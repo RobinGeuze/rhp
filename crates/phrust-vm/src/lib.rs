@@ -13,17 +13,18 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use phrust_bytecode::{CmpKind, FunctionProto, Instr, Program, Reg};
+use phrust_bytecode::{CmpKind, Default as ParamDefault, FunctionProto, Instr, Program, Reg};
 use phrust_builtins::{self as builtins, Host};
 use phrust_semantics::{cast_to_array, inc_dec_value, ops};
-use phrust_values::{conv, ArrayKey, Thrown, Value};
+use phrust_values::{conv, ArrayKey, PhpArray, Thrown, Value};
 
 /// The virtual machine: output sink + call stack + global tables.
 pub struct Vm {
     out: Vec<u8>,
     stack: Vec<Frame>,
+    functions: Vec<Rc<FunctionProto>>,
+    fn_names: HashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
     constants: HashMap<Vec<u8>, Value>,
-    #[allow(dead_code)]
     max_depth: usize,
 }
 
@@ -38,12 +39,14 @@ struct Frame {
     proto: Rc<FunctionProto>,
     regs: Vec<Value>,
     pc: usize,
+    /// Caller register that receives this frame's return value (unused for main).
+    ret_dst: Reg,
 }
 
 impl Frame {
-    fn new(proto: Rc<FunctionProto>) -> Self {
+    fn new(proto: Rc<FunctionProto>, ret_dst: Reg) -> Self {
         let regs = vec![Value::Null; proto.num_registers as usize];
-        Frame { proto, regs, pc: 0 }
+        Frame { proto, regs, pc: 0, ret_dst }
     }
 }
 
@@ -59,7 +62,14 @@ impl Vm {
         for (name, value) in builtins::constants() {
             constants.insert(name.as_bytes().to_vec(), value);
         }
-        Vm { out: Vec::new(), stack: Vec::new(), constants, max_depth: 1 << 16 }
+        Vm {
+            out: Vec::new(),
+            stack: Vec::new(),
+            functions: Vec::new(),
+            fn_names: HashMap::new(),
+            constants,
+            max_depth: 1 << 16,
+        }
     }
 
     pub fn output(&self) -> &[u8] {
@@ -68,8 +78,13 @@ impl Vm {
 
     /// Execute a compiled program; returns the process exit code.
     pub fn run(&mut self, prog: &Program) -> Result<i32, Thrown> {
-        self.stack.push(Frame::new(prog.main.clone()));
-        match self.run_main() {
+        // Install (hoist) all declared functions, keyed case-insensitively.
+        for (idx, proto) in prog.functions.iter().enumerate() {
+            self.functions.push(proto.clone());
+            self.fn_names.insert(proto.name.as_bytes().to_ascii_lowercase(), idx);
+        }
+        self.stack.push(Frame::new(prog.main.clone(), 0));
+        match self.run_loop() {
             Ok(_) => Ok(0),
             Err(Thrown::Exit(code)) => Ok(code),
             Err(other) => Err(other),
@@ -94,14 +109,17 @@ impl Vm {
         }
     }
 
-    fn run_main(&mut self) -> Result<Value, Thrown> {
+    fn run_loop(&mut self) -> Result<Value, Thrown> {
         loop {
             let top = self.stack.len() - 1;
             let proto = self.stack[top].proto.clone();
             let pc = self.stack[top].pc;
             if pc >= proto.code.len() {
-                self.stack.pop();
-                return Ok(Value::Null); // fell off the end == RetNull
+                // fell off the end == RetNull
+                if let Some(done) = self.do_return(Value::Null) {
+                    return Ok(done);
+                }
+                continue;
             }
             let instr = proto.code[pc];
             self.stack[top].pc = pc + 1;
@@ -255,10 +273,23 @@ impl Vm {
                 }
 
                 Instr::Call { dst, name, base, argc } => {
-                    let fname = proto.names[name as usize].as_bytes().to_vec();
-                    let name_str = String::from_utf8_lossy(&fname).into_owned();
-                    let out = self.call_function(top, &name_str, base, argc)?;
-                    self.reg_set(top, dst, out);
+                    let fname = proto.names[name as usize].as_bytes().to_ascii_lowercase();
+                    if let Some(reason) = builtins::is_refused(
+                        std::str::from_utf8(&fname).unwrap_or(""),
+                    ) {
+                        let shown = String::from_utf8_lossy(&fname).into_owned();
+                        return Err(Thrown::unsupported(format!("{shown}()"), reason));
+                    }
+                    if let Some(&fnidx) = self.fn_names.get(&fname) {
+                        // User function: push a frame (args bound to its CVs).
+                        let callee = self.functions[fnidx].clone();
+                        self.enter_user_call(top, callee, dst, base, argc)?;
+                    } else {
+                        // Builtin.
+                        let name_str = String::from_utf8_lossy(&fname).into_owned();
+                        let out = self.call_builtin(top, &name_str, base, argc)?;
+                        self.reg_set(top, dst, out);
+                    }
                 }
 
                 Instr::ThrowMatchError { subject } => {
@@ -295,15 +326,52 @@ impl Vm {
 
                 Instr::Ret { src } => {
                     let v = self.reg_get(top, src);
-                    self.stack.pop();
-                    return Ok(v); // phase 1: single frame == end of script
+                    if let Some(done) = self.do_return(v) {
+                        return Ok(done);
+                    }
                 }
                 Instr::RetNull | Instr::Halt => {
-                    self.stack.pop();
-                    return Ok(Value::Null);
+                    if let Some(done) = self.do_return(Value::Null) {
+                        return Ok(done);
+                    }
                 }
             }
         }
+    }
+
+    /// Pop the current frame and deliver `value`. Returns `Some(value)` when the
+    /// outermost frame returns (program done), else delivers to the caller.
+    fn do_return(&mut self, value: Value) -> Option<Value> {
+        let frame = self.stack.pop().expect("non-empty stack");
+        match self.stack.len().checked_sub(1) {
+            Some(caller) => {
+                self.reg_set(caller, frame.ret_dst, value);
+                None
+            }
+            None => Some(value),
+        }
+    }
+
+    /// Enter a user function: bind args to the callee's CV registers and push.
+    fn enter_user_call(
+        &mut self,
+        top: usize,
+        callee: Rc<FunctionProto>,
+        dst: Reg,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        if self.stack.len() >= self.max_depth {
+            return Err(Thrown::error(
+                "Error",
+                "Maximum call stack depth exceeded",
+            ));
+        }
+        let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+        let mut frame = Frame::new(callee.clone(), dst);
+        bind_params(&callee, &args, &mut frame.regs)?;
+        self.stack.push(frame);
+        Ok(())
     }
 
     /// Binary op that may throw (arithmetic).
@@ -328,16 +396,13 @@ impl Vm {
         self.reg_set(top, dst, v);
     }
 
-    fn call_function(
+    fn call_builtin(
         &mut self,
         top: usize,
         name: &str,
         base: Reg,
         argc: u16,
     ) -> Result<Value, Thrown> {
-        if let Some(reason) = builtins::is_refused(name) {
-            return Err(Thrown::unsupported(format!("{name}()"), reason));
-        }
         let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
         let Some(builtin) = builtins::lookup(name) else {
             return Err(Thrown::error("Error", format!("Call to undefined function {name}()")));
@@ -374,6 +439,47 @@ fn match_case_desc(v: &Value) -> String {
         Value::Null => "NULL".to_string(),
         other => format!("of type {}", other.type_name()),
     }
+}
+
+/// Bind positional `args` to a callee's parameter CV registers (by value), with
+/// constant defaults and variadic collection. By-ref params and named args are
+/// not yet supported.
+fn bind_params(proto: &FunctionProto, args: &[Value], regs: &mut [Value]) -> Result<(), Thrown> {
+    for (i, p) in proto.params.iter().enumerate() {
+        if p.variadic {
+            // Collect the remaining args into an array.
+            let mut arr = PhpArray::new();
+            if i < args.len() {
+                for a in &args[i..] {
+                    arr.push(a.clone());
+                }
+            }
+            regs[p.cv as usize] = Value::Array(arr);
+            return Ok(()); // variadic is always the last parameter
+        } else if i < args.len() {
+            regs[p.cv as usize] = args[i].clone(); // by value
+        } else if let Some(def) = &p.default {
+            match def {
+                ParamDefault::Const(k) => regs[p.cv as usize] = proto.consts[*k as usize].clone(),
+                ParamDefault::Init(_) => {} // non-constant defaults: deferred
+            }
+        } else {
+            return Err(Thrown::error(
+                "ArgumentCountError",
+                format!(
+                    "Too few arguments to function {}(), {} passed and at least {} expected",
+                    String::from_utf8_lossy(proto.name.as_bytes()),
+                    args.len(),
+                    required_params(proto),
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn required_params(proto: &FunctionProto) -> usize {
+    proto.params.iter().filter(|p| p.default.is_none() && !p.variadic).count()
 }
 
 fn eval_cmp(kind: CmpKind, a: &Value, b: &Value) -> Value {

@@ -17,14 +17,21 @@ use phrust_frontend::cst::{
     Expression, ForBody, Identifier, IfBody, Literal, Match, MatchArm, Program as AstProgram,
     Statement, StringPart, SwitchBody, SwitchCase, UnaryPrefixOperator, Variable, WhileBody,
 };
-use phrust_values::{PhpStr, Thrown, Value};
+use phrust_values::{PhpArray, PhpStr, Thrown, Value};
 
 /// Compile a parsed program (borrowed from a `phrust_frontend::Arena`) into an
 /// owned, runnable bytecode `Program`. No `'arena` borrow escapes.
 pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
-    let mut c = ProtoBuilder::new(PhpStr::from("{main}"));
+    // Hoist top-level function declarations (compiled into their own protos).
+    let mut functions = Vec::new();
+    for stmt in program.statements.iter() {
+        if let Statement::Function(func) = stmt {
+            functions.push(Rc::new(compile_function(func)?));
+        }
+    }
 
-    // Pre-pass: assign CV registers to every named variable.
+    // Compile the script body ({main}); its CVs are the globals.
+    let mut c = ProtoBuilder::new(PhpStr::from("{main}"));
     for stmt in program.statements.iter() {
         c.scan_stmt_vars(stmt);
     }
@@ -38,8 +45,60 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
     }
     c.emit(Instr::RetNull);
 
-    let proto = c.finish();
-    Ok(Program { main: Rc::new(proto), functions: Vec::new() })
+    Ok(Program { main: Rc::new(c.finish()), functions })
+}
+
+/// Compile one `function name(params) { body }` into a `FunctionProto`.
+/// Parameters occupy the first CV registers, in order.
+fn compile_function(func: &phrust_frontend::cst::Function) -> Result<FunctionProto, Thrown> {
+    let fname = func.name.value;
+    let mut c = ProtoBuilder::new(PhpStr::from_bytes(fname.to_vec()));
+
+    let mut params = Vec::new();
+    for p in func.parameter_list.parameters.iter() {
+        let var = strip_dollar(p.variable.name);
+        let cv = c.cv(var); // params get CV 0,1,2,... in order
+        let name = c.intern_name(var);
+        let default = match &p.default_value {
+            Some(dv) => Some(c.const_default(dv.value)?),
+            None => None,
+        };
+        params.push(phrust_bytecode::ParamInfo {
+            name,
+            cv,
+            by_ref: p.ampersand.is_some(),
+            variadic: p.ellipsis.is_some(),
+            default,
+        });
+    }
+    let num_params = params.len() as u16;
+
+    // Reject by-ref params for now (semantics not wired through calls yet).
+    if params.iter().any(|p| p.by_ref) {
+        return Err(Thrown::unsupported(
+            "by-reference parameter",
+            "reference parameters arrive in the next phase",
+        ));
+    }
+
+    // Scan the body for the rest of the function's local variables.
+    for s in func.body.statements.iter() {
+        c.scan_stmt_vars(s);
+    }
+    c.num_cvs = c.cv_map.len() as u16;
+    c.next_temp = c.num_cvs;
+    c.high_water = c.num_cvs;
+    c.temp_floor = c.num_cvs;
+
+    for s in func.body.statements.iter() {
+        c.compile_stmt(s)?;
+    }
+    c.emit(Instr::RetNull);
+
+    let mut proto = c.finish();
+    proto.num_params = num_params;
+    proto.params = params;
+    Ok(proto)
 }
 
 struct ProtoBuilder {
@@ -144,6 +203,55 @@ impl ProtoBuilder {
         let i = self.names.len() as NIdx;
         self.names.push(PhpStr::from_bytes(bytes.to_vec()));
         i
+    }
+
+    /// Evaluate a parameter default to a constant and intern it. Only
+    /// compile-time constants are supported (literals, `[]`, true/false/null,
+    /// negated numeric literals); other expressions are deferred.
+    fn const_default(&mut self, e: &Expression) -> Result<phrust_bytecode::Default, Thrown> {
+        let v = self.const_value(e)?;
+        Ok(phrust_bytecode::Default::Const(self.intern_const(v)))
+    }
+
+    fn const_value(&mut self, e: &Expression) -> Result<Value, Thrown> {
+        let v = match e {
+            Expression::Literal(l) => literal_value(l),
+            Expression::Parenthesized(p) => return self.const_value(p.expression),
+            Expression::Array(a) if a.elements.is_empty() => Value::Array(PhpArray::new()),
+            Expression::ConstantAccess(ca) => match identifier_name(&ca.name) {
+                b"true" | b"TRUE" | b"True" => Value::Bool(true),
+                b"false" | b"FALSE" | b"False" => Value::Bool(false),
+                b"null" | b"NULL" | b"Null" => Value::Null,
+                _ => {
+                    return Err(Thrown::unsupported(
+                        "non-constant default value",
+                        "only literals / [] / true/false/null are supported for now",
+                    ))
+                }
+            },
+            Expression::UnaryPrefix(u) => {
+                use UnaryPrefixOperator as Op;
+                let inner = self.const_value(u.operand)?;
+                match (&u.operator, inner) {
+                    (Op::Negation(_), Value::Int(n)) => Value::Int(-n),
+                    (Op::Negation(_), Value::Float(f)) => Value::Float(-f),
+                    (Op::Plus(_), v @ (Value::Int(_) | Value::Float(_))) => v,
+                    _ => {
+                        return Err(Thrown::unsupported(
+                            "non-constant default value",
+                            "only literals / [] / true/false/null are supported for now",
+                        ))
+                    }
+                }
+            }
+            _ => {
+                return Err(Thrown::unsupported(
+                    "non-constant default value",
+                    "only literals / [] / true/false/null are supported for now",
+                ))
+            }
+        };
+        Ok(v)
     }
 
     fn intern_const(&mut self, v: Value) -> CIdx {
@@ -363,6 +471,8 @@ impl ProtoBuilder {
                 }
             }
             Statement::HaltCompiler(_) => self.emit(Instr::Halt),
+            // Top-level function declarations are hoisted/compiled separately.
+            Statement::Function(_) => {}
             Statement::If(i) => self.compile_if(i)?,
             Statement::While(w) => self.compile_while(w)?,
             Statement::DoWhile(d) => self.compile_do_while(d)?,

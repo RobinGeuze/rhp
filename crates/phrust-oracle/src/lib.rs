@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use mago_syntax::cst::{
     Argument, ArrayElement, AssignmentOperator, BinaryOperator, CompositeString, Construct,
-    Expression, ForBody, Identifier, IfBody, Literal, Match, MatchArm, Program, Statement,
+    Expression, ForBody, Function, Identifier, IfBody, Literal, Match, MatchArm, Program, Statement,
     StringPart, SwitchBody, SwitchCase, UnaryPrefixOperator, Variable, WhileBody,
 };
 
@@ -30,32 +30,34 @@ pub enum Flow {
 type ExecResult = Result<Flow, Thrown>;
 type EvalResult = Result<Value, Thrown>;
 
-/// The interpreter state.
-pub struct Interp {
+/// The interpreter state. The lifetime `'a` ties it to the parsed program whose
+/// function declarations it references.
+pub struct Interp<'a> {
     out: Vec<u8>,
     vars: HashMap<Vec<u8>, Value>,
     constants: HashMap<Vec<u8>, Value>,
+    functions: HashMap<Vec<u8>, &'a Function<'a>>, // lowercase name -> declaration
 }
 
-impl Host for Interp {
+impl Host for Interp<'_> {
     fn write_out(&mut self, bytes: &[u8]) {
         self.out.extend_from_slice(bytes);
     }
 }
 
-impl Default for Interp {
+impl Default for Interp<'_> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Interp {
+impl<'a> Interp<'a> {
     pub fn new() -> Self {
         let mut constants = HashMap::new();
         for (name, value) in builtins::constants() {
             constants.insert(name.as_bytes().to_vec(), value);
         }
-        Interp { out: Vec::new(), vars: HashMap::new(), constants }
+        Interp { out: Vec::new(), vars: HashMap::new(), constants, functions: HashMap::new() }
     }
 
     /// The accumulated output buffer.
@@ -65,7 +67,13 @@ impl Interp {
 
     /// Run a parsed program to completion. Returns the process exit code.
     /// `program` borrows a `phrust_frontend::Arena` that must outlive the call.
-    pub fn run(&mut self, program: &Program) -> Result<i32, Thrown> {
+    pub fn run(&mut self, program: &'a Program<'a>) -> Result<i32, Thrown> {
+        // Hoist top-level function declarations.
+        for stmt in program.statements.iter() {
+            if let Statement::Function(func) = stmt {
+                self.functions.insert(func.name.value.to_ascii_lowercase(), func);
+            }
+        }
         for stmt in program.statements.iter() {
             match self.exec_stmt(stmt) {
                 Ok(Flow::Normal) => {}
@@ -80,7 +88,7 @@ impl Interp {
 
     // -- statements --------------------------------------------------------
 
-    fn exec_stmt(&mut self, stmt: &Statement) -> ExecResult {
+    fn exec_stmt(&mut self, stmt: &'a Statement<'a>) -> ExecResult {
         match stmt {
             Statement::OpeningTag(_) | Statement::ClosingTag(_) | Statement::Noop(_) => {
                 Ok(Flow::Normal)
@@ -123,6 +131,7 @@ impl Interp {
                 Ok(Flow::Normal)
             }
             Statement::HaltCompiler(_) => Ok(Flow::Return(Value::Null)),
+            Statement::Function(_) => Ok(Flow::Normal), // hoisted in run()
             Statement::If(i) => self.exec_if(i),
             Statement::While(w) => self.exec_while(w),
             Statement::DoWhile(d) => self.exec_do_while(d),
@@ -145,7 +154,7 @@ impl Interp {
     }
 
     /// Execute a sequence of statements, propagating the first non-Normal flow.
-    fn exec_stmts<'a>(
+    fn exec_stmts(
         &mut self,
         stmts: impl Iterator<Item = &'a Statement<'a>>,
     ) -> ExecResult {
@@ -158,7 +167,7 @@ impl Interp {
         Ok(Flow::Normal)
     }
 
-    fn exec_if(&mut self, i: &mago_syntax::cst::If) -> ExecResult {
+    fn exec_if(&mut self, i: &'a mago_syntax::cst::If<'a>) -> ExecResult {
         match &i.body {
             IfBody::Statement(b) => {
                 if conv::to_bool(&self.walk_expr(i.condition)?) {
@@ -191,7 +200,7 @@ impl Interp {
         }
     }
 
-    fn exec_while(&mut self, w: &mago_syntax::cst::While) -> ExecResult {
+    fn exec_while(&mut self, w: &'a mago_syntax::cst::While<'a>) -> ExecResult {
         while conv::to_bool(&self.walk_expr(w.condition)?) {
             let flow = match &w.body {
                 WhileBody::Statement(s) => self.exec_stmt(s)?,
@@ -206,7 +215,7 @@ impl Interp {
         Ok(Flow::Normal)
     }
 
-    fn exec_do_while(&mut self, d: &mago_syntax::cst::DoWhile) -> ExecResult {
+    fn exec_do_while(&mut self, d: &'a mago_syntax::cst::DoWhile<'a>) -> ExecResult {
         loop {
             let flow = self.exec_stmt(d.statement)?;
             match loop_decision(flow) {
@@ -221,7 +230,7 @@ impl Interp {
         Ok(Flow::Normal)
     }
 
-    fn exec_for(&mut self, f: &mago_syntax::cst::For) -> ExecResult {
+    fn exec_for(&mut self, f: &'a mago_syntax::cst::For<'a>) -> ExecResult {
         for e in f.initializations.iter() {
             self.walk_expr(e)?;
         }
@@ -254,7 +263,7 @@ impl Interp {
         Ok(Flow::Normal)
     }
 
-    fn exec_switch(&mut self, sw: &mago_syntax::cst::Switch) -> ExecResult {
+    fn exec_switch(&mut self, sw: &'a mago_syntax::cst::Switch<'a>) -> ExecResult {
         let subject = self.walk_expr(sw.expression)?;
         let cases: Vec<&SwitchCase> = match &sw.body {
             SwitchBody::BraceDelimited(b) => b.cases.iter().collect(),
@@ -293,7 +302,7 @@ impl Interp {
 
     // -- expressions -------------------------------------------------------
 
-    fn walk_expr(&mut self, expr: &Expression) -> EvalResult {
+    fn walk_expr(&mut self, expr: &'a Expression<'a>) -> EvalResult {
         match expr {
             Expression::Literal(lit) => Ok(walk_literal(lit)),
             Expression::Parenthesized(p) => self.walk_expr(p.expression),
@@ -318,7 +327,7 @@ impl Interp {
         }
     }
 
-    fn walk_binary(&mut self, b: &mago_syntax::cst::Binary) -> EvalResult {
+    fn walk_binary(&mut self, b: &'a mago_syntax::cst::Binary<'a>) -> EvalResult {
         use BinaryOperator as Op;
         // Short-circuiting operators evaluate the rhs lazily.
         match &b.operator {
@@ -377,7 +386,7 @@ impl Interp {
         })
     }
 
-    fn walk_unary_prefix(&mut self, u: &mago_syntax::cst::UnaryPrefix) -> EvalResult {
+    fn walk_unary_prefix(&mut self, u: &'a mago_syntax::cst::UnaryPrefix<'a>) -> EvalResult {
         use UnaryPrefixOperator as Op;
         // inc/dec need an lvalue, handled before evaluating the operand as a value.
         match &u.operator {
@@ -410,7 +419,7 @@ impl Interp {
         })
     }
 
-    fn walk_unary_postfix(&mut self, u: &mago_syntax::cst::UnaryPostfix) -> EvalResult {
+    fn walk_unary_postfix(&mut self, u: &'a mago_syntax::cst::UnaryPostfix<'a>) -> EvalResult {
         use mago_syntax::cst::UnaryPostfixOperator as Op;
         match &u.operator {
             Op::PostIncrement(_) => self.post_inc_dec(u.operand, 1),
@@ -418,7 +427,7 @@ impl Interp {
         }
     }
 
-    fn walk_conditional(&mut self, c: &mago_syntax::cst::Conditional) -> EvalResult {
+    fn walk_conditional(&mut self, c: &'a mago_syntax::cst::Conditional<'a>) -> EvalResult {
         let cond = self.walk_expr(c.condition)?;
         match &c.then {
             Some(then) => {
@@ -439,7 +448,7 @@ impl Interp {
         }
     }
 
-    fn walk_array<'a>(
+    fn walk_array(
         &mut self,
         elements: impl Iterator<Item = &'a ArrayElement<'a>>,
     ) -> EvalResult {
@@ -476,7 +485,7 @@ impl Interp {
         Ok(Value::Array(arr))
     }
 
-    fn walk_match(&mut self, m: &Match) -> EvalResult {
+    fn walk_match(&mut self, m: &'a Match<'a>) -> EvalResult {
         let subject = self.walk_expr(m.expression)?;
         let mut default_expr = None;
         for arm in m.arms.iter() {
@@ -498,7 +507,7 @@ impl Interp {
         }
     }
 
-    fn walk_composite(&mut self, cs: &CompositeString) -> EvalResult {
+    fn walk_composite(&mut self, cs: &'a CompositeString<'a>) -> EvalResult {
         let parts = match cs {
             CompositeString::Interpolated(i) => &i.parts,
             CompositeString::Document(d) => &d.parts,
@@ -526,7 +535,7 @@ impl Interp {
         Ok(Value::str(bytes))
     }
 
-    fn walk_constant(&mut self, id: &Identifier) -> EvalResult {
+    fn walk_constant(&mut self, id: &'a Identifier<'a>) -> EvalResult {
         let name = identifier_name(id);
         // case-sensitive user/engine constants; keyword literals are elsewhere.
         if let Some(v) = self.constants.get(name) {
@@ -543,7 +552,7 @@ impl Interp {
         }
     }
 
-    fn walk_construct(&mut self, c: &Construct) -> EvalResult {
+    fn walk_construct(&mut self, c: &'a Construct<'a>) -> EvalResult {
         match c {
             Construct::Print(p) => {
                 let v = self.walk_expr(p.value)?;
@@ -593,7 +602,7 @@ impl Interp {
 
     fn exit_code_from(
         &mut self,
-        args: Option<&mago_syntax::cst::ArgumentList>,
+        args: Option<&'a mago_syntax::cst::ArgumentList<'a>>,
     ) -> Result<i32, Thrown> {
         let Some(list) = args else { return Ok(0) };
         let Some(first) = list.arguments.iter().next() else { return Ok(0) };
@@ -611,7 +620,7 @@ impl Interp {
         })
     }
 
-    fn walk_call(&mut self, call: &mago_syntax::cst::Call) -> EvalResult {
+    fn walk_call(&mut self, call: &'a mago_syntax::cst::Call<'a>) -> EvalResult {
         use mago_syntax::cst::Call;
         let Call::Function(fc) = call else {
             return Err(Thrown::unsupported(
@@ -657,6 +666,11 @@ impl Interp {
             }
         }
 
+        // User-defined function (hoisted)?
+        if let Some(func) = self.functions.get(name_str.to_ascii_lowercase().as_bytes()).copied() {
+            return self.call_user(func, argv);
+        }
+
         let Some(builtin) = builtins::lookup(&name_str) else {
             return Err(Thrown::error(
                 "Error",
@@ -689,7 +703,65 @@ impl Interp {
 
     // -- variables / lvalues ----------------------------------------------
 
-    fn read_variable(&mut self, var: &Variable) -> EvalResult {
+    /// Call a user-defined function: bind params into a fresh scope, run the
+    /// body, return its value (by-value params + constant defaults + variadic).
+    fn call_user(&mut self, func: &'a Function<'a>, argv: Vec<Value>) -> EvalResult {
+        let mut scope: HashMap<Vec<u8>, Value> = HashMap::new();
+        for (i, p) in func.parameter_list.parameters.iter().enumerate() {
+            if p.ampersand.is_some() {
+                return Err(Thrown::unsupported(
+                    "by-reference parameter",
+                    "reference parameters arrive in the next phase",
+                ));
+            }
+            let var = strip_dollar(p.variable.name).to_vec();
+            if p.ellipsis.is_some() {
+                let mut arr = PhpArray::new();
+                if i < argv.len() {
+                    for a in &argv[i..] {
+                        arr.push(a.clone());
+                    }
+                }
+                scope.insert(var, Value::Array(arr));
+                break;
+            } else if i < argv.len() {
+                scope.insert(var, argv[i].clone());
+            } else if let Some(dv) = &p.default_value {
+                let v = self.walk_expr(dv.value)?;
+                scope.insert(var, v);
+            } else {
+                return Err(Thrown::error(
+                    "ArgumentCountError",
+                    format!(
+                        "Too few arguments to function {}()",
+                        String::from_utf8_lossy(func.name.value)
+                    ),
+                ));
+            }
+        }
+
+        // Swap in the call-local scope; functions have their own variable scope.
+        let saved = std::mem::replace(&mut self.vars, scope);
+        let mut result = Ok(Value::Null);
+        for s in func.body.statements.iter() {
+            match self.exec_stmt(s) {
+                Ok(Flow::Normal) => {}
+                Ok(Flow::Return(v)) => {
+                    result = Ok(v);
+                    break;
+                }
+                Ok(_) => {} // stray break/continue at function scope: ignore
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            }
+        }
+        self.vars = saved;
+        result
+    }
+
+    fn read_variable(&mut self, var: &'a Variable<'a>) -> EvalResult {
         match var {
             Variable::Direct(d) => {
                 let key = strip_dollar(d.name);
@@ -702,7 +774,7 @@ impl Interp {
         }
     }
 
-    fn walk_assignment(&mut self, a: &mago_syntax::cst::Assignment) -> EvalResult {
+    fn walk_assignment(&mut self, a: &'a mago_syntax::cst::Assignment<'a>) -> EvalResult {
         // Only direct-variable targets in the scaffold.
         let Expression::Variable(Variable::Direct(d)) = a.lhs else {
             return Err(Thrown::unsupported(
@@ -744,7 +816,7 @@ impl Interp {
         Ok(new)
     }
 
-    fn pre_inc_dec(&mut self, target: &Expression, delta: i64) -> EvalResult {
+    fn pre_inc_dec(&mut self, target: &'a Expression<'a>, delta: i64) -> EvalResult {
         let Expression::Variable(Variable::Direct(d)) = target else {
             return Err(Thrown::unsupported("++/-- target", "only simple variables for now"));
         };
@@ -755,7 +827,7 @@ impl Interp {
         Ok(new)
     }
 
-    fn post_inc_dec(&mut self, target: &Expression, delta: i64) -> EvalResult {
+    fn post_inc_dec(&mut self, target: &'a Expression<'a>, delta: i64) -> EvalResult {
         let Expression::Variable(Variable::Direct(d)) = target else {
             return Err(Thrown::unsupported("++/-- target", "only simple variables for now"));
         };

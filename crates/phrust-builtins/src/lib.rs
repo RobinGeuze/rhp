@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use phrust_values::conv;
-use phrust_values::Value;
+use phrust_values::{PhpArray, Value};
 
 pub use phrust_values::Thrown;
 
@@ -79,6 +79,18 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "abs"            => fn_abs, 1, Some(1);
             "max"            => fn_max, 1, None;
             "min"            => fn_min, 1, None;
+            "array_sum"      => fn_array_sum, 1, Some(1);
+            "array_product"  => fn_array_product, 1, Some(1);
+            "in_array"       => fn_in_array, 2, Some(3);
+            "array_key_exists" => fn_array_key_exists, 2, Some(2);
+            "implode"        => fn_implode, 1, Some(2);
+            "join"           => fn_implode, 1, Some(2);
+            "explode"        => fn_explode, 2, Some(3);
+            "strtoupper"     => fn_strtoupper, 1, Some(1);
+            "strtolower"     => fn_strtolower, 1, Some(1);
+            "str_contains"   => fn_str_contains, 2, Some(2);
+            "ord"            => fn_ord, 1, Some(1);
+            "chr"            => fn_chr, 1, Some(1);
         }
     })
 }
@@ -297,6 +309,122 @@ fn extremum(args: &[Value], want_max: bool) -> Result<Value, Thrown> {
         }
     }
     Ok(best)
+}
+
+fn fn_array_sum(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Value::Array(a) = deref(&args[0]) else {
+        return Err(Thrown::type_error("array_sum(): Argument #1 ($array) must be of type array"));
+    };
+    let mut acc = Value::Int(0);
+    for (_, v) in a.iter() {
+        acc = ops::add(&acc, v)?;
+    }
+    Ok(acc)
+}
+
+fn fn_array_product(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Value::Array(a) = deref(&args[0]) else {
+        return Err(Thrown::type_error("array_product(): Argument #1 ($array) must be of type array"));
+    };
+    let mut acc = Value::Int(1);
+    for (_, v) in a.iter() {
+        acc = ops::mul(&acc, v)?;
+    }
+    Ok(acc)
+}
+
+fn fn_in_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let needle = deref(&args[0]);
+    let Value::Array(a) = deref(&args[1]) else {
+        return Err(Thrown::type_error("in_array(): Argument #2 ($haystack) must be of type array"));
+    };
+    let strict = args.get(2).map(conv::to_bool).unwrap_or(false);
+    let found = a.iter().any(|(_, v)| {
+        if strict {
+            ops::strict_eq(&needle, v)
+        } else {
+            ops::loose_eq(&needle, v)
+        }
+    });
+    Ok(Value::Bool(found))
+}
+
+fn fn_array_key_exists(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Value::Array(a) = deref(&args[1]) else {
+        return Err(Thrown::type_error("array_key_exists(): Argument #2 ($array) must be of type array"));
+    };
+    let Some(key) = phrust_values::ArrayKey::from_value(&args[0]) else {
+        return Ok(Value::Bool(false));
+    };
+    Ok(Value::Bool(a.get(&key).is_some()))
+}
+
+fn fn_implode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // implode($array) or implode($glue, $array)
+    let (glue, arr) = match (deref(&args[0]), args.get(1).map(deref)) {
+        (Value::Array(a), _) => (Vec::new(), a),
+        (g, Some(Value::Array(a))) => (conv::to_string_bytes(&g), a),
+        _ => return Err(Thrown::type_error("implode(): Argument must be of type array")),
+    };
+    let mut out = Vec::new();
+    for (i, (_, v)) in arr.iter().enumerate() {
+        if i > 0 {
+            out.extend_from_slice(&glue);
+        }
+        out.extend_from_slice(&conv::to_string_bytes(v));
+    }
+    Ok(Value::str(out))
+}
+
+fn fn_explode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let delim = conv::to_string_bytes(&deref(&args[0]));
+    let s = conv::to_string_bytes(&deref(&args[1]));
+    if delim.is_empty() {
+        return Err(Thrown::error("ValueError", "explode(): Argument #1 ($separator) cannot be empty"));
+    }
+    let mut arr = PhpArray::new();
+    let mut start = 0;
+    while let Some(pos) = find_sub(&s[start..], &delim) {
+        arr.push(Value::str(s[start..start + pos].to_vec()));
+        start += pos + delim.len();
+    }
+    arr.push(Value::str(s[start..].to_vec()));
+    Ok(Value::Array(arr))
+}
+
+fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.len() > haystack.len() {
+        return None;
+    }
+    (0..=haystack.len() - needle.len()).find(|&i| &haystack[i..i + needle.len()] == needle)
+}
+
+fn fn_strtoupper(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let mut b = conv::to_string_bytes(&deref(&args[0]));
+    b.make_ascii_uppercase();
+    Ok(Value::str(b))
+}
+
+fn fn_strtolower(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let mut b = conv::to_string_bytes(&deref(&args[0]));
+    b.make_ascii_lowercase();
+    Ok(Value::str(b))
+}
+
+fn fn_str_contains(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let haystack = conv::to_string_bytes(&deref(&args[0]));
+    let needle = conv::to_string_bytes(&deref(&args[1]));
+    Ok(Value::Bool(needle.is_empty() || find_sub(&haystack, &needle).is_some()))
+}
+
+fn fn_ord(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let b = conv::to_string_bytes(&deref(&args[0]));
+    Ok(Value::Int(b.first().copied().unwrap_or(0) as i64))
+}
+
+fn fn_chr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let n = conv::to_int(&deref(&args[0])).rem_euclid(256) as u8;
+    Ok(Value::str(vec![n]))
 }
 
 // small helper on Value for error messages

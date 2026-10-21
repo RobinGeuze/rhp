@@ -10,6 +10,7 @@
 //! exceptions yet (the explicit call stack + exception table are in place for
 //! those phases).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -112,12 +113,35 @@ impl Vm {
         }
     }
 
+    /// Plain register write (temporaries / instruction destinations): overwrites
+    /// the slot. Never writes through a stale `Ref` left in a reused temp.
     fn reg_set(&mut self, top: usize, r: Reg, v: Value) {
-        let slot = &mut self.stack[top].regs[r as usize];
+        self.stack[top].regs[r as usize] = v;
+    }
+
+    /// Assign to a PHP *variable* (a CV): if the slot is a reference, write
+    /// through it (so by-ref aliases see the change); otherwise overwrite.
+    fn cv_assign(&mut self, top: usize, cv: Reg, v: Value) {
+        let slot = &mut self.stack[top].regs[cv as usize];
         if let Value::Ref(rc) = slot {
             *rc.borrow_mut() = v;
         } else {
             *slot = v;
+        }
+    }
+
+    /// Promote a CV slot to a shared reference cell, returning the cell. If the
+    /// slot already holds a `Ref`, its cell is reused.
+    fn promote(&mut self, top: usize, cv: Reg) -> Rc<RefCell<Value>> {
+        let slot = &mut self.stack[top].regs[cv as usize];
+        match slot {
+            Value::Ref(rc) => rc.clone(),
+            other => {
+                let v = std::mem::replace(other, Value::Null);
+                let rc = Rc::new(RefCell::new(v));
+                *other = Value::Ref(rc.clone());
+                rc
+            }
         }
     }
 
@@ -152,7 +176,7 @@ impl Vm {
 
                 Instr::Assign { cv, src } => {
                     let v = self.reg_get(top, src);
-                    self.reg_set(top, cv, v);
+                    self.cv_assign(top, cv, v);
                 }
 
                 Instr::Add { dst, a, b } => self.bin(top, dst, a, b, ops::add)?,
@@ -184,7 +208,7 @@ impl Vm {
                 Instr::IncDec { dst, cv, pre, delta } => {
                     let cur = self.reg_get(top, cv);
                     let new = inc_dec_value(&cur, delta as i64);
-                    self.reg_set(top, cv, new.clone());
+                    self.cv_assign(top, cv, new.clone());
                     self.reg_set(top, dst, if pre { new } else { cur });
                 }
 
@@ -388,6 +412,15 @@ impl Vm {
                     ));
                 }
 
+                Instr::BindRef { dst_cv, src_cv } => {
+                    let rc = self.promote(top, src_cv);
+                    self.stack[top].regs[dst_cv as usize] = Value::Ref(rc);
+                }
+                Instr::MakeRef { dst, cv } => {
+                    let rc = self.promote(top, cv);
+                    self.stack[top].regs[dst as usize] = Value::Ref(rc);
+                }
+
                 Instr::FetchConst { dst, name } => {
                     let cname = proto.names[name as usize].as_bytes().to_vec();
                     match self.constants.get(&cname) {
@@ -455,7 +488,10 @@ impl Vm {
                 "Maximum call stack depth exceeded",
             ));
         }
-        let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+        // Raw (non-deref) copy: by-ref args arrive as `Value::Ref` and must be
+        // kept as references; by-value binding derefs in `bind_params`.
+        let args: Vec<Value> =
+            (0..argc).map(|i| self.stack[top].regs[(base + i) as usize].clone()).collect();
         let mut frame = Frame::new(callee.clone(), dst);
         bind_params(&callee, &args, &mut frame.regs)?;
         self.stack.push(frame);
@@ -595,6 +631,11 @@ fn autovivify(slot: &mut Value) -> Result<(), Thrown> {
 
 /// Write `value` at a cursor path, autovivifying + COW-bubbling along the way.
 fn assign_path(slot: &mut Value, steps: &[CursorStep], value: Value) -> Result<(), Thrown> {
+    // Descend through a reference to its underlying storage.
+    if let Value::Ref(rc) = slot {
+        let mut inner = rc.borrow_mut();
+        return assign_path(&mut inner, steps, value);
+    }
     let Some((head, rest)) = steps.split_first() else {
         *slot = value;
         return Ok(());
@@ -614,6 +655,10 @@ fn assign_path(slot: &mut Value, steps: &[CursorStep], value: Value) -> Result<(
 
 /// Remove the leaf key of a cursor path (COW), descending to the parent first.
 fn unset_path(slot: &mut Value, steps: &[CursorStep]) {
+    if let Value::Ref(rc) = slot {
+        let mut inner = rc.borrow_mut();
+        return unset_path(&mut inner, steps);
+    }
     let Some((head, rest)) = steps.split_first() else { return };
     let Value::Array(arr) = slot else { return };
     let CursorStep::Key(k) = head else { return };
@@ -638,17 +683,19 @@ fn array_key_to_value(k: &ArrayKey) -> Value {
 fn bind_params(proto: &FunctionProto, args: &[Value], regs: &mut [Value]) -> Result<(), Thrown> {
     for (i, p) in proto.params.iter().enumerate() {
         if p.variadic {
-            // Collect the remaining args into an array.
+            // Collect the remaining args into an array (by value).
             let mut arr = PhpArray::new();
             if i < args.len() {
                 for a in &args[i..] {
-                    arr.push(a.clone());
+                    arr.push(deref(a));
                 }
             }
             regs[p.cv as usize] = Value::Array(arr);
             return Ok(()); // variadic is always the last parameter
         } else if i < args.len() {
-            regs[p.cv as usize] = args[i].clone(); // by value
+            // By-ref params keep the incoming Ref (aliasing the caller's var);
+            // by-value params receive a dereferenced copy.
+            regs[p.cv as usize] = if p.by_ref { args[i].clone() } else { deref(&args[i]) };
         } else if let Some(def) = &p.default {
             match def {
                 ParamDefault::Const(k) => regs[p.cv as usize] = proto.consts[*k as usize].clone(),

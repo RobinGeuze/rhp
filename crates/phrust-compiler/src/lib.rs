@@ -9,6 +9,7 @@
 //! `$var` so CVs occupy `[0, num_cvs)`; temporaries bump above and are freed at
 //! statement boundaries; `num_registers` is the peak.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use phrust_bytecode::{CIdx, CmpKind, FnIdx, FunctionProto, Instr, NIdx, Program, Reg};
@@ -29,16 +30,29 @@ use phrust_values::{PhpArray, PhpStr, Thrown, Value};
 /// Compile a parsed program (borrowed from a `phrust_frontend::Arena`) into an
 /// owned, runnable bytecode `Program`. No `'arena` borrow escapes.
 pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
+    // Signature pre-pass: name -> per-parameter by-ref flags, so a call site can
+    // marshal by-ref arguments even though the callee is resolved by name.
+    let mut sigs: HashMap<Vec<u8>, Vec<bool>> = HashMap::new();
+    for stmt in program.statements.iter() {
+        if let Statement::Function(func) = stmt {
+            let flags: Vec<bool> =
+                func.parameter_list.parameters.iter().map(|p| p.ampersand.is_some()).collect();
+            sigs.insert(func.name.value.to_ascii_lowercase(), flags);
+        }
+    }
+    let sigs = Rc::new(sigs);
+
     // Hoist top-level function declarations (compiled into their own protos).
     let mut functions = Vec::new();
     for stmt in program.statements.iter() {
         if let Statement::Function(func) = stmt {
-            functions.push(Rc::new(compile_function(func)?));
+            functions.push(Rc::new(compile_function(func, sigs.clone())?));
         }
     }
 
     // Compile the script body ({main}); its CVs are the globals.
     let mut c = ProtoBuilder::new(PhpStr::from("{main}"));
+    c.sigs = sigs.clone();
     for stmt in program.statements.iter() {
         c.scan_stmt_vars(stmt);
     }
@@ -57,9 +71,13 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
 
 /// Compile one `function name(params) { body }` into a `FunctionProto`.
 /// Parameters occupy the first CV registers, in order.
-fn compile_function(func: &phrust_frontend::cst::Function) -> Result<FunctionProto, Thrown> {
+fn compile_function(
+    func: &phrust_frontend::cst::Function,
+    sigs: Rc<HashMap<Vec<u8>, Vec<bool>>>,
+) -> Result<FunctionProto, Thrown> {
     let fname = func.name.value;
     let mut c = ProtoBuilder::new(PhpStr::from_bytes(fname.to_vec()));
+    c.sigs = sigs;
 
     let mut params = Vec::new();
     for p in func.parameter_list.parameters.iter() {
@@ -79,14 +97,6 @@ fn compile_function(func: &phrust_frontend::cst::Function) -> Result<FunctionPro
         });
     }
     let num_params = params.len() as u16;
-
-    // Reject by-ref params for now (semantics not wired through calls yet).
-    if params.iter().any(|p| p.by_ref) {
-        return Err(Thrown::unsupported(
-            "by-reference parameter",
-            "reference parameters arrive in the next phase",
-        ));
-    }
 
     // Scan the body for the rest of the function's local variables.
     for s in func.body.statements.iter() {
@@ -122,6 +132,8 @@ struct ProtoBuilder {
     temp_floor: Reg,
     /// Stack of enclosing loops/switches, for `break`/`continue` resolution.
     loops: Vec<LoopCtx>,
+    /// Function name (lowercase) -> per-parameter by-ref flags (for call sites).
+    sigs: Rc<HashMap<Vec<u8>, Vec<bool>>>,
 }
 
 /// A break/continue target under construction. Jump placeholders are recorded
@@ -145,6 +157,7 @@ impl ProtoBuilder {
             high_water: 0,
             temp_floor: 0,
             loops: Vec::new(),
+            sigs: Rc::new(HashMap::new()),
         }
     }
 
@@ -1298,31 +1311,51 @@ impl ProtoBuilder {
             }
         };
 
-        // Compile args, then marshal into a contiguous window.
-        let mut arg_regs = Vec::new();
-        for arg in fc.argument_list.arguments.iter() {
-            match arg {
-                Argument::Positional(p) if p.ellipsis.is_none() => {
-                    arg_regs.push(self.compile_expr(p.value)?);
-                }
+        // Per-parameter by-ref flags of the (statically-known) callee.
+        let sig = self.sigs.get(&name_bytes.to_ascii_lowercase()).cloned();
+
+        // Compile each arg into a value reg, or (for a by-ref param) note the
+        // variable's CV so it can be materialized as a reference.
+        enum ArgSlot {
+            Value(Reg),
+            Ref(Reg),
+        }
+        let mut slots = Vec::new();
+        for (i, arg) in fc.argument_list.arguments.iter().enumerate() {
+            let p = match arg {
+                Argument::Positional(p) if p.ellipsis.is_none() => p,
                 Argument::Positional(_) => {
-                    return Err(Thrown::unsupported(
-                        "argument spread",
-                        "variadic call sites arrive with user functions",
-                    ))
+                    return Err(Thrown::unsupported("argument spread", "call-site spread is deferred"))
                 }
                 Argument::Named(_) => {
-                    return Err(Thrown::unsupported(
-                        "named arguments",
-                        "arrive with user functions in phase 5",
-                    ))
+                    return Err(Thrown::unsupported("named arguments", "deferred"))
                 }
+            };
+            let by_ref = sig.as_ref().and_then(|s| s.get(i).copied()).unwrap_or(false);
+            if by_ref {
+                let Expression::Variable(Variable::Direct(d)) = p.value else {
+                    return Err(Thrown::error(
+                        "Error",
+                        format!(
+                            "{}(): Argument #{} could not be passed by reference",
+                            String::from_utf8_lossy(&name_bytes),
+                            i + 1
+                        ),
+                    ));
+                };
+                slots.push(ArgSlot::Ref(self.cv(strip_dollar(d.name))));
+            } else {
+                slots.push(ArgSlot::Value(self.compile_expr(p.value)?));
             }
         }
-        let argc = arg_regs.len() as u16;
+        let argc = slots.len() as u16;
         let base = self.alloc_temps(argc);
-        for (i, r) in arg_regs.into_iter().enumerate() {
-            self.emit(Instr::Mov { dst: base + i as Reg, src: r });
+        for (i, slot) in slots.into_iter().enumerate() {
+            let dst = base + i as Reg;
+            match slot {
+                ArgSlot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
+                ArgSlot::Ref(cv) => self.emit(Instr::MakeRef { dst, cv }),
+            }
         }
         let name = self.intern_name(&name_bytes);
         let dst = self.alloc_temp();
@@ -1372,6 +1405,24 @@ impl ProtoBuilder {
         &mut self,
         a: &phrust_frontend::cst::Assignment,
     ) -> Result<Reg, Thrown> {
+        // Reference assignment `$b =& $a` — rhs is `&<lvalue>`.
+        if let (AssignmentOperator::Assign(_), Expression::UnaryPrefix(u)) = (&a.operator, a.rhs) {
+            if matches!(u.operator, UnaryPrefixOperator::Reference(_)) {
+                let (Expression::Variable(Variable::Direct(dst)), Expression::Variable(Variable::Direct(src))) =
+                    (a.lhs, u.operand)
+                else {
+                    return Err(Thrown::unsupported(
+                        "reference binding target",
+                        "only `$x =& $y` between simple variables for now",
+                    ));
+                };
+                let dst_cv = self.cv(strip_dollar(dst.name));
+                let src_cv = self.cv(strip_dollar(src.name));
+                self.emit(Instr::BindRef { dst_cv, src_cv });
+                return Ok(dst_cv);
+            }
+        }
+
         // Array-element / append target: use the lvalue cursor.
         if matches!(a.lhs, Expression::ArrayAccess(_) | Expression::ArrayAppend(_)) {
             let mut steps = Vec::new();

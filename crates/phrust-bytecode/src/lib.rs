@@ -127,6 +127,12 @@ pub enum Instr {
     /// `match` with no matching arm and no default: throw `\UnhandledMatchError`.
     ThrowMatchError { subject: Reg },
 
+    // -- references --
+    /// `$dst =& $src`: promote `src`'s slot to a shared Ref; `dst` aliases it.
+    BindRef { dst_cv: Reg, src_cv: Reg },
+    /// Materialize CV `cv` as a Ref and place `Value::Ref` in `dst` (by-ref arg).
+    MakeRef { dst: Reg, cv: Reg },
+
     // -- misc --
     FetchConst { dst: Reg, name: NIdx },
     /// Emitted only for a structurally-refused construct on a reachable path;

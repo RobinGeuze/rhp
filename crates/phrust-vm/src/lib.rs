@@ -261,6 +261,14 @@ impl Vm {
                     self.reg_set(top, dst, out);
                 }
 
+                Instr::ThrowMatchError { subject } => {
+                    let v = self.reg_get(top, subject);
+                    return Err(Thrown::error(
+                        "UnhandledMatchError",
+                        format!("Unhandled match case {}", match_case_desc(&v)),
+                    ));
+                }
+
                 Instr::FetchConst { dst, name } => {
                     let cname = proto.names[name as usize].as_bytes().to_vec();
                     match self.constants.get(&cname) {
@@ -353,6 +361,18 @@ impl Vm {
             }
         }
         (builtin.func)(self, &args)
+    }
+}
+
+/// Describe the unmatched subject for an UnhandledMatchError message.
+fn match_case_desc(v: &Value) -> String {
+    match v {
+        Value::Int(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Str(_) => "of type string".to_string(),
+        Value::Float(_) => "of type double".to_string(),
+        Value::Null => "NULL".to_string(),
+        other => format!("of type {}", other.type_name()),
     }
 }
 

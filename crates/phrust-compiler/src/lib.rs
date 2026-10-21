@@ -14,8 +14,8 @@ use std::rc::Rc;
 use phrust_bytecode::{CIdx, CmpKind, FnIdx, FunctionProto, Instr, NIdx, Program, Reg};
 use phrust_frontend::cst::{
     Argument, ArrayElement, AssignmentOperator, BinaryOperator, CompositeString, Construct,
-    Expression, Identifier, Literal, Program as AstProgram, Statement, StringPart,
-    UnaryPrefixOperator, Variable,
+    Expression, ForBody, Identifier, IfBody, Literal, Match, MatchArm, Program as AstProgram,
+    Statement, StringPart, SwitchBody, SwitchCase, UnaryPrefixOperator, Variable, WhileBody,
 };
 use phrust_values::{PhpStr, Thrown, Value};
 
@@ -31,6 +31,7 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
     c.num_cvs = c.cv_map.len() as u16;
     c.next_temp = c.num_cvs;
     c.high_water = c.num_cvs;
+    c.temp_floor = c.num_cvs;
 
     for stmt in program.statements.iter() {
         c.compile_stmt(stmt)?;
@@ -50,6 +51,19 @@ struct ProtoBuilder {
     num_cvs: u16,
     next_temp: Reg,
     high_water: Reg,
+    /// Temporaries below this are protected from `reset_temps` (e.g. a `switch`
+    /// subject held live across fall-through case bodies).
+    temp_floor: Reg,
+    /// Stack of enclosing loops/switches, for `break`/`continue` resolution.
+    loops: Vec<LoopCtx>,
+}
+
+/// A break/continue target under construction. Jump placeholders are recorded
+/// as code positions and patched once the loop's exit/continue labels are known.
+#[derive(Default)]
+struct LoopCtx {
+    break_jumps: Vec<usize>,
+    continue_jumps: Vec<usize>,
 }
 
 impl ProtoBuilder {
@@ -63,6 +77,8 @@ impl ProtoBuilder {
             num_cvs: 0,
             next_temp: 0,
             high_water: 0,
+            temp_floor: 0,
+            loops: Vec::new(),
         }
     }
 
@@ -98,9 +114,18 @@ impl ProtoBuilder {
         base
     }
 
-    /// Free temporaries back to the CV boundary (end of a statement).
+    /// Free temporaries back to the current floor (end of a statement).
     fn reset_temps(&mut self) {
-        self.next_temp = self.num_cvs;
+        self.next_temp = self.temp_floor;
+    }
+
+    /// Patch a placeholder `Nop` at `pos` into a jump to `target`.
+    fn patch_jmp(&mut self, pos: usize, target: u32) {
+        self.code[pos] = Instr::Jmp { target };
+    }
+
+    fn here(&self) -> u32 {
+        self.code.len() as u32
     }
 
     fn cv(&mut self, var_name: &[u8]) -> Reg {
@@ -133,11 +158,84 @@ impl ProtoBuilder {
     // -- CV pre-pass --
 
     fn scan_stmt_vars(&mut self, stmt: &Statement) {
+        use phrust_frontend::cst::{ForBody, IfBody, SwitchBody, SwitchCase, WhileBody};
         match stmt {
             Statement::Echo(e) => e.values.iter().for_each(|v| self.scan_expr_vars(v)),
             Statement::EchoTag(e) => e.values.iter().for_each(|v| self.scan_expr_vars(v)),
             Statement::Expression(s) => self.scan_expr_vars(s.expression),
             Statement::Block(b) => b.statements.iter().for_each(|s| self.scan_stmt_vars(s)),
+            Statement::If(i) => {
+                self.scan_expr_vars(i.condition);
+                match &i.body {
+                    IfBody::Statement(b) => {
+                        self.scan_stmt_vars(b.statement);
+                        for c in b.else_if_clauses.iter() {
+                            self.scan_expr_vars(c.condition);
+                            self.scan_stmt_vars(c.statement);
+                        }
+                        if let Some(e) = &b.else_clause {
+                            self.scan_stmt_vars(e.statement);
+                        }
+                    }
+                    IfBody::ColonDelimited(b) => {
+                        b.statements.iter().for_each(|s| self.scan_stmt_vars(s));
+                        for c in b.else_if_clauses.iter() {
+                            self.scan_expr_vars(c.condition);
+                            c.statements.iter().for_each(|s| self.scan_stmt_vars(s));
+                        }
+                        if let Some(e) = &b.else_clause {
+                            e.statements.iter().for_each(|s| self.scan_stmt_vars(s));
+                        }
+                    }
+                }
+            }
+            Statement::While(w) => {
+                self.scan_expr_vars(w.condition);
+                match &w.body {
+                    WhileBody::Statement(s) => self.scan_stmt_vars(s),
+                    WhileBody::ColonDelimited(b) => {
+                        b.statements.iter().for_each(|s| self.scan_stmt_vars(s))
+                    }
+                }
+            }
+            Statement::DoWhile(d) => {
+                self.scan_stmt_vars(d.statement);
+                self.scan_expr_vars(d.condition);
+            }
+            Statement::For(f) => {
+                f.initializations.iter().for_each(|e| self.scan_expr_vars(e));
+                f.conditions.iter().for_each(|e| self.scan_expr_vars(e));
+                f.increments.iter().for_each(|e| self.scan_expr_vars(e));
+                match &f.body {
+                    ForBody::Statement(s) => self.scan_stmt_vars(s),
+                    ForBody::ColonDelimited(b) => {
+                        b.statements.iter().for_each(|s| self.scan_stmt_vars(s))
+                    }
+                }
+            }
+            Statement::Switch(sw) => {
+                self.scan_expr_vars(sw.expression);
+                let cases = match &sw.body {
+                    SwitchBody::BraceDelimited(b) => &b.cases,
+                    SwitchBody::ColonDelimited(b) => &b.cases,
+                };
+                for case in cases.iter() {
+                    match case {
+                        SwitchCase::Expression(c) => {
+                            self.scan_expr_vars(c.expression);
+                            c.statements.iter().for_each(|s| self.scan_stmt_vars(s));
+                        }
+                        SwitchCase::Default(c) => {
+                            c.statements.iter().for_each(|s| self.scan_stmt_vars(s))
+                        }
+                    }
+                }
+            }
+            Statement::Return(r) => {
+                if let Some(v) = r.value {
+                    self.scan_expr_vars(v);
+                }
+            }
             _ => {}
         }
     }
@@ -180,6 +278,18 @@ impl ProtoBuilder {
                             StringPart::BracedExpression(b) => self.scan_expr_vars(b.expression),
                             StringPart::Literal(_) => {}
                         }
+                    }
+                }
+            }
+            Expression::Match(m) => {
+                self.scan_expr_vars(m.expression);
+                for arm in m.arms.iter() {
+                    match arm {
+                        phrust_frontend::cst::MatchArm::Expression(a) => {
+                            a.conditions.iter().for_each(|c| self.scan_expr_vars(c));
+                            self.scan_expr_vars(a.expression);
+                        }
+                        phrust_frontend::cst::MatchArm::Default(a) => self.scan_expr_vars(a.expression),
                     }
                 }
             }
@@ -253,6 +363,20 @@ impl ProtoBuilder {
                 }
             }
             Statement::HaltCompiler(_) => self.emit(Instr::Halt),
+            Statement::If(i) => self.compile_if(i)?,
+            Statement::While(w) => self.compile_while(w)?,
+            Statement::DoWhile(d) => self.compile_do_while(d)?,
+            Statement::For(f) => self.compile_for(f)?,
+            Statement::Switch(s) => self.compile_switch(s)?,
+            Statement::Return(r) => match r.value {
+                Some(e) => {
+                    let src = self.compile_expr(e)?;
+                    self.emit(Instr::Ret { src });
+                }
+                None => self.emit(Instr::RetNull),
+            },
+            Statement::Break(b) => self.compile_break_continue(b.level, true)?,
+            Statement::Continue(c) => self.compile_break_continue(c.level, false)?,
             other => {
                 return Err(Thrown::unsupported(
                     format!("{} statement", stmt_kind(other)),
@@ -262,6 +386,288 @@ impl ProtoBuilder {
         }
         self.reset_temps();
         Ok(())
+    }
+
+    // -- control-flow lowering --
+
+    /// Compile a single statement or a colon-delimited statement sequence.
+    fn compile_stmts<'a>(&mut self, stmts: impl Iterator<Item = &'a Statement<'a>>) -> Result<(), Thrown> {
+        for s in stmts {
+            self.compile_stmt(s)?;
+        }
+        Ok(())
+    }
+
+    fn compile_if(&mut self, i: &phrust_frontend::cst::If) -> Result<(), Thrown> {
+        // Jumps to the end of the whole if/elseif/else chain, patched at the end.
+        let mut end_jumps = Vec::new();
+
+        // Emit one (condition, body) clause: returns nothing; leaves a JmpFalse
+        // targeting the next clause's start.
+        macro_rules! clause {
+            ($cond:expr, $body:block) => {{
+                let cond = self.compile_expr($cond)?;
+                let jf = self.code.len();
+                self.emit(Instr::Nop); // JmpFalse cond -> next clause
+                $body
+                end_jumps.push(self.code.len());
+                self.emit(Instr::Nop); // Jmp -> end
+                let next = self.here();
+                self.code[jf] = Instr::JmpFalse { cond, target: next };
+            }};
+        }
+
+        match &i.body {
+            IfBody::Statement(b) => {
+                clause!(i.condition, {
+                    self.compile_stmt(b.statement)?;
+                });
+                for c in b.else_if_clauses.iter() {
+                    clause!(c.condition, {
+                        self.compile_stmt(c.statement)?;
+                    });
+                }
+                if let Some(e) = &b.else_clause {
+                    self.compile_stmt(e.statement)?;
+                }
+            }
+            IfBody::ColonDelimited(b) => {
+                clause!(i.condition, {
+                    self.compile_stmts(b.statements.iter())?;
+                });
+                for c in b.else_if_clauses.iter() {
+                    clause!(c.condition, {
+                        self.compile_stmts(c.statements.iter())?;
+                    });
+                }
+                if let Some(e) = &b.else_clause {
+                    self.compile_stmts(e.statements.iter())?;
+                }
+            }
+        }
+
+        let end = self.here();
+        for j in end_jumps {
+            self.patch_jmp(j, end);
+        }
+        Ok(())
+    }
+
+    fn compile_while(&mut self, w: &phrust_frontend::cst::While) -> Result<(), Thrown> {
+        let top = self.here();
+        let cond = self.compile_expr(w.condition)?;
+        let jf = self.code.len();
+        self.emit(Instr::Nop); // JmpFalse cond -> end
+        self.loops.push(LoopCtx::default());
+        match &w.body {
+            WhileBody::Statement(s) => self.compile_stmt(s)?,
+            WhileBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
+        }
+        let ctx = self.loops.pop().unwrap();
+        self.emit(Instr::Jmp { target: top });
+        let end = self.here();
+        self.code[jf] = Instr::JmpFalse { cond, target: end };
+        self.patch_all(ctx.break_jumps, end);
+        self.patch_all(ctx.continue_jumps, top);
+        Ok(())
+    }
+
+    fn compile_do_while(&mut self, d: &phrust_frontend::cst::DoWhile) -> Result<(), Thrown> {
+        let top = self.here();
+        self.loops.push(LoopCtx::default());
+        self.compile_stmt(d.statement)?;
+        let ctx = self.loops.pop().unwrap();
+        let cont = self.here(); // continue -> re-test the condition
+        let cond = self.compile_expr(d.condition)?;
+        self.emit(Instr::JmpTrue { cond, target: top });
+        let end = self.here();
+        self.patch_all(ctx.break_jumps, end);
+        self.patch_all(ctx.continue_jumps, cont);
+        Ok(())
+    }
+
+    fn compile_for(&mut self, f: &phrust_frontend::cst::For) -> Result<(), Thrown> {
+        for e in f.initializations.iter() {
+            self.compile_expr(e)?;
+        }
+        let top = self.here();
+        // All conditions evaluated for side effects; the LAST controls the loop.
+        let jf = if f.conditions.is_empty() {
+            None
+        } else {
+            let mut last = None;
+            for e in f.conditions.iter() {
+                last = Some(self.compile_expr(e)?);
+            }
+            let pos = self.code.len();
+            self.emit(Instr::Nop); // JmpFalse last -> end
+            Some((last.unwrap(), pos))
+        };
+        self.loops.push(LoopCtx::default());
+        match &f.body {
+            ForBody::Statement(s) => self.compile_stmt(s)?,
+            ForBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
+        }
+        let ctx = self.loops.pop().unwrap();
+        let cont = self.here(); // continue -> increments
+        for e in f.increments.iter() {
+            self.compile_expr(e)?;
+        }
+        self.emit(Instr::Jmp { target: top });
+        let end = self.here();
+        if let Some((cond, pos)) = jf {
+            self.code[pos] = Instr::JmpFalse { cond, target: end };
+        }
+        self.patch_all(ctx.break_jumps, end);
+        self.patch_all(ctx.continue_jumps, cont);
+        Ok(())
+    }
+
+    fn compile_switch(&mut self, sw: &phrust_frontend::cst::Switch) -> Result<(), Thrown> {
+        let subject = self.compile_expr(sw.expression)?;
+        // Protect the subject register across the fall-through case bodies.
+        let saved_floor = self.temp_floor;
+        self.temp_floor = self.next_temp;
+
+        let cases: Vec<&SwitchCase> = match &sw.body {
+            SwitchBody::BraceDelimited(b) => b.cases.iter().collect(),
+            SwitchBody::ColonDelimited(b) => b.cases.iter().collect(),
+        };
+
+        // Dispatch: compare the subject against each case (loose ==), in order.
+        let mut dispatch: Vec<(usize, usize, Reg)> = Vec::new(); // (case idx, jmp pos, cond reg)
+        for (idx, case) in cases.iter().enumerate() {
+            if let SwitchCase::Expression(c) = case {
+                let cexpr = self.compile_expr(c.expression)?;
+                let t = self.alloc_temp();
+                self.emit(Instr::Cmp { dst: t, a: subject, b: cexpr, kind: CmpKind::Eq });
+                let pos = self.code.len();
+                self.emit(Instr::Nop); // JmpTrue t -> case body
+                dispatch.push((idx, pos, t));
+            }
+        }
+        let default_idx = cases.iter().position(|c| matches!(c, SwitchCase::Default(_)));
+        let no_match_pos = self.code.len();
+        self.emit(Instr::Nop); // Jmp -> default body or end
+
+        // Case bodies in source order (fall-through: no jumps between them).
+        self.loops.push(LoopCtx::default()); // switch is one break/continue level
+        let mut starts = vec![0u32; cases.len()];
+        for (idx, case) in cases.iter().enumerate() {
+            starts[idx] = self.here();
+            match case {
+                SwitchCase::Expression(c) => self.compile_stmts(c.statements.iter())?,
+                SwitchCase::Default(c) => self.compile_stmts(c.statements.iter())?,
+            }
+        }
+        let ctx = self.loops.pop().unwrap();
+        let end = self.here();
+
+        for (idx, pos, cond) in dispatch {
+            self.code[pos] = Instr::JmpTrue { cond, target: starts[idx] };
+        }
+        let no_match_target = default_idx.map(|i| starts[i]).unwrap_or(end);
+        self.patch_jmp(no_match_pos, no_match_target);
+        // In a switch, continue (level 1) behaves like break.
+        self.patch_all(ctx.break_jumps, end);
+        self.patch_all(ctx.continue_jumps, end);
+
+        self.temp_floor = saved_floor;
+        Ok(())
+    }
+
+    fn compile_break_continue(
+        &mut self,
+        level: Option<&Expression>,
+        is_break: bool,
+    ) -> Result<(), Thrown> {
+        let n = match level {
+            None => 1usize,
+            Some(Expression::Literal(Literal::Integer(i))) => i.value.unwrap_or(1).max(1) as usize,
+            Some(_) => {
+                return Err(Thrown::error(
+                    "Error",
+                    "'break'/'continue' operator accepts only a constant integer level",
+                ))
+            }
+        };
+        let kw = if is_break { "break" } else { "continue" };
+        if n == 0 || self.loops.len() < n {
+            return Err(Thrown::error(
+                "Error",
+                format!("Cannot '{kw}' {n} level(s)"),
+            ));
+        }
+        let idx = self.loops.len() - n;
+        let pos = self.code.len();
+        self.emit(Instr::Nop); // patched to Jmp at loop close
+        if is_break {
+            self.loops[idx].break_jumps.push(pos);
+        } else {
+            self.loops[idx].continue_jumps.push(pos);
+        }
+        Ok(())
+    }
+
+    fn patch_all(&mut self, positions: Vec<usize>, target: u32) {
+        for p in positions {
+            self.patch_jmp(p, target);
+        }
+    }
+
+    fn compile_match(&mut self, m: &Match) -> Result<Reg, Thrown> {
+        let subject = self.compile_expr(m.expression)?;
+        let dst = self.alloc_temp();
+        let arms: Vec<&MatchArm> = m.arms.iter().collect();
+
+        // Dispatch: strict === against each arm condition, in order.
+        let mut dispatch: Vec<(usize, usize, Reg)> = Vec::new();
+        let mut default_idx = None;
+        for (idx, arm) in arms.iter().enumerate() {
+            match arm {
+                MatchArm::Expression(a) => {
+                    for cond in a.conditions.iter() {
+                        let c = self.compile_expr(cond)?;
+                        let t = self.alloc_temp();
+                        self.emit(Instr::Cmp { dst: t, a: subject, b: c, kind: CmpKind::Identical });
+                        let pos = self.code.len();
+                        self.emit(Instr::Nop); // JmpTrue t -> arm body
+                        dispatch.push((idx, pos, t));
+                    }
+                }
+                MatchArm::Default(_) => default_idx = Some(idx),
+            }
+        }
+        let no_match_pos = self.code.len();
+        self.emit(Instr::Nop); // Jmp -> default arm or throw
+
+        // Arm bodies.
+        let mut starts = vec![0u32; arms.len()];
+        let mut end_jumps = Vec::new();
+        for (idx, arm) in arms.iter().enumerate() {
+            starts[idx] = self.here();
+            let e = match arm {
+                MatchArm::Expression(a) => a.expression,
+                MatchArm::Default(a) => a.expression,
+            };
+            let r = self.compile_expr(e)?;
+            self.emit(Instr::Mov { dst, src: r });
+            end_jumps.push(self.code.len());
+            self.emit(Instr::Nop); // Jmp -> end
+        }
+        let throw_label = self.here();
+        self.emit(Instr::ThrowMatchError { subject });
+        let end = self.here();
+
+        for (idx, pos, cond) in dispatch {
+            self.code[pos] = Instr::JmpTrue { cond, target: starts[idx] };
+        }
+        let nm_target = default_idx.map(|i| starts[i]).unwrap_or(throw_label);
+        self.patch_jmp(no_match_pos, nm_target);
+        for j in end_jumps {
+            self.patch_jmp(j, end);
+        }
+        Ok(dst)
     }
 
     // -- expression lowering (returns the register holding the result) --
@@ -285,6 +691,7 @@ impl ProtoBuilder {
             Expression::ConstantAccess(ca) => self.compile_constant(&ca.name),
             Expression::Identifier(id) => self.compile_constant(id),
             Expression::CompositeString(cs) => self.compile_composite(cs),
+            Expression::Match(m) => self.compile_match(m),
             Expression::Construct(c) => self.compile_construct(c),
             Expression::Call(call) => self.compile_call(call),
             other => Err(Thrown::unsupported(

@@ -106,6 +106,9 @@ pub enum Instr {
     Ret { src: Reg },
     RetNull,
 
+    /// `match` with no matching arm and no default: throw `\UnhandledMatchError`.
+    ThrowMatchError { subject: Reg },
+
     // -- misc --
     FetchConst { dst: Reg, name: NIdx },
     /// Emitted only for a structurally-refused construct on a reachable path;

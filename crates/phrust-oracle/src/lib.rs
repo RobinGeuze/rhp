@@ -8,7 +8,8 @@ use std::collections::HashMap;
 
 use mago_syntax::cst::{
     Argument, ArrayElement, AssignmentOperator, BinaryOperator, CompositeString, Construct,
-    Expression, Identifier, Literal, Program, Statement, StringPart, UnaryPrefixOperator, Variable,
+    Expression, ForBody, Identifier, IfBody, Literal, Match, MatchArm, Program, Statement,
+    StringPart, SwitchBody, SwitchCase, UnaryPrefixOperator, Variable, WhileBody,
 };
 
 use phrust_builtins::{self as builtins, Host};
@@ -122,11 +123,172 @@ impl Interp {
                 Ok(Flow::Normal)
             }
             Statement::HaltCompiler(_) => Ok(Flow::Return(Value::Null)),
+            Statement::If(i) => self.exec_if(i),
+            Statement::While(w) => self.exec_while(w),
+            Statement::DoWhile(d) => self.exec_do_while(d),
+            Statement::For(f) => self.exec_for(f),
+            Statement::Switch(s) => self.exec_switch(s),
+            Statement::Return(r) => {
+                let v = match r.value {
+                    Some(e) => self.walk_expr(e)?,
+                    None => Value::Null,
+                };
+                Ok(Flow::Return(v))
+            }
+            Statement::Break(b) => Ok(Flow::Break(flow_level(b.level.as_deref())?)),
+            Statement::Continue(c) => Ok(Flow::Continue(flow_level(c.level.as_deref())?)),
             other => Err(Thrown::unsupported(
                 format!("{} statement", stmt_name(other)),
                 "not implemented in the phase-1 scaffold",
             )),
         }
+    }
+
+    /// Execute a sequence of statements, propagating the first non-Normal flow.
+    fn exec_stmts<'a>(
+        &mut self,
+        stmts: impl Iterator<Item = &'a Statement<'a>>,
+    ) -> ExecResult {
+        for s in stmts {
+            match self.exec_stmt(s)? {
+                Flow::Normal => {}
+                other => return Ok(other),
+            }
+        }
+        Ok(Flow::Normal)
+    }
+
+    fn exec_if(&mut self, i: &mago_syntax::cst::If) -> ExecResult {
+        match &i.body {
+            IfBody::Statement(b) => {
+                if conv::to_bool(&self.walk_expr(i.condition)?) {
+                    return self.exec_stmt(b.statement);
+                }
+                for c in b.else_if_clauses.iter() {
+                    if conv::to_bool(&self.walk_expr(c.condition)?) {
+                        return self.exec_stmt(c.statement);
+                    }
+                }
+                if let Some(e) = &b.else_clause {
+                    return self.exec_stmt(e.statement);
+                }
+                Ok(Flow::Normal)
+            }
+            IfBody::ColonDelimited(b) => {
+                if conv::to_bool(&self.walk_expr(i.condition)?) {
+                    return self.exec_stmts(b.statements.iter());
+                }
+                for c in b.else_if_clauses.iter() {
+                    if conv::to_bool(&self.walk_expr(c.condition)?) {
+                        return self.exec_stmts(c.statements.iter());
+                    }
+                }
+                if let Some(e) = &b.else_clause {
+                    return self.exec_stmts(e.statements.iter());
+                }
+                Ok(Flow::Normal)
+            }
+        }
+    }
+
+    fn exec_while(&mut self, w: &mago_syntax::cst::While) -> ExecResult {
+        while conv::to_bool(&self.walk_expr(w.condition)?) {
+            let flow = match &w.body {
+                WhileBody::Statement(s) => self.exec_stmt(s)?,
+                WhileBody::ColonDelimited(b) => self.exec_stmts(b.statements.iter())?,
+            };
+            match loop_decision(flow) {
+                LoopDecision::Iterate => {}
+                LoopDecision::Stop => break,
+                LoopDecision::Propagate(f) => return Ok(f),
+            }
+        }
+        Ok(Flow::Normal)
+    }
+
+    fn exec_do_while(&mut self, d: &mago_syntax::cst::DoWhile) -> ExecResult {
+        loop {
+            let flow = self.exec_stmt(d.statement)?;
+            match loop_decision(flow) {
+                LoopDecision::Iterate => {}
+                LoopDecision::Stop => break,
+                LoopDecision::Propagate(f) => return Ok(f),
+            }
+            if !conv::to_bool(&self.walk_expr(d.condition)?) {
+                break;
+            }
+        }
+        Ok(Flow::Normal)
+    }
+
+    fn exec_for(&mut self, f: &mago_syntax::cst::For) -> ExecResult {
+        for e in f.initializations.iter() {
+            self.walk_expr(e)?;
+        }
+        loop {
+            // all conditions evaluated; the last controls the loop
+            let mut run = true;
+            let mut last = None;
+            for e in f.conditions.iter() {
+                last = Some(self.walk_expr(e)?);
+            }
+            if let Some(v) = last {
+                run = conv::to_bool(&v);
+            }
+            if !run {
+                break;
+            }
+            let flow = match &f.body {
+                ForBody::Statement(s) => self.exec_stmt(s)?,
+                ForBody::ColonDelimited(b) => self.exec_stmts(b.statements.iter())?,
+            };
+            match loop_decision(flow) {
+                LoopDecision::Iterate => {}
+                LoopDecision::Stop => break,
+                LoopDecision::Propagate(f) => return Ok(f),
+            }
+            for e in f.increments.iter() {
+                self.walk_expr(e)?;
+            }
+        }
+        Ok(Flow::Normal)
+    }
+
+    fn exec_switch(&mut self, sw: &mago_syntax::cst::Switch) -> ExecResult {
+        let subject = self.walk_expr(sw.expression)?;
+        let cases: Vec<&SwitchCase> = match &sw.body {
+            SwitchBody::BraceDelimited(b) => b.cases.iter().collect(),
+            SwitchBody::ColonDelimited(b) => b.cases.iter().collect(),
+        };
+        // First matching case (loose ==), else default.
+        let mut start = None;
+        for (idx, case) in cases.iter().enumerate() {
+            if let SwitchCase::Expression(c) = case {
+                let cv = self.walk_expr(c.expression)?;
+                if ops::loose_eq(&subject, &cv) {
+                    start = Some(idx);
+                    break;
+                }
+            }
+        }
+        let start = start.or_else(|| cases.iter().position(|c| matches!(c, SwitchCase::Default(_))));
+        let Some(start) = start else { return Ok(Flow::Normal) };
+        // Execute from there with fall-through.
+        for case in &cases[start..] {
+            let stmts = match case {
+                SwitchCase::Expression(c) => &c.statements,
+                SwitchCase::Default(c) => &c.statements,
+            };
+            match self.exec_stmts(stmts.iter())? {
+                Flow::Normal => {}
+                // break/continue at level 1 both leave the switch
+                Flow::Break(1) | Flow::Continue(1) => return Ok(Flow::Normal),
+                Flow::Break(n) => return Ok(Flow::Break(n - 1)),
+                Flow::Continue(n) => return Ok(Flow::Continue(n - 1)),
+                Flow::Return(v) => return Ok(Flow::Return(v)),
+            }
+        }
+        Ok(Flow::Normal)
     }
 
     // -- expressions -------------------------------------------------------
@@ -146,6 +308,7 @@ impl Interp {
             Expression::ConstantAccess(ca) => self.walk_constant(&ca.name),
             Expression::Identifier(id) => self.walk_constant(id),
             Expression::CompositeString(cs) => self.walk_composite(cs),
+            Expression::Match(m) => self.walk_match(m),
             Expression::Construct(c) => self.walk_construct(c),
             Expression::Call(call) => self.walk_call(call),
             other => Err(Thrown::unsupported(
@@ -311,6 +474,28 @@ impl Interp {
             }
         }
         Ok(Value::Array(arr))
+    }
+
+    fn walk_match(&mut self, m: &Match) -> EvalResult {
+        let subject = self.walk_expr(m.expression)?;
+        let mut default_expr = None;
+        for arm in m.arms.iter() {
+            match arm {
+                MatchArm::Expression(a) => {
+                    for cond in a.conditions.iter() {
+                        let c = self.walk_expr(cond)?;
+                        if ops::strict_eq(&subject, &c) {
+                            return self.walk_expr(a.expression);
+                        }
+                    }
+                }
+                MatchArm::Default(a) => default_expr = Some(a.expression),
+            }
+        }
+        match default_expr {
+            Some(e) => self.walk_expr(e),
+            None => Err(Thrown::error("UnhandledMatchError", "Unhandled match case")),
+        }
     }
 
     fn walk_composite(&mut self, cs: &CompositeString) -> EvalResult {
@@ -585,6 +770,36 @@ impl Interp {
 // ---------------------------------------------------------------------------
 // free helpers
 // ---------------------------------------------------------------------------
+
+/// What a loop should do after its body returns a given `Flow`.
+enum LoopDecision {
+    Iterate,
+    Stop,
+    Propagate(Flow),
+}
+
+fn loop_decision(flow: Flow) -> LoopDecision {
+    match flow {
+        Flow::Normal => LoopDecision::Iterate,
+        Flow::Continue(1) => LoopDecision::Iterate,
+        Flow::Continue(n) => LoopDecision::Propagate(Flow::Continue(n - 1)),
+        Flow::Break(1) => LoopDecision::Stop,
+        Flow::Break(n) => LoopDecision::Propagate(Flow::Break(n - 1)),
+        Flow::Return(v) => LoopDecision::Propagate(Flow::Return(v)),
+    }
+}
+
+/// Resolve a `break`/`continue` level (default 1; must be a positive literal).
+fn flow_level(level: Option<&Expression>) -> Result<u32, Thrown> {
+    match level {
+        None => Ok(1),
+        Some(Expression::Literal(Literal::Integer(i))) => Ok(i.value.unwrap_or(1).max(1) as u32),
+        Some(_) => Err(Thrown::error(
+            "Error",
+            "'break'/'continue' operator accepts only a constant integer level",
+        )),
+    }
+}
 
 fn strip_dollar(name: &[u8]) -> &[u8] {
     name.strip_prefix(b"$").unwrap_or(name)

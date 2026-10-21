@@ -1,0 +1,10 @@
+[package]
+name = "phrust-builtins"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+phrust-values = { path = "../phrust-values" }
+phrust-semantics = { path = "../phrust-semantics" }

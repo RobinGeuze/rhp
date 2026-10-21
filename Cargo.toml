@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2021"
+version = "0.0.0"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+mago-syntax = "1.58"
+mago-allocator = "1.58"
+mago-database = "1.58"
+mago-span = "1.58"
+bstr = "1.13"
+indexmap = "2.14"
+ordered-float = "5.5"
+rustc-hash = "2"

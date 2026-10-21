@@ -1,0 +1,710 @@
+//! The tree-walking interpreter.
+//!
+//! Walks the mago CST (`phrust_frontend::ParsedFile`), producing owned
+//! `phrust_values::Value`s. Statement execution returns [`Flow`] (control
+//! transfer) in `Ok`, with real throws + engine refusals in `Err(Thrown)`.
+
+use std::collections::HashMap;
+
+use mago_syntax::cst::{
+    Argument, ArrayElement, AssignmentOperator, BinaryOperator, CompositeString, Construct,
+    Expression, Identifier, Literal, Program, Statement, StringPart, UnaryPrefixOperator, Variable,
+};
+
+use phrust_builtins::{self as builtins, Host};
+pub use phrust_builtins::Thrown;
+use phrust_semantics::{cast_to_array, deref, inc_dec_value, ops};
+use phrust_values::conv;
+use phrust_values::{ArrayKey, PhpArray, Value};
+
+/// Control-flow signal carried up the statement-exec stack (see
+/// `docs/design/README.md` §3). Real throws use `Err(Thrown)` instead.
+pub enum Flow {
+    Normal,
+    Break(u32),
+    Continue(u32),
+    Return(Value),
+}
+
+type ExecResult = Result<Flow, Thrown>;
+type EvalResult = Result<Value, Thrown>;
+
+/// The interpreter state.
+pub struct Interp {
+    out: Vec<u8>,
+    vars: HashMap<Vec<u8>, Value>,
+    constants: HashMap<Vec<u8>, Value>,
+}
+
+impl Host for Interp {
+    fn write_out(&mut self, bytes: &[u8]) {
+        self.out.extend_from_slice(bytes);
+    }
+}
+
+impl Default for Interp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Interp {
+    pub fn new() -> Self {
+        let mut constants = HashMap::new();
+        for (name, value) in builtins::constants() {
+            constants.insert(name.as_bytes().to_vec(), value);
+        }
+        Interp { out: Vec::new(), vars: HashMap::new(), constants }
+    }
+
+    /// The accumulated output buffer.
+    pub fn output(&self) -> &[u8] {
+        &self.out
+    }
+
+    /// Run a parsed program to completion. Returns the process exit code.
+    /// `program` borrows a `phrust_frontend::Arena` that must outlive the call.
+    pub fn run(&mut self, program: &Program) -> Result<i32, Thrown> {
+        for stmt in program.statements.iter() {
+            match self.exec_stmt(stmt) {
+                Ok(Flow::Normal) => {}
+                Ok(Flow::Return(_)) => break, // top-level return ends the script
+                Ok(Flow::Break(_)) | Ok(Flow::Continue(_)) => {} // ignored at top level
+                Err(Thrown::Exit(code)) => return Ok(code),
+                Err(other) => return Err(other),
+            }
+        }
+        Ok(0)
+    }
+
+    // -- statements --------------------------------------------------------
+
+    fn exec_stmt(&mut self, stmt: &Statement) -> ExecResult {
+        match stmt {
+            Statement::OpeningTag(_) | Statement::ClosingTag(_) | Statement::Noop(_) => {
+                Ok(Flow::Normal)
+            }
+            Statement::Inline(inline) => {
+                // Inline HTML is emitted verbatim; a shebang line is not.
+                if inline.kind.is_text() {
+                    let bytes = inline.value.to_vec();
+                    self.write_out(&bytes);
+                }
+                Ok(Flow::Normal)
+            }
+            Statement::Echo(echo) => {
+                for value in echo.values.iter() {
+                    let v = self.walk_expr(value)?;
+                    let bytes = conv::to_string_bytes(&v);
+                    self.write_out(&bytes);
+                }
+                Ok(Flow::Normal)
+            }
+            Statement::EchoTag(echo) => {
+                for value in echo.values.iter() {
+                    let v = self.walk_expr(value)?;
+                    let bytes = conv::to_string_bytes(&v);
+                    self.write_out(&bytes);
+                }
+                Ok(Flow::Normal)
+            }
+            Statement::Expression(stmt) => {
+                self.walk_expr(stmt.expression)?;
+                Ok(Flow::Normal)
+            }
+            Statement::Block(block) => {
+                for s in block.statements.iter() {
+                    match self.exec_stmt(s)? {
+                        Flow::Normal => {}
+                        other => return Ok(other),
+                    }
+                }
+                Ok(Flow::Normal)
+            }
+            Statement::HaltCompiler(_) => Ok(Flow::Return(Value::Null)),
+            other => Err(Thrown::unsupported(
+                format!("{} statement", stmt_name(other)),
+                "not implemented in the phase-1 scaffold",
+            )),
+        }
+    }
+
+    // -- expressions -------------------------------------------------------
+
+    fn walk_expr(&mut self, expr: &Expression) -> EvalResult {
+        match expr {
+            Expression::Literal(lit) => Ok(walk_literal(lit)),
+            Expression::Parenthesized(p) => self.walk_expr(p.expression),
+            Expression::Binary(b) => self.walk_binary(b),
+            Expression::UnaryPrefix(u) => self.walk_unary_prefix(u),
+            Expression::UnaryPostfix(u) => self.walk_unary_postfix(u),
+            Expression::Variable(v) => self.read_variable(v),
+            Expression::Assignment(a) => self.walk_assignment(a),
+            Expression::Conditional(c) => self.walk_conditional(c),
+            Expression::Array(arr) => self.walk_array(arr.elements.iter()),
+            Expression::LegacyArray(arr) => self.walk_array(arr.elements.iter()),
+            Expression::ConstantAccess(ca) => self.walk_constant(&ca.name),
+            Expression::Identifier(id) => self.walk_constant(id),
+            Expression::CompositeString(cs) => self.walk_composite(cs),
+            Expression::Construct(c) => self.walk_construct(c),
+            Expression::Call(call) => self.walk_call(call),
+            other => Err(Thrown::unsupported(
+                format!("{} expression", expr_name(other)),
+                "not implemented in the phase-1 scaffold",
+            )),
+        }
+    }
+
+    fn walk_binary(&mut self, b: &mago_syntax::cst::Binary) -> EvalResult {
+        use BinaryOperator as Op;
+        // Short-circuiting operators evaluate the rhs lazily.
+        match &b.operator {
+            Op::And(_) | Op::LowAnd(_) => {
+                let l = self.walk_expr(b.lhs)?;
+                return Ok(Value::Bool(conv::to_bool(&l) && conv::to_bool(&self.walk_expr(b.rhs)?)));
+            }
+            Op::Or(_) | Op::LowOr(_) => {
+                let l = self.walk_expr(b.lhs)?;
+                return Ok(Value::Bool(conv::to_bool(&l) || conv::to_bool(&self.walk_expr(b.rhs)?)));
+            }
+            Op::NullCoalesce(_) => {
+                // `??`: lhs if set and non-null, else rhs. (Full isset-style
+                // suppression of undefined comes with array access.)
+                let l = self.walk_expr(b.lhs).unwrap_or(Value::Null);
+                return if matches!(deref(&l), Value::Null) {
+                    self.walk_expr(b.rhs)
+                } else {
+                    Ok(l)
+                };
+            }
+            _ => {}
+        }
+
+        let l = self.walk_expr(b.lhs)?;
+        let r = self.walk_expr(b.rhs)?;
+        Ok(match &b.operator {
+            Op::Addition(_) => ops::add(&l, &r)?,
+            Op::Subtraction(_) => ops::sub(&l, &r)?,
+            Op::Multiplication(_) => ops::mul(&l, &r)?,
+            Op::Division(_) => ops::div(&l, &r)?,
+            Op::Modulo(_) => ops::modulo(&l, &r)?,
+            Op::Exponentiation(_) => ops::pow(&l, &r)?,
+            Op::BitwiseAnd(_) => ops::bitwise(&l, &r, ops::BitOp::And),
+            Op::BitwiseOr(_) => ops::bitwise(&l, &r, ops::BitOp::Or),
+            Op::BitwiseXor(_) => ops::bitwise(&l, &r, ops::BitOp::Xor),
+            Op::LeftShift(_) => ops::bitwise(&l, &r, ops::BitOp::Shl),
+            Op::RightShift(_) => ops::bitwise(&l, &r, ops::BitOp::Shr),
+            Op::StringConcat(_) => ops::concat(&l, &r),
+            Op::Equal(_) => Value::Bool(ops::loose_eq(&l, &r)),
+            Op::NotEqual(_) | Op::AngledNotEqual(_) => Value::Bool(!ops::loose_eq(&l, &r)),
+            Op::Identical(_) => Value::Bool(ops::strict_eq(&l, &r)),
+            Op::NotIdentical(_) => Value::Bool(!ops::strict_eq(&l, &r)),
+            Op::LessThan(_) => Value::Bool(ops::loose_compare(&l, &r).is_lt()),
+            Op::LessThanOrEqual(_) => Value::Bool(ops::loose_compare(&l, &r).is_le()),
+            Op::GreaterThan(_) => Value::Bool(ops::loose_compare(&l, &r).is_gt()),
+            Op::GreaterThanOrEqual(_) => Value::Bool(ops::loose_compare(&l, &r).is_ge()),
+            Op::Spaceship(_) => ops::spaceship(&l, &r),
+            Op::And(_) | Op::Or(_) | Op::LowAnd(_) | Op::LowOr(_) | Op::NullCoalesce(_) => {
+                unreachable!("handled above")
+            }
+            Op::LowXor(_) => Value::Bool(conv::to_bool(&l) ^ conv::to_bool(&r)),
+            Op::Instanceof(_) => {
+                return Err(Thrown::unsupported("instanceof", "objects arrive in phase 7"))
+            }
+        })
+    }
+
+    fn walk_unary_prefix(&mut self, u: &mago_syntax::cst::UnaryPrefix) -> EvalResult {
+        use UnaryPrefixOperator as Op;
+        // inc/dec need an lvalue, handled before evaluating the operand as a value.
+        match &u.operator {
+            Op::PreIncrement(_) => return self.pre_inc_dec(u.operand, 1),
+            Op::PreDecrement(_) => return self.pre_inc_dec(u.operand, -1),
+            Op::UnsetCast(..) | Op::VoidCast(..) | Op::RealCast(..) => {
+                return Err(Thrown::unsupported("(unset)/(void)/(real) cast", "removed/refused in PHP 8"))
+            }
+            Op::Reference(_) => {
+                return Err(Thrown::unsupported("& reference", "references arrive in phase 6"))
+            }
+            _ => {}
+        }
+        let v = self.walk_expr(u.operand)?;
+        Ok(match &u.operator {
+            Op::Negation(_) => ops::negate(&v)?,
+            Op::Plus(_) => conv::to_number(&deref(&v)).0.to_value(),
+            Op::Not(_) => Value::Bool(!conv::to_bool(&v)),
+            Op::BitwiseNot(_) => ops::bitwise_not(&v),
+            Op::ErrorControl(_) => v, // `@` suppresses warnings; value passes through
+            Op::IntCast(..) | Op::IntegerCast(..) => Value::Int(conv::to_int(&v)),
+            Op::FloatCast(..) | Op::DoubleCast(..) => Value::Float(conv::to_float(&v)),
+            Op::StringCast(..) | Op::BinaryCast(..) => Value::str(conv::to_string_bytes(&v)),
+            Op::BoolCast(..) | Op::BooleanCast(..) => Value::Bool(conv::to_bool(&v)),
+            Op::ArrayCast(..) => cast_to_array(v),
+            Op::ObjectCast(..) => {
+                return Err(Thrown::unsupported("(object) cast", "objects arrive in phase 7"))
+            }
+            _ => unreachable!("handled above"),
+        })
+    }
+
+    fn walk_unary_postfix(&mut self, u: &mago_syntax::cst::UnaryPostfix) -> EvalResult {
+        use mago_syntax::cst::UnaryPostfixOperator as Op;
+        match &u.operator {
+            Op::PostIncrement(_) => self.post_inc_dec(u.operand, 1),
+            Op::PostDecrement(_) => self.post_inc_dec(u.operand, -1),
+        }
+    }
+
+    fn walk_conditional(&mut self, c: &mago_syntax::cst::Conditional) -> EvalResult {
+        let cond = self.walk_expr(c.condition)?;
+        match &c.then {
+            Some(then) => {
+                if conv::to_bool(&cond) {
+                    self.walk_expr(then)
+                } else {
+                    self.walk_expr(c.r#else)
+                }
+            }
+            // Elvis `?:` — reuse the condition value when truthy.
+            None => {
+                if conv::to_bool(&cond) {
+                    Ok(cond)
+                } else {
+                    self.walk_expr(c.r#else)
+                }
+            }
+        }
+    }
+
+    fn walk_array<'a>(
+        &mut self,
+        elements: impl Iterator<Item = &'a ArrayElement<'a>>,
+    ) -> EvalResult {
+        let mut arr = PhpArray::new();
+        for el in elements {
+            match el {
+                ArrayElement::KeyValue(kv) => {
+                    let key = self.walk_expr(kv.key)?;
+                    let val = self.walk_expr(kv.value)?;
+                    let k = ArrayKey::from_value(&key).ok_or_else(|| {
+                        Thrown::type_error("Illegal offset type")
+                    })?;
+                    arr.insert(k, val);
+                }
+                ArrayElement::Value(v) => {
+                    let val = self.walk_expr(v.value)?;
+                    arr.push(val);
+                }
+                ArrayElement::Variadic(v) => {
+                    // array spread: merge entries (int keys renumbered).
+                    let val = self.walk_expr(v.value)?;
+                    if let Value::Array(inner) = deref(&val) {
+                        for (k, iv) in inner.iter() {
+                            match k {
+                                ArrayKey::Int(_) => arr.push(iv.clone()),
+                                ArrayKey::Str(_) => arr.insert(k.clone(), iv.clone()),
+                            }
+                        }
+                    }
+                }
+                ArrayElement::Missing(_) => {}
+            }
+        }
+        Ok(Value::Array(arr))
+    }
+
+    fn walk_composite(&mut self, cs: &CompositeString) -> EvalResult {
+        let parts = match cs {
+            CompositeString::Interpolated(i) => &i.parts,
+            CompositeString::Document(d) => &d.parts,
+            CompositeString::ShellExecute(_) => {
+                return Err(Thrown::unsupported(
+                    "backtick shell execution",
+                    "never spawns a shell; refused by design",
+                ))
+            }
+        };
+        let mut bytes = Vec::new();
+        for part in parts.iter() {
+            match part {
+                StringPart::Literal(l) => bytes.extend_from_slice(l.value.unwrap_or(l.raw)),
+                StringPart::Expression(e) => {
+                    let v = self.walk_expr(e)?;
+                    bytes.extend_from_slice(&conv::to_string_bytes(&v));
+                }
+                StringPart::BracedExpression(b) => {
+                    let v = self.walk_expr(b.expression)?;
+                    bytes.extend_from_slice(&conv::to_string_bytes(&v));
+                }
+            }
+        }
+        Ok(Value::str(bytes))
+    }
+
+    fn walk_constant(&mut self, id: &Identifier) -> EvalResult {
+        let name = identifier_name(id);
+        // case-sensitive user/engine constants; keyword literals are elsewhere.
+        if let Some(v) = self.constants.get(name) {
+            return Ok(v.clone());
+        }
+        match name {
+            b"true" | b"TRUE" | b"True" => Ok(Value::Bool(true)),
+            b"false" | b"FALSE" | b"False" => Ok(Value::Bool(false)),
+            b"null" | b"NULL" | b"Null" => Ok(Value::Null),
+            _ => Err(Thrown::error(
+                "Error",
+                format!("Undefined constant \"{}\"", String::from_utf8_lossy(name)),
+            )),
+        }
+    }
+
+    fn walk_construct(&mut self, c: &Construct) -> EvalResult {
+        match c {
+            Construct::Print(p) => {
+                let v = self.walk_expr(p.value)?;
+                let bytes = conv::to_string_bytes(&v);
+                self.write_out(&bytes);
+                Ok(Value::Int(1))
+            }
+            Construct::Exit(e) => {
+                let code = self.exit_code_from(e.arguments.as_ref())?;
+                Err(Thrown::Exit(code))
+            }
+            Construct::Die(d) => {
+                let code = self.exit_code_from(d.arguments.as_ref())?;
+                Err(Thrown::Exit(code))
+            }
+            Construct::Isset(i) => {
+                // isset($x): true if the variable exists and is not null.
+                let mut all = true;
+                for v in i.values.iter() {
+                    let set = match v {
+                        Expression::Variable(var) => {
+                            matches!(self.read_variable(var), Ok(ref val) if !matches!(deref(val), Value::Null))
+                        }
+                        other => !matches!(deref(&self.walk_expr(other)?), Value::Null),
+                    };
+                    all &= set;
+                }
+                Ok(Value::Bool(all))
+            }
+            Construct::Empty(e) => {
+                let v = self.walk_expr(e.value).unwrap_or(Value::Null);
+                Ok(Value::Bool(!conv::to_bool(&v)))
+            }
+            Construct::Eval(_) => Err(Thrown::unsupported(
+                "eval()",
+                "executes a string as PHP code; refused by design",
+            )),
+            Construct::Include(_)
+            | Construct::IncludeOnce(_)
+            | Construct::Require(_)
+            | Construct::RequireOnce(_) => Err(Thrown::unsupported(
+                "include/require",
+                "file inclusion arrives in a later phase",
+            )),
+        }
+    }
+
+    fn exit_code_from(
+        &mut self,
+        args: Option<&mago_syntax::cst::ArgumentList>,
+    ) -> Result<i32, Thrown> {
+        let Some(list) = args else { return Ok(0) };
+        let Some(first) = list.arguments.iter().next() else { return Ok(0) };
+        let value = match first {
+            Argument::Positional(p) => self.walk_expr(p.value)?,
+            Argument::Named(n) => self.walk_expr(n.value)?,
+        };
+        Ok(match deref(&value) {
+            Value::Int(n) => (n & 0xFF) as i32,
+            Value::Str(s) => {
+                self.write_out(s.as_bytes());
+                0
+            }
+            _ => 0,
+        })
+    }
+
+    fn walk_call(&mut self, call: &mago_syntax::cst::Call) -> EvalResult {
+        use mago_syntax::cst::Call;
+        let Call::Function(fc) = call else {
+            return Err(Thrown::unsupported(
+                "method/static call",
+                "objects arrive in phase 7",
+            ));
+        };
+        let name = match fc.function {
+            Expression::Identifier(id) => identifier_name(id).to_vec(),
+            Expression::ConstantAccess(ca) => identifier_name(&ca.name).to_vec(),
+            _ => {
+                return Err(Thrown::unsupported(
+                    "dynamic function call",
+                    "callable values arrive with closures",
+                ))
+            }
+        };
+        let name_str = String::from_utf8_lossy(&name).into_owned();
+
+        if let Some(reason) = builtins::is_refused(&name_str) {
+            return Err(Thrown::unsupported(format!("{name_str}()"), reason));
+        }
+
+        // Evaluate positional arguments (named/variadic deferred).
+        let mut argv: Vec<Value> = Vec::new();
+        for arg in fc.argument_list.arguments.iter() {
+            match arg {
+                Argument::Positional(p) => {
+                    if p.ellipsis.is_some() {
+                        if let Value::Array(a) = deref(&self.walk_expr(p.value)?) {
+                            argv.extend(a.iter().map(|(_, v)| v.clone()));
+                        }
+                    } else {
+                        argv.push(self.walk_expr(p.value)?);
+                    }
+                }
+                Argument::Named(_) => {
+                    return Err(Thrown::unsupported(
+                        "named arguments",
+                        "arrive with user functions in phase 5",
+                    ))
+                }
+            }
+        }
+
+        let Some(builtin) = builtins::lookup(&name_str) else {
+            return Err(Thrown::error(
+                "Error",
+                format!("Call to undefined function {name_str}()"),
+            ));
+        };
+
+        // Arity check.
+        if argv.len() < builtin.min_args {
+            return Err(Thrown::error(
+                "ArgumentCountError",
+                format!(
+                    "Too few arguments to function {name_str}(), {} passed and at least {} expected",
+                    argv.len(),
+                    builtin.min_args
+                ),
+            ));
+        }
+        if let Some(max) = builtin.max_args {
+            if argv.len() > max {
+                return Err(Thrown::error(
+                    "ArgumentCountError",
+                    format!("Too many arguments to function {name_str}()"),
+                ));
+            }
+        }
+
+        (builtin.func)(self, &argv)
+    }
+
+    // -- variables / lvalues ----------------------------------------------
+
+    fn read_variable(&mut self, var: &Variable) -> EvalResult {
+        match var {
+            Variable::Direct(d) => {
+                let key = strip_dollar(d.name);
+                Ok(self.vars.get(key).cloned().unwrap_or(Value::Null))
+            }
+            _ => Err(Thrown::unsupported(
+                "indirect/nested variable",
+                "variable-variables are refused / deferred",
+            )),
+        }
+    }
+
+    fn walk_assignment(&mut self, a: &mago_syntax::cst::Assignment) -> EvalResult {
+        // Only direct-variable targets in the scaffold.
+        let Expression::Variable(Variable::Direct(d)) = a.lhs else {
+            return Err(Thrown::unsupported(
+                "assignment target",
+                "array/property targets arrive with arrays/OOP",
+            ));
+        };
+        let key = strip_dollar(d.name).to_vec();
+        let rhs = self.walk_expr(a.rhs)?;
+        let new = match &a.operator {
+            AssignmentOperator::Assign(_) => rhs,
+            op => {
+                let cur = self.vars.get(&key).cloned().unwrap_or(Value::Null);
+                match op {
+                    AssignmentOperator::Addition(_) => ops::add(&cur, &rhs)?,
+                    AssignmentOperator::Subtraction(_) => ops::sub(&cur, &rhs)?,
+                    AssignmentOperator::Multiplication(_) => ops::mul(&cur, &rhs)?,
+                    AssignmentOperator::Division(_) => ops::div(&cur, &rhs)?,
+                    AssignmentOperator::Modulo(_) => ops::modulo(&cur, &rhs)?,
+                    AssignmentOperator::Exponentiation(_) => ops::pow(&cur, &rhs)?,
+                    AssignmentOperator::Concat(_) => ops::concat(&cur, &rhs),
+                    AssignmentOperator::BitwiseAnd(_) => ops::bitwise(&cur, &rhs, ops::BitOp::And),
+                    AssignmentOperator::BitwiseOr(_) => ops::bitwise(&cur, &rhs, ops::BitOp::Or),
+                    AssignmentOperator::BitwiseXor(_) => ops::bitwise(&cur, &rhs, ops::BitOp::Xor),
+                    AssignmentOperator::LeftShift(_) => ops::bitwise(&cur, &rhs, ops::BitOp::Shl),
+                    AssignmentOperator::RightShift(_) => ops::bitwise(&cur, &rhs, ops::BitOp::Shr),
+                    AssignmentOperator::Coalesce(_) => {
+                        if matches!(deref(&cur), Value::Null) {
+                            rhs
+                        } else {
+                            cur
+                        }
+                    }
+                    AssignmentOperator::Assign(_) => unreachable!(),
+                }
+            }
+        };
+        self.vars.insert(key, new.clone());
+        Ok(new)
+    }
+
+    fn pre_inc_dec(&mut self, target: &Expression, delta: i64) -> EvalResult {
+        let Expression::Variable(Variable::Direct(d)) = target else {
+            return Err(Thrown::unsupported("++/-- target", "only simple variables for now"));
+        };
+        let key = strip_dollar(d.name).to_vec();
+        let cur = self.vars.get(&key).cloned().unwrap_or(Value::Null);
+        let new = inc_dec_value(&cur, delta);
+        self.vars.insert(key, new.clone());
+        Ok(new)
+    }
+
+    fn post_inc_dec(&mut self, target: &Expression, delta: i64) -> EvalResult {
+        let Expression::Variable(Variable::Direct(d)) = target else {
+            return Err(Thrown::unsupported("++/-- target", "only simple variables for now"));
+        };
+        let key = strip_dollar(d.name).to_vec();
+        let cur = self.vars.get(&key).cloned().unwrap_or(Value::Null);
+        let new = inc_dec_value(&cur, delta);
+        self.vars.insert(key, new);
+        Ok(cur)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// free helpers
+// ---------------------------------------------------------------------------
+
+fn strip_dollar(name: &[u8]) -> &[u8] {
+    name.strip_prefix(b"$").unwrap_or(name)
+}
+
+fn identifier_name<'a>(id: &'a Identifier<'a>) -> &'a [u8] {
+    // Take the final `\`-separated segment (namespace resolution is minimal).
+    let raw = match id {
+        Identifier::Local(l) => l.value,
+        Identifier::Qualified(q) => q.value,
+        Identifier::FullyQualified(f) => f.value,
+    };
+    match raw.iter().rposition(|&b| b == b'\\') {
+        Some(pos) => &raw[pos + 1..],
+        None => raw,
+    }
+}
+
+fn walk_literal(lit: &Literal) -> Value {
+    match lit {
+        Literal::Integer(i) => match i.value {
+            Some(u) if u <= i64::MAX as u64 => Value::Int(u as i64),
+            Some(u) => Value::Float(u as f64), // overflows i64 => float
+            None => {
+                // too large even for u64, or unparsed: fall back to float.
+                let cleaned: Vec<u8> = i.raw.iter().copied().filter(|&b| b != b'_').collect();
+                std::str::from_utf8(&cleaned)
+                    .ok()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .map(Value::Float)
+                    .unwrap_or(Value::Int(0))
+            }
+        },
+        Literal::Float(f) => Value::Float(f.value.0),
+        Literal::String(s) => Value::str(s.value.unwrap_or(s.raw).to_vec()),
+        Literal::True(_) => Value::Bool(true),
+        Literal::False(_) => Value::Bool(false),
+        Literal::Null(_) => Value::Null,
+    }
+}
+
+fn stmt_name(s: &Statement) -> &'static str {
+    match s {
+        Statement::Namespace(_) => "namespace",
+        Statement::Use(_) => "use",
+        Statement::Class(_) => "class",
+        Statement::Interface(_) => "interface",
+        Statement::Trait(_) => "trait",
+        Statement::Enum(_) => "enum",
+        Statement::Constant(_) => "const",
+        Statement::Function(_) => "function",
+        Statement::Declare(_) => "declare",
+        Statement::Goto(_) => "goto",
+        Statement::Try(_) => "try",
+        Statement::Foreach(_) => "foreach",
+        Statement::For(_) => "for",
+        Statement::While(_) => "while",
+        Statement::DoWhile(_) => "do-while",
+        Statement::Switch(_) => "switch",
+        Statement::If(_) => "if",
+        Statement::Return(_) => "return",
+        Statement::Global(_) => "global",
+        Statement::Static(_) => "static",
+        Statement::Unset(_) => "unset",
+        Statement::Break(_) => "break",
+        Statement::Continue(_) => "continue",
+        Statement::Label(_) => "label",
+        _ => "this",
+    }
+}
+
+fn expr_name(e: &Expression) -> &'static str {
+    match e {
+        Expression::CompositeString(_) => "interpolated-string",
+        Expression::Match(_) => "match",
+        Expression::Closure(_) => "closure",
+        Expression::ArrowFunction(_) => "arrow-function",
+        Expression::List(_) => "list()",
+        Expression::ArrayAccess(_) => "array-access",
+        Expression::ArrayAppend(_) => "array-append",
+        Expression::Throw(_) => "throw",
+        Expression::Clone(_) => "clone",
+        Expression::Instantiation(_) => "new",
+        Expression::Access(_) => "member-access",
+        Expression::Yield(_) => "yield",
+        Expression::MagicConstant(_) => "magic-constant",
+        Expression::Pipe(_) => "pipe",
+        _ => "this",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_str(src: &str) -> String {
+        let arena = phrust_frontend::Arena::new();
+        let parsed = arena.parse(b"test.php", src.as_bytes());
+        let mut interp = Interp::new();
+        interp.run(parsed.program()).expect("run ok");
+        String::from_utf8_lossy(interp.output()).into_owned()
+    }
+
+    #[test]
+    fn echo_and_inline() {
+        assert_eq!(run_str("<?php echo 'hi';"), "hi");
+        assert_eq!(run_str("A<?php echo 1+2; ?>B"), "A3B");
+        assert_eq!(run_str("<?php echo 1, 2, 3;"), "123");
+    }
+
+    #[test]
+    fn arithmetic_and_concat() {
+        assert_eq!(run_str("<?php echo 7 % 3;"), "1");
+        assert_eq!(run_str("<?php echo 'r=' . (0.1 + 0.2);"), "r=0.3");
+        assert_eq!(run_str("<?php echo 2 ** 10;"), "1024");
+    }
+
+    #[test]
+    fn variables() {
+        assert_eq!(run_str("<?php $x = 5; $x += 3; echo $x;"), "8");
+        assert_eq!(run_str("<?php $a = 1; echo $a++; echo $a;"), "12");
+    }
+}

@@ -1,0 +1,799 @@
+# phrust bytecode — authoritative build spec
+
+Status: **build spec (implement from this).** Target semantics: PHP 8.5 (ground
+truth: local `php` 8.5.8). This is the single source of truth for the
+register-based bytecode compiler + VM that becomes phrust's primary execution
+core. Where the four research docs disagree, **this doc wins**; their resolved
+decisions are folded in and the losing alternatives are noted inline.
+
+Synthesizes: [`isa.md`](./isa.md) (instruction set), [`vm.md`](./vm.md) (VM
+runtime), [`bytecode-prior-art.md`](./bytecode-prior-art.md) (Zend/Lua lessons),
+[`reorg.md`](./reorg.md) (crate layout + migration). Read first and reused
+verbatim: [`value-model.md`](./value-model.md), [`php-semantics.md`](./php-semantics.md),
+[`ast-surface.md`](./ast-surface.md), and the already-built crates below.
+
+Non-negotiable invariants (unchanged): single-threaded (`Rc`/`RefCell`, never
+`Arc`); `Value`s are owned `'static`; the arena holds only the AST, consumed and
+dropped at compile time (a `FunctionProto` carries **no** `'arena` borrow);
+`eval` / `extract` / `compact` / `create_function` / `include`/`require` /
+backticks / `(unset)`-cast are **refused**, structurally in the compiler for the
+construct nodes and via `is_refused()` for function names (§4). `eval` is
+**never** implemented — no opcode interprets a string as code, by construction.
+
+---
+
+## 1. Crate layout and the ops/conv/Thrown decision
+
+### 1.1 Decision (one coherent answer, justified)
+
+- **`conv` and `fmt` stay in `phrust-values`** (they already live there; pure,
+  no `Thrown`, no move).
+- **`Thrown` moves DOWN into `phrust-values`** (`phrust_values::thrown`,
+  re-exported as `phrust_values::Thrown`; `phrust-builtins` keeps
+  `pub use phrust_values::Thrown;` so every existing `builtins::Thrown` path
+  still compiles).
+- **`ops` moves into a new `phrust-semantics` crate** (not into `phrust-values`).
+
+**Justification (2 lines):** `ops` returns `Result<Value, Thrown>`, so `Thrown`
+must sit at or below `ops`; putting `Thrown` in the leaf `phrust-values` lets
+*both* `phrust-semantics` (ops) and `phrust-builtins` depend on it without a
+cycle, which in turn lets builtins call `ops::loose_compare` for `max/min/sort`.
+Keeping `ops` in its own `phrust-semantics` (rather than in `phrust-values`)
+keeps the value model free of operator policy and lets a future `phrust-jit`
+depend on `bytecode + semantics + values` alone.
+
+> Rejected alternative (vm.md §0): "keep the VM inside `phrust-runtime` next to
+> the oracle, no new crate." Overruled because the task's own migration
+> checklist mandates separate `phrust-bytecode` / `phrust-compiler` /
+> `phrust-vm` / `phrust-oracle` crates (steps ii, iii, iv, vii), and a
+> JIT-lowerable, behavior-free ISA crate must not transitively pull in the
+> compiler or the VM. The `reorg.md` 9-crate split is adopted.
+
+### 1.2 Target workspace (9 crates)
+
+| crate | role | depends on |
+|---|---|---|
+| `phrust-values` | `Value`, `PhpStr`, `PhpArray`, `ArrayKey`, `conv`, `fmt`, **`Thrown`** | `bstr`, `indexmap`, `rustc-hash`, `ordered-float` |
+| `phrust-frontend` | `ParsedFile` + arena (mago wrapper) | `mago-*` |
+| `phrust-semantics` | operator semantics (`ops`) + shared value helpers (`deref`, `inc_dec_value`, `cast_to_array`) | `phrust-values` |
+| `phrust-builtins` | `Host`, `NativeFn`, `Builtin`, `registry`, `constants`, `is_refused`, `dump` | `phrust-values`, `phrust-semantics` |
+| `phrust-bytecode` | the ISA: `Instr`, `FunctionProto`, `Program`, exception table — **data only, no behavior** | `phrust-values` |
+| `phrust-compiler` | AST → bytecode; **owns the structural refusals** (§4) | `phrust-frontend`, `phrust-bytecode`, `phrust-values` |
+| `phrust-vm` | the register VM; executes a `Program`, `impl Host for Vm` | `phrust-bytecode`, `phrust-semantics`, `phrust-builtins`, `phrust-values` |
+| `phrust-oracle` | the tree-walker (ex-`phrust-runtime`), `walk_*` methods | `phrust-frontend`, `phrust-semantics`, `phrust-builtins`, `phrust-values` |
+| `phrust-cli` | SAPI + differential runner (php ⟷ vm ⟷ oracle) | all of the above |
+
+### 1.3 Dependency graph (acyclic)
+
+```
+                         phrust-cli
+        ┌──────────┬──────────┼──────────┬───────────┐
+        v          v          v          v           v
+  phrust-compiler phrust-vm  phrust-oracle   phrust-frontend
+     │   │          │  │ │        │  │
+     │   │          │  │ └────> phrust-builtins ──┐
+     │   │          │  └──────> phrust-semantics <┤
+     │   └──────────┴────────> phrust-bytecode    │
+     └────────────────┬─────────────────┬─────────┘
+                      v                  v
+                 phrust-values  (leaf: Thrown, conv, fmt, Value)
+```
+
+Edge rules that must hold: `phrust-bytecode` depends on **only** `phrust-values`
+(so `phrust-jit` can later lower the same ISA without the compiler/VM);
+`phrust-compiler` does **not** depend on `phrust-vm`/`-oracle`/`-builtins` (it
+refuses only *syntactic constructs*; function-name refusal is a runtime concern,
+but see §4.2 — the compiler may optionally link `phrust-builtins` read-only to
+fold `is_refused()` at compile time for statically-named calls; if that edge is
+taken it is `compiler → builtins`, still acyclic); `phrust-vm` does not depend
+on `phrust-frontend` (runs bytecode, never the arena); the two tiers never see
+each other — only `phrust-cli` knits them.
+
+### 1.4 Reused verbatim (confirmed signatures — do not reimplement)
+
+```rust
+// phrust-semantics::ops  (moved from phrust-runtime/src/ops.rs, Thrown path rewritten)
+pub fn add/sub/mul/div/modulo/pow(a: &Value, b: &Value) -> Result<Value, Thrown>;
+pub fn negate(a: &Value) -> Result<Value, Thrown>;
+pub fn bitwise(a: &Value, b: &Value, op: BitOp) -> Value;   // BitOp::{And,Or,Xor,Shl,Shr}
+pub fn bitwise_not(a: &Value) -> Value;
+pub fn concat(a: &Value, b: &Value) -> Value;
+pub fn loose_compare(a: &Value, b: &Value) -> std::cmp::Ordering;
+pub fn loose_eq(a: &Value, b: &Value) -> bool;
+pub fn strict_eq(a: &Value, b: &Value) -> bool;
+pub fn spaceship(a: &Value, b: &Value) -> Value;            // Int -1/0/1
+// + lifted helpers: deref, inc_dec_value, cast_to_array
+
+// phrust-values::conv / ::fmt
+conv::{to_bool,to_string_bytes,to_int,to_float,to_number,numeric_string,is_numeric,scan_number}
+fmt::{float_echo (precision-14), float_serialize (serialize_precision -1)}
+
+// phrust-builtins
+pub enum Thrown { Error{class:&'static str, message:String}, Unsupported{feature:String, reason:&'static str}, Exit(i32) }  // (def'n now in phrust-values)
+pub trait Host { fn write_out(&mut self, bytes: &[u8]); }
+pub type NativeFn = fn(&mut dyn Host, &[Value]) -> Result<Value, Thrown>;
+pub struct Builtin { /* func: NativeFn, min_args, max_args, by_ref flags, ... */ }
+pub fn registry() -> &'static HashMap<&'static str, Builtin>;
+pub fn lookup(name: &str) -> Option<&'static Builtin>;
+pub fn constants() -> Vec<(&'static str, Value)>;
+pub fn is_refused(name: &str) -> Option<&'static str>;  // Some(reason) ⇒ refuse
+```
+
+---
+
+## 2. The locked ISA (`phrust-bytecode`)
+
+### 2.1 Core types
+
+A compilation unit is one **`FunctionProto`** per PHP function/method/closure,
+plus one named `"{main}"` for the script body (its CVs are the globals; running
+the script is "call `{main}` with no args"). Protos reference each other and the
+builtin table only by small integer id — self-contained, `'static`,
+`Rc`-shareable.
+
+```rust
+use std::rc::Rc;
+use phrust_values::{PhpStr, Value, Thrown};
+
+pub type Reg   = u16;  // register-file index: CVs in [0,num_cvs), temporaries above
+pub type CIdx  = u32;  // index into FunctionProto.consts
+pub type NIdx  = u32;  // index into FunctionProto.names (interned identifier bytes)
+pub type PC    = u32;  // instruction index into FunctionProto.code (NOT a byte offset)
+pub type FnIdx = u32;  // index into Program.functions
+pub type BId   = u32;  // index into the resolved builtin table
+pub type CacheIdx = u32; // index into a per-proto inline-cache side table (reserved; §2.5)
+
+pub struct FunctionProto {
+    pub name: PhpStr,                   // "{main}" / "{closure}" / declared name
+    pub num_params: u16,
+    pub params: Vec<ParamInfo>,         // len == num_params
+    pub num_cvs: u16,                   // named-local registers: [0,num_cvs), params first
+    pub num_registers: u16,             // total frame register-file size (CVs + temps high-water)
+    pub code: Vec<Instr>,               // the instruction stream; PC indexes this
+    pub consts: Vec<Value>,             // immutable literal / default pool, by CIdx, deduped
+    pub names: Vec<PhpStr>,             // interned identifier bytes, by NIdx
+    pub exception_table: Vec<ExRegion>, // innermost-first; §3.4
+    pub caches: Vec<InlineCache>,       // side table, Cell-based; empty until phase 5/7
+    pub debug: DebugInfo,               // pc→line map + cv names; never consulted for semantics
+    pub flags: ProtoFlags,              // has_finally, uses_ref, variadic, generator(reserved)
+}
+
+pub struct ParamInfo {
+    pub name: NIdx,
+    pub cv: Reg,                        // CV the param binds (normally == positional index)
+    pub by_ref: bool,
+    pub variadic: bool,
+    pub default: Option<Default>,       // Some ⇒ optional
+}
+pub enum Default { Const(CIdx), Init(PC) }   // constant default, or run an init block then fall through
+
+pub struct Program {
+    pub main: Rc<FunctionProto>,
+    pub functions: Vec<Rc<FunctionProto>>,   // FnIdx-indexed; name→FnIdx resolved at compile/link
+    // classes: Vec<ClassEntry>  — phase 7
+}
+
+pub struct DebugInfo { pub file: PhpStr, pub lines: Vec<(PC,u32)>, pub cv_names: Vec<NIdx> }
+pub struct ProtoFlags { pub has_finally: bool, pub uses_ref: bool, pub generator: bool }
+```
+
+`Instr` is a **fixed-width `#[derive(Clone, Copy, Debug)] enum`, one variant per
+opcode** (decided, isa.md §2.2). Invariant: *every operand is a small `Copy`
+index or immediate; no variant owns heap data* — so `Instr: Copy`, ~16 bytes,
+`code: Vec<Instr>` is a flat cache-friendly array, dispatch is one exhaustive
+`match`, and Cranelift lowering is the *same* `match` emitting IR. Byte-packing
+is a future option *behind the same opcode set*; not done now. (Rejected: Lua RK
+high-bit packing, Zend's `OP_DATA` trailing-opline, Zend's BP-typed fetch
+explosion, CPython inline-interleaved mutable caches.)
+
+### 2.2 Register model (exactly three addressing modes)
+
+One frame = one flat `Vec<Value>` of length `num_registers`, all `Value::Null`
+on entry. CVs occupy `[0, num_cvs)` — every named `$var`, params first, gets one
+permanent register chosen at compile time; **reading/writing a direct variable
+needs no load/store opcode, the register *is* the variable.** Temporaries occupy
+`[num_cvs, num_registers)`, allocated by a high-water bump allocator and freed at
+expression-statement boundaries; `num_registers` is the peak. A CV slot may hold
+`Value::Ref(Rc<RefCell<Value>>)` after `&` promotion; temporaries never hold a
+live `Ref` outliving the producing instruction.
+
+| Mode | Encoding | Meaning |
+|---|---|---|
+| Register | `Reg` (u16) | a frame slot (CV or temp); the only mutable operand space |
+| Constant | `CIdx` (u32) | an immutable `Value` in `consts` |
+| Immediate | inline scalar in the variant | small ints, bools, `PC`, argc, `NIdx`/`BId`/`FnIdx` |
+
+No instruction addresses memory / an array element / a property directly — those
+go through explicit fetch/store opcodes (§2.4 arrays). `deref` (one-level Ref
+read) is applied on-use wherever a *value* is required:
+`fn deref(v:&Value)->Value { match v { Value::Ref(r)=>r.borrow().clone(), o=>o.clone() } }`.
+
+### 2.3 Delegation rule (load-bearing)
+
+Arithmetic / compare / concat / bitwise / unary opcodes are **thin wrappers that
+call the matching `ops::` function**; echo/print and all builtins go through
+`Host`/`registry()`. The VM contributes only operand fetch, `?`-propagation of
+`Thrown`, and the `dst` write. This makes VM and oracle semantically identical by
+construction, so any differential mismatch localizes to a *compiler lowering*
+bug, never duplicated semantics.
+
+```rust
+Instr::Add { dst, a, b } => regs[dst] = ops::add(&get(a), &get(b))?,
+Instr::Concat { dst, a, b } => regs[dst] = ops::concat(&get(a), &get(b)),
+Instr::Cmp { dst, a, b, kind } => regs[dst] = eval_cmp(kind, &get(a), &get(b)), // wraps ops::loose_*/strict_eq/spaceship
+Instr::Echo { src } => { let b = conv::to_string_bytes(&get(src)); self.write_out(&b); }
+```
+
+### 2.4 The opcode set (complete, grouped)
+
+Rust enum variants (CamelCase). `?` marks opcodes that may return `Err(Thrown)`
+and enter the unwinder (§3.4). Phases per ast-surface.md §14. SCREAMING names
+from isa.md are the disassembly spelling of the same variants.
+
+**Move / const / load (phase 1–2)**
+```
+Nop
+Mov        { dst, src }           dst = deref(src)                         (value copy; `$b=$a`)
+LoadConst  { dst, k }             dst = consts[k].clone()
+LoadNull   { dst }                dst = Null
+LoadBool   { dst, b: bool }       dst = Bool(b)
+LoadInt    { dst, n: i64 }        dst = Int(n)                             (inline small int; big ints via LoadConst)
+```
+
+**Variable store — ref-aware (phase 2, 6)**
+```
+Assign     { cv, src }            if regs[cv] is Ref(rc) { *rc.borrow_mut()=deref(src) } else { regs[cv]=deref(src) }
+```
+Reading a CV needs no opcode. Compound assign `$x += e` lowers to
+`Add t,cv,e; Assign cv,t` (reuses `ops::add` + the ref-aware store).
+
+**Arithmetic / bitwise / unary (phase 2) — route to `ops::`**
+```
+Add Sub Mul { dst,a,b }  → ops::add/sub/mul ?            Div Mod Pow { dst,a,b } → ops::div/modulo/pow ?
+BitAnd BitOr BitXor Shl Shr { dst,a,b } → ops::bitwise(..) (no Err)
+Concat     { dst,a,b }  → ops::concat (no Err; always Str)
+Neg        { dst,a }    → ops::negate ?                  BitNot { dst,a } → ops::bitwise_not
+Not        { dst,a }    → Bool(!conv::to_bool(deref(a)))
+IncDec     { dst, cv, pre: bool, delta: i8 }  → inc_dec_value, ref-aware write-through; dst = new (pre) or old (post)
+```
+
+**Casts (phase 2) — route to `conv::`/helper**
+```
+CastInt    { dst,a } → Int(conv::to_int)       CastFloat  { dst,a } → Float(conv::to_float)
+CastString { dst,a } → Str(conv::to_string_bytes)   CastBool { dst,a } → Bool(conv::to_bool)
+CastArray  { dst,a } → cast_to_array(a)        // (object) is phase 7
+```
+`(unset)`/`(real)`/`(void)` have **no opcode** — refused in the compiler (§4).
+
+**Compare (phase 2) — route to `ops::`** (one op, `kind` selects)
+```
+Cmp { dst,a,b, kind: CmpKind }   kind ∈ {Eq,Ne,Identical,NotIdentical,Lt,Le,Gt,Ge,Spaceship}
+  Eq→Bool(loose_eq)  Ne→Bool(!loose_eq)  Identical→Bool(strict_eq)  NotIdentical→Bool(!strict_eq)
+  Lt/Le/Gt/Ge→Bool(loose_compare(a,b).is_lt()/is_le()/is_gt()/is_ge())   Spaceship→ops::spaceship
+```
+`&&`/`||`/`and`/`or`/`??` are **not** compare opcodes — they short-circuit via
+jumps (§5.1).
+
+**Output (phase 1)**
+```
+Echo      { src }     host.write_out(conv::to_string_bytes(deref(src)))
+EchoConst { k }       host.write_out(conv::to_string_bytes(&consts[k]))   (inline HTML / string literals)
+Print     { dst, src} echo deref(src); dst = Int(1)                       (`print` is an expression)
+```
+
+**Jumps / branches (phase 3)** — no runtime level on break/continue; the
+compiler resolves them to a direct `Jmp` to the loop exit/latch (crossing a
+finally routes through §3.5).
+```
+Jmp        { target }
+JmpTrue    { cond, target }    if conv::to_bool(deref(cond))
+JmpFalse   { cond, target }    if !conv::to_bool(deref(cond))
+JmpNull    { src, target }     if deref(src) is Null          (for ?? / nullsafe)
+JmpNotNull { src, target }
+```
+`switch` → chain of `Cmp Eq; JmpTrue` (loose). `match` → `Cmp Identical; JmpTrue`
+(strict) ending in `ThrowMatchError`.
+
+**Arrays (phase 4)** — build into a temp, then `Assign`/`Mov`; writes use an
+lvalue-cursor stack so no long-lived borrow is held into a COW `IndexMap`.
+```
+NewArray   { dst, cap: u32 }          empty PhpArray (reserve cap)
+ArrPush    { arr, val }               arr[] = deref(val)        (PhpArray::push; make_mut COW on the `arr` slot)
+ArrSet     { arr, key, val }          arr[ArrayKey::from_value(key)] = deref(val) ?  (TypeError on illegal offset)
+ArrSpread  { arr, src }               merge: int keys renumber (push), string keys overwrite
+DimFetchR  { dst, arr, key }          dst = deref(arr)[norm(key)] or Null (+undef-key warning); no autovivify ?
+DimFetchIs { dst, arr, key }          like R but NO warning, Null if arr not array   (for ?? / nested isset)
+-- lvalue cursor (nested `$a[$i][$j]=v` without dangling COW borrows) --
+LvalCv     { cv }                     push a cursor rooted at CV cv (autovivify Null→[] on descent)
+LvalDim    { key }                    descend top cursor into norm(key) (create Null if missing; Err if scalar) ?
+LvalAppend {}                         descend into a freshly appended element
+AssignLval { src }                    commit deref(src) into cursor slot, bubbling make_mut up the path; pop. ref-aware at leaf
+FetchLvalRw{ dst }                    read current cursor value into dst AND keep cursor open (compound/inc-dec on `$a[$i]`)
+-- isset / empty / unset --
+IssetCv    { dst, cv }                Bool(!is_null(deref(cv)))           (unset≡null to isset)
+IssetDim   { dst, arr, key }          Bool(present AND not null); no warning; chains via DimFetchIs
+EmptyCv    { dst, cv }                Bool(!conv::to_bool(deref(cv)))
+EmptyDim   { dst, arr, key }          Bool(!to_bool(element)); missing ⇒ true
+UnsetCv    { cv }                     regs[cv] = Null   (see note)
+UnsetDim   { arr, key }               remove via make_mut; next_int high-water not lowered (value-model §3c)
+```
+> `unset` vs "never defined": `isset` treats null/absent identically, so storing
+> `Null` on `UnsetCv` is observably correct for isset/??/empty. The only
+> divergence is the undefined-variable *warning* on a later read; if a golden
+> needs it, add an `Undef` CV sentinel. Baseline accepts `Null`.
+
+**foreach (phase 4)** — by-value iterates a COW snapshot (Rc bump into a hidden
+reg); by-ref operates on the live CV array. Position is a hidden `Int` reg via
+`IndexMap::get_index(i)`. `keycv` = `Reg::MAX` means "no key target".
+```
+FeReset   { arr_reg, pos_reg, src, end }                  snapshot deref(src); pos=0; if empty Jmp end
+FeFetch   { arr_reg, pos_reg, keycv, valcv, end }         if exhausted Jmp end; bind key?/value from entry[pos]; pos+=1
+FeResetRw { cv, pos_reg, end }                            by-ref over the live array in CV cv (lvalue required)
+FeFetchRw { cv, pos_reg, keycv, valcv, end }              promote current element to Ref, bind valcv to it (writes alias)
+```
+
+**References / scope (phase 6)** — reuse `Value::Ref`, no new machinery.
+```
+BindRef    { dst_cv, src_cv }         `$dst =& $src`: promote src slot to Ref(rc), store Ref(rc.clone()) in both
+MakeRef    { dst, cv }                materialize cv slot as Ref, place Ref(rc) in dst (for `&$x` as arg/element)
+BindGlobal { cv, name: NIdx }         `global $x`: bind cv to {main} scope slot for name, as a shared Ref
+BindStatic { cv, slot: u32, init: CIdx }  `static $x=init`: init persistent slot on first exec; alias cv after
+```
+
+**Calls / return (phase 5)** — positional args evaluated into a contiguous temp
+window `[base, base+argc)`; for a builtin the VM passes `&regs[base..base+argc]`
+straight to `NativeFn`. `cache` reserved for monomorphic function-resolution ICs.
+```
+CallBuiltin { dst, bid, base, argc }              arity-check vs Builtin; dst = (builtin.func)(self, &regs[base..+argc]) ?
+CallUser    { dst, fnidx, base, argc, cache }     push frame for functions[fnidx]; bind params; dst = return value
+CallByName  { dst, name: NIdx, base, argc, cache} resolve name at runtime (Err if undefined), then as CallUser/Builtin
+CallDyn     { dst, callee, base, argc }           callee is a runtime callable (Closure/"fn" string/[obj,method]); resolve+dispatch
+Ret         { src }                               return deref(src); run pending finallys (§3.5); pop frame
+RetNull     {}                                    return Null
+-- arg-staging refinements, emitted before the Call* as needed --
+SendRef    { slot, cv }               place MakeRef(cv) into the arg window (by-ref parameter)
+ArgName    { slot, name: NIdx }       tag a window slot named (CallUser rebinds by ParamInfo.name)
+SpreadArgs { src }                    dynamic argc: switch to the *_V path (CallUserV{dst,fnidx,argsvec}) materializing Vec<Value>
+```
+Param binding in `CallUser` is driven by `ParamInfo` (by-value clone / by-ref
+bind to the passed `Ref` / variadic collects window tail into a `PhpArray` /
+default `Const` copy or `Init` block; missing+no-default ⇒ `ArgumentCountError`).
+Named args against a statically-known callee are resolved to positions at compile
+time; dynamic callee reorders at the call site via `proto.params`. The fixed-arity
+register-window path is the fast path; spread uses the `_V` path.
+
+**Exceptions (phase 3+/5)** — see §3.4–3.5. `try` *entry* needs no opcode (the
+`exception_table` describes protected ranges); only these are explicit:
+```
+Throw           { src }               begin unwinding with deref(src) as the in-flight Throwable
+ThrowMatchError { subject }           throw \UnhandledMatchError (message from deref(subject)); for match fall-off
+FinallyEnd      {}                    pop Frame.pending and perform it (resume after a finally); §3.5
+```
+Catch *matching* is ordinary code at the landing pad (the unwinder puts the
+thrown value in the catch var reg; the pad does class tests — phase 7 — or
+rethrows).
+
+**Misc (phases 2, 5, 7-stub)**
+```
+FetchConst { dst, name: NIdx }        read a user/engine constant (Err "Undefined constant" if absent); true/false/null use LoadBool/LoadNull
+DeclareFn  { fnidx }                  install functions[fnidx] into the live table (conditional/non-hoisted declarations)
+MagicConst { dst, which: u8 }         __LINE__/__FILE__/__FUNCTION__/… from frame/proto
+Halt       {}                         __halt_compiler(): stop this proto as top-level return
+Refuse     { feature: NIdx, reason: NIdx }  emitted ONLY for a structurally-refused node reachable at runtime (§4); raises Thrown::Unsupported
+```
+OOP opcodes (`New`, `FetchProp`/`AssignProp`, `CallMethod`, `CallStatic`,
+`InstanceOf`, `Clone`, late static binding) are **phase 7** — same encoding and
+calling convention; omitted here.
+
+### 2.5 Inline caches, constants, names
+
+- `caches: Vec<InlineCache>` is a Zend-style **side** table (not interleaved),
+  `Cell`-based (single-threaded ⇒ no atomics), **monomorphic to start**, guarded
+  by `ClassId` (u32) compare. Reserve the `cache` field on `CallUser`/`CallByName`
+  from phase 5 so the ISA shape never changes; property/method sites land in
+  phase 7. Miss → ordinary resolver (same code as the oracle), which fills the cache.
+- `consts` holds every literal that isn't a small inline immediate (strings /
+  inline-HTML bytes as `Value::Str`, floats, big ints, constant defaults), deduped.
+- `names` interns identifier bytes used at runtime by `NIdx` (var names for
+  `global`/diagnostics, const names for `FetchConst`, function names for
+  `CallByName`, param names for named args). Functions are case-insensitive (the
+  builtin table lowercases). Engine constants come from `builtins::constants()`
+  at link time; `FetchConst` consults the engine/user constant table, not `consts`.
+
+---
+
+## 3. The VM (`phrust-vm`)
+
+### 3.1 Vm struct
+
+```rust
+pub struct Vm {
+    out: Vec<u8>,                               // the single output sink; SAPI flushes it
+    stack: Vec<Frame>,                          // explicit PHP call stack (§3.3), NOT native recursion
+    functions: Vec<Rc<FunctionProto>>,          // FnIdx-indexed, installed from the Program
+    fn_names: HashMap<Vec<u8>, FnIdx>,          // lowercase name → FnIdx (case-insensitive)
+    constants: HashMap<Vec<u8>, Value>,         // engine+user constants, seeded from builtins::constants()
+    // classes: Vec<ClassEntry>, class_ids: HashMap<...>   — phase 7
+    max_depth: usize,                           // recursion guard → catchable Error, not a native overflow
+}
+
+impl Host for Vm { fn write_out(&mut self, bytes: &[u8]) { self.out.extend_from_slice(bytes); } }
+
+impl Vm {
+    pub fn new() -> Self { /* seed constants from builtins::constants(); max_depth = 1<<16 */ }
+    pub fn output(&self) -> &[u8] { &self.out }
+
+    /// Execute a compiled program; returns the process exit code.
+    pub fn run(&mut self, prog: &Program) -> Result<i32, Thrown> {
+        self.install(prog);                         // register functions/classes
+        match self.call_main(prog.main.clone()) {   // enter {main} as frame 0 and drive (§3.2)
+            Ok(_)                   => Ok(0),
+            Err(Thrown::Exit(code)) => Ok(code),     // exit/die: output kept, clean code
+            Err(other)              => Err(other),   // uncaught throw / refusal → SAPI
+        }
+    }
+}
+```
+
+Constant/function/class tables live **in the `Vm`**, never in a `Value`.
+`Value::Object` carries a `ClassId` (u32 index), so values stay `'static`.
+
+### 3.2 Frame
+
+```rust
+pub struct Frame {
+    pub proto: Rc<FunctionProto>,   // Rc so recursion/closures share one copy
+    pub regs: Vec<Value>,           // CVs [0,num_cvs), temps above, len = num_registers; a slot may be Value::Ref
+    pub pc: usize,
+    pub ret_dst: Reg,               // caller register the return value lands in
+    pub pending: Option<FinallyCont>, // finally bookkeeping (§3.5)
+}
+```
+
+### 3.3 Explicit call stack + dispatch skeleton
+
+Explicit `Vec<Frame>` (not native recursion): deep PHP recursion raises a
+catchable `Error` via the `max_depth` length check instead of aborting the
+process; a suspended generator (phase, reserved) is just a detached `Frame`; and
+it is the natural interop boundary for JIT-ted frames. A `CallUser` **pushes** a
+frame and lets the single top-level loop continue; `Ret` pops. The only native
+recursion is the outer driver restarting the loop after an exception unwinds past
+a frame (§3.4), bounded by `try` nesting, not PHP call depth.
+
+```rust
+impl Vm {
+    fn run_top(&mut self) -> Result<Value, Thrown> {
+        loop {
+            let top   = self.stack.len() - 1;
+            let proto = self.stack[top].proto.clone();     // clone the Rc handle, not the slice
+            let pc    = self.stack[top].pc;
+            let instr = proto.code[pc];
+            self.stack[top].pc = pc + 1;                   // default: fall through
+            match instr {
+                Instr::LoadConst { dst, k } => { let v = proto.consts[k as usize].clone(); self.set(top, dst, v); }
+                Instr::Mov { dst, src }     => { let v = self.get(top, src); self.set(top, dst, v); }
+                Instr::Add { dst, a, b }    => { let (x,y)=(self.get(top,a),self.get(top,b)); let v=ops::add(&x,&y)?; self.set(top,dst,v); }
+                Instr::Concat { dst, a, b } => { let (x,y)=(self.get(top,a),self.get(top,b)); self.set(top,dst,ops::concat(&x,&y)); }
+                Instr::Cmp { dst, a, b, kind } => { let (x,y)=(self.get(top,a),self.get(top,b)); self.set(top,dst,eval_cmp(kind,&x,&y)); }
+                Instr::Echo { src }         => { let v=self.get(top,src); self.write_out(&conv::to_string_bytes(&v)); }
+                Instr::Jmp { target }       => self.stack[top].pc = target as usize,
+                Instr::JmpFalse { cond, target } => if !conv::to_bool(&self.get(top,cond)) { self.stack[top].pc = target as usize; },
+                Instr::CallUser { .. }      => self.enter_user_call(top, instr)?,   // push a Frame; loop continues on the callee
+                Instr::CallBuiltin { dst, bid, base, argc } => {
+                    let args = self.collect_args(top, base, argc);
+                    let out = (self.builtin(bid).func)(self, &args)?;              // self → &mut dyn Host
+                    self.set(top, dst, out);
+                }
+                Instr::Ret { src } => {
+                    self.run_pending_finallys(top)?;
+                    let v = self.get(top, src);
+                    let frame = self.stack.pop().unwrap();
+                    match self.stack.last_mut() { Some(c) => c.deliver_return(frame.ret_dst, v), None => return Ok(v) }
+                }
+                Instr::Throw { src }  => { let v=self.get(top,src); return Err(self.make_throwable(v)); }
+                Instr::Refuse { feature, reason } => return Err(Thrown::unsupported(self.name(feature), self.static_reason(reason))),
+                // … one arm per opcode …
+            }
+        }
+    }
+}
+```
+
+`get`/`set` are register accessors on `self.stack[top].regs`: **`get` auto-derefs
+`Value::Ref` on read; `set` writes *through* a `Ref`-typed slot** (`*cell.borrow_mut()=v`)
+rather than overwriting it (plain slots are replaced wholesale). Opcodes fetch
+operands by cloning out of the register file (an `Rc` bump, not a deep copy)
+*before* calling `ops::`/builtins, side-stepping the borrow conflict between a
+register borrow and `&mut self`.
+
+### 3.4 Exception-table unwinding
+
+```rust
+pub struct ExRegion { pub start: PC, pub end: PC, pub catches: Vec<CatchArm>, pub finally: Option<PC> } // protects [start,end)
+pub struct CatchArm { pub classes: Vec<PhpStr>, pub var_reg: Option<Reg>, pub target: PC }              // catch(A|B $e)
+```
+
+Both real throws and refusals ride `Err(Thrown)`, so Rust `?` does per-opcode
+unwinding for free; cross-frame unwinding is driven by the table, not by scanning
+instructions. The driver that owns `run_top`:
+
+```rust
+impl Vm {
+    fn run_driver(&mut self) -> Result<Value, Thrown> {
+        loop {
+            match self.run_top() {
+                Ok(v)  => return Ok(v),
+                Err(t) => match self.unwind(t)? { Resume::Caught => continue, Resume::Exit(c) => return Err(Thrown::Exit(c)) },
+            }
+        }
+    }
+    fn unwind(&mut self, thrown: Thrown) -> Result<Resume, Thrown> {
+        // Exit / Unsupported are NOT catchable: clear the stack, hand straight to the SAPI.
+        if !is_catchable(&thrown) { self.stack.clear(); return Err(thrown); }
+        loop {
+            let Some(frame) = self.stack.last_mut() else { return Err(thrown); }; // escaped {main} → uncaught fatal
+            if let Some(region) = find_region(&frame.proto, frame.pc) {
+                if let Some(arm) = region.matching_catch(class_of(&thrown), &self.classes) {
+                    if let Some(r) = arm.var_reg { frame.regs[r as usize] = thrown_to_value(&thrown); }
+                    frame.pc = arm.target as usize; return Ok(Resume::Caught);   // enter catch body
+                }
+                if let Some(fin) = region.finally {                              // no catch matched but finally guards
+                    frame.pending = Some(FinallyCont::Rethrow(thrown.clone()));
+                    frame.pc = fin as usize; return Ok(Resume::Caught);
+                }
+            }
+            self.stack.pop();   // no handler here: pop and continue unwinding in the caller
+        }
+    }
+}
+```
+
+- **Catchable = `Thrown::Error{class,..}` only.** Matching is an
+  `instanceof`-style check against the built-in exception hierarchy by class name
+  until phase-7 objects carry the real class.
+- **`Thrown::Exit(code)`** is not an error and not catchable: `unwind` clears the
+  stack, `run` maps it to the exit code, **output is kept** (never discarded).
+- **`Thrown::Unsupported{feature,reason}`** is not catchable: it unwinds every
+  frame to the SAPI, which renders it with the `PHRUST_UNSUPPORTED` marker —
+  distinct from PHP's "undefined function", and **never swallowable by a user
+  `try/catch`.**
+
+### 3.5 `finally` (one model)
+
+A `finally` block is compiled **once**; every way of leaving the protected region
+routes through it carrying what to do after, via `Frame::pending`:
+
+```rust
+pub enum FinallyCont {
+    FallThrough,        // normal completion → continue after the finally
+    Jump(PC),           // a break/continue crossing out
+    Return(Value),      // a `return v;` crossing out — complete it after finally
+    Rethrow(Thrown),    // an exception in flight — resume unwinding after finally
+}
+```
+
+The compiler routes each exit by setting `pending` and jumping to the finally PC;
+the finally region's last opcode is `FinallyEnd`, which pops `pending` and
+performs it. Nested finallys chain naturally (each `FinallyEnd` that still must
+cross another finally re-enters the next). A `return`/`break` *originating inside*
+a finally **overrides** a pending continuation (PHP semantics: the finally's own
+control flow wins) — the finally body replaces the top `pending` before
+`FinallyEnd`. `flags.has_finally` lets the common finally-free function skip this
+path entirely. (This unifies isa.md's FAST_CALL/FAST_RET and vm.md's
+`Frame::pending`: `FinallyEnd` *is* FAST_RET; the entry jump *is* FAST_CALL.)
+
+---
+
+## 4. Refusals in the new pipeline (structural, in `phrust-compiler`)
+
+Refused constructs **never acquire an opcode**. They are rejected in the compiler
+at the AST node; the JIT (later) therefore never has to reason about them.
+
+### 4.1 Syntactic constructs — `phrust-compiler/src/refuse.rs`
+
+The lowerer pattern-matches these nodes and, instead of emitting any `Call*`/eval
+opcode, returns `Err(Thrown::unsupported(...))` at compile time (or, if the node
+sits on a conditionally-reachable path the compiler chooses not to reject
+eagerly, emits a single `Refuse { feature, reason }` opcode that raises the same
+uncatchable `Thrown::Unsupported` when reached — never a `Throw`, so a `catch`
+can't swallow it):
+
+| PHP construct | AST node | action |
+|---|---|---|
+| `eval(...)` | `Construct::Eval` | **refuse — no `Eval` opcode exists, ever** |
+| `include`/`require`(`_once`) | `Construct::{Include,IncludeOnce,Require,RequireOnce}` | refuse (filesystem/code-load) |
+| backticks `` `…` `` | `CompositeString::ShellExecute` | refuse — never spawn a shell |
+| `(unset)`/`(real)`/`(void)` cast | `UnaryPrefixOperator::{UnsetCast,RealCast,VoidCast}` | refuse — fatal in PHP 8.5 |
+| `$$x = …` (variable-variable write) | `Variable::{Indirect,Nested}` as an assignment target | refuse the write form |
+
+### 4.2 Function-name refusals — `is_refused()`
+
+`extract`, `compact`, `create_function`, the string form of `assert`,
+`exec`/`system`/`shell_exec`/`passthru`/`proc_open`/`popen`: no dedicated AST
+node. For a **statically-named** call the compiler checks
+`builtins::is_refused(name)` at call-lowering time and emits the refusal in place
+of the `CallBuiltin`; for a **dynamically-named** call (`CallByName`/`CallDyn`)
+the VM checks `is_refused` at resolution time and raises the same uncatchable
+`Unsupported`. Either way the refusal is `Unsupported`, not a catchable `Error`.
+
+> Load-bearing, per the project's explicit instruction that `eval` in particular
+> is **not to be implemented**: it is absent from the opcode set by construction.
+> The `eval_* → walk_*` oracle rename (reorg.md §5) is cosmetic — the
+> `Construct::Eval` arm stays refused in the oracle too.
+
+---
+
+## 5. Lowering patterns (how the AST becomes bytecode)
+
+`tN` = temp register, `cv(x)` = the CV for `$x`.
+
+### 5.1 Expressions / short-circuit
+```
+echo 1 + 2;              LoadInt t0,1 ; LoadInt t1,2 ; Add t0,t0,t1 ; Echo t0
+$x = 5; $x += 3;         LoadInt t0,5 ; Assign cv(x),t0 ; Add t0,cv(x),<k 3> ; Assign cv(x),t0
+$a && $b → t0:           JmpFalse cv(a),Lf ; JmpFalse cv(b),Lf ; LoadBool t0,true ; Jmp Le ; Lf: LoadBool t0,false ; Le:
+$x ?? $y → t0:           Mov t0,cv(x) (or DimFetchIs) ; JmpNotNull t0,Le ; Mov t0,cv(y) ; Le:
+```
+
+### 5.2 Control flow
+```
+while(C)B:   Ltop: <C→t0> ; JmpFalse t0,Lend ; <B: break→Jmp Lend, continue→Jmp Ltop> ; Jmp Ltop ; Lend:
+```
+`for`/`do-while` same shape (the `for` condition is the last expr of its
+conditions list; others run for side effects). `switch` → `Cmp Eq; JmpTrue
+case_i` + fall-through + `break→Jmp Lend`. `match` → `Cmp Identical; JmpTrue
+arm_i` ending in `ThrowMatchError subject`. `break 2;` across two loops → `Jmp
+<outer Lend>` (resolved at compile time; crossing a finally routes via §3.5).
+
+### 5.3 Arrays
+```
+$a=[1,'k'=>2,...$b];     NewArray t0,3 ; LoadInt t1,1 ; ArrPush t0,t1 ; LoadInt t1,2 ; ArrSet t0,<k "k">,t1 ; ArrSpread t0,cv(b) ; Assign cv(a),t0
+$a[$i][$j]=$v;           <i→t0> <j→t1> ; LvalCv cv(a) ; LvalDim t0 ; LvalDim t1 ; AssignLval cv(v)
+$a[$i]+=1;               <i→t0> ; LvalCv cv(a) ; LvalDim t0 ; FetchLvalRw t1 ; Add t1,t1,<k 1> ; AssignLval t1
+```
+
+### 5.4 Functions / args / try-catch-finally / refs
+```
+strlen($s):              Mov r_base,cv(s) ; CallBuiltin t0,bid(strlen),r_base,1
+foo($x,...$rest):        Mov r_base,cv(x) ; SpreadArgs cv(rest) ; CallUserV t0,fnidx(foo),<argsvec>
+sort($arr) (by-ref p0):  SendRef r_base,cv(arr) ; CallUser t0,fnidx(sort),r_base,1
+return $x; / return;     Ret cv(x) / RetNull
+$b =& $a;                BindRef cv(b),cv(a)        global $g;   BindGlobal cv(g),name(g)
+
+try/catch/finally (exception_table: {[Ltry,Lend)->catch Lcatch, finally Lfin}):
+  Ltry:   <try body>
+          (pending=FallThrough) Jmp Lfin                ; normal completion runs finally
+  Lcatch: <type test; no match → Throw r_exc> ; Assign cv(e),r_exc ; <catch body> ; (pending=FallThrough) Jmp Lfin
+  Lfin:   <finally body> ; FinallyEnd                   ; resume per pending
+  Lafter:
+```
+
+---
+
+## 6. Differential harness (`phrust-cli`)
+
+Both tiers expose the **same entrypoint shape** so the runner can diff
+php ⟷ vm ⟷ oracle on identical inputs, byte-exact stdout + exit code.
+
+```rust
+pub struct Outcome { pub stdout: Vec<u8>, pub exit: i32, pub error: Option<Thrown> }
+
+pub trait Engine { fn execute(pf: &ParsedFile) -> Outcome; }   // implemented by BOTH Vm and the oracle Interp
+
+impl Engine for Vm {
+    fn execute(pf: &ParsedFile) -> Outcome {
+        let prog = match phrust_compiler::compile(pf) {
+            Ok(p)  => p,
+            Err(t) => return Outcome { stdout: Vec::new(), exit: 255, error: Some(t) },  // compile-time refusal
+        };
+        let mut vm = Vm::new();
+        let r = vm.run(&prog);
+        finish(vm.output().to_vec(), r)    // → Outcome (exit code + optional error)
+    }
+}
+impl Engine for Interp { /* wraps the existing tree-walker run(&ParsedFile) */ }
+```
+
+Runner (`phrust-cli/src/runner.rs`, a `#[test]` / xtask): glob
+`tests/golden/*.php` (21 today; also `.phpt`), and for each produce three
+`Outcome`s — real `php` 8.5.8 via `Command::new("php")`, `Vm::execute`,
+`Interp::execute`. **Product gate:** `php.stdout == vm.stdout && php.exit ==
+vm.exit`. **Cross-check (php-free):** `oracle.stdout == vm.stdout` on the
+oracle's covered subset — because operators/builtins are *shared code* (§2.3),
+the oracle is an independent check of exactly the compiler + VM loop, where the
+bugs live. A mismatch reports the fixture, the first differing byte offset, and
+all three streams. `.phpt` parses `--TEST--/--FILE--/--EXPECT[F]--`; refused-
+feature cases assert the `PHRUST_UNSUPPORTED` marker instead of a byte match.
+
+---
+
+## 7. Migration + build checklist (cargo green at every step)
+
+Each step ends with `cargo build --workspace && cargo test --workspace` green.
+Steps 1–4 are pure refactors (the runner doesn't exist yet, so goldens are
+unaffected); 5–10 build the VM path and wire the runner.
+
+0. **Baseline.** Build green (one known dead-code warning on `ops::intdiv`).
+   Snapshot current tree-walker output for a couple of goldens as a regression anchor.
+1. **Move `Thrown` → `phrust-values`.** New `phrust-values/src/thrown.rs`;
+   `pub mod thrown; pub use thrown::Thrown;`. In `phrust-builtins` delete the
+   enum, add `pub use phrust_values::Thrown;`. No other crate changes.
+2. **Create `phrust-semantics`, move `ops`.** New crate (dep `phrust-values`);
+   move `phrust-runtime/src/ops.rs`; rewrite `use phrust_builtins::Thrown` →
+   `use phrust_values::Thrown`; re-export. In `phrust-runtime` replace `mod ops;`
+   with `use phrust_semantics::ops;`. Expose `intdiv` (the VM will use it).
+3. **Lift shared helpers into `phrust-semantics`.** Move `deref`,
+   `inc_dec_value`, `cast_to_array` out of the tree-walker as `pub fn`s; update
+   callers. (Prevents the VM re-implementing them in step 8.)
+4. **Rename `phrust-runtime` → `phrust-oracle`; apply `walk_*`.** Rename dir +
+   `Cargo.toml name`; update `phrust-cli` dep. Apply the reorg.md §5 renames
+   (`eval_* → walk_*`); the `Construct::Eval` refusal arm stays. Add the
+   `phrust-builtins → phrust-semantics` dep so `max/min` can use
+   `ops::loose_compare`.
+5. **Stand up `phrust-bytecode` (ISA only).** New crate (dep `phrust-values`):
+   `Instr`, `FunctionProto`, `Program`, `ExRegion`/`CatchArm`, the newtypes,
+   `InlineCache`. Data only, no executing methods. Nothing depends on it yet.
+6. **`phrust-compiler` — Phase-1 subset.** New crate (deps `phrust-frontend`,
+   `phrust-bytecode`, `phrust-values`). Lower echo/inline-HTML, literals,
+   expressions (binary with short-circuit, unary), casts, builtin calls, array
+   literals, variables-as-registers, assignment/compound. `refuse.rs` rejects
+   `Construct::Eval`/`Include*`/backtick/`(unset)`-cast structurally (§4). Unit-test
+   each refused construct → `Unsupported`.
+7. **`phrust-vm` executing the subset.** New crate (deps `phrust-bytecode`,
+   `phrust-semantics`, `phrust-builtins`, `phrust-values`). `Vm` + `Frame` +
+   explicit `Vec<Frame>` stack; `impl Host`; `run(&Program) -> Result<i32,Thrown>`;
+   dispatch delegating to `ops::`/`registry()`. Unit-test VM vs oracle on
+   expressions.
+8. **Wire `phrust-cli` to run the VM.** Real SAPI: read `.php`, parse, compile,
+   run on the VM, write stdout, exit with the code.
+9. **Green all 21 goldens under the VM.** Add `runner.rs` diffing php/vm/oracle
+   (§6); iterate on compiler + VM until all 21 match php/`.out`/oracle. These are
+   scalar/operator/dump heavy — all covered by shared `ops`/`conv`/`fmt`/`dump`,
+   so divergences are lowering bugs. Confirm `phrust-runtime` fully removed from
+   `members`.
+10. **Then grow coverage** in order: (viii) control-flow opcodes +
+    exception-table/finally, (ix) functions (calls/return/params/by-ref/variadic/
+    named, explicit call stack), (x) arrays-full (lvalue cursor, foreach, spread).
+    Re-green goldens + add fixtures at each sub-step.
+
+---
+
+## 8. Do-not-regret list (VM-specific)
+
+1. **Register allocation correctness.** CVs are fixed `[0,num_cvs)` with params
+   first; temporaries are a high-water bump freed at statement boundaries. A temp
+   freed while still live (e.g. reused across a short-circuit join) silently
+   corrupts a value — free only at true expression-statement ends, and assert
+   `num_registers` is the real peak. This is the highest-frequency lowering bug.
+2. **COW through registers.** Mutate an `Array`/`Str` **in the register slot**
+   (`make_mut` on `regs[i]`), never on a cloned-out `Rc`. `$b=$a; $b[0]=1;` must
+   not touch `$a`: `Mov` shares the `Rc`, `AssignLval`/`ArrSet` triggers COW.
+3. **Deref discipline.** `get` auto-derefs `Value::Ref`; `set` writes **through**
+   a `Ref` slot, never overwrites it. Every by-ref / `global` / `foreach &$v`
+   test depends on this one rule.
+4. **Exception-table off-by-one.** Regions protect `[start, end)` as *instruction
+   indices* and are stored innermost-first; the throwing `pc` has already been
+   advanced past the faulting instruction in the loop, so region membership must
+   be checked against the **pre-increment** pc (capture it before `pc += 1`, or
+   test `pc-1`). Get this wrong and a throw lands in the wrong (or no) handler.
+5. **finally continuation precedence.** A `return`/`break`/`continue` originating
+   *inside* a finally overrides any pending continuation; a plain throw must
+   survive a finally that falls through. Drive it all through one `FinallyCont`
+   and one `FinallyEnd` — do not special-case per exit site.
+6. **Exit/Unsupported stay uncatchable.** Never lower a refusal to `Throw` (a
+   user `catch` would swallow it); never let `Exit` discard the output buffer.
+7. **Two float precisions survive lowering.** `Echo`/`Concat`/`(string)` use
+   `fmt::float_echo` (precision-14); `var_dump`/`var_export` use
+   `fmt::float_serialize` (−1). The compiler routes to the right one; the opcode
+   does not choose.
+8. **Stack-depth guard, not native overflow.** Check `stack.len() < max_depth` on
+   every `CallUser` → catchable `Error`, never a Rust stack abort.
+9. **Keep it JIT-lowerable.** Fixed-shape `Copy` operands, instruction-index PCs,
+   side-table constants/caches, exception table (not `?`-only control flow), and
+   one explicit terminator per basic block. Never bury an opcode's semantics in
+   the loop such that a helper can't be extracted — the JIT calls the same
+   `ops::`/`NativeFn` on cold paths.
+10. **Oracle parity is the regression net.** Because operators/builtins are
+    shared, vm≠oracle on the covered subset *always* means a compiler/VM-loop bug;
+    keep the oracle running green on every golden so a VM regression is caught
+    without needing the `php` binary.

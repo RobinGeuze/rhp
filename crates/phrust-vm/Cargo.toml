@@ -1,0 +1,12 @@
+[package]
+name = "phrust-vm"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+phrust-values = { path = "../phrust-values" }
+phrust-bytecode = { path = "../phrust-bytecode" }
+phrust-semantics = { path = "../phrust-semantics" }
+phrust-builtins = { path = "../phrust-builtins" }

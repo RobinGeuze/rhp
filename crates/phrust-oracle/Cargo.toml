@@ -1,0 +1,13 @@
+[package]
+name = "phrust-oracle"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+phrust-values = { path = "../phrust-values" }
+phrust-frontend = { path = "../phrust-frontend" }
+phrust-builtins = { path = "../phrust-builtins" }
+phrust-semantics = { path = "../phrust-semantics" }
+mago-syntax.workspace = true

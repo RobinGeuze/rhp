@@ -1,0 +1,11 @@
+[package]
+name = "phrust-compiler"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+phrust-values = { path = "../phrust-values" }
+phrust-bytecode = { path = "../phrust-bytecode" }
+phrust-frontend = { path = "../phrust-frontend" }

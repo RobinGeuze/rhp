@@ -14,9 +14,16 @@ use std::rc::Rc;
 use phrust_bytecode::{CIdx, CmpKind, FnIdx, FunctionProto, Instr, NIdx, Program, Reg};
 use phrust_frontend::cst::{
     Argument, ArrayElement, AssignmentOperator, BinaryOperator, CompositeString, Construct,
-    Expression, ForBody, Identifier, IfBody, Literal, Match, MatchArm, Program as AstProgram,
-    Statement, StringPart, SwitchBody, SwitchCase, UnaryPrefixOperator, Variable, WhileBody,
+    Expression, ForBody, ForeachBody, ForeachTarget, Identifier, IfBody, Literal, Match, MatchArm,
+    Program as AstProgram, Statement, StringPart, SwitchBody, SwitchCase, UnaryPrefixOperator,
+    Variable, WhileBody,
 };
+
+/// A step in an lvalue path (compiler-side; key regs are pre-evaluated).
+enum CursorStep {
+    Key(Reg),
+    Append,
+}
 use phrust_values::{PhpArray, PhpStr, Thrown, Value};
 
 /// Compile a parsed program (borrowed from a `phrust_frontend::Arena`) into an
@@ -344,6 +351,23 @@ impl ProtoBuilder {
                     self.scan_expr_vars(v);
                 }
             }
+            Statement::Foreach(fe) => {
+                self.scan_expr_vars(fe.expression);
+                match &fe.target {
+                    ForeachTarget::Value(t) => self.scan_expr_vars(t.value),
+                    ForeachTarget::KeyValue(t) => {
+                        self.scan_expr_vars(t.key);
+                        self.scan_expr_vars(t.value);
+                    }
+                }
+                match &fe.body {
+                    ForeachBody::Statement(s) => self.scan_stmt_vars(s),
+                    ForeachBody::ColonDelimited(b) => {
+                        b.statements.iter().for_each(|s| self.scan_stmt_vars(s))
+                    }
+                }
+            }
+            Statement::Unset(u) => u.values.iter().for_each(|v| self.scan_expr_vars(v)),
             _ => {}
         }
     }
@@ -373,6 +397,11 @@ impl ProtoBuilder {
             }
             Expression::Array(arr) => self.scan_array_vars(arr.elements.iter()),
             Expression::LegacyArray(arr) => self.scan_array_vars(arr.elements.iter()),
+            Expression::ArrayAccess(aa) => {
+                self.scan_expr_vars(aa.array);
+                self.scan_expr_vars(aa.index);
+            }
+            Expression::ArrayAppend(ap) => self.scan_expr_vars(ap.array),
             Expression::CompositeString(cs) => {
                 let parts = match cs {
                     CompositeString::Interpolated(i) => Some(&i.parts),
@@ -478,6 +507,8 @@ impl ProtoBuilder {
             Statement::DoWhile(d) => self.compile_do_while(d)?,
             Statement::For(f) => self.compile_for(f)?,
             Statement::Switch(s) => self.compile_switch(s)?,
+            Statement::Foreach(fe) => self.compile_foreach(fe)?,
+            Statement::Unset(u) => self.compile_unset(u)?,
             Statement::Return(r) => match r.value {
                 Some(e) => {
                     let src = self.compile_expr(e)?;
@@ -686,6 +717,86 @@ impl ProtoBuilder {
         Ok(())
     }
 
+    fn compile_foreach(&mut self, fe: &phrust_frontend::cst::Foreach) -> Result<(), Thrown> {
+        let src = self.compile_expr(fe.expression)?;
+        let arr_reg = self.alloc_temp();
+        let pos_reg = self.alloc_temp();
+        let saved_floor = self.temp_floor;
+        self.temp_floor = self.next_temp; // protect src/arr_reg/pos_reg across the body
+
+        let (key_cv, val_cv) = match &fe.target {
+            ForeachTarget::Value(t) => (Reg::MAX, self.foreach_target_cv(t.value)?),
+            ForeachTarget::KeyValue(t) => {
+                (self.foreach_target_cv(t.key)?, self.foreach_target_cv(t.value)?)
+            }
+        };
+
+        let reset_pos = self.code.len();
+        self.emit(Instr::Nop); // FeReset (needs end)
+        let fetch_label = self.here();
+        let fetch_pos = self.code.len();
+        self.emit(Instr::Nop); // FeFetch (needs end)
+
+        self.loops.push(LoopCtx::default());
+        match &fe.body {
+            ForeachBody::Statement(s) => self.compile_stmt(s)?,
+            ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
+        }
+        let ctx = self.loops.pop().unwrap();
+        self.emit(Instr::Jmp { target: fetch_label });
+        let end = self.here();
+        self.code[reset_pos] = Instr::FeReset { arr_reg, pos_reg, src, end };
+        self.code[fetch_pos] = Instr::FeFetch { arr_reg, pos_reg, key_cv, val_cv, end };
+        self.patch_all(ctx.break_jumps, end);
+        self.patch_all(ctx.continue_jumps, fetch_label);
+        self.temp_floor = saved_floor;
+        Ok(())
+    }
+
+    fn foreach_target_cv(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+        match e {
+            Expression::Variable(Variable::Direct(d)) => Ok(self.cv(strip_dollar(d.name))),
+            Expression::UnaryPrefix(u)
+                if matches!(u.operator, UnaryPrefixOperator::Reference(_)) =>
+            {
+                Err(Thrown::unsupported(
+                    "foreach by reference",
+                    "references arrive in the next phase",
+                ))
+            }
+            _ => Err(Thrown::unsupported(
+                "foreach target",
+                "only simple `$var` targets for now (no list()/destructuring)",
+            )),
+        }
+    }
+
+    fn compile_unset(&mut self, u: &phrust_frontend::cst::Unset) -> Result<(), Thrown> {
+        for v in u.values.iter() {
+            match v {
+                Expression::Variable(Variable::Direct(d)) => {
+                    // A CV can't be removed; null is observably equivalent to
+                    // unset for isset/??/empty.
+                    let cv = self.cv(strip_dollar(d.name));
+                    self.emit(Instr::LoadNull { dst: cv });
+                }
+                Expression::ArrayAccess(_) => {
+                    let mut steps = Vec::new();
+                    let root = self.collect_lvalue_steps(v, &mut steps)?;
+                    self.emit_cursor(root, &steps);
+                    self.emit(Instr::UnsetLval);
+                }
+                _ => {
+                    return Err(Thrown::unsupported(
+                        "unset target",
+                        "only variables and array elements",
+                    ))
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn compile_break_continue(
         &mut self,
         level: Option<&Expression>,
@@ -798,6 +909,13 @@ impl ProtoBuilder {
             Expression::Conditional(c) => self.compile_conditional(c),
             Expression::Array(arr) => self.compile_array(arr.elements.iter()),
             Expression::LegacyArray(arr) => self.compile_array(arr.elements.iter()),
+            Expression::ArrayAccess(aa) => {
+                let arr = self.compile_expr(aa.array)?;
+                let key = self.compile_expr(aa.index)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::DimFetch { dst, arr, key });
+                Ok(dst)
+            }
             Expression::ConstantAccess(ca) => self.compile_constant(&ca.name),
             Expression::Identifier(id) => self.compile_constant(id),
             Expression::CompositeString(cs) => self.compile_composite(cs),
@@ -985,13 +1103,23 @@ impl ProtoBuilder {
         pre: bool,
         delta: i8,
     ) -> Result<Reg, Thrown> {
-        let Expression::Variable(Variable::Direct(d)) = target else {
-            return Err(Thrown::unsupported("++/-- target", "only simple variables for now"));
-        };
-        let cv = self.cv(strip_dollar(d.name));
-        let dst = self.alloc_temp();
-        self.emit(Instr::IncDec { dst, cv, pre, delta });
-        Ok(dst)
+        match target {
+            Expression::Variable(Variable::Direct(d)) => {
+                let cv = self.cv(strip_dollar(d.name));
+                let dst = self.alloc_temp();
+                self.emit(Instr::IncDec { dst, cv, pre, delta });
+                Ok(dst)
+            }
+            Expression::ArrayAccess(_) => {
+                let mut steps = Vec::new();
+                let root = self.collect_lvalue_steps(target, &mut steps)?;
+                self.emit_cursor(root, &steps);
+                let dst = self.alloc_temp();
+                self.emit(Instr::IncDecLval { dst, pre, delta });
+                Ok(dst)
+            }
+            _ => Err(Thrown::unsupported("++/-- target", "only variables and array elements")),
+        }
     }
 
     fn compile_conditional(
@@ -1118,12 +1246,39 @@ impl ProtoBuilder {
                 "include/require",
                 "file inclusion arrives in a later phase",
             )),
-            Construct::Exit(_) | Construct::Die(_) | Construct::Isset(_) | Construct::Empty(_) => {
-                Err(Thrown::unsupported(
-                    "exit/die/isset/empty",
-                    "arrive with control flow / arrays",
-                ))
+            Construct::Isset(i) => {
+                // AND over each operand: true iff every value is non-null.
+                let dst = self.alloc_temp();
+                let mut jumps = Vec::new();
+                for v in i.values.iter() {
+                    let r = self.compile_expr(v)?; // null if absent (DimFetch returns null)
+                    let pos = self.code.len();
+                    self.emit(Instr::Nop); // JmpNull r -> false
+                    jumps.push((pos, r));
+                }
+                self.emit(Instr::LoadBool { dst, b: true });
+                let jend = self.code.len();
+                self.emit(Instr::Nop); // Jmp end
+                let lfalse = self.here();
+                self.emit(Instr::LoadBool { dst, b: false });
+                let lend = self.here();
+                for (pos, r) in jumps {
+                    self.code[pos] = Instr::JmpNull { src: r, target: lfalse };
+                }
+                self.code[jend] = Instr::Jmp { target: lend };
+                Ok(dst)
             }
+            Construct::Empty(e) => {
+                // empty(x) == !to_bool(x); absent/null -> true (Not handles it).
+                let r = self.compile_expr(e.value)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::Not { dst, a: r });
+                Ok(dst)
+            }
+            Construct::Exit(_) | Construct::Die(_) => Err(Thrown::unsupported(
+                "exit/die",
+                "arrive with the SAPI exit path",
+            )),
         }
     }
 
@@ -1175,14 +1330,75 @@ impl ProtoBuilder {
         Ok(dst)
     }
 
+    /// Collect an lvalue path (root CV + pre-evaluated key/append steps). All
+    /// index expressions are compiled into registers here, so the subsequent
+    /// cursor opcode sequence is contiguous (no nested cursors).
+    fn collect_lvalue_steps(
+        &mut self,
+        target: &Expression,
+        steps: &mut Vec<CursorStep>,
+    ) -> Result<Reg, Thrown> {
+        match target {
+            Expression::Variable(Variable::Direct(d)) => Ok(self.cv(strip_dollar(d.name))),
+            Expression::ArrayAccess(aa) => {
+                let root = self.collect_lvalue_steps(aa.array, steps)?;
+                let key = self.compile_expr(aa.index)?;
+                steps.push(CursorStep::Key(key));
+                Ok(root)
+            }
+            Expression::ArrayAppend(ap) => {
+                let root = self.collect_lvalue_steps(ap.array, steps)?;
+                steps.push(CursorStep::Append);
+                Ok(root)
+            }
+            _ => Err(Thrown::unsupported(
+                "assignment target",
+                "only variables and array elements are supported",
+            )),
+        }
+    }
+
+    fn emit_cursor(&mut self, root: Reg, steps: &[CursorStep]) {
+        self.emit(Instr::LvalCv { cv: root });
+        for step in steps {
+            match step {
+                CursorStep::Key(r) => self.emit(Instr::LvalKey { key: *r }),
+                CursorStep::Append => self.emit(Instr::LvalAppend),
+            }
+        }
+    }
+
     fn compile_assignment(
         &mut self,
         a: &phrust_frontend::cst::Assignment,
     ) -> Result<Reg, Thrown> {
+        // Array-element / append target: use the lvalue cursor.
+        if matches!(a.lhs, Expression::ArrayAccess(_) | Expression::ArrayAppend(_)) {
+            let mut steps = Vec::new();
+            let root = self.collect_lvalue_steps(a.lhs, &mut steps)?;
+            let rhs = self.compile_expr(a.rhs)?;
+            return match &a.operator {
+                AssignmentOperator::Assign(_) => {
+                    self.emit_cursor(root, &steps);
+                    self.emit(Instr::AssignLval { src: rhs });
+                    Ok(rhs)
+                }
+                op => {
+                    self.emit_cursor(root, &steps);
+                    let cur = self.alloc_temp();
+                    self.emit(Instr::FetchLvalRw { dst: cur });
+                    let res = self.alloc_temp();
+                    self.emit(compound_op(op, res, cur, rhs)?);
+                    self.emit(Instr::AssignLval { src: res });
+                    Ok(res)
+                }
+            };
+        }
+
         let Expression::Variable(Variable::Direct(d)) = a.lhs else {
             return Err(Thrown::unsupported(
                 "assignment target",
-                "array/property targets arrive with arrays/OOP",
+                "property targets arrive with OOP",
             ));
         };
         let cv = self.cv(strip_dollar(d.name));
@@ -1232,6 +1448,32 @@ impl ProtoBuilder {
 
 fn strip_dollar(name: &[u8]) -> &[u8] {
     name.strip_prefix(b"$").unwrap_or(name)
+}
+
+/// Build the instruction for a compound-assignment operator `dst = a <op> b`.
+fn compound_op(op: &AssignmentOperator, dst: Reg, a: Reg, b: Reg) -> Result<Instr, Thrown> {
+    use AssignmentOperator as Ao;
+    Ok(match op {
+        Ao::Addition(_) => Instr::Add { dst, a, b },
+        Ao::Subtraction(_) => Instr::Sub { dst, a, b },
+        Ao::Multiplication(_) => Instr::Mul { dst, a, b },
+        Ao::Division(_) => Instr::Div { dst, a, b },
+        Ao::Modulo(_) => Instr::Mod { dst, a, b },
+        Ao::Exponentiation(_) => Instr::Pow { dst, a, b },
+        Ao::Concat(_) => Instr::Concat { dst, a, b },
+        Ao::BitwiseAnd(_) => Instr::BitAnd { dst, a, b },
+        Ao::BitwiseOr(_) => Instr::BitOr { dst, a, b },
+        Ao::BitwiseXor(_) => Instr::BitXor { dst, a, b },
+        Ao::LeftShift(_) => Instr::Shl { dst, a, b },
+        Ao::RightShift(_) => Instr::Shr { dst, a, b },
+        Ao::Coalesce(_) => {
+            return Err(Thrown::unsupported(
+                "??= on an array element",
+                "use a full assignment for now",
+            ))
+        }
+        Ao::Assign(_) => unreachable!("handled by caller"),
+    })
 }
 
 fn identifier_name<'a>(id: &'a Identifier<'a>) -> &'a [u8] {

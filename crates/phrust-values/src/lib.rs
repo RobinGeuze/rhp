@@ -284,6 +284,11 @@ impl PhpArray {
         self.0.entries.iter()
     }
 
+    /// The (key, value) at insertion position `i` (for `foreach` iteration).
+    pub fn get_index(&self, i: usize) -> Option<(&ArrayKey, &Value)> {
+        self.0.entries.get_index(i)
+    }
+
     pub fn next_int(&self) -> Option<i64> {
         self.0.next_int
     }
@@ -311,6 +316,34 @@ impl PhpArray {
         let k = data.next_int.unwrap_or(0);
         data.bump_next_int(k);
         data.entries.insert(ArrayKey::Int(k), value);
+    }
+
+    /// COW mutable access to the slot at `key`, inserting `Null` if absent.
+    /// Updates the append counter for integer keys. Used by nested lvalue writes.
+    pub fn get_or_insert_mut(&mut self, key: ArrayKey) -> &mut Value {
+        let data = self.make_mut();
+        if let ArrayKey::Int(n) = key {
+            data.bump_next_int(n);
+        }
+        data.entries.entry(key).or_insert(Value::Null)
+    }
+
+    /// COW mutable access to a freshly appended slot (`$a[]`).
+    pub fn append_mut(&mut self) -> &mut Value {
+        let data = self.make_mut();
+        let k = data.next_int.unwrap_or(0);
+        data.bump_next_int(k);
+        data.entries.entry(ArrayKey::Int(k)).or_insert(Value::Null)
+    }
+
+    /// COW mutable access to an existing slot (no insert).
+    pub fn get_mut(&mut self, key: &ArrayKey) -> Option<&mut Value> {
+        self.make_mut().entries.get_mut(key)
+    }
+
+    /// COW remove, preserving insertion order. `next_int` is not lowered.
+    pub fn remove(&mut self, key: &ArrayKey) -> Option<Value> {
+        self.make_mut().entries.shift_remove(key)
     }
 }
 

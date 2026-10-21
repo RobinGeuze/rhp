@@ -7,9 +7,10 @@
 use std::collections::HashMap;
 
 use mago_syntax::cst::{
-    Argument, ArrayElement, AssignmentOperator, BinaryOperator, CompositeString, Construct,
-    Expression, ForBody, Function, Identifier, IfBody, Literal, Match, MatchArm, Program, Statement,
-    StringPart, SwitchBody, SwitchCase, UnaryPrefixOperator, Variable, WhileBody,
+    Argument, ArrayAccess, ArrayElement, AssignmentOperator, BinaryOperator, CompositeString,
+    Construct, Expression, ForBody, Foreach, ForeachBody, ForeachTarget, Function, Identifier,
+    IfBody, Literal, Match, MatchArm, Program, Statement, StringPart, SwitchBody, SwitchCase,
+    UnaryPrefixOperator, Variable, WhileBody,
 };
 
 use phrust_builtins::{self as builtins, Host};
@@ -136,7 +137,19 @@ impl<'a> Interp<'a> {
             Statement::While(w) => self.exec_while(w),
             Statement::DoWhile(d) => self.exec_do_while(d),
             Statement::For(f) => self.exec_for(f),
+            Statement::Foreach(fe) => self.exec_foreach(fe),
             Statement::Switch(s) => self.exec_switch(s),
+            Statement::Unset(u) => {
+                for v in u.values.iter() {
+                    let (root, steps) = self.collect_path(v)?;
+                    if steps.is_empty() {
+                        self.vars.remove(&root);
+                    } else if let Some(slot) = self.vars.get_mut(&root) {
+                        unset_path(slot, &steps);
+                    }
+                }
+                Ok(Flow::Normal)
+            }
             Statement::Return(r) => {
                 let v = match r.value {
                     Some(e) => self.walk_expr(e)?,
@@ -263,6 +276,68 @@ impl<'a> Interp<'a> {
         Ok(Flow::Normal)
     }
 
+    fn exec_foreach(&mut self, fe: &'a Foreach<'a>) -> ExecResult {
+        let subject = self.walk_expr(fe.expression)?;
+        let Value::Array(arr) = deref(&subject) else {
+            // php warns "foreach() argument must be of type array|object"; skip.
+            return Ok(Flow::Normal);
+        };
+        // Iterate a snapshot (COW): body mutations of the source don't affect it.
+        let entries: Vec<(ArrayKey, Value)> =
+            arr.iter().map(|(k, v)| (k.clone(), deref(v))).collect();
+        for (k, v) in entries {
+            match &fe.target {
+                ForeachTarget::Value(t) => self.bind_foreach(t.value, v)?,
+                ForeachTarget::KeyValue(t) => {
+                    let key = match k {
+                        ArrayKey::Int(n) => Value::Int(n),
+                        ArrayKey::Str(s) => Value::Str(s),
+                    };
+                    self.bind_foreach(t.key, key)?;
+                    self.bind_foreach(t.value, v)?;
+                }
+            }
+            let flow = match &fe.body {
+                ForeachBody::Statement(s) => self.exec_stmt(s)?,
+                ForeachBody::ColonDelimited(b) => self.exec_stmts(b.statements.iter())?,
+            };
+            match loop_decision(flow) {
+                LoopDecision::Iterate => {}
+                LoopDecision::Stop => break,
+                LoopDecision::Propagate(f) => return Ok(f),
+            }
+        }
+        Ok(Flow::Normal)
+    }
+
+    /// Bind one `foreach` target (key or value) to a produced value.
+    fn bind_foreach(&mut self, target: &'a Expression<'a>, value: Value) -> Result<(), Thrown> {
+        if let Expression::UnaryPrefix(u) = target {
+            if matches!(u.operator, UnaryPrefixOperator::Reference(_)) {
+                return Err(Thrown::unsupported(
+                    "foreach by reference",
+                    "references arrive in the next phase",
+                ));
+            }
+        }
+        match target {
+            Expression::Variable(Variable::Direct(d)) => {
+                self.vars.insert(strip_dollar(d.name).to_vec(), value);
+                Ok(())
+            }
+            Expression::ArrayAccess(_) | Expression::ArrayAppend(_) => {
+                let (root, steps) = self.collect_path(target)?;
+                let slot = self.vars.entry(root).or_insert(Value::Null);
+                assign_path(slot, &steps, value)
+            }
+            Expression::List(_) => Err(Thrown::unsupported(
+                "list() destructuring",
+                "arrives in a later phase",
+            )),
+            _ => Err(Thrown::unsupported("foreach target", "unsupported target")),
+        }
+    }
+
     fn exec_switch(&mut self, sw: &'a mago_syntax::cst::Switch<'a>) -> ExecResult {
         let subject = self.walk_expr(sw.expression)?;
         let cases: Vec<&SwitchCase> = match &sw.body {
@@ -316,6 +391,7 @@ impl<'a> Interp<'a> {
             Expression::LegacyArray(arr) => self.walk_array(arr.elements.iter()),
             Expression::ConstantAccess(ca) => self.walk_constant(&ca.name),
             Expression::Identifier(id) => self.walk_constant(id),
+            Expression::ArrayAccess(aa) => self.walk_array_access(aa),
             Expression::CompositeString(cs) => self.walk_composite(cs),
             Expression::Match(m) => self.walk_match(m),
             Expression::Construct(c) => self.walk_construct(c),
@@ -761,6 +837,75 @@ impl<'a> Interp<'a> {
         result
     }
 
+    /// Read `$a[$i]`: array element (null if absent), or a single byte from a
+    /// string (negative offsets count from the end; out of range → "").
+    fn walk_array_access(&mut self, aa: &'a ArrayAccess<'a>) -> EvalResult {
+        let base = self.walk_expr(aa.array)?;
+        let idx = self.walk_expr(aa.index)?;
+        match deref(&base) {
+            Value::Array(a) => {
+                let key = ArrayKey::from_value(&idx)
+                    .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
+                Ok(a.get(&key).map(deref).unwrap_or(Value::Null))
+            }
+            Value::Str(s) => {
+                let bytes = s.as_bytes();
+                let len = bytes.len() as i64;
+                let i = conv::to_int(&idx);
+                let actual = if i < 0 { len + i } else { i };
+                if actual >= 0 && actual < len {
+                    Ok(Value::str(vec![bytes[actual as usize]]))
+                } else {
+                    Ok(Value::str(Vec::new()))
+                }
+            }
+            _ => Ok(Value::Null),
+        }
+    }
+
+    /// Resolve an lvalue (`$x`, `$a[$i]`, `$a[$i][$j]`, `$a[]`) into its root
+    /// variable name plus a sequence of descent steps. Index expressions are
+    /// evaluated here (left to right, outer array first).
+    fn collect_path(
+        &mut self,
+        target: &'a Expression<'a>,
+    ) -> Result<(Vec<u8>, Vec<PathStep>), Thrown> {
+        match target {
+            Expression::Variable(Variable::Direct(d)) => {
+                Ok((strip_dollar(d.name).to_vec(), Vec::new()))
+            }
+            Expression::ArrayAccess(aa) => {
+                let (root, mut steps) = self.collect_path(aa.array)?;
+                let idx = self.walk_expr(aa.index)?;
+                let key = ArrayKey::from_value(&idx)
+                    .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
+                steps.push(PathStep::Key(key));
+                Ok((root, steps))
+            }
+            Expression::ArrayAppend(aa) => {
+                let (root, mut steps) = self.collect_path(aa.array)?;
+                steps.push(PathStep::Append);
+                Ok((root, steps))
+            }
+            _ => Err(Thrown::unsupported(
+                "assignment target",
+                "only variables and array elements are supported",
+            )),
+        }
+    }
+
+    /// Read the value at a resolved path, or `None` if any step is missing /
+    /// not an array. Never autovivifies.
+    fn read_opt(&self, root: &[u8], steps: &[PathStep]) -> Option<Value> {
+        let mut cur = deref(self.vars.get(root)?);
+        for step in steps {
+            let Value::Array(a) = &cur else { return None };
+            let PathStep::Key(key) = step else { return None };
+            cur = deref(a.get(key)?);
+        }
+        Some(cur)
+    }
+
     fn read_variable(&mut self, var: &'a Variable<'a>) -> EvalResult {
         match var {
             Variable::Direct(d) => {
@@ -775,67 +920,99 @@ impl<'a> Interp<'a> {
     }
 
     fn walk_assignment(&mut self, a: &'a mago_syntax::cst::Assignment<'a>) -> EvalResult {
-        // Only direct-variable targets in the scaffold.
-        let Expression::Variable(Variable::Direct(d)) = a.lhs else {
-            return Err(Thrown::unsupported(
-                "assignment target",
-                "array/property targets arrive with arrays/OOP",
-            ));
-        };
-        let key = strip_dollar(d.name).to_vec();
-        let rhs = self.walk_expr(a.rhs)?;
-        let new = match &a.operator {
-            AssignmentOperator::Assign(_) => rhs,
-            op => {
-                let cur = self.vars.get(&key).cloned().unwrap_or(Value::Null);
-                match op {
-                    AssignmentOperator::Addition(_) => ops::add(&cur, &rhs)?,
-                    AssignmentOperator::Subtraction(_) => ops::sub(&cur, &rhs)?,
-                    AssignmentOperator::Multiplication(_) => ops::mul(&cur, &rhs)?,
-                    AssignmentOperator::Division(_) => ops::div(&cur, &rhs)?,
-                    AssignmentOperator::Modulo(_) => ops::modulo(&cur, &rhs)?,
-                    AssignmentOperator::Exponentiation(_) => ops::pow(&cur, &rhs)?,
-                    AssignmentOperator::Concat(_) => ops::concat(&cur, &rhs),
-                    AssignmentOperator::BitwiseAnd(_) => ops::bitwise(&cur, &rhs, ops::BitOp::And),
-                    AssignmentOperator::BitwiseOr(_) => ops::bitwise(&cur, &rhs, ops::BitOp::Or),
-                    AssignmentOperator::BitwiseXor(_) => ops::bitwise(&cur, &rhs, ops::BitOp::Xor),
-                    AssignmentOperator::LeftShift(_) => ops::bitwise(&cur, &rhs, ops::BitOp::Shl),
-                    AssignmentOperator::RightShift(_) => ops::bitwise(&cur, &rhs, ops::BitOp::Shr),
+        match a.lhs {
+            Expression::Variable(Variable::Direct(d)) => {
+                let key = strip_dollar(d.name).to_vec();
+                let new = match &a.operator {
+                    AssignmentOperator::Assign(_) => self.walk_expr(a.rhs)?,
                     AssignmentOperator::Coalesce(_) => {
-                        if matches!(deref(&cur), Value::Null) {
-                            rhs
-                        } else {
-                            cur
+                        let cur = self.vars.get(&key).cloned().unwrap_or(Value::Null);
+                        if !matches!(deref(&cur), Value::Null) {
+                            return Ok(cur);
                         }
+                        self.walk_expr(a.rhs)?
                     }
-                    AssignmentOperator::Assign(_) => unreachable!(),
+                    op => {
+                        let cur = self.vars.get(&key).cloned().unwrap_or(Value::Null);
+                        let rhs = self.walk_expr(a.rhs)?;
+                        apply_compound_op(op, &cur, &rhs)?
+                    }
+                };
+                self.vars.insert(key, new.clone());
+                Ok(new)
+            }
+            Expression::ArrayAccess(_) | Expression::ArrayAppend(_) => self.assign_to_path(a),
+            _ => Err(Thrown::unsupported(
+                "assignment target",
+                "property targets arrive with OOP",
+            )),
+        }
+    }
+
+    /// Assign to an array-element lvalue (`$a[$i] = v`, `$a[] = v`, compounds).
+    fn assign_to_path(&mut self, a: &'a mago_syntax::cst::Assignment<'a>) -> EvalResult {
+        let (root, steps) = self.collect_path(a.lhs)?;
+        let new = match &a.operator {
+            AssignmentOperator::Assign(_) => self.walk_expr(a.rhs)?,
+            AssignmentOperator::Coalesce(_) => {
+                if let Some(v) = self.read_opt(&root, &steps) {
+                    if !matches!(v, Value::Null) {
+                        return Ok(v);
+                    }
                 }
+                self.walk_expr(a.rhs)?
+            }
+            op => {
+                let cur = self.read_opt(&root, &steps).unwrap_or(Value::Null);
+                let rhs = self.walk_expr(a.rhs)?;
+                apply_compound_op(op, &cur, &rhs)?
             }
         };
-        self.vars.insert(key, new.clone());
+        let slot = self.vars.entry(root).or_insert(Value::Null);
+        assign_path(slot, &steps, new.clone())?;
         Ok(new)
     }
 
     fn pre_inc_dec(&mut self, target: &'a Expression<'a>, delta: i64) -> EvalResult {
-        let Expression::Variable(Variable::Direct(d)) = target else {
-            return Err(Thrown::unsupported("++/-- target", "only simple variables for now"));
-        };
-        let key = strip_dollar(d.name).to_vec();
-        let cur = self.vars.get(&key).cloned().unwrap_or(Value::Null);
-        let new = inc_dec_value(&cur, delta);
-        self.vars.insert(key, new.clone());
-        Ok(new)
+        match target {
+            Expression::Variable(Variable::Direct(d)) => {
+                let key = strip_dollar(d.name).to_vec();
+                let cur = self.vars.get(&key).cloned().unwrap_or(Value::Null);
+                let new = inc_dec_value(&cur, delta);
+                self.vars.insert(key, new.clone());
+                Ok(new)
+            }
+            Expression::ArrayAccess(_) => {
+                let (root, steps) = self.collect_path(target)?;
+                let cur = self.read_opt(&root, &steps).unwrap_or(Value::Null);
+                let new = inc_dec_value(&cur, delta);
+                let slot = self.vars.entry(root).or_insert(Value::Null);
+                assign_path(slot, &steps, new.clone())?;
+                Ok(new)
+            }
+            _ => Err(Thrown::unsupported("++/-- target", "unsupported target")),
+        }
     }
 
     fn post_inc_dec(&mut self, target: &'a Expression<'a>, delta: i64) -> EvalResult {
-        let Expression::Variable(Variable::Direct(d)) = target else {
-            return Err(Thrown::unsupported("++/-- target", "only simple variables for now"));
-        };
-        let key = strip_dollar(d.name).to_vec();
-        let cur = self.vars.get(&key).cloned().unwrap_or(Value::Null);
-        let new = inc_dec_value(&cur, delta);
-        self.vars.insert(key, new);
-        Ok(cur)
+        match target {
+            Expression::Variable(Variable::Direct(d)) => {
+                let key = strip_dollar(d.name).to_vec();
+                let cur = self.vars.get(&key).cloned().unwrap_or(Value::Null);
+                let new = inc_dec_value(&cur, delta);
+                self.vars.insert(key, new);
+                Ok(cur)
+            }
+            Expression::ArrayAccess(_) => {
+                let (root, steps) = self.collect_path(target)?;
+                let cur = self.read_opt(&root, &steps).unwrap_or(Value::Null);
+                let new = inc_dec_value(&cur, delta);
+                let slot = self.vars.entry(root).or_insert(Value::Null);
+                assign_path(slot, &steps, new)?;
+                Ok(cur)
+            }
+            _ => Err(Thrown::unsupported("++/-- target", "unsupported target")),
+        }
     }
 }
 
@@ -871,6 +1048,81 @@ fn flow_level(level: Option<&Expression>) -> Result<u32, Thrown> {
             "'break'/'continue' operator accepts only a constant integer level",
         )),
     }
+}
+
+/// One descent step of an array lvalue path.
+enum PathStep {
+    Key(ArrayKey),
+    Append,
+}
+
+/// Write `value` at `steps` under `slot`, autovivifying intermediate arrays
+/// (COW via `make_mut`). `null`/`""` become a fresh array; other scalars error.
+fn assign_path(slot: &mut Value, steps: &[PathStep], value: Value) -> Result<(), Thrown> {
+    if steps.is_empty() {
+        *slot = value;
+        return Ok(());
+    }
+    if matches!(slot, Value::Null) || matches!(slot, Value::Str(s) if s.is_empty()) {
+        *slot = Value::Array(PhpArray::new());
+    }
+    let Value::Array(arr) = slot else {
+        return Err(Thrown::error("Error", "Cannot use a scalar value as an array"));
+    };
+    let data = arr.make_mut();
+    let key = match &steps[0] {
+        PathStep::Key(k) => k.clone(),
+        PathStep::Append => ArrayKey::Int(data.next_int.unwrap_or(0)),
+    };
+    // Maintain the next-free-integer high-water mark for integer keys.
+    if let ArrayKey::Int(n) = &key {
+        let n = *n;
+        data.next_int = Some(match data.next_int {
+            None => n + 1,
+            Some(x) => x.max(n + 1),
+        });
+    }
+    if steps.len() == 1 {
+        data.entries.insert(key, value);
+    } else {
+        let child = data.entries.entry(key).or_insert(Value::Null);
+        assign_path(child, &steps[1..], value)?;
+    }
+    Ok(())
+}
+
+/// Remove the leaf element at `steps` (order-preserving; never lowers next_int).
+fn unset_path(slot: &mut Value, steps: &[PathStep]) {
+    let Value::Array(arr) = slot else { return };
+    let PathStep::Key(key) = &steps[0] else { return };
+    if steps.len() == 1 {
+        arr.make_mut().entries.shift_remove(key);
+    } else if let Some(child) = arr.make_mut().entries.get_mut(key) {
+        unset_path(child, &steps[1..]);
+    }
+}
+
+/// Apply a compound-assignment operator (`+=`, `.=`, `&=`, …) — not `=`/`??=`.
+fn apply_compound_op(
+    op: &AssignmentOperator,
+    cur: &Value,
+    rhs: &Value,
+) -> Result<Value, Thrown> {
+    Ok(match op {
+        AssignmentOperator::Addition(_) => ops::add(cur, rhs)?,
+        AssignmentOperator::Subtraction(_) => ops::sub(cur, rhs)?,
+        AssignmentOperator::Multiplication(_) => ops::mul(cur, rhs)?,
+        AssignmentOperator::Division(_) => ops::div(cur, rhs)?,
+        AssignmentOperator::Modulo(_) => ops::modulo(cur, rhs)?,
+        AssignmentOperator::Exponentiation(_) => ops::pow(cur, rhs)?,
+        AssignmentOperator::Concat(_) => ops::concat(cur, rhs),
+        AssignmentOperator::BitwiseAnd(_) => ops::bitwise(cur, rhs, ops::BitOp::And),
+        AssignmentOperator::BitwiseOr(_) => ops::bitwise(cur, rhs, ops::BitOp::Or),
+        AssignmentOperator::BitwiseXor(_) => ops::bitwise(cur, rhs, ops::BitOp::Xor),
+        AssignmentOperator::LeftShift(_) => ops::bitwise(cur, rhs, ops::BitOp::Shl),
+        AssignmentOperator::RightShift(_) => ops::bitwise(cur, rhs, ops::BitOp::Shr),
+        AssignmentOperator::Assign(_) | AssignmentOperator::Coalesce(_) => unreachable!(),
+    })
 }
 
 fn strip_dollar(name: &[u8]) -> &[u8] {
@@ -973,6 +1225,103 @@ mod tests {
         let mut interp = Interp::new();
         interp.run(parsed.program()).expect("run ok");
         String::from_utf8_lossy(interp.output()).into_owned()
+    }
+
+    // --- array access + foreach (ground truth from php 8.5.8) ---
+
+    #[test]
+    fn array_read() {
+        assert_eq!(
+            run_str(
+                r#"<?php $a=[10,20,30];$m=["x"=>1,"y"=>2];$n=[[1,2],[3,4]];
+                   echo $a[0],$a[2],$m["x"],$n[0][1],$n[1][0],($a[99]??"Z");"#
+            ),
+            "1030123Z"
+        );
+    }
+
+    #[test]
+    fn array_write() {
+        assert_eq!(
+            run_str(r#"<?php $a=[];$a[0]="z";$a[]="one";$a["k"]="v";$a[0]="Z";var_dump($a);"#),
+            "array(3) {\n  [0]=>\n  string(1) \"Z\"\n  [1]=>\n  string(3) \"one\"\n  [\"k\"]=>\n  string(1) \"v\"\n}\n"
+        );
+    }
+
+    #[test]
+    fn nested_autovivify() {
+        assert_eq!(
+            run_str(r#"<?php $g=[];$g[2][3]="deep";var_dump($g);"#),
+            "array(1) {\n  [2]=>\n  array(1) {\n    [3]=>\n    string(4) \"deep\"\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn element_compound_and_incdec() {
+        assert_eq!(
+            run_str(
+                r#"<?php $a=[10,20,30];$a[0]+=5;$a[1]*=2;$a[2]++;
+                   $c=[];$c["x"]=0;$c["x"]++;$c["x"]++;
+                   echo $a[0],",",$a[1],",",$a[2],",",$c["x"];"#
+            ),
+            "15,40,31,2"
+        );
+    }
+
+    #[test]
+    fn isset_empty_unset_dims() {
+        assert_eq!(
+            run_str(
+                r#"<?php $a=["x"=>1,"y"=>null,"z"=>0];
+                   var_dump(isset($a["x"]));var_dump(isset($a["y"]));var_dump(isset($a["q"]));
+                   var_dump(empty($a["z"]));var_dump(empty($a["x"]));"#
+            ),
+            "bool(true)\nbool(false)\nbool(false)\nbool(true)\nbool(false)\n"
+        );
+        assert_eq!(
+            run_str(r#"<?php $a=["x"=>1,"y"=>null,"z"=>0];unset($a["x"]);var_dump($a);"#),
+            "array(2) {\n  [\"y\"]=>\n  NULL\n  [\"z\"]=>\n  int(0)\n}\n"
+        );
+    }
+
+    #[test]
+    fn foreach_value_and_kv() {
+        assert_eq!(
+            run_str(
+                r#"<?php $a=[10,20,30];$s=0;foreach($a as $v){$s+=$v;}
+                   $m=["a"=>1,"b"=>2];$o="";foreach($m as $k=>$v){$o.="$k$v";}
+                   echo $s,"|",$o;"#
+            ),
+            "60|a1b2"
+        );
+    }
+
+    #[test]
+    fn foreach_nested_and_break() {
+        assert_eq!(
+            run_str(
+                r#"<?php $n=[[1,2],[3,4]];$o="";
+                   foreach($n as $row){foreach($row as $x){if($x==3)break 2;$o.=$x;}}
+                   echo $o;"#
+            ),
+            "12"
+        );
+    }
+
+    #[test]
+    fn string_index() {
+        assert_eq!(run_str(r#"<?php $s="hello";echo $s[0],$s[4],$s[-1],"|",strlen($s);"#), "hoo|5");
+    }
+
+    #[test]
+    fn append_highwater_after_unset() {
+        assert_eq!(
+            run_str(
+                r#"<?php $a=[0,1,2];unset($a[1]);$a[]=9;$o="";
+                   foreach($a as $k=>$v){$o.="$k:$v ";}echo $o;"#
+            ),
+            "0:0 2:2 3:9 "
+        );
     }
 
     #[test]

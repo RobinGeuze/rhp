@@ -81,6 +81,11 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "min"            => fn_min, 1, None;
             "array_sum"      => fn_array_sum, 1, Some(1);
             "array_product"  => fn_array_product, 1, Some(1);
+            "array_keys"     => fn_array_keys, 1, Some(1);
+            "array_values"   => fn_array_values, 1, Some(1);
+            "array_merge"    => fn_array_merge, 0, None;
+            "array_reverse"  => fn_array_reverse, 1, Some(2);
+            "range"          => fn_range, 2, Some(3);
             "in_array"       => fn_in_array, 2, Some(3);
             "array_key_exists" => fn_array_key_exists, 2, Some(2);
             "implode"        => fn_implode, 1, Some(2);
@@ -331,6 +336,91 @@ fn fn_array_product(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         acc = ops::mul(&acc, v)?;
     }
     Ok(acc)
+}
+
+fn fn_array_keys(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Value::Array(a) = deref(&args[0]) else {
+        return Err(Thrown::type_error("array_keys(): Argument #1 ($array) must be of type array"));
+    };
+    let mut out = PhpArray::new();
+    for (k, _) in a.iter() {
+        out.push(match k {
+            phrust_values::ArrayKey::Int(n) => Value::Int(*n),
+            phrust_values::ArrayKey::Str(s) => Value::Str(s.clone()),
+        });
+    }
+    Ok(Value::Array(out))
+}
+
+fn fn_array_values(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Value::Array(a) = deref(&args[0]) else {
+        return Err(Thrown::type_error("array_values(): Argument #1 ($array) must be of type array"));
+    };
+    let mut out = PhpArray::new();
+    for (_, v) in a.iter() {
+        out.push(v.clone());
+    }
+    Ok(Value::Array(out))
+}
+
+fn fn_array_merge(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let mut out = PhpArray::new();
+    for arg in args {
+        let Value::Array(a) = deref(arg) else {
+            return Err(Thrown::type_error("array_merge(): Arguments must be of type array"));
+        };
+        for (k, v) in a.iter() {
+            match k {
+                // integer keys are renumbered; string keys overwrite
+                phrust_values::ArrayKey::Int(_) => out.push(v.clone()),
+                phrust_values::ArrayKey::Str(_) => out.insert(k.clone(), v.clone()),
+            }
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+fn fn_array_reverse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Value::Array(a) = deref(&args[0]) else {
+        return Err(Thrown::type_error("array_reverse(): Argument #1 ($array) must be of type array"));
+    };
+    let preserve = args.get(1).map(conv::to_bool).unwrap_or(false);
+    let mut out = PhpArray::new();
+    let entries: Vec<_> = a.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    for (k, v) in entries.into_iter().rev() {
+        match k {
+            phrust_values::ArrayKey::Int(_) if !preserve => out.push(v),
+            _ => out.insert(k, v),
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+fn fn_range(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // Numeric ranges only (char ranges deferred).
+    let start = conv::to_number(&deref(&args[0])).0;
+    let end = conv::to_number(&deref(&args[1])).0;
+    let step = args.get(2).map(|v| conv::to_number(&deref(v)).0.as_f64().abs()).unwrap_or(1.0);
+    let step = if step == 0.0 { 1.0 } else { step };
+    let mut out = PhpArray::new();
+    let use_float = matches!(start, conv::Num::Float(_))
+        || matches!(end, conv::Num::Float(_))
+        || step.fract() != 0.0;
+    let (s, e) = (start.as_f64(), end.as_f64());
+    if s <= e {
+        let mut x = s;
+        while x <= e + 1e-9 {
+            out.push(if use_float { Value::Float(x) } else { Value::Int(x as i64) });
+            x += step;
+        }
+    } else {
+        let mut x = s;
+        while x >= e - 1e-9 {
+            out.push(if use_float { Value::Float(x) } else { Value::Int(x as i64) });
+            x -= step;
+        }
+    }
+    Ok(Value::Array(out))
 }
 
 fn fn_in_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

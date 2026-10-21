@@ -99,6 +99,24 @@ pub enum Instr {
     ArrSet { arr: Reg, key: Reg, val: Reg },
     ArrSpread { arr: Reg, src: Reg },
 
+    // -- array element read (value context): element or Null; string offset --
+    DimFetch { dst: Reg, arr: Reg, key: Reg },
+
+    // -- lvalue cursor: descend a root CV by keys/appends, then commit --
+    // Emitted contiguously (no interleaving); the VM holds the cursor between them.
+    LvalCv { cv: Reg },        // begin a cursor rooted at CV `cv`
+    LvalKey { key: Reg },      // descend into element `key` (autovivify on write)
+    LvalAppend,                // descend into a freshly appended element
+    FetchLvalRw { dst: Reg },  // read the current cursor location (null if absent), keep cursor open
+    AssignLval { src: Reg },   // write `src` at the cursor location (COW-bubbling), close cursor
+    UnsetLval,                 // remove the cursor's leaf key, close cursor
+    /// `++`/`--` on the cursor location (ref-correct inc_dec); dst = new/old. Closes cursor.
+    IncDecLval { dst: Reg, pre: bool, delta: i8 },
+
+    // -- foreach (by value): iterate a COW snapshot --
+    FeReset { arr_reg: Reg, pos_reg: Reg, src: Reg, end: Pc }, // snapshot src; pos=0; if not-array/empty -> jmp end
+    FeFetch { arr_reg: Reg, pos_reg: Reg, key_cv: Reg, val_cv: Reg, end: Pc }, // bind key?/value; pos++; if done jmp end
+
     // -- calls / return (phase 1 builtins; user functions later) --
     /// Resolve `name` (case-insensitive): refused → Unsupported; builtin →
     /// call with `regs[base..base+argc]`; user function (later) → push frame.

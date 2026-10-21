@@ -1,0 +1,12 @@
+bool(true)
+bool(false)
+bool(false)
+bool(true)
+bool(false)
+bool(false)
+array(2) {
+  ["y"]=>
+  NULL
+  ["z"]=>
+  int(0)
+}

@@ -18,6 +18,12 @@ use phrust_builtins::{self as builtins, Host};
 use phrust_semantics::{cast_to_array, inc_dec_value, ops};
 use phrust_values::{conv, ArrayKey, PhpArray, Thrown, Value};
 
+/// A pending lvalue step (an evaluated key, or an append).
+enum CursorStep {
+    Key(Value),
+    Append,
+}
+
 /// The virtual machine: output sink + call stack + global tables.
 pub struct Vm {
     out: Vec<u8>,
@@ -26,6 +32,10 @@ pub struct Vm {
     fn_names: HashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
     constants: HashMap<Vec<u8>, Value>,
     max_depth: usize,
+    // lvalue cursor: a root CV in the current frame + pending path steps. Cursor
+    // opcodes are emitted contiguously, so a single cursor never nests.
+    cursor_root: Reg,
+    cursor_steps: Vec<CursorStep>,
 }
 
 impl Host for Vm {
@@ -69,6 +79,8 @@ impl Vm {
             fn_names: HashMap::new(),
             constants,
             max_depth: 1 << 16,
+            cursor_root: 0,
+            cursor_steps: Vec::new(),
         }
     }
 
@@ -292,6 +304,82 @@ impl Vm {
                     }
                 }
 
+                // -- array element read --
+                Instr::DimFetch { dst, arr, key } => {
+                    let a = self.reg_get(top, arr);
+                    let k = self.reg_get(top, key);
+                    self.reg_set(top, dst, dim_fetch(&a, &k));
+                }
+
+                // -- lvalue cursor --
+                Instr::LvalCv { cv } => {
+                    self.cursor_root = cv;
+                    self.cursor_steps.clear();
+                }
+                Instr::LvalKey { key } => {
+                    let k = self.reg_get(top, key);
+                    self.cursor_steps.push(CursorStep::Key(k));
+                }
+                Instr::LvalAppend => self.cursor_steps.push(CursorStep::Append),
+                Instr::FetchLvalRw { dst } => {
+                    let root = self.cursor_root as usize;
+                    let v = read_path(&self.stack[top].regs[root], &self.cursor_steps);
+                    self.reg_set(top, dst, v); // cursor stays open for the AssignLval
+                }
+                Instr::AssignLval { src } => {
+                    let v = self.reg_get(top, src);
+                    let root = self.cursor_root as usize;
+                    let steps = std::mem::take(&mut self.cursor_steps);
+                    assign_path(&mut self.stack[top].regs[root], &steps, v)?;
+                }
+                Instr::UnsetLval => {
+                    let root = self.cursor_root as usize;
+                    let steps = std::mem::take(&mut self.cursor_steps);
+                    unset_path(&mut self.stack[top].regs[root], &steps);
+                }
+                Instr::IncDecLval { dst, pre, delta } => {
+                    let root = self.cursor_root as usize;
+                    let steps = std::mem::take(&mut self.cursor_steps);
+                    let old = read_path(&self.stack[top].regs[root], &steps);
+                    let new = inc_dec_value(&old, delta as i64);
+                    assign_path(&mut self.stack[top].regs[root], &steps, new.clone())?;
+                    self.reg_set(top, dst, if pre { new } else { old });
+                }
+
+                // -- foreach --
+                Instr::FeReset { arr_reg, pos_reg, src, end } => {
+                    match self.reg_get(top, src) {
+                        Value::Array(a) if !a.is_empty() => {
+                            self.reg_set(top, arr_reg, Value::Array(a));
+                            self.reg_set(top, pos_reg, Value::Int(0));
+                        }
+                        // empty array or non-array: skip the loop
+                        _ => self.stack[top].pc = end as usize,
+                    }
+                }
+                Instr::FeFetch { arr_reg, pos_reg, key_cv, val_cv, end } => {
+                    let pos = match self.reg_get(top, pos_reg) {
+                        Value::Int(n) => n as usize,
+                        _ => 0,
+                    };
+                    let snapshot = self.reg_get(top, arr_reg);
+                    let Value::Array(a) = snapshot else {
+                        self.stack[top].pc = end as usize;
+                        continue;
+                    };
+                    match a.get_index(pos) {
+                        Some((k, v)) => {
+                            let (k, v) = (k.clone(), v.clone());
+                            self.reg_set(top, val_cv, v);
+                            if key_cv != Reg::MAX {
+                                self.reg_set(top, key_cv, array_key_to_value(&k));
+                            }
+                            self.reg_set(top, pos_reg, Value::Int((pos + 1) as i64));
+                        }
+                        None => self.stack[top].pc = end as usize,
+                    }
+                }
+
                 Instr::ThrowMatchError { subject } => {
                     let v = self.reg_get(top, subject);
                     return Err(Thrown::error(
@@ -438,6 +526,109 @@ fn match_case_desc(v: &Value) -> String {
         Value::Float(_) => "of type double".to_string(),
         Value::Null => "NULL".to_string(),
         other => format!("of type {}", other.type_name()),
+    }
+}
+
+// --- array element read + lvalue path operations ---------------------------
+
+fn deref(v: &Value) -> Value {
+    match v {
+        Value::Ref(r) => r.borrow().clone(),
+        other => other.clone(),
+    }
+}
+
+/// `$container[$key]` read: array element (Null if absent) or string byte.
+fn dim_fetch(container: &Value, key: &Value) -> Value {
+    match deref(container) {
+        Value::Array(a) => match ArrayKey::from_value(key) {
+            Some(k) => a.get(&k).cloned().unwrap_or(Value::Null),
+            None => Value::Null,
+        },
+        Value::Str(s) => {
+            let bytes = s.as_bytes();
+            let len = bytes.len() as i64;
+            let idx = conv::to_int(key);
+            let i = if idx < 0 { len + idx } else { idx };
+            if i >= 0 && i < len {
+                Value::str(vec![bytes[i as usize]])
+            } else {
+                Value::str("")
+            }
+        }
+        _ => Value::Null,
+    }
+}
+
+/// Read the value at a cursor path (Null if any step is absent); non-mutating.
+fn read_path(slot: &Value, steps: &[CursorStep]) -> Value {
+    if let Value::Ref(r) = slot {
+        return read_path(&r.borrow(), steps);
+    }
+    let Some((head, rest)) = steps.split_first() else {
+        return slot.clone();
+    };
+    match (slot, head) {
+        (Value::Array(a), CursorStep::Key(k)) => match ArrayKey::from_value(k) {
+            Some(key) => a.get(&key).map(|c| read_path(c, rest)).unwrap_or(Value::Null),
+            None => Value::Null,
+        },
+        _ => Value::Null,
+    }
+}
+
+/// Make `slot` an array (autovivifying null/"" ), or error on a non-empty scalar.
+fn autovivify(slot: &mut Value) -> Result<(), Thrown> {
+    match slot {
+        Value::Array(_) => Ok(()),
+        Value::Null => {
+            *slot = Value::Array(PhpArray::new());
+            Ok(())
+        }
+        Value::Str(s) if s.is_empty() => {
+            *slot = Value::Array(PhpArray::new());
+            Ok(())
+        }
+        _ => Err(Thrown::type_error("Cannot use a scalar value as an array")),
+    }
+}
+
+/// Write `value` at a cursor path, autovivifying + COW-bubbling along the way.
+fn assign_path(slot: &mut Value, steps: &[CursorStep], value: Value) -> Result<(), Thrown> {
+    let Some((head, rest)) = steps.split_first() else {
+        *slot = value;
+        return Ok(());
+    };
+    autovivify(slot)?;
+    let Value::Array(arr) = slot else { unreachable!("autovivify ensures array") };
+    let child = match head {
+        CursorStep::Key(k) => {
+            let key = ArrayKey::from_value(k)
+                .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
+            arr.get_or_insert_mut(key)
+        }
+        CursorStep::Append => arr.append_mut(),
+    };
+    assign_path(child, rest, value)
+}
+
+/// Remove the leaf key of a cursor path (COW), descending to the parent first.
+fn unset_path(slot: &mut Value, steps: &[CursorStep]) {
+    let Some((head, rest)) = steps.split_first() else { return };
+    let Value::Array(arr) = slot else { return };
+    let CursorStep::Key(k) = head else { return };
+    let Some(key) = ArrayKey::from_value(k) else { return };
+    if rest.is_empty() {
+        arr.remove(&key);
+    } else if let Some(child) = arr.get_mut(&key) {
+        unset_path(child, rest);
+    }
+}
+
+fn array_key_to_value(k: &ArrayKey) -> Value {
+    match k {
+        ArrayKey::Int(n) => Value::Int(*n),
+        ArrayKey::Str(s) => Value::Str(s.clone()),
     }
 }
 

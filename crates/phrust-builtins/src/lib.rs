@@ -15,6 +15,11 @@ pub use phrust_values::Thrown;
 
 pub mod dump;
 
+mod arr_fns;
+mod math_fns;
+mod misc_fns;
+mod str_fns;
+
 /// The interpreter surface a builtin may use. Implemented by the VM and the oracle.
 pub trait Host {
     /// Append bytes to the single output sink (stdout / output buffer).
@@ -48,7 +53,7 @@ macro_rules! builtins {
 pub fn registry() -> &'static HashMap<&'static str, Builtin> {
     static REG: OnceLock<HashMap<&'static str, Builtin>> = OnceLock::new();
     REG.get_or_init(|| {
-        builtins! {
+        let mut m = builtins! {
             "var_dump"       => fn_var_dump, 1, None;
             "print_r"        => fn_print_r, 1, Some(2);
             "var_export"     => fn_var_export, 1, Some(2);
@@ -96,7 +101,13 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "str_contains"   => fn_str_contains, 2, Some(2);
             "ord"            => fn_ord, 1, Some(1);
             "chr"            => fn_chr, 1, Some(1);
-        }
+        };
+        // Builtin modules produced by the stdlib workflow (each verified vs php).
+        str_fns::register(&mut m);
+        math_fns::register(&mut m);
+        arr_fns::register(&mut m);
+        misc_fns::register(&mut m);
+        m
     })
 }
 
@@ -128,6 +139,13 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("E_NOTICE", Value::Int(8)),
         ("COUNT_NORMAL", Value::Int(0)),
         ("COUNT_RECURSIVE", Value::Int(1)),
+        ("STR_PAD_RIGHT", Value::Int(1)),
+        ("STR_PAD_LEFT", Value::Int(0)),
+        ("STR_PAD_BOTH", Value::Int(2)),
+        ("M_PI", Value::Float(std::f64::consts::PI)),
+        ("M_E", Value::Float(std::f64::consts::E)),
+        ("M_SQRT2", Value::Float(std::f64::consts::SQRT_2)),
+        ("PHP_FLOAT_DIG", Value::Int(15)),
     ]
 }
 

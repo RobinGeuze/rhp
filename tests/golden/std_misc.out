@@ -1,0 +1,11 @@
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+[1,2,3]
+{"name":"Bob","age":30,"active":true}
+{"nested":[1,2],"null":null,"f":3.14}
+"he said \"hi\"\n"
+bool(true)
+bool(false)

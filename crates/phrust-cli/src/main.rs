@@ -60,6 +60,11 @@ fn fatal(t: Thrown) -> ExitCode {
             eprintln!("PHP Fatal error:  Uncaught {class}: {message}");
             ExitCode::from(255)
         }
+        Thrown::Object(_) => {
+            // Uncaught user exception (details rendered to stderr only).
+            eprintln!("PHP Fatal error:  Uncaught exception");
+            ExitCode::from(255)
+        }
         Thrown::Unsupported { feature, reason } => {
             eprintln!("PHRUST_UNSUPPORTED: {feature} is not supported ({reason})");
             ExitCode::from(255)

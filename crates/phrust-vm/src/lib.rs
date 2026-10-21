@@ -61,6 +61,15 @@ impl Host for Vm {
     fn write_out(&mut self, bytes: &[u8]) {
         self.out.extend_from_slice(bytes);
     }
+
+    fn class_name(&self, class_id: u32) -> Option<Vec<u8>> {
+        self.classes.get(class_id as usize).map(|c| c.name.as_bytes().to_vec())
+    }
+
+    fn class_parent_name(&self, class_id: u32) -> Option<Vec<u8>> {
+        let parent = self.classes.get(class_id as usize)?.parent?;
+        Some(self.classes[parent as usize].name.as_bytes().to_vec())
+    }
 }
 
 /// One activation record.
@@ -74,12 +83,30 @@ struct Frame {
     defining_class: Option<ClassId>,
     /// The late-static-binding class (`static::`); None outside methods.
     called_class: Option<ClassId>,
+    /// What a `finally` block must do when it finishes (set by the unwinder).
+    pending: Option<FinallyCont>,
+}
+
+/// What to do after a `finally` block completes.
+enum FinallyCont {
+    /// An exception was in flight (no catch matched); re-raise after finally.
+    Rethrow(Thrown),
+    /// A `return` crossed out of the try/catch; complete it after finally.
+    Return(Value),
 }
 
 impl Frame {
     fn new(proto: Rc<FunctionProto>, ret_dst: Reg) -> Self {
         let regs = vec![Value::Null; proto.num_registers as usize];
-        Frame { proto, regs, pc: 0, ret_dst, defining_class: None, called_class: None }
+        Frame {
+            proto,
+            regs,
+            pc: 0,
+            ret_dst,
+            defining_class: None,
+            called_class: None,
+            pending: None,
+        }
     }
 }
 
@@ -218,7 +245,26 @@ impl Vm {
         }
     }
 
+    /// Drive execution, catching thrown exceptions and routing them through the
+    /// exception table (per-frame handlers / finally), unwinding frames until a
+    /// handler is found or the program's top frame is reached.
     fn run_loop(&mut self) -> Result<Value, Thrown> {
+        loop {
+            match self.run_frames() {
+                Ok(v) => return Ok(v),
+                Err(thrown) => {
+                    if !thrown.is_catchable() {
+                        self.stack.clear();
+                        return Err(thrown); // Exit / Unsupported: straight to the SAPI
+                    }
+                    // unwind: Ok => a handler was installed, re-enter; Err => uncaught
+                    self.unwind(thrown)?;
+                }
+            }
+        }
+    }
+
+    fn run_frames(&mut self) -> Result<Value, Thrown> {
         loop {
             let top = self.stack.len() - 1;
             let proto = self.stack[top].proto.clone();
@@ -491,6 +537,38 @@ impl Vm {
                         format!("Unhandled match case {}", match_case_desc(&v)),
                     ));
                 }
+                Instr::Throw { src } => {
+                    let v = self.reg_get(top, src);
+                    match v {
+                        Value::Object(h) => {
+                            let cls = h.borrow().class;
+                            let is_throwable = self
+                                .resolve_class_by_name(b"Throwable")
+                                .map(|t| self.class(cls).ancestors.contains(&t))
+                                .unwrap_or(false);
+                            if is_throwable {
+                                return Err(Thrown::Object(h));
+                            }
+                            return Err(Thrown::type_error(
+                                "Can only throw objects that implement Throwable",
+                            ));
+                        }
+                        _ => return Err(Thrown::type_error("Can only throw objects")),
+                    }
+                }
+                Instr::FinallyEnd => match self.stack[top].pending.take() {
+                    Some(FinallyCont::Rethrow(t)) => return Err(t),
+                    Some(FinallyCont::Return(v)) => {
+                        if let Some(done) = self.do_return(v) {
+                            return Ok(done);
+                        }
+                    }
+                    None => {}
+                },
+                Instr::SetPendingRet { src } => {
+                    let v = self.reg_get(top, src);
+                    self.stack[top].pending = Some(FinallyCont::Return(v));
+                }
 
                 // -- OOP --
                 Instr::New { dst, class, base, argc, .. } => {
@@ -715,6 +793,76 @@ impl Vm {
                     }
                 }
             }
+        }
+    }
+
+    /// Unwind a thrown exception through the exception table: find a matching
+    /// catch (bind + jump) or finally (re-raise after) in the current frame,
+    /// else pop and continue in the caller. Returns `Ok` when a handler is
+    /// installed (re-enter `run_frames`), `Err` when it escapes the top frame.
+    fn unwind(&mut self, thrown: Thrown) -> Result<(), Thrown> {
+        loop {
+            let Some(top) = self.stack.len().checked_sub(1) else {
+                return Err(thrown); // escaped {main} — uncaught
+            };
+            let proto = self.stack[top].proto.clone();
+            // The throwing pc has already been advanced past the faulting instr.
+            let throw_pc = (self.stack[top].pc as u32).saturating_sub(1);
+            if let Some(region) =
+                proto.exception_table.iter().find(|r| throw_pc >= r.start && throw_pc < r.end)
+            {
+                let region = region.clone();
+                if let Some(cls) = self.thrown_class_id(&thrown) {
+                    for arm in &region.catches {
+                        if arm.classes.iter().any(|cn| self.class_matches(cls, cn.as_bytes())) {
+                            let obj = self.thrown_to_object(&thrown)?;
+                            if let Some(vr) = arm.var_reg {
+                                self.stack[top].regs[vr as usize] = obj;
+                            }
+                            self.stack[top].pc = arm.target as usize;
+                            return Ok(());
+                        }
+                    }
+                }
+                if let Some(fin) = region.finally {
+                    self.stack[top].pending = Some(FinallyCont::Rethrow(thrown));
+                    self.stack[top].pc = fin as usize;
+                    return Ok(());
+                }
+            }
+            self.stack.pop();
+        }
+    }
+
+    fn thrown_class_id(&self, thrown: &Thrown) -> Option<ClassId> {
+        match thrown {
+            Thrown::Object(h) => Some(h.borrow().class),
+            Thrown::Error { class, .. } => self.resolve_class_by_name(class.as_bytes()).ok(),
+            _ => None,
+        }
+    }
+
+    fn class_matches(&self, cls: ClassId, catch_name: &[u8]) -> bool {
+        match self.resolve_class_by_name(catch_name) {
+            Ok(target) => self.class(cls).ancestors.contains(&target),
+            Err(_) => false,
+        }
+    }
+
+    /// Materialize the thrown value as a `Throwable` object (instantiating the
+    /// named class for an engine `Error`).
+    fn thrown_to_object(&mut self, thrown: &Thrown) -> Result<Value, Thrown> {
+        match thrown {
+            Thrown::Object(h) => Ok(Value::Object(h.clone())),
+            Thrown::Error { class, message } => {
+                let cls = self.resolve_class_by_name(class.as_bytes())?;
+                let obj = self.new_object(cls);
+                obj.borrow_mut()
+                    .properties
+                    .insert(phrust_values::PhpStr::from("message"), Value::str(message.clone()));
+                Ok(Value::Object(obj))
+            }
+            _ => Err(thrown.clone()),
         }
     }
 

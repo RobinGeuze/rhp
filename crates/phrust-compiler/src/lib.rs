@@ -19,7 +19,7 @@ use phrust_bytecode::{
 use phrust_frontend::cst::{
     Access, Argument, ArrayElement, AssignmentOperator, BinaryOperator, Class, ClassLikeMember,
     ClassLikeMemberSelector, CompositeString, Construct, Expression, ForBody, ForeachBody,
-    ForeachTarget, Identifier, IfBody, Literal, Match, MatchArm, MethodBody, Modifier,
+    ForeachTarget, Hint, Identifier, IfBody, Literal, Match, MatchArm, MethodBody, Modifier,
     Program as AstProgram, Property, PropertyItem, Statement, StringPart, SwitchBody, SwitchCase,
     UnaryPrefixOperator, Variable, WhileBody,
 };
@@ -54,15 +54,17 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
     }
     let sigs = Rc::new(sigs);
 
-    // Hoist top-level function + class declarations.
+    // Hoist top-level function + class declarations. Start the class list with
+    // the built-in exception hierarchy (the "prelude").
     let mut functions = Vec::new();
-    let mut classes = Vec::new();
+    let mut classes = prelude_classes()?;
     for stmt in program.statements.iter() {
         match stmt {
             Statement::Function(func) => {
                 functions.push(Rc::new(compile_function(func, sigs.clone())?));
             }
             Statement::Class(class) => classes.push(compile_class(class, &sigs)?),
+            Statement::Interface(iface) => classes.push(compile_interface(iface)?),
             _ => {}
         }
     }
@@ -194,6 +196,107 @@ fn compile_class(
         methods,
         props,
         static_props,
+        constants,
+    })
+}
+
+/// The built-in exception/throwable class hierarchy, as PHP source. Compiled
+/// and prepended to every program so `throw`/`catch` and engine errors work.
+const PRELUDE: &str = r#"<?php
+interface Throwable {}
+interface Stringable {}
+class Exception implements Throwable {
+    protected $message = "";
+    protected $code = 0;
+    public function __construct($message = "", $code = 0, $previous = null) {
+        $this->message = $message;
+        $this->code = $code;
+    }
+    public function getMessage() { return $this->message; }
+    public function getCode() { return $this->code; }
+    public function getPrevious() { return null; }
+}
+class Error implements Throwable {
+    protected $message = "";
+    protected $code = 0;
+    public function __construct($message = "", $code = 0, $previous = null) {
+        $this->message = $message;
+        $this->code = $code;
+    }
+    public function getMessage() { return $this->message; }
+    public function getCode() { return $this->code; }
+    public function getPrevious() { return null; }
+}
+class ErrorException extends Exception {}
+class TypeError extends Error {}
+class ValueError extends Error {}
+class ArithmeticError extends Error {}
+class DivisionByZeroError extends ArithmeticError {}
+class ArgumentCountError extends TypeError {}
+class UnhandledMatchError extends Error {}
+class AssertionError extends Error {}
+class LogicException extends Exception {}
+class InvalidArgumentException extends LogicException {}
+class LengthException extends LogicException {}
+class DomainException extends LogicException {}
+class RuntimeException extends Exception {}
+class OutOfBoundsException extends RuntimeException {}
+class OutOfRangeException extends LogicException {}
+class RangeException extends RuntimeException {}
+class OverflowException extends RuntimeException {}
+class UnderflowException extends RuntimeException {}
+class UnexpectedValueException extends RuntimeException {}
+class JsonException extends Exception {}
+"#;
+
+fn prelude_classes() -> Result<Vec<ClassProto>, Thrown> {
+    let arena = phrust_frontend::Arena::new();
+    let parsed = arena.parse(b"<prelude>", PRELUDE.as_bytes());
+    let sigs = Rc::new(std::collections::HashMap::new());
+    let mut out = Vec::new();
+    for stmt in parsed.program().statements.iter() {
+        match stmt {
+            Statement::Class(c) => out.push(compile_class(c, &sigs)?),
+            Statement::Interface(i) => out.push(compile_interface(i)?),
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+fn compile_interface(
+    iface: &phrust_frontend::cst::Interface,
+) -> Result<ClassProto, Thrown> {
+    let name = PhpStr::from_bytes(iface.name.value.to_vec());
+    let interfaces: Vec<PhpStr> = iface
+        .extends
+        .as_ref()
+        .map(|e| e.types.iter().map(|id| PhpStr::from_bytes(identifier_name(id).to_vec())).collect())
+        .unwrap_or_default();
+    let mut constants = Vec::new();
+    for member in iface.members.iter() {
+        if let ClassLikeMember::Constant(c) = member {
+            let visibility = modifiers_visibility(&c.modifiers);
+            for item in c.items.iter() {
+                constants.push(ConstProto {
+                    name: PhpStr::from_bytes(item.name.value.to_vec()),
+                    visibility,
+                    value: ConstInitProto::Const(const_value_static(item.value)?),
+                });
+            }
+        }
+        // Interface method signatures / properties contribute no runtime members.
+    }
+    Ok(ClassProto {
+        name,
+        kind: ClassKind::Interface,
+        flags: ClassFlags::default(),
+        parent: None,
+        interfaces,
+        traits: Vec::new(),
+        methods: Vec::new(),
+        props: Vec::new(),
+        static_props: Vec::new(),
         constants,
     })
 }
@@ -343,6 +446,10 @@ struct ProtoBuilder {
     names: Vec<PhpStr>,
     cv_map: Vec<Vec<u8>>, // index = Reg, value = variable name bytes
     caches: Vec<phrust_bytecode::InlineCache>,
+    exception_table: Vec<phrust_bytecode::ExRegion>,
+    /// Per enclosing try-with-finally: positions of pending-return jump
+    /// placeholders to patch to the finally entry.
+    finally_rets: Vec<Vec<usize>>,
     num_cvs: u16,
     next_temp: Reg,
     high_water: Reg,
@@ -372,6 +479,8 @@ impl ProtoBuilder {
             names: Vec::new(),
             cv_map: Vec::new(),
             caches: Vec::new(),
+            exception_table: Vec::new(),
+            finally_rets: Vec::new(),
             num_cvs: 0,
             next_temp: 0,
             high_water: 0,
@@ -389,6 +498,7 @@ impl ProtoBuilder {
         proto.consts = self.consts;
         proto.names = self.names;
         proto.caches = self.caches;
+        proto.exception_table = self.exception_table;
         proto.debug.cv_names = (0..self.cv_map.len() as u32).collect();
         proto
     }
@@ -608,6 +718,18 @@ impl ProtoBuilder {
                 }
             }
             Statement::Unset(u) => u.values.iter().for_each(|v| self.scan_expr_vars(v)),
+            Statement::Try(t) => {
+                t.block.statements.iter().for_each(|s| self.scan_stmt_vars(s));
+                for clause in t.catch_clauses.iter() {
+                    if let Some(v) = &clause.variable {
+                        self.cv(strip_dollar(v.name));
+                    }
+                    clause.block.statements.iter().for_each(|s| self.scan_stmt_vars(s));
+                }
+                if let Some(fin) = &t.finally_clause {
+                    fin.block.statements.iter().for_each(|s| self.scan_stmt_vars(s));
+                }
+            }
             _ => {}
         }
     }
@@ -684,6 +806,7 @@ impl ProtoBuilder {
                 Access::ClassConstant(cca) => self.scan_expr_vars(cca.class),
             },
             Expression::Clone(cl) => self.scan_expr_vars(cl.object),
+            Expression::Throw(t) => self.scan_expr_vars(t.exception),
             Expression::Construct(c) => self.scan_construct_vars(c),
             Expression::Call(call) => {
                 use phrust_frontend::cst::Call;
@@ -771,23 +894,43 @@ impl ProtoBuilder {
                 }
             }
             Statement::HaltCompiler(_) => self.emit(Instr::Halt),
-            // Top-level function + class declarations are hoisted separately.
+            // Top-level function + class/interface declarations are hoisted.
             Statement::Function(_) => {}
             Statement::Class(_) => {}
+            Statement::Interface(_) => {}
             Statement::If(i) => self.compile_if(i)?,
             Statement::While(w) => self.compile_while(w)?,
             Statement::DoWhile(d) => self.compile_do_while(d)?,
             Statement::For(f) => self.compile_for(f)?,
             Statement::Switch(s) => self.compile_switch(s)?,
             Statement::Foreach(fe) => self.compile_foreach(fe)?,
+            Statement::Try(t) => self.compile_try(t)?,
             Statement::Unset(u) => self.compile_unset(u)?,
-            Statement::Return(r) => match r.value {
-                Some(e) => {
-                    let src = self.compile_expr(e)?;
-                    self.emit(Instr::Ret { src });
+            Statement::Return(r) => {
+                if self.finally_rets.is_empty() {
+                    match r.value {
+                        Some(e) => {
+                            let src = self.compile_expr(e)?;
+                            self.emit(Instr::Ret { src });
+                        }
+                        None => self.emit(Instr::RetNull),
+                    }
+                } else {
+                    // Route the return through the innermost enclosing finally.
+                    let src = match r.value {
+                        Some(e) => self.compile_expr(e)?,
+                        None => {
+                            let t = self.alloc_temp();
+                            self.emit(Instr::LoadNull { dst: t });
+                            t
+                        }
+                    };
+                    self.emit(Instr::SetPendingRet { src });
+                    let pos = self.code.len();
+                    self.emit(Instr::Nop); // Jmp -> finally (patched)
+                    self.finally_rets.last_mut().unwrap().push(pos);
                 }
-                None => self.emit(Instr::RetNull),
-            },
+            }
             Statement::Break(b) => self.compile_break_continue(b.level, true)?,
             Statement::Continue(c) => self.compile_break_continue(c.level, false)?,
             other => {
@@ -1069,6 +1212,66 @@ impl ProtoBuilder {
         Ok(())
     }
 
+    fn compile_try(&mut self, t: &phrust_frontend::cst::Try) -> Result<(), Thrown> {
+        use phrust_bytecode::{CatchArm, ExRegion};
+        let has_finally = t.finally_clause.is_some();
+        if has_finally {
+            self.finally_rets.push(Vec::new());
+        }
+        let try_start = self.here();
+        self.compile_stmts(t.block.statements.iter())?;
+        let try_end = self.here();
+        // Normal completion jumps past the catch bodies to finally/after.
+        let norm_jmp = self.code.len();
+        self.emit(Instr::Nop);
+
+        let mut catch_arms = Vec::new();
+        let mut end_jumps = vec![norm_jmp];
+        for clause in t.catch_clauses.iter() {
+            let target = self.here();
+            let classes = hint_class_names(&clause.hint)?;
+            let var_reg = clause.variable.as_ref().map(|v| self.cv(strip_dollar(v.name)));
+            self.compile_stmts(clause.block.statements.iter())?;
+            let j = self.code.len();
+            self.emit(Instr::Nop);
+            end_jumps.push(j);
+            catch_arms.push(CatchArm {
+                classes,
+                var_reg,
+                target,
+            });
+        }
+
+        let finally_pc = if let Some(fin) = &t.finally_clause {
+            // Stop routing returns into THIS finally while compiling its body.
+            let pending_rets = self.finally_rets.pop().unwrap();
+            let fpc = self.here();
+            self.compile_stmts(fin.block.statements.iter())?;
+            self.emit(Instr::FinallyEnd);
+            // Patch `return`s that crossed out of try/catch to enter the finally.
+            for pos in pending_rets {
+                self.code[pos] = Instr::Jmp { target: fpc };
+            }
+            Some(fpc)
+        } else {
+            None
+        };
+
+        let after = self.here();
+        let norm_target = finally_pc.unwrap_or(after);
+        for j in end_jumps {
+            self.patch_jmp(j, norm_target);
+        }
+
+        self.exception_table.push(ExRegion {
+            start: try_start,
+            end: try_end,
+            catches: catch_arms,
+            finally: finally_pc,
+        });
+        Ok(())
+    }
+
     fn compile_break_continue(
         &mut self,
         level: Option<&Expression>,
@@ -1198,6 +1401,13 @@ impl ProtoBuilder {
                 let src = self.compile_expr(cl.object)?;
                 let dst = self.alloc_temp();
                 self.emit(Instr::CloneObj { dst, src });
+                Ok(dst)
+            }
+            Expression::Throw(t) => {
+                let src = self.compile_expr(t.exception)?;
+                self.emit(Instr::Throw { src });
+                // `throw` never returns; the dst is unreachable.
+                let dst = self.alloc_temp();
                 Ok(dst)
             }
             Expression::Construct(c) => self.compile_construct(c),
@@ -2050,6 +2260,27 @@ fn fold_const_array<'a>(
         }
     }
     Ok(Value::Array(a))
+}
+
+/// Extract the class name(s) a `catch` clause's type hint names (`A` or `A|B`).
+fn hint_class_names(hint: &Hint) -> Result<Vec<PhpStr>, Thrown> {
+    fn collect(hint: &Hint, out: &mut Vec<PhpStr>) -> Result<(), Thrown> {
+        match hint {
+            Hint::Identifier(id) => {
+                out.push(PhpStr::from_bytes(identifier_name(id).to_vec()));
+                Ok(())
+            }
+            Hint::Union(u) => {
+                collect(u.left, out)?;
+                collect(u.right, out)
+            }
+            Hint::Parenthesized(p) => collect(p.hint, out),
+            _ => Err(Thrown::unsupported("catch type", "only class-name catch types")),
+        }
+    }
+    let mut out = Vec::new();
+    collect(hint, &mut out)?;
+    Ok(out)
 }
 
 fn non_const_err() -> Thrown {

@@ -24,6 +24,16 @@ mod str_fns;
 pub trait Host {
     /// Append bytes to the single output sink (stdout / output buffer).
     fn write_out(&mut self, bytes: &[u8]);
+
+    /// A class's name by id (for `get_class` etc.). Default: not available.
+    fn class_name(&self, _class_id: u32) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// A class's parent's name by id (for `get_parent_class`). Default: none.
+    fn class_parent_name(&self, _class_id: u32) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// A native builtin function over owned values.
@@ -101,6 +111,9 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "str_contains"   => fn_str_contains, 2, Some(2);
             "ord"            => fn_ord, 1, Some(1);
             "chr"            => fn_chr, 1, Some(1);
+            "get_class"      => fn_get_class, 1, Some(1);
+            "get_parent_class" => fn_get_parent_class, 0, Some(1);
+            "get_object_vars" => fn_get_object_vars, 1, Some(1);
         };
         // Builtin modules produced by the stdlib workflow (each verified vs php).
         str_fns::register(&mut m);
@@ -523,6 +536,39 @@ fn fn_str_contains(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let haystack = conv::to_string_bytes(&deref(&args[0]));
     let needle = conv::to_string_bytes(&deref(&args[1]));
     Ok(Value::Bool(needle.is_empty() || find_sub(&haystack, &needle).is_some()))
+}
+
+fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match deref(&args[0]) {
+        Value::Object(h) => {
+            let cid = h.borrow().class;
+            Ok(host.class_name(cid).map(Value::str).unwrap_or(Value::Bool(false)))
+        }
+        _ => Err(Thrown::type_error("get_class(): Argument #1 ($object) must be of type object")),
+    }
+}
+
+fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match args.first().map(deref) {
+        Some(Value::Object(h)) => {
+            let cid = h.borrow().class;
+            Ok(host.class_parent_name(cid).map(Value::str).unwrap_or(Value::Bool(false)))
+        }
+        _ => Ok(Value::Bool(false)),
+    }
+}
+
+fn fn_get_object_vars(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match deref(&args[0]) {
+        Value::Object(h) => {
+            let mut arr = PhpArray::new();
+            for (k, v) in h.borrow().properties.iter() {
+                arr.insert(phrust_values::ArrayKey::Str(k.clone()), v.clone());
+            }
+            Ok(Value::Array(arr))
+        }
+        _ => Err(Thrown::type_error("get_object_vars(): Argument #1 must be of type object")),
+    }
 }
 
 fn fn_ord(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

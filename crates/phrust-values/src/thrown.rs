@@ -4,10 +4,13 @@
 
 /// Unwinds the interpreter: a real PHP `Throwable`, an engine refusal for an
 /// unsupported high-risk feature, or `exit`/`die`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Thrown {
-    /// A real PHP error/exception (caught by `try/catch` from phase 5 on).
+    /// An engine-raised error named by class + message (instantiated into a real
+    /// Throwable object lazily when caught). Catchable.
     Error { class: &'static str, message: String },
+    /// A user-thrown `Throwable` object (`throw $e`). Catchable.
+    Object(crate::ObjectHandle),
     /// A deliberately-unsupported feature (eval/extract/…). Rendered with the
     /// `PHRUST_UNSUPPORTED` marker, distinct from PHP's "undefined function",
     /// and never swallowable by a user `try/catch`.
@@ -15,6 +18,21 @@ pub enum Thrown {
     /// `exit` / `die`: not an error — unwinds to the SAPI, which exits with this
     /// code. Any already-written output is kept.
     Exit(i32),
+}
+
+impl std::fmt::Debug for Thrown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Thrown::Error { class, message } => {
+                write!(f, "Error {{ class: {class:?}, message: {message:?} }}")
+            }
+            Thrown::Object(o) => write!(f, "Object(class #{})", o.borrow().class),
+            Thrown::Unsupported { feature, reason } => {
+                write!(f, "Unsupported {{ feature: {feature:?}, reason: {reason:?} }}")
+            }
+            Thrown::Exit(c) => write!(f, "Exit({c})"),
+        }
+    }
 }
 
 impl Thrown {
@@ -28,9 +46,9 @@ impl Thrown {
         Thrown::Unsupported { feature: feature.into(), reason }
     }
 
-    /// Catchable by a PHP `try/catch`? Only real `Error`s are; refusals and
-    /// `exit` unwind straight to the SAPI.
+    /// Catchable by a PHP `try/catch`? Real errors and thrown objects are;
+    /// refusals and `exit` unwind straight to the SAPI.
     pub fn is_catchable(&self) -> bool {
-        matches!(self, Thrown::Error { .. })
+        matches!(self, Thrown::Error { .. } | Thrown::Object(_))
     }
 }

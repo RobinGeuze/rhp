@@ -1,0 +1,7 @@
+caught at top: deep error
+is runtime: yes
+is exception: yes
+class: MyException
+finally ran
+from try
+final: wrapped: original

@@ -126,6 +126,14 @@ pub enum Instr {
 
     /// `match` with no matching arm and no default: throw `\UnhandledMatchError`.
     ThrowMatchError { subject: Reg },
+    /// `throw $e`: begin unwinding with the Throwable in `src`.
+    Throw { src: Reg },
+    /// End of a `finally` block: perform the pending continuation (re-raise a
+    /// pending exception, perform a pending return, or fall through).
+    FinallyEnd,
+    /// A `return` that must cross a `finally`: stash the value as a pending
+    /// return, then `Jmp` to the finally block.
+    SetPendingRet { src: Reg },
 
     // -- OOP (phase 7) --
     /// `new C(args)`: allocate into `dst`, then run `__construct` via the window.

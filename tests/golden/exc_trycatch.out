@@ -1,0 +1,10 @@
+result: 20
+  (done 5)
+result: invalid: negative: -1
+  (done -1)
+result: divzero: zero
+  (done 0)
+result: 25
+  (done 4)
+caught engine error: DivisionByZeroError
+after

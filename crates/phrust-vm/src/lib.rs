@@ -85,6 +85,16 @@ struct Frame {
     called_class: Option<ClassId>,
     /// What a `finally` block must do when it finishes (set by the unwinder).
     pending: Option<FinallyCont>,
+    /// A synchronous (re-entrant) call: when this frame returns, `do_return`
+    /// hands the value back to the Rust caller instead of delivering to a reg.
+    capture: bool,
+}
+
+/// Result of unwinding: a handler was installed, or the exception escaped the
+/// current (sub)run and should propagate to the Rust caller.
+enum UnwindResult {
+    Caught,
+    Escaped(Thrown),
 }
 
 /// What to do after a `finally` block completes.
@@ -106,6 +116,7 @@ impl Frame {
             defining_class: None,
             called_class: None,
             pending: None,
+            capture: false,
         }
     }
 }
@@ -257,8 +268,10 @@ impl Vm {
                         self.stack.clear();
                         return Err(thrown); // Exit / Unsupported: straight to the SAPI
                     }
-                    // unwind: Ok => a handler was installed, re-enter; Err => uncaught
-                    self.unwind(thrown)?;
+                    match self.unwind(thrown, 0)? {
+                        UnwindResult::Caught => {} // handler installed; re-enter
+                        UnwindResult::Escaped(t) => return Err(t), // uncaught
+                    }
                 }
             }
         }
@@ -309,7 +322,17 @@ impl Vm {
                 Instr::BitXor { dst, a, b } => self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Xor)),
                 Instr::Shl { dst, a, b } => self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Shl)),
                 Instr::Shr { dst, a, b } => self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Shr)),
-                Instr::Concat { dst, a, b } => self.bin_inf(top, dst, a, b, ops::concat),
+                Instr::Concat { dst, a, b } => {
+                    let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+                    let v = if matches!(x, Value::Object(_)) || matches!(y, Value::Object(_)) {
+                        let mut bytes = self.to_string_vm(&x)?;
+                        bytes.extend_from_slice(&self.to_string_vm(&y)?);
+                        Value::str(bytes)
+                    } else {
+                        ops::concat(&x, &y)
+                    };
+                    self.reg_set(top, dst, v);
+                }
 
                 Instr::Neg { dst, a } => {
                     let v = self.reg_get(top, a);
@@ -341,7 +364,8 @@ impl Vm {
                 }
                 Instr::CastString { dst, a } => {
                     let v = self.reg_get(top, a);
-                    self.reg_set(top, dst, Value::str(conv::to_string_bytes(&v)));
+                    let s = self.to_string_vm(&v)?;
+                    self.reg_set(top, dst, Value::str(s));
                 }
                 Instr::CastBool { dst, a } => {
                     let v = self.reg_get(top, a);
@@ -359,7 +383,7 @@ impl Vm {
 
                 Instr::Echo { src } => {
                     let v = self.reg_get(top, src);
-                    let bytes = conv::to_string_bytes(&v);
+                    let bytes = self.to_string_vm(&v)?;
                     self.write_out(&bytes);
                 }
                 Instr::EchoConst { k } => {
@@ -368,7 +392,7 @@ impl Vm {
                 }
                 Instr::Print { dst, src } => {
                     let v = self.reg_get(top, src);
-                    let bytes = conv::to_string_bytes(&v);
+                    let bytes = self.to_string_vm(&v)?;
                     self.write_out(&bytes);
                     self.reg_set(top, dst, Value::Int(1));
                 }
@@ -603,7 +627,17 @@ impl Vm {
                                     return Err(self.access_err("property", decl, pname.as_bytes(), vis));
                                 }
                             }
-                            h.borrow().properties.get(&pname).cloned().unwrap_or(Value::Null)
+                            match h.borrow().properties.get(&pname).cloned() {
+                                Some(v) => v,
+                                // Undefined property: __get fallback, else Null.
+                                None => match self.lookup_method(cls, b"__get") {
+                                    Some(getter) => {
+                                        let arg = Value::str(pname.as_bytes().to_vec());
+                                        self.call_sync(&getter, Some(h.clone()), cls, vec![arg])?
+                                    }
+                                    None => Value::Null,
+                                },
+                            }
                         }
                         _ => Value::Null, // php warns "property on <type>"
                     };
@@ -665,7 +699,25 @@ impl Vm {
                     };
                     let cls = h.borrow().class;
                     let mname = proto.names[name as usize].as_bytes().to_vec();
-                    let Some(m) = self.lookup_method(cls, &mname) else {
+                    let found = self.lookup_method(cls, &mname);
+                    let accessible = found.as_ref().is_some_and(|m| {
+                        self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility)
+                    });
+                    if let (Some(m), true) = (&found, accessible) {
+                        let m = m.clone();
+                        self.enter_method(top, &m, Some(h.clone()), cls, dst, base, argc)?;
+                    } else if let Some(magic) = self.lookup_method(cls, b"__call") {
+                        // Undefined or inaccessible method -> __call($name, $args).
+                        let mut arr = phrust_values::PhpArray::new();
+                        for i in 0..argc {
+                            arr.push(self.reg_get(top, base + i));
+                        }
+                        let args = vec![Value::str(mname.clone()), Value::Array(arr)];
+                        let r = self.call_sync(&magic, Some(h.clone()), cls, args)?;
+                        self.reg_set(top, dst, r);
+                    } else if let Some(m) = found {
+                        return Err(self.access_err("method", m.defining_class, &mname, m.visibility));
+                    } else {
                         return Err(Thrown::error(
                             "Error",
                             format!(
@@ -674,25 +726,42 @@ impl Vm {
                                 String::from_utf8_lossy(&mname)
                             ),
                         ));
-                    };
-                    if !self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility) {
-                        return Err(self.access_err("method", m.defining_class, &mname, m.visibility));
                     }
-                    self.enter_method(top, &m, Some(h.clone()), cls, dst, base, argc)?;
                 }
                 Instr::CallStatic { dst, class, name, base, argc, .. } => {
                     let cls = self.resolve_class(top, class)?;
                     let mname = proto.names[name as usize].as_bytes().to_vec();
-                    let Some(m) = self.lookup_method(cls, &mname) else {
-                        return Err(Thrown::error(
-                            "Error",
-                            format!(
-                                "Call to undefined method {}::{}()",
-                                String::from_utf8_lossy(self.class(cls).name.as_bytes()),
-                                String::from_utf8_lossy(&mname)
-                            ),
-                        ));
-                    };
+                    let found = self.lookup_method(cls, &mname);
+                    let accessible = found.as_ref().is_some_and(|m| {
+                        self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility)
+                    });
+                    if !(found.is_some() && accessible) {
+                        // Undefined / inaccessible static method -> __callStatic.
+                        if let Some(magic) = self.lookup_method(cls, b"__callstatic") {
+                            let mut arr = phrust_values::PhpArray::new();
+                            for i in 0..argc {
+                                arr.push(self.reg_get(top, base + i));
+                            }
+                            let args = vec![Value::str(mname.clone()), Value::Array(arr)];
+                            let r = self.call_sync(&magic, None, cls, args)?;
+                            self.reg_set(top, dst, r);
+                            continue;
+                        }
+                        return match found {
+                            Some(m) => {
+                                Err(self.access_err("method", m.defining_class, &mname, m.visibility))
+                            }
+                            None => Err(Thrown::error(
+                                "Error",
+                                format!(
+                                    "Call to undefined method {}::{}()",
+                                    String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                                    String::from_utf8_lossy(&mname)
+                                ),
+                            )),
+                        };
+                    }
+                    let m = found.unwrap();
                     // LSB: self/parent/static forward the called-class; Name/Dynamic set it.
                     let called = match class {
                         ClassRef::SelfClass | ClassRef::ParentClass | ClassRef::StaticClass => {
@@ -700,9 +769,6 @@ impl Vm {
                         }
                         _ => cls,
                     };
-                    if !self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility) {
-                        return Err(self.access_err("method", m.defining_class, &mname, m.visibility));
-                    }
                     // Forward $this to a non-static method iff it is-a the target class.
                     let this = if m.is_static {
                         None
@@ -800,11 +866,12 @@ impl Vm {
     /// catch (bind + jump) or finally (re-raise after) in the current frame,
     /// else pop and continue in the caller. Returns `Ok` when a handler is
     /// installed (re-enter `run_frames`), `Err` when it escapes the top frame.
-    fn unwind(&mut self, thrown: Thrown) -> Result<(), Thrown> {
+    fn unwind(&mut self, thrown: Thrown, floor: usize) -> Result<UnwindResult, Thrown> {
         loop {
-            let Some(top) = self.stack.len().checked_sub(1) else {
-                return Err(thrown); // escaped {main} — uncaught
-            };
+            if self.stack.len() <= floor {
+                return Ok(UnwindResult::Escaped(thrown)); // escaped the (sub)run
+            }
+            let top = self.stack.len() - 1;
             let proto = self.stack[top].proto.clone();
             // The throwing pc has already been advanced past the faulting instr.
             let throw_pc = (self.stack[top].pc as u32).saturating_sub(1);
@@ -820,18 +887,81 @@ impl Vm {
                                 self.stack[top].regs[vr as usize] = obj;
                             }
                             self.stack[top].pc = arm.target as usize;
-                            return Ok(());
+                            return Ok(UnwindResult::Caught);
                         }
                     }
                 }
                 if let Some(fin) = region.finally {
                     self.stack[top].pending = Some(FinallyCont::Rethrow(thrown));
                     self.stack[top].pc = fin as usize;
-                    return Ok(());
+                    return Ok(UnwindResult::Caught);
                 }
             }
             self.stack.pop();
         }
+    }
+
+    /// Synchronously call a method and return its value (re-entrant: used by
+    /// magic methods like `__toString`/`__get` mid-opcode). Exceptions thrown
+    /// inside are handled within the sub-run; if uncaught there, they propagate.
+    fn call_sync(
+        &mut self,
+        method: &classes::ResolvedMethod,
+        this: Option<ObjectHandle>,
+        called_class: ClassId,
+        args: Vec<Value>,
+    ) -> Result<Value, Thrown> {
+        if self.stack.len() >= self.max_depth {
+            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
+        }
+        let callee = method.proto.clone();
+        let mut frame = Frame::new(callee.clone(), 0);
+        bind_params(&callee, &args, &mut frame.regs)?;
+        if let (Some(cv), Some(obj)) = (callee.this_cv, this) {
+            frame.regs[cv as usize] = Value::Object(obj);
+        }
+        frame.defining_class = Some(method.defining_class);
+        frame.called_class = Some(called_class);
+        frame.capture = true;
+        let base = self.stack.len();
+        self.stack.push(frame);
+        loop {
+            match self.run_frames() {
+                Ok(v) => return Ok(v), // the capture frame returned
+                Err(thrown) => {
+                    if !thrown.is_catchable() {
+                        return Err(thrown);
+                    }
+                    match self.unwind(thrown, base)? {
+                        UnwindResult::Caught => {} // handled within the sub-run
+                        UnwindResult::Escaped(t) => return Err(t),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Stringify a value, invoking `__toString` on objects that define it.
+    fn to_string_vm(&mut self, v: &Value) -> Result<Vec<u8>, Thrown> {
+        let d = match v {
+            Value::Ref(r) => r.borrow().clone(),
+            other => other.clone(),
+        };
+        if let Value::Object(h) = &d {
+            let cls = h.borrow().class;
+            if let Some(m) = self.lookup_method(cls, b"__tostring") {
+                let r = self.call_sync(&m, Some(h.clone()), cls, Vec::new())?;
+                return Ok(conv::to_string_bytes(&r));
+            }
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "Object of class {} could not be converted to string",
+                    String::from_utf8_lossy(self.class(cls).name.as_bytes())
+                ),
+            ));
+        }
+        Ok(conv::to_string_bytes(&d))
     }
 
     fn thrown_class_id(&self, thrown: &Thrown) -> Option<ClassId> {
@@ -870,6 +1000,10 @@ impl Vm {
     /// outermost frame returns (program done), else delivers to the caller.
     fn do_return(&mut self, value: Value) -> Option<Value> {
         let frame = self.stack.pop().expect("non-empty stack");
+        // A synchronous (re-entrant) call returns its value to the Rust caller.
+        if frame.capture {
+            return Some(value);
+        }
         match self.stack.len().checked_sub(1) {
             Some(caller) => {
                 // Reg::MAX means "discard" (constructor / __clone return value).

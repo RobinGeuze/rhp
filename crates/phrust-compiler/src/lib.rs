@@ -65,6 +65,7 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
             }
             Statement::Class(class) => classes.push(compile_class(class, &sigs)?),
             Statement::Interface(iface) => classes.push(compile_interface(iface)?),
+            Statement::Trait(tr) => classes.push(compile_trait(tr, &sigs)?),
             _ => {}
         }
     }
@@ -126,18 +127,41 @@ fn compile_class(
         .map(|i| i.types.iter().map(|id| PhpStr::from_bytes(identifier_name(id).to_vec())).collect())
         .unwrap_or_default();
 
-    let mut methods = Vec::new();
-    let mut props = Vec::new();
-    let mut static_props = Vec::new();
-    let mut constants = Vec::new();
-    let mut traits = Vec::new();
+    let m = compile_members(&class.members, sigs)?;
+    Ok(ClassProto {
+        name,
+        kind: ClassKind::Class,
+        flags,
+        parent,
+        interfaces,
+        traits: m.traits,
+        methods: m.methods,
+        props: m.props,
+        static_props: m.static_props,
+        constants: m.constants,
+    })
+}
 
-    for member in class.members.iter() {
+#[derive(Default)]
+struct CompiledMembers {
+    methods: Vec<MethodProto>,
+    props: Vec<PropProto>,
+    static_props: Vec<StaticPropProto>,
+    constants: Vec<ConstProto>,
+    traits: Vec<PhpStr>,
+}
+
+fn compile_members(
+    members: &phrust_frontend::cst::Sequence<ClassLikeMember>,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+) -> Result<CompiledMembers, Thrown> {
+    let mut out = CompiledMembers::default();
+    for member in members.iter() {
         match member {
             ClassLikeMember::Method(m) => {
                 let (mp, promoted) = compile_method(m, sigs)?;
-                methods.push(mp);
-                props.extend(promoted);
+                out.methods.push(mp);
+                out.props.extend(promoted);
             }
             ClassLikeMember::Property(Property::Plain(p)) => {
                 let visibility = modifiers_visibility(&p.modifiers);
@@ -156,9 +180,9 @@ fn compile_class(
                             PropDefaultProto::Const(v) => ConstInitProto::Const(v.clone()),
                             _ => ConstInitProto::Const(Value::Null),
                         };
-                        static_props.push(StaticPropProto { name: pname, visibility, is_readonly, init });
+                        out.static_props.push(StaticPropProto { name: pname, visibility, is_readonly, init });
                     } else {
-                        props.push(PropProto { name: pname, visibility, is_readonly, default });
+                        out.props.push(PropProto { name: pname, visibility, is_readonly, default });
                     }
                 }
             }
@@ -168,7 +192,7 @@ fn compile_class(
             ClassLikeMember::Constant(c) => {
                 let visibility = modifiers_visibility(&c.modifiers);
                 for item in c.items.iter() {
-                    constants.push(ConstProto {
+                    out.constants.push(ConstProto {
                         name: PhpStr::from_bytes(item.name.value.to_vec()),
                         visibility,
                         value: ConstInitProto::Const(const_value_static(item.value)?),
@@ -177,7 +201,7 @@ fn compile_class(
             }
             ClassLikeMember::TraitUse(tu) => {
                 for t in tu.trait_names.iter() {
-                    traits.push(PhpStr::from_bytes(identifier_name(t).to_vec()));
+                    out.traits.push(PhpStr::from_bytes(identifier_name(t).to_vec()));
                 }
             }
             ClassLikeMember::EnumCase(_) => {
@@ -185,18 +209,25 @@ fn compile_class(
             }
         }
     }
+    Ok(out)
+}
 
+fn compile_trait(
+    t: &phrust_frontend::cst::Trait,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+) -> Result<ClassProto, Thrown> {
+    let m = compile_members(&t.members, sigs)?;
     Ok(ClassProto {
-        name,
-        kind: ClassKind::Class,
-        flags,
-        parent,
-        interfaces,
-        traits,
-        methods,
-        props,
-        static_props,
-        constants,
+        name: PhpStr::from_bytes(t.name.value.to_vec()),
+        kind: ClassKind::Trait,
+        flags: ClassFlags::default(),
+        parent: None,
+        interfaces: Vec::new(),
+        traits: m.traits,
+        methods: m.methods,
+        props: m.props,
+        static_props: m.static_props,
+        constants: m.constants,
     })
 }
 
@@ -898,6 +929,7 @@ impl ProtoBuilder {
             Statement::Function(_) => {}
             Statement::Class(_) => {}
             Statement::Interface(_) => {}
+            Statement::Trait(_) => {}
             Statement::If(i) => self.compile_if(i)?,
             Statement::While(w) => self.compile_while(w)?,
             Statement::DoWhile(d) => self.compile_do_while(d)?,
@@ -1787,10 +1819,12 @@ impl ProtoBuilder {
         use phrust_frontend::cst::Call;
         match call {
             Call::Function(fc) => self.compile_function_call(fc),
-            Call::Method(mc) => self.compile_method_call(mc.object, &mc.method, &mc.argument_list),
+            Call::Method(mc) => {
+                self.compile_method_call(mc.object, &mc.method, &mc.argument_list, false)
+            }
             Call::StaticMethod(smc) => self.compile_static_call(smc),
-            Call::NullSafeMethod(_) => {
-                Err(Thrown::unsupported("?->method() call", "null-safe method calls deferred"))
+            Call::NullSafeMethod(mc) => {
+                self.compile_method_call(mc.object, &mc.method, &mc.argument_list, true)
             }
         }
     }
@@ -2044,13 +2078,36 @@ impl ProtoBuilder {
         object: &Expression,
         selector: &phrust_frontend::cst::ClassLikeMemberSelector,
         args: &phrust_frontend::cst::ArgumentList,
+        null_safe: bool,
     ) -> Result<Reg, Thrown> {
         let obj = self.compile_expr(object)?;
+        if !null_safe {
+            let name = self.selector_name(selector)?;
+            let (base, argc) = self.compile_arg_window(Some(args))?;
+            let dst = self.alloc_temp();
+            let cache = self.alloc_cache();
+            self.emit(Instr::CallMethod { dst, obj, name, base, argc, cache });
+            return Ok(dst);
+        }
+        // `$o?->m(...)`: if $o is null, the whole call is null and args are not
+        // evaluated (the guard jumps over both the arg marshalling and the call).
+        let dst = self.alloc_temp();
+        self.emit(Instr::Mov { dst, src: obj });
+        let jn = self.code.len();
+        self.emit(Instr::Nop); // JmpNull dst -> Lnull
         let name = self.selector_name(selector)?;
         let (base, argc) = self.compile_arg_window(Some(args))?;
-        let dst = self.alloc_temp();
         let cache = self.alloc_cache();
-        self.emit(Instr::CallMethod { dst, obj, name, base, argc, cache });
+        let t = self.alloc_temp();
+        self.emit(Instr::CallMethod { dst: t, obj: dst, name, base, argc, cache });
+        self.emit(Instr::Mov { dst, src: t });
+        let jend = self.code.len();
+        self.emit(Instr::Nop); // Jmp end
+        let lnull = self.here();
+        self.emit(Instr::LoadNull { dst });
+        let end = self.here();
+        self.code[jn] = Instr::JmpNull { src: dst, target: lnull };
+        self.code[jend] = Instr::Jmp { target: end };
         Ok(dst)
     }
 

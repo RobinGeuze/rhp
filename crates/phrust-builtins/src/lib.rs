@@ -16,9 +16,13 @@ pub use phrust_values::Thrown;
 pub mod dump;
 
 mod arr_fns;
+mod datetime_fns;
+mod hash_fns;
 mod math_fns;
 mod misc_fns;
 mod str_fns;
+mod strarr2_fns;
+mod webenc_fns;
 
 /// The interpreter surface a builtin may use. Implemented by the VM and the oracle.
 pub trait Host {
@@ -120,6 +124,10 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         math_fns::register(&mut m);
         arr_fns::register(&mut m);
         misc_fns::register(&mut m);
+        hash_fns::register(&mut m);
+        webenc_fns::register(&mut m);
+        datetime_fns::register(&mut m);
+        strarr2_fns::register(&mut m);
         m
     })
 }
@@ -155,6 +163,13 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("STR_PAD_RIGHT", Value::Int(1)),
         ("STR_PAD_LEFT", Value::Int(0)),
         ("STR_PAD_BOTH", Value::Int(2)),
+        ("ENT_QUOTES", Value::Int(3)),
+        ("ENT_COMPAT", Value::Int(2)),
+        ("ENT_NOQUOTES", Value::Int(0)),
+        ("ENT_HTML401", Value::Int(0)),
+        ("ENT_HTML5", Value::Int(48)),
+        ("PHP_ROUND_HALF_UP", Value::Int(1)),
+        ("PHP_ROUND_HALF_DOWN", Value::Int(2)),
         ("M_PI", Value::Float(std::f64::consts::PI)),
         ("M_E", Value::Float(std::f64::consts::E)),
         ("M_SQRT2", Value::Float(std::f64::consts::SQRT_2)),

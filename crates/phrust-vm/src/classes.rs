@@ -185,6 +185,21 @@ impl Vm {
         // Static properties (inherited slots alias; redeclared get a fresh cell).
         let mut static_props: IndexMap<Vec<u8>, StaticProp> =
             parent.map(|p| self.classes[p as usize].static_props.clone()).unwrap_or_default();
+        for tname in &proto.traits {
+            let tid = self.class_ids[&lc(tname.as_bytes())];
+            for (k, sp) in self.classes[tid as usize].static_props.clone() {
+                // Each using class gets its own cell, seeded from the trait's.
+                let v = sp.cell.borrow().clone();
+                static_props.insert(
+                    k,
+                    StaticProp {
+                        cell: Rc::new(RefCell::new(v)),
+                        visibility: sp.visibility,
+                        declaring_class: id,
+                    },
+                );
+            }
+        }
         for sp in &proto.static_props {
             let v = const_init(&sp.init)?;
             static_props.insert(
@@ -200,6 +215,12 @@ impl Vm {
         // Class constants.
         let mut constants: HashMap<Vec<u8>, ClassConst> =
             parent.map(|p| self.classes[p as usize].constants.clone()).unwrap_or_default();
+        for tname in &proto.traits {
+            let tid = self.class_ids[&lc(tname.as_bytes())];
+            for (k, c) in self.classes[tid as usize].constants.clone() {
+                constants.insert(k, ClassConst { declaring_class: id, ..c });
+            }
+        }
         for c in &proto.constants {
             let v = const_init(&c.value)?;
             constants.insert(

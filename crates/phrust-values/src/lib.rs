@@ -47,11 +47,36 @@ pub type ObjectHandle = Rc<RefCell<ObjectData>>;
 /// A PHP reference: a shared, mutable value slot.
 pub type PhpRef = Rc<RefCell<Value>>;
 
-/// Object storage (sketch; filled out in the OOP phase).
+/// Object storage.
 pub struct ObjectData {
     pub class: ClassId,
     pub id: u32,
     pub properties: IndexMap<PhpStr, Value, FxBuildHasher>,
+}
+
+/// What kind of class-like declaration a class table entry is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ClassKind {
+    Class,
+    Interface,
+    Trait,
+    Enum,
+}
+
+/// Member visibility.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Visibility {
+    Public,
+    Protected,
+    Private,
+}
+
+/// Class-level modifier flags.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct ClassFlags {
+    pub is_abstract: bool,
+    pub is_final: bool,
+    pub is_readonly: bool,
 }
 
 // ---------------------------------------------------------------------------

@@ -14,15 +14,18 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use phrust_bytecode::{CmpKind, Default as ParamDefault, FunctionProto, Instr, Program, Reg};
+use phrust_bytecode::{
+    ClassRef, CmpKind, Default as ParamDefault, FunctionProto, Instr, Program, Reg,
+};
 use phrust_builtins::{self as builtins, Host};
 use phrust_semantics::{cast_to_array, inc_dec_value, ops};
-use phrust_values::{conv, ArrayKey, PhpArray, Thrown, Value};
+use phrust_values::{conv, ArrayKey, ClassId, ClassKind, ObjectData, ObjectHandle, PhpArray, Thrown, Value};
 
-/// A pending lvalue step (an evaluated key, or an append).
+/// A pending lvalue step (an evaluated key, an append, or an object property).
 enum CursorStep {
     Key(Value),
     Append,
+    Prop(phrust_values::PhpStr),
 }
 
 /// The virtual machine: output sink + call stack + global tables.
@@ -33,10 +36,25 @@ pub struct Vm {
     fn_names: HashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
     constants: HashMap<Vec<u8>, Value>,
     max_depth: usize,
-    // lvalue cursor: a root CV in the current frame + pending path steps. Cursor
-    // opcodes are emitted contiguously, so a single cursor never nests.
-    cursor_root: Reg,
+    // lvalue cursor: a root in the current frame (CV or a static-prop cell) +
+    // pending path steps. Cursor opcodes are emitted contiguously, so a single
+    // cursor never nests.
+    cursor_root: CursorRoot,
     cursor_steps: Vec<CursorStep>,
+    // OOP class table (see `classes` module).
+    classes: Vec<classes::ClassEntry>,
+    class_ids: HashMap<Vec<u8>, ClassId>, // lowercase name -> id
+    next_object_id: u32,
+}
+
+mod classes;
+
+/// Where an lvalue cursor is rooted.
+enum CursorRoot {
+    /// A register (compiled variable) in the current frame.
+    Cv(Reg),
+    /// A shared static-property cell.
+    Cell(Rc<RefCell<Value>>),
 }
 
 impl Host for Vm {
@@ -52,12 +70,16 @@ struct Frame {
     pc: usize,
     /// Caller register that receives this frame's return value (unused for main).
     ret_dst: Reg,
+    /// The class whose body this is (`self::`/`parent::`/`__CLASS__`); None outside methods.
+    defining_class: Option<ClassId>,
+    /// The late-static-binding class (`static::`); None outside methods.
+    called_class: Option<ClassId>,
 }
 
 impl Frame {
     fn new(proto: Rc<FunctionProto>, ret_dst: Reg) -> Self {
         let regs = vec![Value::Null; proto.num_registers as usize];
-        Frame { proto, regs, pc: 0, ret_dst }
+        Frame { proto, regs, pc: 0, ret_dst, defining_class: None, called_class: None }
     }
 }
 
@@ -80,8 +102,11 @@ impl Vm {
             fn_names: HashMap::new(),
             constants,
             max_depth: 1 << 16,
-            cursor_root: 0,
+            cursor_root: CursorRoot::Cv(0),
             cursor_steps: Vec::new(),
+            classes: Vec::new(),
+            class_ids: HashMap::new(),
+            next_object_id: 1,
         }
     }
 
@@ -96,6 +121,8 @@ impl Vm {
             self.functions.push(proto.clone());
             self.fn_names.insert(proto.name.as_bytes().to_ascii_lowercase(), idx);
         }
+        // Link all declared classes (flatten inheritance, resolve forward refs).
+        self.install_classes(&prog.classes)?;
         self.stack.push(Frame::new(prog.main.clone(), 0));
         match self.run_loop() {
             Ok(_) => Ok(0),
@@ -127,6 +154,52 @@ impl Vm {
             *rc.borrow_mut() = v;
         } else {
             *slot = v;
+        }
+    }
+
+    /// Read the value at the current cursor (root + steps), non-mutating.
+    fn cursor_read(&self, top: usize) -> Value {
+        self.cursor_read_steps(top, &self.cursor_steps)
+    }
+
+    fn cursor_read_steps(&self, top: usize, steps: &[CursorStep]) -> Value {
+        match &self.cursor_root {
+            CursorRoot::Cv(r) => read_path(&self.stack[top].regs[*r as usize], steps),
+            CursorRoot::Cell(rc) => read_path(&rc.borrow(), steps),
+        }
+    }
+
+    /// Write `v` at the current cursor (root + steps).
+    fn cursor_write(&mut self, top: usize, steps: &[CursorStep], v: Value) -> Result<(), Thrown> {
+        match &self.cursor_root {
+            CursorRoot::Cv(r) => {
+                let r = *r as usize;
+                assign_path(&mut self.stack[top].regs[r], steps, v)
+            }
+            CursorRoot::Cell(rc) => {
+                let rc = rc.clone();
+                let r = assign_path(&mut rc.borrow_mut(), steps, v);
+                r
+            }
+        }
+    }
+
+    /// The `$this` of the current frame, if it is bound to an object.
+    fn current_this(&self, top: usize) -> Option<ObjectHandle> {
+        let cv = self.stack[top].proto.this_cv?;
+        match &self.stack[top].regs[cv as usize] {
+            Value::Object(h) => Some(h.clone()),
+            _ => None,
+        }
+    }
+
+    fn cursor_unset(&mut self, top: usize, steps: &[CursorStep]) {
+        match &self.cursor_root {
+            CursorRoot::Cv(r) => unset_path(&mut self.stack[top].regs[*r as usize], steps),
+            CursorRoot::Cell(rc) => {
+                let rc = rc.clone();
+                unset_path(&mut rc.borrow_mut(), steps);
+            }
         }
     }
 
@@ -337,7 +410,7 @@ impl Vm {
 
                 // -- lvalue cursor --
                 Instr::LvalCv { cv } => {
-                    self.cursor_root = cv;
+                    self.cursor_root = CursorRoot::Cv(cv);
                     self.cursor_steps.clear();
                 }
                 Instr::LvalKey { key } => {
@@ -345,28 +418,35 @@ impl Vm {
                     self.cursor_steps.push(CursorStep::Key(k));
                 }
                 Instr::LvalAppend => self.cursor_steps.push(CursorStep::Append),
+                Instr::LvalProp { name } => {
+                    let p = proto.names[name as usize].clone();
+                    self.cursor_steps.push(CursorStep::Prop(p));
+                }
+                Instr::LvalStaticProp { class, name } => {
+                    let cls = self.resolve_class(top, class)?;
+                    let pname = proto.names[name as usize].as_bytes().to_vec();
+                    let cell = self.static_prop_cell(cls, &pname)?;
+                    self.cursor_root = CursorRoot::Cell(cell);
+                    self.cursor_steps.clear();
+                }
                 Instr::FetchLvalRw { dst } => {
-                    let root = self.cursor_root as usize;
-                    let v = read_path(&self.stack[top].regs[root], &self.cursor_steps);
+                    let v = self.cursor_read(top);
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
                 Instr::AssignLval { src } => {
                     let v = self.reg_get(top, src);
-                    let root = self.cursor_root as usize;
                     let steps = std::mem::take(&mut self.cursor_steps);
-                    assign_path(&mut self.stack[top].regs[root], &steps, v)?;
+                    self.cursor_write(top, &steps, v)?;
                 }
                 Instr::UnsetLval => {
-                    let root = self.cursor_root as usize;
                     let steps = std::mem::take(&mut self.cursor_steps);
-                    unset_path(&mut self.stack[top].regs[root], &steps);
+                    self.cursor_unset(top, &steps);
                 }
                 Instr::IncDecLval { dst, pre, delta } => {
-                    let root = self.cursor_root as usize;
                     let steps = std::mem::take(&mut self.cursor_steps);
-                    let old = read_path(&self.stack[top].regs[root], &steps);
+                    let old = self.cursor_read_steps(top, &steps);
                     let new = inc_dec_value(&old, delta as i64);
-                    assign_path(&mut self.stack[top].regs[root], &steps, new.clone())?;
+                    self.cursor_write(top, &steps, new.clone())?;
                     self.reg_set(top, dst, if pre { new } else { old });
                 }
 
@@ -410,6 +490,184 @@ impl Vm {
                         "UnhandledMatchError",
                         format!("Unhandled match case {}", match_case_desc(&v)),
                     ));
+                }
+
+                // -- OOP --
+                Instr::New { dst, class, base, argc, .. } => {
+                    let cls = self.resolve_class(top, class)?;
+                    let entry = self.class(cls);
+                    if entry.kind != ClassKind::Class || entry.flags.is_abstract {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Cannot instantiate {} {}",
+                                if entry.flags.is_abstract { "abstract class" } else { "interface/trait" },
+                                String::from_utf8_lossy(entry.name.as_bytes())
+                            ),
+                        ));
+                    }
+                    let obj = self.new_object(cls);
+                    self.reg_set(top, dst, Value::Object(obj.clone()));
+                    // Run __construct, discarding its return (into the arg window).
+                    if let Some(m) = self.lookup_method(cls, b"__construct") {
+                        self.enter_method(top, &m, Some(obj), cls, Reg::MAX, base, argc)?;
+                    }
+                }
+                Instr::FetchProp { dst, obj, name, .. } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = proto.names[name as usize].clone();
+                    let v = match o {
+                        Value::Object(h) => {
+                            let cls = h.borrow().class;
+                            if let Some(pe) = self.class(cls).props.get(&pname) {
+                                let (vis, decl) = (pe.visibility, pe.declaring_class);
+                                if !self.check_access(self.stack[top].defining_class, decl, vis) {
+                                    return Err(self.access_err("property", decl, pname.as_bytes(), vis));
+                                }
+                            }
+                            h.borrow().properties.get(&pname).cloned().unwrap_or(Value::Null)
+                        }
+                        _ => Value::Null, // php warns "property on <type>"
+                    };
+                    self.reg_set(top, dst, v);
+                }
+                Instr::FetchStaticProp { dst, class, name, .. } => {
+                    let cls = self.resolve_class(top, class)?;
+                    let pname = proto.names[name as usize].as_bytes().to_vec();
+                    if let Some(sp) = self.class(cls).static_props.get(&pname) {
+                        let (vis, decl) = (sp.visibility, sp.declaring_class);
+                        if !self.check_access(self.stack[top].defining_class, decl, vis) {
+                            return Err(self.access_err("property", decl, &pname, vis));
+                        }
+                    }
+                    let cell = self.static_prop_cell(cls, &pname)?;
+                    let v = cell.borrow().clone();
+                    self.reg_set(top, dst, v);
+                }
+                Instr::FetchClassConst { dst, class, name, .. } => {
+                    let name_b = proto.names[name as usize].as_bytes().to_vec();
+                    let cls = self.resolve_class(top, class)?;
+                    if name_b == b"class" {
+                        let v = Value::str(self.class(cls).name.as_bytes().to_vec());
+                        self.reg_set(top, dst, v);
+                    } else {
+                        match self.class(cls).constants.get(&name_b) {
+                            Some(c) => {
+                                let (vis, decl) = (c.visibility, c.declaring_class);
+                                if !self.check_access(self.stack[top].defining_class, decl, vis) {
+                                    return Err(self.access_err("constant", decl, &name_b, vis));
+                                }
+                                let v = c.value.clone();
+                                self.reg_set(top, dst, v);
+                            }
+                            None => {
+                                return Err(Thrown::error(
+                                    "Error",
+                                    format!(
+                                        "Undefined constant {}::{}",
+                                        String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                                        String::from_utf8_lossy(&name_b)
+                                    ),
+                                ))
+                            }
+                        }
+                    }
+                }
+                Instr::CallMethod { dst, obj, name, base, argc, .. } => {
+                    let o = self.reg_get(top, obj);
+                    let Value::Object(h) = o else {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Call to a member function {}() on {}",
+                                String::from_utf8_lossy(proto.names[name as usize].as_bytes()),
+                                type_lc(&o)
+                            ),
+                        ));
+                    };
+                    let cls = h.borrow().class;
+                    let mname = proto.names[name as usize].as_bytes().to_vec();
+                    let Some(m) = self.lookup_method(cls, &mname) else {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Call to undefined method {}::{}()",
+                                String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                                String::from_utf8_lossy(&mname)
+                            ),
+                        ));
+                    };
+                    if !self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility) {
+                        return Err(self.access_err("method", m.defining_class, &mname, m.visibility));
+                    }
+                    self.enter_method(top, &m, Some(h.clone()), cls, dst, base, argc)?;
+                }
+                Instr::CallStatic { dst, class, name, base, argc, .. } => {
+                    let cls = self.resolve_class(top, class)?;
+                    let mname = proto.names[name as usize].as_bytes().to_vec();
+                    let Some(m) = self.lookup_method(cls, &mname) else {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Call to undefined method {}::{}()",
+                                String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                                String::from_utf8_lossy(&mname)
+                            ),
+                        ));
+                    };
+                    // LSB: self/parent/static forward the called-class; Name/Dynamic set it.
+                    let called = match class {
+                        ClassRef::SelfClass | ClassRef::ParentClass | ClassRef::StaticClass => {
+                            self.stack[top].called_class.unwrap_or(cls)
+                        }
+                        _ => cls,
+                    };
+                    if !self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility) {
+                        return Err(self.access_err("method", m.defining_class, &mname, m.visibility));
+                    }
+                    // Forward $this to a non-static method iff it is-a the target class.
+                    let this = if m.is_static {
+                        None
+                    } else {
+                        self.current_this(top)
+                            .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))
+                    };
+                    self.enter_method(top, &m, this, called, dst, base, argc)?;
+                }
+                Instr::InstanceOf { dst, val, class } => {
+                    let v = self.reg_get(top, val);
+                    let result = match v {
+                        Value::Object(h) => match self.resolve_class(top, class) {
+                            Ok(cid) => self.class(h.borrow().class).ancestors.contains(&cid),
+                            Err(_) => false,
+                        },
+                        _ => false,
+                    };
+                    self.reg_set(top, dst, Value::Bool(result));
+                }
+                Instr::CloneObj { dst, src } => {
+                    let v = self.reg_get(top, src);
+                    let Value::Object(h) = v else {
+                        return Err(Thrown::error("Error", "__clone method called on non-object"));
+                    };
+                    let (cls, props) = {
+                        let od = h.borrow();
+                        (od.class, od.properties.clone())
+                    };
+                    let id = self.next_object_id;
+                    self.next_object_id += 1;
+                    let new_obj: ObjectHandle =
+                        Rc::new(RefCell::new(ObjectData { class: cls, id, properties: props }));
+                    self.reg_set(top, dst, Value::Object(new_obj.clone()));
+                    if let Some(m) = self.lookup_method(cls, b"__clone") {
+                        self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;
+                    }
+                }
+                Instr::DeclareClass { .. } => {
+                    return Err(Thrown::unsupported(
+                        "conditional class declaration",
+                        "only top-level class declarations for now",
+                    ))
                 }
 
                 Instr::BindRef { dst_cv, src_cv } => {
@@ -466,7 +724,10 @@ impl Vm {
         let frame = self.stack.pop().expect("non-empty stack");
         match self.stack.len().checked_sub(1) {
             Some(caller) => {
-                self.reg_set(caller, frame.ret_dst, value);
+                // Reg::MAX means "discard" (constructor / __clone return value).
+                if frame.ret_dst != Reg::MAX {
+                    self.reg_set(caller, frame.ret_dst, value);
+                }
                 None
             }
             None => Some(value),
@@ -609,6 +870,10 @@ fn read_path(slot: &Value, steps: &[CursorStep]) -> Value {
             Some(key) => a.get(&key).map(|c| read_path(c, rest)).unwrap_or(Value::Null),
             None => Value::Null,
         },
+        (Value::Object(h), CursorStep::Prop(name)) => {
+            let od = h.borrow();
+            od.properties.get(name).map(|c| read_path(c, rest)).unwrap_or(Value::Null)
+        }
         _ => Value::Null,
     }
 }
@@ -640,6 +905,24 @@ fn assign_path(slot: &mut Value, steps: &[CursorStep], value: Value) -> Result<(
         *slot = value;
         return Ok(());
     };
+    if let CursorStep::Prop(name) = head {
+        // Descend into an object property (handle semantics: no COW).
+        let handle = match slot {
+            Value::Object(h) => h.clone(),
+            Value::Null => {
+                return Err(Thrown::error("Error", "Attempt to assign property on null"))
+            }
+            other => {
+                return Err(Thrown::error(
+                    "Error",
+                    format!("Attempt to assign property on {}", type_lc(other)),
+                ))
+            }
+        };
+        let mut od = handle.borrow_mut();
+        let child = od.properties.entry(name.clone()).or_insert(Value::Null);
+        return assign_path(child, rest, value);
+    }
     autovivify(slot)?;
     let Value::Array(arr) = slot else { unreachable!("autovivify ensures array") };
     let child = match head {
@@ -649,6 +932,7 @@ fn assign_path(slot: &mut Value, steps: &[CursorStep], value: Value) -> Result<(
             arr.get_or_insert_mut(key)
         }
         CursorStep::Append => arr.append_mut(),
+        CursorStep::Prop(_) => unreachable!("handled above"),
     };
     assign_path(child, rest, value)
 }
@@ -660,13 +944,40 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep]) {
         return unset_path(&mut inner, steps);
     }
     let Some((head, rest)) = steps.split_first() else { return };
-    let Value::Array(arr) = slot else { return };
-    let CursorStep::Key(k) = head else { return };
-    let Some(key) = ArrayKey::from_value(k) else { return };
-    if rest.is_empty() {
-        arr.remove(&key);
-    } else if let Some(child) = arr.get_mut(&key) {
-        unset_path(child, rest);
+    match head {
+        CursorStep::Prop(name) => {
+            let Value::Object(h) = slot else { return };
+            let h = h.clone();
+            let mut od = h.borrow_mut();
+            if rest.is_empty() {
+                od.properties.shift_remove(name);
+            } else if let Some(child) = od.properties.get_mut(name) {
+                unset_path(child, rest);
+            }
+        }
+        CursorStep::Key(k) => {
+            let Value::Array(arr) = slot else { return };
+            let Some(key) = ArrayKey::from_value(k) else { return };
+            if rest.is_empty() {
+                arr.remove(&key);
+            } else if let Some(child) = arr.get_mut(&key) {
+                unset_path(child, rest);
+            }
+        }
+        CursorStep::Append => {}
+    }
+}
+
+fn type_lc(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Str(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+        Value::Ref(_) => "reference",
     }
 }
 

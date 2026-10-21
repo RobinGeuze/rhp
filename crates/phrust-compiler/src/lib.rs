@@ -12,20 +12,32 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use phrust_bytecode::{CIdx, CmpKind, FnIdx, FunctionProto, Instr, NIdx, Program, Reg};
-use phrust_frontend::cst::{
-    Argument, ArrayElement, AssignmentOperator, BinaryOperator, CompositeString, Construct,
-    Expression, ForBody, ForeachBody, ForeachTarget, Identifier, IfBody, Literal, Match, MatchArm,
-    Program as AstProgram, Statement, StringPart, SwitchBody, SwitchCase, UnaryPrefixOperator,
-    Variable, WhileBody,
+use phrust_bytecode::{
+    CIdx, ClassProto, ClassRef, CmpKind, ConstInitProto, ConstProto, FnIdx, FunctionProto, Instr,
+    MethodProto, NIdx, Program, PropDefaultProto, PropProto, Reg, StaticPropProto,
 };
+use phrust_frontend::cst::{
+    Access, Argument, ArrayElement, AssignmentOperator, BinaryOperator, Class, ClassLikeMember,
+    ClassLikeMemberSelector, CompositeString, Construct, Expression, ForBody, ForeachBody,
+    ForeachTarget, Identifier, IfBody, Literal, Match, MatchArm, MethodBody, Modifier,
+    Program as AstProgram, Property, PropertyItem, Statement, StringPart, SwitchBody, SwitchCase,
+    UnaryPrefixOperator, Variable, WhileBody,
+};
+use phrust_values::{ClassFlags, ClassKind, Visibility};
 
 /// A step in an lvalue path (compiler-side; key regs are pre-evaluated).
 enum CursorStep {
     Key(Reg),
     Append,
+    Prop(NIdx),
 }
-use phrust_values::{PhpArray, PhpStr, Thrown, Value};
+
+/// Where an lvalue cursor roots.
+enum LvalRoot {
+    Cv(Reg),
+    StaticProp(ClassRef, NIdx),
+}
+use phrust_values::{ArrayKey, PhpArray, PhpStr, Thrown, Value};
 
 /// Compile a parsed program (borrowed from a `phrust_frontend::Arena`) into an
 /// owned, runnable bytecode `Program`. No `'arena` borrow escapes.
@@ -42,11 +54,16 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
     }
     let sigs = Rc::new(sigs);
 
-    // Hoist top-level function declarations (compiled into their own protos).
+    // Hoist top-level function + class declarations.
     let mut functions = Vec::new();
+    let mut classes = Vec::new();
     for stmt in program.statements.iter() {
-        if let Statement::Function(func) = stmt {
-            functions.push(Rc::new(compile_function(func, sigs.clone())?));
+        match stmt {
+            Statement::Function(func) => {
+                functions.push(Rc::new(compile_function(func, sigs.clone())?));
+            }
+            Statement::Class(class) => classes.push(compile_class(class, &sigs)?),
+            _ => {}
         }
     }
 
@@ -66,7 +83,208 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
     }
     c.emit(Instr::RetNull);
 
-    Ok(Program { main: Rc::new(c.finish()), functions })
+    Ok(Program { main: Rc::new(c.finish()), functions, classes })
+}
+
+// --- OOP: class declaration compilation ------------------------------------
+
+fn modifiers_visibility(mods: &phrust_frontend::cst::Sequence<Modifier>) -> Visibility {
+    for m in mods.iter() {
+        match m {
+            Modifier::Private(_) | Modifier::PrivateSet(_) => return Visibility::Private,
+            Modifier::Protected(_) | Modifier::ProtectedSet(_) => return Visibility::Protected,
+            Modifier::Public(_) | Modifier::PublicSet(_) => return Visibility::Public,
+            _ => {}
+        }
+    }
+    Visibility::Public
+}
+
+fn has_modifier(mods: &phrust_frontend::cst::Sequence<Modifier>, want: fn(&Modifier) -> bool) -> bool {
+    mods.iter().any(want)
+}
+
+fn compile_class(
+    class: &Class,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+) -> Result<ClassProto, Thrown> {
+    let name = PhpStr::from_bytes(class.name.value.to_vec());
+    let flags = ClassFlags {
+        is_abstract: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Abstract(_))),
+        is_final: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Final(_))),
+        is_readonly: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Readonly(_))),
+    };
+    // Single inheritance: a class `extends` one parent.
+    let parent = class.extends.as_ref().and_then(|e| {
+        e.types.iter().next().map(|id| PhpStr::from_bytes(identifier_name(id).to_vec()))
+    });
+    let interfaces: Vec<PhpStr> = class
+        .implements
+        .as_ref()
+        .map(|i| i.types.iter().map(|id| PhpStr::from_bytes(identifier_name(id).to_vec())).collect())
+        .unwrap_or_default();
+
+    let mut methods = Vec::new();
+    let mut props = Vec::new();
+    let mut static_props = Vec::new();
+    let mut constants = Vec::new();
+    let mut traits = Vec::new();
+
+    for member in class.members.iter() {
+        match member {
+            ClassLikeMember::Method(m) => {
+                let (mp, promoted) = compile_method(m, sigs)?;
+                methods.push(mp);
+                props.extend(promoted);
+            }
+            ClassLikeMember::Property(Property::Plain(p)) => {
+                let visibility = modifiers_visibility(&p.modifiers);
+                let is_static = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Static(_)));
+                let is_readonly = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
+                for item in p.items.iter() {
+                    let (var, default) = match item {
+                        PropertyItem::Concrete(c) => {
+                            (c.variable.name, PropDefaultProto::Const(const_value_static(c.value)?))
+                        }
+                        PropertyItem::Abstract(a) => (a.variable.name, PropDefaultProto::None),
+                    };
+                    let pname = PhpStr::from_bytes(strip_dollar(var).to_vec());
+                    if is_static {
+                        let init = match &default {
+                            PropDefaultProto::Const(v) => ConstInitProto::Const(v.clone()),
+                            _ => ConstInitProto::Const(Value::Null),
+                        };
+                        static_props.push(StaticPropProto { name: pname, visibility, is_readonly, init });
+                    } else {
+                        props.push(PropProto { name: pname, visibility, is_readonly, default });
+                    }
+                }
+            }
+            ClassLikeMember::Property(Property::Hooked(_)) => {
+                return Err(Thrown::unsupported("property hooks", "deferred"))
+            }
+            ClassLikeMember::Constant(c) => {
+                let visibility = modifiers_visibility(&c.modifiers);
+                for item in c.items.iter() {
+                    constants.push(ConstProto {
+                        name: PhpStr::from_bytes(item.name.value.to_vec()),
+                        visibility,
+                        value: ConstInitProto::Const(const_value_static(item.value)?),
+                    });
+                }
+            }
+            ClassLikeMember::TraitUse(tu) => {
+                for t in tu.trait_names.iter() {
+                    traits.push(PhpStr::from_bytes(identifier_name(t).to_vec()));
+                }
+            }
+            ClassLikeMember::EnumCase(_) => {
+                return Err(Thrown::unsupported("enum case", "enums are deferred"))
+            }
+        }
+    }
+
+    Ok(ClassProto {
+        name,
+        kind: ClassKind::Class,
+        flags,
+        parent,
+        interfaces,
+        traits,
+        methods,
+        props,
+        static_props,
+        constants,
+    })
+}
+
+fn compile_method(
+    m: &phrust_frontend::cst::Method,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+) -> Result<(MethodProto, Vec<PropProto>), Thrown> {
+    let name = PhpStr::from_bytes(m.name.value.to_vec());
+    let visibility = modifiers_visibility(&m.modifiers);
+    let is_static = has_modifier(&m.modifiers, |md| matches!(md, Modifier::Static(_)));
+    let is_abstract = has_modifier(&m.modifiers, |md| matches!(md, Modifier::Abstract(_)));
+    let is_final = has_modifier(&m.modifiers, |md| matches!(md, Modifier::Final(_)));
+
+    let mut c = ProtoBuilder::new(name.clone());
+    c.sigs = sigs.clone();
+
+    // Instance methods reserve CV 0 for `$this`.
+    if !is_static {
+        let this = c.cv(b"this");
+        debug_assert_eq!(this, 0);
+    }
+
+    // Constructor property promotion: a param with a modifier declares a property.
+    let mut promoted: Vec<PropProto> = Vec::new();
+    let mut promo_stores: Vec<(NIdx, Reg)> = Vec::new(); // (prop name, param cv)
+
+    let mut params = Vec::new();
+    for p in m.parameter_list.parameters.iter() {
+        let var = strip_dollar(p.variable.name);
+        let cv = c.cv(var);
+        let pname = c.intern_name(var);
+        let default = match &p.default_value {
+            Some(dv) => Some(c.const_default(dv.value)?),
+            None => None,
+        };
+        if !p.modifiers.is_empty() {
+            let vis = modifiers_visibility(&p.modifiers);
+            let ro = has_modifier(&p.modifiers, |md| matches!(md, Modifier::Readonly(_)));
+            promoted.push(PropProto {
+                name: PhpStr::from_bytes(var.to_vec()),
+                visibility: vis,
+                is_readonly: ro,
+                default: PropDefaultProto::None,
+            });
+            promo_stores.push((c.intern_name(var), cv));
+        }
+        params.push(phrust_bytecode::ParamInfo {
+            name: pname,
+            cv,
+            by_ref: p.ampersand.is_some(),
+            variadic: p.ellipsis.is_some(),
+            default,
+        });
+    }
+    let num_params = params.len() as u16;
+
+    let empty: &[Statement] = &[];
+    let body_stmts: &[_] = match &m.body {
+        MethodBody::Concrete(block) => block.statements.as_slice(),
+        MethodBody::Abstract(_) => empty,
+    };
+
+    for s in body_stmts {
+        c.scan_stmt_vars(s);
+    }
+    c.num_cvs = c.cv_map.len() as u16;
+    c.next_temp = c.num_cvs;
+    c.high_water = c.num_cvs;
+    c.temp_floor = c.num_cvs;
+
+    // Emit `$this->name = $name` for each promoted param, before the body.
+    for (prop_name, param_cv) in &promo_stores {
+        c.emit(Instr::LvalCv { cv: 0 });
+        c.emit(Instr::LvalProp { name: *prop_name });
+        c.emit(Instr::AssignLval { src: *param_cv });
+    }
+
+    for s in body_stmts {
+        c.compile_stmt(s)?;
+    }
+    c.emit(Instr::RetNull);
+
+    let mut proto = c.finish();
+    proto.num_params = num_params;
+    proto.params = params;
+    proto.this_cv = if is_static { None } else { Some(0) };
+    proto.is_static = is_static;
+
+    let mp = MethodProto { name, proto: Rc::new(proto), visibility, is_static, is_abstract, is_final };
+    Ok((mp, promoted))
 }
 
 /// Compile one `function name(params) { body }` into a `FunctionProto`.
@@ -124,6 +342,7 @@ struct ProtoBuilder {
     consts: Vec<Value>,
     names: Vec<PhpStr>,
     cv_map: Vec<Vec<u8>>, // index = Reg, value = variable name bytes
+    caches: Vec<phrust_bytecode::InlineCache>,
     num_cvs: u16,
     next_temp: Reg,
     high_water: Reg,
@@ -152,6 +371,7 @@ impl ProtoBuilder {
             consts: Vec::new(),
             names: Vec::new(),
             cv_map: Vec::new(),
+            caches: Vec::new(),
             num_cvs: 0,
             next_temp: 0,
             high_water: 0,
@@ -168,8 +388,15 @@ impl ProtoBuilder {
         proto.code = self.code;
         proto.consts = self.consts;
         proto.names = self.names;
+        proto.caches = self.caches;
         proto.debug.cv_names = (0..self.cv_map.len() as u32).collect();
         proto
+    }
+
+    fn alloc_cache(&mut self) -> phrust_bytecode::CacheIdx {
+        let idx = self.caches.len() as phrust_bytecode::CacheIdx;
+        self.caches.push(phrust_bytecode::InlineCache::default());
+        idx
     }
 
     // -- register / pool management --
@@ -443,18 +670,49 @@ impl ProtoBuilder {
                     }
                 }
             }
+            Expression::Instantiation(inst) => {
+                self.scan_expr_vars(inst.class);
+                if let Some(list) = &inst.argument_list {
+                    self.scan_args(list);
+                }
+            }
+            Expression::Access(acc) => match acc {
+                Access::Property(pa) => self.scan_expr_vars(pa.object),
+                Access::NullSafeProperty(pa) => self.scan_expr_vars(pa.object),
+                // Note: in `C::$x` the `$x` is the static-property NAME, not a local.
+                Access::StaticProperty(spa) => self.scan_expr_vars(spa.class),
+                Access::ClassConstant(cca) => self.scan_expr_vars(cca.class),
+            },
+            Expression::Clone(cl) => self.scan_expr_vars(cl.object),
             Expression::Construct(c) => self.scan_construct_vars(c),
             Expression::Call(call) => {
-                if let phrust_frontend::cst::Call::Function(fc) = call {
-                    for arg in fc.argument_list.arguments.iter() {
-                        match arg {
-                            Argument::Positional(p) => self.scan_expr_vars(p.value),
-                            Argument::Named(n) => self.scan_expr_vars(n.value),
-                        }
+                use phrust_frontend::cst::Call;
+                match call {
+                    Call::Function(fc) => self.scan_args(&fc.argument_list),
+                    Call::Method(mc) => {
+                        self.scan_expr_vars(mc.object);
+                        self.scan_args(&mc.argument_list);
+                    }
+                    Call::NullSafeMethod(mc) => {
+                        self.scan_expr_vars(mc.object);
+                        self.scan_args(&mc.argument_list);
+                    }
+                    Call::StaticMethod(smc) => {
+                        self.scan_expr_vars(smc.class);
+                        self.scan_args(&smc.argument_list);
                     }
                 }
             }
             _ => {}
+        }
+    }
+
+    fn scan_args(&mut self, list: &phrust_frontend::cst::ArgumentList) {
+        for arg in list.arguments.iter() {
+            match arg {
+                Argument::Positional(p) => self.scan_expr_vars(p.value),
+                Argument::Named(n) => self.scan_expr_vars(n.value),
+            }
         }
     }
 
@@ -513,8 +771,9 @@ impl ProtoBuilder {
                 }
             }
             Statement::HaltCompiler(_) => self.emit(Instr::Halt),
-            // Top-level function declarations are hoisted/compiled separately.
+            // Top-level function + class declarations are hoisted separately.
             Statement::Function(_) => {}
+            Statement::Class(_) => {}
             Statement::If(i) => self.compile_if(i)?,
             Statement::While(w) => self.compile_while(w)?,
             Statement::DoWhile(d) => self.compile_do_while(d)?,
@@ -933,6 +1192,14 @@ impl ProtoBuilder {
             Expression::Identifier(id) => self.compile_constant(id),
             Expression::CompositeString(cs) => self.compile_composite(cs),
             Expression::Match(m) => self.compile_match(m),
+            Expression::Instantiation(inst) => self.compile_new(inst),
+            Expression::Access(acc) => self.compile_access(acc),
+            Expression::Clone(cl) => {
+                let src = self.compile_expr(cl.object)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::CloneObj { dst, src });
+                Ok(dst)
+            }
             Expression::Construct(c) => self.compile_construct(c),
             Expression::Call(call) => self.compile_call(call),
             other => Err(Thrown::unsupported(
@@ -963,6 +1230,13 @@ impl ProtoBuilder {
             Op::And(_) | Op::LowAnd(_) => return self.compile_logical(b, true),
             Op::Or(_) | Op::LowOr(_) => return self.compile_logical(b, false),
             Op::NullCoalesce(_) => return self.compile_coalesce(b),
+            Op::Instanceof(_) => {
+                let val = self.compile_expr(b.lhs)?;
+                let class = self.class_ref(b.rhs)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::InstanceOf { dst, val, class });
+                return Ok(dst);
+            }
             _ => {}
         }
 
@@ -996,10 +1270,12 @@ impl ProtoBuilder {
                 // a xor b == (bool)a != (bool)b, via cast+compare
                 Instr::Cmp { dst, a, b: r, kind: CmpKind::Ne }
             }
-            Op::Instanceof(_) => {
-                return Err(Thrown::unsupported("instanceof", "objects arrive in phase 7"))
-            }
-            Op::And(_) | Op::Or(_) | Op::LowAnd(_) | Op::LowOr(_) | Op::NullCoalesce(_) => {
+            Op::And(_)
+            | Op::Or(_)
+            | Op::LowAnd(_)
+            | Op::LowOr(_)
+            | Op::NullCoalesce(_)
+            | Op::Instanceof(_) => {
                 unreachable!("handled above")
             }
         };
@@ -1123,7 +1399,9 @@ impl ProtoBuilder {
                 self.emit(Instr::IncDec { dst, cv, pre, delta });
                 Ok(dst)
             }
-            Expression::ArrayAccess(_) => {
+            Expression::ArrayAccess(_)
+            | Expression::Access(Access::Property(_))
+            | Expression::Access(Access::StaticProperty(_)) => {
                 let mut steps = Vec::new();
                 let root = self.collect_lvalue_steps(target, &mut steps)?;
                 self.emit_cursor(root, &steps);
@@ -1131,7 +1409,7 @@ impl ProtoBuilder {
                 self.emit(Instr::IncDecLval { dst, pre, delta });
                 Ok(dst)
             }
-            _ => Err(Thrown::unsupported("++/-- target", "only variables and array elements")),
+            _ => Err(Thrown::unsupported("++/-- target", "variables, array elements, properties")),
         }
     }
 
@@ -1297,9 +1575,20 @@ impl ProtoBuilder {
 
     fn compile_call(&mut self, call: &phrust_frontend::cst::Call) -> Result<Reg, Thrown> {
         use phrust_frontend::cst::Call;
-        let Call::Function(fc) = call else {
-            return Err(Thrown::unsupported("method/static call", "objects arrive in phase 7"));
-        };
+        match call {
+            Call::Function(fc) => self.compile_function_call(fc),
+            Call::Method(mc) => self.compile_method_call(mc.object, &mc.method, &mc.argument_list),
+            Call::StaticMethod(smc) => self.compile_static_call(smc),
+            Call::NullSafeMethod(_) => {
+                Err(Thrown::unsupported("?->method() call", "null-safe method calls deferred"))
+            }
+        }
+    }
+
+    fn compile_function_call(
+        &mut self,
+        fc: &phrust_frontend::cst::FunctionCall,
+    ) -> Result<Reg, Thrown> {
         let name_bytes = match fc.function {
             Expression::Identifier(id) => identifier_name(id).to_vec(),
             Expression::ConstantAccess(ca) => identifier_name(&ca.name).to_vec(),
@@ -1370,9 +1659,9 @@ impl ProtoBuilder {
         &mut self,
         target: &Expression,
         steps: &mut Vec<CursorStep>,
-    ) -> Result<Reg, Thrown> {
+    ) -> Result<LvalRoot, Thrown> {
         match target {
-            Expression::Variable(Variable::Direct(d)) => Ok(self.cv(strip_dollar(d.name))),
+            Expression::Variable(Variable::Direct(d)) => Ok(LvalRoot::Cv(self.cv(strip_dollar(d.name)))),
             Expression::ArrayAccess(aa) => {
                 let root = self.collect_lvalue_steps(aa.array, steps)?;
                 let key = self.compile_expr(aa.index)?;
@@ -1384,21 +1673,188 @@ impl ProtoBuilder {
                 steps.push(CursorStep::Append);
                 Ok(root)
             }
+            Expression::Access(Access::Property(pa)) => {
+                let root = self.collect_lvalue_steps(pa.object, steps)?;
+                let name = self.selector_name(&pa.property)?;
+                steps.push(CursorStep::Prop(name));
+                Ok(root)
+            }
+            Expression::Access(Access::StaticProperty(spa)) => {
+                // Static property is the cursor root, not a step.
+                let class = self.class_ref(spa.class)?;
+                let name = self.static_prop_name(&spa.property)?;
+                Ok(LvalRoot::StaticProp(class, name))
+            }
             _ => Err(Thrown::unsupported(
                 "assignment target",
-                "only variables and array elements are supported",
+                "only variables, array elements, and properties are supported",
             )),
         }
     }
 
-    fn emit_cursor(&mut self, root: Reg, steps: &[CursorStep]) {
-        self.emit(Instr::LvalCv { cv: root });
+    fn emit_cursor(&mut self, root: LvalRoot, steps: &[CursorStep]) {
+        match root {
+            LvalRoot::Cv(cv) => self.emit(Instr::LvalCv { cv }),
+            LvalRoot::StaticProp(class, name) => self.emit(Instr::LvalStaticProp { class, name }),
+        }
         for step in steps {
             match step {
                 CursorStep::Key(r) => self.emit(Instr::LvalKey { key: *r }),
                 CursorStep::Append => self.emit(Instr::LvalAppend),
+                CursorStep::Prop(n) => self.emit(Instr::LvalProp { name: *n }),
             }
         }
+    }
+
+    // --- OOP expression lowering ---
+
+    /// Resolve the class part of `new`/`::`/`instanceof` to a `ClassRef`.
+    fn class_ref(&mut self, expr: &Expression) -> Result<ClassRef, Thrown> {
+        match expr {
+            Expression::Identifier(id) => Ok(ClassRef::Name(self.intern_name(identifier_name(id)))),
+            Expression::Self_(_) => Ok(ClassRef::SelfClass),
+            Expression::Static(_) => Ok(ClassRef::StaticClass),
+            Expression::Parent(_) => Ok(ClassRef::ParentClass),
+            other => Ok(ClassRef::Dynamic(self.compile_expr(other)?)),
+        }
+    }
+
+    fn selector_name(
+        &mut self,
+        sel: &phrust_frontend::cst::ClassLikeMemberSelector,
+    ) -> Result<NIdx, Thrown> {
+        match sel {
+            ClassLikeMemberSelector::Identifier(li) => Ok(self.intern_name(li.value)),
+            _ => Err(Thrown::unsupported("dynamic member name", "`->$x`/`->{expr}` deferred")),
+        }
+    }
+
+    fn static_prop_name(&mut self, v: &Variable) -> Result<NIdx, Thrown> {
+        match v {
+            Variable::Direct(d) => Ok(self.intern_name(strip_dollar(d.name))),
+            _ => Err(Thrown::unsupported("dynamic static property", "deferred")),
+        }
+    }
+
+    /// Marshal positional args into a contiguous register window.
+    fn compile_arg_window(
+        &mut self,
+        args: Option<&phrust_frontend::cst::ArgumentList>,
+    ) -> Result<(Reg, u16), Thrown> {
+        let mut arg_regs = Vec::new();
+        if let Some(list) = args {
+            for arg in list.arguments.iter() {
+                match arg {
+                    Argument::Positional(p) if p.ellipsis.is_none() => {
+                        arg_regs.push(self.compile_expr(p.value)?)
+                    }
+                    Argument::Positional(_) => {
+                        return Err(Thrown::unsupported("argument spread", "deferred"))
+                    }
+                    Argument::Named(_) => {
+                        return Err(Thrown::unsupported("named arguments", "deferred"))
+                    }
+                }
+            }
+        }
+        let argc = arg_regs.len() as u16;
+        let base = self.alloc_temps(argc);
+        for (i, r) in arg_regs.into_iter().enumerate() {
+            self.emit(Instr::Mov { dst: base + i as Reg, src: r });
+        }
+        Ok((base, argc))
+    }
+
+    fn compile_new(&mut self, inst: &phrust_frontend::cst::Instantiation) -> Result<Reg, Thrown> {
+        let class = self.class_ref(inst.class)?;
+        let (base, argc) = self.compile_arg_window(inst.argument_list.as_ref())?;
+        let dst = self.alloc_temp();
+        let cache = self.alloc_cache();
+        self.emit(Instr::New { dst, class, base, argc, cache });
+        Ok(dst)
+    }
+
+    fn compile_access(&mut self, acc: &Access) -> Result<Reg, Thrown> {
+        match acc {
+            Access::Property(pa) => {
+                let obj = self.compile_expr(pa.object)?;
+                let name = self.selector_name(&pa.property)?;
+                let dst = self.alloc_temp();
+                let cache = self.alloc_cache();
+                self.emit(Instr::FetchProp { dst, obj, name, cache });
+                Ok(dst)
+            }
+            Access::NullSafeProperty(npa) => {
+                // `$o?->p`: null short-circuits the whole access to null.
+                let obj = self.compile_expr(npa.object)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::Mov { dst, src: obj });
+                let jn = self.code.len();
+                self.emit(Instr::Nop); // JmpNull dst -> Lnull
+                let name = self.selector_name(&npa.property)?;
+                let cache = self.alloc_cache();
+                let t = self.alloc_temp();
+                self.emit(Instr::FetchProp { dst: t, obj: dst, name, cache });
+                self.emit(Instr::Mov { dst, src: t });
+                let jend = self.code.len();
+                self.emit(Instr::Nop); // Jmp end
+                let lnull = self.here();
+                self.emit(Instr::LoadNull { dst });
+                let end = self.here();
+                self.code[jn] = Instr::JmpNull { src: dst, target: lnull };
+                self.code[jend] = Instr::Jmp { target: end };
+                Ok(dst)
+            }
+            Access::StaticProperty(spa) => {
+                let class = self.class_ref(spa.class)?;
+                let name = self.static_prop_name(&spa.property)?;
+                let dst = self.alloc_temp();
+                let cache = self.alloc_cache();
+                self.emit(Instr::FetchStaticProp { dst, class, name, cache });
+                Ok(dst)
+            }
+            Access::ClassConstant(cca) => {
+                let class = self.class_ref(cca.class)?;
+                let name = match &cca.constant {
+                    phrust_frontend::cst::ClassLikeConstantSelector::Identifier(li) => {
+                        self.intern_name(li.value)
+                    }
+                    _ => return Err(Thrown::unsupported("dynamic class constant", "deferred")),
+                };
+                let dst = self.alloc_temp();
+                let cache = self.alloc_cache();
+                self.emit(Instr::FetchClassConst { dst, class, name, cache });
+                Ok(dst)
+            }
+        }
+    }
+
+    fn compile_method_call(
+        &mut self,
+        object: &Expression,
+        selector: &phrust_frontend::cst::ClassLikeMemberSelector,
+        args: &phrust_frontend::cst::ArgumentList,
+    ) -> Result<Reg, Thrown> {
+        let obj = self.compile_expr(object)?;
+        let name = self.selector_name(selector)?;
+        let (base, argc) = self.compile_arg_window(Some(args))?;
+        let dst = self.alloc_temp();
+        let cache = self.alloc_cache();
+        self.emit(Instr::CallMethod { dst, obj, name, base, argc, cache });
+        Ok(dst)
+    }
+
+    fn compile_static_call(
+        &mut self,
+        smc: &phrust_frontend::cst::StaticMethodCall,
+    ) -> Result<Reg, Thrown> {
+        let class = self.class_ref(smc.class)?;
+        let name = self.selector_name(&smc.method)?;
+        let (base, argc) = self.compile_arg_window(Some(&smc.argument_list))?;
+        let dst = self.alloc_temp();
+        let cache = self.alloc_cache();
+        self.emit(Instr::CallStatic { dst, class, name, base, argc, cache });
+        Ok(dst)
     }
 
     fn compile_assignment(
@@ -1423,8 +1879,14 @@ impl ProtoBuilder {
             }
         }
 
-        // Array-element / append target: use the lvalue cursor.
-        if matches!(a.lhs, Expression::ArrayAccess(_) | Expression::ArrayAppend(_)) {
+        // Array-element / property / static-property target: use the lvalue cursor.
+        if matches!(
+            a.lhs,
+            Expression::ArrayAccess(_)
+                | Expression::ArrayAppend(_)
+                | Expression::Access(Access::Property(_))
+                | Expression::Access(Access::StaticProperty(_))
+        ) {
             let mut steps = Vec::new();
             let root = self.collect_lvalue_steps(a.lhs, &mut steps)?;
             let rhs = self.compile_expr(a.rhs)?;
@@ -1537,6 +1999,68 @@ fn identifier_name<'a>(id: &'a Identifier<'a>) -> &'a [u8] {
         Some(pos) => &raw[pos + 1..],
         None => raw,
     }
+}
+
+/// Fold a compile-time-constant expression (literals, const arrays, true/false/
+/// null, negated numeric literals) to a `Value`. Errors on anything requiring
+/// runtime evaluation (named constants, class constants, arithmetic).
+fn fold_const(e: &Expression) -> Result<Value, Thrown> {
+    let v = match e {
+        Expression::Literal(l) => literal_value(l),
+        Expression::Parenthesized(p) => return fold_const(p.expression),
+        Expression::Array(arr) => return fold_const_array(arr.elements.iter()),
+        Expression::LegacyArray(arr) => return fold_const_array(arr.elements.iter()),
+        Expression::ConstantAccess(ca) => match identifier_name(&ca.name) {
+            b"true" | b"TRUE" | b"True" => Value::Bool(true),
+            b"false" | b"FALSE" | b"False" => Value::Bool(false),
+            b"null" | b"NULL" | b"Null" => Value::Null,
+            _ => return Err(non_const_err()),
+        },
+        Expression::UnaryPrefix(u) => {
+            use UnaryPrefixOperator as Op;
+            let inner = fold_const(u.operand)?;
+            match (&u.operator, inner) {
+                (Op::Negation(_), Value::Int(n)) => Value::Int(-n),
+                (Op::Negation(_), Value::Float(f)) => Value::Float(-f),
+                (Op::Plus(_), v @ (Value::Int(_) | Value::Float(_))) => v,
+                _ => return Err(non_const_err()),
+            }
+        }
+        _ => return Err(non_const_err()),
+    };
+    Ok(v)
+}
+
+fn fold_const_array<'a>(
+    els: impl Iterator<Item = &'a ArrayElement<'a>>,
+) -> Result<Value, Thrown> {
+    let mut a = PhpArray::new();
+    for el in els {
+        match el {
+            ArrayElement::KeyValue(kv) => {
+                let k = fold_const(kv.key)?;
+                let v = fold_const(kv.value)?;
+                let key = ArrayKey::from_value(&k)
+                    .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
+                a.insert(key, v);
+            }
+            ArrayElement::Value(v) => a.push(fold_const(v.value)?),
+            ArrayElement::Variadic(_) => return Err(non_const_err()),
+            ArrayElement::Missing(_) => {}
+        }
+    }
+    Ok(Value::Array(a))
+}
+
+fn non_const_err() -> Thrown {
+    Thrown::unsupported(
+        "non-constant initializer",
+        "only literal / array / true/false/null constant initializers for now",
+    )
+}
+
+fn const_value_static(e: &Expression) -> Result<Value, Thrown> {
+    fold_const(e)
 }
 
 /// Fold a literal AST node to its runtime value (same rules as the oracle).

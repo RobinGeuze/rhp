@@ -10,3 +10,5 @@ phrust-values = { path = "../phrust-values" }
 phrust-bytecode = { path = "../phrust-bytecode" }
 phrust-semantics = { path = "../phrust-semantics" }
 phrust-builtins = { path = "../phrust-builtins" }
+indexmap = { workspace = true }
+rustc-hash = { workspace = true }

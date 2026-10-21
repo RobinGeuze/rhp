@@ -14,7 +14,7 @@
 
 use std::rc::Rc;
 
-use phrust_values::{PhpStr, Value};
+use phrust_values::{ClassFlags, ClassKind, PhpStr, Value, Visibility};
 
 // --- operand newtypes (kept as aliases for a lean encoding) ---------------
 pub type Reg = u16; // register-file index: CVs in [0,num_cvs), temporaries above
@@ -127,6 +127,30 @@ pub enum Instr {
     /// `match` with no matching arm and no default: throw `\UnhandledMatchError`.
     ThrowMatchError { subject: Reg },
 
+    // -- OOP (phase 7) --
+    /// `new C(args)`: allocate into `dst`, then run `__construct` via the window.
+    New { dst: Reg, class: ClassRef, base: Reg, argc: u16, cache: CacheIdx },
+    /// `$o->p` (value context).
+    FetchProp { dst: Reg, obj: Reg, name: NIdx, cache: CacheIdx },
+    /// `C::$p` (value context).
+    FetchStaticProp { dst: Reg, class: ClassRef, name: NIdx, cache: CacheIdx },
+    /// `C::K` / `C::class`.
+    FetchClassConst { dst: Reg, class: ClassRef, name: NIdx, cache: CacheIdx },
+    /// `$o->m(args)`.
+    CallMethod { dst: Reg, obj: Reg, name: NIdx, base: Reg, argc: u16, cache: CacheIdx },
+    /// `C::m(args)` / `self::` / `static::` / `parent::`.
+    CallStatic { dst: Reg, class: ClassRef, name: NIdx, base: Reg, argc: u16, cache: CacheIdx },
+    /// `$val instanceof C` (never throws).
+    InstanceOf { dst: Reg, val: Reg, class: ClassRef },
+    /// `clone $src`: shallow copy + new id + `__clone`.
+    CloneObj { dst: Reg, src: Reg },
+    /// Cursor step: descend into object property `name`.
+    LvalProp { name: NIdx },
+    /// Cursor root: a static-property cell `C::$name`.
+    LvalStaticProp { class: ClassRef, name: NIdx },
+    /// Link + register a conditionally-declared class at this point.
+    DeclareClass { class_idx: u32 },
+
     // -- references --
     /// `$dst =& $src`: promote `src`'s slot to a shared Ref; `dst` aliases it.
     BindRef { dst_cv: Reg, src_cv: Reg },
@@ -214,6 +238,10 @@ pub struct FunctionProto {
     pub caches: Vec<InlineCache>,
     pub debug: DebugInfo,
     pub flags: ProtoFlags,
+    /// CV holding `$this` for an instance method; `None` otherwise.
+    pub this_cv: Option<Reg>,
+    /// True for a `static function` (no `$this` binding).
+    pub is_static: bool,
 }
 
 impl FunctionProto {
@@ -232,6 +260,8 @@ impl FunctionProto {
             caches: Vec::new(),
             debug: DebugInfo::default(),
             flags: ProtoFlags::default(),
+            this_cv: None,
+            is_static: false,
         }
     }
 }
@@ -248,9 +278,91 @@ impl std::fmt::Debug for FunctionProto {
     }
 }
 
-/// A fully compiled program: the script body plus all declared functions.
+/// A fully compiled program: the script body, functions, and class declarations.
 pub struct Program {
     pub main: Rc<FunctionProto>,
     pub functions: Vec<Rc<FunctionProto>>,
-    // classes: Vec<ClassEntry>  — phase 7
+    /// Compiled, UN-LINKED class declarations; the VM links them (`Vm::install`),
+    /// resolving `extends`/`implements`/`use` by name and assigning `ClassId`s.
+    pub classes: Vec<ClassProto>,
+}
+
+// ---------------------------------------------------------------------------
+// OOP: class operand + compiled (un-linked) class declarations
+// ---------------------------------------------------------------------------
+
+/// How a `New`/`CallStatic`/`FetchStaticProp`/`FetchClassConst`/`InstanceOf`
+/// names its class. `Copy`, owns no heap.
+#[derive(Clone, Copy, Debug)]
+pub enum ClassRef {
+    /// `Foo` — interned name; resolved to a `ClassId` at run time (IC-cacheable).
+    Name(NIdx),
+    /// `self` — the current frame's defining class.
+    SelfClass,
+    /// `parent` — the parent of the frame's defining class.
+    ParentClass,
+    /// `static` — the current frame's called class (late static binding).
+    StaticClass,
+    /// `new $cls()` / `$cls::m()` — a runtime string or object in a register.
+    Dynamic(Reg),
+}
+
+/// One compiled class/interface/trait/enum declaration (parents referenced by
+/// name; resolved to `ClassId` at link time).
+pub struct ClassProto {
+    pub name: PhpStr,
+    pub kind: ClassKind,
+    pub flags: ClassFlags,
+    pub parent: Option<PhpStr>,
+    pub interfaces: Vec<PhpStr>,
+    pub traits: Vec<PhpStr>,
+    pub methods: Vec<MethodProto>,
+    pub props: Vec<PropProto>,
+    pub static_props: Vec<StaticPropProto>,
+    pub constants: Vec<ConstProto>,
+}
+
+pub struct MethodProto {
+    pub name: PhpStr,
+    pub proto: Rc<FunctionProto>,
+    pub visibility: Visibility,
+    pub is_static: bool,
+    pub is_abstract: bool,
+    pub is_final: bool,
+}
+
+pub struct PropProto {
+    pub name: PhpStr,
+    pub visibility: Visibility,
+    pub is_readonly: bool,
+    pub default: PropDefaultProto,
+}
+
+pub struct StaticPropProto {
+    pub name: PhpStr,
+    pub visibility: Visibility,
+    pub is_readonly: bool,
+    pub init: ConstInitProto,
+}
+
+pub struct ConstProto {
+    pub name: PhpStr,
+    pub visibility: Visibility,
+    pub value: ConstInitProto,
+}
+
+/// A property's per-instance default, as compiled.
+pub enum PropDefaultProto {
+    /// Constant default folded at compile time.
+    Const(Value),
+    /// Non-constant initializer: a zero-param thunk run per-instance at `new`.
+    Init(Rc<FunctionProto>),
+    /// Declared without a default.
+    None,
+}
+
+/// A class-constant / static-prop initializer, as compiled.
+pub enum ConstInitProto {
+    Const(Value),
+    Thunk(Rc<FunctionProto>),
 }

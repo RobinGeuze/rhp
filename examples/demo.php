@@ -84,4 +84,41 @@ echo "base64: ", base64_encode($msg), "\n";
 echo "json:   ", json_encode(["engine" => "phrust", "shapes" => count($shapes), "ok" => true]), "\n";
 echo "date:   ", date("Y-m-d", 1760000000), "\n";
 
+echo "\n=== closures & first-class callables ===\n";
+$scale = fn(float $factor) => fn(float $x) => $x * $factor;
+$double = $scale(2.0);
+echo "double(21) = ", $double(21), "\n";
+$areas = array_map(fn($s) => round($s->area(), 2), $shapes);
+echo "areas: ", implode(", ", $areas), "\n";
+$total = array_reduce($areas, fn($c, $a) => $c + $a, 0.0);
+echo "total area: ", round($total, 2), "\n";
+echo "lengths: ", implode(",", array_map(strlen(...), ["a", "bb", "ccc"])), "\n";
+
+echo "\n=== enums ===\n";
+enum Suit: string {
+    case Hearts = '♥';
+    case Spades = '♠';
+    public function color(): string {
+        return match ($this) {
+            Suit::Hearts => "red",
+            Suit::Spades => "black",
+        };
+    }
+}
+foreach (Suit::cases() as $s) {
+    echo "  {$s->name} ({$s->value}) is {$s->color()}\n";
+}
+echo "from('♠') = ", Suit::from('♠')->name, "\n";
+
+echo "\n=== named args, sorting, regex ===\n";
+function label(string $text, int $width = 10, string $fill = ".") {
+    return str_pad($text, $width, $fill);
+}
+echo "[", label(text: "hi", width: 8), "]\n";
+$nums = [5, 3, 8, 1, 9, 2];
+usort($nums, fn($a, $b) => $a <=> $b);
+echo "sorted: ", implode(",", $nums), "\n";
+preg_match('/(\w+)@(\w+)\.(\w+)/', "user@example.com", $m);
+echo "email user=", $m[1], " domain=", $m[2], "\n";
+
 echo "\nDone.\n";

@@ -121,6 +121,9 @@ pub enum Instr {
     /// Resolve `name` (case-insensitive): refused → Unsupported; builtin →
     /// call with `regs[base..base+argc]`; user function (later) → push frame.
     Call { dst: Reg, name: NIdx, base: Reg, argc: u16 },
+    /// Variadic call: `args` holds a `PhpArray` of the evaluated arguments
+    /// (used when a call site contains argument spread `...$x`).
+    CallV { dst: Reg, name: NIdx, args: Reg },
     Ret { src: Reg },
     RetNull,
 
@@ -138,6 +141,10 @@ pub enum Instr {
     // -- OOP (phase 7) --
     /// `new C(args)`: allocate into `dst`, then run `__construct` via the window.
     New { dst: Reg, class: ClassRef, base: Reg, argc: u16, cache: CacheIdx },
+    /// Variadic `new` / method / static calls: `args` holds a `PhpArray`.
+    NewV { dst: Reg, class: ClassRef, args: Reg },
+    CallMethodV { dst: Reg, obj: Reg, name: NIdx, args: Reg },
+    CallStaticV { dst: Reg, class: ClassRef, name: NIdx, args: Reg },
     /// `$o->p` (value context).
     FetchProp { dst: Reg, obj: Reg, name: NIdx, cache: CacheIdx },
     /// `C::$p` (value context).

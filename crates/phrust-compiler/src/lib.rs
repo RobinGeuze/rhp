@@ -790,6 +790,7 @@ impl ProtoBuilder {
             }
             Expression::Array(arr) => self.scan_array_vars(arr.elements.iter()),
             Expression::LegacyArray(arr) => self.scan_array_vars(arr.elements.iter()),
+            Expression::List(lst) => self.scan_array_vars(lst.elements.iter()),
             Expression::ArrayAccess(aa) => {
                 self.scan_expr_vars(aa.array);
                 self.scan_expr_vars(aa.index);
@@ -1168,21 +1169,44 @@ impl ProtoBuilder {
         let src = self.compile_expr(fe.expression)?;
         let arr_reg = self.alloc_temp();
         let pos_reg = self.alloc_temp();
-        let saved_floor = self.temp_floor;
-        self.temp_floor = self.next_temp; // protect src/arr_reg/pos_reg across the body
 
-        let (key_cv, val_cv) = match &fe.target {
-            ForeachTarget::Value(t) => (Reg::MAX, self.foreach_target_cv(t.value)?),
-            ForeachTarget::KeyValue(t) => {
-                (self.foreach_target_cv(t.key)?, self.foreach_target_cv(t.value)?)
-            }
+        // Resolve key + value targets. A value target may be a destructuring
+        // pattern, which binds into a protected element register per iteration.
+        let (key_cv, val_expr) = match &fe.target {
+            ForeachTarget::Value(t) => (Reg::MAX, t.value),
+            ForeachTarget::KeyValue(t) => (self.foreach_target_cv(t.key)?, t.value),
         };
+        let (val_cv, val_pattern): (Reg, Option<&Expression>) = match val_expr {
+            Expression::Variable(Variable::Direct(d)) => (self.cv(strip_dollar(d.name)), None),
+            Expression::UnaryPrefix(u)
+                if matches!(u.operator, UnaryPrefixOperator::Reference(_)) =>
+            {
+                return Err(Thrown::unsupported(
+                    "foreach by reference",
+                    "references arrive in the next phase",
+                ))
+            }
+            Expression::Array(_) | Expression::List(_) => (self.alloc_temp(), Some(val_expr)),
+            _ => return Err(Thrown::unsupported("foreach target", "variable or destructuring only")),
+        };
+
+        let saved_floor = self.temp_floor;
+        self.temp_floor = self.next_temp; // protect iterator + element regs across the body
 
         let reset_pos = self.code.len();
         self.emit(Instr::Nop); // FeReset (needs end)
         let fetch_label = self.here();
         let fetch_pos = self.code.len();
         self.emit(Instr::Nop); // FeFetch (needs end)
+
+        // Destructure the fetched element into the pattern, if any.
+        if let Some(pattern) = val_pattern {
+            match pattern {
+                Expression::Array(arr) => self.destructure_into(arr.elements.iter(), val_cv)?,
+                Expression::List(lst) => self.destructure_into(lst.elements.iter(), val_cv)?,
+                _ => unreachable!(),
+            }
+        }
 
         self.loops.push(LoopCtx::default());
         match &fe.body {
@@ -1301,6 +1325,62 @@ impl ProtoBuilder {
             catches: catch_arms,
             finally: finally_pc,
         });
+        Ok(())
+    }
+
+    /// Assign the elements of `src` (an array value) to a destructuring pattern.
+    fn destructure_into<'a>(
+        &mut self,
+        elements: impl Iterator<Item = &'a ArrayElement<'a>>,
+        src: Reg,
+    ) -> Result<(), Thrown> {
+        let mut idx: i64 = 0;
+        for el in elements {
+            match el {
+                ArrayElement::Missing(_) => idx += 1,
+                ArrayElement::Value(v) => {
+                    let key = self.alloc_temp();
+                    self.emit(Instr::LoadInt { dst: key, n: idx });
+                    let val = self.alloc_temp();
+                    self.emit(Instr::DimFetch { dst: val, arr: src, key });
+                    self.store_to_target(v.value, val)?;
+                    idx += 1;
+                }
+                ArrayElement::KeyValue(kv) => {
+                    let key = self.compile_expr(kv.key)?;
+                    let val = self.alloc_temp();
+                    self.emit(Instr::DimFetch { dst: val, arr: src, key });
+                    self.store_to_target(kv.value, val)?;
+                }
+                ArrayElement::Variadic(_) => {
+                    return Err(Thrown::unsupported("spread in destructuring", "deferred"))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Store `src` into a single destructuring target (variable, nested pattern,
+    /// array element, or property).
+    fn store_to_target(&mut self, target: &Expression, src: Reg) -> Result<(), Thrown> {
+        match target {
+            Expression::Variable(Variable::Direct(d)) => {
+                let cv = self.cv(strip_dollar(d.name));
+                self.emit(Instr::Assign { cv, src });
+            }
+            Expression::Array(arr) => self.destructure_into(arr.elements.iter(), src)?,
+            Expression::List(lst) => self.destructure_into(lst.elements.iter(), src)?,
+            Expression::ArrayAccess(_)
+            | Expression::ArrayAppend(_)
+            | Expression::Access(Access::Property(_))
+            | Expression::Access(Access::StaticProperty(_)) => {
+                let mut steps = Vec::new();
+                let root = self.collect_lvalue_steps(target, &mut steps)?;
+                self.emit_cursor(root, &steps);
+                self.emit(Instr::AssignLval { src });
+            }
+            _ => return Err(Thrown::unsupported("destructuring target", "deferred")),
+        }
         Ok(())
     }
 
@@ -1844,6 +1924,15 @@ impl ProtoBuilder {
             }
         };
 
+        // Spread call `foo(...$args)`: marshal args into an array, emit CallV.
+        if has_spread(&fc.argument_list) {
+            let args = self.build_args_array(Some(&fc.argument_list))?;
+            let name = self.intern_name(&name_bytes);
+            let dst = self.alloc_temp();
+            self.emit(Instr::CallV { dst, name, args });
+            return Ok(dst);
+        }
+
         // Per-parameter by-ref flags of the (statically-known) callee.
         let sig = self.sigs.get(&name_bytes.to_ascii_lowercase()).cloned();
 
@@ -1980,6 +2069,34 @@ impl ProtoBuilder {
         }
     }
 
+    /// Build a `PhpArray` of the call arguments (used when the call has a
+    /// spread `...$x`): positional args are pushed, spreads are merged.
+    fn build_args_array(
+        &mut self,
+        args: Option<&phrust_frontend::cst::ArgumentList>,
+    ) -> Result<Reg, Thrown> {
+        let dst = self.alloc_temp();
+        self.emit(Instr::NewArray { dst, cap: 0 });
+        if let Some(list) = args {
+            for arg in list.arguments.iter() {
+                match arg {
+                    Argument::Positional(p) => {
+                        let r = self.compile_expr(p.value)?;
+                        if p.ellipsis.is_some() {
+                            self.emit(Instr::ArrSpread { arr: dst, src: r });
+                        } else {
+                            self.emit(Instr::ArrPush { arr: dst, val: r });
+                        }
+                    }
+                    Argument::Named(_) => {
+                        return Err(Thrown::unsupported("named argument with spread", "deferred"))
+                    }
+                }
+            }
+        }
+        Ok(dst)
+    }
+
     /// Marshal positional args into a contiguous register window.
     fn compile_arg_window(
         &mut self,
@@ -2011,6 +2128,12 @@ impl ProtoBuilder {
 
     fn compile_new(&mut self, inst: &phrust_frontend::cst::Instantiation) -> Result<Reg, Thrown> {
         let class = self.class_ref(inst.class)?;
+        if inst.argument_list.as_ref().is_some_and(has_spread) {
+            let args = self.build_args_array(inst.argument_list.as_ref())?;
+            let dst = self.alloc_temp();
+            self.emit(Instr::NewV { dst, class, args });
+            return Ok(dst);
+        }
         let (base, argc) = self.compile_arg_window(inst.argument_list.as_ref())?;
         let dst = self.alloc_temp();
         let cache = self.alloc_cache();
@@ -2083,6 +2206,12 @@ impl ProtoBuilder {
         let obj = self.compile_expr(object)?;
         if !null_safe {
             let name = self.selector_name(selector)?;
+            if has_spread(args) {
+                let args = self.build_args_array(Some(args))?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::CallMethodV { dst, obj, name, args });
+                return Ok(dst);
+            }
             let (base, argc) = self.compile_arg_window(Some(args))?;
             let dst = self.alloc_temp();
             let cache = self.alloc_cache();
@@ -2117,6 +2246,12 @@ impl ProtoBuilder {
     ) -> Result<Reg, Thrown> {
         let class = self.class_ref(smc.class)?;
         let name = self.selector_name(&smc.method)?;
+        if has_spread(&smc.argument_list) {
+            let args = self.build_args_array(Some(&smc.argument_list))?;
+            let dst = self.alloc_temp();
+            self.emit(Instr::CallStaticV { dst, class, name, args });
+            return Ok(dst);
+        }
         let (base, argc) = self.compile_arg_window(Some(&smc.argument_list))?;
         let dst = self.alloc_temp();
         let cache = self.alloc_cache();
@@ -2128,6 +2263,20 @@ impl ProtoBuilder {
         &mut self,
         a: &phrust_frontend::cst::Assignment,
     ) -> Result<Reg, Thrown> {
+        // Destructuring: `[$a, $b] = ...` / `list($a, $b) = ...`.
+        if matches!(a.operator, AssignmentOperator::Assign(_)) {
+            if let Expression::Array(arr) = a.lhs {
+                let rhs = self.compile_expr(a.rhs)?;
+                self.destructure_into(arr.elements.iter(), rhs)?;
+                return Ok(rhs);
+            }
+            if let Expression::List(lst) = a.lhs {
+                let rhs = self.compile_expr(a.rhs)?;
+                self.destructure_into(lst.elements.iter(), rhs)?;
+                return Ok(rhs);
+            }
+        }
+
         // Reference assignment `$b =& $a` — rhs is `&<lvalue>`.
         if let (AssignmentOperator::Assign(_), Expression::UnaryPrefix(u)) = (&a.operator, a.rhs) {
             if matches!(u.operator, UnaryPrefixOperator::Reference(_)) {
@@ -2228,6 +2377,12 @@ impl ProtoBuilder {
 
 fn strip_dollar(name: &[u8]) -> &[u8] {
     name.strip_prefix(b"$").unwrap_or(name)
+}
+
+fn has_spread(list: &phrust_frontend::cst::ArgumentList) -> bool {
+    list.arguments
+        .iter()
+        .any(|a| matches!(a, Argument::Positional(p) if p.ellipsis.is_some()))
 }
 
 /// Build the instruction for a compound-assignment operator `dst = a <op> b`.

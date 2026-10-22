@@ -389,9 +389,24 @@ impl Vm {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
-        let callee = method.proto.clone();
         let args: Vec<Value> =
             (0..argc).map(|i| self.stack[top].regs[(base + i) as usize].clone()).collect();
+        self.push_method_frame(method, this, called_class, args, dst)
+    }
+
+    /// Push a method frame with pre-collected args (for spread / magic dispatch).
+    pub(crate) fn push_method_frame(
+        &mut self,
+        method: &ResolvedMethod,
+        this: Option<ObjectHandle>,
+        called_class: ClassId,
+        args: Vec<Value>,
+        dst: Reg,
+    ) -> Result<(), Thrown> {
+        if self.stack.len() >= self.max_depth {
+            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
+        }
+        let callee = method.proto.clone();
         let mut frame = Frame::new(callee.clone(), dst);
         crate::bind_params(&callee, &args, &mut frame.regs)?;
         if let (Some(this_cv), Some(obj)) = (callee.this_cv, this) {

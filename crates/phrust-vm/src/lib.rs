@@ -823,6 +823,99 @@ impl Vm {
                     self.stack[top].regs[dst as usize] = Value::Ref(rc);
                 }
 
+                Instr::CallV { dst, name, args } => {
+                    let fname = proto.names[name as usize].as_bytes().to_ascii_lowercase();
+                    if let Some(reason) =
+                        builtins::is_refused(std::str::from_utf8(&fname).unwrap_or(""))
+                    {
+                        let shown = String::from_utf8_lossy(&fname).into_owned();
+                        return Err(Thrown::unsupported(format!("{shown}()"), reason));
+                    }
+                    let arr = self.reg_get(top, args);
+                    let argv = self.spread_args(&arr);
+                    if let Some(&fnidx) = self.fn_names.get(&fname) {
+                        let callee = self.functions[fnidx].clone();
+                        self.push_user_frame(callee, argv, dst)?;
+                    } else {
+                        let name_str = String::from_utf8_lossy(&fname).into_owned();
+                        let out = self.invoke_builtin(&name_str, argv)?;
+                        self.reg_set(top, dst, out);
+                    }
+                }
+                Instr::NewV { dst, class, args } => {
+                    let cls = self.resolve_class(top, class)?;
+                    let entry = self.class(cls);
+                    if entry.kind != ClassKind::Class || entry.flags.is_abstract {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Cannot instantiate {}",
+                                String::from_utf8_lossy(entry.name.as_bytes())
+                            ),
+                        ));
+                    }
+                    let obj = self.new_object(cls);
+                    self.reg_set(top, dst, Value::Object(obj.clone()));
+                    if let Some(m) = self.lookup_method(cls, b"__construct") {
+                        let arr = self.reg_get(top, args);
+                        let argv = self.spread_args(&arr);
+                        self.push_method_frame(&m, Some(obj), cls, argv, Reg::MAX)?;
+                    }
+                }
+                Instr::CallMethodV { dst, obj, name, args } => {
+                    let o = self.reg_get(top, obj);
+                    let Value::Object(h) = o else {
+                        return Err(Thrown::type_error("Call to a member function on non-object"));
+                    };
+                    let cls = h.borrow().class;
+                    let mname = proto.names[name as usize].as_bytes().to_vec();
+                    let Some(m) = self.lookup_method(cls, &mname) else {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Call to undefined method {}::{}()",
+                                String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                                String::from_utf8_lossy(&mname)
+                            ),
+                        ));
+                    };
+                    if !self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility) {
+                        return Err(self.access_err("method", m.defining_class, &mname, m.visibility));
+                    }
+                    let arr = self.reg_get(top, args);
+                    let argv = self.spread_args(&arr);
+                    self.push_method_frame(&m, Some(h.clone()), cls, argv, dst)?;
+                }
+                Instr::CallStaticV { dst, class, name, args } => {
+                    let cls = self.resolve_class(top, class)?;
+                    let mname = proto.names[name as usize].as_bytes().to_vec();
+                    let Some(m) = self.lookup_method(cls, &mname) else {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Call to undefined method {}::{}()",
+                                String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                                String::from_utf8_lossy(&mname)
+                            ),
+                        ));
+                    };
+                    let called = match class {
+                        ClassRef::SelfClass | ClassRef::ParentClass | ClassRef::StaticClass => {
+                            self.stack[top].called_class.unwrap_or(cls)
+                        }
+                        _ => cls,
+                    };
+                    let this = if m.is_static {
+                        None
+                    } else {
+                        self.current_this(top)
+                            .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))
+                    };
+                    let arr = self.reg_get(top, args);
+                    let argv = self.spread_args(&arr);
+                    self.push_method_frame(&m, this, called, argv, dst)?;
+                }
+
                 Instr::FetchConst { dst, name } => {
                     let cname = proto.names[name as usize].as_bytes().to_vec();
                     match self.constants.get(&cname) {
@@ -1035,10 +1128,32 @@ impl Vm {
         // kept as references; by-value binding derefs in `bind_params`.
         let args: Vec<Value> =
             (0..argc).map(|i| self.stack[top].regs[(base + i) as usize].clone()).collect();
+        self.push_user_frame(callee, args, dst)
+    }
+
+    /// Push a frame for a user function with pre-collected args.
+    fn push_user_frame(
+        &mut self,
+        callee: Rc<FunctionProto>,
+        args: Vec<Value>,
+        dst: Reg,
+    ) -> Result<(), Thrown> {
+        if self.stack.len() >= self.max_depth {
+            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
+        }
         let mut frame = Frame::new(callee.clone(), dst);
         bind_params(&callee, &args, &mut frame.regs)?;
         self.stack.push(frame);
         Ok(())
+    }
+
+    /// Flatten an array value into a positional argument vector (for spread).
+    fn spread_args(&self, arr: &Value) -> Vec<Value> {
+        match arr {
+            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+            Value::Ref(r) => self.spread_args(&r.borrow()),
+            _ => Vec::new(),
+        }
     }
 
     /// Binary op that may throw (arithmetic).
@@ -1071,6 +1186,11 @@ impl Vm {
         argc: u16,
     ) -> Result<Value, Thrown> {
         let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+        self.invoke_builtin(name, args)
+    }
+
+    /// Call a builtin by name with a pre-collected argument vector.
+    fn invoke_builtin(&mut self, name: &str, args: Vec<Value>) -> Result<Value, Thrown> {
         let Some(builtin) = builtins::lookup(name) else {
             return Err(Thrown::error("Error", format!("Call to undefined function {name}()")));
         };

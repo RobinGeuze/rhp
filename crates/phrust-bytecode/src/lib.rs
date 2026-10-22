@@ -322,6 +322,9 @@ pub struct Program {
     /// Anonymous closure / arrow-function protos, indexed by the `fnidx` operand
     /// of `MakeClosure` and by `ClosureData::fnidx`.
     pub closures: Vec<Rc<FunctionProto>>,
+    /// User-defined global constants (`const NAME = <const-expr>;`), folded at
+    /// compile time; the VM installs them into its constant table at startup.
+    pub constants: Vec<(PhpStr, Value)>,
 }
 
 // ---------------------------------------------------------------------------

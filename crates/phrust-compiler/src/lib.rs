@@ -76,6 +76,7 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
     // the built-in exception hierarchy (the "prelude").
     let mut functions = Vec::new();
     let mut classes = prelude_classes()?;
+    let mut user_constants: Vec<(PhpStr, Value)> = Vec::new();
     for stmt in program.statements.iter() {
         match stmt {
             Statement::Function(func) => {
@@ -85,6 +86,13 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
             Statement::Interface(iface) => classes.push(compile_interface(iface)?),
             Statement::Trait(tr) => classes.push(compile_trait(tr, &sigs)?),
             Statement::Enum(en) => classes.push(compile_enum(en, &sigs)?),
+            Statement::Constant(c) => {
+                // Top-level `const NAME = <const-expr>;` — fold now, install at startup.
+                for item in c.items.iter() {
+                    let value = fold_const(item.value)?;
+                    user_constants.push((PhpStr::from_bytes(item.name.value.to_vec()), value));
+                }
+            }
             _ => {}
         }
     }
@@ -106,7 +114,7 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
     c.emit(Instr::RetNull);
 
     let closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    Ok(Program { main: Rc::new(c.finish()), functions, classes, closures })
+    Ok(Program { main: Rc::new(c.finish()), functions, classes, closures, constants: user_constants })
 }
 
 // --- OOP: class declaration compilation ------------------------------------
@@ -696,44 +704,8 @@ impl ProtoBuilder {
     }
 
     fn const_value(&mut self, e: &Expression) -> Result<Value, Thrown> {
-        let v = match e {
-            Expression::Literal(l) => literal_value(l),
-            Expression::Parenthesized(p) => return self.const_value(p.expression),
-            Expression::Array(a) if a.elements.is_empty() => Value::Array(PhpArray::new()),
-            Expression::ConstantAccess(ca) => match identifier_name(&ca.name) {
-                b"true" | b"TRUE" | b"True" => Value::Bool(true),
-                b"false" | b"FALSE" | b"False" => Value::Bool(false),
-                b"null" | b"NULL" | b"Null" => Value::Null,
-                _ => {
-                    return Err(Thrown::unsupported(
-                        "non-constant default value",
-                        "only literals / [] / true/false/null are supported for now",
-                    ))
-                }
-            },
-            Expression::UnaryPrefix(u) => {
-                use UnaryPrefixOperator as Op;
-                let inner = self.const_value(u.operand)?;
-                match (&u.operator, inner) {
-                    (Op::Negation(_), Value::Int(n)) => Value::Int(-n),
-                    (Op::Negation(_), Value::Float(f)) => Value::Float(-f),
-                    (Op::Plus(_), v @ (Value::Int(_) | Value::Float(_))) => v,
-                    _ => {
-                        return Err(Thrown::unsupported(
-                            "non-constant default value",
-                            "only literals / [] / true/false/null are supported for now",
-                        ))
-                    }
-                }
-            }
-            _ => {
-                return Err(Thrown::unsupported(
-                    "non-constant default value",
-                    "only literals / [] / true/false/null are supported for now",
-                ))
-            }
-        };
-        Ok(v)
+        // Parameter defaults fold with the same rules as class consts / props.
+        fold_const(e)
     }
 
     fn intern_const(&mut self, v: Value) -> CIdx {
@@ -1026,6 +998,7 @@ impl ProtoBuilder {
             Statement::Interface(_) => {}
             Statement::Trait(_) => {}
             Statement::Enum(_) => {}
+            Statement::Constant(_) => {} // hoisted at compile time
             Statement::If(i) => self.compile_if(i)?,
             Statement::While(w) => self.compile_while(w)?,
             Statement::DoWhile(d) => self.compile_do_while(d)?,
@@ -2786,6 +2759,47 @@ fn fold_const(e: &Expression) -> Result<Value, Thrown> {
                 (Op::Negation(_), Value::Int(n)) => Value::Int(-n),
                 (Op::Negation(_), Value::Float(f)) => Value::Float(-f),
                 (Op::Plus(_), v @ (Value::Int(_) | Value::Float(_))) => v,
+                (Op::BitwiseNot(_), v) => phrust_semantics::ops::bitwise_not(&v),
+                (Op::Not(_), v) => Value::Bool(!phrust_values::conv::to_bool(&v)),
+                _ => return Err(non_const_err()),
+            }
+        }
+        Expression::Binary(b) => {
+            use phrust_frontend::cst::BinaryOperator as Bop;
+            use phrust_semantics::ops::{self, BitOp};
+            let l = fold_const(b.lhs)?;
+            let r = fold_const(b.rhs)?;
+            match &b.operator {
+                Bop::Addition(_) => ops::add(&l, &r)?,
+                Bop::Subtraction(_) => ops::sub(&l, &r)?,
+                Bop::Multiplication(_) => ops::mul(&l, &r)?,
+                Bop::Division(_) => ops::div(&l, &r)?,
+                Bop::Modulo(_) => ops::modulo(&l, &r)?,
+                Bop::Exponentiation(_) => ops::pow(&l, &r)?,
+                Bop::StringConcat(_) => ops::concat(&l, &r),
+                Bop::BitwiseAnd(_) => ops::bitwise(&l, &r, BitOp::And),
+                Bop::BitwiseOr(_) => ops::bitwise(&l, &r, BitOp::Or),
+                Bop::BitwiseXor(_) => ops::bitwise(&l, &r, BitOp::Xor),
+                Bop::LeftShift(_) => ops::bitwise(&l, &r, BitOp::Shl),
+                Bop::RightShift(_) => ops::bitwise(&l, &r, BitOp::Shr),
+                Bop::Equal(_) => Value::Bool(ops::loose_eq(&l, &r)),
+                Bop::NotEqual(_) | Bop::AngledNotEqual(_) => Value::Bool(!ops::loose_eq(&l, &r)),
+                Bop::Identical(_) => Value::Bool(ops::strict_eq(&l, &r)),
+                Bop::NotIdentical(_) => Value::Bool(!ops::strict_eq(&l, &r)),
+                Bop::LessThan(_) => Value::Bool(ops::loose_compare(&l, &r).is_lt()),
+                Bop::LessThanOrEqual(_) => Value::Bool(ops::loose_compare(&l, &r).is_le()),
+                Bop::GreaterThan(_) => Value::Bool(ops::loose_compare(&l, &r).is_gt()),
+                Bop::GreaterThanOrEqual(_) => Value::Bool(ops::loose_compare(&l, &r).is_ge()),
+                Bop::Spaceship(_) => ops::spaceship(&l, &r),
+                Bop::And(_) | Bop::LowAnd(_) => {
+                    Value::Bool(phrust_values::conv::to_bool(&l) && phrust_values::conv::to_bool(&r))
+                }
+                Bop::Or(_) | Bop::LowOr(_) => {
+                    Value::Bool(phrust_values::conv::to_bool(&l) || phrust_values::conv::to_bool(&r))
+                }
+                Bop::NullCoalesce(_) => {
+                    if matches!(l, Value::Null) { r } else { l }
+                }
                 _ => return Err(non_const_err()),
             }
         }

@@ -202,6 +202,10 @@ impl Vm {
         }
         // Register anonymous closure / arrow-function protos (indexed by fnidx).
         self.closures = prog.closures.clone();
+        // Install user-defined global constants.
+        for (name, value) in &prog.constants {
+            self.constants.insert(name.as_bytes().to_vec(), value.clone());
+        }
         // Link all declared classes (flatten inheritance, resolve forward refs).
         self.install_classes(&prog.classes)?;
         self.stack.push(Frame::new(prog.main.clone(), 0));

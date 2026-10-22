@@ -724,6 +724,83 @@ impl Vm {
                     };
                     self.reg_set(top, dst, v);
                 }
+                Instr::StoreProp { obj, name, src } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = proto.names[name as usize].clone();
+                    let val = self.reg_get(top, src);
+                    if let Value::Object(h) = o {
+                        let cls = h.borrow().class;
+                        let declared = self.class(cls).props.get(&pname).map(|pe| (pe.visibility, pe.declaring_class));
+                        let accessible = declared.map_or(true, |(vis, decl)| {
+                            self.check_access(self.stack[top].defining_class, decl, vis)
+                        });
+                        if declared.is_none() || !accessible {
+                            // Undefined or inaccessible: route to __set if present.
+                            if let Some(setter) = self.lookup_method(cls, b"__set") {
+                                let nm = Value::str(pname.as_bytes().to_vec());
+                                self.call_sync(&setter, Some(h), cls, vec![nm, val])?;
+                                continue;
+                            }
+                            if !accessible {
+                                let (vis, decl) = declared.unwrap();
+                                return Err(self.access_err("property", decl, pname.as_bytes(), vis));
+                            }
+                        }
+                        // Direct write, honouring an existing by-ref property slot.
+                        let existing_ref = match h.borrow().properties.get(&pname) {
+                            Some(Value::Ref(rc)) => Some(rc.clone()),
+                            _ => None,
+                        };
+                        match existing_ref {
+                            Some(rc) => *rc.borrow_mut() = val,
+                            None => {
+                                h.borrow_mut().properties.insert(pname, val);
+                            }
+                        }
+                    }
+                }
+                Instr::IssetProp { dst, obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = proto.names[name as usize].clone();
+                    let result = match o {
+                        Value::Object(h) => {
+                            let present = h.borrow().properties.get(&pname).cloned();
+                            match present {
+                                // A declared/dynamic property: set iff non-null.
+                                Some(v) => !matches!(deref(&v), Value::Null),
+                                None => {
+                                    let cls = h.borrow().class;
+                                    match self.lookup_method(cls, b"__isset") {
+                                        Some(m) => {
+                                            let nm = Value::str(pname.as_bytes().to_vec());
+                                            let r = self.call_sync(&m, Some(h.clone()), cls, vec![nm])?;
+                                            conv::to_bool(&r)
+                                        }
+                                        None => false,
+                                    }
+                                }
+                            }
+                        }
+                        _ => false,
+                    };
+                    self.reg_set(top, dst, Value::Bool(result));
+                }
+                Instr::UnsetProp { obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = proto.names[name as usize].clone();
+                    if let Value::Object(h) = o {
+                        let present = h.borrow().properties.contains_key(&pname);
+                        if present {
+                            h.borrow_mut().properties.shift_remove(&pname);
+                        } else {
+                            let cls = h.borrow().class;
+                            if let Some(m) = self.lookup_method(cls, b"__unset") {
+                                let nm = Value::str(pname.as_bytes().to_vec());
+                                self.call_sync(&m, Some(h), cls, vec![nm])?;
+                            }
+                        }
+                    }
+                }
                 Instr::FetchStaticProp { dst, class, name, .. } => {
                     let cls = self.resolve_class(top, class)?;
                     let pname = proto.names[name as usize].as_bytes().to_vec();

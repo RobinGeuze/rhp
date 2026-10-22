@@ -163,6 +163,13 @@ pub enum Instr {
     CallMethod { dst: Reg, obj: Reg, name: NIdx, base: Reg, argc: u16, cache: CacheIdx },
     /// `C::m(args)` / `self::` / `static::` / `parent::`.
     CallStatic { dst: Reg, class: ClassRef, name: NIdx, base: Reg, argc: u16, cache: CacheIdx },
+    /// `$o->name = src` (single-level): direct write to a declared/accessible
+    /// property, else `__set`, else a dynamic property.
+    StoreProp { obj: Reg, name: NIdx, src: Reg },
+    /// `isset($o->name)`: declared non-null property, else `__isset`, else false.
+    IssetProp { dst: Reg, obj: Reg, name: NIdx },
+    /// `unset($o->name)`: remove a declared property, else `__unset`.
+    UnsetProp { obj: Reg, name: NIdx },
     /// `$val instanceof C` (never throws).
     InstanceOf { dst: Reg, val: Reg, class: ClassRef },
     /// `clone $src`: shallow copy + new id + `__clone`.

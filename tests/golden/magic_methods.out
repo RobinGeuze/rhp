@@ -1,0 +1,11 @@
+30
+bool(true)
+bool(false)
+bool(false)
+gone
+compute(1,2,3)
+static make
+15
+Robin: 60
+bool(true)
+blocked: Cannot access protected property Account::$balance

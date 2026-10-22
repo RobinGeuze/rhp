@@ -1352,10 +1352,23 @@ impl ProtoBuilder {
                     self.emit_cursor(root, &steps);
                     self.emit(Instr::UnsetLval);
                 }
+                // `unset($o->prop)`: remove a declared property, else `__unset`.
+                Expression::Access(Access::Property(pa)) => {
+                    if let ClassLikeMemberSelector::Identifier(li) = &pa.property {
+                        let obj = self.compile_expr(pa.object)?;
+                        let name = self.intern_name(li.value);
+                        self.emit(Instr::UnsetProp { obj, name });
+                    } else {
+                        return Err(Thrown::unsupported(
+                            "unset of dynamic property name",
+                            "`unset($o->$x)` deferred",
+                        ));
+                    }
+                }
                 _ => {
                     return Err(Thrown::unsupported(
                         "unset target",
-                        "only variables and array elements",
+                        "only variables, array elements, and properties",
                     ))
                 }
             }
@@ -1961,10 +1974,24 @@ impl ProtoBuilder {
                 let dst = self.alloc_temp();
                 let mut jumps = Vec::new();
                 for v in i.values.iter() {
+                    // `isset($o->prop)` must consult `__isset`, not `__get`.
+                    if let Expression::Access(Access::Property(pa)) = v {
+                        if let ClassLikeMemberSelector::Identifier(li) = &pa.property {
+                            let obj = self.compile_expr(pa.object)?;
+                            let name = self.intern_name(li.value);
+                            let r = self.alloc_temp();
+                            self.emit(Instr::IssetProp { dst: r, obj, name });
+                            // IssetProp yields a bool; false short-circuits.
+                            let pos = self.code.len();
+                            self.emit(Instr::Nop); // JmpFalse r -> false
+                            jumps.push((pos, r, true));
+                            continue;
+                        }
+                    }
                     let r = self.compile_expr(v)?; // null if absent (DimFetch returns null)
                     let pos = self.code.len();
                     self.emit(Instr::Nop); // JmpNull r -> false
-                    jumps.push((pos, r));
+                    jumps.push((pos, r, false));
                 }
                 self.emit(Instr::LoadBool { dst, b: true });
                 let jend = self.code.len();
@@ -1972,8 +1999,12 @@ impl ProtoBuilder {
                 let lfalse = self.here();
                 self.emit(Instr::LoadBool { dst, b: false });
                 let lend = self.here();
-                for (pos, r) in jumps {
-                    self.code[pos] = Instr::JmpNull { src: r, target: lfalse };
+                for (pos, r, is_bool) in jumps {
+                    self.code[pos] = if is_bool {
+                        Instr::JmpFalse { cond: r, target: lfalse }
+                    } else {
+                        Instr::JmpNull { src: r, target: lfalse }
+                    };
                 }
                 self.code[jend] = Instr::Jmp { target: lend };
                 Ok(dst)
@@ -2574,6 +2605,20 @@ impl ProtoBuilder {
                 let src_cv = self.cv(strip_dollar(src.name));
                 self.emit(Instr::BindRef { dst_cv, src_cv });
                 return Ok(dst_cv);
+            }
+        }
+
+        // Simple single-level `$o->prop = v`: a dedicated opcode so the VM can
+        // route undefined/inaccessible writes to `__set` (the cursor can't).
+        if let (AssignmentOperator::Assign(_), Expression::Access(Access::Property(pa))) =
+            (&a.operator, a.lhs)
+        {
+            if let ClassLikeMemberSelector::Identifier(li) = &pa.property {
+                let obj = self.compile_expr(pa.object)?;
+                let name = self.intern_name(li.value);
+                let rhs = self.compile_expr(a.rhs)?;
+                self.emit(Instr::StoreProp { obj, name, src: rhs });
+                return Ok(rhs);
             }
         }
 

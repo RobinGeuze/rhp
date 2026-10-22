@@ -2797,18 +2797,12 @@ fn strip_dollar(name: &[u8]) -> &[u8] {
     name.strip_prefix(b"$").unwrap_or(name)
 }
 
-/// By-reference parameter flags for builtins whose first argument is modified
-/// in place (the sort family and the stack/queue ops). The call site then emits
-/// a `MakeRef` for arg 0 so the builtin can mutate the caller's variable.
+/// By-reference parameter flags for a builtin, from the shared bytecode table.
+/// The call site emits `MakeRef` for each flagged position.
 fn builtin_by_ref(name_lc: &[u8]) -> Option<Vec<bool>> {
-    let is_ref0 = matches!(
-        name_lc,
-        b"sort" | b"rsort" | b"asort" | b"arsort" | b"ksort" | b"krsort"
-            | b"usort" | b"uasort" | b"uksort"
-            | b"array_push" | b"array_pop" | b"array_shift" | b"array_unshift"
-            | b"shuffle" | b"array_splice"
-    );
-    is_ref0.then(|| vec![true])
+    let name = std::str::from_utf8(name_lc).ok()?;
+    let flags = phrust_bytecode::builtin_ref_params(name);
+    (!flags.is_empty()).then(|| flags.to_vec())
 }
 
 fn has_spread(list: &phrust_frontend::cst::ArgumentList) -> bool {

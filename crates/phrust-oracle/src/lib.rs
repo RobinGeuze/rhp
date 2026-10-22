@@ -1135,16 +1135,10 @@ fn apply_compound_op(
     })
 }
 
-/// Builtins whose first argument is passed by reference (the sort family and
-/// the stack/queue ops). The oracle cannot run these correctly, so it refuses.
+/// Builtins with by-reference parameters (sort/stack ops, `preg_*` out-params).
+/// The frozen oracle has no by-ref call path, so it refuses them.
 fn is_byref_builtin(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "sort" | "rsort" | "asort" | "arsort" | "ksort" | "krsort"
-            | "usort" | "uasort" | "uksort"
-            | "array_push" | "array_pop" | "array_shift" | "array_unshift"
-            | "shuffle" | "array_splice"
-    )
+    !phrust_bytecode::builtin_ref_params(&name.to_ascii_lowercase()).is_empty()
 }
 
 fn strip_dollar(name: &[u8]) -> &[u8] {

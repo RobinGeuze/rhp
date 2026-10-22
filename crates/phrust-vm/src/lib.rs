@@ -1596,13 +1596,13 @@ impl Vm {
         base: Reg,
         argc: u16,
     ) -> Result<Value, Thrown> {
-        // By-ref builtins (sort/array_push/…) need arg 0 kept as the `Value::Ref`
-        // the call site built, so they can mutate the caller's variable. All
-        // other args are deref'd to plain values as usual.
-        let ref0 = is_byref_builtin(name);
+        // By-ref builtins (sort/array_push/preg_match/…) need their by-reference
+        // positions kept as the `Value::Ref` the call site built, so they can
+        // write back to the caller's variable. Other args deref to plain values.
+        let ref_mask = phrust_bytecode::builtin_ref_params(&name.to_ascii_lowercase());
         let args: Vec<Value> = (0..argc)
             .map(|i| {
-                if ref0 && i == 0 {
+                if ref_mask.get(i as usize).copied().unwrap_or(false) {
                     self.stack[top].regs[(base + i) as usize].clone()
                 } else {
                     self.reg_get(top, base + i)
@@ -1793,18 +1793,6 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep]) {
     }
 }
 
-/// Builtins whose first argument is passed by reference (mirrors the compiler's
-/// `builtin_by_ref`): arg 0 must reach the builtin as the `Value::Ref` the call
-/// site constructed, not a deref'd copy.
-fn is_byref_builtin(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "sort" | "rsort" | "asort" | "arsort" | "ksort" | "krsort"
-            | "usort" | "uasort" | "uksort"
-            | "array_push" | "array_pop" | "array_shift" | "array_unshift"
-            | "shuffle" | "array_splice"
-    )
-}
 
 /// For by-reference foreach: promote the array element at insertion index `pos`
 /// to a shared cell and return `(key, cell)`. The element in the array becomes a

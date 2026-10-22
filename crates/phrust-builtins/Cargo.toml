@@ -8,3 +8,4 @@ publish.workspace = true
 [dependencies]
 phrust-values = { path = "../phrust-values" }
 phrust-semantics = { path = "../phrust-semantics" }
+fancy-regex = "0.13"

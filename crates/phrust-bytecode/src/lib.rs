@@ -390,6 +390,28 @@ pub enum EnumBacking {
     Str,
 }
 
+/// Per-parameter by-reference flags for builtins whose arguments are passed by
+/// reference (the array-mutating sort/stack family, and the `preg_*` out-params
+/// `&$matches` / `&$count`). The call site emits `MakeRef` for each flagged
+/// position, and the VM passes those positions to the builtin as `Value::Ref`
+/// rather than a deref'd copy. Empty slice = no by-ref parameters. This is the
+/// single source of truth shared by the compiler and the VM.
+pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
+    match name_lc {
+        // arg 0 (the array) by reference.
+        "sort" | "rsort" | "asort" | "arsort" | "ksort" | "krsort" | "usort" | "uasort"
+        | "uksort" | "array_push" | "array_pop" | "array_shift" | "array_unshift" | "shuffle"
+        | "array_splice" => &[true],
+        // `&$matches` at position 2.
+        "preg_match" | "preg_match_all" => &[false, false, true],
+        // `&$count` at position 4.
+        "preg_replace" | "preg_replace_callback" | "preg_replace_callback_array" => {
+            &[false, false, false, false, true]
+        }
+        _ => &[],
+    }
+}
+
 pub struct MethodProto {
     pub name: PhpStr,
     pub proto: Rc<FunctionProto>,

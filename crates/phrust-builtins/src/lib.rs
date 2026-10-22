@@ -23,6 +23,7 @@ mod hash_fns;
 mod math_fns;
 mod mb_fns;
 mod misc_fns;
+mod preg_fns;
 mod printf_fns;
 mod serialize_fns;
 mod sort_fns;
@@ -164,6 +165,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         mb_fns::register(&mut m);
         printf_fns::register(&mut m);
         arrayset_fns::register(&mut m);
+        preg_fns::register(&mut m);
         m
     })
 }
@@ -269,6 +271,9 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("M_SQRT2", Value::Float(std::f64::consts::SQRT_2)),
         ("PHP_FLOAT_DIG", Value::Int(15)),
     ]
+    .into_iter()
+    .chain(preg_fns::preg_constants())
+    .collect()
 }
 
 /// If `name` is a deliberately-refused high-risk function, return why.

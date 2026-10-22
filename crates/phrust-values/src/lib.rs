@@ -54,6 +54,10 @@ pub struct ClosureData {
     pub bound_class: Option<ClassId>,
     /// The late-static-binding scope (`static::`) at closure creation.
     pub bound_static: Option<ClassId>,
+    /// A first-class callable (`strlen(...)`, `$o->m(...)`): calling this closure
+    /// forwards its arguments to the wrapped callable value. `fnidx`/`captures`
+    /// are unused when this is `Some`.
+    pub wrapped: Option<Box<Value>>,
 }
 
 pub type ClosureHandle = Rc<ClosureData>;

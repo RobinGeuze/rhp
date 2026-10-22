@@ -529,6 +529,19 @@ impl Vm {
                         bound_this: None,
                         bound_class: self.stack[top].defining_class,
                         bound_static: self.stack[top].called_class,
+                        wrapped: None,
+                    });
+                    self.reg_set(top, dst, Value::Closure(cd));
+                }
+                Instr::MakeFcc { dst, callee } => {
+                    let c = self.reg_get(top, callee);
+                    let cd = Rc::new(phrust_values::ClosureData {
+                        fnidx: u32::MAX,
+                        captures: Vec::new(),
+                        bound_this: None,
+                        bound_class: None,
+                        bound_static: None,
+                        wrapped: Some(Box::new(c)),
                     });
                     self.reg_set(top, dst, Value::Closure(cd));
                 }
@@ -959,6 +972,16 @@ impl Vm {
                             Ok(cid) => self.class(h.borrow().class).ancestors.contains(&cid),
                             Err(_) => false,
                         },
+                        // Closures / arrow fns / first-class callables are
+                        // instances of the built-in `Closure` class.
+                        Value::Closure(_) => match class {
+                            ClassRef::Name(nidx) => {
+                                let n = proto.names[nidx as usize].as_bytes();
+                                let seg = n.rsplit(|&b| b == b'\\').next().unwrap_or(n);
+                                seg.eq_ignore_ascii_case(b"Closure")
+                            }
+                            _ => false,
+                        },
                         _ => false,
                     };
                     self.reg_set(top, dst, Value::Bool(result));
@@ -1331,6 +1354,11 @@ impl Vm {
             other => other.clone(),
         };
         match c {
+            // First-class callable: forward to the wrapped callable.
+            Value::Closure(cd) if cd.wrapped.is_some() => {
+                let w = (**cd.wrapped.as_ref().unwrap()).clone();
+                self.call_callable_value(&w, args)
+            }
             Value::Closure(cd) => self.run_closure_sync(&cd, args),
             Value::Str(s) => {
                 let lower = s.as_bytes().to_ascii_lowercase();

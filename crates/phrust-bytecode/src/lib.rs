@@ -132,6 +132,9 @@ pub enum Instr {
     /// Build a closure value: read `ncaptures` capture values from
     /// `regs[base..base+ncaptures]` and pair them with closure proto `fnidx`.
     MakeClosure { dst: Reg, fnidx: u32, base: Reg, ncaptures: u16 },
+    /// First-class callable (`f(...)`, `$o->m(...)`, `C::m(...)`): wrap the
+    /// callable value in `callee` as a `Closure`.
+    MakeFcc { dst: Reg, callee: Reg },
     Ret { src: Reg },
     RetNull,
 

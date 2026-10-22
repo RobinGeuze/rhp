@@ -1607,6 +1607,7 @@ impl ProtoBuilder {
             Expression::Call(call) => self.compile_call(call),
             Expression::ArrowFunction(af) => self.compile_arrow(af),
             Expression::Closure(cl) => self.compile_closure(cl),
+            Expression::PartialApplication(pa) => self.compile_fcc(pa),
             other => Err(Thrown::unsupported(
                 format!("{} expression", expr_kind(other)),
                 "not implemented in the phase-1 compiler",
@@ -2120,6 +2121,81 @@ impl ProtoBuilder {
         let dst = self.alloc_temp();
         self.emit(Instr::CallDyn { dst, callee, base, argc });
         Ok(dst)
+    }
+
+    /// First-class callable syntax: `f(...)`, `$o->m(...)`, `C::m(...)`. Builds
+    /// the underlying callable value, then wraps it as a `Closure` via `MakeFcc`.
+    fn compile_fcc(
+        &mut self,
+        pa: &phrust_frontend::cst::PartialApplication,
+    ) -> Result<Reg, Thrown> {
+        use phrust_frontend::cst::PartialApplication as Pa;
+        if !pa.is_first_class_callable() {
+            return Err(Thrown::unsupported(
+                "partial application with placeholders",
+                "only the first-class callable form `f(...)` is supported",
+            ));
+        }
+        // Build the callable Value into `callee`.
+        let callee = match pa {
+            Pa::Function(f) => match f.function {
+                // Named function: the callable is its name string.
+                Expression::Identifier(id) => self.load_string_const(identifier_name(id)),
+                Expression::ConstantAccess(ca) => {
+                    self.load_string_const(identifier_name(&ca.name))
+                }
+                // Dynamic `$f(...)`: wrap the existing callable value.
+                other => self.compile_expr(other)?,
+            },
+            Pa::Method(m) => {
+                let obj = self.compile_expr(m.object)?;
+                let name = self.selector_string(&m.method)?;
+                self.build_pair(obj, &name)
+            }
+            Pa::StaticMethod(s) => {
+                let class = match s.class {
+                    Expression::Identifier(id) => self.load_string_const(identifier_name(id)),
+                    Expression::ConstantAccess(ca) => {
+                        self.load_string_const(identifier_name(&ca.name))
+                    }
+                    other => self.compile_expr(other)?,
+                };
+                let name = self.selector_string(&s.method)?;
+                self.build_pair(class, &name)
+            }
+        };
+        let dst = self.alloc_temp();
+        self.emit(Instr::MakeFcc { dst, callee });
+        Ok(dst)
+    }
+
+    /// Load a byte-string constant into a fresh register.
+    fn load_string_const(&mut self, bytes: &[u8]) -> Reg {
+        let k = self.intern_const(Value::str(bytes.to_vec()));
+        let dst = self.alloc_temp();
+        self.emit(Instr::LoadConst { dst, k });
+        dst
+    }
+
+    /// Build a two-element `[first, second-string]` array (a callable pair).
+    fn build_pair(&mut self, first: Reg, second: &[u8]) -> Reg {
+        let arr = self.alloc_temp();
+        self.emit(Instr::NewArray { dst: arr, cap: 2 });
+        self.emit(Instr::ArrPush { arr, val: first });
+        let s = self.load_string_const(second);
+        self.emit(Instr::ArrPush { arr, val: s });
+        arr
+    }
+
+    /// The raw identifier bytes of a member selector (non-dynamic only).
+    fn selector_string(
+        &self,
+        sel: &phrust_frontend::cst::ClassLikeMemberSelector,
+    ) -> Result<Vec<u8>, Thrown> {
+        match sel {
+            ClassLikeMemberSelector::Identifier(li) => Ok(li.value.to_vec()),
+            _ => Err(Thrown::unsupported("dynamic member name", "`->$x(...)` deferred")),
+        }
     }
 
     /// `fn(params) => expr` — arrow function. Auto-captures (by value) every

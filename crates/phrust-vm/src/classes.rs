@@ -35,6 +35,10 @@ pub struct ClassEntry {
     pub constants: HashMap<Vec<u8>, ClassConst>,
     /// Flattened static-property slots (shared cells; inherited ones alias).
     pub static_props: IndexMap<Vec<u8>, StaticProp>,
+    /// Enum case singletons in declaration order (empty for non-enums).
+    pub enum_cases: Vec<ObjectHandle>,
+    /// Backing type of a backed enum (`None` for pure enums / non-enums).
+    pub enum_backing: Option<phrust_bytecode::EnumBacking>,
 }
 
 #[derive(Clone)]
@@ -253,8 +257,41 @@ impl Vm {
             props,
             constants,
             static_props,
+            enum_cases: Vec::new(),
+            enum_backing: proto.enum_backing,
         });
+
+        // Enum cases: materialize one singleton object per case and expose it as
+        // a public class constant, so `E::Case` resolves through `FetchClassConst`.
+        if proto.kind == ClassKind::Enum {
+            for case in &proto.enum_cases {
+                let obj = self.new_enum_case(id, &case.name, case.value.clone());
+                self.classes[id as usize].constants.insert(
+                    case.name.as_bytes().to_vec(),
+                    ClassConst {
+                        value: Value::Object(obj.clone()),
+                        visibility: Visibility::Public,
+                        declaring_class: id,
+                    },
+                );
+                self.classes[id as usize].enum_cases.push(obj);
+            }
+        }
         Ok(())
+    }
+
+    /// Build an enum case's singleton object: an instance of the enum class with
+    /// a read-only `name` property (and `value` for a backed enum).
+    fn new_enum_case(&mut self, class_id: ClassId, name: &PhpStr, value: Option<Value>) -> ObjectHandle {
+        let oid = self.next_object_id;
+        self.next_object_id += 1;
+        let mut properties: IndexMap<PhpStr, Value, FxBuildHasher> =
+            IndexMap::with_hasher(FxBuildHasher);
+        properties.insert(PhpStr::from("name"), Value::Str(name.clone()));
+        if let Some(v) = value {
+            properties.insert(PhpStr::from("value"), v);
+        }
+        Rc::new(RefCell::new(ObjectData { class: class_id, id: oid, properties }))
     }
 
     /// Resolve a `ClassRef` (in the context of frame `top`) to a `ClassId`.

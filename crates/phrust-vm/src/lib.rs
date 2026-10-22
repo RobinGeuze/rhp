@@ -72,6 +72,10 @@ impl Host for Vm {
         Some(self.classes[parent as usize].name.as_bytes().to_vec())
     }
 
+    fn is_enum_class(&self, class_id: u32) -> bool {
+        self.classes.get(class_id as usize).is_some_and(|c| c.kind == ClassKind::Enum)
+    }
+
     fn call_callable(&mut self, callable: &Value, args: &[Value]) -> Result<Value, Thrown> {
         self.call_callable_value(callable, args.to_vec())
     }
@@ -666,11 +670,21 @@ impl Vm {
                     let cls = self.resolve_class(top, class)?;
                     let entry = self.class(cls);
                     if entry.kind != ClassKind::Class || entry.flags.is_abstract {
+                        let what = if entry.flags.is_abstract {
+                            "abstract class"
+                        } else {
+                            match entry.kind {
+                                ClassKind::Enum => "enum",
+                                ClassKind::Interface => "interface",
+                                ClassKind::Trait => "trait",
+                                ClassKind::Class => "class",
+                            }
+                        };
                         return Err(Thrown::error(
                             "Error",
                             format!(
                                 "Cannot instantiate {} {}",
-                                if entry.flags.is_abstract { "abstract class" } else { "interface/trait" },
+                                what,
                                 String::from_utf8_lossy(entry.name.as_bytes())
                             ),
                         ));
@@ -799,6 +813,18 @@ impl Vm {
                     let cls = self.resolve_class(top, class)?;
                     let mname = proto.names[name as usize].as_bytes().to_vec();
                     let found = self.lookup_method(cls, &mname);
+                    // Enum built-in static methods (cases/from/tryFrom) when not
+                    // overridden by a user-defined method.
+                    if found.is_none() && self.class(cls).kind == ClassKind::Enum {
+                        let lc = mname.to_ascii_lowercase();
+                        if matches!(lc.as_slice(), b"cases" | b"from" | b"tryfrom") {
+                            let args: Vec<Value> =
+                                (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+                            let r = self.enum_builtin_static(cls, &lc, args)?;
+                            self.reg_set(top, dst, r);
+                            continue;
+                        }
+                    }
                     let accessible = found.as_ref().is_some_and(|m| {
                         self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility)
                     });
@@ -1148,6 +1174,71 @@ impl Vm {
                     }
                 }
             }
+        }
+    }
+
+    /// Built-in enum static methods: `cases()`, `from()`, `tryFrom()`.
+    fn enum_builtin_static(
+        &mut self,
+        cls: ClassId,
+        method_lc: &[u8],
+        args: Vec<Value>,
+    ) -> Result<Value, Thrown> {
+        let enum_name = || String::from_utf8_lossy(self.class(cls).name.as_bytes()).into_owned();
+        match method_lc {
+            b"cases" => {
+                let mut arr = phrust_values::PhpArray::new();
+                for obj in &self.class(cls).enum_cases {
+                    arr.push(Value::Object(obj.clone()));
+                }
+                Ok(Value::Array(arr))
+            }
+            b"from" | b"tryfrom" => {
+                let is_try = method_lc == b"tryfrom";
+                let backing = self.class(cls).enum_backing.ok_or_else(|| {
+                    Thrown::error("Error", format!("{}::{} is not a backed enum", enum_name(), if is_try { "tryFrom()" } else { "from()" }))
+                })?;
+                let input = match args.first() {
+                    Some(Value::Ref(r)) => r.borrow().clone(),
+                    Some(v) => v.clone(),
+                    None => Value::Null,
+                };
+                // The declared parameter type is int|string; other types are a TypeError.
+                use phrust_bytecode::EnumBacking;
+                let matches = |cv: &Value| -> bool {
+                    match (backing, &input) {
+                        (EnumBacking::Int, Value::Int(n)) => matches!(cv, Value::Int(m) if m == n),
+                        (EnumBacking::Str, Value::Str(s)) => {
+                            matches!(cv, Value::Str(cs) if cs.as_bytes() == s.as_bytes())
+                        }
+                        // Cross-type (e.g. int value against a string backing) never matches.
+                        _ => false,
+                    }
+                };
+                let cases = self.class(cls).enum_cases.clone();
+                let value_key = phrust_values::PhpStr::from("value");
+                for obj in &cases {
+                    let val = obj.borrow().properties.get(&value_key).cloned();
+                    if let Some(v) = val {
+                        if matches(&v) {
+                            return Ok(Value::Object(obj.clone()));
+                        }
+                    }
+                }
+                if is_try {
+                    return Ok(Value::Null);
+                }
+                // from(): no match -> ValueError.
+                let shown = match &input {
+                    Value::Str(s) => format!("\"{}\"", String::from_utf8_lossy(s.as_bytes())),
+                    other => String::from_utf8_lossy(&conv::to_string_bytes(other)).into_owned(),
+                };
+                Err(Thrown::error(
+                    "ValueError",
+                    format!("{} is not a valid backing value for enum {}", shown, enum_name()),
+                ))
+            }
+            _ => unreachable!("enum_builtin_static called with {:?}", method_lc),
         }
     }
 

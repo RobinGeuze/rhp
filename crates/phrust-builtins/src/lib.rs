@@ -16,12 +16,14 @@ pub use phrust_values::Thrown;
 pub mod dump;
 
 mod arr_fns;
+mod arrayset_fns;
 mod datetime_fns;
 mod filter_fns;
 mod hash_fns;
 mod math_fns;
 mod mb_fns;
 mod misc_fns;
+mod printf_fns;
 mod serialize_fns;
 mod sort_fns;
 mod str_fns;
@@ -42,6 +44,11 @@ pub trait Host {
     /// A class's parent's name by id (for `get_parent_class`). Default: none.
     fn class_parent_name(&self, _class_id: u32) -> Option<Vec<u8>> {
         None
+    }
+
+    /// Whether a class id names an enum (for `var_dump` rendering). Default: no.
+    fn is_enum_class(&self, _class_id: u32) -> bool {
+        false
     }
 
     /// Invoke a PHP callable (for `array_map`/`array_filter`/…). Default: refused.
@@ -155,6 +162,8 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         filter_fns::register(&mut m);
         strcmp_fns::register(&mut m);
         mb_fns::register(&mut m);
+        printf_fns::register(&mut m);
+        arrayset_fns::register(&mut m);
         m
     })
 }
@@ -187,6 +196,12 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("E_NOTICE", Value::Int(8)),
         ("COUNT_NORMAL", Value::Int(0)),
         ("COUNT_RECURSIVE", Value::Int(1)),
+        // Standard streams: this engine has no resource Value, so these are
+        // placeholder ints. fprintf/vfprintf ignore the stream and write to the
+        // single output sink, so the value is never inspected in practice.
+        ("STDIN", Value::Int(0)),
+        ("STDOUT", Value::Int(1)),
+        ("STDERR", Value::Int(2)),
         ("STR_PAD_RIGHT", Value::Int(1)),
         ("STR_PAD_LEFT", Value::Int(0)),
         ("STR_PAD_BOTH", Value::Int(2)),
@@ -280,7 +295,7 @@ use phrust_semantics::{deref, ops};
 fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
     for a in args {
-        dump::var_dump(&mut out, a, 0);
+        dump::var_dump(host, &mut out, a, 0);
     }
     host.write_out(&out);
     Ok(Value::Null)

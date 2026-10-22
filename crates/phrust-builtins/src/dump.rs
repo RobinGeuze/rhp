@@ -4,14 +4,15 @@
 //! (tests/golden/{var_dump,print_r,var_export}_nested.out).
 
 use phrust_values::conv;
-use phrust_values::{fmt, ArrayKey, Value};
+use phrust_values::{fmt, ArrayKey, PhpStr, Value};
 
 fn sp(n: usize, out: &mut Vec<u8>) {
     out.extend(std::iter::repeat(b' ').take(n));
 }
 
-/// `var_dump` of one value at the given indentation (spaces).
-pub fn var_dump(out: &mut Vec<u8>, v: &Value, indent: usize) {
+/// `var_dump` of one value at the given indentation (spaces). `host` supplies
+/// class names / enum-ness for object rendering.
+pub fn var_dump(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, indent: usize) {
     let v = deref(v);
     sp(indent, out);
     match &v {
@@ -36,12 +37,58 @@ pub fn var_dump(out: &mut Vec<u8>, v: &Value, indent: usize) {
                 sp(indent + 2, out);
                 dump_key(out, k);
                 out.extend_from_slice(b"=>\n");
-                var_dump(out, val, indent + 2);
+                var_dump(host, out, val, indent + 2);
             }
             sp(indent, out);
             out.extend_from_slice(b"}\n");
         }
-        Value::Object(_) | Value::Closure(_) => out.extend_from_slice(b"object\n"),
+        Value::Object(h) => {
+            // Snapshot under a short borrow so recursion can't double-borrow.
+            let (class_id, obj_id, props) = {
+                let b = h.borrow();
+                let props: Vec<(PhpStr, Value)> =
+                    b.properties.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                (b.class, b.id, props)
+            };
+            let cname = host.class_name(class_id).unwrap_or_else(|| b"class".to_vec());
+            if host.is_enum_class(class_id) {
+                // `enum(Name::Case)` — the case is the object's `name` property.
+                let case = props
+                    .iter()
+                    .find(|(k, _)| k.as_bytes() == b"name")
+                    .map(|(_, v)| conv::to_string_bytes(v))
+                    .unwrap_or_default();
+                out.extend_from_slice(b"enum(");
+                out.extend_from_slice(&cname);
+                out.extend_from_slice(b"::");
+                out.extend_from_slice(&case);
+                out.extend_from_slice(b")\n");
+            } else {
+                out.extend_from_slice(
+                    format!(
+                        "object({})#{} ({}) {{\n",
+                        String::from_utf8_lossy(&cname),
+                        obj_id,
+                        props.len()
+                    )
+                    .as_bytes(),
+                );
+                for (k, val) in &props {
+                    sp(indent + 2, out);
+                    out.extend_from_slice(b"[\"");
+                    out.extend_from_slice(k.as_bytes());
+                    out.extend_from_slice(b"\"]=>\n");
+                    var_dump(host, out, val, indent + 2);
+                }
+                sp(indent, out);
+                out.extend_from_slice(b"}\n");
+            }
+        }
+        Value::Closure(_) => {
+            out.extend_from_slice(b"object(Closure)#0 (0) {\n");
+            sp(indent, out);
+            out.extend_from_slice(b"}\n");
+        }
         Value::Ref(_) => unreachable!("deref'd above"),
     }
 }

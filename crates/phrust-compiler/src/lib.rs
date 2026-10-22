@@ -84,6 +84,7 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
             Statement::Class(class) => classes.push(compile_class(class, &sigs)?),
             Statement::Interface(iface) => classes.push(compile_interface(iface)?),
             Statement::Trait(tr) => classes.push(compile_trait(tr, &sigs)?),
+            Statement::Enum(en) => classes.push(compile_enum(en, &sigs)?),
             _ => {}
         }
     }
@@ -158,6 +159,63 @@ fn compile_class(
         props: m.props,
         static_props: m.static_props,
         constants: m.constants,
+        enum_cases: Vec::new(),
+        enum_backing: None,
+    })
+}
+
+/// Compile an `enum` declaration into a `ClassProto` of kind `Enum`.
+///
+/// Enum cases are collected and materialized by the VM at link time (one
+/// singleton object per case, exposed as class constants). The enum implements
+/// `UnitEnum` (pure) or `BackedEnum` (backed), plus any declared interfaces.
+fn compile_enum(
+    en: &phrust_frontend::cst::Enum,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+) -> Result<ClassProto, Thrown> {
+    use phrust_bytecode::EnumBacking;
+    let name = PhpStr::from_bytes(en.name.value.to_vec());
+
+    let backing = match &en.backing_type_hint {
+        None => None,
+        Some(h) => match &h.hint {
+            Hint::Integer(_) => Some(EnumBacking::Int),
+            Hint::String(_) => Some(EnumBacking::Str),
+            _ => {
+                return Err(Thrown::unsupported(
+                    "enum backing type",
+                    "only int and string backings are valid",
+                ))
+            }
+        },
+    };
+
+    let mut interfaces: Vec<PhpStr> = en
+        .implements
+        .as_ref()
+        .map(|i| i.types.iter().map(|id| PhpStr::from_bytes(identifier_name(id).to_vec())).collect())
+        .unwrap_or_default();
+    // Every enum implements UnitEnum; a backed enum also implements BackedEnum.
+    interfaces.push(PhpStr::from("UnitEnum"));
+    if backing.is_some() {
+        interfaces.push(PhpStr::from("BackedEnum"));
+    }
+
+    let m = compile_members(&en.members, sigs)?;
+    Ok(ClassProto {
+        name,
+        kind: ClassKind::Enum,
+        // Enums are implicitly final.
+        flags: ClassFlags { is_abstract: false, is_final: true, is_readonly: false },
+        parent: None,
+        interfaces,
+        traits: m.traits,
+        methods: m.methods,
+        props: m.props,
+        static_props: m.static_props,
+        constants: m.constants,
+        enum_cases: m.enum_cases,
+        enum_backing: backing,
     })
 }
 
@@ -168,6 +226,7 @@ struct CompiledMembers {
     static_props: Vec<StaticPropProto>,
     constants: Vec<ConstProto>,
     traits: Vec<PhpStr>,
+    enum_cases: Vec<phrust_bytecode::EnumCaseProto>,
 }
 
 fn compile_members(
@@ -223,8 +282,18 @@ fn compile_members(
                     out.traits.push(PhpStr::from_bytes(identifier_name(t).to_vec()));
                 }
             }
-            ClassLikeMember::EnumCase(_) => {
-                return Err(Thrown::unsupported("enum case", "enums are deferred"))
+            ClassLikeMember::EnumCase(ec) => {
+                use phrust_frontend::cst::EnumCaseItem;
+                let (name, value) = match &ec.item {
+                    EnumCaseItem::Unit(u) => {
+                        (PhpStr::from_bytes(u.name.value.to_vec()), None)
+                    }
+                    EnumCaseItem::Backed(b) => (
+                        PhpStr::from_bytes(b.name.value.to_vec()),
+                        Some(const_value_static(b.value)?),
+                    ),
+                };
+                out.enum_cases.push(phrust_bytecode::EnumCaseProto { name, value });
             }
         }
     }
@@ -247,6 +316,8 @@ fn compile_trait(
         props: m.props,
         static_props: m.static_props,
         constants: m.constants,
+        enum_cases: Vec::new(),
+        enum_backing: None,
     })
 }
 
@@ -255,6 +326,8 @@ fn compile_trait(
 const PRELUDE: &str = r#"<?php
 interface Throwable {}
 interface Stringable {}
+interface UnitEnum {}
+interface BackedEnum extends UnitEnum {}
 class Exception implements Throwable {
     protected $message = "";
     protected $code = 0;
@@ -348,6 +421,8 @@ fn compile_interface(
         props: Vec::new(),
         static_props: Vec::new(),
         constants,
+        enum_cases: Vec::new(),
+        enum_backing: None,
     })
 }
 
@@ -950,6 +1025,7 @@ impl ProtoBuilder {
             Statement::Class(_) => {}
             Statement::Interface(_) => {}
             Statement::Trait(_) => {}
+            Statement::Enum(_) => {}
             Statement::If(i) => self.compile_if(i)?,
             Statement::While(w) => self.compile_while(w)?,
             Statement::DoWhile(d) => self.compile_do_while(d)?,

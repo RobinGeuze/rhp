@@ -1063,7 +1063,7 @@ fn render_conv(c: &Conv, arg: &Value) -> Vec<u8> {
 
 /// Core of sprintf/vsprintf: `fmt` + value args (not including the format).
 /// `given` is the total argument count (incl. the format) for error messages.
-fn do_sprintf(fmt: &[u8], value_args: &[Value], given: usize) -> Result<Vec<u8>, Thrown> {
+pub(crate) fn do_sprintf(fmt: &[u8], value_args: &[Value], given: usize) -> Result<Vec<u8>, Thrown> {
     let pieces = parse_format(fmt)?;
 
     // Resolve argument indices (positional does not advance the sequential ptr).

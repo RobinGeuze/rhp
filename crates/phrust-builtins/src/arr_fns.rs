@@ -516,7 +516,7 @@ mod tests {
 
     fn dumped(v: &Value) -> String {
         let mut out = Vec::new();
-        crate::dump::var_dump(&mut out, v, 0);
+        crate::dump::var_dump(&NullHost, &mut out, v, 0);
         String::from_utf8_lossy(&out).into_owned()
     }
 

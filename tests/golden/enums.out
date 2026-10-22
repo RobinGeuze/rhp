@@ -1,0 +1,21 @@
+Hearts
+Red Black
+bool(true)
+bool(false)
+bool(true)
+4
+Hearts Diamonds Clubs Spades 
+Active=active
+Active
+Active
+Inactive
+enum(Status::Active)
+NULL
+bool(true)
+bool(true)
+bool(true)
+3
+Small
+NULL
+err: 99 is not a valid backing value for enum Size
+err: Cannot instantiate enum Suit

@@ -350,6 +350,25 @@ pub struct ClassProto {
     pub props: Vec<PropProto>,
     pub static_props: Vec<StaticPropProto>,
     pub constants: Vec<ConstProto>,
+    /// Enum cases, in declaration order: `(name, backing value)`. The backing
+    /// value is `None` for a pure enum, `Some(Int|Str)` for a backed enum.
+    pub enum_cases: Vec<EnumCaseProto>,
+    /// Backing type of a backed enum (`Int`/`Str`); `None` for a pure enum or a
+    /// non-enum class.
+    pub enum_backing: Option<EnumBacking>,
+}
+
+/// One compiled enum case.
+pub struct EnumCaseProto {
+    pub name: PhpStr,
+    /// The backing value (already the correct scalar type), or `None` for a pure enum.
+    pub value: Option<Value>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EnumBacking {
+    Int,
+    Str,
 }
 
 pub struct MethodProto {

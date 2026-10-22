@@ -631,8 +631,50 @@ impl Vm {
                     };
                     match a.get_index(pos) {
                         Some((k, v)) => {
-                            let (k, v) = (k.clone(), v.clone());
-                            self.reg_set(top, val_cv, v);
+                            let (k, v) = (k.clone(), deref(&v).clone());
+                            // Bind as a PHP variable: if the loop var is still a
+                            // reference (e.g. left over from a prior by-ref loop),
+                            // write through it — matching PHP's foreach gotcha.
+                            self.cv_assign(top, val_cv, v);
+                            if key_cv != Reg::MAX {
+                                self.cv_assign(top, key_cv, array_key_to_value(&k));
+                            }
+                            self.reg_set(top, pos_reg, Value::Int((pos + 1) as i64));
+                        }
+                        None => self.stack[top].pc = end as usize,
+                    }
+                }
+
+                Instr::FeResetRef { arr_cv, pos_reg, end } => {
+                    let nonempty = match &self.stack[top].regs[arr_cv as usize] {
+                        Value::Array(a) => !a.is_empty(),
+                        Value::Ref(rc) => matches!(&*rc.borrow(), Value::Array(a) if !a.is_empty()),
+                        _ => false,
+                    };
+                    if nonempty {
+                        self.reg_set(top, pos_reg, Value::Int(0));
+                    } else {
+                        self.stack[top].pc = end as usize;
+                    }
+                }
+                Instr::FeFetchRef { arr_cv, pos_reg, key_cv, val_cv, end } => {
+                    let pos = match self.reg_get(top, pos_reg) {
+                        Value::Int(n) => n as usize,
+                        _ => 0,
+                    };
+                    // Promote the element at `pos` to a shared cell (through a
+                    // Ref if the source variable itself is a reference).
+                    let rc_opt = match &self.stack[top].regs[arr_cv as usize] {
+                        Value::Ref(rc) => Some(rc.clone()),
+                        _ => None,
+                    };
+                    let fetched = match rc_opt {
+                        Some(rc) => foreach_promote(&mut rc.borrow_mut(), pos),
+                        None => foreach_promote(&mut self.stack[top].regs[arr_cv as usize], pos),
+                    };
+                    match fetched {
+                        Some((k, elem_rc)) => {
+                            self.reg_set(top, val_cv, Value::Ref(elem_rc));
                             if key_cv != Reg::MAX {
                                 self.reg_set(top, key_cv, array_key_to_value(&k));
                             }
@@ -1762,6 +1804,30 @@ fn is_byref_builtin(name: &str) -> bool {
             | "array_push" | "array_pop" | "array_shift" | "array_unshift"
             | "shuffle" | "array_splice"
     )
+}
+
+/// For by-reference foreach: promote the array element at insertion index `pos`
+/// to a shared cell and return `(key, cell)`. The element in the array becomes a
+/// `Value::Ref` to that cell, so a later write through the cell is visible in the
+/// array. Returns `None` if `slot` is not an array or `pos` is out of range.
+fn foreach_promote(slot: &mut Value, pos: usize) -> Option<(ArrayKey, Rc<RefCell<Value>>)> {
+    let Value::Array(arr) = slot else { return None };
+    if pos >= arr.len() {
+        return None;
+    }
+    let data = arr.make_mut();
+    let (k, v) = data.entries.get_index_mut(pos)?;
+    let key = k.clone();
+    let rc = match v {
+        Value::Ref(rc) => rc.clone(),
+        other => {
+            let inner = std::mem::replace(other, Value::Null);
+            let rc = Rc::new(RefCell::new(inner));
+            *other = Value::Ref(rc.clone());
+            rc
+        }
+    };
+    Some((key, rc))
 }
 
 fn type_lc(v: &Value) -> &'static str {

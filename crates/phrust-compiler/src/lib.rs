@@ -1234,26 +1234,68 @@ impl ProtoBuilder {
     }
 
     fn compile_foreach(&mut self, fe: &phrust_frontend::cst::Foreach) -> Result<(), Thrown> {
-        let src = self.compile_expr(fe.expression)?;
-        let arr_reg = self.alloc_temp();
-        let pos_reg = self.alloc_temp();
-
         // Resolve key + value targets. A value target may be a destructuring
         // pattern, which binds into a protected element register per iteration.
         let (key_cv, val_expr) = match &fe.target {
             ForeachTarget::Value(t) => (Reg::MAX, t.value),
             ForeachTarget::KeyValue(t) => (self.foreach_target_cv(t.key)?, t.value),
         };
+
+        // By-reference foreach: `foreach ($a as &$v)` / `... as $k => &$v`.
+        let by_ref = matches!(
+            val_expr,
+            Expression::UnaryPrefix(u) if matches!(u.operator, UnaryPrefixOperator::Reference(_))
+        );
+
+        if by_ref {
+            let Expression::UnaryPrefix(u) = val_expr else { unreachable!() };
+            let Expression::Variable(Variable::Direct(d)) = u.operand else {
+                return Err(Thrown::unsupported(
+                    "foreach by-reference target",
+                    "only a simple `&$v` loop variable is supported",
+                ));
+            };
+            // The source must be a variable so its elements can be referenced.
+            let Expression::Variable(Variable::Direct(sd)) = fe.expression else {
+                return Err(Thrown::error(
+                    "Error",
+                    "Cannot create references to elements of a temporary array expression",
+                ));
+            };
+            let arr_cv = self.cv(strip_dollar(sd.name));
+            let val_cv = self.cv(strip_dollar(d.name));
+            let pos_reg = self.alloc_temp();
+            let saved_floor = self.temp_floor;
+            self.temp_floor = self.next_temp;
+
+            let reset_pos = self.code.len();
+            self.emit(Instr::Nop); // FeResetRef
+            let fetch_label = self.here();
+            let fetch_pos = self.code.len();
+            self.emit(Instr::Nop); // FeFetchRef
+
+            self.loops.push(LoopCtx::default());
+            match &fe.body {
+                ForeachBody::Statement(s) => self.compile_stmt(s)?,
+                ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
+            }
+            let ctx = self.loops.pop().unwrap();
+            self.emit(Instr::Jmp { target: fetch_label });
+            let end = self.here();
+            self.code[reset_pos] = Instr::FeResetRef { arr_cv, pos_reg, end };
+            self.code[fetch_pos] = Instr::FeFetchRef { arr_cv, pos_reg, key_cv, val_cv, end };
+            self.patch_all(ctx.break_jumps, end);
+            self.patch_all(ctx.continue_jumps, fetch_label);
+            self.temp_floor = saved_floor;
+            return Ok(());
+        }
+
+        let src = self.compile_expr(fe.expression)?;
+        let arr_reg = self.alloc_temp();
+        let pos_reg = self.alloc_temp();
+
         let (val_cv, val_pattern): (Reg, Option<&Expression>) = match val_expr {
             Expression::Variable(Variable::Direct(d)) => (self.cv(strip_dollar(d.name)), None),
-            Expression::UnaryPrefix(u)
-                if matches!(u.operator, UnaryPrefixOperator::Reference(_)) =>
-            {
-                return Err(Thrown::unsupported(
-                    "foreach by reference",
-                    "references arrive in the next phase",
-                ))
-            }
             Expression::Array(_) | Expression::List(_) => (self.alloc_temp(), Some(val_expr)),
             _ => return Err(Thrown::unsupported("foreach target", "variable or destructuring only")),
         };

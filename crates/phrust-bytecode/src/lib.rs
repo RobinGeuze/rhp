@@ -116,6 +116,12 @@ pub enum Instr {
     // -- foreach (by value): iterate a COW snapshot --
     FeReset { arr_reg: Reg, pos_reg: Reg, src: Reg, end: Pc }, // snapshot src; pos=0; if not-array/empty -> jmp end
     FeFetch { arr_reg: Reg, pos_reg: Reg, key_cv: Reg, val_cv: Reg, end: Pc }, // bind key?/value; pos++; if done jmp end
+    /// By-reference foreach setup: `arr_cv` is the source variable's CV (iterated
+    /// live, not snapshotted). Skips to `end` if it is not a non-empty array.
+    FeResetRef { arr_cv: Reg, pos_reg: Reg, end: Pc },
+    /// By-reference foreach step: promote element at `pos` to a shared cell and
+    /// bind `val_cv` to it (so body writes flow back into the array).
+    FeFetchRef { arr_cv: Reg, pos_reg: Reg, key_cv: Reg, val_cv: Reg, end: Pc },
 
     // -- calls / return (phase 1 builtins; user functions later) --
     /// Resolve `name` (case-insensitive): refused → Unsupported; builtin →

@@ -56,6 +56,42 @@ thread_local! {
     static CLOSURES: RefCell<Vec<Rc<FunctionProto>>> = const { RefCell::new(Vec::new()) };
 }
 
+/// One parameter's name (lowercased) and folded default, for reordering named
+/// arguments at a call site. `None` default = required parameter.
+#[derive(Clone)]
+struct ParamSpec {
+    name_lc: Vec<u8>,
+    default: Option<Value>,
+    variadic: bool,
+}
+
+thread_local! {
+    /// Function name (lowercase) -> parameter specs, for named-argument calls.
+    /// Set once per `compile()`; a function is absent if any default did not fold.
+    static FN_PARAMS: RefCell<HashMap<Vec<u8>, Vec<ParamSpec>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Build the parameter specs for a function, or `None` if a default value is not
+/// a foldable constant (then named-argument calls to it fall back to an error).
+fn param_specs(
+    pl: &phrust_frontend::cst::FunctionLikeParameterList,
+) -> Option<Vec<ParamSpec>> {
+    let mut out = Vec::new();
+    for p in pl.parameters.iter() {
+        let default = match &p.default_value {
+            Some(dv) => Some(fold_const(dv.value).ok()?),
+            None => None,
+        };
+        out.push(ParamSpec {
+            name_lc: strip_dollar(p.variable.name).to_ascii_lowercase(),
+            default,
+            variadic: p.ellipsis.is_some(),
+        });
+    }
+    Some(out)
+}
+
 /// Compile a parsed program (borrowed from a `phrust_frontend::Arena`) into an
 /// owned, runnable bytecode `Program`. No `'arena` borrow escapes.
 pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
@@ -63,14 +99,20 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
     // Signature pre-pass: name -> per-parameter by-ref flags, so a call site can
     // marshal by-ref arguments even though the callee is resolved by name.
     let mut sigs: HashMap<Vec<u8>, Vec<bool>> = HashMap::new();
+    // Parameter-name signatures, so a call site can reorder named arguments.
+    let mut fn_params: HashMap<Vec<u8>, Vec<ParamSpec>> = HashMap::new();
     for stmt in program.statements.iter() {
         if let Statement::Function(func) = stmt {
             let flags: Vec<bool> =
                 func.parameter_list.parameters.iter().map(|p| p.ampersand.is_some()).collect();
             sigs.insert(func.name.value.to_ascii_lowercase(), flags);
+            if let Some(specs) = param_specs(&func.parameter_list) {
+                fn_params.insert(func.name.value.to_ascii_lowercase(), specs);
+            }
         }
     }
     let sigs = Rc::new(sigs);
+    FN_PARAMS.with(|m| *m.borrow_mut() = fn_params);
 
     // Hoist top-level function + class declarations. Start the class list with
     // the built-in exception hierarchy (the "prelude").
@@ -2100,6 +2142,106 @@ impl ProtoBuilder {
         }
     }
 
+    /// Compile a call that uses named arguments by reordering them into the
+    /// callee's declared parameter order (filling omitted parameters from their
+    /// folded defaults). Only statically-known user functions are supported.
+    fn compile_named_call(
+        &mut self,
+        name_bytes: &[u8],
+        list: &phrust_frontend::cst::ArgumentList,
+    ) -> Result<Reg, Thrown> {
+        let name_lc = name_bytes.to_ascii_lowercase();
+        let specs = FN_PARAMS.with(|m| m.borrow().get(&name_lc).cloned());
+        let Some(specs) = specs else {
+            return Err(Thrown::unsupported(
+                "named arguments",
+                "only to statically-known user functions with constant defaults",
+            ));
+        };
+        if specs.iter().any(|s| s.variadic) {
+            return Err(Thrown::unsupported("named arguments into a variadic function", "deferred"));
+        }
+
+        // Assign each argument to a parameter slot.
+        let mut provided: Vec<Option<&Expression>> = vec![None; specs.len()];
+        let mut pos = 0usize;
+        for arg in list.arguments.iter() {
+            match arg {
+                Argument::Positional(p) => {
+                    if pos >= specs.len() {
+                        return Err(Thrown::error(
+                            "ArgumentCountError",
+                            format!("Too many arguments to function {}()", String::from_utf8_lossy(name_bytes)),
+                        ));
+                    }
+                    provided[pos] = Some(p.value);
+                    pos += 1;
+                }
+                Argument::Named(n) => {
+                    let pname = n.name.value.to_ascii_lowercase();
+                    let idx = specs.iter().position(|s| s.name_lc == pname).ok_or_else(|| {
+                        Thrown::error(
+                            "Error",
+                            format!(
+                                "Unknown named parameter ${}",
+                                String::from_utf8_lossy(n.name.value)
+                            ),
+                        )
+                    })?;
+                    provided[idx] = Some(n.value);
+                }
+            }
+        }
+
+        // The window spans slots 0..=highest-provided; trailing defaulted
+        // parameters are left off (the callee's bind_params fills them).
+        let last = provided.iter().rposition(|p| p.is_some());
+        let Some(last) = last else {
+            // No args at all — just a plain zero-arg call.
+            let name = self.intern_name(name_bytes);
+            let base = self.alloc_temps(1);
+            let dst = self.alloc_temp();
+            self.emit(Instr::Call { dst, name, base, argc: 0 });
+            return Ok(dst);
+        };
+        let argc = (last + 1) as u16;
+
+        // Compile each slot's value into a contiguous window.
+        let mut regs = Vec::with_capacity(argc as usize);
+        for i in 0..=last {
+            let r = match provided[i] {
+                Some(e) => self.compile_expr(e)?,
+                None => match &specs[i].default {
+                    Some(v) => {
+                        let k = self.intern_const(v.clone());
+                        let t = self.alloc_temp();
+                        self.emit(Instr::LoadConst { dst: t, k });
+                        t
+                    }
+                    None => {
+                        return Err(Thrown::error(
+                            "ArgumentCountError",
+                            format!(
+                                "Missing required argument ${} for {}()",
+                                String::from_utf8_lossy(&specs[i].name_lc),
+                                String::from_utf8_lossy(name_bytes)
+                            ),
+                        ))
+                    }
+                },
+            };
+            regs.push(r);
+        }
+        let base = self.alloc_temps(argc);
+        for (i, r) in regs.into_iter().enumerate() {
+            self.emit(Instr::Mov { dst: base + i as Reg, src: r });
+        }
+        let name = self.intern_name(name_bytes);
+        let dst = self.alloc_temp();
+        self.emit(Instr::Call { dst, name, base, argc });
+        Ok(dst)
+    }
+
     fn compile_function_call(
         &mut self,
         fc: &phrust_frontend::cst::FunctionCall,
@@ -2119,6 +2261,12 @@ impl ProtoBuilder {
             let dst = self.alloc_temp();
             self.emit(Instr::CallV { dst, name, args });
             return Ok(dst);
+        }
+
+        // Named arguments: reorder to positional using the callee's parameter
+        // names (statically-known user functions only).
+        if has_named(&fc.argument_list) {
+            return self.compile_named_call(&name_bytes, &fc.argument_list);
         }
 
         // Per-parameter by-ref flags of the (statically-known) callee: a user
@@ -2850,6 +2998,10 @@ fn builtin_by_ref(name_lc: &[u8]) -> Option<Vec<bool>> {
     let name = std::str::from_utf8(name_lc).ok()?;
     let flags = phrust_bytecode::builtin_ref_params(name);
     (!flags.is_empty()).then(|| flags.to_vec())
+}
+
+fn has_named(list: &phrust_frontend::cst::ArgumentList) -> bool {
+    list.arguments.iter().any(|a| matches!(a, Argument::Named(_)))
 }
 
 fn has_spread(list: &phrust_frontend::cst::ArgumentList) -> bool {

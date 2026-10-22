@@ -730,6 +730,15 @@ impl<'a> Interp<'a> {
             ));
         }
 
+        // The oracle has no runtime-constant table, so it cannot model
+        // define/defined/constant; it refuses them (the harness then skips).
+        if matches!(name_str.to_ascii_lowercase().as_str(), "define" | "defined" | "constant") {
+            return Err(Thrown::unsupported(
+                format!("{name_str}()"),
+                "runtime constants are not supported by the oracle",
+            ));
+        }
+
         // Evaluate positional arguments (named/variadic deferred).
         let mut argv: Vec<Value> = Vec::new();
         for arg in fc.argument_list.arguments.iter() {

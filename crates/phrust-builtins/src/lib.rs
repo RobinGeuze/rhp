@@ -52,6 +52,16 @@ pub trait Host {
         false
     }
 
+    /// Define a runtime constant (`define`). Returns false if already defined.
+    fn define_const(&mut self, _name: &[u8], _value: Value) -> bool {
+        false
+    }
+
+    /// Look up a constant by name (`constant`), or None if undefined.
+    fn get_const(&self, _name: &[u8]) -> Option<Value> {
+        None
+    }
+
     /// Invoke a PHP callable (for `array_map`/`array_filter`/…). Default: refused.
     fn call_callable(&mut self, _callable: &Value, _args: &[Value]) -> Result<Value, Thrown> {
         Err(Thrown::unsupported("callback", "callbacks are not available in this host"))
@@ -110,6 +120,9 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "is_scalar"      => fn_is_scalar, 1, Some(1);
             "is_object"      => fn_is_object, 1, Some(1);
             "is_callable"    => fn_is_callable, 1, Some(1);
+            "define"         => fn_define, 2, Some(3);
+            "defined"        => fn_defined, 1, Some(1);
+            "constant"       => fn_constant, 1, Some(1);
             "intval"         => fn_intval, 1, Some(2);
             "floatval"       => fn_floatval, 1, Some(1);
             "doubleval"      => fn_floatval, 1, Some(1);
@@ -370,6 +383,27 @@ is_type!(fn_is_object, Value::Object(_) | Value::Closure(_));
 
 fn fn_is_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(host.is_callable_value(&args[0])))
+}
+
+fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = conv::to_string_bytes(&deref(&args[0]));
+    let value = deref(&args[1]).clone();
+    Ok(Value::Bool(host.define_const(&name, value)))
+}
+
+fn fn_defined(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = conv::to_string_bytes(&deref(&args[0]));
+    Ok(Value::Bool(host.get_const(&name).is_some()))
+}
+
+fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = conv::to_string_bytes(&deref(&args[0]));
+    host.get_const(&name).ok_or_else(|| {
+        Thrown::error(
+            "Error",
+            format!("Undefined constant \"{}\"", String::from_utf8_lossy(&name)),
+        )
+    })
 }
 is_type!(fn_is_scalar, Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bool(_));
 

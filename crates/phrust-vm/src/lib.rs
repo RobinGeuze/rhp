@@ -82,6 +82,18 @@ impl Host for Vm {
         self.classes.get(class_id as usize).is_some_and(|c| c.kind == ClassKind::Enum)
     }
 
+    fn define_const(&mut self, name: &[u8], value: Value) -> bool {
+        if self.constants.contains_key(name) {
+            return false;
+        }
+        self.constants.insert(name.to_vec(), value);
+        true
+    }
+
+    fn get_const(&self, name: &[u8]) -> Option<Value> {
+        self.constants.get(name).cloned()
+    }
+
     fn call_callable(&mut self, callable: &Value, args: &[Value]) -> Result<Value, Thrown> {
         self.call_callable_value(callable, args.to_vec())
     }

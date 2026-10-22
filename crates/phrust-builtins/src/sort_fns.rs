@@ -238,6 +238,75 @@ fn rebuild_reindex_ints(pairs: impl Iterator<Item = (ArrayKey, Value)>) -> PhpAr
     out
 }
 
+/// `array_splice(&$array, $offset, $length?, $replacement?)`: remove a slice
+/// (reindexed), optionally splicing in `$replacement`, and return the removed
+/// elements (reindexed). The array is passed by reference (arg 0).
+fn fn_array_splice(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Some(pairs) = snapshot(&args[0]) else { return Ok(Value::Array(PhpArray::new())) };
+    let len = pairs.len() as i64;
+
+    // offset: negative counts from the end; clamped to [0, len].
+    let mut offset = conv::to_int(&deref(&args[1]));
+    if offset < 0 {
+        offset = (len + offset).max(0);
+    } else {
+        offset = offset.min(len);
+    }
+    let offset = offset as usize;
+
+    // length: default to the rest; negative stops that many from the end.
+    let remove = match args.get(2) {
+        None | Some(Value::Null) => (len as usize).saturating_sub(offset),
+        Some(v) => {
+            let l = conv::to_int(&deref(v));
+            if l < 0 {
+                ((len + l) as usize).saturating_sub(offset)
+            } else {
+                (l as usize).min((len as usize).saturating_sub(offset))
+            }
+        }
+    };
+
+    // replacement: an array splices its values; a scalar splices as one element.
+    let replacement: Vec<Value> = match args.get(3) {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(a)) => a.iter().map(|(_, v)| deref(v).clone()).collect(),
+        Some(Value::Ref(r)) => match &*r.borrow() {
+            Value::Array(a) => a.iter().map(|(_, v)| deref(v).clone()).collect(),
+            other => vec![deref(other).clone()],
+        },
+        Some(v) => vec![deref(v).clone()],
+    };
+
+    let end = (offset + remove).min(pairs.len());
+    let mut removed = PhpArray::new();
+    let mut result = PhpArray::new();
+    // Entries before the cut (reindex ints, preserve string keys).
+    for (k, v) in &pairs[..offset] {
+        match k {
+            ArrayKey::Int(_) => result.push(v.clone()),
+            s => result.insert(s.clone(), v.clone()),
+        }
+    }
+    // Spliced-in replacement.
+    for rv in &replacement {
+        result.push(rv.clone());
+    }
+    // Removed slice (always reindexed in the return value).
+    for (_, v) in &pairs[offset..end] {
+        removed.push(v.clone());
+    }
+    // Entries after the cut.
+    for (k, v) in &pairs[end..] {
+        match k {
+            ArrayKey::Int(_) => result.push(v.clone()),
+            s => result.insert(s.clone(), v.clone()),
+        }
+    }
+    store(&args[0], result);
+    Ok(Value::Array(removed))
+}
+
 pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
     let add = |m: &mut std::collections::HashMap<&'static str, Builtin>,
                name: &'static str,
@@ -259,4 +328,5 @@ pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
     add(m, "array_pop", fn_array_pop, 1, Some(1));
     add(m, "array_shift", fn_array_shift, 1, Some(1));
     add(m, "array_unshift", fn_array_unshift, 1, None);
+    add(m, "array_splice", fn_array_splice, 2, Some(4));
 }

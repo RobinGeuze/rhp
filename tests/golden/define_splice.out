@@ -1,0 +1,10 @@
+hello 100 3.14
+bool(true)
+bool(false)
+100
+hello
+1,x,y,z,4,5 | 2,3
+1,2
+1,ins,2,3
+a,b,d | c
+10,99,30

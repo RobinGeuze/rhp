@@ -124,6 +124,14 @@ pub enum Instr {
     /// Variadic call: `args` holds a `PhpArray` of the evaluated arguments
     /// (used when a call site contains argument spread `...$x`).
     CallV { dst: Reg, name: NIdx, args: Reg },
+    /// Dynamic call `$f(args)`: `callee` holds a closure / string name / callable
+    /// array / `__invoke` object; call it with `regs[base..base+argc]`.
+    CallDyn { dst: Reg, callee: Reg, base: Reg, argc: u16 },
+    /// Variadic dynamic call `$f(...$a)`: `args` holds a `PhpArray`.
+    CallDynV { dst: Reg, callee: Reg, args: Reg },
+    /// Build a closure value: read `ncaptures` capture values from
+    /// `regs[base..base+ncaptures]` and pair them with closure proto `fnidx`.
+    MakeClosure { dst: Reg, fnidx: u32, base: Reg, ncaptures: u16 },
     Ret { src: Reg },
     RetNull,
 
@@ -257,6 +265,9 @@ pub struct FunctionProto {
     pub this_cv: Option<Reg>,
     /// True for a `static function` (no `$this` binding).
     pub is_static: bool,
+    /// Number of captured variables for a closure proto. Captures occupy CVs
+    /// `[0, num_captures)`, params follow at `[num_captures, num_captures+num_params)`.
+    pub num_captures: u16,
 }
 
 impl FunctionProto {
@@ -277,6 +288,7 @@ impl FunctionProto {
             flags: ProtoFlags::default(),
             this_cv: None,
             is_static: false,
+            num_captures: 0,
         }
     }
 }
@@ -300,6 +312,9 @@ pub struct Program {
     /// Compiled, UN-LINKED class declarations; the VM links them (`Vm::install`),
     /// resolving `extends`/`implements`/`use` by name and assigning `ClassId`s.
     pub classes: Vec<ClassProto>,
+    /// Anonymous closure / arrow-function protos, indexed by the `fnidx` operand
+    /// of `MakeClosure` and by `ClosureData::fnidx`.
+    pub closures: Vec<Rc<FunctionProto>>,
 }
 
 // ---------------------------------------------------------------------------

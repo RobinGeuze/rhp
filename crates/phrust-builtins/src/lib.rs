@@ -17,11 +17,16 @@ pub mod dump;
 
 mod arr_fns;
 mod datetime_fns;
+mod filter_fns;
 mod hash_fns;
 mod math_fns;
+mod mb_fns;
 mod misc_fns;
+mod serialize_fns;
+mod sort_fns;
 mod str_fns;
 mod strarr2_fns;
+mod strcmp_fns;
 mod webenc_fns;
 
 /// The interpreter surface a builtin may use. Implemented by the VM and the oracle.
@@ -42,6 +47,12 @@ pub trait Host {
     /// Invoke a PHP callable (for `array_map`/`array_filter`/…). Default: refused.
     fn call_callable(&mut self, _callable: &Value, _args: &[Value]) -> Result<Value, Thrown> {
         Err(Thrown::unsupported("callback", "callbacks are not available in this host"))
+    }
+
+    /// Whether a value is callable (`is_callable`): closures, function names,
+    /// `[obj_or_class, method]` pairs, and `__invoke` objects. Default: closures only.
+    fn is_callable_value(&self, callable: &Value) -> bool {
+        matches!(deref(callable), Value::Closure(_))
     }
 }
 
@@ -90,6 +101,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "is_array"       => fn_is_array, 1, Some(1);
             "is_scalar"      => fn_is_scalar, 1, Some(1);
             "is_object"      => fn_is_object, 1, Some(1);
+            "is_callable"    => fn_is_callable, 1, Some(1);
             "intval"         => fn_intval, 1, Some(2);
             "floatval"       => fn_floatval, 1, Some(1);
             "doubleval"      => fn_floatval, 1, Some(1);
@@ -138,6 +150,11 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         webenc_fns::register(&mut m);
         datetime_fns::register(&mut m);
         strarr2_fns::register(&mut m);
+        sort_fns::register(&mut m);
+        serialize_fns::register(&mut m);
+        filter_fns::register(&mut m);
+        strcmp_fns::register(&mut m);
+        mb_fns::register(&mut m);
         m
     })
 }
@@ -173,6 +190,56 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("STR_PAD_RIGHT", Value::Int(1)),
         ("STR_PAD_LEFT", Value::Int(0)),
         ("STR_PAD_BOTH", Value::Int(2)),
+        ("SORT_REGULAR", Value::Int(0)),
+        ("SORT_NUMERIC", Value::Int(1)),
+        ("SORT_STRING", Value::Int(2)),
+        ("SORT_DESC", Value::Int(3)),
+        ("SORT_ASC", Value::Int(4)),
+        ("SORT_LOCALE_STRING", Value::Int(5)),
+        ("SORT_NATURAL", Value::Int(6)),
+        ("SORT_FLAG_CASE", Value::Int(8)),
+        ("MB_CASE_UPPER", Value::Int(0)),
+        ("MB_CASE_LOWER", Value::Int(1)),
+        ("MB_CASE_TITLE", Value::Int(2)),
+        ("MB_CASE_FOLD", Value::Int(3)),
+        ("MB_CASE_UPPER_SIMPLE", Value::Int(4)),
+        ("MB_CASE_LOWER_SIMPLE", Value::Int(5)),
+        ("MB_CASE_TITLE_SIMPLE", Value::Int(6)),
+        ("MB_CASE_FOLD_SIMPLE", Value::Int(7)),
+        ("FILTER_DEFAULT", Value::Int(516)),
+        ("FILTER_UNSAFE_RAW", Value::Int(516)),
+        ("FILTER_VALIDATE_INT", Value::Int(257)),
+        ("FILTER_VALIDATE_BOOLEAN", Value::Int(258)),
+        ("FILTER_VALIDATE_BOOL", Value::Int(258)),
+        ("FILTER_VALIDATE_FLOAT", Value::Int(259)),
+        ("FILTER_VALIDATE_REGEXP", Value::Int(272)),
+        ("FILTER_VALIDATE_DOMAIN", Value::Int(277)),
+        ("FILTER_VALIDATE_URL", Value::Int(273)),
+        ("FILTER_VALIDATE_EMAIL", Value::Int(274)),
+        ("FILTER_VALIDATE_IP", Value::Int(275)),
+        ("FILTER_VALIDATE_MAC", Value::Int(276)),
+        ("FILTER_SANITIZE_ENCODED", Value::Int(514)),
+        ("FILTER_SANITIZE_SPECIAL_CHARS", Value::Int(515)),
+        ("FILTER_SANITIZE_EMAIL", Value::Int(517)),
+        ("FILTER_SANITIZE_URL", Value::Int(518)),
+        ("FILTER_SANITIZE_NUMBER_INT", Value::Int(519)),
+        ("FILTER_SANITIZE_NUMBER_FLOAT", Value::Int(520)),
+        ("FILTER_SANITIZE_FULL_SPECIAL_CHARS", Value::Int(522)),
+        ("FILTER_SANITIZE_ADD_SLASHES", Value::Int(523)),
+        ("FILTER_FLAG_NONE", Value::Int(0)),
+        ("FILTER_NULL_ON_FAILURE", Value::Int(134217728)),
+        ("FILTER_FLAG_ALLOW_OCTAL", Value::Int(1)),
+        ("FILTER_FLAG_ALLOW_HEX", Value::Int(2)),
+        ("FILTER_FLAG_ALLOW_THOUSAND", Value::Int(8192)),
+        ("FILTER_FLAG_ALLOW_SCIENTIFIC", Value::Int(16384)),
+        ("FILTER_FLAG_IPV4", Value::Int(1048576)),
+        ("FILTER_FLAG_IPV6", Value::Int(2097152)),
+        ("FILTER_FLAG_NO_PRIV_RANGE", Value::Int(8388608)),
+        ("FILTER_FLAG_NO_RES_RANGE", Value::Int(4194304)),
+        ("FILTER_FLAG_PATH_REQUIRED", Value::Int(262144)),
+        ("FILTER_FLAG_QUERY_REQUIRED", Value::Int(524288)),
+        ("FILTER_FLAG_HOSTNAME", Value::Int(1048576)),
+        ("FILTER_FLAG_EMAIL_UNICODE", Value::Int(1048576)),
         ("ENT_QUOTES", Value::Int(3)),
         ("ENT_COMPAT", Value::Int(2)),
         ("ENT_NOQUOTES", Value::Int(0)),
@@ -255,6 +322,7 @@ fn fn_get_debug_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         Value::Float(_) => "float",
         Value::Str(_) => "string",
         Value::Array(_) => "array",
+        Value::Closure(_) => "Closure",
         Value::Object(_) => "object",
         Value::Ref(_) => unreachable!(),
     };
@@ -278,7 +346,11 @@ is_type!(fn_is_string, Value::Str(_));
 is_type!(fn_is_bool, Value::Bool(_));
 is_type!(fn_is_null, Value::Null);
 is_type!(fn_is_array, Value::Array(_));
-is_type!(fn_is_object, Value::Object(_));
+is_type!(fn_is_object, Value::Object(_) | Value::Closure(_));
+
+fn fn_is_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(host.is_callable_value(&args[0])))
+}
 is_type!(fn_is_scalar, Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bool(_));
 
 fn fn_intval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -712,7 +784,7 @@ impl TypeNameLower for Value {
             Value::Float(_) => "float",
             Value::Str(_) => "string",
             Value::Array(_) => "array",
-            Value::Object(_) => "object",
+            Value::Object(_) | Value::Closure(_) => "object",
             Value::Ref(r) => r.borrow().type_name_lower(),
         }
     }

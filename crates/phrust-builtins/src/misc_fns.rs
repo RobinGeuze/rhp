@@ -205,8 +205,9 @@ fn json_encode_value(v: &Value, out: &mut Vec<u8>) -> bool {
                 out.push(b'}');
             }
         }
-        // Objects need property introspection we don't have yet.
-        Value::Object(_) => return false,
+        // Objects need property introspection we don't have yet; closures
+        // json_encode to `null` in PHP (no public props), but we fail the call.
+        Value::Object(_) | Value::Closure(_) => return false,
         Value::Ref(_) => unreachable!("deref'd above"),
     }
     true

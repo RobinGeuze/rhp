@@ -84,7 +84,7 @@ fn type_name_lower(v: &Value) -> &'static str {
         Value::Float(_) => "float",
         Value::Str(_) => "string",
         Value::Array(_) => "array",
-        Value::Object(_) => "object",
+        Value::Object(_) | Value::Closure(_) => "object",
         Value::Ref(r) => type_name_lower(&r.borrow()),
     }
 }

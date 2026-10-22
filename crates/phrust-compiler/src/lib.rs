@@ -9,6 +9,7 @@
 //! `$var` so CVs occupy `[0, num_cvs)`; temporaries bump above and are freed at
 //! statement boundaries; `num_registers` is the peak.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -37,11 +38,28 @@ enum LvalRoot {
     Cv(Reg),
     StaticProp(ClassRef, NIdx),
 }
+
+/// The body form of a closure being lowered.
+enum ClosureBody<'a> {
+    /// Arrow function: a single expression, implicitly `return`ed.
+    Arrow(&'a Expression<'a>),
+    /// `function(){ ... }`: a block of statements.
+    Block(&'a phrust_frontend::cst::Block<'a>),
+}
 use phrust_values::{ArrayKey, PhpArray, PhpStr, Thrown, Value};
+
+thread_local! {
+    /// Sink for anonymous closure / arrow-function protos produced anywhere in
+    /// the program. Compilation is single-threaded and non-reentrant per
+    /// `compile()` call; the list is cleared on entry and drained into
+    /// `Program::closures` on exit. A closure's `fnidx` is its position here.
+    static CLOSURES: RefCell<Vec<Rc<FunctionProto>>> = const { RefCell::new(Vec::new()) };
+}
 
 /// Compile a parsed program (borrowed from a `phrust_frontend::Arena`) into an
 /// owned, runnable bytecode `Program`. No `'arena` borrow escapes.
 pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
+    CLOSURES.with(|c| c.borrow_mut().clear());
     // Signature pre-pass: name -> per-parameter by-ref flags, so a call site can
     // marshal by-ref arguments even though the callee is resolved by name.
     let mut sigs: HashMap<Vec<u8>, Vec<bool>> = HashMap::new();
@@ -86,7 +104,8 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
     }
     c.emit(Instr::RetNull);
 
-    Ok(Program { main: Rc::new(c.finish()), functions, classes })
+    let closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    Ok(Program { main: Rc::new(c.finish()), functions, classes, closures })
 }
 
 // --- OOP: class declaration compilation ------------------------------------
@@ -1524,6 +1543,8 @@ impl ProtoBuilder {
             }
             Expression::Construct(c) => self.compile_construct(c),
             Expression::Call(call) => self.compile_call(call),
+            Expression::ArrowFunction(af) => self.compile_arrow(af),
+            Expression::Closure(cl) => self.compile_closure(cl),
             other => Err(Thrown::unsupported(
                 format!("{} expression", expr_kind(other)),
                 "not implemented in the phase-1 compiler",
@@ -1916,12 +1937,9 @@ impl ProtoBuilder {
         let name_bytes = match fc.function {
             Expression::Identifier(id) => identifier_name(id).to_vec(),
             Expression::ConstantAccess(ca) => identifier_name(&ca.name).to_vec(),
-            _ => {
-                return Err(Thrown::unsupported(
-                    "dynamic function call",
-                    "callable values arrive with closures",
-                ))
-            }
+            // `$f(...)`, `($expr)(...)`, `$arr[0](...)`: the callee is a runtime
+            // value (closure / string name / `[obj, method]` / __invoke object).
+            _ => return self.compile_dynamic_call(fc),
         };
 
         // Spread call `foo(...$args)`: marshal args into an array, emit CallV.
@@ -1933,8 +1951,10 @@ impl ProtoBuilder {
             return Ok(dst);
         }
 
-        // Per-parameter by-ref flags of the (statically-known) callee.
-        let sig = self.sigs.get(&name_bytes.to_ascii_lowercase()).cloned();
+        // Per-parameter by-ref flags of the (statically-known) callee: a user
+        // function's recorded signature, or a known by-ref builtin.
+        let name_lc = name_bytes.to_ascii_lowercase();
+        let sig = self.sigs.get(&name_lc).cloned().or_else(|| builtin_by_ref(&name_lc));
 
         // Compile each arg into a value reg, or (for a by-ref param) note the
         // variable's CV so it can be materialized as a reference.
@@ -1982,6 +2002,192 @@ impl ProtoBuilder {
         let name = self.intern_name(&name_bytes);
         let dst = self.alloc_temp();
         self.emit(Instr::Call { dst, name, base, argc });
+        Ok(dst)
+    }
+
+    /// `$f(args)` — call a runtime callable value. The callee is evaluated to a
+    /// register; arguments are passed by value (the signature is unknown at the
+    /// call site, so by-ref parameters are not honoured for dynamic calls).
+    fn compile_dynamic_call(
+        &mut self,
+        fc: &phrust_frontend::cst::FunctionCall,
+    ) -> Result<Reg, Thrown> {
+        let callee = self.compile_expr(fc.function)?;
+
+        if has_spread(&fc.argument_list) {
+            let args = self.build_args_array(Some(&fc.argument_list))?;
+            let dst = self.alloc_temp();
+            self.emit(Instr::CallDynV { dst, callee, args });
+            return Ok(dst);
+        }
+
+        let mut argregs = Vec::new();
+        for arg in fc.argument_list.arguments.iter() {
+            let p = match arg {
+                Argument::Positional(p) if p.ellipsis.is_none() => p,
+                Argument::Positional(_) => {
+                    return Err(Thrown::unsupported("argument spread", "call-site spread is deferred"))
+                }
+                Argument::Named(_) => return Err(Thrown::unsupported("named arguments", "deferred")),
+            };
+            argregs.push(self.compile_expr(p.value)?);
+        }
+        let argc = argregs.len() as u16;
+        let base = self.alloc_temps(argc.max(1));
+        for (i, r) in argregs.into_iter().enumerate() {
+            self.emit(Instr::Mov { dst: base + i as Reg, src: r });
+        }
+        let dst = self.alloc_temp();
+        self.emit(Instr::CallDyn { dst, callee, base, argc });
+        Ok(dst)
+    }
+
+    /// `fn(params) => expr` — arrow function. Auto-captures (by value) every
+    /// free variable of the body that is a CV in the enclosing scope, plus
+    /// `$this` when defined and the arrow is non-static.
+    fn compile_arrow(
+        &mut self,
+        af: &phrust_frontend::cst::ArrowFunction,
+    ) -> Result<Reg, Thrown> {
+        let is_static = af.r#static.is_some();
+        // Parameter names, to exclude from auto-capture.
+        let params: Vec<Vec<u8>> =
+            af.parameter_list.parameters.iter().map(|p| strip_dollar(p.variable.name).to_vec()).collect();
+
+        let mut used = Vec::new();
+        collect_vars(af.expression, &mut used);
+        let mut captures: Vec<Vec<u8>> = Vec::new();
+        for name in used {
+            if name == b"this" {
+                continue; // handled below
+            }
+            if params.iter().any(|p| p == &name) || captures.iter().any(|c| c == &name) {
+                continue;
+            }
+            // Only capture variables that exist in the enclosing scope.
+            if self.cv_map.iter().any(|n| n == &name) {
+                captures.push(name);
+            }
+        }
+        // Bind `$this` by value when we're inside an instance context.
+        if !is_static && self.cv_map.iter().any(|n| n == b"this") {
+            captures.insert(0, b"this".to_vec());
+        }
+
+        self.build_closure(is_static, &af.parameter_list, captures, ClosureBody::Arrow(af.expression))
+    }
+
+    /// `function(params) use(...) { body }` — closure with an explicit capture
+    /// list. `use(&$x)` by-ref capture is not yet supported (treated by value).
+    fn compile_closure(
+        &mut self,
+        cl: &phrust_frontend::cst::Closure,
+    ) -> Result<Reg, Thrown> {
+        let is_static = cl.r#static.is_some();
+        let mut captures: Vec<Vec<u8>> = Vec::new();
+        if !is_static && self.cv_map.iter().any(|n| n == b"this") {
+            captures.push(b"this".to_vec());
+        }
+        if let Some(uses) = &cl.use_clause {
+            for u in uses.variables.iter() {
+                if u.ampersand.is_some() {
+                    return Err(Thrown::unsupported(
+                        "by-reference closure capture (`use (&$x)`)",
+                        "only by-value `use` is supported for now",
+                    ));
+                }
+                let name = strip_dollar(u.variable.name).to_vec();
+                if !captures.iter().any(|c| c == &name) {
+                    captures.push(name);
+                }
+            }
+        }
+        self.build_closure(is_static, &cl.parameter_list, captures, ClosureBody::Block(&cl.body))
+    }
+
+    /// Shared closure lowering: compile the body into a fresh proto whose CVs are
+    /// `[captures.., params.., locals..]`, register it, then emit the capture
+    /// window + `MakeClosure` in the enclosing frame.
+    fn build_closure(
+        &mut self,
+        is_static: bool,
+        param_list: &phrust_frontend::cst::FunctionLikeParameterList,
+        captures: Vec<Vec<u8>>,
+        body: ClosureBody,
+    ) -> Result<Reg, Thrown> {
+        let nc = captures.len() as u16;
+
+        // --- compile the closure proto in an isolated builder ---
+        let mut c = ProtoBuilder::new(PhpStr::from("{closure}"));
+        c.sigs = self.sigs.clone();
+        for name in &captures {
+            c.cv(name); // captures occupy CVs 0..nc
+        }
+        let mut params = Vec::new();
+        for p in param_list.parameters.iter() {
+            let var = strip_dollar(p.variable.name);
+            let cv = c.cv(var);
+            let name = c.intern_name(var);
+            let default = match &p.default_value {
+                Some(dv) => Some(c.const_default(dv.value)?),
+                None => None,
+            };
+            params.push(phrust_bytecode::ParamInfo {
+                name,
+                cv,
+                by_ref: p.ampersand.is_some(),
+                variadic: p.ellipsis.is_some(),
+                default,
+            });
+        }
+        let num_params = params.len() as u16;
+
+        match body {
+            ClosureBody::Arrow(e) => c.scan_expr_vars(e),
+            ClosureBody::Block(b) => b.statements.iter().for_each(|s| c.scan_stmt_vars(s)),
+        }
+        c.num_cvs = c.cv_map.len() as u16;
+        c.next_temp = c.num_cvs;
+        c.high_water = c.num_cvs;
+        c.temp_floor = c.num_cvs;
+
+        match body {
+            ClosureBody::Arrow(e) => {
+                let r = c.compile_expr(e)?;
+                c.emit(Instr::Ret { src: r });
+            }
+            ClosureBody::Block(b) => {
+                for s in b.statements.iter() {
+                    c.compile_stmt(s)?;
+                }
+                c.emit(Instr::RetNull);
+            }
+        }
+
+        let mut proto = c.finish();
+        proto.num_params = num_params;
+        proto.params = params;
+        proto.num_captures = nc;
+        proto.is_static = is_static;
+
+        let fnidx = CLOSURES.with(|cls| {
+            let mut v = cls.borrow_mut();
+            let idx = v.len() as u32;
+            v.push(Rc::new(proto));
+            idx
+        });
+
+        // --- emit the capture window + MakeClosure in the enclosing frame ---
+        let base = self.alloc_temps(nc.max(1));
+        for (i, name) in captures.iter().enumerate() {
+            let dst = base + i as Reg;
+            match self.cv_map.iter().position(|n| n == name) {
+                Some(src) => self.emit(Instr::Mov { dst, src: src as Reg }),
+                None => self.emit(Instr::LoadNull { dst }),
+            }
+        }
+        let dst = self.alloc_temp();
+        self.emit(Instr::MakeClosure { dst, fnidx, base, ncaptures: nc });
         Ok(dst)
     }
 
@@ -2379,6 +2585,20 @@ fn strip_dollar(name: &[u8]) -> &[u8] {
     name.strip_prefix(b"$").unwrap_or(name)
 }
 
+/// By-reference parameter flags for builtins whose first argument is modified
+/// in place (the sort family and the stack/queue ops). The call site then emits
+/// a `MakeRef` for arg 0 so the builtin can mutate the caller's variable.
+fn builtin_by_ref(name_lc: &[u8]) -> Option<Vec<bool>> {
+    let is_ref0 = matches!(
+        name_lc,
+        b"sort" | b"rsort" | b"asort" | b"arsort" | b"ksort" | b"krsort"
+            | b"usort" | b"uasort" | b"uksort"
+            | b"array_push" | b"array_pop" | b"array_shift" | b"array_unshift"
+            | b"shuffle" | b"array_splice"
+    );
+    is_ref0.then(|| vec![true])
+}
+
 fn has_spread(list: &phrust_frontend::cst::ArgumentList) -> bool {
     list.arguments
         .iter()
@@ -2553,6 +2773,153 @@ fn stmt_kind(s: &Statement) -> &'static str {
         Statement::Class(_) => "class",
         Statement::Try(_) => "try",
         _ => "this",
+    }
+}
+
+/// Read-only collection of every `$var` name referenced in an expression, for
+/// arrow-function auto-capture. Descends into nested closures/arrows so their
+/// free variables propagate upward (over-collection is harmless: the caller
+/// keeps only names that are CVs in the enclosing scope). Does not mutate the
+/// builder, unlike [`ProtoBuilder::scan_expr_vars`].
+fn collect_vars(expr: &Expression, out: &mut Vec<Vec<u8>>) {
+    let push = |name: &[u8], out: &mut Vec<Vec<u8>>| {
+        if !out.iter().any(|n| n == name) {
+            out.push(name.to_vec());
+        }
+    };
+    match expr {
+        Expression::Variable(Variable::Direct(d)) => push(strip_dollar(d.name), out),
+        Expression::Parenthesized(p) => collect_vars(p.expression, out),
+        Expression::Binary(b) => {
+            collect_vars(b.lhs, out);
+            collect_vars(b.rhs, out);
+        }
+        Expression::UnaryPrefix(u) => collect_vars(u.operand, out),
+        Expression::UnaryPostfix(u) => collect_vars(u.operand, out),
+        Expression::Assignment(a) => {
+            collect_vars(a.lhs, out);
+            collect_vars(a.rhs, out);
+        }
+        Expression::Conditional(c) => {
+            collect_vars(c.condition, out);
+            if let Some(t) = &c.then {
+                collect_vars(t, out);
+            }
+            collect_vars(c.r#else, out);
+        }
+        Expression::Array(arr) => collect_array_vars(arr.elements.iter(), out),
+        Expression::LegacyArray(arr) => collect_array_vars(arr.elements.iter(), out),
+        Expression::List(lst) => collect_array_vars(lst.elements.iter(), out),
+        Expression::ArrayAccess(aa) => {
+            collect_vars(aa.array, out);
+            collect_vars(aa.index, out);
+        }
+        Expression::ArrayAppend(ap) => collect_vars(ap.array, out),
+        Expression::CompositeString(cs) => {
+            let parts = match cs {
+                CompositeString::Interpolated(i) => Some(&i.parts),
+                CompositeString::Document(d) => Some(&d.parts),
+                CompositeString::ShellExecute(_) => None,
+            };
+            if let Some(parts) = parts {
+                for part in parts.iter() {
+                    match part {
+                        StringPart::Expression(e) => collect_vars(e, out),
+                        StringPart::BracedExpression(b) => collect_vars(b.expression, out),
+                        StringPart::Literal(_) => {}
+                    }
+                }
+            }
+        }
+        Expression::Match(m) => {
+            collect_vars(m.expression, out);
+            for arm in m.arms.iter() {
+                match arm {
+                    MatchArm::Expression(a) => {
+                        a.conditions.iter().for_each(|c| collect_vars(c, out));
+                        collect_vars(a.expression, out);
+                    }
+                    MatchArm::Default(a) => collect_vars(a.expression, out),
+                }
+            }
+        }
+        Expression::Instantiation(inst) => {
+            collect_vars(inst.class, out);
+            if let Some(list) = &inst.argument_list {
+                collect_arg_vars(list, out);
+            }
+        }
+        Expression::Access(acc) => match acc {
+            Access::Property(pa) => collect_vars(pa.object, out),
+            Access::NullSafeProperty(pa) => collect_vars(pa.object, out),
+            Access::StaticProperty(spa) => collect_vars(spa.class, out),
+            Access::ClassConstant(cca) => collect_vars(cca.class, out),
+        },
+        Expression::Clone(cl) => collect_vars(cl.object, out),
+        Expression::Throw(t) => collect_vars(t.exception, out),
+        Expression::Construct(c) => match c {
+            Construct::Print(p) => collect_vars(p.value, out),
+            Construct::Empty(e) => collect_vars(e.value, out),
+            Construct::Isset(i) => i.values.iter().for_each(|v| collect_vars(v, out)),
+            _ => {}
+        },
+        Expression::Call(call) => {
+            use phrust_frontend::cst::Call;
+            match call {
+                Call::Function(fc) => {
+                    collect_vars(fc.function, out);
+                    collect_arg_vars(&fc.argument_list, out);
+                }
+                Call::Method(mc) => {
+                    collect_vars(mc.object, out);
+                    collect_arg_vars(&mc.argument_list, out);
+                }
+                Call::NullSafeMethod(mc) => {
+                    collect_vars(mc.object, out);
+                    collect_arg_vars(&mc.argument_list, out);
+                }
+                Call::StaticMethod(smc) => {
+                    collect_vars(smc.class, out);
+                    collect_arg_vars(&smc.argument_list, out);
+                }
+            }
+        }
+        // Nested closure/arrow: only the vars it needs from *our* scope matter.
+        Expression::ArrowFunction(af) => collect_vars(af.expression, out),
+        Expression::Closure(cl) => {
+            if let Some(uses) = &cl.use_clause {
+                for u in uses.variables.iter() {
+                    push(strip_dollar(u.variable.name), out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_arg_vars(list: &phrust_frontend::cst::ArgumentList, out: &mut Vec<Vec<u8>>) {
+    for arg in list.arguments.iter() {
+        match arg {
+            Argument::Positional(p) => collect_vars(p.value, out),
+            Argument::Named(n) => collect_vars(n.value, out),
+        }
+    }
+}
+
+fn collect_array_vars<'a>(
+    els: impl Iterator<Item = &'a ArrayElement<'a>>,
+    out: &mut Vec<Vec<u8>>,
+) {
+    for el in els {
+        match el {
+            ArrayElement::KeyValue(kv) => {
+                collect_vars(kv.key, out);
+                collect_vars(kv.value, out);
+            }
+            ArrayElement::Value(v) => collect_vars(v.value, out),
+            ArrayElement::Variadic(v) => collect_vars(v.value, out),
+            ArrayElement::Missing(_) => {}
+        }
     }
 }
 

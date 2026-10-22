@@ -34,6 +34,7 @@ pub struct Vm {
     stack: Vec<Frame>,
     functions: Vec<Rc<FunctionProto>>,
     fn_names: HashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
+    closures: Vec<Rc<FunctionProto>>, // anonymous closure protos, indexed by `fnidx`
     constants: HashMap<Vec<u8>, Value>,
     max_depth: usize,
     // lvalue cursor: a root in the current frame (CV or a static-prop cell) +
@@ -73,6 +74,37 @@ impl Host for Vm {
 
     fn call_callable(&mut self, callable: &Value, args: &[Value]) -> Result<Value, Thrown> {
         self.call_callable_value(callable, args.to_vec())
+    }
+
+    fn is_callable_value(&self, callable: &Value) -> bool {
+        let c = match callable {
+            Value::Ref(r) => r.borrow().clone(),
+            other => other.clone(),
+        };
+        match c {
+            Value::Closure(_) => true,
+            Value::Str(s) => {
+                let lower = s.as_bytes().to_ascii_lowercase();
+                self.fn_names.contains_key(&lower)
+                    || builtins::lookup(&String::from_utf8_lossy(s.as_bytes())).is_some()
+            }
+            Value::Array(a) if a.len() == 2 => {
+                let item0 = a.get(&ArrayKey::Int(0)).cloned().unwrap_or(Value::Null);
+                let method = a.get(&ArrayKey::Int(1)).cloned().unwrap_or(Value::Null);
+                let mname = conv::to_string_bytes(&method);
+                let cls = match item0 {
+                    Value::Object(h) => Some(h.borrow().class),
+                    Value::Str(cn) => self.resolve_class_by_name(cn.as_bytes()).ok(),
+                    _ => None,
+                };
+                cls.map(|c| self.lookup_method(c, &mname).is_some()).unwrap_or(false)
+            }
+            Value::Object(h) => {
+                let cls = h.borrow().class;
+                self.lookup_method(cls, b"__invoke").is_some()
+            }
+            _ => false,
+        }
     }
 }
 
@@ -142,6 +174,7 @@ impl Vm {
             stack: Vec::new(),
             functions: Vec::new(),
             fn_names: HashMap::new(),
+            closures: Vec::new(),
             constants,
             max_depth: 1 << 16,
             cursor_root: CursorRoot::Cv(0),
@@ -163,6 +196,8 @@ impl Vm {
             self.functions.push(proto.clone());
             self.fn_names.insert(proto.name.as_bytes().to_ascii_lowercase(), idx);
         }
+        // Register anonymous closure / arrow-function protos (indexed by fnidx).
+        self.closures = prog.closures.clone();
         // Link all declared classes (flatten inheritance, resolve forward refs).
         self.install_classes(&prog.classes)?;
         self.stack.push(Frame::new(prog.main.clone(), 0));
@@ -473,6 +508,34 @@ impl Vm {
                         let out = self.call_builtin(top, &name_str, base, argc)?;
                         self.reg_set(top, dst, out);
                     }
+                }
+
+                Instr::MakeClosure { dst, fnidx, base, ncaptures } => {
+                    let captures: Vec<Value> =
+                        (0..ncaptures).map(|i| self.reg_get(top, base + i)).collect();
+                    // Bind the defining/static class scope so the closure body can
+                    // reach private members and resolve `self::`/`static::`.
+                    let cd = Rc::new(phrust_values::ClosureData {
+                        fnidx,
+                        captures,
+                        bound_this: None,
+                        bound_class: self.stack[top].defining_class,
+                        bound_static: self.stack[top].called_class,
+                    });
+                    self.reg_set(top, dst, Value::Closure(cd));
+                }
+                Instr::CallDyn { dst, callee, base, argc } => {
+                    let c = self.reg_get(top, callee);
+                    let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+                    let out = self.call_callable_value(&c, args)?;
+                    self.reg_set(top, dst, out);
+                }
+                Instr::CallDynV { dst, callee, args } => {
+                    let c = self.reg_get(top, callee);
+                    let arr = self.reg_get(top, args);
+                    let argvec = self.spread_args(&arr);
+                    let out = self.call_callable_value(&c, argvec)?;
+                    self.reg_set(top, dst, out);
                 }
 
                 // -- array element read --
@@ -1051,14 +1114,52 @@ impl Vm {
         }
     }
 
+    /// Push a capture frame for a closure (captures bound to CVs `0..nc`, params
+    /// after) and drive it to completion (re-entrant; exceptions handled within).
+    fn run_closure_sync(
+        &mut self,
+        cd: &phrust_values::ClosureData,
+        args: Vec<Value>,
+    ) -> Result<Value, Thrown> {
+        if self.stack.len() >= self.max_depth {
+            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
+        }
+        let proto = self.closures[cd.fnidx as usize].clone();
+        let mut frame = Frame::new(proto.clone(), 0);
+        bind_params(&proto, &args, &mut frame.regs)?;
+        for (i, cap) in cd.captures.iter().enumerate() {
+            frame.regs[i] = cap.clone();
+        }
+        frame.defining_class = cd.bound_class;
+        frame.called_class = cd.bound_static;
+        frame.capture = true;
+        let base = self.stack.len();
+        self.stack.push(frame);
+        loop {
+            match self.run_frames() {
+                Ok(v) => return Ok(v),
+                Err(thrown) => {
+                    if !thrown.is_catchable() {
+                        return Err(thrown);
+                    }
+                    match self.unwind(thrown, base)? {
+                        UnwindResult::Caught => {}
+                        UnwindResult::Escaped(t) => return Err(t),
+                    }
+                }
+            }
+        }
+    }
+
     /// Invoke a PHP callable value synchronously (string function name,
-    /// `[obj_or_class, method]`, or an `__invoke` object).
+    /// `[obj_or_class, method]`, an `__invoke` object, or a closure).
     fn call_callable_value(&mut self, callable: &Value, args: Vec<Value>) -> Result<Value, Thrown> {
         let c = match callable {
             Value::Ref(r) => r.borrow().clone(),
             other => other.clone(),
         };
         match c {
+            Value::Closure(cd) => self.run_closure_sync(&cd, args),
             Value::Str(s) => {
                 let lower = s.as_bytes().to_ascii_lowercase();
                 if let Some(&fnidx) = self.fn_names.get(&lower) {
@@ -1253,7 +1354,19 @@ impl Vm {
         base: Reg,
         argc: u16,
     ) -> Result<Value, Thrown> {
-        let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+        // By-ref builtins (sort/array_push/…) need arg 0 kept as the `Value::Ref`
+        // the call site built, so they can mutate the caller's variable. All
+        // other args are deref'd to plain values as usual.
+        let ref0 = is_byref_builtin(name);
+        let args: Vec<Value> = (0..argc)
+            .map(|i| {
+                if ref0 && i == 0 {
+                    self.stack[top].regs[(base + i) as usize].clone()
+                } else {
+                    self.reg_get(top, base + i)
+                }
+            })
+            .collect();
         self.invoke_builtin(name, args)
     }
 
@@ -1438,6 +1551,19 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep]) {
     }
 }
 
+/// Builtins whose first argument is passed by reference (mirrors the compiler's
+/// `builtin_by_ref`): arg 0 must reach the builtin as the `Value::Ref` the call
+/// site constructed, not a deref'd copy.
+fn is_byref_builtin(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "sort" | "rsort" | "asort" | "arsort" | "ksort" | "krsort"
+            | "usort" | "uasort" | "uksort"
+            | "array_push" | "array_pop" | "array_shift" | "array_unshift"
+            | "shuffle" | "array_splice"
+    )
+}
+
 fn type_lc(v: &Value) -> &'static str {
     match v {
         Value::Null => "null",
@@ -1446,7 +1572,7 @@ fn type_lc(v: &Value) -> &'static str {
         Value::Float(_) => "float",
         Value::Str(_) => "string",
         Value::Array(_) => "array",
-        Value::Object(_) => "object",
+        Value::Object(_) | Value::Closure(_) => "object",
         Value::Ref(_) => "reference",
     }
 }

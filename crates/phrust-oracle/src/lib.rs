@@ -720,6 +720,16 @@ impl<'a> Interp<'a> {
             return Err(Thrown::unsupported(format!("{name_str}()"), reason));
         }
 
+        // By-reference builtins (sort/array_push/…) mutate their array argument
+        // in place; the frozen oracle has no by-ref call path, so it refuses
+        // them (the differential harness then skips those fixtures).
+        if is_byref_builtin(&name_str) {
+            return Err(Thrown::unsupported(
+                format!("{name_str}()"),
+                "by-reference builtins are not supported by the oracle",
+            ));
+        }
+
         // Evaluate positional arguments (named/variadic deferred).
         let mut argv: Vec<Value> = Vec::new();
         for arg in fc.argument_list.arguments.iter() {
@@ -1123,6 +1133,18 @@ fn apply_compound_op(
         AssignmentOperator::RightShift(_) => ops::bitwise(cur, rhs, ops::BitOp::Shr),
         AssignmentOperator::Assign(_) | AssignmentOperator::Coalesce(_) => unreachable!(),
     })
+}
+
+/// Builtins whose first argument is passed by reference (the sort family and
+/// the stack/queue ops). The oracle cannot run these correctly, so it refuses.
+fn is_byref_builtin(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "sort" | "rsort" | "asort" | "arsort" | "ksort" | "krsort"
+            | "usort" | "uasort" | "uksort"
+            | "array_push" | "array_pop" | "array_shift" | "array_unshift"
+            | "shuffle" | "array_splice"
+    )
 }
 
 fn strip_dollar(name: &[u8]) -> &[u8] {

@@ -36,7 +36,27 @@ pub enum Value {
     /// A PHP reference (`&`): an aliased slot. Not a PHP *type* — an internal
     /// marker that a slot is shared. See value-model.md §4.
     Ref(PhpRef),
+    /// A closure / arrow function. Holds captured values + the proto index
+    /// (the compiled proto lives in the VM, so this crate stays below bytecode).
+    Closure(ClosureHandle),
 }
+
+/// A closure's runtime state.
+pub struct ClosureData {
+    /// Index into the program's closure protos (resolved by the VM).
+    pub fnidx: u32,
+    /// Captured outer variables, in capture order (bound to CVs 0..n at call).
+    /// `$this`, when bound, is captured here like any other variable.
+    pub captures: Vec<Value>,
+    /// Bound `$this` (for closures created in an instance method).
+    pub bound_this: Option<ObjectHandle>,
+    /// The class scope the closure was defined in (`self::`, private access).
+    pub bound_class: Option<ClassId>,
+    /// The late-static-binding scope (`static::`) at closure creation.
+    pub bound_static: Option<ClassId>,
+}
+
+pub type ClosureHandle = Rc<ClosureData>;
 
 /// Interned class id; the class table lives in the engine, not the value.
 pub type ClassId = u32;
@@ -160,7 +180,7 @@ impl ArrayKey {
             Value::Float(f) => ArrayKey::Int(float_to_int(*f)),
             Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
             Value::Ref(r) => return ArrayKey::from_value(&r.borrow()),
-            Value::Array(_) | Value::Object(_) => return None,
+            Value::Array(_) | Value::Object(_) | Value::Closure(_) => return None,
         })
     }
 
@@ -406,7 +426,7 @@ impl Value {
             Value::Float(_) => "double",
             Value::Str(_) => "string",
             Value::Array(_) => "array",
-            Value::Object(_) => "object",
+            Value::Object(_) | Value::Closure(_) => "object",
             Value::Ref(r) => r.borrow().type_name(),
         }
     }

@@ -41,7 +41,7 @@ pub fn var_dump(out: &mut Vec<u8>, v: &Value, indent: usize) {
             sp(indent, out);
             out.extend_from_slice(b"}\n");
         }
-        Value::Object(_) => out.extend_from_slice(b"object\n"),
+        Value::Object(_) | Value::Closure(_) => out.extend_from_slice(b"object\n"),
         Value::Ref(_) => unreachable!("deref'd above"),
     }
 }
@@ -120,7 +120,7 @@ pub fn var_export(out: &mut Vec<u8>, v: &Value, indent: usize) {
             sp(indent, out);
             out.push(b')');
         }
-        Value::Object(_) => out.extend_from_slice(b"NULL"),
+        Value::Object(_) | Value::Closure(_) => out.extend_from_slice(b"NULL"),
         Value::Ref(_) => unreachable!("deref'd above"),
     }
 }

@@ -1,0 +1,11 @@
+int(123)
+bool(false)
+int(-45)
+float(12.5)
+float(1000)
+bool(true)
+bool(false)
+string(7) "a@b.com"
+bool(false)
+int(5)
+bool(false)

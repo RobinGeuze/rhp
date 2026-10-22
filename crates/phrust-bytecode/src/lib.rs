@@ -179,6 +179,11 @@ pub enum Instr {
     IssetProp { dst: Reg, obj: Reg, name: NIdx },
     /// `unset($o->name)`: remove a declared property, else `__unset`.
     UnsetProp { obj: Reg, name: NIdx },
+    /// `global $x`: bind CV `cv` to the global variable `name` (a shared cell).
+    BindGlobal { cv: Reg, name: NIdx },
+    /// `static $x = <const>`: bind CV `cv` to a per-function persistent cell,
+    /// initialized to const `init` (`u32::MAX` = null) on first execution.
+    BindStatic { cv: Reg, name: NIdx, init: u32 },
     /// `$val instanceof C` (never throws).
     InstanceOf { dst: Reg, val: Reg, class: ClassRef },
     /// `clone $src`: shallow copy + new id + `__clone`.
@@ -334,6 +339,9 @@ pub struct Program {
     /// User-defined global constants (`const NAME = <const-expr>;`), folded at
     /// compile time; the VM installs them into its constant table at startup.
     pub constants: Vec<(PhpStr, Value)>,
+    /// {main}'s variable names indexed by CV register, so the VM can bind a
+    /// function's `global $x` to the top-level variable's slot.
+    pub main_var_names: Vec<PhpStr>,
 }
 
 // ---------------------------------------------------------------------------

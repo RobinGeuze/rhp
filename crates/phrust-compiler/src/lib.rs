@@ -114,7 +114,16 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
     c.emit(Instr::RetNull);
 
     let closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    Ok(Program { main: Rc::new(c.finish()), functions, classes, closures, constants: user_constants })
+    let main_var_names: Vec<PhpStr> =
+        c.cv_map.iter().map(|n| PhpStr::from_bytes(n.clone())).collect();
+    Ok(Program {
+        main: Rc::new(c.finish()),
+        functions,
+        classes,
+        closures,
+        constants: user_constants,
+        main_var_names,
+    })
 }
 
 // --- OOP: class declaration compilation ------------------------------------
@@ -815,6 +824,18 @@ impl ProtoBuilder {
                 }
             }
             Statement::Unset(u) => u.values.iter().for_each(|v| self.scan_expr_vars(v)),
+            Statement::Global(g) => {
+                for v in g.variables.iter() {
+                    if let Variable::Direct(d) = v {
+                        self.cv(strip_dollar(d.name));
+                    }
+                }
+            }
+            Statement::Static(s) => {
+                for item in s.items.iter() {
+                    self.cv(strip_dollar(item.variable().name));
+                }
+            }
             Statement::Try(t) => {
                 t.block.statements.iter().for_each(|s| self.scan_stmt_vars(s));
                 for clause in t.catch_clauses.iter() {
@@ -1006,6 +1027,32 @@ impl ProtoBuilder {
             Statement::Switch(s) => self.compile_switch(s)?,
             Statement::Foreach(fe) => self.compile_foreach(fe)?,
             Statement::Try(t) => self.compile_try(t)?,
+            Statement::Global(g) => {
+                for v in g.variables.iter() {
+                    if let Variable::Direct(d) = v {
+                        let var = strip_dollar(d.name);
+                        let cv = self.cv(var);
+                        let name = self.intern_name(var);
+                        self.emit(Instr::BindGlobal { cv, name });
+                    }
+                }
+            }
+            Statement::Static(s) => {
+                for item in s.items.iter() {
+                    use phrust_frontend::cst::StaticItem;
+                    let (dvar, init) = match item {
+                        StaticItem::Abstract(a) => (&a.variable, u32::MAX),
+                        StaticItem::Concrete(c) => {
+                            let v = fold_const(c.value)?;
+                            (&c.variable, self.intern_const(v) as u32)
+                        }
+                    };
+                    let var = strip_dollar(dvar.name);
+                    let cv = self.cv(var);
+                    let name = self.intern_name(var);
+                    self.emit(Instr::BindStatic { cv, name, init });
+                }
+            }
             Statement::Unset(u) => self.compile_unset(u)?,
             Statement::Return(r) => {
                 if self.finally_rets.is_empty() {

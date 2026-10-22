@@ -46,6 +46,12 @@ pub struct Vm {
     classes: Vec<classes::ClassEntry>,
     class_ids: HashMap<Vec<u8>, ClassId>, // lowercase name -> id
     next_object_id: u32,
+    // `global $x`: {main}'s CV register for each top-level variable name, plus
+    // an overflow table for globals first created inside a function.
+    main_cv_names: HashMap<Vec<u8>, Reg>,
+    globals: HashMap<Vec<u8>, Rc<RefCell<Value>>>,
+    // `static $x`: persistent cells keyed by (function proto pointer, var name).
+    statics: HashMap<(usize, Vec<u8>), Rc<RefCell<Value>>>,
 }
 
 mod classes;
@@ -186,6 +192,9 @@ impl Vm {
             classes: Vec::new(),
             class_ids: HashMap::new(),
             next_object_id: 1,
+            main_cv_names: HashMap::new(),
+            globals: HashMap::new(),
+            statics: HashMap::new(),
         }
     }
 
@@ -205,6 +214,10 @@ impl Vm {
         // Install user-defined global constants.
         for (name, value) in &prog.constants {
             self.constants.insert(name.as_bytes().to_vec(), value.clone());
+        }
+        // Record {main}'s variable -> register map for `global $x`.
+        for (reg, name) in prog.main_var_names.iter().enumerate() {
+            self.main_cv_names.insert(name.as_bytes().to_vec(), reg as Reg);
         }
         // Link all declared classes (flatten inheritance, resolve forward refs).
         self.install_classes(&prog.classes)?;
@@ -532,6 +545,38 @@ impl Vm {
                         wrapped: None,
                     });
                     self.reg_set(top, dst, Value::Closure(cd));
+                }
+                Instr::BindGlobal { cv, name } => {
+                    let gname = proto.names[name as usize].as_bytes().to_vec();
+                    // Share the global's cell: {main}'s slot if it is a top-level
+                    // variable, else an entry in the overflow table.
+                    let cell = match self.main_cv_names.get(&gname).copied() {
+                        Some(mreg) => self.promote(0, mreg),
+                        None => self
+                            .globals
+                            .entry(gname)
+                            .or_insert_with(|| Rc::new(RefCell::new(Value::Null)))
+                            .clone(),
+                    };
+                    self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                }
+                Instr::BindStatic { cv, name, init } => {
+                    let sname = proto.names[name as usize].as_bytes().to_vec();
+                    let key = (Rc::as_ptr(&proto) as usize, sname);
+                    let cell = match self.statics.get(&key) {
+                        Some(c) => c.clone(),
+                        None => {
+                            let initv = if init == u32::MAX {
+                                Value::Null
+                            } else {
+                                proto.consts[init as usize].clone()
+                            };
+                            let c = Rc::new(RefCell::new(initv));
+                            self.statics.insert(key, c.clone());
+                            c
+                        }
+                    };
+                    self.stack[top].regs[cv as usize] = Value::Ref(cell);
                 }
                 Instr::MakeFcc { dst, callee } => {
                     let c = self.reg_get(top, callee);

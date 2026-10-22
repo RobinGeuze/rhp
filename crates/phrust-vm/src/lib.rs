@@ -70,6 +70,10 @@ impl Host for Vm {
         let parent = self.classes.get(class_id as usize)?.parent?;
         Some(self.classes[parent as usize].name.as_bytes().to_vec())
     }
+
+    fn call_callable(&mut self, callable: &Value, args: &[Value]) -> Result<Value, Thrown> {
+        self.call_callable_value(callable, args.to_vec())
+    }
 }
 
 /// One activation record.
@@ -1004,33 +1008,97 @@ impl Vm {
         called_class: ClassId,
         args: Vec<Value>,
     ) -> Result<Value, Thrown> {
+        let proto = method.proto.clone();
+        self.run_proto_sync(proto, this, Some(method.defining_class), Some(called_class), args)
+    }
+
+    /// Push a capture frame for `proto` and drive it to completion, returning
+    /// its value (re-entrant; exceptions handled within the sub-run).
+    fn run_proto_sync(
+        &mut self,
+        proto: Rc<FunctionProto>,
+        this: Option<ObjectHandle>,
+        defining_class: Option<ClassId>,
+        called_class: Option<ClassId>,
+        args: Vec<Value>,
+    ) -> Result<Value, Thrown> {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
-        let callee = method.proto.clone();
-        let mut frame = Frame::new(callee.clone(), 0);
-        bind_params(&callee, &args, &mut frame.regs)?;
-        if let (Some(cv), Some(obj)) = (callee.this_cv, this) {
+        let mut frame = Frame::new(proto.clone(), 0);
+        bind_params(&proto, &args, &mut frame.regs)?;
+        if let (Some(cv), Some(obj)) = (proto.this_cv, this) {
             frame.regs[cv as usize] = Value::Object(obj);
         }
-        frame.defining_class = Some(method.defining_class);
-        frame.called_class = Some(called_class);
+        frame.defining_class = defining_class;
+        frame.called_class = called_class;
         frame.capture = true;
         let base = self.stack.len();
         self.stack.push(frame);
         loop {
             match self.run_frames() {
-                Ok(v) => return Ok(v), // the capture frame returned
+                Ok(v) => return Ok(v),
                 Err(thrown) => {
                     if !thrown.is_catchable() {
                         return Err(thrown);
                     }
                     match self.unwind(thrown, base)? {
-                        UnwindResult::Caught => {} // handled within the sub-run
+                        UnwindResult::Caught => {}
                         UnwindResult::Escaped(t) => return Err(t),
                     }
                 }
             }
+        }
+    }
+
+    /// Invoke a PHP callable value synchronously (string function name,
+    /// `[obj_or_class, method]`, or an `__invoke` object).
+    fn call_callable_value(&mut self, callable: &Value, args: Vec<Value>) -> Result<Value, Thrown> {
+        let c = match callable {
+            Value::Ref(r) => r.borrow().clone(),
+            other => other.clone(),
+        };
+        match c {
+            Value::Str(s) => {
+                let lower = s.as_bytes().to_ascii_lowercase();
+                if let Some(&fnidx) = self.fn_names.get(&lower) {
+                    let proto = self.functions[fnidx].clone();
+                    self.run_proto_sync(proto, None, None, None, args)
+                } else {
+                    let name = String::from_utf8_lossy(s.as_bytes()).into_owned();
+                    self.invoke_builtin(&name, args)
+                }
+            }
+            Value::Array(a) if a.len() == 2 => {
+                let item0 = a.get(&ArrayKey::Int(0)).cloned().unwrap_or(Value::Null);
+                let method = a.get(&ArrayKey::Int(1)).cloned().unwrap_or(Value::Null);
+                let mname = conv::to_string_bytes(&method);
+                match item0 {
+                    Value::Object(h) => {
+                        let cls = h.borrow().class;
+                        let m = self.lookup_method(cls, &mname).ok_or_else(|| {
+                            Thrown::error("Error", "Call to undefined method in callable")
+                        })?;
+                        self.call_sync(&m, Some(h), cls, args)
+                    }
+                    Value::Str(cn) => {
+                        let cls = self.resolve_class_by_name(cn.as_bytes())?;
+                        let m = self.lookup_method(cls, &mname).ok_or_else(|| {
+                            Thrown::error("Error", "Call to undefined method in callable")
+                        })?;
+                        self.call_sync(&m, None, cls, args)
+                    }
+                    _ => Err(Thrown::type_error("Invalid callable array")),
+                }
+            }
+            Value::Object(h) => {
+                let cls = h.borrow().class;
+                match self.lookup_method(cls, b"__invoke") {
+                    Some(m) => self.call_sync(&m, Some(h), cls, args),
+                    None => Err(Thrown::type_error("Object is not callable (no __invoke)")),
+                }
+            }
+            _ => Err(Thrown::type_error("Value is not callable")),
         }
     }
 

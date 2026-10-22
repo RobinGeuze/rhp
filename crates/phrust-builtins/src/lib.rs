@@ -38,6 +38,11 @@ pub trait Host {
     fn class_parent_name(&self, _class_id: u32) -> Option<Vec<u8>> {
         None
     }
+
+    /// Invoke a PHP callable (for `array_map`/`array_filter`/…). Default: refused.
+    fn call_callable(&mut self, _callable: &Value, _args: &[Value]) -> Result<Value, Thrown> {
+        Err(Thrown::unsupported("callback", "callbacks are not available in this host"))
+    }
 }
 
 /// A native builtin function over owned values.
@@ -105,6 +110,11 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "array_merge"    => fn_array_merge, 0, None;
             "array_reverse"  => fn_array_reverse, 1, Some(2);
             "range"          => fn_range, 2, Some(3);
+            "array_map"      => fn_array_map, 2, None;
+            "array_filter"   => fn_array_filter, 1, Some(3);
+            "array_reduce"   => fn_array_reduce, 2, Some(3);
+            "call_user_func" => fn_call_user_func, 1, None;
+            "call_user_func_array" => fn_call_user_func_array, 2, Some(2);
             "in_array"       => fn_in_array, 2, Some(3);
             "array_key_exists" => fn_array_key_exists, 2, Some(2);
             "implode"        => fn_implode, 1, Some(2);
@@ -170,6 +180,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("ENT_HTML5", Value::Int(48)),
         ("PHP_ROUND_HALF_UP", Value::Int(1)),
         ("PHP_ROUND_HALF_DOWN", Value::Int(2)),
+        ("ARRAY_FILTER_USE_KEY", Value::Int(2)),
+        ("ARRAY_FILTER_USE_BOTH", Value::Int(1)),
         ("M_PI", Value::Float(std::f64::consts::PI)),
         ("M_E", Value::Float(std::f64::consts::E)),
         ("M_SQRT2", Value::Float(std::f64::consts::SQRT_2)),
@@ -424,6 +436,97 @@ fn fn_array_merge(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
     }
     Ok(Value::Array(out))
+}
+
+fn key_to_value(k: &phrust_values::ArrayKey) -> Value {
+    match k {
+        phrust_values::ArrayKey::Int(n) => Value::Int(*n),
+        phrust_values::ArrayKey::Str(s) => Value::Str(s.clone()),
+    }
+}
+
+fn as_array(v: &Value, who: &str) -> Result<PhpArray, Thrown> {
+    match deref(v) {
+        Value::Array(a) => Ok(a),
+        _ => Err(Thrown::type_error(format!("{who}(): argument must be of type array"))),
+    }
+}
+
+fn fn_array_map(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let cb = &args[0];
+    let cb_null = matches!(deref(cb), Value::Null);
+    let arrays: Vec<PhpArray> =
+        args[1..].iter().map(|a| as_array(a, "array_map")).collect::<Result<_, _>>()?;
+    if arrays.len() == 1 {
+        // single array: preserve keys
+        let mut out = PhpArray::new();
+        for (k, v) in arrays[0].iter() {
+            let r = if cb_null { v.clone() } else { host.call_callable(cb, &[v.clone()])? };
+            out.insert(k.clone(), r);
+        }
+        return Ok(Value::Array(out));
+    }
+    // multiple arrays: zip by position, reindex
+    let max_len = arrays.iter().map(|a| a.len()).max().unwrap_or(0);
+    let mut out = PhpArray::new();
+    for i in 0..max_len {
+        let tuple: Vec<Value> =
+            arrays.iter().map(|a| a.get_index(i).map(|(_, v)| v.clone()).unwrap_or(Value::Null)).collect();
+        if cb_null {
+            let mut t = PhpArray::new();
+            for v in tuple {
+                t.push(v);
+            }
+            out.push(Value::Array(t));
+        } else {
+            out.push(host.call_callable(cb, &tuple)?);
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+fn fn_array_filter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = as_array(&args[0], "array_filter")?;
+    let cb = args.get(1).filter(|c| !matches!(deref(c), Value::Null));
+    let mode = args.get(2).map(conv::to_int).unwrap_or(0);
+    let mut out = PhpArray::new();
+    for (k, v) in a.iter() {
+        let keep = match cb {
+            None => conv::to_bool(v),
+            Some(cb) => {
+                let call_args: Vec<Value> = match mode {
+                    2 => vec![key_to_value(k)],                       // ARRAY_FILTER_USE_KEY
+                    1 => vec![v.clone(), key_to_value(k)],            // ARRAY_FILTER_USE_BOTH
+                    _ => vec![v.clone()],
+                };
+                conv::to_bool(&host.call_callable(cb, &call_args)?)
+            }
+        };
+        if keep {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+fn fn_array_reduce(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = as_array(&args[0], "array_reduce")?;
+    let cb = &args[1];
+    let mut acc = args.get(2).map(deref).unwrap_or(Value::Null);
+    for (_, v) in a.iter() {
+        acc = host.call_callable(cb, &[acc, v.clone()])?;
+    }
+    Ok(acc)
+}
+
+fn fn_call_user_func(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    host.call_callable(&args[0], &args[1..])
+}
+
+fn fn_call_user_func_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let params = as_array(&args[1], "call_user_func_array")?;
+    let argv: Vec<Value> = params.iter().map(|(_, v)| v.clone()).collect();
+    host.call_callable(&args[0], &argv)
 }
 
 fn fn_array_reverse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

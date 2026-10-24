@@ -11,11 +11,17 @@ use crate::Builtin;
 
 pub mod bcmath;
 pub mod ctype;
+pub mod gmp;
 pub mod hash;
+pub mod mbstring;
+pub mod password;
 
 /// Register every extension's builtins into the shared table.
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     hash::register(m);
     bcmath::register(m);
     ctype::register(m);
+    gmp::register(m);
+    mbstring::register(m);
+    password::register(m);
 }

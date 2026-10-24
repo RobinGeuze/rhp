@@ -23,7 +23,6 @@ mod ext;
 mod filter_fns;
 mod json_fns;
 mod math_fns;
-mod mb_fns;
 mod misc_fns;
 mod parse_fns;
 mod preg_fns;
@@ -255,7 +254,6 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         serialize_fns::register(&mut m);
         filter_fns::register(&mut m);
         strcmp_fns::register(&mut m);
-        mb_fns::register(&mut m);
         printf_fns::register(&mut m);
         arrayset_fns::register(&mut m);
         preg_fns::register(&mut m);
@@ -365,6 +363,26 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("M_E", Value::Float(std::f64::consts::E)),
         ("M_SQRT2", Value::Float(std::f64::consts::SQRT_2)),
         ("PHP_FLOAT_DIG", Value::Int(15)),
+        // gmp: division rounding modes, (de)serialisation endianness, version.
+        ("GMP_ROUND_ZERO", Value::Int(0)),
+        ("GMP_ROUND_PLUSINF", Value::Int(1)),
+        ("GMP_ROUND_MINUSINF", Value::Int(2)),
+        ("GMP_MSW_FIRST", Value::Int(1)),
+        ("GMP_LSW_FIRST", Value::Int(2)),
+        ("GMP_LITTLE_ENDIAN", Value::Int(4)),
+        ("GMP_BIG_ENDIAN", Value::Int(8)),
+        ("GMP_NATIVE_ENDIAN", Value::Int(16)),
+        ("GMP_VERSION", Value::str("6.3.0")),
+        // password_* extension (all algo identifiers are strings).
+        ("PASSWORD_DEFAULT", Value::str("2y")),
+        ("PASSWORD_BCRYPT", Value::str("2y")),
+        ("PASSWORD_ARGON2I", Value::str("argon2i")),
+        ("PASSWORD_ARGON2ID", Value::str("argon2id")),
+        ("PASSWORD_BCRYPT_DEFAULT_COST", Value::Int(12)),
+        ("PASSWORD_ARGON2_PROVIDER", Value::str("standard")),
+        ("PASSWORD_ARGON2_DEFAULT_MEMORY_COST", Value::Int(65536)),
+        ("PASSWORD_ARGON2_DEFAULT_TIME_COST", Value::Int(4)),
+        ("PASSWORD_ARGON2_DEFAULT_THREADS", Value::Int(1)),
     ]
     .into_iter()
     .chain(preg_fns::preg_constants())

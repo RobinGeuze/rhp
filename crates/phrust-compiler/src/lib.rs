@@ -519,6 +519,11 @@ interface ArrayAccess {}
 interface Countable {}
 final class Generator implements Iterator {}
 class stdClass {}
+class GMP {
+    public $num = "0";
+    public function __construct($num = 0) { $this->num = (string)$num; }
+    public function __toString() { return (string)$this->num; }
+}
 class Exception implements Throwable {
     protected $message = "";
     protected $code = 0;

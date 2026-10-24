@@ -5,7 +5,7 @@
 //! covers the `hash` extension; the same shape (generate → `diff_source` →
 //! classify) is how any future reimplemented extension is driven.
 
-use crate::{diff_source, php_bytes_array, run_php, Diff};
+use crate::{diff_source, php_bytes_array, php_bytes_literal, run_php, Diff};
 
 /// Ask the real `php` which `hash()` algorithms it supports.
 pub fn php_hash_algos() -> Result<Vec<String>, String> {
@@ -137,4 +137,132 @@ pub fn ctype_snippet() -> String {
 /// Run the ctype differential sweep.
 pub fn ctype() -> Diff {
     diff_source(ctype_snippet().as_bytes())
+}
+
+// ---------------------------------------------------------------------------
+// gmp (value-level; object ids in var_dump are intentionally not tested —
+// phrust does not recycle object handles like php does)
+// ---------------------------------------------------------------------------
+
+/// A random big-integer decimal string (optional sign, up to `digits` digits).
+fn gmp_int(rng: &mut Rng, digits: usize) -> String {
+    let neg = rng.below(4) == 0;
+    let n = 1 + rng.below(digits);
+    let mut s = String::new();
+    if neg {
+        s.push('-');
+    }
+    for k in 0..n {
+        let d = if k == 0 { 1 + rng.below(9) } else { rng.below(10) };
+        s.push((b'0' + d as u8) as char);
+    }
+    s
+}
+
+/// PHP snippet over generated big integers, printing gmp results via gmp_strval
+/// / gmp_cmp / gmp_sign (never var_dump — object ids differ by design).
+pub fn gmp_snippet(seed: u64, count: usize) -> String {
+    let mut rng = Rng::new(seed);
+    let mut s = String::from("<?php\n");
+    for _ in 0..count {
+        let a = gmp_int(&mut rng, 40);
+        let b = gmp_int(&mut rng, 20);
+        let bz = if b.trim_start_matches('-') == "0" { "1".to_string() } else { b.clone() };
+        let e = rng.below(16);
+        s.push_str(&format!("echo gmp_strval(gmp_add(\"{a}\",\"{b}\")),\"|\";\n"));
+        s.push_str(&format!("echo gmp_strval(gmp_sub(\"{a}\",\"{b}\")),\"|\";\n"));
+        s.push_str(&format!("echo gmp_strval(gmp_mul(\"{a}\",\"{b}\")),\"|\";\n"));
+        s.push_str(&format!("echo gmp_strval(gmp_div_q(\"{a}\",\"{bz}\")),\"|\";\n"));
+        s.push_str(&format!("echo gmp_strval(gmp_div_r(\"{a}\",\"{bz}\")),\"|\";\n"));
+        s.push_str(&format!("echo gmp_strval(gmp_mod(\"{a}\",\"{bz}\")),\"|\";\n"));
+        s.push_str(&format!("echo gmp_strval(gmp_pow(\"{b}\",{e})),\"|\";\n"));
+        s.push_str(&format!("echo gmp_strval(gmp_gcd(\"{a}\",\"{b}\")),\"|\";\n"));
+        s.push_str(&format!("echo gmp_strval(gmp_abs(\"{a}\")),\"|\";\n"));
+        s.push_str(&format!("echo gmp_strval(gmp_neg(\"{a}\")),\"|\";\n"));
+        s.push_str(&format!("echo gmp_strval(gmp_and(\"{a}\",\"{b}\")),\"|\";\n"));
+        s.push_str(&format!("echo gmp_strval(gmp_or(\"{a}\",\"{b}\")),\"|\";\n"));
+        s.push_str(&format!("echo gmp_strval(gmp_xor(\"{a}\",\"{b}\")),\"|\";\n"));
+        s.push_str(&format!("echo gmp_cmp(\"{a}\",\"{b}\"),gmp_sign(\"{a}\"),gmp_popcount(gmp_abs(\"{a}\")),\"|\";\n"));
+        s.push_str(&format!("echo gmp_strval(gmp_add(\"{a}\",\"{b}\"),16),\"|\";\n"));
+        s.push_str("echo \"\\n\";\n");
+    }
+    s
+}
+
+/// Run the gmp differential sweep.
+pub fn gmp(seed: u64, count: usize) -> Diff {
+    diff_source(gmp_snippet(seed, count).as_bytes())
+}
+
+// ---------------------------------------------------------------------------
+// mbstring (UTF-8 value-level)
+// ---------------------------------------------------------------------------
+
+/// A random UTF-8 string mixing ASCII, Latin-1 accents, CJK and astral emoji.
+fn utf8_string(rng: &mut Rng) -> String {
+    const POOL: &[char] = &[
+        'a', 'Z', '0', ' ', '!', 'é', 'ß', 'Ü', 'ñ', 'Ω', 'Я', '日', '本', '語', '✓', '€', '😀', '🎉', '𝔘',
+    ];
+    let n = rng.below(12);
+    (0..n).map(|_| POOL[rng.below(POOL.len())]).collect()
+}
+
+/// PHP snippet exercising the common mb_* functions over generated UTF-8 strings.
+pub fn mbstring_snippet(seed: u64, count: usize) -> String {
+    let mut rng = Rng::new(seed);
+    let mut s = String::from("<?php\n");
+    for _ in 0..count {
+        let a = utf8_string(&mut rng);
+        let needle = utf8_string(&mut rng);
+        let start = rng.below(6);
+        let len = rng.below(6);
+        // embed as \xNN escapes so the source is pure-ascii and binary-safe
+        let la = php_bytes_literal(a.as_bytes());
+        let ln = php_bytes_literal(needle.as_bytes());
+        s.push_str(&format!("echo mb_strlen({la}),\"|\";\n"));
+        s.push_str(&format!("echo mb_substr({la},{start},{len}),\"|\";\n"));
+        s.push_str(&format!("echo mb_strtoupper({la}),\"|\";\n"));
+        s.push_str(&format!("echo mb_strtolower({la}),\"|\";\n"));
+        s.push_str(&format!("echo mb_convert_case({la}, MB_CASE_TITLE),\"|\";\n"));
+        s.push_str(&format!("echo implode(\",\", mb_str_split({la})),\"|\";\n"));
+        s.push_str(&format!("echo var_export(mb_strpos({la},{ln}),true),\"|\";\n"));
+        s.push_str(&format!("echo mb_strwidth({la}),\"|\";\n"));
+        // mb_ord throws on an empty string in php 8; guard so the snippet never fatals
+        s.push_str(&format!("echo (mb_strlen({la})>0 ? var_export(mb_ord({la}),true) : \"-\"),\"|\";\n"));
+        s.push_str("echo \"\\n\";\n");
+    }
+    s
+}
+
+/// Run the mbstring differential sweep.
+pub fn mbstring(seed: u64, count: usize) -> Diff {
+    diff_source(mbstring_snippet(seed, count).as_bytes())
+}
+
+// ---------------------------------------------------------------------------
+// password (deterministic surface; hashing itself is random-salted so it is
+// cross-verified separately, not byte-compared)
+// ---------------------------------------------------------------------------
+
+/// PHP snippet over the deterministic password_* surface: algos, get_info and
+/// verify over fixed known hashes, needs_rehash.
+pub fn password_snippet() -> String {
+    let known = [
+        // (password, bcrypt $2y$ hash of it)
+        ("$2y$10$N9qo8uLOickgx2ZMRZoMye1VdLk3fsv36cQ.Rl4bQ2N0J1x8i9Ym", "secret"),
+        ("$2y$12$GhvMmNVjRW29ulnudl.LbuAnUtN/LRfe1oxpvczonrdgw2fFbMWDG", "password"),
+    ];
+    let mut s = String::from("<?php\n");
+    s.push_str("echo implode(\",\", password_algos()), \"\\n\";\n");
+    for (h, pw) in known {
+        s.push_str(&format!("print_r(password_get_info(\"{h}\"));\n"));
+        s.push_str(&format!("var_dump(password_verify(\"{pw}\",\"{h}\"), password_verify(\"wrong\",\"{h}\"));\n"));
+        s.push_str(&format!("var_dump(password_needs_rehash(\"{h}\", PASSWORD_BCRYPT, [\"cost\"=>10]));\n"));
+    }
+    s
+}
+
+/// Run the deterministic password_* differential sweep.
+pub fn password() -> Diff {
+    diff_source(password_snippet().as_bytes())
 }

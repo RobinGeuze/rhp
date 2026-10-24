@@ -25,7 +25,14 @@ tiger = "0.2"
 gost94 = "0.10"
 xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64", "xxh3"] }
 
-# bcmath: arbitrary-precision integers (the decimal/scale semantics on top are
-# PHP-specific and hand-rolled in bc_fns.rs).
+# bcmath + gmp: arbitrary-precision integers (the decimal/scale semantics for
+# bcmath are PHP-specific and hand-rolled in ext/bcmath).
 num-bigint = "0.4"
 num-traits = "0.2"
+num-integer = "0.1"
+
+# password_* : bcrypt + argon2 password hashing (faithful Rust 1:1).
+bcrypt = "0.17"
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }

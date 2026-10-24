@@ -27,6 +27,20 @@ fn main() -> ExitCode {
     let only = flag_val(&args, "--algo");
     let strict = args.iter().any(|a| a == "--strict");
 
+    if args.iter().any(|a| a == "--dump") {
+        use phrust_difftest::sweeps;
+        let src = match ext.as_str() {
+            "gmp" => sweeps::gmp_snippet(seed, count),
+            "mbstring" => sweeps::mbstring_snippet(seed, count),
+            "password" => sweeps::password_snippet(),
+            "bcmath" => sweeps::bcmath_snippet(seed, count),
+            "ctype" => sweeps::ctype_snippet(),
+            _ => String::new(),
+        };
+        print!("{src}");
+        return ExitCode::SUCCESS;
+    }
+
     if !php_available() {
         eprintln!("phrust-difftest: no `php` binary on PATH — cannot run a differential sweep.");
         eprintln!("(set PHRUST_PHP to point at one, or install php 8.5.x)");
@@ -37,8 +51,13 @@ fn main() -> ExitCode {
         "hash" => sweep_hash(seed, count, only.as_deref(), strict),
         "bcmath" => sweep_bcmath(seed, count),
         "ctype" => sweep_ctype(),
+        "gmp" => simple_sweep("gmp", phrust_difftest::sweeps::gmp(seed, count)),
+        "mbstring" => simple_sweep("mbstring", phrust_difftest::sweeps::mbstring(seed, count)),
+        "password" => simple_sweep("password", phrust_difftest::sweeps::password()),
         other => {
-            eprintln!("phrust-difftest: unknown extension {other:?} (known: hash, bcmath, ctype)");
+            eprintln!(
+                "phrust-difftest: unknown extension {other:?} (known: hash, bcmath, ctype, gmp, mbstring, password)"
+            );
             ExitCode::from(2)
         }
     }
@@ -126,6 +145,30 @@ fn sweep_hash(seed: u64, count: usize, only: Option<&str>, strict: bool) -> Exit
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+/// Generic single-snippet sweep reporter for extensions with one combined diff.
+fn simple_sweep(name: &str, diff: Diff) -> ExitCode {
+    println!("{name} sweep\n");
+    match diff {
+        Diff::Match => {
+            println!("  MATCH  all {name} output byte-identical");
+            ExitCode::SUCCESS
+        }
+        Diff::Mismatch { php, phrust } => {
+            println!("  MISMATCH");
+            print_first_diff(&php, &phrust);
+            ExitCode::FAILURE
+        }
+        Diff::PhrustErr(e) => {
+            println!("  phrust error: {}", first_line(&e));
+            ExitCode::FAILURE
+        }
+        Diff::PhpErr(e) => {
+            println!("  php error: {}", first_line(&e));
+            ExitCode::from(2)
+        }
     }
 }
 

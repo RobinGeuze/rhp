@@ -70,6 +70,40 @@ thread_local! {
     /// Set once per `compile()`; a function is absent if any default did not fold.
     static FN_PARAMS: RefCell<HashMap<Vec<u8>, Vec<ParamSpec>>> =
         RefCell::new(HashMap::new());
+    /// Method name (lowercase) -> per-position "could be by-reference" mask: true
+    /// at position i if ANY method of that name declares `&` there. A call site
+    /// passes those positions by reference; by-value callees simply deref, so
+    /// over-approximation across classes is safe.
+    static METHOD_REF: RefCell<HashMap<Vec<u8>, Vec<bool>>> = RefCell::new(HashMap::new());
+}
+
+/// Scan every class-like's methods, OR-ing their by-ref parameter flags by name.
+fn collect_method_refs(program: &AstProgram) -> HashMap<Vec<u8>, Vec<bool>> {
+    let mut map: HashMap<Vec<u8>, Vec<bool>> = HashMap::new();
+    let mut add = |name: &[u8], pl: &phrust_frontend::cst::FunctionLikeParameterList| {
+        let entry = map.entry(name.to_ascii_lowercase()).or_default();
+        for (i, p) in pl.parameters.iter().enumerate() {
+            if entry.len() <= i {
+                entry.resize(i + 1, false);
+            }
+            entry[i] |= p.ampersand.is_some();
+        }
+    };
+    for stmt in program.statements.iter() {
+        let members = match stmt {
+            Statement::Class(c) => &c.members,
+            Statement::Trait(t) => &t.members,
+            Statement::Enum(e) => &e.members,
+            Statement::Interface(i) => &i.members,
+            _ => continue,
+        };
+        for m in members.iter() {
+            if let ClassLikeMember::Method(method) = m {
+                add(method.name.value, &method.parameter_list);
+            }
+        }
+    }
+    map
 }
 
 /// Build the parameter specs for a function, or `None` if a default value is not
@@ -113,6 +147,7 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
     }
     let sigs = Rc::new(sigs);
     FN_PARAMS.with(|m| *m.borrow_mut() = fn_params);
+    METHOD_REF.with(|m| *m.borrow_mut() = collect_method_refs(program));
 
     // Hoist top-level function + class declarations. Start the class list with
     // the built-in exception hierarchy (the "prelude").
@@ -3078,32 +3113,62 @@ impl ProtoBuilder {
     }
 
     /// Marshal positional args into a contiguous register window.
+    /// Compile a method/constructor argument list into a contiguous window.
+    /// `ref_mask[i]` true means position `i` may be by-reference for some method
+    /// of this name: if the argument is a simple variable, pass it as a `Ref`
+    /// (by-value callees deref it in `bind_params`).
     fn compile_arg_window(
         &mut self,
         args: Option<&phrust_frontend::cst::ArgumentList>,
+        ref_mask: &[bool],
     ) -> Result<(Reg, u16), Thrown> {
-        let mut arg_regs = Vec::new();
+        enum Slot {
+            Value(Reg),
+            Ref(Reg),
+        }
+        let mut slots = Vec::new();
         if let Some(list) = args {
-            for arg in list.arguments.iter() {
-                match arg {
-                    Argument::Positional(p) if p.ellipsis.is_none() => {
-                        arg_regs.push(self.compile_expr(p.value)?)
-                    }
+            for (i, arg) in list.arguments.iter().enumerate() {
+                let p = match arg {
+                    Argument::Positional(p) if p.ellipsis.is_none() => p,
                     Argument::Positional(_) => {
                         return Err(Thrown::unsupported("argument spread", "deferred"))
                     }
                     Argument::Named(_) => {
                         return Err(Thrown::unsupported("named arguments", "deferred"))
                     }
+                };
+                let by_ref = ref_mask.get(i).copied().unwrap_or(false);
+                if by_ref {
+                    if let Expression::Variable(Variable::Direct(d)) = p.value {
+                        slots.push(Slot::Ref(self.cv(strip_dollar(d.name))));
+                        continue;
+                    }
                 }
+                slots.push(Slot::Value(self.compile_expr(p.value)?));
             }
         }
-        let argc = arg_regs.len() as u16;
+        let argc = slots.len() as u16;
         let base = self.alloc_temps(argc);
-        for (i, r) in arg_regs.into_iter().enumerate() {
-            self.emit(Instr::Mov { dst: base + i as Reg, src: r });
+        for (i, slot) in slots.into_iter().enumerate() {
+            let dst = base + i as Reg;
+            match slot {
+                Slot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
+                Slot::Ref(cv) => self.emit(Instr::MakeRef { dst, cv }),
+            }
         }
         Ok((base, argc))
+    }
+
+    /// The by-ref mask for a method/constructor name (empty if none).
+    fn method_ref_mask(&self, name_lc: &[u8]) -> Vec<bool> {
+        METHOD_REF.with(|m| m.borrow().get(name_lc).cloned().unwrap_or_default())
+    }
+
+    /// The by-ref mask for an interned method name.
+    fn name_ref_mask(&self, name: NIdx) -> Vec<bool> {
+        let lc = self.names[name as usize].as_bytes().to_ascii_lowercase();
+        self.method_ref_mask(&lc)
     }
 
     fn compile_new(&mut self, inst: &phrust_frontend::cst::Instantiation) -> Result<Reg, Thrown> {
@@ -3114,7 +3179,8 @@ impl ProtoBuilder {
             self.emit(Instr::NewV { dst, class, args });
             return Ok(dst);
         }
-        let (base, argc) = self.compile_arg_window(inst.argument_list.as_ref())?;
+        let mask = self.method_ref_mask(b"__construct");
+        let (base, argc) = self.compile_arg_window(inst.argument_list.as_ref(), &mask)?;
         let dst = self.alloc_temp();
         let cache = self.alloc_cache();
         self.emit(Instr::New { dst, class, base, argc, cache });
@@ -3192,7 +3258,8 @@ impl ProtoBuilder {
                 self.emit(Instr::CallMethodV { dst, obj, name, args });
                 return Ok(dst);
             }
-            let (base, argc) = self.compile_arg_window(Some(args))?;
+            let mask = self.name_ref_mask(name);
+            let (base, argc) = self.compile_arg_window(Some(args), &mask)?;
             let dst = self.alloc_temp();
             let cache = self.alloc_cache();
             self.emit(Instr::CallMethod { dst, obj, name, base, argc, cache });
@@ -3205,7 +3272,8 @@ impl ProtoBuilder {
         let jn = self.code.len();
         self.emit(Instr::Nop); // JmpNull dst -> Lnull
         let name = self.selector_name(selector)?;
-        let (base, argc) = self.compile_arg_window(Some(args))?;
+        let mask = self.name_ref_mask(name);
+        let (base, argc) = self.compile_arg_window(Some(args), &mask)?;
         let cache = self.alloc_cache();
         let t = self.alloc_temp();
         self.emit(Instr::CallMethod { dst: t, obj: dst, name, base, argc, cache });
@@ -3232,7 +3300,8 @@ impl ProtoBuilder {
             self.emit(Instr::CallStaticV { dst, class, name, args });
             return Ok(dst);
         }
-        let (base, argc) = self.compile_arg_window(Some(&smc.argument_list))?;
+        let mask = self.name_ref_mask(name);
+        let (base, argc) = self.compile_arg_window(Some(&smc.argument_list), &mask)?;
         let dst = self.alloc_temp();
         let cache = self.alloc_cache();
         self.emit(Instr::CallStatic { dst, class, name, base, argc, cache });

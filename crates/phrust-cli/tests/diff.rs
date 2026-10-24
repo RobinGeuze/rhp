@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use phrust_compiler::compile;
+use phrust_compiler::compile_with_source;
 use phrust_frontend::Arena;
 use phrust_oracle::Interp;
 use phrust_values::Thrown;
@@ -25,7 +25,7 @@ fn run_vm(source: &[u8], name: &str) -> Result<Vec<u8>, Thrown> {
     let arena = Arena::new();
     let parsed = arena.parse(name.as_bytes(), source);
     assert!(!parsed.has_parse_errors(), "{name}: unexpected parse error");
-    let program = compile(parsed.program())?;
+    let program = compile_with_source(parsed.program(), source, name)?;
     let mut vm = Vm::new();
     vm.run(&program)?;
     Ok(vm.output().to_vec())

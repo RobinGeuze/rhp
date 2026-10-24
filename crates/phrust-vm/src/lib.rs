@@ -394,6 +394,21 @@ impl Vm {
         }
     }
 
+    /// Source line of the instruction currently executing in frame `top`.
+    fn current_line(&self, top: usize) -> u32 {
+        let f = &self.stack[top];
+        let pc = f.pc.saturating_sub(1) as u32;
+        let lines = &f.proto.debug.lines;
+        // Largest (pc,line) entry whose pc <= the current pc.
+        let idx = lines.partition_point(|(p, _)| (*p as u32) <= pc);
+        if idx == 0 { 0 } else { lines[idx - 1].1 }
+    }
+
+    /// The source file name of frame `top` (for exception getFile()).
+    fn current_file(&self, top: usize) -> Vec<u8> {
+        self.stack[top].proto.debug.file.as_bytes().to_vec()
+    }
+
     /// The `$this` of the current frame, if it is bound to an object.
     fn current_this(&self, top: usize) -> Option<ObjectHandle> {
         let cv = self.stack[top].proto.this_cv?;
@@ -1032,6 +1047,14 @@ impl Vm {
                         ));
                     }
                     let obj = self.new_object(cls);
+                    // Throwables record their creation site for getLine()/getFile().
+                    if self.class_implements(cls, b"Throwable") {
+                        let line = self.current_line(top);
+                        let file = self.current_file(top);
+                        let mut b = obj.borrow_mut();
+                        b.properties.insert(phrust_values::PhpStr::from("line"), Value::Int(line as i64));
+                        b.properties.insert(phrust_values::PhpStr::from("file"), Value::str(file));
+                    }
                     self.reg_set(top, dst, Value::Object(obj.clone()));
                     // Run __construct, discarding its return (into the arg window).
                     if let Some(m) = self.lookup_method(cls, b"__construct") {

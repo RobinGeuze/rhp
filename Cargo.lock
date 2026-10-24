@@ -584,6 +584,7 @@ dependencies = [
 name = "phrust-compiler"
 version = "0.0.0"
 dependencies = [
+ "mago-span",
  "phrust-bytecode",
  "phrust-frontend",
  "phrust-semantics",

@@ -10,3 +10,4 @@ phrust-values = { path = "../phrust-values" }
 phrust-bytecode = { path = "../phrust-bytecode" }
 phrust-frontend = { path = "../phrust-frontend" }
 phrust-semantics = { path = "../phrust-semantics" }
+mago-span.workspace = true

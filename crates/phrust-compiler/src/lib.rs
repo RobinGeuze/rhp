@@ -75,6 +75,37 @@ thread_local! {
     /// passes those positions by reference; by-value callees simply deref, so
     /// over-approximation across classes is safe.
     static METHOD_REF: RefCell<HashMap<Vec<u8>, Vec<bool>>> = RefCell::new(HashMap::new());
+    /// Byte offsets of each line start in the source currently being compiled
+    /// (empty while compiling the prelude; whose line numbers are never surfaced).
+    static LINE_STARTS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    /// The file name reported in debug info / exception getFile().
+    static SRC_FILE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Sorted byte offsets of line starts (offset 0, then after each '\n').
+fn build_line_starts(source: &[u8]) -> Vec<u32> {
+    let mut v = vec![0u32];
+    for (i, &b) in source.iter().enumerate() {
+        if b == b'\n' {
+            v.push((i + 1) as u32);
+        }
+    }
+    v
+}
+
+/// 1-based line number for a byte offset, via the current `LINE_STARTS`.
+fn line_of(offset: u32) -> u32 {
+    LINE_STARTS.with(|ls| {
+        let ls = ls.borrow();
+        if ls.is_empty() {
+            return 0;
+        }
+        // Largest index whose start <= offset, +1 for 1-based.
+        match ls.binary_search(&offset) {
+            Ok(i) => (i + 1) as u32,
+            Err(i) => i as u32, // i = count of starts <= offset
+        }
+    })
 }
 
 /// Scan every class-like's methods, OR-ing their by-ref parameter flags by name.
@@ -129,6 +160,21 @@ fn param_specs(
 /// Compile a parsed program (borrowed from a `phrust_frontend::Arena`) into an
 /// owned, runnable bytecode `Program`. No `'arena` borrow escapes.
 pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
+    compile_with_source(program, b"", "")
+}
+
+/// Compile with the original source + file name, so protos carry accurate line
+/// numbers (for exception `getLine()`/`getFile()` and diagnostics).
+pub fn compile_with_source(
+    program: &AstProgram,
+    source: &[u8],
+    file: &str,
+) -> Result<Program, Thrown> {
+    // Line info applies to user code only; the prelude (compiled first) keeps an
+    // empty map, so set the real line starts after the prelude is built.
+    LINE_STARTS.with(|ls| ls.borrow_mut().clear());
+    SRC_FILE.with(|f| *f.borrow_mut() = file.as_bytes().to_vec());
+    let user_line_starts = build_line_starts(source);
     CLOSURES.with(|c| c.borrow_mut().clear());
     // Signature pre-pass: name -> per-parameter by-ref flags, so a call site can
     // marshal by-ref arguments even though the callee is resolved by name.
@@ -153,6 +199,8 @@ pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
     // the built-in exception hierarchy (the "prelude").
     let mut functions = Vec::new();
     let mut classes = prelude_classes()?;
+    // From here on we compile user code, so install its line map.
+    LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
     let mut user_constants: Vec<(PhpStr, Value)> = Vec::new();
     for stmt in program.statements.iter() {
         match stmt {
@@ -459,7 +507,7 @@ fn compile_trait(
 
 /// The built-in exception/throwable class hierarchy, as PHP source. Compiled
 /// and prepended to every program so `throw`/`catch` and engine errors work.
-const PRELUDE: &str = r#"<?php
+const PRELUDE: &str = r##"<?php
 interface Throwable {}
 interface Stringable {}
 interface UnitEnum {}
@@ -474,24 +522,40 @@ class stdClass {}
 class Exception implements Throwable {
     protected $message = "";
     protected $code = 0;
+    protected $file = "";
+    protected $line = 0;
+    protected $previous = null;
     public function __construct($message = "", $code = 0, $previous = null) {
         $this->message = $message;
         $this->code = $code;
+        $this->previous = $previous;
     }
     public function getMessage() { return $this->message; }
     public function getCode() { return $this->code; }
-    public function getPrevious() { return null; }
+    public function getPrevious() { return $this->previous; }
+    public function getFile() { return $this->file; }
+    public function getLine() { return $this->line; }
+    public function getTrace() { return []; }
+    public function getTraceAsString() { return "#0 {main}"; }
 }
 class Error implements Throwable {
     protected $message = "";
     protected $code = 0;
+    protected $file = "";
+    protected $line = 0;
+    protected $previous = null;
     public function __construct($message = "", $code = 0, $previous = null) {
         $this->message = $message;
         $this->code = $code;
+        $this->previous = $previous;
     }
     public function getMessage() { return $this->message; }
     public function getCode() { return $this->code; }
-    public function getPrevious() { return null; }
+    public function getPrevious() { return $this->previous; }
+    public function getFile() { return $this->file; }
+    public function getLine() { return $this->line; }
+    public function getTrace() { return []; }
+    public function getTraceAsString() { return "#0 {main}"; }
 }
 class ErrorException extends Exception {}
 class TypeError extends Error {}
@@ -813,7 +877,7 @@ class DateTimeImmutable implements DateTimeInterface {
         return $iv;
     }
 }
-"#;
+"##;
 
 fn prelude_classes() -> Result<Vec<ClassProto>, Thrown> {
     let arena = phrust_frontend::Arena::new();
@@ -1030,6 +1094,10 @@ struct ProtoBuilder {
     loops: Vec<LoopCtx>,
     /// Function name (lowercase) -> per-parameter by-ref flags (for call sites).
     sigs: Rc<HashMap<Vec<u8>, Vec<bool>>>,
+    /// Current source line (set per statement); recorded into `lines` on change.
+    cur_line: u32,
+    /// (pc, line) pairs, appended whenever `cur_line` changes at an emit point.
+    lines: Vec<(phrust_bytecode::Pc, u32)>,
 }
 
 /// A break/continue target under construction. Jump placeholders are recorded
@@ -1057,6 +1125,8 @@ impl ProtoBuilder {
             temp_floor: 0,
             loops: Vec::new(),
             sigs: Rc::new(HashMap::new()),
+            cur_line: 0,
+            lines: Vec::new(),
         }
     }
 
@@ -1070,6 +1140,8 @@ impl ProtoBuilder {
         proto.caches = self.caches;
         proto.exception_table = self.exception_table;
         proto.debug.cv_names = (0..self.cv_map.len() as u32).collect();
+        proto.debug.lines = self.lines;
+        proto.debug.file = SRC_FILE.with(|f| PhpStr::from_bytes(f.borrow().clone()));
         proto
     }
 
@@ -1082,6 +1154,10 @@ impl ProtoBuilder {
     // -- register / pool management --
 
     fn emit(&mut self, instr: Instr) {
+        // Record a line entry whenever the source line changes (for debug info).
+        if self.lines.last().map(|(_, l)| *l) != Some(self.cur_line) {
+            self.lines.push((self.code.len() as phrust_bytecode::Pc, self.cur_line));
+        }
         self.code.push(instr);
     }
 
@@ -1412,6 +1488,8 @@ impl ProtoBuilder {
     // -- statement lowering --
 
     fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), Thrown> {
+        use mago_span::HasSpan;
+        self.cur_line = line_of(stmt.span().start.offset);
         match stmt {
             Statement::OpeningTag(_) | Statement::ClosingTag(_) | Statement::Noop(_) => {}
             Statement::Inline(inline) => {

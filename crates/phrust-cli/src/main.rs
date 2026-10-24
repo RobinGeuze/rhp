@@ -8,7 +8,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use phrust_compiler::compile;
+use phrust_compiler::compile_with_source;
 use phrust_frontend::Arena;
 use phrust_values::Thrown;
 use phrust_vm::Vm;
@@ -36,7 +36,7 @@ fn main() -> ExitCode {
     }
 
     // Compile to owned bytecode; the arena can be dropped after this.
-    let program = match compile(parsed.program()) {
+    let program = match compile_with_source(parsed.program(), &source, &path) {
         Ok(p) => p,
         Err(t) => return fatal(t),
     };

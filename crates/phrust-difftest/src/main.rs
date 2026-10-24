@@ -35,8 +35,40 @@ fn main() -> ExitCode {
 
     match ext.as_str() {
         "hash" => sweep_hash(seed, count, only.as_deref(), strict),
+        "bcmath" => sweep_bcmath(seed, count),
+        "ctype" => sweep_ctype(),
         other => {
-            eprintln!("phrust-difftest: unknown extension {other:?} (known: hash)");
+            eprintln!("phrust-difftest: unknown extension {other:?} (known: hash, bcmath, ctype)");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn sweep_bcmath(seed: u64, count: usize) -> ExitCode {
+    use phrust_difftest::sweeps::bcmath;
+    println!("bcmath sweep — {count} operand rows, seed {seed:#x}\n");
+    match bcmath(seed, count) {
+        Diff::Match => {
+            println!("  MATCH  all bcmath operations byte-identical");
+            ExitCode::SUCCESS
+        }
+        Diff::Mismatch { php, phrust } => {
+            println!("  MISMATCH");
+            let (p, q) = (String::from_utf8_lossy(&php), String::from_utf8_lossy(&phrust));
+            for (i, (a, b)) in p.lines().zip(q.lines()).enumerate() {
+                if a != b {
+                    println!("    row {i}:\n      php   : {a}\n      phrust: {b}");
+                    break;
+                }
+            }
+            ExitCode::FAILURE
+        }
+        Diff::PhrustErr(e) => {
+            println!("  phrust error: {}", first_line(&e));
+            ExitCode::FAILURE
+        }
+        Diff::PhpErr(e) => {
+            println!("  php error: {}", first_line(&e));
             ExitCode::from(2)
         }
     }
@@ -94,6 +126,30 @@ fn sweep_hash(seed: u64, count: usize, only: Option<&str>, strict: bool) -> Exit
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+fn sweep_ctype() -> ExitCode {
+    use phrust_difftest::sweeps::ctype;
+    println!("ctype sweep — all ctype_* over every byte, int quirk, and strings\n");
+    match ctype() {
+        Diff::Match => {
+            println!("  MATCH  all ctype_* byte-identical");
+            ExitCode::SUCCESS
+        }
+        Diff::Mismatch { php, phrust } => {
+            println!("  MISMATCH");
+            print_first_diff(&php, &phrust);
+            ExitCode::FAILURE
+        }
+        Diff::PhrustErr(e) => {
+            println!("  phrust error: {}", first_line(&e));
+            ExitCode::FAILURE
+        }
+        Diff::PhpErr(e) => {
+            println!("  php error: {}", first_line(&e));
+            ExitCode::from(2)
+        }
     }
 }
 

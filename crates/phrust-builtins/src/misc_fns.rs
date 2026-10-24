@@ -68,6 +68,20 @@ fn is_xdigit(b: u8) -> bool {
     b.is_ascii_hexdigit()
 }
 
+// High-byte behavior per this binary's C.UTF-8 == ISO-8859-1 (byte 173, the
+// soft hyphen, classifies as control — not printable — like php).
+fn is_cntrl(b: u8) -> bool {
+    b <= 31 || (127..=159).contains(&b) || b == 173
+}
+
+fn is_graph(b: u8) -> bool {
+    (33..=126).contains(&b) || (161..=172).contains(&b) || (174..=255).contains(&b)
+}
+
+fn is_print(b: u8) -> bool {
+    b == 32 || b == 160 || is_graph(b)
+}
+
 /// Run a ctype class test with php's int/string argument quirks.
 fn ctype_check(v: &Value, class: fn(u8) -> bool) -> bool {
     match deref(v) {
@@ -102,6 +116,9 @@ ctype_fn!(fn_ctype_upper, is_upper);
 ctype_fn!(fn_ctype_lower, is_lower);
 ctype_fn!(fn_ctype_punct, is_punct);
 ctype_fn!(fn_ctype_xdigit, is_xdigit);
+ctype_fn!(fn_ctype_cntrl, is_cntrl);
+ctype_fn!(fn_ctype_graph, is_graph);
+ctype_fn!(fn_ctype_print, is_print);
 
 // ---------------------------------------------------------------------------
 // is_iterable / is_countable
@@ -139,6 +156,9 @@ pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
     reg!("ctype_lower", fn_ctype_lower, 1, Some(1));
     reg!("ctype_punct", fn_ctype_punct, 1, Some(1));
     reg!("ctype_xdigit", fn_ctype_xdigit, 1, Some(1));
+    reg!("ctype_cntrl", fn_ctype_cntrl, 1, Some(1));
+    reg!("ctype_graph", fn_ctype_graph, 1, Some(1));
+    reg!("ctype_print", fn_ctype_print, 1, Some(1));
     reg!("is_iterable", fn_is_iterable, 1, Some(1));
     reg!("is_countable", fn_is_countable, 1, Some(1));
 }

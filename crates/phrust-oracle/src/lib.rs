@@ -38,11 +38,20 @@ pub struct Interp<'a> {
     vars: HashMap<Vec<u8>, Value>,
     constants: HashMap<Vec<u8>, Value>,
     functions: HashMap<Vec<u8>, &'a Function<'a>>, // lowercase name -> declaration
+    bc_scale: i64,
 }
 
 impl Host for Interp<'_> {
     fn write_out(&mut self, bytes: &[u8]) {
         self.out.extend_from_slice(bytes);
+    }
+
+    fn bc_scale(&self) -> i64 {
+        self.bc_scale
+    }
+
+    fn set_bc_scale(&mut self, scale: i64) {
+        self.bc_scale = scale;
     }
 }
 
@@ -58,7 +67,13 @@ impl<'a> Interp<'a> {
         for (name, value) in builtins::constants() {
             constants.insert(name.as_bytes().to_vec(), value);
         }
-        Interp { out: Vec::new(), vars: HashMap::new(), constants, functions: HashMap::new() }
+        Interp {
+            out: Vec::new(),
+            vars: HashMap::new(),
+            constants,
+            functions: HashMap::new(),
+            bc_scale: 0,
+        }
     }
 
     /// The accumulated output buffer.

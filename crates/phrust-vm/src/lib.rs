@@ -61,6 +61,8 @@ pub struct Vm {
     yield_out: Option<(Value, Value, Reg)>,
     // Stack of generator ids currently being advanced (innermost last).
     gen_stack: Vec<u32>,
+    // Default scale for the bcmath builtins (`bcscale()`); 0 at script start.
+    bc_scale: i64,
 }
 
 /// Status of a generator.
@@ -124,6 +126,14 @@ impl Host for Vm {
 
     fn get_const(&self, name: &[u8]) -> Option<Value> {
         self.constants.get(name).cloned()
+    }
+
+    fn bc_scale(&self) -> i64 {
+        self.bc_scale
+    }
+
+    fn set_bc_scale(&mut self, scale: i64) {
+        self.bc_scale = scale;
     }
 
     fn call_callable(&mut self, callable: &Value, args: &[Value]) -> Result<Value, Thrown> {
@@ -284,6 +294,7 @@ impl Vm {
             generators: HashMap::new(),
             yield_out: None,
             gen_stack: Vec::new(),
+            bc_scale: 0,
         }
     }
 

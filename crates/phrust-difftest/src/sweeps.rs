@@ -33,3 +33,108 @@ pub fn hash_algo_snippet(algo: &str, corpus: &[Vec<u8>]) -> String {
 pub fn hash_algo(algo: &str, corpus: &[Vec<u8>]) -> Diff {
     diff_source(hash_algo_snippet(algo, corpus).as_bytes())
 }
+
+// ---------------------------------------------------------------------------
+// bcmath
+// ---------------------------------------------------------------------------
+
+use crate::Rng;
+
+/// A random bc-number string: optional sign, up to `int_max` integer digits and
+/// up to `frac_max` fractional digits (sometimes an integer).
+fn bc_number(rng: &mut Rng, int_max: usize, frac_max: usize) -> String {
+    let neg = rng.below(2) == 0;
+    let ni = 1 + rng.below(int_max);
+    let nf = rng.below(frac_max + 1);
+    let mut s = String::new();
+    if neg {
+        s.push('-');
+    }
+    for k in 0..ni {
+        // avoid a leading zero run that is the whole integer part being "0..."
+        let d = if k == 0 { 1 + rng.below(9) } else { rng.below(10) };
+        s.push((b'0' + d as u8) as char);
+    }
+    if nf > 0 {
+        s.push('.');
+        for _ in 0..nf {
+            s.push((b'0' + rng.below(10) as u8) as char);
+        }
+    }
+    s
+}
+
+/// A PHP snippet exercising the two-operand bcmath ops over generated operands
+/// and scales, plus the unary ops. Deterministic from `seed`.
+pub fn bcmath_snippet(seed: u64, count: usize) -> String {
+    let mut rng = Rng::new(seed);
+    let mut lines = String::from("<?php\n");
+    for _ in 0..count {
+        let a = bc_number(&mut rng, 12, 6);
+        let b = bc_number(&mut rng, 8, 6);
+        let scale = rng.below(10);
+        // guard divide/mod by zero (php throws; we test those separately)
+        let b_nonzero = if b.trim_start_matches(['-', '0', '.']).is_empty() {
+            "1".to_string()
+        } else {
+            b.clone()
+        };
+        lines.push_str(&format!("echo bcadd(\"{a}\",\"{b}\",{scale}),\"|\";\n"));
+        lines.push_str(&format!("echo bcsub(\"{a}\",\"{b}\",{scale}),\"|\";\n"));
+        lines.push_str(&format!("echo bcmul(\"{a}\",\"{b}\",{scale}),\"|\";\n"));
+        lines.push_str(&format!("echo bcdiv(\"{a}\",\"{b_nonzero}\",{scale}),\"|\";\n"));
+        lines.push_str(&format!("echo bcmod(\"{a}\",\"{b_nonzero}\",{scale}),\"|\";\n"));
+        lines.push_str(&format!("echo bccomp(\"{a}\",\"{b}\",{scale}),\"|\";\n"));
+        lines.push_str(&format!("echo implode(\",\",bcdivmod(\"{a}\",\"{b_nonzero}\",{scale})),\"|\";\n"));
+        lines.push_str(&format!("echo bcfloor(\"{a}\"),\"|\";\n"));
+        lines.push_str(&format!("echo bcceil(\"{a}\"),\"|\";\n"));
+        lines.push_str(&format!("echo bcround(\"{a}\",{}),\"|\";\n", rng.below(6)));
+        // small non-negative exponent for bcpow; non-negative base for bcsqrt
+        let e = rng.below(12);
+        lines.push_str(&format!("echo bcpow(\"{a}\",\"{e}\",{scale}),\"|\";\n"));
+        let pos = a.trim_start_matches('-').to_string();
+        lines.push_str(&format!("echo bcsqrt(\"{pos}\",{scale}),\"|\";\n"));
+        lines.push_str("echo \"\\n\";\n");
+    }
+    lines
+}
+
+/// Run the whole bcmath differential sweep as one snippet.
+pub fn bcmath(seed: u64, count: usize) -> Diff {
+    diff_source(bcmath_snippet(seed, count).as_bytes())
+}
+
+// ---------------------------------------------------------------------------
+// ctype
+// ---------------------------------------------------------------------------
+
+/// The 11 `ctype_*` functions.
+pub const CTYPE_FUNCS: &[&str] = &[
+    "ctype_alnum", "ctype_alpha", "ctype_cntrl", "ctype_digit", "ctype_graph", "ctype_lower",
+    "ctype_print", "ctype_punct", "ctype_space", "ctype_upper", "ctype_xdigit",
+];
+
+/// PHP snippet that runs every `ctype_*` over every single byte (0..=255), every
+/// integer argument quirk, and a few multi-char strings.
+pub fn ctype_snippet() -> String {
+    let mut s = String::from("<?php\n$fns = [");
+    for f in CTYPE_FUNCS {
+        s.push_str(&format!("\"{f}\","));
+    }
+    s.push_str("];\n");
+    // single bytes, integer args (the -128..=256 char-code quirk), strings
+    s.push_str(
+        "foreach ($fns as $f) {\n\
+           for ($i = 0; $i < 256; $i++) echo (int)$f(chr($i));\n\
+           for ($n = -130; $n <= 260; $n++) echo (int)$f($n);\n\
+           foreach ([\"\", \"abc\", \"ABC123\", \"  \\t\", \"a1!\", \"\\xe9\\xff\"] as $str) echo (int)$f($str);\n\
+           echo \"\\n\";\n\
+         }\n",
+    );
+    s
+}
+
+/// Run the ctype differential sweep.
+pub fn ctype() -> Diff {
+    diff_source(ctype_snippet().as_bytes())
+}

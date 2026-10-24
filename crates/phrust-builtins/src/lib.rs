@@ -17,6 +17,7 @@ pub mod dump;
 
 mod arr_fns;
 mod arrayset_fns;
+mod bc_fns;
 mod datetime_fns;
 mod dt_oop_fns;
 mod filter_fns;
@@ -104,6 +105,15 @@ pub trait Host {
     fn class_has_property(&self, _class_id: u32, _prop: &[u8]) -> bool {
         false
     }
+
+    /// The bcmath default scale (`bcscale()` with no argument), 0 at script
+    /// start. Stored on the host so it resets per script run.
+    fn bc_scale(&self) -> i64 {
+        0
+    }
+
+    /// Set the bcmath default scale (`bcscale($scale)`).
+    fn set_bc_scale(&mut self, _scale: i64) {}
 
     /// Build a `stdClass` object from named properties (for `json_decode` without
     /// `$associative`, `(object)` cast helpers, etc.). The default fallback — for
@@ -221,6 +231,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         misc_fns::register(&mut m);
         hash_fns::register(&mut m);
         hashext_fns::register(&mut m);
+        bc_fns::register(&mut m);
         webenc_fns::register(&mut m);
         datetime_fns::register(&mut m);
         dt_oop_fns::register(&mut m);

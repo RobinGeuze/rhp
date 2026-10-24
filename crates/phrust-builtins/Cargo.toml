@@ -24,3 +24,8 @@ whirlpool = "0.10"
 tiger = "0.2"
 gost94 = "0.10"
 xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64", "xxh3"] }
+
+# bcmath: arbitrary-precision integers (the decimal/scale semantics on top are
+# PHP-specific and hand-rolled in bc_fns.rs).
+num-bigint = "0.4"
+num-traits = "0.2"

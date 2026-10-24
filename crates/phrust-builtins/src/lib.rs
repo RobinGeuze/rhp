@@ -18,6 +18,7 @@ pub mod dump;
 mod arr_fns;
 mod arrayset_fns;
 mod datetime_fns;
+mod dt_oop_fns;
 mod filter_fns;
 mod hash_fns;
 mod math_fns;
@@ -170,6 +171,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         hash_fns::register(&mut m);
         webenc_fns::register(&mut m);
         datetime_fns::register(&mut m);
+        dt_oop_fns::register(&mut m);
         strarr2_fns::register(&mut m);
         sort_fns::register(&mut m);
         serialize_fns::register(&mut m);

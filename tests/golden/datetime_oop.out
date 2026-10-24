@@ -1,0 +1,82 @@
+== construct + format ==
+2023-11-14 22:13:20
+1700000000
+2023-11-14T22:13:20+00:00
+2023-11-14T22:13:20+00:00
+Tue, 14 Nov 2023 22:13:20 +0000
+Tue, 14 Nov 2023 22:13:20 +0000
+2 th 46 2023 2 317 30 0
+10 22 10 22 13 20 pm PM
+1700000000 UTC UTC +0000 +00:00 Z 0 0 967
+UTC
+== Y-m-d, @ts, ISO, offset ==
+2020-02-29 00:00:00
+2023-11-14 22:13:20 | +00:00 | +00:00 GMT+0000 +00:00
+2023-11-14 22:13:20 +05:00 ts=1699982000 tz=+05:00
++05:00 GMT+0500 18000 +0500
+2023-11-14 22:13:20 +02:00 ts=1699992800 tz=+02:00
+2023-11-14 22:13:20 +00:00 tz=Z
+2023-11-14 22:13:20.123456 123 ts=1700000000
+== setDate/setTime/setTimestamp/setTimezone ==
+2020-02-29 00:00:00
+2020-02-29 13:14:15
+2020-02-29 13:14:15.500000
+2023-11-14 22:13:20
+2023-03-03
+2023-11-15 03:13:20 +05:00 ts=1700000000
+== modify ==
+2023-03-03 10:20:30
+2023-02-01 10:20:30
+2023-11-15 00:43:20
+2023-11-07 22:13:20
+2024-01-31
+2023-04-16
+2023-11-14 23:43:20
+== add / sub ==
+2023-03-03 10:20:30
+2025-01-25 00:43:35
+2022-09-04 19:43:05
+2023-03-03
+2023-06-05
+2023-06-25
+2023-06-22
+== diff ==
+y=1 m=2 d=10 h=2 i=30 s=15 days=437 invert=0
+y=1 m=2 d=10 h=2 i=30 s=15 days=437 invert=1
+y=0 m=0 d=30 h=0 i=0 s=0 days=30 invert=0
+y=0 m=1 d=1 h=0 i=0 s=0 days=30 invert=1
+y=0 m=11 d=30 h=0 i=0 s=0 days=365 invert=0
+y=1 m=0 d=0 h=0 i=0 s=0 days=365 invert=0
+y=0 m=1 d=28 h=13 i=0 s=0 days=59 invert=1
+y=0 m=0 d=0 h=2 i=13 s=20 days=0 invert=0
++830 days = 2 years, 3 months, 9 days (00:00:00)
+== DateInterval ==
+1 2 10 2 30 15 0
+01-02-10 02:30:15 | 1/2/10 2:30:15 | +  | (unknown) | %
+0 90 0
+21
+== DateTimeImmutable ==
+2023-11-14 22:13:20
+2023-11-15 22:13:20
+2023-12-14
+DateTimeImmutable
+2023-06-01 00:00:00
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+== DateTimeZone ==
+UTC => UTC off=0
++05:00 => +05:00 off=18000
+-0800 => -08:00 off=-28800
++0530 => +05:30 off=19800
+GMT => GMT off=0
+== errors ==
+DateInvalidTimeZoneException
+DateMalformedStringException
+DateMalformedIntervalStringException
+== constants ==
+Y-m-d\TH:i:sP
+l, d-M-Y H:i:s T
+D, d M Y H:i:s O
+Y-m-d\TH:i:sP

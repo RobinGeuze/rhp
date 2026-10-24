@@ -717,10 +717,18 @@ impl Vm {
                     }
                 }
                 Instr::FeFetch { arr_reg, pos_reg, key_cv, val_cv, end } => {
-                    // Generator mode: bind current (key,value), then advance.
+                    // Generator mode. The advance happens at the TOP of each
+                    // iteration except the first, so the generator's post-yield
+                    // code runs *after* the loop body (unlike an array's pos++).
+                    // `pos_reg` is 0 on the first fetch, 1 thereafter.
                     if let Value::Object(h) = self.reg_get(top, arr_reg) {
                         let id = h.borrow().id;
-                        if let Some(g) = self.generators.get(&id) {
+                        if self.generators.contains_key(&id) {
+                            let first = matches!(self.reg_get(top, pos_reg), Value::Int(0));
+                            if !first {
+                                self.advance_gen(id, Value::Null)?;
+                            }
+                            let g = &self.generators[&id];
                             if g.status == GenStatus::Finished {
                                 self.stack[top].pc = end as usize;
                             } else {
@@ -729,7 +737,7 @@ impl Vm {
                                 if key_cv != Reg::MAX {
                                     self.cv_assign(top, key_cv, k);
                                 }
-                                self.advance_gen(id, Value::Null)?;
+                                self.reg_set(top, pos_reg, Value::Int(1));
                             }
                             continue;
                         }

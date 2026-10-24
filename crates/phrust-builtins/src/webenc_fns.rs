@@ -204,10 +204,75 @@ fn fn_htmlspecialchars_decode(_: &mut dyn Host, args: &[Value]) -> Result<Value,
     Ok(Value::str(out))
 }
 
+/// Reverse of [`NAMED_ENTITIES`]: UTF-8 byte sequence → canonical HTML 4.01
+/// entity name. First-wins over the decode table, so the 5 base entities
+/// (`quot`/`amp`/`lt`/`gt`) take their single-byte code points.
+fn entity_rev_map() -> &'static std::collections::HashMap<&'static [u8], &'static [u8]> {
+    use std::sync::OnceLock;
+    static MAP: OnceLock<std::collections::HashMap<&'static [u8], &'static [u8]>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        let mut m = std::collections::HashMap::new();
+        for (name, bytes) in NAMED_ENTITIES {
+            m.entry(*bytes).or_insert(*name);
+        }
+        m
+    })
+}
+
+/// Encode one run of valid UTF-8, replacing each code point that has an HTML 4.01
+/// named entity with `&name;`. The single quote has no HTML 4.01 named entity, so
+/// under the php 8.1+ default (ENT_QUOTES) it becomes `&#039;`.
+fn entity_encode_str(s: &str, out: &mut Vec<u8>) {
+    let map = entity_rev_map();
+    let mut buf = [0u8; 4];
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.extend_from_slice(b"&#039;");
+            continue;
+        }
+        let bytes = ch.encode_utf8(&mut buf).as_bytes();
+        if let Some(name) = map.get(bytes) {
+            out.push(b'&');
+            out.extend_from_slice(name);
+            out.push(b';');
+        } else {
+            out.extend_from_slice(bytes);
+        }
+    }
+}
+
+/// `htmlentities`: like `htmlspecialchars` but every code point with an HTML 4.01
+/// named entity is converted (`é` → `&eacute;`, `€` → `&euro;`, …), not just the
+/// 5 base characters. Input is treated as UTF-8 (the php 8.x default charset);
+/// malformed byte sequences are substituted with U+FFFD, matching the php 8.1+
+/// default `ENT_SUBSTITUTE`. The full HTML 4.01 named-entity set is covered via
+/// the shared [`NAMED_ENTITIES`] table (not just the Latin-1 range).
 fn fn_htmlentities(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // For ASCII input this is identical to htmlspecialchars (phrust treats the
-    // byte-string charset as single-byte-safe; high bytes are passed through).
-    Ok(Value::str(html_escape(&bytes_of(&args[0]))))
+    let input = bytes_of(&args[0]);
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        match std::str::from_utf8(&input[i..]) {
+            Ok(valid) => {
+                entity_encode_str(valid, &mut out);
+                break;
+            }
+            Err(e) => {
+                let good = e.valid_up_to();
+                if good > 0 {
+                    // SAFETY: bytes 0..good validated by from_utf8 above.
+                    entity_encode_str(std::str::from_utf8(&input[i..i + good]).unwrap(), &mut out);
+                    i += good;
+                }
+                out.extend_from_slice(&[0xEF, 0xBF, 0xBD]); // U+FFFD
+                match e.error_len() {
+                    Some(n) => i += n,
+                    None => break, // truncated sequence at end of input
+                }
+            }
+        }
+    }
+    Ok(Value::str(out))
 }
 
 /// Is a unicode scalar permitted as a numeric entity target (UTF-8, HTML401)?

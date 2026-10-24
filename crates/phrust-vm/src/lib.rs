@@ -127,6 +127,28 @@ impl Host for Vm {
         self.call_callable_value(callable, args.to_vec())
     }
 
+    fn resolve_class(&self, name: &[u8]) -> Option<u32> {
+        self.resolve_class_by_name(name).ok()
+    }
+
+    fn class_kind(&self, class_id: u32) -> Option<ClassKind> {
+        self.classes.get(class_id as usize).map(|c| c.kind)
+    }
+
+    fn class_has_method(&self, class_id: u32, method: &[u8]) -> bool {
+        self.lookup_method(class_id, method).is_some()
+    }
+
+    fn class_has_property(&self, class_id: u32, prop: &[u8]) -> bool {
+        match self.classes.get(class_id as usize) {
+            Some(entry) => {
+                entry.props.keys().any(|k| k.as_bytes() == prop)
+                    || entry.static_props.contains_key(prop)
+            }
+            None => false,
+        }
+    }
+
     fn is_callable_value(&self, callable: &Value) -> bool {
         let c = match callable {
             Value::Ref(r) => r.borrow().clone(),

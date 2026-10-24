@@ -425,6 +425,26 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "mb_convert_case", fn_mb_convert_case, 2, Some(3));
     put(m, "mb_ord", fn_mb_ord, 1, Some(2));
     put(m, "mb_chr", fn_mb_chr, 1, Some(2));
+    put(m, "mb_detect_encoding", fn_mb_detect_encoding, 1, Some(3));
+}
+
+/// `mb_detect_encoding($string, $encodings = null, $strict = false)`.
+///
+/// Pragmatic detector covering the common case: returns `"UTF-8"` for valid
+/// (non-ASCII-containing) UTF-8, `"ASCII"` for a 7-bit string, and `false` for
+/// bytes that are neither. This does not attempt the full php candidate-list /
+/// encoding-guessing machinery; `$encodings` and `$strict` are accepted but the
+/// detection is limited to the ASCII / UTF-8 distinction documented here.
+fn fn_mb_detect_encoding(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = bytes_of(&args[0]);
+    if s.iter().all(|&b| b < 0x80) {
+        return Ok(Value::str("ASCII"));
+    }
+    if std::str::from_utf8(&s).is_ok() {
+        Ok(Value::str("UTF-8"))
+    } else {
+        Ok(Value::Bool(false))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +493,17 @@ mod tests {
                 .collect(),
             other => panic!("expected array, got {}", other.type_name()),
         }
+    }
+
+    #[test]
+    fn detect_encoding() {
+        // ASCII / valid-UTF-8 cases match php 8.5.8 exactly.
+        assert_eq!(calls(fn_mb_detect_encoding, &[s("hello")]), "ASCII");
+        assert_eq!(calls(fn_mb_detect_encoding, &[s("café")]), "UTF-8");
+        assert_eq!(calls(fn_mb_detect_encoding, &[s("日本語")]), "UTF-8");
+        // Malformed UTF-8: this engine returns false (php's lenient default
+        // instead falls back to "ASCII" — documented divergence).
+        assert!(is_false(fn_mb_detect_encoding, &[Value::str(vec![0xC3, 0x28])]));
     }
 
     // mb_strlen("héllo") == 5  (vs strlen == 6)

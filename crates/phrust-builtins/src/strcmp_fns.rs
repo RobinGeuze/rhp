@@ -294,7 +294,7 @@ fn compare_left(a: &[u8], ap: &mut usize, aend: usize, b: &[u8], bp: &mut usize,
     }
 }
 
-fn strnatcmp_ex(a: &[u8], b: &[u8], fold_case: bool) -> i64 {
+pub(crate) fn strnatcmp_ex(a: &[u8], b: &[u8], fold_case: bool) -> i64 {
     let aend = a.len();
     let bend = b.len();
     if a.is_empty() || b.is_empty() {

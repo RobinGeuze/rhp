@@ -414,6 +414,15 @@ pub enum EnumBacking {
     Str,
 }
 
+/// By-ref mask for `sscanf`: positions 0 (`$string`) and 1 (`$format`) are by
+/// value; every assignment target after them is by reference.
+static SSCANF_REF_MASK: [bool; 64] = {
+    let mut m = [true; 64];
+    m[0] = false;
+    m[1] = false;
+    m
+};
+
 /// Per-parameter by-reference flags for builtins whose arguments are passed by
 /// reference (the array-mutating sort/stack family, and the `preg_*` out-params
 /// `&$matches` / `&$count`). The call site emits `MakeRef` for each flagged
@@ -425,7 +434,10 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         // arg 0 (the array) by reference.
         "sort" | "rsort" | "asort" | "arsort" | "ksort" | "krsort" | "usort" | "uasort"
         | "uksort" | "array_push" | "array_pop" | "array_shift" | "array_unshift" | "shuffle"
-        | "array_splice" => &[true],
+        | "array_splice" | "natsort" | "natcasesort" | "array_walk" => &[true],
+        // `sscanf($string, $format, &...$vars)`: every argument from position 2
+        // on is an output passed by reference.
+        "sscanf" => &SSCANF_REF_MASK,
         // `&$matches` at position 2.
         "preg_match" | "preg_match_all" => &[false, false, true],
         // `&$count` at position 4.

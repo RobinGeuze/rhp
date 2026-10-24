@@ -21,9 +21,11 @@ mod datetime_fns;
 mod dt_oop_fns;
 mod filter_fns;
 mod hash_fns;
+mod json_fns;
 mod math_fns;
 mod mb_fns;
 mod misc_fns;
+mod parse_fns;
 mod preg_fns;
 mod printf_fns;
 mod serialize_fns;
@@ -72,6 +74,30 @@ pub trait Host {
     /// `[obj_or_class, method]` pairs, and `__invoke` objects. Default: closures only.
     fn is_callable_value(&self, callable: &Value) -> bool {
         matches!(deref(callable), Value::Closure(_))
+    }
+
+    /// Resolve a class-like name to its opaque class id (for `class_exists`,
+    /// `method_exists`/`property_exists` on a class-name string). Default: none.
+    fn resolve_class(&self, _name: &[u8]) -> Option<u32> {
+        None
+    }
+
+    /// The [`ClassKind`] of a class id (class / interface / trait / enum), used by
+    /// the `*_exists` family. Default: none.
+    fn class_kind(&self, _class_id: u32) -> Option<phrust_values::ClassKind> {
+        None
+    }
+
+    /// Whether a class id declares a method (case-insensitive, flattened over the
+    /// inheritance chain). Default: false.
+    fn class_has_method(&self, _class_id: u32, _method: &[u8]) -> bool {
+        false
+    }
+
+    /// Whether a class id declares a property — instance or static
+    /// (case-sensitive, flattened over the inheritance chain). Default: false.
+    fn class_has_property(&self, _class_id: u32, _prop: &[u8]) -> bool {
+        false
     }
 }
 
@@ -165,6 +191,12 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "get_class"      => fn_get_class, 1, Some(1);
             "get_parent_class" => fn_get_parent_class, 0, Some(1);
             "get_object_vars" => fn_get_object_vars, 1, Some(1);
+            "method_exists"  => fn_method_exists, 2, Some(2);
+            "property_exists" => fn_property_exists, 2, Some(2);
+            "class_exists"   => fn_class_exists, 1, Some(2);
+            "interface_exists" => fn_interface_exists, 1, Some(2);
+            "enum_exists"    => fn_enum_exists, 1, Some(2);
+            "iterator_to_array" => fn_iterator_to_array, 1, Some(2);
         };
         // Builtin modules produced by the stdlib workflow (each verified vs php).
         str_fns::register(&mut m);
@@ -184,6 +216,8 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         printf_fns::register(&mut m);
         arrayset_fns::register(&mut m);
         preg_fns::register(&mut m);
+        json_fns::register(&mut m);
+        parse_fns::register(&mut m);
         m
     })
 }
@@ -291,6 +325,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     ]
     .into_iter()
     .chain(preg_fns::preg_constants())
+    .chain(json_fns::json_constants())
     .collect()
 }
 
@@ -890,6 +925,96 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
             Ok(host.class_parent_name(cid).map(Value::str).unwrap_or(Value::Bool(false)))
         }
         _ => Ok(Value::Bool(false)),
+    }
+}
+
+/// Resolve the class id named by an argument: an object yields its own class,
+/// a string resolves via the host's class table.
+fn class_id_of(host: &dyn Host, v: &Value) -> Option<u32> {
+    match deref(v) {
+        Value::Object(h) => Some(h.borrow().class),
+        Value::Str(s) => host.resolve_class(s.as_bytes()),
+        _ => None,
+    }
+}
+
+fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let method = conv::to_string_bytes(&deref(&args[1]));
+    let found = class_id_of(host, &args[0])
+        .map(|cid| host.class_has_method(cid, &method))
+        .unwrap_or(false);
+    Ok(Value::Bool(found))
+}
+
+fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let prop = conv::to_string_bytes(&deref(&args[1]));
+    let found = match deref(&args[0]) {
+        Value::Object(h) => {
+            let cid = h.borrow().class;
+            // An object matches on a declared member (instance or static) OR a
+            // dynamically-set instance property.
+            let dynamic = h
+                .borrow()
+                .properties
+                .contains_key(&phrust_values::PhpStr::from_bytes(prop.clone()));
+            dynamic || host.class_has_property(cid, &prop)
+        }
+        Value::Str(s) => host
+            .resolve_class(s.as_bytes())
+            .map(|cid| host.class_has_property(cid, &prop))
+            .unwrap_or(false),
+        _ => false,
+    };
+    Ok(Value::Bool(found))
+}
+
+/// Shared helper for `class_exists` / `interface_exists` / `enum_exists`: resolve
+/// the name and test the resolved kind against `want`.
+fn exists_of_kind(host: &dyn Host, name: &Value, want: fn(phrust_values::ClassKind) -> bool) -> bool {
+    let name = conv::to_string_bytes(&deref(name));
+    host.resolve_class(&name).and_then(|cid| host.class_kind(cid)).map(want).unwrap_or(false)
+}
+
+fn fn_class_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    use phrust_values::ClassKind;
+    // Enums are classes too (`class_exists` is true for an enum name).
+    Ok(Value::Bool(exists_of_kind(host, &args[0], |k| {
+        matches!(k, ClassKind::Class | ClassKind::Enum)
+    })))
+}
+
+fn fn_interface_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    use phrust_values::ClassKind;
+    Ok(Value::Bool(exists_of_kind(host, &args[0], |k| k == ClassKind::Interface)))
+}
+
+fn fn_enum_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    use phrust_values::ClassKind;
+    Ok(Value::Bool(exists_of_kind(host, &args[0], |k| k == ClassKind::Enum)))
+}
+
+/// `iterator_to_array($iterable, $preserve_keys = true)`. Only a plain array is
+/// supported here: driving a user `Iterator` / `Generator` is done by the VM, so
+/// a non-array iterable is deferred-to-VM and yields a TypeError from this
+/// builtin. For an array it is a (re-keyed when `!preserve_keys`) passthrough.
+fn fn_iterator_to_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let preserve = args.get(1).map(|v| conv::to_bool(&deref(v))).unwrap_or(true);
+    match deref(&args[0]) {
+        Value::Array(a) => {
+            if preserve {
+                Ok(Value::Array(a))
+            } else {
+                let mut out = PhpArray::new();
+                for (_, v) in a.iter() {
+                    out.push(v.clone());
+                }
+                Ok(Value::Array(out))
+            }
+        }
+        _ => Err(Thrown::type_error(
+            "iterator_to_array(): driving a non-array Traversable is handled by the VM, \
+             not this builtin",
+        )),
     }
 }
 

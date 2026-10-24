@@ -197,12 +197,26 @@ fn format_date(format: &[u8], tm: &Tm, ts: i64) -> Vec<u8> {
             b'z' => push_int(&mut out, tm.yday),
             b't' => push_int(&mut out, days_in_month(tm.year, tm.month)),
             b'L' => out.push(if is_leap(tm.year) { b'1' } else { b'0' }),
+            b'S' => out.extend_from_slice(ordinal_suffix(tm.day)),
             b'U' => push_int(&mut out, ts),
             other => out.push(other),
         }
         i += 1;
     }
     out
+}
+
+/// English ordinal suffix for a day-of-month (`date("S")`): `st`/`nd`/`rd`/`th`.
+/// 11, 12, 13 are always `th`; otherwise the last digit selects 1→st, 2→nd,
+/// 3→rd, else th.
+fn ordinal_suffix(day: i64) -> &'static [u8] {
+    match (day % 100, day % 10) {
+        (11..=13, _) => b"th",
+        (_, 1) => b"st",
+        (_, 2) => b"nd",
+        (_, 3) => b"rd",
+        _ => b"th",
+    }
 }
 
 /// 12-hour clock value for a 0..23 hour (0 and 12 both map to 12).
@@ -406,6 +420,41 @@ mod tests {
             calls(fn_date, &[s("Y-m-d H:i:s"), Value::Int(-86400)]),
             "1969-12-31 00:00:00"
         );
+    }
+
+    #[test]
+    fn date_ordinal_suffix() {
+        // Expected values captured from php 8.5.8 `date("jS", mktime(...))`.
+        let cases: &[(i64, &str)] = &[
+            (1, "1st"),
+            (2, "2nd"),
+            (3, "3rd"),
+            (4, "4th"),
+            (11, "11th"),
+            (12, "12th"),
+            (13, "13th"),
+            (21, "21st"),
+            (22, "22nd"),
+            (23, "23rd"),
+            (31, "31st"),
+        ];
+        for &(day, want) in cases {
+            // 2024-03-<day> at midnight UTC via mktime(0,0,0,3,day,2024).
+            let ts = call_int(
+                fn_mktime,
+                &[
+                    Value::Int(0),
+                    Value::Int(0),
+                    Value::Int(0),
+                    Value::Int(3),
+                    Value::Int(day),
+                    Value::Int(2024),
+                ],
+            );
+            assert_eq!(calls(fn_date, &[s("jS"), Value::Int(ts)]), want);
+        }
+        assert_eq!(ordinal_suffix(111), b"th");
+        assert_eq!(ordinal_suffix(101), b"st");
     }
 
     #[test]

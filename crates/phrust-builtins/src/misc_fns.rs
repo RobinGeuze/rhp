@@ -1,5 +1,5 @@
-//! Character-class tests (`ctype_*`), `is_iterable` / `is_countable`, and
-//! `json_encode`.
+//! Character-class tests (`ctype_*`) and `is_iterable` / `is_countable`.
+//! (The JSON builtins live in `json_fns`.)
 //!
 //! All behavior verified byte-for-byte against the local php 8.5.8 binary.
 //!
@@ -18,17 +18,8 @@
 //!   ISO-8859-1 classification (e.g. `ctype_alpha("\xE9")` / `é` → true,
 //!   `ctype_punct("\xA1")` / `¡` → true). The tables below are transcribed from
 //!   that binary.
-//!
-//! ## `json_encode`
-//! Default flags only (flags/depth args are accepted but ignored). Floats use
-//! shortest round-trip (`serialize_precision = -1`) via [`fmt::float_serialize`]
-//! but with a lowercase `e` exponent and *no* forced `.0` (so `1.0` → `"1"`,
-//! `1e20` → `"1.0e+20"`). Strings are escaped per php's default: `"` `\` `/`
-//! and the C0 controls are escaped, and every non-ASCII code point becomes
-//! `\uXXXX` (surrogate pair for astral planes). Invalid UTF-8, `NAN`, `INF`, and
-//! objects make the whole call return `false`, as in php.
 
-use phrust_values::{fmt, ArrayKey, Value};
+use phrust_values::Value;
 
 use crate::{Builtin, Host, Thrown};
 
@@ -127,126 +118,6 @@ fn fn_is_countable(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 // ---------------------------------------------------------------------------
-// json_encode (default flags)
-// ---------------------------------------------------------------------------
-
-fn fn_json_encode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // flags (arg 1) and depth (arg 2) are accepted but ignored: default only.
-    let mut out = Vec::new();
-    if json_encode_value(&args[0], &mut out) {
-        Ok(Value::str(out))
-    } else {
-        Ok(Value::Bool(false))
-    }
-}
-
-/// Encode one value, appending to `out`. Returns false on an unencodable value
-/// (NAN/INF, invalid UTF-8, object) — php then fails the whole call.
-fn json_encode_value(v: &Value, out: &mut Vec<u8>) -> bool {
-    match deref(v) {
-        Value::Null => out.extend_from_slice(b"null"),
-        Value::Bool(true) => out.extend_from_slice(b"true"),
-        Value::Bool(false) => out.extend_from_slice(b"false"),
-        Value::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),
-        Value::Float(f) => {
-            if !f.is_finite() {
-                return false;
-            }
-            let mut s = fmt::float_serialize(f);
-            // php's json uses a lowercase exponent ('1.0e+20'); float_serialize
-            // emits the var_dump-style uppercase 'E'.
-            for b in s.iter_mut() {
-                if *b == b'E' {
-                    *b = b'e';
-                }
-            }
-            out.extend_from_slice(&s);
-        }
-        Value::Str(s) => return json_encode_string(s.as_bytes(), out),
-        Value::Array(a) => {
-            let is_list = a
-                .iter()
-                .enumerate()
-                .all(|(i, (k, _))| matches!(k, ArrayKey::Int(n) if *n == i as i64));
-            if is_list {
-                out.push(b'[');
-                for (i, (_, val)) in a.iter().enumerate() {
-                    if i > 0 {
-                        out.push(b',');
-                    }
-                    if !json_encode_value(val, out) {
-                        return false;
-                    }
-                }
-                out.push(b']');
-            } else {
-                out.push(b'{');
-                for (i, (k, val)) in a.iter().enumerate() {
-                    if i > 0 {
-                        out.push(b',');
-                    }
-                    match k {
-                        ArrayKey::Int(n) => {
-                            out.push(b'"');
-                            out.extend_from_slice(n.to_string().as_bytes());
-                            out.push(b'"');
-                        }
-                        ArrayKey::Str(s) => {
-                            if !json_encode_string(s.as_bytes(), out) {
-                                return false;
-                            }
-                        }
-                    }
-                    out.push(b':');
-                    if !json_encode_value(val, out) {
-                        return false;
-                    }
-                }
-                out.push(b'}');
-            }
-        }
-        // Objects need property introspection we don't have yet; closures
-        // json_encode to `null` in PHP (no public props), but we fail the call.
-        Value::Object(_) | Value::Closure(_) => return false,
-        Value::Ref(_) => unreachable!("deref'd above"),
-    }
-    true
-}
-
-/// Append a JSON string literal for `bytes`. Returns false on invalid UTF-8.
-fn json_encode_string(bytes: &[u8], out: &mut Vec<u8>) -> bool {
-    let s = match std::str::from_utf8(bytes) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    out.push(b'"');
-    for ch in s.chars() {
-        let cp = ch as u32;
-        match ch {
-            '"' => out.extend_from_slice(b"\\\""),
-            '\\' => out.extend_from_slice(b"\\\\"),
-            '/' => out.extend_from_slice(b"\\/"),
-            '\u{08}' => out.extend_from_slice(b"\\b"),
-            '\u{09}' => out.extend_from_slice(b"\\t"),
-            '\u{0a}' => out.extend_from_slice(b"\\n"),
-            '\u{0c}' => out.extend_from_slice(b"\\f"),
-            '\u{0d}' => out.extend_from_slice(b"\\r"),
-            _ if cp < 0x20 => out.extend_from_slice(format!("\\u{cp:04x}").as_bytes()),
-            _ if cp < 0x80 => out.push(cp as u8),
-            _ if cp <= 0xFFFF => out.extend_from_slice(format!("\\u{cp:04x}").as_bytes()),
-            _ => {
-                let v = cp - 0x10000;
-                let hi = 0xD800 + (v >> 10);
-                let lo = 0xDC00 + (v & 0x3FF);
-                out.extend_from_slice(format!("\\u{hi:04x}\\u{lo:04x}").as_bytes());
-            }
-        }
-    }
-    out.push(b'"');
-    true
-}
-
-// ---------------------------------------------------------------------------
 // registration
 // ---------------------------------------------------------------------------
 
@@ -270,7 +141,6 @@ pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
     reg!("ctype_xdigit", fn_ctype_xdigit, 1, Some(1));
     reg!("is_iterable", fn_is_iterable, 1, Some(1));
     reg!("is_countable", fn_is_countable, 1, Some(1));
-    reg!("json_encode", fn_json_encode, 1, Some(3));
 }
 
 // ---------------------------------------------------------------------------
@@ -285,35 +155,10 @@ mod tests {
         Value::str(b)
     }
 
-    fn je(v: &Value) -> Value {
-        let mut out = Vec::new();
-        if json_encode_value(v, &mut out) {
-            Value::str(out)
-        } else {
-            Value::Bool(false)
-        }
-    }
-
-    fn je_str(v: &Value) -> String {
-        match je(v) {
-            Value::Str(s) => String::from_utf8(s.as_bytes().to_vec()).unwrap(),
-            Value::Bool(false) => "<false>".to_string(),
-            _ => unreachable!(),
-        }
-    }
-
     fn arr(items: &[Value]) -> Value {
         let mut a = phrust_values::PhpArray::new();
         for v in items {
             a.push(v.clone());
-        }
-        Value::Array(a)
-    }
-
-    fn map(pairs: &[(&str, Value)]) -> Value {
-        let mut a = phrust_values::PhpArray::new();
-        for (k, v) in pairs {
-            a.insert(ArrayKey::from_bytes(k.as_bytes()), v.clone());
         }
         Value::Array(a)
     }
@@ -401,110 +246,5 @@ mod tests {
     struct NoopHost;
     impl Host for NoopHost {
         fn write_out(&mut self, _: &[u8]) {}
-    }
-
-    // --- json_encode -----------------------------------------------------
-
-    #[test]
-    fn json_scalars() {
-        assert_eq!(je_str(&Value::Null), "null");
-        assert_eq!(je_str(&Value::Bool(true)), "true");
-        assert_eq!(je_str(&Value::Bool(false)), "false");
-        assert_eq!(je_str(&Value::Int(42)), "42");
-        assert_eq!(je_str(&Value::Int(-7)), "-7");
-        assert_eq!(je_str(&Value::Int(i64::MAX)), "9223372036854775807");
-    }
-
-    #[test]
-    fn json_floats() {
-        assert_eq!(je_str(&Value::Float(1.0)), "1");
-        assert_eq!(je_str(&Value::Float(1.5)), "1.5");
-        assert_eq!(je_str(&Value::Float(1.0 / 3.0)), "0.3333333333333333");
-        assert_eq!(je_str(&Value::Float(0.1 + 0.2)), "0.30000000000000004");
-        assert_eq!(je_str(&Value::Float(1e20)), "1.0e+20");
-        assert_eq!(je_str(&Value::Float(1.5e-10)), "1.5e-10");
-        assert_eq!(je_str(&Value::Float(100.0)), "100");
-        assert_eq!(je_str(&Value::Float(-0.0)), "-0");
-        assert_eq!(je_str(&Value::Float(0.0)), "0");
-        assert_eq!(je_str(&Value::Float(1.0e-5)), "1.0e-5");
-        // NAN / INF -> false
-        assert_eq!(je_str(&Value::Float(f64::NAN)), "<false>");
-        assert_eq!(je_str(&Value::Float(f64::INFINITY)), "<false>");
-    }
-
-    #[test]
-    fn json_strings() {
-        assert_eq!(je_str(&s("hello")), "\"hello\"");
-        assert_eq!(je_str(&s("a/b")), "\"a\\/b\"");
-        assert_eq!(je_str(&s("a\\b")), "\"a\\\\b\"");
-        assert_eq!(je_str(&s("quote\"here")), "\"quote\\\"here\"");
-        assert_eq!(je_str(&s("tab\tnl\n")), "\"tab\\tnl\\n\"");
-        assert_eq!(je_str(&s("\x08\x0c\r")), "\"\\b\\f\\r\"");
-        assert_eq!(je_str(&s("\x1b")), "\"\\u001b\"");
-        assert_eq!(je_str(&s("\x00\x01\x1f")), "\"\\u0000\\u0001\\u001f\"");
-        assert_eq!(je_str(&s("<html>&amp;")), "\"<html>&amp;\"");
-        assert_eq!(je_str(&s("apos'")), "\"apos'\"");
-        assert_eq!(je_str(&s("\x7f")), "\"\x7f\""); // DEL is literal
-        // multibyte
-        assert_eq!(je_str(&s("café")), "\"caf\\u00e9\"");
-        assert_eq!(je_str(&s("日本")), "\"\\u65e5\\u672c\"");
-        assert_eq!(je_str(&s("emoji😀")), "\"emoji\\ud83d\\ude00\"");
-        // invalid utf8 -> false
-        assert_eq!(je_str(&Value::str(vec![0xC3, 0x28])), "<false>");
-    }
-
-    #[test]
-    fn json_arrays() {
-        assert_eq!(je_str(&arr(&[])), "[]");
-        assert_eq!(
-            je_str(&arr(&[Value::Int(1), Value::Int(2), Value::Int(3)])),
-            "[1,2,3]"
-        );
-        assert_eq!(je_str(&arr(&[s("a"), s("b")])), "[\"a\",\"b\"]");
-        // gap / non-zero-start -> object
-        let mut gap = phrust_values::PhpArray::new();
-        gap.insert(ArrayKey::Int(0), s("a"));
-        gap.insert(ArrayKey::Int(2), s("b"));
-        assert_eq!(je_str(&Value::Array(gap)), "{\"0\":\"a\",\"2\":\"b\"}");
-        let mut rev = phrust_values::PhpArray::new();
-        rev.insert(ArrayKey::Int(1), s("a"));
-        rev.insert(ArrayKey::Int(0), s("b"));
-        assert_eq!(je_str(&Value::Array(rev)), "{\"1\":\"a\",\"0\":\"b\"}");
-        // string keys
-        assert_eq!(
-            je_str(&map(&[("x", Value::Int(1)), ("y", Value::Int(2))])),
-            "{\"x\":1,\"y\":2}"
-        );
-        // "0","1" canonicalize to ints -> list
-        assert_eq!(
-            je_str(&map(&[("0", s("a")), ("1", s("b"))])),
-            "[\"a\",\"b\"]"
-        );
-    }
-
-    #[test]
-    fn json_nested() {
-        let inner = map(&[("c", Value::Int(3))]);
-        let outer = map(&[("a", arr(&[Value::Int(1), Value::Int(2)])), ("b", inner)]);
-        assert_eq!(je_str(&outer), "{\"a\":[1,2],\"b\":{\"c\":3}}");
-        assert_eq!(
-            je_str(&arr(&[
-                arr(&[Value::Int(1), Value::Int(2)]),
-                arr(&[Value::Int(3), Value::Int(4)])
-            ])),
-            "[[1,2],[3,4]]"
-        );
-        let nested = map(&[(
-            "nested",
-            map(&[
-                ("a", Value::Bool(true)),
-                ("b", Value::Null),
-                ("c", arr(&[])),
-            ]),
-        )]);
-        assert_eq!(
-            je_str(&nested),
-            "{\"nested\":{\"a\":true,\"b\":null,\"c\":[]}}"
-        );
     }
 }

@@ -548,9 +548,25 @@ fn fn_strlen(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(conv::to_string_bytes(&args[0]).len() as i64))
 }
 
-fn fn_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_count(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match deref(&args[0]) {
         Value::Array(a) => Ok(Value::Int(a.len() as i64)),
+        // A Countable object: count($obj) calls $obj->count().
+        obj @ Value::Object(_) => {
+            let callable = Value::Array({
+                let mut a = phrust_values::PhpArray::new();
+                a.push(obj.clone());
+                a.push(Value::str("count"));
+                a
+            });
+            if host.is_callable_value(&callable) {
+                let r = host.call_callable(&callable, &[])?;
+                return Ok(Value::Int(conv::to_int(&deref(&r))));
+            }
+            Err(Thrown::type_error(
+                "count(): Argument #1 ($value) must be of type Countable|array, object given",
+            ))
+        }
         other => Err(Thrown::type_error(format!(
             "count(): Argument #1 ($value) must be of type Countable|array, {} given",
             other.type_name_lower()

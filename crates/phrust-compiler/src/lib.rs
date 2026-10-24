@@ -425,6 +425,8 @@ interface BackedEnum extends UnitEnum {}
 interface Traversable {}
 interface Iterator extends Traversable {}
 interface IteratorAggregate extends Traversable {}
+interface ArrayAccess {}
+interface Countable {}
 final class Generator implements Iterator {}
 class stdClass {}
 class Exception implements Throwable {

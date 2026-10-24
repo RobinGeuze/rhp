@@ -354,6 +354,17 @@ impl Vm {
 
     /// Write `v` at the current cursor (root + steps).
     fn cursor_write(&mut self, top: usize, steps: &[CursorStep], v: Value) -> Result<(), Thrown> {
+        // `$obj[$k] = v` / `$obj[] = v` on an ArrayAccess object -> offsetSet.
+        if steps.len() == 1 {
+            if let (Some(h), Some(key)) = (self.cursor_root_obj(top), aa_key(&steps[0])) {
+                let cls = h.borrow().class;
+                if self.class_implements(cls, b"ArrayAccess") {
+                    let m = self.lookup_method(cls, b"offsetset").unwrap();
+                    self.call_sync(&m, Some(h), cls, vec![key, v])?;
+                    return Ok(());
+                }
+            }
+        }
         match &self.cursor_root {
             CursorRoot::Cv(r) => {
                 let r = *r as usize;
@@ -367,6 +378,18 @@ impl Vm {
         }
     }
 
+    /// The deref'd object at the cursor root, if any (for ArrayAccess dispatch).
+    fn cursor_root_obj(&self, top: usize) -> Option<ObjectHandle> {
+        let v = match &self.cursor_root {
+            CursorRoot::Cv(r) => self.stack[top].regs[*r as usize].clone(),
+            CursorRoot::Cell(rc) => rc.borrow().clone(),
+        };
+        match deref(&v) {
+            Value::Object(h) => Some(h),
+            _ => None,
+        }
+    }
+
     /// The `$this` of the current frame, if it is bound to an object.
     fn current_this(&self, top: usize) -> Option<ObjectHandle> {
         let cv = self.stack[top].proto.this_cv?;
@@ -377,6 +400,18 @@ impl Vm {
     }
 
     fn cursor_unset(&mut self, top: usize, steps: &[CursorStep]) {
+        // `unset($obj[$k])` on an ArrayAccess object -> offsetUnset.
+        if steps.len() == 1 {
+            if let (Some(h), Some(CursorStep::Key(k))) = (self.cursor_root_obj(top), steps.first()) {
+                let cls = h.borrow().class;
+                if self.class_implements(cls, b"ArrayAccess") {
+                    if let Some(m) = self.lookup_method(cls, b"offsetunset") {
+                        let _ = self.call_sync(&m, Some(h), cls, vec![k.clone()]);
+                    }
+                    return;
+                }
+            }
+        }
         match &self.cursor_root {
             CursorRoot::Cv(r) => unset_path(&mut self.stack[top].regs[*r as usize], steps),
             CursorRoot::Cell(rc) => {
@@ -703,6 +738,15 @@ impl Vm {
                 Instr::DimFetch { dst, arr, key } => {
                     let a = self.reg_get(top, arr);
                     let k = self.reg_get(top, key);
+                    // `$obj[$k]` on an ArrayAccess object dispatches offsetGet.
+                    if let Value::Object(h) = &a {
+                        if self.class_implements(h.borrow().class, b"ArrayAccess") {
+                            let m = self.lookup_method(h.borrow().class, b"offsetget").unwrap();
+                            let r = self.call_sync(&m, Some(h.clone()), h.borrow().class, vec![k])?;
+                            self.reg_set(top, dst, r);
+                            continue;
+                        }
+                    }
                     self.reg_set(top, dst, dim_fetch(&a, &k));
                 }
 
@@ -2253,6 +2297,16 @@ fn assign_path(slot: &mut Value, steps: &[CursorStep], value: Value) -> Result<(
         CursorStep::Prop(_) => unreachable!("handled above"),
     };
     assign_path(child, rest, value)
+}
+
+/// The key value for an ArrayAccess cursor step: `Key(k)` -> k, `Append` -> null
+/// (`$obj[] = v` calls offsetSet(null, v)); `Prop` is not array access.
+fn aa_key(step: &CursorStep) -> Option<Value> {
+    match step {
+        CursorStep::Key(k) => Some(k.clone()),
+        CursorStep::Append => Some(Value::Null),
+        CursorStep::Prop(_) => None,
+    }
 }
 
 /// Navigate the cursor path and promote the target slot (a property or array

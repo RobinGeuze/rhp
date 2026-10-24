@@ -634,6 +634,8 @@ dependencies = [
  "indexmap",
  "phrust-builtins",
  "phrust-bytecode",
+ "phrust-compiler",
+ "phrust-frontend",
  "phrust-semantics",
  "phrust-values",
  "rustc-hash",

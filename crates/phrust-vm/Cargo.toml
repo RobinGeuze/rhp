@@ -12,3 +12,7 @@ phrust-semantics = { path = "../phrust-semantics" }
 phrust-builtins = { path = "../phrust-builtins" }
 indexmap = { workspace = true }
 rustc-hash = { workspace = true }
+
+[dev-dependencies]
+phrust-compiler = { path = "../phrust-compiler" }
+phrust-frontend = { path = "../phrust-frontend" }

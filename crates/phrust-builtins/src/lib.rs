@@ -21,6 +21,10 @@ mod datetime_fns;
 mod dt_oop_fns;
 mod filter_fns;
 mod hash_fns;
+mod hash_haval;
+mod hash_snefru;
+mod hash_tiger;
+mod hashext_fns;
 mod json_fns;
 mod math_fns;
 mod mb_fns;
@@ -34,8 +38,6 @@ mod str_fns;
 mod strarr2_fns;
 mod strcmp_fns;
 mod strtotime_fns;
-#[cfg(feature = "zendshim")]
-mod zendshim_fns;
 mod webenc_fns;
 
 /// The interpreter surface a builtin may use. Implemented by the VM and the oracle.
@@ -218,12 +220,11 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         arr_fns::register(&mut m);
         misc_fns::register(&mut m);
         hash_fns::register(&mut m);
+        hashext_fns::register(&mut m);
         webenc_fns::register(&mut m);
         datetime_fns::register(&mut m);
         dt_oop_fns::register(&mut m);
         strtotime_fns::register(&mut m);
-        #[cfg(feature = "zendshim")]
-        zendshim_fns::register(&mut m);
         strarr2_fns::register(&mut m);
         sort_fns::register(&mut m);
         serialize_fns::register(&mut m);

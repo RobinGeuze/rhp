@@ -7,7 +7,6 @@ publish.workspace = true
 
 [features]
 default = []
-zendshim = ["phrust-builtins/zendshim"]
 
 [dependencies]
 phrust-values = { path = "../phrust-values" }

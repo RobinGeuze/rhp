@@ -36,7 +36,7 @@ fn bytes_of(v: &Value) -> Vec<u8> {
 }
 
 /// Lowercase hex encoding of a byte slice.
-fn to_hex(bytes: &[u8]) -> Vec<u8> {
+pub(crate) fn to_hex(bytes: &[u8]) -> Vec<u8> {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = Vec::with_capacity(bytes.len() * 2);
     for &b in bytes {
@@ -50,7 +50,7 @@ fn to_hex(bytes: &[u8]) -> Vec<u8> {
 // MD5 (RFC 1321) — implemented by hand
 // ---------------------------------------------------------------------------
 
-fn md5(msg: &[u8]) -> [u8; 16] {
+pub(crate) fn md5(msg: &[u8]) -> [u8; 16] {
     // per-round left-rotate amounts
     const S: [u32; 64] = [
         7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, //
@@ -130,7 +130,7 @@ fn md5(msg: &[u8]) -> [u8; 16] {
 // SHA-1 (FIPS 180-1) — implemented by hand
 // ---------------------------------------------------------------------------
 
-fn sha1(msg: &[u8]) -> [u8; 20] {
+pub(crate) fn sha1(msg: &[u8]) -> [u8; 20] {
     let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
 
     // padding: 0x80, zeros, 64-bit big-endian bit length.
@@ -195,7 +195,7 @@ fn sha1(msg: &[u8]) -> [u8; 20] {
 // SHA-256 (FIPS 180-4) — implemented by hand
 // ---------------------------------------------------------------------------
 
-fn sha256(msg: &[u8]) -> [u8; 32] {
+pub(crate) fn sha256(msg: &[u8]) -> [u8; 32] {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
         0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
@@ -281,7 +281,7 @@ fn sha256(msg: &[u8]) -> [u8; 32] {
 
 /// Standard CRC-32 (reflected polynomial 0xEDB88320, init/final XOR 0xFFFFFFFF).
 /// This is php's `crc32()` value and also `hash("crc32b", ...)`.
-fn crc32(data: &[u8]) -> u32 {
+pub(crate) fn crc32(data: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFF_FFFF;
     for &byte in data {
         crc ^= byte as u32;
@@ -432,27 +432,6 @@ fn fn_crc32(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(crc32(&s) as i64))
 }
 
-fn fn_hash(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let algo = bytes_of(&args[0]);
-    let data = bytes_of(&args[1]);
-    let binary = args.get(2).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
-    // algorithm name is matched case-insensitively (php lowercases it)
-    let algo_lc = algo.to_ascii_lowercase();
-    let raw: Vec<u8> = match algo_lc.as_slice() {
-        b"md5" => md5(&data).to_vec(),
-        b"sha1" => sha1(&data).to_vec(),
-        b"sha256" => sha256(&data).to_vec(),
-        b"crc32b" => crc32(&data).to_be_bytes().to_vec(),
-        _ => {
-            return Err(Thrown::error(
-                "ValueError",
-                "hash(): Argument #1 ($algo) must be a valid hashing algorithm",
-            ))
-        }
-    };
-    Ok(Value::str(if binary { raw } else { to_hex(&raw) }))
-}
-
 fn fn_base64_encode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = bytes_of(&args[0]);
     Ok(Value::str(base64_encode(&s)))
@@ -525,7 +504,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "md5", fn_md5, 1, Some(2));
     put(m, "sha1", fn_sha1, 1, Some(2));
     put(m, "crc32", fn_crc32, 1, Some(1));
-    put(m, "hash", fn_hash, 2, Some(3));
     put(m, "base64_encode", fn_base64_encode, 1, Some(1));
     put(m, "base64_decode", fn_base64_decode, 1, Some(2));
     put(m, "bin2hex", fn_bin2hex, 1, Some(1));
@@ -616,44 +594,6 @@ mod tests {
             call_int(fn_crc32, &[s("The quick brown fox jumps over the lazy dog")]),
             1095738169
         );
-    }
-
-    #[test]
-    fn hash_vectors() {
-        assert_eq!(calls(fn_hash, &[s("md5"), s("abc")]), "900150983cd24fb0d6963f7d28e17f72");
-        assert_eq!(
-            calls(fn_hash, &[s("sha1"), s("abc")]),
-            "a9993e364706816aba3e25717850c26c9cd0d89d"
-        );
-        assert_eq!(
-            calls(fn_hash, &[s("sha256"), s("")]),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
-        assert_eq!(
-            calls(fn_hash, &[s("sha256"), s("abc")]),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-        assert_eq!(
-            calls(
-                fn_hash,
-                &[s("sha256"), s("The quick brown fox jumps over the lazy dog")]
-            ),
-            "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592"
-        );
-        assert_eq!(
-            calls(
-                fn_hash,
-                &[s("sha256"), s("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")]
-            ),
-            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
-        );
-        // crc32b == crc32() value, hex encoded
-        assert_eq!(calls(fn_hash, &[s("crc32b"), s("")]), "00000000");
-        assert_eq!(calls(fn_hash, &[s("crc32b"), s("abc")]), "352441c2");
-        // case-insensitive algo name
-        assert_eq!(calls(fn_hash, &[s("MD5"), s("abc")]), "900150983cd24fb0d6963f7d28e17f72");
-        // unknown algo -> ValueError
-        assert!(fn_hash(&mut NullHost, &[s("unknownalgo"), s("abc")]).is_err());
     }
 
     #[test]

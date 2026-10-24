@@ -1,0 +1,20 @@
+[package]
+name = "phrust-difftest"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "phrust_difftest"
+path = "src/lib.rs"
+
+[[bin]]
+name = "phrust-difftest"
+path = "src/main.rs"
+
+[dependencies]
+phrust-compiler = { path = "../phrust-compiler" }
+phrust-frontend = { path = "../phrust-frontend" }
+phrust-vm = { path = "../phrust-vm" }
+phrust-values = { path = "../phrust-values" }

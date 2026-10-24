@@ -32,6 +32,7 @@ const FILTER_VALIDATE_DOMAIN: i64 = 277;
 const FILTER_VALIDATE_URL: i64 = 273;
 const FILTER_VALIDATE_EMAIL: i64 = 274;
 const FILTER_VALIDATE_IP: i64 = 275;
+const FILTER_VALIDATE_MAC: i64 = 276;
 const FILTER_DEFAULT: i64 = 516;
 const FILTER_SANITIZE_SPECIAL_CHARS: i64 = 515;
 const FILTER_SANITIZE_EMAIL: i64 = 517;
@@ -172,6 +173,7 @@ fn run_filter(value: &Value, filter: i64, opts: &Opts) -> Option<Value> {
         FILTER_VALIDATE_EMAIL => validate_email(value),
         FILTER_VALIDATE_URL => validate_url(value, opts),
         FILTER_VALIDATE_IP => validate_ip(value, opts),
+        FILTER_VALIDATE_MAC => validate_mac(value),
         FILTER_VALIDATE_DOMAIN => validate_domain(value, opts),
         FILTER_SANITIZE_NUMBER_INT => Some(Value::str(sanitize_number_int(value))),
         FILTER_SANITIZE_EMAIL => Some(Value::str(sanitize_set(value, &email_sanitize_mask()))),
@@ -180,6 +182,33 @@ fn run_filter(value: &Value, filter: i64, opts: &Opts) -> Option<Value> {
         FILTER_DEFAULT => Some(Value::str(conv::to_string_bytes(value))),
         _ => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// FILTER_VALIDATE_MAC
+// ---------------------------------------------------------------------------
+
+/// Validate a MAC address: six hex pairs separated uniformly by `:` or `-`
+/// (`AA:BB:CC:DD:EE:FF` / `AA-BB-...`), or the Cisco form of three dotted hex
+/// quads (`AABB.CCDD.EEFF`). Returns the original string on success.
+fn validate_mac(value: &Value) -> Option<Value> {
+    let bytes = conv::to_string_bytes(value);
+    let s = &bytes[..];
+    let hex = |b: u8| b.is_ascii_hexdigit();
+    let ok = if s.len() == 17 && (s[2] == b':' || s[2] == b'-') {
+        let sep = s[2];
+        s.iter().enumerate().all(|(i, &b)| {
+            if i % 3 == 2 { b == sep } else { hex(b) }
+        })
+    } else if s.len() == 14 {
+        // Cisco: xxxx.xxxx.xxxx
+        s.iter().enumerate().all(|(i, &b)| {
+            if i == 4 || i == 9 { b == b'.' } else { hex(b) }
+        })
+    } else {
+        false
+    };
+    ok.then(|| Value::str(bytes))
 }
 
 // ---------------------------------------------------------------------------

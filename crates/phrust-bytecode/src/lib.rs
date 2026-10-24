@@ -143,6 +143,11 @@ pub enum Instr {
     MakeFcc { dst: Reg, callee: Reg },
     Ret { src: Reg },
     RetNull,
+    /// `yield` / `yield $v` / `yield $k => $v` (only inside a generator). Suspends
+    /// the frame, handing `(key, value)` to the driver; `dst` receives the value
+    /// passed to `->send()` when the generator resumes. `key == Reg::MAX` means
+    /// an auto-incrementing integer key.
+    Yield { dst: Reg, key: Reg, value: Reg },
 
     /// `match` with no matching arm and no default: throw `\UnhandledMatchError`.
     ThrowMatchError { subject: Reg },
@@ -289,6 +294,10 @@ pub struct FunctionProto {
     /// Number of captured variables for a closure proto. Captures occupy CVs
     /// `[0, num_captures)`, params follow at `[num_captures, num_captures+num_params)`.
     pub num_captures: u16,
+    /// True if the body contains `yield`: calling it builds a `Generator` object
+    /// (the body runs lazily, driven by the generator protocol) instead of
+    /// running immediately.
+    pub is_generator: bool,
 }
 
 impl FunctionProto {
@@ -310,6 +319,7 @@ impl FunctionProto {
             this_cv: None,
             is_static: false,
             num_captures: 0,
+            is_generator: false,
         }
     }
 }

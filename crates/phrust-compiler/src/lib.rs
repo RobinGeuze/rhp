@@ -387,6 +387,10 @@ interface Throwable {}
 interface Stringable {}
 interface UnitEnum {}
 interface BackedEnum extends UnitEnum {}
+interface Traversable {}
+interface Iterator extends Traversable {}
+interface IteratorAggregate extends Traversable {}
+final class Generator implements Iterator {}
 class Exception implements Throwable {
     protected $message = "";
     protected $code = 0;
@@ -569,6 +573,7 @@ fn compile_method(
     proto.params = params;
     proto.this_cv = if is_static { None } else { Some(0) };
     proto.is_static = is_static;
+    proto.is_generator = body_stmts.iter().any(stmt_has_yield);
 
     let mp = MethodProto { name, proto: Rc::new(proto), visibility, is_static, is_abstract, is_final };
     Ok((mp, promoted))
@@ -620,6 +625,7 @@ fn compile_function(
     let mut proto = c.finish();
     proto.num_params = num_params;
     proto.params = params;
+    proto.is_generator = block_has_yield(&func.body.statements);
     Ok(proto)
 }
 
@@ -1739,6 +1745,7 @@ impl ProtoBuilder {
             Expression::ArrowFunction(af) => self.compile_arrow(af),
             Expression::Closure(cl) => self.compile_closure(cl),
             Expression::PartialApplication(pa) => self.compile_fcc(pa),
+            Expression::Yield(y) => self.compile_yield(y),
             other => Err(Thrown::unsupported(
                 format!("{} expression", expr_kind(other)),
                 "not implemented in the phase-1 compiler",
@@ -2360,6 +2367,36 @@ impl ProtoBuilder {
         Ok(dst)
     }
 
+    /// `yield` / `yield $v` / `yield $k => $v`. The result register receives the
+    /// value sent in via `Generator::send()` when execution resumes.
+    fn compile_yield(&mut self, y: &phrust_frontend::cst::Yield) -> Result<Reg, Thrown> {
+        use phrust_frontend::cst::Yield;
+        let (key, value) = match y {
+            Yield::Value(v) => {
+                let value = match v.value {
+                    Some(e) => self.compile_expr(e)?,
+                    None => {
+                        let t = self.alloc_temp();
+                        self.emit(Instr::LoadNull { dst: t });
+                        t
+                    }
+                };
+                (Reg::MAX, value)
+            }
+            Yield::Pair(p) => {
+                let key = self.compile_expr(p.key)?;
+                let value = self.compile_expr(p.value)?;
+                (key, value)
+            }
+            Yield::From(_) => {
+                return Err(Thrown::unsupported("yield from", "generator delegation is deferred"))
+            }
+        };
+        let dst = self.alloc_temp();
+        self.emit(Instr::Yield { dst, key, value });
+        Ok(dst)
+    }
+
     /// First-class callable syntax: `f(...)`, `$o->m(...)`, `C::m(...)`. Builds
     /// the underlying callable value, then wraps it as a `Closure` via `MakeFcc`.
     fn compile_fcc(
@@ -2562,6 +2599,9 @@ impl ProtoBuilder {
         proto.params = params;
         proto.num_captures = nc;
         proto.is_static = is_static;
+        if let ClosureBody::Block(b) = body {
+            proto.is_generator = block_has_yield(&b.statements);
+        }
 
         let fnidx = CLOSURES.with(|cls| {
             let mut v = cls.borrow_mut();
@@ -2998,6 +3038,98 @@ fn builtin_by_ref(name_lc: &[u8]) -> Option<Vec<bool>> {
     let name = std::str::from_utf8(name_lc).ok()?;
     let flags = phrust_bytecode::builtin_ref_params(name);
     (!flags.is_empty()).then(|| flags.to_vec())
+}
+
+/// Does a function body contain a top-level `yield` (making it a generator)?
+/// Does not descend into nested function-likes (their yields are their own).
+fn block_has_yield(stmts: &phrust_frontend::cst::Sequence<Statement>) -> bool {
+    stmts.iter().any(stmt_has_yield)
+}
+
+fn stmt_has_yield(s: &Statement) -> bool {
+    use phrust_frontend::cst::{ForBody, IfBody, SwitchBody, SwitchCase, WhileBody};
+    match s {
+        Statement::Expression(e) => expr_has_yield(e.expression),
+        Statement::Echo(e) => e.values.iter().any(|v| expr_has_yield(v)),
+        Statement::Return(r) => r.value.map(expr_has_yield).unwrap_or(false),
+        Statement::Block(b) => block_has_yield(&b.statements),
+        Statement::If(i) => {
+            expr_has_yield(i.condition)
+                || match &i.body {
+                    IfBody::Statement(b) => {
+                        stmt_has_yield(b.statement)
+                            || b.else_if_clauses.iter().any(|c| expr_has_yield(c.condition) || stmt_has_yield(c.statement))
+                            || b.else_clause.as_ref().map(|e| stmt_has_yield(e.statement)).unwrap_or(false)
+                    }
+                    IfBody::ColonDelimited(b) => {
+                        b.statements.iter().any(stmt_has_yield)
+                            || b.else_if_clauses.iter().any(|c| expr_has_yield(c.condition) || c.statements.iter().any(stmt_has_yield))
+                            || b.else_clause.as_ref().map(|e| e.statements.iter().any(stmt_has_yield)).unwrap_or(false)
+                    }
+                }
+        }
+        Statement::While(w) => {
+            expr_has_yield(w.condition)
+                || match &w.body {
+                    WhileBody::Statement(s) => stmt_has_yield(s),
+                    WhileBody::ColonDelimited(b) => b.statements.iter().any(stmt_has_yield),
+                }
+        }
+        Statement::DoWhile(d) => stmt_has_yield(d.statement) || expr_has_yield(d.condition),
+        Statement::For(f) => {
+            f.initializations.iter().any(|e| expr_has_yield(e))
+                || f.conditions.iter().any(|e| expr_has_yield(e))
+                || f.increments.iter().any(|e| expr_has_yield(e))
+                || match &f.body {
+                    ForBody::Statement(s) => stmt_has_yield(s),
+                    ForBody::ColonDelimited(b) => b.statements.iter().any(stmt_has_yield),
+                }
+        }
+        Statement::Foreach(fe) => {
+            expr_has_yield(fe.expression)
+                || match &fe.body {
+                    ForeachBody::Statement(s) => stmt_has_yield(s),
+                    ForeachBody::ColonDelimited(b) => b.statements.iter().any(stmt_has_yield),
+                }
+        }
+        Statement::Switch(sw) => {
+            expr_has_yield(sw.expression)
+                || {
+                    let cases = match &sw.body {
+                        SwitchBody::BraceDelimited(b) => &b.cases,
+                        SwitchBody::ColonDelimited(b) => &b.cases,
+                    };
+                    cases.iter().any(|c| match c {
+                        SwitchCase::Expression(e) => expr_has_yield(e.expression) || e.statements.iter().any(stmt_has_yield),
+                        SwitchCase::Default(d) => d.statements.iter().any(stmt_has_yield),
+                    })
+                }
+        }
+        Statement::Try(t) => {
+            t.block.statements.iter().any(stmt_has_yield)
+                || t.catch_clauses.iter().any(|c| c.block.statements.iter().any(stmt_has_yield))
+                || t.finally_clause.as_ref().map(|f| f.block.statements.iter().any(stmt_has_yield)).unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+fn expr_has_yield(e: &Expression) -> bool {
+    match e {
+        Expression::Yield(_) => true,
+        Expression::Parenthesized(p) => expr_has_yield(p.expression),
+        Expression::Assignment(a) => expr_has_yield(a.lhs) || expr_has_yield(a.rhs),
+        Expression::Binary(b) => expr_has_yield(b.lhs) || expr_has_yield(b.rhs),
+        Expression::UnaryPrefix(u) => expr_has_yield(u.operand),
+        Expression::UnaryPostfix(u) => expr_has_yield(u.operand),
+        Expression::Conditional(c) => {
+            expr_has_yield(c.condition)
+                || c.then.map(expr_has_yield).unwrap_or(false)
+                || expr_has_yield(c.r#else)
+        }
+        // `yield` inside a nested closure/arrow/function belongs to that one.
+        _ => false,
+    }
 }
 
 fn has_named(list: &phrust_frontend::cst::ArgumentList) -> bool {

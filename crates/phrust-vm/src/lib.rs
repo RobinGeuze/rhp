@@ -52,6 +52,35 @@ pub struct Vm {
     globals: HashMap<Vec<u8>, Rc<RefCell<Value>>>,
     // `static $x`: persistent cells keyed by (function proto pointer, var name).
     statics: HashMap<(usize, Vec<u8>), Rc<RefCell<Value>>>,
+    // Generator runtime state, keyed by the Generator object's id.
+    generators: HashMap<u32, GenState>,
+    // Set by the `Yield` opcode to hand (key, value, resume-dst) to the driver.
+    yield_out: Option<(Value, Value, Reg)>,
+    // Stack of generator ids currently being advanced (innermost last).
+    gen_stack: Vec<u32>,
+}
+
+/// Status of a generator.
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum GenStatus {
+    NotStarted,
+    Suspended,
+    Running,
+    Finished,
+}
+
+/// A generator's suspended execution state.
+struct GenState {
+    /// The suspended frame (taken out while running). `None` while running/finished.
+    frame: Option<Frame>,
+    status: GenStatus,
+    current_key: Value,
+    current_val: Value,
+    return_val: Value,
+    /// Next auto-increment integer key for keyless `yield`.
+    auto_key: i64,
+    /// Register in the frame that receives the `send()` value on resume.
+    resume_dst: Reg,
 }
 
 mod classes;
@@ -207,6 +236,9 @@ impl Vm {
             main_cv_names: HashMap::new(),
             globals: HashMap::new(),
             statics: HashMap::new(),
+            generators: HashMap::new(),
+            yield_out: None,
+            gen_stack: Vec::new(),
         }
     }
 
@@ -672,11 +704,36 @@ impl Vm {
                             self.reg_set(top, arr_reg, Value::Array(a));
                             self.reg_set(top, pos_reg, Value::Int(0));
                         }
-                        // empty array or non-array: skip the loop
+                        // A Generator (or other object) is driven by the iterator
+                        // protocol in FeFetch; just start it and stash the object.
+                        Value::Object(h) if self.generators.contains_key(&h.borrow().id) => {
+                            let id = h.borrow().id;
+                            self.gen_ensure_started(id)?;
+                            self.reg_set(top, arr_reg, Value::Object(h));
+                            self.reg_set(top, pos_reg, Value::Int(0));
+                        }
+                        // empty array or non-iterable: skip the loop
                         _ => self.stack[top].pc = end as usize,
                     }
                 }
                 Instr::FeFetch { arr_reg, pos_reg, key_cv, val_cv, end } => {
+                    // Generator mode: bind current (key,value), then advance.
+                    if let Value::Object(h) = self.reg_get(top, arr_reg) {
+                        let id = h.borrow().id;
+                        if let Some(g) = self.generators.get(&id) {
+                            if g.status == GenStatus::Finished {
+                                self.stack[top].pc = end as usize;
+                            } else {
+                                let (k, v) = (g.current_key.clone(), g.current_val.clone());
+                                self.cv_assign(top, val_cv, v);
+                                if key_cv != Reg::MAX {
+                                    self.cv_assign(top, key_cv, k);
+                                }
+                                self.advance_gen(id, Value::Null)?;
+                            }
+                            continue;
+                        }
+                    }
                     let pos = match self.reg_get(top, pos_reg) {
                         Value::Int(n) => n as usize,
                         _ => 0,
@@ -973,6 +1030,16 @@ impl Vm {
                     };
                     let cls = h.borrow().class;
                     let mname = proto.names[name as usize].as_bytes().to_vec();
+                    // Built-in Generator methods (current/next/send/valid/…).
+                    let gid = h.borrow().id;
+                    if self.generators.contains_key(&gid) {
+                        let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+                        if let Some(r) = self.generator_method(gid, &mname.to_ascii_lowercase(), &args) {
+                            let r = r?;
+                            self.reg_set(top, dst, r);
+                            continue;
+                        }
+                    }
                     let found = self.lookup_method(cls, &mname);
                     let accessible = found.as_ref().is_some_and(|m| {
                         self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility)
@@ -1247,6 +1314,29 @@ impl Vm {
                         return Ok(done);
                     }
                 }
+                Instr::Yield { dst, key, value } => {
+                    // Suspend: hand (key, value, resume-dst) to the generator
+                    // driver, leaving this frame on the stack for it to reclaim.
+                    let val = self.reg_get(top, value);
+                    let id = *self.gen_stack.last().expect("yield outside a generator");
+                    let key_val = if key == Reg::MAX {
+                        let g = self.generators.get_mut(&id).unwrap();
+                        let k = Value::Int(g.auto_key);
+                        g.auto_key += 1;
+                        k
+                    } else {
+                        let kv = self.reg_get(top, key);
+                        if let Value::Int(n) = &kv {
+                            let g = self.generators.get_mut(&id).unwrap();
+                            if *n >= g.auto_key {
+                                g.auto_key = n + 1;
+                            }
+                        }
+                        kv
+                    };
+                    self.yield_out = Some((key_val, val, dst));
+                    return Ok(Value::Null);
+                }
             }
         }
     }
@@ -1324,6 +1414,9 @@ impl Vm {
         }
         frame.defining_class = defining_class;
         frame.called_class = called_class;
+        if proto.is_generator {
+            return Ok(self.make_generator(frame));
+        }
         frame.capture = true;
         let base = self.stack.len();
         self.stack.push(frame);
@@ -1361,6 +1454,9 @@ impl Vm {
         }
         frame.defining_class = cd.bound_class;
         frame.called_class = cd.bound_static;
+        if proto.is_generator {
+            return Ok(self.make_generator(frame));
+        }
         frame.capture = true;
         let base = self.stack.len();
         self.stack.push(frame);
@@ -1378,6 +1474,147 @@ impl Vm {
                 }
             }
         }
+    }
+
+    /// Wrap a prepared (but not pushed) frame as a `Generator` object; the body
+    /// runs lazily under the generator protocol.
+    fn make_generator(&mut self, mut frame: Frame) -> Value {
+        frame.ret_dst = Reg::MAX;
+        let cls = self.resolve_class_by_name(b"Generator").expect("Generator prelude class");
+        let id = self.next_object_id;
+        self.next_object_id += 1;
+        let obj = Rc::new(RefCell::new(ObjectData {
+            class: cls,
+            id,
+            properties: indexmap::IndexMap::with_hasher(rustc_hash::FxBuildHasher),
+        }));
+        self.generators.insert(
+            id,
+            GenState {
+                frame: Some(frame),
+                status: GenStatus::NotStarted,
+                current_key: Value::Null,
+                current_val: Value::Null,
+                return_val: Value::Null,
+                auto_key: 0,
+                resume_dst: 0,
+            },
+        );
+        Value::Object(obj)
+    }
+
+    /// Advance generator `id` to its next `yield` (or completion), injecting
+    /// `send` as the result of the yield expression it was suspended on.
+    fn advance_gen(&mut self, id: u32, send: Value) -> Result<(), Thrown> {
+        if self.stack.len() >= self.max_depth {
+            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
+        }
+        let (mut frame, status, resume_dst) = {
+            let g = self.generators.get_mut(&id).unwrap();
+            if g.status == GenStatus::Finished {
+                return Ok(());
+            }
+            (g.frame.take().expect("suspended generator frame"), g.status, g.resume_dst)
+        };
+        if status == GenStatus::Suspended {
+            frame.regs[resume_dst as usize] = send;
+        }
+        frame.capture = true;
+        self.generators.get_mut(&id).unwrap().status = GenStatus::Running;
+        let base = self.stack.len();
+        self.stack.push(frame);
+        self.gen_stack.push(id);
+        let saved_yield = self.yield_out.take();
+        let result = loop {
+            match self.run_frames() {
+                Ok(v) => {
+                    if let Some((k, val, dst)) = self.yield_out.take() {
+                        let frame = self.stack.pop().unwrap();
+                        let g = self.generators.get_mut(&id).unwrap();
+                        g.frame = Some(frame);
+                        g.resume_dst = dst;
+                        g.current_key = k;
+                        g.current_val = val;
+                        g.status = GenStatus::Suspended;
+                        break Ok(());
+                    } else {
+                        let g = self.generators.get_mut(&id).unwrap();
+                        g.return_val = v;
+                        g.current_key = Value::Null;
+                        g.current_val = Value::Null;
+                        g.status = GenStatus::Finished;
+                        break Ok(());
+                    }
+                }
+                Err(thrown) => {
+                    if !thrown.is_catchable() {
+                        break Err(thrown);
+                    }
+                    match self.unwind(thrown, base)? {
+                        UnwindResult::Caught => {}
+                        UnwindResult::Escaped(t) => {
+                            self.generators.get_mut(&id).unwrap().status = GenStatus::Finished;
+                            break Err(t);
+                        }
+                    }
+                }
+            }
+        };
+        self.gen_stack.pop();
+        self.yield_out = saved_yield;
+        result
+    }
+
+    /// Ensure a generator has started (run to its first yield).
+    fn gen_ensure_started(&mut self, id: u32) -> Result<(), Thrown> {
+        if self.generators.get(&id).map(|g| g.status) == Some(GenStatus::NotStarted) {
+            self.advance_gen(id, Value::Null)?;
+        }
+        Ok(())
+    }
+
+    /// Dispatch a built-in `Generator` method. Returns `None` if `name` is not a
+    /// generator method (so the caller falls through to normal dispatch).
+    fn generator_method(
+        &mut self,
+        id: u32,
+        name_lc: &[u8],
+        args: &[Value],
+    ) -> Option<Result<Value, Thrown>> {
+        Some(match name_lc {
+            b"current" => (|| {
+                self.gen_ensure_started(id)?;
+                Ok(self.generators[&id].current_val.clone())
+            })(),
+            b"key" => (|| {
+                self.gen_ensure_started(id)?;
+                Ok(self.generators[&id].current_key.clone())
+            })(),
+            b"valid" => (|| {
+                self.gen_ensure_started(id)?;
+                Ok(Value::Bool(self.generators[&id].status != GenStatus::Finished))
+            })(),
+            b"next" => (|| {
+                self.gen_ensure_started(id)?;
+                self.advance_gen(id, Value::Null)?;
+                Ok(Value::Null)
+            })(),
+            b"send" => (|| {
+                let v = args.first().cloned().unwrap_or(Value::Null);
+                // Sending to a not-yet-started generator first runs to the first yield.
+                if self.generators[&id].status == GenStatus::NotStarted {
+                    self.advance_gen(id, Value::Null)?;
+                }
+                self.advance_gen(id, v)?;
+                Ok(self.generators[&id].current_val.clone())
+            })(),
+            b"rewind" => (|| {
+                self.gen_ensure_started(id)?;
+                Ok(Value::Null)
+            })(),
+            b"getreturn" => Ok(self.generators[&id].return_val.clone()),
+            _ => return None,
+        })
     }
 
     /// Built-in enum static methods: `cases()`, `from()`, `tryFrom()`.
@@ -1611,6 +1848,14 @@ impl Vm {
         }
         let mut frame = Frame::new(callee.clone(), dst);
         bind_params(&callee, &args, &mut frame.regs)?;
+        if callee.is_generator {
+            let gen = self.make_generator(frame);
+            let caller = self.stack.len() - 1;
+            if dst != Reg::MAX {
+                self.reg_set(caller, dst, gen);
+            }
+            return Ok(());
+        }
         self.stack.push(frame);
         Ok(())
     }

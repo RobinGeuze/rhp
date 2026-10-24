@@ -451,6 +451,14 @@ impl Vm {
         }
         frame.defining_class = Some(method.defining_class);
         frame.called_class = Some(called_class);
+        if callee.is_generator {
+            let gen = self.make_generator(frame);
+            let caller = self.stack.len() - 1;
+            if dst != Reg::MAX {
+                self.reg_set(caller, dst, gen);
+            }
+            return Ok(());
+        }
         self.stack.push(frame);
         Ok(())
     }

@@ -1,0 +1,13 @@
+12345
+a=1 b=2 
+12bool(true)
+bool(false)
+
+12 ret=99
+10
+0,1,1,2,3,5,8,13,21,34
+bool(true)
+bool(true)
+bool(true)
+got:a got:b 
+2->4 3->9 4->16 

@@ -149,6 +149,25 @@ impl Host for Vm {
         }
     }
 
+    fn make_object(&mut self, props: Vec<(Vec<u8>, Value)>) -> Value {
+        let Ok(cls) = self.resolve_class_by_name(b"stdClass") else {
+            // No stdClass (shouldn't happen) — fall back to an array.
+            let mut a = PhpArray::new();
+            for (k, v) in props {
+                a.insert(ArrayKey::from_bytes(&k), v);
+            }
+            return Value::Array(a);
+        };
+        let obj = self.new_object(cls);
+        {
+            let mut b = obj.borrow_mut();
+            for (k, v) in props {
+                b.properties.insert(phrust_values::PhpStr::from_bytes(k), v);
+            }
+        }
+        Value::Object(obj)
+    }
+
     fn is_callable_value(&self, callable: &Value) -> bool {
         let c = match callable {
             Value::Ref(r) => r.borrow().clone(),

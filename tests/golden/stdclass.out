@@ -11,3 +11,6 @@ Array
     [b] => 2
 )
 2
+{"items":[1,2,3],"meta":{"count":3}}
+stdClass Al 1
+{"a":1,"b":[2,3]}

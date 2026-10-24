@@ -5,10 +5,9 @@
 //! (see the `#[cfg(test)]` block — expected values are hardcoded from `php -r`).
 //!
 //! ## Scope / known gaps
-//! - `json_decode` decodes JSON objects to **associative arrays** regardless of
-//!   the `$associative` argument, because this worktree has no `stdClass` yet
-//!   (the parent adds it separately). When stdClass lands, the `$associative ==
-//!   false` path should build a stdClass instead. This is the only intentional
+//! - `json_decode` decodes JSON objects to a `stdClass` (default / `$associative
+//!   == false`) via `Host::make_object`, or to an associative array when
+//!   `$associative` is true (or `JSON_OBJECT_AS_ARRAY`). The intentional
 //!   divergence from php; everything else (numbers, unicode escapes incl.
 //!   surrogate pairs, depth limit, duplicate keys = last wins, trailing data =
 //!   error, `json_last_error`) matches php.
@@ -151,9 +150,17 @@ fn encode_value(v: &Value, out: &mut Vec<u8>, flags: i64, level: usize) -> bool 
             return encode_string(s.as_bytes(), out, flags);
         }
         Value::Array(a) => return encode_array(a, out, flags, level, pretty),
-        Value::Object(_) | Value::Closure(_) => {
-            set_last_error(JSON_ERROR_UNSUPPORTED_TYPE);
-            return false;
+        // An object serializes as a JSON object of its properties (always `{}`,
+        // never `[]`). Private/protected visibility is not filtered here; the
+        // common targets are stdClass / public-property DTOs.
+        Value::Object(h) => {
+            let props: Vec<(phrust_values::PhpStr, Value)> =
+                h.borrow().properties.iter().map(|(k, v)| (k.clone(), deref(v))).collect();
+            return encode_object(&props, out, flags, level, pretty);
+        }
+        Value::Closure(_) => {
+            // A Closure encodes as an empty object in php.
+            return encode_object(&[], out, flags, level, pretty);
         }
         Value::Ref(r) => return encode_value(&r.borrow(), out, flags, level),
     }
@@ -170,6 +177,43 @@ fn encode_float(f: f64, out: &mut Vec<u8>) {
         }
     }
     out.extend_from_slice(&s);
+}
+
+/// Encode an object's properties as a JSON object (`{"k":v,...}`, always braces).
+fn encode_object(
+    props: &[(phrust_values::PhpStr, Value)],
+    out: &mut Vec<u8>,
+    flags: i64,
+    level: usize,
+    pretty: bool,
+) -> bool {
+    out.push(b'{');
+    if props.is_empty() {
+        out.push(b'}');
+        return true;
+    }
+    for (i, (k, val)) in props.iter().enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        if pretty {
+            out.push(b'\n');
+            indent(out, level + 1);
+        }
+        if !encode_string(k.as_bytes(), out, flags) {
+            return false;
+        }
+        out.extend_from_slice(if pretty { b": " } else { b":" });
+        if !encode_value(val, out, flags, level + 1) {
+            return false;
+        }
+    }
+    if pretty {
+        out.push(b'\n');
+        indent(out, level);
+    }
+    out.push(b'}');
+    true
 }
 
 fn encode_array(
@@ -271,7 +315,7 @@ fn encode_string(bytes: &[u8], out: &mut Vec<u8>, flags: i64) -> bool {
 // json_decode
 // ---------------------------------------------------------------------------
 
-fn fn_json_decode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_json_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let json = conv::to_string_bytes(&deref(&args[0]));
     // $associative: null (default) -> objects as stdClass (we fall back to array);
     // true -> array; false -> stdClass (-> array fallback). JSON_OBJECT_AS_ARRAY
@@ -297,6 +341,7 @@ fn fn_json_decode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         max_depth,
         assoc,
         bigint_as_string,
+        host,
     };
     p.skip_ws();
     let result = p.parse_value(1);
@@ -326,15 +371,16 @@ fn throw_or_null(flags: i64, code: i64) -> Result<Value, Thrown> {
     }
 }
 
-struct Parser<'a> {
+struct Parser<'a, 'h> {
     s: &'a [u8],
     i: usize,
     max_depth: i64,
     assoc: bool,
     bigint_as_string: bool,
+    host: &'h mut dyn Host,
 }
 
-impl Parser<'_> {
+impl Parser<'_, '_> {
     fn skip_ws(&mut self) {
         while self.i < self.s.len() && matches!(self.s[self.i], b' ' | b'\t' | b'\n' | b'\r') {
             self.i += 1;
@@ -376,38 +422,50 @@ impl Parser<'_> {
 
     fn parse_object(&mut self, depth: i64) -> Result<Value, i64> {
         self.i += 1; // consume '{'
-        let mut arr = PhpArray::new();
+        let mut pairs: Vec<(Vec<u8>, Value)> = Vec::new();
         self.skip_ws();
-        if self.peek() == Some(b'}') {
-            self.i += 1;
-            return Ok(Value::Array(arr));
-        }
-        loop {
-            self.skip_ws();
-            if self.peek() != Some(b'"') {
-                return Err(JSON_ERROR_SYNTAX);
-            }
-            let key = self.parse_string()?;
-            self.skip_ws();
-            if self.peek() != Some(b':') {
-                return Err(JSON_ERROR_SYNTAX);
-            }
-            self.i += 1;
-            let val = self.parse_value(depth + 1)?;
-            // Duplicate keys: last wins (insert overwrites in place).
-            arr.insert(ArrayKey::from_bytes(&key), val);
-            self.skip_ws();
-            match self.peek() {
-                Some(b',') => self.i += 1,
-                Some(b'}') => {
-                    self.i += 1;
-                    break;
+        if self.peek() != Some(b'}') {
+            loop {
+                self.skip_ws();
+                if self.peek() != Some(b'"') {
+                    return Err(JSON_ERROR_SYNTAX);
                 }
-                _ => return Err(JSON_ERROR_SYNTAX),
+                let key = self.parse_string()?;
+                self.skip_ws();
+                if self.peek() != Some(b':') {
+                    return Err(JSON_ERROR_SYNTAX);
+                }
+                self.i += 1;
+                let val = self.parse_value(depth + 1)?;
+                // Duplicate keys: last wins (overwrite in place, keep position).
+                if let Some(slot) = pairs.iter_mut().find(|(k, _)| *k == key) {
+                    slot.1 = val;
+                } else {
+                    pairs.push((key, val));
+                }
+                self.skip_ws();
+                match self.peek() {
+                    Some(b',') => self.i += 1,
+                    Some(b'}') => {
+                        self.i += 1;
+                        break;
+                    }
+                    _ => return Err(JSON_ERROR_SYNTAX),
+                }
             }
+        } else {
+            self.i += 1;
         }
-        let _ = self.assoc; // objects decode to arrays either way (no stdClass yet)
-        Ok(Value::Array(arr))
+        if self.assoc {
+            let mut arr = PhpArray::new();
+            for (k, v) in pairs {
+                arr.insert(ArrayKey::from_bytes(&k), v);
+            }
+            Ok(Value::Array(arr))
+        } else {
+            // Decode to an object (stdClass via the host; array fallback otherwise).
+            Ok(self.host.make_object(pairs))
+        }
     }
 
     fn parse_array(&mut self, depth: i64) -> Result<Value, i64> {

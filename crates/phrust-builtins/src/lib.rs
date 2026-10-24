@@ -99,6 +99,17 @@ pub trait Host {
     fn class_has_property(&self, _class_id: u32, _prop: &[u8]) -> bool {
         false
     }
+
+    /// Build a `stdClass` object from named properties (for `json_decode` without
+    /// `$associative`, `(object)` cast helpers, etc.). The default fallback — for
+    /// hosts without an object model — returns an associative array instead.
+    fn make_object(&mut self, props: Vec<(Vec<u8>, Value)>) -> Value {
+        let mut a = phrust_values::PhpArray::new();
+        for (k, v) in props {
+            a.insert(phrust_values::ArrayKey::from_bytes(&k), v);
+        }
+        Value::Array(a)
+    }
 }
 
 /// A native builtin function over owned values.

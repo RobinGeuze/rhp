@@ -1,9 +1,9 @@
-# phrust bytecode ISA — the register VM core
+# rhp bytecode ISA — the register VM core
 
 Status: design, execution core (register bytecode compiler + VM). Target
 semantics: PHP 8.5 (ground truth: local `php` 8.5.8). This document fixes the
 **instruction set, chunk format, register model, and lowering patterns** for the
-primary execution engine. The tiny tree-walker in `phrust-runtime/src/lib.rs`
+primary execution engine. The tiny tree-walker in `rhp-runtime/src/lib.rs`
 survives only as a differential oracle; this ISA is what actually runs.
 
 Read first (this doc assumes them and reuses them verbatim):
@@ -11,9 +11,9 @@ Read first (this doc assumes them and reuses them verbatim):
 - [`value-model.md`](./value-model.md) — the owned `Value` enum, `PhpStr`/`PhpArray`/`PhpRef`, COW vs aliasing, `ArrayKey` normalization.
 - [`php-semantics.md`](./php-semantics.md) — byte-exact output/number/compare/cast rules; the precision-14 vs serialize_precision-−1 split.
 - [`ast-surface.md`](./ast-surface.md) — every `Statement`/`Expression`/operator node the compiler lowers from.
-- `crates/phrust-runtime/src/ops.rs` — PHP operator semantics over `Value`. **The VM calls these; it never reimplements operators.**
-- `crates/phrust-values/src/{lib.rs,conv.rs,fmt.rs}` — `Value`, `conv::*`, `fmt::*`.
-- `crates/phrust-builtins/src/lib.rs` — `Thrown`, `Host`, `NativeFn`, `registry()`, `is_refused()`.
+- `crates/rhp-runtime/src/ops.rs` — PHP operator semantics over `Value`. **The VM calls these; it never reimplements operators.**
+- `crates/rhp-values/src/{lib.rs,conv.rs,fmt.rs}` — `Value`, `conv::*`, `fmt::*`.
+- `crates/rhp-builtins/src/lib.rs` — `Thrown`, `Host`, `NativeFn`, `registry()`, `is_refused()`.
 
 ## 0. Design goals, in priority order
 
@@ -46,7 +46,7 @@ integer id, so a proto is self-contained, `'static`, and cheap to clone/share
 
 ```rust
 use std::rc::Rc;
-use phrust_values::{PhpStr, Value};
+use rhp_values::{PhpStr, Value};
 
 /// A compiled PHP function / method / closure / the script body.
 pub struct FunctionProto {
@@ -675,12 +675,12 @@ until the deferred cycle collector (unchanged from value-model §0).
 
 ### 8.1 What is catchable
 
-`Thrown` (phrust-builtins) has three arms. Only **`Thrown::Error { class, message }`**
+`Thrown` (rhp-builtins) has three arms. Only **`Thrown::Error { class, message }`**
 is a PHP `Throwable` and is catchable / runs `finally`. **`Thrown::Exit(code)`**
 (exit/die) and **`Thrown::Unsupported { feature, reason }`** (refused features)
 are *uncatchable*: they bypass the handler search and `finally`, unwinding
 straight to the SAPI (Exit → process exit code; Unsupported → the
-`PHRUST_UNSUPPORTED` fatal). The unwinder checks the arm before searching the
+`RHP_UNSUPPORTED` fatal). The unwinder checks the arm before searching the
 table. (When phase-7 objects land, `Thrown::Error` carries the actual exception
 object; catch type tests run against it. Until then they match on `class`.)
 
@@ -777,7 +777,7 @@ variant), keeping `Value` unchanged and the whole thing JIT-lowerable.
 ## 11. Refused at compile time — no opcode exists
 
 These are rejected **in the compiler**, at the AST node, with
-`Thrown::Unsupported` (rendered with the `PHRUST_UNSUPPORTED` marker). There is
+`Thrown::Unsupported` (rendered with the `RHP_UNSUPPORTED` marker). There is
 deliberately **no bytecode** that can express them, so nothing downstream (VM,
 future JIT) can ever execute them:
 

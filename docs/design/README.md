@@ -1,6 +1,6 @@
-# phrust — implementation spec (scaffold contract)
+# rhp — implementation spec (scaffold contract)
 
-phrust is a PHP execution engine in Rust: a tree-walking interpreter over the
+rhp is a PHP execution engine in Rust: a tree-walking interpreter over the
 mago-syntax CST with a CLI SAPI, targeting **PHP 8.5 semantics** (ground truth:
 local `php` 8.5.8). This document is the single authoritative build contract. It
 synthesizes the four design docs in this directory — read them for the "why":
@@ -23,33 +23,33 @@ Cargo workspace, `resolver = "2"`, five library/binary crates under `crates/*`.
 Strict one-directional dependency graph (no cycles):
 
 ```
-          phrust-cli  (bin: the SAPI / entry point, test runner)
+          rhp-cli  (bin: the SAPI / entry point, test runner)
               |
               v
-        phrust-runtime  (tree-walking interpreter, scopes, Flow)
+        rhp-runtime  (tree-walking interpreter, scopes, Flow)
           /        \
          v          v
- phrust-builtins   phrust-frontend   (mago wrapper, owns arenas)
+ rhp-builtins   rhp-frontend   (mago wrapper, owns arenas)
          |
          v
-   phrust-values   (Value / PhpStr / PhpArray / PhpRef — zero PHP-logic deps)
+   rhp-values   (Value / PhpStr / PhpArray / PhpRef — zero PHP-logic deps)
 ```
 
 Edges (each crate depends only on what is below/beside it):
 
 | crate | depends on |
 |---|---|
-| `phrust-values` | `bstr`, `indexmap`, `rustc-hash` (`ordered-float` reserved, unused) |
-| `phrust-frontend` | `mago-syntax`, `mago-allocator`, `mago-database`, `mago-span` |
-| `phrust-builtins` | `phrust-values` |
-| `phrust-runtime` | `phrust-values`, `phrust-frontend`, `phrust-builtins` |
-| `phrust-cli` | `phrust-runtime` (+ `phrust-frontend`, `phrust-values` re-exports) |
+| `rhp-values` | `bstr`, `indexmap`, `rustc-hash` (`ordered-float` reserved, unused) |
+| `rhp-frontend` | `mago-syntax`, `mago-allocator`, `mago-database`, `mago-span` |
+| `rhp-builtins` | `rhp-values` |
+| `rhp-runtime` | `rhp-values`, `rhp-frontend`, `rhp-builtins` |
+| `rhp-cli` | `rhp-runtime` (+ `rhp-frontend`, `rhp-values` re-exports) |
 
-`phrust-builtins` must **not** depend on `phrust-frontend` (builtins never touch
-the arena/AST — they operate on owned `Value`s only). `phrust-runtime` is the
+`rhp-builtins` must **not** depend on `rhp-frontend` (builtins never touch
+the arena/AST — they operate on owned `Value`s only). `rhp-runtime` is the
 only crate that knits AST + values + builtins together.
 
-### 1.1 `phrust-values` — the data model
+### 1.1 `rhp-values` — the data model
 
 The zval analogue. No arena lifetime anywhere; everything is `'static` and
 cheaply cloneable. Public types (see value-model.md §1–5):
@@ -84,10 +84,10 @@ reused by `(int)` casts and float keys), and the `next_int` update rule
 disables append). This crate has **no knowledge of the AST or of PHP operator
 semantics** — it is pure storage + key rules.
 
-### 1.2 `phrust-frontend` — the parser wrapper (ALREADY SCAFFOLDED)
+### 1.2 `rhp-frontend` — the parser wrapper (ALREADY SCAFFOLDED)
 
 Owns the arena and hides mago's self-referential borrow. Already present at
-`crates/phrust-frontend/src/lib.rs`: `ParsedFile` bundles a `Box<LocalArena>`
+`crates/rhp-frontend/src/lib.rs`: `ParsedFile` bundles a `Box<LocalArena>`
 with the `&'arena Program` (stored as a raw pointer, handed back only tied to
 `&self`), plus `source`, `logical_name`. Public surface:
 
@@ -108,12 +108,12 @@ Entry point reminder (mago 1.58.2, verified in-tree):
 the arena type is `mago_allocator::LocalArena`. The runtime never sees
 `LocalArena` directly — it holds a `ParsedFile` and walks `.program().statements`.
 
-### 1.3 `phrust-builtins` — native function + constant registry
+### 1.3 `rhp-builtins` — native function + constant registry
 
 ```rust
 pub enum Thrown {                                       // unwinds the interpreter
     Error { class: &'static str, message: String },     // real Throwable (phase 5 catch)
-    Unsupported { function: &'static str, reason: &'static str },  // PHRUST_UNSUPPORTED
+    Unsupported { function: &'static str, reason: &'static str },  // RHP_UNSUPPORTED
 }
 pub type NativeFn = fn(&mut dyn Host, &[Value]) -> Result<Value, Thrown>;
 pub struct Builtin { pub name: &'static str, pub func: NativeFn,
@@ -123,7 +123,7 @@ pub fn constants() -> &'static [(&'static str, Value)];         // PHP_EOL, PHP_
 pub fn is_refused(name: &str) -> Option<&'static str>;          // extract/compact/create_function
 ```
 
-To avoid a dependency on `phrust-runtime`, builtins talk to the interpreter
+To avoid a dependency on `rhp-runtime`, builtins talk to the interpreter
 through a narrow `Host` trait defined here and implemented by the runtime
 (`fn write_out(&mut self, bytes: &[u8])` for the output sink, plus a precision
 getter). By-ref builtins (`settype`) use a small allowlist + a `NativeRefFn`
@@ -132,7 +132,7 @@ second entry point (builtins-min.md §1.4). Minimal set: `gettype`/`settype`/
 `var_export`, `strlen`/`count`/`str_repeat`/`implode`/`explode`, `sprintf`/
 `printf`. Refused names resolve to `Thrown::Unsupported`.
 
-### 1.4 `phrust-runtime` — the tree-walker
+### 1.4 `rhp-runtime` — the tree-walker
 
 The core. Holds the interpreter state and the eval functions. Key public types:
 
@@ -157,15 +157,15 @@ impl Interp {
 }
 ```
 
-`phrust-runtime` implements `phrust_builtins::Host` for `Interp` (writes into
+`rhp-runtime` implements `rhp_builtins::Host` for `Interp` (writes into
 `out`, exposes precision). It owns: statement exec (`exec_stmt`, `exec_block`),
 expression eval (`eval_expr`), lvalue resolution (`eval_lvalue` → a `Slot`),
 the operator tables (arith/compare/concat/bitwise with PHP coercion), the
 stringify path (precision-14 `echo`/concat formatting), and the scalar casts.
 
-### 1.5 `phrust-cli` — the SAPI / binary
+### 1.5 `rhp-cli` — the SAPI / binary
 
-`cargo run -p phrust-cli -- script.php`. Reads the file, `ParsedFile::parse`,
+`cargo run -p rhp-cli -- script.php`. Reads the file, `ParsedFile::parse`,
 bails with a diagnostic if `has_parse_errors()`, else `Interp::run`, flushes
 `out` to real stdout, exits with the returned code (default 0; `exit($n)` sets
 it; uncaught `Thrown` → stderr fatal + nonzero). Also hosts the differential
@@ -181,11 +181,11 @@ walked.** mago parses into a `LocalArena`; the returned `Program` and every
 owned `Value`s on production, so runtime data never pins the arena — but the AST
 being walked does.
 
-- **Phase 1 (single file):** `phrust-cli` creates one `ParsedFile` (which boxes
+- **Phase 1 (single file):** `rhp-cli` creates one `ParsedFile` (which boxes
   the `LocalArena`). The `Interp::run(&pf)` borrow lasts the whole execution.
   Values produced during the run are `'static` and survive `pf` being dropped at
   process exit.
-- **The self-reference is already solved** in `phrust-frontend::ParsedFile`:
+- **The self-reference is already solved** in `rhp-frontend::ParsedFile`:
   `Box<LocalArena>` + a raw `*const Program<'static>` reborrowed only as
   `&self`-tied. Nothing else in the tree uses `unsafe`; treat `ParsedFile` as
   the sole owner of that trick.
@@ -244,7 +244,7 @@ Threading rules:
 ## 4. Phase-1 acceptance criterion (testable, byte-exact)
 
 **Definition of done for the scaffold:** a differential runner discovers every
-`tests/golden/*.php`, runs it under both `phrust` and the real `php` binary, and
+`tests/golden/*.php`, runs it under both `rhp` and the real `php` binary, and
 asserts **identical stdout bytes and identical exit code**. Phase 1 passes when
 the mixed-inline-HTML + echo/print + scalar/arithmetic/concat/comparison subset
 matches byte-for-byte.
@@ -278,12 +278,12 @@ Covered already by: `echo_int`, `echo_float_formats`, `echo_bool_null`,
 
 ### 4.2 The differential runner
 
-In `phrust-cli` (an integration test `tests/diff.rs`, or a `cargo test` harness):
+In `rhp-cli` (an integration test `tests/diff.rs`, or a `cargo test` harness):
 
 1. Glob `tests/golden/*.php`. For each `NAME.php`:
-2. Run phrust: `Interp::run(ParsedFile::parse(name, bytes))`, capture `out` + exit code.
+2. Run rhp: `Interp::run(ParsedFile::parse(name, bytes))`, capture `out` + exit code.
 3. Run reference: `std::process::Command::new("php").arg(path)`, capture stdout + exit code.
-4. **Assert `phrust.stdout == php.stdout` (bytes) and `phrust.code == php.code`.**
+4. **Assert `rhp.stdout == php.stdout` (bytes) and `rhp.code == php.code`.**
    (Stderr is excluded — fixtures avoid fatal/warning cases so bytes are
    deterministic and path-independent; the `.out` files already hold exactly
    `php NAME.php` stdout.)
@@ -301,14 +301,14 @@ actual (lossy-rendered). Green runner = phase 1 done.
 Each step compiles and tests pass before the next.
 
 1. **Workspace skeleton.** Confirm the five crates exist with correct deps
-   (`phrust-frontend` is done). Add empty `phrust-values`, `phrust-builtins`,
-   `phrust-runtime`, `phrust-cli` with `lib.rs`/`main.rs` stubs. `cargo build`
-   green. Wire `rustc-hash` into `phrust-values`.
-2. **`phrust-values`.** `Value`, `PhpStr`, `ArrayKey`, `ArrayData`, `PhpArray`,
+   (`rhp-frontend` is done). Add empty `rhp-values`, `rhp-builtins`,
+   `rhp-runtime`, `rhp-cli` with `lib.rs`/`main.rs` stubs. `cargo build`
+   green. Wire `rustc-hash` into `rhp-values`.
+2. **`rhp-values`.** `Value`, `PhpStr`, `ArrayKey`, `ArrayData`, `PhpArray`,
    `PhpRef`. Implement `ArrayKey::from_value`, `float_to_int`, `next_int` update,
    `PhpStr`/`PhpArray` `make_mut`. Unit-test key normalization against the
    value-model.md §3b table. No PHP logic beyond keys.
-3. **Stringify + casts (in `phrust-runtime`).** `to_php_string` (echo/concat
+3. **Stringify + casts (in `rhp-runtime`).** `to_php_string` (echo/concat
    path, **precision 14**, `1.0E+20` sci form, `true→"1"`, `false/null→""`),
    `to_bool`, `to_int` (via `float_to_int`), `to_float`, `to_number`. These are
    the backbone of everything. Unit-test against php-semantics.md §1/§6/§8.
@@ -318,7 +318,7 @@ Each step compiles and tests pass before the next.
    `Literal`, `Parenthesized`. `Interp::run` drives `program().statements`.
    **Wire the refused set now** (eval/backticks/`(unset)` cast structurally;
    extract/compact/create_function via registry) so unsupported code fails loudly.
-5. **CLI + differential runner.** `phrust-cli` main + `tests/diff.rs` (§4).
+5. **CLI + differential runner.** `rhp-cli` main + `tests/diff.rs` (§4).
    `inline_html`/`echo`/`print` goldens go green. This is the first real
    acceptance gate.
 6. **Operators & more expressions.** `Binary` (arith with overflow→float,
@@ -327,7 +327,7 @@ Each step compiles and tests pass before the next.
    aliases + `(unset)`→fatal), `UnaryPostfix`, `Conditional`/elvis. Variables
    (`Variable::Direct`), `Assignment` (`=` + compound). All phase-1 number/
    comparison/concat goldens go green.
-7. **Builtins (`phrust-builtins`).** Registry + `Host` trait + arity dispatch.
+7. **Builtins (`rhp-builtins`).** Registry + `Host` trait + arity dispatch.
    Implement in builtins-min.md §5 order: `var_dump`/`gettype`/`is_*`/constants,
    then `intval`/`floatval`/`strval`/`boolval`/`settype`/`is_numeric`, then
    `strlen`/`count`/`str_repeat`/`implode`/`explode`, then `sprintf`/`printf`/
@@ -379,7 +379,7 @@ phase map and are out of scope for the scaffold gate.)
   `Construct::Eval`, `CompositeString::ShellExecute` (backticks),
   `UnaryPrefixOperator::UnsetCast`, and `$$x =` writes. By registry:
   `extract`/`compact`/`create_function`/`assert(string)`/`exec`-family. All →
-  `Thrown::Unsupported` rendered with the `PHRUST_UNSUPPORTED` marker, distinct
+  `Thrown::Unsupported` rendered with the `RHP_UNSUPPORTED` marker, distinct
   from PHP's own "undefined function" error.
 - **`#[non_exhaustive]` enums.** `Statement` (32) and `Expression` (33) both need
   a `_ =>` arm that errors clearly on an unhandled/`Error` node.

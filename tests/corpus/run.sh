@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Differential runner: compares php vs phrust VM output for every corpus/*.php
+# Differential runner: compares php vs rhp VM output for every corpus/*.php
 set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
-BIN="$DIR/../../target/release/phrust"
+BIN="$DIR/../../target/release/rhp"
 pass=0; fail=0; failed=()
 for f in "$DIR"/*.php; do
   php_out="$(php "$f" 2>&1)"

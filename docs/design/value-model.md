@@ -1,4 +1,4 @@
-# phrust runtime value model
+# rhp runtime value model
 
 Status: design, phase 1 (tree-walking interpreter). Target semantics: PHP 8.5
 (ground truth: local `php` 8.5.8). This document fixes the concrete Rust types

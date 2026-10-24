@@ -1,9 +1,9 @@
-# phrust OOP — prior art on object models + method dispatch
+# rhp OOP — prior art on object models + method dispatch
 
 Status: **design input** for the OOP phase (bytecode.md "phase 7"). Target
 semantics: PHP 8.5 (ground truth: local `php` 8.5.8, probed inline below). This
 doc surveys how Zend (PHP's own engine) and V8 model objects and dispatch
-methods, then distills a concrete, phrust-shaped first cut. It does not change
+methods, then distills a concrete, rhp-shaped first cut. It does not change
 the ISA: OOP keeps "the same encoding and calling convention" promised in
 [`bytecode.md`](./bytecode.md) §2.4 and reuses the reserved inline-cache side
 table ([`bytecode.md`](./bytecode.md) §2.5) and the `ClassId` handle model fixed
@@ -30,7 +30,7 @@ Non-negotiable invariants carried in from the rest of the design:
 
 A class is a `zend_class_entry` (`Zend/zend.h`). The fields that matter here:
 
-| `zend_class_entry` field | what it is | phrust analogue |
+| `zend_class_entry` field | what it is | rhp analogue |
 |---|---|---|
 | `parent` / `parent_name` | pointer to the single parent CE | `parent: Option<ClassId>` |
 | `function_table` | `HashTable` name → `zend_function` (methods) | flattened method table (see (d)) |
@@ -94,7 +94,7 @@ $f = Closure::bind(fn() => $this->x, new C, C::class);
 echo $f();  // 7  — bound $this + bound scope lets it see private $x
 ```
 
-### What to borrow, what to simplify for phrust
+### What to borrow, what to simplify for rhp
 
 **Borrow:**
 
@@ -102,7 +102,7 @@ echo $f();  // 7  — bound $this + bound scope lets it see private $x
    `Value` `'static`. `ObjectData.class` is the `ClassId`; the entry is
    `vm.classes[class_id as usize]`.
 2. **The declared-vs-dynamic split as a *concept*** (declared props are known at
-   class-link time; dynamic props are the deprecated fallback). phrust gets the
+   class-link time; dynamic props are the deprecated fallback). rhp gets the
    same two tiers even though the first cut stores both in one map (see (c)).
 3. **Three class pointers on the frame.** Add to `Frame` (or the method-call
    convention): `this: Option<ObjectHandle>`, `called_scope: ClassId` (LSB,
@@ -114,7 +114,7 @@ echo $f();  // 7  — bound $this + bound scope lets it see private $x
 
 **Simplify / defer:**
 
-- **No struct-hack inlined `properties_table`.** phrust objects are
+- **No struct-hack inlined `properties_table`.** rhp objects are
   `Rc<RefCell<ObjectData>>` with an `IndexMap<PhpStr, Value>` already in the
   value model. The packed-offset optimization is a *later* internal change (see
   (c)) that needs no ISA change.
@@ -153,7 +153,7 @@ else { fbc = zend_hash_find(...); cache->ce = obj->ce; cache->fn = fbc; }  // mi
 The guard is a **single pointer (class-identity) compare** — this is a
 *monomorphic inline cache keyed on the receiver's class*. Zend's run-time cache
 is a **side slab** (not bytes interleaved in the instruction stream), one slot
-per call *site*, which is exactly the shape phrust already reserved.
+per call *site*, which is exactly the shape rhp already reserved.
 
 **V8.** The same idea, generalized. Every object points to a **Map** (a.k.a.
 "hidden class") that describes its layout and type. A property/method access
@@ -163,13 +163,13 @@ this function". On access it does `if (object.map == cachedMap) use handler`.
 Repeated sites with one receiver shape stay *monomorphic* (one compare, then a
 direct slot/func); sites that see 2–4 shapes go *polymorphic* (a tiny list of
 `{Map, handler}`); more go *megamorphic* (fall back to the runtime hash). The
-Map pointer plays exactly the role of Zend's `ce` and of phrust's `ClassId`.
+Map pointer plays exactly the role of Zend's `ce` and of rhp's `ClassId`.
 
 The shared lesson: **a 1-entry cache keyed on the receiver's class/map, guarded
 by one identity compare, with a side-table slot per call site, collapses the
 "name → member" lookup to a compare + a direct index on the hot path.**
 
-### Where phrust puts the cache (no ISA change)
+### Where rhp puts the cache (no ISA change)
 
 The ISA already has the slots:
 
@@ -221,7 +221,7 @@ Key properties, all already consistent with the design:
 
 A caution borrowed from Zend's bug history: the cache key must be the **receiver
 class**, not the static call-site class, and must be invalidated conceptually if
-classes can be (re)declared at runtime. phrust declares classes via a hoist
+classes can be (re)declared at runtime. rhp declares classes via a hoist
 pre-pass / `DeclareClass` and does not redefine them, so a filled slot stays
 valid for the process — simpler than Zend, which ties the run-time cache
 lifetime to the request and a `map_ptr` base.
@@ -249,7 +249,7 @@ lifetime to the request and a `map_ptr` base.
 Both converge on: **resolve the property *name* to an integer *slot* once, cache
 the (class, slot), and index directly thereafter.**
 
-### Recommended first cut for phrust: name-keyed `IndexMap` now
+### Recommended first cut for rhp: name-keyed `IndexMap` now
 
 [`value-model.md`](./value-model.md) §5 already fixes
 `ObjectData.properties: IndexMap<PhpStr, Value, FxBuildHasher>` in declaration/
@@ -333,7 +333,7 @@ reserved so turning it into a slot index is an internal, ISA-preserving change.*
 child's members and fixes up property offsets). It makes the monomorphic IC
 correct-by-construction and keeps the hot path walk-free. Memory cost is modest
 (method/const tables are name→id maps of small entries; property slots are a flat
-`Vec`), and phrust declares each class once per process.
+`Vec`), and rhp declares each class once per process.
 
 Concretely, at `DeclareClass`:
 
@@ -409,7 +409,7 @@ only non-receiver-cached dispatch forms are `self::`/`parent::`/`static::`
 
 ---
 
-## Appendix — concrete phrust touch points (for the implementer)
+## Appendix — concrete rhp touch points (for the implementer)
 
 - Uncomment/define `Program.classes` ([`bytecode.rs`] line 255 /
   [`bytecode.md`](./bytecode.md) §2.1) as `Vec<ClassEntry>`; add `DeclareClass`
@@ -419,7 +419,7 @@ only non-receiver-cached dispatch forms are `self::`/`parent::`/`static::`
   the program's class list during `install`.
 - Extend `Frame` ([`vm.md`/§3.2]) with `this: Option<ObjectHandle>`,
   `called_scope: ClassId`, `defining_scope: ClassId`; `enter_method_call`
-  mirrors `enter_user_call` ([`phrust-vm/src/lib.rs`] lines 477–499) but also
+  mirrors `enter_user_call` ([`rhp-vm/src/lib.rs`] lines 477–499) but also
   binds those three and reserves CV0 for `$this` if the method is non-static.
 - Reuse `InlineCache { class_id, payload }` ([`bytecode.rs`] lines 178–183) as
   the monomorphic cache for both `CallMethod` and `FetchProp`/`AssignProp`; add

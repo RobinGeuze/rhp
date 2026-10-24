@@ -772,123 +772,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phrust-builtins"
-version = "0.0.0"
-dependencies = [
- "argon2",
- "bcrypt",
- "digest",
- "gost94",
- "libc",
- "md2",
- "md4",
- "num-bigint",
- "num-integer",
- "num-traits",
- "password-hash",
- "pcre2-sys",
- "phrust-semantics",
- "phrust-values",
- "rand_core",
- "ripemd",
- "sha2",
- "sha3",
- "tiger",
- "whirlpool",
- "xxhash-rust",
-]
-
-[[package]]
-name = "phrust-bytecode"
-version = "0.0.0"
-dependencies = [
- "phrust-values",
-]
-
-[[package]]
-name = "phrust-cli"
-version = "0.0.0"
-dependencies = [
- "phrust-compiler",
- "phrust-frontend",
- "phrust-oracle",
- "phrust-values",
- "phrust-vm",
-]
-
-[[package]]
-name = "phrust-compiler"
-version = "0.0.0"
-dependencies = [
- "mago-span",
- "phrust-bytecode",
- "phrust-frontend",
- "phrust-semantics",
- "phrust-values",
-]
-
-[[package]]
-name = "phrust-difftest"
-version = "0.0.0"
-dependencies = [
- "phrust-compiler",
- "phrust-frontend",
- "phrust-values",
- "phrust-vm",
-]
-
-[[package]]
-name = "phrust-frontend"
-version = "0.0.0"
-dependencies = [
- "mago-allocator",
- "mago-database",
- "mago-syntax",
-]
-
-[[package]]
-name = "phrust-oracle"
-version = "0.0.0"
-dependencies = [
- "mago-syntax",
- "phrust-builtins",
- "phrust-bytecode",
- "phrust-frontend",
- "phrust-semantics",
- "phrust-values",
-]
-
-[[package]]
-name = "phrust-semantics"
-version = "0.0.0"
-dependencies = [
- "phrust-values",
-]
-
-[[package]]
-name = "phrust-values"
-version = "0.0.0"
-dependencies = [
- "bstr",
- "indexmap",
- "rustc-hash",
-]
-
-[[package]]
-name = "phrust-vm"
-version = "0.0.0"
-dependencies = [
- "indexmap",
- "phrust-builtins",
- "phrust-bytecode",
- "phrust-compiler",
- "phrust-frontend",
- "phrust-semantics",
- "phrust-values",
- "rustc-hash",
-]
-
-[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1025,6 +908,123 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "rhp-builtins"
+version = "0.0.0"
+dependencies = [
+ "argon2",
+ "bcrypt",
+ "digest",
+ "gost94",
+ "libc",
+ "md2",
+ "md4",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "password-hash",
+ "pcre2-sys",
+ "rand_core",
+ "rhp-semantics",
+ "rhp-values",
+ "ripemd",
+ "sha2",
+ "sha3",
+ "tiger",
+ "whirlpool",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "rhp-bytecode"
+version = "0.0.0"
+dependencies = [
+ "rhp-values",
+]
+
+[[package]]
+name = "rhp-cli"
+version = "0.0.0"
+dependencies = [
+ "rhp-compiler",
+ "rhp-frontend",
+ "rhp-oracle",
+ "rhp-values",
+ "rhp-vm",
+]
+
+[[package]]
+name = "rhp-compiler"
+version = "0.0.0"
+dependencies = [
+ "mago-span",
+ "rhp-bytecode",
+ "rhp-frontend",
+ "rhp-semantics",
+ "rhp-values",
+]
+
+[[package]]
+name = "rhp-difftest"
+version = "0.0.0"
+dependencies = [
+ "rhp-compiler",
+ "rhp-frontend",
+ "rhp-values",
+ "rhp-vm",
+]
+
+[[package]]
+name = "rhp-frontend"
+version = "0.0.0"
+dependencies = [
+ "mago-allocator",
+ "mago-database",
+ "mago-syntax",
+]
+
+[[package]]
+name = "rhp-oracle"
+version = "0.0.0"
+dependencies = [
+ "mago-syntax",
+ "rhp-builtins",
+ "rhp-bytecode",
+ "rhp-frontend",
+ "rhp-semantics",
+ "rhp-values",
+]
+
+[[package]]
+name = "rhp-semantics"
+version = "0.0.0"
+dependencies = [
+ "rhp-values",
+]
+
+[[package]]
+name = "rhp-values"
+version = "0.0.0"
+dependencies = [
+ "bstr",
+ "indexmap",
+ "rustc-hash",
+]
+
+[[package]]
+name = "rhp-vm"
+version = "0.0.0"
+dependencies = [
+ "indexmap",
+ "rhp-builtins",
+ "rhp-bytecode",
+ "rhp-compiler",
+ "rhp-frontend",
+ "rhp-semantics",
+ "rhp-values",
+ "rustc-hash",
+]
 
 [[package]]
 name = "ripemd"

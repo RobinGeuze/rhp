@@ -1,0 +1,20 @@
+[package]
+name = "rhp-difftest"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "rhp_difftest"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rhp-difftest"
+path = "src/main.rs"
+
+[dependencies]
+rhp-compiler = { path = "../rhp-compiler" }
+rhp-frontend = { path = "../rhp-frontend" }
+rhp-vm = { path = "../rhp-vm" }
+rhp-values = { path = "../rhp-values" }

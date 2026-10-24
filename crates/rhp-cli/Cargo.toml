@@ -1,0 +1,17 @@
+[package]
+name = "rhp-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "rhp"
+path = "src/main.rs"
+
+[dependencies]
+rhp-oracle = { path = "../rhp-oracle" }
+rhp-compiler = { path = "../rhp-compiler" }
+rhp-vm = { path = "../rhp-vm" }
+rhp-frontend = { path = "../rhp-frontend" }
+rhp-values = { path = "../rhp-values" }

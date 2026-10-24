@@ -1,0 +1,11 @@
+[package]
+name = "rhp-frontend"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+mago-syntax.workspace = true
+mago-allocator.workspace = true
+mago-database.workspace = true

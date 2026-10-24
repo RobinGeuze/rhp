@@ -1,6 +1,6 @@
-# mago-syntax AST Surface Catalog (phrust interpreter contract)
+# mago-syntax AST Surface Catalog (rhp interpreter contract)
 
-Exhaustive enumeration of the mago-syntax **1.58.2** CST that the phrust tree-walking
+Exhaustive enumeration of the mago-syntax **1.58.2** CST that the rhp tree-walking
 interpreter matches against for language phases 1–7 (output/echo, scalars &
 expressions, control flow, arrays, functions, references, OOP).
 
@@ -287,7 +287,7 @@ Non-cast: `ErrorControl(Span)` `@` (suppress diagnostics on operand),
 > - Deprecated but still functional (emit `E_DEPRECATED`, behave as canonical):
 >   `(integer)`→int, `(boolean)`→bool, `(double)`→float, `(binary)`→string.
 > - `(unset)` → **fatal `Error` at runtime** ("no longer supported"). Mago parses it;
->   phrust should raise a fatal, not perform it.
+>   rhp should raise a fatal, not perform it.
 > - `(real)` and `(void)` → **PHP parse errors** in 8.5 (`(real)` removed; `(void)` not
 >   a cast). Mago has `RealCast`/`VoidCast` variants for older-version parsing; under
 >   our 8.5 target treat them as errors if ever produced.

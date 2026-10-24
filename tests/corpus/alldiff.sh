@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 DIR="$(cd "$(dirname "$0")" && pwd)"
-BIN="$DIR/../../target/release/phrust"
-OUT="${1:-/tmp/phrust_diffs.txt}"
+BIN="$DIR/../../target/release/rhp"
+OUT="${1:-/tmp/rhp_diffs.txt}"
 : > "$OUT"
 for f in "$DIR"/*.php; do
   po="$(php "$f" 2>&1)"

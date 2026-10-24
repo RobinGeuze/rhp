@@ -1,7 +1,7 @@
-# phrust — VM execution architecture
+# rhp — VM execution architecture
 
 The execution core is a **register-based bytecode compiler + VM**. The
-tree-walker in `phrust-runtime/src/lib.rs` is demoted to a *differential oracle*
+tree-walker in `rhp-runtime/src/lib.rs` is demoted to a *differential oracle*
 (`Interp`): it stays byte-for-byte correct on the subset it covers and is run
 side-by-side with the VM in tests, but it is no longer the product.
 
@@ -9,13 +9,13 @@ This document specifies the VM. It is a contract on top of the four existing
 design docs and the already-built, **tier-agnostic** crates the VM reuses
 verbatim:
 
-- `phrust-values` — the owned `Value` enum, `PhpStr`/`PhpArray`/`PhpRef`,
+- `rhp-values` — the owned `Value` enum, `PhpStr`/`PhpArray`/`PhpRef`,
   `ArrayKey` + key normalization, `conv::`, `fmt::`. The VM stores these in
   registers; it never invents a second value representation.
-- `phrust-builtins` — `Thrown`, `Host`, `NativeFn`, `registry()`, `constants()`,
+- `rhp-builtins` — `Thrown`, `Host`, `NativeFn`, `registry()`, `constants()`,
   `is_refused()`. The VM **is** the `Host`; it dispatches builtins through the
   registry.
-- `phrust-runtime::ops` — every binary/unary PHP operator over `Value`. Each
+- `rhp-runtime::ops` — every binary/unary PHP operator over `Value`. Each
   arithmetic/compare/concat/bitwise opcode is a thin wrapper that calls the
   matching `ops::` function. **The VM must not reimplement operator semantics.**
 
@@ -36,12 +36,12 @@ it (see §7).
 
 ## 0. Crate placement
 
-The VM lives in `phrust-runtime` alongside the oracle (same dependency edges —
-it already sees `phrust-values`, `phrust-frontend`, `phrust-builtins`). New
+The VM lives in `rhp-runtime` alongside the oracle (same dependency edges —
+it already sees `rhp-values`, `rhp-frontend`, `rhp-builtins`). New
 modules:
 
 ```
-crates/phrust-runtime/src/
+crates/rhp-runtime/src/
   lib.rs        // re-exports; the oracle Interp stays here (becomes `oracle`)
   ops.rs        // UNCHANGED — reused by both tiers
   vm/
@@ -52,7 +52,7 @@ crates/phrust-runtime/src/
   engine.rs     // the shared differential entrypoint (oracle + vm)
 ```
 
-No new crate, no new dependency. `phrust-cli` picks the tier behind a flag
+No new crate, no new dependency. `rhp-cli` picks the tier behind a flag
 (`--engine=vm|oracle`, default `vm`).
 
 ---
@@ -80,8 +80,8 @@ of these lowerings is mechanical.
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use phrust_builtins::{self as builtins, Host, Thrown};
-use phrust_values::{ClassId, Value};
+use rhp_builtins::{self as builtins, Host, Thrown};
+use rhp_values::{ClassId, Value};
 
 pub struct Vm {
     /// The single output sink. `impl Host` appends here; the SAPI flushes it.
@@ -210,14 +210,14 @@ impl Vm {
                 // ---- output --------------------------------------------
                 Instr::Echo { src } => {
                     let v = self.get(top, src);
-                    let bytes = phrust_values::conv::to_string_bytes(&v);
+                    let bytes = rhp_values::conv::to_string_bytes(&v);
                     self.write_out(&bytes);
                 }
 
                 // ---- control flow (intra-proc) -------------------------
                 Instr::Jmp { target } => self.stack[top].pc = target as usize,
                 Instr::JmpIfFalse { cond, target } => {
-                    if !phrust_values::conv::to_bool(&self.get(top, cond)) {
+                    if !rhp_values::conv::to_bool(&self.get(top, cond)) {
                         self.stack[top].pc = target as usize;
                     }
                 }
@@ -529,7 +529,7 @@ Key points:
   stack and returns it so `Vm::run` maps it to the exit code, **keeping already
   written output** (the `out` buffer is never discarded on `Exit`).
 - **`Thrown::Unsupported{feature,reason}`** is also not catchable: it unwinds
-  every frame and reaches the SAPI, which renders it with the `PHRUST_UNSUPPORTED`
+  every frame and reaches the SAPI, which renders it with the `RHP_UNSUPPORTED`
   marker — distinct from PHP's "undefined function". A refusal can therefore
   never be swallowed by a user `try/catch`.
 
@@ -614,7 +614,7 @@ impl Engine for Interp { /* wraps the existing Interp::run(&ParsedFile) */ }
 - `Vm::run(&Program) -> Result<i32, Thrown>` is the native signature the task
   calls for; `execute` is the thin, uniform shell the harness drives both tiers
   through (compile + run + package), mirroring `Interp::output()` / `Interp::run`.
-- **The runner** (in `phrust-cli`, extending the existing `tests/diff.rs`): glob
+- **The runner** (in `rhp-cli`, extending the existing `tests/diff.rs`): glob
   `tests/golden/*.php` **and** `.phpt` cases; for each, produce three `Outcome`s —
   real `php` 8.5.8 via `Command::new("php")`, `Vm::execute`, `Interp::execute`.
   Assert `php.stdout == vm.stdout` and `php.exit == vm.exit` (the product gate),
@@ -624,7 +624,7 @@ impl Engine for Interp { /* wraps the existing Interp::run(&ParsedFile) */ }
   lossy-rendered streams.
 - `.phpt` support parses the standard `--TEST--/--FILE--/--EXPECT[F]--` sections;
   `EXPECTF` patterns compare against the documented `%d/%s/...` wildcards. Cases
-  that hit refused features assert the `PHRUST_UNSUPPORTED` marker rather than a
+  that hit refused features assert the `RHP_UNSUPPORTED` marker rather than a
   byte match.
 - Because operators and builtins are *shared code* (§5), the oracle is a genuine
   independent check only of the **compiler + VM loop**, which is exactly where VM

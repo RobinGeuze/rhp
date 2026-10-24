@@ -1,7 +1,7 @@
 # Extensions & native-library reuse
 
 **Status:** design / research. No engine behavior changes here.
-**Question:** can `phrust` reuse native C code to get byte-exact PHP behavior with
+**Question:** can `rhp` reuse native C code to get byte-exact PHP behavior with
 less reimplementation, and if so, *which* native code and *how*?
 **Ground truth:** local `php` 8.5.8, PCRE 10.47 (2025-10-21), bundled `ext/json` 8.5.8.
 
@@ -12,9 +12,9 @@ This doc distinguishes three very different things that all get called
 `json_decode` recommendation, and the build/portability consequences.
 
 > **Decision (2026-10-24).** The macro-shim prototype of §9 is **abandoned** —
-> `crates/phrust-zendshim` has been removed. The chosen strategy is to
+> `crates/rhp-zendshim` has been removed. The chosen strategy is to
 > **reimplement each extension in Rust and prove it byte-identical to the real
-> `php` binary with a differential-test framework** (`crates/phrust-difftest`,
+> `php` binary with a differential-test framework** (`crates/rhp-difftest`,
 > documented in §10). Pure-Rust crates are used where a faithful 1:1 exists; a
 > C system library (e.g. libmysqlclient, libpq) is permitted only where no 1:1
 > Rust alternative exists. The first extension reimplemented this way is `hash`
@@ -27,11 +27,11 @@ This doc distinguishes three very different things that all get called
 | Category | Verdict | One-line reason |
 |---|---|---|
 | 1. Load compiled Zend extensions (`json.so`, `mbstring.so`) | **Infeasible** | They are ABI clients of the Zend Engine — zval layout, Zend MM, executor hooks. Loading one means *being* the Zend engine. |
-| 1b. Compile ext *source* against a macro shim (§9, prototyped) | **Abandoned** | Proven byte-exact for small/numeric functions, but the macro/type surface balloons for objects/globals/HashTable iteration. Superseded by reimplement-in-Rust + differential testing (§10); `crates/phrust-zendshim` removed. |
+| 1b. Compile ext *source* against a macro shim (§9, prototyped) | **Abandoned** | Proven byte-exact for small/numeric functions, but the macro/type surface balloons for objects/globals/HashTable iteration. Superseded by reimplement-in-Rust + differential testing (§10); `crates/rhp-zendshim` removed. |
 | 2. Link the C libs PHP builds on (pcre2, ICU, libxml2, OpenSSL, zlib, gmp/mpdecimal, oniguruma) | **Feasible** via `-sys` crates / bindgen | This is where byte-exactness actually lives. Caveat: must match PHP's *same lib + version + build options*, and account for PHP's own wrapping. |
 | 3. PHP's own C ext code that is *not* a system lib (`ext/json`, `ext/standard`) | **Feasible but a judgment call per-function** | Can vendor the C, bind a Rust crate + patch quirks, or reimplement. For `json_decode`: **reimplement in Rust against the differential harness** (recommended below). |
 
-The through-line: **phrust reimplements each extension in Rust and proves it
+The through-line: **rhp reimplements each extension in Rust and proves it
 byte-identical to the C `php` binary with a differential harness (§10); it reuses
 the same underlying libraries PHP links (pcre2, and, where no 1:1 Rust crate
 exists, C system libs) rather than loading or recompiling Zend extensions.**
@@ -68,14 +68,14 @@ and manipulate:
   resource destructors, class entries, and stream wrappers — all against engine
   globals (`EG(...)`, `CG(...)`, `PG(...)`).
 
-### Why loading one into phrust is effectively reimplementing Zend
+### Why loading one into rhp is effectively reimplementing Zend
 
-To `dlopen` a stock `json.so` and call into it, phrust would have to present,
+To `dlopen` a stock `json.so` and call into it, rhp would have to present,
 byte-for-byte, the Zend engine it was compiled against:
 
 1. **Replicate the exact `zval`/HashTable/`zend_string` memory layout** for the
    target PHP version and build (NTS vs ZTS changes struct shapes; debug builds
-   add fields). phrust's `Value` is a Rust enum with `Rc<BString>` strings and
+   add fields). rhp's `Value` is a Rust enum with `Rc<BString>` strings and
    an `indexmap`-backed array — a *completely different* representation. Every
    call boundary would need a bidirectional, allocation-correct zval marshaller.
 2. **Provide the Zend MM, the GC, and all `EG`/`CG`/`PG` globals** the module
@@ -92,8 +92,8 @@ byte-for-byte, the Zend engine it was compiled against:
 
 That is not "loading an extension" — it is shipping a binary-compatible
 reimplementation of the Zend Engine's runtime and ABI, which is the entire
-thing phrust set out *not* to be (register VM + owned `Value`s, PHP strings as
-`Rc<BString>`, no Zend internals). It also directly conflicts with phrust's
+thing rhp set out *not* to be (register VM + owned `Value`s, PHP strings as
+`Rc<BString>`, no Zend internals). It also directly conflicts with rhp's
 "no `eval`, structural refusals, everything owned/`'static`" posture, and would
 re-import exactly the C-level memory-safety surface the project is replacing.
 
@@ -104,7 +104,7 @@ global — does not exist in practice among the real extensions anyone wants.)
 
 > Note on FFI subagents / "out-of-process PHP": one could shell out to a real
 > `php` to service specific calls, but that is adopting PHP, not reusing an
-> extension in phrust, and it reintroduces a PHP runtime dependency the project
+> extension in rhp, and it reintroduces a PHP runtime dependency the project
 > is eliminating. Out of scope.
 
 ---
@@ -130,7 +130,7 @@ exposed to Rust via maintained `-sys` crates (or is trivially bindgen-able):
 
 These libraries expose plain C functions over plain C types (`pcre2_compile`,
 `u_strToUpper`, `BN_*`, `mpd_*`). There is no engine ABI, no zval, no shared
-allocator requirement at the call boundary — phrust converts `&[u8]` ↔ the
+allocator requirement at the call boundary — rhp converts `&[u8]` ↔ the
 lib's input/output buffers at the FFI edge and keeps its own `Value`
 representation everywhere else. The existing `registry()` + `NativeFn`
 signature already isolates each builtin, so a native backend is a drop-in body
@@ -143,7 +143,7 @@ version, and the same build options** PHP used — *and* reproducing PHP's own
 wrapper logic around it:
 
 - **Same engine, not a sibling.** `fancy-regex` (what `preg_*` uses today, see
-  `crates/phrust-builtins/src/preg_fns.rs`) is a *different* regex engine from
+  `crates/rhp-builtins/src/preg_fns.rs`) is a *different* regex engine from
   PCRE2. Its header comment already enumerates the divergences it cannot avoid:
   possessive quantifiers, recursion/subroutines (`(?R)`, `(?1)`, `\g<1>`),
   `\G`, `(?'name'…)`, and `\d\w\s` being Unicode-aware vs PCRE's ASCII-default.
@@ -159,7 +159,7 @@ wrapper logic around it:
     to PCRE2 option bits, sets its own `pcre.backtrack_limit` /
     `pcre.recursion_limit` / `pcre.jit`, and does its own UTF-8 validation and
     `$matches` array shaping. All of that is PHP code wrapping PCRE2, and must
-    be reproduced in phrust regardless of the backend.
+    be reproduced in rhp regardless of the backend.
   - mbstring: PHP has its own encoding tables and `mbstring.*` INI handling on
     top of whatever lib does the casing.
   - bcmath: `libmpdec` gives arbitrary-precision decimals, but PHP's scale
@@ -186,7 +186,7 @@ apply; the only options are:
   and the Zend MM (same ABI problem as Category 1, in miniature) — you'd write
   a zval↔`Value` shim for just this subtree, carry a C toolchain + a chunk of
   GPL-adjacent… (actually PHP license) C, and still have to translate its
-  depth/flags/error machinery to phrust's. Lots of C surface for one function
+  depth/flags/error machinery to rhp's. Lots of C surface for one function
   family.
 - **(b) Use a Rust JSON crate (`serde_json`) and patch PHP's quirks.** Low
   effort to start, but a stock crate misses many PHP-specific behaviors (listed
@@ -200,7 +200,7 @@ apply; the only options are:
 
 **Verdict: (c) for `json_decode`** (full recommendation + quirk list + test plan
 in §5). `ext/standard` functions are already being reimplemented one-by-one in
-`phrust-builtins` and should continue that way; reach for Category-2 linking
+`rhp-builtins` and should continue that way; reach for Category-2 linking
 only where a function *is* a thin wrapper over a shared lib (regex, intl, gmp).
 
 ---
@@ -210,17 +210,17 @@ only where a function *is* a thin wrapper over a shared lib (regex, intl, gmp).
 Goal: let a single builtin delegate to a `-sys` crate **without** (a) forcing
 that C dependency on every build, (b) changing the `registry()` / `Host`
 contract, or (c) weakening the differential guarantee. The current layering
-makes this clean — `phrust-builtins` depends only on `phrust-values` +
-`phrust-semantics`, and each builtin is a `NativeFn = fn(&mut dyn Host,
+makes this clean — `rhp-builtins` depends only on `rhp-values` +
+`rhp-semantics`, and each builtin is a `NativeFn = fn(&mut dyn Host,
 &[Value]) -> Result<Value, Thrown>` looked up by name in `registry()`
-(`crates/phrust-builtins/src/lib.rs:78`, `:101`).
+(`crates/rhp-builtins/src/lib.rs:78`, `:101`).
 
 ### 4.1 Feature-gating (pure-Rust build stays the default)
 
-Add Cargo features to `phrust-builtins`, off by default, one per native backend:
+Add Cargo features to `rhp-builtins`, off by default, one per native backend:
 
 ```toml
-# crates/phrust-builtins/Cargo.toml
+# crates/rhp-builtins/Cargo.toml
 [features]
 default = []
 native-pcre2 = ["dep:pcre2"]
@@ -236,9 +236,9 @@ rug         = { version = "1", optional = true }
 ```
 
 The crate always compiles with zero native libs (today's behavior). A parity
-build opts in with `--features native-all`. `phrust-vm`, `phrust-oracle`, and
-`phrust-cli` forward the feature (`phrust-vm/native-pcre2 =
-["phrust-builtins/native-pcre2"]`) so a single top-level flag selects the build.
+build opts in with `--features native-all`. `rhp-vm`, `rhp-oracle`, and
+`rhp-cli` forward the feature (`rhp-vm/native-pcre2 =
+["rhp-builtins/native-pcre2"]`) so a single top-level flag selects the build.
 
 ### 4.2 One builtin, two backends, one public body
 
@@ -283,7 +283,7 @@ Key design rules this encodes:
   ever needs an engine service, e.g. INI like `pcre.backtrack_limit`, that
   would be a *new, defaulted* `Host` method, mirroring how `get_const` /
   `call_callable` were added in `lib.rs:61`/`:66` — never a breaking change.)
-- **Byte-string discipline survives.** phrust strings are bytes
+- **Byte-string discipline survives.** rhp strings are bytes
   (`Rc<BString>`). The backend API is `&[u8]`-in / byte-offsets-out, so we drop
   the `from_utf8_lossy` offset-shifting caveat that the fancy-regex backend
   documents (`preg_fns.rs:17-25`) — PCRE2 matches bytes natively. This is itself
@@ -291,7 +291,7 @@ Key design rules this encodes:
 
 ### 4.3 Keeping byte-exactness tested (the differential harness is the gate)
 
-The harness in `crates/phrust-cli/tests/diff.rs` holds the VM strictly to
+The harness in `crates/rhp-cli/tests/diff.rs` holds the VM strictly to
 committed `.out` files captured from php 8.5.8, over `tests/golden/*.php`. Make
 the native backend subordinate to it:
 
@@ -310,7 +310,7 @@ the native backend subordinate to it:
    `INTL_ICU_VERSION`). A native build that links a *different* version is
    expected to diverge on version-sensitive fixtures; the harness turns that
    into a visible failure instead of silent drift.
-4. **Fuzz the wrapper, not the lib.** Differentially fuzz `phrust preg_match`
+4. **Fuzz the wrapper, not the lib.** Differentially fuzz `rhp preg_match`
    vs `php -r` on random patterns/subjects; the lib is PHP's own, so surviving
    diffs are wrapper bugs.
 
@@ -323,10 +323,10 @@ against real php output, never against each other alone.
 ## 5. `json_decode` — concrete recommendation
 
 `json_decode` is **not implemented today** (only `json_encode`, in
-`crates/phrust-builtins/src/misc_fns.rs:133`). So this is a greenfield decision.
+`crates/rhp-builtins/src/misc_fns.rs:133`). So this is a greenfield decision.
 
 **Recommendation: option (c) — reimplement in Rust** as a byte-oriented
-recursive-descent decoder in `phrust-builtins`, no external crate, pinned by
+recursive-descent decoder in `rhp-builtins`, no external crate, pinned by
 the differential harness. Rationale: it is a few hundred lines, every PHP quirk
 below is directly expressible, it keeps the pure-Rust / no-C-toolchain default,
 and it matches how `json_encode`/`serialize`/`preg_*` were built. `serde_json`
@@ -357,7 +357,7 @@ for the zval-shim cost (§3a).
 
 ### Where `json_last_error` state lives
 
-`json_last_error`/`_msg` read state set by the previous `json_*` call. phrust
+`json_last_error`/`_msg` read state set by the previous `json_*` call. rhp
 builtins are stateless `fn`s, so this is the one piece that needs a home.
 Cleanest fit: a **new defaulted `Host` method pair**
 (`set_json_last_error(code)` / `json_last_error() -> i64`), mirroring the
@@ -486,12 +486,12 @@ Every Category-2 adoption adds a C dependency, so the architecture makes them
   target's cc), but this is the strongest practical argument for keeping native
   backends optional and the pure-Rust path first-class.
 - **Licensing.** PCRE2 (BSD), ICU (ICU/Unicode license), zlib (zlib) are
-  permissive and compatible with phrust's `MIT OR Apache-2.0`. GMP is
-  **LGPL/GPL dual** — `rug`'s GMP backend pulls LGPL; relevant if phrust ever
+  permissive and compatible with rhp's `MIT OR Apache-2.0`. GMP is
+  **LGPL/GPL dual** — `rug`'s GMP backend pulls LGPL; relevant if rhp ever
   ships static binaries. Vendoring php-src's `ext/json` C would carry the PHP
   license. Note each in the opt-in docs.
 - **Future Cranelift JIT.** Native backends are a *non-issue* for the planned
-  JIT. The JIT lowers phrust's own ISA (opcodes that delegate to
+  JIT. The JIT lowers rhp's own ISA (opcodes that delegate to
   `ops`/`conv`/`registry()`); a builtin call remains a call into the registry
   regardless of whether that builtin's body is pure-Rust or an FFI leaf. The JIT
   never needs to inline through FFI — it emits a call to the same `NativeFn`
@@ -526,14 +526,14 @@ Every Category-2 adoption adds a C dependency, so the architecture makes them
 §1 ruled out loading a compiled `.so` (it is an ABI client of the Zend engine).
 This section is a different idea, now **prototyped and measured**: do *not* load
 the `.so` — recompile the extension's `.c` sources against **our own
-redefinitions** of the Zend API macros/types, bridged to phrust's `Value` model.
+redefinitions** of the Zend API macros/types, bridged to rhp's `Value` model.
 The lever is that ext `.c` almost never touches `zval`/HashTable/`zend_string`
 *fields*; it goes through *macros* (`PHP_FUNCTION`, `ZEND_PARSE_PARAMETERS_*`,
 `Z_PARAM_*`, `ZVAL_*`, `RETURN_*`, `add_assoc_*`/`add_next_index_*`) and a few
 inline helpers. If we supply those macros, the ext's real algorithm compiles
-against our definitions and runs against phrust.
+against our definitions and runs against rhp.
 
-Prototype crate: **`crates/phrust-zendshim/`** (feature `zendshim`, off by
+Prototype crate: **`crates/rhp-zendshim/`** (feature `zendshim`, off by
 default). It is the only crate that carries a C toolchain dependency, and nothing
 depends on it unless the feature is turned on, so the pure-Rust default build is
 byte-for-byte unaffected (verified: `cargo build`/`cargo test` unchanged, 186
@@ -599,7 +599,7 @@ pulled in: `ZEND_SET_ALIGNED`, `zend_string`, `zend_string_safe_alloc`,
 
 ### 9.3 Build mechanics
 
-- `crates/phrust-zendshim/build.rs` uses the **`cc` crate** (already in the tree
+- `crates/rhp-zendshim/build.rs` uses the **`cc` crate** (already in the tree
   via `pcre2-sys`) to compile `csrc/*.c` with `-I include` into a static archive
   linked into the Rust crate. Stage 2's vendored file is detected at build time
   and gated by a `--cfg zendshim_bin2hex` (declared with `rustc-check-cfg`, so
@@ -608,7 +608,7 @@ pulled in: `ZEND_SET_ALIGNED`, `zend_string`, `zend_string_safe_alloc`,
   `rs_array_new()` which pushes a `PhpArray` into a thread-local registry and
   returns a 1-based `u32` handle stored in the `zval`. Every `add_assoc_*`/
   `add_next_index_*` forwards the handle to a Rust callback (`rs_array_set_*`/
-  `rs_array_push_*`) that mutates that `PhpArray`. This **reuses phrust's exact
+  `rs_array_push_*`) that mutates that `PhpArray`. This **reuses rhp's exact
   key normalization, insertion ordering, and next-index logic** instead of
   reimplementing an ordered map + canonical-int-string rule in C. Nested arrays
   are moved out of the child slot into the parent at the boundary.
@@ -617,8 +617,8 @@ pulled in: `ZEND_SET_ALIGNED`, `zend_string`, `zend_string_safe_alloc`,
   with a synthetic `execute_data`, checks the thread-local exception, then
   marshals `return_value` back to an owned `Value` and frees the arena. All state
   is thread-local.
-- **Feature gating:** `phrust-builtins/zendshim` → `phrust-zendshim`; forwarded
-  up through `phrust-vm`, `phrust-oracle`, `phrust-cli`. Builtins register as
+- **Feature gating:** `rhp-builtins/zendshim` → `rhp-zendshim`; forwarded
+  up through `rhp-vm`, `rhp-oracle`, `rhp-cli`. Builtins register as
   `__zendshim_demo` / `__zendshim_bin2hex` (prefixed, so they never shadow the
   pure-Rust builtins and can be diffed against them).
 
@@ -694,7 +694,7 @@ only if *several* number-heavy ext functions are wanted at once (then
   toolchain; the pure-Rust default does not. No system libs are required (the C
   is self-contained), so this is lighter than linking pcre2/ICU.
 
-### 9.6 Verdict: is the macro-shim viable as phrust's extension strategy?
+### 9.6 Verdict: is the macro-shim viable as rhp's extension strategy?
 
 **As a general strategy: no. As a targeted tool: situationally yes.**
 
@@ -715,7 +715,7 @@ only if *several* number-heavy ext functions are wanted at once (then
   surface balloons and pure-Rust (pinned by the harness) stays the more robust,
   toolchain-free, memory-safe default — consistent with the rest of this doc.
 
-> **Superseded (2026-10-24).** The shim is no longer pursued; `crates/phrust-zendshim`
+> **Superseded (2026-10-24).** The shim is no longer pursued; `crates/rhp-zendshim`
 > has been removed. See §10 for the strategy that replaced it.
 
 ---
@@ -728,16 +728,16 @@ The adopted extension strategy is deliberately simple and hard to fool:
    exists, hand-rolled otherwise; a C system library (e.g. `libmysqlclient`,
    `libpq`) only where no 1:1 Rust alternative exists.
 2. **Prove it against the C engine.** Run the *same* PHP source through the real
-   `php` binary (the canonical C implementation, our oracle) and through phrust's
+   `php` binary (the canonical C implementation, our oracle) and through rhp's
    VM, and require identical stdout — not against a hand-committed `.out`, but
    against php live, over a broad, generated, seed-reproducible corpus.
 
-### 10.1 The framework — `crates/phrust-difftest`
+### 10.1 The framework — `crates/rhp-difftest`
 
 A small crate with a library, a binary, and integration tests:
 
 - `run_php(src)` feeds the source to `php -n` on stdin (no temp files, fixed UTC
-  timezone) and captures stdout; `run_phrust(src)` compiles and runs it on the VM
+  timezone) and captures stdout; `run_rhp(src)` compiles and runs it on the VM
   (catching engine panics as diffs). `diff_source(src)` runs both and classifies
   the result `Match | Mismatch | PhpErr | PhrustErr`.
 - A dependency-free seeded `Rng` and `default_byte_corpus()` generate the inputs
@@ -746,8 +746,8 @@ A small crate with a library, a binary, and integration tests:
   strings. A failing run reproduces exactly from its seed.
 - `sweeps.rs` turns an extension's functions into per-feature diffs (today: one
   `hash()` sweep per algorithm from php's own `hash_algos()`).
-- The `phrust-difftest` binary prints a per-feature MATCH/MISMATCH verdict
-  (`phrust-difftest hash [--seed N] [--count N] [--algo NAME] [--strict]`); it is
+- The `rhp-difftest` binary prints a per-feature MATCH/MISMATCH verdict
+  (`rhp-difftest hash [--seed N] [--count N] [--algo NAME] [--strict]`); it is
   the dev loop. `tests/hash.rs` is the CI gate — it skips cleanly when no `php`
   is on PATH, so the workspace still tests without PHP installed.
 
@@ -764,7 +764,7 @@ php 8.5.8 over the sweep.
 - **Pure-Rust crates (1:1):** RustCrypto `md2`, `md4`, `sha2` (sha224/256/384/512
   and the sha512/224, sha512/256 truncations), `sha3`, `ripemd`,
   `whirlpool`, `tiger` (3-pass), `gost94` (gost + gost-crypto); `xxhash-rust`
-  (xxh32/64/3/128). `md5`/`sha1`/`sha256`/`crc32b` stay on phrust's existing
+  (xxh32/64/3/128). `md5`/`sha1`/`sha256`/`crc32b` stay on rhp's existing
   hand-rolled primitives.
 - **Hand-rolled (no 1:1 crate):** adler32; the CRC variants; FNV-1/1a (32/64);
   joaat; MurmurHash3 (x86_32, x86_128, x64_128); and the table-heavy
@@ -777,7 +777,7 @@ php 8.5.8 over the sweep.
   big-endian; the HMAC block sizes for the sha3 family follow the keccak rates
   (144/136/104/72).
 
-**Recommendation:** keep `phrust-zendshim` as an **opt-in, feature-gated
+**Recommendation:** keep `rhp-zendshim` as an **opt-in, feature-gated
 capability** for the narrow case it fits (small self-contained ext functions,
 especially numeric ones where `zend_strtod`/scanner exactness is the prize), hold
 it to the differential harness like every native backend, and keep pure-Rust the

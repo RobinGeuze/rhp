@@ -1,8 +1,8 @@
-# phrust bytecode — authoritative build spec
+# rhp bytecode — authoritative build spec
 
 Status: **build spec (implement from this).** Target semantics: PHP 8.5 (ground
 truth: local `php` 8.5.8). This is the single source of truth for the
-register-based bytecode compiler + VM that becomes phrust's primary execution
+register-based bytecode compiler + VM that becomes rhp's primary execution
 core. Where the four research docs disagree, **this doc wins**; their resolved
 decisions are folded in and the losing alternatives are noted inline.
 
@@ -26,26 +26,26 @@ construct nodes and via `is_refused()` for function names (§4). `eval` is
 
 ### 1.1 Decision (one coherent answer, justified)
 
-- **`conv` and `fmt` stay in `phrust-values`** (they already live there; pure,
+- **`conv` and `fmt` stay in `rhp-values`** (they already live there; pure,
   no `Thrown`, no move).
-- **`Thrown` moves DOWN into `phrust-values`** (`phrust_values::thrown`,
-  re-exported as `phrust_values::Thrown`; `phrust-builtins` keeps
-  `pub use phrust_values::Thrown;` so every existing `builtins::Thrown` path
+- **`Thrown` moves DOWN into `rhp-values`** (`rhp_values::thrown`,
+  re-exported as `rhp_values::Thrown`; `rhp-builtins` keeps
+  `pub use rhp_values::Thrown;` so every existing `builtins::Thrown` path
   still compiles).
-- **`ops` moves into a new `phrust-semantics` crate** (not into `phrust-values`).
+- **`ops` moves into a new `rhp-semantics` crate** (not into `rhp-values`).
 
 **Justification (2 lines):** `ops` returns `Result<Value, Thrown>`, so `Thrown`
-must sit at or below `ops`; putting `Thrown` in the leaf `phrust-values` lets
-*both* `phrust-semantics` (ops) and `phrust-builtins` depend on it without a
+must sit at or below `ops`; putting `Thrown` in the leaf `rhp-values` lets
+*both* `rhp-semantics` (ops) and `rhp-builtins` depend on it without a
 cycle, which in turn lets builtins call `ops::loose_compare` for `max/min/sort`.
-Keeping `ops` in its own `phrust-semantics` (rather than in `phrust-values`)
-keeps the value model free of operator policy and lets a future `phrust-jit`
+Keeping `ops` in its own `rhp-semantics` (rather than in `rhp-values`)
+keeps the value model free of operator policy and lets a future `rhp-jit`
 depend on `bytecode + semantics + values` alone.
 
-> Rejected alternative (vm.md §0): "keep the VM inside `phrust-runtime` next to
+> Rejected alternative (vm.md §0): "keep the VM inside `rhp-runtime` next to
 > the oracle, no new crate." Overruled because the task's own migration
-> checklist mandates separate `phrust-bytecode` / `phrust-compiler` /
-> `phrust-vm` / `phrust-oracle` crates (steps ii, iii, iv, vii), and a
+> checklist mandates separate `rhp-bytecode` / `rhp-compiler` /
+> `rhp-vm` / `rhp-oracle` crates (steps ii, iii, iv, vii), and a
 > JIT-lowerable, behavior-free ISA crate must not transitively pull in the
 > compiler or the VM. The `reorg.md` 9-crate split is adopted.
 
@@ -53,46 +53,46 @@ depend on `bytecode + semantics + values` alone.
 
 | crate | role | depends on |
 |---|---|---|
-| `phrust-values` | `Value`, `PhpStr`, `PhpArray`, `ArrayKey`, `conv`, `fmt`, **`Thrown`** | `bstr`, `indexmap`, `rustc-hash`, `ordered-float` |
-| `phrust-frontend` | `ParsedFile` + arena (mago wrapper) | `mago-*` |
-| `phrust-semantics` | operator semantics (`ops`) + shared value helpers (`deref`, `inc_dec_value`, `cast_to_array`) | `phrust-values` |
-| `phrust-builtins` | `Host`, `NativeFn`, `Builtin`, `registry`, `constants`, `is_refused`, `dump` | `phrust-values`, `phrust-semantics` |
-| `phrust-bytecode` | the ISA: `Instr`, `FunctionProto`, `Program`, exception table — **data only, no behavior** | `phrust-values` |
-| `phrust-compiler` | AST → bytecode; **owns the structural refusals** (§4) | `phrust-frontend`, `phrust-bytecode`, `phrust-values` |
-| `phrust-vm` | the register VM; executes a `Program`, `impl Host for Vm` | `phrust-bytecode`, `phrust-semantics`, `phrust-builtins`, `phrust-values` |
-| `phrust-oracle` | the tree-walker (ex-`phrust-runtime`), `walk_*` methods | `phrust-frontend`, `phrust-semantics`, `phrust-builtins`, `phrust-values` |
-| `phrust-cli` | SAPI + differential runner (php ⟷ vm ⟷ oracle) | all of the above |
+| `rhp-values` | `Value`, `PhpStr`, `PhpArray`, `ArrayKey`, `conv`, `fmt`, **`Thrown`** | `bstr`, `indexmap`, `rustc-hash`, `ordered-float` |
+| `rhp-frontend` | `ParsedFile` + arena (mago wrapper) | `mago-*` |
+| `rhp-semantics` | operator semantics (`ops`) + shared value helpers (`deref`, `inc_dec_value`, `cast_to_array`) | `rhp-values` |
+| `rhp-builtins` | `Host`, `NativeFn`, `Builtin`, `registry`, `constants`, `is_refused`, `dump` | `rhp-values`, `rhp-semantics` |
+| `rhp-bytecode` | the ISA: `Instr`, `FunctionProto`, `Program`, exception table — **data only, no behavior** | `rhp-values` |
+| `rhp-compiler` | AST → bytecode; **owns the structural refusals** (§4) | `rhp-frontend`, `rhp-bytecode`, `rhp-values` |
+| `rhp-vm` | the register VM; executes a `Program`, `impl Host for Vm` | `rhp-bytecode`, `rhp-semantics`, `rhp-builtins`, `rhp-values` |
+| `rhp-oracle` | the tree-walker (ex-`rhp-runtime`), `walk_*` methods | `rhp-frontend`, `rhp-semantics`, `rhp-builtins`, `rhp-values` |
+| `rhp-cli` | SAPI + differential runner (php ⟷ vm ⟷ oracle) | all of the above |
 
 ### 1.3 Dependency graph (acyclic)
 
 ```
-                         phrust-cli
+                         rhp-cli
         ┌──────────┬──────────┼──────────┬───────────┐
         v          v          v          v           v
-  phrust-compiler phrust-vm  phrust-oracle   phrust-frontend
+  rhp-compiler rhp-vm  rhp-oracle   rhp-frontend
      │   │          │  │ │        │  │
-     │   │          │  │ └────> phrust-builtins ──┐
-     │   │          │  └──────> phrust-semantics <┤
-     │   └──────────┴────────> phrust-bytecode    │
+     │   │          │  │ └────> rhp-builtins ──┐
+     │   │          │  └──────> rhp-semantics <┤
+     │   └──────────┴────────> rhp-bytecode    │
      └────────────────┬─────────────────┬─────────┘
                       v                  v
-                 phrust-values  (leaf: Thrown, conv, fmt, Value)
+                 rhp-values  (leaf: Thrown, conv, fmt, Value)
 ```
 
-Edge rules that must hold: `phrust-bytecode` depends on **only** `phrust-values`
-(so `phrust-jit` can later lower the same ISA without the compiler/VM);
-`phrust-compiler` does **not** depend on `phrust-vm`/`-oracle`/`-builtins` (it
+Edge rules that must hold: `rhp-bytecode` depends on **only** `rhp-values`
+(so `rhp-jit` can later lower the same ISA without the compiler/VM);
+`rhp-compiler` does **not** depend on `rhp-vm`/`-oracle`/`-builtins` (it
 refuses only *syntactic constructs*; function-name refusal is a runtime concern,
-but see §4.2 — the compiler may optionally link `phrust-builtins` read-only to
+but see §4.2 — the compiler may optionally link `rhp-builtins` read-only to
 fold `is_refused()` at compile time for statically-named calls; if that edge is
-taken it is `compiler → builtins`, still acyclic); `phrust-vm` does not depend
-on `phrust-frontend` (runs bytecode, never the arena); the two tiers never see
-each other — only `phrust-cli` knits them.
+taken it is `compiler → builtins`, still acyclic); `rhp-vm` does not depend
+on `rhp-frontend` (runs bytecode, never the arena); the two tiers never see
+each other — only `rhp-cli` knits them.
 
 ### 1.4 Reused verbatim (confirmed signatures — do not reimplement)
 
 ```rust
-// phrust-semantics::ops  (moved from phrust-runtime/src/ops.rs, Thrown path rewritten)
+// rhp-semantics::ops  (moved from rhp-runtime/src/ops.rs, Thrown path rewritten)
 pub fn add/sub/mul/div/modulo/pow(a: &Value, b: &Value) -> Result<Value, Thrown>;
 pub fn negate(a: &Value) -> Result<Value, Thrown>;
 pub fn bitwise(a: &Value, b: &Value, op: BitOp) -> Value;   // BitOp::{And,Or,Xor,Shl,Shr}
@@ -104,12 +104,12 @@ pub fn strict_eq(a: &Value, b: &Value) -> bool;
 pub fn spaceship(a: &Value, b: &Value) -> Value;            // Int -1/0/1
 // + lifted helpers: deref, inc_dec_value, cast_to_array
 
-// phrust-values::conv / ::fmt
+// rhp-values::conv / ::fmt
 conv::{to_bool,to_string_bytes,to_int,to_float,to_number,numeric_string,is_numeric,scan_number}
 fmt::{float_echo (precision-14), float_serialize (serialize_precision -1)}
 
-// phrust-builtins
-pub enum Thrown { Error{class:&'static str, message:String}, Unsupported{feature:String, reason:&'static str}, Exit(i32) }  // (def'n now in phrust-values)
+// rhp-builtins
+pub enum Thrown { Error{class:&'static str, message:String}, Unsupported{feature:String, reason:&'static str}, Exit(i32) }  // (def'n now in rhp-values)
 pub trait Host { fn write_out(&mut self, bytes: &[u8]); }
 pub type NativeFn = fn(&mut dyn Host, &[Value]) -> Result<Value, Thrown>;
 pub struct Builtin { /* func: NativeFn, min_args, max_args, by_ref flags, ... */ }
@@ -121,7 +121,7 @@ pub fn is_refused(name: &str) -> Option<&'static str>;  // Some(reason) ⇒ refu
 
 ---
 
-## 2. The locked ISA (`phrust-bytecode`)
+## 2. The locked ISA (`rhp-bytecode`)
 
 ### 2.1 Core types
 
@@ -133,7 +133,7 @@ builtin table only by small integer id — self-contained, `'static`,
 
 ```rust
 use std::rc::Rc;
-use phrust_values::{PhpStr, Value, Thrown};
+use rhp_values::{PhpStr, Value, Thrown};
 
 pub type Reg   = u16;  // register-file index: CVs in [0,num_cvs), temporaries above
 pub type CIdx  = u32;  // index into FunctionProto.consts
@@ -402,7 +402,7 @@ calling convention; omitted here.
 
 ---
 
-## 3. The VM (`phrust-vm`)
+## 3. The VM (`rhp-vm`)
 
 ### 3.1 Vm struct
 
@@ -554,7 +554,7 @@ impl Vm {
 - **`Thrown::Exit(code)`** is not an error and not catchable: `unwind` clears the
   stack, `run` maps it to the exit code, **output is kept** (never discarded).
 - **`Thrown::Unsupported{feature,reason}`** is not catchable: it unwinds every
-  frame to the SAPI, which renders it with the `PHRUST_UNSUPPORTED` marker —
+  frame to the SAPI, which renders it with the `RHP_UNSUPPORTED` marker —
   distinct from PHP's "undefined function", and **never swallowable by a user
   `try/catch`.**
 
@@ -584,12 +584,12 @@ path entirely. (This unifies isa.md's FAST_CALL/FAST_RET and vm.md's
 
 ---
 
-## 4. Refusals in the new pipeline (structural, in `phrust-compiler`)
+## 4. Refusals in the new pipeline (structural, in `rhp-compiler`)
 
 Refused constructs **never acquire an opcode**. They are rejected in the compiler
 at the AST node; the JIT (later) therefore never has to reason about them.
 
-### 4.1 Syntactic constructs — `phrust-compiler/src/refuse.rs`
+### 4.1 Syntactic constructs — `rhp-compiler/src/refuse.rs`
 
 The lowerer pattern-matches these nodes and, instead of emitting any `Call*`/eval
 opcode, returns `Err(Thrown::unsupported(...))` at compile time (or, if the node
@@ -670,7 +670,7 @@ try/catch/finally (exception_table: {[Ltry,Lend)->catch Lcatch, finally Lfin}):
 
 ---
 
-## 6. Differential harness (`phrust-cli`)
+## 6. Differential harness (`rhp-cli`)
 
 Both tiers expose the **same entrypoint shape** so the runner can diff
 php ⟷ vm ⟷ oracle on identical inputs, byte-exact stdout + exit code.
@@ -682,7 +682,7 @@ pub trait Engine { fn execute(pf: &ParsedFile) -> Outcome; }   // implemented by
 
 impl Engine for Vm {
     fn execute(pf: &ParsedFile) -> Outcome {
-        let prog = match phrust_compiler::compile(pf) {
+        let prog = match rhp_compiler::compile(pf) {
             Ok(p)  => p,
             Err(t) => return Outcome { stdout: Vec::new(), exit: 255, error: Some(t) },  // compile-time refusal
         };
@@ -694,7 +694,7 @@ impl Engine for Vm {
 impl Engine for Interp { /* wraps the existing tree-walker run(&ParsedFile) */ }
 ```
 
-Runner (`phrust-cli/src/runner.rs`, a `#[test]` / xtask): glob
+Runner (`rhp-cli/src/runner.rs`, a `#[test]` / xtask): glob
 `tests/golden/*.php` (21 today; also `.phpt`), and for each produce three
 `Outcome`s — real `php` 8.5.8 via `Command::new("php")`, `Vm::execute`,
 `Interp::execute`. **Product gate:** `php.stdout == vm.stdout && php.exit ==
@@ -703,7 +703,7 @@ oracle's covered subset — because operators/builtins are *shared code* (§2.3)
 the oracle is an independent check of exactly the compiler + VM loop, where the
 bugs live. A mismatch reports the fixture, the first differing byte offset, and
 all three streams. `.phpt` parses `--TEST--/--FILE--/--EXPECT[F]--`; refused-
-feature cases assert the `PHRUST_UNSUPPORTED` marker instead of a byte match.
+feature cases assert the `RHP_UNSUPPORTED` marker instead of a byte match.
 
 ---
 
@@ -715,41 +715,41 @@ unaffected); 5–10 build the VM path and wire the runner.
 
 0. **Baseline.** Build green (one known dead-code warning on `ops::intdiv`).
    Snapshot current tree-walker output for a couple of goldens as a regression anchor.
-1. **Move `Thrown` → `phrust-values`.** New `phrust-values/src/thrown.rs`;
-   `pub mod thrown; pub use thrown::Thrown;`. In `phrust-builtins` delete the
-   enum, add `pub use phrust_values::Thrown;`. No other crate changes.
-2. **Create `phrust-semantics`, move `ops`.** New crate (dep `phrust-values`);
-   move `phrust-runtime/src/ops.rs`; rewrite `use phrust_builtins::Thrown` →
-   `use phrust_values::Thrown`; re-export. In `phrust-runtime` replace `mod ops;`
-   with `use phrust_semantics::ops;`. Expose `intdiv` (the VM will use it).
-3. **Lift shared helpers into `phrust-semantics`.** Move `deref`,
+1. **Move `Thrown` → `rhp-values`.** New `rhp-values/src/thrown.rs`;
+   `pub mod thrown; pub use thrown::Thrown;`. In `rhp-builtins` delete the
+   enum, add `pub use rhp_values::Thrown;`. No other crate changes.
+2. **Create `rhp-semantics`, move `ops`.** New crate (dep `rhp-values`);
+   move `rhp-runtime/src/ops.rs`; rewrite `use rhp_builtins::Thrown` →
+   `use rhp_values::Thrown`; re-export. In `rhp-runtime` replace `mod ops;`
+   with `use rhp_semantics::ops;`. Expose `intdiv` (the VM will use it).
+3. **Lift shared helpers into `rhp-semantics`.** Move `deref`,
    `inc_dec_value`, `cast_to_array` out of the tree-walker as `pub fn`s; update
    callers. (Prevents the VM re-implementing them in step 8.)
-4. **Rename `phrust-runtime` → `phrust-oracle`; apply `walk_*`.** Rename dir +
-   `Cargo.toml name`; update `phrust-cli` dep. Apply the reorg.md §5 renames
+4. **Rename `rhp-runtime` → `rhp-oracle`; apply `walk_*`.** Rename dir +
+   `Cargo.toml name`; update `rhp-cli` dep. Apply the reorg.md §5 renames
    (`eval_* → walk_*`); the `Construct::Eval` refusal arm stays. Add the
-   `phrust-builtins → phrust-semantics` dep so `max/min` can use
+   `rhp-builtins → rhp-semantics` dep so `max/min` can use
    `ops::loose_compare`.
-5. **Stand up `phrust-bytecode` (ISA only).** New crate (dep `phrust-values`):
+5. **Stand up `rhp-bytecode` (ISA only).** New crate (dep `rhp-values`):
    `Instr`, `FunctionProto`, `Program`, `ExRegion`/`CatchArm`, the newtypes,
    `InlineCache`. Data only, no executing methods. Nothing depends on it yet.
-6. **`phrust-compiler` — Phase-1 subset.** New crate (deps `phrust-frontend`,
-   `phrust-bytecode`, `phrust-values`). Lower echo/inline-HTML, literals,
+6. **`rhp-compiler` — Phase-1 subset.** New crate (deps `rhp-frontend`,
+   `rhp-bytecode`, `rhp-values`). Lower echo/inline-HTML, literals,
    expressions (binary with short-circuit, unary), casts, builtin calls, array
    literals, variables-as-registers, assignment/compound. `refuse.rs` rejects
    `Construct::Eval`/`Include*`/backtick/`(unset)`-cast structurally (§4). Unit-test
    each refused construct → `Unsupported`.
-7. **`phrust-vm` executing the subset.** New crate (deps `phrust-bytecode`,
-   `phrust-semantics`, `phrust-builtins`, `phrust-values`). `Vm` + `Frame` +
+7. **`rhp-vm` executing the subset.** New crate (deps `rhp-bytecode`,
+   `rhp-semantics`, `rhp-builtins`, `rhp-values`). `Vm` + `Frame` +
    explicit `Vec<Frame>` stack; `impl Host`; `run(&Program) -> Result<i32,Thrown>`;
    dispatch delegating to `ops::`/`registry()`. Unit-test VM vs oracle on
    expressions.
-8. **Wire `phrust-cli` to run the VM.** Real SAPI: read `.php`, parse, compile,
+8. **Wire `rhp-cli` to run the VM.** Real SAPI: read `.php`, parse, compile,
    run on the VM, write stdout, exit with the code.
 9. **Green all 21 goldens under the VM.** Add `runner.rs` diffing php/vm/oracle
    (§6); iterate on compiler + VM until all 21 match php/`.out`/oracle. These are
    scalar/operator/dump heavy — all covered by shared `ops`/`conv`/`fmt`/`dump`,
-   so divergences are lowering bugs. Confirm `phrust-runtime` fully removed from
+   so divergences are lowering bugs. Confirm `rhp-runtime` fully removed from
    `members`.
 10. **Then grow coverage** in order: (viii) control-flow opcodes +
     exception-table/finally, (ix) functions (calls/return/params/by-ref/variadic/

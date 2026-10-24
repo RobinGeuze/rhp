@@ -1,4 +1,4 @@
-# phrust OOP runtime object + class model
+# rhp OOP runtime object + class model
 
 Status: **design, phase 7 (OOP, VM-only).** Target semantics: PHP 8.5 (ground
 truth: local `php` 8.5.8). The tree-walking oracle is **frozen** and skips OOP
@@ -61,7 +61,7 @@ become fixtures.
 ## 1. The class table: `ClassEntry` (lives in the `Vm`)
 
 ```rust
-// phrust-values (leaf): small Copy data shared by compiler + VM.
+// rhp-values (leaf): small Copy data shared by compiler + VM.
 pub type ClassId = u32;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -79,7 +79,7 @@ pub struct ClassFlags {
 ```
 
 ```rust
-// phrust-vm: the linked, ready-to-run class. One per declared class/interface/
+// rhp-vm: the linked, ready-to-run class. One per declared class/interface/
 // trait/enum, indexed by ClassId in `Vm.classes`. All tables are FLATTENED.
 pub struct ClassEntry {
     pub id: ClassId,
@@ -223,7 +223,7 @@ Walk-the-chain is kept only as the **cache-miss fallback inside the linker**
 `ObjectData` is the §5 sketch, unchanged in shape:
 
 ```rust
-// phrust-values
+// rhp-values
 pub struct ObjectData {
     pub class: ClassId,
     pub id: u32,                                    // spl_object_id
@@ -295,7 +295,7 @@ and params start at CV 0 as for free functions.
 ### 3.2 Frame growth
 
 ```rust
-// phrust-vm
+// rhp-vm
 struct Frame {
     proto: Rc<FunctionProto>,
     regs: Vec<Value>,
@@ -416,7 +416,7 @@ faithful for the common case. Add name-mangling when a golden needs it.
 
 ## 5. `FunctionProto` growth + how `Program` carries classes
 
-### 5.1 `FunctionProto` (phrust-bytecode) — two new fields, no `ClassId`
+### 5.1 `FunctionProto` (rhp-bytecode) — two new fields, no `ClassId`
 
 ```rust
 pub struct FunctionProto {
@@ -436,7 +436,7 @@ late static binding uses `Frame.called_class` — so `self::`/`parent::`/`static
 resolve from the frame, and no proto needs a post-link fixup. `__METHOD__`/
 `__FUNCTION__` read `proto.name`; `__CLASS__` reads `frame.defining_class`.
 
-### 5.2 `Program` + `ClassProto` (phrust-bytecode) — the un-linked class
+### 5.2 `Program` + `ClassProto` (rhp-bytecode) — the un-linked class
 
 ```rust
 pub struct Program {

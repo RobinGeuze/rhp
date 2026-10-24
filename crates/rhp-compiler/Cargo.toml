@@ -1,0 +1,13 @@
+[package]
+name = "rhp-compiler"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rhp-values = { path = "../rhp-values" }
+rhp-bytecode = { path = "../rhp-bytecode" }
+rhp-frontend = { path = "../rhp-frontend" }
+rhp-semantics = { path = "../rhp-semantics" }
+mago-span.workspace = true

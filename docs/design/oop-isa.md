@@ -1,4 +1,4 @@
-# phrust OOP ISA — classes, objects, methods (phase 7)
+# rhp OOP ISA — classes, objects, methods (phase 7)
 
 Status: **build spec (implement from this).** Target semantics: PHP 8.5 (ground
 truth: local `php` 8.5.8; every behavior below was probed against it). This is
@@ -18,7 +18,7 @@ Read first and reused verbatim: [`value-model.md`](./value-model.md) §5 (the
 `ObjectData`/`ObjectHandle` model — **objects are handle types**,
 `Rc<RefCell<ObjectData>>`, assignment shares, `clone` copies, `===` is
 `Rc::ptr_eq`), [`ast-surface.md`](./ast-surface.md) §10 (OOP AST nodes), and the
-already-built `Value`/`ObjectData` in `phrust-values` (§5 below).
+already-built `Value`/`ObjectData` in `rhp-values` (§5 below).
 
 ---
 
@@ -55,10 +55,10 @@ in-scope-later and may emit `Refuse` until implemented — never a catchable
 
 ---
 
-## 1. The class table (data in `phrust-bytecode`, resolved in the `Vm`)
+## 1. The class table (data in `rhp-bytecode`, resolved in the `Vm`)
 
 `Program` grows the `classes` slot that is currently commented out in
-`bytecode.md` §2.1 and `phrust-bytecode/src/lib.rs`:
+`bytecode.md` §2.1 and `rhp-bytecode/src/lib.rs`:
 
 ```rust
 pub struct Program {
@@ -68,7 +68,7 @@ pub struct Program {
 }
 ```
 
-### 1.1 Compile-time shape (`phrust-bytecode`, data only, no behavior)
+### 1.1 Compile-time shape (`rhp-bytecode`, data only, no behavior)
 
 ```rust
 pub type ClassId = u32;              // index into Program.classes / Vm.classes
@@ -105,7 +105,7 @@ convention, same register model). The only method-specific addition is
 no opcode, exactly like any other variable (`value-model.md`: `$this` is a
 `DirectVariable` named `$this`).
 
-### 1.2 Runtime shape (`phrust-vm`, built once at install)
+### 1.2 Runtime shape (`rhp-vm`, built once at install)
 
 At `Vm::install`, each `ClassProto` is linked into a `ClassEntry` with
 inheritance **flattened** so every hot lookup is one hash probe with no

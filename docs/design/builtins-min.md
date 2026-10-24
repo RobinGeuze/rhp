@@ -1,4 +1,4 @@
-# Minimal Builtins for phrust Phases 1–4
+# Minimal Builtins for rhp Phases 1–4
 
 Status: design. Target semantics: **PHP 8.5** (ground truth: local `php` = 8.5.8).
 All behavior in this document was verified by running the `php` binary; representative
@@ -344,10 +344,10 @@ Error mechanism: resolving a call to any name in the refused set returns
 `Err(Thrown::Unsupported { function, reason })`, which the top-level loop renders as a
 fatal:
 ```
-Fatal error: phrust: <function>() is not supported (<reason>). [PHRUST_UNSUPPORTED]
+Fatal error: rhp: <function>() is not supported (<reason>). [RHP_UNSUPPORTED]
 ```
 This is distinct from PHP's own "undefined function" `Error`, so tests can assert on the
-`PHRUST_UNSUPPORTED` marker and we never accidentally pretend to support them.
+`RHP_UNSUPPORTED` marker and we never accidentally pretend to support them.
 
 | Function | Why refused | Note on real PHP |
 |---|---|---|
@@ -356,7 +356,7 @@ This is distinct from PHP's own "undefined function" `Error`, so tests can asser
 | `assert` **with a string argument** | string form historically eval'd code | in PHP 8 the string is **no longer evaluated** (it's just truthy / used as description): `assert("1==2")` returns `true`. We refuse the string form to avoid the footgun; `assert(bool)` MAY be supported later |
 | `extract` | injects arbitrary names into the current symbol table from array keys → unknown variable set | works in PHP; `extract(["a"=>1])` creates `$a` |
 | `compact` | reads variables by name from strings → couples scope to string data | works in PHP; `compact("a","b")` → `["a"=>..,"b"=>..]` |
-| **variable-variables into scope** (`$$name = ...`) | AST-level construct that writes a slot named by a runtime string | not a function — detected in the assignment evaluator; refuse the write form (`$$x = v`) with the same `PHRUST_UNSUPPORTED` fatal |
+| **variable-variables into scope** (`$$name = ...`) | AST-level construct that writes a slot named by a runtime string | not a function — detected in the assignment evaluator; refuse the write form (`$$x = v`) with the same `RHP_UNSUPPORTED` fatal |
 
 Detection points:
 - `eval`, variable-variable assignment: **AST node kinds** (reject in the evaluator).

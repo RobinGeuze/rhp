@@ -1,21 +1,21 @@
-# Bytecode VM prior art → phrust ISA recommendations
+# Bytecode VM prior art → rhp ISA recommendations
 
 Status: design input for the register-based bytecode compiler + VM that becomes
-phrust's primary execution core. The tiny tree-walker (`phrust-runtime/src/lib.rs`)
+rhp's primary execution core. The tiny tree-walker (`rhp-runtime/src/lib.rs`)
 is kept **only** as a differential oracle. Ground truth: local `php` **8.5.8**.
 
-This document surveys four reference designs and distills concrete, phrust-specific
+This document surveys four reference designs and distills concrete, rhp-specific
 recommendations. It is written against the pieces we already built and will reuse
 **verbatim** — do not reimplement these in the VM:
 
-- `phrust-values`: the owned, `'static`, 16-byte `Value` enum
+- `rhp-values`: the owned, `'static`, 16-byte `Value` enum
   (`Null/Bool/Int(i64)/Float(f64)/Str(PhpStr)/Array(PhpArray)/Object/Ref`), COW
   `PhpStr`/`PhpArray` via `Rc::make_mut`, aliasing `Ref=Rc<RefCell<Value>>` and
   objects via `Rc<RefCell>`, `ArrayKey::from_value`, `float_to_int`, `conv::*`,
   `fmt::*`.
-- `phrust-builtins`: `Thrown { Error{class,message} / Unsupported{feature,reason}
+- `rhp-builtins`: `Thrown { Error{class,message} / Unsupported{feature,reason}
   / Exit(i32) }`, the `Host` trait, `NativeFn`, `registry()`, `is_refused()`.
-- `phrust-runtime/src/ops.rs`: PHP operator semantics over `&Value -> Result<Value,
+- `rhp-runtime/src/ops.rs`: PHP operator semantics over `&Value -> Result<Value,
   Thrown>` (`add/sub/mul/div/modulo/pow/intdiv`, bitwise, `negate`, `concat`,
   `loose_compare/loose_eq/strict_eq/spaceship`). **The VM's arithmetic/compare
   opcodes are thin wrappers over these.**
@@ -77,7 +77,7 @@ us (see section (d)).
 
 ### Borrow vs simplify
 
-| Zend mechanism | phrust decision |
+| Zend mechanism | rhp decision |
 |---|---|
 | **CV = named local → fixed frame slot** | **Borrow.** Resolve every `$x` to a register at compile time; never hash a variable name on the hot path. |
 | **Constant/literal table per op_array, `IS_CONST` by index** | **Borrow.** Per-function const pool, deduped; folds into Cranelift constants later. |
@@ -164,7 +164,7 @@ Two reference mechanisms:
   (de)specialization. This keeps caches hot in icache but makes the instruction
   stream mutable and non-uniform.
 
-**Recommendation for phrust:** take Zend's **side-cache** shape, not CPython's
+**Recommendation for rhp:** take Zend's **side-cache** shape, not CPython's
 inline interleaving — it keeps instructions **fixed-shape and immutable/shareable**
 (important for the JIT and for not rewriting code we execute).
 

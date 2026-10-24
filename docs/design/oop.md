@@ -1,4 +1,4 @@
-# phrust OOP — authoritative build spec (phase 7, VM-only)
+# rhp OOP — authoritative build spec (phase 7, VM-only)
 
 Status: **build spec. Implement from this.** Target semantics: PHP 8.5 (ground
 truth: local `php` 8.5.8; every behavior below was probed against it). This is
@@ -49,10 +49,10 @@ fixtures.
 
 ### 1.1 `ObjectData` — confirmed, unchanged
 
-Already built in `phrust-values` (`value-model.md` §5). **No change for cut 1.**
+Already built in `rhp-values` (`value-model.md` §5). **No change for cut 1.**
 
 ```rust
-// phrust-values
+// rhp-values
 pub struct ObjectData {
     pub class: ClassId,                                  // u32 index into Vm.classes
     pub id: u32,                                         // spl_object_id (monotonic)
@@ -68,7 +68,7 @@ Handle semantics (invariant): assignment shares the `Rc`; `clone` makes a new
 lazy `dynamic` hybrid is the documented *later* optimization; cut 1 keeps the
 single `IndexMap`.)
 
-### 1.2 Leaf types (`phrust-values` — small, `Copy` where possible)
+### 1.2 Leaf types (`rhp-values` — small, `Copy` where possible)
 
 ```rust
 #[derive(Clone, Copy, PartialEq, Eq, Debug)] pub enum ClassKind { Class, Interface, Trait, Enum }
@@ -77,7 +77,7 @@ single `IndexMap`.)
 pub struct ClassFlags { pub is_abstract: bool, pub is_final: bool, pub is_readonly: bool }
 ```
 
-### 1.3 The linked class table — `ClassEntry` (`phrust-vm`, built at install)
+### 1.3 The linked class table — `ClassEntry` (`rhp-vm`, built at install)
 
 One per declared class/interface/trait/enum, indexed by `ClassId` in
 `Vm.classes`. **All tables flattened** (parent merged first, own members
@@ -86,7 +86,7 @@ visibility metadata with oop-isa's `prop_template`/`ancestors`/`static_props`
 cells:
 
 ```rust
-// phrust-vm
+// rhp-vm
 pub struct ClassEntry {
     pub id: ClassId,
     pub name: PhpStr,                 // original case (messages / get_class / ::class)
@@ -216,7 +216,7 @@ $o = new B2; $o->arr[] = 3;  (new B2)->arr;  // [1,2]  — per-instance COW, not
 ### 2.1 `FunctionProto` — two new fields, **no `ClassId`**
 
 ```rust
-// phrust-bytecode
+// rhp-bytecode
 pub struct FunctionProto {
     // ... all existing fields unchanged ...
     pub this_cv: Option<Reg>,  // CV holding $this for an instance method; None otherwise
@@ -237,7 +237,7 @@ Replace the placeholder `pub classes: Vec<PhpStr>` (currently line 173; the
 `Vec<ClassEntry>` comment at line 255 is the intent) with:
 
 ```rust
-// phrust-bytecode
+// rhp-bytecode
 pub struct Program {
     pub main: Rc<FunctionProto>,
     pub functions: Vec<Rc<FunctionProto>>,
@@ -298,7 +298,7 @@ wholesale.
 All operands are small `Copy` indices/immediates; `Instr` stays `Copy`. All heap
 data (names, class protos, caches) stays in side tables.
 
-### 3.1 The class operand `ClassRef` (`phrust-bytecode`, `Copy`, owns no heap)
+### 3.1 The class operand `ClassRef` (`rhp-bytecode`, `Copy`, owns no heap)
 
 ```rust
 #[derive(Clone, Copy, Debug)]
@@ -616,14 +616,14 @@ Scope of cut 1: **classes with properties + methods + `__construct` + `$this` +
 `instanceof` + class constants + static props/methods + `self::`/`static::`.**
 Each step compiles and keeps existing tests green; most add a `php ⟷ vm` fixture.
 
-1. **Leaf types** (`phrust-values`): `ClassKind`, `Visibility`, `ClassFlags`.
+1. **Leaf types** (`rhp-values`): `ClassKind`, `Visibility`, `ClassFlags`.
    Confirm `ObjectData`/`ObjectHandle` unchanged. *Milestone:* `cargo build`, no
    behavior change.
-2. **Bytecode data** (`phrust-bytecode`): add `FunctionProto.{this_cv, is_static}`;
+2. **Bytecode data** (`rhp-bytecode`): add `FunctionProto.{this_cv, is_static}`;
    replace `Program.classes` placeholder with `Vec<ClassProto>` + the `*Proto`
    structs + `ClassRef`. *Milestone:* builds; existing protos set
    `this_cv=None,is_static=false`.
-3. **Class table + install** (`phrust-vm`): `ClassEntry`/`ResolvedMethod`/
+3. **Class table + install** (`rhp-vm`): `ClassEntry`/`ResolvedMethod`/
    `PropEntry`/`StaticProp`/`ClassConst`; add `Vm.{classes, class_ids,
    next_object_id}`; implement `Vm::install` flatten + topo link (classes + props +
    constants + static cells + ancestors + constructor; `final`/abstract/cycle/

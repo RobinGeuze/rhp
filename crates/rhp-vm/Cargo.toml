@@ -1,0 +1,21 @@
+[package]
+name = "rhp-vm"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+rhp-values = { path = "../rhp-values" }
+rhp-bytecode = { path = "../rhp-bytecode" }
+rhp-semantics = { path = "../rhp-semantics" }
+rhp-builtins = { path = "../rhp-builtins" }
+indexmap = { workspace = true }
+rustc-hash = { workspace = true }
+
+[dev-dependencies]
+rhp-compiler = { path = "../rhp-compiler" }
+rhp-frontend = { path = "../rhp-frontend" }

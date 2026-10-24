@@ -1,0 +1,11 @@
+[package]
+name = "rhp-values"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bstr.workspace = true
+indexmap.workspace = true
+rustc-hash.workspace = true

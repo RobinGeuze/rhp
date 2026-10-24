@@ -1,4 +1,4 @@
-# PHP 8.5 Ground-Truth Semantics (phrust compatibility spec)
+# PHP 8.5 Ground-Truth Semantics (rhp compatibility spec)
 
 Captured by running the local `php` binary: **PHP 8.5.8 (cli) (NTS), Zend Engine v4.5.8**, Homebrew build, on darwin.
 

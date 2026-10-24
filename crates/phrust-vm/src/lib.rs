@@ -479,6 +479,11 @@ impl Vm {
                     let v = self.reg_get(top, a);
                     self.reg_set(top, dst, cast_to_array(v));
                 }
+                Instr::CastObject { dst, a } => {
+                    let v = self.reg_get(top, a);
+                    let obj = self.cast_to_object(v);
+                    self.reg_set(top, dst, obj);
+                }
 
                 Instr::Cmp { dst, a, b, kind } => {
                     let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
@@ -1529,6 +1534,40 @@ impl Vm {
                 }
             }
         }
+    }
+
+    /// `(object)` cast: wrap a value in a fresh `stdClass`. Objects pass through;
+    /// arrays map each element to a property; null yields an empty object; a
+    /// scalar yields `{ scalar: value }`.
+    fn cast_to_object(&mut self, v: Value) -> Value {
+        let v = deref(&v);
+        if let Value::Object(_) | Value::Closure(_) = v {
+            return v;
+        }
+        let cls = match self.resolve_class_by_name(b"stdClass") {
+            Ok(c) => c,
+            Err(_) => return v, // prelude missing (shouldn't happen)
+        };
+        let obj = self.new_object(cls);
+        {
+            let mut b = obj.borrow_mut();
+            match v {
+                Value::Null => {}
+                Value::Array(a) => {
+                    for (k, val) in a.iter() {
+                        let name = match k {
+                            ArrayKey::Int(n) => phrust_values::PhpStr::from_bytes(n.to_string().into_bytes()),
+                            ArrayKey::Str(s) => s.clone(),
+                        };
+                        b.properties.insert(name, deref(val));
+                    }
+                }
+                scalar => {
+                    b.properties.insert(phrust_values::PhpStr::from("scalar"), scalar);
+                }
+            }
+        }
+        Value::Object(obj)
     }
 
     /// Does `class_id`'s ancestor set include the named interface/class?

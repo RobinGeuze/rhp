@@ -426,6 +426,7 @@ interface Traversable {}
 interface Iterator extends Traversable {}
 interface IteratorAggregate extends Traversable {}
 final class Generator implements Iterator {}
+class stdClass {}
 class Exception implements Throwable {
     protected $message = "";
     protected $code = 0;
@@ -2235,9 +2236,7 @@ impl ProtoBuilder {
             Op::StringCast(..) | Op::BinaryCast(..) => Instr::CastString { dst, a },
             Op::BoolCast(..) | Op::BooleanCast(..) => Instr::CastBool { dst, a },
             Op::ArrayCast(..) => Instr::CastArray { dst, a },
-            Op::ObjectCast(..) => {
-                return Err(Thrown::unsupported("(object) cast", "objects arrive in phase 7"))
-            }
+            Op::ObjectCast(..) => Instr::CastObject { dst, a },
             _ => unreachable!("handled above"),
         };
         // `+x` is "unary plus" = numeric coercion, not (int). Use Neg-of-Neg? No:

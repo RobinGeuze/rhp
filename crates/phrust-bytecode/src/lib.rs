@@ -77,6 +77,8 @@ pub enum Instr {
     CastString { dst: Reg, a: Reg },
     CastBool { dst: Reg, a: Reg },
     CastArray { dst: Reg, a: Reg },
+    /// `(object)` cast: wrap into a `stdClass` (arrays map elements to properties).
+    CastObject { dst: Reg, a: Reg },
 
     // -- compare (phase 2) — route to ops:: --
     Cmp { dst: Reg, a: Reg, b: Reg, kind: CmpKind },

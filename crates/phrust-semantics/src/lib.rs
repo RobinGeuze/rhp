@@ -22,6 +22,18 @@ pub fn cast_to_array(v: Value) -> Value {
     match deref(&v) {
         Value::Array(a) => Value::Array(a),
         Value::Null => Value::Array(PhpArray::new()),
+        // `(array)$object`: public properties become array elements keyed by
+        // name (visibility name-mangling for private/protected is not modelled).
+        Value::Object(h) => {
+            let mut a = PhpArray::new();
+            for (name, val) in &h.borrow().properties {
+                a.insert(
+                    phrust_values::ArrayKey::from_bytes(name.as_bytes()),
+                    deref(val),
+                );
+            }
+            Value::Array(a)
+        }
         scalar => {
             let mut a = PhpArray::new();
             a.push(scalar);

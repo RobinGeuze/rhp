@@ -1,0 +1,25 @@
+<?php
+echo 1/3, "\n";
+echo 2/3, "\n";
+echo 1.0, "\n";
+echo 100.0, "\n";
+echo 0.0001, "\n";
+echo 1e20, "\n";
+echo 1e-7, "\n";
+echo 123456789012345.0, "\n";
+echo 0.1, "\n";
+echo 3.14, "\n";
+echo -0.0, "\n";
+echo PHP_FLOAT_EPSILON, "\n";
+echo 1234567890123456789, "\n";
+echo 9999999999999999, "\n";
+echo (float)PHP_INT_MAX, "\n";
+echo 7.0 / 2, "\n";
+echo 10 / 2, "\n";
+var_dump(10 / 2);
+var_dump(7 / 2);
+echo json_encode(0.1 + 0.2), "\n";
+echo round(2.5), " ", round(3.5), " ", round(-2.5), "\n";
+echo round(1.95583, 2), "\n";
+echo round(1241757, -3), "\n";
+echo floor(-4.5), " ", ceil(-4.5), "\n";

@@ -1,0 +1,8 @@
+Hello World!
+Array access: a and b
+Upper: World
+Literal dollar: $x
+No $interpolation here
+Raw \n stays
+SELECT * FROM t WHERE id = 5 AND name = 'test'
+Property: value

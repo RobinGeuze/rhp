@@ -1,0 +1,10 @@
+the   #### (4)
+cat   ## (2)
+sat   ## (2)
+on    # (1)
+mat   # (1)
+ran   # (1)
+dog   # (1)
+top: the, cat
+2: on
+3: cat,dog,mat,ran,sat,the

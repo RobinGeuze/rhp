@@ -1,0 +1,21 @@
+<?php
+$a = range(1, 10);
+echo implode(",", array_slice($a, 2, 3)), "\n";
+echo implode(",", array_splice($a, 0, 2)), "\n";
+print_r($a);
+$m = ['b' => 2, 'a' => 1, 'c' => 3];
+asort($m); print_r($m);
+arsort($m); print_r($m);
+echo implode(",", array_keys(['x' => 1, 'y' => 2, 'z' => 1], 1)), "\n";
+$chunks = array_chunk(range(1, 7), 3);
+print_r($chunks);
+print_r(array_combine(['a', 'b', 'c'], [1, 2, 3]));
+print_r(array_flip(['a' => 1, 'b' => 2]));
+print_r(array_count_values([1, 1, 2, 3, 3, 3]));
+print_r(array_unique([1, 2, 2, 3, 3, 3, 1]));
+echo implode(",", array_diff([1, 2, 3, 4], [2, 4])), "\n";
+echo implode(",", array_intersect([1, 2, 3, 4], [2, 4, 6])), "\n";
+print_r(array_pad([1, 2], 4, 0));
+print_r(array_fill_keys(['a', 'b'], 0));
+echo array_product([1, 2, 3, 4]), "\n";
+print_r(array_map(null, [1, 2], ['a', 'b']));

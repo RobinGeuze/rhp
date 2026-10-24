@@ -1,0 +1,23 @@
+<?php
+var_export([1, 2, 3]);
+echo "\n";
+var_export(['a' => 1, 'b' => ['c' => 2]]);
+echo "\n";
+var_export("string with 'quotes'");
+echo "\n";
+var_export(3.14);
+echo "\n";
+var_export(true);
+echo "\n";
+var_export(null);
+echo "\n";
+var_export(['x' => true, 'y' => null, 'z' => 1.5]);
+echo "\n";
+$s = var_export([1, [2, [3]]], true);
+echo $s, "\n";
+var_export(PHP_INT_MAX);
+echo "\n";
+var_export(-0.0);
+echo "\n";
+var_export(1000000.0);
+echo "\n";

@@ -1,0 +1,510 @@
+# Extensions & native-library reuse
+
+**Status:** design / research. No engine behavior changes here.
+**Question:** can `phrust` reuse native C code to get byte-exact PHP behavior with
+less reimplementation, and if so, *which* native code and *how*?
+**Ground truth:** local `php` 8.5.8, PCRE 10.47 (2025-10-21), bundled `ext/json` 8.5.8.
+
+This doc distinguishes three very different things that all get called
+"extensions", gives a verdict on each, then proposes a concrete
+**native-backed builtin** architecture that fits the existing
+`registry()` / `Host` layering, and finishes with a ranked roadmap, a
+`json_decode` recommendation, and the build/portability consequences.
+
+---
+
+## 0. TL;DR verdicts
+
+| Category | Verdict | One-line reason |
+|---|---|---|
+| 1. Load compiled Zend extensions (`json.so`, `mbstring.so`) | **Infeasible** | They are ABI clients of the Zend Engine — zval layout, Zend MM, executor hooks. Loading one means *being* the Zend engine. |
+| 2. Link the C libs PHP builds on (pcre2, ICU, libxml2, OpenSSL, zlib, gmp/mpdecimal, oniguruma) | **Feasible** via `-sys` crates / bindgen | This is where byte-exactness actually lives. Caveat: must match PHP's *same lib + version + build options*, and account for PHP's own wrapping. |
+| 3. PHP's own C ext code that is *not* a system lib (`ext/json`, `ext/standard`) | **Feasible but a judgment call per-function** | Can vendor the C, bind a Rust crate + patch quirks, or reimplement. For `json_decode`: **reimplement in Rust against the differential harness** (recommended below). |
+
+The through-line: **phrust should not load extensions; it should selectively
+*link the same underlying libraries PHP links*, behind feature-gated
+"native-backed builtins", and reimplement the small amount of logic that is
+PHP-proprietary C rather than a shared library.**
+
+---
+
+## 1. Category 1 — loading compiled Zend extensions (`.so`): INFEASIBLE
+
+### What a Zend extension actually is
+
+A distro `json.so` / `mbstring.so` is **not** a freestanding C library with a
+neutral C ABI. It is compiled against `php-src`'s internal headers and is a
+client of the **Zend Engine ABI**. Concretely, a module's functions receive
+and manipulate:
+
+- **`zval`** — the 16-byte tagged union (`zend_value` + `u1`/`u2` type-info
+  words), with reference-counted `zend_refcounted` payloads (`zend_string`,
+  `zend_array` aka HashTable, `zend_object`, `zend_reference`). Every argument
+  arrives as a `zval*`, and return values are written through
+  `return_value`/`ZVAL_*` macros. The *memory layout* is the contract.
+- **`INTERNAL_FUNCTION_PARAMETERS`** — the hidden calling convention
+  (`execute_data`, `return_value`), and `ZEND_PARSE_PARAMETERS_*` /
+  `zend_parse_parameters` for arg coercion, which itself calls back into the
+  engine's type-juggling and error machinery.
+- **The Zend Memory Manager** — `emalloc`/`efree`/`erealloc`, a custom
+  per-request arena allocator. zvals and `zend_string`s must be allocated and
+  freed through it; their refcounting interlocks with the GC.
+- **Module lifecycle hooks** — `zend_module_entry` with
+  `MINIT`/`MSHUTDOWN`/`RINIT`/`RSHUTDOWN`/`MINFO`, the `ZEND_GET_MODULE`
+  symbol, and a `ZEND_MODULE_API_NO` (the ABI stamp, e.g. `20240924`) that the
+  engine checks on `dlopen` and *rejects on mismatch*.
+- **Executor and INI hooks** — extensions register INI entries, opcode
+  handlers, `zend_execute_ex`/`zend_compile` overrides (opcache, xdebug),
+  resource destructors, class entries, and stream wrappers — all against engine
+  globals (`EG(...)`, `CG(...)`, `PG(...)`).
+
+### Why loading one into phrust is effectively reimplementing Zend
+
+To `dlopen` a stock `json.so` and call into it, phrust would have to present,
+byte-for-byte, the Zend engine it was compiled against:
+
+1. **Replicate the exact `zval`/HashTable/`zend_string` memory layout** for the
+   target PHP version and build (NTS vs ZTS changes struct shapes; debug builds
+   add fields). phrust's `Value` is a Rust enum with `Rc<BString>` strings and
+   an `indexmap`-backed array — a *completely different* representation. Every
+   call boundary would need a bidirectional, allocation-correct zval marshaller.
+2. **Provide the Zend MM, the GC, and all `EG`/`CG`/`PG` globals** the module
+   touches, with matching semantics, because the `.so` frees what it allocated
+   and expects the engine's refcount/GC invariants.
+3. **Match the `ZEND_MODULE_API_NO`** and the entire exported symbol surface
+   (`zend_parse_parameters`, `zend_hash_*`, `zend_throw_exception`,
+   `zend_register_*`, hundreds of symbols), with identical behavior — the `.so`
+   is dynamically linked against these and will resolve them against *our*
+   process. Any divergence is UB, not a graceful error.
+4. **Pin ABI per PHP patch build**. The layout and symbol set are stable only
+   within an API-number window; a user's `json.so` from a different distro
+   build can mismatch.
+
+That is not "loading an extension" — it is shipping a binary-compatible
+reimplementation of the Zend Engine's runtime and ABI, which is the entire
+thing phrust set out *not* to be (register VM + owned `Value`s, PHP strings as
+`Rc<BString>`, no Zend internals). It also directly conflicts with phrust's
+"no `eval`, structural refusals, everything owned/`'static`" posture, and would
+re-import exactly the C-level memory-safety surface the project is replacing.
+
+**Verdict: do not attempt.** There is no partial win here: a Zend extension is
+all-or-nothing against the engine ABI. (The only theoretical carve-out — a
+pure, self-contained leaf function that never allocates a zval or touches a
+global — does not exist in practice among the real extensions anyone wants.)
+
+> Note on FFI subagents / "out-of-process PHP": one could shell out to a real
+> `php` to service specific calls, but that is adopting PHP, not reusing an
+> extension in phrust, and it reintroduces a PHP runtime dependency the project
+> is eliminating. Out of scope.
+
+---
+
+## 2. Category 2 — linking the C libraries PHP builds on: FEASIBLE
+
+This is the productive path. Many PHP functions are thin wrappers over a
+*general-purpose* C library with a **stable, neutral C ABI** that is already
+exposed to Rust via maintained `-sys` crates (or is trivially bindgen-able):
+
+| PHP surface | Underlying C lib | Rust binding |
+|---|---|---|
+| `preg_*` | **PCRE2** (`libpcre2-8`) | `pcre2-sys` / `pcre2` crate |
+| `intl`, parts of `mbstring` (casing, collation, normalization), `IntlDateFormatter` | **ICU** (`libicui18n`/`libicuuc`) | `icu`/`rust_icu_*` (bindgen over system ICU), or ICU4X (pure Rust, *different data*) |
+| `mb_ereg*` | **Oniguruma** (`libonig`) | `onig` crate |
+| `dom`, `simplexml`, `xml` | **libxml2** | `libxml`/bindgen |
+| `openssl`, `hash` (some), `sodium` | **OpenSSL**, **libsodium** | `openssl`/`openssl-sys`, `libsodium-sys` |
+| `zlib`, `gzencode`, `gzip` streams | **zlib** | `libz-sys`/`flate2` (zlib backend) |
+| `bcmath` | **libmpdec** (mpdecimal) | bindgen (no mature crate) |
+| `gmp` | **GMP** | `rug`/`gmp-mpfr-sys` |
+
+### Why it is feasible
+
+These libraries expose plain C functions over plain C types (`pcre2_compile`,
+`u_strToUpper`, `BN_*`, `mpd_*`). There is no engine ABI, no zval, no shared
+allocator requirement at the call boundary — phrust converts `&[u8]` ↔ the
+lib's input/output buffers at the FFI edge and keeps its own `Value`
+representation everywhere else. The existing `registry()` + `NativeFn`
+signature already isolates each builtin, so a native backend is a drop-in body
+swap for one function.
+
+### The compatibility caveat (this is the whole game)
+
+Byte-exactness with PHP requires matching **the same library, the same major
+version, and the same build options** PHP used — *and* reproducing PHP's own
+wrapper logic around it:
+
+- **Same engine, not a sibling.** `fancy-regex` (what `preg_*` uses today, see
+  `crates/phrust-builtins/src/preg_fns.rs`) is a *different* regex engine from
+  PCRE2. Its header comment already enumerates the divergences it cannot avoid:
+  possessive quantifiers, recursion/subroutines (`(?R)`, `(?1)`, `\g<1>`),
+  `\G`, `(?'name'…)`, and `\d\w\s` being Unicode-aware vs PCRE's ASCII-default.
+  Those are *semantic* mismatches no amount of wrapping fixes — only PCRE2
+  itself matches PCRE2.
+- **Version matters.** PCRE2 10.47 (what this PHP ships) and ICU releases change
+  matchable Unicode property data, collation tables, and casing between
+  versions. ICU is the worst offender: output depends on the **CLDR/ICU data
+  version**, so even "the same ICU API" gives different collation keys across
+  ICU majors. Matching PHP means matching PHP's ICU *data*, not just its API.
+- **PHP wraps/patches behavior.** PHP does not call these libs raw:
+  - PCRE: PHP parses the `/pat/flags` delimiter syntax, maps modifier letters
+    to PCRE2 option bits, sets its own `pcre.backtrack_limit` /
+    `pcre.recursion_limit` / `pcre.jit`, and does its own UTF-8 validation and
+    `$matches` array shaping. All of that is PHP code wrapping PCRE2, and must
+    be reproduced in phrust regardless of the backend.
+  - mbstring: PHP has its own encoding tables and `mbstring.*` INI handling on
+    top of whatever lib does the casing.
+  - bcmath: `libmpdec` gives arbitrary-precision decimals, but PHP's scale
+    handling, rounding mode, and string formatting are PHP's.
+  So "link the C lib" removes the *algorithm* reimplementation, not the
+  *PHP-wrapper* reimplementation. The wrapper is where the differential harness
+  earns its keep.
+
+**Verdict: adopt selectively, as opt-in native backends, with the differential
+harness as the acceptance gate.** The pcre2 swap is the canonical first case.
+
+---
+
+## 3. Category 3 — PHP's own C ext code (`ext/json`, `ext/standard`): per-function judgment
+
+`ext/json` is the instructive case: there is **no system `libjson`**. PHP's JSON
+is bespoke C in `php-src/ext/json/` — a hand-written recursive-descent parser
+(`json_parser.y` → `json_parser.tab.c`), a scanner (`json_scanner.re`), and an
+encoder — none of it a shared library. So "link the lib PHP uses" does not
+apply; the only options are:
+
+- **(a) Vendor/bind php-src's `ext/json` C.** Pulls the exact parser, so
+  byte-exactness is free. But: it is written against zval/HashTable/zend_string
+  and the Zend MM (same ABI problem as Category 1, in miniature) — you'd write
+  a zval↔`Value` shim for just this subtree, carry a C toolchain + a chunk of
+  GPL-adjacent… (actually PHP license) C, and still have to translate its
+  depth/flags/error machinery to phrust's. Lots of C surface for one function
+  family.
+- **(b) Use a Rust JSON crate (`serde_json`) and patch PHP's quirks.** Low
+  effort to start, but a stock crate misses many PHP-specific behaviors (listed
+  in §5) and some are *hard* to retrofit onto serde (big-int-as-string, PHP's
+  array-key normalization, PHP's exact error codes/messages, depth counting).
+- **(c) Reimplement in Rust against the differential harness.** A focused
+  recursive-descent decoder over `&[u8]` that targets php's observable behavior
+  directly. More up-front code than (b), but *every* quirk is expressible and
+  each is pinned by a golden test. This matches how `json_encode`,
+  `serialize`/`unserialize`, and the `preg_*` family were already built here.
+
+**Verdict: (c) for `json_decode`** (full recommendation + quirk list + test plan
+in §5). `ext/standard` functions are already being reimplemented one-by-one in
+`phrust-builtins` and should continue that way; reach for Category-2 linking
+only where a function *is* a thin wrapper over a shared lib (regex, intl, gmp).
+
+---
+
+## 4. The "native-backed builtin" architecture
+
+Goal: let a single builtin delegate to a `-sys` crate **without** (a) forcing
+that C dependency on every build, (b) changing the `registry()` / `Host`
+contract, or (c) weakening the differential guarantee. The current layering
+makes this clean — `phrust-builtins` depends only on `phrust-values` +
+`phrust-semantics`, and each builtin is a `NativeFn = fn(&mut dyn Host,
+&[Value]) -> Result<Value, Thrown>` looked up by name in `registry()`
+(`crates/phrust-builtins/src/lib.rs:78`, `:101`).
+
+### 4.1 Feature-gating (pure-Rust build stays the default)
+
+Add Cargo features to `phrust-builtins`, off by default, one per native backend:
+
+```toml
+# crates/phrust-builtins/Cargo.toml
+[features]
+default = []
+native-pcre2 = ["dep:pcre2"]
+native-icu   = ["dep:rust_icu_ucol", "dep:rust_icu_ustring"]
+native-gmp   = ["dep:rug"]
+# umbrella for distro-parity builds:
+native-all   = ["native-pcre2", "native-icu", "native-gmp"]
+
+[dependencies]
+fancy-regex = "0.13"          # pure-Rust fallback, always present
+pcre2       = { version = "0.2", optional = true }
+rug         = { version = "1", optional = true }
+```
+
+The crate always compiles with zero native libs (today's behavior). A parity
+build opts in with `--features native-all`. `phrust-vm`, `phrust-oracle`, and
+`phrust-cli` forward the feature (`phrust-vm/native-pcre2 =
+["phrust-builtins/native-pcre2"]`) so a single top-level flag selects the build.
+
+### 4.2 One builtin, two backends, one public body
+
+Keep the *builtin function* identical; switch only its engine via `cfg`. Using
+`preg_match` as the worked example (today it calls `compile()` →
+`fancy_regex::Regex` in `preg_fns.rs:170`):
+
+```rust
+// preg_fns.rs — a backend module boundary, selected at compile time.
+#[cfg(not(feature = "native-pcre2"))]
+#[path = "regex_backend/fancy.rs"]
+mod regex_backend;
+#[cfg(feature = "native-pcre2")]
+#[path = "regex_backend/pcre2.rs"]
+mod regex_backend;
+
+// Both backends expose the SAME small internal API, so the PHP-wrapper code
+// (delimiter parsing, flag mapping, $matches shaping, PREG_* handling) is
+// written ONCE and is backend-agnostic:
+//
+//   fn compile(body: &[u8], opts: PcreOpts) -> Result<CompiledRe, CompileErr>;
+//   impl CompiledRe {
+//       fn find_at(&self, subj: &[u8], start: usize) -> Option<MatchSet>;
+//   }
+//
+// MatchSet reports byte offsets + group spans in terms of the ORIGINAL bytes,
+// so the array-building code never knows which engine produced it.
+```
+
+Key design rules this encodes:
+
+- **The PHP wrapper lives above the backend split.** Delimiter parsing, modifier
+  → option mapping, UTF-8 validation, `$matches`/`PREG_OFFSET_CAPTURE` shaping,
+  and `preg_last_error` stay in shared code. Only the "compile a body + find"
+  primitive is swapped. (This is the §2 lesson: linking the lib removes the
+  algorithm, not the wrapper.)
+- **FFI stays at the leaf.** The `pcre2.rs` backend is the *only* file that
+  touches the `-sys` crate; it converts `&[u8]` ↔ PCRE2 buffers and returns
+  plain Rust structs. No FFI type escapes into `Value` or the `Host` boundary.
+- **`Host` is untouched.** Native backends need no new `Host` methods — they
+  operate on owned `Value`s exactly like every other builtin. (If a native lib
+  ever needs an engine service, e.g. INI like `pcre.backtrack_limit`, that
+  would be a *new, defaulted* `Host` method, mirroring how `get_const` /
+  `call_callable` were added in `lib.rs:61`/`:66` — never a breaking change.)
+- **Byte-string discipline survives.** phrust strings are bytes
+  (`Rc<BString>`). The backend API is `&[u8]`-in / byte-offsets-out, so we drop
+  the `from_utf8_lossy` offset-shifting caveat that the fancy-regex backend
+  documents (`preg_fns.rs:17-25`) — PCRE2 matches bytes natively. This is itself
+  a correctness win, not only a feature win.
+
+### 4.3 Keeping byte-exactness tested (the differential harness is the gate)
+
+The harness in `crates/phrust-cli/tests/diff.rs` holds the VM strictly to
+committed `.out` files captured from php 8.5.8, over `tests/golden/*.php`. Make
+the native backend subordinate to it:
+
+1. **Same fixtures, both backends.** Golden `.out`s are captured from php once.
+   Run the suite twice in CI: `cargo test` (pure-Rust) and
+   `cargo test --features native-all`. The native build must pass the *same*
+   `.out`s — that is the definition of "byte-exact with PHP".
+2. **A backend-parity gate.** For functions with both backends, add a test that
+   asserts fancy-vs-pcre2 agree on a corpus (and both agree with php). Where
+   they *cannot* agree (the fancy-regex limitations list), the fixture is a
+   "native-only" case: gate it `#[cfg(feature = "native-pcre2")]` so the
+   pure-Rust build legitimately skips it rather than failing — analogous to how
+   the oracle *skips* features it doesn't implement (`diff.rs:100-101`).
+3. **Capture provenance.** Record, next to the goldens, the exact lib versions
+   PHP used (PCRE 10.47, ICU X, JSON 8.5.8 — from `PCRE_VERSION`,
+   `INTL_ICU_VERSION`). A native build that links a *different* version is
+   expected to diverge on version-sensitive fixtures; the harness turns that
+   into a visible failure instead of silent drift.
+4. **Fuzz the wrapper, not the lib.** Differentially fuzz `phrust preg_match`
+   vs `php -r` on random patterns/subjects; the lib is PHP's own, so surviving
+   diffs are wrapper bugs.
+
+This gives the property the project wants: the pure-Rust build is always
+correct-or-skips, and the native build is correct-or-fails — both measured
+against real php output, never against each other alone.
+
+---
+
+## 5. `json_decode` — concrete recommendation
+
+`json_decode` is **not implemented today** (only `json_encode`, in
+`crates/phrust-builtins/src/misc_fns.rs:133`). So this is a greenfield decision.
+
+**Recommendation: option (c) — reimplement in Rust** as a byte-oriented
+recursive-descent decoder in `phrust-builtins`, no external crate, pinned by
+the differential harness. Rationale: it is a few hundred lines, every PHP quirk
+below is directly expressible, it keeps the pure-Rust / no-C-toolchain default,
+and it matches how `json_encode`/`serialize`/`preg_*` were built. `serde_json`
+is rejected because retrofitting PHP's big-int/array-key/error semantics onto it
+is more fragile than a purpose-built decoder; vendoring `ext/json` C is rejected
+for the zval-shim cost (§3a).
+
+### PHP quirks a naive Rust crate would miss (all verified against php 8.5.8)
+
+| Quirk | PHP 8.5.8 behavior (observed) |
+|---|---|
+| **assoc flag** | `$assoc=true` (or `JSON_OBJECT_AS_ARRAY` flag) → objects become arrays; default → `stdClass` with dynamic props. `json_decode('{"a":1}')` → `object(stdClass)`; with `true` → `array`. |
+| **object key normalization** | When assoc, string keys that look like canonical ints are normalized to int keys: `json_decode('{"0":"a","1":"b"}', true)` → `[0=>"a", 1=>"b"]` (int keys, like all PHP arrays). A JSON-crate map keeps them as strings. |
+| **big ints → float** | Integers that overflow `i64` become `float` by default: `12345678901234567890` → `float(1.23…E+19)`; `9223372036854775808` (INT_MAX+1) → float. `PHP_INT_MAX` itself stays `int`. |
+| **`JSON_BIGINT_AS_STRING`** | Same overflow input → `string(20) "12345678901234567890"` instead of float. |
+| **int vs float distinction** | `1` → `int(1)`; `1.0` → `float(1)`; `1e3` → `float(1000)`; `-0` → `float(-0)`; `-0.0` → `float(-0)`. A crate that yields one numeric type, or parses `-0` as int, diverges. |
+| **depth limit (default 512)** | Counts *nesting*, and the top container counts: `json_decode('[1]', true, 1)` → `NULL` + error 1 "Maximum stack depth exceeded"; `json_decode('1', true, 1)` is fine (scalar). `json_decode('[[[1]]]', true, 2)` → error. Off-by-one vs most crates. |
+| **trailing data** | `json_decode('1 2')` → `NULL`, error 4 "Syntax error". Leading/trailing *whitespace* is OK; trailing *tokens* are not. |
+| **strict grammar** | No trailing commas (`[1,]` → NULL/syntax), no leading zeros (`01` → NULL/syntax), no comments, no single quotes, no bare/unquoted keys. Stricter than JSON5-ish crates. |
+| **bare scalars** | Top-level `true`/`null`/`"x"`/`42` all decode (RFC 7159). Note `null` input is indistinguishable from failure by return value → **must** check `json_last_error()`. |
+| **duplicate keys** | Last wins: `{"a":1,"a":2}` → `a=2`. (serde_json default also last-wins, but confirm.) |
+| **UTF-8 validation** | Invalid UTF-8 in the *input* → `NULL`, error 5 "Malformed UTF-8 characters…". `"\xff\xfe"` fails. PHP validates the whole input is UTF-8. |
+| **`\uXXXX` / surrogates** | Decodes `\u` escapes incl. surrogate pairs to UTF-8 bytes; lone/invalid surrogates are errors (code 5/6 depending). |
+| **empty string** | `json_decode('')` → `NULL`, error 4 "Syntax error" (not error-free null). |
+| **error codes** | `json_last_error()` / `json_last_error_msg()` return a specific code: `0` none, `1` max depth, `3` ctrl char, `4` syntax, `5` UTF-8, `6` UTF-16, `10` invalid property name. These are observable API. |
+| **`JSON_THROW_ON_ERROR`** | Throws `JsonException` instead of returning `NULL` + setting last-error. Needs the exception prelude hookup. |
+| **`json_last_error` is global state** | Set per-call, read later. Needs a place to live (see below). |
+
+### Where `json_last_error` state lives
+
+`json_last_error`/`_msg` read state set by the previous `json_*` call. phrust
+builtins are stateless `fn`s, so this is the one piece that needs a home.
+Cleanest fit: a **new defaulted `Host` method pair**
+(`set_json_last_error(code)` / `json_last_error() -> i64`), mirroring the
+existing `define_const`/`get_const` pattern (`lib.rs:55-63`). The VM stores a
+single `i64` in request state; the oracle can store it too or refuse
+`json_last_error` (harness then skips it, per `diff.rs:100`). `JSON_THROW_ON_ERROR`
+returns `Err(Thrown::Object(...))` built from the prelude's `JsonException`.
+
+### Test plan
+
+1. **Golden fixtures** under `tests/golden/json_decode_*.php`, each `.out`
+   captured from php 8.5.8, covering every row above (one quirk per fixture, so
+   failures are legible). Seed set = the probe script used to verify this table.
+2. **Round-trip fixtures**: `json_decode(json_encode($x))` structural identity
+   for the already-tested `json_encode` corpus.
+3. **assoc × flags matrix**: each input × `{assoc true/false}` ×
+   `{0, BIGINT_AS_STRING, OBJECT_AS_ARRAY, THROW_ON_ERROR}`.
+4. **Error-path fixtures**: every malformed input asserts both the return
+   (`NULL`/throw) *and* `json_last_error()` + `json_last_error_msg()`.
+5. **Differential fuzz**: random JSON (and random bytes) vs `php -r
+   'echo json_encode([json_decode($s, true), json_last_error()]);'`.
+
+---
+
+## 6. Ranked roadmap: native-backed vs stay-pure-Rust
+
+Ranked by **(benefit of native backing) ÷ (cost + portability hit)**. "Benefit"
+= how much byte-exactness or reimplementation is bought; "cost" = C toolchain,
+version-pinning fragility, cross-compile pain.
+
+### Tier 1 — native backing clearly wins (do these)
+
+1. **Regex — PCRE2** (`pcre2` crate). *Highest value.* It is the one area where a
+   pure-Rust engine (`fancy-regex`) is a *different regex language* and can
+   never be byte-exact (possessive quantifiers, recursion, `\G`, ASCII `\d`,
+   JIT backtrack limits). PCRE2 *is* what PHP runs. The §4.2 worked example is
+   built for exactly this. **Caveat:** pin to PHP's PCRE2 major (10.47 here);
+   bundle it for reproducibility (§7). Keep fancy-regex as the no-C fallback for
+   the common pattern subset.
+
+2. **intl / collation / normalization — ICU** (`rust_icu_*` over system ICU).
+   High value *because it is effectively impossible to match otherwise* —
+   collation keys, locale casing, `Normalizer`, `IntlDateFormatter`,
+   `MessageFormatter` all depend on ICU's data tables. **Heaviest caveat:**
+   output is tied to the **ICU data version** PHP was built with, so even "ICU
+   the API" diverges across majors. ICU4X (pure Rust) is tempting for the no-C
+   build but ships *different* CLDR data → not byte-exact. Recommendation: ICU
+   is opt-in only; without it, refuse `intl` (structural refusal, consistent
+   with the project's posture) rather than approximate it.
+
+### Tier 2 — native backing worth it for arbitrary-precision correctness
+
+3. **gmp / bcmath — GMP (`rug`) / mpdecimal (bindgen).** `gmp` is unbounded
+   integers — a pure-Rust bignum (`num-bigint`/`rug`'s Rust mode) can be
+   byte-exact since the *numbers* are exact; the lib choice is about speed, not
+   correctness, so this is lower-urgency. `bcmath` needs decimal semantics
+   (scale, rounding) — `libmpdec` gives the arithmetic but PHP's scale/format
+   wrapper is the real work; a careful Rust decimal impl can also be exact.
+   **Verdict:** can stay pure-Rust for correctness; adopt `rug`/mpdecimal only
+   if performance matters. Lower priority than Tier 1.
+
+4. **Hashing / crypto — prefer pure-Rust (`sha2`, `md-5`, `ring`), OpenSSL only
+   where required.** Hash *outputs* are standardized → pure-Rust crates are
+   byte-exact and avoid the OpenSSL build dependency. Reach for `openssl` only
+   for `openssl_*` (TLS, X.509, EVP ciphers) where reimplementation is
+   unreasonable. So: hashing = stay pure-Rust (high value, no native need);
+   `ext/openssl` = native OpenSSL, opt-in, if/when attempted.
+
+### Tier 3 — stay pure-Rust (native backing buys little)
+
+5. **json** (`json_decode`/`encode`) — **stay pure-Rust** (§5). No system lib
+   exists; PHP's own C is zval-bound; a focused Rust decoder is byte-exact and
+   keeps the default build C-free.
+
+6. **date / time — stay pure-Rust** (`chrono` + `chrono-tz`, or hand-rolled).
+   `DateTime`/`date()` is proprietary PHP logic over the IANA tz database, not a
+   C lib. `chrono-tz` bundles the tz data (pin its release near PHP's). Native
+   ICU would *change* behavior (ICU calendar), not match `date()`. No native win.
+
+7. **mbstring core (encoding conversion, `mb_substr`, `mb_strlen`) —
+   mostly pure-Rust.** The encoding tables are the work; `encoding_rs` covers the
+   common ones. Only the *Unicode-property* pieces (`mb_convert_case` title-case,
+   full casing) really want ICU — route those to the Tier-1 ICU backend when
+   enabled, refuse/approximate otherwise. `mb_ereg*` specifically wants
+   **Oniguruma** (`onig`), since it *is* oniguruma in PHP — treat like regex
+   (opt-in native), but it is niche → low priority.
+
+8. **libxml2 (dom/simplexml) — defer.** Large surface, and `quick-xml`/`roxmltree`
+   are *different* parsers (error recovery, entity handling differ from
+   libxml2). If strict parity is needed, bind libxml2 (feasible, Category 2);
+   otherwise defer the whole DOM family.
+
+9. **zlib — pure-Rust `flate2` (miniz) or `flate2` with zlib backend.** Deflate
+   output can differ *byte-for-byte* across zlib/miniz at identical compression
+   levels. If `gzencode` byte-parity is required, use `flate2`'s zlib-ng/zlib
+   backend (native); otherwise pure-Rust is fine for decompression and for
+   round-trip-only uses. Low priority.
+
+**Summary ordering:** PCRE2 (now) → ICU (when `intl` is on the roadmap) →
+leave json/date/hash/mbstring-core pure-Rust → gmp/bcmath/openssl/libxml2/zlib
+opt-in only when a concrete parity requirement forces it.
+
+---
+
+## 7. Build & portability implications
+
+Every Category-2 adoption adds a C dependency, so the architecture makes them
+**opt-in** precisely to protect the default developer and CI experience.
+
+- **Pure-Rust default stays toolchain-free.** `cargo build` with no features
+  needs no C compiler, no system libs — today's state (only `fancy-regex`).
+  This is the contract for `default = []` in §4.1 and must not regress.
+- **C toolchain for native features.** `--features native-pcre2` etc. require a
+  C compiler and, for system-lib `-sys` crates, the dev headers (`pkg-config`
+  finds them). This is the cost that keeps these gated.
+- **Bundled vs system libs — bundle for byte-exactness.** A *system* PCRE2/ICU
+  is whatever the build host ships, which defeats version-pinning (§2 caveat).
+  Prefer `-sys` crates in **vendored/bundled mode** (`pcre2-sys` builds a pinned
+  PCRE2 from source; `icu`/`rug` can vendor) so the binary carries the *exact*
+  version matched to the goldens. Trade-off: longer builds, larger binary. For
+  ICU specifically, bundling the **data** is the hard part (tens of MB) — this
+  is a real reason ICU stays opt-in.
+- **Cross-compilation.** Pure-Rust cross-compiles trivially. Each native lib
+  adds a cross-toolchain + target build of that C lib (ICU cross-builds are
+  notoriously painful). Vendored `-sys` crates help (they build the lib in the
+  target's cc), but this is the strongest practical argument for keeping native
+  backends optional and the pure-Rust path first-class.
+- **Licensing.** PCRE2 (BSD), ICU (ICU/Unicode license), zlib (zlib) are
+  permissive and compatible with phrust's `MIT OR Apache-2.0`. GMP is
+  **LGPL/GPL dual** — `rug`'s GMP backend pulls LGPL; relevant if phrust ever
+  ships static binaries. Vendoring php-src's `ext/json` C would carry the PHP
+  license. Note each in the opt-in docs.
+- **Future Cranelift JIT.** Native backends are a *non-issue* for the planned
+  JIT. The JIT lowers phrust's own ISA (opcodes that delegate to
+  `ops`/`conv`/`registry()`); a builtin call remains a call into the registry
+  regardless of whether that builtin's body is pure-Rust or an FFI leaf. The JIT
+  never needs to inline through FFI — it emits a call to the same `NativeFn`
+  pointer the VM uses. The one rule: **keep FFI at the leaf** (§4.2) so the
+  JIT-visible surface is pure-Rust calling conventions, and the C library is an
+  ordinary linked dependency the JIT'd code calls like any other function. This
+  is another reason FFI types must never leak into `Value` or the ISA.
+
+---
+
+## 8. Recommended next steps (actionable)
+
+1. **Implement `json_decode` in pure Rust** (§5) — it is a live gap, greenfield,
+   high-value, and needs no new dependency. Add the `Host` last-error hook and
+   the golden/fuzz suite. *(Do first; unblocks real programs.)*
+2. **Introduce the feature-gate scaffolding** (§4.1) with `native-pcre2` as the
+   first flag, and refactor `preg_fns.rs` to the backend-split shape (§4.2) with
+   `fancy-regex` as `default` and a `pcre2` backend behind the flag. Run the
+   golden suite under both in CI.
+3. **Add provenance capture** (PCRE/ICU/JSON versions) next to the goldens and a
+   native-vs-pure parity test, so divergence is a visible CI failure.
+4. **Defer ICU/intl** until there is a concrete `intl` requirement; when it
+   comes, adopt it strictly opt-in with bundled data, and *refuse* intl in the
+   pure-Rust build rather than approximate.
+5. **Keep date, hashing, mbstring-core, and json pure-Rust**; adopt
+   gmp/bcmath/openssl/libxml2/zlib natives only against a specific parity need.

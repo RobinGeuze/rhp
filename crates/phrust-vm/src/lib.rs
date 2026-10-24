@@ -704,13 +704,40 @@ impl Vm {
                             self.reg_set(top, arr_reg, Value::Array(a));
                             self.reg_set(top, pos_reg, Value::Int(0));
                         }
-                        // A Generator (or other object) is driven by the iterator
-                        // protocol in FeFetch; just start it and stash the object.
-                        Value::Object(h) if self.generators.contains_key(&h.borrow().id) => {
-                            let id = h.borrow().id;
-                            self.gen_ensure_started(id)?;
-                            self.reg_set(top, arr_reg, Value::Object(h));
-                            self.reg_set(top, pos_reg, Value::Int(0));
+                        Value::Object(h) => {
+                            // Resolve the thing we actually iterate: IteratorAggregate
+                            // delegates to getIterator(); Generators / Iterators drive
+                            // the protocol in FeFetch; a plain object iterates its
+                            // accessible properties (snapshotted to an array).
+                            let mut obj = h;
+                            if self.class_implements(obj.borrow().class, b"IteratorAggregate") {
+                                match self.call_iter_method(&obj, b"getiterator")? {
+                                    Value::Object(it) => obj = it,
+                                    _ => {
+                                        self.stack[top].pc = end as usize;
+                                        continue;
+                                    }
+                                }
+                            }
+                            let oid = obj.borrow().id;
+                            let ocls = obj.borrow().class;
+                            if self.generators.contains_key(&oid) {
+                                self.gen_ensure_started(oid)?;
+                                self.reg_set(top, arr_reg, Value::Object(obj));
+                                self.reg_set(top, pos_reg, Value::Int(0));
+                            } else if self.class_implements(ocls, b"Iterator") {
+                                self.call_iter_method(&obj, b"rewind")?;
+                                self.reg_set(top, arr_reg, Value::Object(obj));
+                                self.reg_set(top, pos_reg, Value::Int(0));
+                            } else {
+                                let arr = self.object_prop_array(&obj, top);
+                                if arr.is_empty() {
+                                    self.stack[top].pc = end as usize;
+                                } else {
+                                    self.reg_set(top, arr_reg, Value::Array(arr));
+                                    self.reg_set(top, pos_reg, Value::Int(0));
+                                }
+                            }
                         }
                         // empty array or non-iterable: skip the loop
                         _ => self.stack[top].pc = end as usize,
@@ -735,6 +762,26 @@ impl Vm {
                                 let (k, v) = (g.current_key.clone(), g.current_val.clone());
                                 self.cv_assign(top, val_cv, v);
                                 if key_cv != Reg::MAX {
+                                    self.cv_assign(top, key_cv, k);
+                                }
+                                self.reg_set(top, pos_reg, Value::Int(1));
+                            }
+                            continue;
+                        }
+                        // User Iterator object: rewind()/valid()/current()/key()/next().
+                        if self.class_implements(h.borrow().class, b"Iterator") {
+                            let first = matches!(self.reg_get(top, pos_reg), Value::Int(0));
+                            if !first {
+                                self.call_iter_method(&h, b"next")?;
+                            }
+                            let valid = conv::to_bool(&self.call_iter_method(&h, b"valid")?);
+                            if !valid {
+                                self.stack[top].pc = end as usize;
+                            } else {
+                                let v = self.call_iter_method(&h, b"current")?;
+                                self.cv_assign(top, val_cv, v);
+                                if key_cv != Reg::MAX {
+                                    let k = self.call_iter_method(&h, b"key")?;
                                     self.cv_assign(top, key_cv, k);
                                 }
                                 self.reg_set(top, pos_reg, Value::Int(1));
@@ -1482,6 +1529,42 @@ impl Vm {
                 }
             }
         }
+    }
+
+    /// Does `class_id`'s ancestor set include the named interface/class?
+    fn class_implements(&self, class_id: ClassId, name: &[u8]) -> bool {
+        match self.resolve_class_by_name(name) {
+            Ok(target) => self.classes[class_id as usize].ancestors.contains(&target),
+            Err(_) => false,
+        }
+    }
+
+    /// Call a zero-argument method on an object (for the iterator protocol).
+    fn call_iter_method(&mut self, h: &ObjectHandle, name: &[u8]) -> Result<Value, Thrown> {
+        let cls = h.borrow().class;
+        let m = self
+            .lookup_method(cls, name)
+            .ok_or_else(|| Thrown::error("Error", "Iterator method not found"))?;
+        self.call_sync(&m, Some(h.clone()), cls, Vec::new())
+    }
+
+    /// Snapshot an object's accessible (public from `caller` scope) properties as
+    /// an array, for `foreach` over a plain object.
+    fn object_prop_array(&self, h: &ObjectHandle, top: usize) -> PhpArray {
+        let caller = self.stack[top].defining_class;
+        let b = h.borrow();
+        let cls = b.class;
+        let mut arr = PhpArray::new();
+        for (name, val) in &b.properties {
+            let visible = match self.class(cls).props.get(name) {
+                Some(pe) => self.check_access(caller, pe.declaring_class, pe.visibility),
+                None => true, // dynamic properties are public
+            };
+            if visible {
+                arr.insert(ArrayKey::from_bytes(name.as_bytes()), deref(val).clone());
+            }
+        }
+        arr
     }
 
     /// Wrap a prepared (but not pushed) frame as a `Generator` object; the body

@@ -9,6 +9,11 @@ publish.workspace = true
 name = "phrust"
 path = "src/main.rs"
 
+[features]
+default = []
+# Enable the Zend macro-shim prototype builtins (__zendshim_*). Off by default.
+zendshim = ["phrust-vm/zendshim", "phrust-oracle/zendshim"]
+
 [dependencies]
 phrust-oracle = { path = "../phrust-oracle" }
 phrust-compiler = { path = "../phrust-compiler" }

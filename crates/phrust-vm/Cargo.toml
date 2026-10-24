@@ -5,6 +5,10 @@ version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+zendshim = ["phrust-builtins/zendshim"]
+
 [dependencies]
 phrust-values = { path = "../phrust-values" }
 phrust-bytecode = { path = "../phrust-bytecode" }

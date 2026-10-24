@@ -560,6 +560,7 @@ dependencies = [
  "pcre2-sys",
  "phrust-semantics",
  "phrust-values",
+ "phrust-zendshim",
 ]
 
 [[package]]
@@ -640,6 +641,14 @@ dependencies = [
  "phrust-semantics",
  "phrust-values",
  "rustc-hash",
+]
+
+[[package]]
+name = "phrust-zendshim"
+version = "0.0.0"
+dependencies = [
+ "cc",
+ "phrust-values",
 ]
 
 [[package]]

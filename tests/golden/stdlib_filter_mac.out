@@ -1,0 +1,12 @@
+string(17) "AA:BB:CC:DD:EE:FF"
+string(17) "aa:bb:cc:dd:ee:ff"
+string(17) "AA-BB-CC-DD-EE-FF"
+string(14) "AABB.CCDD.EEFF"
+string(14) "1A2B.3C4D.5E6F"
+string(17) "00:00:00:00:00:00"
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)

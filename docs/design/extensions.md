@@ -18,6 +18,7 @@ This doc distinguishes three very different things that all get called
 | Category | Verdict | One-line reason |
 |---|---|---|
 | 1. Load compiled Zend extensions (`json.so`, `mbstring.so`) | **Infeasible** | They are ABI clients of the Zend Engine — zval layout, Zend MM, executor hooks. Loading one means *being* the Zend engine. |
+| 1b. Compile ext *source* against a macro shim (§9, prototyped) | **Situational** | Recompiling the `.c` against our own Zend macros works and is byte-exact for small/self-contained (esp. numeric) functions; surface balloons for objects/globals/HashTable iteration. Opt-in tool, not the primary strategy. |
 | 2. Link the C libs PHP builds on (pcre2, ICU, libxml2, OpenSSL, zlib, gmp/mpdecimal, oniguruma) | **Feasible** via `-sys` crates / bindgen | This is where byte-exactness actually lives. Caveat: must match PHP's *same lib + version + build options*, and account for PHP's own wrapping. |
 | 3. PHP's own C ext code that is *not* a system lib (`ext/json`, `ext/standard`) | **Feasible but a judgment call per-function** | Can vendor the C, bind a Rust crate + patch quirks, or reimplement. For `json_decode`: **reimplement in Rust against the differential harness** (recommended below). |
 
@@ -508,3 +509,205 @@ Every Category-2 adoption adds a C dependency, so the architecture makes them
    pure-Rust build rather than approximate.
 5. **Keep date, hashing, mbstring-core, and json pure-Rust**; adopt
    gmp/bcmath/openssl/libxml2/zlib natives only against a specific parity need.
+
+---
+
+## 9. Category 1b — compile ext *source* against a macro shim (PROTOTYPED)
+
+§1 ruled out loading a compiled `.so` (it is an ABI client of the Zend engine).
+This section is a different idea, now **prototyped and measured**: do *not* load
+the `.so` — recompile the extension's `.c` sources against **our own
+redefinitions** of the Zend API macros/types, bridged to phrust's `Value` model.
+The lever is that ext `.c` almost never touches `zval`/HashTable/`zend_string`
+*fields*; it goes through *macros* (`PHP_FUNCTION`, `ZEND_PARSE_PARAMETERS_*`,
+`Z_PARAM_*`, `ZVAL_*`, `RETURN_*`, `add_assoc_*`/`add_next_index_*`) and a few
+inline helpers. If we supply those macros, the ext's real algorithm compiles
+against our definitions and runs against phrust.
+
+Prototype crate: **`crates/phrust-zendshim/`** (feature `zendshim`, off by
+default). It is the only crate that carries a C toolchain dependency, and nothing
+depends on it unless the feature is turned on, so the pure-Rust default build is
+byte-for-byte unaffected (verified: `cargo build`/`cargo test` unchanged, 186
+tests green).
+
+### 9.1 What was built (byte-exact evidence)
+
+**Stage 1 — mechanism proven (`csrc/demo_ext.c`).** A hand-written function using
+the *real* Zend macro spellings:
+
+```c
+PHP_FUNCTION(demo_sum_and_label) {
+    zend_long a, b; char *label; size_t label_len;
+    ZEND_PARSE_PARAMETERS_START(3, 3)
+        Z_PARAM_LONG(a) Z_PARAM_LONG(b) Z_PARAM_STRING(label, label_len)
+    ZEND_PARSE_PARAMETERS_END();
+    array_init(return_value);
+    add_assoc_long(return_value, "sum", a + b);
+    add_assoc_string(return_value, "label", label);
+    add_next_index_long(return_value, a);
+}
+```
+
+Compiled against `include/zend_shim.h`, exposed as builtin `__zendshim_demo`,
+`var_dump`'d from a `.php` script, and the returned array (`['sum'=>5,
+'label'=>'hello', 0=>2]`, including key normalization + insertion order + the
+`[]`-append landing at key 0) is **byte-identical** to the equivalent php 8.5.8.
+This proves params-in, array building, strings, and value-out all cross the shim
+correctly.
+
+**Stage 2 — real php-src source (`csrc/php_bin2hex.c`).** The `hexconvtab` table,
+`php_bin2hex()`, and `PHP_FUNCTION(bin2hex)` are copied **verbatim** from
+`php-8.5.8 ext/standard/string.c` (lines 55, 62-77, 158-171); the only change is
+`#include "zend_shim.h"` instead of php's headers. Exposed as `__zendshim_bin2hex`
+and **byte-identical** to php for `"abc"`, `""`, `"Hello, World!"`, and binary
+input `"\x00\x01\xff\xfe"` → `"0001fffe"` (binary-safe). The macros/helpers it
+pulled in: `ZEND_SET_ALIGNED`, `zend_string`, `zend_string_safe_alloc`,
+`ZSTR_VAL`/`ZSTR_LEN`, `ZEND_PARSE_PARAMETERS_*`, `Z_PARAM_STR`, `PHP_FUNCTION`,
+`RETURN_STR` — all provided by the shim, none requiring the real engine.
+
+### 9.2 The macro/type surface implemented in `zend_shim.h`
+
+- **Types:** `zend_long`, `zend_ulong`, `zend_bool`; `zend_string` (flexible-array
+  byte string, NUL-terminated, accessed only via `ZSTR_VAL`/`ZSTR_LEN`); `zval`
+  (`{ zend_value value; uint8_t u1_type; }`) with the real `IS_*` tag numbers;
+  `zend_execute_data` (`{ argc; zval *argv; }`); `INTERNAL_FUNCTION_PARAMETERS` /
+  `return_value`.
+- **Dispatch:** `PHP_FUNCTION`/`ZEND_FUNCTION`/`ZEND_NAMED_FUNCTION` →
+  `void zif_<name>(zend_execute_data*, zval*)`.
+- **ZPP:** `ZEND_PARSE_PARAMETERS_START/_END`, `Z_PARAM_LONG/DOUBLE/BOOL/STRING/
+  STR/OPTIONAL`. (Z_PARAM macros expand to brace blocks, not `do/while`, so they
+  juxtapose with no separators exactly as ext source writes them.)
+- **Accessors/setters:** `Z_TYPE_P`, `Z_LVAL_P`, `Z_DVAL_P`, `Z_STR*_P`,
+  `Z_ARRVAL_P`; `ZVAL_LONG/DOUBLE/NULL/TRUE/FALSE/BOOL/STR/STRING/STRINGL`;
+  `RETVAL_*`/`RETURN_*`.
+- **Arrays:** `array_init`, `add_assoc_long/double/bool/null/string/stringl/zval`,
+  `add_index_long`, `add_next_index_long/double/string/stringl/zval`.
+- **Memory:** `emalloc/ecalloc/erealloc/efree/estrdup/estrndup/safe_emalloc` →
+  a tracked-malloc per-call arena; `zend_string_init/alloc/safe_alloc`, and
+  `zend_string_release*`/`_free` as arena no-ops.
+- **Exceptions:** `zend_throw_exception`/`zend_value_error` → a thread-local
+  pending error the Rust boundary converts to `Thrown`.
+
+### 9.3 Build mechanics
+
+- `crates/phrust-zendshim/build.rs` uses the **`cc` crate** (already in the tree
+  via `pcre2-sys`) to compile `csrc/*.c` with `-I include` into a static archive
+  linked into the Rust crate. Stage 2's vendored file is detected at build time
+  and gated by a `--cfg zendshim_bin2hex` (declared with `rustc-check-cfg`, so
+  zero warnings).
+- **HashTable decision: option B (callback into Rust).** `array_init` calls
+  `rs_array_new()` which pushes a `PhpArray` into a thread-local registry and
+  returns a 1-based `u32` handle stored in the `zval`. Every `add_assoc_*`/
+  `add_next_index_*` forwards the handle to a Rust callback (`rs_array_set_*`/
+  `rs_array_push_*`) that mutates that `PhpArray`. This **reuses phrust's exact
+  key normalization, insertion ordering, and next-index logic** instead of
+  reimplementing an ordered map + canonical-int-string rule in C. Nested arrays
+  are moved out of the child slot into the parent at the boundary.
+- **The bridge** (`src/lib.rs`) per call: resets the arena + registry, marshals
+  `&[Value]` → shim `zval` argv (strings via the C allocator), invokes `zif_*`
+  with a synthetic `execute_data`, checks the thread-local exception, then
+  marshals `return_value` back to an owned `Value` and frees the arena. All state
+  is thread-local.
+- **Feature gating:** `phrust-builtins/zendshim` → `phrust-zendshim`; forwarded
+  up through `phrust-vm`, `phrust-oracle`, `phrust-cli`. Builtins register as
+  `__zendshim_demo` / `__zendshim_bin2hex` (prefixed, so they never shadow the
+  pure-Rust builtins and can be diffed against them).
+
+### 9.4 Stage 3 — `json_decode`: SCOPED, not completed
+
+Attempting `ext/json` mapped the surface precisely (php-8.5.8 `ext/json`,
+pre-generated `json_scanner.c` + `json_parser.tab.c`, no re2c/bison needed):
+
+- **Feasible and would be byte-exact for free:** the **scanner**
+  (`json_scanner.re`) is nearly self-contained — it needs `ZVAL_*`, `ZEND_STRTOL`,
+  `zend_strtod`, `zend_string_alloc`, `ZSTR_VAL`, `memcpy`. Compiling it (plus
+  `Zend/zend_strtod.c`, David Gay's dtoa, which has no engine deps) buys
+  **exact PHP number parsing** — the int-vs-float boundary, `INT_MAX+1`→float,
+  `JSON_BIGINT_AS_STRING`, and `-0.0` handling that §5 lists as the hard quirks —
+  *without reimplementing any of it*. The **parser** (bison) is a token state
+  machine that calls a methods table.
+- **Feasible with the handle model: the `assoc=true` path.** The default parser
+  callbacks (`json_parser.y`) are `array_init` + `zend_hash_next_index_insert` +
+  `zend_symtable_update` — all expressible over our array handle (add
+  `rs_array_*_zval` + a `zend_hash`/`zend_symtable` shim over the handle).
+- **The real blocker: default (object) mode.** With `assoc=false`, `object_init`
+  mints a **`stdClass`** and `zend_symtable_update`/property writes populate it.
+  The current bridge is `Host`-less and cannot mint an object with the engine's
+  `stdClass` class id. Completing json_decode therefore requires threading
+  `&mut dyn Host` through the bridge and adding `Host` hooks to create a
+  `stdClass` + set properties — a change that touches the engine, not just
+  `Value`.
+- **Other surface:** `JSON_G(error_code)` module globals (thread-local shim),
+  `php_json_exception_ce` + `zend_throw_exception` for `JSON_THROW_ON_ERROR`
+  (→ `Thrown`), `php_json_get_error_msg` (static table, compiles as-is), and
+  `php.h`/`php_json*.h` wrapper headers. `json_arginfo.h`/module registration is
+  avoidable by calling `php_json_decode_ex` directly.
+
+**Stage 3 verdict:** the shim path *would* deliver byte-exact json_decode and is
+the cheapest route to exact number parsing, but a correct, committed-quality
+implementation is a multi-file effort (scanner + parser + `zend_strtod` + a
+HashTable/object bridge + globals) that also requires the engine-touching object
+hook. It was out of scope for a single session held to byte-exactness at every
+step, so it is **documented, not shipped**. For json specifically, §5's pure-Rust
+recommendation still stands as the near-term call; the shim becomes attractive
+only if *several* number-heavy ext functions are wanted at once (then
+`zend_strtod` + the scanner amortize).
+
+### 9.5 Hazards found
+
+- **Memory/refcount model.** The shim maps `emalloc`→tracked malloc and
+  `efree`/`zend_string_release`→no-ops, freeing everything in one per-call arena
+  sweep. This is correct for leaf functions whose allocations live only during
+  the call (demo, bin2hex, the json scanner). It is **wrong for any ext that
+  caches across calls, stores into persistent/`pemalloc` memory, or relies on
+  refcount side effects** (COW separation, `Z_TRY_ADDREF`). `zshim_realloc`
+  copies into a fresh block and leaves the old one for the sweep (bounded
+  over-read); fine for prototype scope, not for a realloc-heavy loop.
+- **HashTable ordering / keys.** Delegating to `PhpArray` is a feature, not a
+  risk — it *is* php's ordering. The risk is the inverse: any ext that reads a
+  HashTable it was handed (iteration, `zend_hash_find`) needs a far larger
+  `zend_hash_*` shim over the handle than the write-only set used so far.
+- **Exceptions.** Modeled as a thread-local flag + message → `Thrown`. Real ZPP
+  throws precise `TypeError`/`ValueError` with argument-numbered messages; the
+  shim's are approximate, so an ext whose *observable behavior includes the exact
+  exception message* would diverge until those are reproduced.
+- **Thread-local globals (`JSON_G`, `PG`, `EG`, `CG`).** Any ext reading engine
+  globals or its own `ZEND_DECLARE_MODULE_GLOBALS` needs each shimmed as
+  thread-local state and seeded with php's defaults — easy to under-populate.
+- **Generated-code dependencies.** Using release tarball `.tab.c`/`scanner.c`
+  avoids bundling bison/re2c, but pins the prototype to a php version's generated
+  output; a from-`.y`/`.re` build would re-add those tools.
+- **ABI / struct layout.** Because we recompile, layout is *ours* — the Rust
+  mirror structs (`Zval`, `ZendExecuteData`) just have to match `zend_shim.h`,
+  not real php. This sidesteps §1's fatal ABI problem entirely. The cost moves
+  from "match php's binary layout" to "cover php's macro surface."
+- **Portability.** Same as any Category-2 native backend: the feature needs a C
+  toolchain; the pure-Rust default does not. No system libs are required (the C
+  is self-contained), so this is lighter than linking pcre2/ICU.
+
+### 9.6 Verdict: is the macro-shim viable as phrust's extension strategy?
+
+**As a general strategy: no. As a targeted tool: situationally yes.**
+
+- **vs (a) linking system C libs (§2):** different problem. System-lib linking
+  wins where php is a thin wrapper over a *stable neutral C ABI* (pcre2, ICU,
+  gmp) — no macro surface to reproduce, just `&[u8]` at the edge. The macro shim
+  is for php's *own* C that is **not** a library (`ext/json`, `ext/standard`),
+  where linking does not apply. They are complementary, not competing.
+- **vs (b) pure-Rust reimplementation (§3c):** the shim's genuine edge is
+  **inheriting proprietary numeric/parsing exactness for free** — `zend_strtod`,
+  the json int/float boundary, `php_bin2hex`'s byte handling — the very things a
+  Rust reimpl must chase against the differential harness. Its cost is a C
+  toolchain, an open-ended macro surface that grows with each new ext, a memory
+  model that is only safe for leaf/arena-shaped functions, and engine-touching
+  hooks the moment objects/globals appear (Stage 3). For a *small, self-contained,
+  numeric* function the shim is a fast, exact win; for anything that allocates
+  across calls, manipulates objects, iterates HashTables, or reads globals, the
+  surface balloons and pure-Rust (pinned by the harness) stays the more robust,
+  toolchain-free, memory-safe default — consistent with the rest of this doc.
+
+**Recommendation:** keep `phrust-zendshim` as an **opt-in, feature-gated
+capability** for the narrow case it fits (small self-contained ext functions,
+especially numeric ones where `zend_strtod`/scanner exactness is the prize), hold
+it to the differential harness like every native backend, and keep pure-Rust the
+default. Do **not** make it the primary extension mechanism.

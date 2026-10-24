@@ -1,0 +1,98 @@
+//! End-to-end differential test for `include`/`require`: write a multi-file PHP
+//! project to a temp dir, run it through the real `php` binary and the built
+//! `rhp` binary, and compare stdout. Skips cleanly when no `php` is on PATH.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+fn php_available() -> bool {
+    Command::new("php").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+fn write(path: &Path, contents: &str) {
+    std::fs::write(path, contents).expect("write fixture");
+}
+
+/// stdout of `php -n -d error_reporting=0 <main>` (errors go to stderr, which php
+/// suppresses — matching rhp, whose fatals also go to stderr).
+fn run_php(main: &Path) -> Vec<u8> {
+    let out = Command::new("php")
+        .args(["-n", "-d", "error_reporting=0", "-d", "date.timezone=UTC"])
+        .arg(main)
+        .output()
+        .expect("run php");
+    out.stdout
+}
+
+/// stdout of the built `rhp` binary on `<main>`.
+fn run_rhp(main: &Path) -> Vec<u8> {
+    let out = Command::new(env!("CARGO_BIN_EXE_rhp")).arg(main).output().expect("run rhp");
+    out.stdout
+}
+
+fn case_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("rhp_inc_{name}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).expect("mkdir");
+    dir
+}
+
+#[test]
+fn include_require_matches_php() {
+    if !php_available() {
+        eprintln!("[include] no php — skipping");
+        return;
+    }
+    let dir = case_dir("core");
+    write(
+        &dir.join("lib.php"),
+        "<?php
+        function greet($n) { return \"hi $n\"; }
+        class W { function go() { $f = function () { return 'cl'; }; return $f() . '/' . (fn() => 'arrow')(); } }
+        const V = '1.2';
+        ",
+    );
+    write(
+        &dir.join("config.php"),
+        "<?php return ['n' => 'cfg', 's' => array_sum([1, 2, 3]), 'f' => function ($x) { return $x * 10; }];",
+    );
+    write(
+        &dir.join("sub/relay.php"),
+        "<?php require_once __DIR__ . '/../lib.php'; return greet('sub') . '|' . (new W)->go();",
+    );
+    write(
+        &dir.join("main.php"),
+        "<?php
+        require_once __DIR__ . '/lib.php';
+        echo greet('x'), '|', (new W)->go(), '|', V, \"\\n\";
+        $c = require __DIR__ . '/config.php';
+        echo $c['n'], $c['s'], ($c['f'])(2), \"\\n\";
+        require_once __DIR__ . '/lib.php'; echo \"dedup-ok\\n\";
+        $r = require __DIR__ . '/sub/relay.php'; echo $r, \"\\n\";
+        $m = @include __DIR__ . '/nope.php'; var_dump($m);
+        echo 'file-ok=', (str_contains(__FILE__, 'main.php') ? 'yes' : 'no'), \"\\n\";
+        ",
+    );
+    let main = dir.join("main.php");
+    let (php, rhp) = (run_php(&main), run_rhp(&main));
+    assert_eq!(
+        String::from_utf8_lossy(&php),
+        String::from_utf8_lossy(&rhp),
+        "include/require stdout differs from php"
+    );
+    assert!(!php.is_empty(), "expected output");
+}
+
+#[test]
+fn require_missing_is_fatal_like_php() {
+    if !php_available() {
+        return;
+    }
+    let dir = case_dir("fatal");
+    write(&dir.join("main.php"), "<?php echo \"before\\n\"; require __DIR__ . '/nope.php'; echo \"after\\n\";");
+    let main = dir.join("main.php");
+    let (php, rhp) = (run_php(&main), run_rhp(&main));
+    // both stop after "before" (the fatal goes to stderr, suppressed)
+    assert_eq!(String::from_utf8_lossy(&php), String::from_utf8_lossy(&rhp));
+    assert_eq!(php, b"before\n");
+}

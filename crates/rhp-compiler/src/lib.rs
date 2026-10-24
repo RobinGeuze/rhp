@@ -14,8 +14,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_bytecode::{
-    CIdx, ClassProto, ClassRef, CmpKind, ConstInitProto, ConstProto, FnIdx, FunctionProto, Instr,
-    MethodProto, NIdx, Program, PropDefaultProto, PropProto, Reg, StaticPropProto,
+    CIdx, ClassProto, ClassRef, CmpKind, ConstInitProto, ConstProto, FnIdx, FunctionProto,
+    IncludeKind, Instr, MethodProto, NIdx, Program, PropDefaultProto, PropProto, Reg,
+    StaticPropProto,
 };
 use rhp_frontend::cst::{
     Access, Argument, ArrayElement, AssignmentOperator, BinaryOperator, Class, ClassLikeMember,
@@ -216,6 +217,7 @@ pub fn compile_with_source(
     // the built-in exception hierarchy (the "prelude").
     let mut functions = Vec::new();
     let mut classes = prelude_classes()?;
+    let num_prelude_classes = classes.len();
     // From here on we compile user code, so install its line map.
     LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
     let mut user_constants: Vec<(PhpStr, Value)> = Vec::new();
@@ -266,6 +268,7 @@ pub fn compile_with_source(
         closures,
         constants: user_constants,
         main_var_names,
+        num_prelude_classes,
     })
 }
 
@@ -1531,6 +1534,10 @@ impl ProtoBuilder {
             Construct::Print(p) => self.scan_expr_vars(p.value),
             Construct::Empty(e) => self.scan_expr_vars(e.value),
             Construct::Isset(i) => i.values.iter().for_each(|v| self.scan_expr_vars(v)),
+            Construct::Include(i) => self.scan_expr_vars(i.value),
+            Construct::IncludeOnce(i) => self.scan_expr_vars(i.value),
+            Construct::Require(i) => self.scan_expr_vars(i.value),
+            Construct::RequireOnce(i) => self.scan_expr_vars(i.value),
             _ => {}
         }
     }
@@ -2655,6 +2662,15 @@ impl ProtoBuilder {
         Ok(dst)
     }
 
+    /// Lower `include`/`require`/`*_once $path` to an `Include` opcode; the VM
+    /// resolves, compiles and runs the file at runtime, leaving its return in `dst`.
+    fn compile_include(&mut self, path_expr: &Expression, kind: IncludeKind) -> Result<Reg, Thrown> {
+        let path = self.compile_expr(path_expr)?;
+        let dst = self.alloc_temp();
+        self.emit(Instr::Include { dst, path, kind });
+        Ok(dst)
+    }
+
     fn compile_construct(&mut self, c: &Construct) -> Result<Reg, Thrown> {
         match c {
             Construct::Print(p) => {
@@ -2667,13 +2683,10 @@ impl ProtoBuilder {
                 "eval()",
                 "executes a string as PHP code; refused by design",
             )),
-            Construct::Include(_)
-            | Construct::IncludeOnce(_)
-            | Construct::Require(_)
-            | Construct::RequireOnce(_) => Err(Thrown::unsupported(
-                "include/require",
-                "file inclusion arrives in a later phase",
-            )),
+            Construct::Include(i) => self.compile_include(i.value, IncludeKind::Include),
+            Construct::IncludeOnce(i) => self.compile_include(i.value, IncludeKind::IncludeOnce),
+            Construct::Require(i) => self.compile_include(i.value, IncludeKind::Require),
+            Construct::RequireOnce(i) => self.compile_include(i.value, IncludeKind::RequireOnce),
             Construct::Isset(i) => {
                 // AND over each operand: true iff every value is non-null.
                 let dst = self.alloc_temp();

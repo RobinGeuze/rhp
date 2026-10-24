@@ -15,7 +15,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_bytecode::{
-    ClassRef, CmpKind, Default as ParamDefault, FunctionProto, Instr, Program, Reg,
+    ClassProto, ClassRef, CmpKind, ConstInitProto, Default as ParamDefault, FunctionProto,
+    IncludeKind, Instr, PropDefaultProto, Program, Reg,
 };
 use rhp_builtins::{self as builtins, Host};
 use rhp_semantics::{cast_to_array, inc_dec_value, ops};
@@ -63,6 +64,11 @@ pub struct Vm {
     gen_stack: Vec<u32>,
     // Default scale for the bcmath builtins (`bcscale()`); 0 at script start.
     bc_scale: i64,
+    // `include`/`require`: a callback (injected by the SAPI) that parses+compiles
+    // an included file's source into a Program, keeping the VM compiler-agnostic.
+    includer: Option<Box<dyn FnMut(&str, &[u8]) -> Result<Program, Thrown>>>,
+    // Resolved real paths already included (for the `_once` variants).
+    included_files: std::collections::HashSet<Vec<u8>>,
 }
 
 /// Status of a generator.
@@ -332,7 +338,18 @@ impl Vm {
             yield_out: None,
             gen_stack: Vec::new(),
             bc_scale: 0,
+            includer: None,
+            included_files: std::collections::HashSet::new(),
         }
+    }
+
+    /// Install the SAPI's file-inclusion callback (parse + compile a path's
+    /// source to a `Program`). Without it, `include`/`require` raise an error.
+    pub fn set_includer(
+        &mut self,
+        f: impl FnMut(&str, &[u8]) -> Result<Program, Thrown> + 'static,
+    ) {
+        self.includer = Some(Box::new(f));
     }
 
     pub fn output(&self) -> &[u8] {
@@ -1554,6 +1571,11 @@ impl Vm {
                         return Ok(done);
                     }
                 }
+                Instr::Include { dst, path, kind } => {
+                    let raw = conv::to_string_bytes(&self.reg_get(top, path));
+                    let v = self.do_include(top, raw, kind)?;
+                    self.reg_set(top, dst, v);
+                }
                 Instr::Yield { dst, key, value } => {
                     // Suspend: hand (key, value, resume-dst) to the generator
                     // driver, leaving this frame on the stack for it to reclaim.
@@ -1657,6 +1679,149 @@ impl Vm {
         if proto.is_generator {
             return Ok(self.make_generator(frame));
         }
+        frame.capture = true;
+        let base = self.stack.len();
+        self.stack.push(frame);
+        loop {
+            match self.run_frames() {
+                Ok(v) => return Ok(v),
+                Err(thrown) => {
+                    if !thrown.is_catchable() {
+                        return Err(thrown);
+                    }
+                    match self.unwind(thrown, base)? {
+                        UnwindResult::Caught => {}
+                        UnwindResult::Escaped(t) => return Err(t),
+                    }
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // include / require
+    // -----------------------------------------------------------------------
+
+    /// Execute one `include`/`require` at runtime: resolve the path, (compile &)
+    /// run the file, and return its value (default `1`, or `false` for a missing
+    /// `include`). `require` of a missing file is fatal.
+    fn do_include(&mut self, top: usize, raw_path: Vec<u8>, kind: IncludeKind) -> Result<Value, Thrown> {
+        let path_str = String::from_utf8_lossy(&raw_path).into_owned();
+        let (realpath, source) = match self.resolve_include_path(top, &path_str) {
+            Some(found) => found,
+            None => {
+                if kind.is_require() {
+                    return Err(Thrown::error(
+                        "Error",
+                        &format!("Failed opening required '{path_str}'"),
+                    ));
+                }
+                // include of a missing file: php warns (to stderr) and returns false
+                return Ok(Value::Bool(false));
+            }
+        };
+
+        // `_once`: skip a file already included (count it as included before
+        // running the body, so recursive `_once` includes terminate).
+        if kind.is_once() && self.included_files.contains(&realpath) {
+            return Ok(Value::Bool(true));
+        }
+        self.included_files.insert(realpath.clone());
+
+        // Compile via the SAPI-provided callback (keeps the VM compiler-agnostic).
+        let mut cb = self
+            .includer
+            .take()
+            .ok_or_else(|| Thrown::error("Error", "file inclusion is not available"))?;
+        let rp_str = String::from_utf8_lossy(&realpath).into_owned();
+        let compiled = cb(&rp_str, &source);
+        self.includer = Some(cb);
+        let prog = compiled?;
+
+        let main = self.install_included(&prog)?;
+        let ret = self.run_included(main)?;
+        // A file with no `return` yields int(1).
+        Ok(match ret {
+            Value::Null => Value::Int(1),
+            v => v,
+        })
+    }
+
+    /// Resolve an include path to `(realpath_bytes, source)`: absolute as-is,
+    /// else relative to the including file's directory, then the CWD.
+    fn resolve_include_path(&self, top: usize, path: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+        use std::path::{Path, PathBuf};
+        let p = Path::new(path);
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if p.is_absolute() {
+            candidates.push(p.to_path_buf());
+        } else {
+            let cur = self.current_file(top);
+            let cur = String::from_utf8_lossy(&cur).into_owned();
+            if let Some(dir) = Path::new(&cur).parent() {
+                candidates.push(dir.join(p));
+            }
+            candidates.push(p.to_path_buf()); // relative to CWD
+        }
+        for cand in candidates {
+            if let Ok(canon) = std::fs::canonicalize(&cand) {
+                if let Ok(src) = std::fs::read(&canon) {
+                    return Some((canon.to_string_lossy().into_owned().into_bytes(), src));
+                }
+            }
+        }
+        None
+    }
+
+    /// Merge an included program's declarations into the running VM, rebasing its
+    /// program-global closure indices by the current closure count. Returns the
+    /// rebased `{main}` to execute.
+    fn install_included(&mut self, prog: &Program) -> Result<Rc<FunctionProto>, Thrown> {
+        let base = self.closures.len() as u32;
+        // closures: append (rebased).
+        for c in &prog.closures {
+            self.closures.push(Rc::new(rebase_proto(c, base)));
+        }
+        // functions: a user function is fatal to redeclare (php semantics).
+        for proto in &prog.functions {
+            let lc = proto.name.as_bytes().to_ascii_lowercase();
+            if self.fn_names.contains_key(&lc) {
+                return Err(Thrown::error(
+                    "Error",
+                    &format!("Cannot redeclare function {}()", String::from_utf8_lossy(proto.name.as_bytes())),
+                ));
+            }
+            let idx = self.functions.len();
+            self.functions.push(Rc::new(rebase_proto(proto, base)));
+            self.fn_names.insert(lc, idx);
+        }
+        // classes: skip the re-emitted built-in prelude (always the first N); a
+        // user class past that is fatal to redeclare.
+        let mut new_classes: Vec<ClassProto> = Vec::new();
+        for c in prog.classes.iter().skip(prog.num_prelude_classes) {
+            if self.class_ids.contains_key(&c.name.as_bytes().to_ascii_lowercase()) {
+                return Err(Thrown::error(
+                    "Error",
+                    &format!("Cannot declare class {}, because the name is already in use", String::from_utf8_lossy(c.name.as_bytes())),
+                ));
+            }
+            new_classes.push(rebase_class(c, base));
+        }
+        self.install_classes(&new_classes)?;
+        // constants: define_const skips an already-defined name.
+        for (n, v) in &prog.constants {
+            self.define_const(n.as_bytes(), v.clone());
+        }
+        Ok(Rc::new(rebase_proto(&prog.main, base)))
+    }
+
+    /// Run an included `{main}` to completion (isolated scope; it shares the VM's
+    /// function/class/constant tables) and return its value.
+    fn run_included(&mut self, main: Rc<FunctionProto>) -> Result<Value, Thrown> {
+        if self.stack.len() >= self.max_depth {
+            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
+        }
+        let mut frame = Frame::new(main, 0);
         frame.capture = true;
         let base = self.stack.len();
         self.stack.push(frame);
@@ -2264,6 +2429,47 @@ fn match_case_desc(v: &Value) -> String {
 }
 
 // --- array element read + lvalue path operations ---------------------------
+
+/// Clone a proto, offsetting every `MakeClosure` closure index by `base` (used
+/// when merging an included program whose closures append after the VM's).
+fn rebase_proto(proto: &FunctionProto, base: u32) -> FunctionProto {
+    let mut p = proto.clone();
+    if base != 0 {
+        for ins in &mut p.code {
+            if let Instr::MakeClosure { fnidx, .. } = ins {
+                *fnidx += base;
+            }
+        }
+    }
+    p
+}
+
+/// Rebase a class's method and initializer-thunk protos (their bodies can create
+/// closures) when merging an included program.
+fn rebase_class(c: &ClassProto, base: u32) -> ClassProto {
+    let mut c = c.clone();
+    if base != 0 {
+        for m in &mut c.methods {
+            m.proto = Rc::new(rebase_proto(&m.proto, base));
+        }
+        for p in &mut c.props {
+            if let PropDefaultProto::Init(t) = &p.default {
+                p.default = PropDefaultProto::Init(Rc::new(rebase_proto(t, base)));
+            }
+        }
+        for sp in &mut c.static_props {
+            if let ConstInitProto::Thunk(t) = &sp.init {
+                sp.init = ConstInitProto::Thunk(Rc::new(rebase_proto(t, base)));
+            }
+        }
+        for k in &mut c.constants {
+            if let ConstInitProto::Thunk(t) = &k.value {
+                k.value = ConstInitProto::Thunk(Rc::new(rebase_proto(t, base)));
+            }
+        }
+    }
+    c
+}
 
 fn deref(v: &Value) -> Value {
     match v {

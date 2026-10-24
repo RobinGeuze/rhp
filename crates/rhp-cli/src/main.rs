@@ -47,6 +47,15 @@ fn main() -> ExitCode {
     };
 
     let mut vm = Vm::new();
+    // Teach the VM how to compile an included file (keeps the VM compiler-agnostic).
+    vm.set_includer(|file: &str, src: &[u8]| {
+        let arena = Arena::new();
+        let parsed = arena.parse(file.as_bytes(), src);
+        if parsed.has_parse_errors() {
+            return Err(Thrown::error("ParseError", &format!("syntax error in {file}")));
+        }
+        compile_with_source(parsed.program(), src, file)
+    });
     let result = vm.run(&program);
 
     let _ = std::io::stdout().write_all(vm.output());

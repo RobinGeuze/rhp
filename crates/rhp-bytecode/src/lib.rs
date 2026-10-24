@@ -219,6 +219,38 @@ pub enum Instr {
     Refuse { feature: NIdx, reason: NIdx },
     /// `__halt_compiler()`: stop this proto as a top-level return.
     Halt,
+    /// `include` / `require` (and the `_once` variants): evaluate `path` to a
+    /// string, compile+run that file, and leave its return value in `dst`.
+    Include { dst: Reg, path: Reg, kind: IncludeKind },
+}
+
+/// Which file-inclusion construct an [`Instr::Include`] came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IncludeKind {
+    Include,
+    IncludeOnce,
+    Require,
+    RequireOnce,
+}
+
+impl IncludeKind {
+    /// require / require_once are fatal when the file can't be opened.
+    pub fn is_require(self) -> bool {
+        matches!(self, IncludeKind::Require | IncludeKind::RequireOnce)
+    }
+    /// the `_once` variants skip a file already included.
+    pub fn is_once(self) -> bool {
+        matches!(self, IncludeKind::IncludeOnce | IncludeKind::RequireOnce)
+    }
+    /// the construct name, for error messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            IncludeKind::Include => "include",
+            IncludeKind::IncludeOnce => "include_once",
+            IncludeKind::Require => "require",
+            IncludeKind::RequireOnce => "require_once",
+        }
+    }
 }
 
 /// A by-value/by-ref/variadic parameter (used from phase 5).
@@ -278,6 +310,9 @@ pub struct DebugInfo {
 
 /// One compiled PHP function/method/closure, or the script body (`"{main}"`).
 /// Carries no `'arena` borrow — the AST is consumed at compile time.
+/// `Clone` is used by the VM to rebase an included file's protos (closure fnidx
+/// offset) before merging them.
+#[derive(Clone)]
 pub struct FunctionProto {
     pub name: PhpStr,
     pub num_params: u16,
@@ -358,6 +393,10 @@ pub struct Program {
     /// {main}'s variable names indexed by CV register, so the VM can bind a
     /// function's `global $x` to the top-level variable's slot.
     pub main_var_names: Vec<PhpStr>,
+    /// How many leading entries of `classes` are the built-in prelude (always
+    /// re-emitted per compile). An included file's prelude classes are skipped on
+    /// merge; user classes past this count fatally redeclare if already defined.
+    pub num_prelude_classes: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +421,7 @@ pub enum ClassRef {
 
 /// One compiled class/interface/trait/enum declaration (parents referenced by
 /// name; resolved to `ClassId` at link time).
+#[derive(Clone)]
 pub struct ClassProto {
     pub name: PhpStr,
     pub kind: ClassKind,
@@ -402,6 +442,7 @@ pub struct ClassProto {
 }
 
 /// One compiled enum case.
+#[derive(Clone)]
 pub struct EnumCaseProto {
     pub name: PhpStr,
     /// The backing value (already the correct scalar type), or `None` for a pure enum.
@@ -448,6 +489,7 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
     }
 }
 
+#[derive(Clone)]
 pub struct MethodProto {
     pub name: PhpStr,
     pub proto: Rc<FunctionProto>,
@@ -457,6 +499,7 @@ pub struct MethodProto {
     pub is_final: bool,
 }
 
+#[derive(Clone)]
 pub struct PropProto {
     pub name: PhpStr,
     pub visibility: Visibility,
@@ -464,6 +507,7 @@ pub struct PropProto {
     pub default: PropDefaultProto,
 }
 
+#[derive(Clone)]
 pub struct StaticPropProto {
     pub name: PhpStr,
     pub visibility: Visibility,
@@ -471,6 +515,7 @@ pub struct StaticPropProto {
     pub init: ConstInitProto,
 }
 
+#[derive(Clone)]
 pub struct ConstProto {
     pub name: PhpStr,
     pub visibility: Visibility,
@@ -478,6 +523,7 @@ pub struct ConstProto {
 }
 
 /// A property's per-instance default, as compiled.
+#[derive(Clone)]
 pub enum PropDefaultProto {
     /// Constant default folded at compile time.
     Const(Value),
@@ -488,6 +534,7 @@ pub enum PropDefaultProto {
 }
 
 /// A class-constant / static-prop initializer, as compiled.
+#[derive(Clone)]
 pub enum ConstInitProto {
     Const(Value),
     Thunk(Rc<FunctionProto>),

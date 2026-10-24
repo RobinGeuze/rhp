@@ -139,7 +139,10 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "min"            => fn_min, 1, None;
             "array_sum"      => fn_array_sum, 1, Some(1);
             "array_product"  => fn_array_product, 1, Some(1);
-            "array_keys"     => fn_array_keys, 1, Some(1);
+            "array_keys"     => fn_array_keys, 1, Some(3);
+            "is_nan"         => fn_is_nan, 1, Some(1);
+            "is_infinite"    => fn_is_infinite, 1, Some(1);
+            "is_finite"      => fn_is_finite, 1, Some(1);
             "array_values"   => fn_array_values, 1, Some(1);
             "array_merge"    => fn_array_merge, 0, None;
             "array_reverse"  => fn_array_reverse, 1, Some(2);
@@ -383,6 +386,16 @@ is_type!(fn_is_null, Value::Null);
 is_type!(fn_is_array, Value::Array(_));
 is_type!(fn_is_object, Value::Object(_) | Value::Closure(_));
 
+fn fn_is_nan(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(matches!(deref(&args[0]), Value::Float(f) if f.is_nan())))
+}
+fn fn_is_infinite(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(matches!(deref(&args[0]), Value::Float(f) if f.is_infinite())))
+}
+fn fn_is_finite(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(matches!(deref(&args[0]), Value::Float(f) if f.is_finite())))
+}
+
 fn fn_is_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(host.is_callable_value(&args[0])))
 }
@@ -410,8 +423,67 @@ fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 is_type!(fn_is_scalar, Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bool(_));
 
 fn fn_intval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // base only applies to string args; default 10 is the common path.
-    Ok(Value::Int(conv::to_int(&args[0])))
+    let v = deref(&args[0]);
+    let base = args.get(1).map(|b| conv::to_int(&deref(b))).unwrap_or(10);
+    // `base` applies only to a string argument; base 10 is plain integer conversion.
+    if base == 10 {
+        return Ok(Value::Int(conv::to_int(&v)));
+    }
+    let Value::Str(s) = &v else {
+        return Ok(Value::Int(conv::to_int(&v)));
+    };
+    Ok(Value::Int(intval_base(s.as_bytes(), base)))
+}
+
+/// Parse a string in an explicit base, matching PHP's `intval($s, $base)`:
+/// skips leading whitespace, an optional sign, and (for base 0/16) a `0x` / (0/8)
+/// `0o`/`0` / (0/2) `0b` prefix; stops at the first invalid digit.
+fn intval_base(bytes: &[u8], mut base: i64) -> i64 {
+    let mut i = 0;
+    while i < bytes.len() && (bytes[i] as char).is_ascii_whitespace() {
+        i += 1;
+    }
+    let neg = match bytes.get(i) {
+        Some(b'-') => { i += 1; true }
+        Some(b'+') => { i += 1; false }
+        _ => false,
+    };
+    // Base 0: auto-detect from the prefix.
+    let rest = &bytes[i..];
+    let (digits_start, detected) = detect_prefix(rest, base);
+    i += digits_start;
+    if base == 0 {
+        base = detected;
+    }
+    if !(2..=36).contains(&base) {
+        return 0;
+    }
+    let mut acc: i64 = 0;
+    while i < bytes.len() {
+        let d = match bytes[i] {
+            b'0'..=b'9' => (bytes[i] - b'0') as i64,
+            b'a'..=b'z' => (bytes[i] - b'a' + 10) as i64,
+            b'A'..=b'Z' => (bytes[i] - b'A' + 10) as i64,
+            _ => break,
+        };
+        if d >= base {
+            break;
+        }
+        acc = acc.saturating_mul(base).saturating_add(d);
+        i += 1;
+    }
+    if neg { -acc } else { acc }
+}
+
+/// Returns (bytes-consumed-by-prefix, detected-base) for base 0/16/8/2 prefixes.
+fn detect_prefix(rest: &[u8], base: i64) -> (usize, i64) {
+    match rest {
+        [b'0', b'x' | b'X', ..] if base == 0 || base == 16 => (2, 16),
+        [b'0', b'b' | b'B', ..] if base == 0 || base == 2 => (2, 2),
+        [b'0', b'o' | b'O', ..] if base == 0 || base == 8 => (2, 8),
+        [b'0', ..] if base == 0 => (1, 8),
+        _ => (0, if base == 0 { 10 } else { base }),
+    }
 }
 
 fn fn_floatval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -528,12 +600,29 @@ fn fn_array_keys(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Value::Array(a) = deref(&args[0]) else {
         return Err(Thrown::type_error("array_keys(): Argument #1 ($array) must be of type array"));
     };
+    // Optional search value: keep only keys whose value matches (loose by
+    // default, strict `===` when the third argument is true).
+    let search = args.get(1).map(|v| deref(v));
+    let strict = args.get(2).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let key_val = |k: &phrust_values::ArrayKey| match k {
+        phrust_values::ArrayKey::Int(n) => Value::Int(*n),
+        phrust_values::ArrayKey::Str(s) => Value::Str(s.clone()),
+    };
     let mut out = PhpArray::new();
-    for (k, _) in a.iter() {
-        out.push(match k {
-            phrust_values::ArrayKey::Int(n) => Value::Int(*n),
-            phrust_values::ArrayKey::Str(s) => Value::Str(s.clone()),
-        });
+    for (k, v) in a.iter() {
+        let keep = match &search {
+            None => true,
+            Some(needle) => {
+                if strict {
+                    ops::strict_eq(&deref(v), needle)
+                } else {
+                    ops::loose_eq(&deref(v), needle)
+                }
+            }
+        };
+        if keep {
+            out.push(key_val(k));
+        }
     }
     Ok(Value::Array(out))
 }

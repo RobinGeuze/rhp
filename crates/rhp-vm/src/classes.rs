@@ -345,6 +345,51 @@ impl Vm {
         }
     }
 
+    /// Like [`resolve_class`], but on a miss for a by-name reference it runs the
+    /// registered autoloaders and retries (php's autoloading). `self`/`parent`/
+    /// `static` and object refs never autoload.
+    pub(crate) fn resolve_class_autoload(
+        &mut self,
+        top: usize,
+        class: ClassRef,
+    ) -> Result<ClassId, Thrown> {
+        match self.resolve_class(top, class) {
+            Ok(id) => Ok(id),
+            Err(e) => {
+                let name: Option<Vec<u8>> = match class {
+                    ClassRef::Name(nidx) => {
+                        Some(self.stack[top].proto.names[nidx as usize].as_bytes().to_vec())
+                    }
+                    ClassRef::Dynamic(reg) => match self.reg_get(top, reg) {
+                        crate::Value::Str(s) => Some(s.as_bytes().to_vec()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match name {
+                    Some(n) if self.try_autoload(&n)? => self.resolve_class_by_name(&n),
+                    _ => Err(e),
+                }
+            }
+        }
+    }
+
+    /// Run the registered autoloaders for `name` (php passes the FQCN without a
+    /// leading `\`) until the class resolves. Returns whether it became defined.
+    pub(crate) fn try_autoload(&mut self, name: &[u8]) -> Result<bool, Thrown> {
+        let fqcn = name.strip_prefix(b"\\").unwrap_or(name).to_vec();
+        if self.resolve_class_by_name(&fqcn).is_ok() {
+            return Ok(true);
+        }
+        for loader in self.autoloaders.clone() {
+            self.call_callable_value(&loader, vec![crate::Value::str(fqcn.clone())])?;
+            if self.resolve_class_by_name(&fqcn).is_ok() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub(crate) fn resolve_class_by_name(&self, name: &[u8]) -> Result<ClassId, Thrown> {
         // Allow a leading namespace separator / take the last segment.
         let seg = name.rsplit(|&b| b == b'\\').next().unwrap_or(name);

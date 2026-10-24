@@ -84,6 +84,34 @@ fn include_require_matches_php() {
 }
 
 #[test]
+fn spl_autoload_matches_php() {
+    if !php_available() {
+        return;
+    }
+    let dir = case_dir("autoload");
+    std::fs::create_dir_all(dir.join("classes")).unwrap();
+    write(&dir.join("classes/Mailer.php"), "<?php class Mailer { function send($t){ return \"to:$t\"; } }");
+    write(&dir.join("classes/Logger.php"), "<?php class Logger { static function log($m){ return \"L:$m\"; } }");
+    write(
+        &dir.join("main.php"),
+        "<?php
+        spl_autoload_register(function ($class) {
+            $f = __DIR__ . '/classes/' . $class . '.php';
+            if (file_exists($f)) require $f;
+        });
+        echo (new Mailer())->send('x'), \"\\n\";
+        echo Logger::log('y'), \"\\n\";
+        var_dump(class_exists('Mailer'));
+        echo count(spl_autoload_functions()), \"\\n\";
+        ",
+    );
+    let main = dir.join("main.php");
+    let (php, rhp) = (run_php(&main), run_rhp(&main));
+    assert_eq!(String::from_utf8_lossy(&php), String::from_utf8_lossy(&rhp));
+    assert_eq!(php, b"to:x\nL:y\nbool(true)\n1\n");
+}
+
+#[test]
 fn require_missing_is_fatal_like_php() {
     if !php_available() {
         return;

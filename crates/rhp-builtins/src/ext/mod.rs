@@ -15,6 +15,7 @@ pub mod gmp;
 pub mod hash;
 pub mod mbstring;
 pub mod password;
+pub mod spl;
 
 /// Register every extension's builtins into the shared table.
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
@@ -24,4 +25,5 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     gmp::register(m);
     mbstring::register(m);
     password::register(m);
+    spl::register(m);
 }

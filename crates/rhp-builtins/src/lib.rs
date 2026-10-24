@@ -23,6 +23,7 @@ mod ext;
 mod filter_fns;
 mod json_fns;
 mod math_fns;
+mod file_fns;
 mod misc_fns;
 mod parse_fns;
 mod preg_fns;
@@ -98,6 +99,19 @@ pub trait Host {
     /// (case-sensitive, flattened over the inheritance chain). Default: false.
     fn class_has_property(&self, _class_id: u32, _prop: &[u8]) -> bool {
         false
+    }
+
+    /// Register an `spl_autoload_register` callable (optionally prepending).
+    fn register_autoloader(&mut self, _callback: Value, _prepend: bool) {}
+
+    /// The registered autoloader callables (`spl_autoload_functions`).
+    fn autoload_functions(&self) -> Vec<Value> {
+        Vec::new()
+    }
+
+    /// Trigger autoloading for a class name (`spl_autoload_call`).
+    fn autoload_call(&mut self, _name: &[u8]) -> Result<(), Thrown> {
+        Ok(())
     }
 
     /// The bcmath default scale (`bcscale()` with no argument), 0 at script
@@ -243,6 +257,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         math_fns::register(&mut m);
         arr_fns::register(&mut m);
         misc_fns::register(&mut m);
+        file_fns::register(&mut m);
         // Discrete extensions (php-src ext/<name>/ layout): hash, bcmath, ctype, …
         ext::register(&mut m);
         webenc_fns::register(&mut m);

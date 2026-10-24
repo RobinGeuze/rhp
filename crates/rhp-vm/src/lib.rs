@@ -69,6 +69,8 @@ pub struct Vm {
     includer: Option<Box<dyn FnMut(&str, &[u8]) -> Result<Program, Thrown>>>,
     // Resolved real paths already included (for the `_once` variants).
     included_files: std::collections::HashSet<Vec<u8>>,
+    // Registered `spl_autoload_register` callables, in call order.
+    autoloaders: Vec<Value>,
 }
 
 /// Status of a generator.
@@ -140,6 +142,22 @@ impl Host for Vm {
 
     fn set_bc_scale(&mut self, scale: i64) {
         self.bc_scale = scale;
+    }
+
+    fn register_autoloader(&mut self, callback: Value, prepend: bool) {
+        if prepend {
+            self.autoloaders.insert(0, callback);
+        } else {
+            self.autoloaders.push(callback);
+        }
+    }
+
+    fn autoload_functions(&self) -> Vec<Value> {
+        self.autoloaders.clone()
+    }
+
+    fn autoload_call(&mut self, name: &[u8]) -> Result<(), Thrown> {
+        self.try_autoload(name).map(|_| ())
     }
 
     fn call_callable(&mut self, callable: &Value, args: &[Value]) -> Result<Value, Thrown> {
@@ -340,6 +358,7 @@ impl Vm {
             bc_scale: 0,
             includer: None,
             included_files: std::collections::HashSet::new(),
+            autoloaders: Vec::new(),
         }
     }
 
@@ -849,7 +868,7 @@ impl Vm {
                     self.cursor_steps.push(CursorStep::Prop(p));
                 }
                 Instr::LvalStaticProp { class, name } => {
-                    let cls = self.resolve_class(top, class)?;
+                    let cls = self.resolve_class_autoload(top, class)?;
                     let pname = proto.names[name as usize].as_bytes().to_vec();
                     let cell = self.static_prop_cell(cls, &pname)?;
                     self.cursor_root = CursorRoot::Cell(cell);
@@ -1089,7 +1108,7 @@ impl Vm {
 
                 // -- OOP --
                 Instr::New { dst, class, base, argc, .. } => {
-                    let cls = self.resolve_class(top, class)?;
+                    let cls = self.resolve_class_autoload(top, class)?;
                     let entry = self.class(cls);
                     if entry.kind != ClassKind::Class || entry.flags.is_abstract {
                         let what = if entry.flags.is_abstract {
@@ -1232,7 +1251,7 @@ impl Vm {
                     }
                 }
                 Instr::FetchStaticProp { dst, class, name, .. } => {
-                    let cls = self.resolve_class(top, class)?;
+                    let cls = self.resolve_class_autoload(top, class)?;
                     let pname = proto.names[name as usize].as_bytes().to_vec();
                     if let Some(sp) = self.class(cls).static_props.get(&pname) {
                         let (vis, decl) = (sp.visibility, sp.declaring_class);
@@ -1246,7 +1265,7 @@ impl Vm {
                 }
                 Instr::FetchClassConst { dst, class, name, .. } => {
                     let name_b = proto.names[name as usize].as_bytes().to_vec();
-                    let cls = self.resolve_class(top, class)?;
+                    let cls = self.resolve_class_autoload(top, class)?;
                     if name_b == b"class" {
                         let v = Value::str(self.class(cls).name.as_bytes().to_vec());
                         self.reg_set(top, dst, v);
@@ -1327,7 +1346,7 @@ impl Vm {
                     }
                 }
                 Instr::CallStatic { dst, class, name, base, argc, .. } => {
-                    let cls = self.resolve_class(top, class)?;
+                    let cls = self.resolve_class_autoload(top, class)?;
                     let mname = proto.names[name as usize].as_bytes().to_vec();
                     let found = self.lookup_method(cls, &mname);
                     // Enum built-in static methods (cases/from/tryFrom) when not
@@ -1391,7 +1410,7 @@ impl Vm {
                 Instr::InstanceOf { dst, val, class } => {
                     let v = self.reg_get(top, val);
                     let result = match v {
-                        Value::Object(h) => match self.resolve_class(top, class) {
+                        Value::Object(h) => match self.resolve_class_autoload(top, class) {
                             Ok(cid) => self.class(h.borrow().class).ancestors.contains(&cid),
                             Err(_) => false,
                         },
@@ -1463,7 +1482,7 @@ impl Vm {
                     }
                 }
                 Instr::NewV { dst, class, args } => {
-                    let cls = self.resolve_class(top, class)?;
+                    let cls = self.resolve_class_autoload(top, class)?;
                     let entry = self.class(cls);
                     if entry.kind != ClassKind::Class || entry.flags.is_abstract {
                         return Err(Thrown::error(
@@ -1507,7 +1526,7 @@ impl Vm {
                     self.push_method_frame(&m, Some(h.clone()), cls, argv, dst)?;
                 }
                 Instr::CallStaticV { dst, class, name, args } => {
-                    let cls = self.resolve_class(top, class)?;
+                    let cls = self.resolve_class_autoload(top, class)?;
                     let mname = proto.names[name as usize].as_bytes().to_vec();
                     let Some(m) = self.lookup_method(cls, &mname) else {
                         return Err(Thrown::error(

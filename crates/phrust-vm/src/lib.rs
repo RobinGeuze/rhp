@@ -690,6 +690,21 @@ impl Vm {
                     let steps = std::mem::take(&mut self.cursor_steps);
                     self.cursor_write(top, &steps, v)?;
                 }
+                Instr::MakeRefLval { dst } => {
+                    let steps = std::mem::take(&mut self.cursor_steps);
+                    let cell = match &self.cursor_root {
+                        CursorRoot::Cv(r) => {
+                            let r = *r as usize;
+                            make_ref_path(&mut self.stack[top].regs[r], &steps)?
+                        }
+                        CursorRoot::Cell(rc) => {
+                            let rc = rc.clone();
+                            let c = make_ref_path(&mut rc.borrow_mut(), &steps)?;
+                            c
+                        }
+                    };
+                    self.reg_set(top, dst, Value::Ref(cell));
+                }
                 Instr::UnsetLval => {
                     let steps = std::mem::take(&mut self.cursor_steps);
                     self.cursor_unset(top, &steps);
@@ -2192,6 +2207,55 @@ fn assign_path(slot: &mut Value, steps: &[CursorStep], value: Value) -> Result<(
         CursorStep::Prop(_) => unreachable!("handled above"),
     };
     assign_path(child, rest, value)
+}
+
+/// Navigate the cursor path and promote the target slot (a property or array
+/// element) to a shared `Value::Ref` cell, returning the cell — so a by-ref
+/// builtin can mutate the caller's property/element in place.
+fn make_ref_path(slot: &mut Value, steps: &[CursorStep]) -> Result<Rc<RefCell<Value>>, Thrown> {
+    // Follow an existing reference: reuse it if this is the target, else descend.
+    if let Value::Ref(rc) = slot {
+        if steps.is_empty() {
+            return Ok(rc.clone());
+        }
+        let rc = rc.clone();
+        let r = make_ref_path(&mut rc.borrow_mut(), steps);
+        return r;
+    }
+    let Some((head, rest)) = steps.split_first() else {
+        // Target slot: promote in place to a Ref cell.
+        let v = std::mem::replace(slot, Value::Null);
+        let rc = Rc::new(RefCell::new(v));
+        *slot = Value::Ref(rc.clone());
+        return Ok(rc);
+    };
+    if let CursorStep::Prop(name) = head {
+        let handle = match slot {
+            Value::Object(h) => h.clone(),
+            Value::Null => return Err(Thrown::error("Error", "Attempt to reference property on null")),
+            other => {
+                return Err(Thrown::error(
+                    "Error",
+                    format!("Attempt to reference property on {}", type_lc(other)),
+                ))
+            }
+        };
+        let mut od = handle.borrow_mut();
+        let child = od.properties.entry(name.clone()).or_insert(Value::Null);
+        return make_ref_path(child, rest);
+    }
+    autovivify(slot)?;
+    let Value::Array(arr) = slot else { unreachable!("autovivify ensures array") };
+    let child = match head {
+        CursorStep::Key(k) => {
+            let key = ArrayKey::from_value(k)
+                .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
+            arr.get_or_insert_mut(key)
+        }
+        CursorStep::Append => arr.append_mut(),
+        CursorStep::Prop(_) => unreachable!("handled above"),
+    };
+    make_ref_path(child, rest)
 }
 
 /// Remove the leaf key of a cursor path (COW), descending to the parent first.

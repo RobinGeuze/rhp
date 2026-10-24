@@ -182,6 +182,10 @@ pub enum Instr {
     /// `$o->name = src` (single-level): direct write to a declared/accessible
     /// property, else `__set`, else a dynamic property.
     StoreProp { obj: Reg, name: NIdx, src: Reg },
+    /// Promote the current lvalue cursor target (a property or array element) to
+    /// a shared cell and put a `Ref` to it in `dst` — for passing `$o->p` /
+    /// `$a[$k]` to a by-reference builtin (sort/array_push/array_shift/…).
+    MakeRefLval { dst: Reg },
     /// `isset($o->name)`: declared non-null property, else `__isset`, else false.
     IssetProp { dst: Reg, obj: Reg, name: NIdx },
     /// `unset($o->name)`: remove a declared property, else `__unset`.

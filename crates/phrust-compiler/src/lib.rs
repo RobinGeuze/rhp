@@ -2617,9 +2617,11 @@ impl ProtoBuilder {
 
         // Compile each arg into a value reg, or (for a by-ref param) note the
         // variable's CV so it can be materialized as a reference.
-        enum ArgSlot {
+        enum ArgSlot<'e> {
             Value(Reg),
             Ref(Reg),
+            /// A by-ref argument that is a property / array-element lvalue.
+            RefLval(&'e Expression<'e>),
         }
         let mut slots = Vec::new();
         for (i, arg) in fc.argument_list.arguments.iter().enumerate() {
@@ -2634,17 +2636,28 @@ impl ProtoBuilder {
             };
             let by_ref = sig.as_ref().and_then(|s| s.get(i).copied()).unwrap_or(false);
             if by_ref {
-                let Expression::Variable(Variable::Direct(d)) = p.value else {
-                    return Err(Thrown::error(
-                        "Error",
-                        format!(
-                            "{}(): Argument #{} could not be passed by reference",
-                            String::from_utf8_lossy(&name_bytes),
-                            i + 1
-                        ),
-                    ));
-                };
-                slots.push(ArgSlot::Ref(self.cv(strip_dollar(d.name))));
+                match p.value {
+                    Expression::Variable(Variable::Direct(d)) => {
+                        slots.push(ArgSlot::Ref(self.cv(strip_dollar(d.name))))
+                    }
+                    // `sort($a['k'])`, `array_push($this->items, …)`.
+                    Expression::ArrayAccess(_)
+                    | Expression::ArrayAppend(_)
+                    | Expression::Access(Access::Property(_))
+                    | Expression::Access(Access::StaticProperty(_)) => {
+                        slots.push(ArgSlot::RefLval(p.value))
+                    }
+                    _ => {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "{}(): Argument #{} could not be passed by reference",
+                                String::from_utf8_lossy(&name_bytes),
+                                i + 1
+                            ),
+                        ))
+                    }
+                }
             } else {
                 slots.push(ArgSlot::Value(self.compile_expr(p.value)?));
             }
@@ -2656,6 +2669,12 @@ impl ProtoBuilder {
             match slot {
                 ArgSlot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
                 ArgSlot::Ref(cv) => self.emit(Instr::MakeRef { dst, cv }),
+                ArgSlot::RefLval(expr) => {
+                    let mut steps = Vec::new();
+                    let root = self.collect_lvalue_steps(expr, &mut steps)?;
+                    self.emit_cursor(root, &steps);
+                    self.emit(Instr::MakeRefLval { dst });
+                }
             }
         }
         let name = self.intern_name(&name_bytes);

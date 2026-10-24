@@ -28,15 +28,20 @@ fn main() -> ExitCode {
         }
     };
 
+    // php reports the resolved real path in __FILE__ / __DIR__ / getFile().
+    let file = std::fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.clone());
+
     let arena = Arena::new();
-    let parsed = arena.parse(path.as_bytes(), &source);
+    let parsed = arena.parse(file.as_bytes(), &source);
     if parsed.has_parse_errors() {
-        eprintln!("rhp: parse error in {path}");
+        eprintln!("rhp: parse error in {file}");
         return ExitCode::from(255);
     }
 
     // Compile to owned bytecode; the arena can be dropped after this.
-    let program = match compile_with_source(parsed.program(), &source, &path) {
+    let program = match compile_with_source(parsed.program(), &source, &file) {
         Ok(p) => p,
         Err(t) => return fatal(t),
     };

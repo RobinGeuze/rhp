@@ -20,7 +20,8 @@ use rhp_bytecode::{
 use rhp_frontend::cst::{
     Access, Argument, ArrayElement, AssignmentOperator, BinaryOperator, Class, ClassLikeMember,
     ClassLikeMemberSelector, CompositeString, Construct, Expression, ForBody, ForeachBody,
-    ForeachTarget, Hint, Identifier, IfBody, Literal, Match, MatchArm, MethodBody, Modifier,
+    ForeachTarget, Hint, Identifier, IfBody, Literal, MagicConstant, Match, MatchArm, MethodBody,
+    Modifier,
     Program as AstProgram, Property, PropertyItem, Statement, StringPart, SwitchBody, SwitchCase,
     UnaryPrefixOperator, Variable, WhileBody,
 };
@@ -91,6 +92,22 @@ fn build_line_starts(source: &[u8]) -> Vec<u32> {
         }
     }
     v
+}
+
+/// The source file name currently being compiled (for `__FILE__`).
+fn src_file() -> Vec<u8> {
+    SRC_FILE.with(|f| f.borrow().clone())
+}
+
+/// `dirname()` of a path, matching PHP for the file paths `__FILE__` yields:
+/// no slash → ".", a single leading slash → "/", else everything before the
+/// last slash.
+fn dirname(path: &[u8]) -> Vec<u8> {
+    match path.iter().rposition(|&b| b == b'/') {
+        None => b".".to_vec(),
+        Some(0) => b"/".to_vec(),
+        Some(i) => path[..i].to_vec(),
+    }
 }
 
 /// 1-based line number for a byte offset, via the current `LINE_STARTS`.
@@ -225,6 +242,7 @@ pub fn compile_with_source(
     // Compile the script body ({main}); its CVs are the globals.
     let mut c = ProtoBuilder::new(PhpStr::from("{main}"));
     c.sigs = sigs.clone();
+    c.scope_kind = ScopeKind::Main;
     for stmt in program.statements.iter() {
         c.scan_stmt_vars(stmt);
     }
@@ -289,7 +307,7 @@ fn compile_class(
         .map(|i| i.types.iter().map(|id| PhpStr::from_bytes(identifier_name(id).to_vec())).collect())
         .unwrap_or_default();
 
-    let m = compile_members(&class.members, sigs)?;
+    let m = compile_members(&class.members, sigs, &name)?;
     Ok(ClassProto {
         name,
         kind: ClassKind::Class,
@@ -343,7 +361,7 @@ fn compile_enum(
         interfaces.push(PhpStr::from("BackedEnum"));
     }
 
-    let m = compile_members(&en.members, sigs)?;
+    let m = compile_members(&en.members, sigs, &name)?;
     Ok(ClassProto {
         name,
         kind: ClassKind::Enum,
@@ -371,6 +389,7 @@ fn compile_const_thunk(
 ) -> Result<Rc<FunctionProto>, Thrown> {
     let mut c = ProtoBuilder::new(PhpStr::from("{init}"));
     c.sigs = sigs.clone();
+    c.scope_kind = ScopeKind::Init;
     c.scan_expr_vars(expr); // const-exprs use no $vars, but be safe
     c.num_cvs = c.cv_map.len() as u16;
     c.next_temp = c.num_cvs;
@@ -415,12 +434,13 @@ struct CompiledMembers {
 fn compile_members(
     members: &rhp_frontend::cst::Sequence<ClassLikeMember>,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: &PhpStr,
 ) -> Result<CompiledMembers, Thrown> {
     let mut out = CompiledMembers::default();
     for member in members.iter() {
         match member {
             ClassLikeMember::Method(m) => {
-                let (mp, promoted) = compile_method(m, sigs)?;
+                let (mp, promoted) = compile_method(m, sigs, class_name)?;
                 out.methods.push(mp);
                 out.props.extend(promoted);
             }
@@ -488,9 +508,10 @@ fn compile_trait(
     t: &rhp_frontend::cst::Trait,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<ClassProto, Thrown> {
-    let m = compile_members(&t.members, sigs)?;
+    let name = PhpStr::from_bytes(t.name.value.to_vec());
+    let m = compile_members(&t.members, sigs, &name)?;
     Ok(ClassProto {
-        name: PhpStr::from_bytes(t.name.value.to_vec()),
+        name,
         kind: ClassKind::Trait,
         flags: ClassFlags::default(),
         parent: None,
@@ -941,6 +962,7 @@ fn compile_interface(
 fn compile_method(
     m: &rhp_frontend::cst::Method,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: &PhpStr,
 ) -> Result<(MethodProto, Vec<PropProto>), Thrown> {
     let name = PhpStr::from_bytes(m.name.value.to_vec());
     let visibility = modifiers_visibility(&m.modifiers);
@@ -950,6 +972,8 @@ fn compile_method(
 
     let mut c = ProtoBuilder::new(name.clone());
     c.sigs = sigs.clone();
+    c.class_name = Some(class_name.clone());
+    c.scope_kind = ScopeKind::Method;
 
     // Instance methods reserve CV 0 for `$this`.
     if !is_static {
@@ -1078,8 +1102,26 @@ fn compile_function(
     Ok(proto)
 }
 
+/// What kind of scope a proto is, for the `__FUNCTION__`/`__METHOD__` magic
+/// constants (which read differently at top level vs in a function/method/closure).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScopeKind {
+    Main,
+    Function,
+    Method,
+    Closure,
+    Init,
+}
+
 struct ProtoBuilder {
     name: PhpStr,
+    /// Enclosing class/trait/enum name for `__CLASS__`/`__METHOD__` (None outside).
+    class_name: Option<PhpStr>,
+    /// The scope discriminator for `__FUNCTION__`/`__METHOD__`.
+    scope_kind: ScopeKind,
+    /// For a closure, PHP 8.5's generated name `{closure:<scope>:<line>}` used by
+    /// `__FUNCTION__`/`__METHOD__` inside it (the proto name stays "{closure}").
+    magic_fn_name: Option<PhpStr>,
     code: Vec<Instr>,
     consts: Vec<Value>,
     names: Vec<PhpStr>,
@@ -1117,6 +1159,9 @@ impl ProtoBuilder {
     fn new(name: PhpStr) -> Self {
         ProtoBuilder {
             name,
+            class_name: None,
+            scope_kind: ScopeKind::Function,
+            magic_fn_name: None,
             code: Vec::new(),
             consts: Vec::new(),
             names: Vec::new(),
@@ -2209,11 +2254,98 @@ impl ProtoBuilder {
             Expression::Closure(cl) => self.compile_closure(cl),
             Expression::PartialApplication(pa) => self.compile_fcc(pa),
             Expression::Yield(y) => self.compile_yield(y),
+            Expression::MagicConstant(mc) => self.compile_magic_const(mc),
             other => Err(Thrown::unsupported(
                 format!("{} expression", expr_kind(other)),
                 "not implemented in the phase-1 compiler",
             )),
         }
+    }
+
+    /// Lower a magic constant (`__DIR__`, `__FILE__`, `__LINE__`, `__FUNCTION__`,
+    /// `__CLASS__`, `__METHOD__`, `__NAMESPACE__`) — all resolved at compile time.
+    fn compile_magic_const(&mut self, mc: &MagicConstant) -> Result<Reg, Thrown> {
+        use mago_span::HasSpan;
+        let dst = self.alloc_temp();
+        if let MagicConstant::Line(_) = mc {
+            let n = line_of(mc.span().start.offset) as i64;
+            self.emit(Instr::LoadInt { dst, n });
+            return Ok(dst);
+        }
+        if let MagicConstant::Property(_) = mc {
+            return Err(Thrown::unsupported("__PROPERTY__", "only valid in property hooks"));
+        }
+        let s: Vec<u8> = match mc {
+            MagicConstant::File(_) => src_file(),
+            MagicConstant::Directory(_) => dirname(&src_file()),
+            MagicConstant::Function(_) => self.magic_function_name(),
+            MagicConstant::Method(_) => self.magic_method_name(),
+            MagicConstant::Class(_) | MagicConstant::Trait(_) => {
+                self.class_name.as_ref().map(|c| c.as_bytes().to_vec()).unwrap_or_default()
+            }
+            MagicConstant::Namespace(_) => Vec::new(), // no namespace support
+            MagicConstant::Line(_) | MagicConstant::Property(_) => unreachable!(),
+        };
+        let k = self.intern_const(Value::str(s));
+        self.emit(Instr::LoadConst { dst, k });
+        Ok(dst)
+    }
+
+    /// `__FUNCTION__`: "" at top level, the function/method name, or a closure's
+    /// generated `{closure:…}` name.
+    fn magic_function_name(&self) -> Vec<u8> {
+        match self.scope_kind {
+            ScopeKind::Main | ScopeKind::Init => Vec::new(),
+            ScopeKind::Function | ScopeKind::Method => self.name.as_bytes().to_vec(),
+            ScopeKind::Closure => self
+                .magic_fn_name
+                .as_ref()
+                .map(|n| n.as_bytes().to_vec())
+                .unwrap_or_else(|| b"{closure}".to_vec()),
+        }
+    }
+
+    /// `__METHOD__`: "Class::method" in a method, the function name in a free
+    /// function, the closure name in a closure, "" at top level.
+    fn magic_method_name(&self) -> Vec<u8> {
+        match self.scope_kind {
+            ScopeKind::Method => {
+                let mut v = self.class_name.as_ref().map(|c| c.as_bytes().to_vec()).unwrap_or_default();
+                v.extend_from_slice(b"::");
+                v.extend_from_slice(self.name.as_bytes());
+                v
+            }
+            ScopeKind::Function | ScopeKind::Closure => self.magic_function_name(),
+            ScopeKind::Main | ScopeKind::Init => Vec::new(),
+        }
+    }
+
+    /// PHP 8.5's closure name `{closure:<enclosing>:<line>}`, built from the scope
+    /// that defines the closure (`self`). Top-level/init closures embed the file.
+    fn closure_magic_name(&self, offset: u32) -> PhpStr {
+        let line = line_of(offset);
+        let qual: Vec<u8> = match self.scope_kind {
+            ScopeKind::Method => {
+                let mut v = self.class_name.as_ref().map(|c| c.as_bytes().to_vec()).unwrap_or_default();
+                v.extend_from_slice(b"::");
+                v.extend_from_slice(self.name.as_bytes());
+                v.extend_from_slice(b"()");
+                v
+            }
+            ScopeKind::Function => {
+                let mut v = self.name.as_bytes().to_vec();
+                v.extend_from_slice(b"()");
+                v
+            }
+            ScopeKind::Closure => self.magic_fn_name.as_ref().map(|n| n.as_bytes().to_vec()).unwrap_or_default(),
+            ScopeKind::Main | ScopeKind::Init => src_file(),
+        };
+        let mut s = b"{closure:".to_vec();
+        s.extend_from_slice(&qual);
+        s.push(b':');
+        s.extend_from_slice(line.to_string().as_bytes());
+        s.push(b'}');
+        PhpStr::from_bytes(s)
     }
 
     fn compile_literal(&mut self, lit: &Literal) -> Result<Reg, Thrown> {
@@ -3025,7 +3157,13 @@ impl ProtoBuilder {
             captures.insert(0, (b"this".to_vec(), false));
         }
 
-        self.build_closure(is_static, &af.parameter_list, captures, ClosureBody::Arrow(af.expression))
+        self.build_closure(
+            is_static,
+            &af.parameter_list,
+            captures,
+            ClosureBody::Arrow(af.expression),
+            { use mago_span::HasSpan; af.span().start.offset },
+        )
     }
 
     /// `function(params) use(...) { body }` — closure with an explicit capture
@@ -3050,7 +3188,13 @@ impl ProtoBuilder {
                 }
             }
         }
-        self.build_closure(is_static, &cl.parameter_list, captures, ClosureBody::Block(&cl.body))
+        self.build_closure(
+            is_static,
+            &cl.parameter_list,
+            captures,
+            ClosureBody::Block(&cl.body),
+            { use mago_span::HasSpan; cl.span().start.offset },
+        )
     }
 
     /// Shared closure lowering: compile the body into a fresh proto whose CVs are
@@ -3062,12 +3206,20 @@ impl ProtoBuilder {
         param_list: &rhp_frontend::cst::FunctionLikeParameterList,
         captures: Vec<(Vec<u8>, bool)>,
         body: ClosureBody,
+        closure_offset: u32,
     ) -> Result<Reg, Thrown> {
         let nc = captures.len() as u16;
+
+        // PHP 8.5 names a closure `{closure:<enclosing scope>:<line>}`, computed
+        // from the scope that *defines* it (the current builder).
+        let magic_name = self.closure_magic_name(closure_offset);
 
         // --- compile the closure proto in an isolated builder ---
         let mut c = ProtoBuilder::new(PhpStr::from("{closure}"));
         c.sigs = self.sigs.clone();
+        c.scope_kind = ScopeKind::Closure;
+        c.class_name = self.class_name.clone(); // __CLASS__ in a closure = enclosing class
+        c.magic_fn_name = Some(magic_name);
         for (name, _) in &captures {
             c.cv(name); // captures occupy CVs 0..nc
         }
@@ -3745,6 +3897,20 @@ fn fold_const(e: &Expression) -> Result<Value, Thrown> {
     let v = match e {
         Expression::Literal(l) => literal_value(l),
         Expression::Parenthesized(p) => return fold_const(p.expression),
+        // Context-free magic constants fold in const / default-value positions
+        // (`const ROOT = __DIR__;`, `function f($p = __FILE__)`). The scope-
+        // dependent ones (__CLASS__/__FUNCTION__/__METHOD__) are handled by the
+        // ProtoBuilder path, not here.
+        Expression::MagicConstant(mc) => {
+            use mago_span::HasSpan;
+            match mc {
+                MagicConstant::Line(_) => Value::Int(line_of(mc.span().start.offset) as i64),
+                MagicConstant::File(_) => Value::str(src_file()),
+                MagicConstant::Directory(_) => Value::str(dirname(&src_file())),
+                MagicConstant::Namespace(_) => Value::str(Vec::new()),
+                _ => return Err(non_const_err()),
+            }
+        }
         Expression::Array(arr) => return fold_const_array(arr.elements.iter()),
         Expression::LegacyArray(arr) => return fold_const_array(arr.elements.iter()),
         Expression::ConstantAccess(ca) => match identifier_name(&ca.name) {

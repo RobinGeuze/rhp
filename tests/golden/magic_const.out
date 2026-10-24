@@ -1,0 +1,6 @@
+2
+[][][][]
+worker / worker
+Service::handle => {closure:Service::handle():8}|Service|{closure:Service::handle():8}
+Service::tag
+15

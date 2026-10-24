@@ -581,8 +581,13 @@ impl Vm {
                 }
 
                 Instr::MakeClosure { dst, fnidx, base, ncaptures } => {
-                    let captures: Vec<Value> =
-                        (0..ncaptures).map(|i| self.reg_get(top, base + i)).collect();
+                    // Raw (non-deref) read: a by-reference capture arrives as a
+                    // `Value::Ref` (from MakeRef) and must stay a Ref so writes
+                    // inside the closure reach the outer variable; by-value
+                    // captures were already deref'd into the window by Mov.
+                    let captures: Vec<Value> = (0..ncaptures)
+                        .map(|i| self.stack[top].regs[(base + i) as usize].clone())
+                        .collect();
                     // Bind the defining/static class scope so the closure body can
                     // reach private members and resolve `self::`/`static::`.
                     let cd = Rc::new(phrust_values::ClosureData {

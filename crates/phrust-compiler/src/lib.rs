@@ -2880,49 +2880,46 @@ impl ProtoBuilder {
 
         let mut used = Vec::new();
         collect_vars(af.expression, &mut used);
-        let mut captures: Vec<Vec<u8>> = Vec::new();
+        let mut captures: Vec<(Vec<u8>, bool)> = Vec::new();
         for name in used {
             if name == b"this" {
                 continue; // handled below
             }
-            if params.iter().any(|p| p == &name) || captures.iter().any(|c| c == &name) {
+            if params.iter().any(|p| p == &name) || captures.iter().any(|c| c.0 == name) {
                 continue;
             }
-            // Only capture variables that exist in the enclosing scope.
+            // Arrow functions auto-capture by value only.
             if self.cv_map.iter().any(|n| n == &name) {
-                captures.push(name);
+                captures.push((name, false));
             }
         }
         // Bind `$this` by value when we're inside an instance context.
         if !is_static && self.cv_map.iter().any(|n| n == b"this") {
-            captures.insert(0, b"this".to_vec());
+            captures.insert(0, (b"this".to_vec(), false));
         }
 
         self.build_closure(is_static, &af.parameter_list, captures, ClosureBody::Arrow(af.expression))
     }
 
     /// `function(params) use(...) { body }` — closure with an explicit capture
-    /// list. `use(&$x)` by-ref capture is not yet supported (treated by value).
+    /// list. `use(&$x)` captures by reference (shares a cell with the outer var).
     fn compile_closure(
         &mut self,
         cl: &phrust_frontend::cst::Closure,
     ) -> Result<Reg, Thrown> {
         let is_static = cl.r#static.is_some();
-        let mut captures: Vec<Vec<u8>> = Vec::new();
+        let mut captures: Vec<(Vec<u8>, bool)> = Vec::new();
         if !is_static && self.cv_map.iter().any(|n| n == b"this") {
-            captures.push(b"this".to_vec());
+            captures.push((b"this".to_vec(), false));
         }
         if let Some(uses) = &cl.use_clause {
             for u in uses.variables.iter() {
-                if u.ampersand.is_some() {
-                    return Err(Thrown::unsupported(
-                        "by-reference closure capture (`use (&$x)`)",
-                        "only by-value `use` is supported for now",
-                    ));
-                }
                 let name = strip_dollar(u.variable.name).to_vec();
-                if !captures.iter().any(|c| c == &name) {
-                    captures.push(name);
+                let by_ref = u.ampersand.is_some();
+                if let Some(existing) = captures.iter_mut().find(|c| c.0 == name) {
+                    existing.1 |= by_ref;
+                } else {
+                    captures.push((name, by_ref));
                 }
             }
         }
@@ -2936,7 +2933,7 @@ impl ProtoBuilder {
         &mut self,
         is_static: bool,
         param_list: &phrust_frontend::cst::FunctionLikeParameterList,
-        captures: Vec<Vec<u8>>,
+        captures: Vec<(Vec<u8>, bool)>,
         body: ClosureBody,
     ) -> Result<Reg, Thrown> {
         let nc = captures.len() as u16;
@@ -2944,7 +2941,7 @@ impl ProtoBuilder {
         // --- compile the closure proto in an isolated builder ---
         let mut c = ProtoBuilder::new(PhpStr::from("{closure}"));
         c.sigs = self.sigs.clone();
-        for name in &captures {
+        for (name, _) in &captures {
             c.cv(name); // captures occupy CVs 0..nc
         }
         let mut params = Vec::new();
@@ -3006,11 +3003,17 @@ impl ProtoBuilder {
 
         // --- emit the capture window + MakeClosure in the enclosing frame ---
         let base = self.alloc_temps(nc.max(1));
-        for (i, name) in captures.iter().enumerate() {
+        for (i, (name, by_ref)) in captures.iter().enumerate() {
             let dst = base + i as Reg;
-            match self.cv_map.iter().position(|n| n == name) {
-                Some(src) => self.emit(Instr::Mov { dst, src: src as Reg }),
-                None => self.emit(Instr::LoadNull { dst }),
+            if *by_ref {
+                // Share a cell with the outer variable (created if absent).
+                let cv = self.cv(name);
+                self.emit(Instr::MakeRef { dst, cv });
+            } else {
+                match self.cv_map.iter().position(|n| n == name) {
+                    Some(src) => self.emit(Instr::Mov { dst, src: src as Reg }),
+                    None => self.emit(Instr::LoadNull { dst }),
+                }
             }
         }
         let dst = self.alloc_temp();

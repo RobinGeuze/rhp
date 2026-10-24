@@ -33,6 +33,7 @@ mod sort_fns;
 mod str_fns;
 mod strarr2_fns;
 mod strcmp_fns;
+mod strtotime_fns;
 mod webenc_fns;
 
 /// The interpreter surface a builtin may use. Implemented by the VM and the oracle.
@@ -218,6 +219,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         webenc_fns::register(&mut m);
         datetime_fns::register(&mut m);
         dt_oop_fns::register(&mut m);
+        strtotime_fns::register(&mut m);
         strarr2_fns::register(&mut m);
         sort_fns::register(&mut m);
         serialize_fns::register(&mut m);

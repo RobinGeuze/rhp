@@ -36,10 +36,10 @@ fn deref(v: &Value) -> Value {
     }
 }
 
-const SECS_PER_DAY: i64 = 86400;
+pub(crate) const SECS_PER_DAY: i64 = 86400;
 
 const DAY_SHORT: [&[u8]; 7] = [b"Sun", b"Mon", b"Tue", b"Wed", b"Thu", b"Fri", b"Sat"];
-const DAY_FULL: [&[u8]; 7] = [
+pub(crate) const DAY_FULL: [&[u8]; 7] = [
     b"Sunday",
     b"Monday",
     b"Tuesday",
@@ -48,7 +48,7 @@ const DAY_FULL: [&[u8]; 7] = [
     b"Friday",
     b"Saturday",
 ];
-const MONTH_FULL: [&[u8]; 12] = [
+pub(crate) const MONTH_FULL: [&[u8]; 12] = [
     b"January",
     b"February",
     b"March",
@@ -64,12 +64,12 @@ const MONTH_FULL: [&[u8]; 12] = [
 ];
 
 /// Is `y` a Gregorian leap year?
-fn is_leap(y: i64) -> bool {
+pub(crate) fn is_leap(y: i64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
 /// Days in month `m` (1..12) of year `y`.
-fn days_in_month(y: i64, m: i64) -> i64 {
+pub(crate) fn days_in_month(y: i64, m: i64) -> i64 {
     match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
@@ -86,7 +86,7 @@ fn days_in_month(y: i64, m: i64) -> i64 {
 
 /// Days since the Unix epoch (1970-01-01) for the civil date y/m/d.
 /// Howard Hinnant's algorithm. `m` in [1,12], `d` in [1,31].
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = (if y >= 0 { y } else { y - 399 }) / 400;
     let yoe = y - era * 400; // [0, 399]
@@ -110,18 +110,18 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 }
 
 /// Fully broken-down UTC time for a Unix timestamp.
-struct Tm {
-    year: i64,
-    month: i64, // 1..12
-    day: i64,   // 1..31
-    hour: i64,  // 0..23
-    min: i64,   // 0..59
-    sec: i64,   // 0..59
-    wday: i64,  // 0 = Sunday .. 6 = Saturday
-    yday: i64,  // 0-based day of year
+pub(crate) struct Tm {
+    pub(crate) year: i64,
+    pub(crate) month: i64, // 1..12
+    pub(crate) day: i64,   // 1..31
+    pub(crate) hour: i64,  // 0..23
+    pub(crate) min: i64,   // 0..59
+    pub(crate) sec: i64,   // 0..59
+    pub(crate) wday: i64,  // 0 = Sunday .. 6 = Saturday
+    pub(crate) yday: i64,  // 0-based day of year
 }
 
-fn break_down(ts: i64) -> Tm {
+pub(crate) fn break_down(ts: i64) -> Tm {
     let days = ts.div_euclid(SECS_PER_DAY);
     let rem = ts.rem_euclid(SECS_PER_DAY);
     let hour = rem / 3600;
@@ -242,7 +242,7 @@ fn fn_date(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// PHP's 2-digit-year adjustment for mktime: 0..69 -> 2000..2069,
 /// 70..100 -> 1970..2000; 4-digit years pass through unchanged.
-fn adjust_year(y: i64) -> i64 {
+pub(crate) fn adjust_year(y: i64) -> i64 {
     if (0..=69).contains(&y) {
         y + 2000
     } else if (70..=100).contains(&y) {

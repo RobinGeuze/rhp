@@ -11,6 +11,15 @@ This doc distinguishes three very different things that all get called
 `registry()` / `Host` layering, and finishes with a ranked roadmap, a
 `json_decode` recommendation, and the build/portability consequences.
 
+> **Decision (2026-10-24).** The macro-shim prototype of §9 is **abandoned** —
+> `crates/phrust-zendshim` has been removed. The chosen strategy is to
+> **reimplement each extension in Rust and prove it byte-identical to the real
+> `php` binary with a differential-test framework** (`crates/phrust-difftest`,
+> documented in §10). Pure-Rust crates are used where a faithful 1:1 exists; a
+> C system library (e.g. libmysqlclient, libpq) is permitted only where no 1:1
+> Rust alternative exists. The first extension reimplemented this way is `hash`
+> (§10).
+
 ---
 
 ## 0. TL;DR verdicts
@@ -18,14 +27,14 @@ This doc distinguishes three very different things that all get called
 | Category | Verdict | One-line reason |
 |---|---|---|
 | 1. Load compiled Zend extensions (`json.so`, `mbstring.so`) | **Infeasible** | They are ABI clients of the Zend Engine — zval layout, Zend MM, executor hooks. Loading one means *being* the Zend engine. |
-| 1b. Compile ext *source* against a macro shim (§9, prototyped) | **Situational** | Recompiling the `.c` against our own Zend macros works and is byte-exact for small/self-contained (esp. numeric) functions; surface balloons for objects/globals/HashTable iteration. Opt-in tool, not the primary strategy. |
+| 1b. Compile ext *source* against a macro shim (§9, prototyped) | **Abandoned** | Proven byte-exact for small/numeric functions, but the macro/type surface balloons for objects/globals/HashTable iteration. Superseded by reimplement-in-Rust + differential testing (§10); `crates/phrust-zendshim` removed. |
 | 2. Link the C libs PHP builds on (pcre2, ICU, libxml2, OpenSSL, zlib, gmp/mpdecimal, oniguruma) | **Feasible** via `-sys` crates / bindgen | This is where byte-exactness actually lives. Caveat: must match PHP's *same lib + version + build options*, and account for PHP's own wrapping. |
 | 3. PHP's own C ext code that is *not* a system lib (`ext/json`, `ext/standard`) | **Feasible but a judgment call per-function** | Can vendor the C, bind a Rust crate + patch quirks, or reimplement. For `json_decode`: **reimplement in Rust against the differential harness** (recommended below). |
 
-The through-line: **phrust should not load extensions; it should selectively
-*link the same underlying libraries PHP links*, behind feature-gated
-"native-backed builtins", and reimplement the small amount of logic that is
-PHP-proprietary C rather than a shared library.**
+The through-line: **phrust reimplements each extension in Rust and proves it
+byte-identical to the C `php` binary with a differential harness (§10); it reuses
+the same underlying libraries PHP links (pcre2, and, where no 1:1 Rust crate
+exists, C system libs) rather than loading or recompiling Zend extensions.**
 
 ---
 
@@ -705,6 +714,68 @@ only if *several* number-heavy ext functions are wanted at once (then
   across calls, manipulates objects, iterates HashTables, or reads globals, the
   surface balloons and pure-Rust (pinned by the harness) stays the more robust,
   toolchain-free, memory-safe default — consistent with the rest of this doc.
+
+> **Superseded (2026-10-24).** The shim is no longer pursued; `crates/phrust-zendshim`
+> has been removed. See §10 for the strategy that replaced it.
+
+---
+
+## 10. The chosen approach: reimplement-in-Rust + differential testing
+
+The adopted extension strategy is deliberately simple and hard to fool:
+
+1. **Reimplement the extension in Rust** — pure-Rust crates where a faithful 1:1
+   exists, hand-rolled otherwise; a C system library (e.g. `libmysqlclient`,
+   `libpq`) only where no 1:1 Rust alternative exists.
+2. **Prove it against the C engine.** Run the *same* PHP source through the real
+   `php` binary (the canonical C implementation, our oracle) and through phrust's
+   VM, and require identical stdout — not against a hand-committed `.out`, but
+   against php live, over a broad, generated, seed-reproducible corpus.
+
+### 10.1 The framework — `crates/phrust-difftest`
+
+A small crate with a library, a binary, and integration tests:
+
+- `run_php(src)` feeds the source to `php -n` on stdin (no temp files, fixed UTC
+  timezone) and captures stdout; `run_phrust(src)` compiles and runs it on the VM
+  (catching engine panics as diffs). `diff_source(src)` runs both and classifies
+  the result `Match | Mismatch | PhpErr | PhrustErr`.
+- A dependency-free seeded `Rng` and `default_byte_corpus()` generate the inputs
+  where bugs hide: the empty string, every block-boundary length
+  (55/56/63/64/65/119/120/127/128…), human-readable vectors, and random binary
+  strings. A failing run reproduces exactly from its seed.
+- `sweeps.rs` turns an extension's functions into per-feature diffs (today: one
+  `hash()` sweep per algorithm from php's own `hash_algos()`).
+- The `phrust-difftest` binary prints a per-feature MATCH/MISMATCH verdict
+  (`phrust-difftest hash [--seed N] [--count N] [--algo NAME] [--strict]`); it is
+  the dev loop. `tests/hash.rs` is the CI gate — it skips cleanly when no `php`
+  is on PATH, so the workspace still tests without PHP installed.
+
+This is reusable for any future extension: generate inputs → `diff_source` →
+classify.
+
+### 10.2 First extension: `hash`
+
+`hash` is ideal to prove the framework — pure computation, ~60 algorithms,
+airtight to diff. All of `hash()`, `hash_hmac()`, `hash_pbkdf2()`,
+`hash_equals()`, `hash_algos()`, `hash_hmac_algos()` are byte-identical to
+php 8.5.8 over the sweep.
+
+- **Pure-Rust crates (1:1):** RustCrypto `md2`, `md4`, `sha2` (sha224/256/384/512
+  and the sha512/224, sha512/256 truncations), `sha3`, `ripemd`,
+  `whirlpool`, `tiger` (3-pass), `gost94` (gost + gost-crypto); `xxhash-rust`
+  (xxh32/64/3/128). `md5`/`sha1`/`sha256`/`crc32b` stay on phrust's existing
+  hand-rolled primitives.
+- **Hand-rolled (no 1:1 crate):** adler32; the CRC variants; FNV-1/1a (32/64);
+  joaat; MurmurHash3 (x86_32, x86_128, x64_128); and the table-heavy
+  `hash_tiger.rs` (4-pass tiger), `hash_snefru.rs` (Snefru-256),
+  `hash_haval.rs` (HAVAL 3/4/5-pass × 128–256-bit).
+- **Quirks the differential sweep surfaced** (each invisible to spec reading, each
+  caught instantly by diffing php): PHP emits the non-reflected `crc32`
+  **little-endian** while `crc32b`/`crc32c` are big-endian; `snefru` and
+  `snefru256` are the *same* 256-bit digest; murmur/xxh/fnv/joaat outputs are
+  big-endian; the HMAC block sizes for the sha3 family follow the keccak rates
+  (144/136/104/72).
 
 **Recommendation:** keep `phrust-zendshim` as an **opt-in, feature-gated
 capability** for the narrow case it fits (small self-contained ext functions,

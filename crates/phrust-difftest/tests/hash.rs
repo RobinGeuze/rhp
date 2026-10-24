@@ -12,12 +12,8 @@ use phrust_difftest::sweeps::{hash_algo, php_hash_algos};
 use phrust_difftest::{default_byte_corpus, php_available, Diff};
 
 /// Algorithms still being implemented (table-heavy, verified via the sweep).
-const PENDING: &[&str] = &[
-    "tiger128,4", "tiger160,4", "tiger192,4", "snefru", "snefru256",
-    "haval128,3", "haval160,3", "haval192,3", "haval224,3", "haval256,3",
-    "haval128,4", "haval160,4", "haval192,4", "haval224,4", "haval256,4",
-    "haval128,5", "haval160,5", "haval192,5", "haval224,5", "haval256,5",
-];
+/// Empty — phrust covers the full php `hash_algos()` set.
+const PENDING: &[&str] = &[];
 
 #[test]
 fn hash_matches_php_over_corpus() {

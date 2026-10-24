@@ -181,6 +181,43 @@ impl Host for Vm {
         Value::Object(obj)
     }
 
+    fn instantiate(&mut self, class_name: &[u8], props: Vec<(Vec<u8>, Value)>) -> Option<Value> {
+        let cls = self.resolve_class_by_name(class_name).ok()?;
+        let obj = self.new_object(cls);
+        {
+            let mut b = obj.borrow_mut();
+            for (k, v) in props {
+                b.properties.insert(phrust_values::PhpStr::from_bytes(k), v);
+            }
+        }
+        Some(Value::Object(obj))
+    }
+
+    fn object_prop(&self, obj: &Value, name: &[u8]) -> Option<Value> {
+        let key = phrust_values::PhpStr::from_bytes(name);
+        let h = match obj {
+            Value::Object(h) => h,
+            Value::Ref(r) => match &*r.borrow() {
+                Value::Object(h) => return h.borrow().properties.get(&key).cloned(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        h.borrow().properties.get(&key).cloned()
+    }
+
+    fn object_class_name(&self, obj: &Value) -> Option<Vec<u8>> {
+        let h = match obj {
+            Value::Object(h) => h,
+            Value::Ref(r) => match &*r.borrow() {
+                Value::Object(h) => return self.class_name(h.borrow().class),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        self.class_name(h.borrow().class)
+    }
+
     fn is_callable_value(&self, callable: &Value) -> bool {
         let c = match callable {
             Value::Ref(r) => r.borrow().clone(),

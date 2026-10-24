@@ -115,6 +115,26 @@ pub trait Host {
     /// Set the bcmath default scale (`bcscale($scale)`).
     fn set_bc_scale(&mut self, _scale: i64) {}
 
+    /// Instantiate a named class, materializing its property defaults and then
+    /// overriding/adding the given properties (no constructor is run). Used by
+    /// object-returning builtins (e.g. `gmp_*` returning `GMP`, `date_create`).
+    /// Returns `None` if the host has no such class / no object model.
+    fn instantiate(&mut self, _class_name: &[u8], _props: Vec<(Vec<u8>, Value)>) -> Option<Value> {
+        None
+    }
+
+    /// Read a named property off an object value (for builtins that accept their
+    /// own object type back, e.g. `gmp_add(gmp_add(...), ...)`). Default: none.
+    fn object_prop(&self, _obj: &Value, _name: &[u8]) -> Option<Value> {
+        None
+    }
+
+    /// The class name of an object value, if any (for `instanceof`-style checks
+    /// inside builtins). Default: none.
+    fn object_class_name(&self, _obj: &Value) -> Option<Vec<u8>> {
+        None
+    }
+
     /// Build a `stdClass` object from named properties (for `json_decode` without
     /// `$associative`, `(object)` cast helpers, etc.). The default fallback — for
     /// hosts without an object model — returns an associative array instead.

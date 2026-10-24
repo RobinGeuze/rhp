@@ -52,6 +52,9 @@ pub struct Vm {
     globals: HashMap<Vec<u8>, Rc<RefCell<Value>>>,
     // `static $x`: persistent cells keyed by (function proto pointer, var name).
     statics: HashMap<(usize, Vec<u8>), Rc<RefCell<Value>>>,
+    // Non-constant class const / static-prop / property-default initializers,
+    // evaluated after all classes link (so cross-class/enum refs resolve).
+    pending_inits: Vec<classes::PendingInit>,
     // Generator runtime state, keyed by the Generator object's id.
     generators: HashMap<u32, GenState>,
     // Set by the `Yield` opcode to hand (key, value, resume-dst) to the driver.
@@ -277,6 +280,7 @@ impl Vm {
             main_cv_names: HashMap::new(),
             globals: HashMap::new(),
             statics: HashMap::new(),
+            pending_inits: Vec::new(),
             generators: HashMap::new(),
             yield_out: None,
             gen_stack: Vec::new(),

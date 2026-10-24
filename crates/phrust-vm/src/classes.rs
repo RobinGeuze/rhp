@@ -81,7 +81,10 @@ impl Vm {
         let mut pending: Vec<&ClassProto> = protos.iter().collect();
         loop {
             if pending.is_empty() {
-                return Ok(());
+                // All classes linked: now evaluate deferred initializers (class
+                // consts / static props / property defaults that referenced
+                // other classes, enum cases, etc.) in each one's scope.
+                return self.eval_pending_inits();
             }
             let mut progressed = false;
             let mut i = 0;
@@ -173,11 +176,13 @@ impl Vm {
             let default = match &pp.default {
                 PropDefaultProto::Const(v) => v.clone(),
                 PropDefaultProto::None => Value::Null,
-                PropDefaultProto::Init(_) => {
-                    return Err(Thrown::unsupported(
-                        "non-constant property default",
-                        "constant initializers only for now",
-                    ))
+                PropDefaultProto::Init(thunk) => {
+                    self.pending_inits.push(PendingInit {
+                        class_id: id,
+                        thunk: thunk.clone(),
+                        target: PendingTarget::Prop(pp.name.clone()),
+                    });
+                    Value::Null // placeholder until eval_pending_inits runs
                 }
             };
             props.insert(
@@ -205,14 +210,18 @@ impl Vm {
             }
         }
         for sp in &proto.static_props {
-            let v = const_init(&sp.init)?;
+            let cell = Rc::new(RefCell::new(Value::Null));
+            match &sp.init {
+                ConstInitProto::Const(v) => *cell.borrow_mut() = v.clone(),
+                ConstInitProto::Thunk(thunk) => self.pending_inits.push(PendingInit {
+                    class_id: id,
+                    thunk: thunk.clone(),
+                    target: PendingTarget::Static(cell.clone()),
+                }),
+            }
             static_props.insert(
                 sp.name.as_bytes().to_vec(),
-                StaticProp {
-                    cell: Rc::new(RefCell::new(v)),
-                    visibility: sp.visibility,
-                    declaring_class: id,
-                },
+                StaticProp { cell, visibility: sp.visibility, declaring_class: id },
             );
         }
 
@@ -226,7 +235,17 @@ impl Vm {
             }
         }
         for c in &proto.constants {
-            let v = const_init(&c.value)?;
+            let v = match &c.value {
+                ConstInitProto::Const(v) => v.clone(),
+                ConstInitProto::Thunk(thunk) => {
+                    self.pending_inits.push(PendingInit {
+                        class_id: id,
+                        thunk: thunk.clone(),
+                        target: PendingTarget::Const(c.name.as_bytes().to_vec()),
+                    });
+                    Value::Null // placeholder until eval_pending_inits runs
+                }
+            };
             constants.insert(
                 c.name.as_bytes().to_vec(),
                 ClassConst { value: v, visibility: c.visibility, declaring_class: id },
@@ -462,14 +481,48 @@ impl Vm {
         self.stack.push(frame);
         Ok(())
     }
+
+    /// Evaluate deferred initializer thunks (class consts / static props /
+    /// property defaults with non-constant expressions), each in its class's
+    /// scope, after all classes are linked.
+    fn eval_pending_inits(&mut self) -> Result<(), Thrown> {
+        let pending = std::mem::take(&mut self.pending_inits);
+        for p in pending {
+            let v = self.run_proto_sync(
+                p.thunk.clone(),
+                None,
+                Some(p.class_id),
+                Some(p.class_id),
+                Vec::new(),
+            )?;
+            match p.target {
+                PendingTarget::Static(cell) => *cell.borrow_mut() = v,
+                PendingTarget::Const(name) => {
+                    if let Some(c) = self.classes[p.class_id as usize].constants.get_mut(&name) {
+                        c.value = v;
+                    }
+                }
+                PendingTarget::Prop(name) => {
+                    if let Some(pe) = self.classes[p.class_id as usize].props.get_mut(&name) {
+                        pe.default = v;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
-fn const_init(init: &ConstInitProto) -> Result<Value, Thrown> {
-    match init {
-        ConstInitProto::Const(v) => Ok(v.clone()),
-        ConstInitProto::Thunk(_) => Err(Thrown::unsupported(
-            "non-constant class constant / static initializer",
-            "constant initializers only for now",
-        )),
-    }
+/// A deferred initializer: a thunk to evaluate in `class_id`'s scope and where
+/// to store the result.
+pub(crate) struct PendingInit {
+    pub class_id: ClassId,
+    pub thunk: Rc<FunctionProto>,
+    pub target: PendingTarget,
+}
+
+pub(crate) enum PendingTarget {
+    Static(Rc<RefCell<Value>>),
+    Const(Vec<u8>),
+    Prop(PhpStr),
 }

@@ -313,6 +313,47 @@ fn compile_enum(
     })
 }
 
+/// Compile a (possibly non-constant) initializer expression — a class constant,
+/// static-property, or instance-property default — into a zero-argument thunk
+/// the VM evaluates in the class's scope after all classes are linked. This is
+/// how `const X = self::Y` / `private State $s = State::Idle` resolve.
+fn compile_const_thunk(
+    expr: &Expression,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+) -> Result<Rc<FunctionProto>, Thrown> {
+    let mut c = ProtoBuilder::new(PhpStr::from("{init}"));
+    c.sigs = sigs.clone();
+    c.scan_expr_vars(expr); // const-exprs use no $vars, but be safe
+    c.num_cvs = c.cv_map.len() as u16;
+    c.next_temp = c.num_cvs;
+    c.high_water = c.num_cvs;
+    c.temp_floor = c.num_cvs;
+    let r = c.compile_expr(expr)?;
+    c.emit(Instr::Ret { src: r });
+    Ok(Rc::new(c.finish()))
+}
+
+/// Fold an initializer to a constant, or fall back to a runtime thunk.
+fn const_init_or_thunk(
+    expr: &Expression,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+) -> Result<ConstInitProto, Thrown> {
+    match fold_const(expr) {
+        Ok(v) => Ok(ConstInitProto::Const(v)),
+        Err(_) => Ok(ConstInitProto::Thunk(compile_const_thunk(expr, sigs)?)),
+    }
+}
+
+fn prop_default_or_thunk(
+    expr: &Expression,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+) -> Result<PropDefaultProto, Thrown> {
+    match fold_const(expr) {
+        Ok(v) => Ok(PropDefaultProto::Const(v)),
+        Err(_) => Ok(PropDefaultProto::Init(compile_const_thunk(expr, sigs)?)),
+    }
+}
+
 #[derive(Default)]
 struct CompiledMembers {
     methods: Vec<MethodProto>,
@@ -342,15 +383,16 @@ fn compile_members(
                 for item in p.items.iter() {
                     let (var, default) = match item {
                         PropertyItem::Concrete(c) => {
-                            (c.variable.name, PropDefaultProto::Const(const_value_static(c.value)?))
+                            (c.variable.name, prop_default_or_thunk(c.value, sigs)?)
                         }
                         PropertyItem::Abstract(a) => (a.variable.name, PropDefaultProto::None),
                     };
                     let pname = PhpStr::from_bytes(strip_dollar(var).to_vec());
                     if is_static {
-                        let init = match &default {
-                            PropDefaultProto::Const(v) => ConstInitProto::Const(v.clone()),
-                            _ => ConstInitProto::Const(Value::Null),
+                        let init = match default {
+                            PropDefaultProto::Const(v) => ConstInitProto::Const(v),
+                            PropDefaultProto::Init(t) => ConstInitProto::Thunk(t),
+                            PropDefaultProto::None => ConstInitProto::Const(Value::Null),
                         };
                         out.static_props.push(StaticPropProto { name: pname, visibility, is_readonly, init });
                     } else {
@@ -367,7 +409,7 @@ fn compile_members(
                     out.constants.push(ConstProto {
                         name: PhpStr::from_bytes(item.name.value.to_vec()),
                         visibility,
-                        value: ConstInitProto::Const(const_value_static(item.value)?),
+                        value: const_init_or_thunk(item.value, sigs)?,
                     });
                 }
             }

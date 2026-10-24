@@ -18,8 +18,13 @@ use std::collections::HashMap;
 use digest::Digest;
 use phrust_values::{conv, Value};
 
-use crate::hash_fns::{crc32 as crc32_ieee, md5, sha1, sha256, to_hex};
-use crate::{hash_haval, hash_snefru, hash_tiger, Builtin, Host, Thrown};
+mod haval;
+mod primitives;
+mod snefru;
+mod tiger;
+
+use crate::{Builtin, Host, Thrown};
+use primitives::{crc32 as crc32_ieee, md5, sha1, sha256, to_hex};
 
 // ---------------------------------------------------------------------------
 // value helpers
@@ -79,10 +84,10 @@ pub(crate) fn digest(algo: &[u8], data: &[u8]) -> Option<Vec<u8>> {
         b"tiger128,3" => tiger3(data, 16),
         b"tiger160,3" => tiger3(data, 20),
         b"tiger192,3" => tiger3(data, 24),
-        b"tiger128,4" => hash_tiger::tiger4(data, 16),
-        b"tiger160,4" => hash_tiger::tiger4(data, 20),
-        b"tiger192,4" => hash_tiger::tiger4(data, 24),
-        b"snefru" | b"snefru256" => hash_snefru::snefru256(data).to_vec(),
+        b"tiger128,4" => tiger::tiger4(data, 16),
+        b"tiger160,4" => tiger::tiger4(data, 20),
+        b"tiger192,4" => tiger::tiger4(data, 24),
+        b"snefru" | b"snefru256" => snefru::snefru256(data).to_vec(),
         b"gost" => dg::<gost94::Gost94Test>(data),
         b"gost-crypto" => dg::<gost94::Gost94CryptoPro>(data),
         b"adler32" => adler32(data).to_be_bytes().to_vec(),
@@ -104,7 +109,7 @@ pub(crate) fn digest(algo: &[u8], data: &[u8]) -> Option<Vec<u8>> {
         b"xxh128" => xxhash_rust::xxh3::xxh3_128(data).to_be_bytes().to_vec(),
         _ => {
             if let Some((bits, passes)) = parse_haval(algo) {
-                hash_haval::haval(data, bits, passes)
+                haval::haval(data, bits, passes)
             } else {
                 return None;
             }
@@ -158,7 +163,8 @@ fn parse_haval(algo: &[u8]) -> Option<(usize, usize)> {
 // ---------------------------------------------------------------------------
 
 fn tiger3(data: &[u8], width: usize) -> Vec<u8> {
-    let full = dg::<tiger::Tiger>(data);
+    // `::tiger` = the external crate (the local `tiger` module shadows the name).
+    let full = dg::<::tiger::Tiger>(data);
     full[..width].to_vec()
 }
 
@@ -616,6 +622,8 @@ const HMAC_ALGOS: &[&str] = &[
 // ---------------------------------------------------------------------------
 
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
+    // md5/sha1/crc32/base64/bin2hex/hex2bin — the hand-rolled core primitives.
+    primitives::register(m);
     fn put(
         m: &mut HashMap<&'static str, Builtin>,
         name: &'static str,

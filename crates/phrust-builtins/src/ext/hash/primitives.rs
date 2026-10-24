@@ -1,16 +1,10 @@
-//! Native hashing + binary-encoding builtins (pure, non-callback).
+//! Core hashing + binary-encoding primitives for the `hash` extension
+//! (`md5`, `sha1`, `crc32`, `base64_encode`/`decode`, `bin2hex`/`hex2bin`).
 //!
-//! md5 / sha1 / sha256 / crc32 are implemented by hand (no external crates).
-//! Every function here is verified byte-for-byte against the local php 8.5.8
-//! binary (see the `#[cfg(test)]` block — expected values are hardcoded from
-//! `php -r '...'` output).
-//!
-//! Wire this module into `lib.rs` with:
-//! ```ignore
-//! mod hash_fns;                 // near the other `mod` lines
-//! // ...and inside registry(), after building `m`, before returning it:
-//! hash_fns::register(&mut m);
-//! ```
+//! md5 / sha1 / sha256 / crc32 are implemented by hand (no external crates) and
+//! reused by the `hash()` dispatch in the parent module. Every function here is
+//! verified byte-for-byte against the local php 8.5.8 binary (see the
+//! `#[cfg(test)]` block). Registered via `super::register`.
 
 use std::collections::HashMap;
 

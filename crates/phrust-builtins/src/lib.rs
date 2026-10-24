@@ -17,15 +17,10 @@ pub mod dump;
 
 mod arr_fns;
 mod arrayset_fns;
-mod bc_fns;
 mod datetime_fns;
 mod dt_oop_fns;
+mod ext;
 mod filter_fns;
-mod hash_fns;
-mod hash_haval;
-mod hash_snefru;
-mod hash_tiger;
-mod hashext_fns;
 mod json_fns;
 mod math_fns;
 mod mb_fns;
@@ -249,9 +244,8 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         math_fns::register(&mut m);
         arr_fns::register(&mut m);
         misc_fns::register(&mut m);
-        hash_fns::register(&mut m);
-        hashext_fns::register(&mut m);
-        bc_fns::register(&mut m);
+        // Discrete extensions (php-src ext/<name>/ layout): hash, bcmath, ctype, …
+        ext::register(&mut m);
         webenc_fns::register(&mut m);
         datetime_fns::register(&mut m);
         dt_oop_fns::register(&mut m);

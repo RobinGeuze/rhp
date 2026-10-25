@@ -14,7 +14,7 @@ pub enum Thrown {
     /// A deliberately-unsupported feature (eval/extract/…). Rendered with the
     /// `RHP_UNSUPPORTED` marker, distinct from PHP's "undefined function",
     /// and never swallowable by a user `try/catch`.
-    Unsupported { feature: String, reason: &'static str },
+    Unsupported { feature: String, reason: String },
     /// `exit` / `die`: not an error — unwinds to the SAPI, which exits with this
     /// code. Any already-written output is kept.
     Exit(i32),
@@ -42,8 +42,8 @@ impl Thrown {
     pub fn type_error(message: impl Into<String>) -> Thrown {
         Thrown::error("TypeError", message)
     }
-    pub fn unsupported(feature: impl Into<String>, reason: &'static str) -> Thrown {
-        Thrown::Unsupported { feature: feature.into(), reason }
+    pub fn unsupported(feature: impl Into<String>, reason: impl Into<String>) -> Thrown {
+        Thrown::Unsupported { feature: feature.into(), reason: reason.into() }
     }
 
     /// Catchable by a PHP `try/catch`? Real errors and thrown objects are;

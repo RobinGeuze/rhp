@@ -106,6 +106,10 @@ pub enum Instr {
     ArrPush { arr: Reg, val: Reg },
     ArrSet { arr: Reg, key: Reg, val: Reg },
     ArrSpread { arr: Reg, src: Reg },
+    /// `[&$x]` / `[k => &$x]`: push/insert the raw `Value::Ref` in `val` so the
+    /// element aliases the source variable (no deref).
+    ArrPushRef { arr: Reg, val: Reg },
+    ArrSetRef { arr: Reg, key: Reg, val: Reg },
 
     // -- array element read (value context): element or Null; string offset --
     DimFetch { dst: Reg, arr: Reg, key: Reg },
@@ -165,6 +169,11 @@ pub enum Instr {
 
     /// `match` with no matching arm and no default: throw `\UnhandledMatchError`.
     ThrowMatchError { subject: Reg },
+    /// A construct the compiler accepts syntactically but refuses to run (eval,
+    /// goto, …): the refusal is deferred to runtime so a file that merely
+    /// *contains* it — down an unexecuted branch — still compiles and loads.
+    /// `what`/`why` are interned message strings.
+    DeferredUnsupported { what: CIdx, why: CIdx },
     /// `throw $e`: begin unwinding with the Throwable in `src`.
     Throw { src: Reg },
     /// End of a `finally` block: perform the pending continuation (re-raise a
@@ -197,6 +206,9 @@ pub enum Instr {
     CallMethod { dst: Reg, obj: Reg, name: NIdx, base: Reg, argc: u16, cache: CacheIdx },
     /// `C::m(args)` / `self::` / `static::` / `parent::`.
     CallStatic { dst: Reg, class: ClassRef, name: NIdx, base: Reg, argc: u16, cache: CacheIdx },
+    /// `C::$m(args)` / `$class::$m(args)`: static call whose method name is a
+    /// runtime string in register `name`.
+    CallStaticDyn { dst: Reg, class: ClassRef, name: Reg, base: Reg, argc: u16 },
     /// `$o->name = src` (single-level): direct write to a declared/accessible
     /// property, else `__set`, else a dynamic property.
     StoreProp { obj: Reg, name: NIdx, src: Reg },

@@ -47,6 +47,7 @@ pub struct ResolvedMethod {
     pub defining_class: ClassId,
     pub visibility: Visibility,
     pub is_static: bool,
+    pub is_abstract: bool,
 }
 
 #[derive(Clone)]
@@ -149,23 +150,38 @@ impl Vm {
         };
 
         // Methods: parent's table, then traits, then own (override by lc name).
+        // An *abstract* method is only a requirement: it must never clobber an
+        // already-present concrete method (e.g. a trait's `abstract foo()`
+        // alongside a concrete `foo()` inherited from the parent class).
         let mut methods: HashMap<Vec<u8>, ResolvedMethod> =
             parent.map(|p| self.classes[p as usize].methods.clone()).unwrap_or_default();
+        let insert_method = |methods: &mut HashMap<Vec<u8>, ResolvedMethod>, k: Vec<u8>, m: ResolvedMethod| {
+            if m.is_abstract {
+                if let Some(existing) = methods.get(&k) {
+                    if !existing.is_abstract {
+                        return; // keep the concrete method
+                    }
+                }
+            }
+            methods.insert(k, m);
+        };
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
-            for (k, m) in &self.classes[tid as usize].methods {
+            for (k, m) in self.classes[tid as usize].methods.clone() {
                 // Trait methods adopt the using class as their defining class.
-                methods.insert(k.clone(), ResolvedMethod { defining_class: id, ..m.clone() });
+                insert_method(&mut methods, k, ResolvedMethod { defining_class: id, ..m });
             }
         }
         for m in &proto.methods {
-            methods.insert(
+            insert_method(
+                &mut methods,
                 lc(m.name.as_bytes()),
                 ResolvedMethod {
                     proto: m.proto.clone(),
                     defining_class: id,
                     visibility: m.visibility,
                     is_static: m.is_static,
+                    is_abstract: m.is_abstract,
                 },
             );
         }

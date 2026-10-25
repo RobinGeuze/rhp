@@ -56,6 +56,31 @@ fn fn_spl_autoload_call(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     Ok(Value::Null)
 }
 
+/// `spl_object_id(object $obj): int` — the object's per-run handle id.
+fn fn_spl_object_id(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match deref(&args[0]) {
+        Value::Object(h) => Ok(Value::Int(h.borrow().id as i64)),
+        _ => Err(Thrown::type_error(
+            "spl_object_id(): Argument #1 ($object) must be of type object",
+        )),
+    }
+}
+
+/// `spl_object_hash(object $obj): string` — a 32-hex-char id unique to the
+/// object for its lifetime. (Derived from the handle id; not byte-identical to
+/// php's hash, but stable and collision-free as a map key.)
+fn fn_spl_object_hash(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match deref(&args[0]) {
+        Value::Object(h) => {
+            let id = h.borrow().id;
+            Ok(Value::str(format!("{id:032x}").into_bytes()))
+        }
+        _ => Err(Thrown::type_error(
+            "spl_object_hash(): Argument #1 ($object) must be of type object",
+        )),
+    }
+}
+
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     fn put(
         m: &mut HashMap<&'static str, Builtin>,
@@ -70,6 +95,8 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "spl_autoload_unregister", fn_spl_autoload_unregister, 1, Some(1));
     put(m, "spl_autoload_functions", fn_spl_autoload_functions, 0, Some(0));
     put(m, "spl_autoload_call", fn_spl_autoload_call, 1, Some(1));
+    put(m, "spl_object_id", fn_spl_object_id, 1, Some(1));
+    put(m, "spl_object_hash", fn_spl_object_hash, 1, Some(1));
 }
 
 /// SPL / core data-structure classes implemented in PHP (ArrayIterator and

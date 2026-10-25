@@ -95,6 +95,66 @@ fn fn_basename(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(base.to_vec()))
 }
 
+/// `pathinfo(path, flags=PATHINFO_ALL)` — splits a path into dirname/basename/
+/// extension/filename. Returns an assoc array, or a single string when exactly
+/// one flag bit is requested.
+fn fn_pathinfo(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    const DIRNAME: i64 = 1;
+    const BASENAME: i64 = 2;
+    const EXTENSION: i64 = 4;
+    const FILENAME: i64 = 8;
+    const ALL: i64 = DIRNAME | BASENAME | EXTENSION | FILENAME;
+
+    let path = path_arg(args, 0);
+    let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(ALL);
+
+    // basename (php keeps trailing-slash handling consistent with basename()).
+    let end = path.iter().rposition(|&b| b != b'/').map(|i| i + 1).unwrap_or(0);
+    let trimmed = &path[..end];
+    let base_start = trimmed.iter().rposition(|&b| b == b'/').map(|i| i + 1).unwrap_or(0);
+    let basename = &trimmed[base_start..];
+    // extension / filename: split basename on the LAST '.', but a leading dot
+    // (dotfile with no other dot) has no extension.
+    let (filename, extension): (&[u8], Option<&[u8]>) = match basename.iter().rposition(|&b| b == b'.') {
+        None => (basename, None),
+        Some(dot) => (&basename[..dot], Some(&basename[dot + 1..])),
+    };
+
+    let dir = dirname_once(&path);
+    // php: dirname is "." for a bare name only when the input had no slash.
+    let dirname: Vec<u8> = if path.contains(&b'/') { dir } else { b".".to_vec() };
+
+    // Single-component request -> return a string.
+    if flags != ALL && (flags & (flags - 1)) == 0 {
+        let s: Vec<u8> = match flags {
+            DIRNAME => dirname,
+            BASENAME => basename.to_vec(),
+            EXTENSION => extension.unwrap_or(b"").to_vec(),
+            FILENAME => filename.to_vec(),
+            _ => Vec::new(),
+        };
+        return Ok(Value::str(s));
+    }
+
+    use rhp_values::{ArrayKey as K, PhpArray};
+    let mut arr = PhpArray::new();
+    if flags & DIRNAME != 0 {
+        arr.insert(K::from_bytes(b"dirname"), Value::str(dirname));
+    }
+    if flags & BASENAME != 0 {
+        arr.insert(K::from_bytes(b"basename"), Value::str(basename.to_vec()));
+    }
+    if flags & EXTENSION != 0 {
+        if let Some(ext) = extension {
+            arr.insert(K::from_bytes(b"extension"), Value::str(ext.to_vec()));
+        }
+    }
+    if flags & FILENAME != 0 {
+        arr.insert(K::from_bytes(b"filename"), Value::str(filename.to_vec()));
+    }
+    Ok(Value::Array(arr))
+}
+
 /// `dirname(path, levels=1)` — matching php: "." when no slash, "/" at root.
 fn fn_dirname(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut path = path_arg(args, 0);
@@ -362,6 +422,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "is_readable", fn_is_readable, 1, Some(1));
     put(m, "basename", fn_basename, 1, Some(2));
     put(m, "dirname", fn_dirname, 1, Some(2));
+    put(m, "pathinfo", fn_pathinfo, 1, Some(2));
     put(m, "realpath", fn_realpath, 1, Some(1));
     put(m, "getcwd", fn_getcwd, 0, Some(0));
     put(m, "file_get_contents", fn_file_get_contents, 1, Some(1));

@@ -45,5 +45,8 @@ flate2 = "1.1"
 # phar per-file bzip2 compression (pure-Rust backend, no libbz2 dependency).
 bzip2 = "0.5"
 
+# openssl extension: pure-Rust X.509 certificate parsing (openssl_x509_parse).
+x509-parser = { version = "0.16", features = ["verify"] }
+
 # CSPRNG for random_bytes/random_int/mt_rand.
 getrandom = "0.2"

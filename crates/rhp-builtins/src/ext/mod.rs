@@ -14,6 +14,7 @@ pub mod ctype;
 pub mod gmp;
 pub mod hash;
 pub mod mbstring;
+pub mod openssl;
 pub mod password;
 pub mod phar;
 pub mod reflection;
@@ -83,6 +84,13 @@ pub fn modules() -> Vec<ModuleDef> {
             name: "zlib",
             functions: zlib::register,
             constants: zlib::constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "openssl",
+            functions: openssl::register,
+            constants: no_constants,
             prelude_php: "",
             wrappers: no_wrappers,
         },

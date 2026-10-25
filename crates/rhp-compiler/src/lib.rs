@@ -424,6 +424,18 @@ fn src_file() -> Vec<u8> {
     SRC_FILE.with(|f| f.borrow().clone())
 }
 
+/// If `e` is a `&$lvalue` reference-prefix expression, return the referenced
+/// operand (used for by-reference array elements `[k => &$v]`).
+fn as_reference<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
+    match e {
+        Expression::UnaryPrefix(u) => match &u.operator {
+            UnaryPrefixOperator::Reference(_) => Some(u.operand),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// `dirname()` of a path, matching PHP for the file paths `__FILE__` yields:
 /// no slash → ".", a single leading slash → "/", else everything before the
 /// last slash.
@@ -1718,6 +1730,15 @@ impl ProtoBuilder {
         i
     }
 
+    /// Emit a runtime-deferred "unsupported" error (eval/goto): interns the two
+    /// message halves and emits `DeferredUnsupported`, which throws only if the
+    /// instruction is actually executed.
+    fn emit_deferred_unsupported(&mut self, what: &str, why: &str) {
+        let what = self.intern_const(Value::str(what.as_bytes().to_vec()));
+        let why = self.intern_const(Value::str(why.as_bytes().to_vec()));
+        self.emit(Instr::DeferredUnsupported { what, why });
+    }
+
     // -- CV pre-pass --
 
     fn scan_stmt_vars(&mut self, stmt: &Statement) {
@@ -2107,6 +2128,16 @@ impl ProtoBuilder {
                         }
                     }
                 }
+            }
+            // `goto`/`label` are not implemented, but deferred to runtime so a
+            // file that merely contains a `goto` (down an unexecuted branch) still
+            // loads. A label is a no-op marker; an executed `goto` throws.
+            Statement::Label(_) => {}
+            Statement::Goto(_) => {
+                self.emit_deferred_unsupported(
+                    "goto statement",
+                    "not implemented in the phase-1 compiler",
+                );
             }
             other => {
                 return Err(Thrown::unsupported(
@@ -3076,12 +3107,22 @@ impl ProtoBuilder {
             match el {
                 ArrayElement::KeyValue(kv) => {
                     let key = self.compile_expr(kv.key)?;
-                    let val = self.compile_expr(kv.value)?;
-                    self.emit(Instr::ArrSet { arr: dst, key, val });
+                    if let Some(inner) = as_reference(kv.value) {
+                        let val = self.compile_ref_source(inner)?;
+                        self.emit(Instr::ArrSetRef { arr: dst, key, val });
+                    } else {
+                        let val = self.compile_expr(kv.value)?;
+                        self.emit(Instr::ArrSet { arr: dst, key, val });
+                    }
                 }
                 ArrayElement::Value(v) => {
-                    let val = self.compile_expr(v.value)?;
-                    self.emit(Instr::ArrPush { arr: dst, val });
+                    if let Some(inner) = as_reference(v.value) {
+                        let val = self.compile_ref_source(inner)?;
+                        self.emit(Instr::ArrPushRef { arr: dst, val });
+                    } else {
+                        let val = self.compile_expr(v.value)?;
+                        self.emit(Instr::ArrPush { arr: dst, val });
+                    }
                 }
                 ArrayElement::Variadic(v) => {
                     let src = self.compile_expr(v.value)?;
@@ -3161,10 +3202,16 @@ impl ProtoBuilder {
                 self.emit(Instr::Print { dst, src });
                 Ok(dst)
             }
-            Construct::Eval(_) => Err(Thrown::unsupported(
-                "eval()",
-                "executes a string as PHP code; refused by design",
-            )),
+            Construct::Eval(_) => {
+                // eval is refused by design, but deferred to RUNTIME: a file that
+                // merely *contains* an eval() (down an unused branch) still
+                // compiles and loads; the error only fires if eval is executed.
+                self.emit_deferred_unsupported(
+                    "eval()",
+                    "executes a string as PHP code; refused by design",
+                );
+                Ok(self.alloc_temp())
+            }
             Construct::Include(i) => self.compile_include(i.value, IncludeKind::Include),
             Construct::IncludeOnce(i) => self.compile_include(i.value, IncludeKind::IncludeOnce),
             Construct::Require(i) => self.compile_include(i.value, IncludeKind::Require),
@@ -4242,19 +4289,34 @@ impl ProtoBuilder {
         smc: &rhp_frontend::cst::StaticMethodCall,
     ) -> Result<Reg, Thrown> {
         let class = self.class_ref(smc.class)?;
-        let name = self.selector_name(&smc.method)?;
-        if has_spread(&smc.argument_list) {
-            let args = self.build_args_array(Some(&smc.argument_list))?;
-            let dst = self.alloc_temp();
-            self.emit(Instr::CallStaticV { dst, class, name, args });
-            return Ok(dst);
+        match self.compile_selector(&smc.method)? {
+            Sel::Static(name) => {
+                if has_spread(&smc.argument_list) {
+                    let args = self.build_args_array(Some(&smc.argument_list))?;
+                    let dst = self.alloc_temp();
+                    self.emit(Instr::CallStaticV { dst, class, name, args });
+                    return Ok(dst);
+                }
+                let mask = self.name_ref_mask(name);
+                let (base, argc) = self.compile_arg_window_ex(Some(&smc.argument_list), &mask, true)?;
+                let dst = self.alloc_temp();
+                let cache = self.alloc_cache();
+                self.emit(Instr::CallStatic { dst, class, name, base, argc, cache });
+                Ok(dst)
+            }
+            Sel::Dyn(name) => {
+                if has_spread(&smc.argument_list) {
+                    return Err(Thrown::unsupported(
+                        "dynamic static call with argument spread",
+                        "deferred",
+                    ));
+                }
+                let (base, argc) = self.compile_arg_window_ex(Some(&smc.argument_list), &[], true)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::CallStaticDyn { dst, class, name, base, argc });
+                Ok(dst)
+            }
         }
-        let mask = self.name_ref_mask(name);
-        let (base, argc) = self.compile_arg_window_ex(Some(&smc.argument_list), &mask, true)?;
-        let dst = self.alloc_temp();
-        let cache = self.alloc_cache();
-        self.emit(Instr::CallStatic { dst, class, name, base, argc, cache });
-        Ok(dst)
     }
 
     fn compile_assignment(

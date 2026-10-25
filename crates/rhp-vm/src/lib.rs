@@ -920,6 +920,74 @@ impl Vm {
         Ok(())
     }
 
+    /// Shared body for `C::m()` / `C::$m()` static dispatch (resolves the class,
+    /// handles enum built-ins, `__callStatic`, LSB, and `$this` forwarding).
+    fn do_call_static(
+        &mut self,
+        top: usize,
+        class: ClassRef,
+        mname: Vec<u8>,
+        dst: Reg,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        let cls = self.resolve_class_autoload(top, class)?;
+        let found = self.lookup_method(cls, &mname);
+        // Enum built-in static methods (cases/from/tryFrom) when not overridden.
+        if found.is_none() && self.class(cls).kind == ClassKind::Enum {
+            let lc = mname.to_ascii_lowercase();
+            if matches!(lc.as_slice(), b"cases" | b"from" | b"tryfrom") {
+                let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+                let r = self.enum_builtin_static(cls, &lc, args)?;
+                self.reg_set(top, dst, r);
+                return Ok(());
+            }
+        }
+        let accessible = found.as_ref().is_some_and(|m| {
+            self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility)
+        });
+        if !(found.is_some() && accessible) {
+            // Undefined / inaccessible static method -> __callStatic.
+            if let Some(magic) = self.lookup_method(cls, b"__callstatic") {
+                let mut arr = rhp_values::PhpArray::new();
+                for i in 0..argc {
+                    arr.push(self.reg_get(top, base + i));
+                }
+                let args = vec![Value::str(mname.clone()), Value::Array(arr)];
+                let r = self.call_sync(&magic, None, cls, args)?;
+                self.reg_set(top, dst, r);
+                return Ok(());
+            }
+            return match found {
+                Some(m) => Err(self.access_err("method", m.defining_class, &mname, m.visibility)),
+                None => Err(Thrown::error(
+                    "Error",
+                    format!(
+                        "Call to undefined method {}::{}()",
+                        String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                        String::from_utf8_lossy(&mname)
+                    ),
+                )),
+            };
+        }
+        let m = found.unwrap();
+        // LSB: self/parent/static forward the called-class; Name/Dynamic set it.
+        let called = match class {
+            ClassRef::SelfClass | ClassRef::ParentClass | ClassRef::StaticClass => {
+                self.stack[top].called_class.unwrap_or(cls)
+            }
+            _ => cls,
+        };
+        // Forward $this to a non-static method iff it is-a the target class.
+        let this = if m.is_static {
+            None
+        } else {
+            self.current_this(top)
+                .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))
+        };
+        self.enter_method(top, &m, this, called, dst, base, argc)
+    }
+
     /// Build the parameter-descriptor array `ReflectionParameter` reads from.
     fn params_to_value(&self, proto: &FunctionProto) -> Value {
         let mut arr = PhpArray::new();
@@ -1573,6 +1641,21 @@ impl Vm {
                         a.insert(key, v);
                     }
                 }
+                Instr::ArrPushRef { arr, val } => {
+                    let v = self.stack[top].regs[val as usize].clone();
+                    if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
+                        a.push(v);
+                    }
+                }
+                Instr::ArrSetRef { arr, key, val } => {
+                    let k = self.reg_get(top, key);
+                    let v = self.stack[top].regs[val as usize].clone();
+                    let key = ArrayKey::from_value(&k)
+                        .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
+                    if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
+                        a.insert(key, v);
+                    }
+                }
                 Instr::ArrSpread { arr, src } => {
                     let spread = self.reg_get(top, src);
                     if let Value::Array(inner) = spread {
@@ -1983,6 +2066,14 @@ impl Vm {
                         format!("Unhandled match case {}", match_case_desc(&v)),
                     ));
                 }
+                Instr::DeferredUnsupported { what, why } => {
+                    let what = conv::to_string_bytes(&proto.consts[what as usize]);
+                    let why = conv::to_string_bytes(&proto.consts[why as usize]);
+                    return Err(Thrown::unsupported(
+                        String::from_utf8_lossy(&what).into_owned(),
+                        String::from_utf8_lossy(&why).into_owned(),
+                    ));
+                }
                 Instr::Throw { src } => {
                     let v = self.reg_get(top, src);
                     match v {
@@ -2196,66 +2287,12 @@ impl Vm {
                     self.invoke_method(top, h, cls, mname, dst, base, argc)?;
                 }
                 Instr::CallStatic { dst, class, name, base, argc, .. } => {
-                    let cls = self.resolve_class_autoload(top, class)?;
                     let mname = proto.names[name as usize].as_bytes().to_vec();
-                    let found = self.lookup_method(cls, &mname);
-                    // Enum built-in static methods (cases/from/tryFrom) when not
-                    // overridden by a user-defined method.
-                    if found.is_none() && self.class(cls).kind == ClassKind::Enum {
-                        let lc = mname.to_ascii_lowercase();
-                        if matches!(lc.as_slice(), b"cases" | b"from" | b"tryfrom") {
-                            let args: Vec<Value> =
-                                (0..argc).map(|i| self.reg_get(top, base + i)).collect();
-                            let r = self.enum_builtin_static(cls, &lc, args)?;
-                            self.reg_set(top, dst, r);
-                            continue;
-                        }
-                    }
-                    let accessible = found.as_ref().is_some_and(|m| {
-                        self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility)
-                    });
-                    if !(found.is_some() && accessible) {
-                        // Undefined / inaccessible static method -> __callStatic.
-                        if let Some(magic) = self.lookup_method(cls, b"__callstatic") {
-                            let mut arr = rhp_values::PhpArray::new();
-                            for i in 0..argc {
-                                arr.push(self.reg_get(top, base + i));
-                            }
-                            let args = vec![Value::str(mname.clone()), Value::Array(arr)];
-                            let r = self.call_sync(&magic, None, cls, args)?;
-                            self.reg_set(top, dst, r);
-                            continue;
-                        }
-                        return match found {
-                            Some(m) => {
-                                Err(self.access_err("method", m.defining_class, &mname, m.visibility))
-                            }
-                            None => Err(Thrown::error(
-                                "Error",
-                                format!(
-                                    "Call to undefined method {}::{}()",
-                                    String::from_utf8_lossy(self.class(cls).name.as_bytes()),
-                                    String::from_utf8_lossy(&mname)
-                                ),
-                            )),
-                        };
-                    }
-                    let m = found.unwrap();
-                    // LSB: self/parent/static forward the called-class; Name/Dynamic set it.
-                    let called = match class {
-                        ClassRef::SelfClass | ClassRef::ParentClass | ClassRef::StaticClass => {
-                            self.stack[top].called_class.unwrap_or(cls)
-                        }
-                        _ => cls,
-                    };
-                    // Forward $this to a non-static method iff it is-a the target class.
-                    let this = if m.is_static {
-                        None
-                    } else {
-                        self.current_this(top)
-                            .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))
-                    };
-                    self.enter_method(top, &m, this, called, dst, base, argc)?;
+                    self.do_call_static(top, class, mname, dst, base, argc)?;
+                }
+                Instr::CallStaticDyn { dst, class, name, base, argc } => {
+                    let mname = conv::to_string_bytes(&self.reg_get(top, name));
+                    self.do_call_static(top, class, mname, dst, base, argc)?;
                 }
                 Instr::InstanceOf { dst, val, class } => {
                     let v = self.reg_get(top, val);

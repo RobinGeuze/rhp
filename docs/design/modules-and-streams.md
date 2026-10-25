@@ -1,6 +1,11 @@
 # Modules & stream wrappers (plan toward running Composer)
 
-**Status:** design / plan. No engine behavior changes yet.
+**Status:** IMPLEMENTED (Parts A/B/C + M1). `rhp composer.phar --version` now
+produces byte-identical stdout to php 8.5.8. See the commit "run composer.phar"
+and `crates/rhp-cli/tests/phar.rs`. Resource streams (plan Stage 2) also landed,
+since composer's output needs `fwrite` to `php://stdout`. The notes below are the
+original plan, kept for reference; broader composer commands (`list`/`about`)
+need Reflection next (M2).
 **Goal:** (1) turn each extension into a self-contained *module* that can register
 functions **and** classes, constants, and **stream wrappers**; (2) add a stream
 layer so file I/O and `include`/`require` dispatch by URL scheme; (3) implement

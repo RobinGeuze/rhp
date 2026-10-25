@@ -47,6 +47,25 @@ pub trait Host {
     /// Append bytes to the single output sink (stdout / output buffer).
     fn write_out(&mut self, bytes: &[u8]);
 
+    /// Output buffering (`ob_*`). Defaults make the stack a no-op for hosts
+    /// (e.g. the oracle) that don't implement it.
+    fn ob_start(&mut self) {}
+    fn ob_get_contents(&self) -> Option<Vec<u8>> {
+        None
+    }
+    fn ob_get_level(&self) -> usize {
+        0
+    }
+    fn ob_get_clean(&mut self) -> Option<Vec<u8>> {
+        None
+    }
+    fn ob_end_clean(&mut self) -> bool {
+        false
+    }
+    fn ob_end_flush(&mut self) -> bool {
+        false
+    }
+
     /// A class's name by id (for `get_class` etc.). Default: not available.
     fn class_name(&self, _class_id: u32) -> Option<Vec<u8>> {
         None
@@ -456,6 +475,10 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PCRE_VERSION", Value::str("10.47 2025-10-21")),
         ("PCRE_VERSION_MAJOR", Value::Int(10)),
         ("PCRE_VERSION_MINOR", Value::Int(47)),
+        ("ICONV_VERSION", Value::str("1.11")),
+        ("ICONV_IMPL", Value::str("libiconv")),
+        ("ICONV_MIBENUM_ASCII", Value::Int(3)),
+        ("MB_ONIGURUMA_VERSION", Value::str("6.9.10")),
         ("DIRECTORY_SEPARATOR", Value::str("/")),
         ("PATH_SEPARATOR", Value::str(":")),
         ("PHP_MAXPATHLEN", Value::Int(1024)),

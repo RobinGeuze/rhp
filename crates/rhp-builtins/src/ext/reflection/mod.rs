@@ -218,6 +218,22 @@ class ReflectionClass {
 class ReflectionObject extends ReflectionClass {}
 class ReflectionEnum extends ReflectionClass {}
 
+class ReflectionExtension {
+    public $name;
+    public function __construct($name) { $this->name = $name; }
+    public function getName() { return $this->name; }
+    public function getVersion() { $v = phpversion($this->name); return $v === false ? null : $v; }
+    public function info() { /* detailed phpinfo() text is not available */ }
+    public function getClasses() { return []; }
+    public function getClassNames() { return []; }
+    public function getConstants() { return []; }
+    public function getFunctions() { return []; }
+    public function getINIEntries() { return []; }
+    public function getDependencies() { return []; }
+    public function isPersistent() { return true; }
+    public function isTemporary() { return false; }
+}
+
 class ReflectionClassConstant {
     public $name; public $class; private $__m;
     public function __construct($class, $name) {

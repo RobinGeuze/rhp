@@ -148,3 +148,13 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         Builtin { name: "openssl_x509_parse", func: fn_openssl_x509_parse, min_args: 1, max_args: Some(2) },
     );
 }
+
+/// `OPENSSL_*` constants read by Composer's platform detection.
+pub fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("OPENSSL_VERSION_TEXT", Value::str("OpenSSL 3.6.3 9 Jun 2026")),
+        ("OPENSSL_VERSION_NUMBER", Value::Int(811597872)),
+        ("OPENSSL_RAW_DATA", Value::Int(1)),
+        ("OPENSSL_ZERO_PADDING", Value::Int(2)),
+    ]
+}

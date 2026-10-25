@@ -90,7 +90,7 @@ pub fn modules() -> Vec<ModuleDef> {
         ModuleDef {
             name: "openssl",
             functions: openssl::register,
-            constants: no_constants,
+            constants: openssl::constants,
             prelude_php: "",
             wrappers: no_wrappers,
         },

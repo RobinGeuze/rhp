@@ -34,6 +34,9 @@ enum CursorStep {
 /// The virtual machine: output sink + call stack + global tables.
 pub struct Vm {
     out: Vec<u8>,
+    /// Output-buffering stack (`ob_start`): `echo`/`print` write to the top
+    /// buffer when non-empty, else straight to `out`.
+    ob_stack: Vec<Vec<u8>>,
     stack: Vec<Frame>,
     functions: Vec<Rc<FunctionProto>>,
     fn_names: HashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
@@ -136,7 +139,43 @@ enum CursorRoot {
 
 impl Host for Vm {
     fn write_out(&mut self, bytes: &[u8]) {
-        self.out.extend_from_slice(bytes);
+        match self.ob_stack.last_mut() {
+            Some(buf) => buf.extend_from_slice(bytes),
+            None => self.out.extend_from_slice(bytes),
+        }
+    }
+
+    fn ob_start(&mut self) {
+        self.ob_stack.push(Vec::new());
+    }
+
+    fn ob_get_contents(&self) -> Option<Vec<u8>> {
+        self.ob_stack.last().cloned()
+    }
+
+    fn ob_get_level(&self) -> usize {
+        self.ob_stack.len()
+    }
+
+    /// Pop the top buffer and return its contents (`ob_get_clean`).
+    fn ob_get_clean(&mut self) -> Option<Vec<u8>> {
+        self.ob_stack.pop()
+    }
+
+    /// Pop the top buffer and discard it (`ob_end_clean`).
+    fn ob_end_clean(&mut self) -> bool {
+        self.ob_stack.pop().is_some()
+    }
+
+    /// Pop the top buffer and write its contents to the next sink (`ob_end_flush`).
+    fn ob_end_flush(&mut self) -> bool {
+        match self.ob_stack.pop() {
+            Some(buf) => {
+                self.write_out(&buf);
+                true
+            }
+            None => false,
+        }
     }
 
     fn class_name(&self, class_id: u32) -> Option<Vec<u8>> {
@@ -712,6 +751,7 @@ impl Vm {
         }
         Vm {
             out: Vec::new(),
+            ob_stack: Vec::new(),
             stack: Vec::new(),
             functions: Vec::new(),
             fn_names: HashMap::new(),

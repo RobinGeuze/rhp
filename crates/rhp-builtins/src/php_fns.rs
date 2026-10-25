@@ -80,6 +80,37 @@ fn fn_php_sapi_name(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
     Ok(Value::str("cli"))
 }
 
+fn fn_ob_start(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    host.ob_start();
+    Ok(Value::Bool(true))
+}
+
+fn fn_ob_get_contents(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(host.ob_get_contents().map(Value::str).unwrap_or(Value::Bool(false)))
+}
+
+fn fn_ob_get_clean(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(host.ob_get_clean().map(Value::str).unwrap_or(Value::Bool(false)))
+}
+
+fn fn_ob_get_level(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(host.ob_get_level() as i64))
+}
+
+fn fn_ob_end_clean(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(host.ob_end_clean()))
+}
+
+fn fn_ob_end_flush(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(host.ob_end_flush()))
+}
+
+fn fn_ob_get_flush(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let contents = host.ob_get_contents();
+    host.ob_end_flush();
+    Ok(contents.map(Value::str).unwrap_or(Value::Bool(false)))
+}
+
 fn fn_php_uname(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mode = args.first().map(|v| conv::to_string_bytes(&deref(v))).unwrap_or_else(|| b"a".to_vec());
     let s: &[u8] = match mode.first() {
@@ -363,6 +394,39 @@ fn fn_uniqid(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(s))
 }
 
+/// `time(): int` — current unix timestamp (seconds).
+fn fn_time(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    Ok(Value::Int(now.as_secs() as i64))
+}
+
+/// `microtime(bool $as_float = false)` — current time with microseconds.
+fn fn_microtime(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let as_float = args.first().map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    if as_float {
+        Ok(Value::Float(now.as_secs_f64()))
+    } else {
+        // php format: "0.xxxxxxxx sssssssss" (microsecond fraction, then seconds).
+        Ok(Value::str(format!("{:.8} {}", now.subsec_micros() as f64 / 1_000_000.0, now.as_secs()).into_bytes()))
+    }
+}
+
+/// `hrtime(bool $as_number = false)` — high-resolution time. As a monotonic-ish
+/// value derived from the wall clock (no separate monotonic source needed here).
+fn fn_hrtime(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let as_number = args.first().map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    if as_number {
+        Ok(Value::Int(now.as_nanos() as i64))
+    } else {
+        let mut a = PhpArray::new();
+        a.push(Value::Int(now.as_secs() as i64));
+        a.push(Value::Int(now.subsec_nanos() as i64));
+        Ok(Value::Array(a))
+    }
+}
+
 // --- version_compare ---------------------------------------------------------
 
 /// Canonicalize a version string into comparable components, per php: insert a
@@ -494,6 +558,13 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "function_exists", fn_function_exists, 1, Some(1));
     put(m, "phpversion", fn_phpversion, 0, Some(1));
     put(m, "php_sapi_name", fn_php_sapi_name, 0, Some(0));
+    put(m, "ob_start", fn_ob_start, 0, Some(3));
+    put(m, "ob_get_contents", fn_ob_get_contents, 0, Some(0));
+    put(m, "ob_get_clean", fn_ob_get_clean, 0, Some(0));
+    put(m, "ob_get_level", fn_ob_get_level, 0, Some(0));
+    put(m, "ob_end_clean", fn_ob_end_clean, 0, Some(0));
+    put(m, "ob_end_flush", fn_ob_end_flush, 0, Some(0));
+    put(m, "ob_get_flush", fn_ob_get_flush, 0, Some(0));
     put(m, "php_uname", fn_php_uname, 0, Some(1));
     put(m, "getenv", fn_getenv, 0, Some(1));
     put(m, "putenv", fn_putenv, 1, Some(1));
@@ -529,6 +600,9 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "mt_srand", fn_noop_null, 0, Some(2));
     put(m, "srand", fn_noop_null, 0, Some(2));
     put(m, "uniqid", fn_uniqid, 0, Some(2));
+    put(m, "time", fn_time, 0, Some(0));
+    put(m, "microtime", fn_microtime, 0, Some(1));
+    put(m, "hrtime", fn_hrtime, 0, Some(1));
     put(m, "__closure_from_callable", fn_closure_from_callable, 1, Some(1));
     put(m, "__closure_bind", fn_closure_bind, 2, Some(3));
     put(m, "version_compare", fn_version_compare, 2, Some(3));

@@ -26,6 +26,7 @@ fn arith_num(v: &Value, op: &str) -> Result<Num, Thrown> {
         Value::Object(_) | Value::Closure(_) => {
             Err(Thrown::type_error(format!("Unsupported operand types: object {op} int")))
         }
+        Value::Resource(r) => Ok(Num::Int(r.id as i64)),
         Value::Ref(r) => arith_num(&r.borrow(), op),
     }
 }

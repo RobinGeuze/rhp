@@ -47,6 +47,10 @@ fn main() -> ExitCode {
     };
 
     let mut vm = Vm::new();
+    // The top-level script's path, so `Phar::mapPhar` can parse the running phar.
+    vm.set_main_script_path(file.as_bytes().to_vec());
+    // $argv / $_SERVER['argv']: the script name as given, then its arguments.
+    vm.set_argv(args[1..].iter().map(|s| s.as_bytes().to_vec()).collect());
     // Teach the VM how to compile an included file (keeps the VM compiler-agnostic).
     vm.set_includer(|file: &str, src: &[u8]| {
         let arena = Arena::new();

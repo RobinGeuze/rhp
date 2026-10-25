@@ -162,6 +162,7 @@ fn encode_value(v: &Value, out: &mut Vec<u8>, flags: i64, level: usize) -> bool 
             // A Closure encodes as an empty object in php.
             return encode_object(&[], out, flags, level, pretty);
         }
+        Value::Resource(_) => return false, // resources are not JSON-encodable
         Value::Ref(r) => return encode_value(&r.borrow(), out, flags, level),
     }
     true

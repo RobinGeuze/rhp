@@ -60,6 +60,7 @@ fn serialize_value(out: &mut Vec<u8>, v: &Value) {
         // Objects are out of scope; php would emit `O:`. Nothing in-scope hits
         // this, but keep serialization total by falling back to null.
         Value::Object(_) | Value::Closure(_) => out.extend_from_slice(b"N;"),
+        Value::Resource(_) => out.extend_from_slice(b"i:0;"), // php serializes a resource as 0
         Value::Ref(_) => unreachable!("deref'd above"),
     }
 }

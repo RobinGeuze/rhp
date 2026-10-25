@@ -73,6 +73,32 @@ pub struct Vm {
     included_files: std::collections::HashSet<Vec<u8>>,
     // Registered `spl_autoload_register` callables, in call order.
     autoloaders: Vec<Value>,
+    // Stream wrappers by scheme (`file`, `phar`, …), installed at startup from
+    // the module list; runtime-mutable later via `stream_wrapper_register`.
+    wrappers: HashMap<Vec<u8>, Rc<dyn builtins::StreamWrapper>>,
+    // Filesystem path of the top-level script (for `Phar::mapPhar`).
+    main_script_path: Option<Vec<u8>>,
+    // Open stream resources (fopen family), keyed by resource id.
+    streams: HashMap<u32, StreamState>,
+    next_resource_id: u32,
+    // CLI arguments ($argv / $_SERVER['argv']); argv[0] is the script name.
+    argv: Vec<Vec<u8>>,
+}
+
+/// The backing state of an open stream resource.
+enum StreamState {
+    /// Standard output / `php://output` — writes to the VM output sink.
+    Stdout,
+    /// Standard error — writes to the process stderr.
+    Stderr,
+    /// Standard input (reads return EOF for now).
+    Stdin,
+    /// An in-memory / preloaded-file buffer (`php://memory`, a file opened for
+    /// reading): read from `pos`, writes append.
+    Mem { buf: Vec<u8>, pos: usize },
+    /// A file opened for writing: buffered, flushed to the wrapper on
+    /// flush/close. `append` keeps existing content.
+    FileWrite { buf: Vec<u8>, url: Vec<u8> },
 }
 
 /// Status of a generator.
@@ -162,12 +188,194 @@ impl Host for Vm {
         self.try_autoload(name).map(|_| ())
     }
 
+    // --- stream layer: dispatch to the per-run wrapper registry ---------------
+
+    fn stream_get_contents(&self, url: &[u8]) -> Option<Vec<u8>> {
+        self.wrapper_for(url)?.get_contents(url)
+    }
+
+    fn stream_exists(&self, url: &[u8]) -> bool {
+        self.wrapper_for(url).map(|w| w.exists(url)).unwrap_or(false)
+    }
+
+    fn stream_stat(&self, url: &[u8]) -> Option<builtins::StatInfo> {
+        self.wrapper_for(url)?.stat(url)
+    }
+
+    fn stream_put_contents(&mut self, url: &[u8], data: &[u8]) -> Option<usize> {
+        self.wrapper_for(url)?.put_contents(url, data)
+    }
+
+    fn stream_wrapper(&self, scheme: &[u8]) -> Option<Rc<dyn builtins::StreamWrapper>> {
+        self.wrappers.get(scheme).cloned()
+    }
+
+    fn running_main_path(&self) -> Option<Vec<u8>> {
+        self.main_script_path.clone()
+    }
+
+    fn stream_open(&mut self, path: &[u8], mode: &[u8]) -> Option<Value> {
+        let writable = mode.iter().any(|&b| matches!(b, b'w' | b'a' | b'x' | b'c' | b'+'));
+        let append = mode.first() == Some(&b'a');
+        let state = if path == b"php://stdout" || path == b"php://output" {
+            StreamState::Stdout
+        } else if path == b"php://stderr" {
+            StreamState::Stderr
+        } else if path == b"php://stdin" {
+            StreamState::Stdin
+        } else if path == b"php://memory" || path.starts_with(b"php://temp") {
+            StreamState::Mem { buf: Vec::new(), pos: 0 }
+        } else if path.starts_with(b"php://") {
+            return None; // other php:// streams unsupported
+        } else if writable {
+            let buf = if append {
+                self.wrapper_for(path).and_then(|w| w.get_contents(path)).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            StreamState::FileWrite { buf, url: path.to_vec() }
+        } else {
+            let data = self.wrapper_for(path).and_then(|w| w.get_contents(path))?;
+            StreamState::Mem { buf: data, pos: 0 }
+        };
+        Some(self.make_stream(state, "stream"))
+    }
+
+    fn stream_write(&mut self, res: &Value, data: &[u8]) -> Option<usize> {
+        let id = res_id(res)?;
+        enum Act {
+            Out,
+            Err,
+            Buf,
+            No,
+        }
+        let act = match self.streams.get(&id)? {
+            StreamState::Stdout => Act::Out,
+            StreamState::Stderr => Act::Err,
+            StreamState::Mem { .. } | StreamState::FileWrite { .. } => Act::Buf,
+            StreamState::Stdin => Act::No,
+        };
+        match act {
+            Act::Out => self.out.extend_from_slice(data),
+            Act::Err => {
+                use std::io::Write;
+                let _ = std::io::stderr().write_all(data);
+            }
+            Act::Buf => match self.streams.get_mut(&id)? {
+                StreamState::Mem { buf, .. } | StreamState::FileWrite { buf, .. } => {
+                    buf.extend_from_slice(data)
+                }
+                _ => {}
+            },
+            Act::No => return None,
+        }
+        Some(data.len())
+    }
+
+    fn stream_read(&mut self, res: &Value, len: i64) -> Option<Vec<u8>> {
+        let id = res_id(res)?;
+        match self.streams.get_mut(&id)? {
+            StreamState::Mem { buf, pos } => {
+                let take = if len < 0 { buf.len() - *pos } else { (len as usize).min(buf.len() - *pos) };
+                let out = buf[*pos..*pos + take].to_vec();
+                *pos += take;
+                Some(out)
+            }
+            _ => Some(Vec::new()),
+        }
+    }
+
+    fn stream_gets(&mut self, res: &Value) -> Option<Vec<u8>> {
+        let id = res_id(res)?;
+        match self.streams.get_mut(&id)? {
+            StreamState::Mem { buf, pos } => {
+                if *pos >= buf.len() {
+                    return None;
+                }
+                let start = *pos;
+                let nl = buf[start..].iter().position(|&b| b == b'\n').map(|i| start + i + 1);
+                let end = nl.unwrap_or(buf.len());
+                let line = buf[start..end].to_vec();
+                *pos = end;
+                Some(line)
+            }
+            _ => None,
+        }
+    }
+
+    fn stream_eof(&self, res: &Value) -> bool {
+        match res_id(res).and_then(|id| self.streams.get(&id)) {
+            Some(StreamState::Mem { buf, pos }) => *pos >= buf.len(),
+            _ => true,
+        }
+    }
+
+    fn stream_close(&mut self, res: &Value) -> bool {
+        let Some(id) = res_id(res) else { return false };
+        match self.streams.remove(&id) {
+            Some(StreamState::FileWrite { buf, url }) => {
+                self.wrapper_for(&url).map(|w| w.put_contents(&url, &buf)).is_some()
+            }
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    fn stream_flush(&mut self, res: &Value) -> bool {
+        let Some(id) = res_id(res) else { return false };
+        if let Some(StreamState::FileWrite { buf, url }) = self.streams.get(&id) {
+            let (buf, url) = (buf.clone(), url.clone());
+            return self.wrapper_for(&url).map(|w| w.put_contents(&url, &buf)).is_some();
+        }
+        true
+    }
+
+    fn stream_rewind(&mut self, res: &Value) -> bool {
+        if let Some(StreamState::Mem { pos, .. }) =
+            res_id(res).and_then(|id| self.streams.get_mut(&id))
+        {
+            *pos = 0;
+        }
+        true
+    }
+
     fn call_callable(&mut self, callable: &Value, args: &[Value]) -> Result<Value, Thrown> {
         self.call_callable_value(callable, args.to_vec())
     }
 
     fn resolve_class(&self, name: &[u8]) -> Option<u32> {
         self.resolve_class_by_name(name).ok()
+    }
+
+    fn function_exists(&self, name: &[u8]) -> bool {
+        self.fn_names.contains_key(&name.to_ascii_lowercase())
+            || builtins::lookup(&String::from_utf8_lossy(name)).is_some()
+    }
+
+    fn closure_bind(&self, closure: &Value, new_this: &Value, scope: &Value) -> Option<Value> {
+        let cd = match deref(closure) {
+            Value::Closure(cd) => cd,
+            _ => return None,
+        };
+        let new_this_h = match deref(new_this) {
+            Value::Object(h) => Some(h),
+            _ => None,
+        };
+        // Scope: an explicit class name / object, else the new $this's class,
+        // else keep the closure's original scope.
+        let scope_class = match deref(scope) {
+            Value::Null => new_this_h.as_ref().map(|h| h.borrow().class).or(cd.bound_class),
+            Value::Object(h) => Some(h.borrow().class),
+            v => self.resolve_class_by_name(&conv::to_string_bytes(&v)).ok().or(cd.bound_class),
+        };
+        Some(Value::Closure(Rc::new(rhp_values::ClosureData {
+            fnidx: cd.fnidx,
+            captures: cd.captures.clone(),
+            bound_this: new_this_h,
+            bound_class: scope_class,
+            bound_static: scope_class,
+            wrapped: cd.wrapped.clone(),
+        })))
     }
 
     fn class_kind(&self, class_id: u32) -> Option<ClassKind> {
@@ -292,6 +500,9 @@ struct Frame {
     /// A synchronous (re-entrant) call: when this frame returns, `do_return`
     /// hands the value back to the Rust caller instead of delivering to a reg.
     capture: bool,
+    /// Number of positional arguments actually passed (for non-constant parameter
+    /// default-init guards in the prologue).
+    argc: usize,
 }
 
 /// Result of unwinding: a handler was installed, or the exception escaped the
@@ -321,6 +532,7 @@ impl Frame {
             called_class: None,
             pending: None,
             capture: false,
+            argc: 0,
         }
     }
 }
@@ -355,6 +567,13 @@ impl Vm {
         for (name, value) in builtins::constants() {
             constants.insert(name.as_bytes().to_vec(), value);
         }
+        // Seed the stream-wrapper registry: the default `file://` plus every
+        // module-provided wrapper (`phar://`, …).
+        let mut wrappers: HashMap<Vec<u8>, Rc<dyn builtins::StreamWrapper>> = HashMap::new();
+        wrappers.insert(b"file".to_vec(), builtins::streams::file_wrapper());
+        for reg in builtins::stream_wrappers() {
+            wrappers.insert(reg.scheme.as_bytes().to_vec(), (reg.factory)());
+        }
         Vm {
             out: Vec::new(),
             stack: Vec::new(),
@@ -379,7 +598,105 @@ impl Vm {
             includer: None,
             included_files: std::collections::HashSet::new(),
             autoloaders: Vec::new(),
+            wrappers,
+            main_script_path: None,
+            streams: HashMap::new(),
+            next_resource_id: 1,
+            argv: Vec::new(),
         }
+    }
+
+    /// Set the CLI argument vector (`$argv`; `argv[0]` is the script name).
+    pub fn set_argv(&mut self, argv: Vec<Vec<u8>>) {
+        self.argv = argv;
+    }
+
+    /// Get or create the shared global cell for `name` (the overflow globals
+    /// table), used for superglobals and `global`.
+    fn global_cell(&mut self, name: &[u8]) -> Rc<RefCell<Value>> {
+        self.globals
+            .entry(name.to_vec())
+            .or_insert_with(|| Rc::new(RefCell::new(Value::Null)))
+            .clone()
+    }
+
+    /// Populate the superglobal global cells ($_SERVER, $argv, …) for a CLI run.
+    fn seed_superglobals(&mut self) {
+        use rhp_values::{ArrayKey, PhpArray};
+        let argv_arr = {
+            let mut a = PhpArray::new();
+            for arg in &self.argv {
+                a.push(Value::str(arg.clone()));
+            }
+            a
+        };
+        let argc = self.argv.len() as i64;
+        let script = self.argv.first().cloned().unwrap_or_default();
+
+        let mut server = PhpArray::new();
+        for (k, v) in std::env::vars() {
+            server.insert(ArrayKey::from_bytes(k.as_bytes()), Value::str(v.into_bytes()));
+        }
+        server.insert(ArrayKey::from_bytes(b"argv"), Value::Array(argv_arr.clone()));
+        server.insert(ArrayKey::from_bytes(b"argc"), Value::Int(argc));
+        server.insert(ArrayKey::from_bytes(b"PHP_SELF"), Value::str(script.clone()));
+        server.insert(ArrayKey::from_bytes(b"SCRIPT_NAME"), Value::str(script.clone()));
+        let script_fn = self.main_script_path.clone().unwrap_or(script.clone());
+        server.insert(ArrayKey::from_bytes(b"SCRIPT_FILENAME"), Value::str(script_fn));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        server.insert(ArrayKey::from_bytes(b"REQUEST_TIME"), Value::Int(now));
+        server.insert(ArrayKey::from_bytes(b"REQUEST_TIME_FLOAT"), Value::Float(now as f64));
+
+        let set = |vm: &mut Vm, name: &[u8], v: Value| {
+            *vm.global_cell(name).borrow_mut() = v;
+        };
+        set(self, b"_SERVER", Value::Array(server));
+        set(self, b"_ENV", {
+            let mut a = PhpArray::new();
+            for (k, v) in std::env::vars() {
+                a.insert(ArrayKey::from_bytes(k.as_bytes()), Value::str(v.into_bytes()));
+            }
+            Value::Array(a)
+        });
+        for empty in [&b"_GET"[..], b"_POST", b"_COOKIE", b"_FILES", b"_REQUEST", b"_SESSION"] {
+            set(self, empty, Value::Array(PhpArray::new()));
+        }
+        // $argv / $argc as plain globals (available at top level / via `global`).
+        set(self, b"argv", Value::Array(argv_arr));
+        set(self, b"argc", Value::Int(argc));
+    }
+
+    /// Bind a frame's superglobal CVs to their shared global cells.
+    fn bind_superglobals(&mut self, frame: &mut Frame) {
+        if frame.proto.superglobals.is_empty() {
+            return;
+        }
+        for (cv, name) in frame.proto.superglobals.clone() {
+            let cell = self.global_cell(name.as_bytes());
+            frame.regs[cv as usize] = Value::Ref(cell);
+        }
+    }
+
+    /// Allocate a stream resource backed by `state`, returning its resource Value.
+    fn make_stream(&mut self, state: StreamState, type_name: &'static str) -> Value {
+        let id = self.next_resource_id;
+        self.next_resource_id += 1;
+        self.streams.insert(id, state);
+        Value::Resource(Rc::new(rhp_values::ResourceData { id, type_name }))
+    }
+
+    /// Record the top-level script's filesystem path (for `Phar::mapPhar`).
+    pub fn set_main_script_path(&mut self, path: impl Into<Vec<u8>>) {
+        self.main_script_path = Some(path.into());
+    }
+
+    /// The stream wrapper for a URL's scheme (default `file://`).
+    fn wrapper_for(&self, url: &[u8]) -> Option<&Rc<dyn builtins::StreamWrapper>> {
+        let (scheme, _) = builtins::streams::split_scheme(url);
+        self.wrappers.get(scheme)
     }
 
     /// Install the SAPI's file-inclusion callback (parse + compile a path's
@@ -397,6 +714,16 @@ impl Vm {
 
     /// Execute a compiled program; returns the process exit code.
     pub fn run(&mut self, prog: &Program) -> Result<i32, Thrown> {
+        // Bind the standard stream resources (CLI SAPI) once.
+        if self.streams.is_empty() {
+            let stdin = self.make_stream(StreamState::Stdin, "stream");
+            let stdout = self.make_stream(StreamState::Stdout, "stream");
+            let stderr = self.make_stream(StreamState::Stderr, "stream");
+            self.constants.insert(b"STDIN".to_vec(), stdin);
+            self.constants.insert(b"STDOUT".to_vec(), stdout);
+            self.constants.insert(b"STDERR".to_vec(), stderr);
+            self.seed_superglobals();
+        }
         // Install (hoist) all declared functions, keyed case-insensitively.
         for (idx, proto) in prog.functions.iter().enumerate() {
             self.functions.push(proto.clone());
@@ -414,7 +741,9 @@ impl Vm {
         }
         // Link all declared classes (flatten inheritance, resolve forward refs).
         self.install_classes(&prog.classes)?;
-        self.stack.push(Frame::new(prog.main.clone(), 0));
+        let mut main_frame = Frame::new(prog.main.clone(), 0);
+        self.bind_superglobals(&mut main_frame);
+        self.stack.push(main_frame);
         match self.run_loop() {
             Ok(_) => Ok(0),
             Err(Thrown::Exit(code)) => Ok(code),
@@ -706,6 +1035,11 @@ impl Vm {
                 }
 
                 Instr::Jmp { target } => self.stack[top].pc = target as usize,
+                Instr::JmpIfArg { index, target } => {
+                    if self.stack[top].argc > index as usize {
+                        self.stack[top].pc = target as usize;
+                    }
+                }
                 Instr::JmpTrue { cond, target } => {
                     if conv::to_bool(&self.reg_get(top, cond)) {
                         self.stack[top].pc = target as usize;
@@ -1622,6 +1956,23 @@ impl Vm {
                     let v = self.do_include(top, raw, kind)?;
                     self.reg_set(top, dst, v);
                 }
+                Instr::Exit { arg } => {
+                    // A string message is printed (code 0); an int is the code.
+                    let code = match self.reg_get(top, arg) {
+                        Value::Int(n) => n as i32,
+                        Value::Str(s) => {
+                            self.out.extend_from_slice(s.as_bytes());
+                            0
+                        }
+                        Value::Null => 0,
+                        other => {
+                            let s = conv::to_string_bytes(&other);
+                            self.out.extend_from_slice(&s);
+                            0
+                        }
+                    };
+                    return Err(Thrown::Exit(code));
+                }
                 Instr::Yield { dst, key, value } => {
                     // Suspend: hand (key, value, resume-dst) to the generator
                     // driver, leaving this frame on the stack for it to reclaim.
@@ -1716,7 +2067,9 @@ impl Vm {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
         let mut frame = Frame::new(proto.clone(), 0);
+        frame.argc = args.len();
         bind_params(&proto, &args, &mut frame.regs)?;
+        self.bind_superglobals(&mut frame);
         if let (Some(cv), Some(obj)) = (proto.this_cv, this) {
             frame.regs[cv as usize] = Value::Object(obj);
         }
@@ -1793,10 +2146,21 @@ impl Vm {
         })
     }
 
-    /// Resolve an include path to `(realpath_bytes, source)`: absolute as-is,
-    /// else relative to the including file's directory, then the CWD.
+    /// Resolve an include path to `(realpath_bytes, source)`: for a schemed URL
+    /// (`phar://`, …) read through the stream wrapper directly; otherwise
+    /// absolute as-is, else relative to the including file's directory, then CWD.
     fn resolve_include_path(&self, top: usize, path: &str) -> Option<(Vec<u8>, Vec<u8>)> {
         use std::path::{Path, PathBuf};
+        // Schemed URLs: no candidate search — the wrapper owns resolution. The
+        // returned key (→ `__FILE__`/`__DIR__`/`_once`) is the normalized URL.
+        let (scheme, _) = builtins::streams::split_scheme(path.as_bytes());
+        if scheme != b"file" {
+            let url = path.as_bytes();
+            let w = self.wrapper_for(url)?;
+            let src = w.get_contents(url)?;
+            let key = w.canonical(url).unwrap_or_else(|| normalize_url(url));
+            return Some((key, src));
+        }
         let p = Path::new(path);
         let mut candidates: Vec<PathBuf> = Vec::new();
         if p.is_absolute() {
@@ -1869,6 +2233,7 @@ impl Vm {
         }
         let mut frame = Frame::new(main, 0);
         frame.capture = true;
+        self.bind_superglobals(&mut frame);
         let base = self.stack.len();
         self.stack.push(frame);
         loop {
@@ -1899,9 +2264,16 @@ impl Vm {
         }
         let proto = self.closures[cd.fnidx as usize].clone();
         let mut frame = Frame::new(proto.clone(), 0);
+        frame.argc = args.len();
         bind_params(&proto, &args, &mut frame.regs)?;
+        self.bind_superglobals(&mut frame);
         for (i, cap) in cd.captures.iter().enumerate() {
             frame.regs[i] = cap.clone();
+        }
+        // A rebound closure (`Closure::bind`/`bindTo`) overrides the captured
+        // `$this` with the new object.
+        if let (Some(cv), Some(obj)) = (proto.this_cv, &cd.bound_this) {
+            frame.regs[cv as usize] = Value::Object(obj.clone());
         }
         frame.defining_class = cd.bound_class;
         frame.called_class = cd.bound_static;
@@ -2368,7 +2740,9 @@ impl Vm {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
         let mut frame = Frame::new(callee.clone(), dst);
+        frame.argc = args.len();
         bind_params(&callee, &args, &mut frame.regs)?;
+        self.bind_superglobals(&mut frame);
         if callee.is_generator {
             let gen = self.make_generator(frame);
             let caller = self.stack.len() - 1;
@@ -2475,6 +2849,41 @@ fn match_case_desc(v: &Value) -> String {
 }
 
 // --- array element read + lvalue path operations ---------------------------
+
+/// The resource id of a (possibly referenced) resource value.
+fn res_id(v: &Value) -> Option<u32> {
+    match deref(v) {
+        Value::Resource(r) => Some(r.id),
+        _ => None,
+    }
+}
+
+/// Normalize a schemed URL (`scheme://…`) by collapsing `.`/`..`/empty path
+/// segments after the scheme, preserving the scheme and any leading `/` of the
+/// remainder. Used as the canonical `__FILE__`/`_once` key for phar entries.
+fn normalize_url(url: &[u8]) -> Vec<u8> {
+    let Some(pos) = url.windows(3).position(|w| w == b"://") else {
+        return url.to_vec();
+    };
+    let (pre, rest) = url.split_at(pos + 3);
+    let leading_slash = rest.first() == Some(&b'/');
+    let mut segs: Vec<&[u8]> = Vec::new();
+    for s in rest.split(|&b| b == b'/') {
+        match s {
+            b"" | b"." => {}
+            b".." => {
+                segs.pop();
+            }
+            x => segs.push(x),
+        }
+    }
+    let mut out = pre.to_vec();
+    if leading_slash {
+        out.push(b'/');
+    }
+    out.extend_from_slice(&segs.join(&b"/"[..]));
+    out
+}
 
 /// Clone a proto, stamping its `closure_base` so its file-local `MakeClosure`
 /// indices resolve into the VM's flat closure table (whose tail holds this
@@ -2743,6 +3152,7 @@ fn type_lc(v: &Value) -> &'static str {
         Value::Str(_) => "string",
         Value::Array(_) => "array",
         Value::Object(_) | Value::Closure(_) => "object",
+        Value::Resource(_) => "resource",
         Value::Ref(_) => "reference",
     }
 }

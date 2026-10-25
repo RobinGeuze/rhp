@@ -1,13 +1,13 @@
 //! Discrete PHP extensions, one folder per extension — mirroring php-src's
-//! `ext/<name>/` layout. Each submodule owns its functions and exposes a
-//! `register(&mut HashMap<&str, Builtin>)`; [`register`] here aggregates them.
+//! `ext/<name>/` layout. Each extension is a self-contained [`ModuleDef`]
+//! ([`modules`]) owning its functions, constants, PHP-source classes, and stream
+//! wrappers; the registry / constants / prelude / wrapper plumbing in `lib.rs`
+//! folds every module in.
 //!
 //! (The broad core library — string/array/math/etc., php's `ext/standard` — still
 //! lives in the flat `*_fns` modules for now.)
 
-use std::collections::HashMap;
-
-use crate::Builtin;
+use crate::module::{no_constants, no_wrappers, ModuleDef};
 
 pub mod bcmath;
 pub mod ctype;
@@ -15,15 +15,75 @@ pub mod gmp;
 pub mod hash;
 pub mod mbstring;
 pub mod password;
+pub mod phar;
 pub mod spl;
+pub mod zlib;
 
-/// Register every extension's builtins into the shared table.
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    hash::register(m);
-    bcmath::register(m);
-    ctype::register(m);
-    gmp::register(m);
-    mbstring::register(m);
-    password::register(m);
-    spl::register(m);
+/// Every discrete extension, in registration order.
+pub fn modules() -> Vec<ModuleDef> {
+    vec![
+        ModuleDef {
+            name: "hash",
+            functions: hash::register,
+            constants: no_constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "bcmath",
+            functions: bcmath::register,
+            constants: no_constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "ctype",
+            functions: ctype::register,
+            constants: no_constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "gmp",
+            functions: gmp::register,
+            constants: gmp::constants,
+            prelude_php: gmp::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "mbstring",
+            functions: mbstring::register,
+            constants: no_constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "password",
+            functions: password::register,
+            constants: password::constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "spl",
+            functions: spl::register,
+            constants: no_constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "zlib",
+            functions: zlib::register,
+            constants: zlib::constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "phar",
+            functions: phar::register,
+            constants: no_constants,
+            prelude_php: phar::PRELUDE_PHP,
+            wrappers: phar::wrappers,
+        },
+    ]
 }

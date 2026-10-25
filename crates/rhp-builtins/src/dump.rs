@@ -89,6 +89,11 @@ pub fn var_dump(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, indent: us
             sp(indent, out);
             out.extend_from_slice(b"}\n");
         }
+        Value::Resource(r) => {
+            out.extend_from_slice(
+                format!("resource({}) of type ({})\n", r.id, r.type_name).as_bytes(),
+            );
+        }
         Value::Ref(_) => unreachable!("deref'd above"),
     }
 }
@@ -167,7 +172,9 @@ pub fn var_export(out: &mut Vec<u8>, v: &Value, indent: usize) {
             sp(indent, out);
             out.push(b')');
         }
-        Value::Object(_) | Value::Closure(_) => out.extend_from_slice(b"NULL"),
+        Value::Object(_) | Value::Closure(_) | Value::Resource(_) => {
+            out.extend_from_slice(b"NULL")
+        }
         Value::Ref(_) => unreachable!("deref'd above"),
     }
 }

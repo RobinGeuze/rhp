@@ -14,6 +14,10 @@ use rhp_values::{PhpArray, Value};
 pub use rhp_values::Thrown;
 
 pub mod dump;
+pub mod module;
+pub mod streams;
+
+pub use streams::{StatInfo, StreamWrapper, WrapperReg};
 
 mod arr_fns;
 mod arrayset_fns;
@@ -26,11 +30,13 @@ mod math_fns;
 mod file_fns;
 mod misc_fns;
 mod parse_fns;
+mod php_fns;
 mod preg_fns;
 mod printf_fns;
 mod serialize_fns;
 mod sort_fns;
 mod str_fns;
+mod stream_fns;
 mod strarr2_fns;
 mod strcmp_fns;
 mod strtotime_fns;
@@ -101,6 +107,19 @@ pub trait Host {
         false
     }
 
+    /// Whether a function exists (`function_exists`): a user function or a
+    /// builtin. Default: builtins only (hosts without a user-function table).
+    fn function_exists(&self, name: &[u8]) -> bool {
+        lookup(&String::from_utf8_lossy(name)).is_some()
+    }
+
+    /// `Closure::bind`/`bindTo`: return a copy of `closure` with its `$this`
+    /// rebound to `new_this` (object or null) and its scope set from `scope` (a
+    /// class name string, an object, or null = keep/derive). Default: none.
+    fn closure_bind(&self, _closure: &Value, _new_this: &Value, _scope: &Value) -> Option<Value> {
+        None
+    }
+
     /// Register an `spl_autoload_register` callable (optionally prepending).
     fn register_autoloader(&mut self, _callback: Value, _prepend: bool) {}
 
@@ -152,6 +171,80 @@ pub trait Host {
             a.insert(rhp_values::ArrayKey::from_bytes(&k), v);
         }
         Value::Array(a)
+    }
+
+    // --- stream layer (file:// / phar:// / …) --------------------------------
+    // Defaults implement only `file://` via std::fs, so hosts without a wrapper
+    // registry (the oracle) still read local files; the VM overrides these to
+    // dispatch through its per-run wrapper registry.
+
+    /// Whole-file read through the stream layer (`file_get_contents`, include).
+    fn stream_get_contents(&self, url: &[u8]) -> Option<Vec<u8>> {
+        streams::default_get_contents(url)
+    }
+
+    /// Existence through the stream layer (`file_exists`).
+    fn stream_exists(&self, url: &[u8]) -> bool {
+        streams::default_exists(url)
+    }
+
+    /// Stat through the stream layer (`is_file`/`is_dir`/`filesize`).
+    fn stream_stat(&self, url: &[u8]) -> Option<StatInfo> {
+        streams::default_stat(url)
+    }
+
+    /// Whole-file write through the stream layer (`file_put_contents`).
+    fn stream_put_contents(&mut self, url: &[u8], data: &[u8]) -> Option<usize> {
+        streams::default_put_contents(url, data)
+    }
+
+    /// The registered wrapper for a scheme, for wrapper-specific control ops
+    /// (e.g. `Phar::mapPhar` reaching the `phar://` archive table). Default: none.
+    fn stream_wrapper(&self, _scheme: &[u8]) -> Option<std::rc::Rc<dyn StreamWrapper>> {
+        None
+    }
+
+    /// The filesystem path of the top-level script being executed (for
+    /// `Phar::mapPhar`, which parses the running phar itself). Default: none.
+    fn running_main_path(&self) -> Option<Vec<u8>> {
+        None
+    }
+
+    // --- stream resources (fopen family) -------------------------------------
+    // Streams are resource Values whose state lives in the VM; these are the
+    // `fopen`/`fwrite`/… primitives. Defaults are no-ops (hosts without streams).
+
+    /// `fopen($path, $mode)` → a resource, or None on failure.
+    fn stream_open(&mut self, _path: &[u8], _mode: &[u8]) -> Option<Value> {
+        None
+    }
+    /// `fwrite`/`fputs` → bytes written.
+    fn stream_write(&mut self, _res: &Value, _data: &[u8]) -> Option<usize> {
+        None
+    }
+    /// `fread($res, $len)` (len < 0 = read all remaining).
+    fn stream_read(&mut self, _res: &Value, _len: i64) -> Option<Vec<u8>> {
+        None
+    }
+    /// `fgets($res)` → one line (incl. newline), or None at EOF.
+    fn stream_gets(&mut self, _res: &Value) -> Option<Vec<u8>> {
+        None
+    }
+    /// `feof($res)`.
+    fn stream_eof(&self, _res: &Value) -> bool {
+        true
+    }
+    /// `fclose($res)` (flushes writable streams to their target).
+    fn stream_close(&mut self, _res: &Value) -> bool {
+        false
+    }
+    /// `fflush($res)`.
+    fn stream_flush(&mut self, _res: &Value) -> bool {
+        false
+    }
+    /// `rewind($res)`.
+    fn stream_rewind(&mut self, _res: &Value) -> bool {
+        false
     }
 }
 
@@ -258,8 +351,11 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         arr_fns::register(&mut m);
         misc_fns::register(&mut m);
         file_fns::register(&mut m);
-        // Discrete extensions (php-src ext/<name>/ layout): hash, bcmath, ctype, …
-        ext::register(&mut m);
+        // Discrete extensions (php-src ext/<name>/ layout): each a self-contained
+        // module owning its functions/constants/classes/wrappers.
+        for md in ext::modules() {
+            (md.functions)(&mut m);
+        }
         webenc_fns::register(&mut m);
         datetime_fns::register(&mut m);
         dt_oop_fns::register(&mut m);
@@ -274,6 +370,8 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         preg_fns::register(&mut m);
         json_fns::register(&mut m);
         parse_fns::register(&mut m);
+        php_fns::register(&mut m);
+        stream_fns::register(&mut m);
         m
     })
 }
@@ -297,8 +395,37 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PHP_VERSION", Value::str("8.5.8")),
         ("PHP_MAJOR_VERSION", Value::Int(8)),
         ("PHP_MINOR_VERSION", Value::Int(5)),
+        ("PHP_RELEASE_VERSION", Value::Int(8)),
+        ("PHP_EXTRA_VERSION", Value::str("")),
+        ("PHP_VERSION_ID", Value::Int(80508)),
+        ("PHP_SAPI", Value::str("cli")),
+        ("PHP_BINARY", Value::str("/usr/bin/php")),
         ("PHP_OS", Value::str("Darwin")),
         ("PHP_OS_FAMILY", Value::str("Darwin")),
+        ("DIRECTORY_SEPARATOR", Value::str("/")),
+        ("PATH_SEPARATOR", Value::str(":")),
+        ("PHP_MAXPATHLEN", Value::Int(1024)),
+        ("PHP_BINDIR", Value::str("/usr/bin")),
+        ("LC_CTYPE", Value::Int(0)),
+        ("LC_NUMERIC", Value::Int(1)),
+        ("LC_TIME", Value::Int(2)),
+        ("LC_COLLATE", Value::Int(3)),
+        ("LC_MONETARY", Value::Int(4)),
+        ("LC_MESSAGES", Value::Int(5)),
+        ("LC_ALL", Value::Int(6)),
+        ("E_ERROR", Value::Int(1)),
+        ("E_PARSE", Value::Int(4)),
+        ("E_CORE_ERROR", Value::Int(16)),
+        ("E_CORE_WARNING", Value::Int(32)),
+        ("E_COMPILE_ERROR", Value::Int(64)),
+        ("E_COMPILE_WARNING", Value::Int(128)),
+        ("E_USER_ERROR", Value::Int(256)),
+        ("E_USER_WARNING", Value::Int(512)),
+        ("E_USER_NOTICE", Value::Int(1024)),
+        ("E_STRICT", Value::Int(2048)),
+        ("E_RECOVERABLE_ERROR", Value::Int(4096)),
+        ("E_DEPRECATED", Value::Int(8192)),
+        ("E_USER_DEPRECATED", Value::Int(16384)),
         ("NAN", Value::Float(f64::NAN)),
         ("INF", Value::Float(f64::INFINITY)),
         ("E_ALL", Value::Int(32767)),
@@ -378,31 +505,33 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("M_E", Value::Float(std::f64::consts::E)),
         ("M_SQRT2", Value::Float(std::f64::consts::SQRT_2)),
         ("PHP_FLOAT_DIG", Value::Int(15)),
-        // gmp: division rounding modes, (de)serialisation endianness, version.
-        ("GMP_ROUND_ZERO", Value::Int(0)),
-        ("GMP_ROUND_PLUSINF", Value::Int(1)),
-        ("GMP_ROUND_MINUSINF", Value::Int(2)),
-        ("GMP_MSW_FIRST", Value::Int(1)),
-        ("GMP_LSW_FIRST", Value::Int(2)),
-        ("GMP_LITTLE_ENDIAN", Value::Int(4)),
-        ("GMP_BIG_ENDIAN", Value::Int(8)),
-        ("GMP_NATIVE_ENDIAN", Value::Int(16)),
-        ("GMP_VERSION", Value::str("6.3.0")),
-        // password_* extension (all algo identifiers are strings).
-        ("PASSWORD_DEFAULT", Value::str("2y")),
-        ("PASSWORD_BCRYPT", Value::str("2y")),
-        ("PASSWORD_ARGON2I", Value::str("argon2i")),
-        ("PASSWORD_ARGON2ID", Value::str("argon2id")),
-        ("PASSWORD_BCRYPT_DEFAULT_COST", Value::Int(12)),
-        ("PASSWORD_ARGON2_PROVIDER", Value::str("standard")),
-        ("PASSWORD_ARGON2_DEFAULT_MEMORY_COST", Value::Int(65536)),
-        ("PASSWORD_ARGON2_DEFAULT_TIME_COST", Value::Int(4)),
-        ("PASSWORD_ARGON2_DEFAULT_THREADS", Value::Int(1)),
     ]
     .into_iter()
     .chain(preg_fns::preg_constants())
     .chain(json_fns::json_constants())
+    // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with their module.
+    .chain(ext::modules().into_iter().flat_map(|md| (md.constants)()))
     .collect()
+}
+
+/// Concatenated PHP-source class declarations contributed by extension modules
+/// (GMP, Phar, …). The compiler compiles these into the prelude alongside the
+/// engine's own core classes.
+pub fn module_prelude() -> String {
+    let mut s = String::new();
+    for md in ext::modules() {
+        if !md.prelude_php.is_empty() {
+            s.push_str(md.prelude_php);
+            s.push('\n');
+        }
+    }
+    s
+}
+
+/// Built-in stream wrappers contributed by extension modules (e.g. `phar://`),
+/// installed into the VM's per-run registry at startup.
+pub fn stream_wrappers() -> Vec<WrapperReg> {
+    ext::modules().into_iter().flat_map(|md| (md.wrappers)()).collect()
 }
 
 /// If `name` is a deliberately-refused high-risk function, return why.
@@ -473,6 +602,7 @@ fn fn_get_debug_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         Value::Array(_) => "array",
         Value::Closure(_) => "Closure",
         Value::Object(_) => "object",
+        Value::Resource(_) => "resource (stream)",
         Value::Ref(_) => unreachable!(),
     };
     Ok(Value::str(name))
@@ -1147,6 +1277,7 @@ impl TypeNameLower for Value {
             Value::Str(_) => "string",
             Value::Array(_) => "array",
             Value::Object(_) | Value::Closure(_) => "object",
+            Value::Resource(_) => "resource",
             Value::Ref(r) => r.borrow().type_name_lower(),
         }
     }

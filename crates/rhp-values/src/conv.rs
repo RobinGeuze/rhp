@@ -51,7 +51,7 @@ pub fn to_bool(v: &Value) -> bool {
             !(b.is_empty() || b == b"0")
         }
         Value::Array(a) => !a.is_empty(),
-        Value::Object(_) | Value::Closure(_) => true,
+        Value::Object(_) | Value::Closure(_) | Value::Resource(_) => true,
         Value::Ref(r) => to_bool(&r.borrow()),
     }
 }
@@ -73,6 +73,7 @@ pub fn to_string_bytes(v: &Value) -> Vec<u8> {
         // Closure→string is a fatal error in PHP; the VM intercepts it before
         // reaching this infallible path, so this placeholder is only a fallback.
         Value::Closure(_) => b"Closure".to_vec(),
+        Value::Resource(r) => format!("Resource id #{}", r.id).into_bytes(),
         Value::Ref(r) => to_string_bytes(&r.borrow()),
     }
 }
@@ -91,6 +92,7 @@ pub fn to_int(v: &Value) -> i64 {
         },
         Value::Array(a) => !a.is_empty() as i64,
         Value::Object(_) | Value::Closure(_) => 1,
+        Value::Resource(r) => r.id as i64,
         Value::Ref(r) => to_int(&r.borrow()),
     }
 }
@@ -108,6 +110,7 @@ pub fn to_float(v: &Value) -> f64 {
         },
         Value::Array(a) => !a.is_empty() as i64 as f64,
         Value::Object(_) | Value::Closure(_) => 1.0,
+        Value::Resource(r) => r.id as f64,
         Value::Ref(r) => to_float(&r.borrow()),
     }
 }
@@ -132,6 +135,7 @@ pub fn to_number(v: &Value) -> (Num, bool) {
             }
         }
         Value::Ref(r) => to_number(&r.borrow()),
+        Value::Resource(r) => (Num::Int(r.id as i64), true),
         Value::Array(_) | Value::Object(_) | Value::Closure(_) => (Num::Int(0), false),
     }
 }

@@ -453,3 +453,18 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "password_get_info", fn_password_get_info, 1, Some(1));
     put(m, "password_algos", fn_password_algos, 0, Some(0));
 }
+
+/// `PASSWORD_*` constants (all algo identifiers are strings in PHP 8).
+pub fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("PASSWORD_DEFAULT", Value::str("2y")),
+        ("PASSWORD_BCRYPT", Value::str("2y")),
+        ("PASSWORD_ARGON2I", Value::str("argon2i")),
+        ("PASSWORD_ARGON2ID", Value::str("argon2id")),
+        ("PASSWORD_BCRYPT_DEFAULT_COST", Value::Int(12)),
+        ("PASSWORD_ARGON2_PROVIDER", Value::str("standard")),
+        ("PASSWORD_ARGON2_DEFAULT_MEMORY_COST", Value::Int(65536)),
+        ("PASSWORD_ARGON2_DEFAULT_TIME_COST", Value::Int(4)),
+        ("PASSWORD_ARGON2_DEFAULT_THREADS", Value::Int(1)),
+    ]
+}

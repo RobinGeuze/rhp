@@ -72,6 +72,7 @@ impl TypeNameLower_ for Value {
             Value::Str(_) => "string",
             Value::Array(_) => "array",
             Value::Object(_) | Value::Closure(_) => "object",
+        Value::Resource(_) => "resource",
             Value::Ref(r) => r.borrow().type_name_lower_(),
         }
     }

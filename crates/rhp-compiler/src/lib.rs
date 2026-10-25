@@ -484,7 +484,7 @@ pub fn compile_with_source(
                 functions.push(Rc::new(compile_function(func, sigs.clone())?));
             }
             Statement::Class(class) => classes.push(compile_class(class, &sigs)?),
-            Statement::Interface(iface) => classes.push(compile_interface(iface)?),
+            Statement::Interface(iface) => classes.push(compile_interface(iface, &sigs)?),
             Statement::Trait(tr) => classes.push(compile_trait(tr, &sigs)?),
             Statement::Enum(en) => classes.push(compile_enum(en, &sigs)?),
             Statement::Constant(c) => {
@@ -802,10 +802,9 @@ interface ArrayAccess {}
 interface Countable {}
 final class Generator implements Iterator {}
 class stdClass {}
-class GMP {
-    public $num = "0";
-    public function __construct($num = 0) { $this->num = (string)$num; }
-    public function __toString() { return (string)$this->num; }
+final class Closure {
+    public static function fromCallable($callback) { return __closure_from_callable($callback); }
+    public static function bind($closure, $newThis, $newScope = null) { return __closure_bind($closure, $newThis, $newScope); }
 }
 class Exception implements Throwable {
     protected $message = "";
@@ -1168,14 +1167,17 @@ class DateTimeImmutable implements DateTimeInterface {
 "##;
 
 fn prelude_classes() -> Result<Vec<ClassProto>, Thrown> {
+    // The engine's core classes (PRELUDE) plus each extension module's own
+    // PHP-source classes (GMP, Phar, …), which it owns alongside its functions.
+    let src = format!("{PRELUDE}\n{}", rhp_builtins::module_prelude());
     let arena = rhp_frontend::Arena::new();
-    let parsed = arena.parse(b"<prelude>", PRELUDE.as_bytes());
+    let parsed = arena.parse(b"<prelude>", src.as_bytes());
     let sigs = Rc::new(std::collections::HashMap::new());
     let mut out = Vec::new();
     for stmt in parsed.program().statements.iter() {
         match stmt {
             Statement::Class(c) => out.push(compile_class(c, &sigs)?),
-            Statement::Interface(i) => out.push(compile_interface(i)?),
+            Statement::Interface(i) => out.push(compile_interface(i, &sigs)?),
             _ => {}
         }
     }
@@ -1184,6 +1186,7 @@ fn prelude_classes() -> Result<Vec<ClassProto>, Thrown> {
 
 fn compile_interface(
     iface: &rhp_frontend::cst::Interface,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<ClassProto, Thrown> {
     let name = PhpStr::from_bytes(join_ns(&cur_ns(), iface.name.value));
     let interfaces: Vec<PhpStr> = iface
@@ -1199,7 +1202,7 @@ fn compile_interface(
                 constants.push(ConstProto {
                     name: PhpStr::from_bytes(item.name.value.to_vec()),
                     visibility,
-                    value: ConstInitProto::Const(const_value_static(item.value)?),
+                    value: const_init_or_thunk(item.value, sigs)?,
                 });
             }
         }
@@ -1248,12 +1251,19 @@ fn compile_method(
     let mut promo_stores: Vec<(NIdx, Reg)> = Vec::new(); // (prop name, param cv)
 
     let mut params = Vec::new();
-    for p in m.parameter_list.parameters.iter() {
+    let mut nonconst_defaults: Vec<(u16, Reg, &Expression)> = Vec::new();
+    for (idx, p) in m.parameter_list.parameters.iter().enumerate() {
         let var = strip_dollar(p.variable.name);
         let cv = c.cv(var);
         let pname = c.intern_name(var);
         let default = match &p.default_value {
-            Some(dv) => Some(c.const_default(dv.value)?),
+            Some(dv) => Some(match c.const_default(dv.value) {
+                Ok(d) => d,
+                Err(_) => {
+                    nonconst_defaults.push((idx as u16, cv, dv.value));
+                    rhp_bytecode::Default::Init(0)
+                }
+            }),
             None => None,
         };
         if !p.modifiers.is_empty() {
@@ -1291,6 +1301,9 @@ fn compile_method(
     c.high_water = c.num_cvs;
     c.temp_floor = c.num_cvs;
 
+    // Non-constant parameter defaults (e.g. `= self::CONST`), before promotion/body.
+    c.emit_param_defaults(&nonconst_defaults)?;
+
     // Emit `$this->name = $name` for each promoted param, before the body.
     for (prop_name, param_cv) in &promo_stores {
         c.emit(Instr::LvalCv { cv: 0 });
@@ -1325,12 +1338,19 @@ fn compile_function(
     c.sigs = sigs;
 
     let mut params = Vec::new();
-    for p in func.parameter_list.parameters.iter() {
+    let mut nonconst_defaults: Vec<(u16, Reg, &Expression)> = Vec::new();
+    for (idx, p) in func.parameter_list.parameters.iter().enumerate() {
         let var = strip_dollar(p.variable.name);
         let cv = c.cv(var); // params get CV 0,1,2,... in order
         let name = c.intern_name(var);
         let default = match &p.default_value {
-            Some(dv) => Some(c.const_default(dv.value)?),
+            Some(dv) => Some(match c.const_default(dv.value) {
+                Ok(d) => d,
+                Err(_) => {
+                    nonconst_defaults.push((idx as u16, cv, dv.value));
+                    rhp_bytecode::Default::Init(0)
+                }
+            }),
             None => None,
         };
         params.push(rhp_bytecode::ParamInfo {
@@ -1351,6 +1371,8 @@ fn compile_function(
     c.next_temp = c.num_cvs;
     c.high_water = c.num_cvs;
     c.temp_floor = c.num_cvs;
+
+    c.emit_param_defaults(&nonconst_defaults)?;
 
     for s in func.body.statements.iter() {
         c.compile_stmt(s)?;
@@ -1454,6 +1476,13 @@ impl ProtoBuilder {
         proto.debug.cv_names = (0..self.cv_map.len() as u32).collect();
         proto.debug.lines = self.lines;
         proto.debug.file = SRC_FILE.with(|f| PhpStr::from_bytes(f.borrow().clone()));
+        proto.superglobals = self
+            .cv_map
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| is_superglobal(n))
+            .map(|(i, n)| (i as Reg, PhpStr::from_bytes(n.clone())))
+            .collect();
         proto
     }
 
@@ -1551,6 +1580,23 @@ impl ProtoBuilder {
     fn const_default(&mut self, e: &Expression) -> Result<rhp_bytecode::Default, Thrown> {
         let v = self.const_value(e)?;
         Ok(rhp_bytecode::Default::Const(self.intern_const(v)))
+    }
+
+    /// Emit prologue code for non-constant parameter defaults (e.g.
+    /// `$v = self::CONST`): for each, `JmpIfArg index -> after` skips the init when
+    /// the argument was passed, else the default expression is evaluated into the
+    /// param's CV (in the callee's scope, so `self::`/`static::` resolve).
+    fn emit_param_defaults(&mut self, defs: &[(u16, Reg, &Expression)]) -> Result<(), Thrown> {
+        for &(index, cv, expr) in defs {
+            let jpos = self.code.len();
+            self.emit(Instr::Nop); // JmpIfArg index -> after (patched)
+            let t = self.compile_expr(expr)?;
+            self.emit(Instr::Mov { dst: cv, src: t });
+            let after = self.here();
+            self.code[jpos] = Instr::JmpIfArg { index, target: after };
+            self.reset_temps();
+        }
+        Ok(())
     }
 
     fn const_value(&mut self, e: &Expression) -> Result<Value, Thrown> {
@@ -1928,6 +1974,19 @@ impl ProtoBuilder {
             }
             Statement::Break(b) => self.compile_break_continue(b.level, true)?,
             Statement::Continue(c) => self.compile_break_continue(c.level, false)?,
+            // `declare(strict_types=1|ticks=…|encoding=…)` — the directives are
+            // no-ops for this engine; compile the body (usually just `;`).
+            Statement::Declare(d) => {
+                use rhp_frontend::cst::DeclareBody;
+                match &d.body {
+                    DeclareBody::Statement(s) => self.compile_stmt(s)?,
+                    DeclareBody::ColonDelimited(c) => {
+                        for s in c.statements.iter() {
+                            self.compile_stmt(s)?;
+                        }
+                    }
+                }
+            }
             other => {
                 return Err(Thrown::unsupported(
                     format!("{} statement", stmt_kind(other)),
@@ -3020,11 +3079,30 @@ impl ProtoBuilder {
                 self.emit(Instr::Not { dst, a: r });
                 Ok(dst)
             }
-            Construct::Exit(_) | Construct::Die(_) => Err(Thrown::unsupported(
-                "exit/die",
-                "arrive with the SAPI exit path",
-            )),
+            Construct::Exit(e) => self.compile_exit(e.arguments.as_ref()),
+            Construct::Die(d) => self.compile_exit(d.arguments.as_ref()),
         }
+    }
+
+    /// `exit`/`die` with an optional single argument (a status int or a message
+    /// string to print). Evaluates the argument (or null) and emits `Exit`.
+    fn compile_exit(
+        &mut self,
+        arguments: Option<&rhp_frontend::cst::ArgumentList>,
+    ) -> Result<Reg, Thrown> {
+        let arg = match arguments.and_then(|a| a.arguments.first()) {
+            Some(Argument::Positional(p)) => self.compile_expr(p.value)?,
+            _ => {
+                let r = self.alloc_temp();
+                self.emit(Instr::LoadNull { dst: r });
+                r
+            }
+        };
+        self.emit(Instr::Exit { arg });
+        // `exit` never returns a value, but expressions expect a result register.
+        let dst = self.alloc_temp();
+        self.emit(Instr::LoadNull { dst });
+        Ok(dst)
     }
 
     fn compile_call(&mut self, call: &rhp_frontend::cst::Call) -> Result<Reg, Thrown> {
@@ -3551,12 +3629,19 @@ impl ProtoBuilder {
             c.cv(name); // captures occupy CVs 0..nc
         }
         let mut params = Vec::new();
-        for p in param_list.parameters.iter() {
+        let mut nonconst_defaults: Vec<(u16, Reg, &Expression)> = Vec::new();
+        for (idx, p) in param_list.parameters.iter().enumerate() {
             let var = strip_dollar(p.variable.name);
             let cv = c.cv(var);
             let name = c.intern_name(var);
             let default = match &p.default_value {
-                Some(dv) => Some(c.const_default(dv.value)?),
+                Some(dv) => Some(match c.const_default(dv.value) {
+                    Ok(d) => d,
+                    Err(_) => {
+                        nonconst_defaults.push((idx as u16, cv, dv.value));
+                        rhp_bytecode::Default::Init(0)
+                    }
+                }),
                 None => None,
             };
             params.push(rhp_bytecode::ParamInfo {
@@ -3577,6 +3662,8 @@ impl ProtoBuilder {
         c.next_temp = c.num_cvs;
         c.high_water = c.num_cvs;
         c.temp_floor = c.num_cvs;
+
+        c.emit_param_defaults(&nonconst_defaults)?;
 
         match body {
             ClosureBody::Arrow(e) => {
@@ -3856,6 +3943,20 @@ impl ProtoBuilder {
                 Ok(dst)
             }
             Access::ClassConstant(cca) => {
+                // `Name::class` is a COMPILE-TIME fully-qualified-name string — the
+                // class need not exist (php uses `Foo::class` as a bareword FQN,
+                // e.g. `function_exists(u::class)`). `self/static/parent::class`
+                // and `$obj::class` stay runtime.
+                if let rhp_frontend::cst::ClassLikeConstantSelector::Identifier(li) = &cca.constant {
+                    if li.value.eq_ignore_ascii_case(b"class") {
+                        if let Expression::Identifier(id) = cca.class {
+                            let k = self.intern_const(Value::str(resolve_class_name(id)));
+                            let dst = self.alloc_temp();
+                            self.emit(Instr::LoadConst { dst, k });
+                            return Ok(dst);
+                        }
+                    }
+                }
                 let class = self.class_ref(cca.class)?;
                 let name = match &cca.constant {
                     rhp_frontend::cst::ClassLikeConstantSelector::Identifier(li) => {
@@ -4346,6 +4447,22 @@ fn hint_class_names(hint: &Hint) -> Result<Vec<PhpStr>, Thrown> {
     Ok(out)
 }
 
+/// PHP's superglobals, available in every scope without `global`.
+fn is_superglobal(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"GLOBALS"
+            | b"_SERVER"
+            | b"_GET"
+            | b"_POST"
+            | b"_REQUEST"
+            | b"_SESSION"
+            | b"_ENV"
+            | b"_COOKIE"
+            | b"_FILES"
+    )
+}
+
 fn non_const_err() -> Thrown {
     Thrown::unsupported(
         "non-constant initializer",
@@ -4396,13 +4513,30 @@ fn stmt_kind(s: &Statement) -> &'static str {
     match s {
         Statement::If(_) => "if",
         Statement::While(_) => "while",
+        Statement::DoWhile(_) => "do-while",
         Statement::For(_) => "for",
         Statement::Foreach(_) => "foreach",
         Statement::Switch(_) => "switch",
         Statement::Function(_) => "function",
         Statement::Return(_) => "return",
         Statement::Class(_) => "class",
+        Statement::Interface(_) => "interface",
+        Statement::Trait(_) => "trait",
+        Statement::Enum(_) => "enum",
         Statement::Try(_) => "try",
+        Statement::Namespace(_) => "namespace",
+        Statement::Use(_) => "use",
+        Statement::Declare(_) => "declare",
+        Statement::Goto(_) => "goto",
+        Statement::Label(_) => "label",
+        Statement::Block(_) => "block",
+        Statement::Global(_) => "global",
+        Statement::Static(_) => "static",
+        Statement::Unset(_) => "unset",
+        Statement::Constant(_) => "const",
+        Statement::Echo(_) => "echo",
+        Statement::Expression(_) => "expression",
+        Statement::HaltCompiler(_) => "__halt_compiler",
         _ => "this",
     }
 }

@@ -39,7 +39,20 @@ pub enum Value {
     /// A closure / arrow function. Holds captured values + the proto index
     /// (the compiled proto lives in the VM, so this crate stays below bytecode).
     Closure(ClosureHandle),
+    /// A resource (stream, …): an opaque id + type name. The actual stream state
+    /// (buffers, file handles, the stdout/stderr target) lives in the VM, keyed
+    /// by this id, so this crate stays I/O-free.
+    Resource(ResourceHandle),
 }
+
+/// A resource value's identity: an id (shared with the VM's resource table) and
+/// its php type name (e.g. "stream").
+pub struct ResourceData {
+    pub id: u32,
+    pub type_name: &'static str,
+}
+
+pub type ResourceHandle = Rc<ResourceData>;
 
 /// A closure's runtime state.
 pub struct ClosureData {
@@ -183,6 +196,7 @@ impl ArrayKey {
             Value::Null => ArrayKey::Str(PhpStr::from_bytes(Vec::new())),
             Value::Float(f) => ArrayKey::Int(float_to_int(*f)),
             Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+            Value::Resource(r) => ArrayKey::Int(r.id as i64),
             Value::Ref(r) => return ArrayKey::from_value(&r.borrow()),
             Value::Array(_) | Value::Object(_) | Value::Closure(_) => return None,
         })
@@ -431,6 +445,7 @@ impl Value {
             Value::Str(_) => "string",
             Value::Array(_) => "array",
             Value::Object(_) | Value::Closure(_) => "object",
+            Value::Resource(_) => "resource",
             Value::Ref(r) => r.borrow().type_name(),
         }
     }

@@ -10,4 +10,5 @@ rhp-values = { path = "../rhp-values" }
 rhp-bytecode = { path = "../rhp-bytecode" }
 rhp-frontend = { path = "../rhp-frontend" }
 rhp-semantics = { path = "../rhp-semantics" }
+rhp-builtins = { path = "../rhp-builtins" }
 mago-span.workspace = true

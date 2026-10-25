@@ -93,6 +93,9 @@ pub enum Instr {
 
     // -- jumps / branches (phase 3) --
     Jmp { target: Pc },
+    /// Prologue guard for a non-constant parameter default: jump to `target`
+    /// (skipping the default-init code) if argument `index` was actually passed.
+    JmpIfArg { index: u16, target: Pc },
     JmpTrue { cond: Reg, target: Pc },
     JmpFalse { cond: Reg, target: Pc },
     JmpNull { src: Reg, target: Pc },
@@ -228,6 +231,9 @@ pub enum Instr {
     Refuse { feature: NIdx, reason: NIdx },
     /// `__halt_compiler()`: stop this proto as a top-level return.
     Halt,
+    /// `exit`/`die`: a string `arg` is printed (code 0), an int `arg` is the exit
+    /// code, null/absent is code 0. Terminates the script via the SAPI exit path.
+    Exit { arg: Reg },
     /// `include` / `require` (and the `_once` variants): evaluate `path` to a
     /// string, compile+run that file, and leave its return value in `dst`.
     Include { dst: Reg, path: Reg, kind: IncludeKind },
@@ -354,6 +360,10 @@ pub struct FunctionProto {
     /// included file is stamped with the closure count at merge time, so no
     /// instruction rewriting is needed (see `Vm::install_included`).
     pub closure_base: u32,
+    /// CVs that name a superglobal (`$_SERVER`, `$GLOBALS`, …), paired with the
+    /// name; the VM binds each to the shared global cell at frame entry so they
+    /// are visible in every scope without an explicit `global`.
+    pub superglobals: Vec<(Reg, PhpStr)>,
 }
 
 impl FunctionProto {
@@ -377,6 +387,7 @@ impl FunctionProto {
             num_captures: 0,
             is_generator: false,
             closure_base: 0,
+            superglobals: Vec::new(),
         }
     }
 }

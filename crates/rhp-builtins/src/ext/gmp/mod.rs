@@ -1139,3 +1139,28 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "gmp_nextprime", fn_gmp_nextprime, 1, Some(1));
     put(m, "gmp_prob_prime", fn_gmp_prob_prime, 1, Some(2));
 }
+
+/// The `GMP` wrapper class, owned by this module (was in the compiler prelude).
+pub const PRELUDE_PHP: &str = r#"
+class GMP {
+    public $num = "0";
+    public function __construct($num = 0) { $this->num = (string)$num; }
+    public function __toString() { return (string)$this->num; }
+}
+"#;
+
+/// `GMP_*` constants: division rounding modes, (de)serialisation endianness,
+/// and the reported GMP library version.
+pub fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("GMP_ROUND_ZERO", Value::Int(0)),
+        ("GMP_ROUND_PLUSINF", Value::Int(1)),
+        ("GMP_ROUND_MINUSINF", Value::Int(2)),
+        ("GMP_MSW_FIRST", Value::Int(1)),
+        ("GMP_LSW_FIRST", Value::Int(2)),
+        ("GMP_LITTLE_ENDIAN", Value::Int(4)),
+        ("GMP_BIG_ENDIAN", Value::Int(8)),
+        ("GMP_NATIVE_ENDIAN", Value::Int(16)),
+        ("GMP_VERSION", Value::str("6.3.0")),
+    ]
+}

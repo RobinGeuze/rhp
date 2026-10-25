@@ -98,9 +98,16 @@ impl Vm {
                 }
             }
             if !progressed {
-                // A remaining class names an unlinked dependency (missing or cyclic).
+                // A remaining class names an unlinked dependency. Before failing,
+                // try to autoload it (php autoloads a missing parent/interface/
+                // trait while declaring a class), then retry the link loop.
+                let missing = self.first_missing_dep(pending[0]);
+                if let Some(dep) = &missing {
+                    if self.try_autoload(dep)? {
+                        continue;
+                    }
+                }
                 let p = pending[0];
-                let missing = self.first_missing_dep(p);
                 return Err(Thrown::error(
                     "Error",
                     format!(
@@ -232,6 +239,15 @@ impl Vm {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for (k, c) in self.classes[tid as usize].constants.clone() {
                 constants.insert(k, ClassConst { declaring_class: id, ..c });
+            }
+        }
+        // Constants are inherited from implemented interfaces too (their flattened
+        // maps already include their own parent interfaces'); a parent class's
+        // constant takes precedence, so don't overwrite.
+        for iname in &proto.interfaces {
+            let iid = self.class_ids[&lc(iname.as_bytes())];
+            for (k, cc) in self.classes[iid as usize].constants.clone() {
+                constants.entry(k).or_insert(cc);
             }
         }
         for c in &proto.constants {
@@ -510,7 +526,9 @@ impl Vm {
         }
         let callee = method.proto.clone();
         let mut frame = Frame::new(callee.clone(), dst);
+        frame.argc = args.len();
         crate::bind_params(&callee, &args, &mut frame.regs)?;
+        self.bind_superglobals(&mut frame);
         if let (Some(this_cv), Some(obj)) = (callee.this_cv, this) {
             frame.regs[this_cv as usize] = Value::Object(obj);
         }

@@ -310,8 +310,8 @@ pub struct DebugInfo {
 
 /// One compiled PHP function/method/closure, or the script body (`"{main}"`).
 /// Carries no `'arena` borrow — the AST is consumed at compile time.
-/// `Clone` is used by the VM to rebase an included file's protos (closure fnidx
-/// offset) before merging them.
+/// `Clone` is used by the VM to stamp an included file's protos with a
+/// `closure_base` offset before merging them (see `Vm::install_included`).
 #[derive(Clone)]
 pub struct FunctionProto {
     pub name: PhpStr,
@@ -339,6 +339,12 @@ pub struct FunctionProto {
     /// (the body runs lazily, driven by the generator protocol) instead of
     /// running immediately.
     pub is_generator: bool,
+    /// Offset of this proto's file into the VM's flat closure table. A
+    /// `MakeClosure` operand is a *file-local* closure index; the running
+    /// closure index is `closure_base + fnidx`. The base program is 0; an
+    /// included file is stamped with the closure count at merge time, so no
+    /// instruction rewriting is needed (see `Vm::install_included`).
+    pub closure_base: u32,
 }
 
 impl FunctionProto {
@@ -361,6 +367,7 @@ impl FunctionProto {
             is_static: false,
             num_captures: 0,
             is_generator: false,
+            closure_base: 0,
         }
     }
 }

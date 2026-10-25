@@ -770,7 +770,8 @@ impl Vm {
                     // Bind the defining/static class scope so the closure body can
                     // reach private members and resolve `self::`/`static::`.
                     let cd = Rc::new(rhp_values::ClosureData {
-                        fnidx,
+                        // `fnidx` is file-local; resolve into the flat table.
+                        fnidx: proto.closure_base + fnidx,
                         captures,
                         bound_this: None,
                         bound_class: self.stack[top].defining_class,
@@ -2449,42 +2450,35 @@ fn match_case_desc(v: &Value) -> String {
 
 // --- array element read + lvalue path operations ---------------------------
 
-/// Clone a proto, offsetting every `MakeClosure` closure index by `base` (used
-/// when merging an included program whose closures append after the VM's).
+/// Clone a proto, stamping its `closure_base` so its file-local `MakeClosure`
+/// indices resolve into the VM's flat closure table (whose tail holds this
+/// file's closures). No instruction rewriting — the base is applied at run time.
 fn rebase_proto(proto: &FunctionProto, base: u32) -> FunctionProto {
     let mut p = proto.clone();
-    if base != 0 {
-        for ins in &mut p.code {
-            if let Instr::MakeClosure { fnidx, .. } = ins {
-                *fnidx += base;
-            }
-        }
-    }
+    p.closure_base = base;
     p
 }
 
-/// Rebase a class's method and initializer-thunk protos (their bodies can create
-/// closures) when merging an included program.
+/// Stamp `closure_base` on a class's method and initializer-thunk protos (their
+/// bodies can create closures) when merging an included program.
 fn rebase_class(c: &ClassProto, base: u32) -> ClassProto {
     let mut c = c.clone();
-    if base != 0 {
-        for m in &mut c.methods {
-            m.proto = Rc::new(rebase_proto(&m.proto, base));
+    for m in &mut c.methods {
+        m.proto = Rc::new(rebase_proto(&m.proto, base));
+    }
+    for p in &mut c.props {
+        if let PropDefaultProto::Init(t) = &p.default {
+            p.default = PropDefaultProto::Init(Rc::new(rebase_proto(t, base)));
         }
-        for p in &mut c.props {
-            if let PropDefaultProto::Init(t) = &p.default {
-                p.default = PropDefaultProto::Init(Rc::new(rebase_proto(t, base)));
-            }
+    }
+    for sp in &mut c.static_props {
+        if let ConstInitProto::Thunk(t) = &sp.init {
+            sp.init = ConstInitProto::Thunk(Rc::new(rebase_proto(t, base)));
         }
-        for sp in &mut c.static_props {
-            if let ConstInitProto::Thunk(t) = &sp.init {
-                sp.init = ConstInitProto::Thunk(Rc::new(rebase_proto(t, base)));
-            }
-        }
-        for k in &mut c.constants {
-            if let ConstInitProto::Thunk(t) = &k.value {
-                k.value = ConstInitProto::Thunk(Rc::new(rebase_proto(t, base)));
-            }
+    }
+    for k in &mut c.constants {
+        if let ConstInitProto::Thunk(t) = &k.value {
+            k.value = ConstInitProto::Thunk(Rc::new(rebase_proto(t, base)));
         }
     }
     c

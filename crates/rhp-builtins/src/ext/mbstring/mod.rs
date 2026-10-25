@@ -788,6 +788,109 @@ fn fn_mb_strwidth(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(width))
 }
 
+/// Display width of one codepoint (1, or 2 for the East-Asian wide ranges).
+fn cp_width(cp: u32) -> i64 {
+    if in_ranges(mb_tables::WIDTH2, cp) {
+        2
+    } else {
+        1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// mb_strstr / mb_strrchr
+// ---------------------------------------------------------------------------
+
+/// `mb_strstr($haystack, $needle, $before_needle = false, $encoding = null)`:
+/// portion of `haystack` from the first occurrence of `needle` to the end (or,
+/// with `$before_needle`, the part before it); `false` if not found. An empty
+/// needle matches at the start.
+fn fn_mb_strstr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let before = args.get(2).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let enc = arg_enc(args, 3, "mb_strstr", 4)?;
+    let haystack = decode(enc, &bytes_of(&args[0]));
+    let needle = decode(enc, &bytes_of(&args[1]));
+    match find_cps(&haystack, &needle, 0) {
+        Some(pos) => {
+            let slice = if before { &haystack[..pos] } else { &haystack[pos..] };
+            Ok(Value::str(encode(enc, slice)))
+        }
+        None => Ok(Value::Bool(false)),
+    }
+}
+
+/// `mb_strrchr($haystack, $needle, $before_needle = false, $encoding = null)`:
+/// like [`fn_mb_strstr`] but from the **last** occurrence of the whole `needle`
+/// (an empty needle matches at the end).
+fn fn_mb_strrchr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let before = args.get(2).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let enc = arg_enc(args, 3, "mb_strrchr", 4)?;
+    let haystack = decode(enc, &bytes_of(&args[0]));
+    let needle = decode(enc, &bytes_of(&args[1]));
+    match rfind_cps(&haystack, &needle, 0, haystack.len()) {
+        Some(pos) => {
+            let slice = if before { &haystack[..pos] } else { &haystack[pos..] };
+            Ok(Value::str(encode(enc, slice)))
+        }
+        None => Ok(Value::Bool(false)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// mb_strimwidth
+// ---------------------------------------------------------------------------
+
+/// `mb_strimwidth($string, $start, $width, $trim_marker = "", $encoding = null)`:
+/// truncate `string` (from char offset `$start`) to display `$width` columns,
+/// appending `$trim_marker` when truncation occurs (the marker's width is counted
+/// against the budget). A negative `$width` is taken relative to the substring's
+/// full width (deprecated in php, but still supported).
+fn fn_mb_strimwidth(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let enc = arg_enc(args, 4, "mb_strimwidth", 5)?;
+    let cps = decode(enc, &bytes_of(&args[0]));
+    let start = clamp_start(conv::to_int(&deref(&args[1])), cps.len());
+    let mut width = conv::to_int(&deref(&args[2]));
+    let marker = match args.get(3).map(deref) {
+        None | Some(Value::Null) => Vec::new(),
+        Some(v) => conv::to_string_bytes(&v),
+    };
+    let sub = &cps[start..];
+    let total: i64 = sub.iter().map(|&c| cp_width(c)).sum();
+    if width < 0 {
+        width = (total + width).max(0);
+    }
+    if total <= width {
+        return Ok(Value::str(encode(enc, sub)));
+    }
+    let marker_w: i64 = decode(enc, &marker).iter().map(|&c| cp_width(c)).sum();
+    let budget = width - marker_w;
+    let mut acc = 0i64;
+    let mut end = 0usize;
+    for (idx, &c) in sub.iter().enumerate() {
+        let w = cp_width(c);
+        if acc + w > budget {
+            break;
+        }
+        acc += w;
+        end = idx + 1;
+    }
+    let mut out = encode(enc, &sub[..end]);
+    out.extend_from_slice(&marker);
+    Ok(Value::str(out))
+}
+
+// ---------------------------------------------------------------------------
+// mb_scrub
+// ---------------------------------------------------------------------------
+
+/// `mb_scrub($string, $encoding = null)`: replace every illegal byte sequence
+/// with the substitute character (`?`), by decoding then re-encoding.
+fn fn_mb_scrub(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let enc = arg_enc(args, 1, "mb_scrub", 2)?;
+    let cps = decode(enc, &bytes_of(&args[0]));
+    Ok(Value::str(encode(enc, &cps)))
+}
+
 // ---------------------------------------------------------------------------
 // mb_ord / mb_chr
 // ---------------------------------------------------------------------------
@@ -978,6 +1081,10 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "mb_strripos", fn_mb_strripos, 2, Some(4));
     put(m, "mb_substr_count", fn_mb_substr_count, 2, Some(3));
     put(m, "mb_strwidth", fn_mb_strwidth, 1, Some(2));
+    put(m, "mb_strstr", fn_mb_strstr, 2, Some(4));
+    put(m, "mb_strrchr", fn_mb_strrchr, 2, Some(4));
+    put(m, "mb_strimwidth", fn_mb_strimwidth, 3, Some(5));
+    put(m, "mb_scrub", fn_mb_scrub, 1, Some(2));
     put(m, "mb_ord", fn_mb_ord, 1, Some(2));
     put(m, "mb_chr", fn_mb_chr, 1, Some(2));
     put(m, "mb_str_pad", fn_mb_str_pad, 2, Some(5));
@@ -1115,6 +1222,45 @@ mod tests {
         assert!(fn_mb_substr_count(&mut NullHost, &[s("abc"), s("")]).is_err());
         assert_eq!(call_int(fn_mb_strwidth, &[s("日本語abc")]), 9);
         assert_eq!(call_int(fn_mb_strwidth, &[s("😀")]), 2);
+    }
+
+    #[test]
+    fn strstr_strrchr_cases() {
+        assert_eq!(calls(fn_mb_strstr, &[s("héllo wörld"), s("ö")]), "örld");
+        assert_eq!(calls(fn_mb_strstr, &[s("héllo wörld"), s("ö"), Value::Bool(true)]), "héllo w");
+        assert!(is_false(fn_mb_strstr, &[s("héllo"), s("z")]));
+        assert_eq!(calls(fn_mb_strstr, &[s("日本語テスト"), s("語")]), "語テスト");
+        assert_eq!(calls(fn_mb_strrchr, &[s("héllo wörld"), s("l")]), "ld");
+        assert_eq!(calls(fn_mb_strrchr, &[s("héllo wörld"), s("l"), Value::Bool(true)]), "héllo wör");
+        assert_eq!(calls(fn_mb_strrchr, &[s("foobarbo"), s("ob")]), "obarbo");
+        assert!(is_false(fn_mb_strrchr, &[s("abc"), s("xy")]));
+    }
+
+    #[test]
+    fn strimwidth_cases() {
+        assert_eq!(
+            calls(fn_mb_strimwidth, &[s("Hello World"), Value::Int(0), Value::Int(10), s("...")]),
+            "Hello W..."
+        );
+        assert_eq!(
+            calls(fn_mb_strimwidth, &[s("日本語テスト"), Value::Int(0), Value::Int(6), s("...")]),
+            "日..."
+        );
+        assert_eq!(
+            calls(fn_mb_strimwidth, &[s("Hello"), Value::Int(0), Value::Int(3)]),
+            "Hel"
+        );
+        assert_eq!(
+            calls(fn_mb_strimwidth, &[s("日本語テスト"), Value::Int(2), Value::Int(6), s("..")]),
+            "語テ.."
+        );
+    }
+
+    #[test]
+    fn scrub_cases() {
+        assert_eq!(calls(fn_mb_scrub, &[s("valid")]), "valid");
+        assert_eq!(calls(fn_mb_scrub, &[Value::str(b"abc\xff\xfedef".to_vec())]), "abc??def");
+        assert_eq!(calls(fn_mb_scrub, &[Value::str(b"\xe6\x97".to_vec())]), "?");
     }
 
     #[test]

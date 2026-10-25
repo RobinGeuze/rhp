@@ -8,8 +8,9 @@
 //! `docs/design/modules-and-streams.md` §3 for the exact field layout.
 //!
 //! Scope: READ-ONLY, native format only. Compressed entries use raw DEFLATE
-//! (via `flate2`); bzip2 entries and tar/zip-based phars are not yet supported.
-//! Writing, extraction, iteration, and the compression APIs are deferred.
+//! (via `flate2`) or bzip2 (via the pure-Rust `bzip2` backend); tar/zip-based
+//! phars are not yet supported. Writing, extraction, iteration, and the
+//! compression APIs are deferred.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -123,7 +124,10 @@ impl PharArchive {
             DeflateDecoder::new(raw).read_to_end(&mut out).ok()?;
             Some(out)
         } else if e.flags & COMPRESSED_BZ2 != 0 {
-            None // bzip2 entries not supported yet
+            use std::io::Read;
+            let mut out = Vec::with_capacity(e.usize_);
+            bzip2::read::BzDecoder::new(raw).read_to_end(&mut out).ok()?;
+            Some(out)
         } else {
             Some(raw.to_vec())
         }

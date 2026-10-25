@@ -249,6 +249,13 @@ impl Host for Vm {
         self.wrappers.get(scheme).cloned()
     }
 
+    fn stream_wrapper_schemes(&self) -> Vec<Vec<u8>> {
+        // The `php://` pseudo-wrapper is handled specially (not in the map).
+        let mut v: Vec<Vec<u8>> = vec![b"php".to_vec()];
+        v.extend(self.wrappers.keys().cloned());
+        v
+    }
+
     fn running_main_path(&self) -> Option<Vec<u8>> {
         self.main_script_path.clone()
     }
@@ -1607,7 +1614,11 @@ impl Vm {
                 }
                 Instr::CastArray { dst, a } => {
                     let v = self.reg_get(top, a);
-                    self.reg_set(top, dst, cast_to_array(v));
+                    let out = match &v {
+                        Value::Object(h) => self.object_to_array_mangled(h),
+                        _ => cast_to_array(v),
+                    };
+                    self.reg_set(top, dst, out);
                 }
                 Instr::CastObject { dst, a } => {
                     let v = self.reg_get(top, a);
@@ -2962,6 +2973,39 @@ impl Vm {
             .lookup_method(cls, name)
             .ok_or_else(|| Thrown::error("Error", "Iterator method not found"))?;
         self.call_sync(&m, Some(h.clone()), cls, Vec::new())
+    }
+
+    /// `(array) $object`: every property, keyed with php's visibility mangling —
+    /// public `name`, protected `"\0*\0name"`, private `"\0Class\0name"`.
+    fn object_to_array_mangled(&self, h: &ObjectHandle) -> Value {
+        use rhp_values::Visibility;
+        let b = h.borrow();
+        let cls = b.class;
+        let mut a = PhpArray::new();
+        for (name, val) in &b.properties {
+            let key: Vec<u8> = match self.class(cls).props.get(name) {
+                Some(pe) => match pe.visibility {
+                    Visibility::Public => name.as_bytes().to_vec(),
+                    Visibility::Protected => {
+                        let mut k = vec![0u8];
+                        k.extend_from_slice(b"*\0");
+                        k.extend_from_slice(name.as_bytes());
+                        k
+                    }
+                    Visibility::Private => {
+                        let cname = self.class(pe.declaring_class).name.as_bytes().to_vec();
+                        let mut k = vec![0u8];
+                        k.extend_from_slice(&cname);
+                        k.push(0);
+                        k.extend_from_slice(name.as_bytes());
+                        k
+                    }
+                },
+                None => name.as_bytes().to_vec(), // dynamic properties are public
+            };
+            a.insert(ArrayKey::from_bytes(&key), deref(val).clone());
+        }
+        Value::Array(a)
     }
 
     /// Snapshot an object's accessible (public from `caller` scope) properties as

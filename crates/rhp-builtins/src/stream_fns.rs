@@ -85,6 +85,30 @@ fn fn_get_resource_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     }
 }
 
+fn fn_stream_copy_to_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let src = deref(&args[0]);
+    let dst = deref(&args[1]);
+    let mut total = 0usize;
+    loop {
+        match host.stream_read(&src, 8192) {
+            Some(b) if !b.is_empty() => {
+                host.stream_write(&dst, &b);
+                total += b.len();
+            }
+            _ => break,
+        }
+    }
+    Ok(Value::Int(total as i64))
+}
+
+fn fn_stream_get_wrappers(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let mut a = rhp_values::PhpArray::new();
+    for scheme in host.stream_wrapper_schemes() {
+        a.push(Value::str(scheme));
+    }
+    Ok(Value::Array(a))
+}
+
 fn fn_true(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(true))
 }
@@ -120,6 +144,8 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "stream_get_contents", fn_stream_get_contents, 1, Some(3));
     put(m, "is_resource", fn_is_resource, 1, Some(1));
     put(m, "get_resource_type", fn_get_resource_type, 1, Some(1));
+    put(m, "stream_get_wrappers", fn_stream_get_wrappers, 0, Some(0));
+    put(m, "stream_copy_to_stream", fn_stream_copy_to_stream, 2, Some(4));
     // No-op stream knobs (accepted so framework output code runs).
     put(m, "stream_set_blocking", fn_true, 2, Some(2));
     put(m, "stream_set_timeout", fn_true, 2, Some(3));

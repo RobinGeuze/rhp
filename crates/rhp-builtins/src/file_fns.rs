@@ -251,6 +251,15 @@ fn fn_filemtime(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
+/// `fileatime`/`filectime` — we track only mtime, so report it for all three
+/// (sufficient for cache-freshness checks).
+fn fn_fileatime(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match host.stream_stat(&path_arg(args, 0)) {
+        Some(s) => Ok(Value::Int(s.mtime)),
+        None => Ok(Value::Bool(false)),
+    }
+}
+
 fn fn_filesize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match host.stream_stat(&path_arg(args, 0)) {
         Some(s) => Ok(Value::Int(s.size as i64)),
@@ -437,6 +446,8 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "rename", fn_rename, 2, Some(3));
     put(m, "copy", fn_copy, 2, Some(3));
     put(m, "filemtime", fn_filemtime, 1, Some(1));
+    put(m, "fileatime", fn_fileatime, 1, Some(1));
+    put(m, "filectime", fn_fileatime, 1, Some(1));
     put(m, "filesize", fn_filesize, 1, Some(1));
     put(m, "fileperms", fn_fileperms, 1, Some(1));
     put(m, "touch", fn_touch, 1, Some(3));

@@ -285,6 +285,87 @@ fn walk_rec_pairs(
 
 // -- stack / queue --------------------------------------------------------
 
+/// Shared access for the internal-pointer functions: run `f` with a mutable
+/// `ArrayData` (through the by-ref arg). Returns `None` if the arg isn't an array.
+fn with_array_data<R>(arg: &Value, f: impl FnOnce(&mut rhp_values::ArrayData) -> R) -> Option<R> {
+    match arg {
+        Value::Ref(rc) => {
+            let mut g = rc.borrow_mut();
+            if let Value::Array(a) = &mut *g {
+                Some(f(a.make_mut()))
+            } else {
+                None
+            }
+        }
+        // A by-value (temp) array: php warns but still operates on it; the moved
+        // pointer just isn't observable afterwards. We work on a local copy.
+        Value::Array(a) => {
+            let mut a = a.clone();
+            Some(f(a.make_mut()))
+        }
+        _ => None,
+    }
+}
+
+fn elem_at(d: &rhp_values::ArrayData, pos: usize) -> Value {
+    d.entries.get_index(pos).map(|(_, v)| deref(v).clone()).unwrap_or(Value::Bool(false))
+}
+
+fn fn_reset(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(with_array_data(&args[0], |d| {
+        d.pos = 0;
+        elem_at(d, 0)
+    })
+    .unwrap_or(Value::Bool(false)))
+}
+
+fn fn_end(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(with_array_data(&args[0], |d| {
+        let n = d.entries.len();
+        d.pos = n.saturating_sub(1);
+        if n == 0 { Value::Bool(false) } else { elem_at(d, d.pos) }
+    })
+    .unwrap_or(Value::Bool(false)))
+}
+
+fn fn_next(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(with_array_data(&args[0], |d| {
+        d.pos = d.pos.saturating_add(1);
+        elem_at(d, d.pos)
+    })
+    .unwrap_or(Value::Bool(false)))
+}
+
+fn fn_prev(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(with_array_data(&args[0], |d| {
+        if d.pos == 0 {
+            d.pos = usize::MAX; // past-begin
+            Value::Bool(false)
+        } else {
+            d.pos -= 1;
+            elem_at(d, d.pos)
+        }
+    })
+    .unwrap_or(Value::Bool(false)))
+}
+
+fn fn_current(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(with_array_data(&args[0], |d| elem_at(d, d.pos)).unwrap_or(Value::Bool(false)))
+}
+
+fn fn_key(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(with_array_data(&args[0], |d| {
+        d.entries
+            .get_index(d.pos)
+            .map(|(k, _)| match k {
+                ArrayKey::Int(n) => Value::Int(*n),
+                ArrayKey::Str(s) => Value::Str(s.clone()),
+            })
+            .unwrap_or(Value::Null)
+    })
+    .unwrap_or(Value::Null))
+}
+
 fn fn_array_push(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Value::Ref(rc) = &args[0] else { return Ok(Value::Bool(false)) };
     let mut g = rc.borrow_mut();
@@ -444,4 +525,10 @@ pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
     add(m, "array_shift", fn_array_shift, 1, Some(1));
     add(m, "array_unshift", fn_array_unshift, 1, None);
     add(m, "array_splice", fn_array_splice, 2, Some(4));
+    add(m, "reset", fn_reset, 1, Some(1));
+    add(m, "end", fn_end, 1, Some(1));
+    add(m, "next", fn_next, 1, Some(1));
+    add(m, "prev", fn_prev, 1, Some(1));
+    add(m, "current", fn_current, 1, Some(1));
+    add(m, "key", fn_key, 1, Some(1));
 }

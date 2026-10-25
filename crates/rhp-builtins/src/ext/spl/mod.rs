@@ -130,4 +130,131 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
     public function getArrayCopy() { return $this->__s; }
     public function append($v) { $this->__s[] = $v; }
 }
+
+class SplDoublyLinkedList implements Iterator, Countable, ArrayAccess {
+    protected $__d = [];
+    protected $__p = 0;
+    protected $__lifo = false;
+    public function push($v): void { $this->__d[] = $v; }
+    public function pop(): mixed { if (count($this->__d) === 0) { throw new RuntimeException("Can't pop from an empty datastructure"); } return array_pop($this->__d); }
+    public function shift(): mixed { if (count($this->__d) === 0) { throw new RuntimeException("Can't shift from an empty datastructure"); } return array_shift($this->__d); }
+    public function unshift($v): void { array_unshift($this->__d, $v); }
+    public function top(): mixed { if (count($this->__d) === 0) { throw new RuntimeException("Peek at an empty datastructure"); } return $this->__d[count($this->__d) - 1]; }
+    public function bottom(): mixed { if (count($this->__d) === 0) { throw new RuntimeException("Peek at an empty datastructure"); } return $this->__d[0]; }
+    public function add($index, $value): void { array_splice($this->__d, $index, 0, [$value]); }
+    public function isEmpty(): bool { return count($this->__d) === 0; }
+    public function count(): int { return count($this->__d); }
+    public function toArray(): array { return $this->__d; }
+    public function offsetExists($i): bool { return isset($this->__d[$i]); }
+    public function offsetGet($i): mixed { return $this->__d[$i]; }
+    public function offsetSet($i, $v): void { if ($i === null) { $this->__d[] = $v; } else { $this->__d[$i] = $v; } }
+    public function offsetUnset($i): void { array_splice($this->__d, $i, 1); }
+    public function setIteratorMode($mode): void { $this->__lifo = (bool)($mode & 2); }
+    public function rewind(): void { $this->__p = $this->__lifo ? count($this->__d) - 1 : 0; }
+    public function current(): mixed { return $this->__d[$this->__p] ?? null; }
+    public function key(): mixed { return $this->__p; }
+    public function next(): void { if ($this->__lifo) { $this->__p--; } else { $this->__p++; } }
+    public function valid(): bool { return $this->__p >= 0 && $this->__p < count($this->__d); }
+}
+
+class SplQueue extends SplDoublyLinkedList {
+    public function enqueue($v): void { $this->push($v); }
+    public function dequeue(): mixed { return $this->shift(); }
+}
+
+class SplStack extends SplDoublyLinkedList {
+    public function __construct() { $this->__lifo = true; }
+}
+
+class SplObjectStorage implements Countable, Iterator, ArrayAccess {
+    private $__o = [];
+    private $__v = [];
+    private $__k = [];
+    private $__p = 0;
+    public function attach($obj, $data = null): void { $id = spl_object_id($obj); $this->__o[$id] = $obj; $this->__v[$id] = $data; }
+    public function detach($obj): void { $id = spl_object_id($obj); unset($this->__o[$id], $this->__v[$id]); }
+    public function contains($obj): bool { return isset($this->__o[spl_object_id($obj)]); }
+    public function count(): int { return count($this->__o); }
+    public function offsetExists($obj): bool { return $this->contains($obj); }
+    public function offsetGet($obj): mixed { return $this->__v[spl_object_id($obj)] ?? null; }
+    public function offsetSet($obj, $data): void { $this->attach($obj, $data); }
+    public function offsetUnset($obj): void { $this->detach($obj); }
+    public function getInfo(): mixed { return $this->__v[$this->__k[$this->__p]] ?? null; }
+    public function setInfo($data): void { if (isset($this->__k[$this->__p])) { $this->__v[$this->__k[$this->__p]] = $data; } }
+    public function rewind(): void { $this->__k = array_keys($this->__o); $this->__p = 0; }
+    public function current(): mixed { return $this->__o[$this->__k[$this->__p]] ?? null; }
+    public function key(): mixed { return $this->__p; }
+    public function next(): void { $this->__p++; }
+    public function valid(): bool { return $this->__p < count($this->__k); }
+}
+
+class SplPriorityQueue implements Countable, Iterator {
+    private $__items = [];
+    private $__serial = 0;
+    public function insert($value, $priority): bool {
+        $this->__items[] = ['data' => $value, 'priority' => $priority, 'serial' => $this->__serial--];
+        usort($this->__items, function ($a, $b) {
+            $c = $a['priority'] <=> $b['priority'];
+            return $c !== 0 ? $c : ($a['serial'] <=> $b['serial']);
+        });
+        return true;
+    }
+    public function extract(): mixed { $it = array_pop($this->__items); return $it === null ? null : $it['data']; }
+    public function top(): mixed { if (count($this->__items) === 0) { throw new RuntimeException("Can't peek at an empty heap"); } return $this->__items[count($this->__items) - 1]['data']; }
+    public function peek(): mixed { return $this->top(); }
+    public function count(): int { return count($this->__items); }
+    public function isEmpty(): bool { return count($this->__items) === 0; }
+    public function rewind(): void {}
+    public function current(): mixed { return $this->top(); }
+    public function key(): mixed { return count($this->__items) - 1; }
+    public function next(): void { $this->extract(); }
+    public function valid(): bool { return count($this->__items) > 0; }
+}
+
+final class WeakReference {
+    public $__o = null;
+    private function __construct() {}
+    public static function create($object) { $r = new WeakReference(); $r->__o = $object; return $r; }
+    public function get() { return $this->__o; }
+}
+
+final class WeakMap implements ArrayAccess, Countable, IteratorAggregate {
+    private $__o = [];
+    private $__v = [];
+    public function offsetExists($obj): bool { return isset($this->__o[spl_object_id($obj)]); }
+    public function offsetGet($obj): mixed { return $this->__v[spl_object_id($obj)]; }
+    public function offsetSet($obj, $value): void { $id = spl_object_id($obj); $this->__o[$id] = $obj; $this->__v[$id] = $value; }
+    public function offsetUnset($obj): void { $id = spl_object_id($obj); unset($this->__o[$id], $this->__v[$id]); }
+    public function count(): int { return count($this->__o); }
+    public function getIterator(): Iterator {
+        $pairs = [];
+        foreach ($this->__o as $id => $obj) { $pairs[] = [$obj, $this->__v[$id]]; }
+        return new ArrayIterator($pairs);
+    }
+}
+
+class SplFixedArray implements ArrayAccess, Countable, Iterator {
+    private $__d = [];
+    private $__size = 0;
+    private $__p = 0;
+    public function __construct($size = 0) { $this->__size = $size; for ($i = 0; $i < $size; $i++) { $this->__d[$i] = null; } }
+    public function count(): int { return $this->__size; }
+    public function getSize(): int { return $this->__size; }
+    public function setSize($size): void {
+        if ($size < $this->__size) { for ($i = $size; $i < $this->__size; $i++) { unset($this->__d[$i]); } }
+        else { for ($i = $this->__size; $i < $size; $i++) { $this->__d[$i] = null; } }
+        $this->__size = $size;
+    }
+    public function toArray(): array { return $this->__d; }
+    public static function fromArray($array) { $a = new SplFixedArray(count($array)); $i = 0; foreach ($array as $v) { $a[$i++] = $v; } return $a; }
+    public function offsetExists($i): bool { return $i >= 0 && $i < $this->__size; }
+    public function offsetGet($i): mixed { if ($i < 0 || $i >= $this->__size) { throw new RuntimeException("Index invalid or out of range"); } return $this->__d[$i]; }
+    public function offsetSet($i, $v): void { if ($i < 0 || $i >= $this->__size) { throw new RuntimeException("Index invalid or out of range"); } $this->__d[$i] = $v; }
+    public function offsetUnset($i): void { if ($i >= 0 && $i < $this->__size) { $this->__d[$i] = null; } }
+    public function rewind(): void { $this->__p = 0; }
+    public function current(): mixed { return $this->__d[$this->__p] ?? null; }
+    public function key(): mixed { return $this->__p; }
+    public function next(): void { $this->__p++; }
+    public function valid(): bool { return $this->__p < $this->__size; }
+}
 "#;

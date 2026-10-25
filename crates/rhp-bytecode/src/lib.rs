@@ -588,7 +588,9 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         "sort" | "rsort" | "asort" | "arsort" | "ksort" | "krsort" | "usort" | "uasort"
         | "uksort" | "array_push" | "array_pop" | "array_shift" | "array_unshift" | "shuffle"
         | "array_splice" | "natsort" | "natcasesort" | "array_walk"
-        | "array_walk_recursive" => &[true],
+        | "array_walk_recursive"
+        // internal-pointer functions mutate the array's pointer.
+        | "end" | "reset" | "next" | "prev" | "current" | "key" | "each" => &[true],
         // `sscanf($string, $format, &...$vars)`: every argument from position 2
         // on is an output passed by reference.
         "sscanf" => &SSCANF_REF_MASK,

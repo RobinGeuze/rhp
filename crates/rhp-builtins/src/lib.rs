@@ -229,6 +229,11 @@ pub trait Host {
         None
     }
 
+    /// Registered stream-wrapper scheme names (for `stream_get_wrappers`).
+    fn stream_wrapper_schemes(&self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+
     /// The filesystem path of the top-level script being executed (for
     /// `Phar::mapPhar`, which parses the running phar itself). Default: none.
     fn running_main_path(&self) -> Option<Vec<u8>> {

@@ -3486,6 +3486,16 @@ impl ProtoBuilder {
                     | Expression::Access(Access::StaticProperty(_)) => {
                         slots.push(ArgSlot::RefLval(p.value))
                     }
+                    // The internal-pointer functions are lenient in php: passing a
+                    // non-variable only warns and operates on a copy. Fall back to
+                    // by-value rather than the hard error other by-ref builtins get.
+                    _ if matches!(
+                        global_lc.as_deref().unwrap_or(&name_lc),
+                        b"end" | b"reset" | b"next" | b"prev" | b"current" | b"key" | b"each"
+                    ) =>
+                    {
+                        slots.push(ArgSlot::Value(self.compile_expr(p.value)?))
+                    }
                     _ => {
                         return Err(Thrown::error(
                             "Error",

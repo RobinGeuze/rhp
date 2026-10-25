@@ -293,6 +293,8 @@ pub struct ArrayData {
     pub next_int: Option<i64>,
     /// True once an append would overflow i64 (next element already occupied).
     pub append_disabled: bool,
+    /// Internal pointer for `current`/`next`/`prev`/`end`/`reset`/`key`.
+    pub pos: usize,
 }
 
 impl ArrayData {
@@ -301,6 +303,7 @@ impl ArrayData {
             entries: IndexMap::with_hasher(FxBuildHasher),
             next_int: None,
             append_disabled: false,
+            pos: 0,
         }
     }
 

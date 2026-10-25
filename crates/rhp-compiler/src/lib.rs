@@ -590,6 +590,12 @@ pub fn compile_with_source(
 
     for (ctx, stmt) in &flat {
         set_ns_ctx(ctx);
+        // A bare top-level function is already hoisted into `functions`; skip it
+        // so compile_stmt doesn't also runtime-declare (double) it. Functions
+        // nested in control flow flow through compile_stmt and runtime-declare.
+        if matches!(stmt, Statement::Function(_)) {
+            continue;
+        }
         c.compile_stmt(stmt)?;
     }
     c.emit(Instr::RetNull);
@@ -1998,8 +2004,19 @@ impl ProtoBuilder {
                 }
             }
             Statement::HaltCompiler(_) => self.emit(Instr::Halt),
-            // Top-level function + class/interface declarations are hoisted.
-            Statement::Function(_) => {}
+            // A function reached here is NOT a hoisted file-top-level declaration
+            // (the {main} loop skips those) — it is nested in control flow or a
+            // function body, so declare it at runtime (php conditional functions).
+            Statement::Function(f) => {
+                let proto = compile_function(f, self.sigs.clone())?;
+                let idx = CLOSURES.with(|c| {
+                    let mut v = c.borrow_mut();
+                    let i = v.len() as u32;
+                    v.push(Rc::new(proto));
+                    i
+                });
+                self.emit(Instr::DeclareFunc { idx });
+            }
             Statement::Class(_) => {}
             Statement::Interface(_) => {}
             Statement::Trait(_) => {}

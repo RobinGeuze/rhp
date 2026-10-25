@@ -69,7 +69,7 @@ pub fn modules() -> Vec<ModuleDef> {
             name: "spl",
             functions: spl::register,
             constants: no_constants,
-            prelude_php: "",
+            prelude_php: spl::PRELUDE_PHP,
             wrappers: no_wrappers,
         },
         ModuleDef {

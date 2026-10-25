@@ -1133,13 +1133,46 @@ fn fn_explode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if delim.is_empty() {
         return Err(Thrown::error("ValueError", "explode(): Argument #1 ($separator) cannot be empty"));
     }
-    let mut arr = PhpArray::new();
+    // All pieces, in order.
+    let mut parts: Vec<Vec<u8>> = Vec::new();
     let mut start = 0;
     while let Some(pos) = find_sub(&s[start..], &delim) {
-        arr.push(Value::str(s[start..start + pos].to_vec()));
+        parts.push(s[start..start + pos].to_vec());
         start += pos + delim.len();
     }
-    arr.push(Value::str(s[start..].to_vec()));
+    parts.push(s[start..].to_vec());
+
+    let limit = args.get(2).map(|v| conv::to_int(&deref(v)));
+    let n = parts.len();
+    let pieces: Vec<Vec<u8>> = match limit {
+        None => parts,
+        // Positive: at most `limit` pieces; the last keeps the remainder.
+        Some(l) if l > 0 => {
+            let l = l as usize;
+            if l >= n {
+                parts
+            } else {
+                let mut out: Vec<Vec<u8>> = parts[..l - 1].to_vec();
+                out.push(parts[l - 1..].join(&delim[..]));
+                out
+            }
+        }
+        // Zero is treated as 1: the whole string as one piece.
+        Some(0) => vec![s.clone()],
+        // Negative: drop the last `|limit|` pieces.
+        Some(l) => {
+            let drop = (-l) as usize;
+            if drop >= n {
+                Vec::new()
+            } else {
+                parts[..n - drop].to_vec()
+            }
+        }
+    };
+    let mut arr = PhpArray::new();
+    for p in pieces {
+        arr.push(Value::str(p));
+    }
     Ok(Value::Array(arr))
 }
 

@@ -2227,6 +2227,23 @@ impl Vm {
                         "only top-level class declarations for now",
                     ))
                 }
+                Instr::DeclareFunc { idx } => {
+                    // The proto is stored in the closures table (file-local index).
+                    let f = self.closures[(proto.closure_base + idx) as usize].clone();
+                    let lc = f.name.as_bytes().to_ascii_lowercase();
+                    if self.fn_names.contains_key(&lc) {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Cannot redeclare function {}()",
+                                String::from_utf8_lossy(f.name.as_bytes())
+                            ),
+                        ));
+                    }
+                    let i = self.functions.len();
+                    self.functions.push(f);
+                    self.fn_names.insert(lc, i);
+                }
 
                 Instr::BindRef { dst_cv, src_cv } => {
                     let rc = self.promote(top, src_cv);

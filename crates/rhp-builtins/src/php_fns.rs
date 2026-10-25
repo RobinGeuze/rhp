@@ -40,6 +40,7 @@ const LOADED_EXTS: &[&str] = &[
     "bcmath",
     "gmp",
     "reflection",
+    "iconv",
 ];
 
 fn fn_extension_loaded(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -187,6 +188,56 @@ fn fn_php_ini_loaded_file(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Th
 fn fn_setlocale(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     // We don't model locales; report the C locale.
     Ok(Value::str("C"))
+}
+
+fn is_utf8ish(cs: &str) -> bool {
+    matches!(cs, "UTF-8" | "UTF8" | "" )
+}
+
+/// `iconv($from, $to, $string)` — pragmatic subset: UTF-8↔UTF-8 (and same
+/// charset) passes through; `ASCII`/`US-ASCII` targets drop non-ASCII (honouring
+/// `//IGNORE`/`//TRANSLIT` best-effort); other charsets pass through unchanged.
+fn fn_iconv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let from = String::from_utf8_lossy(&str_arg(args, 0)).to_uppercase();
+    let to_raw = String::from_utf8_lossy(&str_arg(args, 1)).to_uppercase();
+    let data = str_arg(args, 2);
+    let from_c = from.split("//").next().unwrap_or("");
+    let to_c = to_raw.split("//").next().unwrap_or("");
+    if from_c == to_c || (is_utf8ish(from_c) && is_utf8ish(to_c)) {
+        return Ok(Value::str(data));
+    }
+    if matches!(to_c, "ASCII" | "US-ASCII") {
+        let out: Vec<u8> = data.into_iter().filter(|&b| b < 0x80).collect();
+        return Ok(Value::str(out));
+    }
+    Ok(Value::str(data))
+}
+
+/// Count UTF-8 code points (continuation bytes `10xxxxxx` don't start a char).
+fn utf8_len(bytes: &[u8]) -> usize {
+    bytes.iter().filter(|&&b| (b & 0xC0) != 0x80).count()
+}
+
+fn fn_iconv_strlen(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(utf8_len(&str_arg(args, 0)) as i64))
+}
+
+fn fn_iconv_substr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = str_arg(args, 0);
+    let text = String::from_utf8_lossy(&s);
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len() as i64;
+    let mut start = conv::to_int(&deref(&args[1]));
+    if start < 0 {
+        start = (len + start).max(0);
+    }
+    let start = start.min(len) as usize;
+    let count = match args.get(2).map(|v| conv::to_int(&deref(v))) {
+        None => chars.len() - start,
+        Some(n) if n < 0 => ((len + n) as usize).saturating_sub(start),
+        Some(n) => (n as usize).min(chars.len() - start),
+    };
+    Ok(Value::str(chars[start..start + count].iter().collect::<String>().into_bytes()))
 }
 
 /// `Closure::fromCallable($callable)`: wrap a callable in a Closure (a closure is
@@ -449,6 +500,9 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "getmypid", fn_getmypid, 0, Some(0));
     put(m, "php_ini_loaded_file", fn_php_ini_loaded_file, 0, Some(0));
     put(m, "setlocale", fn_setlocale, 2, None);
+    put(m, "iconv", fn_iconv, 3, Some(3));
+    put(m, "iconv_strlen", fn_iconv_strlen, 1, Some(2));
+    put(m, "iconv_substr", fn_iconv_substr, 2, Some(3));
     put(m, "random_bytes", fn_random_bytes, 1, Some(1));
     put(m, "random_int", fn_random_int, 2, Some(2));
     put(m, "mt_rand", fn_mt_rand, 0, Some(2));

@@ -243,6 +243,46 @@ fn fn_array_walk(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(true))
 }
 
+/// `array_walk_recursive(&$array, $callback, $extra = null)`: like `array_walk`
+/// but descends into sub-arrays, invoking the callback only on leaf (non-array)
+/// values (by reference, written back in place).
+fn fn_array_walk_recursive(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Some(pairs) = snapshot(&args[0]) else { return Ok(Value::Bool(false)) };
+    let cb = args[1].clone();
+    let extra = args.get(2).map(deref).unwrap_or(Value::Null);
+    let out = walk_rec_pairs(host, &cb, &extra, pairs)?;
+    store(&args[0], out);
+    Ok(Value::Bool(true))
+}
+
+fn walk_rec_pairs(
+    host: &mut dyn Host,
+    cb: &Value,
+    extra: &Value,
+    pairs: Vec<(rhp_values::ArrayKey, Value)>,
+) -> Result<PhpArray, Thrown> {
+    let mut out = PhpArray::new();
+    for (k, v) in pairs {
+        match deref(&v) {
+            Value::Array(sub) => {
+                let subpairs: Vec<_> = sub.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let walked = walk_rec_pairs(host, cb, extra, subpairs)?;
+                out.insert(k, Value::Array(walked));
+            }
+            leaf => {
+                let cell = std::rc::Rc::new(std::cell::RefCell::new(leaf));
+                host.call_callable(
+                    cb,
+                    &[Value::Ref(cell.clone()), key_to_value(&k), extra.clone()],
+                )?;
+                let nv = cell.borrow().clone();
+                out.insert(k, nv);
+            }
+        }
+    }
+    Ok(out)
+}
+
 // -- stack / queue --------------------------------------------------------
 
 fn fn_array_push(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -398,6 +438,7 @@ pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
     add(m, "natsort", fn_natsort, 1, Some(1));
     add(m, "natcasesort", fn_natcasesort, 1, Some(1));
     add(m, "array_walk", fn_array_walk, 2, Some(3));
+    add(m, "array_walk_recursive", fn_array_walk_recursive, 2, Some(3));
     add(m, "array_push", fn_array_push, 1, None);
     add(m, "array_pop", fn_array_pop, 1, Some(1));
     add(m, "array_shift", fn_array_shift, 1, Some(1));

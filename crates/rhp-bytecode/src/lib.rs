@@ -220,6 +220,10 @@ pub enum Instr {
     LvalStaticProp { class: ClassRef, name: NIdx },
     /// Link + register a conditionally-declared class at this point.
     DeclareClass { class_idx: u32 },
+    /// Register a conditionally-declared function (one nested in control flow, so
+    /// not hoisted): its proto is stored in the closures table at file-local
+    /// index `idx` (resolved via the running proto's `closure_base`).
+    DeclareFunc { idx: u32 },
 
     // -- references --
     /// `$dst =& $src`: promote `src`'s slot to a shared Ref; `dst` aliases it.
@@ -557,7 +561,8 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         // arg 0 (the array) by reference.
         "sort" | "rsort" | "asort" | "arsort" | "ksort" | "krsort" | "usort" | "uasort"
         | "uksort" | "array_push" | "array_pop" | "array_shift" | "array_unshift" | "shuffle"
-        | "array_splice" | "natsort" | "natcasesort" | "array_walk" => &[true],
+        | "array_splice" | "natsort" | "natcasesort" | "array_walk"
+        | "array_walk_recursive" => &[true],
         // `sscanf($string, $format, &...$vars)`: every argument from position 2
         // on is an output passed by reference.
         "sscanf" => &SSCANF_REF_MASK,

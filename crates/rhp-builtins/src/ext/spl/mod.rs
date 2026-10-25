@@ -71,3 +71,36 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "spl_autoload_functions", fn_spl_autoload_functions, 0, Some(0));
     put(m, "spl_autoload_call", fn_spl_autoload_call, 1, Some(1));
 }
+
+/// SPL / core data-structure classes implemented in PHP (ArrayIterator and
+/// friends), backed by a plain array.
+pub const PRELUDE_PHP: &str = r#"
+class ArrayIterator implements Iterator, ArrayAccess, Countable {
+    private $__s; private $__k; private $__p = 0;
+    public function __construct($array = [], $flags = 0) { $this->__s = $array; $this->__k = array_keys($array); }
+    public function current(): mixed { return $this->__s[$this->__k[$this->__p]] ?? null; }
+    public function key(): mixed { return $this->__k[$this->__p] ?? null; }
+    public function next(): void { $this->__p++; }
+    public function rewind(): void { $this->__k = array_keys($this->__s); $this->__p = 0; }
+    public function valid(): bool { return $this->__p < count($this->__k); }
+    public function count(): int { return count($this->__s); }
+    public function offsetExists($k): bool { return isset($this->__s[$k]); }
+    public function offsetGet($k): mixed { return $this->__s[$k] ?? null; }
+    public function offsetSet($k, $v): void { if ($k === null) { $this->__s[] = $v; } else { $this->__s[$k] = $v; } }
+    public function offsetUnset($k): void { unset($this->__s[$k]); }
+    public function getArrayCopy() { return $this->__s; }
+    public function append($v) { $this->__s[] = $v; }
+}
+class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
+    private $__s;
+    public function __construct($array = [], $flags = 0) { $this->__s = $array; }
+    public function getIterator(): Iterator { return new ArrayIterator($this->__s); }
+    public function count(): int { return count($this->__s); }
+    public function offsetExists($k): bool { return isset($this->__s[$k]); }
+    public function offsetGet($k): mixed { return $this->__s[$k] ?? null; }
+    public function offsetSet($k, $v): void { if ($k === null) { $this->__s[] = $v; } else { $this->__s[$k] = $v; } }
+    public function offsetUnset($k): void { unset($this->__s[$k]); }
+    public function getArrayCopy() { return $this->__s; }
+    public function append($v) { $this->__s[] = $v; }
+}
+"#;

@@ -85,6 +85,61 @@ fn fn_get_resource_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     }
 }
 
+fn fn_stream_context_create(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let options = args.first().map(deref).unwrap_or(Value::Array(rhp_values::PhpArray::new()));
+    Ok(host.create_stream_context(options))
+}
+
+fn fn_stream_context_get_options(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match host.stream_context_options(&deref(&args[0])) {
+        Value::Null => Ok(Value::Array(rhp_values::PhpArray::new())),
+        v => Ok(v),
+    }
+}
+
+fn fn_stream_context_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // Two forms: ($ctx, $wrapper, $option, $value) or ($ctx, $options_array).
+    if args.len() >= 4 {
+        let wrapper = conv::to_string_bytes(&deref(&args[1]));
+        let option = conv::to_string_bytes(&deref(&args[2]));
+        host.stream_context_set_option(&deref(&args[0]), &wrapper, &option, deref(&args[3]));
+    } else if let Value::Array(opts) = deref(&args[1]) {
+        for (wk, wv) in opts.iter() {
+            if let Value::Array(inner) = wv {
+                let wrapper = key_bytes(wk);
+                for (ok, ov) in inner.iter() {
+                    host.stream_context_set_option(&deref(&args[0]), &wrapper, &key_bytes(ok), ov.clone());
+                }
+            }
+        }
+    }
+    Ok(Value::Bool(true))
+}
+
+fn key_bytes(k: &rhp_values::ArrayKey) -> Vec<u8> {
+    match k {
+        rhp_values::ArrayKey::Int(n) => n.to_string().into_bytes(),
+        rhp_values::ArrayKey::Str(s) => s.as_bytes().to_vec(),
+    }
+}
+
+fn fn_http_get_last_response_headers(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let headers = host.http_response_headers();
+    if headers.is_empty() {
+        return Ok(Value::Null);
+    }
+    let mut a = rhp_values::PhpArray::new();
+    for h in headers {
+        a.push(Value::str(h));
+    }
+    Ok(Value::Array(a))
+}
+
+fn fn_http_clear_last_response_headers(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    host.clear_http_response_headers();
+    Ok(Value::Null)
+}
+
 fn fn_stream_copy_to_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let src = deref(&args[0]);
     let dst = deref(&args[1]);
@@ -146,6 +201,11 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "get_resource_type", fn_get_resource_type, 1, Some(1));
     put(m, "stream_get_wrappers", fn_stream_get_wrappers, 0, Some(0));
     put(m, "stream_copy_to_stream", fn_stream_copy_to_stream, 2, Some(4));
+    put(m, "stream_context_create", fn_stream_context_create, 0, Some(2));
+    put(m, "stream_context_get_options", fn_stream_context_get_options, 1, Some(1));
+    put(m, "stream_context_set_option", fn_stream_context_set_option, 2, Some(4));
+    put(m, "http_get_last_response_headers", fn_http_get_last_response_headers, 0, Some(0));
+    put(m, "http_clear_last_response_headers", fn_http_clear_last_response_headers, 0, Some(0));
     // No-op stream knobs (accepted so framework output code runs).
     put(m, "stream_set_blocking", fn_true, 2, Some(2));
     put(m, "stream_set_timeout", fn_true, 2, Some(3));

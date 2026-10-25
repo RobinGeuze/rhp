@@ -84,6 +84,10 @@ pub struct Vm {
     // Open stream resources (fopen family), keyed by resource id.
     streams: HashMap<u32, StreamState>,
     next_resource_id: u32,
+    // Stream-context resources (`stream_context_create`), id -> options array.
+    stream_contexts: HashMap<u32, Value>,
+    // Response header lines from the last http(s) request (status line first).
+    last_response_headers: Vec<Vec<u8>>,
     // CLI arguments ($argv / $_SERVER['argv']); argv[0] is the script name.
     argv: Vec<Vec<u8>>,
 }
@@ -254,6 +258,49 @@ impl Host for Vm {
         let mut v: Vec<Vec<u8>> = vec![b"php".to_vec()];
         v.extend(self.wrappers.keys().cloned());
         v
+    }
+
+    fn create_stream_context(&mut self, options: Value) -> Value {
+        let id = self.next_resource_id;
+        self.next_resource_id += 1;
+        self.stream_contexts.insert(id, options);
+        Value::Resource(Rc::new(rhp_values::ResourceData { id, type_name: "stream-context" }))
+    }
+
+    fn stream_context_options(&self, ctx: &Value) -> Value {
+        if let Value::Resource(r) = ctx {
+            if let Some(opts) = self.stream_contexts.get(&r.id) {
+                return opts.clone();
+            }
+        }
+        Value::Null
+    }
+
+    fn stream_context_set_option(&mut self, ctx: &Value, wrapper: &[u8], option: &[u8], value: Value) {
+        let Value::Resource(r) = ctx else { return };
+        let entry = self.stream_contexts.entry(r.id).or_insert_with(|| Value::Array(PhpArray::new()));
+        if !matches!(entry, Value::Array(_)) {
+            *entry = Value::Array(PhpArray::new());
+        }
+        if let Value::Array(outer) = entry {
+            let wk = ArrayKey::from_bytes(wrapper);
+            let mut inner = match outer.get(&wk) {
+                Some(Value::Array(a)) => a.clone(),
+                _ => PhpArray::new(),
+            };
+            inner.insert(ArrayKey::from_bytes(option), value);
+            outer.insert(wk, Value::Array(inner));
+        }
+    }
+
+    fn set_http_response_headers(&mut self, headers: Vec<Vec<u8>>) {
+        self.last_response_headers = headers;
+    }
+    fn http_response_headers(&self) -> Vec<Vec<u8>> {
+        self.last_response_headers.clone()
+    }
+    fn clear_http_response_headers(&mut self) {
+        self.last_response_headers.clear();
     }
 
     fn running_main_path(&self) -> Option<Vec<u8>> {
@@ -785,6 +832,8 @@ impl Vm {
             main_script_path: None,
             streams: HashMap::new(),
             next_resource_id: 1,
+            stream_contexts: HashMap::new(),
+            last_response_headers: Vec::new(),
             argv: Vec::new(),
         }
     }

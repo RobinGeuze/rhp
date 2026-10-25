@@ -191,7 +191,16 @@ fn fn_getcwd(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match host.stream_get_contents(&path_arg(args, 0)) {
+    let url = path_arg(args, 0);
+    // http(s): perform a real request (Composer's non-curl transport). The
+    // context (arg 2) carries the http method/headers/body.
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with(b"http://") || lower.starts_with(b"https://") {
+        // args: (url, use_include_path, context, offset, maxlen)
+        let ctx = args.get(2).map(|v| deref(v)).unwrap_or(Value::Null);
+        return Ok(crate::http::fetch(host, &url, &ctx));
+    }
+    match host.stream_get_contents(&url) {
         Some(bytes) => Ok(Value::str(bytes)),
         None => Ok(Value::Bool(false)),
     }
@@ -434,7 +443,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "pathinfo", fn_pathinfo, 1, Some(2));
     put(m, "realpath", fn_realpath, 1, Some(1));
     put(m, "getcwd", fn_getcwd, 0, Some(0));
-    put(m, "file_get_contents", fn_file_get_contents, 1, Some(1));
+    put(m, "file_get_contents", fn_file_get_contents, 1, Some(5));
     put(m, "file_put_contents", fn_file_put_contents, 2, Some(3));
     put(m, "unlink", fn_unlink, 1, Some(1));
     put(m, "sys_get_temp_dir", fn_sys_get_temp_dir, 0, Some(0));

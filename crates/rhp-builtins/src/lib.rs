@@ -28,6 +28,7 @@ mod filter_fns;
 mod json_fns;
 mod math_fns;
 mod file_fns;
+pub mod http;
 mod misc_fns;
 mod parse_fns;
 mod php_fns;
@@ -233,6 +234,25 @@ pub trait Host {
     fn stream_wrapper_schemes(&self) -> Vec<Vec<u8>> {
         Vec::new()
     }
+
+    /// Create a stream context resource holding `options` (nested array like
+    /// `['http' => [...], 'ssl' => [...]]`); returns the resource value.
+    fn create_stream_context(&mut self, _options: Value) -> Value {
+        Value::Bool(false)
+    }
+    /// The options array stored on a stream-context resource (or Null).
+    fn stream_context_options(&self, _ctx: &Value) -> Value {
+        Value::Null
+    }
+    /// `stream_context_set_option($ctx, $wrapper, $option, $value)`.
+    fn stream_context_set_option(&mut self, _ctx: &Value, _wrapper: &[u8], _option: &[u8], _value: Value) {}
+
+    /// Response header lines (status line first) from the last http(s) request.
+    fn set_http_response_headers(&mut self, _headers: Vec<Vec<u8>>) {}
+    fn http_response_headers(&self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+    fn clear_http_response_headers(&mut self) {}
 
     /// The filesystem path of the top-level script being executed (for
     /// `Phar::mapPhar`, which parses the running phar itself). Default: none.

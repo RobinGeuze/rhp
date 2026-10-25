@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use rhp_values::{conv, fmt, PhpArray, Value};
+use rhp_values::{conv, fmt, ArrayKey, PhpArray, Value};
 
 use crate::{Builtin, Host, Thrown};
 
@@ -1134,6 +1134,218 @@ fn fn_vsprintf(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 // ---------------------------------------------------------------------------
+// soundex
+// ---------------------------------------------------------------------------
+
+/// `soundex($string)`: the four-character American Soundex code (a faithful port
+/// of php's `php_soundex`). Non-letters are skipped; the empty / letterless input
+/// yields `"0000"`.
+fn fn_soundex(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // soundex_table[c-'A'] for A..Z; '0' means "no code" (vowel / h / w / y).
+    const TABLE: &[u8; 26] = b"01230120022455012623010202";
+    let s = bytes_of(&args[0]);
+    let mut out = Vec::with_capacity(4);
+    let mut last = 0u8;
+    for &b in &s {
+        if out.len() >= 4 {
+            break;
+        }
+        let up = b.to_ascii_uppercase();
+        if !up.is_ascii_uppercase() {
+            continue;
+        }
+        let code = TABLE[(up - b'A') as usize];
+        if out.is_empty() {
+            out.push(up);
+            last = code;
+        } else if code != last {
+            if code != b'0' {
+                out.push(code);
+            }
+            last = code;
+        }
+    }
+    while out.len() < 4 {
+        out.push(b'0');
+    }
+    Ok(Value::str(out))
+}
+
+// ---------------------------------------------------------------------------
+// addcslashes / stripcslashes
+// ---------------------------------------------------------------------------
+
+/// `addcslashes($string, $characters)`: backslash-escape every byte present in
+/// `$characters` (control bytes become `\n`, `\t`, … or a 3-digit octal escape).
+fn fn_addcslashes(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = bytes_of(&args[0]);
+    let mask = charmask(&bytes_of(&args[1]));
+    let mut out = Vec::with_capacity(s.len());
+    for &c in &s {
+        if mask[c as usize] {
+            if !(32..=126).contains(&c) {
+                out.push(b'\\');
+                match c {
+                    b'\n' => out.push(b'n'),
+                    b'\t' => out.push(b't'),
+                    b'\r' => out.push(b'r'),
+                    0x07 => out.push(b'a'),
+                    0x0b => out.push(b'v'),
+                    0x08 => out.push(b'b'),
+                    0x0c => out.push(b'f'),
+                    _ => out.extend_from_slice(format!("{c:03o}").as_bytes()),
+                }
+            } else {
+                out.push(b'\\');
+                out.push(c);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    Ok(Value::str(out))
+}
+
+/// `stripcslashes($string)`: the inverse of [`fn_addcslashes`] (a faithful port
+/// of php's `php_stripcslashes`), decoding `\n`, `\xHH`, octal `\NNN`, etc.
+fn fn_stripcslashes(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = bytes_of(&args[0]);
+    let n = s.len();
+    let mut out = Vec::with_capacity(n);
+    let mut i = 0;
+    while i < n {
+        if s[i] == b'\\' && i + 1 < n {
+            i += 1;
+            let c = s[i];
+            match c {
+                b'n' => {
+                    out.push(b'\n');
+                    i += 1;
+                }
+                b't' => {
+                    out.push(b'\t');
+                    i += 1;
+                }
+                b'r' => {
+                    out.push(b'\r');
+                    i += 1;
+                }
+                b'a' => {
+                    out.push(0x07);
+                    i += 1;
+                }
+                b'v' => {
+                    out.push(0x0b);
+                    i += 1;
+                }
+                b'b' => {
+                    out.push(0x08);
+                    i += 1;
+                }
+                b'f' => {
+                    out.push(0x0c);
+                    i += 1;
+                }
+                b'\\' => {
+                    out.push(b'\\');
+                    i += 1;
+                }
+                b'x' => {
+                    if i + 1 < n && s[i + 1].is_ascii_hexdigit() {
+                        let mut val = hex_val(s[i + 1]);
+                        if i + 2 < n && s[i + 2].is_ascii_hexdigit() {
+                            val = val * 16 + hex_val(s[i + 2]);
+                            i += 3;
+                        } else {
+                            i += 2;
+                        }
+                        out.push(val);
+                    } else {
+                        out.push(b'x');
+                        i += 1;
+                    }
+                }
+                _ => {
+                    let mut k = 0;
+                    let mut val: u32 = 0;
+                    while i < n && k < 3 && (b'0'..=b'7').contains(&s[i]) {
+                        val = val * 8 + (s[i] - b'0') as u32;
+                        i += 1;
+                        k += 1;
+                    }
+                    if k > 0 {
+                        out.push(val as u8);
+                    } else {
+                        out.push(c);
+                        i += 1;
+                    }
+                }
+            }
+        } else {
+            out.push(s[i]);
+            i += 1;
+        }
+    }
+    Ok(Value::str(out))
+}
+
+fn hex_val(b: u8) -> u8 {
+    match b {
+        b'0'..=b'9' => b - b'0',
+        b'a'..=b'f' => b - b'a' + 10,
+        b'A'..=b'F' => b - b'A' + 10,
+        _ => 0,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// count_chars
+// ---------------------------------------------------------------------------
+
+/// `count_chars($string, $mode = 0)`: per-byte frequency statistics. Modes 0–2
+/// return an int-keyed array; modes 3–4 return a byte string.
+fn fn_count_chars(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = bytes_of(&args[0]);
+    let mode = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    if !(0..=4).contains(&mode) {
+        return Err(Thrown::error(
+            "ValueError",
+            "count_chars(): Argument #2 ($mode) must be between 0 and 4 (inclusive)",
+        ));
+    }
+    let mut counts = [0i64; 256];
+    for &b in &s {
+        counts[b as usize] += 1;
+    }
+    match mode {
+        3 | 4 => {
+            let want_present = mode == 3;
+            let mut out = Vec::new();
+            for (b, &c) in counts.iter().enumerate() {
+                if (c > 0) == want_present {
+                    out.push(b as u8);
+                }
+            }
+            Ok(Value::str(out))
+        }
+        _ => {
+            let mut arr = PhpArray::new();
+            for (b, &c) in counts.iter().enumerate() {
+                let keep = match mode {
+                    0 => true,
+                    1 => c > 0,
+                    _ => c == 0, // mode 2
+                };
+                if keep {
+                    arr.insert(ArrayKey::Int(b as i64), Value::Int(c));
+                }
+            }
+            Ok(Value::Array(arr))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // registration
 // ---------------------------------------------------------------------------
 
@@ -1179,6 +1391,10 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "sprintf", fn_sprintf, 1, None);
     put(m, "printf", fn_printf, 1, None);
     put(m, "vsprintf", fn_vsprintf, 2, Some(2));
+    put(m, "soundex", fn_soundex, 1, Some(1));
+    put(m, "addcslashes", fn_addcslashes, 2, Some(2));
+    put(m, "stripcslashes", fn_stripcslashes, 1, Some(1));
+    put(m, "count_chars", fn_count_chars, 1, Some(2));
 }
 
 // ---------------------------------------------------------------------------
@@ -1622,5 +1838,58 @@ mod tests {
         assert_eq!(calls(fn_vsprintf, &[s("%s-%s"), vals]), "a-b");
         // printf returns the written length
         assert_eq!(call_int(fn_printf, &[s("%s!"), s("hi")]), 3);
+    }
+
+    #[test]
+    fn soundex_cases() {
+        // expected values captured from php 8.5.8
+        assert_eq!(calls(fn_soundex, &[s("Robert")]), "R163");
+        assert_eq!(calls(fn_soundex, &[s("Tymczak")]), "T522");
+        assert_eq!(calls(fn_soundex, &[s("Ashcraft")]), "A226");
+        assert_eq!(calls(fn_soundex, &[s("Lukasiewicz")]), "L222");
+        assert_eq!(calls(fn_soundex, &[s("a")]), "A000");
+        assert_eq!(calls(fn_soundex, &[s("")]), "0000");
+        assert_eq!(calls(fn_soundex, &[s("123")]), "0000");
+    }
+
+    #[test]
+    fn addcslashes_cases() {
+        assert_eq!(calls(fn_addcslashes, &[s("Hello World"), s("W")]), "Hello \\World");
+        assert_eq!(calls(fn_addcslashes, &[s("foo[ ]"), s("A..Z")]), "foo[ ]");
+        assert_eq!(calls(fn_addcslashes, &[s("abc\n\t\r"), s("\0..\u{1f}")]), "abc\\n\\t\\r");
+        assert_eq!(
+            calls(fn_addcslashes, &[
+                Value::str(b"foo\x7f\x80bar".to_vec()),
+                Value::str(b"\x7f..\xff".to_vec()),
+            ]),
+            "foo\\177\\200bar"
+        );
+    }
+
+    #[test]
+    fn stripcslashes_cases() {
+        assert_eq!(calls(fn_stripcslashes, &[s("\\101\\x41")]), "AA");
+        assert_eq!(calls(fn_stripcslashes, &[s("He\\llo")]), "Hello");
+        assert_eq!(calls(fn_stripcslashes, &[s("\\xg")]), "xg");
+        assert_eq!(calls(fn_stripcslashes, &[s("end\\")]), "end\\");
+        assert_eq!(calls(fn_stripcslashes, &[s("\\n\\t\\\\")]), "\n\t\\");
+    }
+
+    #[test]
+    fn count_chars_cases() {
+        assert_eq!(calls(fn_count_chars, &[s("hello"), Value::Int(3)]), "ehlo");
+        assert_eq!(calls(fn_count_chars, &[s("abcabc"), Value::Int(3)]), "abc");
+        // mode 1: present bytes with counts, keys ascending by byte value
+        let r = call(fn_count_chars, &[s("hello"), Value::Int(1)]);
+        let Value::Array(a) = r else { panic!("expected array") };
+        let pairs: Vec<(i64, i64)> = a
+            .iter()
+            .map(|(k, v)| {
+                let ArrayKey::Int(n) = k else { panic!() };
+                (*n, conv::to_int(v))
+            })
+            .collect();
+        assert_eq!(pairs, vec![(101, 1), (104, 1), (108, 2), (111, 1)]);
+        assert!(fn_count_chars(&mut NullHost, &[s("x"), Value::Int(5)]).is_err());
     }
 }

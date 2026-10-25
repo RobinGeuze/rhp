@@ -170,6 +170,53 @@ fn fn_exp(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Float(f(&args[0]).exp()))
 }
 
+// php's math functions call the platform libm directly. Rust's std implements
+// `asinh`/`acosh`/`atanh` in pure Rust (not via libm), which can differ from php
+// in the last ULP, so every function here is routed through the C libm (`libc`)
+// to stay byte-identical to the oracle.
+extern "C" {
+    fn expm1(x: f64) -> f64;
+    fn log1p(x: f64) -> f64;
+    fn sinh(x: f64) -> f64;
+    fn cosh(x: f64) -> f64;
+    fn tanh(x: f64) -> f64;
+    fn asinh(x: f64) -> f64;
+    fn acosh(x: f64) -> f64;
+    fn atanh(x: f64) -> f64;
+}
+
+fn fn_expm1(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Float(unsafe { expm1(f(&args[0])) }))
+}
+
+fn fn_log1p(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Float(unsafe { log1p(f(&args[0])) }))
+}
+
+fn fn_sinh(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Float(unsafe { sinh(f(&args[0])) }))
+}
+
+fn fn_cosh(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Float(unsafe { cosh(f(&args[0])) }))
+}
+
+fn fn_tanh(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Float(unsafe { tanh(f(&args[0])) }))
+}
+
+fn fn_asinh(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Float(unsafe { asinh(f(&args[0])) }))
+}
+
+fn fn_acosh(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Float(unsafe { acosh(f(&args[0])) }))
+}
+
+fn fn_atanh(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Float(unsafe { atanh(f(&args[0])) }))
+}
+
 /// Integer exponentiation by squaring with overflow detection.
 fn ipow(mut base: i64, mut exp: u64) -> Option<i64> {
     let mut result: i64 = 1;
@@ -450,6 +497,14 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     reg!("sqrt", fn_sqrt, 1, Some(1));
     reg!("pow", fn_pow, 2, Some(2));
     reg!("exp", fn_exp, 1, Some(1));
+    reg!("expm1", fn_expm1, 1, Some(1));
+    reg!("log1p", fn_log1p, 1, Some(1));
+    reg!("sinh", fn_sinh, 1, Some(1));
+    reg!("cosh", fn_cosh, 1, Some(1));
+    reg!("tanh", fn_tanh, 1, Some(1));
+    reg!("asinh", fn_asinh, 1, Some(1));
+    reg!("acosh", fn_acosh, 1, Some(1));
+    reg!("atanh", fn_atanh, 1, Some(1));
     reg!("log", fn_log, 1, Some(2));
     reg!("log10", fn_log10, 1, Some(1));
     reg!("sin", fn_sin, 1, Some(1));
@@ -690,5 +745,21 @@ mod tests {
         // base range errors
         assert!(fn_base_convert(&mut NullHost, &[st("ff"), i(1), i(10)]).is_err());
         assert!(fn_base_convert(&mut NullHost, &[st("ff"), i(16), i(37)]).is_err());
+    }
+
+    #[test]
+    fn hyperbolic_and_exp_anchors() {
+        // Exact values php 8.5.8 returns; the ULP-sensitive cases are covered by
+        // the CLI differential tests (routed through the C libm).
+        assert_eq!(fv(call(fn_sinh, &[fl(0.0)])), 0.0);
+        assert_eq!(fv(call(fn_cosh, &[fl(0.0)])), 1.0);
+        assert_eq!(fv(call(fn_tanh, &[fl(0.0)])), 0.0);
+        assert_eq!(fv(call(fn_asinh, &[fl(0.0)])), 0.0);
+        assert_eq!(fv(call(fn_acosh, &[fl(1.0)])), 0.0);
+        assert_eq!(fv(call(fn_atanh, &[fl(0.0)])), 0.0);
+        assert_eq!(fv(call(fn_expm1, &[fl(0.0)])), 0.0);
+        assert_eq!(fv(call(fn_log1p, &[fl(0.0)])), 0.0);
+        // tanh saturates to 1 for large arguments
+        assert_eq!(fv(call(fn_tanh, &[fl(40.0)])), 1.0);
     }
 }

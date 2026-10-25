@@ -219,6 +219,9 @@ pub enum Instr {
     CloneObj { dst: Reg, src: Reg },
     /// Cursor step: descend into object property `name`.
     LvalProp { name: NIdx },
+    /// Cursor step: descend into object property named by `name` (a runtime
+    /// string register), e.g. `$o->$p = ...`.
+    LvalPropDyn { name: Reg },
     /// Cursor root: a static-property cell `C::$name`.
     LvalStaticProp { class: ClassRef, name: NIdx },
     /// Link + register a conditionally-declared class at this point.

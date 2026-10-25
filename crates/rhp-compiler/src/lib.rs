@@ -40,6 +40,7 @@ enum CursorStep {
     Key(Reg),
     Append,
     Prop(NIdx),
+    PropDyn(Reg),
 }
 
 /// Where an lvalue cursor roots.
@@ -3882,8 +3883,10 @@ impl ProtoBuilder {
             }
             Expression::Access(Access::Property(pa)) => {
                 let root = self.collect_lvalue_steps(pa.object, steps)?;
-                let name = self.selector_name(&pa.property)?;
-                steps.push(CursorStep::Prop(name));
+                match self.compile_selector(&pa.property)? {
+                    Sel::Static(name) => steps.push(CursorStep::Prop(name)),
+                    Sel::Dyn(r) => steps.push(CursorStep::PropDyn(r)),
+                }
                 Ok(root)
             }
             Expression::Access(Access::StaticProperty(spa)) => {
@@ -3909,6 +3912,7 @@ impl ProtoBuilder {
                 CursorStep::Key(r) => self.emit(Instr::LvalKey { key: *r }),
                 CursorStep::Append => self.emit(Instr::LvalAppend),
                 CursorStep::Prop(n) => self.emit(Instr::LvalProp { name: *n }),
+                CursorStep::PropDyn(r) => self.emit(Instr::LvalPropDyn { name: *r }),
             }
         }
     }

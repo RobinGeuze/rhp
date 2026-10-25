@@ -1716,6 +1716,10 @@ impl Vm {
                     let p = proto.names[name as usize].clone();
                     self.cursor_steps.push(CursorStep::Prop(p));
                 }
+                Instr::LvalPropDyn { name } => {
+                    let p = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    self.cursor_steps.push(CursorStep::Prop(p));
+                }
                 Instr::LvalStaticProp { class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
                     let pname = proto.names[name as usize].as_bytes().to_vec();
@@ -1884,9 +1888,11 @@ impl Vm {
                 }
 
                 Instr::FeResetRef { arr_cv, pos_reg, end } => {
-                    let nonempty = match &self.stack[top].regs[arr_cv as usize] {
+                    let nonempty = match deref(&self.stack[top].regs[arr_cv as usize]) {
                         Value::Array(a) => !a.is_empty(),
-                        Value::Ref(rc) => matches!(&*rc.borrow(), Value::Array(a) if !a.is_empty()),
+                        // A plain object iterates its properties by reference;
+                        // `FeFetchRef` ends the loop when none remain accessible.
+                        Value::Object(_) => true,
                         _ => false,
                     };
                     if nonempty {
@@ -1900,6 +1906,54 @@ impl Vm {
                         Value::Int(n) => n as usize,
                         _ => 0,
                     };
+                    // By-reference foreach over a plain object: alias each
+                    // accessible property slot so writes through the loop var are
+                    // visible on the object (matches PHP).
+                    if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]).clone() {
+                        let caller = self.stack[top].defining_class;
+                        let cls = h.borrow().class;
+                        let mut b = h.borrow_mut();
+                        let n = b.properties.len();
+                        let mut idx = pos;
+                        let mut found: Option<PhpStr> = None;
+                        while idx < n {
+                            let name = b.properties.get_index(idx).unwrap().0.clone();
+                            let visible = match self.class(cls).props.get(&name) {
+                                Some(pe) => self.check_access(caller, pe.declaring_class, pe.visibility),
+                                None => true, // dynamic properties are public
+                            };
+                            if visible {
+                                found = Some(name);
+                                break;
+                            }
+                            idx += 1;
+                        }
+                        match found {
+                            Some(name) => {
+                                let slot = b.properties.get_index_mut(idx).unwrap().1;
+                                let rc = match slot {
+                                    Value::Ref(rc) => rc.clone(),
+                                    other => {
+                                        let inner = std::mem::replace(other, Value::Null);
+                                        let rc = Rc::new(RefCell::new(inner));
+                                        *other = Value::Ref(rc.clone());
+                                        rc
+                                    }
+                                };
+                                drop(b);
+                                self.reg_set(top, val_cv, Value::Ref(rc));
+                                if key_cv != Reg::MAX {
+                                    self.reg_set(top, key_cv, Value::str(name.as_bytes().to_vec()));
+                                }
+                                self.reg_set(top, pos_reg, Value::Int((idx + 1) as i64));
+                            }
+                            None => {
+                                drop(b);
+                                self.stack[top].pc = end as usize;
+                            }
+                        }
+                        continue;
+                    }
                     // Promote the element at `pos` to a shared cell (through a
                     // Ref if the source variable itself is a reference).
                     let rc_opt = match &self.stack[top].regs[arr_cv as usize] {

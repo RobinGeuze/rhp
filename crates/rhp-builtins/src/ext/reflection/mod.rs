@@ -76,6 +76,12 @@ fn fn_func_params(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     Ok(host.reflect_callable_params(&c).unwrap_or_else(|| Value::Array(rhp_values::PhpArray::new())))
 }
 
+fn fn_class_constants(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(host
+        .reflect_class_constants(&str_arg(args, 0))
+        .unwrap_or_else(|| Value::Array(rhp_values::PhpArray::new())))
+}
+
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     fn put(
         m: &mut HashMap<&'static str, Builtin>,
@@ -94,6 +100,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "__reflect_set_prop", fn_set_prop, 3, Some(3));
     put(m, "__reflect_method_params", fn_method_params, 2, Some(2));
     put(m, "__reflect_func_params", fn_func_params, 1, Some(1));
+    put(m, "__reflect_class_constants", fn_class_constants, 1, Some(1));
 }
 
 /// The `Reflection*` classes (read-focused subset).
@@ -196,6 +203,8 @@ class ReflectionClass {
     public function getConstants() { return $this->meta['constants']; }
     public function getConstant($n) { return $this->meta['constants'][$n] ?? false; }
     public function hasConstant($n) { return array_key_exists($n, $this->meta['constants']); }
+    public function getReflectionConstants($filter = null) { $out = []; foreach (__reflect_class_constants($this->name) as $c) { $out[] = new ReflectionClassConstant($this->name, $c['name']); } return $out; }
+    public function getReflectionConstant($n) { return $this->hasConstant($n) ? new ReflectionClassConstant($this->name, $n) : false; }
     public function getProperties($filter = null) { $out = []; foreach ($this->meta['properties'] as $p) { $out[] = new ReflectionProperty($this->name, $p); } return $out; }
     public function getProperty($p) { return new ReflectionProperty($this->name, $p); }
     public function hasProperty($p) { return in_array($p, $this->meta['properties']); }
@@ -208,4 +217,30 @@ class ReflectionClass {
 
 class ReflectionObject extends ReflectionClass {}
 class ReflectionEnum extends ReflectionClass {}
+
+class ReflectionClassConstant {
+    public $name; public $class; private $__m;
+    public function __construct($class, $name) {
+        $this->class = is_object($class) ? get_class($class) : $class;
+        $this->name = $name;
+        $this->__m = null;
+    }
+    private function meta() {
+        if ($this->__m === null) {
+            foreach (__reflect_class_constants($this->class) as $c) {
+                if ($c['name'] === $this->name) { $this->__m = $c; break; }
+            }
+            if ($this->__m === null) { $this->__m = ['value' => null, 'public' => true, 'protected' => false, 'private' => false]; }
+        }
+        return $this->__m;
+    }
+    public function getName() { return $this->name; }
+    public function getValue() { return $this->meta()['value']; }
+    public function isPublic() { return $this->meta()['public']; }
+    public function isProtected() { return $this->meta()['protected']; }
+    public function isPrivate() { return $this->meta()['private']; }
+    public function isFinal() { return false; }
+    public function isEnumCase() { return false; }
+    public function getDeclaringClass() { return new ReflectionClass($this->class); }
+}
 "#;

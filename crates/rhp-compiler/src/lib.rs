@@ -1332,6 +1332,7 @@ fn compile_method(
     c.sigs = sigs.clone();
     c.class_name = Some(class_name.clone());
     c.scope_kind = ScopeKind::Method;
+    c.returns_ref = m.ampersand.is_some();
 
     // Instance methods reserve CV 0 for `$this`.
     if !is_static {
@@ -1431,6 +1432,7 @@ fn compile_function(
     let fname = join_ns(&cur_ns(), func.name.value);
     let mut c = ProtoBuilder::new(PhpStr::from_bytes(fname));
     c.sigs = sigs;
+    c.returns_ref = func.ampersand.is_some();
 
     let mut params = Vec::new();
     let mut nonconst_defaults: Vec<(u16, Reg, &Expression)> = Vec::new();
@@ -1498,6 +1500,8 @@ struct ProtoBuilder {
     name: PhpStr,
     /// Enclosing class/trait/enum name for `__CLASS__`/`__METHOD__` (None outside).
     class_name: Option<PhpStr>,
+    /// `function &f()` — this proto returns by reference (affects `return`).
+    returns_ref: bool,
     /// The scope discriminator for `__FUNCTION__`/`__METHOD__`.
     scope_kind: ScopeKind,
     /// For a closure, PHP 8.5's generated name `{closure:<scope>:<line>}` used by
@@ -1541,6 +1545,7 @@ impl ProtoBuilder {
         ProtoBuilder {
             name,
             class_name: None,
+            returns_ref: false,
             scope_kind: ScopeKind::Function,
             magic_fn_name: None,
             code: Vec::new(),
@@ -1581,6 +1586,7 @@ impl ProtoBuilder {
             .map(|(i, n)| (i as Reg, PhpStr::from_bytes(n.clone())))
             .collect();
         proto.strict_types = STRICT_TYPES.with(|s| *s.borrow());
+        proto.returns_ref = self.returns_ref;
         proto
     }
 
@@ -2059,6 +2065,11 @@ impl ProtoBuilder {
             Statement::Return(r) => {
                 if self.finally_rets.is_empty() {
                     match r.value {
+                        // By-ref function: `return $lval` yields a reference.
+                        Some(e) if self.returns_ref => {
+                            let src = self.compile_ref_source(e)?;
+                            self.emit(Instr::RetRef { src });
+                        }
                         Some(e) => {
                             let src = self.compile_expr(e)?;
                             self.emit(Instr::Ret { src });
@@ -3694,6 +3705,7 @@ impl ProtoBuilder {
             ClosureBody::Arrow(af.expression),
             { use mago_span::HasSpan; af.span().start.offset },
             af.return_type_hint.as_ref().map(|r| &r.hint),
+            af.ampersand.is_some(),
         )
     }
 
@@ -3726,6 +3738,7 @@ impl ProtoBuilder {
             ClosureBody::Block(&cl.body),
             { use mago_span::HasSpan; cl.span().start.offset },
             cl.return_type_hint.as_ref().map(|r| &r.hint),
+            cl.ampersand.is_some(),
         )
     }
 
@@ -3740,6 +3753,7 @@ impl ProtoBuilder {
         body: ClosureBody,
         closure_offset: u32,
         ret_hint: Option<&Hint>,
+        returns_ref: bool,
     ) -> Result<Reg, Thrown> {
         let nc = captures.len() as u16;
 
@@ -3753,6 +3767,7 @@ impl ProtoBuilder {
         c.scope_kind = ScopeKind::Closure;
         c.class_name = self.class_name.clone(); // __CLASS__ in a closure = enclosing class
         c.magic_fn_name = Some(magic_name);
+        c.returns_ref = returns_ref;
         for (name, _) in &captures {
             c.cv(name); // captures occupy CVs 0..nc
         }
@@ -3944,7 +3959,10 @@ impl ProtoBuilder {
                 self.emit(Instr::MakeRefLval { dst: r });
                 Ok(r)
             }
-            _ => Err(Thrown::unsupported("reference binding source", "must be a variable or lvalue")),
+            // `$x = &func()` / other non-lvalue source: we don't implement
+            // return-by-reference, so bind by value (matches php's fallback for a
+            // non-ref-returning callee; object handles are shared regardless).
+            other => self.compile_expr(other),
         }
     }
 
@@ -4007,10 +4025,15 @@ impl ProtoBuilder {
     /// `ref_mask[i]` true means position `i` may be by-reference for some method
     /// of this name: if the argument is a simple variable, pass it as a `Ref`
     /// (by-value callees deref it in `bind_params`).
-    fn compile_arg_window(
+    /// `over_approx`: pass every simple-variable argument by reference (used for
+    /// method / constructor calls, where the callee may live in another file so
+    /// its by-ref signature is unknown at compile time; a by-value parameter just
+    /// dereferences a copy, so this is safe and matches php's runtime by-ref).
+    fn compile_arg_window_ex(
         &mut self,
         args: Option<&rhp_frontend::cst::ArgumentList>,
         ref_mask: &[bool],
+        over_approx: bool,
     ) -> Result<(Reg, u16), Thrown> {
         enum Slot {
             Value(Reg),
@@ -4028,9 +4051,8 @@ impl ProtoBuilder {
                         return Err(Thrown::unsupported("named arguments", "deferred"))
                     }
                 };
-                let by_ref = ref_mask.get(i).copied().unwrap_or(false);
-                if by_ref {
-                    if let Expression::Variable(Variable::Direct(d)) = p.value {
+                if let Expression::Variable(Variable::Direct(d)) = p.value {
+                    if over_approx || ref_mask.get(i).copied().unwrap_or(false) {
                         slots.push(Slot::Ref(self.cv(strip_dollar(d.name))));
                         continue;
                     }
@@ -4070,7 +4092,7 @@ impl ProtoBuilder {
             return Ok(dst);
         }
         let mask = self.method_ref_mask(b"__construct");
-        let (base, argc) = self.compile_arg_window(inst.argument_list.as_ref(), &mask)?;
+        let (base, argc) = self.compile_arg_window_ex(inst.argument_list.as_ref(), &mask, true)?;
         let dst = self.alloc_temp();
         let cache = self.alloc_cache();
         self.emit(Instr::New { dst, class, base, argc, cache });
@@ -4168,7 +4190,7 @@ impl ProtoBuilder {
                         return Ok(dst);
                     }
                     let mask = self.name_ref_mask(name);
-                    let (base, argc) = self.compile_arg_window(Some(args), &mask)?;
+                    let (base, argc) = self.compile_arg_window_ex(Some(args), &mask, true)?;
                     let dst = self.alloc_temp();
                     let cache = self.alloc_cache();
                     self.emit(Instr::CallMethod { dst, obj, name, base, argc, cache });
@@ -4181,7 +4203,7 @@ impl ProtoBuilder {
                             "deferred",
                         ));
                     }
-                    let (base, argc) = self.compile_arg_window(Some(args), &[])?;
+                    let (base, argc) = self.compile_arg_window_ex(Some(args), &[], true)?;
                     let dst = self.alloc_temp();
                     self.emit(Instr::CallMethodDyn { dst, obj, name, base, argc });
                     return Ok(dst);
@@ -4196,7 +4218,7 @@ impl ProtoBuilder {
         self.emit(Instr::Nop); // JmpNull dst -> Lnull
         let name = self.selector_name(selector)?;
         let mask = self.name_ref_mask(name);
-        let (base, argc) = self.compile_arg_window(Some(args), &mask)?;
+        let (base, argc) = self.compile_arg_window_ex(Some(args), &mask, true)?;
         let cache = self.alloc_cache();
         let t = self.alloc_temp();
         self.emit(Instr::CallMethod { dst: t, obj: dst, name, base, argc, cache });
@@ -4224,7 +4246,7 @@ impl ProtoBuilder {
             return Ok(dst);
         }
         let mask = self.name_ref_mask(name);
-        let (base, argc) = self.compile_arg_window(Some(&smc.argument_list), &mask)?;
+        let (base, argc) = self.compile_arg_window_ex(Some(&smc.argument_list), &mask, true)?;
         let dst = self.alloc_temp();
         let cache = self.alloc_cache();
         self.emit(Instr::CallStatic { dst, class, name, base, argc, cache });

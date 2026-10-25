@@ -393,6 +393,11 @@ impl Host for Vm {
         Some(Value::Array(a))
     }
 
+    fn class_constant(&self, class: &[u8], name: &[u8]) -> Option<Value> {
+        let cid = self.resolve_class_by_name(class).ok()?;
+        self.classes[cid as usize].constants.get(name).map(|c| c.value.clone())
+    }
+
     fn reflect_is_a(&self, name: &[u8], other: &[u8]) -> bool {
         match (self.resolve_class_by_name(name), self.resolve_class_by_name(other)) {
             (Ok(a), Ok(b)) => self.classes[a as usize].ancestors.contains(&b),
@@ -432,6 +437,22 @@ impl Host for Vm {
         } else {
             false
         }
+    }
+
+    fn reflect_class_constants(&self, class: &[u8]) -> Option<Value> {
+        use rhp_values::Visibility;
+        let cid = self.resolve_class_by_name(class).ok()?;
+        let mut arr = PhpArray::new();
+        for (name, c) in &self.classes[cid as usize].constants {
+            let mut d = PhpArray::new();
+            d.insert(ArrayKey::from_bytes(b"name"), Value::str(name.clone()));
+            d.insert(ArrayKey::from_bytes(b"value"), c.value.clone());
+            d.insert(ArrayKey::from_bytes(b"public"), Value::Bool(c.visibility == Visibility::Public));
+            d.insert(ArrayKey::from_bytes(b"protected"), Value::Bool(c.visibility == Visibility::Protected));
+            d.insert(ArrayKey::from_bytes(b"private"), Value::Bool(c.visibility == Visibility::Private));
+            arr.push(Value::Array(d));
+        }
+        Some(Value::Array(arr))
     }
 
     fn reflect_method_params(&self, class: &[u8], method: &[u8]) -> Option<Value> {
@@ -2389,6 +2410,15 @@ impl Vm {
                     if proto.return_type.is_some() {
                         v = self.check_return_type(&proto, top, v)?;
                     }
+                    if let Some(done) = self.do_return(v) {
+                        return Ok(done);
+                    }
+                }
+                Instr::RetRef { src } => {
+                    // Return-by-reference: deliver the raw slot (a `Value::Ref`
+                    // cell) without dereferencing, so the caller's `$x = &f()`
+                    // aliases the same cell. No return-type coercion.
+                    let v = self.stack[top].regs[src as usize].clone();
                     if let Some(done) = self.do_return(v) {
                         return Ok(done);
                     }

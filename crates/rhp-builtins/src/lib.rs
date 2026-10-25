@@ -72,6 +72,12 @@ pub trait Host {
         None
     }
 
+    /// A class constant's value (`defined`/`constant` with `Class::CONST`, incl.
+    /// enum cases), or None if the class or constant does not exist.
+    fn class_constant(&self, _class: &[u8], _name: &[u8]) -> Option<Value> {
+        None
+    }
+
     /// Invoke a PHP callable (for `array_map`/`array_filter`/…). Default: refused.
     fn call_callable(&mut self, _callable: &Value, _args: &[Value]) -> Result<Value, Thrown> {
         Err(Thrown::unsupported("callback", "callbacks are not available in this host"))
@@ -282,6 +288,11 @@ pub trait Host {
     }
     /// Parameter descriptors for a callable (`ReflectionFunction::getParameters`).
     fn reflect_callable_params(&self, _callable: &Value) -> Option<Value> {
+        None
+    }
+    /// Class-constant descriptors for `ReflectionClass::getReflectionConstants`:
+    /// an array of `{name, value, public, protected, private}`.
+    fn reflect_class_constants(&self, _class: &[u8]) -> Option<Value> {
         None
     }
 }
@@ -579,7 +590,6 @@ pub fn is_refused(name: &str) -> Option<&'static str> {
         "extract" => Some("writes arbitrary variables into the local scope"),
         "compact" => Some("resolves variable names dynamically from strings"),
         "create_function" => Some("compiles a string into a function (eval-equivalent)"),
-        "assert" => Some("string assertions are eval-equivalent"),
         "exec" | "system" | "passthru" | "shell_exec" | "proc_open" | "popen" => {
             Some("executes external shell commands")
         }
@@ -685,14 +695,26 @@ fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(host.define_const(&name, value)))
 }
 
+/// Resolve a constant by name: a class constant `Class::CONST` (incl. enum cases)
+/// or a global constant.
+fn resolve_const(host: &dyn Host, name: &[u8]) -> Option<Value> {
+    if let Some(pos) = find_sub(name, b"::") {
+        let class = name[..pos].strip_prefix(b"\\").unwrap_or(&name[..pos]);
+        let cname = &name[pos + 2..];
+        host.class_constant(class, cname)
+    } else {
+        host.get_const(name)
+    }
+}
+
 fn fn_defined(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
-    Ok(Value::Bool(host.get_const(&name).is_some()))
+    Ok(Value::Bool(resolve_const(host, &name).is_some()))
 }
 
 fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
-    host.get_const(&name).ok_or_else(|| {
+    resolve_const(host, &name).ok_or_else(|| {
         Thrown::error(
             "Error",
             format!("Undefined constant \"{}\"", String::from_utf8_lossy(&name)),

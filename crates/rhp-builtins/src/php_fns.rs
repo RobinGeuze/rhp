@@ -185,6 +185,21 @@ fn fn_php_ini_loaded_file(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Th
     Ok(Value::Bool(false))
 }
 
+/// `assert($assertion, $description = null)` — PHP 8: evaluate `$assertion`; if
+/// falsy, throw AssertionError (assertions are treated as enabled, the CLI
+/// default). A string `$description` becomes the message; a Throwable is thrown.
+fn fn_assert(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    if conv::to_bool(&deref(&args[0])) {
+        return Ok(Value::Bool(true));
+    }
+    match args.get(1).map(deref) {
+        Some(Value::Str(s)) => {
+            Err(Thrown::error("AssertionError", String::from_utf8_lossy(s.as_bytes()).into_owned()))
+        }
+        _ => Err(Thrown::error("AssertionError", "assert failed")),
+    }
+}
+
 fn fn_setlocale(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     // We don't model locales; report the C locale.
     Ok(Value::str("C"))
@@ -500,6 +515,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "getmypid", fn_getmypid, 0, Some(0));
     put(m, "php_ini_loaded_file", fn_php_ini_loaded_file, 0, Some(0));
     put(m, "setlocale", fn_setlocale, 2, None);
+    put(m, "assert", fn_assert, 1, Some(2));
     put(m, "iconv", fn_iconv, 3, Some(3));
     put(m, "iconv_strlen", fn_iconv_strlen, 1, Some(2));
     put(m, "iconv_substr", fn_iconv_substr, 2, Some(3));

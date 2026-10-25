@@ -153,6 +153,9 @@ pub enum Instr {
     /// callable value in `callee` as a `Closure`.
     MakeFcc { dst: Reg, callee: Reg },
     Ret { src: Reg },
+    /// `return` from a by-reference function (`function &f()`): `src` holds a
+    /// reference to the returned lvalue; it is delivered raw (not dereferenced).
+    RetRef { src: Reg },
     RetNull,
     /// `yield` / `yield $v` / `yield $k => $v` (only inside a generator). Suspends
     /// the frame, handing `(key, value)` to the driver; `dst` receives the value
@@ -421,6 +424,9 @@ pub struct FunctionProto {
     /// `declare(strict_types=1)` in this proto's file: argument/return coercion is
     /// disabled for calls made *from* this proto (php's caller-decides rule).
     pub strict_types: bool,
+    /// `function &f()` — returns by reference: `return $lval` yields a reference to
+    /// the lvalue, which `$x =& f()` aliases.
+    pub returns_ref: bool,
 }
 
 impl FunctionProto {
@@ -447,6 +453,7 @@ impl FunctionProto {
             superglobals: Vec::new(),
             return_type: None,
             strict_types: false,
+            returns_ref: false,
         }
     }
 }

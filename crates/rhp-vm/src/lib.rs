@@ -2410,6 +2410,10 @@ impl Vm {
                     let rc = self.promote(top, cv);
                     self.stack[top].regs[dst as usize] = Value::Ref(rc);
                 }
+                Instr::MakeRefVal { dst, src } => {
+                    let v = self.reg_get(top, src);
+                    self.reg_set(top, dst, Value::Ref(Rc::new(RefCell::new(v))));
+                }
 
                 Instr::CallV { dst, name, args, fallback } => {
                     let (user, fname) = self.resolve_fn(name, fallback, &proto.names);

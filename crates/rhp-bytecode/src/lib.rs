@@ -254,6 +254,10 @@ pub enum Instr {
     AssignLvalRef { src: Reg },
     /// Materialize CV `cv` as a Ref and place `Value::Ref` in `dst` (by-ref arg).
     MakeRef { dst: Reg, cv: Reg },
+    /// Wrap the *value* in `src` in a fresh `Value::Ref` cell (no aliasing of any
+    /// variable slot). Used for `&$this`, which php protects from being modified
+    /// through the reference.
+    MakeRefVal { dst: Reg, src: Reg },
 
     // -- misc --
     /// `name` (resolved constant). `fallback` is tried if `name` misses

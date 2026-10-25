@@ -3994,7 +3994,17 @@ impl ProtoBuilder {
     fn compile_ref_source(&mut self, src: &Expression) -> Result<Reg, Thrown> {
         match src {
             Expression::Variable(Variable::Direct(v)) => {
-                let cv = self.cv(strip_dollar(v.name));
+                let name = strip_dollar(v.name);
+                // `$t =& $this` must NOT let `$t = null` null out `$this` (php
+                // protects $this): bind to a fresh ref cell holding the object,
+                // not the $this slot itself. The object handle is still shared.
+                if name == b"this" {
+                    let obj = self.compile_expr(src)?;
+                    let r = self.alloc_temp();
+                    self.emit(Instr::MakeRefVal { dst: r, src: obj });
+                    return Ok(r);
+                }
+                let cv = self.cv(name);
                 let r = self.alloc_temp();
                 self.emit(Instr::MakeRef { dst: r, cv });
                 Ok(r)
@@ -4341,15 +4351,20 @@ impl ProtoBuilder {
         if let (AssignmentOperator::Assign(_), Expression::UnaryPrefix(u)) = (&a.operator, a.rhs) {
             if matches!(u.operator, UnaryPrefixOperator::Reference(_)) {
                 // `$dst =& $src` between simple variables: alias the slots.
+                // Exception: `$dst =& $this` must not alias the $this slot (php
+                // protects $this), so it goes through compile_ref_source below,
+                // which binds a fresh ref cell holding the object.
                 if let (
                     Expression::Variable(Variable::Direct(dst)),
                     Expression::Variable(Variable::Direct(src)),
                 ) = (a.lhs, u.operand)
                 {
-                    let dst_cv = self.cv(strip_dollar(dst.name));
-                    let src_cv = self.cv(strip_dollar(src.name));
-                    self.emit(Instr::BindRef { dst_cv, src_cv });
-                    return Ok(dst_cv);
+                    if strip_dollar(src.name) != b"this" {
+                        let dst_cv = self.cv(strip_dollar(dst.name));
+                        let src_cv = self.cv(strip_dollar(src.name));
+                        self.emit(Instr::BindRef { dst_cv, src_cv });
+                        return Ok(dst_cv);
+                    }
                 }
                 // `$dst =& <lvalue>` (property / array element / static prop): take
                 // a reference to the source lvalue and alias the destination var.

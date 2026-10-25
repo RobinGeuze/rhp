@@ -17,7 +17,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use flate2::read::DeflateDecoder;
+use md5::Md5;
 use rhp_values::{conv, Value};
+use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
 
 use crate::streams::{StatInfo, StreamWrapper, WrapperReg};
@@ -170,26 +172,36 @@ fn halt_offset(data: &[u8]) -> Option<usize> {
 }
 
 /// Verify the trailing signature `[hash][type(4,LE)][GBMB]` over
-/// `data[0 .. len-(hashlen+8)]`. Supports SHA-256/512 (composer uses SHA-512);
-/// MD5/SHA-1 are accepted without verification for now.
+/// `data[0 .. len-(hashlen+8)]`. Supports MD5, SHA-1, SHA-256 and SHA-512
+/// (composer uses SHA-512), all verified byte-for-byte. OpenSSL (type 0x10)
+/// signatures carry a variable-length RSA signature and need the archive's
+/// public key (`<phar>.pubkey`); they remain accepted without verification.
 fn verify_signature(data: &[u8]) -> Result<(), String> {
     let n = data.len();
     if n < 8 || &data[n - 4..] != b"GBMB" {
         return Err("missing GBMB signature trailer".into());
     }
     let sig_type = u32le(data, n - 8).ok_or("truncated signature type")?;
+    // Each arm hashes `data[0 .. n-(hashlen+8)]` (everything before the stored
+    // hash, the 4-byte type, and the `GBMB` magic) and compares to the stored hash.
     let (hashlen, computed): (usize, Option<Vec<u8>>) = match sig_type {
-        0x0004 => (64, {
+        0x0004 => {
             let body = &data[..n - 72];
-            Some(Sha512::digest(body).to_vec())
-        }),
-        0x0003 => (32, {
+            (64, Some(Sha512::digest(body).to_vec()))
+        }
+        0x0003 => {
             let body = &data[..n - 40];
-            Some(Sha256::digest(body).to_vec())
-        }),
-        0x0002 => (20, None), // SHA-1: accept (no verify yet)
-        0x0001 => (16, None), // MD5: accept (no verify yet)
-        0x0010 => return Ok(()), // OpenSSL: variable length; accept
+            (32, Some(Sha256::digest(body).to_vec()))
+        }
+        0x0002 => {
+            let body = &data[..n - 28];
+            (20, Some(Sha1::digest(body).to_vec()))
+        }
+        0x0001 => {
+            let body = &data[..n - 24];
+            (16, Some(Md5::digest(body).to_vec()))
+        }
+        0x0010 => return Ok(()), // OpenSSL: variable length; accept (needs pubkey + RSA)
         other => return Err(format!("unknown phar signature type {other}")),
     };
     if let Some(expected) = computed {

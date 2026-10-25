@@ -20,6 +20,9 @@ use rhp_values::{ClassFlags, ClassKind, PhpStr, Value, Visibility};
 pub type Reg = u16; // register-file index: CVs in [0,num_cvs), temporaries above
 pub type CIdx = u32; // index into FunctionProto.consts
 pub type NIdx = u32; // index into FunctionProto.names (interned identifier bytes)
+/// Sentinel `NIdx` meaning "no name" — used for the optional global-fallback name
+/// on namespaced unqualified function/const references (see `Call`/`FetchConst`).
+pub const NO_NAME: NIdx = u32::MAX;
 pub type Pc = u32; // instruction index into FunctionProto.code (NOT a byte offset)
 pub type FnIdx = u32; // index into Program.functions
 pub type CacheIdx = u32; // index into a per-proto inline-cache side table (reserved)
@@ -128,10 +131,13 @@ pub enum Instr {
     // -- calls / return (phase 1 builtins; user functions later) --
     /// Resolve `name` (case-insensitive): refused → Unsupported; builtin →
     /// call with `regs[base..base+argc]`; user function (later) → push frame.
-    Call { dst: Reg, name: NIdx, base: Reg, argc: u16 },
+    /// `fallback` is a second name to try if `name` misses (`NO_NAME` if none):
+    /// an unqualified call inside a namespace resolves `Ns\name` first, then the
+    /// global `name` (PHP's fall-back-to-global rule).
+    Call { dst: Reg, name: NIdx, base: Reg, argc: u16, fallback: NIdx },
     /// Variadic call: `args` holds a `PhpArray` of the evaluated arguments
     /// (used when a call site contains argument spread `...$x`).
-    CallV { dst: Reg, name: NIdx, args: Reg },
+    CallV { dst: Reg, name: NIdx, args: Reg, fallback: NIdx },
     /// Dynamic call `$f(args)`: `callee` holds a closure / string name / callable
     /// array / `__invoke` object; call it with `regs[base..base+argc]`.
     CallDyn { dst: Reg, callee: Reg, base: Reg, argc: u16 },
@@ -213,7 +219,10 @@ pub enum Instr {
     MakeRef { dst: Reg, cv: Reg },
 
     // -- misc --
-    FetchConst { dst: Reg, name: NIdx },
+    /// `name` (resolved constant). `fallback` is tried if `name` misses
+    /// (`NO_NAME` if none): an unqualified constant inside a namespace resolves
+    /// `Ns\NAME` first, then the global `NAME`.
+    FetchConst { dst: Reg, name: NIdx, fallback: NIdx },
     /// Emitted only for a structurally-refused construct on a reachable path;
     /// raises the uncatchable `Thrown::Unsupported`.
     Refuse { feature: NIdx, reason: NIdx },

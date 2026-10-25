@@ -391,10 +391,11 @@ impl Vm {
     }
 
     pub(crate) fn resolve_class_by_name(&self, name: &[u8]) -> Result<ClassId, Thrown> {
-        // Allow a leading namespace separator / take the last segment.
-        let seg = name.rsplit(|&b| b == b'\\').next().unwrap_or(name);
-        self.class_ids.get(&lc(seg)).copied().ok_or_else(|| {
-            Thrown::error("Error", format!("Class \"{}\" not found", String::from_utf8_lossy(seg)))
+        // A leading namespace separator is insignificant; otherwise match the
+        // full (namespaced) name — class names resolve with no global fallback.
+        let n = name.strip_prefix(b"\\").unwrap_or(name);
+        self.class_ids.get(&lc(n)).copied().ok_or_else(|| {
+            Thrown::error("Error", format!("Class \"{}\" not found", String::from_utf8_lossy(n)))
         })
     }
 

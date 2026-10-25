@@ -16,11 +16,13 @@ use std::rc::Rc;
 
 use rhp_bytecode::{
     ClassProto, ClassRef, CmpKind, ConstInitProto, Default as ParamDefault, FunctionProto,
-    IncludeKind, Instr, PropDefaultProto, Program, Reg,
+    IncludeKind, Instr, NIdx, PropDefaultProto, Program, Reg,
 };
 use rhp_builtins::{self as builtins, Host};
 use rhp_semantics::{cast_to_array, inc_dec_value, ops};
-use rhp_values::{conv, ArrayKey, ClassId, ClassKind, ObjectData, ObjectHandle, PhpArray, Thrown, Value};
+use rhp_values::{
+    conv, ArrayKey, ClassId, ClassKind, ObjectData, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
+};
 
 /// A pending lvalue step (an evaluated key, an append, or an object property).
 enum CursorStep {
@@ -330,6 +332,24 @@ impl Default for Vm {
 }
 
 impl Vm {
+    /// Resolve a (possibly namespaced) function reference. Tries the primary
+    /// `name`, then `fallback` (the global name) if set, against user functions;
+    /// returns the user-function index if found, plus the lowercased name to use
+    /// for a builtin dispatch / refusal check (the last candidate tried, which is
+    /// the global name inside a namespace since builtins are not namespaced).
+    fn resolve_fn(&self, name: NIdx, fallback: NIdx, names: &[PhpStr]) -> (Option<usize>, Vec<u8>) {
+        let p = names[name as usize].as_bytes().to_ascii_lowercase();
+        if let Some(&i) = self.fn_names.get(&p) {
+            return (Some(i), p);
+        }
+        if fallback != rhp_bytecode::NO_NAME {
+            let f = names[fallback as usize].as_bytes().to_ascii_lowercase();
+            let idx = self.fn_names.get(&f).copied();
+            return (idx, f);
+        }
+        (None, p)
+    }
+
     pub fn new() -> Self {
         let mut constants = HashMap::new();
         for (name, value) in builtins::constants() {
@@ -739,15 +759,15 @@ impl Vm {
                     }
                 }
 
-                Instr::Call { dst, name, base, argc } => {
-                    let fname = proto.names[name as usize].as_bytes().to_ascii_lowercase();
+                Instr::Call { dst, name, base, argc, fallback } => {
+                    let (user, fname) = self.resolve_fn(name, fallback, &proto.names);
                     if let Some(reason) = builtins::is_refused(
                         std::str::from_utf8(&fname).unwrap_or(""),
                     ) {
                         let shown = String::from_utf8_lossy(&fname).into_owned();
                         return Err(Thrown::unsupported(format!("{shown}()"), reason));
                     }
-                    if let Some(&fnidx) = self.fn_names.get(&fname) {
+                    if let Some(fnidx) = user {
                         // User function: push a frame (args bound to its CVs).
                         let callee = self.functions[fnidx].clone();
                         self.enter_user_call(top, callee, dst, base, argc)?;
@@ -1463,8 +1483,8 @@ impl Vm {
                     self.stack[top].regs[dst as usize] = Value::Ref(rc);
                 }
 
-                Instr::CallV { dst, name, args } => {
-                    let fname = proto.names[name as usize].as_bytes().to_ascii_lowercase();
+                Instr::CallV { dst, name, args, fallback } => {
+                    let (user, fname) = self.resolve_fn(name, fallback, &proto.names);
                     if let Some(reason) =
                         builtins::is_refused(std::str::from_utf8(&fname).unwrap_or(""))
                     {
@@ -1473,7 +1493,7 @@ impl Vm {
                     }
                     let arr = self.reg_get(top, args);
                     let argv = self.spread_args(&arr);
-                    if let Some(&fnidx) = self.fn_names.get(&fname) {
+                    if let Some(fnidx) = user {
                         let callee = self.functions[fnidx].clone();
                         self.push_user_frame(callee, argv, dst)?;
                     } else {
@@ -1556,11 +1576,17 @@ impl Vm {
                     self.push_method_frame(&m, this, called, argv, dst)?;
                 }
 
-                Instr::FetchConst { dst, name } => {
+                Instr::FetchConst { dst, name, fallback } => {
                     let cname = proto.names[name as usize].as_bytes().to_vec();
-                    match self.constants.get(&cname) {
+                    let v = self.constants.get(&cname).cloned().or_else(|| {
+                        if fallback != rhp_bytecode::NO_NAME {
+                            self.constants.get(proto.names[fallback as usize].as_bytes()).cloned()
+                        } else {
+                            None
+                        }
+                    });
+                    match v {
                         Some(v) => {
-                            let v = v.clone();
                             self.reg_set(top, dst, v);
                         }
                         None => {

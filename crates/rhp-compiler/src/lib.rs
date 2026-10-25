@@ -84,6 +84,253 @@ thread_local! {
     static SRC_FILE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
+// --- namespaces --------------------------------------------------------------
+
+/// The per-file, per-block namespace state threaded through compilation: the
+/// current namespace and the `use` import aliases visible so far (textual order
+/// — a reference only sees imports declared before it, matching PHP). Class and
+/// function aliases are keyed case-insensitively (lowercased); constant aliases
+/// are case-sensitive. Alias values are fully-qualified names WITHOUT a leading
+/// backslash.
+#[derive(Default, Clone)]
+struct NsContext {
+    ns: Vec<u8>, // "" = global namespace, else e.g. b"Foo\\Bar"
+    use_class: HashMap<Vec<u8>, Vec<u8>>,
+    use_func: HashMap<Vec<u8>, Vec<u8>>,
+    use_const: HashMap<Vec<u8>, Vec<u8>>,
+}
+
+thread_local! {
+    /// The namespace context active at the statement currently being compiled.
+    /// Set from the flattened `(context, statement)` list before each statement
+    /// in every compile pass, so deep name-resolution chokepoints can read it.
+    static NS_CTX: RefCell<Rc<NsContext>> = RefCell::new(Rc::new(NsContext::default()));
+}
+
+/// Which symbol table an identifier resolves against (PHP resolves classes,
+/// functions, and constants in separate namespace tables with different rules).
+#[derive(Clone, Copy)]
+enum NameKind {
+    Class,
+    Func,
+    Const,
+}
+
+#[derive(Clone, Copy)]
+enum UseKind {
+    Class,
+    Func,
+    Const,
+}
+
+fn set_ns_ctx(ctx: &Rc<NsContext>) {
+    NS_CTX.with(|c| *c.borrow_mut() = ctx.clone());
+}
+
+/// The current namespace (empty for the global namespace).
+fn cur_ns() -> Vec<u8> {
+    NS_CTX.with(|c| c.borrow().ns.clone())
+}
+
+/// Join a namespace prefix and a (relative) name with a backslash.
+fn join_ns(ns: &[u8], name: &[u8]) -> Vec<u8> {
+    if ns.is_empty() {
+        return name.to_vec();
+    }
+    let mut v = Vec::with_capacity(ns.len() + 1 + name.len());
+    v.extend_from_slice(ns);
+    v.push(b'\\');
+    v.extend_from_slice(name);
+    v
+}
+
+/// Drop a single leading backslash, if present.
+fn strip_lead_bs(name: &[u8]) -> Vec<u8> {
+    if name.first() == Some(&b'\\') {
+        name[1..].to_vec()
+    } else {
+        name.to_vec()
+    }
+}
+
+fn starts_with_ci(hay: &[u8], pfx: &[u8]) -> bool {
+    hay.len() >= pfx.len() && hay[..pfx.len()].eq_ignore_ascii_case(pfx)
+}
+
+/// The raw identifier bytes exactly as written (backslashes preserved), unlike
+/// [`identifier_name`] which strips to the last segment.
+fn identifier_raw<'a>(id: &'a Identifier<'a>) -> &'a [u8] {
+    match id {
+        Identifier::Local(l) => l.value,
+        Identifier::Qualified(q) => q.value,
+        Identifier::FullyQualified(f) => f.value,
+    }
+}
+
+/// Resolve an identifier reference to `(primary_fqn, Option<global_fallback>)`
+/// per PHP's namespace rules, using the current [`NsContext`]. Returned names
+/// carry no leading backslash. A fallback is produced only for an unqualified
+/// function/const reference inside a namespace (PHP's fall-back-to-global rule);
+/// class references and everything qualified resolve to a single name.
+fn resolve_name(id: &Identifier, kind: NameKind) -> (Vec<u8>, Option<Vec<u8>>) {
+    NS_CTX.with(|c| resolve_in(&c.borrow(), id, kind))
+}
+
+fn resolve_in(ctx: &NsContext, id: &Identifier, kind: NameKind) -> (Vec<u8>, Option<Vec<u8>>) {
+    match id {
+        // `\Foo\Bar` — absolute; drop the leading backslash.
+        Identifier::FullyQualified(f) => (strip_lead_bs(f.value), None),
+        // `Foo\Bar` — qualified: `namespace\X` is relative to the current ns;
+        // otherwise the first segment may be a class/namespace import alias, else
+        // it is relative to the current namespace.
+        Identifier::Qualified(q) => {
+            let raw = q.value;
+            if starts_with_ci(raw, b"namespace\\") {
+                let rest = &raw[b"namespace\\".len()..];
+                return (join_ns(&ctx.ns, rest), None);
+            }
+            let first_len = raw.iter().position(|&b| b == b'\\').unwrap_or(raw.len());
+            let first_lc = raw[..first_len].to_ascii_lowercase();
+            if let Some(fqn) = ctx.use_class.get(&first_lc) {
+                let mut v = fqn.clone();
+                v.extend_from_slice(&raw[first_len..]); // keep the remaining `\...`
+                (v, None)
+            } else {
+                (join_ns(&ctx.ns, raw), None)
+            }
+        }
+        // `Foo` — unqualified: import alias, else namespaced (with a global
+        // fallback for functions/constants).
+        Identifier::Local(l) => {
+            let raw = l.value;
+            match kind {
+                NameKind::Class => match ctx.use_class.get(&raw.to_ascii_lowercase()) {
+                    Some(fqn) => (fqn.clone(), None),
+                    None => (join_ns(&ctx.ns, raw), None),
+                },
+                NameKind::Func => {
+                    if let Some(fqn) = ctx.use_func.get(&raw.to_ascii_lowercase()) {
+                        (fqn.clone(), None)
+                    } else if ctx.ns.is_empty() {
+                        (raw.to_vec(), None)
+                    } else {
+                        (join_ns(&ctx.ns, raw), Some(raw.to_vec()))
+                    }
+                }
+                NameKind::Const => {
+                    if let Some(fqn) = ctx.use_const.get(raw) {
+                        (fqn.clone(), None)
+                    } else if ctx.ns.is_empty() {
+                        (raw.to_vec(), None)
+                    } else {
+                        (join_ns(&ctx.ns, raw), Some(raw.to_vec()))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Resolve a class-position identifier to its single fully-qualified name.
+fn resolve_class_name(id: &Identifier) -> Vec<u8> {
+    resolve_name(id, NameKind::Class).0
+}
+
+/// Flatten `namespace`/`use` statements into `(context, statement)` pairs in
+/// source order: each `use` accumulates into the running context (so later
+/// statements see it but earlier ones do not), and each `namespace` block starts
+/// a fresh context. Every compile pass iterates this list so name resolution is
+/// identical across passes.
+fn flatten_namespaces<'a>(
+    stmts: &'a rhp_frontend::cst::Sequence<'a, Statement<'a>>,
+    ctx: Rc<NsContext>,
+    out: &mut Vec<(Rc<NsContext>, &'a Statement<'a>)>,
+) {
+    let mut ctx = ctx;
+    for stmt in stmts.iter() {
+        match stmt {
+            Statement::Namespace(ns) => {
+                let name = ns.name.as_ref().map(identifier_raw).unwrap_or(b"");
+                let base = Rc::new(NsContext { ns: strip_lead_bs(name), ..Default::default() });
+                flatten_namespaces(ns.statements(), base, out);
+            }
+            Statement::Use(u) => {
+                let mut c = (*ctx).clone();
+                apply_use(&mut c, u);
+                ctx = Rc::new(c);
+            }
+            other => out.push((Rc::clone(&ctx), other)),
+        }
+    }
+}
+
+fn apply_use(ctx: &mut NsContext, u: &rhp_frontend::cst::Use) {
+    use rhp_frontend::cst::UseItems;
+    match &u.items {
+        UseItems::Sequence(seq) => {
+            for it in seq.items.iter() {
+                import_one(ctx, UseKind::Class, b"", it);
+            }
+        }
+        UseItems::TypedSequence(ts) => {
+            let k = use_kind(&ts.r#type);
+            for it in ts.items.iter() {
+                import_one(ctx, k, b"", it);
+            }
+        }
+        UseItems::TypedList(tl) => {
+            let k = use_kind(&tl.r#type);
+            let pfx = strip_lead_bs(identifier_raw(&tl.namespace));
+            for it in tl.items.iter() {
+                import_one(ctx, k, &pfx, it);
+            }
+        }
+        UseItems::MixedList(ml) => {
+            let pfx = strip_lead_bs(identifier_raw(&ml.namespace));
+            for mit in ml.items.iter() {
+                let k = mit.r#type.as_ref().map(use_kind).unwrap_or(UseKind::Class);
+                import_one(ctx, k, &pfx, &mit.item);
+            }
+        }
+    }
+}
+
+fn use_kind(t: &rhp_frontend::cst::UseType) -> UseKind {
+    use rhp_frontend::cst::UseType;
+    match t {
+        UseType::Function(_) => UseKind::Func,
+        UseType::Const(_) => UseKind::Const,
+    }
+}
+
+fn import_one(
+    ctx: &mut NsContext,
+    kind: UseKind,
+    prefix: &[u8],
+    item: &rhp_frontend::cst::UseItem,
+) {
+    let name_raw = strip_lead_bs(identifier_raw(&item.name));
+    let full = if prefix.is_empty() { name_raw } else { join_ns(prefix, &name_raw) };
+    let alias: Vec<u8> = match &item.alias {
+        Some(a) => a.identifier.value.to_vec(),
+        None => match full.iter().rposition(|&b| b == b'\\') {
+            Some(p) => full[p + 1..].to_vec(),
+            None => full.clone(),
+        },
+    };
+    match kind {
+        UseKind::Class => {
+            ctx.use_class.insert(alias.to_ascii_lowercase(), full);
+        }
+        UseKind::Func => {
+            ctx.use_func.insert(alias.to_ascii_lowercase(), full);
+        }
+        UseKind::Const => {
+            ctx.use_const.insert(alias, full);
+        }
+    }
+}
+
 /// Sorted byte offsets of line starts (offset 0, then after each '\n').
 fn build_line_starts(source: &[u8]) -> Vec<u32> {
     let mut v = vec![0u32];
@@ -127,7 +374,8 @@ fn line_of(offset: u32) -> u32 {
 }
 
 /// Scan every class-like's methods, OR-ing their by-ref parameter flags by name.
-fn collect_method_refs(program: &AstProgram) -> HashMap<Vec<u8>, Vec<bool>> {
+/// (Method names are not namespaced, so this ignores the namespace context.)
+fn collect_method_refs(flat: &[(Rc<NsContext>, &Statement)]) -> HashMap<Vec<u8>, Vec<bool>> {
     let mut map: HashMap<Vec<u8>, Vec<bool>> = HashMap::new();
     let mut add = |name: &[u8], pl: &rhp_frontend::cst::FunctionLikeParameterList| {
         let entry = map.entry(name.to_ascii_lowercase()).or_default();
@@ -138,7 +386,7 @@ fn collect_method_refs(program: &AstProgram) -> HashMap<Vec<u8>, Vec<bool>> {
             entry[i] |= p.ampersand.is_some();
         }
     };
-    for stmt in program.statements.iter() {
+    for (_ctx, stmt) in flat {
         let members = match stmt {
             Statement::Class(c) => &c.members,
             Statement::Trait(t) => &t.members,
@@ -194,24 +442,32 @@ pub fn compile_with_source(
     SRC_FILE.with(|f| *f.borrow_mut() = file.as_bytes().to_vec());
     let user_line_starts = build_line_starts(source);
     CLOSURES.with(|c| c.borrow_mut().clear());
-    // Signature pre-pass: name -> per-parameter by-ref flags, so a call site can
-    // marshal by-ref arguments even though the callee is resolved by name.
+    NS_CTX.with(|c| *c.borrow_mut() = Rc::new(NsContext::default()));
+    // Flatten namespace/use into (context, statement) pairs in source order; every
+    // pass below iterates this so name resolution is consistent across passes.
+    let mut flat: Vec<(Rc<NsContext>, &Statement)> = Vec::new();
+    flatten_namespaces(&program.statements, Rc::new(NsContext::default()), &mut flat);
+
+    // Signature pre-pass: fully-qualified name -> per-parameter by-ref flags, so a
+    // call site can marshal by-ref arguments even though the callee is resolved by
+    // name. Keyed by FQN (lowercased) to match the call-site resolution.
     let mut sigs: HashMap<Vec<u8>, Vec<bool>> = HashMap::new();
     // Parameter-name signatures, so a call site can reorder named arguments.
     let mut fn_params: HashMap<Vec<u8>, Vec<ParamSpec>> = HashMap::new();
-    for stmt in program.statements.iter() {
+    for (ctx, stmt) in &flat {
         if let Statement::Function(func) = stmt {
+            let fqn = join_ns(&ctx.ns, func.name.value).to_ascii_lowercase();
             let flags: Vec<bool> =
                 func.parameter_list.parameters.iter().map(|p| p.ampersand.is_some()).collect();
-            sigs.insert(func.name.value.to_ascii_lowercase(), flags);
+            sigs.insert(fqn.clone(), flags);
             if let Some(specs) = param_specs(&func.parameter_list) {
-                fn_params.insert(func.name.value.to_ascii_lowercase(), specs);
+                fn_params.insert(fqn, specs);
             }
         }
     }
     let sigs = Rc::new(sigs);
     FN_PARAMS.with(|m| *m.borrow_mut() = fn_params);
-    METHOD_REF.with(|m| *m.borrow_mut() = collect_method_refs(program));
+    METHOD_REF.with(|m| *m.borrow_mut() = collect_method_refs(&flat));
 
     // Hoist top-level function + class declarations. Start the class list with
     // the built-in exception hierarchy (the "prelude").
@@ -221,7 +477,8 @@ pub fn compile_with_source(
     // From here on we compile user code, so install its line map.
     LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
     let mut user_constants: Vec<(PhpStr, Value)> = Vec::new();
-    for stmt in program.statements.iter() {
+    for (ctx, stmt) in &flat {
+        set_ns_ctx(ctx);
         match stmt {
             Statement::Function(func) => {
                 functions.push(Rc::new(compile_function(func, sigs.clone())?));
@@ -234,7 +491,8 @@ pub fn compile_with_source(
                 // Top-level `const NAME = <const-expr>;` — fold now, install at startup.
                 for item in c.items.iter() {
                     let value = fold_const(item.value)?;
-                    user_constants.push((PhpStr::from_bytes(item.name.value.to_vec()), value));
+                    let name = join_ns(&ctx.ns, item.name.value);
+                    user_constants.push((PhpStr::from_bytes(name), value));
                 }
             }
             _ => {}
@@ -245,7 +503,7 @@ pub fn compile_with_source(
     let mut c = ProtoBuilder::new(PhpStr::from("{main}"));
     c.sigs = sigs.clone();
     c.scope_kind = ScopeKind::Main;
-    for stmt in program.statements.iter() {
+    for (_ctx, stmt) in &flat {
         c.scan_stmt_vars(stmt);
     }
     c.num_cvs = c.cv_map.len() as u16;
@@ -253,7 +511,8 @@ pub fn compile_with_source(
     c.high_water = c.num_cvs;
     c.temp_floor = c.num_cvs;
 
-    for stmt in program.statements.iter() {
+    for (ctx, stmt) in &flat {
+        set_ns_ctx(ctx);
         c.compile_stmt(stmt)?;
     }
     c.emit(Instr::RetNull);
@@ -294,7 +553,7 @@ fn compile_class(
     class: &Class,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<ClassProto, Thrown> {
-    let name = PhpStr::from_bytes(class.name.value.to_vec());
+    let name = PhpStr::from_bytes(join_ns(&cur_ns(), class.name.value));
     let flags = ClassFlags {
         is_abstract: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Abstract(_))),
         is_final: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Final(_))),
@@ -302,12 +561,12 @@ fn compile_class(
     };
     // Single inheritance: a class `extends` one parent.
     let parent = class.extends.as_ref().and_then(|e| {
-        e.types.iter().next().map(|id| PhpStr::from_bytes(identifier_name(id).to_vec()))
+        e.types.iter().next().map(|id| PhpStr::from_bytes(resolve_class_name(id)))
     });
     let interfaces: Vec<PhpStr> = class
         .implements
         .as_ref()
-        .map(|i| i.types.iter().map(|id| PhpStr::from_bytes(identifier_name(id).to_vec())).collect())
+        .map(|i| i.types.iter().map(|id| PhpStr::from_bytes(resolve_class_name(id))).collect())
         .unwrap_or_default();
 
     let m = compile_members(&class.members, sigs, &name)?;
@@ -337,7 +596,7 @@ fn compile_enum(
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<ClassProto, Thrown> {
     use rhp_bytecode::EnumBacking;
-    let name = PhpStr::from_bytes(en.name.value.to_vec());
+    let name = PhpStr::from_bytes(join_ns(&cur_ns(), en.name.value));
 
     let backing = match &en.backing_type_hint {
         None => None,
@@ -356,7 +615,7 @@ fn compile_enum(
     let mut interfaces: Vec<PhpStr> = en
         .implements
         .as_ref()
-        .map(|i| i.types.iter().map(|id| PhpStr::from_bytes(identifier_name(id).to_vec())).collect())
+        .map(|i| i.types.iter().map(|id| PhpStr::from_bytes(resolve_class_name(id))).collect())
         .unwrap_or_default();
     // Every enum implements UnitEnum; a backed enum also implements BackedEnum.
     interfaces.push(PhpStr::from("UnitEnum"));
@@ -486,7 +745,7 @@ fn compile_members(
             }
             ClassLikeMember::TraitUse(tu) => {
                 for t in tu.trait_names.iter() {
-                    out.traits.push(PhpStr::from_bytes(identifier_name(t).to_vec()));
+                    out.traits.push(PhpStr::from_bytes(resolve_class_name(t)));
                 }
             }
             ClassLikeMember::EnumCase(ec) => {
@@ -511,7 +770,7 @@ fn compile_trait(
     t: &rhp_frontend::cst::Trait,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<ClassProto, Thrown> {
-    let name = PhpStr::from_bytes(t.name.value.to_vec());
+    let name = PhpStr::from_bytes(join_ns(&cur_ns(), t.name.value));
     let m = compile_members(&t.members, sigs, &name)?;
     Ok(ClassProto {
         name,
@@ -926,11 +1185,11 @@ fn prelude_classes() -> Result<Vec<ClassProto>, Thrown> {
 fn compile_interface(
     iface: &rhp_frontend::cst::Interface,
 ) -> Result<ClassProto, Thrown> {
-    let name = PhpStr::from_bytes(iface.name.value.to_vec());
+    let name = PhpStr::from_bytes(join_ns(&cur_ns(), iface.name.value));
     let interfaces: Vec<PhpStr> = iface
         .extends
         .as_ref()
-        .map(|e| e.types.iter().map(|id| PhpStr::from_bytes(identifier_name(id).to_vec())).collect())
+        .map(|e| e.types.iter().map(|id| PhpStr::from_bytes(resolve_class_name(id))).collect())
         .unwrap_or_default();
     let mut constants = Vec::new();
     for member in iface.members.iter() {
@@ -1061,8 +1320,8 @@ fn compile_function(
     func: &rhp_frontend::cst::Function,
     sigs: Rc<HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<FunctionProto, Thrown> {
-    let fname = func.name.value;
-    let mut c = ProtoBuilder::new(PhpStr::from_bytes(fname.to_vec()));
+    let fname = join_ns(&cur_ns(), func.name.value);
+    let mut c = ProtoBuilder::new(PhpStr::from_bytes(fname));
     c.sigs = sigs;
 
     let mut params = Vec::new();
@@ -1259,6 +1518,31 @@ impl ProtoBuilder {
         let i = self.names.len() as NIdx;
         self.names.push(PhpStr::from_bytes(bytes.to_vec()));
         i
+    }
+
+    /// Intern an optional global-fallback name, or `NO_NAME` when there is none.
+    fn intern_fallback(&mut self, fb: &Option<Vec<u8>>) -> NIdx {
+        match fb {
+            Some(f) => self.intern_name(f),
+            None => rhp_bytecode::NO_NAME,
+        }
+    }
+
+    /// Resolve a first-class-callable's target function to a single name. An
+    /// unqualified reference inside a namespace prefers the namespaced user
+    /// function when one is declared, else the global name (builtins are global).
+    fn resolve_callable_name(&self, id: &Identifier) -> Vec<u8> {
+        let (primary, fallback) = resolve_name(id, NameKind::Func);
+        match fallback {
+            None => primary,
+            Some(global) => {
+                if self.sigs.contains_key(&primary.to_ascii_lowercase()) {
+                    primary
+                } else {
+                    global
+                }
+            }
+        }
     }
 
     /// Evaluate a parameter default to a constant and intern it. Only
@@ -2290,7 +2574,7 @@ impl ProtoBuilder {
             MagicConstant::Class(_) | MagicConstant::Trait(_) => {
                 self.class_name.as_ref().map(|c| c.as_bytes().to_vec()).unwrap_or_default()
             }
-            MagicConstant::Namespace(_) => Vec::new(), // no namespace support
+            MagicConstant::Namespace(_) => cur_ns(),
             MagicConstant::Line(_) | MagicConstant::Property(_) => unreachable!(),
         };
         let k = self.intern_const(Value::str(s));
@@ -2655,8 +2939,10 @@ impl ProtoBuilder {
             b"false" | b"FALSE" | b"False" => self.emit(Instr::LoadBool { dst, b: false }),
             b"null" | b"NULL" | b"Null" => self.emit(Instr::LoadNull { dst }),
             _ => {
-                let n = self.intern_name(name);
-                self.emit(Instr::FetchConst { dst, name: n });
+                let (primary, fallback) = resolve_name(id, NameKind::Const);
+                let n = self.intern_name(&primary);
+                let fb = self.intern_fallback(&fallback);
+                self.emit(Instr::FetchConst { dst, name: n, fallback: fb });
             }
         }
         Ok(dst)
@@ -2761,10 +3047,16 @@ impl ProtoBuilder {
     fn compile_named_call(
         &mut self,
         name_bytes: &[u8],
+        fallback: &Option<Vec<u8>>,
         list: &rhp_frontend::cst::ArgumentList,
     ) -> Result<Reg, Thrown> {
         let name_lc = name_bytes.to_ascii_lowercase();
-        let specs = FN_PARAMS.with(|m| m.borrow().get(&name_lc).cloned());
+        let specs = FN_PARAMS.with(|m| {
+            let m = m.borrow();
+            m.get(&name_lc).cloned().or_else(|| {
+                fallback.as_ref().and_then(|f| m.get(&f.to_ascii_lowercase()).cloned())
+            })
+        });
         let Some(specs) = specs else {
             return Err(Thrown::unsupported(
                 "named arguments",
@@ -2812,9 +3104,10 @@ impl ProtoBuilder {
         let Some(last) = last else {
             // No args at all — just a plain zero-arg call.
             let name = self.intern_name(name_bytes);
+            let fb = self.intern_fallback(fallback);
             let base = self.alloc_temps(1);
             let dst = self.alloc_temp();
-            self.emit(Instr::Call { dst, name, base, argc: 0 });
+            self.emit(Instr::Call { dst, name, base, argc: 0, fallback: fb });
             return Ok(dst);
         };
         let argc = (last + 1) as u16;
@@ -2850,8 +3143,9 @@ impl ProtoBuilder {
             self.emit(Instr::Mov { dst: base + i as Reg, src: r });
         }
         let name = self.intern_name(name_bytes);
+        let fb = self.intern_fallback(fallback);
         let dst = self.alloc_temp();
-        self.emit(Instr::Call { dst, name, base, argc });
+        self.emit(Instr::Call { dst, name, base, argc, fallback: fb });
         Ok(dst)
     }
 
@@ -2859,33 +3153,44 @@ impl ProtoBuilder {
         &mut self,
         fc: &rhp_frontend::cst::FunctionCall,
     ) -> Result<Reg, Thrown> {
-        let name_bytes = match fc.function {
-            Expression::Identifier(id) => identifier_name(id).to_vec(),
-            Expression::ConstantAccess(ca) => identifier_name(&ca.name).to_vec(),
+        let callee_id: &Identifier = match fc.function {
+            Expression::Identifier(id) => id,
+            Expression::ConstantAccess(ca) => &ca.name,
             // `$f(...)`, `($expr)(...)`, `$arr[0](...)`: the callee is a runtime
             // value (closure / string name / `[obj, method]` / __invoke object).
             _ => return self.compile_dynamic_call(fc),
         };
+        // Resolve the (possibly namespaced) callee to a primary name + optional
+        // global fallback (PHP's fall-back-to-global for unqualified calls).
+        let (name_bytes, fallback) = resolve_name(callee_id, NameKind::Func);
 
         // Spread call `foo(...$args)`: marshal args into an array, emit CallV.
         if has_spread(&fc.argument_list) {
             let args = self.build_args_array(Some(&fc.argument_list))?;
             let name = self.intern_name(&name_bytes);
+            let fb = self.intern_fallback(&fallback);
             let dst = self.alloc_temp();
-            self.emit(Instr::CallV { dst, name, args });
+            self.emit(Instr::CallV { dst, name, args, fallback: fb });
             return Ok(dst);
         }
 
         // Named arguments: reorder to positional using the callee's parameter
         // names (statically-known user functions only).
         if has_named(&fc.argument_list) {
-            return self.compile_named_call(&name_bytes, &fc.argument_list);
+            return self.compile_named_call(&name_bytes, &fallback, &fc.argument_list);
         }
 
         // Per-parameter by-ref flags of the (statically-known) callee: a user
-        // function's recorded signature, or a known by-ref builtin.
+        // function's recorded signature (tried under the namespaced name, then the
+        // global fallback), or a known by-ref builtin (always global).
         let name_lc = name_bytes.to_ascii_lowercase();
-        let sig = self.sigs.get(&name_lc).cloned().or_else(|| builtin_by_ref(&name_lc));
+        let global_lc = fallback.as_ref().map(|f| f.to_ascii_lowercase());
+        let sig = self
+            .sigs
+            .get(&name_lc)
+            .cloned()
+            .or_else(|| global_lc.as_ref().and_then(|g| self.sigs.get(g).cloned()))
+            .or_else(|| builtin_by_ref(global_lc.as_deref().unwrap_or(&name_lc)));
 
         // Compile each arg into a value reg, or (for a by-ref param) note the
         // variable's CV so it can be materialized as a reference.
@@ -2950,8 +3255,9 @@ impl ProtoBuilder {
             }
         }
         let name = self.intern_name(&name_bytes);
+        let fb = self.intern_fallback(&fallback);
         let dst = self.alloc_temp();
-        self.emit(Instr::Call { dst, name, base, argc });
+        self.emit(Instr::Call { dst, name, base, argc, fallback: fb });
         Ok(dst)
     }
 
@@ -3079,10 +3385,14 @@ impl ProtoBuilder {
         // Build the callable Value into `callee`.
         let callee = match pa {
             Pa::Function(f) => match f.function {
-                // Named function: the callable is its name string.
-                Expression::Identifier(id) => self.load_string_const(identifier_name(id)),
+                // Named function: the callable is its (resolved) name string.
+                Expression::Identifier(id) => {
+                    let n = self.resolve_callable_name(id);
+                    self.load_string_const(&n)
+                }
                 Expression::ConstantAccess(ca) => {
-                    self.load_string_const(identifier_name(&ca.name))
+                    let n = self.resolve_callable_name(&ca.name);
+                    self.load_string_const(&n)
                 }
                 // Dynamic `$f(...)`: wrap the existing callable value.
                 other => self.compile_expr(other)?,
@@ -3094,9 +3404,13 @@ impl ProtoBuilder {
             }
             Pa::StaticMethod(s) => {
                 let class = match s.class {
-                    Expression::Identifier(id) => self.load_string_const(identifier_name(id)),
+                    Expression::Identifier(id) => {
+                        let n = resolve_class_name(id);
+                        self.load_string_const(&n)
+                    }
                     Expression::ConstantAccess(ca) => {
-                        self.load_string_const(identifier_name(&ca.name))
+                        let n = resolve_class_name(&ca.name);
+                        self.load_string_const(&n)
                     }
                     other => self.compile_expr(other)?,
                 };
@@ -3372,7 +3686,9 @@ impl ProtoBuilder {
     /// Resolve the class part of `new`/`::`/`instanceof` to a `ClassRef`.
     fn class_ref(&mut self, expr: &Expression) -> Result<ClassRef, Thrown> {
         match expr {
-            Expression::Identifier(id) => Ok(ClassRef::Name(self.intern_name(identifier_name(id)))),
+            Expression::Identifier(id) => {
+                Ok(ClassRef::Name(self.intern_name(&resolve_class_name(id))))
+            }
             Expression::Self_(_) => Ok(ClassRef::SelfClass),
             Expression::Static(_) => Ok(ClassRef::StaticClass),
             Expression::Parent(_) => Ok(ClassRef::ParentClass),
@@ -3920,7 +4236,7 @@ fn fold_const(e: &Expression) -> Result<Value, Thrown> {
                 MagicConstant::Line(_) => Value::Int(line_of(mc.span().start.offset) as i64),
                 MagicConstant::File(_) => Value::str(src_file()),
                 MagicConstant::Directory(_) => Value::str(dirname(&src_file())),
-                MagicConstant::Namespace(_) => Value::str(Vec::new()),
+                MagicConstant::Namespace(_) => Value::str(cur_ns()),
                 _ => return Err(non_const_err()),
             }
         }

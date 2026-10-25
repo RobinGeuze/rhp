@@ -640,6 +640,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accdf3a98721154f135cf90f27815d8db5c7b0c898d79550b0f80775447847c3"
 
 [[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
+]
+
+[[package]]
 name = "md2"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -956,6 +966,7 @@ dependencies = [
  "getrandom 0.2.17",
  "gost94",
  "libc",
+ "md-5",
  "md2",
  "md4",
  "num-bigint",
@@ -967,6 +978,7 @@ dependencies = [
  "rhp-semantics",
  "rhp-values",
  "ripemd",
+ "sha1",
  "sha2",
  "sha3",
  "tiger",
@@ -1174,6 +1186,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "sha1"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest",
 ]
 
 [[package]]

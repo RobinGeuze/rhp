@@ -82,6 +82,75 @@ thread_local! {
     static LINE_STARTS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
     /// The file name reported in debug info / exception getFile().
     static SRC_FILE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// Whether the file being compiled declared `strict_types=1` (php's
+    /// caller-decides coercion rule); stamped on every proto built from it.
+    static STRICT_TYPES: RefCell<bool> = const { RefCell::new(false) };
+}
+
+/// Lower a mago type hint to the bytecode [`rhp_bytecode::TypeHint`] (resolving
+/// class names against the current namespace).
+fn type_hint(h: &Hint) -> rhp_bytecode::TypeHint {
+    let mut out = rhp_bytecode::TypeHint { nullable: false, intersection: false, kinds: Vec::new() };
+    collect_hint(h, &mut out);
+    out
+}
+
+fn collect_hint(h: &Hint, out: &mut rhp_bytecode::TypeHint) {
+    use rhp_bytecode::TypeKind as K;
+    match h {
+        Hint::Nullable(n) => {
+            out.nullable = true;
+            collect_hint(n.hint, out);
+        }
+        Hint::Parenthesized(p) => collect_hint(p.hint, out),
+        Hint::Union(u) => {
+            collect_hint(u.left, out);
+            collect_hint(u.right, out);
+        }
+        Hint::Intersection(i) => {
+            out.intersection = true;
+            collect_hint(i.left, out);
+            collect_hint(i.right, out);
+        }
+        Hint::Null(_) => out.nullable = true,
+        Hint::True(_) => out.kinds.push(K::True),
+        Hint::False(_) => out.kinds.push(K::False),
+        Hint::Array(_) => out.kinds.push(K::Array),
+        Hint::Callable(_) => out.kinds.push(K::Callable),
+        Hint::Static(_) => out.kinds.push(K::StaticType),
+        Hint::Self_(_) => out.kinds.push(K::SelfType),
+        Hint::Parent(_) => out.kinds.push(K::Parent),
+        Hint::Void(_) => out.kinds.push(K::Void),
+        Hint::Never(_) => out.kinds.push(K::Never),
+        Hint::Float(_) => out.kinds.push(K::Float),
+        Hint::Bool(_) => out.kinds.push(K::Bool),
+        Hint::Integer(_) => out.kinds.push(K::Int),
+        Hint::String(_) => out.kinds.push(K::String),
+        Hint::Object(_) => out.kinds.push(K::Object),
+        Hint::Mixed(_) => out.kinds.push(K::Mixed),
+        Hint::Iterable(_) => out.kinds.push(K::Iterable),
+        Hint::Identifier(id) => out.kinds.push(K::Named(PhpStr::from_bytes(resolve_class_name(id)))),
+    }
+}
+
+/// Whether the program's leading statement is `declare(strict_types=1)`.
+fn detect_strict_types(program: &AstProgram) -> bool {
+    for stmt in program.statements.iter() {
+        match stmt {
+            // skip the opening `<?php` / inline-html prelude
+            Statement::OpeningTag(_) | Statement::Inline(_) | Statement::Noop(_) => continue,
+            Statement::Declare(d) => {
+                for item in d.items.iter() {
+                    if item.name.value.eq_ignore_ascii_case(b"strict_types") {
+                        return matches!(fold_const(item.value), Ok(Value::Int(1)));
+                    }
+                }
+                return false;
+            }
+            _ => return false, // strict_types must be the first statement
+        }
+    }
+    false
 }
 
 // --- namespaces --------------------------------------------------------------
@@ -440,6 +509,7 @@ pub fn compile_with_source(
     // empty map, so set the real line starts after the prelude is built.
     LINE_STARTS.with(|ls| ls.borrow_mut().clear());
     SRC_FILE.with(|f| *f.borrow_mut() = file.as_bytes().to_vec());
+    STRICT_TYPES.with(|s| *s.borrow_mut() = detect_strict_types(program));
     let user_line_starts = build_line_starts(source);
     CLOSURES.with(|c| c.borrow_mut().clear());
     NS_CTX.with(|c| *c.borrow_mut() = Rc::new(NsContext::default()));
@@ -1167,6 +1237,14 @@ class DateTimeImmutable implements DateTimeInterface {
 "##;
 
 fn prelude_classes() -> Result<Vec<ClassProto>, Thrown> {
+    // Prelude / built-in classes are never strict-typed (coercive calls).
+    let saved_strict = STRICT_TYPES.with(|s| std::mem::replace(&mut *s.borrow_mut(), false));
+    let r = prelude_classes_inner();
+    STRICT_TYPES.with(|s| *s.borrow_mut() = saved_strict);
+    r
+}
+
+fn prelude_classes_inner() -> Result<Vec<ClassProto>, Thrown> {
     // The engine's core classes (PRELUDE) plus each extension module's own
     // PHP-source classes (GMP, Phar, …), which it owns alongside its functions.
     let src = format!("{PRELUDE}\n{}", rhp_builtins::module_prelude());
@@ -1283,6 +1361,7 @@ fn compile_method(
             by_ref: p.ampersand.is_some(),
             variadic: p.ellipsis.is_some(),
             default,
+            type_hint: p.hint.as_ref().map(type_hint),
         });
     }
     let num_params = params.len() as u16;
@@ -1322,6 +1401,7 @@ fn compile_method(
     proto.this_cv = if is_static { None } else { Some(0) };
     proto.is_static = is_static;
     proto.is_generator = body_stmts.iter().any(stmt_has_yield);
+    proto.return_type = m.return_type_hint.as_ref().map(|r| type_hint(&r.hint));
 
     let mp = MethodProto { name, proto: Rc::new(proto), visibility, is_static, is_abstract, is_final };
     Ok((mp, promoted))
@@ -1359,6 +1439,7 @@ fn compile_function(
             by_ref: p.ampersand.is_some(),
             variadic: p.ellipsis.is_some(),
             default,
+            type_hint: p.hint.as_ref().map(type_hint),
         });
     }
     let num_params = params.len() as u16;
@@ -1383,6 +1464,7 @@ fn compile_function(
     proto.num_params = num_params;
     proto.params = params;
     proto.is_generator = block_has_yield(&func.body.statements);
+    proto.return_type = func.return_type_hint.as_ref().map(|r| type_hint(&r.hint));
     Ok(proto)
 }
 
@@ -1483,6 +1565,7 @@ impl ProtoBuilder {
             .filter(|(_, n)| is_superglobal(n))
             .map(|(i, n)| (i as Reg, PhpStr::from_bytes(n.clone())))
             .collect();
+        proto.strict_types = STRICT_TYPES.with(|s| *s.borrow());
         proto
     }
 
@@ -3568,6 +3651,7 @@ impl ProtoBuilder {
             captures,
             ClosureBody::Arrow(af.expression),
             { use mago_span::HasSpan; af.span().start.offset },
+            af.return_type_hint.as_ref().map(|r| &r.hint),
         )
     }
 
@@ -3599,6 +3683,7 @@ impl ProtoBuilder {
             captures,
             ClosureBody::Block(&cl.body),
             { use mago_span::HasSpan; cl.span().start.offset },
+            cl.return_type_hint.as_ref().map(|r| &r.hint),
         )
     }
 
@@ -3612,6 +3697,7 @@ impl ProtoBuilder {
         captures: Vec<(Vec<u8>, bool)>,
         body: ClosureBody,
         closure_offset: u32,
+        ret_hint: Option<&Hint>,
     ) -> Result<Reg, Thrown> {
         let nc = captures.len() as u16;
 
@@ -3650,6 +3736,7 @@ impl ProtoBuilder {
                 by_ref: p.ampersand.is_some(),
                 variadic: p.ellipsis.is_some(),
                 default,
+                type_hint: p.hint.as_ref().map(type_hint),
             });
         }
         let num_params = params.len() as u16;
@@ -3683,6 +3770,7 @@ impl ProtoBuilder {
         proto.params = params;
         proto.num_captures = nc;
         proto.is_static = is_static;
+        proto.return_type = ret_hint.map(type_hint);
         if let ClosureBody::Block(b) = body {
             proto.is_generator = block_has_yield(&b.statements);
         }

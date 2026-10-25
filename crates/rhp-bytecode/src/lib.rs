@@ -276,6 +276,42 @@ pub struct ParamInfo {
     pub by_ref: bool,
     pub variadic: bool,
     pub default: Option<Default>,
+    /// Declared type (for `strict_types` enforcement / coercion); None = untyped.
+    pub type_hint: Option<TypeHint>,
+}
+
+/// A declared parameter / return type: a (possibly nullable) union or
+/// intersection of type kinds. A single plain type is one `kinds` element with
+/// `intersection = false`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypeHint {
+    pub nullable: bool,
+    pub intersection: bool,
+    pub kinds: Vec<TypeKind>,
+}
+
+/// One member of a declared type.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TypeKind {
+    Int,
+    Float,
+    String,
+    Bool,
+    Array,
+    Object,
+    Callable,
+    Iterable,
+    Mixed,
+    Void,
+    Never,
+    Null,
+    True,
+    False,
+    SelfType,
+    StaticType,
+    Parent,
+    /// A class / interface / enum name (resolved FQN, no leading backslash).
+    Named(PhpStr),
 }
 
 #[derive(Clone, Copy)]
@@ -364,6 +400,11 @@ pub struct FunctionProto {
     /// name; the VM binds each to the shared global cell at frame entry so they
     /// are visible in every scope without an explicit `global`.
     pub superglobals: Vec<(Reg, PhpStr)>,
+    /// Declared return type (for `strict_types` enforcement); None = untyped.
+    pub return_type: Option<TypeHint>,
+    /// `declare(strict_types=1)` in this proto's file: argument/return coercion is
+    /// disabled for calls made *from* this proto (php's caller-decides rule).
+    pub strict_types: bool,
 }
 
 impl FunctionProto {
@@ -388,6 +429,8 @@ impl FunctionProto {
             is_generator: false,
             closure_base: 0,
             superglobals: Vec::new(),
+            return_type: None,
+            strict_types: false,
         }
     }
 }

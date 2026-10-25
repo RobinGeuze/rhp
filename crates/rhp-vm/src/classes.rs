@@ -529,6 +529,8 @@ impl Vm {
         frame.argc = args.len();
         crate::bind_params(&callee, &args, &mut frame.regs)?;
         self.bind_superglobals(&mut frame);
+        let strict = self.caller_strict();
+        self.check_arg_types(&callee, &mut frame, strict, Some(method.defining_class))?;
         if let (Some(this_cv), Some(obj)) = (callee.this_cv, this) {
             frame.regs[this_cv as usize] = Value::Object(obj);
         }

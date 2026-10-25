@@ -964,7 +964,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "preg_match", fn_preg_match, 2, Some(5));
     put(m, "preg_match_all", fn_preg_match_all, 2, Some(5));
     put(m, "preg_replace", fn_preg_replace, 3, Some(5));
-    put(m, "preg_replace_callback", fn_preg_replace_callback, 3, Some(5));
+    put(m, "preg_replace_callback", fn_preg_replace_callback, 3, Some(6));
     put(m, "preg_split", fn_preg_split, 2, Some(4));
     put(m, "preg_quote", fn_preg_quote, 1, Some(2));
     put(m, "preg_grep", fn_preg_grep, 2, Some(3));

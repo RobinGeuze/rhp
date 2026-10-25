@@ -246,6 +246,44 @@ pub trait Host {
     fn stream_rewind(&mut self, _res: &Value) -> bool {
         false
     }
+
+    // --- reflection introspection --------------------------------------------
+    // Backing for the `Reflection*` classes. Return PHP `Value`s the prelude
+    // classes read; defaults are empty (hosts without a class model).
+
+    /// Class metadata for `ReflectionClass`: an assoc array (name, shortName,
+    /// namespaceName, isAbstract, isInterface, isInstantiable, isFinal, isEnum,
+    /// parent|false, interfaces[], methods[], constants{}, properties[]), or None
+    /// if the class does not exist.
+    fn reflect_meta(&self, _name: &[u8]) -> Option<Value> {
+        None
+    }
+    /// Whether class `name`'s ancestry includes `other` (incl. self) — for
+    /// `implementsInterface`/`isSubclassOf`/`instanceof`-by-name.
+    fn reflect_is_a(&self, _name: &[u8], _other: &[u8]) -> bool {
+        false
+    }
+    /// `new C(...$args)` with (or without) running the constructor.
+    fn reflect_new_instance(
+        &mut self,
+        _name: &[u8],
+        _args: Vec<Value>,
+        _run_ctor: bool,
+    ) -> Result<Value, Thrown> {
+        Err(Thrown::error("ReflectionException", "reflection is not available in this host"))
+    }
+    /// Set an object property bypassing visibility (`ReflectionProperty::setValue`).
+    fn reflect_set_prop(&mut self, _obj: &Value, _name: &[u8], _val: Value) -> bool {
+        false
+    }
+    /// Parameter descriptors for a class method (`ReflectionMethod::getParameters`).
+    fn reflect_method_params(&self, _class: &[u8], _method: &[u8]) -> Option<Value> {
+        None
+    }
+    /// Parameter descriptors for a callable (`ReflectionFunction::getParameters`).
+    fn reflect_callable_params(&self, _callable: &Value) -> Option<Value> {
+        None
+    }
 }
 
 /// A native builtin function over owned values.

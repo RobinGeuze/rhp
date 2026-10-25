@@ -180,6 +180,12 @@ pub enum Instr {
     CallStaticV { dst: Reg, class: ClassRef, name: NIdx, args: Reg },
     /// `$o->p` (value context).
     FetchProp { dst: Reg, obj: Reg, name: NIdx, cache: CacheIdx },
+    /// `$o->$p` / `$o->{expr}`: the property name is a runtime string in `name`.
+    FetchPropDyn { dst: Reg, obj: Reg, name: Reg },
+    /// `$o->$p = src`: dynamic-name property write.
+    StorePropDyn { obj: Reg, name: Reg, src: Reg },
+    /// `$o->$m(args)`: dynamic-name method call.
+    CallMethodDyn { dst: Reg, obj: Reg, name: Reg, base: Reg, argc: u16 },
     /// `C::$p` (value context).
     FetchStaticProp { dst: Reg, class: ClassRef, name: NIdx, cache: CacheIdx },
     /// `C::K` / `C::class`.
@@ -218,6 +224,12 @@ pub enum Instr {
     // -- references --
     /// `$dst =& $src`: promote `src`'s slot to a shared Ref; `dst` aliases it.
     BindRef { dst_cv: Reg, src_cv: Reg },
+    /// `$dst =& <lvalue>`: `src` already holds a `Ref` (from `MakeRefLval`); make
+    /// CV `dst_cv` alias it (raw copy, no deref).
+    RefAssign { dst_cv: Reg, src: Reg },
+    /// `<lvalue> =& <src>`: write the raw `Ref` in `src` (not deref'd) to the
+    /// current lvalue-cursor target, so that element/property becomes a reference.
+    AssignLvalRef { src: Reg },
     /// Materialize CV `cv` as a Ref and place `Value::Ref` in `dst` (by-ref arg).
     MakeRef { dst: Reg, cv: Reg },
 

@@ -16,6 +16,7 @@ pub mod hash;
 pub mod mbstring;
 pub mod password;
 pub mod phar;
+pub mod reflection;
 pub mod spl;
 pub mod zlib;
 
@@ -69,6 +70,13 @@ pub fn modules() -> Vec<ModuleDef> {
             functions: spl::register,
             constants: no_constants,
             prelude_php: "",
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "reflection",
+            functions: reflection::register,
+            constants: no_constants,
+            prelude_php: reflection::PRELUDE_PHP,
             wrappers: no_wrappers,
         },
         ModuleDef {

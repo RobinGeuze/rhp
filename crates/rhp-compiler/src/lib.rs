@@ -28,6 +28,13 @@ use rhp_frontend::cst::{
 };
 use rhp_values::{ClassFlags, ClassKind, Visibility};
 
+/// A compiled member selector: a static interned name, or a runtime name in a
+/// register (dynamic `$o->$x` / `$o->{expr}`).
+enum Sel {
+    Static(NIdx),
+    Dyn(Reg),
+}
+
 /// A step in an lvalue path (compiler-side; key regs are pre-evaluated).
 enum CursorStep {
     Key(Reg),
@@ -868,6 +875,8 @@ interface BackedEnum extends UnitEnum {}
 interface Traversable {}
 interface Iterator extends Traversable {}
 interface IteratorAggregate extends Traversable {}
+interface JsonSerializable {}
+interface Serializable {}
 interface ArrayAccess {}
 interface Countable {}
 final class Generator implements Iterator {}
@@ -2291,15 +2300,31 @@ impl ProtoBuilder {
                     "only a simple `&$v` loop variable is supported",
                 ));
             };
-            // The source must be a variable so its elements can be referenced.
-            let Expression::Variable(Variable::Direct(sd)) = fe.expression else {
-                return Err(Thrown::error(
-                    "Error",
-                    "Cannot create references to elements of a temporary array expression",
-                ));
-            };
-            let arr_cv = self.cv(strip_dollar(sd.name));
             let val_cv = self.cv(strip_dollar(d.name));
+            // The source must be assignable so its elements can be referenced: a
+            // simple variable uses its slot directly; a property / array-element /
+            // static-property is promoted to a reference held in a temp (the VM's
+            // `FeFetchRef` derefs an `arr_cv` that holds a `Ref`).
+            let arr_cv = match fe.expression {
+                Expression::Variable(Variable::Direct(sd)) => self.cv(strip_dollar(sd.name)),
+                Expression::ArrayAccess(_)
+                | Expression::ArrayAppend(_)
+                | Expression::Access(Access::Property(_))
+                | Expression::Access(Access::StaticProperty(_)) => {
+                    let mut steps = Vec::new();
+                    let root = self.collect_lvalue_steps(fe.expression, &mut steps)?;
+                    self.emit_cursor(root, &steps);
+                    let r = self.alloc_temp();
+                    self.emit(Instr::MakeRefLval { dst: r });
+                    r
+                }
+                _ => {
+                    return Err(Thrown::error(
+                        "Error",
+                        "Cannot create references to elements of a temporary array expression",
+                    ))
+                }
+            };
             let pos_reg = self.alloc_temp();
             let saved_floor = self.temp_floor;
             self.temp_floor = self.next_temp;
@@ -3881,6 +3906,50 @@ impl ProtoBuilder {
         }
     }
 
+    /// Produce a register holding a `Ref` to a reference-assignment source: a
+    /// simple variable's slot, or a property / array-element / static-prop lvalue.
+    fn compile_ref_source(&mut self, src: &Expression) -> Result<Reg, Thrown> {
+        match src {
+            Expression::Variable(Variable::Direct(v)) => {
+                let cv = self.cv(strip_dollar(v.name));
+                let r = self.alloc_temp();
+                self.emit(Instr::MakeRef { dst: r, cv });
+                Ok(r)
+            }
+            Expression::ArrayAccess(_)
+            | Expression::ArrayAppend(_)
+            | Expression::Access(Access::Property(_))
+            | Expression::Access(Access::StaticProperty(_)) => {
+                let mut steps = Vec::new();
+                let root = self.collect_lvalue_steps(src, &mut steps)?;
+                self.emit_cursor(root, &steps);
+                let r = self.alloc_temp();
+                self.emit(Instr::MakeRefLval { dst: r });
+                Ok(r)
+            }
+            _ => Err(Thrown::unsupported("reference binding source", "must be a variable or lvalue")),
+        }
+    }
+
+    /// A member selector as either a static interned name or a runtime name
+    /// register (`$o->$x` / `$o->{expr}`).
+    fn compile_selector(
+        &mut self,
+        sel: &rhp_frontend::cst::ClassLikeMemberSelector,
+    ) -> Result<Sel, Thrown> {
+        match sel {
+            ClassLikeMemberSelector::Identifier(li) => Ok(Sel::Static(self.intern_name(li.value))),
+            ClassLikeMemberSelector::Variable(Variable::Direct(d)) => {
+                Ok(Sel::Dyn(self.cv(strip_dollar(d.name))))
+            }
+            ClassLikeMemberSelector::Expression(e) => Ok(Sel::Dyn(self.compile_expr(e.expression)?)),
+            _ => Err(Thrown::unsupported(
+                "dynamic member name",
+                "variable-variable member names deferred",
+            )),
+        }
+    }
+
     fn static_prop_name(&mut self, v: &Variable) -> Result<NIdx, Thrown> {
         match v {
             Variable::Direct(d) => Ok(self.intern_name(strip_dollar(d.name))),
@@ -3995,10 +4064,14 @@ impl ProtoBuilder {
         match acc {
             Access::Property(pa) => {
                 let obj = self.compile_expr(pa.object)?;
-                let name = self.selector_name(&pa.property)?;
                 let dst = self.alloc_temp();
-                let cache = self.alloc_cache();
-                self.emit(Instr::FetchProp { dst, obj, name, cache });
+                match self.compile_selector(&pa.property)? {
+                    Sel::Static(name) => {
+                        let cache = self.alloc_cache();
+                        self.emit(Instr::FetchProp { dst, obj, name, cache });
+                    }
+                    Sel::Dyn(name) => self.emit(Instr::FetchPropDyn { dst, obj, name }),
+                }
                 Ok(dst)
             }
             Access::NullSafeProperty(npa) => {
@@ -4069,19 +4142,34 @@ impl ProtoBuilder {
     ) -> Result<Reg, Thrown> {
         let obj = self.compile_expr(object)?;
         if !null_safe {
-            let name = self.selector_name(selector)?;
-            if has_spread(args) {
-                let args = self.build_args_array(Some(args))?;
-                let dst = self.alloc_temp();
-                self.emit(Instr::CallMethodV { dst, obj, name, args });
-                return Ok(dst);
+            match self.compile_selector(selector)? {
+                Sel::Static(name) => {
+                    if has_spread(args) {
+                        let args = self.build_args_array(Some(args))?;
+                        let dst = self.alloc_temp();
+                        self.emit(Instr::CallMethodV { dst, obj, name, args });
+                        return Ok(dst);
+                    }
+                    let mask = self.name_ref_mask(name);
+                    let (base, argc) = self.compile_arg_window(Some(args), &mask)?;
+                    let dst = self.alloc_temp();
+                    let cache = self.alloc_cache();
+                    self.emit(Instr::CallMethod { dst, obj, name, base, argc, cache });
+                    return Ok(dst);
+                }
+                Sel::Dyn(name) => {
+                    if has_spread(args) {
+                        return Err(Thrown::unsupported(
+                            "dynamic method call with argument spread",
+                            "deferred",
+                        ));
+                    }
+                    let (base, argc) = self.compile_arg_window(Some(args), &[])?;
+                    let dst = self.alloc_temp();
+                    self.emit(Instr::CallMethodDyn { dst, obj, name, base, argc });
+                    return Ok(dst);
+                }
             }
-            let mask = self.name_ref_mask(name);
-            let (base, argc) = self.compile_arg_window(Some(args), &mask)?;
-            let dst = self.alloc_temp();
-            let cache = self.alloc_cache();
-            self.emit(Instr::CallMethod { dst, obj, name, base, argc, cache });
-            return Ok(dst);
         }
         // `$o?->m(...)`: if $o is null, the whole call is null and args are not
         // evaluated (the guard jumps over both the arg marshalling and the call).
@@ -4147,18 +4235,45 @@ impl ProtoBuilder {
         // Reference assignment `$b =& $a` — rhs is `&<lvalue>`.
         if let (AssignmentOperator::Assign(_), Expression::UnaryPrefix(u)) = (&a.operator, a.rhs) {
             if matches!(u.operator, UnaryPrefixOperator::Reference(_)) {
-                let (Expression::Variable(Variable::Direct(dst)), Expression::Variable(Variable::Direct(src))) =
-                    (a.lhs, u.operand)
-                else {
-                    return Err(Thrown::unsupported(
-                        "reference binding target",
-                        "only `$x =& $y` between simple variables for now",
-                    ));
-                };
-                let dst_cv = self.cv(strip_dollar(dst.name));
-                let src_cv = self.cv(strip_dollar(src.name));
-                self.emit(Instr::BindRef { dst_cv, src_cv });
-                return Ok(dst_cv);
+                // `$dst =& $src` between simple variables: alias the slots.
+                if let (
+                    Expression::Variable(Variable::Direct(dst)),
+                    Expression::Variable(Variable::Direct(src)),
+                ) = (a.lhs, u.operand)
+                {
+                    let dst_cv = self.cv(strip_dollar(dst.name));
+                    let src_cv = self.cv(strip_dollar(src.name));
+                    self.emit(Instr::BindRef { dst_cv, src_cv });
+                    return Ok(dst_cv);
+                }
+                // `$dst =& <lvalue>` (property / array element / static prop): take
+                // a reference to the source lvalue and alias the destination var.
+                if let Expression::Variable(Variable::Direct(dst)) = a.lhs {
+                    let r = self.compile_ref_source(u.operand)?;
+                    let dst_cv = self.cv(strip_dollar(dst.name));
+                    self.emit(Instr::RefAssign { dst_cv, src: r });
+                    return Ok(dst_cv);
+                }
+                // `<lvalue> =& <src>`: make the destination element/property a
+                // reference to the source.
+                if matches!(
+                    a.lhs,
+                    Expression::ArrayAccess(_)
+                        | Expression::ArrayAppend(_)
+                        | Expression::Access(Access::Property(_))
+                        | Expression::Access(Access::StaticProperty(_))
+                ) {
+                    let r = self.compile_ref_source(u.operand)?;
+                    let mut steps = Vec::new();
+                    let root = self.collect_lvalue_steps(a.lhs, &mut steps)?;
+                    self.emit_cursor(root, &steps);
+                    self.emit(Instr::AssignLvalRef { src: r });
+                    return Ok(r);
+                }
+                return Err(Thrown::unsupported(
+                    "reference binding target",
+                    "unsupported `=&` source/target form",
+                ));
             }
         }
 
@@ -4172,6 +4287,20 @@ impl ProtoBuilder {
                 let name = self.intern_name(li.value);
                 let rhs = self.compile_expr(a.rhs)?;
                 self.emit(Instr::StoreProp { obj, name, src: rhs });
+                return Ok(rhs);
+            }
+            // Dynamic `$o->$x = v` / `$o->{expr} = v`.
+            if matches!(
+                &pa.property,
+                ClassLikeMemberSelector::Variable(_) | ClassLikeMemberSelector::Expression(_)
+            ) {
+                let obj = self.compile_expr(pa.object)?;
+                let name = match self.compile_selector(&pa.property)? {
+                    Sel::Dyn(r) => r,
+                    Sel::Static(_) => unreachable!(),
+                };
+                let rhs = self.compile_expr(a.rhs)?;
+                self.emit(Instr::StorePropDyn { obj, name, src: rhs });
                 return Ok(rhs);
             }
         }

@@ -339,6 +339,121 @@ impl Host for Vm {
         true
     }
 
+    // --- reflection -----------------------------------------------------------
+
+    fn reflect_meta(&self, name: &[u8]) -> Option<Value> {
+        let cid = self.resolve_class_by_name(name).ok()?;
+        let entry = &self.classes[cid as usize];
+        let full = entry.name.as_bytes().to_vec();
+        let (short, ns) = match full.iter().rposition(|&b| b == b'\\') {
+            Some(p) => (full[p + 1..].to_vec(), full[..p].to_vec()),
+            None => (full.clone(), Vec::new()),
+        };
+        let mut a = PhpArray::new();
+        a.insert(ArrayKey::from_bytes(b"name"), Value::str(full.clone()));
+        a.insert(ArrayKey::from_bytes(b"shortName"), Value::str(short));
+        a.insert(ArrayKey::from_bytes(b"namespaceName"), Value::str(ns));
+        a.insert(ArrayKey::from_bytes(b"isAbstract"), Value::Bool(entry.flags.is_abstract));
+        a.insert(ArrayKey::from_bytes(b"isInterface"), Value::Bool(entry.kind == ClassKind::Interface));
+        a.insert(ArrayKey::from_bytes(b"isEnum"), Value::Bool(entry.kind == ClassKind::Enum));
+        a.insert(ArrayKey::from_bytes(b"isFinal"), Value::Bool(entry.flags.is_final));
+        a.insert(
+            ArrayKey::from_bytes(b"isInstantiable"),
+            Value::Bool(entry.kind == ClassKind::Class && !entry.flags.is_abstract),
+        );
+        a.insert(
+            ArrayKey::from_bytes(b"parent"),
+            match entry.parent {
+                Some(p) => Value::str(self.classes[p as usize].name.as_bytes().to_vec()),
+                None => Value::Bool(false),
+            },
+        );
+        let mut ifaces = PhpArray::new();
+        for &anc in &entry.ancestors {
+            if anc != cid && self.classes[anc as usize].kind == ClassKind::Interface {
+                ifaces.push(Value::str(self.classes[anc as usize].name.as_bytes().to_vec()));
+            }
+        }
+        a.insert(ArrayKey::from_bytes(b"interfaces"), Value::Array(ifaces));
+        let mut methods = PhpArray::new();
+        for m in entry.methods.values() {
+            methods.push(Value::str(m.proto.name.as_bytes().to_vec()));
+        }
+        a.insert(ArrayKey::from_bytes(b"methods"), Value::Array(methods));
+        let mut consts = PhpArray::new();
+        for (k, c) in &entry.constants {
+            consts.insert(ArrayKey::from_bytes(k), c.value.clone());
+        }
+        a.insert(ArrayKey::from_bytes(b"constants"), Value::Array(consts));
+        let mut props = PhpArray::new();
+        for k in entry.props.keys() {
+            props.push(Value::str(k.as_bytes().to_vec()));
+        }
+        a.insert(ArrayKey::from_bytes(b"properties"), Value::Array(props));
+        Some(Value::Array(a))
+    }
+
+    fn reflect_is_a(&self, name: &[u8], other: &[u8]) -> bool {
+        match (self.resolve_class_by_name(name), self.resolve_class_by_name(other)) {
+            (Ok(a), Ok(b)) => self.classes[a as usize].ancestors.contains(&b),
+            _ => false,
+        }
+    }
+
+    fn reflect_new_instance(
+        &mut self,
+        name: &[u8],
+        args: Vec<Value>,
+        run_ctor: bool,
+    ) -> Result<Value, Thrown> {
+        let cid = self.resolve_class_by_name(name)?;
+        let entry = &self.classes[cid as usize];
+        if entry.kind != ClassKind::Class || entry.flags.is_abstract {
+            return Err(Thrown::error(
+                "Error",
+                format!("Cannot instantiate {} {}", kind_word(entry.kind), String::from_utf8_lossy(&entry.name.as_bytes().to_vec())),
+            ));
+        }
+        let obj = self.new_object(cid);
+        let objval = Value::Object(obj);
+        if run_ctor && self.lookup_method(cid, b"__construct").is_some() {
+            let mut pair = PhpArray::new();
+            pair.push(objval.clone());
+            pair.push(Value::str("__construct"));
+            self.call_callable_value(&Value::Array(pair), args)?;
+        }
+        Ok(objval)
+    }
+
+    fn reflect_set_prop(&mut self, obj: &Value, name: &[u8], val: Value) -> bool {
+        if let Value::Object(h) = deref(obj) {
+            h.borrow_mut().properties.insert(PhpStr::from_bytes(name.to_vec()), val);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn reflect_method_params(&self, class: &[u8], method: &[u8]) -> Option<Value> {
+        let cid = self.resolve_class_by_name(class).ok()?;
+        let m = self.lookup_method(cid, method)?;
+        Some(self.params_to_value(&m.proto))
+    }
+
+    fn reflect_callable_params(&self, callable: &Value) -> Option<Value> {
+        let proto = match deref(callable) {
+            Value::Closure(cd) if cd.wrapped.is_none() => {
+                self.closures.get(cd.fnidx as usize)?.clone()
+            }
+            Value::Str(s) => {
+                let i = *self.fn_names.get(&s.as_bytes().to_ascii_lowercase())?;
+                self.functions[i].clone()
+            }
+            _ => return None,
+        };
+        Some(self.params_to_value(&proto))
+    }
+
     fn call_callable(&mut self, callable: &Value, args: &[Value]) -> Result<Value, Thrown> {
         self.call_callable_value(callable, args.to_vec())
     }
@@ -672,6 +787,158 @@ impl Vm {
     /// Whether `v` is an instance of the named class/interface (or a Closure for
     /// the `Closure` type). Unresolvable target class → lenient `true` (the class
     /// may be autoloadable; we don't reject on a name we can't see).
+    /// Read property `pname` off `o` (visibility-checked, `__get` fallback).
+    fn prop_fetch(&mut self, top: usize, o: Value, pname: PhpStr) -> Result<Value, Thrown> {
+        Ok(match o {
+            Value::Object(h) => {
+                let cls = h.borrow().class;
+                if let Some(pe) = self.class(cls).props.get(&pname) {
+                    let (vis, decl) = (pe.visibility, pe.declaring_class);
+                    if !self.check_access(self.stack[top].defining_class, decl, vis) {
+                        return Err(self.access_err("property", decl, pname.as_bytes(), vis));
+                    }
+                }
+                match h.borrow().properties.get(&pname).cloned() {
+                    Some(v) => v,
+                    None => match self.lookup_method(cls, b"__get") {
+                        Some(getter) => {
+                            let arg = Value::str(pname.as_bytes().to_vec());
+                            self.call_sync(&getter, Some(h.clone()), cls, vec![arg])?
+                        }
+                        None => Value::Null,
+                    },
+                }
+            }
+            _ => Value::Null,
+        })
+    }
+
+    /// Write `val` to property `pname` of `o` (visibility-checked, `__set` fallback).
+    fn prop_store(&mut self, top: usize, o: Value, pname: PhpStr, val: Value) -> Result<(), Thrown> {
+        if let Value::Object(h) = o {
+            let cls = h.borrow().class;
+            let declared =
+                self.class(cls).props.get(&pname).map(|pe| (pe.visibility, pe.declaring_class));
+            let accessible = declared.map_or(true, |(vis, decl)| {
+                self.check_access(self.stack[top].defining_class, decl, vis)
+            });
+            if declared.is_none() || !accessible {
+                if let Some(setter) = self.lookup_method(cls, b"__set") {
+                    let nm = Value::str(pname.as_bytes().to_vec());
+                    self.call_sync(&setter, Some(h), cls, vec![nm, val])?;
+                    return Ok(());
+                }
+                if !accessible {
+                    let (vis, decl) = declared.unwrap();
+                    return Err(self.access_err("property", decl, pname.as_bytes(), vis));
+                }
+            }
+            let existing_ref = match h.borrow().properties.get(&pname) {
+                Some(Value::Ref(rc)) => Some(rc.clone()),
+                _ => None,
+            };
+            match existing_ref {
+                Some(rc) => *rc.borrow_mut() = val,
+                None => {
+                    h.borrow_mut().properties.insert(pname, val);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Dispatch a method call on `h` by name (generator methods, user method with
+    /// visibility check, `__call` fallback, else errors). Shared by `CallMethod`
+    /// and `CallMethodDyn`.
+    fn invoke_method(
+        &mut self,
+        top: usize,
+        h: ObjectHandle,
+        cls: ClassId,
+        mname: Vec<u8>,
+        dst: Reg,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        let gid = h.borrow().id;
+        if self.generators.contains_key(&gid) {
+            let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+            if let Some(r) = self.generator_method(gid, &mname.to_ascii_lowercase(), &args) {
+                let r = r?;
+                self.reg_set(top, dst, r);
+                return Ok(());
+            }
+        }
+        let found = self.lookup_method(cls, &mname);
+        let accessible = found.as_ref().is_some_and(|m| {
+            self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility)
+        });
+        if let (Some(m), true) = (&found, accessible) {
+            let m = m.clone();
+            self.enter_method(top, &m, Some(h.clone()), cls, dst, base, argc)?;
+        } else if let Some(magic) = self.lookup_method(cls, b"__call") {
+            let mut arr = rhp_values::PhpArray::new();
+            for i in 0..argc {
+                arr.push(self.reg_get(top, base + i));
+            }
+            let args = vec![Value::str(mname.clone()), Value::Array(arr)];
+            let r = self.call_sync(&magic, Some(h.clone()), cls, args)?;
+            self.reg_set(top, dst, r);
+        } else if let Some(m) = found {
+            return Err(self.access_err("method", m.defining_class, &mname, m.visibility));
+        } else {
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "Call to undefined method {}::{}()",
+                    String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                    String::from_utf8_lossy(&mname)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Build the parameter-descriptor array `ReflectionParameter` reads from.
+    fn params_to_value(&self, proto: &FunctionProto) -> Value {
+        let mut arr = PhpArray::new();
+        for p in &proto.params {
+            let mut d = PhpArray::new();
+            d.insert(
+                ArrayKey::from_bytes(b"name"),
+                Value::str(proto.names[p.name as usize].as_bytes().to_vec()),
+            );
+            d.insert(ArrayKey::from_bytes(b"optional"), Value::Bool(p.default.is_some() || p.variadic));
+            d.insert(ArrayKey::from_bytes(b"variadic"), Value::Bool(p.variadic));
+            d.insert(ArrayKey::from_bytes(b"byref"), Value::Bool(p.by_ref));
+            let (has_def, def) = match &p.default {
+                Some(rhp_bytecode::Default::Const(k)) => (true, proto.consts[*k as usize].clone()),
+                Some(rhp_bytecode::Default::Init(_)) => (true, Value::Null),
+                None => (false, Value::Null),
+            };
+            d.insert(ArrayKey::from_bytes(b"hasDefault"), Value::Bool(has_def));
+            d.insert(ArrayKey::from_bytes(b"default"), def);
+            match &p.type_hint {
+                Some(ty) => {
+                    let name = type_string(ty);
+                    let name = name.strip_prefix('?').unwrap_or(&name).to_string();
+                    d.insert(ArrayKey::from_bytes(b"hasType"), Value::Bool(true));
+                    d.insert(ArrayKey::from_bytes(b"type"), Value::str(name.into_bytes()));
+                    d.insert(ArrayKey::from_bytes(b"typeNullable"), Value::Bool(ty.nullable));
+                    d.insert(ArrayKey::from_bytes(b"typeBuiltin"), Value::Bool(is_builtin_type(ty)));
+                }
+                None => {
+                    d.insert(ArrayKey::from_bytes(b"hasType"), Value::Bool(false));
+                    d.insert(ArrayKey::from_bytes(b"type"), Value::Null);
+                    d.insert(ArrayKey::from_bytes(b"typeNullable"), Value::Bool(false));
+                    d.insert(ArrayKey::from_bytes(b"typeBuiltin"), Value::Bool(false));
+                }
+            }
+            arr.push(Value::Array(d));
+        }
+        Value::Array(arr)
+    }
+
     fn value_instanceof(&self, v: &Value, name: &[u8]) -> bool {
         match v {
             Value::Object(h) => match self.resolve_class_by_name(name) {
@@ -1444,6 +1711,13 @@ impl Vm {
                     let steps = std::mem::take(&mut self.cursor_steps);
                     self.cursor_write(top, &steps, v)?;
                 }
+                Instr::AssignLvalRef { src } => {
+                    // Raw (non-deref) value: `src` holds a `Ref`, so the cursor
+                    // target becomes a reference to the same cell.
+                    let v = self.stack[top].regs[src as usize].clone();
+                    let steps = std::mem::take(&mut self.cursor_steps);
+                    self.cursor_write(top, &steps, v)?;
+                }
                 Instr::MakeRefLval { dst } => {
                     let steps = std::mem::take(&mut self.cursor_steps);
                     let cell = match &self.cursor_root {
@@ -1709,65 +1983,42 @@ impl Vm {
                 Instr::FetchProp { dst, obj, name, .. } => {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
-                    let v = match o {
-                        Value::Object(h) => {
-                            let cls = h.borrow().class;
-                            if let Some(pe) = self.class(cls).props.get(&pname) {
-                                let (vis, decl) = (pe.visibility, pe.declaring_class);
-                                if !self.check_access(self.stack[top].defining_class, decl, vis) {
-                                    return Err(self.access_err("property", decl, pname.as_bytes(), vis));
-                                }
-                            }
-                            match h.borrow().properties.get(&pname).cloned() {
-                                Some(v) => v,
-                                // Undefined property: __get fallback, else Null.
-                                None => match self.lookup_method(cls, b"__get") {
-                                    Some(getter) => {
-                                        let arg = Value::str(pname.as_bytes().to_vec());
-                                        self.call_sync(&getter, Some(h.clone()), cls, vec![arg])?
-                                    }
-                                    None => Value::Null,
-                                },
-                            }
-                        }
-                        _ => Value::Null, // php warns "property on <type>"
-                    };
+                    let v = self.prop_fetch(top, o, pname)?;
                     self.reg_set(top, dst, v);
+                }
+                Instr::FetchPropDyn { dst, obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let v = self.prop_fetch(top, o, pname)?;
+                    self.reg_set(top, dst, v);
+                }
+                Instr::StorePropDyn { obj, name, src } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let val = self.reg_get(top, src);
+                    self.prop_store(top, o, pname, val)?;
+                }
+                Instr::CallMethodDyn { dst, obj, name, base, argc } => {
+                    let o = self.reg_get(top, obj);
+                    let mname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let Value::Object(h) = o else {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Call to a member function {}() on {}",
+                                String::from_utf8_lossy(&mname),
+                                type_lc(&o)
+                            ),
+                        ));
+                    };
+                    let cls = h.borrow().class;
+                    self.invoke_method(top, h, cls, mname, dst, base, argc)?;
                 }
                 Instr::StoreProp { obj, name, src } => {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let val = self.reg_get(top, src);
-                    if let Value::Object(h) = o {
-                        let cls = h.borrow().class;
-                        let declared = self.class(cls).props.get(&pname).map(|pe| (pe.visibility, pe.declaring_class));
-                        let accessible = declared.map_or(true, |(vis, decl)| {
-                            self.check_access(self.stack[top].defining_class, decl, vis)
-                        });
-                        if declared.is_none() || !accessible {
-                            // Undefined or inaccessible: route to __set if present.
-                            if let Some(setter) = self.lookup_method(cls, b"__set") {
-                                let nm = Value::str(pname.as_bytes().to_vec());
-                                self.call_sync(&setter, Some(h), cls, vec![nm, val])?;
-                                continue;
-                            }
-                            if !accessible {
-                                let (vis, decl) = declared.unwrap();
-                                return Err(self.access_err("property", decl, pname.as_bytes(), vis));
-                            }
-                        }
-                        // Direct write, honouring an existing by-ref property slot.
-                        let existing_ref = match h.borrow().properties.get(&pname) {
-                            Some(Value::Ref(rc)) => Some(rc.clone()),
-                            _ => None,
-                        };
-                        match existing_ref {
-                            Some(rc) => *rc.borrow_mut() = val,
-                            None => {
-                                h.borrow_mut().properties.insert(pname, val);
-                            }
-                        }
-                    }
+                    self.prop_store(top, o, pname, val)?;
                 }
                 Instr::IssetProp { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
@@ -1855,56 +2106,19 @@ impl Vm {
                 }
                 Instr::CallMethod { dst, obj, name, base, argc, .. } => {
                     let o = self.reg_get(top, obj);
+                    let mname = proto.names[name as usize].as_bytes().to_vec();
                     let Value::Object(h) = o else {
                         return Err(Thrown::error(
                             "Error",
                             format!(
                                 "Call to a member function {}() on {}",
-                                String::from_utf8_lossy(proto.names[name as usize].as_bytes()),
+                                String::from_utf8_lossy(&mname),
                                 type_lc(&o)
                             ),
                         ));
                     };
                     let cls = h.borrow().class;
-                    let mname = proto.names[name as usize].as_bytes().to_vec();
-                    // Built-in Generator methods (current/next/send/valid/…).
-                    let gid = h.borrow().id;
-                    if self.generators.contains_key(&gid) {
-                        let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
-                        if let Some(r) = self.generator_method(gid, &mname.to_ascii_lowercase(), &args) {
-                            let r = r?;
-                            self.reg_set(top, dst, r);
-                            continue;
-                        }
-                    }
-                    let found = self.lookup_method(cls, &mname);
-                    let accessible = found.as_ref().is_some_and(|m| {
-                        self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility)
-                    });
-                    if let (Some(m), true) = (&found, accessible) {
-                        let m = m.clone();
-                        self.enter_method(top, &m, Some(h.clone()), cls, dst, base, argc)?;
-                    } else if let Some(magic) = self.lookup_method(cls, b"__call") {
-                        // Undefined or inaccessible method -> __call($name, $args).
-                        let mut arr = rhp_values::PhpArray::new();
-                        for i in 0..argc {
-                            arr.push(self.reg_get(top, base + i));
-                        }
-                        let args = vec![Value::str(mname.clone()), Value::Array(arr)];
-                        let r = self.call_sync(&magic, Some(h.clone()), cls, args)?;
-                        self.reg_set(top, dst, r);
-                    } else if let Some(m) = found {
-                        return Err(self.access_err("method", m.defining_class, &mname, m.visibility));
-                    } else {
-                        return Err(Thrown::error(
-                            "Error",
-                            format!(
-                                "Call to undefined method {}::{}()",
-                                String::from_utf8_lossy(self.class(cls).name.as_bytes()),
-                                String::from_utf8_lossy(&mname)
-                            ),
-                        ));
-                    }
+                    self.invoke_method(top, h, cls, mname, dst, base, argc)?;
                 }
                 Instr::CallStatic { dst, class, name, base, argc, .. } => {
                     let cls = self.resolve_class_autoload(top, class)?;
@@ -2017,6 +2231,11 @@ impl Vm {
                 Instr::BindRef { dst_cv, src_cv } => {
                     let rc = self.promote(top, src_cv);
                     self.stack[top].regs[dst_cv as usize] = Value::Ref(rc);
+                }
+                Instr::RefAssign { dst_cv, src } => {
+                    // `src` already holds a `Ref` (MakeRefLval); alias it raw.
+                    let v = self.stack[top].regs[src as usize].clone();
+                    self.stack[top].regs[dst_cv as usize] = v;
                 }
                 Instr::MakeRef { dst, cv } => {
                     let rc = self.promote(top, cv);
@@ -3064,6 +3283,22 @@ fn match_case_desc(v: &Value) -> String {
 }
 
 // --- array element read + lvalue path operations ---------------------------
+
+/// The word php uses in "Cannot instantiate {abstract class|interface|enum} X".
+fn kind_word(kind: ClassKind) -> &'static str {
+    match kind {
+        ClassKind::Interface => "interface",
+        ClassKind::Trait => "trait",
+        ClassKind::Enum => "enum",
+        ClassKind::Class => "abstract class",
+    }
+}
+
+/// Whether every member of a type is a built-in (non-class) type.
+fn is_builtin_type(ty: &rhp_bytecode::TypeHint) -> bool {
+    use rhp_bytecode::TypeKind as K;
+    ty.kinds.iter().all(|k| !matches!(k, K::Named(_) | K::SelfType | K::StaticType | K::Parent))
+}
 
 /// The lone scalar kind of a type (for coercive coercion), or None if there is
 /// not exactly one scalar member.

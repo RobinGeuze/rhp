@@ -19,6 +19,7 @@ pub mod password;
 pub mod phar;
 pub mod reflection;
 pub mod spl;
+pub mod zip;
 pub mod zlib;
 
 /// Every discrete extension, in registration order.
@@ -78,6 +79,13 @@ pub fn modules() -> Vec<ModuleDef> {
             functions: reflection::register,
             constants: no_constants,
             prelude_php: reflection::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "zip",
+            functions: zip::register,
+            constants: no_constants,
+            prelude_php: zip::PRELUDE_PHP,
             wrappers: no_wrappers,
         },
         ModuleDef {

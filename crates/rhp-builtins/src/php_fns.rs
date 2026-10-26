@@ -42,6 +42,7 @@ const LOADED_EXTS: &[&str] = &[
     "reflection",
     "iconv",
     "openssl",
+    "zip",
 ];
 
 fn fn_extension_loaded(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

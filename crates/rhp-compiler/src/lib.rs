@@ -561,9 +561,12 @@ pub fn compile_with_source(
 
     // Hoist top-level function + class declarations. Start the class list with
     // the built-in exception hierarchy (the "prelude").
-    let mut functions = Vec::new();
-    let mut classes = prelude_classes()?;
+    let (mut classes, mut functions) = {
+        let (c, f) = prelude_classes()?;
+        (c, f)
+    };
     let num_prelude_classes = classes.len();
+    let num_prelude_functions = functions.len();
     // From here on we compile user code, so install its line map.
     LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
     let mut user_constants: Vec<(PhpStr, Value)> = Vec::new();
@@ -624,6 +627,7 @@ pub fn compile_with_source(
         constants: user_constants,
         main_var_names,
         num_prelude_classes,
+        num_prelude_functions,
     })
 }
 
@@ -894,6 +898,8 @@ interface BackedEnum extends UnitEnum {}
 interface Traversable {}
 interface Iterator extends Traversable {}
 interface IteratorAggregate extends Traversable {}
+interface OuterIterator extends Iterator {}
+interface RecursiveIterator extends Iterator {}
 interface JsonSerializable {}
 interface Serializable {}
 interface ArrayAccess {}
@@ -1264,7 +1270,8 @@ class DateTimeImmutable implements DateTimeInterface {
 }
 "##;
 
-fn prelude_classes() -> Result<Vec<ClassProto>, Thrown> {
+#[allow(clippy::type_complexity)]
+fn prelude_classes() -> Result<(Vec<ClassProto>, Vec<Rc<FunctionProto>>), Thrown> {
     // Prelude / built-in classes are never strict-typed (coercive calls).
     let saved_strict = STRICT_TYPES.with(|s| std::mem::replace(&mut *s.borrow_mut(), false));
     let r = prelude_classes_inner();
@@ -1272,22 +1279,25 @@ fn prelude_classes() -> Result<Vec<ClassProto>, Thrown> {
     r
 }
 
-fn prelude_classes_inner() -> Result<Vec<ClassProto>, Thrown> {
+#[allow(clippy::type_complexity)]
+fn prelude_classes_inner() -> Result<(Vec<ClassProto>, Vec<Rc<FunctionProto>>), Thrown> {
     // The engine's core classes (PRELUDE) plus each extension module's own
-    // PHP-source classes (GMP, Phar, …), which it owns alongside its functions.
+    // PHP-source classes (GMP, Phar, …) and helper functions (iterator_*, …).
     let src = format!("{PRELUDE}\n{}", rhp_builtins::module_prelude());
     let arena = rhp_frontend::Arena::new();
     let parsed = arena.parse(b"<prelude>", src.as_bytes());
     let sigs = Rc::new(std::collections::HashMap::new());
-    let mut out = Vec::new();
+    let mut classes = Vec::new();
+    let mut functions = Vec::new();
     for stmt in parsed.program().statements.iter() {
         match stmt {
-            Statement::Class(c) => out.push(compile_class(c, &sigs)?),
-            Statement::Interface(i) => out.push(compile_interface(i, &sigs)?),
+            Statement::Class(c) => classes.push(compile_class(c, &sigs)?),
+            Statement::Interface(i) => classes.push(compile_interface(i, &sigs)?),
+            Statement::Function(f) => functions.push(Rc::new(compile_function(f, sigs.clone())?)),
             _ => {}
         }
     }
-    Ok(out)
+    Ok((classes, functions))
 }
 
 fn compile_interface(

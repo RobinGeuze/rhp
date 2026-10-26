@@ -517,6 +517,9 @@ pub struct Program {
     /// re-emitted per compile). An included file's prelude classes are skipped on
     /// merge; user classes past this count fatally redeclare if already defined.
     pub num_prelude_classes: usize,
+    /// How many leading entries of `functions` are prelude helper functions
+    /// (`iterator_*`, …), re-emitted per compile and skipped on include merge.
+    pub num_prelude_functions: usize,
 }
 
 // ---------------------------------------------------------------------------

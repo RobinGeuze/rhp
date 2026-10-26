@@ -1589,6 +1589,7 @@ impl ProtoBuilder {
         proto.caches = self.caches;
         proto.exception_table = self.exception_table;
         proto.debug.cv_names = (0..self.cv_map.len() as u32).collect();
+        proto.cv_var_names = self.cv_map.iter().map(|n| PhpStr::from_bytes(n.clone())).collect();
         proto.debug.lines = self.lines;
         proto.debug.file = SRC_FILE.with(|f| PhpStr::from_bytes(f.borrow().clone()));
         proto.superglobals = self
@@ -3202,15 +3203,11 @@ impl ProtoBuilder {
                 self.emit(Instr::Print { dst, src });
                 Ok(dst)
             }
-            Construct::Eval(_) => {
-                // eval is refused by design, but deferred to RUNTIME: a file that
-                // merely *contains* an eval() (down an unused branch) still
-                // compiles and loads; the error only fires if eval is executed.
-                self.emit_deferred_unsupported(
-                    "eval()",
-                    "executes a string as PHP code; refused by design",
-                );
-                Ok(self.alloc_temp())
+            Construct::Eval(e) => {
+                let src = self.compile_expr(e.value)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::Eval { dst, src });
+                Ok(dst)
             }
             Construct::Include(i) => self.compile_include(i.value, IncludeKind::Include),
             Construct::IncludeOnce(i) => self.compile_include(i.value, IncludeKind::IncludeOnce),

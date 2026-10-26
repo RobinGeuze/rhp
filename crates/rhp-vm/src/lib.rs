@@ -2174,6 +2174,10 @@ impl Vm {
                         String::from_utf8_lossy(&why).into_owned(),
                     ));
                 }
+                Instr::Eval { dst, src } => {
+                    let v = self.do_eval(top, src)?;
+                    self.reg_set(top, dst, v);
+                }
                 Instr::Throw { src } => {
                     let v = self.reg_get(top, src);
                     match v {
@@ -2776,6 +2780,28 @@ impl Vm {
     /// Execute one `include`/`require` at runtime: resolve the path, (compile &)
     /// run the file, and return its value (default `1`, or `false` for a missing
     /// `include`). `require` of a missing file is fatal.
+    /// `eval($code)`: compile the PHP source at runtime and run it in the current
+    /// variable scope (`top`). Returns the script's return value (Null if none).
+    fn do_eval(&mut self, top: usize, src: Reg) -> Result<Value, Thrown> {
+        let code = conv::to_string_bytes(&self.reg_get(top, src));
+        // eval() code is already in PHP mode; prepend an open tag so the parser
+        // (which starts in inline/HTML mode) enters PHP.
+        let mut source = b"<?php ".to_vec();
+        source.extend_from_slice(&code);
+        let file = String::from_utf8_lossy(&self.current_file(top)).into_owned();
+
+        let mut cb = self
+            .includer
+            .take()
+            .ok_or_else(|| Thrown::error("Error", "eval is not available"))?;
+        let compiled = cb(&file, &source);
+        self.includer = Some(cb);
+        let prog = compiled?;
+
+        let main = self.install_included(&prog)?;
+        self.run_included(main, top)
+    }
+
     fn do_include(&mut self, top: usize, raw_path: Vec<u8>, kind: IncludeKind) -> Result<Value, Thrown> {
         let path_str = String::from_utf8_lossy(&raw_path).into_owned();
         let (realpath, source) = match self.resolve_include_path(top, &path_str) {
@@ -2810,7 +2836,7 @@ impl Vm {
         let prog = compiled?;
 
         let main = self.install_included(&prog)?;
-        let ret = self.run_included(main)?;
+        let ret = self.run_included(main, top)?;
         // A file with no `return` yields int(1).
         Ok(match ret {
             Value::Null => Value::Int(1),
@@ -2899,12 +2925,29 @@ impl Vm {
 
     /// Run an included `{main}` to completion (isolated scope; it shares the VM's
     /// function/class/constant tables) and return its value.
-    fn run_included(&mut self, main: Rc<FunctionProto>) -> Result<Value, Thrown> {
+    /// Run an included / eval'd script's `{main}` **in the calling scope**: its
+    /// CVs are bound by name to the caller frame's variables (shared cells), so
+    /// writes are visible to the caller and reads see the caller's current
+    /// values — php's include/eval scope semantics. `$this` / class scope are
+    /// forwarded too (an include inside a method can use `$this`).
+    fn run_included(&mut self, main: Rc<FunctionProto>, caller_top: usize) -> Result<Value, Thrown> {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
-        let mut frame = Frame::new(main, 0);
+        let mut frame = Frame::new(main.clone(), 0);
         frame.capture = true;
+        frame.defining_class = self.stack[caller_top].defining_class;
+        frame.called_class = self.stack[caller_top].called_class;
+
+        // Bind each CV to the caller's same-named variable (shared via a Ref).
+        let caller_proto = self.stack[caller_top].proto.clone();
+        for ci in 0..main.cv_var_names.len() {
+            let name = &main.cv_var_names[ci];
+            if let Some(caller_ci) = caller_proto.cv_var_names.iter().position(|n| n == name) {
+                let rc = self.promote(caller_top, caller_ci as Reg);
+                frame.regs[ci] = Value::Ref(rc);
+            }
+        }
         self.bind_superglobals(&mut frame);
         let base = self.stack.len();
         self.stack.push(frame);

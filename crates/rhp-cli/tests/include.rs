@@ -112,6 +112,60 @@ fn spl_autoload_matches_php() {
 }
 
 #[test]
+fn eval_matches_php() {
+    if !php_available() {
+        return;
+    }
+    let dir = case_dir("eval");
+    write(
+        &dir.join("main.php"),
+        "<?php
+        echo eval('return 1 + 2;'), \"\\n\";
+        $fn = eval('return function($v){ return $v * 2; };');
+        echo $fn(21), \"\\n\";
+        // composer FilesystemRepository pattern: prepend a close tag then a php file
+        $content = \"<?php return array('a' => 1, 'b' => 2);\";
+        $d = eval('?>' . $content);
+        echo json_encode($d), \"\\n\";
+        // eval executes in the calling scope.
+        function g() { $x = 5; eval('$x = $x * 10; $y = 99;'); return \"$x,$y\"; }
+        echo g(), \"\\n\";
+        var_dump(eval('$z = 1;'));
+        ",
+    );
+    let main = dir.join("main.php");
+    let (php, rhp) = (run_php(&main), run_rhp(&main));
+    assert_eq!(String::from_utf8_lossy(&php), String::from_utf8_lossy(&rhp), "eval stdout differs");
+    assert!(!php.is_empty());
+}
+
+#[test]
+fn include_shares_caller_scope_like_php() {
+    if !php_available() {
+        return;
+    }
+    let dir = case_dir("incscope");
+    // The included file reads a caller variable and defines new ones; php's
+    // include runs in the caller's scope, so both directions are visible.
+    write(&dir.join("vars.php"), "<?php $vendorDir = $base . '/vendor'; $extra = 'E'; return $vendorDir;");
+    write(
+        &dir.join("main.php"),
+        "<?php
+        function load($p) {
+            $base = '/root';
+            $ret = require $p;         // vars.php sets $vendorDir/$extra from $base
+            return \"$ret|$vendorDir|$extra\";
+        }
+        echo load(__DIR__ . '/vars.php'), \"\\n\";
+        ",
+    );
+    let main = dir.join("main.php");
+    let (php, rhp) = (run_php(&main), run_rhp(&main));
+    assert_eq!(String::from_utf8_lossy(&php), String::from_utf8_lossy(&rhp), "include scope differs");
+    assert_eq!(php, b"/root/vendor|/root/vendor|E\n");
+}
+
+#[test]
 fn require_missing_is_fatal_like_php() {
     if !php_available() {
         return;

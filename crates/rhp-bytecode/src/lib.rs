@@ -169,11 +169,14 @@ pub enum Instr {
 
     /// `match` with no matching arm and no default: throw `\UnhandledMatchError`.
     ThrowMatchError { subject: Reg },
-    /// A construct the compiler accepts syntactically but refuses to run (eval,
-    /// goto, …): the refusal is deferred to runtime so a file that merely
-    /// *contains* it — down an unexecuted branch — still compiles and loads.
-    /// `what`/`why` are interned message strings.
+    /// A construct the compiler accepts syntactically but refuses to run (goto,
+    /// …): the refusal is deferred to runtime so a file that merely *contains*
+    /// it — down an unexecuted branch — still compiles and loads. `what`/`why`
+    /// are interned message strings.
     DeferredUnsupported { what: CIdx, why: CIdx },
+    /// `eval($code)`: compile the PHP source in `src` at runtime and run it in
+    /// the current variable scope; the script's return value lands in `dst`.
+    Eval { dst: Reg, src: Reg },
     /// `throw $e`: begin unwinding with the Throwable in `src`.
     Throw { src: Reg },
     /// End of a `finally` block: perform the pending continuation (re-raise a
@@ -446,6 +449,10 @@ pub struct FunctionProto {
     /// `function &f()` — returns by reference: `return $lval` yields a reference to
     /// the lvalue, which `$x =& f()` aliases.
     pub returns_ref: bool,
+    /// CV register -> variable name (index = Reg). Used to bind an `include`d /
+    /// `eval`'d script's `{main}` to the *calling* scope's variables by name
+    /// (php executes include/eval in the enclosing variable scope).
+    pub cv_var_names: Vec<PhpStr>,
 }
 
 impl FunctionProto {
@@ -473,6 +480,7 @@ impl FunctionProto {
             return_type: None,
             strict_types: false,
             returns_ref: false,
+            cv_var_names: Vec::new(),
         }
     }
 }

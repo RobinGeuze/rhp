@@ -116,6 +116,13 @@ pub trait Host {
         None
     }
 
+    /// Like `resolve_class` but invokes registered autoloaders on a miss (for
+    /// `class_exists($name)` with `$autoload = true`, php's default). Default:
+    /// falls back to the non-autoloading resolve.
+    fn resolve_class_autoload(&mut self, name: &[u8]) -> Option<u32> {
+        self.resolve_class(name)
+    }
+
     /// The [`ClassKind`] of a class id (class / interface / trait / enum), used by
     /// the `*_exists` family. Default: none.
     fn class_kind(&self, _class_id: u32) -> Option<rhp_values::ClassKind> {
@@ -1385,27 +1392,32 @@ fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
 
 /// Shared helper for `class_exists` / `interface_exists` / `enum_exists`: resolve
 /// the name and test the resolved kind against `want`.
-fn exists_of_kind(host: &dyn Host, name: &Value, want: fn(rhp_values::ClassKind) -> bool) -> bool {
-    let name = conv::to_string_bytes(&deref(name));
-    host.resolve_class(&name).and_then(|cid| host.class_kind(cid)).map(want).unwrap_or(false)
+fn exists_of_kind(
+    host: &mut dyn Host,
+    args: &[Value],
+    want: fn(rhp_values::ClassKind) -> bool,
+) -> bool {
+    let name = conv::to_string_bytes(&deref(&args[0]));
+    // `$autoload` defaults to true: a miss triggers registered autoloaders.
+    let autoload = args.get(1).map(|v| conv::to_bool(&deref(v))).unwrap_or(true);
+    let cid = if autoload { host.resolve_class_autoload(&name) } else { host.resolve_class(&name) };
+    cid.and_then(|cid| host.class_kind(cid)).map(want).unwrap_or(false)
 }
 
 fn fn_class_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use rhp_values::ClassKind;
     // Enums are classes too (`class_exists` is true for an enum name).
-    Ok(Value::Bool(exists_of_kind(host, &args[0], |k| {
-        matches!(k, ClassKind::Class | ClassKind::Enum)
-    })))
+    Ok(Value::Bool(exists_of_kind(host, args, |k| matches!(k, ClassKind::Class | ClassKind::Enum))))
 }
 
 fn fn_interface_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use rhp_values::ClassKind;
-    Ok(Value::Bool(exists_of_kind(host, &args[0], |k| k == ClassKind::Interface)))
+    Ok(Value::Bool(exists_of_kind(host, args, |k| k == ClassKind::Interface)))
 }
 
 fn fn_enum_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use rhp_values::ClassKind;
-    Ok(Value::Bool(exists_of_kind(host, &args[0], |k| k == ClassKind::Enum)))
+    Ok(Value::Bool(exists_of_kind(host, args, |k| k == ClassKind::Enum)))
 }
 
 /// `iterator_to_array($iterable, $preserve_keys = true)`. Only a plain array is

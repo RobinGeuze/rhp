@@ -80,6 +80,11 @@ fn fn_php_sapi_name(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
     Ok(Value::str("cli"))
 }
 
+/// rhp has no php.ini, so this reports "no scanned files".
+fn fn_php_ini_scanned_files(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(false))
+}
+
 fn fn_ob_start(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     host.ob_start();
     Ok(Value::Bool(true))
@@ -558,6 +563,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "function_exists", fn_function_exists, 1, Some(1));
     put(m, "phpversion", fn_phpversion, 0, Some(1));
     put(m, "php_sapi_name", fn_php_sapi_name, 0, Some(0));
+    put(m, "php_ini_scanned_files", fn_php_ini_scanned_files, 0, Some(0));
     put(m, "ob_start", fn_ob_start, 0, Some(3));
     put(m, "ob_get_contents", fn_ob_get_contents, 0, Some(0));
     put(m, "ob_get_clean", fn_ob_get_clean, 0, Some(0));

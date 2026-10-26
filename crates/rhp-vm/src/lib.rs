@@ -263,6 +263,24 @@ impl Host for Vm {
         v
     }
 
+    #[allow(clippy::type_complexity)]
+    fn call_stack(&self) -> Vec<(Vec<u8>, Option<Vec<u8>>, Vec<u8>, u32, Option<Value>)> {
+        // Innermost frame first. Each entry pairs the frame's function with the
+        // CALL site (the caller frame's current file/line), matching php.
+        let mut out = Vec::new();
+        for i in (1..self.stack.len()).rev() {
+            let f = &self.stack[i];
+            let func = f.proto.name.as_bytes().to_vec();
+            let class = f.defining_class.map(|c| self.class(c).name.as_bytes().to_vec());
+            let this = self.current_this(i).map(Value::Object);
+            let caller = i - 1;
+            let file = self.stack[caller].proto.debug.file.as_bytes().to_vec();
+            let line = self.current_line(caller);
+            out.push((func, class, file, line, this));
+        }
+        out
+    }
+
     fn create_stream_context(&mut self, options: Value) -> Value {
         let id = self.next_resource_id;
         self.next_resource_id += 1;

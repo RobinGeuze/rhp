@@ -4785,7 +4785,10 @@ fn hint_class_names(hint: &Hint) -> Result<Vec<PhpStr>, Thrown> {
     fn collect(hint: &Hint, out: &mut Vec<PhpStr>) -> Result<(), Thrown> {
         match hint {
             Hint::Identifier(id) => {
-                out.push(PhpStr::from_bytes(identifier_name(id).to_vec()));
+                // Resolve against the current namespace + `use` imports (php
+                // treats `catch (Foo)` in namespace N as `N\Foo`), matching how
+                // `instanceof`/`new` resolve class names.
+                out.push(PhpStr::from_bytes(resolve_class_name(id)));
                 Ok(())
             }
             Hint::Union(u) => {

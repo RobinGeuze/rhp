@@ -86,6 +86,44 @@ fn fn_php_ini_scanned_files(_: &mut dyn Host, _args: &[Value]) -> Result<Value, 
     Ok(Value::Bool(false))
 }
 
+fn fn_debug_backtrace(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    use rhp_values::ArrayKey as K;
+    let mut arr = PhpArray::new();
+    for (func, class, file, line, this) in host.call_stack() {
+        let mut e = PhpArray::new();
+        if !file.is_empty() {
+            e.insert(K::from_bytes(b"file"), Value::str(file));
+            e.insert(K::from_bytes(b"line"), Value::Int(line as i64));
+        }
+        e.insert(K::from_bytes(b"function"), Value::str(func));
+        if let Some(c) = class {
+            e.insert(K::from_bytes(b"class"), Value::str(c));
+            e.insert(K::from_bytes(b"type"), Value::str("->"));
+            if let Some(obj) = this {
+                e.insert(K::from_bytes(b"object"), obj);
+            }
+        }
+        arr.push(Value::Array(e));
+    }
+    Ok(Value::Array(arr))
+}
+
+fn fn_debug_print_backtrace(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let mut out = Vec::new();
+    for (i, (func, class, file, line, _this)) in host.call_stack().into_iter().enumerate() {
+        let call = match &class {
+            Some(c) => format!("{}->{}", String::from_utf8_lossy(c), String::from_utf8_lossy(&func)),
+            None => String::from_utf8_lossy(&func).into_owned(),
+        };
+        out.extend_from_slice(
+            format!("#{} {}() called at [{}:{}]\n", i, call, String::from_utf8_lossy(&file), line)
+                .as_bytes(),
+        );
+    }
+    host.write_out(&out);
+    Ok(Value::Null)
+}
+
 fn fn_ob_start(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     host.ob_start();
     Ok(Value::Bool(true))
@@ -565,6 +603,8 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "phpversion", fn_phpversion, 0, Some(1));
     put(m, "php_sapi_name", fn_php_sapi_name, 0, Some(0));
     put(m, "php_ini_scanned_files", fn_php_ini_scanned_files, 0, Some(0));
+    put(m, "debug_backtrace", fn_debug_backtrace, 0, Some(2));
+    put(m, "debug_print_backtrace", fn_debug_print_backtrace, 0, Some(2));
     put(m, "ob_start", fn_ob_start, 0, Some(3));
     put(m, "ob_get_contents", fn_ob_get_contents, 0, Some(0));
     put(m, "ob_get_clean", fn_ob_get_clean, 0, Some(0));

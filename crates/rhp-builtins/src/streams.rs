@@ -15,6 +15,9 @@ use std::rc::Rc;
 /// Minimal stat for a stream URL (what `is_file`/`is_dir`/`filesize` need).
 pub struct StatInfo {
     pub is_dir: bool,
+    /// A *regular* file (php `is_file`): false for directories and for special
+    /// files such as `/dev/null` (character devices), sockets, fifos.
+    pub is_regular: bool,
     pub size: u64,
     pub mtime: i64,
 }
@@ -92,7 +95,7 @@ impl StreamWrapper for FileWrapper {
         let md = std::fs::metadata(&*String::from_utf8_lossy(file_path(url))).ok()?;
         let mtime =
             md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0);
-        Some(StatInfo { is_dir: md.is_dir(), size: md.len(), mtime })
+        Some(StatInfo { is_dir: md.is_dir(), is_regular: md.is_file(), size: md.len(), mtime })
     }
     fn put_contents(&self, url: &[u8], data: &[u8]) -> Option<usize> {
         std::fs::write(&*String::from_utf8_lossy(file_path(url)), data).ok().map(|_| data.len())

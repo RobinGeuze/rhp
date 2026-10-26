@@ -243,6 +243,16 @@ pub trait Host {
         Vec::new()
     }
 
+    /// The current PHP call stack for `debug_backtrace`/`debug_print_backtrace`:
+    /// one entry per frame, innermost first, as
+    /// `(function, class, file, line, this_object)` where file/line are the call
+    /// site and `this_object` is the frame's `$this` (for `$trace['object']`).
+    /// Default: empty.
+    #[allow(clippy::type_complexity)]
+    fn call_stack(&self) -> Vec<(Vec<u8>, Option<Vec<u8>>, Vec<u8>, u32, Option<Value>)> {
+        Vec::new()
+    }
+
     /// Create a stream context resource holding `options` (nested array like
     /// `['http' => [...], 'ssl' => [...]]`); returns the resource value.
     fn create_stream_context(&mut self, _options: Value) -> Value {
@@ -460,6 +470,8 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "chr"            => fn_chr, 1, Some(1);
             "get_class"      => fn_get_class, 1, Some(1);
             "get_parent_class" => fn_get_parent_class, 0, Some(1);
+            "is_a"           => fn_is_a, 2, Some(3);
+            "is_subclass_of" => fn_is_subclass_of, 2, Some(3);
             "get_object_vars" => fn_get_object_vars, 1, Some(1);
             "method_exists"  => fn_method_exists, 2, Some(2);
             "property_exists" => fn_property_exists, 2, Some(2);
@@ -1337,6 +1349,44 @@ fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             Ok(host.class_name(cid).map(Value::str).unwrap_or(Value::Bool(false)))
         }
         _ => Err(Thrown::type_error("get_class(): Argument #1 ($object) must be of type object")),
+    }
+}
+
+/// Class name of an `is_a`/`is_subclass_of` subject: an object's class, or the
+/// string itself when `allow_string`.
+fn subject_class(host: &dyn Host, subject: &Value, allow_string: bool) -> Option<Vec<u8>> {
+    match subject {
+        Value::Object(h) => host.class_name(h.borrow().class),
+        Value::Str(s) if allow_string => Some(s.as_bytes().to_vec()),
+        _ => None,
+    }
+}
+
+fn norm_class(n: &[u8]) -> Vec<u8> {
+    n.strip_prefix(b"\\").unwrap_or(n).to_ascii_lowercase()
+}
+
+fn fn_is_a(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let subject = deref(&args[0]);
+    let target = conv::to_string_bytes(&deref(&args[1]));
+    let allow_string = args.get(2).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    match subject_class(host, &subject, allow_string) {
+        Some(n) => Ok(Value::Bool(host.reflect_is_a(&n, &target))),
+        None => Ok(Value::Bool(false)),
+    }
+}
+
+fn fn_is_subclass_of(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let subject = deref(&args[0]);
+    let target = conv::to_string_bytes(&deref(&args[1]));
+    let allow_string = args.get(2).map(|v| conv::to_bool(&deref(v))).unwrap_or(true);
+    match subject_class(host, &subject, allow_string) {
+        Some(n) => {
+            // Subtype but NOT the same class (is_subclass_of is exclusive).
+            let same = norm_class(&n) == norm_class(&target);
+            Ok(Value::Bool(!same && host.reflect_is_a(&n, &target)))
+        }
+        None => Ok(Value::Bool(false)),
     }
 }
 

@@ -68,7 +68,8 @@ fn fn_file_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 }
 
 fn fn_is_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.stream_stat(&path_arg(args, 0)).is_some_and(|s| !s.is_dir)))
+    // php `is_file` is true only for a *regular* file (not dirs, not /dev/null).
+    Ok(Value::Bool(host.stream_stat(&path_arg(args, 0)).is_some_and(|s| s.is_regular)))
 }
 
 fn fn_is_dir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -188,6 +189,11 @@ fn fn_getcwd(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
         Ok(p) => Ok(Value::str(p.to_string_lossy().into_owned().into_bytes())),
         Err(_) => Ok(Value::Bool(false)),
     }
+}
+
+fn fn_chdir(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let dir = path_arg(args, 0);
+    Ok(Value::Bool(std::env::set_current_dir(&*as_str(&dir)).is_ok()))
 }
 
 fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -461,7 +467,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "fileperms", fn_fileperms, 1, Some(1));
     put(m, "touch", fn_touch, 1, Some(3));
     put(m, "chmod", fn_chmod, 2, Some(2));
-    put(m, "chdir", fn_true1, 1, Some(1));
+    put(m, "chdir", fn_chdir, 1, Some(1));
     put(m, "clearstatcache", fn_true1, 0, Some(2));
     put(m, "scandir", fn_scandir, 1, Some(3));
     put(m, "is_link", fn_is_link, 1, Some(1));

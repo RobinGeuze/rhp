@@ -134,7 +134,7 @@ impl PharArchive {
     }
 
     fn entry_stat(&self, entry: &[u8]) -> Option<StatInfo> {
-        self.entries.get(entry).map(|e| StatInfo { is_dir: false, size: e.usize_ as u64, mtime: 0 })
+        self.entries.get(entry).map(|e| StatInfo { is_dir: false, is_regular: true, size: e.usize_ as u64, mtime: 0 })
     }
 
     fn has_dir(&self, prefix: &[u8]) -> bool {
@@ -321,7 +321,7 @@ impl StreamWrapper for PharWrapper {
         if let Some(s) = arc.entry_stat(&entry) {
             Some(s)
         } else if arc.has_dir(&entry) {
-            Some(StatInfo { is_dir: true, size: 0, mtime: 0 })
+            Some(StatInfo { is_dir: true, is_regular: false, size: 0, mtime: 0 })
         } else {
             None
         }

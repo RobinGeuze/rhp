@@ -272,6 +272,17 @@ pub trait Host {
     }
     fn clear_http_response_headers(&mut self) {}
 
+    /// Number of arguments passed to the currently-executing user function
+    /// (`func_num_args`). Default 0.
+    fn current_arg_count(&self) -> i64 {
+        0
+    }
+    /// The argument values passed to the currently-executing user function
+    /// (`func_get_args`), best-effort (declared params only). Default empty.
+    fn current_args(&self) -> Vec<Value> {
+        Vec::new()
+    }
+
     /// ZipArchive backing (open archives keyed by id). `zip_open` returns the id
     /// (>= 0) on success or a negative `ZipArchive::ER_*` code on failure.
     fn zip_open(&mut self, _path: &[u8]) -> i64 {
@@ -556,6 +567,35 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("DATE_RFC850", Value::str("l, d-M-y H:i:s T")),
         ("DATE_RFC1036", Value::str("D, d M y H:i:s O")),
         ("DATE_RFC1123", Value::str("D, d M Y H:i:s O")),
+        ("LIBXML_VERSION", Value::Int(20913)),
+        ("LIBXML_DOTTED_VERSION", Value::str("2.9.13")),
+        ("LIBXML_COMPACT", Value::Int(65536)),
+        ("LIBXML_NOBLANKS", Value::Int(256)),
+        ("LIBXML_NOENT", Value::Int(2)),
+        ("LIBXML_NOERROR", Value::Int(32)),
+        ("LIBXML_NOWARNING", Value::Int(64)),
+        ("LIBXML_NONET", Value::Int(2048)),
+        ("LIBXML_PARSEHUGE", Value::Int(524288)),
+        ("LIBXML_DTDLOAD", Value::Int(4)),
+        ("LIBXML_DTDATTR", Value::Int(8)),
+        ("LIBXML_DTDVALID", Value::Int(16)),
+        ("LIBXML_HTML_NOIMPLIED", Value::Int(8192)),
+        ("LIBXML_HTML_NODEFDTD", Value::Int(4)),
+        ("LIBXML_ERR_NONE", Value::Int(0)),
+        ("LIBXML_ERR_WARNING", Value::Int(1)),
+        ("LIBXML_ERR_ERROR", Value::Int(2)),
+        ("LIBXML_ERR_FATAL", Value::Int(3)),
+        ("FILE_USE_INCLUDE_PATH", Value::Int(1)),
+        ("FILE_IGNORE_NEW_LINES", Value::Int(2)),
+        ("FILE_SKIP_EMPTY_LINES", Value::Int(4)),
+        ("FILE_APPEND", Value::Int(8)),
+        ("FILE_NO_DEFAULT_CONTEXT", Value::Int(16)),
+        ("FILE_TEXT", Value::Int(0)),
+        ("FILE_BINARY", Value::Int(0)),
+        ("LOCK_SH", Value::Int(1)),
+        ("LOCK_EX", Value::Int(2)),
+        ("LOCK_UN", Value::Int(3)),
+        ("LOCK_NB", Value::Int(4)),
         ("MB_ONIGURUMA_VERSION", Value::str("6.9.10")),
         ("DIRECTORY_SEPARATOR", Value::str("/")),
         ("PATH_SEPARATOR", Value::str(":")),

@@ -315,7 +315,8 @@ class RecursiveDirectoryIterator extends FilesystemIterator implements Recursive
         return is_dir($this->getPathname());
     }
     public function getChildren(): RecursiveDirectoryIterator {
-        $child = new RecursiveDirectoryIterator($this->getPathname(), $this->__flags);
+        // `new static` so a subclass (e.g. symfony Finder's) keeps its own type.
+        $child = new static($this->getPathname(), $this->__flags);
         $child->__subPath = $this->getSubPathname();
         return $child;
     }
@@ -395,6 +396,9 @@ class IteratorIterator implements OuterIterator {
     public function current(): mixed { return $this->__it->current(); }
     public function key(): mixed { return $this->__it->key(); }
     public function next(): void { $this->__it->next(); }
+    // SPL forwards unknown calls (getFilename/getPathname/isDir/…) to the inner
+    // iterator, so callers can treat a filter iterator like its SplFileInfo items.
+    public function __call($name, $args) { return call_user_func_array([$this->__it, $name], $args); }
 }
 
 abstract class FilterIterator extends IteratorIterator {

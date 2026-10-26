@@ -196,6 +196,31 @@ fn fn_chdir(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(std::env::set_current_dir(&*as_str(&dir)).is_ok()))
 }
 
+/// `umask(?int $mask = null): int` — get, or set-and-return-old, the file mode
+/// creation mask.
+fn fn_umask(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match args.first().map(|v| conv::to_int(&deref(v))) {
+        Some(mask) => Ok(Value::Int(unsafe { libc::umask(mask as libc::mode_t) } as i64)),
+        None => {
+            // Read without changing: set to 0, capture, restore.
+            let cur = unsafe { libc::umask(0) };
+            unsafe { libc::umask(cur) };
+            Ok(Value::Int(cur as i64))
+        }
+    }
+}
+
+/// `php_strip_whitespace($filename)` — php returns the source with comments and
+/// whitespace removed (via the tokenizer). Composer only uses it to feed its own
+/// comment-stripping classmap scanner, so returning the raw source is correct
+/// for that purpose (and `''` only for a missing/empty file).
+fn fn_php_strip_whitespace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match host.stream_get_contents(&path_arg(args, 0)) {
+        Some(bytes) => Ok(Value::str(bytes)),
+        None => Ok(Value::str("")),
+    }
+}
+
 fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let url = path_arg(args, 0);
     // http(s): perform a real request (Composer's non-curl transport). The
@@ -213,9 +238,30 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 }
 
 fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let data = conv::to_string_bytes(&deref(&args[1]));
-    match host.stream_put_contents(&path_arg(args, 0), &data) {
-        Some(n) => Ok(Value::Int(n as i64)),
+    let path = path_arg(args, 0);
+    // `$data` is a string or an array (concatenated).
+    let data = match deref(&args[1]) {
+        Value::Array(a) => {
+            let mut b = Vec::new();
+            for (_, v) in a.iter() {
+                b.extend_from_slice(&conv::to_string_bytes(v));
+            }
+            b
+        }
+        other => conv::to_string_bytes(&other),
+    };
+    let flags = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    const FILE_APPEND: i64 = 8;
+    let to_write = if flags & FILE_APPEND != 0 {
+        let mut existing = host.stream_get_contents(&path).unwrap_or_default();
+        existing.extend_from_slice(&data);
+        existing
+    } else {
+        data.clone()
+    };
+    match host.stream_put_contents(&path, &to_write) {
+        // php returns the number of bytes written (the `$data` length).
+        Some(_) => Ok(Value::Int(data.len() as i64)),
         None => Ok(Value::Bool(false)),
     }
 }
@@ -468,6 +514,8 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "touch", fn_touch, 1, Some(3));
     put(m, "chmod", fn_chmod, 2, Some(2));
     put(m, "chdir", fn_chdir, 1, Some(1));
+    put(m, "umask", fn_umask, 0, Some(1));
+    put(m, "php_strip_whitespace", fn_php_strip_whitespace, 1, Some(1));
     put(m, "clearstatcache", fn_true1, 0, Some(2));
     put(m, "scandir", fn_scandir, 1, Some(3));
     put(m, "is_link", fn_is_link, 1, Some(1));

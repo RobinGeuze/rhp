@@ -43,6 +43,14 @@ const LOADED_EXTS: &[&str] = &[
     "iconv",
     "openssl",
     "zip",
+    // XML family: reported so composer resolution passes for packages that
+    // require ext-xml/ext-dom (symfony etc.). Runtime XML support is partial.
+    "libxml",
+    "xml",
+    "dom",
+    "simplexml",
+    "xmlreader",
+    "xmlwriter",
 ];
 
 fn fn_extension_loaded(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -84,6 +92,23 @@ fn fn_php_sapi_name(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
 /// rhp has no php.ini, so this reports "no scanned files".
 fn fn_php_ini_scanned_files(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(false))
+}
+
+fn fn_func_num_args(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(host.current_arg_count()))
+}
+
+fn fn_func_get_args(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let mut a = PhpArray::new();
+    for v in host.current_args() {
+        a.push(v);
+    }
+    Ok(Value::Array(a))
+}
+
+fn fn_func_get_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let i = conv::to_int(&deref(&args[0]));
+    Ok(host.current_args().into_iter().nth(i.max(0) as usize).unwrap_or(Value::Bool(false)))
 }
 
 fn fn_debug_backtrace(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -603,6 +628,9 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "phpversion", fn_phpversion, 0, Some(1));
     put(m, "php_sapi_name", fn_php_sapi_name, 0, Some(0));
     put(m, "php_ini_scanned_files", fn_php_ini_scanned_files, 0, Some(0));
+    put(m, "func_num_args", fn_func_num_args, 0, Some(0));
+    put(m, "func_get_args", fn_func_get_args, 0, Some(0));
+    put(m, "func_get_arg", fn_func_get_arg, 1, Some(1));
     put(m, "debug_backtrace", fn_debug_backtrace, 0, Some(2));
     put(m, "debug_print_backtrace", fn_debug_print_backtrace, 0, Some(2));
     put(m, "ob_start", fn_ob_start, 0, Some(3));

@@ -324,6 +324,19 @@ impl Host for Vm {
         self.last_response_headers.clear();
     }
 
+    fn current_arg_count(&self) -> i64 {
+        self.stack.last().map(|f| f.argc as i64).unwrap_or(0)
+    }
+    fn current_args(&self) -> Vec<Value> {
+        let Some(f) = self.stack.last() else { return Vec::new() };
+        let n = (f.argc).min(f.proto.params.len());
+        let mut out = Vec::new();
+        for p in f.proto.params.iter().take(n) {
+            out.push(deref(&f.regs[p.cv as usize]).clone());
+        }
+        out
+    }
+
     fn zip_open(&mut self, path: &[u8]) -> i64 {
         // Read the file (through the stream layer so phar:// etc. work).
         let bytes = match self.stream_get_contents(path) {

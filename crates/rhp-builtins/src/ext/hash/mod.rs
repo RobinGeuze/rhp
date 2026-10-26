@@ -516,6 +516,33 @@ fn fn_hash(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
+fn fn_hash_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let algo = bytes_of(&args[0]).to_ascii_lowercase();
+    let path = bytes_of(&args[1]);
+    let binary = as_bool(args.get(2));
+    let Some(data) = host.stream_get_contents(&path) else { return Ok(Value::Bool(false)) };
+    match digest(&algo, &data) {
+        Some(raw) => Ok(Value::str(if binary { raw } else { to_hex(&raw) })),
+        None => Err(invalid_algo("hash_file")),
+    }
+}
+
+fn fn_md5_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let path = bytes_of(&args[0]);
+    let binary = as_bool(args.get(1));
+    let Some(data) = host.stream_get_contents(&path) else { return Ok(Value::Bool(false)) };
+    let raw = digest(b"md5", &data).unwrap();
+    Ok(Value::str(if binary { raw } else { to_hex(&raw) }))
+}
+
+fn fn_sha1_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let path = bytes_of(&args[0]);
+    let binary = as_bool(args.get(1));
+    let Some(data) = host.stream_get_contents(&path) else { return Ok(Value::Bool(false)) };
+    let raw = digest(b"sha1", &data).unwrap();
+    Ok(Value::str(if binary { raw } else { to_hex(&raw) }))
+}
+
 fn fn_hash_hmac(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let algo = bytes_of(&args[0]).to_ascii_lowercase();
     let data = bytes_of(&args[1]);
@@ -634,6 +661,9 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         m.insert(name, Builtin { name, func, min_args: min, max_args: max });
     }
     put(m, "hash", fn_hash, 2, Some(4));
+    put(m, "hash_file", fn_hash_file, 2, Some(3));
+    put(m, "md5_file", fn_md5_file, 1, Some(2));
+    put(m, "sha1_file", fn_sha1_file, 1, Some(2));
     put(m, "hash_hmac", fn_hash_hmac, 3, Some(4));
     put(m, "hash_pbkdf2", fn_hash_pbkdf2, 4, Some(6));
     put(m, "hash_equals", fn_hash_equals, 2, Some(2));

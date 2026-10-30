@@ -35,7 +35,7 @@ num-integer = "0.1"
 
 # password_* : bcrypt + argon2 password hashing (faithful Rust 1:1).
 bcrypt = "0.17"
-argon2 = "0.5"
+argon2 = "0.6"
 password-hash = { version = "0.5", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 

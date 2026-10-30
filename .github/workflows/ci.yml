@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (e.g. force-push to a PR branch).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Formatting: cheap, fail fast.
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  # Lints, warnings treated as errors.
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # Baseline suite with NO `php` on PATH. This guards the project's property
+  # that the golden suite validates against the committed `.out` fixtures and
+  # the differential sweeps skip gracefully when no `php` is available.
+  test:
+    name: test (no php)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-targets
+
+  # Full differential suite against a real php 8.5 binary. This is where the
+  # byte-for-byte sweeps (hash, bcmath, ctype, gmp, mbstring, password) actually
+  # run instead of skipping.
+  differential:
+    name: differential (php 8.5)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          # bcmath/ctype/hash are bundled; gmp/mbstring are installed explicitly
+          # so their sweeps run instead of being skipped.
+          extensions: gmp, mbstring
+          coverage: none
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Confirm php is available
+        run: php --version
+      - name: Run workspace tests with live php differential sweeps
+        env:
+          RHP_PHP: php
+        run: cargo test --workspace --all-targets
+      # Fails the job on any byte-for-byte MISMATCH (the binary exits nonzero).
+      - name: Extension differential sweeps
+        env:
+          RHP_PHP: php
+        run: |
+          for ext in hash bcmath ctype gmp mbstring password; do
+            echo "::group::rhp-difftest $ext"
+            cargo run --quiet -p rhp-difftest -- "$ext"
+            echo "::endgroup::"
+          done

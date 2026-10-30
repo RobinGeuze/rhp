@@ -453,6 +453,10 @@ fn fn_chmod(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(ok))
 }
 
+// The `as u32` casts are required on platforms where the libc `S_IF*` constants
+// are narrower than u32 (e.g. macOS/BSD, where they are c_ushort); on Linux they
+// are already u32, so clippy would flag the cast as unnecessary there.
+#[allow(clippy::unnecessary_cast)]
 fn fn_is_link(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let is_link = lstat_mode(&path_arg(args, 0))
         .is_some_and(|m| m & libc::S_IFMT as u32 == libc::S_IFLNK as u32);
@@ -475,6 +479,8 @@ fn fn_symlink(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 /// `filetype` — php reports via `lstat`, so a symlink is "link".
+// `as u32` casts: see the note on `fn_is_link` — required on macOS/BSD.
+#[allow(clippy::unnecessary_cast)]
 fn fn_filetype(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match lstat_mode(&path_arg(args, 0)) {
         Some(m) => {

@@ -151,7 +151,7 @@ fn parse_haval(algo: &[u8]) -> Option<(usize, usize)> {
     let comma = rest.iter().position(|&b| b == b',')?;
     let bits: usize = std::str::from_utf8(&rest[..comma]).ok()?.parse().ok()?;
     let passes: usize = std::str::from_utf8(&rest[comma + 1..]).ok()?.parse().ok()?;
-    if matches!(bits, 128 | 160 | 192 | 224 | 256) && matches!(passes, 3 | 4 | 5) {
+    if matches!(bits, 128 | 160 | 192 | 224 | 256) && matches!(passes, 3..=5) {
         Some((bits, passes))
     } else {
         None
@@ -284,7 +284,12 @@ fn murmur3a(data: &[u8]) -> u32 {
     let mut h: u32 = 0;
     let nblocks = data.len() / 4;
     for i in 0..nblocks {
-        let mut k = u32::from_le_bytes([data[i * 4], data[i * 4 + 1], data[i * 4 + 2], data[i * 4 + 3]]);
+        let mut k = u32::from_le_bytes([
+            data[i * 4],
+            data[i * 4 + 1],
+            data[i * 4 + 2],
+            data[i * 4 + 3],
+        ]);
         k = k.wrapping_mul(C1);
         k = k.rotate_left(15);
         k = k.wrapping_mul(C2);
@@ -334,48 +339,115 @@ fn murmur3c(data: &[u8]) -> Vec<u8> {
     let nblocks = data.len() / 16;
     for i in 0..nblocks {
         let base = i * 16;
-        let rd = |o: usize| u32::from_le_bytes([data[base + o], data[base + o + 1], data[base + o + 2], data[base + o + 3]]);
+        let rd = |o: usize| {
+            u32::from_le_bytes([
+                data[base + o],
+                data[base + o + 1],
+                data[base + o + 2],
+                data[base + o + 3],
+            ])
+        };
         let (mut k1, mut k2, mut k3, mut k4) = (rd(0), rd(4), rd(8), rd(12));
         k1 = k1.wrapping_mul(C1).rotate_left(15).wrapping_mul(C2);
         h1 ^= k1;
-        h1 = h1.rotate_left(19).wrapping_add(h2).wrapping_mul(5).wrapping_add(0x561c_cd1b);
+        h1 = h1
+            .rotate_left(19)
+            .wrapping_add(h2)
+            .wrapping_mul(5)
+            .wrapping_add(0x561c_cd1b);
         k2 = k2.wrapping_mul(C2).rotate_left(16).wrapping_mul(C3);
         h2 ^= k2;
-        h2 = h2.rotate_left(17).wrapping_add(h3).wrapping_mul(5).wrapping_add(0x0bca_a747);
+        h2 = h2
+            .rotate_left(17)
+            .wrapping_add(h3)
+            .wrapping_mul(5)
+            .wrapping_add(0x0bca_a747);
         k3 = k3.wrapping_mul(C3).rotate_left(17).wrapping_mul(C4);
         h3 ^= k3;
-        h3 = h3.rotate_left(15).wrapping_add(h4).wrapping_mul(5).wrapping_add(0x96cd_1c35);
+        h3 = h3
+            .rotate_left(15)
+            .wrapping_add(h4)
+            .wrapping_mul(5)
+            .wrapping_add(0x96cd_1c35);
         k4 = k4.wrapping_mul(C4).rotate_left(18).wrapping_mul(C1);
         h4 ^= k4;
-        h4 = h4.rotate_left(13).wrapping_add(h1).wrapping_mul(5).wrapping_add(0x32ac_3b17);
+        h4 = h4
+            .rotate_left(13)
+            .wrapping_add(h1)
+            .wrapping_mul(5)
+            .wrapping_add(0x32ac_3b17);
     }
     let tail = &data[nblocks * 16..];
     let (mut k1, mut k2, mut k3, mut k4) = (0u32, 0u32, 0u32, 0u32);
     let get = |n: usize| *tail.get(n).unwrap_or(&0) as u32;
     let l = tail.len();
-    if l >= 15 { k4 ^= get(14) << 16; }
-    if l >= 14 { k4 ^= get(13) << 8; }
-    if l >= 13 { k4 ^= get(12); k4 = k4.wrapping_mul(C4).rotate_left(18).wrapping_mul(C1); h4 ^= k4; }
-    if l >= 12 { k3 ^= get(11) << 24; }
-    if l >= 11 { k3 ^= get(10) << 16; }
-    if l >= 10 { k3 ^= get(9) << 8; }
-    if l >= 9 { k3 ^= get(8); k3 = k3.wrapping_mul(C3).rotate_left(17).wrapping_mul(C4); h3 ^= k3; }
-    if l >= 8 { k2 ^= get(7) << 24; }
-    if l >= 7 { k2 ^= get(6) << 16; }
-    if l >= 6 { k2 ^= get(5) << 8; }
-    if l >= 5 { k2 ^= get(4); k2 = k2.wrapping_mul(C2).rotate_left(16).wrapping_mul(C3); h2 ^= k2; }
-    if l >= 4 { k1 ^= get(3) << 24; }
-    if l >= 3 { k1 ^= get(2) << 16; }
-    if l >= 2 { k1 ^= get(1) << 8; }
-    if l >= 1 { k1 ^= get(0); k1 = k1.wrapping_mul(C1).rotate_left(15).wrapping_mul(C2); h1 ^= k1; }
+    if l >= 15 {
+        k4 ^= get(14) << 16;
+    }
+    if l >= 14 {
+        k4 ^= get(13) << 8;
+    }
+    if l >= 13 {
+        k4 ^= get(12);
+        k4 = k4.wrapping_mul(C4).rotate_left(18).wrapping_mul(C1);
+        h4 ^= k4;
+    }
+    if l >= 12 {
+        k3 ^= get(11) << 24;
+    }
+    if l >= 11 {
+        k3 ^= get(10) << 16;
+    }
+    if l >= 10 {
+        k3 ^= get(9) << 8;
+    }
+    if l >= 9 {
+        k3 ^= get(8);
+        k3 = k3.wrapping_mul(C3).rotate_left(17).wrapping_mul(C4);
+        h3 ^= k3;
+    }
+    if l >= 8 {
+        k2 ^= get(7) << 24;
+    }
+    if l >= 7 {
+        k2 ^= get(6) << 16;
+    }
+    if l >= 6 {
+        k2 ^= get(5) << 8;
+    }
+    if l >= 5 {
+        k2 ^= get(4);
+        k2 = k2.wrapping_mul(C2).rotate_left(16).wrapping_mul(C3);
+        h2 ^= k2;
+    }
+    if l >= 4 {
+        k1 ^= get(3) << 24;
+    }
+    if l >= 3 {
+        k1 ^= get(2) << 16;
+    }
+    if l >= 2 {
+        k1 ^= get(1) << 8;
+    }
+    if l >= 1 {
+        k1 ^= get(0);
+        k1 = k1.wrapping_mul(C1).rotate_left(15).wrapping_mul(C2);
+        h1 ^= k1;
+    }
 
     let len = data.len() as u32;
-    h1 ^= len; h2 ^= len; h3 ^= len; h4 ^= len;
+    h1 ^= len;
+    h2 ^= len;
+    h3 ^= len;
+    h4 ^= len;
     h1 = h1.wrapping_add(h2).wrapping_add(h3).wrapping_add(h4);
     h2 = h2.wrapping_add(h1);
     h3 = h3.wrapping_add(h1);
     h4 = h4.wrapping_add(h1);
-    h1 = fmix32(h1); h2 = fmix32(h2); h3 = fmix32(h3); h4 = fmix32(h4);
+    h1 = fmix32(h1);
+    h2 = fmix32(h2);
+    h3 = fmix32(h3);
+    h4 = fmix32(h4);
     h1 = h1.wrapping_add(h2).wrapping_add(h3).wrapping_add(h4);
     h2 = h2.wrapping_add(h1);
     h3 = h3.wrapping_add(h1);
@@ -403,30 +475,72 @@ fn murmur3f(data: &[u8]) -> Vec<u8> {
         let (mut k1, mut k2) = (rd(0), rd(8));
         k1 = k1.wrapping_mul(C1).rotate_left(31).wrapping_mul(C2);
         h1 ^= k1;
-        h1 = h1.rotate_left(27).wrapping_add(h2).wrapping_mul(5).wrapping_add(0x52dc_e729);
+        h1 = h1
+            .rotate_left(27)
+            .wrapping_add(h2)
+            .wrapping_mul(5)
+            .wrapping_add(0x52dc_e729);
         k2 = k2.wrapping_mul(C2).rotate_left(33).wrapping_mul(C1);
         h2 ^= k2;
-        h2 = h2.rotate_left(31).wrapping_add(h1).wrapping_mul(5).wrapping_add(0x3849_5ab5);
+        h2 = h2
+            .rotate_left(31)
+            .wrapping_add(h1)
+            .wrapping_mul(5)
+            .wrapping_add(0x3849_5ab5);
     }
     let tail = &data[nblocks * 16..];
     let (mut k1, mut k2) = (0u64, 0u64);
     let get = |n: usize| *tail.get(n).unwrap_or(&0) as u64;
     let l = tail.len();
-    if l >= 15 { k2 ^= get(14) << 48; }
-    if l >= 14 { k2 ^= get(13) << 40; }
-    if l >= 13 { k2 ^= get(12) << 32; }
-    if l >= 12 { k2 ^= get(11) << 24; }
-    if l >= 11 { k2 ^= get(10) << 16; }
-    if l >= 10 { k2 ^= get(9) << 8; }
-    if l >= 9 { k2 ^= get(8); k2 = k2.wrapping_mul(C2).rotate_left(33).wrapping_mul(C1); h2 ^= k2; }
-    if l >= 8 { k1 ^= get(7) << 56; }
-    if l >= 7 { k1 ^= get(6) << 48; }
-    if l >= 6 { k1 ^= get(5) << 40; }
-    if l >= 5 { k1 ^= get(4) << 32; }
-    if l >= 4 { k1 ^= get(3) << 24; }
-    if l >= 3 { k1 ^= get(2) << 16; }
-    if l >= 2 { k1 ^= get(1) << 8; }
-    if l >= 1 { k1 ^= get(0); k1 = k1.wrapping_mul(C1).rotate_left(31).wrapping_mul(C2); h1 ^= k1; }
+    if l >= 15 {
+        k2 ^= get(14) << 48;
+    }
+    if l >= 14 {
+        k2 ^= get(13) << 40;
+    }
+    if l >= 13 {
+        k2 ^= get(12) << 32;
+    }
+    if l >= 12 {
+        k2 ^= get(11) << 24;
+    }
+    if l >= 11 {
+        k2 ^= get(10) << 16;
+    }
+    if l >= 10 {
+        k2 ^= get(9) << 8;
+    }
+    if l >= 9 {
+        k2 ^= get(8);
+        k2 = k2.wrapping_mul(C2).rotate_left(33).wrapping_mul(C1);
+        h2 ^= k2;
+    }
+    if l >= 8 {
+        k1 ^= get(7) << 56;
+    }
+    if l >= 7 {
+        k1 ^= get(6) << 48;
+    }
+    if l >= 6 {
+        k1 ^= get(5) << 40;
+    }
+    if l >= 5 {
+        k1 ^= get(4) << 32;
+    }
+    if l >= 4 {
+        k1 ^= get(3) << 24;
+    }
+    if l >= 3 {
+        k1 ^= get(2) << 16;
+    }
+    if l >= 2 {
+        k1 ^= get(1) << 8;
+    }
+    if l >= 1 {
+        k1 ^= get(0);
+        k1 = k1.wrapping_mul(C1).rotate_left(31).wrapping_mul(C2);
+        h1 ^= k1;
+    }
 
     let len = data.len() as u64;
     h1 ^= len;
@@ -471,7 +585,13 @@ fn hmac(algo: &[u8], key: &[u8], msg: &[u8]) -> Option<Vec<u8>> {
 // PBKDF2 (RFC 2898) over HMAC
 // ---------------------------------------------------------------------------
 
-fn pbkdf2(algo: &[u8], pass: &[u8], salt: &[u8], iterations: i64, key_len: usize) -> Option<Vec<u8>> {
+fn pbkdf2(
+    algo: &[u8],
+    pass: &[u8],
+    salt: &[u8],
+    iterations: i64,
+    key_len: usize,
+) -> Option<Vec<u8>> {
     let h_len = digest(algo, b"")?.len();
     // php: $length defaults to 0 meaning "the full digest length" (as hex this is
     // 2*h_len chars). The raw length produced is key_len when given, else h_len.
@@ -502,7 +622,7 @@ fn pbkdf2(algo: &[u8], pass: &[u8], salt: &[u8], iterations: i64, key_len: usize
 fn invalid_algo(func: &str) -> Thrown {
     Thrown::error(
         "ValueError",
-        &format!("{func}(): Argument #1 ($algo) must be a valid hashing algorithm"),
+        format!("{func}(): Argument #1 ($algo) must be a valid hashing algorithm"),
     )
 }
 
@@ -520,7 +640,9 @@ fn fn_hash_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let algo = bytes_of(&args[0]).to_ascii_lowercase();
     let path = bytes_of(&args[1]);
     let binary = as_bool(args.get(2));
-    let Some(data) = host.stream_get_contents(&path) else { return Ok(Value::Bool(false)) };
+    let Some(data) = host.stream_get_contents(&path) else {
+        return Ok(Value::Bool(false));
+    };
     match digest(&algo, &data) {
         Some(raw) => Ok(Value::str(if binary { raw } else { to_hex(&raw) })),
         None => Err(invalid_algo("hash_file")),
@@ -530,7 +652,9 @@ fn fn_hash_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_md5_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = bytes_of(&args[0]);
     let binary = as_bool(args.get(1));
-    let Some(data) = host.stream_get_contents(&path) else { return Ok(Value::Bool(false)) };
+    let Some(data) = host.stream_get_contents(&path) else {
+        return Ok(Value::Bool(false));
+    };
     let raw = digest(b"md5", &data).unwrap();
     Ok(Value::str(if binary { raw } else { to_hex(&raw) }))
 }
@@ -538,7 +662,9 @@ fn fn_md5_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_sha1_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = bytes_of(&args[0]);
     let binary = as_bool(args.get(1));
-    let Some(data) = host.stream_get_contents(&path) else { return Ok(Value::Bool(false)) };
+    let Some(data) = host.stream_get_contents(&path) else {
+        return Ok(Value::Bool(false));
+    };
     let raw = digest(b"sha1", &data).unwrap();
     Ok(Value::str(if binary { raw } else { to_hex(&raw) }))
 }
@@ -600,7 +726,11 @@ fn fn_hash_equals(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let user = bytes_of(&args[1]);
     // constant-time compare (length first, then byte diff accumulation)
     let eq = known.len() == user.len()
-        && known.iter().zip(user.iter()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0;
+        && known
+            .iter()
+            .zip(user.iter())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0;
     Ok(Value::Bool(eq))
 }
 
@@ -622,26 +752,114 @@ fn string_list(names: &[&str]) -> Value {
 
 /// Every algorithm rhp's `hash()` accepts, in PHP's `hash_algos()` order.
 const ALGOS: &[&str] = &[
-    "md2", "md4", "md5", "sha1", "sha224", "sha256", "sha384", "sha512/224", "sha512/256",
-    "sha512", "sha3-224", "sha3-256", "sha3-384", "sha3-512", "ripemd128", "ripemd160",
-    "ripemd256", "ripemd320", "whirlpool", "tiger128,3", "tiger160,3", "tiger192,3",
-    "tiger128,4", "tiger160,4", "tiger192,4", "snefru", "snefru256", "gost", "gost-crypto",
-    "adler32", "crc32", "crc32b", "crc32c", "fnv132", "fnv1a32", "fnv164", "fnv1a64", "joaat",
-    "murmur3a", "murmur3c", "murmur3f", "xxh32", "xxh64", "xxh3", "xxh128", "haval128,3",
-    "haval160,3", "haval192,3", "haval224,3", "haval256,3", "haval128,4", "haval160,4",
-    "haval192,4", "haval224,4", "haval256,4", "haval128,5", "haval160,5", "haval192,5",
-    "haval224,5", "haval256,5",
+    "md2",
+    "md4",
+    "md5",
+    "sha1",
+    "sha224",
+    "sha256",
+    "sha384",
+    "sha512/224",
+    "sha512/256",
+    "sha512",
+    "sha3-224",
+    "sha3-256",
+    "sha3-384",
+    "sha3-512",
+    "ripemd128",
+    "ripemd160",
+    "ripemd256",
+    "ripemd320",
+    "whirlpool",
+    "tiger128,3",
+    "tiger160,3",
+    "tiger192,3",
+    "tiger128,4",
+    "tiger160,4",
+    "tiger192,4",
+    "snefru",
+    "snefru256",
+    "gost",
+    "gost-crypto",
+    "adler32",
+    "crc32",
+    "crc32b",
+    "crc32c",
+    "fnv132",
+    "fnv1a32",
+    "fnv164",
+    "fnv1a64",
+    "joaat",
+    "murmur3a",
+    "murmur3c",
+    "murmur3f",
+    "xxh32",
+    "xxh64",
+    "xxh3",
+    "xxh128",
+    "haval128,3",
+    "haval160,3",
+    "haval192,3",
+    "haval224,3",
+    "haval256,3",
+    "haval128,4",
+    "haval160,4",
+    "haval192,4",
+    "haval224,4",
+    "haval256,4",
+    "haval128,5",
+    "haval160,5",
+    "haval192,5",
+    "haval224,5",
+    "haval256,5",
 ];
 
 /// The subset valid for `hash_hmac()` / `hash_pbkdf2()` — crypto algorithms only.
 const HMAC_ALGOS: &[&str] = &[
-    "md2", "md4", "md5", "sha1", "sha224", "sha256", "sha384", "sha512/224", "sha512/256",
-    "sha512", "sha3-224", "sha3-256", "sha3-384", "sha3-512", "ripemd128", "ripemd160",
-    "ripemd256", "ripemd320", "whirlpool", "tiger128,3", "tiger160,3", "tiger192,3",
-    "tiger128,4", "tiger160,4", "tiger192,4", "snefru", "snefru256", "gost", "gost-crypto",
-    "haval128,3", "haval160,3", "haval192,3", "haval224,3", "haval256,3", "haval128,4",
-    "haval160,4", "haval192,4", "haval224,4", "haval256,4", "haval128,5", "haval160,5",
-    "haval192,5", "haval224,5", "haval256,5",
+    "md2",
+    "md4",
+    "md5",
+    "sha1",
+    "sha224",
+    "sha256",
+    "sha384",
+    "sha512/224",
+    "sha512/256",
+    "sha512",
+    "sha3-224",
+    "sha3-256",
+    "sha3-384",
+    "sha3-512",
+    "ripemd128",
+    "ripemd160",
+    "ripemd256",
+    "ripemd320",
+    "whirlpool",
+    "tiger128,3",
+    "tiger160,3",
+    "tiger192,3",
+    "tiger128,4",
+    "tiger160,4",
+    "tiger192,4",
+    "snefru",
+    "snefru256",
+    "gost",
+    "gost-crypto",
+    "haval128,3",
+    "haval160,3",
+    "haval192,3",
+    "haval224,3",
+    "haval256,3",
+    "haval128,4",
+    "haval160,4",
+    "haval192,4",
+    "haval224,4",
+    "haval256,4",
+    "haval128,5",
+    "haval160,5",
+    "haval192,5",
+    "haval224,5",
+    "haval256,5",
 ];
 
 // ---------------------------------------------------------------------------
@@ -658,7 +876,15 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         min: usize,
         max: Option<usize>,
     ) {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     }
     put(m, "hash", fn_hash, 2, Some(4));
     put(m, "hash_file", fn_hash_file, 2, Some(3));

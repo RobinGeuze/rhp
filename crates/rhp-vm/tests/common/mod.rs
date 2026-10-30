@@ -19,7 +19,10 @@ use rhp_vm::Vm;
 pub fn run(src: &str) -> String {
     let arena = Arena::new();
     let parsed = arena.parse(b"test", src.as_bytes());
-    assert!(!parsed.has_parse_errors(), "unexpected parse error in:\n{src}");
+    assert!(
+        !parsed.has_parse_errors(),
+        "unexpected parse error in:\n{src}"
+    );
     let program = compile(parsed.program()).expect("compile failed");
     let mut vm = Vm::new();
     vm.run(&program).expect("VM threw");
@@ -33,7 +36,10 @@ pub fn run_throws(src: &str) -> (String, String) {
     use rhp_values::Thrown;
     let arena = Arena::new();
     let parsed = arena.parse(b"test", src.as_bytes());
-    assert!(!parsed.has_parse_errors(), "unexpected parse error in:\n{src}");
+    assert!(
+        !parsed.has_parse_errors(),
+        "unexpected parse error in:\n{src}"
+    );
     let program = compile(parsed.program()).expect("compile failed");
     let mut vm = Vm::new();
     match vm.run(&program) {

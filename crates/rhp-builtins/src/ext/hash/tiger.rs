@@ -15,14 +15,8 @@
 fn round(a: &mut u64, b: &mut u64, c: &mut u64, x: u64, mul: u64) {
     *c ^= x;
     let c2 = c.to_le_bytes();
-    let a2 = T1[c2[0] as usize]
-        ^ T2[c2[2] as usize]
-        ^ T3[c2[4] as usize]
-        ^ T4[c2[6] as usize];
-    let b2 = T4[c2[1] as usize]
-        ^ T3[c2[3] as usize]
-        ^ T2[c2[5] as usize]
-        ^ T1[c2[7] as usize];
+    let a2 = T1[c2[0] as usize] ^ T2[c2[2] as usize] ^ T3[c2[4] as usize] ^ T4[c2[6] as usize];
+    let b2 = T4[c2[1] as usize] ^ T3[c2[3] as usize] ^ T2[c2[5] as usize] ^ T1[c2[7] as usize];
     *a = a.wrapping_sub(a2);
     *b = b.wrapping_add(b2).wrapping_mul(mul);
 }
@@ -65,8 +59,8 @@ fn key_schedule(x: &mut [u64; 8]) {
 /// Compress one 64-byte block into the state using `passes` total passes.
 fn compress(state: &mut [u64; 3], raw: &[u8; 64], passes: usize) {
     let mut block = [0u64; 8];
-    for (o, chunk) in block.iter_mut().zip(raw.chunks_exact(8)) {
-        *o = u64::from_le_bytes(chunk.try_into().unwrap());
+    for (o, chunk) in block.iter_mut().zip(raw.as_chunks::<8>().0) {
+        *o = u64::from_le_bytes(*chunk);
     }
 
     let [mut a, mut b, mut c] = *state;
@@ -102,11 +96,10 @@ fn tiger_hash(data: &[u8], passes: usize) -> [u64; 3] {
         0xF096_A5B4_C3B2_E187u64,
     ];
 
-    let mut chunks = data.chunks_exact(64);
-    for block in &mut chunks {
-        compress(&mut state, block.try_into().unwrap(), passes);
+    let (blocks, rem) = data.as_chunks::<64>();
+    for block in blocks {
+        compress(&mut state, block, passes);
     }
-    let rem = chunks.remainder();
 
     // Original-Tiger padding: 0x01 byte, zero fill, little-endian bit length.
     let bitlen = (data.len() as u64).wrapping_mul(8);
@@ -136,44 +129,6 @@ fn digest_bytes(state: [u64; 3]) -> [u8; 24] {
 /// (16, 20, or 24).
 pub fn tiger4(data: &[u8], width: usize) -> Vec<u8> {
     digest_bytes(tiger_hash(data, 4))[..width].to_vec()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
-    #[test]
-    fn three_pass_byte_order_matches_php() {
-        // Known php `tiger192,3` values: proves S-boxes, little-endian words and
-        // output byte order are all correct before relying on 4-pass.
-        assert_eq!(
-            hex(&digest_bytes(tiger_hash(b"", 3))),
-            "3293ac630c13f0245f92bbb1766e16167a4e58492dde73f3"
-        );
-        assert_eq!(
-            hex(&digest_bytes(tiger_hash(b"abc", 3))),
-            "2aab1484e8c158f2bfb8c5ff41b57a525129131c957b5f93"
-        );
-    }
-
-    #[test]
-    fn four_pass_matches_php() {
-        assert_eq!(
-            hex(&tiger4(b"", 24)),
-            "24cc78a7f6ff3546e7984e59695ca13d804e0b686e255194"
-        );
-        assert_eq!(
-            hex(&tiger4(b"abc", 24)),
-            "538883c8fc5f28250299018e66bdf4fdb5ef7b65f2e91753"
-        );
-        // Truncated widths are a prefix of the 192-bit digest.
-        assert_eq!(tiger4(b"abc", 16), tiger4(b"abc", 24)[..16]);
-        assert_eq!(tiger4(b"abc", 20), tiger4(b"abc", 24)[..20]);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1215,3 +1170,41 @@ static T4: [u64; 256] = [
     0xC832_23F1_720A_EF96,
     0xC3A0_396F_7363_A51F,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn three_pass_byte_order_matches_php() {
+        // Known php `tiger192,3` values: proves S-boxes, little-endian words and
+        // output byte order are all correct before relying on 4-pass.
+        assert_eq!(
+            hex(&digest_bytes(tiger_hash(b"", 3))),
+            "3293ac630c13f0245f92bbb1766e16167a4e58492dde73f3"
+        );
+        assert_eq!(
+            hex(&digest_bytes(tiger_hash(b"abc", 3))),
+            "2aab1484e8c158f2bfb8c5ff41b57a525129131c957b5f93"
+        );
+    }
+
+    #[test]
+    fn four_pass_matches_php() {
+        assert_eq!(
+            hex(&tiger4(b"", 24)),
+            "24cc78a7f6ff3546e7984e59695ca13d804e0b686e255194"
+        );
+        assert_eq!(
+            hex(&tiger4(b"abc", 24)),
+            "538883c8fc5f28250299018e66bdf4fdb5ef7b65f2e91753"
+        );
+        // Truncated widths are a prefix of the 192-bit digest.
+        assert_eq!(tiger4(b"abc", 16), tiger4(b"abc", 24)[..16]);
+        assert_eq!(tiger4(b"abc", 20), tiger4(b"abc", 24)[..20]);
+    }
+}

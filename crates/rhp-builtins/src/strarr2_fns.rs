@@ -215,7 +215,10 @@ fn fn_substr_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             let sbytes = bytes_of(v);
             // replace: array -> nth element (else ""); scalar -> whole, for all.
             let rep = match &replace {
-                Value::Array(ra) => ra.get_index(i).map(|(_, rv)| bytes_of(rv)).unwrap_or_default(),
+                Value::Array(ra) => ra
+                    .get_index(i)
+                    .map(|(_, rv)| bytes_of(rv))
+                    .unwrap_or_default(),
                 other => bytes_of(other),
             };
             // start: array -> nth element (else 0); scalar -> per-subject.
@@ -237,7 +240,10 @@ fn fn_substr_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
                 ),
                 Some(other) => Some(conv::to_int(other)),
             };
-            out.insert(k.clone(), Value::str(substr_replace_one(&sbytes, st, ln, &rep)));
+            out.insert(
+                k.clone(),
+                Value::str(substr_replace_one(&sbytes, st, ln, &rep)),
+            );
         }
         Ok(Value::Array(out))
     } else {
@@ -254,7 +260,11 @@ fn fn_substr_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         }
         let sbytes = conv::to_string_bytes(&subject);
         let rep = match &replace {
-            Value::Array(ra) => ra.iter().next().map(|(_, rv)| bytes_of(rv)).unwrap_or_default(),
+            Value::Array(ra) => ra
+                .iter()
+                .next()
+                .map(|(_, rv)| bytes_of(rv))
+                .unwrap_or_default(),
             other => bytes_of(other),
         };
         let st = conv::to_int(&start_arg);
@@ -349,7 +359,7 @@ fn fn_similar_text(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_str_word_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = bytes_of(&args[0]);
     let format = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
-    if !matches!(format, 0 | 1 | 2) {
+    if !matches!(format, 0..=2) {
         return Err(Thrown::error(
             "ValueError",
             "str_word_count(): Argument #2 ($format) must be a valid format value",
@@ -357,7 +367,8 @@ fn fn_str_word_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     }
     let extra = args.get(2).map(bytes_of);
     let extra_mask = extra.map(|e| charmask(&e)).unwrap_or([false; 256]);
-    let is_word = |b: u8| b.is_ascii_alphabetic() || b == b'\'' || b == b'-' || extra_mask[b as usize];
+    let is_word =
+        |b: u8| b.is_ascii_alphabetic() || b == b'\'' || b == b'-' || extra_mask[b as usize];
 
     let mut count = 0i64;
     let mut words = PhpArray::new();
@@ -371,7 +382,10 @@ fn fn_str_word_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             count += 1;
             match format {
                 1 => words.push(Value::str(s[start..i].to_vec())),
-                2 => words.insert(ArrayKey::Int(start as i64), Value::str(s[start..i].to_vec())),
+                2 => words.insert(
+                    ArrayKey::Int(start as i64),
+                    Value::str(s[start..i].to_vec()),
+                ),
                 _ => {}
             }
         } else {
@@ -625,7 +639,15 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         min: usize,
         max: Option<usize>,
     ) {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     }
     put(m, "str_split", fn_str_split, 1, Some(2));
     put(m, "strtr", fn_strtr, 2, Some(3));
@@ -640,7 +662,13 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "array_uintersect", fn_array_uintersect, 3, None);
     put(m, "array_diff_ukey", fn_array_diff_ukey, 3, None);
     put(m, "array_replace", fn_array_replace, 1, None);
-    put(m, "array_merge_recursive", fn_array_merge_recursive, 0, None);
+    put(
+        m,
+        "array_merge_recursive",
+        fn_array_merge_recursive,
+        0,
+        None,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -722,16 +750,28 @@ mod tests {
     #[test]
     fn strtr_pairs() {
         assert_eq!(
-            calls(fn_strtr, &[s("Hello World"), map(vec![("Hello", s("Hi")), ("World", s("Earth"))])]),
+            calls(
+                fn_strtr,
+                &[
+                    s("Hello World"),
+                    map(vec![("Hello", s("Hi")), ("World", s("Earth"))])
+                ]
+            ),
             "Hi Earth"
         );
         // longest key wins (ab before a)
         assert_eq!(
-            calls(fn_strtr, &[s("abcabc"), map(vec![("a", s("1")), ("ab", s("X"))])]),
+            calls(
+                fn_strtr,
+                &[s("abcabc"), map(vec![("a", s("1")), ("ab", s("X"))])]
+            ),
             "XcXc"
         );
         // output is not re-translated
-        assert_eq!(calls(fn_strtr, &[s("aaa"), map(vec![("a", s("aa"))])]), "aaaaaa");
+        assert_eq!(
+            calls(fn_strtr, &[s("aaa"), map(vec![("a", s("aa"))])]),
+            "aaaaaa"
+        );
         assert_eq!(calls(fn_strtr, &[s("hi"), list(vec![])]), "hi");
         // integer keys coerce to their string form; longest wins
         assert_eq!(
@@ -739,7 +779,10 @@ mod tests {
             "bb"
         );
         assert_eq!(
-            calls(fn_strtr, &[s("test"), map(vec![("t", s("T")), ("te", s("X"))])]),
+            calls(
+                fn_strtr,
+                &[s("test"), map(vec![("t", s("T")), ("te", s("X"))])]
+            ),
             "XsT"
         );
     }
@@ -747,7 +790,10 @@ mod tests {
     #[test]
     fn strtr_from_to() {
         assert_eq!(calls(fn_strtr, &[s("Hello"), s("el"), s("ip")]), "Hippo");
-        assert_eq!(calls(fn_strtr, &[s("The fox"), s("abcdefghij"), s("0123456789")]), "T74 5ox");
+        assert_eq!(
+            calls(fn_strtr, &[s("The fox"), s("abcdefghij"), s("0123456789")]),
+            "T74 5ox"
+        );
         // to shorter than from: only the common prefix maps
         assert_eq!(calls(fn_strtr, &[s("abcd"), s("abcde"), s("xy")]), "xycd");
     }
@@ -756,35 +802,99 @@ mod tests {
 
     #[test]
     fn substr_replace_string() {
-        assert_eq!(calls(fn_substr_replace, &[s("Hello World"), s("PHP"), i(6)]), "Hello PHP");
-        assert_eq!(calls(fn_substr_replace, &[s("Hello World"), s("PHP"), i(6), i(5)]), "Hello PHP");
-        assert_eq!(calls(fn_substr_replace, &[s("Hello World"), s("PHP"), i(-5)]), "Hello PHP");
-        assert_eq!(calls(fn_substr_replace, &[s("Hello World"), s("PHP"), i(-5), i(-1)]), "Hello PHPd");
-        assert_eq!(calls(fn_substr_replace, &[s("Hello"), s("XXX"), i(0), i(0)]), "XXXHello");
-        assert_eq!(calls(fn_substr_replace, &[s("Hello"), s("XXX"), i(2), i(-1)]), "HeXXXo");
-        assert_eq!(calls(fn_substr_replace, &[s("abcdef"), s("-"), i(2), i(0)]), "ab-cdef");
+        assert_eq!(
+            calls(fn_substr_replace, &[s("Hello World"), s("PHP"), i(6)]),
+            "Hello PHP"
+        );
+        assert_eq!(
+            calls(fn_substr_replace, &[s("Hello World"), s("PHP"), i(6), i(5)]),
+            "Hello PHP"
+        );
+        assert_eq!(
+            calls(fn_substr_replace, &[s("Hello World"), s("PHP"), i(-5)]),
+            "Hello PHP"
+        );
+        assert_eq!(
+            calls(
+                fn_substr_replace,
+                &[s("Hello World"), s("PHP"), i(-5), i(-1)]
+            ),
+            "Hello PHPd"
+        );
+        assert_eq!(
+            calls(fn_substr_replace, &[s("Hello"), s("XXX"), i(0), i(0)]),
+            "XXXHello"
+        );
+        assert_eq!(
+            calls(fn_substr_replace, &[s("Hello"), s("XXX"), i(2), i(-1)]),
+            "HeXXXo"
+        );
+        assert_eq!(
+            calls(fn_substr_replace, &[s("abcdef"), s("-"), i(2), i(0)]),
+            "ab-cdef"
+        );
         assert_eq!(calls(fn_substr_replace, &[s("abc"), s("X"), i(10)]), "abcX");
-        assert_eq!(calls(fn_substr_replace, &[s("abc"), s("X"), i(10), i(5)]), "abcX");
-        assert_eq!(calls(fn_substr_replace, &[s("abcdef"), s("XYZ"), i(-2), i(-5)]), "abcdXYZef");
-        assert_eq!(calls(fn_substr_replace, &[s("abc"), s("X"), i(-99), i(1)]), "Xbc");
-        assert_eq!(calls(fn_substr_replace, &[s("Hello World"), s("PHP"), i(6), i(0)]), "Hello PHPWorld");
+        assert_eq!(
+            calls(fn_substr_replace, &[s("abc"), s("X"), i(10), i(5)]),
+            "abcX"
+        );
+        assert_eq!(
+            calls(fn_substr_replace, &[s("abcdef"), s("XYZ"), i(-2), i(-5)]),
+            "abcdXYZef"
+        );
+        assert_eq!(
+            calls(fn_substr_replace, &[s("abc"), s("X"), i(-99), i(1)]),
+            "Xbc"
+        );
+        assert_eq!(
+            calls(fn_substr_replace, &[s("Hello World"), s("PHP"), i(6), i(0)]),
+            "Hello PHPWorld"
+        );
         // scalar subject with array replace uses the first element
-        assert_eq!(calls(fn_substr_replace, &[s("aaa"), list(vec![s("X"), s("Y")]), i(1), i(1)]), "aXa");
-        assert_eq!(calls(fn_substr_replace, &[s("abc"), list(vec![]), i(1), i(1)]), "ac");
+        assert_eq!(
+            calls(
+                fn_substr_replace,
+                &[s("aaa"), list(vec![s("X"), s("Y")]), i(1), i(1)]
+            ),
+            "aXa"
+        );
+        assert_eq!(
+            calls(fn_substr_replace, &[s("abc"), list(vec![]), i(1), i(1)]),
+            "ac"
+        );
     }
 
     #[test]
     fn substr_replace_array() {
         assert_eq!(
-            dumped(&call(fn_substr_replace, &[list(vec![s("Hello"), s("World")]), s("X"), i(1), i(2)])),
+            dumped(&call(
+                fn_substr_replace,
+                &[list(vec![s("Hello"), s("World")]), s("X"), i(1), i(2)]
+            )),
             "array(2) {\n  [0]=>\n  string(4) \"HXlo\"\n  [1]=>\n  string(4) \"WXld\"\n}\n"
         );
         assert_eq!(
-            dumped(&call(fn_substr_replace, &[list(vec![s("aaa"), s("bbbb")]), list(vec![s("1"), s("2")]), i(1), i(1)])),
+            dumped(&call(
+                fn_substr_replace,
+                &[
+                    list(vec![s("aaa"), s("bbbb")]),
+                    list(vec![s("1"), s("2")]),
+                    i(1),
+                    i(1)
+                ]
+            )),
             "array(2) {\n  [0]=>\n  string(3) \"a1a\"\n  [1]=>\n  string(4) \"b2bb\"\n}\n"
         );
         assert_eq!(
-            dumped(&call(fn_substr_replace, &[list(vec![s("aaa"), s("bbbb")]), list(vec![s("1"), s("2")]), list(vec![i(0), i(1)]), list(vec![i(1), i(2)])])),
+            dumped(&call(
+                fn_substr_replace,
+                &[
+                    list(vec![s("aaa"), s("bbbb")]),
+                    list(vec![s("1"), s("2")]),
+                    list(vec![i(0), i(1)]),
+                    list(vec![i(1), i(2)])
+                ]
+            )),
             "array(2) {\n  [0]=>\n  string(3) \"1aa\"\n  [1]=>\n  string(3) \"b2b\"\n}\n"
         );
         // replace array shorter than subjects -> "" for the rest
@@ -794,7 +904,15 @@ mod tests {
         );
         // start/length arrays exhausted -> start 0, length full (whole replaced)
         assert_eq!(
-            dumped(&call(fn_substr_replace, &[list(vec![s("aaa"), s("bbb")]), s("X"), list(vec![i(1)]), list(vec![i(1)])])),
+            dumped(&call(
+                fn_substr_replace,
+                &[
+                    list(vec![s("aaa"), s("bbb")]),
+                    s("X"),
+                    list(vec![i(1)]),
+                    list(vec![i(1)])
+                ]
+            )),
             "array(2) {\n  [0]=>\n  string(3) \"aXa\"\n  [1]=>\n  string(1) \"X\"\n}\n"
         );
         // omitted length + start array
@@ -804,15 +922,29 @@ mod tests {
         );
         // keys preserved for associative subject
         assert_eq!(
-            dumped(&call(fn_substr_replace, &[map(vec![("x", s("aaa")), ("y", s("bbb"))]), list(vec![s("1"), s("2")]), i(1), i(1)])),
+            dumped(&call(
+                fn_substr_replace,
+                &[
+                    map(vec![("x", s("aaa")), ("y", s("bbb"))]),
+                    list(vec![s("1"), s("2")]),
+                    i(1),
+                    i(1)
+                ]
+            )),
             "array(2) {\n  [\"x\"]=>\n  string(3) \"a1a\"\n  [\"y\"]=>\n  string(3) \"b2b\"\n}\n"
         );
     }
 
     #[test]
     fn substr_replace_errors() {
-        assert!(fn_substr_replace(&mut NullHost, &[s("abc"), s("X"), list(vec![i(1)]), list(vec![i(1)])]).is_err());
-        assert!(fn_substr_replace(&mut NullHost, &[s("abc"), s("X"), i(1), list(vec![i(1)])]).is_err());
+        assert!(fn_substr_replace(
+            &mut NullHost,
+            &[s("abc"), s("X"), list(vec![i(1)]), list(vec![i(1)])]
+        )
+        .is_err());
+        assert!(
+            fn_substr_replace(&mut NullHost, &[s("abc"), s("X"), i(1), list(vec![i(1)])]).is_err()
+        );
     }
 
     // --- levenshtein -----------------------------------------------------
@@ -827,9 +959,21 @@ mod tests {
         assert_eq!(call_int(fn_levenshtein, &[s("gumbo"), s("gambol")]), 2);
         assert_eq!(call_int(fn_levenshtein, &[s("Hello"), s("hello")]), 1);
         // weighted costs: ins, rep, del
-        assert_eq!(call_int(fn_levenshtein, &[s("kitten"), s("sitting"), i(1), i(2), i(1)]), 5);
-        assert_eq!(call_int(fn_levenshtein, &[s("abc"), s("xyz"), i(10), i(1), i(10)]), 3);
-        assert_eq!(call_int(fn_levenshtein, &[s("ab"), s("abcd"), i(2), i(5), i(3)]), 4);
+        assert_eq!(
+            call_int(
+                fn_levenshtein,
+                &[s("kitten"), s("sitting"), i(1), i(2), i(1)]
+            ),
+            5
+        );
+        assert_eq!(
+            call_int(fn_levenshtein, &[s("abc"), s("xyz"), i(10), i(1), i(10)]),
+            3
+        );
+        assert_eq!(
+            call_int(fn_levenshtein, &[s("ab"), s("abcd"), i(2), i(5), i(3)]),
+            4
+        );
     }
 
     // --- similar_text ----------------------------------------------------
@@ -842,11 +986,23 @@ mod tests {
         assert_eq!(call_int(fn_similar_text, &[s(""), s("abc")]), 0);
         assert_eq!(call_int(fn_similar_text, &[s("abc"), s("")]), 0);
         assert_eq!(call_int(fn_similar_text, &[s(""), s("")]), 0);
-        assert_eq!(call_int(fn_similar_text, &[s("PHP IS GREAT"), s("WITH MYSQL")]), 3);
-        assert_eq!(call_int(fn_similar_text, &[s("Hello World"), s("Hello PHP World")]), 11);
+        assert_eq!(
+            call_int(fn_similar_text, &[s("PHP IS GREAT"), s("WITH MYSQL")]),
+            3
+        );
+        assert_eq!(
+            call_int(fn_similar_text, &[s("Hello World"), s("Hello PHP World")]),
+            11
+        );
         assert_eq!(call_int(fn_similar_text, &[s("test"), s("test")]), 4);
         assert_eq!(call_int(fn_similar_text, &[s("aaa"), s("aa")]), 2);
-        assert_eq!(call_int(fn_similar_text, &[s("The quick brown fox"), s("The quick fox")]), 13);
+        assert_eq!(
+            call_int(
+                fn_similar_text,
+                &[s("The quick brown fox"), s("The quick fox")]
+            ),
+            13
+        );
     }
 
     // --- str_word_count --------------------------------------------------
@@ -863,17 +1019,26 @@ mod tests {
             dumped(&call(fn_str_word_count, &[s("Hello World Foo"), i(1)])),
             "array(3) {\n  [0]=>\n  string(5) \"Hello\"\n  [1]=>\n  string(5) \"World\"\n  [2]=>\n  string(3) \"Foo\"\n}\n"
         );
-        assert_eq!(dumped(&call(fn_str_word_count, &[s(""), i(1)])), "array(0) {\n}\n");
+        assert_eq!(
+            dumped(&call(fn_str_word_count, &[s(""), i(1)])),
+            "array(0) {\n}\n"
+        );
         assert_eq!(
             dumped(&call(fn_str_word_count, &[s("Hello World"), i(2)])),
             "array(2) {\n  [0]=>\n  string(5) \"Hello\"\n  [6]=>\n  string(5) \"World\"\n}\n"
         );
         // additional characters (with range syntax)
         assert_eq!(
-            dumped(&call(fn_str_word_count, &[s("hi123 there"), i(1), s("123")])),
+            dumped(&call(
+                fn_str_word_count,
+                &[s("hi123 there"), i(1), s("123")]
+            )),
             "array(2) {\n  [0]=>\n  string(5) \"hi123\"\n  [1]=>\n  string(5) \"there\"\n}\n"
         );
-        assert_eq!(call_int(fn_str_word_count, &[s("a1b c"), i(0), s("0..9")]), 2);
+        assert_eq!(
+            call_int(fn_str_word_count, &[s("a1b c"), i(0), s("0..9")]),
+            2
+        );
         assert!(fn_str_word_count(&mut NullHost, &[s("hi"), i(5)]).is_err());
     }
 
@@ -881,14 +1046,29 @@ mod tests {
 
     #[test]
     fn chunk_split_cases() {
-        assert_eq!(calls(fn_chunk_split, &[s("abcdefgh"), i(3), s("-")]), "abc-def-gh-");
+        assert_eq!(
+            calls(fn_chunk_split, &[s("abcdefgh"), i(3), s("-")]),
+            "abc-def-gh-"
+        );
         assert_eq!(calls(fn_chunk_split, &[s("abcdefgh")]), "abcdefgh\r\n");
-        assert_eq!(calls(fn_chunk_split, &[s("abcdefgh"), i(3)]), "abc\r\ndef\r\ngh\r\n");
+        assert_eq!(
+            calls(fn_chunk_split, &[s("abcdefgh"), i(3)]),
+            "abc\r\ndef\r\ngh\r\n"
+        );
         assert_eq!(calls(fn_chunk_split, &[s("abc"), i(5), s("|")]), "abc|");
         assert_eq!(calls(fn_chunk_split, &[s(""), i(3), s("-")]), "-");
-        assert_eq!(calls(fn_chunk_split, &[s("abcdef"), i(2), s("\r\n")]), "ab\r\ncd\r\nef\r\n");
-        assert_eq!(calls(fn_chunk_split, &[s("abcdefgh"), i(4), s("")]), "abcdefgh");
-        assert_eq!(calls(fn_chunk_split, &[s("abcdefgh"), i(4), s("-")]), "abcd-efgh-");
+        assert_eq!(
+            calls(fn_chunk_split, &[s("abcdef"), i(2), s("\r\n")]),
+            "ab\r\ncd\r\nef\r\n"
+        );
+        assert_eq!(
+            calls(fn_chunk_split, &[s("abcdefgh"), i(4), s("")]),
+            "abcdefgh"
+        );
+        assert_eq!(
+            calls(fn_chunk_split, &[s("abcdefgh"), i(4), s("-")]),
+            "abcd-efgh-"
+        );
         assert_eq!(calls(fn_chunk_split, &[s("abcd"), i(4), s("-")]), "abcd-");
         assert!(fn_chunk_split(&mut NullHost, &[s("abc"), i(0)]).is_err());
     }
@@ -898,15 +1078,34 @@ mod tests {
     #[test]
     fn array_diff_key_cases() {
         assert_eq!(
-            dumped(&call(fn_array_diff_key, &[map(vec![("a", i(1)), ("b", i(2)), ("c", i(3))]), map(vec![("b", i(9)), ("d", i(9))])])),
+            dumped(&call(
+                fn_array_diff_key,
+                &[
+                    map(vec![("a", i(1)), ("b", i(2)), ("c", i(3))]),
+                    map(vec![("b", i(9)), ("d", i(9))])
+                ]
+            )),
             "array(2) {\n  [\"a\"]=>\n  int(1)\n  [\"c\"]=>\n  int(3)\n}\n"
         );
         assert_eq!(
-            dumped(&call(fn_array_diff_key, &[imap(vec![(10, s("x")), (20, s("y")), (30, s("z"))]), imap(vec![(20, s("q"))])])),
+            dumped(&call(
+                fn_array_diff_key,
+                &[
+                    imap(vec![(10, s("x")), (20, s("y")), (30, s("z"))]),
+                    imap(vec![(20, s("q"))])
+                ]
+            )),
             "array(2) {\n  [10]=>\n  string(1) \"x\"\n  [30]=>\n  string(1) \"z\"\n}\n"
         );
         assert_eq!(
-            dumped(&call(fn_array_diff_key, &[map(vec![("a", i(1)), ("b", i(2)), ("c", i(3))]), map(vec![("a", i(9))]), map(vec![("c", i(9))])])),
+            dumped(&call(
+                fn_array_diff_key,
+                &[
+                    map(vec![("a", i(1)), ("b", i(2)), ("c", i(3))]),
+                    map(vec![("a", i(9))]),
+                    map(vec![("c", i(9))])
+                ]
+            )),
             "array(1) {\n  [\"b\"]=>\n  int(2)\n}\n"
         );
     }
@@ -914,15 +1113,34 @@ mod tests {
     #[test]
     fn array_intersect_key_cases() {
         assert_eq!(
-            dumped(&call(fn_array_intersect_key, &[map(vec![("a", i(1)), ("b", i(2)), ("c", i(3))]), map(vec![("b", i(9)), ("c", i(8)), ("d", i(7))])])),
+            dumped(&call(
+                fn_array_intersect_key,
+                &[
+                    map(vec![("a", i(1)), ("b", i(2)), ("c", i(3))]),
+                    map(vec![("b", i(9)), ("c", i(8)), ("d", i(7))])
+                ]
+            )),
             "array(2) {\n  [\"b\"]=>\n  int(2)\n  [\"c\"]=>\n  int(3)\n}\n"
         );
         assert_eq!(
-            dumped(&call(fn_array_intersect_key, &[imap(vec![(0, s("a")), (1, s("b")), (2, s("c"))]), imap(vec![(1, s("x")), (2, s("y"))])])),
+            dumped(&call(
+                fn_array_intersect_key,
+                &[
+                    imap(vec![(0, s("a")), (1, s("b")), (2, s("c"))]),
+                    imap(vec![(1, s("x")), (2, s("y"))])
+                ]
+            )),
             "array(2) {\n  [1]=>\n  string(1) \"b\"\n  [2]=>\n  string(1) \"c\"\n}\n"
         );
         assert_eq!(
-            dumped(&call(fn_array_intersect_key, &[map(vec![("a", i(1)), ("b", i(2)), ("c", i(3))]), map(vec![("a", i(0)), ("b", i(0))]), map(vec![("b", i(0)), ("c", i(0))])])),
+            dumped(&call(
+                fn_array_intersect_key,
+                &[
+                    map(vec![("a", i(1)), ("b", i(2)), ("c", i(3))]),
+                    map(vec![("a", i(0)), ("b", i(0))]),
+                    map(vec![("b", i(0)), ("c", i(0))])
+                ]
+            )),
             "array(1) {\n  [\"b\"]=>\n  int(2)\n}\n"
         );
     }
@@ -932,7 +1150,13 @@ mod tests {
     #[test]
     fn array_replace_cases() {
         assert_eq!(
-            dumped(&call(fn_array_replace, &[map(vec![("a", i(1)), ("b", i(2))]), map(vec![("b", i(9)), ("c", i(3))])])),
+            dumped(&call(
+                fn_array_replace,
+                &[
+                    map(vec![("a", i(1)), ("b", i(2))]),
+                    map(vec![("b", i(9)), ("c", i(3))])
+                ]
+            )),
             "array(3) {\n  [\"a\"]=>\n  int(1)\n  [\"b\"]=>\n  int(9)\n  [\"c\"]=>\n  int(3)\n}\n"
         );
         assert_eq!(
@@ -940,7 +1164,14 @@ mod tests {
             "array(3) {\n  [0]=>\n  string(1) \"x\"\n  [1]=>\n  int(2)\n  [2]=>\n  string(1) \"z\"\n}\n"
         );
         assert_eq!(
-            dumped(&call(fn_array_replace, &[map(vec![("a", i(1))]), map(vec![("a", i(2))]), map(vec![("a", i(3)), ("b", i(4))])])),
+            dumped(&call(
+                fn_array_replace,
+                &[
+                    map(vec![("a", i(1))]),
+                    map(vec![("a", i(2))]),
+                    map(vec![("a", i(3)), ("b", i(4))])
+                ]
+            )),
             "array(2) {\n  [\"a\"]=>\n  int(3)\n  [\"b\"]=>\n  int(4)\n}\n"
         );
     }
@@ -987,11 +1218,13 @@ mod tests {
     impl Host for CmpHost {
         fn write_out(&mut self, _: &[u8]) {}
         fn call_callable(&mut self, _c: &Value, a: &[Value]) -> Result<Value, Thrown> {
-            Ok(Value::Int(match conv::to_int(&a[0]).cmp(&conv::to_int(&a[1])) {
-                std::cmp::Ordering::Less => -1,
-                std::cmp::Ordering::Equal => 0,
-                std::cmp::Ordering::Greater => 1,
-            }))
+            Ok(Value::Int(
+                match conv::to_int(&a[0]).cmp(&conv::to_int(&a[1])) {
+                    std::cmp::Ordering::Less => -1,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                },
+            ))
         }
     }
     fn cb() -> Value {
@@ -1003,7 +1236,11 @@ mod tests {
         // php: array_udiff([3,1,2,1], [2,4], <=>) => [0=>3, 1=>1, 3=>1]
         let r = fn_array_udiff(
             &mut CmpHost,
-            &[list(vec![i(3), i(1), i(2), i(1)]), list(vec![i(2), i(4)]), cb()],
+            &[
+                list(vec![i(3), i(1), i(2), i(1)]),
+                list(vec![i(2), i(4)]),
+                cb(),
+            ],
         )
         .unwrap();
         assert_eq!(
@@ -1017,7 +1254,11 @@ mod tests {
         // php: array_uintersect([1,2,3,2], [2,3,4], <=>) => [1=>2, 2=>3, 3=>2]
         let r = fn_array_uintersect(
             &mut CmpHost,
-            &[list(vec![i(1), i(2), i(3), i(2)]), list(vec![i(2), i(3), i(4)]), cb()],
+            &[
+                list(vec![i(1), i(2), i(3), i(2)]),
+                list(vec![i(2), i(3), i(4)]),
+                cb(),
+            ],
         )
         .unwrap();
         assert_eq!(
@@ -1031,7 +1272,11 @@ mod tests {
         // php: array_diff_ukey([1,2,3], [0=>9, 2=>9], <=>) => [1=>2]
         let r = fn_array_diff_ukey(
             &mut CmpHost,
-            &[list(vec![i(1), i(2), i(3)]), imap(vec![(0, i(9)), (2, i(9))]), cb()],
+            &[
+                list(vec![i(1), i(2), i(3)]),
+                imap(vec![(0, i(9)), (2, i(9))]),
+                cb(),
+            ],
         )
         .unwrap();
         assert_eq!(dumped(&r), "array(1) {\n  [1]=>\n  int(2)\n}\n");

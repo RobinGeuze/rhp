@@ -52,7 +52,11 @@ fn bc_number(rng: &mut Rng, int_max: usize, frac_max: usize) -> String {
     }
     for k in 0..ni {
         // avoid a leading zero run that is the whole integer part being "0..."
-        let d = if k == 0 { 1 + rng.below(9) } else { rng.below(10) };
+        let d = if k == 0 {
+            1 + rng.below(9)
+        } else {
+            rng.below(10)
+        };
         s.push((b'0' + d as u8) as char);
     }
     if nf > 0 {
@@ -82,10 +86,16 @@ pub fn bcmath_snippet(seed: u64, count: usize) -> String {
         lines.push_str(&format!("echo bcadd(\"{a}\",\"{b}\",{scale}),\"|\";\n"));
         lines.push_str(&format!("echo bcsub(\"{a}\",\"{b}\",{scale}),\"|\";\n"));
         lines.push_str(&format!("echo bcmul(\"{a}\",\"{b}\",{scale}),\"|\";\n"));
-        lines.push_str(&format!("echo bcdiv(\"{a}\",\"{b_nonzero}\",{scale}),\"|\";\n"));
-        lines.push_str(&format!("echo bcmod(\"{a}\",\"{b_nonzero}\",{scale}),\"|\";\n"));
+        lines.push_str(&format!(
+            "echo bcdiv(\"{a}\",\"{b_nonzero}\",{scale}),\"|\";\n"
+        ));
+        lines.push_str(&format!(
+            "echo bcmod(\"{a}\",\"{b_nonzero}\",{scale}),\"|\";\n"
+        ));
         lines.push_str(&format!("echo bccomp(\"{a}\",\"{b}\",{scale}),\"|\";\n"));
-        lines.push_str(&format!("echo implode(\",\",bcdivmod(\"{a}\",\"{b_nonzero}\",{scale})),\"|\";\n"));
+        lines.push_str(&format!(
+            "echo implode(\",\",bcdivmod(\"{a}\",\"{b_nonzero}\",{scale})),\"|\";\n"
+        ));
         lines.push_str(&format!("echo bcfloor(\"{a}\"),\"|\";\n"));
         lines.push_str(&format!("echo bcceil(\"{a}\"),\"|\";\n"));
         lines.push_str(&format!("echo bcround(\"{a}\",{}),\"|\";\n", rng.below(6)));
@@ -110,8 +120,17 @@ pub fn bcmath(seed: u64, count: usize) -> Diff {
 
 /// The 11 `ctype_*` functions.
 pub const CTYPE_FUNCS: &[&str] = &[
-    "ctype_alnum", "ctype_alpha", "ctype_cntrl", "ctype_digit", "ctype_graph", "ctype_lower",
-    "ctype_print", "ctype_punct", "ctype_space", "ctype_upper", "ctype_xdigit",
+    "ctype_alnum",
+    "ctype_alpha",
+    "ctype_cntrl",
+    "ctype_digit",
+    "ctype_graph",
+    "ctype_lower",
+    "ctype_print",
+    "ctype_punct",
+    "ctype_space",
+    "ctype_upper",
+    "ctype_xdigit",
 ];
 
 /// PHP snippet that runs every `ctype_*` over every single byte (0..=255), every
@@ -153,7 +172,11 @@ fn gmp_int(rng: &mut Rng, digits: usize) -> String {
         s.push('-');
     }
     for k in 0..n {
-        let d = if k == 0 { 1 + rng.below(9) } else { rng.below(10) };
+        let d = if k == 0 {
+            1 + rng.below(9)
+        } else {
+            rng.below(10)
+        };
         s.push((b'0' + d as u8) as char);
     }
     s
@@ -167,23 +190,49 @@ pub fn gmp_snippet(seed: u64, count: usize) -> String {
     for _ in 0..count {
         let a = gmp_int(&mut rng, 40);
         let b = gmp_int(&mut rng, 20);
-        let bz = if b.trim_start_matches('-') == "0" { "1".to_string() } else { b.clone() };
+        let bz = if b.trim_start_matches('-') == "0" {
+            "1".to_string()
+        } else {
+            b.clone()
+        };
         let e = rng.below(16);
-        s.push_str(&format!("echo gmp_strval(gmp_add(\"{a}\",\"{b}\")),\"|\";\n"));
-        s.push_str(&format!("echo gmp_strval(gmp_sub(\"{a}\",\"{b}\")),\"|\";\n"));
-        s.push_str(&format!("echo gmp_strval(gmp_mul(\"{a}\",\"{b}\")),\"|\";\n"));
-        s.push_str(&format!("echo gmp_strval(gmp_div_q(\"{a}\",\"{bz}\")),\"|\";\n"));
-        s.push_str(&format!("echo gmp_strval(gmp_div_r(\"{a}\",\"{bz}\")),\"|\";\n"));
-        s.push_str(&format!("echo gmp_strval(gmp_mod(\"{a}\",\"{bz}\")),\"|\";\n"));
+        s.push_str(&format!(
+            "echo gmp_strval(gmp_add(\"{a}\",\"{b}\")),\"|\";\n"
+        ));
+        s.push_str(&format!(
+            "echo gmp_strval(gmp_sub(\"{a}\",\"{b}\")),\"|\";\n"
+        ));
+        s.push_str(&format!(
+            "echo gmp_strval(gmp_mul(\"{a}\",\"{b}\")),\"|\";\n"
+        ));
+        s.push_str(&format!(
+            "echo gmp_strval(gmp_div_q(\"{a}\",\"{bz}\")),\"|\";\n"
+        ));
+        s.push_str(&format!(
+            "echo gmp_strval(gmp_div_r(\"{a}\",\"{bz}\")),\"|\";\n"
+        ));
+        s.push_str(&format!(
+            "echo gmp_strval(gmp_mod(\"{a}\",\"{bz}\")),\"|\";\n"
+        ));
         s.push_str(&format!("echo gmp_strval(gmp_pow(\"{b}\",{e})),\"|\";\n"));
-        s.push_str(&format!("echo gmp_strval(gmp_gcd(\"{a}\",\"{b}\")),\"|\";\n"));
+        s.push_str(&format!(
+            "echo gmp_strval(gmp_gcd(\"{a}\",\"{b}\")),\"|\";\n"
+        ));
         s.push_str(&format!("echo gmp_strval(gmp_abs(\"{a}\")),\"|\";\n"));
         s.push_str(&format!("echo gmp_strval(gmp_neg(\"{a}\")),\"|\";\n"));
-        s.push_str(&format!("echo gmp_strval(gmp_and(\"{a}\",\"{b}\")),\"|\";\n"));
-        s.push_str(&format!("echo gmp_strval(gmp_or(\"{a}\",\"{b}\")),\"|\";\n"));
-        s.push_str(&format!("echo gmp_strval(gmp_xor(\"{a}\",\"{b}\")),\"|\";\n"));
+        s.push_str(&format!(
+            "echo gmp_strval(gmp_and(\"{a}\",\"{b}\")),\"|\";\n"
+        ));
+        s.push_str(&format!(
+            "echo gmp_strval(gmp_or(\"{a}\",\"{b}\")),\"|\";\n"
+        ));
+        s.push_str(&format!(
+            "echo gmp_strval(gmp_xor(\"{a}\",\"{b}\")),\"|\";\n"
+        ));
         s.push_str(&format!("echo gmp_cmp(\"{a}\",\"{b}\"),gmp_sign(\"{a}\"),gmp_popcount(gmp_abs(\"{a}\")),\"|\";\n"));
-        s.push_str(&format!("echo gmp_strval(gmp_add(\"{a}\",\"{b}\"),16),\"|\";\n"));
+        s.push_str(&format!(
+            "echo gmp_strval(gmp_add(\"{a}\",\"{b}\"),16),\"|\";\n"
+        ));
         s.push_str("echo \"\\n\";\n");
     }
     s
@@ -201,7 +250,8 @@ pub fn gmp(seed: u64, count: usize) -> Diff {
 /// A random UTF-8 string mixing ASCII, Latin-1 accents, CJK and astral emoji.
 fn utf8_string(rng: &mut Rng) -> String {
     const POOL: &[char] = &[
-        'a', 'Z', '0', ' ', '!', 'é', 'ß', 'Ü', 'ñ', 'Ω', 'Я', '日', '本', '語', '✓', '€', '😀', '🎉', '𝔘',
+        'a', 'Z', '0', ' ', '!', 'é', 'ß', 'Ü', 'ñ', 'Ω', 'Я', '日', '本', '語', '✓', '€', '😀',
+        '🎉', '𝔘',
     ];
     let n = rng.below(12);
     (0..n).map(|_| POOL[rng.below(POOL.len())]).collect()
@@ -223,12 +273,18 @@ pub fn mbstring_snippet(seed: u64, count: usize) -> String {
         s.push_str(&format!("echo mb_substr({la},{start},{len}),\"|\";\n"));
         s.push_str(&format!("echo mb_strtoupper({la}),\"|\";\n"));
         s.push_str(&format!("echo mb_strtolower({la}),\"|\";\n"));
-        s.push_str(&format!("echo mb_convert_case({la}, MB_CASE_TITLE),\"|\";\n"));
+        s.push_str(&format!(
+            "echo mb_convert_case({la}, MB_CASE_TITLE),\"|\";\n"
+        ));
         s.push_str(&format!("echo implode(\",\", mb_str_split({la})),\"|\";\n"));
-        s.push_str(&format!("echo var_export(mb_strpos({la},{ln}),true),\"|\";\n"));
+        s.push_str(&format!(
+            "echo var_export(mb_strpos({la},{ln}),true),\"|\";\n"
+        ));
         s.push_str(&format!("echo mb_strwidth({la}),\"|\";\n"));
         // mb_ord throws on an empty string in php 8; guard so the snippet never fatals
-        s.push_str(&format!("echo (mb_strlen({la})>0 ? var_export(mb_ord({la}),true) : \"-\"),\"|\";\n"));
+        s.push_str(&format!(
+            "echo (mb_strlen({la})>0 ? var_export(mb_ord({la}),true) : \"-\"),\"|\";\n"
+        ));
         s.push_str("echo \"\\n\";\n");
     }
     s
@@ -249,15 +305,25 @@ pub fn mbstring(seed: u64, count: usize) -> Diff {
 pub fn password_snippet() -> String {
     let known = [
         // (password, bcrypt $2y$ hash of it)
-        ("$2y$10$N9qo8uLOickgx2ZMRZoMye1VdLk3fsv36cQ.Rl4bQ2N0J1x8i9Ym", "secret"),
-        ("$2y$12$GhvMmNVjRW29ulnudl.LbuAnUtN/LRfe1oxpvczonrdgw2fFbMWDG", "password"),
+        (
+            "$2y$10$N9qo8uLOickgx2ZMRZoMye1VdLk3fsv36cQ.Rl4bQ2N0J1x8i9Ym",
+            "secret",
+        ),
+        (
+            "$2y$12$GhvMmNVjRW29ulnudl.LbuAnUtN/LRfe1oxpvczonrdgw2fFbMWDG",
+            "password",
+        ),
     ];
     let mut s = String::from("<?php\n");
     s.push_str("echo implode(\",\", password_algos()), \"\\n\";\n");
     for (h, pw) in known {
         s.push_str(&format!("print_r(password_get_info(\"{h}\"));\n"));
-        s.push_str(&format!("var_dump(password_verify(\"{pw}\",\"{h}\"), password_verify(\"wrong\",\"{h}\"));\n"));
-        s.push_str(&format!("var_dump(password_needs_rehash(\"{h}\", PASSWORD_BCRYPT, [\"cost\"=>10]));\n"));
+        s.push_str(&format!(
+            "var_dump(password_verify(\"{pw}\",\"{h}\"), password_verify(\"wrong\",\"{h}\"));\n"
+        ));
+        s.push_str(&format!(
+            "var_dump(password_needs_rehash(\"{h}\", PASSWORD_BCRYPT, [\"cost\"=>10]));\n"
+        ));
     }
     s
 }

@@ -35,7 +35,9 @@ impl Default for Arena {
 
 impl Arena {
     pub fn new() -> Self {
-        Arena { arena: LocalArena::new() }
+        Arena {
+            arena: LocalArena::new(),
+        }
     }
 
     /// Parse `source` under a logical file name. The returned [`Parsed`] borrows
@@ -73,6 +75,6 @@ mod tests {
         let arena = Arena::new();
         let parsed = arena.parse(b"t.php", br#"<?php echo "hi", 1+2;"#);
         assert!(!parsed.has_parse_errors());
-        assert!(parsed.program().statements.len() >= 1);
+        assert!(!parsed.program().statements.is_empty());
     }
 }

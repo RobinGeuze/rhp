@@ -100,7 +100,11 @@ fn sign_extend(v: u64, n: usize) -> i64 {
 fn fn_unpack(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let format = conv::to_string_bytes(&deref(&args[0]));
     let data = conv::to_string_bytes(&deref(&args[1]));
-    let mut pos = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0).max(0) as usize;
+    let mut pos = args
+        .get(2)
+        .map(|v| conv::to_int(&deref(v)))
+        .unwrap_or(0)
+        .max(0) as usize;
 
     let mut out = PhpArray::new();
     let fmt = String::from_utf8_lossy(&format);
@@ -151,7 +155,11 @@ fn fn_unpack(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             'Q' => (8, false, false),
             'a' | 'A' | 'Z' => {
                 // string: count = length (or rest for '*').
-                let len = if star { data.len().saturating_sub(pos) } else { count };
+                let len = if star {
+                    data.len().saturating_sub(pos)
+                } else {
+                    count
+                };
                 let end = (pos + len).min(data.len());
                 let mut s = data[pos..end].to_vec();
                 pos = end;
@@ -164,7 +172,11 @@ fn fn_unpack(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         s.truncate(z);
                     }
                 }
-                let key = if name.is_empty() { "1".to_string() } else { name.to_string() };
+                let key = if name.is_empty() {
+                    "1".to_string()
+                } else {
+                    name.to_string()
+                };
                 out.insert(ArrayKey::from_bytes(key.as_bytes()), Value::str(s));
                 continue;
             }
@@ -182,7 +194,11 @@ fn fn_unpack(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 None => break,
             };
             pos += size;
-            let val = if signed { Value::Int(sign_extend(raw, size)) } else { Value::Int(raw as i64) };
+            let val = if signed {
+                Value::Int(sign_extend(raw, size))
+            } else {
+                Value::Int(raw as i64)
+            };
             let key = if name.is_empty() {
                 (idx + 1).to_string()
             } else if star || count > 1 {
@@ -219,7 +235,11 @@ fn fn_pack(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 ci += 1;
             }
         }
-        let count: usize = if count_str.is_empty() { 1 } else { count_str.parse().unwrap_or(1) };
+        let count: usize = if count_str.is_empty() {
+            1
+        } else {
+            count_str.parse().unwrap_or(1)
+        };
         let push_int = |out: &mut Vec<u8>, v: u64, size: usize, be: bool| {
             if be {
                 for i in (0..size).rev() {
@@ -242,9 +262,16 @@ fn fn_pack(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             'J' => (8, true),
             'P' | 'q' | 'Q' => (8, false),
             'a' | 'A' | 'Z' => {
-                let s = vals.get(vi).map(|v| conv::to_string_bytes(&deref(v))).unwrap_or_default();
+                let s = vals
+                    .get(vi)
+                    .map(|v| conv::to_string_bytes(&deref(v)))
+                    .unwrap_or_default();
                 vi += 1;
-                let len = if star { s.len() + if code == 'Z' { 1 } else { 0 } } else { count };
+                let len = if star {
+                    s.len() + if code == 'Z' { 1 } else { 0 }
+                } else {
+                    count
+                };
                 let pad = if code == 'A' { b' ' } else { 0u8 };
                 for i in 0..len {
                     out.push(*s.get(i).unwrap_or(&pad));
@@ -253,7 +280,11 @@ fn fn_pack(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             }
             _ => return Ok(Value::Bool(false)),
         };
-        let reps = if star { vals.len().saturating_sub(vi) } else { count };
+        let reps = if star {
+            vals.len().saturating_sub(vi)
+        } else {
+            count
+        };
         for _ in 0..reps {
             let v = vals.get(vi).map(|x| conv::to_int(&deref(x))).unwrap_or(0) as u64;
             vi += 1;
@@ -271,7 +302,15 @@ fn fn_pack(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
     macro_rules! reg {
         ($name:literal, $func:path, $min:literal, $max:expr) => {
-            m.insert($name, Builtin { name: $name, func: $func, min_args: $min, max_args: $max });
+            m.insert(
+                $name,
+                Builtin {
+                    name: $name,
+                    func: $func,
+                    min_args: $min,
+                    max_args: $max,
+                },
+            );
         };
     }
     reg!("is_iterable", fn_is_iterable, 1, Some(1));
@@ -305,7 +344,10 @@ mod tests {
 
     #[test]
     fn iterable_countable() {
-        assert!(matches!(fn_is_iterable(&mut NoopHost, &[arr(&[])]).unwrap(), Value::Bool(true)));
+        assert!(matches!(
+            fn_is_iterable(&mut NoopHost, &[arr(&[])]).unwrap(),
+            Value::Bool(true)
+        ));
         assert!(matches!(
             fn_is_iterable(&mut NoopHost, &[Value::str("abc")]).unwrap(),
             Value::Bool(false)

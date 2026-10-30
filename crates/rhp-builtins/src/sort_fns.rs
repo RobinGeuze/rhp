@@ -7,8 +7,8 @@
 
 use std::cmp::Ordering;
 
-use rhp_values::{conv, ArrayKey, PhpArray, Value};
 use rhp_semantics::{deref, ops};
+use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::{Builtin, Host, Thrown};
 
@@ -59,7 +59,11 @@ fn cmp_flagged(a: &Value, b: &Value, flags: i64) -> Ordering {
 fn snapshot(arg: &Value) -> Option<Vec<(ArrayKey, Value)>> {
     if let Value::Ref(rc) = arg {
         if let Value::Array(a) = &*rc.borrow() {
-            return Some(a.iter().map(|(k, v)| (k.clone(), deref(v).clone())).collect());
+            return Some(
+                a.iter()
+                    .map(|(k, v)| (k.clone(), deref(v).clone()))
+                    .collect(),
+            );
         }
     }
     None
@@ -95,12 +99,18 @@ fn flags_arg(args: &[Value], i: usize) -> i64 {
 // -- value sorts (reindex keys) -------------------------------------------
 
 fn sort_values(args: &[Value], reverse: bool) -> Value {
-    let Some(entries) = snapshot(&args[0]) else { return Value::Bool(false) };
+    let Some(entries) = snapshot(&args[0]) else {
+        return Value::Bool(false);
+    };
     let flags = flags_arg(args, 1);
     let mut vals: Vec<Value> = entries.into_iter().map(|(_, v)| v).collect();
     vals.sort_by(|a, b| {
         let o = cmp_flagged(a, b, flags);
-        if reverse { o.reverse() } else { o }
+        if reverse {
+            o.reverse()
+        } else {
+            o
+        }
     });
     store(&args[0], reindex(vals));
     Value::Bool(true)
@@ -117,12 +127,22 @@ fn fn_rsort(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // -- associative sorts (preserve keys) ------------------------------------
 
 fn asort_impl(args: &[Value], reverse: bool, by_key: bool) -> Value {
-    let Some(mut pairs) = snapshot(&args[0]) else { return Value::Bool(false) };
+    let Some(mut pairs) = snapshot(&args[0]) else {
+        return Value::Bool(false);
+    };
     let flags = flags_arg(args, 1);
     pairs.sort_by(|a, b| {
-        let (x, y) = if by_key { (key_to_value(&a.0), key_to_value(&b.0)) } else { (a.1.clone(), b.1.clone()) };
+        let (x, y) = if by_key {
+            (key_to_value(&a.0), key_to_value(&b.0))
+        } else {
+            (a.1.clone(), b.1.clone())
+        };
         let o = cmp_flagged(&x, &y, flags);
-        if reverse { o.reverse() } else { o }
+        if reverse {
+            o.reverse()
+        } else {
+            o
+        }
     });
     store(&args[0], from_pairs(pairs));
     Value::Bool(true)
@@ -149,7 +169,9 @@ fn usort_impl(
     preserve_keys: bool,
     by_key: bool,
 ) -> Result<Value, Thrown> {
-    let Some(pairs) = snapshot(&args[0]) else { return Ok(Value::Bool(false)) };
+    let Some(pairs) = snapshot(&args[0]) else {
+        return Ok(Value::Bool(false));
+    };
     let cmp = args[1].clone();
     let mut pairs = pairs;
     let mut err: Option<Thrown> = None;
@@ -197,7 +219,9 @@ fn fn_uksort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `natsort(&$array)` / `natcasesort(&$array)`: sort by value using the natural
 /// order algorithm (reusing `strnatcmp`/`strnatcasecmp`), preserving keys.
 fn natsort_impl(args: &[Value], fold_case: bool) -> Value {
-    let Some(mut pairs) = snapshot(&args[0]) else { return Value::Bool(false) };
+    let Some(mut pairs) = snapshot(&args[0]) else {
+        return Value::Bool(false);
+    };
     pairs.sort_by(|a, b| {
         crate::strcmp_fns::strnatcmp_ex(
             &conv::to_string_bytes(&a.1),
@@ -227,7 +251,9 @@ fn fn_natcasesort(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// (the possibly-modified value is written back under the original key). A
 /// callback taking `$value` by value leaves the element unchanged, matching PHP.
 fn fn_array_walk(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(pairs) = snapshot(&args[0]) else { return Ok(Value::Bool(false)) };
+    let Some(pairs) = snapshot(&args[0]) else {
+        return Ok(Value::Bool(false));
+    };
     let cb = args[1].clone();
     let extra = args.get(2).map(deref).unwrap_or(Value::Null);
     let mut out = PhpArray::new();
@@ -247,7 +273,9 @@ fn fn_array_walk(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// but descends into sub-arrays, invoking the callback only on leaf (non-array)
 /// values (by reference, written back in place).
 fn fn_array_walk_recursive(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(pairs) = snapshot(&args[0]) else { return Ok(Value::Bool(false)) };
+    let Some(pairs) = snapshot(&args[0]) else {
+        return Ok(Value::Bool(false));
+    };
     let cb = args[1].clone();
     let extra = args.get(2).map(deref).unwrap_or(Value::Null);
     let out = walk_rec_pairs(host, &cb, &extra, pairs)?;
@@ -308,7 +336,10 @@ fn with_array_data<R>(arg: &Value, f: impl FnOnce(&mut rhp_values::ArrayData) ->
 }
 
 fn elem_at(d: &rhp_values::ArrayData, pos: usize) -> Value {
-    d.entries.get_index(pos).map(|(_, v)| deref(v).clone()).unwrap_or(Value::Bool(false))
+    d.entries
+        .get_index(pos)
+        .map(|(_, v)| deref(v).clone())
+        .unwrap_or(Value::Bool(false))
 }
 
 fn fn_reset(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -323,7 +354,11 @@ fn fn_end(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(with_array_data(&args[0], |d| {
         let n = d.entries.len();
         d.pos = n.saturating_sub(1);
-        if n == 0 { Value::Bool(false) } else { elem_at(d, d.pos) }
+        if n == 0 {
+            Value::Bool(false)
+        } else {
+            elem_at(d, d.pos)
+        }
     })
     .unwrap_or(Value::Bool(false)))
 }
@@ -367,9 +402,13 @@ fn fn_key(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_array_push(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Value::Ref(rc) = &args[0] else { return Ok(Value::Bool(false)) };
+    let Value::Ref(rc) = &args[0] else {
+        return Ok(Value::Bool(false));
+    };
     let mut g = rc.borrow_mut();
-    let Value::Array(a) = &mut *g else { return Ok(Value::Bool(false)) };
+    let Value::Array(a) = &mut *g else {
+        return Ok(Value::Bool(false));
+    };
     for v in &args[1..] {
         a.push(deref(v).clone());
     }
@@ -377,7 +416,9 @@ fn fn_array_push(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_array_pop(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(pairs) = snapshot(&args[0]) else { return Ok(Value::Null) };
+    let Some(pairs) = snapshot(&args[0]) else {
+        return Ok(Value::Null);
+    };
     if pairs.is_empty() {
         return Ok(Value::Null);
     }
@@ -390,7 +431,9 @@ fn fn_array_pop(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_array_shift(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(pairs) = snapshot(&args[0]) else { return Ok(Value::Null) };
+    let Some(pairs) = snapshot(&args[0]) else {
+        return Ok(Value::Null);
+    };
     if pairs.is_empty() {
         return Ok(Value::Null);
     }
@@ -401,7 +444,9 @@ fn fn_array_shift(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_array_unshift(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(pairs) = snapshot(&args[0]) else { return Ok(Value::Bool(false)) };
+    let Some(pairs) = snapshot(&args[0]) else {
+        return Ok(Value::Bool(false));
+    };
     let mut out = PhpArray::new();
     for v in &args[1..] {
         out.push(deref(v).clone());
@@ -434,7 +479,9 @@ fn rebuild_reindex_ints(pairs: impl Iterator<Item = (ArrayKey, Value)>) -> PhpAr
 /// (reindexed), optionally splicing in `$replacement`, and return the removed
 /// elements (reindexed). The array is passed by reference (arg 0).
 fn fn_array_splice(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(pairs) = snapshot(&args[0]) else { return Ok(Value::Array(PhpArray::new())) };
+    let Some(pairs) = snapshot(&args[0]) else {
+        return Ok(Value::Array(PhpArray::new()));
+    };
     let len = pairs.len() as i64;
 
     // offset: negative counts from the end; clamped to [0, len].
@@ -505,7 +552,15 @@ pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
                func: crate::NativeFn,
                min: usize,
                max: Option<usize>| {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     };
     add(m, "sort", fn_sort, 1, Some(2));
     add(m, "rsort", fn_rsort, 1, Some(2));
@@ -519,7 +574,13 @@ pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
     add(m, "natsort", fn_natsort, 1, Some(1));
     add(m, "natcasesort", fn_natcasesort, 1, Some(1));
     add(m, "array_walk", fn_array_walk, 2, Some(3));
-    add(m, "array_walk_recursive", fn_array_walk_recursive, 2, Some(3));
+    add(
+        m,
+        "array_walk_recursive",
+        fn_array_walk_recursive,
+        2,
+        Some(3),
+    );
     add(m, "array_push", fn_array_push, 1, None);
     add(m, "array_pop", fn_array_pop, 1, Some(1));
     add(m, "array_shift", fn_array_shift, 1, Some(1));

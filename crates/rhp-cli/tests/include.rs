@@ -6,7 +6,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn php_available() -> bool {
-    Command::new("php").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+    Command::new("php")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn write(path: &Path, contents: &str) {
@@ -26,7 +30,10 @@ fn run_php(main: &Path) -> Vec<u8> {
 
 /// stdout of the built `rhp` binary on `<main>`.
 fn run_rhp(main: &Path) -> Vec<u8> {
-    let out = Command::new(env!("CARGO_BIN_EXE_rhp")).arg(main).output().expect("run rhp");
+    let out = Command::new(env!("CARGO_BIN_EXE_rhp"))
+        .arg(main)
+        .output()
+        .expect("run rhp");
     out.stdout
 }
 
@@ -90,8 +97,14 @@ fn spl_autoload_matches_php() {
     }
     let dir = case_dir("autoload");
     std::fs::create_dir_all(dir.join("classes")).unwrap();
-    write(&dir.join("classes/Mailer.php"), "<?php class Mailer { function send($t){ return \"to:$t\"; } }");
-    write(&dir.join("classes/Logger.php"), "<?php class Logger { static function log($m){ return \"L:$m\"; } }");
+    write(
+        &dir.join("classes/Mailer.php"),
+        "<?php class Mailer { function send($t){ return \"to:$t\"; } }",
+    );
+    write(
+        &dir.join("classes/Logger.php"),
+        "<?php class Logger { static function log($m){ return \"L:$m\"; } }",
+    );
     write(
         &dir.join("main.php"),
         "<?php
@@ -135,7 +148,11 @@ fn eval_matches_php() {
     );
     let main = dir.join("main.php");
     let (php, rhp) = (run_php(&main), run_rhp(&main));
-    assert_eq!(String::from_utf8_lossy(&php), String::from_utf8_lossy(&rhp), "eval stdout differs");
+    assert_eq!(
+        String::from_utf8_lossy(&php),
+        String::from_utf8_lossy(&rhp),
+        "eval stdout differs"
+    );
     assert!(!php.is_empty());
 }
 
@@ -147,7 +164,10 @@ fn include_shares_caller_scope_like_php() {
     let dir = case_dir("incscope");
     // The included file reads a caller variable and defines new ones; php's
     // include runs in the caller's scope, so both directions are visible.
-    write(&dir.join("vars.php"), "<?php $vendorDir = $base . '/vendor'; $extra = 'E'; return $vendorDir;");
+    write(
+        &dir.join("vars.php"),
+        "<?php $vendorDir = $base . '/vendor'; $extra = 'E'; return $vendorDir;",
+    );
     write(
         &dir.join("main.php"),
         "<?php
@@ -161,7 +181,11 @@ fn include_shares_caller_scope_like_php() {
     );
     let main = dir.join("main.php");
     let (php, rhp) = (run_php(&main), run_rhp(&main));
-    assert_eq!(String::from_utf8_lossy(&php), String::from_utf8_lossy(&rhp), "include scope differs");
+    assert_eq!(
+        String::from_utf8_lossy(&php),
+        String::from_utf8_lossy(&rhp),
+        "include scope differs"
+    );
     assert_eq!(php, b"/root/vendor|/root/vendor|E\n");
 }
 
@@ -171,7 +195,10 @@ fn require_missing_is_fatal_like_php() {
         return;
     }
     let dir = case_dir("fatal");
-    write(&dir.join("main.php"), "<?php echo \"before\\n\"; require __DIR__ . '/nope.php'; echo \"after\\n\";");
+    write(
+        &dir.join("main.php"),
+        "<?php echo \"before\\n\"; require __DIR__ . '/nope.php'; echo \"after\\n\";",
+    );
     let main = dir.join("main.php");
     let (php, rhp) = (run_php(&main), run_rhp(&main));
     // both stop after "before" (the fatal goes to stderr, suppressed)

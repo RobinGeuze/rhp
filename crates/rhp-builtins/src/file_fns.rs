@@ -69,11 +69,17 @@ fn fn_file_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 
 fn fn_is_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // php `is_file` is true only for a *regular* file (not dirs, not /dev/null).
-    Ok(Value::Bool(host.stream_stat(&path_arg(args, 0)).is_some_and(|s| s.is_regular)))
+    Ok(Value::Bool(
+        host.stream_stat(&path_arg(args, 0))
+            .is_some_and(|s| s.is_regular),
+    ))
 }
 
 fn fn_is_dir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.stream_stat(&path_arg(args, 0)).is_some_and(|s| s.is_dir)))
+    Ok(Value::Bool(
+        host.stream_stat(&path_arg(args, 0))
+            .is_some_and(|s| s.is_dir),
+    ))
 }
 
 fn fn_is_readable(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -84,11 +90,22 @@ fn fn_is_readable(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// php (trailing slashes ignored; an exact suffix stripped unless it's the whole).
 fn fn_basename(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_arg(args, 0);
-    let suffix = args.get(1).map(|v| conv::to_string_bytes(&deref(v))).unwrap_or_default();
+    let suffix = args
+        .get(1)
+        .map(|v| conv::to_string_bytes(&deref(v)))
+        .unwrap_or_default();
     // drop trailing '/'
-    let end = path.iter().rposition(|&b| b != b'/').map(|i| i + 1).unwrap_or(0);
+    let end = path
+        .iter()
+        .rposition(|&b| b != b'/')
+        .map(|i| i + 1)
+        .unwrap_or(0);
     let trimmed = &path[..end];
-    let start = trimmed.iter().rposition(|&b| b == b'/').map(|i| i + 1).unwrap_or(0);
+    let start = trimmed
+        .iter()
+        .rposition(|&b| b == b'/')
+        .map(|i| i + 1)
+        .unwrap_or(0);
     let mut base = &trimmed[start..];
     if !suffix.is_empty() && base.len() > suffix.len() && base.ends_with(&suffix[..]) {
         base = &base[..base.len() - suffix.len()];
@@ -110,20 +127,33 @@ fn fn_pathinfo(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(ALL);
 
     // basename (php keeps trailing-slash handling consistent with basename()).
-    let end = path.iter().rposition(|&b| b != b'/').map(|i| i + 1).unwrap_or(0);
+    let end = path
+        .iter()
+        .rposition(|&b| b != b'/')
+        .map(|i| i + 1)
+        .unwrap_or(0);
     let trimmed = &path[..end];
-    let base_start = trimmed.iter().rposition(|&b| b == b'/').map(|i| i + 1).unwrap_or(0);
+    let base_start = trimmed
+        .iter()
+        .rposition(|&b| b == b'/')
+        .map(|i| i + 1)
+        .unwrap_or(0);
     let basename = &trimmed[base_start..];
     // extension / filename: split basename on the LAST '.', but a leading dot
     // (dotfile with no other dot) has no extension.
-    let (filename, extension): (&[u8], Option<&[u8]>) = match basename.iter().rposition(|&b| b == b'.') {
-        None => (basename, None),
-        Some(dot) => (&basename[..dot], Some(&basename[dot + 1..])),
-    };
+    let (filename, extension): (&[u8], Option<&[u8]>) =
+        match basename.iter().rposition(|&b| b == b'.') {
+            None => (basename, None),
+            Some(dot) => (&basename[..dot], Some(&basename[dot + 1..])),
+        };
 
     let dir = dirname_once(&path);
     // php: dirname is "." for a bare name only when the input had no slash.
-    let dirname: Vec<u8> = if path.contains(&b'/') { dir } else { b".".to_vec() };
+    let dirname: Vec<u8> = if path.contains(&b'/') {
+        dir
+    } else {
+        b".".to_vec()
+    };
 
     // Single-component request -> return a string.
     if flags != ALL && (flags & (flags - 1)) == 0 {
@@ -159,7 +189,11 @@ fn fn_pathinfo(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `dirname(path, levels=1)` — matching php: "." when no slash, "/" at root.
 fn fn_dirname(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut path = path_arg(args, 0);
-    let levels = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(1).max(1);
+    let levels = args
+        .get(1)
+        .map(|v| conv::to_int(&deref(v)))
+        .unwrap_or(1)
+        .max(1);
     for _ in 0..levels {
         path = dirname_once(&path);
     }
@@ -168,7 +202,11 @@ fn fn_dirname(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn dirname_once(path: &[u8]) -> Vec<u8> {
     // drop trailing slashes
-    let end = path.iter().rposition(|&b| b != b'/').map(|i| i + 1).unwrap_or(0);
+    let end = path
+        .iter()
+        .rposition(|&b| b != b'/')
+        .map(|i| i + 1)
+        .unwrap_or(0);
     let trimmed = &path[..end];
     match trimmed.iter().rposition(|&b| b == b'/') {
         None => b".".to_vec(),
@@ -193,14 +231,18 @@ fn fn_getcwd(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_chdir(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let dir = path_arg(args, 0);
-    Ok(Value::Bool(std::env::set_current_dir(&*as_str(&dir)).is_ok()))
+    Ok(Value::Bool(
+        std::env::set_current_dir(&*as_str(&dir)).is_ok(),
+    ))
 }
 
 /// `umask(?int $mask = null): int` — get, or set-and-return-old, the file mode
 /// creation mask.
 fn fn_umask(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match args.first().map(|v| conv::to_int(&deref(v))) {
-        Some(mask) => Ok(Value::Int(unsafe { libc::umask(mask as libc::mode_t) } as i64)),
+        Some(mask) => Ok(Value::Int(
+            unsafe { libc::umask(mask as libc::mode_t) } as i64
+        )),
         None => {
             // Read without changing: set to 0, capture, restore.
             let cur = unsafe { libc::umask(0) };
@@ -228,7 +270,7 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     let lower = url.to_ascii_lowercase();
     if lower.starts_with(b"http://") || lower.starts_with(b"https://") {
         // args: (url, use_include_path, context, offset, maxlen)
-        let ctx = args.get(2).map(|v| deref(v)).unwrap_or(Value::Null);
+        let ctx = args.get(2).map(deref).unwrap_or(Value::Null);
         return Ok(crate::http::fetch(host, &url, &ctx));
     }
     match host.stream_get_contents(&url) {
@@ -267,11 +309,18 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 }
 
 fn fn_unlink(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(std::fs::remove_file(&*as_str(&path_arg(args, 0))).is_ok()))
+    Ok(Value::Bool(
+        std::fs::remove_file(&*as_str(&path_arg(args, 0))).is_ok(),
+    ))
 }
 
 fn fn_sys_get_temp_dir(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(std::env::temp_dir().to_string_lossy().into_owned().into_bytes()))
+    Ok(Value::str(
+        std::env::temp_dir()
+            .to_string_lossy()
+            .into_owned()
+            .into_bytes(),
+    ))
 }
 
 fn fn_is_writable(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -284,13 +333,22 @@ fn fn_is_executable(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_mkdir(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = as_str(&path_arg(args, 0)).into_owned();
-    let recursive = args.get(2).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
-    let r = if recursive { std::fs::create_dir_all(&path) } else { std::fs::create_dir(&path) };
+    let recursive = args
+        .get(2)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
+    let r = if recursive {
+        std::fs::create_dir_all(&path)
+    } else {
+        std::fs::create_dir(&path)
+    };
     Ok(Value::Bool(r.is_ok()))
 }
 
 fn fn_rmdir(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(std::fs::remove_dir(&*as_str(&path_arg(args, 0))).is_ok()))
+    Ok(Value::Bool(
+        std::fs::remove_dir(&*as_str(&path_arg(args, 0))).is_ok(),
+    ))
 }
 
 fn fn_rename(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -333,7 +391,11 @@ fn fn_touch(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path_str = as_str(&path).into_owned();
     // Create the file if absent (php's touch creates an empty file).
     if !std::path::Path::new(&path_str).exists()
-        && std::fs::OpenOptions::new().create(true).append(true).open(&path_str).is_err()
+        && std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path_str)
+            .is_err()
     {
         return Ok(Value::Bool(false));
     }
@@ -343,15 +405,24 @@ fn fn_touch(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .unwrap_or(0);
     // mtime: given or now; atime: given or the (effective) mtime — php's rule.
     let given = |i: usize| {
-        args.get(i).map(|v| deref(v)).filter(|v| !matches!(v, Value::Null)).map(|v| conv::to_int(&v))
+        args.get(i)
+            .map(deref)
+            .filter(|v| !matches!(v, Value::Null))
+            .map(|v| conv::to_int(&v))
     };
     let mtime = given(1).unwrap_or(now);
     let atime = given(2).unwrap_or(mtime);
     let ok = match CString::new(path) {
         Ok(c) => {
             let times = [
-                libc::timeval { tv_sec: atime as libc::time_t, tv_usec: 0 },
-                libc::timeval { tv_sec: mtime as libc::time_t, tv_usec: 0 },
+                libc::timeval {
+                    tv_sec: atime as libc::time_t,
+                    tv_usec: 0,
+                },
+                libc::timeval {
+                    tv_sec: mtime as libc::time_t,
+                    tv_usec: 0,
+                },
             ];
             unsafe { libc::utimes(c.as_ptr(), times.as_ptr()) == 0 }
         }
@@ -382,6 +453,10 @@ fn fn_chmod(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(ok))
 }
 
+// The `as u32` casts are required on platforms where the libc `S_IF*` constants
+// are narrower than u32 (e.g. macOS/BSD, where they are c_ushort); on Linux they
+// are already u32, so clippy would flag the cast as unnecessary there.
+#[allow(clippy::unnecessary_cast)]
 fn fn_is_link(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let is_link = lstat_mode(&path_arg(args, 0))
         .is_some_and(|m| m & libc::S_IFMT as u32 == libc::S_IFLNK as u32);
@@ -398,10 +473,14 @@ fn fn_readlink(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_symlink(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let target = as_str(&path_arg(args, 0)).into_owned();
     let link = as_str(&path_arg(args, 1)).into_owned();
-    Ok(Value::Bool(std::os::unix::fs::symlink(&target, &link).is_ok()))
+    Ok(Value::Bool(
+        std::os::unix::fs::symlink(&target, &link).is_ok(),
+    ))
 }
 
 /// `filetype` — php reports via `lstat`, so a symlink is "link".
+// `as u32` casts: see the note on `fn_is_link` — required on macOS/BSD.
+#[allow(clippy::unnecessary_cast)]
 fn fn_filetype(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match lstat_mode(&path_arg(args, 0)) {
         Some(m) => {
@@ -484,7 +563,15 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         min: usize,
         max: Option<usize>,
     ) {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     }
     put(m, "file_exists", fn_file_exists, 1, Some(1));
     put(m, "is_file", fn_is_file, 1, Some(1));
@@ -515,7 +602,13 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "chmod", fn_chmod, 2, Some(2));
     put(m, "chdir", fn_chdir, 1, Some(1));
     put(m, "umask", fn_umask, 0, Some(1));
-    put(m, "php_strip_whitespace", fn_php_strip_whitespace, 1, Some(1));
+    put(
+        m,
+        "php_strip_whitespace",
+        fn_php_strip_whitespace,
+        1,
+        Some(1),
+    );
     put(m, "clearstatcache", fn_true1, 0, Some(2));
     put(m, "scandir", fn_scandir, 1, Some(3));
     put(m, "is_link", fn_is_link, 1, Some(1));

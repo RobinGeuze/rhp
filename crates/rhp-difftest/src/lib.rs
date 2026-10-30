@@ -176,12 +176,20 @@ impl Rng {
 pub fn default_byte_corpus(seed: u64, random_count: usize) -> Vec<Vec<u8>> {
     let mut rng = Rng::new(seed);
     let mut corpus: Vec<Vec<u8>> = Vec::new();
-    let fixed_lens = [0usize, 1, 2, 3, 4, 7, 8, 15, 16, 31, 32, 55, 56, 63, 64, 65, 119, 120, 127, 128, 256, 1000];
+    let fixed_lens = [
+        0usize, 1, 2, 3, 4, 7, 8, 15, 16, 31, 32, 55, 56, 63, 64, 65, 119, 120, 127, 128, 256, 1000,
+    ];
     for &l in &fixed_lens {
         corpus.push(rng.bytes(l));
     }
     // a few human-readable vectors too, to make failures easy to eyeball
-    for s in ["", "a", "abc", "message digest", "The quick brown fox jumps over the lazy dog"] {
+    for s in [
+        "",
+        "a",
+        "abc",
+        "message digest",
+        "The quick brown fox jumps over the lazy dog",
+    ] {
         corpus.push(s.as_bytes().to_vec());
     }
     for _ in 0..random_count {

@@ -13,8 +13,8 @@ use mago_syntax::cst::{
     UnaryPrefixOperator, Variable, WhileBody,
 };
 
-use rhp_builtins::{self as builtins, Host};
 pub use rhp_builtins::Thrown;
+use rhp_builtins::{self as builtins, Host};
 use rhp_semantics::{cast_to_array, deref, inc_dec_value, ops};
 use rhp_values::conv;
 use rhp_values::{ArrayKey, PhpArray, Value};
@@ -87,7 +87,8 @@ impl<'a> Interp<'a> {
         // Hoist top-level function declarations.
         for stmt in program.statements.iter() {
             if let Statement::Function(func) = stmt {
-                self.functions.insert(func.name.value.to_ascii_lowercase(), func);
+                self.functions
+                    .insert(func.name.value.to_ascii_lowercase(), func);
             }
         }
         for stmt in program.statements.iter() {
@@ -172,8 +173,8 @@ impl<'a> Interp<'a> {
                 };
                 Ok(Flow::Return(v))
             }
-            Statement::Break(b) => Ok(Flow::Break(flow_level(b.level.as_deref())?)),
-            Statement::Continue(c) => Ok(Flow::Continue(flow_level(c.level.as_deref())?)),
+            Statement::Break(b) => Ok(Flow::Break(flow_level(b.level)?)),
+            Statement::Continue(c) => Ok(Flow::Continue(flow_level(c.level)?)),
             other => Err(Thrown::unsupported(
                 format!("{} statement", stmt_name(other)),
                 "not implemented in the phase-1 scaffold",
@@ -182,10 +183,7 @@ impl<'a> Interp<'a> {
     }
 
     /// Execute a sequence of statements, propagating the first non-Normal flow.
-    fn exec_stmts(
-        &mut self,
-        stmts: impl Iterator<Item = &'a Statement<'a>>,
-    ) -> ExecResult {
+    fn exec_stmts(&mut self, stmts: impl Iterator<Item = &'a Statement<'a>>) -> ExecResult {
         for s in stmts {
             match self.exec_stmt(s)? {
                 Flow::Normal => {}
@@ -370,8 +368,14 @@ impl<'a> Interp<'a> {
                 }
             }
         }
-        let start = start.or_else(|| cases.iter().position(|c| matches!(c, SwitchCase::Default(_))));
-        let Some(start) = start else { return Ok(Flow::Normal) };
+        let start = start.or_else(|| {
+            cases
+                .iter()
+                .position(|c| matches!(c, SwitchCase::Default(_)))
+        });
+        let Some(start) = start else {
+            return Ok(Flow::Normal);
+        };
         // Execute from there with fall-through.
         for case in &cases[start..] {
             let stmts = match case {
@@ -424,11 +428,15 @@ impl<'a> Interp<'a> {
         match &b.operator {
             Op::And(_) | Op::LowAnd(_) => {
                 let l = self.walk_expr(b.lhs)?;
-                return Ok(Value::Bool(conv::to_bool(&l) && conv::to_bool(&self.walk_expr(b.rhs)?)));
+                return Ok(Value::Bool(
+                    conv::to_bool(&l) && conv::to_bool(&self.walk_expr(b.rhs)?),
+                ));
             }
             Op::Or(_) | Op::LowOr(_) => {
                 let l = self.walk_expr(b.lhs)?;
-                return Ok(Value::Bool(conv::to_bool(&l) || conv::to_bool(&self.walk_expr(b.rhs)?)));
+                return Ok(Value::Bool(
+                    conv::to_bool(&l) || conv::to_bool(&self.walk_expr(b.rhs)?),
+                ));
             }
             Op::NullCoalesce(_) => {
                 // `??`: lhs if set and non-null, else rhs. (Full isset-style
@@ -472,7 +480,10 @@ impl<'a> Interp<'a> {
             }
             Op::LowXor(_) => Value::Bool(conv::to_bool(&l) ^ conv::to_bool(&r)),
             Op::Instanceof(_) => {
-                return Err(Thrown::unsupported("instanceof", "objects arrive in phase 7"))
+                return Err(Thrown::unsupported(
+                    "instanceof",
+                    "objects arrive in phase 7",
+                ))
             }
         })
     }
@@ -484,10 +495,16 @@ impl<'a> Interp<'a> {
             Op::PreIncrement(_) => return self.pre_inc_dec(u.operand, 1),
             Op::PreDecrement(_) => return self.pre_inc_dec(u.operand, -1),
             Op::UnsetCast(..) | Op::VoidCast(..) | Op::RealCast(..) => {
-                return Err(Thrown::unsupported("(unset)/(void)/(real) cast", "removed/refused in PHP 8"))
+                return Err(Thrown::unsupported(
+                    "(unset)/(void)/(real) cast",
+                    "removed/refused in PHP 8",
+                ))
             }
             Op::Reference(_) => {
-                return Err(Thrown::unsupported("& reference", "references arrive in phase 6"))
+                return Err(Thrown::unsupported(
+                    "& reference",
+                    "references arrive in phase 6",
+                ))
             }
             _ => {}
         }
@@ -504,7 +521,10 @@ impl<'a> Interp<'a> {
             Op::BoolCast(..) | Op::BooleanCast(..) => Value::Bool(conv::to_bool(&v)),
             Op::ArrayCast(..) => cast_to_array(v),
             Op::ObjectCast(..) => {
-                return Err(Thrown::unsupported("(object) cast", "objects arrive in phase 7"))
+                return Err(Thrown::unsupported(
+                    "(object) cast",
+                    "objects arrive in phase 7",
+                ))
             }
             _ => unreachable!("handled above"),
         })
@@ -539,19 +559,15 @@ impl<'a> Interp<'a> {
         }
     }
 
-    fn walk_array(
-        &mut self,
-        elements: impl Iterator<Item = &'a ArrayElement<'a>>,
-    ) -> EvalResult {
+    fn walk_array(&mut self, elements: impl Iterator<Item = &'a ArrayElement<'a>>) -> EvalResult {
         let mut arr = PhpArray::new();
         for el in elements {
             match el {
                 ArrayElement::KeyValue(kv) => {
                     let key = self.walk_expr(kv.key)?;
                     let val = self.walk_expr(kv.value)?;
-                    let k = ArrayKey::from_value(&key).ok_or_else(|| {
-                        Thrown::type_error("Illegal offset type")
-                    })?;
+                    let k = ArrayKey::from_value(&key)
+                        .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
                     arr.insert(k, val);
                 }
                 ArrayElement::Value(v) => {
@@ -696,7 +712,9 @@ impl<'a> Interp<'a> {
         args: Option<&'a mago_syntax::cst::ArgumentList<'a>>,
     ) -> Result<i32, Thrown> {
         let Some(list) = args else { return Ok(0) };
-        let Some(first) = list.arguments.iter().next() else { return Ok(0) };
+        let Some(first) = list.arguments.iter().next() else {
+            return Ok(0);
+        };
         let value = match first {
             Argument::Positional(p) => self.walk_expr(p.value)?,
             Argument::Named(n) => self.walk_expr(n.value)?,
@@ -747,7 +765,10 @@ impl<'a> Interp<'a> {
 
         // The oracle has no runtime-constant table, so it cannot model
         // define/defined/constant; it refuses them (the harness then skips).
-        if matches!(name_str.to_ascii_lowercase().as_str(), "define" | "defined" | "constant") {
+        if matches!(
+            name_str.to_ascii_lowercase().as_str(),
+            "define" | "defined" | "constant"
+        ) {
             return Err(Thrown::unsupported(
                 format!("{name_str}()"),
                 "runtime constants are not supported by the oracle",
@@ -777,7 +798,11 @@ impl<'a> Interp<'a> {
         }
 
         // User-defined function (hoisted)?
-        if let Some(func) = self.functions.get(name_str.to_ascii_lowercase().as_bytes()).copied() {
+        if let Some(func) = self
+            .functions
+            .get(name_str.to_ascii_lowercase().as_bytes())
+            .copied()
+        {
             return self.call_user(func, argv);
         }
 
@@ -934,7 +959,9 @@ impl<'a> Interp<'a> {
         let mut cur = deref(self.vars.get(root)?);
         for step in steps {
             let Value::Array(a) = &cur else { return None };
-            let PathStep::Key(key) = step else { return None };
+            let PathStep::Key(key) = step else {
+                return None;
+            };
             cur = deref(a.get(key)?);
         }
         Some(cur)
@@ -1101,7 +1128,10 @@ fn assign_path(slot: &mut Value, steps: &[PathStep], value: Value) -> Result<(),
         *slot = Value::Array(PhpArray::new());
     }
     let Value::Array(arr) = slot else {
-        return Err(Thrown::error("Error", "Cannot use a scalar value as an array"));
+        return Err(Thrown::error(
+            "Error",
+            "Cannot use a scalar value as an array",
+        ));
     };
     let data = arr.make_mut();
     let key = match &steps[0] {
@@ -1128,7 +1158,9 @@ fn assign_path(slot: &mut Value, steps: &[PathStep], value: Value) -> Result<(),
 /// Remove the leaf element at `steps` (order-preserving; never lowers next_int).
 fn unset_path(slot: &mut Value, steps: &[PathStep]) {
     let Value::Array(arr) = slot else { return };
-    let PathStep::Key(key) = &steps[0] else { return };
+    let PathStep::Key(key) = &steps[0] else {
+        return;
+    };
     if steps.len() == 1 {
         arr.make_mut().entries.shift_remove(key);
     } else if let Some(child) = arr.make_mut().entries.get_mut(key) {
@@ -1137,11 +1169,7 @@ fn unset_path(slot: &mut Value, steps: &[PathStep]) {
 }
 
 /// Apply a compound-assignment operator (`+=`, `.=`, `&=`, …) — not `=`/`??=`.
-fn apply_compound_op(
-    op: &AssignmentOperator,
-    cur: &Value,
-    rhs: &Value,
-) -> Result<Value, Thrown> {
+fn apply_compound_op(op: &AssignmentOperator, cur: &Value, rhs: &Value) -> Result<Value, Thrown> {
     Ok(match op {
         AssignmentOperator::Addition(_) => ops::add(cur, rhs)?,
         AssignmentOperator::Subtraction(_) => ops::sub(cur, rhs)?,
@@ -1350,7 +1378,10 @@ mod tests {
 
     #[test]
     fn string_index() {
-        assert_eq!(run_str(r#"<?php $s="hello";echo $s[0],$s[4],$s[-1],"|",strlen($s);"#), "hoo|5");
+        assert_eq!(
+            run_str(r#"<?php $s="hello";echo $s[0],$s[4],$s[-1],"|",strlen($s);"#),
+            "hoo|5"
+        );
     }
 
     #[test]

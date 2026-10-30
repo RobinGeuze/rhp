@@ -150,5 +150,8 @@ pub fn request(
         .read_to_end(&mut body)
         .map_err(|e| e.to_string())?;
 
-    Ok(HttpResponse { headers: lines, body })
+    Ok(HttpResponse {
+        headers: lines,
+        body,
+    })
 }

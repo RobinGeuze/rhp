@@ -61,7 +61,9 @@ pub fn split_scheme(path: &[u8]) -> (&[u8], &[u8]) {
         let scheme = &path[..pos];
         if !scheme.is_empty()
             && scheme[0].is_ascii_alphabetic()
-            && scheme.iter().all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'.' | b'-'))
+            && scheme
+                .iter()
+                .all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'.' | b'-'))
         {
             return (scheme, path);
         }
@@ -93,12 +95,23 @@ impl StreamWrapper for FileWrapper {
     }
     fn stat(&self, url: &[u8]) -> Option<StatInfo> {
         let md = std::fs::metadata(&*String::from_utf8_lossy(file_path(url))).ok()?;
-        let mtime =
-            md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0);
-        Some(StatInfo { is_dir: md.is_dir(), is_regular: md.is_file(), size: md.len(), mtime })
+        let mtime = md
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        Some(StatInfo {
+            is_dir: md.is_dir(),
+            is_regular: md.is_file(),
+            size: md.len(),
+            mtime,
+        })
     }
     fn put_contents(&self, url: &[u8], data: &[u8]) -> Option<usize> {
-        std::fs::write(&*String::from_utf8_lossy(file_path(url)), data).ok().map(|_| data.len())
+        std::fs::write(&*String::from_utf8_lossy(file_path(url)), data)
+            .ok()
+            .map(|_| data.len())
     }
     fn as_any(&self) -> &dyn Any {
         self

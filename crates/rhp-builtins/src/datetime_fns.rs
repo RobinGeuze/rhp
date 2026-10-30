@@ -393,7 +393,10 @@ mod tests {
         assert_eq!(
             calls(
                 fn_date,
-                &[s("Y|y|m|n|d|j|H|G|h|g|i|s|A|a|D|l|N|w|z|t|L|U"), Value::Int(1700000000)]
+                &[
+                    s("Y|y|m|n|d|j|H|G|h|g|i|s|A|a|D|l|N|w|z|t|L|U"),
+                    Value::Int(1700000000)
+                ]
             ),
             "2023|23|11|11|14|14|22|22|10|10|13|20|PM|pm|Tue|Tuesday|2|2|317|30|0|1700000000"
         );
@@ -408,7 +411,10 @@ mod tests {
         assert_eq!(
             calls(
                 fn_date,
-                &[s("Y|y|m|n|d|j|H|G|h|g|i|s|A|a|D|l|N|w|z|t|L|U"), Value::Int(0)]
+                &[
+                    s("Y|y|m|n|d|j|H|G|h|g|i|s|A|a|D|l|N|w|z|t|L|U"),
+                    Value::Int(0)
+                ]
             ),
             "1970|70|01|1|01|1|00|0|12|12|00|00|AM|am|Thu|Thursday|4|4|0|31|0|0"
         );
@@ -459,9 +465,18 @@ mod tests {
 
     #[test]
     fn date_twelve_hour_and_escapes() {
-        assert_eq!(calls(fn_date, &[s("g h A"), Value::Int(946684800)]), "12 12 AM");
-        assert_eq!(calls(fn_date, &[s("g h A"), Value::Int(946728000)]), "12 12 PM");
-        assert_eq!(calls(fn_date, &[s("h:i:s A"), Value::Int(1700000000)]), "10:13:20 PM");
+        assert_eq!(
+            calls(fn_date, &[s("g h A"), Value::Int(946684800)]),
+            "12 12 AM"
+        );
+        assert_eq!(
+            calls(fn_date, &[s("g h A"), Value::Int(946728000)]),
+            "12 12 PM"
+        );
+        assert_eq!(
+            calls(fn_date, &[s("h:i:s A"), Value::Int(1700000000)]),
+            "10:13:20 PM"
+        );
         // backslash escapes: \Y is a literal Y, \t \i \m \e literal letters
         assert_eq!(
             calls(fn_date, &[s(r"\Y=Y \t\i\m\e"), Value::Int(1700000000)]),

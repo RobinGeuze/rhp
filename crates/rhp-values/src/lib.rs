@@ -469,17 +469,42 @@ mod tests {
         assert_eq!(key("-5"), ArrayKey::Int(-5));
         assert_eq!(key("9223372036854775807"), ArrayKey::Int(i64::MAX));
         // stay strings:
-        for s in ["08", "00", "01", "+1", " 1", "1.5", "-0", "9223372036854775808", ""] {
-            assert!(matches!(key(s), ArrayKey::Str(_)), "{s:?} should be a string key");
+        for s in [
+            "08",
+            "00",
+            "01",
+            "+1",
+            " 1",
+            "1.5",
+            "-0",
+            "9223372036854775808",
+            "",
+        ] {
+            assert!(
+                matches!(key(s), ArrayKey::Str(_)),
+                "{s:?} should be a string key"
+            );
         }
     }
 
     #[test]
     fn key_from_scalars() {
-        assert_eq!(ArrayKey::from_value(&Value::Bool(true)), Some(ArrayKey::Int(1)));
-        assert_eq!(ArrayKey::from_value(&Value::Bool(false)), Some(ArrayKey::Int(0)));
-        assert_eq!(ArrayKey::from_value(&Value::Float(2.9)), Some(ArrayKey::Int(2)));
-        assert_eq!(ArrayKey::from_value(&Value::Float(-2.9)), Some(ArrayKey::Int(-2)));
+        assert_eq!(
+            ArrayKey::from_value(&Value::Bool(true)),
+            Some(ArrayKey::Int(1))
+        );
+        assert_eq!(
+            ArrayKey::from_value(&Value::Bool(false)),
+            Some(ArrayKey::Int(0))
+        );
+        assert_eq!(
+            ArrayKey::from_value(&Value::Float(2.9)),
+            Some(ArrayKey::Int(2))
+        );
+        assert_eq!(
+            ArrayKey::from_value(&Value::Float(-2.9)),
+            Some(ArrayKey::Int(-2))
+        );
         assert_eq!(
             ArrayKey::from_value(&Value::Null),
             Some(ArrayKey::Str(PhpStr::from_bytes(Vec::new())))

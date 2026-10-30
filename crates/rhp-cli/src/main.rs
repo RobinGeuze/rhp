@@ -56,7 +56,10 @@ fn main() -> ExitCode {
         let arena = Arena::new();
         let parsed = arena.parse(file.as_bytes(), src);
         if parsed.has_parse_errors() {
-            return Err(Thrown::error("ParseError", &format!("syntax error in {file}")));
+            return Err(Thrown::error(
+                "ParseError",
+                format!("syntax error in {file}"),
+            ));
         }
         compile_with_source(parsed.program(), src, file)
     });

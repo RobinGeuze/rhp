@@ -330,12 +330,20 @@ fn parse_numeric_entity(s: &[u8]) -> Option<(u32, usize)> {
     let digits_start = j;
     let mut cp: u64 = 0;
     while j < s.len() {
-        let d = if hex { hex_val(s[j]) } else {
-            if s[j].is_ascii_digit() { Some(s[j] - b'0') } else { None }
+        let d = if hex {
+            hex_val(s[j])
+        } else {
+            if s[j].is_ascii_digit() {
+                Some(s[j] - b'0')
+            } else {
+                None
+            }
         };
         match d {
             Some(v) => {
-                cp = cp.saturating_mul(if hex { 16 } else { 10 }).saturating_add(v as u64);
+                cp = cp
+                    .saturating_mul(if hex { 16 } else { 10 })
+                    .saturating_add(v as u64);
                 j += 1;
             }
             None => break,
@@ -352,7 +360,8 @@ fn match_named_entity(s: &[u8]) -> Option<(&'static [u8], usize)> {
     let mut best: Option<(&'static [u8], usize)> = None;
     for (name, bytes) in NAMED_ENTITIES {
         let full = name.len() + 2; // '&' + name + ';'
-        if s.len() >= full && s[0] == b'&' && &s[1..1 + name.len()] == *name && s[full - 1] == b';' {
+        if s.len() >= full && s[0] == b'&' && &s[1..1 + name.len()] == *name && s[full - 1] == b';'
+        {
             match best {
                 Some((_, blen)) if blen >= full => {}
                 _ => best = Some((*bytes, full)),
@@ -368,7 +377,10 @@ fn match_named_entity(s: &[u8]) -> Option<(&'static [u8], usize)> {
 
 fn fn_nl2br(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = bytes_of(&args[0]);
-    let is_xhtml = args.get(1).map(|v| conv::to_bool(&deref(v))).unwrap_or(true);
+    let is_xhtml = args
+        .get(1)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(true);
     let br: &[u8] = if is_xhtml { b"<br />" } else { b"<br>" };
     let mut out = Vec::with_capacity(s.len());
     let mut i = 0;
@@ -469,10 +481,10 @@ fn fn_strip_tags(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 #[derive(PartialEq)]
 enum St {
     Text,
-    Tag,       // inside <...>
-    Comment,   // inside <!-- ... -->
-    Decl,      // inside <! ... > (declaration, not a comment)
-    Php,       // inside <? ... ?>
+    Tag,     // inside <...>
+    Comment, // inside <!-- ... -->
+    Decl,    // inside <! ... > (declaration, not a comment)
+    Php,     // inside <? ... ?>
 }
 
 fn strip_tags(s: &[u8]) -> Vec<u8> {
@@ -529,10 +541,7 @@ fn strip_tags(s: &[u8]) -> Vec<u8> {
                 }
             }
             St::Comment => {
-                if c == b'-'
-                    && s.get(i + 1) == Some(&b'-')
-                    && s.get(i + 2) == Some(&b'>')
-                {
+                if c == b'-' && s.get(i + 1) == Some(&b'-') && s.get(i + 2) == Some(&b'>') {
                     state = St::Text;
                     i += 3;
                     continue;
@@ -588,7 +597,8 @@ fn do_parse_url(s: &[u8]) -> Option<UrlParts> {
     let qhash = s.iter().position(|&b| b == b'?' || b == b'#').unwrap_or(ue);
     if let Some(colon) = s.iter().position(|&b| b == b':') {
         if colon != 0 && colon < qhash {
-            let scheme_ok = s[0].is_ascii_alphabetic() && s[..colon].iter().all(|&b| is_scheme_char(b));
+            let scheme_ok =
+                s[0].is_ascii_alphabetic() && s[..colon].iter().all(|&b| is_scheme_char(b));
             if scheme_ok {
                 // Distinguish a real scheme from a leading "host:port".
                 if colon + 1 < ue && s[colon + 1] == b'/' {
@@ -597,7 +607,11 @@ fn do_parse_url(s: &[u8]) -> Option<UrlParts> {
                     if colon + 2 < ue && s[colon + 2] == b'/' {
                         i = colon + 3;
                         // file:///path keeps the leading slash as path.
-                        if out.scheme.as_deref().map(|sc| sc.eq_ignore_ascii_case(b"file")).unwrap_or(false)
+                        if out
+                            .scheme
+                            .as_deref()
+                            .map(|sc| sc.eq_ignore_ascii_case(b"file"))
+                            .unwrap_or(false)
                             && i < ue
                             && s[i] == b'/'
                         {
@@ -676,7 +690,8 @@ fn parse_authority(mut out: UrlParts, s: &[u8], i: usize) -> Option<UrlParts> {
     let host_region = &s[host_start..end];
     if host_region.first() == Some(&b'[') {
         // IPv6 literal: host is up to and including ']'.
-        if let Some(close_rel) = host_region.iter().position(|&b| b == b']') {
+        {
+            let close_rel = host_region.iter().position(|&b| b == b']')?;
             out.host = Some(host_region[..=close_rel].to_vec());
             let after = &host_region[close_rel + 1..];
             if after.first() == Some(&b':') {
@@ -685,8 +700,6 @@ fn parse_authority(mut out: UrlParts, s: &[u8], i: usize) -> Option<UrlParts> {
                     out.port = parse_port(digits)?;
                 }
             }
-        } else {
-            return None;
         }
     } else if let Some(c) = host_region.iter().rposition(|&b| b == b':') {
         let (h, pport) = (&host_region[..c], &host_region[c + 1..]);
@@ -825,7 +838,13 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     // htmlspecialchars/htmlentities accept optional ($flags, $encoding,
     // $double_encode); only the default-flags single-arg form is honored.
     put(m, "htmlspecialchars", fn_htmlspecialchars, 1, Some(4));
-    put(m, "htmlspecialchars_decode", fn_htmlspecialchars_decode, 1, Some(2));
+    put(
+        m,
+        "htmlspecialchars_decode",
+        fn_htmlspecialchars_decode,
+        1,
+        Some(2),
+    );
     put(m, "htmlentities", fn_htmlentities, 1, Some(4));
     put(m, "html_entity_decode", fn_html_entity_decode, 1, Some(3));
     put(m, "nl2br", fn_nl2br, 1, Some(2));
@@ -1130,19 +1149,28 @@ mod tests {
 
     #[test]
     fn urlencode_cases() {
-        assert_eq!(calls(fn_urlencode, &[s("a b+c&d=e/f?g~h.i_j-k")]), "a+b%2Bc%26d%3De%2Ff%3Fg%7Eh.i_j-k");
+        assert_eq!(
+            calls(fn_urlencode, &[s("a b+c&d=e/f?g~h.i_j-k")]),
+            "a+b%2Bc%26d%3De%2Ff%3Fg%7Eh.i_j-k"
+        );
         assert_eq!(call(fn_urlencode, &[sb(b"\xff\x00A~")]), b"%FF%00A%7E");
     }
 
     #[test]
     fn rawurlencode_cases() {
-        assert_eq!(calls(fn_rawurlencode, &[s("a b+c&d=e/f?g~h.i_j-k")]), "a%20b%2Bc%26d%3De%2Ff%3Fg~h.i_j-k");
+        assert_eq!(
+            calls(fn_rawurlencode, &[s("a b+c&d=e/f?g~h.i_j-k")]),
+            "a%20b%2Bc%26d%3De%2Ff%3Fg~h.i_j-k"
+        );
         assert_eq!(call(fn_rawurlencode, &[sb(b"\xff\x00A~")]), b"%FF%00A~");
     }
 
     #[test]
     fn urldecode_cases() {
-        assert_eq!(calls(fn_urldecode, &[s("a+b%20c%26d%ZZ%4")]), "a b c&d%ZZ%4");
+        assert_eq!(
+            calls(fn_urldecode, &[s("a+b%20c%26d%ZZ%4")]),
+            "a b c&d%ZZ%4"
+        );
         assert_eq!(calls(fn_urldecode, &[s("abc%")]), "abc%");
         assert_eq!(calls(fn_rawurldecode, &[s("a+b%20c%26d")]), "a+b c&d");
         assert_eq!(calls(fn_rawurldecode, &[s("ab%2")]), "ab%2");
@@ -1166,7 +1194,9 @@ mod tests {
         assert_eq!(
             calls(
                 fn_htmlspecialchars_decode,
-                &[s("&lt;a&gt; &amp; &quot;q&quot; &#039;a&#039; &#39;b&#39; &apos;c&apos;")]
+                &[s(
+                    "&lt;a&gt; &amp; &quot;q&quot; &#039;a&#039; &#39;b&#39; &apos;c&apos;"
+                )]
             ),
             "<a> & \"q\" 'a' 'b' &apos;c&apos;"
         );
@@ -1177,24 +1207,50 @@ mod tests {
     #[test]
     fn html_entity_decode_cases() {
         assert_eq!(
-            call(fn_html_entity_decode, &[s("&lt;a&gt;&amp;&quot;&#039;&#39;&apos;&copy;&nbsp;&#65;&#x41;")]),
+            call(
+                fn_html_entity_decode,
+                &[s(
+                    "&lt;a&gt;&amp;&quot;&#039;&#39;&apos;&copy;&nbsp;&#65;&#x41;"
+                )]
+            ),
             // < a > & " ' '  &apos; © nbsp A A   (copy=c2a9, nbsp=c2a0)
             b"<a>&\"''&apos;\xc2\xa9\xc2\xa0AA"
         );
         // numeric decimal + hex (incl. astral plane)
-        assert_eq!(call(fn_html_entity_decode, &[s("&#65;&#128512;")]), b"A\xf0\x9f\x98\x80");
-        assert_eq!(call(fn_html_entity_decode, &[s("&#x41;&#X1F600;")]), b"A\xf0\x9f\x98\x80");
+        assert_eq!(
+            call(fn_html_entity_decode, &[s("&#65;&#128512;")]),
+            b"A\xf0\x9f\x98\x80"
+        );
+        assert_eq!(
+            call(fn_html_entity_decode, &[s("&#x41;&#X1F600;")]),
+            b"A\xf0\x9f\x98\x80"
+        );
         // semicolon required
-        assert_eq!(calls(fn_html_entity_decode, &[s("&copy x &amp y")]), "&copy x &amp y");
+        assert_eq!(
+            calls(fn_html_entity_decode, &[s("&copy x &amp y")]),
+            "&copy x &amp y"
+        );
         assert_eq!(calls(fn_html_entity_decode, &[s("&#65 &#65;")]), "&#65 A");
         // unknown entity stays; &amp;lt; not re-scanned
-        assert_eq!(calls(fn_html_entity_decode, &[s("&foobar; &amp;")]), "&foobar; &");
+        assert_eq!(
+            calls(fn_html_entity_decode, &[s("&foobar; &amp;")]),
+            "&foobar; &"
+        );
         assert_eq!(calls(fn_html_entity_decode, &[s("&amp;lt;")]), "&lt;");
         // forbidden codepoints are left literal
-        assert_eq!(calls(fn_html_entity_decode, &[s("&#0;&#127;&#128;")]), "&#0;&#127;&#128;");
+        assert_eq!(
+            calls(fn_html_entity_decode, &[s("&#0;&#127;&#128;")]),
+            "&#0;&#127;&#128;"
+        );
         assert_eq!(call(fn_html_entity_decode, &[s("&#9;")]), b"\t");
-        assert_eq!(calls(fn_html_entity_decode, &[s("&#1114112;&#xD800;")]), "&#1114112;&#xD800;");
-        assert_eq!(call(fn_html_entity_decode, &[s("&#65535;")]), b"\xef\xbf\xbf");
+        assert_eq!(
+            calls(fn_html_entity_decode, &[s("&#1114112;&#xD800;")]),
+            "&#1114112;&#xD800;"
+        );
+        assert_eq!(
+            call(fn_html_entity_decode, &[s("&#65535;")]),
+            b"\xef\xbf\xbf"
+        );
     }
 
     #[test]
@@ -1203,17 +1259,26 @@ mod tests {
             call(fn_nl2br, &[sb(b"a\nb\r\nc\rd\n\re")]),
             b"a<br />\nb<br />\r\nc<br />\rd<br />\n\re"
         );
-        assert_eq!(call(fn_nl2br, &[sb(b"a\nb"), Value::Bool(false)]), b"a<br>\nb");
+        assert_eq!(
+            call(fn_nl2br, &[sb(b"a\nb"), Value::Bool(false)]),
+            b"a<br>\nb"
+        );
     }
 
     #[test]
     fn addslashes_cases() {
-        assert_eq!(call(fn_addslashes, &[sb(b"a'b\"c\\d\x00e")]), b"a\\'b\\\"c\\\\d\\0e");
+        assert_eq!(
+            call(fn_addslashes, &[sb(b"a'b\"c\\d\x00e")]),
+            b"a\\'b\\\"c\\\\d\\0e"
+        );
     }
 
     #[test]
     fn stripslashes_cases() {
-        assert_eq!(call(fn_stripslashes, &[sb(b"a\\'b\\\"c\\\\d\\0e\\n")]), b"a'b\"c\\d\x00en");
+        assert_eq!(
+            call(fn_stripslashes, &[sb(b"a\\'b\\\"c\\\\d\\0e\\n")]),
+            b"a'b\"c\\d\x00en"
+        );
         assert_eq!(call(fn_stripslashes, &[sb(b"\\0")]), b"\x00");
         assert_eq!(call(fn_stripslashes, &[sb(b"ab\\")]), b"ab");
     }
@@ -1254,8 +1319,16 @@ mod tests {
             "3c6120623d313e63",
         ];
         for i in 0..cases.len() {
-            assert_eq!(hex(&call(fn_strip_tags, &[s(cases[i])])), php_strip[i], "strip_tags case {i}");
-            assert_eq!(hex(&call(fn_html_entity_decode, &[s(cases[i])])), php_hed[i], "html_entity_decode case {i}");
+            assert_eq!(
+                hex(&call(fn_strip_tags, &[s(cases[i])])),
+                php_strip[i],
+                "strip_tags case {i}"
+            );
+            assert_eq!(
+                hex(&call(fn_html_entity_decode, &[s(cases[i])])),
+                php_hed[i],
+                "html_entity_decode case {i}"
+            );
         }
     }
 

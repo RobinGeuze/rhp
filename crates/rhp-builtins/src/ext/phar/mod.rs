@@ -36,7 +36,8 @@ fn deref(v: &Value) -> Value {
 // --- little-endian readers ---------------------------------------------------
 
 fn u32le(b: &[u8], pos: usize) -> Option<u32> {
-    b.get(pos..pos + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    b.get(pos..pos + 4)
+        .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
 // --- parsed archive ----------------------------------------------------------
@@ -77,7 +78,10 @@ impl PharArchive {
         pos += 4;
         let alias_len = u32le(&data, pos).ok_or("truncated alias length")? as usize;
         pos += 4;
-        let alias = data.get(pos..pos + alias_len).ok_or("truncated alias")?.to_vec();
+        let alias = data
+            .get(pos..pos + alias_len)
+            .ok_or("truncated alias")?
+            .to_vec();
         pos += alias_len;
         let meta_len = u32le(&data, pos).ok_or("truncated global metadata length")? as usize;
         pos += 4 + meta_len; // skip global metadata (serialize())
@@ -91,7 +95,10 @@ impl PharArchive {
         for _ in 0..num_files {
             let name_len = u32le(&data, pos).ok_or("truncated entry name length")? as usize;
             pos += 4;
-            let name = data.get(pos..pos + name_len).ok_or("truncated entry name")?.to_vec();
+            let name = data
+                .get(pos..pos + name_len)
+                .ok_or("truncated entry name")?
+                .to_vec();
             pos += name_len;
             let usize_ = u32le(&data, pos).ok_or("truncated usize")? as usize;
             pos += 4;
@@ -106,12 +113,25 @@ impl PharArchive {
 
             // Directories (trailing '/') carry no data block.
             if !name.ends_with(b"/") {
-                entries.insert(name, Entry { offset: cursor, csize, usize_, flags });
+                entries.insert(
+                    name,
+                    Entry {
+                        offset: cursor,
+                        csize,
+                        usize_,
+                        flags,
+                    },
+                );
                 cursor += csize;
             }
         }
 
-        Ok(PharArchive { data, alias, path: Vec::new(), entries })
+        Ok(PharArchive {
+            data,
+            alias,
+            path: Vec::new(),
+            entries,
+        })
     }
 
     /// The raw (decompressed) bytes of an internal entry.
@@ -126,7 +146,9 @@ impl PharArchive {
         } else if e.flags & COMPRESSED_BZ2 != 0 {
             use std::io::Read;
             let mut out = Vec::with_capacity(e.usize_);
-            bzip2::read::BzDecoder::new(raw).read_to_end(&mut out).ok()?;
+            bzip2::read::BzDecoder::new(raw)
+                .read_to_end(&mut out)
+                .ok()?;
             Some(out)
         } else {
             Some(raw.to_vec())
@@ -134,7 +156,12 @@ impl PharArchive {
     }
 
     fn entry_stat(&self, entry: &[u8]) -> Option<StatInfo> {
-        self.entries.get(entry).map(|e| StatInfo { is_dir: false, is_regular: true, size: e.usize_ as u64, mtime: 0 })
+        self.entries.get(entry).map(|e| StatInfo {
+            is_dir: false,
+            is_regular: true,
+            size: e.usize_ as u64,
+            mtime: 0,
+        })
     }
 
     fn has_dir(&self, prefix: &[u8]) -> bool {
@@ -209,7 +236,9 @@ fn verify_signature(data: &[u8]) -> Result<(), String> {
         other => return Err(format!("unknown phar signature type {other}")),
     };
     if let Some(expected) = computed {
-        let stored = data.get(n - 8 - hashlen..n - 8).ok_or("truncated signature hash")?;
+        let stored = data
+            .get(n - 8 - hashlen..n - 8)
+            .ok_or("truncated signature hash")?;
         if stored != expected.as_slice() {
             return Err("phar signature verification failed".into());
         }
@@ -227,7 +256,9 @@ pub struct PharWrapper {
 
 impl PharWrapper {
     fn new() -> PharWrapper {
-        PharWrapper { archives: RefCell::new(HashMap::new()) }
+        PharWrapper {
+            archives: RefCell::new(HashMap::new()),
+        }
     }
 
     /// Register a parsed archive under its filesystem path, its manifest alias,
@@ -245,12 +276,7 @@ impl PharWrapper {
         }
     }
 
-    fn map_phar(
-        &self,
-        path: &[u8],
-        alias: Option<&[u8]>,
-        bytes: Vec<u8>,
-    ) -> Result<(), String> {
+    fn map_phar(&self, path: &[u8], alias: Option<&[u8]>, bytes: Vec<u8>) -> Result<(), String> {
         let mut arc = PharArchive::parse(bytes)?;
         arc.path = path.to_vec();
         self.install(path, alias, Rc::new(arc));
@@ -285,7 +311,11 @@ impl PharWrapper {
         }
         let (key, klen) = best?;
         let arc = m.get(key)?.clone();
-        let entry = if rest.len() > klen { &rest[klen + 1..] } else { b"" };
+        let entry = if rest.len() > klen {
+            &rest[klen + 1..]
+        } else {
+            b""
+        };
         Some((arc, normalize(entry)))
     }
 }
@@ -321,7 +351,12 @@ impl StreamWrapper for PharWrapper {
         if let Some(s) = arc.entry_stat(&entry) {
             Some(s)
         } else if arc.has_dir(&entry) {
-            Some(StatInfo { is_dir: true, is_regular: false, size: 0, mtime: 0 })
+            Some(StatInfo {
+                is_dir: true,
+                is_regular: false,
+                size: 0,
+                mtime: 0,
+            })
         } else {
             None
         }
@@ -354,7 +389,10 @@ fn with_phar_wrapper<R>(
 /// `Phar::mapPhar($alias)`: parse the currently-running phar (the top-level
 /// script) and register `$alias` → the archive.
 fn fn_phar_mapphar(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let alias = args.first().map(|v| conv::to_string_bytes(&deref(v))).filter(|a| !a.is_empty());
+    let alias = args
+        .first()
+        .map(|v| conv::to_string_bytes(&deref(v)))
+        .filter(|a| !a.is_empty());
     let path = host
         .running_main_path()
         .ok_or_else(|| Thrown::error("PharException", "cannot determine the running phar"))?;
@@ -362,7 +400,8 @@ fn fn_phar_mapphar(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
         .stream_get_contents(&path)
         .ok_or_else(|| Thrown::error("PharException", "cannot read the running phar"))?;
     with_phar_wrapper(host, |pw| {
-        pw.map_phar(&path, alias.as_deref(), bytes).map_err(|e| Thrown::error("PharException", &e))
+        pw.map_phar(&path, alias.as_deref(), bytes)
+            .map_err(|e| Thrown::error("PharException", &e))
     })?;
     Ok(Value::Null)
 }
@@ -370,7 +409,10 @@ fn fn_phar_mapphar(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 /// `Phar::loadPhar($filename, $alias)`: load an external phar by path.
 fn fn_phar_loadphar(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let filename = conv::to_string_bytes(&deref(&args[0]));
-    let alias = args.get(1).map(|v| conv::to_string_bytes(&deref(v))).filter(|a| !a.is_empty());
+    let alias = args
+        .get(1)
+        .map(|v| conv::to_string_bytes(&deref(v)))
+        .filter(|a| !a.is_empty());
     let bytes = host
         .stream_get_contents(&filename)
         .ok_or_else(|| Thrown::error("PharException", "cannot read phar file"))?;
@@ -384,7 +426,10 @@ fn fn_phar_loadphar(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 /// `Phar::running($retphar)`: the URL (or path) of the running phar. Used only by
 /// composer's self-update; returns "" when not running inside a phar.
 fn fn_phar_running(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let retphar = args.first().map(|v| conv::to_bool(&deref(v))).unwrap_or(true);
+    let retphar = args
+        .first()
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(true);
     match host.running_main_path() {
         Some(p) => {
             if retphar {
@@ -407,7 +452,15 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         min: usize,
         max: Option<usize>,
     ) {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     }
     put(m, "__phar_mapphar", fn_phar_mapphar, 0, Some(2));
     put(m, "__phar_loadphar", fn_phar_loadphar, 1, Some(2));
@@ -415,7 +468,10 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
 }
 
 pub fn wrappers() -> Vec<WrapperReg> {
-    vec![WrapperReg { scheme: "phar", factory: || Rc::new(PharWrapper::new()) }]
+    vec![WrapperReg {
+        scheme: "phar",
+        factory: || Rc::new(PharWrapper::new()),
+    }]
 }
 
 /// The `Phar` class (read-only subset) + `PharException`. Static methods delegate

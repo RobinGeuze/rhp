@@ -49,11 +49,17 @@ struct Dec {
 
 impl Dec {
     fn zero() -> Self {
-        Dec { mant: BigInt::zero(), scale: 0 }
+        Dec {
+            mant: BigInt::zero(),
+            scale: 0,
+        }
     }
 
     fn one() -> Self {
-        Dec { mant: BigInt::one(), scale: 0 }
+        Dec {
+            mant: BigInt::one(),
+            scale: 0,
+        }
     }
 
     /// Parse a PHP bc-number string. PHP accepts `[+-]?[0-9]*(\.[0-9]*)?` (an
@@ -105,25 +111,40 @@ impl Dec {
         if self.scale == target {
             self.clone()
         } else if self.scale < target {
-            Dec { mant: &self.mant * ten_pow(target - self.scale), scale: target }
+            Dec {
+                mant: &self.mant * ten_pow(target - self.scale),
+                scale: target,
+            }
         } else {
             // BigInt division truncates toward zero — exactly bc's behavior.
-            Dec { mant: &self.mant / ten_pow(self.scale - target), scale: target }
+            Dec {
+                mant: &self.mant / ten_pow(self.scale - target),
+                scale: target,
+            }
         }
     }
 
     fn add(&self, other: &Dec) -> Dec {
         let s = self.scale.max(other.scale);
-        Dec { mant: self.rescale(s).mant + other.rescale(s).mant, scale: s }
+        Dec {
+            mant: self.rescale(s).mant + other.rescale(s).mant,
+            scale: s,
+        }
     }
 
     fn sub(&self, other: &Dec) -> Dec {
         let s = self.scale.max(other.scale);
-        Dec { mant: self.rescale(s).mant - other.rescale(s).mant, scale: s }
+        Dec {
+            mant: self.rescale(s).mant - other.rescale(s).mant,
+            scale: s,
+        }
     }
 
     fn mul(&self, other: &Dec) -> Dec {
-        Dec { mant: &self.mant * &other.mant, scale: self.scale + other.scale }
+        Dec {
+            mant: &self.mant * &other.mant,
+            scale: self.scale + other.scale,
+        }
     }
 
     fn is_zero(&self) -> bool {
@@ -173,7 +194,10 @@ fn bc_div(a: &Dec, b: &Dec, scale: usize) -> Result<Dec, Thrown> {
     // q = trunc( a.mant * 10^(b.scale+scale) / (b.mant * 10^a.scale) )
     let num = &a.mant * ten_pow(b.scale + scale);
     let den = &b.mant * ten_pow(a.scale);
-    Ok(Dec { mant: num / den, scale })
+    Ok(Dec {
+        mant: num / den,
+        scale,
+    })
 }
 
 fn bc_mod(a: &Dec, b: &Dec, scale: usize) -> Result<Dec, Thrown> {
@@ -232,7 +256,10 @@ fn bc_sqrt(a: &Dec, scale: usize) -> Result<Dec, Thrown> {
     } else {
         &a.mant / ten_pow((-shift) as usize)
     };
-    Ok(Dec { mant: radicand.sqrt(), scale })
+    Ok(Dec {
+        mant: radicand.sqrt(),
+        scale,
+    })
 }
 
 /// `bcround` with half-away-from-zero (PHP's default `RoundingMode::HalfAwayFromZero`).
@@ -258,19 +285,28 @@ fn bc_round(a: &Dec, places: i64) -> Dec {
         (q * ten_pow((-places) as usize), 0)
     };
     let mant = if a.mant.is_negative() { -mant } else { mant };
-    Dec { mant, scale: out_scale }
+    Dec {
+        mant,
+        scale: out_scale,
+    }
 }
 
 // ---------------------------------------------------------------------------
 // argument parsing
 // ---------------------------------------------------------------------------
 
-fn operand(args: &[Value], idx: usize, func: &str, argnum: usize, name: &str) -> Result<Dec, Thrown> {
+fn operand(
+    args: &[Value],
+    idx: usize,
+    func: &str,
+    argnum: usize,
+    name: &str,
+) -> Result<Dec, Thrown> {
     let raw = bytes_of(&args[idx]);
     Dec::parse(&raw).ok_or_else(|| {
         Thrown::error(
             "ValueError",
-            &format!("{func}(): Argument #{argnum} (${name}) is not well-formed"),
+            format!("{func}(): Argument #{argnum} (${name}) is not well-formed"),
         )
     })
 }
@@ -291,7 +327,7 @@ fn scale_arg(
     if !(0..=2147483647).contains(&s) {
         return Err(Thrown::error(
             "ValueError",
-            &format!("{func}(): Argument #{argnum} ($scale) must be between 0 and 2147483647"),
+            format!("{func}(): Argument #{argnum} ($scale) must be between 0 and 2147483647"),
         ));
     }
     Ok(s as usize)
@@ -376,7 +412,13 @@ fn fn_bcpowmod(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     let base_i = base.trunc_int();
     let result = base_i.modpow(&e, &m.abs());
-    Ok(Value::str(Dec { mant: result, scale: 0 }.format(scale)))
+    Ok(Value::str(
+        Dec {
+            mant: result,
+            scale: 0,
+        }
+        .format(scale),
+    ))
 }
 
 fn fn_bcsqrt(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -462,7 +504,15 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         min: usize,
         max: Option<usize>,
     ) {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     }
     put(m, "bcadd", fn_bcadd, 2, Some(3));
     put(m, "bcsub", fn_bcsub, 2, Some(3));

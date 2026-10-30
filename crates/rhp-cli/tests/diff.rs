@@ -76,7 +76,12 @@ fn vm_matches_php_baseline() {
         }
     }
     eprintln!("[VM] golden: {passed}/{} passed", cases.len());
-    assert!(failures.is_empty(), "[VM] {} failure(s):\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "[VM] {} failure(s):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 /// The oracle must match php on every fixture it supports; unsupported ones skip.
@@ -88,7 +93,9 @@ fn oracle_matches_php_on_supported() {
     let mut failures = Vec::new();
     for php in &cases {
         let name = php.file_stem().unwrap().to_string_lossy().into_owned();
-        let Ok(expected) = std::fs::read(php.with_extension("out")) else { continue };
+        let Ok(expected) = std::fs::read(php.with_extension("out")) else {
+            continue;
+        };
         let source = std::fs::read(php).expect("read php");
         match std::panic::catch_unwind(|| run_oracle(&source, &name)) {
             Ok(Ok(actual)) if actual == expected => passed += 1,
@@ -103,6 +110,14 @@ fn oracle_matches_php_on_supported() {
             Err(_) => failures.push(format!("{name}: panicked")),
         }
     }
-    eprintln!("[oracle] golden: {passed}/{} passed, {skipped} skipped (unsupported)", cases.len());
-    assert!(failures.is_empty(), "[oracle] {} failure(s):\n{}", failures.len(), failures.join("\n"));
+    eprintln!(
+        "[oracle] golden: {passed}/{} passed, {skipped} skipped (unsupported)",
+        cases.len()
+    );
+    assert!(
+        failures.is_empty(),
+        "[oracle] {} failure(s):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

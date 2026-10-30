@@ -3,11 +3,15 @@
 //! real `php`. Skips when no `php` is on PATH. (These live here, not in the golden
 //! suite, because the tree-walker oracle does not enforce types.)
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 fn php_available() -> bool {
-    Command::new("php").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+    Command::new("php")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn case(name: &str, src: &str) {
@@ -31,7 +35,11 @@ fn case(name: &str, src: &str) {
 
 fn run(bin: &str, file: &Path) -> Vec<u8> {
     let args: &[&str] = if bin == "php" { &["-n"] } else { &[] };
-    let o = Command::new(bin).args(args).arg(file).output().expect("run");
+    let o = Command::new(bin)
+        .args(args)
+        .arg(file)
+        .output()
+        .expect("run");
     // Merge stderr (TypeError messages) so we compare the full observable result.
     let mut out = o.stdout;
     out.extend_from_slice(&o.stderr);

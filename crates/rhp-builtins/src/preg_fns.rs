@@ -39,8 +39,8 @@
 
 use std::collections::HashMap;
 
-use rhp_values::{ArrayKey, PhpArray, PhpStr, Value};
 use rhp_semantics::deref;
+use rhp_values::{ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::{Builtin, Host, Thrown};
 
@@ -122,7 +122,12 @@ mod engine {
             }
             let ncaptures = pattern_info_usize(code, PCRE2_INFO_CAPTURECOUNT);
             let names = read_name_table(code, ncaptures);
-            Some(Regex { code, ncaptures, names, utf: options & PCRE2_UTF != 0 })
+            Some(Regex {
+                code,
+                ncaptures,
+                names,
+                utf: options & PCRE2_UTF != 0,
+            })
         }
 
         pub fn ncaptures(&self) -> usize {
@@ -189,7 +194,11 @@ mod engine {
             let mut pos = start.min(subject.len());
             let mut notempty = false;
             loop {
-                let opts = if notempty { PCRE2_ANCHORED | PCRE2_NOTEMPTY_ATSTART } else { 0 };
+                let opts = if notempty {
+                    PCRE2_ANCHORED | PCRE2_NOTEMPTY_ATSTART
+                } else {
+                    0
+                };
                 match self.try_match(subject, pos, opts, &md)? {
                     Some(ov) => {
                         let (s, e) = ov[0].unwrap();
@@ -297,7 +306,9 @@ fn bytes_of(v: &Value) -> Vec<u8> {
 
 /// `(int)` of a value (after deref). Default when the arg is absent.
 fn int_arg(args: &[Value], i: usize, default: i64) -> i64 {
-    args.get(i).map(|v| rhp_values::conv::to_int(&deref(v))).unwrap_or(default)
+    args.get(i)
+        .map(|v| rhp_values::conv::to_int(&deref(v)))
+        .unwrap_or(default)
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +428,13 @@ fn group_bytes<'a>(ov: &Ovector, subject: &'a [u8], i: usize) -> Option<&'a [u8]
 
 /// The value for one capture group in the result array. Honours
 /// `PREG_OFFSET_CAPTURE` (wrap as `[text, offset]`) and `PREG_UNMATCHED_AS_NULL`.
-fn group_value(ov: &Ovector, subject: &[u8], i: usize, offset_capture: bool, unmatched_null: bool) -> Value {
+fn group_value(
+    ov: &Ovector,
+    subject: &[u8],
+    i: usize,
+    offset_capture: bool,
+    unmatched_null: bool,
+) -> Value {
     match ov.get(i).and_then(|o| *o) {
         Some((s, e)) => {
             let val = Value::str(subject[s..e].to_vec());
@@ -428,7 +445,11 @@ fn group_value(ov: &Ovector, subject: &[u8], i: usize, offset_capture: bool, unm
             }
         }
         None => {
-            let empty = if unmatched_null { Value::Null } else { Value::str("") };
+            let empty = if unmatched_null {
+                Value::Null
+            } else {
+                Value::str("")
+            };
             if offset_capture {
                 pair(empty, -1)
             } else {
@@ -532,7 +553,13 @@ fn fn_preg_match_all(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         // SET_ORDER: an array of per-match arrays (each like preg_match's).
         let mut outer = PhpArray::new();
         for ov in &all {
-            outer.push(Value::Array(build_match(ov, &subject, &names, offset_capture, unmatched_null)));
+            outer.push(Value::Array(build_match(
+                ov,
+                &subject,
+                &names,
+                offset_capture,
+                unmatched_null,
+            )));
         }
         outer
     } else {
@@ -547,7 +574,10 @@ fn fn_preg_match_all(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
                 col.push(group_value(ov, &subject, i, offset_capture, unmatched_null));
             }
             if let Some(name) = names.get(i).and_then(|o| o.as_ref()) {
-                outer.insert(ArrayKey::Str(PhpStr::from(name.as_str())), Value::Array(col.clone()));
+                outer.insert(
+                    ArrayKey::Str(PhpStr::from(name.as_str())),
+                    Value::Array(col.clone()),
+                );
             }
             outer.insert(ArrayKey::Int(i as i64), Value::Array(col));
         }
@@ -584,7 +614,10 @@ fn expand<'a>(template: &[u8], group: impl Fn(usize) -> &'a [u8], out: &mut Vec<
                         j += 1;
                     }
                     if j > ds && j < b.len() && b[j] == b'}' {
-                        let n: usize = std::str::from_utf8(&b[ds..j]).unwrap().parse().unwrap_or(usize::MAX);
+                        let n: usize = std::str::from_utf8(&b[ds..j])
+                            .unwrap()
+                            .parse()
+                            .unwrap_or(usize::MAX);
                         out.extend_from_slice(group(n));
                         i = j + 1;
                     } else {
@@ -679,17 +712,32 @@ where
 // ---------------------------------------------------------------------------
 
 /// Apply one (pattern, replacement-template) pair to a byte subject.
-fn replace_one(pattern: &[u8], replacement: &[u8], subject: &[u8], limit: i64) -> Option<(Vec<u8>, usize)> {
+fn replace_one(
+    pattern: &[u8],
+    replacement: &[u8],
+    subject: &[u8],
+    limit: i64,
+) -> Option<(Vec<u8>, usize)> {
     let re = compile(pattern)?;
     replace_driver(&re, subject, limit, |ov, out| {
-        expand(replacement, |g| group_bytes(ov, subject, g).unwrap_or(b""), out)
+        expand(
+            replacement,
+            |g| group_bytes(ov, subject, g).unwrap_or(b""),
+            out,
+        )
     })
     .ok()
 }
 
 /// Run every (pattern, replacement) pair over a single subject in sequence.
 /// `pats`/`reps` are parallel lists; a missing replacement means "".
-fn replace_subject(pats: &[Vec<u8>], reps: &[Vec<u8>], subject: &[u8], limit: i64, count: &mut usize) -> Option<Vec<u8>> {
+fn replace_subject(
+    pats: &[Vec<u8>],
+    reps: &[Vec<u8>],
+    subject: &[u8],
+    limit: i64,
+    count: &mut usize,
+) -> Option<Vec<u8>> {
     let mut cur = subject.to_vec();
     for (i, pat) in pats.iter().enumerate() {
         let rep = reps.get(i).map(|v| v.as_slice()).unwrap_or(b"");
@@ -765,10 +813,15 @@ fn fn_preg_replace_callback(host: &mut dyn Host, args: &[Value]) -> Result<Value
     let mut count = 0usize;
 
     // Mirror preg_replace's subject handling (scalar or array of subjects).
-    let run = |host: &mut dyn Host, subject: &[u8], count: &mut usize| -> Result<Option<Vec<u8>>, Thrown> {
+    let run = |host: &mut dyn Host,
+               subject: &[u8],
+               count: &mut usize|
+     -> Result<Option<Vec<u8>>, Thrown> {
         let mut cur = subject.to_vec();
         for pat in &pats {
-            let Some(re) = compile(pat) else { return Ok(None) };
+            let Some(re) = compile(pat) else {
+                return Ok(None);
+            };
             let names = re.names().to_vec();
             // Build replacements by invoking the callback; errors from the
             // callback propagate out as a `Thrown`.
@@ -846,11 +899,15 @@ fn fn_preg_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             return;
         }
         let v = Value::str(piece.to_vec());
-        out.push(if offset_capture { pair(v, off as i64) } else { v });
+        out.push(if offset_capture {
+            pair(v, off as i64)
+        } else {
+            v
+        });
     };
 
     let mut next = 0usize; // start of the current (unemitted) text piece
-    // `pieces` = number of text pieces already emitted (one per match iteration).
+                           // `pieces` = number of text pieces already emitted (one per match iteration).
     for (pieces, ov) in all.iter().enumerate() {
         // limit>0: once we have limit-1 text pieces, the remainder is the last.
         if limit > 0 && pieces as i64 >= limit - 1 {
@@ -869,7 +926,11 @@ fn fn_preg_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
         next = e;
     }
-    emit(&mut out, &subject[next.min(subject.len())..], next.min(subject.len()));
+    emit(
+        &mut out,
+        &subject[next.min(subject.len())..],
+        next.min(subject.len()),
+    );
 
     Ok(Value::Array(out))
 }
@@ -883,13 +944,17 @@ fn fn_preg_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_preg_quote(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = bytes_of(&args[0]);
     // delimiter: first byte of the second argument, if any.
-    let delim = args.get(1).map(bytes_of).filter(|d| !d.is_empty()).map(|d| d[0]);
+    let delim = args
+        .get(1)
+        .map(bytes_of)
+        .filter(|d| !d.is_empty())
+        .map(|d| d[0]);
     let mut out = Vec::with_capacity(s.len() + s.len() / 2);
     for &b in &s {
         match b {
             0 => out.extend_from_slice(b"\\000"),
-            b'.' | b'\\' | b'+' | b'*' | b'?' | b'[' | b'^' | b']' | b'$' | b'(' | b')'
-            | b'{' | b'}' | b'=' | b'!' | b'<' | b'>' | b'|' | b':' | b'-' | b'#' => {
+            b'.' | b'\\' | b'+' | b'*' | b'?' | b'[' | b'^' | b']' | b'$' | b'(' | b')' | b'{'
+            | b'}' | b'=' | b'!' | b'<' | b'>' | b'|' | b':' | b'-' | b'#' => {
                 out.push(b'\\');
                 out.push(b);
             }
@@ -913,7 +978,9 @@ fn fn_preg_grep(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Bool(false));
     };
     let Value::Array(input) = deref(&args[1]) else {
-        return Err(Thrown::type_error("preg_grep(): Argument #2 ($array) must be of type array"));
+        return Err(Thrown::type_error(
+            "preg_grep(): Argument #2 ($array) must be of type array",
+        ));
     };
     let invert = int_arg(args, 2, 0) & PREG_GREP_INVERT != 0;
     let mut out = PhpArray::new();
@@ -942,8 +1009,14 @@ pub fn preg_constants() -> Vec<(&'static str, Value)> {
         ("PREG_SET_ORDER", Value::Int(PREG_SET_ORDER)),
         ("PREG_OFFSET_CAPTURE", Value::Int(PREG_OFFSET_CAPTURE)),
         ("PREG_SPLIT_NO_EMPTY", Value::Int(PREG_SPLIT_NO_EMPTY)),
-        ("PREG_SPLIT_DELIM_CAPTURE", Value::Int(PREG_SPLIT_DELIM_CAPTURE)),
-        ("PREG_SPLIT_OFFSET_CAPTURE", Value::Int(PREG_SPLIT_OFFSET_CAPTURE)),
+        (
+            "PREG_SPLIT_DELIM_CAPTURE",
+            Value::Int(PREG_SPLIT_DELIM_CAPTURE),
+        ),
+        (
+            "PREG_SPLIT_OFFSET_CAPTURE",
+            Value::Int(PREG_SPLIT_OFFSET_CAPTURE),
+        ),
         ("PREG_UNMATCHED_AS_NULL", Value::Int(PREG_UNMATCHED_AS_NULL)),
         ("PREG_GREP_INVERT", Value::Int(PREG_GREP_INVERT)),
     ]
@@ -957,14 +1030,28 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         min: usize,
         max: Option<usize>,
     ) {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     }
     // `&$matches` / `&$count` are by-reference OUT params (arg 2 for the match
     // functions, the final arg for the replace functions).
     put(m, "preg_match", fn_preg_match, 2, Some(5));
     put(m, "preg_match_all", fn_preg_match_all, 2, Some(5));
     put(m, "preg_replace", fn_preg_replace, 3, Some(5));
-    put(m, "preg_replace_callback", fn_preg_replace_callback, 3, Some(6));
+    put(
+        m,
+        "preg_replace_callback",
+        fn_preg_replace_callback,
+        3,
+        Some(6),
+    );
     put(m, "preg_split", fn_preg_split, 2, Some(4));
     put(m, "preg_quote", fn_preg_quote, 1, Some(2));
     put(m, "preg_grep", fn_preg_grep, 2, Some(3));
@@ -988,6 +1075,7 @@ mod tests {
     /// A host that dispatches `call_callable` to a Rust closure, for the
     /// preg_replace_callback test (mirrors how other modules stub a callback).
     struct CbHost<'a> {
+        #[allow(clippy::type_complexity)]
         f: Box<dyn FnMut(&[Value]) -> Value + 'a>,
     }
     impl Host for CbHost<'_> {
@@ -1018,10 +1106,15 @@ mod tests {
     // ---- small array readers for assertions -------------------------------
 
     fn arr_str(v: &Value, key: ArrayKey) -> String {
-        let Value::Array(a) = v else { panic!("not array") };
+        let Value::Array(a) = v else {
+            panic!("not array")
+        };
         match a.get(&key) {
             Some(Value::Str(p)) => String::from_utf8_lossy(p.as_bytes()).into_owned(),
-            other => panic!("expected string at {key:?}, got {:?}", other.map(|v| v.type_name())),
+            other => panic!(
+                "expected string at {key:?}, got {:?}",
+                other.map(|v| v.type_name())
+            ),
         }
     }
     fn as_str(v: &Value) -> String {
@@ -1041,7 +1134,7 @@ mod tests {
     fn match_simple() {
         let m = slot();
         let r = re(&[s("/\\d+/"), s("abc123"), m.clone()]);
-        assert_eq!(matches!(r, Value::Int(1)), true);
+        assert!(matches!(r, Value::Int(1)));
         assert_eq!(arr_str(&slot_val(&m), ArrayKey::Int(0)), "123");
     }
 
@@ -1051,7 +1144,9 @@ mod tests {
         let r = re(&[s("/xyz/"), s("abc"), m.clone()]);
         assert!(matches!(r, Value::Int(0)));
         // $matches set to an empty array
-        let Value::Array(a) = slot_val(&m) else { panic!() };
+        let Value::Array(a) = slot_val(&m) else {
+            panic!()
+        };
         assert_eq!(a.len(), 0);
     }
 
@@ -1094,7 +1189,10 @@ mod tests {
             let m = slot();
             let r = re(&[s(pat), s("42"), m.clone()]);
             assert!(matches!(r, Value::Int(1)), "pattern {pat} failed to match");
-            assert_eq!(arr_str(&slot_val(&m), ArrayKey::Str(PhpStr::from("y"))), "42");
+            assert_eq!(
+                arr_str(&slot_val(&m), ArrayKey::Str(PhpStr::from("y"))),
+                "42"
+            );
         }
     }
 
@@ -1102,10 +1200,17 @@ mod tests {
     fn match_offset_capture() {
         // php: 0 => array('123', 3)
         let m = slot();
-        re(&[s("/\\d+/"), s("abc123def"), m.clone(), Value::Int(PREG_OFFSET_CAPTURE)]);
+        re(&[
+            s("/\\d+/"),
+            s("abc123def"),
+            m.clone(),
+            Value::Int(PREG_OFFSET_CAPTURE),
+        ]);
         let v = slot_val(&m);
         let Value::Array(a) = &v else { panic!() };
-        let Some(Value::Array(inner)) = a.get(&ArrayKey::Int(0)) else { panic!() };
+        let Some(Value::Array(inner)) = a.get(&ArrayKey::Int(0)) else {
+            panic!()
+        };
         assert_eq!(as_str(inner.get(&ArrayKey::Int(0)).unwrap()), "123");
         assert!(matches!(inner.get(&ArrayKey::Int(1)), Some(Value::Int(3))));
     }
@@ -1121,7 +1226,9 @@ mod tests {
         // (a)(b)? on "a" trims trailing unmatched group 2 entirely
         let m2 = slot();
         re(&[s("/(a)(b)?/"), s("a"), m2.clone()]);
-        let Value::Array(a2) = slot_val(&m2) else { panic!() };
+        let Value::Array(a2) = slot_val(&m2) else {
+            panic!()
+        };
         assert_eq!(a2.len(), 2); // only 0 and 1
     }
 
@@ -1129,8 +1236,15 @@ mod tests {
     fn match_unmatched_as_null() {
         // php: (a)(b)?(c) on "ac" with UNMATCHED_AS_NULL => group 2 is null
         let m = slot();
-        re(&[s("/(a)(b)?(c)/"), s("ac"), m.clone(), Value::Int(PREG_UNMATCHED_AS_NULL)]);
-        let Value::Array(a) = slot_val(&m) else { panic!() };
+        re(&[
+            s("/(a)(b)?(c)/"),
+            s("ac"),
+            m.clone(),
+            Value::Int(PREG_UNMATCHED_AS_NULL),
+        ]);
+        let Value::Array(a) = slot_val(&m) else {
+            panic!()
+        };
         assert!(matches!(a.get(&ArrayKey::Int(2)), Some(Value::Null)));
         assert_eq!(arr_str(&slot_val(&m), ArrayKey::Int(3)), "c");
     }
@@ -1139,7 +1253,13 @@ mod tests {
     fn match_offset_arg() {
         // php: preg_match('/\d+/','ab12cd34',$m,0,4) => '34'
         let m = slot();
-        re(&[s("/\\d+/"), s("ab12cd34"), m.clone(), Value::Int(0), Value::Int(4)]);
+        re(&[
+            s("/\\d+/"),
+            s("ab12cd34"),
+            m.clone(),
+            Value::Int(0),
+            Value::Int(4),
+        ]);
         assert_eq!(arr_str(&slot_val(&m), ArrayKey::Int(0)), "34");
     }
 
@@ -1159,7 +1279,10 @@ mod tests {
     fn feature_lookbehind() {
         // php: /(?<=foo)bar/ on "foobar" => 1, match "bar"
         let m = slot();
-        assert!(matches!(re(&[s("/(?<=foo)bar/"), s("foobar"), m.clone()]), Value::Int(1)));
+        assert!(matches!(
+            re(&[s("/(?<=foo)bar/"), s("foobar"), m.clone()]),
+            Value::Int(1)
+        ));
         assert_eq!(arr_str(&slot_val(&m), ArrayKey::Int(0)), "bar");
     }
 
@@ -1169,7 +1292,9 @@ mod tests {
         let (r, v) = match_all(&[s("/\\G\\d/"), s("123 45")]);
         assert!(matches!(r, Value::Int(3)));
         let Value::Array(a) = &v else { panic!() };
-        let Some(Value::Array(g0)) = a.get(&ArrayKey::Int(0)) else { panic!() };
+        let Some(Value::Array(g0)) = a.get(&ArrayKey::Int(0)) else {
+            panic!()
+        };
         let got: Vec<String> = g0.iter().map(|(_, x)| as_str(x)).collect();
         assert_eq!(got, vec!["1", "2", "3"]);
     }
@@ -1184,10 +1309,16 @@ mod tests {
         ));
         // (?R) whole-pattern recursion
         let m2 = slot();
-        assert!(matches!(re(&[s("/\\((?:[^()]++|(?R))*\\)/"), s("(a(b)c)"), m2]), Value::Int(1)));
+        assert!(matches!(
+            re(&[s("/\\((?:[^()]++|(?R))*\\)/"), s("(a(b)c)"), m2]),
+            Value::Int(1)
+        ));
         // \g<1> subroutine call
         let m3 = slot();
-        assert!(matches!(re(&[s("/(\\d+)-\\g<1>/"), s("12-34"), m3.clone()]), Value::Int(1)));
+        assert!(matches!(
+            re(&[s("/(\\d+)-\\g<1>/"), s("12-34"), m3.clone()]),
+            Value::Int(1)
+        ));
         assert_eq!(arr_str(&slot_val(&m3), ArrayKey::Int(0)), "12-34");
     }
 
@@ -1245,7 +1376,10 @@ mod tests {
         assert!(matches!(re(&[s("/foo/SX"), s("foo"), m6]), Value::Int(1)));
         // an unknown modifier is rejected => false.
         let m7 = slot();
-        assert!(matches!(re(&[s("/foo/z"), s("foo"), m7]), Value::Bool(false)));
+        assert!(matches!(
+            re(&[s("/foo/z"), s("foo"), m7]),
+            Value::Bool(false)
+        ));
     }
 
     #[test]
@@ -1253,7 +1387,9 @@ mod tests {
         // middle unmatched group kept, trailing trimmed: nothing new, sanity.
         let m = slot();
         re(&[s("/(a)(b)?(c)/"), s("ac"), m.clone()]);
-        let Value::Array(a) = slot_val(&m) else { panic!() };
+        let Value::Array(a) = slot_val(&m) else {
+            panic!()
+        };
         assert_eq!(a.len(), 4);
     }
 
@@ -1271,9 +1407,13 @@ mod tests {
         let (r, v) = match_all(&[s("/(\\d)(\\w)/"), s("1a2b3c")]);
         assert!(matches!(r, Value::Int(3)));
         let Value::Array(a) = &v else { panic!() };
-        let Some(Value::Array(g0)) = a.get(&ArrayKey::Int(0)) else { panic!() };
+        let Some(Value::Array(g0)) = a.get(&ArrayKey::Int(0)) else {
+            panic!()
+        };
         assert_eq!(as_str(g0.get(&ArrayKey::Int(1)).unwrap()), "2b");
-        let Some(Value::Array(g2)) = a.get(&ArrayKey::Int(2)) else { panic!() };
+        let Some(Value::Array(g2)) = a.get(&ArrayKey::Int(2)) else {
+            panic!()
+        };
         assert_eq!(as_str(g2.get(&ArrayKey::Int(2)).unwrap()), "c");
     }
 
@@ -1283,7 +1423,9 @@ mod tests {
         let (r, v) = match_all(&[s("/(\\d)(\\w)/"), s("1a2b3c"), Value::Int(PREG_SET_ORDER)]);
         assert!(matches!(r, Value::Int(3)));
         let Value::Array(a) = &v else { panic!() };
-        let Some(Value::Array(set1)) = a.get(&ArrayKey::Int(1)) else { panic!() };
+        let Some(Value::Array(set1)) = a.get(&ArrayKey::Int(1)) else {
+            panic!()
+        };
         assert_eq!(as_str(set1.get(&ArrayKey::Int(0)).unwrap()), "2b");
         assert_eq!(as_str(set1.get(&ArrayKey::Int(2)).unwrap()), "b");
     }
@@ -1295,7 +1437,9 @@ mod tests {
         assert!(matches!(r, Value::Int(0)));
         let Value::Array(a) = &v else { panic!() };
         assert_eq!(a.len(), 1);
-        let Some(Value::Array(g0)) = a.get(&ArrayKey::Int(0)) else { panic!() };
+        let Some(Value::Array(g0)) = a.get(&ArrayKey::Int(0)) else {
+            panic!()
+        };
         assert_eq!(g0.len(), 0);
     }
 
@@ -1306,7 +1450,9 @@ mod tests {
         let (r, v) = match_all(&[s("/a*?/"), s("aaa")]);
         assert!(matches!(r, Value::Int(7)), "expected 7 matches");
         let Value::Array(a) = &v else { panic!() };
-        let Some(Value::Array(g0)) = a.get(&ArrayKey::Int(0)) else { panic!() };
+        let Some(Value::Array(g0)) = a.get(&ArrayKey::Int(0)) else {
+            panic!()
+        };
         let got: Vec<String> = g0.iter().map(|(_, x)| as_str(x)).collect();
         assert_eq!(got, vec!["", "a", "", "a", "", "a", ""]);
     }
@@ -1317,7 +1463,9 @@ mod tests {
         let (r, v) = match_all(&[s("/x*/"), s("axb")]);
         assert!(matches!(r, Value::Int(4)));
         let Value::Array(a) = &v else { panic!() };
-        let Some(Value::Array(g0)) = a.get(&ArrayKey::Int(0)) else { panic!() };
+        let Some(Value::Array(g0)) = a.get(&ArrayKey::Int(0)) else {
+            panic!()
+        };
         let got: Vec<String> = g0.iter().map(|(_, x)| as_str(x)).collect();
         assert_eq!(got, vec!["", "x", "", ""]);
     }
@@ -1329,13 +1477,29 @@ mod tests {
     #[test]
     fn replace_backrefs() {
         // swap words: $2 $1
-        assert_eq!(as_str(&replace(&[s("/(\\w+)\\s(\\w+)/"), s("$2 $1"), s("hello world")])), "world hello");
+        assert_eq!(
+            as_str(&replace(&[
+                s("/(\\w+)\\s(\\w+)/"),
+                s("$2 $1"),
+                s("hello world")
+            ])),
+            "world hello"
+        );
         // \1 backslash form
-        assert_eq!(as_str(&replace(&[s("/(\\d+)/"), s("[\\1]"), s("a1b22c")])), "a[1]b[22]c");
+        assert_eq!(
+            as_str(&replace(&[s("/(\\d+)/"), s("[\\1]"), s("a1b22c")])),
+            "a[1]b[22]c"
+        );
         // ${1} brace form, and disambiguation ${1}2 => group1 + '2'
-        assert_eq!(as_str(&replace(&[s("/(\\d)(\\d)/"), s("${1}2"), s("ab45cd")])), "ab42cd");
+        assert_eq!(
+            as_str(&replace(&[s("/(\\d)(\\d)/"), s("${1}2"), s("ab45cd")])),
+            "ab42cd"
+        );
         // $12 reads two digits => group 12 (nonexistent) => ''
-        assert_eq!(as_str(&replace(&[s("/(\\d)(\\d)/"), s("$12"), s("ab45cd")])), "abcd");
+        assert_eq!(
+            as_str(&replace(&[s("/(\\d)(\\d)/"), s("$12"), s("ab45cd")])),
+            "abcd"
+        );
         // \$ is a literal dollar, \n stays verbatim
         assert_eq!(as_str(&replace(&[s("/a/"), s("x\\$1y"), s("a")])), "x$1y");
         assert_eq!(as_str(&replace(&[s("/a/"), s("x\\nz"), s("a")])), "x\\nz");
@@ -1346,7 +1510,10 @@ mod tests {
     #[test]
     fn replace_limit_and_count() {
         // limit 2
-        assert_eq!(as_str(&replace(&[s("/\\d/"), s("#"), s("1234"), Value::Int(2)])), "##34");
+        assert_eq!(
+            as_str(&replace(&[s("/\\d/"), s("#"), s("1234"), Value::Int(2)])),
+            "##34"
+        );
         // count out-param
         let c = slot();
         fn_preg_replace(
@@ -1397,7 +1564,8 @@ mod tests {
                 Value::str((n * 2).to_string())
             }),
         };
-        let r = fn_preg_replace_callback(&mut host, &[s("/\\d+/"), Value::Null, s("a3b4")]).unwrap();
+        let r =
+            fn_preg_replace_callback(&mut host, &[s("/\\d+/"), Value::Null, s("a3b4")]).unwrap();
         assert_eq!(as_str(&r), "a6b8");
 
         // use capture groups: swap the two digits of each pair
@@ -1410,32 +1578,51 @@ mod tests {
             }),
         };
         let r2 =
-            fn_preg_replace_callback(&mut host2, &[s("/(\\d)(\\d)/"), Value::Null, s("x12y34")]).unwrap();
+            fn_preg_replace_callback(&mut host2, &[s("/(\\d)(\\d)/"), Value::Null, s("x12y34")])
+                .unwrap();
         assert_eq!(as_str(&r2), "x21y43");
     }
 
     fn split(args: &[Value]) -> Vec<String> {
-        let Value::Array(a) = fn_preg_split(&mut NullHost, args).unwrap() else { panic!() };
+        let Value::Array(a) = fn_preg_split(&mut NullHost, args).unwrap() else {
+            panic!()
+        };
         a.iter().map(|(_, v)| as_str(v)).collect()
     }
 
     #[test]
     fn split_basic_and_limit() {
         assert_eq!(split(&[s("/,/"), s("a,b,c")]), vec!["a", "b", "c"]);
-        assert_eq!(split(&[s("/,/"), s("a,b,c,d"), Value::Int(2)]), vec!["a", "b,c,d"]);
-        assert_eq!(split(&[s("/\\s+/"), s("hello   world  foo")]), vec!["hello", "world", "foo"]);
+        assert_eq!(
+            split(&[s("/,/"), s("a,b,c,d"), Value::Int(2)]),
+            vec!["a", "b,c,d"]
+        );
+        assert_eq!(
+            split(&[s("/\\s+/"), s("hello   world  foo")]),
+            vec!["hello", "world", "foo"]
+        );
     }
 
     #[test]
     fn split_flags() {
         // NO_EMPTY
         assert_eq!(
-            split(&[s("/,/"), s("a,,b,"), Value::Int(-1), Value::Int(PREG_SPLIT_NO_EMPTY)]),
+            split(&[
+                s("/,/"),
+                s("a,,b,"),
+                Value::Int(-1),
+                Value::Int(PREG_SPLIT_NO_EMPTY)
+            ]),
             vec!["a", "b"]
         );
         // DELIM_CAPTURE
         assert_eq!(
-            split(&[s("/([,;])/"), s("a,b;c"), Value::Int(-1), Value::Int(PREG_SPLIT_DELIM_CAPTURE)]),
+            split(&[
+                s("/([,;])/"),
+                s("a,b;c"),
+                Value::Int(-1),
+                Value::Int(PREG_SPLIT_DELIM_CAPTURE)
+            ]),
             vec!["a", ",", "b", ";", "c"]
         );
         // DELIM_CAPTURE | NO_EMPTY
@@ -1454,16 +1641,26 @@ mod tests {
     fn split_offset_capture() {
         // php: preg_split('/,/','a,bb',-1,PREG_SPLIT_OFFSET_CAPTURE)
         //   => [['a',0],['bb',2]]
-        let Value::Array(a) =
-            fn_preg_split(&mut NullHost, &[s("/,/"), s("a,bb"), Value::Int(-1), Value::Int(PREG_SPLIT_OFFSET_CAPTURE)])
-                .unwrap()
-        else {
+        let Value::Array(a) = fn_preg_split(
+            &mut NullHost,
+            &[
+                s("/,/"),
+                s("a,bb"),
+                Value::Int(-1),
+                Value::Int(PREG_SPLIT_OFFSET_CAPTURE),
+            ],
+        )
+        .unwrap() else {
             panic!()
         };
-        let Some(Value::Array(p0)) = a.get(&ArrayKey::Int(0)) else { panic!() };
+        let Some(Value::Array(p0)) = a.get(&ArrayKey::Int(0)) else {
+            panic!()
+        };
         assert_eq!(as_str(p0.get(&ArrayKey::Int(0)).unwrap()), "a");
         assert!(matches!(p0.get(&ArrayKey::Int(1)), Some(Value::Int(0))));
-        let Some(Value::Array(p1)) = a.get(&ArrayKey::Int(1)) else { panic!() };
+        let Some(Value::Array(p1)) = a.get(&ArrayKey::Int(1)) else {
+            panic!()
+        };
         assert_eq!(as_str(p1.get(&ArrayKey::Int(0)).unwrap()), "bb");
         assert!(matches!(p1.get(&ArrayKey::Int(1)), Some(Value::Int(2))));
     }
@@ -1483,7 +1680,12 @@ mod tests {
     fn split_delim_capture_optional() {
         // (,)|(;) on 'a,b;c': a, ',', b, '', ';', c
         assert_eq!(
-            split(&[s("/(,)|(;)/"), s("a,b;c"), Value::Int(-1), Value::Int(PREG_SPLIT_DELIM_CAPTURE)]),
+            split(&[
+                s("/(,)|(;)/"),
+                s("a,b;c"),
+                Value::Int(-1),
+                Value::Int(PREG_SPLIT_DELIM_CAPTURE)
+            ]),
             vec!["a", ",", "b", "", ";", "c"]
         );
     }
@@ -1507,7 +1709,9 @@ mod tests {
     }
 
     fn grep(args: &[Value]) -> Vec<(ArrayKey, String)> {
-        let Value::Array(a) = fn_preg_grep(&mut NullHost, args).unwrap() else { panic!() };
+        let Value::Array(a) = fn_preg_grep(&mut NullHost, args).unwrap() else {
+            panic!()
+        };
         a.iter().map(|(k, v)| (k.clone(), as_str(v))).collect()
     }
 
@@ -1520,19 +1724,41 @@ mod tests {
         input.push(s("dd"));
         // php preg_grep('/\d/', ...) => [0=>'a1',2=>'c3'] (keys preserved)
         let r = grep(&[s("/\\d/"), Value::Array(input.clone())]);
-        assert_eq!(r, vec![(ArrayKey::Int(0), "a1".into()), (ArrayKey::Int(2), "c3".into())]);
+        assert_eq!(
+            r,
+            vec![
+                (ArrayKey::Int(0), "a1".into()),
+                (ArrayKey::Int(2), "c3".into())
+            ]
+        );
         // INVERT => [1=>'bb',3=>'dd']
-        let r2 = grep(&[s("/\\d/"), Value::Array(input), Value::Int(PREG_GREP_INVERT)]);
-        assert_eq!(r2, vec![(ArrayKey::Int(1), "bb".into()), (ArrayKey::Int(3), "dd".into())]);
+        let r2 = grep(&[
+            s("/\\d/"),
+            Value::Array(input),
+            Value::Int(PREG_GREP_INVERT),
+        ]);
+        assert_eq!(
+            r2,
+            vec![
+                (ArrayKey::Int(1), "bb".into()),
+                (ArrayKey::Int(3), "dd".into())
+            ]
+        );
     }
 
     #[test]
     fn invalid_pattern_returns_false() {
         let m = slot();
         assert!(matches!(re(&[s("/(/"), s("abc"), m]), Value::Bool(false)));
-        assert!(matches!(fn_preg_split(&mut NullHost, &[s("bad"), s("x")]).unwrap(), Value::Bool(false)));
+        assert!(matches!(
+            fn_preg_split(&mut NullHost, &[s("bad"), s("x")]).unwrap(),
+            Value::Bool(false)
+        ));
         // preg_replace returns null on a bad pattern
-        assert!(matches!(replace(&[s("/(/"), s("x"), s("abc")]), Value::Null));
+        assert!(matches!(
+            replace(&[s("/(/"), s("x"), s("abc")]),
+            Value::Null
+        ));
     }
 
     #[test]
@@ -1551,7 +1777,10 @@ mod tests {
         assert!(matches!(re(&[s("/a b c/x"), s("abc"), m2c]), Value::Int(1)));
         // alternate delimiters
         let m3 = slot();
-        assert!(matches!(re(&[s("#/path/#"), s("/path/"), m3]), Value::Int(1)));
+        assert!(matches!(
+            re(&[s("#/path/#"), s("/path/"), m3]),
+            Value::Int(1)
+        ));
         let m4 = slot();
         assert!(matches!(re(&[s("{\\d+}"), s("a12b"), m4]), Value::Int(1)));
     }

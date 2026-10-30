@@ -68,12 +68,16 @@ fn fn_set_prop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_method_params(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let class = str_arg(args, 0);
     let method = str_arg(args, 1);
-    Ok(host.reflect_method_params(&class, &method).unwrap_or_else(|| Value::Array(rhp_values::PhpArray::new())))
+    Ok(host
+        .reflect_method_params(&class, &method)
+        .unwrap_or_else(|| Value::Array(rhp_values::PhpArray::new())))
 }
 
 fn fn_func_params(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let c = deref(&args[0]);
-    Ok(host.reflect_callable_params(&c).unwrap_or_else(|| Value::Array(rhp_values::PhpArray::new())))
+    Ok(host
+        .reflect_callable_params(&c)
+        .unwrap_or_else(|| Value::Array(rhp_values::PhpArray::new())))
 }
 
 fn fn_class_constants(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -90,17 +94,37 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         min: usize,
         max: Option<usize>,
     ) {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     }
     put(m, "__reflect_meta", fn_meta, 1, Some(1));
     put(m, "__reflect_is_a", fn_is_a, 2, Some(2));
     put(m, "__reflect_new_instance", fn_new_instance, 1, Some(2));
-    put(m, "__reflect_new_instance_noctor", fn_new_instance_noctor, 1, Some(1));
+    put(
+        m,
+        "__reflect_new_instance_noctor",
+        fn_new_instance_noctor,
+        1,
+        Some(1),
+    );
     put(m, "__reflect_get_prop", fn_get_prop, 2, Some(2));
     put(m, "__reflect_set_prop", fn_set_prop, 3, Some(3));
     put(m, "__reflect_method_params", fn_method_params, 2, Some(2));
     put(m, "__reflect_func_params", fn_func_params, 1, Some(1));
-    put(m, "__reflect_class_constants", fn_class_constants, 1, Some(1));
+    put(
+        m,
+        "__reflect_class_constants",
+        fn_class_constants,
+        1,
+        Some(1),
+    );
 }
 
 /// The `Reflection*` classes (read-focused subset).

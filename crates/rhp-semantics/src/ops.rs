@@ -6,8 +6,8 @@
 
 use std::cmp::Ordering;
 
-use rhp_values::Thrown;
 use rhp_values::conv::{self, Num};
+use rhp_values::Thrown;
 use rhp_values::{PhpStr, Value};
 
 /// Coerce an operand to a number for arithmetic, raising `TypeError` for
@@ -22,17 +22,24 @@ fn arith_num(v: &Value, op: &str) -> Result<Num, Thrown> {
                 "Unsupported operand types: string {op} int"
             ))),
         },
-        Value::Array(_) => Err(Thrown::type_error(format!("Unsupported operand types: array {op} int"))),
-        Value::Object(_) | Value::Closure(_) => {
-            Err(Thrown::type_error(format!("Unsupported operand types: object {op} int")))
-        }
+        Value::Array(_) => Err(Thrown::type_error(format!(
+            "Unsupported operand types: array {op} int"
+        ))),
+        Value::Object(_) | Value::Closure(_) => Err(Thrown::type_error(format!(
+            "Unsupported operand types: object {op} int"
+        ))),
         Value::Resource(r) => Ok(Num::Int(r.id as i64)),
         Value::Ref(r) => arith_num(&r.borrow(), op),
     }
 }
 
 /// `+` `-` `*` on two numbers, with int-overflow → float promotion.
-fn arith_add_sub_mul(a: Num, b: Num, f_int: fn(i64, i64) -> Option<i64>, f_flt: fn(f64, f64) -> f64) -> Value {
+fn arith_add_sub_mul(
+    a: Num,
+    b: Num,
+    f_int: fn(i64, i64) -> Option<i64>,
+    f_flt: fn(f64, f64) -> f64,
+) -> Value {
     match (a, b) {
         (Num::Int(x), Num::Int(y)) => match f_int(x, y) {
             Some(n) => Value::Int(n),
@@ -174,7 +181,9 @@ pub fn loose_compare(a: &Value, b: &Value) -> Ordering {
         (Null, _) => loose_compare(&null_as(&b), &b),
         (_, Null) => loose_compare(&a, &null_as(&a)),
         // numbers
-        (Int(_) | Float(_), Int(_) | Float(_)) => cmp_num(conv::to_number(&a).0, conv::to_number(&b).0),
+        (Int(_) | Float(_), Int(_) | Float(_)) => {
+            cmp_num(conv::to_number(&a).0, conv::to_number(&b).0)
+        }
         // number vs string
         (Int(_) | Float(_), Str(s)) => match conv::numeric_string(s.as_bytes()) {
             Some(n) => cmp_num(conv::to_number(&a).0, n),
@@ -186,7 +195,10 @@ pub fn loose_compare(a: &Value, b: &Value) -> Ordering {
         },
         // string vs string
         (Str(x), Str(y)) => {
-            match (conv::numeric_string(x.as_bytes()), conv::numeric_string(y.as_bytes())) {
+            match (
+                conv::numeric_string(x.as_bytes()),
+                conv::numeric_string(y.as_bytes()),
+            ) {
                 (Some(nx), Some(ny)) => cmp_num(nx, ny),
                 _ => cmp_bytes(x.as_bytes(), y.as_bytes()),
             }
@@ -228,7 +240,10 @@ fn null_as(other: &Value) -> Value {
 fn cmp_num(a: Num, b: Num) -> Ordering {
     match (a, b) {
         (Num::Int(x), Num::Int(y)) => x.cmp(&y),
-        _ => a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(Ordering::Equal),
+        _ => a
+            .as_f64()
+            .partial_cmp(&b.as_f64())
+            .unwrap_or(Ordering::Equal),
     }
 }
 
@@ -253,7 +268,9 @@ pub fn strict_eq(a: &Value, b: &Value) -> bool {
         (Str(x), Str(y)) => x == y,
         (Array(x), Array(y)) => {
             x.len() == y.len()
-                && x.iter().zip(y.iter()).all(|((xk, xv), (yk, yv))| xk == yk && strict_eq(xv, yv))
+                && x.iter()
+                    .zip(y.iter())
+                    .all(|((xk, xv), (yk, yv))| xk == yk && strict_eq(xv, yv))
         }
         (Object(x), Object(y)) => std::rc::Rc::ptr_eq(x, y),
         _ => false,

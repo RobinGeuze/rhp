@@ -40,7 +40,11 @@ fn gcvt(f: f64, mode: Mode) -> Vec<u8> {
         return b"NAN".to_vec();
     }
     if f.is_infinite() {
-        return if f < 0.0 { b"-INF".to_vec() } else { b"INF".to_vec() };
+        return if f < 0.0 {
+            b"-INF".to_vec()
+        } else {
+            b"INF".to_vec()
+        };
     }
     let negative = f.is_sign_negative();
     let sign: &[u8] = if negative { b"-" } else { b"" };
@@ -88,7 +92,10 @@ fn gcvt(f: f64, mode: Mode) -> Vec<u8> {
 /// The returned digit string has the decimal point removed.
 fn split_exp(s: &str) -> (Vec<u8>, i32) {
     let bytes = s.as_bytes();
-    let e_pos = bytes.iter().position(|&b| b == b'e').expect("exp form has 'e'");
+    let e_pos = bytes
+        .iter()
+        .position(|&b| b == b'e')
+        .expect("exp form has 'e'");
     let mantissa = &s[..e_pos];
     let exp: i32 = s[e_pos + 1..].parse().expect("valid exponent");
     let mut digits = Vec::with_capacity(mantissa.len());
@@ -132,7 +139,7 @@ fn format_fixed(digits: &[u8], exp10: i32) -> Vec<u8> {
         if digits.len() <= int_len {
             // All digits are integer part; pad with zeros.
             out.extend_from_slice(digits);
-            out.extend(std::iter::repeat(b'0').take(int_len - digits.len()));
+            out.extend(std::iter::repeat_n(b'0', int_len - digits.len()));
         } else {
             out.extend_from_slice(&digits[..int_len]);
             out.push(b'.');
@@ -141,7 +148,7 @@ fn format_fixed(digits: &[u8], exp10: i32) -> Vec<u8> {
     } else {
         // 0.00..digits
         out.extend_from_slice(b"0.");
-        out.extend(std::iter::repeat(b'0').take((-exp10 - 1) as usize));
+        out.extend(std::iter::repeat_n(b'0', (-exp10 - 1) as usize));
         out.extend_from_slice(digits);
     }
     out

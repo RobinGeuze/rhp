@@ -12,18 +12,48 @@ use common::{run, run_throws};
 #[test]
 fn is_callable_covers_all_shapes() {
     let prelude = "<?php function sq($x){return $x;} class C{public function m(){} public function __invoke(){}} $o=new C;";
-    assert_eq!(run(&format!("{prelude} var_dump(is_callable('sq'));")), "bool(true)\n");
-    assert_eq!(run(&format!("{prelude} var_dump(is_callable('strlen'));")), "bool(true)\n"); // builtin
-    assert_eq!(run(&format!("{prelude} var_dump(is_callable('nope'));")), "bool(false)\n");
-    assert_eq!(run(&format!("{prelude} var_dump(is_callable(fn()=>1));")), "bool(true)\n");
-    assert_eq!(run(&format!("{prelude} var_dump(is_callable([$o,'m']));")), "bool(true)\n"); // [obj, method]
-    assert_eq!(run(&format!("{prelude} var_dump(is_callable([$o,'nope']));")), "bool(false)\n");
-    assert_eq!(run(&format!("{prelude} var_dump(is_callable($o));")), "bool(true)\n"); // __invoke
-    assert_eq!(run(&format!("{prelude} var_dump(is_callable(42));")), "bool(false)\n");
+    assert_eq!(
+        run(&format!("{prelude} var_dump(is_callable('sq'));")),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run(&format!("{prelude} var_dump(is_callable('strlen'));")),
+        "bool(true)\n"
+    ); // builtin
+    assert_eq!(
+        run(&format!("{prelude} var_dump(is_callable('nope'));")),
+        "bool(false)\n"
+    );
+    assert_eq!(
+        run(&format!("{prelude} var_dump(is_callable(fn()=>1));")),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run(&format!("{prelude} var_dump(is_callable([$o,'m']));")),
+        "bool(true)\n"
+    ); // [obj, method]
+    assert_eq!(
+        run(&format!("{prelude} var_dump(is_callable([$o,'nope']));")),
+        "bool(false)\n"
+    );
+    assert_eq!(
+        run(&format!("{prelude} var_dump(is_callable($o));")),
+        "bool(true)\n"
+    ); // __invoke
+    assert_eq!(
+        run(&format!("{prelude} var_dump(is_callable(42));")),
+        "bool(false)\n"
+    );
     // a 1-element array is not a callable (guards the `a.len() == 2` match guard)
-    assert_eq!(run(&format!("{prelude} var_dump(is_callable([$o]));")), "bool(false)\n");
+    assert_eq!(
+        run(&format!("{prelude} var_dump(is_callable([$o]));")),
+        "bool(false)\n"
+    );
     // a 3-element array is not a callable either (guards `== 2` against `true`)
-    assert_eq!(run(&format!("{prelude} var_dump(is_callable([$o,'m',1]));")), "bool(false)\n");
+    assert_eq!(
+        run(&format!("{prelude} var_dump(is_callable([$o,'m',1]));")),
+        "bool(false)\n"
+    );
     // ['ClassName', 'staticMethod'] is callable (guards the Str-classname arm)
     assert_eq!(
         run("<?php class C{public static function s(){return 's';}} var_dump(is_callable(['C','s']));"),
@@ -35,7 +65,10 @@ fn is_callable_covers_all_shapes() {
 
 #[test]
 fn call_user_func_string_callable() {
-    assert_eq!(run("<?php function sq($x){return $x*$x;} echo call_user_func('sq', 6);"), "36");
+    assert_eq!(
+        run("<?php function sq($x){return $x*$x;} echo call_user_func('sq', 6);"),
+        "36"
+    );
 }
 
 #[test]
@@ -53,7 +86,9 @@ fn call_array_callable_static_method_by_string() {
 #[test]
 fn calling_three_element_array_is_not_callable() {
     // Guards the `a.len() == 2` guard in call_callable_value against `true`.
-    let (_out, class) = run_throws("<?php class C{public function m(){return 1;}} $o=new C; $cb=[$o,'m',1]; $cb();");
+    let (_out, class) = run_throws(
+        "<?php class C{public function m(){return 1;}} $o=new C; $cb=[$o,'m',1]; $cb();",
+    );
     assert_eq!(class, "TypeError");
 }
 
@@ -62,7 +97,10 @@ fn calling_three_element_array_is_not_callable() {
 #[test]
 fn define_returns_true_then_false_on_redefine() {
     // First define succeeds; redefining the same name returns false (not an error).
-    assert_eq!(run("<?php var_dump(define('X', 1)); var_dump(define('X', 2)); echo X;"), "bool(true)\nbool(false)\n1");
+    assert_eq!(
+        run("<?php var_dump(define('X', 1)); var_dump(define('X', 2)); echo X;"),
+        "bool(true)\nbool(false)\n1"
+    );
 }
 
 #[test]
@@ -74,9 +112,18 @@ fn constant_lookup_via_constant_and_bareword() {
 
 #[test]
 fn string_backed_enum_from_and_tryfrom() {
-    assert_eq!(run("<?php enum S:string{case A='a'; case B='b';} echo S::from('b')->name;"), "B");
-    assert_eq!(run("<?php enum S:string{case A='a'; case B='b';} var_dump(S::tryFrom('a'));"), "enum(S::A)\n");
-    assert_eq!(run("<?php enum S:string{case A='a'; case B='b';} var_dump(S::tryFrom('z'));"), "NULL\n");
+    assert_eq!(
+        run("<?php enum S:string{case A='a'; case B='b';} echo S::from('b')->name;"),
+        "B"
+    );
+    assert_eq!(
+        run("<?php enum S:string{case A='a'; case B='b';} var_dump(S::tryFrom('a'));"),
+        "enum(S::A)\n"
+    );
+    assert_eq!(
+        run("<?php enum S:string{case A='a'; case B='b';} var_dump(S::tryFrom('z'));"),
+        "NULL\n"
+    );
 }
 
 // --- is_enum_class (lib.rs ~82): a plain object dumps as object, not enum ---
@@ -93,9 +140,18 @@ fn plain_object_var_dump_shape() {
 
 #[test]
 fn inherited_instanceof_and_get_parent_class() {
-    assert_eq!(run("<?php class A{} class B extends A{} var_dump((new B()) instanceof A);"), "bool(true)\n");
-    assert_eq!(run("<?php class A{} class B extends A{} echo get_parent_class(new B());"), "A");
-    assert_eq!(run("<?php class A{} var_dump(get_parent_class(new A()));"), "bool(false)\n");
+    assert_eq!(
+        run("<?php class A{} class B extends A{} var_dump((new B()) instanceof A);"),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run("<?php class A{} class B extends A{} echo get_parent_class(new B());"),
+        "A"
+    );
+    assert_eq!(
+        run("<?php class A{} var_dump(get_parent_class(new A()));"),
+        "bool(false)\n"
+    );
 }
 
 // --- type_lc (lib.rs ~1878): used in the member-call-on-non-object error ----
@@ -131,7 +187,10 @@ fn string_out_of_bounds_index_is_empty_string() {
 
 #[test]
 fn append_to_empty_string_autovivifies_array() {
-    assert_eq!(run("<?php $x=''; $x[]=5; print_r($x);"), "Array\n(\n    [0] => 5\n)\n");
+    assert_eq!(
+        run("<?php $x=''; $x[]=5; print_r($x);"),
+        "Array\n(\n    [0] => 5\n)\n"
+    );
 }
 
 #[test]

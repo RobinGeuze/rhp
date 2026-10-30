@@ -22,9 +22,8 @@ use rhp_frontend::cst::{
     Access, Argument, ArrayElement, AssignmentOperator, BinaryOperator, Class, ClassLikeMember,
     ClassLikeMemberSelector, CompositeString, Construct, Expression, ForBody, ForeachBody,
     ForeachTarget, Hint, Identifier, IfBody, Literal, MagicConstant, Match, MatchArm, MethodBody,
-    Modifier,
-    Program as AstProgram, Property, PropertyItem, Statement, StringPart, SwitchBody, SwitchCase,
-    UnaryPrefixOperator, Variable, WhileBody,
+    Modifier, Program as AstProgram, Property, PropertyItem, Statement, StringPart, SwitchBody,
+    SwitchCase, UnaryPrefixOperator, Variable, WhileBody,
 };
 use rhp_values::{ClassFlags, ClassKind, Visibility};
 
@@ -98,7 +97,11 @@ thread_local! {
 /// Lower a mago type hint to the bytecode [`rhp_bytecode::TypeHint`] (resolving
 /// class names against the current namespace).
 fn type_hint(h: &Hint) -> rhp_bytecode::TypeHint {
-    let mut out = rhp_bytecode::TypeHint { nullable: false, intersection: false, kinds: Vec::new() };
+    let mut out = rhp_bytecode::TypeHint {
+        nullable: false,
+        intersection: false,
+        kinds: Vec::new(),
+    };
     collect_hint(h, &mut out);
     out
 }
@@ -137,7 +140,9 @@ fn collect_hint(h: &Hint, out: &mut rhp_bytecode::TypeHint) {
         Hint::Object(_) => out.kinds.push(K::Object),
         Hint::Mixed(_) => out.kinds.push(K::Mixed),
         Hint::Iterable(_) => out.kinds.push(K::Iterable),
-        Hint::Identifier(id) => out.kinds.push(K::Named(PhpStr::from_bytes(resolve_class_name(id)))),
+        Hint::Identifier(id) => out
+            .kinds
+            .push(K::Named(PhpStr::from_bytes(resolve_class_name(id)))),
     }
 }
 
@@ -328,7 +333,10 @@ fn flatten_namespaces<'a>(
         match stmt {
             Statement::Namespace(ns) => {
                 let name = ns.name.as_ref().map(identifier_raw).unwrap_or(b"");
-                let base = Rc::new(NsContext { ns: strip_lead_bs(name), ..Default::default() });
+                let base = Rc::new(NsContext {
+                    ns: strip_lead_bs(name),
+                    ..Default::default()
+                });
                 flatten_namespaces(ns.statements(), base, out);
             }
             Statement::Use(u) => {
@@ -387,7 +395,11 @@ fn import_one(
     item: &rhp_frontend::cst::UseItem,
 ) {
     let name_raw = strip_lead_bs(identifier_raw(&item.name));
-    let full = if prefix.is_empty() { name_raw } else { join_ns(prefix, &name_raw) };
+    let full = if prefix.is_empty() {
+        name_raw
+    } else {
+        join_ns(prefix, &name_raw)
+    };
     let alias: Vec<u8> = match &item.alias {
         Some(a) => a.identifier.value.to_vec(),
         None => match full.iter().rposition(|&b| b == b'\\') {
@@ -494,9 +506,7 @@ fn collect_method_refs(flat: &[(Rc<NsContext>, &Statement)]) -> HashMap<Vec<u8>,
 
 /// Build the parameter specs for a function, or `None` if a default value is not
 /// a foldable constant (then named-argument calls to it fall back to an error).
-fn param_specs(
-    pl: &rhp_frontend::cst::FunctionLikeParameterList,
-) -> Option<Vec<ParamSpec>> {
+fn param_specs(pl: &rhp_frontend::cst::FunctionLikeParameterList) -> Option<Vec<ParamSpec>> {
     let mut out = Vec::new();
     for p in pl.parameters.iter() {
         let default = match &p.default_value {
@@ -536,7 +546,11 @@ pub fn compile_with_source(
     // Flatten namespace/use into (context, statement) pairs in source order; every
     // pass below iterates this so name resolution is consistent across passes.
     let mut flat: Vec<(Rc<NsContext>, &Statement)> = Vec::new();
-    flatten_namespaces(&program.statements, Rc::new(NsContext::default()), &mut flat);
+    flatten_namespaces(
+        &program.statements,
+        Rc::new(NsContext::default()),
+        &mut flat,
+    );
 
     // Signature pre-pass: fully-qualified name -> per-parameter by-ref flags, so a
     // call site can marshal by-ref arguments even though the callee is resolved by
@@ -547,8 +561,12 @@ pub fn compile_with_source(
     for (ctx, stmt) in &flat {
         if let Statement::Function(func) = stmt {
             let fqn = join_ns(&ctx.ns, func.name.value).to_ascii_lowercase();
-            let flags: Vec<bool> =
-                func.parameter_list.parameters.iter().map(|p| p.ampersand.is_some()).collect();
+            let flags: Vec<bool> = func
+                .parameter_list
+                .parameters
+                .iter()
+                .map(|p| p.ampersand.is_some())
+                .collect();
             sigs.insert(fqn.clone(), flags);
             if let Some(specs) = param_specs(&func.parameter_list) {
                 fn_params.insert(fqn, specs);
@@ -617,8 +635,11 @@ pub fn compile_with_source(
     c.emit(Instr::RetNull);
 
     let closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    let main_var_names: Vec<PhpStr> =
-        c.cv_map.iter().map(|n| PhpStr::from_bytes(n.clone())).collect();
+    let main_var_names: Vec<PhpStr> = c
+        .cv_map
+        .iter()
+        .map(|n| PhpStr::from_bytes(n.clone()))
+        .collect();
     Ok(Program {
         main: Rc::new(c.finish()),
         functions,
@@ -661,12 +682,20 @@ fn compile_class(
     };
     // Single inheritance: a class `extends` one parent.
     let parent = class.extends.as_ref().and_then(|e| {
-        e.types.iter().next().map(|id| PhpStr::from_bytes(resolve_class_name(id)))
+        e.types
+            .iter()
+            .next()
+            .map(|id| PhpStr::from_bytes(resolve_class_name(id)))
     });
     let interfaces: Vec<PhpStr> = class
         .implements
         .as_ref()
-        .map(|i| i.types.iter().map(|id| PhpStr::from_bytes(resolve_class_name(id))).collect())
+        .map(|i| {
+            i.types
+                .iter()
+                .map(|id| PhpStr::from_bytes(resolve_class_name(id)))
+                .collect()
+        })
         .unwrap_or_default();
 
     let m = compile_members(&class.members, sigs, &name)?;
@@ -715,7 +744,12 @@ fn compile_enum(
     let mut interfaces: Vec<PhpStr> = en
         .implements
         .as_ref()
-        .map(|i| i.types.iter().map(|id| PhpStr::from_bytes(resolve_class_name(id))).collect())
+        .map(|i| {
+            i.types
+                .iter()
+                .map(|id| PhpStr::from_bytes(resolve_class_name(id)))
+                .collect()
+        })
         .unwrap_or_default();
     // Every enum implements UnitEnum; a backed enum also implements BackedEnum.
     interfaces.push(PhpStr::from("UnitEnum"));
@@ -728,7 +762,11 @@ fn compile_enum(
         name,
         kind: ClassKind::Enum,
         // Enums are implicitly final.
-        flags: ClassFlags { is_abstract: false, is_final: true, is_readonly: false },
+        flags: ClassFlags {
+            is_abstract: false,
+            is_final: true,
+            is_readonly: false,
+        },
         parent: None,
         interfaces,
         traits: m.traits,
@@ -809,7 +847,8 @@ fn compile_members(
             ClassLikeMember::Property(Property::Plain(p)) => {
                 let visibility = modifiers_visibility(&p.modifiers);
                 let is_static = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Static(_)));
-                let is_readonly = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
+                let is_readonly =
+                    has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
                 for item in p.items.iter() {
                     let (var, default) = match item {
                         PropertyItem::Concrete(c) => {
@@ -824,9 +863,19 @@ fn compile_members(
                             PropDefaultProto::Init(t) => ConstInitProto::Thunk(t),
                             PropDefaultProto::None => ConstInitProto::Const(Value::Null),
                         };
-                        out.static_props.push(StaticPropProto { name: pname, visibility, is_readonly, init });
+                        out.static_props.push(StaticPropProto {
+                            name: pname,
+                            visibility,
+                            is_readonly,
+                            init,
+                        });
                     } else {
-                        out.props.push(PropProto { name: pname, visibility, is_readonly, default });
+                        out.props.push(PropProto {
+                            name: pname,
+                            visibility,
+                            is_readonly,
+                            default,
+                        });
                     }
                 }
             }
@@ -851,15 +900,14 @@ fn compile_members(
             ClassLikeMember::EnumCase(ec) => {
                 use rhp_frontend::cst::EnumCaseItem;
                 let (name, value) = match &ec.item {
-                    EnumCaseItem::Unit(u) => {
-                        (PhpStr::from_bytes(u.name.value.to_vec()), None)
-                    }
+                    EnumCaseItem::Unit(u) => (PhpStr::from_bytes(u.name.value.to_vec()), None),
                     EnumCaseItem::Backed(b) => (
                         PhpStr::from_bytes(b.name.value.to_vec()),
                         Some(const_value_static(b.value)?),
                     ),
                 };
-                out.enum_cases.push(rhp_bytecode::EnumCaseProto { name, value });
+                out.enum_cases
+                    .push(rhp_bytecode::EnumCaseProto { name, value });
             }
         }
     }
@@ -1308,7 +1356,12 @@ fn compile_interface(
     let interfaces: Vec<PhpStr> = iface
         .extends
         .as_ref()
-        .map(|e| e.types.iter().map(|id| PhpStr::from_bytes(resolve_class_name(id))).collect())
+        .map(|e| {
+            e.types
+                .iter()
+                .map(|id| PhpStr::from_bytes(resolve_class_name(id)))
+                .collect()
+        })
         .unwrap_or_default();
     let mut constants = Vec::new();
     for member in iface.members.iter() {
@@ -1373,16 +1426,16 @@ fn compile_method(
         let var = strip_dollar(p.variable.name);
         let cv = c.cv(var);
         let pname = c.intern_name(var);
-        let default = match &p.default_value {
-            Some(dv) => Some(match c.const_default(dv.value) {
+        let default = p
+            .default_value
+            .as_ref()
+            .map(|dv| match c.const_default(dv.value) {
                 Ok(d) => d,
                 Err(_) => {
                     nonconst_defaults.push((idx as u16, cv, dv.value));
                     rhp_bytecode::Default::Init(0)
                 }
-            }),
-            None => None,
-        };
+            });
         if !p.modifiers.is_empty() {
             let vis = modifiers_visibility(&p.modifiers);
             let ro = has_modifier(&p.modifiers, |md| matches!(md, Modifier::Readonly(_)));
@@ -1442,7 +1495,14 @@ fn compile_method(
     proto.is_generator = body_stmts.iter().any(stmt_has_yield);
     proto.return_type = m.return_type_hint.as_ref().map(|r| type_hint(&r.hint));
 
-    let mp = MethodProto { name, proto: Rc::new(proto), visibility, is_static, is_abstract, is_final };
+    let mp = MethodProto {
+        name,
+        proto: Rc::new(proto),
+        visibility,
+        is_static,
+        is_abstract,
+        is_final,
+    };
     Ok((mp, promoted))
 }
 
@@ -1463,16 +1523,16 @@ fn compile_function(
         let var = strip_dollar(p.variable.name);
         let cv = c.cv(var); // params get CV 0,1,2,... in order
         let name = c.intern_name(var);
-        let default = match &p.default_value {
-            Some(dv) => Some(match c.const_default(dv.value) {
+        let default = p
+            .default_value
+            .as_ref()
+            .map(|dv| match c.const_default(dv.value) {
                 Ok(d) => d,
                 Err(_) => {
                     nonconst_defaults.push((idx as u16, cv, dv.value));
                     rhp_bytecode::Default::Init(0)
                 }
-            }),
-            None => None,
-        };
+            });
         params.push(rhp_bytecode::ParamInfo {
             name,
             cv,
@@ -1599,7 +1659,11 @@ impl ProtoBuilder {
         proto.caches = self.caches;
         proto.exception_table = self.exception_table;
         proto.debug.cv_names = (0..self.cv_map.len() as u32).collect();
-        proto.cv_var_names = self.cv_map.iter().map(|n| PhpStr::from_bytes(n.clone())).collect();
+        proto.cv_var_names = self
+            .cv_map
+            .iter()
+            .map(|n| PhpStr::from_bytes(n.clone()))
+            .collect();
         proto.debug.lines = self.lines;
         proto.debug.file = SRC_FILE.with(|f| PhpStr::from_bytes(f.borrow().clone()));
         proto.superglobals = self
@@ -1625,7 +1689,8 @@ impl ProtoBuilder {
     fn emit(&mut self, instr: Instr) {
         // Record a line entry whenever the source line changes (for debug info).
         if self.lines.last().map(|(_, l)| *l) != Some(self.cur_line) {
-            self.lines.push((self.code.len() as rhp_bytecode::Pc, self.cur_line));
+            self.lines
+                .push((self.code.len() as rhp_bytecode::Pc, self.cur_line));
         }
         self.code.push(instr);
     }
@@ -1721,7 +1786,10 @@ impl ProtoBuilder {
             let t = self.compile_expr(expr)?;
             self.emit(Instr::Mov { dst: cv, src: t });
             let after = self.here();
-            self.code[jpos] = Instr::JmpIfArg { index, target: after };
+            self.code[jpos] = Instr::JmpIfArg {
+                index,
+                target: after,
+            };
             self.reset_temps();
         }
         Ok(())
@@ -1798,7 +1866,9 @@ impl ProtoBuilder {
                 self.scan_expr_vars(d.condition);
             }
             Statement::For(f) => {
-                f.initializations.iter().for_each(|e| self.scan_expr_vars(e));
+                f.initializations
+                    .iter()
+                    .for_each(|e| self.scan_expr_vars(e));
                 f.conditions.iter().for_each(|e| self.scan_expr_vars(e));
                 f.increments.iter().for_each(|e| self.scan_expr_vars(e));
                 match &f.body {
@@ -1861,15 +1931,25 @@ impl ProtoBuilder {
                 }
             }
             Statement::Try(t) => {
-                t.block.statements.iter().for_each(|s| self.scan_stmt_vars(s));
+                t.block
+                    .statements
+                    .iter()
+                    .for_each(|s| self.scan_stmt_vars(s));
                 for clause in t.catch_clauses.iter() {
                     if let Some(v) = &clause.variable {
                         self.cv(strip_dollar(v.name));
                     }
-                    clause.block.statements.iter().for_each(|s| self.scan_stmt_vars(s));
+                    clause
+                        .block
+                        .statements
+                        .iter()
+                        .for_each(|s| self.scan_stmt_vars(s));
                 }
                 if let Some(fin) = &t.finally_clause {
-                    fin.block.statements.iter().for_each(|s| self.scan_stmt_vars(s));
+                    fin.block
+                        .statements
+                        .iter()
+                        .for_each(|s| self.scan_stmt_vars(s));
                 }
             }
             _ => {}
@@ -1931,7 +2011,9 @@ impl ProtoBuilder {
                             a.conditions.iter().for_each(|c| self.scan_expr_vars(c));
                             self.scan_expr_vars(a.expression);
                         }
-                        rhp_frontend::cst::MatchArm::Default(a) => self.scan_expr_vars(a.expression),
+                        rhp_frontend::cst::MatchArm::Default(a) => {
+                            self.scan_expr_vars(a.expression)
+                        }
                     }
                 }
             }
@@ -2085,7 +2167,7 @@ impl ProtoBuilder {
                         StaticItem::Abstract(a) => (&a.variable, u32::MAX),
                         StaticItem::Concrete(c) => {
                             let v = fold_const(c.value)?;
-                            (&c.variable, self.intern_const(v) as u32)
+                            (&c.variable, self.intern_const(v))
                         }
                     };
                     let var = strip_dollar(dvar.name);
@@ -2164,7 +2246,10 @@ impl ProtoBuilder {
     // -- control-flow lowering --
 
     /// Compile a single statement or a colon-delimited statement sequence.
-    fn compile_stmts<'a>(&mut self, stmts: impl Iterator<Item = &'a Statement<'a>>) -> Result<(), Thrown> {
+    fn compile_stmts<'a>(
+        &mut self,
+        stmts: impl Iterator<Item = &'a Statement<'a>>,
+    ) -> Result<(), Thrown> {
         for s in stmts {
             self.compile_stmt(s)?;
         }
@@ -2313,13 +2398,20 @@ impl ProtoBuilder {
             if let SwitchCase::Expression(c) = case {
                 let cexpr = self.compile_expr(c.expression)?;
                 let t = self.alloc_temp();
-                self.emit(Instr::Cmp { dst: t, a: subject, b: cexpr, kind: CmpKind::Eq });
+                self.emit(Instr::Cmp {
+                    dst: t,
+                    a: subject,
+                    b: cexpr,
+                    kind: CmpKind::Eq,
+                });
                 let pos = self.code.len();
                 self.emit(Instr::Nop); // JmpTrue t -> case body
                 dispatch.push((idx, pos, t));
             }
         }
-        let default_idx = cases.iter().position(|c| matches!(c, SwitchCase::Default(_)));
+        let default_idx = cases
+            .iter()
+            .position(|c| matches!(c, SwitchCase::Default(_)));
         let no_match_pos = self.code.len();
         self.emit(Instr::Nop); // Jmp -> default body or end
 
@@ -2337,7 +2429,10 @@ impl ProtoBuilder {
         let end = self.here();
 
         for (idx, pos, cond) in dispatch {
-            self.code[pos] = Instr::JmpTrue { cond, target: starts[idx] };
+            self.code[pos] = Instr::JmpTrue {
+                cond,
+                target: starts[idx],
+            };
         }
         let no_match_target = default_idx.map(|i| starts[i]).unwrap_or(end);
         self.patch_jmp(no_match_pos, no_match_target);
@@ -2364,7 +2459,9 @@ impl ProtoBuilder {
         );
 
         if by_ref {
-            let Expression::UnaryPrefix(u) = val_expr else { unreachable!() };
+            let Expression::UnaryPrefix(u) = val_expr else {
+                unreachable!()
+            };
             let Expression::Variable(Variable::Direct(d)) = u.operand else {
                 return Err(Thrown::unsupported(
                     "foreach by-reference target",
@@ -2412,10 +2509,22 @@ impl ProtoBuilder {
                 ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
             }
             let ctx = self.loops.pop().unwrap();
-            self.emit(Instr::Jmp { target: fetch_label });
+            self.emit(Instr::Jmp {
+                target: fetch_label,
+            });
             let end = self.here();
-            self.code[reset_pos] = Instr::FeResetRef { arr_cv, pos_reg, end };
-            self.code[fetch_pos] = Instr::FeFetchRef { arr_cv, pos_reg, key_cv, val_cv, end };
+            self.code[reset_pos] = Instr::FeResetRef {
+                arr_cv,
+                pos_reg,
+                end,
+            };
+            self.code[fetch_pos] = Instr::FeFetchRef {
+                arr_cv,
+                pos_reg,
+                key_cv,
+                val_cv,
+                end,
+            };
             self.patch_all(ctx.break_jumps, end);
             self.patch_all(ctx.continue_jumps, fetch_label);
             self.temp_floor = saved_floor;
@@ -2429,7 +2538,12 @@ impl ProtoBuilder {
         let (val_cv, val_pattern): (Reg, Option<&Expression>) = match val_expr {
             Expression::Variable(Variable::Direct(d)) => (self.cv(strip_dollar(d.name)), None),
             Expression::Array(_) | Expression::List(_) => (self.alloc_temp(), Some(val_expr)),
-            _ => return Err(Thrown::unsupported("foreach target", "variable or destructuring only")),
+            _ => {
+                return Err(Thrown::unsupported(
+                    "foreach target",
+                    "variable or destructuring only",
+                ))
+            }
         };
 
         let saved_floor = self.temp_floor;
@@ -2456,10 +2570,23 @@ impl ProtoBuilder {
             ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
         }
         let ctx = self.loops.pop().unwrap();
-        self.emit(Instr::Jmp { target: fetch_label });
+        self.emit(Instr::Jmp {
+            target: fetch_label,
+        });
         let end = self.here();
-        self.code[reset_pos] = Instr::FeReset { arr_reg, pos_reg, src, end };
-        self.code[fetch_pos] = Instr::FeFetch { arr_reg, pos_reg, key_cv, val_cv, end };
+        self.code[reset_pos] = Instr::FeReset {
+            arr_reg,
+            pos_reg,
+            src,
+            end,
+        };
+        self.code[fetch_pos] = Instr::FeFetch {
+            arr_reg,
+            pos_reg,
+            key_cv,
+            val_cv,
+            end,
+        };
         self.patch_all(ctx.break_jumps, end);
         self.patch_all(ctx.continue_jumps, fetch_label);
         self.temp_floor = saved_floor;
@@ -2541,7 +2668,10 @@ impl ProtoBuilder {
         for clause in t.catch_clauses.iter() {
             let target = self.here();
             let classes = hint_class_names(&clause.hint)?;
-            let var_reg = clause.variable.as_ref().map(|v| self.cv(strip_dollar(v.name)));
+            let var_reg = clause
+                .variable
+                .as_ref()
+                .map(|v| self.cv(strip_dollar(v.name)));
             self.compile_stmts(clause.block.statements.iter())?;
             let j = self.code.len();
             self.emit(Instr::Nop);
@@ -2597,14 +2727,22 @@ impl ProtoBuilder {
                     let key = self.alloc_temp();
                     self.emit(Instr::LoadInt { dst: key, n: idx });
                     let val = self.alloc_temp();
-                    self.emit(Instr::DimFetch { dst: val, arr: src, key });
+                    self.emit(Instr::DimFetch {
+                        dst: val,
+                        arr: src,
+                        key,
+                    });
                     self.store_to_target(v.value, val)?;
                     idx += 1;
                 }
                 ArrayElement::KeyValue(kv) => {
                     let key = self.compile_expr(kv.key)?;
                     let val = self.alloc_temp();
-                    self.emit(Instr::DimFetch { dst: val, arr: src, key });
+                    self.emit(Instr::DimFetch {
+                        dst: val,
+                        arr: src,
+                        key,
+                    });
                     self.store_to_target(kv.value, val)?;
                 }
                 ArrayElement::Variadic(_) => {
@@ -2692,7 +2830,12 @@ impl ProtoBuilder {
                     for cond in a.conditions.iter() {
                         let c = self.compile_expr(cond)?;
                         let t = self.alloc_temp();
-                        self.emit(Instr::Cmp { dst: t, a: subject, b: c, kind: CmpKind::Identical });
+                        self.emit(Instr::Cmp {
+                            dst: t,
+                            a: subject,
+                            b: c,
+                            kind: CmpKind::Identical,
+                        });
                         let pos = self.code.len();
                         self.emit(Instr::Nop); // JmpTrue t -> arm body
                         dispatch.push((idx, pos, t));
@@ -2723,7 +2866,10 @@ impl ProtoBuilder {
         let end = self.here();
 
         for (idx, pos, cond) in dispatch {
-            self.code[pos] = Instr::JmpTrue { cond, target: starts[idx] };
+            self.code[pos] = Instr::JmpTrue {
+                cond,
+                target: starts[idx],
+            };
         }
         let nm_target = default_idx.map(|i| starts[i]).unwrap_or(throw_label);
         self.patch_jmp(no_match_pos, nm_target);
@@ -2802,16 +2948,21 @@ impl ProtoBuilder {
             return Ok(dst);
         }
         if let MagicConstant::Property(_) = mc {
-            return Err(Thrown::unsupported("__PROPERTY__", "only valid in property hooks"));
+            return Err(Thrown::unsupported(
+                "__PROPERTY__",
+                "only valid in property hooks",
+            ));
         }
         let s: Vec<u8> = match mc {
             MagicConstant::File(_) => src_file(),
             MagicConstant::Directory(_) => dirname(&src_file()),
             MagicConstant::Function(_) => self.magic_function_name(),
             MagicConstant::Method(_) => self.magic_method_name(),
-            MagicConstant::Class(_) | MagicConstant::Trait(_) => {
-                self.class_name.as_ref().map(|c| c.as_bytes().to_vec()).unwrap_or_default()
-            }
+            MagicConstant::Class(_) | MagicConstant::Trait(_) => self
+                .class_name
+                .as_ref()
+                .map(|c| c.as_bytes().to_vec())
+                .unwrap_or_default(),
             MagicConstant::Namespace(_) => cur_ns(),
             MagicConstant::Line(_) | MagicConstant::Property(_) => unreachable!(),
         };
@@ -2839,7 +2990,11 @@ impl ProtoBuilder {
     fn magic_method_name(&self) -> Vec<u8> {
         match self.scope_kind {
             ScopeKind::Method => {
-                let mut v = self.class_name.as_ref().map(|c| c.as_bytes().to_vec()).unwrap_or_default();
+                let mut v = self
+                    .class_name
+                    .as_ref()
+                    .map(|c| c.as_bytes().to_vec())
+                    .unwrap_or_default();
                 v.extend_from_slice(b"::");
                 v.extend_from_slice(self.name.as_bytes());
                 v
@@ -2855,7 +3010,11 @@ impl ProtoBuilder {
         let line = line_of(offset);
         let qual: Vec<u8> = match self.scope_kind {
             ScopeKind::Method => {
-                let mut v = self.class_name.as_ref().map(|c| c.as_bytes().to_vec()).unwrap_or_default();
+                let mut v = self
+                    .class_name
+                    .as_ref()
+                    .map(|c| c.as_bytes().to_vec())
+                    .unwrap_or_default();
                 v.extend_from_slice(b"::");
                 v.extend_from_slice(self.name.as_bytes());
                 v.extend_from_slice(b"()");
@@ -2866,7 +3025,11 @@ impl ProtoBuilder {
                 v.extend_from_slice(b"()");
                 v
             }
-            ScopeKind::Closure => self.magic_fn_name.as_ref().map(|n| n.as_bytes().to_vec()).unwrap_or_default(),
+            ScopeKind::Closure => self
+                .magic_fn_name
+                .as_ref()
+                .map(|n| n.as_bytes().to_vec())
+                .unwrap_or_default(),
             ScopeKind::Main | ScopeKind::Init => src_file(),
         };
         let mut s = b"{closure:".to_vec();
@@ -2911,7 +3074,12 @@ impl ProtoBuilder {
         let a = self.compile_expr(b.lhs)?;
         let r = self.compile_expr(b.rhs)?;
         let dst = self.alloc_temp();
-        let cmp = |k| Instr::Cmp { dst, a, b: r, kind: k };
+        let cmp = |k| Instr::Cmp {
+            dst,
+            a,
+            b: r,
+            kind: k,
+        };
         let instr = match &b.operator {
             Op::Addition(_) => Instr::Add { dst, a, b: r },
             Op::Subtraction(_) => Instr::Sub { dst, a, b: r },
@@ -2936,7 +3104,12 @@ impl ProtoBuilder {
             Op::Spaceship(_) => cmp(CmpKind::Spaceship),
             Op::LowXor(_) => {
                 // a xor b == (bool)a != (bool)b, via cast+compare
-                Instr::Cmp { dst, a, b: r, kind: CmpKind::Ne }
+                Instr::Cmp {
+                    dst,
+                    a,
+                    b: r,
+                    kind: CmpKind::Ne,
+                }
             }
             Op::And(_)
             | Op::Or(_)
@@ -2971,9 +3144,15 @@ impl ProtoBuilder {
         self.emit(Instr::LoadBool { dst, b: !is_and });
         let end = self.code.len() as u32;
         self.code[jcond] = if is_and {
-            Instr::JmpFalse { cond: a, target: short }
+            Instr::JmpFalse {
+                cond: a,
+                target: short,
+            }
         } else {
-            Instr::JmpTrue { cond: a, target: short }
+            Instr::JmpTrue {
+                cond: a,
+                target: short,
+            }
         };
         self.code[jend] = Instr::Jmp { target: end };
         Ok(dst)
@@ -2988,14 +3167,14 @@ impl ProtoBuilder {
         let r = self.compile_expr(b.rhs)?;
         self.emit(Instr::Mov { dst, src: r });
         let end = self.code.len() as u32;
-        self.code[jnn] = Instr::JmpNotNull { src: dst, target: end };
+        self.code[jnn] = Instr::JmpNotNull {
+            src: dst,
+            target: end,
+        };
         Ok(dst)
     }
 
-    fn compile_unary_prefix(
-        &mut self,
-        u: &rhp_frontend::cst::UnaryPrefix,
-    ) -> Result<Reg, Thrown> {
+    fn compile_unary_prefix(&mut self, u: &rhp_frontend::cst::UnaryPrefix) -> Result<Reg, Thrown> {
         use UnaryPrefixOperator as Op;
         match &u.operator {
             Op::PreIncrement(_) => return self.compile_inc_dec(u.operand, true, 1),
@@ -3007,7 +3186,10 @@ impl ProtoBuilder {
                 ))
             }
             Op::Reference(_) => {
-                return Err(Thrown::unsupported("& reference", "references arrive in phase 6"))
+                return Err(Thrown::unsupported(
+                    "& reference",
+                    "references arrive in phase 6",
+                ))
             }
             _ => {}
         }
@@ -3062,7 +3244,12 @@ impl ProtoBuilder {
             Expression::Variable(Variable::Direct(d)) => {
                 let cv = self.cv(strip_dollar(d.name));
                 let dst = self.alloc_temp();
-                self.emit(Instr::IncDec { dst, cv, pre, delta });
+                self.emit(Instr::IncDec {
+                    dst,
+                    cv,
+                    pre,
+                    delta,
+                });
                 Ok(dst)
             }
             Expression::ArrayAccess(_)
@@ -3075,14 +3262,14 @@ impl ProtoBuilder {
                 self.emit(Instr::IncDecLval { dst, pre, delta });
                 Ok(dst)
             }
-            _ => Err(Thrown::unsupported("++/-- target", "variables, array elements, properties")),
+            _ => Err(Thrown::unsupported(
+                "++/-- target",
+                "variables, array elements, properties",
+            )),
         }
     }
 
-    fn compile_conditional(
-        &mut self,
-        c: &rhp_frontend::cst::Conditional,
-    ) -> Result<Reg, Thrown> {
+    fn compile_conditional(&mut self, c: &rhp_frontend::cst::Conditional) -> Result<Reg, Thrown> {
         let dst = self.alloc_temp();
         let cond = self.compile_expr(c.condition)?;
         let jf = self.code.len();
@@ -3103,7 +3290,10 @@ impl ProtoBuilder {
         let e = self.compile_expr(c.r#else)?;
         self.emit(Instr::Mov { dst, src: e });
         let end = self.code.len() as u32;
-        self.code[jf] = Instr::JmpFalse { cond, target: else_label };
+        self.code[jf] = Instr::JmpFalse {
+            cond,
+            target: else_label,
+        };
         self.code[jend] = Instr::Jmp { target: end };
         Ok(dst)
     }
@@ -3190,7 +3380,11 @@ impl ProtoBuilder {
                 let (primary, fallback) = resolve_name(id, NameKind::Const);
                 let n = self.intern_name(&primary);
                 let fb = self.intern_fallback(&fallback);
-                self.emit(Instr::FetchConst { dst, name: n, fallback: fb });
+                self.emit(Instr::FetchConst {
+                    dst,
+                    name: n,
+                    fallback: fb,
+                });
             }
         }
         Ok(dst)
@@ -3198,7 +3392,11 @@ impl ProtoBuilder {
 
     /// Lower `include`/`require`/`*_once $path` to an `Include` opcode; the VM
     /// resolves, compiles and runs the file at runtime, leaving its return in `dst`.
-    fn compile_include(&mut self, path_expr: &Expression, kind: IncludeKind) -> Result<Reg, Thrown> {
+    fn compile_include(
+        &mut self,
+        path_expr: &Expression,
+        kind: IncludeKind,
+    ) -> Result<Reg, Thrown> {
         let path = self.compile_expr(path_expr)?;
         let dst = self.alloc_temp();
         self.emit(Instr::Include { dst, path, kind });
@@ -3255,9 +3453,15 @@ impl ProtoBuilder {
                 let lend = self.here();
                 for (pos, r, is_bool) in jumps {
                     self.code[pos] = if is_bool {
-                        Instr::JmpFalse { cond: r, target: lfalse }
+                        Instr::JmpFalse {
+                            cond: r,
+                            target: lfalse,
+                        }
                     } else {
-                        Instr::JmpNull { src: r, target: lfalse }
+                        Instr::JmpNull {
+                            src: r,
+                            target: lfalse,
+                        }
                     };
                 }
                 self.code[jend] = Instr::Jmp { target: lend };
@@ -3323,7 +3527,9 @@ impl ProtoBuilder {
         let specs = FN_PARAMS.with(|m| {
             let m = m.borrow();
             m.get(&name_lc).cloned().or_else(|| {
-                fallback.as_ref().and_then(|f| m.get(&f.to_ascii_lowercase()).cloned())
+                fallback
+                    .as_ref()
+                    .and_then(|f| m.get(&f.to_ascii_lowercase()).cloned())
             })
         });
         let Some(specs) = specs else {
@@ -3333,7 +3539,10 @@ impl ProtoBuilder {
             ));
         };
         if specs.iter().any(|s| s.variadic) {
-            return Err(Thrown::unsupported("named arguments into a variadic function", "deferred"));
+            return Err(Thrown::unsupported(
+                "named arguments into a variadic function",
+                "deferred",
+            ));
         }
 
         // Assign each argument to a parameter slot.
@@ -3345,7 +3554,10 @@ impl ProtoBuilder {
                     if pos >= specs.len() {
                         return Err(Thrown::error(
                             "ArgumentCountError",
-                            format!("Too many arguments to function {}()", String::from_utf8_lossy(name_bytes)),
+                            format!(
+                                "Too many arguments to function {}()",
+                                String::from_utf8_lossy(name_bytes)
+                            ),
                         ));
                     }
                     provided[pos] = Some(p.value);
@@ -3353,15 +3565,18 @@ impl ProtoBuilder {
                 }
                 Argument::Named(n) => {
                     let pname = n.name.value.to_ascii_lowercase();
-                    let idx = specs.iter().position(|s| s.name_lc == pname).ok_or_else(|| {
-                        Thrown::error(
-                            "Error",
-                            format!(
-                                "Unknown named parameter ${}",
-                                String::from_utf8_lossy(n.name.value)
-                            ),
-                        )
-                    })?;
+                    let idx = specs
+                        .iter()
+                        .position(|s| s.name_lc == pname)
+                        .ok_or_else(|| {
+                            Thrown::error(
+                                "Error",
+                                format!(
+                                    "Unknown named parameter ${}",
+                                    String::from_utf8_lossy(n.name.value)
+                                ),
+                            )
+                        })?;
                     provided[idx] = Some(n.value);
                 }
             }
@@ -3376,7 +3591,13 @@ impl ProtoBuilder {
             let fb = self.intern_fallback(fallback);
             let base = self.alloc_temps(1);
             let dst = self.alloc_temp();
-            self.emit(Instr::Call { dst, name, base, argc: 0, fallback: fb });
+            self.emit(Instr::Call {
+                dst,
+                name,
+                base,
+                argc: 0,
+                fallback: fb,
+            });
             return Ok(dst);
         };
         let argc = (last + 1) as u16;
@@ -3409,12 +3630,21 @@ impl ProtoBuilder {
         }
         let base = self.alloc_temps(argc);
         for (i, r) in regs.into_iter().enumerate() {
-            self.emit(Instr::Mov { dst: base + i as Reg, src: r });
+            self.emit(Instr::Mov {
+                dst: base + i as Reg,
+                src: r,
+            });
         }
         let name = self.intern_name(name_bytes);
         let fb = self.intern_fallback(fallback);
         let dst = self.alloc_temp();
-        self.emit(Instr::Call { dst, name, base, argc, fallback: fb });
+        self.emit(Instr::Call {
+            dst,
+            name,
+            base,
+            argc,
+            fallback: fb,
+        });
         Ok(dst)
     }
 
@@ -3439,7 +3669,12 @@ impl ProtoBuilder {
             let name = self.intern_name(&name_bytes);
             let fb = self.intern_fallback(&fallback);
             let dst = self.alloc_temp();
-            self.emit(Instr::CallV { dst, name, args, fallback: fb });
+            self.emit(Instr::CallV {
+                dst,
+                name,
+                args,
+                fallback: fb,
+            });
             return Ok(dst);
         }
 
@@ -3474,13 +3709,19 @@ impl ProtoBuilder {
             let p = match arg {
                 Argument::Positional(p) if p.ellipsis.is_none() => p,
                 Argument::Positional(_) => {
-                    return Err(Thrown::unsupported("argument spread", "call-site spread is deferred"))
+                    return Err(Thrown::unsupported(
+                        "argument spread",
+                        "call-site spread is deferred",
+                    ))
                 }
                 Argument::Named(_) => {
                     return Err(Thrown::unsupported("named arguments", "deferred"))
                 }
             };
-            let by_ref = sig.as_ref().and_then(|s| s.get(i).copied()).unwrap_or(false);
+            let by_ref = sig
+                .as_ref()
+                .and_then(|s| s.get(i).copied())
+                .unwrap_or(false);
             if by_ref {
                 match p.value {
                     Expression::Variable(Variable::Direct(d)) => {
@@ -3536,7 +3777,13 @@ impl ProtoBuilder {
         let name = self.intern_name(&name_bytes);
         let fb = self.intern_fallback(&fallback);
         let dst = self.alloc_temp();
-        self.emit(Instr::Call { dst, name, base, argc, fallback: fb });
+        self.emit(Instr::Call {
+            dst,
+            name,
+            base,
+            argc,
+            fallback: fb,
+        });
         Ok(dst)
     }
 
@@ -3561,19 +3808,32 @@ impl ProtoBuilder {
             let p = match arg {
                 Argument::Positional(p) if p.ellipsis.is_none() => p,
                 Argument::Positional(_) => {
-                    return Err(Thrown::unsupported("argument spread", "call-site spread is deferred"))
+                    return Err(Thrown::unsupported(
+                        "argument spread",
+                        "call-site spread is deferred",
+                    ))
                 }
-                Argument::Named(_) => return Err(Thrown::unsupported("named arguments", "deferred")),
+                Argument::Named(_) => {
+                    return Err(Thrown::unsupported("named arguments", "deferred"))
+                }
             };
             argregs.push(self.compile_expr(p.value)?);
         }
         let argc = argregs.len() as u16;
         let base = self.alloc_temps(argc.max(1));
         for (i, r) in argregs.into_iter().enumerate() {
-            self.emit(Instr::Mov { dst: base + i as Reg, src: r });
+            self.emit(Instr::Mov {
+                dst: base + i as Reg,
+                src: r,
+            });
         }
         let dst = self.alloc_temp();
-        self.emit(Instr::CallDyn { dst, callee, base, argc });
+        self.emit(Instr::CallDyn {
+            dst,
+            callee,
+            base,
+            argc,
+        });
         Ok(dst)
     }
 
@@ -3621,39 +3881,67 @@ impl ProtoBuilder {
         let fetch_pos = self.code.len();
         self.emit(Instr::Nop); // FeFetch
         let ysink = self.alloc_temp();
-        self.emit(Instr::Yield { dst: ysink, key: key_cv, value: val_cv });
-        self.emit(Instr::Jmp { target: fetch_label });
+        self.emit(Instr::Yield {
+            dst: ysink,
+            key: key_cv,
+            value: val_cv,
+        });
+        self.emit(Instr::Jmp {
+            target: fetch_label,
+        });
         let end = self.here();
-        self.code[reset_pos] = Instr::FeReset { arr_reg, pos_reg, src, end };
-        self.code[fetch_pos] = Instr::FeFetch { arr_reg, pos_reg, key_cv, val_cv, end };
+        self.code[reset_pos] = Instr::FeReset {
+            arr_reg,
+            pos_reg,
+            src,
+            end,
+        };
+        self.code[fetch_pos] = Instr::FeFetch {
+            arr_reg,
+            pos_reg,
+            key_cv,
+            val_cv,
+            end,
+        };
 
         // Result: `$src instanceof Generator ? $src->getReturn() : null`.
         let dst = self.alloc_temp();
         let is_gen = self.alloc_temp();
         let gen_class = ClassRef::Name(self.intern_name(b"Generator"));
-        self.emit(Instr::InstanceOf { dst: is_gen, val: src, class: gen_class });
+        self.emit(Instr::InstanceOf {
+            dst: is_gen,
+            val: src,
+            class: gen_class,
+        });
         let jf = self.code.len();
         self.emit(Instr::Nop); // JmpFalse is_gen -> lnull
         let base = self.alloc_temps(1);
         let cache = self.alloc_cache();
         let name = self.intern_name(b"getReturn");
-        self.emit(Instr::CallMethod { dst, obj: src, name, base, argc: 0, cache });
+        self.emit(Instr::CallMethod {
+            dst,
+            obj: src,
+            name,
+            base,
+            argc: 0,
+            cache,
+        });
         let jend = self.code.len();
         self.emit(Instr::Nop); // Jmp -> lend
         let lnull = self.here();
         self.emit(Instr::LoadNull { dst });
         let lend = self.here();
-        self.code[jf] = Instr::JmpFalse { cond: is_gen, target: lnull };
+        self.code[jf] = Instr::JmpFalse {
+            cond: is_gen,
+            target: lnull,
+        };
         self.code[jend] = Instr::Jmp { target: lend };
         Ok(dst)
     }
 
     /// First-class callable syntax: `f(...)`, `$o->m(...)`, `C::m(...)`. Builds
     /// the underlying callable value, then wraps it as a `Closure` via `MakeFcc`.
-    fn compile_fcc(
-        &mut self,
-        pa: &rhp_frontend::cst::PartialApplication,
-    ) -> Result<Reg, Thrown> {
+    fn compile_fcc(&mut self, pa: &rhp_frontend::cst::PartialApplication) -> Result<Reg, Thrown> {
         use rhp_frontend::cst::PartialApplication as Pa;
         if !pa.is_first_class_callable() {
             return Err(Thrown::unsupported(
@@ -3727,21 +4015,25 @@ impl ProtoBuilder {
     ) -> Result<Vec<u8>, Thrown> {
         match sel {
             ClassLikeMemberSelector::Identifier(li) => Ok(li.value.to_vec()),
-            _ => Err(Thrown::unsupported("dynamic member name", "`->$x(...)` deferred")),
+            _ => Err(Thrown::unsupported(
+                "dynamic member name",
+                "`->$x(...)` deferred",
+            )),
         }
     }
 
     /// `fn(params) => expr` — arrow function. Auto-captures (by value) every
     /// free variable of the body that is a CV in the enclosing scope, plus
     /// `$this` when defined and the arrow is non-static.
-    fn compile_arrow(
-        &mut self,
-        af: &rhp_frontend::cst::ArrowFunction,
-    ) -> Result<Reg, Thrown> {
+    fn compile_arrow(&mut self, af: &rhp_frontend::cst::ArrowFunction) -> Result<Reg, Thrown> {
         let is_static = af.r#static.is_some();
         // Parameter names, to exclude from auto-capture.
-        let params: Vec<Vec<u8>> =
-            af.parameter_list.parameters.iter().map(|p| strip_dollar(p.variable.name).to_vec()).collect();
+        let params: Vec<Vec<u8>> = af
+            .parameter_list
+            .parameters
+            .iter()
+            .map(|p| strip_dollar(p.variable.name).to_vec())
+            .collect();
 
         let mut used = Vec::new();
         collect_vars(af.expression, &mut used);
@@ -3768,7 +4060,10 @@ impl ProtoBuilder {
             &af.parameter_list,
             captures,
             ClosureBody::Arrow(af.expression),
-            { use mago_span::HasSpan; af.span().start.offset },
+            {
+                use mago_span::HasSpan;
+                af.span().start.offset
+            },
             af.return_type_hint.as_ref().map(|r| &r.hint),
             af.ampersand.is_some(),
         )
@@ -3776,10 +4071,7 @@ impl ProtoBuilder {
 
     /// `function(params) use(...) { body }` — closure with an explicit capture
     /// list. `use(&$x)` captures by reference (shares a cell with the outer var).
-    fn compile_closure(
-        &mut self,
-        cl: &rhp_frontend::cst::Closure,
-    ) -> Result<Reg, Thrown> {
+    fn compile_closure(&mut self, cl: &rhp_frontend::cst::Closure) -> Result<Reg, Thrown> {
         let is_static = cl.r#static.is_some();
         let mut captures: Vec<(Vec<u8>, bool)> = Vec::new();
         if !is_static && self.cv_map.iter().any(|n| n == b"this") {
@@ -3801,7 +4093,10 @@ impl ProtoBuilder {
             &cl.parameter_list,
             captures,
             ClosureBody::Block(&cl.body),
-            { use mago_span::HasSpan; cl.span().start.offset },
+            {
+                use mago_span::HasSpan;
+                cl.span().start.offset
+            },
             cl.return_type_hint.as_ref().map(|r| &r.hint),
             cl.ampersand.is_some(),
         )
@@ -3810,6 +4105,7 @@ impl ProtoBuilder {
     /// Shared closure lowering: compile the body into a fresh proto whose CVs are
     /// `[captures.., params.., locals..]`, register it, then emit the capture
     /// window + `MakeClosure` in the enclosing frame.
+    #[allow(clippy::too_many_arguments)] // closure lowering needs the full frame context
     fn build_closure(
         &mut self,
         is_static: bool,
@@ -3842,16 +4138,16 @@ impl ProtoBuilder {
             let var = strip_dollar(p.variable.name);
             let cv = c.cv(var);
             let name = c.intern_name(var);
-            let default = match &p.default_value {
-                Some(dv) => Some(match c.const_default(dv.value) {
+            let default = p
+                .default_value
+                .as_ref()
+                .map(|dv| match c.const_default(dv.value) {
                     Ok(d) => d,
                     Err(_) => {
                         nonconst_defaults.push((idx as u16, cv, dv.value));
                         rhp_bytecode::Default::Init(0)
                     }
-                }),
-                None => None,
-            };
+                });
             params.push(rhp_bytecode::ParamInfo {
                 name,
                 cv,
@@ -3914,13 +4210,21 @@ impl ProtoBuilder {
                 self.emit(Instr::MakeRef { dst, cv });
             } else {
                 match self.cv_map.iter().position(|n| n == name) {
-                    Some(src) => self.emit(Instr::Mov { dst, src: src as Reg }),
+                    Some(src) => self.emit(Instr::Mov {
+                        dst,
+                        src: src as Reg,
+                    }),
                     None => self.emit(Instr::LoadNull { dst }),
                 }
             }
         }
         let dst = self.alloc_temp();
-        self.emit(Instr::MakeClosure { dst, fnidx, base, ncaptures: nc });
+        self.emit(Instr::MakeClosure {
+            dst,
+            fnidx,
+            base,
+            ncaptures: nc,
+        });
         Ok(dst)
     }
 
@@ -3933,7 +4237,9 @@ impl ProtoBuilder {
         steps: &mut Vec<CursorStep>,
     ) -> Result<LvalRoot, Thrown> {
         match target {
-            Expression::Variable(Variable::Direct(d)) => Ok(LvalRoot::Cv(self.cv(strip_dollar(d.name)))),
+            Expression::Variable(Variable::Direct(d)) => {
+                Ok(LvalRoot::Cv(self.cv(strip_dollar(d.name))))
+            }
             Expression::ArrayAccess(aa) => {
                 let root = self.collect_lvalue_steps(aa.array, steps)?;
                 let key = self.compile_expr(aa.index)?;
@@ -4002,7 +4308,10 @@ impl ProtoBuilder {
     ) -> Result<NIdx, Thrown> {
         match sel {
             ClassLikeMemberSelector::Identifier(li) => Ok(self.intern_name(li.value)),
-            _ => Err(Thrown::unsupported("dynamic member name", "`->$x`/`->{expr}` deferred")),
+            _ => Err(Thrown::unsupported(
+                "dynamic member name",
+                "`->$x`/`->{expr}` deferred",
+            )),
         }
     }
 
@@ -4055,7 +4364,9 @@ impl ProtoBuilder {
             ClassLikeMemberSelector::Variable(Variable::Direct(d)) => {
                 Ok(Sel::Dyn(self.cv(strip_dollar(d.name))))
             }
-            ClassLikeMemberSelector::Expression(e) => Ok(Sel::Dyn(self.compile_expr(e.expression)?)),
+            ClassLikeMemberSelector::Expression(e) => {
+                Ok(Sel::Dyn(self.compile_expr(e.expression)?))
+            }
             _ => Err(Thrown::unsupported(
                 "dynamic member name",
                 "variable-variable member names deferred",
@@ -4090,7 +4401,10 @@ impl ProtoBuilder {
                         }
                     }
                     Argument::Named(_) => {
-                        return Err(Thrown::unsupported("named argument with spread", "deferred"))
+                        return Err(Thrown::unsupported(
+                            "named argument with spread",
+                            "deferred",
+                        ))
                     }
                 }
             }
@@ -4173,7 +4487,13 @@ impl ProtoBuilder {
         let (base, argc) = self.compile_arg_window_ex(inst.argument_list.as_ref(), &mask, true)?;
         let dst = self.alloc_temp();
         let cache = self.alloc_cache();
-        self.emit(Instr::New { dst, class, base, argc, cache });
+        self.emit(Instr::New {
+            dst,
+            class,
+            base,
+            argc,
+            cache,
+        });
         Ok(dst)
     }
 
@@ -4185,7 +4505,12 @@ impl ProtoBuilder {
                 match self.compile_selector(&pa.property)? {
                     Sel::Static(name) => {
                         let cache = self.alloc_cache();
-                        self.emit(Instr::FetchProp { dst, obj, name, cache });
+                        self.emit(Instr::FetchProp {
+                            dst,
+                            obj,
+                            name,
+                            cache,
+                        });
                     }
                     Sel::Dyn(name) => self.emit(Instr::FetchPropDyn { dst, obj, name }),
                 }
@@ -4201,14 +4526,22 @@ impl ProtoBuilder {
                 let name = self.selector_name(&npa.property)?;
                 let cache = self.alloc_cache();
                 let t = self.alloc_temp();
-                self.emit(Instr::FetchProp { dst: t, obj: dst, name, cache });
+                self.emit(Instr::FetchProp {
+                    dst: t,
+                    obj: dst,
+                    name,
+                    cache,
+                });
                 self.emit(Instr::Mov { dst, src: t });
                 let jend = self.code.len();
                 self.emit(Instr::Nop); // Jmp end
                 let lnull = self.here();
                 self.emit(Instr::LoadNull { dst });
                 let end = self.here();
-                self.code[jn] = Instr::JmpNull { src: dst, target: lnull };
+                self.code[jn] = Instr::JmpNull {
+                    src: dst,
+                    target: lnull,
+                };
                 self.code[jend] = Instr::Jmp { target: end };
                 Ok(dst)
             }
@@ -4217,7 +4550,12 @@ impl ProtoBuilder {
                 let name = self.static_prop_name(&spa.property)?;
                 let dst = self.alloc_temp();
                 let cache = self.alloc_cache();
-                self.emit(Instr::FetchStaticProp { dst, class, name, cache });
+                self.emit(Instr::FetchStaticProp {
+                    dst,
+                    class,
+                    name,
+                    cache,
+                });
                 Ok(dst)
             }
             Access::ClassConstant(cca) => {
@@ -4225,7 +4563,8 @@ impl ProtoBuilder {
                 // class need not exist (php uses `Foo::class` as a bareword FQN,
                 // e.g. `function_exists(u::class)`). `self/static/parent::class`
                 // and `$obj::class` stay runtime.
-                if let rhp_frontend::cst::ClassLikeConstantSelector::Identifier(li) = &cca.constant {
+                if let rhp_frontend::cst::ClassLikeConstantSelector::Identifier(li) = &cca.constant
+                {
                     if li.value.eq_ignore_ascii_case(b"class") {
                         if let Expression::Identifier(id) = cca.class {
                             let k = self.intern_const(Value::str(resolve_class_name(id)));
@@ -4244,7 +4583,12 @@ impl ProtoBuilder {
                 };
                 let dst = self.alloc_temp();
                 let cache = self.alloc_cache();
-                self.emit(Instr::FetchClassConst { dst, class, name, cache });
+                self.emit(Instr::FetchClassConst {
+                    dst,
+                    class,
+                    name,
+                    cache,
+                });
                 Ok(dst)
             }
         }
@@ -4264,14 +4608,26 @@ impl ProtoBuilder {
                     if has_spread(args) {
                         let args = self.build_args_array(Some(args))?;
                         let dst = self.alloc_temp();
-                        self.emit(Instr::CallMethodV { dst, obj, name, args });
+                        self.emit(Instr::CallMethodV {
+                            dst,
+                            obj,
+                            name,
+                            args,
+                        });
                         return Ok(dst);
                     }
                     let mask = self.name_ref_mask(name);
                     let (base, argc) = self.compile_arg_window_ex(Some(args), &mask, true)?;
                     let dst = self.alloc_temp();
                     let cache = self.alloc_cache();
-                    self.emit(Instr::CallMethod { dst, obj, name, base, argc, cache });
+                    self.emit(Instr::CallMethod {
+                        dst,
+                        obj,
+                        name,
+                        base,
+                        argc,
+                        cache,
+                    });
                     return Ok(dst);
                 }
                 Sel::Dyn(name) => {
@@ -4283,7 +4639,13 @@ impl ProtoBuilder {
                     }
                     let (base, argc) = self.compile_arg_window_ex(Some(args), &[], true)?;
                     let dst = self.alloc_temp();
-                    self.emit(Instr::CallMethodDyn { dst, obj, name, base, argc });
+                    self.emit(Instr::CallMethodDyn {
+                        dst,
+                        obj,
+                        name,
+                        base,
+                        argc,
+                    });
                     return Ok(dst);
                 }
             }
@@ -4299,14 +4661,24 @@ impl ProtoBuilder {
         let (base, argc) = self.compile_arg_window_ex(Some(args), &mask, true)?;
         let cache = self.alloc_cache();
         let t = self.alloc_temp();
-        self.emit(Instr::CallMethod { dst: t, obj: dst, name, base, argc, cache });
+        self.emit(Instr::CallMethod {
+            dst: t,
+            obj: dst,
+            name,
+            base,
+            argc,
+            cache,
+        });
         self.emit(Instr::Mov { dst, src: t });
         let jend = self.code.len();
         self.emit(Instr::Nop); // Jmp end
         let lnull = self.here();
         self.emit(Instr::LoadNull { dst });
         let end = self.here();
-        self.code[jn] = Instr::JmpNull { src: dst, target: lnull };
+        self.code[jn] = Instr::JmpNull {
+            src: dst,
+            target: lnull,
+        };
         self.code[jend] = Instr::Jmp { target: end };
         Ok(dst)
     }
@@ -4321,14 +4693,27 @@ impl ProtoBuilder {
                 if has_spread(&smc.argument_list) {
                     let args = self.build_args_array(Some(&smc.argument_list))?;
                     let dst = self.alloc_temp();
-                    self.emit(Instr::CallStaticV { dst, class, name, args });
+                    self.emit(Instr::CallStaticV {
+                        dst,
+                        class,
+                        name,
+                        args,
+                    });
                     return Ok(dst);
                 }
                 let mask = self.name_ref_mask(name);
-                let (base, argc) = self.compile_arg_window_ex(Some(&smc.argument_list), &mask, true)?;
+                let (base, argc) =
+                    self.compile_arg_window_ex(Some(&smc.argument_list), &mask, true)?;
                 let dst = self.alloc_temp();
                 let cache = self.alloc_cache();
-                self.emit(Instr::CallStatic { dst, class, name, base, argc, cache });
+                self.emit(Instr::CallStatic {
+                    dst,
+                    class,
+                    name,
+                    base,
+                    argc,
+                    cache,
+                });
                 Ok(dst)
             }
             Sel::Dyn(name) => {
@@ -4338,18 +4723,22 @@ impl ProtoBuilder {
                         "deferred",
                     ));
                 }
-                let (base, argc) = self.compile_arg_window_ex(Some(&smc.argument_list), &[], true)?;
+                let (base, argc) =
+                    self.compile_arg_window_ex(Some(&smc.argument_list), &[], true)?;
                 let dst = self.alloc_temp();
-                self.emit(Instr::CallStaticDyn { dst, class, name, base, argc });
+                self.emit(Instr::CallStaticDyn {
+                    dst,
+                    class,
+                    name,
+                    base,
+                    argc,
+                });
                 Ok(dst)
             }
         }
     }
 
-    fn compile_assignment(
-        &mut self,
-        a: &rhp_frontend::cst::Assignment,
-    ) -> Result<Reg, Thrown> {
+    fn compile_assignment(&mut self, a: &rhp_frontend::cst::Assignment) -> Result<Reg, Thrown> {
         // Destructuring: `[$a, $b] = ...` / `list($a, $b) = ...`.
         if matches!(a.operator, AssignmentOperator::Assign(_)) {
             if let Expression::Array(arr) = a.lhs {
@@ -4423,7 +4812,11 @@ impl ProtoBuilder {
                 let obj = self.compile_expr(pa.object)?;
                 let name = self.intern_name(li.value);
                 let rhs = self.compile_expr(a.rhs)?;
-                self.emit(Instr::StoreProp { obj, name, src: rhs });
+                self.emit(Instr::StoreProp {
+                    obj,
+                    name,
+                    src: rhs,
+                });
                 return Ok(rhs);
             }
             // Dynamic `$o->$x = v` / `$o->{expr} = v`.
@@ -4437,7 +4830,11 @@ impl ProtoBuilder {
                     Sel::Static(_) => unreachable!(),
                 };
                 let rhs = self.compile_expr(a.rhs)?;
-                self.emit(Instr::StorePropDyn { obj, name, src: rhs });
+                self.emit(Instr::StorePropDyn {
+                    obj,
+                    name,
+                    src: rhs,
+                });
                 return Ok(rhs);
             }
         }
@@ -4505,7 +4902,10 @@ impl ProtoBuilder {
                         self.emit(Instr::Nop);
                         self.emit(Instr::Mov { dst, src: rhs });
                         let end = self.code.len() as u32;
-                        self.code[jnn] = Instr::JmpNotNull { src: dst, target: end };
+                        self.code[jnn] = Instr::JmpNotNull {
+                            src: dst,
+                            target: end,
+                        };
                         self.emit(Instr::Assign { cv, src: dst });
                         return Ok(dst);
                     }
@@ -4552,13 +4952,24 @@ fn stmt_has_yield(s: &Statement) -> bool {
                 || match &i.body {
                     IfBody::Statement(b) => {
                         stmt_has_yield(b.statement)
-                            || b.else_if_clauses.iter().any(|c| expr_has_yield(c.condition) || stmt_has_yield(c.statement))
-                            || b.else_clause.as_ref().map(|e| stmt_has_yield(e.statement)).unwrap_or(false)
+                            || b.else_if_clauses
+                                .iter()
+                                .any(|c| expr_has_yield(c.condition) || stmt_has_yield(c.statement))
+                            || b.else_clause
+                                .as_ref()
+                                .map(|e| stmt_has_yield(e.statement))
+                                .unwrap_or(false)
                     }
                     IfBody::ColonDelimited(b) => {
                         b.statements.iter().any(stmt_has_yield)
-                            || b.else_if_clauses.iter().any(|c| expr_has_yield(c.condition) || c.statements.iter().any(stmt_has_yield))
-                            || b.else_clause.as_ref().map(|e| e.statements.iter().any(stmt_has_yield)).unwrap_or(false)
+                            || b.else_if_clauses.iter().any(|c| {
+                                expr_has_yield(c.condition)
+                                    || c.statements.iter().any(stmt_has_yield)
+                            })
+                            || b.else_clause
+                                .as_ref()
+                                .map(|e| e.statements.iter().any(stmt_has_yield))
+                                .unwrap_or(false)
                     }
                 }
         }
@@ -4587,22 +4998,28 @@ fn stmt_has_yield(s: &Statement) -> bool {
                 }
         }
         Statement::Switch(sw) => {
-            expr_has_yield(sw.expression)
-                || {
-                    let cases = match &sw.body {
-                        SwitchBody::BraceDelimited(b) => &b.cases,
-                        SwitchBody::ColonDelimited(b) => &b.cases,
-                    };
-                    cases.iter().any(|c| match c {
-                        SwitchCase::Expression(e) => expr_has_yield(e.expression) || e.statements.iter().any(stmt_has_yield),
-                        SwitchCase::Default(d) => d.statements.iter().any(stmt_has_yield),
-                    })
-                }
+            expr_has_yield(sw.expression) || {
+                let cases = match &sw.body {
+                    SwitchBody::BraceDelimited(b) => &b.cases,
+                    SwitchBody::ColonDelimited(b) => &b.cases,
+                };
+                cases.iter().any(|c| match c {
+                    SwitchCase::Expression(e) => {
+                        expr_has_yield(e.expression) || e.statements.iter().any(stmt_has_yield)
+                    }
+                    SwitchCase::Default(d) => d.statements.iter().any(stmt_has_yield),
+                })
+            }
         }
         Statement::Try(t) => {
             t.block.statements.iter().any(stmt_has_yield)
-                || t.catch_clauses.iter().any(|c| c.block.statements.iter().any(stmt_has_yield))
-                || t.finally_clause.as_ref().map(|f| f.block.statements.iter().any(stmt_has_yield)).unwrap_or(false)
+                || t.catch_clauses
+                    .iter()
+                    .any(|c| c.block.statements.iter().any(stmt_has_yield))
+                || t.finally_clause
+                    .as_ref()
+                    .map(|f| f.block.statements.iter().any(stmt_has_yield))
+                    .unwrap_or(false)
         }
         _ => false,
     }
@@ -4627,7 +5044,9 @@ fn expr_has_yield(e: &Expression) -> bool {
 }
 
 fn has_named(list: &rhp_frontend::cst::ArgumentList) -> bool {
-    list.arguments.iter().any(|a| matches!(a, Argument::Named(_)))
+    list.arguments
+        .iter()
+        .any(|a| matches!(a, Argument::Named(_)))
 }
 
 fn has_spread(list: &rhp_frontend::cst::ArgumentList) -> bool {
@@ -4749,7 +5168,11 @@ fn fold_const(e: &Expression) -> Result<Value, Thrown> {
                     Value::Bool(rhp_values::conv::to_bool(&l) || rhp_values::conv::to_bool(&r))
                 }
                 Bop::NullCoalesce(_) => {
-                    if matches!(l, Value::Null) { r } else { l }
+                    if matches!(l, Value::Null) {
+                        r
+                    } else {
+                        l
+                    }
                 }
                 _ => return Err(non_const_err()),
             }
@@ -4759,9 +5182,7 @@ fn fold_const(e: &Expression) -> Result<Value, Thrown> {
     Ok(v)
 }
 
-fn fold_const_array<'a>(
-    els: impl Iterator<Item = &'a ArrayElement<'a>>,
-) -> Result<Value, Thrown> {
+fn fold_const_array<'a>(els: impl Iterator<Item = &'a ArrayElement<'a>>) -> Result<Value, Thrown> {
     let mut a = PhpArray::new();
     for el in els {
         match el {
@@ -4796,7 +5217,10 @@ fn hint_class_names(hint: &Hint) -> Result<Vec<PhpStr>, Thrown> {
                 collect(u.right, out)
             }
             Hint::Parenthesized(p) => collect(p.hint, out),
-            _ => Err(Thrown::unsupported("catch type", "only class-name catch types")),
+            _ => Err(Thrown::unsupported(
+                "catch type",
+                "only class-name catch types",
+            )),
         }
     }
     let mut out = Vec::new();
@@ -5028,10 +5452,7 @@ fn collect_arg_vars(list: &rhp_frontend::cst::ArgumentList, out: &mut Vec<Vec<u8
     }
 }
 
-fn collect_array_vars<'a>(
-    els: impl Iterator<Item = &'a ArrayElement<'a>>,
-    out: &mut Vec<Vec<u8>>,
-) {
+fn collect_array_vars<'a>(els: impl Iterator<Item = &'a ArrayElement<'a>>, out: &mut Vec<Vec<u8>>) {
     for el in els {
         match el {
             ArrayElement::KeyValue(kv) => {

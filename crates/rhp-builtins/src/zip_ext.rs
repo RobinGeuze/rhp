@@ -16,7 +16,9 @@ pub struct ZipState {
 impl ZipState {
     /// Parse the archive from its raw bytes. `None` if it is not a valid zip.
     pub fn open(bytes: Vec<u8>) -> Option<ZipState> {
-        zip::ZipArchive::new(Cursor::new(bytes)).ok().map(|archive| ZipState { archive })
+        zip::ZipArchive::new(Cursor::new(bytes))
+            .ok()
+            .map(|archive| ZipState { archive })
     }
 
     pub fn count(&self) -> usize {
@@ -25,7 +27,10 @@ impl ZipState {
 
     /// Entry name at index `i` (php `getNameIndex`).
     pub fn name_index(&mut self, i: usize) -> Option<Vec<u8>> {
-        self.archive.by_index(i).ok().map(|f| f.name().as_bytes().to_vec())
+        self.archive
+            .by_index(i)
+            .ok()
+            .map(|f| f.name().as_bytes().to_vec())
     }
 
     /// `(name, uncompressed_size, compressed_size)` for `statIndex`.

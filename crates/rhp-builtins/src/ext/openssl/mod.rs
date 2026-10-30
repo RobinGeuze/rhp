@@ -62,7 +62,10 @@ fn name_to_php(name: &X509Name, short: bool) -> (String, Value) {
             oneline.push('=');
             oneline.push_str(&val);
             let key = attr_name(&long, short);
-            assoc.insert(ArrayKey::from_bytes(key.as_bytes()), Value::str(val.into_bytes()));
+            assoc.insert(
+                ArrayKey::from_bytes(key.as_bytes()),
+                Value::str(val.into_bytes()),
+            );
         }
     }
     (oneline, Value::Array(assoc))
@@ -71,7 +74,10 @@ fn name_to_php(name: &X509Name, short: bool) -> (String, Value) {
 fn fn_openssl_x509_parse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let data = conv::to_string_bytes(&deref(&args[0]));
     // $short_names defaults to true.
-    let short = args.get(1).map(|v| conv::to_bool(&deref(v))).unwrap_or(true);
+    let short = args
+        .get(1)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(true);
 
     // Accept PEM (possibly a bundle with leading comments / many certs — php
     // parses the first certificate) or raw DER. `iter_from_buffer` scans for the
@@ -97,10 +103,16 @@ fn fn_openssl_x509_parse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
     let mut out = PhpArray::new();
     let (subj_line, subj) = name_to_php(cert.subject(), short);
     let (_issuer_line, issuer) = name_to_php(cert.issuer(), short);
-    out.insert(ArrayKey::from_bytes(b"name"), Value::str(subj_line.into_bytes()));
+    out.insert(
+        ArrayKey::from_bytes(b"name"),
+        Value::str(subj_line.into_bytes()),
+    );
     out.insert(ArrayKey::from_bytes(b"subject"), subj);
     out.insert(ArrayKey::from_bytes(b"issuer"), issuer);
-    out.insert(ArrayKey::from_bytes(b"version"), Value::Int(cert.version().0 as i64));
+    out.insert(
+        ArrayKey::from_bytes(b"version"),
+        Value::Int(cert.version().0 as i64),
+    );
     out.insert(
         ArrayKey::from_bytes(b"serialNumber"),
         Value::str(cert.raw_serial_as_string().replace(':', "").into_bytes()),
@@ -126,7 +138,10 @@ fn fn_openssl_x509_parse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
                     GeneralName::DNSName(n) => Some(format!("DNS:{n}")),
                     GeneralName::IPAddress(ip) => Some(format!(
                         "IP Address:{}",
-                        ip.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(".")
+                        ip.iter()
+                            .map(|b| b.to_string())
+                            .collect::<Vec<_>>()
+                            .join(".")
                     )),
                     _ => None,
                 })
@@ -145,14 +160,22 @@ fn fn_openssl_x509_parse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     m.insert(
         "openssl_x509_parse",
-        Builtin { name: "openssl_x509_parse", func: fn_openssl_x509_parse, min_args: 1, max_args: Some(2) },
+        Builtin {
+            name: "openssl_x509_parse",
+            func: fn_openssl_x509_parse,
+            min_args: 1,
+            max_args: Some(2),
+        },
     );
 }
 
 /// `OPENSSL_*` constants read by Composer's platform detection.
 pub fn constants() -> Vec<(&'static str, Value)> {
     vec![
-        ("OPENSSL_VERSION_TEXT", Value::str("OpenSSL 3.6.3 9 Jun 2026")),
+        (
+            "OPENSSL_VERSION_TEXT",
+            Value::str("OpenSSL 3.6.3 9 Jun 2026"),
+        ),
         ("OPENSSL_VERSION_NUMBER", Value::Int(811597872)),
         ("OPENSSL_RAW_DATA", Value::Int(1)),
         ("OPENSSL_ZERO_PADDING", Value::Int(2)),

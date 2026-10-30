@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (e.g. force-push to a PR branch).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Formatting: cheap, fail fast.
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  # Lints, warnings treated as errors.
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # Full suite with NO `php` on PATH. The VM is validated byte-for-byte against
+  # the committed `.out` golden fixtures (captured from php 8.5.8), which needs
+  # no php. The live-php tests (differential sweeps, phar/cli end-to-end) all
+  # guard on `php_available()` and skip cleanly here.
+  #
+  # Note: ubuntu-latest ships its own php, but the project's php-differential
+  # harness runs php with `-n` (no ini) and so expects a build where bcmath,
+  # ctype, gmp, mbstring and phar are compiled in statically (as Homebrew's is).
+  # Debian/Ubuntu package those as shared extensions that `-n` drops, so the
+  # runner's php can't drive the differential suite — we remove it and let the
+  # live-php tests skip. Run the differential locally against php 8.5.x.
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Remove the runner's pre-installed php
+        run: |
+          sudo update-alternatives --remove-all php >/dev/null 2>&1 || true
+          sudo rm -f /usr/bin/php* /usr/local/bin/php* || true
+          if command -v php >/dev/null 2>&1; then
+            echo "php still on PATH at $(command -v php)"; exit 1
+          fi
+          echo "no php on PATH — live-php tests will skip"
+      - run: cargo test --workspace --all-targets

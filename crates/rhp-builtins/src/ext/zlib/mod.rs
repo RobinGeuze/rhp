@@ -42,9 +42,9 @@ fn level_arg(args: &[Value], i: usize) -> Compression {
     }
 }
 
-fn encode<W: Write, F: FnOnce(Vec<u8>) -> W>(data: &[u8], make: F) -> Vec<u8>
+fn encode<W, F: FnOnce(Vec<u8>) -> W>(data: &[u8], make: F) -> Vec<u8>
 where
-    W: FinishInto,
+    W: Write + FinishInto,
 {
     let mut enc = make(Vec::new());
     let _ = enc.write_all(data);
@@ -84,7 +84,9 @@ fn fn_gzdeflate(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_gzinflate(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let data = bytes_arg(args, 0);
-    Ok(decode(DeflateDecoder::new(&data[..])).map(Value::str).unwrap_or(Value::Bool(false)))
+    Ok(decode(DeflateDecoder::new(&data[..]))
+        .map(Value::str)
+        .unwrap_or(Value::Bool(false)))
 }
 
 fn fn_gzcompress(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -95,7 +97,9 @@ fn fn_gzcompress(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_gzuncompress(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let data = bytes_arg(args, 0);
-    Ok(decode(ZlibDecoder::new(&data[..])).map(Value::str).unwrap_or(Value::Bool(false)))
+    Ok(decode(ZlibDecoder::new(&data[..]))
+        .map(Value::str)
+        .unwrap_or(Value::Bool(false)))
 }
 
 fn fn_gzencode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -106,7 +110,9 @@ fn fn_gzencode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_gzdecode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let data = bytes_arg(args, 0);
-    Ok(decode(GzDecoder::new(&data[..])).map(Value::str).unwrap_or(Value::Bool(false)))
+    Ok(decode(GzDecoder::new(&data[..]))
+        .map(Value::str)
+        .unwrap_or(Value::Bool(false)))
 }
 
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
@@ -117,7 +123,15 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         min: usize,
         max: Option<usize>,
     ) {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     }
     put(m, "gzdeflate", fn_gzdeflate, 1, Some(3));
     put(m, "gzinflate", fn_gzinflate, 1, Some(2));

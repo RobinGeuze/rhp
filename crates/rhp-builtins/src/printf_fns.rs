@@ -182,7 +182,10 @@ mod tests {
     #[test]
     fn vprintf_writes_and_returns_len() {
         // php: vprintf("%s/%s/%d", ["a","b",7]) -> "a/b/7", returns 5
-        let (out, n) = run(fn_vprintf, &[s("%s/%s/%d"), arr(vec![s("a"), s("b"), Value::Int(7)])]);
+        let (out, n) = run(
+            fn_vprintf,
+            &[s("%s/%s/%d"), arr(vec![s("a"), s("b"), Value::Int(7)])],
+        );
         assert_eq!(out, "a/b/7");
         assert_eq!(n, 5);
 
@@ -224,7 +227,11 @@ mod tests {
         // php: vfprintf(STDOUT, "%04.1f|%x", [7.86, 255]) -> "07.9|ff", returns 7
         let (out, n) = run(
             fn_vfprintf,
-            &[Value::Int(2), s("%04.1f|%x"), arr(vec![Value::Float(7.86), Value::Int(255)])],
+            &[
+                Value::Int(2),
+                s("%04.1f|%x"),
+                arr(vec![Value::Float(7.86), Value::Int(255)]),
+            ],
         );
         assert_eq!(out, "07.9|ff");
         assert_eq!(n, 7);

@@ -113,7 +113,9 @@ impl Vm {
                     "Error",
                     format!(
                         "Class \"{}\" not found",
-                        String::from_utf8_lossy(&missing.unwrap_or_else(|| p.name.as_bytes().to_vec()))
+                        String::from_utf8_lossy(
+                            &missing.unwrap_or_else(|| p.name.as_bytes().to_vec())
+                        )
                     ),
                 ));
             }
@@ -122,7 +124,7 @@ impl Vm {
 
     fn deps_ready(&self, p: &ClassProto) -> bool {
         let known = |n: &PhpStr| self.class_ids.contains_key(&lc(n.as_bytes()));
-        p.parent.as_ref().map_or(true, known)
+        p.parent.as_ref().is_none_or(known)
             && p.interfaces.iter().all(known)
             && p.traits.iter().all(known)
     }
@@ -153,23 +155,32 @@ impl Vm {
         // An *abstract* method is only a requirement: it must never clobber an
         // already-present concrete method (e.g. a trait's `abstract foo()`
         // alongside a concrete `foo()` inherited from the parent class).
-        let mut methods: HashMap<Vec<u8>, ResolvedMethod> =
-            parent.map(|p| self.classes[p as usize].methods.clone()).unwrap_or_default();
-        let insert_method = |methods: &mut HashMap<Vec<u8>, ResolvedMethod>, k: Vec<u8>, m: ResolvedMethod| {
-            if m.is_abstract {
-                if let Some(existing) = methods.get(&k) {
-                    if !existing.is_abstract {
-                        return; // keep the concrete method
+        let mut methods: HashMap<Vec<u8>, ResolvedMethod> = parent
+            .map(|p| self.classes[p as usize].methods.clone())
+            .unwrap_or_default();
+        let insert_method =
+            |methods: &mut HashMap<Vec<u8>, ResolvedMethod>, k: Vec<u8>, m: ResolvedMethod| {
+                if m.is_abstract {
+                    if let Some(existing) = methods.get(&k) {
+                        if !existing.is_abstract {
+                            return; // keep the concrete method
+                        }
                     }
                 }
-            }
-            methods.insert(k, m);
-        };
+                methods.insert(k, m);
+            };
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for (k, m) in self.classes[tid as usize].methods.clone() {
                 // Trait methods adopt the using class as their defining class.
-                insert_method(&mut methods, k, ResolvedMethod { defining_class: id, ..m });
+                insert_method(
+                    &mut methods,
+                    k,
+                    ResolvedMethod {
+                        defining_class: id,
+                        ..m
+                    },
+                );
             }
         }
         for m in &proto.methods {
@@ -187,12 +198,19 @@ impl Vm {
         }
 
         // Instance properties, flattened (override replaces in place).
-        let mut props: IndexMap<PhpStr, PropEntry> =
-            parent.map(|p| self.classes[p as usize].props.clone()).unwrap_or_default();
+        let mut props: IndexMap<PhpStr, PropEntry> = parent
+            .map(|p| self.classes[p as usize].props.clone())
+            .unwrap_or_default();
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for (k, pe) in self.classes[tid as usize].props.clone() {
-                props.insert(k, PropEntry { declaring_class: id, ..pe });
+                props.insert(
+                    k,
+                    PropEntry {
+                        declaring_class: id,
+                        ..pe
+                    },
+                );
             }
         }
         for pp in &proto.props {
@@ -210,13 +228,18 @@ impl Vm {
             };
             props.insert(
                 pp.name.clone(),
-                PropEntry { default, visibility: pp.visibility, declaring_class: id },
+                PropEntry {
+                    default,
+                    visibility: pp.visibility,
+                    declaring_class: id,
+                },
             );
         }
 
         // Static properties (inherited slots alias; redeclared get a fresh cell).
-        let mut static_props: IndexMap<Vec<u8>, StaticProp> =
-            parent.map(|p| self.classes[p as usize].static_props.clone()).unwrap_or_default();
+        let mut static_props: IndexMap<Vec<u8>, StaticProp> = parent
+            .map(|p| self.classes[p as usize].static_props.clone())
+            .unwrap_or_default();
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for (k, sp) in self.classes[tid as usize].static_props.clone() {
@@ -244,17 +267,28 @@ impl Vm {
             }
             static_props.insert(
                 sp.name.as_bytes().to_vec(),
-                StaticProp { cell, visibility: sp.visibility, declaring_class: id },
+                StaticProp {
+                    cell,
+                    visibility: sp.visibility,
+                    declaring_class: id,
+                },
             );
         }
 
         // Class constants.
-        let mut constants: HashMap<Vec<u8>, ClassConst> =
-            parent.map(|p| self.classes[p as usize].constants.clone()).unwrap_or_default();
+        let mut constants: HashMap<Vec<u8>, ClassConst> = parent
+            .map(|p| self.classes[p as usize].constants.clone())
+            .unwrap_or_default();
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for (k, c) in self.classes[tid as usize].constants.clone() {
-                constants.insert(k, ClassConst { declaring_class: id, ..c });
+                constants.insert(
+                    k,
+                    ClassConst {
+                        declaring_class: id,
+                        ..c
+                    },
+                );
             }
         }
         // Constants are inherited from implemented interfaces too (their flattened
@@ -280,7 +314,11 @@ impl Vm {
             };
             constants.insert(
                 c.name.as_bytes().to_vec(),
-                ClassConst { value: v, visibility: c.visibility, declaring_class: id },
+                ClassConst {
+                    value: v,
+                    visibility: c.visibility,
+                    declaring_class: id,
+                },
             );
         }
 
@@ -333,7 +371,12 @@ impl Vm {
 
     /// Build an enum case's singleton object: an instance of the enum class with
     /// a read-only `name` property (and `value` for a backed enum).
-    fn new_enum_case(&mut self, class_id: ClassId, name: &PhpStr, value: Option<Value>) -> ObjectHandle {
+    fn new_enum_case(
+        &mut self,
+        class_id: ClassId,
+        name: &PhpStr,
+        value: Option<Value>,
+    ) -> ObjectHandle {
         let oid = self.next_object_id;
         self.next_object_id += 1;
         let mut properties: IndexMap<PhpStr, Value, FxBuildHasher> =
@@ -342,7 +385,11 @@ impl Vm {
         if let Some(v) = value {
             properties.insert(PhpStr::from("value"), v);
         }
-        Rc::new(RefCell::new(ObjectData { class: class_id, id: oid, properties }))
+        Rc::new(RefCell::new(ObjectData {
+            class: class_id,
+            id: oid,
+            properties,
+        }))
     }
 
     /// Resolve a `ClassRef` (in the context of frame `top`) to a `ClassId`.
@@ -363,9 +410,9 @@ impl Vm {
                     .parent
                     .ok_or_else(|| Thrown::error("Error", "Cannot use \"parent\" when no parent"))
             }
-            ClassRef::StaticClass => self.stack[top]
-                .called_class
-                .ok_or_else(|| Thrown::error("Error", "Cannot use \"static\" outside class context")),
+            ClassRef::StaticClass => self.stack[top].called_class.ok_or_else(|| {
+                Thrown::error("Error", "Cannot use \"static\" outside class context")
+            }),
             ClassRef::Dynamic(reg) => {
                 let v = self.reg_get(top, reg);
                 match v {
@@ -389,9 +436,11 @@ impl Vm {
             Ok(id) => Ok(id),
             Err(e) => {
                 let name: Option<Vec<u8>> = match class {
-                    ClassRef::Name(nidx) => {
-                        Some(self.stack[top].proto.names[nidx as usize].as_bytes().to_vec())
-                    }
+                    ClassRef::Name(nidx) => Some(
+                        self.stack[top].proto.names[nidx as usize]
+                            .as_bytes()
+                            .to_vec(),
+                    ),
                     ClassRef::Dynamic(reg) => match self.reg_get(top, reg) {
                         crate::Value::Str(s) => Some(s.as_bytes().to_vec()),
                         _ => None,
@@ -427,7 +476,10 @@ impl Vm {
         // full (namespaced) name — class names resolve with no global fallback.
         let n = name.strip_prefix(b"\\").unwrap_or(name);
         self.class_ids.get(&lc(n)).copied().ok_or_else(|| {
-            Thrown::error("Error", format!("Class \"{}\" not found", String::from_utf8_lossy(n)))
+            Thrown::error(
+                "Error",
+                format!("Class \"{}\" not found", String::from_utf8_lossy(n)),
+            )
         })
     }
 
@@ -456,7 +508,13 @@ impl Vm {
         }
     }
 
-    pub(crate) fn access_err(&self, what: &str, class: ClassId, member: &[u8], vis: Visibility) -> Thrown {
+    pub(crate) fn access_err(
+        &self,
+        what: &str,
+        class: ClassId,
+        member: &[u8],
+        vis: Visibility,
+    ) -> Thrown {
         let v = match vis {
             Visibility::Private => "private",
             Visibility::Protected => "protected",
@@ -478,8 +536,11 @@ impl Vm {
         class_id: ClassId,
         name: &[u8],
     ) -> Result<Rc<RefCell<Value>>, Thrown> {
-        self.classes[class_id as usize].static_props.get(name).map(|sp| sp.cell.clone()).ok_or_else(
-            || {
+        self.classes[class_id as usize]
+            .static_props
+            .get(name)
+            .map(|sp| sp.cell.clone())
+            .ok_or_else(|| {
                 Thrown::error(
                     "Error",
                     format!(
@@ -488,8 +549,7 @@ impl Vm {
                         String::from_utf8_lossy(name)
                     ),
                 )
-            },
-        )
+            })
     }
 
     /// Allocate a fresh instance of `class_id`, materializing property defaults.
@@ -501,15 +561,23 @@ impl Vm {
         for (name, pe) in &self.classes[class_id as usize].props {
             properties.insert(name.clone(), pe.default.clone());
         }
-        Rc::new(RefCell::new(ObjectData { class: class_id, id, properties }))
+        Rc::new(RefCell::new(ObjectData {
+            class: class_id,
+            id,
+            properties,
+        }))
     }
 
     /// Look up a method (flattened table) by name on `class_id`.
     pub(crate) fn lookup_method(&self, class_id: ClassId, name: &[u8]) -> Option<ResolvedMethod> {
-        self.classes[class_id as usize].methods.get(&lc(name)).cloned()
+        self.classes[class_id as usize]
+            .methods
+            .get(&lc(name))
+            .cloned()
     }
 
     /// Push a frame for a method call, binding `$this` and the LSB classes.
+    #[allow(clippy::too_many_arguments)] // VM call-dispatch frame setup
     pub(crate) fn enter_method(
         &mut self,
         top: usize,
@@ -523,8 +591,9 @@ impl Vm {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
-        let args: Vec<Value> =
-            (0..argc).map(|i| self.stack[top].regs[(base + i) as usize].clone()).collect();
+        let args: Vec<Value> = (0..argc)
+            .map(|i| self.stack[top].regs[(base + i) as usize].clone())
+            .collect();
         self.push_method_frame(method, this, called_class, args, dst)
     }
 

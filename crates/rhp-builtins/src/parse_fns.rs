@@ -24,7 +24,10 @@ fn deref(v: &Value) -> Value {
 fn first_byte(v: Option<&Value>, default: u8) -> u8 {
     match v {
         None => default,
-        Some(v) => conv::to_string_bytes(&deref(v)).first().copied().unwrap_or(default),
+        Some(v) => conv::to_string_bytes(&deref(v))
+            .first()
+            .copied()
+            .unwrap_or(default),
     }
 }
 
@@ -254,7 +257,11 @@ fn run_sscanf(input: &[u8], format: &[u8]) -> ScanResult {
             // Ran out of input for a value conversion.
             if matched == 0 {
                 eof_before_match = true;
-                return ScanResult { fields, matched, eof_before_match };
+                return ScanResult {
+                    fields,
+                    matched,
+                    eof_before_match,
+                };
             }
             if !suppress {
                 fields.push(Field::Null);
@@ -288,13 +295,19 @@ fn run_sscanf(input: &[u8], format: &[u8]) -> ScanResult {
         }
     }
 
-    ScanResult { fields, matched, eof_before_match }
+    ScanResult {
+        fields,
+        matched,
+        eof_before_match,
+    }
 }
 
 /// Scan an integer in `base` (optional sign, base digits), honouring `width`.
 fn scan_int(input: &[u8], ip: &mut usize, width: Option<usize>, base: u32) -> Option<Value> {
     let start = *ip;
-    let limit = width.map(|w| (start + w).min(input.len())).unwrap_or(input.len());
+    let limit = width
+        .map(|w| (start + w).min(input.len()))
+        .unwrap_or(input.len());
     let mut j = start;
     let mut neg = false;
     if j < limit && (input[j] == b'+' || input[j] == b'-') {
@@ -326,7 +339,9 @@ fn scan_int(input: &[u8], ip: &mut usize, width: Option<usize>, base: u32) -> Op
 /// Scan a float (sign, digits, optional fraction and exponent), honouring `width`.
 fn scan_float(input: &[u8], ip: &mut usize, width: Option<usize>) -> Option<Value> {
     let start = *ip;
-    let limit = width.map(|w| (start + w).min(input.len())).unwrap_or(input.len());
+    let limit = width
+        .map(|w| (start + w).min(input.len()))
+        .unwrap_or(input.len());
     let mut j = start;
     if j < limit && (input[j] == b'+' || input[j] == b'-') {
         j += 1;
@@ -368,7 +383,9 @@ fn scan_float(input: &[u8], ip: &mut usize, width: Option<usize>) -> Option<Valu
 /// Scan a run of non-whitespace bytes (`%s`), honouring `width`.
 fn scan_str(input: &[u8], ip: &mut usize, width: Option<usize>) -> Option<Value> {
     let start = *ip;
-    let limit = width.map(|w| (start + w).min(input.len())).unwrap_or(input.len());
+    let limit = width
+        .map(|w| (start + w).min(input.len()))
+        .unwrap_or(input.len());
     let mut j = start;
     while j < limit && !is_ws(input[j]) {
         j += 1;
@@ -399,7 +416,15 @@ fn scan_char(input: &[u8], ip: &mut usize, width: Option<usize>) -> Option<Value
 pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
     macro_rules! reg {
         ($name:literal, $func:path, $min:literal, $max:expr) => {
-            m.insert($name, Builtin { name: $name, func: $func, min_args: $min, max_args: $max });
+            m.insert(
+                $name,
+                Builtin {
+                    name: $name,
+                    func: $func,
+                    min_args: $min,
+                    max_args: $max,
+                },
+            );
         };
     }
     reg!("str_getcsv", fn_str_getcsv, 1, Some(4));
@@ -446,7 +471,10 @@ mod tests {
     fn csv_basic() {
         assert_eq!(csv(&[s("a,b,c")]), some(&["a", "b", "c"]));
         assert_eq!(csv(&[s("a,\"b,c\",d")]), some(&["a", "b,c", "d"]));
-        assert_eq!(csv(&[s("\"he said \"\"hi\"\"\",x")]), some(&["he said \"hi\"", "x"]));
+        assert_eq!(
+            csv(&[s("\"he said \"\"hi\"\"\",x")]),
+            some(&["he said \"hi\"", "x"])
+        );
         assert_eq!(csv(&[s("a;b;c"), s(";")]), some(&["a", "b", "c"]));
         assert_eq!(csv(&[s("a,b,,")]), some(&["a", "b", "", ""]));
         assert_eq!(csv(&[s("")]), vec![None]);
@@ -457,10 +485,22 @@ mod tests {
     #[test]
     fn csv_escape() {
         // escape char keeps both chars; close-quote handling.
-        assert_eq!(csv(&[s("x,\"y\\\"z\""), s(","), s("\""), s("\\")]), some(&["x", "y\\\"z"]));
-        assert_eq!(csv(&[s("a\"b,c"), s(","), s("\""), s("\\")]), some(&["a\"b", "c"]));
-        assert_eq!(csv(&[s("\"a\"b,c"), s(","), s("\""), s("\\")]), some(&["ab", "c"]));
-        assert_eq!(csv(&[s("a\\,b,c"), s(","), s("\""), s("\\")]), some(&["a\\", "b", "c"]));
+        assert_eq!(
+            csv(&[s("x,\"y\\\"z\""), s(","), s("\""), s("\\")]),
+            some(&["x", "y\\\"z"])
+        );
+        assert_eq!(
+            csv(&[s("a\"b,c"), s(","), s("\""), s("\\")]),
+            some(&["a\"b", "c"])
+        );
+        assert_eq!(
+            csv(&[s("\"a\"b,c"), s(","), s("\""), s("\\")]),
+            some(&["ab", "c"])
+        );
+        assert_eq!(
+            csv(&[s("a\\,b,c"), s(","), s("\""), s("\\")]),
+            some(&["a\\", "b", "c"])
+        );
     }
 
     /// Canonical string form of a value, for structural comparison (Value has no
@@ -522,7 +562,12 @@ mod tests {
         let b = Rc::new(RefCell::new(Value::Null));
         let n = fn_sscanf(
             &mut NoopHost,
-            &[s("42 foo"), s("%d %s"), Value::Ref(a.clone()), Value::Ref(b.clone())],
+            &[
+                s("42 foo"),
+                s("%d %s"),
+                Value::Ref(a.clone()),
+                Value::Ref(b.clone()),
+            ],
         )
         .unwrap();
         assert!(matches!(n, Value::Int(2)));
@@ -541,8 +586,7 @@ mod tests {
 
         // 0 matched -> NULL.
         let a3 = Rc::new(RefCell::new(Value::Null));
-        let n3 =
-            fn_sscanf(&mut NoopHost, &[s("nomatch"), s("%d"), Value::Ref(a3)]).unwrap();
+        let n3 = fn_sscanf(&mut NoopHost, &[s("nomatch"), s("%d"), Value::Ref(a3)]).unwrap();
         assert!(matches!(n3, Value::Null));
     }
 }

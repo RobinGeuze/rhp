@@ -46,94 +46,277 @@ pub enum CmpKind {
 pub enum Instr {
     // -- move / const / load (phase 1-2) --
     Nop,
-    Mov { dst: Reg, src: Reg },
-    LoadConst { dst: Reg, k: CIdx },
-    LoadNull { dst: Reg },
-    LoadBool { dst: Reg, b: bool },
-    LoadInt { dst: Reg, n: i64 },
+    Mov {
+        dst: Reg,
+        src: Reg,
+    },
+    LoadConst {
+        dst: Reg,
+        k: CIdx,
+    },
+    LoadNull {
+        dst: Reg,
+    },
+    LoadBool {
+        dst: Reg,
+        b: bool,
+    },
+    LoadInt {
+        dst: Reg,
+        n: i64,
+    },
 
     // -- variable store (ref-aware; phase 2/6) --
-    Assign { cv: Reg, src: Reg },
+    Assign {
+        cv: Reg,
+        src: Reg,
+    },
 
     // -- arithmetic / bitwise / unary (phase 2) — route to ops:: --
-    Add { dst: Reg, a: Reg, b: Reg },
-    Sub { dst: Reg, a: Reg, b: Reg },
-    Mul { dst: Reg, a: Reg, b: Reg },
-    Div { dst: Reg, a: Reg, b: Reg },
-    Mod { dst: Reg, a: Reg, b: Reg },
-    Pow { dst: Reg, a: Reg, b: Reg },
-    BitAnd { dst: Reg, a: Reg, b: Reg },
-    BitOr { dst: Reg, a: Reg, b: Reg },
-    BitXor { dst: Reg, a: Reg, b: Reg },
-    Shl { dst: Reg, a: Reg, b: Reg },
-    Shr { dst: Reg, a: Reg, b: Reg },
-    Concat { dst: Reg, a: Reg, b: Reg },
-    Neg { dst: Reg, a: Reg },
-    BitNot { dst: Reg, a: Reg },
-    Not { dst: Reg, a: Reg },
+    Add {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    Sub {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    Mul {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    Div {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    Mod {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    Pow {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    BitAnd {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    BitOr {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    BitXor {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    Shl {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    Shr {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    Concat {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    },
+    Neg {
+        dst: Reg,
+        a: Reg,
+    },
+    BitNot {
+        dst: Reg,
+        a: Reg,
+    },
+    Not {
+        dst: Reg,
+        a: Reg,
+    },
     /// `++`/`--`; ref-aware write-through. `pre`: value is new(true)/old(false).
-    IncDec { dst: Reg, cv: Reg, pre: bool, delta: i8 },
+    IncDec {
+        dst: Reg,
+        cv: Reg,
+        pre: bool,
+        delta: i8,
+    },
 
     // -- casts (phase 2) --
-    CastInt { dst: Reg, a: Reg },
-    CastFloat { dst: Reg, a: Reg },
-    CastString { dst: Reg, a: Reg },
-    CastBool { dst: Reg, a: Reg },
-    CastArray { dst: Reg, a: Reg },
+    CastInt {
+        dst: Reg,
+        a: Reg,
+    },
+    CastFloat {
+        dst: Reg,
+        a: Reg,
+    },
+    CastString {
+        dst: Reg,
+        a: Reg,
+    },
+    CastBool {
+        dst: Reg,
+        a: Reg,
+    },
+    CastArray {
+        dst: Reg,
+        a: Reg,
+    },
     /// `(object)` cast: wrap into a `stdClass` (arrays map elements to properties).
-    CastObject { dst: Reg, a: Reg },
+    CastObject {
+        dst: Reg,
+        a: Reg,
+    },
 
     // -- compare (phase 2) — route to ops:: --
-    Cmp { dst: Reg, a: Reg, b: Reg, kind: CmpKind },
+    Cmp {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        kind: CmpKind,
+    },
 
     // -- output (phase 1) --
-    Echo { src: Reg },
-    EchoConst { k: CIdx },
-    Print { dst: Reg, src: Reg },
+    Echo {
+        src: Reg,
+    },
+    EchoConst {
+        k: CIdx,
+    },
+    Print {
+        dst: Reg,
+        src: Reg,
+    },
 
     // -- jumps / branches (phase 3) --
-    Jmp { target: Pc },
+    Jmp {
+        target: Pc,
+    },
     /// Prologue guard for a non-constant parameter default: jump to `target`
     /// (skipping the default-init code) if argument `index` was actually passed.
-    JmpIfArg { index: u16, target: Pc },
-    JmpTrue { cond: Reg, target: Pc },
-    JmpFalse { cond: Reg, target: Pc },
-    JmpNull { src: Reg, target: Pc },
-    JmpNotNull { src: Reg, target: Pc },
+    JmpIfArg {
+        index: u16,
+        target: Pc,
+    },
+    JmpTrue {
+        cond: Reg,
+        target: Pc,
+    },
+    JmpFalse {
+        cond: Reg,
+        target: Pc,
+    },
+    JmpNull {
+        src: Reg,
+        target: Pc,
+    },
+    JmpNotNull {
+        src: Reg,
+        target: Pc,
+    },
 
     // -- arrays (phase 4; literals first) --
-    NewArray { dst: Reg, cap: u32 },
-    ArrPush { arr: Reg, val: Reg },
-    ArrSet { arr: Reg, key: Reg, val: Reg },
-    ArrSpread { arr: Reg, src: Reg },
+    NewArray {
+        dst: Reg,
+        cap: u32,
+    },
+    ArrPush {
+        arr: Reg,
+        val: Reg,
+    },
+    ArrSet {
+        arr: Reg,
+        key: Reg,
+        val: Reg,
+    },
+    ArrSpread {
+        arr: Reg,
+        src: Reg,
+    },
     /// `[&$x]` / `[k => &$x]`: push/insert the raw `Value::Ref` in `val` so the
     /// element aliases the source variable (no deref).
-    ArrPushRef { arr: Reg, val: Reg },
-    ArrSetRef { arr: Reg, key: Reg, val: Reg },
+    ArrPushRef {
+        arr: Reg,
+        val: Reg,
+    },
+    ArrSetRef {
+        arr: Reg,
+        key: Reg,
+        val: Reg,
+    },
 
     // -- array element read (value context): element or Null; string offset --
-    DimFetch { dst: Reg, arr: Reg, key: Reg },
+    DimFetch {
+        dst: Reg,
+        arr: Reg,
+        key: Reg,
+    },
 
     // -- lvalue cursor: descend a root CV by keys/appends, then commit --
     // Emitted contiguously (no interleaving); the VM holds the cursor between them.
-    LvalCv { cv: Reg },        // begin a cursor rooted at CV `cv`
-    LvalKey { key: Reg },      // descend into element `key` (autovivify on write)
-    LvalAppend,                // descend into a freshly appended element
-    FetchLvalRw { dst: Reg },  // read the current cursor location (null if absent), keep cursor open
-    AssignLval { src: Reg },   // write `src` at the cursor location (COW-bubbling), close cursor
-    UnsetLval,                 // remove the cursor's leaf key, close cursor
+    LvalCv {
+        cv: Reg,
+    }, // begin a cursor rooted at CV `cv`
+    LvalKey {
+        key: Reg,
+    }, // descend into element `key` (autovivify on write)
+    LvalAppend, // descend into a freshly appended element
+    FetchLvalRw {
+        dst: Reg,
+    }, // read the current cursor location (null if absent), keep cursor open
+    AssignLval {
+        src: Reg,
+    }, // write `src` at the cursor location (COW-bubbling), close cursor
+    UnsetLval,  // remove the cursor's leaf key, close cursor
     /// `++`/`--` on the cursor location (ref-correct inc_dec); dst = new/old. Closes cursor.
-    IncDecLval { dst: Reg, pre: bool, delta: i8 },
+    IncDecLval {
+        dst: Reg,
+        pre: bool,
+        delta: i8,
+    },
 
     // -- foreach (by value): iterate a COW snapshot --
-    FeReset { arr_reg: Reg, pos_reg: Reg, src: Reg, end: Pc }, // snapshot src; pos=0; if not-array/empty -> jmp end
-    FeFetch { arr_reg: Reg, pos_reg: Reg, key_cv: Reg, val_cv: Reg, end: Pc }, // bind key?/value; pos++; if done jmp end
+    FeReset {
+        arr_reg: Reg,
+        pos_reg: Reg,
+        src: Reg,
+        end: Pc,
+    }, // snapshot src; pos=0; if not-array/empty -> jmp end
+    FeFetch {
+        arr_reg: Reg,
+        pos_reg: Reg,
+        key_cv: Reg,
+        val_cv: Reg,
+        end: Pc,
+    }, // bind key?/value; pos++; if done jmp end
     /// By-reference foreach setup: `arr_cv` is the source variable's CV (iterated
     /// live, not snapshotted). Skips to `end` if it is not a non-empty array.
-    FeResetRef { arr_cv: Reg, pos_reg: Reg, end: Pc },
+    FeResetRef {
+        arr_cv: Reg,
+        pos_reg: Reg,
+        end: Pc,
+    },
     /// By-reference foreach step: promote element at `pos` to a shared cell and
     /// bind `val_cv` to it (so body writes flow back into the array).
-    FeFetchRef { arr_cv: Reg, pos_reg: Reg, key_cv: Reg, val_cv: Reg, end: Pc },
+    FeFetchRef {
+        arr_cv: Reg,
+        pos_reg: Reg,
+        key_cv: Reg,
+        val_cv: Reg,
+        end: Pc,
+    },
 
     // -- calls / return (phase 1 builtins; user functions later) --
     /// Resolve `name` (case-insensitive): refused → Unsupported; builtin →
@@ -141,143 +324,325 @@ pub enum Instr {
     /// `fallback` is a second name to try if `name` misses (`NO_NAME` if none):
     /// an unqualified call inside a namespace resolves `Ns\name` first, then the
     /// global `name` (PHP's fall-back-to-global rule).
-    Call { dst: Reg, name: NIdx, base: Reg, argc: u16, fallback: NIdx },
+    Call {
+        dst: Reg,
+        name: NIdx,
+        base: Reg,
+        argc: u16,
+        fallback: NIdx,
+    },
     /// Variadic call: `args` holds a `PhpArray` of the evaluated arguments
     /// (used when a call site contains argument spread `...$x`).
-    CallV { dst: Reg, name: NIdx, args: Reg, fallback: NIdx },
+    CallV {
+        dst: Reg,
+        name: NIdx,
+        args: Reg,
+        fallback: NIdx,
+    },
     /// Dynamic call `$f(args)`: `callee` holds a closure / string name / callable
     /// array / `__invoke` object; call it with `regs[base..base+argc]`.
-    CallDyn { dst: Reg, callee: Reg, base: Reg, argc: u16 },
+    CallDyn {
+        dst: Reg,
+        callee: Reg,
+        base: Reg,
+        argc: u16,
+    },
     /// Variadic dynamic call `$f(...$a)`: `args` holds a `PhpArray`.
-    CallDynV { dst: Reg, callee: Reg, args: Reg },
+    CallDynV {
+        dst: Reg,
+        callee: Reg,
+        args: Reg,
+    },
     /// Build a closure value: read `ncaptures` capture values from
     /// `regs[base..base+ncaptures]` and pair them with closure proto `fnidx`.
-    MakeClosure { dst: Reg, fnidx: u32, base: Reg, ncaptures: u16 },
+    MakeClosure {
+        dst: Reg,
+        fnidx: u32,
+        base: Reg,
+        ncaptures: u16,
+    },
     /// First-class callable (`f(...)`, `$o->m(...)`, `C::m(...)`): wrap the
     /// callable value in `callee` as a `Closure`.
-    MakeFcc { dst: Reg, callee: Reg },
-    Ret { src: Reg },
+    MakeFcc {
+        dst: Reg,
+        callee: Reg,
+    },
+    Ret {
+        src: Reg,
+    },
     /// `return` from a by-reference function (`function &f()`): `src` holds a
     /// reference to the returned lvalue; it is delivered raw (not dereferenced).
-    RetRef { src: Reg },
+    RetRef {
+        src: Reg,
+    },
     RetNull,
     /// `yield` / `yield $v` / `yield $k => $v` (only inside a generator). Suspends
     /// the frame, handing `(key, value)` to the driver; `dst` receives the value
     /// passed to `->send()` when the generator resumes. `key == Reg::MAX` means
     /// an auto-incrementing integer key.
-    Yield { dst: Reg, key: Reg, value: Reg },
+    Yield {
+        dst: Reg,
+        key: Reg,
+        value: Reg,
+    },
 
     /// `match` with no matching arm and no default: throw `\UnhandledMatchError`.
-    ThrowMatchError { subject: Reg },
+    ThrowMatchError {
+        subject: Reg,
+    },
     /// A construct the compiler accepts syntactically but refuses to run (goto,
     /// …): the refusal is deferred to runtime so a file that merely *contains*
     /// it — down an unexecuted branch — still compiles and loads. `what`/`why`
     /// are interned message strings.
-    DeferredUnsupported { what: CIdx, why: CIdx },
+    DeferredUnsupported {
+        what: CIdx,
+        why: CIdx,
+    },
     /// `eval($code)`: compile the PHP source in `src` at runtime and run it in
     /// the current variable scope; the script's return value lands in `dst`.
-    Eval { dst: Reg, src: Reg },
+    Eval {
+        dst: Reg,
+        src: Reg,
+    },
     /// `throw $e`: begin unwinding with the Throwable in `src`.
-    Throw { src: Reg },
+    Throw {
+        src: Reg,
+    },
     /// End of a `finally` block: perform the pending continuation (re-raise a
     /// pending exception, perform a pending return, or fall through).
     FinallyEnd,
     /// A `return` that must cross a `finally`: stash the value as a pending
     /// return, then `Jmp` to the finally block.
-    SetPendingRet { src: Reg },
+    SetPendingRet {
+        src: Reg,
+    },
 
     // -- OOP (phase 7) --
     /// `new C(args)`: allocate into `dst`, then run `__construct` via the window.
-    New { dst: Reg, class: ClassRef, base: Reg, argc: u16, cache: CacheIdx },
+    New {
+        dst: Reg,
+        class: ClassRef,
+        base: Reg,
+        argc: u16,
+        cache: CacheIdx,
+    },
     /// Variadic `new` / method / static calls: `args` holds a `PhpArray`.
-    NewV { dst: Reg, class: ClassRef, args: Reg },
-    CallMethodV { dst: Reg, obj: Reg, name: NIdx, args: Reg },
-    CallStaticV { dst: Reg, class: ClassRef, name: NIdx, args: Reg },
+    NewV {
+        dst: Reg,
+        class: ClassRef,
+        args: Reg,
+    },
+    CallMethodV {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+        args: Reg,
+    },
+    CallStaticV {
+        dst: Reg,
+        class: ClassRef,
+        name: NIdx,
+        args: Reg,
+    },
     /// `$o->p` (value context).
-    FetchProp { dst: Reg, obj: Reg, name: NIdx, cache: CacheIdx },
+    FetchProp {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+        cache: CacheIdx,
+    },
     /// `$o->$p` / `$o->{expr}`: the property name is a runtime string in `name`.
-    FetchPropDyn { dst: Reg, obj: Reg, name: Reg },
+    FetchPropDyn {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+    },
     /// `$o->$p = src`: dynamic-name property write.
-    StorePropDyn { obj: Reg, name: Reg, src: Reg },
+    StorePropDyn {
+        obj: Reg,
+        name: Reg,
+        src: Reg,
+    },
     /// `$o->$m(args)`: dynamic-name method call.
-    CallMethodDyn { dst: Reg, obj: Reg, name: Reg, base: Reg, argc: u16 },
+    CallMethodDyn {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+        base: Reg,
+        argc: u16,
+    },
     /// `C::$p` (value context).
-    FetchStaticProp { dst: Reg, class: ClassRef, name: NIdx, cache: CacheIdx },
+    FetchStaticProp {
+        dst: Reg,
+        class: ClassRef,
+        name: NIdx,
+        cache: CacheIdx,
+    },
     /// `C::K` / `C::class`.
-    FetchClassConst { dst: Reg, class: ClassRef, name: NIdx, cache: CacheIdx },
+    FetchClassConst {
+        dst: Reg,
+        class: ClassRef,
+        name: NIdx,
+        cache: CacheIdx,
+    },
     /// `$o->m(args)`.
-    CallMethod { dst: Reg, obj: Reg, name: NIdx, base: Reg, argc: u16, cache: CacheIdx },
+    CallMethod {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+        base: Reg,
+        argc: u16,
+        cache: CacheIdx,
+    },
     /// `C::m(args)` / `self::` / `static::` / `parent::`.
-    CallStatic { dst: Reg, class: ClassRef, name: NIdx, base: Reg, argc: u16, cache: CacheIdx },
+    CallStatic {
+        dst: Reg,
+        class: ClassRef,
+        name: NIdx,
+        base: Reg,
+        argc: u16,
+        cache: CacheIdx,
+    },
     /// `C::$m(args)` / `$class::$m(args)`: static call whose method name is a
     /// runtime string in register `name`.
-    CallStaticDyn { dst: Reg, class: ClassRef, name: Reg, base: Reg, argc: u16 },
+    CallStaticDyn {
+        dst: Reg,
+        class: ClassRef,
+        name: Reg,
+        base: Reg,
+        argc: u16,
+    },
     /// `$o->name = src` (single-level): direct write to a declared/accessible
     /// property, else `__set`, else a dynamic property.
-    StoreProp { obj: Reg, name: NIdx, src: Reg },
+    StoreProp {
+        obj: Reg,
+        name: NIdx,
+        src: Reg,
+    },
     /// Promote the current lvalue cursor target (a property or array element) to
     /// a shared cell and put a `Ref` to it in `dst` — for passing `$o->p` /
     /// `$a[$k]` to a by-reference builtin (sort/array_push/array_shift/…).
-    MakeRefLval { dst: Reg },
+    MakeRefLval {
+        dst: Reg,
+    },
     /// `isset($o->name)`: declared non-null property, else `__isset`, else false.
-    IssetProp { dst: Reg, obj: Reg, name: NIdx },
+    IssetProp {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+    },
     /// `unset($o->name)`: remove a declared property, else `__unset`.
-    UnsetProp { obj: Reg, name: NIdx },
+    UnsetProp {
+        obj: Reg,
+        name: NIdx,
+    },
     /// `global $x`: bind CV `cv` to the global variable `name` (a shared cell).
-    BindGlobal { cv: Reg, name: NIdx },
+    BindGlobal {
+        cv: Reg,
+        name: NIdx,
+    },
     /// `static $x = <const>`: bind CV `cv` to a per-function persistent cell,
     /// initialized to const `init` (`u32::MAX` = null) on first execution.
-    BindStatic { cv: Reg, name: NIdx, init: u32 },
+    BindStatic {
+        cv: Reg,
+        name: NIdx,
+        init: u32,
+    },
     /// `$val instanceof C` (never throws).
-    InstanceOf { dst: Reg, val: Reg, class: ClassRef },
+    InstanceOf {
+        dst: Reg,
+        val: Reg,
+        class: ClassRef,
+    },
     /// `clone $src`: shallow copy + new id + `__clone`.
-    CloneObj { dst: Reg, src: Reg },
+    CloneObj {
+        dst: Reg,
+        src: Reg,
+    },
     /// Cursor step: descend into object property `name`.
-    LvalProp { name: NIdx },
+    LvalProp {
+        name: NIdx,
+    },
     /// Cursor step: descend into object property named by `name` (a runtime
     /// string register), e.g. `$o->$p = ...`.
-    LvalPropDyn { name: Reg },
+    LvalPropDyn {
+        name: Reg,
+    },
     /// Cursor root: a static-property cell `C::$name`.
-    LvalStaticProp { class: ClassRef, name: NIdx },
+    LvalStaticProp {
+        class: ClassRef,
+        name: NIdx,
+    },
     /// Link + register a conditionally-declared class at this point.
-    DeclareClass { class_idx: u32 },
+    DeclareClass {
+        class_idx: u32,
+    },
     /// Register a conditionally-declared function (one nested in control flow, so
     /// not hoisted): its proto is stored in the closures table at file-local
     /// index `idx` (resolved via the running proto's `closure_base`).
-    DeclareFunc { idx: u32 },
+    DeclareFunc {
+        idx: u32,
+    },
 
     // -- references --
     /// `$dst =& $src`: promote `src`'s slot to a shared Ref; `dst` aliases it.
-    BindRef { dst_cv: Reg, src_cv: Reg },
+    BindRef {
+        dst_cv: Reg,
+        src_cv: Reg,
+    },
     /// `$dst =& <lvalue>`: `src` already holds a `Ref` (from `MakeRefLval`); make
     /// CV `dst_cv` alias it (raw copy, no deref).
-    RefAssign { dst_cv: Reg, src: Reg },
+    RefAssign {
+        dst_cv: Reg,
+        src: Reg,
+    },
     /// `<lvalue> =& <src>`: write the raw `Ref` in `src` (not deref'd) to the
     /// current lvalue-cursor target, so that element/property becomes a reference.
-    AssignLvalRef { src: Reg },
+    AssignLvalRef {
+        src: Reg,
+    },
     /// Materialize CV `cv` as a Ref and place `Value::Ref` in `dst` (by-ref arg).
-    MakeRef { dst: Reg, cv: Reg },
+    MakeRef {
+        dst: Reg,
+        cv: Reg,
+    },
     /// Wrap the *value* in `src` in a fresh `Value::Ref` cell (no aliasing of any
     /// variable slot). Used for `&$this`, which php protects from being modified
     /// through the reference.
-    MakeRefVal { dst: Reg, src: Reg },
+    MakeRefVal {
+        dst: Reg,
+        src: Reg,
+    },
 
     // -- misc --
     /// `name` (resolved constant). `fallback` is tried if `name` misses
     /// (`NO_NAME` if none): an unqualified constant inside a namespace resolves
     /// `Ns\NAME` first, then the global `NAME`.
-    FetchConst { dst: Reg, name: NIdx, fallback: NIdx },
+    FetchConst {
+        dst: Reg,
+        name: NIdx,
+        fallback: NIdx,
+    },
     /// Emitted only for a structurally-refused construct on a reachable path;
     /// raises the uncatchable `Thrown::Unsupported`.
-    Refuse { feature: NIdx, reason: NIdx },
+    Refuse {
+        feature: NIdx,
+        reason: NIdx,
+    },
     /// `__halt_compiler()`: stop this proto as a top-level return.
     Halt,
     /// `exit`/`die`: a string `arg` is printed (code 0), an int `arg` is the exit
     /// code, null/absent is code 0. Terminates the script via the SAPI exit path.
-    Exit { arg: Reg },
+    Exit {
+        arg: Reg,
+    },
     /// `include` / `require` (and the `_once` variants): evaluate `path` to a
     /// string, compile+run that file, and leave its return value in `dst`.
-    Include { dst: Reg, path: Reg, kind: IncludeKind },
+    Include {
+        dst: Reg,
+        path: Reg,
+        kind: IncludeKind,
+    },
 }
 
 /// Which file-inclusion construct an [`Instr::Include`] came from.

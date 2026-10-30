@@ -19,7 +19,7 @@ fn snefru_block(state: &mut [u32; 16]) {
     for index in 0..8usize {
         let t0 = &TABLES[2 * index];
         let t1 = &TABLES[2 * index + 1];
-        for sub in 0..4usize {
+        for &r in &SHIFTS {
             // round(L, C, N, SB): SBE = SB[C & 0xff]; L ^= SBE; N ^= SBE
             macro_rules! rnd {
                 ($l:expr, $c:expr, $n:expr, $t:expr) => {{
@@ -45,7 +45,6 @@ fn snefru_block(state: &mut [u32; 16]) {
             rnd!(b[13], b[14], b[15], t1);
             rnd!(b[14], b[15], b[0], t1);
 
-            let r = SHIFTS[sub];
             for w in b.iter_mut() {
                 *w = w.rotate_right(r);
             }
@@ -87,15 +86,12 @@ pub fn snefru256(data: &[u8]) -> [u8; 32] {
     let count_hi = (bits >> 32) as u32;
     let count_lo = bits as u32;
 
-    let mut chunks = data.chunks_exact(32);
-    for chunk in &mut chunks {
-        let mut block = [0u8; 32];
-        block.copy_from_slice(chunk);
-        transform(&mut state, &block);
+    let (blocks, rem) = data.as_chunks::<32>();
+    for block in blocks {
+        transform(&mut state, block);
     }
 
     // Any trailing partial block is zero-padded and transformed.
-    let rem = chunks.remainder();
     if !rem.is_empty() {
         let mut block = [0u8; 32];
         block[..rem.len()].copy_from_slice(rem);

@@ -117,11 +117,7 @@ fn fn_substr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             if l < 0 {
                 // cut |l| bytes off the end of the remainder
                 let drop = (-l) as usize;
-                if drop >= rest {
-                    0
-                } else {
-                    rest - drop
-                }
+                rest.saturating_sub(drop)
             } else {
                 (l as usize).min(rest)
             }
@@ -135,18 +131,17 @@ fn fn_substr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 /// Apply one (search, replace) pairing to a single subject string.
-fn replace_one_subject(
-    subject: &[u8],
-    search: &Value,
-    replace: &Value,
-) -> Result<Vec<u8>, Thrown> {
+fn replace_one_subject(subject: &[u8], search: &Value, replace: &Value) -> Result<Vec<u8>, Thrown> {
     match search {
         Value::Array(searches) => {
             let mut cur = subject.to_vec();
             for (i, (_, sv)) in searches.iter().enumerate() {
                 let sbytes = bytes_of(sv);
                 let rbytes = match replace {
-                    Value::Array(reps) => reps.get_index(i).map(|(_, v)| bytes_of(v)).unwrap_or_default(),
+                    Value::Array(reps) => reps
+                        .get_index(i)
+                        .map(|(_, v)| bytes_of(v))
+                        .unwrap_or_default(),
                     other => bytes_of(other),
                 };
                 cur = replace_all(&cur, &sbytes, &rbytes);
@@ -443,7 +438,11 @@ fn fn_substr_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "substr_count(): Argument #3 ($offset) must be contained in argument #1 ($haystack)",
         ));
     }
-    let start = if off < 0 { (len + off) as usize } else { off as usize };
+    let start = if off < 0 {
+        (len + off) as usize
+    } else {
+        off as usize
+    };
     let end = match args.get(3).map(deref) {
         None | Some(Value::Null) => haystack.len(),
         Some(v) => {
@@ -486,7 +485,9 @@ fn fn_str_starts_with(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 fn fn_str_ends_with(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let h = bytes_of(&args[0]);
     let n = bytes_of(&args[1]);
-    Ok(Value::Bool(h.len() >= n.len() && h[h.len() - n.len()..] == n[..]))
+    Ok(Value::Bool(
+        h.len() >= n.len() && h[h.len() - n.len()..] == n[..],
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -500,7 +501,10 @@ fn fn_wordwrap(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Some(v) => bytes_of(v),
         None => b"\n".to_vec(),
     };
-    let cut = args.get(3).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let cut = args
+        .get(3)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
 
     if text.is_empty() {
         return Ok(Value::str(Vec::new()));
@@ -600,9 +604,7 @@ fn round_decimal(int_digits: &[u8], frac_digits: &[u8], dec: i64) -> (Vec<u8>, V
     all.extend_from_slice(frac_digits);
 
     let keep = int_len + dec; // number of leading digits to retain
-    let round_up = if keep < 0 {
-        false
-    } else if keep as usize >= all.len() {
+    let round_up = if keep < 0 || keep as usize >= all.len() {
         false
     } else {
         all[keep as usize] >= b'5'
@@ -623,13 +625,13 @@ fn round_decimal(int_digits: &[u8], frac_digits: &[u8], dec: i64) -> (Vec<u8>, V
     } else {
         kept[first_nonzero..].to_vec()
     };
-    let is_zero = kept_int == [b'0'];
+    let is_zero = kept_int == *b"0";
 
     if dec <= 0 {
         // No fractional output. For dec<0 the kept integer scales by 10^(-dec).
         let mut int_str = kept_int;
         if !is_zero && dec < 0 {
-            int_str.extend(std::iter::repeat(b'0').take((-dec) as usize));
+            int_str.extend(std::iter::repeat_n(b'0', (-dec) as usize));
         }
         (int_str, Vec::new())
     } else {
@@ -642,7 +644,10 @@ fn round_decimal(int_digits: &[u8], frac_digits: &[u8], dec: i64) -> (Vec<u8>, V
         let int_str = kint[..split].to_vec();
         let frac_str = kint[split..].to_vec();
         // strip leading zeros of int part (keep one)
-        let fnz = int_str.iter().position(|&b| b != b'0').unwrap_or(int_str.len());
+        let fnz = int_str
+            .iter()
+            .position(|&b| b != b'0')
+            .unwrap_or(int_str.len());
         let int_str = if fnz == int_str.len() {
             vec![b'0']
         } else {
@@ -680,7 +685,7 @@ fn fn_number_format(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
     let (int_digits, frac_digits) = round_decimal(&int_part, &frac_part, dec);
 
-    let value_is_zero = int_digits == [b'0'] && frac_digits.iter().all(|&b| b == b'0');
+    let value_is_zero = int_digits == *b"0" && frac_digits.iter().all(|&b| b == b'0');
 
     // Group the integer part with the thousands separator.
     let mut grouped: Vec<u8> = Vec::new();
@@ -752,7 +757,10 @@ fn parse_format(fmt: &[u8]) -> Result<Vec<Piece>, Thrown> {
                 j += 1;
             }
             if j > i && j < fmt.len() && fmt[j] == b'$' {
-                let n: usize = std::str::from_utf8(&fmt[i..j]).unwrap().parse().unwrap_or(0);
+                let n: usize = std::str::from_utf8(&fmt[i..j])
+                    .unwrap()
+                    .parse()
+                    .unwrap_or(0);
                 arg = Some(n);
                 i = j + 1;
             }
@@ -792,7 +800,10 @@ fn parse_format(fmt: &[u8]) -> Result<Vec<Piece>, Thrown> {
             i += 1;
         }
         let width: usize = if i > ws {
-            std::str::from_utf8(&fmt[ws..i]).unwrap().parse().unwrap_or(0)
+            std::str::from_utf8(&fmt[ws..i])
+                .unwrap()
+                .parse()
+                .unwrap_or(0)
         } else {
             0
         };
@@ -806,7 +817,10 @@ fn parse_format(fmt: &[u8]) -> Result<Vec<Piece>, Thrown> {
                 i += 1;
             }
             prec = Some(if i > ps {
-                std::str::from_utf8(&fmt[ps..i]).unwrap().parse().unwrap_or(0)
+                std::str::from_utf8(&fmt[ps..i])
+                    .unwrap()
+                    .parse()
+                    .unwrap_or(0)
             } else {
                 0
             });
@@ -822,8 +836,19 @@ fn parse_format(fmt: &[u8]) -> Result<Vec<Piece>, Thrown> {
         i += 1;
         if !matches!(
             spec,
-            b's' | b'd' | b'f' | b'F' | b'b' | b'o' | b'x' | b'X' | b'c' | b'u' | b'e' | b'E'
-                | b'g' | b'G'
+            b's' | b'd'
+                | b'f'
+                | b'F'
+                | b'b'
+                | b'o'
+                | b'x'
+                | b'X'
+                | b'c'
+                | b'u'
+                | b'e'
+                | b'E'
+                | b'g'
+                | b'G'
         ) {
             return Err(Thrown::error(
                 "ValueError",
@@ -855,9 +880,9 @@ fn pad_field(body: Vec<u8>, width: usize, pad: u8, left: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(width);
     if left {
         out.extend_from_slice(&body);
-        out.extend(std::iter::repeat(pad).take(fill));
+        out.extend(std::iter::repeat_n(pad, fill));
     } else {
-        out.extend(std::iter::repeat(pad).take(fill));
+        out.extend(std::iter::repeat_n(pad, fill));
         out.extend_from_slice(&body);
     }
     out
@@ -878,13 +903,13 @@ fn pad_numeric(sign: &[u8], mag: &[u8], width: usize, pad: u8, left: bool) -> Ve
         let p = if pad == b'0' { b' ' } else { pad };
         out.extend_from_slice(sign);
         out.extend_from_slice(mag);
-        out.extend(std::iter::repeat(p).take(fill));
+        out.extend(std::iter::repeat_n(p, fill));
     } else if pad == b'0' {
         out.extend_from_slice(sign);
-        out.extend(std::iter::repeat(b'0').take(fill));
+        out.extend(std::iter::repeat_n(b'0', fill));
         out.extend_from_slice(mag);
     } else {
-        out.extend(std::iter::repeat(pad).take(fill));
+        out.extend(std::iter::repeat_n(pad, fill));
         out.extend_from_slice(sign);
         out.extend_from_slice(mag);
     }
@@ -943,7 +968,7 @@ fn gcvt(f: f64, precision: usize, upper: bool) -> Vec<u8> {
         let mut out = Vec::new();
         if digits.len() <= int_len {
             out.extend_from_slice(digits);
-            out.extend(std::iter::repeat(b'0').take(int_len - digits.len()));
+            out.extend(std::iter::repeat_n(b'0', int_len - digits.len()));
         } else {
             out.extend_from_slice(&digits[..int_len]);
             out.push(b'.');
@@ -953,7 +978,7 @@ fn gcvt(f: f64, precision: usize, upper: bool) -> Vec<u8> {
     } else {
         let mut out = Vec::new();
         out.extend_from_slice(b"0.");
-        out.extend(std::iter::repeat(b'0').take((-exp10 - 1) as usize));
+        out.extend(std::iter::repeat_n(b'0', (-exp10 - 1) as usize));
         out.extend_from_slice(digits);
         out
     };
@@ -1030,7 +1055,11 @@ fn render_conv(c: &Conv, arg: &Value) -> Vec<u8> {
                 return b"NaN".to_vec();
             }
             if f.is_infinite() {
-                return if f < 0.0 { b"-INF".to_vec() } else { b"INF".to_vec() };
+                return if f < 0.0 {
+                    b"-INF".to_vec()
+                } else {
+                    b"INF".to_vec()
+                };
             }
             let prec = c.prec.unwrap_or(6);
             let (mut sign, mag) = float_parts(f, c.spec, prec);
@@ -1045,7 +1074,11 @@ fn render_conv(c: &Conv, arg: &Value) -> Vec<u8> {
                 return b"NaN".to_vec();
             }
             if f.is_infinite() {
-                return if f < 0.0 { b"-INF".to_vec() } else { b"INF".to_vec() };
+                return if f < 0.0 {
+                    b"-INF".to_vec()
+                } else {
+                    b"INF".to_vec()
+                };
             }
             let prec = c.prec.unwrap_or(6);
             let body = gcvt(f, prec, c.spec == b'G');
@@ -1063,7 +1096,11 @@ fn render_conv(c: &Conv, arg: &Value) -> Vec<u8> {
 
 /// Core of sprintf/vsprintf: `fmt` + value args (not including the format).
 /// `given` is the total argument count (incl. the format) for error messages.
-pub(crate) fn do_sprintf(fmt: &[u8], value_args: &[Value], given: usize) -> Result<Vec<u8>, Thrown> {
+pub(crate) fn do_sprintf(
+    fmt: &[u8],
+    value_args: &[Value],
+    given: usize,
+) -> Result<Vec<u8>, Thrown> {
     let pieces = parse_format(fmt)?;
 
     // Resolve argument indices (positional does not advance the sequential ptr).
@@ -1402,6 +1439,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::approx_constant)] // deliberate literal test values, not PI
 mod tests {
     use super::*;
 
@@ -1442,14 +1480,26 @@ mod tests {
 
     #[test]
     fn substr_cases() {
-        assert_eq!(calls(fn_substr, &[s("Hello World"), Value::Int(6)]), "World");
-        assert_eq!(calls(fn_substr, &[s("Hello World"), Value::Int(-5)]), "World");
         assert_eq!(
-            calls(fn_substr, &[s("Hello World"), Value::Int(0), Value::Int(-6)]),
+            calls(fn_substr, &[s("Hello World"), Value::Int(6)]),
+            "World"
+        );
+        assert_eq!(
+            calls(fn_substr, &[s("Hello World"), Value::Int(-5)]),
+            "World"
+        );
+        assert_eq!(
+            calls(
+                fn_substr,
+                &[s("Hello World"), Value::Int(0), Value::Int(-6)]
+            ),
             "Hello"
         );
         assert_eq!(
-            calls(fn_substr, &[s("Hello World"), Value::Int(-5), Value::Int(-1)]),
+            calls(
+                fn_substr,
+                &[s("Hello World"), Value::Int(-5), Value::Int(-1)]
+            ),
             "Worl"
         );
         assert_eq!(calls(fn_substr, &[s("Hello"), Value::Int(10)]), "");
@@ -1544,15 +1594,24 @@ mod tests {
         );
         assert_eq!(calls(fn_str_pad, &[s("5"), Value::Int(3)]), "5  ");
         assert_eq!(
-            calls(fn_str_pad, &[s("abc"), Value::Int(10), s("*-"), Value::Int(2)]),
+            calls(
+                fn_str_pad,
+                &[s("abc"), Value::Int(10), s("*-"), Value::Int(2)]
+            ),
             "*-*abc*-*-"
         );
         assert_eq!(
-            calls(fn_str_pad, &[s("abc"), Value::Int(10), s("123"), Value::Int(0)]),
+            calls(
+                fn_str_pad,
+                &[s("abc"), Value::Int(10), s("123"), Value::Int(0)]
+            ),
             "1231231abc"
         );
         assert_eq!(
-            calls(fn_str_pad, &[s("abc"), Value::Int(7), s("xy"), Value::Int(2)]),
+            calls(
+                fn_str_pad,
+                &[s("abc"), Value::Int(7), s("xy"), Value::Int(2)]
+            ),
             "xyabcxy"
         );
     }
@@ -1572,7 +1631,10 @@ mod tests {
     fn case_and_rev() {
         assert_eq!(calls(fn_ucfirst, &[s("hello world")]), "Hello world");
         assert_eq!(calls(fn_lcfirst, &[s("Hello World")]), "hello World");
-        assert_eq!(calls(fn_ucwords, &[s("hello world foo")]), "Hello World Foo");
+        assert_eq!(
+            calls(fn_ucwords, &[s("hello world foo")]),
+            "Hello World Foo"
+        );
         assert_eq!(
             calls(fn_ucwords, &[s("hello-world foo"), s("-")]),
             "Hello-World foo"
@@ -1586,11 +1648,17 @@ mod tests {
 
     #[test]
     fn substr_count_cases() {
-        assert_eq!(call_int(fn_substr_count, &[s("hello world hello"), s("hello")]), 2);
+        assert_eq!(
+            call_int(fn_substr_count, &[s("hello world hello"), s("hello")]),
+            2
+        );
         assert_eq!(call_int(fn_substr_count, &[s("abababab"), s("ab")]), 4);
         assert_eq!(call_int(fn_substr_count, &[s("aaa"), s("aa")]), 1);
         assert_eq!(
-            call_int(fn_substr_count, &[s("hello world hello"), s("o"), Value::Int(5)]),
+            call_int(
+                fn_substr_count,
+                &[s("hello world hello"), s("o"), Value::Int(5)]
+            ),
             2
         );
         assert_eq!(
@@ -1619,26 +1687,44 @@ mod tests {
         assert_eq!(
             calls(
                 fn_wordwrap,
-                &[s("A very long woooooooooooooord"), Value::Int(10), s("\n"), Value::Bool(true)]
+                &[
+                    s("A very long woooooooooooooord"),
+                    Value::Int(10),
+                    s("\n"),
+                    Value::Bool(true)
+                ]
             ),
             "A very\nlong\nwooooooooo\nooooord"
         );
         assert_eq!(
             calls(
                 fn_wordwrap,
-                &[s("A very long woooooooooooooord"), Value::Int(10), s("\n"), Value::Bool(false)]
+                &[
+                    s("A very long woooooooooooooord"),
+                    Value::Int(10),
+                    s("\n"),
+                    Value::Bool(false)
+                ]
             ),
             "A very\nlong\nwoooooooooooooord"
         );
         assert_eq!(
             calls(
                 fn_wordwrap,
-                &[s("12345678901234567890"), Value::Int(5), s("\n"), Value::Bool(true)]
+                &[
+                    s("12345678901234567890"),
+                    Value::Int(5),
+                    s("\n"),
+                    Value::Bool(true)
+                ]
             ),
             "12345\n67890\n12345\n67890"
         );
         assert_eq!(
-            calls(fn_wordwrap, &[s("Hello World"), Value::Int(5), s("-"), Value::Bool(false)]),
+            calls(
+                fn_wordwrap,
+                &[s("Hello World"), Value::Int(5), s("-"), Value::Bool(false)]
+            ),
             "Hello-World"
         );
     }
@@ -1652,16 +1738,33 @@ mod tests {
             "The quick\nbrown fox\njumped"
         );
         assert_eq!(
-            calls(f, &[s("The quick brown fox jumped"), Value::Int(10), s("<br>")]),
+            calls(
+                f,
+                &[s("The quick brown fox jumped"), Value::Int(10), s("<br>")]
+            ),
             "The quick<br>brown fox<br>jumped"
         );
-        assert_eq!(calls(f, &[s("aaa bbb ccc"), Value::Int(3)]), "aaa\nbbb\nccc");
         assert_eq!(
-            calls(f, &[s("aaa bbb ccc"), Value::Int(3), s("\n"), Value::Bool(true)]),
+            calls(f, &[s("aaa bbb ccc"), Value::Int(3)]),
             "aaa\nbbb\nccc"
         );
         assert_eq!(
-            calls(f, &[s("a aa aaa aaaa aaaaa"), Value::Int(4), s("|"), Value::Bool(true)]),
+            calls(
+                f,
+                &[s("aaa bbb ccc"), Value::Int(3), s("\n"), Value::Bool(true)]
+            ),
+            "aaa\nbbb\nccc"
+        );
+        assert_eq!(
+            calls(
+                f,
+                &[
+                    s("a aa aaa aaaa aaaaa"),
+                    Value::Int(4),
+                    s("|"),
+                    Value::Bool(true)
+                ]
+            ),
             "a aa|aaa|aaaa|aaaa|a"
         );
         assert_eq!(
@@ -1677,7 +1780,15 @@ mod tests {
             "trailing\nspace\n"
         );
         assert_eq!(
-            calls(f, &[s("supercalifragilistic"), Value::Int(5), s("\n"), Value::Bool(true)]),
+            calls(
+                f,
+                &[
+                    s("supercalifragilistic"),
+                    Value::Int(5),
+                    s("\n"),
+                    Value::Bool(true)
+                ]
+            ),
             "super\ncalif\nragil\nistic"
         );
         assert_eq!(calls(f, &[s("one two"), Value::Int(100)]), "one two");
@@ -1685,9 +1796,15 @@ mod tests {
 
     #[test]
     fn number_format_cases() {
-        assert_eq!(calls(fn_number_format, &[Value::Float(1234567.891)]), "1,234,568");
         assert_eq!(
-            calls(fn_number_format, &[Value::Float(1234567.891), Value::Int(2)]),
+            calls(fn_number_format, &[Value::Float(1234567.891)]),
+            "1,234,568"
+        );
+        assert_eq!(
+            calls(
+                fn_number_format,
+                &[Value::Float(1234567.891), Value::Int(2)]
+            ),
             "1,234,567.89"
         );
         assert_eq!(
@@ -1702,16 +1819,40 @@ mod tests {
             "-1,234.57"
         );
         assert_eq!(calls(fn_number_format, &[Value::Float(0.5)]), "1");
-        assert_eq!(calls(fn_number_format, &[Value::Float(1.995), Value::Int(2)]), "2.00");
-        assert_eq!(calls(fn_number_format, &[Value::Float(-0.0), Value::Int(2)]), "0.00");
-        assert_eq!(calls(fn_number_format, &[Value::Float(2.675), Value::Int(2)]), "2.68");
-        assert_eq!(calls(fn_number_format, &[Value::Float(1.005), Value::Int(2)]), "1.01");
+        assert_eq!(
+            calls(fn_number_format, &[Value::Float(1.995), Value::Int(2)]),
+            "2.00"
+        );
+        assert_eq!(
+            calls(fn_number_format, &[Value::Float(-0.0), Value::Int(2)]),
+            "0.00"
+        );
+        assert_eq!(
+            calls(fn_number_format, &[Value::Float(2.675), Value::Int(2)]),
+            "2.68"
+        );
+        assert_eq!(
+            calls(fn_number_format, &[Value::Float(1.005), Value::Int(2)]),
+            "1.01"
+        );
         assert_eq!(calls(fn_number_format, &[Value::Float(-0.5)]), "-1");
         assert_eq!(calls(fn_number_format, &[Value::Float(2.5)]), "3");
-        assert_eq!(calls(fn_number_format, &[Value::Int(123), Value::Int(4)]), "123.0000");
-        assert_eq!(calls(fn_number_format, &[Value::Float(-0.001), Value::Int(2)]), "0.00");
-        assert_eq!(calls(fn_number_format, &[Value::Float(1.5), Value::Int(-1)]), "0");
-        assert_eq!(calls(fn_number_format, &[Value::Float(99.9999), Value::Int(2)]), "100.00");
+        assert_eq!(
+            calls(fn_number_format, &[Value::Int(123), Value::Int(4)]),
+            "123.0000"
+        );
+        assert_eq!(
+            calls(fn_number_format, &[Value::Float(-0.001), Value::Int(2)]),
+            "0.00"
+        );
+        assert_eq!(
+            calls(fn_number_format, &[Value::Float(1.5), Value::Int(-1)]),
+            "0"
+        );
+        assert_eq!(
+            calls(fn_number_format, &[Value::Float(99.9999), Value::Int(2)]),
+            "100.00"
+        );
     }
 
     #[test]
@@ -1724,8 +1865,14 @@ mod tests {
             calls(fn_sprintf, &[s("%+d %+d"), Value::Int(42), Value::Int(-42)]),
             "+42 -42"
         );
-        assert_eq!(calls(fn_sprintf, &[s("%5.2f"), Value::Float(3.14159)]), " 3.14");
-        assert_eq!(calls(fn_sprintf, &[s("%.2f"), Value::Float(3.14159)]), "3.14");
+        assert_eq!(
+            calls(fn_sprintf, &[s("%5.2f"), Value::Float(3.14159)]),
+            " 3.14"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%.2f"), Value::Float(3.14159)]),
+            "3.14"
+        );
         assert_eq!(calls(fn_sprintf, &[s("%-10s|"), s("hi")]), "hi        |");
         assert_eq!(calls(fn_sprintf, &[s("%10s|"), s("hi")]), "        hi|");
         assert_eq!(
@@ -1740,16 +1887,43 @@ mod tests {
 
     #[test]
     fn sprintf_advanced() {
-        assert_eq!(calls(fn_sprintf, &[s("%08.2f"), Value::Float(-3.14159)]), "-0003.14");
-        assert_eq!(calls(fn_sprintf, &[s("%+08.2f"), Value::Float(3.14159)]), "+0003.14");
+        assert_eq!(
+            calls(fn_sprintf, &[s("%08.2f"), Value::Float(-3.14159)]),
+            "-0003.14"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%+08.2f"), Value::Float(3.14159)]),
+            "+0003.14"
+        );
         assert_eq!(calls(fn_sprintf, &[s("%5.3s|"), s("hello")]), "  hel|");
-        assert_eq!(calls(fn_sprintf, &[s("%'*10d|"), Value::Int(42)]), "********42|");
-        assert_eq!(calls(fn_sprintf, &[s("%'*10d|"), Value::Int(-42)]), "*******-42|");
-        assert_eq!(calls(fn_sprintf, &[s("%'*-10d|"), Value::Int(42)]), "42********|");
-        assert_eq!(calls(fn_sprintf, &[s("%010.3f"), Value::Float(-1.5)]), "-00001.500");
-        assert_eq!(calls(fn_sprintf, &[s("%x"), Value::Int(-1)]), "ffffffffffffffff");
-        assert_eq!(calls(fn_sprintf, &[s("%u"), Value::Int(-1)]), "18446744073709551615");
-        assert_eq!(calls(fn_sprintf, &[s("%b"), Value::Int(-1)]), "1".repeat(64));
+        assert_eq!(
+            calls(fn_sprintf, &[s("%'*10d|"), Value::Int(42)]),
+            "********42|"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%'*10d|"), Value::Int(-42)]),
+            "*******-42|"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%'*-10d|"), Value::Int(42)]),
+            "42********|"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%010.3f"), Value::Float(-1.5)]),
+            "-00001.500"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%x"), Value::Int(-1)]),
+            "ffffffffffffffff"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%u"), Value::Int(-1)]),
+            "18446744073709551615"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%b"), Value::Int(-1)]),
+            "1".repeat(64)
+        );
         assert_eq!(calls(fn_sprintf, &[s("%c"), Value::Int(321)]), "A");
         assert_eq!(calls(fn_sprintf, &[s("%5c|"), Value::Int(65)]), "A|");
         assert_eq!(calls(fn_sprintf, &[s("%.0f"), Value::Float(2.5)]), "2");
@@ -1769,20 +1943,59 @@ mod tests {
 
     #[test]
     fn sprintf_floats() {
-        assert_eq!(calls(fn_sprintf, &[s("%e"), Value::Float(12345.678)]), "1.234568e+4");
-        assert_eq!(calls(fn_sprintf, &[s("%E"), Value::Float(12345.678)]), "1.234568E+4");
-        assert_eq!(calls(fn_sprintf, &[s("%e"), Value::Float(0.0)]), "0.000000e+0");
-        assert_eq!(calls(fn_sprintf, &[s("%.2e"), Value::Float(12345.678)]), "1.23e+4");
-        assert_eq!(calls(fn_sprintf, &[s("%g"), Value::Float(12345.678)]), "12345.7");
-        assert_eq!(calls(fn_sprintf, &[s("%g"), Value::Float(0.00001)]), "1.0e-5");
-        assert_eq!(calls(fn_sprintf, &[s("%g"), Value::Float(1000000.0)]), "1.0e+6");
-        assert_eq!(calls(fn_sprintf, &[s("%g"), Value::Float(1234567.0)]), "1.23457e+6");
-        assert_eq!(calls(fn_sprintf, &[s("%.3g"), Value::Float(12345.0)]), "1.23e+4");
-        assert_eq!(calls(fn_sprintf, &[s("%f"), Value::Float(f64::INFINITY)]), "INF");
-        assert_eq!(calls(fn_sprintf, &[s("%f"), Value::Float(f64::NEG_INFINITY)]), "-INF");
+        assert_eq!(
+            calls(fn_sprintf, &[s("%e"), Value::Float(12345.678)]),
+            "1.234568e+4"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%E"), Value::Float(12345.678)]),
+            "1.234568E+4"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%e"), Value::Float(0.0)]),
+            "0.000000e+0"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%.2e"), Value::Float(12345.678)]),
+            "1.23e+4"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%g"), Value::Float(12345.678)]),
+            "12345.7"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%g"), Value::Float(0.00001)]),
+            "1.0e-5"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%g"), Value::Float(1000000.0)]),
+            "1.0e+6"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%g"), Value::Float(1234567.0)]),
+            "1.23457e+6"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%.3g"), Value::Float(12345.0)]),
+            "1.23e+4"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%f"), Value::Float(f64::INFINITY)]),
+            "INF"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%f"), Value::Float(f64::NEG_INFINITY)]),
+            "-INF"
+        );
         assert_eq!(calls(fn_sprintf, &[s("%f"), Value::Float(f64::NAN)]), "NaN");
-        assert_eq!(calls(fn_sprintf, &[s("%f"), Value::Float(-0.0)]), "0.000000");
-        assert_eq!(calls(fn_sprintf, &[s("%.2f"), Value::Float(-0.001)]), "-0.00");
+        assert_eq!(
+            calls(fn_sprintf, &[s("%f"), Value::Float(-0.0)]),
+            "0.000000"
+        );
+        assert_eq!(
+            calls(fn_sprintf, &[s("%.2f"), Value::Float(-0.001)]),
+            "-0.00"
+        );
     }
 
     #[test]
@@ -1790,34 +2003,86 @@ mod tests {
         // sweep captured from php 8.5.8
         let f = fn_sprintf;
         assert_eq!(
-            calls(f, &[s("%5.2f|%-5.2f|%+.1f"), Value::Float(1.5), Value::Float(2.5), Value::Float(3.0)]),
+            calls(
+                f,
+                &[
+                    s("%5.2f|%-5.2f|%+.1f"),
+                    Value::Float(1.5),
+                    Value::Float(2.5),
+                    Value::Float(3.0)
+                ]
+            ),
             " 1.50|2.50 |+3.0"
         );
         assert_eq!(calls(f, &[s("%08b"), Value::Int(5)]), "00000101");
         assert_eq!(calls(f, &[s("%'.10d"), Value::Int(42)]), "........42");
         assert_eq!(calls(f, &[s("%.3d"), Value::Int(5)]), "5"); // precision ignored for int
         assert_eq!(calls(f, &[s("%5.2e"), Value::Float(1234.5)]), "1.23e+3");
-        assert_eq!(calls(f, &[s("%-10.3e|"), Value::Float(0.000123)]), "1.230e-4  |");
         assert_eq!(
-            calls(f, &[s("%d|%d|%d"), Value::Bool(true), Value::Bool(false), Value::Null]),
+            calls(f, &[s("%-10.3e|"), Value::Float(0.000123)]),
+            "1.230e-4  |"
+        );
+        assert_eq!(
+            calls(
+                f,
+                &[
+                    s("%d|%d|%d"),
+                    Value::Bool(true),
+                    Value::Bool(false),
+                    Value::Null
+                ]
+            ),
             "1|0|0"
         );
         assert_eq!(
-            calls(f, &[s("%s|%s"), Value::Float(3.14159265358979), Value::Float(1000000.0)]),
+            calls(
+                f,
+                &[
+                    s("%s|%s"),
+                    Value::Float(3.14159265358979),
+                    Value::Float(1000000.0)
+                ]
+            ),
             "3.1415926535898|1000000"
         );
-        assert_eq!(calls(f, &[s("%X %x"), Value::Int(-255), Value::Int(255)]), "FFFFFFFFFFFFFF01 ff");
-        assert_eq!(calls(f, &[s("%c%c%c"), Value::Int(72), Value::Int(73), Value::Int(33)]), "HI!");
+        assert_eq!(
+            calls(f, &[s("%X %x"), Value::Int(-255), Value::Int(255)]),
+            "FFFFFFFFFFFFFF01 ff"
+        );
+        assert_eq!(
+            calls(
+                f,
+                &[s("%c%c%c"), Value::Int(72), Value::Int(73), Value::Int(33)]
+            ),
+            "HI!"
+        );
         assert_eq!(calls(f, &[s("%06.2f%%"), Value::Float(3.14159)]), "003.14%");
         assert_eq!(calls(f, &[s("%'02d"), Value::Int(7)]), "07");
-        assert_eq!(calls(f, &[s("%2$s=%1$d"), Value::Int(42), s("answer")]), "answer=42");
+        assert_eq!(
+            calls(f, &[s("%2$s=%1$d"), Value::Int(42), s("answer")]),
+            "answer=42"
+        );
         assert_eq!(calls(f, &[s("%+08.3f"), Value::Float(-1.5)]), "-001.500");
         assert_eq!(
-            calls(f, &[s("%g %g %g"), Value::Float(0.00001), Value::Float(123456.0), Value::Float(0.1)]),
+            calls(
+                f,
+                &[
+                    s("%g %g %g"),
+                    Value::Float(0.00001),
+                    Value::Float(123456.0),
+                    Value::Float(0.1)
+                ]
+            ),
             "1.0e-5 123456 0.1"
         );
-        assert_eq!(calls(f, &[s("%.10g"), Value::Float(3.14159265358979)]), "3.141592654");
-        assert_eq!(calls(f, &[s("%o %o"), Value::Int(64), Value::Int(-1)]), "100 1777777777777777777777");
+        assert_eq!(
+            calls(f, &[s("%.10g"), Value::Float(3.14159265358979)]),
+            "3.141592654"
+        );
+        assert_eq!(
+            calls(f, &[s("%o %o"), Value::Int(64), Value::Int(-1)]),
+            "100 1777777777777777777777"
+        );
     }
 
     #[test]
@@ -1854,14 +2119,23 @@ mod tests {
 
     #[test]
     fn addcslashes_cases() {
-        assert_eq!(calls(fn_addcslashes, &[s("Hello World"), s("W")]), "Hello \\World");
-        assert_eq!(calls(fn_addcslashes, &[s("foo[ ]"), s("A..Z")]), "foo[ ]");
-        assert_eq!(calls(fn_addcslashes, &[s("abc\n\t\r"), s("\0..\u{1f}")]), "abc\\n\\t\\r");
         assert_eq!(
-            calls(fn_addcslashes, &[
-                Value::str(b"foo\x7f\x80bar".to_vec()),
-                Value::str(b"\x7f..\xff".to_vec()),
-            ]),
+            calls(fn_addcslashes, &[s("Hello World"), s("W")]),
+            "Hello \\World"
+        );
+        assert_eq!(calls(fn_addcslashes, &[s("foo[ ]"), s("A..Z")]), "foo[ ]");
+        assert_eq!(
+            calls(fn_addcslashes, &[s("abc\n\t\r"), s("\0..\u{1f}")]),
+            "abc\\n\\t\\r"
+        );
+        assert_eq!(
+            calls(
+                fn_addcslashes,
+                &[
+                    Value::str(b"foo\x7f\x80bar".to_vec()),
+                    Value::str(b"\x7f..\xff".to_vec()),
+                ]
+            ),
             "foo\\177\\200bar"
         );
     }
@@ -1881,7 +2155,9 @@ mod tests {
         assert_eq!(calls(fn_count_chars, &[s("abcabc"), Value::Int(3)]), "abc");
         // mode 1: present bytes with counts, keys ascending by byte value
         let r = call(fn_count_chars, &[s("hello"), Value::Int(1)]);
-        let Value::Array(a) = r else { panic!("expected array") };
+        let Value::Array(a) = r else {
+            panic!("expected array")
+        };
         let pairs: Vec<(i64, i64)> = a
             .iter()
             .map(|(k, v)| {

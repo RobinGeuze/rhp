@@ -9,8 +9,8 @@
 
 use std::collections::HashSet;
 
-use rhp_values::{conv, ArrayKey, PhpArray, Value};
 use rhp_semantics::{deref, ops};
+use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::{Builtin, Host, Thrown};
 
@@ -72,7 +72,7 @@ impl TypeNameLower_ for Value {
             Value::Str(_) => "string",
             Value::Array(_) => "array",
             Value::Object(_) | Value::Closure(_) => "object",
-        Value::Resource(_) => "resource",
+            Value::Resource(_) => "resource",
             Value::Ref(r) => r.borrow().type_name_lower_(),
         }
     }
@@ -92,14 +92,17 @@ fn fn_array_slice(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             o => Some(conv::to_int(&o)),
         },
     };
-    let preserve = args.get(3).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let preserve = args
+        .get(3)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
 
     let num = a.len() as i64;
     let mut start = offset;
     if start > num {
         start = num;
     } else if start < 0 {
-        start = num + start;
+        start += num;
         if start < 0 {
             start = 0;
         }
@@ -216,7 +219,10 @@ fn fn_array_combine(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_array_search(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let needle = deref(&args[0]);
     let a = want_array(deref(&args[1]), "array_search")?;
-    let strict = args.get(2).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let strict = args
+        .get(2)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
     for (k, v) in a.iter() {
         let hit = if strict {
             ops::strict_eq(&needle, v)
@@ -303,12 +309,18 @@ fn fn_array_pad(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_array_key_first(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let a = want_array(deref(&args[0]), "array_key_first")?;
-    Ok(a.iter().next().map(|(k, _)| key_to_value(k)).unwrap_or(Value::Null))
+    Ok(a.iter()
+        .next()
+        .map(|(k, _)| key_to_value(k))
+        .unwrap_or(Value::Null))
 }
 
 fn fn_array_key_last(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let a = want_array(deref(&args[0]), "array_key_last")?;
-    Ok(a.iter().last().map(|(k, _)| key_to_value(k)).unwrap_or(Value::Null))
+    Ok(a.iter()
+        .last()
+        .map(|(k, _)| key_to_value(k))
+        .unwrap_or(Value::Null))
 }
 
 // ---------------------------------------------------------------------------
@@ -433,7 +445,10 @@ fn fn_array_chunk(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "array_chunk(): Argument #2 ($length) must be greater than 0",
         ));
     }
-    let preserve = args.get(2).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let preserve = args
+        .get(2)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
     let size = size as usize;
 
     let mut out = PhpArray::new();
@@ -482,7 +497,15 @@ pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
                func: crate::NativeFn,
                min: usize,
                max: Option<usize>| {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     };
     add(m, "array_slice", fn_array_slice, 2, Some(4));
     add(m, "array_flip", fn_array_flip, 1, Some(1));
@@ -609,7 +632,13 @@ mod tests {
             dumped(&r),
             "array(3) {\n  [\"a\"]=>\n  int(0)\n  [\"b\"]=>\n  int(0)\n  [7]=>\n  int(0)\n}\n"
         );
-        let keys = list(vec![i(1), s("1"), s("01"), Value::Float(2.9), Value::Bool(true)]);
+        let keys = list(vec![
+            i(1),
+            s("1"),
+            s("01"),
+            Value::Float(2.9),
+            Value::Bool(true),
+        ]);
         let r = call(fn_array_fill_keys, &[keys, s("x")]);
         assert_eq!(
             dumped(&r),
@@ -626,17 +655,28 @@ mod tests {
             dumped(&r),
             "array(4) {\n  [\"a\"]=>\n  int(1)\n  [\"2.9\"]=>\n  int(2)\n  [1]=>\n  int(3)\n  [123]=>\n  int(4)\n}\n"
         );
-        assert!(fn_array_combine(&mut NullHost, &[list(vec![i(1), i(2)]), list(vec![i(1)])]).is_err());
+        assert!(
+            fn_array_combine(&mut NullHost, &[list(vec![i(1), i(2)]), list(vec![i(1)])]).is_err()
+        );
     }
 
     #[test]
     fn t_array_search() {
         let base = arr(vec![(sk("x"), s("a")), (sk("y"), s("b"))]);
-        assert_eq!(dumped(&call(fn_array_search, &[s("b"), base])), "string(1) \"y\"\n");
+        assert_eq!(
+            dumped(&call(fn_array_search, &[s("b"), base])),
+            "string(1) \"y\"\n"
+        );
         let base = list(vec![s("a"), s("b")]);
-        assert_eq!(dumped(&call(fn_array_search, &[i(0), base])), "bool(false)\n");
+        assert_eq!(
+            dumped(&call(fn_array_search, &[i(0), base])),
+            "bool(false)\n"
+        );
         let base = list(vec![i(1), i(2), i(3)]);
-        assert_eq!(dumped(&call(fn_array_search, &[s("1"), base.clone()])), "int(0)\n");
+        assert_eq!(
+            dumped(&call(fn_array_search, &[s("1"), base.clone()])),
+            "int(0)\n"
+        );
         assert_eq!(
             dumped(&call(fn_array_search, &[s("1"), base, Value::Bool(true)])),
             "bool(false)\n"
@@ -683,7 +723,10 @@ mod tests {
     #[test]
     fn t_key_first_last() {
         let base = arr(vec![(sk("a"), i(1)), (sk("b"), i(2))]);
-        assert_eq!(dumped(&call(fn_array_key_first, &[base])), "string(1) \"a\"\n");
+        assert_eq!(
+            dumped(&call(fn_array_key_first, &[base])),
+            "string(1) \"a\"\n"
+        );
         let base = arr(vec![(ik(3), s("x")), (ik(7), s("y"))]);
         assert_eq!(dumped(&call(fn_array_key_last, &[base])), "int(7)\n");
         assert_eq!(dumped(&call(fn_array_key_first, &[list(vec![])])), "NULL\n");
@@ -692,7 +735,10 @@ mod tests {
 
     #[test]
     fn t_array_is_list() {
-        assert_eq!(dumped(&call(fn_array_is_list, &[list(vec![])])), "bool(true)\n");
+        assert_eq!(
+            dumped(&call(fn_array_is_list, &[list(vec![])])),
+            "bool(true)\n"
+        );
         assert_eq!(
             dumped(&call(fn_array_is_list, &[list(vec![i(1), i(2), i(3)])])),
             "bool(true)\n"
@@ -706,7 +752,10 @@ mod tests {
     #[test]
     fn t_array_diff() {
         let base = list(vec![i(1), i(2), i(3), i(4)]);
-        let r = call(fn_array_diff, &[base, list(vec![i(2), i(4)]), list(vec![i(3)])]);
+        let r = call(
+            fn_array_diff,
+            &[base, list(vec![i(2), i(4)]), list(vec![i(3)])],
+        );
         assert_eq!(dumped(&r), "array(1) {\n  [0]=>\n  int(1)\n}\n");
         let base = list(vec![i(1), s("1"), i(2)]);
         let r = call(fn_array_diff, &[base, list(vec![s("1")])]);
@@ -720,7 +769,10 @@ mod tests {
             fn_array_intersect,
             &[base, list(vec![i(2), i(4), i(5)]), list(vec![i(4), i(2)])],
         );
-        assert_eq!(dumped(&r), "array(2) {\n  [1]=>\n  int(2)\n  [3]=>\n  int(4)\n}\n");
+        assert_eq!(
+            dumped(&r),
+            "array(2) {\n  [1]=>\n  int(2)\n  [3]=>\n  int(4)\n}\n"
+        );
     }
 
     #[test]
@@ -783,7 +835,15 @@ mod tests {
 
     #[test]
     fn t_array_count_values() {
-        let base = list(vec![i(1), i(1), s("1"), s("hello"), s("hello"), Value::Float(2.5), s("123")]);
+        let base = list(vec![
+            i(1),
+            i(1),
+            s("1"),
+            s("hello"),
+            s("hello"),
+            Value::Float(2.5),
+            s("123"),
+        ]);
         let r = call(fn_array_count_values, &[base]);
         assert_eq!(
             dumped(&r),

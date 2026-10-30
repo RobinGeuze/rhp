@@ -266,6 +266,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::approx_constant)] // deliberate literal test values, not PI
 mod tests {
     use super::*;
 
@@ -337,7 +338,10 @@ mod tests {
     fn serialize_byte_length_is_bytes() {
         // php -r 'echo bin2hex(serialize("\x00\x01ab"));' => 733a343a2200016162223b
         // i.e. s:4:"\x00\x01ab"; — 4 BYTES, quotes unescaped
-        assert_eq!(ser(Value::str(vec![0u8, 1, b'a', b'b'])), b"s:4:\"\x00\x01ab\";");
+        assert_eq!(
+            ser(Value::str(vec![0u8, 1, b'a', b'b'])),
+            b"s:4:\"\x00\x01ab\";"
+        );
         // php -r 'echo serialize("he\"ll\\o");'     => s:7:"he"ll\o";
         assert_eq!(ser(Value::str("he\"ll\\o")), b"s:7:\"he\"ll\\o\";");
     }
@@ -368,8 +372,14 @@ mod tests {
             (ArrayKey::Int(1), Value::Int(3)),
         ]);
         let v = arr(vec![
-            (ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"a".to_vec())), Value::Int(1)),
-            (ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"b".to_vec())), inner),
+            (
+                ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"a".to_vec())),
+                Value::Int(1),
+            ),
+            (
+                ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"b".to_vec())),
+                inner,
+            ),
         ]);
         assert_eq!(
             ser(v),
@@ -429,7 +439,7 @@ mod tests {
             }
             _ => panic!(),
         }
-        assert!(matches!(unser(b"a:0:{}"), Value::Array(a) if a.len() == 0));
+        assert!(matches!(unser(b"a:0:{}"), Value::Array(a) if a.is_empty()));
     }
 
     #[test]
@@ -454,12 +464,17 @@ mod tests {
             (ArrayKey::Int(4), Value::Null),
         ]);
         let s = ser(v);
-        assert_eq!(s, &b"a:5:{i:0;i:1;i:1;s:3:\"two\";i:2;d:3.5;i:3;b:1;i:4;N;}"[..]);
+        assert_eq!(
+            s,
+            &b"a:5:{i:0;i:1;i:1;s:3:\"two\";i:2;d:3.5;i:3;b:1;i:4;N;}"[..]
+        );
         match unser(&s) {
             Value::Array(a) => {
                 assert_eq!(a.len(), 5);
                 assert!(matches!(a.get(&ArrayKey::Int(0)), Some(Value::Int(1))));
-                assert!(matches!(a.get(&ArrayKey::Int(1)), Some(Value::Str(x)) if x.as_bytes() == b"two"));
+                assert!(
+                    matches!(a.get(&ArrayKey::Int(1)), Some(Value::Str(x)) if x.as_bytes() == b"two")
+                );
                 assert!(matches!(a.get(&ArrayKey::Int(2)), Some(Value::Float(f)) if *f == 3.5));
                 assert!(matches!(a.get(&ArrayKey::Int(3)), Some(Value::Bool(true))));
                 assert!(matches!(a.get(&ArrayKey::Int(4)), Some(Value::Null)));

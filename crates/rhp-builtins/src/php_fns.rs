@@ -74,7 +74,8 @@ fn fn_phpversion(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // phpversion($extension) returns the ext's version or false; plain → engine.
     match args.first() {
         Some(v) if !matches!(deref(v), Value::Null) => {
-            let name = String::from_utf8_lossy(&conv::to_string_bytes(&deref(v))).to_ascii_lowercase();
+            let name =
+                String::from_utf8_lossy(&conv::to_string_bytes(&deref(v))).to_ascii_lowercase();
             if LOADED_EXTS.contains(&name.as_str()) {
                 Ok(Value::str("8.5.8"))
             } else {
@@ -108,7 +109,11 @@ fn fn_func_get_args(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Throw
 
 fn fn_func_get_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let i = conv::to_int(&deref(&args[0]));
-    Ok(host.current_args().into_iter().nth(i.max(0) as usize).unwrap_or(Value::Bool(false)))
+    Ok(host
+        .current_args()
+        .into_iter()
+        .nth(i.max(0) as usize)
+        .unwrap_or(Value::Bool(false)))
 }
 
 fn fn_debug_backtrace(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -137,12 +142,22 @@ fn fn_debug_print_backtrace(host: &mut dyn Host, _args: &[Value]) -> Result<Valu
     let mut out = Vec::new();
     for (i, (func, class, file, line, _this)) in host.call_stack().into_iter().enumerate() {
         let call = match &class {
-            Some(c) => format!("{}->{}", String::from_utf8_lossy(c), String::from_utf8_lossy(&func)),
+            Some(c) => format!(
+                "{}->{}",
+                String::from_utf8_lossy(c),
+                String::from_utf8_lossy(&func)
+            ),
             None => String::from_utf8_lossy(&func).into_owned(),
         };
         out.extend_from_slice(
-            format!("#{} {}() called at [{}:{}]\n", i, call, String::from_utf8_lossy(&file), line)
-                .as_bytes(),
+            format!(
+                "#{} {}() called at [{}:{}]\n",
+                i,
+                call,
+                String::from_utf8_lossy(&file),
+                line
+            )
+            .as_bytes(),
         );
     }
     host.write_out(&out);
@@ -155,11 +170,17 @@ fn fn_ob_start(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_ob_get_contents(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(host.ob_get_contents().map(Value::str).unwrap_or(Value::Bool(false)))
+    Ok(host
+        .ob_get_contents()
+        .map(Value::str)
+        .unwrap_or(Value::Bool(false)))
 }
 
 fn fn_ob_get_clean(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(host.ob_get_clean().map(Value::str).unwrap_or(Value::Bool(false)))
+    Ok(host
+        .ob_get_clean()
+        .map(Value::str)
+        .unwrap_or(Value::Bool(false)))
 }
 
 fn fn_ob_get_level(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -181,7 +202,10 @@ fn fn_ob_get_flush(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown
 }
 
 fn fn_php_uname(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mode = args.first().map(|v| conv::to_string_bytes(&deref(v))).unwrap_or_else(|| b"a".to_vec());
+    let mode = args
+        .first()
+        .map(|v| conv::to_string_bytes(&deref(v)))
+        .unwrap_or_else(|| b"a".to_vec());
     let s: &[u8] = match mode.first() {
         Some(b's') => b"Darwin",
         Some(b'n') => b"localhost",
@@ -205,7 +229,10 @@ fn fn_getenv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         _ => {
             let mut a = PhpArray::new();
             for (k, v) in std::env::vars() {
-                a.insert(rhp_values::ArrayKey::from_bytes(k.as_bytes()), Value::str(v.into_bytes()));
+                a.insert(
+                    rhp_values::ArrayKey::from_bytes(k.as_bytes()),
+                    Value::str(v.into_bytes()),
+                );
             }
             Ok(Value::Array(a))
         }
@@ -294,9 +321,10 @@ fn fn_assert(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Bool(true));
     }
     match args.get(1).map(deref) {
-        Some(Value::Str(s)) => {
-            Err(Thrown::error("AssertionError", String::from_utf8_lossy(s.as_bytes()).into_owned()))
-        }
+        Some(Value::Str(s)) => Err(Thrown::error(
+            "AssertionError",
+            String::from_utf8_lossy(s.as_bytes()).into_owned(),
+        )),
         _ => Err(Thrown::error("AssertionError", "assert failed")),
     }
 }
@@ -307,7 +335,7 @@ fn fn_setlocale(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn is_utf8ish(cs: &str) -> bool {
-    matches!(cs, "UTF-8" | "UTF8" | "" )
+    matches!(cs, "UTF-8" | "UTF8" | "")
 }
 
 /// `iconv($from, $to, $string)` — pragmatic subset: UTF-8↔UTF-8 (and same
@@ -353,7 +381,12 @@ fn fn_iconv_substr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Some(n) if n < 0 => ((len + n) as usize).saturating_sub(start),
         Some(n) => (n as usize).min(chars.len() - start),
     };
-    Ok(Value::str(chars[start..start + count].iter().collect::<String>().into_bytes()))
+    Ok(Value::str(
+        chars[start..start + count]
+            .iter()
+            .collect::<String>()
+            .into_bytes(),
+    ))
 }
 
 /// `Closure::fromCallable($callable)`: wrap a callable in a Closure (a closure is
@@ -384,7 +417,9 @@ fn fn_closure_bind(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     let closure = deref(&args[0]);
     let new_this = args.get(1).map(deref).unwrap_or(Value::Null);
     let scope = args.get(2).map(deref).unwrap_or(Value::Null);
-    Ok(host.closure_bind(&closure, &new_this, &scope).unwrap_or(Value::Null))
+    Ok(host
+        .closure_bind(&closure, &new_this, &scope)
+        .unwrap_or(Value::Null))
 }
 
 // --- randomness --------------------------------------------------------------
@@ -414,11 +449,17 @@ fn rand_range(min: i64, max: i64) -> i64 {
 fn fn_random_bytes(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let len = conv::to_int(&deref(&args[0]));
     if len <= 0 {
-        return Err(Thrown::error("ValueError", "random_bytes(): Argument #1 ($length) must be greater than 0"));
+        return Err(Thrown::error(
+            "ValueError",
+            "random_bytes(): Argument #1 ($length) must be greater than 0",
+        ));
     }
     let mut b = vec![0u8; len as usize];
     if getrandom::getrandom(&mut b).is_err() {
-        return Err(Thrown::error("Random\\RandomException", "Could not gather sufficient random data"));
+        return Err(Thrown::error(
+            "Random\\RandomException",
+            "Could not gather sufficient random data",
+        ));
     }
     Ok(Value::str(b))
 }
@@ -427,7 +468,10 @@ fn fn_random_int(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let min = conv::to_int(&deref(&args[0]));
     let max = conv::to_int(&deref(&args[1]));
     if min > max {
-        return Err(Thrown::error("ValueError", "random_int(): Argument #1 ($min) must be less than or equal to argument #2 ($max)"));
+        return Err(Thrown::error(
+            "ValueError",
+            "random_int(): Argument #1 ($min) must be less than or equal to argument #2 ($max)",
+        ));
     }
     Ok(Value::Int(rand_range(min, max)))
 }
@@ -451,12 +495,27 @@ fn fn_noop_null(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_uniqid(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let prefix = args.first().map(|v| conv::to_string_bytes(&deref(v))).unwrap_or_default();
-    let more = args.get(1).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let prefix = args
+        .first()
+        .map(|v| conv::to_string_bytes(&deref(v)))
+        .unwrap_or_default();
+    let more = args
+        .get(1)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
     let mut s = prefix;
     // php: 8 hex of seconds + 5 hex of microseconds.
-    s.extend_from_slice(format!("{:08x}{:05x}", now.as_secs() & 0xffff_ffff, now.subsec_micros() & 0xf_ffff).as_bytes());
+    s.extend_from_slice(
+        format!(
+            "{:08x}{:05x}",
+            now.as_secs() & 0xffff_ffff,
+            now.subsec_micros() & 0xf_ffff
+        )
+        .as_bytes(),
+    );
     if more {
         s.extend_from_slice(format!(".{:08}", rand_range(0, 99999999)).as_bytes());
     }
@@ -465,27 +524,46 @@ fn fn_uniqid(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// `time(): int` — current unix timestamp (seconds).
 fn fn_time(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
     Ok(Value::Int(now.as_secs() as i64))
 }
 
 /// `microtime(bool $as_float = false)` — current time with microseconds.
 fn fn_microtime(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    let as_float = args.first().map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let as_float = args
+        .first()
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
     if as_float {
         Ok(Value::Float(now.as_secs_f64()))
     } else {
         // php format: "0.xxxxxxxx sssssssss" (microsecond fraction, then seconds).
-        Ok(Value::str(format!("{:.8} {}", now.subsec_micros() as f64 / 1_000_000.0, now.as_secs()).into_bytes()))
+        Ok(Value::str(
+            format!(
+                "{:.8} {}",
+                now.subsec_micros() as f64 / 1_000_000.0,
+                now.as_secs()
+            )
+            .into_bytes(),
+        ))
     }
 }
 
 /// `hrtime(bool $as_number = false)` — high-resolution time. As a monotonic-ish
 /// value derived from the wall clock (no separate monotonic source needed here).
 fn fn_hrtime(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    let as_number = args.first().map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let as_number = args
+        .first()
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
     if as_number {
         Ok(Value::Int(now.as_nanos() as i64))
     } else {
@@ -535,13 +613,16 @@ fn special_order(s: &[u8]) -> i32 {
         b"rc" => -3,
         b"pl" | b"p" => 1,
         _ if l.iter().all(|c| c.is_ascii_digit()) => 0, // numeric
-        _ => -7,                                         // unknown string: below dev
+        _ => -7,                                        // unknown string: below dev
     }
 }
 
 fn cmp_part(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
     use std::cmp::Ordering;
-    let (an, bn) = (a.iter().all(|c| c.is_ascii_digit()), b.iter().all(|c| c.is_ascii_digit()));
+    let (an, bn) = (
+        a.iter().all(|c| c.is_ascii_digit()),
+        b.iter().all(|c| c.is_ascii_digit()),
+    );
     if an && bn {
         // numeric compare (ignore leading zeros via integer parse)
         let ai: u128 = String::from_utf8_lossy(a).parse().unwrap_or(0);
@@ -620,19 +701,45 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         min: usize,
         max: Option<usize>,
     ) {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     }
     put(m, "extension_loaded", fn_extension_loaded, 1, Some(1));
-    put(m, "get_loaded_extensions", fn_get_loaded_extensions, 0, Some(1));
+    put(
+        m,
+        "get_loaded_extensions",
+        fn_get_loaded_extensions,
+        0,
+        Some(1),
+    );
     put(m, "function_exists", fn_function_exists, 1, Some(1));
     put(m, "phpversion", fn_phpversion, 0, Some(1));
     put(m, "php_sapi_name", fn_php_sapi_name, 0, Some(0));
-    put(m, "php_ini_scanned_files", fn_php_ini_scanned_files, 0, Some(0));
+    put(
+        m,
+        "php_ini_scanned_files",
+        fn_php_ini_scanned_files,
+        0,
+        Some(0),
+    );
     put(m, "func_num_args", fn_func_num_args, 0, Some(0));
     put(m, "func_get_args", fn_func_get_args, 0, Some(0));
     put(m, "func_get_arg", fn_func_get_arg, 1, Some(1));
     put(m, "debug_backtrace", fn_debug_backtrace, 0, Some(2));
-    put(m, "debug_print_backtrace", fn_debug_print_backtrace, 0, Some(2));
+    put(
+        m,
+        "debug_print_backtrace",
+        fn_debug_print_backtrace,
+        0,
+        Some(2),
+    );
     put(m, "ob_start", fn_ob_start, 0, Some(3));
     put(m, "ob_get_contents", fn_ob_get_contents, 0, Some(0));
     put(m, "ob_get_clean", fn_ob_get_clean, 0, Some(0));
@@ -648,11 +755,23 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "set_error_handler", fn_set_handler, 1, Some(2));
     put(m, "restore_error_handler", fn_restore_handler, 0, Some(0));
     put(m, "set_exception_handler", fn_set_handler, 1, Some(1));
-    put(m, "restore_exception_handler", fn_restore_handler, 0, Some(0));
+    put(
+        m,
+        "restore_exception_handler",
+        fn_restore_handler,
+        0,
+        Some(0),
+    );
     put(m, "trigger_error", fn_trigger_error, 1, Some(2));
     put(m, "error_reporting", fn_error_reporting, 0, Some(1));
     put(m, "error_get_last", fn_error_get_last, 0, Some(0));
-    put(m, "register_shutdown_function", fn_register_shutdown_function, 1, None);
+    put(
+        m,
+        "register_shutdown_function",
+        fn_register_shutdown_function,
+        1,
+        None,
+    );
     put(m, "memory_get_usage", fn_memory_usage, 0, Some(1));
     put(m, "memory_get_peak_usage", fn_memory_usage, 0, Some(1));
     put(m, "gc_enable", fn_true, 0, Some(0));
@@ -678,7 +797,13 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "time", fn_time, 0, Some(0));
     put(m, "microtime", fn_microtime, 0, Some(1));
     put(m, "hrtime", fn_hrtime, 0, Some(1));
-    put(m, "__closure_from_callable", fn_closure_from_callable, 1, Some(1));
+    put(
+        m,
+        "__closure_from_callable",
+        fn_closure_from_callable,
+        1,
+        Some(1),
+    );
     put(m, "__closure_bind", fn_closure_bind, 2, Some(3));
     put(m, "version_compare", fn_version_compare, 2, Some(3));
 }

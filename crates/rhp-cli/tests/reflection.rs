@@ -6,7 +6,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn php_available() -> bool {
-    Command::new("php").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+    Command::new("php")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn case(name: &str, src: &str) {
@@ -28,7 +32,12 @@ fn case(name: &str, src: &str) {
 
 fn run(bin: &str, file: &Path) -> Vec<u8> {
     let args: &[&str] = if bin == "php" { &["-n"] } else { &[] };
-    Command::new(bin).args(args).arg(file).output().expect("run").stdout
+    Command::new(bin)
+        .args(args)
+        .arg(file)
+        .output()
+        .expect("run")
+        .stdout
 }
 
 #[test]

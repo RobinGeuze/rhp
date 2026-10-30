@@ -154,8 +154,12 @@ fn encode_value(v: &Value, out: &mut Vec<u8>, flags: i64, level: usize) -> bool 
         // never `[]`). Private/protected visibility is not filtered here; the
         // common targets are stdClass / public-property DTOs.
         Value::Object(h) => {
-            let props: Vec<(rhp_values::PhpStr, Value)> =
-                h.borrow().properties.iter().map(|(k, v)| (k.clone(), deref(v))).collect();
+            let props: Vec<(rhp_values::PhpStr, Value)> = h
+                .borrow()
+                .properties
+                .iter()
+                .map(|(k, v)| (k.clone(), deref(v)))
+                .collect();
             return encode_object(&props, out, flags, level, pretty);
         }
         Value::Closure(_) => {
@@ -217,13 +221,7 @@ fn encode_object(
     true
 }
 
-fn encode_array(
-    a: &PhpArray,
-    out: &mut Vec<u8>,
-    flags: i64,
-    level: usize,
-    pretty: bool,
-) -> bool {
+fn encode_array(a: &PhpArray, out: &mut Vec<u8>, flags: i64, level: usize, pretty: bool) -> bool {
     let force_object = flags & JSON_FORCE_OBJECT != 0;
     let is_list = !force_object
         && a.iter()
@@ -660,7 +658,15 @@ fn fn_json_last_error_msg(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Th
 pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
     macro_rules! reg {
         ($name:literal, $func:path, $min:literal, $max:expr) => {
-            m.insert($name, Builtin { name: $name, func: $func, min_args: $min, max_args: $max });
+            m.insert(
+                $name,
+                Builtin {
+                    name: $name,
+                    func: $func,
+                    min_args: $min,
+                    max_args: $max,
+                },
+            );
         };
     }
     reg!("json_encode", fn_json_encode, 1, Some(3));
@@ -674,14 +680,23 @@ pub fn json_constants() -> Vec<(&'static str, Value)> {
     vec![
         ("JSON_ERROR_NONE", Value::Int(JSON_ERROR_NONE)),
         ("JSON_ERROR_DEPTH", Value::Int(JSON_ERROR_DEPTH)),
-        ("JSON_ERROR_STATE_MISMATCH", Value::Int(JSON_ERROR_STATE_MISMATCH)),
+        (
+            "JSON_ERROR_STATE_MISMATCH",
+            Value::Int(JSON_ERROR_STATE_MISMATCH),
+        ),
         ("JSON_ERROR_CTRL_CHAR", Value::Int(JSON_ERROR_CTRL_CHAR)),
         ("JSON_ERROR_SYNTAX", Value::Int(JSON_ERROR_SYNTAX)),
         ("JSON_ERROR_UTF8", Value::Int(JSON_ERROR_UTF8)),
         ("JSON_ERROR_RECURSION", Value::Int(JSON_ERROR_RECURSION)),
         ("JSON_ERROR_INF_OR_NAN", Value::Int(JSON_ERROR_INF_OR_NAN)),
-        ("JSON_ERROR_UNSUPPORTED_TYPE", Value::Int(JSON_ERROR_UNSUPPORTED_TYPE)),
-        ("JSON_ERROR_INVALID_PROPERTY_NAME", Value::Int(JSON_ERROR_INVALID_PROPERTY_NAME)),
+        (
+            "JSON_ERROR_UNSUPPORTED_TYPE",
+            Value::Int(JSON_ERROR_UNSUPPORTED_TYPE),
+        ),
+        (
+            "JSON_ERROR_INVALID_PROPERTY_NAME",
+            Value::Int(JSON_ERROR_INVALID_PROPERTY_NAME),
+        ),
         ("JSON_ERROR_UTF16", Value::Int(JSON_ERROR_UTF16)),
         ("JSON_HEX_TAG", Value::Int(JSON_HEX_TAG)),
         ("JSON_HEX_AMP", Value::Int(JSON_HEX_AMP)),
@@ -692,10 +707,22 @@ pub fn json_constants() -> Vec<(&'static str, Value)> {
         ("JSON_UNESCAPED_SLASHES", Value::Int(JSON_UNESCAPED_SLASHES)),
         ("JSON_PRETTY_PRINT", Value::Int(JSON_PRETTY_PRINT)),
         ("JSON_UNESCAPED_UNICODE", Value::Int(JSON_UNESCAPED_UNICODE)),
-        ("JSON_PARTIAL_OUTPUT_ON_ERROR", Value::Int(JSON_PARTIAL_OUTPUT_ON_ERROR)),
-        ("JSON_PRESERVE_ZERO_FRACTION", Value::Int(JSON_PRESERVE_ZERO_FRACTION)),
-        ("JSON_INVALID_UTF8_IGNORE", Value::Int(JSON_INVALID_UTF8_IGNORE)),
-        ("JSON_INVALID_UTF8_SUBSTITUTE", Value::Int(JSON_INVALID_UTF8_SUBSTITUTE)),
+        (
+            "JSON_PARTIAL_OUTPUT_ON_ERROR",
+            Value::Int(JSON_PARTIAL_OUTPUT_ON_ERROR),
+        ),
+        (
+            "JSON_PRESERVE_ZERO_FRACTION",
+            Value::Int(JSON_PRESERVE_ZERO_FRACTION),
+        ),
+        (
+            "JSON_INVALID_UTF8_IGNORE",
+            Value::Int(JSON_INVALID_UTF8_IGNORE),
+        ),
+        (
+            "JSON_INVALID_UTF8_SUBSTITUTE",
+            Value::Int(JSON_INVALID_UTF8_SUBSTITUTE),
+        ),
         ("JSON_THROW_ON_ERROR", Value::Int(JSON_THROW_ON_ERROR)),
         ("JSON_OBJECT_AS_ARRAY", Value::Int(JSON_OBJECT_AS_ARRAY)),
         ("JSON_BIGINT_AS_STRING", Value::Int(JSON_BIGINT_AS_STRING)),
@@ -733,7 +760,11 @@ mod tests {
     }
 
     fn dec_f(json: &str, assoc: Value, depth: i64, flags: i64) -> Value {
-        fn_json_decode(&mut NoopHost, &[s(json), assoc, Value::Int(depth), Value::Int(flags)]).unwrap()
+        fn_json_decode(
+            &mut NoopHost,
+            &[s(json), assoc, Value::Int(depth), Value::Int(flags)],
+        )
+        .unwrap()
     }
 
     fn arr(items: &[Value]) -> Value {
@@ -778,15 +809,24 @@ mod tests {
             enc(&arr(&[s("1"), s("2.5"), s("x")]), JSON_NUMERIC_CHECK),
             "[1,2.5,\"x\"]"
         );
-        assert_eq!(enc(&arr(&[Value::Int(1), Value::Int(2)]), JSON_FORCE_OBJECT), "{\"0\":1,\"1\":2}");
+        assert_eq!(
+            enc(&arr(&[Value::Int(1), Value::Int(2)]), JSON_FORCE_OBJECT),
+            "{\"0\":1,\"1\":2}"
+        );
     }
 
     #[test]
     fn encode_pretty_print() {
         assert_eq!(enc(&arr(&[]), JSON_PRETTY_PRINT), "[]");
-        assert_eq!(enc(&map(&[("a", arr(&[]))]), JSON_PRETTY_PRINT), "{\n    \"a\": []\n}");
         assert_eq!(
-            enc(&arr(&[Value::Int(1), arr(&[Value::Int(2), Value::Int(3)])]), JSON_PRETTY_PRINT),
+            enc(&map(&[("a", arr(&[]))]), JSON_PRETTY_PRINT),
+            "{\n    \"a\": []\n}"
+        );
+        assert_eq!(
+            enc(
+                &arr(&[Value::Int(1), arr(&[Value::Int(2), Value::Int(3)])]),
+                JSON_PRETTY_PRINT
+            ),
             "[\n    1,\n    [\n        2,\n        3\n    ]\n]"
         );
         assert_eq!(
@@ -822,7 +862,12 @@ mod tests {
         // overflow -> float by default
         assert!(matches!(dec("12345678901234567890"), Value::Float(_)));
         // BIGINT_AS_STRING -> string
-        let big = dec_f("12345678901234567890", Value::Null, 512, JSON_BIGINT_AS_STRING);
+        let big = dec_f(
+            "12345678901234567890",
+            Value::Null,
+            512,
+            JSON_BIGINT_AS_STRING,
+        );
         assert!(matches!(&big, Value::Str(s) if s.as_bytes() == b"12345678901234567890"));
     }
 
@@ -830,7 +875,9 @@ mod tests {
     fn decode_strings_and_unicode() {
         assert!(matches!(dec("\"hi\\u0041\""), Value::Str(s) if s.as_bytes() == b"hiA"));
         // surrogate pair -> 😀 (U+1F600)
-        assert!(matches!(dec("\"\\ud83d\\ude00\""), Value::Str(s) if s.as_bytes() == "😀".as_bytes()));
+        assert!(
+            matches!(dec("\"\\ud83d\\ude00\""), Value::Str(s) if s.as_bytes() == "😀".as_bytes())
+        );
         // lone surrogate -> error -> null
         assert!(matches!(dec("\"\\ud83d\""), Value::Null));
         assert_eq!(get_last_error(), JSON_ERROR_UTF16);
@@ -901,6 +948,9 @@ mod tests {
         let msg = fn_json_last_error_msg(&mut NoopHost, &[]).unwrap();
         assert!(matches!(msg, Value::Str(s) if s.as_bytes() == b"Syntax error"));
         dec("[1]");
-        assert!(matches!(fn_json_last_error(&mut NoopHost, &[]).unwrap(), Value::Int(0)));
+        assert!(matches!(
+            fn_json_last_error(&mut NoopHost, &[]).unwrap(),
+            Value::Int(0)
+        ));
     }
 }

@@ -16,8 +16,8 @@ use std::collections::HashMap;
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use rhp_values::{conv, ArrayKey, PhpArray, Value};
 use rand_core::{OsRng, RngCore};
+use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::{Builtin, Host, Thrown};
 
@@ -55,7 +55,8 @@ fn opt_long(options: Option<&Value>, key: &[u8]) -> Option<i64> {
         Some(Value::Array(a)) => a,
         _ => return None,
     };
-    arr.get(&ArrayKey::from_bytes(key)).map(|v| conv::to_int(&deref(v)))
+    arr.get(&ArrayKey::from_bytes(key))
+        .map(|v| conv::to_int(&deref(v)))
 }
 
 fn verr(msg: impl Into<String>) -> Thrown {
@@ -86,7 +87,7 @@ fn algo_find(ident: &[u8]) -> Option<Algo> {
 /// `php_password_algo_find_zval`: resolve the `$algo` argument of
 /// `password_hash` / `password_needs_rehash` (string | int | null).
 fn algo_find_zval(v: Option<&Value>) -> Option<Algo> {
-    match v.map(|v| deref(v)) {
+    match v.map(deref) {
         None | Some(Value::Null) => Some(Algo::Bcrypt), // default
         Some(Value::Str(s)) => algo_find(s.as_bytes()),
         Some(Value::Int(n)) => algo_from_long(n),
@@ -272,8 +273,13 @@ fn argon2_hash(password: &[u8], options: Option<&Value>, ty: Algo) -> Result<Val
         return Err(verr("Memory cost is too small"));
     }
 
-    let params = Params::new(m as u32, t as u32, p as u32, Some(Params::DEFAULT_OUTPUT_LEN))
-        .map_err(|e| verr(e.to_string()))?;
+    let params = Params::new(
+        m as u32,
+        t as u32,
+        p as u32,
+        Some(Params::DEFAULT_OUTPUT_LEN),
+    )
+    .map_err(|e| verr(e.to_string()))?;
     let alg = if ty == Algo::Argon2i {
         Algorithm::Argon2i
     } else {
@@ -284,8 +290,7 @@ fn argon2_hash(password: &[u8], options: Option<&Value>, ty: Algo) -> Result<Val
     // PHP uses a 16-byte random salt.
     let mut salt = [0u8; 16];
     OsRng.fill_bytes(&mut salt);
-    let salt = SaltString::encode_b64(&salt)
-        .map_err(|e| verr(e.to_string()))?;
+    let salt = SaltString::encode_b64(&salt).map_err(|e| verr(e.to_string()))?;
 
     let hash = argon
         .hash_password(password, &salt)
@@ -326,9 +331,7 @@ fn argon2_verify(password: &[u8], hash: &[u8]) -> bool {
         Ok(p) => p,
         Err(_) => return false,
     };
-    Argon2::default()
-        .verify_password(password, &parsed)
-        .is_ok()
+    Argon2::default().verify_password(password, &parsed).is_ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -394,7 +397,10 @@ fn fn_password_get_info(_: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
         None => {
             out.insert(ArrayKey::from_bytes(b"algo"), Value::Null);
             out.insert(ArrayKey::from_bytes(b"algoName"), Value::str("unknown"));
-            out.insert(ArrayKey::from_bytes(b"options"), Value::Array(PhpArray::new()));
+            out.insert(
+                ArrayKey::from_bytes(b"options"),
+                Value::Array(PhpArray::new()),
+            );
         }
         Some(a) => {
             // `algo` echoes the identifier extracted from the hash.
@@ -410,7 +416,10 @@ fn fn_password_get_info(_: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
             let mut options = PhpArray::new();
             match a {
                 Algo::Bcrypt => {
-                    options.insert(ArrayKey::from_bytes(b"cost"), Value::Int(bcrypt_get_cost(&hash)));
+                    options.insert(
+                        ArrayKey::from_bytes(b"cost"),
+                        Value::Int(bcrypt_get_cost(&hash)),
+                    );
                 }
                 Algo::Argon2i | Algo::Argon2id => {
                     let (m, t, p) = argon2_params(&hash);
@@ -445,11 +454,25 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         min: usize,
         max: Option<usize>,
     ) {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     }
     put(m, "password_hash", fn_password_hash, 2, Some(3));
     put(m, "password_verify", fn_password_verify, 2, Some(2));
-    put(m, "password_needs_rehash", fn_password_needs_rehash, 2, Some(3));
+    put(
+        m,
+        "password_needs_rehash",
+        fn_password_needs_rehash,
+        2,
+        Some(3),
+    );
     put(m, "password_get_info", fn_password_get_info, 1, Some(1));
     put(m, "password_algos", fn_password_algos, 0, Some(0));
 }

@@ -8,7 +8,10 @@
 pub enum Thrown {
     /// An engine-raised error named by class + message (instantiated into a real
     /// Throwable object lazily when caught). Catchable.
-    Error { class: &'static str, message: String },
+    Error {
+        class: &'static str,
+        message: String,
+    },
     /// A user-thrown `Throwable` object (`throw $e`). Catchable.
     Object(crate::ObjectHandle),
     /// A deliberately-unsupported feature (eval/extract/…). Rendered with the
@@ -28,7 +31,10 @@ impl std::fmt::Debug for Thrown {
             }
             Thrown::Object(o) => write!(f, "Object(class #{})", o.borrow().class),
             Thrown::Unsupported { feature, reason } => {
-                write!(f, "Unsupported {{ feature: {feature:?}, reason: {reason:?} }}")
+                write!(
+                    f,
+                    "Unsupported {{ feature: {feature:?}, reason: {reason:?} }}"
+                )
             }
             Thrown::Exit(c) => write!(f, "Exit({c})"),
         }
@@ -37,13 +43,19 @@ impl std::fmt::Debug for Thrown {
 
 impl Thrown {
     pub fn error(class: &'static str, message: impl Into<String>) -> Thrown {
-        Thrown::Error { class, message: message.into() }
+        Thrown::Error {
+            class,
+            message: message.into(),
+        }
     }
     pub fn type_error(message: impl Into<String>) -> Thrown {
         Thrown::error("TypeError", message)
     }
     pub fn unsupported(feature: impl Into<String>, reason: impl Into<String>) -> Thrown {
-        Thrown::Unsupported { feature: feature.into(), reason: reason.into() }
+        Thrown::Unsupported {
+            feature: feature.into(),
+            reason: reason.into(),
+        }
     }
 
     /// Catchable by a PHP `try/catch`? Real errors and thrown objects are;

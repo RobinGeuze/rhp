@@ -27,7 +27,10 @@ fn fn_spl_autoload_register(host: &mut dyn Host, args: &[Value]) -> Result<Value
                     "spl_autoload_register(): Argument #1 ($callback) must be a valid callback",
                 ));
             }
-            let prepend = args.get(2).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+            let prepend = args
+                .get(2)
+                .map(|v| conv::to_bool(&deref(v)))
+                .unwrap_or(false);
             host.register_autoloader(cb, prepend);
             Ok(Value::Bool(true))
         }
@@ -89,11 +92,37 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         min: usize,
         max: Option<usize>,
     ) {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     }
-    put(m, "spl_autoload_register", fn_spl_autoload_register, 0, Some(3));
-    put(m, "spl_autoload_unregister", fn_spl_autoload_unregister, 1, Some(1));
-    put(m, "spl_autoload_functions", fn_spl_autoload_functions, 0, Some(0));
+    put(
+        m,
+        "spl_autoload_register",
+        fn_spl_autoload_register,
+        0,
+        Some(3),
+    );
+    put(
+        m,
+        "spl_autoload_unregister",
+        fn_spl_autoload_unregister,
+        1,
+        Some(1),
+    );
+    put(
+        m,
+        "spl_autoload_functions",
+        fn_spl_autoload_functions,
+        0,
+        Some(0),
+    );
     put(m, "spl_autoload_call", fn_spl_autoload_call, 1, Some(1));
     put(m, "spl_object_id", fn_spl_object_id, 1, Some(1));
     put(m, "spl_object_hash", fn_spl_object_hash, 1, Some(1));

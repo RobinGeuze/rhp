@@ -122,7 +122,10 @@ fn binary_strncasecmp(s1: &[u8], s2: &[u8], length: usize) -> i64 {
 // ---------------------------------------------------------------------------
 
 fn fn_strcmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(binary_strcmp(&bytes_of(&args[0]), &bytes_of(&args[1]))))
+    Ok(Value::Int(binary_strcmp(
+        &bytes_of(&args[0]),
+        &bytes_of(&args[1]),
+    )))
 }
 
 fn fn_strcasecmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -242,7 +245,14 @@ fn is_space(c: u8) -> bool {
 
 /// `compare_right`: longest run of digits wins; else greatest value, decided by
 /// the first differing magnitude once both runs are known equal-length.
-fn compare_right(a: &[u8], ap: &mut usize, aend: usize, b: &[u8], bp: &mut usize, bend: usize) -> i64 {
+fn compare_right(
+    a: &[u8],
+    ap: &mut usize,
+    aend: usize,
+    b: &[u8],
+    bp: &mut usize,
+    bend: usize,
+) -> i64 {
     let mut bias = 0i64;
     loop {
         let a_digit = *ap < aend && at(a, *ap).is_ascii_digit();
@@ -270,7 +280,14 @@ fn compare_right(a: &[u8], ap: &mut usize, aend: usize, b: &[u8], bp: &mut usize
 }
 
 /// `compare_left`: left-aligned numbers; first differing value wins.
-fn compare_left(a: &[u8], ap: &mut usize, aend: usize, b: &[u8], bp: &mut usize, bend: usize) -> i64 {
+fn compare_left(
+    a: &[u8],
+    ap: &mut usize,
+    aend: usize,
+    b: &[u8],
+    bp: &mut usize,
+    bend: usize,
+) -> i64 {
     loop {
         let a_digit = *ap < aend && at(a, *ap).is_ascii_digit();
         let b_digit = *bp < bend && at(b, *bp).is_ascii_digit();
@@ -423,7 +440,11 @@ fn ireplace_all(subject: &[u8], search: &[u8], replace: &[u8]) -> Vec<u8> {
 }
 
 /// Apply one (search, replace) pairing to a single subject (case-insensitive).
-fn ireplace_one_subject(subject: &[u8], search: &Value, replace: &Value) -> Result<Vec<u8>, Thrown> {
+fn ireplace_one_subject(
+    subject: &[u8],
+    search: &Value,
+    replace: &Value,
+) -> Result<Vec<u8>, Thrown> {
     match search {
         Value::Array(searches) => {
             let mut cur = subject.to_vec();
@@ -651,7 +672,10 @@ mod tests {
         assert_eq!(call_int(fn_strcmp, &[s("10"), s("9")]), -8);
         // raw byte diff on single high byte: 0xff - 0x01 = 254
         assert_eq!(
-            call_int(fn_strcmp, &[Value::str(vec![0xffu8]), Value::str(vec![0x01u8])]),
+            call_int(
+                fn_strcmp,
+                &[Value::str(vec![0xffu8]), Value::str(vec![0x01u8])]
+            ),
             254
         );
     }
@@ -668,62 +692,155 @@ mod tests {
 
     #[test]
     fn strncmp_cases() {
-        assert_eq!(call_int(fn_strncmp, &[s("Hello"), s("Help"), Value::Int(3)]), 0);
-        assert_eq!(call_int(fn_strncmp, &[s("Hello"), s("Help"), Value::Int(4)]), -4);
-        assert_eq!(call_int(fn_strncmp, &[s("abc"), s("abd"), Value::Int(0)]), 0);
-        assert_eq!(call_int(fn_strncmp, &[s("abc"), s("abcde"), Value::Int(10)]), -1);
-        assert_eq!(call_int(fn_strncmp, &[s("abcde"), s("abc"), Value::Int(10)]), 1);
-        assert_eq!(call_int(fn_strncmp, &[s("abc"), s("abcde"), Value::Int(3)]), 0);
+        assert_eq!(
+            call_int(fn_strncmp, &[s("Hello"), s("Help"), Value::Int(3)]),
+            0
+        );
+        assert_eq!(
+            call_int(fn_strncmp, &[s("Hello"), s("Help"), Value::Int(4)]),
+            -4
+        );
+        assert_eq!(
+            call_int(fn_strncmp, &[s("abc"), s("abd"), Value::Int(0)]),
+            0
+        );
+        assert_eq!(
+            call_int(fn_strncmp, &[s("abc"), s("abcde"), Value::Int(10)]),
+            -1
+        );
+        assert_eq!(
+            call_int(fn_strncmp, &[s("abcde"), s("abc"), Value::Int(10)]),
+            1
+        );
+        assert_eq!(
+            call_int(fn_strncmp, &[s("abc"), s("abcde"), Value::Int(3)]),
+            0
+        );
         assert!(throws(fn_strncmp, &[s("a"), s("b"), Value::Int(-1)]));
     }
 
     #[test]
     fn strncasecmp_cases() {
-        assert_eq!(call_int(fn_strncasecmp, &[s("Hello"), s("hello"), Value::Int(5)]), 0);
-        assert_eq!(call_int(fn_strncasecmp, &[s("Hello"), s("help"), Value::Int(3)]), 0);
-        assert_eq!(call_int(fn_strncasecmp, &[s("AX"), s("aZ"), Value::Int(2)]), -2);
+        assert_eq!(
+            call_int(fn_strncasecmp, &[s("Hello"), s("hello"), Value::Int(5)]),
+            0
+        );
+        assert_eq!(
+            call_int(fn_strncasecmp, &[s("Hello"), s("help"), Value::Int(3)]),
+            0
+        );
+        assert_eq!(
+            call_int(fn_strncasecmp, &[s("AX"), s("aZ"), Value::Int(2)]),
+            -2
+        );
         assert!(throws(fn_strncasecmp, &[s("a"), s("b"), Value::Int(-1)]));
     }
 
     #[test]
     fn substr_compare_cases() {
-        assert_eq!(call_int(fn_substr_compare, &[s("Hello World"), s("World"), Value::Int(6)]), 0);
         assert_eq!(
             call_int(
                 fn_substr_compare,
-                &[s("Hello World"), s("world"), Value::Int(6), Value::Int(5), Value::Bool(true)]
+                &[s("Hello World"), s("World"), Value::Int(6)]
             ),
             0
         );
-        assert_eq!(call_int(fn_substr_compare, &[s("abcde"), s("bc"), Value::Int(1)]), 1);
-        assert_eq!(call_int(fn_substr_compare, &[s("abcde"), s("bc"), Value::Int(1), Value::Int(2)]), 0);
-        assert_eq!(call_int(fn_substr_compare, &[s("abcde"), s("fg"), Value::Int(-2)]), -2);
         assert_eq!(
-            call_int(fn_substr_compare, &[s("abcde"), s("abcXY"), Value::Int(0), Value::Int(5)]),
-            12
+            call_int(
+                fn_substr_compare,
+                &[
+                    s("Hello World"),
+                    s("world"),
+                    Value::Int(6),
+                    Value::Int(5),
+                    Value::Bool(true)
+                ]
+            ),
+            0
         );
-        assert_eq!(call_int(fn_substr_compare, &[s("abc"), s("abcde"), Value::Int(0)]), -1);
         assert_eq!(
-            call_int(fn_substr_compare, &[s("abcde"), s("abc"), Value::Int(0), Value::Int(10)]),
+            call_int(fn_substr_compare, &[s("abcde"), s("bc"), Value::Int(1)]),
             1
         );
         assert_eq!(
-            call_int(fn_substr_compare, &[s("abcde"), s("XYZ"), Value::Int(1), Value::Int(0)]),
-            0
-        );
-        assert_eq!(call_int(fn_substr_compare, &[s("abc"), s("b"), Value::Int(3)]), -1);
-        assert_eq!(call_int(fn_substr_compare, &[s("abc"), s("a"), Value::Int(-10)]), 1);
-        assert_eq!(
-            call_int(fn_substr_compare, &[s("Hello"), s("hel"), Value::Int(0), Value::Int(3), Value::Bool(true)]),
+            call_int(
+                fn_substr_compare,
+                &[s("abcde"), s("bc"), Value::Int(1), Value::Int(2)]
+            ),
             0
         );
         assert_eq!(
-            call_int(fn_substr_compare, &[s("Hello"), s("hel"), Value::Int(0), Value::Int(5), Value::Bool(true)]),
+            call_int(fn_substr_compare, &[s("abcde"), s("fg"), Value::Int(-2)]),
+            -2
+        );
+        assert_eq!(
+            call_int(
+                fn_substr_compare,
+                &[s("abcde"), s("abcXY"), Value::Int(0), Value::Int(5)]
+            ),
+            12
+        );
+        assert_eq!(
+            call_int(fn_substr_compare, &[s("abc"), s("abcde"), Value::Int(0)]),
+            -1
+        );
+        assert_eq!(
+            call_int(
+                fn_substr_compare,
+                &[s("abcde"), s("abc"), Value::Int(0), Value::Int(10)]
+            ),
+            1
+        );
+        assert_eq!(
+            call_int(
+                fn_substr_compare,
+                &[s("abcde"), s("XYZ"), Value::Int(1), Value::Int(0)]
+            ),
+            0
+        );
+        assert_eq!(
+            call_int(fn_substr_compare, &[s("abc"), s("b"), Value::Int(3)]),
+            -1
+        );
+        assert_eq!(
+            call_int(fn_substr_compare, &[s("abc"), s("a"), Value::Int(-10)]),
+            1
+        );
+        assert_eq!(
+            call_int(
+                fn_substr_compare,
+                &[
+                    s("Hello"),
+                    s("hel"),
+                    Value::Int(0),
+                    Value::Int(3),
+                    Value::Bool(true)
+                ]
+            ),
+            0
+        );
+        assert_eq!(
+            call_int(
+                fn_substr_compare,
+                &[
+                    s("Hello"),
+                    s("hel"),
+                    Value::Int(0),
+                    Value::Int(5),
+                    Value::Bool(true)
+                ]
+            ),
             1
         );
         // errors
-        assert!(throws(fn_substr_compare, &[s("abc"), s("b"), Value::Int(5)]));
-        assert!(throws(fn_substr_compare, &[s("abcde"), s("XYZ"), Value::Int(1), Value::Int(-1)]));
+        assert!(throws(
+            fn_substr_compare,
+            &[s("abc"), s("b"), Value::Int(5)]
+        ));
+        assert!(throws(
+            fn_substr_compare,
+            &[s("abcde"), s("XYZ"), Value::Int(1), Value::Int(-1)]
+        ));
     }
 
     #[test]
@@ -758,8 +875,14 @@ mod tests {
 
     #[test]
     fn str_ireplace_cases() {
-        assert_eq!(calls(fn_str_ireplace, &[s("WORLD"), s("PHP"), s("Hello world")]), "Hello PHP");
-        assert_eq!(calls(fn_str_ireplace, &[s("o"), s("0"), s("FOO Boo")]), "F00 B00");
+        assert_eq!(
+            calls(fn_str_ireplace, &[s("WORLD"), s("PHP"), s("Hello world")]),
+            "Hello PHP"
+        );
+        assert_eq!(
+            calls(fn_str_ireplace, &[s("o"), s("0"), s("FOO Boo")]),
+            "F00 B00"
+        );
         assert_eq!(calls(fn_str_ireplace, &[s("aa"), s("b"), s("aaaa")]), "bb");
         assert_eq!(calls(fn_str_ireplace, &[s(""), s("X"), s("abc")]), "abc");
         // array search + array replace
@@ -812,33 +935,80 @@ mod tests {
     #[test]
     fn strpbrk_cases() {
         assert_eq!(calls(fn_strpbrk, &[s("Hello World"), s("oW")]), "o World");
-        assert_eq!(calls(fn_strpbrk, &[s("This is a test"), s("st")]), "s is a test");
+        assert_eq!(
+            calls(fn_strpbrk, &[s("This is a test"), s("st")]),
+            "s is a test"
+        );
         assert_eq!(calls(fn_strpbrk, &[s("abcdef"), s("a")]), "abcdef");
-        assert!(matches!(call(fn_strpbrk, &[s("Hello"), s("xyz")]), Value::Bool(false)));
+        assert!(matches!(
+            call(fn_strpbrk, &[s("Hello"), s("xyz")]),
+            Value::Bool(false)
+        ));
         assert!(throws(fn_strpbrk, &[s("abc"), s("")]));
     }
 
     #[test]
     fn strspn_cases() {
-        assert_eq!(call_int(fn_strspn, &[s("42 is the answer"), s("1234567890")]), 2);
-        assert_eq!(call_int(fn_strspn, &[s("abcdef"), s("abc")]), 3);
-        assert_eq!(call_int(fn_strspn, &[s("foo123bar"), s("0123456789"), Value::Int(3)]), 3);
         assert_eq!(
-            call_int(fn_strspn, &[s("foo123bar"), s("0123456789"), Value::Int(3), Value::Int(2)]),
+            call_int(fn_strspn, &[s("42 is the answer"), s("1234567890")]),
             2
         );
-        assert_eq!(call_int(fn_strspn, &[s("12345"), s("123"), Value::Int(0), Value::Int(10)]), 3);
-        assert_eq!(call_int(fn_strspn, &[s("abcdef"), s("abc"), Value::Int(-3)]), 0);
-        assert_eq!(call_int(fn_strspn, &[s("abc"), s("abc"), Value::Int(10)]), 0);
-        assert_eq!(call_int(fn_strspn, &[s("aaa"), s("a"), Value::Int(1), Value::Int(10)]), 2);
+        assert_eq!(call_int(fn_strspn, &[s("abcdef"), s("abc")]), 3);
+        assert_eq!(
+            call_int(fn_strspn, &[s("foo123bar"), s("0123456789"), Value::Int(3)]),
+            3
+        );
+        assert_eq!(
+            call_int(
+                fn_strspn,
+                &[
+                    s("foo123bar"),
+                    s("0123456789"),
+                    Value::Int(3),
+                    Value::Int(2)
+                ]
+            ),
+            2
+        );
+        assert_eq!(
+            call_int(
+                fn_strspn,
+                &[s("12345"), s("123"), Value::Int(0), Value::Int(10)]
+            ),
+            3
+        );
+        assert_eq!(
+            call_int(fn_strspn, &[s("abcdef"), s("abc"), Value::Int(-3)]),
+            0
+        );
+        assert_eq!(
+            call_int(fn_strspn, &[s("abc"), s("abc"), Value::Int(10)]),
+            0
+        );
+        assert_eq!(
+            call_int(
+                fn_strspn,
+                &[s("aaa"), s("a"), Value::Int(1), Value::Int(10)]
+            ),
+            2
+        );
     }
 
     #[test]
     fn strcspn_cases() {
         assert_eq!(call_int(fn_strcspn, &[s("hello, world"), s("o")]), 4);
         assert_eq!(call_int(fn_strcspn, &[s("hello"), s("xyz")]), 5);
-        assert_eq!(call_int(fn_strcspn, &[s("hello world"), s("lo"), Value::Int(2), Value::Int(5)]), 0);
-        assert_eq!(call_int(fn_strcspn, &[s("hello"), s("xyz"), Value::Int(-2)]), 2);
+        assert_eq!(
+            call_int(
+                fn_strcspn,
+                &[s("hello world"), s("lo"), Value::Int(2), Value::Int(5)]
+            ),
+            0
+        );
+        assert_eq!(
+            call_int(fn_strcspn, &[s("hello"), s("xyz"), Value::Int(-2)]),
+            2
+        );
         assert_eq!(call_int(fn_strcspn, &[s("abcABC"), s("abc")]), 0);
     }
 

@@ -66,27 +66,40 @@ fn password_cross_verifies_with_php() {
     use rhp_difftest::{run_php, run_rhp};
 
     // NB: hashes contain `$`, so they MUST sit in single-quoted PHP strings.
-    for (pw, algo) in [("hunter2", "PASSWORD_BCRYPT"), ("sukru-key", "PASSWORD_BCRYPT")] {
+    for (pw, algo) in [
+        ("hunter2", "PASSWORD_BCRYPT"),
+        ("sukru-key", "PASSWORD_BCRYPT"),
+    ] {
         // rhp hashes -> php verifies
         let h = run_rhp(format!("<?php echo password_hash('{pw}', {algo});").as_bytes())
             .expect("rhp hash");
         let h = String::from_utf8_lossy(&h);
         let out = run_php(
-            format!("<?php var_dump(password_verify('{pw}','{h}'), password_verify('nope','{h}'));")
-                .as_bytes(),
+            format!(
+                "<?php var_dump(password_verify('{pw}','{h}'), password_verify('nope','{h}'));"
+            )
+            .as_bytes(),
         )
         .expect("php verify");
-        assert_eq!(out, b"bool(true)\nbool(false)\n", "php could not verify rhp's hash for {pw:?}");
+        assert_eq!(
+            out, b"bool(true)\nbool(false)\n",
+            "php could not verify rhp's hash for {pw:?}"
+        );
 
         // php hashes -> rhp verifies
         let h = run_php(format!("<?php echo password_hash('{pw}', {algo});").as_bytes())
             .expect("php hash");
         let h = String::from_utf8_lossy(&h);
         let out = run_rhp(
-            format!("<?php var_dump(password_verify('{pw}','{h}'), password_verify('nope','{h}'));")
-                .as_bytes(),
+            format!(
+                "<?php var_dump(password_verify('{pw}','{h}'), password_verify('nope','{h}'));"
+            )
+            .as_bytes(),
         )
         .expect("rhp verify");
-        assert_eq!(out, b"bool(true)\nbool(false)\n", "rhp could not verify php's hash for {pw:?}");
+        assert_eq!(
+            out, b"bool(true)\nbool(false)\n",
+            "rhp could not verify php's hash for {pw:?}"
+        );
     }
 }

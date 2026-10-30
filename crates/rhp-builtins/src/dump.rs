@@ -7,7 +7,7 @@ use rhp_values::conv;
 use rhp_values::{fmt, ArrayKey, PhpStr, Value};
 
 fn sp(n: usize, out: &mut Vec<u8>) {
-    out.extend(std::iter::repeat(b' ').take(n));
+    out.extend(std::iter::repeat_n(b' ', n));
 }
 
 /// `var_dump` of one value at the given indentation (spaces). `host` supplies
@@ -17,9 +17,11 @@ pub fn var_dump(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, indent: us
     sp(indent, out);
     match &v {
         Value::Null => out.extend_from_slice(b"NULL\n"),
-        Value::Bool(b) => {
-            out.extend_from_slice(if *b { b"bool(true)\n" } else { b"bool(false)\n" })
-        }
+        Value::Bool(b) => out.extend_from_slice(if *b {
+            b"bool(true)\n"
+        } else {
+            b"bool(false)\n"
+        }),
         Value::Int(n) => out.extend_from_slice(format!("int({n})\n").as_bytes()),
         Value::Float(f) => {
             out.extend_from_slice(b"float(");
@@ -46,11 +48,16 @@ pub fn var_dump(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, indent: us
             // Snapshot under a short borrow so recursion can't double-borrow.
             let (class_id, obj_id, props) = {
                 let b = h.borrow();
-                let props: Vec<(PhpStr, Value)> =
-                    b.properties.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let props: Vec<(PhpStr, Value)> = b
+                    .properties
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
                 (b.class, b.id, props)
             };
-            let cname = host.class_name(class_id).unwrap_or_else(|| b"class".to_vec());
+            let cname = host
+                .class_name(class_id)
+                .unwrap_or_else(|| b"class".to_vec());
             if host.is_enum_class(class_id) {
                 // `enum(Name::Case)` — the case is the object's `name` property.
                 let case = props
@@ -172,9 +179,7 @@ pub fn var_export(out: &mut Vec<u8>, v: &Value, indent: usize) {
             sp(indent, out);
             out.push(b')');
         }
-        Value::Object(_) | Value::Closure(_) | Value::Resource(_) => {
-            out.extend_from_slice(b"NULL")
-        }
+        Value::Object(_) | Value::Closure(_) | Value::Resource(_) => out.extend_from_slice(b"NULL"),
         Value::Ref(_) => unreachable!("deref'd above"),
     }
 }
@@ -201,7 +206,9 @@ fn export_string(out: &mut Vec<u8>, s: &[u8]) {
 /// var_export floats always look like floats (append `.0` if integer-valued).
 fn export_float(f: f64) -> Vec<u8> {
     let s = fmt::float_serialize(f);
-    if s.iter().any(|&b| matches!(b, b'.' | b'e' | b'E' | b'N' | b'I')) {
+    if s.iter()
+        .any(|&b| matches!(b, b'.' | b'e' | b'E' | b'N' | b'I'))
+    {
         s
     } else {
         [s, b".0".to_vec()].concat()

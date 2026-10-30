@@ -129,7 +129,15 @@ ctype_fn!(fn_ctype_print, is_print);
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     macro_rules! reg {
         ($name:literal, $func:path, $min:literal, $max:expr) => {
-            m.insert($name, Builtin { name: $name, func: $func, min_args: $min, max_args: $max });
+            m.insert(
+                $name,
+                Builtin {
+                    name: $name,
+                    func: $func,
+                    min_args: $min,
+                    max_args: $max,
+                },
+            );
         };
     }
     reg!("ctype_digit", fn_ctype_digit, 1, Some(1));

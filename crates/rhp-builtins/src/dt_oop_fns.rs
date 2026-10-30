@@ -133,11 +133,27 @@ fn break_down(ts: i64) -> Tm {
 
 const DAY_SHORT: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const DAY_FULL: [&str; 7] = [
-    "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
 ];
 const MONTH_FULL: [&str; 12] = [
-    "January", "February", "March", "April", "May", "June", "July", "August", "September",
-    "October", "November", "December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ];
 
 // ---------------------------------------------------------------------------
@@ -246,7 +262,9 @@ fn offset_hh_mm(off: i64) -> String {
 // ---------------------------------------------------------------------------
 
 fn fn_dt_now(_: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown> {
-    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     Ok(list(vec![
         Value::Int(d.as_secs() as i64),
         Value::Int(d.subsec_micros() as i64),
@@ -437,7 +455,12 @@ fn parse_tz_suffix(b: &[u8]) -> Option<(i64, Vec<u8>, usize)> {
 
 /// Result: Some((ts, us, off, zname)) where `zname` empty means "no explicit
 /// zone in the string — use the default timezone".
-fn parse_datetime(s: &[u8], now_sec: i64, now_us: i64, default_off: i64) -> Option<(i64, i64, i64, Vec<u8>)> {
+fn parse_datetime(
+    s: &[u8],
+    now_sec: i64,
+    now_us: i64,
+    default_off: i64,
+) -> Option<(i64, i64, i64, Vec<u8>)> {
     let t = trim(s);
     if t.is_empty() || t.eq_ignore_ascii_case(b"now") {
         return Some((now_sec, now_us, default_off, Vec::new()));
@@ -721,7 +744,11 @@ fn fn_dt_modify(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let off = arg_int(args, 2);
     let s = arg_str(args, 3);
     match apply_modify(ts, us, off, &s) {
-        Some((ts, us)) => Ok(list(vec![Value::Bool(true), Value::Int(ts), Value::Int(us)])),
+        Some((ts, us)) => Ok(list(vec![
+            Value::Bool(true),
+            Value::Int(ts),
+            Value::Int(us),
+        ])),
         None => Ok(list(vec![Value::Bool(false)])),
     }
 }
@@ -1004,7 +1031,11 @@ fn parse_zone(name: &[u8]) -> Option<(Vec<u8>, i64)> {
 fn fn_dtz_parse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = arg_str(args, 0);
     match parse_zone(&name) {
-        Some((n, off)) => Ok(list(vec![Value::Bool(true), Value::str(n), Value::Int(off)])),
+        Some((n, off)) => Ok(list(vec![
+            Value::Bool(true),
+            Value::str(n),
+            Value::Int(off),
+        ])),
         None => Ok(list(vec![Value::Bool(false)])),
     }
 }

@@ -14,11 +14,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use rhp_builtins::{self as builtins, Host};
 use rhp_bytecode::{
     ClassProto, ClassRef, CmpKind, ConstInitProto, Default as ParamDefault, FunctionProto,
-    IncludeKind, Instr, NIdx, PropDefaultProto, Program, Reg,
+    IncludeKind, Instr, NIdx, Program, PropDefaultProto, Reg,
 };
-use rhp_builtins::{self as builtins, Host};
 use rhp_semantics::{cast_to_array, inc_dec_value, ops};
 use rhp_values::{
     conv, ArrayKey, ClassId, ClassKind, ObjectData, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
@@ -31,6 +31,10 @@ enum CursorStep {
     Prop(rhp_values::PhpStr),
 }
 
+/// SAPI-injected callback that parses + compiles an included file's source into
+/// a `Program`, keeping the VM compiler-agnostic (see the `includer` field).
+type Includer = Box<dyn FnMut(&str, &[u8]) -> Result<Program, Thrown>>;
+
 /// The virtual machine: output sink + call stack + global tables.
 pub struct Vm {
     out: Vec<u8>,
@@ -40,7 +44,7 @@ pub struct Vm {
     stack: Vec<Frame>,
     functions: Vec<Rc<FunctionProto>>,
     fn_names: HashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
-    closures: Vec<Rc<FunctionProto>>, // anonymous closure protos, indexed by `fnidx`
+    closures: Vec<Rc<FunctionProto>>,  // anonymous closure protos, indexed by `fnidx`
     constants: HashMap<Vec<u8>, Value>,
     max_depth: usize,
     // lvalue cursor: a root in the current frame (CV or a static-prop cell) +
@@ -71,7 +75,7 @@ pub struct Vm {
     bc_scale: i64,
     // `include`/`require`: a callback (injected by the SAPI) that parses+compiles
     // an included file's source into a Program, keeping the VM compiler-agnostic.
-    includer: Option<Box<dyn FnMut(&str, &[u8]) -> Result<Program, Thrown>>>,
+    includer: Option<Includer>,
     // Resolved real paths already included (for the `_once` variants).
     included_files: std::collections::HashSet<Vec<u8>>,
     // Registered `spl_autoload_register` callables, in call order.
@@ -186,7 +190,9 @@ impl Host for Vm {
     }
 
     fn class_name(&self, class_id: u32) -> Option<Vec<u8>> {
-        self.classes.get(class_id as usize).map(|c| c.name.as_bytes().to_vec())
+        self.classes
+            .get(class_id as usize)
+            .map(|c| c.name.as_bytes().to_vec())
     }
 
     fn class_parent_name(&self, class_id: u32) -> Option<Vec<u8>> {
@@ -195,7 +201,9 @@ impl Host for Vm {
     }
 
     fn is_enum_class(&self, class_id: u32) -> bool {
-        self.classes.get(class_id as usize).is_some_and(|c| c.kind == ClassKind::Enum)
+        self.classes
+            .get(class_id as usize)
+            .is_some_and(|c| c.kind == ClassKind::Enum)
     }
 
     fn define_const(&mut self, name: &[u8], value: Value) -> bool {
@@ -241,7 +249,9 @@ impl Host for Vm {
     }
 
     fn stream_exists(&self, url: &[u8]) -> bool {
-        self.wrapper_for(url).map(|w| w.exists(url)).unwrap_or(false)
+        self.wrapper_for(url)
+            .map(|w| w.exists(url))
+            .unwrap_or(false)
     }
 
     fn stream_stat(&self, url: &[u8]) -> Option<builtins::StatInfo> {
@@ -271,7 +281,9 @@ impl Host for Vm {
         for i in (1..self.stack.len()).rev() {
             let f = &self.stack[i];
             let func = f.proto.name.as_bytes().to_vec();
-            let class = f.defining_class.map(|c| self.class(c).name.as_bytes().to_vec());
+            let class = f
+                .defining_class
+                .map(|c| self.class(c).name.as_bytes().to_vec());
             let this = self.current_this(i).map(Value::Object);
             let caller = i - 1;
             let file = self.stack[caller].proto.debug.file.as_bytes().to_vec();
@@ -285,7 +297,10 @@ impl Host for Vm {
         let id = self.next_resource_id;
         self.next_resource_id += 1;
         self.stream_contexts.insert(id, options);
-        Value::Resource(Rc::new(rhp_values::ResourceData { id, type_name: "stream-context" }))
+        Value::Resource(Rc::new(rhp_values::ResourceData {
+            id,
+            type_name: "stream-context",
+        }))
     }
 
     fn stream_context_options(&self, ctx: &Value) -> Value {
@@ -297,9 +312,18 @@ impl Host for Vm {
         Value::Null
     }
 
-    fn stream_context_set_option(&mut self, ctx: &Value, wrapper: &[u8], option: &[u8], value: Value) {
+    fn stream_context_set_option(
+        &mut self,
+        ctx: &Value,
+        wrapper: &[u8],
+        option: &[u8],
+        value: Value,
+    ) {
         let Value::Resource(r) = ctx else { return };
-        let entry = self.stream_contexts.entry(r.id).or_insert_with(|| Value::Array(PhpArray::new()));
+        let entry = self
+            .stream_contexts
+            .entry(r.id)
+            .or_insert_with(|| Value::Array(PhpArray::new()));
         if !matches!(entry, Value::Array(_)) {
             *entry = Value::Array(PhpArray::new());
         }
@@ -328,7 +352,9 @@ impl Host for Vm {
         self.stack.last().map(|f| f.argc as i64).unwrap_or(0)
     }
     fn current_args(&self) -> Vec<Value> {
-        let Some(f) = self.stack.last() else { return Vec::new() };
+        let Some(f) = self.stack.last() else {
+            return Vec::new();
+        };
         let n = (f.argc).min(f.proto.params.len());
         let mut out = Vec::new();
         for p in f.proto.params.iter().take(n) {
@@ -354,19 +380,31 @@ impl Host for Vm {
         }
     }
     fn zip_count(&mut self, id: i64) -> i64 {
-        self.zip_archives.get(&(id as u32)).map(|z| z.count() as i64).unwrap_or(0)
+        self.zip_archives
+            .get(&(id as u32))
+            .map(|z| z.count() as i64)
+            .unwrap_or(0)
     }
     fn zip_name_index(&mut self, id: i64, i: i64) -> Option<Vec<u8>> {
-        self.zip_archives.get_mut(&(id as u32)).and_then(|z| z.name_index(i as usize))
+        self.zip_archives
+            .get_mut(&(id as u32))
+            .and_then(|z| z.name_index(i as usize))
     }
     fn zip_stat_index(&mut self, id: i64, i: i64) -> Option<(Vec<u8>, u64, u64)> {
-        self.zip_archives.get_mut(&(id as u32)).and_then(|z| z.stat_index(i as usize))
+        self.zip_archives
+            .get_mut(&(id as u32))
+            .and_then(|z| z.stat_index(i as usize))
     }
     fn zip_get_from_name(&mut self, id: i64, name: &[u8]) -> Option<Vec<u8>> {
-        self.zip_archives.get_mut(&(id as u32)).and_then(|z| z.get_from_name(name))
+        self.zip_archives
+            .get_mut(&(id as u32))
+            .and_then(|z| z.get_from_name(name))
     }
     fn zip_extract_to(&mut self, id: i64, dest: &[u8]) -> bool {
-        self.zip_archives.get_mut(&(id as u32)).map(|z| z.extract_to(dest)).unwrap_or(false)
+        self.zip_archives
+            .get_mut(&(id as u32))
+            .map(|z| z.extract_to(dest))
+            .unwrap_or(false)
     }
     fn zip_close(&mut self, id: i64) {
         self.zip_archives.remove(&(id as u32));
@@ -377,7 +415,9 @@ impl Host for Vm {
     }
 
     fn stream_open(&mut self, path: &[u8], mode: &[u8]) -> Option<Value> {
-        let writable = mode.iter().any(|&b| matches!(b, b'w' | b'a' | b'x' | b'c' | b'+'));
+        let writable = mode
+            .iter()
+            .any(|&b| matches!(b, b'w' | b'a' | b'x' | b'c' | b'+'));
         let append = mode.first() == Some(&b'a');
         let state = if path == b"php://stdout" || path == b"php://output" {
             StreamState::Stdout
@@ -386,16 +426,24 @@ impl Host for Vm {
         } else if path == b"php://stdin" {
             StreamState::Stdin
         } else if path == b"php://memory" || path.starts_with(b"php://temp") {
-            StreamState::Mem { buf: Vec::new(), pos: 0 }
+            StreamState::Mem {
+                buf: Vec::new(),
+                pos: 0,
+            }
         } else if path.starts_with(b"php://") {
             return None; // other php:// streams unsupported
         } else if writable {
             let buf = if append {
-                self.wrapper_for(path).and_then(|w| w.get_contents(path)).unwrap_or_default()
+                self.wrapper_for(path)
+                    .and_then(|w| w.get_contents(path))
+                    .unwrap_or_default()
             } else {
                 Vec::new()
             };
-            StreamState::FileWrite { buf, url: path.to_vec() }
+            StreamState::FileWrite {
+                buf,
+                url: path.to_vec(),
+            }
         } else {
             let data = self.wrapper_for(path).and_then(|w| w.get_contents(path))?;
             StreamState::Mem { buf: data, pos: 0 }
@@ -438,7 +486,11 @@ impl Host for Vm {
         let id = res_id(res)?;
         match self.streams.get_mut(&id)? {
             StreamState::Mem { buf, pos } => {
-                let take = if len < 0 { buf.len() - *pos } else { (len as usize).min(buf.len() - *pos) };
+                let take = if len < 0 {
+                    buf.len() - *pos
+                } else {
+                    (len as usize).min(buf.len() - *pos)
+                };
                 let out = buf[*pos..*pos + take].to_vec();
                 *pos += take;
                 Some(out)
@@ -455,7 +507,10 @@ impl Host for Vm {
                     return None;
                 }
                 let start = *pos;
-                let nl = buf[start..].iter().position(|&b| b == b'\n').map(|i| start + i + 1);
+                let nl = buf[start..]
+                    .iter()
+                    .position(|&b| b == b'\n')
+                    .map(|i| start + i + 1);
                 let end = nl.unwrap_or(buf.len());
                 let line = buf[start..end].to_vec();
                 *pos = end;
@@ -475,9 +530,10 @@ impl Host for Vm {
     fn stream_close(&mut self, res: &Value) -> bool {
         let Some(id) = res_id(res) else { return false };
         match self.streams.remove(&id) {
-            Some(StreamState::FileWrite { buf, url }) => {
-                self.wrapper_for(&url).map(|w| w.put_contents(&url, &buf)).is_some()
-            }
+            Some(StreamState::FileWrite { buf, url }) => self
+                .wrapper_for(&url)
+                .map(|w| w.put_contents(&url, &buf))
+                .is_some(),
             Some(_) => true,
             None => false,
         }
@@ -487,7 +543,10 @@ impl Host for Vm {
         let Some(id) = res_id(res) else { return false };
         if let Some(StreamState::FileWrite { buf, url }) = self.streams.get(&id) {
             let (buf, url) = (buf.clone(), url.clone());
-            return self.wrapper_for(&url).map(|w| w.put_contents(&url, &buf)).is_some();
+            return self
+                .wrapper_for(&url)
+                .map(|w| w.put_contents(&url, &buf))
+                .is_some();
         }
         true
     }
@@ -515,10 +574,22 @@ impl Host for Vm {
         a.insert(ArrayKey::from_bytes(b"name"), Value::str(full.clone()));
         a.insert(ArrayKey::from_bytes(b"shortName"), Value::str(short));
         a.insert(ArrayKey::from_bytes(b"namespaceName"), Value::str(ns));
-        a.insert(ArrayKey::from_bytes(b"isAbstract"), Value::Bool(entry.flags.is_abstract));
-        a.insert(ArrayKey::from_bytes(b"isInterface"), Value::Bool(entry.kind == ClassKind::Interface));
-        a.insert(ArrayKey::from_bytes(b"isEnum"), Value::Bool(entry.kind == ClassKind::Enum));
-        a.insert(ArrayKey::from_bytes(b"isFinal"), Value::Bool(entry.flags.is_final));
+        a.insert(
+            ArrayKey::from_bytes(b"isAbstract"),
+            Value::Bool(entry.flags.is_abstract),
+        );
+        a.insert(
+            ArrayKey::from_bytes(b"isInterface"),
+            Value::Bool(entry.kind == ClassKind::Interface),
+        );
+        a.insert(
+            ArrayKey::from_bytes(b"isEnum"),
+            Value::Bool(entry.kind == ClassKind::Enum),
+        );
+        a.insert(
+            ArrayKey::from_bytes(b"isFinal"),
+            Value::Bool(entry.flags.is_final),
+        );
         a.insert(
             ArrayKey::from_bytes(b"isInstantiable"),
             Value::Bool(entry.kind == ClassKind::Class && !entry.flags.is_abstract),
@@ -533,7 +604,9 @@ impl Host for Vm {
         let mut ifaces = PhpArray::new();
         for &anc in &entry.ancestors {
             if anc != cid && self.classes[anc as usize].kind == ClassKind::Interface {
-                ifaces.push(Value::str(self.classes[anc as usize].name.as_bytes().to_vec()));
+                ifaces.push(Value::str(
+                    self.classes[anc as usize].name.as_bytes().to_vec(),
+                ));
             }
         }
         a.insert(ArrayKey::from_bytes(b"interfaces"), Value::Array(ifaces));
@@ -557,11 +630,17 @@ impl Host for Vm {
 
     fn class_constant(&self, class: &[u8], name: &[u8]) -> Option<Value> {
         let cid = self.resolve_class_by_name(class).ok()?;
-        self.classes[cid as usize].constants.get(name).map(|c| c.value.clone())
+        self.classes[cid as usize]
+            .constants
+            .get(name)
+            .map(|c| c.value.clone())
     }
 
     fn reflect_is_a(&self, name: &[u8], other: &[u8]) -> bool {
-        match (self.resolve_class_by_name(name), self.resolve_class_by_name(other)) {
+        match (
+            self.resolve_class_by_name(name),
+            self.resolve_class_by_name(other),
+        ) {
             (Ok(a), Ok(b)) => self.classes[a as usize].ancestors.contains(&b),
             _ => false,
         }
@@ -578,7 +657,11 @@ impl Host for Vm {
         if entry.kind != ClassKind::Class || entry.flags.is_abstract {
             return Err(Thrown::error(
                 "Error",
-                format!("Cannot instantiate {} {}", kind_word(entry.kind), String::from_utf8_lossy(&entry.name.as_bytes().to_vec())),
+                format!(
+                    "Cannot instantiate {} {}",
+                    kind_word(entry.kind),
+                    String::from_utf8_lossy(entry.name.as_bytes())
+                ),
             ));
         }
         let obj = self.new_object(cid);
@@ -594,7 +677,9 @@ impl Host for Vm {
 
     fn reflect_set_prop(&mut self, obj: &Value, name: &[u8], val: Value) -> bool {
         if let Value::Object(h) = deref(obj) {
-            h.borrow_mut().properties.insert(PhpStr::from_bytes(name.to_vec()), val);
+            h.borrow_mut()
+                .properties
+                .insert(PhpStr::from_bytes(name.to_vec()), val);
             true
         } else {
             false
@@ -609,9 +694,18 @@ impl Host for Vm {
             let mut d = PhpArray::new();
             d.insert(ArrayKey::from_bytes(b"name"), Value::str(name.clone()));
             d.insert(ArrayKey::from_bytes(b"value"), c.value.clone());
-            d.insert(ArrayKey::from_bytes(b"public"), Value::Bool(c.visibility == Visibility::Public));
-            d.insert(ArrayKey::from_bytes(b"protected"), Value::Bool(c.visibility == Visibility::Protected));
-            d.insert(ArrayKey::from_bytes(b"private"), Value::Bool(c.visibility == Visibility::Private));
+            d.insert(
+                ArrayKey::from_bytes(b"public"),
+                Value::Bool(c.visibility == Visibility::Public),
+            );
+            d.insert(
+                ArrayKey::from_bytes(b"protected"),
+                Value::Bool(c.visibility == Visibility::Protected),
+            );
+            d.insert(
+                ArrayKey::from_bytes(b"private"),
+                Value::Bool(c.visibility == Visibility::Private),
+            );
             arr.push(Value::Array(d));
         }
         Some(Value::Array(arr))
@@ -674,9 +768,15 @@ impl Host for Vm {
         // Scope: an explicit class name / object, else the new $this's class,
         // else keep the closure's original scope.
         let scope_class = match deref(scope) {
-            Value::Null => new_this_h.as_ref().map(|h| h.borrow().class).or(cd.bound_class),
+            Value::Null => new_this_h
+                .as_ref()
+                .map(|h| h.borrow().class)
+                .or(cd.bound_class),
             Value::Object(h) => Some(h.borrow().class),
-            v => self.resolve_class_by_name(&conv::to_string_bytes(&v)).ok().or(cd.bound_class),
+            v => self
+                .resolve_class_by_name(&conv::to_string_bytes(&v))
+                .ok()
+                .or(cd.bound_class),
         };
         Some(Value::Closure(Rc::new(rhp_values::ClosureData {
             fnidx: cd.fnidx,
@@ -783,7 +883,8 @@ impl Host for Vm {
                     Value::Str(cn) => self.resolve_class_by_name(cn.as_bytes()).ok(),
                     _ => None,
                 };
-                cls.map(|c| self.lookup_method(c, &mname).is_some()).unwrap_or(false)
+                cls.map(|c| self.lookup_method(c, &mname).is_some())
+                    .unwrap_or(false)
             }
             Value::Object(h) => {
                 let cls = h.borrow().class;
@@ -950,20 +1051,38 @@ impl Vm {
 
         let mut server = PhpArray::new();
         for (k, v) in std::env::vars() {
-            server.insert(ArrayKey::from_bytes(k.as_bytes()), Value::str(v.into_bytes()));
+            server.insert(
+                ArrayKey::from_bytes(k.as_bytes()),
+                Value::str(v.into_bytes()),
+            );
         }
-        server.insert(ArrayKey::from_bytes(b"argv"), Value::Array(argv_arr.clone()));
+        server.insert(
+            ArrayKey::from_bytes(b"argv"),
+            Value::Array(argv_arr.clone()),
+        );
         server.insert(ArrayKey::from_bytes(b"argc"), Value::Int(argc));
-        server.insert(ArrayKey::from_bytes(b"PHP_SELF"), Value::str(script.clone()));
-        server.insert(ArrayKey::from_bytes(b"SCRIPT_NAME"), Value::str(script.clone()));
+        server.insert(
+            ArrayKey::from_bytes(b"PHP_SELF"),
+            Value::str(script.clone()),
+        );
+        server.insert(
+            ArrayKey::from_bytes(b"SCRIPT_NAME"),
+            Value::str(script.clone()),
+        );
         let script_fn = self.main_script_path.clone().unwrap_or(script.clone());
-        server.insert(ArrayKey::from_bytes(b"SCRIPT_FILENAME"), Value::str(script_fn));
+        server.insert(
+            ArrayKey::from_bytes(b"SCRIPT_FILENAME"),
+            Value::str(script_fn),
+        );
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
         server.insert(ArrayKey::from_bytes(b"REQUEST_TIME"), Value::Int(now));
-        server.insert(ArrayKey::from_bytes(b"REQUEST_TIME_FLOAT"), Value::Float(now as f64));
+        server.insert(
+            ArrayKey::from_bytes(b"REQUEST_TIME_FLOAT"),
+            Value::Float(now as f64),
+        );
 
         let set = |vm: &mut Vm, name: &[u8], v: Value| {
             *vm.global_cell(name).borrow_mut() = v;
@@ -972,11 +1091,21 @@ impl Vm {
         set(self, b"_ENV", {
             let mut a = PhpArray::new();
             for (k, v) in std::env::vars() {
-                a.insert(ArrayKey::from_bytes(k.as_bytes()), Value::str(v.into_bytes()));
+                a.insert(
+                    ArrayKey::from_bytes(k.as_bytes()),
+                    Value::str(v.into_bytes()),
+                );
             }
             Value::Array(a)
         });
-        for empty in [&b"_GET"[..], b"_POST", b"_COOKIE", b"_FILES", b"_REQUEST", b"_SESSION"] {
+        for empty in [
+            &b"_GET"[..],
+            b"_POST",
+            b"_COOKIE",
+            b"_FILES",
+            b"_REQUEST",
+            b"_SESSION",
+        ] {
             set(self, empty, Value::Array(PhpArray::new()));
         }
         // $argv / $argc as plain globals (available at top level / via `global`).
@@ -1014,12 +1143,21 @@ impl Vm {
     }
 
     /// Write `val` to property `pname` of `o` (visibility-checked, `__set` fallback).
-    fn prop_store(&mut self, top: usize, o: Value, pname: PhpStr, val: Value) -> Result<(), Thrown> {
+    fn prop_store(
+        &mut self,
+        top: usize,
+        o: Value,
+        pname: PhpStr,
+        val: Value,
+    ) -> Result<(), Thrown> {
         if let Value::Object(h) = o {
             let cls = h.borrow().class;
-            let declared =
-                self.class(cls).props.get(&pname).map(|pe| (pe.visibility, pe.declaring_class));
-            let accessible = declared.map_or(true, |(vis, decl)| {
+            let declared = self
+                .class(cls)
+                .props
+                .get(&pname)
+                .map(|pe| (pe.visibility, pe.declaring_class));
+            let accessible = declared.is_none_or(|(vis, decl)| {
                 self.check_access(self.stack[top].defining_class, decl, vis)
             });
             if declared.is_none() || !accessible {
@@ -1050,6 +1188,7 @@ impl Vm {
     /// Dispatch a method call on `h` by name (generator methods, user method with
     /// visibility check, `__call` fallback, else errors). Shared by `CallMethod`
     /// and `CallMethodDyn`.
+    #[allow(clippy::too_many_arguments)] // VM call-dispatch frame setup
     fn invoke_method(
         &mut self,
         top: usize,
@@ -1071,7 +1210,11 @@ impl Vm {
         }
         let found = self.lookup_method(cls, &mname);
         let accessible = found.as_ref().is_some_and(|m| {
-            self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility)
+            self.check_access(
+                self.stack[top].defining_class,
+                m.defining_class,
+                m.visibility,
+            )
         });
         if let (Some(m), true) = (&found, accessible) {
             let m = m.clone();
@@ -1123,7 +1266,11 @@ impl Vm {
             }
         }
         let accessible = found.as_ref().is_some_and(|m| {
-            self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility)
+            self.check_access(
+                self.stack[top].defining_class,
+                m.defining_class,
+                m.visibility,
+            )
         });
         if !(found.is_some() && accessible) {
             // Undefined / inaccessible static method -> __callStatic.
@@ -1176,7 +1323,10 @@ impl Vm {
                 ArrayKey::from_bytes(b"name"),
                 Value::str(proto.names[p.name as usize].as_bytes().to_vec()),
             );
-            d.insert(ArrayKey::from_bytes(b"optional"), Value::Bool(p.default.is_some() || p.variadic));
+            d.insert(
+                ArrayKey::from_bytes(b"optional"),
+                Value::Bool(p.default.is_some() || p.variadic),
+            );
             d.insert(ArrayKey::from_bytes(b"variadic"), Value::Bool(p.variadic));
             d.insert(ArrayKey::from_bytes(b"byref"), Value::Bool(p.by_ref));
             let (has_def, def) = match &p.default {
@@ -1192,8 +1342,14 @@ impl Vm {
                     let name = name.strip_prefix('?').unwrap_or(&name).to_string();
                     d.insert(ArrayKey::from_bytes(b"hasType"), Value::Bool(true));
                     d.insert(ArrayKey::from_bytes(b"type"), Value::str(name.into_bytes()));
-                    d.insert(ArrayKey::from_bytes(b"typeNullable"), Value::Bool(ty.nullable));
-                    d.insert(ArrayKey::from_bytes(b"typeBuiltin"), Value::Bool(is_builtin_type(ty)));
+                    d.insert(
+                        ArrayKey::from_bytes(b"typeNullable"),
+                        Value::Bool(ty.nullable),
+                    );
+                    d.insert(
+                        ArrayKey::from_bytes(b"typeBuiltin"),
+                        Value::Bool(is_builtin_type(ty)),
+                    );
                 }
                 None => {
                     d.insert(ArrayKey::from_bytes(b"hasType"), Value::Bool(false));
@@ -1210,7 +1366,9 @@ impl Vm {
     fn value_instanceof(&self, v: &Value, name: &[u8]) -> bool {
         match v {
             Value::Object(h) => match self.resolve_class_by_name(name) {
-                Ok(cid) => self.classes[h.borrow().class as usize].ancestors.contains(&cid),
+                Ok(cid) => self.classes[h.borrow().class as usize]
+                    .ancestors
+                    .contains(&cid),
                 Err(_) => true,
             },
             Value::Closure(_) => name.eq_ignore_ascii_case(b"Closure"),
@@ -1231,21 +1389,19 @@ impl Vm {
             K::Array => matches!(v, Value::Array(_)),
             K::Object => matches!(v, Value::Object(_) | Value::Closure(_)),
             K::Callable => self.is_callable_value(v),
-            K::Iterable => {
-                matches!(v, Value::Array(_)) || self.value_instanceof(v, b"Traversable")
-            }
+            K::Iterable => matches!(v, Value::Array(_)) || self.value_instanceof(v, b"Traversable"),
             K::Null => matches!(v, Value::Null),
             K::Named(n) => self.value_instanceof(v, n.as_bytes()),
             K::SelfType | K::StaticType => match (v, ctx) {
-                (Value::Object(h), Some(c)) => {
-                    self.classes[h.borrow().class as usize].ancestors.contains(&c)
-                }
+                (Value::Object(h), Some(c)) => self.classes[h.borrow().class as usize]
+                    .ancestors
+                    .contains(&c),
                 _ => false,
             },
             K::Parent => match (v, ctx.and_then(|c| self.classes[c as usize].parent)) {
-                (Value::Object(h), Some(p)) => {
-                    self.classes[h.borrow().class as usize].ancestors.contains(&p)
-                }
+                (Value::Object(h), Some(p)) => self.classes[h.borrow().class as usize]
+                    .ancestors
+                    .contains(&p),
                 _ => false,
             },
             K::Void | K::Never => false,
@@ -1323,14 +1479,18 @@ impl Vm {
                 Ok(Some(coerced)) => frame.regs[p.cv as usize] = coerced,
                 Err(()) => {
                     let fname = String::from_utf8_lossy(proto.name.as_bytes()).into_owned();
-                    let pname =
-                        String::from_utf8_lossy(proto.names[p.name as usize].as_bytes()).into_owned();
+                    let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
+                        .into_owned();
                     // php appends the call site (the caller is the current top of
                     // stack — the new frame has not been pushed yet).
                     let site = self.stack.last().map(|f| {
                         let pc = f.pc.saturating_sub(1) as u32;
-                        let idx = f.proto.debug.lines.partition_point(|(p, _)| (*p as u32) <= pc);
-                        let line = if idx == 0 { 0 } else { f.proto.debug.lines[idx - 1].1 };
+                        let idx = f.proto.debug.lines.partition_point(|(p, _)| *p <= pc);
+                        let line = if idx == 0 {
+                            0
+                        } else {
+                            f.proto.debug.lines[idx - 1].1
+                        };
                         format!(
                             ", called in {} on line {}",
                             String::from_utf8_lossy(f.proto.debug.file.as_bytes()),
@@ -1357,13 +1517,22 @@ impl Vm {
 
     /// Enforce a function's declared return type on `v`, coercing in coercive
     /// mode. `void`/`never`/`mixed` and unknowable types are not checked.
-    fn check_return_type(&self, proto: &FunctionProto, top: usize, v: Value) -> Result<Value, Thrown> {
+    fn check_return_type(
+        &self,
+        proto: &FunctionProto,
+        top: usize,
+        v: Value,
+    ) -> Result<Value, Thrown> {
         use rhp_bytecode::TypeKind as K;
         let ty = match &proto.return_type {
             Some(t) => t,
             None => return Ok(v),
         };
-        if ty.kinds.iter().any(|k| matches!(k, K::Void | K::Never | K::Mixed)) {
+        if ty
+            .kinds
+            .iter()
+            .any(|k| matches!(k, K::Void | K::Never | K::Mixed))
+        {
             return Ok(v);
         }
         let ctx = self.stack[top].defining_class;
@@ -1389,7 +1558,10 @@ impl Vm {
     /// The strict-types mode of the current caller (top of stack), for argument
     /// coercion of a call about to be made.
     fn caller_strict(&self) -> bool {
-        self.stack.last().map(|f| f.proto.strict_types).unwrap_or(false)
+        self.stack
+            .last()
+            .map(|f| f.proto.strict_types)
+            .unwrap_or(false)
     }
 
     fn value_debug_type(&self, v: &Value) -> String {
@@ -1468,17 +1640,20 @@ impl Vm {
         // Install (hoist) all declared functions, keyed case-insensitively.
         for (idx, proto) in prog.functions.iter().enumerate() {
             self.functions.push(proto.clone());
-            self.fn_names.insert(proto.name.as_bytes().to_ascii_lowercase(), idx);
+            self.fn_names
+                .insert(proto.name.as_bytes().to_ascii_lowercase(), idx);
         }
         // Register anonymous closure / arrow-function protos (indexed by fnidx).
         self.closures = prog.closures.clone();
         // Install user-defined global constants.
         for (name, value) in &prog.constants {
-            self.constants.insert(name.as_bytes().to_vec(), value.clone());
+            self.constants
+                .insert(name.as_bytes().to_vec(), value.clone());
         }
         // Record {main}'s variable -> register map for `global $x`.
         for (reg, name) in prog.main_var_names.iter().enumerate() {
-            self.main_cv_names.insert(name.as_bytes().to_vec(), reg as Reg);
+            self.main_cv_names
+                .insert(name.as_bytes().to_vec(), reg as Reg);
         }
         // Link all declared classes (flatten inheritance, resolve forward refs).
         self.install_classes(&prog.classes)?;
@@ -1487,7 +1662,12 @@ impl Vm {
         // $argv / $argc are available in the top-level (global) scope: bind the
         // {main} frame's CVs of those names to the seeded global values.
         for name in [&b"argv"[..], b"argc"] {
-            if let Some(reg) = prog.main.cv_var_names.iter().position(|n| n.as_bytes() == name) {
+            if let Some(reg) = prog
+                .main
+                .cv_var_names
+                .iter()
+                .position(|n| n.as_bytes() == name)
+            {
                 let v = self.global_cell(name).borrow().clone();
                 main_frame.regs[reg] = v;
             }
@@ -1582,8 +1762,12 @@ impl Vm {
         let pc = f.pc.saturating_sub(1) as u32;
         let lines = &f.proto.debug.lines;
         // Largest (pc,line) entry whose pc <= the current pc.
-        let idx = lines.partition_point(|(p, _)| (*p as u32) <= pc);
-        if idx == 0 { 0 } else { lines[idx - 1].1 }
+        let idx = lines.partition_point(|(p, _)| *p <= pc);
+        if idx == 0 {
+            0
+        } else {
+            lines[idx - 1].1
+        }
     }
 
     /// The source file name of frame `top` (for exception getFile()).
@@ -1603,7 +1787,8 @@ impl Vm {
     fn cursor_unset(&mut self, top: usize, steps: &[CursorStep]) {
         // `unset($obj[$k])` on an ArrayAccess object -> offsetUnset.
         if steps.len() == 1 {
-            if let (Some(h), Some(CursorStep::Key(k))) = (self.cursor_root_obj(top), steps.first()) {
+            if let (Some(h), Some(CursorStep::Key(k))) = (self.cursor_root_obj(top), steps.first())
+            {
                 let cls = h.borrow().class;
                 if self.class_implements(cls, b"ArrayAccess") {
                     if let Some(m) = self.lookup_method(cls, b"offsetunset") {
@@ -1650,7 +1835,7 @@ impl Vm {
                         return Err(thrown); // Exit / Unsupported: straight to the SAPI
                     }
                     match self.unwind(thrown, 0)? {
-                        UnwindResult::Caught => {} // handler installed; re-enter
+                        UnwindResult::Caught => {}                 // handler installed; re-enter
                         UnwindResult::Escaped(t) => return Err(t), // uncaught
                     }
                 }
@@ -1698,11 +1883,21 @@ impl Vm {
                 Instr::Div { dst, a, b } => self.bin(top, dst, a, b, ops::div)?,
                 Instr::Mod { dst, a, b } => self.bin(top, dst, a, b, ops::modulo)?,
                 Instr::Pow { dst, a, b } => self.bin(top, dst, a, b, ops::pow)?,
-                Instr::BitAnd { dst, a, b } => self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::And)),
-                Instr::BitOr { dst, a, b } => self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Or)),
-                Instr::BitXor { dst, a, b } => self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Xor)),
-                Instr::Shl { dst, a, b } => self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Shl)),
-                Instr::Shr { dst, a, b } => self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Shr)),
+                Instr::BitAnd { dst, a, b } => {
+                    self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::And))
+                }
+                Instr::BitOr { dst, a, b } => {
+                    self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Or))
+                }
+                Instr::BitXor { dst, a, b } => {
+                    self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Xor))
+                }
+                Instr::Shl { dst, a, b } => {
+                    self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Shl))
+                }
+                Instr::Shr { dst, a, b } => {
+                    self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Shr))
+                }
                 Instr::Concat { dst, a, b } => {
                     let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
                     let v = if matches!(x, Value::Object(_)) || matches!(y, Value::Object(_)) {
@@ -1728,7 +1923,12 @@ impl Vm {
                     let v = self.reg_get(top, a);
                     self.reg_set(top, dst, Value::Bool(!conv::to_bool(&v)));
                 }
-                Instr::IncDec { dst, cv, pre, delta } => {
+                Instr::IncDec {
+                    dst,
+                    cv,
+                    pre,
+                    delta,
+                } => {
                     let cur = self.reg_get(top, cv);
                     let new = inc_dec_value(&cur, delta as i64);
                     self.cv_assign(top, cv, new.clone());
@@ -1861,11 +2061,17 @@ impl Vm {
                     }
                 }
 
-                Instr::Call { dst, name, base, argc, fallback } => {
+                Instr::Call {
+                    dst,
+                    name,
+                    base,
+                    argc,
+                    fallback,
+                } => {
                     let (user, fname) = self.resolve_fn(name, fallback, &proto.names);
-                    if let Some(reason) = builtins::is_refused(
-                        std::str::from_utf8(&fname).unwrap_or(""),
-                    ) {
+                    if let Some(reason) =
+                        builtins::is_refused(std::str::from_utf8(&fname).unwrap_or(""))
+                    {
                         let shown = String::from_utf8_lossy(&fname).into_owned();
                         return Err(Thrown::unsupported(format!("{shown}()"), reason));
                     }
@@ -1881,7 +2087,12 @@ impl Vm {
                     }
                 }
 
-                Instr::MakeClosure { dst, fnidx, base, ncaptures } => {
+                Instr::MakeClosure {
+                    dst,
+                    fnidx,
+                    base,
+                    ncaptures,
+                } => {
                     // Raw (non-deref) read: a by-reference capture arrives as a
                     // `Value::Ref` (from MakeRef) and must stay a Ref so writes
                     // inside the closure reach the outer variable; by-value
@@ -1946,7 +2157,12 @@ impl Vm {
                     });
                     self.reg_set(top, dst, Value::Closure(cd));
                 }
-                Instr::CallDyn { dst, callee, base, argc } => {
+                Instr::CallDyn {
+                    dst,
+                    callee,
+                    base,
+                    argc,
+                } => {
                     let c = self.reg_get(top, callee);
                     let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
                     let out = self.call_callable_value(&c, args)?;
@@ -1968,7 +2184,8 @@ impl Vm {
                     if let Value::Object(h) = &a {
                         if self.class_implements(h.borrow().class, b"ArrayAccess") {
                             let m = self.lookup_method(h.borrow().class, b"offsetget").unwrap();
-                            let r = self.call_sync(&m, Some(h.clone()), h.borrow().class, vec![k])?;
+                            let r =
+                                self.call_sync(&m, Some(h.clone()), h.borrow().class, vec![k])?;
                             self.reg_set(top, dst, r);
                             continue;
                         }
@@ -2045,7 +2262,12 @@ impl Vm {
                 }
 
                 // -- foreach --
-                Instr::FeReset { arr_reg, pos_reg, src, end } => {
+                Instr::FeReset {
+                    arr_reg,
+                    pos_reg,
+                    src,
+                    end,
+                } => {
                     match self.reg_get(top, src) {
                         Value::Array(a) if !a.is_empty() => {
                             self.reg_set(top, arr_reg, Value::Array(a));
@@ -2090,7 +2312,13 @@ impl Vm {
                         _ => self.stack[top].pc = end as usize,
                     }
                 }
-                Instr::FeFetch { arr_reg, pos_reg, key_cv, val_cv, end } => {
+                Instr::FeFetch {
+                    arr_reg,
+                    pos_reg,
+                    key_cv,
+                    val_cv,
+                    end,
+                } => {
                     // Generator mode. The advance happens at the TOP of each
                     // iteration except the first, so the generator's post-yield
                     // code runs *after* the loop body (unlike an array's pos++).
@@ -2147,7 +2375,7 @@ impl Vm {
                     };
                     match a.get_index(pos) {
                         Some((k, v)) => {
-                            let (k, v) = (k.clone(), deref(&v).clone());
+                            let (k, v) = (k.clone(), deref(v).clone());
                             // Bind as a PHP variable: if the loop var is still a
                             // reference (e.g. left over from a prior by-ref loop),
                             // write through it — matching PHP's foreach gotcha.
@@ -2161,7 +2389,11 @@ impl Vm {
                     }
                 }
 
-                Instr::FeResetRef { arr_cv, pos_reg, end } => {
+                Instr::FeResetRef {
+                    arr_cv,
+                    pos_reg,
+                    end,
+                } => {
                     let nonempty = match deref(&self.stack[top].regs[arr_cv as usize]) {
                         Value::Array(a) => !a.is_empty(),
                         // A plain object iterates its properties by reference;
@@ -2175,7 +2407,13 @@ impl Vm {
                         self.stack[top].pc = end as usize;
                     }
                 }
-                Instr::FeFetchRef { arr_cv, pos_reg, key_cv, val_cv, end } => {
+                Instr::FeFetchRef {
+                    arr_cv,
+                    pos_reg,
+                    key_cv,
+                    val_cv,
+                    end,
+                } => {
                     let pos = match self.reg_get(top, pos_reg) {
                         Value::Int(n) => n as usize,
                         _ => 0,
@@ -2183,7 +2421,8 @@ impl Vm {
                     // By-reference foreach over a plain object: alias each
                     // accessible property slot so writes through the loop var are
                     // visible on the object (matches PHP).
-                    if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]).clone() {
+                    if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]).clone()
+                    {
                         let caller = self.stack[top].defining_class;
                         let cls = h.borrow().class;
                         let mut b = h.borrow_mut();
@@ -2193,7 +2432,9 @@ impl Vm {
                         while idx < n {
                             let name = b.properties.get_index(idx).unwrap().0.clone();
                             let visible = match self.class(cls).props.get(&name) {
-                                Some(pe) => self.check_access(caller, pe.declaring_class, pe.visibility),
+                                Some(pe) => {
+                                    self.check_access(caller, pe.declaring_class, pe.visibility)
+                                }
                                 None => true, // dynamic properties are public
                             };
                             if visible {
@@ -2303,7 +2544,13 @@ impl Vm {
                 }
 
                 // -- OOP --
-                Instr::New { dst, class, base, argc, .. } => {
+                Instr::New {
+                    dst,
+                    class,
+                    base,
+                    argc,
+                    ..
+                } => {
                     let cls = self.resolve_class_autoload(top, class)?;
                     let entry = self.class(cls);
                     if entry.kind != ClassKind::Class || entry.flags.is_abstract {
@@ -2332,8 +2579,10 @@ impl Vm {
                         let line = self.current_line(top);
                         let file = self.current_file(top);
                         let mut b = obj.borrow_mut();
-                        b.properties.insert(rhp_values::PhpStr::from("line"), Value::Int(line as i64));
-                        b.properties.insert(rhp_values::PhpStr::from("file"), Value::str(file));
+                        b.properties
+                            .insert(rhp_values::PhpStr::from("line"), Value::Int(line as i64));
+                        b.properties
+                            .insert(rhp_values::PhpStr::from("file"), Value::str(file));
                     }
                     self.reg_set(top, dst, Value::Object(obj.clone()));
                     // Run __construct, discarding its return (into the arg window).
@@ -2359,7 +2608,13 @@ impl Vm {
                     let val = self.reg_get(top, src);
                     self.prop_store(top, o, pname, val)?;
                 }
-                Instr::CallMethodDyn { dst, obj, name, base, argc } => {
+                Instr::CallMethodDyn {
+                    dst,
+                    obj,
+                    name,
+                    base,
+                    argc,
+                } => {
                     let o = self.reg_get(top, obj);
                     let mname = conv::to_string_bytes(&self.reg_get(top, name));
                     let Value::Object(h) = o else {
@@ -2395,7 +2650,8 @@ impl Vm {
                                     match self.lookup_method(cls, b"__isset") {
                                         Some(m) => {
                                             let nm = Value::str(pname.as_bytes().to_vec());
-                                            let r = self.call_sync(&m, Some(h.clone()), cls, vec![nm])?;
+                                            let r =
+                                                self.call_sync(&m, Some(h.clone()), cls, vec![nm])?;
                                             conv::to_bool(&r)
                                         }
                                         None => false,
@@ -2423,7 +2679,9 @@ impl Vm {
                         }
                     }
                 }
-                Instr::FetchStaticProp { dst, class, name, .. } => {
+                Instr::FetchStaticProp {
+                    dst, class, name, ..
+                } => {
                     let cls = self.resolve_class_autoload(top, class)?;
                     let pname = proto.names[name as usize].as_bytes().to_vec();
                     if let Some(sp) = self.class(cls).static_props.get(&pname) {
@@ -2436,7 +2694,9 @@ impl Vm {
                     let v = cell.borrow().clone();
                     self.reg_set(top, dst, v);
                 }
-                Instr::FetchClassConst { dst, class, name, .. } => {
+                Instr::FetchClassConst {
+                    dst, class, name, ..
+                } => {
                     let name_b = proto.names[name as usize].as_bytes().to_vec();
                     let cls = self.resolve_class_autoload(top, class)?;
                     if name_b == b"class" {
@@ -2465,7 +2725,14 @@ impl Vm {
                         }
                     }
                 }
-                Instr::CallMethod { dst, obj, name, base, argc, .. } => {
+                Instr::CallMethod {
+                    dst,
+                    obj,
+                    name,
+                    base,
+                    argc,
+                    ..
+                } => {
                     let o = self.reg_get(top, obj);
                     let mname = proto.names[name as usize].as_bytes().to_vec();
                     let Value::Object(h) = o else {
@@ -2481,11 +2748,24 @@ impl Vm {
                     let cls = h.borrow().class;
                     self.invoke_method(top, h, cls, mname, dst, base, argc)?;
                 }
-                Instr::CallStatic { dst, class, name, base, argc, .. } => {
+                Instr::CallStatic {
+                    dst,
+                    class,
+                    name,
+                    base,
+                    argc,
+                    ..
+                } => {
                     let mname = proto.names[name as usize].as_bytes().to_vec();
                     self.do_call_static(top, class, mname, dst, base, argc)?;
                 }
-                Instr::CallStaticDyn { dst, class, name, base, argc } => {
+                Instr::CallStaticDyn {
+                    dst,
+                    class,
+                    name,
+                    base,
+                    argc,
+                } => {
                     let mname = conv::to_string_bytes(&self.reg_get(top, name));
                     self.do_call_static(top, class, mname, dst, base, argc)?;
                 }
@@ -2513,7 +2793,10 @@ impl Vm {
                 Instr::CloneObj { dst, src } => {
                     let v = self.reg_get(top, src);
                     let Value::Object(h) = v else {
-                        return Err(Thrown::error("Error", "__clone method called on non-object"));
+                        return Err(Thrown::error(
+                            "Error",
+                            "__clone method called on non-object",
+                        ));
                     };
                     let (cls, props) = {
                         let od = h.borrow();
@@ -2521,8 +2804,11 @@ impl Vm {
                     };
                     let id = self.next_object_id;
                     self.next_object_id += 1;
-                    let new_obj: ObjectHandle =
-                        Rc::new(RefCell::new(ObjectData { class: cls, id, properties: props }));
+                    let new_obj: ObjectHandle = Rc::new(RefCell::new(ObjectData {
+                        class: cls,
+                        id,
+                        properties: props,
+                    }));
                     self.reg_set(top, dst, Value::Object(new_obj.clone()));
                     if let Some(m) = self.lookup_method(cls, b"__clone") {
                         self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;
@@ -2570,7 +2856,12 @@ impl Vm {
                     self.reg_set(top, dst, Value::Ref(Rc::new(RefCell::new(v))));
                 }
 
-                Instr::CallV { dst, name, args, fallback } => {
+                Instr::CallV {
+                    dst,
+                    name,
+                    args,
+                    fallback,
+                } => {
                     let (user, fname) = self.resolve_fn(name, fallback, &proto.names);
                     if let Some(reason) =
                         builtins::is_refused(std::str::from_utf8(&fname).unwrap_or(""))
@@ -2609,10 +2900,17 @@ impl Vm {
                         self.push_method_frame(&m, Some(obj), cls, argv, Reg::MAX)?;
                     }
                 }
-                Instr::CallMethodV { dst, obj, name, args } => {
+                Instr::CallMethodV {
+                    dst,
+                    obj,
+                    name,
+                    args,
+                } => {
                     let o = self.reg_get(top, obj);
                     let Value::Object(h) = o else {
-                        return Err(Thrown::type_error("Call to a member function on non-object"));
+                        return Err(Thrown::type_error(
+                            "Call to a member function on non-object",
+                        ));
                     };
                     let cls = h.borrow().class;
                     let mname = proto.names[name as usize].as_bytes().to_vec();
@@ -2626,14 +2924,28 @@ impl Vm {
                             ),
                         ));
                     };
-                    if !self.check_access(self.stack[top].defining_class, m.defining_class, m.visibility) {
-                        return Err(self.access_err("method", m.defining_class, &mname, m.visibility));
+                    if !self.check_access(
+                        self.stack[top].defining_class,
+                        m.defining_class,
+                        m.visibility,
+                    ) {
+                        return Err(self.access_err(
+                            "method",
+                            m.defining_class,
+                            &mname,
+                            m.visibility,
+                        ));
                     }
                     let arr = self.reg_get(top, args);
                     let argv = self.spread_args(&arr);
                     self.push_method_frame(&m, Some(h.clone()), cls, argv, dst)?;
                 }
-                Instr::CallStaticV { dst, class, name, args } => {
+                Instr::CallStaticV {
+                    dst,
+                    class,
+                    name,
+                    args,
+                } => {
                     let cls = self.resolve_class_autoload(top, class)?;
                     let mname = proto.names[name as usize].as_bytes().to_vec();
                     let Some(m) = self.lookup_method(cls, &mname) else {
@@ -2663,11 +2975,17 @@ impl Vm {
                     self.push_method_frame(&m, this, called, argv, dst)?;
                 }
 
-                Instr::FetchConst { dst, name, fallback } => {
+                Instr::FetchConst {
+                    dst,
+                    name,
+                    fallback,
+                } => {
                     let cname = proto.names[name as usize].as_bytes().to_vec();
                     let v = self.constants.get(&cname).cloned().or_else(|| {
                         if fallback != rhp_bytecode::NO_NAME {
-                            self.constants.get(proto.names[fallback as usize].as_bytes()).cloned()
+                            self.constants
+                                .get(proto.names[fallback as usize].as_bytes())
+                                .cloned()
                         } else {
                             None
                         }
@@ -2679,7 +2997,10 @@ impl Vm {
                         None => {
                             return Err(Thrown::error(
                                 "Error",
-                                format!("Undefined constant \"{}\"", String::from_utf8_lossy(&cname)),
+                                format!(
+                                    "Undefined constant \"{}\"",
+                                    String::from_utf8_lossy(&cname)
+                                ),
                             ))
                         }
                     }
@@ -2780,13 +3101,19 @@ impl Vm {
             let proto = self.stack[top].proto.clone();
             // The throwing pc has already been advanced past the faulting instr.
             let throw_pc = (self.stack[top].pc as u32).saturating_sub(1);
-            if let Some(region) =
-                proto.exception_table.iter().find(|r| throw_pc >= r.start && throw_pc < r.end)
+            if let Some(region) = proto
+                .exception_table
+                .iter()
+                .find(|r| throw_pc >= r.start && throw_pc < r.end)
             {
                 let region = region.clone();
                 if let Some(cls) = self.thrown_class_id(&thrown) {
                     for arm in &region.catches {
-                        if arm.classes.iter().any(|cn| self.class_matches(cls, cn.as_bytes())) {
+                        if arm
+                            .classes
+                            .iter()
+                            .any(|cn| self.class_matches(cls, cn.as_bytes()))
+                        {
                             let obj = self.thrown_to_object(&thrown)?;
                             if let Some(vr) = arm.var_reg {
                                 self.stack[top].regs[vr as usize] = obj;
@@ -2817,7 +3144,13 @@ impl Vm {
         args: Vec<Value>,
     ) -> Result<Value, Thrown> {
         let proto = method.proto.clone();
-        self.run_proto_sync(proto, this, Some(method.defining_class), Some(called_class), args)
+        self.run_proto_sync(
+            proto,
+            this,
+            Some(method.defining_class),
+            Some(called_class),
+            args,
+        )
     }
 
     /// Push a capture frame for `proto` and drive it to completion, returning
@@ -2893,7 +3226,12 @@ impl Vm {
         self.run_included(main, top)
     }
 
-    fn do_include(&mut self, top: usize, raw_path: Vec<u8>, kind: IncludeKind) -> Result<Value, Thrown> {
+    fn do_include(
+        &mut self,
+        top: usize,
+        raw_path: Vec<u8>,
+        kind: IncludeKind,
+    ) -> Result<Value, Thrown> {
         let path_str = String::from_utf8_lossy(&raw_path).into_owned();
         let (realpath, source) = match self.resolve_include_path(top, &path_str) {
             Some(found) => found,
@@ -2901,7 +3239,7 @@ impl Vm {
                 if kind.is_require() {
                     return Err(Thrown::error(
                         "Error",
-                        &format!("Failed opening required '{path_str}'"),
+                        format!("Failed opening required '{path_str}'"),
                     ));
                 }
                 // include of a missing file: php warns (to stderr) and returns false
@@ -2988,7 +3326,10 @@ impl Vm {
             if self.fn_names.contains_key(&lc) {
                 return Err(Thrown::error(
                     "Error",
-                    &format!("Cannot redeclare function {}()", String::from_utf8_lossy(proto.name.as_bytes())),
+                    format!(
+                        "Cannot redeclare function {}()",
+                        String::from_utf8_lossy(proto.name.as_bytes())
+                    ),
                 ));
             }
             let idx = self.functions.len();
@@ -2999,10 +3340,16 @@ impl Vm {
         // user class past that is fatal to redeclare.
         let mut new_classes: Vec<ClassProto> = Vec::new();
         for c in prog.classes.iter().skip(prog.num_prelude_classes) {
-            if self.class_ids.contains_key(&c.name.as_bytes().to_ascii_lowercase()) {
+            if self
+                .class_ids
+                .contains_key(&c.name.as_bytes().to_ascii_lowercase())
+            {
                 return Err(Thrown::error(
                     "Error",
-                    &format!("Cannot declare class {}, because the name is already in use", String::from_utf8_lossy(c.name.as_bytes())),
+                    format!(
+                        "Cannot declare class {}, because the name is already in use",
+                        String::from_utf8_lossy(c.name.as_bytes())
+                    ),
                 ));
             }
             new_classes.push(rebase_class(c, base));
@@ -3022,7 +3369,11 @@ impl Vm {
     /// writes are visible to the caller and reads see the caller's current
     /// values — php's include/eval scope semantics. `$this` / class scope are
     /// forwarded too (an include inside a method can use `$this`).
-    fn run_included(&mut self, main: Rc<FunctionProto>, caller_top: usize) -> Result<Value, Thrown> {
+    fn run_included(
+        &mut self,
+        main: Rc<FunctionProto>,
+        caller_top: usize,
+    ) -> Result<Value, Thrown> {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
@@ -3128,14 +3479,17 @@ impl Vm {
                 Value::Array(a) => {
                     for (k, val) in a.iter() {
                         let name = match k {
-                            ArrayKey::Int(n) => rhp_values::PhpStr::from_bytes(n.to_string().into_bytes()),
+                            ArrayKey::Int(n) => {
+                                rhp_values::PhpStr::from_bytes(n.to_string().into_bytes())
+                            }
                             ArrayKey::Str(s) => s.clone(),
                         };
                         b.properties.insert(name, deref(val));
                     }
                 }
                 scalar => {
-                    b.properties.insert(rhp_values::PhpStr::from("scalar"), scalar);
+                    b.properties
+                        .insert(rhp_values::PhpStr::from("scalar"), scalar);
                 }
             }
         }
@@ -3215,7 +3569,9 @@ impl Vm {
     /// runs lazily under the generator protocol.
     fn make_generator(&mut self, mut frame: Frame) -> Value {
         frame.ret_dst = Reg::MAX;
-        let cls = self.resolve_class_by_name(b"Generator").expect("Generator prelude class");
+        let cls = self
+            .resolve_class_by_name(b"Generator")
+            .expect("Generator prelude class");
         let id = self.next_object_id;
         self.next_object_id += 1;
         let obj = Rc::new(RefCell::new(ObjectData {
@@ -3249,7 +3605,11 @@ impl Vm {
             if g.status == GenStatus::Finished {
                 return Ok(());
             }
-            (g.frame.take().expect("suspended generator frame"), g.status, g.resume_dst)
+            (
+                g.frame.take().expect("suspended generator frame"),
+                g.status,
+                g.resume_dst,
+            )
         };
         if status == GenStatus::Suspended {
             frame.regs[resume_dst as usize] = send;
@@ -3327,7 +3687,9 @@ impl Vm {
             })(),
             b"valid" => (|| {
                 self.gen_ensure_started(id)?;
-                Ok(Value::Bool(self.generators[&id].status != GenStatus::Finished))
+                Ok(Value::Bool(
+                    self.generators[&id].status != GenStatus::Finished,
+                ))
             })(),
             b"next" => (|| {
                 self.gen_ensure_started(id)?;
@@ -3371,7 +3733,14 @@ impl Vm {
             b"from" | b"tryfrom" => {
                 let is_try = method_lc == b"tryfrom";
                 let backing = self.class(cls).enum_backing.ok_or_else(|| {
-                    Thrown::error("Error", format!("{}::{} is not a backed enum", enum_name(), if is_try { "tryFrom()" } else { "from()" }))
+                    Thrown::error(
+                        "Error",
+                        format!(
+                            "{}::{} is not a backed enum",
+                            enum_name(),
+                            if is_try { "tryFrom()" } else { "from()" }
+                        ),
+                    )
                 })?;
                 let input = match args.first() {
                     Some(Value::Ref(r)) => r.borrow().clone(),
@@ -3410,7 +3779,11 @@ impl Vm {
                 };
                 Err(Thrown::error(
                     "ValueError",
-                    format!("{} is not a valid backing value for enum {}", shown, enum_name()),
+                    format!(
+                        "{} is not a valid backing value for enum {}",
+                        shown,
+                        enum_name()
+                    ),
                 ))
             }
             _ => unreachable!("enum_builtin_static called with {:?}", method_lc),
@@ -3475,6 +3848,8 @@ impl Vm {
     }
 
     /// Stringify a value, invoking `__toString` on objects that define it.
+    // Takes `&mut self` because stringifying an object may run its `__toString`.
+    #[allow(clippy::wrong_self_convention)]
     fn to_string_vm(&mut self, v: &Value) -> Result<Vec<u8>, Thrown> {
         let d = match v {
             Value::Ref(r) => r.borrow().clone(),
@@ -3520,9 +3895,10 @@ impl Vm {
             Thrown::Error { class, message } => {
                 let cls = self.resolve_class_by_name(class.as_bytes())?;
                 let obj = self.new_object(cls);
-                obj.borrow_mut()
-                    .properties
-                    .insert(rhp_values::PhpStr::from("message"), Value::str(message.clone()));
+                obj.borrow_mut().properties.insert(
+                    rhp_values::PhpStr::from("message"),
+                    Value::str(message.clone()),
+                );
                 Ok(Value::Object(obj))
             }
             _ => Err(thrown.clone()),
@@ -3559,15 +3935,13 @@ impl Vm {
         argc: u16,
     ) -> Result<(), Thrown> {
         if self.stack.len() >= self.max_depth {
-            return Err(Thrown::error(
-                "Error",
-                "Maximum call stack depth exceeded",
-            ));
+            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
         // Raw (non-deref) copy: by-ref args arrive as `Value::Ref` and must be
         // kept as references; by-value binding derefs in `bind_params`.
-        let args: Vec<Value> =
-            (0..argc).map(|i| self.stack[top].regs[(base + i) as usize].clone()).collect();
+        let args: Vec<Value> = (0..argc)
+            .map(|i| self.stack[top].regs[(base + i) as usize].clone())
+            .collect();
         self.push_user_frame(callee, args, dst)
     }
 
@@ -3656,7 +4030,10 @@ impl Vm {
     /// Call a builtin by name with a pre-collected argument vector.
     fn invoke_builtin(&mut self, name: &str, args: Vec<Value>) -> Result<Value, Thrown> {
         let Some(builtin) = builtins::lookup(name) else {
-            return Err(Thrown::error("Error", format!("Call to undefined function {name}()")));
+            return Err(Thrown::error(
+                "Error",
+                format!("Call to undefined function {name}()"),
+            ));
         };
         if args.len() < builtin.min_args {
             return Err(Thrown::error(
@@ -3707,7 +4084,9 @@ fn kind_word(kind: ClassKind) -> &'static str {
 /// Whether every member of a type is a built-in (non-class) type.
 fn is_builtin_type(ty: &rhp_bytecode::TypeHint) -> bool {
     use rhp_bytecode::TypeKind as K;
-    ty.kinds.iter().all(|k| !matches!(k, K::Named(_) | K::SelfType | K::StaticType | K::Parent))
+    ty.kinds
+        .iter()
+        .all(|k| !matches!(k, K::Named(_) | K::SelfType | K::StaticType | K::Parent))
 }
 
 /// The lone scalar kind of a type (for coercive coercion), or None if there is
@@ -3746,11 +4125,15 @@ fn coerce_scalar(d: &Value, k: &rhp_bytecode::TypeKind) -> Option<Value> {
         K::Float => match d {
             Value::Bool(b) => Some(Value::Float(*b as i64 as f64)),
             Value::Int(n) => Some(Value::Float(*n as f64)),
-            Value::Str(s) => conv::scan_number(s.as_bytes()).map(|(num, _)| Value::Float(num.as_f64())),
+            Value::Str(s) => {
+                conv::scan_number(s.as_bytes()).map(|(num, _)| Value::Float(num.as_f64()))
+            }
             _ => None,
         },
         K::String => match d {
-            Value::Int(_) | Value::Float(_) | Value::Bool(_) => Some(Value::str(conv::to_string_bytes(d))),
+            Value::Int(_) | Value::Float(_) | Value::Bool(_) => {
+                Some(Value::str(conv::to_string_bytes(d)))
+            }
             _ => None,
         },
         K::Bool => match d {
@@ -3906,12 +4289,18 @@ fn read_path(slot: &Value, steps: &[CursorStep]) -> Value {
     };
     match (slot, head) {
         (Value::Array(a), CursorStep::Key(k)) => match ArrayKey::from_value(k) {
-            Some(key) => a.get(&key).map(|c| read_path(c, rest)).unwrap_or(Value::Null),
+            Some(key) => a
+                .get(&key)
+                .map(|c| read_path(c, rest))
+                .unwrap_or(Value::Null),
             None => Value::Null,
         },
         (Value::Object(h), CursorStep::Prop(name)) => {
             let od = h.borrow();
-            od.properties.get(name).map(|c| read_path(c, rest)).unwrap_or(Value::Null)
+            od.properties
+                .get(name)
+                .map(|c| read_path(c, rest))
+                .unwrap_or(Value::Null)
         }
         _ => Value::Null,
     }
@@ -3963,11 +4352,13 @@ fn assign_path(slot: &mut Value, steps: &[CursorStep], value: Value) -> Result<(
         return assign_path(child, rest, value);
     }
     autovivify(slot)?;
-    let Value::Array(arr) = slot else { unreachable!("autovivify ensures array") };
+    let Value::Array(arr) = slot else {
+        unreachable!("autovivify ensures array")
+    };
     let child = match head {
         CursorStep::Key(k) => {
-            let key = ArrayKey::from_value(k)
-                .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
+            let key =
+                ArrayKey::from_value(k).ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
             arr.get_or_insert_mut(key)
         }
         CursorStep::Append => arr.append_mut(),
@@ -4009,7 +4400,12 @@ fn make_ref_path(slot: &mut Value, steps: &[CursorStep]) -> Result<Rc<RefCell<Va
     if let CursorStep::Prop(name) = head {
         let handle = match slot {
             Value::Object(h) => h.clone(),
-            Value::Null => return Err(Thrown::error("Error", "Attempt to reference property on null")),
+            Value::Null => {
+                return Err(Thrown::error(
+                    "Error",
+                    "Attempt to reference property on null",
+                ))
+            }
             other => {
                 return Err(Thrown::error(
                     "Error",
@@ -4022,11 +4418,13 @@ fn make_ref_path(slot: &mut Value, steps: &[CursorStep]) -> Result<Rc<RefCell<Va
         return make_ref_path(child, rest);
     }
     autovivify(slot)?;
-    let Value::Array(arr) = slot else { unreachable!("autovivify ensures array") };
+    let Value::Array(arr) = slot else {
+        unreachable!("autovivify ensures array")
+    };
     let child = match head {
         CursorStep::Key(k) => {
-            let key = ArrayKey::from_value(k)
-                .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
+            let key =
+                ArrayKey::from_value(k).ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
             arr.get_or_insert_mut(key)
         }
         CursorStep::Append => arr.append_mut(),
@@ -4041,7 +4439,9 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep]) {
         let mut inner = rc.borrow_mut();
         return unset_path(&mut inner, steps);
     }
-    let Some((head, rest)) = steps.split_first() else { return };
+    let Some((head, rest)) = steps.split_first() else {
+        return;
+    };
     match head {
         CursorStep::Prop(name) => {
             let Value::Object(h) = slot else { return };
@@ -4055,7 +4455,9 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep]) {
         }
         CursorStep::Key(k) => {
             let Value::Array(arr) = slot else { return };
-            let Some(key) = ArrayKey::from_value(k) else { return };
+            let Some(key) = ArrayKey::from_value(k) else {
+                return;
+            };
             if rest.is_empty() {
                 arr.remove(&key);
             } else if let Some(child) = arr.get_mut(&key) {
@@ -4065,7 +4467,6 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep]) {
         CursorStep::Append => {}
     }
 }
-
 
 /// For by-reference foreach: promote the array element at insertion index `pos`
 /// to a shared cell and return `(key, cell)`. The element in the array becomes a
@@ -4130,7 +4531,11 @@ fn bind_params(proto: &FunctionProto, args: &[Value], regs: &mut [Value]) -> Res
         } else if i < args.len() {
             // By-ref params keep the incoming Ref (aliasing the caller's var);
             // by-value params receive a dereferenced copy.
-            regs[p.cv as usize] = if p.by_ref { args[i].clone() } else { deref(&args[i]) };
+            regs[p.cv as usize] = if p.by_ref {
+                args[i].clone()
+            } else {
+                deref(&args[i])
+            };
         } else if let Some(def) = &p.default {
             match def {
                 ParamDefault::Const(k) => regs[p.cv as usize] = proto.consts[*k as usize].clone(),
@@ -4152,7 +4557,11 @@ fn bind_params(proto: &FunctionProto, args: &[Value], regs: &mut [Value]) -> Res
 }
 
 fn required_params(proto: &FunctionProto) -> usize {
-    proto.params.iter().filter(|p| p.default.is_none() && !p.variadic).count()
+    proto
+        .params
+        .iter()
+        .filter(|p| p.default.is_none() && !p.variadic)
+        .count()
 }
 
 fn eval_cmp(kind: CmpKind, a: &Value, b: &Value) -> Value {

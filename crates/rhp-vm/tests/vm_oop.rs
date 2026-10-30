@@ -10,7 +10,10 @@ use common::{run, run_throws};
 
 #[test]
 fn default_parameters() {
-    assert_eq!(run("<?php function f($a, $b = 10) { return $a + $b; } echo f(5), ' ', f(5, 20);"), "15 25");
+    assert_eq!(
+        run("<?php function f($a, $b = 10) { return $a + $b; } echo f(5), ' ', f(5, 20);"),
+        "15 25"
+    );
 }
 
 #[test]
@@ -21,21 +24,41 @@ fn variadic_collects_rest() {
 
 #[test]
 fn recursion_fibonacci() {
-    assert_eq!(run("<?php function fib($n){return $n<2 ? $n : fib($n-1)+fib($n-2);} echo fib(10);"), "55");
+    assert_eq!(
+        run("<?php function fib($n){return $n<2 ? $n : fib($n-1)+fib($n-2);} echo fib(10);"),
+        "55"
+    );
 }
 
 #[test]
 fn function_hoisting_call_before_definition() {
-    assert_eq!(run("<?php echo later(); function later(){return 'ok';}"), "ok");
+    assert_eq!(
+        run("<?php echo later(); function later(){return 'ok';}"),
+        "ok"
+    );
 }
 
 #[test]
 fn named_arguments() {
     let greet = "<?php function greet(string $name, string $greeting='Hello', string $punct='!'){return \"$greeting, $name$punct\";}";
-    assert_eq!(run(&format!("{greet} echo greet(name: 'Bob');")), "Hello, Bob!");
-    assert_eq!(run(&format!("{greet} echo greet(name: 'Al', greeting: 'Hi');")), "Hi, Al!");
-    assert_eq!(run(&format!("{greet} echo greet('Cy', punct: '?');")), "Hello, Cy?");
-    assert_eq!(run(&format!("{greet} echo greet(greeting: 'Hey', name: 'Dee');")), "Hey, Dee!");
+    assert_eq!(
+        run(&format!("{greet} echo greet(name: 'Bob');")),
+        "Hello, Bob!"
+    );
+    assert_eq!(
+        run(&format!("{greet} echo greet(name: 'Al', greeting: 'Hi');")),
+        "Hi, Al!"
+    );
+    assert_eq!(
+        run(&format!("{greet} echo greet('Cy', punct: '?');")),
+        "Hello, Cy?"
+    );
+    assert_eq!(
+        run(&format!(
+            "{greet} echo greet(greeting: 'Hey', name: 'Dee');"
+        )),
+        "Hey, Dee!"
+    );
 }
 
 #[test]
@@ -49,7 +72,10 @@ fn named_arguments_skip_middle_default() {
 
 #[test]
 fn closure_captures_by_value_at_definition() {
-    assert_eq!(run("<?php $x=10; $f=function() use ($x){return $x;}; $x=20; echo $f();"), "10");
+    assert_eq!(
+        run("<?php $x=10; $f=function() use ($x){return $x;}; $x=20; echo $f();"),
+        "10"
+    );
 }
 
 #[test]
@@ -67,7 +93,10 @@ fn nested_closures_capture_outer() {
 
 #[test]
 fn first_class_callable_from_user_function() {
-    assert_eq!(run("<?php function sq($x){return $x*$x;} $f=sq(...); echo $f(5);"), "25");
+    assert_eq!(
+        run("<?php function sq($x){return $x*$x;} $f=sq(...); echo $f(5);"),
+        "25"
+    );
 }
 
 #[test]
@@ -139,14 +168,28 @@ fn method_chaining_returns_this() {
 
 #[test]
 fn clone_is_shallow_copy_independent() {
-    assert_eq!(run("<?php class P{public $n=1;} $a=new P(); $b=clone $a; $b->n=5; echo $a->n, ' ', $b->n;"), "1 5");
+    assert_eq!(
+        run(
+            "<?php class P{public $n=1;} $a=new P(); $b=clone $a; $b->n=5; echo $a->n, ' ', $b->n;"
+        ),
+        "1 5"
+    );
 }
 
 #[test]
 fn instanceof_class_and_interface() {
-    assert_eq!(run("<?php interface I{} class C implements I{} $c=new C(); var_dump($c instanceof I);"), "bool(true)\n");
-    assert_eq!(run("<?php interface I{} class C implements I{} $c=new C(); var_dump($c instanceof C);"), "bool(true)\n");
-    assert_eq!(run("<?php class A{} class B{} var_dump(new A() instanceof B);"), "bool(false)\n");
+    assert_eq!(
+        run("<?php interface I{} class C implements I{} $c=new C(); var_dump($c instanceof I);"),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run("<?php interface I{} class C implements I{} $c=new C(); var_dump($c instanceof C);"),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run("<?php class A{} class B{} var_dump(new A() instanceof B);"),
+        "bool(false)\n"
+    );
 }
 
 #[test]
@@ -165,7 +208,10 @@ fn static_property_shared_across_instances() {
 
 #[test]
 fn class_constants_and_self_reference() {
-    assert_eq!(run("<?php class C{const X=10; const Y=20;} echo C::X, ' ', C::Y;"), "10 20");
+    assert_eq!(
+        run("<?php class C{const X=10; const Y=20;} echo C::X, ' ', C::Y;"),
+        "10 20"
+    );
 }
 
 #[test]
@@ -197,11 +243,32 @@ fn late_static_binding_const_dispatch() {
 #[test]
 fn magic_get_set_isset_unset() {
     let cls = "<?php class C{private array $d=[]; public function __get($n){return $this->d[$n] ?? null;} public function __set($n,$v){$this->d[$n]=$v;} public function __isset($n){return isset($this->d[$n]);} public function __unset($n){unset($this->d[$n]);}}";
-    assert_eq!(run(&format!("{cls} $c=new C(); $c->x=10; $c->y=20; echo $c->x + $c->y;")), "30");
-    assert_eq!(run(&format!("{cls} $c=new C(); $c->x=1; var_dump(isset($c->x));")), "bool(true)\n");
-    assert_eq!(run(&format!("{cls} $c=new C(); var_dump(isset($c->missing));")), "bool(false)\n");
-    assert_eq!(run(&format!("{cls} $c=new C(); $c->x=1; unset($c->x); var_dump(isset($c->x));")), "bool(false)\n");
-    assert_eq!(run(&format!("{cls} $c=new C(); echo $c->gone ?? 'none';")), "none");
+    assert_eq!(
+        run(&format!(
+            "{cls} $c=new C(); $c->x=10; $c->y=20; echo $c->x + $c->y;"
+        )),
+        "30"
+    );
+    assert_eq!(
+        run(&format!(
+            "{cls} $c=new C(); $c->x=1; var_dump(isset($c->x));"
+        )),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run(&format!("{cls} $c=new C(); var_dump(isset($c->missing));")),
+        "bool(false)\n"
+    );
+    assert_eq!(
+        run(&format!(
+            "{cls} $c=new C(); $c->x=1; unset($c->x); var_dump(isset($c->x));"
+        )),
+        "bool(false)\n"
+    );
+    assert_eq!(
+        run(&format!("{cls} $c=new C(); echo $c->gone ?? 'none';")),
+        "none"
+    );
 }
 
 #[test]
@@ -219,15 +286,28 @@ fn magic_invoke() {
 fn magic_tostring_in_contexts() {
     let cls = "<?php class M{public function __construct(public int $v){} public function __toString(){return 'M('.$this->v.')';}}";
     assert_eq!(run(&format!("{cls} $m=new M(7); echo $m;")), "M(7)");
-    assert_eq!(run(&format!("{cls} $m=new M(7); echo \"val=$m\";")), "val=M(7)");
+    assert_eq!(
+        run(&format!("{cls} $m=new M(7); echo \"val=$m\";")),
+        "val=M(7)"
+    );
     assert_eq!(run(&format!("{cls} $m=new M(7); echo (string)$m;")), "M(7)");
 }
 
 #[test]
 fn nullsafe_operator() {
     let cls = "<?php class C{public ?C $next=null; public int $v=0;}";
-    assert_eq!(run(&format!("{cls} $a=new C(); $a->v=1; echo $a->next?->v ?? 'none';")), "none");
-    assert_eq!(run(&format!("{cls} $a=new C(); $a->next=new C(); $a->next->v=9; echo $a->next?->v;")), "9");
+    assert_eq!(
+        run(&format!(
+            "{cls} $a=new C(); $a->v=1; echo $a->next?->v ?? 'none';"
+        )),
+        "none"
+    );
+    assert_eq!(
+        run(&format!(
+            "{cls} $a=new C(); $a->next=new C(); $a->next->v=9; echo $a->next?->v;"
+        )),
+        "9"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -265,12 +345,18 @@ fn try_catch_basic() {
 #[test]
 fn catch_most_specific_type() {
     let f = "<?php function f($x){try{if($x==1)throw new InvalidArgumentException('bad'); if($x==2)throw new RuntimeException('run'); return 'ok';}catch(InvalidArgumentException $e){return 'iae:'.$e->getMessage();}catch(RuntimeException $e){return 'rte:'.$e->getMessage();}}";
-    assert_eq!(run(&format!("{f} echo f(0), '|', f(1), '|', f(2);")), "ok|iae:bad|rte:run");
+    assert_eq!(
+        run(&format!("{f} echo f(0), '|', f(1), '|', f(2);")),
+        "ok|iae:bad|rte:run"
+    );
 }
 
 #[test]
 fn finally_runs_after_try_return() {
-    assert_eq!(run("<?php function f(){try{return 'try';}finally{echo 'fin ';}} echo f();"), "fin try");
+    assert_eq!(
+        run("<?php function f(){try{return 'try';}finally{echo 'fin ';}} echo f();"),
+        "fin try"
+    );
 }
 
 #[test]
@@ -283,7 +369,10 @@ fn finally_runs_after_catch_return() {
 
 #[test]
 fn finally_return_overrides_try_return() {
-    assert_eq!(run("<?php function f(){try{return 'a';}finally{return 'b';}} echo f();"), "b");
+    assert_eq!(
+        run("<?php function f(){try{return 'a';}finally{return 'b';}} echo f();"),
+        "b"
+    );
 }
 
 #[test]
@@ -306,10 +395,22 @@ fn uncaught_exception_propagates_as_throw() {
 
 #[test]
 fn pure_enum_cases_and_identity() {
-    assert_eq!(run("<?php enum Suit{case Hearts; case Spades;} echo Suit::Hearts->name;"), "Hearts");
-    assert_eq!(run("<?php enum Suit{case Hearts; case Spades;} var_dump(Suit::Hearts === Suit::Hearts);"), "bool(true)\n");
-    assert_eq!(run("<?php enum Suit{case Hearts; case Spades;} var_dump(Suit::Hearts === Suit::Spades);"), "bool(false)\n");
-    assert_eq!(run("<?php enum Suit{case Hearts; case Spades;} echo count(Suit::cases());"), "2");
+    assert_eq!(
+        run("<?php enum Suit{case Hearts; case Spades;} echo Suit::Hearts->name;"),
+        "Hearts"
+    );
+    assert_eq!(
+        run("<?php enum Suit{case Hearts; case Spades;} var_dump(Suit::Hearts === Suit::Hearts);"),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run("<?php enum Suit{case Hearts; case Spades;} var_dump(Suit::Hearts === Suit::Spades);"),
+        "bool(false)\n"
+    );
+    assert_eq!(
+        run("<?php enum Suit{case Hearts; case Spades;} echo count(Suit::cases());"),
+        "2"
+    );
 }
 
 #[test]
@@ -322,9 +423,18 @@ fn enum_method_with_match_on_self() {
 
 #[test]
 fn backed_enum_value_from_tryfrom() {
-    assert_eq!(run("<?php enum Code:int{case Ok=200; case NotFound=404;} echo Code::Ok->value;"), "200");
-    assert_eq!(run("<?php enum Code:int{case Ok=200; case NotFound=404;} echo Code::from(404)->name;"), "NotFound");
-    assert_eq!(run("<?php enum Code:int{case Ok=200; case NotFound=404;} var_dump(Code::tryFrom(999));"), "NULL\n");
+    assert_eq!(
+        run("<?php enum Code:int{case Ok=200; case NotFound=404;} echo Code::Ok->value;"),
+        "200"
+    );
+    assert_eq!(
+        run("<?php enum Code:int{case Ok=200; case NotFound=404;} echo Code::from(404)->name;"),
+        "NotFound"
+    );
+    assert_eq!(
+        run("<?php enum Code:int{case Ok=200; case NotFound=404;} var_dump(Code::tryFrom(999));"),
+        "NULL\n"
+    );
 }
 
 #[test]
@@ -335,10 +445,22 @@ fn backed_enum_from_invalid_throws_value_error() {
 
 #[test]
 fn enum_var_dump_shape_and_interfaces() {
-    assert_eq!(run("<?php enum S:string{case A='a';} var_dump(S::A);"), "enum(S::A)\n");
-    assert_eq!(run("<?php enum S:string{case A='a';} var_dump(S::A instanceof UnitEnum);"), "bool(true)\n");
-    assert_eq!(run("<?php enum S:string{case A='a';} var_dump(S::A instanceof BackedEnum);"), "bool(true)\n");
-    assert_eq!(run("<?php enum S{case A;} var_dump(S::A instanceof BackedEnum);"), "bool(false)\n");
+    assert_eq!(
+        run("<?php enum S:string{case A='a';} var_dump(S::A);"),
+        "enum(S::A)\n"
+    );
+    assert_eq!(
+        run("<?php enum S:string{case A='a';} var_dump(S::A instanceof UnitEnum);"),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run("<?php enum S:string{case A='a';} var_dump(S::A instanceof BackedEnum);"),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run("<?php enum S{case A;} var_dump(S::A instanceof BackedEnum);"),
+        "bool(false)\n"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -352,7 +474,10 @@ fn global_keyword_binds_to_main_scope() {
 
 #[test]
 fn global_can_create_new_binding() {
-    assert_eq!(run("<?php function init(){global $fresh; $fresh='hi';} init(); echo $fresh;"), "hi");
+    assert_eq!(
+        run("<?php function init(){global $fresh; $fresh='hi';} init(); echo $fresh;"),
+        "hi"
+    );
 }
 
 #[test]
@@ -365,12 +490,18 @@ fn global_array_append() {
 
 #[test]
 fn static_variable_persists_across_calls() {
-    assert_eq!(run("<?php function tick(){static $n=0; return ++$n;} echo tick(), tick(), tick();"), "123");
+    assert_eq!(
+        run("<?php function tick(){static $n=0; return ++$n;} echo tick(), tick(), tick();"),
+        "123"
+    );
 }
 
 #[test]
 fn static_initializer_is_const_expr() {
-    assert_eq!(run("<?php function acc($x){static $t=2*5; $t+=$x; return $t;} echo acc(5), ' ', acc(3);"), "15 18");
+    assert_eq!(
+        run("<?php function acc($x){static $t=2*5; $t+=$x; return $t;} echo acc(5), ' ', acc(3);"),
+        "15 18"
+    );
 }
 
 #[test]

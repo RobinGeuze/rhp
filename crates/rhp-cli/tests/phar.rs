@@ -7,13 +7,22 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn php_available() -> bool {
-    Command::new("php").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+    Command::new("php")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn can_build_phar() -> bool {
     // phar.readonly must be togglable; check php accepts -d phar.readonly=0.
     Command::new("php")
-        .args(["-d", "phar.readonly=0", "-r", "echo (int)ini_get('phar.readonly');"])
+        .args([
+            "-d",
+            "phar.readonly=0",
+            "-r",
+            "echo (int)ini_get('phar.readonly');",
+        ])
         .output()
         .map(|o| o.stdout == b"0")
         .unwrap_or(false)
@@ -39,8 +48,15 @@ fn build_phar(dir: &Path, name: &str, maker_php: &str) {
         .arg(&maker)
         .output()
         .expect("run php make");
-    assert!(out.status.success(), "phar build failed: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(dir.join(format!("{name}.phar")).exists(), "phar not created");
+    assert!(
+        out.status.success(),
+        "phar build failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        dir.join(format!("{name}.phar")).exists(),
+        "phar not created"
+    );
 }
 
 /// A phar that: executes its stub, maps itself, requires an internal file across
@@ -76,14 +92,26 @@ fn phar_runs_like_php() {
     );
     let main = dir.join("app.phar");
     let php = {
-        let o = Command::new("php").args(["-n"]).arg(&main).arg("hello").output().expect("php");
+        let o = Command::new("php")
+            .args(["-n"])
+            .arg(&main)
+            .arg("hello")
+            .output()
+            .expect("php");
         o.stdout
     };
     let rhp = {
-        let o =
-            Command::new(env!("CARGO_BIN_EXE_rhp")).arg(&main).arg("hello").output().expect("rhp");
+        let o = Command::new(env!("CARGO_BIN_EXE_rhp"))
+            .arg(&main)
+            .arg("hello")
+            .output()
+            .expect("rhp");
         o.stdout
     };
-    assert_eq!(String::from_utf8_lossy(&php), String::from_utf8_lossy(&rhp), "phar stdout differs");
+    assert_eq!(
+        String::from_utf8_lossy(&php),
+        String::from_utf8_lossy(&rhp),
+        "phar stdout differs"
+    );
     assert!(!php.is_empty());
 }

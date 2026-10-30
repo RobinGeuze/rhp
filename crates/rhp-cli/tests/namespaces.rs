@@ -6,7 +6,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn php_available() -> bool {
-    Command::new("php").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+    Command::new("php")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn write(path: &Path, contents: &str) {
@@ -23,7 +27,11 @@ fn run_php(main: &Path) -> Vec<u8> {
 }
 
 fn run_rhp(main: &Path) -> Vec<u8> {
-    Command::new(env!("CARGO_BIN_EXE_rhp")).arg(main).output().expect("run rhp").stdout
+    Command::new(env!("CARGO_BIN_EXE_rhp"))
+        .arg(main)
+        .output()
+        .expect("run rhp")
+        .stdout
 }
 
 fn case_dir(name: &str) -> PathBuf {

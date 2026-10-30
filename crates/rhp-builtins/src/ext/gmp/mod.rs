@@ -165,7 +165,12 @@ fn operand(
         Value::Float(f) => Ok(bigint_from_f64(f)),
         Value::Str(s) => parse_str_auto(s.as_bytes())
             .ok_or_else(|| value_err(fname, argnum, argname, "is not an integer string")),
-        _ => Err(value_err(fname, argnum, argname, "is not an integer string")),
+        _ => Err(value_err(
+            fname,
+            argnum,
+            argname,
+            "is not an integer string",
+        )),
     }
 }
 
@@ -189,7 +194,7 @@ fn gmp_obj(host: &mut dyn Host, n: BigInt) -> Result<Value, Thrown> {
 fn to_radix(n: &BigInt, base: i64) -> Vec<u8> {
     let abs_base = base.unsigned_abs() as u32;
     // 10..35 use upper-case for negative bases or bases > 36, lower-case for 2..36.
-    let upper_10_35 = base < 0 || base > 36;
+    let upper_10_35 = !(0..=36).contains(&base);
     if n.is_zero() {
         return vec![b'0'];
     }
@@ -291,7 +296,11 @@ fn fn_gmp_intval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_gmp_strval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let n = operand(host, args, 0, "gmp_strval", 1, "num")?;
-    let base = if args.len() >= 2 { int_arg(args, 1) } else { 10 };
+    let base = if args.len() >= 2 {
+        int_arg(args, 1)
+    } else {
+        10
+    };
     let ok = (2..=62).contains(&base) || (-36..=-2).contains(&base);
     if !ok {
         return Err(value_err(
@@ -467,8 +476,7 @@ fn fn_gmp_pow(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "must be greater than or equal to 0",
         ));
     }
-    let e = u32::try_from(exp)
-        .map_err(|_| value_err("gmp_pow", 2, "exponent", "is too large"))?;
+    let e = u32::try_from(exp).map_err(|_| value_err("gmp_pow", 2, "exponent", "is too large"))?;
     gmp_obj(host, base.pow(e))
 }
 
@@ -762,7 +770,9 @@ fn set_or_clear_bit(obj: &Value, index: u64, set: bool) {
     let cur = {
         let b = h.borrow();
         match b.properties.get(&key) {
-            Some(Value::Str(s)) => BigInt::parse_bytes(s.as_bytes(), 10).unwrap_or_else(BigInt::zero),
+            Some(Value::Str(s)) => {
+                BigInt::parse_bytes(s.as_bytes(), 10).unwrap_or_else(BigInt::zero)
+            }
             _ => BigInt::zero(),
         }
     };
@@ -904,7 +914,7 @@ fn is_perfect_power(n: &BigInt) -> bool {
     let maxexp = mag.bits(); // |n| < 2^bits, so any exponent <= bits
     let mut e = 2u64;
     while e <= maxexp {
-        if neg && e % 2 == 0 {
+        if neg && e.is_multiple_of(2) {
             e += 1;
             continue;
         }
@@ -1090,7 +1100,15 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         min: usize,
         max: Option<usize>,
     ) {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     }
     put(m, "gmp_init", fn_gmp_init, 1, Some(2));
     put(m, "gmp_intval", fn_gmp_intval, 1, Some(1));

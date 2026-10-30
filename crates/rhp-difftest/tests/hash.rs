@@ -22,7 +22,11 @@ fn hash_matches_php_over_corpus() {
         return;
     }
     let algos = php_hash_algos().expect("query php hash_algos()");
-    assert!(algos.len() >= 40, "expected the full php algo set, got {}", algos.len());
+    assert!(
+        algos.len() >= 40,
+        "expected the full php algo set, got {}",
+        algos.len()
+    );
     let corpus = default_byte_corpus(0xC0FFEE, 48);
 
     let mut failures = Vec::new();
@@ -42,7 +46,12 @@ fn hash_matches_php_over_corpus() {
         }
     }
     eprintln!("[hash] {covered} algorithm(s) byte-identical to php");
-    assert!(failures.is_empty(), "{} algorithm(s) differ:\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} algorithm(s) differ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 fn first_diff(php: &[u8], rhp: &[u8]) -> (String, String) {

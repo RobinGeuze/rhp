@@ -30,7 +30,10 @@ fn integer_division_truncates_toward_zero() {
 fn modulo_sign_follows_dividend() {
     assert_eq!(run("<?php echo -7 % 3;"), "-1");
     assert_eq!(run("<?php echo 7 % -3;"), "1");
-    assert_eq!(run("<?php echo -10 % 3, ' ', 10 % -3, ' ', -10 % -3;"), "-1 1 -1");
+    assert_eq!(
+        run("<?php echo -10 % 3, ' ', 10 % -3, ' ', -10 % -3;"),
+        "-1 1 -1"
+    );
     assert_eq!(run("<?php echo 10 % 3;"), "1");
 }
 
@@ -41,7 +44,10 @@ fn fmod_is_float_remainder() {
 
 #[test]
 fn division_promotes_to_float_only_when_not_exact() {
-    assert_eq!(run("<?php var_dump(10 / 3);"), "float(3.3333333333333335)\n");
+    assert_eq!(
+        run("<?php var_dump(10 / 3);"),
+        "float(3.3333333333333335)\n"
+    );
     assert_eq!(run("<?php var_dump(10 / 2);"), "int(5)\n");
     assert_eq!(run("<?php var_dump(6 / 3);"), "int(2)\n");
     assert_eq!(run("<?php var_dump(10 / 4);"), "float(2.5)\n");
@@ -49,8 +55,14 @@ fn division_promotes_to_float_only_when_not_exact() {
 
 #[test]
 fn int_overflow_promotes_to_float() {
-    assert_eq!(run("<?php var_dump(PHP_INT_MAX);"), "int(9223372036854775807)\n");
-    assert_eq!(run("<?php var_dump(PHP_INT_MAX + 1);"), "float(9.223372036854776E+18)\n");
+    assert_eq!(
+        run("<?php var_dump(PHP_INT_MAX);"),
+        "int(9223372036854775807)\n"
+    );
+    assert_eq!(
+        run("<?php var_dump(PHP_INT_MAX + 1);"),
+        "float(9.223372036854776E+18)\n"
+    );
     assert_eq!(
         run("<?php var_dump(9223372036854775807 + 1);"),
         "float(9.223372036854776E+18)\n"
@@ -67,7 +79,10 @@ fn mixed_int_float_arithmetic_types() {
 #[test]
 fn power_operator() {
     assert_eq!(run("<?php echo 2 ** 10;"), "1024");
-    assert_eq!(run("<?php var_dump(2 ** 0.5);"), "float(1.4142135623730951)\n");
+    assert_eq!(
+        run("<?php var_dump(2 ** 0.5);"),
+        "float(1.4142135623730951)\n"
+    );
     assert_eq!(run("<?php var_dump(2 ** -1);"), "float(0.5)\n");
     assert_eq!(run("<?php echo 2 ** 3 ** 2;"), "512"); // right-associative
 }
@@ -94,7 +109,10 @@ fn increment_decrement() {
 
 #[test]
 fn compound_assignment() {
-    assert_eq!(run("<?php $x = 1; $x += 2; $x *= 3; $x -= 1; echo $x;"), "8");
+    assert_eq!(
+        run("<?php $x = 1; $x += 2; $x *= 3; $x -= 1; echo $x;"),
+        "8"
+    );
     assert_eq!(run("<?php $x = 10; $x /= 4; echo $x;"), "2.5");
     assert_eq!(run("<?php $x = 10; $x %= 3; echo $x;"), "1");
     assert_eq!(run("<?php $x = 2; $x **= 3; echo $x;"), "8");
@@ -121,7 +139,10 @@ fn float_echo_uses_precision_14() {
 
 #[test]
 fn float_var_dump_uses_full_precision() {
-    assert_eq!(run("<?php var_dump(0.1 + 0.2);"), "float(0.30000000000000004)\n");
+    assert_eq!(
+        run("<?php var_dump(0.1 + 0.2);"),
+        "float(0.30000000000000004)\n"
+    );
     assert_eq!(run("<?php var_dump(1.0);"), "float(1)\n");
     assert_eq!(run("<?php echo 0.1 + 0.2;"), "0.3");
 }
@@ -147,7 +168,10 @@ fn comparison_operators_at_boundaries() {
 fn spaceship_operator() {
     assert_eq!(run("<?php echo 1 <=> 2, 2 <=> 2, 3 <=> 2;"), "-101");
     assert_eq!(run("<?php var_dump([1,2] <=> [1,3]);"), "int(-1)\n");
-    assert_eq!(run("<?php echo ('a' <=> 'b'), ('b' <=> 'a'), ('a' <=> 'a');"), "-110");
+    assert_eq!(
+        run("<?php echo ('a' <=> 'b'), ('b' <=> 'a'), ('a' <=> 'a');"),
+        "-110"
+    );
 }
 
 #[test]
@@ -191,7 +215,10 @@ fn string_comparison_lexicographic() {
     assert_eq!(run("<?php var_dump('a' < 'b');"), "bool(true)\n");
     assert_eq!(run("<?php var_dump('abc' < 'abd');"), "bool(true)\n");
     assert_eq!(run("<?php var_dump('Z' < 'a');"), "bool(true)\n");
-    assert_eq!(run("<?php echo strcmp('a','b'), ' ', strcmp('b','a'), ' ', strcmp('a','a');"), "-1 1 0");
+    assert_eq!(
+        run("<?php echo strcmp('a','b'), ' ', strcmp('b','a'), ' ', strcmp('a','a');"),
+        "-1 1 0"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +270,10 @@ fn concatenation_coerces_operands() {
 
 #[test]
 fn double_quote_interpolation() {
-    assert_eq!(run("<?php $n = 'World'; echo \"Hello $n!\";"), "Hello World!");
+    assert_eq!(
+        run("<?php $n = 'World'; echo \"Hello $n!\";"),
+        "Hello World!"
+    );
     assert_eq!(run("<?php $a = [1,2]; echo \"x={$a[1]}\";"), "x=2");
     assert_eq!(run("<?php $a = [1,2]; echo \"y=$a[0]\";"), "y=1");
 }
@@ -255,27 +285,54 @@ fn single_quotes_are_literal() {
 
 #[test]
 fn heredoc_interpolates_nowdoc_does_not() {
-    assert_eq!(run("<?php $n='World'; echo <<<EOT\nHello $n\nLine2\nEOT;\n"), "Hello World\nLine2");
-    assert_eq!(run("<?php $n='World'; echo <<<'EOT'\nHello $n\nEOT;\n"), "Hello $n");
+    assert_eq!(
+        run("<?php $n='World'; echo <<<EOT\nHello $n\nLine2\nEOT;\n"),
+        "Hello World\nLine2"
+    );
+    assert_eq!(
+        run("<?php $n='World'; echo <<<'EOT'\nHello $n\nEOT;\n"),
+        "Hello $n"
+    );
 }
 
 #[test]
 fn string_builtins() {
-    assert_eq!(run("<?php echo strtoupper('abc'), ' ', strtolower('ABC'), ' ', ucfirst('hi');"), "ABC abc Hi");
+    assert_eq!(
+        run("<?php echo strtoupper('abc'), ' ', strtolower('ABC'), ' ', ucfirst('hi');"),
+        "ABC abc Hi"
+    );
     assert_eq!(run("<?php echo substr('hello', 1, 3);"), "ell");
     assert_eq!(run("<?php echo strpos('hello', 'l');"), "2");
     assert_eq!(run("<?php echo str_replace('l', 'L', 'hello');"), "heLLo");
-    assert_eq!(run("<?php echo trim('  x  '), '|', str_repeat('ab', 3);"), "x|ababab");
-    assert_eq!(run("<?php echo strrev('abc'), ' ', ucwords('hi there');"), "cba Hi There");
+    assert_eq!(
+        run("<?php echo trim('  x  '), '|', str_repeat('ab', 3);"),
+        "x|ababab"
+    );
+    assert_eq!(
+        run("<?php echo strrev('abc'), ' ', ucwords('hi there');"),
+        "cba Hi There"
+    );
     assert_eq!(run("<?php echo strlen('hello');"), "5");
 }
 
 #[test]
 fn string_search_predicates() {
-    assert_eq!(run("<?php var_dump(str_contains('hello','ell'));"), "bool(true)\n");
-    assert_eq!(run("<?php var_dump(str_starts_with('hello','he'));"), "bool(true)\n");
-    assert_eq!(run("<?php var_dump(str_ends_with('hello','lo'));"), "bool(true)\n");
-    assert_eq!(run("<?php var_dump(str_contains('hello','zzz'));"), "bool(false)\n");
+    assert_eq!(
+        run("<?php var_dump(str_contains('hello','ell'));"),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run("<?php var_dump(str_starts_with('hello','he'));"),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run("<?php var_dump(str_ends_with('hello','lo'));"),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run("<?php var_dump(str_contains('hello','zzz'));"),
+        "bool(false)\n"
+    );
 }
 
 #[test]
@@ -291,8 +348,14 @@ fn string_index_read() {
 
 #[test]
 fn printf_and_sprintf_format_specs() {
-    assert_eq!(run("<?php printf('%d %05.2f %s %x', 42, 3.14159, 'hi', 255);"), "42 03.14 hi ff");
-    assert_eq!(run("<?php echo sprintf(\"[%'*10s]\", 'r');"), "[*********r]");
+    assert_eq!(
+        run("<?php printf('%d %05.2f %s %x', 42, 3.14159, 'hi', 255);"),
+        "42 03.14 hi ff"
+    );
+    assert_eq!(
+        run("<?php echo sprintf(\"[%'*10s]\", 'r');"),
+        "[*********r]"
+    );
     assert_eq!(run("<?php echo sprintf('%b %o', 5, 8);"), "101 10");
 }
 
@@ -302,9 +365,18 @@ fn printf_and_sprintf_format_specs() {
 
 #[test]
 fn array_read_nested_and_assoc() {
-    assert_eq!(run("<?php $a = [10,20,30]; echo $a[0], $a[1], $a[2];"), "102030");
-    assert_eq!(run("<?php $m = ['x'=>1,'y'=>2]; echo $m['x'], $m['y'];"), "12");
-    assert_eq!(run("<?php $n = [[1,2],[3,4]]; echo $n[0][1], $n[1][0];"), "23");
+    assert_eq!(
+        run("<?php $a = [10,20,30]; echo $a[0], $a[1], $a[2];"),
+        "102030"
+    );
+    assert_eq!(
+        run("<?php $m = ['x'=>1,'y'=>2]; echo $m['x'], $m['y'];"),
+        "12"
+    );
+    assert_eq!(
+        run("<?php $n = [[1,2],[3,4]]; echo $n[0][1], $n[1][0];"),
+        "23"
+    );
 }
 
 #[test]
@@ -314,8 +386,14 @@ fn array_missing_index_coalesces() {
 
 #[test]
 fn array_copy_on_write_is_value_semantics() {
-    assert_eq!(run("<?php $a=[1,2,3]; $b=$a; $b[0]=99; echo $a[0], ' ', $b[0];"), "1 99");
-    assert_eq!(run("<?php $a=[[1,2],[3,4]]; $b=$a; $b[0][0]=99; echo $a[0][0], ' ', $b[0][0];"), "1 99");
+    assert_eq!(
+        run("<?php $a=[1,2,3]; $b=$a; $b[0]=99; echo $a[0], ' ', $b[0];"),
+        "1 99"
+    );
+    assert_eq!(
+        run("<?php $a=[[1,2],[3,4]]; $b=$a; $b[0][0]=99; echo $a[0][0], ' ', $b[0][0];"),
+        "1 99"
+    );
 }
 
 #[test]
@@ -336,11 +414,11 @@ fn array_compound_assign_on_elements() {
 
 #[test]
 fn array_autovivification() {
+    assert_eq!(run("<?php $a=[]; $a['x']['y']=1; echo $a['x']['y'];"), "1");
     assert_eq!(
-        run("<?php $a=[]; $a['x']['y']=1; echo $a['x']['y'];"),
-        "1"
+        run("<?php $b=[]; $b[]=1; $b[]=2; echo implode(',', $b);"),
+        "1,2"
     );
-    assert_eq!(run("<?php $b=[]; $b[]=1; $b[]=2; echo implode(',', $b);"), "1,2");
 }
 
 #[test]
@@ -361,23 +439,50 @@ fn negative_and_sparse_keys_do_not_autorebase() {
 
 #[test]
 fn array_push_pop_shift_unshift() {
-    assert_eq!(run("<?php $a=[1,2,3]; echo array_pop($a); echo '|'; echo implode(',', $a);"), "3|1,2");
-    assert_eq!(run("<?php $a=[1,2]; array_push($a,8,9); echo implode(',', $a);"), "1,2,8,9");
-    assert_eq!(run("<?php $a=[1,2,3]; echo array_shift($a); echo '|'; echo implode(',', $a);"), "1|2,3");
-    assert_eq!(run("<?php $a=[2,3]; array_unshift($a,0,1); echo implode(',', $a);"), "0,1,2,3");
+    assert_eq!(
+        run("<?php $a=[1,2,3]; echo array_pop($a); echo '|'; echo implode(',', $a);"),
+        "3|1,2"
+    );
+    assert_eq!(
+        run("<?php $a=[1,2]; array_push($a,8,9); echo implode(',', $a);"),
+        "1,2,8,9"
+    );
+    assert_eq!(
+        run("<?php $a=[1,2,3]; echo array_shift($a); echo '|'; echo implode(',', $a);"),
+        "1|2,3"
+    );
+    assert_eq!(
+        run("<?php $a=[2,3]; array_unshift($a,0,1); echo implode(',', $a);"),
+        "0,1,2,3"
+    );
 }
 
 #[test]
 fn array_keys_values_merge_reverse() {
-    assert_eq!(run("<?php echo implode(',', array_keys(['x'=>1,'y'=>2]));"), "x,y");
-    assert_eq!(run("<?php echo implode(',', array_values(['x'=>1,'y'=>2]));"), "1,2");
-    assert_eq!(run("<?php echo implode(',', array_merge([1,2],[3,4]));"), "1,2,3,4");
-    assert_eq!(run("<?php echo implode(',', array_reverse([10,20,30]));"), "30,20,10");
+    assert_eq!(
+        run("<?php echo implode(',', array_keys(['x'=>1,'y'=>2]));"),
+        "x,y"
+    );
+    assert_eq!(
+        run("<?php echo implode(',', array_values(['x'=>1,'y'=>2]));"),
+        "1,2"
+    );
+    assert_eq!(
+        run("<?php echo implode(',', array_merge([1,2],[3,4]));"),
+        "1,2,3,4"
+    );
+    assert_eq!(
+        run("<?php echo implode(',', array_reverse([10,20,30]));"),
+        "30,20,10"
+    );
 }
 
 #[test]
 fn array_merge_string_keys_override_numeric_reindex() {
-    assert_eq!(run("<?php print_r(array_merge(['a'=>1],['a'=>2,'b'=>3]));"), "Array\n(\n    [a] => 2\n    [b] => 3\n)\n");
+    assert_eq!(
+        run("<?php print_r(array_merge(['a'=>1],['a'=>2,'b'=>3]));"),
+        "Array\n(\n    [a] => 2\n    [b] => 3\n)\n"
+    );
 }
 
 #[test]
@@ -389,30 +494,57 @@ fn range_and_sum() {
 
 #[test]
 fn array_slice_positive_and_negative() {
-    assert_eq!(run("<?php echo implode(',', array_slice([1,2,3,4,5], 1, 2));"), "2,3");
-    assert_eq!(run("<?php echo implode(',', array_slice([1,2,3,4,5], -2));"), "4,5");
+    assert_eq!(
+        run("<?php echo implode(',', array_slice([1,2,3,4,5], 1, 2));"),
+        "2,3"
+    );
+    assert_eq!(
+        run("<?php echo implode(',', array_slice([1,2,3,4,5], -2));"),
+        "4,5"
+    );
 }
 
 #[test]
 fn in_array_and_search() {
     assert_eq!(run("<?php var_dump(in_array(2, [1,2,3]));"), "bool(true)\n");
-    assert_eq!(run("<?php var_dump(in_array(9, [1,2,3]));"), "bool(false)\n");
+    assert_eq!(
+        run("<?php var_dump(in_array(9, [1,2,3]));"),
+        "bool(false)\n"
+    );
     assert_eq!(run("<?php echo array_search(2, [1,2,3]);"), "1");
 }
 
 #[test]
 fn array_key_exists_vs_isset() {
     // key present with null value: isset false, array_key_exists true
-    assert_eq!(run("<?php $a=['x'=>null]; var_dump(isset($a['x']));"), "bool(false)\n");
-    assert_eq!(run("<?php $a=['x'=>null]; var_dump(array_key_exists('x', $a));"), "bool(true)\n");
-    assert_eq!(run("<?php $a=['x'=>null]; var_dump(array_key_exists('y', $a));"), "bool(false)\n");
+    assert_eq!(
+        run("<?php $a=['x'=>null]; var_dump(isset($a['x']));"),
+        "bool(false)\n"
+    );
+    assert_eq!(
+        run("<?php $a=['x'=>null]; var_dump(array_key_exists('x', $a));"),
+        "bool(true)\n"
+    );
+    assert_eq!(
+        run("<?php $a=['x'=>null]; var_dump(array_key_exists('y', $a));"),
+        "bool(false)\n"
+    );
 }
 
 #[test]
 fn array_map_filter_reduce() {
-    assert_eq!(run("<?php echo implode(',', array_map(fn($x)=>$x*2, [1,2,3]));"), "2,4,6");
-    assert_eq!(run("<?php echo implode(',', array_filter([1,2,3,4], fn($x)=>$x%2==0));"), "2,4");
-    assert_eq!(run("<?php echo array_reduce([1,2,3,4], fn($c,$x)=>$c+$x, 0);"), "10");
+    assert_eq!(
+        run("<?php echo implode(',', array_map(fn($x)=>$x*2, [1,2,3]));"),
+        "2,4,6"
+    );
+    assert_eq!(
+        run("<?php echo implode(',', array_filter([1,2,3,4], fn($x)=>$x%2==0));"),
+        "2,4"
+    );
+    assert_eq!(
+        run("<?php echo array_reduce([1,2,3,4], fn($c,$x)=>$c+$x, 0);"),
+        "10"
+    );
 }
 
 #[test]
@@ -422,36 +554,66 @@ fn array_column_unique_flip_combine() {
         "a,b"
     );
     // array_unique preserves original keys
-    assert_eq!(run("<?php print_r(array_unique([1,2,2,3,3,3]));"), "Array\n(\n    [0] => 1\n    [1] => 2\n    [3] => 3\n)\n");
-    assert_eq!(run("<?php print_r(array_flip(['x'=>1,'y'=>2]));"), "Array\n(\n    [1] => x\n    [2] => y\n)\n");
-    assert_eq!(run("<?php print_r(array_combine(['a','b'], [1,2]));"), "Array\n(\n    [a] => 1\n    [b] => 2\n)\n");
+    assert_eq!(
+        run("<?php print_r(array_unique([1,2,2,3,3,3]));"),
+        "Array\n(\n    [0] => 1\n    [1] => 2\n    [3] => 3\n)\n"
+    );
+    assert_eq!(
+        run("<?php print_r(array_flip(['x'=>1,'y'=>2]));"),
+        "Array\n(\n    [1] => x\n    [2] => y\n)\n"
+    );
+    assert_eq!(
+        run("<?php print_r(array_combine(['a','b'], [1,2]));"),
+        "Array\n(\n    [a] => 1\n    [b] => 2\n)\n"
+    );
 }
 
 #[test]
 fn explode_implode_str_split() {
-    assert_eq!(run("<?php echo implode(',', explode(',', 'a,b,c'));"), "a,b,c");
+    assert_eq!(
+        run("<?php echo implode(',', explode(',', 'a,b,c'));"),
+        "a,b,c"
+    );
     assert_eq!(run("<?php echo implode('-', [1,2,3]);"), "1-2-3");
     assert_eq!(run("<?php echo implode(',', str_split('abc'));"), "a,b,c");
 }
 
 #[test]
 fn sort_functions() {
-    assert_eq!(run("<?php $a=[3,1,2]; sort($a); echo implode(',', $a);"), "1,2,3");
-    assert_eq!(run("<?php $a=[3,1,2]; rsort($a); echo implode(',', $a);"), "3,2,1");
-    assert_eq!(run("<?php $a=['b'=>2,'a'=>1]; ksort($a); echo implode(',', array_keys($a));"), "a,b");
-    assert_eq!(run("<?php $a=[2,1,3]; usort($a, fn($x,$y)=>$y-$x); echo implode(',', $a);"), "3,2,1");
+    assert_eq!(
+        run("<?php $a=[3,1,2]; sort($a); echo implode(',', $a);"),
+        "1,2,3"
+    );
+    assert_eq!(
+        run("<?php $a=[3,1,2]; rsort($a); echo implode(',', $a);"),
+        "3,2,1"
+    );
+    assert_eq!(
+        run("<?php $a=['b'=>2,'a'=>1]; ksort($a); echo implode(',', array_keys($a));"),
+        "a,b"
+    );
+    assert_eq!(
+        run("<?php $a=[2,1,3]; usort($a, fn($x,$y)=>$y-$x); echo implode(',', $a);"),
+        "3,2,1"
+    );
 }
 
 #[test]
 fn math_builtins() {
     assert_eq!(run("<?php echo max(1,5,3), ' ', min(4,2,8);"), "5 2");
     assert_eq!(run("<?php echo max([3,7,1]), ' ', abs(-5);"), "7 5");
-    assert_eq!(run("<?php echo round(3.14159, 2), ' ', floor(3.7), ' ', ceil(3.2);"), "3.14 3 4");
+    assert_eq!(
+        run("<?php echo round(3.14159, 2), ' ', floor(3.7), ' ', ceil(3.2);"),
+        "3.14 3 4"
+    );
 }
 
 #[test]
 fn json_encode_output() {
-    assert_eq!(run("<?php echo json_encode(['a'=>1,'b'=>[2,3]]);"), "{\"a\":1,\"b\":[2,3]}");
+    assert_eq!(
+        run("<?php echo json_encode(['a'=>1,'b'=>[2,3]]);"),
+        "{\"a\":1,\"b\":[2,3]}"
+    );
     assert_eq!(run("<?php echo json_encode([1,2,3]);"), "[1,2,3]");
 }
 
@@ -504,7 +666,10 @@ fn var_export_shapes() {
 #[test]
 fn short_circuit_and_or() {
     assert_eq!(run("<?php function t(){echo 'T'; return true;} function f(){echo 'F'; return false;} var_dump(f() && t());"), "Fbool(false)\n");
-    assert_eq!(run("<?php function t(){echo 'T'; return true;} var_dump(t() || t());"), "Tbool(true)\n");
+    assert_eq!(
+        run("<?php function t(){echo 'T'; return true;} var_dump(t() || t());"),
+        "Tbool(true)\n"
+    );
 }
 
 #[test]
@@ -525,14 +690,20 @@ fn ternary_and_elvis() {
     assert_eq!(run("<?php $x=5; echo $x>3 ? 'big' : 'small';"), "big");
     assert_eq!(run("<?php $x=5; echo $x ?: 'zero';"), "5");
     assert_eq!(run("<?php $y=0; echo $y ?: 'zero';"), "zero");
-    assert_eq!(run("<?php $x=1; echo $x==1 ? 'a' : ($x==2 ? 'b' : 'c');"), "a");
+    assert_eq!(
+        run("<?php $x=1; echo $x==1 ? 'a' : ($x==2 ? 'b' : 'c');"),
+        "a"
+    );
 }
 
 #[test]
 fn null_coalesce() {
     assert_eq!(run("<?php $a=['x'=>null]; echo $a['x'] ?? 'd1';"), "d1");
     assert_eq!(run("<?php $a=['x'=>null]; echo $a['y'] ?? 'd2';"), "d2");
-    assert_eq!(run("<?php $a=['x'=>null]; echo $a['y']['z'] ?? 'd3';"), "d3");
+    assert_eq!(
+        run("<?php $a=['x'=>null]; echo $a['y']['z'] ?? 'd3';"),
+        "d3"
+    );
     assert_eq!(run("<?php $a=['x'=>5]; echo $a['x'] ?? 'd';"), "5");
 }
 
@@ -553,8 +724,14 @@ fn if_elseif_else() {
 
 #[test]
 fn while_and_break_continue() {
-    assert_eq!(run("<?php $i=0; while(true){if($i>=3)break; echo $i; $i++;}"), "012");
-    assert_eq!(run("<?php $i=0;$s=0; while($i<5){$i++; if($i%2==0)continue; $s+=$i;} echo $s;"), "9");
+    assert_eq!(
+        run("<?php $i=0; while(true){if($i>=3)break; echo $i; $i++;}"),
+        "012"
+    );
+    assert_eq!(
+        run("<?php $i=0;$s=0; while($i<5){$i++; if($i%2==0)continue; $s+=$i;} echo $s;"),
+        "9"
+    );
 }
 
 #[test]
@@ -566,17 +743,24 @@ fn do_while_runs_body_once() {
 #[test]
 fn for_loop_multi_expr() {
     assert_eq!(run("<?php for($i=0;$i<3;$i++){echo $i;}"), "012");
-    assert_eq!(run("<?php for($i=0,$j=10;$i<$j;$i++,$j--){echo \"$i-$j \";}"), "0-10 1-9 2-8 3-7 4-6 ");
+    assert_eq!(
+        run("<?php for($i=0,$j=10;$i<$j;$i++,$j--){echo \"$i-$j \";}"),
+        "0-10 1-9 2-8 3-7 4-6 "
+    );
 }
 
 #[test]
 fn break_n_and_continue_n() {
     assert_eq!(
-        run("<?php for($i=0;$i<3;$i++){for($j=0;$j<3;$j++){if($i+$j==2) break 2; echo \"$i$j \";}}"),
+        run(
+            "<?php for($i=0;$i<3;$i++){for($j=0;$j<3;$j++){if($i+$j==2) break 2; echo \"$i$j \";}}"
+        ),
         "00 01 "
     );
     assert_eq!(
-        run("<?php for($i=0;$i<3;$i++){for($j=0;$j<3;$j++){if($j==1) continue 2; echo \"$i$j \";}}"),
+        run(
+            "<?php for($i=0;$i<3;$i++){for($j=0;$j<3;$j++){if($j==1) continue 2; echo \"$i$j \";}}"
+        ),
         "00 10 20 "
     );
 }
@@ -607,7 +791,10 @@ fn switch_on_strings() {
 
 #[test]
 fn match_exact_and_multi_condition() {
-    assert_eq!(run("<?php echo match(3){1,2=>'lo',3,4=>'hi',default=>'d'};"), "hi");
+    assert_eq!(
+        run("<?php echo match(3){1,2=>'lo',3,4=>'hi',default=>'d'};"),
+        "hi"
+    );
     assert_eq!(run("<?php echo match(true){false=>'f',default=>'t'};"), "t");
     assert_eq!(run("<?php echo match(5){1=>'a',default=>'z'};"), "z");
 }
@@ -615,7 +802,10 @@ fn match_exact_and_multi_condition() {
 #[test]
 fn match_is_strict() {
     // match uses === so '1' does not match 1
-    assert_eq!(run("<?php echo match('1'){1=>'int',default=>'str'};"), "str");
+    assert_eq!(
+        run("<?php echo match('1'){1=>'int',default=>'str'};"),
+        "str"
+    );
 }
 
 #[test]
@@ -637,9 +827,15 @@ fn reference_binding_between_variables() {
 
 #[test]
 fn reference_parameter_writes_through() {
-    assert_eq!(run("<?php function inc(&$x){$x++;} $n=5; inc($n); echo $n;"), "6");
+    assert_eq!(
+        run("<?php function inc(&$x){$x++;} $n=5; inc($n); echo $n;"),
+        "6"
+    );
     // through an existing alias
-    assert_eq!(run("<?php $a=5; $b=&$a; function inc(&$x){$x++;} inc($b); echo $a, ' ', $b;"), "6 6");
+    assert_eq!(
+        run("<?php $a=5; $b=&$a; function inc(&$x){$x++;} inc($b); echo $a, ' ', $b;"),
+        "6 6"
+    );
 }
 
 #[test]
@@ -652,7 +848,10 @@ fn reference_parameter_appends_to_array() {
 
 #[test]
 fn foreach_by_reference_mutates_source() {
-    assert_eq!(run("<?php $a=[1,2,3]; foreach($a as &$v){$v*=2;} unset($v); echo implode(',', $a);"), "2,4,6");
+    assert_eq!(
+        run("<?php $a=[1,2,3]; foreach($a as &$v){$v*=2;} unset($v); echo implode(',', $a);"),
+        "2,4,6"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -661,13 +860,22 @@ fn foreach_by_reference_mutates_source() {
 
 #[test]
 fn foreach_value_and_key_value() {
-    assert_eq!(run("<?php $s=0; foreach([10,20,30] as $v){$s+=$v;} echo $s;"), "60");
-    assert_eq!(run("<?php foreach(['x'=>1,'y'=>2] as $k=>$v){echo \"$k=$v \";}"), "x=1 y=2 ");
+    assert_eq!(
+        run("<?php $s=0; foreach([10,20,30] as $v){$s+=$v;} echo $s;"),
+        "60"
+    );
+    assert_eq!(
+        run("<?php foreach(['x'=>1,'y'=>2] as $k=>$v){echo \"$k=$v \";}"),
+        "x=1 y=2 "
+    );
 }
 
 #[test]
 fn foreach_list_destructuring() {
-    assert_eq!(run("<?php foreach([[1,2],[3,4]] as [$a,$b]){echo \"$a-$b \";}"), "1-2 3-4 ");
+    assert_eq!(
+        run("<?php foreach([[1,2],[3,4]] as [$a,$b]){echo \"$a-$b \";}"),
+        "1-2 3-4 "
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -678,14 +886,23 @@ fn foreach_list_destructuring() {
 fn list_destructuring_variants() {
     assert_eq!(run("<?php [$a,$b,$c]=[1,2,3]; echo \"$a$b$c\";"), "123");
     assert_eq!(run("<?php list($x,,$z)=[10,20,30]; echo \"$x$z\";"), "1030");
-    assert_eq!(run("<?php ['name'=>$n,'age'=>$a]=['name'=>'Bob','age'=>42]; echo \"$n:$a\";"), "Bob:42");
-    assert_eq!(run("<?php [[$p,$q],[$r,$s]]=[[1,2],[3,4]]; echo \"$p$q$r$s\";"), "1234");
+    assert_eq!(
+        run("<?php ['name'=>$n,'age'=>$a]=['name'=>'Bob','age'=>42]; echo \"$n:$a\";"),
+        "Bob:42"
+    );
+    assert_eq!(
+        run("<?php [[$p,$q],[$r,$s]]=[[1,2],[3,4]]; echo \"$p$q$r$s\";"),
+        "1234"
+    );
     assert_eq!(run("<?php [,$b,,$d]=[1,2,3,4]; echo \"$b$d\";"), "24");
 }
 
 #[test]
 fn destructuring_swap() {
-    assert_eq!(run("<?php $a=1;$b=2; [$a,$b]=[$b,$a]; echo \"$a $b\";"), "2 1");
+    assert_eq!(
+        run("<?php $a=1;$b=2; [$a,$b]=[$b,$a]; echo \"$a $b\";"),
+        "2 1"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -694,13 +911,28 @@ fn destructuring_swap() {
 
 #[test]
 fn array_spread_numeric_and_string_keys() {
-    assert_eq!(run("<?php $a=[1,2]; $b=[0,...$a,3]; echo implode(',', $b);"), "0,1,2,3");
-    assert_eq!(run("<?php $c=['x'=>1]; $d=[...$c,'y'=>2]; echo \"{$d['x']}{$d['y']}\";"), "12");
-    assert_eq!(run("<?php $a=['x'=>1,'y'=>2]; $b=[...$a,'z'=>3]; echo implode(',', array_keys($b));"), "x,y,z");
+    assert_eq!(
+        run("<?php $a=[1,2]; $b=[0,...$a,3]; echo implode(',', $b);"),
+        "0,1,2,3"
+    );
+    assert_eq!(
+        run("<?php $c=['x'=>1]; $d=[...$c,'y'=>2]; echo \"{$d['x']}{$d['y']}\";"),
+        "12"
+    );
+    assert_eq!(
+        run("<?php $a=['x'=>1,'y'=>2]; $b=[...$a,'z'=>3]; echo implode(',', array_keys($b));"),
+        "x,y,z"
+    );
 }
 
 #[test]
 fn spread_as_call_arguments() {
-    assert_eq!(run("<?php function add(...$n){return array_sum($n);} $a=[1,2,3]; echo add(...$a);"), "6");
-    assert_eq!(run("<?php function add(...$n){return array_sum($n);} echo add(1, ...[2,3]);"), "6");
+    assert_eq!(
+        run("<?php function add(...$n){return array_sum($n);} $a=[1,2,3]; echo add(...$a);"),
+        "6"
+    );
+    assert_eq!(
+        run("<?php function add(...$n){return array_sum($n);} echo add(1, ...[2,3]);"),
+        "6"
+    );
 }

@@ -80,7 +80,7 @@ pub(crate) fn md5(msg: &[u8]) -> [u8; 16] {
     }
     data.extend_from_slice(&bit_len.to_le_bytes());
 
-    for chunk in data.chunks_exact(64) {
+    for chunk in data.as_chunks::<64>().0 {
         let mut m = [0u32; 16];
         for (i, w) in m.iter_mut().enumerate() {
             *w = u32::from_le_bytes([
@@ -136,7 +136,7 @@ pub(crate) fn sha1(msg: &[u8]) -> [u8; 20] {
     }
     data.extend_from_slice(&bit_len.to_be_bytes());
 
-    for chunk in data.chunks_exact(64) {
+    for chunk in data.as_chunks::<64>().0 {
         let mut w = [0u32; 80];
         for (i, word) in w.iter_mut().take(16).enumerate() {
             *word = u32::from_be_bytes([
@@ -216,7 +216,7 @@ pub(crate) fn sha256(msg: &[u8]) -> [u8; 32] {
     }
     data.extend_from_slice(&bit_len.to_be_bytes());
 
-    for chunk in data.chunks_exact(64) {
+    for chunk in data.as_chunks::<64>().0 {
         let mut w = [0u32; 64];
         for (i, word) in w.iter_mut().take(16).enumerate() {
             *word = u32::from_be_bytes([
@@ -291,8 +291,7 @@ pub(crate) fn crc32(data: &[u8]) -> u32 {
 // base64 (RFC 4648) — implemented by hand
 // ---------------------------------------------------------------------------
 
-const B64_ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn base64_encode(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len().div_ceil(3) * 4);
@@ -386,7 +385,7 @@ fn base64_decode(input: &[u8], strict: bool) -> Option<Vec<u8>> {
             return None;
         }
         // padding must be well-formed and land the total on a 4-char boundary
-        if padding > 0 && (padding > 2 || (i + padding) % 4 != 0) {
+        if padding > 0 && (padding > 2 || !(i + padding).is_multiple_of(4)) {
             return None;
         }
     }
@@ -402,7 +401,10 @@ fn base64_decode(input: &[u8], strict: bool) -> Option<Vec<u8>> {
 fn fn_md5(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = bytes_of(&args[0]);
     let digest = md5(&s);
-    let binary = args.get(1).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let binary = args
+        .get(1)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
     Ok(Value::str(if binary {
         digest.to_vec()
     } else {
@@ -413,7 +415,10 @@ fn fn_md5(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_sha1(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = bytes_of(&args[0]);
     let digest = sha1(&s);
-    let binary = args.get(1).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let binary = args
+        .get(1)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
     Ok(Value::str(if binary {
         digest.to_vec()
     } else {
@@ -433,7 +438,10 @@ fn fn_base64_encode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_base64_decode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = bytes_of(&args[0]);
-    let strict = args.get(1).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let strict = args
+        .get(1)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
     match base64_decode(&s, strict) {
         Some(bytes) => Ok(Value::str(bytes)),
         None => Ok(Value::Bool(false)),
@@ -448,11 +456,11 @@ fn fn_bin2hex(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_hex2bin(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = bytes_of(&args[0]);
     // Odd length or non-hex input: php emits a warning and returns false.
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Ok(Value::Bool(false));
     }
     let mut out = Vec::with_capacity(s.len() / 2);
-    for pair in s.chunks_exact(2) {
+    for pair in s.as_chunks::<2>().0 {
         let hi = hex_val(pair[0]);
         let lo = hex_val(pair[1]);
         match (hi, lo) {
@@ -540,7 +548,10 @@ mod tests {
     #[test]
     fn md5_vectors() {
         assert_eq!(calls(fn_md5, &[s("")]), "d41d8cd98f00b204e9800998ecf8427e");
-        assert_eq!(calls(fn_md5, &[s("abc")]), "900150983cd24fb0d6963f7d28e17f72");
+        assert_eq!(
+            calls(fn_md5, &[s("abc")]),
+            "900150983cd24fb0d6963f7d28e17f72"
+        );
         assert_eq!(
             calls(fn_md5, &[s("message digest")]),
             "f96b697d7cb7938d525a2f31aaf161d0"
@@ -560,7 +571,10 @@ mod tests {
 
     #[test]
     fn sha1_vectors() {
-        assert_eq!(calls(fn_sha1, &[s("")]), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+        assert_eq!(
+            calls(fn_sha1, &[s("")]),
+            "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+        );
         assert_eq!(
             calls(fn_sha1, &[s("abc")]),
             "a9993e364706816aba3e25717850c26c9cd0d89d"
@@ -572,7 +586,9 @@ mod tests {
         assert_eq!(
             calls(
                 fn_sha1,
-                &[s("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")]
+                &[s(
+                    "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+                )]
             ),
             "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
         );
@@ -585,7 +601,10 @@ mod tests {
         assert_eq!(call_int(fn_crc32, &[s("")]), 0);
         assert_eq!(call_int(fn_crc32, &[s("abc")]), 891568578);
         assert_eq!(
-            call_int(fn_crc32, &[s("The quick brown fox jumps over the lazy dog")]),
+            call_int(
+                fn_crc32,
+                &[s("The quick brown fox jumps over the lazy dog")]
+            ),
             1095738169
         );
     }
@@ -604,7 +623,10 @@ mod tests {
             "SGVsbG8sIFdvcmxkIQ=="
         );
         assert_eq!(
-            calls(fn_base64_encode, &[Value::str(vec![0x00, 0xff, 0x80, 0x7f])]),
+            calls(
+                fn_base64_encode,
+                &[Value::str(vec![0x00, 0xff, 0x80, 0x7f])]
+            ),
             "AP+Afw=="
         );
     }
@@ -612,7 +634,10 @@ mod tests {
     #[test]
     fn base64_decode_vectors() {
         assert_eq!(calls(fn_base64_decode, &[s("Zm9vYmFy")]), "foobar");
-        assert_eq!(calls(fn_base64_decode, &[s("SGVsbG8sIFdvcmxkIQ==")]), "Hello, World!");
+        assert_eq!(
+            calls(fn_base64_decode, &[s("SGVsbG8sIFdvcmxkIQ==")]),
+            "Hello, World!"
+        );
         assert_eq!(calls(fn_base64_decode, &[s("")]), "");
         assert_eq!(calls(fn_base64_decode, &[s("====")]), "");
         // non-strict: skip invalid chars / whitespace
@@ -620,11 +645,26 @@ mod tests {
         assert_eq!(calls(fn_base64_decode, &[s("Zm 9v")]), "foo");
         assert_eq!(calls(fn_base64_decode, &[s("QQ")]), "A");
         // strict: invalid chars fail, whitespace ok
-        assert!(is_false(fn_base64_decode, &[s("Zm9v!!"), Value::Bool(true)]));
-        assert_eq!(calls(fn_base64_decode, &[s("Zm 9v"), Value::Bool(true)]), "foo");
-        assert_eq!(calls(fn_base64_decode, &[s("Zm9vYg=="), Value::Bool(true)]), "foob");
-        assert!(is_false(fn_base64_decode, &[s("Zm9vYg="), Value::Bool(true)]));
-        assert_eq!(calls(fn_base64_decode, &[s("Zm9vYg"), Value::Bool(true)]), "foob");
+        assert!(is_false(
+            fn_base64_decode,
+            &[s("Zm9v!!"), Value::Bool(true)]
+        ));
+        assert_eq!(
+            calls(fn_base64_decode, &[s("Zm 9v"), Value::Bool(true)]),
+            "foo"
+        );
+        assert_eq!(
+            calls(fn_base64_decode, &[s("Zm9vYg=="), Value::Bool(true)]),
+            "foob"
+        );
+        assert!(is_false(
+            fn_base64_decode,
+            &[s("Zm9vYg="), Value::Bool(true)]
+        ));
+        assert_eq!(
+            calls(fn_base64_decode, &[s("Zm9vYg"), Value::Bool(true)]),
+            "foob"
+        );
         assert!(is_false(fn_base64_decode, &[s("Z==="), Value::Bool(true)]));
         assert!(is_false(fn_base64_decode, &[s("A"), Value::Bool(true)]));
         assert_eq!(calls(fn_base64_decode, &[s("QQ"), Value::Bool(true)]), "A");
@@ -649,7 +689,10 @@ mod tests {
         );
         assert_eq!(calls(fn_hex2bin, &[s("616263")]), "abc");
         assert_eq!(calls(fn_hex2bin, &[s("")]), "");
-        assert_eq!(bytes_of(&call(fn_hex2bin, &[s("ff0010")])), vec![0xff, 0x00, 0x10]);
+        assert_eq!(
+            bytes_of(&call(fn_hex2bin, &[s("ff0010")])),
+            vec![0xff, 0x00, 0x10]
+        );
         // odd length -> false
         assert!(is_false(fn_hex2bin, &[s("abc")]));
         // non-hex -> false

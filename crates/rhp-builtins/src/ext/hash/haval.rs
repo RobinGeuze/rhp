@@ -67,14 +67,38 @@ const I5: [usize; 32] = [
 
 /// `M[k][i] = (k - i) mod 8`: the state-word selectors used by each step.
 const M: [[usize; 32]; 8] = [
-    [0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1],
-    [1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2],
-    [2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3],
-    [3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4],
-    [4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5],
-    [5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6],
-    [6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7],
-    [7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0],
+    [
+        0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3,
+        2, 1,
+    ],
+    [
+        1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4,
+        3, 2,
+    ],
+    [
+        2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5,
+        4, 3,
+    ],
+    [
+        3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6,
+        5, 4,
+    ],
+    [
+        4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7,
+        6, 5,
+    ],
+    [
+        5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0,
+        7, 6,
+    ],
+    [
+        6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1,
+        0, 7,
+    ],
+    [
+        7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+        1, 0,
+    ],
 ];
 
 // ---------------------------------------------------------------------------
@@ -163,9 +187,15 @@ fn transform(state: &mut [u32; 8], block: &[u8; 128], passes: usize) {
     // Pass 1 (no round constant; words in natural order).
     for i in 0..32 {
         let v = match passes {
-            3 => f1(e[M[1][i]], e[M[0][i]], e[M[3][i]], e[M[5][i]], e[M[6][i]], e[M[2][i]], e[M[4][i]]),
-            4 => f1(e[M[2][i]], e[M[6][i]], e[M[1][i]], e[M[4][i]], e[M[5][i]], e[M[3][i]], e[M[0][i]]),
-            _ => f1(e[M[3][i]], e[M[4][i]], e[M[1][i]], e[M[0][i]], e[M[5][i]], e[M[2][i]], e[M[6][i]]),
+            3 => f1(
+                e[M[1][i]], e[M[0][i]], e[M[3][i]], e[M[5][i]], e[M[6][i]], e[M[2][i]], e[M[4][i]],
+            ),
+            4 => f1(
+                e[M[2][i]], e[M[6][i]], e[M[1][i]], e[M[4][i]], e[M[5][i]], e[M[3][i]], e[M[0][i]],
+            ),
+            _ => f1(
+                e[M[3][i]], e[M[4][i]], e[M[1][i]], e[M[0][i]], e[M[5][i]], e[M[2][i]], e[M[6][i]],
+            ),
         };
         step!(i, v, x[i]);
     }
@@ -173,9 +203,15 @@ fn transform(state: &mut [u32; 8], block: &[u8; 128], passes: usize) {
     // Pass 2.
     for i in 0..32 {
         let v = match passes {
-            3 => f2(e[M[4][i]], e[M[2][i]], e[M[1][i]], e[M[0][i]], e[M[5][i]], e[M[3][i]], e[M[6][i]]),
-            4 => f2(e[M[3][i]], e[M[5][i]], e[M[2][i]], e[M[0][i]], e[M[1][i]], e[M[6][i]], e[M[4][i]]),
-            _ => f2(e[M[6][i]], e[M[2][i]], e[M[1][i]], e[M[0][i]], e[M[3][i]], e[M[4][i]], e[M[5][i]]),
+            3 => f2(
+                e[M[4][i]], e[M[2][i]], e[M[1][i]], e[M[0][i]], e[M[5][i]], e[M[3][i]], e[M[6][i]],
+            ),
+            4 => f2(
+                e[M[3][i]], e[M[5][i]], e[M[2][i]], e[M[0][i]], e[M[1][i]], e[M[6][i]], e[M[4][i]],
+            ),
+            _ => f2(
+                e[M[6][i]], e[M[2][i]], e[M[1][i]], e[M[0][i]], e[M[3][i]], e[M[4][i]], e[M[5][i]],
+            ),
         };
         step!(i, v, x[I2[i]].wrapping_add(K2[i]));
     }
@@ -183,9 +219,15 @@ fn transform(state: &mut [u32; 8], block: &[u8; 128], passes: usize) {
     // Pass 3.
     for i in 0..32 {
         let v = match passes {
-            3 => f3(e[M[6][i]], e[M[1][i]], e[M[2][i]], e[M[3][i]], e[M[4][i]], e[M[5][i]], e[M[0][i]]),
-            4 => f3(e[M[1][i]], e[M[4][i]], e[M[3][i]], e[M[6][i]], e[M[0][i]], e[M[2][i]], e[M[5][i]]),
-            _ => f3(e[M[2][i]], e[M[6][i]], e[M[0][i]], e[M[4][i]], e[M[3][i]], e[M[1][i]], e[M[5][i]]),
+            3 => f3(
+                e[M[6][i]], e[M[1][i]], e[M[2][i]], e[M[3][i]], e[M[4][i]], e[M[5][i]], e[M[0][i]],
+            ),
+            4 => f3(
+                e[M[1][i]], e[M[4][i]], e[M[3][i]], e[M[6][i]], e[M[0][i]], e[M[2][i]], e[M[5][i]],
+            ),
+            _ => f3(
+                e[M[2][i]], e[M[6][i]], e[M[0][i]], e[M[4][i]], e[M[3][i]], e[M[1][i]], e[M[5][i]],
+            ),
         };
         step!(i, v, x[I3[i]].wrapping_add(K3[i]));
     }
@@ -194,8 +236,14 @@ fn transform(state: &mut [u32; 8], block: &[u8; 128], passes: usize) {
     if passes >= 4 {
         for i in 0..32 {
             let v = match passes {
-                4 => f4(e[M[6][i]], e[M[4][i]], e[M[0][i]], e[M[5][i]], e[M[2][i]], e[M[1][i]], e[M[3][i]]),
-                _ => f4(e[M[1][i]], e[M[5][i]], e[M[3][i]], e[M[2][i]], e[M[0][i]], e[M[4][i]], e[M[6][i]]),
+                4 => f4(
+                    e[M[6][i]], e[M[4][i]], e[M[0][i]], e[M[5][i]], e[M[2][i]], e[M[1][i]],
+                    e[M[3][i]],
+                ),
+                _ => f4(
+                    e[M[1][i]], e[M[5][i]], e[M[3][i]], e[M[2][i]], e[M[0][i]], e[M[4][i]],
+                    e[M[6][i]],
+                ),
             };
             step!(i, v, x[I4[i]].wrapping_add(K4[i]));
         }
@@ -221,8 +269,9 @@ fn transform(state: &mut [u32; 8], block: &[u8; 128], passes: usize) {
 // ---------------------------------------------------------------------------
 
 fn tailor_128(s: &mut [u32; 8]) {
-    s[3] = s[3]
-        .wrapping_add((s[7] & 0xFF000000) | (s[6] & 0x00FF0000) | (s[5] & 0x0000FF00) | (s[4] & 0x000000FF));
+    s[3] = s[3].wrapping_add(
+        (s[7] & 0xFF000000) | (s[6] & 0x00FF0000) | (s[5] & 0x0000FF00) | (s[4] & 0x000000FF),
+    );
     s[2] = s[2].wrapping_add(
         (((s[7] & 0x00FF0000) | (s[6] & 0x0000FF00) | (s[5] & 0x000000FF)) << 8)
             | ((s[4] & 0xFF000000) >> 24),
@@ -238,10 +287,10 @@ fn tailor_128(s: &mut [u32; 8]) {
 }
 
 fn tailor_160(s: &mut [u32; 8]) {
-    s[4] = s[4]
-        .wrapping_add(((s[7] & 0xFE000000) | (s[6] & 0x01F80000) | (s[5] & 0x0007F000)) >> 12);
-    s[3] = s[3]
-        .wrapping_add(((s[7] & 0x01F80000) | (s[6] & 0x0007F000) | (s[5] & 0x00000FC0)) >> 6);
+    s[4] =
+        s[4].wrapping_add(((s[7] & 0xFE000000) | (s[6] & 0x01F80000) | (s[5] & 0x0007F000)) >> 12);
+    s[3] =
+        s[3].wrapping_add(((s[7] & 0x01F80000) | (s[6] & 0x0007F000) | (s[5] & 0x00000FC0)) >> 6);
     s[2] = s[2].wrapping_add((s[7] & 0x0007F000) | (s[6] & 0x00000FC0) | (s[5] & 0x0000003F));
     s[1] = s[1].wrapping_add(rotr(
         (s[7] & 0x00000FC0) | (s[6] & 0x0000003F) | (s[5] & 0xFE000000),
@@ -295,23 +344,24 @@ pub fn haval(data: &[u8], bits: usize, passes: usize) -> Vec<u8> {
     // Build the final (tail) block(s): remaining bytes + padding + trailer.
     let bitlen: u64 = (data.len() as u64).wrapping_shl(3);
     let index = data.len() & 0x7f; // bytes already in the partial block
-    let pad_len = if index < 118 { 118 - index } else { 246 - index };
+    let pad_len = if index < 118 {
+        118 - index
+    } else {
+        246 - index
+    };
 
     let mut tail: Vec<u8> = data[i..].to_vec();
     // Padding: a single 0x01 byte followed by zeros.
     tail.push(0x01);
-    tail.extend(std::iter::repeat(0u8).take(pad_len - 1));
+    tail.extend(std::iter::repeat_n(0u8, pad_len - 1));
     // Trailer: version|passes|output byte, high output bits, then 64-bit LE length.
     let output = bits as u32;
-    tail.push(
-        ((0x01u32 & 0x07) | ((passes as u32 & 0x07) << 3) | ((output & 0x03) << 6)) as u8,
-    );
+    tail.push(((0x01u32 & 0x07) | ((passes as u32 & 0x07) << 3) | ((output & 0x03) << 6)) as u8);
     tail.push((output >> 2) as u8);
     tail.extend_from_slice(&bitlen.to_le_bytes());
 
     debug_assert_eq!(tail.len() % 128, 0);
-    for chunk in tail.chunks_exact(128) {
-        let block: &[u8; 128] = chunk.try_into().unwrap();
+    for block in tail.as_chunks::<128>().0 {
         transform(&mut state, block, passes);
     }
 

@@ -89,7 +89,9 @@ fn resolve_enc(name: &[u8]) -> Option<Enc> {
     match lower.as_slice() {
         b"utf-8" | b"utf8" => Some(Enc::Utf8),
         b"ascii" | b"us-ascii" => Some(Enc::Ascii),
-        b"iso-8859-1" | b"iso8859-1" | b"latin1" | b"8859-1" | b"cp819" | b"l1" => Some(Enc::Latin1),
+        b"iso-8859-1" | b"iso8859-1" | b"latin1" | b"8859-1" | b"cp819" | b"l1" => {
+            Some(Enc::Latin1)
+        }
         _ => None,
     }
 }
@@ -198,7 +200,10 @@ fn decode_utf8_full(bytes: &[u8]) -> Vec<(u32, usize, usize)> {
 }
 
 fn decode_utf8(bytes: &[u8]) -> Vec<u32> {
-    decode_utf8_full(bytes).into_iter().map(|(cp, _, _)| cp).collect()
+    decode_utf8_full(bytes)
+        .into_iter()
+        .map(|(cp, _, _)| cp)
+        .collect()
 }
 
 /// Decode UTF-8 for the **position** functions (`mb_strpos` family), which use a
@@ -340,7 +345,10 @@ fn encode(enc: Enc, cps: &[u32]) -> Vec<u8> {
 /// `mb_substr` / `mb_str_pad`). Single-byte encodings yield one span per byte.
 fn char_spans(enc: Enc, bytes: &[u8]) -> Vec<(usize, usize)> {
     match enc {
-        Enc::Utf8 => decode_utf8_full(bytes).into_iter().map(|(_, s, l)| (s, s + l)).collect(),
+        Enc::Utf8 => decode_utf8_full(bytes)
+            .into_iter()
+            .map(|(_, s, l)| (s, s + l))
+            .collect(),
         Enc::Ascii | Enc::Latin1 => (0..bytes.len()).map(|i| (i, i + 1)).collect(),
     }
 }
@@ -389,7 +397,10 @@ fn lookup_full(table: &[(u32, u32, u32, u32)], cp: u32) -> Option<(u32, u32, u32
 }
 
 fn lookup_simple(table: &[(u32, u32)], cp: u32) -> Option<u32> {
-    table.binary_search_by(|e| e.0.cmp(&cp)).ok().map(|i| table[i].1)
+    table
+        .binary_search_by(|e| e.0.cmp(&cp))
+        .ok()
+        .map(|i| table[i].1)
 }
 
 fn in_ranges(table: &[(u32, u32)], cp: u32) -> bool {
@@ -509,7 +520,9 @@ fn title_full(cps: &[u32]) -> Vec<u32> {
 }
 
 fn map_simple(cps: &[u32], table: &[(u32, u32)]) -> Vec<u32> {
-    cps.iter().map(|&cp| lookup_simple(table, cp).unwrap_or(cp)).collect()
+    cps.iter()
+        .map(|&cp| lookup_simple(table, cp).unwrap_or(cp))
+        .collect()
 }
 
 fn title_simple(cps: &[u32]) -> Vec<u32> {
@@ -667,7 +680,9 @@ fn rfind_cps(haystack: &[u32], needle: &[u32], lo: usize, hi: usize) -> Option<u
     if max_start < lo {
         return None;
     }
-    (lo..=max_start).rev().find(|&i| haystack[i..i + needle.len()] == *needle)
+    (lo..=max_start)
+        .rev()
+        .find(|&i| haystack[i..i + needle.len()] == *needle)
 }
 
 /// Shared forward search for `mb_strpos` / `mb_stripos`. The case-insensitive
@@ -677,9 +692,15 @@ fn rfind_cps(haystack: &[u32], needle: &[u32], lo: usize, hi: usize) -> Option<u
 fn strpos_impl(args: &[Value], fname: &str, fold: bool) -> Result<Value, Thrown> {
     let enc = arg_enc(args, 3, fname, 4)?;
     let (mut haystack, mut needle) = if fold {
-        (decode(enc, &bytes_of(&args[0])), decode(enc, &bytes_of(&args[1])))
+        (
+            decode(enc, &bytes_of(&args[0])),
+            decode(enc, &bytes_of(&args[1])),
+        )
     } else {
-        (decode_pos(enc, &bytes_of(&args[0])), decode_pos(enc, &bytes_of(&args[1])))
+        (
+            decode_pos(enc, &bytes_of(&args[0])),
+            decode_pos(enc, &bytes_of(&args[1])),
+        )
     };
     if fold {
         haystack = map_simple(&haystack, mb_tables::MAP_FOLD_SIMPLE);
@@ -690,10 +711,16 @@ fn strpos_impl(args: &[Value], fname: &str, fold: bool) -> Result<Value, Thrown>
     if off < -len || off > len {
         return Err(Thrown::error(
             "ValueError",
-            format!("{fname}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)"),
+            format!(
+                "{fname}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)"
+            ),
         ));
     }
-    let start = if off < 0 { (len + off) as usize } else { off as usize };
+    let start = if off < 0 {
+        (len + off) as usize
+    } else {
+        off as usize
+    };
     match find_cps(&haystack, &needle, start) {
         Some(p) => Ok(Value::Int(p as i64)),
         None => Ok(Value::Bool(false)),
@@ -705,9 +732,15 @@ fn strpos_impl(args: &[Value], fname: &str, fold: bool) -> Result<Value, Thrown>
 fn strrpos_impl(args: &[Value], fname: &str, fold: bool) -> Result<Value, Thrown> {
     let enc = arg_enc(args, 3, fname, 4)?;
     let (mut haystack, mut needle) = if fold {
-        (decode(enc, &bytes_of(&args[0])), decode(enc, &bytes_of(&args[1])))
+        (
+            decode(enc, &bytes_of(&args[0])),
+            decode(enc, &bytes_of(&args[1])),
+        )
     } else {
-        (decode_pos(enc, &bytes_of(&args[0])), decode_pos(enc, &bytes_of(&args[1])))
+        (
+            decode_pos(enc, &bytes_of(&args[0])),
+            decode_pos(enc, &bytes_of(&args[1])),
+        )
     };
     if fold {
         haystack = map_simple(&haystack, mb_tables::MAP_FOLD_SIMPLE);
@@ -718,7 +751,9 @@ fn strrpos_impl(args: &[Value], fname: &str, fold: bool) -> Result<Value, Thrown
     if off < -len || off > len {
         return Err(Thrown::error(
             "ValueError",
-            format!("{fname}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)"),
+            format!(
+                "{fname}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)"
+            ),
         ));
     }
     // offset >= 0 restricts the match start to [offset, len]; offset < 0 restricts
@@ -783,7 +818,13 @@ fn fn_mb_strwidth(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let cps = decode(enc, &bytes_of(&args[0]));
     let width: i64 = cps
         .iter()
-        .map(|&cp| if in_ranges(mb_tables::WIDTH2, cp) { 2 } else { 1 })
+        .map(|&cp| {
+            if in_ranges(mb_tables::WIDTH2, cp) {
+                2
+            } else {
+                1
+            }
+        })
         .sum();
     Ok(Value::Int(width))
 }
@@ -806,13 +847,20 @@ fn cp_width(cp: u32) -> i64 {
 /// with `$before_needle`, the part before it); `false` if not found. An empty
 /// needle matches at the start.
 fn fn_mb_strstr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let before = args.get(2).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let before = args
+        .get(2)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
     let enc = arg_enc(args, 3, "mb_strstr", 4)?;
     let haystack = decode(enc, &bytes_of(&args[0]));
     let needle = decode(enc, &bytes_of(&args[1]));
     match find_cps(&haystack, &needle, 0) {
         Some(pos) => {
-            let slice = if before { &haystack[..pos] } else { &haystack[pos..] };
+            let slice = if before {
+                &haystack[..pos]
+            } else {
+                &haystack[pos..]
+            };
             Ok(Value::str(encode(enc, slice)))
         }
         None => Ok(Value::Bool(false)),
@@ -823,13 +871,20 @@ fn fn_mb_strstr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// like [`fn_mb_strstr`] but from the **last** occurrence of the whole `needle`
 /// (an empty needle matches at the end).
 fn fn_mb_strrchr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let before = args.get(2).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let before = args
+        .get(2)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
     let enc = arg_enc(args, 3, "mb_strrchr", 4)?;
     let haystack = decode(enc, &bytes_of(&args[0]));
     let needle = decode(enc, &bytes_of(&args[1]));
     match rfind_cps(&haystack, &needle, 0, haystack.len()) {
         Some(pos) => {
-            let slice = if before { &haystack[..pos] } else { &haystack[pos..] };
+            let slice = if before {
+                &haystack[..pos]
+            } else {
+                &haystack[pos..]
+            };
             Ok(Value::str(encode(enc, slice)))
         }
         None => Ok(Value::Bool(false)),
@@ -1067,7 +1122,15 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         min: usize,
         max: Option<usize>,
     ) {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     }
     put(m, "mb_strlen", fn_mb_strlen, 1, Some(2));
     put(m, "mb_substr", fn_mb_substr, 2, Some(4));
@@ -1088,7 +1151,13 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "mb_ord", fn_mb_ord, 1, Some(2));
     put(m, "mb_chr", fn_mb_chr, 1, Some(2));
     put(m, "mb_str_pad", fn_mb_str_pad, 2, Some(5));
-    put(m, "mb_internal_encoding", fn_mb_internal_encoding, 0, Some(1));
+    put(
+        m,
+        "mb_internal_encoding",
+        fn_mb_internal_encoding,
+        0,
+        Some(1),
+    );
     put(m, "mb_check_encoding", fn_mb_check_encoding, 0, Some(2));
     put(m, "mb_convert_encoding", fn_mb_convert_encoding, 2, Some(3));
     put(m, "mb_detect_encoding", fn_mb_detect_encoding, 1, Some(3));
@@ -1117,7 +1186,10 @@ mod tests {
         String::from_utf8(bytes_of(&call(f, args))).unwrap()
     }
     fn call_hex(f: crate::NativeFn, args: &[Value]) -> String {
-        bytes_of(&call(f, args)).iter().map(|b| format!("{b:02x}")).collect()
+        bytes_of(&call(f, args))
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
     }
     fn call_int(f: crate::NativeFn, args: &[Value]) -> i64 {
         match call(f, args) {
@@ -1137,9 +1209,10 @@ mod tests {
     }
     fn split_vec(f: crate::NativeFn, args: &[Value]) -> Vec<String> {
         match call(f, args) {
-            Value::Array(a) => {
-                a.iter().map(|(_, v)| String::from_utf8(bytes_of(v)).unwrap()).collect()
-            }
+            Value::Array(a) => a
+                .iter()
+                .map(|(_, v)| String::from_utf8(bytes_of(v)).unwrap())
+                .collect(),
             other => panic!("expected array, got {}", other.type_name()),
         }
     }
@@ -1151,18 +1224,37 @@ mod tests {
         assert_eq!(call_int(fn_mb_strlen, &[s("€uro")]), 4);
         assert_eq!(call_int(fn_mb_strlen, &[s("日本語")]), 3);
         // invalid UTF-8 chunking (ED A0 80 → 3 errors)
-        assert_eq!(call_int(fn_mb_strlen, &[Value::str(vec![0xED, 0xA0, 0x80])]), 3);
+        assert_eq!(
+            call_int(fn_mb_strlen, &[Value::str(vec![0xED, 0xA0, 0x80])]),
+            3
+        );
         assert_eq!(call_int(fn_mb_strlen, &[Value::str(vec![0xC3, 0x28])]), 2);
     }
 
     #[test]
     fn substr_cases() {
-        assert_eq!(calls(fn_mb_substr, &[s("héllo"), Value::Int(1), Value::Int(3)]), "éll");
+        assert_eq!(
+            calls(fn_mb_substr, &[s("héllo"), Value::Int(1), Value::Int(3)]),
+            "éll"
+        );
         assert_eq!(calls(fn_mb_substr, &[s("héllo"), Value::Int(-2)]), "lo");
-        assert_eq!(calls(fn_mb_substr, &[s("héllo"), Value::Int(1), Value::Int(-1)]), "éll");
+        assert_eq!(
+            calls(fn_mb_substr, &[s("héllo"), Value::Int(1), Value::Int(-1)]),
+            "éll"
+        );
         assert_eq!(calls(fn_mb_substr, &[s("héllo"), Value::Int(-10)]), "héllo");
         // invalid lead byte → substitute
-        assert_eq!(call_hex(fn_mb_substr, &[Value::str(vec![0xC3, 0x28, 0x61, 0x62]), Value::Int(0), Value::Int(2)]), "3f28");
+        assert_eq!(
+            call_hex(
+                fn_mb_substr,
+                &[
+                    Value::str(vec![0xC3, 0x28, 0x61, 0x62]),
+                    Value::Int(0),
+                    Value::Int(2)
+                ]
+            ),
+            "3f28"
+        );
     }
 
     #[test]
@@ -1184,34 +1276,76 @@ mod tests {
 
     #[test]
     fn convert_case_cases() {
-        assert_eq!(calls(fn_mb_convert_case, &[s("héllo wörld"), Value::Int(2)]), "Héllo Wörld");
-        assert_eq!(calls(fn_mb_convert_case, &[s("it's a test"), Value::Int(2)]), "It's A Test");
-        assert_eq!(calls(fn_mb_convert_case, &[s("a.b a,b"), Value::Int(2)]), "A.b A,B");
-        assert_eq!(calls(fn_mb_convert_case, &[s("abc123def"), Value::Int(2)]), "Abc123Def");
-        assert_eq!(calls(fn_mb_convert_case, &[s("ßtra"), Value::Int(2)]), "Sstra");
+        assert_eq!(
+            calls(fn_mb_convert_case, &[s("héllo wörld"), Value::Int(2)]),
+            "Héllo Wörld"
+        );
+        assert_eq!(
+            calls(fn_mb_convert_case, &[s("it's a test"), Value::Int(2)]),
+            "It's A Test"
+        );
+        assert_eq!(
+            calls(fn_mb_convert_case, &[s("a.b a,b"), Value::Int(2)]),
+            "A.b A,B"
+        );
+        assert_eq!(
+            calls(fn_mb_convert_case, &[s("abc123def"), Value::Int(2)]),
+            "Abc123Def"
+        );
+        assert_eq!(
+            calls(fn_mb_convert_case, &[s("ßtra"), Value::Int(2)]),
+            "Sstra"
+        );
         // FOLD: ß → ss, µ → μ
-        assert_eq!(call_hex(fn_mb_convert_case, &[s("ß"), Value::Int(3)]), "7373");
-        assert_eq!(call_hex(fn_mb_convert_case, &[s("µ"), Value::Int(3)]), "cebc");
+        assert_eq!(
+            call_hex(fn_mb_convert_case, &[s("ß"), Value::Int(3)]),
+            "7373"
+        );
+        assert_eq!(
+            call_hex(fn_mb_convert_case, &[s("µ"), Value::Int(3)]),
+            "cebc"
+        );
         // SIMPLE upper keeps ß
-        assert_eq!(call_hex(fn_mb_convert_case, &[s("ß"), Value::Int(4)]), "c39f");
+        assert_eq!(
+            call_hex(fn_mb_convert_case, &[s("ß"), Value::Int(4)]),
+            "c39f"
+        );
     }
 
     #[test]
     fn str_split_cases() {
-        assert_eq!(split_vec(fn_mb_str_split, &[s("héllo")]), vec!["h", "é", "l", "l", "o"]);
-        assert_eq!(split_vec(fn_mb_str_split, &[s("héllo"), Value::Int(2)]), vec!["hé", "ll", "o"]);
+        assert_eq!(
+            split_vec(fn_mb_str_split, &[s("héllo")]),
+            vec!["h", "é", "l", "l", "o"]
+        );
+        assert_eq!(
+            split_vec(fn_mb_str_split, &[s("héllo"), Value::Int(2)]),
+            vec!["hé", "ll", "o"]
+        );
         assert!(fn_mb_str_split(&mut NullHost, &[s("abc"), Value::Int(0)]).is_err());
     }
 
     #[test]
     fn pos_cases() {
         assert_eq!(call_pos(fn_mb_strpos, &[s("héllo"), s("llo")]), Some(2));
-        assert_eq!(call_pos(fn_mb_strpos, &[s("aéaéa"), s("a"), Value::Int(-1)]), Some(4));
-        assert_eq!(call_pos(fn_mb_stripos, &[s("Héllo WÖRLD"), s("wörld")]), Some(6));
+        assert_eq!(
+            call_pos(fn_mb_strpos, &[s("aéaéa"), s("a"), Value::Int(-1)]),
+            Some(4)
+        );
+        assert_eq!(
+            call_pos(fn_mb_stripos, &[s("Héllo WÖRLD"), s("wörld")]),
+            Some(6)
+        );
         assert!(is_false(fn_mb_stripos, &[s("maße"), s("MASSE")])); // simple fold: ß ≠ ss
         assert_eq!(call_pos(fn_mb_strrpos, &[s("aéaéa"), s("a")]), Some(4));
-        assert_eq!(call_pos(fn_mb_strrpos, &[s("aéaéa"), s("a"), Value::Int(-2)]), Some(2));
-        assert_eq!(call_pos(fn_mb_strrpos, &[s("abcabc"), s("bc"), Value::Int(-3)]), Some(1));
+        assert_eq!(
+            call_pos(fn_mb_strrpos, &[s("aéaéa"), s("a"), Value::Int(-2)]),
+            Some(2)
+        );
+        assert_eq!(
+            call_pos(fn_mb_strrpos, &[s("abcabc"), s("bc"), Value::Int(-3)]),
+            Some(1)
+        );
         assert_eq!(call_pos(fn_mb_strripos, &[s("AéAéA"), s("a")]), Some(4));
     }
 
@@ -1227,11 +1361,23 @@ mod tests {
     #[test]
     fn strstr_strrchr_cases() {
         assert_eq!(calls(fn_mb_strstr, &[s("héllo wörld"), s("ö")]), "örld");
-        assert_eq!(calls(fn_mb_strstr, &[s("héllo wörld"), s("ö"), Value::Bool(true)]), "héllo w");
+        assert_eq!(
+            calls(fn_mb_strstr, &[s("héllo wörld"), s("ö"), Value::Bool(true)]),
+            "héllo w"
+        );
         assert!(is_false(fn_mb_strstr, &[s("héllo"), s("z")]));
-        assert_eq!(calls(fn_mb_strstr, &[s("日本語テスト"), s("語")]), "語テスト");
+        assert_eq!(
+            calls(fn_mb_strstr, &[s("日本語テスト"), s("語")]),
+            "語テスト"
+        );
         assert_eq!(calls(fn_mb_strrchr, &[s("héllo wörld"), s("l")]), "ld");
-        assert_eq!(calls(fn_mb_strrchr, &[s("héllo wörld"), s("l"), Value::Bool(true)]), "héllo wör");
+        assert_eq!(
+            calls(
+                fn_mb_strrchr,
+                &[s("héllo wörld"), s("l"), Value::Bool(true)]
+            ),
+            "héllo wör"
+        );
         assert_eq!(calls(fn_mb_strrchr, &[s("foobarbo"), s("ob")]), "obarbo");
         assert!(is_false(fn_mb_strrchr, &[s("abc"), s("xy")]));
     }
@@ -1239,19 +1385,31 @@ mod tests {
     #[test]
     fn strimwidth_cases() {
         assert_eq!(
-            calls(fn_mb_strimwidth, &[s("Hello World"), Value::Int(0), Value::Int(10), s("...")]),
+            calls(
+                fn_mb_strimwidth,
+                &[s("Hello World"), Value::Int(0), Value::Int(10), s("...")]
+            ),
             "Hello W..."
         );
         assert_eq!(
-            calls(fn_mb_strimwidth, &[s("日本語テスト"), Value::Int(0), Value::Int(6), s("...")]),
+            calls(
+                fn_mb_strimwidth,
+                &[s("日本語テスト"), Value::Int(0), Value::Int(6), s("...")]
+            ),
             "日..."
         );
         assert_eq!(
-            calls(fn_mb_strimwidth, &[s("Hello"), Value::Int(0), Value::Int(3)]),
+            calls(
+                fn_mb_strimwidth,
+                &[s("Hello"), Value::Int(0), Value::Int(3)]
+            ),
             "Hel"
         );
         assert_eq!(
-            calls(fn_mb_strimwidth, &[s("日本語テスト"), Value::Int(2), Value::Int(6), s("..")]),
+            calls(
+                fn_mb_strimwidth,
+                &[s("日本語テスト"), Value::Int(2), Value::Int(6), s("..")]
+            ),
             "語テ.."
         );
     }
@@ -1259,7 +1417,10 @@ mod tests {
     #[test]
     fn scrub_cases() {
         assert_eq!(calls(fn_mb_scrub, &[s("valid")]), "valid");
-        assert_eq!(calls(fn_mb_scrub, &[Value::str(b"abc\xff\xfedef".to_vec())]), "abc??def");
+        assert_eq!(
+            calls(fn_mb_scrub, &[Value::str(b"abc\xff\xfedef".to_vec())]),
+            "abc??def"
+        );
         assert_eq!(calls(fn_mb_scrub, &[Value::str(b"\xe6\x97".to_vec())]), "?");
     }
 
@@ -1274,8 +1435,20 @@ mod tests {
 
     #[test]
     fn str_pad_cases() {
-        assert_eq!(calls(fn_mb_str_pad, &[s("héllo"), Value::Int(10), s("-*"), Value::Int(1)]), "héllo-*-*-");
-        assert_eq!(calls(fn_mb_str_pad, &[s("héllo"), Value::Int(10), s("xy"), Value::Int(2)]), "xyhélloxyx");
+        assert_eq!(
+            calls(
+                fn_mb_str_pad,
+                &[s("héllo"), Value::Int(10), s("-*"), Value::Int(1)]
+            ),
+            "héllo-*-*-"
+        );
+        assert_eq!(
+            calls(
+                fn_mb_str_pad,
+                &[s("héllo"), Value::Int(10), s("xy"), Value::Int(2)]
+            ),
+            "xyhélloxyx"
+        );
         assert_eq!(calls(fn_mb_str_pad, &[s("héllo"), Value::Int(3)]), "héllo");
     }
 
@@ -1283,23 +1456,41 @@ mod tests {
     fn encoding_cases() {
         // mb_convert_encoding($str, $to, $from): café UTF-8 → ISO-8859-1 (é → 0xe9)
         assert_eq!(
-            call_hex(fn_mb_convert_encoding, &[s("café"), s("ISO-8859-1"), s("UTF-8")]),
+            call_hex(
+                fn_mb_convert_encoding,
+                &[s("café"), s("ISO-8859-1"), s("UTF-8")]
+            ),
             "636166e9"
         );
         // reinterpreting those UTF-8 bytes as Latin-1 → UTF-8 (Ã,©)
         assert_eq!(
-            call_hex(fn_mb_convert_encoding, &[s("café"), s("UTF-8"), s("ISO-8859-1")]),
+            call_hex(
+                fn_mb_convert_encoding,
+                &[s("café"), s("UTF-8"), s("ISO-8859-1")]
+            ),
             "636166c383c2a9"
         );
         // "latin1" is an accepted alias for "ISO-8859-1"
         assert_eq!(
-            call_hex(fn_mb_convert_encoding, &[s("café"), s("UTF-8"), s("latin1")]),
+            call_hex(
+                fn_mb_convert_encoding,
+                &[s("café"), s("UTF-8"), s("latin1")]
+            ),
             "636166c383c2a9"
         );
         // unmappable → '?'
-        assert_eq!(call_hex(fn_mb_convert_encoding, &[s("café"), s("ASCII"), s("UTF-8")]), "6361663f");
-        assert!(matches!(call(fn_mb_check_encoding, &[s("héllo"), s("UTF-8")]), Value::Bool(true)));
-        assert!(is_false(fn_mb_check_encoding, &[Value::str(vec![0xC3, 0x28]), s("UTF-8")]));
+        assert_eq!(
+            call_hex(fn_mb_convert_encoding, &[s("café"), s("ASCII"), s("UTF-8")]),
+            "6361663f"
+        );
+        assert!(matches!(
+            call(fn_mb_check_encoding, &[s("héllo"), s("UTF-8")]),
+            Value::Bool(true)
+        ));
+        assert!(is_false(
+            fn_mb_check_encoding,
+            &[Value::str(vec![0xC3, 0x28]), s("UTF-8")]
+        ));
         assert!(matches!(call(fn_mb_check_encoding, &[]), Value::Bool(true)));
         // invalid encoding name → ValueError
         assert!(fn_mb_strlen(&mut NullHost, &[s("x"), s("bogus")]).is_err());
@@ -1308,7 +1499,10 @@ mod tests {
     #[test]
     fn internal_encoding_roundtrip() {
         assert_eq!(calls(fn_mb_internal_encoding, &[]), "UTF-8");
-        assert!(matches!(call(fn_mb_internal_encoding, &[s("ISO-8859-1")]), Value::Bool(true)));
+        assert!(matches!(
+            call(fn_mb_internal_encoding, &[s("ISO-8859-1")]),
+            Value::Bool(true)
+        ));
         assert_eq!(calls(fn_mb_internal_encoding, &[]), "ISO-8859-1");
         // restore so other tests on this thread see the default
         let _ = call(fn_mb_internal_encoding, &[s("UTF-8")]);

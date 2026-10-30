@@ -22,8 +22,12 @@ fn main() -> ExitCode {
         .find(|a| !a.starts_with("--"))
         .cloned()
         .unwrap_or_else(|| "hash".to_string());
-    let seed = flag_val(&args, "--seed").and_then(|v| v.parse().ok()).unwrap_or(0xC0FFEE);
-    let count = flag_val(&args, "--count").and_then(|v| v.parse().ok()).unwrap_or(48);
+    let seed = flag_val(&args, "--seed")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0xC0FFEE);
+    let count = flag_val(&args, "--count")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(48);
     let only = flag_val(&args, "--algo");
     let strict = args.iter().any(|a| a == "--strict");
 
@@ -205,7 +209,11 @@ fn print_first_diff(php: &[u8], rhp: &[u8]) {
             return;
         }
     }
-    println!("      (length differs: php {} B, rhp {} B)", php.len(), rhp.len());
+    println!(
+        "      (length differs: php {} B, rhp {} B)",
+        php.len(),
+        rhp.len()
+    );
 }
 
 fn first_line(s: &str) -> String {
@@ -213,5 +221,7 @@ fn first_line(s: &str) -> String {
 }
 
 fn flag_val(args: &[String], flag: &str) -> Option<String> {
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1).cloned())
 }

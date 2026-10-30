@@ -24,13 +24,12 @@ mod arrayset_fns;
 mod datetime_fns;
 mod dt_oop_fns;
 mod ext;
+mod file_fns;
 mod filter_fns;
+pub mod http;
 mod json_fns;
 mod math_fns;
-mod file_fns;
-pub mod http;
 mod misc_fns;
-pub mod zip_ext;
 mod parse_fns;
 mod php_fns;
 mod preg_fns;
@@ -38,11 +37,12 @@ mod printf_fns;
 mod serialize_fns;
 mod sort_fns;
 mod str_fns;
-mod stream_fns;
 mod strarr2_fns;
 mod strcmp_fns;
+mod stream_fns;
 mod strtotime_fns;
 mod webenc_fns;
+pub mod zip_ext;
 
 /// The interpreter surface a builtin may use. Implemented by the VM and the oracle.
 pub trait Host {
@@ -101,7 +101,10 @@ pub trait Host {
 
     /// Invoke a PHP callable (for `array_map`/`array_filter`/…). Default: refused.
     fn call_callable(&mut self, _callable: &Value, _args: &[Value]) -> Result<Value, Thrown> {
-        Err(Thrown::unsupported("callback", "callbacks are not available in this host"))
+        Err(Thrown::unsupported(
+            "callback",
+            "callbacks are not available in this host",
+        ))
     }
 
     /// Whether a value is callable (`is_callable`): closures, function names,
@@ -263,7 +266,14 @@ pub trait Host {
         Value::Null
     }
     /// `stream_context_set_option($ctx, $wrapper, $option, $value)`.
-    fn stream_context_set_option(&mut self, _ctx: &Value, _wrapper: &[u8], _option: &[u8], _value: Value) {}
+    fn stream_context_set_option(
+        &mut self,
+        _ctx: &Value,
+        _wrapper: &[u8],
+        _option: &[u8],
+        _value: Value,
+    ) {
+    }
 
     /// Response header lines (status line first) from the last http(s) request.
     fn set_http_response_headers(&mut self, _headers: Vec<Vec<u8>>) {}
@@ -371,7 +381,10 @@ pub trait Host {
         _args: Vec<Value>,
         _run_ctor: bool,
     ) -> Result<Value, Thrown> {
-        Err(Thrown::error("ReflectionException", "reflection is not available in this host"))
+        Err(Thrown::error(
+            "ReflectionException",
+            "reflection is not available in this host",
+        ))
     }
     /// Set an object property bypassing visibility (`ReflectionProperty::setValue`).
     fn reflect_set_prop(&mut self, _obj: &Value, _name: &[u8], _val: Value) -> bool {
@@ -739,7 +752,10 @@ pub fn module_prelude() -> String {
 /// Built-in stream wrappers contributed by extension modules (e.g. `phar://`),
 /// installed into the VM's per-run registry at startup.
 pub fn stream_wrappers() -> Vec<WrapperReg> {
-    ext::modules().into_iter().flat_map(|md| (md.wrappers)()).collect()
+    ext::modules()
+        .into_iter()
+        .flat_map(|md| (md.wrappers)())
+        .collect()
 }
 
 /// If `name` is a deliberately-refused high-risk function, return why.
@@ -835,13 +851,19 @@ is_type!(fn_is_array, Value::Array(_));
 is_type!(fn_is_object, Value::Object(_) | Value::Closure(_));
 
 fn fn_is_nan(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(matches!(deref(&args[0]), Value::Float(f) if f.is_nan())))
+    Ok(Value::Bool(
+        matches!(deref(&args[0]), Value::Float(f) if f.is_nan()),
+    ))
 }
 fn fn_is_infinite(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(matches!(deref(&args[0]), Value::Float(f) if f.is_infinite())))
+    Ok(Value::Bool(
+        matches!(deref(&args[0]), Value::Float(f) if f.is_infinite()),
+    ))
 }
 fn fn_is_finite(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(matches!(deref(&args[0]), Value::Float(f) if f.is_finite())))
+    Ok(Value::Bool(
+        matches!(deref(&args[0]), Value::Float(f) if f.is_finite()),
+    ))
 }
 
 fn fn_is_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -880,7 +902,10 @@ fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         )
     })
 }
-is_type!(fn_is_scalar, Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bool(_));
+is_type!(
+    fn_is_scalar,
+    Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bool(_)
+);
 
 fn fn_intval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
@@ -904,8 +929,14 @@ fn intval_base(bytes: &[u8], mut base: i64) -> i64 {
         i += 1;
     }
     let neg = match bytes.get(i) {
-        Some(b'-') => { i += 1; true }
-        Some(b'+') => { i += 1; false }
+        Some(b'-') => {
+            i += 1;
+            true
+        }
+        Some(b'+') => {
+            i += 1;
+            false
+        }
         _ => false,
     };
     // Base 0: auto-detect from the prefix.
@@ -932,7 +963,11 @@ fn intval_base(bytes: &[u8], mut base: i64) -> i64 {
         acc = acc.saturating_mul(base).saturating_add(d);
         i += 1;
     }
-    if neg { -acc } else { acc }
+    if neg {
+        -acc
+    } else {
+        acc
+    }
 }
 
 /// Returns (bytes-consumed-by-prefix, detected-base) for base 0/16/8/2 prefixes.
@@ -1037,7 +1072,9 @@ fn extremum(args: &[Value], want_max: bool) -> Result<Value, Thrown> {
         args.to_vec()
     };
     if items.is_empty() {
-        return Err(Thrown::type_error("max(): Argument #1 ($value) must contain at least one element"));
+        return Err(Thrown::type_error(
+            "max(): Argument #1 ($value) must contain at least one element",
+        ));
     }
     let mut best = items[0].clone();
     for v in &items[1..] {
@@ -1052,7 +1089,9 @@ fn extremum(args: &[Value], want_max: bool) -> Result<Value, Thrown> {
 
 fn fn_array_sum(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Value::Array(a) = deref(&args[0]) else {
-        return Err(Thrown::type_error("array_sum(): Argument #1 ($array) must be of type array"));
+        return Err(Thrown::type_error(
+            "array_sum(): Argument #1 ($array) must be of type array",
+        ));
     };
     let mut acc = Value::Int(0);
     for (_, v) in a.iter() {
@@ -1063,7 +1102,9 @@ fn fn_array_sum(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_array_product(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Value::Array(a) = deref(&args[0]) else {
-        return Err(Thrown::type_error("array_product(): Argument #1 ($array) must be of type array"));
+        return Err(Thrown::type_error(
+            "array_product(): Argument #1 ($array) must be of type array",
+        ));
     };
     let mut acc = Value::Int(1);
     for (_, v) in a.iter() {
@@ -1074,12 +1115,17 @@ fn fn_array_product(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_array_keys(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Value::Array(a) = deref(&args[0]) else {
-        return Err(Thrown::type_error("array_keys(): Argument #1 ($array) must be of type array"));
+        return Err(Thrown::type_error(
+            "array_keys(): Argument #1 ($array) must be of type array",
+        ));
     };
     // Optional search value: keep only keys whose value matches (loose by
     // default, strict `===` when the third argument is true).
-    let search = args.get(1).map(|v| deref(v));
-    let strict = args.get(2).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let search = args.get(1).map(deref);
+    let strict = args
+        .get(2)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
     let key_val = |k: &rhp_values::ArrayKey| match k {
         rhp_values::ArrayKey::Int(n) => Value::Int(*n),
         rhp_values::ArrayKey::Str(s) => Value::Str(s.clone()),
@@ -1105,7 +1151,9 @@ fn fn_array_keys(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_array_values(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Value::Array(a) = deref(&args[0]) else {
-        return Err(Thrown::type_error("array_values(): Argument #1 ($array) must be of type array"));
+        return Err(Thrown::type_error(
+            "array_values(): Argument #1 ($array) must be of type array",
+        ));
     };
     let mut out = PhpArray::new();
     for (_, v) in a.iter() {
@@ -1118,7 +1166,9 @@ fn fn_array_merge(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = PhpArray::new();
     for arg in args {
         let Value::Array(a) = deref(arg) else {
-            return Err(Thrown::type_error("array_merge(): Arguments must be of type array"));
+            return Err(Thrown::type_error(
+                "array_merge(): Arguments must be of type array",
+            ));
         };
         for (k, v) in a.iter() {
             match k {
@@ -1141,20 +1191,28 @@ fn key_to_value(k: &rhp_values::ArrayKey) -> Value {
 fn as_array(v: &Value, who: &str) -> Result<PhpArray, Thrown> {
     match deref(v) {
         Value::Array(a) => Ok(a),
-        _ => Err(Thrown::type_error(format!("{who}(): argument must be of type array"))),
+        _ => Err(Thrown::type_error(format!(
+            "{who}(): argument must be of type array"
+        ))),
     }
 }
 
 fn fn_array_map(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let cb = &args[0];
     let cb_null = matches!(deref(cb), Value::Null);
-    let arrays: Vec<PhpArray> =
-        args[1..].iter().map(|a| as_array(a, "array_map")).collect::<Result<_, _>>()?;
+    let arrays: Vec<PhpArray> = args[1..]
+        .iter()
+        .map(|a| as_array(a, "array_map"))
+        .collect::<Result<_, _>>()?;
     if arrays.len() == 1 {
         // single array: preserve keys
         let mut out = PhpArray::new();
         for (k, v) in arrays[0].iter() {
-            let r = if cb_null { v.clone() } else { host.call_callable(cb, &[v.clone()])? };
+            let r = if cb_null {
+                v.clone()
+            } else {
+                host.call_callable(cb, std::slice::from_ref(v))?
+            };
             out.insert(k.clone(), r);
         }
         return Ok(Value::Array(out));
@@ -1163,8 +1221,14 @@ fn fn_array_map(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let max_len = arrays.iter().map(|a| a.len()).max().unwrap_or(0);
     let mut out = PhpArray::new();
     for i in 0..max_len {
-        let tuple: Vec<Value> =
-            arrays.iter().map(|a| a.get_index(i).map(|(_, v)| v.clone()).unwrap_or(Value::Null)).collect();
+        let tuple: Vec<Value> = arrays
+            .iter()
+            .map(|a| {
+                a.get_index(i)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or(Value::Null)
+            })
+            .collect();
         if cb_null {
             let mut t = PhpArray::new();
             for v in tuple {
@@ -1188,8 +1252,8 @@ fn fn_array_filter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             None => conv::to_bool(v),
             Some(cb) => {
                 let call_args: Vec<Value> = match mode {
-                    2 => vec![key_to_value(k)],                       // ARRAY_FILTER_USE_KEY
-                    1 => vec![v.clone(), key_to_value(k)],            // ARRAY_FILTER_USE_BOTH
+                    2 => vec![key_to_value(k)],            // ARRAY_FILTER_USE_KEY
+                    1 => vec![v.clone(), key_to_value(k)], // ARRAY_FILTER_USE_BOTH
                     _ => vec![v.clone()],
                 };
                 conv::to_bool(&host.call_callable(cb, &call_args)?)
@@ -1224,7 +1288,9 @@ fn fn_call_user_func_array(host: &mut dyn Host, args: &[Value]) -> Result<Value,
 
 fn fn_array_reverse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Value::Array(a) = deref(&args[0]) else {
-        return Err(Thrown::type_error("array_reverse(): Argument #1 ($array) must be of type array"));
+        return Err(Thrown::type_error(
+            "array_reverse(): Argument #1 ($array) must be of type array",
+        ));
     };
     let preserve = args.get(1).map(conv::to_bool).unwrap_or(false);
     let mut out = PhpArray::new();
@@ -1242,7 +1308,10 @@ fn fn_range(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // Numeric ranges only (char ranges deferred).
     let start = conv::to_number(&deref(&args[0])).0;
     let end = conv::to_number(&deref(&args[1])).0;
-    let step = args.get(2).map(|v| conv::to_number(&deref(v)).0.as_f64().abs()).unwrap_or(1.0);
+    let step = args
+        .get(2)
+        .map(|v| conv::to_number(&deref(v)).0.as_f64().abs())
+        .unwrap_or(1.0);
     let step = if step == 0.0 { 1.0 } else { step };
     let mut out = PhpArray::new();
     let use_float = matches!(start, conv::Num::Float(_))
@@ -1252,13 +1321,21 @@ fn fn_range(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if s <= e {
         let mut x = s;
         while x <= e + 1e-9 {
-            out.push(if use_float { Value::Float(x) } else { Value::Int(x as i64) });
+            out.push(if use_float {
+                Value::Float(x)
+            } else {
+                Value::Int(x as i64)
+            });
             x += step;
         }
     } else {
         let mut x = s;
         while x >= e - 1e-9 {
-            out.push(if use_float { Value::Float(x) } else { Value::Int(x as i64) });
+            out.push(if use_float {
+                Value::Float(x)
+            } else {
+                Value::Int(x as i64)
+            });
             x -= step;
         }
     }
@@ -1268,7 +1345,9 @@ fn fn_range(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_in_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let needle = deref(&args[0]);
     let Value::Array(a) = deref(&args[1]) else {
-        return Err(Thrown::type_error("in_array(): Argument #2 ($haystack) must be of type array"));
+        return Err(Thrown::type_error(
+            "in_array(): Argument #2 ($haystack) must be of type array",
+        ));
     };
     let strict = args.get(2).map(conv::to_bool).unwrap_or(false);
     let found = a.iter().any(|(_, v)| {
@@ -1283,7 +1362,9 @@ fn fn_in_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_array_key_exists(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Value::Array(a) = deref(&args[1]) else {
-        return Err(Thrown::type_error("array_key_exists(): Argument #2 ($array) must be of type array"));
+        return Err(Thrown::type_error(
+            "array_key_exists(): Argument #2 ($array) must be of type array",
+        ));
     };
     let Some(key) = rhp_values::ArrayKey::from_value(&args[0]) else {
         return Ok(Value::Bool(false));
@@ -1296,7 +1377,11 @@ fn fn_implode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (glue, arr) = match (deref(&args[0]), args.get(1).map(deref)) {
         (Value::Array(a), _) => (Vec::new(), a),
         (g, Some(Value::Array(a))) => (conv::to_string_bytes(&g), a),
-        _ => return Err(Thrown::type_error("implode(): Argument must be of type array")),
+        _ => {
+            return Err(Thrown::type_error(
+                "implode(): Argument must be of type array",
+            ))
+        }
     };
     let mut out = Vec::new();
     for (i, (_, v)) in arr.iter().enumerate() {
@@ -1312,7 +1397,10 @@ fn fn_explode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let delim = conv::to_string_bytes(&deref(&args[0]));
     let s = conv::to_string_bytes(&deref(&args[1]));
     if delim.is_empty() {
-        return Err(Thrown::error("ValueError", "explode(): Argument #1 ($separator) cannot be empty"));
+        return Err(Thrown::error(
+            "ValueError",
+            "explode(): Argument #1 ($separator) cannot be empty",
+        ));
     }
     // All pieces, in order.
     let mut parts: Vec<Vec<u8>> = Vec::new();
@@ -1379,16 +1467,23 @@ fn fn_strtolower(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_str_contains(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let haystack = conv::to_string_bytes(&deref(&args[0]));
     let needle = conv::to_string_bytes(&deref(&args[1]));
-    Ok(Value::Bool(needle.is_empty() || find_sub(&haystack, &needle).is_some()))
+    Ok(Value::Bool(
+        needle.is_empty() || find_sub(&haystack, &needle).is_some(),
+    ))
 }
 
 fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match deref(&args[0]) {
         Value::Object(h) => {
             let cid = h.borrow().class;
-            Ok(host.class_name(cid).map(Value::str).unwrap_or(Value::Bool(false)))
+            Ok(host
+                .class_name(cid)
+                .map(Value::str)
+                .unwrap_or(Value::Bool(false)))
         }
-        _ => Err(Thrown::type_error("get_class(): Argument #1 ($object) must be of type object")),
+        _ => Err(Thrown::type_error(
+            "get_class(): Argument #1 ($object) must be of type object",
+        )),
     }
 }
 
@@ -1409,7 +1504,10 @@ fn norm_class(n: &[u8]) -> Vec<u8> {
 fn fn_is_a(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let subject = deref(&args[0]);
     let target = conv::to_string_bytes(&deref(&args[1]));
-    let allow_string = args.get(2).map(|v| conv::to_bool(&deref(v))).unwrap_or(false);
+    let allow_string = args
+        .get(2)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
     match subject_class(host, &subject, allow_string) {
         Some(n) => Ok(Value::Bool(host.reflect_is_a(&n, &target))),
         None => Ok(Value::Bool(false)),
@@ -1419,7 +1517,10 @@ fn fn_is_a(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_is_subclass_of(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let subject = deref(&args[0]);
     let target = conv::to_string_bytes(&deref(&args[1]));
-    let allow_string = args.get(2).map(|v| conv::to_bool(&deref(v))).unwrap_or(true);
+    let allow_string = args
+        .get(2)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(true);
     match subject_class(host, &subject, allow_string) {
         Some(n) => {
             // Subtype but NOT the same class (is_subclass_of is exclusive).
@@ -1434,7 +1535,10 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
     match args.first().map(deref) {
         Some(Value::Object(h)) => {
             let cid = h.borrow().class;
-            Ok(host.class_parent_name(cid).map(Value::str).unwrap_or(Value::Bool(false)))
+            Ok(host
+                .class_parent_name(cid)
+                .map(Value::str)
+                .unwrap_or(Value::Bool(false)))
         }
         _ => Ok(Value::Bool(false)),
     }
@@ -1489,25 +1593,40 @@ fn exists_of_kind(
 ) -> bool {
     let name = conv::to_string_bytes(&deref(&args[0]));
     // `$autoload` defaults to true: a miss triggers registered autoloaders.
-    let autoload = args.get(1).map(|v| conv::to_bool(&deref(v))).unwrap_or(true);
-    let cid = if autoload { host.resolve_class_autoload(&name) } else { host.resolve_class(&name) };
-    cid.and_then(|cid| host.class_kind(cid)).map(want).unwrap_or(false)
+    let autoload = args
+        .get(1)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(true);
+    let cid = if autoload {
+        host.resolve_class_autoload(&name)
+    } else {
+        host.resolve_class(&name)
+    };
+    cid.and_then(|cid| host.class_kind(cid))
+        .map(want)
+        .unwrap_or(false)
 }
 
 fn fn_class_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use rhp_values::ClassKind;
     // Enums are classes too (`class_exists` is true for an enum name).
-    Ok(Value::Bool(exists_of_kind(host, args, |k| matches!(k, ClassKind::Class | ClassKind::Enum))))
+    Ok(Value::Bool(exists_of_kind(host, args, |k| {
+        matches!(k, ClassKind::Class | ClassKind::Enum)
+    })))
 }
 
 fn fn_interface_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use rhp_values::ClassKind;
-    Ok(Value::Bool(exists_of_kind(host, args, |k| k == ClassKind::Interface)))
+    Ok(Value::Bool(exists_of_kind(host, args, |k| {
+        k == ClassKind::Interface
+    })))
 }
 
 fn fn_enum_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use rhp_values::ClassKind;
-    Ok(Value::Bool(exists_of_kind(host, args, |k| k == ClassKind::Enum)))
+    Ok(Value::Bool(exists_of_kind(host, args, |k| {
+        k == ClassKind::Enum
+    })))
 }
 
 /// `iterator_to_array($iterable, $preserve_keys = true)`. Only a plain array is
@@ -1515,7 +1634,10 @@ fn fn_enum_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 /// a non-array iterable is deferred-to-VM and yields a TypeError from this
 /// builtin. For an array it is a (re-keyed when `!preserve_keys`) passthrough.
 fn fn_iterator_to_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let preserve = args.get(1).map(|v| conv::to_bool(&deref(v))).unwrap_or(true);
+    let preserve = args
+        .get(1)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(true);
     match deref(&args[0]) {
         Value::Array(a) => {
             if preserve {
@@ -1544,7 +1666,9 @@ fn fn_get_object_vars(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             }
             Ok(Value::Array(arr))
         }
-        _ => Err(Thrown::type_error("get_object_vars(): Argument #1 must be of type object")),
+        _ => Err(Thrown::type_error(
+            "get_object_vars(): Argument #1 must be of type object",
+        )),
     }
 }
 

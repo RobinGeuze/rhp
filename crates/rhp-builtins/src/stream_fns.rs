@@ -30,18 +30,27 @@ fn fn_fwrite(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             data.truncate(n as usize);
         }
     }
-    Ok(host.stream_write(&res, &data).map(|n| Value::Int(n as i64)).unwrap_or(Value::Bool(false)))
+    Ok(host
+        .stream_write(&res, &data)
+        .map(|n| Value::Int(n as i64))
+        .unwrap_or(Value::Bool(false)))
 }
 
 fn fn_fread(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let res = deref(&args[0]);
     let len = conv::to_int(&deref(&args[1]));
-    Ok(host.stream_read(&res, len).map(Value::str).unwrap_or(Value::Bool(false)))
+    Ok(host
+        .stream_read(&res, len)
+        .map(Value::str)
+        .unwrap_or(Value::Bool(false)))
 }
 
 fn fn_fgets(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let res = deref(&args[0]);
-    Ok(host.stream_gets(&res).map(Value::str).unwrap_or(Value::Bool(false)))
+    Ok(host
+        .stream_gets(&res)
+        .map(Value::str)
+        .unwrap_or(Value::Bool(false)))
 }
 
 fn fn_fgetc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -71,7 +80,10 @@ fn fn_rewind(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_stream_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let res = deref(&args[0]);
     let maxlen = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(-1);
-    Ok(host.stream_read(&res, maxlen).map(Value::str).unwrap_or(Value::Bool(false)))
+    Ok(host
+        .stream_read(&res, maxlen)
+        .map(Value::str)
+        .unwrap_or(Value::Bool(false)))
 }
 
 fn fn_is_resource(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -86,7 +98,10 @@ fn fn_get_resource_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 }
 
 fn fn_stream_context_create(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let options = args.first().map(deref).unwrap_or(Value::Array(rhp_values::PhpArray::new()));
+    let options = args
+        .first()
+        .map(deref)
+        .unwrap_or(Value::Array(rhp_values::PhpArray::new()));
     Ok(host.create_stream_context(options))
 }
 
@@ -108,7 +123,12 @@ fn fn_stream_context_set_option(host: &mut dyn Host, args: &[Value]) -> Result<V
             if let Value::Array(inner) = wv {
                 let wrapper = key_bytes(wk);
                 for (ok, ov) in inner.iter() {
-                    host.stream_context_set_option(&deref(&args[0]), &wrapper, &key_bytes(ok), ov.clone());
+                    host.stream_context_set_option(
+                        &deref(&args[0]),
+                        &wrapper,
+                        &key_bytes(ok),
+                        ov.clone(),
+                    );
                 }
             }
         }
@@ -123,7 +143,10 @@ fn key_bytes(k: &rhp_values::ArrayKey) -> Vec<u8> {
     }
 }
 
-fn fn_http_get_last_response_headers(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+fn fn_http_get_last_response_headers(
+    host: &mut dyn Host,
+    _args: &[Value],
+) -> Result<Value, Thrown> {
     let headers = host.http_response_headers();
     if headers.is_empty() {
         return Ok(Value::Null);
@@ -135,7 +158,10 @@ fn fn_http_get_last_response_headers(host: &mut dyn Host, _args: &[Value]) -> Re
     Ok(Value::Array(a))
 }
 
-fn fn_http_clear_last_response_headers(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+fn fn_http_clear_last_response_headers(
+    host: &mut dyn Host,
+    _args: &[Value],
+) -> Result<Value, Thrown> {
     host.clear_http_response_headers();
     Ok(Value::Null)
 }
@@ -184,7 +210,15 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         min: usize,
         max: Option<usize>,
     ) {
-        m.insert(name, Builtin { name, func, min_args: min, max_args: max });
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
     }
     put(m, "fopen", fn_fopen, 2, Some(4));
     put(m, "fclose", fn_fclose, 1, Some(1));
@@ -200,12 +234,48 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "is_resource", fn_is_resource, 1, Some(1));
     put(m, "get_resource_type", fn_get_resource_type, 1, Some(1));
     put(m, "stream_get_wrappers", fn_stream_get_wrappers, 0, Some(0));
-    put(m, "stream_copy_to_stream", fn_stream_copy_to_stream, 2, Some(4));
-    put(m, "stream_context_create", fn_stream_context_create, 0, Some(2));
-    put(m, "stream_context_get_options", fn_stream_context_get_options, 1, Some(1));
-    put(m, "stream_context_set_option", fn_stream_context_set_option, 2, Some(4));
-    put(m, "http_get_last_response_headers", fn_http_get_last_response_headers, 0, Some(0));
-    put(m, "http_clear_last_response_headers", fn_http_clear_last_response_headers, 0, Some(0));
+    put(
+        m,
+        "stream_copy_to_stream",
+        fn_stream_copy_to_stream,
+        2,
+        Some(4),
+    );
+    put(
+        m,
+        "stream_context_create",
+        fn_stream_context_create,
+        0,
+        Some(2),
+    );
+    put(
+        m,
+        "stream_context_get_options",
+        fn_stream_context_get_options,
+        1,
+        Some(1),
+    );
+    put(
+        m,
+        "stream_context_set_option",
+        fn_stream_context_set_option,
+        2,
+        Some(4),
+    );
+    put(
+        m,
+        "http_get_last_response_headers",
+        fn_http_get_last_response_headers,
+        0,
+        Some(0),
+    );
+    put(
+        m,
+        "http_clear_last_response_headers",
+        fn_http_clear_last_response_headers,
+        0,
+        Some(0),
+    );
     // No-op stream knobs (accepted so framework output code runs).
     put(m, "stream_set_blocking", fn_true, 2, Some(2));
     put(m, "stream_set_timeout", fn_true, 2, Some(3));
@@ -223,9 +293,18 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
 fn fn_meta(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     // Minimal metadata array (framework code reads a few keys defensively).
     let mut a = rhp_values::PhpArray::new();
-    a.insert(rhp_values::ArrayKey::from_bytes(b"timed_out"), Value::Bool(false));
-    a.insert(rhp_values::ArrayKey::from_bytes(b"blocked"), Value::Bool(true));
+    a.insert(
+        rhp_values::ArrayKey::from_bytes(b"timed_out"),
+        Value::Bool(false),
+    );
+    a.insert(
+        rhp_values::ArrayKey::from_bytes(b"blocked"),
+        Value::Bool(true),
+    );
     a.insert(rhp_values::ArrayKey::from_bytes(b"eof"), Value::Bool(false));
-    a.insert(rhp_values::ArrayKey::from_bytes(b"stream_type"), Value::str("STDIO"));
+    a.insert(
+        rhp_values::ArrayKey::from_bytes(b"stream_type"),
+        Value::str("STDIO"),
+    );
     Ok(Value::Array(a))
 }

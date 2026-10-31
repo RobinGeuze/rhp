@@ -697,7 +697,7 @@ impl<'a> Lexer<'a> {
                     self.state = Initial;
                     return Tok::Eol;
                 }
-                23 | 24 | 25 => return Tok::Str(IV::s(text)),
+                23..=25 => return Tok::Str(IV::s(text)),
                 26 => {
                     self.push(DoubleQuotes);
                     return Tok::Ch(b'"');

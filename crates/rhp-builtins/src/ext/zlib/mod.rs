@@ -149,6 +149,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("ZLIB_ENCODING_GZIP", Value::Int(31)),
         ("FORCE_GZIP", Value::Int(31)),
         ("FORCE_DEFLATE", Value::Int(15)),
-        ("ZLIB_VERSION", Value::str("1.3.1")),
+        ("ZLIB_VERSION", Value::str("1.2.12")),
+        ("ZLIB_VERNUM", Value::Int(4800)),
     ]
 }

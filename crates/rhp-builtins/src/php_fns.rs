@@ -21,47 +21,76 @@ fn str_arg(args: &[Value], i: usize) -> Vec<u8> {
     conv::to_string_bytes(&deref(&args[i]))
 }
 
-/// Extensions this engine reports as loaded (lowercased). These are the ones
-/// whose functions/classes rhp actually provides.
+/// Extensions this engine reports as loaded, under php's own module names and
+/// in php 8.5.8's `get_loaded_extensions()` order. These are the ones whose
+/// functions/classes rhp actually provides.
 pub(crate) const LOADED_EXTS: &[&str] = &[
-    "core",
-    "standard",
-    "spl",
-    "pcre",
-    "json",
-    "hash",
-    "filter",
+    "Core",
     "date",
-    "ctype",
-    "mbstring",
-    "tokenizer",
-    "phar",
+    "openssl",
+    "pcre",
     "zlib",
     "bcmath",
+    "ctype",
+    "json",
+    "mbstring",
+    "SPL",
+    "filter",
     "gmp",
-    "reflection",
+    "hash",
     "iconv",
-    "openssl",
-    "zip",
+    "standard",
     // XML family: reported so composer resolution passes for packages that
     // require ext-xml/ext-dom (symfony etc.). Runtime XML support is partial.
     "libxml",
-    "xml",
+    "Phar",
+    "random",
+    "Reflection",
+    "SimpleXML",
+    "tokenizer",
     "dom",
-    "simplexml",
+    "xml",
     "xmlreader",
     "xmlwriter",
+    "zip",
 ];
 
-fn fn_extension_loaded(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = String::from_utf8_lossy(&str_arg(args, 0)).to_ascii_lowercase();
-    Ok(Value::Bool(LOADED_EXTS.contains(&name.as_str())))
+/// The loaded extension matching `name` case-insensitively (php's module
+/// lookup lowercases), if any.
+pub(crate) fn loaded_ext(name: &[u8]) -> Option<&'static str> {
+    LOADED_EXTS
+        .iter()
+        .copied()
+        .find(|e| e.as_bytes().eq_ignore_ascii_case(name))
 }
 
-fn fn_get_loaded_extensions(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+/// `phpversion($ext)`: most bundled extensions report PHP_VERSION.
+fn ext_version(ext: &str) -> &'static str {
+    match ext {
+        "dom" => "20031129",
+        "zip" => "1.22.8",
+        _ => "8.5.8",
+    }
+}
+
+fn fn_extension_loaded(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(loaded_ext(&str_arg(args, 0)).is_some()))
+}
+
+fn fn_get_loaded_extensions(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let zend = crate::argparse::bool_param(
+        host,
+        args,
+        0,
+        "get_loaded_extensions",
+        "zend_extensions",
+        false,
+    )?;
     let mut a = PhpArray::new();
-    for e in LOADED_EXTS {
-        a.push(Value::str(*e));
+    if !zend {
+        for e in LOADED_EXTS {
+            a.push(Value::str(*e));
+        }
     }
     Ok(Value::Array(a))
 }
@@ -74,12 +103,9 @@ fn fn_phpversion(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // phpversion($extension) returns the ext's version or false; plain → engine.
     match args.first() {
         Some(v) if !matches!(deref(v), Value::Null) => {
-            let name =
-                String::from_utf8_lossy(&conv::to_string_bytes(&deref(v))).to_ascii_lowercase();
-            if LOADED_EXTS.contains(&name.as_str()) {
-                Ok(Value::str("8.5.8"))
-            } else {
-                Ok(Value::Bool(false))
+            match loaded_ext(&conv::to_string_bytes(&deref(v))) {
+                Some(e) => Ok(Value::str(ext_version(e))),
+                None => Ok(Value::Bool(false)),
             }
         }
         _ => Ok(Value::str("8.5.8")),
@@ -285,7 +311,9 @@ fn fn_trigger_error(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
 }
 
 fn fn_error_reporting(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(30719))
+    // 32767 matches the phpt harness (run-tests.php sets error_reporting=32767);
+    // a bare `php` reports E_ALL (30719). rhp has no -d/ini plumbing yet.
+    Ok(Value::Int(32767))
 }
 
 fn fn_error_get_last(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {

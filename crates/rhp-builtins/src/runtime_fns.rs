@@ -37,12 +37,15 @@ fn fn_class_alias(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     }
 }
 
+/// (parents, interfaces, traits) as returned by `Host::class_relations`.
+type Relations = (Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>);
+
 /// Shared argument handling for `class_implements`/`class_parents`/`class_uses`.
 fn relation(
     host: &mut dyn Host,
     args: &[Value],
     func: &str,
-    pick: fn((Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>)) -> Vec<Vec<u8>>,
+    pick: fn(Relations) -> Vec<Vec<u8>>,
 ) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
     let autoload = bool_param(host, args, 1, func, "autoload", true)?;
@@ -149,7 +152,7 @@ thread_local! {
 
 /// Is a directive's owning module loaded in this engine?
 fn module_loaded(module: &str) -> bool {
-    module == "core" || crate::php_fns::LOADED_EXTS.contains(&module)
+    crate::php_fns::loaded_ext(module.as_bytes()).is_some()
 }
 
 fn ini_entry(
@@ -169,6 +172,12 @@ pub(crate) fn ini_value(name: &[u8]) -> Option<Option<Vec<u8>>> {
         return Some(v);
     }
     Some(e.2.map(|s| s.as_bytes().to_vec()))
+}
+
+/// Store a runtime override for a directive (`ini_set` / `set_include_path`).
+pub(crate) fn ini_store(name: &[u8], v: Vec<u8>) {
+    let key = String::from_utf8_lossy(name).into_owned();
+    INI.with(|m| m.borrow_mut().insert(key, Some(v)));
 }
 
 fn ini_opt_value(v: Option<Vec<u8>>) -> Value {
@@ -207,8 +216,7 @@ fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value
         return Ok(Value::Bool(false));
     }
     let old = ini_value(&name).flatten().unwrap_or_default();
-    let key = String::from_utf8_lossy(&name).into_owned();
-    INI.with(|m| m.borrow_mut().insert(key, Some(newv)));
+    ini_store(&name, newv);
     Ok(Value::str(old))
 }
 

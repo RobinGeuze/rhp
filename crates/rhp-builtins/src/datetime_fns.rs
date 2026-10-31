@@ -1,15 +1,9 @@
 //! Native date/time builtins — deterministic, explicit-timestamp forms only.
 //!
 //! The engine timezone is treated as UTC, so `date`/`gmdate` are identical and
-//! `mktime`/`gmmktime` are identical. No current-time functions are provided
-//! (`time`, `microtime`, etc. are intentionally absent): every function here is
-//! a pure function of its arguments, verified byte-for-byte against php 8.5.8
-//! with `date_default_timezone_set("UTC")`.
-//!
-//! Arities are tightened to the deterministic shape: `date`/`gmdate` require the
-//! `$timestamp` argument, and `mktime`/`gmmktime` require all six components —
-//! the forms that would otherwise fall back to the current time are refused by
-//! the arity check rather than returning a non-deterministic result.
+//! `mktime`/`gmmktime` are identical. Verified byte-for-byte against php 8.5.8
+//! with `date_default_timezone_set("UTC")`. An omitted / null `$timestamp`
+//! (or omitted `mktime` component) falls back to the current time, as in php.
 //!
 //! Wire this module into `lib.rs` with:
 //! ```ignore
@@ -229,9 +223,25 @@ fn hour12(h: i64) -> i64 {
     }
 }
 
+/// Current unix time (the default for an omitted / null `$timestamp`).
+fn now_ts() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Optional `?int $timestamp` argument: absent or null → now.
+fn ts_arg(args: &[Value], i: usize) -> i64 {
+    match args.get(i).map(deref) {
+        None | Some(Value::Null) => now_ts(),
+        Some(v) => conv::to_int(&v),
+    }
+}
+
 fn fn_date(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let format = conv::to_string_bytes(&deref(&args[0]));
-    let ts = conv::to_int(&deref(&args[1]));
+    let ts = ts_arg(args, 1);
     let tm = break_down(ts);
     Ok(Value::str(format_date(&format, &tm, ts)))
 }
@@ -253,12 +263,21 @@ pub(crate) fn adjust_year(y: i64) -> i64 {
 }
 
 fn fn_mktime(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let hour = conv::to_int(&deref(&args[0]));
-    let minute = conv::to_int(&deref(&args[1]));
-    let second = conv::to_int(&deref(&args[2]));
-    let month = conv::to_int(&deref(&args[3]));
-    let day = conv::to_int(&deref(&args[4]));
-    let year = adjust_year(conv::to_int(&deref(&args[5])));
+    // Omitted / null components default to the current (UTC) time's.
+    let now = break_down(now_ts());
+    let part = |i: usize, dflt: i64| match args.get(i).map(deref) {
+        None | Some(Value::Null) => dflt,
+        Some(v) => conv::to_int(&v),
+    };
+    let hour = part(0, now.hour);
+    let minute = part(1, now.min);
+    let second = part(2, now.sec);
+    let month = part(3, now.month);
+    let day = part(4, now.day);
+    let year = match args.get(5).map(deref) {
+        None | Some(Value::Null) => now.year,
+        Some(v) => adjust_year(conv::to_int(&v)),
+    };
 
     // Normalize the month into 1..12 with a year carry; then every day is a
     // uniform 86400 seconds (UTC, no DST), so day/hour/min/sec overflow folds
@@ -290,7 +309,7 @@ fn fn_checkdate(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_getdate(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let ts = conv::to_int(&deref(&args[0]));
+    let ts = ts_arg(args, 0);
     let tm = break_down(ts);
     let mut a = PhpArray::new();
     a.insert(ArrayKey::from_bytes(b"seconds"), Value::Int(tm.sec));
@@ -336,14 +355,13 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
             },
         );
     }
-    // date/gmdate require the explicit $timestamp (no current-time fallback).
-    put(m, "date", fn_date, 2, Some(2));
-    put(m, "gmdate", fn_date, 2, Some(2));
-    // mktime/gmmktime require all six components (deterministic form).
-    put(m, "mktime", fn_mktime, 6, Some(6));
-    put(m, "gmmktime", fn_mktime, 6, Some(6));
+    // An omitted / null $timestamp means "now", as in php.
+    put(m, "date", fn_date, 1, Some(2));
+    put(m, "gmdate", fn_date, 1, Some(2));
+    put(m, "mktime", fn_mktime, 1, Some(6));
+    put(m, "gmmktime", fn_mktime, 1, Some(6));
     put(m, "checkdate", fn_checkdate, 3, Some(3));
-    put(m, "getdate", fn_getdate, 1, Some(1));
+    put(m, "getdate", fn_getdate, 0, Some(1));
 }
 
 // ---------------------------------------------------------------------------

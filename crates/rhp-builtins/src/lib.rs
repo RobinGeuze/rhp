@@ -49,6 +49,7 @@ mod strcmp_fns;
 mod stream_fns;
 mod strsearch_fns;
 mod strtotime_fns;
+mod sysmisc_fns;
 mod webenc_fns;
 pub mod zip_ext;
 
@@ -587,6 +588,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         runtime_fns::register(&mut m);
         ini_parse::register(&mut m);
         arraycmp_fns::register(&mut m);
+        sysmisc_fns::register(&mut m);
         m
     })
 }

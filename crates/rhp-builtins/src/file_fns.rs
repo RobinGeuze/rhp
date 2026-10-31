@@ -202,6 +202,20 @@ fn fn_php_strip_whitespace(host: &mut dyn Host, args: &[Value]) -> Result<Value,
 
 fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let url = path_arg(args, 0);
+    let offset = args.get(3).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    let maxlen = match args.get(4).map(deref) {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let n = conv::to_int(&v);
+            if n < 0 {
+                return Err(Thrown::error(
+                    "ValueError",
+                    "file_get_contents(): Argument #5 ($length) must be greater than or equal to 0",
+                ));
+            }
+            Some(n as usize)
+        }
+    };
     crate::fs_fns::touch_ctx(host, args, 2);
     // http(s): perform a real request (Composer's non-curl transport). The
     // context (arg 2) carries the http method/headers/body.
@@ -214,7 +228,30 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     match host.stream_get_contents(&url) {
         Some(bytes) => {
             host.consume_resource_ids(1);
-            Ok(Value::str(bytes))
+            // php seeks to `$offset` (SEEK_SET, or SEEK_END when negative)
+            // before copying at most `$length` bytes. A plain file may be
+            // positioned past its end (reads nothing); other wrappers, and
+            // any position before the start, fail the seek -> false.
+            let len = bytes.len() as i64;
+            let start = if offset > 0 {
+                if offset > len && crate::streams::split_scheme(&url).0 != b"file" {
+                    return Ok(Value::Bool(false));
+                }
+                offset.min(len)
+            } else if offset < 0 {
+                if -offset > len {
+                    return Ok(Value::Bool(false));
+                }
+                len + offset
+            } else {
+                0
+            } as usize;
+            let mut out = bytes;
+            out.drain(..start);
+            if let Some(m) = maxlen {
+                out.truncate(m);
+            }
+            Ok(Value::str(out))
         }
         None => Ok(Value::Bool(false)),
     }
@@ -222,8 +259,17 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 
 fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_arg(args, 0);
-    // `$data` is a string or an array (concatenated).
+    // `$data` is a string, an array (concatenated) or a stream resource
+    // (copied from its current position to the end).
     let data = match deref(&args[1]) {
+        r @ Value::Resource(_) => {
+            if host.stream_kind(&r).is_none() {
+                return Err(Thrown::type_error(
+                    "file_put_contents(): supplied resource is not a valid stream resource",
+                ));
+            }
+            host.stream_read(&r, -1).unwrap_or_default()
+        }
         Value::Array(a) => {
             let mut b = Vec::new();
             for (_, v) in a.iter() {

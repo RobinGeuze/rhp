@@ -89,7 +89,9 @@ pub struct Vm {
     streams: HashMap<u32, StreamState>,
     next_resource_id: u32,
     // The most recently opened directory stream (`readdir()` with no handle).
-    last_dir: Option<u32>,
+    // The last opened directory handle (php's DIRG(default_dir), which holds
+    // a reference so the handle stays open).
+    last_dir: Option<Value>,
     // The lazily-allocated default stream context resource id.
     default_context: Option<u32>,
     // (uri, mode) of streams opened through a non-local wrapper (phar://…),
@@ -106,6 +108,13 @@ pub struct Vm {
     argv: Vec<Vec<u8>>,
 }
 
+/// Whether `name` is a builtin visible to user code. `__`-prefixed builtins
+/// are engine-internal helpers behind prelude classes (no php function
+/// starts with `__`), so function_exists/is_callable don't report them.
+fn user_visible_builtin(name: &[u8]) -> bool {
+    !name.starts_with(b"__") && builtins::lookup(&String::from_utf8_lossy(name)).is_some()
+}
+
 /// The backing state of an open stream resource.
 enum StreamState {
     /// Standard output / `php://output` — writes to the VM output sink.
@@ -116,7 +125,20 @@ enum StreamState {
     Stdin,
     /// An in-memory / preloaded-file buffer (`php://memory`, a file opened for
     /// reading): read from `pos`, writes append.
-    Mem { buf: Vec<u8>, pos: usize },
+    /// `skew` is php's `stream->position` minus the buffer offset: they
+    /// diverge after a failed seek (position -1) or a shrinking ftruncate,
+    /// which moves only the memory stream's own offset.
+    Mem {
+        buf: Vec<u8>,
+        pos: usize,
+        skew: i64,
+        /// php's `stream->eof`: set by a read that found no more data,
+        /// cleared by a successful seek.
+        eof: bool,
+        /// The URI of a `php://temp` stream (a TEMP stream wrapping a
+        /// MEMORY one); `None` for memory / wrapper-backed buffers.
+        temp: Option<Vec<u8>>,
+    },
     /// A file opened for writing: buffered, flushed to the wrapper on
     /// flush/close. `append` keeps existing content. (Non-local wrappers.)
     FileWrite { buf: Vec<u8>, url: Vec<u8> },
@@ -449,13 +471,17 @@ impl Host for Vm {
         } else if path == b"php://stdin" {
             StreamState::Stdin
         } else if path == b"php://memory" || path.starts_with(b"php://temp") {
-            if path.starts_with(b"php://temp") {
+            let temp = path.starts_with(b"php://temp").then(|| path.to_vec());
+            if temp.is_some() {
                 // a temp stream wraps an inner memory stream (two resources).
                 self.next_resource_id += 1;
             }
             StreamState::Mem {
                 buf: Vec::new(),
                 pos: 0,
+                skew: 0,
+                eof: false,
+                temp,
             }
         } else if path.starts_with(b"php://") {
             return None; // other php:// streams unsupported
@@ -484,7 +510,16 @@ impl Host for Vm {
             return Some(v);
         } else {
             let data = self.wrapper_for(path).and_then(|w| w.get_contents(path))?;
-            let v = self.make_stream(StreamState::Mem { buf: data, pos: 0 }, "stream");
+            let v = self.make_stream(
+                StreamState::Mem {
+                    buf: data,
+                    pos: 0,
+                    skew: 0,
+                    eof: false,
+                    temp: None,
+                },
+                "stream",
+            );
             if let Some(id) = res_id(&v) {
                 self.stream_origins
                     .insert(id, (path.to_vec(), mode.to_vec()));
@@ -516,7 +551,7 @@ impl Host for Vm {
                 let _ = std::io::stderr().write_all(data);
             }
             Act::Buf => match self.streams.get_mut(&id)? {
-                StreamState::Mem { buf, pos } => {
+                StreamState::Mem { buf, pos, .. } => {
                     // php://memory writes at the current position.
                     let end = *pos + data.len();
                     if end > buf.len() {
@@ -536,14 +571,20 @@ impl Host for Vm {
     fn stream_read(&mut self, res: &Value, len: i64) -> Option<Vec<u8>> {
         let id = res_id(res)?;
         match self.streams.get_mut(&id)? {
-            StreamState::Mem { buf, pos } => {
+            StreamState::Mem { buf, pos, eof, .. } => {
                 let avail = buf.len().saturating_sub(*pos);
                 let take = if len < 0 {
                     avail
                 } else {
                     (len as usize).min(avail)
                 };
-                let out = buf[*pos..*pos + take].to_vec();
+                // _php_stream_read keeps reading memory streams until the
+                // request is met, so a short read hits the end and sets eof.
+                if len < 0 || take < len as usize {
+                    *eof = true;
+                }
+                // A position past the end (fseek beyond EOF) reads nothing.
+                let out = buf.get(*pos..*pos + take).unwrap_or_default().to_vec();
                 *pos += take;
                 Some(out)
             }
@@ -568,7 +609,16 @@ impl Host for Vm {
 
     fn stream_eof(&self, res: &Value) -> bool {
         match res_id(res).and_then(|id| self.streams.get(&id)) {
-            Some(StreamState::Mem { buf, pos }) => *pos >= buf.len(),
+            // Wrapper-backed buffers (phar://, compress.zlib://, …) are
+            // buffered streams in php: eof once everything has been consumed.
+            Some(StreamState::Mem { buf, pos, .. })
+                if res_id(res).is_some_and(|id| self.stream_origins.contains_key(&id)) =>
+            {
+                *pos >= buf.len()
+            }
+            // php://memory and php://temp are unbuffered: eof is the flag a
+            // read sets when it runs out of data.
+            Some(StreamState::Mem { eof, .. }) => *eof,
             Some(StreamState::File(f)) => f.eof(),
             Some(StreamState::Dir { .. }) => false,
             Some(StreamState::Stdout | StreamState::Stderr | StreamState::FileWrite { .. }) => {
@@ -580,18 +630,10 @@ impl Host for Vm {
 
     fn stream_close(&mut self, res: &Value) -> bool {
         let Some(id) = res_id(res) else { return false };
-        if self.last_dir == Some(id) {
+        if self.last_dir.as_ref().and_then(res_id) == Some(id) {
             self.last_dir = None;
         }
-        self.stream_origins.remove(&id);
-        match self.streams.remove(&id) {
-            Some(StreamState::FileWrite { buf, url }) => self
-                .wrapper_for(&url)
-                .map(|w| w.put_contents(&url, &buf))
-                .is_some(),
-            Some(_) => true,
-            None => false,
-        }
+        self.free_stream(id)
     }
 
     fn stream_flush(&mut self, res: &Value) -> bool {
@@ -608,8 +650,10 @@ impl Host for Vm {
 
     fn stream_rewind(&mut self, res: &Value) -> bool {
         match res_id(res).and_then(|id| self.streams.get_mut(&id)) {
-            Some(StreamState::Mem { pos, .. }) => {
+            Some(StreamState::Mem { pos, skew, eof, .. }) => {
                 *pos = 0;
+                *skew = 0;
+                *eof = false;
                 true
             }
             Some(StreamState::File(f)) => f.rewind(),
@@ -632,20 +676,36 @@ impl Host for Vm {
         let Some(id) = res_id(res) else { return false };
         match self.streams.get_mut(&id) {
             Some(StreamState::File(f)) => f.seek(offset, whence),
-            Some(StreamState::Mem { buf, pos }) => {
-                // php://memory: seeking before the start fails; past the end
-                // is allowed (and extends on the next write).
-                let base = match whence {
-                    0 => 0,
-                    1 => *pos as i64,
-                    2 => buf.len() as i64,
-                    _ => return false,
+            Some(StreamState::Mem {
+                buf,
+                pos,
+                skew,
+                eof,
+                ..
+            }) => {
+                // _php_stream_seek + php_stream_memory_seek: a negative
+                // SEEK_SET fails without touching the stream; SEEK_CUR is
+                // resolved against php's position; any other failure resets
+                // the buffer offset to 0 and php's position to -1. Seeking
+                // past the end is allowed (the next write zero-fills).
+                let target = match whence {
+                    0 if offset < 0 => return false,
+                    0 => offset,
+                    1 => (*pos as i64 + *skew).saturating_add(offset),
+                    2 => (buf.len() as i64).saturating_add(offset),
+                    _ => {
+                        *skew = 0;
+                        return false;
+                    }
                 };
-                let t = base + offset;
-                if t < 0 {
+                if target < 0 {
+                    *pos = 0;
+                    *skew = -1;
                     return false;
                 }
-                *pos = t as usize;
+                *pos = target as usize;
+                *skew = 0;
+                *eof = false;
                 true
             }
             _ => false,
@@ -655,7 +715,11 @@ impl Host for Vm {
     fn stream_tell(&mut self, res: &Value) -> Option<i64> {
         match self.streams.get(&res_id(res)?)? {
             StreamState::File(f) => Some(f.tell()),
-            StreamState::Mem { pos, .. } => Some(*pos as i64),
+            StreamState::Mem { pos, skew, .. } => {
+                // ftell() is false while php's position is -1 (failed seek).
+                let t = *pos as i64 + *skew;
+                (t >= 0).then_some(t)
+            }
             StreamState::FileWrite { buf, .. } => Some(buf.len() as i64),
             // php reads a `php_stream_dirent` (char[MAXPATHLEN] + d_type) per
             // entry, advancing the stream position by its size.
@@ -674,8 +738,16 @@ impl Host for Vm {
     fn stream_truncate(&mut self, res: &Value, size: i64) -> Option<bool> {
         match self.streams.get_mut(&res_id(res)?)? {
             StreamState::File(f) => Some(f.truncate(size)),
-            StreamState::Mem { buf, .. } => {
-                buf.resize(size as usize, 0);
+            StreamState::Mem { buf, pos, skew, .. } => {
+                // php_stream_memory_set_option(TRUNCATE_SET_SIZE): shrinking
+                // pulls the buffer offset back to the new end; php's stream
+                // position (what ftell reports) is left alone.
+                let size = size as usize;
+                buf.resize(size, 0);
+                if size < *pos {
+                    *skew += (*pos - size) as i64;
+                    *pos = size;
+                }
                 Some(true)
             }
             _ => None,
@@ -730,7 +802,7 @@ impl Host for Vm {
                 _ => ("user-space", "user-space"),
             };
             let (unread, eof) = match self.streams.get(&id)? {
-                StreamState::Mem { buf, pos } => (0, *pos >= buf.len() && !buf.is_empty()),
+                StreamState::Mem { buf, pos, .. } => (0, *pos >= buf.len() && !buf.is_empty()),
                 _ => (0, false),
             };
             return Some(M {
@@ -762,14 +834,14 @@ impl Host for Vm {
                 seekable: true,
                 eof: false,
             },
-            StreamState::Mem { .. } => M {
+            StreamState::Mem { eof, temp, .. } => M {
                 wrapper_type: "PHP",
-                stream_type: "MEMORY",
+                stream_type: if temp.is_some() { "TEMP" } else { "MEMORY" },
                 mode: b"w+b".to_vec(),
-                uri: b"php://memory".to_vec(),
+                uri: temp.clone().unwrap_or_else(|| b"php://memory".to_vec()),
                 unread_bytes: 0,
                 seekable: true,
-                eof: false,
+                eof: *eof,
             },
             StreamState::FileWrite { url, .. } => M {
                 wrapper_type: "plainfile",
@@ -813,7 +885,7 @@ impl Host for Vm {
             },
             "stream",
         );
-        self.last_dir = res_id(&v);
+        self.last_dir = Some(v.clone());
         Some(v)
     }
 
@@ -869,12 +941,9 @@ impl Host for Vm {
     }
 
     fn last_dir(&self) -> Option<Value> {
-        let id = self.last_dir?;
-        self.streams.get(&id)?;
-        Some(Value::Resource(Rc::new(rhp_values::ResourceData {
-            id,
-            type_name: "stream",
-        })))
+        let v = self.last_dir.as_ref()?;
+        self.streams.get(&res_id(v)?)?;
+        Some(v.clone())
     }
 
     // --- reflection -----------------------------------------------------------
@@ -1082,8 +1151,7 @@ impl Host for Vm {
     }
 
     fn function_exists(&self, name: &[u8]) -> bool {
-        self.fn_names.contains_key(&name.to_ascii_lowercase())
-            || builtins::lookup(&String::from_utf8_lossy(name)).is_some()
+        self.fn_names.contains_key(&name.to_ascii_lowercase()) || user_visible_builtin(name)
     }
 
     fn closure_bind(&self, closure: &Value, new_this: &Value, scope: &Value) -> Option<Value> {
@@ -1201,8 +1269,7 @@ impl Host for Vm {
             Value::Closure(_) => true,
             Value::Str(s) => {
                 let lower = s.as_bytes().to_ascii_lowercase();
-                self.fn_names.contains_key(&lower)
-                    || builtins::lookup(&String::from_utf8_lossy(s.as_bytes())).is_some()
+                self.fn_names.contains_key(&lower) || user_visible_builtin(s.as_bytes())
             }
             Value::Array(a) if a.len() == 2 => {
                 let item0 = a.get(&ArrayKey::Int(0)).cloned().unwrap_or(Value::Null);
@@ -1493,6 +1560,18 @@ impl Vm {
             let accessible = declared.is_none_or(|(vis, decl)| {
                 self.check_access(self.stack[top].defining_class, decl, vis)
             });
+            if self.is_directory_class(cls) {
+                // Directory: readonly properties, no dynamic properties.
+                let p = String::from_utf8_lossy(pname.as_bytes());
+                return Err(Thrown::error(
+                    "Error",
+                    if declared.is_some() {
+                        format!("Cannot modify readonly property Directory::${p}")
+                    } else {
+                        format!("Cannot create dynamic property Directory::${p}")
+                    },
+                ));
+            }
             if declared.is_none() || !accessible {
                 if let Some(setter) = self.lookup_method(cls, b"__set") {
                     let nm = Value::str(pname.as_bytes().to_vec());
@@ -1930,8 +2009,9 @@ impl Vm {
     fn stream_gets_impl(&mut self, res: &Value, max: Option<usize>) -> Option<Vec<u8>> {
         let id = res_id(res)?;
         match self.streams.get_mut(&id)? {
-            StreamState::Mem { buf, pos } => {
+            StreamState::Mem { buf, pos, eof, .. } => {
                 if *pos >= buf.len() {
+                    *eof = true;
                     return None;
                 }
                 let start = *pos;
@@ -1940,8 +2020,14 @@ impl Vm {
                     .position(|&b| b == b'\n')
                     .map(|i| start + i + 1);
                 let mut end = nl.unwrap_or(buf.len());
+                let capped = max.is_some_and(|m| start + m < end);
                 if let Some(m) = max {
                     end = end.min(start + m);
+                }
+                // A line that runs to the end of the data (no newline) makes
+                // php look for more, which sets eof.
+                if nl.is_none() && !capped {
+                    *eof = true;
                 }
                 let line = buf[start..end].to_vec();
                 *pos = end;
@@ -1950,6 +2036,43 @@ impl Vm {
             StreamState::File(f) => f.gets(max),
             _ => None,
         }
+    }
+
+    /// Free a stream's backing state (fclose / last reference dropped):
+    /// closes the descriptor (releasing flock locks) and flushes buffered
+    /// wrapper writes.
+    fn free_stream(&mut self, id: u32) -> bool {
+        self.stream_origins.remove(&id);
+        match self.streams.remove(&id) {
+            Some(StreamState::FileWrite { buf, url }) => self
+                .wrapper_for(&url)
+                .map(|w| w.put_contents(&url, &buf))
+                .is_some(),
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    /// Free the streams whose last resource reference has been dropped.
+    fn reap_dropped_streams(&mut self) {
+        for id in rhp_values::take_dropped_streams() {
+            // The CLI std streams live for the whole request.
+            if matches!(
+                self.streams.get(&id),
+                Some(StreamState::Stdin | StreamState::Stdout | StreamState::Stderr)
+            ) {
+                continue;
+            }
+            self.free_stream(id);
+        }
+    }
+
+    /// The internal `Directory` class (readonly props, not dynamic, not
+    /// cloneable, only created by `dir()`). User code cannot declare a class
+    /// of that name, so the name identifies it.
+    fn is_directory_class(&self, cls: ClassId) -> bool {
+        let n = self.class(cls).name.as_bytes();
+        n.len() == 9 && n.eq_ignore_ascii_case(b"Directory")
     }
 
     /// Allocate a stream resource backed by `state`, returning its resource Value.
@@ -1988,6 +2111,8 @@ impl Vm {
     pub fn run(&mut self, prog: &Program) -> Result<i32, Thrown> {
         // Bind the standard stream resources (CLI SAPI) once.
         if self.streams.is_empty() {
+            // Forget drops left over from a previous VM on this thread.
+            rhp_values::take_dropped_streams();
             let stdin = self.make_stream(StreamState::Stdin, "stream");
             let stdout = self.make_stream(StreamState::Stdout, "stream");
             let stderr = self.make_stream(StreamState::Stderr, "stream");
@@ -2932,6 +3057,13 @@ impl Vm {
                             ),
                         ));
                     }
+                    if self.is_directory_class(cls) {
+                        // php's Directory get_constructor handler.
+                        return Err(Thrown::error(
+                            "Error",
+                            "Cannot directly construct Directory, use dir() instead",
+                        ));
+                    }
                     let obj = self.new_object(cls);
                     // Throwables record their creation site for getLine()/getFile().
                     if self.class_implements(cls, b"Throwable") {
@@ -3026,6 +3158,18 @@ impl Vm {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     if let Value::Object(h) = o {
+                        let cls = h.borrow().class;
+                        if self.is_directory_class(cls)
+                            && self.class(cls).props.contains_key(&pname)
+                        {
+                            return Err(Thrown::error(
+                                "Error",
+                                format!(
+                                    "Cannot unset readonly property Directory::${}",
+                                    String::from_utf8_lossy(pname.as_bytes())
+                                ),
+                            ));
+                        }
                         let present = h.borrow().properties.contains_key(&pname);
                         if present {
                             h.borrow_mut().properties.shift_remove(&pname);
@@ -3161,6 +3305,12 @@ impl Vm {
                         let od = h.borrow();
                         (od.class, od.properties.clone())
                     };
+                    if self.is_directory_class(cls) {
+                        return Err(Thrown::error(
+                            "Error",
+                            "Trying to clone an uncloneable object of class Directory",
+                        ));
+                    }
                     let id = self.next_object_id;
                     self.next_object_id += 1;
                     let new_obj: ObjectHandle = Rc::new(RefCell::new(ObjectData {
@@ -4390,6 +4540,7 @@ impl Vm {
 
     /// Call a builtin by name with a pre-collected argument vector.
     fn invoke_builtin(&mut self, name: &str, args: Vec<Value>) -> Result<Value, Thrown> {
+        self.reap_dropped_streams();
         let Some(builtin) = builtins::lookup(name) else {
             return Err(Thrown::error(
                 "Error",

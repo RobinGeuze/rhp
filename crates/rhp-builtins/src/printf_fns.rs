@@ -82,26 +82,28 @@ fn fn_vprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 /// `fprintf(resource $stream, string $format, mixed ...$values): int` — the
-/// `$stream` (arg 0) is ignored (no stream resources in this engine); the
-/// formatted result goes to host output, and the byte count is returned.
+/// formatted string is written to `$stream`; the formatted length is returned
+/// whether or not the write succeeds (php_stream_write's result is ignored).
 fn fn_fprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = crate::fs_fns::stream_param(host, args, 0, "fprintf", "stream")?;
     let fmt = bytes_of(&args[1]);
     // Argument numbering follows php: the format is arg 2, values start at arg 3,
-    // so the error-reporting `given` excludes the ignored stream argument.
+    // so the error-reporting `given` excludes the stream argument.
     let out = do_sprintf(&fmt, &args[2..], args.len() - 1)?;
     let len = out.len() as i64;
-    host.write_out(&out);
+    host.stream_write(&h, &out);
     Ok(Value::Int(len))
 }
 
 /// `vfprintf(resource $stream, string $format, array $values): int` — array-arg
-/// form of `fprintf`; the `$stream` argument is likewise ignored.
+/// form of `fprintf`.
 fn fn_vfprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = crate::fs_fns::stream_param(host, args, 0, "vfprintf", "stream")?;
     let fmt = bytes_of(&args[1]);
     let values = array_values(&args[2], "vfprintf", 3)?;
     let out = do_sprintf(&fmt, &values, values.len() + 1)?;
     let len = out.len() as i64;
-    host.write_out(&out);
+    host.stream_write(&h, &out);
     Ok(Value::Int(len))
 }
 
@@ -195,46 +197,33 @@ mod tests {
         assert_eq!(n, 7);
     }
 
+    /// fprintf/vfprintf write to their stream (covered by the golden tests);
+    /// a non-stream first argument is php's TypeError.
     #[test]
-    fn fprintf_ignores_stream_writes_and_returns_len() {
-        // php: fprintf(STDOUT, "[%+d]", 9) -> "[+9]", returns 4
-        let (out, n) = run(fn_fprintf, &[Value::Int(2), s("[%+d]"), Value::Int(9)]);
-        assert_eq!(out, "[+9]");
-        assert_eq!(n, 4);
-
-        // php: fprintf(STDERR, "err=%s", "x") -> "err=x", returns 5
-        // (the stream is ignored; STDERR formatting lands on host output too)
-        let (out, n) = run(fn_fprintf, &[Value::Int(3), s("err=%s"), s("x")]);
-        assert_eq!(out, "err=x");
-        assert_eq!(n, 5);
-
-        // a non-resource first arg is accepted and ignored just the same.
-        let (out, n) = run(fn_fprintf, &[Value::Null, s("%03d"), Value::Int(7)]);
-        assert_eq!(out, "007");
-        assert_eq!(n, 3);
-    }
-
-    #[test]
-    fn vfprintf_ignores_stream_writes_and_returns_len() {
-        // php: vfprintf(STDOUT, "%2\$s-%1\$s", ["one","two"]) -> "two-one", returns 7
-        let (out, n) = run(
-            fn_vfprintf,
-            &[Value::Int(2), s("%2$s-%1$s"), arr(vec![s("one"), s("two")])],
+    fn fprintf_family_requires_a_stream() {
+        let mut host = CapHost::default();
+        let err = |r: Result<Value, Thrown>| match r {
+            Err(Thrown::Error { message, .. }) => message,
+            Err(other) => panic!("unexpected {other:?}"),
+            Ok(_) => panic!("expected a TypeError"),
+        };
+        let m = err(fn_fprintf(
+            &mut host,
+            &[Value::Int(2), s("[%+d]"), Value::Int(9)],
+        ));
+        assert_eq!(
+            m,
+            "fprintf(): Argument #1 ($stream) must be of type resource, int given"
         );
-        assert_eq!(out, "two-one");
-        assert_eq!(n, 7);
-
-        // php: vfprintf(STDOUT, "%04.1f|%x", [7.86, 255]) -> "07.9|ff", returns 7
-        let (out, n) = run(
-            fn_vfprintf,
-            &[
-                Value::Int(2),
-                s("%04.1f|%x"),
-                arr(vec![Value::Float(7.86), Value::Int(255)]),
-            ],
+        let m = err(fn_vfprintf(
+            &mut host,
+            &[Value::Null, s("%s"), arr(vec![s("x")])],
+        ));
+        assert_eq!(
+            m,
+            "vfprintf(): Argument #1 ($stream) must be of type resource, null given"
         );
-        assert_eq!(out, "07.9|ff");
-        assert_eq!(n, 7);
+        assert!(host.out.is_empty());
     }
 
     #[test]

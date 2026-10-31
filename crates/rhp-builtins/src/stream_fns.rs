@@ -97,12 +97,36 @@ fn fn_http_clear_last_response_headers(
     Ok(Value::Null)
 }
 
+/// `stream_copy_to_stream($from, $to, ?int $length = null, int $offset = 0)`:
+/// seek `$from` to `$offset` (when > 0), then copy up to `$length` bytes
+/// (null or negative = everything; php casts it to size_t).
 fn fn_stream_copy_to_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let src = deref(&args[0]);
-    let dst = deref(&args[1]);
+    let (src, _) = crate::fs_fns::stream_param(host, args, 0, "stream_copy_to_stream", "from")?;
+    let (dst, _) = crate::fs_fns::stream_param(host, args, 1, "stream_copy_to_stream", "to")?;
+    let maxlen = match args.get(2).map(deref) {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let n = conv::to_int(&v);
+            (n >= 0).then_some(n as usize)
+        }
+    };
+    let pos = args.get(3).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    if pos > 0 && !host.stream_seek(&src, pos, 0) {
+        return Ok(Value::Bool(false));
+    }
+    if maxlen == Some(0) {
+        return Ok(Value::Int(0));
+    }
     let mut total = 0usize;
     loop {
-        match host.stream_read(&src, 8192) {
+        let chunk = match maxlen {
+            Some(m) => (m - total).min(8192),
+            None => 8192,
+        };
+        if chunk == 0 {
+            break;
+        }
+        match host.stream_read(&src, chunk as i64) {
             Some(b) if !b.is_empty() => {
                 host.stream_write(&dst, &b);
                 total += b.len();

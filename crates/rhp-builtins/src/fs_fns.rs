@@ -71,7 +71,7 @@ fn path_param(args: &[Value], i: usize, fname: &str, pname: &str) -> Result<Vec<
 }
 
 /// A `resource $stream` argument that must be a live stream.
-fn stream_param(
+pub(crate) fn stream_param(
     host: &dyn Host,
     args: &[Value],
     i: usize,
@@ -272,12 +272,18 @@ pub const PRELUDE_PHP: &str = r#"
 final class Directory {
     public readonly string $path;
     public readonly mixed $handle;
-    public function __construct() {
-        throw new Error("Cannot directly construct Directory, use dir() instead");
+    public function close(): void {
+        if (func_num_args()) throw new ArgumentCountError('Directory::close() expects exactly 0 arguments, ' . func_num_args() . ' given');
+        __directory_op($this->handle, "close");
     }
-    public function close(): void { __directory_op($this->handle, "close"); }
-    public function rewind(): void { __directory_op($this->handle, "rewind"); }
-    public function read(): string|false { return __directory_op($this->handle, "read"); }
+    public function rewind(): void {
+        if (func_num_args()) throw new ArgumentCountError('Directory::rewind() expects exactly 0 arguments, ' . func_num_args() . ' given');
+        __directory_op($this->handle, "rewind");
+    }
+    public function read(): string|false {
+        if (func_num_args()) throw new ArgumentCountError('Directory::read() expects exactly 0 arguments, ' . func_num_args() . ' given');
+        return __directory_op($this->handle, "read");
+    }
 }
 "#;
 
@@ -1005,10 +1011,25 @@ fn access_check(host: &dyn Host, args: &[Value], amode: libc::c_int) -> bool {
     let Some(s) = host.stream_stat(&p) else {
         return false;
     };
+    // php_stat (filestat.c): owner bits if we own it, group bits for our
+    // primary or any supplementary group, else "other" bits. The root
+    // shortcut only applies to the plain-files wrapper (handled above).
     let (uid, gid) = unsafe { (libc::getuid() as i64, libc::getgid() as i64) };
+    let in_group = |g: i64| {
+        if g == gid {
+            return true;
+        }
+        let n = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+        if n <= 0 {
+            return false;
+        }
+        let mut gids: Vec<libc::gid_t> = vec![0; n as usize];
+        let n = unsafe { libc::getgroups(n, gids.as_mut_ptr()) };
+        gids.iter().take(n.max(0) as usize).any(|&x| x as i64 == g)
+    };
     let shift = if s.uid == uid {
         6
-    } else if s.gid == gid {
+    } else if in_group(s.gid) {
         3
     } else {
         0
@@ -1018,9 +1039,6 @@ fn access_check(host: &dyn Host, args: &[Value], amode: libc::c_int) -> bool {
         libc::W_OK => 2,
         _ => 1,
     };
-    if uid == 0 && amode != libc::X_OK {
-        return false; // root shortcut applies to plain files only
-    }
     s.mode & (bit << shift) != 0
 }
 
@@ -1243,9 +1261,12 @@ fn fn_stream_get_meta_data(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     let mut put = |k: &str, v: Value| {
         a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
     };
-    put("timed_out", Value::Bool(false));
-    put("blocked", Value::Bool(true));
-    put("eof", Value::Bool(m.eof));
+    // A TEMP stream answers META_DATA_API itself, so php skips these three.
+    if m.stream_type != "TEMP" {
+        put("timed_out", Value::Bool(false));
+        put("blocked", Value::Bool(true));
+        put("eof", Value::Bool(m.eof));
+    }
     put("wrapper_type", Value::str(m.wrapper_type));
     put("stream_type", Value::str(m.stream_type));
     put("mode", Value::str(m.mode));

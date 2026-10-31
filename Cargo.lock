@@ -1115,6 +1115,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "pcre2"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e970b0fcce0c7ee6ef662744ff711f21ccd6f11b7cf03cd187a80e89797fc67"
+dependencies = [
+ "libc",
+ "log",
+ "pcre2-sys",
+]
+
+[[package]]
 name = "pcre2-sys"
 version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1360,6 +1371,8 @@ dependencies = [
 name = "rhp-difftest"
 version = "0.0.0"
 dependencies = [
+ "libc",
+ "pcre2",
  "rhp-compiler",
  "rhp-frontend",
  "rhp-values",
@@ -1373,6 +1386,7 @@ dependencies = [
  "mago-allocator",
  "mago-database",
  "mago-syntax",
+ "mago-syntax-core",
 ]
 
 [[package]]

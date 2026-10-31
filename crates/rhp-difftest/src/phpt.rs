@@ -1,0 +1,2002 @@
+//! Differential runner over php-src's `.phpt` test corpus, with mutation.
+//!
+//! Each test's `--FILE--` runs through the real `php` (with run-tests.php's INI
+//! defaults) and through the built `rhp` binary, in place inside a scratch copy
+//! of the test tree so `include "foo.inc"` and friends resolve. Outputs are
+//! compared the way run-tests.php compares them (CRLF-normalised, trimmed).
+//! php — not the test's `--EXPECT--` — is the oracle, so `EXPECTF` patterns,
+//! platform quirks and the host php's exact build are all handled for free.
+//!
+//! Results are classified and clustered so the biggest gaps surface first. A
+//! *known-passing* list ratchets progress: `--check-known` fails if a listed
+//! test stops matching. On top of that, `--mutate N` takes every passing test
+//! and runs `N` first-order mutants of it ([`crate::mutate`]) through both
+//! engines — probing the edges of features that already work — and
+//! `--emit-fixtures` writes minimised, self-contained repros of mutant
+//! divergences for triage into the golden suite.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt::Write as _;
+use std::fs;
+use std::io::{Read, Write};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use crate::{mutate, php_bin, Rng};
+
+// ---------------------------------------------------------------------------
+// .phpt parsing
+// ---------------------------------------------------------------------------
+
+/// A parsed `.phpt` file: section name → raw body bytes.
+pub struct Phpt {
+    sections: HashMap<String, Vec<u8>>,
+}
+
+impl Phpt {
+    pub fn parse(data: &[u8]) -> Phpt {
+        let mut sections = HashMap::new();
+        let mut current: Option<String> = None;
+        let mut body = Vec::new();
+        for line in data.split_inclusive(|&b| b == b'\n') {
+            if let Some(name) = section_header(line) {
+                if let Some(cur) = current.take() {
+                    sections.insert(cur, std::mem::take(&mut body));
+                }
+                current = Some(name);
+            } else if current.is_some() {
+                body.extend_from_slice(line);
+            }
+        }
+        if let Some(cur) = current {
+            sections.insert(cur, body);
+        }
+        Phpt { sections }
+    }
+
+    pub fn section(&self, name: &str) -> Option<&[u8]> {
+        self.sections.get(name).map(Vec::as_slice)
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.sections.contains_key(name)
+    }
+}
+
+/// `--NAME--` on a line of its own (trailing whitespace allowed).
+fn section_header(line: &[u8]) -> Option<String> {
+    let inner = line
+        .trim_ascii_end()
+        .strip_prefix(b"--")?
+        .strip_suffix(b"--")?;
+    (!inner.is_empty() && inner.iter().all(|&b| b.is_ascii_uppercase() || b == b'_'))
+        .then(|| String::from_utf8_lossy(inner).into_owned())
+}
+
+/// Sections whose semantics this runner doesn't reproduce (CGI/web input,
+/// debugger, redirection, timing-sensitive or resource-conflicting tests).
+const UNSUPPORTED_SECTIONS: &[&str] = &[
+    "POST",
+    "POST_RAW",
+    "PUT",
+    "GET",
+    "COOKIE",
+    "GZIP_POST",
+    "DEFLATE_POST",
+    "CGI",
+    "HEADERS",
+    "EXPECTHEADERS",
+    "PHPDBG",
+    "REDIRECTTEST",
+    "CAPTURE_STDIO",
+    "FLAKY",
+    "CONFLICTS",
+];
+
+/// run-tests.php's `$ini_overwrites` (php 8.5), verbatim.
+const PHP_DEFAULT_INI: &[&str] = &[
+    "output_handler=",
+    "open_basedir=",
+    "disable_functions=",
+    "output_buffering=Off",
+    "error_reporting=32767",
+    "fatal_error_backtraces=Off",
+    "display_errors=1",
+    "display_startup_errors=1",
+    "log_errors=0",
+    "html_errors=0",
+    "track_errors=0",
+    "report_zend_debug=0",
+    "docref_root=",
+    "docref_ext=.html",
+    "error_prepend_string=",
+    "error_append_string=",
+    "auto_prepend_file=",
+    "auto_append_file=",
+    "ignore_repeated_errors=0",
+    "precision=14",
+    "serialize_precision=-1",
+    "memory_limit=128M",
+    "opcache.fast_shutdown=0",
+    "opcache.file_update_protection=0",
+    "opcache.revalidate_freq=0",
+    "opcache.jit_hot_loop=1",
+    "opcache.jit_hot_func=1",
+    "opcache.jit_hot_return=1",
+    "opcache.jit_hot_side_exit=1",
+    "opcache.jit_max_root_traces=100000",
+    "opcache.jit_max_side_traces=100000",
+    "opcache.jit_max_exit_counters=100000",
+    "opcache.protect_memory=1",
+    "zend.assertions=1",
+    "zend.exception_ignore_args=0",
+    "zend.exception_string_param_max_len=15",
+    "short_open_tag=0",
+    "date.timezone=UTC",
+];
+
+/// Environment run-tests.php provides by default (offline, non-interactive),
+/// plus skipping slow and timing-sensitive tests, which would make a CI
+/// ratchet flaky.
+const BASE_ENV: &[(&str, &str)] = &[
+    ("NO_INTERACTION", "1"),
+    ("SKIP_ONLINE_TESTS", "1"),
+    ("SKIP_SLOW_TESTS", "1"),
+    ("SKIP_PERF_SENSITIVE", "1"),
+];
+
+/// Tests that spawn "the php under test" as a subprocess. rhp's CLI doesn't
+/// take php's flags, and pointing it at the real php would let rhp's run
+/// delegate the work to php, so such tests are skipped rather than compared.
+const SUBPROCESS_MARKERS: &[&str] = &[
+    "TEST_PHP_EXECUTABLE",
+    "TEST_PHP_CGI_EXECUTABLE",
+    "TEST_PHP_EXTRA_ARGS",
+    "PHP_BINARY",
+];
+
+/// Lines of output php's error display produces (stripped for the
+/// diagnostics-insensitive comparison).
+const DIAGNOSTIC_PREFIXES: &[&str] = &[
+    "Warning: ",
+    "Notice: ",
+    "Deprecated: ",
+    "Fatal error: ",
+    "Parse error: ",
+    "Recoverable fatal error: ",
+    "PHP Warning:  ",
+    "PHP Notice:  ",
+    "PHP Deprecated:  ",
+    "PHP Fatal error:  ",
+    "PHP Parse error:  ",
+];
+
+/// A test's `--INI--` as php `-d` args, or the key rhp can't honour (rhp has
+/// no INI support, so a test is only runnable when its INI is a no-op for us).
+fn test_ini(phpt: &Phpt, dir: &Path) -> Result<Vec<String>, String> {
+    let Some(body) = phpt.section("INI") else {
+        return Ok(Vec::new());
+    };
+    let defaults: HashMap<&str, &str> = PHP_DEFAULT_INI
+        .iter()
+        .filter_map(|kv| kv.split_once('='))
+        .collect();
+    let mut out = Vec::new();
+    for line in String::from_utf8_lossy(body).lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+        let line = line.replace("{PWD}", &dir.to_string_lossy());
+        let (k, v) = line.split_once('=').unwrap_or((&line, ""));
+        let (k, v) = (k.trim(), v.trim().trim_matches('"'));
+        let noop = defaults.get(k) == Some(&v)
+            || (k.starts_with("opcache.") && !(k == "opcache.enable_cli" && v == "1"));
+        if !noop {
+            return Err(format!("ini:{k}"));
+        }
+        out.push(line.to_string());
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// process execution
+// ---------------------------------------------------------------------------
+
+/// Cap on captured output per stream (the rest is drained and dropped).
+const OUTPUT_CAP: usize = 8 << 20;
+
+/// One engine run. `out` is stdout and stderr merged into one stream, exactly
+/// like run-tests.php's `2>&1`.
+struct Outcome {
+    out: Vec<u8>,
+    timed_out: bool,
+    signaled: bool,
+}
+
+fn read_capped(mut r: impl Read, sink: &Mutex<Vec<u8>>) {
+    let mut buf = [0u8; 64 * 1024];
+    while let Ok(n) = r.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        let mut out = sink.lock().unwrap();
+        if out.len() < OUTPUT_CAP {
+            let room = OUTPUT_CAP - out.len();
+            out.extend_from_slice(&buf[..n.min(room)]);
+        }
+    }
+}
+
+fn kill_group(pgid: u32) {
+    // SAFETY: kill(2) on a process group we created (pgid == the child's pid).
+    unsafe { libc::kill(-(pgid as libc::pid_t), libc::SIGKILL) };
+}
+
+/// Run `cmd` to completion or `timeout`, with stdout and stderr on one pipe,
+/// in its own process group. A process that outlives the child while holding
+/// the pipe (a backgrounded grandchild) is killed with the group, and the
+/// reader is only waited on briefly, so nothing can stall the harness.
+fn run_proc(mut cmd: Command, stdin: Option<&[u8]>, timeout: Duration) -> Outcome {
+    let failed = |e: std::io::Error| Outcome {
+        out: format!("spawn failed: {e}").into_bytes(),
+        timed_out: false,
+        signaled: false,
+    };
+    let (reader, writer) = match std::io::pipe() {
+        Ok(p) => p,
+        Err(e) => return failed(e),
+    };
+    let writer2 = match writer.try_clone() {
+        Ok(w) => w,
+        Err(e) => return failed(e),
+    };
+    cmd.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(writer)
+    .stderr(writer2)
+    .process_group(0);
+    let spawned = cmd.spawn();
+    drop(cmd); // release our copies of the pipe's write end, or EOF never comes
+    let mut child = match spawned {
+        Ok(c) => c,
+        Err(e) => return failed(e),
+    };
+    let pgid = child.id();
+    if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
+        let input = input.to_vec();
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(&input);
+        });
+    }
+    let sink = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let reader_thread = {
+        let sink = sink.clone();
+        std::thread::spawn(move || read_capped(reader, &sink))
+    };
+    let deadline = Instant::now() + timeout;
+    let (status, timed_out) = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break (Some(st), false),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
+            _ => {
+                kill_group(pgid);
+                break (child.wait().ok(), true);
+            }
+        }
+    };
+    let wait_reader = |grace: Duration| {
+        let until = Instant::now() + grace;
+        while !reader_thread.is_finished() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        reader_thread.is_finished()
+    };
+    if !wait_reader(Duration::from_millis(200)) {
+        // Something in the group still holds the pipe open.
+        kill_group(pgid);
+        wait_reader(Duration::from_millis(300)); // then give up on it
+    }
+    let out = sink.lock().unwrap().clone();
+    Outcome {
+        out,
+        timed_out,
+        signaled: !timed_out && status.is_some_and(|s| s.signal().is_some()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// comparison + classification
+// ---------------------------------------------------------------------------
+
+/// run-tests.php normalisation: CRLF → LF, then PHP `trim()`.
+fn normalise(out: &[u8]) -> Vec<u8> {
+    let mut s = Vec::with_capacity(out.len());
+    let mut i = 0;
+    while i < out.len() {
+        if out[i] == b'\r' && out.get(i + 1) == Some(&b'\n') {
+            i += 1;
+            continue;
+        }
+        s.push(out[i]);
+        i += 1;
+    }
+    let ws = |b: &u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\0' | 0x0b);
+    let start = s.iter().position(|b| !ws(b)).unwrap_or(s.len());
+    let end = s.iter().rposition(|b| !ws(b)).map_or(start, |e| e + 1);
+    s[start..end].to_vec()
+}
+
+/// PHP's `preg_quote($s, '/')`.
+fn preg_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '.' | '\\' | '+' | '*' | '?' | '[' | '^' | ']' | '$' | '(' | ')' | '{' | '}' | '='
+            | '!' | '<' | '>' | '|' | ':' | '-' | '#' | '/' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\0' => out.push_str("\\000"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// run-tests.php's `expectf_to_regex()`, verbatim: quote everything outside
+/// `%r...%r` sections, then expand the `%` placeholders (one left-to-right
+/// pass, like `strtr`).
+fn expectf_to_regex(wanted: &str) -> String {
+    let wanted = wanted.replace("\r\n", "\n");
+    let mut quoted = String::new();
+    let mut rest = wanted.as_str();
+    while !rest.is_empty() {
+        match rest.find("%r") {
+            Some(start) => match rest[start + 2..].find("%r") {
+                Some(len) => {
+                    quoted.push_str(&preg_quote(&rest[..start]));
+                    quoted.push('(');
+                    quoted.push_str(&rest[start + 2..start + 2 + len]);
+                    quoted.push(')');
+                    rest = &rest[start + 2 + len + 2..];
+                }
+                None => {
+                    // Unbalanced tag: run-tests quotes the rest, tag included.
+                    quoted.push_str(&preg_quote(rest));
+                    rest = "";
+                }
+            },
+            None => {
+                quoted.push_str(&preg_quote(rest));
+                rest = "";
+            }
+        }
+    }
+    let mut out = String::with_capacity(quoted.len() * 2);
+    let mut chars = quoted.chars().peekable();
+    while let Some(c) = chars.next() {
+        let expansion = match (c, chars.peek()) {
+            ('%', Some('e')) => Some("\\/"),
+            ('%', Some('s')) => Some("[^\\r\\n]+"),
+            ('%', Some('S')) => Some("[^\\r\\n]*"),
+            ('%', Some('a')) => Some(".+?"),
+            ('%', Some('A')) => Some(".*?"),
+            ('%', Some('w')) => Some("\\s*"),
+            ('%', Some('i')) => Some("[+-]?\\d+"),
+            ('%', Some('d')) => Some("\\d+"),
+            ('%', Some('x')) => Some("[0-9a-fA-F]+"),
+            ('%', Some('f')) => Some("[+-]?(?:\\d+|(?=\\.\\d))(?:\\.\\d+)?(?:[Ee][+-]?\\d+)?"),
+            ('%', Some('c')) => Some("."),
+            ('%', Some('0')) => Some("\\x00"),
+            _ => None,
+        };
+        match expansion {
+            Some(e) => {
+                out.push_str(e);
+                chars.next();
+            }
+            None => out.push(c),
+        }
+    }
+    out
+}
+
+/// Does `out` satisfy the test's own `--EXPECTF--` / `--EXPECTREGEX--`, the
+/// way run-tests.php checks it (`/^...$/s` on the trimmed output)? `None`
+/// when the test has neither section or the pattern doesn't compile.
+fn spec_matches(phpt: &Phpt, out: &[u8]) -> Option<bool> {
+    let (wanted, is_f) = match (phpt.section("EXPECTF"), phpt.section("EXPECTREGEX")) {
+        (Some(w), _) => (w, true),
+        (None, Some(w)) => (w, false),
+        (None, None) => return None,
+    };
+    let wanted = String::from_utf8_lossy(&normalise(wanted)).into_owned();
+    let re = if is_f {
+        expectf_to_regex(&wanted)
+    } else {
+        wanted
+    };
+    let re = pcre2::bytes::RegexBuilder::new()
+        .dotall(true)
+        .build(&format!("^{re}$"))
+        .ok()?;
+    re.is_match(&normalise(out)).ok()
+}
+
+fn is_diagnostic(line: &str) -> bool {
+    let l = line.trim_start();
+    DIAGNOSTIC_PREFIXES.iter().any(|p| l.starts_with(p))
+}
+
+/// Output with php's diagnostic lines (and the blank lines around them) gone.
+///
+/// An uncaught exception's `Fatal error: Uncaught ...` is followed by its
+/// `Stack trace:` / `#N ...` / `  thrown in ...` tail (and any chained `Next
+/// ...` exceptions); those lines belong to the diagnostic too.
+fn strip_diagnostics(out: &[u8]) -> String {
+    let text = String::from_utf8_lossy(out);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut kept = Vec::new();
+    let mut in_trace = false;
+    for (i, l) in lines.iter().copied().enumerate() {
+        // php prints a blank line before each diagnostic (`\nWarning: ...`);
+        // any other blank line is real output.
+        if l.trim().is_empty() {
+            if in_trace || lines.get(i + 1).is_some_and(|n| is_diagnostic(n)) {
+                continue;
+            }
+            kept.push(l);
+            continue;
+        }
+        if is_diagnostic(l) {
+            in_trace = l
+                .trim_start()
+                .trim_start_matches("PHP ")
+                .starts_with("Fatal error:  Uncaught")
+                || l.trim_start().starts_with("Fatal error: Uncaught");
+            continue;
+        }
+        if in_trace
+            && (l.starts_with("Stack trace:")
+                || l.starts_with('#')
+                || l.starts_with("  thrown in ")
+                || l.starts_with("Next "))
+        {
+            continue;
+        }
+        in_trace = false;
+        kept.push(l);
+    }
+    kept.join("\n")
+}
+
+/// Collapse paths and numbers so similar failures share a cluster key.
+fn cluster_key(prefix: &str, s: &str) -> String {
+    let mut out = String::from(prefix);
+    for word in s.split(' ') {
+        let mut last_digit = false;
+        if word.contains('/') && word.len() > 1 {
+            out.push_str("PATH ");
+            continue;
+        }
+        for c in word.chars() {
+            if c.is_ascii_digit() {
+                if !last_digit {
+                    out.push('N');
+                }
+                last_digit = true;
+            } else {
+                out.push(c);
+                last_digit = false;
+            }
+        }
+        out.push(' ');
+    }
+    out.trim_end().chars().take(110).collect()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Status {
+    Match,
+    DiagnosticsOnly,
+    Mismatch,
+    Unsupported,
+    RhpCrash,
+    RhpTimeout,
+    Skipped,
+}
+
+impl Status {
+    fn label(self) -> &'static str {
+        match self {
+            Status::Match => "match",
+            Status::DiagnosticsOnly => "diagnostics-only",
+            Status::Mismatch => "mismatch",
+            Status::Unsupported => "unsupported",
+            Status::RhpCrash => "rhp-crash",
+            Status::RhpTimeout => "rhp-timeout",
+            Status::Skipped => "skipped",
+        }
+    }
+}
+
+struct Verdict {
+    status: Status,
+    /// Cluster key (non-match) or skip reason.
+    key: String,
+}
+
+fn verdict(status: Status, key: impl Into<String>) -> Verdict {
+    Verdict {
+        status,
+        key: key.into(),
+    }
+}
+
+/// Classify one php/rhp run pair (each a merged stdout+stderr stream).
+fn classify(php: &Outcome, rhp: &Outcome) -> Verdict {
+    if php.timed_out {
+        return verdict(Status::Skipped, "php-timeout");
+    }
+    if php.signaled {
+        return verdict(Status::Skipped, "php-crash");
+    }
+    if rhp.timed_out {
+        return verdict(Status::RhpTimeout, "rhp timeout");
+    }
+    let (p, r) = (
+        String::from_utf8_lossy(&php.out),
+        String::from_utf8_lossy(&rhp.out),
+    );
+    if let Some(line) = r
+        .lines()
+        .find(|l| l.contains("panicked at") || l.contains("overflowed its stack"))
+    {
+        return verdict(Status::RhpCrash, cluster_key("crash: ", line));
+    }
+    if rhp.signaled {
+        return verdict(Status::RhpCrash, "crash: killed by signal");
+    }
+    if normalise(&php.out) == normalise(&rhp.out) {
+        return verdict(Status::Match, "");
+    }
+    if let Some(msg) = r.lines().find_map(|l| l.split_once("RHP_UNSUPPORTED: ")) {
+        let msg = msg.1.split(" (").next().unwrap_or(msg.1);
+        return verdict(Status::Unsupported, cluster_key("unsupported: ", msg));
+    }
+    // Only php's diagnostics may be missing: if php printed none, any extra
+    // rhp diagnostic (e.g. a fatal php doesn't hit) is a real divergence.
+    if let Some(first) = p.lines().find(|l| is_diagnostic(l)) {
+        if strip_diagnostics(&php.out) == strip_diagnostics(&rhp.out) {
+            // Name the first diagnostic php printed, to rank the missing ones.
+            let first = first.split(" in ").next().unwrap_or(first).trim();
+            return verdict(Status::DiagnosticsOnly, cluster_key("diagnostics: ", first));
+        }
+    }
+    if let Some(fatal) = r.lines().find(|l| l.starts_with("PHP Fatal error:")) {
+        let fatal = fatal.trim_start_matches("PHP Fatal error:").trim();
+        let fatal = fatal.trim_start_matches("Uncaught ");
+        return verdict(Status::Mismatch, cluster_key("rhp fatal: ", fatal));
+    }
+    let (mut pl, mut rl) = (p.lines(), r.lines());
+    let key = loop {
+        match (pl.next(), rl.next()) {
+            (Some(a), Some(b)) if a == b => continue,
+            (a, b) => {
+                let show =
+                    |s: Option<&str>| s.unwrap_or("<eof>").chars().take(48).collect::<String>();
+                break format!("php «{}» rhp «{}»", show(a), show(b));
+            }
+        }
+    };
+    verdict(Status::Mismatch, cluster_key("diff: ", &key))
+}
+
+// ---------------------------------------------------------------------------
+// running a test
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct Ctx {
+    rhp_bin: PathBuf,
+    /// [`BASE_ENV`], for every engine run.
+    base_env: Vec<(String, String)>,
+    php_ini: Vec<String>,
+    php_modules: BTreeSet<String>,
+    timeout: Duration,
+    mutate: usize,
+    seed: u64,
+    fixtures: Option<PathBuf>,
+    minimize: bool,
+    /// php's `PHP_VERSION`, when it differs from rhp's: a test whose php output
+    /// contains it is printing the engine version, which can't match.
+    version_skew: Option<String>,
+    /// Pause between the php and rhp runs of a test. The `--write-known`
+    /// confirmation pass sets it past a second, so any test whose output
+    /// depends on the current time diverges deterministically.
+    skew: Duration,
+}
+
+/// Everything needed to run one script through both engines.
+struct Invocation<'a> {
+    dir: &'a Path,
+    script: &'a Path,
+    ini: &'a [String],
+    env: &'a [(String, String)],
+    args: &'a [String],
+    stdin: Option<&'a [u8]>,
+    /// `--CLEAN--` script path + body, run after every engine run.
+    clean: Option<(&'a Path, &'a [u8])>,
+    /// The test directory as it was before any engine ran (plus our script).
+    snapshot: BTreeSet<PathBuf>,
+}
+
+impl Ctx {
+    fn php(&self, inv: &Invocation, extra_ini: &[String], script: &Path) -> Outcome {
+        let mut cmd = Command::new(php_bin());
+        cmd.arg("-n")
+            .current_dir(inv.dir)
+            .envs(self.base_env.iter().cloned())
+            .envs(inv.env.iter().cloned());
+        for kv in self.php_ini.iter().chain(extra_ini) {
+            cmd.arg("-d").arg(kv);
+        }
+        cmd.arg(script).args(inv.args);
+        run_proc(cmd, inv.stdin, self.timeout)
+    }
+
+    fn rhp(&self, inv: &Invocation) -> Outcome {
+        let mut cmd = Command::new(&self.rhp_bin);
+        cmd.current_dir(inv.dir)
+            .envs(self.base_env.iter().cloned())
+            .envs(inv.env.iter().cloned())
+            .arg(inv.script)
+            .args(inv.args);
+        run_proc(cmd, inv.stdin, self.timeout)
+    }
+
+    /// Undo an engine run: run `--CLEAN--` (for files outside the test dir),
+    /// then put the test directory back to its snapshot. php and rhp — and
+    /// every mutant — thus start from the same filesystem state.
+    fn reset(&self, inv: &Invocation) {
+        if let Some((path, body)) = inv.clean {
+            if fs::write(path, body).is_ok() {
+                let _ = self.php(inv, inv.ini, path);
+                let _ = fs::remove_file(path);
+            }
+        }
+        restore(inv.dir, &inv.snapshot);
+    }
+
+    fn php_script(&self, inv: &Invocation) -> Outcome {
+        let out = self.php(inv, inv.ini, inv.script);
+        self.reset(inv);
+        out
+    }
+
+    fn rhp_script(&self, inv: &Invocation) -> Outcome {
+        let out = self.rhp(inv);
+        self.reset(inv);
+        out
+    }
+}
+
+struct TestResult {
+    test: String,
+    status: Status,
+    key: String,
+}
+
+struct MutantResult {
+    test: String,
+    mutation: String,
+    status: Status,
+    key: String,
+}
+
+#[derive(Default)]
+struct MutationStats {
+    generated: usize,
+    discarded: usize,
+}
+
+fn skipped(test: &str, reason: impl Into<String>) -> TestResult {
+    TestResult {
+        test: test.to_string(),
+        status: Status::Skipped,
+        key: reason.into(),
+    }
+}
+
+/// Run one test (and its mutants, if it passes). Mutant divergences are
+/// appended to `mutants`.
+fn run_test(
+    ctx: &Ctx,
+    root: &Path,
+    rel: &str,
+    mutants: &Mutex<Vec<MutantResult>>,
+    mstats: &Mutex<MutationStats>,
+) -> TestResult {
+    let path = root.join(rel);
+    let Ok(data) = fs::read(&path) else {
+        return skipped(rel, "unreadable");
+    };
+    let phpt = Phpt::parse(&data);
+    let dir = path.parent().unwrap_or(root).to_path_buf();
+    if let Some(s) = UNSUPPORTED_SECTIONS.iter().find(|s| phpt.has(s)) {
+        return skipped(rel, format!("section:{s}"));
+    }
+    let file = match (phpt.section("FILE"), phpt.section("FILE_EXTERNAL")) {
+        (Some(f), _) => f.to_vec(),
+        (None, Some(ext)) => {
+            let name = String::from_utf8_lossy(ext).trim().to_string();
+            match fs::read(dir.join(&name)) {
+                Ok(f) => f,
+                Err(_) => return skipped(rel, "file_external unreadable"),
+            }
+        }
+        (None, None) => return skipped(rel, "no FILE"),
+    };
+    let mentions = |needle: &str| {
+        let hay = |b: Option<&[u8]>| {
+            b.is_some_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes()))
+        };
+        hay(Some(&file)) || hay(phpt.section("SKIPIF")) || hay(phpt.section("CLEAN"))
+    };
+    if let Some(m) = SUBPROCESS_MARKERS.iter().find(|m| mentions(m)) {
+        return skipped(rel, format!("subprocess:{m}"));
+    }
+    let ini = match test_ini(&phpt, &dir) {
+        Ok(ini) => ini,
+        Err(reason) => return skipped(rel, reason),
+    };
+    if let Some(exts) = phpt.section("EXTENSIONS") {
+        for ext in String::from_utf8_lossy(exts).split_whitespace() {
+            if !ctx.php_modules.contains(&ext.to_ascii_lowercase()) {
+                return skipped(rel, format!("ext:{ext}"));
+            }
+        }
+    }
+    let env: Vec<(String, String)> = phpt
+        .section("ENV")
+        .map(|b| {
+            String::from_utf8_lossy(b)
+                .lines()
+                .filter_map(|l| l.split_once('='))
+                .map(|(k, v)| (k.trim().to_string(), v.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let args: Vec<String> = phpt
+        .section("ARGS")
+        .map(|b| {
+            String::from_utf8_lossy(b)
+                .split_whitespace()
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    let stdin = phpt.section("STDIN");
+    let stem = rel.trim_end_matches(".phpt");
+    let script = root.join(format!("{stem}.php"));
+    let clean_script = root.join(format!("{stem}.clean.php"));
+    let pristine = snapshot(&dir);
+    let mut inv = Invocation {
+        dir: &dir,
+        script: &script,
+        ini: &ini,
+        env: &env,
+        args: &args,
+        stdin,
+        clean: phpt.section("CLEAN").map(|c| (clean_script.as_path(), c)),
+        snapshot: pristine.clone(),
+    };
+
+    if let Some(skipif) = phpt.section("SKIPIF") {
+        let skip_script = root.join(format!("{stem}.skip.php"));
+        if fs::write(&skip_script, skipif).is_err() {
+            return skipped(rel, "unwritable work dir");
+        }
+        let out = ctx.php(&inv, &ini, &skip_script);
+        let _ = fs::remove_file(&skip_script);
+        restore(&dir, &pristine);
+        let text = String::from_utf8_lossy(&out.out);
+        let text = text.trim_start();
+        if text.len() >= 4 && text[..4].eq_ignore_ascii_case("skip") {
+            return skipped(rel, "skipif");
+        }
+    }
+
+    if fs::write(&script, &file).is_err() {
+        return skipped(rel, "unwritable work dir");
+    }
+    inv.snapshot = snapshot(&dir);
+    let php_out = ctx.php_script(&inv);
+    if let Some(v) = &ctx.version_skew {
+        if php_out.out.windows(v.len()).any(|w| w == v.as_bytes()) {
+            let _ = fs::remove_file(&script);
+            restore(&dir, &pristine);
+            return skipped(rel, "version");
+        }
+    }
+    std::thread::sleep(ctx.skew);
+    let rhp_out = ctx.rhp_script(&inv);
+    let mut v = classify(&php_out, &rhp_out);
+    // Some php output is unspecified (raw memcmp() magnitudes, ids, sizes) and
+    // can differ run to run; php-src marks it with EXPECTF/EXPECTREGEX. When
+    // the engines differ but both satisfy the test's own spec, it passes —
+    // exactly run-tests.php's verdict.
+    if matches!(v.status, Status::Mismatch | Status::DiagnosticsOnly)
+        && spec_matches(&phpt, &php_out.out) == Some(true)
+        && spec_matches(&phpt, &rhp_out.out) == Some(true)
+    {
+        v = verdict(Status::Match, "spec");
+    }
+
+    if v.status == Status::Match && ctx.mutate > 0 {
+        let mut rng = Rng::new(ctx.seed ^ fnv1a(rel.as_bytes()));
+        for (k, m) in mutate::mutants(&file, &mut rng, ctx.mutate)
+            .into_iter()
+            .enumerate()
+        {
+            if fs::write(&script, &m.source).is_err() {
+                break;
+            }
+            let php_m = ctx.php_script(&inv);
+            mstats.lock().unwrap().generated += 1;
+            if php_m.timed_out || String::from_utf8_lossy(&php_m.out).contains("Parse error: ") {
+                mstats.lock().unwrap().discarded += 1;
+                continue;
+            }
+            let rhp_m = ctx.rhp_script(&inv);
+            let mv = classify(&php_m, &rhp_m);
+            if mv.status == Status::Skipped {
+                mstats.lock().unwrap().discarded += 1;
+                continue;
+            }
+            if mv.status != Status::Match {
+                if let (Some(dirf), Status::Mismatch | Status::RhpCrash) =
+                    (&ctx.fixtures, mv.status)
+                {
+                    emit_fixture(ctx, &inv, dirf, rel, k, &m, mv.status);
+                }
+                mutants.lock().unwrap().push(MutantResult {
+                    test: rel.to_string(),
+                    mutation: m.description,
+                    status: mv.status,
+                    key: mv.key,
+                });
+            }
+        }
+    }
+
+    let _ = fs::remove_file(&script);
+    restore(&dir, &pristine);
+    TestResult {
+        test: rel.to_string(),
+        status: v.status,
+        key: v.key,
+    }
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+// ---------------------------------------------------------------------------
+// fixtures: minimised, self-contained repros of mutant divergences
+// ---------------------------------------------------------------------------
+
+/// Sources that read sibling files or their own path can't be moved into the
+/// golden suite verbatim.
+fn is_portable(src: &[u8]) -> bool {
+    let s = String::from_utf8_lossy(src).to_ascii_lowercase();
+    ![
+        "include",
+        "require",
+        "__dir__",
+        "__file__",
+        "fopen",
+        "file_",
+        "opendir",
+        "glob(",
+        "unlink",
+        "mkdir",
+        "getenv",
+        "$argv",
+        "stdin",
+        "tempnam",
+        "sys_get_temp_dir",
+    ]
+    .iter()
+    .any(|needle| s.contains(needle))
+}
+
+/// Whether `src` still makes php and rhp diverge the same way (`want`),
+/// with php accepting the program.
+fn still_diverges(ctx: &Ctx, inv: &Invocation, src: &[u8], want: Status) -> Option<Outcome> {
+    fs::write(inv.script, src).ok()?;
+    let php = ctx.php_script(inv);
+    if php.timed_out || String::from_utf8_lossy(&php.out).contains("Parse error: ") {
+        return None;
+    }
+    let rhp = ctx.rhp_script(inv);
+    (classify(&php, &rhp).status == want).then_some(php)
+}
+
+/// Greedy line-chunk reduction (ddmin-style), bounded to `budget` runs.
+fn minimise(ctx: &Ctx, inv: &Invocation, src: &[u8], want: Status, budget: usize) -> Vec<u8> {
+    let mut lines: Vec<&[u8]> = src.split_inclusive(|&b| b == b'\n').collect();
+    let mut runs = 0;
+    let mut chunk = lines.len().div_ceil(2).max(1);
+    while chunk >= 1 && runs < budget {
+        let mut i = 0;
+        let mut removed_any = false;
+        while i < lines.len() && runs < budget {
+            let end = (i + chunk).min(lines.len());
+            // Never drop the opening tag.
+            if lines[i..end]
+                .iter()
+                .any(|l| l.windows(5).any(|w| w == b"<?php"))
+            {
+                i = end;
+                continue;
+            }
+            let candidate: Vec<u8> = lines[..i]
+                .iter()
+                .chain(&lines[end..])
+                .flat_map(|l| l.iter().copied())
+                .collect();
+            runs += 1;
+            if still_diverges(ctx, inv, &candidate, want).is_some() {
+                lines.drain(i..end);
+                removed_any = true;
+            } else {
+                i = end;
+            }
+        }
+        if !removed_any {
+            if chunk == 1 {
+                break;
+            }
+            chunk = chunk.div_ceil(2);
+        }
+    }
+    lines.concat()
+}
+
+fn emit_fixture(
+    ctx: &Ctx,
+    inv: &Invocation,
+    dir: &Path,
+    rel: &str,
+    k: usize,
+    m: &mutate::Mutant,
+    status: Status,
+) {
+    if !is_portable(&m.source) {
+        return;
+    }
+    let src = if ctx.minimize {
+        minimise(ctx, inv, &m.source, status, 200)
+    } else {
+        m.source.clone()
+    };
+    // Header comments must not end PHP mode or the comment early.
+    let clean = |s: &str| {
+        s.replace("?>", "? >")
+            .replace('\r', "\\r")
+            .replace('\n', "\\n")
+    };
+    let mut program = format!(
+        "<?php\n// phpt-mutant: {}\n// mutation: {}\n?>\n",
+        clean(rel),
+        clean(&m.description)
+    )
+    .into_bytes();
+    program.extend_from_slice(&src);
+    // Injective name: the readable slug plus a hash of the exact test path.
+    let slug: String = rel
+        .trim_end_matches(".phpt")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let base = dir.join(format!("{slug}_{:08x}_m{k}", fnv1a(rel.as_bytes()) as u32));
+    let php_path = base.with_extension("php");
+    if fs::write(&php_path, &program).is_err() {
+        return;
+    }
+    // The expectation is php's output for exactly this file, run where it now
+    // lives — and only if that output is location-independent and rhp still
+    // diverges on it, so the pair can move into tests/golden as is.
+    let here = Invocation {
+        dir,
+        script: &php_path,
+        ini: &[],
+        env: &[],
+        args: &[],
+        stdin: None,
+        clean: None,
+        snapshot: BTreeSet::new(),
+    };
+    let php = ctx.php(&here, &[], &php_path);
+    let rhp = ctx.rhp(&here);
+    let text = String::from_utf8_lossy(&php.out);
+    let portable = !text.contains(" on line ")
+        && !text.contains("Stack trace:")
+        && !text.contains("Parse error: ")
+        && !text.contains(&*dir.to_string_lossy());
+    if php.timed_out || !portable || classify(&php, &rhp).status != status {
+        let _ = fs::remove_file(&php_path);
+        return;
+    }
+    let _ = fs::write(base.with_extension("out"), &php.out);
+}
+
+// ---------------------------------------------------------------------------
+// test selection + work tree
+// ---------------------------------------------------------------------------
+
+/// All `.phpt` files under `root`, as `/`-joined paths relative to it.
+fn find_phpt(root: &Path, rel: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(root.join(rel)) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let sub = rel.join(&name);
+        match e.file_type() {
+            Ok(t) if t.is_dir() => find_phpt(root, &sub, out),
+            Ok(t) if t.is_file() && name.to_string_lossy().ends_with(".phpt") => {
+                out.push(sub.to_string_lossy().replace('\\', "/"))
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The directory a test's fixtures live under: its path up to and including
+/// the first `tests` component (`ext/standard/tests`, `Zend/tests`, `tests`).
+fn tree_root(rel: &str) -> String {
+    let parts: Vec<&str> = rel.split('/').collect();
+    match parts.iter().position(|p| *p == "tests") {
+        Some(i) => parts[..=i].join("/"),
+        None => parts[..parts.len().saturating_sub(1)].join("/"),
+    }
+}
+
+/// Every path under `dir` (relative), without following symlinks.
+fn snapshot(dir: &Path) -> BTreeSet<PathBuf> {
+    fn walk(root: &Path, rel: &Path, out: &mut BTreeSet<PathBuf>) {
+        let Ok(entries) = fs::read_dir(root.join(rel)) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let sub = rel.join(e.file_name());
+            let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
+            out.insert(sub.clone());
+            if is_dir {
+                walk(root, &sub, out);
+            }
+        }
+    }
+    let mut out = BTreeSet::new();
+    walk(dir, Path::new(""), &mut out);
+    out
+}
+
+/// Delete everything under `dir` that isn't in `keep` (files a run created).
+/// Tests sometimes chmod what they create, so retry once after making the
+/// path (and, for a directory, its contents) writable again.
+fn restore(dir: &Path, keep: &BTreeSet<PathBuf>) {
+    use std::os::unix::fs::PermissionsExt;
+    fn make_writable(p: &Path) {
+        let _ = fs::set_permissions(p, fs::Permissions::from_mode(0o700));
+        if fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()) {
+            for e in fs::read_dir(p).into_iter().flatten().flatten() {
+                make_writable(&e.path());
+            }
+        }
+    }
+    fn remove(p: &Path) -> std::io::Result<()> {
+        match fs::symlink_metadata(p) {
+            Ok(m) if m.is_dir() => fs::remove_dir_all(p),
+            Ok(_) => fs::remove_file(p),
+            Err(_) => Ok(()),
+        }
+    }
+    // Children sort after their parent, so reverse order removes them first.
+    for rel in snapshot(dir).iter().rev() {
+        if keep.contains(rel) {
+            continue;
+        }
+        let p = dir.join(rel);
+        if remove(&p).is_err() {
+            if let Some(parent) = p.parent() {
+                let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+            }
+            make_writable(&p);
+            let _ = remove(&p);
+        }
+    }
+}
+
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for e in fs::read_dir(from)? {
+        let e = e?;
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        let t = e.file_type()?;
+        if t.is_dir() {
+            copy_tree(&src, &dst)?;
+        } else if t.is_file() {
+            fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
+
+fn php_modules(ini: &[String]) -> BTreeSet<String> {
+    let mut cmd = Command::new(php_bin());
+    cmd.arg("-n");
+    for kv in ini {
+        cmd.arg("-d").arg(kv);
+    }
+    cmd.arg("-m");
+    let out = run_proc(cmd, None, Duration::from_secs(20));
+    String::from_utf8_lossy(&out.out)
+        .lines()
+        .map(|l| l.trim().to_ascii_lowercase())
+        .filter(|l| !l.is_empty() && !l.starts_with('['))
+        .collect()
+}
+
+fn read_known(path: &Path) -> std::io::Result<Vec<String>> {
+    Ok(fs::read_to_string(path)?
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(String::from)
+        .collect())
+}
+
+// ---------------------------------------------------------------------------
+// reporting
+// ---------------------------------------------------------------------------
+
+fn json_str(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn write_json(
+    path: &Path,
+    results: &[TestResult],
+    mutants: &[MutantResult],
+) -> std::io::Result<()> {
+    let mut s = String::from("{\n\"tests\": [\n");
+    for (i, r) in results.iter().enumerate() {
+        let sep = if i + 1 < results.len() { "," } else { "" };
+        let _ = writeln!(
+            s,
+            "{{\"test\":{},\"status\":\"{}\",\"key\":{}}}{sep}",
+            json_str(&r.test),
+            r.status.label(),
+            json_str(&r.key)
+        );
+    }
+    s.push_str("],\n\"mutants\": [\n");
+    for (i, m) in mutants.iter().enumerate() {
+        let sep = if i + 1 < mutants.len() { "," } else { "" };
+        let _ = writeln!(
+            s,
+            "{{\"test\":{},\"mutation\":{},\"status\":\"{}\",\"key\":{}}}{sep}",
+            json_str(&m.test),
+            json_str(&m.mutation),
+            m.status.label(),
+            json_str(&m.key)
+        );
+    }
+    s.push_str("]\n}\n");
+    fs::write(path, s)
+}
+
+/// Print the `top` largest clusters: count, key and one example.
+fn print_clusters<'a>(items: impl Iterator<Item = (&'a str, &'a str)>, top: usize) {
+    let mut clusters: BTreeMap<&str, (usize, &str)> = BTreeMap::new();
+    for (key, example) in items {
+        clusters.entry(key).or_insert((0, example)).0 += 1;
+    }
+    let mut v: Vec<_> = clusters.into_iter().collect();
+    v.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then(a.0.cmp(b.0)));
+    for (key, (n, ex)) in v.iter().take(top) {
+        println!("  {n:6}  {key}\n          e.g. {ex}");
+    }
+    if v.len() > top {
+        println!("  ... {} more clusters (see --json)", v.len() - top);
+    }
+}
+
+/// php's `PHP_VERSION` if rhp reports a different one, else `None`.
+fn version_skew(ctx: &Ctx, scratch: &Path) -> Option<String> {
+    let script = scratch.join("__rhp_phpt_version.php");
+    fs::write(&script, b"<?php echo PHP_VERSION;").ok()?;
+    let inv = Invocation {
+        dir: scratch,
+        script: &script,
+        ini: &[],
+        env: &[],
+        args: &[],
+        stdin: None,
+        clean: None,
+        snapshot: BTreeSet::new(),
+    };
+    let php = String::from_utf8_lossy(&ctx.php(&inv, &[], &script).out)
+        .trim()
+        .to_string();
+    let rhp = String::from_utf8_lossy(&ctx.rhp(&inv).out)
+        .trim()
+        .to_string();
+    let _ = fs::remove_file(&script);
+    (!php.is_empty() && php != rhp).then_some(php)
+}
+
+/// Run `tests` across the worker roots (one worker per root), sorted by path.
+fn run_parallel(
+    ctx: &Ctx,
+    roots: &[PathBuf],
+    tests: &[String],
+    mutants: &Mutex<Vec<MutantResult>>,
+    mstats: &Mutex<MutationStats>,
+) -> Vec<TestResult> {
+    let next = AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
+    let results = Mutex::new(Vec::with_capacity(tests.len()));
+    let started = Instant::now();
+    std::thread::scope(|s| {
+        for root in roots {
+            let (next, done, results) = (&next, &done, &results);
+            s.spawn(move || loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some(rel) = tests.get(i) else { break };
+                let r = run_test(ctx, root, rel, mutants, mstats);
+                results.lock().unwrap().push(r);
+                let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+                if d.is_multiple_of(500) {
+                    eprintln!(
+                        "  {d}/{} ({:.0}s)",
+                        tests.len(),
+                        started.elapsed().as_secs_f64()
+                    );
+                }
+            });
+        }
+    });
+    let mut results = results.into_inner().unwrap();
+    results.sort_by(|a, b| a.test.cmp(&b.test));
+    results
+}
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+
+const USAGE: &str = "\
+usage: rhp-difftest phpt --php-src <dir> [options]
+
+Runs php-src .phpt tests through php and rhp and compares their output.
+
+selection:
+  --php-src <dir>        php-src checkout (or env RHP_PHP_SRC)
+  --filter <substr>      only tests whose path contains <substr> (repeatable)
+  --limit <n>            run at most <n> tests
+  --check-known <file>   run only the listed tests; exit 1 if any no longer match
+running:
+  --rhp <bin>            rhp binary (default: `rhp` next to this binary, or env RHP_BIN)
+  --jobs <n>             parallel workers (default: all cores)
+  --timeout <secs>       per-process timeout (default: 10)
+  --work <dir>           scratch copy of the test trees (default: a temp dir)
+  --keep-work            don't delete the scratch copy
+mutation:
+  --mutate <n>           run <n> first-order mutants of every passing test
+  --seed <n>             mutant selection seed (default: 0xC0FFEE)
+  --emit-fixtures <dir>  write self-contained repros of mutant mismatches/crashes
+  --minimize             minimise emitted repros (line-based ddmin)
+output:
+  --json <file>          full per-test / per-mutant report
+  --write-known <file>   write the passing tests (the ratchet list)
+  --top <n>              clusters to print (default: 25)
+";
+
+struct Opts {
+    php_src: PathBuf,
+    filters: Vec<String>,
+    limit: Option<usize>,
+    check_known: Option<PathBuf>,
+    rhp: Option<PathBuf>,
+    jobs: usize,
+    timeout: u64,
+    work: Option<PathBuf>,
+    keep_work: bool,
+    mutate: usize,
+    seed: u64,
+    fixtures: Option<PathBuf>,
+    minimize: bool,
+    json: Option<PathBuf>,
+    write_known: Option<PathBuf>,
+    top: usize,
+}
+
+fn parse_opts(args: &[String]) -> Result<Opts, String> {
+    let mut o = Opts {
+        php_src: std::env::var_os("RHP_PHP_SRC")
+            .map(PathBuf::from)
+            .unwrap_or_default(),
+        filters: Vec::new(),
+        limit: None,
+        check_known: None,
+        rhp: std::env::var_os("RHP_BIN").map(PathBuf::from),
+        jobs: std::thread::available_parallelism().map_or(4, |n| n.get()),
+        timeout: 10,
+        work: None,
+        keep_work: false,
+        mutate: 0,
+        seed: 0xC0FFEE,
+        fixtures: None,
+        minimize: false,
+        json: None,
+        write_known: None,
+        top: 25,
+    };
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{a} needs a value"))
+        };
+        let num = |v: String| -> Result<u64, String> {
+            let v = v.trim();
+            match v.strip_prefix("0x") {
+                Some(h) => u64::from_str_radix(h, 16),
+                None => v.parse(),
+            }
+            .map_err(|_| format!("bad number {v:?}"))
+        };
+        match a.as_str() {
+            "--php-src" => o.php_src = val()?.into(),
+            "--filter" => o.filters.push(val()?),
+            "--limit" => o.limit = Some(num(val()?)? as usize),
+            "--check-known" => o.check_known = Some(val()?.into()),
+            "--rhp" => o.rhp = Some(val()?.into()),
+            "--jobs" => o.jobs = (num(val()?)? as usize).max(1),
+            "--timeout" => o.timeout = num(val()?)?.max(1),
+            "--work" => o.work = Some(val()?.into()),
+            "--keep-work" => o.keep_work = true,
+            "--mutate" => o.mutate = num(val()?)? as usize,
+            "--seed" => o.seed = num(val()?)?,
+            "--emit-fixtures" => o.fixtures = Some(val()?.into()),
+            "--minimize" => o.minimize = true,
+            "--json" => o.json = Some(val()?.into()),
+            "--write-known" => o.write_known = Some(val()?.into()),
+            "--top" => o.top = num(val()?)? as usize,
+            "-h" | "--help" => return Err(String::new()),
+            other => return Err(format!("unknown option {other:?}")),
+        }
+    }
+    if o.php_src.as_os_str().is_empty() {
+        return Err("--php-src is required".into());
+    }
+    Ok(o)
+}
+
+/// `rhp-difftest phpt ...` entry point.
+pub fn main(args: &[String]) -> ExitCode {
+    let o = match parse_opts(args) {
+        Ok(o) => o,
+        Err(e) => {
+            if !e.is_empty() {
+                eprintln!("rhp-difftest phpt: {e}\n");
+            }
+            eprint!("{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    let rhp_bin = o.rhp.clone().unwrap_or_else(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("rhp")))
+            .unwrap_or_else(|| PathBuf::from("rhp"))
+    });
+    if !rhp_bin.exists() {
+        eprintln!(
+            "rhp-difftest phpt: rhp binary not found at {} (build rhp-cli, or pass --rhp)",
+            rhp_bin.display()
+        );
+        return ExitCode::from(2);
+    }
+    let rhp_bin = rhp_bin.canonicalize().unwrap_or(rhp_bin);
+    if !crate::php_available() {
+        eprintln!("rhp-difftest phpt: no `php` binary (set RHP_PHP)");
+        return ExitCode::from(2);
+    }
+
+    // Select tests.
+    let known = match &o.check_known {
+        Some(p) => match read_known(p) {
+            Ok(k) => Some(k),
+            Err(e) => {
+                eprintln!("rhp-difftest phpt: can't read {}: {e}", p.display());
+                return ExitCode::from(2);
+            }
+        },
+        None => None,
+    };
+    let mut tests = Vec::new();
+    find_phpt(&o.php_src, Path::new(""), &mut tests);
+    tests.sort();
+    let mut missing_known = Vec::new();
+    if let Some(k) = &known {
+        let have: BTreeSet<&String> = tests.iter().collect();
+        missing_known = k.iter().filter(|t| !have.contains(t)).cloned().collect();
+        let want: BTreeSet<&String> = k.iter().collect();
+        tests.retain(|t| want.contains(t));
+    }
+    if !o.filters.is_empty() {
+        tests.retain(|t| o.filters.iter().any(|f| t.contains(f.as_str())));
+    }
+    if let Some(n) = o.limit {
+        tests.truncate(n);
+    }
+    if tests.is_empty() {
+        eprintln!(
+            "rhp-difftest phpt: no tests selected under {}",
+            o.php_src.display()
+        );
+        return ExitCode::from(2);
+    }
+
+    // A private scratch copy of every tree the selected tests live in, per
+    // worker: tests create and delete files next to themselves, and each run
+    // is reset to a snapshot afterwards, which must not race another worker.
+    let work = o
+        .work
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("rhp-phpt-{}", std::process::id())));
+    let roots: BTreeSet<String> = tests.iter().map(|t| tree_root(t)).collect();
+    let jobs = o.jobs.min(tests.len());
+    let worker_roots: Vec<PathBuf> = (0..jobs).map(|i| work.join(format!("w{i}"))).collect();
+    let copy_errors: Vec<String> = std::thread::scope(|s| {
+        let handles: Vec<_> = worker_roots
+            .iter()
+            .map(|w| {
+                let (roots, php_src) = (&roots, &o.php_src);
+                s.spawn(move || {
+                    roots.iter().find_map(|r| {
+                        copy_tree(&php_src.join(r), &w.join(r))
+                            .err()
+                            .map(|e| format!("copying {r}: {e}"))
+                    })
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok().flatten())
+            .collect()
+    });
+    if let Some(e) = copy_errors.first() {
+        eprintln!("rhp-difftest phpt: {e}");
+        return ExitCode::from(2);
+    }
+    let worker_roots: Vec<PathBuf> = worker_roots
+        .into_iter()
+        .map(|w| w.canonicalize().unwrap_or(w))
+        .collect();
+    if let Some(d) = &o.fixtures {
+        let _ = fs::create_dir_all(d);
+    }
+
+    let php_ini: Vec<String> = PHP_DEFAULT_INI.iter().map(|s| s.to_string()).collect();
+    let ctx = Ctx {
+        php_modules: php_modules(&php_ini),
+        php_ini,
+        base_env: BASE_ENV
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        rhp_bin,
+        timeout: Duration::from_secs(o.timeout),
+        mutate: o.mutate,
+        seed: o.seed,
+        fixtures: o.fixtures.clone(),
+        minimize: o.minimize,
+        skew: Duration::ZERO,
+        version_skew: None,
+    };
+    let ctx = Ctx {
+        version_skew: version_skew(&ctx, &worker_roots[0]),
+        ..ctx
+    };
+    if let Some(v) = &ctx.version_skew {
+        eprintln!(
+            "phpt: php is {v} but rhp reports another version; tests printing it are skipped"
+        );
+    }
+    eprintln!(
+        "phpt: {} tests in {} tree(s), {} jobs{}",
+        tests.len(),
+        roots.len(),
+        jobs,
+        if o.mutate > 0 {
+            format!(", {} mutants/passing test", o.mutate)
+        } else {
+            String::new()
+        }
+    );
+
+    // Run, in parallel.
+    let mutant_results = Mutex::new(Vec::new());
+    let mstats = Mutex::new(MutationStats::default());
+    let started = Instant::now();
+    let mut results = run_parallel(&ctx, &worker_roots, &tests, &mutant_results, &mstats);
+
+    // A ratchet list must not contain tests that only match by luck (output
+    // with the current time, say): re-run every match and keep the steady ones.
+    let mut flaky = Vec::new();
+    if o.write_known.is_some() {
+        let matched: Vec<String> = results
+            .iter()
+            .filter(|r| r.status == Status::Match)
+            .map(|r| r.test.clone())
+            .collect();
+        eprintln!(
+            "phpt: confirming {} matches (re-run with 1.1s between engines)",
+            matched.len()
+        );
+        let confirm_ctx = Ctx {
+            mutate: 0,
+            fixtures: None,
+            skew: Duration::from_millis(1100),
+            ..ctx.clone()
+        };
+        let again = run_parallel(
+            &confirm_ctx,
+            &worker_roots,
+            &matched,
+            &Mutex::new(Vec::new()),
+            &Mutex::new(MutationStats::default()),
+        );
+        for r in again.into_iter().filter(|r| r.status != Status::Match) {
+            if let Some(orig) = results.iter_mut().find(|o| o.test == r.test) {
+                orig.status = Status::Mismatch;
+                orig.key = format!("flaky: {}", r.key);
+            }
+            flaky.push(r.test);
+        }
+    }
+    let mut mutant_results = mutant_results.into_inner().unwrap();
+    mutant_results.sort_by(|a, b| a.test.cmp(&b.test).then(a.mutation.cmp(&b.mutation)));
+    let mstats = mstats.into_inner().unwrap();
+    if !o.keep_work && o.work.is_none() {
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    // Summary.
+    let count = |st: Status| results.iter().filter(|r| r.status == st).count();
+    let ran = results.len() - count(Status::Skipped);
+    println!(
+        "\nphpt: {} selected, {} ran, {} skipped ({:.0}s)",
+        results.len(),
+        ran,
+        count(Status::Skipped),
+        started.elapsed().as_secs_f64()
+    );
+    for st in [
+        Status::Match,
+        Status::DiagnosticsOnly,
+        Status::Mismatch,
+        Status::Unsupported,
+        Status::RhpCrash,
+        Status::RhpTimeout,
+    ] {
+        let n = count(st);
+        println!(
+            "  {:17} {n:6}  {:5.1}%",
+            st.label(),
+            100.0 * n as f64 / ran.max(1) as f64
+        );
+    }
+    let via_spec = results
+        .iter()
+        .filter(|r| r.status == Status::Match && r.key == "spec")
+        .count();
+    if via_spec > 0 {
+        println!("  ({via_spec} of the matches differ from php but both satisfy the test's EXPECTF/EXPECTREGEX)");
+    }
+    if count(Status::Skipped) > 0 {
+        println!("\nskipped, by reason:");
+        print_clusters(
+            results
+                .iter()
+                .filter(|r| r.status == Status::Skipped)
+                .map(|r| (r.key.split(':').next().unwrap_or(&r.key), r.test.as_str())),
+            8,
+        );
+    }
+    let failing: Vec<&TestResult> = results
+        .iter()
+        .filter(|r| !matches!(r.status, Status::Match | Status::Skipped))
+        .collect();
+    if !failing.is_empty() {
+        println!("\ntop clusters (everything that ran but didn't match):");
+        print_clusters(
+            failing.iter().map(|r| (r.key.as_str(), r.test.as_str())),
+            o.top,
+        );
+    }
+    if o.mutate > 0 {
+        let compared = mstats.generated - mstats.discarded;
+        let divergent = mutant_results.len();
+        println!(
+            "\nmutation: {} mutants of {} passing tests; {} discarded (php parse error/timeout); \
+             {} compared, {} diverged",
+            mstats.generated,
+            count(Status::Match),
+            mstats.discarded,
+            compared,
+            divergent
+        );
+        for st in [
+            Status::DiagnosticsOnly,
+            Status::Mismatch,
+            Status::Unsupported,
+            Status::RhpCrash,
+            Status::RhpTimeout,
+        ] {
+            let n = mutant_results.iter().filter(|m| m.status == st).count();
+            if n > 0 {
+                println!("  {:17} {n:6}", st.label());
+            }
+        }
+        if divergent > 0 {
+            println!("\ntop mutant clusters:");
+            let examples: Vec<(String, String)> = mutant_results
+                .iter()
+                .map(|m| (m.key.clone(), format!("{} [{}]", m.test, m.mutation)))
+                .collect();
+            print_clusters(
+                examples.iter().map(|(k, e)| (k.as_str(), e.as_str())),
+                o.top,
+            );
+        }
+    }
+
+    if let Some(p) = &o.json {
+        if let Err(e) = write_json(p, &results, &mutant_results) {
+            eprintln!("rhp-difftest phpt: writing {}: {e}", p.display());
+        }
+    }
+    if !flaky.is_empty() {
+        println!("\nunsteady (matched, then diverged on the time-skewed re-run; left out of --write-known):");
+        for t in &flaky {
+            println!("  {t}");
+        }
+    }
+    if let Some(p) = &o.write_known {
+        let mut s = String::from(
+            "# php-src .phpt tests rhp matches php on (rhp-difftest phpt --write-known).\n\
+             # CI fails if one stops matching: fix the regression, or remove the line.\n",
+        );
+        for r in results.iter().filter(|r| r.status == Status::Match) {
+            s.push_str(&r.test);
+            s.push('\n');
+        }
+        if let Err(e) = fs::write(p, s) {
+            eprintln!("rhp-difftest phpt: writing {}: {e}", p.display());
+        } else {
+            println!(
+                "\nwrote {} passing tests to {}",
+                count(Status::Match),
+                p.display()
+            );
+        }
+    }
+
+    if known.is_some() {
+        // A known test may only be skipped for an environmental reason php
+        // itself reports (its SKIPIF, a php timeout/crash). Any other skip —
+        // a missing extension, an unreadable file, a newly unsupported
+        // section — would silently drop the test from the ratchet.
+        let allowed_skip = |r: &TestResult| {
+            r.status == Status::Skipped
+                && matches!(
+                    r.key.as_str(),
+                    "skipif" | "php-timeout" | "php-crash" | "version"
+                )
+        };
+        let failures: Vec<&TestResult> = results
+            .iter()
+            .filter(|r| r.status != Status::Match && !allowed_skip(r))
+            .collect();
+        let allowed: Vec<&TestResult> = results.iter().filter(|r| allowed_skip(r)).collect();
+        for r in &allowed {
+            println!(
+                "note: known-passing test skipped here: {} ({})",
+                r.test, r.key
+            );
+        }
+        let ran = results.len() - allowed.len();
+        let mut failed = false;
+        if !missing_known.is_empty() {
+            println!(
+                "\n{} known-passing test(s) not found in --php-src:",
+                missing_known.len()
+            );
+            for t in &missing_known {
+                println!("  {t}");
+            }
+            failed = true;
+        }
+        if !failures.is_empty() {
+            println!("\n{} known-passing test(s) regressed:", failures.len());
+            for r in &failures {
+                println!("  {}  [{}] {}", r.test, r.status.label(), r.key);
+            }
+            failed = true;
+        }
+        if ran == 0 {
+            println!("\nno known-passing test actually ran");
+            failed = true;
+        }
+        if failed {
+            return ExitCode::FAILURE;
+        }
+        println!("\nall {ran} runnable known-passing tests still match");
+    }
+    ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_sections() {
+        let p = Phpt::parse(
+            b"--TEST--\nname\n--SKIPIF--\n<?php ?>\n--FILE--\n<?php\necho 1;\n?>\n--EXPECT--\n1\n",
+        );
+        assert_eq!(p.section("TEST"), Some(&b"name\n"[..]));
+        assert_eq!(p.section("FILE"), Some(&b"<?php\necho 1;\n?>\n"[..]));
+        assert_eq!(p.section("EXPECT"), Some(&b"1\n"[..]));
+        assert!(p.has("SKIPIF") && !p.has("INI"));
+    }
+
+    #[test]
+    fn section_header_rules() {
+        assert_eq!(section_header(b"--FILE--\n"), Some("FILE".into()));
+        assert_eq!(
+            section_header(b"--FILE_EXTERNAL--  \r\n"),
+            Some("FILE_EXTERNAL".into())
+        );
+        assert_eq!(section_header(b"--file--\n"), None);
+        assert_eq!(section_header(b"-- FILE --\n"), None);
+        assert_eq!(section_header(b"----\n"), None);
+        assert_eq!(section_header(b"$a--;--\n"), None);
+    }
+
+    #[test]
+    fn normalises_like_run_tests() {
+        assert_eq!(normalise(b"\n a\r\nb \x0b\0\n"), b"a\nb");
+    }
+
+    #[test]
+    fn strips_diagnostics_and_blank_lines() {
+        let php = b"1\n\nWarning: Undefined variable $x in /t.php on line 3\n2\n";
+        assert_eq!(strip_diagnostics(php), strip_diagnostics(b"1\n2\n"));
+    }
+
+    #[test]
+    fn ini_noops_run_others_skip() {
+        let dir = Path::new("/w");
+        let p = Phpt::parse(b"--INI--\nprecision=14\nopcache.enable=0\n--FILE--\n");
+        assert_eq!(test_ini(&p, dir).unwrap().len(), 2);
+        let p = Phpt::parse(b"--INI--\nprecision=10\n--FILE--\n");
+        assert_eq!(test_ini(&p, dir).unwrap_err(), "ini:precision");
+        let p = Phpt::parse(b"--INI--\nopcache.enable_cli=1\n--FILE--\n");
+        assert!(test_ini(&p, dir).is_err());
+    }
+
+    #[test]
+    fn tree_roots() {
+        assert_eq!(
+            tree_root("ext/standard/tests/array/a.phpt"),
+            "ext/standard/tests"
+        );
+        assert_eq!(tree_root("Zend/tests/x/y.phpt"), "Zend/tests");
+        assert_eq!(tree_root("tests/lang/015.phpt"), "tests");
+        assert_eq!(tree_root("sapi/cli/a.phpt"), "sapi/cli");
+    }
+
+    fn out(merged: &[u8]) -> Outcome {
+        Outcome {
+            out: merged.to_vec(),
+            timed_out: false,
+            signaled: false,
+        }
+    }
+
+    #[test]
+    fn classification() {
+        let c = |p: &[u8], r: &[u8]| classify(&out(p), &out(r));
+        assert_eq!(c(b"1\n", b"1").status, Status::Match);
+        let d = c(
+            b"1\n\nWarning: Undefined variable $x in /a/t.php on line 3\n",
+            b"1\n",
+        );
+        assert_eq!(d.status, Status::DiagnosticsOnly);
+        assert_eq!(d.key, "diagnostics: Warning: Undefined variable $x");
+        let u = c(
+            b"1\n2\n",
+            b"1\nRHP_UNSUPPORTED: goto statement is not supported (phase 2)\n",
+        );
+        assert_eq!(u.status, Status::Unsupported);
+        assert_eq!(u.key, "unsupported: goto statement is not supported");
+        let m = c(b"int(3)\n", b"int(4)\n");
+        assert_eq!(
+            (m.status, m.key.as_str()),
+            (Status::Mismatch, "diff: php «int(N)» rhp «int(N)»")
+        );
+        let f = c(
+            b"a\n",
+            b"PHP Fatal error:  Uncaught Error: Call to undefined function strtok()\n",
+        );
+        assert_eq!(
+            f.key,
+            "rhp fatal: Error: Call to undefined function strtok()"
+        );
+        let k = c(
+            b"a",
+            b"thread 'main' panicked at crates/x/src/lib.rs:12:5:\n",
+        );
+        assert_eq!(k.status, Status::RhpCrash);
+    }
+
+    #[test]
+    fn stderr_is_compared() {
+        // rhp fatals in a trailing silent statement: same stdout, but the
+        // merged stream differs and php printed no diagnostic -> not a match.
+        let v = classify(
+            &out(b"done\n"),
+            &out(b"done\nPHP Fatal error:  Uncaught Error: Call to undefined function cleanup()\n"),
+        );
+        assert_eq!(v.status, Status::Mismatch);
+        assert_eq!(
+            v.key,
+            "rhp fatal: Error: Call to undefined function cleanup()"
+        );
+    }
+
+    #[test]
+    fn blank_line_differences_are_not_diagnostics() {
+        let v = classify(
+            &out(b"a\n\nb\n\nWarning: x in /t.php on line 1\n"),
+            &out(b"a\nb\n"),
+        );
+        assert_eq!(v.status, Status::Mismatch);
+    }
+
+    #[test]
+    fn cluster_key_keeps_later_numbers() {
+        assert_eq!(cluster_key("", "int(3) and 42"), "int(N) and N");
+    }
+
+    #[test]
+    fn run_proc_merges_streams_and_survives_background_children() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo out; echo err >&2; (sleep 30 &) ; echo end"]);
+        let started = Instant::now();
+        let o = run_proc(cmd, None, Duration::from_secs(5));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(String::from_utf8_lossy(&o.out), "out\nerr\nend\n");
+        assert!(!o.timed_out && !o.signaled);
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30"]);
+        assert!(run_proc(cmd, None, Duration::from_millis(200)).timed_out);
+    }
+
+    #[test]
+    fn uncaught_exception_trace_counts_as_diagnostic() {
+        let php = b"start\nPHP Fatal error:  Uncaught Error: Call to undefined function f() in /t.php:3\n\
+                    Stack trace:\n#0 {main}\n  thrown in /t.php on line 3\n";
+        assert_eq!(strip_diagnostics(php), "start");
+        let php = b"start\n\nFatal error: Uncaught Exception: a in /t.php:2\nStack trace:\n#0 {main}\n\n\
+                    Next RuntimeException: b in /t.php:4\nStack trace:\n#0 {main}\n  thrown in /t.php on line 4\n";
+        assert_eq!(strip_diagnostics(php), "start");
+        // A `#`-line that isn't part of a trace is real output.
+        assert_eq!(strip_diagnostics(b"#1 not a frame\n"), "#1 not a frame");
+    }
+
+    #[test]
+    fn restore_removes_only_new_paths() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("rhp-phpt-restore-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("keep_dir")).unwrap();
+        fs::write(d.join("keep.txt"), b"x").unwrap();
+        let snap = snapshot(&d);
+        fs::write(d.join("new.txt"), b"y").unwrap();
+        fs::write(d.join("keep_dir/new_inner.txt"), b"y").unwrap();
+        fs::create_dir_all(d.join("new_dir/sub")).unwrap();
+        fs::write(d.join("new_dir/sub/f"), b"z").unwrap();
+        fs::set_permissions(d.join("new_dir"), fs::Permissions::from_mode(0o000)).unwrap();
+        restore(&d, &snap);
+        assert_eq!(snapshot(&d), snap);
+        assert_eq!(fs::read(d.join("keep.txt")).unwrap(), b"x");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn expectf_translation_matches_run_tests() {
+        assert_eq!(preg_quote("a.b/c(d)"), "a\\.b\\/c\\(d\\)");
+        assert_eq!(expectf_to_regex("int(%d)"), "int\\(\\d+\\)");
+        assert_eq!(expectf_to_regex("x%r[ab]+%ry."), "x([ab]+)y\\.");
+        assert_eq!(
+            expectf_to_regex("%s|%S|%a|%A"),
+            "[^\\r\\n]+\\|[^\\r\\n]*\\|.+?\\|.*?"
+        );
+        assert_eq!(expectf_to_regex("100%"), "100%"); // lone % is literal
+    }
+
+    #[test]
+    fn spec_fallback_accepts_unspecified_values() {
+        let p = Phpt::parse(b"--FILE--\n<?php\n--EXPECTREGEX--\nint\\(-[1-9][0-9]*\\)\n");
+        assert_eq!(spec_matches(&p, b"int(-1)\n"), Some(true));
+        assert_eq!(spec_matches(&p, b"int(-32)"), Some(true));
+        assert_eq!(spec_matches(&p, b"int(1)"), Some(false));
+        let p = Phpt::parse(b"--FILE--\n<?php\n--EXPECTF--\nfloat(%f) at %s\nDone\n");
+        assert_eq!(spec_matches(&p, b"float(1.5) at x.php\nDone"), Some(true));
+        assert_eq!(spec_matches(&p, b"float(1.5) at x.php\n"), Some(false));
+        let p = Phpt::parse(b"--FILE--\n<?php\n--EXPECT--\n1\n");
+        assert_eq!(spec_matches(&p, b"1"), None);
+    }
+
+    #[test]
+    fn portability_heuristic() {
+        assert!(is_portable(b"<?php var_dump(1 + 2);"));
+        assert!(!is_portable(b"<?php include 'x.inc';"));
+        assert!(!is_portable(b"<?php echo __DIR__;"));
+    }
+
+    #[test]
+    fn json_escaping() {
+        assert_eq!(json_str("a\"b\\c\nd\u{1}"), "\"a\\\"b\\\\c\\nd\\u0001\"");
+    }
+}

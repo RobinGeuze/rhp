@@ -1,0 +1,14 @@
+C constants: {"Z":3,"A":4,"TC":7,"B":2,"X":9}
+C methods: ["im","shared","cm","tm","pm"]
+C properties: ["c","pa","pb"]
+R constants: {"RC":2,"QC":1,"GC":0}
+R methods: ["rm","qm","gm"]
+R properties: ["r","q","g"]
+Suit cases: ["Hearts","Spades","Clubs"]
+layout: ["g","q","r"]
+R Object
+(
+    [g] => 
+    [q] => 
+    [r] => 
+)

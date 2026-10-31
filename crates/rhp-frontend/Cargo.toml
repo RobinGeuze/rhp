@@ -9,3 +9,4 @@ publish.workspace = true
 mago-syntax.workspace = true
 mago-allocator.workspace = true
 mago-database.workspace = true
+mago-syntax-core.workspace = true

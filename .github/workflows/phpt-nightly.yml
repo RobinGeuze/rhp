@@ -1,0 +1,94 @@
+name: phpt nightly
+
+# Full php-src .phpt corpus + mutation testing against php 8.5. Discovery
+# only, never failing: the job summary lists newly passing tests to add to
+# tests/phpt/known-passing.txt, regressions, and the biggest failure clusters.
+# The JSON report and emitted mutant repros are uploaded as artifacts.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      mutants:
+        description: Mutants per passing test
+        default: '8'
+      minimize:
+        description: Minimise emitted mutant repros (slower)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  phpt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read pinned php-src commit
+        id: ref
+        run: echo "sha=$(grep -v '^#' tests/phpt/php-src.ref | head -1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: php/php-src
+          ref: ${{ steps.ref.outputs.sha }}
+          path: php-src
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /Zend/tests/
+            /tests/
+            /ext/*/tests/
+      - uses: ./.github/actions/setup-php
+        with:
+          php-version: '8.5'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p rhp-cli -p rhp-difftest
+
+      - name: Run the corpus with mutation
+        env:
+          MUTANTS: ${{ inputs.mutants || '8' }}
+          MINIMIZE: ${{ inputs.minimize && '--minimize' || '' }}
+        run: |
+          mkdir -p out
+          target/release/rhp-difftest phpt --php-src php-src \
+            --mutate "$MUTANTS" $MINIMIZE --emit-fixtures out/fixtures \
+            --json out/phpt.json --write-known out/passing-all.txt --top 40 \
+            | tee out/report.txt
+
+      - name: Summarise
+        if: always()
+        run: |
+          strip() { grep -v '^#' "$1" | sort; }
+          # Only the trees the per-PR ratchet checks out are ratchet candidates.
+          strip out/passing-all.txt | grep -E '^(tests/|Zend/tests/|ext/standard/tests/)' > out/passing.txt || true
+          strip tests/phpt/known-passing.txt > out/known.txt
+          comm -13 out/known.txt out/passing.txt > out/newly-passing.txt
+          comm -23 out/known.txt out/passing.txt > out/no-longer-passing.txt
+          {
+            echo "## phpt nightly (php-src ${{ steps.ref.outputs.sha }})"
+            echo
+            echo "- newly passing (add to \`tests/phpt/known-passing.txt\`): **$(wc -l < out/newly-passing.txt)**"
+            echo "- known-passing that didn't match tonight: **$(wc -l < out/no-longer-passing.txt)**"
+            echo "- mutant repros emitted: **$(ls out/fixtures 2>/dev/null | grep -c '\.php$' || true)**"
+            echo
+            echo '```'
+            sed -n '/^phpt:/,$p' out/report.txt | head -150
+            echo '```'
+            if [ -s out/no-longer-passing.txt ]; then
+              echo; echo "### Known-passing tests that didn't match"; echo '```'; head -100 out/no-longer-passing.txt; echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phpt-report
+          path: out/
+          retention-days: 30

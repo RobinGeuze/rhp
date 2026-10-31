@@ -17,9 +17,39 @@
 use mago_allocator::LocalArena;
 use mago_database::file::FileId;
 use mago_syntax::cst::Program;
+use mago_syntax::lexer::Lexer;
 use mago_syntax::parser::parse_file_content;
+use mago_syntax::settings::LexerSettings;
+use mago_syntax_core::input::Input;
 
 pub use mago_syntax::cst;
+pub use mago_syntax::token::TokenKind;
+
+/// One lexical token of a source file: its kind and byte range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Token {
+    pub kind: TokenKind,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Lex `source` into its full token stream (whitespace, comments and inline
+/// HTML included), stopping at the first lexical error. Byte ranges index into
+/// `source`, so callers can rewrite individual tokens in place.
+pub fn tokens(source: &[u8]) -> Vec<Token> {
+    let input = Input::new(FileId::new(b"tokens"), source);
+    let mut lexer = Lexer::new(input, LexerSettings::default());
+    let mut out = Vec::new();
+    while let Some(Ok(tok)) = lexer.advance() {
+        let start = tok.start.offset as usize;
+        out.push(Token {
+            kind: tok.kind,
+            start,
+            end: start + tok.value.len(),
+        });
+    }
+    out
+}
 
 /// Owns a parse arena. Create one per source file, parse into it, use the AST,
 /// then drop it. Cheap to create.
@@ -76,5 +106,26 @@ mod tests {
         let parsed = arena.parse(b"t.php", br#"<?php echo "hi", 1+2;"#);
         assert!(!parsed.has_parse_errors());
         assert!(!parsed.program().statements.is_empty());
+    }
+
+    #[test]
+    fn tokens_cover_source_with_exact_ranges() {
+        let src = b"<?php $a = 10 <= 2.5; // c\necho 'x' . \"y\";";
+        let toks = tokens(src);
+        // Contiguous, gap-free cover of the whole source.
+        assert_eq!(toks.first().unwrap().start, 0);
+        assert_eq!(toks.last().unwrap().end, src.len());
+        for w in toks.windows(2) {
+            assert_eq!(w[0].end, w[1].start);
+        }
+        let text = |k: TokenKind| {
+            let t = toks.iter().find(|t| t.kind == k).unwrap();
+            &src[t.start..t.end]
+        };
+        assert_eq!(text(TokenKind::LiteralInteger), b"10");
+        assert_eq!(text(TokenKind::LiteralFloat), b"2.5");
+        assert_eq!(text(TokenKind::LessThanEqual), b"<=");
+        assert_eq!(text(TokenKind::LiteralString), b"'x'");
+        assert_eq!(text(TokenKind::Dot), b".");
     }
 }

@@ -620,8 +620,21 @@ impl Host for Vm {
             consts.insert(ArrayKey::from_bytes(k), c.value.clone());
         }
         a.insert(ArrayKey::from_bytes(b"constants"), Value::Array(consts));
+        // Reflection lists properties most-derived class first (php's order),
+        // while `entry.props` is the parent-first object layout `var_dump` uses.
         let mut props = PhpArray::new();
-        for k in entry.props.keys() {
+        let mut chain = vec![cid];
+        while let Some(p) = self.classes[*chain.last().unwrap() as usize].parent {
+            chain.push(p);
+        }
+        let rank = |c: ClassId| chain.iter().position(|&x| x == c).unwrap_or(chain.len());
+        let mut keys: Vec<(usize, &PhpStr)> = entry
+            .props
+            .iter()
+            .map(|(k, p)| (rank(p.declaring_class), k))
+            .collect();
+        keys.sort_by_key(|&(r, _)| r); // stable: keeps declaration order within a class
+        for (_, k) in keys {
             props.push(Value::str(k.as_bytes().to_vec()));
         }
         a.insert(ArrayKey::from_bytes(b"properties"), Value::Array(props));

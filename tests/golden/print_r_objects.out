@@ -1,0 +1,54 @@
+P Object
+(
+    [a] => 1
+    [arr] => Array
+        (
+            [0] => 1
+            [1] => Array
+                (
+                    [0] => 2
+                )
+
+        )
+
+    [o] => stdClass Object
+        (
+            [k] => v
+        )
+
+)
+
+stdClass Object
+(
+    [self] => stdClass Object
+ *RECURSION*
+)
+
+S Enum:string
+(
+    [name] => H
+    [value] => h
+)
+
+U Enum
+(
+    [name] => X
+)
+
+Array
+(
+    [0] => stdClass Object
+        (
+        )
+
+    [x] => stdClass Object
+        (
+            [k] => v
+        )
+
+)
+
+stdClass Object
+(
+)
+|

@@ -15,6 +15,12 @@ How it compares, mirroring `run-tests.php`:
 
 - stdout and stderr are merged (`2>&1`), CRLF is normalised, and the result is
   trimmed.
+- Some php output is unspecified and can change from run to run (a raw
+  `memcmp()` magnitude from `strncmp()`, ids, sizes). php-src marks such
+  output with `--EXPECTF--` or `--EXPECTREGEX--`. When the two engines'
+  outputs differ but both satisfy the test's own pattern, translated exactly
+  like `run-tests.php` and matched with PCRE, the test passes. The summary
+  says how many matches came about this way.
 - php gets run-tests' INI overrides and environment (offline,
   non-interactive). Slow and timing-sensitive tests are skipped too.
 - Each worker has its own copy of the test trees. After every engine run, the

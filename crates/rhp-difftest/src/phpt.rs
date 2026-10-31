@@ -335,6 +335,103 @@ fn normalise(out: &[u8]) -> Vec<u8> {
     s[start..end].to_vec()
 }
 
+/// PHP's `preg_quote($s, '/')`.
+fn preg_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '.' | '\\' | '+' | '*' | '?' | '[' | '^' | ']' | '$' | '(' | ')' | '{' | '}' | '='
+            | '!' | '<' | '>' | '|' | ':' | '-' | '#' | '/' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\0' => out.push_str("\\000"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// run-tests.php's `expectf_to_regex()`, verbatim: quote everything outside
+/// `%r...%r` sections, then expand the `%` placeholders (one left-to-right
+/// pass, like `strtr`).
+fn expectf_to_regex(wanted: &str) -> String {
+    let wanted = wanted.replace("\r\n", "\n");
+    let mut quoted = String::new();
+    let mut rest = wanted.as_str();
+    while !rest.is_empty() {
+        match rest.find("%r") {
+            Some(start) => match rest[start + 2..].find("%r") {
+                Some(len) => {
+                    quoted.push_str(&preg_quote(&rest[..start]));
+                    quoted.push('(');
+                    quoted.push_str(&rest[start + 2..start + 2 + len]);
+                    quoted.push(')');
+                    rest = &rest[start + 2 + len + 2..];
+                }
+                None => {
+                    // Unbalanced tag: run-tests quotes the rest, tag included.
+                    quoted.push_str(&preg_quote(rest));
+                    rest = "";
+                }
+            },
+            None => {
+                quoted.push_str(&preg_quote(rest));
+                rest = "";
+            }
+        }
+    }
+    let mut out = String::with_capacity(quoted.len() * 2);
+    let mut chars = quoted.chars().peekable();
+    while let Some(c) = chars.next() {
+        let expansion = match (c, chars.peek()) {
+            ('%', Some('e')) => Some("\\/"),
+            ('%', Some('s')) => Some("[^\\r\\n]+"),
+            ('%', Some('S')) => Some("[^\\r\\n]*"),
+            ('%', Some('a')) => Some(".+?"),
+            ('%', Some('A')) => Some(".*?"),
+            ('%', Some('w')) => Some("\\s*"),
+            ('%', Some('i')) => Some("[+-]?\\d+"),
+            ('%', Some('d')) => Some("\\d+"),
+            ('%', Some('x')) => Some("[0-9a-fA-F]+"),
+            ('%', Some('f')) => Some("[+-]?(?:\\d+|(?=\\.\\d))(?:\\.\\d+)?(?:[Ee][+-]?\\d+)?"),
+            ('%', Some('c')) => Some("."),
+            ('%', Some('0')) => Some("\\x00"),
+            _ => None,
+        };
+        match expansion {
+            Some(e) => {
+                out.push_str(e);
+                chars.next();
+            }
+            None => out.push(c),
+        }
+    }
+    out
+}
+
+/// Does `out` satisfy the test's own `--EXPECTF--` / `--EXPECTREGEX--`, the
+/// way run-tests.php checks it (`/^...$/s` on the trimmed output)? `None`
+/// when the test has neither section or the pattern doesn't compile.
+fn spec_matches(phpt: &Phpt, out: &[u8]) -> Option<bool> {
+    let (wanted, is_f) = match (phpt.section("EXPECTF"), phpt.section("EXPECTREGEX")) {
+        (Some(w), _) => (w, true),
+        (None, Some(w)) => (w, false),
+        (None, None) => return None,
+    };
+    let wanted = String::from_utf8_lossy(&normalise(wanted)).into_owned();
+    let re = if is_f {
+        expectf_to_regex(&wanted)
+    } else {
+        wanted
+    };
+    let re = pcre2::bytes::RegexBuilder::new()
+        .dotall(true)
+        .build(&format!("^{re}$"))
+        .ok()?;
+    re.is_match(&normalise(out)).ok()
+}
+
 fn is_diagnostic(line: &str) -> bool {
     let l = line.trim_start();
     DIAGNOSTIC_PREFIXES.iter().any(|p| l.starts_with(p))
@@ -733,7 +830,17 @@ fn run_test(
     }
     std::thread::sleep(ctx.skew);
     let rhp_out = ctx.rhp_script(&inv);
-    let v = classify(&php_out, &rhp_out);
+    let mut v = classify(&php_out, &rhp_out);
+    // Some php output is unspecified (raw memcmp() magnitudes, ids, sizes) and
+    // can differ run to run; php-src marks it with EXPECTF/EXPECTREGEX. When
+    // the engines differ but both satisfy the test's own spec, it passes —
+    // exactly run-tests.php's verdict.
+    if matches!(v.status, Status::Mismatch | Status::DiagnosticsOnly)
+        && spec_matches(&phpt, &php_out.out) == Some(true)
+        && spec_matches(&phpt, &rhp_out.out) == Some(true)
+    {
+        v = verdict(Status::Match, "spec");
+    }
 
     if v.status == Status::Match && ctx.mutate > 0 {
         let mut rng = Rng::new(ctx.seed ^ fnv1a(rel.as_bytes()));
@@ -1523,6 +1630,13 @@ pub fn main(args: &[String]) -> ExitCode {
             100.0 * n as f64 / ran.max(1) as f64
         );
     }
+    let via_spec = results
+        .iter()
+        .filter(|r| r.status == Status::Match && r.key == "spec")
+        .count();
+    if via_spec > 0 {
+        println!("  ({via_spec} of the matches differ from php but both satisfy the test's EXPECTF/EXPECTREGEX)");
+    }
     if count(Status::Skipped) > 0 {
         println!("\nskipped, by reason:");
         print_clusters(
@@ -1847,6 +1961,31 @@ mod tests {
         assert_eq!(snapshot(&d), snap);
         assert_eq!(fs::read(d.join("keep.txt")).unwrap(), b"x");
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn expectf_translation_matches_run_tests() {
+        assert_eq!(preg_quote("a.b/c(d)"), "a\\.b\\/c\\(d\\)");
+        assert_eq!(expectf_to_regex("int(%d)"), "int\\(\\d+\\)");
+        assert_eq!(expectf_to_regex("x%r[ab]+%ry."), "x([ab]+)y\\.");
+        assert_eq!(
+            expectf_to_regex("%s|%S|%a|%A"),
+            "[^\\r\\n]+\\|[^\\r\\n]*\\|.+?\\|.*?"
+        );
+        assert_eq!(expectf_to_regex("100%"), "100%"); // lone % is literal
+    }
+
+    #[test]
+    fn spec_fallback_accepts_unspecified_values() {
+        let p = Phpt::parse(b"--FILE--\n<?php\n--EXPECTREGEX--\nint\\(-[1-9][0-9]*\\)\n");
+        assert_eq!(spec_matches(&p, b"int(-1)\n"), Some(true));
+        assert_eq!(spec_matches(&p, b"int(-32)"), Some(true));
+        assert_eq!(spec_matches(&p, b"int(1)"), Some(false));
+        let p = Phpt::parse(b"--FILE--\n<?php\n--EXPECTF--\nfloat(%f) at %s\nDone\n");
+        assert_eq!(spec_matches(&p, b"float(1.5) at x.php\nDone"), Some(true));
+        assert_eq!(spec_matches(&p, b"float(1.5) at x.php\n"), Some(false));
+        let p = Phpt::parse(b"--FILE--\n<?php\n--EXPECT--\n1\n");
+        assert_eq!(spec_matches(&p, b"1"), None);
     }
 
     #[test]

@@ -19,3 +19,4 @@ rhp-frontend = { path = "../rhp-frontend" }
 rhp-vm = { path = "../rhp-vm" }
 rhp-values = { path = "../rhp-values" }
 libc = "0.2"
+pcre2 = "0.2"

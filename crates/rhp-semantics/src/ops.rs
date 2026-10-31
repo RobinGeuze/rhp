@@ -177,6 +177,9 @@ pub fn loose_compare(a: &Value, b: &Value) -> Ordering {
         (Null, Null) => Ordering::Equal,
         // bool on either side: compare as bools.
         (Bool(_), _) | (_, Bool(_)) => conv::to_bool(&a).cmp(&conv::to_bool(&b)),
+        // null vs object: compared as bools (object is truthy).
+        (Null, Object(_) | Closure(_) | Resource(_)) => Ordering::Less,
+        (Object(_) | Closure(_) | Resource(_), Null) => Ordering::Greater,
         // null vs X: treat null as the "zero" of X's type.
         (Null, _) => loose_compare(&null_as(&b), &b),
         (_, Null) => loose_compare(&a, &null_as(&a)),
@@ -221,7 +224,42 @@ pub fn loose_compare(a: &Value, b: &Value) -> Ordering {
         },
         (Array(_), _) => Ordering::Greater, // array > scalar
         (_, Array(_)) => Ordering::Less,
-        // objects: identity/placeholder until phase 7
+        // objects (zend_std_compare_objects): same instance → equal; different
+        // classes → uncomparable (1); otherwise property-by-property.
+        (Object(x), Object(y)) => {
+            if std::rc::Rc::ptr_eq(x, y) {
+                return Ordering::Equal;
+            }
+            let (Ok(xb), Ok(yb)) = (x.try_borrow(), y.try_borrow()) else {
+                return Ordering::Greater; // recursion: treat as uncomparable
+            };
+            if xb.class != yb.class {
+                return Ordering::Greater;
+            }
+            if xb.properties.len() != yb.properties.len() {
+                return xb.properties.len().cmp(&yb.properties.len());
+            }
+            for (k, xv) in xb.properties.iter() {
+                match yb.properties.get(k) {
+                    Some(yv) => match loose_compare(xv, yv) {
+                        Ordering::Equal => continue,
+                        other => return other,
+                    },
+                    None => return Ordering::Greater,
+                }
+            }
+            Ordering::Equal
+        }
+        (Closure(x), Closure(y)) => {
+            if std::rc::Rc::ptr_eq(x, y) {
+                Ordering::Equal
+            } else {
+                Ordering::Greater
+            }
+        }
+        // object vs scalar: the object is the "bigger" (uncomparable) side.
+        (Object(_) | Closure(_), _) => Ordering::Greater,
+        (_, Object(_) | Closure(_)) => Ordering::Less,
         _ => Ordering::Equal,
     }
 }

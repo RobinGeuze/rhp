@@ -21,7 +21,7 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -32,29 +32,23 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
-  # Full suite with NO `php` on PATH. The VM is validated byte-for-byte against
-  # the committed `.out` golden fixtures (captured from php 8.5.8), which needs
-  # no php. The live-php tests (differential sweeps, phar/cli end-to-end) all
-  # guard on `php_available()` and skip cleanly here.
-  #
-  # Note: ubuntu-latest ships its own php, but the project's php-differential
-  # harness runs php with `-n` (no ini) and so expects a build where bcmath,
-  # ctype, gmp, mbstring and phar are compiled in statically (as Homebrew's is).
-  # Debian/Ubuntu package those as shared extensions that `-n` drops, so the
-  # runner's php can't drive the differential suite — we remove it and let the
-  # live-php tests skip. Run the differential locally against php 8.5.x.
+  # The suite with NO `php` on PATH: the VM is validated byte-for-byte against
+  # the committed `.out` golden fixtures (captured from php 8.5.8), and every
+  # live-php test guards on `php_available()` and skips. Proves the suite is
+  # green for a contributor without php installed. (ubuntu-latest ships its own
+  # php, so we remove it first.)
   test:
-    name: test
+    name: test (no php)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Remove the runner's pre-installed php
@@ -65,4 +59,65 @@ jobs:
             echo "php still on PATH at $(command -v php)"; exit 1
           fi
           echo "no php on PATH — live-php tests will skip"
-      - run: cargo test --workspace --all-targets
+      - run: cargo test --workspace --all-targets --no-fail-fast
+
+  # Full suite + differential sweeps against real php, one leg per version.
+  # Add a version to the matrix list to cover it.
+  php:
+    name: php ${{ matrix.php }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.5', '8.4']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: bcmath, ctype, gmp, mbstring, phar
+          coverage: none
+      # The rhp test harness runs php with `-n` (no ini) for deterministic
+      # output. Debian/Ubuntu php ships bcmath/ctype/gmp/mbstring/phar as shared
+      # extensions enabled via ini, which `-n` drops — so install a `php` shim
+      # that force-loads them from the command line (which `-n` does not affect)
+      # whenever `-n` is present, matching a statically-built php (e.g. Homebrew).
+      - name: Install php shim that force-loads extensions under -n
+        run: |
+          REAL="$(command -v php)"
+          EXTDIR="$(php-config --extension-dir)"
+          SHIM="$HOME/php-shim"
+          mkdir -p "$SHIM"
+          cat > "$SHIM/php" <<EOF
+          #!/usr/bin/env bash
+          inject=()
+          for a in "\$@"; do
+            if [ "\$a" = "-n" ]; then
+              inject=(-d extension_dir="$EXTDIR" -d extension=bcmath -d extension=ctype -d extension=gmp -d extension=mbstring -d extension=phar)
+              break
+            fi
+          done
+          exec "$REAL" "\${inject[@]}" "\$@"
+          EOF
+          chmod +x "$SHIM/php"
+          echo "$SHIM" >> "$GITHUB_PATH"
+      - name: Confirm extensions load under -n
+        run: |
+          echo "default: $(php --version | head -1)"
+          echo "modules under -n: $(php -n -m | tr '\n' ' ')"
+          php -n -r 'foreach (["bcmath","ctype","gmp","mbstring","phar"] as $e) { echo $e, "=", (int)extension_loaded($e), " "; } echo "\n";'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Full workspace suite against php ${{ matrix.php }}
+        env:
+          RHP_PHP: php
+        run: cargo test --workspace --all-targets --no-fail-fast
+      - name: Extension differential sweeps
+        env:
+          RHP_PHP: php
+        run: |
+          for ext in hash bcmath ctype gmp mbstring password; do
+            echo "::group::rhp-difftest $ext"
+            cargo run --quiet -p rhp-difftest -- "$ext"
+            echo "::endgroup::"
+          done

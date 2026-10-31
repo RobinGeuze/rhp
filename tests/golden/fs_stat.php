@@ -79,6 +79,14 @@ function main() {
     var_dump(realpath("$base/r/a/../a/./b") === realpath($base) . "/r/a/b");
     var_dump(realpath("$base/missing"));
 
+    // hard links
+    var_dump(link($f, "$base/hard"), fileinode("$base/hard") === fileinode($f), stat($f)['nlink']);
+    var_dump(@link($f, "$base/hard"), @link("$base/missing", "$base/h2"), file_exists("$base/h2"));
+    var_dump(linkinfo("$base/link") === lstat("$base/link")['dev'], @linkinfo("$base/missing"));
+    unlink("$base/hard");
+    clearstatcache();
+    var_dump(stat($f)['nlink']);
+
     // failures return false
     var_dump(@stat("$base/missing"), @lstat("$base/missing"), @fileinode("$base/missing"),
         @fileowner("$base/missing"), @filegroup("$base/missing"), @fileatime("$base/missing"),

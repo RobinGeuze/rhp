@@ -1255,6 +1255,37 @@ fn fn_stream_get_meta_data(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     Ok(Value::Array(a))
 }
 
+// --- hard links -----------------------------------------------------------------------
+
+/// `link($target, $link)`: a hard link; plain paths only.
+fn fn_link(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let target = path_param(args, 0, "link", "target")?;
+    let link = path_param(args, 1, "link", "link")?;
+    if target.is_empty() || link.is_empty() {
+        return Ok(Value::Bool(false));
+    }
+    let is_url = |p: &[u8]| split_scheme(p).0 != b"file" || p.starts_with(b"file://");
+    if is_url(&target) || is_url(&link) {
+        return Ok(Value::Bool(false));
+    }
+    let (Ok(t), Ok(l)) = (CString::new(target), CString::new(link)) else {
+        return Ok(Value::Bool(false));
+    };
+    Ok(Value::Bool(
+        unsafe { libc::link(t.as_ptr(), l.as_ptr()) } == 0,
+    ))
+}
+
+/// `linkinfo($path)`: `st_dev` of the link itself, or -1.
+fn fn_linkinfo(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let path = path_param(args, 0, "linkinfo", "path")?;
+    Ok(Value::Int(
+        crate::streams::sys_stat(&path, true)
+            .map(|s| s.dev)
+            .unwrap_or(-1),
+    ))
+}
+
 // --- mkdir / copy ------------------------------------------------------------------
 
 fn sys_mkdir(path: &[u8], mode: i64) -> Result<(), i32> {
@@ -1604,6 +1635,8 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         Some(1),
     );
     put(m, "mkdir", fn_mkdir, 1, Some(4));
+    put(m, "link", fn_link, 2, Some(2));
+    put(m, "linkinfo", fn_linkinfo, 1, Some(1));
     put(m, "copy", fn_copy, 2, Some(3));
     put(m, "opendir", fn_opendir, 1, Some(2));
     put(m, "dir", fn_dir, 1, Some(2));

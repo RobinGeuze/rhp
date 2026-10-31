@@ -33,44 +33,83 @@ fn mangled_props(host: &dyn crate::Host, h: &rhp_values::ObjectHandle) -> Vec<(P
 /// `var_dump` of one value at the given indentation (spaces). `host` supplies
 /// class names / enum-ness for object rendering.
 pub fn var_dump(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, indent: usize) {
+    let mut seen = Seen::default();
+    var_dump_value(host, out, &deref(v), false, indent, &mut seen);
+}
+
+/// Whether a slot holds a PHP reference that php's `var_dump` marks with `&`.
+/// Not rendered yet: many builtins still copy reference wrappers out of
+/// arrays where php copies the plain value, so the mark would be spurious.
+fn is_shared_ref(_host: &dyn crate::Host, _v: &Value) -> bool {
+    false
+}
+
+/// The arrays (by storage identity) and objects (by id) currently being
+/// printed: php's recursion protection.
+#[derive(Default)]
+struct Seen {
+    arrays: Vec<usize>,
+    objects: Vec<u32>,
+}
+
+/// One `var_dump` value; `shared` marks a nested PHP reference with `&`.
+fn var_dump_value(
+    host: &dyn crate::Host,
+    out: &mut Vec<u8>,
+    v: &Value,
+    shared: bool,
+    indent: usize,
+    seen: &mut Seen,
+) {
+    let amp = if shared { "&" } else { "" };
     let v = deref(v);
     sp(indent, out);
     match &v {
-        Value::Null => out.extend_from_slice(b"NULL\n"),
-        Value::Bool(b) => out.extend_from_slice(if *b {
-            b"bool(true)\n"
-        } else {
-            b"bool(false)\n"
-        }),
-        Value::Int(n) => out.extend_from_slice(format!("int({n})\n").as_bytes()),
+        Value::Null => out.extend_from_slice(format!("{amp}NULL\n").as_bytes()),
+        Value::Bool(b) => out.extend_from_slice(format!("{amp}bool({b})\n").as_bytes()),
+        Value::Int(n) => out.extend_from_slice(format!("{amp}int({n})\n").as_bytes()),
         Value::Float(f) => {
-            out.extend_from_slice(b"float(");
+            out.extend_from_slice(format!("{amp}float(").as_bytes());
             out.extend_from_slice(&fmt::float_serialize(*f));
             out.extend_from_slice(b")\n");
         }
         Value::Str(s) => {
-            out.extend_from_slice(format!("string({}) \"", s.len()).as_bytes());
+            out.extend_from_slice(format!("{amp}string({}) \"", s.len()).as_bytes());
             out.extend_from_slice(s.as_bytes());
             out.extend_from_slice(b"\"\n");
         }
         Value::Array(a) => {
-            out.extend_from_slice(format!("array({}) {{\n", a.len()).as_bytes());
+            let id = a.data_ptr();
+            if seen.arrays.contains(&id) {
+                out.extend_from_slice(b"*RECURSION*\n");
+                return;
+            }
+            seen.arrays.push(id);
+            out.extend_from_slice(format!("{amp}array({}) {{\n", a.len()).as_bytes());
             for (k, val) in a.iter() {
                 sp(indent + 2, out);
                 dump_key(out, k);
                 out.extend_from_slice(b"=>\n");
-                var_dump(host, out, val, indent + 2);
+                let shared = is_shared_ref(host, val);
+                var_dump_value(host, out, val, shared, indent + 2, seen);
             }
             sp(indent, out);
             out.extend_from_slice(b"}\n");
+            seen.arrays.pop();
         }
         Value::Object(h) => {
-            // Snapshot under a short borrow so recursion can't double-borrow.
-            let props = mangled_props(host, h);
-            let (class_id, obj_id) = {
+            // Snapshot under a short borrow so recursion can't double-borrow
+            // (reference-ness is read before the snapshot adds a holder).
+            let (class_id, obj_id, shared) = {
                 let b = h.borrow();
-                (b.class, b.id)
+                let shared: Vec<bool> = b
+                    .properties
+                    .values()
+                    .map(|v| is_shared_ref(host, v))
+                    .collect();
+                (b.class, b.id, shared)
             };
+            let props = mangled_props(host, h);
             let cname = host
                 .class_name(class_id)
                 .unwrap_or_else(|| b"class".to_vec());
@@ -81,22 +120,27 @@ pub fn var_dump(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, indent: us
                     .find(|(k, _)| k.as_bytes() == b"name")
                     .map(|(_, v)| conv::to_string_bytes(v))
                     .unwrap_or_default();
-                out.extend_from_slice(b"enum(");
+                out.extend_from_slice(format!("{amp}enum(").as_bytes());
                 out.extend_from_slice(&cname);
                 out.extend_from_slice(b"::");
                 out.extend_from_slice(&case);
                 out.extend_from_slice(b")\n");
             } else {
+                if seen.objects.contains(&obj_id) {
+                    out.extend_from_slice(b"*RECURSION*\n");
+                    return;
+                }
+                seen.objects.push(obj_id);
                 out.extend_from_slice(
                     format!(
-                        "object({})#{} ({}) {{\n",
+                        "{amp}object({})#{} ({}) {{\n",
                         String::from_utf8_lossy(&cname),
                         obj_id,
                         props.len()
                     )
                     .as_bytes(),
                 );
-                for (k, val) in &props {
+                for (i, (k, val)) in props.iter().enumerate() {
                     sp(indent + 2, out);
                     out.extend_from_slice(b"[\"");
                     let (name, owner) = unmangle_prop(k.as_bytes());
@@ -112,20 +156,22 @@ pub fn var_dump(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, indent: us
                         }
                     }
                     out.extend_from_slice(b"]=>\n");
-                    var_dump(host, out, val, indent + 2);
+                    let shared = shared.get(i).copied().unwrap_or(false);
+                    var_dump_value(host, out, val, shared, indent + 2, seen);
                 }
                 sp(indent, out);
                 out.extend_from_slice(b"}\n");
+                seen.objects.pop();
             }
         }
         Value::Closure(_) => {
-            out.extend_from_slice(b"object(Closure)#0 (0) {\n");
+            out.extend_from_slice(format!("{amp}object(Closure)#0 (0) {{\n").as_bytes());
             sp(indent, out);
             out.extend_from_slice(b"}\n");
         }
         Value::Resource(r) => {
             out.extend_from_slice(
-                format!("resource({}) of type ({})\n", r.id, r.type_name).as_bytes(),
+                format!("{amp}resource({}) of type ({})\n", r.id, r.type_name).as_bytes(),
             );
         }
         Value::Ref(_) => unreachable!("deref'd above"),
@@ -145,10 +191,10 @@ fn dump_key(out: &mut Vec<u8>, k: &ArrayKey) {
 
 /// `print_r` of one value. `indent` = column of the opening `(` for arrays.
 pub fn print_r(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, indent: usize) {
-    print_r_value(host, out, v, indent, &mut Vec::new());
+    print_r_value(host, out, v, indent, &mut Seen::default());
 }
 
-/// `print_r` of one value; `printing` holds the ids of the objects currently
+/// `print_r` of one value; `printing` holds the arrays / objects currently
 /// being printed, so a cycle prints ` *RECURSION*` like php instead of
 /// recursing forever.
 fn print_r_value(
@@ -156,17 +202,24 @@ fn print_r_value(
     out: &mut Vec<u8>,
     v: &Value,
     indent: usize,
-    printing: &mut Vec<u32>,
+    printing: &mut Seen,
 ) {
     let v = deref(v);
     match &v {
         Value::Array(a) => {
             out.extend_from_slice(b"Array\n");
+            let id = a.data_ptr();
+            if printing.arrays.contains(&id) {
+                out.extend_from_slice(b" *RECURSION*");
+                return;
+            }
             let entries: Vec<(Vec<u8>, Value)> = a
                 .iter()
                 .map(|(k, val)| (print_r_key(k), val.clone()))
                 .collect();
+            printing.arrays.push(id);
             print_r_block(host, out, &entries, indent, printing);
+            printing.arrays.pop();
         }
         Value::Object(h) => {
             // Snapshot under a short borrow so recursion can't double-borrow.
@@ -205,13 +258,13 @@ fn print_r_value(
             } else {
                 out.extend_from_slice(b" Object\n");
             }
-            if printing.contains(&obj_id) {
+            if printing.objects.contains(&obj_id) {
                 out.extend_from_slice(b" *RECURSION*");
                 return;
             }
-            printing.push(obj_id);
+            printing.objects.push(obj_id);
             print_r_block(host, out, &entries, indent, printing);
-            printing.pop();
+            printing.objects.pop();
         }
         scalar => out.extend_from_slice(&conv::to_string_bytes(scalar)),
     }
@@ -223,7 +276,7 @@ fn print_r_block(
     out: &mut Vec<u8>,
     entries: &[(Vec<u8>, Value)],
     indent: usize,
-    printing: &mut Vec<u32>,
+    printing: &mut Seen,
 ) {
     sp(indent, out);
     out.extend_from_slice(b"(\n");
@@ -252,7 +305,28 @@ fn print_r_key(k: &ArrayKey) -> Vec<u8> {
 
 /// `var_export` of one value — php's `php_var_export_ex`; `level` starts at 1.
 pub fn var_export(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, level: usize) {
+    var_export_value(host, out, v, level, &mut Seen::default());
+}
+
+/// One `var_export` value. A container already being exported (a cycle) is
+/// `NULL` (php also warns "var_export does not handle circular references").
+fn var_export_value(
+    host: &dyn crate::Host,
+    out: &mut Vec<u8>,
+    v: &Value,
+    level: usize,
+    seen: &mut Seen,
+) {
     let v = deref(v);
+    let recursive = match &v {
+        Value::Array(a) => seen.arrays.contains(&a.data_ptr()),
+        Value::Object(h) => seen.objects.contains(&h.borrow().id),
+        _ => false,
+    };
+    if recursive {
+        out.extend_from_slice(b"NULL");
+        return;
+    }
     match &v {
         Value::Null => out.extend_from_slice(b"NULL"),
         Value::Bool(b) => out.extend_from_slice(if *b { b"true" } else { b"false" }),
@@ -267,13 +341,15 @@ pub fn var_export(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, level: u
                 sp(level - 1, out);
             }
             out.extend_from_slice(b"array (\n");
+            seen.arrays.push(a.data_ptr());
             for (k, val) in a.iter() {
                 sp(level + 1, out);
                 export_key(out, k);
                 out.extend_from_slice(b" => ");
-                var_export(host, out, val, level + 2);
+                var_export_value(host, out, val, level + 2, seen);
                 out.extend_from_slice(b",\n");
             }
+            seen.arrays.pop();
             if level > 1 {
                 sp(level - 1, out);
             }
@@ -309,6 +385,7 @@ pub fn var_export(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, level: u
                 }
             }
             if !is_enum {
+                seen.objects.push(h.borrow().id);
                 for (k, val) in &props {
                     sp(level + 2, out);
                     let (name, _) = unmangle_prop(k.as_bytes());
@@ -322,9 +399,10 @@ pub fn var_export(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, level: u
                     }
                     out.push(b'\'');
                     out.extend_from_slice(b" => ");
-                    var_export(host, out, val, level + 2);
+                    var_export_value(host, out, val, level + 2, seen);
                     out.extend_from_slice(b",\n");
                 }
+                seen.objects.pop();
                 if level > 1 {
                     sp(level - 1, out);
                 }

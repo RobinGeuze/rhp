@@ -201,6 +201,20 @@ pub trait Host {
         key.clone()
     }
 
+    /// Store a property read by `unserialize` on `obj` like php's
+    /// `process_nested_object_data`: a plain name, or one mangled for `*` / the
+    /// object's own class, lands on the declared property of that name (at its
+    /// storage key); any other name is kept as is. Returns false for a
+    /// malformed mangled name (a leading NUL without a second one).
+    fn unserialize_set_prop(&mut self, obj: &Value, key: &[u8], val: Value) -> bool {
+        if let Value::Object(h) = obj {
+            h.borrow_mut()
+                .properties
+                .insert(rhp_values::PhpStr::from_bytes(key.to_vec()), val);
+        }
+        true
+    }
+
     /// `get_object_vars($obj)` as seen from the calling scope (unmangled names
     /// of the properties accessible there, in slot order). `None` = the host has
     /// no scope information; the builtin then returns every property.

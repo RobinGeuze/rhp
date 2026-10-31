@@ -1,0 +1,96 @@
+object(stdClass)#1 (3) {
+  ["name"]=>
+  string(1) "o"
+  ["self"]=>
+  *RECURSION*
+  ["list"]=>
+  array(1) {
+    [0]=>
+    *RECURSION*
+  }
+}
+stdClass Object
+(
+    [name] => o
+    [self] => stdClass Object
+ *RECURSION*
+    [list] => Array
+        (
+            [0] => stdClass Object
+ *RECURSION*
+        )
+
+)
+
+(object) array(
+   'name' => 'o',
+   'self' => NULL,
+   'list' => 
+  array (
+    0 => NULL,
+  ),
+)
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  *RECURSION*
+}
+Array
+(
+    [0] => 1
+    [1] => Array
+ *RECURSION*
+)
+
+array (
+  0 => 1,
+  1 => NULL,
+)
+array(2) {
+  [0]=>
+  object(stdClass)#2 (1) {
+    ["v"]=>
+    int(1)
+  }
+  [1]=>
+  object(stdClass)#2 (1) {
+    ["v"]=>
+    int(1)
+  }
+}
+array (
+  0 => 
+  (object) array(
+     'v' => 1,
+  ),
+  1 => 
+  (object) array(
+     'v' => 1,
+  ),
+)
+Array
+(
+    [0] => stdClass Object
+        (
+            [v] => 1
+        )
+
+    [1] => stdClass Object
+        (
+            [v] => 1
+        )
+
+)
+stdClass Object
+(
+    [child] => stdClass Object
+        (
+            [child] => stdClass Object
+                (
+                )
+
+        )
+
+)
+

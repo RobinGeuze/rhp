@@ -1,0 +1,33 @@
+{"custom":true,"n":{"x":1}}
+{"0":"a","1":1,"k":"a"}
+bool(false)
+string(46) "Non-backed enums have no default serialization"
+int(11)
+int(11)
+string(5) "[1,0]"
+string(46) "Non-backed enums have no default serialization"
+{"a":1}
+bool(false)
+string(18) "Recursion detected"
+bool(false)
+string(18) "Recursion detected"
+string(10) "{"o":null}"
+int(6)
+bool(false)
+string(18) "Recursion detected"
+caught boom
+string(6) "["ok"]"
+int(0)
+{
+    "list": [
+        {
+            "custom": true,
+            "n": {
+                "x": 1
+            }
+        },
+        "a"
+    ]
+}
+[{"x":1},{"x":1}]
+JsonException: Non-backed enums have no default serialization

@@ -418,6 +418,26 @@ access error naming the object's class. `get_object_vars` / `foreach` keep a slo
 iff it is what its name resolves to from the scope; the dumpers, `(array)` and
 `serialize` see php's mangled names (`classes::mangled_prop_key`).
 
+Refinements, all following `zend_object_handlers.c`:
+
+- **protected** is checked against the property's *prototype* class
+  (`PropEntry.prototype`, the root of a redeclared public/protected chain), so
+  a sibling may read a cousin's redeclared property.
+- **Asymmetric visibility** (`private(set)` / `protected(set)`) lives in
+  `PropEntry.set_visibility` and is enforced on every write path (`StoreProp`,
+  cursor writes, compound assign, `++`, `&`, `unset`) with php's
+  `Cannot (indirectly) modify|unset X(set) property C::$p from scope|global scope`.
+- A name starting with NUL that is not declared is refused
+  (`Cannot access property starting with "\0"`), so mangled private keys are
+  unreachable by name.
+- **BP_VAR_IS:** isset/empty/`??` compile their container chain with
+  `FetchPropIs` / `FetchPropDynIs` / `FetchStaticPropIs`: inaccessible or missing
+  is null without error, magic objects get `__isset` and then `__get`.
+- **Magic indirect writes:** a cursor path (nested write, compound assign,
+  `++`, reference) through a missing/inaccessible property of a class with an
+  unguarded `__get` goes through `__get` (`MagicSplit`), writing into its
+  by-ref result or a temporary — never creating a real property.
+
 ---
 
 ## 5. `FunctionProto` growth + how `Program` carries classes

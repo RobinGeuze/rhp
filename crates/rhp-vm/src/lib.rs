@@ -943,6 +943,35 @@ impl Host for Vm {
         Some(Value::Object(obj))
     }
 
+    fn unserialize_set_prop(&mut self, obj: &Value, key: &[u8], val: Value) -> bool {
+        let Value::Object(h) = deref(obj) else {
+            return false;
+        };
+        let cls = h.borrow().class;
+        let entry = &self.classes[cls as usize];
+        let declared = |name: &[u8]| {
+            entry
+                .prop_visible
+                .get(&PhpStr::from_bytes(name.to_vec()))
+                .cloned()
+        };
+        let storage = if key.first() == Some(&0) {
+            let Some(end) = key[1..].iter().position(|&b| b == 0) else {
+                return false;
+            };
+            let (owner, name) = (&key[1..end + 1], &key[end + 2..]);
+            let own = owner == b"*" || owner.eq_ignore_ascii_case(entry.name.as_bytes());
+            own.then(|| declared(name))
+                .flatten()
+                .unwrap_or_else(|| PhpStr::from_bytes(key.to_vec()))
+        } else {
+            declared(key).unwrap_or_else(|| PhpStr::from_bytes(key.to_vec()))
+        };
+        let mut od = h.borrow_mut();
+        *classes::prop_slot_mut(&self.classes, &mut od, storage) = val;
+        true
+    }
+
     fn object_prop(&self, obj: &Value, name: &[u8]) -> Option<Value> {
         let key = rhp_values::PhpStr::from_bytes(name);
         let h = match obj {

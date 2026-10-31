@@ -1,0 +1,93 @@
+__PHP_Incomplete_Class Object
+(
+    [__PHP_Incomplete_Class_Name] => H
+    [0] => 1
+)
+
+H::__unserialize
+H Object
+(
+    [x] => Array
+        (
+            [0] => 1
+        )
+
+)
+
+__PHP_Incomplete_Class Object
+(
+    [__PHP_Incomplete_Class_Name] => Wk
+    [a] => 5
+)
+
+Wk::__wakeup
+Array
+(
+    [0] => Wk Object
+        (
+            [a] => 0
+        )
+
+    [1] => __PHP_Incomplete_Class Object
+        (
+            [__PHP_Incomplete_Class_Name] => H
+        )
+
+)
+
+Wk::__wakeup
+Wk Object
+(
+    [a] => 5
+)
+
+string(22) "__PHP_Incomplete_Class"
+__PHP_Incomplete_Class Object
+(
+    [__PHP_Incomplete_Class_Name] => Missing
+    [a] => 1
+    [b:protected] => 2
+    [c:Missing:private] => 3
+)
+
+O:7:"Missing":3:{s:1:"a";i:1;s:4:"~*~b";i:2;s:10:"~Missing~c";i:3;}
+string(18) "O:7:"Missing":0:{}"
+unserialize(): Option "allowed_classes" must be of type array|bool, int given
+unserialize(): Option "allowed_classes" must be of type array|bool, string given
+unserialize(): Option "allowed_classes" must be of type array|bool, null given
+unserialize(): Option "allowed_classes" must be of type array|bool, float given
+unserialize(): Option "allowed_classes" must be an array of class names, int given
+unserialize(): Option "allowed_classes" must be an array of class names, "bad name" given
+enum(E::A)
+enum(P::One)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(true)
+Error: Cannot instantiate enum E
+Error: Cannot instantiate interface I
+Error: Cannot instantiate abstract class Ab
+A Object
+(
+    [a:A:private] => 7
+    [b:protected] => 8
+    [c] => 9
+)
+B Object
+(
+    [a:A:private] => 8
+    [b:protected] => 2
+    [c] => 9
+    [a:B:private] => 7
+)
+A Object
+(
+    [a:A:private] => 1
+    [b:protected] => 2
+    [c] => 3
+    [z:X:private] => 1
+)
+bool(false)
+bool(true)

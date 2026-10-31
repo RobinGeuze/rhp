@@ -970,6 +970,12 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         // `sscanf($string, $format, &...$vars)`: every argument from position 2
         // on is an output passed by reference.
         "sscanf" => &SSCANF_REF_MASK,
+        // `mb_convert_variables($to, $from, &$var, &...$vars)`.
+        "mb_convert_variables" => &SSCANF_REF_MASK,
+        // `&$idna_info` at position 3.
+        "idn_to_ascii" | "idn_to_utf8" => &[false, false, false, true],
+        // `&$next` at position 4.
+        "grapheme_extract" => &[false, false, false, false, true],
         // `&$matches` at position 2.
         "preg_match" | "preg_match_all" => &[false, false, true],
         // `&$count` at position 4.

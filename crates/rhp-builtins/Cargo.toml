@@ -57,3 +57,11 @@ zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 # CSPRNG for random_bytes/random_int/mt_rand.
 getrandom = "0.2"
+
+# intl extension: ICU4X grapheme segmentation, normalization (incl. the UTS #46
+# mapping) and character properties, plus the idna crate's Punycode codec.
+# (icu_normalizer / icu_properties / idna were already in the tree via url.)
+icu_segmenter = "2"
+icu_normalizer = "2"
+icu_properties = "2"
+idna = "1"

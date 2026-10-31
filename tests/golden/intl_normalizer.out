@@ -1,0 +1,9 @@
+norm: ["café","café","fi1","fi1","strasse fi σασ x","",false,"Å","ṩ","ẛ̣","각","각"]
+err: [0,"U_ZERO_ERROR"]
+isnorm: [false,true,true,false,true,false,false,true,true,true]
+raw: ["é",null,null,"ṩ","fi","각","Å","é"]
+err2: [0,"U_ZERO_ERROR"]
+reset: [0,"U_ZERO_ERROR"]
+ValueError: normalizer_normalize(): Argument #2 ($form) must be a a valid normalization form
+ValueError: normalizer_is_normalized(): Argument #2 ($form) must be a a valid normalization form
+consts: [4,4,8,8,16,16,32,32,48,48]

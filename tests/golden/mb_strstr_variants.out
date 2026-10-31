@@ -1,0 +1,59 @@
+stristr: array (
+  0 => 'Wörld ÄÖÜ äöü hello',
+  1 => 'Hello ',
+  2 => 'ÄÖÜ äöü hello',
+  3 => 'ÄÖÜ äöü hello',
+  4 => false,
+  5 => 'Hello Wörld ÄÖÜ äöü hello',
+  6 => '',
+  7 => false,
+  8 => 'ǅa',
+  9 => false,
+  10 => 'def',
+  11 => 'É',
+  12 => 'BC',
+)
+strrichr: array (
+  0 => 'hello',
+  1 => 'Hello Wörld ÄÖÜ äöü ',
+  2 => 'öü hello',
+  3 => false,
+  4 => '',
+  5 => 'Hello Wörld ÄÖÜ äöü hello',
+)
+strstr: array (
+  0 => 'örld ÄÖÜ äöü hello',
+  1 => 'Hello W',
+  2 => 'Hello Wörld ÄÖÜ äöü hello',
+  3 => '?b',
+  4 => 'a',
+  5 => 'lo',
+  6 => 'Hello Wörld ÄÖÜ äöü hel',
+  7 => '',
+  8 => 'a?',
+  9 => 'c',
+)
+mb_stristr(): Argument #4 ($encoding) must be a valid encoding, "nope" given
+mb_strrichr(): Argument #4 ($encoding) must be a valid encoding, "nope" given
+cv: 'UTF-8'
+vals: array (
+  0 => '616263',
+  1 => 'e9',
+  2 => 'fc',
+  3 => 5,
+  4 => NULL,
+  5 => 'e4',
+)
+cv2: 'ISO-8859-1'
+c: 'été'
+cv3: 'ASCII'
+cv4: 'UTF-8'
+e2: array (
+  0 => 'plain',
+  1 => 'ünï',
+)
+cv5: 'UTF-8'
+cv6: 'UTF-8'
+mb_convert_variables(): Argument #1 ($to_encoding) must be a valid encoding, "bogus" given
+mb_convert_variables(): Argument #2 ($from_encoding) contains invalid encoding "bogus"
+mb_convert_variables(): Argument #2 ($from_encoding) must specify at least one encoding

@@ -357,38 +357,6 @@ fn fn_iconv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(data))
 }
 
-/// Count UTF-8 code points (continuation bytes `10xxxxxx` don't start a char).
-fn utf8_len(bytes: &[u8]) -> usize {
-    bytes.iter().filter(|&&b| (b & 0xC0) != 0x80).count()
-}
-
-fn fn_iconv_strlen(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(utf8_len(&str_arg(args, 0)) as i64))
-}
-
-fn fn_iconv_substr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = str_arg(args, 0);
-    let text = String::from_utf8_lossy(&s);
-    let chars: Vec<char> = text.chars().collect();
-    let len = chars.len() as i64;
-    let mut start = conv::to_int(&deref(&args[1]));
-    if start < 0 {
-        start = (len + start).max(0);
-    }
-    let start = start.min(len) as usize;
-    let count = match args.get(2).map(|v| conv::to_int(&deref(v))) {
-        None => chars.len() - start,
-        Some(n) if n < 0 => ((len + n) as usize).saturating_sub(start),
-        Some(n) => (n as usize).min(chars.len() - start),
-    };
-    Ok(Value::str(
-        chars[start..start + count]
-            .iter()
-            .collect::<String>()
-            .into_bytes(),
-    ))
-}
-
 /// `Closure::fromCallable($callable)`: wrap a callable in a Closure (a closure is
 /// returned as-is), mirroring the first-class-callable `MakeFcc` wrapping.
 fn fn_closure_from_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -783,8 +751,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "setlocale", fn_setlocale, 2, None);
     put(m, "assert", fn_assert, 1, Some(2));
     put(m, "iconv", fn_iconv, 3, Some(3));
-    put(m, "iconv_strlen", fn_iconv_strlen, 1, Some(2));
-    put(m, "iconv_substr", fn_iconv_substr, 2, Some(3));
     put(m, "random_bytes", fn_random_bytes, 1, Some(1));
     put(m, "random_int", fn_random_int, 2, Some(2));
     put(m, "mt_rand", fn_mt_rand, 0, Some(2));

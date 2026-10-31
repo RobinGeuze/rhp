@@ -489,6 +489,16 @@ fn lower_full(cps: &[u32]) -> Vec<u32> {
     out
 }
 
+/// Simple Unicode case folding (`MB_CASE_FOLD_SIMPLE`), shared with intl.
+pub(crate) fn case_fold_simple(cps: &[u32]) -> Vec<u32> {
+    map_simple(cps, mb_tables::MAP_FOLD_SIMPLE)
+}
+
+/// Full Unicode case folding (`MB_CASE_FOLD`), shared with the intl module.
+pub(crate) fn case_fold_full(cps: &[u32]) -> Vec<u32> {
+    fold_full(cps)
+}
+
 fn fold_full(cps: &[u32]) -> Vec<u32> {
     let mut out = Vec::with_capacity(cps.len());
     for &cp in cps {
@@ -842,53 +852,205 @@ fn cp_width(cp: u32) -> i64 {
 // mb_strstr / mb_strrchr
 // ---------------------------------------------------------------------------
 
-/// `mb_strstr($haystack, $needle, $before_needle = false, $encoding = null)`:
-/// portion of `haystack` from the first occurrence of `needle` to the end (or,
-/// with `$before_needle`, the part before it); `false` if not found. An empty
-/// needle matches at the start.
-fn fn_mb_strstr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+/// The shared core of `mb_strstr` / `mb_strrchr` / `mb_stristr` /
+/// `mb_strrichr` (php's `php_mb_strstr_variants`): find the needle's codepoint
+/// position exactly as `mb_strpos` / `mb_stripos` (and their reverse forms)
+/// would with offset 0, then return the `mb_substr` before or from it.
+fn strstr_variant(args: &[Value], fname: &str, fold: bool, reverse: bool) -> Result<Value, Thrown> {
     let before = args
         .get(2)
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(false);
-    let enc = arg_enc(args, 3, "mb_strstr", 4)?;
-    let haystack = decode(enc, &bytes_of(&args[0]));
-    let needle = decode(enc, &bytes_of(&args[1]));
-    match find_cps(&haystack, &needle, 0) {
-        Some(pos) => {
-            let slice = if before {
-                &haystack[..pos]
-            } else {
-                &haystack[pos..]
-            };
-            Ok(Value::str(encode(enc, slice)))
+    let enc = arg_enc(args, 3, fname, 4)?;
+    let hb = bytes_of(&args[0]);
+    let nb = bytes_of(&args[1]);
+    let (mut haystack, mut needle) = if fold {
+        (decode(enc, &hb), decode(enc, &nb))
+    } else {
+        (decode_pos(enc, &hb), decode_pos(enc, &nb))
+    };
+    if fold {
+        haystack = map_simple(&haystack, mb_tables::MAP_FOLD_SIMPLE);
+        needle = map_simple(&needle, mb_tables::MAP_FOLD_SIMPLE);
+    }
+    let found = if reverse {
+        rfind_cps(&haystack, &needle, 0, haystack.len())
+    } else {
+        find_cps(&haystack, &needle, 0)
+    };
+    let Some(pos) = found else {
+        return Ok(Value::Bool(false));
+    };
+    // mb_get_substr over the original string (strict decoder, re-encoded).
+    let cps = decode(enc, &hb);
+    let pos = pos.min(cps.len());
+    let slice = if before { &cps[..pos] } else { &cps[pos..] };
+    Ok(Value::str(encode(enc, slice)))
+}
+
+/// `mb_strstr($haystack, $needle, $before_needle = false, $encoding = null)`.
+fn fn_mb_strstr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strstr_variant(args, "mb_strstr", false, false)
+}
+
+/// `mb_strrchr($haystack, $needle, $before_needle = false, $encoding = null)`.
+fn fn_mb_strrchr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strstr_variant(args, "mb_strrchr", false, true)
+}
+
+/// `mb_stristr($haystack, $needle, $before_needle = false, $encoding = null)`.
+fn fn_mb_stristr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strstr_variant(args, "mb_stristr", true, false)
+}
+
+/// `mb_strrichr($haystack, $needle, $before_needle = false, $encoding = null)`.
+fn fn_mb_strrichr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strstr_variant(args, "mb_strrichr", true, true)
+}
+
+// ---------------------------------------------------------------------------
+// mb_convert_variables
+// ---------------------------------------------------------------------------
+
+/// Recursively convert every string inside `v` (arrays and object properties).
+fn convert_value(v: &Value, from: Enc, to: Enc, depth: usize) -> Option<Value> {
+    if depth > 256 {
+        return None;
+    }
+    Some(match v {
+        Value::Str(s) => Value::str(encode(to, &decode(from, s.as_bytes()))),
+        Value::Ref(r) => {
+            let inner = r.borrow().clone();
+            let nv = convert_value(&inner, from, to, depth + 1)?;
+            *r.borrow_mut() = nv;
+            v.clone()
         }
-        None => Ok(Value::Bool(false)),
+        Value::Array(a) => {
+            let mut out = PhpArray::new();
+            for (k, item) in a.iter() {
+                out.insert(k.clone(), convert_value(item, from, to, depth + 1)?);
+            }
+            Value::Array(out)
+        }
+        Value::Object(h) => {
+            let props: Vec<(rhp_values::PhpStr, Value)> = h
+                .borrow()
+                .properties
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            for (k, pv) in props {
+                let nv = convert_value(&pv, from, to, depth + 1)?;
+                h.borrow_mut().properties.insert(k, nv);
+            }
+            v.clone()
+        }
+        o => o.clone(),
+    })
+}
+
+fn collect_strings(v: &Value, out: &mut Vec<Vec<u8>>, depth: usize) {
+    if depth > 256 {
+        return;
+    }
+    match v {
+        Value::Str(s) => out.push(s.as_bytes().to_vec()),
+        Value::Ref(r) => collect_strings(&r.borrow(), out, depth + 1),
+        Value::Array(a) => {
+            for (_, item) in a.iter() {
+                collect_strings(item, out, depth + 1);
+            }
+        }
+        Value::Object(h) => {
+            for (_, pv) in h.borrow().properties.iter() {
+                collect_strings(pv, out, depth + 1);
+            }
+        }
+        _ => {}
     }
 }
 
-/// `mb_strrchr($haystack, $needle, $before_needle = false, $encoding = null)`:
-/// like [`fn_mb_strstr`] but from the **last** occurrence of the whole `needle`
-/// (an empty needle matches at the end).
-fn fn_mb_strrchr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let before = args
-        .get(2)
-        .map(|v| conv::to_bool(&deref(v)))
-        .unwrap_or(false);
-    let enc = arg_enc(args, 3, "mb_strrchr", 4)?;
-    let haystack = decode(enc, &bytes_of(&args[0]));
-    let needle = decode(enc, &bytes_of(&args[1]));
-    match rfind_cps(&haystack, &needle, 0, haystack.len()) {
-        Some(pos) => {
-            let slice = if before {
-                &haystack[..pos]
-            } else {
-                &haystack[pos..]
-            };
-            Ok(Value::str(encode(enc, slice)))
+/// `mb_convert_variables($to_encoding, $from_encoding, &$var, &...$vars)`:
+/// convert every string in the variables in place; returns the (detected)
+/// source encoding name, or false when detection fails.
+fn fn_mb_convert_variables(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let to_name = bytes_of(&args[0]);
+    let to = resolve_enc(&to_name).ok_or_else(|| {
+        Thrown::error(
+            "ValueError",
+            format!(
+                "mb_convert_variables(): Argument #1 ($to_encoding) must be a valid encoding, \"{}\" given",
+                String::from_utf8_lossy(&to_name)
+            ),
+        )
+    })?;
+    // from: string (comma list, "auto") or array of names
+    let names: Vec<Vec<u8>> = match deref(&args[1]) {
+        Value::Array(a) => a.iter().map(|(_, v)| bytes_of(v)).collect(),
+        v => conv::to_string_bytes(&v)
+            .split(|&c| c == b',')
+            .map(|p| p.trim_ascii().to_vec())
+            .collect(),
+    };
+    let mut list: Vec<Enc> = Vec::new();
+    for n in &names {
+        if n.eq_ignore_ascii_case(b"auto") {
+            for e in [Enc::Ascii, Enc::Utf8] {
+                if !list.contains(&e) {
+                    list.push(e);
+                }
+            }
+            continue;
         }
-        None => Ok(Value::Bool(false)),
+        if n.is_empty() && names.len() == 1 {
+            break;
+        }
+        match resolve_enc(n) {
+            Some(e) => {
+                if !list.contains(&e) {
+                    list.push(e)
+                }
+            }
+            None => {
+                return Err(Thrown::error(
+                    "ValueError",
+                    format!(
+                        "mb_convert_variables(): Argument #2 ($from_encoding) contains invalid encoding \"{}\"",
+                        String::from_utf8_lossy(n)
+                    ),
+                ))
+            }
+        }
     }
+    if list.is_empty() {
+        return Err(Thrown::error(
+            "ValueError",
+            "mb_convert_variables(): Argument #2 ($from_encoding) must specify at least one encoding",
+        ));
+    }
+    let from = if list.len() == 1 {
+        list[0]
+    } else {
+        let mut strs = Vec::new();
+        for v in &args[2..] {
+            collect_strings(v, &mut strs, 0);
+        }
+        match list
+            .iter()
+            .copied()
+            .find(|&e| strs.iter().all(|s| is_valid(e, s)))
+        {
+            Some(e) => e,
+            // php: Warning "Unable to detect encoding"
+            None => return Ok(Value::Bool(false)),
+        }
+    };
+    for v in &args[2..] {
+        if convert_value(v, from, to, 0).is_none() {
+            return Ok(Value::Bool(false));
+        }
+    }
+    Ok(Value::str(enc_name(from)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1146,6 +1308,9 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "mb_strwidth", fn_mb_strwidth, 1, Some(2));
     put(m, "mb_strstr", fn_mb_strstr, 2, Some(4));
     put(m, "mb_strrchr", fn_mb_strrchr, 2, Some(4));
+    put(m, "mb_stristr", fn_mb_stristr, 2, Some(4));
+    put(m, "mb_strrichr", fn_mb_strrichr, 2, Some(4));
+    put(m, "mb_convert_variables", fn_mb_convert_variables, 3, None);
     put(m, "mb_strimwidth", fn_mb_strimwidth, 3, Some(5));
     put(m, "mb_scrub", fn_mb_scrub, 1, Some(2));
     put(m, "mb_ord", fn_mb_ord, 1, Some(2));

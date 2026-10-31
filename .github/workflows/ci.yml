@@ -59,7 +59,7 @@ jobs:
             echo "php still on PATH at $(command -v php)"; exit 1
           fi
           echo "no php on PATH — live-php tests will skip"
-      - run: cargo test --workspace --all-targets
+      - run: cargo test --workspace --all-targets --no-fail-fast
 
   # Full suite + differential sweeps against real php, one leg per version.
   # Add a version to the matrix list to cover it.
@@ -111,7 +111,7 @@ jobs:
       - name: Full workspace suite against php ${{ matrix.php }}
         env:
           RHP_PHP: php
-        run: cargo test --workspace --all-targets
+        run: cargo test --workspace --all-targets --no-fail-fast
       - name: Extension differential sweeps
         env:
           RHP_PHP: php

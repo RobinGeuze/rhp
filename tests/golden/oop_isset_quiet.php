@@ -46,3 +46,18 @@ class S { private static $s = 1; protected static $t; public static $u = ['k' =>
 var_dump(isset(S::$s), isset(S::$t), empty(S::$s), S::$s ?? 'd');
 var_dump(isset(S::$u['k']), isset(S::$nope), S::$nope ?? 'undeclared', S::$u['q'] ?? 'missing');
 try { var_dump(S::$s); } catch (Error $e) { echo $e->getMessage(), "\n"; }
+
+// empty(): __isset first, __get only when __isset says yes.
+class EI { private $p = 1; function __isset($n) { echo "isset $n\n"; return true; } }
+$ei = new EI;
+var_dump(empty($ei->p), empty($ei->q));
+class EG { private $p = 0; function __get($n) { echo "get $n\n"; return 5; } }
+$eg = new EG;
+var_dump(empty($eg->p));
+class EB {
+    private $d = ['z' => 0, 'one' => 1];
+    function __isset($n) { echo "isset $n\n"; return array_key_exists($n, $this->d); }
+    function __get($n) { echo "get $n\n"; return $this->d[$n]; }
+}
+$eb = new EB; $nm = 'one';
+var_dump(empty($eb->z), empty($eb->$nm), empty($eb->missing));

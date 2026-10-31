@@ -56,3 +56,16 @@ bool(false)
 string(10) "undeclared"
 string(7) "missing"
 Cannot access private property S::$s
+isset p
+isset q
+bool(true)
+bool(true)
+bool(true)
+isset z
+get z
+isset one
+get one
+isset missing
+bool(true)
+bool(false)
+bool(true)

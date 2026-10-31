@@ -3494,43 +3494,11 @@ impl ProtoBuilder {
                 // `__isset` then `__get` like php.
                 if let Expression::Access(Access::Property(pa)) = e.value {
                     let obj = self.compile_quiet(pa.object)?;
-                    let sel = self.compile_selector(&pa.property)?;
                     let dst = self.alloc_temp();
-                    let set = self.alloc_temp();
-                    match sel {
-                        Sel::Static(name) => self.emit(Instr::IssetProp {
-                            dst: set,
-                            obj,
-                            name,
-                        }),
-                        Sel::Dyn(name) => self.emit(Instr::IssetPropDyn {
-                            dst: set,
-                            obj,
-                            name,
-                        }),
+                    match self.compile_selector(&pa.property)? {
+                        Sel::Static(name) => self.emit(Instr::EmptyProp { dst, obj, name }),
+                        Sel::Dyn(name) => self.emit(Instr::EmptyPropDyn { dst, obj, name }),
                     }
-                    self.emit(Instr::LoadBool { dst, b: true });
-                    let jpos = self.code.len();
-                    self.emit(Instr::Nop); // JmpFalse set -> end
-                    let v = self.alloc_temp();
-                    match sel {
-                        Sel::Static(name) => {
-                            let cache = self.alloc_cache();
-                            self.emit(Instr::FetchProp {
-                                dst: v,
-                                obj,
-                                name,
-                                cache,
-                            });
-                        }
-                        Sel::Dyn(name) => self.emit(Instr::FetchPropDyn { dst: v, obj, name }),
-                    }
-                    self.emit(Instr::Not { dst, a: v });
-                    let lend = self.here();
-                    self.code[jpos] = Instr::JmpFalse {
-                        cond: set,
-                        target: lend,
-                    };
                     return Ok(dst);
                 }
                 // empty(x) == !to_bool(x); absent/null -> true (Not handles it).

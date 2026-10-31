@@ -1323,6 +1323,40 @@ impl Vm {
         })
     }
 
+    /// `empty($o->name)` (zend_std_has_property, ZEND_PROPERTY_NOT_EMPTY): a
+    /// reachable set property's falsiness, else `__isset` and — only if it
+    /// says yes — `__get`; inaccessible / missing without magic is empty.
+    fn prop_empty(&mut self, top: usize, o: Value, pname: PhpStr) -> Result<bool, Thrown> {
+        let Value::Object(h) = o else {
+            return Ok(true);
+        };
+        let cls = h.borrow().class;
+        let scope = self.stack[top].defining_class;
+        let present = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+            PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
+            PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
+            PropRes::Denied(_) => None,
+        };
+        if let Some(v) = present {
+            return Ok(!conv::to_bool(&deref(&v)));
+        }
+        let nm = || Value::str(pname.as_bytes().to_vec());
+        let Some(m) = self.magic(&h, cls, b"__isset", &pname) else {
+            return Ok(true);
+        };
+        let r = self.call_magic(&m, &h, cls, b"__isset", &pname, vec![nm()])?;
+        if !conv::to_bool(&r) {
+            return Ok(true);
+        }
+        match self.magic(&h, cls, b"__get", &pname) {
+            Some(g) => {
+                let v = self.call_magic(&g, &h, cls, b"__get", &pname, vec![nm()])?;
+                Ok(!conv::to_bool(&deref(&v)))
+            }
+            None => Ok(true),
+        }
+    }
+
     /// `$o->name` in BP_VAR_IS mode (an isset / empty / `??` container): the
     /// reachable set property, else `__isset` then (if it says yes) `__get`,
     /// else null — never an access error (zend_std_read_property, BP_VAR_IS).
@@ -3185,6 +3219,18 @@ impl Vm {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let r = self.prop_isset(top, o, pname)?;
+                    self.reg_set(top, dst, Value::Bool(r));
+                }
+                Instr::EmptyProp { dst, obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = proto.names[name as usize].clone();
+                    let r = self.prop_empty(top, o, pname)?;
+                    self.reg_set(top, dst, Value::Bool(r));
+                }
+                Instr::EmptyPropDyn { dst, obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let r = self.prop_empty(top, o, pname)?;
                     self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::IssetPropDyn { dst, obj, name } => {

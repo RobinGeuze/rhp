@@ -557,6 +557,19 @@ pub enum Instr {
         obj: Reg,
         name: NIdx,
     },
+    /// `empty($o->name)`: a reachable set property's falsiness, else (php's
+    /// ZEND_PROPERTY_NOT_EMPTY) `__isset` and, if it says yes, `__get`.
+    EmptyProp {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+    },
+    /// `EmptyProp` with the name in a register.
+    EmptyPropDyn {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+    },
     /// `isset($o->$name)`: `IssetProp` with the name in a register.
     IssetPropDyn {
         dst: Reg,

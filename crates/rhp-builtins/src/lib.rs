@@ -789,7 +789,7 @@ fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    dump::print_r(&mut out, &args[0], 0);
+    dump::print_r(host, &mut out, &args[0], 0);
     let return_mode = args.get(1).map(conv::to_bool).unwrap_or(false);
     if return_mode {
         Ok(Value::str(out))

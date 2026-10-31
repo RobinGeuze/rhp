@@ -117,37 +117,103 @@ fn dump_key(out: &mut Vec<u8>, k: &ArrayKey) {
 }
 
 /// `print_r` of one value. `indent` = column of the opening `(` for arrays.
-pub fn print_r(out: &mut Vec<u8>, v: &Value, indent: usize) {
+pub fn print_r(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, indent: usize) {
+    print_r_value(host, out, v, indent, &mut Vec::new());
+}
+
+/// `print_r` of one value; `printing` holds the ids of the objects currently
+/// being printed, so a cycle prints ` *RECURSION*` like php instead of
+/// recursing forever.
+fn print_r_value(
+    host: &dyn crate::Host,
+    out: &mut Vec<u8>,
+    v: &Value,
+    indent: usize,
+    printing: &mut Vec<u32>,
+) {
     let v = deref(v);
     match &v {
         Value::Array(a) => {
             out.extend_from_slice(b"Array\n");
-            sp(indent, out);
-            out.extend_from_slice(b"(\n");
-            for (k, val) in a.iter() {
-                sp(indent + 4, out);
-                out.push(b'[');
-                print_r_key(out, k);
-                out.extend_from_slice(b"] => ");
-                if matches!(deref(val), Value::Array(_)) {
-                    print_r(out, val, indent + 8);
-                    out.push(b'\n');
-                } else {
-                    out.extend_from_slice(&conv::to_string_bytes(val));
-                    out.push(b'\n');
+            let entries: Vec<(Vec<u8>, Value)> = a
+                .iter()
+                .map(|(k, val)| (print_r_key(k), val.clone()))
+                .collect();
+            print_r_block(host, out, &entries, indent, printing);
+        }
+        Value::Object(h) => {
+            // Snapshot under a short borrow so recursion can't double-borrow.
+            let (class_id, obj_id, entries) = {
+                let b = h.borrow();
+                let entries: Vec<(Vec<u8>, Value)> = b
+                    .properties
+                    .iter()
+                    .map(|(k, v)| (k.as_bytes().to_vec(), v.clone()))
+                    .collect();
+                (b.class, b.id, entries)
+            };
+            out.extend_from_slice(
+                &host
+                    .class_name(class_id)
+                    .unwrap_or_else(|| b"class".to_vec()),
+            );
+            if host.is_enum_class(class_id) {
+                out.extend_from_slice(b" Enum");
+                match entries
+                    .iter()
+                    .find(|(k, _)| k == b"value")
+                    .map(|(_, v)| deref(v))
+                {
+                    Some(Value::Int(_)) => out.extend_from_slice(b":int"),
+                    Some(Value::Str(_)) => out.extend_from_slice(b":string"),
+                    _ => {}
                 }
+                out.push(b'\n');
+            } else {
+                out.extend_from_slice(b" Object\n");
             }
-            sp(indent, out);
-            out.extend_from_slice(b")\n");
+            if printing.contains(&obj_id) {
+                out.extend_from_slice(b" *RECURSION*");
+                return;
+            }
+            printing.push(obj_id);
+            print_r_block(host, out, &entries, indent, printing);
+            printing.pop();
         }
         scalar => out.extend_from_slice(&conv::to_string_bytes(scalar)),
     }
 }
 
-fn print_r_key(out: &mut Vec<u8>, k: &ArrayKey) {
+/// The `(\n    [key] => value\n ... )\n` body shared by arrays and objects.
+fn print_r_block(
+    host: &dyn crate::Host,
+    out: &mut Vec<u8>,
+    entries: &[(Vec<u8>, Value)],
+    indent: usize,
+    printing: &mut Vec<u32>,
+) {
+    sp(indent, out);
+    out.extend_from_slice(b"(\n");
+    for (k, val) in entries {
+        sp(indent + 4, out);
+        out.push(b'[');
+        out.extend_from_slice(k);
+        out.extend_from_slice(b"] => ");
+        if matches!(deref(val), Value::Array(_) | Value::Object(_)) {
+            print_r_value(host, out, val, indent + 8, printing);
+        } else {
+            out.extend_from_slice(&conv::to_string_bytes(val));
+        }
+        out.push(b'\n');
+    }
+    sp(indent, out);
+    out.extend_from_slice(b")\n");
+}
+
+fn print_r_key(k: &ArrayKey) -> Vec<u8> {
     match k {
-        ArrayKey::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),
-        ArrayKey::Str(s) => out.extend_from_slice(s.as_bytes()),
+        ArrayKey::Int(n) => n.to_string().into_bytes(),
+        ArrayKey::Str(s) => s.as_bytes().to_vec(),
     }
 }
 

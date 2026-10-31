@@ -1,0 +1,40 @@
+TypeError: Exception::__construct(): Argument #1 ($message) must be of type string, stdClass given @10
+#0 exc_ctor_args.php(10): Exception->__construct(Object(stdClass))
+#1 exc_ctor_args.php(20): {closure:exc_ctor_args.php:10}()
+#2 {main}
+TypeError: Exception::__construct(): Argument #1 ($message) must be of type string, array given @11
+#0 exc_ctor_args.php(11): Exception->__construct(Array)
+#1 exc_ctor_args.php(20): {closure:exc_ctor_args.php:11}()
+#2 {main}
+TypeError: Error::__construct(): Argument #2 ($code) must be of type int, string given @12
+#0 exc_ctor_args.php(12): Error->__construct('m', 'abc')
+#1 exc_ctor_args.php(20): {closure:exc_ctor_args.php:12}()
+#2 {main}
+TypeError: Exception::__construct(): Argument #3 ($previous) must be of type ?Throwable, stdClass given @13
+#0 exc_ctor_args.php(13): Exception->__construct('m', 1, Object(stdClass))
+#1 exc_ctor_args.php(20): {closure:exc_ctor_args.php:13}()
+#2 {main}
+TypeError: ErrorException::__construct(): Argument #1 ($message) must be of type string, stdClass given @14
+#0 exc_ctor_args.php(14): ErrorException->__construct(Object(stdClass))
+#1 exc_ctor_args.php(20): {closure:exc_ctor_args.php:14}()
+#2 {main}
+TypeError: ErrorException::__construct(): Argument #3 ($severity) must be of type int, string given @15
+#0 exc_ctor_args.php(15): ErrorException->__construct('m', 0, 'x')
+#1 exc_ctor_args.php(20): {closure:exc_ctor_args.php:15}()
+#2 {main}
+TypeError: ErrorException::__construct(): Argument #4 ($filename) must be of type ?string, array given @16
+#0 exc_ctor_args.php(16): ErrorException->__construct('m', 0, 1, Array)
+#1 exc_ctor_args.php(20): {closure:exc_ctor_args.php:16}()
+#2 {main}
+string(2) "42"
+int(7)
+string(13) "from toString"
+string(3) "1.5"
+int(1)
+string(4) "prev"
+int(3)
+int(2)
+string(17) "exc_ctor_args.php"
+int(36)
+string(5) "f.php"
+int(12)

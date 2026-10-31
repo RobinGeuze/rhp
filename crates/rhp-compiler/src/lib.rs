@@ -1026,10 +1026,11 @@ class Exception implements Throwable {
     protected $line = 0;
     private $trace = [];
     private $previous = null;
-    public function __construct($message = null, $code = 0, $previous = null) {
-        if ($message !== null) { $this->message = (string)$message; }
-        if ($code) { $this->code = (int)$code; }
-        if ($previous !== null) { $this->previous = $previous; }
+    public function __construct($message = "", $code = 0, $previous = null) {
+        $n = func_num_args();
+        if ($n >= 1) { $this->message = __zpp_arg("Exception::__construct", 1, "message", "string", $message); }
+        if ($n >= 2) { $c = __zpp_arg("Exception::__construct", 2, "code", "int", $code); if ($c) { $this->code = $c; } }
+        if ($n >= 3) { $p = __zpp_arg("Exception::__construct", 3, "previous", "?Throwable", $previous); if ($p !== null) { $this->previous = $p; } }
     }
     final public function getMessage() { return $this->message; }
     final public function getCode() { return $this->code; }
@@ -1048,10 +1049,11 @@ class Error implements Throwable {
     protected $line = 0;
     private $trace = [];
     private $previous = null;
-    public function __construct($message = null, $code = 0, $previous = null) {
-        if ($message !== null) { $this->message = (string)$message; }
-        if ($code) { $this->code = (int)$code; }
-        if ($previous !== null) { $this->previous = $previous; }
+    public function __construct($message = "", $code = 0, $previous = null) {
+        $n = func_num_args();
+        if ($n >= 1) { $this->message = __zpp_arg("Error::__construct", 1, "message", "string", $message); }
+        if ($n >= 2) { $c = __zpp_arg("Error::__construct", 2, "code", "int", $code); if ($c) { $this->code = $c; } }
+        if ($n >= 3) { $p = __zpp_arg("Error::__construct", 3, "previous", "?Throwable", $previous); if ($p !== null) { $this->previous = $p; } }
     }
     final public function getMessage() { return $this->message; }
     final public function getCode() { return $this->code; }
@@ -1064,11 +1066,18 @@ class Error implements Throwable {
 }
 class ErrorException extends Exception {
     protected $severity = 1;
-    public function __construct($message = null, $code = 0, $severity = 1, $filename = null, $line = null, $previous = null) {
-        parent::__construct($message, $code, $previous);
-        $this->severity = (int)$severity;
-        if ($filename !== null) { $this->file = (string)$filename; }
-        if ($line !== null) { $this->line = (int)$line; } elseif ($filename !== null) { $this->line = 0; }
+    public function __construct($message = "", $code = 0, $severity = 1, $filename = null, $line = null, $previous = null) {
+        $n = func_num_args();
+        $f = "ErrorException::__construct";
+        if ($n >= 1) { $this->message = __zpp_arg($f, 1, "message", "string", $message); }
+        if ($n >= 2) { $c = __zpp_arg($f, 2, "code", "int", $code); if ($c) { $this->code = $c; } }
+        if ($n >= 3) { $severity = __zpp_arg($f, 3, "severity", "int", $severity); }
+        if ($n >= 4) { $filename = __zpp_arg($f, 4, "filename", "?string", $filename); }
+        if ($n >= 5) { $line = __zpp_arg($f, 5, "line", "?int", $line); }
+        if ($n >= 6) { $p = __zpp_arg($f, 6, "previous", "?Throwable", $previous); if ($p !== null) { $this->previous = $p; } }
+        $this->severity = $severity;
+        if ($filename !== null) { $this->file = $filename; }
+        if ($line !== null) { $this->line = $line; } elseif ($filename !== null) { $this->line = 0; }
     }
     final public function getSeverity() { return $this->severity; }
 }

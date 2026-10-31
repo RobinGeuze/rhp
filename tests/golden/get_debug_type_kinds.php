@@ -39,3 +39,4 @@ var_dump((new \ReflectionClass($anon))->isAnonymous(), (new \ReflectionClass(new
 function mk() { return new class {}; }
 var_dump(get_class(mk()) === get_class(mk()));
 var_dump(get_class($anon) === get_class($anonExt));
+print_r($anon); echo "\n"; print_r($anonExt); echo "\n";

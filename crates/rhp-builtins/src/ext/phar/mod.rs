@@ -47,6 +47,7 @@ struct Entry {
     csize: usize,
     usize_: usize,
     flags: u32,
+    timestamp: u32,
 }
 
 /// A parsed, read-only native phar.
@@ -102,7 +103,8 @@ impl PharArchive {
             pos += name_len;
             let usize_ = u32le(&data, pos).ok_or("truncated usize")? as usize;
             pos += 4;
-            pos += 4; // mtime
+            let timestamp = u32le(&data, pos).ok_or("truncated mtime")?;
+            pos += 4;
             let csize = u32le(&data, pos).ok_or("truncated csize")? as usize;
             pos += 4;
             pos += 4; // crc32
@@ -120,6 +122,7 @@ impl PharArchive {
                         csize,
                         usize_,
                         flags,
+                        timestamp,
                     },
                 );
                 cursor += csize;
@@ -155,13 +158,78 @@ impl PharArchive {
         }
     }
 
+    /// php `phar_dostat` for a file entry (archive opened read-only, so the
+    /// write bits are masked off).
+    #[allow(clippy::unnecessary_cast)]
     fn entry_stat(&self, entry: &[u8]) -> Option<StatInfo> {
-        self.entries.get(entry).map(|e| StatInfo {
-            is_dir: false,
-            is_regular: true,
-            size: e.usize_ as u64,
-            mtime: 0,
+        self.entries.get(entry).map(|e| {
+            let perms = e.flags & 0o777;
+            let mode = (perms & 0o555) | libc::S_IFREG as u32;
+            StatInfo {
+                is_regular: true,
+                size: e.usize_ as u64,
+                mode,
+                mtime: e.timestamp as i64,
+                atime: e.timestamp as i64,
+                ctime: e.timestamp as i64,
+                nlink: 1,
+                rdev: -1,
+                dev: 0xc,
+                blksize: -1,
+                blocks: -1,
+                ..StatInfo::default()
+            }
         })
+    }
+
+    /// php `phar_dostat` for a directory with no manifest entry of its own.
+    #[allow(clippy::unnecessary_cast)]
+    fn dir_stat(&self) -> StatInfo {
+        let max = self
+            .entries
+            .values()
+            .map(|e| e.timestamp)
+            .max()
+            .unwrap_or(0) as i64;
+        StatInfo {
+            is_dir: true,
+            mode: 0o555 | libc::S_IFDIR as u32,
+            mtime: max,
+            atime: max,
+            ctime: max,
+            nlink: 1,
+            rdev: -1,
+            dev: 0xc,
+            blksize: -1,
+            blocks: -1,
+            ..StatInfo::default()
+        }
+    }
+
+    /// Immediate children of directory `prefix`, sorted (php sorts phar dir
+    /// streams by binary name compare).
+    fn list_dir(&self, prefix: &[u8]) -> Option<Vec<Vec<u8>>> {
+        if !prefix.is_empty() && !self.has_dir(prefix) {
+            return None;
+        }
+        let mut p = prefix.to_vec();
+        if !p.is_empty() {
+            p.push(b'/');
+        }
+        let mut names: Vec<Vec<u8>> = Vec::new();
+        for k in self.entries.keys() {
+            if let Some(rest) = k.strip_prefix(&p[..]) {
+                let child = match rest.iter().position(|&b| b == b'/') {
+                    Some(i) => &rest[..i],
+                    None => rest,
+                };
+                if !child.is_empty() && !names.iter().any(|n| n == child) {
+                    names.push(child.to_vec());
+                }
+            }
+        }
+        names.sort();
+        Some(names)
     }
 
     fn has_dir(&self, prefix: &[u8]) -> bool {
@@ -350,16 +418,15 @@ impl StreamWrapper for PharWrapper {
         let (arc, entry) = self.resolve(url)?;
         if let Some(s) = arc.entry_stat(&entry) {
             Some(s)
-        } else if arc.has_dir(&entry) {
-            Some(StatInfo {
-                is_dir: true,
-                is_regular: false,
-                size: 0,
-                mtime: 0,
-            })
+        } else if entry.is_empty() || arc.has_dir(&entry) {
+            Some(arc.dir_stat())
         } else {
             None
         }
+    }
+    fn opendir(&self, url: &[u8]) -> Option<Vec<Vec<u8>>> {
+        let (arc, entry) = self.resolve(url)?;
+        arc.list_dir(&entry)
     }
     fn canonical(&self, url: &[u8]) -> Option<Vec<u8>> {
         self.canonical_url(url)

@@ -643,6 +643,7 @@ fn fn_hash_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Some(data) = host.stream_get_contents(&path) else {
         return Ok(Value::Bool(false));
     };
+    host.consume_resource_ids(1);
     match digest(&algo, &data) {
         Some(raw) => Ok(Value::str(if binary { raw } else { to_hex(&raw) })),
         None => Err(invalid_algo("hash_file")),
@@ -655,6 +656,7 @@ fn fn_md5_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Some(data) = host.stream_get_contents(&path) else {
         return Ok(Value::Bool(false));
     };
+    host.consume_resource_ids(1);
     let raw = digest(b"md5", &data).unwrap();
     Ok(Value::str(if binary { raw } else { to_hex(&raw) }))
 }
@@ -665,6 +667,7 @@ fn fn_sha1_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Some(data) = host.stream_get_contents(&path) else {
         return Ok(Value::Bool(false));
     };
+    host.consume_resource_ids(1);
     let raw = digest(b"sha1", &data).unwrap();
     Ok(Value::str(if binary { raw } else { to_hex(&raw) }))
 }

@@ -78,6 +78,12 @@ pub trait Host {
         None
     }
 
+    /// php's `zend_fetch_debug_backtrace` for `debug_backtrace()` (innermost
+    /// first, the calling builtin's own frame skipped). Default: unavailable.
+    fn backtrace(&self, _provide_object: bool, _ignore_args: bool) -> Option<Value> {
+        None
+    }
+
     /// Whether a resource has been closed (`fclose`d stream): `gettype` /
     /// `get_debug_type` then report `resource (closed)`. Default: no.
     fn resource_closed(&self, _res: &Value) -> bool {
@@ -640,6 +646,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PATHINFO_EXTENSION", Value::Int(4)),
         ("PATHINFO_FILENAME", Value::Int(8)),
         ("PATHINFO_ALL", Value::Int(15)),
+        ("DEBUG_BACKTRACE_PROVIDE_OBJECT", Value::Int(1)),
+        ("DEBUG_BACKTRACE_IGNORE_ARGS", Value::Int(2)),
         ("E_ERROR", Value::Int(1)),
         ("E_PARSE", Value::Int(4)),
         ("E_CORE_ERROR", Value::Int(16)),

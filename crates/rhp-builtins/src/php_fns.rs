@@ -116,8 +116,21 @@ fn fn_func_get_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
         .unwrap_or(Value::Bool(false)))
 }
 
-fn fn_debug_backtrace(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+/// `debug_backtrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT, int $limit = 0)`.
+fn fn_debug_backtrace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use rhp_values::ArrayKey as K;
+    let options = args.first().map(|v| conv::to_int(&deref(v))).unwrap_or(1);
+    let limit = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    if let Some(Value::Array(t)) = host.backtrace(options & 1 != 0, options & 2 != 0) {
+        if limit <= 0 {
+            return Ok(Value::Array(t));
+        }
+        let mut out = PhpArray::new();
+        for (_, v) in t.iter().take(limit as usize) {
+            out.push(v.clone());
+        }
+        return Ok(Value::Array(out));
+    }
     let mut arr = PhpArray::new();
     for (func, class, file, line, this) in host.call_stack() {
         let mut e = PhpArray::new();
@@ -399,7 +412,28 @@ fn fn_gethostbyaddr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(name.to_bytes().to_vec()))
 }
 
-fn fn_debug_print_backtrace(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+/// `debug_print_backtrace(int $options = 0, int $limit = 0)`: the trace in
+/// getTraceAsString() format, without the `{main}` line.
+fn fn_debug_print_backtrace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let options = args.first().map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    let limit = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    if let Some(Value::Array(t)) = host.backtrace(false, options & 2 != 0) {
+        let mut frames = PhpArray::new();
+        for (_, v) in t.iter().take(if limit > 0 {
+            limit as usize
+        } else {
+            usize::MAX
+        }) {
+            frames.push(v.clone());
+        }
+        let mut s = trace_to_string(host, &Value::Array(frames));
+        // Strip the trailing "#N {main}".
+        if let Some(pos) = s.iter().rposition(|&b| b == b'#') {
+            s.truncate(pos);
+        }
+        host.write_out(&s);
+        return Ok(Value::Null);
+    }
     let mut out = Vec::new();
     for (i, (func, class, file, line, _this)) in host.call_stack().into_iter().enumerate() {
         let call = match &class {

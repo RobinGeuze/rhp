@@ -530,6 +530,21 @@ impl Host for Vm {
         }
     }
 
+    fn backtrace(&self, provide_object: bool, ignore_args: bool) -> Option<Value> {
+        let full = self.build_trace_ex(provide_object, ignore_args);
+        // Drop the running debug_backtrace()/debug_print_backtrace() frame itself.
+        let skip = usize::from(
+            self.native_calls
+                .last()
+                .is_some_and(|n| n.caller + 1 == self.stack.len()),
+        );
+        let mut out = PhpArray::new();
+        for (_, v) in full.iter().skip(skip) {
+            out.push(v.clone());
+        }
+        Some(Value::Array(out))
+    }
+
     fn resource_closed(&self, res: &Value) -> bool {
         matches!(res, Value::Resource(r) if r.type_name == "stream" && !self.streams.contains_key(&r.id))
     }
@@ -1895,6 +1910,12 @@ impl Vm {
     /// call made by a builtin: `[internal function]`), each running builtin as
     /// its own frame, `include`/`require`/`eval` as pseudo-frames.
     fn build_trace(&self) -> PhpArray {
+        self.build_trace_ex(false, false)
+    }
+
+    /// [`build_trace`] with debug_backtrace's options: `$trace['object']` for
+    /// frames with a `$this`, and no `args`.
+    fn build_trace_ex(&self, provide_object: bool, ignore_args: bool) -> PhpArray {
         let k = |s: &[u8]| ArrayKey::from_bytes(s);
         let mut out = PhpArray::new();
         for i in (0..self.stack.len()).rev() {
@@ -1904,11 +1925,13 @@ impl Vm {
                     e.insert(k(b"file"), Value::str(self.current_file(i)));
                     e.insert(k(b"line"), Value::Int(self.current_line(i) as i64));
                     e.insert(k(b"function"), Value::str(n.name.as_bytes().to_vec()));
-                    let mut a = PhpArray::new();
-                    for v in &n.args {
-                        a.push(deref(v));
+                    if !ignore_args {
+                        let mut a = PhpArray::new();
+                        for v in &n.args {
+                            a.push(deref(v));
+                        }
+                        e.insert(k(b"args"), Value::Array(a));
                     }
-                    e.insert(k(b"args"), Value::Array(a));
                     out.push(Value::Array(e));
                 }
             }
@@ -1927,14 +1950,16 @@ impl Vm {
                 e.insert(k(b"function"), Value::Str(f.proto.name.clone()));
                 if let Some(c) = f.defining_class {
                     e.insert(k(b"class"), Value::Str(self.class(c).name.clone()));
-                    let ty = if self.current_this(i).is_some() {
-                        "->"
-                    } else {
-                        "::"
-                    };
+                    let this = self.current_this(i);
+                    let ty = if this.is_some() { "->" } else { "::" };
+                    if let (true, Some(o)) = (provide_object, this) {
+                        e.insert(k(b"object"), Value::Object(o));
+                    }
                     e.insert(k(b"type"), Value::str(ty));
                 }
-                e.insert(k(b"args"), Value::Array(self.frame_args(i)));
+                if !ignore_args {
+                    e.insert(k(b"args"), Value::Array(self.frame_args(i)));
+                }
             }
             out.push(Value::Array(e));
         }

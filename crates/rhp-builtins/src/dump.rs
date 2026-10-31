@@ -217,37 +217,116 @@ fn print_r_key(k: &ArrayKey) -> Vec<u8> {
     }
 }
 
-/// `var_export` of one value. `indent` = leading spaces of this array's lines.
-pub fn var_export(out: &mut Vec<u8>, v: &Value, indent: usize) {
+/// `var_export` of one value — php's `php_var_export_ex` (`level` starts at
+/// 1; nested arrays/objects go on a new line indented `level - 1`).
+pub fn var_export(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, level: usize) {
     let v = deref(v);
     match &v {
         Value::Null => out.extend_from_slice(b"NULL"),
         Value::Bool(b) => out.extend_from_slice(if *b { b"true" } else { b"false" }),
+        Value::Int(n) if *n == i64::MIN => {
+            out.extend_from_slice(format!("{}-1", i64::MIN + 1).as_bytes())
+        }
         Value::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),
         Value::Float(f) => out.extend_from_slice(&export_float(*f)),
         Value::Str(s) => export_string(out, s.as_bytes()),
         Value::Array(a) => {
+            if level > 1 {
+                out.push(b'\n');
+                sp(level - 1, out);
+            }
             out.extend_from_slice(b"array (\n");
             for (k, val) in a.iter() {
-                sp(indent + 2, out);
+                sp(level + 1, out);
                 export_key(out, k);
                 out.extend_from_slice(b" => ");
-                if matches!(deref(val), Value::Array(_)) {
-                    out.push(b'\n');
-                    sp(indent + 2, out);
-                    var_export(out, val, indent + 2);
-                    out.extend_from_slice(b",\n");
-                } else {
-                    var_export(out, val, indent + 2);
-                    out.extend_from_slice(b",\n");
-                }
+                var_export(host, out, val, level + 2);
+                out.extend_from_slice(b",\n");
             }
-            sp(indent, out);
+            if level > 1 {
+                sp(level - 1, out);
+            }
             out.push(b')');
         }
-        Value::Object(_) | Value::Closure(_) | Value::Resource(_) => out.extend_from_slice(b"NULL"),
+        Value::Object(h) => {
+            if level > 1 {
+                out.push(b'\n');
+                sp(level - 1, out);
+            }
+            let class_id = h.borrow().class;
+            let name = host.class_name(class_id).unwrap_or_default();
+            if host.is_enum_class(class_id) {
+                out.push(b'\\');
+                out.extend_from_slice(&name);
+                out.extend_from_slice(b"::");
+                if let Some(Value::Str(c)) =
+                    h.borrow().properties.get(&rhp_values::PhpStr::from("name"))
+                {
+                    out.extend_from_slice(c.as_bytes());
+                }
+                return;
+            }
+            let is_std = name.eq_ignore_ascii_case(b"stdClass");
+            if is_std {
+                out.extend_from_slice(b"(object) array(\n");
+            } else {
+                out.push(b'\\');
+                out.extend_from_slice(&name);
+                out.extend_from_slice(b"::__set_state(array(\n");
+            }
+            let props = host.object_props_mangled(h);
+            for (k, val) in props.iter() {
+                sp(level + 2, out);
+                match k {
+                    // Property names are always strings (`'7'`).
+                    ArrayKey::Int(n) => export_prop_name(out, n.to_string().as_bytes()),
+                    ArrayKey::Str(s) => export_prop_name(out, unmangle(s.as_bytes())),
+                }
+                out.extend_from_slice(b" => ");
+                var_export(host, out, val, level + 2);
+                out.extend_from_slice(b",\n");
+            }
+            if level > 1 {
+                sp(level - 1, out);
+            }
+            out.extend_from_slice(if is_std { b")" } else { b"))" });
+        }
+        Value::Closure(_) => {
+            if level > 1 {
+                out.push(b'\n');
+                sp(level - 1, out);
+            }
+            out.extend_from_slice(b"\\Closure::__set_state(array(\n");
+            if level > 1 {
+                sp(level - 1, out);
+            }
+            out.extend_from_slice(b"))");
+        }
+        Value::Resource(_) => out.extend_from_slice(b"NULL"),
         Value::Ref(_) => unreachable!("deref'd above"),
     }
+}
+
+/// The bare property name of a (possibly visibility-mangled) key.
+pub fn unmangle(k: &[u8]) -> &[u8] {
+    if k.first() == Some(&0) {
+        if let Some(p) = k[1..].iter().position(|&b| b == 0) {
+            return &k[p + 2..];
+        }
+    }
+    k
+}
+
+/// An object property name in var_export: `'` and `\` escaped, NUL kept raw.
+fn export_prop_name(out: &mut Vec<u8>, s: &[u8]) {
+    out.push(b'\'');
+    for &b in s {
+        if b == b'\\' || b == b'\'' {
+            out.push(b'\\');
+        }
+        out.push(b);
+    }
+    out.push(b'\'');
 }
 
 fn export_key(out: &mut Vec<u8>, k: &ArrayKey) {
@@ -261,6 +340,10 @@ fn export_key(out: &mut Vec<u8>, k: &ArrayKey) {
 fn export_string(out: &mut Vec<u8>, s: &[u8]) {
     out.push(b'\'');
     for &b in s {
+        if b == 0 {
+            out.extend_from_slice(b"' . \"\\0\" . '");
+            continue;
+        }
         if b == b'\\' || b == b'\'' {
             out.push(b'\\');
         }

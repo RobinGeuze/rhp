@@ -1037,6 +1037,7 @@ interface ArrayAccess {}
 interface Countable {}
 final class Generator implements Iterator {}
 class stdClass {}
+final class __PHP_Incomplete_Class {}
 final class Closure {
     public static function fromCallable($callback) { return __closure_from_callable($callback); }
     public static function bind($closure, $newThis, $newScope = null) { return __closure_bind($closure, $newThis, $newScope); }

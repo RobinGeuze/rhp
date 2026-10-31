@@ -213,6 +213,18 @@ pub trait Host {
         None
     }
 
+    /// An object's properties keyed with php's visibility mangling (public
+    /// `name`, protected `"\0*\0name"`, private `"\0Class\0name"`), in
+    /// property-table order — what `(array)`, `serialize` and `json_encode`
+    /// see. Default: the bare property names.
+    fn object_props_mangled(&self, obj: &rhp_values::ObjectHandle) -> PhpArray {
+        let mut a = PhpArray::new();
+        for (k, v) in &obj.borrow().properties {
+            a.insert(rhp_values::ArrayKey::from_bytes(k.as_bytes()), v.clone());
+        }
+        a
+    }
+
     /// Build a `stdClass` object from named properties (for `json_decode` without
     /// `$associative`, `(object)` cast helpers, etc.). The default fallback — for
     /// hosts without an object model — returns an associative array instead.
@@ -815,7 +827,7 @@ fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    dump::var_export(&mut out, &args[0], 0);
+    dump::var_export(host, &mut out, &args[0], 1);
     let return_mode = args.get(1).map(conv::to_bool).unwrap_or(false);
     if return_mode {
         Ok(Value::str(out))

@@ -888,6 +888,13 @@ impl Host for Vm {
         h.borrow().properties.get(&key).cloned()
     }
 
+    fn object_props_mangled(&self, obj: &ObjectHandle) -> PhpArray {
+        match self.object_to_array_mangled(obj) {
+            Value::Array(a) => a,
+            _ => PhpArray::new(),
+        }
+    }
+
     fn object_class_name(&self, obj: &Value) -> Option<Vec<u8>> {
         let h = match obj {
             Value::Object(h) => h,

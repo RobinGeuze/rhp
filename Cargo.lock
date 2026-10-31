@@ -1360,6 +1360,7 @@ dependencies = [
 name = "rhp-difftest"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "rhp-compiler",
  "rhp-frontend",
  "rhp-values",
@@ -1373,6 +1374,7 @@ dependencies = [
  "mago-allocator",
  "mago-database",
  "mago-syntax",
+ "mago-syntax-core",
 ]
 
 [[package]]

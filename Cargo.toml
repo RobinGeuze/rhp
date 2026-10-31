@@ -12,6 +12,7 @@ publish = false
 mago-syntax = "1.58"
 mago-allocator = "1.58"
 mago-database = "1.58"
+mago-syntax-core = "1.58"
 mago-span = "1.58"
 bstr = "1.13"
 indexmap = "2.14"

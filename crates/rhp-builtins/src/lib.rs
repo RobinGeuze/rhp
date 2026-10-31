@@ -17,6 +17,7 @@ pub mod dump;
 pub mod module;
 pub mod streams;
 
+pub use ext::curl::is_curl_handle;
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};
 
 mod arr_fns;
@@ -910,6 +911,12 @@ is_type!(
 fn fn_intval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
     let base = args.get(1).map(|b| conv::to_int(&deref(b))).unwrap_or(10);
+    // php's curl_cast_object: (int) of a CurlHandle is its object id.
+    if let Value::Object(h) = &v {
+        if is_curl_handle(&v) {
+            return Ok(Value::Int(h.borrow().id as i64));
+        }
+    }
     // `base` applies only to a string argument; base 10 is plain integer conversion.
     if base == 10 {
         return Ok(Value::Int(conv::to_int(&v)));

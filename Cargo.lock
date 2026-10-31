@@ -1331,6 +1331,7 @@ dependencies = [
  "sha3",
  "tiger",
  "ureq",
+ "url",
  "whirlpool",
  "x509-parser",
  "xxhash-rust",

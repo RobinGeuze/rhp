@@ -1950,7 +1950,14 @@ impl Vm {
 
                 Instr::CastInt { dst, a } => {
                     let v = self.reg_get(top, a);
-                    self.reg_set(top, dst, Value::Int(conv::to_int(&v)));
+                    // php's curl_cast_object: (int) $curlHandle is its object id.
+                    let n = match &v {
+                        Value::Object(h) if rhp_builtins::is_curl_handle(&v) => {
+                            h.borrow().id as i64
+                        }
+                        _ => conv::to_int(&v),
+                    };
+                    self.reg_set(top, dst, Value::Int(n));
                 }
                 Instr::CastFloat { dst, a } => {
                     let v = self.reg_get(top, a);

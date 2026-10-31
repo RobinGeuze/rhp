@@ -50,6 +50,8 @@ x509-parser = { version = "0.18", features = ["verify"] }
 # HTTP(S) client for the stream http:// / https:// wrappers (rustls TLS with
 # bundled Mozilla roots — no system OpenSSL dependency).
 ureq = "2.12"
+# URL joining for curl redirects (already in the tree via ureq).
+url = "2.5"
 
 # zip extension: reading/extracting .zip archives (ZipArchive). Pure-Rust
 # (deflate via the same miniz_oxide backend as flate2).

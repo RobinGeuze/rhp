@@ -972,6 +972,8 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         "sscanf" => &SSCANF_REF_MASK,
         // `&$matches` at position 2.
         "preg_match" | "preg_match_all" => &[false, false, true],
+        // curl_multi_exec(&$still_running), curl_multi_info_read(&$queued_messages).
+        "curl_multi_exec" | "curl_multi_info_read" => &[false, true],
         // `&$count` at position 4.
         "preg_replace" | "preg_replace_callback" | "preg_replace_callback_array" => {
             &[false, false, false, false, true]

@@ -42,6 +42,7 @@ const LOADED_EXTS: &[&str] = &[
     "reflection",
     "iconv",
     "openssl",
+    "curl",
     "zip",
     // XML family: reported so composer resolution passes for packages that
     // require ext-xml/ext-dom (symfony etc.). Runtime XML support is partial.

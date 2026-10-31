@@ -879,6 +879,26 @@ pub(super) fn fn_verify(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     }))
 }
 
+/// Verify `sig` over `data` with the `PUBLIC KEY` PEM in `pem` (PKCS#1 v1.5
+/// for RSA, ECDSA for EC) under the named digest, for phar's OpenSSL
+/// signatures (`PEM_read_bio_PUBKEY` + `EVP_VerifyFinal`). `None` when the key
+/// cannot be read; `Some(verified)` otherwise.
+pub(crate) fn verify_with_pem(pem: &[u8], digest: &str, data: &[u8], sig: &[u8]) -> Option<bool> {
+    let der = pem_blocks(pem)
+        .into_iter()
+        .find(|(l, _)| l == "PUBLIC KEY")
+        .map(|(_, d)| d)?;
+    let key = parse_spki(&der)?;
+    let Some(md) = md_by_name(digest) else {
+        return Some(false);
+    };
+    let ok = match &key.kind {
+        KeyKind::Rsa { n, e } => rsa_verify(n, e, &md, data, sig, false),
+        KeyKind::Ec { curve, x, y } => ecdsa_verify(*curve, x, y, &md, data, sig),
+    };
+    Some(ok == Some(true))
+}
+
 const MD_METHODS: &[&str] = &[
     "blake2b512",
     "blake2s256",

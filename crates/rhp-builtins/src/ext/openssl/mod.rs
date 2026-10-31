@@ -16,6 +16,7 @@ use crate::{Builtin, Host, Thrown};
 
 mod pkey;
 
+pub(crate) use pkey::verify_with_pem;
 pub use pkey::PRELUDE_PHP;
 
 fn deref(v: &Value) -> Value {

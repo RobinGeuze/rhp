@@ -717,7 +717,7 @@ impl Vm {
         let callee = method.proto.clone();
         let mut frame = Frame::new(callee.clone(), dst);
         frame.argc = args.len();
-        crate::bind_params(&callee, &args, &mut frame.regs)?;
+        self.bind_frame(&callee, &args, &mut frame)?;
         self.bind_superglobals(&mut frame);
         let strict = self.caller_strict();
         self.check_arg_types(&callee, &mut frame, strict, Some(method.defining_class))?;

@@ -83,6 +83,10 @@ pub struct Vm {
     /// `EG(in_autoload)`): a nested lookup of the same name does not re-enter
     /// the autoloaders.
     in_autoload: std::collections::HashSet<Vec<u8>>,
+    /// Named-argument binding for the frame about to be pushed: the skipped
+    /// parameter mask and the extra named arguments collected by a variadic
+    /// parameter. Set by a call instruction right before the push.
+    pending_named: Option<(u64, Vec<(PhpStr, Value)>)>,
     // Stream wrappers by scheme (`file`, `phar`, …), installed at startup from
     // the module list; runtime-mutable later via `stream_wrapper_register`.
     wrappers: HashMap<Vec<u8>, Rc<dyn builtins::StreamWrapper>>,
@@ -145,6 +149,9 @@ mod classes;
 
 /// A function-static slot: (proto address, class it runs as, variable name).
 type StaticKey = (usize, Option<ClassId>, Vec<u8>);
+
+/// Named call arguments, in call order.
+type NamedArgs = Vec<(PhpStr, Value)>;
 
 /// Where an lvalue cursor is rooted.
 enum CursorRoot {
@@ -772,6 +779,15 @@ impl Host for Vm {
         self.call_callable_value(callable, args.to_vec())
     }
 
+    fn call_callable_named(
+        &mut self,
+        callable: &Value,
+        args: &[Value],
+        named: Vec<(PhpStr, Value)>,
+    ) -> Result<Value, Thrown> {
+        self.call_named(callable, args.to_vec(), named)
+    }
+
     fn resolve_class(&self, name: &[u8]) -> Option<u32> {
         self.resolve_class_by_name(name).ok()
     }
@@ -959,6 +975,9 @@ struct Frame {
     /// Number of positional arguments actually passed (for non-constant parameter
     /// default-init guards in the prologue).
     argc: usize,
+    /// Parameters below `argc` that a named-argument call skipped (bit i =
+    /// parameter i): their defaults still apply, as if not passed.
+    holes: u64,
 }
 
 /// Result of unwinding: a handler was installed, or the exception escaped the
@@ -989,6 +1008,7 @@ impl Frame {
             pending: None,
             capture: false,
             argc: 0,
+            holes: 0,
         }
     }
 }
@@ -1055,6 +1075,7 @@ impl Vm {
             included_files: std::collections::HashSet::new(),
             autoloaders: Vec::new(),
             in_autoload: Default::default(),
+            pending_named: None,
             wrappers,
             main_script_path: None,
             streams: HashMap::new(),
@@ -1515,7 +1536,11 @@ impl Vm {
             let Some(ty) = &p.type_hint else { continue };
             // by-ref / variadic params aren't coerced here; a defaulted (not
             // passed) param is trusted.
-            if p.by_ref || p.variadic || i >= frame.argc {
+            if p.by_ref
+                || p.variadic
+                || i >= frame.argc
+                || (i < 64 && frame.holes & (1u64 << i) != 0)
+            {
                 continue;
             }
             let cur = frame.regs[p.cv as usize].clone();
@@ -2047,7 +2072,8 @@ impl Vm {
 
                 Instr::Jmp { target } => self.stack[top].pc = target as usize,
                 Instr::JmpIfArg { index, target } => {
-                    if self.stack[top].argc > index as usize {
+                    let f = &self.stack[top];
+                    if f.argc > index as usize && (index >= 64 || f.holes & (1u64 << index) == 0) {
                         self.stack[top].pc = target as usize;
                     }
                 }
@@ -2254,8 +2280,8 @@ impl Vm {
                 Instr::CallDynV { dst, callee, args } => {
                     let c = self.reg_get(top, callee);
                     let arr = self.reg_get(top, args);
-                    let argvec = self.spread_args(&arr);
-                    let out = self.call_callable_value(&c, argvec)?;
+                    let (argvec, named) = self.split_call_args(&arr)?;
+                    let out = self.call_named(&c, argvec, named)?;
                     self.reg_set(top, dst, out);
                 }
 
@@ -2981,10 +3007,22 @@ impl Vm {
                         return Err(Thrown::unsupported(format!("{shown}()"), reason));
                     }
                     let arr = self.reg_get(top, args);
-                    let argv = self.spread_args(&arr);
+                    let (argv, named) = self.split_call_args(&arr)?;
                     if let Some(fnidx) = user {
                         let callee = self.functions[fnidx].clone();
+                        let argv = self.place_named_args(&callee, None, argv, named)?;
                         self.push_user_frame(callee, argv, dst)?;
+                    } else if !named.is_empty() {
+                        // `call_user_func($f, ...named)` forwards them.
+                        if fname.eq_ignore_ascii_case(b"call_user_func") && !argv.is_empty() {
+                            let out = self.call_named(&argv[0], argv[1..].to_vec(), named)?;
+                            self.reg_set(top, dst, out);
+                        } else {
+                            return Err(Thrown::unsupported(
+                                "named arguments to a builtin function",
+                                "deferred",
+                            ));
+                        }
                     } else {
                         let name_str = String::from_utf8_lossy(&fname).into_owned();
                         let out = self.invoke_builtin(&name_str, argv)?;
@@ -3008,7 +3046,9 @@ impl Vm {
                     self.reg_set(top, dst, Value::Object(obj.clone()));
                     if let Some(m) = self.lookup_method(cls, b"__construct") {
                         let arr = self.reg_get(top, args);
-                        let argv = self.spread_args(&arr);
+                        let (argv, named) = self.split_call_args(&arr)?;
+                        let argv =
+                            self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
                         self.push_method_frame(&m, Some(obj), cls, argv, Reg::MAX)?;
                     }
                 }
@@ -3049,7 +3089,9 @@ impl Vm {
                         ));
                     }
                     let arr = self.reg_get(top, args);
-                    let argv = self.spread_args(&arr);
+                    let (argv, named) = self.split_call_args(&arr)?;
+                    let argv =
+                        self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
                     self.push_method_frame(&m, Some(h.clone()), cls, argv, dst)?;
                 }
                 Instr::CallStaticV {
@@ -3083,7 +3125,9 @@ impl Vm {
                             .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))
                     };
                     let arr = self.reg_get(top, args);
-                    let argv = self.spread_args(&arr);
+                    let (argv, named) = self.split_call_args(&arr)?;
+                    let argv =
+                        self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
                     self.push_method_frame(&m, this, called, argv, dst)?;
                 }
 
@@ -3280,7 +3324,7 @@ impl Vm {
         }
         let mut frame = Frame::new(proto.clone(), 0);
         frame.argc = args.len();
-        bind_params(&proto, &args, &mut frame.regs)?;
+        self.bind_frame(&proto, &args, &mut frame)?;
         self.bind_superglobals(&mut frame);
         if let (Some(cv), Some(obj)) = (proto.this_cv, this) {
             frame.regs[cv as usize] = Value::Object(obj);
@@ -3535,7 +3579,7 @@ impl Vm {
         let proto = self.closures[cd.fnidx as usize].clone();
         let mut frame = Frame::new(proto.clone(), 0);
         frame.argc = args.len();
-        bind_params(&proto, &args, &mut frame.regs)?;
+        self.bind_frame(&proto, &args, &mut frame)?;
         self.bind_superglobals(&mut frame);
         let strict = self.caller_strict();
         self.check_arg_types(&proto, &mut frame, strict, cd.bound_class)?;
@@ -4088,7 +4132,7 @@ impl Vm {
         }
         let mut frame = Frame::new(callee.clone(), dst);
         frame.argc = args.len();
-        bind_params(&callee, &args, &mut frame.regs)?;
+        self.bind_frame(&callee, &args, &mut frame)?;
         self.bind_superglobals(&mut frame);
         let strict = self.caller_strict();
         self.check_arg_types(&callee, &mut frame, strict, None)?;
@@ -4104,12 +4148,208 @@ impl Vm {
         Ok(())
     }
 
-    /// Flatten an array value into a positional argument vector (for spread).
-    fn spread_args(&self, arr: &Value) -> Vec<Value> {
-        match arr {
-            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
-            Value::Ref(r) => self.spread_args(&r.borrow()),
-            _ => Vec::new(),
+    /// Bind `args` into a new frame's parameters, then apply a pending
+    /// named-argument binding (skipped parameters, variadic extras).
+    fn bind_frame(
+        &mut self,
+        proto: &FunctionProto,
+        args: &[Value],
+        frame: &mut Frame,
+    ) -> Result<(), Thrown> {
+        let named = self.pending_named.take();
+        bind_params(proto, args, &mut frame.regs)?;
+        if let Some((holes, extra)) = named {
+            frame.holes = holes;
+            if !extra.is_empty() {
+                if let Some(p) = proto.params.iter().find(|p| p.variadic) {
+                    if let Value::Array(a) = &mut frame.regs[p.cv as usize] {
+                        for (k, v) in extra {
+                            a.insert(ArrayKey::Str(k), deref(&v));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Split a call's argument array (a spread / named-argument call) into
+    /// positional arguments and named ones (string keys).
+    fn split_call_args(&self, arr: &Value) -> Result<(Vec<Value>, NamedArgs), Thrown> {
+        let mut pos = Vec::new();
+        let mut named: NamedArgs = Vec::new();
+        if let Value::Array(a) = deref(arr) {
+            for (k, v) in a.iter() {
+                match k {
+                    ArrayKey::Int(_) => {
+                        if !named.is_empty() {
+                            return Err(Thrown::error(
+                                "Error",
+                                "Cannot use positional argument after named argument during unpacking",
+                            ));
+                        }
+                        pos.push(v.clone());
+                    }
+                    ArrayKey::Str(s) => named.push((s.clone(), v.clone())),
+                }
+            }
+        }
+        Ok((pos, named))
+    }
+
+    /// php's `zend_handle_named_arg` + `zend_handle_undef_args`: place named
+    /// arguments into `proto`'s parameter slots. Skipped parameters take
+    /// their default (a constant one directly; a non-constant one through the
+    /// prologue, via the hole mask); unknown names go to a variadic
+    /// parameter. Arms `pending_named` for the frame push that must follow.
+    fn place_named_args(
+        &mut self,
+        proto: &FunctionProto,
+        class: Option<ClassId>,
+        mut args: Vec<Value>,
+        named: Vec<(PhpStr, Value)>,
+    ) -> Result<Vec<Value>, Thrown> {
+        if named.is_empty() {
+            return Ok(args);
+        }
+        let positional = args.len();
+        let variadic = proto.params.iter().position(|p| p.variadic);
+        let mut slots: Vec<Option<Value>> = args.drain(..).map(Some).collect();
+        let mut extra: Vec<(PhpStr, Value)> = Vec::new();
+        for (name, v) in named {
+            let idx = proto.params.iter().position(|p| {
+                !p.variadic && proto.names[p.name as usize].as_bytes() == name.as_bytes()
+            });
+            match idx {
+                Some(i) => {
+                    if i < slots.len() && slots[i].is_some() {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Named parameter ${} overwrites previous argument",
+                                String::from_utf8_lossy(name.as_bytes())
+                            ),
+                        ));
+                    }
+                    if slots.len() <= i {
+                        slots.resize(i + 1, None);
+                    }
+                    slots[i] = Some(v);
+                }
+                None if variadic.is_some() => {
+                    if extra.iter().any(|(k, _)| k.as_bytes() == name.as_bytes()) {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Named parameter ${} overwrites previous argument",
+                                String::from_utf8_lossy(name.as_bytes())
+                            ),
+                        ));
+                    }
+                    extra.push((name, v));
+                }
+                None => {
+                    return Err(Thrown::error(
+                        "Error",
+                        format!(
+                            "Unknown named parameter ${}",
+                            String::from_utf8_lossy(name.as_bytes())
+                        ),
+                    ))
+                }
+            }
+        }
+        let mut holes = 0u64;
+        let mut out = Vec::with_capacity(slots.len());
+        for (i, slot) in slots.into_iter().enumerate() {
+            match slot {
+                Some(v) => out.push(v),
+                None if i < positional => unreachable!("positional slots are filled"),
+                None => {
+                    let p = &proto.params[i];
+                    match &p.default {
+                        Some(ParamDefault::Const(k)) => out.push(proto.consts[*k as usize].clone()),
+                        Some(ParamDefault::Init(_)) => out.push(Value::Null),
+                        None => {
+                            let fname = match class {
+                                Some(c) => format!(
+                                    "{}::{}",
+                                    String::from_utf8_lossy(self.class(c).name.as_bytes()),
+                                    String::from_utf8_lossy(proto.name.as_bytes())
+                                ),
+                                None => String::from_utf8_lossy(proto.name.as_bytes()).into_owned(),
+                            };
+                            return Err(Thrown::error(
+                                "ArgumentCountError",
+                                format!(
+                                    "{}(): Argument #{} (${}) not passed",
+                                    fname,
+                                    i + 1,
+                                    String::from_utf8_lossy(
+                                        proto.names[p.name as usize].as_bytes()
+                                    )
+                                ),
+                            ));
+                        }
+                    }
+                    if i < 64 {
+                        holes |= 1u64 << i;
+                    }
+                }
+            }
+        }
+        self.pending_named = Some((holes, extra));
+        Ok(out)
+    }
+
+    /// Call a callable value with positional and named arguments.
+    fn call_named(
+        &mut self,
+        c: &Value,
+        mut args: Vec<Value>,
+        named: Vec<(PhpStr, Value)>,
+    ) -> Result<Value, Thrown> {
+        if !named.is_empty() {
+            let Some((p, cls)) = self.callable_proto(c) else {
+                return Err(Thrown::unsupported(
+                    "named arguments to a builtin function",
+                    "deferred",
+                ));
+            };
+            args = self.place_named_args(&p, cls, args, named)?;
+        }
+        self.call_callable_value(c, args)
+    }
+
+    /// The user-code proto a callable value would run (for named-argument
+    /// placement before a dynamic call), with its scope class.
+    fn callable_proto(&self, c: &Value) -> Option<(Rc<FunctionProto>, Option<ClassId>)> {
+        match c {
+            Value::Ref(r) => self.callable_proto(&r.borrow()),
+            Value::Closure(cd) if cd.wrapped.is_some() => {
+                self.callable_proto(cd.wrapped.as_ref().unwrap())
+            }
+            Value::Closure(cd) => Some((self.closures[cd.fnidx as usize].clone(), None)),
+            Value::Str(s) => self
+                .fn_names
+                .get(&s.as_bytes().to_ascii_lowercase())
+                .map(|&i| (self.functions[i].clone(), None)),
+            Value::Array(a) if a.len() == 2 => {
+                let item0 = a.get(&ArrayKey::Int(0)).cloned().unwrap_or(Value::Null);
+                let method = a.get(&ArrayKey::Int(1)).cloned().unwrap_or(Value::Null);
+                let cls = match deref(&item0) {
+                    Value::Object(h) => h.borrow().class,
+                    Value::Str(cn) => self.resolve_class_by_name(cn.as_bytes()).ok()?,
+                    _ => return None,
+                };
+                let m = self.lookup_method(cls, &conv::to_string_bytes(&method))?;
+                Some((m.proto.clone(), Some(m.defining_class)))
+            }
+            Value::Object(h) => {
+                let m = self.lookup_method(h.borrow().class, b"__invoke")?;
+                Some((m.proto.clone(), Some(m.defining_class)))
+            }
+            _ => None,
         }
     }
 

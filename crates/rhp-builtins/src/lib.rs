@@ -121,6 +121,23 @@ pub trait Host {
         ))
     }
 
+    /// Invoke a PHP callable with named arguments too (`call_user_func_array`
+    /// with string keys). Default: refused when any argument is named.
+    fn call_callable_named(
+        &mut self,
+        callable: &Value,
+        args: &[Value],
+        named: Vec<(rhp_values::PhpStr, Value)>,
+    ) -> Result<Value, Thrown> {
+        if !named.is_empty() {
+            return Err(Thrown::unsupported(
+                "named arguments",
+                "not supported by this host",
+            ));
+        }
+        self.call_callable(callable, args)
+    }
+
     /// Whether a value is callable (`is_callable`): closures, function names,
     /// `[obj_or_class, method]` pairs, and `__invoke` objects. Default: closures only.
     fn is_callable_value(&self, callable: &Value) -> bool {
@@ -1308,8 +1325,24 @@ fn fn_call_user_func(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 
 fn fn_call_user_func_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let params = as_array(&args[1], "call_user_func_array")?;
-    let argv: Vec<Value> = params.iter().map(|(_, v)| v.clone()).collect();
-    host.call_callable(&args[0], &argv)
+    let mut argv: Vec<Value> = Vec::new();
+    let mut named: Vec<(rhp_values::PhpStr, Value)> = Vec::new();
+    for (k, v) in params.iter() {
+        match k {
+            rhp_values::ArrayKey::Int(_) if !named.is_empty() => {
+                return Err(Thrown::error(
+                    "Error",
+                    "Cannot use positional argument after named argument",
+                ))
+            }
+            rhp_values::ArrayKey::Int(_) => argv.push(v.clone()),
+            rhp_values::ArrayKey::Str(s) => named.push((s.clone(), v.clone())),
+        }
+    }
+    if named.is_empty() {
+        return host.call_callable(&args[0], &argv);
+    }
+    host.call_callable_named(&args[0], &argv, named)
 }
 
 fn fn_array_reverse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

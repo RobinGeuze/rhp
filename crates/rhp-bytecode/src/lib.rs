@@ -536,6 +536,17 @@ pub enum Instr {
         obj: Reg,
         name: NIdx,
     },
+    /// `isset($o->$name)`: `IssetProp` with the name in a register.
+    IssetPropDyn {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+    },
+    /// `unset($o->$name)`: `UnsetProp` with the name in a register.
+    UnsetPropDyn {
+        obj: Reg,
+        name: Reg,
+    },
     /// `global $x`: bind CV `cv` to the global variable `name` (a shared cell).
     BindGlobal {
         cv: Reg,

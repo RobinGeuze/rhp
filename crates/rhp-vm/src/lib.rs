@@ -39,6 +39,8 @@ type Includer = Box<dyn FnMut(&str, &[u8]) -> Result<Program, Thrown>>;
 /// The virtual machine: output sink + call stack + global tables.
 pub struct Vm {
     out: Vec<u8>,
+    /// Active magic-accessor guards: (object id, accessor, property name).
+    prop_guards: std::collections::HashSet<(u32, &'static [u8], PhpStr)>,
     /// Write output directly to stdout instead of `out` (the CLI).
     stdout_passthrough: bool,
     /// Output-buffering stack (`ob_start`): `echo`/`print` write to the top
@@ -1077,6 +1079,7 @@ impl Vm {
         }
         Vm {
             out: Vec::new(),
+            prop_guards: Default::default(),
             stdout_passthrough: false,
             ob_stack: Vec::new(),
             stack: Vec::new(),
@@ -1228,10 +1231,10 @@ impl Vm {
                     }
                     PropRes::Denied(vis) => Some(vis),
                 };
-                match self.lookup_method(cls, b"__get") {
+                match self.magic(&h, cls, b"__get", &pname) {
                     Some(getter) => {
                         let arg = Value::str(pname.as_bytes().to_vec());
-                        self.call_sync(&getter, Some(h.clone()), cls, vec![arg])?
+                        self.call_magic(&getter, &h, cls, b"__get", &pname, vec![arg])?
                     }
                     None => match denied {
                         Some(vis) => {
@@ -1248,6 +1251,101 @@ impl Vm {
             }
             _ => Value::Null,
         })
+    }
+
+    /// `isset($o->name)`: a set, non-null property reachable from the scope,
+    /// else `__isset`, else false.
+    fn prop_isset(&mut self, top: usize, o: Value, pname: PhpStr) -> Result<bool, Thrown> {
+        let Value::Object(h) = o else {
+            return Ok(false);
+        };
+        let cls = h.borrow().class;
+        let scope = self.stack[top].defining_class;
+        let present = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+            PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
+            PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
+            PropRes::Denied(_) => None,
+        };
+        Ok(match present {
+            // A declared/dynamic property: set iff non-null.
+            Some(v) => !matches!(deref(&v), Value::Null),
+            None => match self.magic(&h, cls, b"__isset", &pname) {
+                Some(m) => {
+                    let nm = Value::str(pname.as_bytes().to_vec());
+                    let r = self.call_magic(&m, &h, cls, b"__isset", &pname, vec![nm])?;
+                    conv::to_bool(&r)
+                }
+                None => false,
+            },
+        })
+    }
+
+    /// `unset($o->name)`: remove the property reachable from the scope, else
+    /// `__unset`, else an access error for an inaccessible declaration.
+    fn prop_unset(&mut self, top: usize, o: Value, pname: PhpStr) -> Result<(), Thrown> {
+        let Value::Object(h) = o else {
+            return Ok(());
+        };
+        let cls = h.borrow().class;
+        let scope = self.stack[top].defining_class;
+        let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
+        let key = match &res {
+            PropRes::Slot(k) => Some(k.clone()),
+            PropRes::Dynamic => Some(pname.clone()),
+            PropRes::Denied(_) => None,
+        };
+        let present = key
+            .as_ref()
+            .is_some_and(|k| h.borrow().properties.contains_key(k));
+        if present {
+            h.borrow_mut().properties.shift_remove(&key.unwrap());
+        } else if let Some(m) = self.magic(&h, cls, b"__unset", &pname) {
+            let nm = Value::str(pname.as_bytes().to_vec());
+            self.call_magic(&m, &h, cls, b"__unset", &pname, vec![nm])?;
+        } else if let PropRes::Denied(vis) = res {
+            return Err(classes::prop_access_err(
+                &self.classes,
+                cls,
+                pname.as_bytes(),
+                vis,
+            ));
+        }
+        Ok(())
+    }
+
+    /// The magic property accessor `which` (`__get`/`__set`/`__isset`/
+    /// `__unset`) for `name` on `h`, unless that same accessor is already
+    /// running for that property on that object (php's property guards: inside
+    /// `__get('x')`, `$this->x` is a plain property access).
+    fn magic(
+        &self,
+        h: &ObjectHandle,
+        cls: ClassId,
+        which: &'static [u8],
+        name: &PhpStr,
+    ) -> Option<classes::ResolvedMethod> {
+        let id = h.borrow().id;
+        if self.prop_guards.contains(&(id, which, name.clone())) {
+            return None;
+        }
+        self.lookup_method(cls, which)
+    }
+
+    /// Run a magic accessor with its property guard held.
+    fn call_magic(
+        &mut self,
+        m: &classes::ResolvedMethod,
+        h: &ObjectHandle,
+        cls: ClassId,
+        which: &'static [u8],
+        name: &PhpStr,
+        args: Vec<Value>,
+    ) -> Result<Value, Thrown> {
+        let guard = (h.borrow().id, which, name.clone());
+        self.prop_guards.insert(guard.clone());
+        let r = self.call_sync(m, Some(h.clone()), cls, args);
+        self.prop_guards.remove(&guard);
+        r
     }
 
     /// php's static-property visibility check: a non-public static is reachable
@@ -1288,9 +1386,9 @@ impl Vm {
             if !present {
                 // Inaccessible, or not currently set (dynamic / unset declared):
                 // `__set` intercepts when defined.
-                if let Some(setter) = self.lookup_method(cls, b"__set") {
+                if let Some(setter) = self.magic(&h, cls, b"__set", &pname) {
                     let nm = Value::str(pname.as_bytes().to_vec());
-                    self.call_sync(&setter, Some(h), cls, vec![nm, val])?;
+                    self.call_magic(&setter, &h, cls, b"__set", &pname, vec![nm, val])?;
                     return Ok(());
                 }
                 if let Some(vis) = denied {
@@ -2809,63 +2907,24 @@ impl Vm {
                 Instr::IssetProp { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
-                    let result = match o {
-                        Value::Object(h) => {
-                            let cls = h.borrow().class;
-                            let scope = self.stack[top].defining_class;
-                            let present =
-                                match classes::resolve_prop(&self.classes, cls, scope, &pname) {
-                                    PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
-                                    PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
-                                    PropRes::Denied(_) => None,
-                                };
-                            match present {
-                                // A declared/dynamic property: set iff non-null.
-                                Some(v) => !matches!(deref(&v), Value::Null),
-                                None => match self.lookup_method(cls, b"__isset") {
-                                    Some(m) => {
-                                        let nm = Value::str(pname.as_bytes().to_vec());
-                                        let r =
-                                            self.call_sync(&m, Some(h.clone()), cls, vec![nm])?;
-                                        conv::to_bool(&r)
-                                    }
-                                    None => false,
-                                },
-                            }
-                        }
-                        _ => false,
-                    };
-                    self.reg_set(top, dst, Value::Bool(result));
+                    let r = self.prop_isset(top, o, pname)?;
+                    self.reg_set(top, dst, Value::Bool(r));
+                }
+                Instr::IssetPropDyn { dst, obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let r = self.prop_isset(top, o, pname)?;
+                    self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::UnsetProp { obj, name } => {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
-                    if let Value::Object(h) = o {
-                        let cls = h.borrow().class;
-                        let scope = self.stack[top].defining_class;
-                        let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
-                        let key = match &res {
-                            PropRes::Slot(k) => Some(k.clone()),
-                            PropRes::Dynamic => Some(pname.clone()),
-                            PropRes::Denied(_) => None,
-                        };
-                        let present = key
-                            .as_ref()
-                            .is_some_and(|k| h.borrow().properties.contains_key(k));
-                        if present {
-                            h.borrow_mut().properties.shift_remove(&key.unwrap());
-                        } else if let Some(m) = self.lookup_method(cls, b"__unset") {
-                            let nm = Value::str(pname.as_bytes().to_vec());
-                            self.call_sync(&m, Some(h), cls, vec![nm])?;
-                        } else if let PropRes::Denied(vis) = res {
-                            return Err(classes::prop_access_err(
-                                &self.classes,
-                                cls,
-                                pname.as_bytes(),
-                                vis,
-                            ));
-                        }
-                    }
+                    self.prop_unset(top, o, pname)?;
+                }
+                Instr::UnsetPropDyn { obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    self.prop_unset(top, o, pname)?;
                 }
                 Instr::FetchStaticProp {
                     dst, class, name, ..

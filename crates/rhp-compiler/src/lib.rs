@@ -2631,15 +2631,10 @@ impl ProtoBuilder {
                 }
                 // `unset($o->prop)`: remove a declared property, else `__unset`.
                 Expression::Access(Access::Property(pa)) => {
-                    if let ClassLikeMemberSelector::Identifier(li) = &pa.property {
-                        let obj = self.compile_expr(pa.object)?;
-                        let name = self.intern_name(li.value);
-                        self.emit(Instr::UnsetProp { obj, name });
-                    } else {
-                        return Err(Thrown::unsupported(
-                            "unset of dynamic property name",
-                            "`unset($o->$x)` deferred",
-                        ));
+                    let obj = self.compile_expr(pa.object)?;
+                    match self.compile_selector(&pa.property)? {
+                        Sel::Static(name) => self.emit(Instr::UnsetProp { obj, name }),
+                        Sel::Dyn(name) => self.emit(Instr::UnsetPropDyn { obj, name }),
                     }
                 }
                 _ => {
@@ -3431,17 +3426,17 @@ impl ProtoBuilder {
                 for v in i.values.iter() {
                     // `isset($o->prop)` must consult `__isset`, not `__get`.
                     if let Expression::Access(Access::Property(pa)) = v {
-                        if let ClassLikeMemberSelector::Identifier(li) = &pa.property {
-                            let obj = self.compile_expr(pa.object)?;
-                            let name = self.intern_name(li.value);
-                            let r = self.alloc_temp();
-                            self.emit(Instr::IssetProp { dst: r, obj, name });
-                            // IssetProp yields a bool; false short-circuits.
-                            let pos = self.code.len();
-                            self.emit(Instr::Nop); // JmpFalse r -> false
-                            jumps.push((pos, r, true));
-                            continue;
+                        let obj = self.compile_expr(pa.object)?;
+                        let r = self.alloc_temp();
+                        match self.compile_selector(&pa.property)? {
+                            Sel::Static(name) => self.emit(Instr::IssetProp { dst: r, obj, name }),
+                            Sel::Dyn(name) => self.emit(Instr::IssetPropDyn { dst: r, obj, name }),
                         }
+                        // IssetProp yields a bool; false short-circuits.
+                        let pos = self.code.len();
+                        self.emit(Instr::Nop); // JmpFalse r -> false
+                        jumps.push((pos, r, true));
+                        continue;
                     }
                     let r = self.compile_expr(v)?; // null if absent (DimFetch returns null)
                     let pos = self.code.len();

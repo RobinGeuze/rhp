@@ -520,6 +520,9 @@ struct Ctx {
     seed: u64,
     fixtures: Option<PathBuf>,
     minimize: bool,
+    /// php's `PHP_VERSION`, when it differs from rhp's: a test whose php output
+    /// contains it is printing the engine version, which can't match.
+    version_skew: Option<String>,
     /// Pause between the php and rhp runs of a test. The `--write-known`
     /// confirmation pass sets it past a second, so any test whose output
     /// depends on the current time diverges deterministically.
@@ -721,6 +724,13 @@ fn run_test(
     }
     inv.snapshot = snapshot(&dir);
     let php_out = ctx.php_script(&inv);
+    if let Some(v) = &ctx.version_skew {
+        if php_out.out.windows(v.len()).any(|w| w == v.as_bytes()) {
+            let _ = fs::remove_file(&script);
+            restore(&dir, &pristine);
+            return skipped(rel, "version");
+        }
+    }
     std::thread::sleep(ctx.skew);
     let rhp_out = ctx.rhp_script(&inv);
     let v = classify(&php_out, &rhp_out);
@@ -1123,6 +1133,30 @@ fn print_clusters<'a>(items: impl Iterator<Item = (&'a str, &'a str)>, top: usiz
     }
 }
 
+/// php's `PHP_VERSION` if rhp reports a different one, else `None`.
+fn version_skew(ctx: &Ctx, scratch: &Path) -> Option<String> {
+    let script = scratch.join("__rhp_phpt_version.php");
+    fs::write(&script, b"<?php echo PHP_VERSION;").ok()?;
+    let inv = Invocation {
+        dir: scratch,
+        script: &script,
+        ini: &[],
+        env: &[],
+        args: &[],
+        stdin: None,
+        clean: None,
+        snapshot: BTreeSet::new(),
+    };
+    let php = String::from_utf8_lossy(&ctx.php(&inv, &[], &script).out)
+        .trim()
+        .to_string();
+    let rhp = String::from_utf8_lossy(&ctx.rhp(&inv).out)
+        .trim()
+        .to_string();
+    let _ = fs::remove_file(&script);
+    (!php.is_empty() && php != rhp).then_some(php)
+}
+
 /// Run `tests` across the worker roots (one worker per root), sorted by path.
 fn run_parallel(
     ctx: &Ctx,
@@ -1394,7 +1428,17 @@ pub fn main(args: &[String]) -> ExitCode {
         fixtures: o.fixtures.clone(),
         minimize: o.minimize,
         skew: Duration::ZERO,
+        version_skew: None,
     };
+    let ctx = Ctx {
+        version_skew: version_skew(&ctx, &worker_roots[0]),
+        ..ctx
+    };
+    if let Some(v) = &ctx.version_skew {
+        eprintln!(
+            "phpt: php is {v} but rhp reports another version; tests printing it are skipped"
+        );
+    }
     eprintln!(
         "phpt: {} tests in {} tree(s), {} jobs{}",
         tests.len(),
@@ -1575,7 +1619,10 @@ pub fn main(args: &[String]) -> ExitCode {
         // section — would silently drop the test from the ratchet.
         let allowed_skip = |r: &TestResult| {
             r.status == Status::Skipped
-                && matches!(r.key.as_str(), "skipif" | "php-timeout" | "php-crash")
+                && matches!(
+                    r.key.as_str(),
+                    "skipif" | "php-timeout" | "php-crash" | "version"
+                )
         };
         let failures: Vec<&TestResult> = results
             .iter()

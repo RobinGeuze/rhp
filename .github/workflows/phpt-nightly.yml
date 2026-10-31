@@ -1,9 +1,13 @@
 name: phpt nightly
 
-# Full php-src .phpt corpus + mutation testing against php 8.5. Discovery
-# only, never failing: the job summary lists newly passing tests to add to
-# tests/phpt/known-passing.txt, regressions, and the biggest failure clusters.
-# The JSON report and emitted mutant repros are uploaded as artifacts.
+# Discovery only, never failing:
+# - phpt: full php-src .phpt corpus + mutation against php 8.5. The summary
+#   lists newly passing tests to add to tests/phpt/known-passing.txt,
+#   regressions, and the biggest failure clusters.
+# - php-bugs: the same corpus and mutants against php built with ASan + UBSan
+#   from the pinned php-src commit, hunting bugs in php itself (crashes and
+#   sanitizer reports), with minimised repros.
+# Reports and repros are uploaded as artifacts.
 
 on:
   schedule:
@@ -17,6 +21,9 @@ on:
         description: Minimise emitted mutant repros (slower)
         type: boolean
         default: false
+      sanitizer_mutants:
+        description: Mutants per test in the ASan/UBSan php-bugs job
+        default: '4'
 
 permissions:
   contents: read
@@ -54,11 +61,14 @@ jobs:
       - name: Run the corpus with mutation
         env:
           MUTANTS: ${{ inputs.mutants || '8' }}
-          MINIMIZE: ${{ inputs.minimize && '--minimize' || '' }}
+          MINIMIZE: ${{ inputs.minimize && 'yes' || '' }}
         run: |
           mkdir -p out
+          extra=()
+          if [ -n "$MINIMIZE" ]; then extra+=(--minimize); fi
           target/release/rhp-difftest phpt --php-src php-src \
-            --mutate "$MUTANTS" $MINIMIZE --emit-fixtures out/fixtures \
+            --mutate "$MUTANTS" "${extra[@]}" --emit-fixtures out/fixtures \
+            --php-findings out/php-findings \
             --json out/phpt.json --write-known out/passing-all.txt --top 40 \
             | tee out/report.txt
 
@@ -76,7 +86,8 @@ jobs:
             echo
             echo "- newly passing (add to \`tests/phpt/known-passing.txt\`): **$(wc -l < out/newly-passing.txt)**"
             echo "- known-passing that didn't match tonight: **$(wc -l < out/no-longer-passing.txt)**"
-            echo "- mutant repros emitted: **$(ls out/fixtures 2>/dev/null | grep -c '\.php$' || true)**"
+            echo "- mutant repros emitted: **$(find out/fixtures -name '*.php' 2>/dev/null | wc -l)**"
+            echo "- runs where php itself crashed: **$(find out/php-findings -name '*.php' 2>/dev/null | wc -l)** repro(s)"
             echo
             echo '```'
             sed -n '/^phpt:/,$p' out/report.txt | head -150
@@ -90,5 +101,107 @@ jobs:
         if: always()
         with:
           name: phpt-report
+          path: out/
+          retention-days: 30
+
+  php-bugs:
+    name: php bugs (ASan + UBSan php)
+    # Pinned: the cached php links against this image's shared libraries.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read pinned php-src commit
+        id: ref
+        run: echo "sha=$(grep -v '^#' tests/phpt/php-src.ref | head -1)" >> "$GITHUB_OUTPUT"
+      # The full tree: we build php from it, and run its tests.
+      - uses: actions/checkout@v7
+        with:
+          repository: php/php-src
+          ref: ${{ steps.ref.outputs.sha }}
+          path: php-src
+          persist-credentials: false
+      # Restore and save separately: a hunt that times out must not throw the
+      # (slow) build away.
+      - uses: actions/cache/restore@v4
+        id: php-cache
+        with:
+          path: php-san
+          key: php-san-ubuntu-24.04-${{ steps.ref.outputs.sha }}-${{ hashFiles('.github/scripts/build-php-sanitizers.sh', '.github/workflows/phpt-nightly.yml') }}
+      # Every run, also on a cache hit: llvm provides llvm-symbolizer, without
+      # which ASan frames have no function names and every finding clusters as
+      # "in ?".
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libclang-rt-dev llvm \
+            autoconf bison re2c pkg-config make libxml2-dev libgmp-dev zlib1g-dev
+          echo "ASAN_SYMBOLIZER_PATH=$(command -v llvm-symbolizer)" >> "$GITHUB_ENV"
+      - name: Build php with ASan + UBSan
+        if: steps.php-cache.outputs.cache-hit != 'true'
+        run: .github/scripts/build-php-sanitizers.sh php-src "$PWD/php-san"
+      - uses: actions/cache/save@v4
+        if: steps.php-cache.outputs.cache-hit != 'true'
+        with:
+          path: php-san
+          key: ${{ steps.php-cache.outputs.cache-primary-key }}
+      - name: Confirm the sanitized php
+        run: |
+          test -x "$ASAN_SYMBOLIZER_PATH"
+          php-san/bin/php -n -v
+          test "$(php-san/bin/php -n -r 'echo "ok";')" = ok
+          # shellcheck disable=SC2016 # single-quoted on purpose: PHP code, not shell
+          php-san/bin/php -n -r 'foreach (["bcmath","ctype","gmp","mbstring","phar","dom"] as $e) { if (!extension_loaded($e)) { fwrite(STDERR, "missing $e\n"); exit(1); } }'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p rhp-cli -p rhp-difftest
+
+      # run-tests.php --asan's environment: php's own allocator off so ASan sees
+      # every allocation, and SKIP_ASAN so SKIPIFs drop tests too slow under it.
+      # Bounded below the job's limit so the summary and upload still run.
+      - name: Hunt php bugs (corpus + mutants)
+        timeout-minutes: 200
+        env:
+          RHP_PHP: ${{ github.workspace }}/php-san/bin/php
+          USE_ZEND_ALLOC: '0'
+          USE_TRACKED_ALLOC: '1'
+          ZEND_DONT_UNLOAD_MODULES: '1'
+          SKIP_ASAN: '1'
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: print_stacktrace=1
+          MUTANTS: ${{ inputs.sanitizer_mutants || '4' }}
+        run: |
+          mkdir -p out
+          target/release/rhp-difftest phpt --php-src php-src \
+            --filter tests/lang/ --filter Zend/tests/ --filter ext/standard/tests/ \
+            --mutate "$MUTANTS" --mutate-all --minimize --timeout 30 \
+            --php-findings out/php-findings --json out/phpt-php-bugs.json --top 40 \
+            | tee out/report.txt
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## php bugs: ASan + UBSan php (php-src ${{ steps.ref.outputs.sha }})"
+            echo
+            # -a: mutant keys can contain NUL bytes.
+            n=$(find out/php-findings -name '*.php' 2>/dev/null | wc -l)
+            if ! grep -aqE '^phpt: [0-9]+ selected' out/report.txt 2>/dev/null; then
+              echo "**The hunt did not finish** (timeout or error). $n repro(s) were written before it stopped; see the \`php-bugs\` artifact."
+            elif grep -aq "php itself misbehaved" out/report.txt; then
+              echo '```'
+              sed -n '/php itself misbehaved/,$p' out/report.txt | head -120
+              echo '```'
+              echo
+              echo "Minimised repros (\`.php\` + php's output in \`.txt\`) are in the \`php-bugs\` artifact."
+            else
+              echo "No crashes or sanitizer reports from php tonight."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: php-bugs
           path: out/
           retention-days: 30

@@ -217,6 +217,8 @@ struct Outcome {
     out: Vec<u8>,
     timed_out: bool,
     signaled: bool,
+    /// The terminating signal, when the process was killed by one.
+    signal: Option<i32>,
 }
 
 fn read_capped(mut r: impl Read, sink: &Mutex<Vec<u8>>) {
@@ -247,6 +249,7 @@ fn run_proc(mut cmd: Command, stdin: Option<&[u8]>, timeout: Duration) -> Outcom
         out: format!("spawn failed: {e}").into_bytes(),
         timed_out: false,
         signaled: false,
+        signal: None,
     };
     let (reader, writer) = match std::io::pipe() {
         Ok(p) => p,
@@ -306,16 +309,126 @@ fn run_proc(mut cmd: Command, stdin: Option<&[u8]>, timeout: Duration) -> Outcom
         wait_reader(Duration::from_millis(300)); // then give up on it
     }
     let out = sink.lock().unwrap().clone();
+    let signal = if timed_out {
+        None
+    } else {
+        status.and_then(|s| s.signal())
+    };
     Outcome {
         out,
         timed_out,
-        signaled: !timed_out && status.is_some_and(|s| s.signal().is_some()),
+        signaled: signal.is_some(),
+        signal,
     }
 }
 
 // ---------------------------------------------------------------------------
 // comparison + classification
 // ---------------------------------------------------------------------------
+
+/// Evidence that php itself misbehaved on a program: killed by a signal, a
+/// sanitizer report (ASan/UBSan, from a sanitizer build), or the Zend
+/// allocator detecting heap corruption. Returns a cluster key that groups
+/// runs hitting the same underlying bug. A timeout is *not* evidence — a
+/// mutant can legitimately loop forever.
+fn php_anomaly(o: &Outcome) -> Option<String> {
+    let text = String::from_utf8_lossy(&o.out);
+    // Sanitizer reports are recognised by their exact shape, so a program that
+    // merely prints the words (e.g. a test titled "zend_mm_heap corrupted")
+    // isn't a finding: ASan's "==<pid>==ERROR: AddressSanitizer: ", UBSan's
+    // "<file>.<ext>:<line>:<col>: runtime error: ".
+    let asan = text
+        .match_indices("==ERROR: AddressSanitizer: ")
+        .find(|&(at, _)| {
+            let line = text[..at].rsplit('\n').next().unwrap_or("");
+            line.len() > 2
+                && line.starts_with("==")
+                && line[2..].bytes().all(|b| b.is_ascii_digit())
+        });
+    if let Some((at, m)) = asan {
+        let report = &text[at + m.len()..];
+        let kind = report.split_whitespace().next().unwrap_or("error");
+        // Where a stack overflow is detected is arbitrary (it varies run to
+        // run), so its top frame would split the cluster and the repro would
+        // never "reproduce"; key it by kind alone.
+        if kind == "stack-overflow" {
+            return Some("asan stack-overflow".into());
+        }
+        // First stack frame outside the sanitizer runtime / libc wrappers.
+        let runtime = |f: &str| {
+            [
+                "__asan",
+                "__interceptor",
+                "___interceptor",
+                "__sanitizer",
+                "__ubsan",
+                "__libc",
+            ]
+            .iter()
+            .any(|p| f.starts_with(p))
+                || matches!(
+                    f,
+                    "malloc"
+                        | "free"
+                        | "calloc"
+                        | "realloc"
+                        | "memcpy"
+                        | "memmove"
+                        | "memset"
+                        | "memcmp"
+                        | "strlen"
+                        | "strcmp"
+                        | "strncmp"
+                )
+        };
+        // (function, source file) of each stack frame.
+        let frames: Vec<(&str, &str)> = report
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim_start();
+                l.starts_with('#').then(|| l.split(" in ").nth(1))?
+            })
+            .filter_map(|rest| {
+                let mut w = rest.split_whitespace();
+                Some((w.next()?, w.next().unwrap_or("")))
+            })
+            .collect();
+        // Prefer the first frame in php's own sources: interceptors (memchr,
+        // strstr, ...) are too many to list and would merge unrelated bugs.
+        let in_php = |file: &str| {
+            ["/Zend/", "/ext/", "/main/", "/sapi/", "/TSRM/"]
+                .iter()
+                .any(|d| file.contains(d))
+        };
+        let frame = frames
+            .iter()
+            .find(|(_, file)| in_php(file))
+            .or_else(|| frames.iter().find(|(f, _)| !runtime(f)))
+            .map_or("?", |(f, _)| f);
+        return Some(format!("asan {kind} in {frame}"));
+    }
+    let ubsan = text.lines().find_map(|l| {
+        let (loc, msg) = l.split_once(": runtime error: ")?;
+        let mut parts = loc.rsplitn(3, ':');
+        let (col, line, file) = (parts.next()?, parts.next()?, parts.next()?);
+        let num = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        let source = [".c", ".h", ".cc", ".cpp", ".y", ".re", ".l"]
+            .iter()
+            .any(|e| file.ends_with(e));
+        (num(col) && num(line) && source).then_some((file, line, msg))
+    });
+    if let Some((file, line, msg)) = ubsan {
+        let file = file.rsplit(['/', ' ']).next().unwrap_or(file);
+        return Some(cluster_key(&format!("ubsan {file}:{line}: "), msg));
+    }
+    if text
+        .lines()
+        .any(|l| l.trim_end() == "zend_mm_heap corrupted")
+    {
+        return Some("zend_mm_heap corrupted".into());
+    }
+    o.signal.map(|sig| format!("php killed by signal {sig}"))
+}
 
 /// run-tests.php normalisation: CRLF → LF, then PHP `trim()`.
 fn normalise(out: &[u8]) -> Vec<u8> {
@@ -484,6 +597,11 @@ fn cluster_key(prefix: &str, s: &str) -> String {
     let mut out = String::from(prefix);
     for word in s.split(' ') {
         let mut last_digit = false;
+        // Addresses (ASLR) differ on every run.
+        if word.starts_with("0x") && word.len() > 2 {
+            out.push_str("ADDR ");
+            continue;
+        }
         if word.contains('/') && word.len() > 1 {
             out.push_str("PATH ");
             continue;
@@ -614,8 +732,13 @@ struct Ctx {
     php_modules: BTreeSet<String>,
     timeout: Duration,
     mutate: usize,
+    /// Mutate every test, not only those rhp matches. Mutants of a test rhp
+    /// doesn't match yet run through php only — they hunt php bugs.
+    mutate_all: bool,
     seed: u64,
     fixtures: Option<PathBuf>,
+    /// Where to write repros of runs in which php itself misbehaved.
+    php_findings: Option<PathBuf>,
     minimize: bool,
     /// php's `PHP_VERSION`, when it differs from rhp's: a test whose php output
     /// contains it is printing the engine version, which can't match.
@@ -642,6 +765,16 @@ struct Invocation<'a> {
 
 impl Ctx {
     fn php(&self, inv: &Invocation, extra_ini: &[String], script: &Path) -> Outcome {
+        self.php_within(inv, extra_ini, script, self.timeout)
+    }
+
+    fn php_within(
+        &self,
+        inv: &Invocation,
+        extra_ini: &[String],
+        script: &Path,
+        timeout: Duration,
+    ) -> Outcome {
         let mut cmd = Command::new(php_bin());
         cmd.arg("-n")
             .current_dir(inv.dir)
@@ -651,7 +784,7 @@ impl Ctx {
             cmd.arg("-d").arg(kv);
         }
         cmd.arg(script).args(inv.args);
-        run_proc(cmd, inv.stdin, self.timeout)
+        run_proc(cmd, inv.stdin, timeout)
     }
 
     fn rhp(&self, inv: &Invocation) -> Outcome {
@@ -678,7 +811,11 @@ impl Ctx {
     }
 
     fn php_script(&self, inv: &Invocation) -> Outcome {
-        let out = self.php(inv, inv.ini, inv.script);
+        self.php_script_within(inv, self.timeout)
+    }
+
+    fn php_script_within(&self, inv: &Invocation, timeout: Duration) -> Outcome {
+        let out = self.php_within(inv, inv.ini, inv.script, timeout);
         self.reset(inv);
         out
     }
@@ -707,6 +844,34 @@ struct MutantResult {
 struct MutationStats {
     generated: usize,
     discarded: usize,
+    /// Run through php only (`--mutate-all`, test not matched by rhp).
+    php_only: usize,
+    /// Compared against rhp.
+    compared: usize,
+}
+
+/// A run (a test, or one of its mutants) in which php itself misbehaved.
+struct PhpFinding {
+    test: String,
+    mutation: Option<String>,
+    key: String,
+}
+
+/// Minimised repros written per php-finding cluster: enough to report the
+/// bug, without minimising a hundred mutants that hit the same one.
+const PHP_REPROS_PER_CLUSTER: usize = 3;
+/// Per-run timeout while checking that a php finding reproduces.
+const PHP_REPRO_TIMEOUT: Duration = Duration::from_secs(5);
+/// Wall-clock budget for minimising one php finding.
+const PHP_REPRO_BUDGET: Duration = Duration::from_secs(180);
+
+/// What workers report besides each test's verdict.
+#[derive(Default)]
+struct Sinks {
+    mutants: Mutex<Vec<MutantResult>>,
+    mstats: Mutex<MutationStats>,
+    php: Mutex<Vec<PhpFinding>>,
+    php_emitted: Mutex<HashMap<String, usize>>,
 }
 
 fn skipped(test: &str, reason: impl Into<String>) -> TestResult {
@@ -719,13 +884,7 @@ fn skipped(test: &str, reason: impl Into<String>) -> TestResult {
 
 /// Run one test (and its mutants, if it passes). Mutant divergences are
 /// appended to `mutants`.
-fn run_test(
-    ctx: &Ctx,
-    root: &Path,
-    rel: &str,
-    mutants: &Mutex<Vec<MutantResult>>,
-    mstats: &Mutex<MutationStats>,
-) -> TestResult {
+fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
     let path = root.join(rel);
     let Ok(data) = fs::read(&path) else {
         return skipped(rel, "unreadable");
@@ -821,6 +980,10 @@ fn run_test(
     }
     inv.snapshot = snapshot(&dir);
     let php_out = ctx.php_script(&inv);
+    if let Some(key) = php_anomaly(&php_out) {
+        record_php_finding(ctx, &inv, sinks, rel, None, &file, key);
+        let _ = fs::write(&script, &file); // the repro run may have rewritten it
+    }
     if let Some(v) = &ctx.version_skew {
         if php_out.out.windows(v.len()).any(|w| w == v.as_bytes()) {
             let _ = fs::remove_file(&script);
@@ -842,7 +1005,11 @@ fn run_test(
         v = verdict(Status::Match, "spec");
     }
 
-    if v.status == Status::Match && ctx.mutate > 0 {
+    let mutate = ctx.mutate > 0
+        && (v.status == Status::Match
+            || (ctx.mutate_all && !php_out.timed_out && php_anomaly(&php_out).is_none()));
+    let php_only = v.status != Status::Match;
+    if mutate {
         let mut rng = Rng::new(ctx.seed ^ fnv1a(rel.as_bytes()));
         for (k, m) in mutate::mutants(&file, &mut rng, ctx.mutate)
             .into_iter()
@@ -852,24 +1019,35 @@ fn run_test(
                 break;
             }
             let php_m = ctx.php_script(&inv);
-            mstats.lock().unwrap().generated += 1;
-            if php_m.timed_out || String::from_utf8_lossy(&php_m.out).contains("Parse error: ") {
-                mstats.lock().unwrap().discarded += 1;
+            sinks.mstats.lock().unwrap().generated += 1;
+            if let Some(key) = php_anomaly(&php_m) {
+                let mutation = Some((k, m.description.as_str()));
+                record_php_finding(ctx, &inv, sinks, rel, mutation, &m.source, key);
+                sinks.mstats.lock().unwrap().discarded += 1;
                 continue;
+            }
+            if php_m.timed_out || String::from_utf8_lossy(&php_m.out).contains("Parse error: ") {
+                sinks.mstats.lock().unwrap().discarded += 1;
+                continue;
+            }
+            if php_only {
+                sinks.mstats.lock().unwrap().php_only += 1;
+                continue; // rhp doesn't match the unmutated test; comparing is noise
             }
             let rhp_m = ctx.rhp_script(&inv);
             let mv = classify(&php_m, &rhp_m);
             if mv.status == Status::Skipped {
-                mstats.lock().unwrap().discarded += 1;
+                sinks.mstats.lock().unwrap().discarded += 1;
                 continue;
             }
+            sinks.mstats.lock().unwrap().compared += 1;
             if mv.status != Status::Match {
                 if let (Some(dirf), Status::Mismatch | Status::RhpCrash) =
                     (&ctx.fixtures, mv.status)
                 {
                     emit_fixture(ctx, &inv, dirf, rel, k, &m, mv.status);
                 }
-                mutants.lock().unwrap().push(MutantResult {
+                sinks.mutants.lock().unwrap().push(MutantResult {
                     test: rel.to_string(),
                     mutation: m.description,
                     status: mv.status,
@@ -936,7 +1114,9 @@ fn still_diverges(ctx: &Ctx, inv: &Invocation, src: &[u8], want: Status) -> Opti
 }
 
 /// Greedy line-chunk reduction (ddmin-style), bounded to `budget` runs.
-fn minimise(ctx: &Ctx, inv: &Invocation, src: &[u8], want: Status, budget: usize) -> Vec<u8> {
+/// Greedy line-chunk reduction (ddmin-style) of `src` while `keep` holds,
+/// bounded to `budget` evaluations.
+fn minimise(src: &[u8], budget: usize, mut keep: impl FnMut(&[u8]) -> bool) -> Vec<u8> {
     let mut lines: Vec<&[u8]> = src.split_inclusive(|&b| b == b'\n').collect();
     let mut runs = 0;
     let mut chunk = lines.len().div_ceil(2).max(1);
@@ -959,7 +1139,7 @@ fn minimise(ctx: &Ctx, inv: &Invocation, src: &[u8], want: Status, budget: usize
                 .flat_map(|l| l.iter().copied())
                 .collect();
             runs += 1;
-            if still_diverges(ctx, inv, &candidate, want).is_some() {
+            if keep(&candidate) {
                 lines.drain(i..end);
                 removed_any = true;
             } else {
@@ -976,6 +1156,85 @@ fn minimise(ctx: &Ctx, inv: &Invocation, src: &[u8], want: Status, budget: usize
     lines.concat()
 }
 
+/// Record a php misbehaviour and, under `--php-findings`, write a repro
+/// (minimised under `--minimize`, keeping the *same* anomaly) plus php's
+/// output, up to [`PHP_REPROS_PER_CLUSTER`] per cluster.
+fn record_php_finding(
+    ctx: &Ctx,
+    inv: &Invocation,
+    sinks: &Sinks,
+    rel: &str,
+    mutation: Option<(usize, &str)>,
+    src: &[u8],
+    key: String,
+) {
+    sinks.php.lock().unwrap().push(PhpFinding {
+        test: rel.to_string(),
+        mutation: mutation.map(|(_, d)| d.to_string()),
+        key: key.clone(),
+    });
+    let Some(dir) = &ctx.php_findings else {
+        return;
+    };
+    // A bare signal says nothing about *which* crash it was, so without a
+    // sanitizer every crashing test gets its own repro slots.
+    let slot = if key.starts_with("php killed by signal") {
+        format!("{key} @ {rel}")
+    } else {
+        key.clone()
+    };
+    {
+        let mut emitted = sinks.php_emitted.lock().unwrap();
+        let n = emitted.entry(slot.clone()).or_insert(0);
+        if *n >= PHP_REPROS_PER_CLUSTER {
+            return;
+        }
+        *n += 1;
+    }
+    // Minimising can delete a loop's exit, and each such candidate would burn
+    // the full timeout: bound both the candidate runs and the whole repro.
+    let started = Instant::now();
+    let candidate_timeout = ctx.timeout.min(PHP_REPRO_TIMEOUT);
+    let reproduces = |candidate: &[u8]| -> Option<Outcome> {
+        fs::write(inv.script, candidate).ok()?;
+        let o = ctx.php_script_within(inv, candidate_timeout);
+        (!o.timed_out && php_anomaly(&o).as_deref() == Some(key.as_str())).then_some(o)
+    };
+    let src = if ctx.minimize {
+        minimise(src, 200, |c| {
+            started.elapsed() < PHP_REPRO_BUDGET && reproduces(c).is_some()
+        })
+    } else {
+        src.to_vec()
+    };
+    let Some(out) = reproduces(&src) else {
+        // Didn't reproduce (flaky): give the slot back to a later run.
+        *sinks.php_emitted.lock().unwrap().get_mut(&slot).unwrap() -= 1;
+        return;
+    };
+    let clean = |s: &str| s.replace("?>", "? >").replace(['\r', '\n'], " ");
+    let mut program = format!(
+        "<?php\n// php-finding: {}\n// from: {}\n// mutation: {}\n?>\n",
+        clean(&key),
+        clean(rel),
+        clean(mutation.map_or("none (the test itself)", |(_, d)| d)),
+    )
+    .into_bytes();
+    program.extend_from_slice(&src);
+    let slug: String = rel
+        .trim_end_matches(".phpt")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let which = mutation.map_or("test".to_string(), |(k, _)| format!("m{k}"));
+    let base = dir.join(format!(
+        "{slug}_{:08x}_{which}",
+        fnv1a(rel.as_bytes()) as u32
+    ));
+    let _ = fs::write(base.with_extension("php"), program);
+    let _ = fs::write(base.with_extension("txt"), &out.out);
+}
+
 fn emit_fixture(
     ctx: &Ctx,
     inv: &Invocation,
@@ -989,7 +1248,9 @@ fn emit_fixture(
         return;
     }
     let src = if ctx.minimize {
-        minimise(ctx, inv, &m.source, status, 200)
+        minimise(&m.source, 200, |c| {
+            still_diverges(ctx, inv, c, status).is_some()
+        })
     } else {
         m.source.clone()
     };
@@ -1196,6 +1457,7 @@ fn write_json(
     path: &Path,
     results: &[TestResult],
     mutants: &[MutantResult],
+    php: &[PhpFinding],
 ) -> std::io::Result<()> {
     let mut s = String::from("{\n\"tests\": [\n");
     for (i, r) in results.iter().enumerate() {
@@ -1218,6 +1480,17 @@ fn write_json(
             json_str(&m.mutation),
             m.status.label(),
             json_str(&m.key)
+        );
+    }
+    s.push_str("],\n\"php_findings\": [\n");
+    for (i, f) in php.iter().enumerate() {
+        let sep = if i + 1 < php.len() { "," } else { "" };
+        let mutation = f.mutation.as_deref().map_or("null".to_string(), json_str);
+        let _ = writeln!(
+            s,
+            "{{\"test\":{},\"mutation\":{mutation},\"key\":{}}}{sep}",
+            json_str(&f.test),
+            json_str(&f.key)
         );
     }
     s.push_str("]\n}\n");
@@ -1265,13 +1538,7 @@ fn version_skew(ctx: &Ctx, scratch: &Path) -> Option<String> {
 }
 
 /// Run `tests` across the worker roots (one worker per root), sorted by path.
-fn run_parallel(
-    ctx: &Ctx,
-    roots: &[PathBuf],
-    tests: &[String],
-    mutants: &Mutex<Vec<MutantResult>>,
-    mstats: &Mutex<MutationStats>,
-) -> Vec<TestResult> {
+fn run_parallel(ctx: &Ctx, roots: &[PathBuf], tests: &[String], sinks: &Sinks) -> Vec<TestResult> {
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
     let results = Mutex::new(Vec::with_capacity(tests.len()));
@@ -1282,7 +1549,7 @@ fn run_parallel(
             s.spawn(move || loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 let Some(rel) = tests.get(i) else { break };
-                let r = run_test(ctx, root, rel, mutants, mstats);
+                let r = run_test(ctx, root, rel, sinks);
                 results.lock().unwrap().push(r);
                 let d = done.fetch_add(1, Ordering::Relaxed) + 1;
                 if d.is_multiple_of(500) {
@@ -1322,8 +1589,12 @@ running:
   --keep-work            don't delete the scratch copy
 mutation:
   --mutate <n>           run <n> first-order mutants of every passing test
+  --mutate-all           mutate every test; for tests rhp doesn't match yet, mutants
+                         run through php only (php bug hunting, with --php-findings)
   --seed <n>             mutant selection seed (default: 0xC0FFEE)
   --emit-fixtures <dir>  write self-contained repros of mutant mismatches/crashes
+  --php-findings <dir>   write repros of runs where php itself crashed or tripped a
+                         sanitizer (ASan/UBSan builds), up to 3 per cluster
   --minimize             minimise emitted repros (line-based ddmin)
 output:
   --json <file>          full per-test / per-mutant report
@@ -1342,8 +1613,10 @@ struct Opts {
     work: Option<PathBuf>,
     keep_work: bool,
     mutate: usize,
+    mutate_all: bool,
     seed: u64,
     fixtures: Option<PathBuf>,
+    php_findings: Option<PathBuf>,
     minimize: bool,
     json: Option<PathBuf>,
     write_known: Option<PathBuf>,
@@ -1364,8 +1637,10 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         work: None,
         keep_work: false,
         mutate: 0,
+        mutate_all: false,
         seed: 0xC0FFEE,
         fixtures: None,
+        php_findings: None,
         minimize: false,
         json: None,
         write_known: None,
@@ -1397,8 +1672,10 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             "--work" => o.work = Some(val()?.into()),
             "--keep-work" => o.keep_work = true,
             "--mutate" => o.mutate = num(val()?)? as usize,
+            "--mutate-all" => o.mutate_all = true,
             "--seed" => o.seed = num(val()?)?,
             "--emit-fixtures" => o.fixtures = Some(val()?.into()),
+            "--php-findings" => o.php_findings = Some(val()?.into()),
             "--minimize" => o.minimize = true,
             "--json" => o.json = Some(val()?.into()),
             "--write-known" => o.write_known = Some(val()?.into()),
@@ -1531,8 +1808,10 @@ pub fn main(args: &[String]) -> ExitCode {
         rhp_bin,
         timeout: Duration::from_secs(o.timeout),
         mutate: o.mutate,
+        mutate_all: o.mutate_all,
         seed: o.seed,
         fixtures: o.fixtures.clone(),
+        php_findings: o.php_findings.clone(),
         minimize: o.minimize,
         skew: Duration::ZERO,
         version_skew: None,
@@ -1559,10 +1838,12 @@ pub fn main(args: &[String]) -> ExitCode {
     );
 
     // Run, in parallel.
-    let mutant_results = Mutex::new(Vec::new());
-    let mstats = Mutex::new(MutationStats::default());
+    if let Some(d) = &o.php_findings {
+        let _ = fs::create_dir_all(d);
+    }
+    let sinks = Sinks::default();
     let started = Instant::now();
-    let mut results = run_parallel(&ctx, &worker_roots, &tests, &mutant_results, &mstats);
+    let mut results = run_parallel(&ctx, &worker_roots, &tests, &sinks);
 
     // A ratchet list must not contain tests that only match by luck (output
     // with the current time, say): re-run every match and keep the steady ones.
@@ -1580,16 +1861,11 @@ pub fn main(args: &[String]) -> ExitCode {
         let confirm_ctx = Ctx {
             mutate: 0,
             fixtures: None,
+            php_findings: None,
             skew: Duration::from_millis(1100),
             ..ctx.clone()
         };
-        let again = run_parallel(
-            &confirm_ctx,
-            &worker_roots,
-            &matched,
-            &Mutex::new(Vec::new()),
-            &Mutex::new(MutationStats::default()),
-        );
+        let again = run_parallel(&confirm_ctx, &worker_roots, &matched, &Sinks::default());
         for r in again.into_iter().filter(|r| r.status != Status::Match) {
             if let Some(orig) = results.iter_mut().find(|o| o.test == r.test) {
                 orig.status = Status::Mismatch;
@@ -1598,9 +1874,11 @@ pub fn main(args: &[String]) -> ExitCode {
             flaky.push(r.test);
         }
     }
-    let mut mutant_results = mutant_results.into_inner().unwrap();
+    let mut mutant_results = sinks.mutants.into_inner().unwrap();
     mutant_results.sort_by(|a, b| a.test.cmp(&b.test).then(a.mutation.cmp(&b.mutation)));
-    let mstats = mstats.into_inner().unwrap();
+    let mstats = sinks.mstats.into_inner().unwrap();
+    let mut php_findings = sinks.php.into_inner().unwrap();
+    php_findings.sort_by(|a, b| a.test.cmp(&b.test).then(a.mutation.cmp(&b.mutation)));
     if !o.keep_work && o.work.is_none() {
         let _ = fs::remove_dir_all(&work);
     }
@@ -1659,16 +1937,12 @@ pub fn main(args: &[String]) -> ExitCode {
         );
     }
     if o.mutate > 0 {
-        let compared = mstats.generated - mstats.discarded;
+        let compared = mstats.compared;
         let divergent = mutant_results.len();
         println!(
-            "\nmutation: {} mutants of {} passing tests; {} discarded (php parse error/timeout); \
-             {} compared, {} diverged",
-            mstats.generated,
-            count(Status::Match),
-            mstats.discarded,
-            compared,
-            divergent
+            "\nmutation: {} mutants; {} discarded (php parse error/timeout/crash); {} php-only; \
+             {} compared with rhp, {} diverged",
+            mstats.generated, mstats.discarded, mstats.php_only, compared, divergent
         );
         for st in [
             Status::DiagnosticsOnly,
@@ -1695,8 +1969,32 @@ pub fn main(args: &[String]) -> ExitCode {
         }
     }
 
+    if !php_findings.is_empty() {
+        let clusters: BTreeSet<&str> = php_findings.iter().map(|f| f.key.as_str()).collect();
+        println!(
+            "\nphp itself misbehaved (possible php bugs): {} run(s) in {} cluster(s){}",
+            php_findings.len(),
+            clusters.len(),
+            match &o.php_findings {
+                Some(d) => format!("; repros in {}", d.display()),
+                None => "; pass --php-findings <dir> for repros".to_string(),
+            }
+        );
+        let examples: Vec<(String, String)> = php_findings
+            .iter()
+            .map(|f| {
+                let what = f.mutation.as_deref().unwrap_or("the test itself");
+                (f.key.clone(), format!("{} [{what}]", f.test))
+            })
+            .collect();
+        print_clusters(
+            examples.iter().map(|(k, e)| (k.as_str(), e.as_str())),
+            o.top,
+        );
+    }
+
     if let Some(p) = &o.json {
-        if let Err(e) = write_json(p, &results, &mutant_results) {
+        if let Err(e) = write_json(p, &results, &mutant_results, &php_findings) {
             eprintln!("rhp-difftest phpt: writing {}: {e}", p.display());
         }
     }
@@ -1846,7 +2144,75 @@ mod tests {
             out: merged.to_vec(),
             timed_out: false,
             signaled: false,
+            signal: None,
         }
+    }
+
+    #[test]
+    fn php_anomalies() {
+        let asan = b"x\n=================================================================\n\
+==123==ERROR: AddressSanitizer: heap-use-after-free on address 0x6020 at pc 0x55 bp 0x7f\n\
+READ of size 8 at 0x6020 thread T0\n\
+    #0 0x55d5 in __interceptor_memcpy (/php+0x1)\n\
+    #1 0x55d6 in zend_hash_find /src/Zend/zend_hash.c:123:5\n\
+    #2 0x55d7 in zif_foo /src/ext/standard/foo.c:9:1\n";
+        assert_eq!(
+            php_anomaly(&out(asan)).as_deref(),
+            Some("asan heap-use-after-free in zend_hash_find")
+        );
+        let ubsan = b"/src/Zend/zend_operators.c:2041:18: runtime error: signed integer overflow: 9223372036854775807 + 1 cannot be represented in type 'long'\n";
+        assert_eq!(
+            php_anomaly(&out(ubsan)).as_deref(),
+            Some("ubsan zend_operators.c:2041: signed integer overflow: N + N cannot be represented in type 'long'")
+        );
+        assert_eq!(
+            php_anomaly(&out(b"zend_mm_heap corrupted\n")).as_deref(),
+            Some("zend_mm_heap corrupted")
+        );
+        let mut segv = out(b"partial");
+        segv.signal = Some(11);
+        segv.signaled = true;
+        assert_eq!(
+            php_anomaly(&segv).as_deref(),
+            Some("php killed by signal 11")
+        );
+        // Ordinary php errors and timeouts are not php bugs.
+        assert_eq!(
+            php_anomaly(&out(b"PHP Fatal error:  Allowed memory size exhausted\n")),
+            None
+        );
+        let mut slow = out(b"");
+        slow.timed_out = true;
+        assert_eq!(php_anomaly(&slow), None);
+        // A program printing the words is not a sanitizer report.
+        for text in [
+            &b"parse.php:3: runtime error: something\n"[..],
+            b"Bug #63305 (zend_mm_heap corrupted with traits)\n",
+            b"echo ERROR: AddressSanitizer: heap-use-after-free\n",
+        ] {
+            assert_eq!(php_anomaly(&out(text)), None);
+        }
+        // Addresses differ per run (ASLR): the key must not carry them.
+        let ub = |a: &str| {
+            php_anomaly(&out(format!("/s/Zend/zend_execute.h:364:64: runtime error: member access within address {a} with insufficient space\n").as_bytes()))
+        };
+        assert_eq!(ub("0xaaaae4bf9320"), ub("0xaaaad7bf9320"));
+        assert_eq!(
+            ub("0x1").as_deref(),
+            Some("ubsan zend_execute.h:364: member access within address ADDR with insufficient space")
+        );
+        // Where a stack overflow is caught varies run to run.
+        let so = b"==9==ERROR: AddressSanitizer: stack-overflow on address 0xfff\n    #0 0x1 in zend_array_destroy /s/Zend/zend_hash.c:1815\n";
+        assert_eq!(
+            php_anomaly(&out(so)).as_deref(),
+            Some("asan stack-overflow")
+        );
+        // The key names the first frame in php's sources, past interceptors.
+        let hbo = b"==9==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x1\n    #0 0x1 in memchr (/usr/lib/libasan.so+0x1)\n    #1 0x2 in php_memnstr /s/main/php.h:9:1\n";
+        assert_eq!(
+            php_anomaly(&out(hbo)).as_deref(),
+            Some("asan heap-buffer-overflow in php_memnstr")
+        );
     }
 
     #[test]

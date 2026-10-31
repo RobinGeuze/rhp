@@ -57,3 +57,37 @@ target/release/rhp-difftest phpt --php-src ../php-src \
 An emitted repro is a `NAME.php` / `NAME.out` pair in the `tests/golden` format,
 with php's output as the expectation. Once rhp is fixed, move the pair into
 `tests/golden/` so it stays covered.
+
+## Hunting bugs in php itself
+
+Mutants also exercise php in ways its own tests don't, so php can crash on
+them. `--php-findings DIR` records every run in which **php itself** went
+wrong: it was killed by a signal, printed an AddressSanitizer or UBSan report,
+or reported `zend_mm_heap corrupted`. (A timeout doesn't count, because a
+mutant can loop forever legitimately.) Findings are grouped by bug: the ASan
+error type plus the first stack frame in php's sources, or the UBSan source
+line and message. Stack overflows form one group, because php's recursion limit
+is well known and where it trips varies from run to run. For each group, up to
+three repros are written, minimised under `--minimize` (with a time budget) so
+that the *same* bug still reproduces: `NAME.php` plus php's output in
+`NAME.txt`.
+
+`--mutate-all` mutates every test, not only the ones rhp already matches. For
+tests rhp doesn't match yet, the mutants run through php only.
+
+The nightly `php-bugs` job runs this against a php built with ASan and UBSan
+from the pinned php-src commit (`.github/scripts/build-php-sanitizers.sh`:
+php-src's own CI flags, minus UBSan's noisy `object-size` check), with
+run-tests' `--asan` environment. It needs `llvm-symbolizer` on PATH, or every
+ASan finding lands in one unnamed group:
+
+```sh
+.github/scripts/build-php-sanitizers.sh /path/to/php-src-copy "$PWD/php-san"   # Linux, clang
+USE_ZEND_ALLOC=0 USE_TRACKED_ALLOC=1 ZEND_DONT_UNLOAD_MODULES=1 SKIP_ASAN=1 \
+ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 RHP_PHP="$PWD/php-san/bin/php" \
+target/release/rhp-difftest phpt --php-src /path/to/php-src-copy --filter Zend/tests/ \
+  --mutate 4 --mutate-all --minimize --timeout 30 --php-findings /tmp/php-bugs
+```
+
+Before reporting a finding upstream, check it against php-src's current
+branch. It may already be fixed.

@@ -27,6 +27,7 @@ mod ext;
 mod file_fns;
 mod filter_fns;
 pub mod http;
+mod info_fns;
 mod json_fns;
 mod math_fns;
 mod misc_fns;
@@ -530,6 +531,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         json_fns::register(&mut m);
         parse_fns::register(&mut m);
         php_fns::register(&mut m);
+        info_fns::register(&mut m);
         stream_fns::register(&mut m);
         m
     })
@@ -558,7 +560,15 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PHP_EXTRA_VERSION", Value::str("")),
         ("PHP_VERSION_ID", Value::Int(80508)),
         ("PHP_SAPI", Value::str("cli")),
-        ("PHP_BINARY", Value::str("/usr/bin/php")),
+        // php reports its own executable; so do we (composer spawns PHP_BINARY).
+        (
+            "PHP_BINARY",
+            Value::str(
+                std::env::current_exe()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            ),
+        ),
         ("PHP_OS", Value::str("Darwin")),
         ("PHP_OS_FAMILY", Value::str("Darwin")),
         ("PHP_DEBUG", Value::Int(0)),
@@ -730,6 +740,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     .into_iter()
     .chain(preg_fns::preg_constants())
     .chain(json_fns::json_constants())
+    .chain(info_fns::constants())
     // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with their module.
     .chain(ext::modules().into_iter().flat_map(|md| (md.constants)()))
     .collect()

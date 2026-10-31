@@ -53,6 +53,11 @@ const LOADED_EXTS: &[&str] = &[
     "xmlwriter",
 ];
 
+/// The loaded-extension list (lowercased), for phpinfo(INFO_MODULES).
+pub(crate) fn loaded_extension_names() -> &'static [&'static str] {
+    LOADED_EXTS
+}
+
 fn fn_extension_loaded(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = String::from_utf8_lossy(&str_arg(args, 0)).to_ascii_lowercase();
     Ok(Value::Bool(LOADED_EXTS.contains(&name.as_str())))
@@ -199,22 +204,6 @@ fn fn_ob_get_flush(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown
     let contents = host.ob_get_contents();
     host.ob_end_flush();
     Ok(contents.map(Value::str).unwrap_or(Value::Bool(false)))
-}
-
-fn fn_php_uname(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mode = args
-        .first()
-        .map(|v| conv::to_string_bytes(&deref(v)))
-        .unwrap_or_else(|| b"a".to_vec());
-    let s: &[u8] = match mode.first() {
-        Some(b's') => b"Darwin",
-        Some(b'n') => b"localhost",
-        Some(b'r') => b"24.0.0",
-        Some(b'v') => b"Darwin Kernel Version 24.0.0",
-        Some(b'm') => b"arm64",
-        _ => b"Darwin localhost 24.0.0 Darwin Kernel Version 24.0.0 arm64",
-    };
-    Ok(Value::str(s.to_vec()))
 }
 
 fn fn_getenv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -809,7 +798,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "ob_end_clean", fn_ob_end_clean, 0, Some(0));
     put(m, "ob_end_flush", fn_ob_end_flush, 0, Some(0));
     put(m, "ob_get_flush", fn_ob_get_flush, 0, Some(0));
-    put(m, "php_uname", fn_php_uname, 0, Some(1));
     put(m, "getenv", fn_getenv, 0, Some(1));
     put(m, "putenv", fn_putenv, 1, Some(1));
     put(m, "ini_get", fn_ini_get, 1, Some(1));

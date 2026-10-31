@@ -145,7 +145,7 @@ fn entries_of(host: &dyn Host, v: &Value) -> Vec<(ArrayKey, Value)> {
     match v {
         Value::Array(a) => a.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         Value::Object(_) => host
-            .object_public_props(v)
+            .object_scoped_props(v)
             .into_iter()
             .map(|(k, v)| (ArrayKey::Str(k), v))
             .collect(),

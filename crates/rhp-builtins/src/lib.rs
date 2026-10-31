@@ -153,9 +153,10 @@ pub trait Host {
         None
     }
 
-    /// An object's properties visible from public scope, in property-table
-    /// order (for `http_build_query` on objects). Default: every property.
-    fn object_public_props(&self, obj: &Value) -> Vec<(rhp_values::PhpStr, Value)> {
+    /// An object's properties accessible from the calling code's class scope
+    /// (`zend_check_property_access`), in property-table order — for
+    /// `http_build_query` on objects. Default: every property.
+    fn object_scoped_props(&self, obj: &Value) -> Vec<(rhp_values::PhpStr, Value)> {
         match deref(obj) {
             Value::Object(h) => h
                 .borrow()

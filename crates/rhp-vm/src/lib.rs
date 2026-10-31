@@ -843,10 +843,12 @@ impl Host for Vm {
         Some((parents, ifaces, traits))
     }
 
-    fn object_public_props(&self, obj: &Value) -> Vec<(PhpStr, Value)> {
+    fn object_scoped_props(&self, obj: &Value) -> Vec<(PhpStr, Value)> {
         let Value::Object(h) = deref(obj) else {
             return Vec::new();
         };
+        // A builtin runs on its caller's frame: that frame's class is the scope.
+        let scope = self.stack.last().and_then(|f| f.defining_class);
         let o = h.borrow();
         let entry = &self.classes[o.class as usize];
         o.properties
@@ -855,7 +857,7 @@ impl Host for Vm {
                 entry
                     .props
                     .get(*k)
-                    .is_none_or(|p| p.visibility == rhp_values::Visibility::Public)
+                    .is_none_or(|p| self.check_access(scope, p.declaring_class, p.visibility))
             })
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()

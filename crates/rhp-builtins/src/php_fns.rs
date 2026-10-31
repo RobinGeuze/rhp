@@ -43,6 +43,8 @@ const LOADED_EXTS: &[&str] = &[
     "iconv",
     "openssl",
     "zip",
+    "posix",
+    "pcntl",
     // XML family: reported so composer resolution passes for packages that
     // require ext-xml/ext-dom (symfony etc.). Runtime XML support is partial.
     "libxml",
@@ -237,11 +239,6 @@ fn fn_getenv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             Ok(Value::Array(a))
         }
     }
-}
-
-fn fn_putenv(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    // No-op (we don't mutate the process environment); report success.
-    Ok(Value::Bool(true))
 }
 
 fn fn_ini_get(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -749,7 +746,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "ob_get_flush", fn_ob_get_flush, 0, Some(0));
     put(m, "php_uname", fn_php_uname, 0, Some(1));
     put(m, "getenv", fn_getenv, 0, Some(1));
-    put(m, "putenv", fn_putenv, 1, Some(1));
     put(m, "ini_get", fn_ini_get, 1, Some(1));
     put(m, "ini_set", fn_ini_set, 2, Some(2));
     put(m, "set_error_handler", fn_set_handler, 1, Some(2));

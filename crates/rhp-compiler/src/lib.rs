@@ -3440,6 +3440,18 @@ impl ProtoBuilder {
                             continue;
                         }
                     }
+                    // `isset($c[$k])`: a string offset out of range reads as
+                    // "" (not null), so dimension isset has its own opcode.
+                    if let Expression::ArrayAccess(aa) = v {
+                        let arr = self.compile_expr(aa.array)?;
+                        let key = self.compile_expr(aa.index)?;
+                        let r = self.alloc_temp();
+                        self.emit(Instr::IssetDim { dst: r, arr, key });
+                        let pos = self.code.len();
+                        self.emit(Instr::Nop); // JmpFalse r -> false
+                        jumps.push((pos, r, true));
+                        continue;
+                    }
                     let r = self.compile_expr(v)?; // null if absent (DimFetch returns null)
                     let pos = self.code.len();
                     self.emit(Instr::Nop); // JmpNull r -> false

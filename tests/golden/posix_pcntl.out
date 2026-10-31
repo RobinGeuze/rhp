@@ -1,0 +1,81 @@
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+array(7) {
+  [0]=>
+  string(4) "name"
+  [1]=>
+  string(6) "passwd"
+  [2]=>
+  string(3) "uid"
+  [3]=>
+  string(3) "gid"
+  [4]=>
+  string(5) "gecos"
+  [5]=>
+  string(3) "dir"
+  [6]=>
+  string(5) "shell"
+}
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+array(4) {
+  [0]=>
+  string(4) "name"
+  [1]=>
+  string(6) "passwd"
+  [2]=>
+  string(7) "members"
+  [3]=>
+  string(3) "gid"
+}
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+string(15) "No such process"
+bool(false)
+bool(false)
+bool(false)
+int(0)
+int(1)
+int(1)
+int(2)
+int(3)
+int(9)
+int(15)
+int(1)
+bool(false)
+bool(false)
+bool(true)
+bool(true)
+int(0)
+bool(true)
+bool(true)
+bool(true)
+int(1)
+bool(true)
+bool(true)
+int(0)
+bool(true)
+bool(true)
+string(6) "strlen"
+bool(true)
+bool(true)
+ValueError: pcntl_signal(): Argument #1 ($signal) must be greater than or equal to 1
+ValueError: pcntl_signal(): Argument #2 ($handler) must be either SIG_DFL or SIG_IGN when an integer value is given
+TypeError: pcntl_signal(): Argument #2 ($handler) must be of type callable|int, string given
+ValueError: pcntl_signal_get_handler(): Argument #1 ($signal) must be between 1 and 31
+bool(true)
+int(3)
+bool(true)
+int(9)

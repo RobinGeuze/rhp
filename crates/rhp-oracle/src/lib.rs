@@ -753,6 +753,24 @@ impl<'a> Interp<'a> {
             return Err(Thrown::unsupported(format!("{name_str}()"), reason));
         }
 
+        // Program execution and OS-stream functions need the VM's resource
+        // table; the frozen oracle refuses them (the harness then skips).
+        if matches!(
+            name_str.to_ascii_lowercase().as_str(),
+            "shell_exec"
+                | "proc_get_status"
+                | "proc_close"
+                | "proc_terminate"
+                | "stream_isatty"
+                | "posix_isatty"
+                | "putenv"
+        ) {
+            return Err(Thrown::unsupported(
+                format!("{name_str}()"),
+                "process control is not supported by the oracle",
+            ));
+        }
+
         // By-reference builtins (sort/array_push/…) mutate their array argument
         // in place; the frozen oracle has no by-ref call path, so it refuses
         // them (the differential harness then skips those fixtures).

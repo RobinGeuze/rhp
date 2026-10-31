@@ -525,6 +525,13 @@ pub enum Instr {
     MakeRefLval {
         dst: Reg,
     },
+    /// `isset($c[$k])`: array element present and non-null, string offset in
+    /// range, or `ArrayAccess::offsetExists`; else false.
+    IssetDim {
+        dst: Reg,
+        arr: Reg,
+        key: Reg,
+    },
     /// `isset($o->name)`: declared non-null property, else `__isset`, else false.
     IssetProp {
         dst: Reg,
@@ -976,6 +983,12 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         "preg_replace" | "preg_replace_callback" | "preg_replace_callback_array" => {
             &[false, false, false, false, true]
         }
+        // Program execution: `&$pipes`, `&$output` / `&$result_code`.
+        "proc_open" => &[false, false, true],
+        "exec" => &[false, true, true],
+        "system" | "passthru" => &[false, true],
+        // `stream_select(&$read, &$write, &$except, …)`.
+        "stream_select" => &[true, true, true],
         _ => &[],
     }
 }

@@ -97,6 +97,13 @@ pub struct Vm {
     next_zip_id: u32,
     // CLI arguments ($argv / $_SERVER['argv']); argv[0] is the script name.
     argv: Vec<Vec<u8>>,
+    // Opaque native resources (e.g. `proc_open` process handles), by id.
+    native_resources: HashMap<u32, Box<dyn std::any::Any>>,
+    // Per-run extension state (`Host::module_state`), by module key.
+    module_states: HashMap<&'static str, Box<dyn std::any::Any>>,
+    // CLI SAPI: write unbuffered output straight to the process stdout (as php
+    // does) instead of collecting it for `output()`.
+    direct_stdout: bool,
 }
 
 /// The backing state of an open stream resource.
@@ -113,6 +120,8 @@ enum StreamState {
     /// A file opened for writing: buffered, flushed to the wrapper on
     /// flush/close. `append` keeps existing content.
     FileWrite { buf: Vec<u8>, url: Vec<u8> },
+    /// An OS file descriptor (a `proc_open` pipe's parent end).
+    Fd(builtins::fdstream::FdStream),
 }
 
 /// Status of a generator.
@@ -152,7 +161,7 @@ impl Host for Vm {
     fn write_out(&mut self, bytes: &[u8]) {
         match self.ob_stack.last_mut() {
             Some(buf) => buf.extend_from_slice(bytes),
-            None => self.out.extend_from_slice(bytes),
+            None => self.emit_stdout(bytes),
         }
     }
 
@@ -459,14 +468,15 @@ impl Host for Vm {
             Buf,
             No,
         }
-        let act = match self.streams.get(&id)? {
+        let act = match self.streams.get_mut(&id)? {
             StreamState::Stdout => Act::Out,
             StreamState::Stderr => Act::Err,
             StreamState::Mem { .. } | StreamState::FileWrite { .. } => Act::Buf,
             StreamState::Stdin => Act::No,
+            StreamState::Fd(f) => return f.write(data),
         };
         match act {
-            Act::Out => self.out.extend_from_slice(data),
+            Act::Out => self.emit_stdout(data),
             Act::Err => {
                 use std::io::Write;
                 let _ = std::io::stderr().write_all(data);
@@ -495,6 +505,11 @@ impl Host for Vm {
                 *pos += take;
                 Some(out)
             }
+            StreamState::Fd(f) => Some(if len < 0 {
+                f.read_all(-1)
+            } else {
+                f.read(len as usize)
+            }),
             _ => Some(Vec::new()),
         }
     }
@@ -516,6 +531,29 @@ impl Host for Vm {
                 *pos = end;
                 Some(line)
             }
+            StreamState::Fd(f) => f.gets(None),
+            _ => None,
+        }
+    }
+
+    fn stream_gets_max(&mut self, res: &Value, maxlen: usize) -> Option<Vec<u8>> {
+        let id = res_id(res)?;
+        match self.streams.get_mut(&id)? {
+            StreamState::Mem { buf, pos } => {
+                if *pos >= buf.len() || maxlen <= 1 {
+                    return None;
+                }
+                let start = *pos;
+                let cap = (start + maxlen - 1).min(buf.len());
+                let end = buf[start..cap]
+                    .iter()
+                    .position(|&b| b == b'\n')
+                    .map(|i| start + i + 1)
+                    .unwrap_or(cap);
+                *pos = end;
+                Some(buf[start..end].to_vec())
+            }
+            StreamState::Fd(f) => f.gets(Some(maxlen)),
             _ => None,
         }
     }
@@ -523,8 +561,118 @@ impl Host for Vm {
     fn stream_eof(&self, res: &Value) -> bool {
         match res_id(res).and_then(|id| self.streams.get(&id)) {
             Some(StreamState::Mem { buf, pos }) => *pos >= buf.len(),
+            Some(StreamState::Fd(f)) => f.eof(),
+            Some(StreamState::Stdout | StreamState::Stderr | StreamState::FileWrite { .. }) => {
+                false
+            }
             _ => true,
         }
+    }
+
+    fn stream_seek(&mut self, res: &Value, offset: i64, whence: i64) -> bool {
+        match res_id(res).and_then(|id| self.streams.get_mut(&id)) {
+            Some(StreamState::Mem { buf, pos }) => {
+                let base = match whence {
+                    0 => 0,
+                    1 => *pos as i64,
+                    2 => buf.len() as i64,
+                    _ => return false,
+                };
+                let target = base + offset;
+                if target < 0 {
+                    return false;
+                }
+                // Seeking past the end is allowed (reads then return nothing);
+                // clamp for our read cursor.
+                *pos = (target as usize).min(buf.len());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn stream_tell(&mut self, res: &Value) -> Option<i64> {
+        match res_id(res).and_then(|id| self.streams.get(&id)) {
+            Some(StreamState::Mem { pos, .. }) => Some(*pos as i64),
+            Some(StreamState::FileWrite { buf, .. }) => Some(buf.len() as i64),
+            _ => None,
+        }
+    }
+
+    fn stream_from_fd(&mut self, fd: std::os::fd::OwnedFd) -> Option<Value> {
+        let st = StreamState::Fd(builtins::fdstream::FdStream::new(fd));
+        Some(self.make_stream(st, "stream"))
+    }
+
+    fn stream_dup_fd(&mut self, res: &Value) -> Result<std::os::fd::OwnedFd, &'static str> {
+        use builtins::fdstream::dup_raw;
+        let id = res_id(res).ok_or("Unknown")?;
+        let fail = |o: Option<std::os::fd::OwnedFd>| o.ok_or("STDIO");
+        match self.streams.get(&id).ok_or("Unknown")? {
+            StreamState::Stdin => fail(dup_raw(0)),
+            StreamState::Stdout => fail(dup_raw(1)),
+            StreamState::Stderr => fail(dup_raw(2)),
+            StreamState::Fd(f) => fail(f.dup_fd()),
+            StreamState::FileWrite { url, .. } => {
+                // A file opened for writing: hand the child its own handle on
+                // the same path (append, so earlier buffered bytes survive).
+                let path = url.strip_prefix(b"file://").unwrap_or(url);
+                let path = String::from_utf8_lossy(path).into_owned();
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(path)
+                    .map(std::os::fd::OwnedFd::from)
+                    .map_err(|_| "STDIO")
+            }
+            StreamState::Mem { .. } => Err("MEMORY"),
+        }
+    }
+
+    fn stream_select_fd(&self, res: &Value) -> Option<(std::os::fd::RawFd, bool)> {
+        match self.streams.get(&res_id(res)?)? {
+            StreamState::Stdin => Some((0, false)),
+            StreamState::Stdout => Some((1, false)),
+            StreamState::Stderr => Some((2, false)),
+            StreamState::Fd(f) => Some((f.raw_fd()?, f.has_buffered())),
+            _ => None,
+        }
+    }
+
+    fn stream_set_blocking(&mut self, res: &Value, blocking: bool) -> bool {
+        let Some(id) = res_id(res) else { return false };
+        match self.streams.get_mut(&id) {
+            Some(StreamState::Fd(f)) => f.set_blocking(blocking),
+            Some(StreamState::Stdin) => builtins::fdstream::set_fd_blocking(0, blocking),
+            Some(StreamState::Stdout) => builtins::fdstream::set_fd_blocking(1, blocking),
+            Some(StreamState::Stderr) => builtins::fdstream::set_fd_blocking(2, blocking),
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    fn resource_insert(&mut self, type_name: &'static str, data: Box<dyn std::any::Any>) -> Value {
+        let id = self.next_resource_id;
+        self.next_resource_id += 1;
+        self.native_resources.insert(id, data);
+        Value::Resource(Rc::new(rhp_values::ResourceData { id, type_name }))
+    }
+
+    fn resource_get(&mut self, res: &Value) -> Option<&mut dyn std::any::Any> {
+        let id = res_id(res)?;
+        self.native_resources.get_mut(&id).map(|b| b.as_mut())
+    }
+
+    fn resource_remove(&mut self, res: &Value) -> Option<Box<dyn std::any::Any>> {
+        self.native_resources.remove(&res_id(res)?)
+    }
+
+    fn module_state(
+        &mut self,
+        key: &'static str,
+        init: fn() -> Box<dyn std::any::Any>,
+    ) -> Option<&mut dyn std::any::Any> {
+        Some(self.module_states.entry(key).or_insert_with(init).as_mut())
     }
 
     fn stream_close(&mut self, res: &Value) -> bool {
@@ -1032,6 +1180,9 @@ impl Vm {
             zip_archives: HashMap::new(),
             next_zip_id: 0,
             argv: Vec::new(),
+            native_resources: HashMap::new(),
+            module_states: HashMap::new(),
+            direct_stdout: false,
         }
     }
 
@@ -1612,6 +1763,31 @@ impl Vm {
         self.next_resource_id += 1;
         self.streams.insert(id, state);
         Value::Resource(Rc::new(rhp_values::ResourceData { id, type_name }))
+    }
+
+    /// Write bytes to the process's standard output: straight to fd 1 in
+    /// direct (CLI) mode, else into the collected `output()` buffer.
+    fn emit_stdout(&mut self, bytes: &[u8]) {
+        if self.direct_stdout {
+            use std::io::Write;
+            let mut so = std::io::stdout().lock();
+            let _ = so.write_all(bytes);
+            let _ = so.flush();
+        } else {
+            self.out.extend_from_slice(bytes);
+        }
+    }
+
+    /// CLI SAPI: send unbuffered output directly to the process stdout as it is
+    /// produced (php's CLI writes each echo immediately), so it interleaves
+    /// correctly with stderr and with child processes sharing our stdout.
+    pub fn set_direct_stdout(&mut self, on: bool) {
+        self.direct_stdout = on;
+    }
+
+    /// Set (or override) an engine constant, e.g. the SAPI's `PHP_BINARY`.
+    pub fn set_constant(&mut self, name: &str, value: Value) {
+        self.constants.insert(name.as_bytes().to_vec(), value);
     }
 
     /// Record the top-level script's filesystem path (for `Phar::mapPhar`).
@@ -2649,6 +2825,22 @@ impl Vm {
                     let val = self.reg_get(top, src);
                     self.prop_store(top, o, pname, val)?;
                 }
+                Instr::IssetDim { dst, arr, key } => {
+                    let a = self.reg_get(top, arr);
+                    let k = self.reg_get(top, key);
+                    if let Value::Object(h) = &a {
+                        if self.class_implements(h.borrow().class, b"ArrayAccess") {
+                            let m = self
+                                .lookup_method(h.borrow().class, b"offsetexists")
+                                .unwrap();
+                            let r =
+                                self.call_sync(&m, Some(h.clone()), h.borrow().class, vec![k])?;
+                            self.reg_set(top, dst, Value::Bool(conv::to_bool(&r)));
+                            continue;
+                        }
+                    }
+                    self.reg_set(top, dst, Value::Bool(isset_dim(&a, &k)));
+                }
                 Instr::IssetProp { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
@@ -3062,13 +3254,13 @@ impl Vm {
                     let code = match self.reg_get(top, arg) {
                         Value::Int(n) => n as i32,
                         Value::Str(s) => {
-                            self.out.extend_from_slice(s.as_bytes());
+                            self.emit_stdout(s.as_bytes());
                             0
                         }
                         Value::Null => 0,
                         other => {
                             let s = conv::to_string_bytes(&other);
-                            self.out.extend_from_slice(&s);
+                            self.emit_stdout(&s);
                             0
                         }
                     };
@@ -4271,6 +4463,30 @@ fn deref(v: &Value) -> Value {
 }
 
 /// `$container[$key]` read: array element (Null if absent) or string byte.
+/// `isset($container[$key])` for arrays and strings (php's
+/// `zend_isset_dim_slow` string-offset rules).
+fn isset_dim(container: &Value, key: &Value) -> bool {
+    match deref(container) {
+        Value::Array(_) => !matches!(dim_fetch(container, key), Value::Null),
+        Value::Str(s) => {
+            let k = deref(key);
+            let idx = match &k {
+                Value::Int(n) => *n,
+                Value::Null | Value::Bool(_) | Value::Float(_) => conv::to_int(&k),
+                Value::Str(ks) => match conv::numeric_string(ks.as_bytes()) {
+                    Some(conv::Num::Int(n)) => n,
+                    _ => return false,
+                },
+                _ => return false,
+            };
+            let len = s.as_bytes().len() as i64;
+            let i = if idx < 0 { idx + len } else { idx };
+            i >= 0 && i < len
+        }
+        _ => false,
+    }
+}
+
 fn dim_fetch(container: &Value, key: &Value) -> Value {
     match deref(container) {
         Value::Array(a) => match ArrayKey::from_value(key) {

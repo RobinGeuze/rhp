@@ -14,6 +14,7 @@ use rhp_values::{PhpArray, Value};
 pub use rhp_values::Thrown;
 
 pub mod dump;
+pub mod fdstream;
 pub mod module;
 pub mod streams;
 
@@ -34,6 +35,7 @@ mod parse_fns;
 mod php_fns;
 mod preg_fns;
 mod printf_fns;
+mod proc_fns;
 mod serialize_fns;
 mod sort_fns;
 mod str_fns;
@@ -357,6 +359,68 @@ pub trait Host {
     fn stream_rewind(&mut self, _res: &Value) -> bool {
         false
     }
+    /// Reposition a seekable stream (`fseek`, `stream_get_contents`' `$offset`);
+    /// `whence` is SEEK_SET/CUR/END (0/1/2). False when it cannot seek.
+    fn stream_seek(&mut self, _res: &Value, _offset: i64, _whence: i64) -> bool {
+        false
+    }
+    /// `ftell($res)`: the current position, or None when not seekable.
+    fn stream_tell(&mut self, _res: &Value) -> Option<i64> {
+        None
+    }
+    /// `fgets($res, $length)` with an explicit maximum (`length - 1` bytes).
+    fn stream_gets_max(&mut self, res: &Value, _maxlen: usize) -> Option<Vec<u8>> {
+        self.stream_gets(res)
+    }
+
+    // --- OS-level streams / process support (proc_open & friends) ------------
+
+    /// Wrap an OS file descriptor (e.g. a pipe's parent end) as a `stream`
+    /// resource. Default: unsupported (the fd is closed).
+    fn stream_from_fd(&mut self, _fd: std::os::fd::OwnedFd) -> Option<Value> {
+        None
+    }
+    /// A `dup(2)` of the OS fd behind a stream resource, for handing to a child
+    /// process (`proc_open` descriptor given as a resource). `Err` carries
+    /// php's stream-type name when the stream has no fd (e.g. `MEMORY`).
+    fn stream_dup_fd(&mut self, _res: &Value) -> Result<std::os::fd::OwnedFd, &'static str> {
+        Err("MEMORY")
+    }
+    /// The OS fd behind a stream, for `stream_select`, plus whether the stream
+    /// already holds buffered unread data (then it counts as readable at once).
+    fn stream_select_fd(&self, _res: &Value) -> Option<(std::os::fd::RawFd, bool)> {
+        None
+    }
+    /// `stream_set_blocking($res, $enable)`.
+    fn stream_set_blocking(&mut self, _res: &Value, _blocking: bool) -> bool {
+        true
+    }
+    /// Register an opaque native resource (e.g. a `process` handle) and return
+    /// its resource Value. Default: unsupported (`Null`).
+    fn resource_insert(
+        &mut self,
+        _type_name: &'static str,
+        _data: Box<dyn std::any::Any>,
+    ) -> Value {
+        Value::Null
+    }
+    /// The native payload of a resource created by [`Host::resource_insert`].
+    fn resource_get(&mut self, _res: &Value) -> Option<&mut dyn std::any::Any> {
+        None
+    }
+    /// Remove (close) a native resource, returning its payload.
+    fn resource_remove(&mut self, _res: &Value) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
+    /// Per-run state owned by an extension module (e.g. pcntl's signal-handler
+    /// table), created on first use by `init`. Default: none (stateless host).
+    fn module_state(
+        &mut self,
+        _key: &'static str,
+        _init: fn() -> Box<dyn std::any::Any>,
+    ) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 
     // --- reflection introspection --------------------------------------------
     // Backing for the `Reflection*` classes. Return PHP `Value`s the prelude
@@ -531,6 +595,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         parse_fns::register(&mut m);
         php_fns::register(&mut m);
         stream_fns::register(&mut m);
+        proc_fns::register(&mut m);
         m
     })
 }
@@ -559,6 +624,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PHP_VERSION_ID", Value::Int(80508)),
         ("PHP_SAPI", Value::str("cli")),
         ("PHP_BINARY", Value::str("/usr/bin/php")),
+        ("ZEND_THREAD_SAFE", Value::Bool(false)),
+        ("ZEND_DEBUG_BUILD", Value::Bool(false)),
         ("PHP_OS", Value::str("Darwin")),
         ("PHP_OS_FAMILY", Value::str("Darwin")),
         ("PHP_DEBUG", Value::Int(0)),
@@ -605,6 +672,9 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("FILE_NO_DEFAULT_CONTEXT", Value::Int(16)),
         ("FILE_TEXT", Value::Int(0)),
         ("FILE_BINARY", Value::Int(0)),
+        ("SEEK_SET", Value::Int(0)),
+        ("SEEK_CUR", Value::Int(1)),
+        ("SEEK_END", Value::Int(2)),
         ("LOCK_SH", Value::Int(1)),
         ("LOCK_EX", Value::Int(2)),
         ("LOCK_UN", Value::Int(3)),
@@ -765,9 +835,6 @@ pub fn is_refused(name: &str) -> Option<&'static str> {
         "extract" => Some("writes arbitrary variables into the local scope"),
         "compact" => Some("resolves variable names dynamically from strings"),
         "create_function" => Some("compiles a string into a function (eval-equivalent)"),
-        "exec" | "system" | "passthru" | "shell_exec" | "proc_open" | "popen" => {
-            Some("executes external shell commands")
-        }
         _ => None,
     }
 }

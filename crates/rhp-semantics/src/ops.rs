@@ -273,6 +273,8 @@ pub fn strict_eq(a: &Value, b: &Value) -> bool {
                     .all(|((xk, xv), (yk, yv))| xk == yk && strict_eq(xv, yv))
         }
         (Object(x), Object(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Resource(x), Resource(y)) => x.id == y.id,
+        (Closure(x), Closure(y)) => std::rc::Rc::ptr_eq(x, y),
         _ => false,
     }
 }

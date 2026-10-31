@@ -16,7 +16,9 @@ pub mod hash;
 pub mod mbstring;
 pub mod openssl;
 pub mod password;
+pub mod pcntl;
 pub mod phar;
+pub mod posix;
 pub mod reflection;
 pub mod spl;
 pub mod zip;
@@ -108,6 +110,20 @@ pub fn modules() -> Vec<ModuleDef> {
             constants: no_constants,
             prelude_php: phar::PRELUDE_PHP,
             wrappers: phar::wrappers,
+        },
+        ModuleDef {
+            name: "posix",
+            functions: posix::register,
+            constants: posix::constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "pcntl",
+            functions: pcntl::register,
+            constants: pcntl::constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
         },
     ]
 }

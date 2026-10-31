@@ -47,10 +47,20 @@ fn fn_fread(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_fgets(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let res = deref(&args[0]);
-    Ok(host
-        .stream_gets(&res)
-        .map(Value::str)
-        .unwrap_or(Value::Bool(false)))
+    let line = match args.get(1).map(deref) {
+        None | Some(Value::Null) => host.stream_gets(&res),
+        Some(v) => {
+            let n = conv::to_int(&v);
+            if n <= 0 {
+                return Err(Thrown::error(
+                    "ValueError",
+                    "fgets(): Argument #2 ($length) must be greater than 0",
+                ));
+            }
+            host.stream_gets_max(&res, n as usize)
+        }
+    };
+    Ok(line.map(Value::str).unwrap_or(Value::Bool(false)))
 }
 
 fn fn_fgetc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -79,11 +89,45 @@ fn fn_rewind(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_stream_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let res = deref(&args[0]);
-    let maxlen = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(-1);
+    let maxlen = match args.get(1).map(deref) {
+        None | Some(Value::Null) => -1,
+        Some(v) => conv::to_int(&v),
+    };
+    // `$offset` (>= 0): seek there first; php returns false when it cannot.
+    if let Some(off) = args.get(2).map(|v| conv::to_int(&deref(v))) {
+        if off >= 0 && !host.stream_seek(&res, off, 0) {
+            return Ok(Value::Bool(false));
+        }
+    }
     Ok(host
         .stream_read(&res, maxlen)
         .map(Value::str)
         .unwrap_or(Value::Bool(false)))
+}
+
+fn fn_fseek(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let res = deref(&args[0]);
+    let off = conv::to_int(&deref(&args[1]));
+    let whence = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    Ok(Value::Int(if host.stream_seek(&res, off, whence) {
+        0
+    } else {
+        -1
+    }))
+}
+
+fn fn_ftell(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let res = deref(&args[0]);
+    Ok(host
+        .stream_tell(&res)
+        .map(Value::Int)
+        .unwrap_or(Value::Bool(false)))
+}
+
+fn fn_stream_set_blocking(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let res = deref(&args[0]);
+    let on = conv::to_bool(&deref(&args[1]));
+    Ok(Value::Bool(host.stream_set_blocking(&res, on)))
 }
 
 fn fn_is_resource(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -277,15 +321,14 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         Some(0),
     );
     // No-op stream knobs (accepted so framework output code runs).
-    put(m, "stream_set_blocking", fn_true, 2, Some(2));
+    put(m, "stream_set_blocking", fn_stream_set_blocking, 2, Some(2));
     put(m, "stream_set_timeout", fn_true, 2, Some(3));
     put(m, "stream_set_write_buffer", fn_zero, 2, Some(2));
     put(m, "set_file_buffer", fn_zero, 2, Some(2));
-    put(m, "fseek", fn_zero, 2, Some(3));
-    put(m, "ftell", fn_zero, 1, Some(1));
-    // TTY / terminal detection — not a terminal under this SAPI.
-    put(m, "stream_isatty", fn_false, 1, Some(1));
-    put(m, "posix_isatty", fn_false, 1, Some(1));
+    put(m, "fseek", fn_fseek, 2, Some(3));
+    put(m, "ftell", fn_ftell, 1, Some(1));
+    // TTY detection: `stream_isatty` lives with the process functions
+    // (proc_fns), `posix_isatty` in ext/posix.
     put(m, "sapi_windows_vt100_support", fn_false, 1, Some(2));
     put(m, "stream_get_meta_data", fn_meta, 1, Some(1));
 }

@@ -684,6 +684,9 @@ pub struct ParamInfo {
     pub default: Option<Default>,
     /// Declared type (for `strict_types` enforcement / coercion); None = untyped.
     pub type_hint: Option<TypeHint>,
+    /// Source line of the parameter declaration (php raises argument
+    /// TypeError / ArgumentCountError at the failing parameter's line).
+    pub line: u32,
 }
 
 /// A declared parameter / return type: a (possibly nullable) union or

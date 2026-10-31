@@ -31,7 +31,7 @@ mod json_fns;
 mod math_fns;
 mod misc_fns;
 mod parse_fns;
-mod php_fns;
+pub mod php_fns;
 mod preg_fns;
 mod printf_fns;
 mod serialize_fns;
@@ -76,6 +76,12 @@ pub trait Host {
     /// A class's parent's name by id (for `get_parent_class`). Default: none.
     fn class_parent_name(&self, _class_id: u32) -> Option<Vec<u8>> {
         None
+    }
+
+    /// Whether a resource has been closed (`fclose`d stream): `gettype` /
+    /// `get_debug_type` then report `resource (closed)`. Default: no.
+    fn resource_closed(&self, _res: &Value) -> bool {
+        false
     }
 
     /// Whether a class id names an enum (for `var_dump` rendering). Default: no.
@@ -811,11 +817,15 @@ fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-fn fn_gettype(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(deref(&args[0]).type_name()))
+fn fn_gettype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = deref(&args[0]);
+    if host.resource_closed(&v) {
+        return Ok(Value::str("resource (closed)"));
+    }
+    Ok(Value::str(v.type_name()))
 }
 
-fn fn_get_debug_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_get_debug_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = match deref(&args[0]) {
         Value::Null => "null",
         Value::Bool(_) => "bool",
@@ -824,8 +834,19 @@ fn fn_get_debug_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         Value::Str(_) => "string",
         Value::Array(_) => "array",
         Value::Closure(_) => "Closure",
-        Value::Object(_) => "object",
-        Value::Resource(_) => "resource (stream)",
+        o @ Value::Object(_) => {
+            // php: the class name. An anonymous class is named
+            // `Prefix@anonymous\0file:line$n`; only the part before the NUL shows.
+            let cname = host.object_class_name(&o).unwrap_or_default();
+            let end = cname.iter().position(|&b| b == 0).unwrap_or(cname.len());
+            return Ok(Value::str(cname[..end].to_vec()));
+        }
+        ref v @ Value::Resource(ref r) => {
+            if host.resource_closed(v) {
+                return Ok(Value::str("resource (closed)"));
+            }
+            return Ok(Value::str(format!("resource ({})", r.type_name)));
+        }
         Value::Ref(_) => unreachable!(),
     };
     Ok(Value::str(name))

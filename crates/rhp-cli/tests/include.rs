@@ -201,7 +201,15 @@ fn require_missing_is_fatal_like_php() {
     );
     let main = dir.join("main.php");
     let (php, rhp) = (run_php(&main), run_rhp(&main));
-    // both stop after "before" (the fatal goes to stderr, suppressed)
-    assert_eq!(String::from_utf8_lossy(&php), String::from_utf8_lossy(&rhp));
+    // Both stop after "before". php runs with error_reporting=0 here, which
+    // hides its "Fatal error: Uncaught Error: Failed opening required …";
+    // rhp (no ini) always displays it, as `php -n` does.
     assert_eq!(php, b"before\n");
+    let rhp = String::from_utf8_lossy(&rhp);
+    let (out, fatal) = rhp.split_at(php.len());
+    assert_eq!(out, "before\n");
+    assert!(
+        fatal.starts_with("\nFatal error: Uncaught Error: Failed opening required '"),
+        "unexpected fatal: {fatal:?}"
+    );
 }

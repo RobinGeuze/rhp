@@ -608,11 +608,17 @@ impl Vm {
         for (name, pe) in &self.classes[class_id as usize].props {
             properties.insert(name.clone(), pe.default.clone());
         }
-        Rc::new(RefCell::new(ObjectData {
+        let obj = Rc::new(RefCell::new(ObjectData {
             class: class_id,
             id,
             properties,
-        }))
+        }));
+        // Throwables record their creation site (file/line/trace) at creation,
+        // before any constructor runs (zend_default_exception_new).
+        if self.class_implements(class_id, b"Throwable") {
+            self.init_throwable(&obj);
+        }
+        obj
     }
 
     /// Look up a method (flattened table) by name on `class_id`.
@@ -658,16 +664,13 @@ impl Vm {
         }
         let callee = method.proto.clone();
         let mut frame = Frame::new(callee.clone(), dst);
-        frame.argc = args.len();
-        crate::bind_params(&callee, &args, &mut frame.regs)?;
-        self.bind_superglobals(&mut frame);
-        let strict = self.caller_strict();
-        self.check_arg_types(&callee, &mut frame, strict, Some(method.defining_class))?;
         if let (Some(this_cv), Some(obj)) = (callee.this_cv, this) {
             frame.regs[this_cv as usize] = Value::Object(obj);
         }
         frame.defining_class = Some(method.defining_class);
         frame.called_class = Some(called_class);
+        self.bind_frame(&mut frame, &args, true)?;
+        self.bind_superglobals(&mut frame);
         if callee.is_generator {
             let gen = self.make_generator(frame);
             let caller = self.stack.len() - 1;

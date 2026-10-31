@@ -64,7 +64,10 @@ fn vm_matches_php_baseline() {
             continue;
         };
         let source = std::fs::read(php).expect("read php");
-        match std::panic::catch_unwind(|| run_vm(&source, &name)) {
+        // Compile under the fixture's real path, as php reports it (getFile(),
+        // traces, __FILE__); fixtures print only its basename to stay portable.
+        let file = php.to_string_lossy().into_owned();
+        match std::panic::catch_unwind(|| run_vm(&source, &file)) {
             Ok(Ok(actual)) if actual == expected => passed += 1,
             Ok(Ok(actual)) => failures.push(format!(
                 "{name}: MISMATCH\n  expected: {:?}\n  actual:   {:?}",
@@ -97,7 +100,8 @@ fn oracle_matches_php_on_supported() {
             continue;
         };
         let source = std::fs::read(php).expect("read php");
-        match std::panic::catch_unwind(|| run_oracle(&source, &name)) {
+        let file = php.to_string_lossy().into_owned();
+        match std::panic::catch_unwind(|| run_oracle(&source, &file)) {
             Ok(Ok(actual)) if actual == expected => passed += 1,
             Ok(Ok(actual)) => failures.push(format!(
                 "{name}: MISMATCH\n  expected: {:?}\n  actual:   {:?}",

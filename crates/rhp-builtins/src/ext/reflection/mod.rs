@@ -210,6 +210,7 @@ class ReflectionClass {
     public function inNamespace() { return $this->meta['namespaceName'] !== ''; }
     public function isAbstract() { return $this->meta['isAbstract']; }
     public function isInterface() { return $this->meta['isInterface']; }
+    public function isAnonymous() { return str_contains($this->name, '@anonymous'); }
     public function isInstantiable() { return $this->meta['isInstantiable']; }
     public function isFinal() { return $this->meta['isFinal']; }
     public function isEnum() { return $this->meta['isEnum']; }

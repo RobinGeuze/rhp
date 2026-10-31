@@ -47,6 +47,8 @@ pub struct Vm {
     closures: Vec<Rc<FunctionProto>>,  // anonymous closure protos, indexed by `fnidx`
     constants: HashMap<Vec<u8>, Value>,
     max_depth: usize,
+    /// Builtin calls in progress (innermost last), for exception traces.
+    native_calls: Vec<NativeCall>,
     // lvalue cursor: a root in the current frame (CV or a static-prop cell) +
     // pending path steps. Cursor opcodes are emitted contiguously, so a single
     // cursor never nests.
@@ -360,6 +362,7 @@ impl Host for Vm {
         for p in f.proto.params.iter().take(n) {
             out.push(deref(&f.regs[p.cv as usize]).clone());
         }
+        out.extend(f.extra_args.iter().cloned());
         out
     }
 
@@ -525,6 +528,10 @@ impl Host for Vm {
             Some(StreamState::Mem { buf, pos }) => *pos >= buf.len(),
             _ => true,
         }
+    }
+
+    fn resource_closed(&self, res: &Value) -> bool {
+        matches!(res, Value::Resource(r) if r.type_name == "stream" && !self.streams.contains_key(&r.id))
     }
 
     fn stream_close(&mut self, res: &Value) -> bool {
@@ -927,6 +934,21 @@ struct Frame {
     /// Number of positional arguments actually passed (for non-constant parameter
     /// default-init guards in the prologue).
     argc: usize,
+    /// Arguments passed beyond the declared parameters (non-variadic callee):
+    /// kept for `func_get_args()` and exception-trace `args`.
+    extra_args: Vec<Value>,
+    /// `include`/`require`/`eval` frame: the construct name shown in traces.
+    include_kind: Option<&'static str>,
+}
+
+/// A builtin (native) call in progress, for exception traces: php shows the
+/// internal function as its own trace frame, called from `caller`'s line, and
+/// any user callback it invokes as `[internal function]`.
+struct NativeCall {
+    name: String,
+    args: Vec<Value>,
+    /// Index of the frame that made the call.
+    caller: usize,
 }
 
 /// Result of unwinding: a handler was installed, or the exception escaped the
@@ -957,6 +979,8 @@ impl Frame {
             pending: None,
             capture: false,
             argc: 0,
+            extra_args: Vec::new(),
+            include_kind: None,
         }
     }
 }
@@ -1007,6 +1031,7 @@ impl Vm {
             closures: Vec::new(),
             constants,
             max_depth: 1 << 16,
+            native_calls: Vec::new(),
             cursor_root: CursorRoot::Cv(0),
             cursor_steps: Vec::new(),
             classes: Vec::new(),
@@ -1478,7 +1503,7 @@ impl Vm {
         frame: &mut Frame,
         strict: bool,
         ctx: Option<ClassId>,
-    ) -> Result<(), Thrown> {
+    ) -> Result<(), (usize, Thrown)> {
         for (i, p) in proto.params.iter().enumerate() {
             let Some(ty) = &p.type_hint else { continue };
             // by-ref / variadic params aren't coerced here; a defaulted (not
@@ -1491,35 +1516,31 @@ impl Vm {
                 Ok(None) => {}
                 Ok(Some(coerced)) => frame.regs[p.cv as usize] = coerced,
                 Err(()) => {
-                    let fname = String::from_utf8_lossy(proto.name.as_bytes()).into_owned();
+                    let fname = self.func_display_name(proto, ctx);
                     let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
                         .into_owned();
-                    // php appends the call site (the caller is the current top of
-                    // stack — the new frame has not been pushed yet).
-                    let site = self.stack.last().map(|f| {
-                        let pc = f.pc.saturating_sub(1) as u32;
-                        let idx = f.proto.debug.lines.partition_point(|(p, _)| *p <= pc);
-                        let line = if idx == 0 {
-                            0
-                        } else {
-                            f.proto.debug.lines[idx - 1].1
-                        };
+                    // php appends the call site when the caller is user code (the
+                    // new frame has not been pushed yet: the caller is the top).
+                    let site = self.user_call_site().map(|(file, line)| {
                         format!(
                             ", called in {} on line {}",
-                            String::from_utf8_lossy(f.proto.debug.file.as_bytes()),
+                            String::from_utf8_lossy(&file),
                             line
                         )
                     });
-                    return Err(Thrown::error(
-                        "TypeError",
-                        format!(
-                            "{}(): Argument #{} (${}) must be of type {}, {} given{}",
-                            fname,
-                            i + 1,
-                            pname,
-                            type_string(ty),
-                            self.value_debug_type(&deref(&cur)),
-                            site.unwrap_or_default(),
+                    return Err((
+                        i,
+                        Thrown::error(
+                            "TypeError",
+                            format!(
+                                "{}(): Argument #{} (${}) must be of type {}, {} given{}",
+                                fname,
+                                i + 1,
+                                pname,
+                                type_string(ty),
+                                self.value_debug_type(&deref(&cur)),
+                                site.unwrap_or_default(),
+                            ),
                         ),
                     ));
                 }
@@ -1786,6 +1807,277 @@ impl Vm {
     /// The source file name of frame `top` (for exception getFile()).
     fn current_file(&self, top: usize) -> Vec<u8> {
         self.stack[top].proto.debug.file.as_bytes().to_vec()
+    }
+
+    // -- exceptions: throw site, backtrace, engine-error materialization --
+
+    /// Frame `i` runs engine-internal code (the prelude's PHP-source classes /
+    /// helpers, compiled with an empty file name): php has no user frame there.
+    fn is_internal_frame(&self, i: usize) -> bool {
+        self.stack[i].proto.debug.file.is_empty()
+    }
+
+    /// A builtin called from frame `i` is still running (so a frame above `i`
+    /// was invoked by it, i.e. from `[internal function]`).
+    fn native_active_from(&self, i: usize) -> bool {
+        self.native_calls.iter().any(|n| n.caller == i)
+    }
+
+    /// Where php's `zend_get_executed_filename/lineno` point: the innermost
+    /// user-code frame's current file and line.
+    fn throw_site(&self) -> (Vec<u8>, u32) {
+        let n = self.stack.len();
+        let Some(i) = (0..n)
+            .rev()
+            .find(|&i| !self.is_internal_frame(i))
+            .or(n.checked_sub(1))
+        else {
+            return (Vec::new(), 0);
+        };
+        (self.current_file(i), self.current_line(i))
+    }
+
+    /// The call site of a frame about to be pushed by the current top frame,
+    /// when that caller is user code (php appends ", called in %s on line %d"
+    /// / "passed in %s on line %d" only then).
+    fn user_call_site(&self) -> Option<(Vec<u8>, u32)> {
+        let top = self.stack.len().checked_sub(1)?;
+        if self.is_internal_frame(top) || self.native_active_from(top) {
+            return None;
+        }
+        Some((self.current_file(top), self.current_line(top)))
+    }
+
+    /// php's display name for a function in messages: `Class::fn` when scoped.
+    fn func_display_name(&self, proto: &FunctionProto, scope: Option<ClassId>) -> String {
+        let f = String::from_utf8_lossy(proto.name.as_bytes());
+        match scope {
+            Some(c) => format!(
+                "{}::{}",
+                String::from_utf8_lossy(self.class(c).name.as_bytes()),
+                f
+            ),
+            None => f.into_owned(),
+        }
+    }
+
+    /// The trace `args` of frame `i`: the passed arguments' current values.
+    fn frame_args(&self, i: usize) -> PhpArray {
+        let f = &self.stack[i];
+        let mut args = PhpArray::new();
+        for (k, p) in f.proto.params.iter().enumerate() {
+            if p.variadic {
+                if let Value::Array(a) = deref(&f.regs[p.cv as usize]) {
+                    for (key, v) in a.iter() {
+                        match key {
+                            ArrayKey::Int(_) => args.push(deref(v)),
+                            ArrayKey::Str(_) => {
+                                args.insert(key.clone(), deref(v));
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+            if k >= f.argc {
+                break;
+            }
+            args.push(deref(&f.regs[p.cv as usize]));
+        }
+        for v in &f.extra_args {
+            args.push(deref(v));
+        }
+        args
+    }
+
+    /// php's `zend_fetch_debug_backtrace` as stored in a Throwable's `trace`:
+    /// innermost first; each user frame paired with its call site (absent for a
+    /// call made by a builtin: `[internal function]`), each running builtin as
+    /// its own frame, `include`/`require`/`eval` as pseudo-frames.
+    fn build_trace(&self) -> PhpArray {
+        let k = |s: &[u8]| ArrayKey::from_bytes(s);
+        let mut out = PhpArray::new();
+        for i in (0..self.stack.len()).rev() {
+            if !self.is_internal_frame(i) {
+                for n in self.native_calls.iter().rev().filter(|n| n.caller == i) {
+                    let mut e = PhpArray::new();
+                    e.insert(k(b"file"), Value::str(self.current_file(i)));
+                    e.insert(k(b"line"), Value::Int(self.current_line(i) as i64));
+                    e.insert(k(b"function"), Value::str(n.name.as_bytes().to_vec()));
+                    let mut a = PhpArray::new();
+                    for v in &n.args {
+                        a.push(deref(v));
+                    }
+                    e.insert(k(b"args"), Value::Array(a));
+                    out.push(Value::Array(e));
+                }
+            }
+            if i == 0 {
+                break;
+            }
+            let f = &self.stack[i];
+            let mut e = PhpArray::new();
+            if !self.is_internal_frame(i - 1) && !self.native_active_from(i - 1) {
+                e.insert(k(b"file"), Value::str(self.current_file(i - 1)));
+                e.insert(k(b"line"), Value::Int(self.current_line(i - 1) as i64));
+            }
+            if let Some(kind) = f.include_kind {
+                e.insert(k(b"function"), Value::str(kind));
+            } else {
+                e.insert(k(b"function"), Value::Str(f.proto.name.clone()));
+                if let Some(c) = f.defining_class {
+                    e.insert(k(b"class"), Value::Str(self.class(c).name.clone()));
+                    let ty = if self.current_this(i).is_some() {
+                        "->"
+                    } else {
+                        "::"
+                    };
+                    e.insert(k(b"type"), Value::str(ty));
+                }
+                e.insert(k(b"args"), Value::Array(self.frame_args(i)));
+            }
+            out.push(Value::Array(e));
+        }
+        out
+    }
+
+    /// Stamp a freshly created Throwable with php's creation-site `file`,
+    /// `line` and `trace` (zend_default_exception_new).
+    fn init_throwable(&self, obj: &ObjectHandle) {
+        let (file, line) = self.throw_site();
+        let trace = self.build_trace();
+        let mut b = obj.borrow_mut();
+        b.properties
+            .insert(rhp_values::PhpStr::from("file"), Value::str(file));
+        b.properties
+            .insert(rhp_values::PhpStr::from("line"), Value::Int(line as i64));
+        b.properties
+            .insert(rhp_values::PhpStr::from("trace"), Value::Array(trace));
+    }
+
+    /// Turn an engine-raised `Thrown::Error` into a real Throwable object, created
+    /// *now* (so its file/line/trace are the throw point). `at` overrides the
+    /// file/line (argument errors are raised at the callee's parameter line).
+    fn materialize(&mut self, thrown: Thrown, at: Option<(Vec<u8>, u32)>) -> Thrown {
+        let Thrown::Error { class, message } = &thrown else {
+            return thrown;
+        };
+        let Ok(cls) = self.resolve_class_by_name(class.as_bytes()) else {
+            return thrown;
+        };
+        let obj = self.new_object(cls);
+        {
+            let mut b = obj.borrow_mut();
+            b.properties.insert(
+                rhp_values::PhpStr::from("message"),
+                Value::str(message.clone()),
+            );
+            if let Some((file, line)) = at {
+                b.properties
+                    .insert(rhp_values::PhpStr::from("file"), Value::str(file));
+                b.properties
+                    .insert(rhp_values::PhpStr::from("line"), Value::Int(line as i64));
+            }
+        }
+        Thrown::Object(obj)
+    }
+
+    /// Bind `args` into `frame` (which already carries its `$this`/scope) and
+    /// enforce declared parameter types. On failure php raises the
+    /// ArgumentCountError / TypeError from *inside* the callee: at the failing
+    /// parameter's line, with the callee on the trace.
+    fn bind_frame(
+        &mut self,
+        frame: &mut Frame,
+        args: &[Value],
+        check_types: bool,
+    ) -> Result<(), Thrown> {
+        let proto = frame.proto.clone();
+        frame.argc = args.len();
+        let failed = match bind_params(&proto, args, frame) {
+            Err(missing) => Some((missing, self.arg_count_error(&proto, frame, args.len()))),
+            Ok(()) if check_types => {
+                let strict = self.caller_strict();
+                let scope = frame.defining_class;
+                self.check_arg_types(&proto, frame, strict, scope).err()
+            }
+            Ok(()) => None,
+        };
+        let Some((idx, err)) = failed else {
+            return Ok(());
+        };
+        let line = proto.params.get(idx).map(|p| p.line).unwrap_or(0);
+        let at = (proto.debug.file.as_bytes().to_vec(), line);
+        let mut pushed = Frame::new(proto.clone(), Reg::MAX);
+        std::mem::swap(&mut pushed, frame);
+        self.stack.push(pushed);
+        let t = self.materialize(err, Some(at));
+        let mut popped = self.stack.pop().expect("pushed frame");
+        std::mem::swap(&mut popped, frame);
+        Err(t)
+    }
+
+    /// "Too few arguments to function f(), N passed[ in F on line L] and
+    /// {exactly|at least} M expected" (zend_missing_arg_error).
+    fn arg_count_error(&self, proto: &FunctionProto, frame: &Frame, passed: usize) -> Thrown {
+        let required = required_params(proto);
+        let declared = proto.params.iter().filter(|p| !p.variadic).count();
+        let which = if required == declared {
+            "exactly"
+        } else {
+            "at least"
+        };
+        let name = self.func_display_name(proto, frame.defining_class);
+        let msg = match self.user_call_site() {
+            Some((file, line)) => format!(
+                "Too few arguments to function {name}(), {passed} passed in {} on line {line} and {which} {required} expected",
+                String::from_utf8_lossy(&file)
+            ),
+            None => format!(
+                "Too few arguments to function {name}(), {passed} passed and {which} {required} expected"
+            ),
+        };
+        Thrown::error("ArgumentCountError", msg)
+    }
+
+    /// The class name of an object (e.g. an uncaught `Thrown::Object`).
+    pub fn class_name_of(&self, obj: &ObjectHandle) -> String {
+        String::from_utf8_lossy(self.class(obj.borrow().class).name.as_bytes()).into_owned()
+    }
+
+    /// The text php prints for an uncaught throwable on the CLI (display
+    /// errors to stdout): `PHP_EOL Fatal error: Uncaught <__toString()>\n  thrown
+    /// in <file> on line <line>\n`.
+    pub fn render_uncaught(&mut self, thrown: Thrown) -> Option<Vec<u8>> {
+        let thrown = self.materialize(thrown, None);
+        let Thrown::Object(h) = thrown else {
+            return None;
+        };
+        let cls = h.borrow().class;
+        let obj = Value::Object(h.clone());
+        let s = match self.lookup_method(cls, b"__tostring") {
+            Some(m) => match self.call_sync(&m, Some(h.clone()), cls, Vec::new()) {
+                Ok(Value::Str(s)) => s.as_bytes().to_vec(),
+                _ => builtins::php_fns::throwable_to_string(self, &obj),
+            },
+            None => builtins::php_fns::throwable_to_string(self, &obj),
+        };
+        let prop = |n: &str| {
+            h.borrow()
+                .properties
+                .get(&rhp_values::PhpStr::from(n))
+                .map(deref)
+                .unwrap_or(Value::Null)
+        };
+        let file = conv::to_string_bytes(&prop("file"));
+        let line = conv::to_int(&prop("line"));
+        let mut out = b"\nFatal error: Uncaught ".to_vec();
+        out.extend_from_slice(&s);
+        out.extend_from_slice(b"\n  thrown in ");
+        out.extend_from_slice(&file);
+        out.extend_from_slice(format!(" on line {line}").as_bytes());
+        out.push(b'\n');
+        Some(out)
     }
 
     /// The `$this` of the current frame, if it is bound to an object.
@@ -2095,7 +2387,15 @@ impl Vm {
                     } else {
                         // Builtin.
                         let name_str = String::from_utf8_lossy(&fname).into_owned();
-                        let out = self.call_builtin(top, &name_str, base, argc)?;
+                        if builtins::lookup(&name_str).is_none() {
+                            return Err(undefined_function(&proto.names[name as usize]));
+                        }
+                        // php compiles a few calls to dedicated opcodes (no call
+                        // frame): only when resolvable at compile time, i.e. not an
+                        // unqualified call inside a namespace.
+                        let frameless = fallback == rhp_bytecode::NO_NAME
+                            && compiled_inline(&fname, argc as usize);
+                        let out = self.call_builtin(top, &name_str, base, argc, frameless)?;
                         self.reg_set(top, dst, out);
                     }
                 }
@@ -2587,16 +2887,6 @@ impl Vm {
                         ));
                     }
                     let obj = self.new_object(cls);
-                    // Throwables record their creation site for getLine()/getFile().
-                    if self.class_implements(cls, b"Throwable") {
-                        let line = self.current_line(top);
-                        let file = self.current_file(top);
-                        let mut b = obj.borrow_mut();
-                        b.properties
-                            .insert(rhp_values::PhpStr::from("line"), Value::Int(line as i64));
-                        b.properties
-                            .insert(rhp_values::PhpStr::from("file"), Value::str(file));
-                    }
                     self.reg_set(top, dst, Value::Object(obj.clone()));
                     // Run __construct, discarding its return (into the arg window).
                     if let Some(m) = self.lookup_method(cls, b"__construct") {
@@ -2889,6 +3179,9 @@ impl Vm {
                         self.push_user_frame(callee, argv, dst)?;
                     } else {
                         let name_str = String::from_utf8_lossy(&fname).into_owned();
+                        if builtins::lookup(&name_str).is_none() {
+                            return Err(undefined_function(&proto.names[name as usize]));
+                        }
                         let out = self.invoke_builtin(&name_str, argv)?;
                         self.reg_set(top, dst, out);
                     }
@@ -3106,6 +3399,9 @@ impl Vm {
     /// else pop and continue in the caller. Returns `Ok` when a handler is
     /// installed (re-enter `run_frames`), `Err` when it escapes the top frame.
     fn unwind(&mut self, thrown: Thrown, floor: usize) -> Result<UnwindResult, Thrown> {
+        // An engine error becomes a real object here, before any frame is popped,
+        // so its file/line/trace describe the throw point.
+        let thrown = self.materialize(thrown, None);
         loop {
             if self.stack.len() <= floor {
                 return Ok(UnwindResult::Escaped(thrown)); // escaped the (sub)run
@@ -3180,14 +3476,13 @@ impl Vm {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
         let mut frame = Frame::new(proto.clone(), 0);
-        frame.argc = args.len();
-        bind_params(&proto, &args, &mut frame.regs)?;
-        self.bind_superglobals(&mut frame);
         if let (Some(cv), Some(obj)) = (proto.this_cv, this) {
             frame.regs[cv as usize] = Value::Object(obj);
         }
         frame.defining_class = defining_class;
         frame.called_class = called_class;
+        self.bind_frame(&mut frame, &args, true)?;
+        self.bind_superglobals(&mut frame);
         if proto.is_generator {
             return Ok(self.make_generator(frame));
         }
@@ -3225,7 +3520,12 @@ impl Vm {
         // (which starts in inline/HTML mode) enters PHP.
         let mut source = b"<?php ".to_vec();
         source.extend_from_slice(&code);
-        let file = String::from_utf8_lossy(&self.current_file(top)).into_owned();
+        // php names eval'd code "FILE(LINE) : eval()'d code" (its __FILE__, getFile()).
+        let file = format!(
+            "{}({}) : eval()'d code",
+            String::from_utf8_lossy(&self.current_file(top)),
+            self.current_line(top)
+        );
 
         let mut cb = self
             .includer
@@ -3236,7 +3536,7 @@ impl Vm {
         let prog = compiled?;
 
         let main = self.install_included(&prog)?;
-        self.run_included(main, top)
+        self.run_included(main, top, "eval")
     }
 
     fn do_include(
@@ -3278,7 +3578,7 @@ impl Vm {
         let prog = compiled?;
 
         let main = self.install_included(&prog)?;
-        let ret = self.run_included(main, top)?;
+        let ret = self.run_included(main, top, kind.name())?;
         // A file with no `return` yields int(1).
         Ok(match ret {
             Value::Null => Value::Int(1),
@@ -3386,12 +3686,14 @@ impl Vm {
         &mut self,
         main: Rc<FunctionProto>,
         caller_top: usize,
+        kind: &'static str,
     ) -> Result<Value, Thrown> {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
         let mut frame = Frame::new(main.clone(), 0);
         frame.capture = true;
+        frame.include_kind = Some(kind);
         frame.defining_class = self.stack[caller_top].defining_class;
         frame.called_class = self.stack[caller_top].called_class;
 
@@ -3435,11 +3737,6 @@ impl Vm {
         }
         let proto = self.closures[cd.fnidx as usize].clone();
         let mut frame = Frame::new(proto.clone(), 0);
-        frame.argc = args.len();
-        bind_params(&proto, &args, &mut frame.regs)?;
-        self.bind_superglobals(&mut frame);
-        let strict = self.caller_strict();
-        self.check_arg_types(&proto, &mut frame, strict, cd.bound_class)?;
         for (i, cap) in cd.captures.iter().enumerate() {
             frame.regs[i] = cap.clone();
         }
@@ -3450,6 +3747,8 @@ impl Vm {
         }
         frame.defining_class = cd.bound_class;
         frame.called_class = cd.bound_static;
+        self.bind_frame(&mut frame, &args, true)?;
+        self.bind_superglobals(&mut frame);
         if proto.is_generator {
             return Ok(self.make_generator(frame));
         }
@@ -3969,11 +4268,8 @@ impl Vm {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
         let mut frame = Frame::new(callee.clone(), dst);
-        frame.argc = args.len();
-        bind_params(&callee, &args, &mut frame.regs)?;
+        self.bind_frame(&mut frame, &args, true)?;
         self.bind_superglobals(&mut frame);
-        let strict = self.caller_strict();
-        self.check_arg_types(&callee, &mut frame, strict, None)?;
         if callee.is_generator {
             let gen = self.make_generator(frame);
             let caller = self.stack.len() - 1;
@@ -4023,6 +4319,7 @@ impl Vm {
         name: &str,
         base: Reg,
         argc: u16,
+        frameless: bool,
     ) -> Result<Value, Thrown> {
         // By-ref builtins (sort/array_push/preg_match/…) need their by-reference
         // positions kept as the `Value::Ref` the call site built, so they can
@@ -4037,36 +4334,110 @@ impl Vm {
                 }
             })
             .collect();
-        self.invoke_builtin(name, args)
+        self.invoke_builtin_ex(name, args, frameless)
     }
 
     /// Call a builtin by name with a pre-collected argument vector.
     fn invoke_builtin(&mut self, name: &str, args: Vec<Value>) -> Result<Value, Thrown> {
+        self.invoke_builtin_ex(name, args, false)
+    }
+
+    /// Call a builtin. Unless `frameless` (php compiled the call to an opcode),
+    /// the call is tracked as a native frame while it runs, and an engine error
+    /// it raises is materialized with that frame on the trace.
+    fn invoke_builtin_ex(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        frameless: bool,
+    ) -> Result<Value, Thrown> {
         let Some(builtin) = builtins::lookup(name) else {
             return Err(Thrown::error(
                 "Error",
                 format!("Call to undefined function {name}()"),
             ));
         };
-        if args.len() < builtin.min_args {
-            return Err(Thrown::error(
-                "ArgumentCountError",
-                format!(
-                    "Too few arguments to function {name}(), {} passed and at least {} expected",
-                    args.len(),
-                    builtin.min_args
-                ),
-            ));
-        }
-        if let Some(max) = builtin.max_args {
-            if args.len() > max {
-                return Err(Thrown::error(
-                    "ArgumentCountError",
-                    format!("Too many arguments to function {name}()"),
-                ));
+        let count_error = builtin_arg_count_error(builtin, args.len());
+        if frameless {
+            if let Some(e) = count_error {
+                return Err(e);
             }
+            return (builtin.func)(self, &args);
         }
-        (builtin.func)(self, &args)
+        // A builtin called from engine-internal (prelude) code is not a php frame.
+        let caller = self.stack.len().saturating_sub(1);
+        let tracked = !self.stack.is_empty() && !self.is_internal_frame(caller);
+        if tracked {
+            self.native_calls.push(NativeCall {
+                name: builtin.name.to_string(),
+                args: args.iter().map(deref).collect(),
+                caller,
+            });
+        }
+        let r = match count_error {
+            Some(e) => Err(e),
+            None => (builtin.func)(self, &args),
+        };
+        let r = match r {
+            Err(e @ Thrown::Error { .. }) if tracked => Err(self.materialize(e, None)),
+            other => other,
+        };
+        if tracked {
+            self.native_calls.pop();
+        }
+        r
+    }
+}
+
+/// "Call to undefined function NAME()" with the name as written at the call
+/// site (namespaced for an unqualified call inside a namespace).
+fn undefined_function(name: &rhp_values::PhpStr) -> Thrown {
+    Thrown::error(
+        "Error",
+        format!(
+            "Call to undefined function {}()",
+            String::from_utf8_lossy(name.as_bytes())
+        ),
+    )
+}
+
+/// zend_wrong_parameters_count_error: "f() expects exactly 1 argument, 0 given".
+fn builtin_arg_count_error(b: &builtins::Builtin, n: usize) -> Option<Thrown> {
+    let max = b.max_args.unwrap_or(usize::MAX);
+    if n >= b.min_args && n <= max {
+        return None;
+    }
+    let (which, bound) = if b.min_args == max {
+        ("exactly", b.min_args)
+    } else if n < b.min_args {
+        ("at least", b.min_args)
+    } else {
+        ("at most", max)
+    };
+    Some(Thrown::error(
+        "ArgumentCountError",
+        format!(
+            "{}() expects {which} {bound} argument{}, {n} given",
+            b.name,
+            if bound == 1 { "" } else { "s" }
+        ),
+    ))
+}
+
+/// Calls php compiles to dedicated opcodes instead of a function call
+/// (zend_try_compile_special_func): they never appear as a trace frame, and a
+/// callback they invoke is called from the caller's own line.
+fn compiled_inline(lcname: &[u8], argc: usize) -> bool {
+    match lcname {
+        b"strlen" | b"is_null" | b"is_bool" | b"is_long" | b"is_int" | b"is_integer"
+        | b"is_float" | b"is_double" | b"is_string" | b"is_array" | b"is_object"
+        | b"is_resource" | b"is_scalar" | b"boolval" | b"intval" | b"floatval" | b"doubleval"
+        | b"strval" | b"gettype" | b"count" | b"sizeof" => argc == 1,
+        b"get_class" => argc <= 1,
+        b"get_called_class" | b"func_num_args" | b"func_get_args" => argc == 0,
+        b"array_key_exists" | b"call_user_func_array" => argc == 2,
+        b"call_user_func" => argc >= 1,
+        _ => false,
     }
 }
 
@@ -4527,9 +4898,10 @@ fn array_key_to_value(k: &ArrayKey) -> Value {
 }
 
 /// Bind positional `args` to a callee's parameter CV registers (by value), with
-/// constant defaults and variadic collection. By-ref params and named args are
-/// not yet supported.
-fn bind_params(proto: &FunctionProto, args: &[Value], regs: &mut [Value]) -> Result<(), Thrown> {
+/// constant defaults and variadic collection; surplus args (non-variadic callee)
+/// are kept in `extra_args`. `Err(i)`: required parameter `i` was not passed.
+fn bind_params(proto: &FunctionProto, args: &[Value], frame: &mut Frame) -> Result<(), usize> {
+    let regs = &mut frame.regs;
     for (i, p) in proto.params.iter().enumerate() {
         if p.variadic {
             // Collect the remaining args into an array (by value).
@@ -4555,16 +4927,11 @@ fn bind_params(proto: &FunctionProto, args: &[Value], regs: &mut [Value]) -> Res
                 ParamDefault::Init(_) => {} // non-constant defaults: deferred
             }
         } else {
-            return Err(Thrown::error(
-                "ArgumentCountError",
-                format!(
-                    "Too few arguments to function {}(), {} passed and at least {} expected",
-                    String::from_utf8_lossy(proto.name.as_bytes()),
-                    args.len(),
-                    required_params(proto),
-                ),
-            ));
+            return Err(i);
         }
+    }
+    if args.len() > proto.params.len() {
+        frame.extra_args = args[proto.params.len()..].iter().map(deref).collect();
     }
     Ok(())
 }

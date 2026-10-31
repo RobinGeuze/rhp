@@ -64,12 +64,22 @@ fn main() -> ExitCode {
         compile_with_source(parsed.program(), src, file)
     });
     let result = vm.run(&program);
+    // An uncaught throwable: php prints `Fatal error: Uncaught …` (its
+    // __toString, then "thrown in") after the script's output, exit 255.
+    let uncaught = match result {
+        Err(ref t @ (Thrown::Error { .. } | Thrown::Object(_))) => vm.render_uncaught(t.clone()),
+        _ => None,
+    };
 
     let _ = std::io::stdout().write_all(vm.output());
+    if let Some(msg) = &uncaught {
+        let _ = std::io::stdout().write_all(msg);
+    }
     let _ = std::io::stdout().flush();
 
     match result {
         Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
+        Err(_) if uncaught.is_some() => ExitCode::from(255),
         Err(t) => fatal(t),
     }
 }

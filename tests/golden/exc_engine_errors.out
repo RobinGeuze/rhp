@@ -1,0 +1,120 @@
+Error | Error | Error
+exc_engine_errors.php:17 code=0
+Call to undefined function nope_fn()
+  #0 file,line,function,class,type,args exc_engine_errors.php:46
+NULL
+#0 exc_engine_errors.php(46): Lib->undefinedFn(5, 'str')
+#1 {main}
+---
+DivisionByZeroError | DivisionByZeroError | DivisionByZeroError
+exc_engine_errors.php:20 code=0
+Division by zero
+  #0 file,line,function,args exc_engine_errors.php:20
+  #1 file,line,function,class,type,args exc_engine_errors.php:46
+NULL
+#0 exc_engine_errors.php(20): intdiv(5, 0)
+#1 exc_engine_errors.php(46): Lib->div(5, 'str')
+#2 {main}
+---
+ArgumentCountError | ArgumentCountError | ArgumentCountError
+exc_engine_errors.php:23 code=0
+strlen() expects exactly 1 argument, 0 given
+  #0 file,line,function,args exc_engine_errors.php:23
+  #1 file,line,function,class,type,args exc_engine_errors.php:46
+NULL
+#0 exc_engine_errors.php(23): strlen()
+#1 exc_engine_errors.php(46): Lib->argc(5, 'str')
+#2 {main}
+---
+ArgumentCountError | ArgumentCountError | ArgumentCountError
+exc_engine_errors.php:26 code=0
+str_repeat() expects exactly 2 arguments, 3 given
+  #0 file,line,function,args exc_engine_errors.php:26
+  #1 file,line,function,class,type,args exc_engine_errors.php:46
+NULL
+#0 exc_engine_errors.php(26): str_repeat('x', 2, 3)
+#1 exc_engine_errors.php(46): Lib->tooMany(5, 'str')
+#2 {main}
+---
+Error | Error | Error
+exc_engine_errors.php:30 code=0
+Call to a member function foo() on null
+  #0 file,line,function,class,type,args exc_engine_errors.php:46
+NULL
+#0 exc_engine_errors.php(46): Lib->onNull(5, 'str')
+#1 {main}
+---
+Error | Error | Error
+exc_engine_errors.php:33 code=0
+Class "NoSuchClass" not found
+  #0 file,line,function,class,type,args exc_engine_errors.php:51
+NULL
+#0 exc_engine_errors.php(51): Lib::noClass()
+#1 {main}
+---
+TypeError | TypeError | TypeError
+exc_engine_errors.php:35 code=0
+Lib::typed(): Argument #1 ($i) must be of type int, string given, called in exc_engine_errors.php on line 52
+  #0 file,line,function,class,type,args exc_engine_errors.php:52
+NULL
+#0 exc_engine_errors.php(52): Lib->typed('abc')
+#1 {main}
+---
+ArgumentCountError | ArgumentCountError | ArgumentCountError
+exc_engine_errors.php:38 code=0
+Too few arguments to function Lib::needs(), 1 passed in exc_engine_errors.php on line 53 and at least 2 expected
+  #0 file,line,function,class,type,args exc_engine_errors.php:53
+NULL
+#0 exc_engine_errors.php(53): Lib->needs(1)
+#1 {main}
+---
+DivisionByZeroError | DivisionByZeroError | DivisionByZeroError
+exc_engine_errors.php:54 code=0
+Modulo by zero
+NULL
+#0 {main}
+---
+Error | Error | Error
+exc_engine_errors.php:55 code=0
+Call to undefined function nOpe_Mixed_Case()
+NULL
+#0 {main}
+---
+RuntimeException | RuntimeException | RuntimeException
+exc_engine_errors.php:60 code=0
+cb 2
+  #0 function,args -:-
+  #1 file,line,function,args exc_engine_errors.php:64
+NULL
+#0 [internal function]: cb(2)
+#1 exc_engine_errors.php(64): array_map('cb', Array)
+#2 {main}
+---
+RuntimeException | RuntimeException | RuntimeException
+exc_engine_errors.php:60 code=0
+cb 2
+  #0 file,line,function,args exc_engine_errors.php:65
+  #1 function,args -:-
+  #2 file,line,function,args exc_engine_errors.php:65
+NULL
+#0 exc_engine_errors.php(65): cb(2)
+#1 [internal function]: {closure:exc_engine_errors.php:65}(1)
+#2 exc_engine_errors.php(65): array_map(Object(Closure), Array)
+#3 {main}
+---
+RuntimeException | RuntimeException | RuntimeException
+exc_engine_errors.php:60 code=0
+cb 9
+  #0 file,line,function,args exc_engine_errors.php:67
+NULL
+#0 exc_engine_errors.php(67): cb(9)
+#1 {main}
+---
+ArgumentCountError | ArgumentCountError | ArgumentCountError
+exc_engine_errors.php:38 code=0
+Too few arguments to function Lib::needs(), 1 passed in exc_engine_errors.php on line 68 and at least 2 expected
+  #0 file,line,function,class,type,args exc_engine_errors.php:68
+NULL
+#0 exc_engine_errors.php(68): Lib->needs(1)
+#1 {main}
+---

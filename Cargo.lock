@@ -799,6 +799,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff20308ecabd635a2dc1dd5834a86c462cca20efba1d5d3ddab1f8aea3455cb2"
 dependencies = [
  "cc",
+ "libc",
  "pkg-config",
  "vcpkg",
 ]
@@ -1327,6 +1328,7 @@ dependencies = [
  "getrandom 0.2.17",
  "gost94",
  "libc",
+ "libz-sys",
  "md-5",
  "md2",
  "md4",

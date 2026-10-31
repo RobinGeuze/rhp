@@ -12,7 +12,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Read;
 
 pub const ER_OK: i64 = 0;
 pub const ER_NOENT: i64 = 9;
@@ -544,12 +544,7 @@ impl Archive {
                     let deflated = if want_store {
                         None
                     } else {
-                        let mut enc = flate2::write::DeflateEncoder::new(
-                            Vec::new(),
-                            flate2::Compression::new(9),
-                        );
-                        let _ = enc.write_all(d);
-                        enc.finish().ok()
+                        crate::ext::zlib::raw_deflate(d, 9)
                     };
                     match deflated {
                         Some(c) if c.len() < d.len() || e.method == 8 => {

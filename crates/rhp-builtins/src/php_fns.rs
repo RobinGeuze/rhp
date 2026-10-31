@@ -37,6 +37,7 @@ const LOADED_EXTS: &[&str] = &[
     "tokenizer",
     "phar",
     "zlib",
+    "bz2",
     "bcmath",
     "gmp",
     "reflection",

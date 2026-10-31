@@ -15,6 +15,7 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::rc::Rc;
 
 use flate2::read::DeflateDecoder;
@@ -158,6 +159,36 @@ impl PharArchive {
         }
     }
 
+    /// php's `phar_set_inode`: the low 16 bits of zend's DJB string hash of
+    /// archive path + entry name (capped at MAXPATHLEN bytes) — bug for bug:
+    /// php `memcpy`s from the entry's `zend_string *` itself rather than its
+    /// value, so the bytes hashed after the path are the string header
+    /// (refcount=1, type_info=IS_STRING|NOT_COLLECTABLE, hash=0, len) followed
+    /// by the name, truncated to the name's length.
+    fn entry_inode(&self, entry: &[u8]) -> i64 {
+        let mut hdr: Vec<u8> = Vec::with_capacity(24 + entry.len());
+        hdr.extend_from_slice(&1u32.to_le_bytes());
+        hdr.extend_from_slice(&0x16u32.to_le_bytes());
+        hdr.extend_from_slice(&0u64.to_le_bytes());
+        hdr.extend_from_slice(&(entry.len() as u64).to_le_bytes());
+        hdr.extend_from_slice(entry);
+        let mut tmp: Vec<u8> = self.path.clone();
+        tmp.truncate(1024);
+        let room = 1024 - tmp.len();
+        tmp.extend_from_slice(&hdr[..entry.len().min(room)]);
+        let mut h: u64 = 5381;
+        for &b in &tmp {
+            // zend hashes `char`, which is signed on x86-64 (unsigned on arm64).
+            let v = if cfg!(target_arch = "x86_64") {
+                b as i8 as i64 as u64
+            } else {
+                b as u64
+            };
+            h = h.wrapping_mul(33).wrapping_add(v);
+        }
+        (h & 0xffff) as i64
+    }
+
     /// php `phar_dostat` for a file entry (archive opened read-only, so the
     /// write bits are masked off).
     #[allow(clippy::unnecessary_cast)]
@@ -175,6 +206,7 @@ impl PharArchive {
                 nlink: 1,
                 rdev: -1,
                 dev: 0xc,
+                ino: self.entry_inode(entry),
                 blksize: -1,
                 blocks: -1,
                 ..StatInfo::default()
@@ -368,6 +400,9 @@ impl PharWrapper {
     /// entry path, by longest registered-key prefix match.
     fn resolve(&self, url: &[u8]) -> Option<(Rc<PharArchive>, Vec<u8>)> {
         let rest = url.strip_prefix(b"phar://")?;
+        if !self.has_archive_for(rest) {
+            self.open_from_path(rest);
+        }
         let m = self.archives.borrow();
         let mut best: Option<(&Vec<u8>, usize)> = None;
         for key in m.keys() {
@@ -403,8 +438,70 @@ fn normalize(entry: &[u8]) -> Vec<u8> {
     out.join(&b"/"[..])
 }
 
+impl PharWrapper {
+    fn has_archive_for(&self, rest: &[u8]) -> bool {
+        self.archives.borrow().keys().any(|key| {
+            rest == key.as_slice()
+                || (rest.len() > key.len() && rest.starts_with(key) && rest[key.len()] == b'/')
+        })
+    }
+
+    /// php opens a phar on first access by filesystem path
+    /// (`phar:///path/to/x.phar/entry`) without any `Phar::loadPhar`: find the
+    /// first path prefix that is a regular file and load it as a phar.
+    fn open_from_path(&self, rest: &[u8]) {
+        let mut cuts: Vec<usize> = rest
+            .iter()
+            .enumerate()
+            .filter(|&(i, &b)| b == b'/' && i > 0)
+            .map(|(i, _)| i)
+            .collect();
+        cuts.push(rest.len());
+        for cut in cuts {
+            let prefix = &rest[..cut];
+            let Some(st) = crate::streams::sys_stat(prefix, false) else {
+                continue;
+            };
+            if st.is_dir {
+                continue;
+            }
+            if !st.is_regular {
+                return;
+            }
+            let Ok(bytes) = std::fs::read(std::ffi::OsStr::from_bytes(prefix)) else {
+                return;
+            };
+            let Ok(mut arc) = PharArchive::parse(bytes) else {
+                return;
+            };
+            let real = std::fs::canonicalize(std::ffi::OsStr::from_bytes(prefix))
+                .map(|p| p.into_os_string().into_vec())
+                .unwrap_or_else(|_| prefix.to_vec());
+            arc.path = real.clone();
+            let arc = Rc::new(arc);
+            self.install(&real, None, arc.clone());
+            self.install(prefix, None, arc);
+            return;
+        }
+    }
+
+    /// `phar://<alias>` with nothing after the alias: php treats a bare name
+    /// as a filesystem path to the archive, so it is the archive root only
+    /// when it names the phar file itself; a bare *alias* cannot be stat'd or
+    /// opened (only `phar://<alias>/` is the root).
+    fn is_bare_archive(&self, url: &[u8]) -> bool {
+        url.strip_prefix(b"phar://").is_some_and(|rest| {
+            self.archives.borrow().contains_key(rest)
+                && !crate::streams::sys_stat(rest, false).is_some_and(|s| s.is_regular)
+        })
+    }
+}
+
 impl StreamWrapper for PharWrapper {
     fn exists(&self, url: &[u8]) -> bool {
+        if self.is_bare_archive(url) {
+            return false;
+        }
         match self.resolve(url) {
             Some((arc, entry)) => arc.entries.contains_key(&entry) || arc.has_dir(&entry),
             None => false,
@@ -415,6 +512,9 @@ impl StreamWrapper for PharWrapper {
         arc.read(&entry)
     }
     fn stat(&self, url: &[u8]) -> Option<StatInfo> {
+        if self.is_bare_archive(url) {
+            return None;
+        }
         let (arc, entry) = self.resolve(url)?;
         if let Some(s) = arc.entry_stat(&entry) {
             Some(s)
@@ -425,6 +525,9 @@ impl StreamWrapper for PharWrapper {
         }
     }
     fn opendir(&self, url: &[u8]) -> Option<Vec<Vec<u8>>> {
+        if self.is_bare_archive(url) {
+            return None;
+        }
         let (arc, entry) = self.resolve(url)?;
         arc.list_dir(&entry)
     }

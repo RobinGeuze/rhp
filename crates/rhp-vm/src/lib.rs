@@ -92,6 +92,9 @@ pub struct Vm {
     last_dir: Option<u32>,
     // The lazily-allocated default stream context resource id.
     default_context: Option<u32>,
+    // (uri, mode) of streams opened through a non-local wrapper (phar://…),
+    // for fstat / stream_get_meta_data.
+    stream_origins: HashMap<u32, (Vec<u8>, Vec<u8>)>,
     // Stream-context resources (`stream_context_create`), id -> options array.
     stream_contexts: HashMap<u32, Value>,
     // Response header lines from the last http(s) request (status line first).
@@ -460,6 +463,7 @@ impl Host for Vm {
             // Plain local file: a real descriptor (seek/tell/flock/ftruncate).
             StreamState::File(Box::new(builtins::streams::LocalFile::open(path, mode)?))
         } else if writable {
+            let origin = (path.to_vec(), mode.to_vec());
             let buf = if append {
                 self.wrapper_for(path)
                     .and_then(|w| w.get_contents(path))
@@ -467,13 +471,25 @@ impl Host for Vm {
             } else {
                 Vec::new()
             };
-            StreamState::FileWrite {
-                buf,
-                url: path.to_vec(),
+            let v = self.make_stream(
+                StreamState::FileWrite {
+                    buf,
+                    url: path.to_vec(),
+                },
+                "stream",
+            );
+            if let Some(id) = res_id(&v) {
+                self.stream_origins.insert(id, origin);
             }
+            return Some(v);
         } else {
             let data = self.wrapper_for(path).and_then(|w| w.get_contents(path))?;
-            StreamState::Mem { buf: data, pos: 0 }
+            let v = self.make_stream(StreamState::Mem { buf: data, pos: 0 }, "stream");
+            if let Some(id) = res_id(&v) {
+                self.stream_origins
+                    .insert(id, (path.to_vec(), mode.to_vec()));
+            }
+            return Some(v);
         };
         Some(self.make_stream(state, "stream"))
     }
@@ -567,6 +583,7 @@ impl Host for Vm {
         if self.last_dir == Some(id) {
             self.last_dir = None;
         }
+        self.stream_origins.remove(&id);
         match self.streams.remove(&id) {
             Some(StreamState::FileWrite { buf, url }) => self
                 .wrapper_for(&url)
@@ -657,7 +674,12 @@ impl Host for Vm {
     }
 
     fn stream_fstat(&mut self, res: &Value) -> Option<builtins::StatInfo> {
-        match self.streams.get(&res_id(res)?)? {
+        let id = res_id(res)?;
+        if let Some((uri, _)) = self.stream_origins.get(&id) {
+            let uri = uri.clone();
+            return self.wrapper_for(&uri)?.stat(&uri);
+        }
+        match self.streams.get(&id)? {
             StreamState::File(f) => f.stat(),
             StreamState::Stdin => builtins::streams::sys_fstat(0),
             StreamState::Stdout => builtins::streams::sys_fstat(1),
@@ -690,7 +712,29 @@ impl Host for Vm {
 
     fn stream_meta(&self, res: &Value) -> Option<builtins::StreamMeta> {
         use builtins::StreamMeta as M;
-        Some(match self.streams.get(&res_id(res)?)? {
+        let id = res_id(res)?;
+        if let Some((uri, mode)) = self.stream_origins.get(&id) {
+            let (scheme, _) = builtins::streams::split_scheme(uri);
+            let (wrapper_type, stream_type) = match scheme {
+                b"phar" => ("phar", "phar stream"),
+                b"compress.zlib" => ("ZLIB", "ZLIB"),
+                _ => ("user-space", "user-space"),
+            };
+            let (unread, eof) = match self.streams.get(&id)? {
+                StreamState::Mem { buf, pos } => (0, *pos >= buf.len() && !buf.is_empty()),
+                _ => (0, false),
+            };
+            return Some(M {
+                wrapper_type,
+                stream_type,
+                mode: mode.clone(),
+                uri: uri.clone(),
+                unread_bytes: unread,
+                seekable: true,
+                eof,
+            });
+        }
+        Some(match self.streams.get(&id)? {
             StreamState::File(f) => M {
                 wrapper_type: "plainfile",
                 stream_type: "STDIO",
@@ -1292,6 +1336,7 @@ impl Vm {
             streams: HashMap::new(),
             last_dir: None,
             default_context: None,
+            stream_origins: HashMap::new(),
             next_resource_id: 1,
             stream_contexts: HashMap::new(),
             last_response_headers: Vec::new(),

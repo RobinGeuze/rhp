@@ -1,0 +1,70 @@
+name: Set up php for rhp's differential tests
+description: >
+  Install php via setup-php, plus a `php` shim that force-loads shared
+  extensions whenever the harness runs `php -n`.
+
+# rhp's harness runs php with `-n` (no ini) for deterministic output.
+# Debian/Ubuntu php ships most extensions as shared modules enabled via ini,
+# which `-n` drops. Homebrew php compiles them all in statically, so `-n` keeps
+# them there. The shim closes that gap: when `-n` is present, it loads every
+# wanted extension from the command line (which `-n` does not affect). It
+# injects an extension only if its .so exists and php hasn't compiled it in.
+# Either mistake would print a startup warning to stdout and corrupt every
+# comparison. Non-`-n` invocations pass through untouched.
+
+inputs:
+  php-version:
+    description: php version for setup-php (e.g. '8.5')
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: shivammathur/setup-php@v2
+      with:
+        php-version: ${{ inputs.php-version }}
+        extensions: >-
+          bcmath, calendar, ctype, dom, exif, fileinfo, gettext, gmp, iconv,
+          intl, mbstring, pcntl, phar, posix, shmop, simplexml, sockets, sodium,
+          sysvmsg, sysvsem, sysvshm, tokenizer, xml, xmlreader, xmlwriter, zip
+        coverage: none
+
+    - name: Install php shim that force-loads extensions under -n
+      shell: bash
+      run: |
+        REAL="$(command -v php)"
+        EXTDIR="$(php-config --extension-dir)"
+        builtin="$(php -n -m | tr 'A-Z' 'a-z')"
+        inject="-d extension_dir=$EXTDIR"
+        for e in bcmath calendar ctype dom exif fileinfo gettext gmp iconv intl \
+                 mbstring pcntl phar posix shmop simplexml sockets sodium sysvmsg \
+                 sysvsem sysvshm tokenizer xml xmlreader xmlwriter zip; do
+          if ! grep -qx "$e" <<<"$builtin" && [ -f "$EXTDIR/$e.so" ]; then
+            inject="$inject -d extension=$e"
+          fi
+        done
+        echo "shim injects under -n: $inject"
+        SHIM="$HOME/php-shim"
+        mkdir -p "$SHIM"
+        cat > "$SHIM/php" <<EOF
+        #!/usr/bin/env bash
+        for a in "\$@"; do
+          if [ "\$a" = "-n" ]; then
+            exec "$REAL" $inject "\$@"
+          fi
+        done
+        exec "$REAL" "\$@"
+        EOF
+        chmod +x "$SHIM/php"
+        echo "$SHIM" >> "$GITHUB_PATH"
+
+    - name: Confirm extensions load under -n with clean stdout
+      shell: bash
+      run: |
+        echo "default: $(php --version | head -1)"
+        echo "modules under -n: $(php -n -m | tr '\n' ' ')"
+        out="$(php -n -r 'echo "ok";')"
+        if [ "$out" != "ok" ]; then
+          echo "php -n prints startup noise on stdout:"; echo "$out"; exit 1
+        fi
+        php -n -r 'foreach (["bcmath","ctype","gmp","mbstring","phar"] as $e) { if (!extension_loaded($e)) { fwrite(STDERR, "missing $e\n"); exit(1); } } echo "required extensions loaded\n";'

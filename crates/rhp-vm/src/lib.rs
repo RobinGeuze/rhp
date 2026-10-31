@@ -61,7 +61,7 @@ pub struct Vm {
     main_cv_names: HashMap<Vec<u8>, Reg>,
     globals: HashMap<Vec<u8>, Rc<RefCell<Value>>>,
     // `static $x`: persistent cells keyed by (function proto pointer, var name).
-    statics: HashMap<(usize, Vec<u8>), Rc<RefCell<Value>>>,
+    statics: HashMap<StaticKey, Rc<RefCell<Value>>>,
     // Non-constant class const / static-prop / property-default initializers,
     // evaluated after all classes link (so cross-class/enum refs resolve).
     // Generator runtime state, keyed by the Generator object's id.
@@ -79,6 +79,10 @@ pub struct Vm {
     included_files: std::collections::HashSet<Vec<u8>>,
     // Registered `spl_autoload_register` callables, in call order.
     autoloaders: Vec<Value>,
+    /// Lowercased class names whose autoload is in progress (php's
+    /// `EG(in_autoload)`): a nested lookup of the same name does not re-enter
+    /// the autoloaders.
+    in_autoload: std::collections::HashSet<Vec<u8>>,
     // Stream wrappers by scheme (`file`, `phar`, …), installed at startup from
     // the module list; runtime-mutable later via `stream_wrapper_register`.
     wrappers: HashMap<Vec<u8>, Rc<dyn builtins::StreamWrapper>>,
@@ -138,6 +142,9 @@ struct GenState {
 }
 
 mod classes;
+
+/// A function-static slot: (proto address, class it runs as, variable name).
+type StaticKey = (usize, Option<ClassId>, Vec<u8>);
 
 /// Where an lvalue cursor is rooted.
 enum CursorRoot {
@@ -1040,6 +1047,7 @@ impl Vm {
             includer: None,
             included_files: std::collections::HashSet::new(),
             autoloaders: Vec::new(),
+            in_autoload: Default::default(),
             wrappers,
             main_script_path: None,
             streams: HashMap::new(),
@@ -1583,6 +1591,19 @@ impl Vm {
                 ))
             }
         }
+    }
+
+    /// Key of a function-static slot: the proto plus, for a method, the class
+    /// it runs as. A method declared in a class always runs with that class,
+    /// but a trait method is copied into every using class and each copy has
+    /// its own statics (php duplicates the op_array per using class).
+    fn static_key(&self, top: usize, proto: &Rc<FunctionProto>, sname: Vec<u8>) -> StaticKey {
+        let cls = if proto.name.as_bytes().starts_with(b"{closure") {
+            None
+        } else {
+            self.stack[top].defining_class
+        };
+        (Rc::as_ptr(proto) as usize, cls, sname)
     }
 
     /// The strict-types mode of the current caller (top of stack), for argument
@@ -2159,7 +2180,7 @@ impl Vm {
                 }
                 Instr::BindStatic { cv, name, init } => {
                     let sname = proto.names[name as usize].as_bytes().to_vec();
-                    let key = (Rc::as_ptr(&proto) as usize, sname);
+                    let key = self.static_key(top, &proto, sname);
                     let cell = match self.statics.get(&key) {
                         Some(c) => c.clone(),
                         None => {
@@ -2177,7 +2198,7 @@ impl Vm {
                 }
                 Instr::BindStaticOrJmp { cv, name, target } => {
                     let sname = proto.names[name as usize].as_bytes().to_vec();
-                    let key = (Rc::as_ptr(&proto) as usize, sname);
+                    let key = self.static_key(top, &proto, sname);
                     if let Some(c) = self.statics.get(&key) {
                         let cell = c.clone();
                         self.stack[top].regs[cv as usize] = Value::Ref(cell);
@@ -2186,7 +2207,7 @@ impl Vm {
                 }
                 Instr::BindStaticInit { cv, name, src } => {
                     let sname = proto.names[name as usize].as_bytes().to_vec();
-                    let key = (Rc::as_ptr(&proto) as usize, sname);
+                    let key = self.static_key(top, &proto, sname);
                     let v = self.reg_get(top, src);
                     let cell = self
                         .statics
@@ -3805,8 +3826,24 @@ impl Vm {
         method_lc: &[u8],
         args: Vec<Value>,
     ) -> Result<Value, Thrown> {
-        // Case values may be pending constant expressions.
-        self.update_class_constants(cls)?;
+        // Case values may be pending constant expressions: cases() evaluates
+        // just the pending case constants (php's zend_enum_cases_func), while
+        // from()/tryFrom() load the whole class (building the value table).
+        if method_lc == b"cases" {
+            let pending: Vec<Vec<u8>> = self
+                .class(cls)
+                .constants
+                .iter()
+                .filter(|(_, c)| matches!(c.init, Some(classes::ConstInit::EnumCase(_))))
+                .map(|(k, _)| k.clone())
+                .collect();
+            let display = self.class(cls).name.as_bytes().to_vec();
+            for name in pending {
+                self.class_const_value(cls, &name, &display, false)?;
+            }
+        } else {
+            self.update_class_constants(cls)?;
+        }
         let enum_name = || String::from_utf8_lossy(self.class(cls).name.as_bytes()).into_owned();
         match method_lc {
             b"cases" => {

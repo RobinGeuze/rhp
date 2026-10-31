@@ -103,6 +103,9 @@ thread_local! {
     /// Whether the file being compiled declared `strict_types=1` (php's
     /// caller-decides coercion rule); stamped on every proto built from it.
     static STRICT_TYPES: RefCell<bool> = const { RefCell::new(false) };
+    /// Whether a trait body is being compiled: `__CLASS__` there names the
+    /// *using* class, so it is lowered to a runtime `self::class`.
+    static IN_TRAIT: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Lower a mago type hint to the bytecode [`rhp_bytecode::TypeHint`] (resolving
@@ -853,6 +856,39 @@ fn prop_default_or_thunk(
     }
 }
 
+/// php's `zend_is_valid_default_value`: a literal int initializer of a
+/// property / class constant whose type admits float but not int becomes a
+/// float at compile time.
+fn widen_int_default(v: Value, hint: Option<&rhp_bytecode::TypeHint>) -> Value {
+    use rhp_bytecode::TypeKind as K;
+    match (v, hint) {
+        (Value::Int(n), Some(h))
+            if h.kinds.contains(&K::Float)
+                && !h.kinds.iter().any(|k| matches!(k, K::Int | K::Mixed)) =>
+        {
+            Value::Float(n as f64)
+        }
+        (v, _) => v,
+    }
+}
+
+fn coerce_prop_default(
+    d: PropDefaultProto,
+    hint: Option<&rhp_bytecode::TypeHint>,
+) -> PropDefaultProto {
+    match d {
+        PropDefaultProto::Const(v) => PropDefaultProto::Const(widen_int_default(v, hint)),
+        other => other,
+    }
+}
+
+fn coerce_const_init(d: ConstInitProto, hint: Option<&rhp_bytecode::TypeHint>) -> ConstInitProto {
+    match d {
+        ConstInitProto::Const(v) => ConstInitProto::Const(widen_int_default(v, hint)),
+        other => other,
+    }
+}
+
 #[derive(Default)]
 struct CompiledMembers {
     methods: Vec<MethodProto>,
@@ -881,11 +917,15 @@ fn compile_members(
                 let is_static = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Static(_)));
                 let is_readonly =
                     has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
+                let hint = p.hint.as_ref().map(type_hint);
                 for item in p.items.iter() {
                     let (var, default) = match item {
                         PropertyItem::Concrete(c) => (
                             c.variable.name,
-                            prop_default_or_thunk(c.value, sigs, Some(class_name))?,
+                            coerce_prop_default(
+                                prop_default_or_thunk(c.value, sigs, Some(class_name))?,
+                                hint.as_ref(),
+                            ),
                         ),
                         PropertyItem::Abstract(a) => (a.variable.name, PropDefaultProto::None),
                     };
@@ -901,6 +941,7 @@ fn compile_members(
                             visibility,
                             is_readonly,
                             init,
+                            type_hint: hint.clone(),
                         });
                     } else {
                         out.props.push(PropProto {
@@ -908,6 +949,7 @@ fn compile_members(
                             visibility,
                             is_readonly,
                             default,
+                            type_hint: hint.clone(),
                         });
                     }
                 }
@@ -917,11 +959,16 @@ fn compile_members(
             }
             ClassLikeMember::Constant(c) => {
                 let visibility = modifiers_visibility(&c.modifiers);
+                let hint = c.hint.as_ref().map(type_hint);
                 for item in c.items.iter() {
                     out.constants.push(ConstProto {
                         name: PhpStr::from_bytes(item.name.value.to_vec()),
                         visibility,
-                        value: const_init_or_thunk(item.value, sigs, Some(class_name))?,
+                        value: coerce_const_init(
+                            const_init_or_thunk(item.value, sigs, Some(class_name))?,
+                            hint.as_ref(),
+                        ),
+                        type_hint: hint.clone(),
                     });
                 }
             }
@@ -952,7 +999,10 @@ fn compile_trait(
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<ClassProto, Thrown> {
     let name = PhpStr::from_bytes(join_ns(&cur_ns(), t.name.value));
-    let m = compile_members(&t.members, sigs, &name)?;
+    let saved = IN_TRAIT.with(|f| std::mem::replace(&mut *f.borrow_mut(), true));
+    let m = compile_members(&t.members, sigs, &name);
+    IN_TRAIT.with(|f| *f.borrow_mut() = saved);
+    let m = m?;
     Ok(ClassProto {
         name,
         kind: ClassKind::Trait,
@@ -1400,11 +1450,16 @@ fn compile_interface(
     for member in iface.members.iter() {
         if let ClassLikeMember::Constant(c) = member {
             let visibility = modifiers_visibility(&c.modifiers);
+            let hint = c.hint.as_ref().map(type_hint);
             for item in c.items.iter() {
                 constants.push(ConstProto {
                     name: PhpStr::from_bytes(item.name.value.to_vec()),
                     visibility,
-                    value: const_init_or_thunk(item.value, sigs, Some(&name))?,
+                    value: coerce_const_init(
+                        const_init_or_thunk(item.value, sigs, Some(&name))?,
+                        hint.as_ref(),
+                    ),
+                    type_hint: hint.clone(),
                 });
             }
         }
@@ -1477,6 +1532,7 @@ fn compile_method(
                 visibility: vis,
                 is_readonly: ro,
                 default: PropDefaultProto::None,
+                type_hint: p.hint.as_ref().map(type_hint),
             });
             promo_stores.push((c.intern_name(var), cv));
         }
@@ -3001,6 +3057,22 @@ impl ProtoBuilder {
         if let MagicConstant::Line(_) = mc {
             let n = line_of(mc.span().start.offset) as i64;
             self.emit(Instr::LoadInt { dst, n });
+            return Ok(dst);
+        }
+        if matches!(mc, MagicConstant::Class(_))
+            && self.class_name.is_some()
+            && IN_TRAIT.with(|f| *f.borrow())
+        {
+            // Inside a trait, `__CLASS__` is the class using it (php resolves
+            // it at runtime, like `self::class`).
+            let name = self.intern_name(b"class");
+            let cache = self.alloc_cache();
+            self.emit(Instr::FetchClassConst {
+                dst,
+                class: ClassRef::SelfClass,
+                name,
+                cache,
+            });
             return Ok(dst);
         }
         if let MagicConstant::Property(_) = mc {

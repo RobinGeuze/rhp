@@ -11,7 +11,9 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 use rustc_hash::FxBuildHasher;
 
-use rhp_bytecode::{ClassProto, ClassRef, ConstInitProto, FunctionProto, PropDefaultProto, Reg};
+use rhp_bytecode::{
+    ClassProto, ClassRef, ConstInitProto, FunctionProto, PropDefaultProto, Reg, TypeHint,
+};
 use rhp_values::{
     ClassFlags, ClassId, ClassKind, ObjectData, ObjectHandle, PhpStr, Thrown, Value, Visibility,
 };
@@ -62,6 +64,8 @@ pub struct PropEntry {
     pub init: Option<Rc<FunctionProto>>,
     pub visibility: Visibility,
     pub declaring_class: ClassId,
+    /// Declared type (`None` = untyped).
+    pub ty: Option<Rc<TypeHint>>,
 }
 
 #[derive(Clone)]
@@ -71,6 +75,8 @@ pub struct StaticProp {
     pub init: Option<Rc<FunctionProto>>,
     pub visibility: Visibility,
     pub declaring_class: ClassId,
+    /// Declared type (`None` = untyped).
+    pub ty: Option<Rc<TypeHint>>,
 }
 
 #[derive(Clone)]
@@ -84,6 +90,8 @@ pub struct ClassConst {
     /// Set while the initializer is being evaluated from inside another
     /// constant expression (php's `IS_CONSTANT_VISITED`), to detect cycles.
     pub visited: bool,
+    /// Declared type of a typed constant (`None` = untyped).
+    pub ty: Option<Rc<TypeHint>>,
 }
 
 /// A deferred class-constant initializer.
@@ -287,6 +295,7 @@ impl Vm {
                     init,
                     visibility: pp.visibility,
                     declaring_class: id,
+                    ty: pp.type_hint.clone().map(Rc::new),
                 },
             );
         }
@@ -308,6 +317,7 @@ impl Vm {
                         init: sp.init.clone(),
                         visibility: sp.visibility,
                         declaring_class: id,
+                        ty: sp.ty.clone(),
                     },
                 );
             }
@@ -328,6 +338,7 @@ impl Vm {
                     init,
                     visibility: sp.visibility,
                     declaring_class: id,
+                    ty: sp.type_hint.clone().map(Rc::new),
                 },
             );
         }
@@ -371,6 +382,7 @@ impl Vm {
                     declaring_class: id,
                     init,
                     visited: false,
+                    ty: c.type_hint.clone().map(Rc::new),
                 },
             );
         }
@@ -439,6 +451,7 @@ impl Vm {
                         declaring_class: id,
                         init,
                         visited: false,
+                        ty: None,
                     },
                 );
                 self.classes[id as usize].enum_cases.push(obj);
@@ -540,13 +553,21 @@ impl Vm {
         if self.resolve_class_by_name(&fqcn).is_ok() {
             return Ok(true);
         }
-        for loader in self.autoloaders.clone() {
-            self.call_callable_value(&loader, vec![crate::Value::str(fqcn.clone())])?;
-            if self.resolve_class_by_name(&fqcn).is_ok() {
-                return Ok(true);
-            }
+        let key = lc(&fqcn);
+        if !self.in_autoload.insert(key.clone()) {
+            return Ok(false); // already being autoloaded further up the stack
         }
-        Ok(false)
+        let r = (|| {
+            for loader in self.autoloaders.clone() {
+                self.call_callable_value(&loader, vec![crate::Value::str(fqcn.clone())])?;
+                if self.resolve_class_by_name(&fqcn).is_ok() {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })();
+        self.in_autoload.remove(&key);
+        r
     }
 
     pub(crate) fn resolve_class_by_name(&self, name: &[u8]) -> Result<ClassId, Thrown> {
@@ -732,6 +753,65 @@ impl Vm {
         )
     }
 
+    /// php's `update_property`: a property initializer is checked against the
+    /// declared type in strict mode (only int -> float widening).
+    fn verify_prop_init_type(
+        &self,
+        v: Value,
+        ty: &TypeHint,
+        decl: ClassId,
+        name: &[u8],
+    ) -> Result<Value, Thrown> {
+        match self.check_one(&v, ty, true, Some(decl)) {
+            Ok(None) => Ok(v),
+            Ok(Some(c)) => Ok(c),
+            Err(()) => Err(Thrown::type_error(format!(
+                "Cannot assign {} to property {}::${} of type {}",
+                self.zval_value_name(&v),
+                String::from_utf8_lossy(self.classes[decl as usize].name.as_bytes()),
+                String::from_utf8_lossy(name),
+                crate::type_string(ty),
+            ))),
+        }
+    }
+
+    /// php's `zend_verify_class_constant_type` (strict; int -> float widens).
+    fn verify_class_const_type(
+        &self,
+        v: Value,
+        ty: &TypeHint,
+        decl: ClassId,
+        name: &[u8],
+    ) -> Result<Value, Thrown> {
+        match self.check_one(&v, ty, true, Some(decl)) {
+            Ok(None) => Ok(v),
+            Ok(Some(c)) => Ok(c),
+            Err(()) => {
+                // zend_zval_type_name: like the value name, but bools are "bool".
+                let tn = match &v {
+                    Value::Bool(_) => "bool".to_string(),
+                    other => self.zval_value_name(other),
+                };
+                Err(Thrown::type_error(format!(
+                    "Cannot assign {} to class constant {}::{} of type {}",
+                    tn,
+                    String::from_utf8_lossy(self.classes[decl as usize].name.as_bytes()),
+                    String::from_utf8_lossy(name),
+                    crate::type_string(ty),
+                )))
+            }
+        }
+    }
+
+    /// php's `zend_zval_value_name`.
+    fn zval_value_name(&self, v: &Value) -> String {
+        match v {
+            Value::Bool(true) => "true".into(),
+            Value::Bool(false) => "false".into(),
+            other => self.value_debug_type(other),
+        }
+    }
+
     /// Read class constant `name` of `cls`, evaluating its initializer first if
     /// it is still pending (php's `zend_update_class_constant`). `display` is
     /// the class as written at the access site (`self`, `parent`, a name), used
@@ -752,6 +832,7 @@ impl Vm {
             return Ok(Some(c.value.clone()));
         };
         let decl = c.declaring_class;
+        let c_ty = c.ty.clone();
         // An inherited constant is evaluated (once) in its declaring class.
         let owner = if decl != cls && self.classes[decl as usize].constants.contains_key(name) {
             decl
@@ -790,7 +871,10 @@ impl Vm {
                 e.visited = false;
             }
         }
-        let v = r?;
+        let mut v = r?;
+        if let (ConstInit::Expr(_), Some(ty)) = (&init, &c_ty) {
+            v = self.verify_class_const_type(v, ty, decl, name)?;
+        }
         // Evaluation may have completed it re-entrantly; finish it only once.
         let e = self.classes[owner as usize]
             .constants
@@ -857,9 +941,16 @@ impl Vm {
             } else {
                 None
             };
+            let ty = pe.ty.clone();
             let v = match (inherited, thunk) {
                 (Some(v), _) => v,
-                (None, Some(t)) => self.run_init_thunk(&t, decl)?,
+                (None, Some(t)) => {
+                    let v = self.run_init_thunk(&t, decl)?;
+                    match ty {
+                        Some(ty) => self.verify_prop_init_type(v, &ty, decl, name.as_bytes())?,
+                        None => v,
+                    }
+                }
                 (None, None) => continue,
             };
             if let Some(pe) = self.classes[cls as usize].props.get_mut(&name) {
@@ -876,10 +967,14 @@ impl Vm {
         for name in pending_statics {
             let sp = &self.classes[cls as usize].static_props[&name];
             let (decl, cell, thunk) = (sp.declaring_class, sp.cell.clone(), sp.init.clone());
+            let ty = sp.ty.clone();
             // An inherited slot aliases the parent's cell (already updated).
             if decl == cls {
                 if let Some(t) = thunk {
-                    let v = self.run_init_thunk(&t, cls)?;
+                    let mut v = self.run_init_thunk(&t, cls)?;
+                    if let Some(ty) = ty {
+                        v = self.verify_prop_init_type(v, &ty, cls, &name)?;
+                    }
                     *cell.borrow_mut() = v;
                 }
             }
@@ -887,7 +982,77 @@ impl Vm {
                 sp.init = None;
             }
         }
+        if let Some(backing) = self.classes[cls as usize].enum_backing {
+            self.build_backed_enum_table(cls, backing)?;
+        }
         self.classes[cls as usize].updated = true;
+        Ok(())
+    }
+
+    /// php's `zend_enum_build_backed_enum_table`: every case value must have
+    /// the enum's backing type, and no two cases may share a value. On
+    /// failure the class stays un-updated, so the next use raises again.
+    fn build_backed_enum_table(
+        &self,
+        cls: ClassId,
+        backing: rhp_bytecode::EnumBacking,
+    ) -> Result<(), Thrown> {
+        use rhp_bytecode::EnumBacking;
+        let entry = &self.classes[cls as usize];
+        let mut seen: Vec<(Value, PhpStr)> = Vec::with_capacity(entry.enum_cases.len());
+        for case in &entry.enum_cases {
+            let o = case.borrow();
+            let name = match o.properties.get(&PhpStr::from("name")) {
+                Some(Value::Str(s)) => s.clone(),
+                _ => PhpStr::from(""),
+            };
+            let v = o
+                .properties
+                .get(&PhpStr::from("value"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let ok = matches!(
+                (&v, backing),
+                (Value::Int(_), EnumBacking::Int) | (Value::Str(_), EnumBacking::Str)
+            );
+            if !ok {
+                let tn = match &v {
+                    Value::Bool(_) => "bool",
+                    Value::Int(_) => "int",
+                    Value::Float(_) => "float",
+                    Value::Str(_) => "string",
+                    Value::Array(_) => "array",
+                    Value::Null => "null",
+                    Value::Resource(_) => "resource",
+                    _ => "object",
+                };
+                return Err(Thrown::type_error(format!(
+                    "Enum case type {} does not match enum backing type {}",
+                    tn,
+                    match backing {
+                        EnumBacking::Int => "int",
+                        EnumBacking::Str => "string",
+                    }
+                )));
+            }
+            let dup = seen.iter().find(|(sv, _)| match (sv, &v) {
+                (Value::Int(a), Value::Int(b)) => a == b,
+                (Value::Str(a), Value::Str(b)) => a.as_bytes() == b.as_bytes(),
+                _ => false,
+            });
+            if let Some((_, first)) = dup {
+                return Err(Thrown::error(
+                    "Error",
+                    format!(
+                        "Duplicate value in enum {} for cases {} and {}",
+                        String::from_utf8_lossy(entry.name.as_bytes()),
+                        String::from_utf8_lossy(first.as_bytes()),
+                        String::from_utf8_lossy(name.as_bytes()),
+                    ),
+                ));
+            }
+            seen.push((v, name));
+        }
         Ok(())
     }
 }

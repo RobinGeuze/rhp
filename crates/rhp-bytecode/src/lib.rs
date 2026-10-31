@@ -1018,6 +1018,9 @@ pub struct PropProto {
     pub visibility: Visibility,
     pub is_readonly: bool,
     pub default: PropDefaultProto,
+    /// Declared type (`None` = untyped); a lazily evaluated default is
+    /// checked against it (php's `update_property`).
+    pub type_hint: Option<TypeHint>,
 }
 
 #[derive(Clone)]
@@ -1026,6 +1029,8 @@ pub struct StaticPropProto {
     pub visibility: Visibility,
     pub is_readonly: bool,
     pub init: ConstInitProto,
+    /// Declared type (`None` = untyped).
+    pub type_hint: Option<TypeHint>,
 }
 
 #[derive(Clone)]
@@ -1033,6 +1038,8 @@ pub struct ConstProto {
     pub name: PhpStr,
     pub visibility: Visibility,
     pub value: ConstInitProto,
+    /// Declared type of a typed class constant (`None` = untyped).
+    pub type_hint: Option<TypeHint>,
 }
 
 /// A property's per-instance default, as compiled.

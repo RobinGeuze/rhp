@@ -573,7 +573,11 @@ pub enum Instr {
         class: ClassRef,
         name: NIdx,
     },
-    /// Link + register a conditionally-declared class at this point.
+    /// Declare a class at this statement. `class_idx` is file-local: indices
+    /// below the file's user top-level class count name `Program::classes`
+    /// (after the prelude) — a no-op when that class was already hoisted at
+    /// load; the rest name `Program::cond_classes` (classes nested in control
+    /// flow or function bodies), linked only when reached.
     DeclareClass {
         class_idx: u32,
     },
@@ -802,6 +806,9 @@ pub struct FunctionProto {
     /// included file is stamped with the closure count at merge time, so no
     /// instruction rewriting is needed (see `Vm::install_included`).
     pub closure_base: u32,
+    /// Offset of this proto's file into the VM's flat class-declaration table
+    /// (the operand of `DeclareClass` is file-local, like `closure_base`).
+    pub class_base: u32,
     /// CVs that name a superglobal (`$_SERVER`, `$GLOBALS`, …), paired with the
     /// name; the VM binds each to the shared global cell at frame entry so they
     /// are visible in every scope without an explicit `global`.
@@ -841,6 +848,7 @@ impl FunctionProto {
             num_captures: 0,
             is_generator: false,
             closure_base: 0,
+            class_base: 0,
             superglobals: Vec::new(),
             return_type: None,
             strict_types: false,
@@ -885,6 +893,9 @@ pub struct Program {
     /// How many leading entries of `functions` are prelude helper functions
     /// (`iterator_*`, …), re-emitted per compile and skipped on include merge.
     pub num_prelude_functions: usize,
+    /// Class declarations nested in control flow / function bodies; never
+    /// hoisted, declared by `DeclareClass` when execution reaches them.
+    pub cond_classes: Vec<ClassProto>,
 }
 
 // ---------------------------------------------------------------------------

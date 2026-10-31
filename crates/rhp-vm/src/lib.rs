@@ -45,6 +45,10 @@ pub struct Vm {
     functions: Vec<Rc<FunctionProto>>,
     fn_names: HashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
     closures: Vec<Rc<FunctionProto>>,  // anonymous closure protos, indexed by `fnidx`
+    /// Flat table of user class declarations (`class_base + DeclareClass`
+    /// operand): each file's top-level class-likes then its nested ones, with
+    /// whether the declaration has already happened (hoisted or executed).
+    decl_classes: Vec<(ClassProto, bool)>,
     constants: HashMap<Vec<u8>, Value>,
     /// User-defined constant names in definition order (`get_defined_constants`).
     user_const_order: Vec<Vec<u8>>,
@@ -939,9 +943,21 @@ impl Host for Vm {
         match c {
             Value::Closure(_) => true,
             Value::Str(s) => {
-                let lower = s.as_bytes().to_ascii_lowercase();
-                self.fn_names.contains_key(&lower)
-                    || builtins::lookup(&String::from_utf8_lossy(s.as_bytes())).is_some()
+                let raw = s.as_bytes();
+                let raw = raw.strip_prefix(b"\\").unwrap_or(raw);
+                let lower = raw.to_ascii_lowercase();
+                if self.fn_names.contains_key(&lower)
+                    || builtins::lookup(&String::from_utf8_lossy(raw)).is_some()
+                {
+                    return true;
+                }
+                match split_static_callable(raw) {
+                    Some((cn, m)) => self
+                        .resolve_class_by_name(cn)
+                        .ok()
+                        .is_some_and(|c| self.lookup_method(c, m).is_some()),
+                    None => false,
+                }
             }
             Value::Array(a) if a.len() == 2 => {
                 let item0 = a.get(&ArrayKey::Int(0)).cloned().unwrap_or(Value::Null);
@@ -1061,6 +1077,7 @@ impl Vm {
             functions: Vec::new(),
             fn_names: HashMap::new(),
             closures: Vec::new(),
+            decl_classes: Vec::new(),
             constants,
             user_const_order: Vec::new(),
             max_depth: 1 << 16,
@@ -1730,8 +1747,13 @@ impl Vm {
             self.main_cv_names
                 .insert(name.as_bytes().to_vec(), reg as Reg);
         }
-        // Link all declared classes (flatten inheritance, resolve forward refs).
-        self.install_classes(&prog.classes)?;
+        // Link the built-in prelude classes, then hoist the user's top-level
+        // classes (those whose dependencies are available); the rest, and
+        // nested declarations, are declared when execution reaches them.
+        self.install_classes(&prog.classes[..prog.num_prelude_classes])?;
+        self.decl_classes.clear();
+        let top = self.register_decl_classes(prog, 0);
+        self.hoist_decl_classes(top)?;
         let mut main_frame = Frame::new(prog.main.clone(), 0);
         self.bind_superglobals(&mut main_frame);
         // $argv / $argc are available in the top-level (global) scope: bind the
@@ -2889,11 +2911,8 @@ impl Vm {
                         self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;
                     }
                 }
-                Instr::DeclareClass { .. } => {
-                    return Err(Thrown::unsupported(
-                        "conditional class declaration",
-                        "only top-level class declarations for now",
-                    ))
+                Instr::DeclareClass { class_idx } => {
+                    self.declare_class_at((proto.class_base + class_idx) as usize)?;
                 }
                 Instr::DeclareFunc { idx } => {
                     // The proto is stored in the closures table (file-local index).
@@ -3390,9 +3409,11 @@ impl Vm {
     /// rebased `{main}` to execute.
     fn install_included(&mut self, prog: &Program) -> Result<Rc<FunctionProto>, Thrown> {
         let base = self.closures.len() as u32;
+        let cbase = self.decl_classes.len();
         // closures: append (rebased).
         for c in &prog.closures {
-            self.closures.push(Rc::new(rebase_proto(c, base)));
+            self.closures
+                .push(Rc::new(rebase_proto_c(c, base, cbase as u32)));
         }
         // functions: skip the re-emitted prelude helpers (the first N); a user
         // function is fatal to redeclare (php semantics).
@@ -3408,12 +3429,12 @@ impl Vm {
                 ));
             }
             let idx = self.functions.len();
-            self.functions.push(Rc::new(rebase_proto(proto, base)));
+            self.functions
+                .push(Rc::new(rebase_proto_c(proto, base, cbase as u32)));
             self.fn_names.insert(lc, idx);
         }
         // classes: skip the re-emitted built-in prelude (always the first N); a
         // user class past that is fatal to redeclare.
-        let mut new_classes: Vec<ClassProto> = Vec::new();
         for c in prog.classes.iter().skip(prog.num_prelude_classes) {
             if self
                 .class_ids
@@ -3427,14 +3448,14 @@ impl Vm {
                     ),
                 ));
             }
-            new_classes.push(rebase_class(c, base));
         }
-        self.install_classes(&new_classes)?;
+        let top = self.register_decl_classes(prog, base);
+        self.hoist_decl_classes(top)?;
         // constants: define_const skips an already-defined name.
         for (n, v) in &prog.constants {
             self.define_const(n.as_bytes(), v.clone());
         }
-        Ok(Rc::new(rebase_proto(&prog.main, base)))
+        Ok(Rc::new(rebase_proto_c(&prog.main, base, cbase as u32)))
     }
 
     /// Run an included `{main}` to completion (isolated scope; it shares the VM's
@@ -3880,12 +3901,28 @@ impl Vm {
             }
             Value::Closure(cd) => self.run_closure_sync(&cd, args),
             Value::Str(s) => {
-                let lower = s.as_bytes().to_ascii_lowercase();
+                let raw = s.as_bytes();
+                let raw = raw.strip_prefix(b"\\").unwrap_or(raw);
+                let lower = raw.to_ascii_lowercase();
                 if let Some(&fnidx) = self.fn_names.get(&lower) {
                     let proto = self.functions[fnidx].clone();
                     self.run_proto_sync(proto, None, None, None, args)
+                } else if let Some((cn, mname)) = split_static_callable(raw) {
+                    // "Class::method" (class names resolve through aliases).
+                    let cls = self.resolve_class_by_name(cn)?;
+                    let m = self.lookup_method(cls, mname).ok_or_else(|| {
+                        Thrown::error(
+                            "Error",
+                            format!(
+                                "Call to undefined method {}::{}()",
+                                String::from_utf8_lossy(self.classes[cls as usize].name.as_bytes()),
+                                String::from_utf8_lossy(mname)
+                            ),
+                        )
+                    })?;
+                    self.call_sync(&m, None, cls, args)
                 } else {
-                    let name = String::from_utf8_lossy(s.as_bytes()).into_owned();
+                    let name = String::from_utf8_lossy(raw).into_owned();
                     self.invoke_builtin(&name, args)
                 }
             }
@@ -4291,35 +4328,39 @@ fn normalize_url(url: &[u8]) -> Vec<u8> {
     out
 }
 
+/// No instruction rewriting — the bases are applied at run time.
 /// Clone a proto, stamping its `closure_base` so its file-local `MakeClosure`
 /// indices resolve into the VM's flat closure table (whose tail holds this
-/// file's closures). No instruction rewriting — the base is applied at run time.
-fn rebase_proto(proto: &FunctionProto, base: u32) -> FunctionProto {
+/// file's closures), and its `class_base` likewise for `DeclareClass`.
+fn rebase_proto_c(proto: &FunctionProto, base: u32, cbase: u32) -> FunctionProto {
     let mut p = proto.clone();
     p.closure_base = base;
+    p.class_base = cbase;
     p
 }
 
-/// Stamp `closure_base` on a class's method and initializer-thunk protos (their
-/// bodies can create closures) when merging an included program.
-fn rebase_class(c: &ClassProto, base: u32) -> ClassProto {
+/// Stamp `closure_base` / `class_base` on a class's method and
+/// initializer-thunk protos (their bodies can create closures or declare
+/// classes) when merging an included program.
+pub(crate) fn rebase_class(c: &ClassProto, base: u32, cbase: u32) -> ClassProto {
     let mut c = c.clone();
+    let rb = |p: &FunctionProto| Rc::new(rebase_proto_c(p, base, cbase));
     for m in &mut c.methods {
-        m.proto = Rc::new(rebase_proto(&m.proto, base));
+        m.proto = rb(&m.proto);
     }
     for p in &mut c.props {
         if let PropDefaultProto::Init(t) = &p.default {
-            p.default = PropDefaultProto::Init(Rc::new(rebase_proto(t, base)));
+            p.default = PropDefaultProto::Init(rb(t));
         }
     }
     for sp in &mut c.static_props {
         if let ConstInitProto::Thunk(t) = &sp.init {
-            sp.init = ConstInitProto::Thunk(Rc::new(rebase_proto(t, base)));
+            sp.init = ConstInitProto::Thunk(rb(t));
         }
     }
     for k in &mut c.constants {
         if let ConstInitProto::Thunk(t) = &k.value {
-            k.value = ConstInitProto::Thunk(Rc::new(rebase_proto(t, base)));
+            k.value = ConstInitProto::Thunk(rb(t));
         }
     }
     c
@@ -4330,6 +4371,13 @@ fn deref(v: &Value) -> Value {
         Value::Ref(r) => r.borrow().clone(),
         other => other.clone(),
     }
+}
+
+/// Split a `"Class::method"` callable string at the first `::`.
+fn split_static_callable(s: &[u8]) -> Option<(&[u8], &[u8])> {
+    let p = s.windows(2).position(|w| w == b"::")?;
+    let (c, m) = (&s[..p], &s[p + 2..]);
+    (!c.is_empty() && !m.is_empty()).then_some((c, m))
 }
 
 /// `$container[$key]` read: array element (Null if absent) or string byte.

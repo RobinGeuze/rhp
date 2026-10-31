@@ -1604,7 +1604,23 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
                 .map(Value::str)
                 .unwrap_or(Value::Bool(false)))
         }
-        _ => Ok(Value::Bool(false)),
+        Some(v @ Value::Str(_)) => {
+            let name = conv::to_string_bytes(&v);
+            match host.resolve_class_autoload(&name) {
+                Some(cid) => Ok(host
+                    .class_parent_name(cid)
+                    .map(Value::str)
+                    .unwrap_or(Value::Bool(false))),
+                None => Err(Thrown::type_error(
+                    "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, string given",
+                )),
+            }
+        }
+        None => Ok(Value::Bool(false)),
+        Some(other) => Err(Thrown::type_error(format!(
+            "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, {} given",
+            argparse::value_name(host, &other)
+        ))),
     }
 }
 

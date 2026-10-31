@@ -77,6 +77,15 @@ pub struct ClassConst {
     pub declaring_class: ClassId,
 }
 
+fn kind_word(k: ClassKind) -> &'static str {
+    match k {
+        ClassKind::Interface => "interface",
+        ClassKind::Trait => "trait",
+        ClassKind::Enum => "enum",
+        _ => "class",
+    }
+}
+
 fn lc(bytes: &[u8]) -> Vec<u8> {
     bytes.to_ascii_lowercase()
 }
@@ -145,6 +154,98 @@ impl Vm {
                 ));
             }
         }
+    }
+
+    /// Append a program's user class declarations (top-level, then nested)
+    /// to the flat declaration table, stamped with the file's bases.
+    /// Returns the table range of the top-level ones.
+    pub(crate) fn register_decl_classes(
+        &mut self,
+        prog: &rhp_bytecode::Program,
+        base: u32,
+    ) -> std::ops::Range<usize> {
+        let cbase = self.decl_classes.len() as u32;
+        let user = prog.classes.iter().skip(prog.num_prelude_classes);
+        for c in user.chain(prog.cond_classes.iter()) {
+            let c = crate::rebase_class(c, base, cbase);
+            self.decl_classes.push((c, false));
+        }
+        let start = cbase as usize;
+        start..start + prog.classes.len() - prog.num_prelude_classes
+    }
+
+    /// Hoist (early-bind) the top-level classes in `range`
+    /// whose parent/interfaces/traits are available — possibly from each
+    /// other. The others stay undeclared until their `DeclareClass` runs.
+    pub(crate) fn hoist_decl_classes(
+        &mut self,
+        range: std::ops::Range<usize>,
+    ) -> Result<(), Thrown> {
+        loop {
+            let mut progressed = false;
+            for i in range.clone() {
+                if self.decl_classes[i].1 {
+                    continue;
+                }
+                let proto = self.decl_classes[i].0.clone();
+                if self.class_ids.contains_key(&lc(proto.name.as_bytes()))
+                    || !self.deps_ready(&proto)
+                {
+                    continue;
+                }
+                self.link_class(&proto)?;
+                self.decl_classes[i].1 = true;
+                progressed = true;
+            }
+            if !progressed {
+                break;
+            }
+        }
+        self.eval_pending_inits()
+    }
+
+    /// Run-time class declaration (`DeclareClass`): link the class now,
+    /// autoloading missing dependencies. A no-op if it was hoisted.
+    pub(crate) fn declare_class_at(&mut self, slot: usize) -> Result<(), Thrown> {
+        let Some((proto, done)) = self.decl_classes.get(slot) else {
+            return Ok(());
+        };
+        if *done {
+            return Ok(());
+        }
+        let proto = proto.clone();
+        if self.class_ids.contains_key(&lc(proto.name.as_bytes())) {
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "Cannot declare {} {}, because the name is already in use",
+                    kind_word(proto.kind),
+                    String::from_utf8_lossy(proto.name.as_bytes())
+                ),
+            ));
+        }
+        let deps = proto
+            .parent
+            .iter()
+            .map(|n| ("Class", n))
+            .chain(proto.interfaces.iter().map(|n| ("Interface", n)))
+            .chain(proto.traits.iter().map(|n| ("Trait", n)));
+        for (what, n) in deps.collect::<Vec<_>>() {
+            if !self.class_ids.contains_key(&lc(n.as_bytes()))
+                && !self.try_autoload(n.as_bytes())?
+            {
+                return Err(Thrown::error(
+                    "Error",
+                    format!(
+                        "{what} \"{}\" not found",
+                        String::from_utf8_lossy(n.as_bytes())
+                    ),
+                ));
+            }
+        }
+        self.link_class(&proto)?;
+        self.decl_classes[slot].1 = true;
+        self.eval_pending_inits()
     }
 
     fn deps_ready(&self, p: &ClassProto) -> bool {

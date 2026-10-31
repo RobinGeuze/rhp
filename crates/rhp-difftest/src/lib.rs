@@ -17,6 +17,8 @@
 //! strings) are built on top of these in the `rhp-difftest` binary and in
 //! the crate's integration tests.
 
+pub mod mutate;
+pub mod phpt;
 pub mod sweeps;
 
 use std::io::Write;

@@ -6,9 +6,11 @@
 //!   rhp-difftest hash --seed 7 --count 64
 //!   rhp-difftest hash --algo tiger128,3     # one algorithm
 //!   rhp-difftest hash --strict              # unsupported algos count as failures
+//!   rhp-difftest phpt --php-src ../php-src  # php-src .phpt corpus (see `phpt --help`)
+//!   rhp-difftest phpt --php-src ../php-src --filter Zend/tests --mutate 20
 //!
 //! Exit code is nonzero if any sweep produced a MISMATCH (or, with --strict,
-//! any rhp-unsupported feature).
+//! any rhp-unsupported feature; for `phpt --check-known`, any regression).
 
 use std::process::ExitCode;
 
@@ -17,6 +19,9 @@ use rhp_difftest::{default_byte_corpus, php_available, Diff};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("phpt") {
+        return rhp_difftest::phpt::main(&args[1..]);
+    }
     let ext = args
         .iter()
         .find(|a| !a.starts_with("--"))

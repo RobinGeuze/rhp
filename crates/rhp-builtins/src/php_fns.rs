@@ -194,7 +194,7 @@ fn trace_arg(host: &dyn Host, v: &Value, out: &mut Vec<u8>) {
                 out.extend_from_slice(&conv::to_string_bytes(&case));
             } else {
                 out.extend_from_slice(b"Object(");
-                out.extend_from_slice(&name);
+                out.extend_from_slice(&crate::dump::c_str(name));
                 out.push(b')');
             }
         }
@@ -565,6 +565,31 @@ fn fn_set_handler(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     // Error/exception handlers are stored by php and invoked on diagnostics;
     // this engine emits none, so we accept and return "no previous handler".
     Ok(Value::Null)
+}
+
+/// `set_exception_handler(?callable $callback)`: returns the previous handler.
+fn fn_set_exception_handler(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let h = deref(&args[0]);
+    let why = match &h {
+        Value::Null => None,
+        Value::Str(s) if !host.is_callable_value(&h) => Some(format!(
+            "function \"{}\" not found or invalid function name",
+            String::from_utf8_lossy(s.as_bytes())
+        )),
+        Value::Str(_) | Value::Array(_) | Value::Closure(_) | Value::Object(_) => None,
+        _ => Some("no array or string given".to_string()),
+    };
+    if let Some(why) = why {
+        return Err(Thrown::type_error(format!(
+            "set_exception_handler(): Argument #1 ($callback) must be a valid callback or null, {why}"
+        )));
+    }
+    Ok(host.set_exception_handler(h))
+}
+
+fn fn_restore_exception_handler(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    host.restore_exception_handler();
+    Ok(Value::Bool(true))
 }
 
 fn fn_restore_handler(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -1058,11 +1083,17 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "ini_set", fn_ini_set, 2, Some(2));
     put(m, "set_error_handler", fn_set_handler, 1, Some(2));
     put(m, "restore_error_handler", fn_restore_handler, 0, Some(0));
-    put(m, "set_exception_handler", fn_set_handler, 1, Some(1));
+    put(
+        m,
+        "set_exception_handler",
+        fn_set_exception_handler,
+        1,
+        Some(1),
+    );
     put(
         m,
         "restore_exception_handler",
-        fn_restore_handler,
+        fn_restore_exception_handler,
         0,
         Some(0),
     );

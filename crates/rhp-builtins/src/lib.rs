@@ -84,6 +84,14 @@ pub trait Host {
         None
     }
 
+    /// Push a user exception handler (`set_exception_handler`; null clears),
+    /// returning the previous one (or null). Default: not stored.
+    fn set_exception_handler(&mut self, _handler: Value) -> Value {
+        Value::Null
+    }
+    /// Pop back to the previous exception handler.
+    fn restore_exception_handler(&mut self) {}
+
     /// Whether a resource has been closed (`fclose`d stream): `gettype` /
     /// `get_debug_type` then report `resource (closed)`. Default: no.
     fn resource_closed(&self, _res: &Value) -> bool {

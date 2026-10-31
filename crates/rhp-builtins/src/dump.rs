@@ -55,9 +55,12 @@ pub fn var_dump(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, indent: us
                     .collect();
                 (b.class, b.id, props)
             };
-            let cname = host
-                .class_name(class_id)
-                .unwrap_or_else(|| b"class".to_vec());
+            // php prints the name as a C string: an anonymous class's
+            // `X@anonymous\0file…` shows as `X@anonymous`.
+            let cname = c_str(
+                host.class_name(class_id)
+                    .unwrap_or_else(|| b"class".to_vec()),
+            );
             if host.is_enum_class(class_id) {
                 // `enum(Name::Case)` — the case is the object's `name` property.
                 let case = props
@@ -152,11 +155,10 @@ fn print_r_value(
                     .collect();
                 (b.class, b.id, entries)
             };
-            out.extend_from_slice(
-                &host
-                    .class_name(class_id)
+            out.extend_from_slice(&c_str(
+                host.class_name(class_id)
                     .unwrap_or_else(|| b"class".to_vec()),
-            );
+            ));
             if host.is_enum_class(class_id) {
                 out.extend_from_slice(b" Enum");
                 match entries
@@ -286,4 +288,12 @@ fn deref(v: &Value) -> Value {
         Value::Ref(r) => r.borrow().clone(),
         other => other.clone(),
     }
+}
+
+/// A name cut at its first NUL, as php's `%s` / `ZSTR_VAL` printing shows it.
+pub fn c_str(mut name: Vec<u8>) -> Vec<u8> {
+    if let Some(i) = name.iter().position(|&b| b == 0) {
+        name.truncate(i);
+    }
+    name
 }

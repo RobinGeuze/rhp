@@ -49,6 +49,8 @@ pub struct Vm {
     max_depth: usize,
     /// Builtin calls in progress (innermost last), for exception traces.
     native_calls: Vec<NativeCall>,
+    /// `set_exception_handler` stack (innermost last; null = none).
+    exception_handlers: Vec<Value>,
     // lvalue cursor: a root in the current frame (CV or a static-prop cell) +
     // pending path steps. Cursor opcodes are emitted contiguously, so a single
     // cursor never nests.
@@ -543,6 +545,20 @@ impl Host for Vm {
             out.push(v.clone());
         }
         Some(Value::Array(out))
+    }
+
+    fn set_exception_handler(&mut self, handler: Value) -> Value {
+        let prev = self
+            .exception_handlers
+            .last()
+            .cloned()
+            .unwrap_or(Value::Null);
+        self.exception_handlers.push(handler);
+        prev
+    }
+
+    fn restore_exception_handler(&mut self) {
+        self.exception_handlers.pop();
     }
 
     fn resource_closed(&self, res: &Value) -> bool {
@@ -1047,6 +1063,7 @@ impl Vm {
             constants,
             max_depth: 1 << 16,
             native_calls: Vec::new(),
+            exception_handlers: Vec::new(),
             cursor_root: CursorRoot::Cv(0),
             cursor_steps: Vec::new(),
             classes: Vec::new(),
@@ -2065,6 +2082,33 @@ impl Vm {
         Thrown::error("ArgumentCountError", msg)
     }
 
+    /// Give an uncaught throwable to the user exception handler, if one is set
+    /// (zend_user_exception_handler). `None`: handled; `Some(t)`: still
+    /// uncaught (no handler, or the handler itself threw `t`).
+    pub fn handle_uncaught(&mut self, thrown: Thrown) -> Option<Thrown> {
+        if !thrown.is_catchable() {
+            return Some(thrown);
+        }
+        let handler = match self.exception_handlers.last() {
+            Some(h) if !matches!(h, Value::Null) => h.clone(),
+            _ => return Some(thrown),
+        };
+        let thrown = self.materialize(thrown, None);
+        let Thrown::Object(obj) = &thrown else {
+            return Some(thrown);
+        };
+        let arg = Value::Object(obj.clone());
+        // The handler runs after the script: called from `[internal function]`.
+        if self.stack.is_empty() {
+            let mut main = FunctionProto::new(rhp_values::PhpStr::from("{main}"));
+            main.debug.file = rhp_values::PhpStr::from("");
+            self.stack.push(Frame::new(Rc::new(main), 0));
+        }
+        let r = self.call_callable_value(&handler, vec![arg]);
+        self.stack.clear();
+        r.err()
+    }
+
     /// The class name of an object (e.g. an uncaught `Thrown::Object`).
     pub fn class_name_of(&self, obj: &ObjectHandle) -> String {
         String::from_utf8_lossy(self.class(obj.borrow().class).name.as_bytes()).into_owned()
@@ -2099,7 +2143,8 @@ impl Vm {
         let mut out = b"\nFatal error: Uncaught ".to_vec();
         out.extend_from_slice(&s);
         out.extend_from_slice(b"\n  thrown in ");
-        out.extend_from_slice(&file);
+        // An emptied `file` makes php report the location as "Unknown".
+        out.extend_from_slice(if file.is_empty() { b"Unknown" } else { &file });
         out.extend_from_slice(format!(" on line {line}").as_bytes());
         out.push(b'\n');
         Some(out)

@@ -63,7 +63,15 @@ fn main() -> ExitCode {
         }
         compile_with_source(parsed.program(), src, file)
     });
-    let result = vm.run(&program);
+    let mut result = vm.run(&program);
+    // A user exception handler (set_exception_handler) gets the uncaught
+    // throwable first; the script then ends normally unless it rethrows.
+    if let Err(t @ (Thrown::Error { .. } | Thrown::Object(_))) = result {
+        result = match vm.handle_uncaught(t) {
+            None => Ok(0),
+            Some(t) => Err(t),
+        };
+    }
     // An uncaught throwable: php prints `Fatal error: Uncaught …` (its
     // __toString, then "thrown in") after the script's output, exit 255.
     let uncaught = match result {

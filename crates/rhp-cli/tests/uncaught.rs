@@ -104,3 +104,24 @@ fn uncaught_user_tostring_override_and_messageless() {
     write(&dir.join("main.php"), "<?php\n\nthrow new Error();\n");
     assert_same(&dir.join("main.php"));
 }
+
+#[test]
+fn exception_handler_receives_uncaught() {
+    if !php_available() {
+        return;
+    }
+    let dir = case_dir("handler");
+    write(
+        &dir.join("main.php"),
+        "<?php\nvar_dump(set_exception_handler(function ($e) { echo 'h: ', get_class($e), ' ', $e->getMessage(), \"\\n\"; }));\nvar_dump(set_exception_handler('first') instanceof Closure);\nrestore_exception_handler();\necho \"a\\n\";\nnope();\n",
+    );
+    assert_same(&dir.join("main.php"));
+    // A handler that throws: the new exception is the uncaught one.
+    let dir = case_dir("handler_throws");
+    write(
+        &dir.join("main.php"),
+        "<?php\nset_exception_handler(function (Throwable $e) {\n    echo 'Caught: ', $e->getMessage(), \"\\n\";\n    throw new Exception('from handler');\n});\nthrow new Exception('main');\n",
+    );
+    let out = assert_same(&dir.join("main.php"));
+    assert!(out.contains("[internal function]"), "{out}");
+}

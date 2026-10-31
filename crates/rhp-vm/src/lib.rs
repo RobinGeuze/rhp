@@ -51,6 +51,13 @@ pub struct Vm {
     native_calls: Vec<NativeCall>,
     /// `set_exception_handler` stack (innermost last; null = none).
     exception_handlers: Vec<Value>,
+    /// `ini_set` overrides of the built-in directive defaults.
+    ini: HashMap<Vec<u8>, Vec<u8>>,
+    /// `register_shutdown_function` callbacks with their arguments, in order.
+    shutdown_functions: Vec<(Value, Vec<Value>)>,
+    /// CLI mode: unbuffered stdout is written to the process's stdout before
+    /// anything goes to stderr, so the two streams interleave as in php.
+    direct_stdout: bool,
     // lvalue cursor: a root in the current frame (CV or a static-prop cell) +
     // pending path steps. Cursor opcodes are emitted contiguously, so a single
     // cursor never nests.
@@ -472,10 +479,7 @@ impl Host for Vm {
         };
         match act {
             Act::Out => self.out.extend_from_slice(data),
-            Act::Err => {
-                use std::io::Write;
-                let _ = std::io::stderr().write_all(data);
-            }
+            Act::Err => self.write_stderr(data),
             Act::Buf => match self.streams.get_mut(&id)? {
                 StreamState::Mem { buf, .. } | StreamState::FileWrite { buf, .. } => {
                     buf.extend_from_slice(data)
@@ -559,6 +563,31 @@ impl Host for Vm {
 
     fn restore_exception_handler(&mut self) {
         self.exception_handlers.pop();
+    }
+
+    fn ini_get(&self, name: &[u8]) -> Option<Vec<u8>> {
+        let default = builtins::php_fns::ini_default(name)?;
+        Some(
+            self.ini
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| default.as_bytes().to_vec()),
+        )
+    }
+
+    fn ini_set(&mut self, name: &[u8], value: Vec<u8>) -> Option<Vec<u8>> {
+        let old = self.ini_get(name)?;
+        self.ini.insert(name.to_vec(), value);
+        Some(old)
+    }
+
+    fn register_shutdown_function(
+        &mut self,
+        callback: Value,
+        args: Vec<Value>,
+    ) -> Result<(), Thrown> {
+        self.shutdown_functions.push((callback, args));
+        Ok(())
     }
 
     fn resource_closed(&self, res: &Value) -> bool {
@@ -914,36 +943,61 @@ impl Host for Vm {
     }
 
     fn is_callable_value(&self, callable: &Value) -> bool {
-        let c = match callable {
-            Value::Ref(r) => r.borrow().clone(),
-            other => other.clone(),
-        };
-        match c {
-            Value::Closure(_) => true,
-            Value::Str(s) => {
-                let lower = s.as_bytes().to_ascii_lowercase();
-                self.fn_names.contains_key(&lower)
-                    || builtins::lookup(&String::from_utf8_lossy(s.as_bytes())).is_some()
-            }
-            Value::Array(a) if a.len() == 2 => {
-                let item0 = a.get(&ArrayKey::Int(0)).cloned().unwrap_or(Value::Null);
-                let method = a.get(&ArrayKey::Int(1)).cloned().unwrap_or(Value::Null);
-                let mname = conv::to_string_bytes(&method);
-                let cls = match item0 {
-                    Value::Object(h) => Some(h.borrow().class),
-                    Value::Str(cn) => self.resolve_class_by_name(cn.as_bytes()).ok(),
-                    _ => None,
-                };
-                cls.map(|c| self.lookup_method(c, &mname).is_some())
-                    .unwrap_or(false)
-            }
-            Value::Object(h) => {
-                let cls = h.borrow().class;
-                self.lookup_method(cls, b"__invoke").is_some()
-            }
-            _ => false,
-        }
+        self.resolve_callable(callable).is_ok()
     }
+
+    fn callable_error(&self, callable: &Value) -> Option<String> {
+        self.resolve_callable(callable).err()
+    }
+
+    fn check_callable(&mut self, callable: &Value) -> Result<Option<String>, Thrown> {
+        self.autoload_callable_class(callable)?;
+        Ok(self.resolve_callable(callable).err())
+    }
+}
+
+/// A resolved callable (see `Vm::resolve_callable`).
+enum Callee {
+    Closure(Rc<rhp_values::ClosureData>),
+    Function(Rc<FunctionProto>),
+    Builtin(String),
+    /// A method with its `$this` (None: static) and called class.
+    Method(classes::ResolvedMethod, Option<ObjectHandle>, ClassId),
+    /// `__call` (with `$this`) / `__callStatic` for an unknown method name.
+    Magic(
+        classes::ResolvedMethod,
+        Option<ObjectHandle>,
+        ClassId,
+        Vec<u8>,
+    ),
+    /// An enum's built-in `cases`/`from`/`tryFrom` (lowercased).
+    EnumStatic(ClassId, Vec<u8>),
+}
+
+/// PG(display_errors) (main.c php_get_display_errors_mode).
+enum DisplayErrors {
+    Off,
+    Stdout,
+    Stderr,
+}
+
+fn display_errors_mode(v: &[u8]) -> DisplayErrors {
+    let lc = v.to_ascii_lowercase();
+    match lc.as_slice() {
+        b"on" | b"yes" | b"true" | b"stdout" => DisplayErrors::Stdout,
+        b"stderr" => DisplayErrors::Stderr,
+        _ => match builtins::php_fns::atol(v) as u8 {
+            0 => DisplayErrors::Off,
+            2 => DisplayErrors::Stderr,
+            _ => DisplayErrors::Stdout,
+        },
+    }
+}
+
+/// zend_ini_parse_bool: "true"/"yes"/"on" (any case) or a nonzero number.
+fn ini_bool(v: &[u8]) -> bool {
+    let lc = v.to_ascii_lowercase();
+    matches!(lc.as_slice(), b"true" | b"yes" | b"on") || builtins::php_fns::atol(v) != 0
 }
 
 /// One activation record.
@@ -1064,6 +1118,9 @@ impl Vm {
             max_depth: 1 << 16,
             native_calls: Vec::new(),
             exception_handlers: Vec::new(),
+            ini: HashMap::new(),
+            shutdown_functions: Vec::new(),
+            direct_stdout: false,
             cursor_root: CursorRoot::Cv(0),
             cursor_steps: Vec::new(),
             classes: Vec::new(),
@@ -2082,6 +2139,15 @@ impl Vm {
         Thrown::error("ArgumentCountError", msg)
     }
 
+    /// Push php's "no user code running" frame: callbacks invoked after the
+    /// script (exception handler, shutdown functions) are called from
+    /// `[internal function]`.
+    fn push_internal_main(&mut self) {
+        let mut main = FunctionProto::new(rhp_values::PhpStr::from("{main}"));
+        main.debug.file = rhp_values::PhpStr::from("");
+        self.stack.push(Frame::new(Rc::new(main), 0));
+    }
+
     /// Give an uncaught throwable to the user exception handler, if one is set
     /// (zend_user_exception_handler). `None`: handled; `Some(t)`: still
     /// uncaught (no handler, or the handler itself threw `t`).
@@ -2098,12 +2164,8 @@ impl Vm {
             return Some(thrown);
         };
         let arg = Value::Object(obj.clone());
-        // The handler runs after the script: called from `[internal function]`.
-        if self.stack.is_empty() {
-            let mut main = FunctionProto::new(rhp_values::PhpStr::from("{main}"));
-            main.debug.file = rhp_values::PhpStr::from("");
-            self.stack.push(Frame::new(Rc::new(main), 0));
-        }
+        self.stack.clear();
+        self.push_internal_main();
         let r = self.call_callable_value(&handler, vec![arg]);
         self.stack.clear();
         r.err()
@@ -2114,23 +2176,87 @@ impl Vm {
         String::from_utf8_lossy(self.class(obj.borrow().class).name.as_bytes()).into_owned()
     }
 
-    /// The text php prints for an uncaught throwable on the CLI (display
-    /// errors to stdout): `PHP_EOL Fatal error: Uncaught <__toString()>\n  thrown
-    /// in <file> on line <line>\n`.
-    pub fn render_uncaught(&mut self, thrown: Thrown) -> Option<Vec<u8>> {
+    /// CLI SAPI mode: pending unbuffered stdout is handed to the process
+    /// before every stderr write, so stdout/stderr interleave as under php.
+    pub fn set_direct_stdout(&mut self, on: bool) {
+        self.direct_stdout = on;
+    }
+
+    /// Write pending unbuffered output to the process's stdout.
+    pub fn flush_stdout(&mut self) {
+        use std::io::Write;
+        let mut o = std::io::stdout().lock();
+        let _ = o.write_all(&self.out);
+        let _ = o.flush();
+        self.out.clear();
+    }
+
+    /// Write to the process's stderr (after pending stdout, in CLI mode).
+    fn write_stderr(&mut self, data: &[u8]) {
+        use std::io::Write;
+        if self.direct_stdout {
+            self.flush_stdout();
+        }
+        let _ = std::io::stderr().write_all(data);
+    }
+
+    /// php_error_cb's log + display step for an error of type `ty` (an E_*
+    /// bit): skipped when masked by error_reporting; logged to stderr as
+    /// `PHP <label>:  …` under log_errors; displayed per display_errors
+    /// (stdout through the output buffers, or stderr without the leading
+    /// newline for "stderr").
+    fn display_error(&mut self, ty: i64, label: &str, message: &[u8], file: &[u8], line: i64) {
+        if builtins::php_fns::error_reporting_level(self) & ty == 0 {
+            return;
+        }
+        let ini = |vm: &Self, n: &[u8]| vm.ini_get(n).unwrap_or_default();
+        let log = ini_bool(&ini(self, b"log_errors"));
+        let mode = display_errors_mode(&ini(self, b"display_errors"));
+        let mut tail = b" in ".to_vec();
+        tail.extend_from_slice(file);
+        tail.extend_from_slice(format!(" on line {line}\n").as_bytes());
+        if log {
+            // error_log unset: the CLI SAPI's log_message writes to stderr.
+            let mut m = format!("PHP {label}:  ").into_bytes();
+            m.extend_from_slice(message);
+            m.extend_from_slice(&tail);
+            self.write_stderr(&m);
+        }
+        match mode {
+            DisplayErrors::Stderr => {
+                let mut m = format!("{label}: ").into_bytes();
+                m.extend_from_slice(message);
+                m.extend_from_slice(&tail);
+                self.write_stderr(&m);
+            }
+            DisplayErrors::Stdout => {
+                let mut m = ini(self, b"error_prepend_string");
+                m.extend_from_slice(format!("\n{label}: ").as_bytes());
+                m.extend_from_slice(message);
+                m.extend_from_slice(&tail);
+                m.extend_from_slice(&ini(self, b"error_append_string"));
+                self.write_out(&m);
+            }
+            DisplayErrors::Off => {}
+        }
+    }
+
+    /// zend_exception_error(ex, E_ERROR) for an uncaught throwable: a
+    /// ParseError reports as `Parse error: <message>`, anything else as
+    /// `Fatal error: Uncaught <__toString()>\n  thrown`.
+    fn report_uncaught(&mut self, thrown: Thrown) {
         let thrown = self.materialize(thrown, None);
-        let Thrown::Object(h) = thrown else {
-            return None;
+        let h = match thrown {
+            Thrown::Object(h) => h,
+            Thrown::Error { class, message } => {
+                let (file, line) = self.throw_site();
+                let msg = format!("Uncaught {class}: {message}");
+                self.display_error(1, "Fatal error", msg.as_bytes(), &file, line as i64);
+                return;
+            }
+            _ => return,
         };
         let cls = h.borrow().class;
-        let obj = Value::Object(h.clone());
-        let s = match self.lookup_method(cls, b"__tostring") {
-            Some(m) => match self.call_sync(&m, Some(h.clone()), cls, Vec::new()) {
-                Ok(Value::Str(s)) => s.as_bytes().to_vec(),
-                _ => builtins::php_fns::throwable_to_string(self, &obj),
-            },
-            None => builtins::php_fns::throwable_to_string(self, &obj),
-        };
         let prop = |n: &str| {
             h.borrow()
                 .properties
@@ -2140,14 +2266,86 @@ impl Vm {
         };
         let file = conv::to_string_bytes(&prop("file"));
         let line = conv::to_int(&prop("line"));
-        let mut out = b"\nFatal error: Uncaught ".to_vec();
-        out.extend_from_slice(&s);
-        out.extend_from_slice(b"\n  thrown in ");
         // An emptied `file` makes php report the location as "Unknown".
-        out.extend_from_slice(if file.is_empty() { b"Unknown" } else { &file });
-        out.extend_from_slice(format!(" on line {line}").as_bytes());
-        out.push(b'\n');
-        Some(out)
+        let file: &[u8] = if file.is_empty() { b"Unknown" } else { &file };
+        let cname = self.class(cls).name.as_bytes().to_ascii_lowercase();
+        if cname == b"parseerror" || cname == b"compileerror" {
+            let msg = conv::to_string_bytes(&prop("message"));
+            let (ty, label) = if cname == b"parseerror" {
+                (4, "Parse error")
+            } else {
+                (64, "Fatal error")
+            };
+            self.display_error(ty, label, &msg, file, line);
+            return;
+        }
+        let obj = Value::Object(h.clone());
+        let s = match self.lookup_method(cls, b"__tostring") {
+            Some(m) => match self.call_sync(&m, Some(h.clone()), cls, Vec::new()) {
+                Ok(Value::Str(s)) => s.as_bytes().to_vec(),
+                _ => builtins::php_fns::throwable_to_string(self, &obj),
+            },
+            None => builtins::php_fns::throwable_to_string(self, &obj),
+        };
+        let mut msg = b"Uncaught ".to_vec();
+        msg.extend_from_slice(&s);
+        msg.extend_from_slice(b"\n  thrown");
+        self.display_error(1, "Fatal error", &msg, file, line);
+    }
+
+    /// An exception that escaped to the top level: the user handler gets it
+    /// first, else it is reported. `Ok(None)`: handled, carry on; `Ok(Some(c))`:
+    /// execution ends with status `c` (255 after a fatal, or an `exit(c)`);
+    /// `Err`: an engine refusal the SAPI reports itself.
+    fn top_level_throw(&mut self, thrown: Thrown) -> Result<Option<i32>, Thrown> {
+        match thrown {
+            Thrown::Exit(c) => Ok(Some(c)),
+            t if t.is_catchable() => match self.handle_uncaught(t) {
+                None => Ok(None),
+                Some(Thrown::Exit(c)) => Ok(Some(c)),
+                Some(t) if t.is_catchable() => {
+                    self.report_uncaught(t);
+                    Ok(Some(255))
+                }
+                Some(t) => Err(t),
+            },
+            t => Err(t),
+        }
+    }
+
+    /// The CLI request around [`Vm::run`] (php_execute_script +
+    /// php_request_shutdown): an uncaught throwable goes to the exception
+    /// handler or is reported, then the shutdown functions run (a fatal or
+    /// `exit` in one stops the rest), then every output buffer is flushed.
+    /// Returns the exit status; `Err` only for an engine refusal.
+    pub fn run_main(&mut self, prog: &Program) -> Result<i32, Thrown> {
+        let mut status = match self.run(prog) {
+            Ok(c) => c,
+            Err(t) => {
+                self.stack.clear();
+                self.top_level_throw(t)?.unwrap_or(0)
+            }
+        };
+        let mut i = 0;
+        while i < self.shutdown_functions.len() {
+            let (cb, args) = self.shutdown_functions[i].clone();
+            i += 1;
+            self.stack.clear();
+            self.push_internal_main();
+            let r = self.call_callable_value(&cb, args);
+            self.stack.clear();
+            if let Err(t) = r {
+                if let Some(c) = self.top_level_throw(t)? {
+                    status = c;
+                    break;
+                }
+            }
+        }
+        // php_output_end_all: flush each buffer into the one below it.
+        while let Some(buf) = self.ob_stack.pop() {
+            self.write_out(&buf);
+        }
+        Ok(status)
     }
 
     /// The `$this` of the current frame, if it is bound to an object.
@@ -4172,60 +4370,360 @@ impl Vm {
         }
     }
 
-    /// Invoke a PHP callable value synchronously (string function name,
-    /// `[obj_or_class, method]`, an `__invoke` object, or a closure).
-    fn call_callable_value(&mut self, callable: &Value, args: Vec<Value>) -> Result<Value, Thrown> {
-        let c = match callable {
-            Value::Ref(r) => r.borrow().clone(),
-            other => other.clone(),
+    /// The calling scope a callable resolves against (zend_is_callable's
+    /// `scope` / called scope / `$this`): the innermost frame.
+    fn callable_scope(&self) -> (Option<ClassId>, Option<ClassId>, Option<ObjectHandle>) {
+        match self.stack.len().checked_sub(1) {
+            Some(top) => (
+                self.stack[top].defining_class,
+                self.stack[top].called_class,
+                self.current_this(top),
+            ),
+            None => (None, None, None),
+        }
+    }
+
+    /// The class half of a `Class::method` / `[Class, method]` callable,
+    /// with `self`/`parent`/`static` relative to the calling scope. Returns
+    /// (class, called class).
+    fn callable_class(&self, name: &[u8]) -> Result<(ClassId, ClassId), String> {
+        let (scope, called, _) = self.callable_scope();
+        let lc = name.to_ascii_lowercase();
+        let no_scope = |w: &str| format!("cannot access \"{w}\" when no class scope is active");
+        let forward = |cls: ClassId| match called {
+            Some(c) if self.class(c).ancestors.contains(&cls) => c,
+            _ => cls,
         };
-        match c {
-            // First-class callable: forward to the wrapped callable.
-            Value::Closure(cd) if cd.wrapped.is_some() => {
-                let w = (**cd.wrapped.as_ref().unwrap()).clone();
-                self.call_callable_value(&w, args)
+        match lc.as_slice() {
+            b"self" => scope
+                .map(|c| (c, forward(c)))
+                .ok_or_else(|| no_scope("self")),
+            b"static" => called
+                .or(scope)
+                .map(|c| (c, c))
+                .ok_or_else(|| no_scope("static")),
+            b"parent" => {
+                let c = scope.ok_or_else(|| no_scope("parent"))?;
+                let p = self.class(c).parent.ok_or_else(|| {
+                    "cannot access \"parent\" when current class scope has no parent".to_string()
+                })?;
+                Ok((p, forward(p)))
             }
-            Value::Closure(cd) => self.run_closure_sync(&cd, args),
-            Value::Str(s) => {
-                let lower = s.as_bytes().to_ascii_lowercase();
-                if let Some(&fnidx) = self.fn_names.get(&lower) {
-                    let proto = self.functions[fnidx].clone();
-                    self.run_proto_sync(proto, None, None, None, args)
-                } else {
-                    let name = String::from_utf8_lossy(s.as_bytes()).into_owned();
-                    self.invoke_builtin(&name, args)
+            _ => self
+                .resolve_class_by_name(name)
+                .map(|c| (c, c))
+                .map_err(|_| {
+                    let n = name.strip_prefix(b"\\").unwrap_or(name);
+                    format!("class \"{}\" not found", String::from_utf8_lossy(n))
+                }),
+        }
+    }
+
+    /// The method half of a method callable (zend_is_callable_check_func).
+    fn callable_method(
+        &self,
+        cls: ClassId,
+        called: ClassId,
+        obj: Option<ObjectHandle>,
+        mname: &[u8],
+    ) -> Result<Callee, String> {
+        let (scope, _, this) = self.callable_scope();
+        let cname = || String::from_utf8_lossy(self.class(cls).name.as_bytes()).into_owned();
+        let magic = |obj: &Option<ObjectHandle>| -> Option<Callee> {
+            let name = mname.to_vec();
+            if let Some(o) = obj {
+                if let Some(m) = self.lookup_method(cls, b"__call") {
+                    return Some(Callee::Magic(m, Some(o.clone()), called, name));
                 }
             }
-            Value::Array(a) if a.len() == 2 => {
-                let item0 = a.get(&ArrayKey::Int(0)).cloned().unwrap_or(Value::Null);
-                let method = a.get(&ArrayKey::Int(1)).cloned().unwrap_or(Value::Null);
-                let mname = conv::to_string_bytes(&method);
-                match item0 {
+            if let Some(m) = self.lookup_method(cls, b"__callstatic") {
+                return Some(Callee::Magic(m, None, called, name));
+            }
+            None
+        };
+        // A non-static method called without an object borrows a compatible
+        // `$this` from the calling scope.
+        let obj =
+            obj.or_else(|| this.filter(|h| self.class(h.borrow().class).ancestors.contains(&cls)));
+        let Some(m) = self.lookup_method(cls, mname) else {
+            if self.class(cls).kind == ClassKind::Enum {
+                let lc = mname.to_ascii_lowercase();
+                if matches!(lc.as_slice(), b"cases" | b"from" | b"tryfrom") {
+                    return Ok(Callee::EnumStatic(cls, lc));
+                }
+            }
+            return magic(&obj).ok_or_else(|| {
+                format!(
+                    "class {} does not have a method \"{}\"",
+                    cname(),
+                    String::from_utf8_lossy(mname)
+                )
+            });
+        };
+        if !self.check_access(scope, m.defining_class, m.visibility) {
+            if let Some(c) = magic(&obj) {
+                return Ok(c);
+            }
+            let v = match m.visibility {
+                rhp_values::Visibility::Private => "private",
+                rhp_values::Visibility::Protected => "protected",
+                rhp_values::Visibility::Public => "public",
+            };
+            return Err(format!(
+                "cannot access {v} method {}::{}()",
+                cname(),
+                String::from_utf8_lossy(m.proto.name.as_bytes())
+            ));
+        }
+        if m.is_static {
+            return Ok(Callee::Method(m, None, called));
+        }
+        match obj {
+            Some(o) => {
+                let oc = o.borrow().class;
+                Ok(Callee::Method(m, Some(o), oc))
+            }
+            None => Err(format!(
+                "non-static method {}::{}() cannot be called statically",
+                cname(),
+                String::from_utf8_lossy(m.proto.name.as_bytes())
+            )),
+        }
+    }
+
+    /// Resolve a callable value (zend_is_callable_ex), or say why it is not
+    /// one in zend_is_callable_error's words.
+    fn resolve_callable(&self, callable: &Value) -> Result<Callee, String> {
+        match deref(callable) {
+            Value::Closure(cd) => Ok(Callee::Closure(cd)),
+            Value::Str(s) => {
+                let b = s.as_bytes();
+                // `Class::method` splits at the last "::".
+                let split = (1..b.len())
+                    .rev()
+                    .find(|&i| b[i] == b':' && b[i - 1] == b':');
+                if let Some(i) = split {
+                    if i == 1 {
+                        return Err("invalid function name".to_string());
+                    }
+                    let (cls, called) = self.callable_class(&b[..i - 1])?;
+                    return self.callable_method(cls, called, None, &b[i + 1..]);
+                }
+                let name = b.strip_prefix(b"\\").unwrap_or(b);
+                if let Some(&idx) = self.fn_names.get(&name.to_ascii_lowercase()) {
+                    return Ok(Callee::Function(self.functions[idx].clone()));
+                }
+                let n = String::from_utf8_lossy(name).into_owned();
+                if builtins::lookup(&n).is_some() {
+                    return Ok(Callee::Builtin(n));
+                }
+                Err(format!(
+                    "function \"{}\" not found or invalid function name",
+                    String::from_utf8_lossy(b)
+                ))
+            }
+            Value::Array(a) => {
+                if a.len() != 2 {
+                    return Err("array callback must have exactly two members".to_string());
+                }
+                let item0 = a.get(&ArrayKey::Int(0)).map(deref);
+                let item1 = a.get(&ArrayKey::Int(1)).map(deref);
+                let (Some(item0), Some(item1)) = (item0, item1) else {
+                    return Err("array callback must have exactly two members".to_string());
+                };
+                let (cls, called, obj) = match item0 {
                     Value::Object(h) => {
-                        let cls = h.borrow().class;
-                        let m = self.lookup_method(cls, &mname).ok_or_else(|| {
-                            Thrown::error("Error", "Call to undefined method in callable")
-                        })?;
-                        self.call_sync(&m, Some(h), cls, args)
+                        let c = h.borrow().class;
+                        (c, c, Some(h))
                     }
                     Value::Str(cn) => {
-                        let cls = self.resolve_class_by_name(cn.as_bytes())?;
-                        let m = self.lookup_method(cls, &mname).ok_or_else(|| {
-                            Thrown::error("Error", "Call to undefined method in callable")
-                        })?;
-                        self.call_sync(&m, None, cls, args)
+                        let (c, called) = self.callable_class(cn.as_bytes())?;
+                        (c, called, None)
                     }
-                    _ => Err(Thrown::type_error("Invalid callable array")),
-                }
+                    _ => {
+                        return Err(
+                            "first array member is not a valid class name or object".to_string()
+                        )
+                    }
+                };
+                let Value::Str(m) = item1 else {
+                    return Err("second array member is not a valid method".to_string());
+                };
+                self.callable_method(cls, called, obj, m.as_bytes())
             }
             Value::Object(h) => {
                 let cls = h.borrow().class;
                 match self.lookup_method(cls, b"__invoke") {
-                    Some(m) => self.call_sync(&m, Some(h), cls, args),
-                    None => Err(Thrown::type_error("Object is not callable (no __invoke)")),
+                    Some(m) => Ok(Callee::Method(m, Some(h), cls)),
+                    None => Err("no array or string given".to_string()),
                 }
             }
-            _ => Err(Thrown::type_error("Value is not callable")),
+            _ => Err("no array or string given".to_string()),
+        }
+    }
+
+    /// Autoload the class half of a callable that names an unloaded class
+    /// (php's zend_is_callable looks classes up with autoloading).
+    fn autoload_callable_class(&mut self, callable: &Value) -> Result<(), Thrown> {
+        let class: Option<Vec<u8>> = match deref(callable) {
+            Value::Str(s) => {
+                let b = s.as_bytes();
+                (2..b.len())
+                    .rev()
+                    .find(|&i| b[i] == b':' && b[i - 1] == b':')
+                    .map(|i| b[..i - 1].to_vec())
+            }
+            Value::Array(a) if a.len() == 2 => match a.get(&ArrayKey::Int(0)).map(deref) {
+                Some(Value::Str(s)) => Some(s.as_bytes().to_vec()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(c) = class {
+            let lc = c.to_ascii_lowercase();
+            if !matches!(lc.as_slice(), b"self" | b"parent" | b"static")
+                && self.resolve_class_by_name(&c).is_err()
+            {
+                self.try_autoload(&c)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Invoke a PHP callable value synchronously (string function name,
+    /// `Class::method`, `[obj_or_class, method]`, an `__invoke` object, or a
+    /// closure). A value that is not callable raises the Error php's dynamic
+    /// call (`$f()`) does.
+    fn call_callable_value(&mut self, callable: &Value, args: Vec<Value>) -> Result<Value, Thrown> {
+        let c = deref(callable);
+        // First-class callable: forward to the wrapped callable.
+        if let Value::Closure(cd) = &c {
+            if let Some(w) = &cd.wrapped {
+                let w = (**w).clone();
+                return self.call_callable_value(&w, args);
+            }
+        }
+        self.autoload_callable_class(&c)?;
+        let callee = match self.resolve_callable(&c) {
+            Ok(callee) => callee,
+            Err(_) => return Err(self.dynamic_call_error(&c)),
+        };
+        match callee {
+            Callee::Closure(cd) => self.run_closure_sync(&cd, args),
+            Callee::Function(proto) => self.run_proto_sync(proto, None, None, None, args),
+            Callee::Builtin(name) => self.invoke_builtin(&name, args),
+            Callee::Method(m, this, called) => self.call_sync(&m, this, called, args),
+            Callee::Magic(m, this, called, name) => {
+                let mut arr = PhpArray::new();
+                for a in args {
+                    arr.push(a);
+                }
+                self.call_sync(&m, this, called, vec![Value::str(name), Value::Array(arr)])
+            }
+            Callee::EnumStatic(cls, lc) => self.enum_builtin_static(cls, &lc, args),
+        }
+    }
+
+    /// The Error a dynamic call of a non-callable value raises
+    /// (ZEND_INIT_DYNAMIC_CALL).
+    fn dynamic_call_error(&self, c: &Value) -> Thrown {
+        let err = |m: String| Thrown::error("Error", m);
+        let method_err = |cls: ClassId, m: &[u8]| -> Thrown {
+            match self.lookup_method(cls, m) {
+                Some(rm) if !rm.is_static => err(format!(
+                    "Non-static method {}::{}() cannot be called statically",
+                    String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                    String::from_utf8_lossy(rm.proto.name.as_bytes())
+                )),
+                Some(rm) => {
+                    let v = match rm.visibility {
+                        rhp_values::Visibility::Private => "private",
+                        rhp_values::Visibility::Protected => "protected",
+                        rhp_values::Visibility::Public => "public",
+                    };
+                    let scope = match self.callable_scope().0 {
+                        Some(c) => format!(
+                            "scope {}",
+                            String::from_utf8_lossy(self.class(c).name.as_bytes())
+                        ),
+                        None => "global scope".to_string(),
+                    };
+                    err(format!(
+                        "Call to {v} method {}::{}() from {scope}",
+                        String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                        String::from_utf8_lossy(rm.proto.name.as_bytes())
+                    ))
+                }
+                None => err(format!(
+                    "Call to undefined method {}::{}()",
+                    String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                    String::from_utf8_lossy(m)
+                )),
+            }
+        };
+        let class_err = |n: &[u8]| {
+            err(format!(
+                "Class \"{}\" not found",
+                String::from_utf8_lossy(n.strip_prefix(b"\\").unwrap_or(n))
+            ))
+        };
+        match c {
+            Value::Str(s) => {
+                let b = s.as_bytes();
+                match (1..b.len())
+                    .rev()
+                    .find(|&i| b[i] == b':' && b[i - 1] == b':')
+                {
+                    Some(i) => match self.callable_class(&b[..i - 1]) {
+                        Ok((cls, _)) => method_err(cls, &b[i + 1..]),
+                        Err(_) => class_err(&b[..i - 1]),
+                    },
+                    None => err(format!(
+                        "Call to undefined function {}()",
+                        String::from_utf8_lossy(b)
+                    )),
+                }
+            }
+            Value::Array(a) if a.len() == 2 => {
+                let item0 = a.get(&ArrayKey::Int(0)).map(deref);
+                let item1 = a.get(&ArrayKey::Int(1)).map(deref);
+                match (item0, item1) {
+                    (Some(Value::Object(h)), Some(Value::Str(m))) => {
+                        method_err(h.borrow().class, m.as_bytes())
+                    }
+                    (Some(Value::Str(cn)), Some(Value::Str(m))) => {
+                        match self.callable_class(cn.as_bytes()) {
+                            Ok((cls, _)) => method_err(cls, m.as_bytes()),
+                            Err(_) => class_err(cn.as_bytes()),
+                        }
+                    }
+                    (Some(Value::Object(_) | Value::Str(_)), Some(_)) => {
+                        err("Second array member is not a valid method".to_string())
+                    }
+                    (Some(_), Some(_)) => {
+                        err("First array member is not a valid class name or object".to_string())
+                    }
+                    _ => err("Array callback must have exactly two elements".to_string()),
+                }
+            }
+            Value::Array(_) => err("Array callback must have exactly two elements".to_string()),
+            Value::Object(_) => err(format!(
+                "Object of type {} is not callable",
+                self.debug_class(c)
+            )),
+            v => err(format!(
+                "Value of type {} is not callable",
+                builtins::php_fns::zend_type_name(v)
+            )),
+        }
+    }
+
+    fn debug_class(&self, v: &Value) -> String {
+        match v {
+            Value::Object(h) => {
+                String::from_utf8_lossy(self.class(h.borrow().class).name.as_bytes()).into_owned()
+            }
+            _ => String::new(),
         }
     }
 

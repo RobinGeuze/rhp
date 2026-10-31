@@ -92,6 +92,30 @@ pub trait Host {
     /// Pop back to the previous exception handler.
     fn restore_exception_handler(&mut self) {}
 
+    /// `ini_get`: a directive's current value, or None when php has no such
+    /// directive. Default: the built-in (`php -n`) defaults, never changed.
+    fn ini_get(&self, name: &[u8]) -> Option<Vec<u8>> {
+        php_fns::ini_default(name).map(|s| s.as_bytes().to_vec())
+    }
+    /// `ini_set`: store `value`, returning the old value (None for an unknown
+    /// directive). Default: not stored.
+    fn ini_set(&mut self, name: &[u8], _value: Vec<u8>) -> Option<Vec<u8>> {
+        self.ini_get(name)
+    }
+
+    /// `register_shutdown_function`: queue a callback (with its arguments) for
+    /// request shutdown. Default: refused (the host has no shutdown phase).
+    fn register_shutdown_function(
+        &mut self,
+        _callback: Value,
+        _args: Vec<Value>,
+    ) -> Result<(), Thrown> {
+        Err(Thrown::unsupported(
+            "register_shutdown_function",
+            "this host has no request shutdown",
+        ))
+    }
+
     /// Whether a resource has been closed (`fclose`d stream): `gettype` /
     /// `get_debug_type` then report `resource (closed)`. Default: no.
     fn resource_closed(&self, _res: &Value) -> bool {
@@ -131,6 +155,30 @@ pub trait Host {
     /// `[obj_or_class, method]` pairs, and `__invoke` objects. Default: closures only.
     fn is_callable_value(&self, callable: &Value) -> bool {
         matches!(deref(callable), Value::Closure(_))
+    }
+
+    /// Why a value is not a valid callback (zend_is_callable_error's message,
+    /// e.g. `function "f" not found or invalid function name`), or None when
+    /// it is callable. Default: derived from [`Host::is_callable_value`].
+    fn callable_error(&self, callable: &Value) -> Option<String> {
+        if self.is_callable_value(callable) {
+            return None;
+        }
+        Some(match deref(callable) {
+            Value::Str(s) => format!(
+                "function \"{}\" not found or invalid function name",
+                String::from_utf8_lossy(s.as_bytes())
+            ),
+            Value::Array(_) => "array callback must have exactly two members".to_string(),
+            _ => "no array or string given".to_string(),
+        })
+    }
+
+    /// [`Host::callable_error`] after autoloading a class the callable names
+    /// (zend_is_callable looks classes up with autoloading; a loader's
+    /// exception propagates).
+    fn check_callable(&mut self, callable: &Value) -> Result<Option<String>, Thrown> {
+        Ok(self.callable_error(callable))
     }
 
     /// Resolve a class-like name to its opaque class id (for `class_exists`,
@@ -671,7 +719,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("E_USER_DEPRECATED", Value::Int(16384)),
         ("NAN", Value::Float(f64::NAN)),
         ("INF", Value::Float(f64::INFINITY)),
-        ("E_ALL", Value::Int(32767)),
+        ("E_ALL", Value::Int(30719)),
         ("E_WARNING", Value::Int(2)),
         ("E_NOTICE", Value::Int(8)),
         ("COUNT_NORMAL", Value::Int(0)),
@@ -904,7 +952,22 @@ fn fn_is_finite(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_is_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.is_callable_value(&args[0])))
+    Ok(Value::Bool(host.check_callable(&args[0])?.is_none()))
+}
+
+/// zpp's `f` check: "F(): Argument #N ($callback) must be a valid callback, …".
+pub fn require_callback(
+    host: &mut dyn Host,
+    func: &str,
+    n: usize,
+    callable: &Value,
+) -> Result<(), Thrown> {
+    match host.check_callable(callable)? {
+        None => Ok(()),
+        Some(why) => Err(Thrown::type_error(format!(
+            "{func}(): Argument #{n} ($callback) must be a valid callback, {why}"
+        ))),
+    }
 }
 
 fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1314,10 +1377,12 @@ fn fn_array_reduce(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 }
 
 fn fn_call_user_func(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    require_callback(host, "call_user_func", 1, &args[0])?;
     host.call_callable(&args[0], &args[1..])
 }
 
 fn fn_call_user_func_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    require_callback(host, "call_user_func_array", 1, &args[0])?;
     let params = as_array(&args[1], "call_user_func_array")?;
     let argv: Vec<Value> = params.iter().map(|(_, v)| v.clone()).collect();
     host.call_callable(&args[0], &argv)

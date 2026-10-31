@@ -1,0 +1,6 @@
+buffered before the throw
+
+Fatal error: Uncaught PortableException: boom
+  thrown in portable.php on line 42
+shutdown 1, level 1
+shutdown 2

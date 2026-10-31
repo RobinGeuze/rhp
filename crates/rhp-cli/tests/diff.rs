@@ -27,7 +27,9 @@ fn run_vm(source: &[u8], name: &str) -> Result<Vec<u8>, Thrown> {
     assert!(!parsed.has_parse_errors(), "{name}: unexpected parse error");
     let program = compile_with_source(parsed.program(), source, name)?;
     let mut vm = Vm::new();
-    vm.run(&program)?;
+    // The whole CLI request: uncaught-throwable report, shutdown functions,
+    // output-buffer flush.
+    vm.run_main(&program)?;
     Ok(vm.output().to_vec())
 }
 
@@ -110,6 +112,15 @@ fn oracle_matches_php_on_supported() {
             )),
             // Features the oracle doesn't implement are skipped, not failed.
             Ok(Err(Thrown::Unsupported { .. })) => skipped += 1,
+            // The oracle has no uncaught-throwable renderer (the VM's
+            // `run_main` does that): fixtures ending in one are VM-only.
+            Ok(Err(Thrown::Error { .. } | Thrown::Object(_)))
+                if expected
+                    .windows(22)
+                    .any(|w| w == b"\nFatal error: Uncaught") =>
+            {
+                skipped += 1
+            }
             Ok(Err(e)) => failures.push(format!("{name}: oracle error: {e:?}")),
             Err(_) => failures.push(format!("{name}: panicked")),
         }

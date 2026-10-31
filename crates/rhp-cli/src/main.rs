@@ -63,31 +63,16 @@ fn main() -> ExitCode {
         }
         compile_with_source(parsed.program(), src, file)
     });
-    let mut result = vm.run(&program);
-    // A user exception handler (set_exception_handler) gets the uncaught
-    // throwable first; the script then ends normally unless it rethrows.
-    if let Err(t @ (Thrown::Error { .. } | Thrown::Object(_))) = result {
-        result = match vm.handle_uncaught(t) {
-            None => Ok(0),
-            Some(t) => Err(t),
-        };
-    }
-    // An uncaught throwable: php prints `Fatal error: Uncaught …` (its
-    // __toString, then "thrown in") after the script's output, exit 255.
-    let uncaught = match result {
-        Err(ref t @ (Thrown::Error { .. } | Thrown::Object(_))) => vm.render_uncaught(t.clone()),
-        _ => None,
-    };
-
-    let _ = std::io::stdout().write_all(vm.output());
-    if let Some(msg) = &uncaught {
-        let _ = std::io::stdout().write_all(msg);
-    }
+    // Unbuffered stdout reaches the process before each stderr write.
+    vm.set_direct_stdout(true);
+    // Run, report an uncaught throwable (per display_errors / log_errors /
+    // error_reporting), call the shutdown functions, flush output buffers.
+    let result = vm.run_main(&program);
+    vm.flush_stdout();
     let _ = std::io::stdout().flush();
 
     match result {
         Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
-        Err(_) if uncaught.is_some() => ExitCode::from(255),
         Err(t) => fatal(t),
     }
 }

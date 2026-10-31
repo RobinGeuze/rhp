@@ -1,0 +1,27 @@
+display_errors='1'
+log_errors='0'
+error_log=''
+html_errors='0'
+error_reporting=''
+error_prepend_string=''
+no_such_directive=false
+int(30719)
+int(30719)
+int(30711)
+string(5) "30711"
+int(30711)
+string(5) "30711"
+int(7)
+string(1) "1"
+string(6) "stderr"
+string(6) "stderr"
+string(1) "1"
+string(1) "0"
+string(1) "0"
+string(1) "0"
+string(0) ""
+string(1) "1"
+string(3) "1.5"
+bool(false)
+bool(false)
+ini_set(): Argument #2 ($value) must be of type string|int|float|bool|null

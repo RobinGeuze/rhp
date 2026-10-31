@@ -624,26 +624,114 @@ fn fn_putenv(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(true))
 }
 
-fn fn_ini_get(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = String::from_utf8_lossy(&str_arg(args, 0)).into_owned();
-    let v: Option<&str> = match name.as_str() {
-        "memory_limit" => Some("-1"),
-        "max_execution_time" => Some("0"),
-        "precision" => Some("14"),
-        "serialize_precision" => Some("-1"),
-        "date.timezone" => Some("UTC"),
-        "default_charset" => Some("UTF-8"),
-        "allow_url_fopen" => Some("1"),
-        "disable_functions" => Some(""),
-        "open_basedir" => Some(""),
-        _ => None,
-    };
-    Ok(v.map(Value::str).unwrap_or(Value::Bool(false)))
+/// Directives php knows, with their `php -n` CLI defaults (`ini_get` /
+/// `ini_set` return false for anything else).
+pub fn ini_default(name: &[u8]) -> Option<&'static str> {
+    Some(match name {
+        b"memory_limit" => "-1",
+        b"max_execution_time" => "0",
+        b"precision" => "14",
+        b"serialize_precision" => "-1",
+        b"date.timezone" => "UTC",
+        b"default_charset" => "UTF-8",
+        b"allow_url_fopen" => "1",
+        b"disable_functions" => "",
+        b"open_basedir" => "",
+        // Error handling (main.c PHP_INI; the CLI SAPI forces display_errors=1).
+        b"display_errors" => "1",
+        b"display_startup_errors" => "1",
+        b"log_errors" => "0",
+        b"error_log" => "",
+        b"html_errors" => "0",
+        b"error_prepend_string" => "",
+        b"error_append_string" => "",
+        // No php.ini value: EG(error_reporting) keeps its E_ALL default.
+        b"error_reporting" => "",
+        b"zend.exception_ignore_args" => "0",
+        _ => return None,
+    })
 }
 
-fn fn_ini_set(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    // No-op; php returns the previous value or false. We return false.
-    Ok(Value::Bool(false))
+fn fn_ini_get(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(match host.ini_get(&str_arg(args, 0)) {
+        Some(v) => Value::str(v),
+        None => Value::Bool(false),
+    })
+}
+
+/// `ini_set(string $option, string|int|float|bool|null $value): string|false`.
+fn fn_ini_set(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = str_arg(args, 0);
+    let value = match deref(&args[1]) {
+        v @ (Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_)) => {
+            conv::to_string_bytes(&v)
+        }
+        _ => {
+            return Err(Thrown::type_error(
+                "ini_set(): Argument #2 ($value) must be of type string|int|float|bool|null",
+            ))
+        }
+    };
+    Ok(match host.ini_set(&name, value) {
+        Some(old) => Value::str(old),
+        None => Value::Bool(false),
+    })
+}
+
+/// zend_zval_type_name (`int`, `bool`, `string`, `null`, …).
+pub fn zend_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Str(_) => "string",
+        Value::Array(_) => "array",
+        Value::Resource(_) => "resource",
+        Value::Closure(_) => "Closure",
+        Value::Object(_) => "object",
+        Value::Ref(r) => zend_type_name(&r.borrow()),
+    }
+}
+
+/// php's E_ALL (8.4+: E_STRICT is gone).
+pub const E_ALL: i64 = 30719;
+
+/// EG(error_reporting): the `error_reporting` directive, E_ALL while unset.
+pub fn error_reporting_level(host: &dyn Host) -> i64 {
+    match host.ini_get(b"error_reporting") {
+        Some(v) if !v.is_empty() => atol(&v),
+        _ => E_ALL,
+    }
+}
+
+/// C `atol`/`ZEND_ATOL`: optional whitespace and sign, then leading digits.
+pub fn atol(s: &[u8]) -> i64 {
+    let mut i = 0;
+    while i < s.len() && (s[i] == b' ' || (b'\t'..=b'\r').contains(&s[i])) {
+        i += 1;
+    }
+    let neg = match s.get(i) {
+        Some(b'-') => {
+            i += 1;
+            true
+        }
+        Some(b'+') => {
+            i += 1;
+            false
+        }
+        _ => false,
+    };
+    let mut n: i64 = 0;
+    while let Some(d) = s.get(i).filter(|c| c.is_ascii_digit()) {
+        n = n.wrapping_mul(10).wrapping_add((d - b'0') as i64);
+        i += 1;
+    }
+    if neg {
+        n.wrapping_neg()
+    } else {
+        n
+    }
 }
 
 fn fn_set_handler(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -685,16 +773,32 @@ fn fn_trigger_error(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
     Ok(Value::Bool(true))
 }
 
-fn fn_error_reporting(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(32767))
+/// `error_reporting(?int $error_level = null): int`: the old level; sets a
+/// new one when given.
+fn fn_error_reporting(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let old = error_reporting_level(host);
+    if let Some(v) = args.first().map(deref) {
+        if !matches!(v, Value::Null) {
+            let n = conv::to_int(&v);
+            host.ini_set(b"error_reporting", n.to_string().into_bytes());
+        }
+    }
+    Ok(Value::Int(old))
 }
 
 fn fn_error_get_last(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Null)
 }
 
-fn fn_register_shutdown_function(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    // Stored by php and run at shutdown; not yet invoked here.
+/// `register_shutdown_function(callable $callback, mixed ...$args): void`.
+fn fn_register_shutdown_function(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let cb = deref(&args[0]);
+    if let Some(why) = host.check_callable(&cb)? {
+        return Err(Thrown::type_error(format!(
+            "register_shutdown_function(): Argument #1 ($callback) must be a valid callback, {why}"
+        )));
+    }
+    host.register_shutdown_function(cb, args[1..].iter().map(deref).collect())?;
     Ok(Value::Null)
 }
 
@@ -1167,6 +1271,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "putenv", fn_putenv, 1, Some(1));
     put(m, "ini_get", fn_ini_get, 1, Some(1));
     put(m, "ini_set", fn_ini_set, 2, Some(2));
+    put(m, "ini_alter", fn_ini_set, 2, Some(2));
     put(m, "set_error_handler", fn_set_handler, 1, Some(2));
     put(m, "restore_error_handler", fn_restore_handler, 0, Some(0));
     put(

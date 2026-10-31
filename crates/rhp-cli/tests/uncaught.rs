@@ -125,3 +125,88 @@ fn exception_handler_receives_uncaught() {
     let out = assert_same(&dir.join("main.php"));
     assert!(out.contains("[internal function]"), "{out}");
 }
+
+/// Run each `(case, script)` through both engines (stdout, stderr, rc).
+fn assert_all_same(cases: &[(&str, &str)]) {
+    for (name, src) in cases {
+        let dir = case_dir(name);
+        write(&dir.join("main.php"), src);
+        assert_same(&dir.join("main.php"));
+    }
+}
+
+#[test]
+fn uncaught_honours_display_errors_log_errors_and_error_reporting() {
+    if !php_available() {
+        return;
+    }
+    assert_all_same(&[
+        // composer's bin/composer: display_errors=stderr (no leading newline).
+        (
+            "de_stderr",
+            "<?php\nini_set('display_errors', 'stderr');\necho \"a\\n\";\nthrow new Exception('to stderr');\n",
+        ),
+        ("de_two", "<?php\nini_set('display_errors', '2');\nthrow new Exception('x');\n"),
+        ("de_off", "<?php\nini_set('display_errors', '0');\necho \"a\\n\";\nthrow new Exception('hidden');\n"),
+        ("de_on", "<?php\nini_set('display_errors', 'On');\nthrow new Exception('x');\n"),
+        ("er_zero", "<?php\nerror_reporting(0);\necho \"a\\n\";\nthrow new Exception('hidden');\n"),
+        (
+            "er_no_error",
+            "<?php\nerror_reporting(E_ALL & ~E_ERROR);\nthrow new Exception('hidden');\n",
+        ),
+        (
+            "log_and_display",
+            "<?php\nini_set('log_errors', '1');\nob_start();\necho \"a\\n\";\nthrow new Exception('both');\n",
+        ),
+        (
+            "log_only",
+            "<?php\nini_set('log_errors', 'yes');\nini_set('display_errors', 'off');\nnull_fn();\n",
+        ),
+        (
+            "prepend_append",
+            "<?php\nini_set('error_prepend_string', '<<');\nini_set('error_append_string', '>>');\nthrow new Exception('x');\n",
+        ),
+    ]);
+}
+
+#[test]
+fn uncaught_flushes_output_buffers_and_runs_shutdown_functions() {
+    if !php_available() {
+        return;
+    }
+    assert_all_same(&[
+        ("ob_exc", "<?php\nob_start();\necho \"buffered\";\nthrow new Exception('x');\n"),
+        ("ob_engine", "<?php\nob_start();\necho \"buffered\";\n$x = null;\n$x->m();\n"),
+        (
+            "sd_after_fatal",
+            "<?php\nregister_shutdown_function(function () { echo \"shutdown\\n\"; });\nthrow new RuntimeException('boom');\n",
+        ),
+        (
+            "sd_with_handler",
+            "<?php\nset_exception_handler(function ($e) { echo \"H\\n\"; });\nregister_shutdown_function(function () { echo \"shutdown\\n\"; });\nthrow new RuntimeException('boom');\n",
+        ),
+        // A fatal in a shutdown function stops the rest.
+        (
+            "sd_throws",
+            "<?php\nregister_shutdown_function(function ($a) { echo \"sd1 $a\\n\"; register_shutdown_function(function () { echo \"nested\\n\"; }); }, 'arg');\nregister_shutdown_function(function () { echo \"sd2\\n\"; throw new Exception('in sd'); });\nregister_shutdown_function(function () { echo \"sd3\\n\"; });\nob_start();\necho \"buffered\\n\";\nthrow new Exception('main');\n",
+        ),
+        // exit() in a shutdown function sets the status and stops the rest.
+        (
+            "sd_exit",
+            "<?php\nregister_shutdown_function(function () { echo \"sd1\\n\"; exit(3); });\nregister_shutdown_function(function () { echo \"sd2\\n\"; });\nthrow new Exception('main');\n",
+        ),
+        // With a handler, a shutdown function's exception is handled too.
+        (
+            "sd_handler_continues",
+            "<?php\nset_exception_handler(function ($e) { echo 'H ', $e->getMessage(), \"\\n\"; });\nregister_shutdown_function(function () { echo \"sd1\\n\"; throw new Exception('from sd'); });\nregister_shutdown_function(function () { echo \"sd2\\n\"; });\nthrow new Exception('main');\n",
+        ),
+        (
+            "sd_handler_rethrows",
+            "<?php\nset_exception_handler(function ($e) { echo 'H ', $e->getMessage(), \"\\n\"; throw new LogicException('again'); });\nregister_shutdown_function(function () { echo \"sd1\\n\"; });\nthrow new Exception('main');\n",
+        ),
+        (
+            "sd_display_off",
+            "<?php\nregister_shutdown_function(function () { echo \"sd\\n\"; });\nini_set('display_errors', '0');\nthrow new Exception('x');\n",
+        ),
+    ]);
+}

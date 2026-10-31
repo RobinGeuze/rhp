@@ -46,6 +46,8 @@ pub struct Vm {
     fn_names: HashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
     closures: Vec<Rc<FunctionProto>>,  // anonymous closure protos, indexed by `fnidx`
     constants: HashMap<Vec<u8>, Value>,
+    /// User-defined constant names in definition order (`get_defined_constants`).
+    user_const_order: Vec<Vec<u8>>,
     max_depth: usize,
     // lvalue cursor: a root in the current frame (CV or a static-prop cell) +
     // pending path steps. Cursor opcodes are emitted contiguously, so a single
@@ -211,7 +213,19 @@ impl Host for Vm {
             return false;
         }
         self.constants.insert(name.to_vec(), value);
+        self.user_const_order.push(name.to_vec());
         true
+    }
+
+    fn user_constants(&self) -> Vec<(Vec<u8>, Value)> {
+        self.user_const_order
+            .iter()
+            .filter_map(|n| self.constants.get(n).map(|v| (n.clone(), v.clone())))
+            .collect()
+    }
+
+    fn output_started(&self) -> bool {
+        !self.out.is_empty()
     }
 
     fn get_const(&self, name: &[u8]) -> Option<Value> {
@@ -602,12 +616,10 @@ impl Host for Vm {
             },
         );
         let mut ifaces = PhpArray::new();
-        for &anc in &entry.ancestors {
-            if anc != cid && self.classes[anc as usize].kind == ClassKind::Interface {
-                ifaces.push(Value::str(
-                    self.classes[anc as usize].name.as_bytes().to_vec(),
-                ));
-            }
+        for &anc in &entry.interfaces {
+            ifaces.push(Value::str(
+                self.classes[anc as usize].name.as_bytes().to_vec(),
+            ));
         }
         a.insert(ArrayKey::from_bytes(b"interfaces"), Value::Array(ifaces));
         let mut methods = PhpArray::new();
@@ -799,6 +811,50 @@ impl Host for Vm {
             bound_static: scope_class,
             wrapped: cd.wrapped.clone(),
         })))
+    }
+
+    fn class_alias(&mut self, class_id: u32, alias: &[u8]) -> bool {
+        let key = alias
+            .strip_prefix(b"\\")
+            .unwrap_or(alias)
+            .to_ascii_lowercase();
+        if self.class_ids.contains_key(&key) {
+            return false;
+        }
+        self.class_ids.insert(key, class_id);
+        true
+    }
+
+    fn class_relations(&self, class_id: u32) -> Option<(Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>)> {
+        let entry = self.classes.get(class_id as usize)?;
+        let name = |id: ClassId| self.classes[id as usize].name.as_bytes().to_vec();
+        let mut parents = Vec::new();
+        let mut p = entry.parent;
+        while let Some(pid) = p {
+            parents.push(name(pid));
+            p = self.classes[pid as usize].parent;
+        }
+        let ifaces = entry.interfaces.iter().map(|&i| name(i)).collect();
+        let traits = entry.traits.iter().map(|&t| name(t)).collect();
+        Some((parents, ifaces, traits))
+    }
+
+    fn object_public_props(&self, obj: &Value) -> Vec<(PhpStr, Value)> {
+        let Value::Object(h) = deref(obj) else {
+            return Vec::new();
+        };
+        let o = h.borrow();
+        let entry = &self.classes[o.class as usize];
+        o.properties
+            .iter()
+            .filter(|(k, _)| {
+                entry
+                    .props
+                    .get(*k)
+                    .is_none_or(|p| p.visibility == rhp_values::Visibility::Public)
+            })
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 
     fn class_kind(&self, class_id: u32) -> Option<ClassKind> {
@@ -1006,6 +1062,7 @@ impl Vm {
             fn_names: HashMap::new(),
             closures: Vec::new(),
             constants,
+            user_const_order: Vec::new(),
             max_depth: 1 << 16,
             cursor_root: CursorRoot::Cv(0),
             cursor_steps: Vec::new(),
@@ -1660,8 +1717,13 @@ impl Vm {
         self.closures = prog.closures.clone();
         // Install user-defined global constants.
         for (name, value) in &prog.constants {
-            self.constants
-                .insert(name.as_bytes().to_vec(), value.clone());
+            if self
+                .constants
+                .insert(name.as_bytes().to_vec(), value.clone())
+                .is_none()
+            {
+                self.user_const_order.push(name.as_bytes().to_vec());
+            }
         }
         // Record {main}'s variable -> register map for `global $x`.
         for (reg, name) in prog.main_var_names.iter().enumerate() {

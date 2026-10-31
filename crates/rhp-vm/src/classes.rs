@@ -26,6 +26,12 @@ pub struct ClassEntry {
     pub parent: Option<ClassId>,
     /// self + all transitive parents + interfaces (the instanceof set).
     pub ancestors: Vec<ClassId>,
+    /// Implemented interfaces in php's `ce->interfaces` order (parent's first,
+    /// then own, then interfaces inherited through own interfaces) — what
+    /// `class_implements` / `getInterfaceNames` report.
+    pub interfaces: Vec<ClassId>,
+    /// Traits used directly by this class (`class_uses`), in `use` order.
+    pub traits: Vec<ClassId>,
     /// Flattened vtable, keyed by lowercase method name, in php's member
     /// order (see [`php_member_order`]).
     pub methods: IndexMap<Vec<u8>, ResolvedMethod>,
@@ -382,6 +388,35 @@ impl Vm {
         ancestors.sort_unstable();
         ancestors.dedup();
 
+        // php's `zend_do_implement_interfaces`: parent's list, then own direct
+        // interfaces (deduped), then for each own interface its inherited
+        // interfaces appended in reverse (`zend_do_inherit_interfaces`).
+        let mut interfaces: Vec<ClassId> = parent
+            .map(|p| self.classes[p as usize].interfaces.clone())
+            .unwrap_or_default();
+        let num_parent = interfaces.len();
+        for iname in &proto.interfaces {
+            let iid = self.class_ids[&lc(iname.as_bytes())];
+            if !interfaces.contains(&iid) {
+                interfaces.push(iid);
+            }
+        }
+        let num_direct = interfaces.len();
+        for i in num_parent..num_direct {
+            let iid = interfaces[i];
+            let ce_num = interfaces.len();
+            for &inh in self.classes[iid as usize].interfaces.iter().rev() {
+                if !interfaces[..ce_num].contains(&inh) {
+                    interfaces.push(inh);
+                }
+            }
+        }
+        let traits: Vec<ClassId> = proto
+            .traits
+            .iter()
+            .map(|t| self.class_ids[&lc(t.as_bytes())])
+            .collect();
+
         self.class_ids.insert(lc(proto.name.as_bytes()), id);
         self.classes.push(ClassEntry {
             name: proto.name.clone(),
@@ -389,6 +424,8 @@ impl Vm {
             flags: proto.flags,
             parent,
             ancestors,
+            interfaces,
+            traits,
             methods,
             props,
             constants,

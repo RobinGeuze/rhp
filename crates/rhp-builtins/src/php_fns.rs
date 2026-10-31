@@ -23,7 +23,7 @@ fn str_arg(args: &[Value], i: usize) -> Vec<u8> {
 
 /// Extensions this engine reports as loaded (lowercased). These are the ones
 /// whose functions/classes rhp actually provides.
-const LOADED_EXTS: &[&str] = &[
+pub(crate) const LOADED_EXTS: &[&str] = &[
     "core",
     "standard",
     "spl",
@@ -239,31 +239,35 @@ fn fn_getenv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-fn fn_putenv(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    // No-op (we don't mutate the process environment); report success.
-    Ok(Value::Bool(true))
-}
-
-fn fn_ini_get(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = String::from_utf8_lossy(&str_arg(args, 0)).into_owned();
-    let v: Option<&str> = match name.as_str() {
-        "memory_limit" => Some("-1"),
-        "max_execution_time" => Some("0"),
-        "precision" => Some("14"),
-        "serialize_precision" => Some("-1"),
-        "date.timezone" => Some("UTC"),
-        "default_charset" => Some("UTF-8"),
-        "allow_url_fopen" => Some("1"),
-        "disable_functions" => Some(""),
-        "open_basedir" => Some(""),
-        _ => None,
+/// `putenv("NAME=value")` sets, `putenv("NAME")` unsets (process env, so
+/// `getenv` and child processes see it, as in php).
+fn fn_putenv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = crate::argparse::str_param(host, args, 0, "putenv", "assignment")?;
+    if a.is_empty() || a[0] == b'=' {
+        return Err(Thrown::error(
+            "ValueError",
+            "putenv(): Argument #1 ($assignment) must have a valid syntax",
+        ));
+    }
+    let (name, value) = match a.iter().position(|&b| b == b'=') {
+        Some(p) => (&a[..p], Some(&a[p + 1..])),
+        None => (&a[..], None),
     };
-    Ok(v.map(Value::str).unwrap_or(Value::Bool(false)))
-}
-
-fn fn_ini_set(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    // No-op; php returns the previous value or false. We return false.
-    Ok(Value::Bool(false))
+    let name = String::from_utf8_lossy(name).into_owned();
+    if name.contains('\0') {
+        return Ok(Value::Bool(false));
+    }
+    match value {
+        Some(v) => {
+            let v = String::from_utf8_lossy(v).into_owned();
+            if v.contains('\0') {
+                return Ok(Value::Bool(false));
+            }
+            std::env::set_var(name, v);
+        }
+        None => std::env::remove_var(name),
+    }
+    Ok(Value::Bool(true))
 }
 
 fn fn_set_handler(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -281,7 +285,7 @@ fn fn_trigger_error(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
 }
 
 fn fn_error_reporting(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(32767))
+    Ok(Value::Int(30719))
 }
 
 fn fn_error_get_last(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -750,8 +754,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "php_uname", fn_php_uname, 0, Some(1));
     put(m, "getenv", fn_getenv, 0, Some(1));
     put(m, "putenv", fn_putenv, 1, Some(1));
-    put(m, "ini_get", fn_ini_get, 1, Some(1));
-    put(m, "ini_set", fn_ini_set, 2, Some(2));
     put(m, "set_error_handler", fn_set_handler, 1, Some(2));
     put(m, "restore_error_handler", fn_restore_handler, 0, Some(0));
     put(m, "set_exception_handler", fn_set_handler, 1, Some(1));

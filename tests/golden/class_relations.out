@@ -1,0 +1,76 @@
+Array
+(
+    [C] => C
+    [D] => D
+    [A] => A
+    [B] => B
+    [E] => E
+)
+Array
+(
+    [C] => C
+    [D] => D
+    [A] => A
+    [B] => B
+)
+Array
+(
+    [B] => B
+    [C] => C
+    [A] => A
+)
+Array
+(
+    [C] => C
+)
+Array
+(
+    [Mid] => Mid
+    [Base] => Base
+)
+Array
+(
+)
+Array
+(
+    [T1] => T1
+    [T2] => T2
+)
+Array
+(
+    [T2] => T2
+)
+Array
+(
+    [T1] => T1
+)
+Array
+(
+)
+bool(false)
+bool(false)
+TypeError: class_implements(): Argument #1 ($object_or_class) must be of type object|string, int given
+C
+bool(false)
+autoload(Ghost)
+bool(false)
+bool(true)
+string(4) "Leaf"
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+bool(false)
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+Array
+(
+    [C] => C
+    [D] => D
+    [A] => A
+    [B] => B
+    [E] => E
+)
+string(4) "Leaf"

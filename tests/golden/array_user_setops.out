@@ -1,0 +1,85 @@
+Array
+(
+    [a] => green
+    [c] => blue
+    [0] => red
+)
+Array
+(
+)
+Array
+(
+    [b] => brown
+    [c] => blue
+    [0] => red
+)
+Array
+(
+    [a] => green
+    [b] => brown
+)
+Array
+(
+    [c] => blue
+    [0] => red
+)
+Array
+(
+    [a] => green
+    [b] => brown
+    [0] => red
+    [10] => 1
+)
+Array
+(
+    [a] => green
+    [0] => red
+)
+Array
+(
+    [b] => brown
+    [10] => 1
+)
+Array
+(
+    [a] => green
+    [10] => 1
+)
+Array
+(
+    [a] => green
+    [b] => brown
+    [10] => 1
+)
+Array
+(
+    [a] => green
+)
+Array
+(
+    [PATH] => 1
+    [Home] => 2
+)
+Array
+(
+)
+Array
+(
+    [a] => 1
+)
+Array
+(
+    [c] => blue
+)
+Array
+(
+    [c] => blue
+)
+Array
+(
+    [a] => green
+    [b] => brown
+    [0] => red
+    [10] => 1
+)
+TypeError: array_intersect_ukey(): Argument #2 must be of type array, string given

@@ -19,14 +19,19 @@ pub mod streams;
 
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};
 
+mod argparse;
 mod arr_fns;
+mod arraycmp_fns;
 mod arrayset_fns;
+mod const_modules;
 mod datetime_fns;
 mod dt_oop_fns;
 mod ext;
 mod file_fns;
 mod filter_fns;
 pub mod http;
+mod ini_parse;
+mod ini_table;
 mod json_fns;
 mod math_fns;
 mod misc_fns;
@@ -34,12 +39,15 @@ mod parse_fns;
 mod php_fns;
 mod preg_fns;
 mod printf_fns;
+mod query_fns;
+mod runtime_fns;
 mod serialize_fns;
 mod sort_fns;
 mod str_fns;
 mod strarr2_fns;
 mod strcmp_fns;
 mod stream_fns;
+mod strsearch_fns;
 mod strtotime_fns;
 mod webenc_fns;
 pub mod zip_ext;
@@ -124,6 +132,49 @@ pub trait Host {
     /// falls back to the non-autoloading resolve.
     fn resolve_class_autoload(&mut self, name: &[u8]) -> Option<u32> {
         self.resolve_class(name)
+    }
+
+    /// `class_alias`: register `alias` as another name for class `class_id`.
+    /// Returns false if the alias name is already taken. Default: refused.
+    fn class_alias(&mut self, _class_id: u32, _alias: &[u8]) -> bool {
+        false
+    }
+
+    /// A class's relations for `class_parents` / `class_implements` /
+    /// `class_uses`: (parent chain nearest-first, interfaces in php order,
+    /// directly used traits). Default: none.
+    #[allow(clippy::type_complexity)]
+    fn class_relations(
+        &self,
+        _class_id: u32,
+    ) -> Option<(Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>)> {
+        None
+    }
+
+    /// An object's properties visible from public scope, in property-table
+    /// order (for `http_build_query` on objects). Default: every property.
+    fn object_public_props(&self, obj: &Value) -> Vec<(rhp_values::PhpStr, Value)> {
+        match deref(obj) {
+            Value::Object(h) => h
+                .borrow()
+                .properties
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// User-defined constants (`define`/`const`) in definition order, for
+    /// `get_defined_constants`. Default: none.
+    fn user_constants(&self) -> Vec<(Vec<u8>, Value)> {
+        Vec::new()
+    }
+
+    /// Has any output reached the real (unbuffered) output stream? The CLI
+    /// SAPI sends headers on first output, so this is `headers_sent()`.
+    fn output_started(&self) -> bool {
+        false
     }
 
     /// The [`ClassKind`] of a class id (class / interface / trait / enum), used by
@@ -531,6 +582,11 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         parse_fns::register(&mut m);
         php_fns::register(&mut m);
         stream_fns::register(&mut m);
+        strsearch_fns::register(&mut m);
+        query_fns::register(&mut m);
+        runtime_fns::register(&mut m);
+        ini_parse::register(&mut m);
+        arraycmp_fns::register(&mut m);
         m
     })
 }
@@ -621,6 +677,11 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("LC_MONETARY", Value::Int(4)),
         ("LC_MESSAGES", Value::Int(5)),
         ("LC_ALL", Value::Int(6)),
+        ("INI_SCANNER_NORMAL", Value::Int(0)),
+        ("INI_SCANNER_RAW", Value::Int(1)),
+        ("INI_SCANNER_TYPED", Value::Int(2)),
+        ("PHP_QUERY_RFC1738", Value::Int(1)),
+        ("PHP_QUERY_RFC3986", Value::Int(2)),
         ("PHP_URL_SCHEME", Value::Int(0)),
         ("PHP_URL_HOST", Value::Int(1)),
         ("PHP_URL_PORT", Value::Int(2)),
@@ -649,7 +710,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("E_USER_DEPRECATED", Value::Int(16384)),
         ("NAN", Value::Float(f64::NAN)),
         ("INF", Value::Float(f64::INFINITY)),
-        ("E_ALL", Value::Int(32767)),
+        ("E_ALL", Value::Int(30719)),
         ("E_WARNING", Value::Int(2)),
         ("E_NOTICE", Value::Int(8)),
         ("COUNT_NORMAL", Value::Int(0)),

@@ -973,9 +973,11 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         // `&$matches` at position 2.
         "preg_match" | "preg_match_all" => &[false, false, true],
         // `&$count` at position 4.
-        "preg_replace" | "preg_replace_callback" | "preg_replace_callback_array" => {
-            &[false, false, false, false, true]
-        }
+        "preg_replace" | "preg_replace_callback" => &[false, false, false, false, true],
+        // `preg_replace_callback_array($pattern, $subject, $limit, &$count)`.
+        "preg_replace_callback_array" => &[false, false, false, true],
+        // `parse_str($string, &$result)`.
+        "parse_str" => &[false, true],
         _ => &[],
     }
 }

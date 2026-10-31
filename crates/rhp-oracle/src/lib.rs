@@ -46,6 +46,10 @@ impl Host for Interp<'_> {
         self.out.extend_from_slice(bytes);
     }
 
+    fn output_started(&self) -> bool {
+        !self.out.is_empty()
+    }
+
     fn bc_scale(&self) -> i64 {
         self.bc_scale
     }

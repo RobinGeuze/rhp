@@ -23,3 +23,6 @@ var_dump($f == $f, $f == fn() => 1);
 var_dump(new stdClass == new stdClass, (object)['a' => 1] == (object)['a' => 1], (object)['a' => 1] == (object)['a' => 2]);
 var_dump((object)['a' => 1, 'b' => 2] == (object)['b' => 2, 'a' => 1]);
 var_dump(new ArrayObject([]) == new stdClass);
+var_dump(new C > new B(1, 1), new C < new B(1, 1), new C >= new B(1, 1), new C <= new B(1, 1));
+var_dump([1 => 1] > [2 => 1], [1 => 1] < [2 => 1], [1 => 1] >= [2 => 1], [1, 2] > [1, 1], [1, 2] >= [1, 2]);
+var_dump(new DateTimeImmutable("@100") < new DateTimeImmutable("@200"), new DateTimeImmutable("@300") >= new DateTimeImmutable("@200"));

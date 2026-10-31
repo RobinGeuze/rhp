@@ -521,6 +521,27 @@ pub fn lookup(name: &str) -> Option<&'static Builtin> {
     registry().get(lower.as_str())
 }
 
+/// `(PHP_OS, PHP_OS_FAMILY)` for the platform this engine was built for.
+fn php_os() -> (&'static str, &'static str) {
+    if cfg!(target_os = "macos") {
+        ("Darwin", "Darwin")
+    } else if cfg!(target_os = "linux") {
+        ("Linux", "Linux")
+    } else if cfg!(target_os = "windows") {
+        ("WINNT", "Windows")
+    } else if cfg!(target_os = "freebsd") {
+        ("FreeBSD", "BSD")
+    } else if cfg!(target_os = "openbsd") {
+        ("OpenBSD", "BSD")
+    } else if cfg!(target_os = "netbsd") {
+        ("NetBSD", "BSD")
+    } else if cfg!(target_os = "solaris") {
+        ("SunOS", "Solaris")
+    } else {
+        ("Unknown", "Unknown")
+    }
+}
+
 /// Engine constants (`PHP_EOL`, `PHP_INT_MAX`, …).
 pub fn constants() -> Vec<(&'static str, Value)> {
     vec![
@@ -547,8 +568,9 @@ pub fn constants() -> Vec<(&'static str, Value)> {
                     .unwrap_or_default(),
             ),
         ),
-        ("PHP_OS", Value::str("Darwin")),
-        ("PHP_OS_FAMILY", Value::str("Darwin")),
+        // php bakes in its build host's OS (uname -s) and family.
+        ("PHP_OS", Value::str(php_os().0)),
+        ("PHP_OS_FAMILY", Value::str(php_os().1)),
         ("PHP_DEBUG", Value::Int(0)),
         ("PHP_ZTS", Value::Int(0)),
         ("PCRE_VERSION", Value::str("10.47 2025-10-21")),

@@ -4534,8 +4534,10 @@ fn eval_cmp(kind: CmpKind, a: &Value, b: &Value) -> Value {
         CmpKind::NotIdentical => Value::Bool(!ops::strict_eq(a, b)),
         CmpKind::Lt => Value::Bool(ops::loose_compare(a, b).is_lt()),
         CmpKind::Le => Value::Bool(ops::loose_compare(a, b).is_le()),
-        CmpKind::Gt => Value::Bool(ops::loose_compare(a, b).is_gt()),
-        CmpKind::Ge => Value::Bool(ops::loose_compare(a, b).is_ge()),
+        // php evaluates `a > b` as `b < a` (ZEND_IS_SMALLER with swapped
+        // operands), so uncomparable pairs are false in both directions.
+        CmpKind::Gt => Value::Bool(ops::loose_compare(b, a).is_lt()),
+        CmpKind::Ge => Value::Bool(ops::loose_compare(b, a).is_le()),
         CmpKind::Spaceship => ops::spaceship(a, b),
     }
 }

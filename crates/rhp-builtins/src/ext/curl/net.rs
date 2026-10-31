@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 /// CURLPROTO_* bits used here.
@@ -71,6 +71,8 @@ pub struct Spec {
     pub http_version: i64,
     pub cainfo: Option<String>,
     pub capath: Option<String>,
+    /// CURLOPT_SSL_VERIFYPEER (default on).
+    pub verify_peer: bool,
 }
 
 /// The transfer numbers `curl_getinfo()` reports.
@@ -444,22 +446,110 @@ struct AgentKey {
     proxy: Option<String>,
     connect_timeout_ms: u64,
     ipresolve: i64,
+    /// CURLOPT_CAINFO in effect (None = bundled Mozilla roots).
+    cainfo: Option<String>,
+    /// CURLOPT_SSL_VERIFYPEER = 0.
+    insecure: bool,
+}
+
+/// Accepts any server certificate (CURLOPT_SSL_VERIFYPEER = 0).
+#[derive(Debug)]
+struct NoVerify(Arc<ureq::rustls::crypto::CryptoProvider>);
+
+impl ureq::rustls::client::danger::ServerCertVerifier for NoVerify {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &ureq::rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[ureq::rustls::pki_types::CertificateDer<'_>],
+        _server_name: &ureq::rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: ureq::rustls::pki_types::UnixTime,
+    ) -> Result<ureq::rustls::client::danger::ServerCertVerified, ureq::rustls::Error> {
+        Ok(ureq::rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &ureq::rustls::pki_types::CertificateDer<'_>,
+        dss: &ureq::rustls::DigitallySignedStruct,
+    ) -> Result<ureq::rustls::client::danger::HandshakeSignatureValid, ureq::rustls::Error> {
+        ureq::rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &ureq::rustls::pki_types::CertificateDer<'_>,
+        dss: &ureq::rustls::DigitallySignedStruct,
+    ) -> Result<ureq::rustls::client::danger::HandshakeSignatureValid, ureq::rustls::Error> {
+        ureq::rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<ureq::rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+/// The TLS configuration for `key`, or libcurl's (errno, message) when the CA
+/// bundle cannot be used. `Ok(None)` = ureq's default (bundled roots).
+fn tls_config(key: &AgentKey) -> Result<Option<Arc<ureq::rustls::ClientConfig>>, (i64, String)> {
+    use ureq::rustls;
+    if key.cainfo.is_none() && !key.insecure {
+        return Ok(None);
+    }
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let builder = rustls::ClientConfig::builder_with_provider(provider.clone())
+        .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
+        .map_err(|e| (35, e.to_string()))?;
+    let config = if key.insecure {
+        builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerify(provider)))
+            .with_no_client_auth()
+    } else {
+        use rustls::pki_types::pem::PemObject;
+        let path = key.cainfo.clone().unwrap_or_default();
+        let bad = || (77, format!("error setting certificate file: {path}"));
+        let mut roots = rustls::RootCertStore::empty();
+        let iter = rustls::pki_types::CertificateDer::pem_file_iter(&path).map_err(|_| bad())?;
+        for cert in iter.flatten() {
+            let _ = roots.add(cert);
+        }
+        if roots.is_empty() {
+            return Err(bad());
+        }
+        builder.with_root_certificates(roots).with_no_client_auth()
+    };
+    Ok(Some(Arc::new(config)))
 }
 
 /// One pooled agent per distinct connection configuration, shared by every
 /// transfer (and every multi worker thread), so keep-alive connections are
 /// reused across handles — like libcurl's shared connection cache.
-fn agent_for(spec: &Spec) -> ureq::Agent {
+fn agent_for(spec: &Spec) -> Result<ureq::Agent, (i64, String)> {
     static AGENTS: OnceLock<Mutex<HashMap<AgentKey, ureq::Agent>>> = OnceLock::new();
     let key = AgentKey {
         proxy: spec.proxy.clone().filter(|p| !p.is_empty()),
         connect_timeout_ms: spec.connect_timeout_ms,
         ipresolve: spec.ipresolve,
+        cainfo: spec.cainfo.clone().filter(|c| !c.is_empty()),
+        insecure: !spec.verify_peer,
     };
     let map = AGENTS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(a) = map.get(&key) {
-        return a.clone();
+        return Ok(a.clone());
     }
     let mut b = ureq::AgentBuilder::new()
         .redirects(0)
@@ -476,9 +566,12 @@ fn agent_for(spec: &Spec) -> ureq::Agent {
             b = b.proxy(proxy);
         }
     }
+    if let Some(cfg) = tls_config(&key)? {
+        b = b.tls_config(cfg);
+    }
     let agent = b.build();
     map.insert(key, agent.clone());
-    agent
+    Ok(agent)
 }
 
 fn base64(input: &[u8]) -> String {
@@ -614,6 +707,57 @@ fn host_port(url: &url::Url) -> (String, u16) {
 }
 
 /// Map a ureq transport failure onto libcurl's (errno, message).
+/// A TLS failure inside a transport error, as libcurl (OpenSSL backend)
+/// reports it: certificate problems are CURLE_PEER_FAILED_VERIFICATION (60),
+/// other handshake failures CURLE_SSL_CONNECT_ERROR (35).
+fn tls_error(t: &ureq::Transport, host: &str) -> Option<(i64, String)> {
+    use std::error::Error;
+    use ureq::rustls::{CertificateError, Error as TlsError};
+    let mut src: Option<&(dyn Error + 'static)> = t.source();
+    let mut found: Option<&TlsError> = None;
+    while let Some(e) = src {
+        if let Some(r) = e.downcast_ref::<TlsError>() {
+            found = Some(r);
+            break;
+        }
+        if let Some(io) = e.downcast_ref::<std::io::Error>() {
+            if let Some(r) = io.get_ref().and_then(|i| i.downcast_ref::<TlsError>()) {
+                found = Some(r);
+                break;
+            }
+        }
+        src = e.source();
+    }
+    let verify = |msg: &str, code: u32| {
+        (
+            60,
+            format!("SSL certificate OpenSSL verify result: {msg} ({code})"),
+        )
+    };
+    Some(match found? {
+        TlsError::InvalidCertificate(c) => match c {
+            CertificateError::Expired | CertificateError::ExpiredContext { .. } => {
+                verify("certificate has expired", 10)
+            }
+            CertificateError::NotValidYet | CertificateError::NotValidYetContext { .. } => {
+                verify("certificate is not yet valid", 9)
+            }
+            CertificateError::UnknownIssuer => verify("unable to get local issuer certificate", 20),
+            CertificateError::Revoked => verify("certificate revoked", 23),
+            CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. } => {
+                (
+                    60,
+                    format!(
+                    "SSL: no alternative certificate subject name matches target hostname '{host}'"
+                ),
+                )
+            }
+            other => (60, format!("SSL certificate problem: {other:?}")),
+        },
+        other => (35, format!("TLS connect error: {other}")),
+    })
+}
+
 fn transport_error(
     t: &ureq::Transport,
     url: &url::Url,
@@ -626,6 +770,9 @@ fn transport_error(
         .trim_start_matches('[')
         .trim_end_matches(']')
         .to_string();
+    if let Some(e) = tls_error(t, &host_disp) {
+        return e;
+    }
     match t.kind() {
         ureq::ErrorKind::Dns => (6, format!("Could not resolve host: {host_disp}")),
         ureq::ErrorKind::ConnectionFailed => {
@@ -686,7 +833,13 @@ fn transport_error(
 }
 
 fn perform_http(spec: &Spec, url_s: String, mut info: Info, start: Instant) -> Outcome {
-    let agent = agent_for(spec);
+    let agent = match agent_for(spec) {
+        Ok(a) => a,
+        Err((errno, msg)) => {
+            info.scheme = scheme_of(&url_s);
+            return fail(info, errno, msg, start);
+        }
+    };
     let mut url_s = url_s;
     let mut method = spec.method();
     let mut body = spec.upload.clone().or_else(|| spec.body.clone());

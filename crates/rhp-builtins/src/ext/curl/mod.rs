@@ -1205,6 +1205,10 @@ fn build_spec(host: &mut dyn Host, easy: &Rc<RefCell<Easy>>) -> Spec {
         http_version: e.misc.get(&OPT_HTTP_VERSION).map(conv::to_int).unwrap_or(0),
         cainfo: e.cainfo.clone(),
         capath: e.capath.clone(),
+        verify_peer: e
+            .misc
+            .get(&OPT_SSL_VERIFYPEER)
+            .is_none_or(|v| conv::to_int(v) != 0),
     }
 }
 

@@ -36,7 +36,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 13 | `putenv` — no-op true | `php_fns.rs:113` | child-process env, `getenv` round-trip | low | med |
 | 14 | `fseek`/`ftell` → 0 (no-op) | `stream_fns.rs:128` | seekable in-memory/file streams (rewind-and-read) | med | med |
 | 15 | `stream_set_blocking`/`_timeout`/buffer knobs — no-ops | `stream_fns.rs:124` | none observable (cosmetic) | low | low |
-| 16 | `stream_isatty`/`posix_isatty` → false | `stream_fns.rs:131` | colour/TTY detection (composer output) | low | med |
+| 16 | ~~`stream_isatty`/`posix_isatty` → false~~ **done**: real `isatty(2)` on the stream's fd (`proc_fns.rs`, `ext/posix`) | — | colour/TTY detection (composer output) | — | — |
 | 17 | `stream_get_meta_data` — fixed minimal array | `stream_fns.rs:137` | `wrapper_data`, URL, seekable, timed_out probes | med | med |
 | 18 | stdin reads return empty | `vm/lib.rs:284` | interactive input, piped stdin | med | med |
 | 19 | `is_readable`/`is_writable`/`is_executable` — mere existence | `file_fns.rs:38`,`:117`,`:218` | permission-gated code (composer cache writes) | med | med |
@@ -264,7 +264,11 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
 - **Effort/priority:** low / low.
 
 ### 2.3 `stream_isatty` / `posix_isatty` / `sapi_windows_vt100_support` → false
-- **Now:** all `fn_false` (`stream_fns.rs:131-133`).
+- **Status:** `stream_isatty` and `posix_isatty` are now real (`isatty(2)` on the
+  fd behind STDIN/STDOUT/STDERR or a `proc_open` pipe; false for memory/file
+  buffers). `sapi_windows_vt100_support` stays false (non-Windows). The notes
+  below are the original analysis.
+- **Was:** all `fn_false` (`stream_fns.rs:131-133`).
 - **OK because:** under the test SAPI output is captured, so "not a tty" is the
   safe answer and matches piped php.
 - **Breaks:** interactive composer runs decide colour/progress output from

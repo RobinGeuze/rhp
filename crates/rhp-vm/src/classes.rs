@@ -66,7 +66,13 @@ pub struct PropEntry {
     pub name: PhpStr,
     pub default: Value,
     pub visibility: Visibility,
+    /// Asymmetric write visibility (`private(set)` / `protected(set)`).
+    pub set_visibility: Option<Visibility>,
     pub declaring_class: ClassId,
+    /// php's `property_info->prototype->ce`: the class of the root declaration
+    /// of a redeclared public/protected property (protected access is checked
+    /// against it, so sibling classes may read a redeclared property).
+    pub prototype: ClassId,
 }
 
 #[derive(Clone)]
@@ -111,8 +117,17 @@ pub(crate) enum PropRes {
     Slot(PhpStr),
     /// Not a declared property visible here: a dynamic property (plain name).
     Dynamic,
-    /// Declared but inaccessible from the scope.
-    Denied(Visibility),
+    /// Declared but inaccessible from the scope (or a name starting with NUL).
+    Denied(Deny),
+}
+
+/// Why a property access was refused.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Deny {
+    /// A private / protected declaration the scope cannot see.
+    Vis(Visibility),
+    /// An undeclared name starting with `"\0"` (php's mangled-name guard).
+    BadName,
 }
 
 /// php's `zend_get_property_offset`: resolve property `name` on an instance of
@@ -136,22 +151,91 @@ pub(crate) fn resolve_prop(
         }
     }
     let Some(key) = entry.prop_visible.get(name) else {
-        return PropRes::Dynamic;
+        return dynamic_or_bad(name);
     };
     let pe = &entry.props[key];
     match pe.visibility {
         Visibility::Public => PropRes::Slot(key.clone()),
         Visibility::Protected => {
-            if protected_ok(classes, scope, pe.declaring_class) {
+            if protected_ok(classes, scope, pe.prototype) {
                 PropRes::Slot(key.clone())
             } else {
-                PropRes::Denied(Visibility::Protected)
+                PropRes::Denied(Deny::Vis(Visibility::Protected))
             }
         }
         // (scope == declaring class was handled by `own_private` above.)
-        Visibility::Private if pe.declaring_class != cls => PropRes::Dynamic,
-        Visibility::Private => PropRes::Denied(Visibility::Private),
+        Visibility::Private if pe.declaring_class != cls => dynamic_or_bad(name),
+        Visibility::Private => PropRes::Denied(Deny::Vis(Visibility::Private)),
     }
+}
+
+/// An undeclared (dynamic) property name; one starting with NUL is refused
+/// (`Cannot access property starting with "\0"`), so mangled private keys
+/// can never be reached by name.
+fn dynamic_or_bad(name: &PhpStr) -> PropRes {
+    if name.as_bytes().first() == Some(&0) {
+        PropRes::Denied(Deny::BadName)
+    } else {
+        PropRes::Dynamic
+    }
+}
+
+/// php's `zend_asymmetric_property_has_set_access`: may `scope` write the
+/// declared slot `key` of an instance of `cls`? (Read access is assumed.)
+pub(crate) fn set_access_ok(
+    classes: &[ClassEntry],
+    cls: ClassId,
+    scope: Option<ClassId>,
+    key: &PhpStr,
+) -> Result<(), (Visibility, ClassId, PhpStr)> {
+    let Some(pe) = classes[cls as usize].props.get(key) else {
+        return Ok(());
+    };
+    let Some(sv) = pe.set_visibility else {
+        return Ok(());
+    };
+    if scope == Some(pe.declaring_class)
+        || (sv == Visibility::Protected && protected_ok(classes, scope, pe.prototype))
+    {
+        return Ok(());
+    }
+    // php prints `prop_info->name` with %s: for a non-public property that is
+    // the mangled `"\0C\0name"` / `"\0*\0name"`, which renders as empty.
+    let shown = if pe.visibility == Visibility::Public {
+        pe.name.clone()
+    } else {
+        PhpStr::from("")
+    };
+    Err((sv, pe.declaring_class, shown))
+}
+
+/// `Cannot {op} private(set) property A::$x from {global scope|scope C}`.
+pub(crate) fn set_access_err(
+    classes: &[ClassEntry],
+    called: Option<ClassId>,
+    op: &str,
+    (sv, decl, name): (Visibility, ClassId, PhpStr),
+) -> Thrown {
+    let v = if sv == Visibility::Private {
+        "private(set)"
+    } else {
+        "protected(set)"
+    };
+    let from = match called {
+        Some(c) => format!(
+            "scope {}",
+            String::from_utf8_lossy(classes[c as usize].name.as_bytes())
+        ),
+        None => "global scope".to_string(),
+    };
+    Thrown::error(
+        "Error",
+        format!(
+            "Cannot {op} {v} property {}::${} from {from}",
+            String::from_utf8_lossy(classes[decl as usize].name.as_bytes()),
+            String::from_utf8_lossy(name.as_bytes()),
+        ),
+    )
 }
 
 fn protected_ok(classes: &[ClassEntry], scope: Option<ClassId>, declaring: ClassId) -> bool {
@@ -169,12 +253,15 @@ pub(crate) fn prop_access_err(
     classes: &[ClassEntry],
     cls: ClassId,
     name: &[u8],
-    vis: Visibility,
+    deny: Deny,
 ) -> Thrown {
-    let v = match vis {
-        Visibility::Private => "private",
-        Visibility::Protected => "protected",
-        Visibility::Public => "public",
+    let v = match deny {
+        Deny::BadName => {
+            return Thrown::error("Error", "Cannot access property starting with \"\\0\"")
+        }
+        Deny::Vis(Visibility::Private) => "private",
+        Deny::Vis(Visibility::Protected) => "protected",
+        Deny::Vis(Visibility::Public) => "public",
     };
     Thrown::error(
         "Error",
@@ -432,7 +519,14 @@ impl Vm {
             .map(|p| self.classes[p as usize].prop_visible.clone())
             .unwrap_or_default();
         let mut own_private: FxHashMap<PhpStr, PhpStr> = FxHashMap::default();
-        let mut declare = |props: &mut IndexMap<PhpStr, PropEntry>, pe: PropEntry| {
+        let mut declare = |props: &mut IndexMap<PhpStr, PropEntry>, mut pe: PropEntry| {
+            // Redeclaring an inherited public/protected property keeps its
+            // root declaration as the prototype.
+            if let Some(inh) = prop_visible.get(&pe.name).and_then(|k| props.get(k)) {
+                if inh.visibility != Visibility::Private {
+                    pe.prototype = inh.prototype;
+                }
+            }
             let key = prop_storage_key(&proto.name, &pe.name, pe.visibility);
             prop_visible.insert(pe.name.clone(), key.clone());
             if pe.visibility == Visibility::Private {
@@ -463,7 +557,9 @@ impl Vm {
                     name: pp.name.clone(),
                     default,
                     visibility: pp.visibility,
+                    set_visibility: pp.set_visibility,
                     declaring_class: id,
+                    prototype: id,
                 },
             );
         }
@@ -479,6 +575,7 @@ impl Vm {
                     &mut props,
                     PropEntry {
                         declaring_class: id,
+                        prototype: id,
                         ..pe
                     },
                 );

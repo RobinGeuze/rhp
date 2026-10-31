@@ -457,6 +457,27 @@ pub enum Instr {
         obj: Reg,
         name: Reg,
     },
+    /// `$o->p` in isset/empty/`??` context (php's BP_VAR_IS): an inaccessible
+    /// or missing property is null without an error, via `__isset` then
+    /// `__get` when defined.
+    FetchPropIs {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+    },
+    /// `FetchPropIs` with the property name in a register.
+    FetchPropDynIs {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+    },
+    /// `C::$p` in isset/empty/`??` context: null (no error) when the static
+    /// property is undeclared or inaccessible.
+    FetchStaticPropIs {
+        dst: Reg,
+        class: ClassRef,
+        name: NIdx,
+    },
     /// `$o->$p = src`: dynamic-name property write.
     StorePropDyn {
         obj: Reg,
@@ -1005,6 +1026,9 @@ pub struct MethodProto {
 pub struct PropProto {
     pub name: PhpStr,
     pub visibility: Visibility,
+    /// Asymmetric write visibility (`private(set)` / `protected(set)`), when
+    /// narrower than `visibility`.
+    pub set_visibility: Option<Visibility>,
     pub is_readonly: bool,
     pub default: PropDefaultProto,
 }

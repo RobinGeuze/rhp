@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use classes::PropRes;
+use classes::{Deny, PropRes};
 use rhp_builtins::{self as builtins, Host};
 use rhp_bytecode::{
     ClassProto, ClassRef, CmpKind, ConstInitProto, Default as ParamDefault, FunctionProto,
@@ -26,10 +26,23 @@ use rhp_values::{
 };
 
 /// A pending lvalue step (an evaluated key, an append, or an object property).
+#[derive(Clone)]
 enum CursorStep {
     Key(Value),
     Append,
     Prop(rhp_values::PhpStr),
+}
+
+/// Where a cursor path first meets a property php routes through `__get`
+/// (missing or inaccessible on its object, with an unguarded `__get`).
+enum MagicSplit {
+    /// No such property: the plain path functions handle the whole path.
+    Plain,
+    /// The final step is such a property of this object.
+    Leaf(ObjectHandle, PhpStr),
+    /// Step `.0` (not the last) is such a property: writes below it go into
+    /// whatever `__get` returns.
+    Nested(usize, ObjectHandle, PhpStr),
 }
 
 /// SAPI-injected callback that parses + compiles an included file's source into
@@ -146,6 +159,7 @@ struct GenState {
 mod classes;
 
 /// Where an lvalue cursor is rooted.
+#[derive(Clone)]
 enum CursorRoot {
     /// A register (compiled variable) in the current frame.
     Cv(Reg),
@@ -1280,6 +1294,37 @@ impl Vm {
         })
     }
 
+    /// `$o->name` in BP_VAR_IS mode (an isset / empty / `??` container): the
+    /// reachable set property, else `__isset` then (if it says yes) `__get`,
+    /// else null — never an access error (zend_std_read_property, BP_VAR_IS).
+    fn prop_fetch_is(&mut self, top: usize, o: Value, pname: PhpStr) -> Result<Value, Thrown> {
+        let Value::Object(h) = o else {
+            return Ok(Value::Null);
+        };
+        let cls = h.borrow().class;
+        let scope = self.stack[top].defining_class;
+        let present = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+            PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
+            PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
+            PropRes::Denied(_) => None,
+        };
+        if let Some(v) = present {
+            return Ok(deref(&v));
+        }
+        let nm = || Value::str(pname.as_bytes().to_vec());
+        if let Some(m) = self.magic(&h, cls, b"__isset", &pname) {
+            let r = self.call_magic(&m, &h, cls, b"__isset", &pname, vec![nm()])?;
+            if !conv::to_bool(&r) {
+                return Ok(Value::Null);
+            }
+        }
+        // (No `__isset`, or inside this property's own `__isset`: `__get`.)
+        match self.magic(&h, cls, b"__get", &pname) {
+            Some(g) => self.call_magic(&g, &h, cls, b"__get", &pname, vec![nm()]),
+            None => Ok(Value::Null),
+        }
+    }
+
     /// `unset($o->name)`: remove the property reachable from the scope, else
     /// `__unset`, else an access error for an inaccessible declaration.
     fn prop_unset(&mut self, top: usize, o: Value, pname: PhpStr) -> Result<(), Thrown> {
@@ -1294,6 +1339,12 @@ impl Vm {
             PropRes::Dynamic => Some(pname.clone()),
             PropRes::Denied(_) => None,
         };
+        if let PropRes::Slot(k) = &res {
+            if let Err(e) = classes::set_access_ok(&self.classes, cls, scope, k) {
+                let called = self.stack[top].called_class;
+                return Err(classes::set_access_err(&self.classes, called, "unset", e));
+            }
+        }
         let present = key
             .as_ref()
             .is_some_and(|k| h.borrow().properties.contains_key(k));
@@ -1360,7 +1411,12 @@ impl Vm {
         if let Some(sp) = self.class(cls).static_props.get(pname) {
             let (vis, decl) = (sp.visibility, sp.declaring_class);
             if !self.check_access(self.stack[top].defining_class, decl, vis) {
-                return Err(classes::prop_access_err(&self.classes, cls, pname, vis));
+                return Err(classes::prop_access_err(
+                    &self.classes,
+                    cls,
+                    pname,
+                    Deny::Vis(vis),
+                ));
             }
         }
         Ok(())
@@ -1383,6 +1439,20 @@ impl Vm {
                 PropRes::Denied(vis) => (pname.clone(), Some(vis)),
             };
             let present = denied.is_none() && h.borrow().properties.contains_key(&key);
+            if denied.is_none() {
+                if let Err(e) = classes::set_access_ok(&self.classes, cls, scope, &key) {
+                    // An unset asymmetric property still defers to `__set`.
+                    if !present {
+                        if let Some(setter) = self.magic(&h, cls, b"__set", &pname) {
+                            let nm = Value::str(pname.as_bytes().to_vec());
+                            self.call_magic(&setter, &h, cls, b"__set", &pname, vec![nm, val])?;
+                            return Ok(());
+                        }
+                    }
+                    let called = self.stack[top].called_class;
+                    return Err(classes::set_access_err(&self.classes, called, "modify", e));
+                }
+            }
             if !present {
                 // Inaccessible, or not currently set (dynamic / unset declared):
                 // `__set` intercepts when defined.
@@ -1954,15 +2024,167 @@ impl Vm {
         }
     }
 
-    /// Read the value at the current cursor (root + steps), non-mutating.
-    fn cursor_read(&self, top: usize) -> Value {
-        self.cursor_read_steps(top, &self.cursor_steps)
+    /// Read the value at the current cursor (root + steps) for a compound
+    /// assignment / increment: a magic property along the way reads via `__get`.
+    fn cursor_read(&mut self, top: usize) -> Result<Value, Thrown> {
+        let steps = std::mem::take(&mut self.cursor_steps);
+        let r = self.cursor_read_magic(top, &steps);
+        self.cursor_steps = steps;
+        r
+    }
+
+    fn cursor_read_magic(&mut self, top: usize, steps: &[CursorStep]) -> Result<Value, Thrown> {
+        match self.cursor_magic_split(top, steps) {
+            MagicSplit::Plain => Ok(self.cursor_read_steps(top, steps)),
+            MagicSplit::Leaf(h, name) => self.prop_fetch(top, Value::Object(h), name),
+            MagicSplit::Nested(i, h, name) => {
+                let got = self.prop_fetch(top, Value::Object(h), name)?;
+                let cx = PropCtx {
+                    classes: &self.classes,
+                    scope: self.stack[top].defining_class,
+                    called: self.stack[top].called_class,
+                };
+                Ok(read_path(&got, &steps[i + 1..], &cx))
+            }
+        }
+    }
+
+    /// The cursor root's current value.
+    fn cursor_root_value(&self, top: usize) -> Value {
+        match &self.cursor_root {
+            CursorRoot::Cv(r) => self.stack[top].regs[*r as usize].clone(),
+            CursorRoot::Cell(rc) => rc.borrow().clone(),
+        }
+    }
+
+    /// Walk the cursor path to the first property php would route through
+    /// `__get` (zend_std_get_property_ptr_ptr returns NULL for a missing or
+    /// inaccessible property when the class has an unguarded `__get`).
+    fn cursor_magic_split(&self, top: usize, steps: &[CursorStep]) -> MagicSplit {
+        let scope = self.stack[top].defining_class;
+        let mut cur = self.cursor_root_value(top);
+        for (i, step) in steps.iter().enumerate() {
+            let next = match (deref(&cur), step) {
+                (Value::Array(a), CursorStep::Key(k)) => {
+                    match ArrayKey::from_value(k).and_then(|key| a.get(&key).cloned()) {
+                        Some(v) => v,
+                        None => return MagicSplit::Plain,
+                    }
+                }
+                (Value::Object(h), CursorStep::Prop(name)) => {
+                    let cls = h.borrow().class;
+                    let present = match classes::resolve_prop(&self.classes, cls, scope, name) {
+                        PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
+                        PropRes::Dynamic => h.borrow().properties.get(name).cloned(),
+                        PropRes::Denied(_) => None,
+                    };
+                    match present {
+                        Some(v) => v,
+                        None if self.magic(&h, cls, b"__get", name).is_some() => {
+                            return if i + 1 == steps.len() {
+                                MagicSplit::Leaf(h, name.clone())
+                            } else {
+                                MagicSplit::Nested(i, h, name.clone())
+                            };
+                        }
+                        None => return MagicSplit::Plain,
+                    }
+                }
+                _ => return MagicSplit::Plain,
+            };
+            cur = next;
+        }
+        MagicSplit::Plain
+    }
+
+    /// How many compiler-temporary registers (not CVs) across the live frames
+    /// hold a `Ref` to `rc`. Such leftovers are not PHP-visible references.
+    fn temp_ref_holders(&self, rc: &Rc<RefCell<Value>>) -> usize {
+        self.stack
+            .iter()
+            .map(|f| {
+                let ncv = f.proto.num_cvs as usize;
+                f.regs
+                    .iter()
+                    .skip(ncv)
+                    .filter(|v| matches!(v, Value::Ref(r) if Rc::ptr_eq(r, rc)))
+                    .count()
+            })
+            .sum()
+    }
+
+    /// Run `f` with the cursor temporarily re-rooted at `cell`.
+    fn with_cursor_root<T>(
+        &mut self,
+        cell: Rc<RefCell<Value>>,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let saved = std::mem::replace(&mut self.cursor_root, CursorRoot::Cell(cell));
+        let r = f(self);
+        self.cursor_root = saved;
+        r
+    }
+
+    /// The cell a nested write below a magic property lands in: the `__get`
+    /// result itself when it is a reference, else a temporary (php: "Indirect
+    /// modification of overloaded property has no effect", which still lets
+    /// writes reach an object the temporary holds).
+    fn magic_write_cell(
+        &mut self,
+        top: usize,
+        h: ObjectHandle,
+        name: PhpStr,
+    ) -> Result<Rc<RefCell<Value>>, Thrown> {
+        let got = self.prop_fetch(top, Value::Object(h), name)?;
+        Ok(match got {
+            Value::Ref(rc) => rc,
+            other => Rc::new(RefCell::new(other)),
+        })
+    }
+
+    /// Promote the cursor target to a shared cell (`&$o->p[...]`, by-ref
+    /// argument passing); a magic property along the way yields its `__get`
+    /// result (or a temporary) like php's BP_VAR_W fetch.
+    fn cursor_make_ref(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+    ) -> Result<Rc<RefCell<Value>>, Thrown> {
+        let (i, h, name) = match self.cursor_magic_split(top, steps) {
+            MagicSplit::Plain => {
+                let cx = PropCtx {
+                    classes: &self.classes,
+                    scope: self.stack[top].defining_class,
+                    called: self.stack[top].called_class,
+                };
+                return match &self.cursor_root {
+                    CursorRoot::Cv(r) => {
+                        let r = *r as usize;
+                        make_ref_path(&mut self.stack[top].regs[r], steps, &cx)
+                    }
+                    CursorRoot::Cell(rc) => {
+                        let rc = rc.clone();
+                        let c = make_ref_path(&mut rc.borrow_mut(), steps, &cx);
+                        c
+                    }
+                };
+            }
+            MagicSplit::Leaf(h, name) => (steps.len() - 1, h, name),
+            MagicSplit::Nested(i, h, name) => (i, h, name),
+        };
+        let cell = self.magic_write_cell(top, h, name)?;
+        let rest = &steps[i + 1..];
+        if rest.is_empty() {
+            return Ok(cell);
+        }
+        self.with_cursor_root(cell, |vm| vm.cursor_make_ref(top, rest))
     }
 
     fn cursor_read_steps(&self, top: usize, steps: &[CursorStep]) -> Value {
         let cx = PropCtx {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
+            called: self.stack[top].called_class,
         };
         match &self.cursor_root {
             CursorRoot::Cv(r) => read_path(&self.stack[top].regs[*r as usize], steps, &cx),
@@ -1972,6 +2194,15 @@ impl Vm {
 
     /// Write `v` at the current cursor (root + steps).
     fn cursor_write(&mut self, top: usize, steps: &[CursorStep], v: Value) -> Result<(), Thrown> {
+        match self.cursor_magic_split(top, steps) {
+            MagicSplit::Plain => {}
+            MagicSplit::Leaf(h, name) => return self.prop_store(top, Value::Object(h), name, v),
+            MagicSplit::Nested(i, h, name) => {
+                let cell = self.magic_write_cell(top, h, name)?;
+                let rest = &steps[i + 1..];
+                return self.with_cursor_root(cell, |vm| vm.cursor_write(top, rest, v));
+            }
+        }
         // `$obj[$k] = v` / `$obj[] = v` on an ArrayAccess object -> offsetSet.
         if steps.len() == 1 {
             if let (Some(h), Some(key)) = (self.cursor_root_obj(top), aa_key(&steps[0])) {
@@ -1986,6 +2217,7 @@ impl Vm {
         let cx = PropCtx {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
+            called: self.stack[top].called_class,
         };
         match &self.cursor_root {
             CursorRoot::Cv(r) => {
@@ -2057,6 +2289,7 @@ impl Vm {
         let cx = PropCtx {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
+            called: self.stack[top].called_class,
         };
         match &self.cursor_root {
             CursorRoot::Cv(r) => unset_path(&mut self.stack[top].regs[*r as usize], steps, &cx),
@@ -2480,7 +2713,7 @@ impl Vm {
                     self.cursor_steps.clear();
                 }
                 Instr::FetchLvalRw { dst } => {
-                    let v = self.cursor_read(top);
+                    let v = self.cursor_read(top)?;
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
                 Instr::AssignLval { src } => {
@@ -2497,21 +2730,7 @@ impl Vm {
                 }
                 Instr::MakeRefLval { dst } => {
                     let steps = std::mem::take(&mut self.cursor_steps);
-                    let cx = PropCtx {
-                        classes: &self.classes,
-                        scope: self.stack[top].defining_class,
-                    };
-                    let cell = match &self.cursor_root {
-                        CursorRoot::Cv(r) => {
-                            let r = *r as usize;
-                            make_ref_path(&mut self.stack[top].regs[r], &steps, &cx)?
-                        }
-                        CursorRoot::Cell(rc) => {
-                            let rc = rc.clone();
-                            let c = make_ref_path(&mut rc.borrow_mut(), &steps, &cx)?;
-                            c
-                        }
-                    };
+                    let cell = self.cursor_make_ref(top, &steps)?;
                     self.reg_set(top, dst, Value::Ref(cell));
                 }
                 Instr::UnsetLval => {
@@ -2520,7 +2739,7 @@ impl Vm {
                 }
                 Instr::IncDecLval { dst, pre, delta } => {
                     let steps = std::mem::take(&mut self.cursor_steps);
-                    let old = self.cursor_read_steps(top, &steps);
+                    let old = self.cursor_read_magic(top, &steps)?;
                     let new = inc_dec_value(&old, delta as i64);
                     self.cursor_write(top, &steps, new.clone())?;
                     self.reg_set(top, dst, if pre { new } else { old });
@@ -2863,6 +3082,35 @@ impl Vm {
                     let v = self.prop_fetch(top, o, pname)?;
                     self.reg_set(top, dst, v);
                 }
+                Instr::FetchPropIs { dst, obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = proto.names[name as usize].clone();
+                    let v = self.prop_fetch_is(top, o, pname)?;
+                    self.reg_set(top, dst, v);
+                }
+                Instr::FetchPropDynIs { dst, obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let v = self.prop_fetch_is(top, o, pname)?;
+                    self.reg_set(top, dst, v);
+                }
+                Instr::FetchStaticPropIs { dst, class, name } => {
+                    let cls = self.resolve_class_autoload(top, class)?;
+                    let pname = proto.names[name as usize].as_bytes().to_vec();
+                    let v = match self.class(cls).static_props.get(&pname[..]) {
+                        Some(sp)
+                            if self.check_access(
+                                self.stack[top].defining_class,
+                                sp.declaring_class,
+                                sp.visibility,
+                            ) =>
+                        {
+                            deref(&sp.cell.borrow())
+                        }
+                        _ => Value::Null,
+                    };
+                    self.reg_set(top, dst, v);
+                }
                 Instr::StorePropDyn { obj, name, src } => {
                     let o = self.reg_get(top, obj);
                     let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
@@ -3049,12 +3297,15 @@ impl Vm {
                     };
                     // php's zval_add_ref: a reference only this object holds is
                     // copied as a plain value, so the clone gets its own slot.
+                    // Holders other than the object and our copy that are
+                    // compiler temporaries (a dead `&` result, a by-ref
+                    // argument already passed) are not PHP references.
                     let (cls, props) = {
                         let od = h.borrow();
                         let mut props = od.properties.clone();
                         for v in props.values_mut() {
                             if let Value::Ref(rc) = v {
-                                if Rc::strong_count(rc) == 2 {
+                                if Rc::strong_count(rc) == 2 + self.temp_ref_holders(rc) {
                                     let inner = rc.borrow().clone();
                                     *v = inner;
                                 }
@@ -4581,12 +4832,41 @@ fn dim_fetch(container: &Value, key: &Value) -> Value {
 struct PropCtx<'a> {
     classes: &'a [classes::ClassEntry],
     scope: Option<ClassId>,
+    /// The called (LSB) class, named by asymmetric-visibility errors.
+    called: Option<ClassId>,
 }
 
 impl PropCtx<'_> {
     /// Storage key for `name` on an instance of `cls`, or the access error.
     fn key(&self, cls: ClassId, name: &PhpStr) -> Result<PhpStr, Thrown> {
         classes::prop_key(self.classes, cls, self.scope, name)
+    }
+
+    /// Storage key for writing through `$o->name` (with `rest` steps still to
+    /// go): also enforces `private(set)` / `protected(set)`. Writing into an
+    /// object held by such a property is allowed (handle semantics); anything
+    /// else is php's "Cannot (indirectly) modify private(set) property".
+    fn write_key(
+        &self,
+        od: &ObjectData,
+        name: &PhpStr,
+        leaf_op: &str,
+        rest: &[CursorStep],
+    ) -> Result<PhpStr, Thrown> {
+        let key = self.key(od.class, name)?;
+        if let Err(e) = classes::set_access_ok(self.classes, od.class, self.scope, &key) {
+            let holds_object = !rest.is_empty()
+                && matches!(od.properties.get(&key).map(deref), Some(Value::Object(_)));
+            if !holds_object {
+                let op = if rest.is_empty() {
+                    leaf_op
+                } else {
+                    "indirectly modify"
+                };
+                return Err(classes::set_access_err(self.classes, self.called, op, e));
+            }
+        }
+        Ok(key)
     }
 }
 
@@ -4667,7 +4947,7 @@ fn assign_path(
             }
         };
         let mut od = handle.borrow_mut();
-        let key = cx.key(od.class, name)?;
+        let key = cx.write_key(&od, name, "modify", rest)?;
         let child = classes::prop_slot_mut(cx.classes, &mut od, key);
         return assign_path(child, rest, value, cx);
     }
@@ -4738,7 +5018,7 @@ fn make_ref_path(
             }
         };
         let mut od = handle.borrow_mut();
-        let key = cx.key(od.class, name)?;
+        let key = cx.write_key(&od, name, "indirectly modify", rest)?;
         let child = classes::prop_slot_mut(cx.classes, &mut od, key);
         return make_ref_path(child, rest, cx);
     }

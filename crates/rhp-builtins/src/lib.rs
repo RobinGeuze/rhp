@@ -50,6 +50,7 @@ mod stream_fns;
 mod strsearch_fns;
 mod strtotime_fns;
 mod sysmisc_fns;
+mod tzdb;
 mod webenc_fns;
 pub mod zip_ext;
 

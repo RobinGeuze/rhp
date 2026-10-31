@@ -302,7 +302,9 @@ impl<'a> Lexer<'a> {
     /// `("true"|"on"|"yes")[ \t]*`-style keyword rule.
     fn keyword_len(&self, i: usize, words: &[&[u8]]) -> usize {
         for w in words {
-            if self.s[i..].starts_with(w) {
+            // php builds the scanner with `re2c --case-inverted`, so quoted
+            // keyword rules match case-insensitively.
+            if self.s.len() >= i + w.len() && self.s[i..i + w.len()].eq_ignore_ascii_case(w) {
                 return self.ts(i + w.len()) - i;
             }
         }

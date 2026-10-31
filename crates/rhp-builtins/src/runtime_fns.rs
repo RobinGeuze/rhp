@@ -285,52 +285,23 @@ thread_local! {
 }
 
 /// Is `id` a known timezone identifier (case-insensitive, as timelib)?
-fn tz_valid(id: &[u8]) -> bool {
-    if id.eq_ignore_ascii_case(b"UTC") {
-        return true;
-    }
-    let Ok(s) = std::str::from_utf8(id) else {
-        return false;
-    };
-    if s.is_empty()
-        || s.starts_with('/')
-        || s.split('/').any(|c| c.is_empty() || c == "." || c == "..")
-    {
-        return false;
-    }
-    // Walk /usr/share/zoneinfo matching each component case-insensitively.
-    let mut dir = std::path::PathBuf::from("/usr/share/zoneinfo");
-    let comps: Vec<&str> = s.split('/').collect();
-    for (i, comp) in comps.iter().enumerate() {
-        let Ok(rd) = std::fs::read_dir(&dir) else {
-            return false;
-        };
-        let found = rd
-            .flatten()
-            .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(comp));
-        let Some(ent) = found else {
-            return false;
-        };
-        dir = ent.path();
-        let is_dir = dir.is_dir();
-        if i + 1 == comps.len() {
-            return !is_dir && std::fs::read(&dir).is_ok_and(|b| b.starts_with(b"TZif"));
-        }
-        if !is_dir {
-            return false;
-        }
-    }
-    false
+pub(crate) fn tz_valid(id: &[u8]) -> bool {
+    id.eq_ignore_ascii_case(b"UTC") || crate::tzdb::load(id).is_some()
 }
 
-fn fn_date_default_timezone_get(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    let tz = TZ.with(|t| t.borrow().clone());
-    Ok(Value::str(tz.unwrap_or_else(|| {
+/// The effective default timezone name: `date_default_timezone_set()`, then a
+/// valid `date.timezone`, then `UTC` (php_date.c `guess_timezone`).
+pub(crate) fn default_timezone_name() -> Vec<u8> {
+    TZ.with(|t| t.borrow().clone()).unwrap_or_else(|| {
         ini_value(b"date.timezone")
             .flatten()
             .filter(|v| !v.is_empty() && tz_valid(v))
             .unwrap_or_else(|| b"UTC".to_vec())
-    })))
+    })
+}
+
+fn fn_date_default_timezone_get(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::str(default_timezone_name()))
 }
 
 fn fn_date_default_timezone_set(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

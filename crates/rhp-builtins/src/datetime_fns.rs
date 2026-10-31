@@ -1,8 +1,8 @@
 //! Native date/time builtins — deterministic, explicit-timestamp forms only.
 //!
-//! The engine timezone is treated as UTC, so `date`/`gmdate` are identical and
-//! `mktime`/`gmmktime` are identical. Verified byte-for-byte against php 8.5.8
-//! with `date_default_timezone_set("UTC")`. An omitted / null `$timestamp`
+//! Local-time functions (`date`, `mktime`, `getdate`) use the default zone
+//! (`date_default_timezone_set()` → `date.timezone` → UTC) via [`crate::tzdb`];
+//! the `gm*` forms always use UTC. An omitted / null `$timestamp`
 //! (or omitted `mktime` component) falls back to the current time, as in php.
 //!
 //! Wire this module into `lib.rs` with:
@@ -32,7 +32,6 @@ fn deref(v: &Value) -> Value {
 
 pub(crate) const SECS_PER_DAY: i64 = 86400;
 
-const DAY_SHORT: [&[u8]; 7] = [b"Sun", b"Mon", b"Tue", b"Wed", b"Thu", b"Fri", b"Sat"];
 pub(crate) const DAY_FULL: [&[u8]; 7] = [
     b"Sunday",
     b"Monday",
@@ -137,92 +136,6 @@ pub(crate) fn break_down(ts: i64) -> Tm {
     }
 }
 
-fn push_int(out: &mut Vec<u8>, n: i64) {
-    out.extend_from_slice(n.to_string().as_bytes());
-}
-
-fn push_2(out: &mut Vec<u8>, n: i64) {
-    out.extend_from_slice(format!("{n:02}").as_bytes());
-}
-
-// ---------------------------------------------------------------------------
-// date / gmdate
-// ---------------------------------------------------------------------------
-
-/// Render `format` against the broken-down time `tm` (timestamp `ts`).
-/// Supports: Y y m n d j H G h g i s A a D l N w z t L U and `\`-escapes.
-/// Any other character is emitted literally.
-fn format_date(format: &[u8], tm: &Tm, ts: i64) -> Vec<u8> {
-    let mut out = Vec::with_capacity(format.len() + 16);
-    let mut i = 0;
-    while i < format.len() {
-        let c = format[i];
-        if c == b'\\' {
-            // Escape: emit the next byte literally (if any).
-            if i + 1 < format.len() {
-                out.push(format[i + 1]);
-                i += 2;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-        match c {
-            b'Y' => push_int(&mut out, tm.year),
-            b'y' => push_2(&mut out, tm.year.rem_euclid(100)),
-            b'm' => push_2(&mut out, tm.month),
-            b'n' => push_int(&mut out, tm.month),
-            b'd' => push_2(&mut out, tm.day),
-            b'j' => push_int(&mut out, tm.day),
-            b'H' => push_2(&mut out, tm.hour),
-            b'G' => push_int(&mut out, tm.hour),
-            b'h' => push_2(&mut out, hour12(tm.hour)),
-            b'g' => push_int(&mut out, hour12(tm.hour)),
-            b'i' => push_2(&mut out, tm.min),
-            b's' => push_2(&mut out, tm.sec),
-            b'A' => out.extend_from_slice(if tm.hour < 12 { b"AM" } else { b"PM" }),
-            b'a' => out.extend_from_slice(if tm.hour < 12 { b"am" } else { b"pm" }),
-            b'D' => out.extend_from_slice(DAY_SHORT[tm.wday as usize]),
-            b'l' => out.extend_from_slice(DAY_FULL[tm.wday as usize]),
-            b'M' => out.extend_from_slice(&MONTH_FULL[(tm.month - 1) as usize][..3]),
-            b'F' => out.extend_from_slice(MONTH_FULL[(tm.month - 1) as usize]),
-            b'N' => push_int(&mut out, if tm.wday == 0 { 7 } else { tm.wday }),
-            b'w' => push_int(&mut out, tm.wday),
-            b'z' => push_int(&mut out, tm.yday),
-            b't' => push_int(&mut out, days_in_month(tm.year, tm.month)),
-            b'L' => out.push(if is_leap(tm.year) { b'1' } else { b'0' }),
-            b'S' => out.extend_from_slice(ordinal_suffix(tm.day)),
-            b'U' => push_int(&mut out, ts),
-            other => out.push(other),
-        }
-        i += 1;
-    }
-    out
-}
-
-/// English ordinal suffix for a day-of-month (`date("S")`): `st`/`nd`/`rd`/`th`.
-/// 11, 12, 13 are always `th`; otherwise the last digit selects 1→st, 2→nd,
-/// 3→rd, else th.
-fn ordinal_suffix(day: i64) -> &'static [u8] {
-    match (day % 100, day % 10) {
-        (11..=13, _) => b"th",
-        (_, 1) => b"st",
-        (_, 2) => b"nd",
-        (_, 3) => b"rd",
-        _ => b"th",
-    }
-}
-
-/// 12-hour clock value for a 0..23 hour (0 and 12 both map to 12).
-fn hour12(h: i64) -> i64 {
-    let h = h % 12;
-    if h == 0 {
-        12
-    } else {
-        h
-    }
-}
-
 /// Current unix time (the default for an omitted / null `$timestamp`).
 fn now_ts() -> i64 {
     std::time::SystemTime::now()
@@ -239,11 +152,64 @@ fn ts_arg(args: &[Value], i: usize) -> i64 {
     }
 }
 
+/// `date()` / `gmdate()` (php_date.c `date_format` with `localtime`).
+fn php_date(format: &[u8], ts: i64, localtime: bool) -> Vec<u8> {
+    use crate::dt_oop_fns::{format_dt_x, ZoneX};
+    if !localtime {
+        let x = ZoneX {
+            abbr: b"GMT".to_vec(),
+            dst: false,
+            localtime: false,
+        };
+        return format_dt_x(ts, 0, 0, b"UTC", Some(&x), format);
+    }
+    match crate::tzdb::default_zone() {
+        None => {
+            let x = ZoneX {
+                abbr: b"UTC".to_vec(),
+                dst: false,
+                localtime: true,
+            };
+            format_dt_x(ts, 0, 0, b"UTC", Some(&x), format)
+        }
+        Some(z) => {
+            let t = z.at(ts);
+            let x = ZoneX {
+                abbr: t.abbr,
+                dst: t.dst,
+                localtime: true,
+            };
+            let name = crate::runtime_fns::default_timezone_name();
+            format_dt_x(ts, 0, t.off, &name, Some(&x), format)
+        }
+    }
+}
+
 fn fn_date(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let format = conv::to_string_bytes(&deref(&args[0]));
     let ts = ts_arg(args, 1);
-    let tm = break_down(ts);
-    Ok(Value::str(format_date(&format, &tm, ts)))
+    Ok(Value::str(php_date(&format, ts, true)))
+}
+
+fn fn_gmdate(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let format = conv::to_string_bytes(&deref(&args[0]));
+    let ts = ts_arg(args, 1);
+    Ok(Value::str(php_date(&format, ts, false)))
+}
+
+/// Broken-down local time (default zone) for `ts`, plus its dst flag.
+pub(crate) fn local_break_down(ts: i64) -> (Tm, bool) {
+    let t = crate::tzdb::local_type(ts);
+    (break_down(ts + t.off), t.dst)
+}
+
+/// Local wall-clock seconds (civil seconds as if UTC) → Unix timestamp in
+/// the default zone (timelib `do_adjust_timezone`).
+pub(crate) fn local_to_ts(local: i64, hint_dst: bool) -> i64 {
+    match crate::tzdb::default_zone() {
+        None => local,
+        Some(z) => z.local_to_utc(local, hint_dst),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -262,9 +228,15 @@ pub(crate) fn adjust_year(y: i64) -> i64 {
     }
 }
 
-fn fn_mktime(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // Omitted / null components default to the current (UTC) time's.
-    let now = break_down(now_ts());
+fn mktime_impl(args: &[Value], gmt: bool) -> i64 {
+    // Omitted / null components default to the current time's (local for
+    // mktime, UTC for gmmktime).
+    let now_ts = now_ts();
+    let (now, now_dst) = if gmt {
+        (break_down(now_ts), false)
+    } else {
+        local_break_down(now_ts)
+    };
     let part = |i: usize, dflt: i64| match args.get(i).map(deref) {
         None | Some(Value::Null) => dflt,
         Some(v) => conv::to_int(&v),
@@ -279,14 +251,25 @@ fn fn_mktime(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Some(v) => adjust_year(conv::to_int(&v)),
     };
 
-    // Normalize the month into 1..12 with a year carry; then every day is a
-    // uniform 86400 seconds (UTC, no DST), so day/hour/min/sec overflow folds
-    // in by plain arithmetic.
+    // Normalize the month into 1..12 with a year carry; day/hour/min/sec
+    // overflow folds in by plain arithmetic on the wall clock.
     let year = year + (month - 1).div_euclid(12);
     let month = (month - 1).rem_euclid(12) + 1;
     let base_days = days_from_civil(year, month, 1) + (day - 1);
-    let ts = base_days * SECS_PER_DAY + hour * 3600 + minute * 60 + second;
-    Ok(Value::Int(ts))
+    let local = base_days * SECS_PER_DAY + hour * 3600 + minute * 60 + second;
+    if gmt {
+        local
+    } else {
+        local_to_ts(local, now_dst)
+    }
+}
+
+fn fn_mktime(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(mktime_impl(args, false)))
+}
+
+fn fn_gmmktime(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(mktime_impl(args, true)))
 }
 
 // ---------------------------------------------------------------------------
@@ -310,7 +293,7 @@ fn fn_checkdate(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_getdate(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let ts = ts_arg(args, 0);
-    let tm = break_down(ts);
+    let (tm, _) = local_break_down(ts);
     let mut a = PhpArray::new();
     a.insert(ArrayKey::from_bytes(b"seconds"), Value::Int(tm.sec));
     a.insert(ArrayKey::from_bytes(b"minutes"), Value::Int(tm.min));
@@ -357,9 +340,9 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     }
     // An omitted / null $timestamp means "now", as in php.
     put(m, "date", fn_date, 1, Some(2));
-    put(m, "gmdate", fn_date, 1, Some(2));
+    put(m, "gmdate", fn_gmdate, 1, Some(2));
     put(m, "mktime", fn_mktime, 1, Some(6));
-    put(m, "gmmktime", fn_mktime, 1, Some(6));
+    put(m, "gmmktime", fn_gmmktime, 1, Some(6));
     put(m, "checkdate", fn_checkdate, 3, Some(3));
     put(m, "getdate", fn_getdate, 0, Some(1));
 }
@@ -477,8 +460,6 @@ mod tests {
             );
             assert_eq!(calls(fn_date, &[s("jS"), Value::Int(ts)]), want);
         }
-        assert_eq!(ordinal_suffix(111), b"th");
-        assert_eq!(ordinal_suffix(101), b"st");
     }
 
     #[test]

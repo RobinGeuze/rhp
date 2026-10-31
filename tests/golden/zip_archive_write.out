@@ -1,0 +1,136 @@
+int(0)
+int(0)
+string(0) ""
+int(-1)
+Invalid or uninitialized Zip object
+ZipArchive::open(): Argument #1 ($filename) must not be empty
+int(9)
+bool(true)
+bool(false)
+bool(true)
+int(0)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+int(10)
+string(19) "File already exists"
+bool(true)
+bool(true)
+bool(true)
+int(7)
+bool(false)
+int(10)
+bool(true)
+bool(false)
+bool(true)
+int(3)
+string(6) "100666"
+bool(true)
+int(3)
+string(5) "40777"
+{"name":"b.txt","index":1,"crc":0,"size":1,"comp_size":1,"comp_method":0,"encryption_method":0}
+int(7)
+int(7)
+bool(true)
+string(15) "archive comment"
+bool(true)
+bool(true)
+int(0)
+string(0) ""
+int(0)
+bool(true)
+bool(true)
+int(7)
+string(15) "archive comment"
+string(15) "archive comment"
+string(13) "entry comment"
+string(0) ""
+{"name":"a.txt","index":0,"crc":2657575671,"size":8,"comp_size":8,"comp_method":0,"encryption_method":0}
+{"name":"b.txt","index":1,"crc":2363233923,"size":1,"comp_size":1,"comp_method":0,"encryption_method":0}
+{"name":"empty.txt","index":2,"crc":0,"size":0,"comp_size":0,"comp_method":0,"encryption_method":0}
+{"name":"dir\/","index":3,"crc":0,"size":0,"comp_size":0,"comp_method":0,"encryption_method":0}
+{"name":"dir2\/","index":4,"crc":0,"size":0,"comp_size":0,"comp_method":0,"encryption_method":0}
+{"name":"sub\/src.txt","index":5,"crc":4059059430,"size":650,"comp_size":22,"comp_method":8,"encryption_method":0}
+{"name":"part.txt","index":6,"crc":2285445990,"size":10,"comp_size":10,"comp_method":0,"encryption_method":0}
+bool(true)
+int(3)
+string(6) "100755"
+bool(true)
+int(3)
+bool(true)
+int(1)
+bool(false)
+int(1)
+int(5)
+bool(false)
+string(8) "replaced"
+string(10) "of text
+li"
+string(1) "x"
+bool(false)
+string(3) "rep"
+int(650)
+string(0) ""
+string(9) "empty.txt"
+bool(false)
+bool(false)
+bool(true)
+string(1) "x"
+bool(true)
+int(7)
+bool(false)
+bool(false)
+bool(false)
+bool(true)
+int(0)
+bool(false)
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+c.txt
+empty.txt
+dir/
+dir2/
+sub/src.txt
+part.txt
+bool(true)
+string(8) "replaced"
+bool(true)
+bool(true)
+int(650)
+bool(true)
+string(10) "of text
+li"
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+int(10)
+int(19)
+int(19)
+bool(true)
+int(0)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+int(0)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(false)
+string(8) "No error"
+bool(true)
+bool(true)
+int(1)
+int(8)
+int(8192)
+int(3)
+int(19)
+int(0)
+bool(true)
+bool(true)

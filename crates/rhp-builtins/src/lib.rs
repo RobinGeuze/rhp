@@ -294,28 +294,6 @@ pub trait Host {
         Vec::new()
     }
 
-    /// ZipArchive backing (open archives keyed by id). `zip_open` returns the id
-    /// (>= 0) on success or a negative `ZipArchive::ER_*` code on failure.
-    fn zip_open(&mut self, _path: &[u8]) -> i64 {
-        -9 // ER_NOENT
-    }
-    fn zip_count(&mut self, _id: i64) -> i64 {
-        0
-    }
-    fn zip_name_index(&mut self, _id: i64, _i: i64) -> Option<Vec<u8>> {
-        None
-    }
-    fn zip_stat_index(&mut self, _id: i64, _i: i64) -> Option<(Vec<u8>, u64, u64)> {
-        None
-    }
-    fn zip_get_from_name(&mut self, _id: i64, _name: &[u8]) -> Option<Vec<u8>> {
-        None
-    }
-    fn zip_extract_to(&mut self, _id: i64, _dest: &[u8]) -> bool {
-        false
-    }
-    fn zip_close(&mut self, _id: i64) {}
-
     /// The filesystem path of the top-level script being executed (for
     /// `Phar::mapPhar`, which parses the running phar itself). Default: none.
     fn running_main_path(&self) -> Option<Vec<u8>> {

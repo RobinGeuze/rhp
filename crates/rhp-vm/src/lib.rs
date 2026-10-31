@@ -93,8 +93,6 @@ pub struct Vm {
     // Response header lines from the last http(s) request (status line first).
     last_response_headers: Vec<Vec<u8>>,
     // Open ZipArchive handles, id -> parsed archive.
-    zip_archives: HashMap<u32, builtins::zip_ext::ZipState>,
-    next_zip_id: u32,
     // CLI arguments ($argv / $_SERVER['argv']); argv[0] is the script name.
     argv: Vec<Vec<u8>>,
 }
@@ -361,53 +359,6 @@ impl Host for Vm {
             out.push(deref(&f.regs[p.cv as usize]).clone());
         }
         out
-    }
-
-    fn zip_open(&mut self, path: &[u8]) -> i64 {
-        // Read the file (through the stream layer so phar:// etc. work).
-        let bytes = match self.stream_get_contents(path) {
-            Some(b) => b,
-            None => return -9, // ER_NOENT
-        };
-        match builtins::zip_ext::ZipState::open(bytes) {
-            Some(state) => {
-                let id = self.next_zip_id;
-                self.next_zip_id += 1;
-                self.zip_archives.insert(id, state);
-                id as i64
-            }
-            None => -19, // ER_NOZIP
-        }
-    }
-    fn zip_count(&mut self, id: i64) -> i64 {
-        self.zip_archives
-            .get(&(id as u32))
-            .map(|z| z.count() as i64)
-            .unwrap_or(0)
-    }
-    fn zip_name_index(&mut self, id: i64, i: i64) -> Option<Vec<u8>> {
-        self.zip_archives
-            .get_mut(&(id as u32))
-            .and_then(|z| z.name_index(i as usize))
-    }
-    fn zip_stat_index(&mut self, id: i64, i: i64) -> Option<(Vec<u8>, u64, u64)> {
-        self.zip_archives
-            .get_mut(&(id as u32))
-            .and_then(|z| z.stat_index(i as usize))
-    }
-    fn zip_get_from_name(&mut self, id: i64, name: &[u8]) -> Option<Vec<u8>> {
-        self.zip_archives
-            .get_mut(&(id as u32))
-            .and_then(|z| z.get_from_name(name))
-    }
-    fn zip_extract_to(&mut self, id: i64, dest: &[u8]) -> bool {
-        self.zip_archives
-            .get_mut(&(id as u32))
-            .map(|z| z.extract_to(dest))
-            .unwrap_or(false)
-    }
-    fn zip_close(&mut self, id: i64) {
-        self.zip_archives.remove(&(id as u32));
     }
 
     fn running_main_path(&self) -> Option<Vec<u8>> {
@@ -1029,8 +980,6 @@ impl Vm {
             next_resource_id: 1,
             stream_contexts: HashMap::new(),
             last_response_headers: Vec::new(),
-            zip_archives: HashMap::new(),
-            next_zip_id: 0,
             argv: Vec::new(),
         }
     }

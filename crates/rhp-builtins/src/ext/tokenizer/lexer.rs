@@ -386,10 +386,10 @@ impl<'a> Lexer<'a> {
         if c == b'"' || ((c == b'b' || c == b'B') && self.at(p + 1) == b'"') {
             return self.double_quoted();
         }
-        if c == b'<' || ((c == b'b' || c == b'B') && self.at(p + 1) == b'<') {
-            if self.try_heredoc_start() {
-                return;
-            }
+        if (c == b'<' || ((c == b'b' || c == b'B') && self.at(p + 1) == b'<'))
+            && self.try_heredoc_start()
+        {
+            return;
         }
         if c == b'`' {
             self.state = St::Backquote;
@@ -681,9 +681,9 @@ impl<'a> Lexer<'a> {
         let c = self.s[p];
         if c == b'$' && is_label_start(self.at(p + 1)) {
             let e = self.label_end(p + 1);
-            if self.s[e..].starts_with(b"->") && is_label_start(self.at(e + 2)) {
-                self.push_state(St::LookingForProperty);
-            } else if self.s[e..].starts_with(b"?->") && is_label_start(self.at(e + 3)) {
+            if (self.s[e..].starts_with(b"->") && is_label_start(self.at(e + 2)))
+                || (self.s[e..].starts_with(b"?->") && is_label_start(self.at(e + 3)))
+            {
                 self.push_state(St::LookingForProperty);
             } else if self.at(e) == b'[' {
                 self.push_state(St::VarOffset);
@@ -902,9 +902,7 @@ impl<'a> Lexer<'a> {
                 return i;
             }
             while i < s.len() {
-                if ok(s[i]) {
-                    i += 1;
-                } else if s[i] == b'_' && ok(self.at(i + 1)) {
+                if ok(s[i]) || (s[i] == b'_' && ok(self.at(i + 1))) {
                     i += 1;
                 } else {
                     break;
@@ -940,9 +938,7 @@ impl<'a> Lexer<'a> {
                 return i;
             }
             while i < s.len() {
-                if isd(s[i]) {
-                    i += 1;
-                } else if s[i] == b'_' && isd(self.at(i + 1)) {
+                if isd(s[i]) || (s[i] == b'_' && isd(self.at(i + 1))) {
                     i += 1;
                 } else {
                     break;

@@ -470,31 +470,20 @@ impl LocalFile {
         }
     }
 
-    /// `fseek`: true on success (php returns 0 / -1).
+    /// `fseek`: true on success (php returns 0 / -1). Bug-compatible with
+    /// php: the read buffer is discarded even when the seek fails, without
+    /// re-syncing the descriptor, so a later read continues from wherever the
+    /// descriptor was (the end of the buffered data) while `ftell` keeps the
+    /// old position.
     pub fn seek(&mut self, offset: i64, whence: i32) -> bool {
-        let target = match whence {
-            libc::SEEK_SET => offset,
-            libc::SEEK_CUR => self.pos + offset,
-            libc::SEEK_END => {
-                self.sync();
-                let r = unsafe { libc::lseek(self.fd(), offset as libc::off_t, libc::SEEK_END) };
-                if r < 0 {
-                    return false;
-                }
-                self.pos = r as i64;
-                self.eof = false;
-                return true;
-            }
-            _ => return false,
+        let (off, wh) = match whence {
+            libc::SEEK_CUR => (self.pos + offset, libc::SEEK_SET),
+            w => (offset, w),
         };
         self.rbuf.clear();
         self.rpos = 0;
-        let r = unsafe { libc::lseek(self.fd(), target as libc::off_t, libc::SEEK_SET) };
+        let r = unsafe { libc::lseek(self.fd(), off as libc::off_t, wh) };
         if r < 0 {
-            // php keeps the old position; re-sync the descriptor to it.
-            unsafe {
-                libc::lseek(self.fd(), self.pos as libc::off_t, libc::SEEK_SET);
-            }
             return false;
         }
         self.pos = r as i64;

@@ -1,6 +1,8 @@
-//! Stream-resource builtins (`fopen`/`fwrite`/`fread`/`fgets`/`fclose`/…) over the
-//! `Host` stream primitives, plus `is_resource`/`get_resource_type`. The resource
-//! state lives in the VM; these just marshal arguments.
+//! Stream-resource builtins over the `Host` stream primitives: contexts,
+//! `is_resource`/`get_resource_type`, copy/wrapper listing and the no-op
+//! knobs. The per-handle file functions (`fopen`/`fread`/`fwrite`/`fgets`/
+//! `fclose`/`fseek`/…) live in `fs_fns` with php's argument validation. The
+//! resource state lives in the VM.
 
 use std::collections::HashMap;
 
@@ -13,59 +15,6 @@ fn deref(v: &Value) -> Value {
         Value::Ref(r) => r.borrow().clone(),
         o => o.clone(),
     }
-}
-
-fn fn_fwrite(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let res = deref(&args[0]);
-    let mut data = conv::to_string_bytes(&deref(&args[1]));
-    if let Some(len) = args.get(2) {
-        let n = conv::to_int(&deref(len));
-        if n >= 0 && (n as usize) < data.len() {
-            data.truncate(n as usize);
-        }
-    }
-    Ok(host
-        .stream_write(&res, &data)
-        .map(|n| Value::Int(n as i64))
-        .unwrap_or(Value::Bool(false)))
-}
-
-fn fn_fread(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let res = deref(&args[0]);
-    let len = conv::to_int(&deref(&args[1]));
-    Ok(host
-        .stream_read(&res, len)
-        .map(Value::str)
-        .unwrap_or(Value::Bool(false)))
-}
-
-fn fn_fgetc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let res = deref(&args[0]);
-    match host.stream_read(&res, 1) {
-        Some(b) if !b.is_empty() => Ok(Value::str(b)),
-        _ => Ok(Value::Bool(false)),
-    }
-}
-
-fn fn_feof(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.stream_eof(&deref(&args[0]))))
-}
-
-fn fn_fclose(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.stream_close(&deref(&args[0]))))
-}
-
-fn fn_fflush(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.stream_flush(&deref(&args[0]))))
-}
-
-fn fn_stream_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let res = deref(&args[0]);
-    let maxlen = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(-1);
-    Ok(host
-        .stream_read(&res, maxlen)
-        .map(Value::str)
-        .unwrap_or(Value::Bool(false)))
 }
 
 fn fn_is_resource(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -202,14 +151,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
             },
         );
     }
-    put(m, "fclose", fn_fclose, 1, Some(1));
-    put(m, "fwrite", fn_fwrite, 2, Some(3));
-    put(m, "fputs", fn_fwrite, 2, Some(3));
-    put(m, "fread", fn_fread, 2, Some(2));
-    put(m, "fgetc", fn_fgetc, 1, Some(1));
-    put(m, "feof", fn_feof, 1, Some(1));
-    put(m, "fflush", fn_fflush, 1, Some(1));
-    put(m, "stream_get_contents", fn_stream_get_contents, 1, Some(3));
     put(m, "is_resource", fn_is_resource, 1, Some(1));
     put(m, "get_resource_type", fn_get_resource_type, 1, Some(1));
     put(m, "stream_get_wrappers", fn_stream_get_wrappers, 0, Some(0));

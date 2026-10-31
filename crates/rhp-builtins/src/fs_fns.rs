@@ -1144,6 +1144,96 @@ fn fn_fgets(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(line.map(Value::str).unwrap_or(Value::Bool(false)))
 }
 
+fn fn_fread(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fread", "stream")?;
+    let len = int_arg(args, 1, 0);
+    if len <= 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "fread(): Argument #2 ($length) must be greater than 0",
+        ));
+    }
+    Ok(host
+        .stream_read(&h, len)
+        .map(Value::str)
+        .unwrap_or(Value::Bool(false)))
+}
+
+fn fn_fwrite(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fwrite", "stream")?;
+    let mut data = str_arg(args, 1);
+    match args.get(2).map(deref) {
+        None | Some(Value::Null) => {}
+        Some(v) => {
+            let n = conv::to_int(&v);
+            if n <= 0 {
+                return Ok(Value::Int(0));
+            }
+            if (n as usize) < data.len() {
+                data.truncate(n as usize);
+            }
+        }
+    }
+    if data.is_empty() {
+        return Ok(Value::Int(0));
+    }
+    Ok(host
+        .stream_write(&h, &data)
+        .map(|n| Value::Int(n as i64))
+        .unwrap_or(Value::Bool(false)))
+}
+
+fn fn_fclose(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, kind) = stream_param(host, args, 0, "fclose", "stream")?;
+    if kind == StreamKind::Dir {
+        // php: "cannot close the provided stream, as it must not be manually
+        // closed" (directory handles are closed with closedir()).
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(host.stream_close(&h)))
+}
+
+fn fn_feof(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "feof", "stream")?;
+    Ok(Value::Bool(host.stream_eof(&h)))
+}
+
+fn fn_fflush(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fflush", "stream")?;
+    Ok(Value::Bool(host.stream_flush(&h)))
+}
+
+fn fn_fgetc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fgetc", "stream")?;
+    match host.stream_read(&h, 1) {
+        Some(b) if !b.is_empty() => Ok(Value::str(b)),
+        _ => Ok(Value::Bool(false)),
+    }
+}
+
+fn fn_stream_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "stream_get_contents", "stream")?;
+    let maxlen = int_arg(args, 1, -1);
+    let offset = int_arg(args, 2, -1);
+    if maxlen < -1 {
+        return Err(Thrown::error(
+            "ValueError",
+            "stream_get_contents(): Argument #2 ($length) must be greater than or equal to -1",
+        ));
+    }
+    if offset >= 0 && !host.stream_seek(&h, offset, 0) {
+        // php: "Failed to seek to position N in the stream".
+        return Ok(Value::Bool(false));
+    }
+    if maxlen == 0 {
+        return Ok(Value::str(""));
+    }
+    Ok(host
+        .stream_read(&h, maxlen)
+        .map(Value::str)
+        .unwrap_or(Value::Bool(false)))
+}
+
 fn fn_stream_get_meta_data(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (h, _) = stream_param(host, args, 0, "stream_get_meta_data", "stream")?;
     let Some(m) = host.stream_meta(&h) else {
@@ -1549,6 +1639,14 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "ftell", fn_ftell, 1, Some(1));
     put(m, "rewind", fn_rewind, 1, Some(1));
     put(m, "fgets", fn_fgets, 1, Some(2));
+    put(m, "fread", fn_fread, 2, Some(2));
+    put(m, "fwrite", fn_fwrite, 2, Some(3));
+    put(m, "fputs", fn_fwrite, 2, Some(3));
+    put(m, "fclose", fn_fclose, 1, Some(1));
+    put(m, "feof", fn_feof, 1, Some(1));
+    put(m, "fflush", fn_fflush, 1, Some(1));
+    put(m, "fgetc", fn_fgetc, 1, Some(1));
+    put(m, "stream_get_contents", fn_stream_get_contents, 1, Some(3));
     put(
         m,
         "stream_get_meta_data",

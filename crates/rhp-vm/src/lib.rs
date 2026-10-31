@@ -570,7 +570,7 @@ impl Host for Vm {
         match res_id(res).and_then(|id| self.streams.get(&id)) {
             Some(StreamState::Mem { buf, pos }) => *pos >= buf.len(),
             Some(StreamState::File(f)) => f.eof(),
-            Some(StreamState::Dir { entries, pos, .. }) => *pos >= entries.len(),
+            Some(StreamState::Dir { .. }) => false,
             Some(StreamState::Stdout | StreamState::Stderr | StreamState::FileWrite { .. }) => {
                 false
             }
@@ -657,7 +657,16 @@ impl Host for Vm {
             StreamState::File(f) => Some(f.tell()),
             StreamState::Mem { pos, .. } => Some(*pos as i64),
             StreamState::FileWrite { buf, .. } => Some(buf.len() as i64),
-            StreamState::Dir { pos, .. } => Some(*pos as i64),
+            // php reads a `php_stream_dirent` (char[MAXPATHLEN] + d_type) per
+            // entry, advancing the stream position by its size.
+            StreamState::Dir { pos, .. } => {
+                let dirent = if cfg!(target_os = "macos") {
+                    1025
+                } else {
+                    4097
+                };
+                Some(*pos as i64 * dirent)
+            }
             _ => Some(0),
         }
     }

@@ -46,7 +46,7 @@ flate2 = "1.1"
 bzip2 = "0.5"
 
 # openssl extension: pure-Rust X.509 certificate parsing (openssl_x509_parse).
-x509-parser = { version = "0.16", features = ["verify"] }
+x509-parser = { version = "0.18", features = ["verify"] }
 
 # HTTP(S) client for the stream http:// / https:// wrappers (rustls TLS with
 # bundled Mozilla roots — no system OpenSSL dependency).

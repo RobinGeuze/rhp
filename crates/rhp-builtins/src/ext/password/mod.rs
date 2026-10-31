@@ -15,8 +15,8 @@
 use std::collections::HashMap;
 
 use argon2::{Algorithm, Argon2, Params, Version};
-use password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use rand_core::{OsRng, RngCore};
+use password_hash::phc::PasswordHash;
+use password_hash::{PasswordHasher, PasswordVerifier};
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::{Builtin, Host, Thrown};
@@ -289,11 +289,10 @@ fn argon2_hash(password: &[u8], options: Option<&Value>, ty: Algo) -> Result<Val
 
     // PHP uses a 16-byte random salt.
     let mut salt = [0u8; 16];
-    OsRng.fill_bytes(&mut salt);
-    let salt = SaltString::encode_b64(&salt).map_err(|e| verr(e.to_string()))?;
+    getrandom::getrandom(&mut salt).map_err(|e| verr(e.to_string()))?;
 
-    let hash = argon
-        .hash_password(password, &salt)
+    let hash: PasswordHash = argon
+        .hash_password_with_salt(password, &salt)
         .map_err(|e| verr(e.to_string()))?;
     Ok(Value::str(hash.to_string()))
 }

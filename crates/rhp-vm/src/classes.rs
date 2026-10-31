@@ -6,7 +6,6 @@
 //! override) for O(1), inline-cacheable dispatch.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
@@ -27,12 +26,13 @@ pub struct ClassEntry {
     pub parent: Option<ClassId>,
     /// self + all transitive parents + interfaces (the instanceof set).
     pub ancestors: Vec<ClassId>,
-    /// Flattened vtable, keyed by lowercase method name.
-    pub methods: HashMap<Vec<u8>, ResolvedMethod>,
+    /// Flattened vtable, keyed by lowercase method name, in php's member
+    /// order (see [`php_member_order`]).
+    pub methods: IndexMap<Vec<u8>, ResolvedMethod>,
     /// Flattened instance properties in declaration order.
     pub props: IndexMap<PhpStr, PropEntry>,
-    /// Flattened class constants (case-sensitive).
-    pub constants: HashMap<Vec<u8>, ClassConst>,
+    /// Flattened class constants (case-sensitive), in php's member order.
+    pub constants: IndexMap<Vec<u8>, ClassConst>,
     /// Flattened static-property slots (shared cells; inherited ones alias).
     pub static_props: IndexMap<Vec<u8>, StaticProp>,
     /// Enum case singletons in declaration order (empty for non-enums).
@@ -73,6 +73,25 @@ pub struct ClassConst {
 
 fn lc(bytes: &[u8]) -> Vec<u8> {
     bytes.to_ascii_lowercase()
+}
+
+/// Reorder a resolved member table into php's order: the class's own members
+/// in declaration order, then trait members, then everything inherited (the
+/// parent's table, itself already in this order, followed by interface
+/// members). Only the order changes — which member won is decided by the
+/// caller. This is what reflection and `get_class_*` enumerate.
+fn php_member_order<V>(
+    mut map: IndexMap<Vec<u8>, V>,
+    first: impl IntoIterator<Item = Vec<u8>>,
+) -> IndexMap<Vec<u8>, V> {
+    let mut out = IndexMap::with_capacity(map.len());
+    for k in first {
+        if let Some(v) = map.shift_remove(&k) {
+            out.insert(k, v);
+        }
+    }
+    out.extend(map);
+    out
 }
 
 impl Vm {
@@ -155,11 +174,11 @@ impl Vm {
         // An *abstract* method is only a requirement: it must never clobber an
         // already-present concrete method (e.g. a trait's `abstract foo()`
         // alongside a concrete `foo()` inherited from the parent class).
-        let mut methods: HashMap<Vec<u8>, ResolvedMethod> = parent
+        let mut methods: IndexMap<Vec<u8>, ResolvedMethod> = parent
             .map(|p| self.classes[p as usize].methods.clone())
             .unwrap_or_default();
         let insert_method =
-            |methods: &mut HashMap<Vec<u8>, ResolvedMethod>, k: Vec<u8>, m: ResolvedMethod| {
+            |methods: &mut IndexMap<Vec<u8>, ResolvedMethod>, k: Vec<u8>, m: ResolvedMethod| {
                 if m.is_abstract {
                     if let Some(existing) = methods.get(&k) {
                         if !existing.is_abstract {
@@ -196,6 +215,20 @@ impl Vm {
                 },
             );
         }
+        let own_methods = proto.methods.iter().map(|m| lc(m.name.as_bytes()));
+        let trait_methods: Vec<Vec<u8>> = proto
+            .traits
+            .iter()
+            .flat_map(|t| {
+                let tid = self.class_ids[&lc(t.as_bytes())];
+                self.classes[tid as usize]
+                    .methods
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let methods = php_member_order(methods, own_methods.chain(trait_methods));
 
         // Instance properties, flattened (override replaces in place).
         let mut props: IndexMap<PhpStr, PropEntry> = parent
@@ -276,7 +309,7 @@ impl Vm {
         }
 
         // Class constants.
-        let mut constants: HashMap<Vec<u8>, ClassConst> = parent
+        let mut constants: IndexMap<Vec<u8>, ClassConst> = parent
             .map(|p| self.classes[p as usize].constants.clone())
             .unwrap_or_default();
         for tname in &proto.traits {
@@ -321,6 +354,20 @@ impl Vm {
                 },
             );
         }
+        let own_consts = proto.constants.iter().map(|c| c.name.as_bytes().to_vec());
+        let trait_consts: Vec<Vec<u8>> = proto
+            .traits
+            .iter()
+            .flat_map(|t| {
+                let tid = self.class_ids[&lc(t.as_bytes())];
+                self.classes[tid as usize]
+                    .constants
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let constants = php_member_order(constants, own_consts.chain(trait_consts));
 
         // Ancestors = self + parent's + each interface's closure.
         let mut ancestors = vec![id];

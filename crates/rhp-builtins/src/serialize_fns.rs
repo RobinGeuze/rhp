@@ -1,7 +1,9 @@
 //! Native PHP serialization builtins: `serialize` / `unserialize`.
 //!
-//! Scope: null, bool, int, float, string, and (nested) array. Object (`O:`)
-//! serialization is intentionally out of scope.
+//! Scope: null, bool, int, float, string, (nested) array, and objects (`O:`
+//! with php-mangled property names, `__serialize`/`__unserialize`,
+//! `__sleep`/`__wakeup`, enums as `E:`). Shared-object back-references
+//! (`r:`/`R:`) and `Serializable` (`C:`) are not modelled.
 //!
 //! Every function here is verified byte-for-byte against the local php 8.5.8
 //! binary (see the `#[cfg(test)]` block — expected values are hardcoded from
@@ -17,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use rhp_values::{conv, fmt, ArrayKey, PhpArray, Value};
+use rhp_values::{conv, fmt, ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::{Builtin, Host, Thrown};
 
@@ -33,7 +35,7 @@ fn deref(v: &Value) -> Value {
 // serialize
 // ---------------------------------------------------------------------------
 
-fn serialize_value(out: &mut Vec<u8>, v: &Value) {
+fn serialize_value(host: &mut dyn Host, out: &mut Vec<u8>, v: &Value) -> Result<(), Thrown> {
     match deref(v) {
         Value::Null => out.extend_from_slice(b"N;"),
         Value::Bool(b) => out.extend_from_slice(if b { b"b:1;" } else { b"b:0;" }),
@@ -43,26 +45,123 @@ fn serialize_value(out: &mut Vec<u8>, v: &Value) {
             out.extend_from_slice(&fmt::float_serialize(f));
             out.push(b';');
         }
-        Value::Str(s) => {
-            let bytes = s.as_bytes();
-            out.extend_from_slice(format!("s:{}:\"", bytes.len()).as_bytes());
-            out.extend_from_slice(bytes);
-            out.extend_from_slice(b"\";");
-        }
+        Value::Str(s) => serialize_str(out, s.as_bytes()),
         Value::Array(a) => {
             out.extend_from_slice(format!("a:{}:{{", a.len()).as_bytes());
             for (k, val) in a.iter() {
                 serialize_key(out, k);
-                serialize_value(out, val);
+                serialize_value(host, out, val)?;
             }
             out.push(b'}');
         }
-        // Objects are out of scope; php would emit `O:`. Nothing in-scope hits
-        // this, but keep serialization total by falling back to null.
-        Value::Object(_) | Value::Closure(_) => out.extend_from_slice(b"N;"),
+        Value::Object(h) => {
+            let class_id = h.borrow().class;
+            let cname = host.class_name(class_id).unwrap_or_default();
+            if host.is_enum_class(class_id) {
+                let case = h
+                    .borrow()
+                    .properties
+                    .get(&PhpStr::from("name"))
+                    .map(conv::to_string_bytes)
+                    .unwrap_or_default();
+                let body = [&cname[..], b":", &case[..]].concat();
+                out.extend_from_slice(format!("E:{}:\"", body.len()).as_bytes());
+                out.extend_from_slice(&body);
+                out.extend_from_slice(b"\";");
+                return Ok(());
+            }
+            let obj = Value::Object(h.clone());
+            let call = |host: &mut dyn Host, m: &str| {
+                let mut cb = PhpArray::new();
+                cb.push(obj.clone());
+                cb.push(Value::str(m));
+                host.call_callable(&Value::Array(cb), &[])
+            };
+            let head = |out: &mut Vec<u8>, n: usize| {
+                out.extend_from_slice(format!("O:{}:\"", cname.len()).as_bytes());
+                out.extend_from_slice(&cname);
+                out.extend_from_slice(format!("\":{n}:{{").as_bytes());
+            };
+            if host.class_has_method(class_id, b"__serialize") {
+                let data = match deref(&call(host, "__serialize")?) {
+                    Value::Array(a) => a,
+                    _ => {
+                        return Err(Thrown::type_error(format!(
+                            "{}::__serialize() must return an array",
+                            String::from_utf8_lossy(&cname)
+                        )))
+                    }
+                };
+                head(out, data.len());
+                for (k, val) in data.iter() {
+                    serialize_key(out, k);
+                    serialize_value(host, out, val)?;
+                }
+                out.push(b'}');
+                return Ok(());
+            }
+            // The object's slots under their php-mangled names.
+            let props: Vec<(PhpStr, Value)> = {
+                let b = h.borrow();
+                b.properties
+                    .iter()
+                    .map(|(k, v)| (host.mangled_prop_name(class_id, k), v.clone()))
+                    .collect()
+            };
+            if host.class_has_method(class_id, b"__sleep") {
+                let names = match deref(&call(host, "__sleep")?) {
+                    Value::Array(a) => a,
+                    _ => {
+                        out.extend_from_slice(b"N;");
+                        return Ok(());
+                    }
+                };
+                let mut picked: Vec<(PhpStr, Value)> = Vec::new();
+                for (_, n) in names.iter() {
+                    let n = conv::to_string_bytes(&deref(n));
+                    let prot = [&b"\0*\0"[..], &n[..]].concat();
+                    let priv_ = [&b"\0"[..], &cname[..], b"\0", &n[..]].concat();
+                    let hit = props.iter().find(|(k, _)| {
+                        k.as_bytes() == n.as_slice()
+                            || k.as_bytes() == priv_.as_slice()
+                            || k.as_bytes() == prot.as_slice()
+                    });
+                    match hit {
+                        Some((k, v)) => picked.push((k.clone(), v.clone())),
+                        None => picked.push((PhpStr::from_bytes(n), Value::Null)),
+                    }
+                }
+                head(out, picked.len());
+                for (k, v) in &picked {
+                    serialize_str(out, k.as_bytes());
+                    serialize_value(host, out, v)?;
+                }
+                out.push(b'}');
+                return Ok(());
+            }
+            head(out, props.len());
+            for (k, v) in &props {
+                serialize_key(out, &ArrayKey::from_bytes(k.as_bytes()));
+                serialize_value(host, out, v)?;
+            }
+            out.push(b'}');
+        }
+        Value::Closure(_) => {
+            return Err(Thrown::error(
+                "Exception",
+                "Serialization of 'Closure' is not allowed",
+            ))
+        }
         Value::Resource(_) => out.extend_from_slice(b"i:0;"), // php serializes a resource as 0
         Value::Ref(_) => unreachable!("deref'd above"),
     }
+    Ok(())
+}
+
+fn serialize_str(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(format!("s:{}:\"", bytes.len()).as_bytes());
+    out.extend_from_slice(bytes);
+    out.extend_from_slice(b"\";");
 }
 
 fn serialize_key(out: &mut Vec<u8>, k: &ArrayKey) {
@@ -77,9 +176,9 @@ fn serialize_key(out: &mut Vec<u8>, k: &ArrayKey) {
     }
 }
 
-fn fn_serialize(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_serialize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    serialize_value(&mut out, &args[0]);
+    serialize_value(host, &mut out, &args[0])?;
     Ok(Value::str(out))
 }
 
@@ -90,6 +189,9 @@ fn fn_serialize(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 struct Parser<'a> {
     b: &'a [u8],
     pos: usize,
+    /// Objects awaiting `__unserialize` / `__wakeup`, in php's call order
+    /// (they run once the whole payload has been parsed).
+    pending: Vec<(Value, Option<PhpArray>)>,
 }
 
 impl<'a> Parser<'a> {
@@ -117,7 +219,7 @@ impl<'a> Parser<'a> {
         Some(slice)
     }
 
-    fn parse_value(&mut self) -> Option<Value> {
+    fn parse_value(&mut self, host: &mut dyn Host) -> Option<Value> {
         match self.b.get(self.pos)? {
             b'N' => {
                 self.pos += 1;
@@ -169,13 +271,74 @@ impl<'a> Parser<'a> {
                 self.expect(b'{')?;
                 let mut arr = PhpArray::new();
                 for _ in 0..count {
-                    let key_val = self.parse_value()?;
+                    let key_val = self.parse_value(host)?;
                     let key = ArrayKey::from_value(&key_val)?;
-                    let val = self.parse_value()?;
+                    let val = self.parse_value(host)?;
                     arr.insert(key, val);
                 }
                 self.expect(b'}')?;
                 Some(Value::Array(arr))
+            }
+            b'O' => {
+                self.pos += 1;
+                self.expect(b':')?;
+                let len = parse_usize(self.read_until(b':')?)?;
+                self.expect(b'"')?;
+                let cname = self.b.get(self.pos..self.pos + len)?.to_vec();
+                self.pos += len;
+                self.expect(b'"')?;
+                self.expect(b':')?;
+                let count = parse_usize(self.read_until(b':')?)?;
+                self.expect(b'{')?;
+                let mut data = PhpArray::new();
+                for _ in 0..count {
+                    let key_val = self.parse_value(host)?;
+                    let key = ArrayKey::from_value(&key_val)?;
+                    let val = self.parse_value(host)?;
+                    data.insert(key, val);
+                }
+                self.expect(b'}')?;
+                let cid = host.resolve_class_autoload(&cname)?;
+                if host.class_has_method(cid, b"__unserialize") {
+                    let obj = host.instantiate(&cname, Vec::new())?;
+                    self.pending.push((obj.clone(), Some(data)));
+                    return Some(obj);
+                }
+                // Mangled names: protected `\0*\0p` is stored as plain `p`;
+                // private `\0C\0p` is the storage key itself.
+                let props = data
+                    .iter()
+                    .map(|(k, v)| {
+                        let k = match k {
+                            ArrayKey::Int(n) => n.to_string().into_bytes(),
+                            ArrayKey::Str(s) => s.as_bytes().to_vec(),
+                        };
+                        let k = match k.strip_prefix(b"\0*\0") {
+                            Some(rest) => rest.to_vec(),
+                            None => k,
+                        };
+                        (k, v.clone())
+                    })
+                    .collect();
+                let obj = host.instantiate(&cname, props)?;
+                if host.class_has_method(cid, b"__wakeup") {
+                    self.pending.push((obj.clone(), None));
+                }
+                Some(obj)
+            }
+            b'E' => {
+                self.pos += 1;
+                self.expect(b':')?;
+                let len = parse_usize(self.read_until(b':')?)?;
+                self.expect(b'"')?;
+                let body = self.b.get(self.pos..self.pos + len)?.to_vec();
+                self.pos += len;
+                self.expect(b'"')?;
+                self.expect(b';')?;
+                let colon = body.iter().position(|&c| c == b':')?;
+                let (class, case) = (&body[..colon], &body[colon + 1..]);
+                host.resolve_class_autoload(class)?;
+                host.class_constant(class, case)
             }
             _ => None,
         }
@@ -223,16 +386,35 @@ fn parse_f64(tok: &[u8]) -> Option<f64> {
     s.parse::<f64>().ok()
 }
 
-fn fn_unserialize(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_unserialize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let bytes = conv::to_string_bytes(&deref(&args[0]));
-    let mut p = Parser { b: &bytes, pos: 0 };
+    let mut p = Parser {
+        b: &bytes,
+        pos: 0,
+        pending: Vec::new(),
+    };
     // php tolerates trailing "extra data" at the top level: it still returns
     // the parsed value (only emits a warning). We return the value and ignore
     // anything after it; malformed/incomplete input yields `false`.
-    match p.parse_value() {
-        Some(v) => Ok(v),
-        None => Ok(Value::Bool(false)),
+    let v = match p.parse_value(host) {
+        Some(v) => v,
+        None => return Ok(Value::Bool(false)),
+    };
+    for (obj, data) in std::mem::take(&mut p.pending) {
+        let mut cb = PhpArray::new();
+        cb.push(obj);
+        match data {
+            Some(d) => {
+                cb.push(Value::str("__unserialize"));
+                host.call_callable(&Value::Array(cb), &[Value::Array(d)])?;
+            }
+            None => {
+                cb.push(Value::str("__wakeup"));
+                host.call_callable(&Value::Array(cb), &[])?;
+            }
+        }
     }
+    Ok(v)
 }
 
 // ---------------------------------------------------------------------------

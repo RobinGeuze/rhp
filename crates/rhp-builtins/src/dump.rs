@@ -10,6 +10,26 @@ fn sp(n: usize, out: &mut Vec<u8>) {
     out.extend(std::iter::repeat_n(b' ', n));
 }
 
+/// Split a php-mangled property name: `"\0Class\0name"` -> (name, Some(Class)),
+/// `"\0*\0name"` -> (name, Some("*")), plain `name` -> (name, None).
+pub fn unmangle_prop(key: &[u8]) -> (&[u8], Option<&[u8]>) {
+    if key.first() == Some(&0) {
+        if let Some(end) = key[1..].iter().position(|&b| b == 0) {
+            return (&key[end + 2..], Some(&key[1..end + 1]));
+        }
+    }
+    (key, None)
+}
+
+/// An object's properties keyed by their php-mangled names (debug view).
+fn mangled_props(host: &dyn crate::Host, h: &rhp_values::ObjectHandle) -> Vec<(PhpStr, Value)> {
+    let b = h.borrow();
+    b.properties
+        .iter()
+        .map(|(k, v)| (host.mangled_prop_name(b.class, k), v.clone()))
+        .collect()
+}
+
 /// `var_dump` of one value at the given indentation (spaces). `host` supplies
 /// class names / enum-ness for object rendering.
 pub fn var_dump(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, indent: usize) {
@@ -46,14 +66,10 @@ pub fn var_dump(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, indent: us
         }
         Value::Object(h) => {
             // Snapshot under a short borrow so recursion can't double-borrow.
-            let (class_id, obj_id, props) = {
+            let props = mangled_props(host, h);
+            let (class_id, obj_id) = {
                 let b = h.borrow();
-                let props: Vec<(PhpStr, Value)> = b
-                    .properties
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                (b.class, b.id, props)
+                (b.class, b.id)
             };
             let cname = host
                 .class_name(class_id)
@@ -83,8 +99,19 @@ pub fn var_dump(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, indent: us
                 for (k, val) in &props {
                     sp(indent + 2, out);
                     out.extend_from_slice(b"[\"");
-                    out.extend_from_slice(k.as_bytes());
-                    out.extend_from_slice(b"\"]=>\n");
+                    let (name, owner) = unmangle_prop(k.as_bytes());
+                    out.extend_from_slice(name);
+                    out.push(b'"');
+                    match owner {
+                        None => {}
+                        Some(b"*") => out.extend_from_slice(b":protected"),
+                        Some(class) => {
+                            out.extend_from_slice(b":\"");
+                            out.extend_from_slice(class);
+                            out.extend_from_slice(b"\":private");
+                        }
+                    }
+                    out.extend_from_slice(b"]=>\n");
                     var_dump(host, out, val, indent + 2);
                 }
                 sp(indent, out);
@@ -143,14 +170,20 @@ fn print_r_value(
         }
         Value::Object(h) => {
             // Snapshot under a short borrow so recursion can't double-borrow.
-            let (class_id, obj_id, entries) = {
+            let entries: Vec<(Vec<u8>, Value)> = mangled_props(host, h)
+                .into_iter()
+                .map(|(k, v)| {
+                    let label = match unmangle_prop(k.as_bytes()) {
+                        (name, None) => name.to_vec(),
+                        (name, Some(b"*")) => [name, b":protected"].concat(),
+                        (name, Some(class)) => [name, b":", class, b":private"].concat(),
+                    };
+                    (label, v)
+                })
+                .collect();
+            let (class_id, obj_id) = {
                 let b = h.borrow();
-                let entries: Vec<(Vec<u8>, Value)> = b
-                    .properties
-                    .iter()
-                    .map(|(k, v)| (k.as_bytes().to_vec(), v.clone()))
-                    .collect();
-                (b.class, b.id, entries)
+                (b.class, b.id)
             };
             out.extend_from_slice(
                 &host
@@ -217,35 +250,104 @@ fn print_r_key(k: &ArrayKey) -> Vec<u8> {
     }
 }
 
-/// `var_export` of one value. `indent` = leading spaces of this array's lines.
-pub fn var_export(out: &mut Vec<u8>, v: &Value, indent: usize) {
+/// `var_export` of one value — php's `php_var_export_ex`; `level` starts at 1.
+pub fn var_export(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, level: usize) {
     let v = deref(v);
     match &v {
         Value::Null => out.extend_from_slice(b"NULL"),
         Value::Bool(b) => out.extend_from_slice(if *b { b"true" } else { b"false" }),
+        // i64::MIN as a literal would parse as a float.
+        Value::Int(i64::MIN) => out.extend_from_slice(b"-9223372036854775807-1"),
         Value::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),
         Value::Float(f) => out.extend_from_slice(&export_float(*f)),
         Value::Str(s) => export_string(out, s.as_bytes()),
         Value::Array(a) => {
+            if level > 1 {
+                out.push(b'\n');
+                sp(level - 1, out);
+            }
             out.extend_from_slice(b"array (\n");
             for (k, val) in a.iter() {
-                sp(indent + 2, out);
+                sp(level + 1, out);
                 export_key(out, k);
                 out.extend_from_slice(b" => ");
-                if matches!(deref(val), Value::Array(_)) {
-                    out.push(b'\n');
-                    sp(indent + 2, out);
-                    var_export(out, val, indent + 2);
-                    out.extend_from_slice(b",\n");
-                } else {
-                    var_export(out, val, indent + 2);
-                    out.extend_from_slice(b",\n");
-                }
+                var_export(host, out, val, level + 2);
+                out.extend_from_slice(b",\n");
             }
-            sp(indent, out);
+            if level > 1 {
+                sp(level - 1, out);
+            }
             out.push(b')');
         }
-        Value::Object(_) | Value::Closure(_) | Value::Resource(_) => out.extend_from_slice(b"NULL"),
+        Value::Object(h) => {
+            let class_id = h.borrow().class;
+            let cname = host
+                .class_name(class_id)
+                .unwrap_or_else(|| b"class".to_vec());
+            let is_enum = host.is_enum_class(class_id);
+            let props = mangled_props(host, h);
+            if level > 1 {
+                out.push(b'\n');
+                sp(level - 1, out);
+            }
+            let is_std = cname.eq_ignore_ascii_case(b"stdClass");
+            if is_std {
+                out.extend_from_slice(b"(object) array(\n");
+            } else {
+                out.push(b'\\');
+                out.extend_from_slice(&cname);
+                if is_enum {
+                    let case = props
+                        .iter()
+                        .find(|(k, _)| k.as_bytes() == b"name")
+                        .map(|(_, v)| conv::to_string_bytes(v))
+                        .unwrap_or_default();
+                    out.extend_from_slice(b"::");
+                    out.extend_from_slice(&case);
+                } else {
+                    out.extend_from_slice(b"::__set_state(array(\n");
+                }
+            }
+            if !is_enum {
+                for (k, val) in &props {
+                    sp(level + 2, out);
+                    let (name, _) = unmangle_prop(k.as_bytes());
+                    // Property names are always string keys (even "0").
+                    out.push(b'\'');
+                    for &b in name {
+                        if b == b'\\' || b == b'\'' {
+                            out.push(b'\\');
+                        }
+                        out.push(b);
+                    }
+                    out.push(b'\'');
+                    out.extend_from_slice(b" => ");
+                    var_export(host, out, val, level + 2);
+                    out.extend_from_slice(b",\n");
+                }
+                if level > 1 {
+                    sp(level - 1, out);
+                }
+            }
+            if is_std {
+                out.push(b')');
+            } else if !is_enum {
+                out.extend_from_slice(b"))");
+            }
+        }
+        Value::Closure(_) => {
+            // A Closure exports as `\Closure::__set_state(array(\n))`.
+            if level > 1 {
+                out.push(b'\n');
+                sp(level - 1, out);
+            }
+            out.extend_from_slice(b"\\Closure::__set_state(array(\n");
+            if level > 1 {
+                sp(level - 1, out);
+            }
+            out.extend_from_slice(b"))");
+        }
+        Value::Resource(_) => out.extend_from_slice(b"NULL"),
         Value::Ref(_) => unreachable!("deref'd above"),
     }
 }
@@ -257,10 +359,15 @@ fn export_key(out: &mut Vec<u8>, k: &ArrayKey) {
     }
 }
 
-/// Single-quoted string literal with `\` and `'` escaped (var_export style).
+/// Single-quoted string literal with `\` and `'` escaped and NUL bytes spliced
+/// as `' . "\0" . '` (var_export style).
 fn export_string(out: &mut Vec<u8>, s: &[u8]) {
     out.push(b'\'');
     for &b in s {
+        if b == 0 {
+            out.extend_from_slice(b"' . \"\\0\" . '");
+            continue;
+        }
         if b == b'\\' || b == b'\'' {
             out.push(b'\\');
         }

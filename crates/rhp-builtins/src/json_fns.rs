@@ -97,10 +97,10 @@ fn deref(v: &Value) -> Value {
 // json_encode
 // ---------------------------------------------------------------------------
 
-fn fn_json_encode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_json_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     let mut out = Vec::new();
-    if encode_value(&deref(&args[0]), &mut out, flags, 0) {
+    if encode_value(host, &deref(&args[0]), &mut out, flags, 0) {
         set_last_error(JSON_ERROR_NONE);
         Ok(Value::str(out))
     } else {
@@ -122,7 +122,7 @@ fn indent(out: &mut Vec<u8>, level: usize) {
 
 /// Encode one value. Returns false on an unencodable value (NAN/INF, invalid
 /// UTF-8, object/closure) — php then fails the whole call.
-fn encode_value(v: &Value, out: &mut Vec<u8>, flags: i64, level: usize) -> bool {
+fn encode_value(host: &dyn Host, v: &Value, out: &mut Vec<u8>, flags: i64, level: usize) -> bool {
     let pretty = flags & JSON_PRETTY_PRINT != 0;
     match v {
         Value::Null => out.extend_from_slice(b"null"),
@@ -149,25 +149,29 @@ fn encode_value(v: &Value, out: &mut Vec<u8>, flags: i64, level: usize) -> bool 
             }
             return encode_string(s.as_bytes(), out, flags);
         }
-        Value::Array(a) => return encode_array(a, out, flags, level, pretty),
-        // An object serializes as a JSON object of its properties (always `{}`,
-        // never `[]`). Private/protected visibility is not filtered here; the
-        // common targets are stdClass / public-property DTOs.
+        Value::Array(a) => return encode_array(host, a, out, flags, level, pretty),
+        // An object serializes as a JSON object of its public properties
+        // (always `{}`, never `[]`); php skips every mangled (protected /
+        // private) name regardless of the calling scope.
         Value::Object(h) => {
-            let props: Vec<(rhp_values::PhpStr, Value)> = h
-                .borrow()
-                .properties
-                .iter()
-                .map(|(k, v)| (k.clone(), deref(v)))
-                .collect();
-            return encode_object(&props, out, flags, level, pretty);
+            let props: Vec<(rhp_values::PhpStr, Value)> = {
+                let b = h.borrow();
+                b.properties
+                    .iter()
+                    .filter(|(k, _)| {
+                        host.mangled_prop_name(b.class, k).as_bytes().first() != Some(&0)
+                    })
+                    .map(|(k, v)| (k.clone(), deref(v)))
+                    .collect()
+            };
+            return encode_object(host, &props, out, flags, level, pretty);
         }
         Value::Closure(_) => {
             // A Closure encodes as an empty object in php.
-            return encode_object(&[], out, flags, level, pretty);
+            return encode_object(host, &[], out, flags, level, pretty);
         }
         Value::Resource(_) => return false, // resources are not JSON-encodable
-        Value::Ref(r) => return encode_value(&r.borrow(), out, flags, level),
+        Value::Ref(r) => return encode_value(host, &r.borrow(), out, flags, level),
     }
     true
 }
@@ -186,6 +190,7 @@ fn encode_float(f: f64, out: &mut Vec<u8>) {
 
 /// Encode an object's properties as a JSON object (`{"k":v,...}`, always braces).
 fn encode_object(
+    host: &dyn Host,
     props: &[(rhp_values::PhpStr, Value)],
     out: &mut Vec<u8>,
     flags: i64,
@@ -209,7 +214,7 @@ fn encode_object(
             return false;
         }
         out.extend_from_slice(if pretty { b": " } else { b":" });
-        if !encode_value(val, out, flags, level + 1) {
+        if !encode_value(host, val, out, flags, level + 1) {
             return false;
         }
     }
@@ -221,7 +226,14 @@ fn encode_object(
     true
 }
 
-fn encode_array(a: &PhpArray, out: &mut Vec<u8>, flags: i64, level: usize, pretty: bool) -> bool {
+fn encode_array(
+    host: &dyn Host,
+    a: &PhpArray,
+    out: &mut Vec<u8>,
+    flags: i64,
+    level: usize,
+    pretty: bool,
+) -> bool {
     let force_object = flags & JSON_FORCE_OBJECT != 0;
     let is_list = !force_object
         && a.iter()
@@ -256,7 +268,7 @@ fn encode_array(a: &PhpArray, out: &mut Vec<u8>, flags: i64, level: usize, prett
             }
             out.extend_from_slice(if pretty { b": " } else { b":" });
         }
-        if !encode_value(val, out, flags, level + 1) {
+        if !encode_value(host, val, out, flags, level + 1) {
             return false;
         }
     }

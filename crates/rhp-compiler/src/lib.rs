@@ -657,9 +657,12 @@ pub fn compile_with_source(
 fn modifiers_visibility(mods: &rhp_frontend::cst::Sequence<Modifier>) -> Visibility {
     for m in mods.iter() {
         match m {
-            Modifier::Private(_) | Modifier::PrivateSet(_) => return Visibility::Private,
-            Modifier::Protected(_) | Modifier::ProtectedSet(_) => return Visibility::Protected,
-            Modifier::Public(_) | Modifier::PublicSet(_) => return Visibility::Public,
+            // `private(set)` etc. only restrict writes (asymmetric visibility,
+            // not enforced yet); the read visibility is the plain modifier,
+            // defaulting to public.
+            Modifier::Private(_) => return Visibility::Private,
+            Modifier::Protected(_) => return Visibility::Protected,
+            Modifier::Public(_) => return Visibility::Public,
             _ => {}
         }
     }
@@ -956,7 +959,7 @@ final class Generator implements Iterator {}
 class stdClass {}
 final class Closure {
     public static function fromCallable($callback) { return __closure_from_callable($callback); }
-    public static function bind($closure, $newThis, $newScope = null) { return __closure_bind($closure, $newThis, $newScope); }
+    public static function bind($closure, $newThis, $newScope = 'static') { return __closure_bind($closure, $newThis, $newScope); }
 }
 class Exception implements Throwable {
     protected $message = "";
@@ -3468,6 +3471,40 @@ impl ProtoBuilder {
                 Ok(dst)
             }
             Construct::Empty(e) => {
+                // `empty($o->prop)` = !isset($o->prop) || !$o->prop: an
+                // inaccessible / unset property is empty (no error), via
+                // `__isset` then `__get` like php.
+                if let Expression::Access(Access::Property(pa)) = e.value {
+                    if let ClassLikeMemberSelector::Identifier(li) = &pa.property {
+                        let obj = self.compile_expr(pa.object)?;
+                        let name = self.intern_name(li.value);
+                        let dst = self.alloc_temp();
+                        let set = self.alloc_temp();
+                        self.emit(Instr::IssetProp {
+                            dst: set,
+                            obj,
+                            name,
+                        });
+                        self.emit(Instr::LoadBool { dst, b: true });
+                        let jpos = self.code.len();
+                        self.emit(Instr::Nop); // JmpFalse set -> end
+                        let v = self.alloc_temp();
+                        let cache = self.alloc_cache();
+                        self.emit(Instr::FetchProp {
+                            dst: v,
+                            obj,
+                            name,
+                            cache,
+                        });
+                        self.emit(Instr::Not { dst, a: v });
+                        let lend = self.here();
+                        self.code[jpos] = Instr::JmpFalse {
+                            cond: set,
+                            target: lend,
+                        };
+                        return Ok(dst);
+                    }
+                }
                 // empty(x) == !to_bool(x); absent/null -> true (Not handles it).
                 let r = self.compile_expr(e.value)?;
                 let dst = self.alloc_temp();
@@ -4183,7 +4220,16 @@ impl ProtoBuilder {
             }
         }
 
+        // `$this` in a non-static closure: its CV receives a rebound object
+        // (`Closure::bind` / `bindTo` / `call`) even when the closure was
+        // created outside any instance context and so captured nothing.
+        let this_cv = if is_static {
+            None
+        } else {
+            c.cv_map.iter().position(|n| n == b"this").map(|i| i as Reg)
+        };
         let mut proto = c.finish();
+        proto.this_cv = this_cv;
         proto.num_params = num_params;
         proto.params = params;
         proto.num_captures = nc;

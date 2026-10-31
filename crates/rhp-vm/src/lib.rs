@@ -14,6 +14,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use classes::PropRes;
 use rhp_builtins::{self as builtins, Host};
 use rhp_bytecode::{
     ClassProto, ClassRef, CmpKind, ConstInitProto, Default as ParamDefault, FunctionProto,
@@ -38,6 +39,8 @@ type Includer = Box<dyn FnMut(&str, &[u8]) -> Result<Program, Thrown>>;
 /// The virtual machine: output sink + call stack + global tables.
 pub struct Vm {
     out: Vec<u8>,
+    /// Write output directly to stdout instead of `out` (the CLI).
+    stdout_passthrough: bool,
     /// Output-buffering stack (`ob_start`): `echo`/`print` write to the top
     /// buffer when non-empty, else straight to `out`.
     ob_stack: Vec<Vec<u8>>,
@@ -152,7 +155,7 @@ impl Host for Vm {
     fn write_out(&mut self, bytes: &[u8]) {
         match self.ob_stack.last_mut() {
             Some(buf) => buf.extend_from_slice(bytes),
-            None => self.out.extend_from_slice(bytes),
+            None => self.emit_stdout(bytes),
         }
     }
 
@@ -466,7 +469,7 @@ impl Host for Vm {
             StreamState::Stdin => Act::No,
         };
         match act {
-            Act::Out => self.out.extend_from_slice(data),
+            Act::Out => self.emit_stdout(data),
             Act::Err => {
                 use std::io::Write;
                 let _ = std::io::stderr().write_all(data);
@@ -628,10 +631,16 @@ impl Host for Vm {
             chain.push(p);
         }
         let rank = |c: ClassId| chain.iter().position(|&x| x == c).unwrap_or(chain.len());
+        // Only the declaration each name resolves to on this class, minus a
+        // parent's private (php's getProperties() never lists those).
         let mut keys: Vec<(usize, &PhpStr)> = entry
             .props
             .iter()
-            .map(|(k, p)| (rank(p.declaring_class), k))
+            .filter(|(k, p)| {
+                entry.prop_visible.get(&p.name) == Some(*k)
+                    && (p.visibility != rhp_values::Visibility::Private || p.declaring_class == cid)
+            })
+            .map(|(_, p)| (rank(p.declaring_class), &p.name))
             .collect();
         keys.sort_by_key(|&(r, _)| r); // stable: keeps declaration order within a class
         for (_, k) in keys {
@@ -688,15 +697,67 @@ impl Host for Vm {
         Ok(objval)
     }
 
-    fn reflect_set_prop(&mut self, obj: &Value, name: &[u8], val: Value) -> bool {
+    fn reflect_set_prop(&mut self, obj: &Value, class: &[u8], name: &[u8], val: Value) -> bool {
         if let Value::Object(h) = deref(obj) {
-            h.borrow_mut()
-                .properties
-                .insert(PhpStr::from_bytes(name.to_vec()), val);
+            let key = self.reflect_prop_key(&h, class, name);
+            let mut od = h.borrow_mut();
+            *classes::prop_slot_mut(&self.classes, &mut od, key) = val;
             true
         } else {
             false
         }
+    }
+
+    fn reflect_get_prop(&self, obj: &Value, class: &[u8], name: &[u8]) -> Option<Value> {
+        match deref(obj) {
+            Value::Object(h) => {
+                let key = self.reflect_prop_key(&h, class, name);
+                let v = h.borrow().properties.get(&key).map(deref);
+                v
+            }
+            _ => None,
+        }
+    }
+
+    fn mangled_prop_name(&self, class_id: u32, key: &PhpStr) -> PhpStr {
+        match self.classes.get(class_id as usize) {
+            Some(entry) => classes::mangled_prop_key(entry, key),
+            None => key.clone(),
+        }
+    }
+
+    fn object_prop_exists(&self, obj: &Value, name: &[u8]) -> bool {
+        let Value::Object(h) = deref(obj) else {
+            return false;
+        };
+        let scope = self.stack.last().and_then(|f| f.defining_class);
+        let b = h.borrow();
+        let name = PhpStr::from_bytes(name.to_vec());
+        match classes::resolve_prop(&self.classes, b.class, scope, &name) {
+            PropRes::Slot(k) => b.properties.contains_key(&k),
+            PropRes::Dynamic => b.properties.contains_key(&name),
+            PropRes::Denied(_) => false,
+        }
+    }
+
+    fn object_vars(&self, obj: &Value) -> Option<Value> {
+        let Value::Object(h) = deref(obj) else {
+            return None;
+        };
+        let scope = self.stack.last().and_then(|f| f.defining_class);
+        let b = h.borrow();
+        let mut arr = PhpArray::new();
+        for (key, val) in &b.properties {
+            if let Some(name) = classes::slot_accessible(&self.classes, b.class, scope, key) {
+                // A reference held only by this slot reads as its value.
+                let v = match val {
+                    Value::Ref(rc) if Rc::strong_count(rc) == 1 => rc.borrow().clone(),
+                    v => v.clone(),
+                };
+                arr.insert(ArrayKey::from_bytes(name.as_bytes()), v);
+            }
+        }
+        Some(Value::Array(arr))
     }
 
     fn reflect_class_constants(&self, class: &[u8]) -> Option<Value> {
@@ -778,25 +839,31 @@ impl Host for Vm {
             Value::Object(h) => Some(h),
             _ => None,
         };
-        // Scope: an explicit class name / object, else the new $this's class,
-        // else keep the closure's original scope.
+        // php's do_closure_bind: an object's class, `"static"` = keep the
+        // closure's scope, a class name, or null = no scope. The called scope
+        // (`static::`) is the new `$this`'s class, else the new scope.
         let scope_class = match deref(scope) {
-            Value::Null => new_this_h
-                .as_ref()
-                .map(|h| h.borrow().class)
-                .or(cd.bound_class),
+            Value::Null => None,
             Value::Object(h) => Some(h.borrow().class),
-            v => self
-                .resolve_class_by_name(&conv::to_string_bytes(&v))
-                .ok()
-                .or(cd.bound_class),
+            v => {
+                let name = conv::to_string_bytes(&v);
+                if name == b"static" {
+                    cd.bound_class
+                } else {
+                    self.resolve_class_by_name(&name).ok().or(cd.bound_class)
+                }
+            }
         };
+        let called = new_this_h
+            .as_ref()
+            .map(|h| h.borrow().class)
+            .or(scope_class);
         Some(Value::Closure(Rc::new(rhp_values::ClosureData {
             fnidx: cd.fnidx,
             captures: cd.captures.clone(),
             bound_this: new_this_h,
             bound_class: scope_class,
-            bound_static: scope_class,
+            bound_static: called,
             wrapped: cd.wrapped.clone(),
         })))
     }
@@ -810,10 +877,20 @@ impl Host for Vm {
     }
 
     fn class_has_property(&self, class_id: u32, prop: &[u8]) -> bool {
+        // php's property_exists(): a declaration visible on the class, where a
+        // parent's private does not count.
         match self.classes.get(class_id as usize) {
             Some(entry) => {
-                entry.props.keys().any(|k| k.as_bytes() == prop)
-                    || entry.static_props.contains_key(prop)
+                let name = PhpStr::from_bytes(prop.to_vec());
+                let inst = entry.prop_visible.get(&name).is_some_and(|k| {
+                    let pe = &entry.props[k];
+                    pe.visibility != rhp_values::Visibility::Private
+                        || pe.declaring_class == class_id
+                });
+                inst || entry.static_props.get(prop).is_some_and(|sp| {
+                    sp.visibility != rhp_values::Visibility::Private
+                        || sp.declaring_class == class_id
+                })
             }
             None => false,
         }
@@ -1000,6 +1077,7 @@ impl Vm {
         }
         Vm {
             out: Vec::new(),
+            stdout_passthrough: false,
             ob_stack: Vec::new(),
             stack: Vec::new(),
             functions: Vec::new(),
@@ -1134,18 +1212,35 @@ impl Vm {
         Ok(match o {
             Value::Object(h) => {
                 let cls = h.borrow().class;
-                if let Some(pe) = self.class(cls).props.get(&pname) {
-                    let (vis, decl) = (pe.visibility, pe.declaring_class);
-                    if !self.check_access(self.stack[top].defining_class, decl, vis) {
-                        return Err(self.access_err("property", decl, pname.as_bytes(), vis));
+                let scope = self.stack[top].defining_class;
+                let denied = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+                    PropRes::Slot(k) => {
+                        if let Some(v) = h.borrow().properties.get(&k) {
+                            return Ok(v.clone());
+                        }
+                        None
                     }
-                }
-                match h.borrow().properties.get(&pname).cloned() {
-                    Some(v) => v,
-                    None => match self.lookup_method(cls, b"__get") {
-                        Some(getter) => {
-                            let arg = Value::str(pname.as_bytes().to_vec());
-                            self.call_sync(&getter, Some(h.clone()), cls, vec![arg])?
+                    PropRes::Dynamic => {
+                        if let Some(v) = h.borrow().properties.get(&pname) {
+                            return Ok(v.clone());
+                        }
+                        None
+                    }
+                    PropRes::Denied(vis) => Some(vis),
+                };
+                match self.lookup_method(cls, b"__get") {
+                    Some(getter) => {
+                        let arg = Value::str(pname.as_bytes().to_vec());
+                        self.call_sync(&getter, Some(h.clone()), cls, vec![arg])?
+                    }
+                    None => match denied {
+                        Some(vis) => {
+                            return Err(classes::prop_access_err(
+                                &self.classes,
+                                cls,
+                                pname.as_bytes(),
+                                vis,
+                            ))
                         }
                         None => Value::Null,
                     },
@@ -1153,6 +1248,24 @@ impl Vm {
             }
             _ => Value::Null,
         })
+    }
+
+    /// php's static-property visibility check: a non-public static is reachable
+    /// only from its declaring class (private) / a related class (protected);
+    /// the error names the class the access was spelled against.
+    fn check_static_prop_access(
+        &self,
+        top: usize,
+        cls: ClassId,
+        pname: &[u8],
+    ) -> Result<(), Thrown> {
+        if let Some(sp) = self.class(cls).static_props.get(pname) {
+            let (vis, decl) = (sp.visibility, sp.declaring_class);
+            if !self.check_access(self.stack[top].defining_class, decl, vis) {
+                return Err(classes::prop_access_err(&self.classes, cls, pname, vis));
+            }
+        }
+        Ok(())
     }
 
     /// Write `val` to property `pname` of `o` (visibility-checked, `__set` fallback).
@@ -1165,34 +1278,39 @@ impl Vm {
     ) -> Result<(), Thrown> {
         if let Value::Object(h) = o {
             let cls = h.borrow().class;
-            let declared = self
-                .class(cls)
-                .props
-                .get(&pname)
-                .map(|pe| (pe.visibility, pe.declaring_class));
-            let accessible = declared.is_none_or(|(vis, decl)| {
-                self.check_access(self.stack[top].defining_class, decl, vis)
-            });
-            if declared.is_none() || !accessible {
+            let scope = self.stack[top].defining_class;
+            let (key, denied) = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+                PropRes::Slot(k) => (k, None),
+                PropRes::Dynamic => (pname.clone(), None),
+                PropRes::Denied(vis) => (pname.clone(), Some(vis)),
+            };
+            let present = denied.is_none() && h.borrow().properties.contains_key(&key);
+            if !present {
+                // Inaccessible, or not currently set (dynamic / unset declared):
+                // `__set` intercepts when defined.
                 if let Some(setter) = self.lookup_method(cls, b"__set") {
                     let nm = Value::str(pname.as_bytes().to_vec());
                     self.call_sync(&setter, Some(h), cls, vec![nm, val])?;
                     return Ok(());
                 }
-                if !accessible {
-                    let (vis, decl) = declared.unwrap();
-                    return Err(self.access_err("property", decl, pname.as_bytes(), vis));
+                if let Some(vis) = denied {
+                    return Err(classes::prop_access_err(
+                        &self.classes,
+                        cls,
+                        pname.as_bytes(),
+                        vis,
+                    ));
                 }
             }
-            let existing_ref = match h.borrow().properties.get(&pname) {
-                Some(Value::Ref(rc)) => Some(rc.clone()),
-                _ => None,
-            };
-            match existing_ref {
-                Some(rc) => *rc.borrow_mut() = val,
-                None => {
-                    h.borrow_mut().properties.insert(pname, val);
+            let mut od = h.borrow_mut();
+            let slot = classes::prop_slot_mut(&self.classes, &mut od, key);
+            match slot {
+                Value::Ref(rc) => {
+                    let rc = rc.clone();
+                    drop(od);
+                    *rc.borrow_mut() = val;
                 }
+                other => *other = val,
             }
         }
         Ok(())
@@ -1634,6 +1752,25 @@ impl Vm {
         self.includer = Some(Box::new(f));
     }
 
+    /// Write script output straight to the process stdout (unbuffered, like
+    /// the php CLI) instead of collecting it for [`Vm::output`], so it
+    /// interleaves correctly with stderr and child-process output.
+    pub fn set_stdout_passthrough(&mut self, on: bool) {
+        self.stdout_passthrough = on;
+    }
+
+    /// Unbuffered-by-default script output (see [`Vm::set_stdout_passthrough`]).
+    fn emit_stdout(&mut self, data: &[u8]) {
+        if self.stdout_passthrough {
+            use std::io::Write;
+            let mut so = std::io::stdout().lock();
+            let _ = so.write_all(data);
+            let _ = so.flush();
+        } else {
+            self.out.extend_from_slice(data);
+        }
+    }
+
     pub fn output(&self) -> &[u8] {
         &self.out
     }
@@ -1725,9 +1862,13 @@ impl Vm {
     }
 
     fn cursor_read_steps(&self, top: usize, steps: &[CursorStep]) -> Value {
+        let cx = PropCtx {
+            classes: &self.classes,
+            scope: self.stack[top].defining_class,
+        };
         match &self.cursor_root {
-            CursorRoot::Cv(r) => read_path(&self.stack[top].regs[*r as usize], steps),
-            CursorRoot::Cell(rc) => read_path(&rc.borrow(), steps),
+            CursorRoot::Cv(r) => read_path(&self.stack[top].regs[*r as usize], steps, &cx),
+            CursorRoot::Cell(rc) => read_path(&rc.borrow(), steps, &cx),
         }
     }
 
@@ -1744,14 +1885,18 @@ impl Vm {
                 }
             }
         }
+        let cx = PropCtx {
+            classes: &self.classes,
+            scope: self.stack[top].defining_class,
+        };
         match &self.cursor_root {
             CursorRoot::Cv(r) => {
                 let r = *r as usize;
-                assign_path(&mut self.stack[top].regs[r], steps, v)
+                assign_path(&mut self.stack[top].regs[r], steps, v, &cx)
             }
             CursorRoot::Cell(rc) => {
                 let rc = rc.clone();
-                let r = assign_path(&mut rc.borrow_mut(), steps, v);
+                let r = assign_path(&mut rc.borrow_mut(), steps, v, &cx);
                 r
             }
         }
@@ -1811,11 +1956,15 @@ impl Vm {
                 }
             }
         }
+        let cx = PropCtx {
+            classes: &self.classes,
+            scope: self.stack[top].defining_class,
+        };
         match &self.cursor_root {
-            CursorRoot::Cv(r) => unset_path(&mut self.stack[top].regs[*r as usize], steps),
+            CursorRoot::Cv(r) => unset_path(&mut self.stack[top].regs[*r as usize], steps, &cx),
             CursorRoot::Cell(rc) => {
                 let rc = rc.clone();
-                unset_path(&mut rc.borrow_mut(), steps);
+                unset_path(&mut rc.borrow_mut(), steps, &cx);
             }
         }
     }
@@ -2227,6 +2376,7 @@ impl Vm {
                 Instr::LvalStaticProp { class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
                     let pname = proto.names[name as usize].as_bytes().to_vec();
+                    self.check_static_prop_access(top, cls, &pname)?;
                     let cell = self.static_prop_cell(cls, &pname)?;
                     self.cursor_root = CursorRoot::Cell(cell);
                     self.cursor_steps.clear();
@@ -2249,14 +2399,18 @@ impl Vm {
                 }
                 Instr::MakeRefLval { dst } => {
                     let steps = std::mem::take(&mut self.cursor_steps);
+                    let cx = PropCtx {
+                        classes: &self.classes,
+                        scope: self.stack[top].defining_class,
+                    };
                     let cell = match &self.cursor_root {
                         CursorRoot::Cv(r) => {
                             let r = *r as usize;
-                            make_ref_path(&mut self.stack[top].regs[r], &steps)?
+                            make_ref_path(&mut self.stack[top].regs[r], &steps, &cx)?
                         }
                         CursorRoot::Cell(rc) => {
                             let rc = rc.clone();
-                            let c = make_ref_path(&mut rc.borrow_mut(), &steps)?;
+                            let c = make_ref_path(&mut rc.borrow_mut(), &steps, &cx)?;
                             c
                         }
                     };
@@ -2443,14 +2597,10 @@ impl Vm {
                         let mut idx = pos;
                         let mut found: Option<PhpStr> = None;
                         while idx < n {
-                            let name = b.properties.get_index(idx).unwrap().0.clone();
-                            let visible = match self.class(cls).props.get(&name) {
-                                Some(pe) => {
-                                    self.check_access(caller, pe.declaring_class, pe.visibility)
-                                }
-                                None => true, // dynamic properties are public
-                            };
-                            if visible {
+                            let key = b.properties.get_index(idx).unwrap().0;
+                            if let Some(name) =
+                                classes::slot_accessible(&self.classes, cls, caller, key)
+                            {
                                 found = Some(name);
                                 break;
                             }
@@ -2630,6 +2780,13 @@ impl Vm {
                 } => {
                     let o = self.reg_get(top, obj);
                     let mname = conv::to_string_bytes(&self.reg_get(top, name));
+                    if let Value::Closure(_) = o {
+                        let args: Vec<Value> =
+                            (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+                        let r = self.closure_method(&o, &mname, args)?;
+                        self.reg_set(top, dst, r);
+                        continue;
+                    }
                     let Value::Object(h) = o else {
                         return Err(Thrown::error(
                             "Error",
@@ -2654,22 +2811,26 @@ impl Vm {
                     let pname = proto.names[name as usize].clone();
                     let result = match o {
                         Value::Object(h) => {
-                            let present = h.borrow().properties.get(&pname).cloned();
+                            let cls = h.borrow().class;
+                            let scope = self.stack[top].defining_class;
+                            let present =
+                                match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+                                    PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
+                                    PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
+                                    PropRes::Denied(_) => None,
+                                };
                             match present {
                                 // A declared/dynamic property: set iff non-null.
                                 Some(v) => !matches!(deref(&v), Value::Null),
-                                None => {
-                                    let cls = h.borrow().class;
-                                    match self.lookup_method(cls, b"__isset") {
-                                        Some(m) => {
-                                            let nm = Value::str(pname.as_bytes().to_vec());
-                                            let r =
-                                                self.call_sync(&m, Some(h.clone()), cls, vec![nm])?;
-                                            conv::to_bool(&r)
-                                        }
-                                        None => false,
+                                None => match self.lookup_method(cls, b"__isset") {
+                                    Some(m) => {
+                                        let nm = Value::str(pname.as_bytes().to_vec());
+                                        let r =
+                                            self.call_sync(&m, Some(h.clone()), cls, vec![nm])?;
+                                        conv::to_bool(&r)
                                     }
-                                }
+                                    None => false,
+                                },
                             }
                         }
                         _ => false,
@@ -2680,15 +2841,29 @@ impl Vm {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     if let Value::Object(h) = o {
-                        let present = h.borrow().properties.contains_key(&pname);
+                        let cls = h.borrow().class;
+                        let scope = self.stack[top].defining_class;
+                        let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
+                        let key = match &res {
+                            PropRes::Slot(k) => Some(k.clone()),
+                            PropRes::Dynamic => Some(pname.clone()),
+                            PropRes::Denied(_) => None,
+                        };
+                        let present = key
+                            .as_ref()
+                            .is_some_and(|k| h.borrow().properties.contains_key(k));
                         if present {
-                            h.borrow_mut().properties.shift_remove(&pname);
-                        } else {
-                            let cls = h.borrow().class;
-                            if let Some(m) = self.lookup_method(cls, b"__unset") {
-                                let nm = Value::str(pname.as_bytes().to_vec());
-                                self.call_sync(&m, Some(h), cls, vec![nm])?;
-                            }
+                            h.borrow_mut().properties.shift_remove(&key.unwrap());
+                        } else if let Some(m) = self.lookup_method(cls, b"__unset") {
+                            let nm = Value::str(pname.as_bytes().to_vec());
+                            self.call_sync(&m, Some(h), cls, vec![nm])?;
+                        } else if let PropRes::Denied(vis) = res {
+                            return Err(classes::prop_access_err(
+                                &self.classes,
+                                cls,
+                                pname.as_bytes(),
+                                vis,
+                            ));
                         }
                     }
                 }
@@ -2697,12 +2872,7 @@ impl Vm {
                 } => {
                     let cls = self.resolve_class_autoload(top, class)?;
                     let pname = proto.names[name as usize].as_bytes().to_vec();
-                    if let Some(sp) = self.class(cls).static_props.get(&pname) {
-                        let (vis, decl) = (sp.visibility, sp.declaring_class);
-                        if !self.check_access(self.stack[top].defining_class, decl, vis) {
-                            return Err(self.access_err("property", decl, &pname, vis));
-                        }
-                    }
+                    self.check_static_prop_access(top, cls, &pname)?;
                     let cell = self.static_prop_cell(cls, &pname)?;
                     let v = cell.borrow().clone();
                     self.reg_set(top, dst, v);
@@ -2748,6 +2918,13 @@ impl Vm {
                 } => {
                     let o = self.reg_get(top, obj);
                     let mname = proto.names[name as usize].as_bytes().to_vec();
+                    if let Value::Closure(_) = o {
+                        let args: Vec<Value> =
+                            (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+                        let r = self.closure_method(&o, &mname, args)?;
+                        self.reg_set(top, dst, r);
+                        continue;
+                    }
                     let Value::Object(h) = o else {
                         return Err(Thrown::error(
                             "Error",
@@ -2811,9 +2988,20 @@ impl Vm {
                             "__clone method called on non-object",
                         ));
                     };
+                    // php's zval_add_ref: a reference only this object holds is
+                    // copied as a plain value, so the clone gets its own slot.
                     let (cls, props) = {
                         let od = h.borrow();
-                        (od.class, od.properties.clone())
+                        let mut props = od.properties.clone();
+                        for v in props.values_mut() {
+                            if let Value::Ref(rc) = v {
+                                if Rc::strong_count(rc) == 2 {
+                                    let inner = rc.borrow().clone();
+                                    *v = inner;
+                                }
+                            }
+                        }
+                        (od.class, props)
                     };
                     let id = self.next_object_id;
                     self.next_object_id += 1;
@@ -3062,13 +3250,13 @@ impl Vm {
                     let code = match self.reg_get(top, arg) {
                         Value::Int(n) => n as i32,
                         Value::Str(s) => {
-                            self.out.extend_from_slice(s.as_bytes());
+                            self.emit_stdout(s.as_bytes());
                             0
                         }
                         Value::Null => 0,
                         other => {
                             let s = conv::to_string_bytes(&other);
-                            self.out.extend_from_slice(&s);
+                            self.emit_stdout(&s);
                             0
                         }
                     };
@@ -3529,49 +3717,44 @@ impl Vm {
     /// `(array) $object`: every property, keyed with php's visibility mangling —
     /// public `name`, protected `"\0*\0name"`, private `"\0Class\0name"`.
     fn object_to_array_mangled(&self, h: &ObjectHandle) -> Value {
-        use rhp_values::Visibility;
         let b = h.borrow();
         let cls = b.class;
         let mut a = PhpArray::new();
-        for (name, val) in &b.properties {
-            let key: Vec<u8> = match self.class(cls).props.get(name) {
-                Some(pe) => match pe.visibility {
-                    Visibility::Public => name.as_bytes().to_vec(),
-                    Visibility::Protected => {
-                        let mut k = vec![0u8];
-                        k.extend_from_slice(b"*\0");
-                        k.extend_from_slice(name.as_bytes());
-                        k
-                    }
-                    Visibility::Private => {
-                        let cname = self.class(pe.declaring_class).name.as_bytes().to_vec();
-                        let mut k = vec![0u8];
-                        k.extend_from_slice(&cname);
-                        k.push(0);
-                        k.extend_from_slice(name.as_bytes());
-                        k
-                    }
-                },
-                None => name.as_bytes().to_vec(), // dynamic properties are public
-            };
-            a.insert(ArrayKey::from_bytes(&key), deref(val).clone());
+        let entry = self.class(cls);
+        for (key, val) in &b.properties {
+            let key = classes::mangled_prop_key(entry, key);
+            a.insert(ArrayKey::from_bytes(key.as_bytes()), deref(val).clone());
         }
         Value::Array(a)
     }
 
     /// Snapshot an object's accessible (public from `caller` scope) properties as
     /// an array, for `foreach` over a plain object.
+    /// Storage key Reflection uses for property `name` of `h` when the
+    /// `ReflectionProperty` belongs to class `class`: that class's own private
+    /// first, else the visible declaration (visibility is bypassed).
+    fn reflect_prop_key(&self, h: &ObjectHandle, class: &[u8], name: &[u8]) -> PhpStr {
+        let cls = h.borrow().class;
+        let name = PhpStr::from_bytes(name.to_vec());
+        let scope = self.resolve_class_by_name(class).ok();
+        match classes::resolve_prop(&self.classes, cls, scope, &name) {
+            PropRes::Slot(k) => k,
+            PropRes::Dynamic => name,
+            PropRes::Denied(_) => self.classes[cls as usize]
+                .prop_visible
+                .get(&name)
+                .cloned()
+                .unwrap_or(name),
+        }
+    }
+
     fn object_prop_array(&self, h: &ObjectHandle, top: usize) -> PhpArray {
         let caller = self.stack[top].defining_class;
         let b = h.borrow();
         let cls = b.class;
         let mut arr = PhpArray::new();
-        for (name, val) in &b.properties {
-            let visible = match self.class(cls).props.get(name) {
-                Some(pe) => self.check_access(caller, pe.declaring_class, pe.visibility),
-                None => true, // dynamic properties are public
-            };
-            if visible {
+        for (key, val) in &b.properties {
+            if let Some(name) = classes::slot_accessible(&self.classes, cls, caller, key) {
                 arr.insert(ArrayKey::from_bytes(name.as_bytes()), deref(val).clone());
             }
         }
@@ -3805,6 +3988,46 @@ impl Vm {
 
     /// Invoke a PHP callable value synchronously (string function name,
     /// `[obj_or_class, method]`, an `__invoke` object, or a closure).
+    /// Instance methods of a `Closure` value: `bindTo`, `call`, `__invoke`.
+    fn closure_method(
+        &mut self,
+        closure: &Value,
+        mname: &[u8],
+        mut args: Vec<Value>,
+    ) -> Result<Value, Thrown> {
+        match mname.to_ascii_lowercase().as_slice() {
+            b"bindto" => {
+                let new_this = args.first().cloned().unwrap_or(Value::Null);
+                let scope = args.get(1).cloned().unwrap_or_else(|| Value::str("static"));
+                Ok(self
+                    .closure_bind(closure, &new_this, &scope)
+                    .unwrap_or(Value::Null))
+            }
+            b"call" => {
+                if args.is_empty() {
+                    return Err(Thrown::error(
+                        "ArgumentCountError",
+                        "Closure::call() expects at least 1 argument, 0 given",
+                    ));
+                }
+                // Temporarily binds `$this` AND the scope to the new object.
+                let new_this = args.remove(0);
+                let bound = self
+                    .closure_bind(closure, &new_this, &new_this)
+                    .unwrap_or(Value::Null);
+                self.call_callable_value(&bound, args)
+            }
+            b"__invoke" => self.call_callable_value(closure, args),
+            _ => Err(Thrown::error(
+                "Error",
+                format!(
+                    "Call to undefined method Closure::{}()",
+                    String::from_utf8_lossy(mname)
+                ),
+            )),
+        }
+    }
+
     fn call_callable_value(&mut self, callable: &Value, args: Vec<Value>) -> Result<Value, Thrown> {
         let c = match callable {
             Value::Ref(r) => r.borrow().clone(),
@@ -4293,9 +4516,24 @@ fn dim_fetch(container: &Value, key: &Value) -> Value {
 }
 
 /// Read the value at a cursor path (Null if any step is absent); non-mutating.
-fn read_path(slot: &Value, steps: &[CursorStep]) -> Value {
+/// Property-name resolution context for cursor paths: the class table and
+/// the calling scope, so `$o->p[...]` / `&$o->p` hit the same slot (and the
+/// same visibility errors) as a plain `$o->p`.
+struct PropCtx<'a> {
+    classes: &'a [classes::ClassEntry],
+    scope: Option<ClassId>,
+}
+
+impl PropCtx<'_> {
+    /// Storage key for `name` on an instance of `cls`, or the access error.
+    fn key(&self, cls: ClassId, name: &PhpStr) -> Result<PhpStr, Thrown> {
+        classes::prop_key(self.classes, cls, self.scope, name)
+    }
+}
+
+fn read_path(slot: &Value, steps: &[CursorStep], cx: &PropCtx) -> Value {
     if let Value::Ref(r) = slot {
-        return read_path(&r.borrow(), steps);
+        return read_path(&r.borrow(), steps, cx);
     }
     let Some((head, rest)) = steps.split_first() else {
         return slot.clone();
@@ -4304,16 +4542,20 @@ fn read_path(slot: &Value, steps: &[CursorStep]) -> Value {
         (Value::Array(a), CursorStep::Key(k)) => match ArrayKey::from_value(k) {
             Some(key) => a
                 .get(&key)
-                .map(|c| read_path(c, rest))
+                .map(|c| read_path(c, rest, cx))
                 .unwrap_or(Value::Null),
             None => Value::Null,
         },
         (Value::Object(h), CursorStep::Prop(name)) => {
             let od = h.borrow();
-            od.properties
-                .get(name)
-                .map(|c| read_path(c, rest))
-                .unwrap_or(Value::Null)
+            match cx.key(od.class, name) {
+                Ok(k) => od
+                    .properties
+                    .get(&k)
+                    .map(|c| read_path(c, rest, cx))
+                    .unwrap_or(Value::Null),
+                Err(_) => Value::Null,
+            }
         }
         _ => Value::Null,
     }
@@ -4336,11 +4578,16 @@ fn autovivify(slot: &mut Value) -> Result<(), Thrown> {
 }
 
 /// Write `value` at a cursor path, autovivifying + COW-bubbling along the way.
-fn assign_path(slot: &mut Value, steps: &[CursorStep], value: Value) -> Result<(), Thrown> {
+fn assign_path(
+    slot: &mut Value,
+    steps: &[CursorStep],
+    value: Value,
+    cx: &PropCtx,
+) -> Result<(), Thrown> {
     // Descend through a reference to its underlying storage.
     if let Value::Ref(rc) = slot {
         let mut inner = rc.borrow_mut();
-        return assign_path(&mut inner, steps, value);
+        return assign_path(&mut inner, steps, value, cx);
     }
     let Some((head, rest)) = steps.split_first() else {
         *slot = value;
@@ -4361,8 +4608,9 @@ fn assign_path(slot: &mut Value, steps: &[CursorStep], value: Value) -> Result<(
             }
         };
         let mut od = handle.borrow_mut();
-        let child = od.properties.entry(name.clone()).or_insert(Value::Null);
-        return assign_path(child, rest, value);
+        let key = cx.key(od.class, name)?;
+        let child = classes::prop_slot_mut(cx.classes, &mut od, key);
+        return assign_path(child, rest, value, cx);
     }
     autovivify(slot)?;
     let Value::Array(arr) = slot else {
@@ -4377,7 +4625,7 @@ fn assign_path(slot: &mut Value, steps: &[CursorStep], value: Value) -> Result<(
         CursorStep::Append => arr.append_mut(),
         CursorStep::Prop(_) => unreachable!("handled above"),
     };
-    assign_path(child, rest, value)
+    assign_path(child, rest, value, cx)
 }
 
 /// The key value for an ArrayAccess cursor step: `Key(k)` -> k, `Append` -> null
@@ -4393,14 +4641,18 @@ fn aa_key(step: &CursorStep) -> Option<Value> {
 /// Navigate the cursor path and promote the target slot (a property or array
 /// element) to a shared `Value::Ref` cell, returning the cell — so a by-ref
 /// builtin can mutate the caller's property/element in place.
-fn make_ref_path(slot: &mut Value, steps: &[CursorStep]) -> Result<Rc<RefCell<Value>>, Thrown> {
+fn make_ref_path(
+    slot: &mut Value,
+    steps: &[CursorStep],
+    cx: &PropCtx,
+) -> Result<Rc<RefCell<Value>>, Thrown> {
     // Follow an existing reference: reuse it if this is the target, else descend.
     if let Value::Ref(rc) = slot {
         if steps.is_empty() {
             return Ok(rc.clone());
         }
         let rc = rc.clone();
-        let r = make_ref_path(&mut rc.borrow_mut(), steps);
+        let r = make_ref_path(&mut rc.borrow_mut(), steps, cx);
         return r;
     }
     let Some((head, rest)) = steps.split_first() else {
@@ -4427,8 +4679,9 @@ fn make_ref_path(slot: &mut Value, steps: &[CursorStep]) -> Result<Rc<RefCell<Va
             }
         };
         let mut od = handle.borrow_mut();
-        let child = od.properties.entry(name.clone()).or_insert(Value::Null);
-        return make_ref_path(child, rest);
+        let key = cx.key(od.class, name)?;
+        let child = classes::prop_slot_mut(cx.classes, &mut od, key);
+        return make_ref_path(child, rest, cx);
     }
     autovivify(slot)?;
     let Value::Array(arr) = slot else {
@@ -4443,14 +4696,14 @@ fn make_ref_path(slot: &mut Value, steps: &[CursorStep]) -> Result<Rc<RefCell<Va
         CursorStep::Append => arr.append_mut(),
         CursorStep::Prop(_) => unreachable!("handled above"),
     };
-    make_ref_path(child, rest)
+    make_ref_path(child, rest, cx)
 }
 
 /// Remove the leaf key of a cursor path (COW), descending to the parent first.
-fn unset_path(slot: &mut Value, steps: &[CursorStep]) {
+fn unset_path(slot: &mut Value, steps: &[CursorStep], cx: &PropCtx) {
     if let Value::Ref(rc) = slot {
         let mut inner = rc.borrow_mut();
-        return unset_path(&mut inner, steps);
+        return unset_path(&mut inner, steps, cx);
     }
     let Some((head, rest)) = steps.split_first() else {
         return;
@@ -4460,10 +4713,13 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep]) {
             let Value::Object(h) = slot else { return };
             let h = h.clone();
             let mut od = h.borrow_mut();
+            let Ok(key) = cx.key(od.class, name) else {
+                return;
+            };
             if rest.is_empty() {
-                od.properties.shift_remove(name);
-            } else if let Some(child) = od.properties.get_mut(name) {
-                unset_path(child, rest);
+                od.properties.shift_remove(&key);
+            } else if let Some(child) = od.properties.get_mut(&key) {
+                unset_path(child, rest, cx);
             }
         }
         CursorStep::Key(k) => {
@@ -4474,7 +4730,7 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep]) {
             if rest.is_empty() {
                 arr.remove(&key);
             } else if let Some(child) = arr.get_mut(&key) {
-                unset_path(child, rest);
+                unset_path(child, rest, cx);
             }
         }
         CursorStep::Append => {}

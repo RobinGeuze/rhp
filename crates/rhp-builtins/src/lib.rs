@@ -193,6 +193,33 @@ pub trait Host {
         None
     }
 
+    /// php's visibility-mangled name for an object's property storage key (as
+    /// `(array)`, `serialize` and the dumpers see it): public/dynamic `name`,
+    /// protected `"\0*\0name"`, private `"\0Class\0name"`. Hosts store private
+    /// properties under their mangled key already; the default is the identity.
+    fn mangled_prop_name(&self, _class_id: u32, key: &rhp_values::PhpStr) -> rhp_values::PhpStr {
+        key.clone()
+    }
+
+    /// `get_object_vars($obj)` as seen from the calling scope (unmangled names
+    /// of the properties accessible there, in slot order). `None` = the host has
+    /// no scope information; the builtin then returns every property.
+    fn object_vars(&self, _obj: &Value) -> Option<Value> {
+        None
+    }
+
+    /// Whether `$obj->name` currently exists as seen from the calling scope
+    /// (the object half of `property_exists`). Default: a plain-name lookup.
+    fn object_prop_exists(&self, obj: &Value, name: &[u8]) -> bool {
+        match obj {
+            Value::Object(h) => h
+                .borrow()
+                .properties
+                .contains_key(&rhp_values::PhpStr::from_bytes(name.to_vec())),
+            _ => false,
+        }
+    }
+
     /// The class name of an object value, if any (for `instanceof`-style checks
     /// inside builtins). Default: none.
     fn object_class_name(&self, _obj: &Value) -> Option<Vec<u8>> {
@@ -386,9 +413,15 @@ pub trait Host {
             "reflection is not available in this host",
         ))
     }
-    /// Set an object property bypassing visibility (`ReflectionProperty::setValue`).
-    fn reflect_set_prop(&mut self, _obj: &Value, _name: &[u8], _val: Value) -> bool {
+    /// Set an object property bypassing visibility (`ReflectionProperty::setValue`),
+    /// resolving `name` as class `class` would see it (its own private first).
+    fn reflect_set_prop(&mut self, _obj: &Value, _class: &[u8], _name: &[u8], _val: Value) -> bool {
         false
+    }
+    /// Read an object property bypassing visibility (`ReflectionProperty::getValue`),
+    /// resolving `name` as class `class` would see it (its own private first).
+    fn reflect_get_prop(&self, obj: &Value, _class: &[u8], name: &[u8]) -> Option<Value> {
+        self.object_prop(obj, name)
     }
     /// Parameter descriptors for a class method (`ReflectionMethod::getParameters`).
     fn reflect_method_params(&self, _class: &[u8], _method: &[u8]) -> Option<Value> {
@@ -801,7 +834,7 @@ fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    dump::var_export(&mut out, &args[0], 0);
+    dump::var_export(host, &mut out, &args[0], 1);
     let return_mode = args.get(1).map(conv::to_bool).unwrap_or(false);
     if return_mode {
         Ok(Value::str(out))
@@ -1568,12 +1601,9 @@ fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
         Value::Object(h) => {
             let cid = h.borrow().class;
             // An object matches on a declared member (instance or static) OR a
-            // dynamically-set instance property.
-            let dynamic = h
-                .borrow()
-                .properties
-                .contains_key(&rhp_values::PhpStr::from_bytes(prop.clone()));
-            dynamic || host.class_has_property(cid, &prop)
+            // property reachable and set from the calling scope.
+            host.class_has_property(cid, &prop)
+                || host.object_prop_exists(&Value::Object(h.clone()), &prop)
         }
         Value::Str(s) => host
             .resolve_class(s.as_bytes())
@@ -1657,9 +1687,12 @@ fn fn_iterator_to_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     }
 }
 
-fn fn_get_object_vars(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_get_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match deref(&args[0]) {
         Value::Object(h) => {
+            if let Some(v) = host.object_vars(&args[0]) {
+                return Ok(v);
+            }
             let mut arr = PhpArray::new();
             for (k, v) in h.borrow().properties.iter() {
                 arr.insert(rhp_values::ArrayKey::Str(k.clone()), v.clone());

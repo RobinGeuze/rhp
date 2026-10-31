@@ -50,9 +50,8 @@ become fixtures.
    prop aliases the parent's cell (writes seen through both names); a redeclared
    one gets a fresh cell. Verified §4.
 6. **Visibility is parsed, stored, and enforced** with a simple caller-class
-   check (public / private / protected). §4. Two documented simplifications in
-   this cut: private-name shadowing (two classes each declaring a private `$x`)
-   is not mangled into separate slots, and **typed-uninitialized** properties are
+   check (public / private / protected). §4. Private-name shadowing uses php's mangled
+   storage keys (§4). Documented simplification: **typed-uninitialized** properties are
    treated as `Null` (we store no type hints yet, so we cannot distinguish them).
    §2, §8.
 
@@ -407,10 +406,17 @@ non-public access the VM checks the *caller class* = `frame.defining_class`:
 
 A violation raises the matching `Error`
 (`Cannot access {private|protected} property C::$p`, or `Call to {…} method`).
-**Documented simplification:** private-name *shadowing* — two classes in one
-hierarchy each declaring a private `$x` — is not mangled into two separate slots
-(PHP stores `\0A\0x` vs `\0B\0x`); this cut keeps one slot keyed by name and is
-faithful for the common case. Add name-mangling when a golden needs it.
+**Private-name shadowing** follows php exactly: an object's property map is
+keyed by *storage key* — the plain name for public/protected, the mangled
+`"\0Class\0name"` for private — so a parent's private `$x` and a child's `$x`
+are separate slots (`ClassEntry.props`, in object-layout order). `$o->name` is
+resolved per access against the calling scope (`classes::resolve_prop`, php's
+`zend_get_property_offset`): the scope's own private wins, else the
+most-derived declaration (`ClassEntry.prop_visible`), where a parent's private
+is invisible (a dynamic property) and an own private / unrelated protected is an
+access error naming the object's class. `get_object_vars` / `foreach` keep a slot
+iff it is what its name resolves to from the scope; the dumpers, `(array)` and
+`serialize` see php's mangled names (`classes::mangled_prop_key`).
 
 ---
 
@@ -571,7 +577,6 @@ pub struct Vm {
   typed-no-default and untyped-no-default as `Null`. Faithful follow-up: store the
   hint, add a `Value::Uninit` sentinel (a leaf `value-model` change) or track
   initialization out-of-band, and throw on read-before-write.
-- **Private-name shadowing** (§4.3): one slot per property name for now.
 - **Trait adaptations** (`insteadof`/`as` renaming + visibility change): basic
   trait method/property merge is in; conflict-resolution adaptations are a
   follow-up.

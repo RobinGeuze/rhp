@@ -1,0 +1,116 @@
+late!
+string(4) "late"
+array(1) {
+  [0]=>
+  string(4) "late"
+}
+yb ybc yb
+string(2) "yb"
+i
+x
+1
+Error: Class "Nope" not found
+Error: Class "Nope" not found
+Error: Undefined constant self::NOPE
+Error: Cannot declare self-referencing constant self::A
+Error: Cannot declare self-referencing constant S3::B
+Undefined constant "UNDEF_P"
+int(5)
+int(9)
+int(7)
+string(5) "elvis"
+string(8) "coalesce"
+int(2)
+string(4) "deep"
+string(1) "b"
+int(-9223372036854775808)
+int(-1)
+bool(true)
+float(2.5)
+int(-6)
+string(5) "x1.51"
+bool(true)
+int(49)
+string(3) "Ops"
+array(4) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  ["k"]=>
+  string(1) "v"
+  [2]=>
+  int(9)
+}
+string(3) "Ops"
+bool(true)
+int(11)
+enum(Status::On)
+enum(Status::Off)
+enum(Status::On)
+int(2)
+int(1)
+string(3) "Off"
+enum(Status::Off)
+enum(Pure::B)
+bool(true)
+int(9)
+bool(true)
+enum(Status::On)
+192021
+33
+ABCNULL
+SV/m
+int(10)
+int(20)
+string(8) "stdClass"
+enum(Status::On)
+array(5) {
+  [0]=>
+  array(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+  }
+  [1]=>
+  string(3) "10-"
+  [2]=>
+  string(11) "ArrayObject"
+  [3]=>
+  enum(Status::Off)
+  [4]=>
+  int(16)
+}
+array(5) {
+  [0]=>
+  array(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+  }
+  [1]=>
+  string(3) "10-"
+  [2]=>
+  string(11) "ArrayObject"
+  [3]=>
+  enum(Status::Off)
+  [4]=>
+  int(1)
+}
+array(5) {
+  [0]=>
+  int(1)
+  [1]=>
+  string(3) "10-"
+  [2]=>
+  string(13) "ArrayIterator"
+  [3]=>
+  enum(Status::Off)
+  [4]=>
+  int(16)
+}
+string(3) "UT1"
+string(3) "UT2"
+string(4) "UT1!"

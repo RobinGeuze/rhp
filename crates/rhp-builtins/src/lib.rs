@@ -99,6 +99,20 @@ pub trait Host {
         None
     }
 
+    /// Like [`Host::class_constant`], but first evaluates the constant's
+    /// initializer if it is still a pending constant expression (which can
+    /// throw, e.g. on an undefined constant inside it).
+    fn class_constant_eval(&mut self, class: &[u8], name: &[u8]) -> Result<Option<Value>, Thrown> {
+        Ok(self.class_constant(class, name))
+    }
+
+    /// Evaluate every pending initializer of `class` (its constants, property
+    /// defaults and static properties) — php's `zend_update_class_constants`,
+    /// done before reflection reads them. A no-op for unknown classes.
+    fn update_class_constants(&mut self, _class: &[u8]) -> Result<(), Thrown> {
+        Ok(())
+    }
+
     /// Invoke a PHP callable (for `array_map`/`array_filter`/…). Default: refused.
     fn call_callable(&mut self, _callable: &Value, _args: &[Value]) -> Result<Value, Thrown> {
         Err(Thrown::unsupported(
@@ -878,24 +892,24 @@ fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// Resolve a constant by name: a class constant `Class::CONST` (incl. enum cases)
 /// or a global constant.
-fn resolve_const(host: &dyn Host, name: &[u8]) -> Option<Value> {
+fn resolve_const(host: &mut dyn Host, name: &[u8]) -> Result<Option<Value>, Thrown> {
     if let Some(pos) = find_sub(name, b"::") {
         let class = name[..pos].strip_prefix(b"\\").unwrap_or(&name[..pos]);
         let cname = &name[pos + 2..];
-        host.class_constant(class, cname)
+        host.class_constant_eval(class, cname)
     } else {
-        host.get_const(name)
+        Ok(host.get_const(name))
     }
 }
 
 fn fn_defined(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
-    Ok(Value::Bool(resolve_const(host, &name).is_some()))
+    Ok(Value::Bool(resolve_const(host, &name)?.is_some()))
 }
 
 fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
-    resolve_const(host, &name).ok_or_else(|| {
+    resolve_const(host, &name)?.ok_or_else(|| {
         Thrown::error(
             "Error",
             format!("Undefined constant \"{}\"", String::from_utf8_lossy(&name)),

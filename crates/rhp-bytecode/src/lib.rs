@@ -548,6 +548,27 @@ pub enum Instr {
         name: NIdx,
         init: u32,
     },
+    /// `static $x = <non-constant expr>;` (php 8.3+), part 1: if the static
+    /// cell `name` already exists, bind CV `cv` to it and jump to `target`
+    /// (skipping the initializer); otherwise fall through to evaluate it.
+    BindStaticOrJmp {
+        cv: Reg,
+        name: NIdx,
+        target: Pc,
+    },
+    /// Part 2: create the static cell `name` holding the value in `src` (unless
+    /// the initializer re-entered and already created it) and bind CV `cv`.
+    BindStaticInit {
+        cv: Reg,
+        name: NIdx,
+        src: Reg,
+    },
+    /// Top-level `const NAME = <expr>;`: define global constant `name` with the
+    /// value in `src` (a no-op if it is already defined), in statement order.
+    DeclareConst {
+        name: NIdx,
+        src: Reg,
+    },
     /// `$val instanceof C` (never throws).
     InstanceOf {
         dst: Reg,
@@ -933,8 +954,9 @@ pub struct ClassProto {
 #[derive(Clone)]
 pub struct EnumCaseProto {
     pub name: PhpStr,
-    /// The backing value (already the correct scalar type), or `None` for a pure enum.
-    pub value: Option<Value>,
+    /// The backing value — folded, or a thunk evaluating a constant expression
+    /// on first access — or `None` for a pure enum.
+    pub value: Option<ConstInitProto>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

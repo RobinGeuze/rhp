@@ -64,7 +64,6 @@ pub struct Vm {
     statics: HashMap<(usize, Vec<u8>), Rc<RefCell<Value>>>,
     // Non-constant class const / static-prop / property-default initializers,
     // evaluated after all classes link (so cross-class/enum refs resolve).
-    pending_inits: Vec<classes::PendingInit>,
     // Generator runtime state, keyed by the Generator object's id.
     generators: HashMap<u32, GenState>,
     // Set by the `Yield` opcode to hand (key, value, resume-dst) to the driver.
@@ -649,6 +648,23 @@ impl Host for Vm {
             .map(|c| c.value.clone())
     }
 
+    fn class_constant_eval(&mut self, class: &[u8], name: &[u8]) -> Result<Option<Value>, Thrown> {
+        let Ok(cid) = self.resolve_class_by_name(class) else {
+            return Ok(None);
+        };
+        if self.classes[cid as usize].enum_backing.is_some() {
+            self.update_class_constants(cid)?;
+        }
+        self.class_const_value(cid, name, class, false)
+    }
+
+    fn update_class_constants(&mut self, class: &[u8]) -> Result<(), Thrown> {
+        match self.resolve_class_by_name(class) {
+            Ok(cid) => Vm::update_class_constants(self, cid),
+            Err(_) => Ok(()),
+        }
+    }
+
     fn reflect_is_a(&self, name: &[u8], other: &[u8]) -> bool {
         match (
             self.resolve_class_by_name(name),
@@ -677,6 +693,7 @@ impl Host for Vm {
                 ),
             ));
         }
+        self.update_class_constants(cid)?;
         let obj = self.new_object(cid);
         let objval = Value::Object(obj);
         if run_ctor && self.lookup_method(cid, b"__construct").is_some() {
@@ -840,6 +857,7 @@ impl Host for Vm {
 
     fn instantiate(&mut self, class_name: &[u8], props: Vec<(Vec<u8>, Value)>) -> Option<Value> {
         let cls = self.resolve_class_by_name(class_name).ok()?;
+        self.update_class_constants(cls).ok()?;
         let obj = self.new_object(cls);
         {
             let mut b = obj.borrow_mut();
@@ -1015,7 +1033,6 @@ impl Vm {
             main_cv_names: HashMap::new(),
             globals: HashMap::new(),
             statics: HashMap::new(),
-            pending_inits: Vec::new(),
             generators: HashMap::new(),
             yield_out: None,
             gen_stack: Vec::new(),
@@ -2158,6 +2175,31 @@ impl Vm {
                     };
                     self.stack[top].regs[cv as usize] = Value::Ref(cell);
                 }
+                Instr::BindStaticOrJmp { cv, name, target } => {
+                    let sname = proto.names[name as usize].as_bytes().to_vec();
+                    let key = (Rc::as_ptr(&proto) as usize, sname);
+                    if let Some(c) = self.statics.get(&key) {
+                        let cell = c.clone();
+                        self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                        self.stack[top].pc = target as usize;
+                    }
+                }
+                Instr::BindStaticInit { cv, name, src } => {
+                    let sname = proto.names[name as usize].as_bytes().to_vec();
+                    let key = (Rc::as_ptr(&proto) as usize, sname);
+                    let v = self.reg_get(top, src);
+                    let cell = self
+                        .statics
+                        .entry(key)
+                        .or_insert_with(|| Rc::new(RefCell::new(v)))
+                        .clone();
+                    self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                }
+                Instr::DeclareConst { name, src } => {
+                    let cname = proto.names[name as usize].as_bytes().to_vec();
+                    let v = self.reg_get(top, src);
+                    self.constants.entry(cname).or_insert(v);
+                }
                 Instr::MakeFcc { dst, callee } => {
                     let c = self.reg_get(top, callee);
                     let cd = Rc::new(rhp_values::ClosureData {
@@ -2586,6 +2628,7 @@ impl Vm {
                             ),
                         ));
                     }
+                    self.update_class_constants(cls)?;
                     let obj = self.new_object(cls);
                     // Throwables record their creation site for getLine()/getFile().
                     if self.class_implements(cls, b"Throwable") {
@@ -2716,13 +2759,40 @@ impl Vm {
                         let v = Value::str(self.class(cls).name.as_bytes().to_vec());
                         self.reg_set(top, dst, v);
                     } else {
+                        // php loads every constant of a backed enum on first
+                        // fetch (it builds the value -> case table).
+                        // (Not from inside a constant expression, which goes
+                        // through zend_get_class_constant_ex in php.)
+                        let in_const_expr = proto.name.as_bytes() == b"{init}";
+                        if self.class(cls).enum_backing.is_some()
+                            && !self.class(cls).updated
+                            && !in_const_expr
+                        {
+                            self.update_class_constants(cls)?;
+                        }
+                        // Inside a constant expression php names the class as
+                        // written (`self::X`); the opcode path uses its name.
+                        let display: Vec<u8> = match class {
+                            ClassRef::Name(n) if in_const_expr => {
+                                proto.names[n as usize].as_bytes().to_vec()
+                            }
+                            ClassRef::SelfClass if in_const_expr => b"self".to_vec(),
+                            ClassRef::ParentClass if in_const_expr => b"parent".to_vec(),
+                            ClassRef::StaticClass if in_const_expr => b"static".to_vec(),
+                            _ => self.class(cls).name.as_bytes().to_vec(),
+                        };
                         match self.class(cls).constants.get(&name_b) {
                             Some(c) => {
                                 let (vis, decl) = (c.visibility, c.declaring_class);
                                 if !self.check_access(self.stack[top].defining_class, decl, vis) {
                                     return Err(self.access_err("constant", decl, &name_b, vis));
                                 }
-                                let v = c.value.clone();
+                                let v = if c.init.is_none() {
+                                    c.value.clone()
+                                } else {
+                                    self.class_const_value(cls, &name_b, &display, in_const_expr)?
+                                        .unwrap_or(Value::Null)
+                                };
                                 self.reg_set(top, dst, v);
                             }
                             None => {
@@ -2730,7 +2800,7 @@ impl Vm {
                                     "Error",
                                     format!(
                                         "Undefined constant {}::{}",
-                                        String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                                        String::from_utf8_lossy(&display),
                                         String::from_utf8_lossy(&name_b)
                                     ),
                                 ))
@@ -2905,6 +2975,7 @@ impl Vm {
                             ),
                         ));
                     }
+                    self.update_class_constants(cls)?;
                     let obj = self.new_object(cls);
                     self.reg_set(top, dst, Value::Object(obj.clone()));
                     if let Some(m) = self.lookup_method(cls, b"__construct") {
@@ -3734,6 +3805,8 @@ impl Vm {
         method_lc: &[u8],
         args: Vec<Value>,
     ) -> Result<Value, Thrown> {
+        // Case values may be pending constant expressions.
+        self.update_class_constants(cls)?;
         let enum_name = || String::from_utf8_lossy(self.class(cls).name.as_bytes()).into_owned();
         match method_lc {
             b"cases" => {
@@ -3907,6 +3980,7 @@ impl Vm {
             Thrown::Object(h) => Ok(Value::Object(h.clone())),
             Thrown::Error { class, message } => {
                 let cls = self.resolve_class_by_name(class.as_bytes())?;
+                self.update_class_constants(cls)?;
                 let obj = self.new_object(cls);
                 obj.borrow_mut().properties.insert(
                     rhp_values::PhpStr::from("message"),
@@ -4258,6 +4332,11 @@ fn rebase_class(c: &ClassProto, base: u32) -> ClassProto {
     for k in &mut c.constants {
         if let ConstInitProto::Thunk(t) = &k.value {
             k.value = ConstInitProto::Thunk(Rc::new(rebase_proto(t, base)));
+        }
+    }
+    for ec in &mut c.enum_cases {
+        if let Some(ConstInitProto::Thunk(t)) = &ec.value {
+            ec.value = Some(ConstInitProto::Thunk(Rc::new(rebase_proto(t, base))));
         }
     }
     c

@@ -65,13 +65,24 @@ thread_local! {
     static CLOSURES: RefCell<Vec<Rc<FunctionProto>>> = const { RefCell::new(Vec::new()) };
 }
 
-/// One parameter's name (lowercased) and folded default, for reordering named
-/// arguments at a call site. `None` default = required parameter.
+/// One parameter's name (lowercased) and default, for reordering named
+/// arguments at a call site.
 #[derive(Clone)]
 struct ParamSpec {
     name_lc: Vec<u8>,
-    default: Option<Value>,
+    default: SpecDefault,
     variadic: bool,
+}
+
+#[derive(Clone)]
+enum SpecDefault {
+    /// A required parameter.
+    Required,
+    /// A default that folded to a constant.
+    Const(Value),
+    /// A non-constant default (`$p = FOO . 'x'`, `$o = new C`): file-local
+    /// closure index of a zero-argument thunk that evaluates it.
+    Thunk(u32),
 }
 
 thread_local! {
@@ -504,14 +515,25 @@ fn collect_method_refs(flat: &[(Rc<NsContext>, &Statement)]) -> HashMap<Vec<u8>,
     map
 }
 
-/// Build the parameter specs for a function, or `None` if a default value is not
-/// a foldable constant (then named-argument calls to it fall back to an error).
+/// Build the parameter specs for a function. A default that does not fold is
+/// compiled into a thunk closure the call site invokes for an omitted argument.
 fn param_specs(pl: &rhp_frontend::cst::FunctionLikeParameterList) -> Option<Vec<ParamSpec>> {
     let mut out = Vec::new();
     for p in pl.parameters.iter() {
         let default = match &p.default_value {
-            Some(dv) => Some(fold_const(dv.value).ok()?),
-            None => None,
+            Some(dv) => match fold_const(dv.value) {
+                Ok(v) => SpecDefault::Const(v),
+                Err(_) => {
+                    let thunk =
+                        compile_const_thunk(dv.value, &Rc::new(HashMap::new()), None).ok()?;
+                    SpecDefault::Thunk(CLOSURES.with(|c| {
+                        let mut v = c.borrow_mut();
+                        v.push(thunk);
+                        (v.len() - 1) as u32
+                    }))
+                }
+            },
+            None => SpecDefault::Required,
         };
         out.push(ParamSpec {
             name_lc: strip_dollar(p.variable.name).to_ascii_lowercase(),
@@ -556,8 +578,6 @@ pub fn compile_with_source(
     // call site can marshal by-ref arguments even though the callee is resolved by
     // name. Keyed by FQN (lowercased) to match the call-site resolution.
     let mut sigs: HashMap<Vec<u8>, Vec<bool>> = HashMap::new();
-    // Parameter-name signatures, so a call site can reorder named arguments.
-    let mut fn_params: HashMap<Vec<u8>, Vec<ParamSpec>> = HashMap::new();
     for (ctx, stmt) in &flat {
         if let Statement::Function(func) = stmt {
             let fqn = join_ns(&ctx.ns, func.name.value).to_ascii_lowercase();
@@ -567,14 +587,11 @@ pub fn compile_with_source(
                 .iter()
                 .map(|p| p.ampersand.is_some())
                 .collect();
-            sigs.insert(fqn.clone(), flags);
-            if let Some(specs) = param_specs(&func.parameter_list) {
-                fn_params.insert(fqn, specs);
-            }
+            sigs.insert(fqn, flags);
         }
     }
     let sigs = Rc::new(sigs);
-    FN_PARAMS.with(|m| *m.borrow_mut() = fn_params);
+    FN_PARAMS.with(|m| m.borrow_mut().clear());
     METHOD_REF.with(|m| *m.borrow_mut() = collect_method_refs(&flat));
 
     // Hoist top-level function + class declarations. Start the class list with
@@ -587,7 +604,20 @@ pub fn compile_with_source(
     let num_prelude_functions = functions.len();
     // From here on we compile user code, so install its line map.
     LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
-    let mut user_constants: Vec<(PhpStr, Value)> = Vec::new();
+    // Parameter-name signatures, so a call site can reorder named arguments
+    // (non-constant defaults compile to thunks, so this runs on user lines).
+    let mut fn_params: HashMap<Vec<u8>, Vec<ParamSpec>> = HashMap::new();
+    for (ctx, stmt) in &flat {
+        if let Statement::Function(func) = stmt {
+            set_ns_ctx(ctx);
+            let fqn = join_ns(&ctx.ns, func.name.value).to_ascii_lowercase();
+            if let Some(specs) = param_specs(&func.parameter_list) {
+                fn_params.insert(fqn, specs);
+            }
+        }
+    }
+    FN_PARAMS.with(|m| *m.borrow_mut() = fn_params);
+    let user_constants: Vec<(PhpStr, Value)> = Vec::new();
     for (ctx, stmt) in &flat {
         set_ns_ctx(ctx);
         match stmt {
@@ -598,14 +628,8 @@ pub fn compile_with_source(
             Statement::Interface(iface) => classes.push(compile_interface(iface, &sigs)?),
             Statement::Trait(tr) => classes.push(compile_trait(tr, &sigs)?),
             Statement::Enum(en) => classes.push(compile_enum(en, &sigs)?),
-            Statement::Constant(c) => {
-                // Top-level `const NAME = <const-expr>;` — fold now, install at startup.
-                for item in c.items.iter() {
-                    let value = fold_const(item.value)?;
-                    let name = join_ns(&ctx.ns, item.name.value);
-                    user_constants.push((PhpStr::from_bytes(name), value));
-                }
-            }
+            // Top-level `const NAME = <expr>;` is a runtime statement (php
+            // declares it when execution reaches it), compiled in {main}.
             _ => {}
         }
     }
@@ -786,9 +810,11 @@ fn compile_enum(
 fn compile_const_thunk(
     expr: &Expression,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: Option<&PhpStr>,
 ) -> Result<Rc<FunctionProto>, Thrown> {
     let mut c = ProtoBuilder::new(PhpStr::from("{init}"));
     c.sigs = sigs.clone();
+    c.class_name = class_name.cloned(); // for `__CLASS__`
     c.scope_kind = ScopeKind::Init;
     c.scan_expr_vars(expr); // const-exprs use no $vars, but be safe
     c.num_cvs = c.cv_map.len() as u16;
@@ -804,20 +830,26 @@ fn compile_const_thunk(
 fn const_init_or_thunk(
     expr: &Expression,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: Option<&PhpStr>,
 ) -> Result<ConstInitProto, Thrown> {
     match fold_const(expr) {
         Ok(v) => Ok(ConstInitProto::Const(v)),
-        Err(_) => Ok(ConstInitProto::Thunk(compile_const_thunk(expr, sigs)?)),
+        Err(_) => Ok(ConstInitProto::Thunk(compile_const_thunk(
+            expr, sigs, class_name,
+        )?)),
     }
 }
 
 fn prop_default_or_thunk(
     expr: &Expression,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: Option<&PhpStr>,
 ) -> Result<PropDefaultProto, Thrown> {
     match fold_const(expr) {
         Ok(v) => Ok(PropDefaultProto::Const(v)),
-        Err(_) => Ok(PropDefaultProto::Init(compile_const_thunk(expr, sigs)?)),
+        Err(_) => Ok(PropDefaultProto::Init(compile_const_thunk(
+            expr, sigs, class_name,
+        )?)),
     }
 }
 
@@ -851,9 +883,10 @@ fn compile_members(
                     has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
                 for item in p.items.iter() {
                     let (var, default) = match item {
-                        PropertyItem::Concrete(c) => {
-                            (c.variable.name, prop_default_or_thunk(c.value, sigs)?)
-                        }
+                        PropertyItem::Concrete(c) => (
+                            c.variable.name,
+                            prop_default_or_thunk(c.value, sigs, Some(class_name))?,
+                        ),
                         PropertyItem::Abstract(a) => (a.variable.name, PropDefaultProto::None),
                     };
                     let pname = PhpStr::from_bytes(strip_dollar(var).to_vec());
@@ -888,7 +921,7 @@ fn compile_members(
                     out.constants.push(ConstProto {
                         name: PhpStr::from_bytes(item.name.value.to_vec()),
                         visibility,
-                        value: const_init_or_thunk(item.value, sigs)?,
+                        value: const_init_or_thunk(item.value, sigs, Some(class_name))?,
                     });
                 }
             }
@@ -903,7 +936,7 @@ fn compile_members(
                     EnumCaseItem::Unit(u) => (PhpStr::from_bytes(u.name.value.to_vec()), None),
                     EnumCaseItem::Backed(b) => (
                         PhpStr::from_bytes(b.name.value.to_vec()),
-                        Some(const_value_static(b.value)?),
+                        Some(const_init_or_thunk(b.value, sigs, Some(class_name))?),
                     ),
                 };
                 out.enum_cases
@@ -1371,7 +1404,7 @@ fn compile_interface(
                 constants.push(ConstProto {
                     name: PhpStr::from_bytes(item.name.value.to_vec()),
                     visibility,
-                    value: const_init_or_thunk(item.value, sigs)?,
+                    value: const_init_or_thunk(item.value, sigs, Some(&name))?,
                 });
             }
         }
@@ -2142,7 +2175,13 @@ impl ProtoBuilder {
             Statement::Interface(_) => {}
             Statement::Trait(_) => {}
             Statement::Enum(_) => {}
-            Statement::Constant(_) => {} // hoisted at compile time
+            Statement::Constant(c) => {
+                for item in c.items.iter() {
+                    let src = self.compile_expr(item.value)?;
+                    let name = self.intern_name(&join_ns(&cur_ns(), item.name.value));
+                    self.emit(Instr::DeclareConst { name, src });
+                }
+            }
             Statement::If(i) => self.compile_if(i)?,
             Statement::While(w) => self.compile_while(w)?,
             Statement::DoWhile(d) => self.compile_do_while(d)?,
@@ -2165,10 +2204,27 @@ impl ProtoBuilder {
                     use rhp_frontend::cst::StaticItem;
                     let (dvar, init) = match item {
                         StaticItem::Abstract(a) => (&a.variable, u32::MAX),
-                        StaticItem::Concrete(c) => {
-                            let v = fold_const(c.value)?;
-                            (&c.variable, self.intern_const(v))
-                        }
+                        StaticItem::Concrete(c) => match fold_const(c.value) {
+                            Ok(v) => (&c.variable, self.intern_const(v)),
+                            Err(_) => {
+                                // php 8.3+: an arbitrary initializer, evaluated
+                                // once on the first execution of the statement.
+                                let var = strip_dollar(c.variable.name);
+                                let cv = self.cv(var);
+                                let name = self.intern_name(var);
+                                let jpos = self.code.len();
+                                self.emit(Instr::Nop); // BindStaticOrJmp (patched)
+                                let src = self.compile_expr(c.value)?;
+                                self.emit(Instr::BindStaticInit { cv, name, src });
+                                let after = self.here();
+                                self.code[jpos] = Instr::BindStaticOrJmp {
+                                    cv,
+                                    name,
+                                    target: after,
+                                };
+                                continue;
+                            }
+                        },
                     };
                     let var = strip_dollar(dvar.name);
                     let cv = self.cv(var);
@@ -3608,13 +3664,32 @@ impl ProtoBuilder {
             let r = match provided[i] {
                 Some(e) => self.compile_expr(e)?,
                 None => match &specs[i].default {
-                    Some(v) => {
+                    SpecDefault::Const(v) => {
                         let k = self.intern_const(v.clone());
                         let t = self.alloc_temp();
                         self.emit(Instr::LoadConst { dst: t, k });
                         t
                     }
-                    None => {
+                    SpecDefault::Thunk(fnidx) => {
+                        // Evaluate the callee's non-constant default here.
+                        let f = self.alloc_temp();
+                        self.emit(Instr::MakeClosure {
+                            dst: f,
+                            fnidx: *fnidx,
+                            base: f,
+                            ncaptures: 0,
+                        });
+                        let base = self.alloc_temps(1);
+                        let t = self.alloc_temp();
+                        self.emit(Instr::CallDyn {
+                            dst: t,
+                            callee: f,
+                            base,
+                            argc: 0,
+                        });
+                        t
+                    }
+                    SpecDefault::Required => {
                         return Err(Thrown::error(
                             "ArgumentCountError",
                             format!(
@@ -5249,10 +5324,6 @@ fn non_const_err() -> Thrown {
         "non-constant initializer",
         "only literal / array / true/false/null constant initializers for now",
     )
-}
-
-fn const_value_static(e: &Expression) -> Result<Value, Thrown> {
-    fold_const(e)
 }
 
 /// Fold a literal AST node to its runtime value (same rules as the oracle).

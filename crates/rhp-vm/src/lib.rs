@@ -1030,8 +1030,14 @@ struct Frame {
 /// internal function as its own trace frame, called from `caller`'s line, and
 /// any user callback it invokes as `[internal function]`.
 struct NativeCall {
-    name: String,
-    args: Vec<Value>,
+    name: &'static str,
+    /// The running builtin's argument slice, borrowed rather than copied so
+    /// tracking a call costs nothing until a trace is actually built.
+    /// Invariant: the entry is pushed just before the builtin is called and
+    /// popped right after it returns, while the owning `Vec` (a local of
+    /// `run_builtin`, only shared-borrowed by the builtin) is alive and
+    /// unmodified — so the pointer is valid whenever it is in `native_calls`.
+    args: *const [Value],
     /// Index of the frame that made the call.
     caller: usize,
 }
@@ -1990,18 +1996,45 @@ impl Vm {
     /// [`build_trace`] with debug_backtrace's options: `$trace['object']` for
     /// frames with a `$this`, and no `args`.
     fn build_trace_ex(&self, provide_object: bool, ignore_args: bool) -> PhpArray {
-        let k = |s: &[u8]| ArrayKey::from_bytes(s);
+        // Keys and file names are shared (Rc) rather than re-allocated per
+        // frame: a trace is built at every Throwable creation.
+        let key = |s: &str| ArrayKey::Str(rhp_values::PhpStr::from(s));
+        let keys = [
+            key("file"),
+            key("line"),
+            key("function"),
+            key("class"),
+            key("object"),
+            key("type"),
+            key("args"),
+        ];
+        let k = |s: &[u8]| -> ArrayKey {
+            let i = match s {
+                b"file" => 0,
+                b"line" => 1,
+                b"function" => 2,
+                b"class" => 3,
+                b"object" => 4,
+                b"type" => 5,
+                _ => 6,
+            };
+            keys[i].clone()
+        };
+        let file_of = |i: usize| Value::Str(self.stack[i].proto.debug.file.clone());
         let mut out = PhpArray::new();
         for i in (0..self.stack.len()).rev() {
             if !self.is_internal_frame(i) {
                 for n in self.native_calls.iter().rev().filter(|n| n.caller == i) {
                     let mut e = PhpArray::new();
-                    e.insert(k(b"file"), Value::str(self.current_file(i)));
+                    e.insert(k(b"file"), file_of(i));
                     e.insert(k(b"line"), Value::Int(self.current_line(i) as i64));
-                    e.insert(k(b"function"), Value::str(n.name.as_bytes().to_vec()));
+                    e.insert(k(b"function"), Value::str(n.name));
                     if !ignore_args {
                         let mut a = PhpArray::new();
-                        for v in &n.args {
+                        // SAFETY: see `NativeCall::args` — every entry
+                        // still in `native_calls` points at a live slice.
+                        let call_args = unsafe { &*n.args };
+                        for v in call_args {
                             a.push(deref(v));
                         }
                         e.insert(k(b"args"), Value::Array(a));
@@ -2015,7 +2048,7 @@ impl Vm {
             let f = &self.stack[i];
             let mut e = PhpArray::new();
             if !self.is_internal_frame(i - 1) && !self.native_active_from(i - 1) {
-                e.insert(k(b"file"), Value::str(self.current_file(i - 1)));
+                e.insert(k(b"file"), file_of(i - 1));
                 e.insert(k(b"line"), Value::Int(self.current_line(i - 1) as i64));
             }
             if let Some(kind) = f.include_kind {
@@ -2653,17 +2686,17 @@ impl Vm {
                         let callee = self.functions[fnidx].clone();
                         self.enter_user_call(top, callee, dst, base, argc)?;
                     } else {
-                        // Builtin.
-                        let name_str = String::from_utf8_lossy(&fname).into_owned();
-                        if builtins::lookup(&name_str).is_none() {
+                        // Builtin (`fname` is already lowercase).
+                        let lc = std::str::from_utf8(&fname).unwrap_or("");
+                        let Some(builtin) = builtins::lookup_lc(lc) else {
                             return Err(undefined_function(&proto.names[name as usize]));
-                        }
+                        };
                         // php compiles a few calls to dedicated opcodes (no call
                         // frame): only when resolvable at compile time, i.e. not an
                         // unqualified call inside a namespace.
                         let frameless = fallback == rhp_bytecode::NO_NAME
                             && compiled_inline(&fname, argc as usize);
-                        let out = self.call_builtin(top, &name_str, base, argc, frameless)?;
+                        let out = self.call_builtin(top, lc, builtin, base, argc, frameless)?;
                         self.reg_set(top, dst, out);
                     }
                 }
@@ -4884,7 +4917,8 @@ impl Vm {
     fn call_builtin(
         &mut self,
         top: usize,
-        name: &str,
+        name_lc: &str,
+        builtin: &'static builtins::Builtin,
         base: Reg,
         argc: u16,
         frameless: bool,
@@ -4892,7 +4926,7 @@ impl Vm {
         // By-ref builtins (sort/array_push/preg_match/…) need their by-reference
         // positions kept as the `Value::Ref` the call site built, so they can
         // write back to the caller's variable. Other args deref to plain values.
-        let ref_mask = rhp_bytecode::builtin_ref_params(&name.to_ascii_lowercase());
+        let ref_mask = rhp_bytecode::builtin_ref_params(name_lc);
         let args: Vec<Value> = (0..argc)
             .map(|i| {
                 if ref_mask.get(i as usize).copied().unwrap_or(false) {
@@ -4902,7 +4936,7 @@ impl Vm {
                 }
             })
             .collect();
-        self.invoke_builtin_ex(name, args, frameless)
+        self.run_builtin(builtin, args, frameless)
     }
 
     /// Call a builtin by name with a pre-collected argument vector.
@@ -4925,34 +4959,42 @@ impl Vm {
                 format!("Call to undefined function {name}()"),
             ));
         };
+        self.run_builtin(builtin, args, frameless)
+    }
+
+    /// [`Vm::invoke_builtin_ex`] for an already looked-up builtin.
+    fn run_builtin(
+        &mut self,
+        builtin: &'static builtins::Builtin,
+        args: Vec<Value>,
+        frameless: bool,
+    ) -> Result<Value, Thrown> {
         let count_error = builtin_arg_count_error(builtin, args.len());
-        if frameless {
-            if let Some(e) = count_error {
-                return Err(e);
-            }
-            return (builtin.func)(self, &args);
-        }
-        // A builtin called from engine-internal (prelude) code is not a php frame.
+        // A builtin called from engine-internal (prelude) code is not a php
+        // frame, and php compiles a few calls to opcodes (no frame either).
         let caller = self.stack.len().saturating_sub(1);
-        let tracked = !self.stack.is_empty() && !self.is_internal_frame(caller);
-        if tracked {
-            self.native_calls.push(NativeCall {
-                name: builtin.name.to_string(),
-                args: args.iter().map(deref).collect(),
-                caller,
-            });
+        if frameless || self.stack.is_empty() || self.is_internal_frame(caller) {
+            return match count_error {
+                Some(e) => Err(e),
+                None => (builtin.func)(self, &args),
+            };
         }
+        self.native_calls.push(NativeCall {
+            name: builtin.name,
+            args: args.as_slice() as *const [Value],
+            caller,
+        });
         let r = match count_error {
             Some(e) => Err(e),
             None => (builtin.func)(self, &args),
         };
         let r = match r {
-            Err(e @ Thrown::Error { .. }) if tracked => Err(self.materialize(e, None)),
+            Err(e @ Thrown::Error { .. }) => Err(self.materialize(e, None)),
             other => other,
         };
-        if tracked {
-            self.native_calls.pop();
-        }
+        self.native_calls.pop();
+        // `args` outlives the entry just popped (see `NativeCall::args`).
+        drop(args);
         r
     }
 }

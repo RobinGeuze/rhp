@@ -609,6 +609,11 @@ pub fn lookup(name: &str) -> Option<&'static Builtin> {
     registry().get(lower.as_str())
 }
 
+/// [`lookup`] for a name that is already lowercase (no allocation).
+pub fn lookup_lc(name_lc: &str) -> Option<&'static Builtin> {
+    registry().get(name_lc)
+}
+
 /// Engine constants (`PHP_EOL`, `PHP_INT_MAX`, …).
 pub fn constants() -> Vec<(&'static str, Value)> {
     vec![

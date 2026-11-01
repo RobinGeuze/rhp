@@ -175,8 +175,14 @@ fn fn_http_build_query(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
         Some(_) => str_param(host, args, 1, "http_build_query", "numeric_prefix")?,
         None => Vec::new(),
     };
+    // A null separator falls back to `arg_separator.output` (never empty).
     let sep = str_or_null_param(host, args, 2, "http_build_query", "arg_separator")?
-        .unwrap_or_else(|| b"&".to_vec());
+        .unwrap_or_else(|| {
+            crate::runtime_fns::ini_value(b"arg_separator.output")
+                .flatten()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| b"&".to_vec())
+        });
     let enc = int_param(host, args, 3, "http_build_query", "encoding_type", 1)?;
     let mut e = Enc {
         out: Vec::new(),

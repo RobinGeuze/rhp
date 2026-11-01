@@ -77,6 +77,15 @@ thread_local! {
     static STRTOK: RefCell<TokState> = const { RefCell::new(TokState { string: None, last: 0 }) };
 }
 
+pub(crate) fn reset_state() {
+    STRTOK.with(|t| {
+        *t.borrow_mut() = TokState {
+            string: None,
+            last: 0,
+        }
+    });
+}
+
 fn fn_strtok(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = str_param(host, args, 0, "strtok", "string")?;
     let tok = str_or_null_param(host, args, 1, "strtok", "token")?;

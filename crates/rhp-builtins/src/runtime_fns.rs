@@ -150,6 +150,14 @@ thread_local! {
     static INI: RefCell<HashMap<String, Option<Vec<u8>>>> = RefCell::new(HashMap::new());
 }
 
+/// Reset this module's per-request state (a new Vm / Interp).
+pub(crate) fn reset_state() {
+    INI.with(|m| m.borrow_mut().clear());
+    TZ.with(|t| *t.borrow_mut() = None);
+    RESPONSE_CODE.with(|c| *c.borrow_mut() = 0);
+    rhp_values::fmt::reset_precision();
+}
+
 /// Is a directive's owning module loaded in this engine?
 fn module_loaded(module: &str) -> bool {
     crate::php_fns::loaded_ext(module.as_bytes()).is_some()
@@ -195,6 +203,157 @@ fn fn_ini_get(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     })
 }
 
+/// C `strtol(s, NULL, 10)` / `atoi`: leading whitespace, sign, digits.
+pub(crate) fn c_atol(s: &[u8]) -> i64 {
+    let mut i = 0;
+    while i < s.len() && matches!(s[i], b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
+        i += 1;
+    }
+    let neg = match s.get(i) {
+        Some(b'-') => {
+            i += 1;
+            true
+        }
+        Some(b'+') => {
+            i += 1;
+            false
+        }
+        _ => false,
+    };
+    let mut n: i64 = 0;
+    while let Some(d) = s.get(i).filter(|c| c.is_ascii_digit()) {
+        n = n.saturating_mul(10).saturating_add((d - b'0') as i64);
+        i += 1;
+    }
+    if neg {
+        n.saturating_neg()
+    } else {
+        n
+    }
+}
+
+/// `zend_ini_parse_quantity` (signed): digits with an optional 0x/0o/0b
+/// prefix, then an optional k/m/g suffix as the last character. Malformed
+/// input keeps the valid leading part (php warns and does the same).
+fn ini_parse_quantity(s: &[u8]) -> i64 {
+    let ws = |c: u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
+    let mut a = 0;
+    let mut b = s.len();
+    while a < b && ws(s[a]) {
+        a += 1;
+    }
+    while b > a && ws(s[b - 1]) {
+        b -= 1;
+    }
+    let t = &s[a..b];
+    if t.is_empty() {
+        return 0;
+    }
+    let mut i = 0;
+    let neg = match t[0] {
+        b'-' => {
+            i = 1;
+            true
+        }
+        b'+' => {
+            i = 1;
+            false
+        }
+        _ => false,
+    };
+    let mut base = 10;
+    if t.get(i) == Some(&b'0') {
+        match t.get(i + 1).map(|c| c.to_ascii_lowercase()) {
+            Some(b'x') => base = 16,
+            Some(b'o') => base = 8,
+            Some(b'b') => base = 2,
+            _ => {}
+        }
+        if base != 10 {
+            i += 2;
+        }
+    }
+    let start = i;
+    let mut n: i64 = 0;
+    while let Some(d) = t.get(i).and_then(|c| (*c as char).to_digit(base)) {
+        n = n.saturating_mul(base as i64).saturating_add(d as i64);
+        i += 1;
+    }
+    if i == start {
+        return 0;
+    }
+    let shift = match t.last().map(|c| c.to_ascii_lowercase()) {
+        Some(b'k') if i < t.len() => 10,
+        Some(b'm') if i < t.len() => 20,
+        Some(b'g') if i < t.len() => 30,
+        _ => 0,
+    };
+    let v = if shift > 0 {
+        n.checked_shl(shift)
+            .filter(|r| r >> shift == n)
+            .unwrap_or(i64::MAX)
+    } else {
+        n
+    };
+    if neg {
+        v.saturating_neg()
+    } else {
+        v
+    }
+}
+
+/// Process memory the engine reports (`memory_get_usage(true)`); a
+/// `memory_limit` below it is refused, as php's allocator does.
+const REAL_MEMORY_USAGE: i64 = 2_097_152;
+
+/// The `OnModify` validators of the directives whose values rhp checks or
+/// uses. `Err(())` means php's handler returns FAILURE (`ini_set` → false).
+fn ini_validate(name: &[u8], v: &[u8]) -> Result<(), ()> {
+    match name {
+        b"precision" | b"serialize_precision" => {
+            if c_atol(v) >= -1 {
+                Ok(())
+            } else {
+                Err(())
+            }
+        }
+        b"memory_limit" => {
+            let q = ini_parse_quantity(v);
+            // zend_ini_parse_uquantity: only -1 may be negative (unlimited).
+            let q = if q < 0 && q != -1 { 0 } else { q };
+            if q != -1 && q < REAL_MEMORY_USAGE {
+                Err(())
+            } else {
+                Ok(())
+            }
+        }
+        b"zend.assertions" => {
+            let cur = ini_value(name)
+                .flatten()
+                .map(|c| ini_parse_quantity(&c))
+                .unwrap_or(1);
+            let val = ini_parse_quantity(v);
+            if cur != val && (cur < 0 || val < 0) {
+                Err(())
+            } else {
+                Ok(())
+            }
+        }
+        b"arg_separator.output" if v.is_empty() => Err(()),
+        b"date.timezone" if !tz_valid(v) => Err(()),
+        _ => Ok(()),
+    }
+}
+
+/// Push a directive's (new) value into the engine state that uses it.
+fn ini_apply(name: &[u8], v: Option<&[u8]>) {
+    match name {
+        b"precision" => rhp_values::fmt::set_precision(v.map_or(14, c_atol)),
+        b"serialize_precision" => rhp_values::fmt::set_serialize_precision(v.map_or(-1, c_atol)),
+        _ => {}
+    }
+}
+
 fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value, Thrown> {
     let name = str_param(host, args, 0, func, "option")?;
     let newv = match deref(&args[1]) {
@@ -202,11 +361,10 @@ fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value
         v @ (Value::Str(_) | Value::Int(_) | Value::Float(_) | Value::Bool(_)) => {
             conv::to_string_bytes(&v)
         }
-        other => {
+        _ => {
             return Err(Thrown::type_error(format!(
-            "{func}(): Argument #2 ($value) must be of type string|int|float|bool|null, {} given",
-            value_name(host, &other)
-        )))
+                "{func}(): Argument #2 ($value) must be of type string|int|float|bool|null"
+            )))
         }
     };
     let Some(e) = ini_entry(&name) else {
@@ -215,7 +373,12 @@ fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value
     if e.3 & PHP_INI_USER == 0 {
         return Ok(Value::Bool(false));
     }
+    if ini_validate(&name, &newv).is_err() {
+        // php: the directive's handler warns (where it does) and refuses.
+        return Ok(Value::Bool(false));
+    }
     let old = ini_value(&name).flatten().unwrap_or_default();
+    ini_apply(&name, Some(&newv));
     ini_store(&name, newv);
     Ok(Value::str(old))
 }
@@ -232,6 +395,9 @@ fn fn_ini_restore(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     let name = str_param(host, args, 0, "ini_restore", "option")?;
     let key = String::from_utf8_lossy(&name).into_owned();
     INI.with(|m| m.borrow_mut().remove(&key));
+    if let Some(v) = ini_value(&name) {
+        ini_apply(&name, v.as_deref());
+    }
     Ok(Value::Null)
 }
 

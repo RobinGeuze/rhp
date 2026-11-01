@@ -229,6 +229,10 @@ thread_local! {
     static TITLE: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
 }
 
+pub(crate) fn reset_state() {
+    TITLE.with(|c| *c.borrow_mut() = None);
+}
+
 fn fn_cli_get_process_title(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(
         TITLE.with(|c| c.borrow().clone()).unwrap_or_default(),

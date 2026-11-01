@@ -67,6 +67,8 @@ impl Default for Interp<'_> {
 
 impl<'a> Interp<'a> {
     pub fn new() -> Self {
+        // Builtin state is per request: never inherit a previous engine's.
+        builtins::reset_request_state();
         let mut constants = HashMap::new();
         for (name, value) in builtins::constants() {
             constants.insert(name.as_bytes().to_vec(), value);

@@ -1091,9 +1091,8 @@ impl Parser<'_, '_> {
             });
         }
         self.expect_ch(b'}')?;
-        let key = String::from_utf8_lossy(&name).into_owned();
-        if let Ok(v) = std::env::var(&key) {
-            return Ok(IV::s(v.as_bytes()));
+        if let Some(v) = crate::php_fns::env_get(&name) {
+            return Ok(IV::s(&v));
         }
         match fallback {
             Some(f) => {

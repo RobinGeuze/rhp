@@ -481,6 +481,22 @@ macro_rules! builtins {
     }};
 }
 
+pub use php_fns::{apply_env_overrides, env_overrides};
+
+/// Reset every builtin's per-request state (ini overrides, default timezone,
+/// precision, strtok/preg/json/mbstring state, process title, putenv
+/// overlay). Engines call this on construction so state never leaks from one
+/// script run to the next on the same thread.
+pub fn reset_request_state() {
+    runtime_fns::reset_state();
+    sysmisc_fns::reset_state();
+    preg_fns::reset_state();
+    json_fns::reset_state();
+    ext::mbstring::reset_state();
+    strsearch_fns::reset_state();
+    php_fns::reset_state();
+}
+
 /// The builtin function table, keyed by lowercase name (PHP function names are
 /// case-insensitive).
 pub fn registry() -> &'static HashMap<&'static str, Builtin> {

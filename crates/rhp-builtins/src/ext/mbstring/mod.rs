@@ -70,6 +70,10 @@ thread_local! {
     static INTERNAL: RefCell<Enc> = const { RefCell::new(Enc::Utf8) };
 }
 
+pub(crate) fn reset_state() {
+    INTERNAL.with(|c| *c.borrow_mut() = Enc::Utf8);
+}
+
 fn internal_enc() -> Enc {
     INTERNAL.with(|c| *c.borrow())
 }

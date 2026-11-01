@@ -61,6 +61,10 @@ thread_local! {
     static LAST_ERROR: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
 }
 
+pub(crate) fn reset_state() {
+    set_last_error(0);
+}
+
 fn set_last_error(code: i64) {
     LAST_ERROR.with(|c| c.set(code));
 }

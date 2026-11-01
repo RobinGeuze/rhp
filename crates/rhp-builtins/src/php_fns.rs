@@ -243,30 +243,95 @@ fn fn_php_uname(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(s.to_vec()))
 }
 
+/// One `putenv` change: name and new value (`None` = unset).
+pub type EnvChange = (Vec<u8>, Option<Vec<u8>>);
+
+thread_local! {
+    /// `putenv` changes for this request, layered over the process
+    /// environment (`None` = unset). The process environment itself is never
+    /// mutated: that would race with other threads' `getenv` (the test
+    /// harness runs engines on parallel threads) and leak across engines.
+    static ENV_OVERLAY: std::cell::RefCell<Vec<EnvChange>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub(crate) fn reset_state() {
+    ENV_OVERLAY.with(|e| e.borrow_mut().clear());
+}
+
+/// The request's `putenv` changes in order (`None` = unset). A spawner of
+/// child processes must apply these (`Command::env` / `env_remove`) so the
+/// child sees the same environment as `getenv`, as in php.
+pub fn env_overrides() -> Vec<EnvChange> {
+    ENV_OVERLAY.with(|e| e.borrow().clone())
+}
+
+/// Apply [`env_overrides`] to a child-process command.
+pub fn apply_env_overrides(cmd: &mut std::process::Command) {
+    for (k, v) in env_overrides() {
+        let k = String::from_utf8_lossy(&k).into_owned();
+        match v {
+            Some(v) => {
+                cmd.env(k, String::from_utf8_lossy(&v).into_owned());
+            }
+            None => {
+                cmd.env_remove(k);
+            }
+        }
+    }
+}
+
+/// `getenv(name)` as php sees it: the request's `putenv` changes, then the
+/// process environment.
+pub(crate) fn env_get(name: &[u8]) -> Option<Vec<u8>> {
+    if let Some(v) = ENV_OVERLAY.with(|e| {
+        e.borrow()
+            .iter()
+            .rev()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+    }) {
+        return v;
+    }
+    std::env::var_os(String::from_utf8_lossy(name).as_ref())
+        .map(|v| v.to_string_lossy().into_owned().into_bytes())
+}
+
 fn fn_getenv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match args.first() {
         Some(v) if !matches!(deref(v), Value::Null) => {
-            let name = String::from_utf8_lossy(&conv::to_string_bytes(&deref(v))).into_owned();
-            match std::env::var(&name) {
-                Ok(val) => Ok(Value::str(val.into_bytes())),
-                Err(_) => Ok(Value::Bool(false)),
+            let name = conv::to_string_bytes(&deref(v));
+            match env_get(&name) {
+                Some(val) => Ok(Value::str(val)),
+                None => Ok(Value::Bool(false)),
             }
         }
         _ => {
             let mut a = PhpArray::new();
-            for (k, v) in std::env::vars() {
+            for (k, v) in std::env::vars_os() {
                 a.insert(
-                    rhp_values::ArrayKey::from_bytes(k.as_bytes()),
-                    Value::str(v.into_bytes()),
+                    rhp_values::ArrayKey::from_bytes(k.to_string_lossy().as_bytes()),
+                    Value::str(v.to_string_lossy().into_owned().into_bytes()),
                 );
+            }
+            for (k, v) in env_overrides() {
+                let key = rhp_values::ArrayKey::from_bytes(&k);
+                match v {
+                    Some(v) => {
+                        a.insert(key, Value::str(v));
+                    }
+                    None => {
+                        a.remove(&key);
+                    }
+                }
             }
             Ok(Value::Array(a))
         }
     }
 }
 
-/// `putenv("NAME=value")` sets, `putenv("NAME")` unsets (process env, so
-/// `getenv` and child processes see it, as in php).
+/// `putenv("NAME=value")` sets, `putenv("NAME")` unsets (in the request's
+/// environment overlay: `getenv` sees it; see [`env_overrides`]).
 fn fn_putenv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let a = crate::argparse::str_param(host, args, 0, "putenv", "assignment")?;
     if a.is_empty() || a[0] == b'=' {
@@ -279,20 +344,11 @@ fn fn_putenv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Some(p) => (&a[..p], Some(&a[p + 1..])),
         None => (&a[..], None),
     };
-    let name = String::from_utf8_lossy(name).into_owned();
-    if name.contains('\0') {
+    if name.contains(&0) || value.is_some_and(|v| v.contains(&0)) {
         return Ok(Value::Bool(false));
     }
-    match value {
-        Some(v) => {
-            let v = String::from_utf8_lossy(v).into_owned();
-            if v.contains('\0') {
-                return Ok(Value::Bool(false));
-            }
-            std::env::set_var(name, v);
-        }
-        None => std::env::remove_var(name),
-    }
+    let entry = (name.to_vec(), value.map(|v| v.to_vec()));
+    ENV_OVERLAY.with(|e| e.borrow_mut().push(entry));
     Ok(Value::Bool(true))
 }
 
@@ -310,10 +366,30 @@ fn fn_trigger_error(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
     Ok(Value::Bool(true))
 }
 
-fn fn_error_reporting(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    // 32767 matches the phpt harness (run-tests.php sets error_reporting=32767);
-    // a bare `php` reports E_ALL (30719). rhp has no -d/ini plumbing yet.
-    Ok(Value::Int(32767))
+/// Default `EG(error_reporting)` with no ini value. A bare `php -n` reports
+/// E_ALL (30719), but rhp has no -d plumbing and the phpt harness runs php
+/// with error_reporting=32767, so the untouched default stays 32767.
+const DEFAULT_ERROR_REPORTING: i64 = 32767;
+
+fn fn_error_reporting(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // EG(error_reporting) mirrors the `error_reporting` ini value (atoi).
+    let old = match crate::runtime_fns::ini_value(b"error_reporting").flatten() {
+        Some(v) => crate::runtime_fns::c_atol(&v) as i32 as i64,
+        None => DEFAULT_ERROR_REPORTING,
+    };
+    let new = crate::argparse::int_or_null_param(host, args, 0, "error_reporting", "error_level")?;
+    if let Some(n) = new {
+        if n != old {
+            crate::runtime_fns::ini_store(b"error_reporting", n.to_string().into_bytes());
+        }
+    }
+    Ok(Value::Int(old))
+}
+
+fn fn_set_time_limit(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let secs = crate::argparse::int_param(host, args, 0, "set_time_limit", "seconds", 0)?;
+    crate::runtime_fns::ini_store(b"max_execution_time", secs.to_string().into_bytes());
+    Ok(Value::Bool(true))
 }
 
 fn fn_error_get_last(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -807,7 +883,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "gc_enable", fn_true, 0, Some(0));
     put(m, "gc_disable", fn_true, 0, Some(0));
     put(m, "gc_collect_cycles", fn_zero, 0, Some(0));
-    put(m, "set_time_limit", fn_true, 1, Some(1));
+    put(m, "set_time_limit", fn_set_time_limit, 1, Some(1));
     put(m, "getmypid", fn_getmypid, 0, Some(0));
     put(m, "php_ini_loaded_file", fn_php_ini_loaded_file, 0, Some(0));
     put(m, "setlocale", fn_setlocale, 2, None);

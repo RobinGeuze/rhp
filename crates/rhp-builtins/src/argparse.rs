@@ -95,6 +95,26 @@ pub(crate) fn bool_param(
     }
 }
 
+/// `Z_PARAM_LONG_OR_NULL`: absent or `null` → `None`.
+pub(crate) fn int_or_null_param(
+    host: &dyn Host,
+    args: &[Value],
+    i: usize,
+    func: &str,
+    pname: &str,
+) -> Result<Option<i64>, Thrown> {
+    match args.get(i).map(deref) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v @ (Value::Array(_) | Value::Object(_) | Value::Resource(_) | Value::Closure(_))) => {
+            Err(type_error(host, func, i + 1, pname, "?int", &v))
+        }
+        Some(Value::Str(s)) if conv::scan_number(s.as_bytes()).is_none() => {
+            Err(type_error(host, func, i + 1, pname, "?int", &Value::Str(s)))
+        }
+        Some(v) => Ok(Some(conv::to_int(&v))),
+    }
+}
+
 /// `Z_PARAM_LONG` (absent → `default`). Non-numeric strings are a TypeError.
 pub(crate) fn int_param(
     host: &dyn Host,

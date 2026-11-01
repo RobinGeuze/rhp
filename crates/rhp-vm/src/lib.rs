@@ -5756,7 +5756,7 @@ impl Vm {
                             if g.status == GenStatus::Finished {
                                 self.stack[top].pc = end as usize;
                             } else {
-                                let (k, v) = (g.current_key.clone(), g.current_val.clone());
+                                let (k, v) = (g.current_key.clone(), deref(&g.current_val));
                                 self.cv_assign(top, val_cv, v);
                                 if key_cv != Reg::MAX {
                                     self.cv_assign(top, key_cv, k);
@@ -5816,6 +5816,50 @@ impl Vm {
                     pos_reg,
                     end,
                 } => {
+                    // A Traversable object by reference: only a by-reference
+                    // generator (directly or from getIterator()) can do it;
+                    // `pos_reg` then holds [generator, fetched-once flag].
+                    if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) {
+                        let mut obj = h;
+                        let mut traversable = false;
+                        while self.class_implements(obj.borrow().class, b"IteratorAggregate") {
+                            traversable = true;
+                            match self.call_iter_method(&obj, b"getiterator")? {
+                                Value::Object(it) => obj = it,
+                                _ => {
+                                    let cls = obj.borrow().class;
+                                    return Err(Thrown::error(
+                                        "Exception",
+                                        format!(
+                                            "Objects returned by {}::getIterator() must be traversable or implement interface Iterator",
+                                            String::from_utf8_lossy(self.class(cls).name.as_bytes())
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                        let oid = obj.borrow().id;
+                        if let Some(g) = self.generators.get(&oid) {
+                            if g.frame.as_ref().is_some_and(|f| !f.proto.returns_ref) {
+                                return Err(Thrown::error(
+                                    "Exception",
+                                    "You can only iterate a generator by-reference if it declared that it yields by-reference",
+                                ));
+                            }
+                            self.gen_ensure_started(oid)?;
+                            let mut st = PhpArray::new();
+                            st.push(Value::Object(obj));
+                            st.push(Value::Bool(false));
+                            self.reg_set(top, pos_reg, Value::Array(st));
+                            continue;
+                        }
+                        if traversable || self.class_implements(obj.borrow().class, b"Iterator") {
+                            return Err(Thrown::error(
+                                "Error",
+                                "An iterator cannot be used with foreach by reference",
+                            ));
+                        }
+                    }
                     let nonempty = match deref(&self.stack[top].regs[arr_cv as usize]) {
                         Value::Array(a) => !a.is_empty(),
                         // A plain object iterates its properties by reference;
@@ -5836,6 +5880,41 @@ impl Vm {
                     val_cv,
                     end,
                 } => {
+                    // By-reference generator (see FeResetRef): advance at the
+                    // top of each iteration but the first, then alias the loop
+                    // variable to the yielded reference.
+                    if let Value::Array(st) = self.reg_get(top, pos_reg) {
+                        let (Some(Value::Object(g)), Some(Value::Bool(fetched))) = (
+                            st.get_index(0).map(|e| e.1.clone()),
+                            st.get_index(1).map(|e| e.1.clone()),
+                        ) else {
+                            self.stack[top].pc = end as usize;
+                            continue;
+                        };
+                        let id = g.borrow().id;
+                        if fetched {
+                            self.advance_gen(id, Value::Null)?;
+                        }
+                        let gs = &self.generators[&id];
+                        if gs.status == GenStatus::Finished {
+                            self.stack[top].pc = end as usize;
+                            continue;
+                        }
+                        let (k, v) = (gs.current_key.clone(), gs.current_val.clone());
+                        let rc = match v {
+                            Value::Ref(rc) => rc,
+                            other => Rc::new(RefCell::new(other)),
+                        };
+                        self.bind_ref_cv(top, val_cv, rc);
+                        if key_cv != Reg::MAX {
+                            self.cv_assign(top, key_cv, k);
+                        }
+                        let mut st = PhpArray::new();
+                        st.push(Value::Object(g));
+                        st.push(Value::Bool(true));
+                        self.reg_set(top, pos_reg, Value::Array(st));
+                        continue;
+                    }
                     let pos = match self.reg_get(top, pos_reg) {
                         Value::Int(n) => n as usize,
                         _ => 0,
@@ -5889,9 +5968,13 @@ impl Vm {
                                     }
                                 };
                                 drop(b);
-                                self.reg_set(top, val_cv, Value::Ref(rc));
+                                self.bind_ref_cv(top, val_cv, rc);
                                 if key_cv != Reg::MAX {
-                                    self.reg_set(top, key_cv, Value::str(name.as_bytes().to_vec()));
+                                    self.cv_assign(
+                                        top,
+                                        key_cv,
+                                        Value::str(name.as_bytes().to_vec()),
+                                    );
                                 }
                                 self.reg_set(top, pos_reg, Value::Int((idx + 1) as i64));
                             }
@@ -5914,9 +5997,9 @@ impl Vm {
                     };
                     match fetched {
                         Some((k, elem_rc)) => {
-                            self.reg_set(top, val_cv, Value::Ref(elem_rc));
+                            self.bind_ref_cv(top, val_cv, elem_rc);
                             if key_cv != Reg::MAX {
-                                self.reg_set(top, key_cv, array_key_to_value(&k));
+                                self.cv_assign(top, key_cv, array_key_to_value(&k));
                             }
                             self.reg_set(top, pos_reg, Value::Int((pos + 1) as i64));
                         }
@@ -6726,7 +6809,15 @@ impl Vm {
                 Instr::Yield { dst, key, value } => {
                     // Suspend: hand (key, value, resume-dst) to the generator
                     // driver, leaving this frame on the stack for it to reclaim.
-                    let val = self.reg_get(top, value);
+                    // A by-reference generator (`function &gen()`) yields a
+                    // variable as a reference to it (php's ZEND_YIELD with
+                    // ZEND_ACC_RETURN_REFERENCE), so `foreach (gen() as &$v)`
+                    // writes reach it; any other value is yielded as is.
+                    let val = if proto.returns_ref && value < proto.num_cvs {
+                        Value::Ref(self.promote(top, value))
+                    } else {
+                        self.reg_get(top, value)
+                    };
                     let id = *self.gen_stack.last().expect("yield outside a generator");
                     let key_val = if key == Reg::MAX {
                         let g = self.generators.get_mut(&id).unwrap();
@@ -7556,7 +7647,7 @@ impl Vm {
         Some(match name_lc {
             b"current" => (|| {
                 self.gen_ensure_started(id)?;
-                Ok(self.generators[&id].current_val.clone())
+                Ok(deref(&self.generators[&id].current_val))
             })(),
             b"key" => (|| {
                 self.gen_ensure_started(id)?;
@@ -7580,7 +7671,7 @@ impl Vm {
                     self.advance_gen(id, Value::Null)?;
                 }
                 self.advance_gen(id, v)?;
-                Ok(self.generators[&id].current_val.clone())
+                Ok(deref(&self.generators[&id].current_val))
             })(),
             b"rewind" => (|| {
                 self.gen_ensure_started(id)?;

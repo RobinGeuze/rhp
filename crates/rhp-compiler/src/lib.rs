@@ -2927,12 +2927,10 @@ impl ProtoBuilder {
                     self.emit(Instr::MakeRefLval { dst: r });
                     r
                 }
-                _ => {
-                    return Err(Thrown::error(
-                        "Error",
-                        "Cannot create references to elements of a temporary array expression",
-                    ))
-                }
+                // Any other expression (a call, `new`, a literal …): php
+                // iterates the temporary itself (FE_RESET_RW on a TMP) — a
+                // by-ref generator / its elements are referenced in place.
+                _ => self.compile_expr(fe.expression)?,
             };
             let pos_reg = self.alloc_temp();
             let saved_floor = self.temp_floor;

@@ -49,9 +49,21 @@ an included file, and reports each file rhp refuses.
 /// Why rhp refused a file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    Parse { line: u32, message: String },
-    Unsupported { feature: String, reason: String },
-    Error { class: String, message: String },
+    Parse {
+        line: u32,
+        message: String,
+    },
+    /// `line` is where the compiler located the refusal, if it did (the
+    /// file is the one being scanned, so it is not repeated here).
+    Unsupported {
+        feature: String,
+        reason: String,
+        line: Option<u32>,
+    },
+    Error {
+        class: String,
+        message: String,
+    },
     Panic(String),
 }
 
@@ -73,8 +85,16 @@ impl std::fmt::Display for Refusal {
             Refusal::Parse { line, message } => {
                 write!(f, "parse error: {} (line {line})", first_line(message))
             }
-            Refusal::Unsupported { feature, reason } => {
-                write!(f, "unsupported {feature}: {}", first_line(reason))
+            Refusal::Unsupported {
+                feature,
+                reason,
+                line,
+            } => {
+                write!(f, "unsupported {feature}: {}", first_line(reason))?;
+                match line {
+                    Some(l) => write!(f, " (line {l})"),
+                    None => Ok(()),
+                }
             }
             Refusal::Error { class, message } => write!(f, "{class}: {}", first_line(message)),
             Refusal::Panic(m) => write!(f, "compiler panic: {}", first_line(m)),
@@ -94,11 +114,17 @@ pub fn lint_source(file: &str, src: &[u8]) -> Result<(), Refusal> {
         if let Some((message, line)) = parsed.parse_error() {
             return Err(Refusal::Parse { line, message });
         }
-        match rhp_compiler::compile_with_source(parsed.program(), src, file) {
+        match rhp_compiler::compile_include(parsed.program(), src, file) {
             Ok(_) => Ok(()),
-            Err(Thrown::Unsupported { feature, reason }) => {
-                Err(Refusal::Unsupported { feature, reason })
-            }
+            Err(Thrown::Unsupported {
+                feature,
+                reason,
+                location,
+            }) => Err(Refusal::Unsupported {
+                feature,
+                reason,
+                line: location.map(|(_, l)| l),
+            }),
             Err(Thrown::Error { class, message }) => Err(Refusal::Error {
                 class: class.to_string(),
                 message,
@@ -365,7 +391,8 @@ pub fn main(args: &[String]) -> ExitCode {
         let mut s = String::from(
             "# Files rhp refuses to compile (rhp-difftest lint --write-known).\n\
              # `rhp-difftest lint --check-known` fails on a refused file not listed here;\n\
-             # delete lines as files start compiling. Format: <file>\\t# <reason>\n",
+             # delete lines as files start compiling. Format: <file>\\t# <reason>\n\
+             # Only <file> is matched; the reason is a comment and may change freely.\n",
         );
         for (key, (_, r)) in &refused {
             s.push_str(&format!("{key}\t# {r}\n"));
@@ -498,6 +525,19 @@ mod tests {
             Err(Refusal::Parse { .. }) => {}
             other => panic!("expected a parse refusal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unsupported_refusals_carry_the_line_but_not_the_file() {
+        // Backticks (shell exec) are refused by design.
+        let r = lint_source("/abs/dir/a.php", b"<?php\n\n$x = `ls`;\n").unwrap_err();
+        match &r {
+            Refusal::Unsupported { line, .. } => assert_eq!(*line, Some(3)),
+            other => panic!("expected an unsupported refusal, got {other:?}"),
+        }
+        let shown = r.to_string();
+        assert!(shown.ends_with("(line 3)"), "{shown}");
+        assert!(!shown.contains("/abs/dir"), "{shown}");
     }
 
     #[test]

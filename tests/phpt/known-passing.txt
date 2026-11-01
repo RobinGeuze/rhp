@@ -1,7 +1,13 @@
 # php-src .phpt tests rhp matches php on (rhp-difftest phpt --write-known).
 # CI fails if one stops matching: fix the regression, or remove the line.
+Zend/tests/ArrayAccess/ArrayAccess_indirect_append.phpt
 Zend/tests/ArrayAccess/bug30346.phpt
 Zend/tests/ArrayAccess/bug33710.phpt
+Zend/tests/ArrayAccess/bug39297.phpt
+Zend/tests/ArrayAccess/bug64417.phpt
+Zend/tests/ArrayAccess/bug68896.phpt
+Zend/tests/ArrayAccess/bug69955.phpt
+Zend/tests/ArrayAccess/bug71731.phpt
 Zend/tests/ArrayAccess/bug78356.phpt
 Zend/tests/ErrorException_construct.phpt
 Zend/tests/abstract-static.phpt
@@ -21,17 +27,20 @@ Zend/tests/anon/007.phpt
 Zend/tests/anon/008.phpt
 Zend/tests/anon/009.phpt
 Zend/tests/anon/010.phpt
+Zend/tests/anon/011.phpt
 Zend/tests/anon/013.phpt
 Zend/tests/anon/014.phpt
 Zend/tests/anon/015.phpt
 Zend/tests/anon/016.phpt
 Zend/tests/anon/anon_class_name.phpt
+Zend/tests/anon/bug77652.phpt
 Zend/tests/anon/gh13097_b.phpt
 Zend/tests/arg_unpack/dynamic.phpt
 Zend/tests/arg_unpack/internal.phpt
 Zend/tests/arg_unpack/many_args.phpt
 Zend/tests/arg_unpack/method.phpt
 Zend/tests/arg_unpack/new.phpt
+Zend/tests/array_add_indirect.phpt
 Zend/tests/array_addition_not_commutative.phpt
 Zend/tests/array_append_COW.phpt
 Zend/tests/array_append_by_reference.phpt
@@ -45,16 +54,19 @@ Zend/tests/array_unpack_string_keys.phpt
 Zend/tests/array_unshift_COW.phpt
 Zend/tests/array_with_refs_identical.phpt
 Zend/tests/arrow_functions/001.phpt
+Zend/tests/arrow_functions/004.phpt
 Zend/tests/assert/expect_empty_stmt_bug.phpt
 Zend/tests/assign_array_object_property.phpt
 Zend/tests/assign_dim_op_same_var.phpt
 Zend/tests/assign_obj_op_cache_slot.phpt
+Zend/tests/assign_obj_to_ref_inference.phpt
 Zend/tests/assign_property_null_object.phpt
 Zend/tests/assign_to_obj_001.phpt
 Zend/tests/assign_to_var_001.phpt
 Zend/tests/assign_to_var_002.phpt
 Zend/tests/assign_to_var_003.phpt
 Zend/tests/assign_to_var_004.phpt
+Zend/tests/asymmetric_visibility/__set.phpt
 Zend/tests/asymmetric_visibility/bug002.phpt
 Zend/tests/asymmetric_visibility/bug003.phpt
 Zend/tests/asymmetric_visibility/bug004.phpt
@@ -196,6 +208,7 @@ Zend/tests/bug62763.phpt
 Zend/tests/bug62991.phpt
 Zend/tests/bug63206_2.phpt
 Zend/tests/bug63882.phpt
+Zend/tests/bug63882_2.phpt
 Zend/tests/bug64555.phpt
 Zend/tests/bug64720.phpt
 Zend/tests/bug64966.phpt
@@ -267,6 +280,7 @@ Zend/tests/bug74603.phpt
 Zend/tests/bug74810.phpt
 Zend/tests/bug75079.phpt
 Zend/tests/bug75252.phpt
+Zend/tests/bug76383.phpt
 Zend/tests/bug76752.phpt
 Zend/tests/bug76965.phpt
 Zend/tests/bug77589.phpt
@@ -395,6 +409,7 @@ Zend/tests/concat/bug40809.phpt
 Zend/tests/concat/bug44069.phpt
 Zend/tests/concat/bug79836_2.phpt
 Zend/tests/concat/bug79836_3.phpt
+Zend/tests/concat/bug81705.phpt
 Zend/tests/concat/concat_001.phpt
 Zend/tests/concat/concat_002.phpt
 Zend/tests/const_dereference_001.phpt
@@ -477,6 +492,7 @@ Zend/tests/dereference/dereference_003.phpt
 Zend/tests/dereference/dereference_004.phpt
 Zend/tests/dereference/dereference_005.phpt
 Zend/tests/dereference/dereference_008.phpt
+Zend/tests/dereference/dereference_009.phpt
 Zend/tests/dereference/dereference_010.phpt
 Zend/tests/dereference/dereference_014.phpt
 Zend/tests/div_001.phpt
@@ -573,6 +589,7 @@ Zend/tests/errmsg/bug43344_8.phpt
 Zend/tests/errmsg/bug43344_9.phpt
 Zend/tests/errmsg/errmsg_024.phpt
 Zend/tests/errmsg/errmsg_040.phpt
+Zend/tests/errmsg/errmsg_044.phpt
 Zend/tests/error_reporting/bug27731.phpt
 Zend/tests/error_reporting/bug33771.phpt
 Zend/tests/error_reporting/bug72162.phpt
@@ -670,6 +687,7 @@ Zend/tests/foreach/bug68215.phpt
 Zend/tests/foreach/bug76800.phpt
 Zend/tests/foreach/foreach_003.phpt
 Zend/tests/foreach/foreach_005.phpt
+Zend/tests/foreach/foreach_006.phpt
 Zend/tests/foreach/foreach_007.phpt
 Zend/tests/foreach/foreach_009.phpt
 Zend/tests/foreach/foreach_011.phpt
@@ -682,6 +700,7 @@ Zend/tests/foreach/foreach_list_002.phpt
 Zend/tests/foreach/foreach_list_keyed.phpt
 Zend/tests/foreach/foreach_shadowed_dyn_property.phpt
 Zend/tests/foreach/foreach_shadowed_property.phpt
+Zend/tests/foreach/foreach_temp_array_expr_with_refs.phpt
 Zend/tests/foreach/foreach_unset_globals.phpt
 Zend/tests/foreach/gh11222.phpt
 Zend/tests/fr47160.phpt
@@ -742,6 +761,7 @@ Zend/tests/generators/bug80240.phpt
 Zend/tests/generators/clone.phpt
 Zend/tests/generators/dangling_send_target.phpt
 Zend/tests/generators/dynamic_call.phpt
+Zend/tests/generators/errors/non_ref_generator_iterated_by_ref_error.phpt
 Zend/tests/generators/fibonacci.phpt
 Zend/tests/generators/finally/return_return.phpt
 Zend/tests/generators/finally/return_yield.phpt
@@ -821,6 +841,7 @@ Zend/tests/gh20672.phpt
 Zend/tests/gh20714.phpt
 Zend/tests/gh21603.phpt
 Zend/tests/gh21605.phpt
+Zend/tests/gh23232.phpt
 Zend/tests/globals_005.phpt
 Zend/tests/grammar/bug31341.phpt
 Zend/tests/grammar/bug35411.phpt
@@ -1059,7 +1080,22 @@ Zend/tests/magic_methods/bug72813.phpt
 Zend/tests/magic_methods/bug74340.phpt
 Zend/tests/magic_methods/bug74862.phpt
 Zend/tests/magic_methods/bug74862_2.phpt
+Zend/tests/magic_methods/bug75420.1.phpt
+Zend/tests/magic_methods/bug75420.10.phpt
+Zend/tests/magic_methods/bug75420.11.phpt
+Zend/tests/magic_methods/bug75420.12.phpt
+Zend/tests/magic_methods/bug75420.13.phpt
+Zend/tests/magic_methods/bug75420.14.phpt
+Zend/tests/magic_methods/bug75420.15.phpt
+Zend/tests/magic_methods/bug75420.16.phpt
+Zend/tests/magic_methods/bug75420.2.phpt
+Zend/tests/magic_methods/bug75420.3.phpt
 Zend/tests/magic_methods/bug75420.4.phpt
+Zend/tests/magic_methods/bug75420.5.phpt
+Zend/tests/magic_methods/bug75420.6.phpt
+Zend/tests/magic_methods/bug75420.7.phpt
+Zend/tests/magic_methods/bug75420.8.phpt
+Zend/tests/magic_methods/bug75420.9.phpt
 Zend/tests/magic_methods/bug75420.phpt
 Zend/tests/magic_methods/bug77291.phpt
 Zend/tests/magic_methods/bug77339.phpt
@@ -1205,6 +1241,7 @@ Zend/tests/new_args_without_ctor.phpt
 Zend/tests/new_without_parentheses/garbage_collection.phpt
 Zend/tests/new_without_parentheses/new_without_ctor_arguments_parentheses_static_property.phpt
 Zend/tests/no_class_const_propagation_in_closures.phpt
+Zend/tests/no_early_binding_if_already_declared.phpt
 Zend/tests/null_to_non_nullable_special_func.phpt
 Zend/tests/nullable_types/array.phpt
 Zend/tests/nullable_types/contravariant_nullable_param_succeeds.phpt
@@ -1251,6 +1288,7 @@ Zend/tests/numeric_strings/string_offset.phpt
 Zend/tests/numeric_strings/trailling_whitespaces.phpt
 Zend/tests/object-null.phpt
 Zend/tests/object_gc_in_shutdown.phpt
+Zend/tests/object_handlers.phpt
 Zend/tests/object_property_ref_incdec.phpt
 Zend/tests/object_types/return_type_in_function.phpt
 Zend/tests/object_types/type_hint_in_class_method.phpt
@@ -1268,6 +1306,7 @@ Zend/tests/objects/objects_027.phpt
 Zend/tests/objects/objects_029.phpt
 Zend/tests/objects/objects_030.phpt
 Zend/tests/objects/objects_031.phpt
+Zend/tests/objects/objects_032.phpt
 Zend/tests/objects/objects_033.phpt
 Zend/tests/objects/objects_035.phpt
 Zend/tests/oct_overflow.phpt
@@ -1369,6 +1408,7 @@ Zend/tests/self_in_eval.phpt
 Zend/tests/serialize/bug34045.phpt
 Zend/tests/serialize/bug70187.phpt
 Zend/tests/serialize/bug70187_2.phpt
+Zend/tests/serialize/bug73900.phpt
 Zend/tests/serialize/bug76502.phpt
 Zend/tests/static_method_non_existing_class.phpt
 Zend/tests/static_variables/static_variable.phpt
@@ -1383,6 +1423,7 @@ Zend/tests/static_variables/static_variables_recursive.phpt
 Zend/tests/static_variables/static_variables_throwing_initializer.phpt
 Zend/tests/str_offset_001.phpt
 Zend/tests/str_offset_003.phpt
+Zend/tests/str_offset_005.phpt
 Zend/tests/strcasecmp_basic.phpt
 Zend/tests/string_offset_int_min_max.phpt
 Zend/tests/string_to_number_comparison.phpt
@@ -1406,6 +1447,7 @@ Zend/tests/temporary_cleaning/temporary_cleaning_004.phpt
 Zend/tests/temporary_cleaning/temporary_cleaning_005.phpt
 Zend/tests/temporary_cleaning/temporary_cleaning_007.phpt
 Zend/tests/temporary_cleaning/temporary_cleaning_008.phpt
+Zend/tests/temporary_cleaning/temporary_cleaning_009.phpt
 Zend/tests/temporary_cleaning/temporary_cleaning_010.phpt
 Zend/tests/temporary_cleaning/temporary_cleaning_011.phpt
 Zend/tests/temporary_cleaning/temporary_cleaning_012.phpt
@@ -1722,6 +1764,8 @@ Zend/tests/type_declarations/typed_properties_104.phpt
 Zend/tests/type_declarations/typed_properties_111.phpt
 Zend/tests/type_declarations/typed_properties_112.phpt
 Zend/tests/type_declarations/typed_properties_cache_slot_opt.phpt
+Zend/tests/type_declarations/typed_properties_failed_assign_is_not_init.phpt
+Zend/tests/type_declarations/typed_properties_magic_set.phpt
 Zend/tests/type_declarations/union_types/generator_return_multiple_classes.phpt
 Zend/tests/type_declarations/union_types/inheritance.phpt
 Zend/tests/type_declarations/union_types/null_false_union.phpt
@@ -1753,6 +1797,7 @@ Zend/tests/unset/bug34518.phpt
 Zend/tests/unset/bug39346.phpt
 Zend/tests/unset/bug40833.phpt
 Zend/tests/unset/bug81377.phpt
+Zend/tests/unset/unset_cv08.phpt
 Zend/tests/unset/unset_cv10.phpt
 Zend/tests/unset/unset_cv11.phpt
 Zend/tests/unset/unset_cv12.phpt

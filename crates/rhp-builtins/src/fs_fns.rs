@@ -1190,6 +1190,10 @@ fn fn_flock(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if let Some(r) = &wb {
         *r.borrow_mut() = Value::Int(0);
     }
+    // Socket streams do not implement php's LOCKING option.
+    if host.stream_sock_info(&h).is_some() {
+        return Ok(Value::Bool(false));
+    }
     let Some(fd) = host.stream_fd(&h) else {
         return Ok(Value::Bool(false));
     };
@@ -1223,6 +1227,11 @@ fn fn_ftruncate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "ftruncate(): Argument #2 ($size) must be greater than or equal to 0",
         ));
     }
+    // Socket streams have no truncate support (php's TRUNCATE_SUPPORTED probe).
+    if host.stream_sock_info(&h).is_some() {
+        crate::warn(host, "ftruncate", "Can't truncate this stream!")?;
+        return Ok(Value::Bool(false));
+    }
     Ok(Value::Bool(host.stream_truncate(&h, size).unwrap_or(false)))
 }
 
@@ -1233,7 +1242,10 @@ fn fn_fseek(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if host.stream_seek(&h, off, whence) {
         return Ok(Value::Int(0));
     }
-    if host.stream_meta(&h).is_some_and(|m| !m.seekable) {
+    // php emulates a forward relative seek on an unseekable stream by
+    // reading (failing quietly at eof); anything else warns.
+    let forward = whence == libc::SEEK_CUR && off >= 0;
+    if !forward && host.stream_meta(&h).is_some_and(|m| !m.seekable) {
         crate::warn(host, "fseek", "Stream does not support seeking")?;
     }
     Ok(Value::Int(-1))
@@ -1249,7 +1261,14 @@ fn fn_ftell(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_rewind(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (h, _) = stream_param(host, args, 0, "rewind", "stream")?;
-    Ok(Value::Bool(host.stream_rewind(&h)))
+    if host.stream_rewind(&h) {
+        return Ok(Value::Bool(true));
+    }
+    // php's seek of an unseekable stream (pipe, socket) warns.
+    if host.stream_meta(&h).is_some_and(|m| !m.seekable) {
+        crate::warn(host, "rewind", "Stream does not support seeking")?;
+    }
+    Ok(Value::Bool(false))
 }
 
 fn fn_fgets(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1987,10 +2006,12 @@ fn fn_fpassthru(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_stream_is_local(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = args.first().map(deref).unwrap_or(Value::Null);
     if let Value::Resource(_) = v {
-        let (h, kind) = stream_param(host, args, 0, "stream_is_local", "stream")?;
-        let _ = h;
-        let _ = kind;
-        return Ok(Value::Bool(true));
+        let (h, _) = stream_param(host, args, 0, "stream_is_local", "stream")?;
+        // A stream without a wrapper (pipe, socket) is not local in php.
+        let wrapperless = host
+            .stream_meta(&h)
+            .is_some_and(|m| m.wrapper_type.is_empty());
+        return Ok(Value::Bool(!wrapperless));
     }
     let url = conv::to_string_bytes(&v);
     let (scheme, _) = split_scheme(&url);

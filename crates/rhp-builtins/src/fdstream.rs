@@ -212,6 +212,11 @@ impl FdStream {
         !self.rbuf.is_empty()
     }
 
+    /// php's `is_seekable` (`stream_get_meta_data()['seekable']`).
+    pub fn is_seekable(&self) -> bool {
+        self.seekable
+    }
+
     /// Bytes read ahead but not consumed (php's `unread_bytes`).
     pub fn unread(&self) -> usize {
         self.rbuf.len()

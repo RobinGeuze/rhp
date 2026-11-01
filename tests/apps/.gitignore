@@ -1,0 +1,18 @@
+# Fixture apps commit composer.json/.lock, app code, config and .env only;
+# everything installed or generated stays out (the apps' own .gitignore
+# files cover the same ground; this is the safety net for new versions).
+*/vendor/
+*/var/
+*/node_modules/
+*/public/build/
+*/public/bundles/
+*/public/hot
+*/bootstrap/cache/*.php
+*/storage/framework/cache/data/*
+*/storage/framework/sessions/*
+*/storage/framework/views/*
+*/storage/logs/*
+!*/storage/**/.gitignore
+*/.phpunit.cache/
+*/.env.local
+*/.env.*.local

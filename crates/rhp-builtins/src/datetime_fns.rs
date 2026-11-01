@@ -212,6 +212,37 @@ pub(crate) fn local_to_ts(local: i64, hint_dst: bool) -> i64 {
     }
 }
 
+/// `idate(format, timestamp = null)`: one local-time field as an int
+/// (`php_idate`). A format that is not exactly one recognised character
+/// returns false (php also warns).
+fn fn_idate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let format = crate::argparse::str_param(host, args, 0, "idate", "format")?;
+    let ts = crate::argparse::int_or_null_param(host, args, 1, "idate", "timestamp")?
+        .unwrap_or_else(now_ts);
+    if format.len() != 1 {
+        return Ok(Value::Bool(false));
+    }
+    let c = format[0];
+    let (tm, _) = local_break_down(ts);
+    let v: i64 = match c {
+        b'y' => tm.year % 100,
+        b'U' => ts as i32 as i64,
+        b'B' => {
+            let mut r = ((ts % 86400) + 3600) * 10;
+            if r < 0 {
+                r += 864000;
+            }
+            (r / 864) % 1000
+        }
+        b'd' | b'j' | b'N' | b'w' | b'z' | b'W' | b'm' | b'n' | b't' | b'L' | b'Y' | b'o'
+        | b'g' | b'h' | b'H' | b'G' | b'i' | b's' | b'I' | b'Z' => {
+            conv::to_int(&Value::str(php_date(&[c], ts, true)))
+        }
+        _ => return Ok(Value::Bool(false)),
+    };
+    Ok(Value::Int(v as i32 as i64))
+}
+
 // ---------------------------------------------------------------------------
 // mktime / gmmktime
 // ---------------------------------------------------------------------------
@@ -345,6 +376,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "gmmktime", fn_gmmktime, 1, Some(6));
     put(m, "checkdate", fn_checkdate, 3, Some(3));
     put(m, "getdate", fn_getdate, 0, Some(1));
+    put(m, "idate", fn_idate, 1, Some(2));
 }
 
 // ---------------------------------------------------------------------------

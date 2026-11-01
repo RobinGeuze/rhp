@@ -1,0 +1,62 @@
+w+: 0 false 5 5 0 1 1 2 
+w+r: true 'hEllo' true 5 '' true 
+seek: 0 'lo' 0 'o' -1 5 -1 5 
+past: 0 8 false 1 9 
+file: '68456c6c6f0000005a' 
+r: 'line1
+' 6 false 'line2
+' 'last' true false 16 
+r2: true 'lin' 0 100 false '' true 
+r3: 0 'ne' 4 '1
+line2
+last' true 16 
+r4: 'line2
+last' 'lin' 3 
+r+: '01' 2 4 '45' 
+r+f: '01AB456789' 
+c+: 2 2 'AB4' 
+c+f: 'ccAB456789' 
+c: 1 1 
+cf: 'CcAB456789' 
+a: 0 2 2 0 1 1 
+af: 'CcAB456789aab' 
+a+: 0 'CcAB' 1 5 '' 
+a+f: 'CcAB456789aabQ' 
+x: false false 
+x+: 3 true 'new' 
+live: 'live' 4 
+len: 3 0 0 0 1 
+lenf: 'abcq' 
+big: 20000 10000 true 
+php://memory: false 3 3 false 0 5 1 6 true '61626300005a' true 
+m2: -1 6 0 'bc' false '00005a' true 0 '005a' true 
+m3: -1 false -1 0 
+php://temp: false 3 3 false 0 5 1 6 true '61626300005a' true 
+m2: -1 6 0 'bc' false '00005a' true 0 '005a' true 
+m3: -1 false -1 0 
+php://temp/maxmemory:10: false 3 3 false 0 5 1 6 true '61626300005a' true 
+m2: -1 6 0 'bc' false '00005a' true 0 '005a' true 
+m3: -1 false -1 0 
+mr: false 0 '' true 
+ma: 3 0 1 1 true 'abcd' 
+mg: 'l1
+' false 'l' '2
+' 'l3' true false 
+mg2: 'l1
+' false false true 
+fread(): Argument #2 ($length) must be greater than 0
+fread(): Argument #2 ($length) must be greater than 0
+fread(): Argument #1 ($stream) must be an open stream resource
+fwrite(): Argument #1 ($stream) must be an open stream resource
+feof(): Argument #1 ($stream) must be an open stream resource
+ftell(): Argument #1 ($stream) must be an open stream resource
+fseek(): Argument #1 ($stream) must be an open stream resource
+rewind(): Argument #1 ($stream) must be an open stream resource
+fclose(): Argument #1 ($stream) must be an open stream resource
+fgets(): Argument #1 ($stream) must be an open stream resource
+fgetc(): Argument #1 ($stream) must be an open stream resource
+fflush(): Argument #1 ($stream) must be an open stream resource
+stream_get_contents(): Argument #1 ($stream) must be an open stream resource
+fwrite(): Argument #1 ($stream) must be of type resource, false given
+fread(): Argument #1 ($stream) must be of type resource, string given
+feof(): Argument #1 ($stream) must be of type resource, null given

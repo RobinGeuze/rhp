@@ -1,0 +1,24 @@
+TypeError: Enum case type string does not match enum backing type int
+TypeError: Enum case type string does not match enum backing type int
+int(2)
+TypeError: Enum case type string does not match enum backing type int
+TypeError: Enum case type int does not match enum backing type string
+Error: Duplicate value in enum E for cases A and B
+Error: Duplicate value in enum E for cases A and B
+Error: Duplicate value in enum E for cases A and B
+Error: Duplicate value in enum E for cases A and B
+Error: Duplicate value in enum F for cases A and C
+TypeError: Enum case type float does not match enum backing type int
+string(3) "abc"
+enum(H::B)
+NULL
+array(3) {
+  [0]=>
+  int(8)
+  [1]=>
+  int(8)
+  [2]=>
+  int(9)
+}
+Error: Duplicate value in enum I for cases A and B
+enum(J::B)

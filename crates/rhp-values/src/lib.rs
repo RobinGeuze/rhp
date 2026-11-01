@@ -54,6 +54,42 @@ pub struct ResourceData {
 
 pub type ResourceHandle = Rc<ResourceData>;
 
+thread_local! {
+    /// Ids of stream resources whose last `Value` reference was dropped. The
+    /// VM drains this and frees the backing stream (php's refcount-0 resource
+    /// destructor: closes the descriptor, releases flock locks, flushes).
+    static DROPPED_STREAMS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+}
+
+impl Drop for ResourceData {
+    fn drop(&mut self) {
+        // Streams and processes are freed on their last reference (php's
+        // refcount-0 resource destructors); other native resources live on.
+        if self.type_name == "stream" || self.type_name == "process" {
+            let id = self.id;
+            let _ = DROPPED_STREAMS.try_with(|q| {
+                if let Ok(mut q) = q.try_borrow_mut() {
+                    q.push(id);
+                }
+            });
+        }
+    }
+}
+
+/// Take the ids of stream resources released since the last call.
+pub fn take_dropped_streams() -> Vec<u32> {
+    DROPPED_STREAMS
+        .try_with(|q| {
+            let mut q = q.borrow_mut();
+            if q.is_empty() {
+                Vec::new()
+            } else {
+                std::mem::take(&mut *q)
+            }
+        })
+        .unwrap_or_default()
+}
+
 /// A closure's runtime state.
 pub struct ClosureData {
     /// Index into the program's closure protos (resolved by the VM).
@@ -91,6 +127,27 @@ pub struct ObjectData {
     pub properties: IndexMap<PhpStr, Value, FxBuildHasher>,
 }
 
+thread_local! {
+    /// Called with an object's id when its storage is freed (the engine's
+    /// `free_obj` hook: lets native extensions release per-object state, e.g.
+    /// libzip writing an unclosed `ZipArchive`).
+    static OBJECT_FREE_HOOK: std::cell::Cell<Option<fn(u32)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Install the object free hook (see [`ObjectData`]'s `Drop`).
+pub fn set_object_free_hook(f: fn(u32)) {
+    OBJECT_FREE_HOOK.with(|h| h.set(Some(f)));
+}
+
+impl Drop for ObjectData {
+    fn drop(&mut self) {
+        // `try_with`: thread-local teardown may already have run.
+        if let Ok(Some(f)) = OBJECT_FREE_HOOK.try_with(|h| h.get()) {
+            f(self.id);
+        }
+    }
+}
+
 /// What kind of class-like declaration a class table entry is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ClassKind {
@@ -114,6 +171,8 @@ pub struct ClassFlags {
     pub is_abstract: bool,
     pub is_final: bool,
     pub is_readonly: bool,
+    /// `#[\AllowDynamicProperties]` (php's ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES).
+    pub allow_dynamic: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +344,6 @@ fn float_to_int_wrapping(t: f64) -> i64 {
 }
 
 /// The array buffer; insertion order preserved by IndexMap.
-#[derive(Clone)]
 pub struct ArrayData {
     pub entries: IndexMap<ArrayKey, Value, FxBuildHasher>,
     /// Next integer index for `$a[] = ...`. `None` = no int key ever inserted
@@ -295,6 +353,38 @@ pub struct ArrayData {
     pub append_disabled: bool,
     /// Internal pointer for `current`/`next`/`prev`/`end`/`reset`/`key`.
     pub pos: usize,
+}
+
+/// php's `zend_array_dup`: a reference held only by the source array
+/// (refcount 1) is not shared with the copy; the copy gets the referenced
+/// value (`zend_array_dup_element`), unless that value is the source array
+/// itself (the self-reference guard).
+impl Clone for ArrayData {
+    fn clone(&self) -> Self {
+        let mut entries = self.entries.clone();
+        let src = self as *const ArrayData as usize;
+        for v in entries.values_mut() {
+            let inner = match v {
+                Value::Ref(rc) if Rc::strong_count(rc) == 2 => match rc.try_borrow() {
+                    Ok(b) => match &*b {
+                        Value::Array(a) if a.data_ptr() == src => None,
+                        other => Some(other.clone()),
+                    },
+                    Err(_) => None,
+                },
+                _ => None,
+            };
+            if let Some(x) = inner {
+                *v = x;
+            }
+        }
+        ArrayData {
+            entries,
+            next_int: self.next_int,
+            append_disabled: self.append_disabled,
+            pos: self.pos,
+        }
+    }
 }
 
 impl ArrayData {
@@ -332,6 +422,14 @@ pub struct PhpArray(Rc<ArrayData>);
 impl PhpArray {
     pub fn new() -> Self {
         PhpArray(Rc::new(ArrayData::new()))
+    }
+
+    /// Identity of the shared array storage (php's `zend_array *`): equal for
+    /// copies that have not been written since, so a recursive array reached
+    /// through a reference is recognized (`*RECURSION*` / circular-reference
+    /// guards in the dumpers and encoders).
+    pub fn data_ptr(&self) -> usize {
+        Rc::as_ptr(&self.0) as usize
     }
 
     pub fn len(&self) -> usize {

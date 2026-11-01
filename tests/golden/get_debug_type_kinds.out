@@ -1,0 +1,44 @@
+null / NULL
+bool / boolean
+bool / boolean
+int / integer
+int / integer
+float / double
+float / double
+string / string
+string / string
+array / array
+array / array
+Closure / object
+Closure / object
+Closure / object
+App\Model\User / object
+stdClass / object
+ArrayObject / object
+App\Model\Status / object
+class@anonymous / object
+App\Model\Base@anonymous / object
+App\Model\Marker@anonymous / object
+ArrayObject@anonymous / object
+resource (stream) / resource
+resource (closed) / resource (closed)
+resource (stream) / resource
+Exception / object
+TypeError / object
+3
+bool(true)
+bool(true)
+bool(true)
+anon-name-ok
+bool(true)
+bool(false)
+bool(true)
+bool(false)
+class@anonymous Object
+(
+)
+
+App\Model\Base@anonymous Object
+(
+)
+

@@ -29,6 +29,7 @@ use rhp_values::{ClassFlags, ClassKind, Visibility};
 
 /// A compiled member selector: a static interned name, or a runtime name in a
 /// register (dynamic `$o->$x` / `$o->{expr}`).
+#[derive(Clone, Copy)]
 enum Sel {
     Static(NIdx),
     Dyn(Reg),
@@ -63,22 +64,16 @@ thread_local! {
     /// `compile()` call; the list is cleared on entry and drained into
     /// `Program::closures` on exit. A closure's `fnidx` is its position here.
     static CLOSURES: RefCell<Vec<Rc<FunctionProto>>> = const { RefCell::new(Vec::new()) };
-}
-
-/// One parameter's name (lowercased) and folded default, for reordering named
-/// arguments at a call site. `None` default = required parameter.
-#[derive(Clone)]
-struct ParamSpec {
-    name_lc: Vec<u8>,
-    default: Option<Value>,
-    variadic: bool,
+    /// Anonymous classes (`new class {…}`) found anywhere in the program,
+    /// declared with the program's classes under their generated names.
+    static ANON_CLASSES: RefCell<Vec<ClassProto>> = const { RefCell::new(Vec::new()) };
+    /// Sink for class declarations nested in control flow / function bodies
+    /// (drained into `Program::cond_classes`), plus the file's count of user
+    /// top-level class-likes (the `DeclareClass` index offset for them).
+    static COND_CLASSES: RefCell<(Vec<ClassProto>, u32)> = const { RefCell::new((Vec::new(), 0)) };
 }
 
 thread_local! {
-    /// Function name (lowercase) -> parameter specs, for named-argument calls.
-    /// Set once per `compile()`; a function is absent if any default did not fold.
-    static FN_PARAMS: RefCell<HashMap<Vec<u8>, Vec<ParamSpec>>> =
-        RefCell::new(HashMap::new());
     /// Method name (lowercase) -> per-position "could be by-reference" mask: true
     /// at position i if ANY method of that name declares `&` there. A call site
     /// passes those positions by reference; by-value callees simply deref, so
@@ -92,6 +87,9 @@ thread_local! {
     /// Whether the file being compiled declared `strict_types=1` (php's
     /// caller-decides coercion rule); stamped on every proto built from it.
     static STRICT_TYPES: RefCell<bool> = const { RefCell::new(false) };
+    /// Whether a trait body is being compiled: `__CLASS__` there names the
+    /// *using* class, so it is lowered to a runtime `self::class`.
+    static IN_TRAIT: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Lower a mago type hint to the bytecode [`rhp_bytecode::TypeHint`] (resolving
@@ -504,24 +502,6 @@ fn collect_method_refs(flat: &[(Rc<NsContext>, &Statement)]) -> HashMap<Vec<u8>,
     map
 }
 
-/// Build the parameter specs for a function, or `None` if a default value is not
-/// a foldable constant (then named-argument calls to it fall back to an error).
-fn param_specs(pl: &rhp_frontend::cst::FunctionLikeParameterList) -> Option<Vec<ParamSpec>> {
-    let mut out = Vec::new();
-    for p in pl.parameters.iter() {
-        let default = match &p.default_value {
-            Some(dv) => Some(fold_const(dv.value).ok()?),
-            None => None,
-        };
-        out.push(ParamSpec {
-            name_lc: strip_dollar(p.variable.name).to_ascii_lowercase(),
-            default,
-            variadic: p.ellipsis.is_some(),
-        });
-    }
-    Some(out)
-}
-
 /// Compile a parsed program (borrowed from a `rhp_frontend::Arena`) into an
 /// owned, runnable bytecode `Program`. No `'arena` borrow escapes.
 pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
@@ -542,6 +522,8 @@ pub fn compile_with_source(
     STRICT_TYPES.with(|s| *s.borrow_mut() = detect_strict_types(program));
     let user_line_starts = build_line_starts(source);
     CLOSURES.with(|c| c.borrow_mut().clear());
+    ANON_CLASSES.with(|c| c.borrow_mut().clear());
+    COND_CLASSES.with(|c| *c.borrow_mut() = (Vec::new(), 0));
     NS_CTX.with(|c| *c.borrow_mut() = Rc::new(NsContext::default()));
     // Flatten namespace/use into (context, statement) pairs in source order; every
     // pass below iterates this so name resolution is consistent across passes.
@@ -556,8 +538,6 @@ pub fn compile_with_source(
     // call site can marshal by-ref arguments even though the callee is resolved by
     // name. Keyed by FQN (lowercased) to match the call-site resolution.
     let mut sigs: HashMap<Vec<u8>, Vec<bool>> = HashMap::new();
-    // Parameter-name signatures, so a call site can reorder named arguments.
-    let mut fn_params: HashMap<Vec<u8>, Vec<ParamSpec>> = HashMap::new();
     for (ctx, stmt) in &flat {
         if let Statement::Function(func) = stmt {
             let fqn = join_ns(&ctx.ns, func.name.value).to_ascii_lowercase();
@@ -567,14 +547,10 @@ pub fn compile_with_source(
                 .iter()
                 .map(|p| p.ampersand.is_some())
                 .collect();
-            sigs.insert(fqn.clone(), flags);
-            if let Some(specs) = param_specs(&func.parameter_list) {
-                fn_params.insert(fqn, specs);
-            }
+            sigs.insert(fqn, flags);
         }
     }
     let sigs = Rc::new(sigs);
-    FN_PARAMS.with(|m| *m.borrow_mut() = fn_params);
     METHOD_REF.with(|m| *m.borrow_mut() = collect_method_refs(&flat));
 
     // Hoist top-level function + class declarations. Start the class list with
@@ -585,9 +561,20 @@ pub fn compile_with_source(
     };
     let num_prelude_classes = classes.len();
     let num_prelude_functions = functions.len();
+    let is_class_like = |st: &Statement| {
+        matches!(
+            st,
+            Statement::Class(_)
+                | Statement::Interface(_)
+                | Statement::Trait(_)
+                | Statement::Enum(_)
+        )
+    };
+    let num_top_classes = flat.iter().filter(|(_, st)| is_class_like(st)).count() as u32;
+    COND_CLASSES.with(|c| c.borrow_mut().1 = num_top_classes);
     // From here on we compile user code, so install its line map.
     LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
-    let mut user_constants: Vec<(PhpStr, Value)> = Vec::new();
+    let user_constants: Vec<(PhpStr, Value)> = Vec::new();
     for (ctx, stmt) in &flat {
         set_ns_ctx(ctx);
         match stmt {
@@ -598,14 +585,8 @@ pub fn compile_with_source(
             Statement::Interface(iface) => classes.push(compile_interface(iface, &sigs)?),
             Statement::Trait(tr) => classes.push(compile_trait(tr, &sigs)?),
             Statement::Enum(en) => classes.push(compile_enum(en, &sigs)?),
-            Statement::Constant(c) => {
-                // Top-level `const NAME = <const-expr>;` — fold now, install at startup.
-                for item in c.items.iter() {
-                    let value = fold_const(item.value)?;
-                    let name = join_ns(&ctx.ns, item.name.value);
-                    user_constants.push((PhpStr::from_bytes(name), value));
-                }
-            }
+            // Top-level `const NAME = <expr>;` is a runtime statement (php
+            // declares it when execution reaches it), compiled in {main}.
             _ => {}
         }
     }
@@ -622,6 +603,7 @@ pub fn compile_with_source(
     c.high_water = c.num_cvs;
     c.temp_floor = c.num_cvs;
 
+    let mut top_class_idx = 0u32;
     for (ctx, stmt) in &flat {
         set_ns_ctx(ctx);
         // A bare top-level function is already hoisted into `functions`; skip it
@@ -630,11 +612,22 @@ pub fn compile_with_source(
         if matches!(stmt, Statement::Function(_)) {
             continue;
         }
+        // A top-level class is hoisted at load when its parent/interfaces
+        // are available; otherwise it is declared when this point is reached.
+        if is_class_like(stmt) {
+            c.emit(Instr::DeclareClass {
+                class_idx: top_class_idx,
+            });
+            top_class_idx += 1;
+            continue;
+        }
         c.compile_stmt(stmt)?;
     }
     c.emit(Instr::RetNull);
 
     let closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    classes.extend(ANON_CLASSES.with(|c| std::mem::take(&mut *c.borrow_mut())));
+    let cond_classes = COND_CLASSES.with(|c| std::mem::take(&mut c.borrow_mut().0));
     let main_var_names: Vec<PhpStr> = c
         .cv_map
         .iter()
@@ -649,6 +642,7 @@ pub fn compile_with_source(
         main_var_names,
         num_prelude_classes,
         num_prelude_functions,
+        cond_classes,
     })
 }
 
@@ -657,17 +651,51 @@ pub fn compile_with_source(
 fn modifiers_visibility(mods: &rhp_frontend::cst::Sequence<Modifier>) -> Visibility {
     for m in mods.iter() {
         match m {
-            Modifier::Private(_) | Modifier::PrivateSet(_) => return Visibility::Private,
-            Modifier::Protected(_) | Modifier::ProtectedSet(_) => return Visibility::Protected,
-            Modifier::Public(_) | Modifier::PublicSet(_) => return Visibility::Public,
+            // `private(set)` etc. only restrict writes (asymmetric visibility,
+            // not enforced yet); the read visibility is the plain modifier,
+            // defaulting to public.
+            Modifier::Private(_) => return Visibility::Private,
+            Modifier::Protected(_) => return Visibility::Protected,
+            Modifier::Public(_) => return Visibility::Public,
             _ => {}
         }
     }
     Visibility::Public
 }
 
+/// The asymmetric write visibility (`private(set)` / `protected(set)`), when
+/// it is narrower than the read visibility.
+fn modifiers_set_visibility(mods: &rhp_frontend::cst::Sequence<Modifier>) -> Option<Visibility> {
+    let read = modifiers_visibility(mods);
+    let set = mods.iter().find_map(|m| match m {
+        Modifier::PrivateSet(_) => Some(Visibility::Private),
+        Modifier::ProtectedSet(_) => Some(Visibility::Protected),
+        Modifier::PublicSet(_) => Some(Visibility::Public),
+        _ => None,
+    })?;
+    let rank = |v: Visibility| match v {
+        Visibility::Public => 0,
+        Visibility::Protected => 1,
+        Visibility::Private => 2,
+    };
+    (rank(set) > rank(read)).then_some(set)
+}
+
 fn has_modifier(mods: &rhp_frontend::cst::Sequence<Modifier>, want: fn(&Modifier) -> bool) -> bool {
     mods.iter().any(want)
+}
+
+/// Whether the attribute lists carry `#[AllowDynamicProperties]`.
+fn has_allow_dynamic(
+    lists: &rhp_frontend::cst::Sequence<rhp_frontend::cst::AttributeList>,
+) -> bool {
+    lists.iter().any(|l| {
+        l.attributes.iter().any(|a| {
+            let n = identifier_raw(&a.name);
+            let n = n.strip_prefix(b"\\").unwrap_or(n);
+            n.eq_ignore_ascii_case(b"AllowDynamicProperties")
+        })
+    })
 }
 
 fn compile_class(
@@ -679,6 +707,7 @@ fn compile_class(
         is_abstract: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Abstract(_))),
         is_final: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Final(_))),
         is_readonly: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Readonly(_))),
+        allow_dynamic: has_allow_dynamic(&class.attribute_lists),
     };
     // Single inheritance: a class `extends` one parent.
     let parent = class.extends.as_ref().and_then(|e| {
@@ -699,6 +728,62 @@ fn compile_class(
         .unwrap_or_default();
 
     let m = compile_members(&class.members, sigs, &name)?;
+    Ok(ClassProto {
+        name,
+        kind: ClassKind::Class,
+        flags,
+        parent,
+        interfaces,
+        traits: m.traits,
+        methods: m.methods,
+        props: m.props,
+        static_props: m.static_props,
+        constants: m.constants,
+        enum_cases: Vec::new(),
+        enum_backing: None,
+    })
+}
+
+/// Compile an anonymous class body under its generated `name`
+/// (`Prefix@anonymous\0file:line$n`, zend_generate_anon_class_name).
+fn compile_anon_class(
+    ac: &rhp_frontend::cst::AnonymousClass,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+) -> Result<ClassProto, Thrown> {
+    use mago_span::HasSpan;
+    let parent = ac.extends.as_ref().and_then(|e| {
+        e.types
+            .iter()
+            .next()
+            .map(|id| PhpStr::from_bytes(resolve_class_name(id)))
+    });
+    let interfaces: Vec<PhpStr> = ac
+        .implements
+        .as_ref()
+        .map(|i| {
+            i.types
+                .iter()
+                .map(|id| PhpStr::from_bytes(resolve_class_name(id)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut name = parent
+        .as_ref()
+        .or(interfaces.first())
+        .map(|n| n.as_bytes().to_vec())
+        .unwrap_or_else(|| b"class".to_vec());
+    name.extend_from_slice(b"@anonymous\0");
+    name.extend_from_slice(&src_file());
+    let n = ANON_CLASSES.with(|c| c.borrow().len());
+    name.extend_from_slice(format!(":{}${:x}", line_of(ac.span().start.offset), n).as_bytes());
+    let name = PhpStr::from_bytes(name);
+    let flags = ClassFlags {
+        is_abstract: false,
+        is_final: true,
+        is_readonly: has_modifier(&ac.modifiers, |m| matches!(m, Modifier::Readonly(_))),
+        allow_dynamic: has_allow_dynamic(&ac.attribute_lists),
+    };
+    let m = compile_members(&ac.members, sigs, &name)?;
     Ok(ClassProto {
         name,
         kind: ClassKind::Class,
@@ -766,6 +851,7 @@ fn compile_enum(
             is_abstract: false,
             is_final: true,
             is_readonly: false,
+            allow_dynamic: false,
         },
         parent: None,
         interfaces,
@@ -786,9 +872,11 @@ fn compile_enum(
 fn compile_const_thunk(
     expr: &Expression,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: Option<&PhpStr>,
 ) -> Result<Rc<FunctionProto>, Thrown> {
     let mut c = ProtoBuilder::new(PhpStr::from("{init}"));
     c.sigs = sigs.clone();
+    c.class_name = class_name.cloned(); // for `__CLASS__`
     c.scope_kind = ScopeKind::Init;
     c.scan_expr_vars(expr); // const-exprs use no $vars, but be safe
     c.num_cvs = c.cv_map.len() as u16;
@@ -804,20 +892,59 @@ fn compile_const_thunk(
 fn const_init_or_thunk(
     expr: &Expression,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: Option<&PhpStr>,
 ) -> Result<ConstInitProto, Thrown> {
     match fold_const(expr) {
         Ok(v) => Ok(ConstInitProto::Const(v)),
-        Err(_) => Ok(ConstInitProto::Thunk(compile_const_thunk(expr, sigs)?)),
+        Err(_) => Ok(ConstInitProto::Thunk(compile_const_thunk(
+            expr, sigs, class_name,
+        )?)),
     }
 }
 
 fn prop_default_or_thunk(
     expr: &Expression,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: Option<&PhpStr>,
 ) -> Result<PropDefaultProto, Thrown> {
     match fold_const(expr) {
         Ok(v) => Ok(PropDefaultProto::Const(v)),
-        Err(_) => Ok(PropDefaultProto::Init(compile_const_thunk(expr, sigs)?)),
+        Err(_) => Ok(PropDefaultProto::Init(compile_const_thunk(
+            expr, sigs, class_name,
+        )?)),
+    }
+}
+
+/// php's `zend_is_valid_default_value`: a literal int initializer of a
+/// property / class constant whose type admits float but not int becomes a
+/// float at compile time.
+fn widen_int_default(v: Value, hint: Option<&rhp_bytecode::TypeHint>) -> Value {
+    use rhp_bytecode::TypeKind as K;
+    match (v, hint) {
+        (Value::Int(n), Some(h))
+            if h.kinds.contains(&K::Float)
+                && !h.kinds.iter().any(|k| matches!(k, K::Int | K::Mixed)) =>
+        {
+            Value::Float(n as f64)
+        }
+        (v, _) => v,
+    }
+}
+
+fn coerce_prop_default(
+    d: PropDefaultProto,
+    hint: Option<&rhp_bytecode::TypeHint>,
+) -> PropDefaultProto {
+    match d {
+        PropDefaultProto::Const(v) => PropDefaultProto::Const(widen_int_default(v, hint)),
+        other => other,
+    }
+}
+
+fn coerce_const_init(d: ConstInitProto, hint: Option<&rhp_bytecode::TypeHint>) -> ConstInitProto {
+    match d {
+        ConstInitProto::Const(v) => ConstInitProto::Const(widen_int_default(v, hint)),
+        other => other,
     }
 }
 
@@ -846,14 +973,20 @@ fn compile_members(
             }
             ClassLikeMember::Property(Property::Plain(p)) => {
                 let visibility = modifiers_visibility(&p.modifiers);
+                let set_visibility = modifiers_set_visibility(&p.modifiers);
                 let is_static = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Static(_)));
                 let is_readonly =
                     has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
+                let hint = p.hint.as_ref().map(type_hint);
                 for item in p.items.iter() {
                     let (var, default) = match item {
-                        PropertyItem::Concrete(c) => {
-                            (c.variable.name, prop_default_or_thunk(c.value, sigs)?)
-                        }
+                        PropertyItem::Concrete(c) => (
+                            c.variable.name,
+                            coerce_prop_default(
+                                prop_default_or_thunk(c.value, sigs, Some(class_name))?,
+                                hint.as_ref(),
+                            ),
+                        ),
                         PropertyItem::Abstract(a) => (a.variable.name, PropDefaultProto::None),
                     };
                     let pname = PhpStr::from_bytes(strip_dollar(var).to_vec());
@@ -868,13 +1001,16 @@ fn compile_members(
                             visibility,
                             is_readonly,
                             init,
+                            type_hint: hint.clone(),
                         });
                     } else {
                         out.props.push(PropProto {
                             name: pname,
                             visibility,
+                            set_visibility,
                             is_readonly,
                             default,
+                            type_hint: hint.clone(),
                         });
                     }
                 }
@@ -884,11 +1020,16 @@ fn compile_members(
             }
             ClassLikeMember::Constant(c) => {
                 let visibility = modifiers_visibility(&c.modifiers);
+                let hint = c.hint.as_ref().map(type_hint);
                 for item in c.items.iter() {
                     out.constants.push(ConstProto {
                         name: PhpStr::from_bytes(item.name.value.to_vec()),
                         visibility,
-                        value: const_init_or_thunk(item.value, sigs)?,
+                        value: coerce_const_init(
+                            const_init_or_thunk(item.value, sigs, Some(class_name))?,
+                            hint.as_ref(),
+                        ),
+                        type_hint: hint.clone(),
                     });
                 }
             }
@@ -903,7 +1044,7 @@ fn compile_members(
                     EnumCaseItem::Unit(u) => (PhpStr::from_bytes(u.name.value.to_vec()), None),
                     EnumCaseItem::Backed(b) => (
                         PhpStr::from_bytes(b.name.value.to_vec()),
-                        Some(const_value_static(b.value)?),
+                        Some(const_init_or_thunk(b.value, sigs, Some(class_name))?),
                     ),
                 };
                 out.enum_cases
@@ -919,7 +1060,10 @@ fn compile_trait(
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<ClassProto, Thrown> {
     let name = PhpStr::from_bytes(join_ns(&cur_ns(), t.name.value));
-    let m = compile_members(&t.members, sigs, &name)?;
+    let saved = IN_TRAIT.with(|f| std::mem::replace(&mut *f.borrow_mut(), true));
+    let m = compile_members(&t.members, sigs, &name);
+    IN_TRAIT.with(|f| *f.borrow_mut() = saved);
+    let m = m?;
     Ok(ClassProto {
         name,
         kind: ClassKind::Trait,
@@ -939,8 +1083,8 @@ fn compile_trait(
 /// The built-in exception/throwable class hierarchy, as PHP source. Compiled
 /// and prepended to every program so `throw`/`catch` and engine errors work.
 const PRELUDE: &str = r##"<?php
-interface Throwable {}
 interface Stringable {}
+interface Throwable extends Stringable {}
 interface UnitEnum {}
 interface BackedEnum extends UnitEnum {}
 interface Traversable {}
@@ -954,60 +1098,89 @@ interface ArrayAccess {}
 interface Countable {}
 final class Generator implements Iterator {}
 class stdClass {}
+final class __PHP_Incomplete_Class {}
 final class Closure {
     public static function fromCallable($callback) { return __closure_from_callable($callback); }
-    public static function bind($closure, $newThis, $newScope = null) { return __closure_bind($closure, $newThis, $newScope); }
+    public static function bind($closure, $newThis, $newScope = 'static') { return __closure_bind($closure, $newThis, $newScope); }
 }
 class Exception implements Throwable {
     protected $message = "";
+    private $string = "";
     protected $code = 0;
     protected $file = "";
     protected $line = 0;
-    protected $previous = null;
+    private $trace = [];
+    private $previous = null;
     public function __construct($message = "", $code = 0, $previous = null) {
-        $this->message = $message;
-        $this->code = $code;
-        $this->previous = $previous;
+        $n = func_num_args();
+        if ($n >= 1) { $this->message = __zpp_arg("Exception::__construct", 1, "message", "string", $message); }
+        if ($n >= 2) { $c = __zpp_arg("Exception::__construct", 2, "code", "int", $code); if ($c) { $this->code = $c; } }
+        if ($n >= 3) { $p = __zpp_arg("Exception::__construct", 3, "previous", "?Throwable", $previous); if ($p !== null) { $this->previous = $p; } }
     }
-    public function getMessage() { return $this->message; }
-    public function getCode() { return $this->code; }
-    public function getPrevious() { return $this->previous; }
-    public function getFile() { return $this->file; }
-    public function getLine() { return $this->line; }
-    public function getTrace() { return []; }
-    public function getTraceAsString() { return "#0 {main}"; }
+    final public function getMessage() { return $this->message; }
+    final public function getCode() { return $this->code; }
+    final public function getPrevious() { return $this->previous; }
+    final public function getFile() { return $this->file; }
+    final public function getLine() { return $this->line; }
+    final public function getTrace() { return $this->trace; }
+    final public function getTraceAsString() { return __exception_trace_string($this->trace); }
+    public function __toString() { return __throwable_string($this); }
 }
 class Error implements Throwable {
     protected $message = "";
+    private $string = "";
     protected $code = 0;
     protected $file = "";
     protected $line = 0;
-    protected $previous = null;
+    private $trace = [];
+    private $previous = null;
     public function __construct($message = "", $code = 0, $previous = null) {
-        $this->message = $message;
-        $this->code = $code;
-        $this->previous = $previous;
+        $n = func_num_args();
+        if ($n >= 1) { $this->message = __zpp_arg("Error::__construct", 1, "message", "string", $message); }
+        if ($n >= 2) { $c = __zpp_arg("Error::__construct", 2, "code", "int", $code); if ($c) { $this->code = $c; } }
+        if ($n >= 3) { $p = __zpp_arg("Error::__construct", 3, "previous", "?Throwable", $previous); if ($p !== null) { $this->previous = $p; } }
     }
-    public function getMessage() { return $this->message; }
-    public function getCode() { return $this->code; }
-    public function getPrevious() { return $this->previous; }
-    public function getFile() { return $this->file; }
-    public function getLine() { return $this->line; }
-    public function getTrace() { return []; }
-    public function getTraceAsString() { return "#0 {main}"; }
+    final public function getMessage() { return $this->message; }
+    final public function getCode() { return $this->code; }
+    final public function getPrevious() { return $this->previous; }
+    final public function getFile() { return $this->file; }
+    final public function getLine() { return $this->line; }
+    final public function getTrace() { return $this->trace; }
+    final public function getTraceAsString() { return __exception_trace_string($this->trace); }
+    public function __toString() { return __throwable_string($this); }
 }
-class ErrorException extends Exception {}
+class ErrorException extends Exception {
+    protected $severity = 1;
+    public function __construct($message = "", $code = 0, $severity = 1, $filename = null, $line = null, $previous = null) {
+        $n = func_num_args();
+        $f = "ErrorException::__construct";
+        if ($n >= 1) { $this->message = __zpp_arg($f, 1, "message", "string", $message); }
+        if ($n >= 2) { $c = __zpp_arg($f, 2, "code", "int", $code); if ($c) { $this->code = $c; } }
+        if ($n >= 3) { $severity = __zpp_arg($f, 3, "severity", "int", $severity); }
+        if ($n >= 4) { $filename = __zpp_arg($f, 4, "filename", "?string", $filename); }
+        if ($n >= 5) { $line = __zpp_arg($f, 5, "line", "?int", $line); }
+        if ($n >= 6) { $p = __zpp_arg($f, 6, "previous", "?Throwable", $previous); if ($p !== null) { $this->previous = $p; } }
+        $this->severity = $severity;
+        if ($filename !== null) { $this->file = $filename; }
+        if ($line !== null) { $this->line = $line; } elseif ($filename !== null) { $this->line = 0; }
+    }
+    final public function getSeverity() { return $this->severity; }
+}
 class TypeError extends Error {}
 class ValueError extends Error {}
 class ArithmeticError extends Error {}
 class DivisionByZeroError extends ArithmeticError {}
 class ArgumentCountError extends TypeError {}
 class UnhandledMatchError extends Error {}
+class CompileError extends Error {}
+class ParseError extends CompileError {}
 class AssertionError extends Error {}
 class LogicException extends Exception {}
 class InvalidArgumentException extends LogicException {}
 class LengthException extends LogicException {}
 class DomainException extends LogicException {}
+class BadFunctionCallException extends LogicException {}
+class BadMethodCallException extends BadFunctionCallException {}
 class RuntimeException extends Exception {}
 class OutOfBoundsException extends RuntimeException {}
 class OutOfRangeException extends LogicException {}
@@ -1322,8 +1495,12 @@ class DateTimeImmutable implements DateTimeInterface {
 fn prelude_classes() -> Result<(Vec<ClassProto>, Vec<Rc<FunctionProto>>), Thrown> {
     // Prelude / built-in classes are never strict-typed (coercive calls).
     let saved_strict = STRICT_TYPES.with(|s| std::mem::replace(&mut *s.borrow_mut(), false));
+    // Prelude protos carry an empty file name: the VM treats them as internal
+    // code (skipped for exception file/line, `[internal function]` in traces).
+    let saved_file = SRC_FILE.with(|f| std::mem::take(&mut *f.borrow_mut()));
     let r = prelude_classes_inner();
     STRICT_TYPES.with(|s| *s.borrow_mut() = saved_strict);
+    SRC_FILE.with(|f| *f.borrow_mut() = saved_file);
     r
 }
 
@@ -1367,11 +1544,16 @@ fn compile_interface(
     for member in iface.members.iter() {
         if let ClassLikeMember::Constant(c) = member {
             let visibility = modifiers_visibility(&c.modifiers);
+            let hint = c.hint.as_ref().map(type_hint);
             for item in c.items.iter() {
                 constants.push(ConstProto {
                     name: PhpStr::from_bytes(item.name.value.to_vec()),
                     visibility,
-                    value: const_init_or_thunk(item.value, sigs)?,
+                    value: coerce_const_init(
+                        const_init_or_thunk(item.value, sigs, Some(&name))?,
+                        hint.as_ref(),
+                    ),
+                    type_hint: hint.clone(),
                 });
             }
         }
@@ -1442,8 +1624,10 @@ fn compile_method(
             promoted.push(PropProto {
                 name: PhpStr::from_bytes(var.to_vec()),
                 visibility: vis,
+                set_visibility: modifiers_set_visibility(&p.modifiers),
                 is_readonly: ro,
                 default: PropDefaultProto::None,
+                type_hint: p.hint.as_ref().map(type_hint),
             });
             promo_stores.push((c.intern_name(var), cv));
         }
@@ -1454,6 +1638,10 @@ fn compile_method(
             variadic: p.ellipsis.is_some(),
             default,
             type_hint: p.hint.as_ref().map(type_hint),
+            line: {
+                use mago_span::HasSpan;
+                line_of(p.span().start.offset)
+            },
         });
     }
     let num_params = params.len() as u16;
@@ -1540,6 +1728,10 @@ fn compile_function(
             variadic: p.ellipsis.is_some(),
             default,
             type_hint: p.hint.as_ref().map(type_hint),
+            line: {
+                use mago_span::HasSpan;
+                line_of(p.span().start.offset)
+            },
         });
     }
     let num_params = params.len() as u16;
@@ -1613,12 +1805,19 @@ struct ProtoBuilder {
     cur_line: u32,
     /// (pc, line) pairs, appended whenever `cur_line` changes at an emit point.
     lines: Vec<(rhp_bytecode::Pc, u32)>,
+    /// Lines of the enclosing call / `new` expressions (innermost last): php
+    /// gives the call opcode the line of the callee name (or `new`), not the
+    /// statement's, which is what getLine() and traces report.
+    call_lines: Vec<u32>,
 }
 
 /// A break/continue target under construction. Jump placeholders are recorded
 /// as code positions and patched once the loop's exit/continue labels are known.
 #[derive(Default)]
 struct LoopCtx {
+    /// `finally_rets.len()` when the loop was entered: a break/continue
+    /// inside more try-with-finally levels than this must run them.
+    finally_depth: usize,
     break_jumps: Vec<usize>,
     continue_jumps: Vec<usize>,
 }
@@ -1646,6 +1845,7 @@ impl ProtoBuilder {
             sigs: Rc::new(HashMap::new()),
             cur_line: 0,
             lines: Vec::new(),
+            call_lines: Vec::new(),
         }
     }
 
@@ -1687,10 +1887,27 @@ impl ProtoBuilder {
     // -- register / pool management --
 
     fn emit(&mut self, instr: Instr) {
+        let line = match (&instr, self.call_lines.last()) {
+            (
+                Instr::Call { .. }
+                | Instr::CallV { .. }
+                | Instr::CallDyn { .. }
+                | Instr::CallDynV { .. }
+                | Instr::New { .. }
+                | Instr::NewV { .. }
+                | Instr::CallMethod { .. }
+                | Instr::CallMethodV { .. }
+                | Instr::CallMethodDyn { .. }
+                | Instr::CallStatic { .. }
+                | Instr::CallStaticV { .. }
+                | Instr::CallStaticDyn { .. },
+                Some(&l),
+            ) if l != 0 => l,
+            _ => self.cur_line,
+        };
         // Record a line entry whenever the source line changes (for debug info).
-        if self.lines.last().map(|(_, l)| *l) != Some(self.cur_line) {
-            self.lines
-                .push((self.code.len() as rhp_bytecode::Pc, self.cur_line));
+        if self.lines.last().map(|(_, l)| *l) != Some(line) {
+            self.lines.push((self.code.len() as rhp_bytecode::Pc, line));
         }
         self.code.push(instr);
     }
@@ -1717,7 +1934,10 @@ impl ProtoBuilder {
 
     /// Patch a placeholder `Nop` at `pos` into a jump to `target`.
     fn patch_jmp(&mut self, pos: usize, target: u32) {
-        self.code[pos] = Instr::Jmp { target };
+        self.code[pos] = match self.code[pos] {
+            Instr::JmpFinally { .. } => Instr::JmpFinally { target },
+            _ => Instr::Jmp { target },
+        };
     }
 
     fn here(&self) -> u32 {
@@ -2093,6 +2313,16 @@ impl ProtoBuilder {
 
     // -- statement lowering --
 
+    /// Record a nested class declaration and emit its `DeclareClass`.
+    fn emit_cond_class(&mut self, proto: ClassProto) {
+        let class_idx = COND_CLASSES.with(|c| {
+            let mut c = c.borrow_mut();
+            c.0.push(proto);
+            c.1 + c.0.len() as u32 - 1
+        });
+        self.emit(Instr::DeclareClass { class_idx });
+    }
+
     fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), Thrown> {
         use mago_span::HasSpan;
         self.cur_line = line_of(stmt.span().start.offset);
@@ -2117,7 +2347,18 @@ impl ProtoBuilder {
                 }
             }
             Statement::Expression(s) => {
+                // Track the temporaries this statement touches so they can be
+                // released at its end (php frees an expression's temporaries,
+                // running destructors, before the next statement).
+                let from = self.next_temp;
+                let saved_hw = self.high_water;
+                self.high_water = self.next_temp;
                 self.compile_expr(s.expression)?;
+                let to = self.high_water;
+                self.high_water = saved_hw.max(to);
+                if to > from {
+                    self.emit(Instr::ClearTemps { from, to });
+                }
             }
             Statement::Block(b) => {
                 for s in b.statements.iter() {
@@ -2138,11 +2379,31 @@ impl ProtoBuilder {
                 });
                 self.emit(Instr::DeclareFunc { idx });
             }
-            Statement::Class(_) => {}
-            Statement::Interface(_) => {}
-            Statement::Trait(_) => {}
-            Statement::Enum(_) => {}
-            Statement::Constant(_) => {} // hoisted at compile time
+            // A class-like reached here is nested in control flow or a function
+            // body: declared at run time when execution reaches it.
+            Statement::Class(cl) => {
+                let proto = compile_class(cl, &self.sigs)?;
+                self.emit_cond_class(proto);
+            }
+            Statement::Interface(i) => {
+                let proto = compile_interface(i, &self.sigs)?;
+                self.emit_cond_class(proto);
+            }
+            Statement::Trait(t) => {
+                let proto = compile_trait(t, &self.sigs)?;
+                self.emit_cond_class(proto);
+            }
+            Statement::Enum(e) => {
+                let proto = compile_enum(e, &self.sigs)?;
+                self.emit_cond_class(proto);
+            }
+            Statement::Constant(c) => {
+                for item in c.items.iter() {
+                    let src = self.compile_expr(item.value)?;
+                    let name = self.intern_name(&join_ns(&cur_ns(), item.name.value));
+                    self.emit(Instr::DeclareConst { name, src });
+                }
+            }
             Statement::If(i) => self.compile_if(i)?,
             Statement::While(w) => self.compile_while(w)?,
             Statement::DoWhile(d) => self.compile_do_while(d)?,
@@ -2165,10 +2426,27 @@ impl ProtoBuilder {
                     use rhp_frontend::cst::StaticItem;
                     let (dvar, init) = match item {
                         StaticItem::Abstract(a) => (&a.variable, u32::MAX),
-                        StaticItem::Concrete(c) => {
-                            let v = fold_const(c.value)?;
-                            (&c.variable, self.intern_const(v))
-                        }
+                        StaticItem::Concrete(c) => match fold_const(c.value) {
+                            Ok(v) => (&c.variable, self.intern_const(v)),
+                            Err(_) => {
+                                // php 8.3+: an arbitrary initializer, evaluated
+                                // once on the first execution of the statement.
+                                let var = strip_dollar(c.variable.name);
+                                let cv = self.cv(var);
+                                let name = self.intern_name(var);
+                                let jpos = self.code.len();
+                                self.emit(Instr::Nop); // BindStaticOrJmp (patched)
+                                let src = self.compile_expr(c.value)?;
+                                self.emit(Instr::BindStaticInit { cv, name, src });
+                                let after = self.here();
+                                self.code[jpos] = Instr::BindStaticOrJmp {
+                                    cv,
+                                    name,
+                                    target: after,
+                                };
+                                continue;
+                            }
+                        },
                     };
                     let var = strip_dollar(dvar.name);
                     let cv = self.cv(var);
@@ -2316,7 +2594,10 @@ impl ProtoBuilder {
         let cond = self.compile_expr(w.condition)?;
         let jf = self.code.len();
         self.emit(Instr::Nop); // JmpFalse cond -> end
-        self.loops.push(LoopCtx::default());
+        self.loops.push(LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            ..LoopCtx::default()
+        });
         match &w.body {
             WhileBody::Statement(s) => self.compile_stmt(s)?,
             WhileBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
@@ -2332,7 +2613,10 @@ impl ProtoBuilder {
 
     fn compile_do_while(&mut self, d: &rhp_frontend::cst::DoWhile) -> Result<(), Thrown> {
         let top = self.here();
-        self.loops.push(LoopCtx::default());
+        self.loops.push(LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            ..LoopCtx::default()
+        });
         self.compile_stmt(d.statement)?;
         let ctx = self.loops.pop().unwrap();
         let cont = self.here(); // continue -> re-test the condition
@@ -2361,7 +2645,10 @@ impl ProtoBuilder {
             self.emit(Instr::Nop); // JmpFalse last -> end
             Some((last.unwrap(), pos))
         };
-        self.loops.push(LoopCtx::default());
+        self.loops.push(LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            ..LoopCtx::default()
+        });
         match &f.body {
             ForBody::Statement(s) => self.compile_stmt(s)?,
             ForBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
@@ -2416,7 +2703,10 @@ impl ProtoBuilder {
         self.emit(Instr::Nop); // Jmp -> default body or end
 
         // Case bodies in source order (fall-through: no jumps between them).
-        self.loops.push(LoopCtx::default()); // switch is one break/continue level
+        self.loops.push(LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            ..LoopCtx::default()
+        }); // switch is one break/continue level
         let mut starts = vec![0u32; cases.len()];
         for (idx, case) in cases.iter().enumerate() {
             starts[idx] = self.here();
@@ -2503,7 +2793,10 @@ impl ProtoBuilder {
             let fetch_pos = self.code.len();
             self.emit(Instr::Nop); // FeFetchRef
 
-            self.loops.push(LoopCtx::default());
+            self.loops.push(LoopCtx {
+                finally_depth: self.finally_rets.len(),
+                ..LoopCtx::default()
+            });
             match &fe.body {
                 ForeachBody::Statement(s) => self.compile_stmt(s)?,
                 ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
@@ -2564,7 +2857,10 @@ impl ProtoBuilder {
             }
         }
 
-        self.loops.push(LoopCtx::default());
+        self.loops.push(LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            ..LoopCtx::default()
+        });
         match &fe.body {
             ForeachBody::Statement(s) => self.compile_stmt(s)?,
             ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
@@ -2628,15 +2924,10 @@ impl ProtoBuilder {
                 }
                 // `unset($o->prop)`: remove a declared property, else `__unset`.
                 Expression::Access(Access::Property(pa)) => {
-                    if let ClassLikeMemberSelector::Identifier(li) = &pa.property {
-                        let obj = self.compile_expr(pa.object)?;
-                        let name = self.intern_name(li.value);
-                        self.emit(Instr::UnsetProp { obj, name });
-                    } else {
-                        return Err(Thrown::unsupported(
-                            "unset of dynamic property name",
-                            "`unset($o->$x)` deferred",
-                        ));
+                    let obj = self.compile_expr(pa.object)?;
+                    match self.compile_selector(&pa.property)? {
+                        Sel::Static(name) => self.emit(Instr::UnsetProp { obj, name }),
+                        Sel::Dyn(name) => self.emit(Instr::UnsetPropDyn { obj, name }),
                     }
                 }
                 _ => {
@@ -2683,11 +2974,14 @@ impl ProtoBuilder {
             });
         }
 
+        let catches_end = self.here();
+        let mut finally_end = 0;
         let finally_pc = if let Some(fin) = &t.finally_clause {
             // Stop routing returns into THIS finally while compiling its body.
             let pending_rets = self.finally_rets.pop().unwrap();
             let fpc = self.here();
             self.compile_stmts(fin.block.statements.iter())?;
+            finally_end = self.here();
             self.emit(Instr::FinallyEnd);
             // Patch `return`s that crossed out of try/catch to enter the finally.
             for pos in pending_rets {
@@ -2704,12 +2998,24 @@ impl ProtoBuilder {
             self.patch_jmp(j, norm_target);
         }
 
+        let has_catches = !catch_arms.is_empty();
         self.exception_table.push(ExRegion {
             start: try_start,
             end: try_end,
             catches: catch_arms,
             finally: finally_pc,
+            finally_end,
         });
+        // An exception escaping a catch body still runs the finally.
+        if finally_pc.is_some() && has_catches {
+            self.exception_table.push(ExRegion {
+                start: try_end,
+                end: catches_end,
+                catches: Vec::new(),
+                finally: finally_pc,
+                finally_end,
+            });
+        }
         Ok(())
     }
 
@@ -2727,7 +3033,7 @@ impl ProtoBuilder {
                     let key = self.alloc_temp();
                     self.emit(Instr::LoadInt { dst: key, n: idx });
                     let val = self.alloc_temp();
-                    self.emit(Instr::DimFetch {
+                    self.emit(Instr::DimFetchList {
                         dst: val,
                         arr: src,
                         key,
@@ -2738,7 +3044,7 @@ impl ProtoBuilder {
                 ArrayElement::KeyValue(kv) => {
                     let key = self.compile_expr(kv.key)?;
                     let val = self.alloc_temp();
-                    self.emit(Instr::DimFetch {
+                    self.emit(Instr::DimFetchList {
                         dst: val,
                         arr: src,
                         key,
@@ -2801,7 +3107,11 @@ impl ProtoBuilder {
         }
         let idx = self.loops.len() - n;
         let pos = self.code.len();
-        self.emit(Instr::Nop); // patched to Jmp at loop close
+        if self.finally_rets.len() > self.loops[idx].finally_depth {
+            self.emit(Instr::JmpFinally { target: 0 }); // patched at loop close
+        } else {
+            self.emit(Instr::Nop); // patched to Jmp at loop close
+        }
         if is_break {
             self.loops[idx].break_jumps.push(pos);
         } else {
@@ -2908,7 +3218,20 @@ impl ProtoBuilder {
             Expression::Identifier(id) => self.compile_constant(id),
             Expression::CompositeString(cs) => self.compile_composite(cs),
             Expression::Match(m) => self.compile_match(m),
-            Expression::Instantiation(inst) => self.compile_new(inst),
+            Expression::Instantiation(inst) => {
+                use mago_span::HasSpan;
+                self.call_lines.push(line_of(inst.span().start.offset));
+                let r = self.compile_new(inst);
+                self.call_lines.pop();
+                r
+            }
+            Expression::AnonymousClass(ac) => {
+                use mago_span::HasSpan;
+                self.call_lines.push(line_of(ac.span().start.offset));
+                let r = self.compile_new_anon(ac);
+                self.call_lines.pop();
+                r
+            }
             Expression::Access(acc) => self.compile_access(acc),
             Expression::Clone(cl) => {
                 let src = self.compile_expr(cl.object)?;
@@ -2924,7 +3247,20 @@ impl ProtoBuilder {
                 Ok(dst)
             }
             Expression::Construct(c) => self.compile_construct(c),
-            Expression::Call(call) => self.compile_call(call),
+            Expression::Call(call) => {
+                use mago_span::HasSpan;
+                use rhp_frontend::cst::Call;
+                let at = match call {
+                    Call::Function(fc) => fc.function.span(),
+                    Call::Method(mc) => mc.method.span(),
+                    Call::NullSafeMethod(mc) => mc.method.span(),
+                    Call::StaticMethod(smc) => smc.method.span(),
+                };
+                self.call_lines.push(line_of(at.start.offset));
+                let r = self.compile_call(call);
+                self.call_lines.pop();
+                r
+            }
             Expression::ArrowFunction(af) => self.compile_arrow(af),
             Expression::Closure(cl) => self.compile_closure(cl),
             Expression::PartialApplication(pa) => self.compile_fcc(pa),
@@ -2945,6 +3281,22 @@ impl ProtoBuilder {
         if let MagicConstant::Line(_) = mc {
             let n = line_of(mc.span().start.offset) as i64;
             self.emit(Instr::LoadInt { dst, n });
+            return Ok(dst);
+        }
+        if matches!(mc, MagicConstant::Class(_))
+            && self.class_name.is_some()
+            && IN_TRAIT.with(|f| *f.borrow())
+        {
+            // Inside a trait, `__CLASS__` is the class using it (php resolves
+            // it at runtime, like `self::class`).
+            let name = self.intern_name(b"class");
+            let cache = self.alloc_cache();
+            self.emit(Instr::FetchClassConst {
+                dst,
+                class: ClassRef::SelfClass,
+                name,
+                cache,
+            });
             return Ok(dst);
         }
         if let MagicConstant::Property(_) = mc {
@@ -3160,7 +3512,7 @@ impl ProtoBuilder {
 
     fn compile_coalesce(&mut self, b: &rhp_frontend::cst::Binary) -> Result<Reg, Thrown> {
         let dst = self.alloc_temp();
-        let a = self.compile_expr(b.lhs)?;
+        let a = self.compile_quiet(b.lhs)?;
         self.emit(Instr::Mov { dst, src: a });
         let jnn = self.code.len();
         self.emit(Instr::Nop); // JmpNotNull dst -> end
@@ -3191,6 +3543,14 @@ impl ProtoBuilder {
                     "references arrive in phase 6",
                 ))
             }
+            Op::ErrorControl(_) => {
+                self.emit(Instr::BeginSilence);
+                let a = self.compile_expr(u.operand)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::Mov { dst, src: a });
+                self.emit(Instr::EndSilence);
+                return Ok(dst);
+            }
             _ => {}
         }
         let a = self.compile_expr(u.operand)?;
@@ -3200,7 +3560,6 @@ impl ProtoBuilder {
             Op::Plus(_) => Instr::CastInt { dst, a }, // +x coerces to number; refined below
             Op::Not(_) => Instr::Not { dst, a },
             Op::BitwiseNot(_) => Instr::BitNot { dst, a },
-            Op::ErrorControl(_) => Instr::Mov { dst, src: a },
             Op::IntCast(..) | Op::IntegerCast(..) => Instr::CastInt { dst, a },
             Op::FloatCast(..) | Op::DoubleCast(..) => Instr::CastFloat { dst, a },
             Op::StringCast(..) | Op::BinaryCast(..) => Instr::CastString { dst, a },
@@ -3427,20 +3786,40 @@ impl ProtoBuilder {
                 let mut jumps = Vec::new();
                 for v in i.values.iter() {
                     // `isset($o->prop)` must consult `__isset`, not `__get`.
-                    if let Expression::Access(Access::Property(pa)) = v {
-                        if let ClassLikeMemberSelector::Identifier(li) = &pa.property {
-                            let obj = self.compile_expr(pa.object)?;
-                            let name = self.intern_name(li.value);
-                            let r = self.alloc_temp();
-                            self.emit(Instr::IssetProp { dst: r, obj, name });
-                            // IssetProp yields a bool; false short-circuits.
-                            let pos = self.code.len();
-                            self.emit(Instr::Nop); // JmpFalse r -> false
-                            jumps.push((pos, r, true));
-                            continue;
+                    // A nullsafe `$o?->prop` too: a null object makes IssetProp false.
+                    let prop = match v {
+                        Expression::Access(Access::Property(pa)) => Some((pa.object, &pa.property)),
+                        Expression::Access(Access::NullSafeProperty(pa)) => {
+                            Some((pa.object, &pa.property))
                         }
+                        _ => None,
+                    };
+                    if let Some((object, property)) = prop {
+                        let obj = self.compile_quiet(object)?;
+                        let r = self.alloc_temp();
+                        match self.compile_selector(property)? {
+                            Sel::Static(name) => self.emit(Instr::IssetProp { dst: r, obj, name }),
+                            Sel::Dyn(name) => self.emit(Instr::IssetPropDyn { dst: r, obj, name }),
+                        }
+                        // IssetProp yields a bool; false short-circuits.
+                        let pos = self.code.len();
+                        self.emit(Instr::Nop); // JmpFalse r -> false
+                        jumps.push((pos, r, true));
+                        continue;
                     }
-                    let r = self.compile_expr(v)?; // null if absent (DimFetch returns null)
+                    // `isset($c[$k])`: a string offset out of range reads as
+                    // "" (not null), so dimension isset has its own opcode.
+                    if let Expression::ArrayAccess(aa) = v {
+                        let arr = self.compile_quiet(aa.array)?;
+                        let key = self.compile_expr(aa.index)?;
+                        let r = self.alloc_temp();
+                        self.emit(Instr::IssetDim { dst: r, arr, key });
+                        let pos = self.code.len();
+                        self.emit(Instr::Nop); // JmpFalse r -> false
+                        jumps.push((pos, r, true));
+                        continue;
+                    }
+                    let r = self.compile_quiet(v)?; // null if absent (DimFetch returns null)
                     let pos = self.code.len();
                     self.emit(Instr::Nop); // JmpNull r -> false
                     jumps.push((pos, r, false));
@@ -3468,8 +3847,27 @@ impl ProtoBuilder {
                 Ok(dst)
             }
             Construct::Empty(e) => {
+                // `empty($o->prop)` = !isset($o->prop) || !$o->prop: an
+                // inaccessible / unset property is empty (no error), via
+                // `__isset` then `__get` like php.
+                let prop = match e.value {
+                    Expression::Access(Access::Property(pa)) => Some((pa.object, &pa.property)),
+                    Expression::Access(Access::NullSafeProperty(pa)) => {
+                        Some((pa.object, &pa.property))
+                    }
+                    _ => None,
+                };
+                if let Some((object, property)) = prop {
+                    let obj = self.compile_quiet(object)?;
+                    let dst = self.alloc_temp();
+                    match self.compile_selector(property)? {
+                        Sel::Static(name) => self.emit(Instr::EmptyProp { dst, obj, name }),
+                        Sel::Dyn(name) => self.emit(Instr::EmptyPropDyn { dst, obj, name }),
+                    }
+                    return Ok(dst);
+                }
                 // empty(x) == !to_bool(x); absent/null -> true (Not handles it).
-                let r = self.compile_expr(e.value)?;
+                let r = self.compile_quiet(e.value)?;
                 let dst = self.alloc_temp();
                 self.emit(Instr::Not { dst, a: r });
                 Ok(dst)
@@ -3514,140 +3912,6 @@ impl ProtoBuilder {
         }
     }
 
-    /// Compile a call that uses named arguments by reordering them into the
-    /// callee's declared parameter order (filling omitted parameters from their
-    /// folded defaults). Only statically-known user functions are supported.
-    fn compile_named_call(
-        &mut self,
-        name_bytes: &[u8],
-        fallback: &Option<Vec<u8>>,
-        list: &rhp_frontend::cst::ArgumentList,
-    ) -> Result<Reg, Thrown> {
-        let name_lc = name_bytes.to_ascii_lowercase();
-        let specs = FN_PARAMS.with(|m| {
-            let m = m.borrow();
-            m.get(&name_lc).cloned().or_else(|| {
-                fallback
-                    .as_ref()
-                    .and_then(|f| m.get(&f.to_ascii_lowercase()).cloned())
-            })
-        });
-        let Some(specs) = specs else {
-            return Err(Thrown::unsupported(
-                "named arguments",
-                "only to statically-known user functions with constant defaults",
-            ));
-        };
-        if specs.iter().any(|s| s.variadic) {
-            return Err(Thrown::unsupported(
-                "named arguments into a variadic function",
-                "deferred",
-            ));
-        }
-
-        // Assign each argument to a parameter slot.
-        let mut provided: Vec<Option<&Expression>> = vec![None; specs.len()];
-        let mut pos = 0usize;
-        for arg in list.arguments.iter() {
-            match arg {
-                Argument::Positional(p) => {
-                    if pos >= specs.len() {
-                        return Err(Thrown::error(
-                            "ArgumentCountError",
-                            format!(
-                                "Too many arguments to function {}()",
-                                String::from_utf8_lossy(name_bytes)
-                            ),
-                        ));
-                    }
-                    provided[pos] = Some(p.value);
-                    pos += 1;
-                }
-                Argument::Named(n) => {
-                    let pname = n.name.value.to_ascii_lowercase();
-                    let idx = specs
-                        .iter()
-                        .position(|s| s.name_lc == pname)
-                        .ok_or_else(|| {
-                            Thrown::error(
-                                "Error",
-                                format!(
-                                    "Unknown named parameter ${}",
-                                    String::from_utf8_lossy(n.name.value)
-                                ),
-                            )
-                        })?;
-                    provided[idx] = Some(n.value);
-                }
-            }
-        }
-
-        // The window spans slots 0..=highest-provided; trailing defaulted
-        // parameters are left off (the callee's bind_params fills them).
-        let last = provided.iter().rposition(|p| p.is_some());
-        let Some(last) = last else {
-            // No args at all — just a plain zero-arg call.
-            let name = self.intern_name(name_bytes);
-            let fb = self.intern_fallback(fallback);
-            let base = self.alloc_temps(1);
-            let dst = self.alloc_temp();
-            self.emit(Instr::Call {
-                dst,
-                name,
-                base,
-                argc: 0,
-                fallback: fb,
-            });
-            return Ok(dst);
-        };
-        let argc = (last + 1) as u16;
-
-        // Compile each slot's value into a contiguous window.
-        let mut regs = Vec::with_capacity(argc as usize);
-        for i in 0..=last {
-            let r = match provided[i] {
-                Some(e) => self.compile_expr(e)?,
-                None => match &specs[i].default {
-                    Some(v) => {
-                        let k = self.intern_const(v.clone());
-                        let t = self.alloc_temp();
-                        self.emit(Instr::LoadConst { dst: t, k });
-                        t
-                    }
-                    None => {
-                        return Err(Thrown::error(
-                            "ArgumentCountError",
-                            format!(
-                                "Missing required argument ${} for {}()",
-                                String::from_utf8_lossy(&specs[i].name_lc),
-                                String::from_utf8_lossy(name_bytes)
-                            ),
-                        ))
-                    }
-                },
-            };
-            regs.push(r);
-        }
-        let base = self.alloc_temps(argc);
-        for (i, r) in regs.into_iter().enumerate() {
-            self.emit(Instr::Mov {
-                dst: base + i as Reg,
-                src: r,
-            });
-        }
-        let name = self.intern_name(name_bytes);
-        let fb = self.intern_fallback(fallback);
-        let dst = self.alloc_temp();
-        self.emit(Instr::Call {
-            dst,
-            name,
-            base,
-            argc,
-            fallback: fb,
-        });
-        Ok(dst)
-    }
-
     fn compile_function_call(
         &mut self,
         fc: &rhp_frontend::cst::FunctionCall,
@@ -3663,8 +3927,9 @@ impl ProtoBuilder {
         // global fallback (PHP's fall-back-to-global for unqualified calls).
         let (name_bytes, fallback) = resolve_name(callee_id, NameKind::Func);
 
-        // Spread call `foo(...$args)`: marshal args into an array, emit CallV.
-        if has_spread(&fc.argument_list) {
+        // Spread / named-argument call `foo(...$args)` / `foo(b: 1)`: marshal
+        // args into an array, emit CallV (the VM places named arguments).
+        if has_spread(&fc.argument_list) || has_named(&fc.argument_list) {
             let args = self.build_args_array(Some(&fc.argument_list))?;
             let name = self.intern_name(&name_bytes);
             let fb = self.intern_fallback(&fallback);
@@ -3676,12 +3941,6 @@ impl ProtoBuilder {
                 fallback: fb,
             });
             return Ok(dst);
-        }
-
-        // Named arguments: reorder to positional using the callee's parameter
-        // names (statically-known user functions only).
-        if has_named(&fc.argument_list) {
-            return self.compile_named_call(&name_bytes, &fallback, &fc.argument_list);
         }
 
         // Per-parameter by-ref flags of the (statically-known) callee: a user
@@ -3796,7 +4055,7 @@ impl ProtoBuilder {
     ) -> Result<Reg, Thrown> {
         let callee = self.compile_expr(fc.function)?;
 
-        if has_spread(&fc.argument_list) {
+        if has_spread(&fc.argument_list) || has_named(&fc.argument_list) {
             let args = self.build_args_array(Some(&fc.argument_list))?;
             let dst = self.alloc_temp();
             self.emit(Instr::CallDynV { dst, callee, args });
@@ -3979,6 +4238,10 @@ impl ProtoBuilder {
                         let n = resolve_class_name(&ca.name);
                         self.load_string_const(&n)
                     }
+                    // Resolved against the creation scope when called.
+                    Expression::Self_(_) => self.load_string_const(b"self"),
+                    Expression::Static(_) => self.load_string_const(b"static"),
+                    Expression::Parent(_) => self.load_string_const(b"parent"),
                     other => self.compile_expr(other)?,
                 };
                 let name = self.selector_string(&s.method)?;
@@ -4123,7 +4386,8 @@ impl ProtoBuilder {
         let magic_name = self.closure_magic_name(closure_offset);
 
         // --- compile the closure proto in an isolated builder ---
-        let mut c = ProtoBuilder::new(PhpStr::from("{closure}"));
+        // The proto carries the 8.5 name too: traces and error messages print it.
+        let mut c = ProtoBuilder::new(magic_name.clone());
         c.sigs = self.sigs.clone();
         c.scope_kind = ScopeKind::Closure;
         c.class_name = self.class_name.clone(); // __CLASS__ in a closure = enclosing class
@@ -4155,6 +4419,10 @@ impl ProtoBuilder {
                 variadic: p.ellipsis.is_some(),
                 default,
                 type_hint: p.hint.as_ref().map(type_hint),
+                line: {
+                    use mago_span::HasSpan;
+                    line_of(p.span().start.offset)
+                },
             });
         }
         let num_params = params.len() as u16;
@@ -4172,6 +4440,10 @@ impl ProtoBuilder {
 
         match body {
             ClosureBody::Arrow(e) => {
+                c.cur_line = {
+                    use mago_span::HasSpan;
+                    line_of(e.span().start.offset)
+                };
                 let r = c.compile_expr(e)?;
                 c.emit(Instr::Ret { src: r });
             }
@@ -4183,7 +4455,16 @@ impl ProtoBuilder {
             }
         }
 
+        // `$this` in a non-static closure: its CV receives a rebound object
+        // (`Closure::bind` / `bindTo` / `call`) even when the closure was
+        // created outside any instance context and so captured nothing.
+        let this_cv = if is_static {
+            None
+        } else {
+            c.cv_map.iter().position(|n| n == b"this").map(|i| i as Reg)
+        };
         let mut proto = c.finish();
+        proto.this_cv = this_cv;
         proto.num_params = num_params;
         proto.params = params;
         proto.num_captures = nc;
@@ -4400,11 +4681,18 @@ impl ProtoBuilder {
                             self.emit(Instr::ArrPush { arr: dst, val: r });
                         }
                     }
-                    Argument::Named(_) => {
-                        return Err(Thrown::unsupported(
-                            "named argument with spread",
-                            "deferred",
-                        ))
+                    // A named argument travels under its name (the callee's
+                    // parameter list places it at run time).
+                    Argument::Named(n) => {
+                        let r = self.compile_expr(n.value)?;
+                        let k = self.intern_const(Value::str(n.name.value.to_vec()));
+                        let key = self.alloc_temp();
+                        self.emit(Instr::LoadConst { dst: key, k });
+                        self.emit(Instr::ArrSet {
+                            arr: dst,
+                            key,
+                            val: r,
+                        });
                     }
                 }
             }
@@ -4475,9 +4763,59 @@ impl ProtoBuilder {
         self.method_ref_mask(&lc)
     }
 
+    /// `new class(args) extends P implements I { … }`: declare the class under
+    /// its generated name and instantiate it.
+    fn compile_new_anon(&mut self, ac: &rhp_frontend::cst::AnonymousClass) -> Result<Reg, Thrown> {
+        use rhp_frontend::cst::PartialArgument;
+        let proto = compile_anon_class(ac, &self.sigs)?;
+        let class = ClassRef::Name(self.intern_name(proto.name.as_bytes()));
+        ANON_CLASSES.with(|c| c.borrow_mut().push(proto));
+        let mut regs = Vec::new();
+        if let Some(list) = &ac.argument_list {
+            for arg in list.arguments.iter() {
+                match arg {
+                    PartialArgument::Positional(p) if p.ellipsis.is_none() => {
+                        regs.push(self.compile_expr(p.value)?)
+                    }
+                    _ => {
+                        return Err(Thrown::unsupported(
+                            "anonymous class argument",
+                            "spread / named / placeholder arguments deferred",
+                        ))
+                    }
+                }
+            }
+        }
+        let argc = regs.len() as u16;
+        let base = self.alloc_temps(argc);
+        for (i, r) in regs.into_iter().enumerate() {
+            self.emit(Instr::Mov {
+                dst: base + i as Reg,
+                src: r,
+            });
+        }
+        let dst = self.alloc_temp();
+        let cache = self.alloc_cache();
+        self.emit(Instr::New {
+            dst,
+            class,
+            base,
+            argc,
+            cache,
+        });
+        Ok(dst)
+    }
+
     fn compile_new(&mut self, inst: &rhp_frontend::cst::Instantiation) -> Result<Reg, Thrown> {
+        if let Expression::AnonymousClass(ac) = inst.class {
+            return self.compile_new_anon(ac);
+        }
         let class = self.class_ref(inst.class)?;
-        if inst.argument_list.as_ref().is_some_and(has_spread) {
+        if inst
+            .argument_list
+            .as_ref()
+            .is_some_and(|l| has_spread(l) || has_named(l))
+        {
             let args = self.build_args_array(inst.argument_list.as_ref())?;
             let dst = self.alloc_temp();
             self.emit(Instr::NewV { dst, class, args });
@@ -4495,6 +4833,68 @@ impl ProtoBuilder {
             cache,
         });
         Ok(dst)
+    }
+
+    /// Compile `e` in php's BP_VAR_IS mode (an isset / empty / `??` operand):
+    /// the property, static-property and dim fetches along its container chain
+    /// are quiet (an inaccessible or missing property is null, no access
+    /// error, `__isset` consulted before `__get`). Keys, dynamic member names
+    /// and anything that is not a fetch compile normally.
+    fn compile_quiet(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+        match e {
+            Expression::Parenthesized(p) => self.compile_quiet(p.expression),
+            Expression::ArrayAccess(aa) => {
+                let arr = self.compile_quiet(aa.array)?;
+                let key = self.compile_expr(aa.index)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::DimFetchIs { dst, arr, key });
+                Ok(dst)
+            }
+            Expression::Access(Access::Property(pa)) => {
+                let obj = self.compile_quiet(pa.object)?;
+                let dst = self.alloc_temp();
+                match self.compile_selector(&pa.property)? {
+                    Sel::Static(name) => self.emit(Instr::FetchPropIs { dst, obj, name }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchPropDynIs { dst, obj, name }),
+                }
+                Ok(dst)
+            }
+            Expression::Access(Access::NullSafeProperty(npa)) => {
+                let obj = self.compile_quiet(npa.object)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::Mov { dst, src: obj });
+                let jn = self.code.len();
+                self.emit(Instr::Nop); // JmpNull dst -> end
+                let t = self.alloc_temp();
+                match self.compile_selector(&npa.property)? {
+                    Sel::Static(name) => self.emit(Instr::FetchPropIs {
+                        dst: t,
+                        obj: dst,
+                        name,
+                    }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchPropDynIs {
+                        dst: t,
+                        obj: dst,
+                        name,
+                    }),
+                }
+                self.emit(Instr::Mov { dst, src: t });
+                let end = self.here();
+                self.code[jn] = Instr::JmpNull {
+                    src: dst,
+                    target: end,
+                };
+                Ok(dst)
+            }
+            Expression::Access(Access::StaticProperty(spa)) => {
+                let class = self.class_ref(spa.class)?;
+                let name = self.static_prop_name(&spa.property)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::FetchStaticPropIs { dst, class, name });
+                Ok(dst)
+            }
+            _ => self.compile_expr(e),
+        }
     }
 
     fn compile_access(&mut self, acc: &Access) -> Result<Reg, Thrown> {
@@ -4605,7 +5005,7 @@ impl ProtoBuilder {
         if !null_safe {
             match self.compile_selector(selector)? {
                 Sel::Static(name) => {
-                    if has_spread(args) {
+                    if has_spread(args) || has_named(args) {
                         let args = self.build_args_array(Some(args))?;
                         let dst = self.alloc_temp();
                         self.emit(Instr::CallMethodV {
@@ -4690,7 +5090,7 @@ impl ProtoBuilder {
         let class = self.class_ref(smc.class)?;
         match self.compile_selector(&smc.method)? {
             Sel::Static(name) => {
-                if has_spread(&smc.argument_list) {
+                if has_spread(&smc.argument_list) || has_named(&smc.argument_list) {
                     let args = self.build_args_array(Some(&smc.argument_list))?;
                     let dst = self.alloc_temp();
                     self.emit(Instr::CallStaticV {
@@ -5158,8 +5558,8 @@ fn fold_const(e: &Expression) -> Result<Value, Thrown> {
                 Bop::NotIdentical(_) => Value::Bool(!ops::strict_eq(&l, &r)),
                 Bop::LessThan(_) => Value::Bool(ops::loose_compare(&l, &r).is_lt()),
                 Bop::LessThanOrEqual(_) => Value::Bool(ops::loose_compare(&l, &r).is_le()),
-                Bop::GreaterThan(_) => Value::Bool(ops::loose_compare(&l, &r).is_gt()),
-                Bop::GreaterThanOrEqual(_) => Value::Bool(ops::loose_compare(&l, &r).is_ge()),
+                Bop::GreaterThan(_) => Value::Bool(ops::loose_compare(&r, &l).is_lt()),
+                Bop::GreaterThanOrEqual(_) => Value::Bool(ops::loose_compare(&r, &l).is_le()),
                 Bop::Spaceship(_) => ops::spaceship(&l, &r),
                 Bop::And(_) | Bop::LowAnd(_) => {
                     Value::Bool(rhp_values::conv::to_bool(&l) && rhp_values::conv::to_bool(&r))
@@ -5249,10 +5649,6 @@ fn non_const_err() -> Thrown {
         "non-constant initializer",
         "only literal / array / true/false/null constant initializers for now",
     )
-}
-
-fn const_value_static(e: &Expression) -> Result<Value, Thrown> {
-    fold_const(e)
 }
 
 /// Fold a literal AST node to its runtime value (same rules as the oracle).

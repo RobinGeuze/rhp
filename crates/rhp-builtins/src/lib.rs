@@ -14,35 +14,103 @@ use rhp_values::{PhpArray, Value};
 pub use rhp_values::Thrown;
 
 pub mod dump;
+pub mod fdstream;
+pub mod memstream;
 pub mod module;
 pub mod streams;
+pub mod stub_params;
 
+pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};
 
+mod argparse;
+/// The kind of an open stream resource (see [`Host::stream_kind`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StreamKind {
+    /// A plain local file (real descriptor).
+    File,
+    /// A directory stream (`opendir`).
+    Dir,
+    /// An in-memory or wrapper-buffered stream (`php://memory`, phar entries).
+    Memory,
+    /// stdin/stdout/stderr/`php://output`.
+    Stdio,
+    /// An OS descriptor stream: a `proc_open` pipe, `php://stdin`.
+    Pipe,
+}
+
+/// `stream_get_meta_data` information for a stream resource.
+pub struct StreamMeta {
+    pub wrapper_type: &'static str,
+    pub stream_type: &'static str,
+    pub mode: Vec<u8>,
+    pub uri: Vec<u8>,
+    pub unread_bytes: i64,
+    pub seekable: bool,
+    pub eof: bool,
+    /// php's `blocked` (false after stream_set_blocking($s, false)).
+    pub blocked: bool,
+}
+
+/// pcntl's asynchronous signal delivery: the VM polls
+/// [`pcntl_interrupt_pending`] between instructions and, when set, calls
+/// [`pcntl_dispatch`] to run the queued PHP signal handlers.
+pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_interrupt_pending};
+
 mod arr_fns;
+mod arraycmp_fns;
 mod arrayset_fns;
+mod const_modules;
 mod datetime_fns;
 mod dt_oop_fns;
 mod ext;
+pub use ext::gmp::{compare_handler as gmp_compare_handler, CmpOperand as GmpCmpOperand};
 mod file_fns;
 mod filter_fns;
+mod fs_fns;
 pub mod http;
+mod info_fns;
+mod ini_parse;
+mod ini_table;
 mod json_fns;
 mod math_fns;
 mod misc_fns;
 mod parse_fns;
-mod php_fns;
+pub mod php_fns;
 mod preg_fns;
 mod printf_fns;
+mod proc_fns;
+mod query_fns;
+mod runtime_fns;
 mod serialize_fns;
 mod sort_fns;
 mod str_fns;
 mod strarr2_fns;
 mod strcmp_fns;
 mod stream_fns;
+mod strsearch_fns;
 mod strtotime_fns;
+mod sysmisc_fns;
+mod tzdb;
 mod webenc_fns;
 pub mod zip_ext;
+
+/// `zend_compare` from inside a builtin, with the host's object semantics.
+pub fn host_compare(
+    host: &mut dyn Host,
+    a: &Value,
+    b: &Value,
+) -> Result<std::cmp::Ordering, Thrown> {
+    match host.compare_cx() {
+        Some(cx) => rhp_semantics::ops::compare(a, b, cx),
+        None => rhp_semantics::ops::compare(a, b, &mut rhp_semantics::ops::NoCx),
+    }
+}
+
+/// `$a == $b` from inside a builtin.
+pub fn host_loose_eq(host: &mut dyn Host, a: &Value, b: &Value) -> Result<bool, Thrown> {
+    Ok(host_compare(host, a, b)? == std::cmp::Ordering::Equal)
+}
 
 /// The interpreter surface a builtin may use. Implemented by the VM and the oracle.
 pub trait Host {
@@ -68,6 +136,37 @@ pub trait Host {
         false
     }
 
+    /// Raise a php diagnostic (`E_WARNING` = 2, `E_NOTICE` = 8, …) at the
+    /// current line: php's `zend_error` — the user error handler
+    /// (`set_error_handler`) first, else `error_get_last` + display per
+    /// `error_reporting` / `@` / `display_errors` / `log_errors`. `msg`
+    /// already carries any `func(): ` prefix. An exception thrown by a user
+    /// handler is held by the host and surfaces when the running builtin
+    /// returns (php's `EG(exception)`); see [`Host::emit_diagnostic`] to
+    /// receive it at the call site instead. Default: dropped.
+    fn raise_diagnostic(&mut self, _level: i64, _msg: &str) {}
+
+    /// Take the exception a user error handler threw during the last
+    /// [`Host::raise_diagnostic`], if any. Default: none.
+    fn take_pending_throw(&mut self) -> Option<Thrown> {
+        None
+    }
+
+    /// The last raised diagnostic for `error_get_last()`: (type, message,
+    /// file, line). Default: none.
+    fn last_error(&self) -> Option<(i64, Vec<u8>, Vec<u8>, i64)> {
+        None
+    }
+
+    /// `error_clear_last()`.
+    fn clear_last_error(&mut self) {}
+
+    /// The engine's comparison context (`__toString`, internal compare
+    /// handlers, notices) for loose comparisons inside builtins.
+    fn compare_cx(&mut self) -> Option<&mut dyn rhp_semantics::ops::CompareCx> {
+        None
+    }
+
     /// A class's name by id (for `get_class` etc.). Default: not available.
     fn class_name(&self, _class_id: u32) -> Option<Vec<u8>> {
         None
@@ -78,9 +177,88 @@ pub trait Host {
         None
     }
 
+    /// php's `zend_fetch_debug_backtrace` for `debug_backtrace()` (innermost
+    /// first, the calling builtin's own frame skipped). Default: unavailable.
+    fn backtrace(&self, _provide_object: bool, _ignore_args: bool) -> Option<Value> {
+        None
+    }
+
+    /// Push a user exception handler (`set_exception_handler`; null clears),
+    /// returning the previous one (or null). Default: not stored.
+    fn set_exception_handler(&mut self, _handler: Value) -> Value {
+        Value::Null
+    }
+    /// Pop back to the previous exception handler.
+    fn restore_exception_handler(&mut self) {}
+
+    /// Push a `set_error_handler` callback (null disables) handling the
+    /// error types in `mask`; returns the previous handler or null.
+    fn set_error_handler(&mut self, _handler: Value, _mask: i64) -> Value {
+        Value::Null
+    }
+    /// `restore_error_handler`: pop back to the previous error handler.
+    fn restore_error_handler(&mut self) {}
+
+    /// Inside an `@` region (error_reporting then reads as the fatal mask).
+    fn silenced(&self) -> bool {
+        false
+    }
+
+    /// A directive's current value (the per-request ini store shared with
+    /// `ini_get`/`ini_set`; a null value reads as ""), or None when no loaded
+    /// module registers it.
+    fn ini_get(&self, name: &[u8]) -> Option<Vec<u8>> {
+        runtime_fns::ini_value(name).map(Option::unwrap_or_default)
+    }
+    /// Store `value` for a known directive (no validation; engine-internal
+    /// writes such as `error_reporting()`), returning the old value.
+    fn ini_set(&mut self, name: &[u8], value: Vec<u8>) -> Option<Vec<u8>> {
+        let old = self.ini_get(name)?;
+        runtime_fns::ini_store(name, value);
+        Some(old)
+    }
+
+    /// `register_shutdown_function`: queue a callback (with its arguments) for
+    /// request shutdown. Default: refused (the host has no shutdown phase).
+    fn register_shutdown_function(
+        &mut self,
+        _callback: Value,
+        _args: Vec<Value>,
+    ) -> Result<(), Thrown> {
+        Err(Thrown::unsupported(
+            "register_shutdown_function",
+            "this host has no request shutdown",
+        ))
+    }
+
+    /// Whether a resource has been closed (`fclose`d stream): `gettype` /
+    /// `get_debug_type` then report `resource (closed)`. Default: no.
+    fn resource_closed(&self, _res: &Value) -> bool {
+        false
+    }
+
     /// Whether a class id names an enum (for `var_dump` rendering). Default: no.
     fn is_enum_class(&self, _class_id: u32) -> bool {
         false
+    }
+
+    /// Whether the property slot `key` (storage key) of an object of class
+    /// `class_id` is engine-internal state of a built-in class (the prelude's
+    /// `__`-prefixed slots): php keeps such state outside the property table,
+    /// so every property-table view (`var_dump`, `(array)`, `serialize`,
+    /// `json_encode`, `get_object_vars`, `foreach`) skips it. Default: no.
+    fn is_internal_slot(&self, _class_id: u32, _key: &rhp_values::PhpStr) -> bool {
+        false
+    }
+
+    /// The uninitialized typed properties `var_dump` lists as
+    /// `uninitialized(type)`: (mangled name, type, how many of the object's
+    /// visible properties precede it). Default: none.
+    fn uninit_props(
+        &self,
+        _obj: &rhp_values::ObjectHandle,
+    ) -> Vec<(rhp_values::PhpStr, String, usize)> {
+        Vec::new()
     }
 
     /// Define a runtime constant (`define`). Returns false if already defined.
@@ -99,6 +277,20 @@ pub trait Host {
         None
     }
 
+    /// Like [`Host::class_constant`], but first evaluates the constant's
+    /// initializer if it is still a pending constant expression (which can
+    /// throw, e.g. on an undefined constant inside it).
+    fn class_constant_eval(&mut self, class: &[u8], name: &[u8]) -> Result<Option<Value>, Thrown> {
+        Ok(self.class_constant(class, name))
+    }
+
+    /// Evaluate every pending initializer of `class` (its constants, property
+    /// defaults and static properties) — php's `zend_update_class_constants`,
+    /// done before reflection reads them. A no-op for unknown classes.
+    fn update_class_constants(&mut self, _class: &[u8]) -> Result<(), Thrown> {
+        Ok(())
+    }
+
     /// Invoke a PHP callable (for `array_map`/`array_filter`/…). Default: refused.
     fn call_callable(&mut self, _callable: &Value, _args: &[Value]) -> Result<Value, Thrown> {
         Err(Thrown::unsupported(
@@ -107,10 +299,64 @@ pub trait Host {
         ))
     }
 
+    /// Invoke a PHP callable with named arguments too (`call_user_func_array`
+    /// with string keys). Default: refused when any argument is named.
+    fn call_callable_named(
+        &mut self,
+        callable: &Value,
+        args: &[Value],
+        named: Vec<(rhp_values::PhpStr, Value)>,
+    ) -> Result<Value, Thrown> {
+        if !named.is_empty() {
+            return Err(Thrown::unsupported(
+                "named arguments",
+                "not supported by this host",
+            ));
+        }
+        self.call_callable(callable, args)
+    }
+
     /// Whether a value is callable (`is_callable`): closures, function names,
     /// `[obj_or_class, method]` pairs, and `__invoke` objects. Default: closures only.
     fn is_callable_value(&self, callable: &Value) -> bool {
         matches!(deref(callable), Value::Closure(_))
+    }
+
+    /// Why a value is not a valid callback (zend_is_callable_error's message,
+    /// e.g. `function "f" not found or invalid function name`), or None when
+    /// it is callable. Default: derived from [`Host::is_callable_value`].
+    fn callable_error(&self, callable: &Value) -> Option<String> {
+        if self.is_callable_value(callable) {
+            return None;
+        }
+        Some(match deref(callable) {
+            Value::Str(s) => format!(
+                "function \"{}\" not found or invalid function name",
+                String::from_utf8_lossy(s.as_bytes())
+            ),
+            Value::Array(_) => "array callback must have exactly two members".to_string(),
+            _ => "no array or string given".to_string(),
+        })
+    }
+
+    /// Wrap a callable as a Closure (`Closure::fromCallable`) that resolves it
+    /// in the calling scope. Default: no scope recorded.
+    fn wrap_callable(&self, callable: Value) -> Value {
+        Value::Closure(std::rc::Rc::new(rhp_values::ClosureData {
+            fnidx: u32::MAX,
+            captures: Vec::new(),
+            bound_this: None,
+            bound_class: None,
+            bound_static: None,
+            wrapped: Some(Box::new(callable)),
+        }))
+    }
+
+    /// [`Host::callable_error`] after autoloading a class the callable names
+    /// (zend_is_callable looks classes up with autoloading; a loader's
+    /// exception propagates).
+    fn check_callable(&mut self, callable: &Value) -> Result<Option<String>, Thrown> {
+        Ok(self.callable_error(callable))
     }
 
     /// Resolve a class-like name to its opaque class id (for `class_exists`,
@@ -122,8 +368,53 @@ pub trait Host {
     /// Like `resolve_class` but invokes registered autoloaders on a miss (for
     /// `class_exists($name)` with `$autoload = true`, php's default). Default:
     /// falls back to the non-autoloading resolve.
-    fn resolve_class_autoload(&mut self, name: &[u8]) -> Option<u32> {
-        self.resolve_class(name)
+    /// An exception thrown by an autoloader propagates.
+    fn resolve_class_autoload(&mut self, name: &[u8]) -> Result<Option<u32>, Thrown> {
+        Ok(self.resolve_class(name))
+    }
+
+    /// `class_alias`: register `alias` as another name for class `class_id`.
+    /// Returns false if the alias name is already taken. Default: refused.
+    fn class_alias(&mut self, _class_id: u32, _alias: &[u8]) -> bool {
+        false
+    }
+
+    /// A class's relations for `class_parents` / `class_implements` /
+    /// `class_uses`: (parent chain nearest-first, interfaces in php order,
+    /// directly used traits). Default: none.
+    #[allow(clippy::type_complexity)]
+    fn class_relations(
+        &self,
+        _class_id: u32,
+    ) -> Option<(Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>)> {
+        None
+    }
+
+    /// An object's properties accessible from the calling code's class scope
+    /// (`zend_check_property_access`), in property-table order — for
+    /// `http_build_query` on objects. Default: every property.
+    fn object_scoped_props(&self, obj: &Value) -> Vec<(rhp_values::PhpStr, Value)> {
+        match deref(obj) {
+            Value::Object(h) => h
+                .borrow()
+                .properties
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// User-defined constants (`define`/`const`) in definition order, for
+    /// `get_defined_constants`. Default: none.
+    fn user_constants(&self) -> Vec<(Vec<u8>, Value)> {
+        Vec::new()
+    }
+
+    /// Has any output reached the real (unbuffered) output stream? The CLI
+    /// SAPI sends headers on first output, so this is `headers_sent()`.
+    fn output_started(&self) -> bool {
+        false
     }
 
     /// The [`ClassKind`] of a class id (class / interface / trait / enum), used by
@@ -193,10 +484,63 @@ pub trait Host {
         None
     }
 
+    /// php's visibility-mangled name for an object's property storage key (as
+    /// `(array)`, `serialize` and the dumpers see it): public/dynamic `name`,
+    /// protected `"\0*\0name"`, private `"\0Class\0name"`. Hosts store private
+    /// properties under their mangled key already; the default is the identity.
+    fn mangled_prop_name(&self, _class_id: u32, key: &rhp_values::PhpStr) -> rhp_values::PhpStr {
+        key.clone()
+    }
+
+    /// Store a property read by `unserialize` on `obj` like php's
+    /// `process_nested_object_data`: a plain name, or one mangled for `*` / the
+    /// object's own class, lands on the declared property of that name (at its
+    /// storage key); any other name is kept as is. Returns false for a
+    /// malformed mangled name (a leading NUL without a second one).
+    fn unserialize_set_prop(&mut self, obj: &Value, key: &[u8], val: Value) -> bool {
+        if let Value::Object(h) = obj {
+            h.borrow_mut()
+                .properties
+                .insert(rhp_values::PhpStr::from_bytes(key.to_vec()), val);
+        }
+        true
+    }
+
+    /// `get_object_vars($obj)` as seen from the calling scope (unmangled names
+    /// of the properties accessible there, in slot order). `None` = the host has
+    /// no scope information; the builtin then returns every property.
+    fn object_vars(&self, _obj: &Value) -> Option<Value> {
+        None
+    }
+
+    /// Whether `$obj->name` currently exists as seen from the calling scope
+    /// (the object half of `property_exists`). Default: a plain-name lookup.
+    fn object_prop_exists(&self, obj: &Value, name: &[u8]) -> bool {
+        match obj {
+            Value::Object(h) => h
+                .borrow()
+                .properties
+                .contains_key(&rhp_values::PhpStr::from_bytes(name.to_vec())),
+            _ => false,
+        }
+    }
+
     /// The class name of an object value, if any (for `instanceof`-style checks
     /// inside builtins). Default: none.
     fn object_class_name(&self, _obj: &Value) -> Option<Vec<u8>> {
         None
+    }
+
+    /// An object's properties keyed with php's visibility mangling (public
+    /// `name`, protected `"\0*\0name"`, private `"\0Class\0name"`), in
+    /// property-table order — what `(array)`, `serialize` and `json_encode`
+    /// see. Default: the bare property names.
+    fn object_props_mangled(&self, obj: &rhp_values::ObjectHandle) -> PhpArray {
+        let mut a = PhpArray::new();
+        for (k, v) in &obj.borrow().properties {
+            a.insert(rhp_values::ArrayKey::from_bytes(k.as_bytes()), v.clone());
+        }
+        a
     }
 
     /// Build a `stdClass` object from named properties (for `json_decode` without
@@ -228,6 +572,26 @@ pub trait Host {
     /// Stat through the stream layer (`is_file`/`is_dir`/`filesize`).
     fn stream_stat(&self, url: &[u8]) -> Option<StatInfo> {
         streams::default_stat(url)
+    }
+
+    /// `lstat` through the stream layer (`lstat`/`is_link`/`filetype`).
+    fn stream_lstat(&self, url: &[u8]) -> Option<StatInfo> {
+        let (scheme, _) = streams::split_scheme(url);
+        if scheme == b"file" {
+            streams::FileWrapper.lstat(url)
+        } else {
+            None
+        }
+    }
+
+    /// Directory listing through the stream layer (`opendir`/`scandir`).
+    fn stream_opendir(&self, url: &[u8]) -> Option<Vec<Vec<u8>>> {
+        let (scheme, _) = streams::split_scheme(url);
+        if scheme == b"file" {
+            streams::FileWrapper.opendir(url)
+        } else {
+            None
+        }
     }
 
     /// Whole-file write through the stream layer (`file_put_contents`).
@@ -293,28 +657,6 @@ pub trait Host {
         Vec::new()
     }
 
-    /// ZipArchive backing (open archives keyed by id). `zip_open` returns the id
-    /// (>= 0) on success or a negative `ZipArchive::ER_*` code on failure.
-    fn zip_open(&mut self, _path: &[u8]) -> i64 {
-        -9 // ER_NOENT
-    }
-    fn zip_count(&mut self, _id: i64) -> i64 {
-        0
-    }
-    fn zip_name_index(&mut self, _id: i64, _i: i64) -> Option<Vec<u8>> {
-        None
-    }
-    fn zip_stat_index(&mut self, _id: i64, _i: i64) -> Option<(Vec<u8>, u64, u64)> {
-        None
-    }
-    fn zip_get_from_name(&mut self, _id: i64, _name: &[u8]) -> Option<Vec<u8>> {
-        None
-    }
-    fn zip_extract_to(&mut self, _id: i64, _dest: &[u8]) -> bool {
-        false
-    }
-    fn zip_close(&mut self, _id: i64) {}
-
     /// The filesystem path of the top-level script being executed (for
     /// `Phar::mapPhar`, which parses the running phar itself). Default: none.
     fn running_main_path(&self) -> Option<Vec<u8>> {
@@ -324,6 +666,20 @@ pub trait Host {
     // --- stream resources (fopen family) -------------------------------------
     // Streams are resource Values whose state lives in the VM; these are the
     // `fopen`/`fwrite`/… primitives. Defaults are no-ops (hosts without streams).
+
+    /// Whether this host delivers signals to PHP callbacks (pcntl). The
+    /// signal queue is process-wide, so only one interpreter per process (the
+    /// VM) may own it. Default: no — `pcntl_signal` with a callable is then
+    /// unsupported.
+    fn supports_signals(&self) -> bool {
+        false
+    }
+
+    /// Whether this host implements stream resources at all (`fopen` on a
+    /// host without them is unsupported rather than a silent failure).
+    fn has_streams(&self) -> bool {
+        false
+    }
 
     /// `fopen($path, $mode)` → a resource, or None on failure.
     fn stream_open(&mut self, _path: &[u8], _mode: &[u8]) -> Option<Value> {
@@ -357,6 +713,139 @@ pub trait Host {
     fn stream_rewind(&mut self, _res: &Value) -> bool {
         false
     }
+    /// What kind of live stream a resource is; `None` if it is not an open
+    /// stream (closed, or not a stream resource).
+    fn stream_kind(&self, _res: &Value) -> Option<StreamKind> {
+        None
+    }
+    /// `fgets($res, $length)`: like `stream_gets` but reading at most
+    /// `max` bytes (php's `$length - 1`).
+    fn stream_gets_max(&mut self, res: &Value, _max: usize) -> Option<Vec<u8>> {
+        self.stream_gets(res)
+    }
+    /// `fseek`: true on success.
+    fn stream_seek(&mut self, _res: &Value, _offset: i64, _whence: i32) -> bool {
+        false
+    }
+    /// `ftell`: None if the stream has no position.
+    fn stream_tell(&mut self, _res: &Value) -> Option<i64> {
+        None
+    }
+    /// `ftruncate`: None if the stream cannot be truncated at all.
+    fn stream_truncate(&mut self, _res: &Value, _size: i64) -> Option<bool> {
+        None
+    }
+    /// `fstat`.
+    fn stream_fstat(&mut self, _res: &Value) -> Option<StatInfo> {
+        None
+    }
+    /// The OS descriptor behind a stream (for `flock`).
+    fn stream_fd(&self, _res: &Value) -> Option<i32> {
+        None
+    }
+    /// `stream_get_meta_data` fields.
+    fn stream_meta(&self, _res: &Value) -> Option<StreamMeta> {
+        None
+    }
+    /// Consume `n` resource ids without creating a resource. php registers
+    /// every internal stream it opens (file_get_contents, file(), copy, …) as
+    /// a resource, so later resource ids skip past them.
+    fn consume_resource_ids(&mut self, _n: u32) {}
+    /// The default stream context (`stream_context_get_default`), allocated
+    /// lazily as a resource the first time a stream function needs it — php
+    /// does this on the first `fopen`/`file_get_contents`/`opendir`/…, which
+    /// is visible in later resource ids.
+    fn default_stream_context(&mut self) -> Value {
+        Value::Null
+    }
+    /// `opendir`: a directory stream resource over `entries`.
+    fn dir_open(&mut self, _url: &[u8], _entries: Vec<Vec<u8>>) -> Option<Value> {
+        None
+    }
+    /// `readdir`: the next entry, or None at the end.
+    fn dir_read(&mut self, _res: &Value) -> Option<Vec<u8>> {
+        None
+    }
+    /// `rewinddir`.
+    fn dir_rewind(&mut self, _res: &Value) {}
+    /// The most recently opened directory stream (for `readdir()` with no arg).
+    fn last_dir(&self) -> Option<Value> {
+        None
+    }
+
+    // --- OS-level streams / process support (proc_open & friends) ------------
+
+    /// Wrap an OS file descriptor (e.g. a pipe's parent end) as a `stream`
+    /// resource. Default: unsupported (the fd is closed).
+    fn stream_from_fd(&mut self, _fd: std::os::fd::OwnedFd) -> Option<Value> {
+        None
+    }
+    /// A `dup(2)` of the OS fd behind a stream resource, for handing to a child
+    /// process (`proc_open` descriptor given as a resource). `Err` carries
+    /// php's stream-type name when the stream has no fd (e.g. `MEMORY`).
+    fn stream_dup_fd(&mut self, _res: &Value) -> Result<std::os::fd::OwnedFd, &'static str> {
+        Err("MEMORY")
+    }
+    /// The OS fd behind a stream, for `stream_select`, plus whether the stream
+    /// already holds buffered unread data (then it counts as readable at once).
+    fn stream_select_fd(&self, _res: &Value) -> Option<(std::os::fd::RawFd, bool)> {
+        None
+    }
+    /// `stream_set_blocking($res, $enable)`.
+    fn stream_set_blocking(&mut self, _res: &Value, _blocking: bool) -> bool {
+        true
+    }
+    /// Register an opaque native resource (e.g. a `process` handle) and return
+    /// its resource Value. Default: unsupported (`Null`).
+    fn resource_insert(
+        &mut self,
+        _type_name: &'static str,
+        _data: Box<dyn std::any::Any>,
+    ) -> Value {
+        Value::Null
+    }
+    /// The native payload of a resource created by [`Host::resource_insert`].
+    fn resource_get(&mut self, _res: &Value) -> Option<&mut dyn std::any::Any> {
+        None
+    }
+    /// Remove (close) a native resource, returning its payload.
+    fn resource_remove(&mut self, _res: &Value) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
+    /// Per-run state owned by an extension module (e.g. pcntl's signal-handler
+    /// table), created on first use by `init`. Default: none (stateless host).
+    fn module_state(
+        &mut self,
+        _key: &'static str,
+        _init: fn() -> Box<dyn std::any::Any>,
+    ) -> Option<&mut dyn std::any::Any> {
+        None
+    }
+    /// `ReflectionMethod::invoke`: call `class::method` on `obj` (null for a
+    /// static method) regardless of its visibility.
+    fn reflect_invoke(
+        &mut self,
+        obj: &Value,
+        class: &[u8],
+        method: &[u8],
+        args: Vec<Value>,
+    ) -> Result<Value, Thrown> {
+        let mut cb = PhpArray::new();
+        cb.push(match obj {
+            Value::Null => Value::str(class.to_vec()),
+            o => o.clone(),
+        });
+        cb.push(Value::str(method.to_vec()));
+        self.call_callable(&Value::Array(cb), &args)
+    }
+    /// Is `res` a stream resource that is still open (not `fclose`d)?
+    fn stream_is_open(&self, _res: &Value) -> bool {
+        true
+    }
+    /// The mode a stream was opened with (`"r"`, `"w+b"`, ...), when known.
+    fn stream_mode(&self, _res: &Value) -> Option<Vec<u8>> {
+        None
+    }
 
     // --- reflection introspection --------------------------------------------
     // Backing for the `Reflection*` classes. Return PHP `Value`s the prelude
@@ -386,9 +875,15 @@ pub trait Host {
             "reflection is not available in this host",
         ))
     }
-    /// Set an object property bypassing visibility (`ReflectionProperty::setValue`).
-    fn reflect_set_prop(&mut self, _obj: &Value, _name: &[u8], _val: Value) -> bool {
+    /// Set an object property bypassing visibility (`ReflectionProperty::setValue`),
+    /// resolving `name` as class `class` would see it (its own private first).
+    fn reflect_set_prop(&mut self, _obj: &Value, _class: &[u8], _name: &[u8], _val: Value) -> bool {
         false
+    }
+    /// Read an object property bypassing visibility (`ReflectionProperty::getValue`),
+    /// resolving `name` as class `class` would see it (its own private first).
+    fn reflect_get_prop(&self, obj: &Value, _class: &[u8], name: &[u8]) -> Option<Value> {
+        self.object_prop(obj, name)
     }
     /// Parameter descriptors for a class method (`ReflectionMethod::getParameters`).
     fn reflect_method_params(&self, _class: &[u8], _method: &[u8]) -> Option<Value> {
@@ -403,6 +898,104 @@ pub trait Host {
     fn reflect_class_constants(&self, _class: &[u8]) -> Option<Value> {
         None
     }
+    /// [`Host::raise_diagnostic`], returning the exception a user error
+    /// handler threw (e.g. composer's `ErrorException`) so the builtin can
+    /// stop right there with `?`.
+    fn emit_diagnostic(&mut self, level: i64, message: &str) -> Result<(), Thrown> {
+        self.raise_diagnostic(level, message);
+        match self.take_pending_throw() {
+            Some(t) => Err(t),
+            None => Ok(()),
+        }
+    }
+}
+
+/// `E_WARNING`.
+pub const E_WARNING: i64 = 2;
+/// `E_NOTICE`.
+pub const E_NOTICE: i64 = 8;
+/// `E_DEPRECATED`.
+pub const E_DEPRECATED: i64 = 8192;
+
+/// `php_error_docref(NULL, E_WARNING, msg)` from builtin `fname`.
+pub fn warn(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
+    host.emit_diagnostic(E_WARNING, &format!("{fname}(): {msg}"))
+}
+
+/// The refcount-0 destructor of a native (non-stream) resource, given its
+/// payload: a process closes its pipes and reaps the child if it already
+/// exited (proc_open_rsrc_dtor); anything else is just dropped.
+pub fn native_resource_dtor(host: &mut dyn Host, data: Box<dyn std::any::Any>) {
+    proc_fns::proc_dtor(host, data);
+}
+
+/// `php_error_docref1(NULL, arg, E_WARNING, msg)`: `fname(arg): msg`.
+pub fn warn_arg(host: &mut dyn Host, fname: &str, arg: &[u8], msg: &str) -> Result<(), Thrown> {
+    host.emit_diagnostic(
+        E_WARNING,
+        &format!("{fname}({}): {msg}", String::from_utf8_lossy(arg)),
+    )
+}
+
+/// php_stream_open_wrapper's failure report for `path` from builtin `fname`:
+/// an unknown wrapper / bad php:// URL first, then "Failed to open stream:"
+/// with the errno the failing syscall recorded (see [`streams::note_errno`]).
+pub fn open_failed(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<(), Thrown> {
+    let scheme = streams::split_scheme(path).0.to_ascii_lowercase();
+    // Only the plain-files wrapper reports errno; others say "operation failed".
+    let mut reason = if scheme == b"file" {
+        streams::last_strerror()
+    } else {
+        "operation failed".to_string()
+    };
+    let known = host.stream_wrapper_schemes();
+    if scheme == b"php" {
+        warn(host, fname, "Invalid php:// URL specified")?;
+        reason = "operation failed".into();
+    } else if scheme != b"file"
+        && !matches!(&scheme[..], b"http" | b"https" | b"data" | b"glob")
+        && !known.iter().any(|k| k.eq_ignore_ascii_case(&scheme))
+    {
+        let name = String::from_utf8_lossy(&scheme).into_owned();
+        warn(
+            host,
+            fname,
+            &format!(
+                "Unable to find the wrapper \"{name}\" - did you forget to enable it when you configured PHP?"
+            ),
+        )?;
+        reason = streams::strerror(libc::ENOENT);
+    }
+    warn_arg(
+        host,
+        fname,
+        path,
+        &format!("Failed to open stream: {reason}"),
+    )
+}
+
+/// `php_error_docref(NULL, E_NOTICE, msg)` from builtin `fname`.
+pub fn notice(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
+    host.emit_diagnostic(E_NOTICE, &format!("{fname}(): {msg}"))
+}
+
+/// `php_error_docref(NULL, E_DEPRECATED, msg)` from builtin `fname`.
+pub fn deprecated(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
+    host.emit_diagnostic(E_DEPRECATED, &format!("{fname}(): {msg}"))
+}
+
+/// The `#[\Deprecated]` notice php raises on calling a deprecated function:
+/// `Function f() is deprecated since V, MSG`.
+pub fn deprecated_fn(
+    host: &mut dyn Host,
+    fname: &str,
+    since: &str,
+    msg: &str,
+) -> Result<(), Thrown> {
+    host.emit_diagnostic(
+        E_DEPRECATED,
+        &format!("Function {fname}() is deprecated since {since}, {msg}"),
+    )
 }
 
 /// A native builtin function over owned values.
@@ -425,6 +1018,29 @@ macro_rules! builtins {
         )*
         m
     }};
+}
+
+pub use php_fns::{apply_env_overrides, env_overrides};
+
+/// A startup ini setting (`php -d name=value`): any registered directive,
+/// applied to the engine state it drives (precision, ...). Unknown names are
+/// ignored. Call after [`reset_request_state`].
+pub fn ini_startup_set(name: &[u8], value: &[u8]) {
+    runtime_fns::ini_startup(name, value);
+}
+
+/// Reset every builtin's per-request state (ini overrides, default timezone,
+/// precision, strtok/preg/json/mbstring state, process title, putenv
+/// overlay). Engines call this on construction so state never leaks from one
+/// script run to the next on the same thread.
+pub fn reset_request_state() {
+    runtime_fns::reset_state();
+    sysmisc_fns::reset_state();
+    preg_fns::reset_state();
+    json_fns::reset_state();
+    ext::mbstring::reset_state();
+    strsearch_fns::reset_state();
+    php_fns::reset_state();
 }
 
 /// The builtin function table, keyed by lowercase name (PHP function names are
@@ -497,6 +1113,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "is_a"           => fn_is_a, 2, Some(3);
             "is_subclass_of" => fn_is_subclass_of, 2, Some(3);
             "get_object_vars" => fn_get_object_vars, 1, Some(1);
+            "get_mangled_object_vars" => fn_get_mangled_object_vars, 1, Some(1);
             "method_exists"  => fn_method_exists, 2, Some(2);
             "property_exists" => fn_property_exists, 2, Some(2);
             "class_exists"   => fn_class_exists, 1, Some(2);
@@ -504,35 +1121,86 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "enum_exists"    => fn_enum_exists, 1, Some(2);
             "iterator_to_array" => fn_iterator_to_array, 1, Some(2);
         };
-        // Builtin modules produced by the stdlib workflow (each verified vs php).
-        str_fns::register(&mut m);
-        math_fns::register(&mut m);
-        arr_fns::register(&mut m);
-        misc_fns::register(&mut m);
-        file_fns::register(&mut m);
-        // Discrete extensions (php-src ext/<name>/ layout): each a self-contained
-        // module owning its functions/constants/classes/wrappers.
-        for md in ext::modules() {
-            (md.functions)(&mut m);
+        for (_, register) in builtin_modules() {
+            register(&mut m);
         }
-        webenc_fns::register(&mut m);
-        datetime_fns::register(&mut m);
-        dt_oop_fns::register(&mut m);
-        strtotime_fns::register(&mut m);
-        strarr2_fns::register(&mut m);
-        sort_fns::register(&mut m);
-        serialize_fns::register(&mut m);
-        filter_fns::register(&mut m);
-        strcmp_fns::register(&mut m);
-        printf_fns::register(&mut m);
-        arrayset_fns::register(&mut m);
-        preg_fns::register(&mut m);
-        json_fns::register(&mut m);
-        parse_fns::register(&mut m);
-        php_fns::register(&mut m);
-        stream_fns::register(&mut m);
         m
     })
+}
+
+type Registrar = Box<dyn Fn(&mut HashMap<&'static str, Builtin>)>;
+
+/// Every builtin module's registration, in registry order (a later module
+/// would override an earlier one's function of the same name; the
+/// `no_duplicate_builtins` test keeps names unique).
+fn builtin_modules() -> Vec<(&'static str, Registrar)> {
+    let mut v: Vec<(&'static str, Registrar)> = vec![
+        ("str_fns", Box::new(str_fns::register)),
+        ("math_fns", Box::new(math_fns::register)),
+        ("arr_fns", Box::new(arr_fns::register)),
+        ("misc_fns", Box::new(misc_fns::register)),
+        ("file_fns", Box::new(file_fns::register)),
+    ];
+    // Discrete extensions (php-src ext/<name>/ layout): each a self-contained
+    // module owning its functions/constants/classes/wrappers.
+    for md in ext::modules() {
+        v.push((md.name, Box::new(move |m| (md.functions)(m))));
+    }
+    let rest: Vec<(&'static str, Registrar)> = vec![
+        ("webenc_fns", Box::new(webenc_fns::register)),
+        ("datetime_fns", Box::new(datetime_fns::register)),
+        ("dt_oop_fns", Box::new(dt_oop_fns::register)),
+        ("strtotime_fns", Box::new(strtotime_fns::register)),
+        ("strarr2_fns", Box::new(strarr2_fns::register)),
+        ("sort_fns", Box::new(sort_fns::register)),
+        ("serialize_fns", Box::new(serialize_fns::register)),
+        ("filter_fns", Box::new(filter_fns::register)),
+        ("strcmp_fns", Box::new(strcmp_fns::register)),
+        ("printf_fns", Box::new(printf_fns::register)),
+        ("arrayset_fns", Box::new(arrayset_fns::register)),
+        ("preg_fns", Box::new(preg_fns::register)),
+        ("json_fns", Box::new(json_fns::register)),
+        ("parse_fns", Box::new(parse_fns::register)),
+        ("php_fns", Box::new(php_fns::register)),
+        ("info_fns", Box::new(info_fns::register)),
+        ("stream_fns", Box::new(stream_fns::register)),
+        ("strsearch_fns", Box::new(strsearch_fns::register)),
+        ("query_fns", Box::new(query_fns::register)),
+        ("runtime_fns", Box::new(runtime_fns::register)),
+        ("ini_parse", Box::new(ini_parse::register)),
+        ("arraycmp_fns", Box::new(arraycmp_fns::register)),
+        ("sysmisc_fns", Box::new(sysmisc_fns::register)),
+        ("proc_fns", Box::new(proc_fns::register)),
+        // Exact-semantics filesystem builtins; registered last so they replace
+        // older approximations in file_fns/stream_fns.
+        ("fs_fns", Box::new(fs_fns::register)),
+    ];
+    v.extend(rest);
+    v
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    /// Branches developed in parallel must not register the same builtin
+    /// twice: the later registration silently shadows the earlier one.
+    #[test]
+    fn no_duplicate_builtins() {
+        let mut owner: HashMap<&'static str, &'static str> = HashMap::new();
+        let mut dups = Vec::new();
+        for (module, register) in builtin_modules() {
+            let mut m = HashMap::new();
+            register(&mut m);
+            for name in m.keys() {
+                if let Some(prev) = owner.insert(name, module) {
+                    dups.push(format!("{name}: {prev} and {module}"));
+                }
+            }
+        }
+        dups.sort();
+        assert!(dups.is_empty(), "duplicate builtins:\n{}", dups.join("\n"));
+    }
 }
 
 /// Case-insensitive builtin lookup.
@@ -541,7 +1209,53 @@ pub fn lookup(name: &str) -> Option<&'static Builtin> {
     registry().get(lower.as_str())
 }
 
+/// [`lookup`] for a name that is already lowercase (no allocation).
+pub fn lookup_lc(name_lc: &str) -> Option<&'static Builtin> {
+    registry().get(name_lc)
+}
+
+/// `(PHP_OS, PHP_OS_FAMILY)` for the platform this engine was built for.
+fn php_os() -> (&'static str, &'static str) {
+    if cfg!(target_os = "macos") {
+        ("Darwin", "Darwin")
+    } else if cfg!(target_os = "linux") {
+        ("Linux", "Linux")
+    } else if cfg!(target_os = "windows") {
+        ("WINNT", "Windows")
+    } else if cfg!(target_os = "freebsd") {
+        ("FreeBSD", "BSD")
+    } else if cfg!(target_os = "openbsd") {
+        ("OpenBSD", "BSD")
+    } else if cfg!(target_os = "netbsd") {
+        ("NetBSD", "BSD")
+    } else if cfg!(target_os = "solaris") {
+        ("SunOS", "Solaris")
+    } else {
+        ("Unknown", "Unknown")
+    }
+}
+
 /// Engine constants (`PHP_EOL`, `PHP_INT_MAX`, …).
+/// php's `PHP_OS`: the build host's uname sysname (configure-time constant).
+#[cfg(target_os = "linux")]
+pub const PHP_OS: &str = "Linux";
+#[cfg(target_os = "macos")]
+pub const PHP_OS: &str = "Darwin";
+#[cfg(target_os = "freebsd")]
+pub const PHP_OS: &str = "FreeBSD";
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+pub const PHP_OS: &str = "Unknown";
+
+/// php's `PHP_OS_FAMILY` (`Linux`, `Darwin`, `BSD`, …).
+#[cfg(target_os = "linux")]
+pub const PHP_OS_FAMILY: &str = "Linux";
+#[cfg(target_os = "macos")]
+pub const PHP_OS_FAMILY: &str = "Darwin";
+#[cfg(target_os = "freebsd")]
+pub const PHP_OS_FAMILY: &str = "BSD";
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+pub const PHP_OS_FAMILY: &str = "Unknown";
+
 pub fn constants() -> Vec<(&'static str, Value)> {
     vec![
         ("PHP_EOL", Value::str("\n")),
@@ -558,9 +1272,20 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PHP_EXTRA_VERSION", Value::str("")),
         ("PHP_VERSION_ID", Value::Int(80508)),
         ("PHP_SAPI", Value::str("cli")),
-        ("PHP_BINARY", Value::str("/usr/bin/php")),
-        ("PHP_OS", Value::str("Darwin")),
-        ("PHP_OS_FAMILY", Value::str("Darwin")),
+        // php reports its own executable; so do we (composer spawns PHP_BINARY).
+        (
+            "PHP_BINARY",
+            Value::str(
+                std::env::current_exe()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            ),
+        ),
+        // php bakes in its build host's OS (uname -s) and family.
+        ("PHP_OS", Value::str(php_os().0)),
+        ("PHP_OS_FAMILY", Value::str(php_os().1)),
+        ("ZEND_THREAD_SAFE", Value::Bool(false)),
+        ("ZEND_DEBUG_BUILD", Value::Bool(false)),
         ("PHP_DEBUG", Value::Int(0)),
         ("PHP_ZTS", Value::Int(0)),
         ("PCRE_VERSION", Value::str("10.47 2025-10-21")),
@@ -605,6 +1330,9 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("FILE_NO_DEFAULT_CONTEXT", Value::Int(16)),
         ("FILE_TEXT", Value::Int(0)),
         ("FILE_BINARY", Value::Int(0)),
+        ("SEEK_SET", Value::Int(0)),
+        ("SEEK_CUR", Value::Int(1)),
+        ("SEEK_END", Value::Int(2)),
         ("LOCK_SH", Value::Int(1)),
         ("LOCK_EX", Value::Int(2)),
         ("LOCK_UN", Value::Int(3)),
@@ -621,6 +1349,11 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("LC_MONETARY", Value::Int(4)),
         ("LC_MESSAGES", Value::Int(5)),
         ("LC_ALL", Value::Int(6)),
+        ("INI_SCANNER_NORMAL", Value::Int(0)),
+        ("INI_SCANNER_RAW", Value::Int(1)),
+        ("INI_SCANNER_TYPED", Value::Int(2)),
+        ("PHP_QUERY_RFC1738", Value::Int(1)),
+        ("PHP_QUERY_RFC3986", Value::Int(2)),
         ("PHP_URL_SCHEME", Value::Int(0)),
         ("PHP_URL_HOST", Value::Int(1)),
         ("PHP_URL_PORT", Value::Int(2)),
@@ -634,6 +1367,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PATHINFO_EXTENSION", Value::Int(4)),
         ("PATHINFO_FILENAME", Value::Int(8)),
         ("PATHINFO_ALL", Value::Int(15)),
+        ("DEBUG_BACKTRACE_PROVIDE_OBJECT", Value::Int(1)),
+        ("DEBUG_BACKTRACE_IGNORE_ARGS", Value::Int(2)),
         ("E_ERROR", Value::Int(1)),
         ("E_PARSE", Value::Int(4)),
         ("E_CORE_ERROR", Value::Int(16)),
@@ -649,7 +1384,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("E_USER_DEPRECATED", Value::Int(16384)),
         ("NAN", Value::Float(f64::NAN)),
         ("INF", Value::Float(f64::INFINITY)),
-        ("E_ALL", Value::Int(32767)),
+        ("E_ALL", Value::Int(30719)),
         ("E_WARNING", Value::Int(2)),
         ("E_NOTICE", Value::Int(8)),
         ("COUNT_NORMAL", Value::Int(0)),
@@ -730,6 +1465,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     .into_iter()
     .chain(preg_fns::preg_constants())
     .chain(json_fns::json_constants())
+    .chain(info_fns::constants())
+    .chain(fs_fns::constants())
     // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with their module.
     .chain(ext::modules().into_iter().flat_map(|md| (md.constants)()))
     .collect()
@@ -740,6 +1477,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
 /// engine's own core classes.
 pub fn module_prelude() -> String {
     let mut s = String::new();
+    s.push_str(fs_fns::PRELUDE_PHP);
+    s.push('\n');
     for md in ext::modules() {
         if !md.prelude_php.is_empty() {
             s.push_str(md.prelude_php);
@@ -765,9 +1504,6 @@ pub fn is_refused(name: &str) -> Option<&'static str> {
         "extract" => Some("writes arbitrary variables into the local scope"),
         "compact" => Some("resolves variable names dynamically from strings"),
         "create_function" => Some("compiles a string into a function (eval-equivalent)"),
-        "exec" | "system" | "passthru" | "shell_exec" | "proc_open" | "popen" => {
-            Some("executes external shell commands")
-        }
         _ => None,
     }
 }
@@ -801,7 +1537,10 @@ fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    dump::var_export(&mut out, &args[0], 0);
+    let circular = dump::var_export(host, &mut out, &args[0], 1);
+    for _ in 0..circular {
+        host.emit_diagnostic(E_WARNING, "var_export does not handle circular references")?;
+    }
     let return_mode = args.get(1).map(conv::to_bool).unwrap_or(false);
     if return_mode {
         Ok(Value::str(out))
@@ -811,11 +1550,15 @@ fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-fn fn_gettype(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(deref(&args[0]).type_name()))
+fn fn_gettype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = deref(&args[0]);
+    if host.resource_closed(&v) {
+        return Ok(Value::str("resource (closed)"));
+    }
+    Ok(Value::str(v.type_name()))
 }
 
-fn fn_get_debug_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_get_debug_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = match deref(&args[0]) {
         Value::Null => "null",
         Value::Bool(_) => "bool",
@@ -824,8 +1567,19 @@ fn fn_get_debug_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         Value::Str(_) => "string",
         Value::Array(_) => "array",
         Value::Closure(_) => "Closure",
-        Value::Object(_) => "object",
-        Value::Resource(_) => "resource (stream)",
+        o @ Value::Object(_) => {
+            // php: the class name. An anonymous class is named
+            // `Prefix@anonymous\0file:line$n`; only the part before the NUL shows.
+            let cname = host.object_class_name(&o).unwrap_or_default();
+            let end = cname.iter().position(|&b| b == 0).unwrap_or(cname.len());
+            return Ok(Value::str(cname[..end].to_vec()));
+        }
+        ref v @ Value::Resource(ref r) => {
+            if host.resource_closed(v) {
+                return Ok(Value::str("resource (closed)"));
+            }
+            return Ok(Value::str(format!("resource ({})", r.type_name)));
+        }
         Value::Ref(_) => unreachable!(),
     };
     Ok(Value::str(name))
@@ -867,7 +1621,22 @@ fn fn_is_finite(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_is_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.is_callable_value(&args[0])))
+    Ok(Value::Bool(host.check_callable(&args[0])?.is_none()))
+}
+
+/// zpp's `f` check: "F(): Argument #N ($callback) must be a valid callback, …".
+pub fn require_callback(
+    host: &mut dyn Host,
+    func: &str,
+    n: usize,
+    callable: &Value,
+) -> Result<(), Thrown> {
+    match host.check_callable(callable)? {
+        None => Ok(()),
+        Some(why) => Err(Thrown::type_error(format!(
+            "{func}(): Argument #{n} ($callback) must be a valid callback, {why}"
+        ))),
+    }
 }
 
 fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -878,24 +1647,24 @@ fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// Resolve a constant by name: a class constant `Class::CONST` (incl. enum cases)
 /// or a global constant.
-fn resolve_const(host: &dyn Host, name: &[u8]) -> Option<Value> {
+fn resolve_const(host: &mut dyn Host, name: &[u8]) -> Result<Option<Value>, Thrown> {
     if let Some(pos) = find_sub(name, b"::") {
         let class = name[..pos].strip_prefix(b"\\").unwrap_or(&name[..pos]);
         let cname = &name[pos + 2..];
-        host.class_constant(class, cname)
+        host.class_constant_eval(class, cname)
     } else {
-        host.get_const(name)
+        Ok(host.get_const(name))
     }
 }
 
 fn fn_defined(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
-    Ok(Value::Bool(resolve_const(host, &name).is_some()))
+    Ok(Value::Bool(resolve_const(host, &name)?.is_some()))
 }
 
 fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
-    resolve_const(host, &name).ok_or_else(|| {
+    resolve_const(host, &name)?.ok_or_else(|| {
         Thrown::error(
             "Error",
             format!("Undefined constant \"{}\"", String::from_utf8_lossy(&name)),
@@ -910,6 +1679,12 @@ is_type!(
 fn fn_intval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
     let base = args.get(1).map(|b| conv::to_int(&deref(b))).unwrap_or(10);
+    // php's curl_cast_object: (int) of a CurlHandle is its object id.
+    if let Value::Object(h) = &v {
+        if is_curl_handle(&v) {
+            return Ok(Value::Int(h.borrow().id as i64));
+        }
+    }
     // `base` applies only to a string argument; base 10 is plain integer conversion.
     if base == 10 {
         return Ok(Value::Int(conv::to_int(&v)));
@@ -1054,37 +1829,123 @@ fn fn_abs(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-fn fn_max(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    extremum(args, true)
+fn fn_max(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    extremum(host, args, true)
 }
-fn fn_min(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    extremum(args, false)
+fn fn_min(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    extremum(host, args, false)
 }
 
-fn extremum(args: &[Value], want_max: bool) -> Result<Value, Thrown> {
-    // max(array) / max(a, b, ...). Comparison uses loose ordering via conv.
-    let items: Vec<Value> = if args.len() == 1 {
-        match deref(&args[0]) {
-            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
-            other => vec![other],
+/// `(double)l` converts back to `l` exactly (`zend_dval_to_lval_silent`).
+fn long_is_exact_double(l: i64) -> bool {
+    let d = l as f64;
+    (-(2f64.powi(63))..2f64.powi(63)).contains(&d) && d as i64 == l
+}
+
+/// php's `min`/`max`: the array form (`zend_hash_minmax`), the two-argument
+/// frameless form, and the variadic loop with its long/double fast paths.
+fn extremum(host: &mut dyn Host, args: &[Value], want_max: bool) -> Result<Value, Thrown> {
+    use std::cmp::Ordering;
+    let name = if want_max { "max" } else { "min" };
+    let args: Vec<Value> = args.iter().map(deref).collect();
+    if args.len() == 1 {
+        let Value::Array(a) = &args[0] else {
+            return Err(Thrown::type_error(format!(
+                "{name}(): Argument #1 ($value) must be of type array, {} given",
+                type_name_of(host, &args[0])
+            )));
+        };
+        let mut it = a.iter().map(|(_, v)| deref(v));
+        let Some(mut res) = it.next() else {
+            return Err(Thrown::error(
+                "ValueError",
+                format!("{name}(): Argument #1 ($value) must contain at least one element"),
+            ));
+        };
+        for zv in it {
+            let c = host_compare(host, &res, &zv)?;
+            if (want_max && c == Ordering::Less) || (!want_max && c == Ordering::Greater) {
+                res = zv;
+            }
         }
-    } else {
-        args.to_vec()
+        return Ok(res);
+    }
+    if args.len() == 2 {
+        // ZEND_FRAMELESS_FUNCTION(min|max, 2)
+        let (lhs, rhs) = (&args[0], &args[1]);
+        let pick = |keep_lhs: bool| if keep_lhs { lhs.clone() } else { rhs.clone() };
+        let dbl = |l: f64, r: f64| if want_max { l >= r } else { l < r };
+        return Ok(match (lhs, rhs) {
+            (Value::Int(l), Value::Int(r)) => pick(if want_max { l >= r } else { l < r }),
+            (Value::Int(l), Value::Float(r)) if long_is_exact_double(*l) => {
+                pick(dbl(*l as f64, *r))
+            }
+            (Value::Float(l), Value::Float(r)) => pick(dbl(*l, *r)),
+            (Value::Float(l), Value::Int(r)) if long_is_exact_double(*r) => {
+                pick(dbl(*l, *r as f64))
+            }
+            _ => {
+                let c = host_compare(host, lhs, rhs)?;
+                pick(if want_max {
+                    c != Ordering::Less
+                } else {
+                    c == Ordering::Less
+                })
+            }
+        });
+    }
+    #[derive(PartialEq)]
+    enum Mode {
+        Long(i64),
+        Double(f64),
+        Generic,
+    }
+    let mut best = 0usize;
+    let mut mode = match &args[0] {
+        Value::Int(l) => Mode::Long(*l),
+        Value::Float(d) => Mode::Double(*d),
+        _ => Mode::Generic,
     };
-    if items.is_empty() {
-        return Err(Thrown::type_error(
-            "max(): Argument #1 ($value) must contain at least one element",
-        ));
-    }
-    let mut best = items[0].clone();
-    for v in &items[1..] {
-        // PHP max/min use the standard loose comparison.
-        let gt = ops::loose_compare(v, &best).is_gt();
-        if gt == want_max {
-            best = v.clone();
+    let better_d = |cur: f64, v: f64| if want_max { cur < v } else { cur > v };
+    for i in 1..args.len() {
+        if let Mode::Long(cur) = mode {
+            match &args[i] {
+                Value::Int(v) => {
+                    if (want_max && cur < *v) || (!want_max && cur > *v) {
+                        mode = Mode::Long(*v);
+                        best = i;
+                    }
+                    continue;
+                }
+                Value::Float(_) if long_is_exact_double(cur) => mode = Mode::Double(cur as f64),
+                _ => mode = Mode::Generic,
+            }
+        }
+        if let Mode::Double(cur) = mode {
+            match &args[i] {
+                Value::Float(v) => {
+                    if better_d(cur, *v) {
+                        mode = Mode::Double(*v);
+                        best = i;
+                    }
+                    continue;
+                }
+                Value::Int(v) if long_is_exact_double(*v) => {
+                    if better_d(cur, *v as f64) {
+                        mode = Mode::Double(*v as f64);
+                        best = i;
+                    }
+                    continue;
+                }
+                _ => mode = Mode::Generic,
+            }
+        }
+        let c = host_compare(host, &args[i], &args[best])?;
+        if (want_max && c == Ordering::Greater) || (!want_max && c == Ordering::Less) {
+            best = i;
         }
     }
-    Ok(best)
+    Ok(args[best].clone())
 }
 
 fn fn_array_sum(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1113,7 +1974,7 @@ fn fn_array_product(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(acc)
 }
 
-fn fn_array_keys(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_array_keys(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Value::Array(a) = deref(&args[0]) else {
         return Err(Thrown::type_error(
             "array_keys(): Argument #1 ($array) must be of type array",
@@ -1138,7 +1999,7 @@ fn fn_array_keys(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 if strict {
                     ops::strict_eq(&deref(v), needle)
                 } else {
-                    ops::loose_eq(&deref(v), needle)
+                    host_loose_eq(host, &deref(v), needle)?
                 }
             }
         };
@@ -1181,7 +2042,7 @@ fn fn_array_merge(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(out))
 }
 
-fn key_to_value(k: &rhp_values::ArrayKey) -> Value {
+pub(crate) fn key_to_value(k: &rhp_values::ArrayKey) -> Value {
     match k {
         rhp_values::ArrayKey::Int(n) => Value::Int(*n),
         rhp_values::ArrayKey::Str(s) => Value::Str(s.clone()),
@@ -1277,13 +2138,31 @@ fn fn_array_reduce(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 }
 
 fn fn_call_user_func(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    require_callback(host, "call_user_func", 1, &args[0])?;
     host.call_callable(&args[0], &args[1..])
 }
 
 fn fn_call_user_func_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    require_callback(host, "call_user_func_array", 1, &args[0])?;
     let params = as_array(&args[1], "call_user_func_array")?;
-    let argv: Vec<Value> = params.iter().map(|(_, v)| v.clone()).collect();
-    host.call_callable(&args[0], &argv)
+    let mut argv: Vec<Value> = Vec::new();
+    let mut named: Vec<(rhp_values::PhpStr, Value)> = Vec::new();
+    for (k, v) in params.iter() {
+        match k {
+            rhp_values::ArrayKey::Int(_) if !named.is_empty() => {
+                return Err(Thrown::error(
+                    "Error",
+                    "Cannot use positional argument after named argument",
+                ))
+            }
+            rhp_values::ArrayKey::Int(_) => argv.push(v.clone()),
+            rhp_values::ArrayKey::Str(s) => named.push((s.clone(), v.clone())),
+        }
+    }
+    if named.is_empty() {
+        return host.call_callable(&args[0], &argv);
+    }
+    host.call_callable_named(&args[0], &argv, named)
 }
 
 fn fn_array_reverse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1342,7 +2221,7 @@ fn fn_range(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(out))
 }
 
-fn fn_in_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_in_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let needle = deref(&args[0]);
     let Value::Array(a) = deref(&args[1]) else {
         return Err(Thrown::type_error(
@@ -1350,14 +2229,17 @@ fn fn_in_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         ));
     };
     let strict = args.get(2).map(conv::to_bool).unwrap_or(false);
-    let found = a.iter().any(|(_, v)| {
-        if strict {
+    for (_, v) in a.iter() {
+        let hit = if strict {
             ops::strict_eq(&needle, v)
         } else {
-            ops::loose_eq(&needle, v)
+            host_loose_eq(host, &needle, v)?
+        };
+        if hit {
+            return Ok(Value::Bool(true));
         }
-    });
-    Ok(Value::Bool(found))
+    }
+    Ok(Value::Bool(false))
 }
 
 fn fn_array_key_exists(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1489,12 +2371,20 @@ fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// Class name of an `is_a`/`is_subclass_of` subject: an object's class, or the
 /// string itself when `allow_string`.
-fn subject_class(host: &dyn Host, subject: &Value, allow_string: bool) -> Option<Vec<u8>> {
-    match subject {
+/// A string subject is looked up with autoloading (zend_lookup_class).
+fn subject_class(
+    host: &mut dyn Host,
+    subject: &Value,
+    allow_string: bool,
+) -> Result<Option<Vec<u8>>, Thrown> {
+    Ok(match subject {
         Value::Object(h) => host.class_name(h.borrow().class),
-        Value::Str(s) if allow_string => Some(s.as_bytes().to_vec()),
+        Value::Str(s) if allow_string => {
+            host.resolve_class_autoload(s.as_bytes())?;
+            Some(s.as_bytes().to_vec())
+        }
         _ => None,
-    }
+    })
 }
 
 fn norm_class(n: &[u8]) -> Vec<u8> {
@@ -1508,7 +2398,7 @@ fn fn_is_a(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .get(2)
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(false);
-    match subject_class(host, &subject, allow_string) {
+    match subject_class(host, &subject, allow_string)? {
         Some(n) => Ok(Value::Bool(host.reflect_is_a(&n, &target))),
         None => Ok(Value::Bool(false)),
     }
@@ -1521,7 +2411,7 @@ fn fn_is_subclass_of(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
         .get(2)
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(true);
-    match subject_class(host, &subject, allow_string) {
+    match subject_class(host, &subject, allow_string)? {
         Some(n) => {
             // Subtype but NOT the same class (is_subclass_of is exclusive).
             let same = norm_class(&n) == norm_class(&target);
@@ -1540,23 +2430,39 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
                 .map(Value::str)
                 .unwrap_or(Value::Bool(false)))
         }
-        _ => Ok(Value::Bool(false)),
+        Some(v @ Value::Str(_)) => {
+            let name = conv::to_string_bytes(&v);
+            match host.resolve_class_autoload(&name)? {
+                Some(cid) => Ok(host
+                    .class_parent_name(cid)
+                    .map(Value::str)
+                    .unwrap_or(Value::Bool(false))),
+                None => Err(Thrown::type_error(
+                    "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, string given",
+                )),
+            }
+        }
+        None => Ok(Value::Bool(false)),
+        Some(other) => Err(Thrown::type_error(format!(
+            "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, {} given",
+            argparse::value_name(host, &other)
+        ))),
     }
 }
 
 /// Resolve the class id named by an argument: an object yields its own class,
 /// a string resolves via the host's class table.
-fn class_id_of(host: &dyn Host, v: &Value) -> Option<u32> {
-    match deref(v) {
+fn class_id_of(host: &mut dyn Host, v: &Value) -> Result<Option<u32>, Thrown> {
+    Ok(match deref(v) {
         Value::Object(h) => Some(h.borrow().class),
-        Value::Str(s) => host.resolve_class(s.as_bytes()),
+        Value::Str(s) => host.resolve_class_autoload(s.as_bytes())?,
         _ => None,
-    }
+    })
 }
 
 fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let method = conv::to_string_bytes(&deref(&args[1]));
-    let found = class_id_of(host, &args[0])
+    let found = class_id_of(host, &args[0])?
         .map(|cid| host.class_has_method(cid, &method))
         .unwrap_or(false);
     Ok(Value::Bool(found))
@@ -1568,15 +2474,12 @@ fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
         Value::Object(h) => {
             let cid = h.borrow().class;
             // An object matches on a declared member (instance or static) OR a
-            // dynamically-set instance property.
-            let dynamic = h
-                .borrow()
-                .properties
-                .contains_key(&rhp_values::PhpStr::from_bytes(prop.clone()));
-            dynamic || host.class_has_property(cid, &prop)
+            // property reachable and set from the calling scope.
+            host.class_has_property(cid, &prop)
+                || host.object_prop_exists(&Value::Object(h.clone()), &prop)
         }
         Value::Str(s) => host
-            .resolve_class(s.as_bytes())
+            .resolve_class_autoload(s.as_bytes())?
             .map(|cid| host.class_has_property(cid, &prop))
             .unwrap_or(false),
         _ => false,
@@ -1590,7 +2493,7 @@ fn exists_of_kind(
     host: &mut dyn Host,
     args: &[Value],
     want: fn(rhp_values::ClassKind) -> bool,
-) -> bool {
+) -> Result<bool, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
     // `$autoload` defaults to true: a miss triggers registered autoloaders.
     let autoload = args
@@ -1598,13 +2501,14 @@ fn exists_of_kind(
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(true);
     let cid = if autoload {
-        host.resolve_class_autoload(&name)
+        host.resolve_class_autoload(&name)?
     } else {
         host.resolve_class(&name)
     };
-    cid.and_then(|cid| host.class_kind(cid))
+    Ok(cid
+        .and_then(|cid| host.class_kind(cid))
         .map(want)
-        .unwrap_or(false)
+        .unwrap_or(false))
 }
 
 fn fn_class_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1612,21 +2516,21 @@ fn fn_class_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     // Enums are classes too (`class_exists` is true for an enum name).
     Ok(Value::Bool(exists_of_kind(host, args, |k| {
         matches!(k, ClassKind::Class | ClassKind::Enum)
-    })))
+    })?))
 }
 
 fn fn_interface_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use rhp_values::ClassKind;
     Ok(Value::Bool(exists_of_kind(host, args, |k| {
         k == ClassKind::Interface
-    })))
+    })?))
 }
 
 fn fn_enum_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use rhp_values::ClassKind;
     Ok(Value::Bool(exists_of_kind(host, args, |k| {
         k == ClassKind::Enum
-    })))
+    })?))
 }
 
 /// `iterator_to_array($iterable, $preserve_keys = true)`. Only a plain array is
@@ -1657,9 +2561,12 @@ fn fn_iterator_to_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     }
 }
 
-fn fn_get_object_vars(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_get_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match deref(&args[0]) {
         Value::Object(h) => {
+            if let Some(v) = host.object_vars(&args[0]) {
+                return Ok(v);
+            }
             let mut arr = PhpArray::new();
             for (k, v) in h.borrow().properties.iter() {
                 arr.insert(rhp_values::ArrayKey::Str(k.clone()), v.clone());
@@ -1670,6 +2577,56 @@ fn fn_get_object_vars(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             "get_object_vars(): Argument #1 must be of type object",
         )),
     }
+}
+
+/// `get_mangled_object_vars()`: the property table under php's mangled
+/// names, ignoring scope and the class's property hooks.
+fn fn_get_mangled_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match deref(&args[0]) {
+        Value::Object(h) => Ok(Value::Array(host.object_props_mangled(&h))),
+        v => Err(Thrown::type_error(format!(
+            "get_mangled_object_vars(): Argument #1 ($object) must be of type object, {} given",
+            v.type_name()
+        ))),
+    }
+}
+
+/// php's `spl_array` property hook: an ArrayObject / ArrayIterator (or a
+/// subclass) without `STD_PROP_LIST` presents its storage array as its
+/// properties to `(array)`, `var_export` and `json_encode`. Returns the
+/// storage and the base class (`ArrayObject` / `ArrayIterator`) that owns it.
+pub fn spl_array_storage(h: &rhp_values::ObjectHandle) -> Option<(Value, &'static str)> {
+    let b = h.borrow();
+    for base in ["ArrayObject", "ArrayIterator"] {
+        let key = |n: &str| rhp_values::PhpStr::from(format!("\0{base}\0{n}").as_str());
+        if let Some(s) = b.properties.get(&key("__s")) {
+            let flags = b
+                .properties
+                .get(&key("__f"))
+                .map(|f| conv::to_int(&deref(f)));
+            if flags.unwrap_or(0) & 1 != 0 {
+                return None;
+            }
+            return Some((deref(s), base));
+        }
+    }
+    None
+}
+
+/// php's `spl_array` debug info: the regular properties plus the storage as
+/// a private `storage` property of the base class (`var_dump`/`print_r`).
+pub fn spl_array_debug_storage(
+    h: &rhp_values::ObjectHandle,
+) -> Option<(rhp_values::PhpStr, Value)> {
+    let b = h.borrow();
+    for base in ["ArrayObject", "ArrayIterator"] {
+        let key = rhp_values::PhpStr::from(format!("\0{base}\0__s").as_str());
+        if let Some(s) = b.properties.get(&key) {
+            let name = rhp_values::PhpStr::from(format!("\0{base}\0storage").as_str());
+            return Some((name, deref(s)));
+        }
+    }
+    None
 }
 
 fn fn_ord(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1699,5 +2656,55 @@ impl TypeNameLower for Value {
             Value::Resource(_) => "resource",
             Value::Ref(r) => r.borrow().type_name_lower(),
         }
+    }
+}
+
+/// `zend_zval_value_name`: the class name for objects, `true`/`false` for
+/// bools, else the type name.
+pub fn type_name_of(host: &dyn Host, v: &Value) -> String {
+    match deref(v) {
+        Value::Bool(true) => "true".into(),
+        Value::Bool(false) => "false".into(),
+        Value::Closure(_) => "Closure".into(),
+        o @ Value::Object(_) => host
+            .object_class_name(&o)
+            .map(|n| String::from_utf8_lossy(&n).into_owned())
+            .unwrap_or_else(|| "object".into()),
+        other => other.type_name_lower().into(),
+    }
+}
+
+/// A host that records diagnostics the way php displays them
+/// (`Warning: f(): msg`), for unit-testing the sites that emit them.
+#[cfg(test)]
+pub(crate) mod diag_test {
+    use super::{Host, Thrown, Value};
+
+    #[derive(Default)]
+    pub struct DiagHost {
+        pub out: Vec<u8>,
+        pub diags: Vec<String>,
+    }
+
+    impl Host for DiagHost {
+        fn write_out(&mut self, bytes: &[u8]) {
+            self.out.extend_from_slice(bytes);
+        }
+        fn raise_diagnostic(&mut self, level: i64, message: &str) {
+            let kind = match level {
+                super::E_WARNING => "Warning",
+                super::E_NOTICE => "Notice",
+                super::E_DEPRECATED => "Deprecated",
+                _ => "Unknown",
+            };
+            self.diags.push(format!("{kind}: {message}"));
+        }
+    }
+
+    /// Call `f`, returning its result and the diagnostics it emitted.
+    pub fn run(f: crate::NativeFn, args: &[Value]) -> (Result<Value, Thrown>, Vec<String>) {
+        let mut h = DiagHost::default();
+        let r = f(&mut h, args);
+        (r, h.diags)
     }
 }

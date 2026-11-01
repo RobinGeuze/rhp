@@ -1,0 +1,17 @@
+outer: first
+nested: after set in handler
+nested: second
+
+Notice: third in F on line 15
+[8192] Constant E_STRICT is deprecated since 8.4, the error level was removed
+2048
+[8] Object of class stdClass could not be converted to int
+2
+caught: Object of class stdClass could not be converted to int
+usort(): Argument #1 ($array) must be of type array, null given
+array_push(): Argument #1 ($array) must be of type array, string given
+[date] PHP Warning:  logged in F on line 26
+<br />
+<b>Warning</b>:  html <b> in <b>F</b> on line <b>30</b><br />
+bool(false)
+string(0) ""

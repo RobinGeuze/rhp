@@ -1,0 +1,23 @@
+load X
+bool(false)
+bool(false)
+load X
+bool(false)
+bool(false)
+load Dep
+bool(false)
+inner: Class "Dep" not found
+outer: Class "Dep" not found
+load Dep
+bool(false)
+inner: Class "Dep" not found
+outer: Class "Dep" not found
+load Y
+bool(false)
+bool(false)
+load Z
+bool(false)
+bool(false)
+load Missing
+bool(false)
+Class "Missing" not found

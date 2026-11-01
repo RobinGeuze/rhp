@@ -29,6 +29,35 @@ fn key_to_value(k: &ArrayKey) -> Value {
 
 /// Compare two values honouring a `SORT_*` flag (default: PHP loose compare).
 /// The `SORT_FLAG_CASE` bit folds ASCII case for the string/natural kinds.
+/// [`cmp_flagged`] with the engine's comparison context (notices such as
+/// "Object of class X could not be converted to int", `__toString`): the
+/// first exception (e.g. from a throwing error handler) is kept in `err` and
+/// the remaining comparisons are skipped.
+fn cmp_flagged_cx(
+    host: &mut dyn Host,
+    a: &Value,
+    b: &Value,
+    flags: i64,
+    err: &mut Option<Thrown>,
+) -> Ordering {
+    if err.is_some() {
+        return Ordering::Equal;
+    }
+    if flags & !SORT_FLAG_CASE & 0xff != 0 {
+        return cmp_flagged(a, b, flags);
+    }
+    match host.compare_cx() {
+        Some(cx) => match ops::compare(a, b, cx) {
+            Ok(o) => o,
+            Err(t) => {
+                *err = Some(t);
+                Ordering::Equal
+            }
+        },
+        None => cmp_flagged(a, b, flags),
+    }
+}
+
 fn cmp_flagged(a: &Value, b: &Value, flags: i64) -> Ordering {
     let fold_case = flags & SORT_FLAG_CASE != 0;
     // Strip the case bit before selecting the base comparison kind.
@@ -98,67 +127,79 @@ fn flags_arg(args: &[Value], i: usize) -> i64 {
 
 // -- value sorts (reindex keys) -------------------------------------------
 
-fn sort_values(args: &[Value], reverse: bool) -> Value {
+fn sort_values(host: &mut dyn Host, args: &[Value], reverse: bool) -> Result<Value, Thrown> {
     let Some(entries) = snapshot(&args[0]) else {
-        return Value::Bool(false);
+        return Ok(Value::Bool(false));
     };
     let flags = flags_arg(args, 1);
     let mut vals: Vec<Value> = entries.into_iter().map(|(_, v)| v).collect();
+    let mut err = None;
     vals.sort_by(|a, b| {
-        let o = cmp_flagged(a, b, flags);
+        let o = cmp_flagged_cx(host, a, b, flags, &mut err);
         if reverse {
             o.reverse()
         } else {
             o
         }
     });
+    if let Some(t) = err.or_else(|| host.take_pending_throw()) {
+        return Err(t);
+    }
     store(&args[0], reindex(vals));
-    Value::Bool(true)
+    Ok(Value::Bool(true))
 }
 
-fn fn_sort(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(sort_values(args, false))
+fn fn_sort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    sort_values(host, args, false)
 }
 
-fn fn_rsort(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(sort_values(args, true))
+fn fn_rsort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    sort_values(host, args, true)
 }
 
 // -- associative sorts (preserve keys) ------------------------------------
 
-fn asort_impl(args: &[Value], reverse: bool, by_key: bool) -> Value {
+fn asort_impl(
+    host: &mut dyn Host,
+    args: &[Value],
+    reverse: bool,
+    by_key: bool,
+) -> Result<Value, Thrown> {
     let Some(mut pairs) = snapshot(&args[0]) else {
-        return Value::Bool(false);
+        return Ok(Value::Bool(false));
     };
     let flags = flags_arg(args, 1);
+    let mut err = None;
     pairs.sort_by(|a, b| {
-        let (x, y) = if by_key {
-            (key_to_value(&a.0), key_to_value(&b.0))
+        let o = if by_key {
+            cmp_flagged(&key_to_value(&a.0), &key_to_value(&b.0), flags)
         } else {
-            (a.1.clone(), b.1.clone())
+            cmp_flagged_cx(host, &a.1, &b.1, flags, &mut err)
         };
-        let o = cmp_flagged(&x, &y, flags);
         if reverse {
             o.reverse()
         } else {
             o
         }
     });
+    if let Some(t) = err.or_else(|| host.take_pending_throw()) {
+        return Err(t);
+    }
     store(&args[0], from_pairs(pairs));
-    Value::Bool(true)
+    Ok(Value::Bool(true))
 }
 
-fn fn_asort(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(asort_impl(args, false, false))
+fn fn_asort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    asort_impl(host, args, false, false)
 }
-fn fn_arsort(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(asort_impl(args, true, false))
+fn fn_arsort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    asort_impl(host, args, true, false)
 }
-fn fn_ksort(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(asort_impl(args, false, true))
+fn fn_ksort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    asort_impl(host, args, false, true)
 }
-fn fn_krsort(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(asort_impl(args, true, true))
+fn fn_krsort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    asort_impl(host, args, true, true)
 }
 
 // -- user-comparator sorts ------------------------------------------------

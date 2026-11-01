@@ -1,0 +1,47 @@
+int(3)
+int(5)
+int(5)
+int(10)
+int(0)
+int(0)
+int(9)
+int(0)
+int(0)
+int(50)
+string(17) "23456789123456789"
+int(0)
+int(0)
+int(2)
+int(3)
+TypeError: stream_copy_to_stream(): Argument #2 ($to) must be of type resource, string given
+TypeError: stream_copy_to_stream(): Argument #1 ($from) must be an open stream resource
+string(4) "3456"
+string(3) "789"
+string(0) ""
+string(0) ""
+bool(false)
+string(2) "01"
+string(0) ""
+string(8) "23456789"
+ValueError: file_get_contents(): Argument #5 ($length) must be greater than or equal to 0
+int(6)
+string(6) "456789"
+int(10)
+int(0)
+string(6) "456789"
+int(10)
+string(16) "4567890123456789"
+int(6)
+string(6) "memory"
+TypeError: file_put_contents(): supplied resource is not a valid stream resource
+int(4)
+int(3)
+string(10) "abc5-x
+[y]"
+TypeError: fprintf(): Argument #1 ($stream) must be of type resource, string given
+TypeError: vfprintf(): Argument #1 ($stream) must be of type resource, int given
+TypeError: fprintf(): Argument #1 ($stream) must be an open stream resource
+int(8)
+string(8) "003.1|ff"
+to stdout ok
+int(13)

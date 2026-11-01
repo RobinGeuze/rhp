@@ -1,0 +1,59 @@
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+int(1)
+array(2) {
+  [0]=>
+  int(0)
+  [1]=>
+  int(2)
+}
+bool(true)
+8 Object of class A could not be converted to int
+bool(false)
+bool(true)
+bool(true)
+Object of class A could not be converted to int
+NULL
+bool(false)
+bool(true)
+int(1)
+int(-1)
+bool(false)
+bool(false)
+int(1)
+int(-1)
+bool(true)
+bool(false)
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+bool(false)
+bool(false)
+Object of class Closure could not be converted to int
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+int(-1)
+int(0)
+ValueError: Number is not an integer string
+bool(false)
+TypeError: Number must be of type GMP|string|int, array given
+bool(true)
+bool(true)
+int(1)
+Error: Nesting level too deep - recursive dependency?
+Error: Nesting level too deep - recursive dependency?
+Error: Nesting level too deep - recursive dependency?
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+still running

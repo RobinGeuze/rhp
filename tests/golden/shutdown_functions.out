@@ -1,0 +1,16 @@
+NULL
+register_shutdown_function(): Argument #1 ($callback) must be a valid callback, function "nofn" not found or invalid function name
+register_shutdown_function(): Argument #1 ($callback) must be a valid callback, class "NoClass" not found
+register_shutdown_function(): Argument #1 ($callback) must be a valid callback, class stdClass does not have a method "nomethod"
+register_shutdown_function(): Argument #1 ($callback) must be a valid callback, array callback must have exactly two members
+register_shutdown_function(): Argument #1 ($callback) must be a valid callback, no array or string given
+register_shutdown_function(): Argument #1 ($callback) must be a valid callback, class "A" not found
+still buffered at exit
+nested buffer
+end of script
+first x y level=2
+printf arg
+K::st 1
+m
+K::st 2
+registered during shutdown

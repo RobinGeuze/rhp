@@ -1,0 +1,37 @@
+array(2) {
+  [0]=>
+  string(17) "pkg/composer.json"
+  [1]=>
+  string(13) "pkg/lib/x.php"
+}
+dist.tar.gz
+dist.tar.bz2
+bool(true)
+int(4)
+bool(false)
+bool(true)
+bool(true)
+pkg pkg true
+{"name":"a/b"}
+bool(true)
+int(4)
+bool(false)
+bool(true)
+bool(true)
+pkg pkg true
+{"name":"a/b"}
+bool(true)
+int(4)
+bool(false)
+bool(true)
+bool(true)
+pkg pkg true
+{"name":"a/b"}
+.,..,README,composer.json,lib
+<?php
+PharException: Extraction from phar "D/dist.tar.gz" failed: Cannot extract "pkg/composer.json" to "D/out/pkg/composer.json", path already exists
+BadMethodCallException: Entry nope does not exist
+phar error: Cannot retrieve contents, "pkg" in phar "D/dist.tar.gz" is a directory
+bool(true)
+bool(true)
+bool(false)

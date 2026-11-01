@@ -10,17 +10,25 @@
 use crate::module::{no_constants, no_wrappers, ModuleDef};
 
 pub mod bcmath;
+pub mod bz2;
 pub mod ctype;
+pub mod curl;
 pub mod gmp;
 pub mod hash;
+pub mod iconv;
+pub mod intl;
 pub mod mbstring;
 pub mod openssl;
 pub mod password;
+pub mod pcntl;
 pub mod phar;
+pub mod posix;
 pub mod reflection;
 pub mod spl;
+pub mod tokenizer;
 pub mod zip;
 pub mod zlib;
+pub mod zpp;
 
 /// Every discrete extension, in registration order.
 pub fn modules() -> Vec<ModuleDef> {
@@ -89,16 +97,51 @@ pub fn modules() -> Vec<ModuleDef> {
             wrappers: no_wrappers,
         },
         ModuleDef {
+            name: "bz2",
+            functions: bz2::register,
+            constants: no_constants,
+            prelude_php: "",
+            wrappers: bz2::wrappers,
+        },
+        ModuleDef {
+            name: "tokenizer",
+            functions: tokenizer::register,
+            constants: tokenizer::constants,
+            prelude_php: tokenizer::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
             name: "zlib",
             functions: zlib::register,
             constants: zlib::constants,
             prelude_php: "",
+            wrappers: zlib::wrappers,
+        },
+        ModuleDef {
+            name: "curl",
+            functions: curl::register,
+            constants: curl::constants,
+            prelude_php: curl::PRELUDE_PHP,
             wrappers: no_wrappers,
         },
         ModuleDef {
             name: "openssl",
             functions: openssl::register,
             constants: openssl::constants,
+            prelude_php: openssl::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "intl",
+            functions: intl::register,
+            constants: intl::constants,
+            prelude_php: intl::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "iconv",
+            functions: iconv::register,
+            constants: iconv::constants,
             prelude_php: "",
             wrappers: no_wrappers,
         },
@@ -108,6 +151,20 @@ pub fn modules() -> Vec<ModuleDef> {
             constants: no_constants,
             prelude_php: phar::PRELUDE_PHP,
             wrappers: phar::wrappers,
+        },
+        ModuleDef {
+            name: "posix",
+            functions: posix::register,
+            constants: posix::constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "pcntl",
+            functions: pcntl::register,
+            constants: pcntl::constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
         },
     ]
 }

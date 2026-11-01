@@ -1,0 +1,14 @@
+finally ran
+caught c 
+a
+inner caught
+fin
+outer a NULL
+f
+1
+fin1
+fin2
+LogicException
+RuntimeException:three <- Exception:two <- Exception:one
+Exception:p2 <- LogicException:own <- Exception:p1
+Exception:keep

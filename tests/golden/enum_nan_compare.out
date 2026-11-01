@@ -1,0 +1,90 @@
+bool(false)
+bool(false)
+int(1)
+int(1)
+bool(true)
+int(0)
+bool(false)
+bool(false)
+bool(false)
+int(1)
+bool(false)
+bool(false)
+int(1)
+bool(true)
+bool(false)
+bool(false)
+int(2)
+array(3) {
+  [0]=>
+  int(1)
+  [2]=>
+  int(2)
+  [4]=>
+  string(1) "a"
+}
+array(2) {
+  [0]=>
+  string(2) "10"
+  [3]=>
+  string(1) "x"
+}
+int(1)
+int(1)
+bool(false)
+string(2) "B2"
+string(2) "A2"
+string(2) "B2"
+string(2) "A2"
+bool(false)
+int(1)
+int(1)
+bool(false)
+bool(true)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+int(1)
+float(NAN)
+int(1)
+float(NAN)
+float(NAN)
+int(1)
+int(2)
+float(NAN)
+bool(true)
+bool(true)
+bool(false)
+bool(false)
+int(1)
+int(1)
+bool(false)
+int(1)
+bool(true)
+bool(true)
+int(-1)
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+float(2)
+float(2)
+float(1)
+string(6) "banana"
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(3)
+}
+string(2) "10"
+float(9.2E+18)
+max(): Argument #1 ($value) must be of type array, int given
+min(): Argument #1 ($value) must contain at least one element
+int(-1)
+int(1)
+int(1)
+int(1)
+bool(false)

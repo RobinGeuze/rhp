@@ -1,0 +1,53 @@
+int(2)
+int(0)
+int(1)
+int(3)
+int(1)
+string(2) "é"
+string(0) ""
+string(0) ""
+string(2) "ef"
+string(3) "bcd"
+string(2) "ab"
+string(0) ""
+string(3) "ñb"
+string(4) "74e9"
+int(2)
+bool(false)
+int(1)
+int(2)
+bool(false)
+int(1)
+int(3)
+int(2)
+int(6)
+bool(false)
+bool(false)
+bool(false)
+int(3)
+int(2)
+bool(false)
+int(2)
+bool(false)
+int(1)
+iconv_strpos(): Argument #3 ($offset) must be contained in argument #1 ($haystack)
+iconv_strpos(): Argument #3 ($offset) must be contained in argument #1 ($haystack)
+bool(false)
+string(26) "Subject: Prüfung Prüfung"
+string(13) "André Pirard"
+string(8) "a x yz b"
+string(15) "=?UTF-8?X?abc?="
+string(15) "=?FOO?Q?abc?= x"
+string(12) "plain folded"
+string(2) "e9"
+string(18) "=?utf-8?q?a=3Db?=x"
+string(4) "a=bx"
+string(4) "abc "
+string(3) "xhi"
+string(1) "A"
+string(5) "Hello"
+string(14) "one	two  three"
+string(10) "soft break"
+string(7) "barecr"
+int(1)
+int(2)

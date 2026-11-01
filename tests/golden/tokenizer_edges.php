@@ -1,0 +1,3 @@
+<?php
+$cases = ["<?php __halt_compiler();\nfoo", "<?php __halt_compiler()\n;\nx", "<?php __halt_compiler ( ) ; \n\nrest", "<?php\n__halt_compiler\n(\n)\n;\nX\nY", "<?php __halt_compiler() ?>\nhtml", "<?php __halt_compiler(); ?>\nhtml", "<?php __halt_compiler", "<?php __halt_compiler(", "<?php __halt_compiler(/*c\n*/);z", "<?php __halt_compiler()\n?>\nq", "<?php yield from", "<?php yield  from", "<?php yield\nfrom", "<?php yield fromx", "<?php yield /* */ from;"];
+foreach ($cases as $c) { foreach (token_get_all($c) as $t) { echo is_array($t) ? token_name($t[0]) . "@" . $t[2] . ":" . json_encode($t[1]) : json_encode($t); echo " "; } echo "\n"; }

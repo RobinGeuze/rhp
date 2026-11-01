@@ -1,0 +1,51 @@
+string(1) "A"
+string(1) "A"
+string(1) "A"
+array(1) {
+  ["A"]=>
+  int(1)
+}
+array(7) {
+  [0]=>
+  string(1) "A"
+  [1]=>
+  string(1) "A"
+  [2]=>
+  string(1) "A"
+  [3]=>
+  string(1) "T"
+  [4]=>
+  string(4) "T::f"
+  [5]=>
+  string(1) "A"
+  [6]=>
+  string(1) "A"
+}
+string(1) "B"
+string(1) "B"
+string(1) "B"
+array(7) {
+  [0]=>
+  string(1) "B"
+  [1]=>
+  string(1) "B"
+  [2]=>
+  string(1) "B"
+  [3]=>
+  string(1) "T"
+  [4]=>
+  string(4) "T::f"
+  [5]=>
+  string(1) "B"
+  [6]=>
+  string(1) "B"
+}
+string(1) "B"
+string(1) "A"
+string(1) "A"
+string(1) "A"
+string(1) "A"
+1213
+A1B1A2A3
+123
+12

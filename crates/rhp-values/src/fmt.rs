@@ -16,14 +16,50 @@
 //! These are pure numeric→bytes helpers (no PHP value logic), kept here so both
 //! the VM, the oracle (echo), and `rhp-builtins` (var_dump) can share them.
 
-/// Format a float the way `echo`/`(string)` does: `precision = 14`.
-pub fn float_echo(f: f64) -> Vec<u8> {
-    gcvt(f, Mode::Precision(14))
+use std::cell::Cell;
+
+thread_local! {
+    /// The `precision` ini setting (echo / string conversion).
+    static PRECISION: Cell<i64> = const { Cell::new(14) };
+    /// The `serialize_precision` ini setting (var_dump / var_export / json).
+    static SERIALIZE_PRECISION: Cell<i64> = const { Cell::new(-1) };
 }
 
-/// Format a float the way `var_dump`/`var_export` does: shortest round-trip.
+/// Set the `precision` ini value (validated by the caller: `>= -1`).
+pub fn set_precision(p: i64) {
+    PRECISION.with(|c| c.set(p));
+}
+
+/// Set the `serialize_precision` ini value (validated by the caller).
+pub fn set_serialize_precision(p: i64) {
+    SERIALIZE_PRECISION.with(|c| c.set(p));
+}
+
+/// Restore both precision settings to php's defaults (14 / -1).
+pub fn reset_precision() {
+    set_precision(14);
+    set_serialize_precision(-1);
+}
+
+/// `zend_gcvt(value, precision ? precision : 1, ...)`: `-1` = shortest.
+fn mode_for(p: i64) -> Mode {
+    match p {
+        p if p < 0 => Mode::Shortest,
+        0 => Mode::Precision(1),
+        // zend_dtoa yields at most ~767 significant digits; cap the request.
+        p => Mode::Precision(p.min(500) as usize),
+    }
+}
+
+/// Format a float the way `echo`/`(string)` does (`precision`, default 14).
+pub fn float_echo(f: f64) -> Vec<u8> {
+    gcvt(f, mode_for(PRECISION.with(|c| c.get())))
+}
+
+/// Format a float the way `var_dump`/`var_export` does (`serialize_precision`,
+/// default -1 = shortest round-trip).
 pub fn float_serialize(f: f64) -> Vec<u8> {
-    gcvt(f, Mode::Shortest)
+    gcvt(f, mode_for(SERIALIZE_PRECISION.with(|c| c.get())))
 }
 
 enum Mode {
@@ -71,12 +107,12 @@ fn gcvt(f: f64, mode: Mode) -> Vec<u8> {
         }
     };
 
-    // Threshold for switching to exponential notation, matching PHP: use
-    // exponential when exp10 < -4 or exp10 >= decimal_point_cutoff. For
-    // precision mode the cutoff is the precision (14); for shortest PHP uses 15.
+    // Threshold for switching to exponential notation, matching zend_gcvt:
+    // exponential when exp10 < -4 or exp10 >= ndigit, where ndigit is the
+    // precision, or 17 in shortest mode (mode 0).
     let cutoff: i32 = match mode {
         Mode::Precision(p) => p as i32,
-        Mode::Shortest => 15,
+        Mode::Shortest => 17,
     };
 
     let trimmed = trim_trailing_zeros(&digits); // keep >= 1 digit
@@ -194,6 +230,10 @@ mod tests {
         // php -r 'var_dump(1/3);' => float(0.3333333333333333)
         assert_eq!(ser(1.0 / 3.0), "0.3333333333333333");
         assert_eq!(ser(1e20), "1.0E+20");
+        // php -r 'var_dump(1e15, 1e16, 1e17);'
+        assert_eq!(ser(1e15), "1000000000000000");
+        assert_eq!(ser(1e16), "10000000000000000");
+        assert_eq!(ser(1e17), "1.0E+17");
         assert_eq!(ser(1.0), "1");
         assert_eq!(ser(-0.0), "-0");
     }

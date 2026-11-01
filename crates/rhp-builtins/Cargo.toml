@@ -38,8 +38,13 @@ bcrypt = "0.17"
 argon2 = "0.6"
 password-hash = { version = "0.6", features = ["phc", "alloc"] }
 
-# zlib + phar per-file compression: raw DEFLATE / zlib / gzip (pure-Rust backend).
-flate2 = "1.1"
+# zlib + phar per-file compression + ZipArchive writing: raw DEFLATE / zlib /
+# gzip. Backed by C zlib (system libz, or libz-sys's bundled copy) rather than
+# miniz_oxide so compressed bytes are identical to php's (which links zlib).
+flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
+# Direct zlib calls where php's exact deflateInit2 parameters matter (memLevel 9,
+# sync flushes): gzencode & co., the compress.zlib:// wrapper, ZipArchive.
+libz-sys = "1.1"
 
 # phar per-file bzip2 compression (pure-Rust backend, no libbz2 dependency).
 bzip2 = "0.5"
@@ -50,6 +55,14 @@ x509-parser = { version = "0.18", features = ["verify"] }
 # HTTP(S) client for the stream http:// / https:// wrappers (rustls TLS with
 # bundled Mozilla roots — no system OpenSSL dependency).
 ureq = "2.12"
+# URL joining for curl redirects (already in the tree via ureq).
+url = "2.5"
+# ext/curl's own HTTP/1.1 transport: the Mozilla roots ureq bundles, plus the
+# brotli / zstd decoders behind CURLOPT_ENCODING (libcurl's "deflate, gzip,
+# br, zstd"). All pure Rust.
+webpki-roots = "0.26"
+brotli-decompressor = "4"
+ruzstd = "0.8"
 
 # zip extension: reading/extracting .zip archives (ZipArchive). Pure-Rust
 # (deflate via the same miniz_oxide backend as flate2).
@@ -57,3 +70,11 @@ zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 # CSPRNG for random_bytes/random_int/mt_rand.
 getrandom = "0.2"
+
+# intl extension: ICU4X grapheme segmentation, normalization (incl. the UTS #46
+# mapping) and character properties, plus the idna crate's Punycode codec.
+# (icu_normalizer / icu_properties / idna were already in the tree via url.)
+icu_segmenter = "2"
+icu_normalizer = "2"
+icu_properties = "2"
+idna = "1"

@@ -197,11 +197,11 @@ fn require_missing_is_fatal_like_php() {
     let dir = case_dir("fatal");
     write(
         &dir.join("main.php"),
-        "<?php echo \"before\\n\"; require __DIR__ . '/nope.php'; echo \"after\\n\";",
+        "<?php error_reporting(0); echo \"before\\n\"; require __DIR__ . '/nope.php'; echo \"after\\n\";",
     );
     let main = dir.join("main.php");
     let (php, rhp) = (run_php(&main), run_rhp(&main));
-    // both stop after "before" (the fatal goes to stderr, suppressed)
+    // Both stop after "before"; error_reporting(0) hides the fatal in both.
     assert_eq!(String::from_utf8_lossy(&php), String::from_utf8_lossy(&rhp));
     assert_eq!(php, b"before\n");
 }

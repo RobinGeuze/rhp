@@ -1,0 +1,169 @@
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+bool(false)
+bool(true)
+bool(false)
+bool(false)
+int(11)
+int(1793481787)
+string(6) "100444"
+string(5) "40555"
+string(4) "file"
+string(3) "dir"
+bool(false)
+int(26)
+int(5)
+int(12)
+int(1)
+int(-1)
+int(-1)
+int(-1)
+int(0)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+int(16749)
+int(0)
+int(0)
+bool(true)
+int(33060)
+bool(false)
+array(26) {
+  [0]=>
+  int(12)
+  [1]=>
+  int(0)
+  [2]=>
+  int(16749)
+  [3]=>
+  int(1)
+  [4]=>
+  int(0)
+  [5]=>
+  int(0)
+  [6]=>
+  int(-1)
+  [7]=>
+  int(0)
+  [8]=>
+  int(1793481787)
+  [9]=>
+  int(1793481787)
+  [10]=>
+  int(1793481787)
+  [11]=>
+  int(-1)
+  [12]=>
+  int(-1)
+  ["dev"]=>
+  int(12)
+  ["ino"]=>
+  int(0)
+  ["mode"]=>
+  int(16749)
+  ["nlink"]=>
+  int(1)
+  ["uid"]=>
+  int(0)
+  ["gid"]=>
+  int(0)
+  ["rdev"]=>
+  int(-1)
+  ["size"]=>
+  int(0)
+  ["atime"]=>
+  int(1793481787)
+  ["mtime"]=>
+  int(1793481787)
+  ["ctime"]=>
+  int(1793481787)
+  ["blksize"]=>
+  int(-1)
+  ["blocks"]=>
+  int(-1)
+}
+array(3) {
+  [0]=>
+  string(5) "a.txt"
+  [1]=>
+  string(3) "dir"
+  [2]=>
+  string(7) "zz.json"
+}
+array(2) {
+  [0]=>
+  string(5) "b.php"
+  [1]=>
+  string(3) "sub"
+}
+array(2) {
+  [0]=>
+  string(3) "sub"
+  [1]=>
+  string(5) "b.php"
+}
+array(2) {
+  [0]=>
+  string(5) "b.php"
+  [1]=>
+  string(3) "sub"
+}
+string(5) "b.php"
+bool(false)
+bool(false)
+bool(true)
+bool(false)
+array(2) {
+  [0]=>
+  string(6) "alpha
+"
+  [1]=>
+  string(5) "beta
+"
+}
+array(2) {
+  [0]=>
+  string(5) "alpha"
+  [1]=>
+  string(4) "beta"
+}
+string(5) "gamma"
+string(18) "<?php return 'b';
+"
+bool(true)
+bool(true)
+string(11) "alpha
+beta
+"
+bool(true)
+string(6) "alpha
+"
+int(6)
+string(5) "beta
+"
+bool(true)
+int(0)
+string(3) "pha"
+bool(true)
+string(2) "al"
+int(11)
+string(6) "100444"
+bool(true)
+string(4) "phar"
+string(11) "phar stream"
+string(1) "r"
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+bool(false)

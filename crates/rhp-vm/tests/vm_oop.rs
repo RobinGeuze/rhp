@@ -386,7 +386,7 @@ fn exception_unwinds_across_frames() {
 #[test]
 fn uncaught_exception_propagates_as_throw() {
     let (_out, class) = run_throws("<?php throw new Exception('nope');");
-    assert_eq!(class, "Object");
+    assert_eq!(class, "Exception");
 }
 
 // ---------------------------------------------------------------------------

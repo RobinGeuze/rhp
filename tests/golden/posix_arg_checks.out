@@ -1,0 +1,52 @@
+ValueError: posix_kill(): Argument #1 ($process_id) must be between 2147483648 and 2147483647
+ValueError: posix_kill(): Argument #1 ($process_id) must be between 2147483648 and 2147483647
+ValueError: posix_kill(): Argument #1 ($process_id) must be between 2147483648 and 2147483647
+ValueError: posix_kill(): Argument #1 ($process_id) must be between 2147483648 and 2147483647
+TypeError: posix_kill(): Argument #1 ($process_id) must be of type int, string given
+TypeError: posix_kill(): Argument #1 ($process_id) must be of type int, string given
+TypeError: posix_kill(): Argument #1 ($process_id) must be of type int, array given
+TypeError: posix_kill(): Argument #1 ($process_id) must be of type int, stdClass given
+TypeError: posix_kill(): Argument #1 ($process_id) must be of type int, float given
+TypeError: posix_kill(): Argument #1 ($process_id) must be of type int, float given
+TypeError: posix_kill(): Argument #1 ($process_id) must be of type int, float given
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+TypeError: posix_kill(): Argument #2 ($signal) must be of type int, string given
+TypeError: posix_kill(): Argument #2 ($signal) must be of type int, float given
+TypeError: posix_getpwuid(): Argument #1 ($user_id) must be of type int, string given
+TypeError: posix_getpwuid(): Argument #1 ($user_id) must be of type int, array given
+TypeError: posix_getpwuid(): Argument #1 ($user_id) must be of type int, ArrayObject given
+TypeError: posix_getpwnam(): Argument #1 ($username) must be of type string, array given
+TypeError: posix_getgrgid(): Argument #1 ($group_id) must be of type int, string given
+TypeError: posix_getgrnam(): Argument #1 ($name) must be of type string, stdClass given
+ValueError: posix_getsid(): Argument #1 ($process_id) must be between 0 and 2147483647
+ValueError: posix_getsid(): Argument #1 ($process_id) must be between 0 and 2147483647
+TypeError: posix_getsid(): Argument #1 ($process_id) must be of type int, string given
+TypeError: posix_getpgid(): Argument #1 ($process_id) must be of type int, string given
+bool(true)
+TypeError: posix_strerror(): Argument #1 ($error_code) must be of type int, string given
+string(25) "No such file or directory"
+ValueError: posix_access(): Argument #1 ($filename) must not contain any null bytes
+TypeError: posix_access(): Argument #2 ($flags) must be of type int, string given
+bool(true)
+bool(false)
+bool(false)
+bool(true)
+bool(false)
+TypeError: pcntl_signal(): Argument #1 ($signal) must be of type int, string given
+TypeError: pcntl_signal_get_handler(): Argument #1 ($signal) must be of type int, array given
+TypeError: pcntl_wifexited(): Argument #1 ($status) must be of type int, string given
+int(3)
+TypeError: pcntl_strerror(): Argument #1 ($error_code) must be of type int, string given
+TypeError: pcntl_alarm(): Argument #1 ($seconds) must be of type int, string given
+TypeError: sleep(): Argument #1 ($seconds) must be of type int, string given
+ValueError: sleep(): Argument #1 ($seconds) must be greater than or equal to 0
+TypeError: usleep(): Argument #1 ($microseconds) must be of type int, array given
+NULL
+TypeError: proc_nice(): Argument #1 ($priority) must be of type int, string given
+TypeError: proc_terminate(): Argument #2 ($signal) must be of type int, string given
+TypeError: proc_terminate(): Argument #1 ($process) must be of type resource, int given
+bool(true)
+bool(true)

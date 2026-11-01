@@ -1,0 +1,79 @@
+set foo
+get foo
+get foo
+array(1) {
+  [0]=>
+  int(1)
+}
+get foo
+set o
+get o
+object(stdClass)#2 (1) {
+  ["x"]=>
+  int(5)
+}
+get cnt
+set cnt
+get n
+set n
+get n
+set n
+string(1) "a"
+int(2)
+get list
+bool(false)
+M Object
+(
+    [data] => Array
+        (
+            [foo] => Array
+                (
+                    [0] => 1
+                )
+
+            [o] => stdClass Object
+                (
+                    [x] => 5
+                )
+
+            [cnt] => a
+            [n] => 2
+        )
+
+)
+
+rget a
+rget b
+Array
+(
+    [a] => Array
+        (
+            [0] => 1
+            [1] => 2
+        )
+
+    [b] => Array
+        (
+            [x] => new
+        )
+
+)
+pget hidden
+P Object
+(
+    [hidden:P:private] => Array
+        (
+            [v] => 1
+        )
+
+)
+
+stdClass Object
+(
+    [arr] => Array
+        (
+            [0] => 1
+        )
+
+)
+

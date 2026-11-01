@@ -46,6 +46,10 @@ impl Host for Interp<'_> {
         self.out.extend_from_slice(bytes);
     }
 
+    fn output_started(&self) -> bool {
+        !self.out.is_empty()
+    }
+
     fn bc_scale(&self) -> i64 {
         self.bc_scale
     }
@@ -63,6 +67,8 @@ impl Default for Interp<'_> {
 
 impl<'a> Interp<'a> {
     pub fn new() -> Self {
+        // Builtin state is per request: never inherit a previous engine's.
+        builtins::reset_request_state();
         let mut constants = HashMap::new();
         for (name, value) in builtins::constants() {
             constants.insert(name.as_bytes().to_vec(), value);
@@ -472,8 +478,8 @@ impl<'a> Interp<'a> {
             Op::NotIdentical(_) => Value::Bool(!ops::strict_eq(&l, &r)),
             Op::LessThan(_) => Value::Bool(ops::loose_compare(&l, &r).is_lt()),
             Op::LessThanOrEqual(_) => Value::Bool(ops::loose_compare(&l, &r).is_le()),
-            Op::GreaterThan(_) => Value::Bool(ops::loose_compare(&l, &r).is_gt()),
-            Op::GreaterThanOrEqual(_) => Value::Bool(ops::loose_compare(&l, &r).is_ge()),
+            Op::GreaterThan(_) => Value::Bool(ops::loose_compare(&r, &l).is_lt()),
+            Op::GreaterThanOrEqual(_) => Value::Bool(ops::loose_compare(&r, &l).is_le()),
             Op::Spaceship(_) => ops::spaceship(&l, &r),
             Op::And(_) | Op::Or(_) | Op::LowAnd(_) | Op::LowOr(_) | Op::NullCoalesce(_) => {
                 unreachable!("handled above")
@@ -753,6 +759,23 @@ impl<'a> Interp<'a> {
             return Err(Thrown::unsupported(format!("{name_str}()"), reason));
         }
 
+        // Program execution and OS-stream functions need the VM's resource
+        // table; the frozen oracle refuses them (the harness then skips).
+        if matches!(
+            name_str.to_ascii_lowercase().as_str(),
+            "shell_exec"
+                | "proc_get_status"
+                | "proc_close"
+                | "proc_terminate"
+                | "stream_isatty"
+                | "posix_isatty"
+        ) {
+            return Err(Thrown::unsupported(
+                format!("{name_str}()"),
+                "process control is not supported by the oracle",
+            ));
+        }
+
         // By-reference builtins (sort/array_push/…) mutate their array argument
         // in place; the frozen oracle has no by-ref call path, so it refuses
         // them (the differential harness then skips those fixtures).
@@ -772,6 +795,18 @@ impl<'a> Interp<'a> {
             return Err(Thrown::unsupported(
                 format!("{name_str}()"),
                 "runtime constants are not supported by the oracle",
+            ));
+        }
+
+        // The oracle's host has no stream table (and its STDOUT is a plain
+        // int), so it refuses the functions that open or need a stream.
+        if matches!(
+            name_str.to_ascii_lowercase().as_str(),
+            "fopen" | "opendir" | "dir" | "tmpfile" | "fprintf" | "vfprintf"
+        ) {
+            return Err(Thrown::unsupported(
+                format!("{name_str}()"),
+                "stream resources are not supported by the oracle",
             ));
         }
 

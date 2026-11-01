@@ -1,0 +1,56 @@
+a=1&b=x+y&c=%C3%A4%26%3D%2B%7E
+a=1&b=x%20y&c=%C3%A4%26%3D%2B~
+p_0=1&p_1=2&k=3
+x%5B0%5D=1&x%5B1%5D=2&x%5B2%5D%5By%5D=z&t=1&f=0
+num5%5Ba%5D%5B7%5D=q
+a=1&amp;b=2
+a=1b=2
+a=1&b=2
+f=1.5&g=0.3&h=1.0E%2B100&i=-0
+k+y%5Bs+p%5D=v
+k%20y%5Bs%20p%5D=v
+string(0) ""
+string(0) ""
+string(0) ""
+pub=p&arr%5Bx%5D=1&dyn=d
+obj%5Bpub%5D=p&obj%5Barr%5D%5Bx%5D=1&obj%5Bdyn%5D=d
+a=b&list%5B0%5D=1&list%5B1%5D=2
+s=H
+ValueError: Unbacked enum Plain cannot be converted to a string
+TypeError: http_build_query(): Argument #1 ($data) must not be an enum, Suit given
+TypeError: http_build_query(): Argument #1 ($data) must be of type array, string given
+"a=1&b=2" => {"a":"1","b":"2"}
+"a[]=1&a[]=2" => {"a":["1","2"]}
+"a[x]=1&a[y][z]=2" => {"a":{"x":"1","y":{"z":"2"}}}
+"a b.c=1" => {"a_b_c":"1"}
+"a[b.c d]=1" => {"a":{"b.c d":"1"}}
+"a[b][c=1" => {"a":{"b":"1"}}
+"a[b=1" => {"a_b":"1"}
+"a[ ]=1" => {"a":["1"]}
+"a[ x]=1" => {"a":{" x":"1"}}
+"a[b]c=1" => {"a":{"b":"1"}}
+"%20a=1" => {"a":"1"}
+"a%00b=1" => {"a":"1"}
+"a=1%002" => {"a":"1\u00002"}
+"1=x&01=y&-1=z" => {"1":"x","01":"y","-1":"z"}
+"a=1&a[x]=2" => {"a":{"x":"2"}}
+"a[x]=1&a=2" => {"a":"2"}
+"__Host-x=1" => {"__Host-x":"1"}
+"x[__Host.x]=1" => {"x":{"__Host.x":"1"}}
+"a[][b]=1&a[][b]=2" => {"a":[{"b":"1"},{"b":"2"}]}
+"a[[x]]=1" => {"a":{"[x":"1"}}
+"a][=1" => {"a]_":"1"}
+"=1" => []
+"a&b&&c=" => {"a":"","b":"","c":""}
+"a[b[c]=1" => {"a":{"b[c":"1"}}
+"a[1][2]=x&a[1][3]=y" => {"a":{"1":{"2":"x","3":"y"}}}
+"q=a+b%2Bc%zz%4" => {"q":"a b+c%zz%4"}
+"" => []
+"arr[]=1&arr[5]=2&arr[]=3" => {"arr":{"0":"1","5":"2","6":"3"}}
+"a.b[c.d]=1" => {"a_b":{"c.d":"1"}}
+" x=1" => {"x":"1"}
+"a=1\u0000b=2" => {"a":"1"}
+array(1) {
+  ["k"]=>
+  string(1) "v"
+}

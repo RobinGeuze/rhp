@@ -25,7 +25,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 2 | `set_error_handler`/`set_exception_handler`/`restore_*` — stored-nowhere no-ops | `php_fns.rs:140`,`:146` | framework error pipelines, `trigger_error` routing | high | high |
 | 3 | `trigger_error` — returns true, emits nothing | `php_fns.rs:150` | user warnings/deprecations, logging | med | med |
 | 4 | `error_reporting` — always returns `32767` | `php_fns.rs:154` | reads/writes of the mask; no effect either way | low | low |
-| 5 | `register_shutdown_function` — accepted, **never invoked** | `php_fns.rs:162` | shutdown hooks, fatal-error handlers, flush-on-exit | high | high |
+| 5 | ~~`register_shutdown_function` — accepted, never invoked~~ **done**: run by `Vm::request_shutdown` (then destructors, then `ob_*` flush) | — | shutdown hooks, fatal-error handlers, flush-on-exit | — | — |
 | 6 | `memory_get_usage`/`_peak_usage` — fixed `2097152` | `php_fns.rs:167` | memory probes, `ini` memory-limit logic | low | low |
 | 7 | `gc_*`, `set_time_limit` — no-ops | `php_fns.rs:445` | none observable (cosmetic) | low | low |
 | 8 | `setlocale` — always `"C"` | `php_fns.rs:187` | locale-dependent formatting | low | low |
@@ -34,25 +34,25 @@ priority order rather than rediscovered one framework crash at a time.
 | 11 | `PHP_BINARY` constant — hardcoded `/usr/bin/php` | `builtins/lib.rs:402` | re-exec / proc-spawn of "self" | low | med |
 | 12 | `mt_rand`/`rand` — CSPRNG, `mt_srand` ignored | `php_fns.rs:268`,`:458` | reproducible seeded sequences | med | med |
 | 13 | `putenv` — no-op true | `php_fns.rs:113` | child-process env, `getenv` round-trip | low | med |
-| 14 | `fseek`/`ftell` → 0 (no-op) | `stream_fns.rs:128` | seekable in-memory/file streams (rewind-and-read) | med | med |
+| 14 | ~~`fseek`/`ftell` → 0 (no-op)~~ **RESOLVED** — real positions on plain files (`LocalFile`) and `php://memory` | `fs_fns.rs`, `streams.rs` | — | — | — |
 | 15 | `stream_set_blocking`/`_timeout`/buffer knobs — no-ops | `stream_fns.rs:124` | none observable (cosmetic) | low | low |
-| 16 | `stream_isatty`/`posix_isatty` → false | `stream_fns.rs:131` | colour/TTY detection (composer output) | low | med |
-| 17 | `stream_get_meta_data` — fixed minimal array | `stream_fns.rs:137` | `wrapper_data`, URL, seekable, timed_out probes | med | med |
-| 18 | stdin reads return empty | `vm/lib.rs:284` | interactive input, piped stdin | med | med |
-| 19 | `is_readable`/`is_writable`/`is_executable` — mere existence | `file_fns.rs:38`,`:117`,`:218` | permission-gated code (composer cache writes) | med | med |
-| 20 | `fileperms` — fixed `0o100644` | `file_fns.rs:171` | perm inspection, `chmod` verification | low | low |
-| 21 | `chmod`/`chdir`/`clearstatcache` — no-op true | `file_fns.rs:227` | cwd-relative paths (`chdir`), perm set | med | med |
-| 22 | `touch` — creates file, does not set mtime | `file_fns.rs:159` | mtime-based cache invalidation | low | med |
-| 23 | Phar MD5/SHA-1/OpenSSL signatures — accepted **without verification** | `ext/phar/mod.rs:190` | tamper detection on non-SHA-256/512 phars | med | low |
+| 16 | ~~`stream_isatty`/`posix_isatty` → false~~ **done**: real `isatty(2)` on the stream's fd (`proc_fns.rs`, `ext/posix`) | — | colour/TTY detection (composer output) | — | — |
+| 17 | ~~`stream_get_meta_data` — fixed minimal array~~ **RESOLVED** — built from the live stream (wrapper/stream type, mode, uri, eof, seekable, unread_bytes) | `fs_fns.rs` | `wrapper_data` still absent | — | — |
+| 18 | ~~stdin reads return empty~~ **done**: `STDIN` reads a buffered dup of fd 0; `php://stdin` opens its own | — | interactive input, piped stdin | — | — |
+| 19 | ~~`is_readable`/`is_writable`/`is_executable`~~ **RESOLVED** — `access(2)` for plain files, mode bits vs uid/gid for other wrappers (phar) | `fs_fns.rs` | — | — | — |
+| 20 | ~~`fileperms` — fixed~~ **RESOLVED** — real `st_mode` via the stream layer (phar: php's `phar_dostat` modes) | `fs_fns.rs` | — | — | — |
+| 21 | ~~`chmod`/`chdir`/`clearstatcache`~~ **RESOLVED** — real `chmod`/`chdir`; `clearstatcache` is a no-op because rhp has no stat cache (php's single-entry stat cache staleness is not modelled) | `file_fns.rs` | — | — | — |
+| 22 | ~~`touch` — does not set mtime~~ **RESOLVED** — sets mtime/atime (php's defaulting rules) | `file_fns.rs` | — | — | — |
+| 23 | ~~Phar MD5/SHA-1/OpenSSL signatures — accepted without verification~~ **resolved**: all signature types verified (OpenSSL against `<phar>.pubkey`) | `ext/phar/mod.rs` `verify_signature` | — | — | — |
 | 24 | Phar bzip2 entries unsupported | `ext/phar/mod.rs:124` | bz2-compressed phars | low | low |
 | 25 | Phar is **read-only**; `createDefaultStub`→`""`, `canCompress`→false | `ext/phar/mod.rs:426`,`:429` | phar writing/creation; self-update | high | low |
 | 26 | Phar tar/zip formats unsupported | `ext/phar/mod.rs` (native-only) | tar/zip phars | med | low |
-| 27 | zlib compressors not byte-identical to php | `ext/zlib/mod.rs:10` | byte-exact compressed output (hashes of it) | med | low |
-| 28 | `gzopen` family + `compress.zlib://` wrapper missing | `ext/zlib/mod.rs:13` | streamed gzip read/write, tgz install | med | med |
+| 27 | ~~zlib compressors not byte-identical to php~~ — **done**: C zlib with php's deflateInit2 params (`ext/zlib/zraw.rs`) | — | — | — | — |
+| 28 | ~~`gzopen` family + `compress.zlib://` wrapper missing~~ — **done** (whole-buffer streams; gzopen's level/strategy mode letters are ignored on write) | `ext/zlib/mod.rs` | — | low | low |
 | 29 | `spl_autoload_unregister` — no-op true, never removes | `ext/spl/mod.rs:39` | dynamic autoloader swapping | med | low |
 | 30 | `Closure::bindTo`/`Closure::call` instance methods missing | `compiler/lib.rs:805` | rebinding via instance form; scoped invoke | med | high |
 | 31 | var_dump object ids — monotonic, no handle recycling | `vm/classes.rs:321` | byte-exact `var_dump`/`spl_object_id` vs php | high | low |
-| 32 | No `E_WARNING`/`E_NOTICE`/`E_DEPRECATED` diagnostics ever emitted | engine-wide | warnings-as-errors, deprecation logs, `@`-suppression semantics | high | med |
+| 32 | No `E_WARNING`/`E_NOTICE`/`E_DEPRECATED` diagnostics ever emitted (builtins already report them through `Host::emit_diagnostic` — iconv, openssl, mbstring so far — which every host still discards) | engine-wide | warnings-as-errors, deprecation logs, `@`-suppression semantics | high | med |
 | 33 | `declare(strict_types=1)` — no-op; type hints unenforced | `compiler/lib.rs:1977` | type coercion/TypeError on hinted params — **in progress** | high | high |
 | 34 | Named args to functions whose defaults don't fold — refused | `compiler/lib.rs:3284` | named-arg calls skipping non-constant-default params | med | med |
 
@@ -119,7 +119,20 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
   reads the last diagnostic recorded by §7. Trivial once those exist.
 - **Effort/priority:** low / low.
 
-### 1.5 `register_shutdown_function` — registered, **never invoked**
+### 1.5 `register_shutdown_function` — registered, **never invoked** — RESOLVED
+- **Resolved:** callbacks are stored on the `Vm` and run by
+  `Vm::request_shutdown` (called by the SAPI after `{main}` returns, exits or
+  throws): shutdown functions in order (an `exit`/uncaught throwable stops the
+  rest), then destructors (globals holding the sole reference, last first, then
+  every remaining object in creation order), then all output buffers are flushed.
+  Objects with a `__destruct` are tracked; one the program releases is destructed
+  at the next instruction boundary (frame return, overwritten/unset variable, end
+  of an expression statement via `ClearTemps`). Gap: an object freed while only a
+  non-tracked container held it is destructed late (at the next check) rather than
+  exactly at release, and cycles are destructed at shutdown (php's GC may run
+  earlier).
+
+The original notes:
 - **Now:** accepts and discards; returns `Null` (`php_fns.rs:162-165`). The comment
   admits "Stored by php and run at shutdown; not yet invoked here" — and it is not
   even stored.
@@ -238,21 +251,13 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
 
 ## 2. Stream & filesystem
 
-### 2.1 `fseek` / `ftell` — no-op zeros (`crates/rhp-builtins/src/stream_fns.rs:128-129`)
-- **Now:** both registered to `fn_zero`; they ignore the resource and return `0`.
-- **OK because:** composer reads whole files via `file_get_contents`/`require`, not
-  by seeking.
-- **Breaks:** this is a *real* gap, not cosmetic. In-memory and file-read streams
-  already carry a `pos` cursor (`StreamState::Mem { buf, pos }`,
-  `vm/lib.rs:278`), so `fopen`-then-`fseek`-then-`fread` and `ftell` *could* be
-  honoured but currently cannot — any code that seeks (rewind to re-read a header,
-  `fseek(SEEK_END)` to size a stream) silently reads from the wrong offset.
-- **Full impl:** add `stream_seek(res, offset, whence)` and `stream_tell(res)`
-  `Host` methods that manipulate the `pos` on `StreamState::Mem`/`FileWrite`
-  (clamp to buffer bounds; `SEEK_SET`/`CUR`/`END`). `rewind` already works via a
-  dedicated path (`stream_fns.rs:67`), so model `fseek` the same way. Stdin/stdout
-  stay non-seekable (return `-1`).
-- **Effort/priority:** med / med.
+### 2.1 `fseek` / `ftell` — RESOLVED
+- `fopen` on a plain local path now opens a real descriptor
+  (`streams::LocalFile`, `StreamState::File`) with php's plain-files semantics:
+  read buffer, logical position, eof set only when `read(2)` returns 0, greedy
+  `fread`, `fgets($h, $len)`. `fseek`/`ftell`/`rewind`/`ftruncate`/`fstat`/
+  `flock` work on it; `php://memory` seeks/truncates in its buffer. Non-local
+  wrappers (`phar://`) still use the buffered `Mem`/`FileWrite` states.
 
 ### 2.2 `stream_set_blocking` / `_timeout` / write-buffer knobs
 - **Now:** no-ops (`stream_fns.rs:124-127`), explicitly labelled "accepted so
@@ -264,7 +269,11 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
 - **Effort/priority:** low / low.
 
 ### 2.3 `stream_isatty` / `posix_isatty` / `sapi_windows_vt100_support` → false
-- **Now:** all `fn_false` (`stream_fns.rs:131-133`).
+- **Status:** `stream_isatty` and `posix_isatty` are now real (`isatty(2)` on the
+  fd behind STDIN/STDOUT/STDERR or a `proc_open` pipe; false for memory/file
+  buffers). `sapi_windows_vt100_support` stays false (non-Windows). The notes
+  below are the original analysis.
+- **Was:** all `fn_false` (`stream_fns.rs:131-133`).
 - **OK because:** under the test SAPI output is captured, so "not a tty" is the
   safe answer and matches piped php.
 - **Breaks:** interactive composer runs decide colour/progress output from
@@ -276,21 +285,17 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
   `StreamState`s).
 - **Effort/priority:** low / med.
 
-### 2.4 `stream_get_meta_data` — fixed minimal array (`stream_fns.rs:137-145`)
-- **Now:** returns a constant array `{timed_out:false, blocked:true, eof:false,
-  stream_type:"STDIO"}`, ignoring the actual resource.
-- **OK because:** framework code "reads a few keys defensively" and these defaults
-  satisfy the common checks.
-- **Breaks:** the real array has `eof` (should reflect the stream's cursor),
-  `seekable`, `uri`/`wrapper_type`, `mode`, `unread_bytes`. Code reading `uri` or
-  `seekable` gets wrong/missing data.
-- **Full impl:** build the array from the live `StreamState`: `eof` from the cursor
-  vs length, `seekable` true for Mem/FileWrite, `uri`/`wrapper_type` from the open
-  URL (store the URL on the stream state — `FileWrite` already keeps `url`;
-  add it to `Mem` opens too), `mode` from the `fopen` mode.
-- **Effort/priority:** med / med.
+### 2.4 `stream_get_meta_data` — RESOLVED
+- Built from the live stream via `Host::stream_meta` (php's key order:
+  timed_out, blocked, eof, wrapper_type, stream_type, mode, unread_bytes,
+  seekable, uri). `wrapper_data` (http) is still not reported.
 
-### 2.5 stdin reads return empty (`crates/rhp-vm/src/lib.rs:275-304`)
+### 2.5 stdin reads return empty (`crates/rhp-vm/src/lib.rs:275-304`) — RESOLVED
+- **Resolved:** `STDIN` reads go through a lazily created `FdStream` over a dup of
+  fd 0 (php's buffering: one 8 KiB fill per read); `fopen('php://stdin')` and
+  `file_get_contents('php://stdin')` open their own dup, as php does.
+
+The original notes:
 - **Now:** `stream_read` only handles `StreamState::Mem`; every other state
   (including `Stdin`) hits the `_ => Some(Vec::new())` arm (`vm/lib.rs:284`), and
   `stream_gets` returns `None` for stdin (`:302`). So `fgets(STDIN)` / `fread(STDIN)`
@@ -303,57 +308,32 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
   `stream_eof` against it. Keep it lazy so non-reading programs pay nothing.
 - **Effort/priority:** med / med.
 
-### 2.6 `is_readable` / `is_writable` / `is_executable` — existence only
-- **Now:** all three answer "does it exist" with no permission modelling
-  (`file_fns.rs:38-41`, `:117-120`; `is_executable` is even aliased to
-  `is_writable` at `:218`).
-- **OK because:** composer's checks are "can I read this file I just found" where
-  existence is a good proxy in the test sandbox.
-- **Breaks:** composer *does* probe writability of its cache/vendor dirs and
-  chooses fallbacks; an always-true `is_writable` on a read-only dir would make it
-  try and then fail at the write. `is_executable` aliased to writable is simply
-  wrong.
-- **Full impl:** stat the path and check the mode bits against the effective
-  uid/gid (Unix: `libc::access(path, R_OK/W_OK/X_OK)` is the faithful, simplest
-  route and matches php's own implementation). Route through the stream layer so
-  `phar://` entries answer sensibly (readable yes, writable no).
-- **Effort/priority:** med / med.
+### 2.6 `is_readable` / `is_writable` / `is_executable` — RESOLVED
+- Plain files: `access(2)` (php's own route). Other wrappers: stat mode bits
+  against uid/gid as in `php_stat` (so `phar://` entries are readable, never
+  writable).
 
-### 2.7 `fileperms` — fixed `0o100644` (`file_fns.rs:171-173`)
-- **Now:** returns a constant regardless of the file.
-- **OK because:** nothing asserts real perms on the bootstrap path.
-- **Breaks:** `fileperms`/`decoct` inspection, and verifying a prior `chmod`.
-- **Full impl:** stat the file and return the real `st_mode` (Unix). Pair with #2.8
-  (`chmod`) so set/inspect are consistent.
-- **Effort/priority:** low / low.
+### 2.7 `fileperms` — RESOLVED
+- Real `st_mode` through the stream layer; `stat`/`lstat`/`fstat` return php's
+  full 26-element array, and `fileinode`/`fileowner`/`filegroup`/`file[amc]time`
+  read the same stat.
 
-### 2.8 `chmod` / `chdir` / `clearstatcache` — no-op true (`file_fns.rs:227-229`)
-- **Now:** all `fn_true1`.
-- **OK because:** `clearstatcache` is genuinely a no-op here (rhp caches no stat
-  results, so there is nothing to clear — this one is *correct*, not a shortcut).
-  `chmod`/`chdir` are not exercised by the bootstrap.
-- **Breaks:** `chdir` is the dangerous one — code that `chdir()`s and then uses
-  relative paths will read/write the wrong directory, because rhp keeps resolving
-  relative to the real process cwd. `chmod` not taking effect breaks scripts that
-  set an executable bit and then run the file.
-- **Full impl:** `chmod` → real `std::fs`/`libc::chmod`. `chdir` → either real
-  `std::env::set_current_dir` (simplest, but process-global) or a per-VM cwd that
-  the file/stream layer prepends to relative paths (cleaner, matches php's
-  per-request cwd). Prefer the per-VM cwd. `clearstatcache` stays a no-op (and can
-  be documented as intentionally so).
-- **Effort/priority:** med / med (driven by `chdir`).
+### 2.8 `chmod` / `chdir` / `clearstatcache` — RESOLVED (cache semantics aside)
+- `chmod`/`chdir`/`umask` are real (process-global cwd, like php CLI).
+  `clearstatcache` is a no-op: rhp keeps no stat cache, so a php script that
+  observes a *stale* cached stat (e.g. `filesize` after an external change
+  without `clearstatcache`) sees fresh data under rhp. Known, deliberate gap.
 
-### 2.9 `touch` — does not set mtime (`file_fns.rs:159-165`)
-- **Now:** creates the file if absent but never updates the modification time (the
-  comment says "we don't model timestamps").
-- **OK because:** the bootstrap doesn't depend on mtimes.
-- **Breaks:** mtime-based cache invalidation (`touch` a sentinel, compare
-  `filemtime` later) — common in framework caches.
-- **Full impl:** use `filetime`/`libc::utimensat` (or `std::fs::File::set_times`,
-  stable since Rust 1.75) to set mtime/atime to the requested time (or now).
-  `filemtime` already reads real mtime via the stream stat (`file_fns.rs:145`), so
-  the pair would then round-trip.
-- **Effort/priority:** low / med.
+### 2.9 `touch` — RESOLVED
+- Sets mtime/atime (`utimes`), creating the file when missing.
+
+### 2.10 Diagnostics from filesystem functions
+- php's warnings/notices (`opendir(...): Failed to open directory`, `fread():
+  Read of N bytes failed`, `tempnam(): file created in the system's temporary
+  directory`, `readdir()` null-handle deprecation, …) are not emitted — the
+  engine has no diagnostics sink yet (see §7.1). Return values match.
+- Closed resources still report their original type (`stream`) instead of
+  php's `Unknown` / `resource (closed)`.
 
 ---
 
@@ -363,22 +343,15 @@ The module is deliberately "READ-ONLY, native format only"
 (`ext/phar/mod.rs:10-12`). It is exactly enough to parse, verify, and execute
 `composer.phar` (M1, shipped). The remaining gaps:
 
-### 3.1 MD5 / SHA-1 / OpenSSL signatures accepted **without verification**
-- **Now:** `verify_signature` fully checks SHA-256 (`type 3`) and SHA-512
-  (`type 4`), but MD5 (`type 1`) and SHA-1 (`type 2`) hit `(16, None)`/`(20, None)`
-  and are accepted unverified; OpenSSL (`type 0x10`) early-returns `Ok(())`
-  (`ext/phar/mod.rs:181-201`).
-- **OK because:** composer is SHA-512 signed (verified byte-for-byte), so the one
-  phar we must run *is* checked. php's `phar.require_hash` is effectively honoured
-  for the hashes we support.
-- **Breaks:** a tampered MD5/SHA-1 phar would be accepted; an OpenSSL-signed phar
-  is trusted blindly. Security-relevant for untrusted phars.
-- **Full impl:** compute MD5 (add `md-5`) and SHA-1 (`sha1`) over
-  `data[0 .. len-(hashlen+8)]` and compare — identical shape to the existing
-  SHA-256/512 arms. OpenSSL signatures need the archive's public key
-  (`<phar>.pubkey` alongside) and an RSA-verify (`rsa`/`openssl` crate); larger
-  and rarely used — do it last.
-- **Effort/priority:** MD5/SHA-1 low / low; OpenSSL med / low.
+### 3.1 ~~MD5 / SHA-1 / OpenSSL signatures accepted without verification~~ (resolved)
+- **Now:** `verify_signature` checks every native signature type php writes:
+  MD5 / SHA-1 / SHA-256 / SHA-512 byte-for-byte, and OpenSSL (`0x10` SHA-1,
+  `0x11` SHA-256, `0x12` SHA-512) by RSA/ECDSA-verifying the archive body against
+  the `PUBLIC KEY` PEM in `<phar>.pubkey` (`ext/openssl/pkey.rs`
+  `verify_with_pem`), with php's exact `PharException` messages for a missing
+  key ("openssl public key could not be read"), an unreadable key ("openssl
+  signature could not be processed") and a mismatch ("broken openssl
+  signature"). Covered by `tests/golden/phar_openssl_signature.php`.
 
 ### 3.2 bzip2 entries unsupported
 - **Now:** a `COMPRESSED_BZ2` entry returns `None` from `read`
@@ -435,7 +408,12 @@ The module is deliberately "READ-ONLY, native format only"
   pure-Rust default. Accept that byte-parity requires matching php's zlib version.
 - **Effort/priority:** med / low.
 
-### 4.2 `gzopen` family + `compress.zlib://` wrapper missing
+### 4.2 `gzopen` family + `compress.zlib://` wrapper — DONE
+- **Status:** implemented: `gzopen`/`gzread`/`gzwrite`/`gzgets`/`gzeof`/`gzclose`/… are
+  the stream functions over a `compress.zlib://` `StreamWrapper` (transparent read of
+  plain files, concatenated members; writes match php's zlib stream bytes). Remaining
+  gap: a level digit in `gzopen`'s mode (`wb9`) is ignored. `compress.bzip2://` +
+  `bzopen` likewise (`ext/bz2`). The notes below are historical.
 - **Now:** only the six string↔string functions exist (`ext/zlib/mod.rs:112-128`);
   the header defers `gzopen`/`gzread`/… and the `compress.zlib://` wrapper to "a
   later (resource) stage" (`:13-14`).

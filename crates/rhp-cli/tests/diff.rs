@@ -12,7 +12,7 @@ use rhp_compiler::compile_with_source;
 use rhp_frontend::Arena;
 use rhp_oracle::Interp;
 use rhp_values::Thrown;
-use rhp_vm::Vm;
+use rhp_vm::{IncludeError, Vm};
 
 fn golden_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -27,7 +27,18 @@ fn run_vm(source: &[u8], name: &str) -> Result<Vec<u8>, Thrown> {
     assert!(!parsed.has_parse_errors(), "{name}: unexpected parse error");
     let program = compile_with_source(parsed.program(), source, name)?;
     let mut vm = Vm::new();
-    vm.run(&program)?;
+    // include/require/eval compile like the CLI SAPI's includer.
+    vm.set_includer(|file: &str, src: &[u8]| {
+        let arena = Arena::new();
+        let parsed = arena.parse(file.as_bytes(), src);
+        if let Some((message, line)) = parsed.parse_error() {
+            return Err(IncludeError::Parse { message, line });
+        }
+        Ok(compile_with_source(parsed.program(), src, file)?)
+    });
+    // The whole CLI request: uncaught-throwable report, shutdown functions,
+    // output-buffer flush.
+    vm.run_main(&program)?;
     Ok(vm.output().to_vec())
 }
 
@@ -64,7 +75,10 @@ fn vm_matches_php_baseline() {
             continue;
         };
         let source = std::fs::read(php).expect("read php");
-        match std::panic::catch_unwind(|| run_vm(&source, &name)) {
+        // Compile under the fixture's real path, as php reports it (getFile(),
+        // traces, __FILE__); fixtures print only its basename to stay portable.
+        let file = php.to_string_lossy().into_owned();
+        match std::panic::catch_unwind(|| run_vm(&source, &file)) {
             Ok(Ok(actual)) if actual == expected => passed += 1,
             Ok(Ok(actual)) => failures.push(format!(
                 "{name}: MISMATCH\n  expected: {:?}\n  actual:   {:?}",
@@ -97,7 +111,8 @@ fn oracle_matches_php_on_supported() {
             continue;
         };
         let source = std::fs::read(php).expect("read php");
-        match std::panic::catch_unwind(|| run_oracle(&source, &name)) {
+        let file = php.to_string_lossy().into_owned();
+        match std::panic::catch_unwind(|| run_oracle(&source, &file)) {
             Ok(Ok(actual)) if actual == expected => passed += 1,
             Ok(Ok(actual)) => failures.push(format!(
                 "{name}: MISMATCH\n  expected: {:?}\n  actual:   {:?}",
@@ -106,6 +121,15 @@ fn oracle_matches_php_on_supported() {
             )),
             // Features the oracle doesn't implement are skipped, not failed.
             Ok(Err(Thrown::Unsupported { .. })) => skipped += 1,
+            // The oracle has no uncaught-throwable renderer (the VM's
+            // `run_main` does that): fixtures ending in one are VM-only.
+            Ok(Err(Thrown::Error { .. } | Thrown::Object(_)))
+                if expected
+                    .windows(22)
+                    .any(|w| w == b"\nFatal error: Uncaught") =>
+            {
+                skipped += 1
+            }
             Ok(Err(e)) => failures.push(format!("{name}: oracle error: {e:?}")),
             Err(_) => failures.push(format!("{name}: panicked")),
         }

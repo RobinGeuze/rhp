@@ -24,13 +24,15 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use rhp_values::{conv, PhpArray, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{warn, Builtin, Host, Thrown};
 
 #[path = "mb_tables.rs"]
 mod mb_tables;
+mod rare_cp;
 
 // ---------------------------------------------------------------------------
 // small shared helpers
@@ -68,6 +70,10 @@ enum Enc {
 // The `mb_internal_encoding()` state (default UTF-8), per thread.
 thread_local! {
     static INTERNAL: RefCell<Enc> = const { RefCell::new(Enc::Utf8) };
+}
+
+pub(crate) fn reset_state() {
+    INTERNAL.with(|c| *c.borrow_mut() = Enc::Utf8);
 }
 
 fn internal_enc() -> Enc {
@@ -314,8 +320,13 @@ fn encode_cp(cp: u32, out: &mut Vec<u8>) {
 fn decode(enc: Enc, bytes: &[u8]) -> Vec<u32> {
     match enc {
         Enc::Utf8 => decode_utf8(bytes),
-        // single-byte: byte value is the codepoint (ISO-8859-1 is pure Latin-1).
-        Enc::Ascii | Enc::Latin1 => bytes.iter().map(|&b| b as u32).collect(),
+        // ASCII: bytes >= 0x80 are MBFL_BAD_INPUT (mb_ascii_to_wchar).
+        Enc::Ascii => bytes
+            .iter()
+            .map(|&b| if b < 0x80 { b as u32 } else { ERR })
+            .collect(),
+        // ISO-8859-1: the byte value is the codepoint.
+        Enc::Latin1 => bytes.iter().map(|&b| b as u32).collect(),
     }
 }
 
@@ -487,6 +498,16 @@ fn lower_full(cps: &[u32]) -> Vec<u32> {
         push_lower_full(&mut out, cps, i);
     }
     out
+}
+
+/// Simple Unicode case folding (`MB_CASE_FOLD_SIMPLE`), shared with intl.
+pub(crate) fn case_fold_simple(cps: &[u32]) -> Vec<u32> {
+    map_simple(cps, mb_tables::MAP_FOLD_SIMPLE)
+}
+
+/// Full Unicode case folding (`MB_CASE_FOLD`), shared with the intl module.
+pub(crate) fn case_fold_full(cps: &[u32]) -> Vec<u32> {
+    fold_full(cps)
 }
 
 fn fold_full(cps: &[u32]) -> Vec<u32> {
@@ -842,53 +863,380 @@ fn cp_width(cp: u32) -> i64 {
 // mb_strstr / mb_strrchr
 // ---------------------------------------------------------------------------
 
-/// `mb_strstr($haystack, $needle, $before_needle = false, $encoding = null)`:
-/// portion of `haystack` from the first occurrence of `needle` to the end (or,
-/// with `$before_needle`, the part before it); `false` if not found. An empty
-/// needle matches at the start.
-fn fn_mb_strstr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+/// The shared core of `mb_strstr` / `mb_strrchr` / `mb_stristr` /
+/// `mb_strrichr` (php's `php_mb_strstr_variants`): find the needle's codepoint
+/// position exactly as `mb_strpos` / `mb_stripos` (and their reverse forms)
+/// would with offset 0, then return the `mb_substr` before or from it.
+fn strstr_variant(args: &[Value], fname: &str, fold: bool, reverse: bool) -> Result<Value, Thrown> {
     let before = args
         .get(2)
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(false);
-    let enc = arg_enc(args, 3, "mb_strstr", 4)?;
-    let haystack = decode(enc, &bytes_of(&args[0]));
-    let needle = decode(enc, &bytes_of(&args[1]));
-    match find_cps(&haystack, &needle, 0) {
-        Some(pos) => {
-            let slice = if before {
-                &haystack[..pos]
-            } else {
-                &haystack[pos..]
-            };
-            Ok(Value::str(encode(enc, slice)))
+    let enc = arg_enc(args, 3, fname, 4)?;
+    let hb = bytes_of(&args[0]);
+    let nb = bytes_of(&args[1]);
+    let (mut haystack, mut needle) = if fold {
+        (decode(enc, &hb), decode(enc, &nb))
+    } else {
+        (decode_pos(enc, &hb), decode_pos(enc, &nb))
+    };
+    if fold {
+        haystack = map_simple(&haystack, mb_tables::MAP_FOLD_SIMPLE);
+        needle = map_simple(&needle, mb_tables::MAP_FOLD_SIMPLE);
+    }
+    let found = if reverse {
+        rfind_cps(&haystack, &needle, 0, haystack.len())
+    } else {
+        find_cps(&haystack, &needle, 0)
+    };
+    let Some(pos) = found else {
+        return Ok(Value::Bool(false));
+    };
+    // mb_get_substr over the original string (strict decoder, re-encoded).
+    let cps = decode(enc, &hb);
+    let pos = pos.min(cps.len());
+    let slice = if before { &cps[..pos] } else { &cps[pos..] };
+    Ok(Value::str(encode(enc, slice)))
+}
+
+/// `mb_strstr($haystack, $needle, $before_needle = false, $encoding = null)`.
+fn fn_mb_strstr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strstr_variant(args, "mb_strstr", false, false)
+}
+
+/// `mb_strrchr($haystack, $needle, $before_needle = false, $encoding = null)`.
+fn fn_mb_strrchr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strstr_variant(args, "mb_strrchr", false, true)
+}
+
+/// `mb_stristr($haystack, $needle, $before_needle = false, $encoding = null)`.
+fn fn_mb_stristr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strstr_variant(args, "mb_stristr", true, false)
+}
+
+/// `mb_strrichr($haystack, $needle, $before_needle = false, $encoding = null)`.
+fn fn_mb_strrichr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strstr_variant(args, "mb_strrichr", true, true)
+}
+
+// ---------------------------------------------------------------------------
+// mb_convert_variables
+// ---------------------------------------------------------------------------
+
+/// Why a walk over the variables stopped: a cycle (php's
+/// `GC_IS_RECURSIVE` / `Z_IS_RECURSIVE` guards) or the stack limit.
+enum WalkErr {
+    Recursive,
+    StackLimit,
+}
+
+/// Nesting depth standing in for php's `mb_check_stack_limit`.
+const WALK_DEPTH_LIMIT: usize = 10_000;
+
+/// The arrays/objects on the current walk path, by identity. Like php's
+/// protect/unprotect flags this only rejects true cycles: a value reached
+/// twice along different paths is walked (and converted) twice.
+type WalkPath = Vec<*const ()>;
+
+fn walk_enter(path: &mut WalkPath, id: *const (), depth: usize) -> Result<(), WalkErr> {
+    if depth > WALK_DEPTH_LIMIT {
+        return Err(WalkErr::StackLimit);
+    }
+    if path.contains(&id) {
+        return Err(WalkErr::Recursive);
+    }
+    path.push(id);
+    Ok(())
+}
+
+/// `mb_recursive_find_strings`: every string inside `v`, in php's order.
+fn find_strings(
+    v: &Value,
+    out: &mut Vec<Vec<u8>>,
+    path: &mut WalkPath,
+    depth: usize,
+) -> Result<(), WalkErr> {
+    match v {
+        Value::Str(s) => out.push(s.as_bytes().to_vec()),
+        Value::Ref(r) => {
+            walk_enter(path, Rc::as_ptr(r) as *const (), depth)?;
+            let inner = r.borrow().clone();
+            let res = find_strings(&inner, out, path, depth + 1);
+            path.pop();
+            res?;
         }
-        None => Ok(Value::Bool(false)),
+        Value::Array(a) => {
+            if depth > WALK_DEPTH_LIMIT {
+                return Err(WalkErr::StackLimit);
+            }
+            for (_, item) in a.iter() {
+                find_strings(item, out, path, depth + 1)?;
+            }
+        }
+        Value::Object(h) => {
+            walk_enter(path, Rc::as_ptr(h) as *const (), depth)?;
+            let props: Vec<Value> = h.borrow().properties.values().cloned().collect();
+            let res = props
+                .iter()
+                .try_for_each(|pv| find_strings(pv, out, path, depth + 1));
+            path.pop();
+            res?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// `mb_recursive_convert_variable` on one slot. A string reached through a
+/// reference *inside* an array or object is replaced by a plain string (php
+/// overwrites the slot's zval, dropping the reference); arrays and objects
+/// behind references are converted in place. A partial conversion stays when
+/// the walk hits a cycle, as in php.
+fn convert_slot(
+    slot: &mut Value,
+    from: Enc,
+    to: Enc,
+    path: &mut WalkPath,
+    depth: usize,
+) -> Result<(), WalkErr> {
+    match slot {
+        Value::Str(s) => {
+            *slot = Value::str(encode(to, &decode(from, s.as_bytes())));
+            Ok(())
+        }
+        Value::Ref(r) => {
+            let r = r.clone();
+            let mut inner = r.borrow().clone();
+            if let Value::Str(s) = &inner {
+                *slot = Value::str(encode(to, &decode(from, s.as_bytes())));
+                return Ok(());
+            }
+            convert_in_cell(&r, &mut inner, from, to, path, depth)
+        }
+        Value::Array(a) => {
+            if depth > WALK_DEPTH_LIMIT {
+                return Err(WalkErr::StackLimit);
+            }
+            let keys: Vec<rhp_values::ArrayKey> = a.iter().map(|(k, _)| k.clone()).collect();
+            for k in keys {
+                if let Some(item) = a.get_mut(&k) {
+                    convert_slot(item, from, to, path, depth + 1)?;
+                }
+            }
+            Ok(())
+        }
+        Value::Object(h) => {
+            let h = h.clone();
+            walk_enter(path, Rc::as_ptr(&h) as *const (), depth)?;
+            let res = convert_object(&h, from, to, path, depth);
+            path.pop();
+            res
+        }
+        _ => Ok(()),
     }
 }
 
-/// `mb_strrchr($haystack, $needle, $before_needle = false, $encoding = null)`:
-/// like [`fn_mb_strstr`] but from the **last** occurrence of the whole `needle`
-/// (an empty needle matches at the end).
-fn fn_mb_strrchr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let before = args
-        .get(2)
-        .map(|v| conv::to_bool(&deref(v)))
-        .unwrap_or(false);
-    let enc = arg_enc(args, 3, "mb_strrchr", 4)?;
-    let haystack = decode(enc, &bytes_of(&args[0]));
-    let needle = decode(enc, &bytes_of(&args[1]));
-    match rfind_cps(&haystack, &needle, 0, haystack.len()) {
-        Some(pos) => {
-            let slice = if before {
-                &haystack[..pos]
-            } else {
-                &haystack[pos..]
-            };
-            Ok(Value::str(encode(enc, slice)))
-        }
-        None => Ok(Value::Bool(false)),
+/// Convert the container held by reference cell `r` (whose value is `inner`)
+/// and store the result back, even when the walk stopped part way.
+fn convert_in_cell(
+    r: &rhp_values::PhpRef,
+    inner: &mut Value,
+    from: Enc,
+    to: Enc,
+    path: &mut WalkPath,
+    depth: usize,
+) -> Result<(), WalkErr> {
+    walk_enter(path, Rc::as_ptr(r) as *const (), depth)?;
+    let res = convert_slot(inner, from, to, path, depth + 1);
+    path.pop();
+    *r.borrow_mut() = std::mem::replace(inner, Value::Null);
+    res
+}
+
+fn convert_object(
+    h: &rhp_values::ObjectHandle,
+    from: Enc,
+    to: Enc,
+    path: &mut WalkPath,
+    depth: usize,
+) -> Result<(), WalkErr> {
+    let keys: Vec<rhp_values::PhpStr> = h.borrow().properties.keys().cloned().collect();
+    for k in keys {
+        let Some(mut pv) = h.borrow().properties.get(&k).cloned() else {
+            continue;
+        };
+        let res = convert_slot(&mut pv, from, to, path, depth + 1);
+        h.borrow_mut().properties.insert(k, pv);
+        res?;
     }
+    Ok(())
+}
+
+/// `estimate_demerits`.
+fn estimate_demerits(w: u32) -> u64 {
+    if w > 0xFFFF {
+        40
+    } else if (0x21..=0x2F).contains(&w) {
+        6
+    } else if (rare_cp::RARE_CODEPOINT_BITVEC[(w >> 5) as usize] >> (w & 0x1F)) & 1 != 0 {
+        30
+    } else {
+        1
+    }
+}
+
+/// `mb_guess_encoding_for_strings` with `strict = false` (the default
+/// `mbstring.strict_detection`) and `order_significant = true`: every
+/// candidate survives; each bad input costs 1000 demerits, codepoints cost
+/// `estimate_demerits`, and the tally is scaled by the candidate's position
+/// weight after each string (strings are visited last to first). None of the
+/// supported encodings has a `check` hook.
+fn guess_encoding(strings: &[Vec<u8>], list: &[Enc]) -> Enc {
+    if list.len() == 1 || (strings.len() == 1 && strings[0].is_empty()) {
+        return list[0];
+    }
+    let len = list.len();
+    let mult: Vec<f32> = (0..len)
+        .map(|i| (1.0 + (0.3 * i as f64) / len as f64) as f32)
+        .collect();
+    let mut demerits = vec![0u64; len];
+    for s in strings.iter().rev() {
+        for (i, &enc) in list.iter().enumerate() {
+            let bytes = if enc == Enc::Utf8 && s.starts_with(b"\xEF\xBB\xBF") {
+                &s[3..]
+            } else {
+                &s[..]
+            };
+            for cp in decode(enc, bytes) {
+                demerits[i] += if cp == ERR {
+                    1000
+                } else {
+                    estimate_demerits(cp)
+                };
+            }
+            let d = demerits[i] as f64 * mult[i] as f64;
+            demerits[i] = if d < u64::MAX as f64 {
+                d as u64
+            } else {
+                u64::MAX
+            };
+        }
+    }
+    let mut best = 0;
+    for i in 1..len {
+        if demerits[i] < demerits[best] {
+            best = i;
+        }
+    }
+    list[best]
+}
+
+/// `mb_convert_variables($to_encoding, $from_encoding, &$var, &...$vars)`:
+/// convert every string in the variables in place; returns the (detected)
+/// source encoding name, or false when detection fails.
+fn fn_mb_convert_variables(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_convert_variables";
+    let to_name = bytes_of(&args[0]);
+    let to = resolve_enc(&to_name).ok_or_else(|| {
+        Thrown::error(
+            "ValueError",
+            format!(
+                "mb_convert_variables(): Argument #1 ($to_encoding) must be a valid encoding, \"{}\" given",
+                String::from_utf8_lossy(&to_name)
+            ),
+        )
+    })?;
+    // from: string (comma list, "auto") or array of names
+    let names: Vec<Vec<u8>> = match deref(&args[1]) {
+        Value::Array(a) => a.iter().map(|(_, v)| bytes_of(v)).collect(),
+        v => conv::to_string_bytes(&v)
+            .split(|&c| c == b',')
+            .map(|p| p.trim_ascii().to_vec())
+            .collect(),
+    };
+    let mut list: Vec<Enc> = Vec::new();
+    for n in &names {
+        if n.eq_ignore_ascii_case(b"auto") {
+            for e in [Enc::Ascii, Enc::Utf8] {
+                if !list.contains(&e) {
+                    list.push(e);
+                }
+            }
+            continue;
+        }
+        if n.is_empty() && names.len() == 1 {
+            break;
+        }
+        match resolve_enc(n) {
+            Some(e) => {
+                if !list.contains(&e) {
+                    list.push(e)
+                }
+            }
+            None => {
+                return Err(Thrown::error(
+                    "ValueError",
+                    format!(
+                        "mb_convert_variables(): Argument #2 ($from_encoding) contains invalid encoding \"{}\"",
+                        String::from_utf8_lossy(n)
+                    ),
+                ))
+            }
+        }
+    }
+    if list.is_empty() {
+        return Err(Thrown::error(
+            "ValueError",
+            "mb_convert_variables(): Argument #2 ($from_encoding) must specify at least one encoding",
+        ));
+    }
+    let walk_failed = |host: &mut dyn Host, e: WalkErr| -> Result<Value, Thrown> {
+        match e {
+            WalkErr::Recursive => {
+                warn(host, f, "Cannot handle recursive references")?;
+                Ok(Value::Bool(false))
+            }
+            WalkErr::StackLimit => Err(Thrown::error(
+                "Error",
+                "Maximum call stack size reached. Infinite recursion?",
+            )),
+        }
+    };
+    let from = if list.len() == 1 {
+        list[0]
+    } else {
+        let mut strs = Vec::new();
+        for v in &args[2..] {
+            if let Err(e) = find_strings(v, &mut strs, &mut Vec::new(), 0) {
+                return walk_failed(host, e);
+            }
+        }
+        // non-strict detection always settles on a candidate, so php's
+        // "Unable to detect encoding" warning cannot arise here
+        guess_encoding(&strs, &list)
+    };
+    for v in &args[2..] {
+        // php ZVAL_DEREFs each argument: a by-reference variable is converted
+        // in place, a string included
+        let mut path = Vec::new();
+        let res = match v {
+            Value::Ref(r) => {
+                let mut inner = r.borrow().clone();
+                if matches!(inner, Value::Str(_)) {
+                    let res = convert_slot(&mut inner, from, to, &mut path, 0);
+                    *r.borrow_mut() = inner;
+                    res
+                } else {
+                    convert_in_cell(r, &mut inner, from, to, &mut path, 0)
+                }
+            }
+            other => convert_slot(&mut other.clone(), from, to, &mut path, 0),
+        };
+        if let Err(e) = res {
+            return walk_failed(host, e);
+        }
+    }
+    Ok(Value::str(enc_name(from)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1146,6 +1494,9 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "mb_strwidth", fn_mb_strwidth, 1, Some(2));
     put(m, "mb_strstr", fn_mb_strstr, 2, Some(4));
     put(m, "mb_strrchr", fn_mb_strrchr, 2, Some(4));
+    put(m, "mb_stristr", fn_mb_stristr, 2, Some(4));
+    put(m, "mb_strrichr", fn_mb_strrichr, 2, Some(4));
+    put(m, "mb_convert_variables", fn_mb_convert_variables, 3, None);
     put(m, "mb_strimwidth", fn_mb_strimwidth, 3, Some(5));
     put(m, "mb_scrub", fn_mb_scrub, 1, Some(2));
     put(m, "mb_ord", fn_mb_ord, 1, Some(2));
@@ -1170,6 +1521,46 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn convert_variables_recursion_warns() {
+        // $r = ["\xe9"]; $r[] = &$r;
+        let cell: rhp_values::PhpRef = Rc::new(RefCell::new(Value::Null));
+        let mut a = PhpArray::new();
+        a.push(Value::str(b"\xe9".to_vec()));
+        a.push(Value::Ref(cell.clone()));
+        *cell.borrow_mut() = Value::Array(a);
+        for from in ["ISO-8859-1", "ISO-8859-1,UTF-8"] {
+            let (r, d) = crate::diag_test::run(
+                fn_mb_convert_variables,
+                &[
+                    Value::str("UTF-8"),
+                    Value::str(from),
+                    Value::Ref(cell.clone()),
+                ],
+            );
+            assert!(matches!(r, Ok(Value::Bool(false))));
+            assert_eq!(
+                d,
+                vec!["Warning: mb_convert_variables(): Cannot handle recursive references"]
+            );
+        }
+        // the single-encoding pass converted the first element before failing
+        let Value::Array(a) = &*cell.borrow() else {
+            panic!()
+        };
+        assert_eq!(bytes_of(a.get_index(0).unwrap().1), b"\xc3\xa9");
+        let (r, d) = crate::diag_test::run(
+            fn_mb_convert_variables,
+            &[
+                Value::str("UTF-8"),
+                Value::str("auto"),
+                Value::str(b"h\xe9llo".to_vec()),
+            ],
+        );
+        assert!(d.is_empty());
+        assert_eq!(bytes_of(&r.ok().unwrap()), b"ASCII");
+    }
 
     struct NullHost;
     impl Host for NullHost {

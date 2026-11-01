@@ -1,0 +1,10 @@
+sha1: true
+<?php echo "hello from sha1 phar\n";
+sha256: true
+<?php echo "hello from sha256 phar\n";
+sha512: true
+<?php echo "hello from sha512 phar\n";
+PharException missing: phar "bad_missing.phar" openssl signature could not be verified: openssl public key could not be read
+PharException wrong: phar "bad_wrong.phar" openssl signature could not be verified: broken openssl signature
+PharException garbage: phar "bad_garbage.phar" openssl signature could not be verified: openssl signature could not be processed
+PharException cert: phar "bad_cert.phar" openssl signature could not be verified: openssl signature could not be processed

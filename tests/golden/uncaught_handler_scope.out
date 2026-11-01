@@ -1,0 +1,4 @@
+destruct local
+EH: boom cfg='global-value'
+shutdown sees: 'global-value'
+destruct global

@@ -1,0 +1,73 @@
+object(U)#1 (2) {
+  ["a"]=>
+  uninitialized(int)
+  ["b"]=>
+  uninitialized(?string)
+  ["c"]=>
+  NULL
+  ["d":"U":private]=>
+  uninitialized(int)
+  ["e"]=>
+  int(3)
+}
+O:1:"U":2:{s:1:"c";N;s:1:"e";i:3;}
+{"c":null,"e":3}
+2
+array(2) {
+  ["c"]=>
+  NULL
+  ["e"]=>
+  int(3)
+}
+object(U)#1 (2) {
+  ["a"]=>
+  int(5)
+  ["b"]=>
+  uninitialized(?string)
+  ["c"]=>
+  NULL
+  ["d":"U":private]=>
+  uninitialized(int)
+  ["e"]=>
+  uninitialized(int)
+}
+Error: Typed property U::$e must not be accessed before initialization
+TypeError: Cannot assign stdClass to property P::$s of type string
+ok
+ok
+TypeError: Cannot assign string to property P::$i of type int
+TypeError: Cannot assign stdClass to property P::$self of type P
+ok
+ok
+ok
+TypeError: Cannot assign null to property P::$s of type string
+P Object
+(
+    [s] => x
+    [i] => 5
+    [a] => 
+    [f] => 3
+    [is] => 1
+)
+
+Error: Cannot modify readonly property RO2::$i
+Error: Cannot modify readonly property RO2::$i
+Error: Cannot unset readonly property RO2::$i
+Error: Cannot indirectly modify readonly property RO2::$v
+Error: Cannot indirectly modify readonly property RO2::$v
+Error: Cannot acquire reference to readonly property RO2::$i
+RO2 Object
+(
+    [i] => 2
+    [v] => Array
+        (
+        )
+
+)
+
+int(42)
+Error: Cannot modify protected(set) readonly property Outside::$x from global scope
+Error: Cannot modify readonly property Status::$value
+Error: Trying to clone an uncloneable object of class Status
+int(1)
+bool(false)

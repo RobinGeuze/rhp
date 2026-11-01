@@ -38,7 +38,14 @@ fn first_byte(v: Option<&Value>, default: u8) -> u8 {
 /// `str_getcsv($string, $separator = ",", $enclosure = '"', $escape = "\\")`.
 /// Parses a single CSV record into an array of fields. An empty input yields
 /// `[null]`, matching php.
-fn fn_str_getcsv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_str_getcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    if args.len() < 4 {
+        crate::deprecated(
+            host,
+            "str_getcsv",
+            "the $escape parameter must be provided as its default value will change",
+        )?;
+    }
     let s = conv::to_string_bytes(&deref(&args[0]));
     let sep = first_byte(args.get(1), b',');
     let enc = first_byte(args.get(2), b'"');
@@ -48,13 +55,19 @@ fn fn_str_getcsv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         None => Some(b'\\'),
     };
 
+    Ok(Value::Array(parse_csv(&s, sep, enc, esc)))
+}
+
+/// One CSV record into its fields (`str_getcsv` / `fgetcsv`); an empty
+/// record is `[null]`.
+pub(crate) fn parse_csv(s: &[u8], sep: u8, enc: u8, esc: Option<u8>) -> PhpArray {
     let mut out = PhpArray::new();
     if s.is_empty() {
         out.push(Value::Null);
-        return Ok(Value::Array(out));
+        return out;
     }
 
-    let bytes = &s;
+    let bytes = s;
     let mut i = 0usize;
     loop {
         let mut field = Vec::new();
@@ -119,7 +132,7 @@ fn fn_str_getcsv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             _ => break,
         }
     }
-    Ok(Value::Array(out))
+    out
 }
 
 // ---------------------------------------------------------------------------

@@ -180,6 +180,12 @@ pub enum Instr {
         a: Reg,
     },
 
+    /// `@expr` begin: diagnostics raised until the matching `EndSilence` are
+    /// recorded but not displayed (ZEND_BEGIN_SILENCE).
+    BeginSilence,
+    /// `@expr` end: restore the display state saved by `BeginSilence`.
+    EndSilence,
+
     // -- compare (phase 2) — route to ops:: --
     Cmp {
         dst: Reg,
@@ -259,6 +265,20 @@ pub enum Instr {
 
     // -- array element read (value context): element or Null; string offset --
     DimFetch {
+        dst: Reg,
+        arr: Reg,
+        key: Reg,
+    },
+    /// `DimFetch` in isset/`??` context (`BP_VAR_IS`): no diagnostics, and an
+    /// absent string offset reads as Null.
+    DimFetchIs {
+        dst: Reg,
+        arr: Reg,
+        key: Reg,
+    },
+    /// `DimFetch` for a `list()`/`[...] =` destructuring element
+    /// (`ZEND_FETCH_LIST_R`).
+    DimFetchList {
         dst: Reg,
         arr: Reg,
         key: Reg,
@@ -416,6 +436,12 @@ pub enum Instr {
     SetPendingRet {
         src: Reg,
     },
+    /// A `break`/`continue` that leaves a `try` with a `finally`: run the
+    /// enclosing finally blocks (innermost first) that do not contain
+    /// `target`, then jump to `target`.
+    JmpFinally {
+        target: Pc,
+    },
 
     // -- OOP (phase 7) --
     /// `new C(args)`: allocate into `dst`, then run `__construct` via the window.
@@ -456,6 +482,27 @@ pub enum Instr {
         dst: Reg,
         obj: Reg,
         name: Reg,
+    },
+    /// `$o->p` in isset/empty/`??` context (php's BP_VAR_IS): an inaccessible
+    /// or missing property is null without an error, via `__isset` then
+    /// `__get` when defined.
+    FetchPropIs {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+    },
+    /// `FetchPropIs` with the property name in a register.
+    FetchPropDynIs {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+    },
+    /// `C::$p` in isset/empty/`??` context: null (no error) when the static
+    /// property is undeclared or inaccessible.
+    FetchStaticPropIs {
+        dst: Reg,
+        class: ClassRef,
+        name: NIdx,
     },
     /// `$o->$p = src`: dynamic-name property write.
     StorePropDyn {
@@ -525,6 +572,13 @@ pub enum Instr {
     MakeRefLval {
         dst: Reg,
     },
+    /// `isset($c[$k])`: array element present and non-null, string offset in
+    /// range, or `ArrayAccess::offsetExists`; else false.
+    IssetDim {
+        dst: Reg,
+        arr: Reg,
+        key: Reg,
+    },
     /// `isset($o->name)`: declared non-null property, else `__isset`, else false.
     IssetProp {
         dst: Reg,
@@ -535,6 +589,30 @@ pub enum Instr {
     UnsetProp {
         obj: Reg,
         name: NIdx,
+    },
+    /// `empty($o->name)`: a reachable set property's falsiness, else (php's
+    /// ZEND_PROPERTY_NOT_EMPTY) `__isset` and, if it says yes, `__get`.
+    EmptyProp {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+    },
+    /// `EmptyProp` with the name in a register.
+    EmptyPropDyn {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+    },
+    /// `isset($o->$name)`: `IssetProp` with the name in a register.
+    IssetPropDyn {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+    },
+    /// `unset($o->$name)`: `UnsetProp` with the name in a register.
+    UnsetPropDyn {
+        obj: Reg,
+        name: Reg,
     },
     /// `global $x`: bind CV `cv` to the global variable `name` (a shared cell).
     BindGlobal {
@@ -547,6 +625,27 @@ pub enum Instr {
         cv: Reg,
         name: NIdx,
         init: u32,
+    },
+    /// `static $x = <non-constant expr>;` (php 8.3+), part 1: if the static
+    /// cell `name` already exists, bind CV `cv` to it and jump to `target`
+    /// (skipping the initializer); otherwise fall through to evaluate it.
+    BindStaticOrJmp {
+        cv: Reg,
+        name: NIdx,
+        target: Pc,
+    },
+    /// Part 2: create the static cell `name` holding the value in `src` (unless
+    /// the initializer re-entered and already created it) and bind CV `cv`.
+    BindStaticInit {
+        cv: Reg,
+        name: NIdx,
+        src: Reg,
+    },
+    /// Top-level `const NAME = <expr>;`: define global constant `name` with the
+    /// value in `src` (a no-op if it is already defined), in statement order.
+    DeclareConst {
+        name: NIdx,
+        src: Reg,
     },
     /// `$val instanceof C` (never throws).
     InstanceOf {
@@ -573,7 +672,11 @@ pub enum Instr {
         class: ClassRef,
         name: NIdx,
     },
-    /// Link + register a conditionally-declared class at this point.
+    /// Declare a class at this statement. `class_idx` is file-local: indices
+    /// below the file's user top-level class count name `Program::classes`
+    /// (after the prelude) — a no-op when that class was already hoisted at
+    /// load; the rest name `Program::cond_classes` (classes nested in control
+    /// flow or function bodies), linked only when reached.
     DeclareClass {
         class_idx: u32,
     },
@@ -631,6 +734,13 @@ pub enum Instr {
     },
     /// `__halt_compiler()`: stop this proto as a top-level return.
     Halt,
+    /// End of an expression statement: the temporaries `[from, to)` it used are
+    /// dead — release them (so an object only they still held is freed, and
+    /// its destructor runs, at the statement boundary as in php).
+    ClearTemps {
+        from: Reg,
+        to: Reg,
+    },
     /// `exit`/`die`: a string `arg` is printed (code 0), an int `arg` is the exit
     /// code, null/absent is code 0. Terminates the script via the SAPI exit path.
     Exit {
@@ -684,6 +794,9 @@ pub struct ParamInfo {
     pub default: Option<Default>,
     /// Declared type (for `strict_types` enforcement / coercion); None = untyped.
     pub type_hint: Option<TypeHint>,
+    /// Source line of the parameter declaration (php raises argument
+    /// TypeError / ArgumentCountError at the failing parameter's line).
+    pub line: u32,
 }
 
 /// A declared parameter / return type: a (possibly nullable) union or
@@ -734,6 +847,9 @@ pub struct ExRegion {
     pub end: Pc,
     pub catches: Vec<CatchArm>,
     pub finally: Option<Pc>,
+    /// The pc of the finally block's `FinallyEnd` (the block is
+    /// `[finally, finally_end]`); meaningless without `finally`.
+    pub finally_end: Pc,
 }
 
 #[derive(Clone)]
@@ -802,6 +918,9 @@ pub struct FunctionProto {
     /// included file is stamped with the closure count at merge time, so no
     /// instruction rewriting is needed (see `Vm::install_included`).
     pub closure_base: u32,
+    /// Offset of this proto's file into the VM's flat class-declaration table
+    /// (the operand of `DeclareClass` is file-local, like `closure_base`).
+    pub class_base: u32,
     /// CVs that name a superglobal (`$_SERVER`, `$GLOBALS`, …), paired with the
     /// name; the VM binds each to the shared global cell at frame entry so they
     /// are visible in every scope without an explicit `global`.
@@ -841,6 +960,7 @@ impl FunctionProto {
             num_captures: 0,
             is_generator: false,
             closure_base: 0,
+            class_base: 0,
             superglobals: Vec::new(),
             return_type: None,
             strict_types: false,
@@ -885,6 +1005,9 @@ pub struct Program {
     /// How many leading entries of `functions` are prelude helper functions
     /// (`iterator_*`, …), re-emitted per compile and skipped on include merge.
     pub num_prelude_functions: usize,
+    /// Class declarations nested in control flow / function bodies; never
+    /// hoisted, declared by `DeclareClass` when execution reaches them.
+    pub cond_classes: Vec<ClassProto>,
 }
 
 // ---------------------------------------------------------------------------
@@ -933,8 +1056,9 @@ pub struct ClassProto {
 #[derive(Clone)]
 pub struct EnumCaseProto {
     pub name: PhpStr,
-    /// The backing value (already the correct scalar type), or `None` for a pure enum.
-    pub value: Option<Value>,
+    /// The backing value — folded, or a thunk evaluating a constant expression
+    /// on first access — or `None` for a pure enum.
+    pub value: Option<ConstInitProto>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -970,12 +1094,30 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         // `sscanf($string, $format, &...$vars)`: every argument from position 2
         // on is an output passed by reference.
         "sscanf" => &SSCANF_REF_MASK,
+        // `mb_convert_variables($to, $from, &$var, &...$vars)`.
+        "mb_convert_variables" => &SSCANF_REF_MASK,
+        // `&$idna_info` at position 3.
+        "idn_to_ascii" | "idn_to_utf8" => &[false, false, false, true],
+        // `&$next` at position 4.
+        "grapheme_extract" => &[false, false, false, false, true],
         // `&$matches` at position 2.
         "preg_match" | "preg_match_all" => &[false, false, true],
+        // `flock($stream, $operation, &$would_block)`.
+        "flock" => &[false, false, true],
+        // curl_multi_exec(&$still_running), curl_multi_info_read(&$queued_messages).
+        "curl_multi_exec" | "curl_multi_info_read" => &[false, true],
         // `&$count` at position 4.
-        "preg_replace" | "preg_replace_callback" | "preg_replace_callback_array" => {
-            &[false, false, false, false, true]
-        }
+        "preg_replace" | "preg_replace_callback" => &[false, false, false, false, true],
+        // `preg_replace_callback_array($pattern, $subject, $limit, &$count)`.
+        "preg_replace_callback_array" => &[false, false, false, true],
+        // `parse_str($string, &$result)`.
+        "parse_str" => &[false, true],
+        // Program execution: `&$pipes`, `&$output` / `&$result_code`.
+        "proc_open" => &[false, false, true],
+        "exec" => &[false, true, true],
+        "system" | "passthru" => &[false, true],
+        // `stream_select(&$read, &$write, &$except, …)`.
+        "stream_select" => &[true, true, true],
         _ => &[],
     }
 }
@@ -994,8 +1136,14 @@ pub struct MethodProto {
 pub struct PropProto {
     pub name: PhpStr,
     pub visibility: Visibility,
+    /// Asymmetric write visibility (`private(set)` / `protected(set)`), when
+    /// narrower than `visibility`.
+    pub set_visibility: Option<Visibility>,
     pub is_readonly: bool,
     pub default: PropDefaultProto,
+    /// Declared type (`None` = untyped); a lazily evaluated default is
+    /// checked against it (php's `update_property`).
+    pub type_hint: Option<TypeHint>,
 }
 
 #[derive(Clone)]
@@ -1004,6 +1152,8 @@ pub struct StaticPropProto {
     pub visibility: Visibility,
     pub is_readonly: bool,
     pub init: ConstInitProto,
+    /// Declared type (`None` = untyped).
+    pub type_hint: Option<TypeHint>,
 }
 
 #[derive(Clone)]
@@ -1011,6 +1161,8 @@ pub struct ConstProto {
     pub name: PhpStr,
     pub visibility: Visibility,
     pub value: ConstInitProto,
+    /// Declared type of a typed class constant (`None` = untyped).
+    pub type_hint: Option<TypeHint>,
 }
 
 /// A property's per-instance default, as compiled.

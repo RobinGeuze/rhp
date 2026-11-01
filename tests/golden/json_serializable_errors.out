@@ -1,0 +1,23 @@
+{"v":5,"k":"x"}
+{
+    "0": {
+        "v": [
+            1,
+            2
+        ],
+        "k": "x"
+    },
+    "b": {
+        "p": 1
+    }
+}
+bool(false)
+6 Recursion detected
+{"v":{"v":3,"k":"x"},"k":"x"}
+{"0":"x","1":1,"k":"x"}
+bool(false)
+11 Non-backed enums have no default serialization
+JsonException: Non-backed enums have no default serialization
+caught js
+caught js
+0

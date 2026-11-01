@@ -1,0 +1,48 @@
+LogicException: inner cause in exc_tostring_chain.php:10
+Stack trace:
+#0 exc_tostring_chain.php(12): thrower(42, 'a string longer...', 'tab\there\n\x01\xC3\xA9', 1.5, 2.0, NULL, true, Array, Object(Thing), Suit::Hearts, false, -0.0)
+#1 {main}
+
+Next RuntimeException: made in exc_tostring_chain.php:10
+Stack trace:
+#0 exc_tostring_chain.php(12): thrower(42, 'a string longer...', 'tab\there\n\x01\xC3\xA9', 1.5, 2.0, NULL, true, Array, Object(Thing), Suit::Hearts, false, -0.0)
+#1 {main}
+===
+#0 exc_tostring_chain.php(12): thrower(42, 'a string longer...', 'tab\there\n\x01\xC3\xA9', 1.5, 2.0, NULL, true, Array, Object(Thing), Suit::Hearts, false, -0.0)
+#1 {main}
+===
+int(12)
+inner cause|exc_tostring_chain.php|10
+Exception in exc_tostring_chain.php:32
+Stack trace:
+#0 {main}
+===
+Error in exc_tostring_chain.php:33
+Stack trace:
+#0 {main}
+===
+Exception: root in exc_tostring_chain.php:36
+Stack trace:
+#0 {main}
+
+Next TypeError: middle in exc_tostring_chain.php:36
+Stack trace:
+#0 {main}
+
+Next Exception: outer in exc_tostring_chain.php:36
+Stack trace:
+#0 {main}
+===
+default message|99
+given|99
+Pretty(p)
+2|/some/where/file.php|77|3
+8|/some/where/file.php|0
+1|exc_tostring_chain.php|60
+exc_tostring_chain.php|5
+bool(true)
+bool(true)
+bool(true)
+70
+77 #0 exc_tostring_chain.php(77): intdiv(1, 0)
+#1 {main}

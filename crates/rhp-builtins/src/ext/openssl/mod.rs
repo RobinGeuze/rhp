@@ -14,6 +14,11 @@ use x509_parser::prelude::*;
 
 use crate::{Builtin, Host, Thrown};
 
+mod pkey;
+
+pub(crate) use pkey::verify_with_pem;
+pub use pkey::PRELUDE_PHP;
+
 fn deref(v: &Value) -> Value {
     match v {
         Value::Ref(r) => r.borrow().clone(),
@@ -158,6 +163,54 @@ fn fn_openssl_x509_parse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
 }
 
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
+    fn put(
+        m: &mut HashMap<&'static str, Builtin>,
+        name: &'static str,
+        func: crate::NativeFn,
+        min: usize,
+        max: Option<usize>,
+    ) {
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
+    }
+    put(
+        m,
+        "openssl_pkey_get_public",
+        pkey::fn_pkey_get_public,
+        1,
+        Some(1),
+    );
+    put(
+        m,
+        "openssl_get_publickey",
+        pkey::fn_pkey_get_public,
+        1,
+        Some(1),
+    );
+    put(
+        m,
+        "openssl_pkey_get_details",
+        pkey::fn_pkey_get_details,
+        1,
+        Some(1),
+    );
+    put(m, "openssl_pkey_free", pkey::fn_pkey_free, 1, Some(1));
+    put(m, "openssl_free_key", pkey::fn_free_key, 1, Some(1));
+    put(m, "openssl_verify", pkey::fn_verify, 3, Some(5));
+    put(
+        m,
+        "openssl_get_md_methods",
+        pkey::fn_get_md_methods,
+        0,
+        Some(1),
+    );
     m.insert(
         "openssl_x509_parse",
         Builtin {
@@ -179,5 +232,25 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("OPENSSL_VERSION_NUMBER", Value::Int(811597872)),
         ("OPENSSL_RAW_DATA", Value::Int(1)),
         ("OPENSSL_ZERO_PADDING", Value::Int(2)),
+        ("OPENSSL_ALGO_SHA1", Value::Int(1)),
+        ("OPENSSL_ALGO_MD5", Value::Int(2)),
+        ("OPENSSL_ALGO_MD4", Value::Int(3)),
+        ("OPENSSL_ALGO_SHA224", Value::Int(6)),
+        ("OPENSSL_ALGO_SHA256", Value::Int(7)),
+        ("OPENSSL_ALGO_SHA384", Value::Int(8)),
+        ("OPENSSL_ALGO_SHA512", Value::Int(9)),
+        ("OPENSSL_ALGO_RMD160", Value::Int(10)),
+        ("OPENSSL_PKCS1_PADDING", Value::Int(1)),
+        ("OPENSSL_NO_PADDING", Value::Int(3)),
+        ("OPENSSL_PKCS1_OAEP_PADDING", Value::Int(4)),
+        ("OPENSSL_PKCS1_PSS_PADDING", Value::Int(6)),
+        ("OPENSSL_KEYTYPE_RSA", Value::Int(0)),
+        ("OPENSSL_KEYTYPE_DSA", Value::Int(1)),
+        ("OPENSSL_KEYTYPE_DH", Value::Int(2)),
+        ("OPENSSL_KEYTYPE_EC", Value::Int(3)),
+        ("OPENSSL_KEYTYPE_X25519", Value::Int(4)),
+        ("OPENSSL_KEYTYPE_ED25519", Value::Int(5)),
+        ("OPENSSL_KEYTYPE_X448", Value::Int(6)),
+        ("OPENSSL_KEYTYPE_ED448", Value::Int(7)),
     ]
 }

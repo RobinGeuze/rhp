@@ -1,0 +1,39 @@
+int(3)
+string(3) "PUB"
+bool(true)
+array(2) {
+  [0]=>
+  string(1) "p"
+  [1]=>
+  string(1) "b"
+}
+string(2) "ub"
+string(3) "pub"
+string(3) "pub"
+string(6) "pubpub"
+string(5) "pub--"
+int(0)
+string(3) "pUb"
+string(7) "pub-pub"
+string(5) "pub+1"
+strlen(): Argument #1 ($string) must be of type string, stdClass given
+str_replace(): Argument #3 ($subject) must be of type array|string, stdClass given
+mb_substr(): Argument #4 ($encoding) must be of type ?string, stdClass given
+strlen(): Argument #1 ($string) must be of type string, Closure given
+array(1) {
+  [0]=>
+  string(3) "PUB"
+}
+int(5)
+bool(true)
+bool(true)
+array(2) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "b"
+}
+array(1) {
+  [0]=>
+  string(1) "z"
+}

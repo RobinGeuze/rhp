@@ -1,0 +1,78 @@
+array(15) {
+  ["a"]=>
+  string(1) "1"
+  ["b"]=>
+  string(0) ""
+  ["c"]=>
+  string(1) "1"
+  ["d"]=>
+  string(0) ""
+  ["e"]=>
+  string(1) "1"
+  ["f"]=>
+  string(0) ""
+  ["g"]=>
+  string(0) ""
+  ["h"]=>
+  string(0) ""
+  ["i"]=>
+  string(1) "1"
+  ["j"]=>
+  string(1) "1"
+  ["k"]=>
+  string(0) ""
+  ["l"]=>
+  string(7) "trueish"
+  ["m"]=>
+  string(2) "On"
+  ["o"]=>
+  string(0) ""
+  ["p"]=>
+  string(0) ""
+}
+array(11) {
+  ["a"]=>
+  bool(true)
+  ["b"]=>
+  bool(false)
+  ["c"]=>
+  bool(true)
+  ["d"]=>
+  bool(false)
+  ["e"]=>
+  bool(true)
+  ["f"]=>
+  bool(false)
+  ["g"]=>
+  bool(false)
+  ["h"]=>
+  NULL
+  ["i"]=>
+  NULL
+  ["j"]=>
+  string(4) "TRUE"
+  ["k"]=>
+  string(5) "True2"
+}
+array(3) {
+  ["a"]=>
+  string(2) "On"
+  ["b"]=>
+  string(4) "TRUE"
+  ["c"]=>
+  string(4) "Null"
+}
+array(1) {
+  ["s"]=>
+  array(2) {
+    ["x"]=>
+    string(1) "1"
+    ["y"]=>
+    array(2) {
+      [0]=>
+      string(0) ""
+      [1]=>
+      string(1) "1"
+    }
+  }
+}

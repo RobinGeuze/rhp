@@ -26,6 +26,20 @@ fn fn_meta(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(host.reflect_meta(&str_arg(args, 0)).unwrap_or(Value::Null))
 }
 
+/// `ReflectionClass::getConstants()`: evaluate pending constant expressions
+/// first (php's `zend_update_class_constants`), then list name => value.
+fn fn_constants(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = str_arg(args, 0);
+    host.update_class_constants(&name)?;
+    let consts = match host.reflect_meta(&name) {
+        Some(Value::Array(a)) => a
+            .get(&rhp_values::ArrayKey::from_bytes(b"constants"))
+            .cloned(),
+        _ => None,
+    };
+    Ok(consts.unwrap_or_else(|| Value::Array(rhp_values::PhpArray::new())))
+}
+
 fn fn_is_a(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = str_arg(args, 0);
     let other = str_arg(args, 1);
@@ -51,17 +65,23 @@ fn fn_new_instance_noctor(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
     host.reflect_new_instance(&name, Vec::new(), false)
 }
 
+/// `__reflect_get_prop($obj, $name, $class)`: read `$name` as `$class` sees it.
 fn fn_get_prop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let obj = deref(&args[0]);
     let name = str_arg(args, 1);
-    Ok(host.object_prop(&obj, &name).unwrap_or(Value::Null))
+    let class = str_arg(args, 2);
+    Ok(host
+        .reflect_get_prop(&obj, &class, &name)
+        .unwrap_or(Value::Null))
 }
 
+/// `__reflect_set_prop($obj, $name, $value, $class)`.
 fn fn_set_prop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let obj = deref(&args[0]);
     let name = str_arg(args, 1);
     let val = deref(&args[2]);
-    host.reflect_set_prop(&obj, &name, val);
+    let class = str_arg(args, 3);
+    host.reflect_set_prop(&obj, &class, &name, val);
     Ok(Value::Null)
 }
 
@@ -73,6 +93,19 @@ fn fn_method_params(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         .unwrap_or_else(|| Value::Array(rhp_values::PhpArray::new())))
 }
 
+/// `__reflect_invoke($object, $class, $method, $args)`: ReflectionMethod::
+/// invoke(), which ignores visibility.
+fn fn_invoke(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let obj = deref(&args[0]);
+    let class = str_arg(args, 1);
+    let method = str_arg(args, 2);
+    let argv: Vec<Value> = match deref(&args[3]) {
+        Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+        _ => Vec::new(),
+    };
+    host.reflect_invoke(&obj, &class, &method, argv)
+}
+
 fn fn_func_params(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let c = deref(&args[0]);
     Ok(host
@@ -81,6 +114,7 @@ fn fn_func_params(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 }
 
 fn fn_class_constants(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    host.update_class_constants(&str_arg(args, 0))?;
     Ok(host
         .reflect_class_constants(&str_arg(args, 0))
         .unwrap_or_else(|| Value::Array(rhp_values::PhpArray::new())))
@@ -105,6 +139,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         );
     }
     put(m, "__reflect_meta", fn_meta, 1, Some(1));
+    put(m, "__reflect_constants", fn_constants, 1, Some(1));
     put(m, "__reflect_is_a", fn_is_a, 2, Some(2));
     put(m, "__reflect_new_instance", fn_new_instance, 1, Some(2));
     put(
@@ -114,9 +149,10 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         1,
         Some(1),
     );
-    put(m, "__reflect_get_prop", fn_get_prop, 2, Some(2));
-    put(m, "__reflect_set_prop", fn_set_prop, 3, Some(3));
+    put(m, "__reflect_get_prop", fn_get_prop, 3, Some(3));
+    put(m, "__reflect_set_prop", fn_set_prop, 4, Some(4));
     put(m, "__reflect_method_params", fn_method_params, 2, Some(2));
+    put(m, "__reflect_invoke", fn_invoke, 4, Some(4));
     put(m, "__reflect_func_params", fn_func_params, 1, Some(1));
     put(
         m,
@@ -165,8 +201,8 @@ class ReflectionMethod {
     public function getName() { return $this->name; }
     public function getShortName() { return $this->name; }
     public function getDeclaringClass() { return new ReflectionClass($this->class); }
-    public function invoke($object, ...$args) { return call_user_func_array([$object ?? $this->class, $this->name], $args); }
-    public function invokeArgs($object, $args) { return call_user_func_array([$object ?? $this->class, $this->name], $args); }
+    public function invoke($object, ...$args) { return __reflect_invoke($object, $this->class, $this->name, $args); }
+    public function invokeArgs($object, $args) { return __reflect_invoke($object, $this->class, $this->name, $args); }
     public function setAccessible($a) {}
     public function getParameters() { $out = []; foreach (__reflect_method_params($this->class, $this->name) as $m) { $out[] = new ReflectionParameter($m); } return $out; }
     public function getNumberOfParameters() { return count(__reflect_method_params($this->class, $this->name)); }
@@ -178,8 +214,8 @@ class ReflectionProperty {
     public function __construct($class, $name) { $this->class = is_object($class) ? get_class($class) : $class; $this->name = $name; }
     public function getName() { return $this->name; }
     public function setAccessible($a) {}
-    public function getValue($object = null) { return __reflect_get_prop($object, $this->name); }
-    public function setValue($object, $value = null) { __reflect_set_prop($object, $this->name, $value); }
+    public function getValue($object = null) { return __reflect_get_prop($object, $this->name, $this->class); }
+    public function setValue($object, $value = null) { __reflect_set_prop($object, $this->name, $value, $this->class); }
     public function isInitialized($object = null) { return true; }
 }
 
@@ -210,6 +246,7 @@ class ReflectionClass {
     public function inNamespace() { return $this->meta['namespaceName'] !== ''; }
     public function isAbstract() { return $this->meta['isAbstract']; }
     public function isInterface() { return $this->meta['isInterface']; }
+    public function isAnonymous() { return str_contains($this->name, '@anonymous'); }
     public function isInstantiable() { return $this->meta['isInstantiable']; }
     public function isFinal() { return $this->meta['isFinal']; }
     public function isEnum() { return $this->meta['isEnum']; }
@@ -224,8 +261,8 @@ class ReflectionClass {
     public function getMethod($m) { return new ReflectionMethod($this->name, $m); }
     public function getMethods($filter = null) { $out = []; foreach ($this->meta['methods'] as $m) { $out[] = new ReflectionMethod($this->name, $m); } return $out; }
     public function getConstructor() { return $this->hasMethod('__construct') ? new ReflectionMethod($this->name, '__construct') : null; }
-    public function getConstants() { return $this->meta['constants']; }
-    public function getConstant($n) { return $this->meta['constants'][$n] ?? false; }
+    public function getConstants() { return __reflect_constants($this->name); }
+    public function getConstant($n) { return __reflect_constants($this->name)[$n] ?? false; }
     public function hasConstant($n) { return array_key_exists($n, $this->meta['constants']); }
     public function getReflectionConstants($filter = null) { $out = []; foreach (__reflect_class_constants($this->name) as $c) { $out[] = new ReflectionClassConstant($this->name, $c['name']); } return $out; }
     public function getReflectionConstant($n) { return $this->hasConstant($n) ? new ReflectionClassConstant($this->name, $n) : false; }

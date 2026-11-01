@@ -530,107 +530,6 @@ fn fn_array_merge_recursive(_: &mut dyn Host, args: &[Value]) -> Result<Value, T
 // registration
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// array_udiff / array_uintersect / array_diff_ukey (callback comparators)
-// ---------------------------------------------------------------------------
-
-/// An array key as a php value (int key → int, string key → string), for passing
-/// keys to a user comparator.
-fn key_to_value(k: &ArrayKey) -> Value {
-    match k {
-        ArrayKey::Int(n) => Value::Int(*n),
-        ArrayKey::Str(s) => Value::str(s.as_bytes().to_vec()),
-    }
-}
-
-/// Split `args` into (base array, other arrays, comparator callable) for the
-/// `u*`/`*_u*` family: the last argument is the callback, the rest are arrays.
-fn split_cb_args<'a>(
-    args: &'a [Value],
-    func: &str,
-) -> Result<(PhpArray, Vec<PhpArray>, &'a Value), Thrown> {
-    let cb = args.last().unwrap();
-    let base = want_array(&args[0], func, 1)?;
-    let mut others = Vec::with_capacity(args.len().saturating_sub(2));
-    for (i, arg) in args[1..args.len() - 1].iter().enumerate() {
-        others.push(want_array(arg, func, i + 2)?);
-    }
-    Ok((base, others, cb))
-}
-
-/// `array_udiff($array, ...$arrays, $value_compare_func)`: entries of `$array`
-/// whose value is not found (comparator returns 0) in any other array. Keys and
-/// order of `$array` are preserved; duplicates are kept.
-fn fn_array_udiff(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let (base, others, cb) = split_cb_args(args, "array_udiff")?;
-    let mut out = PhpArray::new();
-    for (k, v) in base.iter() {
-        let mut found = false;
-        'outer: for other in &others {
-            for (_, v2) in other.iter() {
-                if conv::to_int(&host.call_callable(cb, &[v.clone(), v2.clone()])?) == 0 {
-                    found = true;
-                    break 'outer;
-                }
-            }
-        }
-        if !found {
-            out.insert(k.clone(), v.clone());
-        }
-    }
-    Ok(Value::Array(out))
-}
-
-/// `array_uintersect($array, ...$arrays, $value_compare_func)`: entries of
-/// `$array` whose value is found (comparator returns 0) in every other array.
-fn fn_array_uintersect(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let (base, others, cb) = split_cb_args(args, "array_uintersect")?;
-    let mut out = PhpArray::new();
-    for (k, v) in base.iter() {
-        let mut in_all = true;
-        for other in &others {
-            let mut here = false;
-            for (_, v2) in other.iter() {
-                if conv::to_int(&host.call_callable(cb, &[v.clone(), v2.clone()])?) == 0 {
-                    here = true;
-                    break;
-                }
-            }
-            if !here {
-                in_all = false;
-                break;
-            }
-        }
-        if in_all {
-            out.insert(k.clone(), v.clone());
-        }
-    }
-    Ok(Value::Array(out))
-}
-
-/// `array_diff_ukey($array, ...$arrays, $key_compare_func)`: entries of `$array`
-/// whose key is not found (comparator returns 0) in any other array.
-fn fn_array_diff_ukey(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let (base, others, cb) = split_cb_args(args, "array_diff_ukey")?;
-    let mut out = PhpArray::new();
-    for (k, v) in base.iter() {
-        let kv = key_to_value(k);
-        let mut found = false;
-        'outer: for other in &others {
-            for (k2, _) in other.iter() {
-                if conv::to_int(&host.call_callable(cb, &[kv.clone(), key_to_value(k2)])?) == 0 {
-                    found = true;
-                    break 'outer;
-                }
-            }
-        }
-        if !found {
-            out.insert(k.clone(), v.clone());
-        }
-    }
-    Ok(Value::Array(out))
-}
-
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     fn put(
         m: &mut HashMap<&'static str, Builtin>,
@@ -658,9 +557,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "chunk_split", fn_chunk_split, 1, Some(3));
     put(m, "array_diff_key", fn_array_diff_key, 2, None);
     put(m, "array_intersect_key", fn_array_intersect_key, 2, None);
-    put(m, "array_udiff", fn_array_udiff, 3, None);
-    put(m, "array_uintersect", fn_array_uintersect, 3, None);
-    put(m, "array_diff_ukey", fn_array_diff_ukey, 3, None);
     put(m, "array_replace", fn_array_replace, 1, None);
     put(
         m,
@@ -1214,9 +1110,14 @@ mod tests {
     /// Host whose `call_callable` ignores the callable and applies an integer
     /// spaceship comparison to the two argument values — enough to drive the
     /// comparator-based set functions in a unit test.
+    use crate::arraycmp_fns::{fn_array_diff_ukey, fn_array_udiff, fn_array_uintersect};
+
     struct CmpHost;
     impl Host for CmpHost {
         fn write_out(&mut self, _: &[u8]) {}
+        fn is_callable_value(&self, _: &Value) -> bool {
+            true
+        }
         fn call_callable(&mut self, _c: &Value, a: &[Value]) -> Result<Value, Thrown> {
             Ok(Value::Int(
                 match conv::to_int(&a[0]).cmp(&conv::to_int(&a[1])) {

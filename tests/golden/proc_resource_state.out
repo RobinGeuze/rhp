@@ -1,0 +1,80 @@
+bool(true)
+string(8) "resource"
+string(7) "process"
+string(18) "resource (process)"
+string(17) "resource (stream)"
+int(0)
+bool(false)
+string(17) "resource (closed)"
+string(7) "Unknown"
+string(17) "resource (closed)"
+bool(false)
+string(7) "Unknown"
+resource(N) of type (Unknown)
+array(1) {
+  [1]=>
+  resource(N) of type (Unknown)
+}
+TypeError: proc_close(): supplied resource is not a valid process resource
+TypeError: proc_get_status(): supplied resource is not a valid process resource
+TypeError: proc_terminate(): supplied resource is not a valid process resource
+bool(false)
+string(17) "resource (closed)"
+string(7) "Unknown"
+bool(true)
+string(14) "Resource id #N"
+string(14) "Resource id #N"
+string(14) "stream-context"
+bool(true)
+int(1)
+int(1)
+No stream arrays were passed
+int(1)
+array(1) {
+  [0]=>
+  string(1) "f"
+}
+int(2)
+int(1)
+int(1)
+int(1)
+array(1) {
+  [0]=>
+  string(4) "file"
+}
+bool(false)
+bool(false)
+bool(true)
+bool(true)
+int(5)
+bool(true)
+bool(false)
+int(-1)
+int(1)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(false)
+bool(false)
+int(1)
+bool(false)
+int(-1)
+bool(true)
+bool(false)
+int(1)
+int(1)
+bool(true)
+bool(false)
+int(-1)
+bool(true)
+bool(false)
+int(0)
+bool(true)
+bool(false)
+c2
+int(1)
+bool(false)

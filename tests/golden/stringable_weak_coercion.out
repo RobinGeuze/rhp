@@ -1,0 +1,10 @@
+string(2) "s!"
+string(2) "s!"
+string(2) "s!"
+string(2) "s!"
+bool(true)
+array(1) {
+  [0]=>
+  int(2)
+}
+{closure:stringable_weak_coercion.php:12}(): Argument #1 ($i) must be of type int, S given, called in stringable_weak_coercion.php on line 12

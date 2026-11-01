@@ -1,0 +1,73 @@
+string(1) "c"
+array(5) {
+  [0]=>
+  string(4) "keep"
+  [1]=>
+  string(1) "a"
+  [2]=>
+  string(1) "b"
+  [3]=>
+  string(0) ""
+  [4]=>
+  string(1) "c"
+}
+int(0)
+string(0) ""
+array(0) {
+}
+int(3)
+string(2) "hi"
+string(10) "no newline"
+string(0) ""
+array(2) {
+  [0]=>
+  string(3) "one"
+  [1]=>
+  string(3) "two"
+}
+one
+two
+string(3) "two"
+int(0)
+string(0) ""
+int(4)
+x
+yNULL
+int(0)
+
+NULL
+int(2)
+NULL
+string(3) "yo
+"
+string(3) "a
+b"
+string(11) "from-putenv"
+string(12) "from-putenv
+"
+bool(false)
+string(3) "[]
+"
+string(9) "'it'\''s'"
+string(2) "''"
+string(7) "'a b"c'"
+string(7) "'abéx'"
+string(12) "a\;b 'c' \"d"
+string(4) "x\'y"
+string(0) ""
+string(40) "\#\&\;\`\|\*\?\~\<\>\^\(\)\[\]\{\}\$\\\
+"
+string(11) "it's $HOME
+"
+ValueError: exec(): Argument #1 ($command) must not contain any null bytes
+ValueError: system(): Argument #1 ($command) must not contain any null bytes
+ValueError: passthru(): Argument #1 ($command) must not contain any null bytes
+ValueError: shell_exec(): Argument #1 ($command) must not contain any null bytes
+ValueError: escapeshellarg(): Argument #1 ($arg) must not contain any null bytes
+ValueError: escapeshellcmd(): Argument #1 ($command) must not contain any null bytes
+ValueError: exec(): Argument #1 ($command) must not be empty
+ValueError: system(): Argument #1 ($command) must not be empty
+ValueError: passthru(): Argument #1 ($command) must not be empty
+ValueError: shell_exec(): Argument #1 ($command) must not be empty
+ValueError: putenv(): Argument #1 ($assignment) must have a valid syntax
+ValueError: putenv(): Argument #1 ($assignment) must have a valid syntax

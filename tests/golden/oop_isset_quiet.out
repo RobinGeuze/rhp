@@ -1,0 +1,71 @@
+bool(false)
+bool(false)
+string(1) "d"
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(false)
+bool(false)
+string(14) "null-coalesced"
+array(2) {
+  [0]=>
+  bool(true)
+  [1]=>
+  int(1)
+}
+bool(false)
+string(2) "ns"
+bool(false)
+Cannot access private property A::$arr
+isset a
+get a
+bool(true)
+isset q
+string(2) "dq"
+isset a
+get a
+bool(false)
+isset f
+get f
+isset a
+get a
+isset none
+bool(true)
+bool(false)
+bool(true)
+isset d
+string(1) "x"
+only get p
+only get p
+bool(true)
+string(1) "v"
+only isset p
+only isset p
+only isset p
+bool(true)
+bool(false)
+string(8) "fallback"
+bool(false)
+bool(false)
+bool(true)
+string(1) "d"
+bool(true)
+bool(false)
+string(10) "undeclared"
+string(7) "missing"
+Cannot access private property S::$s
+isset p
+isset q
+bool(true)
+bool(true)
+bool(true)
+isset z
+get z
+isset one
+get one
+isset missing
+bool(true)
+bool(false)
+bool(true)

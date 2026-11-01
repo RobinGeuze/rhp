@@ -20,6 +20,30 @@ pub mod streams;
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};
 
 mod argparse;
+/// The kind of an open stream resource (see [`Host::stream_kind`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StreamKind {
+    /// A plain local file (real descriptor).
+    File,
+    /// A directory stream (`opendir`).
+    Dir,
+    /// An in-memory or wrapper-buffered stream (`php://memory`, phar entries).
+    Memory,
+    /// stdin/stdout/stderr/`php://output`.
+    Stdio,
+}
+
+/// `stream_get_meta_data` information for a stream resource.
+pub struct StreamMeta {
+    pub wrapper_type: &'static str,
+    pub stream_type: &'static str,
+    pub mode: Vec<u8>,
+    pub uri: Vec<u8>,
+    pub unread_bytes: i64,
+    pub seekable: bool,
+    pub eof: bool,
+}
+
 mod arr_fns;
 mod arraycmp_fns;
 mod arrayset_fns;
@@ -30,6 +54,7 @@ mod ext;
 pub use ext::gmp::{compare_handler as gmp_compare_handler, CmpOperand as GmpCmpOperand};
 mod file_fns;
 mod filter_fns;
+mod fs_fns;
 pub mod http;
 mod info_fns;
 mod ini_parse;
@@ -516,6 +541,26 @@ pub trait Host {
         streams::default_stat(url)
     }
 
+    /// `lstat` through the stream layer (`lstat`/`is_link`/`filetype`).
+    fn stream_lstat(&self, url: &[u8]) -> Option<StatInfo> {
+        let (scheme, _) = streams::split_scheme(url);
+        if scheme == b"file" {
+            streams::FileWrapper.lstat(url)
+        } else {
+            None
+        }
+    }
+
+    /// Directory listing through the stream layer (`opendir`/`scandir`).
+    fn stream_opendir(&self, url: &[u8]) -> Option<Vec<Vec<u8>>> {
+        let (scheme, _) = streams::split_scheme(url);
+        if scheme == b"file" {
+            streams::FileWrapper.opendir(url)
+        } else {
+            None
+        }
+    }
+
     /// Whole-file write through the stream layer (`file_put_contents`).
     fn stream_put_contents(&mut self, url: &[u8], data: &[u8]) -> Option<usize> {
         streams::default_put_contents(url, data)
@@ -620,6 +665,65 @@ pub trait Host {
     /// `rewind($res)`.
     fn stream_rewind(&mut self, _res: &Value) -> bool {
         false
+    }
+    /// What kind of live stream a resource is; `None` if it is not an open
+    /// stream (closed, or not a stream resource).
+    fn stream_kind(&self, _res: &Value) -> Option<StreamKind> {
+        None
+    }
+    /// `fgets($res, $length)`: like `stream_gets` but reading at most
+    /// `max` bytes (php's `$length - 1`).
+    fn stream_gets_max(&mut self, res: &Value, _max: usize) -> Option<Vec<u8>> {
+        self.stream_gets(res)
+    }
+    /// `fseek`: true on success.
+    fn stream_seek(&mut self, _res: &Value, _offset: i64, _whence: i32) -> bool {
+        false
+    }
+    /// `ftell`: None if the stream has no position.
+    fn stream_tell(&mut self, _res: &Value) -> Option<i64> {
+        None
+    }
+    /// `ftruncate`: None if the stream cannot be truncated at all.
+    fn stream_truncate(&mut self, _res: &Value, _size: i64) -> Option<bool> {
+        None
+    }
+    /// `fstat`.
+    fn stream_fstat(&mut self, _res: &Value) -> Option<StatInfo> {
+        None
+    }
+    /// The OS descriptor behind a stream (for `flock`).
+    fn stream_fd(&self, _res: &Value) -> Option<i32> {
+        None
+    }
+    /// `stream_get_meta_data` fields.
+    fn stream_meta(&self, _res: &Value) -> Option<StreamMeta> {
+        None
+    }
+    /// Consume `n` resource ids without creating a resource. php registers
+    /// every internal stream it opens (file_get_contents, file(), copy, …) as
+    /// a resource, so later resource ids skip past them.
+    fn consume_resource_ids(&mut self, _n: u32) {}
+    /// The default stream context (`stream_context_get_default`), allocated
+    /// lazily as a resource the first time a stream function needs it — php
+    /// does this on the first `fopen`/`file_get_contents`/`opendir`/…, which
+    /// is visible in later resource ids.
+    fn default_stream_context(&mut self) -> Value {
+        Value::Null
+    }
+    /// `opendir`: a directory stream resource over `entries`.
+    fn dir_open(&mut self, _url: &[u8], _entries: Vec<Vec<u8>>) -> Option<Value> {
+        None
+    }
+    /// `readdir`: the next entry, or None at the end.
+    fn dir_read(&mut self, _res: &Value) -> Option<Vec<u8>> {
+        None
+    }
+    /// `rewinddir`.
+    fn dir_rewind(&mut self, _res: &Value) {}
+    /// The most recently opened directory stream (for `readdir()` with no arg).
+    fn last_dir(&self) -> Option<Value> {
+        None
     }
 
     // --- reflection introspection --------------------------------------------
@@ -887,6 +991,9 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("ini_parse", Box::new(ini_parse::register)),
         ("arraycmp_fns", Box::new(arraycmp_fns::register)),
         ("sysmisc_fns", Box::new(sysmisc_fns::register)),
+        // Exact-semantics filesystem builtins; registered last so they replace
+        // older approximations in file_fns/stream_fns.
+        ("fs_fns", Box::new(fs_fns::register)),
     ];
     v.extend(rest);
     v
@@ -1154,6 +1261,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     .chain(preg_fns::preg_constants())
     .chain(json_fns::json_constants())
     .chain(info_fns::constants())
+    .chain(fs_fns::constants())
     // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with their module.
     .chain(ext::modules().into_iter().flat_map(|md| (md.constants)()))
     .collect()
@@ -1164,6 +1272,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
 /// engine's own core classes.
 pub fn module_prelude() -> String {
     let mut s = String::new();
+    s.push_str(fs_fns::PRELUDE_PHP);
+    s.push('\n');
     for md in ext::modules() {
         if !md.prelude_php.is_empty() {
             s.push_str(md.prelude_php);
@@ -1721,7 +1831,7 @@ fn fn_array_merge(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(out))
 }
 
-fn key_to_value(k: &rhp_values::ArrayKey) -> Value {
+pub(crate) fn key_to_value(k: &rhp_values::ArrayKey) -> Value {
     match k {
         rhp_values::ArrayKey::Int(n) => Value::Int(*n),
         rhp_values::ArrayKey::Str(s) => Value::Str(s.clone()),

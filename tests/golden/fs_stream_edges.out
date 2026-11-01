@@ -1,0 +1,57 @@
+bool(false)
+int(0)
+string(1) "<"
+int(1)
+ValueError: fread(): Argument #2 ($length) must be greater than 0
+ValueError: fread(): Argument #2 ($length) must be greater than 0
+int(-1)
+int(1)
+string(0) ""
+bool(true)
+string(3) "<?p"
+int(3)
+bool(true)
+string(0) ""
+int(0)
+ValueError: stream_get_contents(): Argument #2 ($length) must be greater than or equal to -1
+string(1) "<"
+string(1) "?"
+bool(false)
+bool(true)
+bool(false)
+int(0)
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+int(7)
+int(0)
+int(0)
+int(0)
+int(2)
+bool(false)
+string(4) "abc
+"
+string(5) "def12"
+bool(false)
+bool(true)
+int(0)
+int(20)
+int(1)
+int(21)
+string(42) "6162630a6465663132000000000000000000000058"
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+TypeError: fclose(): Argument #1 ($stream) must be an open stream resource
+TypeError: fwrite(): Argument #1 ($stream) must be an open stream resource
+TypeError: fread(): Argument #1 ($stream) must be an open stream resource
+TypeError: feof(): Argument #1 ($stream) must be an open stream resource
+TypeError: fgetc(): Argument #1 ($stream) must be an open stream resource
+TypeError: fflush(): Argument #1 ($stream) must be an open stream resource
+TypeError: fgets(): Argument #1 ($stream) must be an open stream resource
+TypeError: stream_get_contents(): Argument #1 ($stream) must be an open stream resource
+TypeError: fwrite(): Argument #1 ($stream) must be of type resource, string given
+TypeError: feof(): Argument #1 ($stream) must be of type resource, null given
+TypeError: fclose(): Argument #1 ($stream) must be of type resource, array given

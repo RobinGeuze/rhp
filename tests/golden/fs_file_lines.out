@@ -1,0 +1,111 @@
+""
+  0: []
+  2: []
+  4: []
+  6: []
+  18: []
+"one"
+  0: ["one"]
+  2: ["one"]
+  4: ["one"]
+  6: ["one"]
+  18: ["one"]
+"one\n"
+  0: ["one\n"]
+  2: ["one"]
+  4: ["one\n"]
+  6: ["one"]
+  18: ["one"]
+"one\ntwo"
+  0: ["one\n","two"]
+  2: ["one","two"]
+  4: ["one\n","two"]
+  6: ["one","two"]
+  18: ["one","two"]
+"one\ntwo\n"
+  0: ["one\n","two\n"]
+  2: ["one","two"]
+  4: ["one\n","two\n"]
+  6: ["one","two"]
+  18: ["one","two"]
+"\n"
+  0: ["\n"]
+  2: [""]
+  4: ["\n"]
+  6: []
+  18: [""]
+"\n\n\n"
+  0: ["\n","\n","\n"]
+  2: ["","",""]
+  4: ["\n","\n","\n"]
+  6: []
+  18: ["","",""]
+"a\n\nb\n\n"
+  0: ["a\n","\n","b\n","\n"]
+  2: ["a","","b",""]
+  4: ["a\n","\n","b\n","\n"]
+  6: ["a","b"]
+  18: ["a","","b",""]
+"a\r\nb\r\n\r\nc"
+  0: ["a\r\n","b\r\n","\r\n","c"]
+  2: ["a","b","","c"]
+  4: ["a\r\n","b\r\n","\r\n","c"]
+  6: ["a","b","c"]
+  18: ["a","b","","c"]
+"a\r\n\r\n"
+  0: ["a\r\n","\r\n"]
+  2: ["a",""]
+  4: ["a\r\n","\r\n"]
+  6: ["a"]
+  18: ["a",""]
+"\r\n"
+  0: ["\r\n"]
+  2: [""]
+  4: ["\r\n"]
+  6: []
+  18: [""]
+"x\ry\rz"
+  0: ["x\ry\rz"]
+  2: ["x\ry\rz"]
+  4: ["x\ry\rz"]
+  6: ["x\ry\rz"]
+  18: ["x\ry\rz"]
+"trail\r"
+  0: ["trail\r"]
+  2: ["trail\r"]
+  4: ["trail\r"]
+  6: ["trail\r"]
+  18: ["trail\r"]
+"\nlead"
+  0: ["\n","lead"]
+  2: ["","lead"]
+  4: ["\n","lead"]
+  6: ["lead"]
+  18: ["","lead"]
+" \n\t\n"
+  0: [" \n","\t\n"]
+  2: [" ","\t"]
+  4: [" \n","\t\n"]
+  6: [" ","\t"]
+  18: [" ","\t"]
+"a\u0000b\nc"
+  0: ["a\u0000b\n","c"]
+  2: ["a\u0000b","c"]
+  4: ["a\u0000b\n","c"]
+  6: ["a\u0000b","c"]
+  18: ["a\u0000b","c"]
+array(2) {
+  [0]=>
+  string(3) "one"
+  [1]=>
+  string(3) "two"
+}
+bool(false)
+file(): Argument #2 ($flags) must be a valid flag value
+file(): Argument #2 ($flags) must be a valid flag value
+file(): Argument #2 ($flags) must be a valid flag value
+file(): Argument #1 ($filename) must not contain any null bytes
+int(1)
+int(2)
+int(4)
+int(16)

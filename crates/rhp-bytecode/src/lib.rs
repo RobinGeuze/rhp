@@ -1074,6 +1074,8 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         "grapheme_extract" => &[false, false, false, false, true],
         // `&$matches` at position 2.
         "preg_match" | "preg_match_all" => &[false, false, true],
+        // `flock($stream, $operation, &$would_block)`.
+        "flock" => &[false, false, true],
         // `&$count` at position 4.
         "preg_replace" | "preg_replace_callback" => &[false, false, false, false, true],
         // `preg_replace_callback_array($pattern, $subject, $limit, &$count)`.

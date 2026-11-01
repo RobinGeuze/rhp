@@ -28,7 +28,7 @@ fn arg_int(args: &[Value], i: usize) -> i64 {
 }
 
 /// php's `expand_filepath`: make relative paths absolute against the cwd and
-/// fold `.`/`..` segments (no symlink resolution).
+/// fold `.`/`..` segments, resolving symlinks in the part that exists.
 fn expand_filepath(path: &[u8]) -> Vec<u8> {
     let p = String::from_utf8_lossy(path).into_owned();
     if p.contains("://") {
@@ -50,6 +50,19 @@ fn expand_filepath(path: &[u8]) -> Vec<u8> {
                 parts.pop();
             }
             s => parts.push(s),
+        }
+    }
+    // CWD_FILEPATH: symlinks in the existing leading part are resolved
+    // (tsrm_realpath_r), the rest is kept as written.
+    for keep in (1..=parts.len()).rev() {
+        let head = format!("/{}", parts[..keep].join("/"));
+        if let Ok(real) = std::fs::canonicalize(&head) {
+            let mut out = real.to_string_lossy().into_owned();
+            for seg in &parts[keep..] {
+                out.push('/');
+                out.push_str(seg);
+            }
+            return out.into_bytes();
         }
     }
     format!("/{}", parts.join("/")).into_bytes()

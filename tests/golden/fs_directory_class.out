@@ -1,0 +1,33 @@
+bool(false)
+bool(false)
+close
+rewind
+read
+bool(false)
+bool(true)
+string(4) "path"
+string(6) "handle"
+bool(true)
+bool(true)
+bool(true)
+Error: Cannot modify readonly property Directory::$path
+Error: Cannot modify readonly property Directory::$handle
+Error: Cannot create dynamic property Directory::$foo
+Error: Cannot unset readonly property Directory::$path
+Error: Trying to clone an uncloneable object of class Directory
+ArgumentCountError: Directory::read() expects exactly 0 arguments, 1 given
+ArgumentCountError: Directory::rewind() expects exactly 0 arguments, 2 given
+ArgumentCountError: Directory::close() expects exactly 0 arguments, 1 given
+Error: Cannot directly construct Directory, use dir() instead
+Error: Cannot directly construct Directory, use dir() instead
+array(3) {
+  [0]=>
+  string(1) "."
+  [1]=>
+  string(2) ".."
+  [2]=>
+  string(1) "a"
+}
+bool(true)
+TypeError: Directory::read(): cannot use Directory resource after it has been closed
+bool(true)

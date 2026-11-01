@@ -781,6 +781,18 @@ impl<'a> Interp<'a> {
             ));
         }
 
+        // The oracle's host has no stream table (and its STDOUT is a plain
+        // int), so it refuses the functions that open or need a stream.
+        if matches!(
+            name_str.to_ascii_lowercase().as_str(),
+            "fopen" | "opendir" | "dir" | "tmpfile" | "fprintf" | "vfprintf"
+        ) {
+            return Err(Thrown::unsupported(
+                format!("{name_str}()"),
+                "stream resources are not supported by the oracle",
+            ));
+        }
+
         // Evaluate positional arguments (named/variadic deferred).
         let mut argv: Vec<Value> = Vec::new();
         for arg in fc.argument_list.arguments.iter() {

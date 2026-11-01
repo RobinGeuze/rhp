@@ -54,6 +54,40 @@ pub struct ResourceData {
 
 pub type ResourceHandle = Rc<ResourceData>;
 
+thread_local! {
+    /// Ids of stream resources whose last `Value` reference was dropped. The
+    /// VM drains this and frees the backing stream (php's refcount-0 resource
+    /// destructor: closes the descriptor, releases flock locks, flushes).
+    static DROPPED_STREAMS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+}
+
+impl Drop for ResourceData {
+    fn drop(&mut self) {
+        if self.type_name == "stream" {
+            let id = self.id;
+            let _ = DROPPED_STREAMS.try_with(|q| {
+                if let Ok(mut q) = q.try_borrow_mut() {
+                    q.push(id);
+                }
+            });
+        }
+    }
+}
+
+/// Take the ids of stream resources released since the last call.
+pub fn take_dropped_streams() -> Vec<u32> {
+    DROPPED_STREAMS
+        .try_with(|q| {
+            let mut q = q.borrow_mut();
+            if q.is_empty() {
+                Vec::new()
+            } else {
+                std::mem::take(&mut *q)
+            }
+        })
+        .unwrap_or_default()
+}
+
 /// A closure's runtime state.
 pub struct ClosureData {
     /// Index into the program's closure protos (resolved by the VM).

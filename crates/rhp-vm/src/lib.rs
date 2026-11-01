@@ -1472,13 +1472,12 @@ impl Vm {
         pname: &[u8],
     ) -> Result<(), Thrown> {
         if let Some(sp) = self.class(cls).static_props.get(pname) {
-            let (vis, decl) = (sp.visibility, sp.declaring_class);
-            if !self.check_access(self.stack[top].defining_class, decl, vis) {
+            if !self.static_prop_accessible(self.stack[top].defining_class, sp) {
                 return Err(classes::prop_access_err(
                     &self.classes,
                     cls,
                     pname,
-                    Deny::Vis(vis),
+                    Deny::Vis(sp.visibility),
                 ));
             }
         }
@@ -2523,7 +2522,13 @@ impl Vm {
                 }
 
                 Instr::Cmp { dst, a, b, kind } => {
-                    let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+                    let (mut x, mut y) = (self.reg_get(top, a), self.reg_get(top, b));
+                    if !matches!(kind, CmpKind::Identical | CmpKind::NotIdentical) {
+                        // php casts an object compared with a string through
+                        // `__toString` (zend_std_compare_objects).
+                        x = self.cmp_stringify(x, &y)?;
+                        y = self.cmp_stringify(y, &x)?;
+                    }
                     self.reg_set(top, dst, eval_cmp(kind, &x, &y));
                 }
 
@@ -3162,11 +3167,7 @@ impl Vm {
                     let pname = proto.names[name as usize].as_bytes().to_vec();
                     let v = match self.class(cls).static_props.get(&pname[..]) {
                         Some(sp)
-                            if self.check_access(
-                                self.stack[top].defining_class,
-                                sp.declaring_class,
-                                sp.visibility,
-                            ) =>
+                            if self.static_prop_accessible(self.stack[top].defining_class, sp) =>
                         {
                             deref(&sp.cell.borrow())
                         }
@@ -4466,6 +4467,18 @@ impl Vm {
             }
             _ => Err(Thrown::type_error("Value is not callable")),
         }
+    }
+
+    /// For a loose comparison against a string: an object with `__toString`
+    /// becomes its string form; anything else is returned unchanged.
+    fn cmp_stringify(&mut self, v: Value, other: &Value) -> Result<Value, Thrown> {
+        if let (Value::Object(h), Value::Str(_)) = (deref(&v), deref(other)) {
+            let cls = h.borrow().class;
+            if self.lookup_method(cls, b"__tostring").is_some() {
+                return Ok(Value::str(self.to_string_vm(&v)?));
+            }
+        }
+        Ok(v)
     }
 
     /// Stringify a value, invoking `__toString` on objects that define it.

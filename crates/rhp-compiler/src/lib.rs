@@ -3448,10 +3448,18 @@ impl ProtoBuilder {
                 let mut jumps = Vec::new();
                 for v in i.values.iter() {
                     // `isset($o->prop)` must consult `__isset`, not `__get`.
-                    if let Expression::Access(Access::Property(pa)) = v {
-                        let obj = self.compile_quiet(pa.object)?;
+                    // A nullsafe `$o?->prop` too: a null object makes IssetProp false.
+                    let prop = match v {
+                        Expression::Access(Access::Property(pa)) => Some((pa.object, &pa.property)),
+                        Expression::Access(Access::NullSafeProperty(pa)) => {
+                            Some((pa.object, &pa.property))
+                        }
+                        _ => None,
+                    };
+                    if let Some((object, property)) = prop {
+                        let obj = self.compile_quiet(object)?;
                         let r = self.alloc_temp();
-                        match self.compile_selector(&pa.property)? {
+                        match self.compile_selector(property)? {
                             Sel::Static(name) => self.emit(Instr::IssetProp { dst: r, obj, name }),
                             Sel::Dyn(name) => self.emit(Instr::IssetPropDyn { dst: r, obj, name }),
                         }
@@ -3492,10 +3500,17 @@ impl ProtoBuilder {
                 // `empty($o->prop)` = !isset($o->prop) || !$o->prop: an
                 // inaccessible / unset property is empty (no error), via
                 // `__isset` then `__get` like php.
-                if let Expression::Access(Access::Property(pa)) = e.value {
-                    let obj = self.compile_quiet(pa.object)?;
+                let prop = match e.value {
+                    Expression::Access(Access::Property(pa)) => Some((pa.object, &pa.property)),
+                    Expression::Access(Access::NullSafeProperty(pa)) => {
+                        Some((pa.object, &pa.property))
+                    }
+                    _ => None,
+                };
+                if let Some((object, property)) = prop {
+                    let obj = self.compile_quiet(object)?;
                     let dst = self.alloc_temp();
-                    match self.compile_selector(&pa.property)? {
+                    match self.compile_selector(property)? {
                         Sel::Static(name) => self.emit(Instr::EmptyProp { dst, obj, name }),
                         Sel::Dyn(name) => self.emit(Instr::EmptyPropDyn { dst, obj, name }),
                     }

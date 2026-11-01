@@ -80,6 +80,9 @@ pub struct StaticProp {
     pub cell: Rc<RefCell<Value>>,
     pub visibility: Visibility,
     pub declaring_class: ClassId,
+    /// The root declaration's class of a redeclared public/protected static
+    /// (php's `property_info->prototype->ce`), for the protected check.
+    pub prototype: ClassId,
 }
 
 #[derive(Clone)]
@@ -586,17 +589,27 @@ impl Vm {
         let mut static_props: IndexMap<Vec<u8>, StaticProp> = parent
             .map(|p| self.classes[p as usize].static_props.clone())
             .unwrap_or_default();
+        // A redeclared inherited public/protected static keeps the root
+        // declaration as its prototype.
+        let static_proto = |props: &IndexMap<Vec<u8>, StaticProp>, name: &[u8]| {
+            props
+                .get(name)
+                .filter(|inh| inh.visibility != Visibility::Private)
+                .map_or(id, |inh| inh.prototype)
+        };
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for (k, sp) in self.classes[tid as usize].static_props.clone() {
                 // Each using class gets its own cell, seeded from the trait's.
                 let v = sp.cell.borrow().clone();
+                let prototype = static_proto(&static_props, &k);
                 static_props.insert(
                     k,
                     StaticProp {
                         cell: Rc::new(RefCell::new(v)),
                         visibility: sp.visibility,
                         declaring_class: id,
+                        prototype,
                     },
                 );
             }
@@ -611,12 +624,14 @@ impl Vm {
                     target: PendingTarget::Static(cell.clone()),
                 }),
             }
+            let prototype = static_proto(&static_props, sp.name.as_bytes());
             static_props.insert(
                 sp.name.as_bytes().to_vec(),
                 StaticProp {
                     cell,
                     visibility: sp.visibility,
                     declaring_class: id,
+                    prototype,
                 },
             );
         }
@@ -867,6 +882,20 @@ impl Vm {
                 }
                 None => false,
             },
+        }
+    }
+
+    /// php's static-property visibility check (`zend_std_get_static_property_with_info`):
+    /// a private is reachable only from its declaring class; a protected from
+    /// any class related to the root declaration's class.
+    pub(crate) fn static_prop_accessible(&self, caller: Option<ClassId>, sp: &StaticProp) -> bool {
+        match sp.visibility {
+            Visibility::Public => true,
+            Visibility::Private => caller == Some(sp.declaring_class),
+            Visibility::Protected => {
+                caller == Some(sp.declaring_class)
+                    || protected_ok(&self.classes, caller, sp.prototype)
+            }
         }
     }
 

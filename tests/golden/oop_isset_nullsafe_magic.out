@@ -1,0 +1,38 @@
+isset a
+bool(true)
+isset n
+bool(true)
+isset missing
+bool(false)
+isset a
+get a
+bool(false)
+isset z
+get z
+bool(true)
+isset missing
+bool(true)
+isset a
+get a
+bool(true)
+isset a
+get a
+array(1) {
+  ["b"]=>
+  int(1)
+}
+isset a
+isset a
+get a
+bool(true)
+bool(false)
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+string(1) "n"
+bool(false)
+bool(false)
+bool(false)
+bool(true)
+bool(true)

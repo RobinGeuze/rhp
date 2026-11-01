@@ -5810,13 +5810,16 @@ impl Vm {
                 Instr::FetchStaticPropIs { dst, class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
                     let pname = proto.names[name as usize].as_bytes().to_vec();
-                    let v = match self.class(cls).static_props.get(&pname[..]) {
-                        Some(sp)
-                            if self.static_prop_accessible(self.stack[top].defining_class, sp) =>
-                        {
-                            deref(&sp.cell.borrow())
-                        }
-                        _ => Value::Null,
+                    let accessible = match self.class(cls).static_props.get(&pname[..]) {
+                        Some(sp) => self.static_prop_accessible(self.stack[top].defining_class, sp),
+                        None => false,
+                    };
+                    // The cell via static_prop_cell: runs the class's
+                    // deferred (non-literal) initializers first.
+                    let v = if accessible {
+                        deref(&self.static_prop_cell(cls, &pname)?.borrow())
+                    } else {
+                        Value::Null
                     };
                     self.reg_set(top, dst, v);
                 }

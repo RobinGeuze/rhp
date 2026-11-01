@@ -12,7 +12,7 @@ use rhp_compiler::compile_with_source;
 use rhp_frontend::Arena;
 use rhp_oracle::Interp;
 use rhp_values::Thrown;
-use rhp_vm::Vm;
+use rhp_vm::{IncludeError, Vm};
 
 fn golden_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -27,6 +27,15 @@ fn run_vm(source: &[u8], name: &str) -> Result<Vec<u8>, Thrown> {
     assert!(!parsed.has_parse_errors(), "{name}: unexpected parse error");
     let program = compile_with_source(parsed.program(), source, name)?;
     let mut vm = Vm::new();
+    // include/require/eval compile like the CLI SAPI's includer.
+    vm.set_includer(|file: &str, src: &[u8]| {
+        let arena = Arena::new();
+        let parsed = arena.parse(file.as_bytes(), src);
+        if let Some((message, line)) = parsed.parse_error() {
+            return Err(IncludeError::Parse { message, line });
+        }
+        Ok(compile_with_source(parsed.program(), src, file)?)
+    });
     // The whole CLI request: uncaught-throwable report, shutdown functions,
     // output-buffer flush.
     vm.run_main(&program)?;

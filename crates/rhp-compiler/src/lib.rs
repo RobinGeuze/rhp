@@ -4168,6 +4168,10 @@ impl ProtoBuilder {
                         let n = resolve_class_name(&ca.name);
                         self.load_string_const(&n)
                     }
+                    // Resolved against the creation scope when called.
+                    Expression::Self_(_) => self.load_string_const(b"self"),
+                    Expression::Static(_) => self.load_string_const(b"static"),
+                    Expression::Parent(_) => self.load_string_const(b"parent"),
                     other => self.compile_expr(other)?,
                 };
                 let name = self.selector_string(&s.method)?;

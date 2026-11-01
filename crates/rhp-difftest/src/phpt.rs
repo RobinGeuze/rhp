@@ -658,9 +658,12 @@ impl Ctx {
         let mut cmd = Command::new(&self.rhp_bin);
         cmd.current_dir(inv.dir)
             .envs(self.base_env.iter().cloned())
-            .envs(inv.env.iter().cloned())
-            .arg(inv.script)
-            .args(inv.args);
+            .envs(inv.env.iter().cloned());
+        // run-tests' ini overwrites, as php gets them.
+        for kv in &self.php_ini {
+            cmd.arg("-d").arg(kv);
+        }
+        cmd.arg(inv.script).args(inv.args);
         run_proc(cmd, inv.stdin, self.timeout)
     }
 

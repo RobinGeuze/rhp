@@ -102,6 +102,9 @@ pub struct Vm {
     // `include`/`require`: a callback (injected by the SAPI) that parses+compiles
     // an included file's source into a Program, keeping the VM compiler-agnostic.
     includer: Option<Includer>,
+    /// The scope a first-class callable was created in, while its wrapped
+    /// callable is resolved (php resolves `$this->priv(...)` at creation).
+    fcc_scope: std::cell::Cell<Option<(Option<ClassId>, Option<ClassId>)>>,
     // Resolved real paths already included (for the `_once` variants).
     included_files: std::collections::HashSet<Vec<u8>>,
     // Registered `spl_autoload_register` callables, in call order.
@@ -1169,6 +1172,7 @@ impl Vm {
             gen_stack: Vec::new(),
             bc_scale: 0,
             includer: None,
+            fcc_scope: std::cell::Cell::new(None),
             included_files: std::collections::HashSet::new(),
             autoloaders: Vec::new(),
             wrappers,
@@ -1184,6 +1188,13 @@ impl Vm {
     }
 
     /// Set the CLI argument vector (`$argv`; `argv[0]` is the script name).
+    /// A startup ini setting (`-d key=value`); unknown directives are ignored.
+    pub fn set_ini(&mut self, name: &[u8], value: &[u8]) {
+        if builtins::php_fns::ini_default(name).is_some() {
+            self.ini.insert(name.to_vec(), value.to_vec());
+        }
+    }
+
     pub fn set_argv(&mut self, argv: Vec<Vec<u8>>) {
         self.argv = argv;
     }
@@ -2890,8 +2901,8 @@ impl Vm {
                         fnidx: u32::MAX,
                         captures: Vec::new(),
                         bound_this: None,
-                        bound_class: None,
-                        bound_static: None,
+                        bound_class: self.stack[top].defining_class,
+                        bound_static: self.stack[top].called_class,
                         wrapped: Some(Box::new(c)),
                     });
                     self.reg_set(top, dst, Value::Closure(cd));
@@ -4687,6 +4698,9 @@ impl Vm {
     /// The calling scope a callable resolves against (zend_is_callable's
     /// `scope` / called scope / `$this`): the innermost frame.
     fn callable_scope(&self) -> (Option<ClassId>, Option<ClassId>, Option<ObjectHandle>) {
+        if let Some((scope, called)) = self.fcc_scope.get() {
+            return (scope, called, None);
+        }
         match self.stack.len().checked_sub(1) {
             Some(top) => (
                 self.stack[top].defining_class,
@@ -4914,11 +4928,23 @@ impl Vm {
         if let Value::Closure(cd) = &c {
             if let Some(w) = &cd.wrapped {
                 let w = (**w).clone();
-                return self.call_callable_value(&w, args);
+                // Resolve it in the scope the callable was created in.
+                let saved = self
+                    .fcc_scope
+                    .replace(Some((cd.bound_class, cd.bound_static)));
+                let r = self.call_callable_value(&w, args);
+                self.fcc_scope.set(saved);
+                return r;
             }
         }
+        let fcc = self.fcc_scope.take();
         self.autoload_callable_class(&c)?;
-        let callee = match self.resolve_callable(&c) {
+        self.fcc_scope.set(fcc);
+        let resolved = self.resolve_callable(&c);
+        // A first-class callable's creation scope applies to resolving it
+        // only, not to whatever it then runs.
+        self.fcc_scope.set(None);
+        let callee = match resolved {
             Ok(callee) => callee,
             Err(_) => return Err(self.dynamic_call_error(&c)),
         };

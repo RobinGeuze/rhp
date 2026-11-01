@@ -4514,6 +4514,12 @@ impl Vm {
         let cv = self.stack[top].proto.this_cv?;
         match &self.stack[top].regs[cv as usize] {
             Value::Object(h) => Some(h.clone()),
+            // Passed to a by-reference-capable argument slot, the register
+            // was promoted to a reference cell.
+            Value::Ref(rc) => match &*rc.borrow() {
+                Value::Object(h) => Some(h.clone()),
+                _ => None,
+            },
             _ => None,
         }
     }

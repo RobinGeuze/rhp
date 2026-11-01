@@ -7,4 +7,4 @@ array(1) {
   [0]=>
   int(2)
 }
-{closure:/Users/robing/gits/rhp/tests/golden/stringable_weak_coercion.php:12}(): Argument #1 ($i) must be of type int, S given, called in /Users/robing/gits/rhp/tests/golden/stringable_weak_coercion.php on line 12
+{closure:stringable_weak_coercion.php:12}(): Argument #1 ($i) must be of type int, S given, called in stringable_weak_coercion.php on line 12

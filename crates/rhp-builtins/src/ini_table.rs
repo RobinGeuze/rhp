@@ -1,6 +1,17 @@
 //! php 8.5.8 (`php -n`) ini directive table, generated from `ini_get_all()`:
 //! (owning module lowercased, name, default value or None, access mask).
 
+// Compile-time paths differ per platform's usual php build: Homebrew on macOS,
+// Debian/Ubuntu packages elsewhere. They show up in include failure messages.
+#[cfg(target_os = "macos")]
+const INCLUDE_PATH: &str = ".:/opt/homebrew/Cellar/php/8.5.8/share/php/pear";
+#[cfg(not(target_os = "macos"))]
+const INCLUDE_PATH: &str = ".:/usr/share/php";
+#[cfg(target_os = "macos")]
+const EXTENSION_DIR: &str = "/opt/homebrew/Cellar/php/8.5.8/lib/php/20250925";
+#[cfg(not(target_os = "macos"))]
+const EXTENSION_DIR: &str = "/usr/lib/php/20250925";
+
 pub(crate) const INI_TABLE: &[(&str, &str, Option<&str>, u8)] = &[
     ("core", "allow_url_fopen", Some("1"), 4),
     ("core", "allow_url_include", Some("0"), 4),
@@ -49,12 +60,7 @@ pub(crate) const INI_TABLE: &[(&str, &str, Option<&str>, u8)] = &[
     ("exif", "exif.encode_jis", Some(""), 7),
     ("exif", "exif.encode_unicode", Some("ISO-8859-15"), 7),
     ("core", "expose_php", Some("1"), 4),
-    (
-        "core",
-        "extension_dir",
-        Some("/opt/homebrew/Cellar/php/8.5.8/lib/php/20250925"),
-        4,
-    ),
+    ("core", "extension_dir", Some(EXTENSION_DIR), 4),
     ("core", "fatal_error_backtraces", Some("1"), 7),
     ("core", "ffi.enable", Some("preload"), 4),
     ("core", "ffi.preload", None, 4),
@@ -78,12 +84,7 @@ pub(crate) const INI_TABLE: &[(&str, &str, Option<&str>, u8)] = &[
     ("core", "ignore_repeated_source", Some("0"), 7),
     ("core", "ignore_user_abort", Some("0"), 7),
     ("core", "implicit_flush", Some("1"), 7),
-    (
-        "core",
-        "include_path",
-        Some(".:/opt/homebrew/Cellar/php/8.5.8/share/php/pear"),
-        7,
-    ),
+    ("core", "include_path", Some(INCLUDE_PATH), 7),
     ("core", "input_encoding", None, 7),
     ("core", "internal_encoding", None, 7),
     ("intl", "intl.default_locale", None, 7),

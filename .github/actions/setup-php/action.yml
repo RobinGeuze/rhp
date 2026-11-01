@@ -24,7 +24,7 @@ runs:
       with:
         php-version: ${{ inputs.php-version }}
         extensions: >-
-          bcmath, calendar, ctype, dom, exif, fileinfo, gettext, gmp, iconv,
+          bcmath, bz2, calendar, ctype, curl, dom, exif, fileinfo, gettext, gmp, iconv,
           intl, mbstring, pcntl, phar, posix, shmop, simplexml, sockets, sodium,
           sysvmsg, sysvsem, sysvshm, tokenizer, xml, xmlreader, xmlwriter, zip
         coverage: none
@@ -36,7 +36,7 @@ runs:
         EXTDIR="$(php-config --extension-dir)"
         builtin="$(php -n -m | tr 'A-Z' 'a-z')"
         inject="-d extension_dir=$EXTDIR"
-        for e in bcmath calendar ctype dom exif fileinfo gettext gmp iconv intl \
+        for e in bcmath bz2 calendar ctype curl dom exif fileinfo gettext gmp iconv intl \
                  mbstring pcntl phar posix shmop simplexml sockets sodium sysvmsg \
                  sysvsem sysvshm tokenizer xml xmlreader xmlwriter zip; do
           if ! grep -qx "$e" <<<"$builtin" && [ -f "$EXTDIR/$e.so" ]; then

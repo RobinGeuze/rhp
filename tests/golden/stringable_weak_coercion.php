@@ -9,4 +9,4 @@ function u(int|string $x) { return $x; }
 function k(S|string $x) { return $x; }
 var_dump(r(), a(new S), n(new S), u(new S), k(new S) instanceof S);
 var_dump(array_map(fn(string $s) => strlen($s), [new S]));
-try { (function (int $i) {})(new S); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+try { (function (int $i) {})(new S); } catch (TypeError $e) { echo str_replace(__DIR__ . "/", "", $e->getMessage()), "\n"; }

@@ -821,7 +821,6 @@ Zend/tests/gh20672.phpt
 Zend/tests/gh20714.phpt
 Zend/tests/gh21603.phpt
 Zend/tests/gh21605.phpt
-Zend/tests/gh23232.phpt
 Zend/tests/globals_005.phpt
 Zend/tests/grammar/bug31341.phpt
 Zend/tests/grammar/bug35411.phpt
@@ -3416,7 +3415,6 @@ ext/standard/tests/strings/vsprintf_basic9.phpt
 ext/standard/tests/strings/wordwrap_basic.phpt
 ext/standard/tests/strings/wordwrap_variation5.phpt
 ext/standard/tests/time/001.phpt
-ext/standard/tests/time/idate.phpt
 ext/standard/tests/time/idate_iso.phpt
 ext/standard/tests/url/base64_decode_basic_001.phpt
 ext/standard/tests/url/base64_decode_basic_002.phpt

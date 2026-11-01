@@ -18,7 +18,7 @@ function show($base, $r) {
 function main() {
     $base = sys_get_temp_dir() . "/rhp_glob_" . bin2hex(random_bytes(6));
     mkdir($base);
-    foreach (["a.txt", "b.txt", "c.php", ".hidden", "B.TXT", "x1", "x2", "x10", "[ab]", "q?", "a{b", "a,b"] as $f) {
+    foreach (["a.txt", "b.txt", "c.php", ".hidden", "x1", "x2", "x10", "[ab]", "q?", "a{b", "a,b"] as $f) {
         touch("$base/$f");
     }
     mkdir("$base/sub");

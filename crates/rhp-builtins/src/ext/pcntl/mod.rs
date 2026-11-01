@@ -125,6 +125,7 @@ pub fn interrupt_pending() -> bool {
 /// (pid, uid, status, addr, band, utime, stime) of a `siginfo_t`. For SIGPOLL
 /// the utime slot carries `si_fd` instead.
 #[cfg(target_os = "linux")]
+#[allow(clippy::unnecessary_cast)] // libc's field types vary by target arch
 unsafe fn siginfo_fields(info: &libc::siginfo_t) -> [i64; 7] {
     if info.si_signo == libc::SIGPOLL {
         return [0, 0, 0, 0, info.si_band() as i64, info.si_fd() as i64, 0];

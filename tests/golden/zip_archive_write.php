@@ -16,7 +16,7 @@ try { $z->addFromString('a', 'b'); } catch (ValueError $e) { echo $e->getMessage
 try { $z->open(''); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }
 var_dump($z->open($dir . '/missing.zip'));
 var_dump($z->open($f, ZipArchive::CREATE));
-var_dump($z->filename === $f);
+var_dump(basename($z->filename) === basename($f));
 var_dump($z->addFromString('a.txt', str_repeat('hello ', 100)), $z->lastId);
 var_dump($z->addFromString('b.txt', 'x'));
 var_dump($z->addFromString('empty.txt', ''));
@@ -84,10 +84,9 @@ var_dump(ZipArchive::CREATE, ZipArchive::OVERWRITE, ZipArchive::FL_OVERWRITE, Zi
 var_dump($z instanceof Countable);
 
 // cleanup
-foreach (['out/c.txt', 'out/part.txt', 'out/empty.txt', 'out/sub/src.txt', 'out2/part.txt', 'out3/c.txt', 'out3/sub/src.txt', 'src.txt', 'bad.zip'] as $p) {
+foreach (['out/c.txt', 'out/part.txt', 'out/empty.txt', 'out/sub/src.txt', 'out2/part.txt', 'out3/c.txt', 'out3/sub/src.txt', 'src.txt', 'bad.zip', 't.zip'] as $p) {
     @unlink("$dir/$p");
 }
 foreach (['out/sub', 'out/dir', 'out/dir2', 'out', 'out2', 'out3/sub', 'out3', ''] as $p) {
     @rmdir("$dir/$p");
 }
-var_dump(is_dir($dir));

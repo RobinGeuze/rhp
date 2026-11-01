@@ -1179,6 +1179,8 @@ class LogicException extends Exception {}
 class InvalidArgumentException extends LogicException {}
 class LengthException extends LogicException {}
 class DomainException extends LogicException {}
+class BadFunctionCallException extends LogicException {}
+class BadMethodCallException extends BadFunctionCallException {}
 class RuntimeException extends Exception {}
 class OutOfBoundsException extends RuntimeException {}
 class OutOfRangeException extends LogicException {}

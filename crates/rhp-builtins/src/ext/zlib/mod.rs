@@ -10,7 +10,7 @@
 //! through C zlib with php's exact parameters (see `zraw`), so compressed bytes
 //! are identical to php's.
 
-mod zraw;
+pub(crate) mod zraw;
 
 use std::any::Any;
 use std::collections::HashMap;

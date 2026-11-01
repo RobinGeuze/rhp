@@ -131,33 +131,86 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
 /// SPL / core data-structure classes implemented in PHP (ArrayIterator and
 /// friends), backed by a plain array.
 pub const PRELUDE_PHP: &str = r#"
-class ArrayIterator implements Iterator, ArrayAccess, Countable {
-    private $__s; private $__k; private $__p = 0;
-    public function __construct($array = [], $flags = 0) { $this->__s = $array; $this->__k = array_keys($array); }
-    public function current(): mixed { return $this->__s[$this->__k[$this->__p]] ?? null; }
+interface SeekableIterator extends Iterator { public function seek(int $offset): void; }
+class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
+    const STD_PROP_LIST = 1;
+    const ARRAY_AS_PROPS = 2;
+    private $__s; private $__f = 0; private $__k; private $__p = 0;
+    public function __construct($array = [], int $flags = 0) { $this->__s = is_object($array) ? get_object_vars($array) : $array; $this->__f = $flags; $this->__k = array_keys($this->__s); }
+    public function current(): mixed { return $this->__s[$this->__k[$this->__p] ?? null] ?? null; }
     public function key(): mixed { return $this->__k[$this->__p] ?? null; }
     public function next(): void { $this->__p++; }
     public function rewind(): void { $this->__k = array_keys($this->__s); $this->__p = 0; }
     public function valid(): bool { return $this->__p < count($this->__k); }
+    public function seek(int $offset): void {
+        if ($offset < 0 || $offset >= count($this->__s)) { throw new OutOfBoundsException("Seek position $offset is out of range"); }
+        $this->__k = array_keys($this->__s); $this->__p = $offset;
+    }
     public function count(): int { return count($this->__s); }
     public function offsetExists($k): bool { return isset($this->__s[$k]); }
     public function offsetGet($k): mixed { return $this->__s[$k] ?? null; }
     public function offsetSet($k, $v): void { if ($k === null) { $this->__s[] = $v; } else { $this->__s[$k] = $v; } }
     public function offsetUnset($k): void { unset($this->__s[$k]); }
-    public function getArrayCopy() { return $this->__s; }
-    public function append($v) { $this->__s[] = $v; }
+    public function getArrayCopy(): array { return $this->__s; }
+    public function append($v): void { $this->__s[] = $v; }
+    public function getFlags(): int { return $this->__f; }
+    public function setFlags(int $flags): void { $this->__f = $flags; }
+    public function asort(int $flags = SORT_REGULAR): true { asort($this->__s, $flags); return true; }
+    public function ksort(int $flags = SORT_REGULAR): true { ksort($this->__s, $flags); return true; }
+    public function uasort(callable $callback): true { uasort($this->__s, $callback); return true; }
+    public function uksort(callable $callback): true { uksort($this->__s, $callback); return true; }
+    public function natsort(): true { natsort($this->__s); return true; }
+    public function natcasesort(): true { natcasesort($this->__s); return true; }
+    public function __serialize(): array { return [$this->__f & 0xffff, $this->__s, get_mangled_object_vars($this), null]; }
+    public function __unserialize(array $data): void {
+        $this->__f = $data[0] ?? 0;
+        $this->__s = $data[1] ?? [];
+        foreach ($data[2] ?? [] as $k => $v) {
+            $k = (string)$k;
+            if ($k !== '' && $k[0] === "\0") {
+                $p = strpos($k, "\0", 1); $c = substr($k, 1, $p - 1); $n = substr($k, $p + 1);
+                \Closure::bind(function () use ($n, $v) { $this->$n = $v; }, $this, $c === '*' ? static::class : $c)();
+            } else { $this->$k = $v; }
+        }
+    }
 }
 class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
-    private $__s;
-    public function __construct($array = [], $flags = 0) { $this->__s = $array; }
-    public function getIterator(): Iterator { return new ArrayIterator($this->__s); }
+    const STD_PROP_LIST = 1;
+    const ARRAY_AS_PROPS = 2;
+    private $__s; private $__f = 0; private $__i = 'ArrayIterator';
+    public function __construct($array = [], int $flags = 0, string $iteratorClass = 'ArrayIterator') { $this->__s = is_object($array) ? get_object_vars($array) : $array; $this->__f = $flags; $this->__i = $iteratorClass; }
+    public function getIterator(): Iterator { $c = $this->__i; return new $c($this->__s); }
+    public function exchangeArray($array): array { $old = $this->__s; $this->__s = is_object($array) ? get_object_vars($array) : $array; return $old; }
+    public function getIteratorClass(): string { return $this->__i; }
+    public function setIteratorClass(string $iteratorClass): void { $this->__i = $iteratorClass; }
     public function count(): int { return count($this->__s); }
     public function offsetExists($k): bool { return isset($this->__s[$k]); }
     public function offsetGet($k): mixed { return $this->__s[$k] ?? null; }
     public function offsetSet($k, $v): void { if ($k === null) { $this->__s[] = $v; } else { $this->__s[$k] = $v; } }
     public function offsetUnset($k): void { unset($this->__s[$k]); }
-    public function getArrayCopy() { return $this->__s; }
-    public function append($v) { $this->__s[] = $v; }
+    public function getArrayCopy(): array { return $this->__s; }
+    public function append($v): void { $this->__s[] = $v; }
+    public function getFlags(): int { return $this->__f; }
+    public function setFlags(int $flags): void { $this->__f = $flags; }
+    public function asort(int $flags = SORT_REGULAR): true { asort($this->__s, $flags); return true; }
+    public function ksort(int $flags = SORT_REGULAR): true { ksort($this->__s, $flags); return true; }
+    public function uasort(callable $callback): true { uasort($this->__s, $callback); return true; }
+    public function uksort(callable $callback): true { uksort($this->__s, $callback); return true; }
+    public function natsort(): true { natsort($this->__s); return true; }
+    public function natcasesort(): true { natcasesort($this->__s); return true; }
+    public function __serialize(): array { return [$this->__f & 0xffff, $this->__s, get_mangled_object_vars($this), $this->__i === 'ArrayIterator' ? null : $this->__i]; }
+    public function __unserialize(array $data): void {
+        $this->__f = $data[0] ?? 0;
+        $this->__s = $data[1] ?? [];
+        foreach ($data[2] ?? [] as $k => $v) {
+            $k = (string)$k;
+            if ($k !== '' && $k[0] === "\0") {
+                $p = strpos($k, "\0", 1); $c = substr($k, 1, $p - 1); $n = substr($k, $p + 1);
+                \Closure::bind(function () use ($n, $v) { $this->$n = $v; }, $this, $c === '*' ? static::class : $c)();
+            } else { $this->$k = $v; }
+        }
+        if (isset($data[3])) { $this->__i = $data[3]; }
+    }
 }
 
 class SplDoublyLinkedList implements Iterator, Countable, ArrayAccess {

@@ -292,13 +292,30 @@ impl Encoder {
         if self.objects.contains(&id) {
             return Ok(self.fail(JSON_ERROR_RECURSION, out, b"null"));
         }
-        let props: Vec<(PhpStr, Value)> = {
-            let b = h.borrow();
-            b.properties
+        // get_properties_for(JSON): an ArrayObject / ArrayIterator encodes
+        // its storage (always as an object).
+        let props: Vec<(PhpStr, Value)> = match crate::spl_array_storage(h) {
+            Some((Value::Array(a), _)) => a
                 .iter()
-                .filter(|(k, _)| host.mangled_prop_name(b.class, k).as_bytes().first() != Some(&0))
-                .map(|(k, v)| (k.clone(), deref(v)))
-                .collect()
+                .map(|(k, v)| {
+                    let k = match k {
+                        rhp_values::ArrayKey::Int(n) => PhpStr::from(n.to_string().as_str()),
+                        rhp_values::ArrayKey::Str(s) => s.clone(),
+                    };
+                    (k, deref(v))
+                })
+                .collect(),
+            _ => {
+                let b = h.borrow();
+                b.properties
+                    .iter()
+                    .filter(|(k, _)| {
+                        host.mangled_prop_name(b.class, k).as_bytes().first() != Some(&0)
+                            && !host.is_internal_slot(b.class, k)
+                    })
+                    .map(|(k, v)| (k.clone(), deref(v)))
+                    .collect()
+            }
         };
         self.objects.push(id);
         let r = self.props(host, &props, out, level, pretty);

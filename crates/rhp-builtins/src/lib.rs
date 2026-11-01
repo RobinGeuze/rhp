@@ -239,6 +239,15 @@ pub trait Host {
         false
     }
 
+    /// Whether the property slot `key` (storage key) of an object of class
+    /// `class_id` is engine-internal state of a built-in class (the prelude's
+    /// `__`-prefixed slots): php keeps such state outside the property table,
+    /// so every property-table view (`var_dump`, `(array)`, `serialize`,
+    /// `json_encode`, `get_object_vars`, `foreach`) skips it. Default: no.
+    fn is_internal_slot(&self, _class_id: u32, _key: &rhp_values::PhpStr) -> bool {
+        false
+    }
+
     /// Define a runtime constant (`define`). Returns false if already defined.
     fn define_const(&mut self, _name: &[u8], _value: Value) -> bool {
         false
@@ -1034,6 +1043,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "is_a"           => fn_is_a, 2, Some(3);
             "is_subclass_of" => fn_is_subclass_of, 2, Some(3);
             "get_object_vars" => fn_get_object_vars, 1, Some(1);
+            "get_mangled_object_vars" => fn_get_mangled_object_vars, 1, Some(1);
             "method_exists"  => fn_method_exists, 2, Some(2);
             "property_exists" => fn_property_exists, 2, Some(2);
             "class_exists"   => fn_class_exists, 1, Some(2);
@@ -2494,6 +2504,56 @@ fn fn_get_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
             "get_object_vars(): Argument #1 must be of type object",
         )),
     }
+}
+
+/// `get_mangled_object_vars()`: the property table under php's mangled
+/// names, ignoring scope and the class's property hooks.
+fn fn_get_mangled_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match deref(&args[0]) {
+        Value::Object(h) => Ok(Value::Array(host.object_props_mangled(&h))),
+        v => Err(Thrown::type_error(format!(
+            "get_mangled_object_vars(): Argument #1 ($object) must be of type object, {} given",
+            v.type_name()
+        ))),
+    }
+}
+
+/// php's `spl_array` property hook: an ArrayObject / ArrayIterator (or a
+/// subclass) without `STD_PROP_LIST` presents its storage array as its
+/// properties to `(array)`, `var_export` and `json_encode`. Returns the
+/// storage and the base class (`ArrayObject` / `ArrayIterator`) that owns it.
+pub fn spl_array_storage(h: &rhp_values::ObjectHandle) -> Option<(Value, &'static str)> {
+    let b = h.borrow();
+    for base in ["ArrayObject", "ArrayIterator"] {
+        let key = |n: &str| rhp_values::PhpStr::from(format!("\0{base}\0{n}").as_str());
+        if let Some(s) = b.properties.get(&key("__s")) {
+            let flags = b
+                .properties
+                .get(&key("__f"))
+                .map(|f| conv::to_int(&deref(f)));
+            if flags.unwrap_or(0) & 1 != 0 {
+                return None;
+            }
+            return Some((deref(s), base));
+        }
+    }
+    None
+}
+
+/// php's `spl_array` debug info: the regular properties plus the storage as
+/// a private `storage` property of the base class (`var_dump`/`print_r`).
+pub fn spl_array_debug_storage(
+    h: &rhp_values::ObjectHandle,
+) -> Option<(rhp_values::PhpStr, Value)> {
+    let b = h.borrow();
+    for base in ["ArrayObject", "ArrayIterator"] {
+        let key = rhp_values::PhpStr::from(format!("\0{base}\0__s").as_str());
+        if let Some(s) = b.properties.get(&key) {
+            let name = rhp_values::PhpStr::from(format!("\0{base}\0storage").as_str());
+            return Some((name, deref(s)));
+        }
+    }
+    None
 }
 
 fn fn_ord(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

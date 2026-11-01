@@ -1491,6 +1491,10 @@ impl Host for Vm {
         }
     }
 
+    fn is_internal_slot(&self, class_id: u32, key: &PhpStr) -> bool {
+        self.internal_slot(class_id, key)
+    }
+
     fn mangled_prop_name(&self, class_id: u32, key: &PhpStr) -> PhpStr {
         match self.classes.get(class_id as usize) {
             Some(entry) => classes::mangled_prop_key(entry, key),
@@ -1520,6 +1524,9 @@ impl Host for Vm {
         let b = h.borrow();
         let mut arr = PhpArray::new();
         for (key, val) in &b.properties {
+            if self.internal_slot(b.class, key) {
+                continue;
+            }
             if let Some(name) = classes::slot_accessible(&self.classes, b.class, scope, key) {
                 // A reference held only by this slot reads as its value.
                 let v = match val {
@@ -1688,6 +1695,7 @@ impl Host for Vm {
         // reaches from the scope, under their plain names.
         o.properties
             .iter()
+            .filter(|(k, _)| !self.internal_slot(o.class, k))
             .filter_map(|(k, v)| {
                 classes::slot_accessible(&self.classes, o.class, scope, k).map(|n| (n, v.clone()))
             })
@@ -4575,7 +4583,11 @@ impl Vm {
                 Instr::CastArray { dst, a } => {
                     let v = self.reg_get(top, a);
                     let out = match &v {
-                        Value::Object(h) => self.object_to_array_mangled(h),
+                        // get_properties_for(ARRAY_CAST): an ArrayObject's storage.
+                        Value::Object(h) => match builtins::spl_array_storage(h) {
+                            Some((st @ Value::Array(_), _)) => st,
+                            _ => self.object_to_array_mangled(h),
+                        },
                         _ => cast_to_array(v),
                     };
                     self.reg_set(top, dst, out);
@@ -6556,6 +6568,9 @@ impl Vm {
         let mut a = PhpArray::new();
         let entry = self.class(cls);
         for (key, val) in &b.properties {
+            if self.internal_slot(cls, key) {
+                continue;
+            }
             let key = classes::mangled_prop_key(entry, key);
             a.insert(ArrayKey::from_bytes(key.as_bytes()), deref(val).clone());
         }
@@ -6588,8 +6603,12 @@ impl Vm {
         let cls = b.class;
         let mut arr = PhpArray::new();
         for (key, val) in &b.properties {
+            if self.internal_slot(cls, key) {
+                continue;
+            }
             if let Some(name) = classes::slot_accessible(&self.classes, cls, caller, key) {
-                arr.insert(ArrayKey::from_bytes(name.as_bytes()), deref(val).clone());
+                // Property names iterate as string keys, even numeric ones.
+                arr.insert(ArrayKey::Str(name), deref(val).clone());
             }
         }
         arr
@@ -8363,6 +8382,30 @@ fn type_lc(v: &Value) -> &'static str {
 /// Built-in PHP-source (prelude) code is compiled without a line map.
 fn is_prelude_proto(p: &FunctionProto) -> bool {
     p.debug.lines.iter().all(|&(_, l)| l == 0)
+}
+
+impl Vm {
+    /// Whether class `c` is a built-in class implemented in the PHP prelude.
+    fn is_prelude_class(&self, c: ClassId) -> bool {
+        self.class(c)
+            .methods
+            .values()
+            .any(|m| m.defining_class == c && is_prelude_proto(&m.proto))
+    }
+
+    /// A prelude class's `__`-prefixed state slot (see
+    /// [`builtins::Host::is_internal_slot`]): declared by a prelude class,
+    /// so a user subclass's own `$__x` stays visible.
+    pub(crate) fn internal_slot(&self, class: ClassId, key: &PhpStr) -> bool {
+        let Some(pe) = self
+            .classes
+            .get(class as usize)
+            .and_then(|e| e.props.get(key))
+        else {
+            return false;
+        };
+        pe.name.as_bytes().starts_with(b"__") && self.is_prelude_class(pe.declaring_class)
+    }
 }
 
 /// A `__`-prefixed method name that is not one of php's magic methods.

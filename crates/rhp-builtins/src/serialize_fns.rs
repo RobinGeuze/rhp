@@ -201,6 +201,7 @@ impl Serializer {
             let b = h.borrow();
             b.properties
                 .iter()
+                .filter(|(k, _)| !host.is_internal_slot(class_id, k))
                 .map(|(k, v)| (host.mangled_prop_name(class_id, k), v.clone()))
                 .collect()
         };
@@ -220,6 +221,7 @@ impl Serializer {
                 let b = h.borrow();
                 b.properties
                     .iter()
+                    .filter(|(k, _)| !host.is_internal_slot(class_id, k))
                     .map(|(k, v)| (host.mangled_prop_name(class_id, k), v.clone()))
                     .collect()
             };
@@ -265,7 +267,8 @@ impl Serializer {
         }
         head(out, &cname, props.len());
         for (k, v) in &props {
-            serialize_key(out, &ArrayKey::from_bytes(k.as_bytes()));
+            // Property names are always string keys (`s:1:"0";`).
+            serialize_str(out, k.as_bytes());
             self.nested(host, out, v)?;
         }
         out.push(b'}');

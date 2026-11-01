@@ -22,12 +22,24 @@ pub fn unmangle_prop(key: &[u8]) -> (&[u8], Option<&[u8]>) {
 }
 
 /// An object's properties keyed by their php-mangled names (debug view).
+/// Engine-internal slots of built-in classes are left out.
 fn mangled_props(host: &dyn crate::Host, h: &rhp_values::ObjectHandle) -> Vec<(PhpStr, Value)> {
     let b = h.borrow();
     b.properties
         .iter()
+        .filter(|(k, _)| !host.is_internal_slot(b.class, k))
         .map(|(k, v)| (host.mangled_prop_name(b.class, k), v.clone()))
         .collect()
+}
+
+/// php's `get_debug_info` view (`var_dump`, `print_r`): the properties, plus
+/// an ArrayObject / ArrayIterator's storage as its private `storage`.
+fn debug_props(host: &dyn crate::Host, h: &rhp_values::ObjectHandle) -> Vec<(PhpStr, Value)> {
+    let mut props = mangled_props(host, h);
+    if let Some(st) = crate::spl_array_debug_storage(h) {
+        props.push(st);
+    }
+    props
 }
 
 /// `var_dump` of one value at the given indentation (spaces). `host` supplies
@@ -104,12 +116,13 @@ fn var_dump_value(
                 let b = h.borrow();
                 let shared: Vec<bool> = b
                     .properties
-                    .values()
-                    .map(|v| is_shared_ref(host, v))
+                    .iter()
+                    .filter(|(k, _)| !host.is_internal_slot(b.class, k))
+                    .map(|(_, v)| is_shared_ref(host, v))
                     .collect();
                 (b.class, b.id, shared)
             };
-            let props = mangled_props(host, h);
+            let props = debug_props(host, h);
             // php prints the name as a C string: an anonymous class's
             // `X@anonymous\0file…` shows as `X@anonymous`.
             let cname = c_str(
@@ -229,7 +242,7 @@ fn print_r_value(
         }
         Value::Object(h) => {
             // Snapshot under a short borrow so recursion can't double-borrow.
-            let entries: Vec<(Vec<u8>, Value)> = mangled_props(host, h)
+            let entries: Vec<(Vec<u8>, Value)> = debug_props(host, h)
                 .into_iter()
                 .map(|(k, v)| {
                     let label = match unmangle_prop(k.as_bytes()) {
@@ -366,7 +379,17 @@ fn var_export_value(
                 .class_name(class_id)
                 .unwrap_or_else(|| b"class".to_vec());
             let is_enum = host.is_enum_class(class_id);
-            let props = mangled_props(host, h);
+            // get_properties_for(VAR_EXPORT): an ArrayObject's storage keeps
+            // its integer keys; property names are always string keys.
+            let props: Vec<(ArrayKey, Value)> = match crate::spl_array_storage(h) {
+                Some((Value::Array(a), _)) => {
+                    a.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                }
+                _ => mangled_props(host, h)
+                    .into_iter()
+                    .map(|(k, v)| (ArrayKey::Str(k), v))
+                    .collect(),
+            };
             if level > 1 {
                 out.push(b'\n');
                 sp(level - 1, out);
@@ -380,7 +403,7 @@ fn var_export_value(
                 if is_enum {
                     let case = props
                         .iter()
-                        .find(|(k, _)| k.as_bytes() == b"name")
+                        .find(|(k, _)| matches!(k, ArrayKey::Str(s) if s.as_bytes() == b"name"))
                         .map(|(_, v)| conv::to_string_bytes(v))
                         .unwrap_or_default();
                     out.extend_from_slice(b"::");
@@ -393,6 +416,15 @@ fn var_export_value(
                 seen.objects.push(h.borrow().id);
                 for (k, val) in &props {
                     sp(level + 2, out);
+                    let k = match k {
+                        ArrayKey::Int(n) => {
+                            out.extend_from_slice(format!("{n} => ").as_bytes());
+                            var_export_value(host, out, val, level + 2, seen);
+                            out.extend_from_slice(b",\n");
+                            continue;
+                        }
+                        ArrayKey::Str(s) => s,
+                    };
                     let (name, _) = unmangle_prop(k.as_bytes());
                     // Property names are always string keys (even "0").
                     out.push(b'\'');

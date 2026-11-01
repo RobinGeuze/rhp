@@ -96,20 +96,12 @@ impl CompareCx for Vm {
         // properties; php's objects hold it outside the property table.
         // ArrayObject/ArrayIterator's storage (`__s`) is what their compare
         // handler compares, so it stays visible.
-        // (Private ones are stored mangled, `"\0Class\0__x"`.)
         let n = name.as_bytes();
-        let n = match n.first() {
+        let bare = match n.first() {
             Some(0) => n.iter().rposition(|&c| c == 0).map_or(n, |i| &n[i + 1..]),
             _ => n,
         };
-        n.starts_with(b"__")
-            && n != b"__s"
-            && self
-                .class(class)
-                .methods
-                .values()
-                .next()
-                .is_some_and(|m| crate::is_prelude_proto(&m.proto))
+        bare != b"__s" && self.internal_slot(class, name)
     }
 
     fn class_name(&self, class: ClassId) -> Vec<u8> {

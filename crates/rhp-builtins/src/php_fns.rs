@@ -688,12 +688,22 @@ pub fn zend_type_name(v: &Value) -> &'static str {
 pub const E_ALL: i64 = 30719;
 
 /// EG(error_reporting): the `error_reporting` directive, E_ALL while unset.
+/// Under `@` php 8 lowers it to the fatal types only.
 pub fn error_reporting_level(host: &dyn Host) -> i64 {
-    match host.ini_get(b"error_reporting") {
+    let level = match host.ini_get(b"error_reporting") {
         Some(v) if !v.is_empty() => atol(&v),
         _ => E_ALL,
+    };
+    if host.silenced() {
+        level & SILENCE_MASK
+    } else {
+        level
     }
 }
+
+/// E_ERROR | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR |
+/// E_RECOVERABLE_ERROR | E_PARSE: what `@` leaves of error_reporting.
+pub const SILENCE_MASK: i64 = 4437;
 
 /// C `atol`/`ZEND_ATOL`: optional whitespace and sign, then leading digits.
 pub fn atol(s: &[u8]) -> i64 {
@@ -724,10 +734,29 @@ pub fn atol(s: &[u8]) -> i64 {
     }
 }
 
-fn fn_set_handler(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    // Error/exception handlers are stored by php and invoked on diagnostics;
-    // this engine emits none, so we accept and return "no previous handler".
-    Ok(Value::Null)
+/// `set_error_handler(?callable $callback, int $error_levels = E_ALL)`:
+/// returns the previous handler (or null).
+fn fn_set_handler(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let h = deref(&args[0]);
+    let why = match &h {
+        Value::Null => None,
+        Value::Str(s) if !host.is_callable_value(&h) => Some(format!(
+            "function \"{}\" not found or invalid function name",
+            String::from_utf8_lossy(s.as_bytes())
+        )),
+        Value::Str(_) | Value::Array(_) | Value::Closure(_) | Value::Object(_) => None,
+        _ => Some("no array or string given".to_string()),
+    };
+    if let Some(why) = why {
+        return Err(Thrown::type_error(format!(
+            "set_error_handler(): Argument #1 ($callback) must be a valid callback or null, {why}"
+        )));
+    }
+    let mask = args
+        .get(1)
+        .map(|v| conv::to_int(&deref(v)))
+        .unwrap_or(E_ALL);
+    Ok(host.set_error_handler(h, mask))
 }
 
 /// `set_exception_handler(?callable $callback)`: returns the previous handler.
@@ -755,11 +784,31 @@ fn fn_restore_exception_handler(host: &mut dyn Host, _args: &[Value]) -> Result<
     Ok(Value::Bool(true))
 }
 
-fn fn_restore_handler(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+fn fn_restore_handler(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    host.restore_error_handler();
     Ok(Value::Bool(true))
 }
 
-fn fn_trigger_error(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+/// `trigger_error(string $message, int $error_level = E_USER_NOTICE)`.
+fn fn_trigger_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let msg = conv::to_string_bytes(&deref(&args[0]));
+    let level = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(1024);
+    match level {
+        256 => {
+            host.emit_diagnostic(
+                crate::E_DEPRECATED,
+                "Passing E_USER_ERROR to trigger_error() is deprecated since 8.4, throw an exception or call exit with a string message instead",
+            )?;
+        }
+        512 | 1024 | 16384 => {}
+        _ => {
+            return Err(Thrown::error(
+                "ValueError",
+                "trigger_error(): Argument #2 ($error_level) must be one of E_USER_ERROR, E_USER_WARNING, E_USER_NOTICE, or E_USER_DEPRECATED",
+            ))
+        }
+    }
+    host.emit_diagnostic(level, &String::from_utf8_lossy(&msg))?;
     Ok(Value::Bool(true))
 }
 
@@ -881,38 +930,6 @@ fn fn_iconv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::str(out));
     }
     Ok(Value::str(data))
-}
-
-/// Count UTF-8 code points (continuation bytes `10xxxxxx` don't start a char).
-fn utf8_len(bytes: &[u8]) -> usize {
-    bytes.iter().filter(|&&b| (b & 0xC0) != 0x80).count()
-}
-
-fn fn_iconv_strlen(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(utf8_len(&str_arg(args, 0)) as i64))
-}
-
-fn fn_iconv_substr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = str_arg(args, 0);
-    let text = String::from_utf8_lossy(&s);
-    let chars: Vec<char> = text.chars().collect();
-    let len = chars.len() as i64;
-    let mut start = conv::to_int(&deref(&args[1]));
-    if start < 0 {
-        start = (len + start).max(0);
-    }
-    let start = start.min(len) as usize;
-    let count = match args.get(2).map(|v| conv::to_int(&deref(v))) {
-        None => chars.len() - start,
-        Some(n) if n < 0 => ((len + n) as usize).saturating_sub(start),
-        Some(n) => (n as usize).min(chars.len() - start),
-    };
-    Ok(Value::str(
-        chars[start..start + count]
-            .iter()
-            .collect::<String>()
-            .into_bytes(),
-    ))
 }
 
 /// `Closure::fromCallable($callable)`: wrap a callable in a Closure (a closure is
@@ -1381,8 +1398,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "setlocale", fn_setlocale, 2, None);
     put(m, "assert", fn_assert, 1, Some(2));
     put(m, "iconv", fn_iconv, 3, Some(3));
-    put(m, "iconv_strlen", fn_iconv_strlen, 1, Some(2));
-    put(m, "iconv_substr", fn_iconv_substr, 2, Some(3));
     put(m, "random_bytes", fn_random_bytes, 1, Some(1));
     put(m, "random_int", fn_random_int, 2, Some(2));
     put(m, "mt_rand", fn_mt_rand, 0, Some(2));

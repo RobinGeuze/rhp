@@ -155,7 +155,10 @@ fn fn_zip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     let start = arg_int(args, 5).max(0) as usize;
                     let length = arg_int(args, 6);
                     let Some((mtime, mode)) = file_stat(&path) else {
-                        crate::warn(host, "ZipArchive::addFile(): No such file or directory");
+                        host.raise_diagnostic(
+                            crate::E_WARNING,
+                            "ZipArchive::addFile(): No such file or directory",
+                        );
                         return Ok(Value::Bool(false));
                     };
                     let Ok(mut data) = std::fs::read(&path) else {
@@ -193,7 +196,10 @@ fn fn_zip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     Value::Bool(on(id, |a| a.replace(index, data, mtime)).unwrap_or(false))
                 }
                 _ => {
-                    crate::warn(host, "ZipArchive::replaceFile(): No such file or directory");
+                    host.raise_diagnostic(
+                        crate::E_WARNING,
+                        "ZipArchive::replaceFile(): No such file or directory",
+                    );
                     Value::Bool(false)
                 }
             }

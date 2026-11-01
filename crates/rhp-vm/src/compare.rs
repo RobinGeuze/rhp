@@ -73,7 +73,12 @@ impl Vm {
         a: &Value,
         b: &Value,
     ) -> Result<std::cmp::Ordering, Thrown> {
-        rhp_semantics::ops::compare(a, b, self)
+        let r = rhp_semantics::ops::compare(a, b, self);
+        // An error handler that threw on the conversion notice.
+        match self.pending_throw.take() {
+            Some(t) => Err(t),
+            None => r,
+        }
     }
 }
 
@@ -185,6 +190,6 @@ impl CompareCx for Vm {
     }
 
     fn notice(&mut self, msg: &str) {
-        self.emit_diagnostic(8, msg);
+        self.raise_error(8, msg);
     }
 }

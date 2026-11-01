@@ -1,0 +1,22 @@
+int(1)
+int(1)
+bool(false)
+bool(false)
+int(-1)
+int(-1)
+bool(false)
+int(-1)
+int(-1)
+bool(false)
+bool(false)
+bool(false)
+int(1)
+bool(false)
+Error: Object of class stdClass could not be converted to string
+RuntimeException: no pem
+Error: Object of class stdClass could not be converted to string
+Error: Object of class stdClass could not be converted to string
+NULL
+NULL
+openssl_pkey_free(): Argument #1 ($key) must be of type OpenSSLAsymmetricKey, int given
+openssl_free_key(): Argument #1 ($key) must be of type OpenSSLAsymmetricKey, string given

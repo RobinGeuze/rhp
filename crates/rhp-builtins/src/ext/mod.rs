@@ -14,6 +14,8 @@ pub mod bz2;
 pub mod ctype;
 pub mod gmp;
 pub mod hash;
+pub mod iconv;
+pub mod intl;
 pub mod mbstring;
 pub mod openssl;
 pub mod password;
@@ -23,6 +25,7 @@ pub mod spl;
 pub mod tokenizer;
 pub mod zip;
 pub mod zlib;
+pub mod zpp;
 
 /// Every discrete extension, in registration order.
 pub fn modules() -> Vec<ModuleDef> {
@@ -115,6 +118,20 @@ pub fn modules() -> Vec<ModuleDef> {
             name: "openssl",
             functions: openssl::register,
             constants: openssl::constants,
+            prelude_php: openssl::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "intl",
+            functions: intl::register,
+            constants: intl::constants,
+            prelude_php: intl::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "iconv",
+            functions: iconv::register,
+            constants: iconv::constants,
             prelude_php: "",
             wrappers: no_wrappers,
         },

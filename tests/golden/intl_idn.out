@@ -1,0 +1,82 @@
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" => 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' {"result":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","isTransitionalDifferent":false,"errors":0}
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" => false {"result":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","isTransitionalDifferent":false,"errors":4}
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa." => 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.' {"result":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.","isTransitionalDifferent":false,"errors":0}
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u00e4" => false []
+"\u00e4aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" => false {"result":"xn--aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-4hf.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","isTransitionalDifferent":false,"errors":2}
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" => false {"result":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","isTransitionalDifferent":false,"errors":2}
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u00e4\u00e4" => false {"result":"xn--aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-99ea","isTransitionalDifferent":false,"errors":2}
+"xn--" => false {"result":"xn--�","isTransitionalDifferent":false,"errors":1024}
+"xn--a" => false {"result":"xn--a�","isTransitionalDifferent":false,"errors":1024}
+"xn--abc-" => false {"result":"xn--abc-�","isTransitionalDifferent":false,"errors":1024}
+"xn--ls8h" => 'xn--ls8h' {"result":"xn--ls8h","isTransitionalDifferent":false,"errors":0}
+"xn--LS8H" => 'xn--ls8h' {"result":"xn--ls8h","isTransitionalDifferent":false,"errors":0}
+"xn--zz-xyz" => 'xn--zz-xyz' {"result":"xn--zz-xyz","isTransitionalDifferent":false,"errors":0}
+"xn--a.b" => false {"result":"xn--a�.b","isTransitionalDifferent":false,"errors":1024}
+"xn--ab--c" => false {"result":"xn--ab--c�","isTransitionalDifferent":false,"errors":256}
+"ab--c" => false {"result":"ab--c","isTransitionalDifferent":false,"errors":32}
+"-a" => false {"result":"-a","isTransitionalDifferent":false,"errors":8}
+"a-" => false {"result":"a-","isTransitionalDifferent":false,"errors":16}
+"a..b" => false {"result":"a..b","isTransitionalDifferent":false,"errors":1}
+".a" => false {"result":".a","isTransitionalDifferent":false,"errors":1}
+"a." => 'a.' {"result":"a.","isTransitionalDifferent":false,"errors":0}
+"." => false {"result":".","isTransitionalDifferent":false,"errors":1}
+".." => false {"result":"..","isTransitionalDifferent":false,"errors":1}
+"a b" => 'a b' {"result":"a b","isTransitionalDifferent":false,"errors":0}
+"a_b" => 'a_b' {"result":"a_b","isTransitionalDifferent":false,"errors":0}
+"a_b" => false {"result":"a�b","isTransitionalDifferent":false,"errors":128}
+"fa\u00df.de" => 'xn--fa-hia.de' {"result":"xn--fa-hia.de","isTransitionalDifferent":true,"errors":0}
+"fa\u00df.de" => 'fass.de' {"result":"fass.de","isTransitionalDifferent":true,"errors":0}
+"\u03c2.gr" => 'xn--4xa.gr' {"result":"xn--4xa.gr","isTransitionalDifferent":true,"errors":0}
+"a\u200cb" => 'xn--ab-j1t' {"result":"xn--ab-j1t","isTransitionalDifferent":true,"errors":0}
+"a\u200cb" => 'ab' {"result":"ab","isTransitionalDifferent":true,"errors":0}
+"a\u200cb" => false {"result":"xn--ab-j1t","isTransitionalDifferent":true,"errors":4096}
+"\u0301a" => false {"result":"�a","isTransitionalDifferent":false,"errors":64}
+ => false {"result":"ex�ample","isTransitionalDifferent":false,"errors":128}
+"EXAMPLE.Com" => 'example.com' {"result":"example.com","isTransitionalDifferent":false,"errors":0}
+"B\u00fccher.DE" => 'xn--bcher-kva.de' {"result":"xn--bcher-kva.de","isTransitionalDifferent":false,"errors":0}
+"ab\uff0ecd" => 'ab.cd' {"result":"ab.cd","isTransitionalDifferent":false,"errors":0}
+"a\u3002b" => 'a.b' {"result":"a.b","isTransitionalDifferent":false,"errors":0}
+"\u05d0\u05d1" => 'xn--4dbc' {"result":"xn--4dbc","isTransitionalDifferent":false,"errors":0}
+"a.\u05d01" => 'a.xn--1-zhc' {"result":"a.xn--1-zhc","isTransitionalDifferent":false,"errors":0}
+"1\u05d0" => false {"result":"xn--1-0hc","isTransitionalDifferent":false,"errors":2048}
+"\u05d0a" => false {"result":"xn--a-zhc","isTransitionalDifferent":false,"errors":2048}
+"\u2260" => 'xn--1ch' {"result":"xn--1ch","isTransitionalDifferent":false,"errors":0}
+"a\u00a0b" => false {"result":"a�b","isTransitionalDifferent":false,"errors":128}
+"\u2603.net" => 'xn--n3h.net' {"result":"xn--n3h.net","isTransitionalDifferent":false,"errors":0}
+"xn--n3h.net" => 'xn--n3h.net' {"result":"xn--n3h.net","isTransitionalDifferent":false,"errors":0}
+"xn--N3H.net" => 'xn--n3h.net' {"result":"xn--n3h.net","isTransitionalDifferent":false,"errors":0}
+"xn--ss-" => false {"result":"xn--ss-�","isTransitionalDifferent":false,"errors":1024}
+"a\u094d\u200db" => 'xn--ab-fsf' {"result":"xn--ab-fsf","isTransitionalDifferent":true,"errors":0}
+"\u0628\u200c\u0628" => 'xn--ngba' {"result":"xn--ngba","isTransitionalDifferent":true,"errors":0}
+"\u00e4.xn--" => false {"result":"xn--4ca.xn--�","isTransitionalDifferent":false,"errors":1024}
+"\u00c4-.b" => false {"result":"xn----zfa.b","isTransitionalDifferent":false,"errors":16}
+"xn--a-ecp.ru" => false {"result":"xn--a-ecp�.ru","isTransitionalDifferent":false,"errors":1024}
+"xn--\u00e4" => false {"result":"xn--ä","isTransitionalDifferent":false,"errors":256}
+"a\u00adb" => 'ab' {"result":"ab","isTransitionalDifferent":false,"errors":0}
+"A\u0308" => 'xn--4ca' {"result":"xn--4ca","isTransitionalDifferent":false,"errors":0}
+"\ufffd" => false {"result":"�","isTransitionalDifferent":false,"errors":128}
+"a\udb40\udc01b" => false {"result":"a�b","isTransitionalDifferent":false,"errors":128}
+"x\u0378y" => false {"result":"x�y","isTransitionalDifferent":false,"errors":128}
+U "xn--bcher-kva.de" => 'bücher.de' {"result":"bücher.de","isTransitionalDifferent":false,"errors":0}
+U "xn--zz" => false {"result":"xn--zz�","isTransitionalDifferent":false,"errors":256}
+U "fa\u00df.DE" => 'faß.de' {"result":"faß.de","isTransitionalDifferent":true,"errors":0}
+U "fa\u00df.DE" => 'fass.de' {"result":"fass.de","isTransitionalDifferent":true,"errors":0}
+U "xn--a" => false {"result":"xn--a�","isTransitionalDifferent":false,"errors":1024}
+U "abc" => 'abc' {"result":"abc","isTransitionalDifferent":false,"errors":0}
+U "a..b" => false {"result":"a..b","isTransitionalDifferent":false,"errors":1}
+U "xn--ls8h.xn--" => false {"result":"💩.xn--�","isTransitionalDifferent":false,"errors":1024}
+U "XN--BCHER-KVA.de" => 'bücher.de' {"result":"bücher.de","isTransitionalDifferent":false,"errors":0}
+U "a.b." => 'a.b.' {"result":"a.b.","isTransitionalDifferent":false,"errors":0}
+U "-x" => false {"result":"-x","isTransitionalDifferent":false,"errors":8}
+U "xn--ab--c" => false {"result":"xn--ab--c�","isTransitionalDifferent":false,"errors":256}
+idn_to_ascii(): Argument #1 ($domain) must not be empty
+idn_to_ascii(): Argument #2 ($flags) must be INTL_IDNA_VARIANT_UTS46
+string(1) "a"
+array(3) {
+  ["result"]=>
+  string(1) "a"
+  ["isTransitionalDifferent"]=>
+  bool(false)
+  ["errors"]=>
+  int(0)
+}

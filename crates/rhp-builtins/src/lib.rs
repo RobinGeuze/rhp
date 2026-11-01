@@ -63,11 +63,6 @@ pub fn host_loose_eq(host: &mut dyn Host, a: &Value, b: &Value) -> Result<bool, 
     Ok(host_compare(host, a, b)? == std::cmp::Ordering::Equal)
 }
 
-/// Raise `E_WARNING` with php's `fn(): msg` text.
-pub fn warn(host: &mut dyn Host, msg: &str) {
-    host.raise_diagnostic(2, msg);
-}
-
 /// The interpreter surface a builtin may use. Implemented by the VM and the oracle.
 pub trait Host {
     /// Append bytes to the single output sink (stdout / output buffer).
@@ -93,8 +88,20 @@ pub trait Host {
     }
 
     /// Raise a php diagnostic (`E_WARNING` = 2, `E_NOTICE` = 8, …) at the
-    /// current line, honouring `@`. Default: dropped.
+    /// current line: php's `zend_error` — the user error handler
+    /// (`set_error_handler`) first, else `error_get_last` + display per
+    /// `error_reporting` / `@` / `display_errors` / `log_errors`. `msg`
+    /// already carries any `func(): ` prefix. An exception thrown by a user
+    /// handler is held by the host and surfaces when the running builtin
+    /// returns (php's `EG(exception)`); see [`Host::emit_diagnostic`] to
+    /// receive it at the call site instead. Default: dropped.
     fn raise_diagnostic(&mut self, _level: i64, _msg: &str) {}
+
+    /// Take the exception a user error handler threw during the last
+    /// [`Host::raise_diagnostic`], if any. Default: none.
+    fn take_pending_throw(&mut self) -> Option<Thrown> {
+        None
+    }
 
     /// The last raised diagnostic for `error_get_last()`: (type, message,
     /// file, line). Default: none.
@@ -134,6 +141,19 @@ pub trait Host {
     }
     /// Pop back to the previous exception handler.
     fn restore_exception_handler(&mut self) {}
+
+    /// Push a `set_error_handler` callback (null disables) handling the
+    /// error types in `mask`; returns the previous handler or null.
+    fn set_error_handler(&mut self, _handler: Value, _mask: i64) -> Value {
+        Value::Null
+    }
+    /// `restore_error_handler`: pop back to the previous error handler.
+    fn restore_error_handler(&mut self) {}
+
+    /// Inside an `@` region (error_reporting then reads as the fatal mask).
+    fn silenced(&self) -> bool {
+        false
+    }
 
     /// `ini_get`: a directive's current value, or None when php has no such
     /// directive. Default: the built-in (`php -n`) defaults, never changed.
@@ -596,6 +616,47 @@ pub trait Host {
     fn reflect_class_constants(&self, _class: &[u8]) -> Option<Value> {
         None
     }
+    /// [`Host::raise_diagnostic`], returning the exception a user error
+    /// handler threw (e.g. composer's `ErrorException`) so the builtin can
+    /// stop right there with `?`.
+    fn emit_diagnostic(&mut self, level: i64, message: &str) -> Result<(), Thrown> {
+        self.raise_diagnostic(level, message);
+        match self.take_pending_throw() {
+            Some(t) => Err(t),
+            None => Ok(()),
+        }
+    }
+}
+
+/// `E_WARNING`.
+pub const E_WARNING: i64 = 2;
+/// `E_NOTICE`.
+pub const E_NOTICE: i64 = 8;
+/// `E_DEPRECATED`.
+pub const E_DEPRECATED: i64 = 8192;
+
+/// `php_error_docref(NULL, E_WARNING, msg)` from builtin `fname`.
+pub fn warn(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
+    host.emit_diagnostic(E_WARNING, &format!("{fname}(): {msg}"))
+}
+
+/// `php_error_docref(NULL, E_NOTICE, msg)` from builtin `fname`.
+pub fn notice(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
+    host.emit_diagnostic(E_NOTICE, &format!("{fname}(): {msg}"))
+}
+
+/// The `#[\Deprecated]` notice php raises on calling a deprecated function:
+/// `Function f() is deprecated since V, MSG`.
+pub fn deprecated_fn(
+    host: &mut dyn Host,
+    fname: &str,
+    since: &str,
+    msg: &str,
+) -> Result<(), Thrown> {
+    host.emit_diagnostic(
+        E_DEPRECATED,
+        &format!("Function {fname}() is deprecated since {since}, {msg}"),
+    )
 }
 
 /// A native builtin function over owned values.
@@ -2092,5 +2153,40 @@ pub fn type_name_of(host: &dyn Host, v: &Value) -> String {
             .map(|n| String::from_utf8_lossy(&n).into_owned())
             .unwrap_or_else(|| "object".into()),
         other => other.type_name_lower().into(),
+    }
+}
+
+/// A host that records diagnostics the way php displays them
+/// (`Warning: f(): msg`), for unit-testing the sites that emit them.
+#[cfg(test)]
+pub(crate) mod diag_test {
+    use super::{Host, Thrown, Value};
+
+    #[derive(Default)]
+    pub struct DiagHost {
+        pub out: Vec<u8>,
+        pub diags: Vec<String>,
+    }
+
+    impl Host for DiagHost {
+        fn write_out(&mut self, bytes: &[u8]) {
+            self.out.extend_from_slice(bytes);
+        }
+        fn raise_diagnostic(&mut self, level: i64, message: &str) {
+            let kind = match level {
+                super::E_WARNING => "Warning",
+                super::E_NOTICE => "Notice",
+                super::E_DEPRECATED => "Deprecated",
+                _ => "Unknown",
+            };
+            self.diags.push(format!("{kind}: {message}"));
+        }
+    }
+
+    /// Call `f`, returning its result and the diagnostics it emitted.
+    pub fn run(f: crate::NativeFn, args: &[Value]) -> (Result<Value, Thrown>, Vec<String>) {
+        let mut h = DiagHost::default();
+        let r = f(&mut h, args);
+        (r, h.diags)
     }
 }

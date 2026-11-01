@@ -43,7 +43,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 20 | `fileperms` — fixed `0o100644` | `file_fns.rs:171` | perm inspection, `chmod` verification | low | low |
 | 21 | `chmod`/`chdir`/`clearstatcache` — no-op true | `file_fns.rs:227` | cwd-relative paths (`chdir`), perm set | med | med |
 | 22 | `touch` — creates file, does not set mtime | `file_fns.rs:159` | mtime-based cache invalidation | low | med |
-| 23 | Phar MD5/SHA-1/OpenSSL signatures — accepted **without verification** | `ext/phar/mod.rs:190` | tamper detection on non-SHA-256/512 phars | med | low |
+| 23 | ~~Phar MD5/SHA-1/OpenSSL signatures — accepted without verification~~ **resolved**: all signature types verified (OpenSSL against `<phar>.pubkey`) | `ext/phar/mod.rs` `verify_signature` | — | — | — |
 | 24 | Phar bzip2 entries unsupported | `ext/phar/mod.rs:124` | bz2-compressed phars | low | low |
 | 25 | Phar is **read-only**; `createDefaultStub`→`""`, `canCompress`→false | `ext/phar/mod.rs:426`,`:429` | phar writing/creation; self-update | high | low |
 | 26 | Phar tar/zip formats unsupported | `ext/phar/mod.rs` (native-only) | tar/zip phars | med | low |
@@ -52,7 +52,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 29 | `spl_autoload_unregister` — no-op true, never removes | `ext/spl/mod.rs:39` | dynamic autoloader swapping | med | low |
 | 30 | `Closure::bindTo`/`Closure::call` instance methods missing | `compiler/lib.rs:805` | rebinding via instance form; scoped invoke | med | high |
 | 31 | var_dump object ids — monotonic, no handle recycling | `vm/classes.rs:321` | byte-exact `var_dump`/`spl_object_id` vs php | high | low |
-| 32 | No `E_WARNING`/`E_NOTICE`/`E_DEPRECATED` diagnostics ever emitted | engine-wide | warnings-as-errors, deprecation logs, `@`-suppression semantics | high | med |
+| 32 | No `E_WARNING`/`E_NOTICE`/`E_DEPRECATED` diagnostics ever emitted (builtins already report them through `Host::emit_diagnostic` — iconv, openssl, mbstring so far — which every host still discards) | engine-wide | warnings-as-errors, deprecation logs, `@`-suppression semantics | high | med |
 | 33 | `declare(strict_types=1)` — no-op; type hints unenforced | `compiler/lib.rs:1977` | type coercion/TypeError on hinted params — **in progress** | high | high |
 | 34 | Named args to functions whose defaults don't fold — refused | `compiler/lib.rs:3284` | named-arg calls skipping non-constant-default params | med | med |
 
@@ -363,22 +363,15 @@ The module is deliberately "READ-ONLY, native format only"
 (`ext/phar/mod.rs:10-12`). It is exactly enough to parse, verify, and execute
 `composer.phar` (M1, shipped). The remaining gaps:
 
-### 3.1 MD5 / SHA-1 / OpenSSL signatures accepted **without verification**
-- **Now:** `verify_signature` fully checks SHA-256 (`type 3`) and SHA-512
-  (`type 4`), but MD5 (`type 1`) and SHA-1 (`type 2`) hit `(16, None)`/`(20, None)`
-  and are accepted unverified; OpenSSL (`type 0x10`) early-returns `Ok(())`
-  (`ext/phar/mod.rs:181-201`).
-- **OK because:** composer is SHA-512 signed (verified byte-for-byte), so the one
-  phar we must run *is* checked. php's `phar.require_hash` is effectively honoured
-  for the hashes we support.
-- **Breaks:** a tampered MD5/SHA-1 phar would be accepted; an OpenSSL-signed phar
-  is trusted blindly. Security-relevant for untrusted phars.
-- **Full impl:** compute MD5 (add `md-5`) and SHA-1 (`sha1`) over
-  `data[0 .. len-(hashlen+8)]` and compare — identical shape to the existing
-  SHA-256/512 arms. OpenSSL signatures need the archive's public key
-  (`<phar>.pubkey` alongside) and an RSA-verify (`rsa`/`openssl` crate); larger
-  and rarely used — do it last.
-- **Effort/priority:** MD5/SHA-1 low / low; OpenSSL med / low.
+### 3.1 ~~MD5 / SHA-1 / OpenSSL signatures accepted without verification~~ (resolved)
+- **Now:** `verify_signature` checks every native signature type php writes:
+  MD5 / SHA-1 / SHA-256 / SHA-512 byte-for-byte, and OpenSSL (`0x10` SHA-1,
+  `0x11` SHA-256, `0x12` SHA-512) by RSA/ECDSA-verifying the archive body against
+  the `PUBLIC KEY` PEM in `<phar>.pubkey` (`ext/openssl/pkey.rs`
+  `verify_with_pem`), with php's exact `PharException` messages for a missing
+  key ("openssl public key could not be read"), an unreadable key ("openssl
+  signature could not be processed") and a mismatch ("broken openssl
+  signature"). Covered by `tests/golden/phar_openssl_signature.php`.
 
 ### 3.2 bzip2 entries unsupported
 - **Now:** a `COMPRESSED_BZ2` entry returns `None` from `read`

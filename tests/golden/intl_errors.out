@@ -1,0 +1,41 @@
+0 U_ZERO_ERROR false
+1 U_ILLEGAL_ARGUMENT_ERROR true
+10 U_INVALID_CHAR_FOUND true
+65536 U_BAD_VARIABLE_DEFINITION true
+-128 U_USING_FALLBACK_WARNING false
+999 [BOGUS UErrorCode] true
+15 U_BUFFER_OVERFLOW_ERROR true
+66560 U_STRINGPREP_PROHIBITED_ERROR true
+65792 U_UNEXPECTED_TOKEN true
+66816 U_PLUGIN_TOO_HIGH true
+66818 [BOGUS UErrorCode] true
+int(0)
+int(1)
+int(10)
+int(15)
+int(66818)
+int(-128)
+int(0)
+string(12) "U_ZERO_ERROR"
+string(3) "Ḋ"
+int(0)
+NULL
+int(1)
+string(125) "normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long.: U_ILLEGAL_ARGUMENT_ERROR"
+grapheme_strpos: [false,false,false,false,0] 1 normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long.: U_ILLEGAL_ARGUMENT_ERROR
+grapheme_stripos: [false,false,false,false,0] 1 grapheme_stripos(): Error creating search object: U_ILLEGAL_ARGUMENT_ERROR
+grapheme_strrpos: [false,false,false,false,0] 1 grapheme_strrpos(): Error creating search object: U_ILLEGAL_ARGUMENT_ERROR
+grapheme_strripos: [false,false,false,false,0] 1 grapheme_strripos(): Error creating search object: U_ILLEGAL_ARGUMENT_ERROR
+grapheme_strstr: [false,false,false,false,""] 1 grapheme_strripos(): Error creating search object: U_ILLEGAL_ARGUMENT_ERROR
+grapheme_stristr: [false,false,false,false,""] 1 grapheme_stristr(): Error creating search object: U_ILLEGAL_ARGUMENT_ERROR
+int(2)
+int(1)
+bool(false)
+string(75) "grapheme_extract(): start not contained in string: U_ILLEGAL_ARGUMENT_ERROR"
+string(2) "ok"
+int(0)
+string(12) "U_ZERO_ERROR"
+bool(false)
+string(80) "grapheme_substr(): Error converting input string to UTF-16: U_INVALID_CHAR_FOUND"
+bool(false)
+string(84) "normalizer_is_normalized(): Error converting string to UTF-16.: U_INVALID_CHAR_FOUND"

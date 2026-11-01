@@ -158,6 +158,14 @@ pub struct Vm {
     silence_stack: Vec<(usize, u32)>,
     // The last raised diagnostic (`error_get_last`): type, message, file, line.
     last_error: Option<(i64, Vec<u8>, Vec<u8>, i64)>,
+    /// `set_error_handler` stack (innermost last): (callback or null, mask).
+    error_handlers: Vec<(Value, i64)>,
+    /// A user error handler is running (php unsets the handler meanwhile).
+    in_error_handler: bool,
+    /// An exception a user error handler threw while a builtin (or the
+    /// engine) raised a diagnostic: php's pending `EG(exception)`, thrown
+    /// once the builtin returns.
+    pending_throw: Option<Thrown>,
 }
 
 /// The backing state of an open stream resource.
@@ -219,7 +227,29 @@ enum CursorRoot {
 
 impl Host for Vm {
     fn raise_diagnostic(&mut self, level: i64, msg: &str) {
-        self.emit_diagnostic(level, msg);
+        self.raise_error(level, msg);
+    }
+
+    fn take_pending_throw(&mut self) -> Option<Thrown> {
+        self.pending_throw.take()
+    }
+
+    fn set_error_handler(&mut self, handler: Value, mask: i64) -> Value {
+        let prev = self
+            .error_handlers
+            .last()
+            .map(|(h, _)| h.clone())
+            .unwrap_or(Value::Null);
+        self.error_handlers.push((handler, mask));
+        prev
+    }
+
+    fn restore_error_handler(&mut self) {
+        self.error_handlers.pop();
+    }
+
+    fn silenced(&self) -> bool {
+        self.silence > 0
     }
 
     fn last_error(&self) -> Option<(i64, Vec<u8>, Vec<u8>, i64)> {
@@ -1358,13 +1388,22 @@ impl Vm {
             silence: 0,
             silence_stack: Vec::new(),
             last_error: None,
+            error_handlers: Vec::new(),
+            in_error_handler: false,
+            pending_throw: None,
         }
     }
 
     /// Raise a php diagnostic (`E_WARNING`, `E_NOTICE`, …): record it for
     /// `error_get_last()` and display it (CLI `display_errors=1`) unless an
     /// `@` is in effect.
-    pub(crate) fn emit_diagnostic(&mut self, level: i64, msg: &str) {
+    /// php's `zend_error` for a non-fatal diagnostic of type `level`: the
+    /// user error handler (when its mask covers `level`; called even under
+    /// `@`, where `error_reporting()` reads as the fatal mask), and unless it
+    /// returns false, nothing else; otherwise php_error_cb: `error_get_last`
+    /// and the display / log step (masked by `error_reporting` and `@`). An
+    /// exception from the handler becomes `pending_throw`.
+    pub(crate) fn raise_error(&mut self, level: i64, msg: &str) {
         // The innermost user frame: prelude (built-in PHP-source) code has no
         // line map, and php reports internal functions at their caller.
         let (file, line) = match (0..self.stack.len())
@@ -1374,8 +1413,36 @@ impl Vm {
             None => (Vec::new(), 0),
             Some(i) => (self.current_file(i), self.current_line(i) as i64),
         };
+        if self.pending_throw.is_some() {
+            return; // php skips diagnostics while an exception is pending
+        }
+        let handler = match self.error_handlers.last() {
+            Some((h, mask)) if !self.in_error_handler && !matches!(h, Value::Null) => {
+                (mask & level != 0).then(|| h.clone())
+            }
+            _ => None,
+        };
+        if let Some(h) = handler {
+            let args = vec![
+                Value::Int(level),
+                Value::str(msg.as_bytes().to_vec()),
+                Value::str(file.clone()),
+                Value::Int(line),
+            ];
+            self.in_error_handler = true;
+            let r = self.call_callable_value(&h, args);
+            self.in_error_handler = false;
+            match r {
+                Ok(Value::Bool(false)) => {} // fall through to php_error_cb
+                Ok(_) => return,
+                Err(t) => {
+                    self.pending_throw = Some(t);
+                    return;
+                }
+            }
+        }
         self.last_error = Some((level, msg.as_bytes().to_vec(), file.clone(), line));
-        if self.silence > 0 {
+        if self.silence > 0 && level & SILENCE_KEEPS == 0 {
             return;
         }
         let label = match level {
@@ -1386,10 +1453,7 @@ impl Vm {
             4096 => "Recoverable fatal error",
             _ => "Unknown error",
         };
-        let mut out = format!("\n{label}: {msg} in ").into_bytes();
-        out.extend_from_slice(&file);
-        out.extend_from_slice(format!(" on line {line}\n").as_bytes());
-        self.write_out(&out);
+        self.display_error(level, label, msg.as_bytes(), &file, line);
     }
 
     /// Set the CLI argument vector (`$argv`; `argv[0]` is the script name).
@@ -6387,9 +6451,13 @@ impl Vm {
         // frame, and php compiles a few calls to opcodes (no frame either).
         let caller = self.stack.len().saturating_sub(1);
         if frameless || self.stack.is_empty() || self.is_internal_frame(caller) {
-            return match count_error {
+            let r = match count_error {
                 Some(e) => Err(e),
                 None => (builtin.func)(self, &args),
+            };
+            return match self.pending_throw.take() {
+                Some(t) => Err(t),
+                None => r,
             };
         }
         self.native_calls.push(NativeCall {
@@ -6405,12 +6473,22 @@ impl Vm {
             Err(e @ Thrown::Error { .. }) => Err(self.materialize(e, None)),
             other => other,
         };
+        // An exception a user error handler threw during the call wins.
+        let r = match self.pending_throw.take() {
+            Some(t) => Err(t),
+            None => r,
+        };
         self.native_calls.pop();
         // `args` outlives the entry just popped (see `NativeCall::args`).
         drop(args);
         r
     }
 }
+
+/// php 8's `@` lowers error_reporting to these fatal types only
+/// (E_ERROR | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR |
+/// E_RECOVERABLE_ERROR | E_PARSE).
+pub(crate) const SILENCE_KEEPS: i64 = 4437;
 
 /// "Call to undefined function NAME()" with the name as written at the call
 /// site (namespaced for an unqualified call inside a namespace).

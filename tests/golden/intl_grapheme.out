@@ -1,0 +1,27 @@
+strlen: [7,3,0,3,null,14]
+strpos: [1,3,5,false,false,5,5,0,2,0,11,14,false,false,false,false]
+strpos-nfc: [3,3,false,false]
+stripos: [0,5,1,5,false,0,false,false]
+strrpos: [5,2,3,6,5,8,8,8,2,3,false,0]
+strripos: [5,13,5,1]
+substr: ["a👩‍👩‍👧b\r\nc🇩🇪","a👩‍👩‍👧","c🇩🇪","c","éa👩‍👩‍👧b\r\nc","","","éa👩‍👩‍👧b\r\nc🇩🇪","","","bc","ab","","",false,"é","\r\nc","b\r\nc🇩🇪"]
+strstr: ["c🇩🇪","éa👩‍👩‍👧b\r\n","bc","a",false,"abc","é café CAFÉ","é café CAFÉ","caf","BC","ABC",false]
+split: [["é","a","👩‍👩‍👧","b","\r\n","c","🇩🇪"],["éa","👩‍👩‍👧b","\r\nc","🇩🇪"],["éa👩‍👩‍👧","b\r\nc","🇩🇪"],["ab","cd","e"],[],["a"],["ab","hex:ff63","d"],["abc"],["abc"]]
+extract: ["éa","éa",4,"éa",4,"éa",4,"́a",4,"cde",5,"",false,"c",3,false,1,"a",3,"a\r\n",3]
+lev: [3,0,3,2,3,5]
+err: [1,"grapheme_extract(): grapheme_extract: invalid input string: U_ILLEGAL_ARGUMENT_ERROR"]
+ValueError: grapheme_strpos(): Argument #3 ($offset) must be contained in argument #1 ($haystack)
+ValueError: grapheme_strpos(): Argument #3 ($offset) must be contained in argument #1 ($haystack)
+ValueError: grapheme_strpos(): Argument #3 ($offset) must be contained in argument #1 ($haystack)
+ValueError: grapheme_strrpos(): Argument #3 ($offset) must be contained in argument #1 ($haystack)
+ValueError: grapheme_substr(): Argument #2 ($offset) is too large
+ValueError: grapheme_substr(): Argument #3 ($length) is too large
+ValueError: grapheme_str_split(): Argument #2 ($length) must be greater than 0 and less than or equal to 1073741823
+ValueError: grapheme_extract(): Argument #2 ($size) must be greater than or equal to 0
+ValueError: grapheme_extract(): Argument #3 ($type) must be one of GRAPHEME_EXTR_COUNT, GRAPHEME_EXTR_MAXBYTES, or GRAPHEME_EXTR_MAXCHARS
+ValueError: grapheme_levenshtein(): Argument #3 ($insertion_cost) must be greater than 0 and less than or equal to 1073741823
+TypeError: grapheme_strlen(): Argument #1 ($string) must be of type string, array given
+TypeError: grapheme_strpos(): Argument #3 ($offset) must be of type int, string given
+ValueError: grapheme_strpos(): Argument #4 ($locale) must not contain any null bytes
+err2: [null,10,"grapheme_strlen(): Error converting input string to UTF-16: U_INVALID_CHAR_FOUND",true,"U_ILLEGAL_ARGUMENT_ERROR"]
+consts: [0,1,2]

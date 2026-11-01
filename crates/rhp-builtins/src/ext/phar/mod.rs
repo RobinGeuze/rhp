@@ -64,7 +64,7 @@ const SIG_PRESENT: u32 = 0x1_0000;
 
 impl PharArchive {
     /// Parse a native phar from its full file bytes, verifying the signature.
-    fn parse(data: Vec<u8>) -> Result<PharArchive, String> {
+    fn parse(data: Vec<u8>, path: &[u8]) -> Result<PharArchive, String> {
         // Manifest begins just after `__HALT_COMPILER` + optional `(); ?>` + newline.
         let manifest_start = halt_offset(&data).ok_or("no __HALT_COMPILER in stub")?;
         let mut pos = manifest_start;
@@ -87,7 +87,7 @@ impl PharArchive {
         pos += 4 + meta_len; // skip global metadata (serialize())
 
         if global_flags & SIG_PRESENT != 0 {
-            verify_signature(&data)?;
+            verify_signature(&data, path)?;
         }
 
         let mut entries = HashMap::with_capacity(num_files);
@@ -204,10 +204,10 @@ fn halt_offset(data: &[u8]) -> Option<usize> {
 
 /// Verify the trailing signature `[hash][type(4,LE)][GBMB]` over
 /// `data[0 .. len-(hashlen+8)]`. Supports MD5, SHA-1, SHA-256 and SHA-512
-/// (composer uses SHA-512), all verified byte-for-byte. OpenSSL (type 0x10)
-/// signatures carry a variable-length RSA signature and need the archive's
-/// public key (`<phar>.pubkey`); they remain accepted without verification.
-fn verify_signature(data: &[u8]) -> Result<(), String> {
+/// (composer uses SHA-512), all verified byte-for-byte. OpenSSL signatures
+/// (types 0x10/0x11/0x12: `[sig][siglen(4,LE)][type][GBMB]`, RSA over SHA-1 /
+/// SHA-256 / SHA-512) are verified against `<phar path>.pubkey`, as php does.
+fn verify_signature(data: &[u8], path: &[u8]) -> Result<(), String> {
     let n = data.len();
     if n < 8 || &data[n - 4..] != b"GBMB" {
         return Err("missing GBMB signature trailer".into());
@@ -232,7 +232,7 @@ fn verify_signature(data: &[u8]) -> Result<(), String> {
             let body = &data[..n - 24];
             (16, Some(Md5::digest(body).to_vec()))
         }
-        0x0010 => return Ok(()), // OpenSSL: variable length; accept (needs pubkey + RSA)
+        0x0010..=0x0012 => return verify_openssl_signature(data, sig_type, path),
         other => return Err(format!("unknown phar signature type {other}")),
     };
     if let Some(expected) = computed {
@@ -244,6 +244,43 @@ fn verify_signature(data: &[u8]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The OpenSSL signature arms of [`verify_signature`] (php-src
+/// `phar_verify_signature`): RSA verify of everything before the signature
+/// with the PEM public key in `<path>.pubkey`.
+fn verify_openssl_signature(data: &[u8], sig_type: u32, path: &[u8]) -> Result<(), String> {
+    let n = data.len();
+    let fname = String::from_utf8_lossy(path).into_owned();
+    let len_at = n
+        .checked_sub(12)
+        .ok_or_else(|| format!("phar \"{fname}\" openssl signature length could not be read"))?;
+    let sig_len = u32le(data, len_at)
+        .ok_or_else(|| format!("phar \"{fname}\" openssl signature length could not be read"))?
+        as usize;
+    let sig_start = len_at
+        .checked_sub(sig_len)
+        .ok_or_else(|| format!("phar \"{fname}\" openssl signature could not be read"))?;
+    let sig = &data[sig_start..len_at];
+    let body = &data[..sig_start];
+    let mut pk_path = path.to_vec();
+    pk_path.extend_from_slice(b".pubkey");
+    let fail =
+        |why: &str| format!("phar \"{fname}\" openssl signature could not be verified: {why}");
+    let pem = match std::fs::read(String::from_utf8_lossy(&pk_path).as_ref()) {
+        Ok(p) if !p.is_empty() => p,
+        _ => return Err(fail("openssl public key could not be read")),
+    };
+    let algo = match sig_type {
+        0x0012 => "sha512",
+        0x0011 => "sha256",
+        _ => "sha1",
+    };
+    match crate::ext::openssl::verify_with_pem(&pem, algo, body, sig) {
+        Some(true) => Ok(()),
+        Some(false) => Err(fail("broken openssl signature")),
+        None => Err(fail("openssl signature could not be processed")),
+    }
 }
 
 // --- the phar:// wrapper -----------------------------------------------------
@@ -277,7 +314,7 @@ impl PharWrapper {
     }
 
     fn map_phar(&self, path: &[u8], alias: Option<&[u8]>, bytes: Vec<u8>) -> Result<(), String> {
-        let mut arc = PharArchive::parse(bytes)?;
+        let mut arc = PharArchive::parse(bytes, path)?;
         arc.path = path.to_vec();
         self.install(path, alias, Rc::new(arc));
         Ok(())

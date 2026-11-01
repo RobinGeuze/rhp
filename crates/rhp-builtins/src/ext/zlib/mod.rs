@@ -87,7 +87,7 @@ fn encode(
         match zraw::deflate(data, level, encoding, zraw::MAX_MEM_LEVEL, false) {
             Ok(out) => Value::str(out),
             Err(status) => {
-                crate::warn(host, &format!("{name}(): {}", z_error(status)));
+                host.raise_diagnostic(crate::E_WARNING, &format!("{name}(): {}", z_error(status)));
                 Value::Bool(false)
             }
         },
@@ -107,7 +107,7 @@ fn decode(host: &mut dyn Host, name: &str, args: &[Value], encoding: i64) -> Res
     Ok(match zraw::decode(&data, encoding, max as usize) {
         Ok(out) => Value::str(out),
         Err(status) => {
-            crate::warn(host, &format!("{name}(): {}", z_error(status)));
+            host.raise_diagnostic(crate::E_WARNING, &format!("{name}(): {}", z_error(status)));
             Value::Bool(false)
         }
     })
@@ -264,8 +264,8 @@ pub(crate) fn open_failure_reason(path: &[u8], mode: &[u8]) -> String {
 /// php's "fn(path): Failed to open stream: reason" warning.
 pub(crate) fn warn_open_failed(host: &mut dyn Host, func: &str, path: &[u8], mode: &[u8]) {
     let reason = open_failure_reason(path, mode);
-    crate::warn(
-        host,
+    host.raise_diagnostic(
+        crate::E_WARNING,
         &format!(
             "{func}({}): Failed to open stream: {reason}",
             String::from_utf8_lossy(path)
@@ -277,8 +277,8 @@ fn fn_gzopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = bytes_arg(args, 0);
     let mode = bytes_arg(args, 1);
     if mode.contains(&b'+') {
-        crate::warn(
-            host,
+        host.raise_diagnostic(
+            crate::E_WARNING,
             "gzopen(): Cannot open a zlib stream for reading and writing at the same time!",
         );
         return Ok(Value::Bool(false));
@@ -384,7 +384,7 @@ aliases! {
 /// `gzseek` is `fseek` on the gz stream, whose seek op rejects SEEK_END.
 fn fn_gzseek(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if int_arg(args, 2, 0) == 2 {
-        crate::warn(host, "gzseek(): SEEK_END is not supported");
+        host.raise_diagnostic(crate::E_WARNING, "gzseek(): SEEK_END is not supported");
         return Ok(Value::Int(-1));
     }
     alias(host, "fseek", args)

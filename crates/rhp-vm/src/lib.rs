@@ -182,7 +182,6 @@ pub struct Vm {
     /// `set_error_handler` stack (innermost last): (callback or null, mask).
     error_handlers: Vec<(Value, i64)>,
     /// A user error handler is running (php unsets the handler meanwhile).
-    in_error_handler: bool,
     /// An exception a user error handler threw while a builtin (or the
     /// engine) raised a diagnostic: php's pending `EG(exception)`, thrown
     /// once the builtin returns.
@@ -328,11 +327,10 @@ impl Host for Vm {
     }
 
     fn set_error_handler(&mut self, handler: Value, mask: i64) -> Value {
-        let prev = self
-            .error_handlers
-            .last()
-            .map(|(h, _)| h.clone())
-            .unwrap_or(Value::Null);
+        let prev = match self.error_handlers.last() {
+            Some((Value::Bool(false), _)) | None => Value::Null,
+            Some((h, _)) => h.clone(),
+        };
         self.error_handlers.push((handler, mask));
         prev
     }
@@ -1114,6 +1112,11 @@ impl Host for Vm {
     fn stream_truncate(&mut self, res: &Value, size: i64) -> Option<bool> {
         match self.streams.get_mut(&res_id(res)?)? {
             StreamState::File(f) => Some(f.truncate(size)),
+            // A read-only memory stream refuses (TEMP_STREAM_READONLY).
+            StreamState::Mem {
+                mode: MemMode::ReadOnly,
+                ..
+            } => Some(false),
             StreamState::Mem { buf, pos, skew, .. } => {
                 // php_stream_memory_set_option(TRUNCATE_SET_SIZE): shrinking
                 // pulls the buffer offset back to the new end; php's stream
@@ -2162,7 +2165,6 @@ impl Vm {
             silence_stack: Vec::new(),
             last_error: None,
             error_handlers: Vec::new(),
-            in_error_handler: false,
             pending_throw: None,
             native_resources: HashMap::new(),
             stdin_reader: None,
@@ -2199,7 +2201,7 @@ impl Vm {
             return; // php skips diagnostics while an exception is pending
         }
         let handler = match self.error_handlers.last() {
-            Some((h, mask)) if !self.in_error_handler && !matches!(h, Value::Null) => {
+            Some((h, mask)) if !matches!(h, Value::Null | Value::Bool(false)) => {
                 (mask & level != 0).then(|| h.clone())
             }
             _ => None,
@@ -2211,9 +2213,17 @@ impl Vm {
                 Value::str(file.clone()),
                 Value::Int(line),
             ];
-            self.in_error_handler = true;
+            // php's EG(user_error_handler) swap: while the handler runs there
+            // is none (`false` marks php's UNDEF); it comes back afterwards
+            // only if the handler did not install another one.
+            let idx = self.error_handlers.len() - 1;
+            self.error_handlers[idx].0 = Value::Bool(false);
             let r = self.call_callable_value(&h, args);
-            self.in_error_handler = false;
+            if self.error_handlers.len() == idx + 1
+                && matches!(self.error_handlers[idx].0, Value::Bool(false))
+            {
+                self.error_handlers[idx].0 = h;
+            }
             match r {
                 Ok(Value::Bool(false)) => {} // fall through to php_error_cb
                 Ok(_) => return,
@@ -4533,11 +4543,48 @@ impl Vm {
             tail.push(b'\n');
         }
         if log {
-            // error_log unset: the CLI SAPI's log_message writes to stderr.
             let mut m = format!("PHP {label}:  ").into_bytes();
             m.extend_from_slice(message);
             m.extend_from_slice(&tail);
-            self.write_stderr(&m);
+            let target = ini(self, b"error_log");
+            if target.is_empty() || target == b"syslog" {
+                // error_log unset: the CLI SAPI's log_message writes to stderr.
+                self.write_stderr(&m);
+            } else {
+                // php_log_err: append "[d-M-Y H:i:s e] message" to the file.
+                let stamp = self
+                    .invoke_builtin("date", vec![Value::str("d-M-Y H:i:s e")])
+                    .map(|v| conv::to_string_bytes(&v))
+                    .unwrap_or_default();
+                let mut line = b"[".to_vec();
+                line.extend_from_slice(&stamp);
+                line.extend_from_slice(b"] ");
+                line.extend_from_slice(&m);
+                use std::io::Write;
+                let path = String::from_utf8_lossy(&target).into_owned();
+                match std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                {
+                    Ok(mut f) => {
+                        let _ = f.write_all(&line);
+                    }
+                    Err(_) => self.write_stderr(&m),
+                }
+            }
+        }
+        let html = ini_bool(&ini(self, b"html_errors"));
+        if html && matches!(mode, DisplayErrors::Stdout) {
+            let mut m = ini(self, b"error_prepend_string");
+            m.extend_from_slice(format!("<br />\n<b>{label}</b>:  ").as_bytes());
+            m.extend_from_slice(message);
+            m.extend_from_slice(b" in <b>");
+            m.extend_from_slice(file);
+            m.extend_from_slice(format!("</b> on line <b>{line}</b><br />\n").as_bytes());
+            m.extend_from_slice(&ini(self, b"error_append_string"));
+            self.write_out(&m);
+            return;
         }
         match mode {
             DisplayErrors::Stderr => {
@@ -6174,6 +6221,14 @@ impl Vm {
                     });
                     match v {
                         Some(v) => {
+                            let bare = cname.rsplit(|&c| c == b'\\').next().unwrap_or(&cname);
+                            if bare == b"E_STRICT" && self.constants.contains_key(&b"E_STRICT"[..])
+                            {
+                                self.diag(
+                                    8192,
+                                    "Constant E_STRICT is deprecated since 8.4, the error level was removed",
+                                )?;
+                            }
                             self.reg_set(top, dst, v);
                         }
                         None => {
@@ -8069,12 +8124,29 @@ impl Vm {
         user: bool,
     ) -> Result<(), Thrown> {
         let params = builtins::stub_params::params(name);
-        for &(pos, pname, ty, variadic, nullable, has_str, has_arr) in params {
+        for &(pos, pname, ty, variadic, nullable, has_str, has_arr, by_ref) in params {
             let range = if variadic {
                 pos as usize..args.len()
             } else {
                 pos as usize..(pos as usize + 1).min(args.len())
             };
+            if by_ref {
+                // `array &$array` (sort, usort, array_push, …): the referenced
+                // value must already be an array.
+                if user {
+                    for i in range {
+                        let cur = deref(&args[i]);
+                        if !matches!(cur, Value::Array(_)) {
+                            return Err(Thrown::type_error(format!(
+                                "{name}(): Argument #{} (${pname}) must be of type {ty}, {} given",
+                                i + 1,
+                                self.zval_value_name(&cur)
+                            )));
+                        }
+                    }
+                }
+                continue;
+            }
             for i in range {
                 let given: Vec<u8> = match &args[i] {
                     Value::Object(h) => {

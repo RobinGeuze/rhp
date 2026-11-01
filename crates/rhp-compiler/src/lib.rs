@@ -472,6 +472,19 @@ fn line_of(offset: u32) -> u32 {
     })
 }
 
+/// Stamp a compile-time refusal with the file being compiled and the line of
+/// `offset`, unless an inner construct already located it.
+fn locate(e: Thrown, offset: u32) -> Thrown {
+    if !matches!(e, Thrown::Unsupported { location: None, .. }) {
+        return e;
+    }
+    let line = line_of(offset);
+    e.with_location(
+        || SRC_FILE.with(|f| String::from_utf8_lossy(&f.borrow()).into_owned()),
+        line,
+    )
+}
+
 /// Scan every class-like's methods, OR-ing their by-ref parameter flags by name.
 /// (Method names are not namespaced, so this ignores the namespace context.)
 fn collect_method_refs(flat: &[(Rc<NsContext>, &Statement)]) -> HashMap<Vec<u8>, Vec<bool>> {
@@ -595,15 +608,19 @@ fn compile_program(
     LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
     let user_constants: Vec<(PhpStr, Value)> = Vec::new();
     for (ctx, stmt) in &flat {
+        use mago_span::HasSpan;
         set_ns_ctx(ctx);
+        let at = |e| locate(e, stmt.span().start.offset);
         match stmt {
             Statement::Function(func) => {
-                functions.push(Rc::new(compile_function(func, sigs.clone())?));
+                functions.push(Rc::new(compile_function(func, sigs.clone()).map_err(at)?));
             }
-            Statement::Class(class) => classes.push(compile_class(class, &sigs)?),
-            Statement::Interface(iface) => classes.push(compile_interface(iface, &sigs)?),
-            Statement::Trait(tr) => classes.push(compile_trait(tr, &sigs)?),
-            Statement::Enum(en) => classes.push(compile_enum(en, &sigs)?),
+            Statement::Class(class) => classes.push(compile_class(class, &sigs).map_err(at)?),
+            Statement::Interface(iface) => {
+                classes.push(compile_interface(iface, &sigs).map_err(at)?)
+            }
+            Statement::Trait(tr) => classes.push(compile_trait(tr, &sigs).map_err(at)?),
+            Statement::Enum(en) => classes.push(compile_enum(en, &sigs).map_err(at)?),
             // Top-level `const NAME = <expr>;` is a runtime statement (php
             // declares it when execution reaches it), compiled in {main}.
             _ => {}
@@ -984,94 +1001,106 @@ fn compile_members(
 ) -> Result<CompiledMembers, Thrown> {
     let mut out = CompiledMembers::default();
     for member in members.iter() {
-        match member {
-            ClassLikeMember::Method(m) => {
-                let (mp, promoted) = compile_method(m, sigs, class_name)?;
-                out.methods.push(mp);
-                out.props.extend(promoted);
-            }
-            ClassLikeMember::Property(Property::Plain(p)) => {
-                let visibility = modifiers_visibility(&p.modifiers);
-                let set_visibility = modifiers_set_visibility(&p.modifiers);
-                let is_static = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Static(_)));
-                let is_readonly =
-                    has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
-                let hint = p.hint.as_ref().map(type_hint);
-                for item in p.items.iter() {
-                    let (var, default) = match item {
-                        PropertyItem::Concrete(c) => (
-                            c.variable.name,
-                            coerce_prop_default(
-                                prop_default_or_thunk(c.value, sigs, Some(class_name))?,
-                                hint.as_ref(),
-                            ),
-                        ),
-                        PropertyItem::Abstract(a) => (a.variable.name, PropDefaultProto::None),
-                    };
-                    let pname = PhpStr::from_bytes(strip_dollar(var).to_vec());
-                    if is_static {
-                        let init = match default {
-                            PropDefaultProto::Const(v) => ConstInitProto::Const(v),
-                            PropDefaultProto::Init(t) => ConstInitProto::Thunk(t),
-                            PropDefaultProto::None => ConstInitProto::Const(Value::Null),
-                        };
-                        out.static_props.push(StaticPropProto {
-                            name: pname,
-                            visibility,
-                            is_readonly,
-                            init,
-                            type_hint: hint.clone(),
-                        });
-                    } else {
-                        out.props.push(PropProto {
-                            name: pname,
-                            visibility,
-                            set_visibility,
-                            is_readonly,
-                            default,
-                            type_hint: hint.clone(),
-                        });
-                    }
-                }
-            }
-            ClassLikeMember::Property(Property::Hooked(_)) => {
-                return Err(Thrown::unsupported("property hooks", "deferred"))
-            }
-            ClassLikeMember::Constant(c) => {
-                let visibility = modifiers_visibility(&c.modifiers);
-                let hint = c.hint.as_ref().map(type_hint);
-                for item in c.items.iter() {
-                    out.constants.push(ConstProto {
-                        name: PhpStr::from_bytes(item.name.value.to_vec()),
-                        visibility,
-                        value: coerce_const_init(
-                            const_init_or_thunk(item.value, sigs, Some(class_name))?,
+        use mago_span::HasSpan;
+        compile_member(&mut out, member, sigs, class_name)
+            .map_err(|e| locate(e, member.span().start.offset))?;
+    }
+    Ok(out)
+}
+
+/// Compile one class-like member into `out`.
+fn compile_member(
+    out: &mut CompiledMembers,
+    member: &ClassLikeMember,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: &PhpStr,
+) -> Result<(), Thrown> {
+    match member {
+        ClassLikeMember::Method(m) => {
+            let (mp, promoted) = compile_method(m, sigs, class_name)?;
+            out.methods.push(mp);
+            out.props.extend(promoted);
+        }
+        ClassLikeMember::Property(Property::Plain(p)) => {
+            let visibility = modifiers_visibility(&p.modifiers);
+            let set_visibility = modifiers_set_visibility(&p.modifiers);
+            let is_static = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Static(_)));
+            let is_readonly = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
+            let hint = p.hint.as_ref().map(type_hint);
+            for item in p.items.iter() {
+                let (var, default) = match item {
+                    PropertyItem::Concrete(c) => (
+                        c.variable.name,
+                        coerce_prop_default(
+                            prop_default_or_thunk(c.value, sigs, Some(class_name))?,
                             hint.as_ref(),
                         ),
+                    ),
+                    PropertyItem::Abstract(a) => (a.variable.name, PropDefaultProto::None),
+                };
+                let pname = PhpStr::from_bytes(strip_dollar(var).to_vec());
+                if is_static {
+                    let init = match default {
+                        PropDefaultProto::Const(v) => ConstInitProto::Const(v),
+                        PropDefaultProto::Init(t) => ConstInitProto::Thunk(t),
+                        PropDefaultProto::None => ConstInitProto::Const(Value::Null),
+                    };
+                    out.static_props.push(StaticPropProto {
+                        name: pname,
+                        visibility,
+                        is_readonly,
+                        init,
+                        type_hint: hint.clone(),
+                    });
+                } else {
+                    out.props.push(PropProto {
+                        name: pname,
+                        visibility,
+                        set_visibility,
+                        is_readonly,
+                        default,
                         type_hint: hint.clone(),
                     });
                 }
             }
-            ClassLikeMember::TraitUse(tu) => {
-                for t in tu.trait_names.iter() {
-                    out.traits.push(PhpStr::from_bytes(resolve_class_name(t)));
-                }
-            }
-            ClassLikeMember::EnumCase(ec) => {
-                use rhp_frontend::cst::EnumCaseItem;
-                let (name, value) = match &ec.item {
-                    EnumCaseItem::Unit(u) => (PhpStr::from_bytes(u.name.value.to_vec()), None),
-                    EnumCaseItem::Backed(b) => (
-                        PhpStr::from_bytes(b.name.value.to_vec()),
-                        Some(const_init_or_thunk(b.value, sigs, Some(class_name))?),
+        }
+        ClassLikeMember::Property(Property::Hooked(_)) => {
+            return Err(Thrown::unsupported("property hooks", "deferred"))
+        }
+        ClassLikeMember::Constant(c) => {
+            let visibility = modifiers_visibility(&c.modifiers);
+            let hint = c.hint.as_ref().map(type_hint);
+            for item in c.items.iter() {
+                out.constants.push(ConstProto {
+                    name: PhpStr::from_bytes(item.name.value.to_vec()),
+                    visibility,
+                    value: coerce_const_init(
+                        const_init_or_thunk(item.value, sigs, Some(class_name))?,
+                        hint.as_ref(),
                     ),
-                };
-                out.enum_cases
-                    .push(rhp_bytecode::EnumCaseProto { name, value });
+                    type_hint: hint.clone(),
+                });
             }
         }
+        ClassLikeMember::TraitUse(tu) => {
+            for t in tu.trait_names.iter() {
+                out.traits.push(PhpStr::from_bytes(resolve_class_name(t)));
+            }
+        }
+        ClassLikeMember::EnumCase(ec) => {
+            use rhp_frontend::cst::EnumCaseItem;
+            let (name, value) = match &ec.item {
+                EnumCaseItem::Unit(u) => (PhpStr::from_bytes(u.name.value.to_vec()), None),
+                EnumCaseItem::Backed(b) => (
+                    PhpStr::from_bytes(b.name.value.to_vec()),
+                    Some(const_init_or_thunk(b.value, sigs, Some(class_name))?),
+                ),
+            };
+            out.enum_cases
+                .push(rhp_bytecode::EnumCaseProto { name, value });
+        }
     }
-    Ok(out)
+    Ok(())
 }
 
 fn compile_trait(
@@ -2411,6 +2440,12 @@ impl ProtoBuilder {
 
     fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), Thrown> {
         use mago_span::HasSpan;
+        self.compile_stmt_inner(stmt)
+            .map_err(|e| locate(e, stmt.span().start.offset))
+    }
+
+    fn compile_stmt_inner(&mut self, stmt: &Statement) -> Result<(), Thrown> {
+        use mago_span::HasSpan;
         self.cur_line = line_of(stmt.span().start.offset);
         match stmt {
             Statement::OpeningTag(_) | Statement::ClosingTag(_) | Statement::Noop(_) => {}
@@ -3278,6 +3313,12 @@ impl ProtoBuilder {
     // -- expression lowering (returns the register holding the result) --
 
     fn compile_expr(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
+        use mago_span::HasSpan;
+        self.compile_expr_inner(expr)
+            .map_err(|e| locate(e, expr.span().start.offset))
+    }
+
+    fn compile_expr_inner(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
         match expr {
             Expression::Literal(lit) => self.compile_literal(lit),
             Expression::Parenthesized(p) => self.compile_expr(p.expression),
@@ -5347,7 +5388,7 @@ impl ProtoBuilder {
                     let cur = self.alloc_temp();
                     self.emit(Instr::FetchLvalRw { dst: cur });
                     let res = self.alloc_temp();
-                    self.emit(compound_op(op, res, cur, rhs)?);
+                    self.emit(compound_op(op, res, cur, rhs, lvalue_desc(a.lhs))?);
                     self.emit(Instr::AssignLval { src: res });
                     Ok(res)
                 }
@@ -5541,8 +5582,27 @@ fn has_spread(list: &rhp_frontend::cst::ArgumentList) -> bool {
         .any(|a| matches!(a, Argument::Positional(p) if p.ellipsis.is_some()))
 }
 
-/// Build the instruction for a compound-assignment operator `dst = a <op> b`.
-fn compound_op(op: &AssignmentOperator, dst: Reg, a: Reg, b: Reg) -> Result<Instr, Thrown> {
+/// What an assignment target is, for diagnostics ("an array element", …).
+fn lvalue_desc(e: &Expression) -> &'static str {
+    match e {
+        Expression::ArrayAccess(_) | Expression::ArrayAppend(_) => "an array element",
+        Expression::Access(Access::Property(_)) => "a property",
+        Expression::Access(Access::NullSafeProperty(_)) => "a nullsafe property",
+        Expression::Access(Access::StaticProperty(_)) => "a static property",
+        Expression::Variable(_) => "a variable",
+        _ => "this target",
+    }
+}
+
+/// Build the instruction for a compound-assignment operator `dst = a <op> b`;
+/// `target` describes the assigned lvalue (see [`lvalue_desc`]).
+fn compound_op(
+    op: &AssignmentOperator,
+    dst: Reg,
+    a: Reg,
+    b: Reg,
+    target: &str,
+) -> Result<Instr, Thrown> {
     use AssignmentOperator as Ao;
     Ok(match op {
         Ao::Addition(_) => Instr::Add { dst, a, b },
@@ -5559,7 +5619,7 @@ fn compound_op(op: &AssignmentOperator, dst: Reg, a: Reg, b: Reg) -> Result<Inst
         Ao::RightShift(_) => Instr::Shr { dst, a, b },
         Ao::Coalesce(_) => {
             return Err(Thrown::unsupported(
-                "??= on an array element",
+                format!("??= on {target}"),
                 "use a full assignment for now",
             ))
         }

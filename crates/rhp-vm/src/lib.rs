@@ -5615,6 +5615,10 @@ impl Vm {
                     return Err(Thrown::unsupported(
                         String::from_utf8_lossy(&what).into_owned(),
                         String::from_utf8_lossy(&why).into_owned(),
+                    )
+                    .with_location(
+                        || String::from_utf8_lossy(&self.current_file(top)).into_owned(),
+                        self.current_line(top),
                     ));
                 }
                 Instr::Eval { dst, src } => {

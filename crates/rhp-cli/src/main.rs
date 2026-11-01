@@ -213,8 +213,8 @@ fn fatal(t: Thrown) -> i32 {
             eprintln!("PHP Fatal error:  Uncaught exception");
             255
         }
-        Thrown::Unsupported { feature, reason } => {
-            eprintln!("RHP_UNSUPPORTED: {feature} is not supported ({reason})");
+        t @ Thrown::Unsupported { .. } => {
+            eprintln!("{}", t.unsupported_message().unwrap_or_default());
             255
         }
     }

@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use rhp_compiler::compile_with_source;
 use rhp_frontend::Arena;
 use rhp_values::Thrown;
-use rhp_vm::Vm;
+use rhp_vm::{IncludeError, Vm};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -35,8 +35,12 @@ fn main() -> ExitCode {
 
     let arena = Arena::new();
     let parsed = arena.parse(file.as_bytes(), &source);
-    if parsed.has_parse_errors() {
-        eprintln!("rhp: parse error in {file}");
+    if let Some((message, line)) = parsed.parse_error() {
+        let mut vm = Vm::new();
+        vm.set_direct_stdout(true);
+        vm.report_parse_error(&message, &file, line);
+        vm.flush_stdout();
+        let _ = std::io::stdout().flush();
         return ExitCode::from(255);
     }
 
@@ -55,13 +59,10 @@ fn main() -> ExitCode {
     vm.set_includer(|file: &str, src: &[u8]| {
         let arena = Arena::new();
         let parsed = arena.parse(file.as_bytes(), src);
-        if parsed.has_parse_errors() {
-            return Err(Thrown::error(
-                "ParseError",
-                format!("syntax error in {file}"),
-            ));
+        if let Some((message, line)) = parsed.parse_error() {
+            return Err(IncludeError::Parse { message, line });
         }
-        compile_with_source(parsed.program(), src, file)
+        Ok(compile_with_source(parsed.program(), src, file)?)
     });
     // Unbuffered stdout reaches the process before each stderr write.
     vm.set_direct_stdout(true);

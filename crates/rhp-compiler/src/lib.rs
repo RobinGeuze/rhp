@@ -1087,6 +1087,8 @@ class ArithmeticError extends Error {}
 class DivisionByZeroError extends ArithmeticError {}
 class ArgumentCountError extends TypeError {}
 class UnhandledMatchError extends Error {}
+class CompileError extends Error {}
+class ParseError extends CompileError {}
 class AssertionError extends Error {}
 class LogicException extends Exception {}
 class InvalidArgumentException extends LogicException {}

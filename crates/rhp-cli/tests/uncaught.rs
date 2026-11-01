@@ -210,3 +210,30 @@ fn uncaught_flushes_output_buffers_and_runs_shutdown_functions() {
         ),
     ]);
 }
+
+#[test]
+fn parse_errors_main_eval_and_include() {
+    if !php_available() {
+        return;
+    }
+    let dir = case_dir("parse");
+    // The main script itself does not parse.
+    let bad = dir.join("bad.php");
+    write(&bad, "<?php\necho 1;\n$x = ;\n");
+    let out = assert_same(&bad);
+    assert!(out.contains("Parse error: syntax error, unexpected token \";\""));
+    // Uncaught ParseError from eval() and from include.
+    let ev = dir.join("ev.php");
+    write(
+        &ev,
+        "<?php\necho \"a\\n\";\neval(\"echo 1;\\n\\nfunction (\");\n",
+    );
+    let out = assert_same(&ev);
+    assert!(out.contains("Unclosed '('"));
+    let inc = dir.join("inc.php");
+    write(
+        &inc,
+        "<?php\nfunction f() { include __DIR__ . '/bad.php'; }\nf();\n",
+    );
+    assert_same(&inc);
+}

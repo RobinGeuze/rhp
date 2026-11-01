@@ -33,7 +33,22 @@ enum CursorStep {
 
 /// SAPI-injected callback that parses + compiles an included file's source into
 /// a `Program`, keeping the VM compiler-agnostic (see the `includer` field).
-type Includer = Box<dyn FnMut(&str, &[u8]) -> Result<Program, Thrown>>;
+type Includer = Box<dyn FnMut(&str, &[u8]) -> Result<Program, IncludeError>>;
+
+/// Why the SAPI's includer could not produce a `Program`.
+#[derive(Debug)]
+pub enum IncludeError {
+    /// A syntax error: becomes a catchable `ParseError` at (file, `line`).
+    Parse { message: String, line: u32 },
+    /// Anything else (a compile-time Error, an unsupported construct, …).
+    Thrown(Thrown),
+}
+
+impl From<Thrown> for IncludeError {
+    fn from(t: Thrown) -> Self {
+        IncludeError::Thrown(t)
+    }
+}
 
 /// The virtual machine: output sink + call stack + global tables.
 pub struct Vm {
@@ -1783,7 +1798,7 @@ impl Vm {
     /// source to a `Program`). Without it, `include`/`require` raise an error.
     pub fn set_includer(
         &mut self,
-        f: impl FnMut(&str, &[u8]) -> Result<Program, Thrown> + 'static,
+        f: impl FnMut(&str, &[u8]) -> Result<Program, IncludeError> + 'static,
     ) {
         self.includer = Some(Box::new(f));
     }
@@ -4071,10 +4086,39 @@ impl Vm {
             .ok_or_else(|| Thrown::error("Error", "eval is not available"))?;
         let compiled = cb(&file, &source);
         self.includer = Some(cb);
-        let prog = compiled?;
+        let prog = self.included_program(compiled, &file)?;
 
         let main = self.install_included(&prog)?;
         self.run_included(main, top, "eval")
+    }
+
+    /// The includer's result: a syntax error becomes a ParseError object
+    /// located in the included file (or eval()'d code) at the error's line.
+    fn included_program(
+        &mut self,
+        compiled: Result<Program, IncludeError>,
+        file: &str,
+    ) -> Result<Program, Thrown> {
+        match compiled {
+            Ok(p) => Ok(p),
+            Err(IncludeError::Thrown(t)) => Err(t),
+            Err(IncludeError::Parse { message, line }) => Err(self.materialize(
+                Thrown::error("ParseError", message),
+                Some((file.as_bytes().to_vec(), line)),
+            )),
+        }
+    }
+
+    /// The main script failed to parse: php reports `Parse error: …` through
+    /// the usual display/log path (exit status 255 is the SAPI's job).
+    pub fn report_parse_error(&mut self, message: &str, file: &str, line: u32) {
+        self.display_error(
+            4,
+            "Parse error",
+            message.as_bytes(),
+            file.as_bytes(),
+            line as i64,
+        );
     }
 
     fn do_include(
@@ -4113,7 +4157,7 @@ impl Vm {
         let rp_str = String::from_utf8_lossy(&realpath).into_owned();
         let compiled = cb(&rp_str, &source);
         self.includer = Some(cb);
-        let prog = compiled?;
+        let prog = self.included_program(compiled, &rp_str)?;
 
         let main = self.install_included(&prog)?;
         let ret = self.run_included(main, top, kind.name())?;

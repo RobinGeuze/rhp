@@ -1,0 +1,69 @@
+true st h
+TypeError: Unsupported operand types: string * int
+true st h
+TypeError: Unsupported operand types: string * int
+true st h
+TypeError: Unsupported operand types: string * int
+true st h
+TypeError: Unsupported operand types: string * int
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, class K does not have a method "nope"
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, class "Nope" not found
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, non-static method K::inst() cannot be called statically
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, non-static method K::inst() cannot be called statically
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, class K does not have a method "nope"
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, class K does not have a method "nope"
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, first array member is not a valid class name or object
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, second array member is not a valid method
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, array callback must have exactly two members
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, function "nofn" not found or invalid function name
+true => int(1)
+true => int(1)
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, no array or string given
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, no array or string given
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, no array or string given
+true __callStatic anything ["h"]
+=> NULL
+true __callStatic x ["h"]
+=> NULL
+true __call y ["h"]
+=> NULL
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, cannot access private method K::priv()
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, cannot access private method K::priv()
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, class K does not have a method ""
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, invalid function name
+false TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, class "K::st" not found
+true inst Sub
+=> NULL
+true => enum(Suit::H)
+bool(true)
+bool(true)
+bool(true)
+inst K
+priv
+priv
+st 9
+Error: Call to undefined method K::nope()
+Error: Class "Nope" not found
+Error: Call to undefined function nofn()
+Error: Non-static method K::inst() cannot be called statically
+Error: Call to private method K::priv() from global scope
+Error: Call to private method K::priv() from global scope
+Error: First array member is not a valid class name or object
+Error: Array callback must have exactly two elements
+Error: Value of type int is not callable
+Error: Value of type bool is not callable
+Error: Object of type K is not callable
+Error: Call to undefined method K::()
+Error: Class "" not found
+Error: Second array member is not a valid method
+TypeError: call_user_func_array(): Argument #1 ($callback) must be a valid callback, function "nofn" not found or invalid function name
+st 4
+int(8)
+st 1
+st 2
+array(2) {
+  [0]=>
+  int(2)
+  [1]=>
+  int(4)
+}

@@ -47,12 +47,13 @@ pub fn run_throws(src: &str) -> (String, String) {
         Err(t) => {
             let out = String::from_utf8_lossy(vm.output()).into_owned();
             let class = match t {
-                Thrown::Error { class, .. } => class,
-                Thrown::Object(_) => "Object",
-                Thrown::Exit(_) => "Exit",
-                Thrown::Unsupported { .. } => "Unsupported",
+                Thrown::Error { class, .. } => class.to_string(),
+                // Engine errors are materialized into Throwable objects.
+                Thrown::Object(h) => vm.class_name_of(&h),
+                Thrown::Exit(_) => "Exit".to_string(),
+                Thrown::Unsupported { .. } => "Unsupported".to_string(),
             };
-            (out, class.to_string())
+            (out, class)
         }
     }
 }

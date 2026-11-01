@@ -11,12 +11,36 @@ use std::process::ExitCode;
 use rhp_compiler::compile_with_source;
 use rhp_frontend::Arena;
 use rhp_values::Thrown;
-use rhp_vm::Vm;
+use rhp_vm::{IncludeError, Vm};
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().collect();
+    let all: Vec<String> = std::env::args().collect();
+    // php-style options before the script: `-n` (no php.ini: always the case
+    // here) and `-d key=value` / `-dkey=value` ini settings.
+    let mut ini: Vec<(String, String)> = Vec::new();
+    let mut i = 1;
+    while i < all.len() {
+        let a = &all[i];
+        let setting = if a == "-n" {
+            i += 1;
+            continue;
+        } else if a == "-d" {
+            i += 1;
+            all.get(i).cloned()
+        } else if let Some(kv) = a.strip_prefix("-d") {
+            Some(kv.to_string())
+        } else {
+            break;
+        };
+        if let Some(kv) = setting {
+            let (k, v) = kv.split_once('=').unwrap_or((&kv, "1"));
+            ini.push((k.trim().to_string(), v.trim().to_string()));
+        }
+        i += 1;
+    }
+    let args = &all[i.saturating_sub(1)..];
     let Some(path) = args.get(1) else {
-        eprintln!("usage: rhp <script.php>");
+        eprintln!("usage: rhp [-n] [-d key=value]... <script.php>");
         return ExitCode::from(1);
     };
 
@@ -35,8 +59,15 @@ fn main() -> ExitCode {
 
     let arena = Arena::new();
     let parsed = arena.parse(file.as_bytes(), &source);
-    if parsed.has_parse_errors() {
-        eprintln!("rhp: parse error in {file}");
+    if let Some((message, line)) = parsed.parse_error() {
+        let mut vm = Vm::new();
+        for (k, v) in &ini {
+            vm.set_ini(k.as_bytes(), v.as_bytes());
+        }
+        vm.set_direct_stdout(true);
+        vm.report_parse_error(&message, &file, line);
+        vm.flush_stdout();
+        let _ = std::io::stdout().flush();
         return ExitCode::from(255);
     }
 
@@ -50,6 +81,9 @@ fn main() -> ExitCode {
     // Like the php CLI, write output unbuffered so it interleaves with stderr
     // and with the output of child processes in the order it was produced.
     vm.set_stdout_passthrough(true);
+    for (k, v) in &ini {
+        vm.set_ini(k.as_bytes(), v.as_bytes());
+    }
     // The top-level script's path, so `Phar::mapPhar` can parse the running phar.
     vm.set_main_script_path(file.as_bytes().to_vec());
     // $argv / $_SERVER['argv']: the script name as given, then its arguments.
@@ -58,17 +92,17 @@ fn main() -> ExitCode {
     vm.set_includer(|file: &str, src: &[u8]| {
         let arena = Arena::new();
         let parsed = arena.parse(file.as_bytes(), src);
-        if parsed.has_parse_errors() {
-            return Err(Thrown::error(
-                "ParseError",
-                format!("syntax error in {file}"),
-            ));
+        if let Some((message, line)) = parsed.parse_error() {
+            return Err(IncludeError::Parse { message, line });
         }
-        compile_with_source(parsed.program(), src, file)
+        Ok(compile_with_source(parsed.program(), src, file)?)
     });
-    let result = vm.run(&program);
-
-    let _ = std::io::stdout().write_all(vm.output());
+    // Unbuffered stdout reaches the process before each stderr write.
+    vm.set_direct_stdout(true);
+    // Run, report an uncaught throwable (per display_errors / log_errors /
+    // error_reporting), call the shutdown functions, flush output buffers.
+    let result = vm.run_main(&program);
+    vm.flush_stdout();
     let _ = std::io::stdout().flush();
 
     match result {

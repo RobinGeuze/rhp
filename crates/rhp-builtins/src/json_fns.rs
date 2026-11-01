@@ -108,7 +108,18 @@ fn fn_json_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         arrays: Vec::new(),
         objects: Vec::new(),
     };
-    if enc.value(host, &deref(&args[0]), &mut out, 0)? {
+    // An exception thrown by a jsonSerialize() propagates; the encoder's own
+    // error code then stays NONE.
+    let ok = match enc.value(host, &deref(&args[0]), &mut out, 0) {
+        Ok(ok) => ok,
+        Err(e) => {
+            if flags & JSON_THROW_ON_ERROR == 0 || flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
+                set_last_error(JSON_ERROR_NONE);
+            }
+            return Err(e);
+        }
+    };
+    if ok {
         // With JSON_PARTIAL_OUTPUT_ON_ERROR a substituted failure keeps its
         // json_last_error code.
         Ok(Value::str(out))

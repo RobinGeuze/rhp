@@ -1,0 +1,5 @@
+cb 1 2
+priv
+Failed to create closure from callable: cannot access protected method R::cb()
+Failed to create closure from callable: function "nofn" not found or invalid function name
+X

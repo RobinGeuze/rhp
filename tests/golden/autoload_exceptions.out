@@ -1,0 +1,11 @@
+caught t Foo
+caught t Bar
+caught t Baz
+caught t Qux
+caught js
+caught js
+bool(false)
+caught t M1
+caught t M2
+caught t M3
+bool(false)

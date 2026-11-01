@@ -31,7 +31,7 @@ mod json_fns;
 mod math_fns;
 mod misc_fns;
 mod parse_fns;
-mod php_fns;
+pub mod php_fns;
 mod preg_fns;
 mod printf_fns;
 mod serialize_fns;
@@ -76,6 +76,50 @@ pub trait Host {
     /// A class's parent's name by id (for `get_parent_class`). Default: none.
     fn class_parent_name(&self, _class_id: u32) -> Option<Vec<u8>> {
         None
+    }
+
+    /// php's `zend_fetch_debug_backtrace` for `debug_backtrace()` (innermost
+    /// first, the calling builtin's own frame skipped). Default: unavailable.
+    fn backtrace(&self, _provide_object: bool, _ignore_args: bool) -> Option<Value> {
+        None
+    }
+
+    /// Push a user exception handler (`set_exception_handler`; null clears),
+    /// returning the previous one (or null). Default: not stored.
+    fn set_exception_handler(&mut self, _handler: Value) -> Value {
+        Value::Null
+    }
+    /// Pop back to the previous exception handler.
+    fn restore_exception_handler(&mut self) {}
+
+    /// `ini_get`: a directive's current value, or None when php has no such
+    /// directive. Default: the built-in (`php -n`) defaults, never changed.
+    fn ini_get(&self, name: &[u8]) -> Option<Vec<u8>> {
+        php_fns::ini_default(name).map(|s| s.as_bytes().to_vec())
+    }
+    /// `ini_set`: store `value`, returning the old value (None for an unknown
+    /// directive). Default: not stored.
+    fn ini_set(&mut self, name: &[u8], _value: Vec<u8>) -> Option<Vec<u8>> {
+        self.ini_get(name)
+    }
+
+    /// `register_shutdown_function`: queue a callback (with its arguments) for
+    /// request shutdown. Default: refused (the host has no shutdown phase).
+    fn register_shutdown_function(
+        &mut self,
+        _callback: Value,
+        _args: Vec<Value>,
+    ) -> Result<(), Thrown> {
+        Err(Thrown::unsupported(
+            "register_shutdown_function",
+            "this host has no request shutdown",
+        ))
+    }
+
+    /// Whether a resource has been closed (`fclose`d stream): `gettype` /
+    /// `get_debug_type` then report `resource (closed)`. Default: no.
+    fn resource_closed(&self, _res: &Value) -> bool {
+        false
     }
 
     /// Whether a class id names an enum (for `var_dump` rendering). Default: no.
@@ -144,6 +188,43 @@ pub trait Host {
         matches!(deref(callable), Value::Closure(_))
     }
 
+    /// Why a value is not a valid callback (zend_is_callable_error's message,
+    /// e.g. `function "f" not found or invalid function name`), or None when
+    /// it is callable. Default: derived from [`Host::is_callable_value`].
+    fn callable_error(&self, callable: &Value) -> Option<String> {
+        if self.is_callable_value(callable) {
+            return None;
+        }
+        Some(match deref(callable) {
+            Value::Str(s) => format!(
+                "function \"{}\" not found or invalid function name",
+                String::from_utf8_lossy(s.as_bytes())
+            ),
+            Value::Array(_) => "array callback must have exactly two members".to_string(),
+            _ => "no array or string given".to_string(),
+        })
+    }
+
+    /// Wrap a callable as a Closure (`Closure::fromCallable`) that resolves it
+    /// in the calling scope. Default: no scope recorded.
+    fn wrap_callable(&self, callable: Value) -> Value {
+        Value::Closure(std::rc::Rc::new(rhp_values::ClosureData {
+            fnidx: u32::MAX,
+            captures: Vec::new(),
+            bound_this: None,
+            bound_class: None,
+            bound_static: None,
+            wrapped: Some(Box::new(callable)),
+        }))
+    }
+
+    /// [`Host::callable_error`] after autoloading a class the callable names
+    /// (zend_is_callable looks classes up with autoloading; a loader's
+    /// exception propagates).
+    fn check_callable(&mut self, callable: &Value) -> Result<Option<String>, Thrown> {
+        Ok(self.callable_error(callable))
+    }
+
     /// Resolve a class-like name to its opaque class id (for `class_exists`,
     /// `method_exists`/`property_exists` on a class-name string). Default: none.
     fn resolve_class(&self, _name: &[u8]) -> Option<u32> {
@@ -153,8 +234,9 @@ pub trait Host {
     /// Like `resolve_class` but invokes registered autoloaders on a miss (for
     /// `class_exists($name)` with `$autoload = true`, php's default). Default:
     /// falls back to the non-autoloading resolve.
-    fn resolve_class_autoload(&mut self, name: &[u8]) -> Option<u32> {
-        self.resolve_class(name)
+    /// An exception thrown by an autoloader propagates.
+    fn resolve_class_autoload(&mut self, name: &[u8]) -> Result<Option<u32>, Thrown> {
+        Ok(self.resolve_class(name))
     }
 
     /// The [`ClassKind`] of a class id (class / interface / trait / enum), used by
@@ -631,6 +713,11 @@ pub fn lookup(name: &str) -> Option<&'static Builtin> {
     registry().get(lower.as_str())
 }
 
+/// [`lookup`] for a name that is already lowercase (no allocation).
+pub fn lookup_lc(name_lc: &str) -> Option<&'static Builtin> {
+    registry().get(name_lc)
+}
+
 /// Engine constants (`PHP_EOL`, `PHP_INT_MAX`, …).
 pub fn constants() -> Vec<(&'static str, Value)> {
     vec![
@@ -724,6 +811,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PATHINFO_EXTENSION", Value::Int(4)),
         ("PATHINFO_FILENAME", Value::Int(8)),
         ("PATHINFO_ALL", Value::Int(15)),
+        ("DEBUG_BACKTRACE_PROVIDE_OBJECT", Value::Int(1)),
+        ("DEBUG_BACKTRACE_IGNORE_ARGS", Value::Int(2)),
         ("E_ERROR", Value::Int(1)),
         ("E_PARSE", Value::Int(4)),
         ("E_CORE_ERROR", Value::Int(16)),
@@ -739,7 +828,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("E_USER_DEPRECATED", Value::Int(16384)),
         ("NAN", Value::Float(f64::NAN)),
         ("INF", Value::Float(f64::INFINITY)),
-        ("E_ALL", Value::Int(32767)),
+        ("E_ALL", Value::Int(30719)),
         ("E_WARNING", Value::Int(2)),
         ("E_NOTICE", Value::Int(8)),
         ("COUNT_NORMAL", Value::Int(0)),
@@ -901,11 +990,15 @@ fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-fn fn_gettype(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(deref(&args[0]).type_name()))
+fn fn_gettype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = deref(&args[0]);
+    if host.resource_closed(&v) {
+        return Ok(Value::str("resource (closed)"));
+    }
+    Ok(Value::str(v.type_name()))
 }
 
-fn fn_get_debug_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_get_debug_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = match deref(&args[0]) {
         Value::Null => "null",
         Value::Bool(_) => "bool",
@@ -914,8 +1007,19 @@ fn fn_get_debug_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         Value::Str(_) => "string",
         Value::Array(_) => "array",
         Value::Closure(_) => "Closure",
-        Value::Object(_) => "object",
-        Value::Resource(_) => "resource (stream)",
+        o @ Value::Object(_) => {
+            // php: the class name. An anonymous class is named
+            // `Prefix@anonymous\0file:line$n`; only the part before the NUL shows.
+            let cname = host.object_class_name(&o).unwrap_or_default();
+            let end = cname.iter().position(|&b| b == 0).unwrap_or(cname.len());
+            return Ok(Value::str(cname[..end].to_vec()));
+        }
+        ref v @ Value::Resource(ref r) => {
+            if host.resource_closed(v) {
+                return Ok(Value::str("resource (closed)"));
+            }
+            return Ok(Value::str(format!("resource ({})", r.type_name)));
+        }
         Value::Ref(_) => unreachable!(),
     };
     Ok(Value::str(name))
@@ -957,7 +1061,22 @@ fn fn_is_finite(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_is_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.is_callable_value(&args[0])))
+    Ok(Value::Bool(host.check_callable(&args[0])?.is_none()))
+}
+
+/// zpp's `f` check: "F(): Argument #N ($callback) must be a valid callback, …".
+pub fn require_callback(
+    host: &mut dyn Host,
+    func: &str,
+    n: usize,
+    callable: &Value,
+) -> Result<(), Thrown> {
+    match host.check_callable(callable)? {
+        None => Ok(()),
+        Some(why) => Err(Thrown::type_error(format!(
+            "{func}(): Argument #{n} ($callback) must be a valid callback, {why}"
+        ))),
+    }
 }
 
 fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1367,10 +1486,12 @@ fn fn_array_reduce(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 }
 
 fn fn_call_user_func(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    require_callback(host, "call_user_func", 1, &args[0])?;
     host.call_callable(&args[0], &args[1..])
 }
 
 fn fn_call_user_func_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    require_callback(host, "call_user_func_array", 1, &args[0])?;
     let params = as_array(&args[1], "call_user_func_array")?;
     let mut argv: Vec<Value> = Vec::new();
     let mut named: Vec<(rhp_values::PhpStr, Value)> = Vec::new();
@@ -1595,12 +1716,20 @@ fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// Class name of an `is_a`/`is_subclass_of` subject: an object's class, or the
 /// string itself when `allow_string`.
-fn subject_class(host: &dyn Host, subject: &Value, allow_string: bool) -> Option<Vec<u8>> {
-    match subject {
+/// A string subject is looked up with autoloading (zend_lookup_class).
+fn subject_class(
+    host: &mut dyn Host,
+    subject: &Value,
+    allow_string: bool,
+) -> Result<Option<Vec<u8>>, Thrown> {
+    Ok(match subject {
         Value::Object(h) => host.class_name(h.borrow().class),
-        Value::Str(s) if allow_string => Some(s.as_bytes().to_vec()),
+        Value::Str(s) if allow_string => {
+            host.resolve_class_autoload(s.as_bytes())?;
+            Some(s.as_bytes().to_vec())
+        }
         _ => None,
-    }
+    })
 }
 
 fn norm_class(n: &[u8]) -> Vec<u8> {
@@ -1614,7 +1743,7 @@ fn fn_is_a(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .get(2)
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(false);
-    match subject_class(host, &subject, allow_string) {
+    match subject_class(host, &subject, allow_string)? {
         Some(n) => Ok(Value::Bool(host.reflect_is_a(&n, &target))),
         None => Ok(Value::Bool(false)),
     }
@@ -1627,7 +1756,7 @@ fn fn_is_subclass_of(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
         .get(2)
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(true);
-    match subject_class(host, &subject, allow_string) {
+    match subject_class(host, &subject, allow_string)? {
         Some(n) => {
             // Subtype but NOT the same class (is_subclass_of is exclusive).
             let same = norm_class(&n) == norm_class(&target);
@@ -1652,17 +1781,17 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
 
 /// Resolve the class id named by an argument: an object yields its own class,
 /// a string resolves via the host's class table.
-fn class_id_of(host: &dyn Host, v: &Value) -> Option<u32> {
-    match deref(v) {
+fn class_id_of(host: &mut dyn Host, v: &Value) -> Result<Option<u32>, Thrown> {
+    Ok(match deref(v) {
         Value::Object(h) => Some(h.borrow().class),
-        Value::Str(s) => host.resolve_class(s.as_bytes()),
+        Value::Str(s) => host.resolve_class_autoload(s.as_bytes())?,
         _ => None,
-    }
+    })
 }
 
 fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let method = conv::to_string_bytes(&deref(&args[1]));
-    let found = class_id_of(host, &args[0])
+    let found = class_id_of(host, &args[0])?
         .map(|cid| host.class_has_method(cid, &method))
         .unwrap_or(false);
     Ok(Value::Bool(found))
@@ -1679,7 +1808,7 @@ fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
                 || host.object_prop_exists(&Value::Object(h.clone()), &prop)
         }
         Value::Str(s) => host
-            .resolve_class(s.as_bytes())
+            .resolve_class_autoload(s.as_bytes())?
             .map(|cid| host.class_has_property(cid, &prop))
             .unwrap_or(false),
         _ => false,
@@ -1693,7 +1822,7 @@ fn exists_of_kind(
     host: &mut dyn Host,
     args: &[Value],
     want: fn(rhp_values::ClassKind) -> bool,
-) -> bool {
+) -> Result<bool, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
     // `$autoload` defaults to true: a miss triggers registered autoloaders.
     let autoload = args
@@ -1701,13 +1830,14 @@ fn exists_of_kind(
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(true);
     let cid = if autoload {
-        host.resolve_class_autoload(&name)
+        host.resolve_class_autoload(&name)?
     } else {
         host.resolve_class(&name)
     };
-    cid.and_then(|cid| host.class_kind(cid))
+    Ok(cid
+        .and_then(|cid| host.class_kind(cid))
         .map(want)
-        .unwrap_or(false)
+        .unwrap_or(false))
 }
 
 fn fn_class_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1715,21 +1845,21 @@ fn fn_class_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     // Enums are classes too (`class_exists` is true for an enum name).
     Ok(Value::Bool(exists_of_kind(host, args, |k| {
         matches!(k, ClassKind::Class | ClassKind::Enum)
-    })))
+    })?))
 }
 
 fn fn_interface_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use rhp_values::ClassKind;
     Ok(Value::Bool(exists_of_kind(host, args, |k| {
         k == ClassKind::Interface
-    })))
+    })?))
 }
 
 fn fn_enum_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use rhp_values::ClassKind;
     Ok(Value::Bool(exists_of_kind(host, args, |k| {
         k == ClassKind::Enum
-    })))
+    })?))
 }
 
 /// `iterator_to_array($iterable, $preserve_keys = true)`. Only a plain array is

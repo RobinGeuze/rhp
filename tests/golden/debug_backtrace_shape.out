@@ -1,0 +1,17 @@
+#0 file,line,function,class,type,args inner debug_backtrace_shape.php:13 obj=- args=[5,"two"]
+#1 file,line,function,class,object,type,args run debug_backtrace_shape.php:28 obj=Svc args=[5]
+--
+#0 file,line,function,class,type inner debug_backtrace_shape.php:13 obj=- args=null
+#1 file,line,function,class,type run debug_backtrace_shape.php:28 obj=- args=null
+--
+#0 file,line,function,class,type,args inner debug_backtrace_shape.php:13 obj=- args=[5,"two"]
+--
+#0 debug_backtrace_shape.php(13): Svc::inner(5, 'two')
+#1 debug_backtrace_shape.php(28): Svc->run(5)
+--
+#0 function,class,type,args {closure:Svc::inner():25} -:- obj=- args=[1]
+#1 file,line,function,args array_map debug_backtrace_shape.php:25 obj=- args=[{},[1]]
+#2 file,line,function,class,type,args inner debug_backtrace_shape.php:13 obj=- args=[5,"two"]
+#3 file,line,function,class,type,args run debug_backtrace_shape.php:28 obj=- args=[5]
+#0 file,line,function,args top debug_backtrace_shape.php:30 obj=- args=[]
+end

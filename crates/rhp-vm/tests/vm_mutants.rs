@@ -85,11 +85,12 @@ fn call_array_callable_static_method_by_string() {
 
 #[test]
 fn calling_three_element_array_is_not_callable() {
-    // Guards the `a.len() == 2` guard in call_callable_value against `true`.
+    // Guards the `a.len() == 2` guard in resolve_callable against `true`:
+    // php raises "Error: Array callback must have exactly two elements".
     let (_out, class) = run_throws(
         "<?php class C{public function m(){return 1;}} $o=new C; $cb=[$o,'m',1]; $cb();",
     );
-    assert_eq!(class, "TypeError");
+    assert_eq!(class, "Error");
 }
 
 // --- define_const / get_const (lib.rs ~85-95) -------------------------------

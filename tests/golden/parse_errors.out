@@ -1,0 +1,16 @@
+ParseError: syntax error, unexpected token ";" @1
+ParseError: Unclosed '(' @3
+ParseError: Unclosed '{' on line 1 @3
+ParseError: Unmatched ')' @1
+ParseError: Unclosed '[' does not match ')' @1
+ParseError: syntax error, unexpected token ";" @1
+ParseError: syntax error, unexpected end of file @1
+ParseError: Unmatched '}' @1
+ParseError: Unclosed '(' @1
+ok
+int(7)
+ParseError CompileError ce
+include: syntax error, unexpected token ";" in parse_error_bad.inc:3
+eval file: F(16) : eval()'d code
+in function: syntax error, unexpected token ";"
+done

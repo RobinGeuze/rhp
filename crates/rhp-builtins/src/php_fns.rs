@@ -116,8 +116,21 @@ fn fn_func_get_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
         .unwrap_or(Value::Bool(false)))
 }
 
-fn fn_debug_backtrace(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+/// `debug_backtrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT, int $limit = 0)`.
+fn fn_debug_backtrace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use rhp_values::ArrayKey as K;
+    let options = args.first().map(|v| conv::to_int(&deref(v))).unwrap_or(1);
+    let limit = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    if let Some(Value::Array(t)) = host.backtrace(options & 1 != 0, options & 2 != 0) {
+        if limit <= 0 {
+            return Ok(Value::Array(t));
+        }
+        let mut out = PhpArray::new();
+        for (_, v) in t.iter().take(limit as usize) {
+            out.push(v.clone());
+        }
+        return Ok(Value::Array(out));
+    }
     let mut arr = PhpArray::new();
     for (func, class, file, line, this) in host.call_stack() {
         let mut e = PhpArray::new();
@@ -138,7 +151,374 @@ fn fn_debug_backtrace(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thr
     Ok(Value::Array(arr))
 }
 
-fn fn_debug_print_backtrace(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+/// One trace argument as `zend_exceptions.c::_build_trace_args` renders it
+/// (scalars via `smart_str_append_scalar` with a 15-byte string cap).
+fn trace_arg(host: &dyn Host, v: &Value, out: &mut Vec<u8>) {
+    match deref(v) {
+        Value::Null => out.extend_from_slice(b"NULL"),
+        Value::Bool(b) => out.extend_from_slice(if b { b"true" } else { b"false" }),
+        Value::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),
+        Value::Float(f) => {
+            let s = rhp_values::fmt::float_echo(f);
+            let has_dot = s.contains(&b'.');
+            out.extend_from_slice(&s);
+            if f.is_finite() && !has_dot {
+                out.extend_from_slice(b".0");
+            }
+        }
+        Value::Str(s) => {
+            let b = s.as_bytes();
+            out.push(b'\'');
+            append_escaped(out, &b[..b.len().min(15)]);
+            if b.len() > 15 {
+                out.extend_from_slice(b"...");
+            }
+            out.push(b'\'');
+        }
+        Value::Array(_) => out.extend_from_slice(b"Array"),
+        Value::Resource(r) => {
+            out.extend_from_slice(b"Resource id #");
+            out.extend_from_slice(r.id.to_string().as_bytes());
+        }
+        Value::Closure(_) => out.extend_from_slice(b"Object(Closure)"),
+        o @ Value::Object(_) => {
+            let name = host.object_class_name(&o).unwrap_or_default();
+            let cid = match &o {
+                Value::Object(h) => h.borrow().class,
+                _ => unreachable!(),
+            };
+            if host.is_enum_class(cid) {
+                out.extend_from_slice(&name);
+                out.extend_from_slice(b"::");
+                let case = host.object_prop(&o, b"name").unwrap_or(Value::Null);
+                out.extend_from_slice(&conv::to_string_bytes(&case));
+            } else {
+                out.extend_from_slice(b"Object(");
+                out.extend_from_slice(&crate::dump::c_str(name));
+                out.push(b')');
+            }
+        }
+        Value::Ref(_) => unreachable!(),
+    }
+}
+
+/// `smart_str_append_escaped`: C-style escapes for control / non-ASCII bytes.
+fn append_escaped(out: &mut Vec<u8>, s: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for &c in s {
+        if c < 32 || c == b'\\' || c > 126 {
+            out.push(b'\\');
+            match c {
+                b'\n' => out.push(b'n'),
+                b'\r' => out.push(b'r'),
+                b'\t' => out.push(b't'),
+                0x0c => out.push(b'f'),
+                0x0b => out.push(b'v'),
+                b'\\' => out.push(b'\\'),
+                0x1b => out.push(b'e'),
+                _ => {
+                    out.push(b'x');
+                    out.push(HEX[(c >> 4) as usize]);
+                    out.push(HEX[(c & 0xf) as usize]);
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+}
+
+/// `zend_trace_to_string`: render a `getTrace()` array as php's
+/// `getTraceAsString()` text (`#0 file(line): Class->fn(args)` … `#N {main}`).
+pub fn trace_to_string(host: &dyn Host, trace: &Value) -> Vec<u8> {
+    use rhp_values::ArrayKey as K;
+    let mut out = Vec::new();
+    let mut num = 0usize;
+    if let Value::Array(frames) = deref(trace) {
+        for (_, frame) in frames.iter() {
+            let Value::Array(f) = deref(frame) else {
+                continue;
+            };
+            out.push(b'#');
+            out.extend_from_slice(num.to_string().as_bytes());
+            out.push(b' ');
+            num += 1;
+            match f.get(&K::from_bytes(b"file")) {
+                Some(file) => {
+                    out.extend_from_slice(&conv::to_string_bytes(&deref(file)));
+                    out.push(b'(');
+                    let line = f
+                        .get(&K::from_bytes(b"line"))
+                        .map(|l| conv::to_int(&deref(l)))
+                        .unwrap_or(0);
+                    out.extend_from_slice(line.to_string().as_bytes());
+                    out.extend_from_slice(b"): ");
+                }
+                None => out.extend_from_slice(b"[internal function]: "),
+            }
+            for key in [&b"class"[..], b"type", b"function"] {
+                if let Some(v) = f.get(&K::from_bytes(key)) {
+                    out.extend_from_slice(&conv::to_string_bytes(&deref(v)));
+                }
+            }
+            out.push(b'(');
+            if let Some(Value::Array(args)) = f.get(&K::from_bytes(b"args")).map(deref) {
+                let mut first = true;
+                for (k, a) in args.iter() {
+                    if !first {
+                        out.extend_from_slice(b", ");
+                    }
+                    first = false;
+                    if let K::Str(name) = k {
+                        out.extend_from_slice(name.as_bytes());
+                        out.extend_from_slice(b": ");
+                    }
+                    trace_arg(host, a, &mut out);
+                }
+            }
+            out.extend_from_slice(b")\n");
+        }
+    }
+    out.push(b'#');
+    out.extend_from_slice(num.to_string().as_bytes());
+    out.extend_from_slice(b" {main}");
+    out
+}
+
+/// `__exception_trace_string($trace)`: backs `Exception::getTraceAsString()`.
+fn fn_exception_trace_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::str(trace_to_string(host, &args[0])))
+}
+
+/// `Exception::__toString()` (zend_exceptions.c): the chain from the innermost
+/// `previous` outwards, each as `Class: msg in file:line\nStack trace:\n…`,
+/// joined by `\n\nNext `.
+pub fn throwable_to_string(host: &dyn Host, exc: &Value) -> Vec<u8> {
+    let mut s: Vec<u8> = Vec::new();
+    let mut cur = deref(exc);
+    let mut seen: Vec<u32> = Vec::new();
+    while let Value::Object(h) = &cur {
+        let id = h.borrow().id;
+        let name = host.object_class_name(&cur).unwrap_or_default();
+        if seen.contains(&id) || !host.reflect_is_a(&name, b"Throwable") {
+            break;
+        }
+        seen.push(id);
+        let prop = |n: &[u8]| host.object_prop(&cur, n).map(|v| deref(&v));
+        let mut message = prop(b"message")
+            .map(|v| conv::to_string_bytes(&v))
+            .unwrap_or_default();
+        let file = prop(b"file")
+            .map(|v| conv::to_string_bytes(&v))
+            .unwrap_or_default();
+        let line = prop(b"line").map(|v| conv::to_int(&v)).unwrap_or(0);
+        if (name == b"TypeError" || name == b"ArgumentCountError")
+            && message.windows(12).any(|w| w == b", called in ")
+        {
+            message.extend_from_slice(b" and defined");
+        }
+        let mut trace = prop(b"trace")
+            .map(|t| trace_to_string(host, &t))
+            .unwrap_or_else(|| b"#0 {main}".to_vec());
+        if trace.is_empty() {
+            trace = b"#0 {main}\n".to_vec();
+        }
+        let mut item = name.clone();
+        if !message.is_empty() {
+            item.extend_from_slice(b": ");
+            item.extend_from_slice(&message);
+        }
+        item.extend_from_slice(b" in ");
+        item.extend_from_slice(&file);
+        item.push(b':');
+        item.extend_from_slice(line.to_string().as_bytes());
+        item.extend_from_slice(b"\nStack trace:\n");
+        item.extend_from_slice(&trace);
+        if !s.is_empty() {
+            item.extend_from_slice(b"\n\nNext ");
+            item.extend_from_slice(&s);
+        }
+        s = item;
+        cur = prop(b"previous").unwrap_or(Value::Null);
+    }
+    s
+}
+
+/// `__zpp_arg($fn, $n, $name, $type, $value)`: coerce one argument of a
+/// prelude-implemented internal method the way php's zpp does in coercive
+/// mode (`string`, `int`, `?string`, `?int`, `?Throwable`), or raise its
+/// TypeError ("Fn(): Argument #n ($name) must be of type T, X given").
+fn fn_zpp_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let func = str_arg(args, 0);
+    let n = conv::to_int(&deref(&args[1]));
+    let name = str_arg(args, 2);
+    let ty = str_arg(args, 3);
+    let v = deref(&args[4]);
+    let (nullable, base) = match ty.strip_prefix(b"?") {
+        Some(b) => (true, b.to_vec()),
+        None => (false, ty.clone()),
+    };
+    let coerced: Option<Value> = match (&v, base.as_slice()) {
+        (Value::Null, _) if nullable => Some(Value::Null),
+        // Coercive mode: null to a scalar internal param is the scalar's zero.
+        (Value::Null, b"string") => Some(Value::str("")),
+        (Value::Null, b"int") => Some(Value::Int(0)),
+        (Value::Str(_), b"string") => Some(v.clone()),
+        (Value::Int(_) | Value::Float(_) | Value::Bool(_), b"string") => {
+            Some(Value::str(conv::to_string_bytes(&v)))
+        }
+        (Value::Object(_), b"string") => {
+            let cls = host.object_class_name(&v).unwrap_or_default();
+            if host.reflect_is_a(&cls, b"Stringable") || {
+                let id = match &v {
+                    Value::Object(h) => h.borrow().class,
+                    _ => unreachable!(),
+                };
+                host.class_has_method(id, b"__tostring")
+            } {
+                let mut cb = PhpArray::new();
+                cb.push(v.clone());
+                cb.push(Value::str("__toString"));
+                Some(host.call_callable(&Value::Array(cb), &[])?)
+            } else {
+                None
+            }
+        }
+        (Value::Int(_), b"int") => Some(v.clone()),
+        (Value::Bool(b), b"int") => Some(Value::Int(*b as i64)),
+        (Value::Float(f), b"int") if f.is_finite() => Some(Value::Int(*f as i64)),
+        (Value::Str(s), b"int") => conv::numeric_string(s.as_bytes()).map(|num| {
+            Value::Int(match num {
+                conv::Num::Int(i) => i,
+                conv::Num::Float(f) => f as i64,
+            })
+        }),
+        (Value::Object(_), b"Throwable") => {
+            let cls = host.object_class_name(&v).unwrap_or_default();
+            host.reflect_is_a(&cls, b"Throwable").then(|| v.clone())
+        }
+        _ => None,
+    };
+    match coerced {
+        Some(c) => Ok(c),
+        None => {
+            let given = match &v {
+                Value::Null => "null".to_string(),
+                Value::Bool(_) => "bool".to_string(),
+                Value::Int(_) => "int".to_string(),
+                Value::Float(_) => "float".to_string(),
+                Value::Str(_) => "string".to_string(),
+                Value::Array(_) => "array".to_string(),
+                Value::Closure(_) => "Closure".to_string(),
+                Value::Resource(_) => "resource".to_string(),
+                o @ Value::Object(_) => String::from_utf8_lossy(&crate::dump::c_str(
+                    host.object_class_name(o).unwrap_or_default(),
+                ))
+                .into_owned(),
+                Value::Ref(_) => unreachable!(),
+            };
+            Err(Thrown::type_error(format!(
+                "{}(): Argument #{} (${}) must be of type {}, {} given",
+                String::from_utf8_lossy(&func),
+                n,
+                String::from_utf8_lossy(&name),
+                String::from_utf8_lossy(&ty),
+                given
+            )))
+        }
+    }
+}
+
+/// `__throwable_string($e)`: backs `Exception::__toString()` / `Error::__toString()`.
+fn fn_throwable_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::str(throwable_to_string(host, &args[0])))
+}
+
+/// `gethostbyaddr($ip)`: reverse DNS via getnameinfo(NI_NAMEREQD); the address
+/// itself when it has no name, false for a malformed address
+/// (ext/standard/dns.c php_gethostbyaddr).
+fn fn_gethostbyaddr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    use std::net::IpAddr;
+    let ip = str_arg(args, 0);
+    let Some(addr) = std::str::from_utf8(&ip)
+        .ok()
+        .and_then(|s| s.parse::<IpAddr>().ok())
+    else {
+        return Ok(Value::Bool(false));
+    };
+    let mut host = [0 as libc::c_char; 1025];
+    // SAFETY: the sockaddr structs are fully initialised for their family and
+    // `host` is a writable buffer of the advertised length.
+    let rc = unsafe {
+        match addr {
+            IpAddr::V4(v4) => {
+                let mut sa: libc::sockaddr_in = std::mem::zeroed();
+                sa.sin_family = libc::AF_INET as libc::sa_family_t;
+                sa.sin_addr.s_addr = u32::from_ne_bytes(v4.octets());
+                #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+                {
+                    sa.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
+                }
+                libc::getnameinfo(
+                    &sa as *const _ as *const libc::sockaddr,
+                    std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                    host.as_mut_ptr(),
+                    host.len() as libc::socklen_t,
+                    std::ptr::null_mut(),
+                    0,
+                    libc::NI_NAMEREQD,
+                )
+            }
+            IpAddr::V6(v6) => {
+                let mut sa: libc::sockaddr_in6 = std::mem::zeroed();
+                sa.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+                sa.sin6_addr.s6_addr = v6.octets();
+                #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+                {
+                    sa.sin6_len = std::mem::size_of::<libc::sockaddr_in6>() as u8;
+                }
+                libc::getnameinfo(
+                    &sa as *const _ as *const libc::sockaddr,
+                    std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+                    host.as_mut_ptr(),
+                    host.len() as libc::socklen_t,
+                    std::ptr::null_mut(),
+                    0,
+                    libc::NI_NAMEREQD,
+                )
+            }
+        }
+    };
+    if rc != 0 {
+        return Ok(Value::str(ip));
+    }
+    // SAFETY: getnameinfo NUL-terminated `host` on success.
+    let name = unsafe { std::ffi::CStr::from_ptr(host.as_ptr()) };
+    Ok(Value::str(name.to_bytes().to_vec()))
+}
+
+/// `debug_print_backtrace(int $options = 0, int $limit = 0)`: the trace in
+/// getTraceAsString() format, without the `{main}` line.
+fn fn_debug_print_backtrace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let options = args.first().map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    let limit = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    if let Some(Value::Array(t)) = host.backtrace(false, options & 2 != 0) {
+        let mut frames = PhpArray::new();
+        for (_, v) in t.iter().take(if limit > 0 {
+            limit as usize
+        } else {
+            usize::MAX
+        }) {
+            frames.push(v.clone());
+        }
+        let mut s = trace_to_string(host, &Value::Array(frames));
+        // Strip the trailing "#N {main}".
+        if let Some(pos) = s.iter().rposition(|&b| b == b'#') {
+            s.truncate(pos);
+        }
+        host.write_out(&s);
+        return Ok(Value::Null);
+    }
     let mut out = Vec::new();
     for (i, (func, class, file, line, _this)) in host.call_stack().into_iter().enumerate() {
         let call = match &class {
@@ -244,32 +624,145 @@ fn fn_putenv(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(true))
 }
 
-fn fn_ini_get(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = String::from_utf8_lossy(&str_arg(args, 0)).into_owned();
-    let v: Option<&str> = match name.as_str() {
-        "memory_limit" => Some("-1"),
-        "max_execution_time" => Some("0"),
-        "precision" => Some("14"),
-        "serialize_precision" => Some("-1"),
-        "date.timezone" => Some("UTC"),
-        "default_charset" => Some("UTF-8"),
-        "allow_url_fopen" => Some("1"),
-        "disable_functions" => Some(""),
-        "open_basedir" => Some(""),
-        _ => None,
-    };
-    Ok(v.map(Value::str).unwrap_or(Value::Bool(false)))
+/// Directives php knows, with their `php -n` CLI defaults (`ini_get` /
+/// `ini_set` return false for anything else).
+pub fn ini_default(name: &[u8]) -> Option<&'static str> {
+    Some(match name {
+        b"memory_limit" => "-1",
+        b"max_execution_time" => "0",
+        b"precision" => "14",
+        b"serialize_precision" => "-1",
+        b"date.timezone" => "UTC",
+        b"default_charset" => "UTF-8",
+        b"allow_url_fopen" => "1",
+        b"disable_functions" => "",
+        b"open_basedir" => "",
+        // Error handling (main.c PHP_INI; the CLI SAPI forces display_errors=1).
+        b"display_errors" => "1",
+        b"display_startup_errors" => "1",
+        b"log_errors" => "0",
+        b"error_log" => "",
+        b"html_errors" => "0",
+        b"error_prepend_string" => "",
+        b"error_append_string" => "",
+        // No php.ini value: EG(error_reporting) keeps its E_ALL default.
+        b"error_reporting" => "",
+        b"zend.exception_ignore_args" => "0",
+        _ => return None,
+    })
 }
 
-fn fn_ini_set(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    // No-op; php returns the previous value or false. We return false.
-    Ok(Value::Bool(false))
+fn fn_ini_get(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(match host.ini_get(&str_arg(args, 0)) {
+        Some(v) => Value::str(v),
+        None => Value::Bool(false),
+    })
+}
+
+/// `ini_set(string $option, string|int|float|bool|null $value): string|false`.
+fn fn_ini_set(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = str_arg(args, 0);
+    let value = match deref(&args[1]) {
+        v @ (Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_)) => {
+            conv::to_string_bytes(&v)
+        }
+        _ => {
+            return Err(Thrown::type_error(
+                "ini_set(): Argument #2 ($value) must be of type string|int|float|bool|null",
+            ))
+        }
+    };
+    Ok(match host.ini_set(&name, value) {
+        Some(old) => Value::str(old),
+        None => Value::Bool(false),
+    })
+}
+
+/// zend_zval_type_name (`int`, `bool`, `string`, `null`, …).
+pub fn zend_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Str(_) => "string",
+        Value::Array(_) => "array",
+        Value::Resource(_) => "resource",
+        Value::Closure(_) => "Closure",
+        Value::Object(_) => "object",
+        Value::Ref(r) => zend_type_name(&r.borrow()),
+    }
+}
+
+/// php's E_ALL (8.4+: E_STRICT is gone).
+pub const E_ALL: i64 = 30719;
+
+/// EG(error_reporting): the `error_reporting` directive, E_ALL while unset.
+pub fn error_reporting_level(host: &dyn Host) -> i64 {
+    match host.ini_get(b"error_reporting") {
+        Some(v) if !v.is_empty() => atol(&v),
+        _ => E_ALL,
+    }
+}
+
+/// C `atol`/`ZEND_ATOL`: optional whitespace and sign, then leading digits.
+pub fn atol(s: &[u8]) -> i64 {
+    let mut i = 0;
+    while i < s.len() && (s[i] == b' ' || (b'\t'..=b'\r').contains(&s[i])) {
+        i += 1;
+    }
+    let neg = match s.get(i) {
+        Some(b'-') => {
+            i += 1;
+            true
+        }
+        Some(b'+') => {
+            i += 1;
+            false
+        }
+        _ => false,
+    };
+    let mut n: i64 = 0;
+    while let Some(d) = s.get(i).filter(|c| c.is_ascii_digit()) {
+        n = n.wrapping_mul(10).wrapping_add((d - b'0') as i64);
+        i += 1;
+    }
+    if neg {
+        n.wrapping_neg()
+    } else {
+        n
+    }
 }
 
 fn fn_set_handler(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     // Error/exception handlers are stored by php and invoked on diagnostics;
     // this engine emits none, so we accept and return "no previous handler".
     Ok(Value::Null)
+}
+
+/// `set_exception_handler(?callable $callback)`: returns the previous handler.
+fn fn_set_exception_handler(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let h = deref(&args[0]);
+    let why = match &h {
+        Value::Null => None,
+        Value::Str(s) if !host.is_callable_value(&h) => Some(format!(
+            "function \"{}\" not found or invalid function name",
+            String::from_utf8_lossy(s.as_bytes())
+        )),
+        Value::Str(_) | Value::Array(_) | Value::Closure(_) | Value::Object(_) => None,
+        _ => Some("no array or string given".to_string()),
+    };
+    if let Some(why) = why {
+        return Err(Thrown::type_error(format!(
+            "set_exception_handler(): Argument #1 ($callback) must be a valid callback or null, {why}"
+        )));
+    }
+    Ok(host.set_exception_handler(h))
+}
+
+fn fn_restore_exception_handler(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    host.restore_exception_handler();
+    Ok(Value::Bool(true))
 }
 
 fn fn_restore_handler(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -280,16 +773,32 @@ fn fn_trigger_error(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
     Ok(Value::Bool(true))
 }
 
-fn fn_error_reporting(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(32767))
+/// `error_reporting(?int $error_level = null): int`: the old level; sets a
+/// new one when given.
+fn fn_error_reporting(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let old = error_reporting_level(host);
+    if let Some(v) = args.first().map(deref) {
+        if !matches!(v, Value::Null) {
+            let n = conv::to_int(&v);
+            host.ini_set(b"error_reporting", n.to_string().into_bytes());
+        }
+    }
+    Ok(Value::Int(old))
 }
 
 fn fn_error_get_last(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Null)
 }
 
-fn fn_register_shutdown_function(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    // Stored by php and run at shutdown; not yet invoked here.
+/// `register_shutdown_function(callable $callback, mixed ...$args): void`.
+fn fn_register_shutdown_function(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let cb = deref(&args[0]);
+    if let Some(why) = host.check_callable(&cb)? {
+        return Err(Thrown::type_error(format!(
+            "register_shutdown_function(): Argument #1 ($callback) must be a valid callback, {why}"
+        )));
+    }
+    host.register_shutdown_function(cb, args[1..].iter().map(deref).collect())?;
     Ok(Value::Null)
 }
 
@@ -396,20 +905,13 @@ fn fn_closure_from_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value
     if matches!(c, Value::Closure(_)) {
         return Ok(c);
     }
-    if !host.is_callable_value(&c) {
-        return Err(Thrown::error(
-            "TypeError",
-            "Closure::fromCallable(): Argument #1 ($callback) must be a valid callback",
-        ));
+    // zend_create_closure_from_callable's error (a TypeError).
+    if let Some(err) = host.check_callable(&c)? {
+        return Err(Thrown::type_error(format!(
+            "Failed to create closure from callable: {err}"
+        )));
     }
-    Ok(Value::Closure(std::rc::Rc::new(rhp_values::ClosureData {
-        fnidx: u32::MAX,
-        captures: Vec::new(),
-        bound_this: None,
-        bound_class: None,
-        bound_static: None,
-        wrapped: Some(Box::new(c)),
-    })))
+    Ok(host.wrap_callable(c))
 }
 
 /// `Closure::bind($closure, $newThis, $newScope)` and the `bindTo` instance form.
@@ -735,6 +1237,16 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "debug_backtrace", fn_debug_backtrace, 0, Some(2));
     put(
         m,
+        "__exception_trace_string",
+        fn_exception_trace_string,
+        1,
+        Some(1),
+    );
+    put(m, "__throwable_string", fn_throwable_string, 1, Some(1));
+    put(m, "__zpp_arg", fn_zpp_arg, 5, Some(5));
+    put(m, "gethostbyaddr", fn_gethostbyaddr, 1, Some(1));
+    put(
+        m,
         "debug_print_backtrace",
         fn_debug_print_backtrace,
         0,
@@ -752,13 +1264,20 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "putenv", fn_putenv, 1, Some(1));
     put(m, "ini_get", fn_ini_get, 1, Some(1));
     put(m, "ini_set", fn_ini_set, 2, Some(2));
+    put(m, "ini_alter", fn_ini_set, 2, Some(2));
     put(m, "set_error_handler", fn_set_handler, 1, Some(2));
     put(m, "restore_error_handler", fn_restore_handler, 0, Some(0));
-    put(m, "set_exception_handler", fn_set_handler, 1, Some(1));
+    put(
+        m,
+        "set_exception_handler",
+        fn_set_exception_handler,
+        1,
+        Some(1),
+    );
     put(
         m,
         "restore_exception_handler",
-        fn_restore_handler,
+        fn_restore_exception_handler,
         0,
         Some(0),
     );

@@ -506,7 +506,7 @@ impl<'a> Parser<'a, '_> {
         let (class, case) = (&body[..colon], &body[colon + 1..]);
         let cid = self
             .host
-            .resolve_class_autoload(class)
+            .resolve_class_autoload(class)?
             .ok_or(Fail::Malformed)?;
         if !self.host.is_enum_class(cid) {
             return malformed();
@@ -540,7 +540,7 @@ impl<'a> Parser<'a, '_> {
         self.expect(b'{')?;
 
         let cid = if self.class_allowed(&cname) {
-            self.host.resolve_class_autoload(&cname)
+            self.host.resolve_class_autoload(&cname)?
         } else {
             None
         };

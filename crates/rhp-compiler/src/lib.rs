@@ -64,6 +64,9 @@ thread_local! {
     /// `compile()` call; the list is cleared on entry and drained into
     /// `Program::closures` on exit. A closure's `fnidx` is its position here.
     static CLOSURES: RefCell<Vec<Rc<FunctionProto>>> = const { RefCell::new(Vec::new()) };
+    /// Anonymous classes (`new class {…}`) found anywhere in the program,
+    /// declared with the program's classes under their generated names.
+    static ANON_CLASSES: RefCell<Vec<ClassProto>> = const { RefCell::new(Vec::new()) };
 }
 
 thread_local! {
@@ -515,6 +518,7 @@ pub fn compile_with_source(
     STRICT_TYPES.with(|s| *s.borrow_mut() = detect_strict_types(program));
     let user_line_starts = build_line_starts(source);
     CLOSURES.with(|c| c.borrow_mut().clear());
+    ANON_CLASSES.with(|c| c.borrow_mut().clear());
     NS_CTX.with(|c| *c.borrow_mut() = Rc::new(NsContext::default()));
     // Flatten namespace/use into (context, statement) pairs in source order; every
     // pass below iterates this so name resolution is consistent across passes.
@@ -596,6 +600,7 @@ pub fn compile_with_source(
     c.emit(Instr::RetNull);
 
     let closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    classes.extend(ANON_CLASSES.with(|c| std::mem::take(&mut *c.borrow_mut())));
     let main_var_names: Vec<PhpStr> = c
         .cv_map
         .iter()
@@ -681,6 +686,61 @@ fn compile_class(
         .unwrap_or_default();
 
     let m = compile_members(&class.members, sigs, &name)?;
+    Ok(ClassProto {
+        name,
+        kind: ClassKind::Class,
+        flags,
+        parent,
+        interfaces,
+        traits: m.traits,
+        methods: m.methods,
+        props: m.props,
+        static_props: m.static_props,
+        constants: m.constants,
+        enum_cases: Vec::new(),
+        enum_backing: None,
+    })
+}
+
+/// Compile an anonymous class body under its generated `name`
+/// (`Prefix@anonymous\0file:line$n`, zend_generate_anon_class_name).
+fn compile_anon_class(
+    ac: &rhp_frontend::cst::AnonymousClass,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+) -> Result<ClassProto, Thrown> {
+    use mago_span::HasSpan;
+    let parent = ac.extends.as_ref().and_then(|e| {
+        e.types
+            .iter()
+            .next()
+            .map(|id| PhpStr::from_bytes(resolve_class_name(id)))
+    });
+    let interfaces: Vec<PhpStr> = ac
+        .implements
+        .as_ref()
+        .map(|i| {
+            i.types
+                .iter()
+                .map(|id| PhpStr::from_bytes(resolve_class_name(id)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut name = parent
+        .as_ref()
+        .or(interfaces.first())
+        .map(|n| n.as_bytes().to_vec())
+        .unwrap_or_else(|| b"class".to_vec());
+    name.extend_from_slice(b"@anonymous\0");
+    name.extend_from_slice(&src_file());
+    let n = ANON_CLASSES.with(|c| c.borrow().len());
+    name.extend_from_slice(format!(":{}${:x}", line_of(ac.span().start.offset), n).as_bytes());
+    let name = PhpStr::from_bytes(name);
+    let flags = ClassFlags {
+        is_abstract: false,
+        is_final: true,
+        is_readonly: has_modifier(&ac.modifiers, |m| matches!(m, Modifier::Readonly(_))),
+    };
+    let m = compile_members(&ac.members, sigs, &name)?;
     Ok(ClassProto {
         name,
         kind: ClassKind::Class,
@@ -979,8 +1039,8 @@ fn compile_trait(
 /// The built-in exception/throwable class hierarchy, as PHP source. Compiled
 /// and prepended to every program so `throw`/`catch` and engine errors work.
 const PRELUDE: &str = r##"<?php
-interface Throwable {}
 interface Stringable {}
+interface Throwable extends Stringable {}
 interface UnitEnum {}
 interface BackedEnum extends UnitEnum {}
 interface Traversable {}
@@ -1001,49 +1061,75 @@ final class Closure {
 }
 class Exception implements Throwable {
     protected $message = "";
+    private $string = "";
     protected $code = 0;
     protected $file = "";
     protected $line = 0;
-    protected $previous = null;
+    private $trace = [];
+    private $previous = null;
     public function __construct($message = "", $code = 0, $previous = null) {
-        $this->message = $message;
-        $this->code = $code;
-        $this->previous = $previous;
+        $n = func_num_args();
+        if ($n >= 1) { $this->message = __zpp_arg("Exception::__construct", 1, "message", "string", $message); }
+        if ($n >= 2) { $c = __zpp_arg("Exception::__construct", 2, "code", "int", $code); if ($c) { $this->code = $c; } }
+        if ($n >= 3) { $p = __zpp_arg("Exception::__construct", 3, "previous", "?Throwable", $previous); if ($p !== null) { $this->previous = $p; } }
     }
-    public function getMessage() { return $this->message; }
-    public function getCode() { return $this->code; }
-    public function getPrevious() { return $this->previous; }
-    public function getFile() { return $this->file; }
-    public function getLine() { return $this->line; }
-    public function getTrace() { return []; }
-    public function getTraceAsString() { return "#0 {main}"; }
+    final public function getMessage() { return $this->message; }
+    final public function getCode() { return $this->code; }
+    final public function getPrevious() { return $this->previous; }
+    final public function getFile() { return $this->file; }
+    final public function getLine() { return $this->line; }
+    final public function getTrace() { return $this->trace; }
+    final public function getTraceAsString() { return __exception_trace_string($this->trace); }
+    public function __toString() { return __throwable_string($this); }
 }
 class Error implements Throwable {
     protected $message = "";
+    private $string = "";
     protected $code = 0;
     protected $file = "";
     protected $line = 0;
-    protected $previous = null;
+    private $trace = [];
+    private $previous = null;
     public function __construct($message = "", $code = 0, $previous = null) {
-        $this->message = $message;
-        $this->code = $code;
-        $this->previous = $previous;
+        $n = func_num_args();
+        if ($n >= 1) { $this->message = __zpp_arg("Error::__construct", 1, "message", "string", $message); }
+        if ($n >= 2) { $c = __zpp_arg("Error::__construct", 2, "code", "int", $code); if ($c) { $this->code = $c; } }
+        if ($n >= 3) { $p = __zpp_arg("Error::__construct", 3, "previous", "?Throwable", $previous); if ($p !== null) { $this->previous = $p; } }
     }
-    public function getMessage() { return $this->message; }
-    public function getCode() { return $this->code; }
-    public function getPrevious() { return $this->previous; }
-    public function getFile() { return $this->file; }
-    public function getLine() { return $this->line; }
-    public function getTrace() { return []; }
-    public function getTraceAsString() { return "#0 {main}"; }
+    final public function getMessage() { return $this->message; }
+    final public function getCode() { return $this->code; }
+    final public function getPrevious() { return $this->previous; }
+    final public function getFile() { return $this->file; }
+    final public function getLine() { return $this->line; }
+    final public function getTrace() { return $this->trace; }
+    final public function getTraceAsString() { return __exception_trace_string($this->trace); }
+    public function __toString() { return __throwable_string($this); }
 }
-class ErrorException extends Exception {}
+class ErrorException extends Exception {
+    protected $severity = 1;
+    public function __construct($message = "", $code = 0, $severity = 1, $filename = null, $line = null, $previous = null) {
+        $n = func_num_args();
+        $f = "ErrorException::__construct";
+        if ($n >= 1) { $this->message = __zpp_arg($f, 1, "message", "string", $message); }
+        if ($n >= 2) { $c = __zpp_arg($f, 2, "code", "int", $code); if ($c) { $this->code = $c; } }
+        if ($n >= 3) { $severity = __zpp_arg($f, 3, "severity", "int", $severity); }
+        if ($n >= 4) { $filename = __zpp_arg($f, 4, "filename", "?string", $filename); }
+        if ($n >= 5) { $line = __zpp_arg($f, 5, "line", "?int", $line); }
+        if ($n >= 6) { $p = __zpp_arg($f, 6, "previous", "?Throwable", $previous); if ($p !== null) { $this->previous = $p; } }
+        $this->severity = $severity;
+        if ($filename !== null) { $this->file = $filename; }
+        if ($line !== null) { $this->line = $line; } elseif ($filename !== null) { $this->line = 0; }
+    }
+    final public function getSeverity() { return $this->severity; }
+}
 class TypeError extends Error {}
 class ValueError extends Error {}
 class ArithmeticError extends Error {}
 class DivisionByZeroError extends ArithmeticError {}
 class ArgumentCountError extends TypeError {}
 class UnhandledMatchError extends Error {}
+class CompileError extends Error {}
+class ParseError extends CompileError {}
 class AssertionError extends Error {}
 class LogicException extends Exception {}
 class InvalidArgumentException extends LogicException {}
@@ -1363,8 +1449,12 @@ class DateTimeImmutable implements DateTimeInterface {
 fn prelude_classes() -> Result<(Vec<ClassProto>, Vec<Rc<FunctionProto>>), Thrown> {
     // Prelude / built-in classes are never strict-typed (coercive calls).
     let saved_strict = STRICT_TYPES.with(|s| std::mem::replace(&mut *s.borrow_mut(), false));
+    // Prelude protos carry an empty file name: the VM treats them as internal
+    // code (skipped for exception file/line, `[internal function]` in traces).
+    let saved_file = SRC_FILE.with(|f| std::mem::take(&mut *f.borrow_mut()));
     let r = prelude_classes_inner();
     STRICT_TYPES.with(|s| *s.borrow_mut() = saved_strict);
+    SRC_FILE.with(|f| *f.borrow_mut() = saved_file);
     r
 }
 
@@ -1502,6 +1592,10 @@ fn compile_method(
             variadic: p.ellipsis.is_some(),
             default,
             type_hint: p.hint.as_ref().map(type_hint),
+            line: {
+                use mago_span::HasSpan;
+                line_of(p.span().start.offset)
+            },
         });
     }
     let num_params = params.len() as u16;
@@ -1588,6 +1682,10 @@ fn compile_function(
             variadic: p.ellipsis.is_some(),
             default,
             type_hint: p.hint.as_ref().map(type_hint),
+            line: {
+                use mago_span::HasSpan;
+                line_of(p.span().start.offset)
+            },
         });
     }
     let num_params = params.len() as u16;
@@ -1661,12 +1759,19 @@ struct ProtoBuilder {
     cur_line: u32,
     /// (pc, line) pairs, appended whenever `cur_line` changes at an emit point.
     lines: Vec<(rhp_bytecode::Pc, u32)>,
+    /// Lines of the enclosing call / `new` expressions (innermost last): php
+    /// gives the call opcode the line of the callee name (or `new`), not the
+    /// statement's, which is what getLine() and traces report.
+    call_lines: Vec<u32>,
 }
 
 /// A break/continue target under construction. Jump placeholders are recorded
 /// as code positions and patched once the loop's exit/continue labels are known.
 #[derive(Default)]
 struct LoopCtx {
+    /// `finally_rets.len()` when the loop was entered: a break/continue
+    /// inside more try-with-finally levels than this must run them.
+    finally_depth: usize,
     break_jumps: Vec<usize>,
     continue_jumps: Vec<usize>,
 }
@@ -1694,6 +1799,7 @@ impl ProtoBuilder {
             sigs: Rc::new(HashMap::new()),
             cur_line: 0,
             lines: Vec::new(),
+            call_lines: Vec::new(),
         }
     }
 
@@ -1735,10 +1841,27 @@ impl ProtoBuilder {
     // -- register / pool management --
 
     fn emit(&mut self, instr: Instr) {
+        let line = match (&instr, self.call_lines.last()) {
+            (
+                Instr::Call { .. }
+                | Instr::CallV { .. }
+                | Instr::CallDyn { .. }
+                | Instr::CallDynV { .. }
+                | Instr::New { .. }
+                | Instr::NewV { .. }
+                | Instr::CallMethod { .. }
+                | Instr::CallMethodV { .. }
+                | Instr::CallMethodDyn { .. }
+                | Instr::CallStatic { .. }
+                | Instr::CallStaticV { .. }
+                | Instr::CallStaticDyn { .. },
+                Some(&l),
+            ) if l != 0 => l,
+            _ => self.cur_line,
+        };
         // Record a line entry whenever the source line changes (for debug info).
-        if self.lines.last().map(|(_, l)| *l) != Some(self.cur_line) {
-            self.lines
-                .push((self.code.len() as rhp_bytecode::Pc, self.cur_line));
+        if self.lines.last().map(|(_, l)| *l) != Some(line) {
+            self.lines.push((self.code.len() as rhp_bytecode::Pc, line));
         }
         self.code.push(instr);
     }
@@ -1765,7 +1888,10 @@ impl ProtoBuilder {
 
     /// Patch a placeholder `Nop` at `pos` into a jump to `target`.
     fn patch_jmp(&mut self, pos: usize, target: u32) {
-        self.code[pos] = Instr::Jmp { target };
+        self.code[pos] = match self.code[pos] {
+            Instr::JmpFinally { .. } => Instr::JmpFinally { target },
+            _ => Instr::Jmp { target },
+        };
     }
 
     fn here(&self) -> u32 {
@@ -2387,7 +2513,10 @@ impl ProtoBuilder {
         let cond = self.compile_expr(w.condition)?;
         let jf = self.code.len();
         self.emit(Instr::Nop); // JmpFalse cond -> end
-        self.loops.push(LoopCtx::default());
+        self.loops.push(LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            ..LoopCtx::default()
+        });
         match &w.body {
             WhileBody::Statement(s) => self.compile_stmt(s)?,
             WhileBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
@@ -2403,7 +2532,10 @@ impl ProtoBuilder {
 
     fn compile_do_while(&mut self, d: &rhp_frontend::cst::DoWhile) -> Result<(), Thrown> {
         let top = self.here();
-        self.loops.push(LoopCtx::default());
+        self.loops.push(LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            ..LoopCtx::default()
+        });
         self.compile_stmt(d.statement)?;
         let ctx = self.loops.pop().unwrap();
         let cont = self.here(); // continue -> re-test the condition
@@ -2432,7 +2564,10 @@ impl ProtoBuilder {
             self.emit(Instr::Nop); // JmpFalse last -> end
             Some((last.unwrap(), pos))
         };
-        self.loops.push(LoopCtx::default());
+        self.loops.push(LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            ..LoopCtx::default()
+        });
         match &f.body {
             ForBody::Statement(s) => self.compile_stmt(s)?,
             ForBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
@@ -2487,7 +2622,10 @@ impl ProtoBuilder {
         self.emit(Instr::Nop); // Jmp -> default body or end
 
         // Case bodies in source order (fall-through: no jumps between them).
-        self.loops.push(LoopCtx::default()); // switch is one break/continue level
+        self.loops.push(LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            ..LoopCtx::default()
+        }); // switch is one break/continue level
         let mut starts = vec![0u32; cases.len()];
         for (idx, case) in cases.iter().enumerate() {
             starts[idx] = self.here();
@@ -2574,7 +2712,10 @@ impl ProtoBuilder {
             let fetch_pos = self.code.len();
             self.emit(Instr::Nop); // FeFetchRef
 
-            self.loops.push(LoopCtx::default());
+            self.loops.push(LoopCtx {
+                finally_depth: self.finally_rets.len(),
+                ..LoopCtx::default()
+            });
             match &fe.body {
                 ForeachBody::Statement(s) => self.compile_stmt(s)?,
                 ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
@@ -2635,7 +2776,10 @@ impl ProtoBuilder {
             }
         }
 
-        self.loops.push(LoopCtx::default());
+        self.loops.push(LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            ..LoopCtx::default()
+        });
         match &fe.body {
             ForeachBody::Statement(s) => self.compile_stmt(s)?,
             ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
@@ -2749,11 +2893,14 @@ impl ProtoBuilder {
             });
         }
 
+        let catches_end = self.here();
+        let mut finally_end = 0;
         let finally_pc = if let Some(fin) = &t.finally_clause {
             // Stop routing returns into THIS finally while compiling its body.
             let pending_rets = self.finally_rets.pop().unwrap();
             let fpc = self.here();
             self.compile_stmts(fin.block.statements.iter())?;
+            finally_end = self.here();
             self.emit(Instr::FinallyEnd);
             // Patch `return`s that crossed out of try/catch to enter the finally.
             for pos in pending_rets {
@@ -2770,12 +2917,24 @@ impl ProtoBuilder {
             self.patch_jmp(j, norm_target);
         }
 
+        let has_catches = !catch_arms.is_empty();
         self.exception_table.push(ExRegion {
             start: try_start,
             end: try_end,
             catches: catch_arms,
             finally: finally_pc,
+            finally_end,
         });
+        // An exception escaping a catch body still runs the finally.
+        if finally_pc.is_some() && has_catches {
+            self.exception_table.push(ExRegion {
+                start: try_end,
+                end: catches_end,
+                catches: Vec::new(),
+                finally: finally_pc,
+                finally_end,
+            });
+        }
         Ok(())
     }
 
@@ -2867,7 +3026,11 @@ impl ProtoBuilder {
         }
         let idx = self.loops.len() - n;
         let pos = self.code.len();
-        self.emit(Instr::Nop); // patched to Jmp at loop close
+        if self.finally_rets.len() > self.loops[idx].finally_depth {
+            self.emit(Instr::JmpFinally { target: 0 }); // patched at loop close
+        } else {
+            self.emit(Instr::Nop); // patched to Jmp at loop close
+        }
         if is_break {
             self.loops[idx].break_jumps.push(pos);
         } else {
@@ -2974,7 +3137,20 @@ impl ProtoBuilder {
             Expression::Identifier(id) => self.compile_constant(id),
             Expression::CompositeString(cs) => self.compile_composite(cs),
             Expression::Match(m) => self.compile_match(m),
-            Expression::Instantiation(inst) => self.compile_new(inst),
+            Expression::Instantiation(inst) => {
+                use mago_span::HasSpan;
+                self.call_lines.push(line_of(inst.span().start.offset));
+                let r = self.compile_new(inst);
+                self.call_lines.pop();
+                r
+            }
+            Expression::AnonymousClass(ac) => {
+                use mago_span::HasSpan;
+                self.call_lines.push(line_of(ac.span().start.offset));
+                let r = self.compile_new_anon(ac);
+                self.call_lines.pop();
+                r
+            }
             Expression::Access(acc) => self.compile_access(acc),
             Expression::Clone(cl) => {
                 let src = self.compile_expr(cl.object)?;
@@ -2990,7 +3166,20 @@ impl ProtoBuilder {
                 Ok(dst)
             }
             Expression::Construct(c) => self.compile_construct(c),
-            Expression::Call(call) => self.compile_call(call),
+            Expression::Call(call) => {
+                use mago_span::HasSpan;
+                use rhp_frontend::cst::Call;
+                let at = match call {
+                    Call::Function(fc) => fc.function.span(),
+                    Call::Method(mc) => mc.method.span(),
+                    Call::NullSafeMethod(mc) => mc.method.span(),
+                    Call::StaticMethod(smc) => smc.method.span(),
+                };
+                self.call_lines.push(line_of(at.start.offset));
+                let r = self.compile_call(call);
+                self.call_lines.pop();
+                r
+            }
             Expression::ArrowFunction(af) => self.compile_arrow(af),
             Expression::Closure(cl) => self.compile_closure(cl),
             Expression::PartialApplication(pa) => self.compile_fcc(pa),
@@ -3949,6 +4138,10 @@ impl ProtoBuilder {
                         let n = resolve_class_name(&ca.name);
                         self.load_string_const(&n)
                     }
+                    // Resolved against the creation scope when called.
+                    Expression::Self_(_) => self.load_string_const(b"self"),
+                    Expression::Static(_) => self.load_string_const(b"static"),
+                    Expression::Parent(_) => self.load_string_const(b"parent"),
                     other => self.compile_expr(other)?,
                 };
                 let name = self.selector_string(&s.method)?;
@@ -4093,7 +4286,8 @@ impl ProtoBuilder {
         let magic_name = self.closure_magic_name(closure_offset);
 
         // --- compile the closure proto in an isolated builder ---
-        let mut c = ProtoBuilder::new(PhpStr::from("{closure}"));
+        // The proto carries the 8.5 name too: traces and error messages print it.
+        let mut c = ProtoBuilder::new(magic_name.clone());
         c.sigs = self.sigs.clone();
         c.scope_kind = ScopeKind::Closure;
         c.class_name = self.class_name.clone(); // __CLASS__ in a closure = enclosing class
@@ -4125,6 +4319,10 @@ impl ProtoBuilder {
                 variadic: p.ellipsis.is_some(),
                 default,
                 type_hint: p.hint.as_ref().map(type_hint),
+                line: {
+                    use mago_span::HasSpan;
+                    line_of(p.span().start.offset)
+                },
             });
         }
         let num_params = params.len() as u16;
@@ -4142,6 +4340,10 @@ impl ProtoBuilder {
 
         match body {
             ClosureBody::Arrow(e) => {
+                c.cur_line = {
+                    use mago_span::HasSpan;
+                    line_of(e.span().start.offset)
+                };
                 let r = c.compile_expr(e)?;
                 c.emit(Instr::Ret { src: r });
             }
@@ -4461,7 +4663,53 @@ impl ProtoBuilder {
         self.method_ref_mask(&lc)
     }
 
+    /// `new class(args) extends P implements I { … }`: declare the class under
+    /// its generated name and instantiate it.
+    fn compile_new_anon(&mut self, ac: &rhp_frontend::cst::AnonymousClass) -> Result<Reg, Thrown> {
+        use rhp_frontend::cst::PartialArgument;
+        let proto = compile_anon_class(ac, &self.sigs)?;
+        let class = ClassRef::Name(self.intern_name(proto.name.as_bytes()));
+        ANON_CLASSES.with(|c| c.borrow_mut().push(proto));
+        let mut regs = Vec::new();
+        if let Some(list) = &ac.argument_list {
+            for arg in list.arguments.iter() {
+                match arg {
+                    PartialArgument::Positional(p) if p.ellipsis.is_none() => {
+                        regs.push(self.compile_expr(p.value)?)
+                    }
+                    _ => {
+                        return Err(Thrown::unsupported(
+                            "anonymous class argument",
+                            "spread / named / placeholder arguments deferred",
+                        ))
+                    }
+                }
+            }
+        }
+        let argc = regs.len() as u16;
+        let base = self.alloc_temps(argc);
+        for (i, r) in regs.into_iter().enumerate() {
+            self.emit(Instr::Mov {
+                dst: base + i as Reg,
+                src: r,
+            });
+        }
+        let dst = self.alloc_temp();
+        let cache = self.alloc_cache();
+        self.emit(Instr::New {
+            dst,
+            class,
+            base,
+            argc,
+            cache,
+        });
+        Ok(dst)
+    }
+
     fn compile_new(&mut self, inst: &rhp_frontend::cst::Instantiation) -> Result<Reg, Thrown> {
+        if let Expression::AnonymousClass(ac) = inst.class {
+            return self.compile_new_anon(ac);
+        }
         let class = self.class_ref(inst.class)?;
         if inst
             .argument_list

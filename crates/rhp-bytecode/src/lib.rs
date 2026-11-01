@@ -416,6 +416,12 @@ pub enum Instr {
     SetPendingRet {
         src: Reg,
     },
+    /// A `break`/`continue` that leaves a `try` with a `finally`: run the
+    /// enclosing finally blocks (innermost first) that do not contain
+    /// `target`, then jump to `target`.
+    JmpFinally {
+        target: Pc,
+    },
 
     // -- OOP (phase 7) --
     /// `new C(args)`: allocate into `dst`, then run `__construct` via the window.
@@ -750,6 +756,9 @@ pub struct ParamInfo {
     pub default: Option<Default>,
     /// Declared type (for `strict_types` enforcement / coercion); None = untyped.
     pub type_hint: Option<TypeHint>,
+    /// Source line of the parameter declaration (php raises argument
+    /// TypeError / ArgumentCountError at the failing parameter's line).
+    pub line: u32,
 }
 
 /// A declared parameter / return type: a (possibly nullable) union or
@@ -800,6 +809,9 @@ pub struct ExRegion {
     pub end: Pc,
     pub catches: Vec<CatchArm>,
     pub finally: Option<Pc>,
+    /// The pc of the finally block's `FinallyEnd` (the block is
+    /// `[finally, finally_end]`); meaningless without `finally`.
+    pub finally_end: Pc,
 }
 
 #[derive(Clone)]

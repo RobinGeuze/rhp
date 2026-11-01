@@ -47,7 +47,22 @@ enum MagicSplit {
 
 /// SAPI-injected callback that parses + compiles an included file's source into
 /// a `Program`, keeping the VM compiler-agnostic (see the `includer` field).
-type Includer = Box<dyn FnMut(&str, &[u8]) -> Result<Program, Thrown>>;
+type Includer = Box<dyn FnMut(&str, &[u8]) -> Result<Program, IncludeError>>;
+
+/// Why the SAPI's includer could not produce a `Program`.
+#[derive(Debug)]
+pub enum IncludeError {
+    /// A syntax error: becomes a catchable `ParseError` at (file, `line`).
+    Parse { message: String, line: u32 },
+    /// Anything else (a compile-time Error, an unsupported construct, …).
+    Thrown(Thrown),
+}
+
+impl From<Thrown> for IncludeError {
+    fn from(t: Thrown) -> Self {
+        IncludeError::Thrown(t)
+    }
+}
 
 /// The virtual machine: output sink + call stack + global tables.
 pub struct Vm {
@@ -65,6 +80,17 @@ pub struct Vm {
     closures: Vec<Rc<FunctionProto>>,  // anonymous closure protos, indexed by `fnidx`
     constants: HashMap<Vec<u8>, Value>,
     max_depth: usize,
+    /// Builtin calls in progress (innermost last), for exception traces.
+    native_calls: Vec<NativeCall>,
+    /// `set_exception_handler` stack (innermost last; null = none).
+    exception_handlers: Vec<Value>,
+    /// `ini_set` overrides of the built-in directive defaults.
+    ini: HashMap<Vec<u8>, Vec<u8>>,
+    /// `register_shutdown_function` callbacks with their arguments, in order.
+    shutdown_functions: Vec<(Value, Vec<Value>)>,
+    /// CLI mode: unbuffered stdout is written to the process's stdout before
+    /// anything goes to stderr, so the two streams interleave as in php.
+    direct_stdout: bool,
     // lvalue cursor: a root in the current frame (CV or a static-prop cell) +
     // pending path steps. Cursor opcodes are emitted contiguously, so a single
     // cursor never nests.
@@ -93,6 +119,9 @@ pub struct Vm {
     // `include`/`require`: a callback (injected by the SAPI) that parses+compiles
     // an included file's source into a Program, keeping the VM compiler-agnostic.
     includer: Option<Includer>,
+    /// The scope a first-class callable was created in, while its wrapped
+    /// callable is resolved (php resolves `$this->priv(...)` at creation).
+    fcc_scope: std::cell::Cell<Option<(Option<ClassId>, Option<ClassId>)>>,
     // Resolved real paths already included (for the `_once` variants).
     included_files: std::collections::HashSet<Vec<u8>>,
     // Registered `spl_autoload_register` callables, in call order.
@@ -395,6 +424,7 @@ impl Host for Vm {
         for p in f.proto.params.iter().take(n) {
             out.push(deref(&f.regs[p.cv as usize]).clone());
         }
+        out.extend(f.extra_args.iter().cloned());
         out
     }
 
@@ -502,10 +532,7 @@ impl Host for Vm {
         };
         match act {
             Act::Out => self.emit_stdout(data),
-            Act::Err => {
-                use std::io::Write;
-                let _ = std::io::stderr().write_all(data);
-            }
+            Act::Err => self.write_stderr(data),
             Act::Buf => match self.streams.get_mut(&id)? {
                 StreamState::Mem { buf, .. } | StreamState::FileWrite { buf, .. } => {
                     buf.extend_from_slice(data)
@@ -560,6 +587,64 @@ impl Host for Vm {
             Some(StreamState::Mem { buf, pos }) => *pos >= buf.len(),
             _ => true,
         }
+    }
+
+    fn backtrace(&self, provide_object: bool, ignore_args: bool) -> Option<Value> {
+        let full = self.build_trace_ex(provide_object, ignore_args);
+        // Drop the running debug_backtrace()/debug_print_backtrace() frame itself.
+        let skip = usize::from(
+            self.native_calls
+                .last()
+                .is_some_and(|n| n.caller + 1 == self.stack.len()),
+        );
+        let mut out = PhpArray::new();
+        for (_, v) in full.iter().skip(skip) {
+            out.push(v.clone());
+        }
+        Some(Value::Array(out))
+    }
+
+    fn set_exception_handler(&mut self, handler: Value) -> Value {
+        let prev = self
+            .exception_handlers
+            .last()
+            .cloned()
+            .unwrap_or(Value::Null);
+        self.exception_handlers.push(handler);
+        prev
+    }
+
+    fn restore_exception_handler(&mut self) {
+        self.exception_handlers.pop();
+    }
+
+    fn ini_get(&self, name: &[u8]) -> Option<Vec<u8>> {
+        let default = builtins::php_fns::ini_default(name)?;
+        Some(
+            self.ini
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| default.as_bytes().to_vec()),
+        )
+    }
+
+    fn ini_set(&mut self, name: &[u8], value: Vec<u8>) -> Option<Vec<u8>> {
+        let old = self.ini_get(name)?;
+        self.ini.insert(name.to_vec(), value);
+        Some(old)
+    }
+
+    fn register_shutdown_function(
+        &mut self,
+        callback: Value,
+        args: Vec<Value>,
+    ) -> Result<(), Thrown> {
+        self.shutdown_functions.push((callback, args));
+        Ok(())
+    }
+
+    fn resource_closed(&self, res: &Value) -> bool {
+        matches!(res, Value::Resource(r) if r.type_name == "stream" && !self.streams.contains_key(&r.id))
     }
 
     fn stream_close(&mut self, res: &Value) -> bool {
@@ -875,16 +960,16 @@ impl Host for Vm {
         self.resolve_class_by_name(name).ok()
     }
 
-    fn resolve_class_autoload(&mut self, name: &[u8]) -> Option<u32> {
+    fn resolve_class_autoload(&mut self, name: &[u8]) -> Result<Option<u32>, Thrown> {
         if let Ok(id) = self.resolve_class_by_name(name) {
-            return Some(id);
+            return Ok(Some(id));
         }
-        // Run registered autoloaders (swallow their exceptions — `class_exists`
-        // reports false rather than propagating a loader error here).
-        match self.try_autoload(name) {
-            Ok(true) => self.resolve_class_by_name(name).ok(),
-            _ => None,
-        }
+        // Run registered autoloaders; an exception one throws propagates.
+        Ok(if self.try_autoload(name)? {
+            self.resolve_class_by_name(name).ok()
+        } else {
+            None
+        })
     }
 
     fn function_exists(&self, name: &[u8]) -> bool {
@@ -1020,16 +1105,13 @@ impl Host for Vm {
     }
 
     fn object_prop(&self, obj: &Value, name: &[u8]) -> Option<Value> {
-        let key = rhp_values::PhpStr::from_bytes(name);
-        let h = match obj {
+        let h = match deref(obj) {
             Value::Object(h) => h,
-            Value::Ref(r) => match &*r.borrow() {
-                Value::Object(h) => return h.borrow().properties.get(&key).cloned(),
-                _ => return None,
-            },
             _ => return None,
         };
-        h.borrow().properties.get(&key).cloned()
+        let key = self.declared_prop_key(&h, name);
+        let v = h.borrow().properties.get(&key).cloned();
+        v
     }
 
     fn object_props_mangled(&self, obj: &ObjectHandle) -> PhpArray {
@@ -1052,36 +1134,73 @@ impl Host for Vm {
     }
 
     fn is_callable_value(&self, callable: &Value) -> bool {
-        let c = match callable {
-            Value::Ref(r) => r.borrow().clone(),
-            other => other.clone(),
-        };
-        match c {
-            Value::Closure(_) => true,
-            Value::Str(s) => {
-                let lower = s.as_bytes().to_ascii_lowercase();
-                self.fn_names.contains_key(&lower)
-                    || builtins::lookup(&String::from_utf8_lossy(s.as_bytes())).is_some()
-            }
-            Value::Array(a) if a.len() == 2 => {
-                let item0 = a.get(&ArrayKey::Int(0)).cloned().unwrap_or(Value::Null);
-                let method = a.get(&ArrayKey::Int(1)).cloned().unwrap_or(Value::Null);
-                let mname = conv::to_string_bytes(&method);
-                let cls = match item0 {
-                    Value::Object(h) => Some(h.borrow().class),
-                    Value::Str(cn) => self.resolve_class_by_name(cn.as_bytes()).ok(),
-                    _ => None,
-                };
-                cls.map(|c| self.lookup_method(c, &mname).is_some())
-                    .unwrap_or(false)
-            }
-            Value::Object(h) => {
-                let cls = h.borrow().class;
-                self.lookup_method(cls, b"__invoke").is_some()
-            }
-            _ => false,
-        }
+        self.resolve_callable(callable).is_ok()
     }
+
+    fn callable_error(&self, callable: &Value) -> Option<String> {
+        self.resolve_callable(callable).err()
+    }
+
+    fn check_callable(&mut self, callable: &Value) -> Result<Option<String>, Thrown> {
+        self.autoload_callable_class(callable)?;
+        Ok(self.resolve_callable(callable).err())
+    }
+
+    fn wrap_callable(&self, callable: Value) -> Value {
+        let (scope, called, _) = self.callable_scope();
+        Value::Closure(Rc::new(rhp_values::ClosureData {
+            fnidx: u32::MAX,
+            captures: Vec::new(),
+            bound_this: None,
+            bound_class: scope,
+            bound_static: called,
+            wrapped: Some(Box::new(callable)),
+        }))
+    }
+}
+
+/// A resolved callable (see `Vm::resolve_callable`).
+enum Callee {
+    Closure(Rc<rhp_values::ClosureData>),
+    Function(Rc<FunctionProto>),
+    Builtin(String),
+    /// A method with its `$this` (None: static) and called class.
+    Method(classes::ResolvedMethod, Option<ObjectHandle>, ClassId),
+    /// `__call` (with `$this`) / `__callStatic` for an unknown method name.
+    Magic(
+        classes::ResolvedMethod,
+        Option<ObjectHandle>,
+        ClassId,
+        Vec<u8>,
+    ),
+    /// An enum's built-in `cases`/`from`/`tryFrom` (lowercased).
+    EnumStatic(ClassId, Vec<u8>),
+}
+
+/// PG(display_errors) (main.c php_get_display_errors_mode).
+enum DisplayErrors {
+    Off,
+    Stdout,
+    Stderr,
+}
+
+fn display_errors_mode(v: &[u8]) -> DisplayErrors {
+    let lc = v.to_ascii_lowercase();
+    match lc.as_slice() {
+        b"on" | b"yes" | b"true" | b"stdout" => DisplayErrors::Stdout,
+        b"stderr" => DisplayErrors::Stderr,
+        _ => match builtins::php_fns::atol(v) as u8 {
+            0 => DisplayErrors::Off,
+            2 => DisplayErrors::Stderr,
+            _ => DisplayErrors::Stdout,
+        },
+    }
+}
+
+/// zend_ini_parse_bool: "true"/"yes"/"on" (any case) or a nonzero number.
+fn ini_bool(v: &[u8]) -> bool {
+    let lc = v.to_ascii_lowercase();
+    matches!(lc.as_slice(), b"true" | b"yes" | b"on") || builtins::php_fns::atol(v) != 0
 }
 
 /// One activation record.
@@ -1095,8 +1214,9 @@ struct Frame {
     defining_class: Option<ClassId>,
     /// The late-static-binding class (`static::`); None outside methods.
     called_class: Option<ClassId>,
-    /// What a `finally` block must do when it finishes (set by the unwinder).
-    pending: Option<FinallyCont>,
+    /// What each running `finally` block (keyed by its start pc) must do when
+    /// it finishes: re-raise, return, or jump on (php's per-finally fast_call).
+    pending: Vec<(u32, FinallyCont)>,
     /// A synchronous (re-entrant) call: when this frame returns, `do_return`
     /// hands the value back to the Rust caller instead of delivering to a reg.
     capture: bool,
@@ -1106,6 +1226,27 @@ struct Frame {
     /// Parameters below `argc` that a named-argument call skipped (bit i =
     /// parameter i): their defaults still apply, as if not passed.
     holes: u64,
+    /// Arguments passed beyond the declared parameters (non-variadic callee):
+    /// kept for `func_get_args()` and exception-trace `args`.
+    extra_args: Vec<Value>,
+    /// `include`/`require`/`eval` frame: the construct name shown in traces.
+    include_kind: Option<&'static str>,
+}
+
+/// A builtin (native) call in progress, for exception traces: php shows the
+/// internal function as its own trace frame, called from `caller`'s line, and
+/// any user callback it invokes as `[internal function]`.
+struct NativeCall {
+    name: &'static str,
+    /// The running builtin's argument slice, borrowed rather than copied so
+    /// tracking a call costs nothing until a trace is actually built.
+    /// Invariant: the entry is pushed just before the builtin is called and
+    /// popped right after it returns, while the owning `Vec` (a local of
+    /// `run_builtin`, only shared-borrowed by the builtin) is alive and
+    /// unmodified — so the pointer is valid whenever it is in `native_calls`.
+    args: *const [Value],
+    /// Index of the frame that made the call.
+    caller: usize,
 }
 
 /// Result of unwinding: a handler was installed, or the exception escaped the
@@ -1115,12 +1256,24 @@ enum UnwindResult {
     Escaped(Thrown),
 }
 
+/// The innermost try/catch with a `finally` whose protected range holds `pc`
+/// (and, for a jump, does not hold `target`): its finally block's start pc.
+fn enclosing_finally(proto: &FunctionProto, pc: u32, target: Option<u32>) -> Option<u32> {
+    proto.exception_table.iter().find_map(|r| {
+        let f = r.finally?;
+        let holds = |p: u32| p >= r.start && p < r.end;
+        (holds(pc) && !target.is_some_and(holds)).then_some(f)
+    })
+}
+
 /// What to do after a `finally` block completes.
 enum FinallyCont {
     /// An exception was in flight (no catch matched); re-raise after finally.
     Rethrow(Thrown),
     /// A `return` crossed out of the try/catch; complete it after finally.
     Return(Value),
+    /// A `break`/`continue` crossed out of the try/catch; jump after finally.
+    Jump(u32),
 }
 
 impl Frame {
@@ -1133,10 +1286,12 @@ impl Frame {
             ret_dst,
             defining_class: None,
             called_class: None,
-            pending: None,
+            pending: Vec::new(),
             capture: false,
             argc: 0,
             holes: 0,
+            extra_args: Vec::new(),
+            include_kind: None,
         }
     }
 }
@@ -1189,6 +1344,11 @@ impl Vm {
             closures: Vec::new(),
             constants,
             max_depth: 1 << 16,
+            native_calls: Vec::new(),
+            exception_handlers: Vec::new(),
+            ini: HashMap::new(),
+            shutdown_functions: Vec::new(),
+            direct_stdout: false,
             cursor_root: CursorRoot::Cv(0),
             cursor_steps: Vec::new(),
             classes: Vec::new(),
@@ -1202,6 +1362,7 @@ impl Vm {
             gen_stack: Vec::new(),
             bc_scale: 0,
             includer: None,
+            fcc_scope: std::cell::Cell::new(None),
             included_files: std::collections::HashSet::new(),
             autoloaders: Vec::new(),
             in_autoload: Default::default(),
@@ -1220,6 +1381,13 @@ impl Vm {
     }
 
     /// Set the CLI argument vector (`$argv`; `argv[0]` is the script name).
+    /// A startup ini setting (`-d key=value`); unknown directives are ignored.
+    pub fn set_ini(&mut self, name: &[u8], value: &[u8]) {
+        if builtins::php_fns::ini_default(name).is_some() {
+            self.ini.insert(name.to_vec(), value.to_vec());
+        }
+    }
+
     pub fn set_argv(&mut self, argv: Vec<Vec<u8>>) {
         self.argv = argv;
     }
@@ -1883,7 +2051,7 @@ impl Vm {
         frame: &mut Frame,
         caller: Option<bool>,
         ctx: Option<ClassId>,
-    ) -> Result<(), Thrown> {
+    ) -> Result<(), (usize, Thrown)> {
         let strict = caller.unwrap_or(false);
         for (i, p) in proto.params.iter().enumerate() {
             let Some(ty) = &p.type_hint else { continue };
@@ -1901,35 +2069,34 @@ impl Vm {
                 Ok(None) => {}
                 Ok(Some(coerced)) => frame.regs[p.cv as usize] = coerced,
                 Err(()) => {
-                    let fname = self.fn_display_name(proto, ctx);
+                    let fname = self.func_display_name(proto, ctx);
                     let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
                         .into_owned();
-                    // php appends the call site (the caller is the current top of
-                    // stack — the new frame has not been pushed yet).
-                    let site = self.stack.last().filter(|_| caller.is_some()).map(|f| {
-                        let pc = f.pc.saturating_sub(1) as u32;
-                        let idx = f.proto.debug.lines.partition_point(|(p, _)| *p <= pc);
-                        let line = if idx == 0 {
-                            0
-                        } else {
-                            f.proto.debug.lines[idx - 1].1
-                        };
-                        format!(
-                            ", called in {} on line {}",
-                            String::from_utf8_lossy(f.proto.debug.file.as_bytes()),
-                            line
-                        )
-                    });
-                    return Err(Thrown::error(
-                        "TypeError",
-                        format!(
-                            "{}(): Argument #{} (${}) must be of type {}, {} given{}",
-                            fname,
-                            i + 1,
-                            pname,
-                            type_string(ty),
-                            self.zval_value_name(&deref(&cur)),
-                            site.unwrap_or_default(),
+                    // php appends the call site when the caller is user code (the
+                    // new frame has not been pushed yet: the caller is the top);
+                    // a callback invoked by a builtin (`caller == None`) has none.
+                    let site = caller
+                        .and_then(|_| self.user_call_site())
+                        .map(|(file, line)| {
+                            format!(
+                                ", called in {} on line {}",
+                                String::from_utf8_lossy(&file),
+                                line
+                            )
+                        });
+                    return Err((
+                        i,
+                        Thrown::error(
+                            "TypeError",
+                            format!(
+                                "{}(): Argument #{} (${}) must be of type {}, {} given{}",
+                                fname,
+                                i + 1,
+                                pname,
+                                self.type_string_resolved(ty, ctx, frame.called_class),
+                                self.zval_value_name(&deref(&cur)),
+                                site.unwrap_or_default(),
+                            ),
                         ),
                     ));
                 }
@@ -1940,6 +2107,30 @@ impl Vm {
 
     /// Enforce a function's declared return type on `v`, coercing in coercive
     /// mode. `void`/`never`/`mixed` and unknowable types are not checked.
+    /// Falling off the end of (or a bare `return;` in) a function with a
+    /// declared return type: only `void` allows it (zend_verify_missing_return_type).
+    fn check_implicit_return(&self, proto: &FunctionProto, top: usize) -> Result<(), Thrown> {
+        use rhp_bytecode::TypeKind as K;
+        let Some(ty) = &proto.return_type else {
+            return Ok(());
+        };
+        if ty.kinds.contains(&K::Void) {
+            return Ok(());
+        }
+        let ctx = self.stack[top].defining_class;
+        let fname = self.func_display_name(proto, ctx);
+        let msg = if ty.kinds.contains(&K::Never) {
+            format!("{fname}(): never-returning function must not implicitly return")
+        } else {
+            let called = self.stack[top].called_class;
+            format!(
+                "{fname}(): Return value must be of type {}, none returned",
+                self.type_string_resolved(ty, ctx, called)
+            )
+        };
+        Err(Thrown::error("TypeError", msg))
+    }
+
     fn check_return_type(
         &self,
         proto: &FunctionProto,
@@ -1964,31 +2155,18 @@ impl Vm {
             Ok(None) => Ok(v),
             Ok(Some(coerced)) => Ok(coerced),
             Err(()) => {
-                let fname = self.fn_display_name(proto, ctx);
+                let fname = self.func_display_name(proto, ctx);
+                let called = self.stack[top].called_class;
                 Err(Thrown::error(
                     "TypeError",
                     format!(
                         "{}(): Return value must be of type {}, {} returned",
                         fname,
-                        type_string(ty),
+                        self.type_string_resolved(ty, ctx, called),
                         self.zval_value_name(&deref(&v)),
                     ),
                 ))
             }
-        }
-    }
-
-    /// php's `ZSTR_VAL(func->common.scope->name)::name` for a method, the
-    /// bare name for a function or closure.
-    fn fn_display_name(&self, proto: &FunctionProto, cls: Option<ClassId>) -> String {
-        let name = String::from_utf8_lossy(proto.name.as_bytes()).into_owned();
-        match cls {
-            Some(c) if !name.starts_with("{closure") && !name.contains("::") => format!(
-                "{}::{}",
-                String::from_utf8_lossy(self.classes[c as usize].name.as_bytes()),
-                name
-            ),
-            _ => name,
         }
     }
 
@@ -2080,7 +2258,7 @@ impl Vm {
     /// source to a `Program`). Without it, `include`/`require` raise an error.
     pub fn set_includer(
         &mut self,
-        f: impl FnMut(&str, &[u8]) -> Result<Program, Thrown> + 'static,
+        f: impl FnMut(&str, &[u8]) -> Result<Program, IncludeError> + 'static,
     ) {
         self.includer = Some(Box::new(f));
     }
@@ -2428,6 +2606,584 @@ impl Vm {
         self.stack[top].proto.debug.file.as_bytes().to_vec()
     }
 
+    // -- exceptions: throw site, backtrace, engine-error materialization --
+
+    /// Frame `i` runs engine-internal code (the prelude's PHP-source classes /
+    /// helpers, compiled with an empty file name): php has no user frame there.
+    fn is_internal_frame(&self, i: usize) -> bool {
+        self.stack[i].proto.debug.file.is_empty()
+    }
+
+    /// A builtin called from frame `i` is still running (so a frame above `i`
+    /// was invoked by it, i.e. from `[internal function]`).
+    fn native_active_from(&self, i: usize) -> bool {
+        self.native_calls.iter().any(|n| n.caller == i)
+    }
+
+    /// Where php's `zend_get_executed_filename/lineno` point: the innermost
+    /// user-code frame's current file and line.
+    fn throw_site(&self) -> (Vec<u8>, u32) {
+        let n = self.stack.len();
+        let Some(i) = (0..n)
+            .rev()
+            .find(|&i| !self.is_internal_frame(i))
+            .or(n.checked_sub(1))
+        else {
+            return (Vec::new(), 0);
+        };
+        (self.current_file(i), self.current_line(i))
+    }
+
+    /// The call site of a frame about to be pushed by the current top frame,
+    /// when that caller is user code (php appends ", called in %s on line %d"
+    /// / "passed in %s on line %d" only then).
+    fn user_call_site(&self) -> Option<(Vec<u8>, u32)> {
+        let top = self.stack.len().checked_sub(1)?;
+        if self.is_internal_frame(top) || self.native_active_from(top) {
+            return None;
+        }
+        Some((self.current_file(top), self.current_line(top)))
+    }
+
+    /// zend_type_to_string_resolved: a declared type as php prints it in
+    /// TypeErrors -- class names first (self/parent resolved against `scope`,
+    /// static against `called`), then the builtin types in php's fixed order.
+    fn type_string_resolved(
+        &self,
+        ty: &rhp_bytecode::TypeHint,
+        scope: Option<ClassId>,
+        called: Option<ClassId>,
+    ) -> String {
+        use rhp_bytecode::TypeKind as K;
+        let cname =
+            |c: ClassId| String::from_utf8_lossy(self.class(c).name.as_bytes()).into_owned();
+        let has = |k: &K| ty.kinds.contains(k);
+        if has(&K::Mixed) {
+            return "mixed".into();
+        }
+        let mut parts: Vec<String> = Vec::new();
+        for k in &ty.kinds {
+            match k {
+                K::Named(n) => parts.push(String::from_utf8_lossy(n.as_bytes()).into_owned()),
+                K::SelfType => parts.push(scope.map(cname).unwrap_or_else(|| "self".into())),
+                K::Parent => parts.push(
+                    scope
+                        .and_then(|c| self.class(c).parent)
+                        .map(cname)
+                        .unwrap_or_else(|| "parent".into()),
+                ),
+                K::Iterable => parts.push("Traversable".into()),
+                _ => {}
+            }
+        }
+        if has(&K::StaticType) {
+            let name = match (scope, called) {
+                (Some(_), Some(c)) => cname(c),
+                _ => "static".into(),
+            };
+            parts.push(name);
+        }
+        let array = has(&K::Array) || has(&K::Iterable);
+        let bool_ = has(&K::Bool) || (has(&K::True) && has(&K::False));
+        for (on, name) in [
+            (has(&K::Callable), "callable"),
+            (has(&K::Object), "object"),
+            (array, "array"),
+            (has(&K::String), "string"),
+            (has(&K::Int), "int"),
+            (has(&K::Float), "float"),
+            (bool_, "bool"),
+            (!bool_ && has(&K::False), "false"),
+            (!bool_ && has(&K::True), "true"),
+            (has(&K::Void), "void"),
+            (has(&K::Never), "never"),
+        ] {
+            if on {
+                parts.push(name.into());
+            }
+        }
+        let sep = if ty.intersection { "&" } else { "|" };
+        if ty.nullable || has(&K::Null) {
+            if parts.is_empty() {
+                return "null".into();
+            }
+            if parts.len() == 1 {
+                return format!("?{}", parts[0]);
+            }
+            let mut out = parts.join(sep);
+            out.push_str("|null");
+            return out;
+        }
+        parts.join(sep)
+    }
+
+    /// php's display name for a function in messages: `Class::fn` when scoped.
+    fn func_display_name(&self, proto: &FunctionProto, scope: Option<ClassId>) -> String {
+        let f = String::from_utf8_lossy(proto.name.as_bytes());
+        match scope {
+            Some(c) => format!(
+                "{}::{}",
+                String::from_utf8_lossy(self.class(c).name.as_bytes()),
+                f
+            ),
+            None => f.into_owned(),
+        }
+    }
+
+    /// The trace `args` of frame `i`: the passed arguments' current values.
+    fn frame_args(&self, i: usize) -> PhpArray {
+        let f = &self.stack[i];
+        let mut args = PhpArray::new();
+        for (k, p) in f.proto.params.iter().enumerate() {
+            if p.variadic {
+                if let Value::Array(a) = deref(&f.regs[p.cv as usize]) {
+                    for (key, v) in a.iter() {
+                        match key {
+                            ArrayKey::Int(_) => args.push(deref(v)),
+                            ArrayKey::Str(_) => {
+                                args.insert(key.clone(), deref(v));
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+            if k >= f.argc {
+                break;
+            }
+            args.push(deref(&f.regs[p.cv as usize]));
+        }
+        for v in &f.extra_args {
+            args.push(deref(v));
+        }
+        args
+    }
+
+    /// php's `zend_fetch_debug_backtrace` as stored in a Throwable's `trace`:
+    /// innermost first; each user frame paired with its call site (absent for a
+    /// call made by a builtin: `[internal function]`), each running builtin as
+    /// its own frame, `include`/`require`/`eval` as pseudo-frames.
+    fn build_trace(&self) -> PhpArray {
+        self.build_trace_ex(false, false)
+    }
+
+    /// [`build_trace`] with debug_backtrace's options: `$trace['object']` for
+    /// frames with a `$this`, and no `args`.
+    fn build_trace_ex(&self, provide_object: bool, ignore_args: bool) -> PhpArray {
+        // Keys and file names are shared (Rc) rather than re-allocated per
+        // frame: a trace is built at every Throwable creation.
+        let key = |s: &str| ArrayKey::Str(rhp_values::PhpStr::from(s));
+        let keys = [
+            key("file"),
+            key("line"),
+            key("function"),
+            key("class"),
+            key("object"),
+            key("type"),
+            key("args"),
+        ];
+        let k = |s: &[u8]| -> ArrayKey {
+            let i = match s {
+                b"file" => 0,
+                b"line" => 1,
+                b"function" => 2,
+                b"class" => 3,
+                b"object" => 4,
+                b"type" => 5,
+                _ => 6,
+            };
+            keys[i].clone()
+        };
+        let file_of = |i: usize| Value::Str(self.stack[i].proto.debug.file.clone());
+        let mut out = PhpArray::new();
+        for i in (0..self.stack.len()).rev() {
+            if !self.is_internal_frame(i) {
+                for n in self.native_calls.iter().rev().filter(|n| n.caller == i) {
+                    let mut e = PhpArray::new();
+                    e.insert(k(b"file"), file_of(i));
+                    e.insert(k(b"line"), Value::Int(self.current_line(i) as i64));
+                    e.insert(k(b"function"), Value::str(n.name));
+                    if !ignore_args {
+                        let mut a = PhpArray::new();
+                        // SAFETY: see `NativeCall::args` — every entry
+                        // still in `native_calls` points at a live slice.
+                        let call_args = unsafe { &*n.args };
+                        for v in call_args {
+                            a.push(deref(v));
+                        }
+                        e.insert(k(b"args"), Value::Array(a));
+                    }
+                    out.push(Value::Array(e));
+                }
+            }
+            if i == 0 {
+                break;
+            }
+            let f = &self.stack[i];
+            let mut e = PhpArray::new();
+            if !self.is_internal_frame(i - 1) && !self.native_active_from(i - 1) {
+                e.insert(k(b"file"), file_of(i - 1));
+                e.insert(k(b"line"), Value::Int(self.current_line(i - 1) as i64));
+            }
+            if let Some(kind) = f.include_kind {
+                e.insert(k(b"function"), Value::str(kind));
+            } else {
+                e.insert(k(b"function"), Value::Str(f.proto.name.clone()));
+                if let Some(c) = f.defining_class {
+                    e.insert(k(b"class"), Value::Str(self.class(c).name.clone()));
+                    let this = self.current_this(i);
+                    let ty = if this.is_some() { "->" } else { "::" };
+                    if let (true, Some(o)) = (provide_object, this) {
+                        e.insert(k(b"object"), Value::Object(o));
+                    }
+                    e.insert(k(b"type"), Value::str(ty));
+                }
+                if !ignore_args {
+                    e.insert(k(b"args"), Value::Array(self.frame_args(i)));
+                }
+            }
+            out.push(Value::Array(e));
+        }
+        out
+    }
+
+    /// The storage key of property `name` on `obj` as its class sees it,
+    /// ignoring visibility: the most-derived declaration (a private one is
+    /// stored mangled, `"\0Class\0name"`), else the plain (dynamic) name.
+    /// Engine-internal accesses such as Exception's private `trace` /
+    /// `previous` go through this.
+    pub(crate) fn declared_prop_key(&self, obj: &ObjectHandle, name: &[u8]) -> rhp_values::PhpStr {
+        let name = rhp_values::PhpStr::from_bytes(name);
+        let cls = obj.borrow().class;
+        self.class(cls)
+            .prop_visible
+            .get(&name)
+            .cloned()
+            .unwrap_or(name)
+    }
+
+    /// Stamp a freshly created Throwable with php's creation-site `file`,
+    /// `line` and `trace` (zend_default_exception_new).
+    fn init_throwable(&self, obj: &ObjectHandle) {
+        let (file, line) = self.throw_site();
+        let trace = self.build_trace();
+        let (kf, kl, kt) = (
+            self.declared_prop_key(obj, b"file"),
+            self.declared_prop_key(obj, b"line"),
+            self.declared_prop_key(obj, b"trace"),
+        );
+        let mut b = obj.borrow_mut();
+        b.properties.insert(kf, Value::str(file));
+        b.properties.insert(kl, Value::Int(line as i64));
+        b.properties.insert(kt, Value::Array(trace));
+    }
+
+    /// Turn an engine-raised `Thrown::Error` into a real Throwable object, created
+    /// *now* (so its file/line/trace are the throw point). `at` overrides the
+    /// file/line (argument errors are raised at the callee's parameter line).
+    fn materialize(&mut self, thrown: Thrown, at: Option<(Vec<u8>, u32)>) -> Thrown {
+        let Thrown::Error { class, message } = &thrown else {
+            return thrown;
+        };
+        let Ok(cls) = self.resolve_class_by_name(class.as_bytes()) else {
+            return thrown;
+        };
+        let obj = self.new_object(cls);
+        {
+            let mut b = obj.borrow_mut();
+            b.properties.insert(
+                rhp_values::PhpStr::from("message"),
+                Value::str(message.clone()),
+            );
+            if let Some((file, line)) = at {
+                b.properties
+                    .insert(rhp_values::PhpStr::from("file"), Value::str(file));
+                b.properties
+                    .insert(rhp_values::PhpStr::from("line"), Value::Int(line as i64));
+            }
+        }
+        Thrown::Object(obj)
+    }
+
+    /// Bind `args` into `frame` (which already carries its `$this`/scope) and
+    /// enforce declared parameter types. On failure php raises the
+    /// ArgumentCountError / TypeError from *inside* the callee: at the failing
+    /// parameter's line, with the callee on the trace.
+    fn bind_frame(
+        &mut self,
+        frame: &mut Frame,
+        args: &[Value],
+        caller: Option<bool>,
+    ) -> Result<(), Thrown> {
+        let proto = frame.proto.clone();
+        frame.argc = args.len();
+        // A named-argument call armed `pending_named` for this frame.
+        let named = self.pending_named.take();
+        let failed = match bind_params(&proto, args, frame) {
+            Err(missing) => Some((missing, self.arg_count_error(&proto, frame, args.len()))),
+            Ok(()) => {
+                if let Some((holes, extra)) = named {
+                    frame.holes = holes;
+                    if !extra.is_empty() {
+                        if let Some(p) = proto.params.iter().find(|p| p.variadic) {
+                            if let Value::Array(a) = &mut frame.regs[p.cv as usize] {
+                                for (k, v) in extra {
+                                    a.insert(ArrayKey::Str(k), deref(&v));
+                                }
+                            }
+                        }
+                    }
+                }
+                let scope = frame.defining_class;
+                self.check_arg_types(&proto, frame, caller, scope).err()
+            }
+        };
+        let Some((idx, err)) = failed else {
+            return Ok(());
+        };
+        let line = proto.params.get(idx).map(|p| p.line).unwrap_or(0);
+        let at = (proto.debug.file.as_bytes().to_vec(), line);
+        let mut pushed = Frame::new(proto.clone(), Reg::MAX);
+        std::mem::swap(&mut pushed, frame);
+        self.stack.push(pushed);
+        let t = self.materialize(err, Some(at));
+        let mut popped = self.stack.pop().expect("pushed frame");
+        std::mem::swap(&mut popped, frame);
+        Err(t)
+    }
+
+    /// "Too few arguments to function f(), N passed[ in F on line L] and
+    /// {exactly|at least} M expected" (zend_missing_arg_error).
+    fn arg_count_error(&self, proto: &FunctionProto, frame: &Frame, passed: usize) -> Thrown {
+        let required = required_params(proto);
+        let declared = proto.params.iter().filter(|p| !p.variadic).count();
+        let which = if required == declared {
+            "exactly"
+        } else {
+            "at least"
+        };
+        let name = self.func_display_name(proto, frame.defining_class);
+        let msg = match self.user_call_site() {
+            Some((file, line)) => format!(
+                "Too few arguments to function {name}(), {passed} passed in {} on line {line} and {which} {required} expected",
+                String::from_utf8_lossy(&file)
+            ),
+            None => format!(
+                "Too few arguments to function {name}(), {passed} passed and {which} {required} expected"
+            ),
+        };
+        Thrown::error("ArgumentCountError", msg)
+    }
+
+    /// Push php's "no user code running" frame: callbacks invoked after the
+    /// script (exception handler, shutdown functions) are called from
+    /// `[internal function]`.
+    fn push_internal_main(&mut self) {
+        let mut main = FunctionProto::new(rhp_values::PhpStr::from("{main}"));
+        main.debug.file = rhp_values::PhpStr::from("");
+        self.stack.push(Frame::new(Rc::new(main), 0));
+    }
+
+    /// Give an uncaught throwable to the user exception handler, if one is set
+    /// (zend_user_exception_handler). `None`: handled; `Some(t)`: still
+    /// uncaught (no handler, or the handler itself threw `t`).
+    pub fn handle_uncaught(&mut self, thrown: Thrown) -> Option<Thrown> {
+        if !thrown.is_catchable() {
+            return Some(thrown);
+        }
+        let handler = match self.exception_handlers.last() {
+            Some(h) if !matches!(h, Value::Null) => h.clone(),
+            _ => return Some(thrown),
+        };
+        let thrown = self.materialize(thrown, None);
+        let Thrown::Object(obj) = &thrown else {
+            return Some(thrown);
+        };
+        let arg = Value::Object(obj.clone());
+        self.stack.clear();
+        self.push_internal_main();
+        let r = self.call_callable_value(&handler, vec![arg]);
+        self.stack.clear();
+        r.err()
+    }
+
+    /// The class name of an object (e.g. an uncaught `Thrown::Object`).
+    pub fn class_name_of(&self, obj: &ObjectHandle) -> String {
+        String::from_utf8_lossy(self.class(obj.borrow().class).name.as_bytes()).into_owned()
+    }
+
+    /// CLI SAPI mode: pending unbuffered stdout is handed to the process
+    /// before every stderr write, so stdout/stderr interleave as under php.
+    pub fn set_direct_stdout(&mut self, on: bool) {
+        self.direct_stdout = on;
+    }
+
+    /// Write pending unbuffered output to the process's stdout.
+    pub fn flush_stdout(&mut self) {
+        use std::io::Write;
+        let mut o = std::io::stdout().lock();
+        let _ = o.write_all(&self.out);
+        let _ = o.flush();
+        self.out.clear();
+    }
+
+    /// Write to the process's stderr (after pending stdout, in CLI mode).
+    fn write_stderr(&mut self, data: &[u8]) {
+        use std::io::Write;
+        if self.direct_stdout {
+            self.flush_stdout();
+        }
+        let _ = std::io::stderr().write_all(data);
+    }
+
+    /// php_error_cb's log + display step for an error of type `ty` (an E_*
+    /// bit): skipped when masked by error_reporting; logged to stderr as
+    /// `PHP <label>:  …` under log_errors; displayed per display_errors
+    /// (stdout through the output buffers, or stderr without the leading
+    /// newline for "stderr").
+    fn display_error(&mut self, ty: i64, label: &str, message: &[u8], file: &[u8], line: i64) {
+        if builtins::php_fns::error_reporting_level(self) & ty == 0 {
+            return;
+        }
+        let ini = |vm: &Self, n: &[u8]| vm.ini_get(n).unwrap_or_default();
+        let log = ini_bool(&ini(self, b"log_errors"));
+        let mode = display_errors_mode(&ini(self, b"display_errors"));
+        let mut tail = b" in ".to_vec();
+        tail.extend_from_slice(file);
+        tail.extend_from_slice(format!(" on line {line}\n").as_bytes());
+        if log {
+            // error_log unset: the CLI SAPI's log_message writes to stderr.
+            let mut m = format!("PHP {label}:  ").into_bytes();
+            m.extend_from_slice(message);
+            m.extend_from_slice(&tail);
+            self.write_stderr(&m);
+        }
+        match mode {
+            DisplayErrors::Stderr => {
+                let mut m = format!("{label}: ").into_bytes();
+                m.extend_from_slice(message);
+                m.extend_from_slice(&tail);
+                self.write_stderr(&m);
+            }
+            DisplayErrors::Stdout => {
+                let mut m = ini(self, b"error_prepend_string");
+                m.extend_from_slice(format!("\n{label}: ").as_bytes());
+                m.extend_from_slice(message);
+                m.extend_from_slice(&tail);
+                m.extend_from_slice(&ini(self, b"error_append_string"));
+                self.write_out(&m);
+            }
+            DisplayErrors::Off => {}
+        }
+    }
+
+    /// zend_exception_error(ex, E_ERROR) for an uncaught throwable: a
+    /// ParseError reports as `Parse error: <message>`, anything else as
+    /// `Fatal error: Uncaught <__toString()>\n  thrown`.
+    fn report_uncaught(&mut self, thrown: Thrown) {
+        let thrown = self.materialize(thrown, None);
+        let h = match thrown {
+            Thrown::Object(h) => h,
+            Thrown::Error { class, message } => {
+                let (file, line) = self.throw_site();
+                let msg = format!("Uncaught {class}: {message}");
+                self.display_error(1, "Fatal error", msg.as_bytes(), &file, line as i64);
+                return;
+            }
+            _ => return,
+        };
+        let cls = h.borrow().class;
+        let prop = |n: &str| {
+            h.borrow()
+                .properties
+                .get(&rhp_values::PhpStr::from(n))
+                .map(deref)
+                .unwrap_or(Value::Null)
+        };
+        let file = conv::to_string_bytes(&prop("file"));
+        let line = conv::to_int(&prop("line"));
+        // An emptied `file` makes php report the location as "Unknown".
+        let file: &[u8] = if file.is_empty() { b"Unknown" } else { &file };
+        let cname = self.class(cls).name.as_bytes().to_ascii_lowercase();
+        if cname == b"parseerror" || cname == b"compileerror" {
+            let msg = conv::to_string_bytes(&prop("message"));
+            let (ty, label) = if cname == b"parseerror" {
+                (4, "Parse error")
+            } else {
+                (64, "Fatal error")
+            };
+            self.display_error(ty, label, &msg, file, line);
+            return;
+        }
+        let obj = Value::Object(h.clone());
+        let s = match self.lookup_method(cls, b"__tostring") {
+            Some(m) => match self.call_sync(&m, Some(h.clone()), cls, Vec::new()) {
+                Ok(Value::Str(s)) => s.as_bytes().to_vec(),
+                _ => builtins::php_fns::throwable_to_string(self, &obj),
+            },
+            None => builtins::php_fns::throwable_to_string(self, &obj),
+        };
+        let mut msg = b"Uncaught ".to_vec();
+        msg.extend_from_slice(&s);
+        msg.extend_from_slice(b"\n  thrown");
+        self.display_error(1, "Fatal error", &msg, file, line);
+    }
+
+    /// An exception that escaped to the top level: the user handler gets it
+    /// first, else it is reported. `Ok(None)`: handled, carry on; `Ok(Some(c))`:
+    /// execution ends with status `c` (255 after a fatal, or an `exit(c)`);
+    /// `Err`: an engine refusal the SAPI reports itself.
+    fn top_level_throw(&mut self, thrown: Thrown) -> Result<Option<i32>, Thrown> {
+        match thrown {
+            Thrown::Exit(c) => Ok(Some(c)),
+            t if t.is_catchable() => match self.handle_uncaught(t) {
+                None => Ok(None),
+                Some(Thrown::Exit(c)) => Ok(Some(c)),
+                Some(t) if t.is_catchable() => {
+                    self.report_uncaught(t);
+                    Ok(Some(255))
+                }
+                Some(t) => Err(t),
+            },
+            t => Err(t),
+        }
+    }
+
+    /// The CLI request around [`Vm::run`] (php_execute_script +
+    /// php_request_shutdown): an uncaught throwable goes to the exception
+    /// handler or is reported, then the shutdown functions run (a fatal or
+    /// `exit` in one stops the rest), then every output buffer is flushed.
+    /// Returns the exit status; `Err` only for an engine refusal.
+    pub fn run_main(&mut self, prog: &Program) -> Result<i32, Thrown> {
+        let mut status = match self.run(prog) {
+            Ok(c) => c,
+            Err(t) => {
+                self.stack.clear();
+                self.top_level_throw(t)?.unwrap_or(0)
+            }
+        };
+        let mut i = 0;
+        while i < self.shutdown_functions.len() {
+            let (cb, args) = self.shutdown_functions[i].clone();
+            i += 1;
+            self.stack.clear();
+            self.push_internal_main();
+            let r = self.call_callable_value(&cb, args);
+            self.stack.clear();
+            if let Err(t) = r {
+                if let Some(c) = self.top_level_throw(t)? {
+                    status = c;
+                    break;
+                }
+            }
+        }
+        // php_output_end_all: flush each buffer into the one below it.
+        while let Some(buf) = self.ob_stack.pop() {
+            self.write_out(&buf);
+        }
+        Ok(status)
+    }
+
     /// The `$this` of the current frame, if it is bound to an object.
     fn current_this(&self, top: usize) -> Option<ObjectHandle> {
         let cv = self.stack[top].proto.this_cv?;
@@ -2745,10 +3501,18 @@ impl Vm {
                         let callee = self.functions[fnidx].clone();
                         self.enter_user_call(top, callee, dst, base, argc)?;
                     } else {
-                        // Builtin.
-                        let name_str = String::from_utf8_lossy(&fname).into_owned();
+                        // Builtin (`fname` is already lowercase).
+                        let lc = std::str::from_utf8(&fname).unwrap_or("");
+                        let Some(builtin) = builtins::lookup_lc(lc) else {
+                            return Err(undefined_function(&proto.names[name as usize]));
+                        };
+                        // php compiles a few calls to dedicated opcodes (no call
+                        // frame): only when resolvable at compile time, i.e. not an
+                        // unqualified call inside a namespace.
+                        let frameless = fallback == rhp_bytecode::NO_NAME
+                            && compiled_inline(&fname, argc as usize);
                         self.mark_user_call_builtin(&fname, fallback);
-                        let out = self.call_builtin(top, &name_str, base, argc);
+                        let out = self.call_builtin(top, lc, builtin, base, argc, frameless);
                         self.cuf_caller = None;
                         let out = out?;
                         self.reg_set(top, dst, out);
@@ -2844,8 +3608,8 @@ impl Vm {
                         fnidx: u32::MAX,
                         captures: Vec::new(),
                         bound_this: None,
-                        bound_class: None,
-                        bound_static: None,
+                        bound_class: self.stack[top].defining_class,
+                        bound_static: self.stack[top].called_class,
                         wrapped: Some(Box::new(c)),
                     });
                     self.reg_set(top, dst, Value::Closure(cd));
@@ -3211,18 +3975,53 @@ impl Vm {
                         _ => return Err(Thrown::type_error("Can only throw objects")),
                     }
                 }
-                Instr::FinallyEnd => match self.stack[top].pending.take() {
-                    Some(FinallyCont::Rethrow(t)) => return Err(t),
-                    Some(FinallyCont::Return(v)) => {
-                        if let Some(done) = self.do_return(v) {
-                            return Ok(done);
+                Instr::FinallyEnd => {
+                    let pc = self.stack[top].pc as u32 - 1;
+                    let proto = self.stack[top].proto.clone();
+                    let fin = proto
+                        .exception_table
+                        .iter()
+                        .find(|r| r.finally.is_some() && r.finally_end == pc)
+                        .and_then(|r| r.finally);
+                    let cont = fin.and_then(|f| {
+                        let pend = &mut self.stack[top].pending;
+                        let i = pend.iter().position(|(k, _)| *k == f)?;
+                        Some(pend.remove(i).1)
+                    });
+                    match cont {
+                        Some(FinallyCont::Rethrow(t)) => return Err(t),
+                        Some(FinallyCont::Return(v)) => {
+                            // An outer finally still has to run first.
+                            if let Some(f2) = enclosing_finally(&proto, pc, None) {
+                                self.push_pending(top, f2, FinallyCont::Return(v));
+                                self.stack[top].pc = f2 as usize;
+                            } else if let Some(done) = self.do_return(v) {
+                                return Ok(done);
+                            }
                         }
+                        Some(FinallyCont::Jump(target)) => {
+                            self.jump_through_finally(top, &proto, pc, target)
+                        }
+                        None => {}
                     }
-                    None => {}
-                },
+                }
                 Instr::SetPendingRet { src } => {
-                    let v = self.reg_get(top, src);
-                    self.stack[top].pending = Some(FinallyCont::Return(v));
+                    let mut v = self.reg_get(top, src);
+                    if proto.return_type.is_some() && !proto.is_generator {
+                        v = self.check_return_type(&proto, top, v)?;
+                    }
+                    let pc = self.stack[top].pc as u32 - 1;
+                    let proto = self.stack[top].proto.clone();
+                    self.drop_left_finallies(top, &proto, pc);
+                    if let Some(f) = enclosing_finally(&proto, pc, None) {
+                        self.push_pending(top, f, FinallyCont::Return(v));
+                    }
+                }
+                Instr::JmpFinally { target } => {
+                    let pc = self.stack[top].pc as u32 - 1;
+                    let proto = self.stack[top].proto.clone();
+                    self.drop_left_finallies(top, &proto, pc);
+                    self.jump_through_finally(top, &proto, pc, target);
                 }
 
                 // -- OOP --
@@ -3257,16 +4056,6 @@ impl Vm {
                     }
                     self.update_class_constants(cls)?;
                     let obj = self.new_object(cls);
-                    // Throwables record their creation site for getLine()/getFile().
-                    if self.class_implements(cls, b"Throwable") {
-                        let line = self.current_line(top);
-                        let file = self.current_file(top);
-                        let mut b = obj.borrow_mut();
-                        b.properties
-                            .insert(rhp_values::PhpStr::from("line"), Value::Int(line as i64));
-                        b.properties
-                            .insert(rhp_values::PhpStr::from("file"), Value::str(file));
-                    }
                     self.reg_set(top, dst, Value::Object(obj.clone()));
                     // Run __construct, discarding its return (into the arg window).
                     if let Some(m) = self.lookup_method(cls, b"__construct") {
@@ -3642,6 +4431,9 @@ impl Vm {
                         }
                     } else {
                         let name_str = String::from_utf8_lossy(&fname).into_owned();
+                        if builtins::lookup(&name_str).is_none() {
+                            return Err(undefined_function(&proto.names[name as usize]));
+                        }
                         self.mark_user_call_builtin(&fname, fallback);
                         let out = self.invoke_builtin(&name_str, argv);
                         self.cuf_caller = None;
@@ -3794,7 +4586,7 @@ impl Vm {
                     let mut v = self.reg_get(top, src);
                     // Enforce a declared return type (the callee's own file decides
                     // strict vs coercive).
-                    if proto.return_type.is_some() {
+                    if proto.return_type.is_some() && !proto.is_generator {
                         v = self.check_return_type(&proto, top, v)?;
                     }
                     if let Some(done) = self.do_return(v) {
@@ -3811,6 +4603,9 @@ impl Vm {
                     }
                 }
                 Instr::RetNull | Instr::Halt => {
+                    if proto.return_type.is_some() && !proto.is_generator {
+                        self.check_implicit_return(&proto, top)?;
+                    }
                     if let Some(done) = self.do_return(Value::Null) {
                         return Ok(done);
                     }
@@ -3869,6 +4664,9 @@ impl Vm {
     /// else pop and continue in the caller. Returns `Ok` when a handler is
     /// installed (re-enter `run_frames`), `Err` when it escapes the top frame.
     fn unwind(&mut self, thrown: Thrown, floor: usize) -> Result<UnwindResult, Thrown> {
+        // An engine error becomes a real object here, before any frame is popped,
+        // so its file/line/trace describe the throw point.
+        let thrown = self.materialize(thrown, None);
         loop {
             if self.stack.len() <= floor {
                 return Ok(UnwindResult::Escaped(thrown)); // escaped the (sub)run
@@ -3877,12 +4675,31 @@ impl Vm {
             let proto = self.stack[top].proto.clone();
             // The throwing pc has already been advanced past the faulting instr.
             let throw_pc = (self.stack[top].pc as u32).saturating_sub(1);
-            if let Some(region) = proto
-                .exception_table
-                .iter()
-                .find(|r| throw_pc >= r.start && throw_pc < r.end)
-            {
-                let region = region.clone();
+            let in_try = |r: &&rhp_bytecode::ExRegion| throw_pc >= r.start && throw_pc < r.end;
+            let handler = proto.exception_table.iter().find(in_try).cloned();
+            // Thrown from inside a running finally block and not handled
+            // within it: the exception (or return) that block was finishing
+            // is discarded, and a pending exception becomes the innermost
+            // `previous` of the new one (zend_exception_set_previous).
+            let in_finally = proto.exception_table.iter().filter(|r| {
+                r.finally
+                    .is_some_and(|f| throw_pc >= f && throw_pc <= r.finally_end)
+            });
+            for f in in_finally {
+                let fin = f.finally.unwrap_or(0);
+                let handled_inside = handler
+                    .as_ref()
+                    .is_some_and(|h| h.start >= fin && h.end <= f.finally_end);
+                if !handled_inside {
+                    let pend = &mut self.stack[top].pending;
+                    if let Some(i) = pend.iter().position(|(k, _)| *k == fin) {
+                        if let (_, FinallyCont::Rethrow(prev)) = pend.remove(i) {
+                            self.chain_previous(&thrown, prev);
+                        }
+                    }
+                }
+            }
+            if let Some(region) = handler {
                 if let Some(cls) = self.thrown_class_id(&thrown) {
                     for arm in &region.catches {
                         if arm
@@ -3900,12 +4717,87 @@ impl Vm {
                     }
                 }
                 if let Some(fin) = region.finally {
-                    self.stack[top].pending = Some(FinallyCont::Rethrow(thrown));
+                    self.push_pending(top, fin, FinallyCont::Rethrow(thrown));
                     self.stack[top].pc = fin as usize;
                     return Ok(UnwindResult::Caught);
                 }
             }
             self.stack.pop();
+        }
+    }
+
+    /// Record what the finally block starting at `fin` does when it ends.
+    fn push_pending(&mut self, top: usize, fin: u32, cont: FinallyCont) {
+        let pend = &mut self.stack[top].pending;
+        pend.retain(|(k, _)| *k != fin);
+        pend.push((fin, cont));
+    }
+
+    /// A `return`/`break` leaving the finally blocks that contain `pc`
+    /// discards whatever those blocks were finishing.
+    fn drop_left_finallies(&mut self, top: usize, proto: &FunctionProto, pc: u32) {
+        if self.stack[top].pending.is_empty() {
+            return;
+        }
+        for r in &proto.exception_table {
+            if let Some(f) = r.finally {
+                if pc >= f && pc <= r.finally_end {
+                    self.stack[top].pending.retain(|(k, _)| *k != f);
+                }
+            }
+        }
+    }
+
+    /// Jump to `target`, first running the innermost enclosing finally that
+    /// `target` is outside of (the jump resumes when that block ends).
+    fn jump_through_finally(&mut self, top: usize, proto: &FunctionProto, pc: u32, target: u32) {
+        if let Some(f) = enclosing_finally(proto, pc, Some(target)) {
+            self.push_pending(top, f, FinallyCont::Jump(target));
+            self.stack[top].pc = f as usize;
+        } else {
+            self.stack[top].pc = target as usize;
+        }
+    }
+
+    /// zend_exception_set_previous: append `prev` at the end of `thrown`'s
+    /// `previous` chain, unless it is already part of it (no cycles).
+    fn chain_previous(&self, thrown: &Thrown, prev: Thrown) {
+        let (Thrown::Object(ex), Thrown::Object(add)) = (thrown, &prev) else {
+            return;
+        };
+        if Rc::ptr_eq(ex, add) {
+            return;
+        }
+        let previous_of = |o: &ObjectHandle| match o
+            .borrow()
+            .properties
+            .get(&self.declared_prop_key(o, b"previous"))
+            .map(deref)
+        {
+            Some(Value::Object(p)) => Some(p),
+            _ => None,
+        };
+        // `add`'s own chain must not already contain `ex`.
+        let mut anc = previous_of(add);
+        while let Some(a) = anc {
+            if Rc::ptr_eq(&a, ex) {
+                return;
+            }
+            anc = previous_of(&a);
+        }
+        let mut cur = ex.clone();
+        loop {
+            match previous_of(&cur) {
+                None => {
+                    let key = self.declared_prop_key(&cur, b"previous");
+                    cur.borrow_mut()
+                        .properties
+                        .insert(key, Value::Object(add.clone()));
+                    return;
+                }
+                Some(p) if Rc::ptr_eq(&p, add) => return,
+                Some(p) => cur = p,
+            }
         }
     }
 
@@ -3958,15 +4850,13 @@ impl Vm {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
         let mut frame = Frame::new(proto.clone(), 0);
-        frame.argc = args.len();
-        self.bind_frame(&proto, &args, &mut frame)?;
-        self.bind_superglobals(&mut frame);
-        self.check_arg_types(&proto, &mut frame, caller, defining_class)?;
         if let (Some(cv), Some(obj)) = (proto.this_cv, this) {
             frame.regs[cv as usize] = Value::Object(obj);
         }
         frame.defining_class = defining_class;
         frame.called_class = called_class;
+        self.bind_frame(&mut frame, &args, caller)?;
+        self.bind_superglobals(&mut frame);
         if proto.is_generator {
             return Ok(self.make_generator(frame));
         }
@@ -4004,7 +4894,12 @@ impl Vm {
         // (which starts in inline/HTML mode) enters PHP.
         let mut source = b"<?php ".to_vec();
         source.extend_from_slice(&code);
-        let file = String::from_utf8_lossy(&self.current_file(top)).into_owned();
+        // php names eval'd code "FILE(LINE) : eval()'d code" (its __FILE__, getFile()).
+        let file = format!(
+            "{}({}) : eval()'d code",
+            String::from_utf8_lossy(&self.current_file(top)),
+            self.current_line(top)
+        );
 
         let mut cb = self
             .includer
@@ -4012,10 +4907,39 @@ impl Vm {
             .ok_or_else(|| Thrown::error("Error", "eval is not available"))?;
         let compiled = cb(&file, &source);
         self.includer = Some(cb);
-        let prog = compiled?;
+        let prog = self.included_program(compiled, &file)?;
 
         let main = self.install_included(&prog)?;
-        self.run_included(main, top)
+        self.run_included(main, top, "eval")
+    }
+
+    /// The includer's result: a syntax error becomes a ParseError object
+    /// located in the included file (or eval()'d code) at the error's line.
+    fn included_program(
+        &mut self,
+        compiled: Result<Program, IncludeError>,
+        file: &str,
+    ) -> Result<Program, Thrown> {
+        match compiled {
+            Ok(p) => Ok(p),
+            Err(IncludeError::Thrown(t)) => Err(t),
+            Err(IncludeError::Parse { message, line }) => Err(self.materialize(
+                Thrown::error("ParseError", message),
+                Some((file.as_bytes().to_vec(), line)),
+            )),
+        }
+    }
+
+    /// The main script failed to parse: php reports `Parse error: …` through
+    /// the usual display/log path (exit status 255 is the SAPI's job).
+    pub fn report_parse_error(&mut self, message: &str, file: &str, line: u32) {
+        self.display_error(
+            4,
+            "Parse error",
+            message.as_bytes(),
+            file.as_bytes(),
+            line as i64,
+        );
     }
 
     fn do_include(
@@ -4054,10 +4978,10 @@ impl Vm {
         let rp_str = String::from_utf8_lossy(&realpath).into_owned();
         let compiled = cb(&rp_str, &source);
         self.includer = Some(cb);
-        let prog = compiled?;
+        let prog = self.included_program(compiled, &rp_str)?;
 
         let main = self.install_included(&prog)?;
-        let ret = self.run_included(main, top)?;
+        let ret = self.run_included(main, top, kind.name())?;
         // A file with no `return` yields int(1).
         Ok(match ret {
             Value::Null => Value::Int(1),
@@ -4165,12 +5089,14 @@ impl Vm {
         &mut self,
         main: Rc<FunctionProto>,
         caller_top: usize,
+        kind: &'static str,
     ) -> Result<Value, Thrown> {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
         let mut frame = Frame::new(main.clone(), 0);
         frame.capture = true;
+        frame.include_kind = Some(kind);
         frame.defining_class = self.stack[caller_top].defining_class;
         frame.called_class = self.stack[caller_top].called_class;
 
@@ -4215,10 +5141,6 @@ impl Vm {
         }
         let proto = self.closures[cd.fnidx as usize].clone();
         let mut frame = Frame::new(proto.clone(), 0);
-        frame.argc = args.len();
-        self.bind_frame(&proto, &args, &mut frame)?;
-        self.bind_superglobals(&mut frame);
-        self.check_arg_types(&proto, &mut frame, caller, cd.bound_class)?;
         for (i, cap) in cd.captures.iter().enumerate() {
             frame.regs[i] = cap.clone();
         }
@@ -4229,6 +5151,8 @@ impl Vm {
         }
         frame.defining_class = cd.bound_class;
         frame.called_class = cd.bound_static;
+        self.bind_frame(&mut frame, &args, caller)?;
+        self.bind_superglobals(&mut frame);
         if proto.is_generator {
             return Ok(self.make_generator(frame));
         }
@@ -4637,79 +5561,398 @@ impl Vm {
         }
     }
 
+    /// The calling scope a callable resolves against (zend_is_callable's
+    /// `scope` / called scope / `$this`): the innermost frame.
+    fn callable_scope(&self) -> (Option<ClassId>, Option<ClassId>, Option<ObjectHandle>) {
+        if let Some((scope, called)) = self.fcc_scope.get() {
+            return (scope, called, None);
+        }
+        // Prelude (internal) methods act for their caller, as php's internal
+        // functions do: the scope is the innermost user frame's.
+        let n = self.stack.len();
+        let user = (0..n).rev().find(|&i| !self.is_internal_frame(i));
+        match user.or(n.checked_sub(1)) {
+            Some(top) => (
+                self.stack[top].defining_class,
+                self.stack[top].called_class,
+                self.current_this(top),
+            ),
+            None => (None, None, None),
+        }
+    }
+
+    /// The class half of a `Class::method` / `[Class, method]` callable,
+    /// with `self`/`parent`/`static` relative to the calling scope. Returns
+    /// (class, called class).
+    fn callable_class(&self, name: &[u8]) -> Result<(ClassId, ClassId), String> {
+        let (scope, called, _) = self.callable_scope();
+        let lc = name.to_ascii_lowercase();
+        let no_scope = |w: &str| format!("cannot access \"{w}\" when no class scope is active");
+        let forward = |cls: ClassId| match called {
+            Some(c) if self.class(c).ancestors.contains(&cls) => c,
+            _ => cls,
+        };
+        match lc.as_slice() {
+            b"self" => scope
+                .map(|c| (c, forward(c)))
+                .ok_or_else(|| no_scope("self")),
+            b"static" => called
+                .or(scope)
+                .map(|c| (c, c))
+                .ok_or_else(|| no_scope("static")),
+            b"parent" => {
+                let c = scope.ok_or_else(|| no_scope("parent"))?;
+                let p = self.class(c).parent.ok_or_else(|| {
+                    "cannot access \"parent\" when current class scope has no parent".to_string()
+                })?;
+                Ok((p, forward(p)))
+            }
+            _ => self
+                .resolve_class_by_name(name)
+                .map(|c| (c, c))
+                .map_err(|_| {
+                    let n = name.strip_prefix(b"\\").unwrap_or(name);
+                    format!("class \"{}\" not found", String::from_utf8_lossy(n))
+                }),
+        }
+    }
+
+    /// The method half of a method callable (zend_is_callable_check_func).
+    fn callable_method(
+        &self,
+        cls: ClassId,
+        called: ClassId,
+        obj: Option<ObjectHandle>,
+        mname: &[u8],
+    ) -> Result<Callee, String> {
+        let (scope, _, this) = self.callable_scope();
+        let cname = || String::from_utf8_lossy(self.class(cls).name.as_bytes()).into_owned();
+        let magic = |obj: &Option<ObjectHandle>| -> Option<Callee> {
+            let name = mname.to_vec();
+            if let Some(o) = obj {
+                if let Some(m) = self.lookup_method(cls, b"__call") {
+                    return Some(Callee::Magic(m, Some(o.clone()), called, name));
+                }
+            }
+            if let Some(m) = self.lookup_method(cls, b"__callstatic") {
+                return Some(Callee::Magic(m, None, called, name));
+            }
+            None
+        };
+        // A non-static method called without an object borrows a compatible
+        // `$this` from the calling scope.
+        let obj =
+            obj.or_else(|| this.filter(|h| self.class(h.borrow().class).ancestors.contains(&cls)));
+        let Some(m) = self.lookup_method(cls, mname) else {
+            if self.class(cls).kind == ClassKind::Enum {
+                let lc = mname.to_ascii_lowercase();
+                if matches!(lc.as_slice(), b"cases" | b"from" | b"tryfrom") {
+                    return Ok(Callee::EnumStatic(cls, lc));
+                }
+            }
+            return magic(&obj).ok_or_else(|| {
+                format!(
+                    "class {} does not have a method \"{}\"",
+                    cname(),
+                    String::from_utf8_lossy(mname)
+                )
+            });
+        };
+        if !self.check_access(scope, m.defining_class, m.visibility) {
+            if let Some(c) = magic(&obj) {
+                return Ok(c);
+            }
+            let v = match m.visibility {
+                rhp_values::Visibility::Private => "private",
+                rhp_values::Visibility::Protected => "protected",
+                rhp_values::Visibility::Public => "public",
+            };
+            return Err(format!(
+                "cannot access {v} method {}::{}()",
+                cname(),
+                String::from_utf8_lossy(m.proto.name.as_bytes())
+            ));
+        }
+        if m.is_static {
+            return Ok(Callee::Method(m, None, called));
+        }
+        match obj {
+            Some(o) => {
+                let oc = o.borrow().class;
+                Ok(Callee::Method(m, Some(o), oc))
+            }
+            None => Err(format!(
+                "non-static method {}::{}() cannot be called statically",
+                cname(),
+                String::from_utf8_lossy(m.proto.name.as_bytes())
+            )),
+        }
+    }
+
+    /// Resolve a callable value (zend_is_callable_ex), or say why it is not
+    /// one in zend_is_callable_error's words.
+    fn resolve_callable(&self, callable: &Value) -> Result<Callee, String> {
+        match deref(callable) {
+            Value::Closure(cd) => Ok(Callee::Closure(cd)),
+            Value::Str(s) => {
+                let b = s.as_bytes();
+                // `Class::method` splits at the last "::".
+                let split = (1..b.len())
+                    .rev()
+                    .find(|&i| b[i] == b':' && b[i - 1] == b':');
+                if let Some(i) = split {
+                    if i == 1 {
+                        return Err("invalid function name".to_string());
+                    }
+                    let (cls, called) = self.callable_class(&b[..i - 1])?;
+                    return self.callable_method(cls, called, None, &b[i + 1..]);
+                }
+                let name = b.strip_prefix(b"\\").unwrap_or(b);
+                if let Some(&idx) = self.fn_names.get(&name.to_ascii_lowercase()) {
+                    return Ok(Callee::Function(self.functions[idx].clone()));
+                }
+                let n = String::from_utf8_lossy(name).into_owned();
+                if builtins::lookup(&n).is_some() {
+                    return Ok(Callee::Builtin(n));
+                }
+                Err(format!(
+                    "function \"{}\" not found or invalid function name",
+                    String::from_utf8_lossy(b)
+                ))
+            }
+            Value::Array(a) => {
+                if a.len() != 2 {
+                    return Err("array callback must have exactly two members".to_string());
+                }
+                let item0 = a.get(&ArrayKey::Int(0)).map(deref);
+                let item1 = a.get(&ArrayKey::Int(1)).map(deref);
+                let (Some(item0), Some(item1)) = (item0, item1) else {
+                    return Err("array callback must have exactly two members".to_string());
+                };
+                let (cls, called, obj) = match item0 {
+                    Value::Object(h) => {
+                        let c = h.borrow().class;
+                        (c, c, Some(h))
+                    }
+                    Value::Str(cn) => {
+                        let (c, called) = self.callable_class(cn.as_bytes())?;
+                        (c, called, None)
+                    }
+                    _ => {
+                        return Err(
+                            "first array member is not a valid class name or object".to_string()
+                        )
+                    }
+                };
+                let Value::Str(m) = item1 else {
+                    return Err("second array member is not a valid method".to_string());
+                };
+                self.callable_method(cls, called, obj, m.as_bytes())
+            }
+            Value::Object(h) => {
+                let cls = h.borrow().class;
+                match self.lookup_method(cls, b"__invoke") {
+                    Some(m) => Ok(Callee::Method(m, Some(h), cls)),
+                    None => Err("no array or string given".to_string()),
+                }
+            }
+            _ => Err("no array or string given".to_string()),
+        }
+    }
+
+    /// Autoload the class half of a callable that names an unloaded class
+    /// (php's zend_is_callable looks classes up with autoloading).
+    fn autoload_callable_class(&mut self, callable: &Value) -> Result<(), Thrown> {
+        let class: Option<Vec<u8>> = match deref(callable) {
+            Value::Str(s) => {
+                let b = s.as_bytes();
+                (2..b.len())
+                    .rev()
+                    .find(|&i| b[i] == b':' && b[i - 1] == b':')
+                    .map(|i| b[..i - 1].to_vec())
+            }
+            Value::Array(a) if a.len() == 2 => match a.get(&ArrayKey::Int(0)).map(deref) {
+                Some(Value::Str(s)) => Some(s.as_bytes().to_vec()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(c) = class {
+            let lc = c.to_ascii_lowercase();
+            if !matches!(lc.as_slice(), b"self" | b"parent" | b"static")
+                && self.resolve_class_by_name(&c).is_err()
+            {
+                self.try_autoload(&c)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Invoke a PHP callable value synchronously (string function name,
+    /// `Class::method`, `[obj_or_class, method]`, an `__invoke` object, or a
+    /// closure). A value that is not callable raises the Error php's dynamic
+    /// call (`$f()`) does.
     fn call_callable_value(&mut self, callable: &Value, args: Vec<Value>) -> Result<Value, Thrown> {
         self.call_callable_value_mode(callable, args, None)
     }
 
-    /// Call a callable value; `strict` is the caller's `strict_types` mode for
-    /// the argument checks (true only for a dynamic call from strict user code;
-    /// callbacks invoked by builtins are always coercive, like php's internal
-    /// callers).
+    /// [`Vm::call_callable_value`] with the caller's mode for the argument
+    /// checks: `Some(strict_types)` for a dynamic call from user code, `None`
+    /// for a callback invoked by a builtin (always coercive, like php's
+    /// internal callers, and no call site in the error).
     fn call_callable_value_mode(
         &mut self,
         callable: &Value,
         args: Vec<Value>,
         caller: Option<bool>,
     ) -> Result<Value, Thrown> {
-        let c = match callable {
-            Value::Ref(r) => r.borrow().clone(),
-            other => other.clone(),
+        let c = deref(callable);
+        // First-class callable: forward to the wrapped callable.
+        if let Value::Closure(cd) = &c {
+            if let Some(w) = &cd.wrapped {
+                let w = (**w).clone();
+                // Resolve it in the scope the callable was created in.
+                let saved = self
+                    .fcc_scope
+                    .replace(Some((cd.bound_class, cd.bound_static)));
+                let r = self.call_callable_value_mode(&w, args, caller);
+                self.fcc_scope.set(saved);
+                return r;
+            }
+        }
+        let fcc = self.fcc_scope.take();
+        self.autoload_callable_class(&c)?;
+        self.fcc_scope.set(fcc);
+        let resolved = self.resolve_callable(&c);
+        // A first-class callable's creation scope applies to resolving it
+        // only, not to whatever it then runs.
+        self.fcc_scope.set(None);
+        let callee = match resolved {
+            Ok(callee) => callee,
+            Err(_) => return Err(self.dynamic_call_error(&c)),
+        };
+        match callee {
+            Callee::Closure(cd) => self.run_closure_sync(&cd, args, caller),
+            Callee::Function(proto) => self.run_proto_sync(proto, None, None, None, args, caller),
+            Callee::Builtin(name) => self.invoke_builtin(&name, args),
+            Callee::Method(m, this, called) => self.call_sync_mode(&m, this, called, args, caller),
+            Callee::Magic(m, this, called, name) => {
+                let mut arr = PhpArray::new();
+                for a in args {
+                    arr.push(a);
+                }
+                self.call_sync_mode(
+                    &m,
+                    this,
+                    called,
+                    vec![Value::str(name), Value::Array(arr)],
+                    caller,
+                )
+            }
+            Callee::EnumStatic(cls, lc) => self.enum_builtin_static(cls, &lc, args),
+        }
+    }
+
+    /// The Error a dynamic call of a non-callable value raises
+    /// (ZEND_INIT_DYNAMIC_CALL).
+    fn dynamic_call_error(&self, c: &Value) -> Thrown {
+        let err = |m: String| Thrown::error("Error", m);
+        let method_err = |cls: ClassId, m: &[u8]| -> Thrown {
+            match self.lookup_method(cls, m) {
+                Some(rm) if !rm.is_static => err(format!(
+                    "Non-static method {}::{}() cannot be called statically",
+                    String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                    String::from_utf8_lossy(rm.proto.name.as_bytes())
+                )),
+                Some(rm) => {
+                    let v = match rm.visibility {
+                        rhp_values::Visibility::Private => "private",
+                        rhp_values::Visibility::Protected => "protected",
+                        rhp_values::Visibility::Public => "public",
+                    };
+                    let scope = match self.callable_scope().0 {
+                        Some(c) => format!(
+                            "scope {}",
+                            String::from_utf8_lossy(self.class(c).name.as_bytes())
+                        ),
+                        None => "global scope".to_string(),
+                    };
+                    err(format!(
+                        "Call to {v} method {}::{}() from {scope}",
+                        String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                        String::from_utf8_lossy(rm.proto.name.as_bytes())
+                    ))
+                }
+                None => err(format!(
+                    "Call to undefined method {}::{}()",
+                    String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                    String::from_utf8_lossy(m)
+                )),
+            }
+        };
+        let class_err = |n: &[u8]| {
+            err(format!(
+                "Class \"{}\" not found",
+                String::from_utf8_lossy(n.strip_prefix(b"\\").unwrap_or(n))
+            ))
         };
         match c {
-            // First-class callable: forward to the wrapped callable.
-            Value::Closure(cd) if cd.wrapped.is_some() => {
-                let w = (**cd.wrapped.as_ref().unwrap()).clone();
-                self.call_callable_value_mode(&w, args, caller)
-            }
-            Value::Closure(cd) => self.run_closure_sync(&cd, args, caller),
             Value::Str(s) => {
-                let lower = s.as_bytes().to_ascii_lowercase();
-                if let Some(&fnidx) = self.fn_names.get(&lower) {
-                    let proto = self.functions[fnidx].clone();
-                    self.run_proto_sync(proto, None, None, None, args, caller)
-                } else if let Some(pos) = s.as_bytes().windows(2).position(|w| w == b"::") {
-                    // 'Class::method' string callable.
-                    let (cn, mn) = (&s.as_bytes()[..pos], &s.as_bytes()[pos + 2..]);
-                    let cls = self.resolve_class_by_name(cn)?;
-                    let m = self.lookup_method(cls, mn).ok_or_else(|| {
-                        Thrown::error("Error", "Call to undefined method in callable")
-                    })?;
-                    self.call_sync_mode(&m, None, cls, args, caller)
-                } else {
-                    let name = String::from_utf8_lossy(s.as_bytes()).into_owned();
-                    self.invoke_builtin(&name, args)
+                let b = s.as_bytes();
+                match (1..b.len())
+                    .rev()
+                    .find(|&i| b[i] == b':' && b[i - 1] == b':')
+                {
+                    Some(i) => match self.callable_class(&b[..i - 1]) {
+                        Ok((cls, _)) => method_err(cls, &b[i + 1..]),
+                        Err(_) => class_err(&b[..i - 1]),
+                    },
+                    None => err(format!(
+                        "Call to undefined function {}()",
+                        String::from_utf8_lossy(b)
+                    )),
                 }
             }
             Value::Array(a) if a.len() == 2 => {
-                let item0 = a.get(&ArrayKey::Int(0)).cloned().unwrap_or(Value::Null);
-                let method = a.get(&ArrayKey::Int(1)).cloned().unwrap_or(Value::Null);
-                let mname = conv::to_string_bytes(&method);
-                match item0 {
-                    Value::Object(h) => {
-                        let cls = h.borrow().class;
-                        let m = self.lookup_method(cls, &mname).ok_or_else(|| {
-                            Thrown::error("Error", "Call to undefined method in callable")
-                        })?;
-                        self.call_sync_mode(&m, Some(h), cls, args, caller)
+                let item0 = a.get(&ArrayKey::Int(0)).map(deref);
+                let item1 = a.get(&ArrayKey::Int(1)).map(deref);
+                match (item0, item1) {
+                    (Some(Value::Object(h)), Some(Value::Str(m))) => {
+                        method_err(h.borrow().class, m.as_bytes())
                     }
-                    Value::Str(cn) => {
-                        let cls = self.resolve_class_by_name(cn.as_bytes())?;
-                        let m = self.lookup_method(cls, &mname).ok_or_else(|| {
-                            Thrown::error("Error", "Call to undefined method in callable")
-                        })?;
-                        self.call_sync_mode(&m, None, cls, args, caller)
+                    (Some(Value::Str(cn)), Some(Value::Str(m))) => {
+                        match self.callable_class(cn.as_bytes()) {
+                            Ok((cls, _)) => method_err(cls, m.as_bytes()),
+                            Err(_) => class_err(cn.as_bytes()),
+                        }
                     }
-                    _ => Err(Thrown::type_error("Invalid callable array")),
+                    (Some(Value::Object(_) | Value::Str(_)), Some(_)) => {
+                        err("Second array member is not a valid method".to_string())
+                    }
+                    (Some(_), Some(_)) => {
+                        err("First array member is not a valid class name or object".to_string())
+                    }
+                    _ => err("Array callback must have exactly two elements".to_string()),
                 }
             }
+            Value::Array(_) => err("Array callback must have exactly two elements".to_string()),
+            Value::Object(_) => err(format!(
+                "Object of type {} is not callable",
+                self.debug_class(c)
+            )),
+            v => err(format!(
+                "Value of type {} is not callable",
+                builtins::php_fns::zend_type_name(v)
+            )),
+        }
+    }
+
+    fn debug_class(&self, v: &Value) -> String {
+        match v {
             Value::Object(h) => {
-                let cls = h.borrow().class;
-                match self.lookup_method(cls, b"__invoke") {
-                    Some(m) => self.call_sync_mode(&m, Some(h), cls, args, caller),
-                    None => Err(Thrown::type_error("Object is not callable (no __invoke)")),
-                }
+                String::from_utf8_lossy(self.class(h.borrow().class).name.as_bytes()).into_owned()
             }
-            _ => Err(Thrown::type_error("Value is not callable")),
+            _ => String::new(),
         }
     }
 
@@ -4835,11 +6078,8 @@ impl Vm {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
         let mut frame = Frame::new(callee.clone(), dst);
-        frame.argc = args.len();
-        self.bind_frame(&callee, &args, &mut frame)?;
+        self.bind_frame(&mut frame, &args, Some(self.caller_strict()))?;
         self.bind_superglobals(&mut frame);
-        let strict = self.caller_strict();
-        self.check_arg_types(&callee, &mut frame, Some(strict), None)?;
         if callee.is_generator {
             let gen = self.make_generator(frame);
             let caller = self.stack.len() - 1;
@@ -4849,31 +6089,6 @@ impl Vm {
             return Ok(());
         }
         self.stack.push(frame);
-        Ok(())
-    }
-
-    /// Bind `args` into a new frame's parameters, then apply a pending
-    /// named-argument binding (skipped parameters, variadic extras).
-    fn bind_frame(
-        &mut self,
-        proto: &FunctionProto,
-        args: &[Value],
-        frame: &mut Frame,
-    ) -> Result<(), Thrown> {
-        let named = self.pending_named.take();
-        bind_params(proto, args, &mut frame.regs)?;
-        if let Some((holes, extra)) = named {
-            frame.holes = holes;
-            if !extra.is_empty() {
-                if let Some(p) = proto.params.iter().find(|p| p.variadic) {
-                    if let Value::Array(a) = &mut frame.regs[p.cv as usize] {
-                        for (k, v) in extra {
-                            a.insert(ArrayKey::Str(k), deref(&v));
-                        }
-                    }
-                }
-            }
-        }
         Ok(())
     }
 
@@ -5015,6 +6230,7 @@ impl Vm {
         caller: Option<bool>,
     ) -> Result<Value, Thrown> {
         if !named.is_empty() {
+            self.autoload_callable_class(c)?;
             let Some((p, cls)) = self.callable_proto(c) else {
                 return Err(Thrown::unsupported(
                     "named arguments to a builtin function",
@@ -5029,31 +6245,23 @@ impl Vm {
     /// The user-code proto a callable value would run (for named-argument
     /// placement before a dynamic call), with its scope class.
     fn callable_proto(&self, c: &Value) -> Option<(Rc<FunctionProto>, Option<ClassId>)> {
-        match c {
-            Value::Ref(r) => self.callable_proto(&r.borrow()),
-            Value::Closure(cd) if cd.wrapped.is_some() => {
-                self.callable_proto(cd.wrapped.as_ref().unwrap())
-            }
-            Value::Closure(cd) => Some((self.closures[cd.fnidx as usize].clone(), None)),
-            Value::Str(s) => self
-                .fn_names
-                .get(&s.as_bytes().to_ascii_lowercase())
-                .map(|&i| (self.functions[i].clone(), None)),
-            Value::Array(a) if a.len() == 2 => {
-                let item0 = a.get(&ArrayKey::Int(0)).cloned().unwrap_or(Value::Null);
-                let method = a.get(&ArrayKey::Int(1)).cloned().unwrap_or(Value::Null);
-                let cls = match deref(&item0) {
-                    Value::Object(h) => h.borrow().class,
-                    Value::Str(cn) => self.resolve_class_by_name(cn.as_bytes()).ok()?,
-                    _ => return None,
-                };
-                let m = self.lookup_method(cls, &conv::to_string_bytes(&method))?;
-                Some((m.proto.clone(), Some(m.defining_class)))
-            }
-            Value::Object(h) => {
-                let m = self.lookup_method(h.borrow().class, b"__invoke")?;
-                Some((m.proto.clone(), Some(m.defining_class)))
-            }
+        if let Value::Closure(cd) = deref(c) {
+            return match &cd.wrapped {
+                Some(w) => {
+                    // A first-class callable resolves in its creation scope.
+                    let saved = self
+                        .fcc_scope
+                        .replace(Some((cd.bound_class, cd.bound_static)));
+                    let r = self.callable_proto(w);
+                    self.fcc_scope.set(saved);
+                    r
+                }
+                None => Some((self.closures[cd.fnidx as usize].clone(), None)),
+            };
+        }
+        match self.resolve_callable(c).ok()? {
+            Callee::Function(proto) => Some((proto, None)),
+            Callee::Method(m, _, _) => Some((m.proto.clone(), Some(m.defining_class))),
             _ => None,
         }
     }
@@ -5083,14 +6291,16 @@ impl Vm {
     fn call_builtin(
         &mut self,
         top: usize,
-        name: &str,
+        name_lc: &str,
+        builtin: &'static builtins::Builtin,
         base: Reg,
         argc: u16,
+        frameless: bool,
     ) -> Result<Value, Thrown> {
         // By-ref builtins (sort/array_push/preg_match/…) need their by-reference
         // positions kept as the `Value::Ref` the call site built, so they can
         // write back to the caller's variable. Other args deref to plain values.
-        let ref_mask = rhp_bytecode::builtin_ref_params(&name.to_ascii_lowercase());
+        let ref_mask = rhp_bytecode::builtin_ref_params(name_lc);
         let args: Vec<Value> = (0..argc)
             .map(|i| {
                 if ref_mask.get(i as usize).copied().unwrap_or(false) {
@@ -5100,36 +6310,118 @@ impl Vm {
                 }
             })
             .collect();
-        self.invoke_builtin(name, args)
+        self.run_builtin(builtin, args, frameless)
     }
 
     /// Call a builtin by name with a pre-collected argument vector.
     fn invoke_builtin(&mut self, name: &str, args: Vec<Value>) -> Result<Value, Thrown> {
+        self.invoke_builtin_ex(name, args, false)
+    }
+
+    /// Call a builtin. Unless `frameless` (php compiled the call to an opcode),
+    /// the call is tracked as a native frame while it runs, and an engine error
+    /// it raises is materialized with that frame on the trace.
+    fn invoke_builtin_ex(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        frameless: bool,
+    ) -> Result<Value, Thrown> {
         let Some(builtin) = builtins::lookup(name) else {
             return Err(Thrown::error(
                 "Error",
                 format!("Call to undefined function {name}()"),
             ));
         };
-        if args.len() < builtin.min_args {
-            return Err(Thrown::error(
-                "ArgumentCountError",
-                format!(
-                    "Too few arguments to function {name}(), {} passed and at least {} expected",
-                    args.len(),
-                    builtin.min_args
-                ),
-            ));
+        self.run_builtin(builtin, args, frameless)
+    }
+
+    /// [`Vm::invoke_builtin_ex`] for an already looked-up builtin.
+    fn run_builtin(
+        &mut self,
+        builtin: &'static builtins::Builtin,
+        args: Vec<Value>,
+        frameless: bool,
+    ) -> Result<Value, Thrown> {
+        let count_error = builtin_arg_count_error(builtin, args.len());
+        // A builtin called from engine-internal (prelude) code is not a php
+        // frame, and php compiles a few calls to opcodes (no frame either).
+        let caller = self.stack.len().saturating_sub(1);
+        if frameless || self.stack.is_empty() || self.is_internal_frame(caller) {
+            return match count_error {
+                Some(e) => Err(e),
+                None => (builtin.func)(self, &args),
+            };
         }
-        if let Some(max) = builtin.max_args {
-            if args.len() > max {
-                return Err(Thrown::error(
-                    "ArgumentCountError",
-                    format!("Too many arguments to function {name}()"),
-                ));
-            }
-        }
-        (builtin.func)(self, &args)
+        self.native_calls.push(NativeCall {
+            name: builtin.name,
+            args: args.as_slice() as *const [Value],
+            caller,
+        });
+        let r = match count_error {
+            Some(e) => Err(e),
+            None => (builtin.func)(self, &args),
+        };
+        let r = match r {
+            Err(e @ Thrown::Error { .. }) => Err(self.materialize(e, None)),
+            other => other,
+        };
+        self.native_calls.pop();
+        // `args` outlives the entry just popped (see `NativeCall::args`).
+        drop(args);
+        r
+    }
+}
+
+/// "Call to undefined function NAME()" with the name as written at the call
+/// site (namespaced for an unqualified call inside a namespace).
+fn undefined_function(name: &rhp_values::PhpStr) -> Thrown {
+    Thrown::error(
+        "Error",
+        format!(
+            "Call to undefined function {}()",
+            String::from_utf8_lossy(name.as_bytes())
+        ),
+    )
+}
+
+/// zend_wrong_parameters_count_error: "f() expects exactly 1 argument, 0 given".
+fn builtin_arg_count_error(b: &builtins::Builtin, n: usize) -> Option<Thrown> {
+    let max = b.max_args.unwrap_or(usize::MAX);
+    if n >= b.min_args && n <= max {
+        return None;
+    }
+    let (which, bound) = if b.min_args == max {
+        ("exactly", b.min_args)
+    } else if n < b.min_args {
+        ("at least", b.min_args)
+    } else {
+        ("at most", max)
+    };
+    Some(Thrown::error(
+        "ArgumentCountError",
+        format!(
+            "{}() expects {which} {bound} argument{}, {n} given",
+            b.name,
+            if bound == 1 { "" } else { "s" }
+        ),
+    ))
+}
+
+/// Calls php compiles to dedicated opcodes instead of a function call
+/// (zend_try_compile_special_func): they never appear as a trace frame, and a
+/// callback they invoke is called from the caller's own line.
+fn compiled_inline(lcname: &[u8], argc: usize) -> bool {
+    match lcname {
+        b"strlen" | b"is_null" | b"is_bool" | b"is_long" | b"is_int" | b"is_integer"
+        | b"is_float" | b"is_double" | b"is_string" | b"is_array" | b"is_object"
+        | b"is_resource" | b"is_scalar" | b"boolval" | b"intval" | b"floatval" | b"doubleval"
+        | b"strval" | b"gettype" | b"count" | b"sizeof" => argc == 1,
+        b"get_class" => argc <= 1,
+        b"get_called_class" | b"func_num_args" | b"func_get_args" => argc == 0,
+        b"array_key_exists" | b"call_user_func_array" => argc == 2,
+        b"call_user_func" => argc >= 1,
+        _ => false,
     }
 }
 
@@ -5708,9 +7000,10 @@ fn array_key_to_value(k: &ArrayKey) -> Value {
 }
 
 /// Bind positional `args` to a callee's parameter CV registers (by value), with
-/// constant defaults and variadic collection. By-ref params and named args are
-/// not yet supported.
-fn bind_params(proto: &FunctionProto, args: &[Value], regs: &mut [Value]) -> Result<(), Thrown> {
+/// constant defaults and variadic collection; surplus args (non-variadic callee)
+/// are kept in `extra_args`. `Err(i)`: required parameter `i` was not passed.
+fn bind_params(proto: &FunctionProto, args: &[Value], frame: &mut Frame) -> Result<(), usize> {
+    let regs = &mut frame.regs;
     for (i, p) in proto.params.iter().enumerate() {
         if p.variadic {
             // Collect the remaining args into an array (by value).
@@ -5736,16 +7029,11 @@ fn bind_params(proto: &FunctionProto, args: &[Value], regs: &mut [Value]) -> Res
                 ParamDefault::Init(_) => {} // non-constant defaults: deferred
             }
         } else {
-            return Err(Thrown::error(
-                "ArgumentCountError",
-                format!(
-                    "Too few arguments to function {}(), {} passed and at least {} expected",
-                    String::from_utf8_lossy(proto.name.as_bytes()),
-                    args.len(),
-                    required_params(proto),
-                ),
-            ));
+            return Err(i);
         }
+    }
+    if args.len() > proto.params.len() {
+        frame.extra_args = args[proto.params.len()..].iter().map(deref).collect();
     }
     Ok(())
 }

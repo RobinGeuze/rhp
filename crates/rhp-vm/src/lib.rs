@@ -1645,7 +1645,7 @@ impl Vm {
                                 fname,
                                 i + 1,
                                 pname,
-                                type_string(ty),
+                                self.type_string_resolved(ty, ctx, frame.called_class),
                                 self.value_debug_type(&deref(&cur)),
                                 site.unwrap_or_default(),
                             ),
@@ -1659,6 +1659,30 @@ impl Vm {
 
     /// Enforce a function's declared return type on `v`, coercing in coercive
     /// mode. `void`/`never`/`mixed` and unknowable types are not checked.
+    /// Falling off the end of (or a bare `return;` in) a function with a
+    /// declared return type: only `void` allows it (zend_verify_missing_return_type).
+    fn check_implicit_return(&self, proto: &FunctionProto, top: usize) -> Result<(), Thrown> {
+        use rhp_bytecode::TypeKind as K;
+        let Some(ty) = &proto.return_type else {
+            return Ok(());
+        };
+        if ty.kinds.contains(&K::Void) {
+            return Ok(());
+        }
+        let ctx = self.stack[top].defining_class;
+        let fname = self.func_display_name(proto, ctx);
+        let msg = if ty.kinds.contains(&K::Never) {
+            format!("{fname}(): never-returning function must not implicitly return")
+        } else {
+            let called = self.stack[top].called_class;
+            format!(
+                "{fname}(): Return value must be of type {}, none returned",
+                self.type_string_resolved(ty, ctx, called)
+            )
+        };
+        Err(Thrown::error("TypeError", msg))
+    }
+
     fn check_return_type(
         &self,
         proto: &FunctionProto,
@@ -1683,13 +1707,14 @@ impl Vm {
             Ok(None) => Ok(v),
             Ok(Some(coerced)) => Ok(coerced),
             Err(()) => {
-                let fname = String::from_utf8_lossy(proto.name.as_bytes()).into_owned();
+                let fname = self.func_display_name(proto, ctx);
+                let called = self.stack[top].called_class;
                 Err(Thrown::error(
                     "TypeError",
                     format!(
                         "{}(): Return value must be of type {}, {} returned",
                         fname,
-                        type_string(ty),
+                        self.type_string_resolved(ty, ctx, called),
                         self.value_debug_type(&deref(&v)),
                     ),
                 ))
@@ -1954,6 +1979,78 @@ impl Vm {
             return None;
         }
         Some((self.current_file(top), self.current_line(top)))
+    }
+
+    /// zend_type_to_string_resolved: a declared type as php prints it in
+    /// TypeErrors -- class names first (self/parent resolved against `scope`,
+    /// static against `called`), then the builtin types in php's fixed order.
+    fn type_string_resolved(
+        &self,
+        ty: &rhp_bytecode::TypeHint,
+        scope: Option<ClassId>,
+        called: Option<ClassId>,
+    ) -> String {
+        use rhp_bytecode::TypeKind as K;
+        let cname =
+            |c: ClassId| String::from_utf8_lossy(self.class(c).name.as_bytes()).into_owned();
+        let has = |k: &K| ty.kinds.contains(k);
+        if has(&K::Mixed) {
+            return "mixed".into();
+        }
+        let mut parts: Vec<String> = Vec::new();
+        for k in &ty.kinds {
+            match k {
+                K::Named(n) => parts.push(String::from_utf8_lossy(n.as_bytes()).into_owned()),
+                K::SelfType => parts.push(scope.map(cname).unwrap_or_else(|| "self".into())),
+                K::Parent => parts.push(
+                    scope
+                        .and_then(|c| self.class(c).parent)
+                        .map(cname)
+                        .unwrap_or_else(|| "parent".into()),
+                ),
+                K::Iterable => parts.push("Traversable".into()),
+                _ => {}
+            }
+        }
+        if has(&K::StaticType) {
+            let name = match (scope, called) {
+                (Some(_), Some(c)) => cname(c),
+                _ => "static".into(),
+            };
+            parts.push(name);
+        }
+        let array = has(&K::Array) || has(&K::Iterable);
+        let bool_ = has(&K::Bool) || (has(&K::True) && has(&K::False));
+        for (on, name) in [
+            (has(&K::Callable), "callable"),
+            (has(&K::Object), "object"),
+            (array, "array"),
+            (has(&K::String), "string"),
+            (has(&K::Int), "int"),
+            (has(&K::Float), "float"),
+            (bool_, "bool"),
+            (!bool_ && has(&K::False), "false"),
+            (!bool_ && has(&K::True), "true"),
+            (has(&K::Void), "void"),
+            (has(&K::Never), "never"),
+        ] {
+            if on {
+                parts.push(name.into());
+            }
+        }
+        let sep = if ty.intersection { "&" } else { "|" };
+        if ty.nullable || has(&K::Null) {
+            if parts.is_empty() {
+                return "null".into();
+            }
+            if parts.len() == 1 {
+                return format!("?{}", parts[0]);
+            }
+            let mut out = parts.join(sep);
+            out.push_str("|null");
+            return out;
+        }
+        parts.join(sep)
     }
 
     /// php's display name for a function in messages: `Class::fn` when scoped.
@@ -3187,7 +3284,10 @@ impl Vm {
                     }
                 }
                 Instr::SetPendingRet { src } => {
-                    let v = self.reg_get(top, src);
+                    let mut v = self.reg_get(top, src);
+                    if proto.return_type.is_some() && !proto.is_generator {
+                        v = self.check_return_type(&proto, top, v)?;
+                    }
                     let pc = self.stack[top].pc as u32 - 1;
                     let proto = self.stack[top].proto.clone();
                     self.drop_left_finallies(top, &proto, pc);
@@ -3670,7 +3770,7 @@ impl Vm {
                     let mut v = self.reg_get(top, src);
                     // Enforce a declared return type (the callee's own file decides
                     // strict vs coercive).
-                    if proto.return_type.is_some() {
+                    if proto.return_type.is_some() && !proto.is_generator {
                         v = self.check_return_type(&proto, top, v)?;
                     }
                     if let Some(done) = self.do_return(v) {
@@ -3687,6 +3787,9 @@ impl Vm {
                     }
                 }
                 Instr::RetNull | Instr::Halt => {
+                    if proto.return_type.is_some() && !proto.is_generator {
+                        self.check_implicit_return(&proto, top)?;
+                    }
                     if let Some(done) = self.do_return(Value::Null) {
                         return Ok(done);
                     }

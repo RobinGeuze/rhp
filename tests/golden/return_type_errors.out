@@ -1,0 +1,26 @@
+T::m(): Return value must be of type T, stdClass returned
+T::s(): Return value must be of type T, int returned
+T::q(): Return value must be of type int, string returned
+f(): Return value must be of type ?int, array returned
+{closure:return_type_errors.php:9}(): Return value must be of type int, string returned
+T::m(): Return value must be of type U, stdClass returned
+n(): never-returning function must not implicitly return
+P::a(): Argument #1 ($x) must be of type P, stdClass given, called in return_type_errors.php on line 18
+Q::c(): Argument #1 ($p) must be of type P, stdClass given, called in return_type_errors.php on line 19
+Q::c(): Argument #2 ($z) must be of type string|int|null, array given, called in return_type_errors.php on line 20
+Q::d(): Return value must be of type ?Q, int returned
+Q::e(): Return value must be of type Traversable|array, int returned
+Q::f(): Return value must be of type int|float|false, array returned
+Q::g(): Return value must be of type ?true, int returned
+W::{closure:W::cl():22}(): Return value must be of type int, string returned
+f1(): Return value must be of type ?int, none returned
+f2(): Return value must be of type mixed, none returned
+NULL
+fin
+f4(): Return value must be of type int, string returned
+fin
+int(12)
+1
+5
+1
+S2

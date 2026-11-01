@@ -358,7 +358,8 @@ class FilesystemIterator extends SplFileInfo implements Iterator {
         $this->__dir = rtrim($directory, '/');
         if ($this->__dir === '') { $this->__dir = $directory; }
         $this->__flags = $flags;
-        $all = @scandir($directory);
+        // readdir(3) order, as php's directory stream yields it.
+        $all = @scandir($directory, SCANDIR_SORT_NONE);
         if ($all === false) { $all = []; }
         foreach ($all as $e) {
             if ($e === '.' || $e === '..') {

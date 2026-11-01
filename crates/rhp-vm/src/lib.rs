@@ -2555,6 +2555,12 @@ impl Vm {
                         if let Some(v) = h.borrow().properties.get(&k) {
                             return Ok(deref(v));
                         }
+                        // Skip __get() for an uninitialized typed property.
+                        if self.uninit_typed(&h, &k) {
+                            if let Some(e) = self.typed_slot(cls, &k) {
+                                return Err(e);
+                            }
+                        }
                         absent_slot = Some(k);
                         None
                     }
@@ -2630,6 +2636,8 @@ impl Vm {
         let cls = h.borrow().class;
         let scope = self.stack[top].defining_class;
         let present = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+            // Skip __isset() for an uninitialized typed property.
+            PropRes::Slot(k) if self.uninit_typed(&h, &k) => return Ok(false),
             PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
             PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
             PropRes::Denied(_) => None,
@@ -2658,6 +2666,7 @@ impl Vm {
         let cls = h.borrow().class;
         let scope = self.stack[top].defining_class;
         let present = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+            PropRes::Slot(k) if self.uninit_typed(&h, &k) => return Ok(true),
             PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
             PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
             PropRes::Denied(_) => None,
@@ -2692,6 +2701,7 @@ impl Vm {
         let cls = h.borrow().class;
         let scope = self.stack[top].defining_class;
         let present = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+            PropRes::Slot(k) if self.uninit_typed(&h, &k) => return Ok(Value::Null),
             PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
             PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
             PropRes::Denied(_) => None,
@@ -2771,8 +2781,14 @@ impl Vm {
                 }
             }
         }
+        let was_uninit = matches!(&res, PropRes::Slot(k) if self.uninit_typed(&h, k));
         if present {
-            h.borrow_mut().properties.shift_remove(&key.unwrap());
+            let key = key.unwrap();
+            h.borrow_mut().properties.shift_remove(&key);
+            self.mark_typed_unset(&h, &key);
+        } else if was_uninit {
+            // Reset IS_PROP_UNINIT, bypassing __unset().
+            self.mark_typed_unset(&h, key.as_ref().unwrap());
         } else if let Some(m) = self.magic(&h, cls, b"__unset", &pname) {
             let nm = Value::str(pname.as_bytes().to_vec());
             self.call_magic(&m, &h, cls, b"__unset", &pname, vec![nm])?;
@@ -2785,6 +2801,44 @@ impl Vm {
             ));
         }
         Ok(())
+    }
+
+    /// Is the declared slot `key` of `h` an uninitialized typed property
+    /// that was never `unset()` (php's IS_PROP_UNINIT)? Such a slot never
+    /// routes through the magic accessors: writes go to the slot, reads are
+    /// the "must not be accessed before initialization" Error.
+    fn uninit_typed(&self, h: &ObjectHandle, key: &PhpStr) -> bool {
+        let b = h.borrow();
+        if b.properties.contains_key(key) {
+            return false;
+        }
+        let typed = self
+            .classes
+            .get(b.class as usize)
+            .and_then(|e| e.props.get(key))
+            .is_some_and(|pe| pe.ty.is_some());
+        typed
+            && !self
+                .unset_typed_props
+                .get(&b.id)
+                .is_some_and(|ks| ks.contains(key))
+    }
+
+    /// `unset()` of the declared typed slot `key`: from now on an absent
+    /// slot defers to the magic accessors.
+    fn mark_typed_unset(&mut self, h: &ObjectHandle, key: &PhpStr) {
+        let b = h.borrow();
+        let typed = self
+            .classes
+            .get(b.class as usize)
+            .and_then(|e| e.props.get(key))
+            .is_some_and(|pe| pe.ty.is_some());
+        if typed {
+            let ks = self.unset_typed_props.entry(b.id).or_default();
+            if !ks.contains(key) {
+                ks.push(key.clone());
+            }
+        }
     }
 
     /// The magic property accessor `which` (`__get`/`__set`/`__isset`/
@@ -2875,10 +2929,12 @@ impl Vm {
                 PropRes::Denied(vis) => (pname.clone(), Some(vis)),
             };
             let present = denied.is_none() && h.borrow().properties.contains_key(&key);
+            // Writes to uninitialized typed properties bypass __set().
+            let uninit = !present && denied.is_none() && !is_dyn && self.uninit_typed(&h, &key);
             if denied.is_none() {
                 if let Err(e) = classes::set_access_ok(&self.classes, cls, scope, &key) {
                     // An unset asymmetric property still defers to `__set`.
-                    if !present {
+                    if !present && !uninit {
                         if let Some(setter) = self.magic(&h, cls, b"__set", &pname) {
                             let nm = Value::str(pname.as_bytes().to_vec());
                             self.call_magic(&setter, &h, cls, b"__set", &pname, vec![nm, val])?;
@@ -2889,7 +2945,7 @@ impl Vm {
                     return Err(classes::set_access_err(&self.classes, called, "modify", e));
                 }
             }
-            if !present {
+            if !present && !uninit {
                 // Inaccessible, or not currently set (dynamic / unset declared):
                 // `__set` intercepts when defined.
                 if let Some(setter) = self.magic(&h, cls, b"__set", &pname) {
@@ -4023,8 +4079,13 @@ impl Vm {
                         PropRes::Dynamic => h.borrow().properties.get(name).cloned(),
                         PropRes::Denied(_) => None,
                     };
+                    let uninit = match classes::resolve_prop(&self.classes, cls, scope, name) {
+                        PropRes::Slot(k) => present.is_none() && self.uninit_typed(&h, &k),
+                        _ => false,
+                    };
                     match present {
                         Some(v) => v,
+                        None if uninit => return MagicSplit::Plain,
                         None if self.magic(&h, cls, b"__get", name).is_some() => {
                             return if i + 1 == steps.len() {
                                 MagicSplit::Leaf(h, name.clone())
@@ -6259,6 +6320,10 @@ impl Vm {
                     }
                     let id = self.next_object_id;
                     self.next_object_id += 1;
+                    // The clone keeps the property slots' unset flags.
+                    if let Some(ks) = self.unset_typed_props.get(&h.borrow().id).cloned() {
+                        self.unset_typed_props.insert(id, ks);
+                    }
                     let new_obj: ObjectHandle = Rc::new(RefCell::new(ObjectData {
                         class: cls,
                         id,

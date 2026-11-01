@@ -1073,7 +1073,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "is_array"       => fn_is_array, 1, Some(1);
             "is_scalar"      => fn_is_scalar, 1, Some(1);
             "is_object"      => fn_is_object, 1, Some(1);
-            "is_callable"    => fn_is_callable, 1, Some(1);
+            "is_callable"    => fn_is_callable, 1, Some(2);
             "define"         => fn_define, 2, Some(3);
             "defined"        => fn_defined, 1, Some(1);
             "constant"       => fn_constant, 1, Some(1);
@@ -1629,7 +1629,23 @@ fn fn_is_finite(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_is_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.check_callable(&args[0])?.is_none()))
+    let v = deref(&args[0]);
+    // `$syntax_only`: only the callable's shape is checked.
+    if args.get(1).is_some_and(|f| conv::to_bool(&deref(f))) {
+        match &v {
+            Value::Str(_) | Value::Closure(_) => return Ok(Value::Bool(true)),
+            Value::Array(a) if a.len() == 2 => {
+                let parts: Vec<Value> = a.iter().map(|(_, x)| deref(x)).collect();
+                return Ok(Value::Bool(
+                    matches!(parts[0], Value::Str(_) | Value::Object(_))
+                        && matches!(parts[1], Value::Str(_)),
+                ));
+            }
+            Value::Object(_) => {}
+            _ => return Ok(Value::Bool(false)),
+        }
+    }
+    Ok(Value::Bool(host.check_callable(&v)?.is_none()))
 }
 
 /// zpp's `f` check: "F(): Argument #N ($callback) must be a valid callback, …".

@@ -73,8 +73,9 @@ thread_local! {
     static COND_CLASSES: RefCell<(Vec<ClassProto>, u32)> = const { RefCell::new((Vec::new(), 0)) };
 }
 
-/// The source bytes and token stream doc comments are looked up in.
-type DocSource = (Rc<Vec<u8>>, Rc<Vec<rhp_frontend::Token>>);
+/// The source bytes doc comments are looked up in, and its token stream
+/// (lexed on the first lookup).
+type DocSource = (Rc<Vec<u8>>, Option<Rc<Vec<rhp_frontend::Token>>>);
 
 thread_local! {
     /// Method name (lowercase) -> per-position "could be by-reference" mask: true
@@ -100,7 +101,7 @@ thread_local! {
     /// included), for locating declarations' doc comments. Empty while
     /// compiling the prelude.
     static DOC_SRC: RefCell<DocSource> =
-        RefCell::new((Rc::new(Vec::new()), Rc::new(Vec::new())));
+        RefCell::new((Rc::new(Vec::new()), None));
 }
 
 /// Lower a mago type hint to the bytecode [`rhp_bytecode::TypeHint`] (resolving
@@ -557,7 +558,7 @@ pub fn compile_with_source(
     // Line info applies to user code only; the prelude (compiled first) keeps an
     // empty map, so set the real line starts after the prelude is built.
     LINE_STARTS.with(|ls| ls.borrow_mut().clear());
-    DOC_SRC.with(|d| *d.borrow_mut() = (Rc::new(Vec::new()), Rc::new(Vec::new())));
+    DOC_SRC.with(|d| *d.borrow_mut() = (Rc::new(Vec::new()), None));
     SRC_FILE.with(|f| *f.borrow_mut() = file.as_bytes().to_vec());
     STRICT_TYPES.with(|s| *s.borrow_mut() = detect_strict_types(program));
     let user_line_starts = build_line_starts(source);
@@ -614,16 +615,7 @@ pub fn compile_with_source(
     COND_CLASSES.with(|c| c.borrow_mut().1 = num_top_classes);
     // From here on we compile user code, so install its line map.
     LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
-    DOC_SRC.with(|d| {
-        *d.borrow_mut() = (
-            Rc::new(source.to_vec()),
-            Rc::new(if source.is_empty() {
-                Vec::new()
-            } else {
-                rhp_frontend::tokens(source)
-            }),
-        )
-    });
+    DOC_SRC.with(|d| *d.borrow_mut() = (Rc::new(source.to_vec()), None));
     let user_constants: Vec<(PhpStr, Value)> = Vec::new();
     for (ctx, stmt) in &flat {
         set_ns_ctx(ctx);
@@ -763,8 +755,17 @@ fn has_allow_dynamic(
 fn doc_comment_before(pos: u32) -> Option<PhpStr> {
     use rhp_frontend::TokenKind as T;
     let (src, toks) = DOC_SRC.with(|d| {
-        let d = d.borrow();
-        (d.0.clone(), d.1.clone())
+        let mut d = d.borrow_mut();
+        if d.1.is_none() {
+            let has_doc = d.0.windows(3).any(|w| w == b"/**");
+            let toks = if has_doc {
+                rhp_frontend::tokens(&d.0)
+            } else {
+                Vec::new()
+            };
+            d.1 = Some(Rc::new(toks));
+        }
+        (d.0.clone(), d.1.clone().unwrap_or_default())
     });
     if toks.is_empty() {
         return None;
@@ -1874,6 +1875,34 @@ class DateTimeImmutable implements DateTimeInterface {
 
 #[allow(clippy::type_complexity)]
 fn prelude_classes() -> Result<(Vec<ClassProto>, Vec<Rc<FunctionProto>>), Thrown> {
+    // The prelude is the same for every compile (each include re-emits it):
+    // compile it once per thread and replay its closures into the sink.
+    type PreludeCache = (
+        Vec<ClassProto>,
+        Vec<Rc<FunctionProto>>,
+        Vec<Rc<FunctionProto>>,
+    );
+    thread_local! {
+        static CACHE: RefCell<Option<Rc<PreludeCache>>> = const { RefCell::new(None) };
+    }
+    if let Some(c) = CACHE.with(|c| c.borrow().clone()) {
+        CLOSURES.with(|cl| cl.borrow_mut().extend(c.2.iter().cloned()));
+        return Ok((c.0.clone(), c.1.clone()));
+    }
+    let before = CLOSURES.with(|cl| cl.borrow().len());
+    // Compile it independently of the user file's by-ref method signatures.
+    let saved_refs = METHOD_REF.with(|m| std::mem::take(&mut *m.borrow_mut()));
+    let r = prelude_classes_uncached();
+    METHOD_REF.with(|m| *m.borrow_mut() = saved_refs);
+    let (classes, functions) = r?;
+    let closures: Vec<Rc<FunctionProto>> = CLOSURES.with(|cl| cl.borrow()[before..].to_vec());
+    let cache = Rc::new((classes.clone(), functions.clone(), closures));
+    CACHE.with(|c| *c.borrow_mut() = Some(cache));
+    Ok((classes, functions))
+}
+
+#[allow(clippy::type_complexity)]
+fn prelude_classes_uncached() -> Result<(Vec<ClassProto>, Vec<Rc<FunctionProto>>), Thrown> {
     // Prelude / built-in classes are never strict-typed (coercive calls).
     let saved_strict = STRICT_TYPES.with(|s| std::mem::replace(&mut *s.borrow_mut(), false));
     // Prelude protos carry an empty file name: the VM treats them as internal

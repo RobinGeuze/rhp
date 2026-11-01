@@ -340,7 +340,6 @@ fn float_to_int_wrapping(t: f64) -> i64 {
 }
 
 /// The array buffer; insertion order preserved by IndexMap.
-#[derive(Clone)]
 pub struct ArrayData {
     pub entries: IndexMap<ArrayKey, Value, FxBuildHasher>,
     /// Next integer index for `$a[] = ...`. `None` = no int key ever inserted
@@ -350,6 +349,38 @@ pub struct ArrayData {
     pub append_disabled: bool,
     /// Internal pointer for `current`/`next`/`prev`/`end`/`reset`/`key`.
     pub pos: usize,
+}
+
+/// php's `zend_array_dup`: a reference held only by the source array
+/// (refcount 1) is not shared with the copy; the copy gets the referenced
+/// value (`zend_array_dup_element`), unless that value is the source array
+/// itself (the self-reference guard).
+impl Clone for ArrayData {
+    fn clone(&self) -> Self {
+        let mut entries = self.entries.clone();
+        let src = self as *const ArrayData as usize;
+        for v in entries.values_mut() {
+            let inner = match v {
+                Value::Ref(rc) if Rc::strong_count(rc) == 2 => match rc.try_borrow() {
+                    Ok(b) => match &*b {
+                        Value::Array(a) if a.data_ptr() == src => None,
+                        other => Some(other.clone()),
+                    },
+                    Err(_) => None,
+                },
+                _ => None,
+            };
+            if let Some(x) = inner {
+                *v = x;
+            }
+        }
+        ArrayData {
+            entries,
+            next_int: self.next_int,
+            append_disabled: self.append_disabled,
+            pos: self.pos,
+        }
+    }
 }
 
 impl ArrayData {

@@ -8052,7 +8052,8 @@ fn isset_dim(container: &Value, key: &Value) -> bool {
 fn dim_fetch(container: &Value, key: &Value) -> Value {
     match deref(container) {
         Value::Array(a) => match ArrayKey::from_value(key) {
-            Some(k) => a.get(&k).cloned().unwrap_or(Value::Null),
+            // A read yields the value, never the element's reference cell.
+            Some(k) => a.get(&k).map(deref).unwrap_or(Value::Null),
             None => Value::Null,
         },
         Value::Str(s) => {

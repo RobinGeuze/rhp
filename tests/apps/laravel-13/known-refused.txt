@@ -1,0 +1,208 @@
+# Files rhp refuses to compile (rhp-difftest lint --write-known).
+# `rhp-difftest lint --check-known` fails on a refused file not listed here;
+# delete lines as files start compiling. Format: <file>\t# <reason>
+vendor/hamcrest/hamcrest-php/hamcrest/Hamcrest/Core/Set.php	# unsupported dynamic static property: deferred
+vendor/laravel/framework/src/Illuminate/Auth/Access/Gate.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Auth/AuthManager.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Auth/Passwords/PasswordBrokerManager.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Broadcasting/BroadcastManager.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Broadcasting/Mercure/ChannelEncrypter.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Cache/CacheManager.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Cache/FailoverStore.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Cache/MemoizedTaggedCache.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Cache/Repository.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Collections/HigherOrderCollectionProxy.php	# unsupported dynamic static call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Collections/LazyCollection.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Conditionable/HigherOrderWhenProxy.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Console/Concerns/InteractsWithSignals.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Console/Scheduling/PendingEventAttributes.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Console/Scheduling/Schedule.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Console/Signals.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Container/Container.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Database/Capsule/Manager.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Database/DatabaseManager.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Database/Eloquent/Builder.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Database/Eloquent/Concerns/HasAttributes.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Database/Eloquent/Concerns/PreventsCircularRecursion.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Database/Eloquent/HasCollection.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Database/Eloquent/HigherOrderBuilderProxy.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Database/Eloquent/Model.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Database/Eloquent/Relations/MorphTo.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Database/Migrations/Migrator.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Database/Query/Builder.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Database/Schema/MySqlSchemaState.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Database/Schema/PostgresSchemaState.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Events/CallQueuedListener.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Events/Dispatcher.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Filesystem/FilesystemAdapter.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Filesystem/FilesystemManager.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Foundation/Bootstrap/HandleExceptions.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Foundation/Bus/PendingDispatch.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Foundation/Cloud/ExceptionReporter.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Foundation/CloudBootstrapper.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Foundation/DevCommand.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Foundation/DevCommands.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Foundation/Providers/FoundationServiceProvider.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Foundation/Testing/RefreshDatabase.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Foundation/Vite.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Http/Client/Batch.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Http/Client/Factory.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Http/Client/PendingRequest.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Http/Client/Pool.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Http/Client/Response.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Http/Concerns/InteractsWithInput.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Http/Resources/JsonApi/Concerns/ResolvesJsonApiElements.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Http/Resources/JsonApi/RelationResolver.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Image/Image.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/JsonSchema/JsonSchema.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Log/LogManager.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Log/Logger.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Mail/MailManager.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Mail/Message.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Notifications/ChannelManager.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Pipeline/Pipeline.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Process/Factory.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Process/Pipe.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Process/Pool.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Queue/Capsule/Manager.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Queue/FailoverQueue.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Queue/QueueManager.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Queue/RedisQueue.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Redis/Connections/Connection.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Redis/Connections/PredisConnection.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Redis/Connectors/PhpRedisConnector.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Redis/Connectors/PredisConnector.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Redis/RedisManager.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Routing/Controller.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Routing/Router.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Routing/ViewController.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Support/DateFactory.php	# unsupported dynamic static call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Support/Facades/Facade.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Support/HigherOrderTapProxy.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Support/Manager.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Support/MultipleInstanceManager.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Support/NodePackageManager.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Support/Once.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Support/Optional.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Support/Traits/ForwardsCalls.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Support/ViewErrorBag.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Support/functions.php	# unsupported assignment target: only variables, array elements, and properties are supported
+vendor/laravel/framework/src/Illuminate/Support/helpers.php	# unsupported dynamic static call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Testing/Concerns/TestCaches.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Testing/Concerns/TestViews.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/Testing/TestComponent.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Testing/TestResponse.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Testing/TestResponseAssert.php	# unsupported dynamic static call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Validation/Concerns/FormatsMessages.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/Validation/Validator.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/View/Concerns/ManagesEvents.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/framework/src/Illuminate/View/Factory.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/framework/src/Illuminate/View/InvokableComponentVariable.php	# unsupported dynamic method call with argument spread: deferred
+vendor/laravel/pao/src/Laravel/PaoOutputStyle.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/prompts/src/NumberPrompt.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/prompts/src/Prompt.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/laravel/prompts/src/Terminal.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/league/commonmark/src/Extension/Footnote/Parser/FootnoteParser.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/league/flysystem/src/Filesystem.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/league/uri-interfaces/HostRecord.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/league/uri-interfaces/IPv6/Converter.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/league/uri/UriScheme.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/league/uri/UriTemplate/Expression.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/league/uri/UrlPattern/Parser.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/mockery/mockery/library/Mockery/CompositeExpectation.php	# unsupported dynamic method call with argument spread: deferred
+vendor/mockery/mockery/library/Mockery/Generator/Method.php	# unsupported dynamic method call with argument spread: deferred
+vendor/mockery/mockery/library/Mockery/Generator/Parameter.php	# unsupported dynamic method call with argument spread: deferred
+vendor/mockery/mockery/library/Mockery/Mock.php	# unsupported dynamic method call with argument spread: deferred
+vendor/mockery/mockery/library/Mockery/VerificationDirector.php	# unsupported dynamic method call with argument spread: deferred
+vendor/monolog/monolog/src/Monolog/LogRecord.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/nesbot/carbon/src/Carbon/AbstractTranslator.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/nesbot/carbon/src/Carbon/Callback.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/nesbot/carbon/src/Carbon/CarbonInterval.php	# unsupported indirect/nested variable: variable-variables are refused / deferred
+vendor/nesbot/carbon/src/Carbon/CarbonPeriod.php	# unsupported dynamic method call with argument spread: deferred
+vendor/nesbot/carbon/src/Carbon/Exceptions/ImmutableException.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/nesbot/carbon/src/Carbon/Factory.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/nesbot/carbon/src/Carbon/FactoryImmutable.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/nesbot/carbon/src/Carbon/Language.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/nesbot/carbon/src/Carbon/Traits/Boundaries.php	# unsupported dynamic method call with argument spread: deferred
+vendor/nesbot/carbon/src/Carbon/Traits/Creator.php	# unsupported indirect/nested variable: variable-variables are refused / deferred
+vendor/nesbot/carbon/src/Carbon/Traits/Date.php	# unsupported assignment target: property targets arrive with OOP
+vendor/nesbot/carbon/src/Carbon/Traits/IntervalRounding.php	# unsupported dynamic method call with argument spread: deferred
+vendor/nesbot/carbon/src/Carbon/Traits/Localization.php	# unsupported indirect/nested variable: variable-variables are refused / deferred
+vendor/nesbot/carbon/src/Carbon/Traits/Options.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/nette/schema/src/Schema/Elements/Structure.php	# unsupported assignment target: only variables, array elements, and properties are supported
+vendor/nette/schema/src/Schema/TypeExpression.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/nette/utils/src/Utils/Arrays.php	# unsupported dynamic method call with argument spread: deferred
+vendor/nette/utils/src/Utils/Finder.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/nunomaduro/collision/src/Adapters/Phpunit/Printers/ReportablePrinter.php	# unsupported dynamic method call with argument spread: deferred
+vendor/nunomaduro/termwind/src/Actions/StyleToMethod.php	# unsupported dynamic method call with argument spread: deferred
+vendor/nunomaduro/termwind/src/Components/Element.php	# unsupported dynamic method call with argument spread: deferred
+vendor/nunomaduro/termwind/src/Question.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/nunomaduro/termwind/src/Termwind.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/phpunit/phpunit/src/Framework/MockObject/Runtime/InvocationStubberImplementation.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/phpunit/phpunit/src/Framework/TestCase.php	# unsupported dynamic method call with argument spread: deferred
+vendor/symfony/clock/Clock.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/clock/ClockAwareTrait.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/console/Application.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/console/Attribute/Ask.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/console/Command/HelpCommand.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/console/Command/TraceableCommand.php	# unsupported dynamic method call with argument spread: deferred
+vendor/symfony/console/Formatter/NullOutputFormatter.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/console/Formatter/OutputFormatter.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/console/Formatter/OutputFormatterStyle.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/console/Helper/Dumper.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/console/Helper/ProgressBar.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/console/Helper/ProgressIndicator.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/console/Helper/Table.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/console/Output/ConsoleSectionOutput.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/console/Output/NullOutput.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/console/Style/SymfonyStyle.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/css-selector/Node/AbstractNode.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/css-selector/Parser/Reader.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/error-handler/DebugClassLoader.php	# unsupported dynamic static property: deferred
+vendor/symfony/event-dispatcher/Debug/TraceableEventDispatcher.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/event-dispatcher/Debug/WrappedListener.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/event-dispatcher/DependencyInjection/RegisterListenersPass.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/event-dispatcher/EventDispatcher.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/http-foundation/InputBag.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/http-foundation/ParameterBag.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/http-foundation/Request.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/http-foundation/Session/Storage/Handler/AbstractSessionHandler.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/http-foundation/Session/Storage/MockArraySessionStorage.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/http-kernel/Bundle/AbstractBundle.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/http-kernel/Bundle/Bundle.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/http-kernel/DependencyInjection/ControllerArgumentValueResolverPass.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/http-kernel/EventListener/CacheAttributeListener.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/http-kernel/HttpCache/Store.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/http-kernel/Log/Logger.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/mailer/Test/TransportFactoryTestCase.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/mailer/Transport/Smtp/Stream/SocketStream.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/mailer/Transport/Transports.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/mime/Address.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/mime/FileinfoMimeTypeGuesser.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/mime/Header/AbstractHeader.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/mime/MimeTypes.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/mime/Part/AbstractMultipartPart.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/mime/Part/File.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/mime/Part/TextPart.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/process/Process.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/routing/Loader/YamlFileLoader.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/routing/Matcher/Dumper/CompiledUrlMatcherDumper.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/routing/Router.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/service-contracts/ServiceMethodsSubscriberTrait.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/service-contracts/ServiceSubscriberTrait.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/string/AbstractUnicodeString.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/string/LazyString.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/translation/DataCollectorTranslator.php	# unsupported dynamic method call with argument spread: deferred
+vendor/symfony/translation/Formatter/IntlFormatter.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/translation/Loader/PhpFileLoader.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/translation/LoggingTranslator.php	# unsupported dynamic method call with argument spread: deferred
+vendor/symfony/translation/Test/ProviderFactoryTestCase.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/translation/Test/ProviderTestCase.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/translation/Translator.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/var-dumper/Caster/Caster.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/var-dumper/Caster/MemcachedCaster.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/var-dumper/Cloner/Data.php	# unsupported foreach target: only simple `$var` targets for now (no list()/destructuring)
+vendor/symfony/var-dumper/Cloner/Stub.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/symfony/var-dumper/Dumper/CliDumper.php	# unsupported ??= on an array element: use a full assignment for now
+vendor/voku/portable-ascii/src/voku/helper/ASCII.php	# Error: Cannot create references to elements of a temporary array expression

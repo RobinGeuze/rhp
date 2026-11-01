@@ -214,7 +214,9 @@ impl Vm {
                         format!(
                             "Cannot override final method {}::{}()",
                             String::from_utf8_lossy(
-                                self.classes[existing.defining_class as usize].name.as_bytes()
+                                self.classes[existing.defining_class as usize]
+                                    .name
+                                    .as_bytes()
                             ),
                             String::from_utf8_lossy(existing.proto.name.as_bytes())
                         ),

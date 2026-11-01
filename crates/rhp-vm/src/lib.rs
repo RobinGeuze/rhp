@@ -4584,9 +4584,23 @@ fn is_prelude_proto(p: &FunctionProto) -> bool {
 /// A `__`-prefixed method name that is not one of php's magic methods.
 fn is_engine_helper_name(name: &[u8]) -> bool {
     const MAGIC: &[&[u8]] = &[
-        b"__construct", b"__destruct", b"__call", b"__callstatic", b"__get", b"__set",
-        b"__isset", b"__unset", b"__sleep", b"__wakeup", b"__serialize", b"__unserialize",
-        b"__tostring", b"__invoke", b"__set_state", b"__clone", b"__debuginfo",
+        b"__construct",
+        b"__destruct",
+        b"__call",
+        b"__callstatic",
+        b"__get",
+        b"__set",
+        b"__isset",
+        b"__unset",
+        b"__sleep",
+        b"__wakeup",
+        b"__serialize",
+        b"__unserialize",
+        b"__tostring",
+        b"__invoke",
+        b"__set_state",
+        b"__clone",
+        b"__debuginfo",
     ];
     let lc = name.to_ascii_lowercase();
     lc.starts_with(b"__") && !MAGIC.contains(&lc.as_slice())
@@ -4649,4 +4663,3 @@ fn required_params(proto: &FunctionProto) -> usize {
         .filter(|p| p.default.is_none() && !p.variadic)
         .count()
 }
-

@@ -1204,9 +1204,8 @@ pub fn compare_handler(a: CmpOperand, b: CmpOperand) -> Result<i32, Thrown> {
             CmpOperand::Gmp(n) => Ok(BigInt::parse_bytes(&n, 10).unwrap_or_default()),
             CmpOperand::Other(v, name) => match deref(&v) {
                 Value::Int(i) => Ok(BigInt::from(i)),
-                Value::Str(s) => parse_str_auto(s.as_bytes()).ok_or_else(|| {
-                    Thrown::error("ValueError", "Number is not an integer string")
-                }),
+                Value::Str(s) => parse_str_auto(s.as_bytes())
+                    .ok_or_else(|| Thrown::error("ValueError", "Number is not an integer string")),
                 Value::Bool(b) => Ok(BigInt::from(b as i64)),
                 Value::Float(f) if f.is_finite() && f.abs() < 9.2e18 => Ok(bigint_from_f64(f)),
                 _ => Err(bad(&name)),

@@ -51,4 +51,9 @@ Error: Nesting level too deep - recursive dependency?
 Error: Nesting level too deep - recursive dependency?
 Error: Nesting level too deep - recursive dependency?
 bool(true)
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
 still running

@@ -1117,7 +1117,7 @@ fn fn_min(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `(double)l` converts back to `l` exactly (`zend_dval_to_lval_silent`).
 fn long_is_exact_double(l: i64) -> bool {
     let d = l as f64;
-    (-9.223_372_036_854_775_808e18..9.223_372_036_854_775_808e18).contains(&d) && d as i64 == l
+    (-(2f64.powi(63))..2f64.powi(63)).contains(&d) && d as i64 == l
 }
 
 /// php's `min`/`max`: the array form (`zend_hash_minmax`), the two-argument
@@ -1155,12 +1155,20 @@ fn extremum(host: &mut dyn Host, args: &[Value], want_max: bool) -> Result<Value
         let dbl = |l: f64, r: f64| if want_max { l >= r } else { l < r };
         return Ok(match (lhs, rhs) {
             (Value::Int(l), Value::Int(r)) => pick(if want_max { l >= r } else { l < r }),
-            (Value::Int(l), Value::Float(r)) if long_is_exact_double(*l) => pick(dbl(*l as f64, *r)),
+            (Value::Int(l), Value::Float(r)) if long_is_exact_double(*l) => {
+                pick(dbl(*l as f64, *r))
+            }
             (Value::Float(l), Value::Float(r)) => pick(dbl(*l, *r)),
-            (Value::Float(l), Value::Int(r)) if long_is_exact_double(*r) => pick(dbl(*l, *r as f64)),
+            (Value::Float(l), Value::Int(r)) if long_is_exact_double(*r) => {
+                pick(dbl(*l, *r as f64))
+            }
             _ => {
                 let c = host_compare(host, lhs, rhs)?;
-                pick(if want_max { c != Ordering::Less } else { c == Ordering::Less })
+                pick(if want_max {
+                    c != Ordering::Less
+                } else {
+                    c == Ordering::Less
+                })
             }
         });
     }

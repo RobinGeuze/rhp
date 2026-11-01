@@ -279,10 +279,22 @@ fn fn_error_get_last(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thro
         None => Value::Null,
         Some((ty, msg, file, line)) => {
             let mut a = rhp_values::PhpArray::new();
-            a.insert(rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"type".to_vec())), Value::Int(ty));
-            a.insert(rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"message".to_vec())), Value::Str(rhp_values::PhpStr::from_bytes(msg)));
-            a.insert(rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"file".to_vec())), Value::Str(rhp_values::PhpStr::from_bytes(file)));
-            a.insert(rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"line".to_vec())), Value::Int(line));
+            a.insert(
+                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"type".to_vec())),
+                Value::Int(ty),
+            );
+            a.insert(
+                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"message".to_vec())),
+                Value::Str(rhp_values::PhpStr::from_bytes(msg)),
+            );
+            a.insert(
+                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"file".to_vec())),
+                Value::Str(rhp_values::PhpStr::from_bytes(file)),
+            );
+            a.insert(
+                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"line".to_vec())),
+                Value::Int(line),
+            );
             Value::Array(a)
         }
     })

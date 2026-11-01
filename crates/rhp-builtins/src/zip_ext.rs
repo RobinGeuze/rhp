@@ -701,7 +701,11 @@ pub fn remove(id: i64) -> Option<Archive> {
 /// freed (also at shutdown), writing an archive that was never closed.
 pub fn object_freed(id: u32) {
     let a = ARCHIVES
-        .try_with(|t| t.try_borrow_mut().ok().and_then(|mut t| t.remove(&(id as i64))))
+        .try_with(|t| {
+            t.try_borrow_mut()
+                .ok()
+                .and_then(|mut t| t.remove(&(id as i64)))
+        })
         .ok()
         .flatten();
     if let Some(a) = a {

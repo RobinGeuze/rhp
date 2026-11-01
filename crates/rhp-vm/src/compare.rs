@@ -24,7 +24,11 @@ impl Vm {
     }
 
     fn gmp_num(h: &ObjectHandle) -> Vec<u8> {
-        match h.borrow().properties.get(&PhpStr::from_bytes(b"num".to_vec())) {
+        match h
+            .borrow()
+            .properties
+            .get(&PhpStr::from_bytes(b"num".to_vec()))
+        {
             Some(v) => conv::to_string_bytes(v),
             None => b"0".to_vec(),
         }
@@ -82,6 +86,22 @@ impl CompareCx for Vm {
         Some(self.class(class).props.keys().cloned().collect())
     }
 
+    fn is_internal_prop(&self, class: ClassId, name: &PhpStr) -> bool {
+        // Built-in (prelude) classes keep native state in `__`-prefixed
+        // properties; php's objects hold it outside the property table.
+        // ArrayObject/ArrayIterator's storage (`__s`) is what their compare
+        // handler compares, so it stays visible.
+        let n = name.as_bytes();
+        n.starts_with(b"__")
+            && n != b"__s"
+            && self
+                .class(class)
+                .methods
+                .values()
+                .next()
+                .is_some_and(|m| crate::is_prelude_proto(&m.proto))
+    }
+
     fn class_name(&self, class: ClassId) -> Vec<u8> {
         self.class(class).name.as_bytes().to_vec()
     }
@@ -112,7 +132,9 @@ impl CompareCx for Vm {
                 match self.lookup_method(cls, b"__tostring") {
                     Some(m) => {
                         let r = self.call_sync(&m, Some(obj.clone()), cls, Vec::new())?;
-                        Ok(Some(Value::Str(PhpStr::from_bytes(conv::to_string_bytes(&r)))))
+                        Ok(Some(Value::Str(PhpStr::from_bytes(conv::to_string_bytes(
+                            &r,
+                        )))))
                     }
                     None => Ok(None),
                 }

@@ -27,4 +27,7 @@ try { var_dump($r1 == $r2); } catch (Error $e) { echo get_class($e), ": ", $e->g
 try { var_dump($r1 < $r2); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
 try { var_dump(in_array($r1, [$r2])); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
 var_dump($r1 == $r1);
+// built-in classes compare by what php compares, not engine-internal state
+var_dump(new SplFixedArray(2) == new SplFixedArray(3), new ArrayObject([1]) == new ArrayObject([1]), new ArrayObject([1]) == new ArrayObject([2]), new ArrayObject([1]) < new ArrayObject([2]));
+$ai = new ArrayIterator([1, 2]); $bi = new ArrayIterator([1, 2]); $ai->next(); var_dump($ai == $bi);
 echo "still running\n";

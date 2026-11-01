@@ -192,6 +192,11 @@ pub trait CompareCx {
     fn declared_props(&self, _class: rhp_values::ClassId) -> Option<Vec<PhpStr>> {
         None
     }
+    /// Engine-internal state of a built-in class, invisible to comparison
+    /// (php keeps it outside the property table).
+    fn is_internal_prop(&self, _class: rhp_values::ClassId, _name: &PhpStr) -> bool {
+        false
+    }
     /// The class name (for the conversion notice).
     fn class_name(&self, _class: rhp_values::ClassId) -> Vec<u8> {
         b"object".to_vec()
@@ -422,9 +427,17 @@ fn compare_arrays(
 }
 
 /// The object branch of `zend_compare`: at least one operand is an object.
-fn compare_object_operand(a: &Value, b: &Value, cx: &mut dyn CompareCx) -> Result<Ordering, Thrown> {
+fn compare_object_operand(
+    a: &Value,
+    b: &Value,
+    cx: &mut dyn CompareCx,
+) -> Result<Ordering, Thrown> {
     use Value::*;
-    let (object, other, object_lhs) = if is_obj(a) { (a, b, true) } else { (b, a, false) };
+    let (object, other, object_lhs) = if is_obj(a) {
+        (a, b, true)
+    } else {
+        (b, a, false)
+    };
     if is_obj(other) {
         if same_object(object, other) {
             return Ok(Ordering::Equal);
@@ -520,7 +533,11 @@ fn std_compare_scalar(
         Some(v) => v,
         None => match target {
             CastTarget::Int | CastTarget::Float => {
-                let tn = if target == CastTarget::Int { "int" } else { "float" };
+                let tn = if target == CastTarget::Int {
+                    "int"
+                } else {
+                    "float"
+                };
                 cx.notice(&format!(
                     "Object of class {} could not be converted to {tn}",
                     String::from_utf8_lossy(class_name)
@@ -557,26 +574,32 @@ fn std_compare_objects(
         .borrow()
         .properties
         .iter()
+        .filter(|(k, _)| !cx.is_internal_prop(xc, k))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     let yp: rhp_values::PhpArray = {
         let mut a = rhp_values::PhpArray::new();
         for (k, v) in y.borrow().properties.iter() {
-            a.insert(rhp_values::ArrayKey::Str(k.clone()), v.clone());
+            if !cx.is_internal_prop(yc, k) {
+                a.insert(rhp_values::ArrayKey::Str(k.clone()), v.clone());
+            }
         }
         a
     };
     let get_y = |k: &PhpStr| yp.get(&rhp_values::ArrayKey::Str(k.clone())).cloned();
-    let declared = cx
+    let declared: Vec<PhpStr> = cx
         .declared_props(xc)
-        .unwrap_or_else(|| xp.iter().map(|(k, _)| k.clone()).collect());
+        .unwrap_or_else(|| xp.iter().map(|(k, _)| k.clone()).collect())
+        .into_iter()
+        .filter(|k| !cx.is_internal_prop(xc, k))
+        .collect();
     let is_declared = |k: &PhpStr| declared.iter().any(|d| d == k);
     let x_dyn: Vec<&(PhpStr, Value)> = xp.iter().filter(|(k, _)| !is_declared(k)).collect();
     let y_dyn = y
         .borrow()
         .properties
         .keys()
-        .filter(|k| !is_declared(k))
+        .filter(|k| !is_declared(k) && !cx.is_internal_prop(yc, k))
         .count();
     let get_x = |k: &PhpStr| xp.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
     let _guard = Guard::enter(std::rc::Rc::as_ptr(x) as *const u8 as usize)?;

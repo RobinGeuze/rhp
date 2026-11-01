@@ -243,7 +243,10 @@ pub(crate) fn open_failure_reason(path: &[u8], mode: &[u8]) -> String {
         Some(b'x') => o.write(true).create_new(true),
         Some(b'c') => o.write(true).create(true).truncate(false),
         _ => {
-            return format!("`{}' is not a valid mode for fopen", String::from_utf8_lossy(mode));
+            return format!(
+                "`{}' is not a valid mode for fopen",
+                String::from_utf8_lossy(mode)
+            );
         }
     };
     match o.open(&p) {

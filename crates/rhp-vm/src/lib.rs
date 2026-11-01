@@ -4184,10 +4184,12 @@ impl Vm {
             return Some(thrown);
         };
         let arg = Value::Object(obj.clone());
-        self.stack.clear();
-        self.push_internal_main();
+        // The handler runs on the shutdown scope: {main}'s frame stays alive
+        // (its globals are still reachable via `global`, and its objects are
+        // destructed only after the shutdown functions).
+        self.enter_shutdown_scope();
         let r = self.call_callable_value(&handler, vec![arg]);
-        self.stack.clear();
+        self.stack.truncate(1);
         r.err()
     }
 
@@ -4343,6 +4345,13 @@ impl Vm {
             Ok(c) => c,
             Err(t) => {
                 self.enter_shutdown_scope();
+                if t.is_catchable() {
+                    // The unwound frames' locals were destroyed on the way out
+                    // (php runs their destructors before the exception reaches
+                    // the handler or the fatal report).
+                    self.dtor_pending_checks = usize::MAX / 2;
+                    let _ = self.collect_released();
+                }
                 self.top_level_throw(t)?.unwrap_or(0)
             }
         };

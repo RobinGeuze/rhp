@@ -180,8 +180,9 @@ fn string_negative_index_reads_from_end() {
 fn string_out_of_bounds_index_is_empty_string() {
     // Guards the `i >= 0 && i < len` bounds check: a `<=` or `||` mutation would
     // index past the end and panic instead of returning "".
-    assert_eq!(run("<?php $s='abc'; var_dump($s[3]);"), "string(0) \"\"\n");
-    assert_eq!(run("<?php $s='abc'; var_dump($s[-5]);"), "string(0) \"\"\n");
+    // (php warns "Uninitialized string offset"; `@` keeps the output to the value.)
+    assert_eq!(run("<?php $s='abc'; var_dump(@$s[3]);"), "string(0) \"\"\n");
+    assert_eq!(run("<?php $s='abc'; var_dump(@$s[-5]);"), "string(0) \"\"\n");
 }
 
 // --- autovivify (lib.rs ~1764-1776): empty string vivifies, scalar errors ---

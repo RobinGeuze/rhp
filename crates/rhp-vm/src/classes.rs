@@ -91,6 +91,18 @@ pub struct PropEntry {
     pub prototype: ClassId,
     /// Declared type (`None` = untyped).
     pub ty: Option<Rc<TypeHint>>,
+    /// `readonly` (or a member of a readonly class).
+    pub readonly: bool,
+    /// Declared without a default: a typed one starts uninitialized (its
+    /// slot is absent from a new object).
+    pub no_default: bool,
+}
+
+impl PropEntry {
+    /// A typed property without a default starts uninitialized.
+    pub fn starts_uninit(&self) -> bool {
+        self.ty.is_some() && self.no_default && self.init.is_none()
+    }
 }
 
 #[derive(Clone)]
@@ -718,6 +730,8 @@ impl Vm {
                     declaring_class: id,
                     prototype: id,
                     ty: pp.type_hint.clone().map(Rc::new),
+                    readonly: pp.is_readonly || proto.flags.is_readonly,
+                    no_default: matches!(pp.default, PropDefaultProto::None),
                 },
             );
         }
@@ -953,8 +967,8 @@ impl Vm {
         name: &PhpStr,
         value: Option<Value>,
     ) -> ObjectHandle {
-        let oid = self.next_object_id;
-        self.next_object_id += 1;
+        // The id is assigned on first access (see `touch_enum_case`).
+        let oid = 0;
         let mut properties: IndexMap<PhpStr, Value, FxBuildHasher> =
             IndexMap::with_hasher(FxBuildHasher);
         properties.insert(PhpStr::from("name"), Value::Str(name.clone()));
@@ -1171,6 +1185,9 @@ impl Vm {
         let mut properties: IndexMap<PhpStr, Value, FxBuildHasher> =
             IndexMap::with_hasher(FxBuildHasher);
         for (name, pe) in &self.classes[class_id as usize].props {
+            if pe.starts_uninit() {
+                continue; // uninitialized typed property: no slot yet
+            }
             properties.insert(name.clone(), pe.default.clone());
         }
         let obj = Rc::new(RefCell::new(ObjectData {
@@ -1337,6 +1354,37 @@ impl Vm {
         display: &[u8],
         in_const_expr: bool,
     ) -> Result<Option<Value>, Thrown> {
+        let r = self.class_const_value_inner(cls, name, display, in_const_expr)?;
+        if let Some(Value::Object(h)) = &r {
+            self.touch_enum_case(h);
+        }
+        Ok(r)
+    }
+
+    /// An enum case object gets its object id when its constant is first
+    /// evaluated (php creates case objects lazily).
+    pub(crate) fn touch_enum_case(&mut self, h: &ObjectHandle) {
+        if h.borrow().id == 0 {
+            h.borrow_mut().id = self.next_object_id;
+            self.next_object_id += 1;
+        }
+    }
+
+    /// [`Vm::touch_enum_case`] for every case of enum `cls`, in order.
+    pub(crate) fn touch_enum_cases(&mut self, cls: ClassId) {
+        let cases = self.classes[cls as usize].enum_cases.clone();
+        for h in &cases {
+            self.touch_enum_case(h);
+        }
+    }
+
+    fn class_const_value_inner(
+        &mut self,
+        cls: ClassId,
+        name: &[u8],
+        display: &[u8],
+        in_const_expr: bool,
+    ) -> Result<Option<Value>, Thrown> {
         let Some(c) = self.classes[cls as usize].constants.get(name) else {
             return Ok(None);
         };
@@ -1420,6 +1468,7 @@ impl Vm {
         if self.classes[cls as usize].updated {
             return Ok(());
         }
+        self.touch_enum_cases(cls);
         if let Some(p) = self.classes[cls as usize].parent {
             self.update_class_constants(p)?;
         }

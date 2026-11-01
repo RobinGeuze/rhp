@@ -151,6 +151,9 @@ pub struct Vm {
     /// Streams opened on `php://output`: writes go through the output
     /// buffers like `echo` (unlike `php://stdout`).
     output_streams: std::collections::HashSet<u32>,
+    /// Readonly properties already reinitialized inside a `__clone`
+    /// (object id, storage key): once each.
+    readonly_reinit: std::collections::HashSet<(u32, PhpStr)>,
     // The fopen() mode of each stream opened by stream_open.
     stream_modes: HashMap<u32, Vec<u8>>,
     next_resource_id: u32,
@@ -1506,6 +1509,28 @@ impl Host for Vm {
         self.internal_slot(class_id, key)
     }
 
+    fn uninit_props(&self, obj: &ObjectHandle) -> Vec<(PhpStr, String, usize)> {
+        let o = obj.borrow();
+        let entry = self.class(o.class);
+        let mut out = Vec::new();
+        let mut before = 0usize;
+        for (key, pe) in &entry.props {
+            if self.internal_slot(o.class, key) {
+                continue;
+            }
+            if o.properties.contains_key(key) {
+                before += 1;
+            } else if let Some(ty) = &pe.ty {
+                out.push((
+                    classes::mangled_prop_key(entry, key),
+                    self.type_string_resolved(ty, Some(pe.declaring_class), Some(o.class)),
+                    before,
+                ));
+            }
+        }
+        out
+    }
+
     fn mangled_prop_name(&self, class_id: u32, key: &PhpStr) -> PhpStr {
         match self.classes.get(class_id as usize) {
             Some(entry) => classes::mangled_prop_key(entry, key),
@@ -2124,6 +2149,7 @@ impl Vm {
             main_script_path: None,
             streams: HashMap::new(),
             output_streams: Default::default(),
+            readonly_reinit: Default::default(),
             last_dir: None,
             default_context: None,
             stream_origins: HashMap::new(),
@@ -2326,11 +2352,13 @@ impl Vm {
             Value::Object(h) => {
                 let cls = h.borrow().class;
                 let scope = self.stack[top].defining_class;
+                let mut absent_slot = None;
                 let denied = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
                     PropRes::Slot(k) => {
                         if let Some(v) = h.borrow().properties.get(&k) {
                             return Ok(deref(v));
                         }
+                        absent_slot = Some(k);
                         None
                     }
                     PropRes::Dynamic => {
@@ -2356,6 +2384,11 @@ impl Vm {
                             ))
                         }
                         None => {
+                            if let Some(e) =
+                                absent_slot.as_ref().and_then(|k| self.typed_slot(cls, k))
+                            {
+                                return Err(e);
+                            }
                             let msg = format!(
                                 "Undefined property: {}::${}",
                                 String::from_utf8_lossy(self.class(cls).name.as_bytes()),
@@ -2515,6 +2548,32 @@ impl Vm {
         let present = key
             .as_ref()
             .is_some_and(|k| h.borrow().properties.contains_key(k));
+        if let PropRes::Slot(k) = &res {
+            if let Some(pe) = self.class(cls).props.get(k).filter(|pe| pe.readonly) {
+                let cname = String::from_utf8_lossy(self.class(pe.declaring_class).name.as_bytes())
+                    .into_owned();
+                let p = String::from_utf8_lossy(pe.name.as_bytes()).into_owned();
+                if present {
+                    return Err(Thrown::error(
+                        "Error",
+                        format!("Cannot unset readonly property {cname}::${p}"),
+                    ));
+                }
+                if scope != Some(pe.declaring_class) {
+                    let from = match scope {
+                        Some(s) => format!(
+                            "scope {}",
+                            String::from_utf8_lossy(self.class(s).name.as_bytes())
+                        ),
+                        None => "global scope".into(),
+                    };
+                    return Err(Thrown::error(
+                        "Error",
+                        format!("Cannot unset readonly property {cname}::${p} from {from}"),
+                    ));
+                }
+            }
+        }
         if present {
             h.borrow_mut().properties.shift_remove(&key.unwrap());
         } else if let Some(m) = self.magic(&h, cls, b"__unset", &pname) {
@@ -2653,6 +2712,24 @@ impl Vm {
                     self.check_dynamic_prop(top, cls, &pname)?;
                 }
             }
+            if is_dyn && present && self.class(cls).kind == ClassKind::Enum {
+                return Err(Thrown::error(
+                    "Error",
+                    format!(
+                        "Cannot modify readonly property {}::${}",
+                        String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                        String::from_utf8_lossy(pname.as_bytes())
+                    ),
+                ));
+            }
+            let val = if is_dyn {
+                val
+            } else {
+                let present = h.borrow().properties.contains_key(&key);
+                self.check_readonly_write(&h, &key, present, scope)?;
+                let strict = self.stack[top].proto.strict_types;
+                self.verify_prop_type(cls, &key, val, strict)?
+            };
             let mut od = h.borrow_mut();
             let slot = classes::prop_slot_mut(&self.classes, &mut od, key);
             match slot {
@@ -3815,6 +3892,7 @@ impl Vm {
         top: usize,
         steps: &[CursorStep],
     ) -> Result<Rc<RefCell<Value>>, Thrown> {
+        self.cursor_readonly_check(top, steps, true)?;
         let (i, h, name) = match self.cursor_magic_split(top, steps) {
             MagicSplit::Plain => {
                 let cx = PropCtx {
@@ -3857,8 +3935,65 @@ impl Vm {
         }
     }
 
+    /// Readonly properties along a cursor path: writing the property itself
+    /// follows the readonly rules; writing *through* it (`$o->ro[] = 1`) or
+    /// taking a reference is "Cannot indirectly modify readonly property",
+    /// unless it holds an object.
+    fn cursor_readonly_check(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+        make_ref: bool,
+    ) -> Result<(), Thrown> {
+        let scope = self.stack[top].defining_class;
+        let mut cur = self.cursor_root_value(top);
+        for (i, step) in steps.iter().enumerate() {
+            let next = match (deref(&cur), step) {
+                (Value::Array(a), CursorStep::Key(k)) => {
+                    match ArrayKey::from_value(k).and_then(|key| a.get(&key).cloned()) {
+                        Some(v) => v,
+                        None => return Ok(()),
+                    }
+                }
+                (Value::Object(h), CursorStep::Prop(name)) => {
+                    let cls = h.borrow().class;
+                    let PropRes::Slot(key) = classes::resolve_prop(&self.classes, cls, scope, name)
+                    else {
+                        return Ok(());
+                    };
+                    let val = h.borrow().properties.get(&key).cloned();
+                    if let Some(pe) = self.class(cls).props.get(&key).filter(|pe| pe.readonly) {
+                        let last = i + 1 == steps.len();
+                        if last && !make_ref {
+                            self.check_readonly_write(&h, &key, val.is_some(), scope)?;
+                        } else if !matches!(val.as_ref().map(deref), Some(Value::Object(_))) {
+                            return Err(Thrown::error(
+                                "Error",
+                                format!(
+                                    "Cannot indirectly modify readonly property {}::${}",
+                                    String::from_utf8_lossy(
+                                        self.class(pe.declaring_class).name.as_bytes()
+                                    ),
+                                    String::from_utf8_lossy(pe.name.as_bytes())
+                                ),
+                            ));
+                        }
+                    }
+                    match val {
+                        Some(v) => v,
+                        None => return Ok(()),
+                    }
+                }
+                _ => return Ok(()),
+            };
+            cur = next;
+        }
+        Ok(())
+    }
+
     /// Write `v` at the current cursor (root + steps).
     fn cursor_write(&mut self, top: usize, steps: &[CursorStep], v: Value) -> Result<(), Thrown> {
+        self.cursor_readonly_check(top, steps, false)?;
         match self.cursor_magic_split(top, steps) {
             MagicSplit::Plain => {}
             MagicSplit::Leaf(h, name) => return self.prop_store(top, Value::Object(h), name, v),
@@ -5283,6 +5418,21 @@ impl Vm {
                         }
                         match found {
                             Some(name) => {
+                                let key = b.properties.get_index(idx).unwrap().0.clone();
+                                if let Some(pe) =
+                                    self.class(cls).props.get(&key).filter(|pe| pe.readonly)
+                                {
+                                    return Err(Thrown::error(
+                                        "Error",
+                                        format!(
+                                            "Cannot acquire reference to readonly property {}::${}",
+                                            String::from_utf8_lossy(
+                                                self.class(pe.declaring_class).name.as_bytes()
+                                            ),
+                                            String::from_utf8_lossy(pe.name.as_bytes())
+                                        ),
+                                    ));
+                                }
                                 let slot = b.properties.get_index_mut(idx).unwrap().1;
                                 let rc = match slot {
                                     Value::Ref(rc) => rc.clone(),
@@ -5653,6 +5803,9 @@ impl Vm {
                                     self.class_const_value(cls, &name_b, &display, in_const_expr)?
                                         .unwrap_or(Value::Null)
                                 };
+                                if let Value::Object(h) = &v {
+                                    self.touch_enum_case(h);
+                                }
                                 self.reg_set(top, dst, v);
                             }
                             None => {
@@ -5742,6 +5895,19 @@ impl Vm {
                 }
                 Instr::CloneObj { dst, src } => {
                     let v = self.reg_get(top, src);
+                    if let Value::Closure(cd) = &v {
+                        // A cloned closure is a new Closure object.
+                        let copy = rhp_values::ClosureData {
+                            fnidx: cd.fnidx,
+                            captures: cd.captures.clone(),
+                            bound_this: cd.bound_this.clone(),
+                            bound_class: cd.bound_class,
+                            bound_static: cd.bound_static,
+                            wrapped: cd.wrapped.clone(),
+                        };
+                        self.reg_set(top, dst, Value::Closure(Rc::new(copy)));
+                        continue;
+                    }
                     let Value::Object(h) = v else {
                         return Err(Thrown::error(
                             "Error",
@@ -5772,10 +5938,21 @@ impl Vm {
                         }
                         (od.class, props)
                     };
-                    if self.is_directory_class(cls) {
+                    let uncloneable = self.is_directory_class(cls)
+                        || self.class(cls).kind == ClassKind::Enum
+                        || self.generators.contains_key(&h.borrow().id)
+                        || self
+                            .class(cls)
+                            .name
+                            .as_bytes()
+                            .eq_ignore_ascii_case(b"WeakReference");
+                    if uncloneable {
                         return Err(Thrown::error(
                             "Error",
-                            "Trying to clone an uncloneable object of class Directory",
+                            format!(
+                                "Trying to clone an uncloneable object of class {}",
+                                String::from_utf8_lossy(self.class(cls).name.as_bytes())
+                            ),
                         ));
                     }
                     let id = self.next_object_id;
@@ -6983,6 +7160,7 @@ impl Vm {
         } else {
             self.update_class_constants(cls)?;
         }
+        self.touch_enum_cases(cls);
         let enum_name = || String::from_utf8_lossy(self.class(cls).name.as_bytes()).into_owned();
         match method_lc {
             b"cases" => {
@@ -8377,6 +8555,16 @@ fn isset_dim(container: &Value, key: &Value) -> bool {
     }
 }
 
+/// A public readonly property without an explicit set visibility (php 8.4
+/// makes it protected(set)).
+fn pe_public_implicit_set(vm: &Vm, cls: ClassId, key: &PhpStr) -> bool {
+    vm.class(cls).props.get(key).is_some_and(|pe| {
+        pe.readonly
+            && pe.visibility == rhp_values::Visibility::Public
+            && pe.set_visibility.is_none()
+    })
+}
+
 /// The fetch kind of a dimension read: php's `BP_VAR_R`, `BP_VAR_IS`
 /// (isset / `??`) and `ZEND_FETCH_LIST_R`.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -8904,6 +9092,168 @@ impl Vm {
             .methods
             .values()
             .any(|m| m.defining_class == c && is_prelude_proto(&m.proto))
+    }
+
+    /// Reading the absent (uninitialized) slot `key` of a typed property:
+    /// php's "must not be accessed before initialization" Error.
+    fn typed_slot(&self, cls: ClassId, key: &PhpStr) -> Option<Thrown> {
+        let pe = self.classes.get(cls as usize)?.props.get(key)?;
+        pe.ty.as_ref()?;
+        Some(Thrown::error(
+            "Error",
+            format!(
+                "Typed property {}::${} must not be accessed before initialization",
+                String::from_utf8_lossy(self.class(pe.declaring_class).name.as_bytes()),
+                String::from_utf8_lossy(pe.name.as_bytes())
+            ),
+        ))
+    }
+
+    /// zend_verify_property_type for an assignment of `val` to the declared
+    /// slot `key` of class `cls`: coercive (or strict) scalar conversion, the
+    /// `__toString` step, else "Cannot assign T to property C::$p of type X".
+    pub(crate) fn verify_prop_type(
+        &mut self,
+        cls: ClassId,
+        key: &PhpStr,
+        val: Value,
+        strict: bool,
+    ) -> Result<Value, Thrown> {
+        let Some(pe) = self
+            .classes
+            .get(cls as usize)
+            .and_then(|e| e.props.get(key))
+        else {
+            return Ok(val);
+        };
+        let Some(ty) = pe.ty.clone() else {
+            return Ok(val);
+        };
+        let decl = pe.declaring_class;
+        let name = pe.name.clone();
+        let val = self.coerce_stringable(val, &ty, strict, Some(decl))?;
+        match self.check_one(&val, &ty, strict, Some(decl)) {
+            Ok(None) => Ok(val),
+            Ok(Some(c)) => {
+                if let (Value::Float(f), Value::Int(_)) = (deref(&val), &c) {
+                    if f.fract() != 0.0 {
+                        let shown = String::from_utf8_lossy(&rhp_values::fmt::float_serialize(f))
+                            .into_owned();
+                        self.diag(
+                            8192,
+                            &format!(
+                                "Implicit conversion from float {shown} to int loses precision"
+                            ),
+                        )?;
+                    }
+                }
+                Ok(c)
+            }
+            Err(()) => Err(Thrown::type_error(format!(
+                "Cannot assign {} to property {}::${} of type {}",
+                self.zval_value_name(&deref(&val)),
+                String::from_utf8_lossy(self.class(decl).name.as_bytes()),
+                String::from_utf8_lossy(name.as_bytes()),
+                self.type_string_resolved(&ty, Some(decl), Some(cls))
+            ))),
+        }
+    }
+
+    /// The readonly checks of a write to the declared slot `key` (`present`:
+    /// already initialized): php's "Cannot modify readonly property" and,
+    /// for an uninitialized one written outside its declaring class,
+    /// "Cannot initialize readonly property … from scope/global scope".
+    pub(crate) fn check_readonly_write(
+        &mut self,
+        obj: &ObjectHandle,
+        key: &PhpStr,
+        present: bool,
+        scope: Option<ClassId>,
+    ) -> Result<(), Thrown> {
+        let cls = obj.borrow().class;
+        let Some(pe) = self
+            .classes
+            .get(cls as usize)
+            .and_then(|e| e.props.get(key))
+        else {
+            return Ok(());
+        };
+        if !pe.readonly {
+            return Ok(());
+        }
+        let decl = pe.declaring_class;
+        let name = pe.name.clone();
+        let cname = String::from_utf8_lossy(self.class(decl).name.as_bytes()).into_owned();
+        let p = String::from_utf8_lossy(name.as_bytes()).into_owned();
+        // Redeclared in a child: the parent that declared it may still
+        // initialize it (zend_verify_readonly_initialization_access).
+        let parent_scope_ok = scope.is_some_and(|s| {
+            s != decl
+                && self.class(cls).ancestors.contains(&s)
+                && self
+                    .class(s)
+                    .prop_visible
+                    .get(&name)
+                    .and_then(|k| self.class(s).props.get(k))
+                    .is_some_and(|spe| spe.declaring_class == s)
+        });
+        if present {
+            // php 8.3: during __clone each readonly property may be
+            // reinitialized once (from the property's scope).
+            let oid = obj.borrow().id;
+            let in_clone = self.stack.iter().any(|f| {
+                f.proto.name.as_bytes().eq_ignore_ascii_case(b"__clone")
+                    && f.proto
+                        .this_cv
+                        .and_then(|cv| match f.regs.get(cv as usize) {
+                            Some(Value::Object(o)) => Some(o.borrow().id == oid),
+                            _ => None,
+                        })
+                        .unwrap_or(false)
+            });
+            if in_clone
+                && (scope == Some(decl) || parent_scope_ok)
+                && self.readonly_reinit.insert((oid, key.clone()))
+            {
+                return Ok(());
+            }
+            return Err(Thrown::error(
+                "Error",
+                format!("Cannot modify readonly property {cname}::${p}"),
+            ));
+        }
+        // A public readonly property is implicitly protected(set).
+        if pe_public_implicit_set(self, cls, key)
+            && !scope.is_some_and(|s| {
+                self.class(s).ancestors.contains(&decl) || self.class(decl).ancestors.contains(&s)
+            })
+        {
+            let from = match scope {
+                Some(s) => format!(
+                    "scope {}",
+                    String::from_utf8_lossy(self.class(s).name.as_bytes())
+                ),
+                None => "global scope".into(),
+            };
+            return Err(Thrown::error(
+                "Error",
+                format!("Cannot modify protected(set) readonly property {cname}::${p} from {from}"),
+            ));
+        }
+        if scope != Some(decl) && !parent_scope_ok {
+            let from = match scope {
+                Some(s) => format!(
+                    "scope {}",
+                    String::from_utf8_lossy(self.class(s).name.as_bytes())
+                ),
+                None => "global scope".into(),
+            };
+            return Err(Thrown::error(
+                "Error",
+                format!("Cannot initialize readonly property {cname}::${p} from {from}"),
+            ));
+        }
+        Ok(())
     }
 
     /// A prelude class's `__`-prefixed state slot (see

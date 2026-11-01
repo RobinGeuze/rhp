@@ -249,6 +249,16 @@ pub trait Host {
         false
     }
 
+    /// The uninitialized typed properties `var_dump` lists as
+    /// `uninitialized(type)`: (mangled name, type, how many of the object's
+    /// visible properties precede it). Default: none.
+    fn uninit_props(
+        &self,
+        _obj: &rhp_values::ObjectHandle,
+    ) -> Vec<(rhp_values::PhpStr, String, usize)> {
+        Vec::new()
+    }
+
     /// Define a runtime constant (`define`). Returns false if already defined.
     fn define_const(&mut self, _name: &[u8], _value: Value) -> bool {
         false

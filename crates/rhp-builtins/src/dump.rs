@@ -158,7 +158,35 @@ fn var_dump_value(
                     )
                     .as_bytes(),
                 );
+                let uninit = host.uninit_props(h);
+                let mut next_uninit = 0usize;
+                let dump_uninit = |out: &mut Vec<u8>, upto: usize, next: &mut usize| {
+                    while let Some((k, ty, pos)) = uninit.get(*next) {
+                        if *pos > upto {
+                            break;
+                        }
+                        sp(indent + 2, out);
+                        out.extend_from_slice(b"[\"");
+                        let (name, owner) = unmangle_prop(k.as_bytes());
+                        out.extend_from_slice(name);
+                        out.push(b'"');
+                        match owner {
+                            None => {}
+                            Some(b"*") => out.extend_from_slice(b":protected"),
+                            Some(class) => {
+                                out.extend_from_slice(b":\"");
+                                out.extend_from_slice(class);
+                                out.extend_from_slice(b"\":private");
+                            }
+                        }
+                        out.extend_from_slice(b"]=>\n");
+                        sp(indent + 2, out);
+                        out.extend_from_slice(format!("uninitialized({ty})\n").as_bytes());
+                        *next += 1;
+                    }
+                };
                 for (i, (k, val)) in props.iter().enumerate() {
+                    dump_uninit(out, i, &mut next_uninit);
                     sp(indent + 2, out);
                     out.extend_from_slice(b"[\"");
                     let (name, owner) = unmangle_prop(k.as_bytes());
@@ -177,6 +205,7 @@ fn var_dump_value(
                     let shared = shared.get(i).copied().unwrap_or(false);
                     var_dump_value(host, out, val, shared, indent + 2, seen);
                 }
+                dump_uninit(out, usize::MAX, &mut next_uninit);
                 sp(indent, out);
                 out.extend_from_slice(b"}\n");
                 seen.objects.pop();

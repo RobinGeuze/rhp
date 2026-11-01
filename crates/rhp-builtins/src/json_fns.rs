@@ -35,6 +35,7 @@ const JSON_ERROR_INF_OR_NAN: i64 = 7;
 const JSON_ERROR_UNSUPPORTED_TYPE: i64 = 8;
 const JSON_ERROR_INVALID_PROPERTY_NAME: i64 = 9;
 const JSON_ERROR_UTF16: i64 = 10;
+const JSON_ERROR_NON_BACKED_ENUM: i64 = 11;
 
 // Encode flags.
 const JSON_HEX_TAG: i64 = 1;
@@ -82,6 +83,7 @@ fn error_msg(code: i64) -> &'static str {
         JSON_ERROR_UNSUPPORTED_TYPE => "Type is not supported",
         JSON_ERROR_INVALID_PROPERTY_NAME => "The decoded property name is invalid",
         JSON_ERROR_UTF16 => "Single unpaired UTF-16 surrogate in unicode escape",
+        JSON_ERROR_NON_BACKED_ENUM => "Non-backed enums have no default serialization",
         _ => "Unknown error",
     }
 }
@@ -97,10 +99,26 @@ fn deref(v: &Value) -> Value {
 // json_encode
 // ---------------------------------------------------------------------------
 
-fn fn_json_encode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_json_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     let mut out = Vec::new();
-    if encode_value(&deref(&args[0]), &mut out, flags, 0) {
+    let mut enc = Enc {
+        host,
+        serializing: Vec::new(),
+    };
+    // An exception thrown by a jsonSerialize() propagates (json_encode's
+    // return value is then irrelevant).
+    let ok = match enc.value(&deref(&args[0]), &mut out, flags, 0) {
+        Ok(ok) => ok,
+        Err(e) => {
+            // The encoder's own error code stays NONE on an exception.
+            if flags & JSON_THROW_ON_ERROR == 0 || flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
+                set_last_error(JSON_ERROR_NONE);
+            }
+            return Err(e);
+        }
+    };
+    if ok {
         set_last_error(JSON_ERROR_NONE);
         Ok(Value::str(out))
     } else {
@@ -120,58 +138,6 @@ fn indent(out: &mut Vec<u8>, level: usize) {
     }
 }
 
-/// Encode one value. Returns false on an unencodable value (NAN/INF, invalid
-/// UTF-8, object/closure) — php then fails the whole call.
-fn encode_value(v: &Value, out: &mut Vec<u8>, flags: i64, level: usize) -> bool {
-    let pretty = flags & JSON_PRETTY_PRINT != 0;
-    match v {
-        Value::Null => out.extend_from_slice(b"null"),
-        Value::Bool(true) => out.extend_from_slice(b"true"),
-        Value::Bool(false) => out.extend_from_slice(b"false"),
-        Value::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),
-        Value::Float(f) => {
-            if !f.is_finite() {
-                set_last_error(JSON_ERROR_INF_OR_NAN);
-                return false;
-            }
-            encode_float(*f, out);
-        }
-        Value::Str(s) => {
-            if flags & JSON_NUMERIC_CHECK != 0 {
-                if let Some(num) = conv::numeric_string(s.as_bytes()) {
-                    match num {
-                        conv::Num::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),
-                        conv::Num::Float(f) if f.is_finite() => encode_float(f, out),
-                        conv::Num::Float(_) => return encode_string(s.as_bytes(), out, flags),
-                    }
-                    return true;
-                }
-            }
-            return encode_string(s.as_bytes(), out, flags);
-        }
-        Value::Array(a) => return encode_array(a, out, flags, level, pretty),
-        // An object serializes as a JSON object of its properties (always `{}`,
-        // never `[]`). Private/protected visibility is not filtered here; the
-        // common targets are stdClass / public-property DTOs.
-        Value::Object(h) => {
-            let props: Vec<(rhp_values::PhpStr, Value)> = h
-                .borrow()
-                .properties
-                .iter()
-                .map(|(k, v)| (k.clone(), deref(v)))
-                .collect();
-            return encode_object(&props, out, flags, level, pretty);
-        }
-        Value::Closure(_) => {
-            // A Closure encodes as an empty object in php.
-            return encode_object(&[], out, flags, level, pretty);
-        }
-        Value::Resource(_) => return false, // resources are not JSON-encodable
-        Value::Ref(r) => return encode_value(&r.borrow(), out, flags, level),
-    }
-    true
-}
-
 fn encode_float(f: f64, out: &mut Vec<u8>) {
     let mut s = fmt::float_serialize(f);
     // php's json uses a lowercase exponent ('1.0e+20'); float_serialize emits the
@@ -184,88 +150,229 @@ fn encode_float(f: f64, out: &mut Vec<u8>) {
     out.extend_from_slice(&s);
 }
 
-/// Encode an object's properties as a JSON object (`{"k":v,...}`, always braces).
-fn encode_object(
-    props: &[(rhp_values::PhpStr, Value)],
-    out: &mut Vec<u8>,
-    flags: i64,
-    level: usize,
-    pretty: bool,
-) -> bool {
-    out.push(b'{');
-    if props.is_empty() {
-        out.push(b'}');
-        return true;
-    }
-    for (i, (k, val)) in props.iter().enumerate() {
-        if i > 0 {
-            out.push(b',');
-        }
-        if pretty {
-            out.push(b'\n');
-            indent(out, level + 1);
-        }
-        if !encode_string(k.as_bytes(), out, flags) {
-            return false;
-        }
-        out.extend_from_slice(if pretty { b": " } else { b":" });
-        if !encode_value(val, out, flags, level + 1) {
-            return false;
-        }
-    }
-    if pretty {
-        out.push(b'\n');
-        indent(out, level);
-    }
-    out.push(b'}');
-    true
+/// Encoder state: the host (to call jsonSerialize / inspect classes) and the
+/// JsonSerializable objects whose jsonSerialize() result is being encoded
+/// (php's JSON recursion guard).
+struct Enc<'h> {
+    host: &'h mut dyn Host,
+    serializing: Vec<*const ()>,
 }
 
-fn encode_array(a: &PhpArray, out: &mut Vec<u8>, flags: i64, level: usize, pretty: bool) -> bool {
-    let force_object = flags & JSON_FORCE_OBJECT != 0;
-    let is_list = !force_object
-        && a.iter()
-            .enumerate()
-            .all(|(i, (k, _))| matches!(k, ArrayKey::Int(n) if *n == i as i64));
-    let (open, close) = if is_list { (b'[', b']') } else { (b'{', b'}') };
-    out.push(open);
-    if a.is_empty() {
-        out.push(close);
-        return true;
+impl Enc<'_> {
+    /// Encode one value. Returns false on an unencodable value (NAN/INF, invalid
+    /// UTF-8, object/closure) — php then fails the whole call.
+    fn value(
+        &mut self,
+        v: &Value,
+        out: &mut Vec<u8>,
+        flags: i64,
+        level: usize,
+    ) -> Result<bool, Thrown> {
+        let pretty = flags & JSON_PRETTY_PRINT != 0;
+        match v {
+            Value::Null => out.extend_from_slice(b"null"),
+            Value::Bool(true) => out.extend_from_slice(b"true"),
+            Value::Bool(false) => out.extend_from_slice(b"false"),
+            Value::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),
+            Value::Float(f) => {
+                if !f.is_finite() {
+                    set_last_error(JSON_ERROR_INF_OR_NAN);
+                    return Ok(false);
+                }
+                encode_float(*f, out);
+            }
+            Value::Str(s) => {
+                if flags & JSON_NUMERIC_CHECK != 0 {
+                    if let Some(num) = conv::numeric_string(s.as_bytes()) {
+                        match num {
+                            conv::Num::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),
+                            conv::Num::Float(f) if f.is_finite() => encode_float(f, out),
+                            conv::Num::Float(_) => {
+                                return Ok(encode_string(s.as_bytes(), out, flags))
+                            }
+                        }
+                        return Ok(true);
+                    }
+                }
+                return Ok(encode_string(s.as_bytes(), out, flags));
+            }
+            Value::Array(a) => return self.array(a, out, flags, level, pretty),
+            // An object serializes as a JSON object of its properties (always `{}`,
+            // never `[]`). Private/protected visibility is not filtered here; the
+            // common targets are stdClass / public-property DTOs.
+            Value::Object(h) => {
+                let cid = h.borrow().class;
+                if self.host.is_enum_class(cid) {
+                    return match self.host.object_prop(v, b"value") {
+                        Some(val) => self.value(&deref(&val), out, flags, level),
+                        None => {
+                            set_last_error(JSON_ERROR_NON_BACKED_ENUM);
+                            out.push(b'0');
+                            Ok(false)
+                        }
+                    };
+                }
+                let class = self.host.class_name(cid).unwrap_or_default();
+                if self.host.reflect_is_a(&class, b"JsonSerializable") {
+                    return self.serializable(h, out, flags, level, pretty);
+                }
+                let props: Vec<(rhp_values::PhpStr, Value)> = h
+                    .borrow()
+                    .properties
+                    .iter()
+                    .map(|(k, v)| (k.clone(), deref(v)))
+                    .collect();
+                return self.object(&props, out, flags, level, pretty);
+            }
+            Value::Closure(_) => {
+                // A Closure encodes as an empty object in php.
+                return self.object(&[], out, flags, level, pretty);
+            }
+            Value::Resource(_) => return Ok(false), // resources are not JSON-encodable
+            Value::Ref(r) => {
+                let inner = r.borrow().clone();
+                return self.value(&inner, out, flags, level);
+            }
+        }
+        Ok(true)
     }
-    for (i, (k, val)) in a.iter().enumerate() {
-        if i > 0 {
-            out.push(b',');
+
+    /// php_json_encode_serializable_object: encode what jsonSerialize() returns
+    /// (the object's own properties when it returns `$this`).
+    fn serializable(
+        &mut self,
+        h: &rhp_values::ObjectHandle,
+        out: &mut Vec<u8>,
+        flags: i64,
+        level: usize,
+        pretty: bool,
+    ) -> Result<bool, Thrown> {
+        let key = std::rc::Rc::as_ptr(h) as *const ();
+        if self.serializing.contains(&key) {
+            set_last_error(JSON_ERROR_RECURSION);
+            return Ok(false);
+        }
+        let mut pair = PhpArray::new();
+        pair.push(Value::Object(h.clone()));
+        pair.push(Value::str("jsonSerialize"));
+        let callable = Value::Array(pair);
+        self.serializing.push(key);
+        let ret = self.host.call_callable(&callable, &[]);
+        let ret = match ret {
+            Ok(r) => deref(&r),
+            Err(e) => {
+                self.serializing.pop();
+                return Err(e);
+            }
+        };
+        if let Value::Object(r) = &ret {
+            if std::rc::Rc::ptr_eq(r, h) {
+                self.serializing.pop();
+                let props: Vec<(rhp_values::PhpStr, Value)> = h
+                    .borrow()
+                    .properties
+                    .iter()
+                    .map(|(k, v)| (k.clone(), deref(v)))
+                    .collect();
+                return self.object(&props, out, flags, level, pretty);
+            }
+        }
+        let r = self.value(&ret, out, flags, level);
+        self.serializing.pop();
+        r
+    }
+
+    /// Encode an object's properties as a JSON object (`{"k":v,...}`, always braces).
+    fn object(
+        &mut self,
+        props: &[(rhp_values::PhpStr, Value)],
+        out: &mut Vec<u8>,
+        flags: i64,
+        level: usize,
+        pretty: bool,
+    ) -> Result<bool, Thrown> {
+        out.push(b'{');
+        if props.is_empty() {
+            out.push(b'}');
+            return Ok(true);
+        }
+        for (i, (k, val)) in props.iter().enumerate() {
+            if i > 0 {
+                out.push(b',');
+            }
+            if pretty {
+                out.push(b'\n');
+                indent(out, level + 1);
+            }
+            if !encode_string(k.as_bytes(), out, flags) {
+                return Ok(false);
+            }
+            out.extend_from_slice(if pretty { b": " } else { b":" });
+            if !self.value(val, out, flags, level + 1)? {
+                return Ok(false);
+            }
         }
         if pretty {
             out.push(b'\n');
-            indent(out, level + 1);
+            indent(out, level);
         }
-        if !is_list {
-            match k {
-                ArrayKey::Int(n) => {
-                    if !encode_string(n.to_string().as_bytes(), out, flags) {
-                        return false;
-                    }
-                }
-                ArrayKey::Str(s) => {
-                    if !encode_string(s.as_bytes(), out, flags) {
-                        return false;
-                    }
-                }
+        out.push(b'}');
+        Ok(true)
+    }
+
+    fn array(
+        &mut self,
+        a: &PhpArray,
+        out: &mut Vec<u8>,
+        flags: i64,
+        level: usize,
+        pretty: bool,
+    ) -> Result<bool, Thrown> {
+        let force_object = flags & JSON_FORCE_OBJECT != 0;
+        let is_list = !force_object
+            && a.iter()
+                .enumerate()
+                .all(|(i, (k, _))| matches!(k, ArrayKey::Int(n) if *n == i as i64));
+        let (open, close) = if is_list { (b'[', b']') } else { (b'{', b'}') };
+        out.push(open);
+        if a.is_empty() {
+            out.push(close);
+            return Ok(true);
+        }
+        for (i, (k, val)) in a.iter().enumerate() {
+            if i > 0 {
+                out.push(b',');
             }
-            out.extend_from_slice(if pretty { b": " } else { b":" });
+            if pretty {
+                out.push(b'\n');
+                indent(out, level + 1);
+            }
+            if !is_list {
+                match k {
+                    ArrayKey::Int(n) => {
+                        if !encode_string(n.to_string().as_bytes(), out, flags) {
+                            return Ok(false);
+                        }
+                    }
+                    ArrayKey::Str(s) => {
+                        if !encode_string(s.as_bytes(), out, flags) {
+                            return Ok(false);
+                        }
+                    }
+                }
+                out.extend_from_slice(if pretty { b": " } else { b":" });
+            }
+            if !self.value(val, out, flags, level + 1)? {
+                return Ok(false);
+            }
         }
-        if !encode_value(val, out, flags, level + 1) {
-            return false;
+        if pretty {
+            out.push(b'\n');
+            indent(out, level);
         }
+        out.push(close);
+        Ok(true)
     }
-    if pretty {
-        out.push(b'\n');
-        indent(out, level);
-    }
-    out.push(close);
-    true
 }
 
 /// Append a JSON string literal for `bytes`. Returns false on invalid UTF-8.

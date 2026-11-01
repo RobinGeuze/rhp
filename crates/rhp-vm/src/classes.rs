@@ -509,6 +509,14 @@ impl Vm {
         if self.resolve_class_by_name(&fqcn).is_ok() {
             return Ok(true);
         }
+        // zend_lookup_class_ex: an invalid class name never reaches the
+        // autoloaders (zend_is_valid_class_name).
+        if !fqcn
+            .iter()
+            .all(|&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'\\' || b >= 0x80)
+        {
+            return Ok(false);
+        }
         for loader in self.autoloaders.clone() {
             self.call_callable_value(&loader, vec![crate::Value::str(fqcn.clone())])?;
             if self.resolve_class_by_name(&fqcn).is_ok() {

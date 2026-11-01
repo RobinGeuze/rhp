@@ -819,16 +819,16 @@ impl Host for Vm {
         self.resolve_class_by_name(name).ok()
     }
 
-    fn resolve_class_autoload(&mut self, name: &[u8]) -> Option<u32> {
+    fn resolve_class_autoload(&mut self, name: &[u8]) -> Result<Option<u32>, Thrown> {
         if let Ok(id) = self.resolve_class_by_name(name) {
-            return Some(id);
+            return Ok(Some(id));
         }
-        // Run registered autoloaders (swallow their exceptions — `class_exists`
-        // reports false rather than propagating a loader error here).
-        match self.try_autoload(name) {
-            Ok(true) => self.resolve_class_by_name(name).ok(),
-            _ => None,
-        }
+        // Run registered autoloaders; an exception one throws propagates.
+        Ok(if self.try_autoload(name)? {
+            self.resolve_class_by_name(name).ok()
+        } else {
+            None
+        })
     }
 
     fn function_exists(&self, name: &[u8]) -> bool {

@@ -190,8 +190,9 @@ pub trait Host {
     /// Like `resolve_class` but invokes registered autoloaders on a miss (for
     /// `class_exists($name)` with `$autoload = true`, php's default). Default:
     /// falls back to the non-autoloading resolve.
-    fn resolve_class_autoload(&mut self, name: &[u8]) -> Option<u32> {
-        self.resolve_class(name)
+    /// An exception thrown by an autoloader propagates.
+    fn resolve_class_autoload(&mut self, name: &[u8]) -> Result<Option<u32>, Thrown> {
+        Ok(self.resolve_class(name))
     }
 
     /// The [`ClassKind`] of a class id (class / interface / trait / enum), used by
@@ -1596,12 +1597,20 @@ fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// Class name of an `is_a`/`is_subclass_of` subject: an object's class, or the
 /// string itself when `allow_string`.
-fn subject_class(host: &dyn Host, subject: &Value, allow_string: bool) -> Option<Vec<u8>> {
-    match subject {
+/// A string subject is looked up with autoloading (zend_lookup_class).
+fn subject_class(
+    host: &mut dyn Host,
+    subject: &Value,
+    allow_string: bool,
+) -> Result<Option<Vec<u8>>, Thrown> {
+    Ok(match subject {
         Value::Object(h) => host.class_name(h.borrow().class),
-        Value::Str(s) if allow_string => Some(s.as_bytes().to_vec()),
+        Value::Str(s) if allow_string => {
+            host.resolve_class_autoload(s.as_bytes())?;
+            Some(s.as_bytes().to_vec())
+        }
         _ => None,
-    }
+    })
 }
 
 fn norm_class(n: &[u8]) -> Vec<u8> {
@@ -1615,7 +1624,7 @@ fn fn_is_a(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .get(2)
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(false);
-    match subject_class(host, &subject, allow_string) {
+    match subject_class(host, &subject, allow_string)? {
         Some(n) => Ok(Value::Bool(host.reflect_is_a(&n, &target))),
         None => Ok(Value::Bool(false)),
     }
@@ -1628,7 +1637,7 @@ fn fn_is_subclass_of(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
         .get(2)
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(true);
-    match subject_class(host, &subject, allow_string) {
+    match subject_class(host, &subject, allow_string)? {
         Some(n) => {
             // Subtype but NOT the same class (is_subclass_of is exclusive).
             let same = norm_class(&n) == norm_class(&target);
@@ -1653,17 +1662,17 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
 
 /// Resolve the class id named by an argument: an object yields its own class,
 /// a string resolves via the host's class table.
-fn class_id_of(host: &dyn Host, v: &Value) -> Option<u32> {
-    match deref(v) {
+fn class_id_of(host: &mut dyn Host, v: &Value) -> Result<Option<u32>, Thrown> {
+    Ok(match deref(v) {
         Value::Object(h) => Some(h.borrow().class),
-        Value::Str(s) => host.resolve_class(s.as_bytes()),
+        Value::Str(s) => host.resolve_class_autoload(s.as_bytes())?,
         _ => None,
-    }
+    })
 }
 
 fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let method = conv::to_string_bytes(&deref(&args[1]));
-    let found = class_id_of(host, &args[0])
+    let found = class_id_of(host, &args[0])?
         .map(|cid| host.class_has_method(cid, &method))
         .unwrap_or(false);
     Ok(Value::Bool(found))
@@ -1683,7 +1692,7 @@ fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
             dynamic || host.class_has_property(cid, &prop)
         }
         Value::Str(s) => host
-            .resolve_class(s.as_bytes())
+            .resolve_class_autoload(s.as_bytes())?
             .map(|cid| host.class_has_property(cid, &prop))
             .unwrap_or(false),
         _ => false,
@@ -1697,7 +1706,7 @@ fn exists_of_kind(
     host: &mut dyn Host,
     args: &[Value],
     want: fn(rhp_values::ClassKind) -> bool,
-) -> bool {
+) -> Result<bool, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
     // `$autoload` defaults to true: a miss triggers registered autoloaders.
     let autoload = args
@@ -1705,13 +1714,14 @@ fn exists_of_kind(
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(true);
     let cid = if autoload {
-        host.resolve_class_autoload(&name)
+        host.resolve_class_autoload(&name)?
     } else {
         host.resolve_class(&name)
     };
-    cid.and_then(|cid| host.class_kind(cid))
+    Ok(cid
+        .and_then(|cid| host.class_kind(cid))
         .map(want)
-        .unwrap_or(false)
+        .unwrap_or(false))
 }
 
 fn fn_class_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1719,21 +1729,21 @@ fn fn_class_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     // Enums are classes too (`class_exists` is true for an enum name).
     Ok(Value::Bool(exists_of_kind(host, args, |k| {
         matches!(k, ClassKind::Class | ClassKind::Enum)
-    })))
+    })?))
 }
 
 fn fn_interface_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use rhp_values::ClassKind;
     Ok(Value::Bool(exists_of_kind(host, args, |k| {
         k == ClassKind::Interface
-    })))
+    })?))
 }
 
 fn fn_enum_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use rhp_values::ClassKind;
     Ok(Value::Bool(exists_of_kind(host, args, |k| {
         k == ClassKind::Enum
-    })))
+    })?))
 }
 
 /// `iterator_to_array($iterable, $preserve_keys = true)`. Only a plain array is

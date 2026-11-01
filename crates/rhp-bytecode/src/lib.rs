@@ -558,6 +558,13 @@ pub enum Instr {
     MakeRefLval {
         dst: Reg,
     },
+    /// `isset($c[$k])`: array element present and non-null, string offset in
+    /// range, or `ArrayAccess::offsetExists`; else false.
+    IssetDim {
+        dst: Reg,
+        arr: Reg,
+        key: Reg,
+    },
     /// `isset($o->name)`: declared non-null property, else `__isset`, else false.
     IssetProp {
         dst: Reg,
@@ -713,6 +720,13 @@ pub enum Instr {
     },
     /// `__halt_compiler()`: stop this proto as a top-level return.
     Halt,
+    /// End of an expression statement: the temporaries `[from, to)` it used are
+    /// dead — release them (so an object only they still held is freed, and
+    /// its destructor runs, at the statement boundary as in php).
+    ClearTemps {
+        from: Reg,
+        to: Reg,
+    },
     /// `exit`/`die`: a string `arg` is printed (code 0), an int `arg` is the exit
     /// code, null/absent is code 0. Terminates the script via the SAPI exit path.
     Exit {
@@ -1082,6 +1096,12 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         "preg_replace_callback_array" => &[false, false, false, true],
         // `parse_str($string, &$result)`.
         "parse_str" => &[false, true],
+        // Program execution: `&$pipes`, `&$output` / `&$result_code`.
+        "proc_open" => &[false, false, true],
+        "exec" => &[false, true, true],
+        "system" | "passthru" => &[false, true],
+        // `stream_select(&$read, &$write, &$except, …)`.
+        "stream_select" => &[true, true, true],
         _ => &[],
     }
 }

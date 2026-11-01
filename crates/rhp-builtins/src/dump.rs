@@ -173,9 +173,12 @@ fn var_dump_value(
             out.extend_from_slice(b"}\n");
         }
         Value::Resource(r) => {
-            out.extend_from_slice(
-                format!("{amp}resource({}) of type ({})\n", r.id, r.type_name).as_bytes(),
-            );
+            let ty = if host.resource_closed(&v) {
+                "Unknown"
+            } else {
+                r.type_name
+            };
+            out.extend_from_slice(format!("{amp}resource({}) of type ({})\n", r.id, ty).as_bytes());
         }
         Value::Ref(_) => unreachable!("deref'd above"),
     }

@@ -1,0 +1,186 @@
+resource(7) of type (process)
+array(3) {
+  [0]=>
+  resource(4) of type (stream)
+  [1]=>
+  resource(5) of type (stream)
+  [2]=>
+  resource(6) of type (stream)
+}
+string(7) "process"
+int(16)
+string(6) "hello
+"
+string(2) "wo"
+string(4) "rld
+"
+bool(false)
+string(4) "last"
+bool(false)
+bool(true)
+string(4) "err
+"
+int(5)
+array(0) {
+}
+bool(true)
+array(8) {
+  ["command"]=>
+  string(2) "sh"
+  ["cached"]=>
+  bool(true)
+  ["running"]=>
+  bool(false)
+  ["signaled"]=>
+  bool(false)
+  ["stopped"]=>
+  bool(false)
+  ["exitcode"]=>
+  int(7)
+  ["termsig"]=>
+  int(0)
+  ["stopsig"]=>
+  int(0)
+}
+bool(true)
+array(8) {
+  ["command"]=>
+  string(2) "sh"
+  ["cached"]=>
+  bool(true)
+  ["running"]=>
+  bool(false)
+  ["signaled"]=>
+  bool(false)
+  ["stopped"]=>
+  bool(false)
+  ["exitcode"]=>
+  int(7)
+  ["termsig"]=>
+  int(0)
+  ["stopsig"]=>
+  int(0)
+}
+int(7)
+bool(true)
+bool(true)
+array(8) {
+  ["command"]=>
+  string(12) "exec sleep 5"
+  ["cached"]=>
+  bool(false)
+  ["running"]=>
+  bool(false)
+  ["signaled"]=>
+  bool(true)
+  ["stopped"]=>
+  bool(false)
+  ["exitcode"]=>
+  int(-1)
+  ["termsig"]=>
+  int(15)
+  ["stopsig"]=>
+  int(0)
+}
+bool(true)
+array(8) {
+  ["command"]=>
+  string(12) "exec sleep 5"
+  ["cached"]=>
+  bool(false)
+  ["running"]=>
+  bool(false)
+  ["signaled"]=>
+  bool(false)
+  ["stopped"]=>
+  bool(false)
+  ["exitcode"]=>
+  int(-1)
+  ["termsig"]=>
+  int(0)
+  ["stopsig"]=>
+  int(0)
+}
+int(-1)
+string(12) "x-unset-1
+/
+"
+int(0)
+string(8) "out
+err
+"
+array(0) {
+}
+int(1)
+array(1) {
+  [0]=>
+  int(3)
+}
+string(4) "fd3
+"
+string(8) "to-file
+"
+string(17) "to-file
+appended
+"
+string(9) "a b|$HOME"
+string(6) "printf"
+bool(false)
+bool(true)
+string(0) ""
+bool(false)
+int(0)
+array(0) {
+}
+int(1)
+array(1) {
+  [0]=>
+  string(1) "k"
+}
+string(5) "late
+"
+int(1)
+array(1) {
+  [0]=>
+  int(3)
+}
+string(0) ""
+bool(true)
+bool(true)
+bool(false)
+int(2)
+ValueError: proc_open(): Argument #1 ($command) must not be empty
+ValueError: First element must contain a non-empty program name
+ValueError: Command array element 2 contains a null byte
+ValueError: proc_open(): Argument #2 ($descriptor_spec) must be an integer indexed array
+ValueError: proc_open(): Argument #2 ($descriptor_spec) must only contain arrays and streams
+bool(false)
+ValueError: Missing handle qualifier
+ValueError: Missing mode parameter for 'pipe'
+ValueError: Missing mode parameter for 'file'
+ValueError: Missing file name parameter for 'file'
+ValueError: Redirection target must be of type int, string given
+ValueError: Missing redirection target
+bool(false)
+bool(false)
+TypeError: proc_close(): supplied resource is not a valid process resource
+TypeError: proc_get_status(): supplied resource is not a valid process resource
+TypeError: proc_close(): Argument #1 ($process) must be of type resource, string given
+ValueError: No stream arrays were passed
+ValueError: stream_select(): Argument #4 ($seconds) must be greater than or equal to 0
+ValueError: stream_select(): Argument #5 ($microseconds) must be greater than or equal to 0
+ValueError: stream_select(): Argument #5 ($microseconds) must be null when argument #4 ($seconds) is null
+bool(false)
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+bool(false)
+bool(false)
+bool(true)
+bool(false)
+bool(false)

@@ -520,4 +520,11 @@ impl LocalFile {
     pub fn unread(&self) -> usize {
         self.rbuf.len() - self.rpos
     }
+
+    /// php's `php_stream_cast(PHP_STREAM_AS_FD)` before handing the
+    /// descriptor to another process (`proc_open`): read-ahead is dropped and
+    /// the descriptor moved back to the logical position.
+    pub fn sync_for_cast(&mut self) {
+        self.sync();
+    }
 }

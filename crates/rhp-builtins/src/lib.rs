@@ -14,6 +14,8 @@ use rhp_values::{PhpArray, Value};
 pub use rhp_values::Thrown;
 
 pub mod dump;
+pub mod fdstream;
+pub mod memstream;
 pub mod module;
 pub mod streams;
 
@@ -31,6 +33,8 @@ pub enum StreamKind {
     Memory,
     /// stdin/stdout/stderr/`php://output`.
     Stdio,
+    /// An OS descriptor stream: a `proc_open` pipe, `php://stdin`.
+    Pipe,
 }
 
 /// `stream_get_meta_data` information for a stream resource.
@@ -43,6 +47,11 @@ pub struct StreamMeta {
     pub seekable: bool,
     pub eof: bool,
 }
+
+/// pcntl's asynchronous signal delivery: the VM polls
+/// [`pcntl_interrupt_pending`] between instructions and, when set, calls
+/// [`pcntl_dispatch`] to run the queued PHP signal handlers.
+pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_interrupt_pending};
 
 mod arr_fns;
 mod arraycmp_fns;
@@ -66,6 +75,7 @@ mod parse_fns;
 pub mod php_fns;
 mod preg_fns;
 mod printf_fns;
+mod proc_fns;
 mod query_fns;
 mod runtime_fns;
 mod serialize_fns;
@@ -634,6 +644,20 @@ pub trait Host {
     // Streams are resource Values whose state lives in the VM; these are the
     // `fopen`/`fwrite`/… primitives. Defaults are no-ops (hosts without streams).
 
+    /// Whether this host delivers signals to PHP callbacks (pcntl). The
+    /// signal queue is process-wide, so only one interpreter per process (the
+    /// VM) may own it. Default: no — `pcntl_signal` with a callable is then
+    /// unsupported.
+    fn supports_signals(&self) -> bool {
+        false
+    }
+
+    /// Whether this host implements stream resources at all (`fopen` on a
+    /// host without them is unsupported rather than a silent failure).
+    fn has_streams(&self) -> bool {
+        false
+    }
+
     /// `fopen($path, $mode)` → a resource, or None on failure.
     fn stream_open(&mut self, _path: &[u8], _mode: &[u8]) -> Option<Value> {
         None
@@ -723,6 +747,55 @@ pub trait Host {
     fn dir_rewind(&mut self, _res: &Value) {}
     /// The most recently opened directory stream (for `readdir()` with no arg).
     fn last_dir(&self) -> Option<Value> {
+        None
+    }
+
+    // --- OS-level streams / process support (proc_open & friends) ------------
+
+    /// Wrap an OS file descriptor (e.g. a pipe's parent end) as a `stream`
+    /// resource. Default: unsupported (the fd is closed).
+    fn stream_from_fd(&mut self, _fd: std::os::fd::OwnedFd) -> Option<Value> {
+        None
+    }
+    /// A `dup(2)` of the OS fd behind a stream resource, for handing to a child
+    /// process (`proc_open` descriptor given as a resource). `Err` carries
+    /// php's stream-type name when the stream has no fd (e.g. `MEMORY`).
+    fn stream_dup_fd(&mut self, _res: &Value) -> Result<std::os::fd::OwnedFd, &'static str> {
+        Err("MEMORY")
+    }
+    /// The OS fd behind a stream, for `stream_select`, plus whether the stream
+    /// already holds buffered unread data (then it counts as readable at once).
+    fn stream_select_fd(&self, _res: &Value) -> Option<(std::os::fd::RawFd, bool)> {
+        None
+    }
+    /// `stream_set_blocking($res, $enable)`.
+    fn stream_set_blocking(&mut self, _res: &Value, _blocking: bool) -> bool {
+        true
+    }
+    /// Register an opaque native resource (e.g. a `process` handle) and return
+    /// its resource Value. Default: unsupported (`Null`).
+    fn resource_insert(
+        &mut self,
+        _type_name: &'static str,
+        _data: Box<dyn std::any::Any>,
+    ) -> Value {
+        Value::Null
+    }
+    /// The native payload of a resource created by [`Host::resource_insert`].
+    fn resource_get(&mut self, _res: &Value) -> Option<&mut dyn std::any::Any> {
+        None
+    }
+    /// Remove (close) a native resource, returning its payload.
+    fn resource_remove(&mut self, _res: &Value) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
+    /// Per-run state owned by an extension module (e.g. pcntl's signal-handler
+    /// table), created on first use by `init`. Default: none (stateless host).
+    fn module_state(
+        &mut self,
+        _key: &'static str,
+        _init: fn() -> Box<dyn std::any::Any>,
+    ) -> Option<&mut dyn std::any::Any> {
         None
     }
 
@@ -991,6 +1064,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("ini_parse", Box::new(ini_parse::register)),
         ("arraycmp_fns", Box::new(arraycmp_fns::register)),
         ("sysmisc_fns", Box::new(sysmisc_fns::register)),
+        ("proc_fns", Box::new(proc_fns::register)),
         // Exact-semantics filesystem builtins; registered last so they replace
         // older approximations in file_fns/stream_fns.
         ("fs_fns", Box::new(fs_fns::register)),
@@ -1056,6 +1130,26 @@ fn php_os() -> (&'static str, &'static str) {
 }
 
 /// Engine constants (`PHP_EOL`, `PHP_INT_MAX`, …).
+/// php's `PHP_OS`: the build host's uname sysname (configure-time constant).
+#[cfg(target_os = "linux")]
+pub const PHP_OS: &str = "Linux";
+#[cfg(target_os = "macos")]
+pub const PHP_OS: &str = "Darwin";
+#[cfg(target_os = "freebsd")]
+pub const PHP_OS: &str = "FreeBSD";
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+pub const PHP_OS: &str = "Unknown";
+
+/// php's `PHP_OS_FAMILY` (`Linux`, `Darwin`, `BSD`, …).
+#[cfg(target_os = "linux")]
+pub const PHP_OS_FAMILY: &str = "Linux";
+#[cfg(target_os = "macos")]
+pub const PHP_OS_FAMILY: &str = "Darwin";
+#[cfg(target_os = "freebsd")]
+pub const PHP_OS_FAMILY: &str = "BSD";
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+pub const PHP_OS_FAMILY: &str = "Unknown";
+
 pub fn constants() -> Vec<(&'static str, Value)> {
     vec![
         ("PHP_EOL", Value::str("\n")),
@@ -1084,6 +1178,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         // php bakes in its build host's OS (uname -s) and family.
         ("PHP_OS", Value::str(php_os().0)),
         ("PHP_OS_FAMILY", Value::str(php_os().1)),
+        ("ZEND_THREAD_SAFE", Value::Bool(false)),
+        ("ZEND_DEBUG_BUILD", Value::Bool(false)),
         ("PHP_DEBUG", Value::Int(0)),
         ("PHP_ZTS", Value::Int(0)),
         ("PCRE_VERSION", Value::str("10.47 2025-10-21")),
@@ -1128,6 +1224,9 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("FILE_NO_DEFAULT_CONTEXT", Value::Int(16)),
         ("FILE_TEXT", Value::Int(0)),
         ("FILE_BINARY", Value::Int(0)),
+        ("SEEK_SET", Value::Int(0)),
+        ("SEEK_CUR", Value::Int(1)),
+        ("SEEK_END", Value::Int(2)),
         ("LOCK_SH", Value::Int(1)),
         ("LOCK_EX", Value::Int(2)),
         ("LOCK_UN", Value::Int(3)),
@@ -1299,9 +1398,6 @@ pub fn is_refused(name: &str) -> Option<&'static str> {
         "extract" => Some("writes arbitrary variables into the local scope"),
         "compact" => Some("resolves variable names dynamically from strings"),
         "create_function" => Some("compiles a string into a function (eval-equivalent)"),
-        "exec" | "system" | "passthru" | "shell_exec" | "proc_open" | "popen" => {
-            Some("executes external shell commands")
-        }
         _ => None,
     }
 }

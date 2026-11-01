@@ -503,7 +503,44 @@ fn side(object_lhs: bool) -> Ordering {
 fn same_object(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Object(x), Value::Object(y)) => std::rc::Rc::ptr_eq(x, y),
-        (Value::Closure(x), Value::Closure(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Value::Closure(x), Value::Closure(y)) => {
+            std::rc::Rc::ptr_eq(x, y) || fake_closures_equal(x, y)
+        }
+        _ => false,
+    }
+}
+
+/// php's `zend_closure_compare` for two distinct closure objects: only
+/// first-class-callable ("fake") closures over the same function, `$this` and
+/// scope are equal.
+fn fake_closures_equal(x: &rhp_values::ClosureData, y: &rhp_values::ClosureData) -> bool {
+    let (Some(wx), Some(wy)) = (&x.wrapped, &y.wrapped) else {
+        return false;
+    };
+    let same_this = match (&x.bound_this, &y.bound_this) {
+        (None, None) => true,
+        (Some(a), Some(b)) => std::rc::Rc::ptr_eq(a, b),
+        _ => false,
+    };
+    same_this && x.bound_class == y.bound_class && callables_equal(wx, wy)
+}
+
+fn callables_equal(a: &Value, b: &Value) -> bool {
+    let a = crate::deref(a);
+    let b = crate::deref(b);
+    match (&a, &b) {
+        (Value::Str(x), Value::Str(y)) => x.as_bytes().eq_ignore_ascii_case(y.as_bytes()),
+        (Value::Array(x), Value::Array(y)) if x.len() == 2 && y.len() == 2 => {
+            let xs: Vec<Value> = x.iter().map(|(_, v)| crate::deref(v)).collect();
+            let ys: Vec<Value> = y.iter().map(|(_, v)| crate::deref(v)).collect();
+            let target = match (&xs[0], &ys[0]) {
+                (Value::Object(p), Value::Object(q)) => std::rc::Rc::ptr_eq(p, q),
+                (Value::Str(p), Value::Str(q)) => p.as_bytes().eq_ignore_ascii_case(q.as_bytes()),
+                _ => false,
+            };
+            target && callables_equal(&xs[1], &ys[1])
+        }
+        (Value::Closure(p), Value::Closure(q)) => std::rc::Rc::ptr_eq(p, q),
         _ => false,
     }
 }
@@ -682,6 +719,8 @@ pub fn strict_eq(a: &Value, b: &Value) -> bool {
                     .all(|((xk, xv), (yk, yv))| xk == yk && strict_eq(xv, yv))
         }
         (Object(x), Object(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Closure(x), Closure(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Resource(x), Resource(y)) => x.id == y.id,
         _ => false,
     }
 }

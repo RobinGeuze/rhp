@@ -1,0 +1,1283 @@
+//! Program execution (php's `ext/standard/proc_open.c` + `exec.c`) and
+//! `stream_select` (`streamsfuncs.c`): `proc_open`/`proc_close`/
+//! `proc_get_status`/`proc_terminate`/`proc_nice`, the `exec`/`system`/
+//! `passthru`/`shell_exec` family, `escapeshellarg`/`escapeshellcmd`, plus a
+//! few process-environment helpers (`putenv`, `get_current_user`,
+//! `gethostname`, `gethostbyname`, `usleep`, `cli_set_process_title`).
+//!
+//! Children are started with `posix_spawn(3)` exactly as php does when it is
+//! built with `USE_POSIX_SPAWN` (macOS, glibc ≥ 2.29): a string command runs as
+//! `/bin/sh -c <command>`, an array command via `posix_spawnp` with no shell.
+//! Pipe parent ends become `stream` resources backed by the VM's fd streams.
+//!
+//! (php's warnings — e.g. "posix_spawn() failed: …" — are not emitted: this
+//! engine has no diagnostics channel yet; the return values match.)
+
+use std::collections::HashMap;
+use std::ffi::CString;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+
+use rhp_values::{conv, ArrayKey, PhpArray, Value};
+
+use crate::{Builtin, Host, Thrown};
+
+fn deref(v: &Value) -> Value {
+    match v {
+        Value::Ref(r) => r.borrow().clone(),
+        o => o.clone(),
+    }
+}
+
+fn write_ref(arg: Option<&Value>, value: Value) {
+    if let Some(Value::Ref(rc)) = arg {
+        *rc.borrow_mut() = value;
+    }
+}
+
+/// php's `zend_zval_value_name` (used in ValueError/TypeError messages).
+fn value_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(true) => "true",
+        Value::Bool(false) => "false",
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Str(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) | Value::Closure(_) => "object",
+        Value::Resource(_) => "resource",
+        Value::Ref(r) => value_name(&r.borrow()),
+    }
+}
+
+/// The type name php's zpp TypeErrors print (`zend_zval_value_name`, with the
+/// class name for objects).
+pub(crate) fn zpp_type_name(host: &dyn Host, v: &Value) -> String {
+    match v {
+        Value::Object(_) => host
+            .object_class_name(v)
+            .map(|n| String::from_utf8_lossy(&n).into_owned())
+            .unwrap_or_else(|| "object".into()),
+        Value::Closure(_) => "Closure".into(),
+        other => value_name(other).into(),
+    }
+}
+
+/// php's `zend_parse_arg_long_weak` (`Z_PARAM_LONG`, coercive mode): ints
+/// pass, bools/null become 0/1/0, integral-range floats and fully numeric
+/// strings are truncated; anything else is a TypeError
+/// "`fname(): Argument #n ($pname) must be of type int, T given`".
+pub(crate) fn zpp_long(
+    host: &dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<i64, Thrown> {
+    let v = deref(&args[i]);
+    let float_to_long = |f: f64| -> Option<i64> {
+        // ZEND_DOUBLE_FITS_LONG: !(d >= 2^63 || d < -2^63), and not NaN.
+        const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+        if f.is_nan() || f >= TWO_63 || f < -TWO_63 {
+            None
+        } else {
+            Some(f as i64)
+        }
+    };
+    let n = match &v {
+        Value::Int(n) => Some(*n),
+        Value::Bool(b) => Some(*b as i64),
+        Value::Null => Some(0),
+        Value::Float(f) => float_to_long(*f),
+        Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
+            Some(conv::Num::Int(n)) => Some(n),
+            Some(conv::Num::Float(f)) => float_to_long(f),
+            None => None,
+        },
+        _ => None,
+    };
+    n.ok_or_else(|| {
+        Thrown::type_error(format!(
+            "{fname}(): Argument #{} (${pname}) must be of type int, {} given",
+            i + 1,
+            zpp_type_name(host, &v)
+        ))
+    })
+}
+
+/// `Z_PARAM_STR` (coercive): scalars become strings; arrays, objects without
+/// `__toString` and resources are a TypeError.
+pub(crate) fn zpp_string(
+    host: &dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<Vec<u8>, Thrown> {
+    let v = deref(&args[i]);
+    match &v {
+        Value::Str(s) => Ok(s.as_bytes().to_vec()),
+        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Null => {
+            Ok(conv::to_string_bytes(&v))
+        }
+        _ => Err(Thrown::type_error(format!(
+            "{fname}(): Argument #{} (${pname}) must be of type string, {} given",
+            i + 1,
+            zpp_type_name(host, &v)
+        ))),
+    }
+}
+
+/// `Z_PARAM_PATH`-style string argument: coerced to string, rejecting NUL bytes.
+fn path_arg(args: &[Value], i: usize, fname: &str, pname: &str) -> Result<Vec<u8>, Thrown> {
+    let s = conv::to_string_bytes(&deref(&args[i]));
+    if s.contains(&0) {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "{fname}(): Argument #{} (${pname}) must not contain any null bytes",
+                i + 1
+            ),
+        ));
+    }
+    Ok(s)
+}
+
+fn cstr(b: &[u8]) -> CString {
+    CString::new(b.iter().copied().filter(|&c| c != 0).collect::<Vec<u8>>()).unwrap_or_default()
+}
+
+fn errno() -> i32 {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+/// The current process environment as `KEY=VALUE` entries (php passes
+/// `environ` when no `$env_vars` array is given) with the request's
+/// `putenv` changes applied (php's putenv edits `environ` itself).
+fn current_environ() -> Vec<Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut env: Vec<(Vec<u8>, Vec<u8>)> = std::env::vars_os()
+        .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
+        .collect();
+    for (k, v) in crate::env_overrides() {
+        env.retain(|(n, _)| *n != k);
+        if let Some(v) = v {
+            env.push((k, v));
+        }
+    }
+    env.into_iter()
+        .map(|(k, v)| {
+            let mut e = k;
+            e.push(b'=');
+            e.extend_from_slice(&v);
+            e
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// spawning
+// ---------------------------------------------------------------------------
+
+/// What to execute.
+enum SpawnCmd<'a> {
+    /// `/bin/sh -c <command>`.
+    Shell(&'a [u8]),
+    /// `posix_spawnp(argv[0], argv)` — no shell.
+    Argv(&'a [Vec<u8>]),
+}
+
+/// One child descriptor: the child's fd number, the fd it is fed from, and
+/// (pipes/sockets) the parent's end, which the child must not keep.
+struct Desc {
+    index: i32,
+    childend: OwnedFd,
+    parentend: Option<OwnedFd>,
+}
+
+/// `posix_spawn` the command with php's file actions. Returns the child pid or
+/// the spawn error number.
+fn spawn(
+    cmd: SpawnCmd,
+    descs: &[Desc],
+    cwd: Option<&[u8]>,
+    env: Option<&[Vec<u8>]>,
+) -> Result<libc::pid_t, i32> {
+    unsafe {
+        let mut fa: libc::posix_spawn_file_actions_t = std::mem::zeroed();
+        libc::posix_spawn_file_actions_init(&mut fa);
+        let mut fail = 0;
+        for d in descs {
+            if let Some(p) = &d.parentend {
+                let r = libc::posix_spawn_file_actions_addclose(&mut fa, p.as_raw_fd());
+                if r != 0 {
+                    fail = r;
+                }
+            }
+            let c = d.childend.as_raw_fd();
+            if c != d.index {
+                let r = libc::posix_spawn_file_actions_adddup2(&mut fa, c, d.index);
+                if r != 0 {
+                    fail = r;
+                }
+                let r = libc::posix_spawn_file_actions_addclose(&mut fa, c);
+                if r != 0 {
+                    fail = r;
+                }
+            } else {
+                // Already at the right number: make sure it survives exec.
+                let fl = libc::fcntl(c, libc::F_GETFD);
+                if fl >= 0 && fl & libc::FD_CLOEXEC != 0 {
+                    libc::fcntl(c, libc::F_SETFD, fl & !libc::FD_CLOEXEC);
+                }
+            }
+        }
+        if fail != 0 {
+            libc::posix_spawn_file_actions_destroy(&mut fa);
+            return Err(fail);
+        }
+        let cwd_c = cwd.map(cstr);
+        if let Some(c) = &cwd_c {
+            libc::posix_spawn_file_actions_addchdir_np(&mut fa, c.as_ptr());
+        }
+        let env_vec = match env {
+            Some(e) => e.to_vec(),
+            None => current_environ(),
+        };
+        let env_c: Vec<CString> = env_vec.iter().map(|e| cstr(e)).collect();
+        let mut envp: Vec<*mut libc::c_char> = env_c
+            .iter()
+            .map(|c| c.as_ptr() as *mut libc::c_char)
+            .collect();
+        envp.push(std::ptr::null_mut());
+
+        let mut pid: libc::pid_t = 0;
+        let r = match cmd {
+            SpawnCmd::Shell(command) => {
+                let sh = cstr(b"/bin/sh");
+                let a0 = cstr(b"sh");
+                let a1 = cstr(b"-c");
+                let a2 = cstr(command);
+                let argv: [*mut libc::c_char; 4] = [
+                    a0.as_ptr() as *mut _,
+                    a1.as_ptr() as *mut _,
+                    a2.as_ptr() as *mut _,
+                    std::ptr::null_mut(),
+                ];
+                libc::posix_spawn(
+                    &mut pid,
+                    sh.as_ptr(),
+                    &fa,
+                    std::ptr::null(),
+                    argv.as_ptr(),
+                    envp.as_ptr(),
+                )
+            }
+            SpawnCmd::Argv(argv) => {
+                let args_c: Vec<CString> = argv.iter().map(|a| cstr(a)).collect();
+                let mut argp: Vec<*mut libc::c_char> =
+                    args_c.iter().map(|c| c.as_ptr() as *mut _).collect();
+                argp.push(std::ptr::null_mut());
+                libc::posix_spawnp(
+                    &mut pid,
+                    args_c[0].as_ptr(),
+                    &fa,
+                    std::ptr::null(),
+                    argp.as_ptr(),
+                    envp.as_ptr(),
+                )
+            }
+        };
+        libc::posix_spawn_file_actions_destroy(&mut fa);
+        if r != 0 {
+            return Err(r);
+        }
+        Ok(pid)
+    }
+}
+
+/// A `pipe(2)` pair `(read, write)`, neither end close-on-exec (like php).
+fn make_pipe() -> Option<(OwnedFd, OwnedFd)> {
+    let mut fds = [0 as libc::c_int; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    unsafe { Some((OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))) }
+}
+
+fn set_cloexec(fd: &OwnedFd) {
+    unsafe {
+        let fl = libc::fcntl(fd.as_raw_fd(), libc::F_GETFD);
+        if fl >= 0 {
+            libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, fl | libc::FD_CLOEXEC);
+        }
+    }
+}
+
+fn dup_fd(raw: RawFd) -> Option<OwnedFd> {
+    let d = unsafe { libc::dup(raw) };
+    (d >= 0).then(|| unsafe { OwnedFd::from_raw_fd(d) })
+}
+
+/// `waitpid` retrying on EINTR.
+fn waitpid_retry(pid: libc::pid_t, options: i32) -> (libc::pid_t, i32) {
+    loop {
+        let mut st = 0;
+        let r = unsafe { libc::waitpid(pid, &mut st, options) };
+        if r == -1 && errno() == libc::EINTR {
+            continue;
+        }
+        return (r, st);
+    }
+}
+
+/// The value php's `pclose`-style close reports: the exit code when the child
+/// exited normally, else the raw wait status.
+fn close_status(st: i32) -> i64 {
+    if libc::WIFEXITED(st) {
+        libc::WEXITSTATUS(st) as i64
+    } else {
+        st as i64
+    }
+}
+
+/// `popen(cmd, "r")`: run `/bin/sh -c cmd` with its stdout on a pipe; stdin
+/// and stderr are inherited. Returns (read end, pid).
+fn popen_read(cmd: &[u8]) -> Option<(OwnedFd, libc::pid_t)> {
+    let (r, w) = make_pipe()?;
+    set_cloexec(&r);
+    let descs = [Desc {
+        index: 1,
+        childend: w,
+        parentend: None,
+    }];
+    let pid = spawn(SpawnCmd::Shell(cmd), &descs, None, None).ok()?;
+    drop(descs);
+    Some((r, pid))
+}
+
+/// php wraps every `popen`ed pipe in a (transient) stream resource, which
+/// consumes a resource id; mirror that so later ids line up.
+fn consume_stream_id(host: &mut dyn Host, fd: &OwnedFd) {
+    if let Some(d) = dup_fd(fd.as_raw_fd()) {
+        if let Some(s) = host.stream_from_fd(d) {
+            host.stream_close(&s);
+        }
+    }
+}
+
+fn read_fd_to_end(fd: &OwnedFd, mut each: impl FnMut(&[u8])) {
+    let mut buf = vec![0u8; 8192];
+    loop {
+        let n = unsafe {
+            libc::read(
+                fd.as_raw_fd(),
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len(),
+            )
+        };
+        if n > 0 {
+            each(&buf[..n as usize]);
+        } else if n == 0 || errno() != libc::EINTR {
+            break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// exec / system / passthru / shell_exec
+// ---------------------------------------------------------------------------
+
+/// php's `strip_trailing_whitespace` (C `isspace`).
+fn strip_trailing_ws(b: &[u8]) -> &[u8] {
+    let mut l = b.len();
+    while l > 0 && matches!(b[l - 1], b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') {
+        l -= 1;
+    }
+    &b[..l]
+}
+
+/// `php_exec`: mode 0 = exec (last line), 1 = system (echo lines), 2 = exec
+/// with an output array, 3 = passthru (raw). Returns (return value, status).
+fn php_exec(host: &mut dyn Host, mode: u8, cmd: &[u8], out: &mut Option<PhpArray>) -> (Value, i64) {
+    let Some((fd, pid)) = popen_read(cmd) else {
+        return (Value::Bool(false), -1);
+    };
+    consume_stream_id(host, &fd);
+    let mut ret = Value::str(Vec::new());
+    if mode == 3 {
+        read_fd_to_end(&fd, |chunk| host.write_out(chunk));
+    } else {
+        let mut data = Vec::new();
+        read_fd_to_end(&fd, |chunk| data.extend_from_slice(chunk));
+        let mut last: Option<&[u8]> = None;
+        let mut start = 0;
+        while start < data.len() {
+            let end = data[start..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map(|i| start + i + 1)
+                .unwrap_or(data.len());
+            let line = &data[start..end];
+            match mode {
+                1 => host.write_out(line),
+                2 => {
+                    if let Some(a) = out.as_mut() {
+                        a.push(Value::str(strip_trailing_ws(line).to_vec()));
+                    }
+                }
+                _ => {}
+            }
+            last = Some(line);
+            start = end;
+        }
+        if let Some(l) = last {
+            ret = Value::str(strip_trailing_ws(l).to_vec());
+        }
+    }
+    drop(fd);
+    let (r, st) = waitpid_retry(pid, 0);
+    let status = if r <= 0 { -1 } else { close_status(st) };
+    (ret, status)
+}
+
+fn exec_family(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
+    let cmd = path_arg(args, 0, fname, "command")?;
+    if cmd.is_empty() {
+        return Err(Thrown::error(
+            "ValueError",
+            format!("{fname}(): Argument #1 ($command) must not be empty"),
+        ));
+    }
+    let (mode, code_idx) = match fname {
+        "exec" => (if args.len() > 1 { 2 } else { 0 }, 2),
+        "system" => (1, 1),
+        _ => (3, 1),
+    };
+    let mut out = None;
+    if mode == 2 {
+        out = Some(match deref(&args[1]) {
+            Value::Array(a) => a,
+            _ => PhpArray::new(),
+        });
+    }
+    let (ret, status) = php_exec(host, mode, &cmd, &mut out);
+    if let Some(a) = out {
+        write_ref(args.get(1), Value::Array(a));
+    }
+    if args.len() > code_idx {
+        write_ref(args.get(code_idx), Value::Int(status));
+    }
+    // passthru returns null on success (php 8.2+), false on failure.
+    if mode == 3 {
+        return Ok(if matches!(ret, Value::Bool(false)) {
+            ret
+        } else {
+            Value::Null
+        });
+    }
+    Ok(ret)
+}
+
+fn fn_exec(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    exec_family(host, args, "exec")
+}
+
+fn fn_system(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    exec_family(host, args, "system")
+}
+
+fn fn_passthru(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    exec_family(host, args, "passthru")
+}
+
+fn fn_shell_exec(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let cmd = path_arg(args, 0, "shell_exec", "command")?;
+    if cmd.is_empty() {
+        return Err(Thrown::error(
+            "ValueError",
+            "shell_exec(): Argument #1 ($command) must not be empty",
+        ));
+    }
+    let Some((fd, pid)) = popen_read(&cmd) else {
+        return Ok(Value::Bool(false));
+    };
+    consume_stream_id(host, &fd);
+    let mut data = Vec::new();
+    read_fd_to_end(&fd, |c| data.extend_from_slice(c));
+    drop(fd);
+    waitpid_retry(pid, 0);
+    Ok(if data.is_empty() {
+        Value::Null
+    } else {
+        Value::str(data)
+    })
+}
+
+// ---------------------------------------------------------------------------
+// escapeshellarg / escapeshellcmd
+// ---------------------------------------------------------------------------
+
+/// `php_mblen` under php's default `C.UTF-8` LC_CTYPE: the length of the valid
+/// UTF-8 sequence at the start of `s`, or -1 when it is invalid/incomplete.
+fn mblen(s: &[u8]) -> isize {
+    let b = s[0];
+    if b < 0x80 {
+        return 1;
+    }
+    let n = match b {
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
+        _ => return -1,
+    };
+    if s.len() < n {
+        return -1;
+    }
+    match std::str::from_utf8(&s[..n]) {
+        Ok(_) => n as isize,
+        Err(_) => -1,
+    }
+}
+
+fn escape_shell_arg(s: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len() + 2);
+    out.push(b'\'');
+    let mut x = 0;
+    while x < s.len() {
+        let l = mblen(&s[x..]);
+        if l < 0 {
+            x += 1;
+            continue;
+        }
+        if l > 1 {
+            out.extend_from_slice(&s[x..x + l as usize]);
+            x += l as usize;
+            continue;
+        }
+        if s[x] == b'\'' {
+            out.extend_from_slice(b"'\\'");
+        }
+        out.push(s[x]);
+        x += 1;
+    }
+    out.push(b'\'');
+    out
+}
+
+fn escape_shell_cmd(s: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len() * 2);
+    // Position of the matching closing quote while inside a quoted span.
+    let mut p: Option<usize> = None;
+    let mut x = 0;
+    while x < s.len() {
+        let l = mblen(&s[x..]);
+        if l < 0 {
+            x += 1;
+            continue;
+        }
+        if l > 1 {
+            out.extend_from_slice(&s[x..x + l as usize]);
+            x += l as usize;
+            continue;
+        }
+        let c = s[x];
+        match c {
+            b'"' | b'\'' => {
+                if p.is_none() {
+                    p = s[x + 1..].iter().position(|&b| b == c).map(|i| x + 1 + i);
+                    if p.is_none() {
+                        out.push(b'\\');
+                    }
+                } else if p.map(|i| s[i]) == Some(c) {
+                    p = None;
+                } else {
+                    out.push(b'\\');
+                }
+                out.push(c);
+            }
+            b'#' | b'&' | b';' | b'`' | b'|' | b'*' | b'?' | b'~' | b'<' | b'>' | b'^' | b'('
+            | b')' | b'[' | b']' | b'{' | b'}' | b'$' | b'\\' | b'\n' | 0xFF => {
+                out.push(b'\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+        x += 1;
+    }
+    out
+}
+
+fn fn_escapeshellarg(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = path_arg(args, 0, "escapeshellarg", "arg")?;
+    Ok(Value::str(escape_shell_arg(&s)))
+}
+
+fn fn_escapeshellcmd(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = path_arg(args, 0, "escapeshellcmd", "command")?;
+    Ok(Value::str(escape_shell_cmd(&s)))
+}
+
+// ---------------------------------------------------------------------------
+// proc_open & friends
+// ---------------------------------------------------------------------------
+
+/// A `process` resource's payload.
+struct ProcHandle {
+    pid: libc::pid_t,
+    command: Vec<u8>,
+    /// The pipe stream resources handed back in `$pipes` (closed by proc_close).
+    pipes: Vec<Value>,
+    /// The cached final wait status, once observed (`WIFEXITED` only).
+    cached: Option<i32>,
+}
+
+impl ProcHandle {
+    fn waitpid_cached(&mut self, options: i32) -> (libc::pid_t, i32) {
+        if let Some(st) = self.cached {
+            return (self.pid, st);
+        }
+        let (r, st) = waitpid_retry(self.pid, options);
+        if r > 0 && libc::WIFEXITED(st) {
+            self.cached = Some(st);
+        }
+        (r, st)
+    }
+}
+
+fn proc_arg<'h>(
+    host: &'h mut dyn Host,
+    args: &[Value],
+    fname: &str,
+) -> Result<&'h mut ProcHandle, Thrown> {
+    let v = deref(&args[0]);
+    if !matches!(v, Value::Resource(_)) {
+        return Err(Thrown::type_error(format!(
+            "{fname}(): Argument #1 ($process) must be of type resource, {} given",
+            value_name(&v)
+        )));
+    }
+    let is_proc = matches!(&v, Value::Resource(r) if r.type_name == "process");
+    match host.resource_get(&v) {
+        Some(d) if is_proc => d
+            .downcast_mut::<ProcHandle>()
+            .ok_or_else(|| bad_proc(fname)),
+        _ => Err(bad_proc(fname)),
+    }
+}
+
+fn bad_proc(fname: &str) -> Thrown {
+    Thrown::type_error(format!(
+        "{fname}(): supplied resource is not a valid process resource"
+    ))
+}
+
+fn fn_proc_get_status(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let h = proc_arg(host, args, "proc_get_status")?;
+    let (mut running, mut signaled, mut stopped) = (true, false, false);
+    let (mut exitcode, mut termsig, mut stopsig) = (-1i64, 0i64, 0i64);
+    let (r, st) = h.waitpid_cached(libc::WNOHANG | libc::WUNTRACED);
+    if r == h.pid {
+        if libc::WIFEXITED(st) {
+            running = false;
+            exitcode = libc::WEXITSTATUS(st) as i64;
+        }
+        if libc::WIFSIGNALED(st) {
+            running = false;
+            signaled = true;
+            termsig = libc::WTERMSIG(st) as i64;
+        }
+        if libc::WIFSTOPPED(st) {
+            stopped = true;
+            stopsig = libc::WSTOPSIG(st) as i64;
+        }
+    } else if r == -1 {
+        running = false;
+    }
+    let mut a = PhpArray::new();
+    let mut put = |k: &str, v: Value| {
+        a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
+    };
+    put("command", Value::str(h.command.clone()));
+    put("pid", Value::Int(h.pid as i64));
+    put("cached", Value::Bool(h.cached.is_some()));
+    put("running", Value::Bool(running));
+    put("signaled", Value::Bool(signaled));
+    put("stopped", Value::Bool(stopped));
+    put("exitcode", Value::Int(exitcode));
+    put("termsig", Value::Int(termsig));
+    put("stopsig", Value::Int(stopsig));
+    Ok(Value::Array(a))
+}
+
+fn fn_proc_close(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let pipes = std::mem::take(&mut proc_arg(host, args, "proc_close")?.pipes);
+    // Close all pipe handles first to avoid a deadlock.
+    for p in &pipes {
+        host.stream_close(p);
+    }
+    let mut h = host
+        .resource_remove(&deref(&args[0]))
+        .and_then(|b| b.downcast::<ProcHandle>().ok())
+        .ok_or_else(|| bad_proc("proc_close"))?;
+    let (r, st) = h.waitpid_cached(0);
+    Ok(Value::Int(if r <= 0 { -1 } else { close_status(st) }))
+}
+
+fn fn_proc_terminate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    proc_arg(host, args, "proc_terminate")?;
+    let sig = match args.get(1) {
+        Some(_) => zpp_long(host, args, 1, "proc_terminate", "signal")?,
+        None => libc::SIGTERM as i64,
+    };
+    let h = proc_arg(host, args, "proc_terminate")?;
+    Ok(Value::Bool(unsafe { libc::kill(h.pid, sig as i32) } == 0))
+}
+
+fn fn_proc_nice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let pri = zpp_long(host, args, 0, "proc_nice", "priority")?;
+    unsafe {
+        *libc_errno() = 0;
+        libc::nice(pri as i32);
+        Ok(Value::Bool(*libc_errno() == 0))
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn libc_errno() -> *mut i32 {
+    libc::__error()
+}
+
+#[cfg(not(target_os = "macos"))]
+unsafe fn libc_errno() -> *mut i32 {
+    libc::__errno_location()
+}
+
+/// Open a `['file', $path, $mode]` descriptor target with fopen-mode flags.
+fn open_for_mode(path: &[u8], mode: &[u8]) -> Option<OwnedFd> {
+    let plus = mode.contains(&b'+');
+    let acc = if plus {
+        libc::O_RDWR
+    } else if mode.first() == Some(&b'r') {
+        libc::O_RDONLY
+    } else {
+        libc::O_WRONLY
+    };
+    let extra = match mode.first()? {
+        b'r' => 0,
+        b'w' => libc::O_CREAT | libc::O_TRUNC,
+        b'a' => libc::O_CREAT | libc::O_APPEND,
+        b'x' => libc::O_CREAT | libc::O_EXCL,
+        b'c' => libc::O_CREAT,
+        _ => return None,
+    };
+    let p = cstr(path.strip_prefix(b"file://").unwrap_or(path));
+    let fd = unsafe { libc::open(p.as_ptr(), acc | extra, 0o666 as libc::c_uint) };
+    (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Element `i` of a descriptor array as a string, or the php ValueError.
+fn desc_string(ht: &PhpArray, i: i64, what: &str) -> Result<Vec<u8>, Thrown> {
+    match ht.get(&ArrayKey::Int(i)) {
+        Some(v) => Ok(conv::to_string_bytes(&deref(v))),
+        None => Err(Thrown::error("ValueError", format!("Missing {what}"))),
+    }
+}
+
+/// What a descriptor became (for building `$pipes`).
+enum DescKind {
+    Std,
+    Pipe,
+}
+
+fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // --- the command -------------------------------------------------------
+    let cmd_v = deref(&args[0]);
+    let mut argv: Option<Vec<Vec<u8>>> = None;
+    let command: Vec<u8> = match &cmd_v {
+        Value::Array(a) => {
+            if a.is_empty() {
+                return Err(Thrown::error(
+                    "ValueError",
+                    "proc_open(): Argument #1 ($command) must not be empty",
+                ));
+            }
+            let mut v = Vec::new();
+            for (i, (_, el)) in a.iter().enumerate() {
+                let s = conv::to_string_bytes(&deref(el));
+                if i == 0 && s.is_empty() {
+                    return Err(Thrown::error(
+                        "ValueError",
+                        "First element must contain a non-empty program name",
+                    ));
+                }
+                if s.contains(&0) {
+                    return Err(Thrown::error(
+                        "ValueError",
+                        format!("Command array element {} contains a null byte", i + 1),
+                    ));
+                }
+                v.push(s);
+            }
+            let first = v[0].clone();
+            argv = Some(v);
+            first
+        }
+        Value::Null | Value::Object(_) | Value::Closure(_) | Value::Resource(_) => {
+            return Err(Thrown::type_error(format!(
+                "proc_open(): Argument #1 ($command) must be of type array|string, {} given",
+                value_name(&cmd_v)
+            )))
+        }
+        other => conv::to_string_bytes(other),
+    };
+
+    // --- the descriptor spec ------------------------------------------------
+    let spec = match deref(&args[1]) {
+        Value::Array(a) => a,
+        other => {
+            return Err(Thrown::type_error(format!(
+                "proc_open(): Argument #2 ($descriptor_spec) must be of type array, {} given",
+                value_name(&other)
+            )))
+        }
+    };
+    let cwd: Option<Vec<u8>> = match args.get(3).map(deref) {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(conv::to_string_bytes(&v)),
+    };
+    let env: Option<Vec<Vec<u8>>> = match args.get(4).map(deref) {
+        Some(Value::Array(a)) => {
+            let mut e: Vec<Vec<u8>> = Vec::new();
+            for (k, v) in a.iter() {
+                let s = conv::to_string_bytes(&deref(v));
+                if s.is_empty() {
+                    continue;
+                }
+                match k {
+                    ArrayKey::Str(ks) if !ks.as_bytes().is_empty() => {
+                        let mut entry = ks.as_bytes().to_vec();
+                        entry.push(b'=');
+                        entry.extend_from_slice(&s);
+                        e.push(entry);
+                    }
+                    _ => e.push(s),
+                }
+            }
+            Some(e)
+        }
+        _ => None,
+    };
+
+    let mut descs: Vec<Desc> = Vec::new();
+    let mut kinds: Vec<DescKind> = Vec::new();
+    for (k, item) in spec.iter() {
+        let index =
+            match k {
+                ArrayKey::Int(n) => *n as i32,
+                ArrayKey::Str(_) => return Err(Thrown::error(
+                    "ValueError",
+                    "proc_open(): Argument #2 ($descriptor_spec) must be an integer indexed array",
+                )),
+            };
+        let item = deref(item);
+        let (childend, parentend, kind) = match &item {
+            Value::Resource(r) => {
+                if r.type_name != "stream" {
+                    return Err(Thrown::type_error(
+                        "proc_open(): supplied resource is not a valid stream resource",
+                    ));
+                }
+                match host.stream_dup_fd(&item) {
+                    Ok(fd) => (fd, None, DescKind::Std),
+                    // php: "Cannot represent a stream of type X as a File Descriptor"
+                    Err(_) => return Ok(Value::Bool(false)),
+                }
+            }
+            Value::Array(ht) => {
+                let ty = desc_string(ht, 0, "handle qualifier")?;
+                match ty.as_slice() {
+                    b"pipe" => {
+                        let mode = desc_string(ht, 1, "mode parameter for 'pipe'")?;
+                        let Some((r, w)) = make_pipe() else {
+                            return Ok(Value::Bool(false));
+                        };
+                        let (parent, child) = if mode.first() == Some(&b'w') {
+                            (r, w)
+                        } else {
+                            (w, r)
+                        };
+                        set_cloexec(&parent);
+                        (child, Some(parent), DescKind::Pipe)
+                    }
+                    b"socket" => {
+                        let mut sv = [0 as libc::c_int; 2];
+                        if unsafe {
+                            libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, sv.as_mut_ptr())
+                        } != 0
+                        {
+                            return Ok(Value::Bool(false));
+                        }
+                        let (p, c) =
+                            unsafe { (OwnedFd::from_raw_fd(sv[0]), OwnedFd::from_raw_fd(sv[1])) };
+                        set_cloexec(&p);
+                        (c, Some(p), DescKind::Pipe)
+                    }
+                    b"file" => {
+                        let path = desc_string(ht, 1, "file name parameter for 'file'")?;
+                        let mode = desc_string(ht, 2, "mode parameter for 'file'")?;
+                        let Some(fd) = open_for_mode(&path, &mode) else {
+                            return Ok(Value::Bool(false));
+                        };
+                        // php opens this through a (transient) stream resource,
+                        // which consumes a resource id.
+                        consume_stream_id(host, &fd);
+                        (fd, None, DescKind::Std)
+                    }
+                    b"redirect" => {
+                        let target = match ht.get(&ArrayKey::Int(1)).map(deref) {
+                            None => {
+                                return Err(Thrown::error(
+                                    "ValueError",
+                                    "Missing redirection target",
+                                ))
+                            }
+                            Some(Value::Int(n)) => n as i32,
+                            Some(other) => {
+                                return Err(Thrown::error(
+                                    "ValueError",
+                                    format!(
+                                        "Redirection target must be of type int, {} given",
+                                        value_name(&other)
+                                    ),
+                                ))
+                            }
+                        };
+                        let from = descs
+                            .iter()
+                            .find(|d| d.index == target)
+                            .map(|d| d.childend.as_raw_fd());
+                        let from = match from {
+                            Some(f) => f,
+                            None if (0..=2).contains(&target) => target,
+                            // php: "Redirection target %d not found"
+                            None => return Ok(Value::Bool(false)),
+                        };
+                        let Some(fd) = dup_fd(from) else {
+                            return Ok(Value::Bool(false));
+                        };
+                        (fd, None, DescKind::Std)
+                    }
+                    b"null" => {
+                        let p = cstr(b"/dev/null");
+                        let fd = unsafe { libc::open(p.as_ptr(), libc::O_RDWR) };
+                        if fd < 0 {
+                            return Ok(Value::Bool(false));
+                        }
+                        (unsafe { OwnedFd::from_raw_fd(fd) }, None, DescKind::Std)
+                    }
+                    // `pty` (openpty) is not supported here; anything else is
+                    // "… is not a valid descriptor spec/mode".
+                    _ => return Ok(Value::Bool(false)),
+                }
+            }
+            _ => return Err(Thrown::error(
+                "ValueError",
+                "proc_open(): Argument #2 ($descriptor_spec) must only contain arrays and streams",
+            )),
+        };
+        descs.push(Desc {
+            index,
+            childend,
+            parentend,
+        });
+        kinds.push(kind);
+    }
+
+    // --- spawn ----------------------------------------------------------------
+    let cmd = match &argv {
+        Some(a) => SpawnCmd::Argv(a),
+        None => SpawnCmd::Shell(&command),
+    };
+    let pid = match spawn(cmd, &descs, cwd.as_deref(), env.as_deref()) {
+        Ok(p) => p,
+        // php: "posix_spawn() failed: <strerror>"
+        Err(_) => return Ok(Value::Bool(false)),
+    };
+
+    // --- parent side: close child ends, wrap parent ends as streams ----------
+    let mut pipes_arr = PhpArray::new();
+    let mut pipes = Vec::new();
+    for (d, kind) in descs.into_iter().zip(kinds) {
+        drop(d.childend);
+        if let (DescKind::Pipe, Some(p)) = (kind, d.parentend) {
+            if let Some(s) = host.stream_from_fd(p) {
+                pipes_arr.insert(ArrayKey::Int(d.index as i64), s.clone());
+                pipes.push(s);
+            }
+        }
+    }
+    write_ref(args.get(2), Value::Array(pipes_arr));
+    let h = ProcHandle {
+        pid,
+        command,
+        pipes,
+        cached: None,
+    };
+    Ok(host.resource_insert("process", Box::new(h)))
+}
+
+// ---------------------------------------------------------------------------
+// stream_select
+// ---------------------------------------------------------------------------
+
+/// A by-ref array argument of stream_select (None when null).
+fn select_array(v: Option<&Value>) -> Option<PhpArray> {
+    match v.map(deref) {
+        Some(Value::Array(a)) => Some(a),
+        _ => None,
+    }
+}
+
+fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let arrays = [
+        select_array(args.first()),
+        select_array(args.get(1)),
+        select_array(args.get(2)),
+    ];
+    let sec = match args.get(3).map(deref) {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(conv::to_int(&v)),
+    };
+    let usec = match args.get(4).map(deref) {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(conv::to_int(&v)),
+    };
+
+    let mut sets: [libc::fd_set; 3] = unsafe { std::mem::zeroed() };
+    for s in sets.iter_mut() {
+        unsafe { libc::FD_ZERO(s) };
+    }
+    let mut max_fd: RawFd = 0;
+    let mut nsets = 0;
+    for (i, a) in arrays.iter().enumerate() {
+        if let Some(a) = a {
+            for (_, el) in a.iter() {
+                let el = deref(el);
+                if let Some((fd, _)) = host.stream_select_fd(&el) {
+                    if (fd as usize) < libc::FD_SETSIZE {
+                        unsafe { libc::FD_SET(fd, &mut sets[i]) };
+                        max_fd = max_fd.max(fd);
+                        nsets += 1;
+                    }
+                }
+            }
+        }
+    }
+    if nsets == 0 {
+        return Err(Thrown::error("ValueError", "No stream arrays were passed"));
+    }
+    if sec.is_none() && usec.is_some_and(|u| u != 0) {
+        return Err(Thrown::error(
+            "ValueError",
+            "stream_select(): Argument #5 ($microseconds) must be null when argument #4 ($seconds) is null",
+        ));
+    }
+    let mut tv = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 0,
+    };
+    let mut tvp: *mut libc::timeval = std::ptr::null_mut();
+    if let Some(sec) = sec {
+        let usec = usec.unwrap_or(0);
+        if sec < 0 {
+            return Err(Thrown::error(
+                "ValueError",
+                "stream_select(): Argument #4 ($seconds) must be greater than or equal to 0",
+            ));
+        }
+        if usec < 0 {
+            return Err(Thrown::error(
+                "ValueError",
+                "stream_select(): Argument #5 ($microseconds) must be greater than or equal to 0",
+            ));
+        }
+        tv.tv_sec = (sec + usec / 1_000_000) as libc::time_t;
+        tv.tv_usec = (usec % 1_000_000) as libc::suseconds_t;
+        tvp = &mut tv;
+    }
+
+    // Streams with buffered unread data count as readable immediately.
+    if let Some(r) = &arrays[0] {
+        let mut ready = PhpArray::new();
+        for (k, el) in r.iter() {
+            if let Some((_, true)) = host.stream_select_fd(&deref(el)) {
+                ready.insert(k.clone(), el.clone());
+            }
+        }
+        if !ready.is_empty() {
+            let n = ready.len() as i64;
+            write_ref(args.first(), Value::Array(ready));
+            for (i, a) in arrays.iter().enumerate().skip(1) {
+                if a.is_some() {
+                    write_ref(args.get(i), Value::Array(PhpArray::new()));
+                }
+            }
+            return Ok(Value::Int(n));
+        }
+    }
+
+    let (rp, rest) = sets.split_at_mut(1);
+    let (wp, ep) = rest.split_at_mut(1);
+    let n = loop {
+        let n = unsafe { libc::select(max_fd + 1, &mut rp[0], &mut wp[0], &mut ep[0], tvp) };
+        if n == -1 && errno() == libc::EINTR && tvp.is_null() {
+            continue;
+        }
+        break n;
+    };
+    if n == -1 {
+        // php: "Unable to select [%d]: %s (max_fd=%d)"
+        return Ok(Value::Bool(false));
+    }
+    for (i, a) in arrays.iter().enumerate() {
+        let Some(a) = a else { continue };
+        let mut kept = PhpArray::new();
+        for (k, el) in a.iter() {
+            if let Some((fd, _)) = host.stream_select_fd(&deref(el)) {
+                if (fd as usize) < libc::FD_SETSIZE && unsafe { libc::FD_ISSET(fd, &sets[i]) } {
+                    kept.insert(k.clone(), el.clone());
+                }
+            }
+        }
+        write_ref(args.get(i), Value::Array(kept));
+    }
+    Ok(Value::Int(n as i64))
+}
+
+/// `stream_isatty($stream)`: isatty(2) on the stream's fd.
+fn fn_stream_isatty(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = deref(&args[0]);
+    Ok(Value::Bool(match host.stream_select_fd(&v) {
+        Some((fd, _)) => unsafe { libc::isatty(fd) == 1 },
+        None => false,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// process environment helpers
+// ---------------------------------------------------------------------------
+
+/// The passwd entry for a uid: (name, passwd, uid, gid, gecos, dir, shell).
+pub(crate) struct Passwd {
+    pub name: Vec<u8>,
+    pub passwd: Vec<u8>,
+    pub uid: u32,
+    pub gid: u32,
+    pub gecos: Vec<u8>,
+    pub dir: Vec<u8>,
+    pub shell: Vec<u8>,
+}
+
+unsafe fn cbytes(p: *const libc::c_char) -> Vec<u8> {
+    if p.is_null() {
+        Vec::new()
+    } else {
+        std::ffi::CStr::from_ptr(p).to_bytes().to_vec()
+    }
+}
+
+fn passwd_from(pw: &libc::passwd) -> Passwd {
+    unsafe {
+        Passwd {
+            name: cbytes(pw.pw_name),
+            passwd: cbytes(pw.pw_passwd),
+            uid: pw.pw_uid,
+            gid: pw.pw_gid,
+            gecos: cbytes(pw.pw_gecos),
+            dir: cbytes(pw.pw_dir),
+            shell: cbytes(pw.pw_shell),
+        }
+    }
+}
+
+pub(crate) fn getpwuid(uid: u32) -> Option<Passwd> {
+    unsafe {
+        let mut pw: libc::passwd = std::mem::zeroed();
+        let mut buf = vec![0 as libc::c_char; 16384];
+        let mut res: *mut libc::passwd = std::ptr::null_mut();
+        let r = libc::getpwuid_r(uid, &mut pw, buf.as_mut_ptr(), buf.len(), &mut res);
+        (r == 0 && !res.is_null()).then(|| passwd_from(&pw))
+    }
+}
+
+pub(crate) fn getpwnam(name: &[u8]) -> Option<Passwd> {
+    let c = CString::new(name.to_vec()).ok()?;
+    unsafe {
+        let mut pw: libc::passwd = std::mem::zeroed();
+        let mut buf = vec![0 as libc::c_char; 16384];
+        let mut res: *mut libc::passwd = std::ptr::null_mut();
+        let r = libc::getpwnam_r(c.as_ptr(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut res);
+        (r == 0 && !res.is_null()).then(|| passwd_from(&pw))
+    }
+}
+
+fn fn_usleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let us = zpp_long(host, args, 0, "usleep", "microseconds")?;
+    if us < 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "usleep(): Argument #1 ($microseconds) must be greater than or equal to 0",
+        ));
+    }
+    // php calls usleep(3) once: a signal cuts the sleep short.
+    unsafe { libc::usleep(us as libc::useconds_t) };
+    Ok(Value::Null)
+}
+
+fn fn_sleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = zpp_long(host, args, 0, "sleep", "seconds")?;
+    if s < 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "sleep(): Argument #1 ($seconds) must be greater than or equal to 0",
+        ));
+    }
+    // php's sleep(3): returns the unslept seconds when a signal interrupts.
+    Ok(Value::Int(unsafe { libc::sleep(s as libc::c_uint) } as i64))
+}
+
+pub fn register(m: &mut HashMap<&'static str, Builtin>) {
+    fn put(
+        m: &mut HashMap<&'static str, Builtin>,
+        name: &'static str,
+        func: crate::NativeFn,
+        min: usize,
+        max: Option<usize>,
+    ) {
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: max,
+            },
+        );
+    }
+    put(m, "proc_open", fn_proc_open, 3, Some(6));
+    put(m, "proc_close", fn_proc_close, 1, Some(1));
+    put(m, "proc_get_status", fn_proc_get_status, 1, Some(1));
+    put(m, "proc_terminate", fn_proc_terminate, 1, Some(2));
+    put(m, "proc_nice", fn_proc_nice, 1, Some(1));
+    put(m, "exec", fn_exec, 1, Some(3));
+    put(m, "system", fn_system, 1, Some(2));
+    put(m, "passthru", fn_passthru, 1, Some(2));
+    put(m, "shell_exec", fn_shell_exec, 1, Some(1));
+    put(m, "escapeshellarg", fn_escapeshellarg, 1, Some(1));
+    put(m, "escapeshellcmd", fn_escapeshellcmd, 1, Some(1));
+    put(m, "stream_select", fn_stream_select, 4, Some(5));
+    put(m, "stream_isatty", fn_stream_isatty, 1, Some(1));
+    put(m, "usleep", fn_usleep, 1, Some(1));
+    put(m, "sleep", fn_sleep, 1, Some(1));
+}

@@ -1,0 +1,18 @@
+bool(false)
+bool(false)
+string(3) "abc"
+int(2)
+int(0)
+int(4)
+string(1) "f"
+int(0)
+string(2) "ij"
+int(-1)
+bool(true)
+string(4) "abc
+"
+int(9)
+string(15) "pre
+child
+post
+"

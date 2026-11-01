@@ -2329,7 +2329,18 @@ impl ProtoBuilder {
                 }
             }
             Statement::Expression(s) => {
+                // Track the temporaries this statement touches so they can be
+                // released at its end (php frees an expression's temporaries,
+                // running destructors, before the next statement).
+                let from = self.next_temp;
+                let saved_hw = self.high_water;
+                self.high_water = self.next_temp;
                 self.compile_expr(s.expression)?;
+                let to = self.high_water;
+                self.high_water = saved_hw.max(to);
+                if to > from {
+                    self.emit(Instr::ClearTemps { from, to });
+                }
             }
             Statement::Block(b) => {
                 for s in b.statements.iter() {
@@ -3773,6 +3784,18 @@ impl ProtoBuilder {
                             Sel::Dyn(name) => self.emit(Instr::IssetPropDyn { dst: r, obj, name }),
                         }
                         // IssetProp yields a bool; false short-circuits.
+                        let pos = self.code.len();
+                        self.emit(Instr::Nop); // JmpFalse r -> false
+                        jumps.push((pos, r, true));
+                        continue;
+                    }
+                    // `isset($c[$k])`: a string offset out of range reads as
+                    // "" (not null), so dimension isset has its own opcode.
+                    if let Expression::ArrayAccess(aa) = v {
+                        let arr = self.compile_quiet(aa.array)?;
+                        let key = self.compile_expr(aa.index)?;
+                        let r = self.alloc_temp();
+                        self.emit(Instr::IssetDim { dst: r, arr, key });
                         let pos = self.code.len();
                         self.emit(Instr::Nop); // JmpFalse r -> false
                         jumps.push((pos, r, true));

@@ -40,7 +40,9 @@ fn int_arg(args: &[Value], i: usize, default: i64) -> i64 {
 fn given(host: &dyn Host, v: &Value) -> String {
     match v {
         Value::Null => "null".into(),
-        Value::Bool(_) => "bool".into(),
+        // zend_zval_value_name: booleans show their value.
+        Value::Bool(true) => "true".into(),
+        Value::Bool(false) => "false".into(),
         Value::Int(_) => "int".into(),
         Value::Float(_) => "float".into(),
         Value::Str(_) => "string".into(),

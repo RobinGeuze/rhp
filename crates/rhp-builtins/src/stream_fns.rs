@@ -17,12 +17,22 @@ fn deref(v: &Value) -> Value {
     }
 }
 
-fn fn_is_resource(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(matches!(deref(&args[0]), Value::Resource(_))))
+fn fn_is_resource(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = deref(&args[0]);
+    Ok(Value::Bool(
+        matches!(v, Value::Resource(_)) && !host.resource_closed(&v),
+    ))
 }
 
-fn fn_get_resource_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_stream_set_blocking(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let res = deref(&args[0]);
+    let on = conv::to_bool(&deref(&args[1]));
+    Ok(Value::Bool(host.stream_set_blocking(&res, on)))
+}
+
+fn fn_get_resource_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match deref(&args[0]) {
+        ref v @ Value::Resource(_) if host.resource_closed(v) => Ok(Value::str("Unknown")),
         Value::Resource(r) => Ok(Value::str(r.type_name)),
         _ => Ok(Value::str("Unknown")),
     }
@@ -221,12 +231,11 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         Some(0),
     );
     // No-op stream knobs (accepted so framework output code runs).
-    put(m, "stream_set_blocking", fn_true, 2, Some(2));
+    put(m, "stream_set_blocking", fn_stream_set_blocking, 2, Some(2));
     put(m, "stream_set_timeout", fn_true, 2, Some(3));
     put(m, "stream_set_write_buffer", fn_zero, 2, Some(2));
     put(m, "set_file_buffer", fn_zero, 2, Some(2));
-    // TTY / terminal detection — not a terminal under this SAPI.
-    put(m, "stream_isatty", fn_false, 1, Some(1));
-    put(m, "posix_isatty", fn_false, 1, Some(1));
+    // TTY detection: `stream_isatty` lives with the process functions
+    // (proc_fns), `posix_isatty` in ext/posix.
     put(m, "sapi_windows_vt100_support", fn_false, 1, Some(2));
 }

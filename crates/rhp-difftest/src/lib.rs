@@ -26,6 +26,7 @@ use std::process::{Command, Stdio};
 
 use rhp_compiler::compile_with_source;
 use rhp_frontend::Arena;
+use rhp_values::Thrown;
 use rhp_vm::Vm;
 
 // ---------------------------------------------------------------------------
@@ -94,7 +95,20 @@ pub fn run_rhp(source: &[u8]) -> Result<Vec<u8>, String> {
     // harness crash — catch it and report it like any other mismatch cause.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut vm = Vm::new();
-        let r = vm.run(&program);
+        let r = vm.run(&program).map(|code| {
+            // Request shutdown (shutdown functions, destructors, buffers);
+            // an uncaught throwable there fails the run like one in the script.
+            let mut late: Option<Thrown> = None;
+            vm.request_shutdown(code, &mut |t| {
+                late.get_or_insert(t);
+                255
+            });
+            late
+        });
+        let r = match r {
+            Ok(None) => Ok(0),
+            Ok(Some(t)) | Err(t) => Err(t),
+        };
         (r, vm.output().to_vec())
     }));
     match result {

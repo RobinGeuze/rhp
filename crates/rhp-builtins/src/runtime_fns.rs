@@ -621,30 +621,6 @@ fn fn_http_response_code(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
 // sleep / usleep
 // ---------------------------------------------------------------------------
 
-fn fn_sleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = int_param(host, args, 0, "sleep", "seconds", 0)?;
-    if s < 0 {
-        return Err(Thrown::error(
-            "ValueError",
-            "sleep(): Argument #1 ($seconds) must be greater than or equal to 0",
-        ));
-    }
-    std::thread::sleep(std::time::Duration::from_secs(s as u64));
-    Ok(Value::Int(0))
-}
-
-fn fn_usleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let us = int_param(host, args, 0, "usleep", "microseconds", 0)?;
-    if us < 0 {
-        return Err(Thrown::error(
-            "ValueError",
-            "usleep(): Argument #1 ($microseconds) must be greater than or equal to 0",
-        ));
-    }
-    std::thread::sleep(std::time::Duration::from_micros(us as u64));
-    Ok(Value::Null)
-}
-
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
         m.insert(
@@ -685,6 +661,4 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put("headers_list", fn_headers_list, 0, 0);
     put("header_remove", fn_header_remove, 0, 1);
     put("http_response_code", fn_http_response_code, 0, 1);
-    put("sleep", fn_sleep, 1, 1);
-    put("usleep", fn_usleep, 1, 1);
 }

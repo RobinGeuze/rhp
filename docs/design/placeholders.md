@@ -25,7 +25,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 2 | `set_error_handler`/`set_exception_handler`/`restore_*` — stored-nowhere no-ops | `php_fns.rs:140`,`:146` | framework error pipelines, `trigger_error` routing | high | high |
 | 3 | `trigger_error` — returns true, emits nothing | `php_fns.rs:150` | user warnings/deprecations, logging | med | med |
 | 4 | `error_reporting` — always returns `32767` | `php_fns.rs:154` | reads/writes of the mask; no effect either way | low | low |
-| 5 | `register_shutdown_function` — accepted, **never invoked** | `php_fns.rs:162` | shutdown hooks, fatal-error handlers, flush-on-exit | high | high |
+| 5 | ~~`register_shutdown_function` — accepted, never invoked~~ **done**: run by `Vm::request_shutdown` (then destructors, then `ob_*` flush) | — | shutdown hooks, fatal-error handlers, flush-on-exit | — | — |
 | 6 | `memory_get_usage`/`_peak_usage` — fixed `2097152` | `php_fns.rs:167` | memory probes, `ini` memory-limit logic | low | low |
 | 7 | `gc_*`, `set_time_limit` — no-ops | `php_fns.rs:445` | none observable (cosmetic) | low | low |
 | 8 | `setlocale` — always `"C"` | `php_fns.rs:187` | locale-dependent formatting | low | low |
@@ -36,9 +36,9 @@ priority order rather than rediscovered one framework crash at a time.
 | 13 | `putenv` — no-op true | `php_fns.rs:113` | child-process env, `getenv` round-trip | low | med |
 | 14 | ~~`fseek`/`ftell` → 0 (no-op)~~ **RESOLVED** — real positions on plain files (`LocalFile`) and `php://memory` | `fs_fns.rs`, `streams.rs` | — | — | — |
 | 15 | `stream_set_blocking`/`_timeout`/buffer knobs — no-ops | `stream_fns.rs:124` | none observable (cosmetic) | low | low |
-| 16 | `stream_isatty`/`posix_isatty` → false | `stream_fns.rs:131` | colour/TTY detection (composer output) | low | med |
+| 16 | ~~`stream_isatty`/`posix_isatty` → false~~ **done**: real `isatty(2)` on the stream's fd (`proc_fns.rs`, `ext/posix`) | — | colour/TTY detection (composer output) | — | — |
 | 17 | ~~`stream_get_meta_data` — fixed minimal array~~ **RESOLVED** — built from the live stream (wrapper/stream type, mode, uri, eof, seekable, unread_bytes) | `fs_fns.rs` | `wrapper_data` still absent | — | — |
-| 18 | stdin reads return empty | `vm/lib.rs:284` | interactive input, piped stdin | med | med |
+| 18 | ~~stdin reads return empty~~ **done**: `STDIN` reads a buffered dup of fd 0; `php://stdin` opens its own | — | interactive input, piped stdin | — | — |
 | 19 | ~~`is_readable`/`is_writable`/`is_executable`~~ **RESOLVED** — `access(2)` for plain files, mode bits vs uid/gid for other wrappers (phar) | `fs_fns.rs` | — | — | — |
 | 20 | ~~`fileperms` — fixed~~ **RESOLVED** — real `st_mode` via the stream layer (phar: php's `phar_dostat` modes) | `fs_fns.rs` | — | — | — |
 | 21 | ~~`chmod`/`chdir`/`clearstatcache`~~ **RESOLVED** — real `chmod`/`chdir`; `clearstatcache` is a no-op because rhp has no stat cache (php's single-entry stat cache staleness is not modelled) | `file_fns.rs` | — | — | — |
@@ -119,7 +119,20 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
   reads the last diagnostic recorded by §7. Trivial once those exist.
 - **Effort/priority:** low / low.
 
-### 1.5 `register_shutdown_function` — registered, **never invoked**
+### 1.5 `register_shutdown_function` — registered, **never invoked** — RESOLVED
+- **Resolved:** callbacks are stored on the `Vm` and run by
+  `Vm::request_shutdown` (called by the SAPI after `{main}` returns, exits or
+  throws): shutdown functions in order (an `exit`/uncaught throwable stops the
+  rest), then destructors (globals holding the sole reference, last first, then
+  every remaining object in creation order), then all output buffers are flushed.
+  Objects with a `__destruct` are tracked; one the program releases is destructed
+  at the next instruction boundary (frame return, overwritten/unset variable, end
+  of an expression statement via `ClearTemps`). Gap: an object freed while only a
+  non-tracked container held it is destructed late (at the next check) rather than
+  exactly at release, and cycles are destructed at shutdown (php's GC may run
+  earlier).
+
+The original notes:
 - **Now:** accepts and discards; returns `Null` (`php_fns.rs:162-165`). The comment
   admits "Stored by php and run at shutdown; not yet invoked here" — and it is not
   even stored.
@@ -256,7 +269,11 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
 - **Effort/priority:** low / low.
 
 ### 2.3 `stream_isatty` / `posix_isatty` / `sapi_windows_vt100_support` → false
-- **Now:** all `fn_false` (`stream_fns.rs:131-133`).
+- **Status:** `stream_isatty` and `posix_isatty` are now real (`isatty(2)` on the
+  fd behind STDIN/STDOUT/STDERR or a `proc_open` pipe; false for memory/file
+  buffers). `sapi_windows_vt100_support` stays false (non-Windows). The notes
+  below are the original analysis.
+- **Was:** all `fn_false` (`stream_fns.rs:131-133`).
 - **OK because:** under the test SAPI output is captured, so "not a tty" is the
   safe answer and matches piped php.
 - **Breaks:** interactive composer runs decide colour/progress output from
@@ -273,7 +290,12 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
   timed_out, blocked, eof, wrapper_type, stream_type, mode, unread_bytes,
   seekable, uri). `wrapper_data` (http) is still not reported.
 
-### 2.5 stdin reads return empty (`crates/rhp-vm/src/lib.rs:275-304`)
+### 2.5 stdin reads return empty (`crates/rhp-vm/src/lib.rs:275-304`) — RESOLVED
+- **Resolved:** `STDIN` reads go through a lazily created `FdStream` over a dup of
+  fd 0 (php's buffering: one 8 KiB fill per read); `fopen('php://stdin')` and
+  `file_get_contents('php://stdin')` open their own dup, as php does.
+
+The original notes:
 - **Now:** `stream_read` only handles `StreamState::Mem`; every other state
   (including `Stdin`) hits the `_ => Some(Vec::new())` arm (`vm/lib.rs:284`), and
   `stream_gets` returns `None` for stdin (`:302`). So `fgets(STDIN)` / `fread(STDIN)`

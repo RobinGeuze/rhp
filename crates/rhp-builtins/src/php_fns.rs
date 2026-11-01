@@ -30,8 +30,8 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "openssl",
     "pcre",
     "zlib",
-    "bz2",
     "bcmath",
+    "bz2",
     "ctype",
     "json",
     "mbstring",
@@ -44,7 +44,9 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     // XML family: reported so composer resolution passes for packages that
     // require ext-xml/ext-dom (symfony etc.). Runtime XML support is partial.
     "libxml",
+    "pcntl",
     "Phar",
+    "posix",
     "random",
     "Reflection",
     "SimpleXML",

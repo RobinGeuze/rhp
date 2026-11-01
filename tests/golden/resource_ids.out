@@ -1,0 +1,7 @@
+resource(4) of type (process)
+resource(6) of type (stream)
+resource(7) of type (stream)
+resource(10) of type (stream-context)
+resource(11) of type (stream)
+resource(12) of type (Unknown)
+resource(13) of type (stream)

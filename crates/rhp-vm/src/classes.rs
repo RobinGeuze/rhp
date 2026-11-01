@@ -1183,6 +1183,7 @@ impl Vm {
         if self.class_implements(class_id, b"Throwable") {
             self.init_throwable(&obj);
         }
+        self.track_destructible(&obj);
         obj
     }
 

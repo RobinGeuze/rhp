@@ -164,13 +164,63 @@ fn fn_bzopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if path.is_empty() {
         return Err(Thrown::error(
             "ValueError",
-            "bzopen(): Argument #1 ($file) cannot be empty",
+            "bzopen(): Argument #1 ($file) must not be empty",
         ));
     }
     let mut url = SCHEME_PREFIX.to_vec();
     url.extend_from_slice(&path);
     let fmode: &[u8] = if mode == b"r" { b"rb" } else { b"wb" };
-    Ok(host.stream_open(&url, fmode).unwrap_or(Value::Bool(false)))
+    let rel = inner(&path).to_vec();
+    if mode == b"r" && !rel.windows(3).any(|w| w == b"://") {
+        // libbz2 opens lazily: a readable file that isn't bzip2 still opens,
+        // and the first read fails with BZ_DATA_ERROR_MAGIC.
+        if let Ok(raw) = std::fs::read(String::from_utf8_lossy(&rel).as_ref()) {
+            if let Err(code) = decompress(&raw, false) {
+                if let Some(res) = host.stream_open(b"php://memory", b"rb") {
+                    if let Value::Resource(r) = &res {
+                        BZ_ERRORS.with(|t| t.borrow_mut().insert(r.id, code));
+                    }
+                    return Ok(res);
+                }
+            }
+        }
+    }
+    Ok(match host.stream_open(&url, fmode) {
+        Some(v) => v,
+        None => {
+            crate::ext::zlib::warn_open_failed(host, "bzopen", &rel, fmode);
+            Value::Bool(false)
+        }
+    })
+}
+
+thread_local! {
+    /// The libbz2 error state of bzip2 streams whose read failed, by resource id.
+    static BZ_ERRORS: std::cell::RefCell<HashMap<u32, i64>> = std::cell::RefCell::new(HashMap::new());
+}
+
+fn bz_errno(args: &[Value]) -> i64 {
+    match args.first().map(deref) {
+        Some(Value::Resource(r)) => BZ_ERRORS.with(|t| t.borrow().get(&r.id).copied().unwrap_or(0)),
+        _ => 0,
+    }
+}
+
+/// `BZ2_bzerror`'s names, indexed by `-errno`.
+fn bz_errstr(code: i64) -> &'static str {
+    const NAMES: [&str; 10] = [
+        "OK",
+        "SEQUENCE_ERROR",
+        "PARAM_ERROR",
+        "MEM_ERROR",
+        "DATA_ERROR",
+        "DATA_ERROR_MAGIC",
+        "IO_ERROR",
+        "UNEXPECTED_EOF",
+        "OUTBUFF_FULL",
+        "CONFIG_ERROR",
+    ];
+    NAMES.get((-code).max(0) as usize).copied().unwrap_or("???")
 }
 
 fn alias(host: &mut dyn Host, target: &str, args: &[Value]) -> Result<Value, Thrown> {
@@ -181,6 +231,17 @@ fn alias(host: &mut dyn Host, target: &str, args: &[Value]) -> Result<Value, Thr
 }
 
 fn fn_bzread(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    if let Some(len) = args.get(1) {
+        if conv::to_int(&deref(len)) < 0 {
+            return Err(Thrown::error(
+                "ValueError",
+                "bzread(): Argument #2 ($length) must be greater than or equal to 0",
+            ));
+        }
+    }
+    if bz_errno(args) < 0 {
+        return Ok(Value::Bool(false));
+    }
     let mut a = args.to_vec();
     if a.len() < 2 {
         a.push(Value::Int(1024));
@@ -196,18 +257,19 @@ fn fn_bzclose(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_bzflush(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(true))
 }
-fn fn_bzerrno(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(0))
+fn fn_bzerrno(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(bz_errno(args)))
 }
-fn fn_bzerrstr(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str("OK"))
+fn fn_bzerrstr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::str(bz_errstr(bz_errno(args))))
 }
-fn fn_bzerror(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+fn fn_bzerror(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let code = bz_errno(args);
     let mut a = rhp_values::PhpArray::new();
-    a.insert(rhp_values::ArrayKey::from_bytes(b"errno"), Value::Int(0));
+    a.insert(rhp_values::ArrayKey::from_bytes(b"errno"), Value::Int(code));
     a.insert(
         rhp_values::ArrayKey::from_bytes(b"errstr"),
-        Value::str("OK"),
+        Value::str(bz_errstr(code)),
     );
     Ok(Value::Array(a))
 }

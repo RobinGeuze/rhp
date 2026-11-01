@@ -155,6 +155,7 @@ fn fn_zip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     let start = arg_int(args, 5).max(0) as usize;
                     let length = arg_int(args, 6);
                     let Some((mtime, mode)) = file_stat(&path) else {
+                        crate::warn(host, "ZipArchive::addFile(): No such file or directory");
                         return Ok(Value::Bool(false));
                     };
                     let Ok(mut data) = std::fs::read(&path) else {
@@ -172,8 +173,14 @@ fn fn_zip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     (data, mtime, (mode & 0xFFFF) << 16)
                 }
             };
+            let from_file = op.as_slice() == b"add_file";
             match on(id, |a| a.add(name, data, mtime, attr, overwrite)) {
-                Some(Ok(i)) => Value::Int(i as i64),
+                Some(Ok(i)) => {
+                    if from_file {
+                        on(id, |a| a.entries[i].from_file = true);
+                    }
+                    Value::Int(i as i64)
+                }
                 Some(Err(c)) => fail(id, c),
                 None => Value::Bool(false),
             }
@@ -185,7 +192,10 @@ fn fn_zip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 (Some((mtime, _)), Ok(data)) => {
                     Value::Bool(on(id, |a| a.replace(index, data, mtime)).unwrap_or(false))
                 }
-                _ => fail(id, zip_ext::ER_NOENT),
+                _ => {
+                    crate::warn(host, "ZipArchive::replaceFile(): No such file or directory");
+                    Value::Bool(false)
+                }
             }
         }
         b"locate" => {
@@ -211,6 +221,9 @@ fn fn_zip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         b"get" => {
             let i = arg_int(args, 2);
             let len = arg_int(args, 3);
+            if on(id, |a| a.live(i).map(|e| e.from_file)).flatten() == Some(true) {
+                return Ok(fail(id, zip_ext::ER_CHANGED));
+            }
             match on(id, |a| a.live(i).map(|e| e.contents())).flatten() {
                 Some(Some(mut d)) => {
                     if len > 0 && (len as usize) < d.len() {
@@ -443,7 +456,6 @@ class ZipArchive implements Countable {
     // The open archive is keyed by spl_object_id($this) on the Rust side, so
     // no handle property shows up in var_dump / casts.
     private function __h() { return spl_object_id($this); }
-    public function __construct() { __zip('discard', spl_object_id($this)); }
     private function __chk() {
         if (!__zip('is_open', $this->__h())) { throw new ValueError('Invalid or uninitialized Zip object'); }
         return $this->__h();
@@ -460,6 +472,7 @@ class ZipArchive implements Countable {
 
     public function open(string $filename, int $flags = 0): bool|int {
         if ($filename === '') { throw new ValueError('ZipArchive::open(): Argument #1 ($filename) must not be empty'); }
+        if (str_contains($filename, "\0")) { throw new ValueError('ZipArchive::open(): Argument #1 ($filename) must not contain any null bytes'); }
         __zip('close', $this->__h());
         $r = __zip('open', $this->__h(), $filename, $flags);
         if (is_int($r)) { return $r; }
@@ -499,6 +512,7 @@ class ZipArchive implements Countable {
     public function addFile(string $filepath, string $entryname = '', int $start = 0, int $length = ZipArchive::LENGTH_TO_END, int $flags = ZipArchive::FL_OVERWRITE): bool {
         $this->__chk();
         if ($filepath === '') { throw new ValueError('ZipArchive::addFile(): Argument #1 ($filepath) must not be empty'); }
+        if (str_contains($filepath, "\0")) { throw new ValueError('ZipArchive::addFile(): Argument #1 ($filepath) must not contain any null bytes'); }
         if ($entryname === '') { $entryname = $filepath; }
         return $this->__added(__zip('add_file', $this->__h(), $entryname, $filepath, $flags, $start, $length));
     }
@@ -572,12 +586,16 @@ class ZipArchive implements Countable {
         $this->__chk();
         if ($len < 0) { throw new ValueError('ZipArchive::getFromName(): Argument #2 ($len) must be greater than or equal to 0'); }
         $i = $this->__idx($name, $flags);
-        return $i < 0 ? false : __zip('get', $this->__h(), $i, $len);
+        $r = $i < 0 ? false : __zip('get', $this->__h(), $i, $len);
+        $this->__sync();
+        return $r;
     }
     public function getFromIndex(int $index, int $len = 0, int $flags = 0): string|false {
         $this->__chk();
         if ($len < 0) { throw new ValueError('ZipArchive::getFromIndex(): Argument #2 ($len) must be greater than or equal to 0'); }
-        return __zip('get', $this->__h(), $index, $len);
+        $r = __zip('get', $this->__h(), $index, $len);
+        $this->__sync();
+        return $r;
     }
     private function __stream($data) {
         if ($data === false) { return false; }
@@ -586,7 +604,7 @@ class ZipArchive implements Countable {
         rewind($s);
         return $s;
     }
-    public function getStreamIndex(int $index, int $flags = 0) { $this->__chk(); return $this->__stream(__zip('get', $this->__h(), $index, 0)); }
+    public function getStreamIndex(int $index, int $flags = 0) { $this->__chk(); $r = __zip('get', $this->__h(), $index, 0); $this->__sync(); return $this->__stream($r); }
     public function getStreamName(string $name, int $flags = 0) { $this->__chk(); return $this->getStreamIndex($this->__idx($name, $flags)); }
     public function getStream(string $name) { $this->__chk(); return $this->getStreamIndex($this->__idx($name)); }
     public function setExternalAttributesName(string $name, int $opsys, int $attr, int $flags = 0): bool { $this->__chk(); return __zip('set_attr', $this->__h(), $this->__idx($name), $opsys, $attr); }

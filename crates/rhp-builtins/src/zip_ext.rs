@@ -20,7 +20,10 @@ pub const ER_EXISTS: i64 = 10;
 pub const ER_OPEN: i64 = 11;
 pub const ER_WRITE: i64 = 6;
 /// Opening a directory: libzip fails reading it.
-pub const ER_READ_DIR: i64 = 5;
+/// Opening a directory: libzip reports ZIP_ER_OPNOTSUPP.
+pub const ER_READ_DIR: i64 = 28;
+/// `ZIP_ER_CHANGED`: reading an entry whose data source is not committed.
+pub const ER_CHANGED: i64 = 15;
 pub const ER_INVAL: i64 = 18;
 pub const ER_NOZIP: i64 = 19;
 pub const ER_INCONS: i64 = 21;
@@ -104,6 +107,9 @@ pub struct Entry {
     pub deleted: bool,
     /// Whether the entry is pending (added/replaced since open).
     pub pending: bool,
+    /// Pending data from a file source (`addFile`/`replaceFile`): libzip
+    /// can't read it back (ZIP_ER_CHANGED) and stats a compressed size of 0.
+    pub from_file: bool,
 }
 
 impl Entry {
@@ -122,11 +128,15 @@ impl Entry {
             Data::Raw {
                 method, crc, comp, ..
             } => (*crc, comp.len() as u64, *method),
+            Data::New(_) if self.from_file => (0, 0, 0),
             Data::New(d) => (0, d.len() as u64, 0),
         }
     }
     /// Uncompressed contents.
     pub fn contents(&self) -> Option<Vec<u8>> {
+        if self.from_file {
+            return None;
+        }
         match &self.data {
             Data::New(d) => Some(d.clone()),
             Data::Raw {
@@ -330,6 +340,7 @@ fn parse(bytes: &[u8]) -> Result<(Vec<Entry>, Vec<u8>), i64> {
             method: -1,
             deleted: false,
             pending: false,
+            from_file: false,
         });
     }
     Ok((entries, comment))
@@ -434,6 +445,7 @@ impl Archive {
             method: -1,
             deleted: false,
             pending: true,
+            from_file: false,
         };
         self.changed = true;
         if let Some(i) = self.locate(&name, false, false) {
@@ -453,6 +465,7 @@ impl Archive {
                 e.data = Data::New(data);
                 e.mtime = mtime;
                 e.pending = true;
+                e.from_file = true;
                 self.changed = true;
                 true
             }
@@ -632,7 +645,8 @@ impl Archive {
 /// and leading slashes so an entry can never escape the destination.
 fn clean_entry_path(name: &[u8]) -> Vec<u8> {
     let mut parts: Vec<&[u8]> = Vec::new();
-    for seg in name.split(|&c| c == b'/' || c == b'\\') {
+    // IS_SLASH is only '/' on Unix: a backslash is an ordinary name byte.
+    for seg in name.split(|&c| c == b'/') {
         match seg {
             b"" | b"." => {}
             b".." => {
@@ -681,4 +695,16 @@ pub fn with<R>(id: i64, f: impl FnOnce(&mut Archive) -> R) -> Option<R> {
 
 pub fn remove(id: i64) -> Option<Archive> {
     ARCHIVES.with(|t| t.borrow_mut().remove(&id))
+}
+
+/// `free_obj` for a `ZipArchive`: libzip's `zip_close` runs when the object is
+/// freed (also at shutdown), writing an archive that was never closed.
+pub fn object_freed(id: u32) {
+    let a = ARCHIVES
+        .try_with(|t| t.try_borrow_mut().ok().and_then(|mut t| t.remove(&(id as i64))))
+        .ok()
+        .flatten();
+    if let Some(a) = a {
+        let _ = a.commit();
+    }
 }

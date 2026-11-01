@@ -91,6 +91,27 @@ pub struct ObjectData {
     pub properties: IndexMap<PhpStr, Value, FxBuildHasher>,
 }
 
+thread_local! {
+    /// Called with an object's id when its storage is freed (the engine's
+    /// `free_obj` hook: lets native extensions release per-object state, e.g.
+    /// libzip writing an unclosed `ZipArchive`).
+    static OBJECT_FREE_HOOK: std::cell::Cell<Option<fn(u32)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Install the object free hook (see [`ObjectData`]'s `Drop`).
+pub fn set_object_free_hook(f: fn(u32)) {
+    OBJECT_FREE_HOOK.with(|h| h.set(Some(f)));
+}
+
+impl Drop for ObjectData {
+    fn drop(&mut self) {
+        // `try_with`: thread-local teardown may already have run.
+        if let Ok(Some(f)) = OBJECT_FREE_HOOK.try_with(|h| h.get()) {
+            f(self.id);
+        }
+    }
+}
+
 /// What kind of class-like declaration a class table entry is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ClassKind {

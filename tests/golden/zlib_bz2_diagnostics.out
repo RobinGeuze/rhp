@@ -1,0 +1,50 @@
+bool(false)
+2: gzuncompress(): data error
+bool(false)
+2: gzinflate(): data error
+bool(false)
+2: gzuncompress(): insufficient memory
+bool(false)
+2: zlib_decode(): data error
+bool(false)
+2: gzdecode(): data error
+bool(false)
+2: gzdecode(): data error
+string(2) "ok"
+(none)
+bool(false)
+2: gzopen(/nonexistent-dir/x.gz): Failed to open stream: No such file or directory
+bool(false)
+2: gzopen(/nonexistent-dir/x.gz): Failed to open stream: No such file or directory
+bool(false)
+2: gzopen(rhp_zdiag_plain.txt): Failed to open stream: `q' is not a valid mode for fopen
+bool(false)
+2: gzopen(): Cannot open a zlib stream for reading and writing at the same time!
+bool(false)
+2: gzfile(/nonexistent-dir/f): Failed to open stream: No such file or directory
+bool(false)
+2: readgzfile(/nonexistent-dir/f): Failed to open stream: No such file or directory
+bool(false)
+2: bzopen(/nonexistent-dir/f.bz2): Failed to open stream: No such file or directory
+bzopen(): Argument #1 ($file) must not be empty
+bzopen(): Argument #2 ($mode) must be either "r" or "w"
+bool(true)
+bzread(): Argument #2 ($length) must be greater than or equal to 0
+bool(false)
+int(-5)
+string(16) "DATA_ERROR_MAGIC"
+array(2) {
+  ["errno"]=>
+  int(-5)
+  ["errstr"]=>
+  string(16) "DATA_ERROR_MAGIC"
+}
+string(13) "bzip2 payload"
+int(0)
+string(2) "OK"
+bool(false)
+bool(false)
+bool(true)
+int(1000)
+int(-1)
+2: gzseek(): SEEK_END is not supported

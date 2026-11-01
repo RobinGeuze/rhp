@@ -780,7 +780,12 @@ impl Host for Vm {
     }
 
     fn class_has_method(&self, class_id: u32, method: &[u8]) -> bool {
-        self.lookup_method(class_id, method).is_some()
+        match self.lookup_method(class_id, method) {
+            // `__`-prefixed helpers of built-in (prelude) classes are engine
+            // plumbing, invisible to php code; real magic methods stay.
+            Some(m) => !(is_prelude_proto(&m.proto) && is_engine_helper_name(method)),
+            None => false,
+        }
     }
 
     fn class_has_property(&self, class_id: u32, prop: &[u8]) -> bool {
@@ -972,6 +977,7 @@ impl Vm {
         for reg in builtins::stream_wrappers() {
             wrappers.insert(reg.scheme.as_bytes().to_vec(), (reg.factory)());
         }
+        rhp_values::set_object_free_hook(builtins::zip_ext::object_freed);
         Vm {
             out: Vec::new(),
             ob_stack: Vec::new(),
@@ -1014,9 +1020,14 @@ impl Vm {
     /// `error_get_last()` and display it (CLI `display_errors=1`) unless an
     /// `@` is in effect.
     pub(crate) fn emit_diagnostic(&mut self, level: i64, msg: &str) {
-        let (file, line) = match self.stack.len() {
-            0 => (Vec::new(), 0),
-            n => (self.current_file(n - 1), self.current_line(n - 1) as i64),
+        // The innermost user frame: prelude (built-in PHP-source) code has no
+        // line map, and php reports internal functions at their caller.
+        let (file, line) = match (0..self.stack.len())
+            .rev()
+            .find(|&i| !is_prelude_proto(&self.stack[i].proto))
+        {
+            None => (Vec::new(), 0),
+            Some(i) => (self.current_file(i), self.current_line(i) as i64),
         };
         self.last_error = Some((level, msg.as_bytes().to_vec(), file.clone(), line));
         if self.silence > 0 {
@@ -4563,6 +4574,22 @@ fn type_lc(v: &Value) -> &'static str {
         Value::Resource(_) => "resource",
         Value::Ref(_) => "reference",
     }
+}
+
+/// Built-in PHP-source (prelude) code is compiled without a line map.
+fn is_prelude_proto(p: &FunctionProto) -> bool {
+    p.debug.lines.iter().all(|&(_, l)| l == 0)
+}
+
+/// A `__`-prefixed method name that is not one of php's magic methods.
+fn is_engine_helper_name(name: &[u8]) -> bool {
+    const MAGIC: &[&[u8]] = &[
+        b"__construct", b"__destruct", b"__call", b"__callstatic", b"__get", b"__set",
+        b"__isset", b"__unset", b"__sleep", b"__wakeup", b"__serialize", b"__unserialize",
+        b"__tostring", b"__invoke", b"__set_state", b"__clone", b"__debuginfo",
+    ];
+    let lc = name.to_ascii_lowercase();
+    lc.starts_with(b"__") && !MAGIC.contains(&lc.as_slice())
 }
 
 fn array_key_to_value(k: &ArrayKey) -> Value {

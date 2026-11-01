@@ -1,0 +1,157 @@
+string(0) ""
+string(7) "foo.txt"
+string(7) "foo.txt"
+string(3) "txt"
+string(3) "foo"
+string(2) "/a"
+string(1) "b"
+string(4) "/a/b"
+string(4) "/a/b"
+string(0) ""
+string(1) "/"
+string(1) "/"
+string(1) "a"
+string(8) "b.tar.gz"
+string(2) "gz"
+string(8) "b.tar.gz"
+string(1) "a"
+string(8) "b.tar.gz"
+RuntimeException: SplFileInfo::getSize(): stat failed for /nonexist
+RuntimeException: SplFileInfo::getType(): Lstat failed for /nonexist
+bool(false)
+bool(false)
+RuntimeException: SplFileInfo::openFile(/nonexist): Failed to open stream: No such file or directory
+RuntimeException: SplFileObject::__construct(/nonexist): Failed to open stream: No such file or directory
+UnexpectedValueException: DirectoryIterator::__construct(/nonexist): Failed to open directory: No such file or directory
+ValueError: DirectoryIterator::__construct(): Argument #1 ($directory) must not be empty
+UnexpectedValueException: FilesystemIterator::__construct(/nonexist): Failed to open directory: No such file or directory
+LogicException: Cannot use SplFileObject with directories
+int(0)
+string(3) "l1
+"
+int(1)
+string(4) "l2
+"
+int(2)
+string(1) "
+"
+int(3)
+string(2) "l4"
+int(0)
+string(2) "l1"
+int(1)
+string(2) "l2"
+int(2)
+string(2) "l4"
+int(2)
+string(1) "
+"
+string(2) "l4"
+int(3)
+bool(true)
+bool(false)
+bool(true)
+string(5) "f.txt"
+string(2) "l4"
+string(1) "l"
+int(1)
+string(3) "1
+l"
+int(10)
+int(0)
+int(0)
+string(2) "l1"
+string(1) "
+"
+SplFileObject::fread(): Argument #1 ($length) must be greater than 0
+SplFileObject::seek(): Argument #1 ($line) must be greater than or equal to 0
+string(10) "php://temp"
+string(10) "php://temp"
+string(0) ""
+int(12)
+NULL
+array(2) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "b"
+}
+array(2) {
+  [0]=>
+  string(3) "c
+d"
+  [1]=>
+  string(1) "e"
+}
+int(1)
+int(0)
+array(2) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "b"
+}
+int(1)
+array(2) {
+  [0]=>
+  string(3) "c
+d"
+  [1]=>
+  string(1) "e"
+}
+
+Deprecated: SplFileObject::fputcsv(): the $escape parameter must be provided, as its default value will change, either explicitly or via SplFileObject::setCsvControl() in /Users/robing/gits/rhp/.claude/worktrees/wf_01e7afd0-1d2-9/tests/golden/spl_file_objects.php on line 23
+array(3) {
+  [0]=>
+  string(1) ","
+  [1]=>
+  string(1) """
+  [2]=>
+  string(1) "\"
+}
+int(8)
+string(3) "l1
+"
+array(3) {
+  [0]=>
+  string(1) ";"
+  [1]=>
+  string(1) "'"
+  [2]=>
+  string(0) ""
+}
+int(12)
+int(2)
+bool(true)
+bool(true)
+NULL
+string(6) "hello
+"
+int(0)
+int(8)
+string(8) "hello
+wo"
+string(12) "php://memory"
+string(25) "php://temp/maxmemory:1024"
+0:l1 1:l2 
+int(2)
+int(2)
+f.txt SplFileInfo f.txt
+w.txt SplFileInfo w.txt
+array(4) {
+  ["."]=>
+  string(1) "."
+  [".."]=>
+  string(2) ".."
+  ["f.txt"]=>
+  string(5) "f.txt"
+  ["w.txt"]=>
+  string(5) "w.txt"
+}
+int(288)
+array(2) {
+  [0]=>
+  string(14) "f.txt|txt|f|10"
+  [1]=>
+  string(13) "w.txt|txt|f|8"
+}

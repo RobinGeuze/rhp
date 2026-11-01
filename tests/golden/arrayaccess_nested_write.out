@@ -50,3 +50,4 @@ Error: Cannot use a scalar value as an array
 Error: Cannot use object of type stdClass as array
 Error: Cannot use object of type stdClass as array
 Error: Cannot use a scalar value as an array
+Error: [] operator not supported for strings

@@ -199,9 +199,10 @@ fn append_to_empty_string_autovivifies_array() {
 }
 
 #[test]
-fn append_to_nonempty_string_is_type_error() {
+fn append_to_nonempty_string_is_error() {
+    // php: Error "[] operator not supported for strings"
     let (_out, class) = run_throws("<?php $s='hi'; $s[]='x';");
-    assert_eq!(class, "TypeError");
+    assert_eq!(class, "Error");
 }
 
 // --- bind_params / required_params (lib.rs ~1901-1939): arg count error ------

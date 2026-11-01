@@ -62,6 +62,7 @@ foreach ([
     function () { $s = new stdClass; $s[1] = 2; },
     function () { $s = ['o' => new stdClass]; $s['o']['k'] = 2; },
     function () { $t = true; $t[] = 1; },
+    function () { $s = 'hi'; $s[] = 'x'; },
 ] as $f) {
     try {
         $f();

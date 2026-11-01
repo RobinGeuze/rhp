@@ -9448,8 +9448,12 @@ fn read_path(slot: &Value, steps: &[CursorStep], cx: &PropCtx) -> Value {
 }
 
 /// Make `slot` an array (autovivifying null/"" ), or error on a non-empty scalar.
-fn autovivify(slot: &mut Value, cx: &PropCtx) -> Result<(), Thrown> {
+fn autovivify(slot: &mut Value, head: &CursorStep, cx: &PropCtx) -> Result<(), Thrown> {
     match slot {
+        Value::Str(s) if !s.is_empty() && matches!(head, CursorStep::Append) => Err(Thrown::error(
+            "Error",
+            "[] operator not supported for strings",
+        )),
         Value::Array(_) => Ok(()),
         Value::Null => {
             *slot = Value::Array(PhpArray::new());
@@ -9517,7 +9521,7 @@ fn assign_path(
         let child = classes::prop_slot_mut(cx.classes, &mut od, key);
         return assign_path(child, rest, value, cx);
     }
-    autovivify(slot, cx)?;
+    autovivify(slot, head, cx)?;
     let Value::Array(arr) = slot else {
         unreachable!("autovivify ensures array")
     };
@@ -9588,7 +9592,7 @@ fn make_ref_path(
         let child = classes::prop_slot_mut(cx.classes, &mut od, key);
         return make_ref_path(child, rest, cx);
     }
-    autovivify(slot, cx)?;
+    autovivify(slot, head, cx)?;
     let Value::Array(arr) = slot else {
         unreachable!("autovivify ensures array")
     };

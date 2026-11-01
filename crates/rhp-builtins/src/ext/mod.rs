@@ -36,8 +36,8 @@ pub fn modules() -> Vec<ModuleDef> {
         ModuleDef {
             name: "hash",
             functions: hash::register,
-            constants: no_constants,
-            prelude_php: "",
+            constants: hash::constants,
+            prelude_php: hash::PRELUDE_PHP,
             wrappers: no_wrappers,
         },
         ModuleDef {

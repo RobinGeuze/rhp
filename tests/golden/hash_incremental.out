@@ -1,0 +1,19 @@
+bool(true)
+bool(true)
+string(64) "fb8e20fc2e4c3f248c60c39bd652f3c1347298bb977b8b4d5903b85055620603"
+bool(true)
+TypeError: hash_update(): Argument #1 ($context) must be a valid, non-finalized HashContext
+TypeError: hash_final(): Argument #1 ($context) must be a valid, non-finalized HashContext
+TypeError: hash_copy(): Argument #1 ($context) must be a valid, non-finalized HashContext
+ValueError: hash_init(): Argument #1 ($algo) must be a valid hashing algorithm
+ValueError: hash_init(): Argument #1 ($algo) must be a cryptographic hashing algorithm if HMAC is requested
+ValueError: hash_init(): Argument #3 ($key) must not be empty when HMAC is requested
+bool(true)
+int(1)
+int(5)
+int(6)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)

@@ -1050,6 +1050,10 @@ pub struct ClassProto {
     /// Backing type of a backed enum (`Int`/`Str`); `None` for a pure enum or a
     /// non-enum class.
     pub enum_backing: Option<EnumBacking>,
+    /// Where the declaration starts (file, line): php's
+    /// `info.user.filename` / `line_start`, used by "Cannot redeclare class".
+    pub decl_file: PhpStr,
+    pub decl_line: u32,
 }
 
 /// One compiled enum case.

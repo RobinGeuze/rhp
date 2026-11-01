@@ -2263,6 +2263,24 @@ impl Vm {
     /// returns false, nothing else; otherwise php_error_cb: `error_get_last`
     /// and the display / log step (masked by `error_reporting` and `@`). An
     /// exception from the handler becomes `pending_throw`.
+    /// An `E_COMPILE_ERROR` raised while executing (e.g. a runtime class
+    /// redeclaration): never seen by a user error handler, displayed with
+    /// php 8.5's backtrace, then the request bails out (exit status 255).
+    pub(crate) fn fatal_compile_error(&mut self, msg: &str) -> Thrown {
+        let (file, line) = match (0..self.stack.len())
+            .rev()
+            .find(|&i| !is_prelude_proto(&self.stack[i].proto))
+        {
+            None => (Vec::new(), 0),
+            Some(i) => (self.current_file(i), self.current_line(i) as i64),
+        };
+        self.last_error = Some((64, msg.as_bytes().to_vec(), file.clone(), line));
+        let trace = Value::Array(self.build_trace_ex(false, false));
+        let trace = builtins::php_fns::trace_to_string(self, &trace);
+        self.display_error_trace(64, "Fatal error", msg.as_bytes(), &file, line, &trace);
+        Thrown::Exit(255)
+    }
+
     pub(crate) fn raise_error(&mut self, level: i64, msg: &str) {
         // The innermost user frame: prelude (built-in PHP-source) code has no
         // line map, and php reports internal functions at their caller.
@@ -6907,22 +6925,8 @@ impl Vm {
                 .push(Rc::new(rebase_proto_c(proto, base, cbase as u32)));
             self.fn_names.insert(lc, idx);
         }
-        // classes: skip the re-emitted built-in prelude (always the first N); a
-        // user class past that is fatal to redeclare.
-        for c in prog.classes.iter().skip(prog.num_prelude_classes) {
-            if self
-                .class_ids
-                .contains_key(&c.name.as_bytes().to_ascii_lowercase())
-            {
-                return Err(Thrown::error(
-                    "Error",
-                    format!(
-                        "Cannot declare class {}, because the name is already in use",
-                        String::from_utf8_lossy(c.name.as_bytes())
-                    ),
-                ));
-            }
-        }
+        // classes: a name already in use is not early-bound; redeclaring it is
+        // fatal only when its declaration statement runs (`DeclareClass`).
         let top = self.register_decl_classes(prog, base);
         self.hoist_decl_classes(top)?;
         // constants: define_const skips an already-defined name.

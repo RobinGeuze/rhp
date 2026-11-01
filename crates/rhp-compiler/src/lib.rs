@@ -457,6 +457,11 @@ fn dirname(path: &[u8]) -> Vec<u8> {
     }
 }
 
+/// The file being compiled (a class declaration's `info.user.filename`).
+fn decl_file() -> PhpStr {
+    SRC_FILE.with(|f| PhpStr::from_bytes(f.borrow().clone()))
+}
+
 /// 1-based line number for a byte offset, via the current `LINE_STARTS`.
 fn line_of(offset: u32) -> u32 {
     LINE_STARTS.with(|ls| {
@@ -777,6 +782,8 @@ fn compile_class(
         constants: m.constants,
         enum_cases: Vec::new(),
         enum_backing: None,
+        decl_file: decl_file(),
+        decl_line: line_of(class.name.span.start.offset),
     })
 }
 
@@ -821,6 +828,8 @@ fn compile_anon_class(
     };
     let m = compile_members(&ac.members, sigs, &name)?;
     Ok(ClassProto {
+        decl_file: decl_file(),
+        decl_line: line_of(ac.span().start.offset),
         name,
         kind: ClassKind::Class,
         flags,
@@ -898,6 +907,8 @@ fn compile_enum(
         constants: m.constants,
         enum_cases: m.enum_cases,
         enum_backing: backing,
+        decl_file: decl_file(),
+        decl_line: line_of(en.name.span.start.offset),
     })
 }
 
@@ -1113,6 +1124,8 @@ fn compile_trait(
     IN_TRAIT.with(|f| *f.borrow_mut() = saved);
     let m = m?;
     Ok(ClassProto {
+        decl_file: decl_file(),
+        decl_line: line_of(t.name.span.start.offset),
         name,
         kind: ClassKind::Trait,
         flags: ClassFlags::default(),
@@ -1687,6 +1700,8 @@ fn compile_interface(
         constants,
         enum_cases: Vec::new(),
         enum_backing: None,
+        decl_file: decl_file(),
+        decl_line: line_of(iface.name.span.start.offset),
     })
 }
 

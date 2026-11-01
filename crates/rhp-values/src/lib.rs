@@ -63,7 +63,9 @@ thread_local! {
 
 impl Drop for ResourceData {
     fn drop(&mut self) {
-        if self.type_name == "stream" {
+        // Streams and processes are freed on their last reference (php's
+        // refcount-0 resource destructors); other native resources live on.
+        if self.type_name == "stream" || self.type_name == "process" {
             let id = self.id;
             let _ = DROPPED_STREAMS.try_with(|q| {
                 if let Ok(mut q) = q.try_borrow_mut() {

@@ -910,6 +910,13 @@ pub fn warn(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
     host.emit_diagnostic(E_WARNING, &format!("{fname}(): {msg}"))
 }
 
+/// The refcount-0 destructor of a native (non-stream) resource, given its
+/// payload: a process closes its pipes and reaps the child if it already
+/// exited (proc_open_rsrc_dtor); anything else is just dropped.
+pub fn native_resource_dtor(host: &mut dyn Host, data: Box<dyn std::any::Any>) {
+    proc_fns::proc_dtor(host, data);
+}
+
 /// `php_error_docref1(NULL, arg, E_WARNING, msg)`: `fname(arg): msg`.
 pub fn warn_arg(host: &mut dyn Host, fname: &str, arg: &[u8], msg: &str) -> Result<(), Thrown> {
     host.emit_diagnostic(

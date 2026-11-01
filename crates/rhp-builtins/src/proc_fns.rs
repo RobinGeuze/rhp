@@ -645,6 +645,18 @@ impl ProcHandle {
     }
 }
 
+/// proc_open_rsrc_dtor for a process resource whose last reference went
+/// away: close the pipes, then a non-blocking reap.
+pub(crate) fn proc_dtor(host: &mut dyn Host, data: Box<dyn std::any::Any>) {
+    let Ok(mut h) = data.downcast::<ProcHandle>() else {
+        return;
+    };
+    for p in std::mem::take(&mut h.pipes) {
+        host.stream_close(&p);
+    }
+    h.waitpid_cached(libc::WNOHANG);
+}
+
 fn proc_arg<'h>(
     host: &'h mut dyn Host,
     args: &[Value],

@@ -148,6 +148,9 @@ pub struct Vm {
     main_script_path: Option<Vec<u8>>,
     // Open stream resources (fopen family), keyed by resource id.
     streams: HashMap<u32, StreamState>,
+    /// Streams opened on `php://output`: writes go through the output
+    /// buffers like `echo` (unlike `php://stdout`).
+    output_streams: std::collections::HashSet<u32>,
     // The fopen() mode of each stream opened by stream_open.
     stream_modes: HashMap<u32, Vec<u8>>,
     next_resource_id: u32,
@@ -608,7 +611,14 @@ impl Host for Vm {
             .iter()
             .any(|&b| matches!(b, b'w' | b'a' | b'x' | b'c' | b'+'));
         let append = mode.first() == Some(&b'a');
-        let state = if path == b"php://stdout" || path == b"php://output" {
+        if path == b"php://output" {
+            let v = self.make_stream(StreamState::Stdout, "stream");
+            if let Some(id) = res_id(&v) {
+                self.output_streams.insert(id);
+            }
+            return Some(v);
+        }
+        let state = if path == b"php://stdout" {
             StreamState::Stdout
         } else if path == b"php://stderr" {
             StreamState::Stderr
@@ -741,6 +751,7 @@ impl Host for Vm {
             StreamState::Stdin | StreamState::Dir { .. } => Act::No,
         };
         match act {
+            Act::Out if self.output_streams.contains(&id) => self.write_out(data),
             Act::Out => self.emit_stdout(data),
             Act::Err => self.write_stderr(data),
             Act::Buf => match self.streams.get_mut(&id)? {
@@ -2112,6 +2123,7 @@ impl Vm {
             wrappers,
             main_script_path: None,
             streams: HashMap::new(),
+            output_streams: Default::default(),
             last_dir: None,
             default_context: None,
             stream_origins: HashMap::new(),
@@ -3311,7 +3323,11 @@ impl Vm {
             ) {
                 continue;
             }
-            self.free_stream(id);
+            if self.streams.contains_key(&id) {
+                self.free_stream(id);
+            } else if let Some(data) = self.native_resources.remove(&id) {
+                builtins::native_resource_dtor(self, data);
+            }
         }
     }
 

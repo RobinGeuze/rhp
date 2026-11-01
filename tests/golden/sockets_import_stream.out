@@ -1,0 +1,43 @@
+int(1)
+string(6) "Socket"
+int(0)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+int(0)
+array(2) {
+  ["l_onoff"]=>
+  int(0)
+  ["l_linger"]=>
+  int(0)
+}
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+array(2) {
+  ["sec"]=>
+  int(3)
+  ["usec"]=>
+  int(0)
+}
+int(0)
+int(0)
+bool(false)
+bool(true)
+bool(true)
+int(0)
+bool(true)
+int(0)
+string(10) "via stream"
+[2] socket_import_stream(): Cannot represent a stream of type MEMORY as a Socket Descriptor
+bool(false)
+Cannot directly construct Socket, use socket_create() instead
+socket_get_option(): Argument #1 ($socket) must be of type Socket, resource given
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)

@@ -24,6 +24,7 @@ pub mod pcntl;
 pub mod phar;
 pub mod posix;
 pub mod reflection;
+pub mod sockets;
 pub mod spl;
 pub mod tokenizer;
 pub mod zip;
@@ -164,6 +165,13 @@ pub fn modules() -> Vec<ModuleDef> {
             functions: pcntl::register,
             constants: pcntl::constants,
             prelude_php: "",
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "sockets",
+            functions: sockets::register,
+            constants: sockets::constants,
+            prelude_php: sockets::PRELUDE_PHP,
             wrappers: no_wrappers,
         },
     ]

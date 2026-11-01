@@ -34,7 +34,10 @@ fn fn_get_resource_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     match deref(&args[0]) {
         ref v @ Value::Resource(_) if host.resource_closed(v) => Ok(Value::str("Unknown")),
         Value::Resource(r) => Ok(Value::str(r.type_name)),
-        _ => Ok(Value::str("Unknown")),
+        other => Err(Thrown::type_error(format!(
+            "get_resource_type(): Argument #1 ($resource) must be of type resource, {} given",
+            crate::argparse::value_name(host, &other)
+        ))),
     }
 }
 

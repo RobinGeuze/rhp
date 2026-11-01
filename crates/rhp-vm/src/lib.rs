@@ -675,6 +675,22 @@ impl Host for Vm {
             StreamState::File(Box::new(builtins::streams::LocalFile::open(path, mode)?))
         } else if writable {
             let origin = (path.to_vec(), mode.to_vec());
+            let zlib = builtins::streams::split_scheme(path).0 == b"compress.zlib";
+            if zlib {
+                // The zlib wrapper opens (creating / truncating) the inner
+                // plain file right away: a resource of its own.
+                let inner = &path[b"compress.zlib://".len()..];
+                if !inner.windows(3).any(|w| w == b"://") {
+                    let mut o = std::fs::OpenOptions::new();
+                    if append {
+                        o.append(true).create(true);
+                    } else {
+                        o.write(true).create(true).truncate(!append);
+                    }
+                    o.open(String::from_utf8_lossy(inner).as_ref()).ok()?;
+                }
+                self.next_resource_id += 1;
+            }
             let buf = if append {
                 self.wrapper_for(path)
                     .and_then(|w| w.get_contents(path))
@@ -695,6 +711,9 @@ impl Host for Vm {
             return Some(v);
         } else {
             let data = self.wrapper_for(path).and_then(|w| w.get_contents(path))?;
+            if builtins::streams::split_scheme(path).0 == b"compress.zlib" {
+                self.next_resource_id += 1; // the inner plain-file stream
+            }
             let v = self.make_stream(
                 StreamState::Mem {
                     buf: data,

@@ -228,7 +228,7 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     crate::streams::clear_errno();
     match host.stream_get_contents(&url) {
         Some(bytes) => {
-            host.consume_resource_ids(1);
+            host.consume_resource_ids(crate::streams::open_resource_ids(&url));
             // php seeks to `$offset` (SEEK_SET, or SEEK_END when negative)
             // before copying at most `$length` bytes. A plain file may be
             // positioned past its end (reads nothing); other wrappers, and

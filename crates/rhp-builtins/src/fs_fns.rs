@@ -917,7 +917,7 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         crate::open_failed(host, "file", &path)?;
         return Ok(Value::Bool(false));
     };
-    host.consume_resource_ids(1);
+    host.consume_resource_ids(crate::streams::open_resource_ids(&path));
     let mut a = PhpArray::new();
     if buf.is_empty() {
         return Ok(Value::Array(a));

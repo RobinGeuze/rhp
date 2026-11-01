@@ -355,30 +355,48 @@ fn fn_gzpassthru(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(data.len() as i64))
 }
 
-/// `gzread` & co. are the plain stream functions applied to the gz stream.
+/// `gzread` & co. are the plain stream functions applied to the gz stream
+/// (their argument errors name the gz function).
 fn alias(host: &mut dyn Host, target: &str, args: &[Value]) -> Result<Value, Thrown> {
-    match crate::lookup(target) {
-        Some(b) => (b.func)(host, args),
-        None => Ok(Value::Bool(false)),
+    alias_as(host, target, target, args)
+}
+
+fn alias_as(
+    host: &mut dyn Host,
+    target: &str,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, Thrown> {
+    let Some(b) = crate::lookup(target) else {
+        return Ok(Value::Bool(false));
+    };
+    match (b.func)(host, args) {
+        Err(Thrown::Error { class, message }) if message.starts_with(&format!("{target}(")) => {
+            Err(Thrown::Error {
+                class,
+                message: format!("{name}{}", &message[target.len()..]),
+            })
+        }
+        r => r,
     }
 }
 
 macro_rules! aliases {
-    ($($name:ident => $target:literal),* $(,)?) => {
+    ($($name:ident => $target:literal as $gz:literal),* $(,)?) => {
         $(fn $name(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-            alias(host, $target, args)
+            alias_as(host, $target, $gz, args)
         })*
     };
 }
 aliases! {
-    fn_gzread => "fread",
-    fn_gzwrite => "fwrite",
-    fn_gzclose => "fclose",
-    fn_gzeof => "feof",
-    fn_gzgets => "fgets",
-    fn_gzgetc => "fgetc",
-    fn_gzrewind => "rewind",
-    fn_gztell => "ftell",
+    fn_gzread => "fread" as "gzread",
+    fn_gzwrite => "fwrite" as "gzwrite",
+    fn_gzclose => "fclose" as "gzclose",
+    fn_gzeof => "feof" as "gzeof",
+    fn_gzgets => "fgets" as "gzgets",
+    fn_gzgetc => "fgetc" as "gzgetc",
+    fn_gzrewind => "rewind" as "gzrewind",
+    fn_gztell => "ftell" as "gztell",
 }
 
 /// `gzseek` is `fseek` on the gz stream, whose seek op rejects SEEK_END.

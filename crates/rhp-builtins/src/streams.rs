@@ -99,6 +99,16 @@ pub fn last_errno() -> Option<i32> {
     LAST_OS_ERR.with(|c| c.get())
 }
 
+/// How many resource ids php's open of `url` registers: a compress.zlib://
+/// stream wraps an inner plain-file stream.
+pub fn open_resource_ids(url: &[u8]) -> u32 {
+    if split_scheme(url).0 == b"compress.zlib" {
+        2
+    } else {
+        1
+    }
+}
+
 /// `strerror(code)`.
 pub fn strerror(code: i32) -> String {
     unsafe {

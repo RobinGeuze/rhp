@@ -1,0 +1,10 @@
+int(5)
+int(7)
+int(9)
+string(5) "hello"
+int(11)
+string(0) ""
+string(1) "d"
+int(16)
+gzread(): Argument #1 ($stream) must be an open stream resource
+get_resource_type(): Argument #1 ($resource) must be of type resource, false given

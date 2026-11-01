@@ -225,6 +225,7 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         let ctx = args.get(2).map(deref).unwrap_or(Value::Null);
         return Ok(crate::http::fetch(host, &url, &ctx));
     }
+    crate::streams::clear_errno();
     match host.stream_get_contents(&url) {
         Some(bytes) => {
             host.consume_resource_ids(1);
@@ -253,7 +254,19 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             }
             Ok(Value::str(out))
         }
-        None => Ok(Value::Bool(false)),
+        None => {
+            if crate::streams::last_errno() == Some(libc::EISDIR) {
+                host.consume_resource_ids(1);
+                crate::notice(
+                    host,
+                    "file_get_contents",
+                    "Read of 8320 bytes failed with errno=21 Is a directory",
+                )?;
+                return Ok(Value::str(""));
+            }
+            crate::open_failed(host, "file_get_contents", &url)?;
+            Ok(Value::Bool(false))
+        }
     }
 }
 
@@ -291,49 +304,107 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     } else {
         data.clone()
     };
+    crate::streams::clear_errno();
     match host.stream_put_contents(&path, &to_write) {
         // php returns the number of bytes written (the `$data` length).
         Some(_) => {
             host.consume_resource_ids(1);
             Ok(Value::Int(data.len() as i64))
         }
-        None => Ok(Value::Bool(false)),
+        None => {
+            crate::open_failed(host, "file_put_contents", &path)?;
+            Ok(Value::Bool(false))
+        }
     }
 }
 
 fn fn_unlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     crate::fs_fns::touch_ctx(host, args, 1);
-    Ok(Value::Bool(
-        std::fs::remove_file(&*as_str(&path_arg(args, 0))).is_ok(),
-    ))
+    let path = path_arg(args, 0);
+    let c = CString::new(path.clone()).unwrap_or_default();
+    // php_plain_files_unlink: unlink(2) (a directory fails with EPERM/EISDIR).
+    if unsafe { libc::unlink(c.as_ptr()) } != 0 {
+        let e = std::io::Error::last_os_error();
+        crate::warn_arg(host, "unlink", &path, &os_text(&e))?;
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(true))
+}
+
+/// `strerror` of an `io::Error`'s errno (php's warning text).
+fn os_text(e: &std::io::Error) -> String {
+    match e.raw_os_error() {
+        Some(c) => crate::streams::strerror(c),
+        None => e.to_string(),
+    }
 }
 
 fn fn_rmdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     crate::fs_fns::touch_ctx(host, args, 1);
-    Ok(Value::Bool(
-        std::fs::remove_dir(&*as_str(&path_arg(args, 0))).is_ok(),
-    ))
+    let path = path_arg(args, 0);
+    if let Err(e) = std::fs::remove_dir(&*as_str(&path)) {
+        crate::warn_arg(host, "rmdir", &path, &os_text(&e))?;
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(true))
 }
 
 fn fn_rename(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     crate::fs_fns::touch_ctx(host, args, 2);
-    let from = as_str(&path_arg(args, 0)).into_owned();
-    let to = as_str(&path_arg(args, 1)).into_owned();
-    Ok(Value::Bool(std::fs::rename(&from, &to).is_ok()))
+    let from_b = path_arg(args, 0);
+    let to_b = path_arg(args, 1);
+    let from = as_str(&from_b).into_owned();
+    let to = as_str(&to_b).into_owned();
+    let both = [&from_b[..], b",", &to_b[..]].concat();
+    match std::fs::rename(&from, &to) {
+        Ok(()) => Ok(Value::Bool(true)),
+        // php_plain_files_rename: across devices a file is copied (keeping
+        // its mode) and the source unlinked.
+        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+            let meta = match std::fs::symlink_metadata(&from) {
+                Ok(m) => m,
+                Err(e) => {
+                    crate::warn_arg(host, "rename", &both, &os_text(&e))?;
+                    return Ok(Value::Bool(false));
+                }
+            };
+            if meta.is_dir() {
+                crate::warn_arg(host, "rename", &both, &os_text(&e))?;
+                return Ok(Value::Bool(false));
+            }
+            let r = std::fs::copy(&from, &to).and_then(|_| std::fs::remove_file(&from));
+            match r {
+                Ok(()) => Ok(Value::Bool(true)),
+                Err(e) => {
+                    crate::warn_arg(host, "rename", &both, &os_text(&e))?;
+                    Ok(Value::Bool(false))
+                }
+            }
+        }
+        Err(e) => {
+            crate::warn_arg(host, "rename", &both, &os_text(&e))?;
+            Ok(Value::Bool(false))
+        }
+    }
 }
 
-fn fn_touch(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_touch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_arg(args, 0);
     let path_str = as_str(&path).into_owned();
     // Create the file if absent (php's touch creates an empty file).
-    if !std::path::Path::new(&path_str).exists()
-        && std::fs::OpenOptions::new()
+    if !std::path::Path::new(&path_str).exists() {
+        if let Err(e) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path_str)
-            .is_err()
-    {
-        return Ok(Value::Bool(false));
+        {
+            crate::warn(
+                host,
+                "touch",
+                &format!("Unable to create file {path_str} because {}", os_text(&e)),
+            )?;
+            return Ok(Value::Bool(false));
+        }
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -364,6 +435,10 @@ fn fn_touch(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
         Err(_) => false,
     };
+    if !ok {
+        let e = std::io::Error::last_os_error();
+        crate::warn(host, "touch", &format!("Utime failed: {}", os_text(&e)))?;
+    }
     Ok(Value::Bool(ok))
 }
 
@@ -371,28 +446,39 @@ fn fn_true1(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(true))
 }
 
-fn fn_chmod(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_chmod(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mode = conv::to_int(&deref(&args[1])) as libc::mode_t;
     let ok = match CString::new(path_arg(args, 0)) {
         Ok(c) => unsafe { libc::chmod(c.as_ptr(), mode) == 0 },
         Err(_) => false,
     };
+    if !ok {
+        let e = std::io::Error::last_os_error();
+        crate::warn(host, "chmod", &os_text(&e))?;
+    }
     Ok(Value::Bool(ok))
 }
 
-fn fn_readlink(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_readlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match std::fs::read_link(&*as_str(&path_arg(args, 0))) {
         Ok(p) => Ok(Value::str(p.to_string_lossy().into_owned().into_bytes())),
-        Err(_) => Ok(Value::Bool(false)),
+        Err(e) => {
+            crate::warn(host, "readlink", &os_text(&e))?;
+            Ok(Value::Bool(false))
+        }
     }
 }
 
-fn fn_symlink(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_symlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let target = as_str(&path_arg(args, 0)).into_owned();
     let link = as_str(&path_arg(args, 1)).into_owned();
-    Ok(Value::Bool(
-        std::os::unix::fs::symlink(&target, &link).is_ok(),
-    ))
+    match std::os::unix::fs::symlink(&target, &link) {
+        Ok(()) => Ok(Value::Bool(true)),
+        Err(e) => {
+            crate::warn(host, "symlink", &os_text(&e))?;
+            Ok(Value::Bool(false))
+        }
+    }
 }
 
 fn statvfs_of(path: &[u8]) -> Option<libc::statvfs> {
@@ -402,24 +488,31 @@ fn statvfs_of(path: &[u8]) -> Option<libc::statvfs> {
         if libc::statvfs(c.as_ptr(), &mut st) == 0 {
             Some(st)
         } else {
+            crate::streams::note_errno();
             None
         }
     }
 }
 
 /// `disk_free_space` — `f_bavail * f_frsize` as a float (php's formula).
-fn fn_disk_free_space(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_disk_free_space(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match statvfs_of(&path_arg(args, 0)) {
         Some(s) => Ok(Value::Float(s.f_bavail as f64 * s.f_frsize as f64)),
-        None => Ok(Value::Bool(false)),
+        None => {
+            crate::warn(host, "disk_free_space", &crate::streams::last_strerror())?;
+            Ok(Value::Bool(false))
+        }
     }
 }
 
 /// `disk_total_space` — `f_blocks * f_frsize` as a float (php's formula).
-fn fn_disk_total_space(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_disk_total_space(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match statvfs_of(&path_arg(args, 0)) {
         Some(s) => Ok(Value::Float(s.f_blocks as f64 * s.f_frsize as f64)),
-        None => Ok(Value::Bool(false)),
+        None => {
+            crate::warn(host, "disk_total_space", &crate::streams::last_strerror())?;
+            Ok(Value::Bool(false))
+        }
     }
 }
 

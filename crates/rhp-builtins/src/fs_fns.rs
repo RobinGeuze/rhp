@@ -151,8 +151,32 @@ fn fn_stream_context_get_default(host: &mut dyn Host, args: &[Value]) -> Result<
 fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_param(args, 0, "fopen", "filename")?;
     let mode = str_arg(args, 1);
+    if path.is_empty() {
+        return Err(Thrown::error("ValueError", "Path must not be empty"));
+    }
     touch_ctx(host, args, 3);
-    Ok(host.stream_open(&path, &mode).unwrap_or(Value::Bool(false)))
+    crate::streams::clear_errno();
+    match host.stream_open(&path, &mode) {
+        Some(v) => Ok(v),
+        None => {
+            if crate::streams::split_scheme(&path).0 == b"file"
+                && crate::streams::parse_fopen_mode(&mode).is_none()
+            {
+                crate::warn_arg(
+                    host,
+                    "fopen",
+                    &path,
+                    &format!(
+                        "Failed to open stream: `{}' is not a valid mode for fopen",
+                        String::from_utf8_lossy(&mode)
+                    ),
+                )?;
+            } else {
+                crate::open_failed(host, "fopen", &path)?;
+            }
+            Ok(Value::Bool(false))
+        }
+    }
 }
 
 // --- directory streams -------------------------------------------------------
@@ -164,10 +188,26 @@ fn do_opendir(
 ) -> Result<Option<(Vec<u8>, Value)>, Thrown> {
     let path = path_param(args, 0, fname, "directory")?;
     touch_ctx(host, args, 1);
+    crate::streams::clear_errno();
     let Some(entries) = host.stream_opendir(&path) else {
+        dir_open_failed(host, fname, &path)?;
         return Ok(None);
     };
     Ok(host.dir_open(&path, entries).map(|h| (path, h)))
+}
+
+/// "fname(path): Failed to open directory: <strerror>".
+fn dir_open_failed(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<(), Thrown> {
+    let reason = match crate::streams::last_errno() {
+        Some(c) => crate::streams::strerror(c),
+        None => "operation failed".into(),
+    };
+    crate::warn_arg(
+        host,
+        fname,
+        path,
+        &format!("Failed to open directory: {reason}"),
+    )
 }
 
 fn fn_opendir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -298,7 +338,15 @@ fn fn_scandir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         ));
     }
     let flags = int_arg(args, 1, 0);
+    crate::streams::clear_errno();
     let Some(mut names) = host.stream_opendir(&path) else {
+        let errno = crate::streams::last_errno();
+        dir_open_failed(host, "scandir", &path)?;
+        let (code, text) = match errno {
+            Some(c) => (c, crate::streams::strerror(c)),
+            None => (0, "operation failed".into()),
+        };
+        crate::warn(host, "scandir", &format!("(errno {code}): {text}"))?;
         return Ok(Value::Bool(false));
     };
     host.consume_resource_ids(1);
@@ -840,6 +888,7 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     let include_new_line = flags & IGNORE_NEW_LINES == 0;
     let skip_blank = flags & SKIP_EMPTY_LINES != 0;
+    crate::streams::clear_errno();
     let data = if flags & USE_INCLUDE_PATH != 0 {
         match resolve_include_path(&path) {
             Some(p) => host.stream_get_contents(&p),
@@ -849,6 +898,16 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         host.stream_get_contents(&path)
     };
     let Some(buf) = data else {
+        if crate::streams::last_errno() == Some(libc::EISDIR) {
+            host.consume_resource_ids(1);
+            crate::notice(
+                host,
+                "file",
+                "Read of 8192 bytes failed with errno=21 Is a directory",
+            )?;
+            return Ok(Value::Array(PhpArray::new()));
+        }
+        crate::open_failed(host, "file", &path)?;
         return Ok(Value::Bool(false));
     };
     host.consume_resource_ids(1);
@@ -920,38 +979,81 @@ fn stat_path(host: &dyn Host, args: &[Value], link: bool) -> Option<StatInfo> {
     }
 }
 
+/// php_stat's failure warning (not for the existence checks).
+fn stat_failed(
+    host: &mut dyn Host,
+    args: &[Value],
+    fname: &str,
+    link: bool,
+) -> Result<Value, Thrown> {
+    let p = str_arg(args, 0);
+    if !p.is_empty() && !p.contains(&0) {
+        crate::warn(
+            host,
+            fname,
+            &format!(
+                "{}stat failed for {}",
+                if link { "L" } else { "" },
+                String::from_utf8_lossy(&p)
+            ),
+        )?;
+    }
+    Ok(Value::Bool(false))
+}
+
 fn fn_stat(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(stat_path(host, args, false)
-        .map(|s| arr_from_stat(&s))
-        .unwrap_or(Value::Bool(false)))
+    match stat_path(host, args, false) {
+        Some(s) => Ok(arr_from_stat(&s)),
+        None => stat_failed(host, args, "stat", false),
+    }
 }
 
 fn fn_lstat(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(stat_path(host, args, true)
-        .map(|s| arr_from_stat(&s))
-        .unwrap_or(Value::Bool(false)))
+    match stat_path(host, args, true) {
+        Some(s) => Ok(arr_from_stat(&s)),
+        None => stat_failed(host, args, "lstat", true),
+    }
 }
 
 macro_rules! stat_field_fn {
-    ($name:ident, $link:expr, |$s:ident| $e:expr) => {
+    ($name:ident, $fname:literal, $link:expr, $warn:expr, |$s:ident| $e:expr) => {
         fn $name(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-            Ok(match stat_path(host, args, $link) {
-                Some($s) => $e,
-                None => Value::Bool(false),
-            })
+            match stat_path(host, args, $link) {
+                Some($s) => Ok($e),
+                None if $warn => stat_failed(host, args, $fname, $link),
+                None => Ok(Value::Bool(false)),
+            }
         }
     };
 }
 
-stat_field_fn!(fn_fileinode, false, |s| Value::Int(s.ino));
-stat_field_fn!(fn_fileowner, false, |s| Value::Int(s.uid));
-stat_field_fn!(fn_filegroup, false, |s| Value::Int(s.gid));
-stat_field_fn!(fn_fileatime, false, |s| Value::Int(s.atime));
-stat_field_fn!(fn_filemtime, false, |s| Value::Int(s.mtime));
-stat_field_fn!(fn_filectime, false, |s| Value::Int(s.ctime));
-stat_field_fn!(fn_filesize, false, |s| Value::Int(s.size as i64));
-stat_field_fn!(fn_fileperms, false, |s| Value::Int(s.mode as i64));
-stat_field_fn!(fn_is_link, true, |s| Value::Bool(s.is_link()));
+stat_field_fn!(fn_fileinode, "fileinode", false, true, |s| Value::Int(
+    s.ino
+));
+stat_field_fn!(fn_fileowner, "fileowner", false, true, |s| Value::Int(
+    s.uid
+));
+stat_field_fn!(fn_filegroup, "filegroup", false, true, |s| Value::Int(
+    s.gid
+));
+stat_field_fn!(fn_fileatime, "fileatime", false, true, |s| Value::Int(
+    s.atime
+));
+stat_field_fn!(fn_filemtime, "filemtime", false, true, |s| Value::Int(
+    s.mtime
+));
+stat_field_fn!(fn_filectime, "filectime", false, true, |s| Value::Int(
+    s.ctime
+));
+stat_field_fn!(fn_filesize, "filesize", false, true, |s| Value::Int(
+    s.size as i64
+));
+stat_field_fn!(fn_fileperms, "fileperms", false, true, |s| Value::Int(
+    s.mode as i64
+));
+stat_field_fn!(fn_is_link, "is_link", true, false, |s| Value::Bool(
+    s.is_link()
+));
 
 fn exists_check(host: &dyn Host, args: &[Value], link: bool) -> Option<StatInfo> {
     stat_path(host, args, link)
@@ -972,7 +1074,7 @@ fn fn_is_dir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 #[allow(clippy::unnecessary_cast)]
 fn fn_filetype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Some(s) = stat_path(host, args, true) else {
-        return Ok(Value::Bool(false));
+        return stat_failed(host, args, "filetype", true);
     };
     let t = s.mode & libc::S_IFMT as u32;
     let name: &str = if t == libc::S_IFLNK as u32 {
@@ -1281,7 +1383,7 @@ fn fn_stream_get_meta_data(host: &mut dyn Host, args: &[Value]) -> Result<Value,
 // --- hard links -----------------------------------------------------------------------
 
 /// `link($target, $link)`: a hard link; plain paths only.
-fn fn_link(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_link(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let target = path_param(args, 0, "link", "target")?;
     let link = path_param(args, 1, "link", "link")?;
     if target.is_empty() || link.is_empty() {
@@ -1294,9 +1396,13 @@ fn fn_link(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (Ok(t), Ok(l)) = (CString::new(target), CString::new(link)) else {
         return Ok(Value::Bool(false));
     };
-    Ok(Value::Bool(
-        unsafe { libc::link(t.as_ptr(), l.as_ptr()) } == 0,
-    ))
+    if unsafe { libc::link(t.as_ptr(), l.as_ptr()) } != 0 {
+        let e = std::io::Error::last_os_error();
+        let text = crate::streams::strerror(e.raw_os_error().unwrap_or(0));
+        crate::warn(host, "link", &text)?;
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(true))
 }
 
 /// `linkinfo($path)`: `st_dev` of the link itself, or -1.
@@ -1336,8 +1442,15 @@ fn fn_mkdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Bool(false));
     }
     let local = crate::streams::file_path(&path).to_vec();
+    let fail = |host: &mut dyn Host, e: i32| -> Result<Value, Thrown> {
+        crate::warn(host, "mkdir", &crate::streams::strerror(e))?;
+        Ok(Value::Bool(false))
+    };
     if !recursive {
-        return Ok(Value::Bool(sys_mkdir(&local, mode).is_ok()));
+        return match sys_mkdir(&local, mode) {
+            Ok(()) => Ok(Value::Bool(true)),
+            Err(e) => fail(host, e),
+        };
     }
     // Every cumulative prefix ending before a '/', then the whole path.
     let mut prefixes: Vec<Vec<u8>> = Vec::new();
@@ -1360,10 +1473,13 @@ fn fn_mkdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         match sys_mkdir(p, mode) {
             Ok(()) => {}
             Err(e) if e == libc::EEXIST => {}
-            Err(_) => return Ok(Value::Bool(false)),
+            Err(e) => return fail(host, e),
         }
     }
-    Ok(Value::Bool(sys_mkdir(&leaf, mode).is_ok()))
+    match sys_mkdir(&leaf, mode) {
+        Ok(()) => Ok(Value::Bool(true)),
+        Err(e) => fail(host, e),
+    }
 }
 
 /// `copy($from, $to)` — php_copy_file_ctx: refuses directories and copying a
@@ -1376,10 +1492,20 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     touch_ctx(host, args, 2);
     if let Some(s) = host.stream_stat(&from) {
         if s.is_dir {
+            crate::warn(
+                host,
+                "copy",
+                "The first argument to copy() function cannot be a directory",
+            )?;
             return Ok(Value::Bool(false));
         }
         if let Some(d) = host.stream_stat(&to) {
             if d.is_dir {
+                crate::warn(
+                    host,
+                    "copy",
+                    "The second argument to copy() function cannot be a directory",
+                )?;
                 return Ok(Value::Bool(false));
             }
             if s.ino != 0 && d.ino != 0 {
@@ -1393,19 +1519,27 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             }
         }
     }
+    crate::streams::clear_errno();
     let Some(data) = host.stream_get_contents(&from) else {
+        crate::open_failed(host, "copy", &from)?;
         return Ok(Value::Bool(false));
     };
     host.consume_resource_ids(1);
     let (scheme, _) = split_scheme(&to);
+    crate::streams::clear_errno();
     if scheme == b"file" {
         let Some(mut f) = crate::streams::LocalFile::open(&to, b"wb") else {
+            crate::open_failed(host, "copy", &to)?;
             return Ok(Value::Bool(false));
         };
         host.consume_resource_ids(1);
         return Ok(Value::Bool(f.write(&data).is_some()));
     }
-    Ok(Value::Bool(host.stream_put_contents(&to, &data).is_some()))
+    if host.stream_put_contents(&to, &data).is_none() {
+        crate::open_failed(host, "copy", &to)?;
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(true))
 }
 
 // --- temp files / paths ------------------------------------------------------------
@@ -1498,7 +1632,7 @@ fn getrandom_fill(buf: &mut [u8]) {
     buf.copy_from_slice(&t.to_le_bytes()[..buf.len().min(8)]);
 }
 
-fn fn_tempnam(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_tempnam(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let dir = path_param(args, 0, "tempnam", "directory")?;
     let prefix = path_param(args, 1, "tempnam", "prefix")?;
     // php_basename(prefix), truncated to 63 bytes.
@@ -1518,17 +1652,116 @@ fn fn_tempnam(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         if let Some(p) = open_temp(&dir, &pfx) {
             return Ok(Value::str(p));
         }
-        // php: E_NOTICE "file created in the system's temporary directory".
     }
-    Ok(open_temp(&temp_dir(), &pfx)
-        .map(Value::str)
-        .unwrap_or(Value::Bool(false)))
+    match open_temp(&temp_dir(), &pfx) {
+        Some(p) => {
+            if !dir.is_empty() {
+                crate::notice(
+                    host,
+                    "tempnam",
+                    "file created in the system's temporary directory",
+                )?;
+            }
+            Ok(Value::str(p))
+        }
+        None => Ok(Value::Bool(false)),
+    }
+}
+
+/// chown / chgrp / lchown / lchgrp: a user/group name or id; plain paths.
+fn do_chown(
+    host: &mut dyn Host,
+    args: &[Value],
+    fname: &str,
+    group: bool,
+    link: bool,
+) -> Result<Value, Thrown> {
+    let path = path_param(args, 0, fname, "filename")?;
+    let who = args.get(1).map(deref).unwrap_or(Value::Null);
+    let id: u32 = match &who {
+        Value::Int(n) => *n as u32,
+        Value::Str(s) => {
+            let Ok(c) = CString::new(s.as_bytes().to_vec()) else {
+                return Ok(Value::Bool(false));
+            };
+            let found = unsafe {
+                if group {
+                    let g = libc::getgrnam(c.as_ptr());
+                    (!g.is_null()).then(|| (*g).gr_gid)
+                } else {
+                    let p = libc::getpwnam(c.as_ptr());
+                    (!p.is_null()).then(|| (*p).pw_uid)
+                }
+            };
+            match found {
+                Some(id) => id,
+                None => {
+                    let what = if group { "group" } else { "user" };
+                    crate::warn(
+                        host,
+                        fname,
+                        &format!(
+                            "Unable to find {what} ID for {}",
+                            String::from_utf8_lossy(s.as_bytes())
+                        ),
+                    )?;
+                    return Ok(Value::Bool(false));
+                }
+            }
+        }
+        other => {
+            let what = if group { "group" } else { "user" };
+            return Err(Thrown::type_error(format!(
+                "{fname}(): Argument #2 (${what}) must be of type string|int, {} given",
+                given(host, other)
+            )));
+        }
+    };
+    let Ok(c) = CString::new(crate::streams::file_path(&path).to_vec()) else {
+        return Ok(Value::Bool(false));
+    };
+    let (uid, gid) = if group {
+        (u32::MAX, id)
+    } else {
+        (id, u32::MAX)
+    };
+    let r = unsafe {
+        if link {
+            libc::lchown(c.as_ptr(), uid, gid)
+        } else {
+            libc::chown(c.as_ptr(), uid, gid)
+        }
+    };
+    if r != 0 {
+        let e = std::io::Error::last_os_error();
+        crate::warn(
+            host,
+            fname,
+            &crate::streams::strerror(e.raw_os_error().unwrap_or(0)),
+        )?;
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(true))
+}
+
+fn fn_chown(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    do_chown(host, args, "chown", false, false)
+}
+fn fn_chgrp(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    do_chown(host, args, "chgrp", true, false)
+}
+fn fn_lchown(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    do_chown(host, args, "lchown", false, true)
+}
+fn fn_lchgrp(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    do_chown(host, args, "lchgrp", true, true)
 }
 
 /// `readfile($filename)`: copy a file to the output; bytes written or false.
 fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_param(args, 0, "readfile", "filename")?;
     touch_ctx(host, args, 2);
+    crate::streams::clear_errno();
     let data = if args.get(1).is_some_and(|v| conv::to_bool(&deref(v))) {
         match resolve_include_path(&path) {
             Some(p) => host.stream_get_contents(&p),
@@ -1538,6 +1771,17 @@ fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         host.stream_get_contents(&path)
     };
     let Some(data) = data else {
+        if crate::streams::last_errno() == Some(libc::EISDIR) {
+            // The open succeeds; the first read fails (php returns -1).
+            host.consume_resource_ids(1);
+            crate::notice(
+                host,
+                "readfile",
+                "Read of 8192 bytes failed with errno=21 Is a directory",
+            )?;
+            return Ok(Value::Int(-1));
+        }
+        crate::open_failed(host, "readfile", &path)?;
         return Ok(Value::Bool(false));
     };
     host.consume_resource_ids(1);
@@ -1713,6 +1957,10 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "sys_get_temp_dir", fn_sys_get_temp_dir, 0, Some(0));
     put(m, "realpath", fn_realpath, 1, Some(1));
     put(m, "tempnam", fn_tempnam, 2, Some(2));
+    put(m, "chown", fn_chown, 2, Some(2));
+    put(m, "chgrp", fn_chgrp, 2, Some(2));
+    put(m, "lchown", fn_lchown, 2, Some(2));
+    put(m, "lchgrp", fn_lchgrp, 2, Some(2));
     put(m, "readfile", fn_readfile, 1, Some(3));
     put(m, "fpassthru", fn_fpassthru, 1, Some(1));
     put(m, "stream_is_local", fn_stream_is_local, 1, Some(1));

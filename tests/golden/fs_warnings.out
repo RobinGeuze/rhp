@@ -1,0 +1,65 @@
+[2] fopen(/nonexistent/x): Failed to open stream: No such file or directory
+[2] file_get_contents(/nonexistent/x): Failed to open stream: No such file or directory
+[2] file(/nonexistent/x): Failed to open stream: No such file or directory
+[2] file_put_contents(/nonexistent/x): Failed to open stream: No such file or directory
+[2] copy(/nonexistent/x): Failed to open stream: No such file or directory
+[2] readfile(/nonexistent/x): Failed to open stream: No such file or directory
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+[2] mkdir(): No such file or directory
+[2] rmdir(/nonexistent/x): No such file or directory
+[2] unlink(/nonexistent/x): No such file or directory
+[2] rename(/nonexistent/x,/nonexistent/z): No such file or directory
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+[2] touch(): Unable to create file /nonexistent/t because No such file or directory
+[2] chmod(): No such file or directory
+[2] filemtime(): stat failed for /nonexistent/x
+[2] filesize(): stat failed for /nonexistent/x
+[2] fileperms(): stat failed for /nonexistent/x
+[2] stat(): stat failed for /nonexistent/x
+[2] lstat(): Lstat failed for /nonexistent/x
+[2] readlink(): No such file or directory
+[2] filetype(): Lstat failed for /nonexistent/x
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+[2] opendir(/nonexistent/x): Failed to open directory: No such file or directory
+[2] scandir(/nonexistent/x): Failed to open directory: No such file or directory
+[2] scandir(): (errno 2): No such file or directory
+[2] dir(/nonexistent/x): Failed to open directory: No such file or directory
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+[2] fopen(some/file): Failed to open stream: `q' is not a valid mode for fopen
+[2] fopen(): Unable to find the wrapper "nope" - did you forget to enable it when you configured PHP?
+[2] fopen(nope://x): Failed to open stream: No such file or directory
+[2] fopen(): Invalid php:// URL specified
+[2] fopen(php://nope): Failed to open stream: operation failed
+bool(false)
+bool(false)
+bool(false)
+Path must not be empty
+[2] include(nope_missing.php): Failed to open stream: No such file or directory
+[2] include(): Failed opening 'nope_missing.php' for inclusion (include_path=...)
+bool(false)
+caught: file_put_contents(/nonexistent/x): Failed to open stream: No such file or directory
+bool(false)
+string(49) "unlink(/nonexistent/x): No such file or directory"

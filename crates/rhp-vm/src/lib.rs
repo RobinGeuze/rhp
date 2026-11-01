@@ -4382,6 +4382,13 @@ impl Vm {
     /// zend_exception_error(ex, E_ERROR) for an uncaught throwable: a
     /// ParseError reports as `Parse error: <message>`, anything else as
     /// `Fatal error: Uncaught <__toString()>\n  thrown`.
+    /// php_error_cb for a fatal error: recorded for `error_get_last()` (even
+    /// when not displayed), then logged / displayed.
+    fn fatal_error(&mut self, ty: i64, label: &str, message: &[u8], file: &[u8], line: i64) {
+        self.last_error = Some((ty, message.to_vec(), file.to_vec(), line));
+        self.display_error(ty, label, message, file, line);
+    }
+
     fn report_uncaught(&mut self, thrown: Thrown) {
         let thrown = self.materialize(thrown, None);
         let h = match thrown {
@@ -4389,7 +4396,7 @@ impl Vm {
             Thrown::Error { class, message } => {
                 let (file, line) = self.throw_site();
                 let msg = format!("Uncaught {class}: {message}");
-                self.display_error(1, "Fatal error", msg.as_bytes(), &file, line as i64);
+                self.fatal_error(1, "Fatal error", msg.as_bytes(), &file, line as i64);
                 return;
             }
             _ => return,
@@ -4414,7 +4421,7 @@ impl Vm {
             } else {
                 (64, "Fatal error")
             };
-            self.display_error(ty, label, &msg, file, line);
+            self.fatal_error(ty, label, &msg, file, line);
             return;
         }
         let obj = Value::Object(h.clone());
@@ -4428,7 +4435,7 @@ impl Vm {
         let mut msg = b"Uncaught ".to_vec();
         msg.extend_from_slice(&s);
         msg.extend_from_slice(b"\n  thrown");
-        self.display_error(1, "Fatal error", &msg, file, line);
+        self.fatal_error(1, "Fatal error", &msg, file, line);
     }
 
     /// An exception that escaped to the top level: the user handler gets it
@@ -6388,16 +6395,41 @@ impl Vm {
         kind: IncludeKind,
     ) -> Result<Value, Thrown> {
         let path_str = String::from_utf8_lossy(&raw_path).into_owned();
+        builtins::streams::clear_errno();
         let (realpath, source) = match self.resolve_include_path(top, &path_str) {
             Some(found) => found,
             None => {
+                // php_stream_open_for_zend_ex's warning, then the include's.
+                let fname = kind.name();
+                let ip =
+                    String::from_utf8_lossy(&self.ini_get(b"include_path").unwrap_or_default())
+                        .into_owned();
+                let reason = if path_str.is_empty() {
+                    None
+                } else {
+                    Some(match builtins::streams::last_errno() {
+                        Some(c) => builtins::streams::strerror(c),
+                        None => builtins::streams::strerror(2), // ENOENT
+                    })
+                };
+                if let Some(reason) = reason {
+                    self.diag(
+                        2,
+                        &format!("{fname}({path_str}): Failed to open stream: {reason}"),
+                    )?;
+                }
                 if kind.is_require() {
                     return Err(Thrown::error(
                         "Error",
-                        format!("Failed opening required '{path_str}'"),
+                        format!("Failed opening required '{path_str}' (include_path='{ip}')"),
                     ));
                 }
-                // include of a missing file: php warns (to stderr) and returns false
+                self.diag(
+                    2,
+                    &format!(
+                        "{fname}(): Failed opening '{path_str}' for inclusion (include_path='{ip}')"
+                    ),
+                )?;
                 return Ok(Value::Bool(false));
             }
         };

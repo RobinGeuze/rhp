@@ -69,6 +69,55 @@ impl StatInfo {
     }
 }
 
+// --- the errno of the last failed local-filesystem operation ---------------
+// php builds its warnings ("Failed to open stream: No such file or
+// directory", "stat failed for …") from errno right at the failing syscall;
+// the wrappers record it here so the builtin that sees the failure can.
+
+thread_local! {
+    static LAST_OS_ERR: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+}
+
+/// Record the errno of a failed syscall (`errno` read now).
+pub fn note_errno() {
+    let e = std::io::Error::last_os_error();
+    LAST_OS_ERR.with(|c| c.set(e.raw_os_error()));
+}
+
+/// Record the errno carried by an `io::Error`.
+pub fn note_io_err(e: &std::io::Error) {
+    LAST_OS_ERR.with(|c| c.set(e.raw_os_error()));
+}
+
+/// Forget any recorded errno (before an operation whose failure is reported).
+pub fn clear_errno() {
+    LAST_OS_ERR.with(|c| c.set(None));
+}
+
+/// The recorded errno, if the last failure recorded one.
+pub fn last_errno() -> Option<i32> {
+    LAST_OS_ERR.with(|c| c.get())
+}
+
+/// `strerror(code)`.
+pub fn strerror(code: i32) -> String {
+    unsafe {
+        let p = libc::strerror(code);
+        if p.is_null() {
+            return format!("Unknown error {code}");
+        }
+        std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+    }
+}
+
+/// `strerror` of the recorded errno; php's generic text when none was.
+pub fn last_strerror() -> String {
+    match last_errno() {
+        Some(c) => strerror(c),
+        None => "operation failed".to_string(),
+    }
+}
+
 /// `stat(2)` (or `lstat(2)` when `link`) a local path.
 pub fn sys_stat(path: &[u8], link: bool) -> Option<StatInfo> {
     let c = std::ffi::CString::new(path.to_vec()).ok()?;
@@ -82,6 +131,7 @@ pub fn sys_stat(path: &[u8], link: bool) -> Option<StatInfo> {
         if r == 0 {
             Some(StatInfo::from_libc(&st))
         } else {
+            note_errno();
             None
         }
     }
@@ -107,6 +157,7 @@ pub fn sys_readdir(path: &[u8]) -> Option<Vec<Vec<u8>>> {
     unsafe {
         let dir = libc::opendir(c.as_ptr());
         if dir.is_null() {
+            note_errno();
             return None;
         }
         loop {
@@ -200,7 +251,9 @@ impl StreamWrapper for FileWrapper {
         Path::new(&*String::from_utf8_lossy(file_path(url))).exists()
     }
     fn get_contents(&self, url: &[u8]) -> Option<Vec<u8>> {
-        std::fs::read(&*String::from_utf8_lossy(file_path(url))).ok()
+        std::fs::read(&*String::from_utf8_lossy(file_path(url)))
+            .map_err(|e| note_io_err(&e))
+            .ok()
     }
     fn stat(&self, url: &[u8]) -> Option<StatInfo> {
         sys_stat(file_path(url), false)
@@ -213,6 +266,7 @@ impl StreamWrapper for FileWrapper {
     }
     fn put_contents(&self, url: &[u8], data: &[u8]) -> Option<usize> {
         std::fs::write(&*String::from_utf8_lossy(file_path(url)), data)
+            .map_err(|e| note_io_err(&e))
             .ok()
             .map(|_| data.len())
     }
@@ -324,6 +378,7 @@ impl LocalFile {
         let c = std::ffi::CString::new(file_path(path).to_vec()).ok()?;
         let fd = unsafe { libc::open(c.as_ptr(), flags, 0o666 as libc::c_uint) };
         if fd < 0 {
+            note_errno();
             return None;
         }
         Some(LocalFile {

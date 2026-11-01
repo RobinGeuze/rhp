@@ -1,0 +1,20 @@
+int(39)
+string(8) "1f8b0800"
+string(19) "compressed payload!"
+float(39)
+int(39)
+float(39)
+ENCODING '': string(19) "compressed payload!"
+float(39)
+int(0)
+ENCODING 'gzip': string(19) "compressed payload!"
+float(39)
+int(0)
+ENCODING 'identity': string(19) "compressed payload!"
+float(39)
+int(0)
+int(39)
+H: Content-Type: text/plain
+H: Content-Encoding: gzip
+H: Content-Length: 39
+string(19) "compressed payload!"

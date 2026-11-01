@@ -1,0 +1,42 @@
+HTTP/1.1 200 OK
+Content-type: text/html; charset=UTF-8
+X-lower-Case: a
+x-UPPER: b
+Content-Length: 11
+Connection: close
+
+hello world
+==
+string(24) "text/html; charset=UTF-8"
+int(127)
+string(11) "hello world"
+HTTP/1.1 301 Moved Permanently
+location: /hello
+X-Hop: One
+Content-Length: 5
+Connection: close
+
+HTTP/1.1 200 OK
+Content-type: text/html; charset=UTF-8
+X-lower-Case: a
+x-UPPER: b
+Content-Length: 11
+Connection: close
+
+==
+int(229)
+int(1)
+HTTP/1.1 301 Moved Permanently
+location: /hello
+X-Hop: One
+Content-Length: 5
+Connection: close
+
+HTTP/1.1 200 OK
+Content-type: text/html; charset=UTF-8
+X-lower-Case: a
+x-UPPER: b
+Content-Length: 11
+Connection: close
+
+hello world

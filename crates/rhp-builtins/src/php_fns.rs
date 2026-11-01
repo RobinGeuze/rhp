@@ -33,6 +33,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "bcmath",
     "bz2",
     "ctype",
+    "curl",
     "json",
     "mbstring",
     "SPL",

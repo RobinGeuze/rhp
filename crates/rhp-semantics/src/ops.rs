@@ -167,6 +167,29 @@ pub fn concat(a: &Value, b: &Value) -> Value {
 // Comparison
 // ---------------------------------------------------------------------------
 
+/// Predicate over objects (see [`set_not_comparable_hook`]).
+pub type ObjectPredicate = fn(&rhp_values::ObjectHandle) -> bool;
+
+thread_local! {
+    /// Objects whose class installs `zend_objects_not_comparable` (the curl
+    /// handle classes, registered by the extension that creates them).
+    static NOT_COMPARABLE: std::cell::Cell<Option<ObjectPredicate>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Install the predicate telling which objects are not comparable: such an
+/// object is `==` only to itself and uncomparable (1) to anything else.
+pub fn set_not_comparable_hook(f: ObjectPredicate) {
+    NOT_COMPARABLE.with(|c| c.set(Some(f)));
+}
+
+fn not_comparable(v: &Value) -> bool {
+    match v {
+        Value::Object(h) => NOT_COMPARABLE.with(|c| c.get()).is_some_and(|f| f(h)),
+        _ => false,
+    }
+}
+
 /// The type an object is cast to when it is compared with a non-object
 /// (`cast_object` in zend_std_compare_objects).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -438,11 +461,10 @@ fn compare_object_operand(
     } else {
         (b, a, false)
     };
-    if is_obj(other) {
-        if same_object(object, other) {
-            return Ok(Ordering::Equal);
-        }
-    } else if let Bool(_) = other {
+    if is_obj(other) && same_object(object, other) {
+        return Ok(Ordering::Equal);
+    }
+    if let Bool(_) = other {
         let casted = match object {
             Object(h) => cx.cast_object(h, CastTarget::Bool)?,
             _ => Some(Bool(true)),
@@ -455,6 +477,11 @@ fn compare_object_operand(
         } else {
             compare(other, &casted, cx)
         };
+    }
+    // zend_objects_not_comparable (the curl handle classes): uncomparable to
+    // anything but itself, whichever side it is on.
+    if not_comparable(object) || not_comparable(other) {
+        return Ok(Ordering::Greater);
     }
     // Z_OBJ_HANDLER(object, compare)(a, b)
     let Object(h) = object else {

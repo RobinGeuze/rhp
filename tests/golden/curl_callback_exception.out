@@ -1,0 +1,16 @@
+== multi
+caught boom running=true
+[["a",0],["b",0],["c",0]]
+int(1)
+int(1)
+string(11) "hello world"
+string(11) "hello world"
+int(0)
+== curl_exec, header callback
+RuntimeException hdr 1 n=1
+int(0)
+float(11)
+string(11) "hello world"
+== progress callback
+caught progress p=1
+int(0)

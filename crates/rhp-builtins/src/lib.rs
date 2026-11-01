@@ -19,6 +19,7 @@ pub mod memstream;
 pub mod module;
 pub mod streams;
 
+pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};
 
 mod argparse;
@@ -798,6 +799,14 @@ pub trait Host {
     ) -> Option<&mut dyn std::any::Any> {
         None
     }
+    /// Is `res` a stream resource that is still open (not `fclose`d)?
+    fn stream_is_open(&self, _res: &Value) -> bool {
+        true
+    }
+    /// The mode a stream was opened with (`"r"`, `"w+b"`, ...), when known.
+    fn stream_mode(&self, _res: &Value) -> Option<Vec<u8>> {
+        None
+    }
 
     // --- reflection introspection --------------------------------------------
     // Backing for the `Reflection*` classes. Return PHP `Value`s the prelude
@@ -1570,6 +1579,12 @@ is_type!(
 fn fn_intval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
     let base = args.get(1).map(|b| conv::to_int(&deref(b))).unwrap_or(10);
+    // php's curl_cast_object: (int) of a CurlHandle is its object id.
+    if let Value::Object(h) = &v {
+        if is_curl_handle(&v) {
+            return Ok(Value::Int(h.borrow().id as i64));
+        }
+    }
     // `base` applies only to a string argument; base 10 is plain integer conversion.
     if base == 10 {
         return Ok(Value::Int(conv::to_int(&v)));

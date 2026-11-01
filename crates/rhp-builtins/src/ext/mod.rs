@@ -12,6 +12,7 @@ use crate::module::{no_constants, no_wrappers, ModuleDef};
 pub mod bcmath;
 pub mod bz2;
 pub mod ctype;
+pub mod curl;
 pub mod gmp;
 pub mod hash;
 pub mod iconv;
@@ -115,6 +116,13 @@ pub fn modules() -> Vec<ModuleDef> {
             constants: zlib::constants,
             prelude_php: "",
             wrappers: zlib::wrappers,
+        },
+        ModuleDef {
+            name: "curl",
+            functions: curl::register,
+            constants: curl::constants,
+            prelude_php: curl::PRELUDE_PHP,
+            wrappers: no_wrappers,
         },
         ModuleDef {
             name: "openssl",

@@ -148,6 +148,8 @@ pub struct Vm {
     main_script_path: Option<Vec<u8>>,
     // Open stream resources (fopen family), keyed by resource id.
     streams: HashMap<u32, StreamState>,
+    // The fopen() mode of each stream opened by stream_open.
+    stream_modes: HashMap<u32, Vec<u8>>,
     next_resource_id: u32,
     // The most recently opened directory stream (`readdir()` with no handle).
     // The last opened directory handle (php's DIRG(default_dir), which holds
@@ -688,7 +690,38 @@ impl Host for Vm {
             }
             return Some(v);
         };
-        Some(self.make_stream(state, "stream"))
+        let res = self.make_stream(state, "stream");
+        if let Some(id) = res_id(&res) {
+            self.stream_modes.insert(id, mode.to_vec());
+        }
+        Some(res)
+    }
+
+    fn stream_is_open(&self, res: &Value) -> bool {
+        res_id(res).is_some_and(|id| self.streams.contains_key(&id))
+    }
+
+    fn stream_mode(&self, res: &Value) -> Option<Vec<u8>> {
+        let id = res_id(res)?;
+        if let Some(m) = self
+            .stream_modes
+            .get(&id)
+            .or_else(|| self.stream_origins.get(&id).map(|(_, m)| m))
+        {
+            return Some(m.clone());
+        }
+        // Memory / temp streams (returned before the mode is recorded).
+        match self.streams.get(&id)? {
+            StreamState::Mem { mode, .. } => Some(
+                match mode {
+                    MemMode::ReadOnly => &b"rb"[..],
+                    MemMode::Append => b"a+b",
+                    MemMode::ReadWrite => b"w+b",
+                }
+                .to_vec(),
+            ),
+            _ => None,
+        }
     }
 
     fn stream_write(&mut self, res: &Value, data: &[u8]) -> Option<usize> {
@@ -2029,6 +2062,7 @@ impl Vm {
             last_dir: None,
             default_context: None,
             stream_origins: HashMap::new(),
+            stream_modes: HashMap::new(),
             next_resource_id: 1,
             stream_contexts: HashMap::new(),
             last_response_headers: Vec::new(),
@@ -3028,6 +3062,7 @@ impl Vm {
     /// wrapper writes.
     fn free_stream(&mut self, id: u32) -> bool {
         self.stream_origins.remove(&id);
+        self.stream_modes.remove(&id);
         match self.streams.remove(&id) {
             Some(StreamState::FileWrite { buf, url }) => self
                 .wrapper_for(&url)
@@ -4400,7 +4435,14 @@ impl Vm {
 
                 Instr::CastInt { dst, a } => {
                     let v = self.reg_get(top, a);
-                    self.reg_set(top, dst, Value::Int(conv::to_int(&v)));
+                    // php's curl_cast_object: (int) $curlHandle is its object id.
+                    let n = match &v {
+                        Value::Object(h) if rhp_builtins::is_curl_handle(&v) => {
+                            h.borrow().id as i64
+                        }
+                        _ => conv::to_int(&v),
+                    };
+                    self.reg_set(top, dst, Value::Int(n));
                 }
                 Instr::CastFloat { dst, a } => {
                     let v = self.reg_get(top, a);
@@ -5407,6 +5449,12 @@ impl Vm {
                             "__clone method called on non-object",
                         ));
                     };
+                    if let Some(class) = rhp_builtins::curl_uncloneable(&h) {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!("Trying to clone an uncloneable object of class {class}"),
+                        ));
+                    }
                     // php's zval_add_ref: a reference only this object holds is
                     // copied as a plain value, so the clone gets its own slot.
                     // Holders other than the object and our copy that are
@@ -5439,6 +5487,7 @@ impl Vm {
                         properties: props,
                     }));
                     self.track_destructible(&new_obj);
+                    rhp_builtins::curl_cloned(&h, &new_obj);
                     self.reg_set(top, dst, Value::Object(new_obj.clone()));
                     if let Some(m) = self.lookup_method(cls, b"__clone") {
                         self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;

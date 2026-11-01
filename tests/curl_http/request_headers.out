@@ -1,0 +1,59 @@
+GET /echo HTTP/1.1
+Host: 127.0.0.1:PORT
+Accept: */*
+--
+
+==
+GET /echo HTTP/1.1
+Host: 127.0.0.1:PORT
+--
+
+==
+GET /echo HTTP/1.1
+Host: example.test
+Accept: text/x
+User-Agent:
+X-Empty:
+--
+
+==
+GET /echo HTTP/1.1
+Host: 127.0.0.1:PORT
+Accept: */*
+Accept-Encoding: deflate, gzip, br, zstd
+--
+
+==
+GET /echo HTTP/1.1
+Host: 127.0.0.1:PORT
+Accept: */*
+Accept-Encoding: gzip
+--
+
+==
+POST /echo HTTP/1.1
+Host: 127.0.0.1:PORT
+User-Agent: ua/1
+Accept: */*
+Referer: http://ref.test/
+Content-Length: 3
+Content-Type: application/x-www-form-urlencoded
+--
+a=b
+==
+POST /echo HTTP/1.1
+Host: 127.0.0.1:PORT
+Accept: */*
+Content-Type: text/plain
+Content-Length: 3
+--
+x=1
+==
+PATCH /echo HTTP/1.1
+Host: 127.0.0.1:PORT
+Content-Type: application/json
+Accept: application/json
+Content-Length: 2
+--
+{}
+==

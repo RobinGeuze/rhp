@@ -55,6 +55,14 @@ x509-parser = { version = "0.18", features = ["verify"] }
 # HTTP(S) client for the stream http:// / https:// wrappers (rustls TLS with
 # bundled Mozilla roots — no system OpenSSL dependency).
 ureq = "2.12"
+# URL joining for curl redirects (already in the tree via ureq).
+url = "2.5"
+# ext/curl's own HTTP/1.1 transport: the Mozilla roots ureq bundles, plus the
+# brotli / zstd decoders behind CURLOPT_ENCODING (libcurl's "deflate, gzip,
+# br, zstd"). All pure Rust.
+webpki-roots = "0.26"
+brotli-decompressor = "4"
+ruzstd = "0.8"
 
 # zip extension: reading/extracting .zip archives (ZipArchive). Pure-Rust
 # (deflate via the same miniz_oxide backend as flate2).

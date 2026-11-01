@@ -1034,6 +1034,62 @@ fn fn_get_class_methods(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     Ok(Value::Array(a))
 }
 
+fn declared(host: &dyn Host, kind: rhp_values::ClassKind) -> Value {
+    let mut a = PhpArray::new();
+    for n in host.declared_classes(kind) {
+        a.push(Value::str(n));
+    }
+    Value::Array(a)
+}
+
+fn fn_get_declared_classes(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(declared(host, rhp_values::ClassKind::Class))
+}
+
+fn fn_get_declared_interfaces(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(declared(host, rhp_values::ClassKind::Interface))
+}
+
+fn fn_get_declared_traits(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(declared(host, rhp_values::ClassKind::Trait))
+}
+
+/// `get_defined_functions(bool $exclude_disabled = true)`: `internal` lists
+/// the native builtins (sorted; engine `__` helpers hidden) and the
+/// functions the engine defines in PHP source; `user` the script's own.
+fn fn_get_defined_functions(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let _ = crate::argparse::bool_param(
+        host,
+        args,
+        0,
+        "get_defined_functions",
+        "exclude_disabled",
+        true,
+    )?;
+    let (user, engine) = host.defined_functions();
+    let mut names: Vec<&str> = crate::registry()
+        .keys()
+        .copied()
+        .filter(|n| !n.starts_with("__"))
+        .collect();
+    names.sort_unstable();
+    let mut internal = PhpArray::new();
+    for n in names {
+        internal.push(Value::str(n));
+    }
+    for n in engine {
+        internal.push(Value::str(n));
+    }
+    let mut u = PhpArray::new();
+    for n in user {
+        u.push(Value::str(n));
+    }
+    let mut out = PhpArray::new();
+    out.insert(ArrayKey::from_bytes(b"internal"), Value::Array(internal));
+    out.insert(ArrayKey::from_bytes(b"user"), Value::Array(u));
+    Ok(Value::Array(out))
+}
+
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: Option<usize>| {
         m.insert(
@@ -1096,6 +1152,20 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put("get_required_files", fn_get_included_files, 0, Some(0));
     put("trait_exists", fn_trait_exists, 1, Some(2));
     put("get_class_methods", fn_get_class_methods, 1, Some(1));
+    put("get_declared_classes", fn_get_declared_classes, 0, Some(0));
+    put(
+        "get_declared_interfaces",
+        fn_get_declared_interfaces,
+        0,
+        Some(0),
+    );
+    put("get_declared_traits", fn_get_declared_traits, 0, Some(0));
+    put(
+        "get_defined_functions",
+        fn_get_defined_functions,
+        0,
+        Some(1),
+    );
 }
 
 /// The `FNM_*` / `MT_RAND_*` constants.

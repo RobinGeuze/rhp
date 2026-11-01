@@ -81,3 +81,31 @@ bool(true)
 bool(true)
 string(0) ""
 string(0) ""
+array(4) {
+  [0]=>
+  string(1) "C"
+  [1]=>
+  string(1) "D"
+  [2]=>
+  string(1) "E"
+  [3]=>
+  string(2) "En"
+}
+bool(true)
+bool(false)
+array(1) {
+  [0]=>
+  string(5) "Iface"
+}
+array(1) {
+  [0]=>
+  string(1) "T"
+}
+array(2) {
+  [0]=>
+  string(7) "userfnb"
+  [1]=>
+  string(7) "userfna"
+}
+bool(true)
+bool(true)

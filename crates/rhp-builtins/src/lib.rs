@@ -677,6 +677,20 @@ pub trait Host {
         Vec::new()
     }
 
+    /// `get_declared_classes()` / `_interfaces()` / `_traits()`: the names of
+    /// the declared class-likes of `kind` (enums count as classes), built-in
+    /// ones first, then in declaration order. Default: none.
+    fn declared_classes(&self, _kind: rhp_values::ClassKind) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+
+    /// `get_defined_functions()['user']`: lowercase names of the functions
+    /// user code declared, in declaration order, plus (second) the functions
+    /// the engine itself defines in PHP source. Default: none.
+    fn defined_functions(&self) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        (Vec::new(), Vec::new())
+    }
+
     /// `get_class_methods()`: the class's method names in php's member order,
     /// filtered by visibility from the calling scope. Default: none.
     fn class_method_names(&self, _class_id: u32) -> Vec<Vec<u8>> {

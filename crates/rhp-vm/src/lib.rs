@@ -627,6 +627,32 @@ impl Host for Vm {
         out
     }
 
+    fn declared_classes(&self, kind: ClassKind) -> Vec<Vec<u8>> {
+        self.classes
+            .iter()
+            .filter(|c| match kind {
+                ClassKind::Class => matches!(c.kind, ClassKind::Class | ClassKind::Enum),
+                k => c.kind == k,
+            })
+            .map(|c| c.name.as_bytes().to_vec())
+            .collect()
+    }
+
+    fn defined_functions(&self) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        let mut named: Vec<(usize, &Vec<u8>)> =
+            self.fn_names.iter().map(|(n, &i)| (i, n)).collect();
+        named.sort();
+        let (mut user, mut engine) = (Vec::new(), Vec::new());
+        for (i, n) in named {
+            if self.functions[i].debug.file.is_empty() {
+                engine.push(n.clone());
+            } else {
+                user.push(n.clone());
+            }
+        }
+        (user, engine)
+    }
+
     fn class_method_names(&self, class_id: u32) -> Vec<Vec<u8>> {
         let Some(entry) = self.classes.get(class_id as usize) else {
             return Vec::new();

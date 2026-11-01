@@ -25,3 +25,15 @@ $inc = get_included_files();
 var_dump(count($inc), $inc[0] === __FILE__, $inc[1] === realpath($f), get_required_files() === $inc);
 unlink($f);
 var_dump(Phar::running(), Phar::running(false));
+
+// get_declared_* end with the script's own declarations, in order;
+// get_defined_functions()['user'] lists user functions (lowercased).
+interface Iface {}
+enum En { case A; }
+$classes = get_declared_classes();
+var_dump(array_slice($classes, -4), in_array('ArrayIterator', $classes, true), in_array('Iface', $classes, true));
+var_dump(array_slice(get_declared_interfaces(), -1), get_declared_traits());
+$fns = get_defined_functions();
+var_dump($fns['user'], in_array('strlen', $fns['internal'], true), in_array('hash_init', $fns['internal'], true));
+function userFnB() {}
+function userFnA() {}

@@ -1,0 +1,61 @@
+bool(true)
+string(6) "stream"
+[8192] fputcsv(): the $escape parameter must be provided as its default value will change
+a,"b c","d""e","multi
+line",,"x,y","back\slash"
+1;2.5;1;
+
+plain,row
+[8192] fgetcsv(): the $escape parameter must be provided as its default value will change
+array(7) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(3) "b c"
+  [2]=>
+  string(3) "d"e"
+  [3]=>
+  string(10) "multi
+line"
+  [4]=>
+  string(0) ""
+  [5]=>
+  string(3) "x,y"
+  [6]=>
+  string(10) "back\slash"
+}
+[8192] fgetcsv(): the $escape parameter must be provided as its default value will change
+array(1) {
+  [0]=>
+  string(8) "1;2.5;1;"
+}
+[8192] fgetcsv(): the $escape parameter must be provided as its default value will change
+array(1) {
+  [0]=>
+  NULL
+}
+[8192] fgetcsv(): the $escape parameter must be provided as its default value will change
+array(2) {
+  [0]=>
+  string(5) "plain"
+  [1]=>
+  string(3) "row"
+}
+[8192] fgetcsv(): the $escape parameter must be provided as its default value will change
+string(21) "a,"b c","d""e","multi"
+string(3) "lin"
+string(44) "e",,"x,y","back\slash"
+1;2.5;1;
+
+plain,row
+"
+string(1) "a"
+string(1) "b"
+string(1) "c"
+bool(false)
+string(6) "hello
+"
+string(6) "world
+"
+int(0)
+int(3)

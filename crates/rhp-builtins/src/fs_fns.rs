@@ -1789,6 +1789,176 @@ fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(data.len() as i64))
 }
 
+/// `fgetcsv($stream, $length = null, $separator = ",", $enclosure = "\"",
+/// $escape = "\\")`: one CSV record, reading on while an enclosure is open;
+/// false at EOF, `[null]` for a blank line.
+fn fn_fgetcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fgetcsv", "stream")?;
+    if args.len() < 5 {
+        crate::deprecated(
+            host,
+            "fgetcsv",
+            "the $escape parameter must be provided as its default value will change",
+        )?;
+    }
+    let ch = |i: usize, d: u8| -> Option<u8> {
+        match args.get(i).map(deref) {
+            None | Some(Value::Null) => Some(d),
+            Some(v) => conv::to_string_bytes(&v).first().copied(),
+        }
+    };
+    let sep = ch(2, b',').unwrap_or(b',');
+    let enc = ch(3, b'"').unwrap_or(b'"');
+    let esc = ch(4, b'\\');
+    let Some(mut buf) = host.stream_gets(&h) else {
+        return Ok(Value::Bool(false));
+    };
+    // An enclosure left open at the end of the line continues on the next.
+    let open = |b: &[u8]| {
+        let (mut inq, mut i) = (false, 0);
+        while i < b.len() {
+            let c = b[i];
+            if inq && Some(c) == esc && Some(c) != Some(enc) && i + 1 < b.len() {
+                i += 2;
+                continue;
+            }
+            if c == enc {
+                inq = !inq;
+            }
+            i += 1;
+        }
+        inq
+    };
+    while open(&buf) {
+        match host.stream_gets(&h) {
+            Some(more) => buf.extend_from_slice(&more),
+            None => break,
+        }
+    }
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+        if buf.last() == Some(&b'\r') {
+            buf.pop();
+        }
+    } else if buf.last() == Some(&b'\r') {
+        buf.pop();
+    }
+    Ok(Value::Array(crate::parse_fns::parse_csv(
+        &buf, sep, enc, esc,
+    )))
+}
+
+/// php_fputcsv: a field is enclosed when it holds the separator, the
+/// enclosure, the escape character or whitespace; enclosures inside are
+/// doubled (unless escaped). Returns the bytes written.
+fn fn_fputcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fputcsv", "stream")?;
+    if args.len() < 5 {
+        crate::deprecated(
+            host,
+            "fputcsv",
+            "the $escape parameter must be provided as its default value will change",
+        )?;
+    }
+    let Value::Array(fields) = args.get(1).map(deref).unwrap_or(Value::Null) else {
+        return Err(Thrown::type_error(
+            "fputcsv(): Argument #2 ($fields) must be of type array",
+        ));
+    };
+    let ch = |i: usize, d: u8| -> Option<u8> {
+        match args.get(i).map(deref) {
+            None | Some(Value::Null) => Some(d),
+            Some(v) => conv::to_string_bytes(&v).first().copied(),
+        }
+    };
+    let sep = ch(2, b',').unwrap_or(b',');
+    let enc = ch(3, b'"').unwrap_or(b'"');
+    let esc = ch(4, b'\\');
+    let eol = match args.get(5).map(deref) {
+        None | Some(Value::Null) => b"\n".to_vec(),
+        Some(v) => conv::to_string_bytes(&v),
+    };
+    let mut line = Vec::new();
+    for (i, (_, v)) in fields.iter().enumerate() {
+        if i > 0 {
+            line.push(sep);
+        }
+        let f = conv::to_string_bytes(&deref(v));
+        let needs = f.iter().any(|&c| {
+            c == sep || c == enc || Some(c) == esc || matches!(c, b'\n' | b'\r' | b'\t' | b' ')
+        });
+        if needs {
+            line.push(enc);
+            let mut escaped = false;
+            for &c in &f {
+                if Some(c) == esc && esc.is_some() {
+                    escaped = true;
+                } else if !escaped && c == enc {
+                    line.push(enc);
+                } else {
+                    escaped = false;
+                }
+                line.push(c);
+            }
+            line.push(enc);
+        } else {
+            line.extend_from_slice(&f);
+        }
+    }
+    line.extend_from_slice(&eol);
+    Ok(match host.stream_write(&h, &line) {
+        Some(n) => Value::Int(n as i64),
+        None => Value::Bool(false),
+    })
+}
+
+/// `tmpfile()`: a new unlinked temporary file opened "w+b".
+fn fn_tmpfile(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let Some(path) = open_temp(&temp_dir(), b"php") else {
+        return Ok(Value::Bool(false));
+    };
+    let r = host.stream_open(&path, b"w+b");
+    if let Ok(c) = CString::new(path) {
+        unsafe { libc::unlink(c.as_ptr()) };
+    }
+    Ok(r.unwrap_or(Value::Bool(false)))
+}
+
+/// `stream_get_line($stream, $length, $ending = "")`: read up to `$length`
+/// bytes (0 = the default chunk), stopping before `$ending` (consumed).
+fn fn_stream_get_line(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "stream_get_line", "stream")?;
+    let mut max = int_arg(args, 1, 0);
+    if max < 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "stream_get_line(): Argument #2 ($length) must be greater than or equal to 0",
+        ));
+    }
+    if max == 0 {
+        max = 8192;
+    }
+    let ending = str_arg(args, 2);
+    let mut out = Vec::new();
+    while (out.len() as i64) < max {
+        let Some(b) = host.stream_read(&h, 1) else {
+            break;
+        };
+        if b.is_empty() {
+            break;
+        }
+        out.extend_from_slice(&b);
+        if !ending.is_empty() && out.ends_with(&ending) {
+            out.truncate(out.len() - ending.len());
+            return Ok(Value::str(out));
+        }
+    }
+    if out.is_empty() && host.stream_eof(&h) {
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::str(out))
+}
+
 /// `fpassthru($stream)`: output the rest of the stream; bytes written.
 fn fn_fpassthru(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (h, _) = stream_param(host, args, 0, "fpassthru", "stream")?;
@@ -1957,6 +2127,10 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "sys_get_temp_dir", fn_sys_get_temp_dir, 0, Some(0));
     put(m, "realpath", fn_realpath, 1, Some(1));
     put(m, "tempnam", fn_tempnam, 2, Some(2));
+    put(m, "fgetcsv", fn_fgetcsv, 1, Some(5));
+    put(m, "fputcsv", fn_fputcsv, 2, Some(6));
+    put(m, "tmpfile", fn_tmpfile, 0, Some(0));
+    put(m, "stream_get_line", fn_stream_get_line, 2, Some(3));
     put(m, "chown", fn_chown, 2, Some(2));
     put(m, "chgrp", fn_chgrp, 2, Some(2));
     put(m, "lchown", fn_lchown, 2, Some(2));

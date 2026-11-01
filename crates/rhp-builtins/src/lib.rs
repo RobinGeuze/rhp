@@ -977,6 +977,11 @@ pub fn notice(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown>
     host.emit_diagnostic(E_NOTICE, &format!("{fname}(): {msg}"))
 }
 
+/// `php_error_docref(NULL, E_DEPRECATED, msg)` from builtin `fname`.
+pub fn deprecated(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
+    host.emit_diagnostic(E_DEPRECATED, &format!("{fname}(): {msg}"))
+}
+
 /// The `#[\Deprecated]` notice php raises on calling a deprecated function:
 /// `Function f() is deprecated since V, MSG`.
 pub fn deprecated_fn(

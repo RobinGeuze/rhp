@@ -1,0 +1,52 @@
+set 2
+set 3
+unset 4
+get 5
+set 5
+set NULL
+set 7
+get 7
+[8] Indirect modification of overloaded element of A has no effect
+array(4) {
+  [3]=>
+  string(1) "c"
+  [5]=>
+  string(1) "x"
+  [6]=>
+  string(3) "app"
+  [7]=>
+  int(1)
+}
+set 1
+get 1
+set 2
+get 1
+array(1) {
+  [2]=>
+  string(6) "nested"
+}
+set 7
+get 7
+set 7
+string(2) "qr"
+get 's'
+[8] Indirect modification of overloaded element of A has no effect
+set 9
+set NULL
+unset 9
+array(1) {
+  [10]=>
+  string(1) "z"
+}
+exists 3
+exists 3
+get 3
+exists 99
+bool(true)
+string(1) "c"
+bool(true)
+Error: Cannot use a scalar value as an array
+Error: Cannot use a scalar value as an array
+Error: Cannot use object of type stdClass as array
+Error: Cannot use object of type stdClass as array
+Error: Cannot use a scalar value as an array

@@ -43,6 +43,9 @@ enum MagicSplit {
     /// Step `.0` (not the last) is such a property: writes below it go into
     /// whatever `__get` returns.
     Nested(usize, ObjectHandle, PhpStr),
+    /// Step `.0` (a key / append) indexes this ArrayAccess object: the leaf
+    /// is `offsetSet`/`offsetUnset`, a deeper path goes through `offsetGet`.
+    Offset(usize, ObjectHandle),
 }
 
 /// SAPI-injected callback that parses + compiles an included file's source into
@@ -4047,6 +4050,15 @@ impl Vm {
                 };
                 Ok(read_path(&got, &steps[i + 1..], &cx))
             }
+            MagicSplit::Offset(i, h) => {
+                let key = aa_key(&steps[i]).unwrap_or(Value::Null);
+                if i + 1 == steps.len() {
+                    return Ok(deref(&self.aa_offset_get(&h, key)?));
+                }
+                let cell = self.aa_fetch_w(&h, key)?;
+                let rest = &steps[i + 1..];
+                self.with_cursor_root(cell, |vm| vm.cursor_read_magic(top, rest))
+            }
         }
     }
 
@@ -4095,6 +4107,14 @@ impl Vm {
                         }
                         None => return MagicSplit::Plain,
                     }
+                }
+                (Value::Object(h), CursorStep::Key(_) | CursorStep::Append) => {
+                    let cls = h.borrow().class;
+                    return if self.class_implements(cls, b"ArrayAccess") {
+                        MagicSplit::Offset(i, h)
+                    } else {
+                        MagicSplit::Plain
+                    };
                 }
                 _ => return MagicSplit::Plain,
             };
@@ -4178,6 +4198,15 @@ impl Vm {
             }
             MagicSplit::Leaf(h, name) => (steps.len() - 1, h, name),
             MagicSplit::Nested(i, h, name) => (i, h, name),
+            MagicSplit::Offset(i, h) => {
+                let key = aa_key(&steps[i]).unwrap_or(Value::Null);
+                let cell = self.aa_fetch_w(&h, key)?;
+                let rest = &steps[i + 1..];
+                if rest.is_empty() {
+                    return Ok(cell);
+                }
+                return self.with_cursor_root(cell, |vm| vm.cursor_make_ref(top, rest));
+            }
         };
         let cell = self.magic_write_cell(top, h, name)?;
         let rest = &steps[i + 1..];
@@ -4266,16 +4295,20 @@ impl Vm {
                 let rest = &steps[i + 1..];
                 return self.with_cursor_root(cell, |vm| vm.cursor_write(top, rest, v));
             }
-        }
-        // `$obj[$k] = v` / `$obj[] = v` on an ArrayAccess object -> offsetSet.
-        if steps.len() == 1 {
-            if let (Some(h), Some(key)) = (self.cursor_root_obj(top), aa_key(&steps[0])) {
-                let cls = h.borrow().class;
-                if self.class_implements(cls, b"ArrayAccess") {
-                    let m = self.lookup_method(cls, b"offsetset").unwrap();
-                    self.call_sync(&m, Some(h), cls, vec![key, v])?;
+            // `$obj[$k] = v` / `$obj[] = v` on an ArrayAccess object ->
+            // offsetSet; below it, the element is fetched with offsetGet.
+            MagicSplit::Offset(i, h) => {
+                let key = aa_key(&steps[i]).unwrap_or(Value::Null);
+                if i + 1 == steps.len() {
+                    let cls = h.borrow().class;
+                    if let Some(m) = self.lookup_method(cls, b"offsetset") {
+                        self.call_sync(&m, Some(h), cls, vec![key, v])?;
+                    }
                     return Ok(());
                 }
+                let cell = self.aa_fetch_w(&h, key)?;
+                let rest = &steps[i + 1..];
+                return self.with_cursor_root(cell, |vm| vm.cursor_write(top, rest, v));
             }
         }
         let cx = PropCtx {
@@ -4293,18 +4326,6 @@ impl Vm {
                 let r = assign_path(&mut rc.borrow_mut(), steps, v, &cx);
                 r
             }
-        }
-    }
-
-    /// The deref'd object at the cursor root, if any (for ArrayAccess dispatch).
-    fn cursor_root_obj(&self, top: usize) -> Option<ObjectHandle> {
-        let v = match &self.cursor_root {
-            CursorRoot::Cv(r) => self.stack[top].regs[*r as usize].clone(),
-            CursorRoot::Cell(rc) => rc.borrow().clone(),
-        };
-        match deref(&v) {
-            Value::Object(h) => Some(h),
-            _ => None,
         }
     }
 
@@ -4994,18 +5015,28 @@ impl Vm {
         }
     }
 
-    fn cursor_unset(&mut self, top: usize, steps: &[CursorStep]) {
-        // `unset($obj[$k])` on an ArrayAccess object -> offsetUnset.
-        if steps.len() == 1 {
-            if let (Some(h), Some(CursorStep::Key(k))) = (self.cursor_root_obj(top), steps.first())
-            {
-                let cls = h.borrow().class;
-                if self.class_implements(cls, b"ArrayAccess") {
+    fn cursor_unset(&mut self, top: usize, steps: &[CursorStep]) -> Result<(), Thrown> {
+        match self.cursor_magic_split(top, steps) {
+            MagicSplit::Plain | MagicSplit::Leaf(..) => {}
+            MagicSplit::Nested(i, h, name) => {
+                let cell = self.magic_write_cell(top, h, name)?;
+                let rest = &steps[i + 1..];
+                return self.with_cursor_root(cell, |vm| vm.cursor_unset(top, rest));
+            }
+            // `unset($obj[$k])` on an ArrayAccess object -> offsetUnset; one
+            // deeper in the path is fetched with offsetGet first.
+            MagicSplit::Offset(i, h) => {
+                let key = aa_key(&steps[i]).unwrap_or(Value::Null);
+                if i + 1 == steps.len() {
+                    let cls = h.borrow().class;
                     if let Some(m) = self.lookup_method(cls, b"offsetunset") {
-                        let _ = self.call_sync(&m, Some(h), cls, vec![k.clone()]);
+                        self.call_sync(&m, Some(h), cls, vec![key])?;
                     }
-                    return;
+                    return Ok(());
                 }
+                let cell = self.aa_fetch_w(&h, key)?;
+                let rest = &steps[i + 1..];
+                return self.with_cursor_root(cell, |vm| vm.cursor_unset(top, rest));
             }
         }
         let cx = PropCtx {
@@ -5020,11 +5051,51 @@ impl Vm {
                 unset_path(&mut rc.borrow_mut(), steps, &cx);
             }
         }
+        Ok(())
+    }
+
+    /// `offsetGet($key)` on an ArrayAccess object.
+    fn aa_offset_get(&mut self, h: &ObjectHandle, key: Value) -> Result<Value, Thrown> {
+        let cls = h.borrow().class;
+        match self.lookup_method(cls, b"offsetget") {
+            Some(m) => self.call_sync(&m, Some(h.clone()), cls, vec![key]),
+            None => Ok(Value::Null),
+        }
+    }
+
+    /// An ArrayAccess element fetched for writing below it (php's
+    /// FETCH_DIM_W/RW/UNSET on an object): `offsetGet`, whose result is the
+    /// cell further writes land in — a temporary unless it returned by
+    /// reference ("Indirect modification of overloaded element" notice when
+    /// that temporary is not an object, which writes could still reach).
+    fn aa_fetch_w(&mut self, h: &ObjectHandle, key: Value) -> Result<Rc<RefCell<Value>>, Thrown> {
+        let got = self.aa_offset_get(h, key)?;
+        Ok(match got {
+            Value::Ref(rc) => rc,
+            other => {
+                if !matches!(other, Value::Object(_) | Value::Closure(_)) {
+                    let cls = h.borrow().class;
+                    let msg = format!(
+                        "Indirect modification of overloaded element of {} has no effect",
+                        String::from_utf8_lossy(self.class(cls).name.as_bytes())
+                    );
+                    self.diag(8, &msg)?;
+                }
+                Rc::new(RefCell::new(other))
+            }
+        })
     }
 
     /// Promote a CV slot to a shared reference cell, returning the cell. If the
     /// slot already holds a `Ref`, its cell is reused.
     fn promote(&mut self, top: usize, cv: Reg) -> Rc<RefCell<Value>> {
+        let f = &self.stack[top];
+        if f.global_scope {
+            if let Some(n) = f.proto.cv_var_names.get(cv as usize) {
+                let n = n.as_bytes().to_vec();
+                self.ref_globals.insert(n);
+            }
+        }
         let slot = &mut self.stack[top].regs[cv as usize];
         match slot {
             Value::Ref(rc) => rc.clone(),
@@ -5588,10 +5659,24 @@ impl Vm {
                 }
                 Instr::UnsetLval => {
                     let steps = std::mem::take(&mut self.cursor_steps);
-                    self.cursor_unset(top, &steps);
+                    self.cursor_unset(top, &steps)?;
                 }
                 Instr::IncDecLval { dst, pre, delta } => {
                     let steps = std::mem::take(&mut self.cursor_steps);
+                    // `$obj[$k]++` on an ArrayAccess object: php fetches the
+                    // element for RW (offsetGet) and increments that; there
+                    // is no offsetSet.
+                    if let MagicSplit::Offset(i, h) = self.cursor_magic_split(top, &steps) {
+                        if i + 1 == steps.len() {
+                            let key = aa_key(&steps[i]).unwrap_or(Value::Null);
+                            let cell = self.aa_fetch_w(&h, key)?;
+                            let old = deref(&cell.borrow());
+                            let new = inc_dec_value(&old, delta as i64);
+                            *cell.borrow_mut() = new.clone();
+                            self.reg_set(top, dst, if pre { new } else { old });
+                            continue;
+                        }
+                    }
                     let old = self.cursor_read_magic(top, &steps)?;
                     let new = inc_dec_value(&old, delta as i64);
                     self.cursor_write(top, &steps, new.clone())?;
@@ -9272,7 +9357,7 @@ fn read_path(slot: &Value, steps: &[CursorStep], cx: &PropCtx) -> Value {
 }
 
 /// Make `slot` an array (autovivifying null/"" ), or error on a non-empty scalar.
-fn autovivify(slot: &mut Value) -> Result<(), Thrown> {
+fn autovivify(slot: &mut Value, cx: &PropCtx) -> Result<(), Thrown> {
     match slot {
         Value::Array(_) => Ok(()),
         Value::Null => {
@@ -9283,7 +9368,26 @@ fn autovivify(slot: &mut Value) -> Result<(), Thrown> {
             *slot = Value::Array(PhpArray::new());
             Ok(())
         }
-        _ => Err(Thrown::type_error("Cannot use a scalar value as an array")),
+        Value::Object(h) => Err(Thrown::error(
+            "Error",
+            format!(
+                "Cannot use object of type {} as array",
+                h.try_borrow()
+                    .map(
+                        |b| String::from_utf8_lossy(cx.classes[b.class as usize].name.as_bytes())
+                            .into_owned()
+                    )
+                    .unwrap_or_default()
+            ),
+        )),
+        Value::Closure(_) => Err(Thrown::error(
+            "Error",
+            "Cannot use object of type Closure as array",
+        )),
+        _ => Err(Thrown::error(
+            "Error",
+            "Cannot use a scalar value as an array",
+        )),
     }
 }
 
@@ -9322,7 +9426,7 @@ fn assign_path(
         let child = classes::prop_slot_mut(cx.classes, &mut od, key);
         return assign_path(child, rest, value, cx);
     }
-    autovivify(slot)?;
+    autovivify(slot, cx)?;
     let Value::Array(arr) = slot else {
         unreachable!("autovivify ensures array")
     };
@@ -9393,7 +9497,7 @@ fn make_ref_path(
         let child = classes::prop_slot_mut(cx.classes, &mut od, key);
         return make_ref_path(child, rest, cx);
     }
-    autovivify(slot)?;
+    autovivify(slot, cx)?;
     let Value::Array(arr) = slot else {
         unreachable!("autovivify ensures array")
     };

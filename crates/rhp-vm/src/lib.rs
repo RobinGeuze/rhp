@@ -2081,6 +2081,8 @@ struct Frame {
     extra_args: Vec<Value>,
     /// `include`/`require`/`eval` frame: the construct name shown in traces.
     include_kind: Option<&'static str>,
+    /// Variables created by name (`$$n = v`) that have no compiled slot.
+    dyn_vars: HashMap<Vec<u8>, Rc<RefCell<Value>>>,
 }
 
 /// A builtin (native) call in progress, for exception traces: php shows the
@@ -2142,6 +2144,7 @@ impl Frame {
             holes: 0,
             extra_args: Vec::new(),
             include_kind: None,
+            dyn_vars: HashMap::new(),
         }
     }
 }
@@ -3012,6 +3015,158 @@ impl Vm {
                 .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))
         };
         self.enter_method(top, &m, this, called, dst, base, argc)
+    }
+
+    /// `$o->m(...)` with the arguments in an array (spread / named arguments):
+    /// register `args` holds positional entries then named (string-keyed)
+    /// ones. An undefined or inaccessible method goes to `__call` with the
+    /// arguments array as is (php collects named arguments into it).
+    fn call_method_args(
+        &mut self,
+        top: usize,
+        obj: Reg,
+        mname: Vec<u8>,
+        args: Reg,
+        dst: Reg,
+    ) -> Result<(), Thrown> {
+        let o = self.reg_get(top, obj);
+        let arr = self.reg_get(top, args);
+        if let Value::Closure(_) = o {
+            let (argv, _named) = self.split_call_args(&arr)?;
+            let r = self.closure_method(&o, &mname, argv)?;
+            self.reg_set(top, dst, r);
+            return Ok(());
+        }
+        let Value::Object(h) = o else {
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "Call to a member function {}() on {}",
+                    String::from_utf8_lossy(&mname),
+                    type_lc(&o)
+                ),
+            ));
+        };
+        let gid = h.borrow().id;
+        if self.generators.contains_key(&gid) {
+            let (argv, _named) = self.split_call_args(&arr)?;
+            if let Some(r) = self.generator_method(gid, &mname.to_ascii_lowercase(), &argv) {
+                let r = r?;
+                self.reg_set(top, dst, r);
+                return Ok(());
+            }
+        }
+        let cls = h.borrow().class;
+        let found = self.lookup_method(cls, &mname);
+        let accessible = found.as_ref().is_some_and(|m| {
+            self.check_access(
+                self.stack[top].defining_class,
+                m.defining_class,
+                m.visibility,
+            )
+        });
+        match (found, accessible) {
+            (Some(m), true) => {
+                let (argv, named) = self.split_call_args(&arr)?;
+                let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
+                self.push_method_frame(&m, Some(h.clone()), cls, argv, dst)
+            }
+            (found, _) => {
+                if let Some(magic) = self.lookup_method(cls, b"__call") {
+                    let arr = match deref(&arr) {
+                        Value::Array(a) => Value::Array(a),
+                        _ => Value::Array(PhpArray::new()),
+                    };
+                    let r =
+                        self.call_sync(&magic, Some(h.clone()), cls, vec![Value::str(mname), arr])?;
+                    self.reg_set(top, dst, r);
+                    return Ok(());
+                }
+                Err(match found {
+                    Some(m) => self.access_err("method", m.defining_class, &mname, m.visibility),
+                    None => Thrown::error(
+                        "Error",
+                        format!(
+                            "Call to undefined method {}::{}()",
+                            String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                            String::from_utf8_lossy(&mname)
+                        ),
+                    ),
+                })
+            }
+        }
+    }
+
+    /// `C::m(...)` with the arguments in an array (see [`Self::call_method_args`]):
+    /// LSB and `$this` forwarding as for a window call; enum built-ins; an
+    /// undefined or inaccessible method goes to `__callStatic`.
+    fn call_static_args(
+        &mut self,
+        top: usize,
+        class: ClassRef,
+        mname: Vec<u8>,
+        args: Reg,
+        dst: Reg,
+    ) -> Result<(), Thrown> {
+        let cls = self.resolve_class_autoload(top, class)?;
+        let arr = self.reg_get(top, args);
+        let found = self.lookup_method(cls, &mname);
+        if found.is_none() && self.class(cls).kind == ClassKind::Enum {
+            let lc = mname.to_ascii_lowercase();
+            if matches!(lc.as_slice(), b"cases" | b"from" | b"tryfrom") {
+                let (argv, _named) = self.split_call_args(&arr)?;
+                let r = self.enum_builtin_static(cls, &lc, argv)?;
+                self.reg_set(top, dst, r);
+                return Ok(());
+            }
+        }
+        let accessible = found.as_ref().is_some_and(|m| {
+            self.check_access(
+                self.stack[top].defining_class,
+                m.defining_class,
+                m.visibility,
+            )
+        });
+        let m = match (found, accessible) {
+            (Some(m), true) => m,
+            (found, _) => {
+                if let Some(magic) = self.lookup_method(cls, b"__callstatic") {
+                    let arr = match deref(&arr) {
+                        Value::Array(a) => Value::Array(a),
+                        _ => Value::Array(PhpArray::new()),
+                    };
+                    let r = self.call_sync(&magic, None, cls, vec![Value::str(mname), arr])?;
+                    self.reg_set(top, dst, r);
+                    return Ok(());
+                }
+                return Err(match found {
+                    Some(m) => self.access_err("method", m.defining_class, &mname, m.visibility),
+                    None => Thrown::error(
+                        "Error",
+                        format!(
+                            "Call to undefined method {}::{}()",
+                            String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                            String::from_utf8_lossy(&mname)
+                        ),
+                    ),
+                });
+            }
+        };
+        let called = match class {
+            ClassRef::SelfClass | ClassRef::ParentClass | ClassRef::StaticClass => {
+                self.stack[top].called_class.unwrap_or(cls)
+            }
+            _ => cls,
+        };
+        let this = if m.is_static {
+            None
+        } else {
+            self.current_this(top)
+                .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))
+        };
+        let (argv, named) = self.split_call_args(&arr)?;
+        let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
+        self.push_method_frame(&m, this, called, argv, dst)
     }
 
     /// Build the parameter-descriptor array `ReflectionParameter` reads from.
@@ -4826,6 +4981,44 @@ impl Vm {
         }
     }
 
+    /// Where the variable `name` of frame `top` lives, for a variable-variable:
+    /// its compiled slot, else a cell in the frame's by-name table ({main}'s is
+    /// the globals table, shared with `global`). `None` when the variable does
+    /// not exist. (Auto-globals are resolved at compile time in php, so
+    /// `$$n` with `$n = '_SERVER'` inside a function is undefined.)
+    fn var_var_lookup(&self, top: usize, name: &[u8]) -> Option<Result<Reg, Rc<RefCell<Value>>>> {
+        let proto = &self.stack[top].proto;
+        if let Some(i) = proto
+            .cv_var_names
+            .iter()
+            .take(proto.num_cvs as usize)
+            .position(|n| n.as_bytes() == name)
+        {
+            return Some(Ok(i as Reg));
+        }
+        let table = if top == 0 && self.stack[top].include_kind.is_none() {
+            &self.globals
+        } else {
+            &self.stack[top].dyn_vars
+        };
+        table.get(name).map(|c| Err(c.clone()))
+    }
+
+    /// [`Self::var_var_lookup`], creating the variable when it does not exist.
+    fn var_var_slot(&mut self, top: usize, name: &[u8]) -> Result<Reg, Rc<RefCell<Value>>> {
+        if let Some(found) = self.var_var_lookup(top, name) {
+            return found;
+        }
+        if top == 0 && self.stack[top].include_kind.is_none() {
+            return Err(self.global_cell(name));
+        }
+        Err(self.stack[top]
+            .dyn_vars
+            .entry(name.to_vec())
+            .or_insert_with(|| Rc::new(RefCell::new(Value::Null)))
+            .clone())
+    }
+
     /// Promote a CV slot to a shared reference cell, returning the cell. If the
     /// slot already holds a `Ref`, its cell is reused.
     fn promote(&mut self, top: usize, cv: Reg) -> Rc<RefCell<Value>> {
@@ -5328,6 +5521,52 @@ impl Vm {
                     self.cursor_root = CursorRoot::Cell(cell);
                     self.cursor_steps.clear();
                 }
+                Instr::LvalStaticPropDyn { class, name } => {
+                    let cls = self.resolve_class_autoload(top, class)?;
+                    let pname = conv::to_string_bytes(&self.reg_get(top, name));
+                    self.check_static_prop_access(top, cls, &pname)?;
+                    let cell = self.static_prop_cell(cls, &pname)?;
+                    self.cursor_root = CursorRoot::Cell(cell);
+                    self.cursor_steps.clear();
+                }
+                Instr::LvalVarVar { name } => {
+                    let vname = conv::to_string_bytes(&self.reg_get(top, name));
+                    self.cursor_root = match self.var_var_slot(top, &vname) {
+                        Ok(cv) => CursorRoot::Cv(cv),
+                        Err(cell) => CursorRoot::Cell(cell),
+                    };
+                    self.cursor_steps.clear();
+                }
+                Instr::FetchVarVar { dst, name } => {
+                    let vname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let v = match self.var_var_lookup(top, &vname) {
+                        Some(Ok(cv)) => self.reg_get(top, cv),
+                        Some(Err(cell)) => deref(&cell.borrow()),
+                        None => Value::Null,
+                    };
+                    self.reg_set(top, dst, v);
+                }
+                Instr::FetchStaticPropDyn { dst, class, name } => {
+                    let cls = self.resolve_class_autoload(top, class)?;
+                    let pname = conv::to_string_bytes(&self.reg_get(top, name));
+                    self.check_static_prop_access(top, cls, &pname)?;
+                    let cell = self.static_prop_cell(cls, &pname)?;
+                    let v = cell.borrow().clone();
+                    self.reg_set(top, dst, v);
+                }
+                Instr::FetchStaticPropDynIs { dst, class, name } => {
+                    let cls = self.resolve_class_autoload(top, class)?;
+                    let pname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let v = match self.class(cls).static_props.get(&pname[..]) {
+                        Some(sp)
+                            if self.static_prop_accessible(self.stack[top].defining_class, sp) =>
+                        {
+                            deref(&sp.cell.borrow())
+                        }
+                        _ => Value::Null,
+                    };
+                    self.reg_set(top, dst, v);
+                }
                 Instr::FetchLvalRw { dst } => {
                     let v = self.cursor_read(top)?;
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
@@ -5608,6 +5847,12 @@ impl Vm {
                         "UnhandledMatchError",
                         format!("Unhandled match case {}", match_case_desc(&v)),
                     ));
+                }
+                Instr::SendNoRef { dst, src } => {
+                    let v = self.reg_get(top, src);
+                    self.diag(8, "Only variables should be passed by reference")?;
+                    // The callee works on a private copy.
+                    self.reg_set(top, dst, Value::Ref(Rc::new(RefCell::new(v))));
                 }
                 Instr::DeferredUnsupported { what, why } => {
                     let what = conv::to_string_bytes(&proto.consts[what as usize]);
@@ -6207,41 +6452,17 @@ impl Vm {
                     name,
                     args,
                 } => {
-                    let o = self.reg_get(top, obj);
-                    let Value::Object(h) = o else {
-                        return Err(Thrown::type_error(
-                            "Call to a member function on non-object",
-                        ));
-                    };
-                    let cls = h.borrow().class;
                     let mname = proto.names[name as usize].as_bytes().to_vec();
-                    let Some(m) = self.lookup_method(cls, &mname) else {
-                        return Err(Thrown::error(
-                            "Error",
-                            format!(
-                                "Call to undefined method {}::{}()",
-                                String::from_utf8_lossy(self.class(cls).name.as_bytes()),
-                                String::from_utf8_lossy(&mname)
-                            ),
-                        ));
-                    };
-                    if !self.check_access(
-                        self.stack[top].defining_class,
-                        m.defining_class,
-                        m.visibility,
-                    ) {
-                        return Err(self.access_err(
-                            "method",
-                            m.defining_class,
-                            &mname,
-                            m.visibility,
-                        ));
-                    }
-                    let arr = self.reg_get(top, args);
-                    let (argv, named) = self.split_call_args(&arr)?;
-                    let argv =
-                        self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
-                    self.push_method_frame(&m, Some(h.clone()), cls, argv, dst)?;
+                    self.call_method_args(top, obj, mname, args, dst)?;
+                }
+                Instr::CallMethodDynV {
+                    dst,
+                    obj,
+                    name,
+                    args,
+                } => {
+                    let mname = conv::to_string_bytes(&self.reg_get(top, name));
+                    self.call_method_args(top, obj, mname, args, dst)?;
                 }
                 Instr::CallStaticV {
                     dst,
@@ -6249,35 +6470,17 @@ impl Vm {
                     name,
                     args,
                 } => {
-                    let cls = self.resolve_class_autoload(top, class)?;
                     let mname = proto.names[name as usize].as_bytes().to_vec();
-                    let Some(m) = self.lookup_method(cls, &mname) else {
-                        return Err(Thrown::error(
-                            "Error",
-                            format!(
-                                "Call to undefined method {}::{}()",
-                                String::from_utf8_lossy(self.class(cls).name.as_bytes()),
-                                String::from_utf8_lossy(&mname)
-                            ),
-                        ));
-                    };
-                    let called = match class {
-                        ClassRef::SelfClass | ClassRef::ParentClass | ClassRef::StaticClass => {
-                            self.stack[top].called_class.unwrap_or(cls)
-                        }
-                        _ => cls,
-                    };
-                    let this = if m.is_static {
-                        None
-                    } else {
-                        self.current_this(top)
-                            .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))
-                    };
-                    let arr = self.reg_get(top, args);
-                    let (argv, named) = self.split_call_args(&arr)?;
-                    let argv =
-                        self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
-                    self.push_method_frame(&m, this, called, argv, dst)?;
+                    self.call_static_args(top, class, mname, args, dst)?;
+                }
+                Instr::CallStaticDynV {
+                    dst,
+                    class,
+                    name,
+                    args,
+                } => {
+                    let mname = conv::to_string_bytes(&self.reg_get(top, name));
+                    self.call_static_args(top, class, mname, args, dst)?;
                 }
 
                 Instr::FetchConst {

@@ -22,8 +22,8 @@ use rhp_frontend::cst::{
     Access, Argument, ArrayElement, AssignmentOperator, BinaryOperator, Class, ClassLikeMember,
     ClassLikeMemberSelector, CompositeString, Construct, Expression, ForBody, ForeachBody,
     ForeachTarget, Hint, Identifier, IfBody, Literal, MagicConstant, Match, MatchArm, MethodBody,
-    Modifier, Program as AstProgram, Property, PropertyItem, Statement, StringPart, SwitchBody,
-    SwitchCase, UnaryPrefixOperator, Variable, WhileBody,
+    Modifier, Node, Program as AstProgram, Property, PropertyItem, Statement, StringPart,
+    SwitchBody, SwitchCase, UnaryPrefixOperator, Variable, WhileBody,
 };
 use rhp_values::{ClassFlags, ClassKind, Visibility};
 
@@ -45,8 +45,13 @@ enum CursorStep {
 
 /// Where an lvalue cursor roots.
 enum LvalRoot {
+    /// A register: a CV, or a temporary holding a call result.
     Cv(Reg),
     StaticProp(ClassRef, NIdx),
+    /// `C::${expr}`: static property with a runtime name.
+    StaticPropDyn(ClassRef, Reg),
+    /// `$$name` / `${expr}`: the variable named by the register's value.
+    VarVar(Reg),
 }
 
 /// The body form of a closure being lowered.
@@ -598,10 +603,10 @@ pub fn compile_with_source(
     for (_ctx, stmt) in &flat {
         c.scan_stmt_vars(stmt);
     }
-    c.num_cvs = c.cv_map.len() as u16;
-    c.next_temp = c.num_cvs;
-    c.high_water = c.num_cvs;
-    c.temp_floor = c.num_cvs;
+    for (_ctx, stmt) in &flat {
+        c.scan_node_vars(Node::Statement(stmt));
+    }
+    c.freeze_cvs();
 
     let mut top_class_idx = 0u32;
     for (ctx, stmt) in &flat {
@@ -615,6 +620,12 @@ pub fn compile_with_source(
         // A top-level class is hoisted at load when its parent/interfaces
         // are available; otherwise it is declared when this point is reached.
         if is_class_like(stmt) {
+            // Errors raised while declaring it (missing parent/interface)
+            // report the declaration's line.
+            c.cur_line = {
+                use mago_span::HasSpan;
+                line_of(stmt.span().start.offset)
+            };
             c.emit(Instr::DeclareClass {
                 class_idx: top_class_idx,
             });
@@ -634,7 +645,7 @@ pub fn compile_with_source(
         .map(|n| PhpStr::from_bytes(n.clone()))
         .collect();
     Ok(Program {
-        main: Rc::new(c.finish()),
+        main: Rc::new(c.finish()?),
         functions,
         classes,
         closures,
@@ -879,13 +890,11 @@ fn compile_const_thunk(
     c.class_name = class_name.cloned(); // for `__CLASS__`
     c.scope_kind = ScopeKind::Init;
     c.scan_expr_vars(expr); // const-exprs use no $vars, but be safe
-    c.num_cvs = c.cv_map.len() as u16;
-    c.next_temp = c.num_cvs;
-    c.high_water = c.num_cvs;
-    c.temp_floor = c.num_cvs;
+    c.scan_node_vars(Node::Expression(expr));
+    c.freeze_cvs();
     let r = c.compile_expr(expr)?;
     c.emit(Instr::Ret { src: r });
-    Ok(Rc::new(c.finish()))
+    Ok(Rc::new(c.finish()?))
 }
 
 /// Fold an initializer to a constant, or fall back to a runtime thunk.
@@ -1655,10 +1664,10 @@ fn compile_method(
     for s in body_stmts {
         c.scan_stmt_vars(s);
     }
-    c.num_cvs = c.cv_map.len() as u16;
-    c.next_temp = c.num_cvs;
-    c.high_water = c.num_cvs;
-    c.temp_floor = c.num_cvs;
+    for s in body_stmts {
+        c.scan_node_vars(Node::Statement(s));
+    }
+    c.freeze_cvs();
 
     // Non-constant parameter defaults (e.g. `= self::CONST`), before promotion/body.
     c.emit_param_defaults(&nonconst_defaults)?;
@@ -1675,7 +1684,7 @@ fn compile_method(
     }
     c.emit(Instr::RetNull);
 
-    let mut proto = c.finish();
+    let mut proto = c.finish()?;
     proto.num_params = num_params;
     proto.params = params;
     proto.this_cv = if is_static { None } else { Some(0) };
@@ -1740,10 +1749,10 @@ fn compile_function(
     for s in func.body.statements.iter() {
         c.scan_stmt_vars(s);
     }
-    c.num_cvs = c.cv_map.len() as u16;
-    c.next_temp = c.num_cvs;
-    c.high_water = c.num_cvs;
-    c.temp_floor = c.num_cvs;
+    for s in func.body.statements.iter() {
+        c.scan_node_vars(Node::Statement(s));
+    }
+    c.freeze_cvs();
 
     c.emit_param_defaults(&nonconst_defaults)?;
 
@@ -1752,7 +1761,7 @@ fn compile_function(
     }
     c.emit(Instr::RetNull);
 
-    let mut proto = c.finish();
+    let mut proto = c.finish()?;
     proto.num_params = num_params;
     proto.params = params;
     proto.is_generator = block_has_yield(&func.body.statements);
@@ -1809,6 +1818,17 @@ struct ProtoBuilder {
     /// gives the call opcode the line of the callee name (or `new`), not the
     /// statement's, which is what getLine() and traces report.
     call_lines: Vec<u32>,
+    /// Set once the CV pre-pass is done: every `$var` of the body must already
+    /// have its slot (a later slot would alias a temporary).
+    cvs_frozen: bool,
+    /// The enclosing loop/switch and finally-body scopes (unique ids; finally
+    /// bodies have the high bit set), for checking `goto` jumps.
+    goto_scope: Vec<u32>,
+    goto_serial: u32,
+    /// `label:` name -> (pc, scope path at the label).
+    labels: HashMap<Vec<u8>, (u32, Vec<u32>)>,
+    /// Pending `goto`s: placeholder position, label, scope path, line.
+    gotos: Vec<(usize, Vec<u8>, Vec<u32>, u32)>,
 }
 
 /// A break/continue target under construction. Jump placeholders are recorded
@@ -1846,10 +1866,68 @@ impl ProtoBuilder {
             cur_line: 0,
             lines: Vec::new(),
             call_lines: Vec::new(),
+            cvs_frozen: false,
+            goto_scope: Vec::new(),
+            goto_serial: 0,
+            labels: HashMap::new(),
+            gotos: Vec::new(),
         }
     }
 
-    fn finish(self) -> FunctionProto {
+    /// Enter a loop/switch (`finally == false`) or finally-body scope.
+    fn enter_goto_scope(&mut self, finally: bool) {
+        self.goto_serial += 1;
+        let id = self.goto_serial | if finally { 1 << 31 } else { 0 };
+        self.goto_scope.push(id);
+    }
+
+    /// Bind each `goto` to its label (php's zend_resolve_goto_label plus the
+    /// finally checks of pass_two): the label must exist, must not be inside a
+    /// loop/switch the `goto` is not in, and the jump may not cross a finally
+    /// body boundary. A jump out of a try/catch with a finally runs it first.
+    fn resolve_gotos(&mut self) -> Result<(), Thrown> {
+        for (pos, name, scope, line) in std::mem::take(&mut self.gotos) {
+            let label = String::from_utf8_lossy(&name).into_owned();
+            let Some((target, lscope)) = self.labels.get(&name) else {
+                return Err(compile_error(
+                    format!("'goto' to undefined label '{label}'"),
+                    line,
+                ));
+            };
+            let common = scope
+                .iter()
+                .zip(lscope.iter())
+                .take_while(|(a, b)| a == b)
+                .count();
+            if lscope[common..].iter().any(|id| id & (1 << 31) != 0) {
+                return Err(compile_error(
+                    "jump into a finally block is disallowed",
+                    line,
+                ));
+            }
+            if scope[common..].iter().any(|id| id & (1 << 31) != 0) {
+                return Err(compile_error(
+                    "jump out of a finally block is disallowed",
+                    line,
+                ));
+            }
+            if common < lscope.len() {
+                return Err(compile_error(
+                    "'goto' into loop or switch statement is disallowed",
+                    line,
+                ));
+            }
+            let target = *target;
+            self.code[pos] = match self.code[pos] {
+                Instr::JmpFinally { .. } => Instr::JmpFinally { target },
+                _ => Instr::Jmp { target },
+            };
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<FunctionProto, Thrown> {
+        self.resolve_gotos()?;
         let mut proto = FunctionProto::new(self.name);
         proto.num_cvs = self.num_cvs;
         proto.num_registers = self.high_water.max(self.num_cvs);
@@ -1875,7 +1953,7 @@ impl ProtoBuilder {
             .collect();
         proto.strict_types = STRICT_TYPES.with(|s| *s.borrow());
         proto.returns_ref = self.returns_ref;
-        proto
+        Ok(proto)
     }
 
     fn alloc_cache(&mut self) -> rhp_bytecode::CacheIdx {
@@ -1900,7 +1978,9 @@ impl ProtoBuilder {
                 | Instr::CallMethodDyn { .. }
                 | Instr::CallStatic { .. }
                 | Instr::CallStaticV { .. }
-                | Instr::CallStaticDyn { .. },
+                | Instr::CallStaticDyn { .. }
+                | Instr::CallMethodDynV { .. }
+                | Instr::CallStaticDynV { .. },
                 Some(&l),
             ) if l != 0 => l,
             _ => self.cur_line,
@@ -1948,6 +2028,11 @@ impl ProtoBuilder {
         if let Some(i) = self.cv_map.iter().position(|n| n == var_name) {
             return i as Reg;
         }
+        debug_assert!(
+            !self.cvs_frozen,
+            "CV ${} was missed by the pre-pass (its slot would alias a temporary)",
+            String::from_utf8_lossy(var_name)
+        );
         let r = self.cv_map.len() as Reg;
         self.cv_map.push(var_name.to_vec());
         r
@@ -2027,15 +2112,6 @@ impl ProtoBuilder {
         let i = self.consts.len() as CIdx;
         self.consts.push(v);
         i
-    }
-
-    /// Emit a runtime-deferred "unsupported" error (eval/goto): interns the two
-    /// message halves and emits `DeferredUnsupported`, which throws only if the
-    /// instruction is actually executed.
-    fn emit_deferred_unsupported(&mut self, what: &str, why: &str) {
-        let what = self.intern_const(Value::str(what.as_bytes().to_vec()));
-        let why = self.intern_const(Value::str(why.as_bytes().to_vec()));
-        self.emit(Instr::DeferredUnsupported { what, why });
     }
 
     // -- CV pre-pass --
@@ -2307,8 +2383,69 @@ impl ProtoBuilder {
             Construct::IncludeOnce(i) => self.scan_expr_vars(i.value),
             Construct::Require(i) => self.scan_expr_vars(i.value),
             Construct::RequireOnce(i) => self.scan_expr_vars(i.value),
+            Construct::Exit(e) => {
+                if let Some(args) = &e.arguments {
+                    self.scan_args(args);
+                }
+            }
+            Construct::Die(e) => {
+                if let Some(args) = &e.arguments {
+                    self.scan_args(args);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Completeness backstop for the CV pre-pass: walk every node of the body
+    /// (not entering nested function/class scopes, whose variables are their
+    /// own) and give each `$name` still missing a slot. A closure contributes
+    /// its `use` variables; an arrow function nothing (it captures only
+    /// variables the enclosing scope already has).
+    fn scan_node_vars(&mut self, node: Node) {
+        match node {
+            Node::DirectVariable(d) => {
+                self.cv(strip_dollar(d.name));
+                return;
+            }
+            Node::Closure(cl) => {
+                if let Some(u) = &cl.use_clause {
+                    for v in u.variables.iter() {
+                        self.cv(strip_dollar(v.variable.name));
+                    }
+                }
+                return;
+            }
+            Node::AnonymousClass(ac) => {
+                if let Some(args) = &ac.argument_list {
+                    self.scan_node_vars(Node::PartialArgumentList(args));
+                }
+                return;
+            }
+            // `C::$p`: the `$p` is the property name, not a local.
+            Node::StaticPropertyAccess(spa) => {
+                self.scan_node_vars(Node::Expression(spa.class));
+                return;
+            }
+            Node::ArrowFunction(_)
+            | Node::Function(_)
+            | Node::Class(_)
+            | Node::Interface(_)
+            | Node::Trait(_)
+            | Node::Enum(_)
+            | Node::AttributeList(_) => return,
+            _ => {}
+        }
+        node.visit_children(|ch| self.scan_node_vars(ch));
+    }
+
+    /// End the CV pre-pass: CVs occupy `[0, num_cvs)`, temporaries follow.
+    fn freeze_cvs(&mut self) {
+        self.num_cvs = self.cv_map.len() as u16;
+        self.next_temp = self.num_cvs;
+        self.high_water = self.num_cvs;
+        self.temp_floor = self.num_cvs;
+        self.cvs_frozen = true;
     }
 
     // -- statement lowering --
@@ -2501,14 +2638,33 @@ impl ProtoBuilder {
                 }
             }
             // `goto`/`label` are not implemented, but deferred to runtime so a
-            // file that merely contains a `goto` (down an unexecuted branch) still
-            // loads. A label is a no-op marker; an executed `goto` throws.
-            Statement::Label(_) => {}
-            Statement::Goto(_) => {
-                self.emit_deferred_unsupported(
-                    "goto statement",
-                    "not implemented in the phase-1 compiler",
-                );
+            Statement::Label(l) => {
+                let name = l.name.value.to_vec();
+                if self.labels.contains_key(&name) {
+                    return Err(compile_error(
+                        format!("Label '{}' already defined", String::from_utf8_lossy(&name)),
+                        self.cur_line,
+                    ));
+                }
+                let here = self.here();
+                self.labels.insert(name, (here, self.goto_scope.clone()));
+            }
+            // Bound to its label when the function is finished. Inside a
+            // try/catch with a finally, the jump runs the finally blocks it
+            // leaves (JmpFinally leaves any that contain the target alone).
+            Statement::Goto(g) => {
+                let pos = self.code.len();
+                if self.finally_rets.is_empty() {
+                    self.emit(Instr::Nop);
+                } else {
+                    self.emit(Instr::JmpFinally { target: 0 });
+                }
+                self.gotos.push((
+                    pos,
+                    g.label.value.to_vec(),
+                    self.goto_scope.clone(),
+                    self.cur_line,
+                ));
             }
             other => {
                 return Err(Thrown::unsupported(
@@ -2598,11 +2754,13 @@ impl ProtoBuilder {
             finally_depth: self.finally_rets.len(),
             ..LoopCtx::default()
         });
+        self.enter_goto_scope(false);
         match &w.body {
             WhileBody::Statement(s) => self.compile_stmt(s)?,
             WhileBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
         }
         let ctx = self.loops.pop().unwrap();
+        self.goto_scope.pop();
         self.emit(Instr::Jmp { target: top });
         let end = self.here();
         self.code[jf] = Instr::JmpFalse { cond, target: end };
@@ -2617,8 +2775,10 @@ impl ProtoBuilder {
             finally_depth: self.finally_rets.len(),
             ..LoopCtx::default()
         });
+        self.enter_goto_scope(false);
         self.compile_stmt(d.statement)?;
         let ctx = self.loops.pop().unwrap();
+        self.goto_scope.pop();
         let cont = self.here(); // continue -> re-test the condition
         let cond = self.compile_expr(d.condition)?;
         self.emit(Instr::JmpTrue { cond, target: top });
@@ -2649,11 +2809,13 @@ impl ProtoBuilder {
             finally_depth: self.finally_rets.len(),
             ..LoopCtx::default()
         });
+        self.enter_goto_scope(false);
         match &f.body {
             ForBody::Statement(s) => self.compile_stmt(s)?,
             ForBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
         }
         let ctx = self.loops.pop().unwrap();
+        self.goto_scope.pop();
         let cont = self.here(); // continue -> increments
         for e in f.increments.iter() {
             self.compile_expr(e)?;
@@ -2707,6 +2869,7 @@ impl ProtoBuilder {
             finally_depth: self.finally_rets.len(),
             ..LoopCtx::default()
         }); // switch is one break/continue level
+        self.enter_goto_scope(false);
         let mut starts = vec![0u32; cases.len()];
         for (idx, case) in cases.iter().enumerate() {
             starts[idx] = self.here();
@@ -2716,6 +2879,7 @@ impl ProtoBuilder {
             }
         }
         let ctx = self.loops.pop().unwrap();
+        self.goto_scope.pop();
         let end = self.here();
 
         for (idx, pos, cond) in dispatch {
@@ -2797,11 +2961,14 @@ impl ProtoBuilder {
                 finally_depth: self.finally_rets.len(),
                 ..LoopCtx::default()
             });
+
+            self.enter_goto_scope(false);
             match &fe.body {
                 ForeachBody::Statement(s) => self.compile_stmt(s)?,
                 ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
             }
             let ctx = self.loops.pop().unwrap();
+            self.goto_scope.pop();
             self.emit(Instr::Jmp {
                 target: fetch_label,
             });
@@ -2861,11 +3028,14 @@ impl ProtoBuilder {
             finally_depth: self.finally_rets.len(),
             ..LoopCtx::default()
         });
+
+        self.enter_goto_scope(false);
         match &fe.body {
             ForeachBody::Statement(s) => self.compile_stmt(s)?,
             ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
         }
         let ctx = self.loops.pop().unwrap();
+        self.goto_scope.pop();
         self.emit(Instr::Jmp {
             target: fetch_label,
         });
@@ -2980,7 +3150,9 @@ impl ProtoBuilder {
             // Stop routing returns into THIS finally while compiling its body.
             let pending_rets = self.finally_rets.pop().unwrap();
             let fpc = self.here();
+            self.enter_goto_scope(true);
             self.compile_stmts(fin.block.statements.iter())?;
+            self.goto_scope.pop();
             finally_end = self.here();
             self.emit(Instr::FinallyEnd);
             // Patch `return`s that crossed out of try/catch to enter the finally.
@@ -3196,10 +3368,7 @@ impl ProtoBuilder {
             Expression::Literal(lit) => self.compile_literal(lit),
             Expression::Parenthesized(p) => self.compile_expr(p.expression),
             Expression::Variable(Variable::Direct(d)) => Ok(self.cv(strip_dollar(d.name))),
-            Expression::Variable(_) => Err(Thrown::unsupported(
-                "indirect/nested variable",
-                "variable-variables are refused / deferred",
-            )),
+            Expression::Variable(v) => self.compile_variable(v),
             Expression::Binary(b) => self.compile_binary(b),
             Expression::UnaryPrefix(u) => self.compile_unary_prefix(u),
             Expression::UnaryPostfix(u) => self.compile_unary_postfix(u),
@@ -3962,6 +4131,8 @@ impl ProtoBuilder {
             Ref(Reg),
             /// A by-ref argument that is a property / array-element lvalue.
             RefLval(&'e Expression<'e>),
+            /// A call result for a by-ref parameter (passed with a notice).
+            NoRef(Reg),
         }
         let mut slots = Vec::new();
         for (i, arg) in fc.argument_list.arguments.iter().enumerate() {
@@ -3992,6 +4163,22 @@ impl ProtoBuilder {
                     | Expression::Access(Access::Property(_))
                     | Expression::Access(Access::StaticProperty(_)) => {
                         slots.push(ArgSlot::RefLval(p.value))
+                    }
+                    // A call result for a by-ref parameter: php passes it
+                    // anyway with "Only variables should be passed by reference"
+                    // (ZEND_SEND_VAR_NO_REF / SEND_FUNC_ARG). `current`/`key`
+                    // take their array by value in php 8, and prefer-ref
+                    // parameters accept a temporary silently.
+                    Expression::Call(_) => {
+                        let r = self.compile_expr(p.value)?;
+                        if matches!(
+                            global_lc.as_deref().unwrap_or(&name_lc),
+                            b"current" | b"key" | b"array_multisort" | b"extract"
+                        ) {
+                            slots.push(ArgSlot::Value(r))
+                        } else {
+                            slots.push(ArgSlot::NoRef(r))
+                        }
                     }
                     // The internal-pointer functions are lenient in php: passing a
                     // non-variable only warns and operates on a copy. Fall back to
@@ -4025,6 +4212,7 @@ impl ProtoBuilder {
             match slot {
                 ArgSlot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
                 ArgSlot::Ref(cv) => self.emit(Instr::MakeRef { dst, cv }),
+                ArgSlot::NoRef(src) => self.emit(Instr::SendNoRef { dst, src }),
                 ArgSlot::RefLval(expr) => {
                     let mut steps = Vec::new();
                     let root = self.collect_lvalue_steps(expr, &mut steps)?;
@@ -4428,13 +4616,18 @@ impl ProtoBuilder {
         let num_params = params.len() as u16;
 
         match body {
-            ClosureBody::Arrow(e) => c.scan_expr_vars(e),
-            ClosureBody::Block(b) => b.statements.iter().for_each(|s| c.scan_stmt_vars(s)),
+            ClosureBody::Arrow(e) => {
+                c.scan_expr_vars(e);
+                c.scan_node_vars(Node::Expression(e));
+            }
+            ClosureBody::Block(b) => {
+                b.statements.iter().for_each(|s| c.scan_stmt_vars(s));
+                b.statements
+                    .iter()
+                    .for_each(|s| c.scan_node_vars(Node::Statement(s)));
+            }
         }
-        c.num_cvs = c.cv_map.len() as u16;
-        c.next_temp = c.num_cvs;
-        c.high_water = c.num_cvs;
-        c.temp_floor = c.num_cvs;
+        c.freeze_cvs();
 
         c.emit_param_defaults(&nonconst_defaults)?;
 
@@ -4463,16 +4656,17 @@ impl ProtoBuilder {
         } else {
             c.cv_map.iter().position(|n| n == b"this").map(|i| i as Reg)
         };
-        let mut proto = c.finish();
+        let mut proto = c.finish()?;
         proto.this_cv = this_cv;
         proto.num_params = num_params;
         proto.params = params;
         proto.num_captures = nc;
         proto.is_static = is_static;
         proto.return_type = ret_hint.map(type_hint);
-        if let ClosureBody::Block(b) = body {
-            proto.is_generator = block_has_yield(&b.statements);
-        }
+        proto.is_generator = match body {
+            ClosureBody::Block(b) => block_has_yield(&b.statements),
+            ClosureBody::Arrow(e) => expr_has_yield(e),
+        };
 
         let fnidx = CLOSURES.with(|cls| {
             let mut v = cls.borrow_mut();
@@ -4543,12 +4737,26 @@ impl ProtoBuilder {
             Expression::Access(Access::StaticProperty(spa)) => {
                 // Static property is the cursor root, not a step.
                 let class = self.class_ref(spa.class)?;
-                let name = self.static_prop_name(&spa.property)?;
-                Ok(LvalRoot::StaticProp(class, name))
+                Ok(match self.static_prop_sel(&spa.property)? {
+                    Sel::Static(name) => LvalRoot::StaticProp(class, name),
+                    Sel::Dyn(name) => LvalRoot::StaticPropDyn(class, name),
+                })
             }
-            _ => Err(Thrown::unsupported(
-                "assignment target",
-                "only variables, array elements, and properties are supported",
+            Expression::Variable(v) => Ok(LvalRoot::VarVar(self.var_name_reg(v)?)),
+            Expression::Parenthesized(p) => self.collect_lvalue_steps(p.expression, steps),
+            Expression::Access(Access::NullSafeProperty(_))
+            | Expression::Call(rhp_frontend::cst::Call::NullSafeMethod(_)) => Err(Thrown::error(
+                "Error",
+                "Can't use nullsafe operator in write context",
+            )),
+            // `f()[$k] = v`, `A::g()->p[] = v`: php allows a call result as the
+            // container (zend_delayed_compile_var on a call). The cursor roots
+            // at the temporary; objects are handles, so writes through one land
+            // in the shared object (an `ArrayAccess` root goes to `offsetSet`).
+            Expression::Call(_) => Ok(LvalRoot::Cv(self.compile_expr(target)?)),
+            _ => Err(Thrown::error(
+                "Error",
+                "Cannot use temporary expression in write context",
             )),
         }
     }
@@ -4557,6 +4765,10 @@ impl ProtoBuilder {
         match root {
             LvalRoot::Cv(cv) => self.emit(Instr::LvalCv { cv }),
             LvalRoot::StaticProp(class, name) => self.emit(Instr::LvalStaticProp { class, name }),
+            LvalRoot::StaticPropDyn(class, name) => {
+                self.emit(Instr::LvalStaticPropDyn { class, name })
+            }
+            LvalRoot::VarVar(name) => self.emit(Instr::LvalVarVar { name }),
         }
         for step in steps {
             match step {
@@ -4655,10 +4867,35 @@ impl ProtoBuilder {
         }
     }
 
-    fn static_prop_name(&mut self, v: &Variable) -> Result<NIdx, Thrown> {
+    /// The name of `C::$name` (static) or `C::${expr}` / `C::$$x` (runtime).
+    fn static_prop_sel(&mut self, v: &Variable) -> Result<Sel, Thrown> {
         match v {
-            Variable::Direct(d) => Ok(self.intern_name(strip_dollar(d.name))),
-            _ => Err(Thrown::unsupported("dynamic static property", "deferred")),
+            Variable::Direct(d) => Ok(Sel::Static(self.intern_name(strip_dollar(d.name)))),
+            other => Ok(Sel::Dyn(self.var_name_reg(other)?)),
+        }
+    }
+
+    /// The register holding a variable-variable's *name*: `${expr}` is the
+    /// expression's value, `$$x` the value of `$x` (recursively). For a direct
+    /// `$x` (only reached as the root of `C::$x` lowering) the name itself.
+    fn var_name_reg(&mut self, v: &Variable) -> Result<Reg, Thrown> {
+        match v {
+            Variable::Indirect(iv) => self.compile_expr(iv.expression),
+            Variable::Nested(nv) => self.compile_variable(nv.variable),
+            Variable::Direct(d) => Ok(self.load_string_const(strip_dollar(d.name))),
+        }
+    }
+
+    /// A variable in value context: a CV, or a variable-variable read.
+    fn compile_variable(&mut self, v: &Variable) -> Result<Reg, Thrown> {
+        match v {
+            Variable::Direct(d) => Ok(self.cv(strip_dollar(d.name))),
+            other => {
+                let name = self.var_name_reg(other)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::FetchVarVar { dst, name });
+                Ok(dst)
+            }
         }
     }
 
@@ -4888,9 +5125,11 @@ impl ProtoBuilder {
             }
             Expression::Access(Access::StaticProperty(spa)) => {
                 let class = self.class_ref(spa.class)?;
-                let name = self.static_prop_name(&spa.property)?;
                 let dst = self.alloc_temp();
-                self.emit(Instr::FetchStaticPropIs { dst, class, name });
+                match self.static_prop_sel(&spa.property)? {
+                    Sel::Static(name) => self.emit(Instr::FetchStaticPropIs { dst, class, name }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchStaticPropDynIs { dst, class, name }),
+                }
                 Ok(dst)
             }
             _ => self.compile_expr(e),
@@ -4947,15 +5186,19 @@ impl ProtoBuilder {
             }
             Access::StaticProperty(spa) => {
                 let class = self.class_ref(spa.class)?;
-                let name = self.static_prop_name(&spa.property)?;
                 let dst = self.alloc_temp();
-                let cache = self.alloc_cache();
-                self.emit(Instr::FetchStaticProp {
-                    dst,
-                    class,
-                    name,
-                    cache,
-                });
+                match self.static_prop_sel(&spa.property)? {
+                    Sel::Static(name) => {
+                        let cache = self.alloc_cache();
+                        self.emit(Instr::FetchStaticProp {
+                            dst,
+                            class,
+                            name,
+                            cache,
+                        });
+                    }
+                    Sel::Dyn(name) => self.emit(Instr::FetchStaticPropDyn { dst, class, name }),
+                }
                 Ok(dst)
             }
             Access::ClassConstant(cca) => {
@@ -5031,11 +5274,16 @@ impl ProtoBuilder {
                     return Ok(dst);
                 }
                 Sel::Dyn(name) => {
-                    if has_spread(args) {
-                        return Err(Thrown::unsupported(
-                            "dynamic method call with argument spread",
-                            "deferred",
-                        ));
+                    if has_spread(args) || has_named(args) {
+                        let args = self.build_args_array(Some(args))?;
+                        let dst = self.alloc_temp();
+                        self.emit(Instr::CallMethodDynV {
+                            dst,
+                            obj,
+                            name,
+                            args,
+                        });
+                        return Ok(dst);
                     }
                     let (base, argc) = self.compile_arg_window_ex(Some(args), &[], true)?;
                     let dst = self.alloc_temp();
@@ -5056,19 +5304,51 @@ impl ProtoBuilder {
         self.emit(Instr::Mov { dst, src: obj });
         let jn = self.code.len();
         self.emit(Instr::Nop); // JmpNull dst -> Lnull
-        let name = self.selector_name(selector)?;
-        let mask = self.name_ref_mask(name);
-        let (base, argc) = self.compile_arg_window_ex(Some(args), &mask, true)?;
-        let cache = self.alloc_cache();
+        let sel = self.compile_selector(selector)?;
         let t = self.alloc_temp();
-        self.emit(Instr::CallMethod {
-            dst: t,
-            obj: dst,
-            name,
-            base,
-            argc,
-            cache,
-        });
+        if has_spread(args) || has_named(args) {
+            let args = self.build_args_array(Some(args))?;
+            match sel {
+                Sel::Static(name) => self.emit(Instr::CallMethodV {
+                    dst: t,
+                    obj: dst,
+                    name,
+                    args,
+                }),
+                Sel::Dyn(name) => self.emit(Instr::CallMethodDynV {
+                    dst: t,
+                    obj: dst,
+                    name,
+                    args,
+                }),
+            }
+        } else {
+            match sel {
+                Sel::Static(name) => {
+                    let mask = self.name_ref_mask(name);
+                    let (base, argc) = self.compile_arg_window_ex(Some(args), &mask, true)?;
+                    let cache = self.alloc_cache();
+                    self.emit(Instr::CallMethod {
+                        dst: t,
+                        obj: dst,
+                        name,
+                        base,
+                        argc,
+                        cache,
+                    });
+                }
+                Sel::Dyn(name) => {
+                    let (base, argc) = self.compile_arg_window_ex(Some(args), &[], true)?;
+                    self.emit(Instr::CallMethodDyn {
+                        dst: t,
+                        obj: dst,
+                        name,
+                        base,
+                        argc,
+                    });
+                }
+            }
+        }
         self.emit(Instr::Mov { dst, src: t });
         let jend = self.code.len();
         self.emit(Instr::Nop); // Jmp end
@@ -5117,11 +5397,16 @@ impl ProtoBuilder {
                 Ok(dst)
             }
             Sel::Dyn(name) => {
-                if has_spread(&smc.argument_list) {
-                    return Err(Thrown::unsupported(
-                        "dynamic static call with argument spread",
-                        "deferred",
-                    ));
+                if has_spread(&smc.argument_list) || has_named(&smc.argument_list) {
+                    let args = self.build_args_array(Some(&smc.argument_list))?;
+                    let dst = self.alloc_temp();
+                    self.emit(Instr::CallStaticDynV {
+                        dst,
+                        class,
+                        name,
+                        args,
+                    });
+                    return Ok(dst);
                 }
                 let (base, argc) =
                     self.compile_arg_window_ex(Some(&smc.argument_list), &[], true)?;
@@ -5203,6 +5488,10 @@ impl ProtoBuilder {
             }
         }
 
+        if matches!(a.operator, AssignmentOperator::Coalesce(_)) {
+            return self.compile_coalesce_assign(a.lhs, a.rhs);
+        }
+
         // Simple single-level `$o->prop = v`: a dedicated opcode so the VM can
         // route undefined/inaccessible writes to `__set` (the cursor can't).
         if let (AssignmentOperator::Assign(_), Expression::Access(Access::Property(pa))) =
@@ -5239,13 +5528,15 @@ impl ProtoBuilder {
             }
         }
 
-        // Array-element / property / static-property target: use the lvalue cursor.
+        // Array-element / property / static-property / variable-variable
+        // target: use the lvalue cursor.
         if matches!(
             a.lhs,
             Expression::ArrayAccess(_)
                 | Expression::ArrayAppend(_)
                 | Expression::Access(Access::Property(_))
                 | Expression::Access(Access::StaticProperty(_))
+                | Expression::Variable(Variable::Indirect(_) | Variable::Nested(_))
         ) {
             let mut steps = Vec::new();
             let root = self.collect_lvalue_steps(a.lhs, &mut steps)?;
@@ -5318,9 +5609,141 @@ impl ProtoBuilder {
         self.emit(Instr::Assign { cv, src: value_reg });
         Ok(value_reg)
     }
+
+    /// `lhs ??= rhs` (php's ZEND_ASSIGN_COALESCE): fetch `lhs` quietly (isset
+    /// semantics: no undefined-key/property diagnostics, `ArrayAccess` via
+    /// `offsetExists`/`offsetGet`, `__isset`/`__get`); when it is not null that
+    /// is the result and nothing is written or evaluated further. Otherwise
+    /// evaluate `rhs` and assign it. Sub-expressions of `lhs` (keys, objects)
+    /// are evaluated exactly once.
+    fn compile_coalesce_assign(
+        &mut self,
+        lhs: &Expression,
+        rhs: &Expression,
+    ) -> Result<Reg, Thrown> {
+        let dst = self.alloc_temp();
+        match lhs {
+            Expression::Parenthesized(p) => return self.compile_coalesce_assign(p.expression, rhs),
+            Expression::Variable(Variable::Direct(d)) => {
+                let cv = self.cv(strip_dollar(d.name));
+                self.emit(Instr::Mov { dst, src: cv });
+                let jnn = self.code.len();
+                self.emit(Instr::Nop); // JmpNotNull dst -> end
+                let r = self.compile_expr(rhs)?;
+                self.emit(Instr::Assign { cv, src: r });
+                self.emit(Instr::Mov { dst, src: cv });
+                let end = self.here();
+                self.code[jnn] = Instr::JmpNotNull {
+                    src: dst,
+                    target: end,
+                };
+            }
+            // Single-level `$o->p ??= v`: the write is a plain property store,
+            // so an inaccessible/undefined property routes to `__set`.
+            // The container is fetched quietly too (php compiles the whole
+            // left side in BP_VAR_IS mode for the check).
+            Expression::Access(Access::Property(pa)) => {
+                let obj = self.compile_quiet(pa.object)?;
+                let sel = self.compile_selector(&pa.property)?;
+                match sel {
+                    Sel::Static(name) => self.emit(Instr::FetchPropIs { dst, obj, name }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchPropDynIs { dst, obj, name }),
+                }
+                let jnn = self.code.len();
+                self.emit(Instr::Nop);
+                let r = self.compile_expr(rhs)?;
+                match sel {
+                    Sel::Static(name) => self.emit(Instr::StoreProp { obj, name, src: r }),
+                    Sel::Dyn(name) => self.emit(Instr::StorePropDyn { obj, name, src: r }),
+                }
+                self.emit(Instr::Mov { dst, src: r });
+                let end = self.here();
+                self.code[jnn] = Instr::JmpNotNull {
+                    src: dst,
+                    target: end,
+                };
+            }
+            _ => {
+                let mut steps = Vec::new();
+                let root = self.collect_lvalue_steps(lhs, &mut steps)?;
+                // Quiet read along the same (pre-evaluated) path.
+                let mut cur = match &root {
+                    LvalRoot::Cv(r) => *r,
+                    LvalRoot::StaticProp(class, name) => {
+                        let t = self.alloc_temp();
+                        self.emit(Instr::FetchStaticPropIs {
+                            dst: t,
+                            class: *class,
+                            name: *name,
+                        });
+                        t
+                    }
+                    LvalRoot::StaticPropDyn(class, name) => {
+                        let t = self.alloc_temp();
+                        self.emit(Instr::FetchStaticPropDynIs {
+                            dst: t,
+                            class: *class,
+                            name: *name,
+                        });
+                        t
+                    }
+                    LvalRoot::VarVar(name) => {
+                        let t = self.alloc_temp();
+                        self.emit(Instr::FetchVarVar {
+                            dst: t,
+                            name: *name,
+                        });
+                        t
+                    }
+                };
+                for step in &steps {
+                    let t = self.alloc_temp();
+                    match step {
+                        CursorStep::Key(key) => self.emit(Instr::DimFetchIs {
+                            dst: t,
+                            arr: cur,
+                            key: *key,
+                        }),
+                        CursorStep::Prop(name) => self.emit(Instr::FetchPropIs {
+                            dst: t,
+                            obj: cur,
+                            name: *name,
+                        }),
+                        CursorStep::PropDyn(name) => self.emit(Instr::FetchPropDynIs {
+                            dst: t,
+                            obj: cur,
+                            name: *name,
+                        }),
+                        CursorStep::Append => {
+                            return Err(Thrown::error("Error", "Cannot use [] for reading"))
+                        }
+                    }
+                    cur = t;
+                }
+                self.emit(Instr::Mov { dst, src: cur });
+                let jnn = self.code.len();
+                self.emit(Instr::Nop);
+                let r = self.compile_expr(rhs)?;
+                self.emit_cursor(root, &steps);
+                self.emit(Instr::AssignLval { src: r });
+                self.emit(Instr::Mov { dst, src: r });
+                let end = self.here();
+                self.code[jnn] = Instr::JmpNotNull {
+                    src: dst,
+                    target: end,
+                };
+            }
+        }
+        Ok(dst)
+    }
 }
 
 // --- free helpers ---------------------------------------------------------
+
+/// A php compile-time fatal error (E_COMPILE_ERROR) at `line`.
+fn compile_error(msg: impl Into<String>, _line: u32) -> Thrown {
+    Thrown::error("Error", msg)
+}
 
 fn strip_dollar(name: &[u8]) -> &[u8] {
     name.strip_prefix(b"$").unwrap_or(name)
@@ -5341,106 +5764,37 @@ fn block_has_yield(stmts: &rhp_frontend::cst::Sequence<Statement>) -> bool {
 }
 
 fn stmt_has_yield(s: &Statement) -> bool {
-    use rhp_frontend::cst::{ForBody, IfBody, SwitchBody, SwitchCase, WhileBody};
-    match s {
-        Statement::Expression(e) => expr_has_yield(e.expression),
-        Statement::Echo(e) => e.values.iter().any(|v| expr_has_yield(v)),
-        Statement::Return(r) => r.value.map(expr_has_yield).unwrap_or(false),
-        Statement::Block(b) => block_has_yield(&b.statements),
-        Statement::If(i) => {
-            expr_has_yield(i.condition)
-                || match &i.body {
-                    IfBody::Statement(b) => {
-                        stmt_has_yield(b.statement)
-                            || b.else_if_clauses
-                                .iter()
-                                .any(|c| expr_has_yield(c.condition) || stmt_has_yield(c.statement))
-                            || b.else_clause
-                                .as_ref()
-                                .map(|e| stmt_has_yield(e.statement))
-                                .unwrap_or(false)
-                    }
-                    IfBody::ColonDelimited(b) => {
-                        b.statements.iter().any(stmt_has_yield)
-                            || b.else_if_clauses.iter().any(|c| {
-                                expr_has_yield(c.condition)
-                                    || c.statements.iter().any(stmt_has_yield)
-                            })
-                            || b.else_clause
-                                .as_ref()
-                                .map(|e| e.statements.iter().any(stmt_has_yield))
-                                .unwrap_or(false)
-                    }
-                }
-        }
-        Statement::While(w) => {
-            expr_has_yield(w.condition)
-                || match &w.body {
-                    WhileBody::Statement(s) => stmt_has_yield(s),
-                    WhileBody::ColonDelimited(b) => b.statements.iter().any(stmt_has_yield),
-                }
-        }
-        Statement::DoWhile(d) => stmt_has_yield(d.statement) || expr_has_yield(d.condition),
-        Statement::For(f) => {
-            f.initializations.iter().any(|e| expr_has_yield(e))
-                || f.conditions.iter().any(|e| expr_has_yield(e))
-                || f.increments.iter().any(|e| expr_has_yield(e))
-                || match &f.body {
-                    ForBody::Statement(s) => stmt_has_yield(s),
-                    ForBody::ColonDelimited(b) => b.statements.iter().any(stmt_has_yield),
-                }
-        }
-        Statement::Foreach(fe) => {
-            expr_has_yield(fe.expression)
-                || match &fe.body {
-                    ForeachBody::Statement(s) => stmt_has_yield(s),
-                    ForeachBody::ColonDelimited(b) => b.statements.iter().any(stmt_has_yield),
-                }
-        }
-        Statement::Switch(sw) => {
-            expr_has_yield(sw.expression) || {
-                let cases = match &sw.body {
-                    SwitchBody::BraceDelimited(b) => &b.cases,
-                    SwitchBody::ColonDelimited(b) => &b.cases,
-                };
-                cases.iter().any(|c| match c {
-                    SwitchCase::Expression(e) => {
-                        expr_has_yield(e.expression) || e.statements.iter().any(stmt_has_yield)
-                    }
-                    SwitchCase::Default(d) => d.statements.iter().any(stmt_has_yield),
-                })
-            }
-        }
-        Statement::Try(t) => {
-            t.block.statements.iter().any(stmt_has_yield)
-                || t.catch_clauses
-                    .iter()
-                    .any(|c| c.block.statements.iter().any(stmt_has_yield))
-                || t.finally_clause
-                    .as_ref()
-                    .map(|f| f.block.statements.iter().any(stmt_has_yield))
-                    .unwrap_or(false)
-        }
-        _ => false,
-    }
+    node_has_yield(Node::Statement(s))
 }
 
 fn expr_has_yield(e: &Expression) -> bool {
-    match e {
-        Expression::Yield(_) => true,
-        Expression::Parenthesized(p) => expr_has_yield(p.expression),
-        Expression::Assignment(a) => expr_has_yield(a.lhs) || expr_has_yield(a.rhs),
-        Expression::Binary(b) => expr_has_yield(b.lhs) || expr_has_yield(b.rhs),
-        Expression::UnaryPrefix(u) => expr_has_yield(u.operand),
-        Expression::UnaryPostfix(u) => expr_has_yield(u.operand),
-        Expression::Conditional(c) => {
-            expr_has_yield(c.condition)
-                || c.then.map(expr_has_yield).unwrap_or(false)
-                || expr_has_yield(c.r#else)
+    node_has_yield(Node::Expression(e))
+}
+
+/// Any `yield` / `yield from` below `node`, not counting nested function-likes
+/// and class bodies (their yields are their own).
+fn node_has_yield(node: Node) -> bool {
+    match node {
+        Node::Expression(Expression::Yield(_)) => return true,
+        Node::Closure(_)
+        | Node::ArrowFunction(_)
+        | Node::Function(_)
+        | Node::Class(_)
+        | Node::Interface(_)
+        | Node::Trait(_)
+        | Node::Enum(_)
+        | Node::AttributeList(_) => return false,
+        Node::AnonymousClass(ac) => {
+            return ac
+                .argument_list
+                .as_ref()
+                .is_some_and(|l| node_has_yield(Node::PartialArgumentList(l)));
         }
-        // `yield` inside a nested closure/arrow/function belongs to that one.
-        _ => false,
+        _ => {}
     }
+    let mut found = false;
+    node.visit_children(|ch| found = found || node_has_yield(ch));
+    found
 }
 
 fn has_named(list: &rhp_frontend::cst::ArgumentList) -> bool {
@@ -5724,142 +6078,51 @@ fn stmt_kind(s: &Statement) -> &'static str {
 /// keeps only names that are CVs in the enclosing scope). Does not mutate the
 /// builder, unlike [`ProtoBuilder::scan_expr_vars`].
 fn collect_vars(expr: &Expression, out: &mut Vec<Vec<u8>>) {
+    collect_node_vars(Node::Expression(expr), out);
+}
+
+/// [`collect_vars`] over any node: every `$name` below it (in source order,
+/// deduplicated), entering nested arrow functions but not other function or
+/// class scopes; a closure contributes its `use` variables.
+fn collect_node_vars(node: Node, out: &mut Vec<Vec<u8>>) {
     let push = |name: &[u8], out: &mut Vec<Vec<u8>>| {
         if !out.iter().any(|n| n == name) {
             out.push(name.to_vec());
         }
     };
-    match expr {
-        Expression::Variable(Variable::Direct(d)) => push(strip_dollar(d.name), out),
-        Expression::Parenthesized(p) => collect_vars(p.expression, out),
-        Expression::Binary(b) => {
-            collect_vars(b.lhs, out);
-            collect_vars(b.rhs, out);
+    match node {
+        Node::DirectVariable(d) => {
+            push(strip_dollar(d.name), out);
+            return;
         }
-        Expression::UnaryPrefix(u) => collect_vars(u.operand, out),
-        Expression::UnaryPostfix(u) => collect_vars(u.operand, out),
-        Expression::Assignment(a) => {
-            collect_vars(a.lhs, out);
-            collect_vars(a.rhs, out);
-        }
-        Expression::Conditional(c) => {
-            collect_vars(c.condition, out);
-            if let Some(t) = &c.then {
-                collect_vars(t, out);
-            }
-            collect_vars(c.r#else, out);
-        }
-        Expression::Array(arr) => collect_array_vars(arr.elements.iter(), out),
-        Expression::LegacyArray(arr) => collect_array_vars(arr.elements.iter(), out),
-        Expression::List(lst) => collect_array_vars(lst.elements.iter(), out),
-        Expression::ArrayAccess(aa) => {
-            collect_vars(aa.array, out);
-            collect_vars(aa.index, out);
-        }
-        Expression::ArrayAppend(ap) => collect_vars(ap.array, out),
-        Expression::CompositeString(cs) => {
-            let parts = match cs {
-                CompositeString::Interpolated(i) => Some(&i.parts),
-                CompositeString::Document(d) => Some(&d.parts),
-                CompositeString::ShellExecute(_) => None,
-            };
-            if let Some(parts) = parts {
-                for part in parts.iter() {
-                    match part {
-                        StringPart::Expression(e) => collect_vars(e, out),
-                        StringPart::BracedExpression(b) => collect_vars(b.expression, out),
-                        StringPart::Literal(_) => {}
-                    }
-                }
-            }
-        }
-        Expression::Match(m) => {
-            collect_vars(m.expression, out);
-            for arm in m.arms.iter() {
-                match arm {
-                    MatchArm::Expression(a) => {
-                        a.conditions.iter().for_each(|c| collect_vars(c, out));
-                        collect_vars(a.expression, out);
-                    }
-                    MatchArm::Default(a) => collect_vars(a.expression, out),
-                }
-            }
-        }
-        Expression::Instantiation(inst) => {
-            collect_vars(inst.class, out);
-            if let Some(list) = &inst.argument_list {
-                collect_arg_vars(list, out);
-            }
-        }
-        Expression::Access(acc) => match acc {
-            Access::Property(pa) => collect_vars(pa.object, out),
-            Access::NullSafeProperty(pa) => collect_vars(pa.object, out),
-            Access::StaticProperty(spa) => collect_vars(spa.class, out),
-            Access::ClassConstant(cca) => collect_vars(cca.class, out),
-        },
-        Expression::Clone(cl) => collect_vars(cl.object, out),
-        Expression::Throw(t) => collect_vars(t.exception, out),
-        Expression::Construct(c) => match c {
-            Construct::Print(p) => collect_vars(p.value, out),
-            Construct::Empty(e) => collect_vars(e.value, out),
-            Construct::Isset(i) => i.values.iter().for_each(|v| collect_vars(v, out)),
-            _ => {}
-        },
-        Expression::Call(call) => {
-            use rhp_frontend::cst::Call;
-            match call {
-                Call::Function(fc) => {
-                    collect_vars(fc.function, out);
-                    collect_arg_vars(&fc.argument_list, out);
-                }
-                Call::Method(mc) => {
-                    collect_vars(mc.object, out);
-                    collect_arg_vars(&mc.argument_list, out);
-                }
-                Call::NullSafeMethod(mc) => {
-                    collect_vars(mc.object, out);
-                    collect_arg_vars(&mc.argument_list, out);
-                }
-                Call::StaticMethod(smc) => {
-                    collect_vars(smc.class, out);
-                    collect_arg_vars(&smc.argument_list, out);
-                }
-            }
-        }
-        // Nested closure/arrow: only the vars it needs from *our* scope matter.
-        Expression::ArrowFunction(af) => collect_vars(af.expression, out),
-        Expression::Closure(cl) => {
+        Node::Closure(cl) => {
             if let Some(uses) = &cl.use_clause {
                 for u in uses.variables.iter() {
                     push(strip_dollar(u.variable.name), out);
                 }
             }
+            return;
         }
+        Node::AnonymousClass(ac) => {
+            if let Some(args) = &ac.argument_list {
+                collect_node_vars(Node::PartialArgumentList(args), out);
+            }
+            return;
+        }
+        // `C::$p`: the `$p` is the property name, not a variable.
+        Node::StaticPropertyAccess(spa) => {
+            collect_node_vars(Node::Expression(spa.class), out);
+            return;
+        }
+        Node::Function(_)
+        | Node::Class(_)
+        | Node::Interface(_)
+        | Node::Trait(_)
+        | Node::Enum(_)
+        | Node::AttributeList(_) => return,
         _ => {}
     }
-}
-
-fn collect_arg_vars(list: &rhp_frontend::cst::ArgumentList, out: &mut Vec<Vec<u8>>) {
-    for arg in list.arguments.iter() {
-        match arg {
-            Argument::Positional(p) => collect_vars(p.value, out),
-            Argument::Named(n) => collect_vars(n.value, out),
-        }
-    }
-}
-
-fn collect_array_vars<'a>(els: impl Iterator<Item = &'a ArrayElement<'a>>, out: &mut Vec<Vec<u8>>) {
-    for el in els {
-        match el {
-            ArrayElement::KeyValue(kv) => {
-                collect_vars(kv.key, out);
-                collect_vars(kv.value, out);
-            }
-            ArrayElement::Value(v) => collect_vars(v.value, out),
-            ArrayElement::Variadic(v) => collect_vars(v.value, out),
-            ArrayElement::Missing(_) => {}
-        }
-    }
+    node.visit_children(|ch| collect_node_vars(ch, out));
 }
 
 fn expr_kind(e: &Expression) -> &'static str {

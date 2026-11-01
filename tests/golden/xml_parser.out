@@ -1,0 +1,177 @@
+S:ROOT {"A":"1","B":"x"}
+C:"\n  "
+S:ITEM []
+C:"x\ny "
+C:"&"
+C:" z "
+C:"A"
+E:ITEM
+C:"\n  "
+D:"<!-- c -->"
+PI:pi "data"
+C:"cd <x>"
+S:E []
+E:E
+C:"\n"
+E:ROOT
+r=1
+W[8192]: Function xml_parser_free() is deprecated since 8.5, as it has no effect since PHP 8.0
+S:A []
+C:"\u00e9t\u00e9"
+E:A
+r=1
+W[8192]: Function xml_parser_free() is deprecated since 8.5, as it has no effect since PHP 8.0
+r=1
+S:A []
+S:B []
+C:"t"
+E:B
+r=1
+E:A
+r=1
+W[8192]: Function xml_parser_free() is deprecated since 8.5, as it has no effect since PHP 8.0
+S:A []
+S:B []
+r=0
+err 76 Mismatched tag L1 C11 B10
+W[8192]: Function xml_parser_free() is deprecated since 8.5, as it has no effect since PHP 8.0
+S:A []
+C:"x"
+E:A
+r=0
+err 5 Invalid document end L1 C9 B0
+W[8192]: Function xml_parser_free() is deprecated since 8.5, as it has no effect since PHP 8.0
+S:a []
+E:a
+r=1
+W[8192]: Function xml_parser_free() is deprecated since 8.5, as it has no effect since PHP 8.0
+S:root []
+C:"\n "
+S:x []
+C:" "
+E:x
+C:"\n"
+E:root
+r=1
+W[8192]: Function xml_parser_free() is deprecated since 8.5, as it has no effect since PHP 8.0
+array(7) {
+  [0]=>
+  array(3) {
+    ["tag"]=>
+    string(4) "PARA"
+    ["type"]=>
+    string(4) "open"
+    ["level"]=>
+    int(1)
+  }
+  [1]=>
+  array(4) {
+    ["tag"]=>
+    string(4) "NOTE"
+    ["type"]=>
+    string(8) "complete"
+    ["level"]=>
+    int(2)
+    ["value"]=>
+    string(11) "simple note"
+  }
+  [2]=>
+  array(5) {
+    ["tag"]=>
+    string(1) "B"
+    ["type"]=>
+    string(4) "open"
+    ["level"]=>
+    int(2)
+    ["attributes"]=>
+    array(1) {
+      ["A"]=>
+      string(1) "1"
+    }
+    ["value"]=>
+    string(1) "x"
+  }
+  [3]=>
+  array(4) {
+    ["tag"]=>
+    string(1) "I"
+    ["type"]=>
+    string(8) "complete"
+    ["level"]=>
+    int(3)
+    ["value"]=>
+    string(1) "y"
+  }
+  [4]=>
+  array(4) {
+    ["tag"]=>
+    string(1) "B"
+    ["value"]=>
+    string(1) "z"
+    ["type"]=>
+    string(5) "cdata"
+    ["level"]=>
+    int(2)
+  }
+  [5]=>
+  array(3) {
+    ["tag"]=>
+    string(1) "B"
+    ["type"]=>
+    string(5) "close"
+    ["level"]=>
+    int(2)
+  }
+  [6]=>
+  array(3) {
+    ["tag"]=>
+    string(4) "PARA"
+    ["type"]=>
+    string(5) "close"
+    ["level"]=>
+    int(1)
+  }
+}
+array(4) {
+  ["PARA"]=>
+  array(2) {
+    [0]=>
+    int(0)
+    [1]=>
+    int(6)
+  }
+  ["NOTE"]=>
+  array(1) {
+    [0]=>
+    int(1)
+  }
+  ["B"]=>
+  array(3) {
+    [0]=>
+    int(2)
+    [1]=>
+    int(4)
+    [2]=>
+    int(5)
+  }
+  ["I"]=>
+  array(1) {
+    [0]=>
+    int(3)
+  }
+}
+bool(true)
+string(5) "UTF-8"
+string(31) "Not well-formed (invalid token)"
+string(14) "Mismatched tag"
+int(2)
+string(6) "libxml"
+S:URN:X:A []
+S:URN:P:B {"URN:P:C":"1"}
+E:URN:P:B
+E:URN:X:A
+W[8192]: Function xml_set_object() is deprecated since 8.4, provide a proper method callable to xml_set_*_handler() functions
+W[8192]: xml_set_element_handler(): Passing non-callable strings is deprecated since 8.4
+obj S:Q
+obj E:Q
+string(9) "XMLParser"

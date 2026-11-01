@@ -1104,6 +1104,8 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         "preg_match" | "preg_match_all" => &[false, false, true],
         // `flock($stream, $operation, &$would_block)`.
         "flock" => &[false, false, true],
+        // `xml_parse_into_struct($parser, $data, &$values, &$index)`.
+        "xml_parse_into_struct" => &[false, false, true, true],
         // curl_multi_exec(&$still_running), curl_multi_info_read(&$queued_messages).
         "curl_multi_exec" | "curl_multi_info_read" => &[false, true],
         // `&$count` at position 4.

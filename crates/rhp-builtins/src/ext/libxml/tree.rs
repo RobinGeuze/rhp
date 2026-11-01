@@ -55,6 +55,8 @@ pub struct Node {
     pub ns_defs: Vec<(Vec<u8>, Vec<u8>)>,
     pub line: u32,
     pub doctype: Option<Box<DocTypeInfo>>,
+    /// Parsed from an empty-element tag (`<a/>`; libxml2's NODE_IS_EMPTY).
+    pub empty_tag: bool,
 }
 
 impl Node {
@@ -74,6 +76,7 @@ impl Node {
             ns_defs: Vec::new(),
             line: 0,
             doctype: None,
+            empty_tag: false,
         }
     }
 
@@ -375,6 +378,7 @@ impl Doc {
         n.ns_defs = s.ns_defs.clone();
         n.line = s.line;
         n.doctype = s.doctype.clone();
+        n.empty_tag = s.empty_tag;
         let id = self.add(n);
         if s.kind == Kind::Element {
             for &a in &from.nodes[src].attrs {
@@ -414,6 +418,7 @@ impl Doc {
         n.ns_defs = s.ns_defs.clone();
         n.line = s.line;
         n.doctype = s.doctype.clone();
+        n.empty_tag = s.empty_tag;
         let attrs = s.attrs.clone();
         let id = self.add(n);
         for a in attrs {

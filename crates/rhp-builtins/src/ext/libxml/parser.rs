@@ -19,6 +19,34 @@ pub struct XmlError {
     pub context: Option<(Vec<u8>, Vec<u8>)>,
 }
 
+/// A namespaced attribute in a SAX start event: (namespace, local, value).
+pub type SaxAttr = (Option<Vec<u8>>, Vec<u8>, Vec<u8>);
+
+/// A SAX callback as libxml2 issues it (for ext/xml's expat-compatible
+/// parser): recorded while parsing, cut off at the first fatal error.
+#[derive(Clone, Debug)]
+pub enum SaxEv {
+    Start {
+        qname: Vec<u8>,
+        ns: Option<Vec<u8>>,
+        local: Vec<u8>,
+        /// Attributes as written (xmlns declarations included).
+        raw_attrs: Vec<(Vec<u8>, Vec<u8>)>,
+        /// Non-declaration attributes: (namespace, local name, value).
+        attrs: Vec<SaxAttr>,
+        nsdecls: Vec<(Vec<u8>, Vec<u8>)>,
+    },
+    End {
+        qname: Vec<u8>,
+        ns: Option<Vec<u8>>,
+        local: Vec<u8>,
+        nsdecls: Vec<Vec<u8>>,
+    },
+    Chars(Vec<u8>),
+    Pi(Vec<u8>, Vec<u8>),
+    Comment(Vec<u8>),
+}
+
 pub const LEVEL_WARNING: i32 = 1;
 pub const LEVEL_ERROR: i32 = 2;
 pub const LEVEL_FATAL: i32 = 3;
@@ -65,6 +93,10 @@ struct P<'o> {
     in_attr_entity: usize,
     /// First non-UTF-8 byte position and its hex dump (reported on reach).
     bad_utf8: Option<(usize, String)>,
+    /// SAX event recording (ext/xml); stops at the first fatal error.
+    sax: Option<Vec<SaxEv>>,
+    /// Input offset of the first fatal error.
+    fatal_at: Option<usize>,
 }
 
 /// An attribute as parsed: (prefix, local name, value, line).
@@ -150,6 +182,9 @@ impl P<'_> {
         let (line, col) = self.loc();
         if level == LEVEL_FATAL {
             self.well_formed = false;
+            if self.fatal_at.is_none() {
+                self.fatal_at = Some(self.pos);
+            }
         }
         let context = Some(self.context());
         self.errors.push(XmlError {
@@ -660,9 +695,20 @@ impl P<'_> {
     }
 
     /// Append character data to `parent`, coalescing with a trailing text node.
+    fn sax_push(&mut self, ev: SaxEv) {
+        if self.fatal_at.is_none() {
+            if let Some(v) = &mut self.sax {
+                v.push(ev);
+            }
+        }
+    }
+
     fn characters(&mut self, parent: NodeId, data: &[u8]) {
         if data.is_empty() {
             return;
+        }
+        if self.sax.is_some() {
+            self.sax_push(SaxEv::Chars(data.to_vec()));
         }
         if let Some(l) = self.doc.nodes[parent].last {
             if self.doc.nodes[l].kind == Kind::Text {
@@ -933,6 +979,9 @@ impl P<'_> {
                     self.fatal(80, "Double hyphen within comment\n");
                 }
                 let line = self.line();
+                if self.sax.is_some() && parent != 0 {
+                    self.sax_push(SaxEv::Comment(v.clone()));
+                }
                 let mut n = Node::new(Kind::Comment);
                 n.content = v;
                 n.line = line;
@@ -960,6 +1009,9 @@ impl P<'_> {
         }
         if self.starts(b"?>") {
             self.pos += 2;
+            if self.sax.is_some() {
+                self.sax_push(SaxEv::Pi(target.clone(), Vec::new()));
+            }
             let mut n = Node::new(Kind::Pi);
             n.name = target;
             self.add_child(parent, n);
@@ -980,6 +1032,9 @@ impl P<'_> {
             if self.starts(b"?>") {
                 let data = self.s[st..self.pos].to_vec();
                 self.pos += 2;
+                if self.sax.is_some() {
+                    self.sax_push(SaxEv::Pi(target.clone(), data.clone()));
+                }
                 let mut n = Node::new(Kind::Pi);
                 n.name = target;
                 n.content = data;
@@ -1005,6 +1060,9 @@ impl P<'_> {
             if self.starts(b"]]>") {
                 let data = self.s[st..self.pos].to_vec();
                 self.pos += 3;
+                if self.sax.is_some() && !self.opts.nocdata {
+                    self.sax_push(SaxEv::Chars(data.clone()));
+                }
                 if self.opts.nocdata {
                     self.characters(parent, &data);
                 } else {
@@ -1131,6 +1189,7 @@ impl P<'_> {
         let mut attrs: Vec<RawAttr> = Vec::new();
         let ns_mark = self.ns.len();
         let mut ns_defs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        let mut raw_attrs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         self.skip_blanks();
         while !self.eof()
             && self.cur() != b'>'
@@ -1164,6 +1223,14 @@ impl P<'_> {
                 );
             }
             if let Some(v) = val {
+                if self.sax.is_some() {
+                    let q = if ap.is_empty() {
+                        al.clone()
+                    } else {
+                        [&ap[..], b":", &al[..]].concat()
+                    };
+                    raw_attrs.push((q, v.clone()));
+                }
                 if ap.is_empty() && al == b"xmlns" {
                     self.check_ns_uri(None, &v);
                     if !ns_defs.iter().any(|(p, _)| p.is_empty()) {
@@ -1313,8 +1380,31 @@ impl P<'_> {
             let aid = self.doc.add(a);
             self.doc.nodes[id].attrs.push(aid);
         }
-        if self.cur() == b'/' && self.nxt(1) == b'>' {
+        let ended = self.cur() == b'/' && self.nxt(1) == b'>';
+        if self.sax.is_some() && (ended || self.cur() == b'>') {
+            let n = &self.doc.nodes[id];
+            let attrs = n
+                .attrs
+                .iter()
+                .map(|&a| {
+                    let an = &self.doc.nodes[a];
+                    (an.ns.clone(), an.name.clone(), an.content.clone())
+                })
+                .collect();
+            let ev = SaxEv::Start {
+                qname: qname.clone(),
+                ns: n.ns.clone(),
+                local: n.name.clone(),
+                raw_attrs: std::mem::take(&mut raw_attrs),
+                attrs,
+                nsdecls: n.ns_defs.clone(),
+            };
+            self.sax_push(ev);
+        }
+        if ended {
             self.pos += 2;
+            self.doc.nodes[id].empty_tag = true;
+            self.sax_end(id, &qname);
             self.ns.truncate(ns_mark);
             return;
         }
@@ -1382,7 +1472,22 @@ impl P<'_> {
                 ),
             );
         }
+        self.sax_end(id, &qname);
         self.ns.truncate(ns_mark);
+    }
+
+    fn sax_end(&mut self, id: NodeId, qname: &[u8]) {
+        if self.sax.is_none() {
+            return;
+        }
+        let n = &self.doc.nodes[id];
+        let ev = SaxEv::End {
+            qname: qname.to_vec(),
+            ns: n.ns.clone(),
+            local: n.name.clone(),
+            nsdecls: n.ns_defs.iter().map(|(p, _)| p.clone()).collect(),
+        };
+        self.sax_push(ev);
     }
 
     fn check_ns_uri(&mut self, prefix: Option<&[u8]>, uri: &[u8]) {
@@ -1463,6 +1568,28 @@ fn normalize_input(input: &[u8]) -> Vec<u8> {
 /// Parse a document. Returns the tree when the input is well-formed (or the
 /// parse recovered), plus every diagnostic raised.
 pub fn parse(input: &[u8], opts: &ParseOpts, url: Option<&[u8]>) -> (Option<Doc>, Vec<XmlError>) {
+    let (doc, errs, _, _) = parse_inner(input, opts, url, false);
+    (doc, errs)
+}
+
+/// Parse recording libxml2's SAX callbacks: (events, diagnostics, offset of
+/// the first fatal error).
+pub fn parse_sax(input: &[u8]) -> (Vec<SaxEv>, Vec<XmlError>, Option<usize>) {
+    let opts = ParseOpts {
+        keep_blanks: true,
+        ..Default::default()
+    };
+    let (_, errs, ev, at) = parse_inner(input, &opts, None, true);
+    (ev, errs, at)
+}
+
+#[allow(clippy::type_complexity)]
+fn parse_inner(
+    input: &[u8],
+    opts: &ParseOpts,
+    url: Option<&[u8]>,
+    sax: bool,
+) -> (Option<Doc>, Vec<XmlError>, Vec<SaxEv>, Option<usize>) {
     let s = normalize_input(input);
     let mut p = P {
         s,
@@ -1480,8 +1607,13 @@ pub fn parse(input: &[u8], opts: &ParseOpts, url: Option<&[u8]>) -> (Option<Doc>
         has_external_subset: false,
         in_attr_entity: 0,
         bad_utf8: None,
+        sax: None,
+        fatal_at: None,
     };
     p.doc.version = None;
+    if sax {
+        p.sax = Some(Vec::new());
+    }
     // no XML declaration: the encoding is undeclared; check UTF-8 up front
     if !(p.starts(b"<?xml") && p.s.len() > 5 && is_blank(p.nxt(5))) {
         p.check_utf8();
@@ -1493,10 +1625,11 @@ pub fn parse(input: &[u8], opts: &ParseOpts, url: Option<&[u8]>) -> (Option<Doc>
         doc.version = Some(b"1.0".to_vec());
     }
     doc.url = url.map(|u| u.to_vec());
+    let events = p.sax.take().unwrap_or_default();
     if p.well_formed || opts.recover {
-        (Some(doc), p.errors)
+        (Some(doc), p.errors, events, p.fatal_at)
     } else {
-        (None, p.errors)
+        (None, p.errors, events, p.fatal_at)
     }
 }
 

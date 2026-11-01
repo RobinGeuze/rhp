@@ -42,8 +42,6 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "hash",
     "iconv",
     "standard",
-    // XML family: reported so composer resolution passes for packages that
-    // require ext-xml/ext-dom (symfony etc.). Runtime XML support is partial.
     "libxml",
     "pcntl",
     "Phar",

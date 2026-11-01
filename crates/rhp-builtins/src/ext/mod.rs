@@ -29,6 +29,8 @@ pub mod reflection;
 pub mod simplexml;
 pub mod spl;
 pub mod tokenizer;
+pub mod xml;
+pub mod xmlreader;
 pub mod xmlwriter;
 pub mod zip;
 pub mod zlib;
@@ -189,6 +191,20 @@ pub fn modules() -> Vec<ModuleDef> {
             functions: simplexml::register,
             constants: no_constants,
             prelude_php: simplexml::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "xml",
+            functions: xml::register,
+            constants: xml::constants,
+            prelude_php: xml::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "xmlreader",
+            functions: xmlreader::register,
+            constants: no_constants,
+            prelude_php: xmlreader::PRELUDE_PHP,
             wrappers: no_wrappers,
         },
         ModuleDef {

@@ -1,0 +1,91 @@
+array(2) {
+  ["MY_CONST"]=>
+  int(42)
+  ["OTHER"]=>
+  string(1) "x"
+}
+int(2)
+int(1)
+int(30719)
+int(8)
+bool(true)
+bool(true)
+bool(true)
+PREG_NO_ERROR=0
+PREG_INTERNAL_ERROR=1
+PREG_BACKTRACK_LIMIT_ERROR=2
+PREG_RECURSION_LIMIT_ERROR=3
+PREG_BAD_UTF8_ERROR=4
+PREG_BAD_UTF8_OFFSET_ERROR=5
+PREG_JIT_STACKLIMIT_ERROR=6
+int(42)
+string(1) "x"
+int(2)
+string(5) "OTHER"
+string(7) "E_ERROR"
+string(2) "14"
+bool(false)
+string(2) "14"
+string(2) "10"
+string(2) "10"
+string(2) "14"
+bool(false)
+bool(false)
+string(1) "1"
+string(7) "1000000"
+array(3) {
+  ["pcre.backtrack_limit"]=>
+  array(3) {
+    ["global_value"]=>
+    string(7) "1000000"
+    ["local_value"]=>
+    string(7) "1000000"
+    ["access"]=>
+    int(7)
+  }
+  ["pcre.jit"]=>
+  array(3) {
+    ["global_value"]=>
+    string(1) "1"
+    ["local_value"]=>
+    string(1) "1"
+    ["access"]=>
+    int(7)
+  }
+  ["pcre.recursion_limit"]=>
+  array(3) {
+    ["global_value"]=>
+    string(6) "100000"
+    ["local_value"]=>
+    string(6) "100000"
+    ["access"]=>
+    int(7)
+  }
+}
+array(3) {
+  ["pcre.backtrack_limit"]=>
+  string(7) "1000000"
+  ["pcre.jit"]=>
+  string(1) "1"
+  ["pcre.recursion_limit"]=>
+  string(6) "100000"
+}
+bool(false)
+string(0) ""
+string(1) "0"
+string(1) "1"
+bool(true)
+bool(true)
+bool(true)
+string(3) "UTC"
+bool(true)
+string(16) "Europe/Amsterdam"
+bool(false)
+string(16) "Europe/Amsterdam"
+bool(true)
+string(3) "utc"
+bool(true)
+NULL
+int(0)
+ValueError: usleep(): Argument #1 ($microseconds) must be greater than or equal to 0
+bool(true)

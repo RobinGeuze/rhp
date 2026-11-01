@@ -1,0 +1,22 @@
+array(9) {
+  [0]=>
+  bool(false)
+  [1]=>
+  bool(false)
+  [2]=>
+  array(0) {
+  }
+  [3]=>
+  bool(true)
+  [4]=>
+  int(404)
+  [5]=>
+  int(302)
+  [6]=>
+  int(201)
+  [7]=>
+  int(201)
+  [8]=>
+  bool(false)
+}
+bool(true)

@@ -1,0 +1,51 @@
+start
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+string(1) "D"
+string(1) "k"
+array(1) {
+  [0]=>
+  int(1)
+}
+string(1) "A"
+string(1) "E"
+bool(true)
+bool(true)
+bool(false)
+string(2) "hi"
+string(1) "m"
+bool(true)
+array(1) {
+  ["I0"]=>
+  string(2) "I0"
+}
+bool(false)
+int(1)
+autoload(Base)
+string(4) "base"
+string(1) "t"
+string(1) "h"
+bool(true)
+autoload(Missing)
+Error: Class "Missing" not found
+autoload(MissingI)
+Error: Interface "MissingI" not found
+bool(false)
+bool(true)
+string(1) "A"
+string(1) "A"
+string(1) "A"
+bool(true)
+bool(false)
+string(1) "A"
+bool(false)
+autoload(NopeClass)
+get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, string given
+get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, int given
+string(1) "D"
+array(1) {
+  [0]=>
+  string(1) "E"
+}

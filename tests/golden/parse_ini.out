@@ -1,0 +1,554 @@
+== mode 0, sections
+array(3) {
+  ["first"]=>
+  array(32) {
+    ["plain"]=>
+    string(11) "hello world"
+    ["quoted"]=>
+    string(14) "a "q" \ $ \n x"
+    ["single"]=>
+    string(9) "raw $x \n"
+    ["num"]=>
+    string(2) "42"
+    ["neg"]=>
+    string(2) "-7"
+    ["float"]=>
+    string(3) "1.5"
+    ["hexish"]=>
+    string(4) "0x1A"
+    ["bool_on"]=>
+    string(1) "1"
+    ["bool_yes"]=>
+    string(1) "1"
+    ["bool_true"]=>
+    string(1) "1"
+    ["bool_off"]=>
+    string(0) ""
+    ["bool_no"]=>
+    string(0) ""
+    ["bool_none"]=>
+    string(0) ""
+    ["bool_false"]=>
+    string(0) ""
+    ["nul"]=>
+    string(0) ""
+    ["empty"]=>
+    string(0) ""
+    ["const"]=>
+    string(8) "constval"
+    ["constcat"]=>
+    string(17) "constval and more"
+    ["colon"]=>
+    string(3) "a:b"
+    ["expr_or"]=>
+    string(1) "3"
+    ["expr_and"]=>
+    string(1) "3"
+    ["expr_xor"]=>
+    string(1) "4"
+    ["expr_not"]=>
+    string(2) "-1"
+    ["expr_bang"]=>
+    string(1) "0"
+    ["expr_paren"]=>
+    string(1) "5"
+    ["trailing"]=>
+    string(5) "value"
+    ["path"]=>
+    string(14) "/usr/local/bin"
+    ["url"]=>
+    string(21) "http://example.com/?a"
+    ["dollar"]=>
+    string(7) "$notvar"
+    ["envvar"]=>
+    string(7) "fromenv"
+    ["envmissing"]=>
+    string(0) ""
+    ["envquoted"]=>
+    string(16) "pre fromenv post"
+  }
+  ["second"]=>
+  array(8) {
+    ["arr"]=>
+    array(2) {
+      [0]=>
+      string(3) "one"
+      [1]=>
+      string(3) "two"
+    }
+    ["map"]=>
+    array(2) {
+      ["key"]=>
+      string(2) "v1"
+      ["other"]=>
+      string(2) "v2"
+    }
+    [5]=>
+    string(4) "five"
+    ["n"]=>
+    array(1) {
+      [3]=>
+      string(5) "three"
+    }
+    ["007"]=>
+    array(1) {
+      ["x"]=>
+      string(1) "y"
+    }
+    ["mix"]=>
+    string(14) "quotedunquoted"
+    ["spaced key"]=>
+    string(2) "sv"
+    ["dotted.key"]=>
+    string(2) "dv"
+  }
+  [" 10 "]=>
+  array(1) {
+    ["a"]=>
+    string(1) "1"
+  }
+}
+== mode 1, sections
+array(3) {
+  ["first"]=>
+  array(32) {
+    ["plain"]=>
+    string(11) "hello world"
+    ["quoted"]=>
+    string(18) "a \"q\" \\ \$ \n x"
+    ["single"]=>
+    string(11) "'raw $x \n'"
+    ["num"]=>
+    string(2) "42"
+    ["neg"]=>
+    string(2) "-7"
+    ["float"]=>
+    string(3) "1.5"
+    ["hexish"]=>
+    string(4) "0x1A"
+    ["bool_on"]=>
+    string(2) "on"
+    ["bool_yes"]=>
+    string(3) "yes"
+    ["bool_true"]=>
+    string(4) "true"
+    ["bool_off"]=>
+    string(3) "off"
+    ["bool_no"]=>
+    string(2) "no"
+    ["bool_none"]=>
+    string(4) "none"
+    ["bool_false"]=>
+    string(5) "false"
+    ["nul"]=>
+    string(4) "null"
+    ["empty"]=>
+    string(0) ""
+    ["const"]=>
+    string(7) "MYCONST"
+    ["constcat"]=>
+    string(16) "MYCONST and more"
+    ["colon"]=>
+    string(3) "a:b"
+    ["expr_or"]=>
+    string(5) "1 | 2"
+    ["expr_and"]=>
+    string(5) "7 & 3"
+    ["expr_xor"]=>
+    string(5) "5 ^ 1"
+    ["expr_not"]=>
+    string(2) "~0"
+    ["expr_bang"]=>
+    string(2) "!1"
+    ["expr_paren"]=>
+    string(11) "(1 | 4) & 5"
+    ["trailing"]=>
+    string(5) "value"
+    ["path"]=>
+    string(14) "/usr/local/bin"
+    ["url"]=>
+    string(21) "http://example.com/?a"
+    ["dollar"]=>
+    string(7) "$notvar"
+    ["envvar"]=>
+    string(15) "${RHP_INI_TEST}"
+    ["envmissing"]=>
+    string(22) "${RHP_INI_MISSING_VAR}"
+    ["envquoted"]=>
+    string(24) "pre ${RHP_INI_TEST} post"
+  }
+  ["second"]=>
+  array(8) {
+    ["arr"]=>
+    array(2) {
+      [0]=>
+      string(3) "one"
+      [1]=>
+      string(3) "two"
+    }
+    ["map"]=>
+    array(2) {
+      ["key"]=>
+      string(2) "v1"
+      ["other"]=>
+      string(2) "v2"
+    }
+    [5]=>
+    string(4) "five"
+    ["n"]=>
+    array(1) {
+      [3]=>
+      string(5) "three"
+    }
+    ["007"]=>
+    array(1) {
+      ["x"]=>
+      string(1) "y"
+    }
+    ["mix"]=>
+    string(17) ""quoted" unquoted"
+    ["spaced key"]=>
+    string(2) "sv"
+    ["dotted.key"]=>
+    string(2) "dv"
+  }
+  [" 10 "]=>
+  array(1) {
+    ["a"]=>
+    string(1) "1"
+  }
+}
+== mode 2, sections
+array(3) {
+  ["first"]=>
+  array(32) {
+    ["plain"]=>
+    string(11) "hello world"
+    ["quoted"]=>
+    string(14) "a "q" \ $ \n x"
+    ["single"]=>
+    string(9) "raw $x \n"
+    ["num"]=>
+    int(42)
+    ["neg"]=>
+    int(-7)
+    ["float"]=>
+    float(1.5)
+    ["hexish"]=>
+    string(4) "0x1A"
+    ["bool_on"]=>
+    bool(true)
+    ["bool_yes"]=>
+    bool(true)
+    ["bool_true"]=>
+    bool(true)
+    ["bool_off"]=>
+    bool(false)
+    ["bool_no"]=>
+    bool(false)
+    ["bool_none"]=>
+    bool(false)
+    ["bool_false"]=>
+    bool(false)
+    ["nul"]=>
+    NULL
+    ["empty"]=>
+    string(0) ""
+    ["const"]=>
+    string(8) "constval"
+    ["constcat"]=>
+    string(17) "constval and more"
+    ["colon"]=>
+    string(3) "a:b"
+    ["expr_or"]=>
+    int(3)
+    ["expr_and"]=>
+    int(3)
+    ["expr_xor"]=>
+    int(4)
+    ["expr_not"]=>
+    int(-1)
+    ["expr_bang"]=>
+    int(0)
+    ["expr_paren"]=>
+    int(5)
+    ["trailing"]=>
+    string(5) "value"
+    ["path"]=>
+    string(14) "/usr/local/bin"
+    ["url"]=>
+    string(21) "http://example.com/?a"
+    ["dollar"]=>
+    string(7) "$notvar"
+    ["envvar"]=>
+    string(7) "fromenv"
+    ["envmissing"]=>
+    string(0) ""
+    ["envquoted"]=>
+    string(16) "pre fromenv post"
+  }
+  ["second"]=>
+  array(8) {
+    ["arr"]=>
+    array(2) {
+      [0]=>
+      string(3) "one"
+      [1]=>
+      string(3) "two"
+    }
+    ["map"]=>
+    array(2) {
+      ["key"]=>
+      string(2) "v1"
+      ["other"]=>
+      string(2) "v2"
+    }
+    [5]=>
+    string(4) "five"
+    ["n"]=>
+    array(1) {
+      [3]=>
+      string(5) "three"
+    }
+    ["007"]=>
+    array(1) {
+      ["x"]=>
+      string(1) "y"
+    }
+    ["mix"]=>
+    string(14) "quotedunquoted"
+    ["spaced key"]=>
+    string(2) "sv"
+    ["dotted.key"]=>
+    string(2) "dv"
+  }
+  [" 10 "]=>
+  array(1) {
+    ["a"]=>
+    int(1)
+  }
+}
+== no sections
+array(41) {
+  ["plain"]=>
+  string(11) "hello world"
+  ["quoted"]=>
+  string(14) "a "q" \ $ \n x"
+  ["single"]=>
+  string(9) "raw $x \n"
+  ["num"]=>
+  string(2) "42"
+  ["neg"]=>
+  string(2) "-7"
+  ["float"]=>
+  string(3) "1.5"
+  ["hexish"]=>
+  string(4) "0x1A"
+  ["bool_on"]=>
+  string(1) "1"
+  ["bool_yes"]=>
+  string(1) "1"
+  ["bool_true"]=>
+  string(1) "1"
+  ["bool_off"]=>
+  string(0) ""
+  ["bool_no"]=>
+  string(0) ""
+  ["bool_none"]=>
+  string(0) ""
+  ["bool_false"]=>
+  string(0) ""
+  ["nul"]=>
+  string(0) ""
+  ["empty"]=>
+  string(0) ""
+  ["const"]=>
+  string(8) "constval"
+  ["constcat"]=>
+  string(17) "constval and more"
+  ["colon"]=>
+  string(3) "a:b"
+  ["expr_or"]=>
+  string(1) "3"
+  ["expr_and"]=>
+  string(1) "3"
+  ["expr_xor"]=>
+  string(1) "4"
+  ["expr_not"]=>
+  string(2) "-1"
+  ["expr_bang"]=>
+  string(1) "0"
+  ["expr_paren"]=>
+  string(1) "5"
+  ["trailing"]=>
+  string(5) "value"
+  ["path"]=>
+  string(14) "/usr/local/bin"
+  ["url"]=>
+  string(21) "http://example.com/?a"
+  ["dollar"]=>
+  string(7) "$notvar"
+  ["envvar"]=>
+  string(7) "fromenv"
+  ["envmissing"]=>
+  string(0) ""
+  ["envquoted"]=>
+  string(16) "pre fromenv post"
+  ["arr"]=>
+  array(2) {
+    [0]=>
+    string(3) "one"
+    [1]=>
+    string(3) "two"
+  }
+  ["map"]=>
+  array(2) {
+    ["key"]=>
+    string(2) "v1"
+    ["other"]=>
+    string(2) "v2"
+  }
+  [5]=>
+  string(4) "five"
+  ["n"]=>
+  array(1) {
+    [3]=>
+    string(5) "three"
+  }
+  ["007"]=>
+  array(1) {
+    ["x"]=>
+    string(1) "y"
+  }
+  ["mix"]=>
+  string(14) "quotedunquoted"
+  ["spaced key"]=>
+  string(2) "sv"
+  ["dotted.key"]=>
+  string(2) "dv"
+  ["a"]=>
+  string(1) "1"
+}
+"a=1\nb=2"
+  0: {"a":"1","b":"2"}
+  1: {"a":"1","b":"2"}
+  2: {"a":1,"b":2}
+"a = \"unterminated"
+  0: false
+  1: {"a":"\"unterminated"}
+  2: false
+"a = b = c"
+  0: false
+  1: {"a":"b = c"}
+  2: false
+"[sec"
+  0: false
+  1: false
+  2: false
+"a[ = 1"
+  0: false
+  1: false
+  2: false
+"key"
+  0: []
+  1: []
+  2: []
+"a=${x:-b}"
+  0: false
+  1: {"a":"${x:-b}"}
+  2: false
+"a=${xy:-def}"
+  0: {"a":"def"}
+  1: {"a":"${xy:-def}"}
+  2: {"a":"def"}
+"yes = 1"
+  0: false
+  1: false
+  2: false
+"a = 'x' 'y'"
+  0: {"a":"x y"}
+  1: {"a":"'x' 'y'"}
+  2: {"a":"x y"}
+"a = \"C:\\path\\\"\nb=2"
+  0: {"a":"C:\\path\\","b":"2"}
+  1: {"a":"C:\\path\\","b":"2"}
+  2: {"a":"C:\\path\\","b":2}
+"a=1;c"
+  0: {"a":"1"}
+  1: {"a":"1"}
+  2: {"a":1}
+"a=\"x;y\" ; z"
+  0: {"a":"x;y"}
+  1: {"a":"x;y"}
+  2: {"a":"x;y"}
+"\ufeffbom=1"
+  0: {"bom":"1"}
+  1: {"bom":"1"}
+  2: {"bom":1}
+"a=1\r\nb=2\rc=3"
+  0: {"a":"1","b":"2","c":"3"}
+  1: {"a":"1","b":"2","c":"3"}
+  2: {"a":1,"b":2,"c":3}
+"x = 99999999999999999999"
+  0: {"x":"99999999999999999999"}
+  1: {"x":"99999999999999999999"}
+  2: {"x":"99999999999999999999"}
+"x = 1e3"
+  0: {"x":"1e3"}
+  1: {"x":"1e3"}
+  2: {"x":"1e3"}
+"x = .5"
+  0: {"x":".5"}
+  1: {"x":".5"}
+  2: {"x":0.5}
+"x = 5."
+  0: {"x":"5."}
+  1: {"x":"5."}
+  2: {"x":5}
+"x = 1 2"
+  0: {"x":"1 2"}
+  1: {"x":"1 2"}
+  2: {"x":"1 2"}
+"[a]\nk=1\n[a]\nj=2"
+  0: {"a":{"j":"2"}}
+  1: {"a":{"j":"2"}}
+  2: {"a":{"j":2}}
+"a.b c=1"
+  0: {"a.b c":"1"}
+  1: {"a.b c":"1"}
+  2: {"a.b c":1}
+"a=\"multi\nline\""
+  0: {"a":"multi\nline"}
+  1: false
+  2: {"a":"multi\nline"}
+"a=\"${RHP_INI_TEST}\""
+  0: {"a":"fromenv"}
+  1: {"a":"${RHP_INI_TEST}"}
+  2: {"a":"fromenv"}
+"a = true story"
+  0: false
+  1: {"a":"true story"}
+  2: false
+"a = (1"
+  0: false
+  1: {"a":"(1"}
+  2: false
+"a = ~"
+  0: false
+  1: {"a":"~"}
+  2: false
+"a = 1 |"
+  0: false
+  1: {"a":"1 |"}
+  2: false
+"!a=1"
+  0: false
+  1: false
+  2: false
+"a=$\\{"
+  0: {"a":"$\\{"}
+  1: {"a":"$\\{"}
+  2: {"a":"$\\{"}
+bool(false)
+array(0) {
+}

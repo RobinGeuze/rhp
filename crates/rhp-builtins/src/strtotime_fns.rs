@@ -195,6 +195,7 @@ pub(crate) fn strtotime(s: &[u8], base: i64) -> Option<i64> {
 // ---------------------------------------------------------------------------
 
 fn parse_epoch(t: &[u8]) -> Option<i64> {
+    EXPLICIT_ZONE.with(|e| e.set(true));
     let body = &t[1..];
     let (neg, body) = match body.first() {
         Some(b'-') => (true, &body[1..]),
@@ -521,6 +522,7 @@ fn parse_time_tz(src: &[u8]) -> Option<(i64, i64, i64, i64)> {
 
 /// Parse a trailing zone: `z` (lowercased Z), `+HH:MM`, `-HHMM`, `+HH`.
 fn parse_tz(b: &[u8]) -> Option<(i64, usize)> {
+    EXPLICIT_ZONE.with(|e| e.set(true));
     if b[0] == b'z' {
         return Some((0, 1));
     }
@@ -702,13 +704,32 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+thread_local! {
+    /// Set while parsing when the string pins its own zone (`@epoch`, `Z`,
+    /// `+HH:MM`): the result is then absolute, not default-zone local time.
+    static EXPLICIT_ZONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `strtotime` in the default zone: the grammar runs on local wall-clock
+/// seconds and the result is mapped back through the zone's offsets.
+fn strtotime_local(s: &[u8], base: i64) -> Option<i64> {
+    let t = crate::tzdb::local_type(base);
+    EXPLICIT_ZONE.with(|e| e.set(false));
+    let r = strtotime(s, base + t.off)?;
+    if EXPLICIT_ZONE.with(|e| e.get()) {
+        Some(r)
+    } else {
+        Some(crate::datetime_fns::local_to_ts(r, t.dst))
+    }
+}
+
 fn fn_strtotime(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = conv::to_string_bytes(&deref(&args[0]));
     let base = match args.get(1).map(deref) {
         None | Some(Value::Null) => now_secs(),
         Some(v) => conv::to_int(&v),
     };
-    match strtotime(&s, base) {
+    match strtotime_local(&s, base) {
         Some(ts) => Ok(Value::Int(ts)),
         None => Ok(Value::Bool(false)),
     }

@@ -284,7 +284,27 @@ fn fn_dt_fmt(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(format_dt(ts, us, off, &zname, &fmt)))
 }
 
+/// Extra zone detail for `date()` / `gmdate()` on a database zone.
+pub(crate) struct ZoneX {
+    pub(crate) abbr: Vec<u8>,
+    pub(crate) dst: bool,
+    /// false for `gmdate()` (php_date.c `localtime == 0`).
+    pub(crate) localtime: bool,
+}
+
 fn format_dt(ts: i64, us: i64, off: i64, zname: &[u8], fmt: &[u8]) -> Vec<u8> {
+    format_dt_x(ts, us, off, zname, None, fmt)
+}
+
+/// `date()` / `gmdate()` rendering with a database zone's abbreviation/dst.
+pub(crate) fn format_dt_x(
+    ts: i64,
+    us: i64,
+    off: i64,
+    zname: &[u8],
+    x: Option<&ZoneX>,
+    fmt: &[u8],
+) -> Vec<u8> {
     let tm = break_down(ts + off);
     let kind = zone_kind(zname);
     let mut out = Vec::with_capacity(fmt.len() + 16);
@@ -300,7 +320,7 @@ fn format_dt(ts: i64, us: i64, off: i64, zname: &[u8], fmt: &[u8]) -> Vec<u8> {
             }
             continue;
         }
-        emit_char(&mut out, c, &tm, ts, us, off, zname, kind);
+        emit_char(&mut out, c, &tm, ts, us, off, zname, kind, x);
         i += 1;
     }
     out
@@ -316,6 +336,7 @@ fn emit_char(
     off: i64,
     zname: &[u8],
     kind: ZoneKind,
+    x: Option<&ZoneX>,
 ) {
     let push = |out: &mut Vec<u8>, s: &str| out.extend_from_slice(s.as_bytes());
     let pint = |out: &mut Vec<u8>, n: i64| out.extend_from_slice(n.to_string().as_bytes());
@@ -376,14 +397,30 @@ fn emit_char(
             ZoneKind::Utc => push(out, "UTC"),
             _ => out.extend_from_slice(zname),
         },
+        b'T' if x.is_some() => {
+            let x = x.unwrap();
+            if x.localtime {
+                out.extend_from_slice(&x.abbr.to_ascii_uppercase());
+            } else {
+                push(out, "GMT");
+            }
+        }
         b'T' => match kind {
             ZoneKind::Utc => push(out, "UTC"),
             ZoneKind::Named => out.extend_from_slice(zname),
             ZoneKind::Offset => push(out, &format!("GMT{}", offset_hhmm(off))),
         },
-        b'I' => out.push(b'0'),
+        b'I' => out.push(if x.is_some_and(|x| x.dst) { b'1' } else { b'0' }),
         b'O' => push(out, &offset_hhmm(off)),
         b'P' => push(out, &offset_hh_mm(off)),
+        b'p' if x.is_some() => {
+            let x = x.unwrap();
+            if !x.localtime || matches!(&x.abbr[..], b"UTC" | b"Z" | b"GMT+0000") {
+                out.push(b'Z');
+            } else {
+                push(out, &offset_hh_mm(off));
+            }
+        }
         b'p' => {
             if off == 0 && kind != ZoneKind::Named {
                 out.push(b'Z');
@@ -393,8 +430,8 @@ fn emit_char(
         }
         b'Z' => pint(out, off),
         // composite
-        b'c' => out.extend_from_slice(&format_dt(ts, us, off, zname, b"Y-m-d\\TH:i:sP")),
-        b'r' => out.extend_from_slice(&format_dt(ts, us, off, zname, b"D, d M Y H:i:s O")),
+        b'c' => out.extend_from_slice(&format_dt_x(ts, us, off, zname, x, b"Y-m-d\\TH:i:sP")),
+        b'r' => out.extend_from_slice(&format_dt_x(ts, us, off, zname, x, b"D, d M Y H:i:s O")),
         b'U' => pint(out, ts),
         other => out.push(other),
     }

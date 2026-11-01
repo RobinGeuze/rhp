@@ -46,6 +46,10 @@ impl Host for Interp<'_> {
         self.out.extend_from_slice(bytes);
     }
 
+    fn output_started(&self) -> bool {
+        !self.out.is_empty()
+    }
+
     fn bc_scale(&self) -> i64 {
         self.bc_scale
     }
@@ -63,6 +67,8 @@ impl Default for Interp<'_> {
 
 impl<'a> Interp<'a> {
     pub fn new() -> Self {
+        // Builtin state is per request: never inherit a previous engine's.
+        builtins::reset_request_state();
         let mut constants = HashMap::new();
         for (name, value) in builtins::constants() {
             constants.insert(name.as_bytes().to_vec(), value);

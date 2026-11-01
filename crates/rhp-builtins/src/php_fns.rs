@@ -21,53 +21,82 @@ fn str_arg(args: &[Value], i: usize) -> Vec<u8> {
     conv::to_string_bytes(&deref(&args[i]))
 }
 
-/// Extensions this engine reports as loaded (lowercased). These are the ones
-/// whose functions/classes rhp actually provides.
-const LOADED_EXTS: &[&str] = &[
-    "core",
-    "standard",
-    "spl",
-    "pcre",
-    "json",
-    "hash",
-    "filter",
+/// Extensions this engine reports as loaded, under php's own module names and
+/// in php 8.5.8's `get_loaded_extensions()` order. These are the ones whose
+/// functions/classes rhp actually provides.
+pub(crate) const LOADED_EXTS: &[&str] = &[
+    "Core",
     "date",
-    "ctype",
-    "mbstring",
-    "tokenizer",
-    "phar",
+    "openssl",
+    "pcre",
     "zlib",
     "bz2",
     "bcmath",
+    "ctype",
+    "json",
+    "mbstring",
+    "SPL",
+    "filter",
     "gmp",
-    "reflection",
+    "hash",
     "iconv",
-    "openssl",
-    "zip",
+    "standard",
     // XML family: reported so composer resolution passes for packages that
     // require ext-xml/ext-dom (symfony etc.). Runtime XML support is partial.
     "libxml",
-    "xml",
+    "Phar",
+    "random",
+    "Reflection",
+    "SimpleXML",
+    "tokenizer",
     "dom",
-    "simplexml",
+    "xml",
     "xmlreader",
     "xmlwriter",
+    "zip",
 ];
 
-/// The loaded-extension list (lowercased), for phpinfo(INFO_MODULES).
+/// The loaded-extension list (php's module names), for phpinfo(INFO_MODULES).
 pub(crate) fn loaded_extension_names() -> &'static [&'static str] {
     LOADED_EXTS
 }
 
-fn fn_extension_loaded(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = String::from_utf8_lossy(&str_arg(args, 0)).to_ascii_lowercase();
-    Ok(Value::Bool(LOADED_EXTS.contains(&name.as_str())))
+/// The loaded extension matching `name` case-insensitively (php's module
+/// lookup lowercases), if any.
+pub(crate) fn loaded_ext(name: &[u8]) -> Option<&'static str> {
+    LOADED_EXTS
+        .iter()
+        .copied()
+        .find(|e| e.as_bytes().eq_ignore_ascii_case(name))
 }
 
-fn fn_get_loaded_extensions(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+/// `phpversion($ext)`: most bundled extensions report PHP_VERSION.
+fn ext_version(ext: &str) -> &'static str {
+    match ext {
+        "dom" => "20031129",
+        "zip" => "1.22.8",
+        _ => "8.5.8",
+    }
+}
+
+fn fn_extension_loaded(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(loaded_ext(&str_arg(args, 0)).is_some()))
+}
+
+fn fn_get_loaded_extensions(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let zend = crate::argparse::bool_param(
+        host,
+        args,
+        0,
+        "get_loaded_extensions",
+        "zend_extensions",
+        false,
+    )?;
     let mut a = PhpArray::new();
-    for e in LOADED_EXTS {
-        a.push(Value::str(*e));
+    if !zend {
+        for e in LOADED_EXTS {
+            a.push(Value::str(*e));
+        }
     }
     Ok(Value::Array(a))
 }
@@ -80,12 +109,9 @@ fn fn_phpversion(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // phpversion($extension) returns the ext's version or false; plain → engine.
     match args.first() {
         Some(v) if !matches!(deref(v), Value::Null) => {
-            let name =
-                String::from_utf8_lossy(&conv::to_string_bytes(&deref(v))).to_ascii_lowercase();
-            if LOADED_EXTS.contains(&name.as_str()) {
-                Ok(Value::str("8.5.8"))
-            } else {
-                Ok(Value::Bool(false))
+            match loaded_ext(&conv::to_string_bytes(&deref(v))) {
+                Some(e) => Ok(Value::str(ext_version(e))),
+                None => Ok(Value::Bool(false)),
             }
         }
         _ => Ok(Value::str("8.5.8")),
@@ -587,85 +613,113 @@ fn fn_ob_get_flush(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown
     Ok(contents.map(Value::str).unwrap_or(Value::Bool(false)))
 }
 
+/// One `putenv` change: name and new value (`None` = unset).
+pub type EnvChange = (Vec<u8>, Option<Vec<u8>>);
+
+thread_local! {
+    /// `putenv` changes for this request, layered over the process
+    /// environment (`None` = unset). The process environment itself is never
+    /// mutated: that would race with other threads' `getenv` (the test
+    /// harness runs engines on parallel threads) and leak across engines.
+    static ENV_OVERLAY: std::cell::RefCell<Vec<EnvChange>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub(crate) fn reset_state() {
+    ENV_OVERLAY.with(|e| e.borrow_mut().clear());
+}
+
+/// The request's `putenv` changes in order (`None` = unset). A spawner of
+/// child processes must apply these (`Command::env` / `env_remove`) so the
+/// child sees the same environment as `getenv`, as in php.
+pub fn env_overrides() -> Vec<EnvChange> {
+    ENV_OVERLAY.with(|e| e.borrow().clone())
+}
+
+/// Apply [`env_overrides`] to a child-process command.
+pub fn apply_env_overrides(cmd: &mut std::process::Command) {
+    for (k, v) in env_overrides() {
+        let k = String::from_utf8_lossy(&k).into_owned();
+        match v {
+            Some(v) => {
+                cmd.env(k, String::from_utf8_lossy(&v).into_owned());
+            }
+            None => {
+                cmd.env_remove(k);
+            }
+        }
+    }
+}
+
+/// `getenv(name)` as php sees it: the request's `putenv` changes, then the
+/// process environment.
+pub(crate) fn env_get(name: &[u8]) -> Option<Vec<u8>> {
+    if let Some(v) = ENV_OVERLAY.with(|e| {
+        e.borrow()
+            .iter()
+            .rev()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+    }) {
+        return v;
+    }
+    std::env::var_os(String::from_utf8_lossy(name).as_ref())
+        .map(|v| v.to_string_lossy().into_owned().into_bytes())
+}
+
 fn fn_getenv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match args.first() {
         Some(v) if !matches!(deref(v), Value::Null) => {
-            let name = String::from_utf8_lossy(&conv::to_string_bytes(&deref(v))).into_owned();
-            match std::env::var(&name) {
-                Ok(val) => Ok(Value::str(val.into_bytes())),
-                Err(_) => Ok(Value::Bool(false)),
+            let name = conv::to_string_bytes(&deref(v));
+            match env_get(&name) {
+                Some(val) => Ok(Value::str(val)),
+                None => Ok(Value::Bool(false)),
             }
         }
         _ => {
             let mut a = PhpArray::new();
-            for (k, v) in std::env::vars() {
+            for (k, v) in std::env::vars_os() {
                 a.insert(
-                    rhp_values::ArrayKey::from_bytes(k.as_bytes()),
-                    Value::str(v.into_bytes()),
+                    rhp_values::ArrayKey::from_bytes(k.to_string_lossy().as_bytes()),
+                    Value::str(v.to_string_lossy().into_owned().into_bytes()),
                 );
+            }
+            for (k, v) in env_overrides() {
+                let key = rhp_values::ArrayKey::from_bytes(&k);
+                match v {
+                    Some(v) => {
+                        a.insert(key, Value::str(v));
+                    }
+                    None => {
+                        a.remove(&key);
+                    }
+                }
             }
             Ok(Value::Array(a))
         }
     }
 }
 
-fn fn_putenv(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    // No-op (we don't mutate the process environment); report success.
-    Ok(Value::Bool(true))
-}
-
-/// Directives php knows, with their `php -n` CLI defaults (`ini_get` /
-/// `ini_set` return false for anything else).
-pub fn ini_default(name: &[u8]) -> Option<&'static str> {
-    Some(match name {
-        b"memory_limit" => "-1",
-        b"max_execution_time" => "0",
-        b"precision" => "14",
-        b"serialize_precision" => "-1",
-        b"date.timezone" => "UTC",
-        b"default_charset" => "UTF-8",
-        b"allow_url_fopen" => "1",
-        b"disable_functions" => "",
-        b"open_basedir" => "",
-        // Error handling (main.c PHP_INI; the CLI SAPI forces display_errors=1).
-        b"display_errors" => "1",
-        b"display_startup_errors" => "1",
-        b"log_errors" => "0",
-        b"error_log" => "",
-        b"html_errors" => "0",
-        b"error_prepend_string" => "",
-        b"error_append_string" => "",
-        // No php.ini value: EG(error_reporting) keeps its E_ALL default.
-        b"error_reporting" => "",
-        b"zend.exception_ignore_args" => "0",
-        _ => return None,
-    })
-}
-
-fn fn_ini_get(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(match host.ini_get(&str_arg(args, 0)) {
-        Some(v) => Value::str(v),
-        None => Value::Bool(false),
-    })
-}
-
-/// `ini_set(string $option, string|int|float|bool|null $value): string|false`.
-fn fn_ini_set(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = str_arg(args, 0);
-    let value = match deref(&args[1]) {
-        v @ (Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_)) => {
-            conv::to_string_bytes(&v)
-        }
-        _ => {
-            return Err(Thrown::type_error(
-                "ini_set(): Argument #2 ($value) must be of type string|int|float|bool|null",
-            ))
-        }
+/// `putenv("NAME=value")` sets, `putenv("NAME")` unsets (in the request's
+/// environment overlay: `getenv` sees it; see [`env_overrides`]).
+fn fn_putenv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = crate::argparse::str_param(host, args, 0, "putenv", "assignment")?;
+    if a.is_empty() || a[0] == b'=' {
+        return Err(Thrown::error(
+            "ValueError",
+            "putenv(): Argument #1 ($assignment) must have a valid syntax",
+        ));
+    }
+    let (name, value) = match a.iter().position(|&b| b == b'=') {
+        Some(p) => (&a[..p], Some(&a[p + 1..])),
+        None => (&a[..], None),
     };
-    Ok(match host.ini_set(&name, value) {
-        Some(old) => Value::str(old),
-        None => Value::Bool(false),
-    })
+    if name.contains(&0) || value.is_some_and(|v| v.contains(&0)) {
+        return Ok(Value::Bool(false));
+    }
+    let entry = (name.to_vec(), value.map(|v| v.to_vec()));
+    ENV_OVERLAY.with(|e| e.borrow_mut().push(entry));
+    Ok(Value::Bool(true))
 }
 
 /// zend_zval_type_name (`int`, `bool`, `string`, `null`, …).
@@ -812,13 +866,19 @@ fn fn_trigger_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
     Ok(Value::Bool(true))
 }
 
+fn fn_set_time_limit(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let secs = crate::argparse::int_param(host, args, 0, "set_time_limit", "seconds", 0)?;
+    crate::runtime_fns::ini_store(b"max_execution_time", secs.to_string().into_bytes());
+    Ok(Value::Bool(true))
+}
+
 /// `error_reporting(?int $error_level = null): int`: the old level; sets a
 /// new one when given.
 fn fn_error_reporting(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let old = error_reporting_level(host);
-    if let Some(v) = args.first().map(deref) {
-        if !matches!(v, Value::Null) {
-            let n = conv::to_int(&v);
+    let new = crate::argparse::int_or_null_param(host, args, 0, "error_reporting", "error_level")?;
+    if let Some(n) = new {
+        if n != old {
             host.ini_set(b"error_reporting", n.to_string().into_bytes());
         }
     }
@@ -1357,9 +1417,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "ob_get_flush", fn_ob_get_flush, 0, Some(0));
     put(m, "getenv", fn_getenv, 0, Some(1));
     put(m, "putenv", fn_putenv, 1, Some(1));
-    put(m, "ini_get", fn_ini_get, 1, Some(1));
-    put(m, "ini_set", fn_ini_set, 2, Some(2));
-    put(m, "ini_alter", fn_ini_set, 2, Some(2));
     put(m, "set_error_handler", fn_set_handler, 1, Some(2));
     put(m, "restore_error_handler", fn_restore_handler, 0, Some(0));
     put(
@@ -1392,7 +1449,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "gc_enable", fn_true, 0, Some(0));
     put(m, "gc_disable", fn_true, 0, Some(0));
     put(m, "gc_collect_cycles", fn_zero, 0, Some(0));
-    put(m, "set_time_limit", fn_true, 1, Some(1));
+    put(m, "set_time_limit", fn_set_time_limit, 1, Some(1));
     put(m, "getmypid", fn_getmypid, 0, Some(0));
     put(m, "php_ini_loaded_file", fn_php_ini_loaded_file, 0, Some(0));
     put(m, "setlocale", fn_setlocale, 2, None);

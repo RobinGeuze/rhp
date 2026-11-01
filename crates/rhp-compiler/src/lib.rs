@@ -67,6 +67,10 @@ thread_local! {
     /// Anonymous classes (`new class {…}`) found anywhere in the program,
     /// declared with the program's classes under their generated names.
     static ANON_CLASSES: RefCell<Vec<ClassProto>> = const { RefCell::new(Vec::new()) };
+    /// Sink for class declarations nested in control flow / function bodies
+    /// (drained into `Program::cond_classes`), plus the file's count of user
+    /// top-level class-likes (the `DeclareClass` index offset for them).
+    static COND_CLASSES: RefCell<(Vec<ClassProto>, u32)> = const { RefCell::new((Vec::new(), 0)) };
 }
 
 thread_local! {
@@ -519,6 +523,7 @@ pub fn compile_with_source(
     let user_line_starts = build_line_starts(source);
     CLOSURES.with(|c| c.borrow_mut().clear());
     ANON_CLASSES.with(|c| c.borrow_mut().clear());
+    COND_CLASSES.with(|c| *c.borrow_mut() = (Vec::new(), 0));
     NS_CTX.with(|c| *c.borrow_mut() = Rc::new(NsContext::default()));
     // Flatten namespace/use into (context, statement) pairs in source order; every
     // pass below iterates this so name resolution is consistent across passes.
@@ -556,6 +561,17 @@ pub fn compile_with_source(
     };
     let num_prelude_classes = classes.len();
     let num_prelude_functions = functions.len();
+    let is_class_like = |st: &Statement| {
+        matches!(
+            st,
+            Statement::Class(_)
+                | Statement::Interface(_)
+                | Statement::Trait(_)
+                | Statement::Enum(_)
+        )
+    };
+    let num_top_classes = flat.iter().filter(|(_, st)| is_class_like(st)).count() as u32;
+    COND_CLASSES.with(|c| c.borrow_mut().1 = num_top_classes);
     // From here on we compile user code, so install its line map.
     LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
     let user_constants: Vec<(PhpStr, Value)> = Vec::new();
@@ -587,6 +603,7 @@ pub fn compile_with_source(
     c.high_water = c.num_cvs;
     c.temp_floor = c.num_cvs;
 
+    let mut top_class_idx = 0u32;
     for (ctx, stmt) in &flat {
         set_ns_ctx(ctx);
         // A bare top-level function is already hoisted into `functions`; skip it
@@ -595,12 +612,22 @@ pub fn compile_with_source(
         if matches!(stmt, Statement::Function(_)) {
             continue;
         }
+        // A top-level class is hoisted at load when its parent/interfaces
+        // are available; otherwise it is declared when this point is reached.
+        if is_class_like(stmt) {
+            c.emit(Instr::DeclareClass {
+                class_idx: top_class_idx,
+            });
+            top_class_idx += 1;
+            continue;
+        }
         c.compile_stmt(stmt)?;
     }
     c.emit(Instr::RetNull);
 
     let closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
     classes.extend(ANON_CLASSES.with(|c| std::mem::take(&mut *c.borrow_mut())));
+    let cond_classes = COND_CLASSES.with(|c| std::mem::take(&mut c.borrow_mut().0));
     let main_var_names: Vec<PhpStr> = c
         .cv_map
         .iter()
@@ -615,6 +642,7 @@ pub fn compile_with_source(
         main_var_names,
         num_prelude_classes,
         num_prelude_functions,
+        cond_classes,
     })
 }
 
@@ -2267,6 +2295,16 @@ impl ProtoBuilder {
 
     // -- statement lowering --
 
+    /// Record a nested class declaration and emit its `DeclareClass`.
+    fn emit_cond_class(&mut self, proto: ClassProto) {
+        let class_idx = COND_CLASSES.with(|c| {
+            let mut c = c.borrow_mut();
+            c.0.push(proto);
+            c.1 + c.0.len() as u32 - 1
+        });
+        self.emit(Instr::DeclareClass { class_idx });
+    }
+
     fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), Thrown> {
         use mago_span::HasSpan;
         self.cur_line = line_of(stmt.span().start.offset);
@@ -2312,10 +2350,24 @@ impl ProtoBuilder {
                 });
                 self.emit(Instr::DeclareFunc { idx });
             }
-            Statement::Class(_) => {}
-            Statement::Interface(_) => {}
-            Statement::Trait(_) => {}
-            Statement::Enum(_) => {}
+            // A class-like reached here is nested in control flow or a function
+            // body: declared at run time when execution reaches it.
+            Statement::Class(cl) => {
+                let proto = compile_class(cl, &self.sigs)?;
+                self.emit_cond_class(proto);
+            }
+            Statement::Interface(i) => {
+                let proto = compile_interface(i, &self.sigs)?;
+                self.emit_cond_class(proto);
+            }
+            Statement::Trait(t) => {
+                let proto = compile_trait(t, &self.sigs)?;
+                self.emit_cond_class(proto);
+            }
+            Statement::Enum(e) => {
+                let proto = compile_enum(e, &self.sigs)?;
+                self.emit_cond_class(proto);
+            }
             Statement::Constant(c) => {
                 for item in c.items.iter() {
                     let src = self.compile_expr(item.value)?;

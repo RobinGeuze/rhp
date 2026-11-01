@@ -19,8 +19,11 @@ pub mod streams;
 
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};
 
+mod argparse;
 mod arr_fns;
+mod arraycmp_fns;
 mod arrayset_fns;
+mod const_modules;
 mod datetime_fns;
 mod dt_oop_fns;
 mod ext;
@@ -29,6 +32,8 @@ mod file_fns;
 mod filter_fns;
 pub mod http;
 mod info_fns;
+mod ini_parse;
+mod ini_table;
 mod json_fns;
 mod math_fns;
 mod misc_fns;
@@ -36,13 +41,18 @@ mod parse_fns;
 pub mod php_fns;
 mod preg_fns;
 mod printf_fns;
+mod query_fns;
+mod runtime_fns;
 mod serialize_fns;
 mod sort_fns;
 mod str_fns;
 mod strarr2_fns;
 mod strcmp_fns;
 mod stream_fns;
+mod strsearch_fns;
 mod strtotime_fns;
+mod sysmisc_fns;
+mod tzdb;
 mod webenc_fns;
 pub mod zip_ext;
 
@@ -155,15 +165,18 @@ pub trait Host {
         false
     }
 
-    /// `ini_get`: a directive's current value, or None when php has no such
-    /// directive. Default: the built-in (`php -n`) defaults, never changed.
+    /// A directive's current value (the per-request ini store shared with
+    /// `ini_get`/`ini_set`; a null value reads as ""), or None when no loaded
+    /// module registers it.
     fn ini_get(&self, name: &[u8]) -> Option<Vec<u8>> {
-        php_fns::ini_default(name).map(|s| s.as_bytes().to_vec())
+        runtime_fns::ini_value(name).map(Option::unwrap_or_default)
     }
-    /// `ini_set`: store `value`, returning the old value (None for an unknown
-    /// directive). Default: not stored.
-    fn ini_set(&mut self, name: &[u8], _value: Vec<u8>) -> Option<Vec<u8>> {
-        self.ini_get(name)
+    /// Store `value` for a known directive (no validation; engine-internal
+    /// writes such as `error_reporting()`), returning the old value.
+    fn ini_set(&mut self, name: &[u8], value: Vec<u8>) -> Option<Vec<u8>> {
+        let old = self.ini_get(name)?;
+        runtime_fns::ini_store(name, value);
+        Some(old)
     }
 
     /// `register_shutdown_function`: queue a callback (with its arguments) for
@@ -300,6 +313,50 @@ pub trait Host {
     /// An exception thrown by an autoloader propagates.
     fn resolve_class_autoload(&mut self, name: &[u8]) -> Result<Option<u32>, Thrown> {
         Ok(self.resolve_class(name))
+    }
+
+    /// `class_alias`: register `alias` as another name for class `class_id`.
+    /// Returns false if the alias name is already taken. Default: refused.
+    fn class_alias(&mut self, _class_id: u32, _alias: &[u8]) -> bool {
+        false
+    }
+
+    /// A class's relations for `class_parents` / `class_implements` /
+    /// `class_uses`: (parent chain nearest-first, interfaces in php order,
+    /// directly used traits). Default: none.
+    #[allow(clippy::type_complexity)]
+    fn class_relations(
+        &self,
+        _class_id: u32,
+    ) -> Option<(Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>)> {
+        None
+    }
+
+    /// An object's properties accessible from the calling code's class scope
+    /// (`zend_check_property_access`), in property-table order — for
+    /// `http_build_query` on objects. Default: every property.
+    fn object_scoped_props(&self, obj: &Value) -> Vec<(rhp_values::PhpStr, Value)> {
+        match deref(obj) {
+            Value::Object(h) => h
+                .borrow()
+                .properties
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// User-defined constants (`define`/`const`) in definition order, for
+    /// `get_defined_constants`. Default: none.
+    fn user_constants(&self) -> Vec<(Vec<u8>, Value)> {
+        Vec::new()
+    }
+
+    /// Has any output reached the real (unbuffered) output stream? The CLI
+    /// SAPI sends headers on first output, so this is `headers_sent()`.
+    fn output_started(&self) -> bool {
+        false
     }
 
     /// The [`ClassKind`] of a class id (class / interface / trait / enum), used by
@@ -681,6 +738,29 @@ macro_rules! builtins {
     }};
 }
 
+pub use php_fns::{apply_env_overrides, env_overrides};
+
+/// A startup ini setting (`php -d name=value`): any registered directive,
+/// applied to the engine state it drives (precision, ...). Unknown names are
+/// ignored. Call after [`reset_request_state`].
+pub fn ini_startup_set(name: &[u8], value: &[u8]) {
+    runtime_fns::ini_startup(name, value);
+}
+
+/// Reset every builtin's per-request state (ini overrides, default timezone,
+/// precision, strtok/preg/json/mbstring state, process title, putenv
+/// overlay). Engines call this on construction so state never leaks from one
+/// script run to the next on the same thread.
+pub fn reset_request_state() {
+    runtime_fns::reset_state();
+    sysmisc_fns::reset_state();
+    preg_fns::reset_state();
+    json_fns::reset_state();
+    ext::mbstring::reset_state();
+    strsearch_fns::reset_state();
+    php_fns::reset_state();
+}
+
 /// The builtin function table, keyed by lowercase name (PHP function names are
 /// case-insensitive).
 pub fn registry() -> &'static HashMap<&'static str, Builtin> {
@@ -758,36 +838,82 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "enum_exists"    => fn_enum_exists, 1, Some(2);
             "iterator_to_array" => fn_iterator_to_array, 1, Some(2);
         };
-        // Builtin modules produced by the stdlib workflow (each verified vs php).
-        str_fns::register(&mut m);
-        math_fns::register(&mut m);
-        arr_fns::register(&mut m);
-        misc_fns::register(&mut m);
-        file_fns::register(&mut m);
-        // Discrete extensions (php-src ext/<name>/ layout): each a self-contained
-        // module owning its functions/constants/classes/wrappers.
-        for md in ext::modules() {
-            (md.functions)(&mut m);
+        for (_, register) in builtin_modules() {
+            register(&mut m);
         }
-        webenc_fns::register(&mut m);
-        datetime_fns::register(&mut m);
-        dt_oop_fns::register(&mut m);
-        strtotime_fns::register(&mut m);
-        strarr2_fns::register(&mut m);
-        sort_fns::register(&mut m);
-        serialize_fns::register(&mut m);
-        filter_fns::register(&mut m);
-        strcmp_fns::register(&mut m);
-        printf_fns::register(&mut m);
-        arrayset_fns::register(&mut m);
-        preg_fns::register(&mut m);
-        json_fns::register(&mut m);
-        parse_fns::register(&mut m);
-        php_fns::register(&mut m);
-        info_fns::register(&mut m);
-        stream_fns::register(&mut m);
         m
     })
+}
+
+type Registrar = Box<dyn Fn(&mut HashMap<&'static str, Builtin>)>;
+
+/// Every builtin module's registration, in registry order (a later module
+/// would override an earlier one's function of the same name; the
+/// `no_duplicate_builtins` test keeps names unique).
+fn builtin_modules() -> Vec<(&'static str, Registrar)> {
+    let mut v: Vec<(&'static str, Registrar)> = vec![
+        ("str_fns", Box::new(str_fns::register)),
+        ("math_fns", Box::new(math_fns::register)),
+        ("arr_fns", Box::new(arr_fns::register)),
+        ("misc_fns", Box::new(misc_fns::register)),
+        ("file_fns", Box::new(file_fns::register)),
+    ];
+    // Discrete extensions (php-src ext/<name>/ layout): each a self-contained
+    // module owning its functions/constants/classes/wrappers.
+    for md in ext::modules() {
+        v.push((md.name, Box::new(move |m| (md.functions)(m))));
+    }
+    let rest: Vec<(&'static str, Registrar)> = vec![
+        ("webenc_fns", Box::new(webenc_fns::register)),
+        ("datetime_fns", Box::new(datetime_fns::register)),
+        ("dt_oop_fns", Box::new(dt_oop_fns::register)),
+        ("strtotime_fns", Box::new(strtotime_fns::register)),
+        ("strarr2_fns", Box::new(strarr2_fns::register)),
+        ("sort_fns", Box::new(sort_fns::register)),
+        ("serialize_fns", Box::new(serialize_fns::register)),
+        ("filter_fns", Box::new(filter_fns::register)),
+        ("strcmp_fns", Box::new(strcmp_fns::register)),
+        ("printf_fns", Box::new(printf_fns::register)),
+        ("arrayset_fns", Box::new(arrayset_fns::register)),
+        ("preg_fns", Box::new(preg_fns::register)),
+        ("json_fns", Box::new(json_fns::register)),
+        ("parse_fns", Box::new(parse_fns::register)),
+        ("php_fns", Box::new(php_fns::register)),
+        ("info_fns", Box::new(info_fns::register)),
+        ("stream_fns", Box::new(stream_fns::register)),
+        ("strsearch_fns", Box::new(strsearch_fns::register)),
+        ("query_fns", Box::new(query_fns::register)),
+        ("runtime_fns", Box::new(runtime_fns::register)),
+        ("ini_parse", Box::new(ini_parse::register)),
+        ("arraycmp_fns", Box::new(arraycmp_fns::register)),
+        ("sysmisc_fns", Box::new(sysmisc_fns::register)),
+    ];
+    v.extend(rest);
+    v
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    /// Branches developed in parallel must not register the same builtin
+    /// twice: the later registration silently shadows the earlier one.
+    #[test]
+    fn no_duplicate_builtins() {
+        let mut owner: HashMap<&'static str, &'static str> = HashMap::new();
+        let mut dups = Vec::new();
+        for (module, register) in builtin_modules() {
+            let mut m = HashMap::new();
+            register(&mut m);
+            for name in m.keys() {
+                if let Some(prev) = owner.insert(name, module) {
+                    dups.push(format!("{name}: {prev} and {module}"));
+                }
+            }
+        }
+        dups.sort();
+        assert!(dups.is_empty(), "duplicate builtins:\n{}", dups.join("\n"));
+    }
 }
 
 /// Case-insensitive builtin lookup.
@@ -911,6 +1037,11 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("LC_MONETARY", Value::Int(4)),
         ("LC_MESSAGES", Value::Int(5)),
         ("LC_ALL", Value::Int(6)),
+        ("INI_SCANNER_NORMAL", Value::Int(0)),
+        ("INI_SCANNER_RAW", Value::Int(1)),
+        ("INI_SCANNER_TYPED", Value::Int(2)),
+        ("PHP_QUERY_RFC1738", Value::Int(1)),
+        ("PHP_QUERY_RFC3986", Value::Int(2)),
         ("PHP_URL_SCHEME", Value::Int(0)),
         ("PHP_URL_HOST", Value::Int(1)),
         ("PHP_URL_PORT", Value::Int(2)),
@@ -1978,7 +2109,23 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
                 .map(Value::str)
                 .unwrap_or(Value::Bool(false)))
         }
-        _ => Ok(Value::Bool(false)),
+        Some(v @ Value::Str(_)) => {
+            let name = conv::to_string_bytes(&v);
+            match host.resolve_class_autoload(&name)? {
+                Some(cid) => Ok(host
+                    .class_parent_name(cid)
+                    .map(Value::str)
+                    .unwrap_or(Value::Bool(false))),
+                None => Err(Thrown::type_error(
+                    "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, string given",
+                )),
+            }
+        }
+        None => Ok(Value::Bool(false)),
+        Some(other) => Err(Thrown::type_error(format!(
+            "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, {} given",
+            argparse::value_name(host, &other)
+        ))),
     }
 }
 

@@ -1,0 +1,79 @@
+string(2) "14"
+0.33333 3.3333E+9 0.3
+string(1) "5"
+0.3333333333333333 0.30000000000000004 1000000000000000 1.0E+17
+string(2) "-1"
+0.3 2.0E+1
+bool(false)
+string(1) "0"
+string(1) "0"
+string(3) "abc"
+0.7
+0.33333333333333 14
+string(2) "-1"
+0.3 0.33333 d:0.1;
+float(0.33333)
+string(1) "5"
+float(0.10000000000000001)
+[0.10000000000000001,1000000000000000]
+bool(false)
+string(2) "17"
+float(1000000000000000)
+float(10000000000000000)
+float(1.0E+17)
+float(0.30000000000000004)
+[1000000000000000,10000000000000000,1.0e+17]
+string(1) "&"
+a=1;b%5B0%5D=1;b%5B1%5D=2 a=1|b=2
+bool(false)
+string(1) ";"
+string(0) ""
+int(30719)
+string(5) "30719"
+int(30719)
+string(1) "0"
+int(0)
+string(5) "30711"
+string(5) "30711"
+int(0)
+int(0)
+int(0)
+int(5)
+error_reporting(): Argument #1 ($error_level) must be of type ?int, string given
+bool(true)
+string(1) "5"
+bool(true)
+string(1) "0"
+'abc' => false now=128M
+'-5' => false now=128M
+'1G' => '128M' now=1G
+'2M' => '1G' now=2M
+'1M' => false now=2M
+'3M' => '2M' now=3M
+'0x400000' => '3M' now=0x400000
+'64m' => '0x400000' now=64m
+' 64M ' => '64m' now= 64M 
+'4096K' => ' 64M ' now=4096K
+'8388608' => '4096K' now=8388608
+'1.5G' => '8388608' now=1.5G
+'64MB' => false now=1.5G
+'0' => false now=1.5G
+'' => false now=1.5G
+'-1' => '1.5G' now=-1
+true => false now=-1
+4194304 => '-1' now=4194304
+NULL => false now=4194304
+1.5 => false now=4194304
+zend.assertions -1 => false now=1
+zend.assertions 0 => '1' now=0
+zend.assertions 1 => '0' now=1
+zend.assertions 2 => '1' now=2
+zend.assertions -1 => false now=2
+zend.assertions x => '2' now=x
+bool(false)
+string(3) "UTC"
+string(3) "UTC"
+string(12) "Europe/Paris"
+ini_set(): Argument #2 ($value) must be of type string|int|float|bool|null
+ini_set(): Argument #2 ($value) must be of type string|int|float|bool|null
+bool(false)

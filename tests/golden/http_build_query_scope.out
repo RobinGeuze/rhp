@@ -1,0 +1,6 @@
+string(26) "a=1&b=2&c=3&d=4&f%5Bx%5D=1"
+string(26) "a=1&b=2&d=4&e=5&f%5Bx%5D=1"
+string(7) "a=1&d=4"
+string(7) "a=1&d=4"
+string(21) "k%5Ba%5D=1&k%5Bb%5D=2"
+string(11) "a=1&amp;d=4"

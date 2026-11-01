@@ -78,14 +78,18 @@ pub struct Vm {
     functions: Vec<Rc<FunctionProto>>,
     fn_names: HashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
     closures: Vec<Rc<FunctionProto>>,  // anonymous closure protos, indexed by `fnidx`
+    /// Flat table of user class declarations (`class_base + DeclareClass`
+    /// operand): each file's top-level class-likes then its nested ones, with
+    /// whether the declaration has already happened (hoisted or executed).
+    decl_classes: Vec<(ClassProto, bool)>,
     constants: HashMap<Vec<u8>, Value>,
+    /// User-defined constant names in definition order (`get_defined_constants`).
+    user_const_order: Vec<Vec<u8>>,
     max_depth: usize,
     /// Builtin calls in progress (innermost last), for exception traces.
     native_calls: Vec<NativeCall>,
     /// `set_exception_handler` stack (innermost last; null = none).
     exception_handlers: Vec<Value>,
-    /// `ini_set` overrides of the built-in directive defaults.
-    ini: HashMap<Vec<u8>, Vec<u8>>,
     /// `register_shutdown_function` callbacks with their arguments, in order.
     shutdown_functions: Vec<(Value, Vec<Value>)>,
     /// CLI mode: unbuffered stdout is written to the process's stdout before
@@ -326,7 +330,19 @@ impl Host for Vm {
             return false;
         }
         self.constants.insert(name.to_vec(), value);
+        self.user_const_order.push(name.to_vec());
         true
+    }
+
+    fn user_constants(&self) -> Vec<(Vec<u8>, Value)> {
+        self.user_const_order
+            .iter()
+            .filter_map(|n| self.constants.get(n).map(|v| (n.clone(), v.clone())))
+            .collect()
+    }
+
+    fn output_started(&self) -> bool {
+        !self.out.is_empty()
     }
 
     fn get_const(&self, name: &[u8]) -> Option<Value> {
@@ -622,22 +638,6 @@ impl Host for Vm {
         self.exception_handlers.pop();
     }
 
-    fn ini_get(&self, name: &[u8]) -> Option<Vec<u8>> {
-        let default = builtins::php_fns::ini_default(name)?;
-        Some(
-            self.ini
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| default.as_bytes().to_vec()),
-        )
-    }
-
-    fn ini_set(&mut self, name: &[u8], value: Vec<u8>) -> Option<Vec<u8>> {
-        let old = self.ini_get(name)?;
-        self.ini.insert(name.to_vec(), value);
-        Some(old)
-    }
-
     fn register_shutdown_function(
         &mut self,
         callback: Value,
@@ -726,12 +726,10 @@ impl Host for Vm {
             },
         );
         let mut ifaces = PhpArray::new();
-        for &anc in &entry.ancestors {
-            if anc != cid && self.classes[anc as usize].kind == ClassKind::Interface {
-                ifaces.push(Value::str(
-                    self.classes[anc as usize].name.as_bytes().to_vec(),
-                ));
-            }
+        for &anc in &entry.interfaces {
+            ifaces.push(Value::str(
+                self.classes[anc as usize].name.as_bytes().to_vec(),
+            ));
         }
         a.insert(ArrayKey::from_bytes(b"interfaces"), Value::Array(ifaces));
         let mut methods = PhpArray::new();
@@ -1017,6 +1015,49 @@ impl Host for Vm {
             bound_static: called,
             wrapped: cd.wrapped.clone(),
         })))
+    }
+
+    fn class_alias(&mut self, class_id: u32, alias: &[u8]) -> bool {
+        let key = alias
+            .strip_prefix(b"\\")
+            .unwrap_or(alias)
+            .to_ascii_lowercase();
+        if self.class_ids.contains_key(&key) {
+            return false;
+        }
+        self.class_ids.insert(key, class_id);
+        true
+    }
+
+    fn class_relations(&self, class_id: u32) -> Option<(Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>)> {
+        let entry = self.classes.get(class_id as usize)?;
+        let name = |id: ClassId| self.classes[id as usize].name.as_bytes().to_vec();
+        let mut parents = Vec::new();
+        let mut p = entry.parent;
+        while let Some(pid) = p {
+            parents.push(name(pid));
+            p = self.classes[pid as usize].parent;
+        }
+        let ifaces = entry.interfaces.iter().map(|&i| name(i)).collect();
+        let traits = entry.traits.iter().map(|&t| name(t)).collect();
+        Some((parents, ifaces, traits))
+    }
+
+    fn object_scoped_props(&self, obj: &Value) -> Vec<(PhpStr, Value)> {
+        let Value::Object(h) = deref(obj) else {
+            return Vec::new();
+        };
+        // A builtin runs on its caller's frame: that frame's class is the scope.
+        let scope = self.stack.last().and_then(|f| f.defining_class);
+        let o = h.borrow();
+        // Storage keys are mangled for privates: keep the slots `$obj->name`
+        // reaches from the scope, under their plain names.
+        o.properties
+            .iter()
+            .filter_map(|(k, v)| {
+                classes::slot_accessible(&self.classes, o.class, scope, k).map(|n| (n, v.clone()))
+            })
+            .collect()
     }
 
     fn class_kind(&self, class_id: u32) -> Option<ClassKind> {
@@ -1331,6 +1372,8 @@ impl Vm {
     }
 
     pub fn new() -> Self {
+        // Builtin state is per request: never inherit a previous engine's.
+        builtins::reset_request_state();
         let mut constants = HashMap::new();
         for (name, value) in builtins::constants() {
             constants.insert(name.as_bytes().to_vec(), value);
@@ -1352,11 +1395,12 @@ impl Vm {
             functions: Vec::new(),
             fn_names: HashMap::new(),
             closures: Vec::new(),
+            decl_classes: Vec::new(),
             constants,
+            user_const_order: Vec::new(),
             max_depth: 1 << 16,
             native_calls: Vec::new(),
             exception_handlers: Vec::new(),
-            ini: HashMap::new(),
             shutdown_functions: Vec::new(),
             direct_stdout: false,
             cursor_root: CursorRoot::Cv(0),
@@ -1459,9 +1503,7 @@ impl Vm {
     /// Set the CLI argument vector (`$argv`; `argv[0]` is the script name).
     /// A startup ini setting (`-d key=value`); unknown directives are ignored.
     pub fn set_ini(&mut self, name: &[u8], value: &[u8]) {
-        if builtins::php_fns::ini_default(name).is_some() {
-            self.ini.insert(name.to_vec(), value.to_vec());
-        }
+        builtins::ini_startup_set(name, value);
     }
 
     pub fn set_argv(&mut self, argv: Vec<Vec<u8>>) {
@@ -2384,16 +2426,26 @@ impl Vm {
         self.closures = prog.closures.clone();
         // Install user-defined global constants.
         for (name, value) in &prog.constants {
-            self.constants
-                .insert(name.as_bytes().to_vec(), value.clone());
+            if self
+                .constants
+                .insert(name.as_bytes().to_vec(), value.clone())
+                .is_none()
+            {
+                self.user_const_order.push(name.as_bytes().to_vec());
+            }
         }
         // Record {main}'s variable -> register map for `global $x`.
         for (reg, name) in prog.main_var_names.iter().enumerate() {
             self.main_cv_names
                 .insert(name.as_bytes().to_vec(), reg as Reg);
         }
-        // Link all declared classes (flatten inheritance, resolve forward refs).
-        self.install_classes(&prog.classes)?;
+        // Link the built-in prelude classes, then hoist the user's top-level
+        // classes (those whose dependencies are available); the rest, and
+        // nested declarations, are declared when execution reaches them.
+        self.install_classes(&prog.classes[..prog.num_prelude_classes])?;
+        self.decl_classes.clear();
+        let top = self.register_decl_classes(prog, 0);
+        self.hoist_decl_classes(top)?;
         let mut main_frame = Frame::new(prog.main.clone(), 0);
         self.bind_superglobals(&mut main_frame);
         // $argv / $argc are available in the top-level (global) scope: bind the
@@ -4432,11 +4484,8 @@ impl Vm {
                         self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;
                     }
                 }
-                Instr::DeclareClass { .. } => {
-                    return Err(Thrown::unsupported(
-                        "conditional class declaration",
-                        "only top-level class declarations for now",
-                    ))
+                Instr::DeclareClass { class_idx } => {
+                    self.declare_class_at((proto.class_base + class_idx) as usize)?;
                 }
                 Instr::DeclareFunc { idx } => {
                     // The proto is stored in the closures table (file-local index).
@@ -5146,9 +5195,11 @@ impl Vm {
     /// rebased `{main}` to execute.
     fn install_included(&mut self, prog: &Program) -> Result<Rc<FunctionProto>, Thrown> {
         let base = self.closures.len() as u32;
+        let cbase = self.decl_classes.len();
         // closures: append (rebased).
         for c in &prog.closures {
-            self.closures.push(Rc::new(rebase_proto(c, base)));
+            self.closures
+                .push(Rc::new(rebase_proto_c(c, base, cbase as u32)));
         }
         // functions: skip the re-emitted prelude helpers (the first N); a user
         // function is fatal to redeclare (php semantics).
@@ -5164,12 +5215,12 @@ impl Vm {
                 ));
             }
             let idx = self.functions.len();
-            self.functions.push(Rc::new(rebase_proto(proto, base)));
+            self.functions
+                .push(Rc::new(rebase_proto_c(proto, base, cbase as u32)));
             self.fn_names.insert(lc, idx);
         }
         // classes: skip the re-emitted built-in prelude (always the first N); a
         // user class past that is fatal to redeclare.
-        let mut new_classes: Vec<ClassProto> = Vec::new();
         for c in prog.classes.iter().skip(prog.num_prelude_classes) {
             if self
                 .class_ids
@@ -5183,14 +5234,14 @@ impl Vm {
                     ),
                 ));
             }
-            new_classes.push(rebase_class(c, base));
         }
-        self.install_classes(&new_classes)?;
+        let top = self.register_decl_classes(prog, base);
+        self.hoist_decl_classes(top)?;
         // constants: define_const skips an already-defined name.
         for (n, v) in &prog.constants {
             self.define_const(n.as_bytes(), v.clone());
         }
-        Ok(Rc::new(rebase_proto(&prog.main, base)))
+        Ok(Rc::new(rebase_proto_c(&prog.main, base, cbase as u32)))
     }
 
     /// Run an included `{main}` to completion (isolated scope; it shares the VM's
@@ -6752,40 +6803,44 @@ fn normalize_url(url: &[u8]) -> Vec<u8> {
     out
 }
 
+/// No instruction rewriting — the bases are applied at run time.
 /// Clone a proto, stamping its `closure_base` so its file-local `MakeClosure`
 /// indices resolve into the VM's flat closure table (whose tail holds this
-/// file's closures). No instruction rewriting — the base is applied at run time.
-fn rebase_proto(proto: &FunctionProto, base: u32) -> FunctionProto {
+/// file's closures), and its `class_base` likewise for `DeclareClass`.
+fn rebase_proto_c(proto: &FunctionProto, base: u32, cbase: u32) -> FunctionProto {
     let mut p = proto.clone();
     p.closure_base = base;
+    p.class_base = cbase;
     p
 }
 
-/// Stamp `closure_base` on a class's method and initializer-thunk protos (their
-/// bodies can create closures) when merging an included program.
-fn rebase_class(c: &ClassProto, base: u32) -> ClassProto {
+/// Stamp `closure_base` / `class_base` on a class's method and
+/// initializer-thunk protos (their bodies can create closures or declare
+/// classes) when merging an included program.
+pub(crate) fn rebase_class(c: &ClassProto, base: u32, cbase: u32) -> ClassProto {
     let mut c = c.clone();
+    let rb = |p: &FunctionProto| Rc::new(rebase_proto_c(p, base, cbase));
     for m in &mut c.methods {
-        m.proto = Rc::new(rebase_proto(&m.proto, base));
+        m.proto = rb(&m.proto);
     }
     for p in &mut c.props {
         if let PropDefaultProto::Init(t) = &p.default {
-            p.default = PropDefaultProto::Init(Rc::new(rebase_proto(t, base)));
+            p.default = PropDefaultProto::Init(rb(t));
         }
     }
     for sp in &mut c.static_props {
         if let ConstInitProto::Thunk(t) = &sp.init {
-            sp.init = ConstInitProto::Thunk(Rc::new(rebase_proto(t, base)));
+            sp.init = ConstInitProto::Thunk(rb(t));
         }
     }
     for k in &mut c.constants {
         if let ConstInitProto::Thunk(t) = &k.value {
-            k.value = ConstInitProto::Thunk(Rc::new(rebase_proto(t, base)));
+            k.value = ConstInitProto::Thunk(rb(t));
         }
     }
     for ec in &mut c.enum_cases {
         if let Some(ConstInitProto::Thunk(t)) = &ec.value {
-            ec.value = Some(ConstInitProto::Thunk(Rc::new(rebase_proto(t, base))));
+            ec.value = Some(ConstInitProto::Thunk(rb(t)));
         }
     }
     c

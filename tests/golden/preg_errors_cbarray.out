@@ -1,0 +1,48 @@
+int(0)
+string(8) "No error"
+bool(false)
+int(1)
+string(14) "Internal error"
+int(1)
+int(0)
+string(8) "No error"
+bool(false)
+int(4)
+string(56) "Malformed UTF-8 characters, possibly incorrectly encoded"
+string(1) "x"
+int(4)
+bool(false)
+string(74) "The offset did not correspond to the beginning of a valid UTF-8 code point"
+bool(false)
+int(2)
+string(25) "Backtrack limit exhausted"
+NULL
+string(56) "Malformed UTF-8 characters, possibly incorrectly encoded"
+bool(false)
+string(56) "Malformed UTF-8 characters, possibly incorrectly encoded"
+int(3)
+string(8) "No error"
+string(5) "a6 b3"
+int(2)
+array(2) {
+  ["x"]=>
+  string(6) "a<1>b2"
+  ["y"]=>
+  string(4) "c<3>"
+}
+int(2)
+string(15) "["a","a",null]b"
+string(10) "a[["b",1]]"
+string(9) "unchanged"
+int(0)
+string(2) "cc"
+NULL
+TypeError: preg_replace_callback_array(): Argument #1 ($pattern) must contain only string patterns as keys
+TypeError: preg_replace_callback_array(): Argument #1 ($pattern) must contain only valid callbacks
+string(15) "x["a","a",null]"
+int(1)
+string(10) "x[["a",1]]"
+array(1) {
+  ["j"]=>
+  string(1) "X"
+}

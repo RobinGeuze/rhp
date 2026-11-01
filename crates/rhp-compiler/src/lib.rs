@@ -47,6 +47,21 @@ enum CursorStep {
 enum LvalRoot {
     Cv(Reg),
     StaticProp(ClassRef, NIdx),
+    /// `$GLOBALS[<name reg>]`: a global variable by name.
+    Global(Reg),
+}
+
+/// `$GLOBALS[<index>]`: the index expression when `e` is that form.
+fn globals_index<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
+    match e {
+        Expression::ArrayAccess(aa) if is_globals_var(aa.array) => Some(aa.index),
+        _ => None,
+    }
+}
+
+/// Is `e` the bare `$GLOBALS` variable?
+fn is_globals_var(e: &Expression) -> bool {
+    matches!(e, Expression::Variable(Variable::Direct(d)) if strip_dollar(d.name) == b"GLOBALS")
 }
 
 /// The body form of a closure being lowered.
@@ -3052,6 +3067,10 @@ impl ProtoBuilder {
                     let cv = self.cv(strip_dollar(d.name));
                     self.emit(Instr::LoadNull { dst: cv });
                 }
+                Expression::ArrayAccess(_) if globals_index(v).is_some() => {
+                    let name = self.compile_expr(globals_index(v).unwrap())?;
+                    self.emit(Instr::UnsetGlobal { name });
+                }
                 Expression::ArrayAccess(_) => {
                     let mut steps = Vec::new();
                     let root = self.collect_lvalue_steps(v, &mut steps)?;
@@ -3337,6 +3356,11 @@ impl ProtoBuilder {
         match expr {
             Expression::Literal(lit) => self.compile_literal(lit),
             Expression::Parenthesized(p) => self.compile_expr(p.expression),
+            Expression::Variable(Variable::Direct(d)) if strip_dollar(d.name) == b"GLOBALS" => {
+                let dst = self.alloc_temp();
+                self.emit(Instr::FetchGlobals { dst });
+                Ok(dst)
+            }
             Expression::Variable(Variable::Direct(d)) => Ok(self.cv(strip_dollar(d.name))),
             Expression::Variable(_) => Err(Thrown::unsupported(
                 "indirect/nested variable",
@@ -3349,6 +3373,12 @@ impl ProtoBuilder {
             Expression::Conditional(c) => self.compile_conditional(c),
             Expression::Array(arr) => self.compile_array(arr.elements.iter()),
             Expression::LegacyArray(arr) => self.compile_array(arr.elements.iter()),
+            Expression::ArrayAccess(aa) if is_globals_var(aa.array) => {
+                let name = self.compile_expr(aa.index)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::FetchGlobal { dst, name });
+                Ok(dst)
+            }
             Expression::ArrayAccess(aa) => {
                 let arr = self.compile_expr(aa.array)?;
                 let key = self.compile_expr(aa.index)?;
@@ -4663,6 +4693,10 @@ impl ProtoBuilder {
             Expression::Variable(Variable::Direct(d)) => {
                 Ok(LvalRoot::Cv(self.cv(strip_dollar(d.name))))
             }
+            Expression::ArrayAccess(aa) if is_globals_var(aa.array) => {
+                let name = self.compile_expr(aa.index)?;
+                Ok(LvalRoot::Global(name))
+            }
             Expression::ArrayAccess(aa) => {
                 let root = self.collect_lvalue_steps(aa.array, steps)?;
                 let key = self.compile_expr(aa.index)?;
@@ -4699,6 +4733,7 @@ impl ProtoBuilder {
         match root {
             LvalRoot::Cv(cv) => self.emit(Instr::LvalCv { cv }),
             LvalRoot::StaticProp(class, name) => self.emit(Instr::LvalStaticProp { class, name }),
+            LvalRoot::Global(name) => self.emit(Instr::LvalGlobal { name }),
         }
         for step in steps {
             match step {

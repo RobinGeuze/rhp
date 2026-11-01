@@ -104,10 +104,20 @@ pub struct Vm {
     classes: Vec<classes::ClassEntry>,
     class_ids: HashMap<Vec<u8>, ClassId>, // lowercase name -> id
     next_object_id: u32,
-    // `global $x`: {main}'s CV register for each top-level variable name, plus
-    // an overflow table for globals first created inside a function.
-    main_cv_names: HashMap<Vec<u8>, Reg>,
-    globals: HashMap<Vec<u8>, Rc<RefCell<Value>>>,
+    // The global symbol table (php's EG(symbol_table)), in insertion order:
+    // one shared cell per global variable. {main}'s CVs, top-level included
+    // files, `global $x` and `$GLOBALS[...]` all alias these cells.
+    globals: indexmap::IndexMap<Vec<u8>, Rc<RefCell<Value>>>,
+    // Auto-globals php creates on first use (auto_globals_jit): their initial
+    // value, moved into `globals` when a script first references the name.
+    jit_globals: HashMap<Vec<u8>, Value>,
+    // Typed property slots that were `unset()` (object id -> storage keys):
+    // php clears a slot's IS_PROP_UNINIT flag on unset, after which an absent
+    // slot defers to the magic accessors; a never-initialized one does not.
+    unset_typed_props: HashMap<u32, Vec<PhpStr>>,
+    // Globals that became PHP references (`global $x`, `=&`, by-ref passing):
+    // php's shutdown sweep only destroys plain (non-reference) object globals.
+    ref_globals: std::collections::HashSet<Vec<u8>>,
     // `static $x`: persistent cells keyed by (function proto pointer, var name).
     statics: HashMap<StaticKey, Rc<RefCell<Value>>>,
     // Non-constant class const / static-prop / property-default initializers,
@@ -2081,6 +2091,9 @@ struct Frame {
     extra_args: Vec<Value>,
     /// `include`/`require`/`eval` frame: the construct name shown in traces.
     include_kind: Option<&'static str>,
+    /// Runs in the global scope ({main}, or a file included from it): its
+    /// CVs are the global symbol table's cells.
+    global_scope: bool,
 }
 
 /// A builtin (native) call in progress, for exception traces: php shows the
@@ -2142,6 +2155,7 @@ impl Frame {
             holes: 0,
             extra_args: Vec::new(),
             include_kind: None,
+            global_scope: false,
         }
     }
 }
@@ -2208,8 +2222,10 @@ impl Vm {
             classes: Vec::new(),
             class_ids: HashMap::new(),
             next_object_id: 1,
-            main_cv_names: HashMap::new(),
-            globals: HashMap::new(),
+            globals: indexmap::IndexMap::new(),
+            jit_globals: HashMap::new(),
+            unset_typed_props: HashMap::new(),
+            ref_globals: std::collections::HashSet::new(),
             statics: HashMap::new(),
             generators: HashMap::new(),
             yield_out: None,
@@ -2361,13 +2377,94 @@ impl Vm {
         self.argv = argv;
     }
 
-    /// Get or create the shared global cell for `name` (the overflow globals
-    /// table), used for superglobals and `global`.
+    /// Get or create the shared global cell for `name` in the global symbol
+    /// table, used for {main}'s variables, superglobals, `global` and
+    /// `$GLOBALS[...]`.
     fn global_cell(&mut self, name: &[u8]) -> Rc<RefCell<Value>> {
-        self.globals
-            .entry(name.to_vec())
-            .or_insert_with(|| Rc::new(RefCell::new(Value::Null)))
-            .clone()
+        if let Some(c) = self.globals.get(name) {
+            return c.clone();
+        }
+        let init = self.jit_globals.remove(name).unwrap_or(Value::Null);
+        let c = Rc::new(RefCell::new(init));
+        self.globals.insert(name.to_vec(), c.clone());
+        c
+    }
+
+    /// Point global `name` at `cell` (after the variable was unset or
+    /// re-pointed with `=&`): the symbol-table entry is replaced, and every
+    /// live global-scope frame ({main}, top-level includes) follows.
+    fn rebind_global(&mut self, name: &[u8], cell: Rc<RefCell<Value>>) {
+        self.globals.insert(name.to_vec(), cell.clone());
+        for f in self.stack.iter_mut().filter(|f| f.global_scope) {
+            if let Some(i) = f
+                .proto
+                .cv_var_names
+                .iter()
+                .position(|n| n.as_bytes() == name)
+            {
+                f.regs[i] = Value::Ref(cell.clone());
+            }
+        }
+    }
+
+    /// After CV `cv` of frame `top` was overwritten as a slot (unset, `=&`),
+    /// keep the global symbol table in step when `top` runs in global scope.
+    fn sync_global_cv(&mut self, top: usize, cv: Reg) {
+        let f = &self.stack[top];
+        if !f.global_scope || cv as usize >= f.proto.cv_var_names.len() {
+            return;
+        }
+        let name = f.proto.cv_var_names[cv as usize].as_bytes().to_vec();
+        if name.is_empty() || name == b"this" || is_auto_global(&name) {
+            return;
+        }
+        let cell = match &self.stack[top].regs[cv as usize] {
+            Value::Ref(rc) => {
+                self.ref_globals.insert(name.clone());
+                rc.clone()
+            }
+            v => {
+                self.ref_globals.remove(&name);
+                Rc::new(RefCell::new(v.clone()))
+            }
+        };
+        self.rebind_global(&name, cell);
+    }
+
+    /// Make CV `cv` of frame `top` a reference to `rc` (a by-ref foreach
+    /// variable), keeping the global symbol table in step.
+    fn bind_ref_cv(&mut self, top: usize, cv: Reg, rc: Rc<RefCell<Value>>) {
+        self.reg_set(top, cv, Value::Ref(rc));
+        self.sync_global_cv(top, cv);
+    }
+
+    /// Bind every named CV of a global-scope frame to its global cell.
+    fn bind_global_scope(&mut self, frame: &mut Frame) {
+        frame.global_scope = true;
+        let proto = frame.proto.clone();
+        for (i, name) in proto.cv_var_names.iter().enumerate() {
+            let n = name.as_bytes();
+            if n.is_empty() || n == b"this" || is_auto_global(n) {
+                continue;
+            }
+            frame.regs[i] = Value::Ref(self.global_cell(n));
+        }
+    }
+
+    /// `$GLOBALS` read: a by-value copy of the global symbol table (php 8.1+).
+    /// Variables never assigned (null cells) are left out, as php skips its
+    /// undefined (IS_UNDEF) entries.
+    fn globals_array(&self) -> Value {
+        use rhp_values::{ArrayKey, PhpArray};
+        let mut a = PhpArray::new();
+        for (k, c) in &self.globals {
+            let v = c.borrow();
+            if matches!(*v, Value::Null) {
+                continue;
+            }
+            a.insert(ArrayKey::from_bytes(k), deref(&v));
+        }
+        Value::Array(a)
     }
 
     /// Populate the superglobal global cells ($_SERVER, $argv, …) for a CLI run.
@@ -2421,30 +2518,26 @@ impl Vm {
         let set = |vm: &mut Vm, name: &[u8], v: Value| {
             *vm.global_cell(name).borrow_mut() = v;
         };
-        set(self, b"_SERVER", Value::Array(server));
-        set(self, b"_ENV", {
-            let mut a = PhpArray::new();
-            for (k, v) in std::env::vars() {
-                a.insert(
-                    ArrayKey::from_bytes(k.as_bytes()),
-                    Value::str(v.into_bytes()),
-                );
-            }
-            Value::Array(a)
-        });
-        for empty in [
-            &b"_GET"[..],
-            b"_POST",
-            b"_COOKIE",
-            b"_FILES",
-            b"_REQUEST",
-            b"_SESSION",
-        ] {
-            set(self, empty, Value::Array(PhpArray::new()));
-        }
-        // $argv / $argc as plain globals (available at top level / via `global`).
+        // php's CLI order: argv/argc (register_argc_argv), the request
+        // auto-globals, then $_SERVER; $_ENV/$_REQUEST are created on first use.
         set(self, b"argv", Value::Array(argv_arr));
         set(self, b"argc", Value::Int(argc));
+        for empty in [&b"_GET"[..], b"_POST", b"_COOKIE", b"_FILES"] {
+            set(self, empty, Value::Array(PhpArray::new()));
+        }
+        set(self, b"_SERVER", Value::Array(server));
+        let mut env = PhpArray::new();
+        for (k, v) in std::env::vars() {
+            env.insert(
+                ArrayKey::from_bytes(k.as_bytes()),
+                Value::str(v.into_bytes()),
+            );
+        }
+        self.jit_globals.insert(b"_ENV".to_vec(), Value::Array(env));
+        for lazy in [&b"_REQUEST"[..], b"_SESSION"] {
+            self.jit_globals
+                .insert(lazy.to_vec(), Value::Array(PhpArray::new()));
+        }
     }
 
     /// Whether `v` is an instance of the named class/interface (or a Closure for
@@ -3437,6 +3530,9 @@ impl Vm {
             return;
         }
         for (cv, name) in frame.proto.superglobals.clone() {
+            if name.as_bytes() == b"GLOBALS" {
+                continue; // `$GLOBALS` compiles to its own opcodes
+            }
             let cell = self.global_cell(name.as_bytes());
             frame.regs[cv as usize] = Value::Ref(cell);
         }
@@ -3724,34 +3820,53 @@ impl Vm {
         // Globals holding the sole reference to an object, last first, until
         // nothing changes (php's `zval_call_destructor` sweep over the global
         // symbol table).
-        if !self.stack.is_empty() {
-            loop {
-                let mut changed = false;
-                let nregs = self.stack[0].regs.len();
-                for r in (0..nregs).rev() {
-                    let Value::Object(h) = &self.stack[0].regs[r] else {
-                        continue;
-                    };
-                    let ptr = Rc::as_ptr(h) as usize;
-                    let idx = self
-                        .destructibles
-                        .iter()
-                        .position(|d| Rc::as_ptr(d) as usize == ptr);
-                    // owners: this slot + (if tracked) our list
-                    if Rc::strong_count(h) != 1 + idx.is_some() as usize {
-                        continue;
-                    }
-                    let v = std::mem::replace(&mut self.stack[0].regs[r], Value::Null);
-                    if let Some(i) = idx {
-                        let h = self.destructibles.remove(i);
-                        self.call_destructor(h)?;
-                    }
-                    drop(v);
-                    changed = true;
+        loop {
+            let mut changed = false;
+            let names: Vec<Vec<u8>> = self.globals.keys().rev().cloned().collect();
+            for name in names {
+                let Some(cell) = self.globals.get(&name[..]).cloned() else {
+                    continue;
+                };
+                // A global that is a PHP reference (made one by `global`,
+                // `=&`, by-ref passing, or aliased beyond the table and the
+                // global-scope frames' own slots) is not an object.
+                if self.ref_globals.contains(&name) {
+                    continue;
                 }
-                if !changed {
-                    break;
+                let frame_slots = self
+                    .stack
+                    .iter()
+                    .flat_map(|f| f.regs.iter())
+                    .filter(|v| matches!(v, Value::Ref(r) if Rc::ptr_eq(r, &cell)))
+                    .count();
+                if Rc::strong_count(&cell) != 2 + frame_slots {
+                    continue; // (+1: our clone)
                 }
+                let h = match &*cell.borrow() {
+                    Value::Object(h) => h.clone(),
+                    _ => continue,
+                };
+                let ptr = Rc::as_ptr(&h) as usize;
+                let idx = self
+                    .destructibles
+                    .iter()
+                    .position(|d| Rc::as_ptr(d) as usize == ptr);
+                // owners: the global + (if tracked) our list + our clone
+                if Rc::strong_count(&h) != 2 + idx.is_some() as usize {
+                    continue;
+                }
+                drop(h);
+                self.globals.shift_remove(&name[..]);
+                let v = std::mem::replace(&mut *cell.borrow_mut(), Value::Null);
+                if let Some(i) = idx {
+                    let h = self.destructibles.remove(i);
+                    self.call_destructor(h)?;
+                }
+                drop(v);
+                changed = true;
+            }
+            if !changed {
+                break;
             }
         }
         // Then every object still alive, in creation order (objects created
@@ -3802,11 +3917,6 @@ impl Vm {
                 self.user_const_order.push(name.as_bytes().to_vec());
             }
         }
-        // Record {main}'s variable -> register map for `global $x`.
-        for (reg, name) in prog.main_var_names.iter().enumerate() {
-            self.main_cv_names
-                .insert(name.as_bytes().to_vec(), reg as Reg);
-        }
         // Link the built-in prelude classes, then hoist the user's top-level
         // classes (those whose dependencies are available); the rest, and
         // nested declarations, are declared when execution reaches them.
@@ -3816,19 +3926,8 @@ impl Vm {
         self.hoist_decl_classes(top)?;
         let mut main_frame = Frame::new(prog.main.clone(), 0);
         self.bind_superglobals(&mut main_frame);
-        // $argv / $argc are available in the top-level (global) scope: bind the
-        // {main} frame's CVs of those names to the seeded global values.
-        for name in [&b"argv"[..], b"argc"] {
-            if let Some(reg) = prog
-                .main
-                .cv_var_names
-                .iter()
-                .position(|n| n.as_bytes() == name)
-            {
-                let v = self.global_cell(name).borrow().clone();
-                main_frame.regs[reg] = v;
-            }
-        }
+        // {main}'s variables are the global symbol table's entries.
+        self.bind_global_scope(&mut main_frame);
         self.stack.push(main_frame);
         match self.run_loop() {
             Ok(_) => Ok(0),
@@ -4950,7 +5049,20 @@ impl Vm {
                     let v = proto.consts[k as usize].clone();
                     self.reg_set(top, dst, v);
                 }
-                Instr::LoadNull { dst } => self.reg_set(top, dst, Value::Null),
+                Instr::LoadNull { dst } => {
+                    // `unset($x)` in the global scope drops the symbol-table
+                    // entry's binding (a reference to it keeps the old cell).
+                    if self.stack[top].global_scope
+                        && (dst as usize) < proto.cv_var_names.len()
+                        && matches!(self.stack[top].regs[dst as usize], Value::Ref(_))
+                    {
+                        self.stack[top].regs[dst as usize] = Value::Null;
+                        self.sync_global_cv(top, dst);
+                        self.dtor_check = true;
+                    } else {
+                        self.reg_set(top, dst, Value::Null);
+                    }
+                }
                 Instr::LoadBool { dst, b } => self.reg_set(top, dst, Value::Bool(b)),
                 Instr::LoadInt { dst, n } => self.reg_set(top, dst, Value::Int(n)),
 
@@ -5231,17 +5343,9 @@ impl Vm {
                     self.reg_set(top, dst, Value::Closure(cd));
                 }
                 Instr::BindGlobal { cv, name } => {
-                    let gname = proto.names[name as usize].as_bytes().to_vec();
-                    // Share the global's cell: {main}'s slot if it is a top-level
-                    // variable, else an entry in the overflow table.
-                    let cell = match self.main_cv_names.get(&gname).copied() {
-                        Some(mreg) => self.promote(0, mreg),
-                        None => self
-                            .globals
-                            .entry(gname)
-                            .or_insert_with(|| Rc::new(RefCell::new(Value::Null)))
-                            .clone(),
-                    };
+                    let gname = proto.names[name as usize].clone();
+                    let cell = self.global_cell(gname.as_bytes());
+                    self.ref_globals.insert(gname.as_bytes().to_vec());
                     self.stack[top].regs[cv as usize] = Value::Ref(cell);
                 }
                 Instr::BindStatic { cv, name, init } => {
@@ -5365,6 +5469,40 @@ impl Vm {
                     let cell = self.static_prop_cell(cls, &pname)?;
                     self.cursor_root = CursorRoot::Cell(cell);
                     self.cursor_steps.clear();
+                }
+                Instr::LvalGlobal { name } => {
+                    let n = conv::to_string_bytes(&self.reg_get(top, name));
+                    self.cursor_root = CursorRoot::Cell(self.global_cell(&n));
+                    self.cursor_steps.clear();
+                }
+                Instr::FetchGlobal { dst, name } => {
+                    let n = conv::to_string_bytes(&self.reg_get(top, name));
+                    let v = match self.globals.get(&n[..]) {
+                        Some(c) => deref(&c.borrow()),
+                        None => {
+                            let msg = format!(
+                                "Undefined global variable ${}",
+                                String::from_utf8_lossy(&n)
+                            );
+                            self.diag(2, &msg)?;
+                            Value::Null
+                        }
+                    };
+                    self.reg_set(top, dst, v);
+                }
+                Instr::FetchGlobals { dst } => {
+                    let v = self.globals_array();
+                    self.reg_set(top, dst, v);
+                }
+                Instr::UnsetGlobal { name } => {
+                    let n = conv::to_string_bytes(&self.reg_get(top, name));
+                    if self.globals.contains_key(&n[..]) {
+                        // Live global-scope frames lose the variable too.
+                        self.rebind_global(&n, Rc::new(RefCell::new(Value::Null)));
+                        self.globals.shift_remove(&n[..]);
+                        self.ref_globals.remove(&n[..]);
+                        self.dtor_check = true;
+                    }
                 }
                 Instr::FetchLvalRw { dst } => {
                     let v = self.cursor_read(top)?;
@@ -6157,11 +6295,13 @@ impl Vm {
                 Instr::BindRef { dst_cv, src_cv } => {
                     let rc = self.promote(top, src_cv);
                     self.stack[top].regs[dst_cv as usize] = Value::Ref(rc);
+                    self.sync_global_cv(top, dst_cv);
                 }
                 Instr::RefAssign { dst_cv, src } => {
                     // `src` already holds a `Ref` (MakeRefLval); alias it raw.
                     let v = self.stack[top].regs[src as usize].clone();
                     self.stack[top].regs[dst_cv as usize] = v;
+                    self.sync_global_cv(top, dst_cv);
                 }
                 Instr::MakeRef { dst, cv } => {
                     let rc = self.promote(top, cv);
@@ -6962,8 +7102,16 @@ impl Vm {
         frame.called_class = self.stack[caller_top].called_class;
 
         // Bind each CV to the caller's same-named variable (shared via a Ref).
+        // From the global scope, the included file's variables are the global
+        // symbol table's (including the ones it creates).
         let caller_proto = self.stack[caller_top].proto.clone();
+        if self.stack[caller_top].global_scope {
+            self.bind_global_scope(&mut frame);
+        }
         for ci in 0..main.cv_var_names.len() {
+            if frame.global_scope {
+                break;
+            }
             let name = &main.cv_var_names[ci];
             if let Some(caller_ci) = caller_proto.cv_var_names.iter().position(|n| n == name) {
                 let rc = self.promote(caller_top, caller_ci as Reg);
@@ -8696,6 +8844,23 @@ pub(crate) fn rebase_class(c: &ClassProto, base: u32, cbase: u32) -> ClassProto 
         }
     }
     c
+}
+
+/// php's auto-globals (`$_SERVER`, …, `$GLOBALS`): bound by name in every
+/// scope, never as a plain global-scope variable.
+fn is_auto_global(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"GLOBALS"
+            | b"_SERVER"
+            | b"_GET"
+            | b"_POST"
+            | b"_REQUEST"
+            | b"_SESSION"
+            | b"_ENV"
+            | b"_COOKIE"
+            | b"_FILES"
+    )
 }
 
 fn deref(v: &Value) -> Value {

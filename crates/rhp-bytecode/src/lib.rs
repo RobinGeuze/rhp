@@ -672,6 +672,26 @@ pub enum Instr {
         class: ClassRef,
         name: NIdx,
     },
+    /// Cursor root: the global variable named by `name` (a runtime string
+    /// register), i.e. `$GLOBALS[$name]...` as an lvalue (php 8.1+: element
+    /// writes through `$GLOBALS` go to the global symbol table).
+    LvalGlobal {
+        name: Reg,
+    },
+    /// `$GLOBALS[$name]` read: the global variable's value ("Undefined global
+    /// variable" warning when absent).
+    FetchGlobal {
+        dst: Reg,
+        name: Reg,
+    },
+    /// Bare `$GLOBALS` read: a by-value copy of the global symbol table.
+    FetchGlobals {
+        dst: Reg,
+    },
+    /// `unset($GLOBALS[$name])`: remove the global variable.
+    UnsetGlobal {
+        name: Reg,
+    },
     /// Declare a class at this statement. `class_idx` is file-local: indices
     /// below the file's user top-level class count name `Program::classes`
     /// (after the prelude) — a no-op when that class was already hoisted at

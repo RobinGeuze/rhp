@@ -130,7 +130,7 @@ fn fn_json_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     } else {
         // Failure sets json_last_error at the failure site.
         if flags & JSON_THROW_ON_ERROR != 0 {
-            return Err(Thrown::error("JsonException", error_msg(get_last_error())));
+            return Err(json_exception(host, get_last_error()));
         }
         Ok(Value::Bool(false))
     }
@@ -183,14 +183,14 @@ impl Encoder {
                 if !f.is_finite() {
                     return Ok(self.fail(JSON_ERROR_INF_OR_NAN, out, b"0"));
                 }
-                encode_float(*f, out);
+                encode_float(*f, out, flags);
             }
             Value::Str(s) => {
                 if flags & JSON_NUMERIC_CHECK != 0 {
                     if let Some(num) = conv::numeric_string(s.as_bytes()) {
                         match num {
                             conv::Num::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),
-                            conv::Num::Float(f) if f.is_finite() => encode_float(f, out),
+                            conv::Num::Float(f) if f.is_finite() => encode_float(f, out, flags),
                             conv::Num::Float(_) => {
                                 return Ok(encode_string(s.as_bytes(), out, flags))
                             }
@@ -412,7 +412,7 @@ impl Encoder {
     }
 }
 
-fn encode_float(f: f64, out: &mut Vec<u8>) {
+fn encode_float(f: f64, out: &mut Vec<u8>, flags: i64) {
     let mut s = fmt::float_serialize(f);
     // php's json uses a lowercase exponent ('1.0e+20'); float_serialize emits the
     // var_dump-style uppercase 'E'.
@@ -421,13 +421,33 @@ fn encode_float(f: f64, out: &mut Vec<u8>) {
             *b = b'e';
         }
     }
+    // JSON_PRESERVE_ZERO_FRACTION: an integral value keeps a `.0`.
+    if flags & JSON_PRESERVE_ZERO_FRACTION != 0
+        && s.iter().all(|&b| b.is_ascii_digit() || b == b'-')
+    {
+        s.extend_from_slice(b".0");
+    }
     out.extend_from_slice(&s);
 }
 
 /// Append a JSON string literal for `bytes`. Returns false on invalid UTF-8.
 fn encode_string(bytes: &[u8], out: &mut Vec<u8>, flags: i64) -> bool {
+    let owned;
     let s = match std::str::from_utf8(bytes) {
         Ok(s) => s,
+        // JSON_INVALID_UTF8_IGNORE drops, JSON_INVALID_UTF8_SUBSTITUTE replaces
+        // (U+FFFD) each invalid sequence.
+        Err(_) if flags & (JSON_INVALID_UTF8_IGNORE | JSON_INVALID_UTF8_SUBSTITUTE) != 0 => {
+            let mut t = String::with_capacity(bytes.len());
+            for chunk in bytes.utf8_chunks() {
+                t.push_str(chunk.valid());
+                if !chunk.invalid().is_empty() && flags & JSON_INVALID_UTF8_IGNORE == 0 {
+                    t.push('\u{fffd}');
+                }
+            }
+            owned = t;
+            &owned
+        }
         Err(_) => {
             set_last_error(JSON_ERROR_UTF8);
             return false;
@@ -487,7 +507,7 @@ fn fn_json_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     // Validate UTF-8 before parsing (php returns JSON_ERROR_UTF8 for invalid).
     if std::str::from_utf8(&json).is_err() {
         set_last_error(JSON_ERROR_UTF8);
-        return throw_or_null(flags, JSON_ERROR_UTF8);
+        return throw_or_null(host, flags, JSON_ERROR_UTF8);
     }
 
     let mut p = Parser {
@@ -506,23 +526,33 @@ fn fn_json_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             if p.i != p.s.len() {
                 // trailing non-whitespace data.
                 set_last_error(JSON_ERROR_SYNTAX);
-                return throw_or_null(flags, JSON_ERROR_SYNTAX);
+                return throw_or_null(host, flags, JSON_ERROR_SYNTAX);
             }
             set_last_error(JSON_ERROR_NONE);
             Ok(v)
         }
         Err(code) => {
             set_last_error(code);
-            throw_or_null(flags, code)
+            throw_or_null(host, flags, code)
         }
     }
 }
 
-fn throw_or_null(flags: i64, code: i64) -> Result<Value, Thrown> {
+fn throw_or_null(host: &mut dyn Host, flags: i64, code: i64) -> Result<Value, Thrown> {
     if flags & JSON_THROW_ON_ERROR != 0 {
-        Err(Thrown::error("JsonException", error_msg(code)))
+        Err(json_exception(host, code))
     } else {
         Ok(Value::Null)
+    }
+}
+
+/// `new JsonException(json_last_error_msg(), code)` (php_json_throw...).
+fn json_exception(host: &mut dyn Host, code: i64) -> Thrown {
+    let args = vec![Value::str(error_msg(code)), Value::Int(code)];
+    match host.reflect_new_instance(b"JsonException", args, true) {
+        Ok(Value::Object(h)) => Thrown::Object(h),
+        Ok(_) => Thrown::error("JsonException", error_msg(code)),
+        Err(t) => t,
     }
 }
 
@@ -591,6 +621,11 @@ impl Parser<'_, '_> {
                     return Err(JSON_ERROR_SYNTAX);
                 }
                 self.i += 1;
+                // php_json_parser_object_update: an object property name may
+                // not start with NUL (mangled names).
+                if !self.assoc && key.first() == Some(&0) {
+                    return Err(JSON_ERROR_INVALID_PROPERTY_NAME);
+                }
                 let val = self.parse_value(depth + 1)?;
                 // Duplicate keys: last wins (overwrite in place, keep position).
                 if let Some(slot) = pairs.iter_mut().find(|(k, _)| *k == key) {

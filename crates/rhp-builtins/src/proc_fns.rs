@@ -1165,6 +1165,15 @@ fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
                         max_fd = max_fd.max(fd);
                         nsets += 1;
                     }
+                } else if let Some(m) = host.stream_meta(&el) {
+                    crate::warn(
+                        host,
+                        "stream_select",
+                        &format!(
+                            "Cannot represent a stream of type {} as a select()able descriptor",
+                            m.stream_type
+                        ),
+                    )?;
                 }
             }
         }

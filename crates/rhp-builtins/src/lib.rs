@@ -48,6 +48,8 @@ pub struct StreamMeta {
     pub unread_bytes: i64,
     pub seekable: bool,
     pub eof: bool,
+    /// php's `blocked` (false after stream_set_blocking($s, false)).
+    pub blocked: bool,
 }
 
 /// pcntl's asynchronous signal delivery: the VM polls

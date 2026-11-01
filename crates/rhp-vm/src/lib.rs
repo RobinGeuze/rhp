@@ -154,6 +154,10 @@ pub struct Vm {
     /// Readonly properties already reinitialized inside a `__clone`
     /// (object id, storage key): once each.
     readonly_reinit: std::collections::HashSet<(u32, PhpStr)>,
+    /// Streams switched to non-blocking mode (stream_get_meta_data's `blocked`).
+    nonblocking: std::collections::HashSet<u32>,
+    /// Descriptor streams opened by name (`php://stdin`): their uri and mode.
+    fd_names: HashMap<u32, (Vec<u8>, Vec<u8>)>,
     // The fopen() mode of each stream opened by stream_open.
     stream_modes: HashMap<u32, Vec<u8>>,
     next_resource_id: u32,
@@ -625,9 +629,16 @@ impl Host for Vm {
             StreamState::Stderr
         } else if path == b"php://stdin" {
             // php opens php://stdin on a dup() of fd 0: its own buffer.
-            StreamState::Fd(builtins::fdstream::FdStream::new(
-                builtins::fdstream::dup_raw(0)?,
-            ))
+            let v = self.make_stream(
+                StreamState::Fd(builtins::fdstream::FdStream::new(
+                    builtins::fdstream::dup_raw(0)?,
+                )),
+                "stream",
+            );
+            if let Some(id) = res_id(&v) {
+                self.fd_names.insert(id, (path.to_vec(), mode.to_vec()));
+            }
+            return Some(v);
         } else if path == b"php://memory" || path.starts_with(b"php://temp") {
             let temp = path.starts_with(b"php://temp").then(|| path.to_vec());
             let is_temp = temp.is_some();
@@ -951,6 +962,13 @@ impl Host for Vm {
 
     fn stream_set_blocking(&mut self, res: &Value, blocking: bool) -> bool {
         let Some(id) = res_id(res) else { return false };
+        if self.streams.contains_key(&id) {
+            if blocking {
+                self.nonblocking.remove(&id);
+            } else {
+                self.nonblocking.insert(id);
+            }
+        }
         match self.streams.get_mut(&id) {
             Some(StreamState::Fd(f)) => f.set_blocking(blocking),
             Some(StreamState::Stdin) => builtins::fdstream::set_fd_blocking(0, blocking),
@@ -1175,95 +1193,132 @@ impl Host for Vm {
     fn stream_meta(&self, res: &Value) -> Option<builtins::StreamMeta> {
         use builtins::StreamMeta as M;
         let id = res_id(res)?;
-        if let Some((uri, mode)) = self.stream_origins.get(&id) {
-            let (scheme, _) = builtins::streams::split_scheme(uri);
-            let (wrapper_type, stream_type) = match scheme {
-                b"phar" => ("phar", "phar stream"),
-                b"compress.zlib" => ("ZLIB", "ZLIB"),
-                _ => ("user-space", "user-space"),
-            };
-            let (unread, eof) = match self.streams.get(&id)? {
-                StreamState::Mem { buf, pos, .. } => (0, *pos >= buf.len() && !buf.is_empty()),
-                _ => (0, false),
-            };
-            return Some(M {
-                wrapper_type,
-                stream_type,
-                mode: mode.clone(),
-                uri: uri.clone(),
-                unread_bytes: unread,
-                seekable: true,
-                eof,
-            });
-        }
-        Some(match self.streams.get(&id)? {
-            StreamState::File(f) => M {
-                wrapper_type: "plainfile",
-                stream_type: "STDIO",
-                mode: f.mode.clone(),
-                uri: f.uri.clone(),
-                unread_bytes: f.unread() as i64,
-                seekable: true,
-                eof: f.eof(),
-            },
-            StreamState::Fd(f) => M {
-                wrapper_type: "PHP",
-                stream_type: "STDIO",
-                mode: b"r".to_vec(),
-                uri: b"php://fd".to_vec(),
-                unread_bytes: 0,
-                seekable: f.tell() != -1,
-                eof: f.eof(),
-            },
-            StreamState::Dir { url, .. } => M {
-                wrapper_type: "plainfile",
-                stream_type: "dir",
-                mode: b"r".to_vec(),
-                uri: url.clone(),
-                unread_bytes: 0,
-                seekable: true,
-                eof: false,
-            },
-            StreamState::Mem { eof, temp, .. } => M {
-                wrapper_type: "PHP",
-                stream_type: if temp.is_some() { "TEMP" } else { "MEMORY" },
-                mode: b"w+b".to_vec(),
-                uri: temp.clone().unwrap_or_else(|| b"php://memory".to_vec()),
-                unread_bytes: 0,
-                seekable: true,
-                eof: *eof,
-            },
-            StreamState::FileWrite { url, .. } => M {
-                wrapper_type: "plainfile",
-                stream_type: "STDIO",
-                mode: b"w".to_vec(),
-                uri: url.clone(),
-                unread_bytes: 0,
-                seekable: true,
-                eof: false,
-            },
-            st @ (StreamState::Stdin | StreamState::Stdout | StreamState::Stderr) => {
-                let (fd, mode, uri): (i32, &[u8], &[u8]) = match st {
-                    StreamState::Stdin => (0, b"rb", b"php://stdin"),
-                    StreamState::Stdout => (1, b"wb", b"php://stdout"),
-                    _ => (2, b"wb", b"php://stderr"),
+        let meta = || -> Option<M> {
+            if let Some((uri, mode)) = self.stream_origins.get(&id) {
+                let (scheme, _) = builtins::streams::split_scheme(uri);
+                let (wrapper_type, stream_type) = match scheme {
+                    b"phar" => ("phar", "phar stream"),
+                    b"compress.zlib" => ("ZLIB", "ZLIB"),
+                    _ => ("user-space", "user-space"),
                 };
-                // php: seekable unless a fifo or character device.
-                let seekable = builtins::streams::sys_fstat(fd).is_some_and(|s| {
-                    let fmt = s.mode & 0o170000;
-                    fmt != 0o010000 && fmt != 0o020000
+                let (unread, eof) = match self.streams.get(&id)? {
+                    StreamState::Mem { buf, pos, .. } => (0, *pos >= buf.len() && !buf.is_empty()),
+                    _ => (0, false),
+                };
+                return Some(M {
+                    wrapper_type,
+                    stream_type,
+                    mode: mode.clone(),
+                    uri: uri.clone(),
+                    unread_bytes: unread,
+                    seekable: true,
+                    eof,
+                    blocked: true,
                 });
-                M {
-                    wrapper_type: "PHP",
-                    stream_type: "STDIO",
-                    mode: mode.to_vec(),
-                    uri: uri.to_vec(),
-                    unread_bytes: 0,
-                    seekable,
-                    eof: false,
-                }
             }
-        })
+            Some(match self.streams.get(&id)? {
+                StreamState::File(f) => M {
+                    wrapper_type: "plainfile",
+                    stream_type: "STDIO",
+                    mode: f.mode.clone(),
+                    uri: f.uri.clone(),
+                    unread_bytes: f.unread() as i64,
+                    seekable: true,
+                    eof: f.eof(),
+                    blocked: true,
+                },
+                StreamState::Fd(f) => match self.fd_names.get(&id) {
+                    Some((uri, mode)) => M {
+                        wrapper_type: "PHP",
+                        stream_type: "STDIO",
+                        mode: mode.clone(),
+                        uri: uri.clone(),
+                        unread_bytes: 0,
+                        seekable: f.tell() != -1,
+                        eof: f.eof(),
+                        blocked: true,
+                    },
+                    // A pipe (proc_open, popen): no wrapper, no uri; the mode is
+                    // the descriptor's direction.
+                    None => M {
+                        wrapper_type: "",
+                        stream_type: "STDIO",
+                        mode: match f.raw_fd().map(builtins::fdstream::fd_access_mode) {
+                            Some(Some(true)) => b"w".to_vec(),
+                            _ => b"r".to_vec(),
+                        },
+                        uri: Vec::new(),
+                        unread_bytes: 0,
+                        seekable: f.tell() != -1,
+                        eof: f.eof(),
+                        blocked: true,
+                    },
+                },
+                StreamState::Dir { .. } => M {
+                    wrapper_type: "plainfile",
+                    stream_type: "dir",
+                    mode: b"r".to_vec(),
+                    uri: Vec::new(),
+                    unread_bytes: 0,
+                    seekable: true,
+                    eof: false,
+                    blocked: true,
+                },
+                StreamState::Mem {
+                    eof, temp, mode, ..
+                } => M {
+                    wrapper_type: "PHP",
+                    stream_type: if temp.is_some() { "TEMP" } else { "MEMORY" },
+                    mode: match mode {
+                        MemMode::ReadOnly => b"rb".to_vec(),
+                        MemMode::Append => b"a+b".to_vec(),
+                        MemMode::ReadWrite => b"w+b".to_vec(),
+                    },
+                    uri: temp.clone().unwrap_or_else(|| b"php://memory".to_vec()),
+                    unread_bytes: 0,
+                    seekable: true,
+                    eof: *eof,
+                    blocked: true,
+                },
+                StreamState::FileWrite { url, .. } => M {
+                    wrapper_type: "plainfile",
+                    stream_type: "STDIO",
+                    mode: b"w".to_vec(),
+                    uri: url.clone(),
+                    unread_bytes: 0,
+                    seekable: true,
+                    eof: false,
+                    blocked: true,
+                },
+                st @ (StreamState::Stdin | StreamState::Stdout | StreamState::Stderr) => {
+                    let (fd, mode, uri): (i32, &[u8], &[u8]) = match st {
+                        StreamState::Stdin => (0, b"rb", b"php://stdin"),
+                        StreamState::Stdout => (1, b"wb", b"php://stdout"),
+                        _ => (2, b"wb", b"php://stderr"),
+                    };
+                    // php: seekable unless a fifo or character device.
+                    let seekable = builtins::streams::sys_fstat(fd).is_some_and(|s| {
+                        let fmt = s.mode & 0o170000;
+                        fmt != 0o010000 && fmt != 0o020000
+                    });
+                    M {
+                        wrapper_type: "PHP",
+                        stream_type: "STDIO",
+                        mode: mode.to_vec(),
+                        uri: uri.to_vec(),
+                        unread_bytes: 0,
+                        seekable,
+                        eof: false,
+                        blocked: true,
+                    }
+                }
+            })
+        };
+        let mut m = meta()?;
+        if self.nonblocking.contains(&id) {
+            m.blocked = false;
+        }
+        Some(m)
     }
 
     fn dir_open(&mut self, url: &[u8], entries: Vec<Vec<u8>>) -> Option<Value> {
@@ -2153,6 +2208,8 @@ impl Vm {
             streams: HashMap::new(),
             output_streams: Default::default(),
             readonly_reinit: Default::default(),
+            nonblocking: Default::default(),
+            fd_names: HashMap::new(),
             last_dir: None,
             default_context: None,
             stream_origins: HashMap::new(),

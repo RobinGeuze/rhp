@@ -1,0 +1,15 @@
+0: {"timed_out":false,"blocked":true,"eof":false,"stream_type":"STDIO","mode":"w","unread_bytes":0,"seekable":false}
+1: {"timed_out":false,"blocked":true,"eof":false,"stream_type":"STDIO","mode":"r","unread_bytes":0,"seekable":false}
+bool(false)
+[2] fseek(): Stream does not support seeking
+int(-1)
+r rb
+w w+b
+a+ a+b
+r+ w+b
+[2] stream_select(): Cannot represent a stream of type MEMORY as a select()able descriptor
+No stream arrays were passed
+[8192] readdir(): Passing null is deprecated, instead the last opened directory stream should be provided
+bool(false)
+bool(true)
+[8192] closedir(): Passing null is deprecated, instead the last opened directory stream should be provided

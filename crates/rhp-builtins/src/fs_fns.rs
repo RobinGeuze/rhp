@@ -232,13 +232,20 @@ fn fn_dir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 /// Resolve the `?resource $dir_handle` argument of readdir/rewinddir/closedir.
-fn dir_param(host: &dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
+fn dir_param(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
     let v = args.first().map(deref).unwrap_or(Value::Null);
     let v = match v {
-        Value::Null => match host.last_dir() {
-            Some(d) => d,
-            None => return Err(Thrown::type_error("No resource supplied")),
-        },
+        Value::Null => {
+            crate::deprecated(
+                host,
+                fname,
+                "Passing null is deprecated, instead the last opened directory stream should be provided",
+            )?;
+            match host.last_dir() {
+                Some(d) => d,
+                None => return Err(Thrown::type_error("No resource supplied")),
+            }
+        }
         Value::Resource(_) => v,
         other => {
             return Err(Thrown::type_error(format!(
@@ -1223,11 +1230,13 @@ fn fn_fseek(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (h, _) = stream_param(host, args, 0, "fseek", "stream")?;
     let off = int_arg(args, 1, 0);
     let whence = int_arg(args, 2, 0) as i32;
-    Ok(Value::Int(if host.stream_seek(&h, off, whence) {
-        0
-    } else {
-        -1
-    }))
+    if host.stream_seek(&h, off, whence) {
+        return Ok(Value::Int(0));
+    }
+    if host.stream_meta(&h).is_some_and(|m| !m.seekable) {
+        crate::warn(host, "fseek", "Stream does not support seeking")?;
+    }
+    Ok(Value::Int(-1))
 }
 
 fn fn_ftell(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1368,15 +1377,20 @@ fn fn_stream_get_meta_data(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     // A TEMP stream answers META_DATA_API itself, so php skips these three.
     if m.stream_type != "TEMP" {
         put("timed_out", Value::Bool(false));
-        put("blocked", Value::Bool(true));
+        put("blocked", Value::Bool(m.blocked));
         put("eof", Value::Bool(m.eof));
     }
-    put("wrapper_type", Value::str(m.wrapper_type));
+    // Pipes have no wrapper and no uri; directory streams no uri.
+    if !m.wrapper_type.is_empty() {
+        put("wrapper_type", Value::str(m.wrapper_type));
+    }
     put("stream_type", Value::str(m.stream_type));
     put("mode", Value::str(m.mode));
     put("unread_bytes", Value::Int(m.unread_bytes));
     put("seekable", Value::Bool(m.seekable));
-    put("uri", Value::str(m.uri));
+    if !m.uri.is_empty() {
+        put("uri", Value::str(m.uri));
+    }
     Ok(Value::Array(a))
 }
 

@@ -384,3 +384,13 @@ pub fn dup_raw(raw: RawFd) -> Option<OwnedFd> {
     let d = unsafe { libc::dup(raw) };
     (d >= 0).then(|| unsafe { OwnedFd::from_raw_fd(d) })
 }
+
+/// Whether `fd` is open write-only (`Some(true)`), read-only / read-write
+/// (`Some(false)`), or unknown (`None`): `fcntl(F_GETFL)`.
+pub fn fd_access_mode(fd: RawFd) -> Option<bool> {
+    let fl = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if fl < 0 {
+        return None;
+    }
+    Some(fl & libc::O_ACCMODE == libc::O_WRONLY)
+}

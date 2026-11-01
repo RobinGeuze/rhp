@@ -2,13 +2,13 @@
 // set_error_handler inside a running handler applies to later errors there;
 // E_STRICT's deprecation; sort() comparison notices reach the handler;
 // by-reference array parameters are type-checked; error_log / html_errors.
-function outer($l, $m) {
+$outer = function ($l, $m) {
     echo "outer: $m\n";
     set_error_handler(function ($l, $m) { echo "nested: $m\n"; return true; });
     trigger_error('after set in handler', E_USER_NOTICE);
     return true;
-}
-set_error_handler('outer');
+};
+set_error_handler($outer);
 trigger_error('first', E_USER_NOTICE);
 trigger_error('second', E_USER_NOTICE);
 restore_error_handler();

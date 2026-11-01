@@ -13,7 +13,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use rhp_compiler::compile_with_source;
+use rhp_compiler::{compile_include, compile_with_source};
 use rhp_frontend::Arena;
 use rhp_values::{Thrown, Value};
 use rhp_vm::{IncludeError, Vm};
@@ -184,7 +184,7 @@ fn main() -> ExitCode {
         if let Some((message, line)) = parsed.parse_error() {
             return Err(IncludeError::Parse { message, line });
         }
-        Ok(compile_with_source(parsed.program(), src, file)?)
+        Ok(compile_include(parsed.program(), src, file)?)
     });
     // Unbuffered stdout reaches the process before each stderr write.
     vm.set_direct_stdout(true);
@@ -213,8 +213,8 @@ fn fatal(t: Thrown) -> i32 {
             eprintln!("PHP Fatal error:  Uncaught exception");
             255
         }
-        Thrown::Unsupported { feature, reason } => {
-            eprintln!("RHP_UNSUPPORTED: {feature} is not supported ({reason})");
+        t @ Thrown::Unsupported { .. } => {
+            eprintln!("{}", t.unsupported_message().unwrap_or_default());
             255
         }
     }

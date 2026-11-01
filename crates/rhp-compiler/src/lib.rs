@@ -472,6 +472,19 @@ fn line_of(offset: u32) -> u32 {
     })
 }
 
+/// Stamp a compile-time refusal with the file being compiled and the line of
+/// `offset`, unless an inner construct already located it.
+fn locate(e: Thrown, offset: u32) -> Thrown {
+    if !matches!(e, Thrown::Unsupported { location: None, .. }) {
+        return e;
+    }
+    let line = line_of(offset);
+    e.with_location(
+        || SRC_FILE.with(|f| String::from_utf8_lossy(&f.borrow()).into_owned()),
+        line,
+    )
+}
+
 /// Scan every class-like's methods, OR-ing their by-ref parameter flags by name.
 /// (Method names are not namespaced, so this ignores the namespace context.)
 fn collect_method_refs(flat: &[(Rc<NsContext>, &Statement)]) -> HashMap<Vec<u8>, Vec<bool>> {
@@ -515,8 +528,23 @@ pub fn compile_with_source(
     source: &[u8],
     file: &str,
 ) -> Result<Program, Thrown> {
-    // Line info applies to user code only; the prelude (compiled first) keeps an
-    // empty map, so set the real line starts after the prelude is built.
+    compile_program(program, source, file, true)
+}
+
+/// Compile a file for `include`/`require`/`eval` into an already-running VM:
+/// like [`compile_with_source`] but without the built-in prelude (the VM
+/// skips an included program's first `num_prelude_*` entries anyway, so
+/// this program carries none and reports a prelude count of zero).
+pub fn compile_include(program: &AstProgram, source: &[u8], file: &str) -> Result<Program, Thrown> {
+    compile_program(program, source, file, false)
+}
+
+fn compile_program(
+    program: &AstProgram,
+    source: &[u8],
+    file: &str,
+    with_prelude: bool,
+) -> Result<Program, Thrown> {
     LINE_STARTS.with(|ls| ls.borrow_mut().clear());
     SRC_FILE.with(|f| *f.borrow_mut() = file.as_bytes().to_vec());
     STRICT_TYPES.with(|s| *s.borrow_mut() = detect_strict_types(program));
@@ -554,10 +582,14 @@ pub fn compile_with_source(
     METHOD_REF.with(|m| *m.borrow_mut() = collect_method_refs(&flat));
 
     // Hoist top-level function + class declarations. Start the class list with
-    // the built-in exception hierarchy (the "prelude").
-    let (mut classes, mut functions) = {
-        let (c, f) = prelude_classes()?;
-        (c, f)
+    // the built-in exception hierarchy (the "prelude"), compiled once per
+    // thread and copied from the cache.
+    let (mut classes, mut functions) = if with_prelude {
+        let p = prelude_classes()?;
+        CLOSURES.with(|c| *c.borrow_mut() = p.closures.clone());
+        (p.classes.clone(), p.functions.clone())
+    } else {
+        (Vec::new(), Vec::new())
     };
     let num_prelude_classes = classes.len();
     let num_prelude_functions = functions.len();
@@ -576,15 +608,19 @@ pub fn compile_with_source(
     LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
     let user_constants: Vec<(PhpStr, Value)> = Vec::new();
     for (ctx, stmt) in &flat {
+        use mago_span::HasSpan;
         set_ns_ctx(ctx);
+        let at = |e| locate(e, stmt.span().start.offset);
         match stmt {
             Statement::Function(func) => {
-                functions.push(Rc::new(compile_function(func, sigs.clone())?));
+                functions.push(Rc::new(compile_function(func, sigs.clone()).map_err(at)?));
             }
-            Statement::Class(class) => classes.push(compile_class(class, &sigs)?),
-            Statement::Interface(iface) => classes.push(compile_interface(iface, &sigs)?),
-            Statement::Trait(tr) => classes.push(compile_trait(tr, &sigs)?),
-            Statement::Enum(en) => classes.push(compile_enum(en, &sigs)?),
+            Statement::Class(class) => classes.push(compile_class(class, &sigs).map_err(at)?),
+            Statement::Interface(iface) => {
+                classes.push(compile_interface(iface, &sigs).map_err(at)?)
+            }
+            Statement::Trait(tr) => classes.push(compile_trait(tr, &sigs).map_err(at)?),
+            Statement::Enum(en) => classes.push(compile_enum(en, &sigs).map_err(at)?),
             // Top-level `const NAME = <expr>;` is a runtime statement (php
             // declares it when execution reaches it), compiled in {main}.
             _ => {}
@@ -965,94 +1001,106 @@ fn compile_members(
 ) -> Result<CompiledMembers, Thrown> {
     let mut out = CompiledMembers::default();
     for member in members.iter() {
-        match member {
-            ClassLikeMember::Method(m) => {
-                let (mp, promoted) = compile_method(m, sigs, class_name)?;
-                out.methods.push(mp);
-                out.props.extend(promoted);
-            }
-            ClassLikeMember::Property(Property::Plain(p)) => {
-                let visibility = modifiers_visibility(&p.modifiers);
-                let set_visibility = modifiers_set_visibility(&p.modifiers);
-                let is_static = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Static(_)));
-                let is_readonly =
-                    has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
-                let hint = p.hint.as_ref().map(type_hint);
-                for item in p.items.iter() {
-                    let (var, default) = match item {
-                        PropertyItem::Concrete(c) => (
-                            c.variable.name,
-                            coerce_prop_default(
-                                prop_default_or_thunk(c.value, sigs, Some(class_name))?,
-                                hint.as_ref(),
-                            ),
-                        ),
-                        PropertyItem::Abstract(a) => (a.variable.name, PropDefaultProto::None),
-                    };
-                    let pname = PhpStr::from_bytes(strip_dollar(var).to_vec());
-                    if is_static {
-                        let init = match default {
-                            PropDefaultProto::Const(v) => ConstInitProto::Const(v),
-                            PropDefaultProto::Init(t) => ConstInitProto::Thunk(t),
-                            PropDefaultProto::None => ConstInitProto::Const(Value::Null),
-                        };
-                        out.static_props.push(StaticPropProto {
-                            name: pname,
-                            visibility,
-                            is_readonly,
-                            init,
-                            type_hint: hint.clone(),
-                        });
-                    } else {
-                        out.props.push(PropProto {
-                            name: pname,
-                            visibility,
-                            set_visibility,
-                            is_readonly,
-                            default,
-                            type_hint: hint.clone(),
-                        });
-                    }
-                }
-            }
-            ClassLikeMember::Property(Property::Hooked(_)) => {
-                return Err(Thrown::unsupported("property hooks", "deferred"))
-            }
-            ClassLikeMember::Constant(c) => {
-                let visibility = modifiers_visibility(&c.modifiers);
-                let hint = c.hint.as_ref().map(type_hint);
-                for item in c.items.iter() {
-                    out.constants.push(ConstProto {
-                        name: PhpStr::from_bytes(item.name.value.to_vec()),
-                        visibility,
-                        value: coerce_const_init(
-                            const_init_or_thunk(item.value, sigs, Some(class_name))?,
+        use mago_span::HasSpan;
+        compile_member(&mut out, member, sigs, class_name)
+            .map_err(|e| locate(e, member.span().start.offset))?;
+    }
+    Ok(out)
+}
+
+/// Compile one class-like member into `out`.
+fn compile_member(
+    out: &mut CompiledMembers,
+    member: &ClassLikeMember,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: &PhpStr,
+) -> Result<(), Thrown> {
+    match member {
+        ClassLikeMember::Method(m) => {
+            let (mp, promoted) = compile_method(m, sigs, class_name)?;
+            out.methods.push(mp);
+            out.props.extend(promoted);
+        }
+        ClassLikeMember::Property(Property::Plain(p)) => {
+            let visibility = modifiers_visibility(&p.modifiers);
+            let set_visibility = modifiers_set_visibility(&p.modifiers);
+            let is_static = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Static(_)));
+            let is_readonly = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
+            let hint = p.hint.as_ref().map(type_hint);
+            for item in p.items.iter() {
+                let (var, default) = match item {
+                    PropertyItem::Concrete(c) => (
+                        c.variable.name,
+                        coerce_prop_default(
+                            prop_default_or_thunk(c.value, sigs, Some(class_name))?,
                             hint.as_ref(),
                         ),
+                    ),
+                    PropertyItem::Abstract(a) => (a.variable.name, PropDefaultProto::None),
+                };
+                let pname = PhpStr::from_bytes(strip_dollar(var).to_vec());
+                if is_static {
+                    let init = match default {
+                        PropDefaultProto::Const(v) => ConstInitProto::Const(v),
+                        PropDefaultProto::Init(t) => ConstInitProto::Thunk(t),
+                        PropDefaultProto::None => ConstInitProto::Const(Value::Null),
+                    };
+                    out.static_props.push(StaticPropProto {
+                        name: pname,
+                        visibility,
+                        is_readonly,
+                        init,
+                        type_hint: hint.clone(),
+                    });
+                } else {
+                    out.props.push(PropProto {
+                        name: pname,
+                        visibility,
+                        set_visibility,
+                        is_readonly,
+                        default,
                         type_hint: hint.clone(),
                     });
                 }
             }
-            ClassLikeMember::TraitUse(tu) => {
-                for t in tu.trait_names.iter() {
-                    out.traits.push(PhpStr::from_bytes(resolve_class_name(t)));
-                }
-            }
-            ClassLikeMember::EnumCase(ec) => {
-                use rhp_frontend::cst::EnumCaseItem;
-                let (name, value) = match &ec.item {
-                    EnumCaseItem::Unit(u) => (PhpStr::from_bytes(u.name.value.to_vec()), None),
-                    EnumCaseItem::Backed(b) => (
-                        PhpStr::from_bytes(b.name.value.to_vec()),
-                        Some(const_init_or_thunk(b.value, sigs, Some(class_name))?),
+        }
+        ClassLikeMember::Property(Property::Hooked(_)) => {
+            return Err(Thrown::unsupported("property hooks", "deferred"))
+        }
+        ClassLikeMember::Constant(c) => {
+            let visibility = modifiers_visibility(&c.modifiers);
+            let hint = c.hint.as_ref().map(type_hint);
+            for item in c.items.iter() {
+                out.constants.push(ConstProto {
+                    name: PhpStr::from_bytes(item.name.value.to_vec()),
+                    visibility,
+                    value: coerce_const_init(
+                        const_init_or_thunk(item.value, sigs, Some(class_name))?,
+                        hint.as_ref(),
                     ),
-                };
-                out.enum_cases
-                    .push(rhp_bytecode::EnumCaseProto { name, value });
+                    type_hint: hint.clone(),
+                });
             }
         }
+        ClassLikeMember::TraitUse(tu) => {
+            for t in tu.trait_names.iter() {
+                out.traits.push(PhpStr::from_bytes(resolve_class_name(t)));
+            }
+        }
+        ClassLikeMember::EnumCase(ec) => {
+            use rhp_frontend::cst::EnumCaseItem;
+            let (name, value) = match &ec.item {
+                EnumCaseItem::Unit(u) => (PhpStr::from_bytes(u.name.value.to_vec()), None),
+                EnumCaseItem::Backed(b) => (
+                    PhpStr::from_bytes(b.name.value.to_vec()),
+                    Some(const_init_or_thunk(b.value, sigs, Some(class_name))?),
+                ),
+            };
+            out.enum_cases
+                .push(rhp_bytecode::EnumCaseProto { name, value });
+        }
     }
-    Ok(out)
+    Ok(())
 }
 
 fn compile_trait(
@@ -1491,17 +1539,76 @@ class DateTimeImmutable implements DateTimeInterface {
 }
 "##;
 
-#[allow(clippy::type_complexity)]
-fn prelude_classes() -> Result<(Vec<ClassProto>, Vec<Rc<FunctionProto>>), Thrown> {
+/// The compiled prelude: built-in classes, helper functions, and the
+/// closures their bodies declare (always program closures `0..n`).
+struct PreludeParts {
+    classes: Vec<ClassProto>,
+    functions: Vec<Rc<FunctionProto>>,
+    closures: Vec<Rc<FunctionProto>>,
+}
+
+thread_local! {
+    /// The prelude, compiled on first use and shared by every later compile on
+    /// this thread (protos hold `Rc`s, so the cache is per thread — matching
+    /// the VM-per-thread model). It depends on no per-file state: it is
+    /// compiled in an isolated compiler context (see [`prelude_classes`]).
+    static PRELUDE_CACHE: RefCell<Option<Rc<PreludeParts>>> = const { RefCell::new(None) };
+}
+
+/// The compiled prelude, compiling it on this thread's first call.
+fn prelude_classes() -> Result<Rc<PreludeParts>, Thrown> {
+    if let Some(p) = PRELUDE_CACHE.with(|c| c.borrow().clone()) {
+        return Ok(p);
+    }
+    let parts = Rc::new(prelude_classes_isolated()?);
+    PRELUDE_CACHE.with(|c| *c.borrow_mut() = Some(parts.clone()));
+    Ok(parts)
+}
+
+/// Compile the prelude with the per-file compiler state (thread-locals) set to
+/// a fixed, prelude-only context, restoring the caller's state afterwards, so
+/// the result is independent of whichever file happened to trigger it.
+fn prelude_classes_isolated() -> Result<PreludeParts, Thrown> {
     // Prelude / built-in classes are never strict-typed (coercive calls).
     let saved_strict = STRICT_TYPES.with(|s| std::mem::replace(&mut *s.borrow_mut(), false));
     // Prelude protos carry an empty file name: the VM treats them as internal
     // code (skipped for exception file/line, `[internal function]` in traces).
     let saved_file = SRC_FILE.with(|f| std::mem::take(&mut *f.borrow_mut()));
+    // No line map: prelude line numbers are never surfaced.
+    let saved_lines = LINE_STARTS.with(|l| std::mem::take(&mut *l.borrow_mut()));
+    let saved_ns =
+        NS_CTX.with(|c| std::mem::replace(&mut *c.borrow_mut(), Rc::new(NsContext::default())));
+    let saved_trait = IN_TRAIT.with(|t| std::mem::replace(&mut *t.borrow_mut(), false));
+    let saved_method_ref = METHOD_REF.with(|m| std::mem::take(&mut *m.borrow_mut()));
+    let saved_closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let saved_anon = ANON_CLASSES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let saved_cond = COND_CLASSES.with(|c| std::mem::take(&mut *c.borrow_mut()));
     let r = prelude_classes_inner();
+    // Closures the prelude declares occupy closure indices `0..n`; a program
+    // with the prelude re-seeds them first. Anonymous / nested classes would
+    // index per-file tables the cached copy cannot carry.
+    let closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let leaked = ANON_CLASSES.with(|c| !c.borrow().is_empty())
+        || COND_CLASSES.with(|c| !c.borrow().0.is_empty());
     STRICT_TYPES.with(|s| *s.borrow_mut() = saved_strict);
     SRC_FILE.with(|f| *f.borrow_mut() = saved_file);
-    r
+    LINE_STARTS.with(|l| *l.borrow_mut() = saved_lines);
+    NS_CTX.with(|c| *c.borrow_mut() = saved_ns);
+    IN_TRAIT.with(|t| *t.borrow_mut() = saved_trait);
+    METHOD_REF.with(|m| *m.borrow_mut() = saved_method_ref);
+    CLOSURES.with(|c| *c.borrow_mut() = saved_closures);
+    ANON_CLASSES.with(|c| *c.borrow_mut() = saved_anon);
+    COND_CLASSES.with(|c| *c.borrow_mut() = saved_cond);
+    assert!(
+        !leaked,
+        "prelude must not declare anonymous or nested classes"
+    );
+    let (classes, functions) = r?;
+    Ok(PreludeParts {
+        classes,
+        functions,
+        closures,
+    })
 }
 
 #[allow(clippy::type_complexity)]
@@ -1511,6 +1618,14 @@ fn prelude_classes_inner() -> Result<(Vec<ClassProto>, Vec<Rc<FunctionProto>>), 
     let src = format!("{PRELUDE}\n{}", rhp_builtins::module_prelude());
     let arena = rhp_frontend::Arena::new();
     let parsed = arena.parse(b"<prelude>", src.as_bytes());
+    // Method calls inside the prelude see the prelude's own by-ref signatures.
+    let flat: Vec<(Rc<NsContext>, &Statement)> = parsed
+        .program()
+        .statements
+        .iter()
+        .map(|s| (Rc::new(NsContext::default()), s))
+        .collect();
+    METHOD_REF.with(|m| *m.borrow_mut() = collect_method_refs(&flat));
     let sigs = Rc::new(std::collections::HashMap::new());
     let mut classes = Vec::new();
     let mut functions = Vec::new();
@@ -2324,6 +2439,12 @@ impl ProtoBuilder {
     }
 
     fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), Thrown> {
+        use mago_span::HasSpan;
+        self.compile_stmt_inner(stmt)
+            .map_err(|e| locate(e, stmt.span().start.offset))
+    }
+
+    fn compile_stmt_inner(&mut self, stmt: &Statement) -> Result<(), Thrown> {
         use mago_span::HasSpan;
         self.cur_line = line_of(stmt.span().start.offset);
         match stmt {
@@ -3192,6 +3313,12 @@ impl ProtoBuilder {
     // -- expression lowering (returns the register holding the result) --
 
     fn compile_expr(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
+        use mago_span::HasSpan;
+        self.compile_expr_inner(expr)
+            .map_err(|e| locate(e, expr.span().start.offset))
+    }
+
+    fn compile_expr_inner(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
         match expr {
             Expression::Literal(lit) => self.compile_literal(lit),
             Expression::Parenthesized(p) => self.compile_expr(p.expression),
@@ -5261,7 +5388,7 @@ impl ProtoBuilder {
                     let cur = self.alloc_temp();
                     self.emit(Instr::FetchLvalRw { dst: cur });
                     let res = self.alloc_temp();
-                    self.emit(compound_op(op, res, cur, rhs)?);
+                    self.emit(compound_op(op, res, cur, rhs, lvalue_desc(a.lhs))?);
                     self.emit(Instr::AssignLval { src: res });
                     Ok(res)
                 }
@@ -5455,8 +5582,27 @@ fn has_spread(list: &rhp_frontend::cst::ArgumentList) -> bool {
         .any(|a| matches!(a, Argument::Positional(p) if p.ellipsis.is_some()))
 }
 
-/// Build the instruction for a compound-assignment operator `dst = a <op> b`.
-fn compound_op(op: &AssignmentOperator, dst: Reg, a: Reg, b: Reg) -> Result<Instr, Thrown> {
+/// What an assignment target is, for diagnostics ("an array element", …).
+fn lvalue_desc(e: &Expression) -> &'static str {
+    match e {
+        Expression::ArrayAccess(_) | Expression::ArrayAppend(_) => "an array element",
+        Expression::Access(Access::Property(_)) => "a property",
+        Expression::Access(Access::NullSafeProperty(_)) => "a nullsafe property",
+        Expression::Access(Access::StaticProperty(_)) => "a static property",
+        Expression::Variable(_) => "a variable",
+        _ => "this target",
+    }
+}
+
+/// Build the instruction for a compound-assignment operator `dst = a <op> b`;
+/// `target` describes the assigned lvalue (see [`lvalue_desc`]).
+fn compound_op(
+    op: &AssignmentOperator,
+    dst: Reg,
+    a: Reg,
+    b: Reg,
+    target: &str,
+) -> Result<Instr, Thrown> {
     use AssignmentOperator as Ao;
     Ok(match op {
         Ao::Addition(_) => Instr::Add { dst, a, b },
@@ -5473,7 +5619,7 @@ fn compound_op(op: &AssignmentOperator, dst: Reg, a: Reg, b: Reg) -> Result<Inst
         Ao::RightShift(_) => Instr::Shr { dst, a, b },
         Ao::Coalesce(_) => {
             return Err(Thrown::unsupported(
-                "??= on an array element",
+                format!("??= on {target}"),
                 "use a full assignment for now",
             ))
         }

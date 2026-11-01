@@ -120,6 +120,13 @@ fn fn_class_constants(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
         .unwrap_or_else(|| Value::Array(rhp_values::PhpArray::new())))
 }
 
+/// `__reflect($op, ...$args)`: a metadata query answered by the host (see
+/// `Host::reflect_op`).
+fn fn_reflect(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let op = str_arg(args, 0);
+    host.reflect_op(&op, &args[1..])
+}
+
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     fn put(
         m: &mut HashMap<&'static str, Builtin>,
@@ -138,6 +145,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
             },
         );
     }
+    put(m, "__reflect", fn_reflect, 1, None);
     put(m, "__reflect_meta", fn_meta, 1, Some(1));
     put(m, "__reflect_constants", fn_constants, 1, Some(1));
     put(m, "__reflect_is_a", fn_is_a, 2, Some(2));
@@ -163,161 +171,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     );
 }
 
-/// The `Reflection*` classes (read-focused subset).
-pub const PRELUDE_PHP: &str = r#"
-class ReflectionException extends Exception {}
-
-class ReflectionNamedType {
-    private $tname; private $tnullable; private $tbuiltin;
-    public function __construct($n, $nu, $b) { $this->tname = $n; $this->tnullable = $nu; $this->tbuiltin = $b; }
-    public function getName() { return $this->tname; }
-    public function allowsNull() { return $this->tnullable; }
-    public function isBuiltin() { return $this->tbuiltin; }
-    public function __toString() { return ($this->tnullable && $this->tbuiltin && $this->tname !== 'null' && $this->tname !== 'mixed' ? '?' : '') . $this->tname; }
-}
-
-class ReflectionParameter {
-    public $name;
-    private $meta;
-    public function __construct($meta) { $this->meta = $meta; $this->name = $meta['name']; }
-    public function getName() { return $this->name; }
-    public function isOptional() { return $this->meta['optional']; }
-    public function isVariadic() { return $this->meta['variadic']; }
-    public function isPassedByReference() { return $this->meta['byref']; }
-    public function isDefaultValueAvailable() { return $this->meta['hasDefault']; }
-    public function getDefaultValue() { return $this->meta['default'] ?? null; }
-    public function hasType() { return $this->meta['hasType']; }
-    public function getType() { return $this->meta['hasType'] ? new ReflectionNamedType($this->meta['type'], $this->meta['typeNullable'], $this->meta['typeBuiltin']) : null; }
-    public function allowsNull() { return !$this->meta['hasType'] || $this->meta['typeNullable']; }
-}
-
-class ReflectionMethod {
-    public $name; public $class;
-    public function __construct($class, $name = null) {
-        if ($name === null) { $p = explode('::', $class); $class = $p[0]; $name = $p[1]; }
-        $this->class = is_object($class) ? get_class($class) : $class;
-        $this->name = $name;
-    }
-    public function getName() { return $this->name; }
-    public function getShortName() { return $this->name; }
-    public function getDeclaringClass() { return new ReflectionClass($this->class); }
-    public function invoke($object, ...$args) { return __reflect_invoke($object, $this->class, $this->name, $args); }
-    public function invokeArgs($object, $args) { return __reflect_invoke($object, $this->class, $this->name, $args); }
-    public function setAccessible($a) {}
-    public function getParameters() { $out = []; foreach (__reflect_method_params($this->class, $this->name) as $m) { $out[] = new ReflectionParameter($m); } return $out; }
-    public function getNumberOfParameters() { return count(__reflect_method_params($this->class, $this->name)); }
-    public function getNumberOfRequiredParameters() { $n = 0; foreach (__reflect_method_params($this->class, $this->name) as $m) { if (!$m['optional']) $n++; } return $n; }
-}
-
-class ReflectionProperty {
-    public $name; public $class;
-    public function __construct($class, $name) { $this->class = is_object($class) ? get_class($class) : $class; $this->name = $name; }
-    public function getName() { return $this->name; }
-    public function setAccessible($a) {}
-    public function getValue($object = null) { return __reflect_get_prop($object, $this->name, $this->class); }
-    public function setValue($object, $value = null) { __reflect_set_prop($object, $this->name, $value, $this->class); }
-    public function isInitialized($object = null) { return true; }
-}
-
-class ReflectionFunction {
-    public $name; private $callable;
-    public function __construct($f) { $this->callable = $f; $this->name = is_string($f) ? $f : '{closure}'; }
-    public function getName() { return $this->name; }
-    public function invoke(...$args) { return call_user_func_array($this->callable, $args); }
-    public function invokeArgs($args) { return call_user_func_array($this->callable, $args); }
-    public function getParameters() { $out = []; foreach (__reflect_func_params($this->callable) as $m) { $out[] = new ReflectionParameter($m); } return $out; }
-    public function getNumberOfParameters() { return count(__reflect_func_params($this->callable)); }
-    public function getNumberOfRequiredParameters() { $n = 0; foreach (__reflect_func_params($this->callable) as $m) { if (!$m['optional']) $n++; } return $n; }
-}
-
-class ReflectionClass {
-    public $name;
-    private $meta;
-    public function __construct($arg) {
-        $this->name = is_object($arg) ? get_class($arg) : $arg;
-        $m = __reflect_meta($this->name);
-        if ($m === null) { throw new ReflectionException('Class "' . $this->name . '" does not exist'); }
-        $this->meta = $m;
-        $this->name = $m['name'];
-    }
-    public function getName() { return $this->name; }
-    public function getShortName() { return $this->meta['shortName']; }
-    public function getNamespaceName() { return $this->meta['namespaceName']; }
-    public function inNamespace() { return $this->meta['namespaceName'] !== ''; }
-    public function isAbstract() { return $this->meta['isAbstract']; }
-    public function isInterface() { return $this->meta['isInterface']; }
-    public function isAnonymous() { return str_contains($this->name, '@anonymous'); }
-    public function isInstantiable() { return $this->meta['isInstantiable']; }
-    public function isFinal() { return $this->meta['isFinal']; }
-    public function isEnum() { return $this->meta['isEnum']; }
-    public function isInternal() { return false; }
-    public function isUserDefined() { return true; }
-    public function getParentClass() { return $this->meta['parent'] === false ? false : new ReflectionClass($this->meta['parent']); }
-    public function getInterfaceNames() { return $this->meta['interfaces']; }
-    public function implementsInterface($i) { return __reflect_is_a($this->name, $i); }
-    public function isSubclassOf($c) { return __reflect_is_a($this->name, $c) && strcasecmp(ltrim($this->name, '\\'), ltrim($c, '\\')) !== 0; }
-    public function isInstance($obj) { return __reflect_is_a(get_class($obj), $this->name); }
-    public function hasMethod($m) { return in_array(strtolower($m), array_map('strtolower', $this->meta['methods'])); }
-    public function getMethod($m) { return new ReflectionMethod($this->name, $m); }
-    public function getMethods($filter = null) { $out = []; foreach ($this->meta['methods'] as $m) { $out[] = new ReflectionMethod($this->name, $m); } return $out; }
-    public function getConstructor() { return $this->hasMethod('__construct') ? new ReflectionMethod($this->name, '__construct') : null; }
-    public function getConstants() { return __reflect_constants($this->name); }
-    public function getConstant($n) { return __reflect_constants($this->name)[$n] ?? false; }
-    public function hasConstant($n) { return array_key_exists($n, $this->meta['constants']); }
-    public function getReflectionConstants($filter = null) { $out = []; foreach (__reflect_class_constants($this->name) as $c) { $out[] = new ReflectionClassConstant($this->name, $c['name']); } return $out; }
-    public function getReflectionConstant($n) { return $this->hasConstant($n) ? new ReflectionClassConstant($this->name, $n) : false; }
-    public function getProperties($filter = null) { $out = []; foreach ($this->meta['properties'] as $p) { $out[] = new ReflectionProperty($this->name, $p); } return $out; }
-    public function getProperty($p) { return new ReflectionProperty($this->name, $p); }
-    public function hasProperty($p) { return in_array($p, $this->meta['properties']); }
-    public function newInstance(...$args) { return __reflect_new_instance($this->name, $args); }
-    public function newInstanceArgs($args = []) { return __reflect_new_instance($this->name, $args); }
-    public function newInstanceWithoutConstructor() { return __reflect_new_instance_noctor($this->name); }
-    public function getAttributes($name = null, $flags = 0) { return []; }
-    public function getInterfaces() { $out = []; foreach ($this->meta['interfaces'] as $i) { $out[$i] = new ReflectionClass($i); } return $out; }
-}
-
-class ReflectionObject extends ReflectionClass {}
-class ReflectionEnum extends ReflectionClass {}
-
-class ReflectionExtension {
-    public $name;
-    public function __construct($name) { $this->name = $name; }
-    public function getName() { return $this->name; }
-    public function getVersion() { $v = phpversion($this->name); return $v === false ? null : $v; }
-    public function info() { /* detailed phpinfo() text is not available */ }
-    public function getClasses() { return []; }
-    public function getClassNames() { return []; }
-    public function getConstants() { return []; }
-    public function getFunctions() { return []; }
-    public function getINIEntries() { return []; }
-    public function getDependencies() { return []; }
-    public function isPersistent() { return true; }
-    public function isTemporary() { return false; }
-}
-
-class ReflectionClassConstant {
-    public $name; public $class; private $__m;
-    public function __construct($class, $name) {
-        $this->class = is_object($class) ? get_class($class) : $class;
-        $this->name = $name;
-        $this->__m = null;
-    }
-    private function meta() {
-        if ($this->__m === null) {
-            foreach (__reflect_class_constants($this->class) as $c) {
-                if ($c['name'] === $this->name) { $this->__m = $c; break; }
-            }
-            if ($this->__m === null) { $this->__m = ['value' => null, 'public' => true, 'protected' => false, 'private' => false]; }
-        }
-        return $this->__m;
-    }
-    public function getName() { return $this->name; }
-    public function getValue() { return $this->meta()['value']; }
-    public function isPublic() { return $this->meta()['public']; }
-    public function isProtected() { return $this->meta()['protected']; }
-    public function isPrivate() { return $this->meta()['private']; }
-    public function isFinal() { return false; }
-    public function isEnumCase() { return false; }
-    public function getDeclaringClass() { return new ReflectionClass($this->class); }
-}
-"#;
+/// The `Reflection*` classes and the engine's attribute classes
+/// (`Attribute`, `Override`, …), as PHP source over `__reflect()`.
+pub const PRELUDE_PHP: &str = include_str!("prelude.php");

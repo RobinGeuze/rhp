@@ -1,0 +1,98 @@
+array(2) {
+  ["I"]=>
+  string(1) "I"
+  ["Stringable"]=>
+  string(10) "Stringable"
+}
+array(2) {
+  [0]=>
+  string(1) "I"
+  [1]=>
+  string(10) "Stringable"
+}
+bool(true)
+array(2) {
+  [0]=>
+  string(5) "count"
+  [1]=>
+  string(11) "getIterator"
+}
+array(2) {
+  [0]=>
+  string(16) "Countable::count"
+  [1]=>
+  string(30) "IteratorAggregate::getIterator"
+}
+string(5) "count"
+string(0) ""
+array(2) {
+  [0]=>
+  int(6)
+  ["w"]=>
+  array(2) {
+    [0]=>
+    string(3) "Cfg"
+    [1]=>
+    string(4) "Use1"
+  }
+}
+array(2) {
+  [0]=>
+  string(3) "Cfg"
+  [1]=>
+  string(4) "Use1"
+}
+string(18) "SensitiveParameter"
+array(1) {
+  ["v"]=>
+  int(8)
+}
+Error: Attribute "OnlyProp" cannot target class (allowed targets: property)
+Attribute "Opt" must not be repeated
+Attempting to use non-attribute class "NotAttr" as attribute
+Attribute class "Missing\Thing" not found
+string(13) "Missing\Thing"
+array(1) {
+  [0]=>
+  int(1)
+}
+array(1) {
+  [0]=>
+  int(9)
+}
+bool(true)
+int(5)
+int(36)
+string(16) "/** doc for f */"
+int(40)
+int(40)
+bool(true)
+string(41) "Parameter #0 [ <optional> array $a = [] ]"
+string(1) "f"
+NULL
+string(40) "Parameter #1 [ <optional> $b = PHP_EOL ]"
+string(1) "f"
+NULL
+string(42) "Parameter #2 [ <optional> ?Cfg $c = NULL ]"
+string(1) "f"
+NULL
+string(46) "Parameter #3 [ <optional> int|float $d = 1.5 ]"
+string(1) "f"
+NULL
+array(2) {
+  ["v"]=>
+  NULL
+  ["w"]=>
+  NULL
+}
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+array(0) {
+}
+int(1)
+bool(true)

@@ -126,8 +126,11 @@ pub struct Vm {
     /// The scope a first-class callable was created in, while its wrapped
     /// callable is resolved (php resolves `$this->priv(...)` at creation).
     fcc_scope: std::cell::Cell<Option<(Option<ClassId>, Option<ClassId>)>>,
-    // Resolved real paths already included (for the `_once` variants).
-    included_files: std::collections::HashSet<Vec<u8>>,
+    // Resolved real paths already included (for the `_once` variants), in
+    // inclusion order (`get_included_files`).
+    included_files: indexmap::IndexSet<Vec<u8>>,
+    /// Classes `[0, internal_classes)` are the built-in (prelude) ones.
+    internal_classes: usize,
     // Registered `spl_autoload_register` callables, in call order.
     autoloaders: Vec<Value>,
     /// Lowercased class names whose autoload is in progress (php's
@@ -305,6 +308,7 @@ struct GenState {
 
 mod classes;
 mod compare;
+mod reflect;
 
 /// A function-static slot: (proto address, class it runs as, variable name).
 type StaticKey = (usize, Option<ClassId>, Vec<u8>);
@@ -1677,6 +1681,10 @@ impl Host for Vm {
         Some(Value::Array(arr))
     }
 
+    fn reflect_op(&mut self, op: &[u8], args: &[Value]) -> Result<Value, Thrown> {
+        Vm::reflect_op(self, op, args)
+    }
+
     fn reflect_method_params(&self, class: &[u8], method: &[u8]) -> Option<Value> {
         let cid = self.resolve_class_by_name(class).ok()?;
         let m = self.lookup_method(cid, method)?;
@@ -2217,7 +2225,8 @@ impl Vm {
             bc_scale: 0,
             includer: None,
             fcc_scope: std::cell::Cell::new(None),
-            included_files: std::collections::HashSet::new(),
+            included_files: indexmap::IndexSet::new(),
+            internal_classes: 0,
             autoloaders: Vec::new(),
             in_autoload: Default::default(),
             pending_named: None,
@@ -3112,8 +3121,16 @@ impl Vm {
         if matches!(v, Value::Null) && ty.nullable {
             return true;
         }
+        // DNF: any intersection group fully matched satisfies the union.
+        if ty.groups.iter().any(|g| {
+            g.iter()
+                .all(|n| self.kind_matches(v, &rhp_bytecode::TypeKind::Named(n.clone()), ctx))
+        }) {
+            return true;
+        }
         if ty.kinds.is_empty() {
-            return true; // only-null / unknown: don't reject
+            // only-null / unknown: don't reject (a DNF union already failed)
+            return ty.groups.is_empty();
         }
         if ty.intersection {
             ty.kinds.iter().all(|k| self.kind_matches(v, k, ctx))
@@ -3793,6 +3810,7 @@ impl Vm {
         // classes (those whose dependencies are available); the rest, and
         // nested declarations, are declared when execution reaches them.
         self.install_classes(&prog.classes[..prog.num_prelude_classes])?;
+        self.internal_classes = self.classes.len();
         self.decl_classes.clear();
         let top = self.register_decl_classes(prog, 0);
         self.hoist_decl_classes(top)?;
@@ -4204,7 +4222,7 @@ impl Vm {
         if has(&K::Mixed) {
             return "mixed".into();
         }
-        let mut parts: Vec<String> = Vec::new();
+        let mut parts: Vec<String> = dnf_group_strings(ty);
         for k in &ty.kinds {
             match k {
                 K::Named(n) => parts.push(String::from_utf8_lossy(n.as_bytes()).into_owned()),
@@ -4250,7 +4268,7 @@ impl Vm {
             if parts.is_empty() {
                 return "null".into();
             }
-            if parts.len() == 1 {
+            if parts.len() == 1 && ty.groups.is_empty() {
                 return format!("?{}", parts[0]);
             }
             let mut out = parts.join(sep);
@@ -8520,6 +8538,20 @@ fn weak_scalar_coerce(d: &Value, ty: &rhp_bytecode::TypeHint) -> Option<Value> {
     None
 }
 
+/// The `(A&B)` members of a DNF type, as php prints them.
+fn dnf_group_strings(ty: &rhp_bytecode::TypeHint) -> Vec<String> {
+    ty.groups
+        .iter()
+        .map(|g| {
+            let names: Vec<String> = g
+                .iter()
+                .map(|n| String::from_utf8_lossy(n.as_bytes()).into_owned())
+                .collect();
+            format!("({})", names.join("&"))
+        })
+        .collect()
+}
+
 /// Human-readable form of a declared type, for TypeError messages.
 fn type_string(ty: &rhp_bytecode::TypeHint) -> String {
     // php's zend_type_to_string: class names first (declaration order), then
@@ -8538,7 +8570,7 @@ fn type_string(ty: &rhp_bytecode::TypeHint) -> String {
         return parts.join("&");
     }
     let has = |want: &dyn Fn(&K) -> bool| ty.kinds.iter().any(want);
-    let mut parts: Vec<String> = Vec::new();
+    let mut parts: Vec<String> = dnf_group_strings(ty);
     for k in &ty.kinds {
         match k {
             K::Named(n) => parts.push(String::from_utf8_lossy(n.as_bytes()).into_owned()),
@@ -8585,7 +8617,7 @@ fn type_string(ty: &rhp_bytecode::TypeHint) -> String {
         parts.push("never".into());
     }
     if ty.nullable || has(&|k| matches!(k, K::Null)) {
-        if parts.len() == 1 {
+        if parts.len() == 1 && ty.groups.is_empty() {
             return format!("?{}", parts[0]);
         }
         parts.push("null".into());

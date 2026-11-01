@@ -61,6 +61,9 @@ pub struct ClassEntry {
     /// static properties) have all been evaluated — php's
     /// `ZEND_ACC_CONSTANTS_UPDATED`. See [`Vm::update_class_constants`].
     pub updated: bool,
+    /// The declaration this entry was linked from (Reflection metadata:
+    /// attributes, doc comments, lines, declared member order).
+    pub proto: Rc<ClassProto>,
 }
 
 #[derive(Clone)]
@@ -559,10 +562,26 @@ impl Vm {
             .map(|n| ("Class", n))
             .chain(proto.interfaces.iter().map(|n| ("Interface", n)))
             .chain(proto.traits.iter().map(|n| ("Trait", n)));
+        // php registers the class (unlinked) before loading its dependencies,
+        // so a lookup of it from an autoloader finds it and does not recurse
+        // into autoloading it again (it just is not usable yet).
+        let self_key = lc(proto.name.as_bytes());
+        let marked = self.in_autoload.insert(self_key.clone());
         for (what, n) in deps.collect::<Vec<_>>() {
-            if !self.class_ids.contains_key(&lc(n.as_bytes()))
-                && !self.try_autoload(n.as_bytes())?
-            {
+            let loaded = self.class_ids.contains_key(&lc(n.as_bytes()))
+                || match self.try_autoload(n.as_bytes()) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        if marked {
+                            self.in_autoload.remove(&self_key);
+                        }
+                        return Err(e);
+                    }
+                };
+            if !loaded {
+                if marked {
+                    self.in_autoload.remove(&self_key);
+                }
                 return Err(Thrown::error(
                     "Error",
                     format!(
@@ -571,6 +590,9 @@ impl Vm {
                     ),
                 ));
             }
+        }
+        if marked {
+            self.in_autoload.remove(&self_key);
         }
         self.link_class(&proto)?;
         self.decl_classes[slot].1 = true;
@@ -670,6 +692,23 @@ impl Vm {
                     is_final: m.is_final,
                 },
             );
+        }
+        // php copies interface methods into the implementing class's function
+        // table (do_inherit_iface_method): an abstract class / interface lists
+        // the abstract methods it inherits from its interfaces.
+        // (Built-in prelude classes implement their interfaces natively.)
+        let ifaces_for_methods: &[PhpStr] = if self.internal_classes > 0 {
+            &proto.interfaces
+        } else {
+            &[]
+        };
+        for iname in ifaces_for_methods {
+            let iid = self.class_ids[&lc(iname.as_bytes())];
+            for (k, m) in &self.classes[iid as usize].methods {
+                if !methods.contains_key(k) {
+                    methods.insert(k.clone(), m.clone());
+                }
+            }
         }
         let own_methods = proto.methods.iter().map(|m| lc(m.name.as_bytes()));
         let trait_methods: Vec<Vec<u8>> = proto
@@ -927,6 +966,7 @@ impl Vm {
             enum_cases: Vec::new(),
             enum_backing: proto.enum_backing,
             updated: false,
+            proto: Rc::new(proto.clone()),
         });
 
         // Enum cases: materialize one singleton object per case and expose it as

@@ -797,6 +797,42 @@ pub struct ParamInfo {
     /// Source line of the parameter declaration (php raises argument
     /// TypeError / ArgumentCountError at the failing parameter's line).
     pub line: u32,
+    /// `#[...]` attributes on the parameter (Reflection metadata only).
+    pub attributes: Vec<AttributeProto>,
+    /// A constructor-promoted parameter (`public function __construct(private $x)`).
+    pub promoted: bool,
+    /// A non-constant default compiled as a standalone thunk, for
+    /// `ReflectionParameter::getDefaultValue()` (the call path evaluates it
+    /// inline in the prologue instead).
+    pub default_thunk: Option<Rc<FunctionProto>>,
+    /// The default is a constant reference (`= PHP_EOL`, `= self::X`): its
+    /// name, for `getDefaultValueConstantName()`.
+    pub default_const: Option<PhpStr>,
+}
+
+/// A compiled `#[Name(args)]` attribute (Reflection metadata only).
+#[derive(Clone)]
+pub struct AttributeProto {
+    /// The attribute class name, namespace/use-resolved (no leading `\`).
+    pub name: PhpStr,
+    /// The argument list as an array (int keys for positional arguments,
+    /// string keys for named ones) — folded, or a thunk evaluated lazily in
+    /// the declaring scope (`ReflectionAttribute::getArguments()`); `None`
+    /// when the attribute has no argument list.
+    pub args: Option<ConstInitProto>,
+}
+
+/// Declaration metadata surfaced by Reflection: attributes, the doc comment
+/// and the declaration's source line span.
+#[derive(Clone, Default)]
+pub struct DeclMeta {
+    pub attributes: Vec<AttributeProto>,
+    /// The `/** ... */` comment php's scanner attaches to the declaration.
+    pub doc_comment: Option<PhpStr>,
+    pub start_line: u32,
+    pub end_line: u32,
+    /// Byte offset of the declaration (orders members declared on one line).
+    pub offset: u32,
 }
 
 /// A declared parameter / return type: a (possibly nullable) union or
@@ -807,6 +843,12 @@ pub struct TypeHint {
     pub nullable: bool,
     pub intersection: bool,
     pub kinds: Vec<TypeKind>,
+    /// DNF intersection groups of a union (`(A&B)|C|null`): each inner list is
+    /// one parenthesized intersection; `kinds` holds the union's other members.
+    pub groups: Vec<Vec<PhpStr>>,
+    /// `null` was spelled as a union member (`int|null`), not `?int`; only
+    /// matters for how Reflection prints a multi-member union.
+    pub explicit_null: bool,
 }
 
 /// One member of a declared type.
@@ -937,6 +979,8 @@ pub struct FunctionProto {
     /// `eval`'d script's `{main}` to the *calling* scope's variables by name
     /// (php executes include/eval in the enclosing variable scope).
     pub cv_var_names: Vec<PhpStr>,
+    /// Reflection metadata (attributes, doc comment, line span).
+    pub meta: DeclMeta,
 }
 
 impl FunctionProto {
@@ -966,6 +1010,7 @@ impl FunctionProto {
             strict_types: false,
             returns_ref: false,
             cv_var_names: Vec::new(),
+            meta: DeclMeta::default(),
         }
     }
 }
@@ -1050,6 +1095,10 @@ pub struct ClassProto {
     /// Backing type of a backed enum (`Int`/`Str`); `None` for a pure enum or a
     /// non-enum class.
     pub enum_backing: Option<EnumBacking>,
+    /// Reflection metadata (attributes, doc comment, line span).
+    pub meta: DeclMeta,
+    /// The declaring file (empty for built-in prelude classes).
+    pub file: PhpStr,
 }
 
 /// One compiled enum case.
@@ -1059,6 +1108,7 @@ pub struct EnumCaseProto {
     /// The backing value — folded, or a thunk evaluating a constant expression
     /// on first access — or `None` for a pure enum.
     pub value: Option<ConstInitProto>,
+    pub meta: DeclMeta,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1144,6 +1194,9 @@ pub struct PropProto {
     /// Declared type (`None` = untyped); a lazily evaluated default is
     /// checked against it (php's `update_property`).
     pub type_hint: Option<TypeHint>,
+    pub meta: DeclMeta,
+    /// Declared by constructor promotion.
+    pub promoted: bool,
 }
 
 #[derive(Clone)]
@@ -1154,6 +1207,9 @@ pub struct StaticPropProto {
     pub init: ConstInitProto,
     /// Declared type (`None` = untyped).
     pub type_hint: Option<TypeHint>,
+    pub meta: DeclMeta,
+    /// Declared with an explicit default (`static $x = 1;`).
+    pub has_default: bool,
 }
 
 #[derive(Clone)]
@@ -1163,6 +1219,8 @@ pub struct ConstProto {
     pub value: ConstInitProto,
     /// Declared type of a typed class constant (`None` = untyped).
     pub type_hint: Option<TypeHint>,
+    pub meta: DeclMeta,
+    pub is_final: bool,
 }
 
 /// A property's per-instance default, as compiled.

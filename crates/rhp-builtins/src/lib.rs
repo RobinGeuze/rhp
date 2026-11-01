@@ -65,6 +65,7 @@ mod datetime_fns;
 mod dt_oop_fns;
 mod ext;
 pub use ext::gmp::{compare_handler as gmp_compare_handler, CmpOperand as GmpCmpOperand};
+mod class_fns;
 mod file_fns;
 mod filter_fns;
 mod fs_fns;
@@ -898,6 +899,12 @@ pub trait Host {
     fn reflect_class_constants(&self, _class: &[u8]) -> Option<Value> {
         None
     }
+    /// A Reflection / introspection metadata query (`op` names it; see the
+    /// VM's `reflect` module): class / method / property / constant /
+    /// attribute descriptors, declared-class and included-file lists, ….
+    fn reflect_op(&mut self, _op: &[u8], _args: &[Value]) -> Result<Value, Thrown> {
+        Ok(Value::Null)
+    }
     /// [`Host::raise_diagnostic`], returning the exception a user error
     /// handler threw (e.g. composer's `ErrorException`) so the builtin can
     /// stop right there with `?`.
@@ -1167,6 +1174,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("strsearch_fns", Box::new(strsearch_fns::register)),
         ("query_fns", Box::new(query_fns::register)),
         ("runtime_fns", Box::new(runtime_fns::register)),
+        ("class_fns", Box::new(class_fns::register)),
         ("ini_parse", Box::new(ini_parse::register)),
         ("arraycmp_fns", Box::new(arraycmp_fns::register)),
         ("sysmisc_fns", Box::new(sysmisc_fns::register)),

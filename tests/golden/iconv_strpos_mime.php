@@ -1,6 +1,6 @@
 <?php
 // iconv_strlen / iconv_substr / iconv_strpos / iconv_strrpos / iconv_mime_decode
-// (warning-free cases: rhp emits no diagnostics, the return values are exact).
+// (warning-free cases; the failure paths are in iconv_error_returns.php).
 var_dump(iconv_strlen("aé"), iconv_strlen(""), iconv_strlen("ab", "UTF-16LE"), iconv_strlen("\xe9t\xe9", "ISO-8859-1"), iconv_strlen("x", null));
 var_dump(iconv_substr("aéb", 1, 1), iconv_substr("abc", 5), iconv_substr("abc", 3), iconv_substr("abcdef", -2), iconv_substr("abcdef", 1, -2), iconv_substr("abcdef", -10, 2), iconv_substr("abcdef", 2, -10), iconv_substr("añb", 1, null, "UTF-8"), bin2hex(iconv_substr("\xe9t\xe9", 1, 2, "latin1")));
 var_dump(iconv_strpos("aéb", "b"), iconv_strpos("abc", "", 0), iconv_strpos("aéb", "é", 1, "UTF-8"), iconv_strpos("abc", "c", -1), iconv_strpos("abc", "a", -1));

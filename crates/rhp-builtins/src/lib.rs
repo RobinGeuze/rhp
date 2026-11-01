@@ -403,6 +403,47 @@ pub trait Host {
     fn reflect_class_constants(&self, _class: &[u8]) -> Option<Value> {
         None
     }
+    /// The diagnostic sink: a `php_error_docref` of `level` (`E_WARNING`,
+    /// `E_NOTICE`, `E_DEPRECATED`, ...) whose `message` already carries the
+    /// `func(): ` prefix. Builtins call it at every site php warns at; the
+    /// engine-wide sink (error_reporting mask, `@`, `set_error_handler`, the
+    /// `Warning: ... in F on line N` display) is placeholder #32, so the
+    /// default — and for now every host — discards it. The `Result` lets a
+    /// future user error handler throw (e.g. composer's `ErrorException`).
+    fn emit_diagnostic(&mut self, _level: i64, _message: &str) -> Result<(), Thrown> {
+        Ok(())
+    }
+}
+
+/// `E_WARNING`.
+pub const E_WARNING: i64 = 2;
+/// `E_NOTICE`.
+pub const E_NOTICE: i64 = 8;
+/// `E_DEPRECATED`.
+pub const E_DEPRECATED: i64 = 8192;
+
+/// `php_error_docref(NULL, E_WARNING, msg)` from builtin `fname`.
+pub fn warn(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
+    host.emit_diagnostic(E_WARNING, &format!("{fname}(): {msg}"))
+}
+
+/// `php_error_docref(NULL, E_NOTICE, msg)` from builtin `fname`.
+pub fn notice(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
+    host.emit_diagnostic(E_NOTICE, &format!("{fname}(): {msg}"))
+}
+
+/// The `#[\Deprecated]` notice php raises on calling a deprecated function:
+/// `Function f() is deprecated since V, MSG`.
+pub fn deprecated_fn(
+    host: &mut dyn Host,
+    fname: &str,
+    since: &str,
+    msg: &str,
+) -> Result<(), Thrown> {
+    host.emit_diagnostic(
+        E_DEPRECATED,
+        &format!("Function {fname}() is deprecated since {since}, {msg}"),
+    )
 }
 
 /// A native builtin function over owned values.
@@ -1699,5 +1740,41 @@ impl TypeNameLower for Value {
             Value::Resource(_) => "resource",
             Value::Ref(r) => r.borrow().type_name_lower(),
         }
+    }
+}
+
+/// A host that records diagnostics the way php displays them
+/// (`Warning: f(): msg`), for unit-testing the sites that emit them.
+#[cfg(test)]
+pub(crate) mod diag_test {
+    use super::{Host, Thrown, Value};
+
+    #[derive(Default)]
+    pub struct DiagHost {
+        pub out: Vec<u8>,
+        pub diags: Vec<String>,
+    }
+
+    impl Host for DiagHost {
+        fn write_out(&mut self, bytes: &[u8]) {
+            self.out.extend_from_slice(bytes);
+        }
+        fn emit_diagnostic(&mut self, level: i64, message: &str) -> Result<(), Thrown> {
+            let kind = match level {
+                super::E_WARNING => "Warning",
+                super::E_NOTICE => "Notice",
+                super::E_DEPRECATED => "Deprecated",
+                _ => "Unknown",
+            };
+            self.diags.push(format!("{kind}: {message}"));
+            Ok(())
+        }
+    }
+
+    /// Call `f`, returning its result and the diagnostics it emitted.
+    pub fn run(f: crate::NativeFn, args: &[Value]) -> (Result<Value, Thrown>, Vec<String>) {
+        let mut h = DiagHost::default();
+        let r = f(&mut h, args);
+        (r, h.diags)
     }
 }

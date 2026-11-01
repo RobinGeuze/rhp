@@ -22,7 +22,7 @@ use num_traits::{One, Zero};
 use rhp_values::{ArrayKey, ObjectData, PhpArray, Value};
 
 use crate::ext::zpp::{deref, given_type, str_arg};
-use crate::{Host, Thrown};
+use crate::{deprecated_fn, warn, Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // DER
@@ -458,10 +458,24 @@ fn pkey_from_zval(
     }
     let data = match &v {
         Value::Str(s) => s.as_bytes().to_vec(),
-        Value::Object(_) => match str_arg(host, std::slice::from_ref(&v), 0, fname, "key") {
-            Ok(s) => s,
-            Err(_) => return Ok(None),
-        },
+        Value::Object(_) => {
+            // zval_try_get_string: __toString, or the engine's conversion Error
+            let cls = host.object_class_name(&v);
+            let stringable = cls
+                .as_deref()
+                .and_then(|c| host.resolve_class(c))
+                .is_some_and(|id| host.class_has_method(id, b"__tostring"));
+            if !stringable {
+                return Err(Thrown::error(
+                    "Error",
+                    format!(
+                        "Object of class {} could not be converted to string",
+                        String::from_utf8_lossy(&cls.unwrap_or_default())
+                    ),
+                ));
+            }
+            str_arg(host, std::slice::from_ref(&v), 0, fname, "key")?
+        }
         _ => return Ok(None),
     };
     let data = if data.len() > 7 && data.starts_with(b"file://") {
@@ -504,12 +518,18 @@ fn want_key_object(host: &dyn Host, args: &[Value], fname: &str) -> Result<Rc<Pu
     )))
 }
 
+/// The `#[\Deprecated(since: '8.0', message: ...)]` both free functions carry;
+/// php raises it before parsing the arguments.
+const FREE_DEPRECATION: &str = "as OpenSSLAsymmetricKey objects are freed automatically";
+
 pub(super) fn fn_pkey_free(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    deprecated_fn(host, "openssl_pkey_free", "8.0", FREE_DEPRECATION)?;
     want_key_object(host, args, "openssl_pkey_free")?;
     Ok(Value::Null)
 }
 
 pub(super) fn fn_free_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    deprecated_fn(host, "openssl_free_key", "8.0", FREE_DEPRECATION)?;
     want_key_object(host, args, "openssl_free_key")?;
     Ok(Value::Null)
 }
@@ -848,17 +868,23 @@ pub(super) fn fn_verify(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         )?),
     };
     let Some(md) = md else {
-        // php: Warning "Unknown digest algorithm"
+        warn(host, f, "Unknown digest algorithm")?;
         return Ok(Value::Bool(false));
     };
     let key_arg = args.get(2).cloned().unwrap_or(Value::Null);
     let Some(key) = pkey_from_zval(host, &key_arg, f)? else {
-        // php: Warning "Supplied key param cannot be coerced into a public key"
+        warn(
+            host,
+            f,
+            "Supplied key param cannot be coerced into a public key",
+        )?;
         return Ok(Value::Bool(false));
     };
+    // php_openssl_setup_rsa_padding
     let res = match &key.kind {
         KeyKind::Rsa { n, e } => {
             if padding != 0 && padding != 1 && padding != 6 {
+                warn(host, f, "Unknown padding type")?;
                 None
             } else {
                 rsa_verify(n, e, &md, &data, &sig, padding == 6)
@@ -866,6 +892,7 @@ pub(super) fn fn_verify(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         }
         KeyKind::Ec { curve, x, y } => {
             if padding != 0 {
+                warn(host, f, "Padding parameter is only supported for RSA keys")?;
                 None
             } else {
                 ecdsa_verify(*curve, x, y, &md, &data, &sig)
@@ -1005,3 +1032,116 @@ final class OpenSSLAsymmetricKey {
     public function __construct() { throw new Error("Cannot directly construct OpenSSLAsymmetricKey, use openssl_pkey_new() instead"); }
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diag_test::run;
+
+    const RSA: &str = "-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC8dJ1adN1iO6N5NkABfiX4aUQe
+/4Fwl8ieHHju1OZzTCXeyahCs52FOvFTYOQEl4RbA2iVQx78nXt7iTk+mgZ1+tpr
+xBx1QV0LDEcLLd2OaWmhFLAV5dlqnv0sbWyQX6hO4Q+be15nf/bpAo4f2Zuc8x9i
+BRhJ8KfkQ/zJ0fiwVQIDAQAB
+-----END PUBLIC KEY-----
+";
+    const EC: &str = "-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEb0juCnk6R2lIWkq0bSWzPBsoImrB
+O4bihc90FOdq4LXCZ3weD9YelPP4XpA8W+gswhpe+pBkgCqdPqTf8vN72g==
+-----END PUBLIC KEY-----
+";
+    const SIG: &str = "T4nNTV/m3gKkoAB6TqCQ1G8lI+uDQU/9rIz8nKm26mRirvksHpJ5V4eF0Qt90+vgQRSP0jI52vGQBFAzS4hMZS1EVYIz7+WRV/tHhI8ckGp9Wz/26HgbFMs4em6zGwmway7xSouxOVhVCaa2VTK2E29AUeRk+VVG6ImIfqMKZ7o=";
+    const ECSIG: &str = "MEYCIQCeDBjGv00skRrACs9fccJ5XkXhh/dGyigCWCO7BzUEaQIhALlW5o/+01Bp2yU3Msp7fOtrrash+K3/Vk9nqIMKZkww";
+
+    fn b64(s: &str) -> Value {
+        Value::str(b64_decode(s).unwrap())
+    }
+
+    fn verify(args: Vec<Value>) -> (String, Vec<String>) {
+        let (r, d) = run(fn_verify, &args);
+        let r = match r {
+            Ok(Value::Int(i)) => format!("int({i})"),
+            Ok(Value::Bool(b)) => format!("bool({b})"),
+            Ok(_) => "other".into(),
+            Err(Thrown::Error { class, message }) => format!("{class}: {message}"),
+            Err(_) => "thrown".into(),
+        };
+        (r, d)
+    }
+
+    #[test]
+    fn verify_warnings() {
+        let m = || Value::str("hello world");
+        let w = |s: &str| vec![format!("Warning: openssl_verify(): {s}")];
+        assert_eq!(
+            verify(vec![m(), b64(SIG), Value::str(RSA), Value::str("sha256")]),
+            ("int(1)".into(), vec![])
+        );
+        assert_eq!(
+            verify(vec![m(), b64(SIG), Value::str(RSA), Value::str("bogus")]),
+            ("bool(false)".into(), w("Unknown digest algorithm"))
+        );
+        assert_eq!(
+            verify(vec![m(), b64(SIG), Value::str(RSA), Value::Int(999)]),
+            ("bool(false)".into(), w("Unknown digest algorithm"))
+        );
+        assert_eq!(
+            verify(vec![
+                m(),
+                b64(SIG),
+                Value::str(RSA),
+                Value::str("sha256"),
+                Value::Int(999)
+            ]),
+            ("int(-1)".into(), w("Unknown padding type"))
+        );
+        assert_eq!(
+            verify(vec![m(), b64(SIG), Value::str("bogus key")]),
+            (
+                "bool(false)".into(),
+                w("Supplied key param cannot be coerced into a public key")
+            )
+        );
+        assert_eq!(
+            verify(vec![m(), b64(SIG), Value::Null]),
+            (
+                "bool(false)".into(),
+                w("Supplied key param cannot be coerced into a public key")
+            )
+        );
+        assert_eq!(
+            verify(vec![
+                m(),
+                b64(ECSIG),
+                Value::str(EC),
+                Value::str("sha256"),
+                Value::Int(6)
+            ]),
+            (
+                "int(-1)".into(),
+                w("Padding parameter is only supported for RSA keys")
+            )
+        );
+        assert_eq!(
+            verify(vec![m(), b64(ECSIG), Value::str(EC), Value::str("sha256")]),
+            ("int(1)".into(), vec![])
+        );
+    }
+
+    #[test]
+    fn free_is_deprecated() {
+        for (f, name) in [
+            (fn_pkey_free as crate::NativeFn, "openssl_pkey_free"),
+            (fn_free_key, "openssl_free_key"),
+        ] {
+            let (r, d) = run(f, &[Value::Int(1)]);
+            assert!(r.is_err());
+            assert_eq!(
+                d,
+                vec![format!(
+                    "Deprecated: Function {name}() is deprecated since 8.0, as OpenSSLAsymmetricKey objects are freed automatically"
+                )]
+            );
+        }
+    }
+}

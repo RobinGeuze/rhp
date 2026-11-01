@@ -52,7 +52,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 29 | `spl_autoload_unregister` — no-op true, never removes | `ext/spl/mod.rs:39` | dynamic autoloader swapping | med | low |
 | 30 | `Closure::bindTo`/`Closure::call` instance methods missing | `compiler/lib.rs:805` | rebinding via instance form; scoped invoke | med | high |
 | 31 | var_dump object ids — monotonic, no handle recycling | `vm/classes.rs:321` | byte-exact `var_dump`/`spl_object_id` vs php | high | low |
-| 32 | No `E_WARNING`/`E_NOTICE`/`E_DEPRECATED` diagnostics ever emitted | engine-wide | warnings-as-errors, deprecation logs, `@`-suppression semantics | high | med |
+| 32 | No `E_WARNING`/`E_NOTICE`/`E_DEPRECATED` diagnostics ever emitted (builtins already report them through `Host::emit_diagnostic` — iconv, openssl, mbstring so far — which every host still discards) | engine-wide | warnings-as-errors, deprecation logs, `@`-suppression semantics | high | med |
 | 33 | `declare(strict_types=1)` — no-op; type hints unenforced | `compiler/lib.rs:1977` | type coercion/TypeError on hinted params — **in progress** | high | high |
 | 34 | Named args to functions whose defaults don't fold — refused | `compiler/lib.rs:3284` | named-arg calls skipping non-constant-default params | med | med |
 

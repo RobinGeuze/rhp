@@ -6,10 +6,10 @@
 //! time; this module decodes through a small table of charsets (UTF-8,
 //! ASCII, ISO-8859-1, Windows-1252, UTF-16/32 and UCS-2/4 in both byte
 //! orders) and reproduces the C loops' observable quirks — notably that
-//! `iconv_strpos` stops silently at the first illegal sequence while
-//! `iconv_strlen` / `iconv_substr` report it. Diagnostics (E_NOTICE /
-//! E_WARNING) are not emitted (rhp has no diagnostic channel); the `false`
-//! returns and `ValueError`s are exact.
+//! `iconv_strpos` stops silently at the first illegal sequence (unless it
+//! reached the character before it — libiconv's one-character lookahead)
+//! while `iconv_strlen` / `iconv_substr` report it. `_php_iconv_show_error`'s
+//! E_NOTICE / E_WARNING texts go to the host's diagnostic sink.
 //!
 //! `iconv()` itself (with its platform-specific //TRANSLIT tables) still lives
 //! in `php_fns`.
@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use rhp_values::Value;
 
 use crate::ext::zpp::{int_arg_or, opt_int_arg, opt_str_arg, str_arg, value_error};
-use crate::{Builtin, Host, Thrown};
+use crate::{notice, warn, Builtin, Host, Thrown};
 
 /// The charsets this module can convert.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -274,13 +274,70 @@ fn encode(cs: Cs, cps: &[u32]) -> Option<Vec<u8>> {
 }
 
 /// php's `php_iconv_err_t` outcomes this module reports.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Err {
     WrongCharset,
     IllegalChar,
     IllegalSeq,
     Malformed,
     Unknown,
+    OutOfBounds,
 }
+
+impl Err {
+    fn from_stop(stop: Stop) -> Option<Err> {
+        match stop {
+            Stop::End => None,
+            Stop::Incomplete => Some(Err::IllegalChar),
+            Stop::Illegal => Some(Err::IllegalSeq),
+        }
+    }
+}
+
+/// The `errno` php's "Unknown error (%d)" prints: the decoders' failure leaves
+/// EILSEQ behind.
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+const EILSEQ: i32 = 92;
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "freebsd")))]
+const EILSEQ: i32 = 84;
+
+/// `_php_iconv_show_error`.
+fn show_error(
+    host: &mut dyn Host,
+    fname: &str,
+    err: Err,
+    out_charset: &[u8],
+    in_charset: &[u8],
+) -> Result<(), Thrown> {
+    match err {
+        Err::WrongCharset => warn(
+            host,
+            fname,
+            &format!(
+                "Wrong encoding, conversion from \"{}\" to \"{}\" is not allowed",
+                String::from_utf8_lossy(in_charset),
+                String::from_utf8_lossy(out_charset)
+            ),
+        ),
+        Err::IllegalChar => notice(
+            host,
+            fname,
+            "Detected an incomplete multibyte character in input string",
+        ),
+        Err::IllegalSeq => notice(host, fname, "Detected an illegal character in input string"),
+        Err::Malformed => warn(host, fname, "Malformed string"),
+        Err::Unknown => notice(host, fname, &format!("Unknown error ({EILSEQ})")),
+        Err::OutOfBounds => Err(value_error(
+            fname,
+            3,
+            "offset",
+            "must be contained in argument #1 ($haystack)",
+        )),
+    }
+}
+
+/// php's generic superset charset (`ICONV_UCS4_ENCODING`).
+const SUPERSET: &[u8] = b"UCS-4LE";
 
 /// The `$encoding` argument (`s!`, defaulting to the internal encoding UTF-8).
 /// php warns and returns false for names of 64+ bytes.
@@ -292,7 +349,14 @@ fn enc_arg(
 ) -> Result<Option<Vec<u8>>, Thrown> {
     match opt_str_arg(host, args, i, fname, "encoding")? {
         None => Ok(Some(b"UTF-8".to_vec())),
-        Some(e) if e.len() >= 64 => Ok(None),
+        Some(e) if e.len() >= 64 => {
+            warn(
+                host,
+                fname,
+                "Encoding parameter exceeds the maximum allowed length of 64 characters",
+            )?;
+            Ok(None)
+        }
         Some(e) => Ok(Some(e)),
     }
 }
@@ -301,10 +365,9 @@ fn enc_arg(
 fn iconv_strlen(s: &[u8], enc: &[u8]) -> Result<usize, Err> {
     let cs = charset(enc).ok_or(Err::WrongCharset)?;
     let (cps, stop) = decode(cs, s);
-    match stop {
-        Stop::End => Ok(cps.len()),
-        Stop::Incomplete => Err(Err::IllegalChar),
-        Stop::Illegal => Err(Err::IllegalSeq),
+    match Err::from_stop(stop) {
+        None => Ok(cps.len()),
+        Some(e) => Err(e),
     }
 }
 
@@ -315,7 +378,10 @@ fn fn_iconv_strlen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     };
     Ok(match iconv_strlen(&s, &enc) {
         Ok(n) => Value::Int(n as i64),
-        Err(_) => Value::Bool(false),
+        Err(e) => {
+            show_error(host, "iconv_strlen", e, SUPERSET, &enc)?;
+            Value::Bool(false)
+        }
     })
 }
 
@@ -328,10 +394,13 @@ fn fn_iconv_substr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
         return Ok(Value::Bool(false));
     };
     let mut len = len.unwrap_or(s.len() as i64);
-    let Ok(total) = iconv_strlen(&s, &enc) else {
-        return Ok(Value::Bool(false));
+    let total = match iconv_strlen(&s, &enc) {
+        Ok(t) => t as i64,
+        Err(e) => {
+            show_error(host, f, e, SUPERSET, &enc)?;
+            return Ok(Value::Bool(false));
+        }
     };
-    let total = total as i64;
     if offset < 0 {
         offset += total;
         if offset < 0 {
@@ -363,8 +432,12 @@ fn fn_iconv_substr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     })
 }
 
-/// `_php_iconv_strpos`: the C loop's partial-match bookkeeping, including its
-/// silent stop at the first undecodable input.
+/// `_php_iconv_strpos`: the C loop's partial-match bookkeeping. php feeds
+/// iconv(3) one output character at a time, so decoding stops silently at the
+/// first undecodable input — except that libiconv looks one character ahead:
+/// converting the character just before the bad input already fails, which
+/// sets `err` (and the result is then `false`). A forward search that
+/// completes its match earlier never gets there.
 fn iconv_strpos(
     h: &[u8],
     n: &[u8],
@@ -374,17 +447,20 @@ fn iconv_strpos(
 ) -> Result<Option<usize>, Err> {
     let cs = charset(enc).ok_or(Err::WrongCharset)?;
     let (ndl, nstop) = decode(cs, n);
-    match nstop {
-        Stop::End => {}
-        Stop::Incomplete => return Err(Err::IllegalChar),
-        Stop::Illegal => return Err(Err::IllegalSeq),
+    if let Some(e) = Err::from_stop(nstop) {
+        return Err(e);
     }
-    let (hay, _) = decode(cs, h);
+    let (hay, hstop) = decode(cs, h);
+    let hay_err = Err::from_stop(hstop);
+    let mut err = None;
     let mut ret = None;
     let mut p = 0usize;
     let mut match_ofs: Option<usize> = None;
     let mut cnt = 0usize;
     for &c in &hay {
+        if cnt + 1 == hay.len() && hay_err.is_some() {
+            err = hay_err;
+        }
         if cnt >= offset {
             if c == ndl[p] {
                 if match_ofs.is_none() {
@@ -425,8 +501,11 @@ fn iconv_strpos(
         }
         cnt += 1;
     }
+    if let Some(e) = err {
+        return Err(e);
+    }
     if offset > cnt {
-        return Ok(Some(usize::MAX)); // out of bounds marker
+        return Err(Err::OutOfBounds);
     }
     Ok(ret)
 }
@@ -439,30 +518,29 @@ fn fn_iconv_strpos(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     let Some(enc) = enc_arg(host, args, 3, f)? else {
         return Ok(Value::Bool(false));
     };
-    let oob = || {
-        value_error(
-            f,
-            3,
-            "offset",
-            "must be contained in argument #1 ($haystack)",
-        )
-    };
     if offset < 0 {
-        let Ok(hl) = iconv_strlen(&h, &enc) else {
-            return Ok(Value::Bool(false));
+        let hl = match iconv_strlen(&h, &enc) {
+            Ok(hl) => hl,
+            Err(e) => {
+                show_error(host, f, e, SUPERSET, &enc)?;
+                return Ok(Value::Bool(false));
+            }
         };
         offset += hl as i64;
         if offset < 0 {
-            return Err(oob());
+            show_error(host, f, Err::OutOfBounds, SUPERSET, &enc)?;
         }
     }
     if n.is_empty() {
         return Ok(Value::Bool(false));
     }
     match iconv_strpos(&h, &n, offset as usize, &enc, false) {
-        Ok(Some(usize::MAX)) => Err(oob()),
         Ok(Some(p)) => Ok(Value::Int(p as i64)),
-        _ => Ok(Value::Bool(false)),
+        Ok(None) => Ok(Value::Bool(false)),
+        Err(e) => {
+            show_error(host, f, e, SUPERSET, &enc)?;
+            Ok(Value::Bool(false))
+        }
     }
 }
 
@@ -477,8 +555,12 @@ fn fn_iconv_strrpos(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         return Ok(Value::Bool(false));
     };
     match iconv_strpos(&h, &n, 0, &enc, true) {
-        Ok(Some(p)) if p != usize::MAX => Ok(Value::Int(p as i64)),
-        _ => Ok(Value::Bool(false)),
+        Ok(Some(p)) => Ok(Value::Int(p as i64)),
+        Ok(None) => Ok(Value::Bool(false)),
+        Err(e) => {
+            show_error(host, f, e, SUPERSET, &enc)?;
+            Ok(Value::Bool(false))
+        }
     }
 }
 
@@ -492,10 +574,8 @@ const MODE_CONTINUE_ON_ERROR: i64 = 2;
 /// An iconv descriptor: append `bytes` (in `from`) to `out` (in `to`).
 fn append(out: &mut Vec<u8>, bytes: &[u8], from: Cs, to: Cs) -> Result<(), Err> {
     let (cps, stop) = decode(from, bytes);
-    match stop {
-        Stop::End => {}
-        Stop::Incomplete => return Err(Err::IllegalChar),
-        Stop::Illegal => return Err(Err::IllegalSeq),
+    if let Some(e) = Err::from_stop(stop) {
+        return Err(e);
     }
     match encode(to, &cps) {
         Some(b) => {
@@ -943,9 +1023,10 @@ fn fn_iconv_mime_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     };
     Ok(match mime_decode(&s, &enc, mode) {
         Ok(b) => Value::str(b),
-        Err(
-            Err::WrongCharset | Err::IllegalChar | Err::IllegalSeq | Err::Malformed | Err::Unknown,
-        ) => Value::Bool(false),
+        Err(e) => {
+            show_error(host, f, e, &enc, b"???")?;
+            Value::Bool(false)
+        }
     })
 }
 
@@ -982,4 +1063,167 @@ pub fn constants() -> Vec<(&'static str, Value)> {
             Value::Int(MODE_CONTINUE_ON_ERROR),
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diag_test::run;
+
+    fn s(b: &[u8]) -> Value {
+        Value::str(b.to_vec())
+    }
+
+    /// `(result-as-debug, diagnostics)`.
+    fn go(f: crate::NativeFn, args: &[Value]) -> (String, Vec<String>) {
+        let (r, d) = run(f, args);
+        let r = match r {
+            Ok(Value::Bool(b)) => format!("bool({b})"),
+            Ok(Value::Int(i)) => format!("int({i})"),
+            Ok(Value::Str(b)) => format!("string({:?})", String::from_utf8_lossy(b.as_bytes())),
+            Ok(_) => "other".into(),
+            Err(Thrown::Error { class, message }) => format!("{class}: {message}"),
+            Err(_) => "thrown".into(),
+        };
+        (r, d)
+    }
+
+    const ILLEGAL: &str = "Notice: iconv_strlen(): Detected an illegal character in input string";
+
+    #[test]
+    fn strlen_diagnostics() {
+        assert_eq!(
+            go(fn_iconv_strlen, &[s(b"h\xe9llo")]),
+            ("bool(false)".into(), vec![ILLEGAL.to_string()])
+        );
+        assert_eq!(
+            go(fn_iconv_strlen, &[s(b"h\xc3")]),
+            (
+                "bool(false)".into(),
+                vec![
+                    "Notice: iconv_strlen(): Detected an incomplete multibyte character in input string"
+                        .to_string()
+                ]
+            )
+        );
+        assert_eq!(
+            go(fn_iconv_strlen, &[s(b"abc"), s(b"bogus")]),
+            (
+                "bool(false)".into(),
+                vec![
+                    "Warning: iconv_strlen(): Wrong encoding, conversion from \"bogus\" to \"UCS-4LE\" is not allowed"
+                        .to_string()
+                ]
+            )
+        );
+        assert_eq!(
+            go(fn_iconv_strlen, &[s(b"abc"), s(&[b'x'; 64])]),
+            (
+                "bool(false)".into(),
+                vec![
+                    "Warning: iconv_strlen(): Encoding parameter exceeds the maximum allowed length of 64 characters"
+                        .to_string()
+                ]
+            )
+        );
+        assert_eq!(go(fn_iconv_strlen, &[s(b"abc")]), ("int(3)".into(), vec![]));
+    }
+
+    #[test]
+    fn substr_diagnostics() {
+        assert_eq!(
+            go(fn_iconv_substr, &[s(b"h\xe9llo"), Value::Int(1)]).1,
+            vec!["Notice: iconv_substr(): Detected an illegal character in input string"]
+        );
+        assert_eq!(
+            go(fn_iconv_substr, &[s(b"abc"), Value::Int(1), Value::Int(1), s(b"bogus")]).1,
+            vec!["Warning: iconv_substr(): Wrong encoding, conversion from \"bogus\" to \"UCS-4LE\" is not allowed"]
+        );
+    }
+
+    #[test]
+    fn strpos_lookahead() {
+        let n = |h: &[u8], nd: &[u8]| go(fn_iconv_strpos, &[s(h), s(nd)]);
+        let ill = "Notice: iconv_strpos(): Detected an illegal character in input string";
+        let inc =
+            "Notice: iconv_strpos(): Detected an incomplete multibyte character in input string";
+        assert_eq!(n(b"ab\xc3", b"b"), ("bool(false)".into(), vec![inc.into()]));
+        assert_eq!(n(b"ab\xc3", b"a"), ("int(0)".into(), vec![]));
+        assert_eq!(n(b"abc\xff", b"b"), ("int(1)".into(), vec![]));
+        assert_eq!(
+            n(b"abc\xff", b"c"),
+            ("bool(false)".into(), vec![ill.into()])
+        );
+        assert_eq!(
+            n(b"abc\xff", b"z"),
+            ("bool(false)".into(), vec![ill.into()])
+        );
+        assert_eq!(n(b"ab\xff", b"b"), ("bool(false)".into(), vec![ill.into()]));
+        assert_eq!(
+            go(
+                fn_iconv_strpos,
+                &[s(b"ab\xffcd"), s(b"b"), Value::Int(0), s(b"ASCII")]
+            ),
+            ("bool(false)".into(), vec![ill.into()])
+        );
+        // err suppresses the out-of-bounds ValueError
+        assert_eq!(
+            go(fn_iconv_strpos, &[s(b"abc\xff"), s(b"a"), Value::Int(10)]),
+            ("bool(false)".into(), vec![ill.into()])
+        );
+        // bad input at the very start: nothing decoded, no error
+        assert_eq!(
+            go(fn_iconv_strpos, &[s(b"\xff"), s(b"a"), Value::Int(3)]).0,
+            "ValueError: iconv_strpos(): Argument #3 ($offset) must be contained in argument #1 ($haystack)"
+        );
+        let r = |h: &[u8], nd: &[u8]| go(fn_iconv_strrpos, &[s(h), s(nd)]);
+        let rill = "Notice: iconv_strrpos(): Detected an illegal character in input string";
+        assert_eq!(
+            r(b"a\xffbc", b"a"),
+            ("bool(false)".into(), vec![rill.into()])
+        );
+        assert_eq!(
+            r(b"abcdef\xff", b"a"),
+            ("bool(false)".into(), vec![rill.into()])
+        );
+        assert_eq!(r(b"\xffab", b"a"), ("bool(false)".into(), vec![]));
+        assert_eq!(
+            r(b"abc", b"\xff"),
+            ("bool(false)".into(), vec![rill.into()])
+        );
+        assert_eq!(
+            go(fn_iconv_strpos, &[s(b"abc"), s(b"b"), Value::Int(0), s(b"bogus")]).1,
+            vec!["Warning: iconv_strpos(): Wrong encoding, conversion from \"bogus\" to \"UCS-4LE\" is not allowed"]
+        );
+    }
+
+    #[test]
+    fn mime_decode_diagnostics() {
+        let m = |x: &[u8]| go(fn_iconv_mime_decode, &[s(x)]);
+        assert_eq!(
+            m(b"=?UTF-8?X?abc?="),
+            (
+                "bool(false)".into(),
+                vec!["Warning: iconv_mime_decode(): Malformed string".into()]
+            )
+        );
+        assert_eq!(
+            m(b"=?FOO?Q?abc?= x").1,
+            vec!["Warning: iconv_mime_decode(): Wrong encoding, conversion from \"???\" to \"UTF-8\" is not allowed"]
+        );
+        assert_eq!(
+            go(fn_iconv_mime_decode, &[s(b""), Value::Int(0), s(b"bogus")]).1,
+            vec!["Warning: iconv_mime_decode(): Wrong encoding, conversion from \"???\" to \"bogus\" is not allowed"]
+        );
+        assert_eq!(
+            m(b"=?UTF-8?Q?\xff?=").1,
+            vec!["Notice: iconv_mime_decode(): Detected an illegal character in input string"]
+        );
+        assert_eq!(
+            m(b"=?UTF-8?Q?=ZZ?=").1,
+            vec![format!(
+                "Notice: iconv_mime_decode(): Unknown error ({EILSEQ})"
+            )]
+        );
+    }
 }

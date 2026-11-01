@@ -799,6 +799,23 @@ pub trait Host {
     ) -> Option<&mut dyn std::any::Any> {
         None
     }
+    /// `ReflectionMethod::invoke`: call `class::method` on `obj` (null for a
+    /// static method) regardless of its visibility.
+    fn reflect_invoke(
+        &mut self,
+        obj: &Value,
+        class: &[u8],
+        method: &[u8],
+        args: Vec<Value>,
+    ) -> Result<Value, Thrown> {
+        let mut cb = PhpArray::new();
+        cb.push(match obj {
+            Value::Null => Value::str(class.to_vec()),
+            o => o.clone(),
+        });
+        cb.push(Value::str(method.to_vec()));
+        self.call_callable(&Value::Array(cb), &args)
+    }
     /// Is `res` a stream resource that is still open (not `fclose`d)?
     fn stream_is_open(&self, _res: &Value) -> bool {
         true

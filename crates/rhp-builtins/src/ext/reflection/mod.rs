@@ -93,6 +93,19 @@ fn fn_method_params(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         .unwrap_or_else(|| Value::Array(rhp_values::PhpArray::new())))
 }
 
+/// `__reflect_invoke($object, $class, $method, $args)`: ReflectionMethod::
+/// invoke(), which ignores visibility.
+fn fn_invoke(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let obj = deref(&args[0]);
+    let class = str_arg(args, 1);
+    let method = str_arg(args, 2);
+    let argv: Vec<Value> = match deref(&args[3]) {
+        Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+        _ => Vec::new(),
+    };
+    host.reflect_invoke(&obj, &class, &method, argv)
+}
+
 fn fn_func_params(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let c = deref(&args[0]);
     Ok(host
@@ -139,6 +152,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "__reflect_get_prop", fn_get_prop, 3, Some(3));
     put(m, "__reflect_set_prop", fn_set_prop, 4, Some(4));
     put(m, "__reflect_method_params", fn_method_params, 2, Some(2));
+    put(m, "__reflect_invoke", fn_invoke, 4, Some(4));
     put(m, "__reflect_func_params", fn_func_params, 1, Some(1));
     put(
         m,
@@ -187,8 +201,8 @@ class ReflectionMethod {
     public function getName() { return $this->name; }
     public function getShortName() { return $this->name; }
     public function getDeclaringClass() { return new ReflectionClass($this->class); }
-    public function invoke($object, ...$args) { return call_user_func_array([$object ?? $this->class, $this->name], $args); }
-    public function invokeArgs($object, $args) { return call_user_func_array([$object ?? $this->class, $this->name], $args); }
+    public function invoke($object, ...$args) { return __reflect_invoke($object, $this->class, $this->name, $args); }
+    public function invokeArgs($object, $args) { return __reflect_invoke($object, $this->class, $this->name, $args); }
     public function setAccessible($a) {}
     public function getParameters() { $out = []; foreach (__reflect_method_params($this->class, $this->name) as $m) { $out[] = new ReflectionParameter($m); } return $out; }
     public function getNumberOfParameters() { return count(__reflect_method_params($this->class, $this->name)); }

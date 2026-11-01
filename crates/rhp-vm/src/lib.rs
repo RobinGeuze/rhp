@@ -1805,6 +1805,51 @@ impl Host for Vm {
         }
     }
 
+    fn reflect_invoke(
+        &mut self,
+        obj: &Value,
+        class: &[u8],
+        method: &[u8],
+        args: Vec<Value>,
+    ) -> Result<Value, Thrown> {
+        let cls = self.resolve_class_by_name(class)?;
+        let shown = || {
+            format!(
+                "{}::{}",
+                String::from_utf8_lossy(class),
+                String::from_utf8_lossy(method)
+            )
+        };
+        let Some(m) = self.lookup_method(cls, method) else {
+            return Err(Thrown::error(
+                "ReflectionException",
+                format!("Method {}() does not exist", shown()),
+            ));
+        };
+        if m.is_static {
+            return self.call_sync(&m, None, cls, args);
+        }
+        match deref(obj) {
+            Value::Object(h) => {
+                let oc = h.borrow().class;
+                if oc != m.defining_class && !self.class(oc).ancestors.contains(&m.defining_class) {
+                    return Err(Thrown::error(
+                        "ReflectionException",
+                        "Given object is not an instance of the class this method was declared in",
+                    ));
+                }
+                self.call_sync(&m, Some(h), oc, args)
+            }
+            _ => Err(Thrown::error(
+                "ReflectionException",
+                format!(
+                    "Trying to invoke non static method {}() without an object",
+                    shown()
+                ),
+            )),
+        }
+    }
+
     fn object_class_name(&self, obj: &Value) -> Option<Vec<u8>> {
         let h = match obj {
             Value::Object(h) => h,
@@ -2825,6 +2870,64 @@ impl Vm {
         }
         // Coercive mode: php's zend_verify_weak_scalar_type_hint.
         weak_scalar_coerce(&d, ty).map(Some).ok_or(())
+    }
+
+    /// Coercive typing's `__toString` step (zend_verify_weak_scalar_type_hint
+    /// for `string`): an object with `__toString` passed where a `string`
+    /// (and not its class) is declared becomes its string form.
+    fn coerce_stringable(
+        &mut self,
+        v: Value,
+        ty: &rhp_bytecode::TypeHint,
+        strict: bool,
+        ctx: Option<ClassId>,
+    ) -> Result<Value, Thrown> {
+        use rhp_bytecode::TypeKind as K;
+        if strict || !ty.kinds.contains(&K::String) {
+            return Ok(v);
+        }
+        let Value::Object(h) = deref(&v) else {
+            return Ok(v);
+        };
+        if self.matches_type(&v, ty, ctx) {
+            return Ok(v);
+        }
+        if self
+            .lookup_method(h.borrow().class, b"__tostring")
+            .is_none()
+        {
+            return Ok(v);
+        }
+        Ok(Value::str(self.to_string_vm(&Value::Object(h))?))
+    }
+
+    /// [`Vm::coerce_stringable`] over a just-bound frame's passed parameters.
+    fn coerce_stringable_args(
+        &mut self,
+        proto: &FunctionProto,
+        frame: &mut Frame,
+        caller: Option<bool>,
+        ctx: Option<ClassId>,
+    ) -> Result<(), Thrown> {
+        let strict = caller.unwrap_or(false);
+        if strict {
+            return Ok(());
+        }
+        for (i, p) in proto.params.iter().enumerate() {
+            let Some(ty) = &p.type_hint else { continue };
+            if p.by_ref
+                || p.variadic
+                || i >= frame.argc
+                || (i < 64 && frame.holes & (1u64 << i) != 0)
+            {
+                continue;
+            }
+            let cur = frame.regs[p.cv as usize].clone();
+            if matches!(cur, Value::Object(_)) {
+                frame.regs[p.cv as usize] = self.coerce_stringable(cur, ty, false, ctx)?;
+            }
+        }
+        Ok(())
     }
 
     /// Enforce declared parameter types on a just-bound frame (php's
@@ -4013,7 +4116,10 @@ impl Vm {
                     }
                 }
                 let scope = frame.defining_class;
-                self.check_arg_types(&proto, frame, caller, scope).err()
+                match self.coerce_stringable_args(&proto, frame, caller, scope) {
+                    Err(e) => Some((0, e)),
+                    Ok(()) => self.check_arg_types(&proto, frame, caller, scope).err(),
+                }
             }
         };
         let Some((idx, err)) = failed else {
@@ -5102,7 +5208,9 @@ impl Vm {
                 }
                 Instr::SetPendingRet { src } => {
                     let mut v = self.reg_get(top, src);
-                    if proto.return_type.is_some() && !proto.is_generator {
+                    if let (Some(ty), false) = (&proto.return_type, proto.is_generator) {
+                        let ctx = self.stack[top].defining_class;
+                        v = self.coerce_stringable(v, ty, proto.strict_types, ctx)?;
                         v = self.check_return_type(&proto, top, v)?;
                     }
                     let pc = self.stack[top].pc as u32 - 1;
@@ -5724,7 +5832,9 @@ impl Vm {
                     let mut v = self.reg_get(top, src);
                     // Enforce a declared return type (the callee's own file decides
                     // strict vs coercive).
-                    if proto.return_type.is_some() && !proto.is_generator {
+                    if let (Some(ty), false) = (&proto.return_type, proto.is_generator) {
+                        let ctx = self.stack[top].defining_class;
+                        v = self.coerce_stringable(v, ty, proto.strict_types, ctx)?;
                         v = self.check_return_type(&proto, top, v)?;
                     }
                     if let Some(done) = self.do_return(v) {

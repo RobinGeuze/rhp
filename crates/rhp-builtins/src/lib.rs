@@ -21,6 +21,7 @@ pub mod streams;
 pub mod stub_params;
 
 pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};
+pub use ext::simplexml::{sxe_bool, sxe_string};
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};
 
 mod argparse;
@@ -1034,6 +1035,7 @@ pub fn ini_startup_set(name: &[u8], value: &[u8]) {
 /// overlay). Engines call this on construction so state never leaks from one
 /// script run to the next on the same thread.
 pub fn reset_request_state() {
+    ext::libxml::reset_state();
     runtime_fns::reset_state();
     sysmisc_fns::reset_state();
     preg_fns::reset_state();

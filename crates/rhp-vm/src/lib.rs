@@ -4967,7 +4967,7 @@ impl Vm {
                 }
                 Instr::Not { dst, a } => {
                     let v = self.reg_get(top, a);
-                    self.reg_set(top, dst, Value::Bool(!conv::to_bool(&v)));
+                    self.reg_set(top, dst, Value::Bool(!self.truthy(&v)));
                 }
                 Instr::IncDec {
                     dst,
@@ -4988,13 +4988,23 @@ impl Vm {
                         Value::Object(h) if rhp_builtins::is_curl_handle(&v) => {
                             h.borrow().id as i64
                         }
+                        // SimpleXML's cast handler: the node's text.
+                        Value::Object(h) if self.is_sxe(h) => conv::to_int(&Value::str(
+                            rhp_builtins::sxe_string(&v).unwrap_or_default(),
+                        )),
                         _ => conv::to_int(&v),
                     };
                     self.reg_set(top, dst, Value::Int(n));
                 }
                 Instr::CastFloat { dst, a } => {
                     let v = self.reg_get(top, a);
-                    self.reg_set(top, dst, Value::Float(conv::to_float(&v)));
+                    let f = match &v {
+                        Value::Object(h) if self.is_sxe(h) => conv::to_float(&Value::str(
+                            rhp_builtins::sxe_string(&v).unwrap_or_default(),
+                        )),
+                        _ => conv::to_float(&v),
+                    };
+                    self.reg_set(top, dst, Value::Float(f));
                 }
                 Instr::CastString { dst, a } => {
                     let v = self.reg_get(top, a);
@@ -5003,7 +5013,7 @@ impl Vm {
                 }
                 Instr::CastBool { dst, a } => {
                     let v = self.reg_get(top, a);
-                    self.reg_set(top, dst, Value::Bool(conv::to_bool(&v)));
+                    self.reg_set(top, dst, Value::Bool(self.truthy(&v)));
                 }
                 Instr::CastArray { dst, a } => {
                     let v = self.reg_get(top, a);
@@ -5062,12 +5072,12 @@ impl Vm {
                     }
                 }
                 Instr::JmpTrue { cond, target } => {
-                    if conv::to_bool(&self.reg_get(top, cond)) {
+                    if self.truthy(&self.reg_get(top, cond)) {
                         self.stack[top].pc = target as usize;
                     }
                 }
                 Instr::JmpFalse { cond, target } => {
-                    if !conv::to_bool(&self.reg_get(top, cond)) {
+                    if !self.truthy(&self.reg_get(top, cond)) {
                         self.stack[top].pc = target as usize;
                     }
                 }
@@ -9225,6 +9235,26 @@ fn type_lc(v: &Value) -> &'static str {
         Value::Object(_) | Value::Closure(_) => "object",
         Value::Resource(_) => "resource",
         Value::Ref(_) => "reference",
+    }
+}
+
+impl Vm {
+    /// Whether `h` is a `SimpleXMLElement` (whose cast handler the VM's
+    /// int/float/bool conversions honour).
+    fn is_sxe(&self, h: &ObjectHandle) -> bool {
+        match self.resolve_class_by_name(b"SimpleXMLElement") {
+            Ok(t) => self.class(h.borrow().class).ancestors.contains(&t),
+            Err(_) => false,
+        }
+    }
+
+    /// `(bool) $v`, with SimpleXML's cast handler (an empty element list is
+    /// false).
+    fn truthy(&self, v: &Value) -> bool {
+        match v {
+            Value::Object(h) if self.is_sxe(h) => rhp_builtins::sxe_bool(v),
+            _ => conv::to_bool(v),
+        }
     }
 }
 

@@ -972,6 +972,18 @@ impl Host for Vm {
         self.autoload_callable_class(callable)?;
         Ok(self.resolve_callable(callable).err())
     }
+
+    fn wrap_callable(&self, callable: Value) -> Value {
+        let (scope, called, _) = self.callable_scope();
+        Value::Closure(Rc::new(rhp_values::ClosureData {
+            fnidx: u32::MAX,
+            captures: Vec::new(),
+            bound_this: None,
+            bound_class: scope,
+            bound_static: called,
+            wrapped: Some(Box::new(callable)),
+        }))
+    }
 }
 
 /// A resolved callable (see `Vm::resolve_callable`).
@@ -4701,7 +4713,11 @@ impl Vm {
         if let Some((scope, called)) = self.fcc_scope.get() {
             return (scope, called, None);
         }
-        match self.stack.len().checked_sub(1) {
+        // Prelude (internal) methods act for their caller, as php's internal
+        // functions do: the scope is the innermost user frame's.
+        let n = self.stack.len();
+        let user = (0..n).rev().find(|&i| !self.is_internal_frame(i));
+        match user.or(n.checked_sub(1)) {
             Some(top) => (
                 self.stack[top].defining_class,
                 self.stack[top].called_class,

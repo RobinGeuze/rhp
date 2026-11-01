@@ -905,20 +905,13 @@ fn fn_closure_from_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value
     if matches!(c, Value::Closure(_)) {
         return Ok(c);
     }
-    if !host.is_callable_value(&c) {
-        return Err(Thrown::error(
-            "TypeError",
-            "Closure::fromCallable(): Argument #1 ($callback) must be a valid callback",
-        ));
+    // zend_create_closure_from_callable's error (a TypeError).
+    if let Some(err) = host.check_callable(&c)? {
+        return Err(Thrown::type_error(format!(
+            "Failed to create closure from callable: {err}"
+        )));
     }
-    Ok(Value::Closure(std::rc::Rc::new(rhp_values::ClosureData {
-        fnidx: u32::MAX,
-        captures: Vec::new(),
-        bound_this: None,
-        bound_class: None,
-        bound_static: None,
-        wrapped: Some(Box::new(c)),
-    })))
+    Ok(host.wrap_callable(c))
 }
 
 /// `Closure::bind($closure, $newThis, $newScope)` and the `bindTo` instance form.

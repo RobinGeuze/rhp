@@ -174,6 +174,19 @@ pub trait Host {
         })
     }
 
+    /// Wrap a callable as a Closure (`Closure::fromCallable`) that resolves it
+    /// in the calling scope. Default: no scope recorded.
+    fn wrap_callable(&self, callable: Value) -> Value {
+        Value::Closure(std::rc::Rc::new(rhp_values::ClosureData {
+            fnidx: u32::MAX,
+            captures: Vec::new(),
+            bound_this: None,
+            bound_class: None,
+            bound_static: None,
+            wrapped: Some(Box::new(callable)),
+        }))
+    }
+
     /// [`Host::callable_error`] after autoloading a class the callable names
     /// (zend_is_callable looks classes up with autoloading; a loader's
     /// exception propagates).

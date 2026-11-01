@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
-use rustc_hash::FxBuildHasher;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use rhp_bytecode::{ClassProto, ClassRef, ConstInitProto, FunctionProto, PropDefaultProto, Reg};
 use rhp_values::{
@@ -29,8 +29,18 @@ pub struct ClassEntry {
     /// Flattened vtable, keyed by lowercase method name, in php's member
     /// order (see [`php_member_order`]).
     pub methods: IndexMap<Vec<u8>, ResolvedMethod>,
-    /// Flattened instance properties in declaration order.
+    /// Flattened instance-property slots in php's object layout order, keyed
+    /// by *storage key*: the plain name for public/protected properties, the
+    /// php-mangled `"\0Class\0name"` for private ones — so a parent's private
+    /// `$x` and a child's `$x` are two distinct slots (see [`prop_storage_key`]).
     pub props: IndexMap<PhpStr, PropEntry>,
+    /// php's `properties_info`: unmangled name -> storage key of the most-derived
+    /// declaration of that name (which may be an inherited parent private).
+    pub prop_visible: FxHashMap<PhpStr, PhpStr>,
+    /// Private instance properties declared by THIS class (incl. trait-imported):
+    /// unmangled name -> storage key. Consulted first when this class is the
+    /// calling scope, so its methods see their own private slot.
+    pub own_private: FxHashMap<PhpStr, PhpStr>,
     /// Flattened class constants (case-sensitive), in php's member order.
     pub constants: IndexMap<Vec<u8>, ClassConst>,
     /// Flattened static-property slots (shared cells; inherited ones alias).
@@ -52,9 +62,17 @@ pub struct ResolvedMethod {
 
 #[derive(Clone)]
 pub struct PropEntry {
+    /// Unmangled property name (no `$`).
+    pub name: PhpStr,
     pub default: Value,
     pub visibility: Visibility,
+    /// Asymmetric write visibility (`private(set)` / `protected(set)`).
+    pub set_visibility: Option<Visibility>,
     pub declaring_class: ClassId,
+    /// php's `property_info->prototype->ce`: the class of the root declaration
+    /// of a redeclared public/protected property (protected access is checked
+    /// against it, so sibling classes may read a redeclared property).
+    pub prototype: ClassId,
 }
 
 #[derive(Clone)]
@@ -62,6 +80,9 @@ pub struct StaticProp {
     pub cell: Rc<RefCell<Value>>,
     pub visibility: Visibility,
     pub declaring_class: ClassId,
+    /// The root declaration's class of a redeclared public/protected static
+    /// (php's `property_info->prototype->ce`), for the protected check.
+    pub prototype: ClassId,
 }
 
 #[derive(Clone)]
@@ -69,6 +90,266 @@ pub struct ClassConst {
     pub value: Value,
     pub visibility: Visibility,
     pub declaring_class: ClassId,
+}
+
+/// The key a declared instance property is stored under in
+/// `ObjectData::properties`: the plain name for public/protected, php's mangled
+/// `"\0Class\0name"` for private (so shadowed privates are distinct slots).
+pub(crate) fn prop_storage_key(class_name: &PhpStr, name: &PhpStr, vis: Visibility) -> PhpStr {
+    if vis == Visibility::Private {
+        mangle_private(class_name.as_bytes(), name.as_bytes())
+    } else {
+        name.clone()
+    }
+}
+
+/// `"\0Class\0name"`.
+pub(crate) fn mangle_private(class_name: &[u8], name: &[u8]) -> PhpStr {
+    let mut k = Vec::with_capacity(class_name.len() + name.len() + 2);
+    k.push(0);
+    k.extend_from_slice(class_name);
+    k.push(0);
+    k.extend_from_slice(name);
+    PhpStr::from_bytes(k)
+}
+
+/// Outcome of resolving `$obj->name` against the object's class from a scope.
+#[derive(Debug)]
+pub(crate) enum PropRes {
+    /// A declared property slot, by storage key.
+    Slot(PhpStr),
+    /// Not a declared property visible here: a dynamic property (plain name).
+    Dynamic,
+    /// Declared but inaccessible from the scope (or a name starting with NUL).
+    Denied(Deny),
+}
+
+/// Why a property access was refused.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Deny {
+    /// A private / protected declaration the scope cannot see.
+    Vis(Visibility),
+    /// An undeclared name starting with `"\0"` (php's mangled-name guard).
+    BadName,
+}
+
+/// php's `zend_get_property_offset`: resolve property `name` on an instance of
+/// `cls` as seen from `scope`. The scope's own private property wins (so a
+/// parent method sees the parent's private slot even when a child redeclares
+/// the name); otherwise the most-derived declaration applies, where a parent's
+/// private is invisible (treated as dynamic) and an own private / protected is
+/// an access error.
+pub(crate) fn resolve_prop(
+    classes: &[ClassEntry],
+    cls: ClassId,
+    scope: Option<ClassId>,
+    name: &PhpStr,
+) -> PropRes {
+    let entry = &classes[cls as usize];
+    if let Some(s) = scope {
+        if let Some(k) = classes[s as usize].own_private.get(name) {
+            if entry.props.contains_key(k) {
+                return PropRes::Slot(k.clone());
+            }
+        }
+    }
+    let Some(key) = entry.prop_visible.get(name) else {
+        return dynamic_or_bad(name);
+    };
+    let pe = &entry.props[key];
+    match pe.visibility {
+        Visibility::Public => PropRes::Slot(key.clone()),
+        Visibility::Protected => {
+            if protected_ok(classes, scope, pe.prototype) {
+                PropRes::Slot(key.clone())
+            } else {
+                PropRes::Denied(Deny::Vis(Visibility::Protected))
+            }
+        }
+        // (scope == declaring class was handled by `own_private` above.)
+        Visibility::Private if pe.declaring_class != cls => dynamic_or_bad(name),
+        Visibility::Private => PropRes::Denied(Deny::Vis(Visibility::Private)),
+    }
+}
+
+/// An undeclared (dynamic) property name; one starting with NUL is refused
+/// (`Cannot access property starting with "\0"`), so mangled private keys
+/// can never be reached by name.
+fn dynamic_or_bad(name: &PhpStr) -> PropRes {
+    if name.as_bytes().first() == Some(&0) {
+        PropRes::Denied(Deny::BadName)
+    } else {
+        PropRes::Dynamic
+    }
+}
+
+/// php's `zend_asymmetric_property_has_set_access`: may `scope` write the
+/// declared slot `key` of an instance of `cls`? (Read access is assumed.)
+pub(crate) fn set_access_ok(
+    classes: &[ClassEntry],
+    cls: ClassId,
+    scope: Option<ClassId>,
+    key: &PhpStr,
+) -> Result<(), (Visibility, ClassId, PhpStr)> {
+    let Some(pe) = classes[cls as usize].props.get(key) else {
+        return Ok(());
+    };
+    let Some(sv) = pe.set_visibility else {
+        return Ok(());
+    };
+    if scope == Some(pe.declaring_class)
+        || (sv == Visibility::Protected && protected_ok(classes, scope, pe.prototype))
+    {
+        return Ok(());
+    }
+    // php prints `prop_info->name` with %s: for a non-public property that is
+    // the mangled `"\0C\0name"` / `"\0*\0name"`, which renders as empty.
+    let shown = if pe.visibility == Visibility::Public {
+        pe.name.clone()
+    } else {
+        PhpStr::from("")
+    };
+    Err((sv, pe.declaring_class, shown))
+}
+
+/// `Cannot {op} private(set) property A::$x from {global scope|scope C}`.
+pub(crate) fn set_access_err(
+    classes: &[ClassEntry],
+    called: Option<ClassId>,
+    op: &str,
+    (sv, decl, name): (Visibility, ClassId, PhpStr),
+) -> Thrown {
+    let v = if sv == Visibility::Private {
+        "private(set)"
+    } else {
+        "protected(set)"
+    };
+    let from = match called {
+        Some(c) => format!(
+            "scope {}",
+            String::from_utf8_lossy(classes[c as usize].name.as_bytes())
+        ),
+        None => "global scope".to_string(),
+    };
+    Thrown::error(
+        "Error",
+        format!(
+            "Cannot {op} {v} property {}::${} from {from}",
+            String::from_utf8_lossy(classes[decl as usize].name.as_bytes()),
+            String::from_utf8_lossy(name.as_bytes()),
+        ),
+    )
+}
+
+fn protected_ok(classes: &[ClassEntry], scope: Option<ClassId>, declaring: ClassId) -> bool {
+    match scope {
+        Some(c) => {
+            classes[c as usize].ancestors.contains(&declaring)
+                || classes[declaring as usize].ancestors.contains(&c)
+        }
+        None => false,
+    }
+}
+
+/// `Cannot access {private|protected} property C::$name` (C = object's class).
+pub(crate) fn prop_access_err(
+    classes: &[ClassEntry],
+    cls: ClassId,
+    name: &[u8],
+    deny: Deny,
+) -> Thrown {
+    let v = match deny {
+        Deny::BadName => {
+            return Thrown::error("Error", "Cannot access property starting with \"\\0\"")
+        }
+        Deny::Vis(Visibility::Private) => "private",
+        Deny::Vis(Visibility::Protected) => "protected",
+        Deny::Vis(Visibility::Public) => "public",
+    };
+    Thrown::error(
+        "Error",
+        format!(
+            "Cannot access {v} property {}::${}",
+            String::from_utf8_lossy(classes[cls as usize].name.as_bytes()),
+            String::from_utf8_lossy(name),
+        ),
+    )
+}
+
+/// Resolve `name` on `cls` to the storage key to use, or the access error.
+pub(crate) fn prop_key(
+    classes: &[ClassEntry],
+    cls: ClassId,
+    scope: Option<ClassId>,
+    name: &PhpStr,
+) -> Result<PhpStr, Thrown> {
+    match resolve_prop(classes, cls, scope, name) {
+        PropRes::Slot(k) => Ok(k),
+        PropRes::Dynamic => Ok(name.clone()),
+        PropRes::Denied(vis) => Err(prop_access_err(classes, cls, name.as_bytes(), vis)),
+    }
+}
+
+/// The value slot for storage key `key` on `od`, created (as null) when absent.
+/// A declared property that was `unset()` comes back at its declared position
+/// (php keeps the slot, it was only UNDEF), ahead of any dynamic properties.
+pub(crate) fn prop_slot_mut<'o>(
+    classes: &[ClassEntry],
+    od: &'o mut ObjectData,
+    key: PhpStr,
+) -> &'o mut Value {
+    if let Some(i) = od.properties.get_index_of(&key) {
+        return &mut od.properties[i];
+    }
+    let entry = &classes[od.class as usize];
+    let pos = match entry.props.get_index_of(&key) {
+        Some(slot) => od
+            .properties
+            .keys()
+            .take_while(|k| entry.props.get_index_of(*k).is_some_and(|j| j < slot))
+            .count(),
+        None => od.properties.len(),
+    };
+    od.properties.shift_insert(pos, key, Value::Null);
+    &mut od.properties[pos]
+}
+
+/// php's `zend_check_property_access`: is the object slot stored under `key`
+/// the one `$obj->name` reaches from `scope`? Returns its unmangled name if so
+/// (drives `get_object_vars`, `foreach` over an object, and friends).
+pub(crate) fn slot_accessible(
+    classes: &[ClassEntry],
+    cls: ClassId,
+    scope: Option<ClassId>,
+    key: &PhpStr,
+) -> Option<PhpStr> {
+    let entry = &classes[cls as usize];
+    let name = match entry.props.get(key) {
+        Some(pe) => pe.name.clone(),
+        None => key.clone(), // dynamic property
+    };
+    let ok = match resolve_prop(classes, cls, scope, &name) {
+        PropRes::Slot(k) => &k == key,
+        PropRes::Dynamic => *key == name && !entry.props.contains_key(key),
+        PropRes::Denied(_) => false,
+    };
+    ok.then_some(name)
+}
+
+/// php's visibility-mangled form of an object's storage key (what `(array)`,
+/// `serialize` and the debug dumpers see): private keys are already mangled,
+/// a declared protected property becomes `"\0*\0name"`, everything else
+/// (public / dynamic) stays plain.
+pub(crate) fn mangled_prop_key(entry: &ClassEntry, key: &PhpStr) -> PhpStr {
+    match entry.props.get(key) {
+        Some(pe) if pe.visibility == Visibility::Protected => {
+            let mut k = Vec::with_capacity(key.len() + 3);
+            k.extend_from_slice(b"\0*\0");
+            k.extend_from_slice(key.as_bytes());
+            PhpStr::from_bytes(k)
+        }
+        _ => key.clone(),
+    }
 }
 
 fn lc(bytes: &[u8]) -> Vec<u8> {
@@ -230,22 +511,32 @@ impl Vm {
             .collect();
         let methods = php_member_order(methods, own_methods.chain(trait_methods));
 
-        // Instance properties, flattened (override replaces in place).
+        // Instance properties, flattened. A redeclared public/protected property
+        // keeps its inherited slot (same plain key, same position); a property
+        // whose inherited declaration is a parent *private* gets a fresh slot
+        // appended, leaving the parent's private slot in place (php shadowing).
         let mut props: IndexMap<PhpStr, PropEntry> = parent
             .map(|p| self.classes[p as usize].props.clone())
             .unwrap_or_default();
-        for tname in &proto.traits {
-            let tid = self.class_ids[&lc(tname.as_bytes())];
-            for (k, pe) in self.classes[tid as usize].props.clone() {
-                props.insert(
-                    k,
-                    PropEntry {
-                        declaring_class: id,
-                        ..pe
-                    },
-                );
+        let mut prop_visible: FxHashMap<PhpStr, PhpStr> = parent
+            .map(|p| self.classes[p as usize].prop_visible.clone())
+            .unwrap_or_default();
+        let mut own_private: FxHashMap<PhpStr, PhpStr> = FxHashMap::default();
+        let mut declare = |props: &mut IndexMap<PhpStr, PropEntry>, mut pe: PropEntry| {
+            // Redeclaring an inherited public/protected property keeps its
+            // root declaration as the prototype.
+            if let Some(inh) = prop_visible.get(&pe.name).and_then(|k| props.get(k)) {
+                if inh.visibility != Visibility::Private {
+                    pe.prototype = inh.prototype;
+                }
             }
-        }
+            let key = prop_storage_key(&proto.name, &pe.name, pe.visibility);
+            prop_visible.insert(pe.name.clone(), key.clone());
+            if pe.visibility == Visibility::Private {
+                own_private.insert(pe.name.clone(), key.clone());
+            }
+            props.insert(key, pe);
+        };
         for pp in &proto.props {
             let default = match &pp.default {
                 PropDefaultProto::Const(v) => v.clone(),
@@ -254,36 +545,71 @@ impl Vm {
                     self.pending_inits.push(PendingInit {
                         class_id: id,
                         thunk: thunk.clone(),
-                        target: PendingTarget::Prop(pp.name.clone()),
+                        target: PendingTarget::Prop(prop_storage_key(
+                            &proto.name,
+                            &pp.name,
+                            pp.visibility,
+                        )),
                     });
                     Value::Null // placeholder until eval_pending_inits runs
                 }
             };
-            props.insert(
-                pp.name.clone(),
+            declare(
+                &mut props,
                 PropEntry {
+                    name: pp.name.clone(),
                     default,
                     visibility: pp.visibility,
+                    set_visibility: pp.set_visibility,
                     declaring_class: id,
+                    prototype: id,
                 },
             );
+        }
+        // Trait properties follow the class's own (php binds traits after
+        // compiling the class body); one the class declares itself is skipped.
+        for tname in &proto.traits {
+            let tid = self.class_ids[&lc(tname.as_bytes())];
+            for pe in self.classes[tid as usize].props.values().cloned() {
+                if proto.props.iter().any(|pp| pp.name == pe.name) {
+                    continue;
+                }
+                declare(
+                    &mut props,
+                    PropEntry {
+                        declaring_class: id,
+                        prototype: id,
+                        ..pe
+                    },
+                );
+            }
         }
 
         // Static properties (inherited slots alias; redeclared get a fresh cell).
         let mut static_props: IndexMap<Vec<u8>, StaticProp> = parent
             .map(|p| self.classes[p as usize].static_props.clone())
             .unwrap_or_default();
+        // A redeclared inherited public/protected static keeps the root
+        // declaration as its prototype.
+        let static_proto = |props: &IndexMap<Vec<u8>, StaticProp>, name: &[u8]| {
+            props
+                .get(name)
+                .filter(|inh| inh.visibility != Visibility::Private)
+                .map_or(id, |inh| inh.prototype)
+        };
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for (k, sp) in self.classes[tid as usize].static_props.clone() {
                 // Each using class gets its own cell, seeded from the trait's.
                 let v = sp.cell.borrow().clone();
+                let prototype = static_proto(&static_props, &k);
                 static_props.insert(
                     k,
                     StaticProp {
                         cell: Rc::new(RefCell::new(v)),
                         visibility: sp.visibility,
                         declaring_class: id,
+                        prototype,
                     },
                 );
             }
@@ -298,12 +624,14 @@ impl Vm {
                     target: PendingTarget::Static(cell.clone()),
                 }),
             }
+            let prototype = static_proto(&static_props, sp.name.as_bytes());
             static_props.insert(
                 sp.name.as_bytes().to_vec(),
                 StaticProp {
                     cell,
                     visibility: sp.visibility,
                     declaring_class: id,
+                    prototype,
                 },
             );
         }
@@ -391,6 +719,8 @@ impl Vm {
             ancestors,
             methods,
             props,
+            prop_visible,
+            own_private,
             constants,
             static_props,
             enum_cases: Vec::new(),
@@ -552,6 +882,20 @@ impl Vm {
                 }
                 None => false,
             },
+        }
+    }
+
+    /// php's static-property visibility check (`zend_std_get_static_property_with_info`):
+    /// a private is reachable only from its declaring class; a protected from
+    /// any class related to the root declaration's class.
+    pub(crate) fn static_prop_accessible(&self, caller: Option<ClassId>, sp: &StaticProp) -> bool {
+        match sp.visibility {
+            Visibility::Public => true,
+            Visibility::Private => caller == Some(sp.declaring_class),
+            Visibility::Protected => {
+                caller == Some(sp.declaring_class)
+                    || protected_ok(&self.classes, caller, sp.prototype)
+            }
         }
     }
 

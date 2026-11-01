@@ -175,6 +175,10 @@ pub fn loose_compare(a: &Value, b: &Value) -> Ordering {
     use Value::*;
     match (&a, &b) {
         (Null, Null) => Ordering::Equal,
+        // object vs null: an object is always greater (before the bool rule
+        // would cast null; zend_compare's IS_OBJECT/IS_NULL pair).
+        (Object(_) | Closure(_) | Resource(_), Null) => Ordering::Greater,
+        (Null, Object(_) | Closure(_) | Resource(_)) => Ordering::Less,
         // bool on either side: compare as bools.
         (Bool(_), _) | (_, Bool(_)) => conv::to_bool(&a).cmp(&conv::to_bool(&b)),
         // null vs X: treat null as the "zero" of X's type.
@@ -203,6 +207,15 @@ pub fn loose_compare(a: &Value, b: &Value) -> Ordering {
                 _ => cmp_bytes(x.as_bytes(), y.as_bytes()),
             }
         }
+        (Object(x), Object(y)) => compare_objects(x, y),
+        // object vs int/float: php's cast fails ("could not be converted",
+        // a notice) and the object counts as 1.
+        (Object(_), Int(_) | Float(_)) => loose_compare(&Int(1), &b),
+        (Int(_) | Float(_), Object(_)) => loose_compare(&a, &Int(1)),
+        // object vs string / array: uncomparable, the object side is greater
+        // (an object with `__toString` is stringified by the VM beforehand).
+        (Object(_), Str(_) | Array(_)) => Ordering::Greater,
+        (Str(_) | Array(_), Object(_)) => Ordering::Less,
         // arrays
         (Array(x), Array(y)) => match x.len().cmp(&y.len()) {
             Ordering::Equal => {
@@ -224,6 +237,64 @@ pub fn loose_compare(a: &Value, b: &Value) -> Ordering {
         // objects: identity/placeholder until phase 7
         _ => Ordering::Equal,
     }
+}
+
+thread_local! {
+    /// Nesting depth of `compare_objects` (php's recursion protection).
+    static OBJ_CMP_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// php's `zend_std_compare_objects`: the same object is equal; objects of
+/// different classes are uncomparable (1); otherwise the property tables are
+/// compared like `zend_compare_symbol_tables` (count first, then each of the
+/// left object's properties against the same-named one on the right, a
+/// missing one being uncomparable).
+fn compare_objects(x: &rhp_values::ObjectHandle, y: &rhp_values::ObjectHandle) -> Ordering {
+    if std::rc::Rc::ptr_eq(x, y) {
+        return Ordering::Equal;
+    }
+    let (xa, ya) = (x.borrow(), y.borrow());
+    if xa.class != ya.class {
+        return Ordering::Greater;
+    }
+    if xa.properties.len() != ya.properties.len() {
+        return xa.properties.len().cmp(&ya.properties.len());
+    }
+    // A cyclic graph would recurse forever (php throws "Nesting level too
+    // deep"); give up as uncomparable instead of overflowing the stack.
+    let depth = OBJ_CMP_DEPTH.with(|d| d.get());
+    if depth >= 256 {
+        return Ordering::Greater;
+    }
+    let xs: Vec<(PhpStr, Value)> = xa
+        .properties
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let ys: Vec<Option<Value>> = xs
+        .iter()
+        .map(|(k, _)| ya.properties.get(k).cloned())
+        .collect();
+    drop((xa, ya));
+    OBJ_CMP_DEPTH.with(|d| d.set(depth + 1));
+    let mut out = Ordering::Equal;
+    for ((_, xv), yv) in xs.iter().zip(ys) {
+        match yv {
+            Some(yv) => match loose_compare(xv, &yv) {
+                Ordering::Equal => continue,
+                other => {
+                    out = other;
+                    break;
+                }
+            },
+            None => {
+                out = Ordering::Greater;
+                break;
+            }
+        }
+    }
+    OBJ_CMP_DEPTH.with(|d| d.set(depth));
+    out
 }
 
 /// The value `null` is compared *as* when the other side has a concrete type.

@@ -1,0 +1,33 @@
+assign x: Cannot modify private(set) property A::$x from global scope
+assign y: Cannot modify protected(set) property A::$y from global scope
+child sets x: Cannot modify private(set) property A::$x from scope B
+compound: Cannot modify private(set) property A::$x from global scope
+increment: Cannot modify private(set) property A::$x from global scope
+decrement: Cannot modify private(set) property A::$x from global scope
+append: Cannot indirectly modify private(set) property A::$arr from global scope
+nested dim: Cannot indirectly modify private(set) property A::$arr from global scope
+reference: Cannot indirectly modify private(set) property A::$x from global scope
+unset: Cannot unset private(set) property A::$x from global scope
+dynamic name: Cannot modify private(set) property A::$x from global scope
+child sets pp: Cannot modify private(set) property A::$ from scope B
+int(4)
+int(4)
+B Object
+(
+    [x] => 2
+    [y] => from child
+    [arr] => Array
+        (
+            [0] => 2
+        )
+
+    [o] => stdClass Object
+        (
+            [through] => object handle
+        )
+
+    [pp:protected] => 4
+)
+2 from child
+bool(true)
+bool(false)

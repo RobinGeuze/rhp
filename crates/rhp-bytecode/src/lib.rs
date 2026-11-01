@@ -457,6 +457,27 @@ pub enum Instr {
         obj: Reg,
         name: Reg,
     },
+    /// `$o->p` in isset/empty/`??` context (php's BP_VAR_IS): an inaccessible
+    /// or missing property is null without an error, via `__isset` then
+    /// `__get` when defined.
+    FetchPropIs {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+    },
+    /// `FetchPropIs` with the property name in a register.
+    FetchPropDynIs {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+    },
+    /// `C::$p` in isset/empty/`??` context: null (no error) when the static
+    /// property is undeclared or inaccessible.
+    FetchStaticPropIs {
+        dst: Reg,
+        class: ClassRef,
+        name: NIdx,
+    },
     /// `$o->$p = src`: dynamic-name property write.
     StorePropDyn {
         obj: Reg,
@@ -535,6 +556,30 @@ pub enum Instr {
     UnsetProp {
         obj: Reg,
         name: NIdx,
+    },
+    /// `empty($o->name)`: a reachable set property's falsiness, else (php's
+    /// ZEND_PROPERTY_NOT_EMPTY) `__isset` and, if it says yes, `__get`.
+    EmptyProp {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+    },
+    /// `EmptyProp` with the name in a register.
+    EmptyPropDyn {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+    },
+    /// `isset($o->$name)`: `IssetProp` with the name in a register.
+    IssetPropDyn {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+    },
+    /// `unset($o->$name)`: `UnsetProp` with the name in a register.
+    UnsetPropDyn {
+        obj: Reg,
+        name: Reg,
     },
     /// `global $x`: bind CV `cv` to the global variable `name` (a shared cell).
     BindGlobal {
@@ -994,6 +1039,9 @@ pub struct MethodProto {
 pub struct PropProto {
     pub name: PhpStr,
     pub visibility: Visibility,
+    /// Asymmetric write visibility (`private(set)` / `protected(set)`), when
+    /// narrower than `visibility`.
+    pub set_visibility: Option<Visibility>,
     pub is_readonly: bool,
     pub default: PropDefaultProto,
 }

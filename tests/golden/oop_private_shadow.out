@@ -1,0 +1,131 @@
+base child
+B1 child
+B1 C1
+2
+array(2) {
+  [0]=>
+  string(1) "x"
+  ["k"]=>
+  string(1) "x"
+}
+bool(true)
+bool(true)
+via-ref C1
+via-ref!
+object(Child)#1 (5) {
+  ["name":"Base":private]=>
+  string(8) "via-ref!"
+  ["list":"Base":private]=>
+  array(2) {
+    [0]=>
+    string(1) "x"
+    ["k"]=>
+    string(1) "x"
+  }
+  ["prot":protected]=>
+  string(1) "p"
+  ["pub"]=>
+  string(1) "u"
+  ["name":"Child":private]=>
+  string(2) "C1"
+}
+Child Object
+(
+    [name:Base:private] => via-ref!
+    [list:Base:private] => Array
+        (
+            [0] => x
+            [k] => x
+        )
+
+    [prot:protected] => p
+    [pub] => u
+    [name:Child:private] => C1
+)
+
+\Child::__set_state(array(
+   'name' => 'via-ref!',
+   'list' => 
+  array (
+    0 => 'x',
+    'k' => 'x',
+  ),
+   'prot' => 'p',
+   'pub' => 'u',
+   'name' => 'C1',
+))
+{"pub":"u"}
+bool(true)
+\0Base\0name
+\0Base\0list
+\0*\0prot
+pub
+\0Child\0name
+array(4) {
+  ["name"]=>
+  string(8) "via-ref!"
+  ["list"]=>
+  array(2) {
+    [0]=>
+    string(1) "x"
+    ["k"]=>
+    string(1) "x"
+  }
+  ["prot"]=>
+  string(1) "p"
+  ["pub"]=>
+  string(1) "u"
+}
+array(3) {
+  ["prot"]=>
+  string(1) "p"
+  ["pub"]=>
+  string(1) "u"
+  ["name"]=>
+  string(2) "C1"
+}
+array(1) {
+  ["pub"]=>
+  string(1) "u"
+}
+name,list,prot,pub
+prot,pub,name
+global sees pub
+unset
+set
+array(2) {
+  [0]=>
+  string(1) "x"
+  ["k"]=>
+  string(1) "x"
+}
+array(2) {
+  ["pub"]=>
+  string(1) "u"
+  ["list"]=>
+  string(3) "dyn"
+}
+bool(false)
+bool(true)
+C1
+back
+object(Child)#1 (6) {
+  ["name":"Base":private]=>
+  string(4) "BACK"
+  ["list":"Base":private]=>
+  array(2) {
+    [0]=>
+    string(1) "x"
+    ["k"]=>
+    string(1) "x"
+  }
+  ["prot":protected]=>
+  string(1) "P"
+  ["pub"]=>
+  string(1) "U"
+  ["name":"Child":private]=>
+  string(2) "C1"
+  ["list"]=>
+  string(3) "dyn"
+}
+BACK cloned C1

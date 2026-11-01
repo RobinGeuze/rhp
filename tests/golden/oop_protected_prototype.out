@@ -1,0 +1,9 @@
+string(2) "np"
+string(2) "c1"
+string(2) "d1"
+bool(true)
+string(11) "poked by C2"
+bool(false)
+Cannot access protected property L::$own
+Cannot access protected property C1::$prot
+Cannot access protected property P1::$x

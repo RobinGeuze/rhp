@@ -1,0 +1,123 @@
+O:2:"R2":5:{s:5:"~R1~x";s:2:"r1";s:9:"~*~shared";s:1:"s";s:5:"~R2~x";s:2:"r2";s:3:"pub";a:2:{i:0;i:1;s:1:"a";N;}s:3:"dyn";d:1.5;}
+r1 r2
+bool(true)
+R2 Object
+(
+    [x:R1:private] => r1
+    [shared:protected] => s
+    [x:R2:private] => r2
+    [pub] => Array
+        (
+            [0] => 1
+            [a] => 
+        )
+
+    [dyn] => 1.5
+)
+
+\R2::__set_state(array(
+   'x' => 'r1',
+   'shared' => 's',
+   'x' => 'r2',
+   'pub' => 
+  array (
+    0 => 1,
+    'a' => NULL,
+  ),
+   'dyn' => 1.5,
+))
+array (
+  1 => 
+  \R2::__set_state(array(
+     'x' => 'r1',
+     'shared' => 's',
+     'x' => 'r2',
+     'pub' => 
+    array (
+      0 => 1,
+      'a' => NULL,
+    ),
+     'dyn' => 1.5,
+  )),
+  'nested' => 
+  array (
+    'o' => 
+    (object) array(
+    ),
+    'e' => 
+    array (
+    ),
+  ),
+)
+(object) array(
+   'a' => 'it\'s',
+   '0' => 'zero',
+   'b' => 
+  array (
+    'x' => 'nul' . "\0" . 'byte',
+  ),
+)
+{"pub":{"0":1,"a":null},"dyn":1.5}
+[
+    {
+        "a": "it's",
+        "0": "zero",
+        "b": {
+            "x": "nul\u0000byte"
+        }
+    },
+    {
+        "pub": {
+            "0": 1,
+            "a": null
+        },
+        "dyn": 1.5
+    }
+]
+~R1~x => "r1"
+~*~shared => "s"
+~R2~x => "r2"
+pub => {"0":1,"a":null}
+dyn => 1.5
+O:6:"Sleepy":4:{s:9:"~Sleepy~y";s:2:"yy";s:4:"~*~z";s:2:"zz";s:1:"w";s:2:"ww";s:9:"~*~shared";s:1:"s";}
+woke yy
+Sleepy Object
+(
+    [x:R1:private] => r1
+    [shared:protected] => s
+    [y:Sleepy:private] => yy
+    [z:protected] => zz
+    [w] => ww
+)
+
+O:6:"Custom":3:{s:1:"a";i:1;s:1:"b";i:2;s:5:"extra";a:2:{i:0;i:1;i:1;i:2;}}
+unserialize {"a":1,"b":2,"extra":[1,2]}
+Custom Object
+(
+    [a:Custom:private] => 10
+    [b:protected] => 2
+)
+
+Array
+(
+    [list] => Array
+        (
+            [0] => R1 Object
+                (
+                    [x:R1:private] => r1
+                    [shared:protected] => s
+                )
+
+            [1] => stdClass Object
+                (
+                )
+
+        )
+
+    [k] => v
+)
+
+Exception: Serialization of 'Closure' is not allowed
+-9223372036854775807-1
+-0.0
+1.0E+100

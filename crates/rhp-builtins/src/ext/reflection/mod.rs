@@ -51,17 +51,23 @@ fn fn_new_instance_noctor(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
     host.reflect_new_instance(&name, Vec::new(), false)
 }
 
+/// `__reflect_get_prop($obj, $name, $class)`: read `$name` as `$class` sees it.
 fn fn_get_prop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let obj = deref(&args[0]);
     let name = str_arg(args, 1);
-    Ok(host.object_prop(&obj, &name).unwrap_or(Value::Null))
+    let class = str_arg(args, 2);
+    Ok(host
+        .reflect_get_prop(&obj, &class, &name)
+        .unwrap_or(Value::Null))
 }
 
+/// `__reflect_set_prop($obj, $name, $value, $class)`.
 fn fn_set_prop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let obj = deref(&args[0]);
     let name = str_arg(args, 1);
     let val = deref(&args[2]);
-    host.reflect_set_prop(&obj, &name, val);
+    let class = str_arg(args, 3);
+    host.reflect_set_prop(&obj, &class, &name, val);
     Ok(Value::Null)
 }
 
@@ -114,8 +120,8 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         1,
         Some(1),
     );
-    put(m, "__reflect_get_prop", fn_get_prop, 2, Some(2));
-    put(m, "__reflect_set_prop", fn_set_prop, 3, Some(3));
+    put(m, "__reflect_get_prop", fn_get_prop, 3, Some(3));
+    put(m, "__reflect_set_prop", fn_set_prop, 4, Some(4));
     put(m, "__reflect_method_params", fn_method_params, 2, Some(2));
     put(m, "__reflect_func_params", fn_func_params, 1, Some(1));
     put(
@@ -178,8 +184,8 @@ class ReflectionProperty {
     public function __construct($class, $name) { $this->class = is_object($class) ? get_class($class) : $class; $this->name = $name; }
     public function getName() { return $this->name; }
     public function setAccessible($a) {}
-    public function getValue($object = null) { return __reflect_get_prop($object, $this->name); }
-    public function setValue($object, $value = null) { __reflect_set_prop($object, $this->name, $value); }
+    public function getValue($object = null) { return __reflect_get_prop($object, $this->name, $this->class); }
+    public function setValue($object, $value = null) { __reflect_set_prop($object, $this->name, $value, $this->class); }
     public function isInitialized($object = null) { return true; }
 }
 

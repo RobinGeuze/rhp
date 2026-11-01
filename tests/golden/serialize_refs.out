@@ -1,0 +1,34 @@
+O:8:"stdClass":1:{s:4:"self";r:1;}
+bool(true)
+a:3:{i:0;O:8:"stdClass":1:{s:1:"v";i:1;}i:1;r:2;s:1:"x";a:1:{i:0;r:2;}}
+bool(true)
+int(2)
+a:3:{i:0;i:1;i:1;R:2;i:2;i:1;}
+a:2:{i:0;i:1;i:1;a:2:{i:0;i:1;i:1;R:3;}}
+a:2:{s:1:"x";a:1:{i:0;i:1;}s:1:"y";R:2;}
+{"x":[1,2],"y":[1,2]}
+Array
+(
+    [0] => 5
+    [1] => 5
+)
+Array
+(
+    [0] => a
+    [1] => 8
+    [2] => 8
+)
+O:1:"W":2:{s:1:"n";s:5:"outer";s:5:"child";O:1:"W":2:{s:1:"n";s:5:"inner";s:5:"child";r:1;}}
+wakeup inner
+wakeup outer
+bool(true)
+string(5) "inner"
+a:3:{i:0;O:8:"stdClass":0:{}i:1;R:2;i:2;r:2;}
+O:8:"stdClass":2:{s:4:"list";a:2:{i:0;i:1;i:1;i:2;}s:5:"alias";R:2;}
+3
+a:2:{i:0;O:2:"S2":2:{s:1:"a";O:8:"stdClass":0:{}s:1:"b";r:3;}i:1;r:3;}
+bool(true)
+bool(true)
+bool(false)
+bool(false)
+bool(false)

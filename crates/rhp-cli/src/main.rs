@@ -47,6 +47,9 @@ fn main() -> ExitCode {
     };
 
     let mut vm = Vm::new();
+    // Like the php CLI, write output unbuffered so it interleaves with stderr
+    // and with the output of child processes in the order it was produced.
+    vm.set_stdout_passthrough(true);
     // The top-level script's path, so `Phar::mapPhar` can parse the running phar.
     vm.set_main_script_path(file.as_bytes().to_vec());
     // $argv / $_SERVER['argv']: the script name as given, then its arguments.

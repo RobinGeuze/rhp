@@ -1,0 +1,55 @@
+A-private B-public/B-protected B-public
+set-by-A outside/B-protected
+object(B)#1 (4) {
+  ["v":"A":private]=>
+  string(8) "set-by-A"
+  ["w":"A":private]=>
+  string(3) "A-w"
+  ["v"]=>
+  string(7) "outside"
+  ["w":protected]=>
+  string(11) "B-protected"
+}
+array(2) {
+  ["v"]=>
+  string(8) "set-by-A"
+  ["w"]=>
+  string(3) "A-w"
+}
+array(1) {
+  ["v"]=>
+  string(7) "outside"
+}
+Error: Cannot access protected property B::$w
+Cannot access protected property B::$w
+Cannot access protected property B::$w
+bool(false)
+bool(true)
+bool(true)
+Cannot access private property P::$secret
+Cannot access protected property P::$prot
+n
+bool(false)
+1
+Cannot access protected property Q::$prot
+bool(false)
+bool(true)
+bool(true)
+S1 S1 S2 T
+changed S2 changed
+Cannot access private property S2::$s
+Cannot access private property S3::$s
+Cannot access private property S1::$s
+Cannot access protected property S2::$t
+bool(false)
+bool(true)
+k1 k2
+k1-new k2
+array(1) {
+  ["z"]=>
+  string(6) "k1-new"
+}
+array(1) {
+  ["z"]=>
+  string(2) "k2"
+}

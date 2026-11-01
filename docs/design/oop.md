@@ -39,9 +39,9 @@ fixtures.
    `defining_class` (→ `self::`/`parent::`/`__CLASS__`) and `called_class` (→
    `static::`/`new static`/`static::class`). §4
 6. **Visibility is parsed, stored, and enforced** with a caller-class check
-   (`caller == frame.defining_class`). Two documented simplifications: private-name
-   shadowing uses one slot per name; typed-uninitialized properties materialize as
-   `Null`. §5
+   (`caller == frame.defining_class`). Private-name shadowing uses php's mangled storage
+   keys (see oop-model.md §4). Documented simplification: typed-uninitialized
+   properties materialize as `Null`. §5
 
 ---
 
@@ -562,9 +562,9 @@ class A { private $s="secret"; public function get(){ return $this->s; } }
 $a = new A; $a->get();  // "secret"   $a->s;  // Error: Cannot access private property A::$s
 ```
 
-Documented simplifications (cut 1): **private-name shadowing** uses one slot per
-property name (PHP mangles `\0A\0x` vs `\0B\0x`) — faithful for the common case,
-add mangling when a golden needs it. **Typed-uninitialized** properties
+Private-name shadowing is modelled with php's mangled storage keys
+(`\0A\0x` vs `\0B\0x`, see oop-model.md §4). Documented simplification (cut 1):
+**Typed-uninitialized** properties
 materialize as `Null` (we store no type hints yet). *(Baseline shortcut allowed
 during bring-up: land method/property plumbing with everything treated public,
 then switch the check on — but the metadata must be stored from step 1.)*

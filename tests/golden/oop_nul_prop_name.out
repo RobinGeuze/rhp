@@ -1,0 +1,42 @@
+read: Cannot access property starting with "\0"
+write: Cannot access property starting with "\0"
+unset: Cannot access property starting with "\0"
+bool(false)
+bool(true)
+string(9) "coalesced"
+bool(false)
+read: Cannot access property starting with "\0"
+write: Cannot access property starting with "\0"
+unset: Cannot access property starting with "\0"
+bool(false)
+bool(true)
+string(9) "coalesced"
+bool(false)
+read: Cannot access property starting with "\0"
+write: Cannot access property starting with "\0"
+unset: Cannot access property starting with "\0"
+bool(false)
+bool(true)
+string(9) "coalesced"
+bool(false)
+read: Cannot access property starting with "\0"
+write: Cannot access property starting with "\0"
+unset: Cannot access property starting with "\0"
+bool(false)
+bool(true)
+string(9) "coalesced"
+bool(false)
+Cannot access property starting with "\0"
+A Object
+(
+    [secret:A:private] => s3cret
+    [prot:protected] => p
+    [pub] => 1
+)
+
+int(3)
+get 4
+string(1) "g"
+set 2
+isset 2
+bool(true)

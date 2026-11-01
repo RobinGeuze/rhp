@@ -1,0 +1,27 @@
+__get(foo)
+__set(foo)
+[FOO]
+[FOO]
+__set(bar)
+[v]
+__isset(baz)
+bool(false)
+bool(true)
+__unset(qux)
+__isset(bar)
+bool(false)
+Lazy Object
+(
+    [loaded:Lazy:private] => Array
+        (
+        )
+
+    [foo] => [FOO]
+)
+
+proxy get secret
+proxy get a
+proxy get missing
+string(1) "s"
+int(1)
+NULL

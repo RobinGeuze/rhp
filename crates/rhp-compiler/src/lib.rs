@@ -29,6 +29,7 @@ use rhp_values::{ClassFlags, ClassKind, Visibility};
 
 /// A compiled member selector: a static interned name, or a runtime name in a
 /// register (dynamic `$o->$x` / `$o->{expr}`).
+#[derive(Clone, Copy)]
 enum Sel {
     Static(NIdx),
     Dyn(Reg),
@@ -657,13 +658,34 @@ pub fn compile_with_source(
 fn modifiers_visibility(mods: &rhp_frontend::cst::Sequence<Modifier>) -> Visibility {
     for m in mods.iter() {
         match m {
-            Modifier::Private(_) | Modifier::PrivateSet(_) => return Visibility::Private,
-            Modifier::Protected(_) | Modifier::ProtectedSet(_) => return Visibility::Protected,
-            Modifier::Public(_) | Modifier::PublicSet(_) => return Visibility::Public,
+            // `private(set)` etc. only restrict writes (asymmetric visibility,
+            // not enforced yet); the read visibility is the plain modifier,
+            // defaulting to public.
+            Modifier::Private(_) => return Visibility::Private,
+            Modifier::Protected(_) => return Visibility::Protected,
+            Modifier::Public(_) => return Visibility::Public,
             _ => {}
         }
     }
     Visibility::Public
+}
+
+/// The asymmetric write visibility (`private(set)` / `protected(set)`), when
+/// it is narrower than the read visibility.
+fn modifiers_set_visibility(mods: &rhp_frontend::cst::Sequence<Modifier>) -> Option<Visibility> {
+    let read = modifiers_visibility(mods);
+    let set = mods.iter().find_map(|m| match m {
+        Modifier::PrivateSet(_) => Some(Visibility::Private),
+        Modifier::ProtectedSet(_) => Some(Visibility::Protected),
+        Modifier::PublicSet(_) => Some(Visibility::Public),
+        _ => None,
+    })?;
+    let rank = |v: Visibility| match v {
+        Visibility::Public => 0,
+        Visibility::Protected => 1,
+        Visibility::Private => 2,
+    };
+    (rank(set) > rank(read)).then_some(set)
 }
 
 fn has_modifier(mods: &rhp_frontend::cst::Sequence<Modifier>, want: fn(&Modifier) -> bool) -> bool {
@@ -846,6 +868,7 @@ fn compile_members(
             }
             ClassLikeMember::Property(Property::Plain(p)) => {
                 let visibility = modifiers_visibility(&p.modifiers);
+                let set_visibility = modifiers_set_visibility(&p.modifiers);
                 let is_static = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Static(_)));
                 let is_readonly =
                     has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
@@ -873,6 +896,7 @@ fn compile_members(
                         out.props.push(PropProto {
                             name: pname,
                             visibility,
+                            set_visibility,
                             is_readonly,
                             default,
                         });
@@ -954,9 +978,10 @@ interface ArrayAccess {}
 interface Countable {}
 final class Generator implements Iterator {}
 class stdClass {}
+final class __PHP_Incomplete_Class {}
 final class Closure {
     public static function fromCallable($callback) { return __closure_from_callable($callback); }
-    public static function bind($closure, $newThis, $newScope = null) { return __closure_bind($closure, $newThis, $newScope); }
+    public static function bind($closure, $newThis, $newScope = 'static') { return __closure_bind($closure, $newThis, $newScope); }
 }
 class Exception implements Throwable {
     protected $message = "";
@@ -1442,6 +1467,7 @@ fn compile_method(
             promoted.push(PropProto {
                 name: PhpStr::from_bytes(var.to_vec()),
                 visibility: vis,
+                set_visibility: modifiers_set_visibility(&p.modifiers),
                 is_readonly: ro,
                 default: PropDefaultProto::None,
             });
@@ -2628,15 +2654,10 @@ impl ProtoBuilder {
                 }
                 // `unset($o->prop)`: remove a declared property, else `__unset`.
                 Expression::Access(Access::Property(pa)) => {
-                    if let ClassLikeMemberSelector::Identifier(li) = &pa.property {
-                        let obj = self.compile_expr(pa.object)?;
-                        let name = self.intern_name(li.value);
-                        self.emit(Instr::UnsetProp { obj, name });
-                    } else {
-                        return Err(Thrown::unsupported(
-                            "unset of dynamic property name",
-                            "`unset($o->$x)` deferred",
-                        ));
+                    let obj = self.compile_expr(pa.object)?;
+                    match self.compile_selector(&pa.property)? {
+                        Sel::Static(name) => self.emit(Instr::UnsetProp { obj, name }),
+                        Sel::Dyn(name) => self.emit(Instr::UnsetPropDyn { obj, name }),
                     }
                 }
                 _ => {
@@ -3160,7 +3181,7 @@ impl ProtoBuilder {
 
     fn compile_coalesce(&mut self, b: &rhp_frontend::cst::Binary) -> Result<Reg, Thrown> {
         let dst = self.alloc_temp();
-        let a = self.compile_expr(b.lhs)?;
+        let a = self.compile_quiet(b.lhs)?;
         self.emit(Instr::Mov { dst, src: a });
         let jnn = self.code.len();
         self.emit(Instr::Nop); // JmpNotNull dst -> end
@@ -3427,20 +3448,28 @@ impl ProtoBuilder {
                 let mut jumps = Vec::new();
                 for v in i.values.iter() {
                     // `isset($o->prop)` must consult `__isset`, not `__get`.
-                    if let Expression::Access(Access::Property(pa)) = v {
-                        if let ClassLikeMemberSelector::Identifier(li) = &pa.property {
-                            let obj = self.compile_expr(pa.object)?;
-                            let name = self.intern_name(li.value);
-                            let r = self.alloc_temp();
-                            self.emit(Instr::IssetProp { dst: r, obj, name });
-                            // IssetProp yields a bool; false short-circuits.
-                            let pos = self.code.len();
-                            self.emit(Instr::Nop); // JmpFalse r -> false
-                            jumps.push((pos, r, true));
-                            continue;
+                    // A nullsafe `$o?->prop` too: a null object makes IssetProp false.
+                    let prop = match v {
+                        Expression::Access(Access::Property(pa)) => Some((pa.object, &pa.property)),
+                        Expression::Access(Access::NullSafeProperty(pa)) => {
+                            Some((pa.object, &pa.property))
                         }
+                        _ => None,
+                    };
+                    if let Some((object, property)) = prop {
+                        let obj = self.compile_quiet(object)?;
+                        let r = self.alloc_temp();
+                        match self.compile_selector(property)? {
+                            Sel::Static(name) => self.emit(Instr::IssetProp { dst: r, obj, name }),
+                            Sel::Dyn(name) => self.emit(Instr::IssetPropDyn { dst: r, obj, name }),
+                        }
+                        // IssetProp yields a bool; false short-circuits.
+                        let pos = self.code.len();
+                        self.emit(Instr::Nop); // JmpFalse r -> false
+                        jumps.push((pos, r, true));
+                        continue;
                     }
-                    let r = self.compile_expr(v)?; // null if absent (DimFetch returns null)
+                    let r = self.compile_quiet(v)?; // null if absent (DimFetch returns null)
                     let pos = self.code.len();
                     self.emit(Instr::Nop); // JmpNull r -> false
                     jumps.push((pos, r, false));
@@ -3468,8 +3497,27 @@ impl ProtoBuilder {
                 Ok(dst)
             }
             Construct::Empty(e) => {
+                // `empty($o->prop)` = !isset($o->prop) || !$o->prop: an
+                // inaccessible / unset property is empty (no error), via
+                // `__isset` then `__get` like php.
+                let prop = match e.value {
+                    Expression::Access(Access::Property(pa)) => Some((pa.object, &pa.property)),
+                    Expression::Access(Access::NullSafeProperty(pa)) => {
+                        Some((pa.object, &pa.property))
+                    }
+                    _ => None,
+                };
+                if let Some((object, property)) = prop {
+                    let obj = self.compile_quiet(object)?;
+                    let dst = self.alloc_temp();
+                    match self.compile_selector(property)? {
+                        Sel::Static(name) => self.emit(Instr::EmptyProp { dst, obj, name }),
+                        Sel::Dyn(name) => self.emit(Instr::EmptyPropDyn { dst, obj, name }),
+                    }
+                    return Ok(dst);
+                }
                 // empty(x) == !to_bool(x); absent/null -> true (Not handles it).
-                let r = self.compile_expr(e.value)?;
+                let r = self.compile_quiet(e.value)?;
                 let dst = self.alloc_temp();
                 self.emit(Instr::Not { dst, a: r });
                 Ok(dst)
@@ -4183,7 +4231,16 @@ impl ProtoBuilder {
             }
         }
 
+        // `$this` in a non-static closure: its CV receives a rebound object
+        // (`Closure::bind` / `bindTo` / `call`) even when the closure was
+        // created outside any instance context and so captured nothing.
+        let this_cv = if is_static {
+            None
+        } else {
+            c.cv_map.iter().position(|n| n == b"this").map(|i| i as Reg)
+        };
         let mut proto = c.finish();
+        proto.this_cv = this_cv;
         proto.num_params = num_params;
         proto.params = params;
         proto.num_captures = nc;
@@ -4495,6 +4552,68 @@ impl ProtoBuilder {
             cache,
         });
         Ok(dst)
+    }
+
+    /// Compile `e` in php's BP_VAR_IS mode (an isset / empty / `??` operand):
+    /// the property, static-property and dim fetches along its container chain
+    /// are quiet (an inaccessible or missing property is null, no access
+    /// error, `__isset` consulted before `__get`). Keys, dynamic member names
+    /// and anything that is not a fetch compile normally.
+    fn compile_quiet(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+        match e {
+            Expression::Parenthesized(p) => self.compile_quiet(p.expression),
+            Expression::ArrayAccess(aa) => {
+                let arr = self.compile_quiet(aa.array)?;
+                let key = self.compile_expr(aa.index)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::DimFetch { dst, arr, key });
+                Ok(dst)
+            }
+            Expression::Access(Access::Property(pa)) => {
+                let obj = self.compile_quiet(pa.object)?;
+                let dst = self.alloc_temp();
+                match self.compile_selector(&pa.property)? {
+                    Sel::Static(name) => self.emit(Instr::FetchPropIs { dst, obj, name }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchPropDynIs { dst, obj, name }),
+                }
+                Ok(dst)
+            }
+            Expression::Access(Access::NullSafeProperty(npa)) => {
+                let obj = self.compile_quiet(npa.object)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::Mov { dst, src: obj });
+                let jn = self.code.len();
+                self.emit(Instr::Nop); // JmpNull dst -> end
+                let t = self.alloc_temp();
+                match self.compile_selector(&npa.property)? {
+                    Sel::Static(name) => self.emit(Instr::FetchPropIs {
+                        dst: t,
+                        obj: dst,
+                        name,
+                    }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchPropDynIs {
+                        dst: t,
+                        obj: dst,
+                        name,
+                    }),
+                }
+                self.emit(Instr::Mov { dst, src: t });
+                let end = self.here();
+                self.code[jn] = Instr::JmpNull {
+                    src: dst,
+                    target: end,
+                };
+                Ok(dst)
+            }
+            Expression::Access(Access::StaticProperty(spa)) => {
+                let class = self.class_ref(spa.class)?;
+                let name = self.static_prop_name(&spa.property)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::FetchStaticPropIs { dst, class, name });
+                Ok(dst)
+            }
+            _ => self.compile_expr(e),
+        }
     }
 
     fn compile_access(&mut self, acc: &Access) -> Result<Reg, Thrown> {

@@ -334,6 +334,14 @@ impl PhpArray {
         PhpArray(Rc::new(ArrayData::new()))
     }
 
+    /// Identity of the shared array storage (php's `zend_array *`): equal for
+    /// copies that have not been written since, so a recursive array reached
+    /// through a reference is recognized (`*RECURSION*` / circular-reference
+    /// guards in the dumpers and encoders).
+    pub fn data_ptr(&self) -> usize {
+        Rc::as_ptr(&self.0) as usize
+    }
+
     pub fn len(&self) -> usize {
         self.0.entries.len()
     }

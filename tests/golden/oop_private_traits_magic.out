@@ -1,0 +1,44 @@
+12 base
+object(Derived)#1 (4) {
+  ["tag":"Base":private]=>
+  string(4) "base"
+  ["count":"Base":private]=>
+  int(0)
+  ["tag":"Derived":private]=>
+  string(7) "derived"
+  ["count":"Derived":private]=>
+  int(2)
+}
+Array
+(
+)
+bool(true)
+bool(true)
+magic-get(hidden)
+magic-set(hidden)
+magic-isset(hidden)
+bool(true)
+magic-unset(hidden)
+h magic-get(hidden)
+magic-set(hidden)
+h
+object(MagicChild)#2 (1) {
+  ["hidden":"Magic":private]=>
+  string(1) "h"
+}
+read: Cannot access private property NoMagic::$p
+write: Cannot access protected property NoMagic::$q
+unset: Cannot access private property NoMagic::$p
+arraywrite: Cannot access private property NoMagic::$p
+ref: Cannot access protected property NoMagic::$q
+bool(false)
+bool(false)
+bool(true)
+r1 r2
+R1-new r2
+R1-new R2-new
+x
+pub
+prot
+x
+bool(true)

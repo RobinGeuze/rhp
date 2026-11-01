@@ -638,6 +638,13 @@ pub enum Instr {
     },
     /// `__halt_compiler()`: stop this proto as a top-level return.
     Halt,
+    /// End of an expression statement: the temporaries `[from, to)` it used are
+    /// dead — release them (so an object only they still held is freed, and
+    /// its destructor runs, at the statement boundary as in php).
+    ClearTemps {
+        from: Reg,
+        to: Reg,
+    },
     /// `exit`/`die`: a string `arg` is printed (code 0), an int `arg` is the exit
     /// code, null/absent is code 0. Terminates the script via the SAPI exit path.
     Exit {

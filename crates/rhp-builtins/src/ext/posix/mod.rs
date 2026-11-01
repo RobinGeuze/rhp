@@ -8,7 +8,7 @@ use std::ffi::{CStr, CString};
 
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::proc_fns::{getpwnam, getpwuid, Passwd};
+use crate::proc_fns::{getpwnam, getpwuid, zpp_long, zpp_string, Passwd};
 use crate::{Builtin, Host, Thrown};
 
 fn deref(v: &Value) -> Value {
@@ -18,8 +18,19 @@ fn deref(v: &Value) -> Value {
     }
 }
 
-fn int_arg(args: &[Value], i: usize) -> i64 {
-    conv::to_int(&deref(&args[i]))
+/// php's `PHP_POSIX_CHECK_PID`: ValueError unless `lower <= pid <= upper`.
+fn check_pid(pid: i64, arg: usize, fname: &str, pname: &str, lower: i64) -> Result<(), Thrown> {
+    let upper = i32::MAX as i64;
+    if pid < lower || pid > upper {
+        // php passes the C `int` bounds to a ZEND_LONG_FMT ("%lld") format, so
+        // INT_MIN prints as its zero-extended 32-bit pattern (2147483648).
+        let shown = lower as i32 as u32;
+        return Err(Thrown::error(
+            "ValueError",
+            format!("{fname}(): Argument #{arg} (${pname}) must be between {shown} and {upper}"),
+        ));
+    }
+    Ok(())
 }
 
 fn errno() -> i32 {
@@ -108,7 +119,9 @@ id_fn!(fn_getegid, libc::getegid());
 id_fn!(fn_getpgrp, libc::getpgrp());
 
 fn fn_getsid(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let r = unsafe { libc::getsid(int_arg(args, 0) as libc::pid_t) };
+    let pid = zpp_long(host, args, 0, "posix_getsid", "process_id")?;
+    check_pid(pid, 1, "posix_getsid", "process_id", 0)?;
+    let r = unsafe { libc::getsid(pid as libc::pid_t) };
     if r < 0 {
         set_last_error(host, errno());
         return Ok(Value::Bool(false));
@@ -117,7 +130,8 @@ fn fn_getsid(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_getpgid(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let r = unsafe { libc::getpgid(int_arg(args, 0) as libc::pid_t) };
+    let pid = zpp_long(host, args, 0, "posix_getpgid", "process_id")?;
+    let r = unsafe { libc::getpgid(pid as libc::pid_t) };
     if r < 0 {
         set_last_error(host, errno());
         return Ok(Value::Bool(false));
@@ -126,8 +140,9 @@ fn fn_getpgid(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_kill(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let pid = int_arg(args, 0);
-    let sig = int_arg(args, 1);
+    let pid = zpp_long(host, args, 0, "posix_kill", "process_id")?;
+    let sig = zpp_long(host, args, 1, "posix_kill", "signal")?;
+    check_pid(pid, 1, "posix_kill", "process_id", i32::MIN as i64)?;
     if unsafe { libc::kill(pid as libc::pid_t, sig as i32) } < 0 {
         set_last_error(host, errno());
         return Ok(Value::Bool(false));
@@ -166,9 +181,16 @@ fn fn_isatty(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_ttyname(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
-    let Some(fd) = fd_of(host, &v) else {
-        return Ok(Value::Bool(false));
+    let fd = match (&v, fd_of(host, &v)) {
+        (_, Some(fd)) => fd,
+        (Value::Resource(_), None) => return Ok(Value::Bool(false)),
+        // php warns, then falls back to zval_get_long().
+        (_, None) => conv::to_int(&v),
     };
+    if !matches!(v, Value::Resource(_)) && (fd < 0 || fd > i32::MAX as i64) {
+        set_last_error(host, libc::EBADF);
+        return Ok(Value::Bool(false));
+    }
     let mut buf = vec![0 as libc::c_char; 256];
     let r = unsafe { libc::ttyname_r(fd as i32, buf.as_mut_ptr(), buf.len()) };
     if r != 0 {
@@ -179,7 +201,8 @@ fn fn_ttyname(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_getpwuid(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match getpwuid(int_arg(args, 0) as u32) {
+    let uid = zpp_long(host, args, 0, "posix_getpwuid", "user_id")?;
+    match getpwuid(uid as libc::uid_t) {
         Some(p) => Ok(passwd_array(p)),
         None => {
             set_last_error(host, errno());
@@ -189,7 +212,7 @@ fn fn_getpwuid(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_getpwnam(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = conv::to_string_bytes(&deref(&args[0]));
+    let name = zpp_string(host, args, 0, "posix_getpwnam", "username")?;
     match getpwnam(&name) {
         Some(p) => Ok(passwd_array(p)),
         None => {
@@ -200,7 +223,7 @@ fn fn_getpwnam(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_getgrgid(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let gid = int_arg(args, 0) as libc::gid_t;
+    let gid = zpp_long(host, args, 0, "posix_getgrgid", "group_id")? as libc::gid_t;
     unsafe {
         let mut g: libc::group = std::mem::zeroed();
         let mut buf = vec![0 as libc::c_char; 65536];
@@ -215,7 +238,7 @@ fn fn_getgrgid(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_getgrnam(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = conv::to_string_bytes(&deref(&args[0]));
+    let name = zpp_string(host, args, 0, "posix_getgrnam", "name")?;
     let Ok(c) = CString::new(name) else {
         return Ok(Value::Bool(false));
     };
@@ -288,8 +311,17 @@ fn fn_getcwd(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_access(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = conv::to_string_bytes(&deref(&args[0]));
-    let mode = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    let path = zpp_string(host, args, 0, "posix_access", "filename")?;
+    if path.contains(&0) {
+        return Err(Thrown::error(
+            "ValueError",
+            "posix_access(): Argument #1 ($filename) must not contain any null bytes",
+        ));
+    }
+    let mode = match args.get(1) {
+        Some(_) => zpp_long(host, args, 1, "posix_access", "flags")?,
+        None => 0,
+    };
     let Ok(c) = CString::new(path) else {
         return Ok(Value::Bool(false));
     };
@@ -304,8 +336,8 @@ fn fn_get_last_error(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thro
     Ok(Value::Int(last_error(host) as i64))
 }
 
-fn fn_strerror(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let e = int_arg(args, 0) as i32;
+fn fn_strerror(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let e = zpp_long(host, args, 0, "posix_strerror", "error_code")? as i32;
     let s = unsafe { cbytes(libc::strerror(e)) };
     Ok(Value::str(s))
 }

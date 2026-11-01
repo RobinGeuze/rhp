@@ -99,6 +99,32 @@ pub struct Vm {
     argv: Vec<Vec<u8>>,
     // Opaque native resources (e.g. `proc_open` process handles), by id.
     native_resources: HashMap<u32, Box<dyn std::any::Any>>,
+    // The `STDIN` constant's reader: a buffered stream over a dup of fd 0
+    // (created on first read).
+    stdin_reader: Option<builtins::fdstream::FdStream>,
+    // Whether php's default stream context has been allocated (it uses up a
+    // resource id the first time a context-taking function runs without one).
+    default_context_used: bool,
+    // Live objects whose class has a `__destruct` (strong handles, creation
+    // order). An entry whose only owner is this list has been released by the
+    // program: its destructor runs at the next check (`dtor_check`), as php's
+    // refcount release would. Whatever is left runs at request shutdown.
+    destructibles: Vec<ObjectHandle>,
+    // Set when a reference to an object may have been dropped (a frame
+    // returned, a variable holding an object was overwritten or unset).
+    dtor_check: bool,
+    // Checks requested since the last full scan of `destructibles` (scans of a
+    // long list are rationed to keep the cost amortized).
+    dtor_pending_checks: usize,
+    // Constructor frames in flight: (stack index, object pointer). A
+    // constructor that throws leaves its object marked destructed (php's
+    // `zend_object_store_ctor_failed`): its destructor never runs.
+    ctor_frames: Vec<(usize, usize)>,
+    // `register_shutdown_function` callbacks (callable, extra args), in order.
+    shutdown_functions: Vec<(Value, Vec<Value>)>,
+    // The {main} frame once the script finished (returned, exited or threw):
+    // kept so shutdown functions and destructors still see the globals.
+    finished_main: Option<Frame>,
     // Per-run extension state (`Host::module_state`), by module key.
     module_states: HashMap<&'static str, Box<dyn std::any::Any>>,
     // CLI SAPI: write unbuffered output straight to the process stdout (as php
@@ -114,13 +140,15 @@ enum StreamState {
     Stderr,
     /// Standard input (reads return EOF for now).
     Stdin,
-    /// An in-memory / preloaded-file buffer (`php://memory`, a file opened for
-    /// reading): read from `pos`, writes append.
-    Mem { buf: Vec<u8>, pos: usize },
-    /// A file opened for writing: buffered, flushed to the wrapper on
-    /// flush/close. `append` keeps existing content.
-    FileWrite { buf: Vec<u8>, url: Vec<u8> },
-    /// An OS file descriptor (a `proc_open` pipe's parent end).
+    /// php's memory stream (`php://memory`, `php://temp`), or the in-memory
+    /// view of a file opened through a non-`file://` wrapper (`url`: written
+    /// back to the wrapper on flush / close when modified).
+    Mem {
+        m: builtins::memstream::MemStream,
+        url: Option<Vec<u8>>,
+    },
+    /// An OS file descriptor: a local file opened by `fopen`, a `proc_open`
+    /// pipe's parent end, `php://stdin`.
     Fd(builtins::fdstream::FdStream),
 }
 
@@ -254,6 +282,11 @@ impl Host for Vm {
     // --- stream layer: dispatch to the per-run wrapper registry ---------------
 
     fn stream_get_contents(&self, url: &[u8]) -> Option<Vec<u8>> {
+        if url.eq_ignore_ascii_case(b"php://stdin") {
+            // A fresh php://stdin stream (a dup of fd 0) read to EOF.
+            let fd = builtins::fdstream::dup_raw(0)?;
+            return Some(builtins::fdstream::FdStream::new(fd).read_all(-1));
+        }
         self.wrapper_for(url)?.get_contents(url)
     }
 
@@ -423,71 +456,72 @@ impl Host for Vm {
         self.main_script_path.clone()
     }
 
+    fn has_streams(&self) -> bool {
+        true
+    }
+
+    fn supports_signals(&self) -> bool {
+        true
+    }
+
     fn stream_open(&mut self, path: &[u8], mode: &[u8]) -> Option<Value> {
-        let writable = mode
-            .iter()
-            .any(|&b| matches!(b, b'w' | b'a' | b'x' | b'c' | b'+'));
-        let append = mode.first() == Some(&b'a');
+        use builtins::memstream::{MemMode, MemStream};
+        // fopen() without a context fetches php's default context, allocated
+        // (as a resource) on first use.
+        self.use_default_context();
         let state = if path == b"php://stdout" || path == b"php://output" {
             StreamState::Stdout
         } else if path == b"php://stderr" {
             StreamState::Stderr
         } else if path == b"php://stdin" {
-            StreamState::Stdin
+            // php opens php://stdin on a dup() of fd 0: its own buffer.
+            StreamState::Fd(builtins::fdstream::FdStream::new(
+                builtins::fdstream::dup_raw(0)?,
+            ))
         } else if path == b"php://memory" || path.starts_with(b"php://temp") {
             StreamState::Mem {
-                buf: Vec::new(),
-                pos: 0,
+                m: MemStream::new(Vec::new(), MemMode::from_fopen_mode(mode)),
+                url: None,
             }
         } else if path.starts_with(b"php://") {
             return None; // other php:// streams unsupported
-        } else if writable {
-            let buf = if append {
-                self.wrapper_for(path)
-                    .and_then(|w| w.get_contents(path))
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            StreamState::FileWrite {
-                buf,
-                url: path.to_vec(),
-            }
+        } else if builtins::streams::split_scheme(path).0 == b"file" {
+            // A local file: a real descriptor, opened as php's plain-files
+            // wrapper does (`php_stream_parse_fopen_modes`).
+            StreamState::Fd(builtins::fdstream::FdStream::new_plain(
+                builtins::fdstream::open_plain_file(path, mode)?,
+            ))
         } else {
-            let data = self.wrapper_for(path).and_then(|w| w.get_contents(path))?;
-            StreamState::Mem { buf: data, pos: 0 }
+            // Another wrapper: an in-memory view, written back when modified.
+            let mm = MemMode::from_fopen_mode(mode);
+            let existing = || self.wrapper_for(path).and_then(|w| w.get_contents(path));
+            let data = match mode.first() {
+                Some(b'r') => existing()?,
+                Some(b'a') | Some(b'c') => existing().unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            let truncating = matches!(mode.first(), Some(b'w'));
+            let mut m = MemStream::new(data, mm);
+            m.dirty = truncating;
+            StreamState::Mem {
+                m,
+                url: (mm != MemMode::ReadOnly).then(|| path.to_vec()),
+            }
         };
         Some(self.make_stream(state, "stream"))
     }
 
     fn stream_write(&mut self, res: &Value, data: &[u8]) -> Option<usize> {
         let id = res_id(res)?;
-        enum Act {
-            Out,
-            Err,
-            Buf,
-            No,
-        }
-        let act = match self.streams.get_mut(&id)? {
-            StreamState::Stdout => Act::Out,
-            StreamState::Stderr => Act::Err,
-            StreamState::Mem { .. } | StreamState::FileWrite { .. } => Act::Buf,
-            StreamState::Stdin => Act::No,
-            StreamState::Fd(f) => return f.write(data),
-        };
-        match act {
-            Act::Out => self.emit_stdout(data),
-            Act::Err => {
+        match self.streams.get_mut(&id)? {
+            StreamState::Stdout => self.emit_stdout(data),
+            StreamState::Stderr => {
                 use std::io::Write;
                 let _ = std::io::stderr().write_all(data);
             }
-            Act::Buf => match self.streams.get_mut(&id)? {
-                StreamState::Mem { buf, .. } | StreamState::FileWrite { buf, .. } => {
-                    buf.extend_from_slice(data)
-                }
-                _ => {}
-            },
-            Act::No => return None,
+            StreamState::Mem { m, .. } => return m.write(data),
+            StreamState::Stdin => return None,
+            StreamState::Fd(f) => return f.write(data),
         }
         Some(data.len())
     }
@@ -495,21 +529,22 @@ impl Host for Vm {
     fn stream_read(&mut self, res: &Value, len: i64) -> Option<Vec<u8>> {
         let id = res_id(res)?;
         match self.streams.get_mut(&id)? {
-            StreamState::Mem { buf, pos } => {
-                let take = if len < 0 {
-                    buf.len() - *pos
+            StreamState::Mem { m, .. } => Some(m.read(len)),
+            StreamState::Fd(f) => {
+                if len < 0 {
+                    Some(f.read_all(-1))
                 } else {
-                    (len as usize).min(buf.len() - *pos)
-                };
-                let out = buf[*pos..*pos + take].to_vec();
-                *pos += take;
-                Some(out)
+                    f.read(len as usize)
+                }
             }
-            StreamState::Fd(f) => Some(if len < 0 {
-                f.read_all(-1)
-            } else {
-                f.read(len as usize)
-            }),
+            StreamState::Stdin => {
+                let f = self.stdin_stream()?;
+                if len < 0 {
+                    Some(f.read_all(-1))
+                } else {
+                    f.read(len as usize)
+                }
+            }
             _ => Some(Vec::new()),
         }
     }
@@ -517,21 +552,9 @@ impl Host for Vm {
     fn stream_gets(&mut self, res: &Value) -> Option<Vec<u8>> {
         let id = res_id(res)?;
         match self.streams.get_mut(&id)? {
-            StreamState::Mem { buf, pos } => {
-                if *pos >= buf.len() {
-                    return None;
-                }
-                let start = *pos;
-                let nl = buf[start..]
-                    .iter()
-                    .position(|&b| b == b'\n')
-                    .map(|i| start + i + 1);
-                let end = nl.unwrap_or(buf.len());
-                let line = buf[start..end].to_vec();
-                *pos = end;
-                Some(line)
-            }
+            StreamState::Mem { m, .. } => m.gets(None),
             StreamState::Fd(f) => f.gets(None),
+            StreamState::Stdin => self.stdin_stream()?.gets(None),
             _ => None,
         }
     }
@@ -539,64 +562,49 @@ impl Host for Vm {
     fn stream_gets_max(&mut self, res: &Value, maxlen: usize) -> Option<Vec<u8>> {
         let id = res_id(res)?;
         match self.streams.get_mut(&id)? {
-            StreamState::Mem { buf, pos } => {
-                if *pos >= buf.len() || maxlen <= 1 {
-                    return None;
-                }
-                let start = *pos;
-                let cap = (start + maxlen - 1).min(buf.len());
-                let end = buf[start..cap]
-                    .iter()
-                    .position(|&b| b == b'\n')
-                    .map(|i| start + i + 1)
-                    .unwrap_or(cap);
-                *pos = end;
-                Some(buf[start..end].to_vec())
-            }
+            StreamState::Mem { m, .. } => m.gets(Some(maxlen)),
             StreamState::Fd(f) => f.gets(Some(maxlen)),
+            StreamState::Stdin => self.stdin_stream()?.gets(Some(maxlen)),
             _ => None,
         }
     }
 
     fn stream_eof(&self, res: &Value) -> bool {
         match res_id(res).and_then(|id| self.streams.get(&id)) {
-            Some(StreamState::Mem { buf, pos }) => *pos >= buf.len(),
+            Some(StreamState::Mem { m, .. }) => m.eof(),
             Some(StreamState::Fd(f)) => f.eof(),
-            Some(StreamState::Stdout | StreamState::Stderr | StreamState::FileWrite { .. }) => {
-                false
-            }
+            Some(StreamState::Stdin) => self.stdin_reader.as_ref().is_some_and(|f| f.eof()),
+            Some(StreamState::Stdout | StreamState::Stderr) => false,
             _ => true,
         }
     }
 
     fn stream_seek(&mut self, res: &Value, offset: i64, whence: i64) -> bool {
-        match res_id(res).and_then(|id| self.streams.get_mut(&id)) {
-            Some(StreamState::Mem { buf, pos }) => {
-                let base = match whence {
-                    0 => 0,
-                    1 => *pos as i64,
-                    2 => buf.len() as i64,
-                    _ => return false,
-                };
-                let target = base + offset;
-                if target < 0 {
-                    return false;
-                }
-                // Seeking past the end is allowed (reads then return nothing);
-                // clamp for our read cursor.
-                *pos = (target as usize).min(buf.len());
-                true
-            }
+        let Ok(whence) = i32::try_from(whence) else {
+            return false;
+        };
+        let Some(id) = res_id(res) else { return false };
+        match self.streams.get_mut(&id) {
+            Some(StreamState::Mem { m, .. }) => m.seek(offset, whence),
+            Some(StreamState::Fd(f)) => f.seek(offset, whence),
+            Some(StreamState::Stdin) => match self.stdin_stream() {
+                Some(f) => f.seek(offset, whence),
+                None => false,
+            },
             _ => false,
         }
     }
 
     fn stream_tell(&mut self, res: &Value) -> Option<i64> {
-        match res_id(res).and_then(|id| self.streams.get(&id)) {
-            Some(StreamState::Mem { pos, .. }) => Some(*pos as i64),
-            Some(StreamState::FileWrite { buf, .. }) => Some(buf.len() as i64),
-            _ => None,
-        }
+        let pos = match res_id(res).and_then(|id| self.streams.get(&id)) {
+            Some(StreamState::Mem { m, .. }) => m.tell(),
+            Some(StreamState::Fd(f)) => f.tell(),
+            Some(StreamState::Stdin) => self.stdin_reader.as_ref().map_or(0, |f| f.tell()),
+            Some(StreamState::Stdout | StreamState::Stderr) => 0,
+            None => return None,
+        };
+        // php's ftell(): false when the stream position is -1.
+        (pos != -1).then_some(pos)
     }
 
     fn stream_from_fd(&mut self, fd: std::os::fd::OwnedFd) -> Option<Value> {
@@ -608,30 +616,26 @@ impl Host for Vm {
         use builtins::fdstream::dup_raw;
         let id = res_id(res).ok_or("Unknown")?;
         let fail = |o: Option<std::os::fd::OwnedFd>| o.ok_or("STDIO");
-        match self.streams.get(&id).ok_or("Unknown")? {
+        match self.streams.get_mut(&id).ok_or("Unknown")? {
             StreamState::Stdin => fail(dup_raw(0)),
             StreamState::Stdout => fail(dup_raw(1)),
             StreamState::Stderr => fail(dup_raw(2)),
-            StreamState::Fd(f) => fail(f.dup_fd()),
-            StreamState::FileWrite { url, .. } => {
-                // A file opened for writing: hand the child its own handle on
-                // the same path (append, so earlier buffered bytes survive).
-                let path = url.strip_prefix(b"file://").unwrap_or(url);
-                let path = String::from_utf8_lossy(path).into_owned();
-                std::fs::OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open(path)
-                    .map(std::os::fd::OwnedFd::from)
-                    .map_err(|_| "STDIO")
+            StreamState::Fd(f) => {
+                f.sync_for_cast();
+                fail(f.dup_fd())
             }
-            StreamState::Mem { .. } => Err("MEMORY"),
+            StreamState::Mem { url: None, .. } => Err("MEMORY"),
+            StreamState::Mem { .. } => Err("Unknown"),
         }
     }
 
     fn stream_select_fd(&self, res: &Value) -> Option<(std::os::fd::RawFd, bool)> {
-        match self.streams.get(&res_id(res)?)? {
-            StreamState::Stdin => Some((0, false)),
+        let id = res_id(res)?;
+        match self.streams.get(&id)? {
+            StreamState::Stdin => Some((
+                0,
+                self.stdin_reader.as_ref().is_some_and(|f| f.has_buffered()),
+            )),
             StreamState::Stdout => Some((1, false)),
             StreamState::Stderr => Some((2, false)),
             StreamState::Fd(f) => Some((f.raw_fd()?, f.has_buffered())),
@@ -667,6 +671,17 @@ impl Host for Vm {
         self.native_resources.remove(&res_id(res)?)
     }
 
+    fn note_internal_stream(&mut self, opened: bool) {
+        self.use_default_context();
+        if opened {
+            self.next_resource_id += 1;
+        }
+    }
+
+    fn register_shutdown_function(&mut self, callback: Value, args: Vec<Value>) {
+        self.add_shutdown_function(callback, args);
+    }
+
     fn module_state(
         &mut self,
         key: &'static str,
@@ -675,12 +690,19 @@ impl Host for Vm {
         Some(self.module_states.entry(key).or_insert_with(init).as_mut())
     }
 
+    fn resource_closed(&self, res: &Value) -> bool {
+        // A resource is live while some table still holds its id.
+        matches!(res, Value::Resource(r) if !(self.streams.contains_key(&r.id)
+            || self.native_resources.contains_key(&r.id)
+            || self.stream_contexts.contains_key(&r.id)))
+    }
+
     fn stream_close(&mut self, res: &Value) -> bool {
         let Some(id) = res_id(res) else { return false };
         match self.streams.remove(&id) {
-            Some(StreamState::FileWrite { buf, url }) => self
+            Some(StreamState::Mem { m, url: Some(url) }) if m.dirty => self
                 .wrapper_for(&url)
-                .map(|w| w.put_contents(&url, &buf))
+                .map(|w| w.put_contents(&url, m.contents()))
                 .is_some(),
             Some(_) => true,
             None => false,
@@ -689,23 +711,21 @@ impl Host for Vm {
 
     fn stream_flush(&mut self, res: &Value) -> bool {
         let Some(id) = res_id(res) else { return false };
-        if let Some(StreamState::FileWrite { buf, url }) = self.streams.get(&id) {
-            let (buf, url) = (buf.clone(), url.clone());
-            return self
-                .wrapper_for(&url)
-                .map(|w| w.put_contents(&url, &buf))
-                .is_some();
+        if let Some(StreamState::Mem { m, url: Some(url) }) = self.streams.get_mut(&id) {
+            if m.dirty {
+                m.dirty = false;
+                let (buf, url) = (m.contents().to_vec(), url.clone());
+                return self
+                    .wrapper_for(&url)
+                    .map(|w| w.put_contents(&url, &buf))
+                    .is_some();
+            }
         }
         true
     }
 
     fn stream_rewind(&mut self, res: &Value) -> bool {
-        if let Some(StreamState::Mem { pos, .. }) =
-            res_id(res).and_then(|id| self.streams.get_mut(&id))
-        {
-            *pos = 0;
-        }
-        true
+        self.stream_seek(res, 0, 0) // SEEK_SET
     }
 
     // --- reflection -----------------------------------------------------------
@@ -1181,6 +1201,14 @@ impl Vm {
             next_zip_id: 0,
             argv: Vec::new(),
             native_resources: HashMap::new(),
+            stdin_reader: None,
+            default_context_used: false,
+            destructibles: Vec::new(),
+            dtor_check: false,
+            dtor_pending_checks: 0,
+            ctor_frames: Vec::new(),
+            shutdown_functions: Vec::new(),
+            finished_main: None,
             module_states: HashMap::new(),
             direct_stdout: false,
         }
@@ -1814,6 +1842,199 @@ impl Vm {
         &self.out
     }
 
+    /// php's `FG(default_context)`: created lazily by the first function
+    /// that needs a context and none was passed; it takes a resource id.
+    fn use_default_context(&mut self) {
+        if !self.default_context_used {
+            self.default_context_used = true;
+            self.next_resource_id += 1;
+        }
+    }
+
+    /// The `STDIN` reader (a dup of fd 0), created on first use.
+    fn stdin_stream(&mut self) -> Option<&mut builtins::fdstream::FdStream> {
+        if self.stdin_reader.is_none() {
+            let fd = builtins::fdstream::dup_raw(0)?;
+            self.stdin_reader = Some(builtins::fdstream::FdStream::new(fd));
+        }
+        self.stdin_reader.as_mut()
+    }
+
+    // -- object destruction & request shutdown ---------------------------------
+
+    /// Remember a new object whose class defines `__destruct`.
+    pub(crate) fn track_destructible(&mut self, h: &ObjectHandle) {
+        let cls = h.borrow().class;
+        if self.lookup_method(cls, b"__destruct").is_some() {
+            self.destructibles.push(h.clone());
+        }
+    }
+
+    /// Call `__destruct` on `h` (already removed from the tracking list, so it
+    /// runs at most once).
+    fn call_destructor(&mut self, h: ObjectHandle) -> Result<(), Thrown> {
+        let cls = h.borrow().class;
+        if let Some(m) = self.lookup_method(cls, b"__destruct") {
+            self.call_sync(&m, Some(h), cls, Vec::new())?;
+        }
+        Ok(())
+    }
+
+    /// Destruct every tracked object nothing else references any more (php
+    /// destructs on the refcount reaching zero), in creation order.
+    fn collect_released(&mut self) -> Result<(), Thrown> {
+        // A full scan is O(n): with many live destructible objects, scan only
+        // once enough release events have accumulated (amortized O(1)).
+        self.dtor_pending_checks += 1;
+        if self.destructibles.len() > 256
+            && self.dtor_pending_checks < self.destructibles.len() / 64
+        {
+            return Ok(());
+        }
+        self.dtor_pending_checks = 0;
+        loop {
+            if !self.destructibles.iter().any(|h| Rc::strong_count(h) == 1) {
+                return Ok(());
+            }
+            let (released, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.destructibles)
+                .into_iter()
+                .partition(|h| Rc::strong_count(h) == 1);
+            self.destructibles = kept;
+            let mut it = released.into_iter();
+            while let Some(h) = it.next() {
+                if let Err(e) = self.call_destructor(h) {
+                    // Keep the not-yet-destructed ones tracked.
+                    let rest: Vec<_> = it.collect();
+                    self.destructibles.splice(0..0, rest);
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    /// `register_shutdown_function($callback, ...$args)`.
+    fn add_shutdown_function(&mut self, callback: Value, args: Vec<Value>) {
+        self.shutdown_functions.push((callback, args));
+    }
+
+    /// php's request shutdown, run by the SAPI after the script finished
+    /// (normally, through `exit`, or with an uncaught exception already
+    /// reported): 1. the `register_shutdown_function` callbacks, in order
+    /// (including ones registered meanwhile; an `exit` or uncaught throwable
+    /// stops the rest), 2. destructors — globals holding the only reference to
+    /// an object first (in reverse order), then every remaining object in
+    /// creation order, 3. flush all output buffers. Returns the exit code,
+    /// starting from `code` (an `exit` during shutdown replaces it).
+    /// Uncaught throwables are handed to `on_fatal` (which reports them and
+    /// returns the resulting exit code).
+    pub fn request_shutdown(
+        &mut self,
+        mut code: i32,
+        on_fatal: &mut dyn FnMut(Thrown) -> i32,
+    ) -> i32 {
+        // Shutdown code runs with {main} as the global scope.
+        self.stack.clear();
+        if let Some(mut main) = self.finished_main.take() {
+            main.pc = main.proto.code.len();
+            self.stack.push(main);
+        }
+        let mut handle = |vm: &mut Vm, r: Result<(), Thrown>, code: &mut i32| -> bool {
+            match r {
+                Ok(()) => true,
+                Err(Thrown::Exit(c)) => {
+                    *code = c;
+                    vm.truncate_to_main();
+                    false
+                }
+                Err(t) => {
+                    *code = on_fatal(t);
+                    vm.truncate_to_main();
+                    false
+                }
+            }
+        };
+        // 1. shutdown functions
+        let mut i = 0;
+        while i < self.shutdown_functions.len() {
+            let (cb, args) = self.shutdown_functions[i].clone();
+            i += 1;
+            let r = self.call_callable_value(&cb, args).map(|_| ());
+            if !handle(self, r, &mut code) {
+                break;
+            }
+        }
+        self.shutdown_functions.clear();
+        // 2. destructors
+        let r = self.shutdown_destructors();
+        handle(self, r, &mut code);
+        self.destructibles.clear();
+        // 3. output buffers
+        while let Some(buf) = self.ob_stack.pop() {
+            builtins::Host::write_out(self, &buf);
+        }
+        self.stack.clear();
+        code
+    }
+
+    /// Drop every frame above {main} (after an exit / uncaught throwable
+    /// during shutdown).
+    fn truncate_to_main(&mut self) {
+        self.stack.truncate(1);
+    }
+
+    /// php's `zend_call_destructors`.
+    fn shutdown_destructors(&mut self) -> Result<(), Thrown> {
+        self.dtor_pending_checks = usize::MAX / 2;
+        self.collect_released()?;
+        // Globals holding the sole reference to an object, last first, until
+        // nothing changes (php's `zval_call_destructor` sweep over the global
+        // symbol table).
+        if !self.stack.is_empty() {
+            loop {
+                let mut changed = false;
+                let nregs = self.stack[0].regs.len();
+                for r in (0..nregs).rev() {
+                    let Value::Object(h) = &self.stack[0].regs[r] else {
+                        continue;
+                    };
+                    let ptr = Rc::as_ptr(h) as usize;
+                    let idx = self
+                        .destructibles
+                        .iter()
+                        .position(|d| Rc::as_ptr(d) as usize == ptr);
+                    // owners: this slot + (if tracked) our list
+                    if Rc::strong_count(h) != 1 + idx.is_some() as usize {
+                        continue;
+                    }
+                    let v = std::mem::replace(&mut self.stack[0].regs[r], Value::Null);
+                    if let Some(i) = idx {
+                        let h = self.destructibles.remove(i);
+                        self.call_destructor(h)?;
+                    }
+                    drop(v);
+                    changed = true;
+                }
+                if !changed {
+                    break;
+                }
+            }
+        }
+        // Then every object still alive, in creation order (objects created
+        // by destructors included).
+        while !self.destructibles.is_empty() {
+            let batch = std::mem::take(&mut self.destructibles);
+            let mut it = batch.into_iter();
+            while let Some(h) = it.next() {
+                if let Err(e) = self.call_destructor(h) {
+                    let rest: Vec<_> = it.collect();
+                    self.destructibles.splice(0..0, rest);
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Execute a compiled program; returns the process exit code.
     pub fn run(&mut self, prog: &Program) -> Result<i32, Thrown> {
         // Bind the standard stream resources (CLI SAPI) once.
@@ -1881,17 +2102,24 @@ impl Vm {
     /// Plain register write (temporaries / instruction destinations): overwrites
     /// the slot. Never writes through a stale `Ref` left in a reused temp.
     fn reg_set(&mut self, top: usize, r: Reg, v: Value) {
-        self.stack[top].regs[r as usize] = v;
+        let slot = &mut self.stack[top].regs[r as usize];
+        if !self.destructibles.is_empty() && matches!(slot, Value::Object(_) | Value::Array(_)) {
+            self.dtor_check = true;
+        }
+        *slot = v;
     }
 
     /// Assign to a PHP *variable* (a CV): if the slot is a reference, write
     /// through it (so by-ref aliases see the change); otherwise overwrite.
     fn cv_assign(&mut self, top: usize, cv: Reg, v: Value) {
         let slot = &mut self.stack[top].regs[cv as usize];
-        if let Value::Ref(rc) = slot {
-            *rc.borrow_mut() = v;
+        let old = if let Value::Ref(rc) = slot {
+            std::mem::replace(&mut *rc.borrow_mut(), v)
         } else {
-            *slot = v;
+            std::mem::replace(slot, v)
+        };
+        if !self.destructibles.is_empty() && matches!(old, Value::Object(_) | Value::Array(_)) {
+            self.dtor_check = true;
         }
     }
 
@@ -2020,8 +2248,13 @@ impl Vm {
                 Ok(v) => return Ok(v),
                 Err(thrown) => {
                     if !thrown.is_catchable() {
-                        self.stack.clear();
-                        return Err(thrown); // Exit / Unsupported: straight to the SAPI
+                        // Exit / Unsupported: straight to the SAPI (keeping
+                        // {main}'s globals for the shutdown sequence).
+                        self.stack.truncate(1);
+                        if let Some(main) = self.stack.pop() {
+                            self.finished_main = Some(main);
+                        }
+                        return Err(thrown);
                     }
                     match self.unwind(thrown, 0)? {
                         UnwindResult::Caught => {}                 // handler installed; re-enter
@@ -2046,6 +2279,26 @@ impl Vm {
             }
             let instr = proto.code[pc];
             self.stack[top].pc = pc + 1;
+
+            // Run destructors of objects the program has just released.
+            if self.dtor_check {
+                self.dtor_check = false;
+                if !self.destructibles.is_empty() {
+                    self.collect_released()?;
+                    self.stack[top].pc = pc;
+                    continue;
+                }
+            }
+
+            // pcntl async signals (php's `EG(vm_interrupt)` check): run queued
+            // PHP signal handlers before the next instruction.
+            if builtins::pcntl_interrupt_pending() {
+                // A throwing handler raises at this (not yet run) instruction;
+                // otherwise the instruction then runs as usual.
+                builtins::pcntl_dispatch(self)?;
+                self.stack[top].pc = pc;
+                continue;
+            }
 
             match instr {
                 Instr::Nop => {}
@@ -2776,7 +3029,16 @@ impl Vm {
                     self.reg_set(top, dst, Value::Object(obj.clone()));
                     // Run __construct, discarding its return (into the arg window).
                     if let Some(m) = self.lookup_method(cls, b"__construct") {
+                        let ptr = Rc::as_ptr(&obj) as usize;
+                        let tracked = !self.destructibles.is_empty()
+                            && self
+                                .destructibles
+                                .last()
+                                .is_some_and(|d| Rc::as_ptr(d) as usize == ptr);
                         self.enter_method(top, &m, Some(obj), cls, Reg::MAX, base, argc)?;
+                        if tracked {
+                            self.ctor_frames.push((self.stack.len() - 1, ptr));
+                        }
                     }
                 }
                 Instr::FetchProp { dst, obj, name, .. } => {
@@ -3014,6 +3276,7 @@ impl Vm {
                         id,
                         properties: props,
                     }));
+                    self.track_destructible(&new_obj);
                     self.reg_set(top, dst, Value::Object(new_obj.clone()));
                     if let Some(m) = self.lookup_method(cls, b"__clone") {
                         self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;
@@ -3239,6 +3502,19 @@ impl Vm {
                         return Ok(done);
                     }
                 }
+                Instr::ClearTemps { from, to } => {
+                    let regs = &mut self.stack[top].regs[from as usize..to as usize];
+                    if !self.destructibles.is_empty()
+                        && regs
+                            .iter()
+                            .any(|v| matches!(v, Value::Object(_) | Value::Array(_)))
+                    {
+                        self.dtor_check = true;
+                    }
+                    for r in regs {
+                        *r = Value::Null;
+                    }
+                }
                 Instr::RetNull | Instr::Halt => {
                     if let Some(done) = self.do_return(Value::Null) {
                         return Ok(done);
@@ -3334,7 +3610,16 @@ impl Vm {
                     return Ok(UnwindResult::Caught);
                 }
             }
-            self.stack.pop();
+            let popped = self.stack.pop();
+            let depth = self.stack.len();
+            if let Some((_, ptr)) = self.ctor_frames.pop_if(|c| c.0 == depth) {
+                // The constructor threw: its object will never be destructed.
+                self.destructibles.retain(|d| Rc::as_ptr(d) as usize != ptr);
+            }
+            if self.stack.is_empty() && floor == 0 {
+                // An uncaught exception left {main}: keep its globals.
+                self.finished_main = popped;
+            }
         }
     }
 
@@ -3458,6 +3743,9 @@ impl Vm {
             return Ok(Value::Bool(true));
         }
         self.included_files.insert(realpath.clone());
+        // php opens each included file as a stream resource (closed again
+        // after compiling): it uses up a resource id.
+        self.next_resource_id += 1;
 
         // Compile via the SAPI-provided callback (keeps the VM compiler-agnostic).
         let mut cb = self
@@ -4114,6 +4402,16 @@ impl Vm {
     /// outermost frame returns (program done), else delivers to the caller.
     fn do_return(&mut self, value: Value) -> Option<Value> {
         let frame = self.stack.pop().expect("non-empty stack");
+        if self
+            .ctor_frames
+            .last()
+            .is_some_and(|c| c.0 == self.stack.len())
+        {
+            self.ctor_frames.pop();
+        }
+        if !self.destructibles.is_empty() {
+            self.dtor_check = true;
+        }
         // A synchronous (re-entrant) call returns its value to the Rust caller.
         if frame.capture {
             return Some(value);
@@ -4126,7 +4424,11 @@ impl Vm {
                 }
                 None
             }
-            None => Some(value),
+            None => {
+                // {main} finished: keep its globals for the shutdown sequence.
+                self.finished_main = Some(frame);
+                Some(value)
+            }
         }
     }
 

@@ -74,7 +74,7 @@ bool(true)
 ValueError: pcntl_signal(): Argument #1 ($signal) must be greater than or equal to 1
 ValueError: pcntl_signal(): Argument #2 ($handler) must be either SIG_DFL or SIG_IGN when an integer value is given
 TypeError: pcntl_signal(): Argument #2 ($handler) must be of type callable|int, string given
-ValueError: pcntl_signal_get_handler(): Argument #1 ($signal) must be between 1 and 31
+pcntl_signal_get_handler(): Argument #1 ($signal) must be between 1 and N
 bool(true)
 int(3)
 bool(true)

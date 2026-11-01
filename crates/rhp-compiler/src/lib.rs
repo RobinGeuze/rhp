@@ -2117,7 +2117,18 @@ impl ProtoBuilder {
                 }
             }
             Statement::Expression(s) => {
+                // Track the temporaries this statement touches so they can be
+                // released at its end (php frees an expression's temporaries,
+                // running destructors, before the next statement).
+                let from = self.next_temp;
+                let saved_hw = self.high_water;
+                self.high_water = self.next_temp;
                 self.compile_expr(s.expression)?;
+                let to = self.high_water;
+                self.high_water = saved_hw.max(to);
+                if to > from {
+                    self.emit(Instr::ClearTemps { from, to });
+                }
             }
             Statement::Block(b) => {
                 for s in b.statements.iter() {

@@ -1,0 +1,50 @@
+ctor local
+in f
+destruct local
+after f
+ctor a1
+destruct a1
+after null
+ctor b1
+destruct b1
+after unset
+ctor c1
+ctor c2
+destruct c1
+after reassign
+ctor arr
+destruct arr
+after arr
+ctor held
+destruct held
+after holder
+ctor e
+destruct e-clone
+after clone
+ctor ret
+destruct ret
+after g
+ctor temp
+destruct temp
+after temp
+ctor sa
+ctor sb
+ctor sc
+ctor in-array
+ctor nested
+register_shutdown_function(): Argument #1 ($callback) must be a valid callback, function "no_such_function_xyz" not found or invalid function name
+register_shutdown_function(): Argument #1 ($callback) must be a valid callback, class stdClass does not have a method "nope"
+buffered at end
+end of script
+shutdown1 arg
+global sa: sa
+shutdown2
+printf shutdown3
+nested shutdown
+destruct nested
+destruct sc
+destruct e
+destruct c2
+destruct sa
+destruct sb
+destruct in-array

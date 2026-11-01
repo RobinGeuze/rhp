@@ -27,8 +27,16 @@ fn run_vm(source: &[u8], name: &str) -> Result<Vec<u8>, Thrown> {
     assert!(!parsed.has_parse_errors(), "{name}: unexpected parse error");
     let program = compile_with_source(parsed.program(), source, name)?;
     let mut vm = Vm::new();
-    vm.run(&program)?;
-    Ok(vm.output().to_vec())
+    let code = vm.run(&program)?;
+    let mut late: Option<Thrown> = None;
+    vm.request_shutdown(code, &mut |t| {
+        late.get_or_insert(t);
+        255
+    });
+    match late {
+        Some(t) => Err(t),
+        None => Ok(vm.output().to_vec()),
+    }
 }
 
 fn run_oracle(source: &[u8], name: &str) -> Result<Vec<u8>, Thrown> {

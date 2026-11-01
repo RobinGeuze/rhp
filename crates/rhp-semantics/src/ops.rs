@@ -177,6 +177,32 @@ pub fn loose_compare(a: &Value, b: &Value) -> Ordering {
         (Null, Null) => Ordering::Equal,
         // bool on either side: compare as bools.
         (Bool(_), _) | (_, Bool(_)) => conv::to_bool(&a).cmp(&conv::to_bool(&b)),
+        // null vs an object/closure/resource: null is smaller (they are truthy).
+        (Null, Object(_) | Closure(_) | Resource(_)) => Ordering::Less,
+        (Object(_) | Closure(_) | Resource(_), Null) => Ordering::Greater,
+        // resources compare by id; against a scalar both sides become numbers.
+        (Resource(x), Resource(y)) => x.id.cmp(&y.id),
+        (Resource(_), Int(_) | Float(_) | Str(_)) | (Int(_) | Float(_) | Str(_), Resource(_)) => {
+            cmp_num(conv::to_number(&a).0, conv::to_number(&b).0)
+        }
+        // closures: equal only to themselves (or, for first-class callables,
+        // to one wrapping the same callable); otherwise uncomparable (1).
+        (Closure(x), Closure(y)) => {
+            if std::rc::Rc::ptr_eq(x, y) || fake_closures_equal(x, y) {
+                Ordering::Equal
+            } else {
+                Ordering::Greater
+            }
+        }
+        // A closure against a number converts to 1 (php notices and uses 1).
+        (Closure(_), Int(_) | Float(_)) => cmp_num(Num::Int(1), conv::to_number(&b).0),
+        (Int(_) | Float(_), Closure(_)) => cmp_num(conv::to_number(&a).0, Num::Int(1)),
+        (Closure(_), Str(_) | Object(_) | Resource(_))
+        | (Str(_) | Object(_) | Resource(_), Closure(_)) => Ordering::Greater,
+        (Object(x), Object(y)) => compare_objects(x, y),
+        // An object against a number converts to 1 (php notices and uses 1).
+        (Object(_), Int(_) | Float(_)) => cmp_num(Num::Int(1), conv::to_number(&b).0),
+        (Int(_) | Float(_), Object(_)) => cmp_num(conv::to_number(&a).0, Num::Int(1)),
         // null vs X: treat null as the "zero" of X's type.
         (Null, _) => loose_compare(&null_as(&b), &b),
         (_, Null) => loose_compare(&a, &null_as(&a)),
@@ -223,6 +249,87 @@ pub fn loose_compare(a: &Value, b: &Value) -> Ordering {
         (_, Array(_)) => Ordering::Less,
         // objects: identity/placeholder until phase 7
         _ => Ordering::Equal,
+    }
+}
+
+thread_local! {
+    static OBJ_CMP_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// php's `zend_std_compare_objects`: the same object is equal; instances of
+/// different classes are uncomparable (1); otherwise the property tables are
+/// compared like arrays (count first, then each property in order; a property
+/// missing on the right is uncomparable).
+fn compare_objects(x: &rhp_values::ObjectHandle, y: &rhp_values::ObjectHandle) -> Ordering {
+    if std::rc::Rc::ptr_eq(x, y) {
+        return Ordering::Equal;
+    }
+    let (xo, yo) = (x.borrow(), y.borrow());
+    if xo.class != yo.class {
+        return Ordering::Greater;
+    }
+    // php bails out with "Nesting level too deep"; stay finite here.
+    let depth = OBJ_CMP_DEPTH.with(|d| d.get());
+    if depth > 256 {
+        return Ordering::Greater;
+    }
+    match xo.properties.len().cmp(&yo.properties.len()) {
+        Ordering::Equal => {}
+        other => return other,
+    }
+    OBJ_CMP_DEPTH.with(|d| d.set(depth + 1));
+    let mut result = Ordering::Equal;
+    for (k, xv) in xo.properties.iter() {
+        match yo.properties.get(k) {
+            Some(yv) => match loose_compare(xv, yv) {
+                Ordering::Equal => continue,
+                other => {
+                    result = other;
+                    break;
+                }
+            },
+            None => {
+                result = Ordering::Greater;
+                break;
+            }
+        }
+    }
+    OBJ_CMP_DEPTH.with(|d| d.set(depth));
+    result
+}
+
+/// php's `zend_closure_compare` for two distinct closure objects: only
+/// first-class-callable ("fake") closures over the same function, `$this` and
+/// scope are equal.
+fn fake_closures_equal(x: &rhp_values::ClosureData, y: &rhp_values::ClosureData) -> bool {
+    let (Some(wx), Some(wy)) = (&x.wrapped, &y.wrapped) else {
+        return false;
+    };
+    let same_this = match (&x.bound_this, &y.bound_this) {
+        (None, None) => true,
+        (Some(a), Some(b)) => std::rc::Rc::ptr_eq(a, b),
+        _ => false,
+    };
+    same_this && x.bound_class == y.bound_class && callables_equal(wx, wy)
+}
+
+fn callables_equal(a: &Value, b: &Value) -> bool {
+    let a = crate::deref(a);
+    let b = crate::deref(b);
+    match (&a, &b) {
+        (Value::Str(x), Value::Str(y)) => x.as_bytes().eq_ignore_ascii_case(y.as_bytes()),
+        (Value::Array(x), Value::Array(y)) if x.len() == 2 && y.len() == 2 => {
+            let xs: Vec<Value> = x.iter().map(|(_, v)| crate::deref(v)).collect();
+            let ys: Vec<Value> = y.iter().map(|(_, v)| crate::deref(v)).collect();
+            let target = match (&xs[0], &ys[0]) {
+                (Value::Object(p), Value::Object(q)) => std::rc::Rc::ptr_eq(p, q),
+                (Value::Str(p), Value::Str(q)) => p.as_bytes().eq_ignore_ascii_case(q.as_bytes()),
+                _ => false,
+            };
+            target && callables_equal(&xs[1], &ys[1])
+        }
+        (Value::Closure(p), Value::Closure(q)) => std::rc::Rc::ptr_eq(p, q),
+        _ => false,
     }
 }
 

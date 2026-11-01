@@ -273,7 +273,9 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         let ctx = args.get(2).map(deref).unwrap_or(Value::Null);
         return Ok(crate::http::fetch(host, &url, &ctx));
     }
-    match host.stream_get_contents(&url) {
+    let got = host.stream_get_contents(&url);
+    host.note_internal_stream(got.is_some());
+    match got {
         Some(bytes) => Ok(Value::str(bytes)),
         None => Ok(Value::Bool(false)),
     }
@@ -301,7 +303,9 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     } else {
         data.clone()
     };
-    match host.stream_put_contents(&path, &to_write) {
+    let put = host.stream_put_contents(&path, &to_write);
+    host.note_internal_stream(put.is_some());
+    match put {
         // php returns the number of bytes written (the `$data` length).
         Some(_) => Ok(Value::Int(data.len() as i64)),
         None => Ok(Value::Bool(false)),

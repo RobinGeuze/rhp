@@ -285,8 +285,51 @@ fn fn_error_get_last(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown>
     Ok(Value::Null)
 }
 
-fn fn_register_shutdown_function(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    // Stored by php and run at shutdown; not yet invoked here.
+fn fn_register_shutdown_function(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let cb = deref(&args[0]);
+    if !host.is_callable_value(&cb) {
+        let why = match &cb {
+            Value::Str(s) => {
+                let s = String::from_utf8_lossy(s.as_bytes()).into_owned();
+                match s.split_once("::") {
+                    Some((cls, _)) => format!("class \"{cls}\" not found"),
+                    None => format!("function \"{s}\" not found or invalid function name"),
+                }
+            }
+            Value::Array(a) if a.len() == 2 => {
+                let mut it = a.iter().map(|(_, v)| deref(v));
+                let (first, method) = (it.next(), it.next());
+                let method = method
+                    .map(|m| String::from_utf8_lossy(&conv::to_string_bytes(&m)).into_owned())
+                    .unwrap_or_default();
+                let class = match &first {
+                    Some(o @ Value::Object(_)) => host.object_class_name(o),
+                    Some(Value::Str(c)) => host
+                        .resolve_class(c.as_bytes())
+                        .and_then(|id| host.class_name(id)),
+                    _ => None,
+                };
+                match (&first, class) {
+                    (_, Some(c)) => format!(
+                        "class {} does not have a method \"{method}\"",
+                        String::from_utf8_lossy(&c)
+                    ),
+                    (Some(Value::Str(c)), None) => format!(
+                        "class \"{}\" not found",
+                        String::from_utf8_lossy(c.as_bytes())
+                    ),
+                    _ => "first array member is not a valid class name or object".to_string(),
+                }
+            }
+            Value::Array(_) => "array callback must have exactly two members".to_string(),
+            _ => "no array or string given".to_string(),
+        };
+        return Err(Thrown::type_error(format!(
+            "register_shutdown_function(): Argument #1 ($callback) must be a valid callback, {why}"
+        )));
+    }
+    let extra = args[1..].iter().map(deref).collect();
+    host.register_shutdown_function(cb, extra);
     Ok(Value::Null)
 }
 

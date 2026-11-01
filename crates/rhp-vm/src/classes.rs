@@ -608,11 +608,13 @@ impl Vm {
         for (name, pe) in &self.classes[class_id as usize].props {
             properties.insert(name.clone(), pe.default.clone());
         }
-        Rc::new(RefCell::new(ObjectData {
+        let h = Rc::new(RefCell::new(ObjectData {
             class: class_id,
             id,
             properties,
-        }))
+        }));
+        self.track_destructible(&h);
+        h
     }
 
     /// Look up a method (flattened table) by name on `class_id`.

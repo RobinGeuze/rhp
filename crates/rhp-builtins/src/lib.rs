@@ -15,10 +15,16 @@ pub use rhp_values::Thrown;
 
 pub mod dump;
 pub mod fdstream;
+pub mod memstream;
 pub mod module;
 pub mod streams;
 
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};
+
+/// pcntl's asynchronous signal delivery: the VM polls
+/// [`pcntl_interrupt_pending`] between instructions and, when set, calls
+/// [`pcntl_dispatch`] to run the queued PHP signal handlers.
+pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_interrupt_pending};
 
 mod arr_fns;
 mod arrayset_fns;
@@ -78,6 +84,12 @@ pub trait Host {
     /// A class's parent's name by id (for `get_parent_class`). Default: none.
     fn class_parent_name(&self, _class_id: u32) -> Option<Vec<u8>> {
         None
+    }
+
+    /// Whether a resource has been closed (`fclose`d stream): `gettype` /
+    /// `get_debug_type` then report `resource (closed)`. Default: no.
+    fn resource_closed(&self, _res: &Value) -> bool {
+        false
     }
 
     /// Whether a class id names an enum (for `var_dump` rendering). Default: no.
@@ -327,6 +339,20 @@ pub trait Host {
     // Streams are resource Values whose state lives in the VM; these are the
     // `fopen`/`fwrite`/… primitives. Defaults are no-ops (hosts without streams).
 
+    /// Whether this host delivers signals to PHP callbacks (pcntl). The
+    /// signal queue is process-wide, so only one interpreter per process (the
+    /// VM) may own it. Default: no — `pcntl_signal` with a callable is then
+    /// unsupported.
+    fn supports_signals(&self) -> bool {
+        false
+    }
+
+    /// Whether this host implements stream resources at all (`fopen` on a
+    /// host without them is unsupported rather than a silent failure).
+    fn has_streams(&self) -> bool {
+        false
+    }
+
     /// `fopen($path, $mode)` → a resource, or None on failure.
     fn stream_open(&mut self, _path: &[u8], _mode: &[u8]) -> Option<Value> {
         None
@@ -412,6 +438,13 @@ pub trait Host {
     fn resource_remove(&mut self, _res: &Value) -> Option<Box<dyn std::any::Any>> {
         None
     }
+    /// Resource-id bookkeeping for a stream php opens internally (e.g. in
+    /// `file_get_contents`): the default stream context is allocated on first
+    /// use, and an opened stream uses up one more id. Default: nothing.
+    fn note_internal_stream(&mut self, _opened: bool) {}
+    /// `register_shutdown_function($callback, ...$args)`: queue a callback for
+    /// request shutdown. Default: dropped (no shutdown phase).
+    fn register_shutdown_function(&mut self, _callback: Value, _args: Vec<Value>) {}
     /// Per-run state owned by an extension module (e.g. pcntl's signal-handler
     /// table), created on first use by `init`. Default: none (stateless host).
     fn module_state(
@@ -607,6 +640,26 @@ pub fn lookup(name: &str) -> Option<&'static Builtin> {
 }
 
 /// Engine constants (`PHP_EOL`, `PHP_INT_MAX`, …).
+/// php's `PHP_OS`: the build host's uname sysname (configure-time constant).
+#[cfg(target_os = "linux")]
+pub const PHP_OS: &str = "Linux";
+#[cfg(target_os = "macos")]
+pub const PHP_OS: &str = "Darwin";
+#[cfg(target_os = "freebsd")]
+pub const PHP_OS: &str = "FreeBSD";
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+pub const PHP_OS: &str = "Unknown";
+
+/// php's `PHP_OS_FAMILY` (`Linux`, `Darwin`, `BSD`, …).
+#[cfg(target_os = "linux")]
+pub const PHP_OS_FAMILY: &str = "Linux";
+#[cfg(target_os = "macos")]
+pub const PHP_OS_FAMILY: &str = "Darwin";
+#[cfg(target_os = "freebsd")]
+pub const PHP_OS_FAMILY: &str = "BSD";
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+pub const PHP_OS_FAMILY: &str = "Unknown";
+
 pub fn constants() -> Vec<(&'static str, Value)> {
     vec![
         ("PHP_EOL", Value::str("\n")),
@@ -626,8 +679,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PHP_BINARY", Value::str("/usr/bin/php")),
         ("ZEND_THREAD_SAFE", Value::Bool(false)),
         ("ZEND_DEBUG_BUILD", Value::Bool(false)),
-        ("PHP_OS", Value::str("Darwin")),
-        ("PHP_OS_FAMILY", Value::str("Darwin")),
+        ("PHP_OS", Value::str(PHP_OS)),
+        ("PHP_OS_FAMILY", Value::str(PHP_OS_FAMILY)),
         ("PHP_DEBUG", Value::Int(0)),
         ("PHP_ZTS", Value::Int(0)),
         ("PCRE_VERSION", Value::str("10.47 2025-10-21")),
@@ -878,11 +931,15 @@ fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-fn fn_gettype(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(deref(&args[0]).type_name()))
+fn fn_gettype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = deref(&args[0]);
+    if host.resource_closed(&v) {
+        return Ok(Value::str("resource (closed)"));
+    }
+    Ok(Value::str(v.type_name()))
 }
 
-fn fn_get_debug_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_get_debug_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = match deref(&args[0]) {
         Value::Null => "null",
         Value::Bool(_) => "bool",
@@ -892,7 +949,12 @@ fn fn_get_debug_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         Value::Array(_) => "array",
         Value::Closure(_) => "Closure",
         Value::Object(_) => "object",
-        Value::Resource(_) => "resource (stream)",
+        ref v @ Value::Resource(ref r) => {
+            if host.resource_closed(v) {
+                return Ok(Value::str("resource (closed)"));
+            }
+            return Ok(Value::str(format!("resource ({})", r.type_name)));
+        }
         Value::Ref(_) => unreachable!(),
     };
     Ok(Value::str(name))

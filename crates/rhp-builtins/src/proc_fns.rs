@@ -50,6 +50,84 @@ fn value_name(v: &Value) -> &'static str {
     }
 }
 
+/// The type name php's zpp TypeErrors print (`zend_zval_value_name`, with the
+/// class name for objects).
+pub(crate) fn zpp_type_name(host: &dyn Host, v: &Value) -> String {
+    match v {
+        Value::Object(_) => host
+            .object_class_name(v)
+            .map(|n| String::from_utf8_lossy(&n).into_owned())
+            .unwrap_or_else(|| "object".into()),
+        Value::Closure(_) => "Closure".into(),
+        other => value_name(other).into(),
+    }
+}
+
+/// php's `zend_parse_arg_long_weak` (`Z_PARAM_LONG`, coercive mode): ints
+/// pass, bools/null become 0/1/0, integral-range floats and fully numeric
+/// strings are truncated; anything else is a TypeError
+/// "`fname(): Argument #n ($pname) must be of type int, T given`".
+pub(crate) fn zpp_long(
+    host: &dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<i64, Thrown> {
+    let v = deref(&args[i]);
+    let float_to_long = |f: f64| -> Option<i64> {
+        // ZEND_DOUBLE_FITS_LONG: !(d >= 2^63 || d < -2^63), and not NaN.
+        const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+        if f.is_nan() || f >= TWO_63 || f < -TWO_63 {
+            None
+        } else {
+            Some(f as i64)
+        }
+    };
+    let n = match &v {
+        Value::Int(n) => Some(*n),
+        Value::Bool(b) => Some(*b as i64),
+        Value::Null => Some(0),
+        Value::Float(f) => float_to_long(*f),
+        Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
+            Some(conv::Num::Int(n)) => Some(n),
+            Some(conv::Num::Float(f)) => float_to_long(f),
+            None => None,
+        },
+        _ => None,
+    };
+    n.ok_or_else(|| {
+        Thrown::type_error(format!(
+            "{fname}(): Argument #{} (${pname}) must be of type int, {} given",
+            i + 1,
+            zpp_type_name(host, &v)
+        ))
+    })
+}
+
+/// `Z_PARAM_STR` (coercive): scalars become strings; arrays, objects without
+/// `__toString` and resources are a TypeError.
+pub(crate) fn zpp_string(
+    host: &dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<Vec<u8>, Thrown> {
+    let v = deref(&args[i]);
+    match &v {
+        Value::Str(s) => Ok(s.as_bytes().to_vec()),
+        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Null => {
+            Ok(conv::to_string_bytes(&v))
+        }
+        _ => Err(Thrown::type_error(format!(
+            "{fname}(): Argument #{} (${pname}) must be of type string, {} given",
+            i + 1,
+            zpp_type_name(host, &v)
+        ))),
+    }
+}
+
 /// `Z_PARAM_PATH`-style string argument: coerced to string, rejecting NUL bytes.
 fn path_arg(args: &[Value], i: usize, fname: &str, pname: &str) -> Result<Vec<u8>, Thrown> {
     let s = conv::to_string_bytes(&deref(&args[i]));
@@ -637,16 +715,17 @@ fn fn_proc_close(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_proc_terminate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let sig = args
-        .get(1)
-        .map(|v| conv::to_int(&deref(v)))
-        .unwrap_or(libc::SIGTERM as i64);
+    proc_arg(host, args, "proc_terminate")?;
+    let sig = match args.get(1) {
+        Some(_) => zpp_long(host, args, 1, "proc_terminate", "signal")?,
+        None => libc::SIGTERM as i64,
+    };
     let h = proc_arg(host, args, "proc_terminate")?;
     Ok(Value::Bool(unsafe { libc::kill(h.pid, sig as i32) } == 0))
 }
 
-fn fn_proc_nice(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let pri = conv::to_int(&deref(&args[0]));
+fn fn_proc_nice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let pri = zpp_long(host, args, 0, "proc_nice", "priority")?;
     unsafe {
         *libc_errno() = 0;
         libc::nice(pri as i32);
@@ -1195,28 +1274,29 @@ fn fn_gethostbyname(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(found.map(|s| s.into_bytes()).unwrap_or(name)))
 }
 
-fn fn_usleep(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let us = conv::to_int(&deref(&args[0]));
+fn fn_usleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let us = zpp_long(host, args, 0, "usleep", "microseconds")?;
     if us < 0 {
         return Err(Thrown::error(
             "ValueError",
             "usleep(): Argument #1 ($microseconds) must be greater than or equal to 0",
         ));
     }
-    std::thread::sleep(std::time::Duration::from_micros(us as u64));
+    // php calls usleep(3) once: a signal cuts the sleep short.
+    unsafe { libc::usleep(us as libc::useconds_t) };
     Ok(Value::Null)
 }
 
-fn fn_sleep(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = conv::to_int(&deref(&args[0]));
+fn fn_sleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = zpp_long(host, args, 0, "sleep", "seconds")?;
     if s < 0 {
         return Err(Thrown::error(
             "ValueError",
             "sleep(): Argument #1 ($seconds) must be greater than or equal to 0",
         ));
     }
-    std::thread::sleep(std::time::Duration::from_secs(s as u64));
-    Ok(Value::Int(0))
+    // php's sleep(3): returns the unslept seconds when a signal interrupts.
+    Ok(Value::Int(unsafe { libc::sleep(s as libc::c_uint) } as i64))
 }
 
 /// `cli_set_process_title($title)`: accepted (the title is remembered for

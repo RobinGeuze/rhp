@@ -15,20 +15,57 @@ fn deref(v: &Value) -> Value {
     }
 }
 
+/// A `$stream` argument (`php_stream_from_zval`): a non-resource is a
+/// TypeError "must be of type resource, T given"; a closed resource or one of
+/// another type is "must be an open stream resource".
+pub(crate) fn stream_arg(
+    host: &mut dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+) -> Result<Value, Thrown> {
+    let v = deref(&args[i]);
+    match &v {
+        Value::Resource(r) if r.type_name == "stream" && !host.resource_closed(&v) => Ok(v),
+        Value::Resource(_) => Err(Thrown::type_error(format!(
+            "{fname}(): Argument #{} ($stream) must be an open stream resource",
+            i + 1
+        ))),
+        other => Err(Thrown::type_error(format!(
+            "{fname}(): Argument #{} ($stream) must be of type resource, {} given",
+            i + 1,
+            crate::proc_fns::zpp_type_name(host, other)
+        ))),
+    }
+}
+
 fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = conv::to_string_bytes(&deref(&args[0]));
     let mode = conv::to_string_bytes(&deref(&args[1]));
+    if !host.has_streams() {
+        return Err(Thrown::unsupported(
+            "fopen",
+            "stream resources are not available in this host",
+        ));
+    }
     Ok(host.stream_open(&path, &mode).unwrap_or(Value::Bool(false)))
 }
 
 fn fn_fwrite(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let res = deref(&args[0]);
+    let res = stream_arg(host, args, 0, "fwrite")?;
     let mut data = conv::to_string_bytes(&deref(&args[1]));
-    if let Some(len) = args.get(2) {
-        let n = conv::to_int(&deref(len));
-        if n >= 0 && (n as usize) < data.len() {
+    // `$length`: null = everything; <= 0 writes nothing (returns 0).
+    if let Some(len) = args.get(2).map(deref).filter(|v| !matches!(v, Value::Null)) {
+        let n = conv::to_int(&len);
+        if n <= 0 {
+            return Ok(Value::Int(0));
+        }
+        if (n as usize) < data.len() {
             data.truncate(n as usize);
         }
+    }
+    if data.is_empty() {
+        return Ok(Value::Int(0));
     }
     Ok(host
         .stream_write(&res, &data)
@@ -37,8 +74,14 @@ fn fn_fwrite(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_fread(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let res = deref(&args[0]);
+    let res = stream_arg(host, args, 0, "fread")?;
     let len = conv::to_int(&deref(&args[1]));
+    if len <= 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "fread(): Argument #2 ($length) must be greater than 0",
+        ));
+    }
     Ok(host
         .stream_read(&res, len)
         .map(Value::str)
@@ -46,7 +89,7 @@ fn fn_fread(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_fgets(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let res = deref(&args[0]);
+    let res = stream_arg(host, args, 0, "fgets")?;
     let line = match args.get(1).map(deref) {
         None | Some(Value::Null) => host.stream_gets(&res),
         Some(v) => {
@@ -64,7 +107,7 @@ fn fn_fgets(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_fgetc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let res = deref(&args[0]);
+    let res = stream_arg(host, args, 0, "fgetc")?;
     match host.stream_read(&res, 1) {
         Some(b) if !b.is_empty() => Ok(Value::str(b)),
         _ => Ok(Value::Bool(false)),
@@ -72,23 +115,27 @@ fn fn_fgetc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_feof(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.stream_eof(&deref(&args[0]))))
+    let res = stream_arg(host, args, 0, "feof")?;
+    Ok(Value::Bool(host.stream_eof(&res)))
 }
 
 fn fn_fclose(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.stream_close(&deref(&args[0]))))
+    let res = stream_arg(host, args, 0, "fclose")?;
+    Ok(Value::Bool(host.stream_close(&res)))
 }
 
 fn fn_fflush(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.stream_flush(&deref(&args[0]))))
+    let res = stream_arg(host, args, 0, "fflush")?;
+    Ok(Value::Bool(host.stream_flush(&res)))
 }
 
 fn fn_rewind(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.stream_rewind(&deref(&args[0]))))
+    let res = stream_arg(host, args, 0, "rewind")?;
+    Ok(Value::Bool(host.stream_rewind(&res)))
 }
 
 fn fn_stream_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let res = deref(&args[0]);
+    let res = stream_arg(host, args, 0, "stream_get_contents")?;
     let maxlen = match args.get(1).map(deref) {
         None | Some(Value::Null) => -1,
         Some(v) => conv::to_int(&v),
@@ -106,7 +153,7 @@ fn fn_stream_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
 }
 
 fn fn_fseek(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let res = deref(&args[0]);
+    let res = stream_arg(host, args, 0, "fseek")?;
     let off = conv::to_int(&deref(&args[1]));
     let whence = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     Ok(Value::Int(if host.stream_seek(&res, off, whence) {
@@ -117,7 +164,7 @@ fn fn_fseek(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_ftell(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let res = deref(&args[0]);
+    let res = stream_arg(host, args, 0, "ftell")?;
     Ok(host
         .stream_tell(&res)
         .map(Value::Int)
@@ -130,12 +177,16 @@ fn fn_stream_set_blocking(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
     Ok(Value::Bool(host.stream_set_blocking(&res, on)))
 }
 
-fn fn_is_resource(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(matches!(deref(&args[0]), Value::Resource(_))))
+fn fn_is_resource(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = deref(&args[0]);
+    Ok(Value::Bool(
+        matches!(v, Value::Resource(_)) && !host.resource_closed(&v),
+    ))
 }
 
-fn fn_get_resource_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_get_resource_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match deref(&args[0]) {
+        ref v @ Value::Resource(_) if host.resource_closed(v) => Ok(Value::str("Unknown")),
         Value::Resource(r) => Ok(Value::str(r.type_name)),
         _ => Ok(Value::str("Unknown")),
     }

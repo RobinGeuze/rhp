@@ -48,5 +48,6 @@ var_dump(pcntl_signal_dispatch());
 t(fn() => pcntl_signal(0, SIG_DFL));
 t(fn() => pcntl_signal(SIGINT, 5));
 t(fn() => pcntl_signal(SIGINT, "no_such_function_xyz"));
-t(fn() => pcntl_signal_get_handler(0));
+// The upper bound is the platform's SIGRTMAX / NSIG-1: print it masked.
+try { pcntl_signal_get_handler(0); } catch (ValueError $e) { echo preg_replace('/\d+$/', 'N', $e->getMessage()), "\n"; }
 var_dump(pcntl_wifexited(0), pcntl_wexitstatus(3 << 8), pcntl_wifsignaled(9), pcntl_wtermsig(9));

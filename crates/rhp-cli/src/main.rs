@@ -127,7 +127,7 @@ fn main() -> ExitCode {
     // Compile to owned bytecode; the arena can be dropped after this.
     let program = match compile_with_source(parsed.program(), &source, &file) {
         Ok(p) => p,
-        Err(t) => return fatal(t),
+        Err(t) => return ExitCode::from(fatal(t).clamp(0, 255) as u8),
     };
 
     let mut vm = Vm::new();
@@ -164,31 +164,34 @@ fn main() -> ExitCode {
         compile_with_source(parsed.program(), src, file)
     });
     let result = vm.run(&program);
+    let code = match result {
+        Ok(code) => code,
+        Err(t) => fatal(t),
+    };
+    // Request shutdown: shutdown functions, destructors, output buffers.
+    let code = vm.request_shutdown(code, &mut fatal);
 
     let _ = std::io::stdout().write_all(vm.output());
     let _ = std::io::stdout().flush();
-
-    match result {
-        Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
-        Err(t) => fatal(t),
-    }
+    ExitCode::from(code.clamp(0, 255) as u8)
 }
 
-fn fatal(t: Thrown) -> ExitCode {
+/// Report an uncaught throwable (or honour `exit`); returns the exit code.
+fn fatal(t: Thrown) -> i32 {
     match t {
-        Thrown::Exit(code) => ExitCode::from(code.clamp(0, 255) as u8),
+        Thrown::Exit(code) => code,
         Thrown::Error { class, message } => {
             eprintln!("PHP Fatal error:  Uncaught {class}: {message}");
-            ExitCode::from(255)
+            255
         }
         Thrown::Object(_) => {
             // Uncaught user exception (details rendered to stderr only).
             eprintln!("PHP Fatal error:  Uncaught exception");
-            ExitCode::from(255)
+            255
         }
         Thrown::Unsupported { feature, reason } => {
             eprintln!("RHP_UNSUPPORTED: {feature} is not supported ({reason})");
-            ExitCode::from(255)
+            255
         }
     }
 }

@@ -3191,6 +3191,14 @@ impl ProtoBuilder {
                     "references arrive in phase 6",
                 ))
             }
+            Op::ErrorControl(_) => {
+                self.emit(Instr::BeginSilence);
+                let a = self.compile_expr(u.operand)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::Mov { dst, src: a });
+                self.emit(Instr::EndSilence);
+                return Ok(dst);
+            }
             _ => {}
         }
         let a = self.compile_expr(u.operand)?;
@@ -3200,7 +3208,6 @@ impl ProtoBuilder {
             Op::Plus(_) => Instr::CastInt { dst, a }, // +x coerces to number; refined below
             Op::Not(_) => Instr::Not { dst, a },
             Op::BitwiseNot(_) => Instr::BitNot { dst, a },
-            Op::ErrorControl(_) => Instr::Mov { dst, src: a },
             Op::IntCast(..) | Op::IntegerCast(..) => Instr::CastInt { dst, a },
             Op::FloatCast(..) | Op::DoubleCast(..) => Instr::CastFloat { dst, a },
             Op::StringCast(..) | Op::BinaryCast(..) => Instr::CastString { dst, a },
@@ -5158,8 +5165,8 @@ fn fold_const(e: &Expression) -> Result<Value, Thrown> {
                 Bop::NotIdentical(_) => Value::Bool(!ops::strict_eq(&l, &r)),
                 Bop::LessThan(_) => Value::Bool(ops::loose_compare(&l, &r).is_lt()),
                 Bop::LessThanOrEqual(_) => Value::Bool(ops::loose_compare(&l, &r).is_le()),
-                Bop::GreaterThan(_) => Value::Bool(ops::loose_compare(&l, &r).is_gt()),
-                Bop::GreaterThanOrEqual(_) => Value::Bool(ops::loose_compare(&l, &r).is_ge()),
+                Bop::GreaterThan(_) => Value::Bool(ops::loose_compare(&r, &l).is_lt()),
+                Bop::GreaterThanOrEqual(_) => Value::Bool(ops::loose_compare(&r, &l).is_le()),
                 Bop::Spaceship(_) => ops::spaceship(&l, &r),
                 Bop::And(_) | Bop::LowAnd(_) => {
                     Value::Bool(rhp_values::conv::to_bool(&l) && rhp_values::conv::to_bool(&r))

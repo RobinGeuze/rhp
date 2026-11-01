@@ -95,6 +95,12 @@ pub struct Vm {
     // Open ZipArchive handles, id -> parsed archive.
     // CLI arguments ($argv / $_SERVER['argv']); argv[0] is the script name.
     argv: Vec<Vec<u8>>,
+    // `@` nesting depth: diagnostics are recorded but not displayed while > 0.
+    silence: u32,
+    // Active `@` regions: (frame depth, silence level to restore).
+    silence_stack: Vec<(usize, u32)>,
+    // The last raised diagnostic (`error_get_last`): type, message, file, line.
+    last_error: Option<(i64, Vec<u8>, Vec<u8>, i64)>,
 }
 
 /// The backing state of an open stream resource.
@@ -137,6 +143,7 @@ struct GenState {
 }
 
 mod classes;
+mod compare;
 
 /// Where an lvalue cursor is rooted.
 enum CursorRoot {
@@ -147,6 +154,22 @@ enum CursorRoot {
 }
 
 impl Host for Vm {
+    fn raise_diagnostic(&mut self, level: i64, msg: &str) {
+        self.emit_diagnostic(level, msg);
+    }
+
+    fn last_error(&self) -> Option<(i64, Vec<u8>, Vec<u8>, i64)> {
+        self.last_error.clone()
+    }
+
+    fn clear_last_error(&mut self) {
+        self.last_error = None;
+    }
+
+    fn compare_cx(&mut self) -> Option<&mut dyn rhp_semantics::ops::CompareCx> {
+        Some(self)
+    }
+
     fn write_out(&mut self, bytes: &[u8]) {
         match self.ob_stack.last_mut() {
             Some(buf) => buf.extend_from_slice(bytes),
@@ -981,7 +1004,36 @@ impl Vm {
             stream_contexts: HashMap::new(),
             last_response_headers: Vec::new(),
             argv: Vec::new(),
+            silence: 0,
+            silence_stack: Vec::new(),
+            last_error: None,
         }
+    }
+
+    /// Raise a php diagnostic (`E_WARNING`, `E_NOTICE`, …): record it for
+    /// `error_get_last()` and display it (CLI `display_errors=1`) unless an
+    /// `@` is in effect.
+    pub(crate) fn emit_diagnostic(&mut self, level: i64, msg: &str) {
+        let (file, line) = match self.stack.len() {
+            0 => (Vec::new(), 0),
+            n => (self.current_file(n - 1), self.current_line(n - 1) as i64),
+        };
+        self.last_error = Some((level, msg.as_bytes().to_vec(), file.clone(), line));
+        if self.silence > 0 {
+            return;
+        }
+        let label = match level {
+            1 | 16 | 64 | 256 => "Fatal error",
+            2 | 32 | 128 | 512 => "Warning",
+            8 | 1024 => "Notice",
+            8192 | 16384 => "Deprecated",
+            4096 => "Recoverable fatal error",
+            _ => "Unknown error",
+        };
+        let mut out = format!("\n{label}: {msg} in ").into_bytes();
+        out.extend_from_slice(&file);
+        out.extend_from_slice(format!(" on line {line}\n").as_bytes());
+        self.write_out(&out);
     }
 
     /// Set the CLI argument vector (`$argv`; `argv[0]` is the script name).
@@ -1930,7 +1982,17 @@ impl Vm {
 
                 Instr::Cmp { dst, a, b, kind } => {
                     let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
-                    self.reg_set(top, dst, eval_cmp(kind, &x, &y));
+                    let r = self.eval_cmp(kind, &x, &y)?;
+                    self.reg_set(top, dst, r);
+                }
+                Instr::BeginSilence => {
+                    self.silence_stack.push((self.stack.len(), self.silence));
+                    self.silence += 1;
+                }
+                Instr::EndSilence => {
+                    if let Some((_, lvl)) = self.silence_stack.pop() {
+                        self.silence = lvl;
+                    }
                 }
 
                 Instr::Echo { src } => {
@@ -3054,6 +3116,39 @@ impl Vm {
     /// catch (bind + jump) or finally (re-raise after) in the current frame,
     /// else pop and continue in the caller. Returns `Ok` when a handler is
     /// installed (re-enter `run_frames`), `Err` when it escapes the top frame.
+    fn eval_cmp(&mut self, kind: CmpKind, a: &Value, b: &Value) -> Result<Value, Thrown> {
+        use std::cmp::Ordering;
+        Ok(match kind {
+            CmpKind::Eq => Value::Bool(self.compare_values(a, b)? == Ordering::Equal),
+            CmpKind::Ne => Value::Bool(self.compare_values(a, b)? != Ordering::Equal),
+            CmpKind::Identical => Value::Bool(ops::strict_eq(a, b)),
+            CmpKind::NotIdentical => Value::Bool(!ops::strict_eq(a, b)),
+            CmpKind::Lt => Value::Bool(self.compare_values(a, b)?.is_lt()),
+            CmpKind::Le => Value::Bool(self.compare_values(a, b)?.is_le()),
+            // php evaluates `a > b` as `b < a` (ZEND_IS_SMALLER with swapped
+            // operands), so uncomparable pairs are false in both directions.
+            CmpKind::Gt => Value::Bool(self.compare_values(b, a)?.is_lt()),
+            CmpKind::Ge => Value::Bool(self.compare_values(b, a)?.is_le()),
+            CmpKind::Spaceship => Value::Int(match self.compare_values(a, b)? {
+                Ordering::Less => -1,
+                Ordering::Equal => 0,
+                Ordering::Greater => 1,
+            }),
+        })
+    }
+
+    /// An exception was caught at frame depth `depth`: end every `@` region
+    /// opened at or above it (php's live-range cleanup of ZEND_END_SILENCE).
+    fn unsilence_frames(&mut self, depth: usize) {
+        while let Some(&(d, lvl)) = self.silence_stack.last() {
+            if d < depth {
+                break;
+            }
+            self.silence = lvl;
+            self.silence_stack.pop();
+        }
+    }
+
     fn unwind(&mut self, thrown: Thrown, floor: usize) -> Result<UnwindResult, Thrown> {
         loop {
             if self.stack.len() <= floor {
@@ -3081,6 +3176,7 @@ impl Vm {
                                 self.stack[top].regs[vr as usize] = obj;
                             }
                             self.stack[top].pc = arm.target as usize;
+                            self.unsilence_frames(top + 1);
                             return Ok(UnwindResult::Caught);
                         }
                     }
@@ -3088,6 +3184,7 @@ impl Vm {
                 if let Some(fin) = region.finally {
                     self.stack[top].pending = Some(FinallyCont::Rethrow(thrown));
                     self.stack[top].pc = fin as usize;
+                    self.unsilence_frames(top + 1);
                     return Ok(UnwindResult::Caught);
                 }
             }
@@ -4526,18 +4623,3 @@ fn required_params(proto: &FunctionProto) -> usize {
         .count()
 }
 
-fn eval_cmp(kind: CmpKind, a: &Value, b: &Value) -> Value {
-    match kind {
-        CmpKind::Eq => Value::Bool(ops::loose_eq(a, b)),
-        CmpKind::Ne => Value::Bool(!ops::loose_eq(a, b)),
-        CmpKind::Identical => Value::Bool(ops::strict_eq(a, b)),
-        CmpKind::NotIdentical => Value::Bool(!ops::strict_eq(a, b)),
-        CmpKind::Lt => Value::Bool(ops::loose_compare(a, b).is_lt()),
-        CmpKind::Le => Value::Bool(ops::loose_compare(a, b).is_le()),
-        // php evaluates `a > b` as `b < a` (ZEND_IS_SMALLER with swapped
-        // operands), so uncomparable pairs are false in both directions.
-        CmpKind::Gt => Value::Bool(ops::loose_compare(b, a).is_lt()),
-        CmpKind::Ge => Value::Bool(ops::loose_compare(b, a).is_le()),
-        CmpKind::Spaceship => ops::spaceship(a, b),
-    }
-}

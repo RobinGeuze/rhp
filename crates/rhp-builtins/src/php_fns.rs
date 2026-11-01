@@ -274,7 +274,22 @@ fn fn_error_reporting(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown
     Ok(Value::Int(32767))
 }
 
-fn fn_error_get_last(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+fn fn_error_get_last(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(match host.last_error() {
+        None => Value::Null,
+        Some((ty, msg, file, line)) => {
+            let mut a = rhp_values::PhpArray::new();
+            a.insert(rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"type".to_vec())), Value::Int(ty));
+            a.insert(rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"message".to_vec())), Value::Str(rhp_values::PhpStr::from_bytes(msg)));
+            a.insert(rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"file".to_vec())), Value::Str(rhp_values::PhpStr::from_bytes(file)));
+            a.insert(rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"line".to_vec())), Value::Int(line));
+            Value::Array(a)
+        }
+    })
+}
+
+fn fn_error_clear_last(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    host.clear_last_error();
     Ok(Value::Null)
 }
 
@@ -816,6 +831,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "trigger_error", fn_trigger_error, 1, Some(2));
     put(m, "error_reporting", fn_error_reporting, 0, Some(1));
     put(m, "error_get_last", fn_error_get_last, 0, Some(0));
+    put(m, "error_clear_last", fn_error_clear_last, 0, Some(0));
     put(
         m,
         "register_shutdown_function",

@@ -24,6 +24,7 @@ mod arrayset_fns;
 mod datetime_fns;
 mod dt_oop_fns;
 mod ext;
+pub use ext::gmp::{compare_handler as gmp_compare_handler, CmpOperand as GmpCmpOperand};
 mod file_fns;
 mod filter_fns;
 pub mod http;
@@ -44,6 +45,28 @@ mod stream_fns;
 mod strtotime_fns;
 mod webenc_fns;
 pub mod zip_ext;
+
+/// `zend_compare` from inside a builtin, with the host's object semantics.
+pub fn host_compare(
+    host: &mut dyn Host,
+    a: &Value,
+    b: &Value,
+) -> Result<std::cmp::Ordering, Thrown> {
+    match host.compare_cx() {
+        Some(cx) => rhp_semantics::ops::compare(a, b, cx),
+        None => rhp_semantics::ops::compare(a, b, &mut rhp_semantics::ops::NoCx),
+    }
+}
+
+/// `$a == $b` from inside a builtin.
+pub fn host_loose_eq(host: &mut dyn Host, a: &Value, b: &Value) -> Result<bool, Thrown> {
+    Ok(host_compare(host, a, b)? == std::cmp::Ordering::Equal)
+}
+
+/// Raise `E_WARNING` with php's `fn(): msg` text.
+pub fn warn(host: &mut dyn Host, msg: &str) {
+    host.raise_diagnostic(2, msg);
+}
 
 /// The interpreter surface a builtin may use. Implemented by the VM and the oracle.
 pub trait Host {
@@ -67,6 +90,25 @@ pub trait Host {
     }
     fn ob_end_flush(&mut self) -> bool {
         false
+    }
+
+    /// Raise a php diagnostic (`E_WARNING` = 2, `E_NOTICE` = 8, …) at the
+    /// current line, honouring `@`. Default: dropped.
+    fn raise_diagnostic(&mut self, _level: i64, _msg: &str) {}
+
+    /// The last raised diagnostic for `error_get_last()`: (type, message,
+    /// file, line). Default: none.
+    fn last_error(&self) -> Option<(i64, Vec<u8>, Vec<u8>, i64)> {
+        None
+    }
+
+    /// `error_clear_last()`.
+    fn clear_last_error(&mut self) {}
+
+    /// The engine's comparison context (`__toString`, internal compare
+    /// handlers, notices) for loose comparisons inside builtins.
+    fn compare_cx(&mut self) -> Option<&mut dyn rhp_semantics::ops::CompareCx> {
+        None
     }
 
     /// A class's name by id (for `get_class` etc.). Default: not available.
@@ -1065,37 +1107,115 @@ fn fn_abs(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-fn fn_max(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    extremum(args, true)
+fn fn_max(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    extremum(host, args, true)
 }
-fn fn_min(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    extremum(args, false)
+fn fn_min(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    extremum(host, args, false)
 }
 
-fn extremum(args: &[Value], want_max: bool) -> Result<Value, Thrown> {
-    // max(array) / max(a, b, ...). Comparison uses loose ordering via conv.
-    let items: Vec<Value> = if args.len() == 1 {
-        match deref(&args[0]) {
-            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
-            other => vec![other],
+/// `(double)l` converts back to `l` exactly (`zend_dval_to_lval_silent`).
+fn long_is_exact_double(l: i64) -> bool {
+    let d = l as f64;
+    (-9.223_372_036_854_775_808e18..9.223_372_036_854_775_808e18).contains(&d) && d as i64 == l
+}
+
+/// php's `min`/`max`: the array form (`zend_hash_minmax`), the two-argument
+/// frameless form, and the variadic loop with its long/double fast paths.
+fn extremum(host: &mut dyn Host, args: &[Value], want_max: bool) -> Result<Value, Thrown> {
+    use std::cmp::Ordering;
+    let name = if want_max { "max" } else { "min" };
+    let args: Vec<Value> = args.iter().map(deref).collect();
+    if args.len() == 1 {
+        let Value::Array(a) = &args[0] else {
+            return Err(Thrown::type_error(format!(
+                "{name}(): Argument #1 ($value) must be of type array, {} given",
+                type_name_of(host, &args[0])
+            )));
+        };
+        let mut it = a.iter().map(|(_, v)| deref(v));
+        let Some(mut res) = it.next() else {
+            return Err(Thrown::error(
+                "ValueError",
+                format!("{name}(): Argument #1 ($value) must contain at least one element"),
+            ));
+        };
+        for zv in it {
+            let c = host_compare(host, &res, &zv)?;
+            if (want_max && c == Ordering::Less) || (!want_max && c == Ordering::Greater) {
+                res = zv;
+            }
         }
-    } else {
-        args.to_vec()
+        return Ok(res);
+    }
+    if args.len() == 2 {
+        // ZEND_FRAMELESS_FUNCTION(min|max, 2)
+        let (lhs, rhs) = (&args[0], &args[1]);
+        let pick = |keep_lhs: bool| if keep_lhs { lhs.clone() } else { rhs.clone() };
+        let dbl = |l: f64, r: f64| if want_max { l >= r } else { l < r };
+        return Ok(match (lhs, rhs) {
+            (Value::Int(l), Value::Int(r)) => pick(if want_max { l >= r } else { l < r }),
+            (Value::Int(l), Value::Float(r)) if long_is_exact_double(*l) => pick(dbl(*l as f64, *r)),
+            (Value::Float(l), Value::Float(r)) => pick(dbl(*l, *r)),
+            (Value::Float(l), Value::Int(r)) if long_is_exact_double(*r) => pick(dbl(*l, *r as f64)),
+            _ => {
+                let c = host_compare(host, lhs, rhs)?;
+                pick(if want_max { c != Ordering::Less } else { c == Ordering::Less })
+            }
+        });
+    }
+    #[derive(PartialEq)]
+    enum Mode {
+        Long(i64),
+        Double(f64),
+        Generic,
+    }
+    let mut best = 0usize;
+    let mut mode = match &args[0] {
+        Value::Int(l) => Mode::Long(*l),
+        Value::Float(d) => Mode::Double(*d),
+        _ => Mode::Generic,
     };
-    if items.is_empty() {
-        return Err(Thrown::type_error(
-            "max(): Argument #1 ($value) must contain at least one element",
-        ));
-    }
-    let mut best = items[0].clone();
-    for v in &items[1..] {
-        // PHP max/min use the standard loose comparison.
-        let gt = ops::loose_compare(v, &best).is_gt();
-        if gt == want_max {
-            best = v.clone();
+    let better_d = |cur: f64, v: f64| if want_max { cur < v } else { cur > v };
+    for i in 1..args.len() {
+        if let Mode::Long(cur) = mode {
+            match &args[i] {
+                Value::Int(v) => {
+                    if (want_max && cur < *v) || (!want_max && cur > *v) {
+                        mode = Mode::Long(*v);
+                        best = i;
+                    }
+                    continue;
+                }
+                Value::Float(_) if long_is_exact_double(cur) => mode = Mode::Double(cur as f64),
+                _ => mode = Mode::Generic,
+            }
+        }
+        if let Mode::Double(cur) = mode {
+            match &args[i] {
+                Value::Float(v) => {
+                    if better_d(cur, *v) {
+                        mode = Mode::Double(*v);
+                        best = i;
+                    }
+                    continue;
+                }
+                Value::Int(v) if long_is_exact_double(*v) => {
+                    if better_d(cur, *v as f64) {
+                        mode = Mode::Double(*v as f64);
+                        best = i;
+                    }
+                    continue;
+                }
+                _ => mode = Mode::Generic,
+            }
+        }
+        let c = host_compare(host, &args[i], &args[best])?;
+        if (want_max && c == Ordering::Greater) || (!want_max && c == Ordering::Less) {
+            best = i;
         }
     }
-    Ok(best)
+    Ok(args[best].clone())
 }
 
 fn fn_array_sum(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1124,7 +1244,7 @@ fn fn_array_product(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(acc)
 }
 
-fn fn_array_keys(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_array_keys(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Value::Array(a) = deref(&args[0]) else {
         return Err(Thrown::type_error(
             "array_keys(): Argument #1 ($array) must be of type array",
@@ -1149,7 +1269,7 @@ fn fn_array_keys(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 if strict {
                     ops::strict_eq(&deref(v), needle)
                 } else {
-                    ops::loose_eq(&deref(v), needle)
+                    host_loose_eq(host, &deref(v), needle)?
                 }
             }
         };
@@ -1353,7 +1473,7 @@ fn fn_range(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(out))
 }
 
-fn fn_in_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_in_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let needle = deref(&args[0]);
     let Value::Array(a) = deref(&args[1]) else {
         return Err(Thrown::type_error(
@@ -1361,14 +1481,17 @@ fn fn_in_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         ));
     };
     let strict = args.get(2).map(conv::to_bool).unwrap_or(false);
-    let found = a.iter().any(|(_, v)| {
-        if strict {
+    for (_, v) in a.iter() {
+        let hit = if strict {
             ops::strict_eq(&needle, v)
         } else {
-            ops::loose_eq(&needle, v)
+            host_loose_eq(host, &needle, v)?
+        };
+        if hit {
+            return Ok(Value::Bool(true));
         }
-    });
-    Ok(Value::Bool(found))
+    }
+    Ok(Value::Bool(false))
 }
 
 fn fn_array_key_exists(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1710,5 +1833,20 @@ impl TypeNameLower for Value {
             Value::Resource(_) => "resource",
             Value::Ref(r) => r.borrow().type_name_lower(),
         }
+    }
+}
+
+/// `zend_zval_value_name`: the class name for objects, `true`/`false` for
+/// bools, else the type name.
+pub fn type_name_of(host: &dyn Host, v: &Value) -> String {
+    match deref(v) {
+        Value::Bool(true) => "true".into(),
+        Value::Bool(false) => "false".into(),
+        Value::Closure(_) => "Closure".into(),
+        o @ Value::Object(_) => host
+            .object_class_name(&o)
+            .map(|n| String::from_utf8_lossy(&n).into_owned())
+            .unwrap_or_else(|| "object".into()),
+        other => other.type_name_lower().into(),
     }
 }

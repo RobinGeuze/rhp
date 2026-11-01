@@ -180,6 +180,12 @@ pub enum Instr {
         a: Reg,
     },
 
+    /// `@expr` begin: diagnostics raised until the matching `EndSilence` are
+    /// recorded but not displayed (ZEND_BEGIN_SILENCE).
+    BeginSilence,
+    /// `@expr` end: restore the display state saved by `BeginSilence`.
+    EndSilence,
+
     // -- compare (phase 2) — route to ops:: --
     Cmp {
         dst: Reg,

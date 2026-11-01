@@ -778,7 +778,21 @@ impl Host for Vm {
             StreamState::Stderr => Act::Err,
             StreamState::Mem { .. } | StreamState::FileWrite { .. } => Act::Buf,
             StreamState::File(f) => return f.write(data),
-            StreamState::Fd(f) => return f.write(data),
+            StreamState::Fd(f) => {
+                let r = f.write(data);
+                if let Some(e) = f.take_send_error() {
+                    // php_sockop_write's notice, under the calling builtin.
+                    let func = self.native_calls.last().map_or("fwrite", |n| n.name);
+                    let msg = format!(
+                        "{func}(): Send of {} bytes failed with errno={} {}",
+                        e.count,
+                        e.errno,
+                        builtins::streams::strerror(e.errno)
+                    );
+                    self.raise_error(builtins::E_NOTICE, &msg);
+                }
+                return r;
+            }
             StreamState::Stdin | StreamState::Dir { .. } => Act::No,
         };
         match act {
@@ -939,6 +953,45 @@ impl Host for Vm {
     fn stream_from_fd(&mut self, fd: std::os::fd::OwnedFd) -> Option<Value> {
         let st = StreamState::Fd(builtins::fdstream::FdStream::new(fd));
         Some(self.make_stream(st, "stream"))
+    }
+
+    fn stream_from_socket(
+        &mut self,
+        fd: std::os::fd::OwnedFd,
+        info: builtins::fdstream::SockInfo,
+    ) -> Option<Value> {
+        let blocked = info.blocked;
+        let st = StreamState::Fd(builtins::fdstream::FdStream::new_socket(fd, info));
+        let v = self.make_stream(st, "stream");
+        if !blocked {
+            if let Some(id) = res_id(&v) {
+                self.nonblocking.insert(id);
+            }
+        }
+        Some(v)
+    }
+
+    fn stream_sock_info(&self, res: &Value) -> Option<builtins::fdstream::SockInfo> {
+        match self.streams.get(&res_id(res)?)? {
+            StreamState::Fd(f) => f.sock().cloned(),
+            _ => None,
+        }
+    }
+
+    fn stream_set_timeout(&mut self, res: &Value, timeout: Option<(i64, i64)>) -> bool {
+        let Some(id) = res_id(res) else { return false };
+        match self.streams.get_mut(&id) {
+            Some(StreamState::Fd(f)) => f.set_timeout(timeout),
+            _ => false,
+        }
+    }
+
+    fn prepare_fork(&mut self) {
+        if self.direct_stdout || self.stdout_passthrough {
+            self.flush_stdout();
+        }
+        use std::io::Write;
+        let _ = std::io::stderr().flush();
     }
 
     fn stream_dup_fd(&mut self, res: &Value) -> Result<std::os::fd::OwnedFd, &'static str> {
@@ -1233,6 +1286,7 @@ impl Host for Vm {
                     seekable: true,
                     eof,
                     blocked: true,
+                    timed_out: false,
                 });
             }
             Some(match self.streams.get(&id)? {
@@ -1245,7 +1299,24 @@ impl Host for Vm {
                     seekable: true,
                     eof: f.eof(),
                     blocked: true,
+                    timed_out: false,
                 },
+                // A socket: php's META_DATA_API answer (timed_out, blocked,
+                // eof from the socket layer), no wrapper / uri.
+                StreamState::Fd(f) if f.sock().is_some() => {
+                    let s = f.sock()?;
+                    M {
+                        wrapper_type: "",
+                        stream_type: s.stream_type,
+                        mode: b"r+".to_vec(),
+                        uri: s.uri.clone().unwrap_or_default(),
+                        unread_bytes: f.unread() as i64,
+                        seekable: false,
+                        eof: f.eof_flag(),
+                        blocked: s.blocked,
+                        timed_out: s.timed_out,
+                    }
+                }
                 StreamState::Fd(f) => match self.fd_names.get(&id) {
                     Some((uri, mode)) => M {
                         wrapper_type: "PHP",
@@ -1256,6 +1327,7 @@ impl Host for Vm {
                         seekable: f.tell() != -1,
                         eof: f.eof(),
                         blocked: true,
+                        timed_out: false,
                     },
                     // A pipe (proc_open, popen): no wrapper, no uri; the mode is
                     // the descriptor's direction.
@@ -1271,6 +1343,7 @@ impl Host for Vm {
                         seekable: f.tell() != -1,
                         eof: f.eof(),
                         blocked: true,
+                        timed_out: false,
                     },
                 },
                 StreamState::Dir { .. } => M {
@@ -1282,6 +1355,7 @@ impl Host for Vm {
                     seekable: true,
                     eof: false,
                     blocked: true,
+                    timed_out: false,
                 },
                 StreamState::Mem {
                     eof, temp, mode, ..
@@ -1298,6 +1372,7 @@ impl Host for Vm {
                     seekable: true,
                     eof: *eof,
                     blocked: true,
+                    timed_out: false,
                 },
                 StreamState::FileWrite { url, .. } => M {
                     wrapper_type: "plainfile",
@@ -1308,6 +1383,7 @@ impl Host for Vm {
                     seekable: true,
                     eof: false,
                     blocked: true,
+                    timed_out: false,
                 },
                 st @ (StreamState::Stdin | StreamState::Stdout | StreamState::Stderr) => {
                     let (fd, mode, uri): (i32, &[u8], &[u8]) = match st {
@@ -1329,6 +1405,7 @@ impl Host for Vm {
                         seekable,
                         eof: false,
                         blocked: true,
+                        timed_out: false,
                     }
                 }
             })

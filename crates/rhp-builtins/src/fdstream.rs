@@ -32,6 +32,72 @@ pub struct FdStream {
     /// path): `fread` loops until `$length` bytes or EOF (php's "greedy" read
     /// for `file://`), instead of returning after one fill.
     greedy: bool,
+    /// Set for a socket stream (php's `php_netstream_data_t`): reads and
+    /// writes then follow `xp_socket.c` (poll with the read timeout, `recv` /
+    /// `send` with `MSG_DONTWAIT`).
+    sock: Option<SockInfo>,
+    /// The failed `send(2)` of the last write (socket streams).
+    last_send_error: Option<SendError>,
+}
+
+/// The socket half of a socket stream (php's `php_netstream_data_t` plus the
+/// stream ops name).
+#[derive(Clone, Debug)]
+pub struct SockInfo {
+    /// php's ops label (`stream_get_meta_data()['stream_type']`):
+    /// `tcp_socket/ssl`, `udp_socket`, `unix_socket`, `udg_socket`,
+    /// `generic_socket`.
+    pub stream_type: &'static str,
+    /// The read/write timeout; `None` is php's `tv_sec == -1` (wait forever).
+    pub timeout: Option<(i64, i64)>,
+    /// php's `timeout_event` (`timed_out` in the meta data).
+    pub timed_out: bool,
+    /// php's `is_blocked`.
+    pub blocked: bool,
+    /// A listening server socket (`PHP_STREAM_FLAG_NO_IO`).
+    pub no_io: bool,
+    /// The address the stream was opened with (php's `orig_path`, the meta
+    /// data `uri`); none for accepted sockets and socket pairs.
+    pub uri: Option<Vec<u8>>,
+    /// The peer closed the connection, as seen by a liveness check (`feof`).
+    peer_closed: std::cell::Cell<bool>,
+}
+
+impl SockInfo {
+    pub fn new(stream_type: &'static str, timeout: Option<(i64, i64)>) -> SockInfo {
+        SockInfo {
+            stream_type,
+            timeout,
+            timed_out: false,
+            blocked: true,
+            no_io: false,
+            uri: None,
+            peer_closed: std::cell::Cell::new(false),
+        }
+    }
+}
+
+/// A failed `send(2)` on a socket stream: php's
+/// "Send of N bytes failed with errno=E <strerror>" notice.
+#[derive(Clone, Copy, Debug)]
+pub struct SendError {
+    pub count: usize,
+    pub errno: i32,
+}
+
+/// `poll(2)` one fd for `events`, waiting at most `timeout` (`None` =
+/// forever): `>0` ready, `0` timed out, `<0` error (errno set).
+pub fn poll_fd(fd: RawFd, events: libc::c_short, timeout: Option<(i64, i64)>) -> i32 {
+    let ms = match timeout {
+        None => -1,
+        Some((s, us)) => (s.max(0) * 1000 + us.max(0) / 1000).min(i32::MAX as i64) as i32,
+    };
+    let mut p = libc::pollfd {
+        fd,
+        events,
+        revents: 0,
+    };
+    unsafe { libc::poll(&mut p, 1, ms) }
 }
 
 /// Outcome of one `read(2)` into the read-ahead buffer.
@@ -41,6 +107,10 @@ enum Fill {
     Nothing,
     /// A hard read error (php's fill fails: `fread` returns false).
     Error,
+}
+
+fn errno() -> i32 {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 impl FdStream {
@@ -70,6 +140,50 @@ impl FdStream {
             position,
             seekable,
             greedy: false,
+            sock: None,
+            last_send_error: None,
+        }
+    }
+
+    /// A socket stream (`stream_socket_server` / `_client` / `_accept` /
+    /// `_pair`, `fsockopen`): never seekable, position 0.
+    pub fn new_socket(fd: OwnedFd, info: SockInfo) -> Self {
+        FdStream {
+            fd: Some(fd),
+            eof: false,
+            rbuf: Vec::new(),
+            position: 0,
+            seekable: false,
+            greedy: false,
+            sock: Some(info),
+            last_send_error: None,
+        }
+    }
+
+    /// The socket state of a socket stream.
+    pub fn sock(&self) -> Option<&SockInfo> {
+        self.sock.as_ref()
+    }
+
+    pub fn sock_mut(&mut self) -> Option<&mut SockInfo> {
+        self.sock.as_mut()
+    }
+
+    /// The failed send of the last `write`, if it failed (taken).
+    pub fn take_send_error(&mut self) -> Option<SendError> {
+        self.last_send_error.take()
+    }
+
+    /// `stream_set_timeout` on a socket stream (php's READ_TIMEOUT option):
+    /// false for any other stream.
+    pub fn set_timeout(&mut self, timeout: Option<(i64, i64)>) -> bool {
+        match self.sock.as_mut() {
+            Some(s) => {
+                s.timeout = timeout;
+                s.timed_out = false;
+                true
+            }
+            None => false,
         }
     }
 
@@ -98,13 +212,28 @@ impl FdStream {
         !self.rbuf.is_empty()
     }
 
+    /// Bytes read ahead but not consumed (php's `unread_bytes`).
+    pub fn unread(&self) -> usize {
+        self.rbuf.len()
+    }
+
     /// One `read(2)` of up to `max` bytes appended to the read-ahead buffer
     /// (php's `php_stdiop_read`: EINTR retried, EAGAIN is "no data", EBADF
     /// leaves the EOF flag alone, any other error sets it).
     fn fill(&mut self, max: usize) -> Fill {
+        self.fill_ex(max, false)
+    }
+
+    /// [`FdStream::fill`]; `has_buffered` is php's `stream->has_buffered_data`
+    /// (this read already took bytes from the buffer), which makes a blocking
+    /// socket read not wait.
+    fn fill_ex(&mut self, max: usize, has_buffered: bool) -> Fill {
         let Some(raw) = self.raw_fd() else {
             return Fill::Error;
         };
+        if self.sock.is_some() {
+            return self.sock_fill(raw, max, has_buffered);
+        }
         let mut buf = vec![0u8; max.max(1)];
         loop {
             let n = unsafe { libc::read(raw, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
@@ -130,6 +259,95 @@ impl FdStream {
         }
     }
 
+    /// php's `php_sockop_read`: a blocking socket waits (poll) up to its
+    /// timeout for data unless this read already has some; a timeout fails
+    /// the read (without EOF); then one `recv`, where EAGAIN is "no data",
+    /// 0 is EOF and any other error sets EOF.
+    fn sock_fill(&mut self, raw: RawFd, max: usize, has_buffered: bool) -> Fill {
+        let sock = self.sock.as_mut().expect("socket stream");
+        let mut flags = 0;
+        if sock.blocked {
+            let dont_wait = has_buffered || sock.timeout == Some((0, 0));
+            if dont_wait || sock.timeout.is_some() {
+                flags = libc::MSG_DONTWAIT;
+            }
+            if !dont_wait {
+                sock.timed_out = false;
+                loop {
+                    let r = poll_fd(raw, libc::POLLIN | libc::POLLPRI, sock.timeout);
+                    if r == 0 {
+                        sock.timed_out = true;
+                    }
+                    if r >= 0 || errno() != libc::EINTR {
+                        break;
+                    }
+                }
+                if sock.timed_out {
+                    return if has_buffered {
+                        Fill::Nothing
+                    } else {
+                        Fill::Error
+                    };
+                }
+            }
+        }
+        let mut buf = vec![0u8; max.max(1)];
+        let n = unsafe { libc::recv(raw, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), flags) };
+        if n > 0 {
+            self.rbuf.extend_from_slice(&buf[..n as usize]);
+            return Fill::Data;
+        }
+        if n == 0 {
+            self.eof = true;
+            return Fill::Nothing;
+        }
+        let err = errno();
+        if err == libc::EAGAIN || err == libc::EWOULDBLOCK || err == libc::EINTR {
+            return Fill::Nothing;
+        }
+        self.eof = true;
+        Fill::Error
+    }
+
+    /// php's `PHP_STREAM_OPTION_CHECK_LIVENESS` with a zero timeout (what
+    /// `feof` asks a socket): peek one byte without waiting; a clean
+    /// shutdown (0) or a hard error means the peer is gone.
+    fn sock_alive(&self) -> bool {
+        let (Some(sock), Some(raw)) = (self.sock.as_ref(), self.raw_fd()) else {
+            return true;
+        };
+        if sock.peer_closed.get() {
+            return false;
+        }
+        if sock.no_io {
+            // A listening socket: poll(0) for readability, then peek.
+            if poll_fd(raw, libc::POLLIN | libc::POLLPRI, Some((0, 0))) <= 0 {
+                return true;
+            }
+        }
+        let mut b = 0u8;
+        let r = unsafe {
+            libc::recv(
+                raw,
+                &mut b as *mut u8 as *mut libc::c_void,
+                1,
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            )
+        };
+        let alive = if r == 0 {
+            false
+        } else if r < 0 {
+            let e = errno();
+            e == libc::EWOULDBLOCK || e == libc::EAGAIN || e == libc::EMSGSIZE
+        } else {
+            true
+        };
+        if !alive {
+            sock.peer_closed.set(true);
+        }
+        alive
+    }
+
     fn take(&mut self, n: usize) -> Vec<u8> {
         let n = n.min(self.rbuf.len());
         self.position += n as i64;
@@ -146,7 +364,8 @@ impl FdStream {
         }
         let mut out = self.take(len);
         while out.len() < len {
-            match self.fill(CHUNK) {
+            let had = !out.is_empty();
+            match self.fill_ex(CHUNK, had) {
                 Fill::Data => {}
                 Fill::Nothing => break,
                 Fill::Error if out.is_empty() => return None,
@@ -207,7 +426,12 @@ impl FdStream {
 
     /// `feof($h)`: false while buffered data remains; else the sticky EOF flag.
     pub fn eof(&self) -> bool {
-        self.rbuf.is_empty() && self.eof
+        if !self.rbuf.is_empty() {
+            return false;
+        }
+        // A socket is asked whether the peer is still there (php's
+        // CHECK_LIVENESS in `_php_stream_eof`).
+        self.eof || (self.sock.is_some() && !self.sock_alive())
     }
 
     /// `fwrite($h, $data)` (php's `_php_stream_write_buffer`): on a seekable
@@ -218,6 +442,9 @@ impl FdStream {
         let raw = self.raw_fd()?;
         if data.is_empty() {
             return Some(0);
+        }
+        if self.sock.is_some() {
+            return self.sock_write(raw, data);
         }
         if self.seekable && !self.rbuf.is_empty() {
             self.rbuf.clear();
@@ -243,6 +470,69 @@ impl FdStream {
                 return Some(done);
             }
             return if done == 0 { None } else { Some(done) };
+        }
+        Some(done)
+    }
+
+    /// `_php_stream_write_buffer` over `php_sockop_write`: `send` until all
+    /// is written. A blocking socket waits (poll) up to its timeout when the
+    /// send buffer is full; a non-blocking one returns the partial count. A
+    /// failed send before any byte is `None` and leaves a [`SendError`] for
+    /// the caller's notice.
+    fn sock_write(&mut self, raw: RawFd, data: &[u8]) -> Option<usize> {
+        let (blocked, timeout) = {
+            let s = self.sock.as_ref().expect("socket stream");
+            (s.blocked, s.timeout)
+        };
+        let mut done = 0usize;
+        while done < data.len() {
+            let rest = &data[done..];
+            let flags = if blocked && timeout.is_some() {
+                libc::MSG_DONTWAIT
+            } else {
+                0
+            };
+            let n = 'retry: loop {
+                let n = unsafe {
+                    libc::send(raw, rest.as_ptr() as *const libc::c_void, rest.len(), flags)
+                };
+                if n > 0 {
+                    break n;
+                }
+                let mut err = errno();
+                if err == libc::EINTR {
+                    continue;
+                }
+                if err == libc::EAGAIN || err == libc::EWOULDBLOCK {
+                    if !blocked {
+                        // Not an error for a non-blocking stream: 0 written.
+                        return Some(done);
+                    }
+                    let s = self.sock.as_mut().expect("socket stream");
+                    s.timed_out = false;
+                    loop {
+                        let r = poll_fd(raw, libc::POLLOUT, timeout);
+                        if r == 0 {
+                            s.timed_out = true;
+                            break;
+                        }
+                        if r > 0 {
+                            continue 'retry; // writable now
+                        }
+                        err = errno();
+                        if err != libc::EINTR {
+                            break;
+                        }
+                    }
+                }
+                self.last_send_error = Some(SendError {
+                    count: rest.len(),
+                    errno: err,
+                });
+                return if done == 0 { None } else { Some(done) };
+            };
+            done += n as usize;
+            self.position += n as i64;
         }
         Some(done)
     }
@@ -318,10 +608,22 @@ impl FdStream {
 
     /// `stream_set_blocking($h, $mode)`: toggle `O_NONBLOCK` on the fd.
     pub fn set_blocking(&mut self, blocking: bool) -> bool {
-        match self.raw_fd() {
+        let ok = match self.raw_fd() {
             Some(raw) => set_fd_blocking(raw, blocking),
             None => false,
+        };
+        if ok {
+            if let Some(s) = self.sock.as_mut() {
+                s.blocked = blocking;
+            }
         }
+        ok
+    }
+
+    /// php's `stream->eof` flag as `stream_get_meta_data` reports it (no
+    /// liveness probe; a probe that saw the peer gone did set it).
+    pub fn eof_flag(&self) -> bool {
+        self.eof || self.sock.as_ref().is_some_and(|s| s.peer_closed.get())
     }
 
     /// Close the fd (`fclose`).

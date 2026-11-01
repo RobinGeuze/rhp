@@ -1376,7 +1376,7 @@ fn fn_stream_get_meta_data(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     };
     // A TEMP stream answers META_DATA_API itself, so php skips these three.
     if m.stream_type != "TEMP" {
-        put("timed_out", Value::Bool(false));
+        put("timed_out", Value::Bool(m.timed_out));
         put("blocked", Value::Bool(m.blocked));
         put("eof", Value::Bool(m.eof));
     }

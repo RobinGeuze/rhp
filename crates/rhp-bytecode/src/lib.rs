@@ -1118,6 +1118,16 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         "system" | "passthru" => &[false, true],
         // `stream_select(&$read, &$write, &$except, …)`.
         "stream_select" => &[true, true, true],
+        // Socket streams: `&$error_code, &$error_message` / `&$peer_name` /
+        // `&$address`.
+        "stream_socket_server" | "stream_socket_client" => &[false, true, true],
+        "fsockopen" | "pfsockopen" => &[false, false, true, true],
+        "stream_socket_accept" => &[false, false, true],
+        "stream_socket_recvfrom" => &[false, false, false, true],
+        // pcntl: `&$status` (and `&$resource_usage`), `&$old_signals`.
+        "pcntl_waitpid" => &[false, true, false, true],
+        "pcntl_wait" => &[true, false, true],
+        "pcntl_sigprocmask" => &[false, false, true],
         _ => &[],
     }
 }

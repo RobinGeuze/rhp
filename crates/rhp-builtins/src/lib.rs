@@ -50,6 +50,8 @@ pub struct StreamMeta {
     pub eof: bool,
     /// php's `blocked` (false after stream_set_blocking($s, false)).
     pub blocked: bool,
+    /// php's `timed_out` (a socket read / write hit its timeout).
+    pub timed_out: bool,
 }
 
 /// pcntl's asynchronous signal delivery: the VM polls
@@ -83,6 +85,7 @@ mod proc_fns;
 mod query_fns;
 mod runtime_fns;
 mod serialize_fns;
+mod socket_fns;
 mod sort_fns;
 mod str_fns;
 mod strarr2_fns;
@@ -795,6 +798,27 @@ pub trait Host {
     fn stream_set_blocking(&mut self, _res: &Value, _blocking: bool) -> bool {
         true
     }
+    /// Wrap a socket descriptor as a socket `stream` resource (php's
+    /// `php_netstream_data_t` stream). Default: unsupported.
+    fn stream_from_socket(
+        &mut self,
+        _fd: std::os::fd::OwnedFd,
+        _info: fdstream::SockInfo,
+    ) -> Option<Value> {
+        None
+    }
+    /// The socket state of a socket stream (`None` for any other stream).
+    fn stream_sock_info(&self, _res: &Value) -> Option<fdstream::SockInfo> {
+        None
+    }
+    /// `stream_set_timeout` (`None` = wait forever): false unless `res` is a
+    /// socket stream.
+    fn stream_set_timeout(&mut self, _res: &Value, _timeout: Option<(i64, i64)>) -> bool {
+        false
+    }
+    /// Flush whatever the host holds back before the process forks
+    /// (`pcntl_fork`), so the child does not write it a second time.
+    fn prepare_fork(&mut self) {}
     /// Register an opaque native resource (e.g. a `process` handle) and return
     /// its resource Value. Default: unsupported (`Null`).
     fn resource_insert(
@@ -1164,6 +1188,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("php_fns", Box::new(php_fns::register)),
         ("info_fns", Box::new(info_fns::register)),
         ("stream_fns", Box::new(stream_fns::register)),
+        ("socket_fns", Box::new(socket_fns::register)),
         ("strsearch_fns", Box::new(strsearch_fns::register)),
         ("query_fns", Box::new(query_fns::register)),
         ("runtime_fns", Box::new(runtime_fns::register)),
@@ -1467,6 +1492,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     .chain(json_fns::json_constants())
     .chain(info_fns::constants())
     .chain(fs_fns::constants())
+    .chain(socket_fns::constants())
     // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with their module.
     .chain(ext::modules().into_iter().flat_map(|md| (md.constants)()))
     .collect()

@@ -158,10 +158,6 @@ fn fn_stream_get_wrappers(host: &mut dyn Host, _args: &[Value]) -> Result<Value,
     Ok(Value::Array(a))
 }
 
-fn fn_true(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(true))
-}
-
 fn fn_zero(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(0))
 }
@@ -235,7 +231,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     );
     // No-op stream knobs (accepted so framework output code runs).
     put(m, "stream_set_blocking", fn_stream_set_blocking, 2, Some(2));
-    put(m, "stream_set_timeout", fn_true, 2, Some(3));
     put(m, "stream_set_write_buffer", fn_zero, 2, Some(2));
     put(m, "set_file_buffer", fn_zero, 2, Some(2));
     // TTY detection: `stream_isatty` lives with the process functions

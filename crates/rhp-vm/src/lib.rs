@@ -4149,6 +4149,24 @@ impl Vm {
         self.stack[top].proto.debug.file.as_bytes().to_vec()
     }
 
+    /// Stamp an unlocated refusal with the innermost user frame's file and
+    /// line (engine-internal prelude frames have no source to point at).
+    fn locate_unsupported(&self, t: Thrown) -> Thrown {
+        if !matches!(t, Thrown::Unsupported { location: None, .. }) {
+            return t;
+        }
+        match (0..self.stack.len())
+            .rev()
+            .find(|&i| !self.is_internal_frame(i))
+        {
+            Some(i) => t.with_location(
+                || String::from_utf8_lossy(&self.current_file(i)).into_owned(),
+                self.current_line(i),
+            ),
+            None => t,
+        }
+    }
+
     // -- exceptions: throw site, backtrace, engine-error materialization --
 
     /// Frame `i` runs engine-internal code (the prelude's PHP-source classes /
@@ -4851,7 +4869,9 @@ impl Vm {
                 Err(thrown) => {
                     if !thrown.is_catchable() {
                         // Exit / Unsupported: straight to the SAPI (keeping
-                        // {main}'s globals for the shutdown sequence).
+                        // {main}'s globals for the shutdown sequence). A
+                        // refusal raised by a builtin is located first.
+                        let thrown = self.locate_unsupported(thrown);
                         self.stack.truncate(1);
                         if let Some(main) = self.stack.pop() {
                             self.finished_main = Some(main);
@@ -5612,10 +5632,10 @@ impl Vm {
                 Instr::DeferredUnsupported { what, why } => {
                     let what = conv::to_string_bytes(&proto.consts[what as usize]);
                     let why = conv::to_string_bytes(&proto.consts[why as usize]);
-                    return Err(Thrown::unsupported(
+                    return Err(self.locate_unsupported(Thrown::unsupported(
                         String::from_utf8_lossy(&what).into_owned(),
                         String::from_utf8_lossy(&why).into_owned(),
-                    ));
+                    )));
                 }
                 Instr::Eval { dst, src } => {
                     let v = self.do_eval(top, src)?;
@@ -6321,10 +6341,10 @@ impl Vm {
 
                 Instr::Refuse { feature, .. } => {
                     let f = proto.names[feature as usize].as_bytes().to_vec();
-                    return Err(Thrown::unsupported(
+                    return Err(self.locate_unsupported(Thrown::unsupported(
                         String::from_utf8_lossy(&f).into_owned(),
                         "refused construct",
-                    ));
+                    )));
                 }
 
                 Instr::Ret { src } => {

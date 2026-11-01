@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use rhp_compiler::compile_with_source;
+use rhp_compiler::{compile_include, compile_with_source};
 use rhp_frontend::Arena;
 use rhp_oracle::Interp;
 use rhp_values::Thrown;
@@ -34,7 +34,7 @@ fn run_vm(source: &[u8], name: &str) -> Result<Vec<u8>, Thrown> {
         if let Some((message, line)) = parsed.parse_error() {
             return Err(IncludeError::Parse { message, line });
         }
-        Ok(compile_with_source(parsed.program(), src, file)?)
+        Ok(compile_include(parsed.program(), src, file)?)
     });
     // The whole CLI request: uncaught-throwable report, shutdown functions,
     // output-buffer flush.

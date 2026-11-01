@@ -1,0 +1,60 @@
+# Pinned framework fixture apps (see README.md).
+#
+# One [[app]] table per (framework, version); the app lives in tests/apps/<name>/.
+# Adding a version = create that directory + add an entry here. CI builds its
+# matrix from this file (`python3 tests/apps/apps.py matrix`), so nothing else
+# needs editing.
+#
+# Fields (paths are relative to the app directory):
+#   name              directory name and CI matrix leg, "<framework>-<version>"
+#   framework         symfony | laravel | ...
+#   version           the framework version the app is pinned to
+#   docroot           web document root
+#   front_controller  the script every request is routed to
+#   console           the console entry point (`php <console> --version`)
+#   install           how to install vendor/ (never runs composer scripts: some
+#                     need a database or network services)
+#   setup             commands run with php after install, in order
+#   lint              paths scanned by `rhp-difftest lint`
+#   known_refused     the lint ratchet list
+#   smoke             "METHOD PATH STATUS" requests checked under php -S
+
+[[app]]
+name = "symfony-7.4"
+framework = "symfony"
+version = "7.4"
+docroot = "public"
+front_controller = "public/index.php"
+console = "bin/console"
+install = "composer install --no-scripts --no-interaction"
+setup = ["php bin/console cache:warmup"]
+lint = ["vendor", "src", "config", "public"]
+known_refused = "known-refused.txt"
+smoke = [
+    "GET / 200",
+    "GET /hello/rhp 200",
+    "GET /json?a=1 200",
+    "GET /twig/rhp 200",
+    "POST /submit 201",
+    "GET /nope 404",
+]
+
+[[app]]
+name = "laravel-13"
+framework = "laravel"
+version = "13"
+docroot = "public"
+front_controller = "public/index.php"
+console = "artisan"
+install = "composer install --no-scripts --no-interaction"
+setup = ["php artisan package:discover"]
+lint = ["vendor", "app", "bootstrap", "config", "routes", "public"]
+known_refused = "known-refused.txt"
+smoke = [
+    "GET / 200",
+    "GET /hello/rhp 200",
+    "GET /api/json?a=1 200",
+    "POST /submit 419",
+    "GET /up 200",
+    "GET /nope 404",
+]

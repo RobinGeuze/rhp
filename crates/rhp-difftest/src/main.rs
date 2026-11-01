@@ -8,9 +8,11 @@
 //!   rhp-difftest hash --strict              # unsupported algos count as failures
 //!   rhp-difftest phpt --php-src ../php-src  # php-src .phpt corpus (see `phpt --help`)
 //!   rhp-difftest phpt --php-src ../php-src --filter Zend/tests --mutate 20
+//!   rhp-difftest lint vendor --check-known known-refused.txt  # compile-only scan
 //!
 //! Exit code is nonzero if any sweep produced a MISMATCH (or, with --strict,
-//! any rhp-unsupported feature; for `phpt --check-known`, any regression).
+//! any rhp-unsupported feature; for `phpt --check-known`, any regression;
+//! for `lint --check-known`, a refused file not on the list).
 
 use std::process::ExitCode;
 
@@ -21,6 +23,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("phpt") {
         return rhp_difftest::phpt::main(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("lint") {
+        return rhp_difftest::lint::main(&args[1..]);
     }
     let ext = args
         .iter()

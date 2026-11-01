@@ -122,3 +122,46 @@ jobs:
       - run: cargo build --release -p rhp-cli -p rhp-difftest
       - name: Known-passing php-src tests still match
         run: target/release/rhp-difftest phpt --php-src php-src --check-known tests/phpt/known-passing.txt
+
+  # Pinned framework fixture apps (tests/apps/apps.toml): the matrix is read
+  # from the manifest, so adding an app version needs no workflow change.
+  apps-matrix:
+    name: fixture apps
+    runs-on: ubuntu-latest
+    outputs:
+      apps: ${{ steps.m.outputs.apps }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: m
+        run: echo "apps=$(python3 tests/apps/apps.py matrix)" >> "$GITHUB_OUTPUT"
+
+  # Per app: install vendor/ from the lockfile (no composer scripts; cached on
+  # the lockfile hash), smoke-test its routes under php, then the compile-only
+  # ratchet: `rhp-difftest lint --check-known` fails only on a file rhp newly
+  # refuses; listed files that now compile are a notice, never a failure.
+  apps-lint:
+    name: app ${{ matrix.app }}
+    needs: apps-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.apps-matrix.outputs.apps) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-php
+        with:
+          php-version: '8.5'
+      - uses: actions/cache@v4
+        with:
+          path: tests/apps/${{ matrix.app }}/vendor
+          key: apps-vendor-${{ matrix.app }}-${{ hashFiles(format('tests/apps/{0}/composer.lock', matrix.app)) }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install and set up the app
+        run: python3 tests/apps/apps.py setup ${{ matrix.app }}
+      - name: Smoke-test the app under php
+        run: python3 tests/apps/apps.py smoke ${{ matrix.app }}
+      - run: cargo build --release -p rhp-difftest
+      - name: No new compile refusals
+        run: python3 tests/apps/apps.py lint ${{ matrix.app }}

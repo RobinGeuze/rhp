@@ -2923,6 +2923,26 @@ impl Vm {
         }
         for (i, p) in proto.params.iter().enumerate() {
             let Some(ty) = &p.type_hint else { continue };
+            if p.variadic && !p.by_ref {
+                // `string ...$xs`: each collected argument.
+                let Value::Array(a) = &frame.regs[p.cv as usize] else {
+                    continue;
+                };
+                if !a.iter().any(|(_, v)| matches!(v, Value::Object(_))) {
+                    continue;
+                }
+                let mut a = a.clone();
+                let keys: Vec<ArrayKey> = a.iter().map(|(k, _)| k.clone()).collect();
+                for k in keys {
+                    let cur = a.get(&k).cloned().unwrap_or(Value::Null);
+                    if matches!(cur, Value::Object(_)) {
+                        let v = self.coerce_stringable(cur, ty, false, ctx)?;
+                        a.insert(k, v);
+                    }
+                }
+                frame.regs[p.cv as usize] = Value::Array(a);
+                continue;
+            }
             if p.by_ref
                 || p.variadic
                 || i >= frame.argc
@@ -7678,16 +7698,105 @@ impl Vm {
     }
 
     /// [`Vm::invoke_builtin_ex`] for an already looked-up builtin.
+    /// zpp's string parameters: a `Stringable` object passed to a builtin's
+    /// `string` parameter is converted with `__toString()`, any other object
+    /// is a TypeError. Builtins that stringify the elements of a `mixed` /
+    /// array argument (`implode`, `sprintf`, …) get those converted too.
+    fn coerce_builtin_string_args(&mut self, name: &str, args: &mut [Value]) -> Result<(), Thrown> {
+        if !args
+            .iter()
+            .any(|a| matches!(a, Value::Object(_) | Value::Closure(_) | Value::Array(_)))
+        {
+            return Ok(());
+        }
+        let params = builtins::stub_params::string_params(name);
+        for &(pos, pname, ty, variadic) in params {
+            let range = if variadic {
+                pos as usize..args.len()
+            } else {
+                pos as usize..(pos as usize + 1).min(args.len())
+            };
+            for i in range {
+                let given = match &args[i] {
+                    Value::Object(h) => {
+                        let cls = h.borrow().class;
+                        if self.lookup_method(cls, b"__tostring").is_some() {
+                            let s = self.to_string_vm(&args[i])?;
+                            args[i] = Value::str(s);
+                            continue;
+                        }
+                        self.class(cls).name.as_bytes().to_vec()
+                    }
+                    Value::Closure(_) => b"Closure".to_vec(),
+                    _ => continue,
+                };
+                return Err(Thrown::type_error(format!(
+                    "{name}(): Argument #{} (${pname}) must be of type {ty}, {} given",
+                    i + 1,
+                    String::from_utf8_lossy(&given)
+                )));
+            }
+        }
+        // Elements stringified inside the builtin (zval_get_string).
+        let elems: Option<(usize, bool)> = match name {
+            "implode" | "join" => Some((0, true)),
+            "sprintf" | "printf" => Some((1, false)),
+            "fprintf" => Some((2, false)),
+            "vsprintf" | "vprintf" => Some((1, true)),
+            "vfprintf" => Some((2, true)),
+            _ => None,
+        };
+        if let Some((from, arrays)) = elems {
+            for i in from..args.len() {
+                if arrays {
+                    let Value::Array(a) = &args[i] else { continue };
+                    let hits: Vec<ArrayKey> = a
+                        .iter()
+                        .filter(|(_, v)| self.is_stringable(&deref(v)))
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    if hits.is_empty() {
+                        continue;
+                    }
+                    let mut a = a.clone();
+                    for k in hits {
+                        let v = deref(a.get(&k).unwrap_or(&Value::Null));
+                        let s = self.to_string_vm(&v)?;
+                        a.insert(k, Value::str(s));
+                    }
+                    args[i] = Value::Array(a);
+                } else if self.is_stringable(&args[i]) {
+                    let s = self.to_string_vm(&args[i])?;
+                    args[i] = Value::str(s);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// An object with `__toString()`.
+    fn is_stringable(&self, v: &Value) -> bool {
+        match v {
+            Value::Object(h) => self
+                .lookup_method(h.borrow().class, b"__tostring")
+                .is_some(),
+            _ => false,
+        }
+    }
+
     fn run_builtin(
         &mut self,
         builtin: &'static builtins::Builtin,
-        args: Vec<Value>,
+        mut args: Vec<Value>,
         frameless: bool,
     ) -> Result<Value, Thrown> {
         // Free streams whose last reference went away (php closes a resource
         // when its refcount drops to zero).
         self.reap_dropped_streams();
         let count_error = builtin_arg_count_error(builtin, args.len());
+        if count_error.is_none() {
+            self.coerce_builtin_string_args(builtin.name, &mut args)?;
+        }
         // A builtin called from engine-internal (prelude) code is not a php
         // frame, and php compiles a few calls to opcodes (no frame either).
         let caller = self.stack.len().saturating_sub(1);

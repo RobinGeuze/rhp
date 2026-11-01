@@ -18,6 +18,7 @@ pub mod fdstream;
 pub mod memstream;
 pub mod module;
 pub mod streams;
+pub mod stub_params;
 
 pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};

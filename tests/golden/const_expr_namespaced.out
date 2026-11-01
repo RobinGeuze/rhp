@@ -1,0 +1,30 @@
+ns-local
+ns-localns-local!
+4 NS1\x
+ns-local def
+42
+8
+Undefined constant "NS1\UNDEFINED_LATER"
+1
+ns-local
+4243
+first
+secondsecond
+ok-late
+array(2) {
+  [0]=>
+  string(9) "ns-local!"
+  [1]=>
+  string(8) "ns-local"
+}
+int(1)
+string(5) "Green"
+array(2) {
+  [0]=>
+  string(1) "r"
+  [1]=>
+  string(1) "g"
+}
+string(3) "x64"
+string(9) "ns-local!"
+string(7) "missing"

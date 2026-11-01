@@ -66,20 +66,7 @@ thread_local! {
     static CLOSURES: RefCell<Vec<Rc<FunctionProto>>> = const { RefCell::new(Vec::new()) };
 }
 
-/// One parameter's name (lowercased) and folded default, for reordering named
-/// arguments at a call site. `None` default = required parameter.
-#[derive(Clone)]
-struct ParamSpec {
-    name_lc: Vec<u8>,
-    default: Option<Value>,
-    variadic: bool,
-}
-
 thread_local! {
-    /// Function name (lowercase) -> parameter specs, for named-argument calls.
-    /// Set once per `compile()`; a function is absent if any default did not fold.
-    static FN_PARAMS: RefCell<HashMap<Vec<u8>, Vec<ParamSpec>>> =
-        RefCell::new(HashMap::new());
     /// Method name (lowercase) -> per-position "could be by-reference" mask: true
     /// at position i if ANY method of that name declares `&` there. A call site
     /// passes those positions by reference; by-value callees simply deref, so
@@ -93,6 +80,9 @@ thread_local! {
     /// Whether the file being compiled declared `strict_types=1` (php's
     /// caller-decides coercion rule); stamped on every proto built from it.
     static STRICT_TYPES: RefCell<bool> = const { RefCell::new(false) };
+    /// Whether a trait body is being compiled: `__CLASS__` there names the
+    /// *using* class, so it is lowered to a runtime `self::class`.
+    static IN_TRAIT: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Lower a mago type hint to the bytecode [`rhp_bytecode::TypeHint`] (resolving
@@ -505,24 +495,6 @@ fn collect_method_refs(flat: &[(Rc<NsContext>, &Statement)]) -> HashMap<Vec<u8>,
     map
 }
 
-/// Build the parameter specs for a function, or `None` if a default value is not
-/// a foldable constant (then named-argument calls to it fall back to an error).
-fn param_specs(pl: &rhp_frontend::cst::FunctionLikeParameterList) -> Option<Vec<ParamSpec>> {
-    let mut out = Vec::new();
-    for p in pl.parameters.iter() {
-        let default = match &p.default_value {
-            Some(dv) => Some(fold_const(dv.value).ok()?),
-            None => None,
-        };
-        out.push(ParamSpec {
-            name_lc: strip_dollar(p.variable.name).to_ascii_lowercase(),
-            default,
-            variadic: p.ellipsis.is_some(),
-        });
-    }
-    Some(out)
-}
-
 /// Compile a parsed program (borrowed from a `rhp_frontend::Arena`) into an
 /// owned, runnable bytecode `Program`. No `'arena` borrow escapes.
 pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
@@ -557,8 +529,6 @@ pub fn compile_with_source(
     // call site can marshal by-ref arguments even though the callee is resolved by
     // name. Keyed by FQN (lowercased) to match the call-site resolution.
     let mut sigs: HashMap<Vec<u8>, Vec<bool>> = HashMap::new();
-    // Parameter-name signatures, so a call site can reorder named arguments.
-    let mut fn_params: HashMap<Vec<u8>, Vec<ParamSpec>> = HashMap::new();
     for (ctx, stmt) in &flat {
         if let Statement::Function(func) = stmt {
             let fqn = join_ns(&ctx.ns, func.name.value).to_ascii_lowercase();
@@ -568,14 +538,10 @@ pub fn compile_with_source(
                 .iter()
                 .map(|p| p.ampersand.is_some())
                 .collect();
-            sigs.insert(fqn.clone(), flags);
-            if let Some(specs) = param_specs(&func.parameter_list) {
-                fn_params.insert(fqn, specs);
-            }
+            sigs.insert(fqn, flags);
         }
     }
     let sigs = Rc::new(sigs);
-    FN_PARAMS.with(|m| *m.borrow_mut() = fn_params);
     METHOD_REF.with(|m| *m.borrow_mut() = collect_method_refs(&flat));
 
     // Hoist top-level function + class declarations. Start the class list with
@@ -588,7 +554,7 @@ pub fn compile_with_source(
     let num_prelude_functions = functions.len();
     // From here on we compile user code, so install its line map.
     LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
-    let mut user_constants: Vec<(PhpStr, Value)> = Vec::new();
+    let user_constants: Vec<(PhpStr, Value)> = Vec::new();
     for (ctx, stmt) in &flat {
         set_ns_ctx(ctx);
         match stmt {
@@ -599,14 +565,8 @@ pub fn compile_with_source(
             Statement::Interface(iface) => classes.push(compile_interface(iface, &sigs)?),
             Statement::Trait(tr) => classes.push(compile_trait(tr, &sigs)?),
             Statement::Enum(en) => classes.push(compile_enum(en, &sigs)?),
-            Statement::Constant(c) => {
-                // Top-level `const NAME = <const-expr>;` — fold now, install at startup.
-                for item in c.items.iter() {
-                    let value = fold_const(item.value)?;
-                    let name = join_ns(&ctx.ns, item.name.value);
-                    user_constants.push((PhpStr::from_bytes(name), value));
-                }
-            }
+            // Top-level `const NAME = <expr>;` is a runtime statement (php
+            // declares it when execution reaches it), compiled in {main}.
             _ => {}
         }
     }
@@ -808,9 +768,11 @@ fn compile_enum(
 fn compile_const_thunk(
     expr: &Expression,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: Option<&PhpStr>,
 ) -> Result<Rc<FunctionProto>, Thrown> {
     let mut c = ProtoBuilder::new(PhpStr::from("{init}"));
     c.sigs = sigs.clone();
+    c.class_name = class_name.cloned(); // for `__CLASS__`
     c.scope_kind = ScopeKind::Init;
     c.scan_expr_vars(expr); // const-exprs use no $vars, but be safe
     c.num_cvs = c.cv_map.len() as u16;
@@ -826,20 +788,59 @@ fn compile_const_thunk(
 fn const_init_or_thunk(
     expr: &Expression,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: Option<&PhpStr>,
 ) -> Result<ConstInitProto, Thrown> {
     match fold_const(expr) {
         Ok(v) => Ok(ConstInitProto::Const(v)),
-        Err(_) => Ok(ConstInitProto::Thunk(compile_const_thunk(expr, sigs)?)),
+        Err(_) => Ok(ConstInitProto::Thunk(compile_const_thunk(
+            expr, sigs, class_name,
+        )?)),
     }
 }
 
 fn prop_default_or_thunk(
     expr: &Expression,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: Option<&PhpStr>,
 ) -> Result<PropDefaultProto, Thrown> {
     match fold_const(expr) {
         Ok(v) => Ok(PropDefaultProto::Const(v)),
-        Err(_) => Ok(PropDefaultProto::Init(compile_const_thunk(expr, sigs)?)),
+        Err(_) => Ok(PropDefaultProto::Init(compile_const_thunk(
+            expr, sigs, class_name,
+        )?)),
+    }
+}
+
+/// php's `zend_is_valid_default_value`: a literal int initializer of a
+/// property / class constant whose type admits float but not int becomes a
+/// float at compile time.
+fn widen_int_default(v: Value, hint: Option<&rhp_bytecode::TypeHint>) -> Value {
+    use rhp_bytecode::TypeKind as K;
+    match (v, hint) {
+        (Value::Int(n), Some(h))
+            if h.kinds.contains(&K::Float)
+                && !h.kinds.iter().any(|k| matches!(k, K::Int | K::Mixed)) =>
+        {
+            Value::Float(n as f64)
+        }
+        (v, _) => v,
+    }
+}
+
+fn coerce_prop_default(
+    d: PropDefaultProto,
+    hint: Option<&rhp_bytecode::TypeHint>,
+) -> PropDefaultProto {
+    match d {
+        PropDefaultProto::Const(v) => PropDefaultProto::Const(widen_int_default(v, hint)),
+        other => other,
+    }
+}
+
+fn coerce_const_init(d: ConstInitProto, hint: Option<&rhp_bytecode::TypeHint>) -> ConstInitProto {
+    match d {
+        ConstInitProto::Const(v) => ConstInitProto::Const(widen_int_default(v, hint)),
+        other => other,
     }
 }
 
@@ -872,11 +873,16 @@ fn compile_members(
                 let is_static = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Static(_)));
                 let is_readonly =
                     has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
+                let hint = p.hint.as_ref().map(type_hint);
                 for item in p.items.iter() {
                     let (var, default) = match item {
-                        PropertyItem::Concrete(c) => {
-                            (c.variable.name, prop_default_or_thunk(c.value, sigs)?)
-                        }
+                        PropertyItem::Concrete(c) => (
+                            c.variable.name,
+                            coerce_prop_default(
+                                prop_default_or_thunk(c.value, sigs, Some(class_name))?,
+                                hint.as_ref(),
+                            ),
+                        ),
                         PropertyItem::Abstract(a) => (a.variable.name, PropDefaultProto::None),
                     };
                     let pname = PhpStr::from_bytes(strip_dollar(var).to_vec());
@@ -891,6 +897,7 @@ fn compile_members(
                             visibility,
                             is_readonly,
                             init,
+                            type_hint: hint.clone(),
                         });
                     } else {
                         out.props.push(PropProto {
@@ -899,6 +906,7 @@ fn compile_members(
                             set_visibility,
                             is_readonly,
                             default,
+                            type_hint: hint.clone(),
                         });
                     }
                 }
@@ -908,11 +916,16 @@ fn compile_members(
             }
             ClassLikeMember::Constant(c) => {
                 let visibility = modifiers_visibility(&c.modifiers);
+                let hint = c.hint.as_ref().map(type_hint);
                 for item in c.items.iter() {
                     out.constants.push(ConstProto {
                         name: PhpStr::from_bytes(item.name.value.to_vec()),
                         visibility,
-                        value: const_init_or_thunk(item.value, sigs)?,
+                        value: coerce_const_init(
+                            const_init_or_thunk(item.value, sigs, Some(class_name))?,
+                            hint.as_ref(),
+                        ),
+                        type_hint: hint.clone(),
                     });
                 }
             }
@@ -927,7 +940,7 @@ fn compile_members(
                     EnumCaseItem::Unit(u) => (PhpStr::from_bytes(u.name.value.to_vec()), None),
                     EnumCaseItem::Backed(b) => (
                         PhpStr::from_bytes(b.name.value.to_vec()),
-                        Some(const_value_static(b.value)?),
+                        Some(const_init_or_thunk(b.value, sigs, Some(class_name))?),
                     ),
                 };
                 out.enum_cases
@@ -943,7 +956,10 @@ fn compile_trait(
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<ClassProto, Thrown> {
     let name = PhpStr::from_bytes(join_ns(&cur_ns(), t.name.value));
-    let m = compile_members(&t.members, sigs, &name)?;
+    let saved = IN_TRAIT.with(|f| std::mem::replace(&mut *f.borrow_mut(), true));
+    let m = compile_members(&t.members, sigs, &name);
+    IN_TRAIT.with(|f| *f.borrow_mut() = saved);
+    let m = m?;
     Ok(ClassProto {
         name,
         kind: ClassKind::Trait,
@@ -1392,11 +1408,16 @@ fn compile_interface(
     for member in iface.members.iter() {
         if let ClassLikeMember::Constant(c) = member {
             let visibility = modifiers_visibility(&c.modifiers);
+            let hint = c.hint.as_ref().map(type_hint);
             for item in c.items.iter() {
                 constants.push(ConstProto {
                     name: PhpStr::from_bytes(item.name.value.to_vec()),
                     visibility,
-                    value: const_init_or_thunk(item.value, sigs)?,
+                    value: coerce_const_init(
+                        const_init_or_thunk(item.value, sigs, Some(&name))?,
+                        hint.as_ref(),
+                    ),
+                    type_hint: hint.clone(),
                 });
             }
         }
@@ -1470,6 +1491,7 @@ fn compile_method(
                 set_visibility: modifiers_set_visibility(&p.modifiers),
                 is_readonly: ro,
                 default: PropDefaultProto::None,
+                type_hint: p.hint.as_ref().map(type_hint),
             });
             promo_stores.push((c.intern_name(var), cv));
         }
@@ -2168,7 +2190,13 @@ impl ProtoBuilder {
             Statement::Interface(_) => {}
             Statement::Trait(_) => {}
             Statement::Enum(_) => {}
-            Statement::Constant(_) => {} // hoisted at compile time
+            Statement::Constant(c) => {
+                for item in c.items.iter() {
+                    let src = self.compile_expr(item.value)?;
+                    let name = self.intern_name(&join_ns(&cur_ns(), item.name.value));
+                    self.emit(Instr::DeclareConst { name, src });
+                }
+            }
             Statement::If(i) => self.compile_if(i)?,
             Statement::While(w) => self.compile_while(w)?,
             Statement::DoWhile(d) => self.compile_do_while(d)?,
@@ -2191,10 +2219,27 @@ impl ProtoBuilder {
                     use rhp_frontend::cst::StaticItem;
                     let (dvar, init) = match item {
                         StaticItem::Abstract(a) => (&a.variable, u32::MAX),
-                        StaticItem::Concrete(c) => {
-                            let v = fold_const(c.value)?;
-                            (&c.variable, self.intern_const(v))
-                        }
+                        StaticItem::Concrete(c) => match fold_const(c.value) {
+                            Ok(v) => (&c.variable, self.intern_const(v)),
+                            Err(_) => {
+                                // php 8.3+: an arbitrary initializer, evaluated
+                                // once on the first execution of the statement.
+                                let var = strip_dollar(c.variable.name);
+                                let cv = self.cv(var);
+                                let name = self.intern_name(var);
+                                let jpos = self.code.len();
+                                self.emit(Instr::Nop); // BindStaticOrJmp (patched)
+                                let src = self.compile_expr(c.value)?;
+                                self.emit(Instr::BindStaticInit { cv, name, src });
+                                let after = self.here();
+                                self.code[jpos] = Instr::BindStaticOrJmp {
+                                    cv,
+                                    name,
+                                    target: after,
+                                };
+                                continue;
+                            }
+                        },
                     };
                     let var = strip_dollar(dvar.name);
                     let cv = self.cv(var);
@@ -2968,6 +3013,22 @@ impl ProtoBuilder {
             self.emit(Instr::LoadInt { dst, n });
             return Ok(dst);
         }
+        if matches!(mc, MagicConstant::Class(_))
+            && self.class_name.is_some()
+            && IN_TRAIT.with(|f| *f.borrow())
+        {
+            // Inside a trait, `__CLASS__` is the class using it (php resolves
+            // it at runtime, like `self::class`).
+            let name = self.intern_name(b"class");
+            let cache = self.alloc_cache();
+            self.emit(Instr::FetchClassConst {
+                dst,
+                class: ClassRef::SelfClass,
+                name,
+                cache,
+            });
+            return Ok(dst);
+        }
         if let MagicConstant::Property(_) = mc {
             return Err(Thrown::unsupported(
                 "__PROPERTY__",
@@ -3562,140 +3623,6 @@ impl ProtoBuilder {
         }
     }
 
-    /// Compile a call that uses named arguments by reordering them into the
-    /// callee's declared parameter order (filling omitted parameters from their
-    /// folded defaults). Only statically-known user functions are supported.
-    fn compile_named_call(
-        &mut self,
-        name_bytes: &[u8],
-        fallback: &Option<Vec<u8>>,
-        list: &rhp_frontend::cst::ArgumentList,
-    ) -> Result<Reg, Thrown> {
-        let name_lc = name_bytes.to_ascii_lowercase();
-        let specs = FN_PARAMS.with(|m| {
-            let m = m.borrow();
-            m.get(&name_lc).cloned().or_else(|| {
-                fallback
-                    .as_ref()
-                    .and_then(|f| m.get(&f.to_ascii_lowercase()).cloned())
-            })
-        });
-        let Some(specs) = specs else {
-            return Err(Thrown::unsupported(
-                "named arguments",
-                "only to statically-known user functions with constant defaults",
-            ));
-        };
-        if specs.iter().any(|s| s.variadic) {
-            return Err(Thrown::unsupported(
-                "named arguments into a variadic function",
-                "deferred",
-            ));
-        }
-
-        // Assign each argument to a parameter slot.
-        let mut provided: Vec<Option<&Expression>> = vec![None; specs.len()];
-        let mut pos = 0usize;
-        for arg in list.arguments.iter() {
-            match arg {
-                Argument::Positional(p) => {
-                    if pos >= specs.len() {
-                        return Err(Thrown::error(
-                            "ArgumentCountError",
-                            format!(
-                                "Too many arguments to function {}()",
-                                String::from_utf8_lossy(name_bytes)
-                            ),
-                        ));
-                    }
-                    provided[pos] = Some(p.value);
-                    pos += 1;
-                }
-                Argument::Named(n) => {
-                    let pname = n.name.value.to_ascii_lowercase();
-                    let idx = specs
-                        .iter()
-                        .position(|s| s.name_lc == pname)
-                        .ok_or_else(|| {
-                            Thrown::error(
-                                "Error",
-                                format!(
-                                    "Unknown named parameter ${}",
-                                    String::from_utf8_lossy(n.name.value)
-                                ),
-                            )
-                        })?;
-                    provided[idx] = Some(n.value);
-                }
-            }
-        }
-
-        // The window spans slots 0..=highest-provided; trailing defaulted
-        // parameters are left off (the callee's bind_params fills them).
-        let last = provided.iter().rposition(|p| p.is_some());
-        let Some(last) = last else {
-            // No args at all — just a plain zero-arg call.
-            let name = self.intern_name(name_bytes);
-            let fb = self.intern_fallback(fallback);
-            let base = self.alloc_temps(1);
-            let dst = self.alloc_temp();
-            self.emit(Instr::Call {
-                dst,
-                name,
-                base,
-                argc: 0,
-                fallback: fb,
-            });
-            return Ok(dst);
-        };
-        let argc = (last + 1) as u16;
-
-        // Compile each slot's value into a contiguous window.
-        let mut regs = Vec::with_capacity(argc as usize);
-        for i in 0..=last {
-            let r = match provided[i] {
-                Some(e) => self.compile_expr(e)?,
-                None => match &specs[i].default {
-                    Some(v) => {
-                        let k = self.intern_const(v.clone());
-                        let t = self.alloc_temp();
-                        self.emit(Instr::LoadConst { dst: t, k });
-                        t
-                    }
-                    None => {
-                        return Err(Thrown::error(
-                            "ArgumentCountError",
-                            format!(
-                                "Missing required argument ${} for {}()",
-                                String::from_utf8_lossy(&specs[i].name_lc),
-                                String::from_utf8_lossy(name_bytes)
-                            ),
-                        ))
-                    }
-                },
-            };
-            regs.push(r);
-        }
-        let base = self.alloc_temps(argc);
-        for (i, r) in regs.into_iter().enumerate() {
-            self.emit(Instr::Mov {
-                dst: base + i as Reg,
-                src: r,
-            });
-        }
-        let name = self.intern_name(name_bytes);
-        let fb = self.intern_fallback(fallback);
-        let dst = self.alloc_temp();
-        self.emit(Instr::Call {
-            dst,
-            name,
-            base,
-            argc,
-            fallback: fb,
-        });
-        Ok(dst)
-    }
-
     fn compile_function_call(
         &mut self,
         fc: &rhp_frontend::cst::FunctionCall,
@@ -3711,8 +3638,9 @@ impl ProtoBuilder {
         // global fallback (PHP's fall-back-to-global for unqualified calls).
         let (name_bytes, fallback) = resolve_name(callee_id, NameKind::Func);
 
-        // Spread call `foo(...$args)`: marshal args into an array, emit CallV.
-        if has_spread(&fc.argument_list) {
+        // Spread / named-argument call `foo(...$args)` / `foo(b: 1)`: marshal
+        // args into an array, emit CallV (the VM places named arguments).
+        if has_spread(&fc.argument_list) || has_named(&fc.argument_list) {
             let args = self.build_args_array(Some(&fc.argument_list))?;
             let name = self.intern_name(&name_bytes);
             let fb = self.intern_fallback(&fallback);
@@ -3724,12 +3652,6 @@ impl ProtoBuilder {
                 fallback: fb,
             });
             return Ok(dst);
-        }
-
-        // Named arguments: reorder to positional using the callee's parameter
-        // names (statically-known user functions only).
-        if has_named(&fc.argument_list) {
-            return self.compile_named_call(&name_bytes, &fallback, &fc.argument_list);
         }
 
         // Per-parameter by-ref flags of the (statically-known) callee: a user
@@ -3844,7 +3766,7 @@ impl ProtoBuilder {
     ) -> Result<Reg, Thrown> {
         let callee = self.compile_expr(fc.function)?;
 
-        if has_spread(&fc.argument_list) {
+        if has_spread(&fc.argument_list) || has_named(&fc.argument_list) {
             let args = self.build_args_array(Some(&fc.argument_list))?;
             let dst = self.alloc_temp();
             self.emit(Instr::CallDynV { dst, callee, args });
@@ -4457,11 +4379,18 @@ impl ProtoBuilder {
                             self.emit(Instr::ArrPush { arr: dst, val: r });
                         }
                     }
-                    Argument::Named(_) => {
-                        return Err(Thrown::unsupported(
-                            "named argument with spread",
-                            "deferred",
-                        ))
+                    // A named argument travels under its name (the callee's
+                    // parameter list places it at run time).
+                    Argument::Named(n) => {
+                        let r = self.compile_expr(n.value)?;
+                        let k = self.intern_const(Value::str(n.name.value.to_vec()));
+                        let key = self.alloc_temp();
+                        self.emit(Instr::LoadConst { dst: key, k });
+                        self.emit(Instr::ArrSet {
+                            arr: dst,
+                            key,
+                            val: r,
+                        });
                     }
                 }
             }
@@ -4534,7 +4463,11 @@ impl ProtoBuilder {
 
     fn compile_new(&mut self, inst: &rhp_frontend::cst::Instantiation) -> Result<Reg, Thrown> {
         let class = self.class_ref(inst.class)?;
-        if inst.argument_list.as_ref().is_some_and(has_spread) {
+        if inst
+            .argument_list
+            .as_ref()
+            .is_some_and(|l| has_spread(l) || has_named(l))
+        {
             let args = self.build_args_array(inst.argument_list.as_ref())?;
             let dst = self.alloc_temp();
             self.emit(Instr::NewV { dst, class, args });
@@ -4724,7 +4657,7 @@ impl ProtoBuilder {
         if !null_safe {
             match self.compile_selector(selector)? {
                 Sel::Static(name) => {
-                    if has_spread(args) {
+                    if has_spread(args) || has_named(args) {
                         let args = self.build_args_array(Some(args))?;
                         let dst = self.alloc_temp();
                         self.emit(Instr::CallMethodV {
@@ -4809,7 +4742,7 @@ impl ProtoBuilder {
         let class = self.class_ref(smc.class)?;
         match self.compile_selector(&smc.method)? {
             Sel::Static(name) => {
-                if has_spread(&smc.argument_list) {
+                if has_spread(&smc.argument_list) || has_named(&smc.argument_list) {
                     let args = self.build_args_array(Some(&smc.argument_list))?;
                     let dst = self.alloc_temp();
                     self.emit(Instr::CallStaticV {
@@ -5368,10 +5301,6 @@ fn non_const_err() -> Thrown {
         "non-constant initializer",
         "only literal / array / true/false/null constant initializers for now",
     )
-}
-
-fn const_value_static(e: &Expression) -> Result<Value, Thrown> {
-    fold_const(e)
 }
 
 /// Fold a literal AST node to its runtime value (same rules as the oracle).

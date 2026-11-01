@@ -1,0 +1,14 @@
+int(1)
+int(2)
+TypeError: a(): Argument #1 ($x) must be of type int, string given [site]
+TypeError: a(): Argument #1 ($x) must be of type int, float given [site]
+int(3)
+TypeError: a(): Argument #1 ($x) must be of type int, array given [site]
+bool(false)
+NULL
+int(1)
+int(1)
+TypeError: K::m(): Argument #1 ($x) must be of type string|int, array given [site]
+float(2.5)
+float(3)
+TypeError: K::f(): Argument #1 ($x) must be of type float, string given [site]

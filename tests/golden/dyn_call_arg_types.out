@@ -1,0 +1,26 @@
+TypeError: a(): Argument #1 ($x) must be of type int, string given [site]
+int(2)
+float(3)
+TypeError: a(): Argument #1 ($x) must be of type int, string given [site]
+TypeError: a(): Argument #1 ($x) must be of type int, string given [site]
+TypeError: a(): Argument #1 ($x) must be of type int, string given [site]
+TypeError: K::s(): Argument #1 ($x) must be of type int, string given [site]
+int(7)
+TypeError: K::m(): Argument #1 ($x) must be of type int, string given [site]
+int(8)
+TypeError: K::bad(): Return value must be of type int, string returned
+TypeError: K::__invoke(): Argument #1 ($s) must be of type string, int given [site]
+closure TypeError
+TypeError: a(): Argument #1 ($x) must be of type int, string given [site]
+int(12)
+int(13)
+string(2) "14"
+TypeError: a(): Argument #1 ($x) must be of type int, string given
+array(3) {
+  [0]=>
+  string(1) "1"
+  [1]=>
+  string(1) "2"
+  [2]=>
+  string(1) "3"
+}

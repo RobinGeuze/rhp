@@ -99,12 +99,43 @@ pub trait Host {
         None
     }
 
+    /// Like [`Host::class_constant`], but first evaluates the constant's
+    /// initializer if it is still a pending constant expression (which can
+    /// throw, e.g. on an undefined constant inside it).
+    fn class_constant_eval(&mut self, class: &[u8], name: &[u8]) -> Result<Option<Value>, Thrown> {
+        Ok(self.class_constant(class, name))
+    }
+
+    /// Evaluate every pending initializer of `class` (its constants, property
+    /// defaults and static properties) — php's `zend_update_class_constants`,
+    /// done before reflection reads them. A no-op for unknown classes.
+    fn update_class_constants(&mut self, _class: &[u8]) -> Result<(), Thrown> {
+        Ok(())
+    }
+
     /// Invoke a PHP callable (for `array_map`/`array_filter`/…). Default: refused.
     fn call_callable(&mut self, _callable: &Value, _args: &[Value]) -> Result<Value, Thrown> {
         Err(Thrown::unsupported(
             "callback",
             "callbacks are not available in this host",
         ))
+    }
+
+    /// Invoke a PHP callable with named arguments too (`call_user_func_array`
+    /// with string keys). Default: refused when any argument is named.
+    fn call_callable_named(
+        &mut self,
+        callable: &Value,
+        args: &[Value],
+        named: Vec<(rhp_values::PhpStr, Value)>,
+    ) -> Result<Value, Thrown> {
+        if !named.is_empty() {
+            return Err(Thrown::unsupported(
+                "named arguments",
+                "not supported by this host",
+            ));
+        }
+        self.call_callable(callable, args)
     }
 
     /// Whether a value is callable (`is_callable`): closures, function names,
@@ -238,6 +269,18 @@ pub trait Host {
     /// inside builtins). Default: none.
     fn object_class_name(&self, _obj: &Value) -> Option<Vec<u8>> {
         None
+    }
+
+    /// An object's properties keyed with php's visibility mangling (public
+    /// `name`, protected `"\0*\0name"`, private `"\0Class\0name"`), in
+    /// property-table order — what `(array)`, `serialize` and `json_encode`
+    /// see. Default: the bare property names.
+    fn object_props_mangled(&self, obj: &rhp_values::ObjectHandle) -> PhpArray {
+        let mut a = PhpArray::new();
+        for (k, v) in &obj.borrow().properties {
+            a.insert(rhp_values::ArrayKey::from_bytes(k.as_bytes()), v.clone());
+        }
+        a
     }
 
     /// Build a `stdClass` object from named properties (for `json_decode` without
@@ -925,24 +968,24 @@ fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// Resolve a constant by name: a class constant `Class::CONST` (incl. enum cases)
 /// or a global constant.
-fn resolve_const(host: &dyn Host, name: &[u8]) -> Option<Value> {
+fn resolve_const(host: &mut dyn Host, name: &[u8]) -> Result<Option<Value>, Thrown> {
     if let Some(pos) = find_sub(name, b"::") {
         let class = name[..pos].strip_prefix(b"\\").unwrap_or(&name[..pos]);
         let cname = &name[pos + 2..];
-        host.class_constant(class, cname)
+        host.class_constant_eval(class, cname)
     } else {
-        host.get_const(name)
+        Ok(host.get_const(name))
     }
 }
 
 fn fn_defined(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
-    Ok(Value::Bool(resolve_const(host, &name).is_some()))
+    Ok(Value::Bool(resolve_const(host, &name)?.is_some()))
 }
 
 fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
-    resolve_const(host, &name).ok_or_else(|| {
+    resolve_const(host, &name)?.ok_or_else(|| {
         Thrown::error(
             "Error",
             format!("Undefined constant \"{}\"", String::from_utf8_lossy(&name)),
@@ -1329,8 +1372,24 @@ fn fn_call_user_func(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 
 fn fn_call_user_func_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let params = as_array(&args[1], "call_user_func_array")?;
-    let argv: Vec<Value> = params.iter().map(|(_, v)| v.clone()).collect();
-    host.call_callable(&args[0], &argv)
+    let mut argv: Vec<Value> = Vec::new();
+    let mut named: Vec<(rhp_values::PhpStr, Value)> = Vec::new();
+    for (k, v) in params.iter() {
+        match k {
+            rhp_values::ArrayKey::Int(_) if !named.is_empty() => {
+                return Err(Thrown::error(
+                    "Error",
+                    "Cannot use positional argument after named argument",
+                ))
+            }
+            rhp_values::ArrayKey::Int(_) => argv.push(v.clone()),
+            rhp_values::ArrayKey::Str(s) => named.push((s.clone(), v.clone())),
+        }
+    }
+    if named.is_empty() {
+        return host.call_callable(&args[0], &argv);
+    }
+    host.call_callable_named(&args[0], &argv, named)
 }
 
 fn fn_array_reverse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

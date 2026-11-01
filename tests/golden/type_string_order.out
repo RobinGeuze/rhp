@@ -1,0 +1,13 @@
+a(): Argument #1 ($x) must be of type string|int, float given
+b(): Argument #1 ($x) must be of type Traversable|array|null, int given
+c(): Argument #1 ($x) must be of type array|int|float|bool|null, string given
+d(): Argument #1 ($x) must be of type ?true, int given
+e(): Argument #1 ($x) must be of type I&J, int given
+f(): Argument #1 ($x) must be of type I|int|null, string given
+g(): Argument #1 ($x) must be of type callable|object|false, int given
+h(): Argument #1 ($x) must be of type ?int, string given
+i(): Argument #1 ($x) must be of type Traversable|array|string, int given
+j(): Return value must be of type int|float, string returned
+k(): Argument #1 ($x) must be of type string|int|float|bool, array given
+l(): Argument #1 ($x) must be of type J|I, int given
+Cannot assign float to property Q::$u of type string|int

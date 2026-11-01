@@ -79,10 +79,9 @@ pub struct Vm {
     main_cv_names: HashMap<Vec<u8>, Reg>,
     globals: HashMap<Vec<u8>, Rc<RefCell<Value>>>,
     // `static $x`: persistent cells keyed by (function proto pointer, var name).
-    statics: HashMap<(usize, Vec<u8>), Rc<RefCell<Value>>>,
+    statics: HashMap<StaticKey, Rc<RefCell<Value>>>,
     // Non-constant class const / static-prop / property-default initializers,
     // evaluated after all classes link (so cross-class/enum refs resolve).
-    pending_inits: Vec<classes::PendingInit>,
     // Generator runtime state, keyed by the Generator object's id.
     generators: HashMap<u32, GenState>,
     // Set by the `Yield` opcode to hand (key, value, resume-dst) to the driver.
@@ -98,6 +97,17 @@ pub struct Vm {
     included_files: std::collections::HashSet<Vec<u8>>,
     // Registered `spl_autoload_register` callables, in call order.
     autoloaders: Vec<Value>,
+    /// Lowercased class names whose autoload is in progress (php's
+    /// `EG(in_autoload)`): a nested lookup of the same name does not re-enter
+    /// the autoloaders.
+    in_autoload: std::collections::HashSet<Vec<u8>>,
+    /// Named-argument binding for the frame about to be pushed: the skipped
+    /// parameter mask and the extra named arguments collected by a variadic
+    /// parameter. Set by a call instruction right before the push.
+    pending_named: Option<(u64, Vec<(PhpStr, Value)>)>,
+    /// Set while a statically resolved `call_user_func[_array]()` builtin runs:
+    /// the caller's `strict_types`, consumed by its single callback dispatch.
+    cuf_caller: Option<bool>,
     // Stream wrappers by scheme (`file`, `phar`, …), installed at startup from
     // the module list; runtime-mutable later via `stream_wrapper_register`.
     wrappers: HashMap<Vec<u8>, Rc<dyn builtins::StreamWrapper>>,
@@ -157,6 +167,12 @@ struct GenState {
 }
 
 mod classes;
+
+/// A function-static slot: (proto address, class it runs as, variable name).
+type StaticKey = (usize, Option<ClassId>, Vec<u8>);
+
+/// Named call arguments, in call order.
+type NamedArgs = Vec<(PhpStr, Value)>;
 
 /// Where an lvalue cursor is rooted.
 #[derive(Clone)]
@@ -674,6 +690,23 @@ impl Host for Vm {
             .map(|c| c.value.clone())
     }
 
+    fn class_constant_eval(&mut self, class: &[u8], name: &[u8]) -> Result<Option<Value>, Thrown> {
+        let Ok(cid) = self.resolve_class_by_name(class) else {
+            return Ok(None);
+        };
+        if self.classes[cid as usize].enum_backing.is_some() {
+            self.update_class_constants(cid)?;
+        }
+        self.class_const_value(cid, name, class, false)
+    }
+
+    fn update_class_constants(&mut self, class: &[u8]) -> Result<(), Thrown> {
+        match self.resolve_class_by_name(class) {
+            Ok(cid) => Vm::update_class_constants(self, cid),
+            Err(_) => Ok(()),
+        }
+    }
+
     fn reflect_is_a(&self, name: &[u8], other: &[u8]) -> bool {
         match (
             self.resolve_class_by_name(name),
@@ -702,6 +735,7 @@ impl Host for Vm {
                 ),
             ));
         }
+        self.update_class_constants(cid)?;
         let obj = self.new_object(cid);
         let objval = Value::Object(obj);
         if run_ctor && self.lookup_method(cid, b"__construct").is_some() {
@@ -822,7 +856,19 @@ impl Host for Vm {
     }
 
     fn call_callable(&mut self, callable: &Value, args: &[Value]) -> Result<Value, Thrown> {
-        self.call_callable_value(callable, args.to_vec())
+        // `call_user_func[_array]` compiled as a user call (see `cuf_caller`).
+        let caller = self.cuf_caller.take();
+        self.call_callable_value_mode(callable, args.to_vec(), caller)
+    }
+
+    fn call_callable_named(
+        &mut self,
+        callable: &Value,
+        args: &[Value],
+        named: Vec<(PhpStr, Value)>,
+    ) -> Result<Value, Thrown> {
+        let caller = self.cuf_caller.take();
+        self.call_named(callable, args.to_vec(), named, caller)
     }
 
     fn resolve_class(&self, name: &[u8]) -> Option<u32> {
@@ -933,6 +979,7 @@ impl Host for Vm {
 
     fn instantiate(&mut self, class_name: &[u8], props: Vec<(Vec<u8>, Value)>) -> Option<Value> {
         let cls = self.resolve_class_by_name(class_name).ok()?;
+        self.update_class_constants(cls).ok()?;
         let obj = self.new_object(cls);
         {
             let mut b = obj.borrow_mut();
@@ -983,6 +1030,13 @@ impl Host for Vm {
             _ => return None,
         };
         h.borrow().properties.get(&key).cloned()
+    }
+
+    fn object_props_mangled(&self, obj: &ObjectHandle) -> PhpArray {
+        match self.object_to_array_mangled(obj) {
+            Value::Array(a) => a,
+            _ => PhpArray::new(),
+        }
     }
 
     fn object_class_name(&self, obj: &Value) -> Option<Vec<u8>> {
@@ -1049,6 +1103,9 @@ struct Frame {
     /// Number of positional arguments actually passed (for non-constant parameter
     /// default-init guards in the prologue).
     argc: usize,
+    /// Parameters below `argc` that a named-argument call skipped (bit i =
+    /// parameter i): their defaults still apply, as if not passed.
+    holes: u64,
 }
 
 /// Result of unwinding: a handler was installed, or the exception escaped the
@@ -1079,6 +1136,7 @@ impl Frame {
             pending: None,
             capture: false,
             argc: 0,
+            holes: 0,
         }
     }
 }
@@ -1139,7 +1197,6 @@ impl Vm {
             main_cv_names: HashMap::new(),
             globals: HashMap::new(),
             statics: HashMap::new(),
-            pending_inits: Vec::new(),
             generators: HashMap::new(),
             yield_out: None,
             gen_stack: Vec::new(),
@@ -1147,6 +1204,9 @@ impl Vm {
             includer: None,
             included_files: std::collections::HashSet::new(),
             autoloaders: Vec::new(),
+            in_autoload: Default::default(),
+            pending_named: None,
+            cuf_caller: None,
             wrappers,
             main_script_path: None,
             streams: HashMap::new(),
@@ -1809,29 +1869,31 @@ impl Vm {
         if strict {
             return Err(());
         }
-        // Coercive mode: coerce to a lone scalar target kind.
-        if let Some(k) = scalar_target(ty) {
-            if let Some(cv) = coerce_scalar(&d, k) {
-                return Ok(Some(cv));
-            }
-        }
-        Err(())
+        // Coercive mode: php's zend_verify_weak_scalar_type_hint.
+        weak_scalar_coerce(&d, ty).map(Some).ok_or(())
     }
 
     /// Enforce declared parameter types on a just-bound frame (php's
     /// `strict_types` is the CALLER's; `ctx` resolves `self`/`static`/`parent`).
+    /// `caller` is `Some(strict_types)` for a call from user code, `None` for
+    /// a call made by a builtin (coercive, and the error has no call site).
     fn check_arg_types(
         &self,
         proto: &FunctionProto,
         frame: &mut Frame,
-        strict: bool,
+        caller: Option<bool>,
         ctx: Option<ClassId>,
     ) -> Result<(), Thrown> {
+        let strict = caller.unwrap_or(false);
         for (i, p) in proto.params.iter().enumerate() {
             let Some(ty) = &p.type_hint else { continue };
             // by-ref / variadic params aren't coerced here; a defaulted (not
             // passed) param is trusted.
-            if p.by_ref || p.variadic || i >= frame.argc {
+            if p.by_ref
+                || p.variadic
+                || i >= frame.argc
+                || (i < 64 && frame.holes & (1u64 << i) != 0)
+            {
                 continue;
             }
             let cur = frame.regs[p.cv as usize].clone();
@@ -1839,12 +1901,12 @@ impl Vm {
                 Ok(None) => {}
                 Ok(Some(coerced)) => frame.regs[p.cv as usize] = coerced,
                 Err(()) => {
-                    let fname = String::from_utf8_lossy(proto.name.as_bytes()).into_owned();
+                    let fname = self.fn_display_name(proto, ctx);
                     let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
                         .into_owned();
                     // php appends the call site (the caller is the current top of
                     // stack — the new frame has not been pushed yet).
-                    let site = self.stack.last().map(|f| {
+                    let site = self.stack.last().filter(|_| caller.is_some()).map(|f| {
                         let pc = f.pc.saturating_sub(1) as u32;
                         let idx = f.proto.debug.lines.partition_point(|(p, _)| *p <= pc);
                         let line = if idx == 0 {
@@ -1866,7 +1928,7 @@ impl Vm {
                             i + 1,
                             pname,
                             type_string(ty),
-                            self.value_debug_type(&deref(&cur)),
+                            self.zval_value_name(&deref(&cur)),
                             site.unwrap_or_default(),
                         ),
                     ));
@@ -1902,17 +1964,58 @@ impl Vm {
             Ok(None) => Ok(v),
             Ok(Some(coerced)) => Ok(coerced),
             Err(()) => {
-                let fname = String::from_utf8_lossy(proto.name.as_bytes()).into_owned();
+                let fname = self.fn_display_name(proto, ctx);
                 Err(Thrown::error(
                     "TypeError",
                     format!(
                         "{}(): Return value must be of type {}, {} returned",
                         fname,
                         type_string(ty),
-                        self.value_debug_type(&deref(&v)),
+                        self.zval_value_name(&deref(&v)),
                     ),
                 ))
             }
+        }
+    }
+
+    /// php's `ZSTR_VAL(func->common.scope->name)::name` for a method, the
+    /// bare name for a function or closure.
+    fn fn_display_name(&self, proto: &FunctionProto, cls: Option<ClassId>) -> String {
+        let name = String::from_utf8_lossy(proto.name.as_bytes()).into_owned();
+        match cls {
+            Some(c) if !name.starts_with("{closure") && !name.contains("::") => format!(
+                "{}::{}",
+                String::from_utf8_lossy(self.classes[c as usize].name.as_bytes()),
+                name
+            ),
+            _ => name,
+        }
+    }
+
+    /// Key of a function-static slot: the proto plus, for a method, the class
+    /// it runs as. A method declared in a class always runs with that class,
+    /// but a trait method is copied into every using class and each copy has
+    /// its own statics (php duplicates the op_array per using class).
+    fn static_key(&self, top: usize, proto: &Rc<FunctionProto>, sname: Vec<u8>) -> StaticKey {
+        let cls = if proto.name.as_bytes().starts_with(b"{closure") {
+            None
+        } else {
+            self.stack[top].defining_class
+        };
+        (Rc::as_ptr(proto) as usize, cls, sname)
+    }
+
+    /// php compiles a statically resolved `call_user_func()` /
+    /// `call_user_func_array()` into a direct user call (ZEND_INIT_USER_CALL),
+    /// so the callee sees the caller's `strict_types` and the call site; a
+    /// namespaced unqualified call (runtime resolution) stays an internal call.
+    fn mark_user_call_builtin(&mut self, fname: &[u8], fallback: NIdx) {
+        self.cuf_caller = None;
+        if fallback == rhp_bytecode::NO_NAME
+            && (fname.eq_ignore_ascii_case(b"call_user_func")
+                || fname.eq_ignore_ascii_case(b"call_user_func_array"))
+        {
+            self.cuf_caller = Some(self.caller_strict());
         }
     }
 
@@ -2550,7 +2653,8 @@ impl Vm {
 
                 Instr::Jmp { target } => self.stack[top].pc = target as usize,
                 Instr::JmpIfArg { index, target } => {
-                    if self.stack[top].argc > index as usize {
+                    let f = &self.stack[top];
+                    if f.argc > index as usize && (index >= 64 || f.holes & (1u64 << index) == 0) {
                         self.stack[top].pc = target as usize;
                     }
                 }
@@ -2643,7 +2747,10 @@ impl Vm {
                     } else {
                         // Builtin.
                         let name_str = String::from_utf8_lossy(&fname).into_owned();
-                        let out = self.call_builtin(top, &name_str, base, argc)?;
+                        self.mark_user_call_builtin(&fname, fallback);
+                        let out = self.call_builtin(top, &name_str, base, argc);
+                        self.cuf_caller = None;
+                        let out = out?;
                         self.reg_set(top, dst, out);
                     }
                 }
@@ -2690,7 +2797,7 @@ impl Vm {
                 }
                 Instr::BindStatic { cv, name, init } => {
                     let sname = proto.names[name as usize].as_bytes().to_vec();
-                    let key = (Rc::as_ptr(&proto) as usize, sname);
+                    let key = self.static_key(top, &proto, sname);
                     let cell = match self.statics.get(&key) {
                         Some(c) => c.clone(),
                         None => {
@@ -2705,6 +2812,31 @@ impl Vm {
                         }
                     };
                     self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                }
+                Instr::BindStaticOrJmp { cv, name, target } => {
+                    let sname = proto.names[name as usize].as_bytes().to_vec();
+                    let key = self.static_key(top, &proto, sname);
+                    if let Some(c) = self.statics.get(&key) {
+                        let cell = c.clone();
+                        self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                        self.stack[top].pc = target as usize;
+                    }
+                }
+                Instr::BindStaticInit { cv, name, src } => {
+                    let sname = proto.names[name as usize].as_bytes().to_vec();
+                    let key = self.static_key(top, &proto, sname);
+                    let v = self.reg_get(top, src);
+                    let cell = self
+                        .statics
+                        .entry(key)
+                        .or_insert_with(|| Rc::new(RefCell::new(v)))
+                        .clone();
+                    self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                }
+                Instr::DeclareConst { name, src } => {
+                    let cname = proto.names[name as usize].as_bytes().to_vec();
+                    let v = self.reg_get(top, src);
+                    self.constants.entry(cname).or_insert(v);
                 }
                 Instr::MakeFcc { dst, callee } => {
                     let c = self.reg_get(top, callee);
@@ -2726,14 +2858,16 @@ impl Vm {
                 } => {
                     let c = self.reg_get(top, callee);
                     let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
-                    let out = self.call_callable_value(&c, args)?;
+                    let strict = self.caller_strict();
+                    let out = self.call_callable_value_mode(&c, args, Some(strict))?;
                     self.reg_set(top, dst, out);
                 }
                 Instr::CallDynV { dst, callee, args } => {
                     let c = self.reg_get(top, callee);
                     let arr = self.reg_get(top, args);
-                    let argvec = self.spread_args(&arr);
-                    let out = self.call_callable_value(&c, argvec)?;
+                    let (argvec, named) = self.split_call_args(&arr)?;
+                    let strict = self.caller_strict();
+                    let out = self.call_named(&c, argvec, named, Some(strict))?;
                     self.reg_set(top, dst, out);
                 }
 
@@ -3121,6 +3255,7 @@ impl Vm {
                             ),
                         ));
                     }
+                    self.update_class_constants(cls)?;
                     let obj = self.new_object(cls);
                     // Throwables record their creation site for getLine()/getFile().
                     if self.class_implements(cls, b"Throwable") {
@@ -3269,13 +3404,40 @@ impl Vm {
                         let v = Value::str(self.class(cls).name.as_bytes().to_vec());
                         self.reg_set(top, dst, v);
                     } else {
+                        // php loads every constant of a backed enum on first
+                        // fetch (it builds the value -> case table).
+                        // (Not from inside a constant expression, which goes
+                        // through zend_get_class_constant_ex in php.)
+                        let in_const_expr = proto.name.as_bytes() == b"{init}";
+                        if self.class(cls).enum_backing.is_some()
+                            && !self.class(cls).updated
+                            && !in_const_expr
+                        {
+                            self.update_class_constants(cls)?;
+                        }
+                        // Inside a constant expression php names the class as
+                        // written (`self::X`); the opcode path uses its name.
+                        let display: Vec<u8> = match class {
+                            ClassRef::Name(n) if in_const_expr => {
+                                proto.names[n as usize].as_bytes().to_vec()
+                            }
+                            ClassRef::SelfClass if in_const_expr => b"self".to_vec(),
+                            ClassRef::ParentClass if in_const_expr => b"parent".to_vec(),
+                            ClassRef::StaticClass if in_const_expr => b"static".to_vec(),
+                            _ => self.class(cls).name.as_bytes().to_vec(),
+                        };
                         match self.class(cls).constants.get(&name_b) {
                             Some(c) => {
                                 let (vis, decl) = (c.visibility, c.declaring_class);
                                 if !self.check_access(self.stack[top].defining_class, decl, vis) {
                                     return Err(self.access_err("constant", decl, &name_b, vis));
                                 }
-                                let v = c.value.clone();
+                                let v = if c.init.is_none() {
+                                    c.value.clone()
+                                } else {
+                                    self.class_const_value(cls, &name_b, &display, in_const_expr)?
+                                        .unwrap_or(Value::Null)
+                                };
                                 self.reg_set(top, dst, v);
                             }
                             None => {
@@ -3283,7 +3445,7 @@ impl Vm {
                                     "Error",
                                     format!(
                                         "Undefined constant {}::{}",
-                                        String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                                        String::from_utf8_lossy(&display),
                                         String::from_utf8_lossy(&name_b)
                                     ),
                                 ))
@@ -3457,13 +3619,33 @@ impl Vm {
                         return Err(Thrown::unsupported(format!("{shown}()"), reason));
                     }
                     let arr = self.reg_get(top, args);
-                    let argv = self.spread_args(&arr);
+                    let (argv, named) = self.split_call_args(&arr)?;
                     if let Some(fnidx) = user {
                         let callee = self.functions[fnidx].clone();
+                        let argv = self.place_named_args(&callee, None, argv, named)?;
                         self.push_user_frame(callee, argv, dst)?;
+                    } else if !named.is_empty() {
+                        // `call_user_func($f, ...named)` forwards them.
+                        if fname.eq_ignore_ascii_case(b"call_user_func") && !argv.is_empty() {
+                            let out = self.call_named(
+                                &argv[0],
+                                argv[1..].to_vec(),
+                                named,
+                                Some(self.caller_strict()),
+                            )?;
+                            self.reg_set(top, dst, out);
+                        } else {
+                            return Err(Thrown::unsupported(
+                                "named arguments to a builtin function",
+                                "deferred",
+                            ));
+                        }
                     } else {
                         let name_str = String::from_utf8_lossy(&fname).into_owned();
-                        let out = self.invoke_builtin(&name_str, argv)?;
+                        self.mark_user_call_builtin(&fname, fallback);
+                        let out = self.invoke_builtin(&name_str, argv);
+                        self.cuf_caller = None;
+                        let out = out?;
                         self.reg_set(top, dst, out);
                     }
                 }
@@ -3479,11 +3661,14 @@ impl Vm {
                             ),
                         ));
                     }
+                    self.update_class_constants(cls)?;
                     let obj = self.new_object(cls);
                     self.reg_set(top, dst, Value::Object(obj.clone()));
                     if let Some(m) = self.lookup_method(cls, b"__construct") {
                         let arr = self.reg_get(top, args);
-                        let argv = self.spread_args(&arr);
+                        let (argv, named) = self.split_call_args(&arr)?;
+                        let argv =
+                            self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
                         self.push_method_frame(&m, Some(obj), cls, argv, Reg::MAX)?;
                     }
                 }
@@ -3524,7 +3709,9 @@ impl Vm {
                         ));
                     }
                     let arr = self.reg_get(top, args);
-                    let argv = self.spread_args(&arr);
+                    let (argv, named) = self.split_call_args(&arr)?;
+                    let argv =
+                        self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
                     self.push_method_frame(&m, Some(h.clone()), cls, argv, dst)?;
                 }
                 Instr::CallStaticV {
@@ -3558,7 +3745,9 @@ impl Vm {
                             .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))
                     };
                     let arr = self.reg_get(top, args);
-                    let argv = self.spread_args(&arr);
+                    let (argv, named) = self.split_call_args(&arr)?;
+                    let argv =
+                        self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
                     self.push_method_frame(&m, this, called, argv, dst)?;
                 }
 
@@ -3730,6 +3919,19 @@ impl Vm {
         called_class: ClassId,
         args: Vec<Value>,
     ) -> Result<Value, Thrown> {
+        self.call_sync_mode(method, this, called_class, args, None)
+    }
+
+    /// [`Self::call_sync`] with the caller's `strict_types` mode for the
+    /// argument checks (an internal caller is always coercive).
+    fn call_sync_mode(
+        &mut self,
+        method: &classes::ResolvedMethod,
+        this: Option<ObjectHandle>,
+        called_class: ClassId,
+        args: Vec<Value>,
+        caller: Option<bool>,
+    ) -> Result<Value, Thrown> {
         let proto = method.proto.clone();
         self.run_proto_sync(
             proto,
@@ -3737,6 +3939,7 @@ impl Vm {
             Some(method.defining_class),
             Some(called_class),
             args,
+            caller,
         )
     }
 
@@ -3749,14 +3952,16 @@ impl Vm {
         defining_class: Option<ClassId>,
         called_class: Option<ClassId>,
         args: Vec<Value>,
+        caller: Option<bool>,
     ) -> Result<Value, Thrown> {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
         let mut frame = Frame::new(proto.clone(), 0);
         frame.argc = args.len();
-        bind_params(&proto, &args, &mut frame.regs)?;
+        self.bind_frame(&proto, &args, &mut frame)?;
         self.bind_superglobals(&mut frame);
+        self.check_arg_types(&proto, &mut frame, caller, defining_class)?;
         if let (Some(cv), Some(obj)) = (proto.this_cv, this) {
             frame.regs[cv as usize] = Value::Object(obj);
         }
@@ -4003,6 +4208,7 @@ impl Vm {
         &mut self,
         cd: &rhp_values::ClosureData,
         args: Vec<Value>,
+        caller: Option<bool>,
     ) -> Result<Value, Thrown> {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
@@ -4010,10 +4216,9 @@ impl Vm {
         let proto = self.closures[cd.fnidx as usize].clone();
         let mut frame = Frame::new(proto.clone(), 0);
         frame.argc = args.len();
-        bind_params(&proto, &args, &mut frame.regs)?;
+        self.bind_frame(&proto, &args, &mut frame)?;
         self.bind_superglobals(&mut frame);
-        let strict = self.caller_strict();
-        self.check_arg_types(&proto, &mut frame, strict, cd.bound_class)?;
+        self.check_arg_types(&proto, &mut frame, caller, cd.bound_class)?;
         for (i, cap) in cd.captures.iter().enumerate() {
             frame.regs[i] = cap.clone();
         }
@@ -4303,6 +4508,24 @@ impl Vm {
         method_lc: &[u8],
         args: Vec<Value>,
     ) -> Result<Value, Thrown> {
+        // Case values may be pending constant expressions: cases() evaluates
+        // just the pending case constants (php's zend_enum_cases_func), while
+        // from()/tryFrom() load the whole class (building the value table).
+        if method_lc == b"cases" {
+            let pending: Vec<Vec<u8>> = self
+                .class(cls)
+                .constants
+                .iter()
+                .filter(|(_, c)| matches!(c.init, Some(classes::ConstInit::EnumCase(_))))
+                .map(|(k, _)| k.clone())
+                .collect();
+            let display = self.class(cls).name.as_bytes().to_vec();
+            for name in pending {
+                self.class_const_value(cls, &name, &display, false)?;
+            }
+        } else {
+            self.update_class_constants(cls)?;
+        }
         let enum_name = || String::from_utf8_lossy(self.class(cls).name.as_bytes()).into_owned();
         match method_lc {
             b"cases" => {
@@ -4415,6 +4638,19 @@ impl Vm {
     }
 
     fn call_callable_value(&mut self, callable: &Value, args: Vec<Value>) -> Result<Value, Thrown> {
+        self.call_callable_value_mode(callable, args, None)
+    }
+
+    /// Call a callable value; `strict` is the caller's `strict_types` mode for
+    /// the argument checks (true only for a dynamic call from strict user code;
+    /// callbacks invoked by builtins are always coercive, like php's internal
+    /// callers).
+    fn call_callable_value_mode(
+        &mut self,
+        callable: &Value,
+        args: Vec<Value>,
+        caller: Option<bool>,
+    ) -> Result<Value, Thrown> {
         let c = match callable {
             Value::Ref(r) => r.borrow().clone(),
             other => other.clone(),
@@ -4423,14 +4659,22 @@ impl Vm {
             // First-class callable: forward to the wrapped callable.
             Value::Closure(cd) if cd.wrapped.is_some() => {
                 let w = (**cd.wrapped.as_ref().unwrap()).clone();
-                self.call_callable_value(&w, args)
+                self.call_callable_value_mode(&w, args, caller)
             }
-            Value::Closure(cd) => self.run_closure_sync(&cd, args),
+            Value::Closure(cd) => self.run_closure_sync(&cd, args, caller),
             Value::Str(s) => {
                 let lower = s.as_bytes().to_ascii_lowercase();
                 if let Some(&fnidx) = self.fn_names.get(&lower) {
                     let proto = self.functions[fnidx].clone();
-                    self.run_proto_sync(proto, None, None, None, args)
+                    self.run_proto_sync(proto, None, None, None, args, caller)
+                } else if let Some(pos) = s.as_bytes().windows(2).position(|w| w == b"::") {
+                    // 'Class::method' string callable.
+                    let (cn, mn) = (&s.as_bytes()[..pos], &s.as_bytes()[pos + 2..]);
+                    let cls = self.resolve_class_by_name(cn)?;
+                    let m = self.lookup_method(cls, mn).ok_or_else(|| {
+                        Thrown::error("Error", "Call to undefined method in callable")
+                    })?;
+                    self.call_sync_mode(&m, None, cls, args, caller)
                 } else {
                     let name = String::from_utf8_lossy(s.as_bytes()).into_owned();
                     self.invoke_builtin(&name, args)
@@ -4446,14 +4690,14 @@ impl Vm {
                         let m = self.lookup_method(cls, &mname).ok_or_else(|| {
                             Thrown::error("Error", "Call to undefined method in callable")
                         })?;
-                        self.call_sync(&m, Some(h), cls, args)
+                        self.call_sync_mode(&m, Some(h), cls, args, caller)
                     }
                     Value::Str(cn) => {
                         let cls = self.resolve_class_by_name(cn.as_bytes())?;
                         let m = self.lookup_method(cls, &mname).ok_or_else(|| {
                             Thrown::error("Error", "Call to undefined method in callable")
                         })?;
-                        self.call_sync(&m, None, cls, args)
+                        self.call_sync_mode(&m, None, cls, args, caller)
                     }
                     _ => Err(Thrown::type_error("Invalid callable array")),
                 }
@@ -4461,7 +4705,7 @@ impl Vm {
             Value::Object(h) => {
                 let cls = h.borrow().class;
                 match self.lookup_method(cls, b"__invoke") {
-                    Some(m) => self.call_sync(&m, Some(h), cls, args),
+                    Some(m) => self.call_sync_mode(&m, Some(h), cls, args, caller),
                     None => Err(Thrown::type_error("Object is not callable (no __invoke)")),
                 }
             }
@@ -4528,6 +4772,7 @@ impl Vm {
             Thrown::Object(h) => Ok(Value::Object(h.clone())),
             Thrown::Error { class, message } => {
                 let cls = self.resolve_class_by_name(class.as_bytes())?;
+                self.update_class_constants(cls)?;
                 let obj = self.new_object(cls);
                 obj.borrow_mut().properties.insert(
                     rhp_values::PhpStr::from("message"),
@@ -4591,10 +4836,10 @@ impl Vm {
         }
         let mut frame = Frame::new(callee.clone(), dst);
         frame.argc = args.len();
-        bind_params(&callee, &args, &mut frame.regs)?;
+        self.bind_frame(&callee, &args, &mut frame)?;
         self.bind_superglobals(&mut frame);
         let strict = self.caller_strict();
-        self.check_arg_types(&callee, &mut frame, strict, None)?;
+        self.check_arg_types(&callee, &mut frame, Some(strict), None)?;
         if callee.is_generator {
             let gen = self.make_generator(frame);
             let caller = self.stack.len() - 1;
@@ -4607,12 +4852,209 @@ impl Vm {
         Ok(())
     }
 
-    /// Flatten an array value into a positional argument vector (for spread).
-    fn spread_args(&self, arr: &Value) -> Vec<Value> {
-        match arr {
-            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
-            Value::Ref(r) => self.spread_args(&r.borrow()),
-            _ => Vec::new(),
+    /// Bind `args` into a new frame's parameters, then apply a pending
+    /// named-argument binding (skipped parameters, variadic extras).
+    fn bind_frame(
+        &mut self,
+        proto: &FunctionProto,
+        args: &[Value],
+        frame: &mut Frame,
+    ) -> Result<(), Thrown> {
+        let named = self.pending_named.take();
+        bind_params(proto, args, &mut frame.regs)?;
+        if let Some((holes, extra)) = named {
+            frame.holes = holes;
+            if !extra.is_empty() {
+                if let Some(p) = proto.params.iter().find(|p| p.variadic) {
+                    if let Value::Array(a) = &mut frame.regs[p.cv as usize] {
+                        for (k, v) in extra {
+                            a.insert(ArrayKey::Str(k), deref(&v));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Split a call's argument array (a spread / named-argument call) into
+    /// positional arguments and named ones (string keys).
+    fn split_call_args(&self, arr: &Value) -> Result<(Vec<Value>, NamedArgs), Thrown> {
+        let mut pos = Vec::new();
+        let mut named: NamedArgs = Vec::new();
+        if let Value::Array(a) = deref(arr) {
+            for (k, v) in a.iter() {
+                match k {
+                    ArrayKey::Int(_) => {
+                        if !named.is_empty() {
+                            return Err(Thrown::error(
+                                "Error",
+                                "Cannot use positional argument after named argument during unpacking",
+                            ));
+                        }
+                        pos.push(v.clone());
+                    }
+                    ArrayKey::Str(s) => named.push((s.clone(), v.clone())),
+                }
+            }
+        }
+        Ok((pos, named))
+    }
+
+    /// php's `zend_handle_named_arg` + `zend_handle_undef_args`: place named
+    /// arguments into `proto`'s parameter slots. Skipped parameters take
+    /// their default (a constant one directly; a non-constant one through the
+    /// prologue, via the hole mask); unknown names go to a variadic
+    /// parameter. Arms `pending_named` for the frame push that must follow.
+    fn place_named_args(
+        &mut self,
+        proto: &FunctionProto,
+        class: Option<ClassId>,
+        mut args: Vec<Value>,
+        named: Vec<(PhpStr, Value)>,
+    ) -> Result<Vec<Value>, Thrown> {
+        if named.is_empty() {
+            return Ok(args);
+        }
+        let positional = args.len();
+        let variadic = proto.params.iter().position(|p| p.variadic);
+        let mut slots: Vec<Option<Value>> = args.drain(..).map(Some).collect();
+        let mut extra: Vec<(PhpStr, Value)> = Vec::new();
+        for (name, v) in named {
+            let idx = proto.params.iter().position(|p| {
+                !p.variadic && proto.names[p.name as usize].as_bytes() == name.as_bytes()
+            });
+            match idx {
+                Some(i) => {
+                    if i < slots.len() && slots[i].is_some() {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Named parameter ${} overwrites previous argument",
+                                String::from_utf8_lossy(name.as_bytes())
+                            ),
+                        ));
+                    }
+                    if slots.len() <= i {
+                        slots.resize(i + 1, None);
+                    }
+                    slots[i] = Some(v);
+                }
+                None if variadic.is_some() => {
+                    if extra.iter().any(|(k, _)| k.as_bytes() == name.as_bytes()) {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Named parameter ${} overwrites previous argument",
+                                String::from_utf8_lossy(name.as_bytes())
+                            ),
+                        ));
+                    }
+                    extra.push((name, v));
+                }
+                None => {
+                    return Err(Thrown::error(
+                        "Error",
+                        format!(
+                            "Unknown named parameter ${}",
+                            String::from_utf8_lossy(name.as_bytes())
+                        ),
+                    ))
+                }
+            }
+        }
+        let mut holes = 0u64;
+        let mut out = Vec::with_capacity(slots.len());
+        for (i, slot) in slots.into_iter().enumerate() {
+            match slot {
+                Some(v) => out.push(v),
+                None if i < positional => unreachable!("positional slots are filled"),
+                None => {
+                    let p = &proto.params[i];
+                    match &p.default {
+                        Some(ParamDefault::Const(k)) => out.push(proto.consts[*k as usize].clone()),
+                        Some(ParamDefault::Init(_)) => out.push(Value::Null),
+                        None => {
+                            let fname = match class {
+                                Some(c) => format!(
+                                    "{}::{}",
+                                    String::from_utf8_lossy(self.class(c).name.as_bytes()),
+                                    String::from_utf8_lossy(proto.name.as_bytes())
+                                ),
+                                None => String::from_utf8_lossy(proto.name.as_bytes()).into_owned(),
+                            };
+                            return Err(Thrown::error(
+                                "ArgumentCountError",
+                                format!(
+                                    "{}(): Argument #{} (${}) not passed",
+                                    fname,
+                                    i + 1,
+                                    String::from_utf8_lossy(
+                                        proto.names[p.name as usize].as_bytes()
+                                    )
+                                ),
+                            ));
+                        }
+                    }
+                    if i < 64 {
+                        holes |= 1u64 << i;
+                    }
+                }
+            }
+        }
+        self.pending_named = Some((holes, extra));
+        Ok(out)
+    }
+
+    /// Call a callable value with positional and named arguments.
+    fn call_named(
+        &mut self,
+        c: &Value,
+        mut args: Vec<Value>,
+        named: Vec<(PhpStr, Value)>,
+        caller: Option<bool>,
+    ) -> Result<Value, Thrown> {
+        if !named.is_empty() {
+            let Some((p, cls)) = self.callable_proto(c) else {
+                return Err(Thrown::unsupported(
+                    "named arguments to a builtin function",
+                    "deferred",
+                ));
+            };
+            args = self.place_named_args(&p, cls, args, named)?;
+        }
+        self.call_callable_value_mode(c, args, caller)
+    }
+
+    /// The user-code proto a callable value would run (for named-argument
+    /// placement before a dynamic call), with its scope class.
+    fn callable_proto(&self, c: &Value) -> Option<(Rc<FunctionProto>, Option<ClassId>)> {
+        match c {
+            Value::Ref(r) => self.callable_proto(&r.borrow()),
+            Value::Closure(cd) if cd.wrapped.is_some() => {
+                self.callable_proto(cd.wrapped.as_ref().unwrap())
+            }
+            Value::Closure(cd) => Some((self.closures[cd.fnidx as usize].clone(), None)),
+            Value::Str(s) => self
+                .fn_names
+                .get(&s.as_bytes().to_ascii_lowercase())
+                .map(|&i| (self.functions[i].clone(), None)),
+            Value::Array(a) if a.len() == 2 => {
+                let item0 = a.get(&ArrayKey::Int(0)).cloned().unwrap_or(Value::Null);
+                let method = a.get(&ArrayKey::Int(1)).cloned().unwrap_or(Value::Null);
+                let cls = match deref(&item0) {
+                    Value::Object(h) => h.borrow().class,
+                    Value::Str(cn) => self.resolve_class_by_name(cn.as_bytes()).ok()?,
+                    _ => return None,
+                };
+                let m = self.lookup_method(cls, &conv::to_string_bytes(&method))?;
+                Some((m.proto.clone(), Some(m.defining_class)))
+            }
+            Value::Object(h) => {
+                let m = self.lookup_method(h.borrow().class, b"__invoke")?;
+                Some((m.proto.clone(), Some(m.defining_class)))
+            }
+            _ => None,
         }
     }
 
@@ -4723,96 +5165,147 @@ fn is_builtin_type(ty: &rhp_bytecode::TypeHint) -> bool {
         .all(|k| !matches!(k, K::Named(_) | K::SelfType | K::StaticType | K::Parent))
 }
 
-/// The lone scalar kind of a type (for coercive coercion), or None if there is
-/// not exactly one scalar member.
-fn scalar_target(ty: &rhp_bytecode::TypeHint) -> Option<&rhp_bytecode::TypeKind> {
-    use rhp_bytecode::TypeKind as K;
-    let mut found = None;
-    for k in &ty.kinds {
-        if matches!(k, K::Int | K::Float | K::String | K::Bool) {
-            if found.is_some() {
-                return None; // more than one scalar → ambiguous
-            }
-            found = Some(k);
-        }
-    }
-    found
-}
-
-/// Coerce a scalar value to a scalar kind (php coercive-mode rules); None if not
-/// coercible (e.g. array/object/non-numeric-string to int).
-fn coerce_scalar(d: &Value, k: &rhp_bytecode::TypeKind) -> Option<Value> {
+/// php's `zend_verify_weak_scalar_type_hint`: coerce a scalar to the first of
+/// int, float, string, bool (in that preference order) the type accepts.
+/// `None` if no member accepts it. (The E_DEPRECATED for a fractional float
+/// to int is not emitted.)
+fn weak_scalar_coerce(d: &Value, ty: &rhp_bytecode::TypeHint) -> Option<Value> {
     use rhp_bytecode::TypeKind as K;
     use rhp_values::conv::Num;
-    match k {
-        K::Int => match d {
-            Value::Bool(b) => Some(Value::Int(*b as i64)),
-            Value::Float(f) => Some(Value::Int(*f as i64)),
-            Value::Str(s) => conv::scan_number(s.as_bytes()).map(|(num, _)| {
-                Value::Int(match num {
-                    Num::Int(n) => n,
-                    Num::Float(f) => f as i64,
-                })
-            }),
-            _ => None,
-        },
-        K::Float => match d {
-            Value::Bool(b) => Some(Value::Float(*b as i64 as f64)),
-            Value::Int(n) => Some(Value::Float(*n as f64)),
-            Value::Str(s) => {
-                conv::scan_number(s.as_bytes()).map(|(num, _)| Value::Float(num.as_f64()))
+    let has = |want: fn(&K) -> bool| ty.kinds.iter().any(want);
+    let (t_int, t_float, t_str) = (
+        has(|k| matches!(k, K::Int)),
+        has(|k| matches!(k, K::Float)),
+        has(|k| matches!(k, K::String)),
+    );
+    let t_bool = has(|k| matches!(k, K::Bool))
+        || (has(|k| matches!(k, K::True)) && has(|k| matches!(k, K::False)));
+    // ZEND_DOUBLE_FITS_LONG + NaN check, then truncation.
+    let f2i = |f: f64| -> Option<i64> {
+        if f.is_nan() || !(-9.223_372_036_854_776e18..9.223_372_036_854_776e18).contains(&f) {
+            None
+        } else {
+            Some(f as i64)
+        }
+    };
+    if t_int {
+        match d {
+            // int|float and a string: is_numeric_string decides.
+            Value::Str(s) if t_float => match conv::numeric_string(s.as_bytes()) {
+                Some(Num::Int(n)) => return Some(Value::Int(n)),
+                Some(Num::Float(f)) => return Some(Value::Float(f)),
+                None => {}
+            },
+            Value::Float(f) => {
+                if let Some(n) = f2i(*f) {
+                    return Some(Value::Int(n));
+                }
             }
-            _ => None,
-        },
-        K::String => match d {
-            Value::Int(_) | Value::Float(_) | Value::Bool(_) => {
-                Some(Value::str(conv::to_string_bytes(d)))
-            }
-            _ => None,
-        },
-        K::Bool => match d {
-            Value::Int(_) | Value::Float(_) | Value::Str(_) => Some(Value::Bool(conv::to_bool(d))),
-            _ => None,
-        },
-        _ => None,
+            Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
+                Some(Num::Int(n)) => return Some(Value::Int(n)),
+                Some(Num::Float(f)) => {
+                    if let Some(n) = f2i(f) {
+                        return Some(Value::Int(n));
+                    }
+                }
+                None => {}
+            },
+            Value::Bool(b) => return Some(Value::Int(*b as i64)),
+            _ => {}
+        }
     }
+    if t_float {
+        match d {
+            Value::Int(n) => return Some(Value::Float(*n as f64)),
+            Value::Bool(b) => return Some(Value::Float(*b as i64 as f64)),
+            Value::Str(s) => {
+                if let Some(num) = conv::numeric_string(s.as_bytes()) {
+                    return Some(Value::Float(num.as_f64()));
+                }
+            }
+            _ => {}
+        }
+    }
+    if t_str && matches!(d, Value::Int(_) | Value::Float(_) | Value::Bool(_)) {
+        return Some(Value::str(conv::to_string_bytes(d)));
+    }
+    if t_bool && matches!(d, Value::Int(_) | Value::Float(_) | Value::Str(_)) {
+        return Some(Value::Bool(conv::to_bool(d)));
+    }
+    None
 }
 
 /// Human-readable form of a declared type, for TypeError messages.
 fn type_string(ty: &rhp_bytecode::TypeHint) -> String {
+    // php's zend_type_to_string: class names first (declaration order), then
+    // the builtin types in a fixed order, `null` last (or `?T` for a single
+    // type). `iterable` is `Traversable|array`.
     use rhp_bytecode::TypeKind as K;
-    let sep = if ty.intersection { "&" } else { "|" };
-    let mut parts: Vec<String> = ty
-        .kinds
-        .iter()
-        .map(|k| match k {
-            K::Int => "int".into(),
-            K::Float => "float".into(),
-            K::String => "string".into(),
-            K::Bool => "bool".into(),
-            K::Array => "array".into(),
-            K::Object => "object".into(),
-            K::Callable => "callable".into(),
-            K::Iterable => "iterable".into(),
-            K::Mixed => "mixed".into(),
-            K::Void => "void".into(),
-            K::Never => "never".into(),
-            K::Null => "null".into(),
-            K::True => "true".into(),
-            K::False => "false".into(),
-            K::SelfType => "self".into(),
-            K::StaticType => "static".into(),
-            K::Parent => "parent".into(),
-            K::Named(n) => String::from_utf8_lossy(n.as_bytes()).into_owned(),
-        })
-        .collect();
-    if ty.nullable && ty.kinds.len() == 1 && !matches!(ty.kinds[0], K::Null) {
-        return format!("?{}", parts[0]);
+    if ty.intersection {
+        let parts: Vec<String> = ty
+            .kinds
+            .iter()
+            .filter_map(|k| match k {
+                K::Named(n) => Some(String::from_utf8_lossy(n.as_bytes()).into_owned()),
+                _ => None,
+            })
+            .collect();
+        return parts.join("&");
     }
-    if ty.nullable {
+    let has = |want: &dyn Fn(&K) -> bool| ty.kinds.iter().any(want);
+    let mut parts: Vec<String> = Vec::new();
+    for k in &ty.kinds {
+        match k {
+            K::Named(n) => parts.push(String::from_utf8_lossy(n.as_bytes()).into_owned()),
+            K::SelfType => parts.push("self".into()),
+            K::Parent => parts.push("parent".into()),
+            _ => {}
+        }
+    }
+    if has(&|k| matches!(k, K::Iterable)) && !parts.iter().any(|p| p == "Traversable") {
+        parts.push("Traversable".into());
+    }
+    if has(&|k| matches!(k, K::Mixed)) {
+        parts.push("mixed".into());
+        return parts.join("|");
+    }
+    type Pred = fn(&K) -> bool;
+    let order: [(Pred, &str); 7] = [
+        (|k| matches!(k, K::StaticType), "static"),
+        (|k| matches!(k, K::Callable), "callable"),
+        (|k| matches!(k, K::Object), "object"),
+        (|k| matches!(k, K::Array | K::Iterable), "array"),
+        (|k| matches!(k, K::String), "string"),
+        (|k| matches!(k, K::Int), "int"),
+        (|k| matches!(k, K::Float), "float"),
+    ];
+    for (pred, name) in order {
+        if has(&pred) {
+            parts.push(name.into());
+        }
+    }
+    let t = has(&|k| matches!(k, K::True));
+    let f = has(&|k| matches!(k, K::False));
+    if has(&|k| matches!(k, K::Bool)) || (t && f) {
+        parts.push("bool".into());
+    } else if f {
+        parts.push("false".into());
+    } else if t {
+        parts.push("true".into());
+    }
+    if has(&|k| matches!(k, K::Void)) {
+        parts.push("void".into());
+    }
+    if has(&|k| matches!(k, K::Never)) {
+        parts.push("never".into());
+    }
+    if ty.nullable || has(&|k| matches!(k, K::Null)) {
+        if parts.len() == 1 {
+            return format!("?{}", parts[0]);
+        }
         parts.push("null".into());
     }
-    parts.join(sep)
+    parts.join("|")
 }
 
 /// The resource id of a (possibly referenced) resource value.
@@ -4879,6 +5372,11 @@ fn rebase_class(c: &ClassProto, base: u32) -> ClassProto {
     for k in &mut c.constants {
         if let ConstInitProto::Thunk(t) = &k.value {
             k.value = ConstInitProto::Thunk(Rc::new(rebase_proto(t, base)));
+        }
+    }
+    for ec in &mut c.enum_cases {
+        if let Some(ConstInitProto::Thunk(t)) = &ec.value {
+            ec.value = Some(ConstInitProto::Thunk(Rc::new(rebase_proto(t, base))));
         }
     }
     c

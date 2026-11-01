@@ -1,0 +1,37 @@
+6x
+array(4) {
+  [0]=>
+  int(2)
+  [1]=>
+  int(1)
+  [2]=>
+  int(2)
+  ["k"]=>
+  string(2) "6x"
+}
+string(3) "big"
+kx! K
+string(2) "hx"
+string(2) "kx"
+enum(Suit::S)
+hx
+int(3)
+string(3) "kx!"
+enum(Suit::S)
+int(1)
+int(3)
+string(2) "bb"
+enum(Suit::S)
+int(1)
+kx2.kx2..
+string(3) "2kx"
+array(2) {
+  [0]=>
+  string(1) "P"
+  [1]=>
+  int(2)
+}
+enum(Suit::H)
+int(2)
+Error: Undefined constant "UNDEF_CONST"
+Error: Cannot declare self-referencing constant self::B

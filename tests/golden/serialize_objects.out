@@ -1,0 +1,87 @@
+O:1:"A":4:{s:1:"p";i:1;s:1:"q";i:1;s:4:"~*~r";i:3;s:4:"~A~s";i:4;}
+\A::__set_state(array(
+   'p' => 1,
+   'q' => 1,
+   'r' => 3,
+   's' => 4,
+))
+\A::__set_state(array(
+   'p' => 1,
+   'q' => 2,
+   'r' => 3,
+   's' => 4,
+))
+(object) array(
+   'q' => 2,
+   '7' => 'int',
+)
+a:3:{i:0;O:8:"stdClass":2:{s:4:"self";r:2;s:4:"list";a:2:{i:0;r:2;i:1;i:1;}}i:1;r:2;i:2;O:1:"A":4:{s:1:"p";i:1;s:1:"q";i:1;s:4:"~*~r";i:3;s:4:"~A~s";i:4;}}
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+O:1:"W":1:{s:1:"a";i:7;}
+wakeup 7
+\W::__set_state(array(
+   'a' => 7,
+   'log' => 
+  array (
+  ),
+))
+construct 1
+construct 2
+ser 1
+ser 2
+O:1:"M":2:{s:2:"xx";i:1;s:2:"in";O:1:"M":2:{s:2:"xx";i:2;s:2:"in";O:1:"W":1:{s:1:"a";i:1;}}}
+wakeup 1
+unser 2
+unser 1
+int(1)
+int(2)
+int(1)
+a:2:{i:0;O:6:"Legacy":1:{s:1:"d";s:3:"abc";}i:1;r:2;}
+legacy __unserialize
+string(3) "abc"
+bool(true)
+O:4:"Both":1:{s:1:"v";i:5;}
+int(10)
+E:3:"S:A";
+a:3:{i:0;E:3:"U:X";i:1;r:2;i:2;E:3:"U:Y";}
+bool(true)
+bool(true)
+Error: Cannot instantiate enum U
+string(22) "__PHP_Incomplete_Class"
+O:7:"Missing":1:{s:1:"a";i:1;}
+\__PHP_Incomplete_Class::__set_state(array(
+   '__PHP_Incomplete_Class_Name' => 'A',
+))
+\A::__set_state(array(
+   'p' => 1,
+   'q' => 1,
+   'r' => 3,
+   's' => 4,
+))
+array (
+  0 => 
+  \__PHP_Incomplete_Class::__set_state(array(
+     '__PHP_Incomplete_Class_Name' => 'A',
+  )),
+)
+TypeError: unserialize(): Option "allowed_classes" must be of type array|bool, int given
+Exception: Serialization of 'Closure' is not allowed
+Exception: Serialization of 'Closure' is not allowed
+Exception: Serialization of 'Generator' is not allowed
+TypeError: Bad::__serialize() must return an array
+caught no wakeup
+a:3:{i:0;i:1;i:1;R:2;i:2;i:2;}
+array (
+  0 => 1,
+  1 => 1,
+  2 => 2,
+)
+array (
+  1 => 1,
+  5 => 
+  (object) array(
+  ),
+)

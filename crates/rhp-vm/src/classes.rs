@@ -11,7 +11,9 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 
-use rhp_bytecode::{ClassProto, ClassRef, ConstInitProto, FunctionProto, PropDefaultProto, Reg};
+use rhp_bytecode::{
+    ClassProto, ClassRef, ConstInitProto, FunctionProto, PropDefaultProto, Reg, TypeHint,
+};
 use rhp_values::{
     ClassFlags, ClassId, ClassKind, ObjectData, ObjectHandle, PhpStr, Thrown, Value, Visibility,
 };
@@ -49,6 +51,10 @@ pub struct ClassEntry {
     pub enum_cases: Vec<ObjectHandle>,
     /// Backing type of a backed enum (`None` for pure enums / non-enums).
     pub enum_backing: Option<rhp_bytecode::EnumBacking>,
+    /// Whether the deferred initializers (constants, property defaults,
+    /// static properties) have all been evaluated — php's
+    /// `ZEND_ACC_CONSTANTS_UPDATED`. See [`Vm::update_class_constants`].
+    pub updated: bool,
 }
 
 #[derive(Clone)]
@@ -65,6 +71,9 @@ pub struct PropEntry {
     /// Unmangled property name (no `$`).
     pub name: PhpStr,
     pub default: Value,
+    /// A not-yet-evaluated non-constant default (evaluated in the declaring
+    /// class's scope by [`Vm::update_class_constants`]).
+    pub init: Option<Rc<FunctionProto>>,
     pub visibility: Visibility,
     /// Asymmetric write visibility (`private(set)` / `protected(set)`).
     pub set_visibility: Option<Visibility>,
@@ -73,16 +82,22 @@ pub struct PropEntry {
     /// of a redeclared public/protected property (protected access is checked
     /// against it, so sibling classes may read a redeclared property).
     pub prototype: ClassId,
+    /// Declared type (`None` = untyped).
+    pub ty: Option<Rc<TypeHint>>,
 }
 
 #[derive(Clone)]
 pub struct StaticProp {
     pub cell: Rc<RefCell<Value>>,
+    /// A not-yet-evaluated non-constant initializer for `cell`.
+    pub init: Option<Rc<FunctionProto>>,
     pub visibility: Visibility,
     pub declaring_class: ClassId,
     /// The root declaration's class of a redeclared public/protected static
     /// (php's `property_info->prototype->ce`), for the protected check.
     pub prototype: ClassId,
+    /// Declared type (`None` = untyped).
+    pub ty: Option<Rc<TypeHint>>,
 }
 
 #[derive(Clone)]
@@ -90,6 +105,24 @@ pub struct ClassConst {
     pub value: Value,
     pub visibility: Visibility,
     pub declaring_class: ClassId,
+    /// A not-yet-evaluated constant expression (php's `IS_CONSTANT_AST`):
+    /// evaluated on first access, in the declaring class's scope.
+    pub init: Option<ConstInit>,
+    /// Set while the initializer is being evaluated from inside another
+    /// constant expression (php's `IS_CONSTANT_VISITED`), to detect cycles.
+    pub visited: bool,
+    /// Declared type of a typed constant (`None` = untyped).
+    pub ty: Option<Rc<TypeHint>>,
+}
+
+/// A deferred class-constant initializer.
+#[derive(Clone)]
+pub enum ConstInit {
+    /// `const X = <expr>;` — the thunk yields the constant's value.
+    Expr(Rc<FunctionProto>),
+    /// `case C = <expr>;` of a backed enum — the constant's value is already
+    /// the case object; the thunk yields its backing `value` property.
+    EnumCase(Rc<FunctionProto>),
 }
 
 /// The key a declared instance property is stored under in
@@ -382,10 +415,12 @@ impl Vm {
         let mut pending: Vec<&ClassProto> = protos.iter().collect();
         loop {
             if pending.is_empty() {
-                // All classes linked: now evaluate deferred initializers (class
-                // consts / static props / property defaults that referenced
-                // other classes, enum cases, etc.) in each one's scope.
-                return self.eval_pending_inits();
+                // All classes linked. Deferred initializers (non-constant
+                // class consts / static props / property defaults / enum case
+                // values) are evaluated lazily, as php does: a constant on
+                // first access, the rest on first use of the class (see
+                // `update_class_constants`).
+                return Ok(());
             }
             let mut progressed = false;
             let mut i = 0;
@@ -538,31 +573,23 @@ impl Vm {
             props.insert(key, pe);
         };
         for pp in &proto.props {
-            let default = match &pp.default {
-                PropDefaultProto::Const(v) => v.clone(),
-                PropDefaultProto::None => Value::Null,
-                PropDefaultProto::Init(thunk) => {
-                    self.pending_inits.push(PendingInit {
-                        class_id: id,
-                        thunk: thunk.clone(),
-                        target: PendingTarget::Prop(prop_storage_key(
-                            &proto.name,
-                            &pp.name,
-                            pp.visibility,
-                        )),
-                    });
-                    Value::Null // placeholder until eval_pending_inits runs
-                }
+            let (default, init) = match &pp.default {
+                PropDefaultProto::Const(v) => (v.clone(), None),
+                PropDefaultProto::None => (Value::Null, None),
+                // Placeholder until update_class_constants evaluates it.
+                PropDefaultProto::Init(thunk) => (Value::Null, Some(thunk.clone())),
             };
             declare(
                 &mut props,
                 PropEntry {
                     name: pp.name.clone(),
                     default,
+                    init,
                     visibility: pp.visibility,
                     set_visibility: pp.set_visibility,
                     declaring_class: id,
                     prototype: id,
+                    ty: pp.type_hint.clone().map(Rc::new),
                 },
             );
         }
@@ -600,38 +627,42 @@ impl Vm {
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for (k, sp) in self.classes[tid as usize].static_props.clone() {
-                // Each using class gets its own cell, seeded from the trait's.
+                // Each using class gets its own cell, seeded from the trait's
+                // (an unevaluated initializer is re-run in the using class).
                 let v = sp.cell.borrow().clone();
                 let prototype = static_proto(&static_props, &k);
                 static_props.insert(
                     k,
                     StaticProp {
                         cell: Rc::new(RefCell::new(v)),
+                        init: sp.init.clone(),
                         visibility: sp.visibility,
                         declaring_class: id,
                         prototype,
+                        ty: sp.ty.clone(),
                     },
                 );
             }
         }
         for sp in &proto.static_props {
             let cell = Rc::new(RefCell::new(Value::Null));
-            match &sp.init {
-                ConstInitProto::Const(v) => *cell.borrow_mut() = v.clone(),
-                ConstInitProto::Thunk(thunk) => self.pending_inits.push(PendingInit {
-                    class_id: id,
-                    thunk: thunk.clone(),
-                    target: PendingTarget::Static(cell.clone()),
-                }),
-            }
+            let init = match &sp.init {
+                ConstInitProto::Const(v) => {
+                    *cell.borrow_mut() = v.clone();
+                    None
+                }
+                ConstInitProto::Thunk(thunk) => Some(thunk.clone()),
+            };
             let prototype = static_proto(&static_props, sp.name.as_bytes());
             static_props.insert(
                 sp.name.as_bytes().to_vec(),
                 StaticProp {
                     cell,
+                    init,
                     visibility: sp.visibility,
                     declaring_class: id,
                     prototype,
+                    ty: sp.type_hint.clone().map(Rc::new),
                 },
             );
         }
@@ -662,16 +693,10 @@ impl Vm {
             }
         }
         for c in &proto.constants {
-            let v = match &c.value {
-                ConstInitProto::Const(v) => v.clone(),
-                ConstInitProto::Thunk(thunk) => {
-                    self.pending_inits.push(PendingInit {
-                        class_id: id,
-                        thunk: thunk.clone(),
-                        target: PendingTarget::Const(c.name.as_bytes().to_vec()),
-                    });
-                    Value::Null // placeholder until eval_pending_inits runs
-                }
+            let (v, init) = match &c.value {
+                ConstInitProto::Const(v) => (v.clone(), None),
+                // Placeholder until first access evaluates it.
+                ConstInitProto::Thunk(thunk) => (Value::Null, Some(ConstInit::Expr(thunk.clone()))),
             };
             constants.insert(
                 c.name.as_bytes().to_vec(),
@@ -679,6 +704,9 @@ impl Vm {
                     value: v,
                     visibility: c.visibility,
                     declaring_class: id,
+                    init,
+                    visited: false,
+                    ty: c.type_hint.clone().map(Rc::new),
                 },
             );
         }
@@ -725,19 +753,31 @@ impl Vm {
             static_props,
             enum_cases: Vec::new(),
             enum_backing: proto.enum_backing,
+            updated: false,
         });
 
         // Enum cases: materialize one singleton object per case and expose it as
         // a public class constant, so `E::Case` resolves through `FetchClassConst`.
         if proto.kind == ClassKind::Enum {
             for case in &proto.enum_cases {
-                let obj = self.new_enum_case(id, &case.name, case.value.clone());
+                let (value, init) = match &case.value {
+                    None => (None, None),
+                    Some(ConstInitProto::Const(v)) => (Some(v.clone()), None),
+                    // The backing value is filled in on first access.
+                    Some(ConstInitProto::Thunk(t)) => {
+                        (Some(Value::Null), Some(ConstInit::EnumCase(t.clone())))
+                    }
+                };
+                let obj = self.new_enum_case(id, &case.name, value);
                 self.classes[id as usize].constants.insert(
                     case.name.as_bytes().to_vec(),
                     ClassConst {
                         value: Value::Object(obj.clone()),
                         visibility: Visibility::Public,
                         declaring_class: id,
+                        init,
+                        visited: false,
+                        ty: None,
                     },
                 );
                 self.classes[id as usize].enum_cases.push(obj);
@@ -839,13 +879,21 @@ impl Vm {
         if self.resolve_class_by_name(&fqcn).is_ok() {
             return Ok(true);
         }
-        for loader in self.autoloaders.clone() {
-            self.call_callable_value(&loader, vec![crate::Value::str(fqcn.clone())])?;
-            if self.resolve_class_by_name(&fqcn).is_ok() {
-                return Ok(true);
-            }
+        let key = lc(&fqcn);
+        if !self.in_autoload.insert(key.clone()) {
+            return Ok(false); // already being autoloaded further up the stack
         }
-        Ok(false)
+        let r = (|| {
+            for loader in self.autoloaders.clone() {
+                self.call_callable_value(&loader, vec![crate::Value::str(fqcn.clone())])?;
+                if self.resolve_class_by_name(&fqcn).is_ok() {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })();
+        self.in_autoload.remove(&key);
+        r
     }
 
     pub(crate) fn resolve_class_by_name(&self, name: &[u8]) -> Result<ClassId, Thrown> {
@@ -923,10 +971,16 @@ impl Vm {
     }
 
     pub(crate) fn static_prop_cell(
-        &self,
+        &mut self,
         class_id: ClassId,
         name: &[u8],
     ) -> Result<Rc<RefCell<Value>>, Thrown> {
+        if self.classes[class_id as usize]
+            .static_props
+            .contains_key(name)
+        {
+            self.update_class_constants(class_id)?;
+        }
         self.classes[class_id as usize]
             .static_props
             .get(name)
@@ -1003,10 +1057,15 @@ impl Vm {
         let callee = method.proto.clone();
         let mut frame = Frame::new(callee.clone(), dst);
         frame.argc = args.len();
-        crate::bind_params(&callee, &args, &mut frame.regs)?;
+        self.bind_frame(&callee, &args, &mut frame)?;
         self.bind_superglobals(&mut frame);
         let strict = self.caller_strict();
-        self.check_arg_types(&callee, &mut frame, strict, Some(method.defining_class))?;
+        self.check_arg_types(
+            &callee,
+            &mut frame,
+            Some(strict),
+            Some(method.defining_class),
+        )?;
         if let (Some(this_cv), Some(obj)) = (callee.this_cv, this) {
             frame.regs[this_cv as usize] = Value::Object(obj);
         }
@@ -1024,47 +1083,323 @@ impl Vm {
         Ok(())
     }
 
-    /// Evaluate deferred initializer thunks (class consts / static props /
-    /// property defaults with non-constant expressions), each in its class's
-    /// scope, after all classes are linked.
-    fn eval_pending_inits(&mut self) -> Result<(), Thrown> {
-        let pending = std::mem::take(&mut self.pending_inits);
-        for p in pending {
-            let v = self.run_proto_sync(
-                p.thunk.clone(),
-                None,
-                Some(p.class_id),
-                Some(p.class_id),
-                Vec::new(),
-            )?;
-            match p.target {
-                PendingTarget::Static(cell) => *cell.borrow_mut() = v,
-                PendingTarget::Const(name) => {
-                    if let Some(c) = self.classes[p.class_id as usize].constants.get_mut(&name) {
-                        c.value = v;
-                    }
-                }
-                PendingTarget::Prop(name) => {
-                    if let Some(pe) = self.classes[p.class_id as usize].props.get_mut(&name) {
-                        pe.default = v;
+    /// Run a deferred-initializer thunk in `class_id`'s scope.
+    fn run_init_thunk(
+        &mut self,
+        thunk: &Rc<FunctionProto>,
+        class_id: ClassId,
+    ) -> Result<Value, Thrown> {
+        self.run_proto_sync(
+            thunk.clone(),
+            None,
+            Some(class_id),
+            Some(class_id),
+            Vec::new(),
+            None,
+        )
+    }
+
+    /// php's `update_property`: a property initializer is checked against the
+    /// declared type in strict mode (only int -> float widening).
+    fn verify_prop_init_type(
+        &self,
+        v: Value,
+        ty: &TypeHint,
+        decl: ClassId,
+        name: &[u8],
+    ) -> Result<Value, Thrown> {
+        match self.check_one(&v, ty, true, Some(decl)) {
+            Ok(None) => Ok(v),
+            Ok(Some(c)) => Ok(c),
+            Err(()) => Err(Thrown::type_error(format!(
+                "Cannot assign {} to property {}::${} of type {}",
+                self.zval_value_name(&v),
+                String::from_utf8_lossy(self.classes[decl as usize].name.as_bytes()),
+                String::from_utf8_lossy(name),
+                crate::type_string(ty),
+            ))),
+        }
+    }
+
+    /// php's `zend_verify_class_constant_type` (strict; int -> float widens).
+    fn verify_class_const_type(
+        &self,
+        v: Value,
+        ty: &TypeHint,
+        decl: ClassId,
+        name: &[u8],
+    ) -> Result<Value, Thrown> {
+        match self.check_one(&v, ty, true, Some(decl)) {
+            Ok(None) => Ok(v),
+            Ok(Some(c)) => Ok(c),
+            Err(()) => {
+                // zend_zval_type_name: like the value name, but bools are "bool".
+                let tn = match &v {
+                    Value::Bool(_) => "bool".to_string(),
+                    other => self.zval_value_name(other),
+                };
+                Err(Thrown::type_error(format!(
+                    "Cannot assign {} to class constant {}::{} of type {}",
+                    tn,
+                    String::from_utf8_lossy(self.classes[decl as usize].name.as_bytes()),
+                    String::from_utf8_lossy(name),
+                    crate::type_string(ty),
+                )))
+            }
+        }
+    }
+
+    /// php's `zend_zval_value_name`.
+    pub(crate) fn zval_value_name(&self, v: &Value) -> String {
+        match v {
+            Value::Bool(true) => "true".into(),
+            Value::Bool(false) => "false".into(),
+            other => self.value_debug_type(other),
+        }
+    }
+
+    /// Read class constant `name` of `cls`, evaluating its initializer first if
+    /// it is still pending (php's `zend_update_class_constant`). `display` is
+    /// the class as written at the access site (`self`, `parent`, a name), used
+    /// in the cycle error; `in_const_expr` is true when the access itself
+    /// comes from a constant expression (only those mark the constant as
+    /// visited, exactly like php's `zend_get_class_constant_ex`).
+    pub(crate) fn class_const_value(
+        &mut self,
+        cls: ClassId,
+        name: &[u8],
+        display: &[u8],
+        in_const_expr: bool,
+    ) -> Result<Option<Value>, Thrown> {
+        let Some(c) = self.classes[cls as usize].constants.get(name) else {
+            return Ok(None);
+        };
+        let Some(init) = c.init.clone() else {
+            return Ok(Some(c.value.clone()));
+        };
+        let decl = c.declaring_class;
+        let c_ty = c.ty.clone();
+        // An inherited constant is evaluated (once) in its declaring class.
+        let owner = if decl != cls && self.classes[decl as usize].constants.contains_key(name) {
+            decl
+        } else {
+            cls
+        };
+        if owner != cls && self.classes[owner as usize].constants[name].init.is_none() {
+            let v = self.classes[owner as usize].constants[name].value.clone();
+            let e = self.classes[cls as usize].constants.get_mut(name).unwrap();
+            e.value = v.clone();
+            e.init = None;
+            return Ok(Some(v));
+        }
+        if in_const_expr {
+            if self.classes[owner as usize].constants[name].visited {
+                return Err(Thrown::error(
+                    "Error",
+                    format!(
+                        "Cannot declare self-referencing constant {}::{}",
+                        String::from_utf8_lossy(display),
+                        String::from_utf8_lossy(name)
+                    ),
+                ));
+            }
+            self.classes[owner as usize]
+                .constants
+                .get_mut(name)
+                .unwrap()
+                .visited = true;
+        }
+        let r = match &init {
+            ConstInit::Expr(t) | ConstInit::EnumCase(t) => self.run_init_thunk(t, decl),
+        };
+        if in_const_expr {
+            if let Some(e) = self.classes[owner as usize].constants.get_mut(name) {
+                e.visited = false;
+            }
+        }
+        let mut v = r?;
+        if let (ConstInit::Expr(_), Some(ty)) = (&init, &c_ty) {
+            v = self.verify_class_const_type(v, ty, decl, name)?;
+        }
+        // Evaluation may have completed it re-entrantly; finish it only once.
+        let e = self.classes[owner as usize]
+            .constants
+            .get_mut(name)
+            .unwrap();
+        if e.init.is_some() {
+            e.init = None;
+            match init {
+                ConstInit::Expr(_) => e.value = v,
+                ConstInit::EnumCase(_) => {
+                    if let Value::Object(h) = &e.value {
+                        h.borrow_mut().properties.insert(PhpStr::from("value"), v);
                     }
                 }
             }
         }
+        let value = e.value.clone();
+        if owner != cls {
+            let e = self.classes[cls as usize].constants.get_mut(name).unwrap();
+            e.value = value.clone();
+            e.init = None;
+        }
+        Ok(Some(value))
+    }
+
+    /// php's `zend_update_class_constants`: on first use of a class (object
+    /// creation, static-property access, enum case listing, reflection),
+    /// evaluate every pending initializer — parent first, then the class's
+    /// constants, instance-property defaults and static properties.
+    pub(crate) fn update_class_constants(&mut self, cls: ClassId) -> Result<(), Thrown> {
+        if self.classes[cls as usize].updated {
+            return Ok(());
+        }
+        if let Some(p) = self.classes[cls as usize].parent {
+            self.update_class_constants(p)?;
+        }
+        let pending_consts: Vec<Vec<u8>> = self.classes[cls as usize]
+            .constants
+            .iter()
+            .filter(|(_, c)| c.init.is_some())
+            .map(|(k, _)| k.clone())
+            .collect();
+        for name in pending_consts {
+            let display = self.classes[cls as usize].name.as_bytes().to_vec();
+            self.class_const_value(cls, &name, &display, false)?;
+        }
+        let pending_props: Vec<PhpStr> = self.classes[cls as usize]
+            .props
+            .iter()
+            .filter(|(_, p)| p.init.is_some())
+            .map(|(k, _)| k.clone())
+            .collect();
+        for name in pending_props {
+            let pe = &self.classes[cls as usize].props[&name];
+            let decl = pe.declaring_class;
+            let thunk = pe.init.clone();
+            // An inherited default was already evaluated by the parent.
+            let inherited = if decl != cls {
+                self.classes[decl as usize]
+                    .props
+                    .get(&name)
+                    .filter(|dp| dp.init.is_none())
+                    .map(|dp| dp.default.clone())
+            } else {
+                None
+            };
+            let ty = pe.ty.clone();
+            let shown = pe.name.clone();
+            let v = match (inherited, thunk) {
+                (Some(v), _) => v,
+                (None, Some(t)) => {
+                    let v = self.run_init_thunk(&t, decl)?;
+                    match ty {
+                        Some(ty) => self.verify_prop_init_type(v, &ty, decl, shown.as_bytes())?,
+                        None => v,
+                    }
+                }
+                (None, None) => continue,
+            };
+            if let Some(pe) = self.classes[cls as usize].props.get_mut(&name) {
+                pe.default = v;
+                pe.init = None;
+            }
+        }
+        let pending_statics: Vec<Vec<u8>> = self.classes[cls as usize]
+            .static_props
+            .iter()
+            .filter(|(_, p)| p.init.is_some())
+            .map(|(k, _)| k.clone())
+            .collect();
+        for name in pending_statics {
+            let sp = &self.classes[cls as usize].static_props[&name];
+            let (decl, cell, thunk) = (sp.declaring_class, sp.cell.clone(), sp.init.clone());
+            let ty = sp.ty.clone();
+            // An inherited slot aliases the parent's cell (already updated).
+            if decl == cls {
+                if let Some(t) = thunk {
+                    let mut v = self.run_init_thunk(&t, cls)?;
+                    if let Some(ty) = ty {
+                        v = self.verify_prop_init_type(v, &ty, cls, &name)?;
+                    }
+                    *cell.borrow_mut() = v;
+                }
+            }
+            if let Some(sp) = self.classes[cls as usize].static_props.get_mut(&name) {
+                sp.init = None;
+            }
+        }
+        if let Some(backing) = self.classes[cls as usize].enum_backing {
+            self.build_backed_enum_table(cls, backing)?;
+        }
+        self.classes[cls as usize].updated = true;
         Ok(())
     }
-}
 
-/// A deferred initializer: a thunk to evaluate in `class_id`'s scope and where
-/// to store the result.
-pub(crate) struct PendingInit {
-    pub class_id: ClassId,
-    pub thunk: Rc<FunctionProto>,
-    pub target: PendingTarget,
-}
-
-pub(crate) enum PendingTarget {
-    Static(Rc<RefCell<Value>>),
-    Const(Vec<u8>),
-    Prop(PhpStr),
+    /// php's `zend_enum_build_backed_enum_table`: every case value must have
+    /// the enum's backing type, and no two cases may share a value. On
+    /// failure the class stays un-updated, so the next use raises again.
+    fn build_backed_enum_table(
+        &self,
+        cls: ClassId,
+        backing: rhp_bytecode::EnumBacking,
+    ) -> Result<(), Thrown> {
+        use rhp_bytecode::EnumBacking;
+        let entry = &self.classes[cls as usize];
+        let mut seen: Vec<(Value, PhpStr)> = Vec::with_capacity(entry.enum_cases.len());
+        for case in &entry.enum_cases {
+            let o = case.borrow();
+            let name = match o.properties.get(&PhpStr::from("name")) {
+                Some(Value::Str(s)) => s.clone(),
+                _ => PhpStr::from(""),
+            };
+            let v = o
+                .properties
+                .get(&PhpStr::from("value"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let ok = matches!(
+                (&v, backing),
+                (Value::Int(_), EnumBacking::Int) | (Value::Str(_), EnumBacking::Str)
+            );
+            if !ok {
+                let tn = match &v {
+                    Value::Bool(_) => "bool",
+                    Value::Int(_) => "int",
+                    Value::Float(_) => "float",
+                    Value::Str(_) => "string",
+                    Value::Array(_) => "array",
+                    Value::Null => "null",
+                    Value::Resource(_) => "resource",
+                    _ => "object",
+                };
+                return Err(Thrown::type_error(format!(
+                    "Enum case type {} does not match enum backing type {}",
+                    tn,
+                    match backing {
+                        EnumBacking::Int => "int",
+                        EnumBacking::Str => "string",
+                    }
+                )));
+            }
+            let dup = seen.iter().find(|(sv, _)| match (sv, &v) {
+                (Value::Int(a), Value::Int(b)) => a == b,
+                (Value::Str(a), Value::Str(b)) => a.as_bytes() == b.as_bytes(),
+                _ => false,
+            });
+            if let Some((_, first)) = dup {
+                return Err(Thrown::error(
+                    "Error",
+                    format!(
+                        "Duplicate value in enum {} for cases {} and {}",
+                        String::from_utf8_lossy(entry.name.as_bytes()),
+                        String::from_utf8_lossy(first.as_bytes()),
+                        String::from_utf8_lossy(name.as_bytes()),
+                    ),
+                ));
+            }
+            seen.push((v, name));
+        }
+        Ok(())
+    }
 }

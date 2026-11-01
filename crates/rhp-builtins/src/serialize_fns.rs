@@ -147,6 +147,12 @@ impl Serializer {
     ) -> Result<(), Thrown> {
         let class_id = h.borrow().class;
         let mut cname = host.class_name(class_id).unwrap_or_default();
+        if cname.eq_ignore_ascii_case(b"Generator") {
+            return Err(Thrown::error(
+                "Exception",
+                "Serialization of 'Generator' is not allowed",
+            ));
+        }
         if host.is_enum_class(class_id) {
             let case = h
                 .borrow()

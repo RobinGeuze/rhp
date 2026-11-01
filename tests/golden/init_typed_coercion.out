@@ -1,0 +1,39 @@
+A: TypeError: Cannot assign string to property A::$x of type int
+A::$y: TypeError: Cannot assign string to property A::$x of type int
+P: TypeError: Cannot assign UE to property P::$q of type int
+Q: TypeError: Cannot assign null to property Q::$w of type int
+R::$b: TypeError: Cannot assign int to property R::$b of type bool
+S: TypeError: Cannot assign true to property S::$t of type int
+D::X: TypeError: Cannot assign string to class constant D::X of type int
+bool(true)
+D::O: TypeError: Cannot assign UE to class constant D::O of type int
+array(7) {
+  ["f"]=>
+  float(5)
+  ["g"]=>
+  float(1)
+  ["u"]=>
+  int(3)
+  ["fs"]=>
+  float(4)
+  ["n"]=>
+  float(5)
+  ["z"]=>
+  NULL
+  ["m"]=>
+  int(5)
+}
+float(5)
+float(0)
+float(5)
+float(2)
+NULL
+int(5)
+enum(UE::A)
+array (
+  0 => 5.0,
+  1 => 2.0,
+  2 => 1.0,
+)
+[0,5,1]
+Cannot assign string to property A::$x of type int

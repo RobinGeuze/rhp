@@ -1,0 +1,27 @@
+[1,1]
+[1,2,[]]
+[1,2,{"0":3,"extra":4,"more":5}]
+["p","Q"]
+["p","from z"]
+[16,"k",3]
+["A","B",null]
+[[1],{"x":1}]
+[5,{"z":6}]
+[1,[2,3]]
+["1 2 9","0 2 7"]
+"XY"
+[16,"B",null]
+[1,{"k":2}]
+[5,{"b":6}]
+9
+[1,"callable"]
+ArgumentCountError: req(): Argument #1 ($a) not passed
+Error: Named parameter $a overwrites previous argument
+Error: Unknown named parameter $c
+Error: Named parameter $a overwrites previous argument
+ArgumentCountError: V::m(): Argument #1 ($x) not passed
+Error: Unknown named parameter $r
+Error: Cannot use positional argument after named argument
+[1,"ArrayObject","C","counted"]
+[1,"stdClass","c","D"]
+[[3,1,"x",[1]],[2,1,"y",null]]

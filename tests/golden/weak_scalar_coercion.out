@@ -1,0 +1,266 @@
+i ' 12': int(12)
+i '12 ': int(12)
+i '12abc': i(): Argument #1 ($x) must be of type int, string given
+i '1e2': int(100)
+i '0x1A': i(): Argument #1 ($x) must be of type int, string given
+i '': i(): Argument #1 ($x) must be of type int, string given
+i ' ': i(): Argument #1 ($x) must be of type int, string given
+i 'abc': i(): Argument #1 ($x) must be of type int, string given
+i 1.0: int(1)
+i 1.0E+30: i(): Argument #1 ($x) must be of type int, float given
+i INF: i(): Argument #1 ($x) must be of type int, float given
+i -0.0: int(0)
+i true: int(1)
+i false: int(0)
+i 7: int(7)
+i '9223372036854775808': i(): Argument #1 ($x) must be of type int, string given
+i 9.223372036854776E+18: i(): Argument #1 ($x) must be of type int, float given
+i array (
+  0 => 1,
+): i(): Argument #1 ($x) must be of type int, array given
+f ' 12': float(12)
+f '12 ': float(12)
+f '12abc': f(): Argument #1 ($x) must be of type float, string given
+f '1e2': float(100)
+f '0x1A': f(): Argument #1 ($x) must be of type float, string given
+f '': f(): Argument #1 ($x) must be of type float, string given
+f ' ': f(): Argument #1 ($x) must be of type float, string given
+f 'abc': f(): Argument #1 ($x) must be of type float, string given
+f 1.0: float(1)
+f 1.0E+30: float(1.0E+30)
+f INF: float(INF)
+f -0.0: float(-0)
+f true: float(1)
+f false: float(0)
+f 7: float(7)
+f '9223372036854775808': float(9.223372036854776E+18)
+f 9.223372036854776E+18: float(9.223372036854776E+18)
+f array (
+  0 => 1,
+): f(): Argument #1 ($x) must be of type float, array given
+s ' 12': string(3) " 12"
+s '12 ': string(3) "12 "
+s '12abc': string(5) "12abc"
+s '1e2': string(3) "1e2"
+s '0x1A': string(4) "0x1A"
+s '': string(0) ""
+s ' ': string(1) " "
+s 'abc': string(3) "abc"
+s 1.0: string(1) "1"
+s 1.0E+30: string(7) "1.0E+30"
+s INF: string(3) "INF"
+s -0.0: string(2) "-0"
+s true: string(1) "1"
+s false: string(0) ""
+s 7: string(1) "7"
+s '9223372036854775808': string(19) "9223372036854775808"
+s 9.223372036854776E+18: string(19) "9.2233720368548E+18"
+s array (
+  0 => 1,
+): s(): Argument #1 ($x) must be of type string, array given
+b ' 12': bool(true)
+b '12 ': bool(true)
+b '12abc': bool(true)
+b '1e2': bool(true)
+b '0x1A': bool(true)
+b '': bool(false)
+b ' ': bool(true)
+b 'abc': bool(true)
+b 1.0: bool(true)
+b 1.0E+30: bool(true)
+b INF: bool(true)
+b -0.0: bool(false)
+b true: bool(true)
+b false: bool(false)
+b 7: bool(true)
+b '9223372036854775808': bool(true)
+b 9.223372036854776E+18: bool(true)
+b array (
+  0 => 1,
+): b(): Argument #1 ($x) must be of type bool, array given
+if_ ' 12': int(12)
+if_ '12 ': int(12)
+if_ '12abc': if_(): Argument #1 ($x) must be of type int|float, string given
+if_ '1e2': float(100)
+if_ '0x1A': if_(): Argument #1 ($x) must be of type int|float, string given
+if_ '': if_(): Argument #1 ($x) must be of type int|float, string given
+if_ ' ': if_(): Argument #1 ($x) must be of type int|float, string given
+if_ 'abc': if_(): Argument #1 ($x) must be of type int|float, string given
+if_ 1.0: float(1)
+if_ 1.0E+30: float(1.0E+30)
+if_ INF: float(INF)
+if_ -0.0: float(-0)
+if_ true: int(1)
+if_ false: int(0)
+if_ 7: int(7)
+if_ '9223372036854775808': float(9.223372036854776E+18)
+if_ 9.223372036854776E+18: float(9.223372036854776E+18)
+if_ array (
+  0 => 1,
+): if_(): Argument #1 ($x) must be of type int|float, array given
+is ' 12': string(3) " 12"
+is '12 ': string(3) "12 "
+is '12abc': string(5) "12abc"
+is '1e2': string(3) "1e2"
+is '0x1A': string(4) "0x1A"
+is '': string(0) ""
+is ' ': string(1) " "
+is 'abc': string(3) "abc"
+is 1.0: int(1)
+is 1.0E+30: string(7) "1.0E+30"
+is INF: string(3) "INF"
+is -0.0: int(0)
+is true: int(1)
+is false: int(0)
+is 7: int(7)
+is '9223372036854775808': string(19) "9223372036854775808"
+is 9.223372036854776E+18: string(19) "9.2233720368548E+18"
+is array (
+  0 => 1,
+): is(): Argument #1 ($x) must be of type string|int, array given
+fs ' 12': string(3) " 12"
+fs '12 ': string(3) "12 "
+fs '12abc': string(5) "12abc"
+fs '1e2': string(3) "1e2"
+fs '0x1A': string(4) "0x1A"
+fs '': string(0) ""
+fs ' ': string(1) " "
+fs 'abc': string(3) "abc"
+fs 1.0: float(1)
+fs 1.0E+30: float(1.0E+30)
+fs INF: float(INF)
+fs -0.0: float(-0)
+fs true: float(1)
+fs false: float(0)
+fs 7: float(7)
+fs '9223372036854775808': string(19) "9223372036854775808"
+fs 9.223372036854776E+18: float(9.223372036854776E+18)
+fs array (
+  0 => 1,
+): fs(): Argument #1 ($x) must be of type string|float, array given
+sb ' 12': string(3) " 12"
+sb '12 ': string(3) "12 "
+sb '12abc': string(5) "12abc"
+sb '1e2': string(3) "1e2"
+sb '0x1A': string(4) "0x1A"
+sb '': string(0) ""
+sb ' ': string(1) " "
+sb 'abc': string(3) "abc"
+sb 1.0: string(1) "1"
+sb 1.0E+30: string(7) "1.0E+30"
+sb INF: string(3) "INF"
+sb -0.0: string(2) "-0"
+sb true: bool(true)
+sb false: bool(false)
+sb 7: string(1) "7"
+sb '9223372036854775808': string(19) "9223372036854775808"
+sb 9.223372036854776E+18: string(19) "9.2233720368548E+18"
+sb array (
+  0 => 1,
+): sb(): Argument #1 ($x) must be of type string|bool, array given
+ib ' 12': int(12)
+ib '12 ': int(12)
+ib '12abc': bool(true)
+ib '1e2': int(100)
+ib '0x1A': bool(true)
+ib '': bool(false)
+ib ' ': bool(true)
+ib 'abc': bool(true)
+ib 1.0: int(1)
+ib 1.0E+30: bool(true)
+ib INF: bool(true)
+ib -0.0: int(0)
+ib true: bool(true)
+ib false: bool(false)
+ib 7: int(7)
+ib '9223372036854775808': bool(true)
+ib 9.223372036854776E+18: bool(true)
+ib array (
+  0 => 1,
+): ib(): Argument #1 ($x) must be of type int|bool, array given
+nf ' 12': float(12)
+nf '12 ': float(12)
+nf '12abc': nf(): Argument #1 ($x) must be of type ?float, string given
+nf '1e2': float(100)
+nf '0x1A': nf(): Argument #1 ($x) must be of type ?float, string given
+nf '': nf(): Argument #1 ($x) must be of type ?float, string given
+nf ' ': nf(): Argument #1 ($x) must be of type ?float, string given
+nf 'abc': nf(): Argument #1 ($x) must be of type ?float, string given
+nf 1.0: float(1)
+nf 1.0E+30: float(1.0E+30)
+nf INF: float(INF)
+nf -0.0: float(-0)
+nf true: float(1)
+nf false: float(0)
+nf 7: float(7)
+nf '9223372036854775808': float(9.223372036854776E+18)
+nf 9.223372036854776E+18: float(9.223372036854776E+18)
+nf array (
+  0 => 1,
+): nf(): Argument #1 ($x) must be of type ?float, array given
+fa ' 12': fa(): Argument #1 ($x) must be of type array|false, string given
+fa '12 ': fa(): Argument #1 ($x) must be of type array|false, string given
+fa '12abc': fa(): Argument #1 ($x) must be of type array|false, string given
+fa '1e2': fa(): Argument #1 ($x) must be of type array|false, string given
+fa '0x1A': fa(): Argument #1 ($x) must be of type array|false, string given
+fa '': fa(): Argument #1 ($x) must be of type array|false, string given
+fa ' ': fa(): Argument #1 ($x) must be of type array|false, string given
+fa 'abc': fa(): Argument #1 ($x) must be of type array|false, string given
+fa 1.0: fa(): Argument #1 ($x) must be of type array|false, float given
+fa 1.0E+30: fa(): Argument #1 ($x) must be of type array|false, float given
+fa INF: fa(): Argument #1 ($x) must be of type array|false, float given
+fa -0.0: fa(): Argument #1 ($x) must be of type array|false, float given
+fa true: fa(): Argument #1 ($x) must be of type array|false, true given
+fa false: bool(false)
+fa 7: fa(): Argument #1 ($x) must be of type array|false, int given
+fa '9223372036854775808': fa(): Argument #1 ($x) must be of type array|false, string given
+fa 9.223372036854776E+18: fa(): Argument #1 ($x) must be of type array|false, float given
+fa array (
+  0 => 1,
+): array(1) {
+  [0]=>
+  int(1)
+}
+ia ' 12': int(12)
+ia '12 ': int(12)
+ia '12abc': ia(): Argument #1 ($x) must be of type array|int, string given
+ia '1e2': int(100)
+ia '0x1A': ia(): Argument #1 ($x) must be of type array|int, string given
+ia '': ia(): Argument #1 ($x) must be of type array|int, string given
+ia ' ': ia(): Argument #1 ($x) must be of type array|int, string given
+ia 'abc': ia(): Argument #1 ($x) must be of type array|int, string given
+ia 1.0: int(1)
+ia 1.0E+30: ia(): Argument #1 ($x) must be of type array|int, float given
+ia INF: ia(): Argument #1 ($x) must be of type array|int, float given
+ia -0.0: int(0)
+ia true: int(1)
+ia false: int(0)
+ia 7: int(7)
+ia '9223372036854775808': ia(): Argument #1 ($x) must be of type array|int, string given
+ia 9.223372036854776E+18: ia(): Argument #1 ($x) must be of type array|int, float given
+ia array (
+  0 => 1,
+): array(1) {
+  [0]=>
+  int(1)
+}
+tf ' 12': int(12)
+tf '12 ': int(12)
+tf '12abc': tf(): Argument #1 ($x) must be of type int|true, string given
+tf '1e2': int(100)
+tf '0x1A': tf(): Argument #1 ($x) must be of type int|true, string given
+tf '': tf(): Argument #1 ($x) must be of type int|true, string given
+tf ' ': tf(): Argument #1 ($x) must be of type int|true, string given
+tf 'abc': tf(): Argument #1 ($x) must be of type int|true, string given
+tf 1.0: int(1)
+tf 1.0E+30: tf(): Argument #1 ($x) must be of type int|true, float given
+tf INF: tf(): Argument #1 ($x) must be of type int|true, float given
+tf -0.0: int(0)
+tf true: bool(true)
+tf false: int(0)
+tf 7: int(7)
+tf '9223372036854775808': tf(): Argument #1 ($x) must be of type int|true, string given
+tf 9.223372036854776E+18: tf(): Argument #1 ($x) must be of type int|true, float given
+tf array (
+  0 => 1,
+): tf(): Argument #1 ($x) must be of type int|true, array given

@@ -1,0 +1,48 @@
+3 choice minOccurs="0" maxOccurs="unbounded" <r><zz/></r>: Element 'zz': This element is not expected.
+3 choice minOccurs="0" maxOccurs="unbounded" <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+3 choice <r><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e0, e1, e2 ).
+3 choice <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+3 sequence <r><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e0, e1, e2 ).
+3 sequence <r><e1/><zz/></r>: Element 'zz': This element is not expected. Expected is ( e2 ).
+3 choice maxOccurs="unbounded" <r><zz/></r>: Element 'zz': This element is not expected.
+3 choice maxOccurs="unbounded" <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+5 choice minOccurs="0" maxOccurs="unbounded" <r><zz/></r>: Element 'zz': This element is not expected.
+5 choice minOccurs="0" maxOccurs="unbounded" <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+5 choice <r><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e0, e1, e2, e3, e4 ).
+5 choice <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+5 sequence <r><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e0, e1, e2, e3, e4 ).
+5 sequence <r><e1/><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e2, e3, e4 ).
+5 choice maxOccurs="unbounded" <r><zz/></r>: Element 'zz': This element is not expected.
+5 choice maxOccurs="unbounded" <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+9 choice minOccurs="0" maxOccurs="unbounded" <r><zz/></r>: Element 'zz': This element is not expected.
+9 choice minOccurs="0" maxOccurs="unbounded" <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+9 choice <r><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e0, e1, e2, e3, e4, e5, e6, e7, e8 ).
+9 choice <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+9 sequence <r><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e0, e1, e2, e3, e4, e5, e6, e7, e8 ).
+9 sequence <r><e1/><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e2, e3, e4, e5, e6, e7, e8 ).
+9 choice maxOccurs="unbounded" <r><zz/></r>: Element 'zz': This element is not expected.
+9 choice maxOccurs="unbounded" <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+10 choice minOccurs="0" maxOccurs="unbounded" <r><zz/></r>: Element 'zz': This element is not expected.
+10 choice minOccurs="0" maxOccurs="unbounded" <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+10 choice <r><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e0, e1, e2, e3, e4, e5, e6, e7, e8, e9 ).
+10 choice <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+10 sequence <r><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e0, e1, e2, e3, e4, e5, e6, e7, e8, e9 ).
+10 sequence <r><e1/><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e2, e3, e4, e5, e6, e7, e8, e9 ).
+10 choice maxOccurs="unbounded" <r><zz/></r>: Element 'zz': This element is not expected.
+10 choice maxOccurs="unbounded" <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+11 choice minOccurs="0" maxOccurs="unbounded" <r><zz/></r>: Element 'zz': This element is not expected.
+11 choice minOccurs="0" maxOccurs="unbounded" <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+11 choice <r><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e0, e1, e2, e3, e4, e5, e6, e7, e8, e9 ).
+11 choice <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+11 sequence <r><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e0, e1, e2, e3, e4, e5, e6, e7, e8, e9 ).
+11 sequence <r><e1/><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e2, e3, e4, e5, e6, e7, e8, e9, e10 ).
+11 choice maxOccurs="unbounded" <r><zz/></r>: Element 'zz': This element is not expected.
+11 choice maxOccurs="unbounded" <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+15 choice minOccurs="0" maxOccurs="unbounded" <r><zz/></r>: Element 'zz': This element is not expected.
+15 choice minOccurs="0" maxOccurs="unbounded" <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+15 choice <r><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e0, e1, e2, e3, e4, e5, e6, e7, e8, e9 ).
+15 choice <r><e1/><zz/></r>: Element 'zz': This element is not expected.
+15 sequence <r><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e0, e1, e2, e3, e4, e5, e6, e7, e8, e9 ).
+15 sequence <r><e1/><zz/></r>: Element 'zz': This element is not expected. Expected is one of ( e2, e3, e4, e5, e6, e7, e8, e9, e10, e11 ).
+15 choice maxOccurs="unbounded" <r><zz/></r>: Element 'zz': This element is not expected.
+15 choice maxOccurs="unbounded" <r><e1/><zz/></r>: Element 'zz': This element is not expected.

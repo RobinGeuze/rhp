@@ -1,0 +1,37 @@
+string(307) "<?xml version="1.0" encoding="UTF-8"?>
+<root a="x&lt;&quot;&amp;'&#10;&#9;"><child>t&lt;&gt;&amp;&quot;'</child><empty/><emptystr></emptystr><mixed>before<in/>after</mixed><cd><![CDATA[x]]>y]]></cd><!-- c --><nested><deep k="v"/></nested><p:nsel q:at="v" xmlns:q="urn:q" xmlns:p="urn:p"/><?pi data?></root>
+"
+string(333) "<?xml version="1.0" encoding="UTF-8"?>
+<root a="x&lt;&quot;&amp;'&#10;&#9;">
+ <child>t&lt;&gt;&amp;&quot;'</child>
+ <empty/>
+ <emptystr></emptystr>
+ <mixed>before  <in/>
+after</mixed>
+ <cd><![CDATA[x]]>y]]></cd>
+ <!-- c -->
+ <nested>
+  <deep k="v"/>
+ </nested>
+ <p:nsel q:at="v" xmlns:q="urn:q" xmlns:p="urn:p"/>
+<?pi data?>
+</root>
+"
+<a>
+	<b>x</b>
+</a>
+bool(false)
+string(0) ""
+bool(true)
+int(0)
+<?xml version="1.0"?>
+<z>q</z>
+string(58) "<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<x"
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<x/>
+<t a="1">
+ <u><![CDATA[c]]></u>
+ <v>x  <w/>
+ </v>
+</t>

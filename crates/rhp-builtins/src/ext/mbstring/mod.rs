@@ -74,6 +74,7 @@ thread_local! {
 
 pub(crate) fn reset_state() {
     INTERNAL.with(|c| *c.borrow_mut() = Enc::Utf8);
+    SUBST.with(|c| *c.borrow_mut() = Value::Int(0x3F));
 }
 
 fn internal_enc() -> Enc {
@@ -95,6 +96,12 @@ fn resolve_enc(name: &[u8]) -> Option<Enc> {
     match lower.as_slice() {
         b"utf-8" | b"utf8" => Some(Enc::Utf8),
         b"ascii" | b"us-ascii" => Some(Enc::Ascii),
+        _ if ASCII_ALIASES
+            .iter()
+            .any(|a| a.as_bytes().eq_ignore_ascii_case(&lower)) =>
+        {
+            Some(Enc::Ascii)
+        }
         b"iso-8859-1" | b"iso8859-1" | b"latin1" | b"8859-1" | b"cp819" | b"l1" => {
             Some(Enc::Latin1)
         }
@@ -1428,12 +1435,326 @@ fn fn_mb_check_encoding(_: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     Ok(Value::Bool(is_valid(enc, &value)))
 }
 
-fn fn_mb_convert_encoding(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+/// `mb_convert_encoding(array|string $string, string $to, array|string|null $from)`.
+fn fn_mb_convert_encoding(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_convert_encoding";
     let to_name = conv::to_string_bytes(&deref(&args[1]));
-    let to = resolve_enc(&to_name).ok_or_else(|| enc_error("mb_convert_encoding", 2, &to_name))?;
-    let from = arg_enc(args, 2, "mb_convert_encoding", 3)?;
-    let cps = decode(from, &bytes_of(&args[0]));
-    Ok(Value::str(encode(to, &cps)))
+    let to = resolve_enc(&to_name).ok_or_else(|| {
+        Thrown::error(
+            "ValueError",
+            format!(
+                "{f}(): Argument #2 ($to_encoding) must be a valid encoding, \"{}\" given",
+                String::from_utf8_lossy(&to_name)
+            ),
+        )
+    })?;
+    let from: Vec<Enc> = match args.get(2).map(deref) {
+        None | Some(Value::Null) => vec![internal_enc()],
+        Some(v) => {
+            let (names, is_array) = match &v {
+                Value::Array(a) => (a.iter().map(|(_, v)| bytes_of(v)).collect(), true),
+                v => (
+                    conv::to_string_bytes(v)
+                        .split(|&c| c == b',')
+                        .map(|p| p.trim_ascii().to_vec())
+                        .collect::<Vec<_>>(),
+                    false,
+                ),
+            };
+            let mut list = Vec::new();
+            for n in &names {
+                if n.eq_ignore_ascii_case(b"auto") {
+                    for e in [Enc::Ascii, Enc::Utf8] {
+                        if !list.contains(&e) {
+                            list.push(e);
+                        }
+                    }
+                    continue;
+                }
+                if n.is_empty() && !is_array && names.len() == 1 {
+                    break;
+                }
+                match resolve_enc(n) {
+                    Some(e) => {
+                        if !list.contains(&e) {
+                            list.push(e)
+                        }
+                    }
+                    None => {
+                        return Err(Thrown::error(
+                            "ValueError",
+                            format!(
+                            "{f}(): Argument #3 ($from_encoding) contains invalid encoding \"{}\"",
+                            String::from_utf8_lossy(n)
+                        ),
+                        ))
+                    }
+                }
+            }
+            if list.is_empty() {
+                return Err(Thrown::error(
+                    "ValueError",
+                    format!(
+                        "{f}(): Argument #3 ($from_encoding) must specify at least one encoding"
+                    ),
+                ));
+            }
+            list
+        }
+    };
+    let conv_one = |s: &[u8]| -> Vec<u8> {
+        let enc = guess_encoding(&[s.to_vec()], &from);
+        encode(to, &decode(enc, s))
+    };
+    match deref(&args[0]) {
+        Value::Array(a) => convert_array_recursive(host, &a, &conv_one, &mut Vec::new()),
+        v => Ok(Value::str(conv_one(&conv::to_string_bytes(&v)))),
+    }
+}
+
+/// `php_mb_convert_encoding_recursive`: keys and string values converted,
+/// scalars copied, nested arrays recursed, objects dropped with a warning.
+fn convert_array_recursive(
+    host: &mut dyn Host,
+    a: &PhpArray,
+    conv_one: &dyn Fn(&[u8]) -> Vec<u8>,
+    seen: &mut Vec<usize>,
+) -> Result<Value, Thrown> {
+    let id = a.data_ptr();
+    if seen.contains(&id) {
+        warn(
+            host,
+            "mb_convert_encoding",
+            "Cannot convert recursively referenced values",
+        )?;
+        return Ok(Value::Array(PhpArray::new()));
+    }
+    seen.push(id);
+    let mut out = PhpArray::new();
+    for (k, v) in a.iter() {
+        let key = match k {
+            rhp_values::ArrayKey::Str(s) => {
+                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(conv_one(s.as_bytes())))
+            }
+            k => k.clone(),
+        };
+        let nv = match deref(v) {
+            Value::Str(s) => Value::str(conv_one(s.as_bytes())),
+            v @ (Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_)) => v,
+            Value::Array(inner) => convert_array_recursive(host, &inner, conv_one, seen)?,
+            _ => {
+                warn(host, "mb_convert_encoding", "Object is not supported")?;
+                continue;
+            }
+        };
+        if out.get(&key).is_none() {
+            out.insert(key, nv);
+        }
+    }
+    seen.pop();
+    Ok(Value::Array(out))
+}
+
+/// `mb_strcut(string $string, int $start, ?int $length = null, ?string $encoding = null)`:
+/// a byte-range cut, moved back onto character boundaries.
+fn fn_mb_strcut(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = bytes_of(&args[0]);
+    let n = s.len() as i64;
+    let mut from = conv::to_int(&deref(&args[1]));
+    let mut len = match args.get(2).map(deref) {
+        None | Some(Value::Null) => n,
+        Some(v) => conv::to_int(&v),
+    };
+    let enc = arg_enc(args, 3, "mb_strcut", 4)?;
+    if from < 0 {
+        from = (n + from).max(0);
+    }
+    if len < 0 {
+        len = ((n - from) + len).max(0);
+    }
+    if from > n || len == 0 {
+        return Ok(Value::str(""));
+    }
+    let from = from as usize;
+    match enc {
+        Enc::Utf8 => {
+            let cont = |i: usize| s.get(i).is_some_and(|&b| (b as i8) < -64);
+            let mut start = from;
+            while start > 0 && cont(start) {
+                start -= 1;
+            }
+            let end = start as u128 + len as u128;
+            if end >= s.len() as u128 {
+                return Ok(Value::str(s[start..].to_vec()));
+            }
+            let mut end = end as usize;
+            while end > start && cont(end) {
+                end -= 1;
+            }
+            Ok(Value::str(s[start..end].to_vec()))
+        }
+        Enc::Ascii | Enc::Latin1 => {
+            let len = (len as usize).min(s.len() - from);
+            Ok(Value::str(s[from..from + len].to_vec()))
+        }
+    }
+}
+
+thread_local! {
+    /// `mb_substitute_character()` setting: a codepoint, or "none"/"long"/"entity".
+    static SUBST: RefCell<Value> = const { RefCell::new(Value::Int(0x3F)) };
+}
+
+/// `mb_substitute_character(string|int|null $substitute_character = null)`.
+fn fn_mb_substitute_character(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_substitute_character";
+    match args.first().map(deref) {
+        None | Some(Value::Null) => Ok(SUBST.with(|s| s.borrow().clone())),
+        Some(Value::Str(s)) if conv::scan_number(s.as_bytes()).is_none() => {
+            let l = s.as_bytes().to_ascii_lowercase();
+            match l.as_slice() {
+                b"none" | b"long" | b"entity" => {
+                    SUBST.with(|c| *c.borrow_mut() = Value::str(l));
+                    Ok(Value::Bool(true))
+                }
+                _ => Err(Thrown::error(
+                    "ValueError",
+                    format!("{f}(): Argument #1 ($substitute_character) must be \"none\", \"long\", \"entity\" or a valid codepoint"),
+                )),
+            }
+        }
+        Some(v) => {
+            let cp = conv::to_int(&v);
+            if !(0..=0x10FFFF).contains(&cp) || (0xD800..=0xDFFF).contains(&cp) {
+                return Err(Thrown::error(
+                    "ValueError",
+                    format!("{f}(): Argument #1 ($substitute_character) is not a valid codepoint"),
+                ));
+            }
+            SUBST.with(|c| *c.borrow_mut() = Value::Int(cp));
+            Ok(Value::Bool(true))
+        }
+    }
+}
+
+/// php 8.5.8's `mb_list_encodings()`.
+const ALL_ENCODINGS: &[&str] = &[
+    "BASE64",
+    "UUENCODE",
+    "HTML-ENTITIES",
+    "Quoted-Printable",
+    "7bit",
+    "8bit",
+    "UCS-4",
+    "UCS-4BE",
+    "UCS-4LE",
+    "UCS-2",
+    "UCS-2BE",
+    "UCS-2LE",
+    "UTF-32",
+    "UTF-32BE",
+    "UTF-32LE",
+    "UTF-16",
+    "UTF-16BE",
+    "UTF-16LE",
+    "UTF-8",
+    "UTF-7",
+    "UTF7-IMAP",
+    "ASCII",
+    "EUC-JP",
+    "SJIS",
+    "eucJP-win",
+    "EUC-JP-2004",
+    "SJIS-Mobile#DOCOMO",
+    "SJIS-Mobile#KDDI",
+    "SJIS-Mobile#SOFTBANK",
+    "SJIS-mac",
+    "SJIS-2004",
+    "UTF-8-Mobile#DOCOMO",
+    "UTF-8-Mobile#KDDI-A",
+    "UTF-8-Mobile#KDDI-B",
+    "UTF-8-Mobile#SOFTBANK",
+    "CP932",
+    "SJIS-win",
+    "CP51932",
+    "JIS",
+    "ISO-2022-JP",
+    "ISO-2022-JP-MS",
+    "GB18030",
+    "GB18030-2022",
+    "Windows-1252",
+    "Windows-1254",
+    "ISO-8859-1",
+    "ISO-8859-2",
+    "ISO-8859-3",
+    "ISO-8859-4",
+    "ISO-8859-5",
+    "ISO-8859-6",
+    "ISO-8859-7",
+    "ISO-8859-8",
+    "ISO-8859-9",
+    "ISO-8859-10",
+    "ISO-8859-13",
+    "ISO-8859-14",
+    "ISO-8859-15",
+    "ISO-8859-16",
+    "EUC-CN",
+    "CP936",
+    "HZ",
+    "EUC-TW",
+    "BIG-5",
+    "CP950",
+    "EUC-KR",
+    "UHC",
+    "ISO-2022-KR",
+    "Windows-1251",
+    "CP866",
+    "KOI8-R",
+    "KOI8-U",
+    "ArmSCII-8",
+    "CP850",
+    "ISO-2022-JP-2004",
+    "ISO-2022-JP-MOBILE#KDDI",
+    "CP50220",
+    "CP50221",
+    "CP50222",
+];
+
+const ASCII_ALIASES: &[&str] = &[
+    "ANSI_X3.4-1968",
+    "iso-ir-6",
+    "ANSI_X3.4-1986",
+    "ISO_646.irv:1991",
+    "US-ASCII",
+    "ISO646-US",
+    "us",
+    "IBM367",
+    "IBM-367",
+    "cp367",
+    "csASCII",
+];
+
+fn fn_mb_list_encodings(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let mut a = PhpArray::new();
+    for e in ALL_ENCODINGS {
+        a.push(Value::str(*e));
+    }
+    Ok(Value::Array(a))
+}
+
+fn fn_mb_encoding_aliases(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = bytes_of(&args[0]);
+    let enc = resolve_enc(&name).ok_or_else(|| enc_error("mb_encoding_aliases", 1, &name))?;
+    let list: &[&str] = match enc {
+        Enc::Utf8 => &["utf8"],
+        Enc::Ascii => ASCII_ALIASES,
+        Enc::Latin1 => &["ISO8859-1", "latin1"],
+    };
+    let mut a = PhpArray::new();
+    for e in list {
+        a.push(Value::str(*e));
+    }
+    Ok(Value::Array(a))
 }
 
 // ---------------------------------------------------------------------------
@@ -1511,6 +1832,16 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     );
     put(m, "mb_check_encoding", fn_mb_check_encoding, 0, Some(2));
     put(m, "mb_convert_encoding", fn_mb_convert_encoding, 2, Some(3));
+    put(m, "mb_strcut", fn_mb_strcut, 2, Some(4));
+    put(
+        m,
+        "mb_substitute_character",
+        fn_mb_substitute_character,
+        0,
+        Some(1),
+    );
+    put(m, "mb_list_encodings", fn_mb_list_encodings, 0, Some(0));
+    put(m, "mb_encoding_aliases", fn_mb_encoding_aliases, 1, Some(1));
     put(m, "mb_detect_encoding", fn_mb_detect_encoding, 1, Some(3));
 }
 

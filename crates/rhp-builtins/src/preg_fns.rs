@@ -645,11 +645,9 @@ fn fn_preg_match_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
         outer
     } else {
         // PATTERN_ORDER: one array per group (named group by name then index).
-        // All groups are included (no trailing trim). With zero matches, php
-        // emits only `[0 => []]`.
+        // All groups are included (no trailing trim), even with zero matches.
         let mut outer = PhpArray::new();
-        let groups = if count == 0 { 1 } else { ngroups };
-        for i in 0..groups {
+        for i in 0..ngroups {
             let mut col = PhpArray::new();
             for ov in &all {
                 col.push(group_value(ov, &subject, i, offset_capture, unmatched_null));

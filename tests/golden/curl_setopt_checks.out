@@ -1,0 +1,84 @@
+== stream modes
+r   FILE: curl_setopt(): The provided file handle must be writable | WRITEHEADER: curl_setopt(): The provided file handle must be writable | STDERR: curl_setopt(): The provided file handle must be writable | INFILE=true
+rb  FILE: curl_setopt(): The provided file handle must be writable | WRITEHEADER: curl_setopt(): The provided file handle must be writable | STDERR: curl_setopt(): The provided file handle must be writable | INFILE=true
+r+  FILE=true | WRITEHEADER=true | STDERR=true | INFILE=true
+rb+ FILE: curl_setopt(): The provided file handle must be writable | WRITEHEADER: curl_setopt(): The provided file handle must be writable | STDERR: curl_setopt(): The provided file handle must be writable | INFILE=true
+w   FILE=true | WRITEHEADER=true | STDERR=true | INFILE=true
+wb  FILE=true | WRITEHEADER=true | STDERR=true | INFILE=true
+a   FILE=true | WRITEHEADER=true | STDERR=true | INFILE=true
+a+  FILE=true | WRITEHEADER=true | STDERR=true | INFILE=true
+x+  FILE=true | WRITEHEADER=true | STDERR=true | INFILE=true
+c   FILE=true | WRITEHEADER=true | STDERR=true | INFILE=true
+TypeError: curl_setopt(): supplied argument is not a valid File-Handle resource
+TypeError: curl_setopt(): supplied argument is not a valid File-Handle resource
+TypeError: curl_setopt(): supplied argument is not a valid File-Handle resource
+bool(true)
+array: curl_setopt_array(): The provided file handle must be writable
+== string conversion
+URL stdClass: Error: Object of class stdClass could not be converted to string
+URL Closure: Error: Object of class Closure could not be converted to string
+URL Str: true
+POSTFIELDS stdClass: Error: Object of class stdClass could not be converted to string
+POSTFIELDS Closure: Error: Object of class Closure could not be converted to string
+POSTFIELDS Str: true
+USERAGENT stdClass: Error: Object of class stdClass could not be converted to string
+USERAGENT Closure: Error: Object of class Closure could not be converted to string
+USERAGENT Str: true
+CUSTOMREQUEST stdClass: Error: Object of class stdClass could not be converted to string
+CUSTOMREQUEST Closure: Error: Object of class Closure could not be converted to string
+CUSTOMREQUEST Str: true
+COOKIEFILE stdClass: Error: Object of class stdClass could not be converted to string
+COOKIEFILE Closure: Error: Object of class Closure could not be converted to string
+COOKIEFILE Str: true
+string(26) "http://example.invalid/str"
+HTTPHEADER: Object of class stdClass could not be converted to string
+bool(true)
+string(5) "Array"
+bool(true)
+string(4) "12.5"
+== SSL_VERIFYHOST
+bool(true)
+bool(true)
+bool(true)
+== libcurl range checks
+TIMEOUT        -1=false 0=true 30=true
+TIMEOUT_MS     -1=false 0=true
+CONNECTTIMEOUT -2=false 0=true 10=true
+MAXREDIRS      -5=false -2=false -1=true 0=true 20=true
+SSLVERSION     99=false 2=false 3=false 0=true 1=true 6=true 7=true 8=false 458758=true 524289=false
+PROXYTYPE      12345=false -1=false 0=true 7=true 8=false
+HTTP_VERSION   99=false -1=false 0=true 2=true 3=true 4=true 5=true 6=false 30=true 31=true 32=false
+IPRESOLVE      99=false -1=false 0=true 1=true 2=true 3=false
+PORT           99999=false -1=false 0=true 80=true 65535=true 65536=false
+FOLLOWLOCATION 0=true 1=true 2=true 3=true 4=false -1=false
+BUFFERSIZE     -1=false 0=true 1024=true
+INFILESIZE     -2=false -1=true 0=true
+HTTPAUTH       0=true 1=true 8=false 4294967279=true 2147483648=false 16=true 4294967278=true
+PROXYAUTH      8=false 9=true
+SOCKS5_AUTH    0=true 1=true 4=true 5=true 2=false -1=false
+NEW_FILE_PERMS 420=true 511=true 512=false -1=false
+ADDRESS_SCOPE  0=true 4294967295=true 4294967296=false -1=false
+RTSP_REQUEST   0=false 1=true 11=true 12=false
+NETRC          0=true 2=true 3=false
+ALTSVC_CTRL    0=false 1=true
+SSL_FALSESTART 0=false 1=false
+PROTOCOLS_STR: 'nope'=false ''=false 'all'=true 'ALL'=true 'http'=true 'HTTP,https'=true 'http,,https'=true 'http,'=true 'all,http'=false 'http '=false 'rtmp'=false 'smb'=false 'file,ftp,sftp'=true
+REDIR_PROTOCOLS_STR: 'nope'=false ''=false 'all'=true 'ALL'=true 'http'=true 'HTTP,https'=true 'http,,https'=true 'http,'=true 'all,http'=false 'http '=false 'rtmp'=false 'smb'=false 'file,ftp,sftp'=true
+INTERFACE '' => false
+INTERFACE 'lo0' => true
+SSLENGINE '' => true
+SSLENGINE 'x' => false
+DNS_SERVERS '' => false
+DNS_SERVERS '1.1.1.1' => false
+TLSAUTH_TYPE 'SRP' => true
+TLSAUTH_TYPE 'srp' => true
+TLSAUTH_TYPE 'x' => false
+TLSAUTH_TYPE '' => false
+PROXY_TLSAUTH_TYPE 'SRP' => true
+PROXY_TLSAUTH_TYPE 'tls' => false
+bool(false)
+bool(false)
+string(17) "http://x.invalid/"
+== deprecated close functions
+NULL
+NULL

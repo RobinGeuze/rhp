@@ -5,6 +5,7 @@
 //! php 8.5.8 (see `docs/design/php-semantics.md`).
 
 use std::cmp::Ordering;
+use std::rc::Rc;
 
 use rhp_values::conv::{self, Num};
 use rhp_values::Thrown;
@@ -167,6 +168,29 @@ pub fn concat(a: &Value, b: &Value) -> Value {
 // Comparison
 // ---------------------------------------------------------------------------
 
+/// Predicate over objects (see [`set_not_comparable_hook`]).
+pub type ObjectPredicate = fn(&rhp_values::ObjectHandle) -> bool;
+
+thread_local! {
+    /// Objects whose class installs `zend_objects_not_comparable` (the curl
+    /// handle classes, registered by the extension that creates them).
+    static NOT_COMPARABLE: std::cell::Cell<Option<ObjectPredicate>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Install the predicate telling which objects are not comparable: such an
+/// object is `==` only to itself and uncomparable (1) to anything else.
+pub fn set_not_comparable_hook(f: ObjectPredicate) {
+    NOT_COMPARABLE.with(|c| c.set(Some(f)));
+}
+
+fn not_comparable(v: &Value) -> bool {
+    match v {
+        Value::Object(h) => NOT_COMPARABLE.with(|c| c.get()).is_some_and(|f| f(h)),
+        _ => false,
+    }
+}
+
 /// PHP loose comparison (`<`, `<=`, `>`, `>=`, `<=>`, and `==` via `== Equal`).
 /// Verified against php 8.5.8 (comparison_php8 / spaceship / string_ordering).
 pub fn loose_compare(a: &Value, b: &Value) -> Ordering {
@@ -177,6 +201,13 @@ pub fn loose_compare(a: &Value, b: &Value) -> Ordering {
         (Null, Null) => Ordering::Equal,
         // bool on either side: compare as bools.
         (Bool(_), _) | (_, Bool(_)) => conv::to_bool(&a).cmp(&conv::to_bool(&b)),
+        // zend_compare: object vs null is decided before any handler.
+        (Object(_), Null) => Ordering::Greater,
+        (Null, Object(_)) => Ordering::Less,
+        // zend_objects_not_comparable: the same object is equal, anything
+        // else is ZEND_UNCOMPARABLE (1) whichever side the object is on.
+        (Object(x), Object(y)) if Rc::ptr_eq(x, y) => Ordering::Equal,
+        _ if not_comparable(&a) || not_comparable(&b) => Ordering::Greater,
         // null vs X: treat null as the "zero" of X's type.
         (Null, _) => loose_compare(&null_as(&b), &b),
         (_, Null) => loose_compare(&a, &null_as(&a)),

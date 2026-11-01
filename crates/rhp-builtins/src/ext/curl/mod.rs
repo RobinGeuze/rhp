@@ -43,9 +43,11 @@ const OPT_FAILONERROR: i64 = 45;
 const OPT_UPLOAD: i64 = 46;
 const OPT_POST: i64 = 47;
 const OPT_FOLLOWLOCATION: i64 = 52;
+const OPT_AUTOREFERER: i64 = 58;
 const OPT_PUT: i64 = 54;
 const OPT_SSL_VERIFYPEER: i64 = 64;
 const OPT_MAXREDIRS: i64 = 68;
+const OPT_UNRESTRICTED_AUTH: i64 = 105;
 const OPT_CONNECTTIMEOUT: i64 = 78;
 const OPT_HTTPGET: i64 = 80;
 const OPT_SSL_VERIFYHOST: i64 = 81;
@@ -424,7 +426,19 @@ fn new_object(host: &mut dyn Host, class: &str) -> Result<(Value, ObjectHandle),
         // A host without object support (the tree-walking oracle) skips curl.
         .ok_or_else(|| Thrown::unsupported("curl", format!("cannot instantiate {class}")))?;
     let h = obj_handle(&v).ok_or_else(|| Thrown::error("Error", "curl: bad object"))?;
+    // The handle classes use zend_objects_not_comparable.
+    rhp_semantics::ops::set_not_comparable_hook(is_curl_object);
     Ok((v, h))
+}
+
+/// Is `h` a CurlHandle / CurlMultiHandle / CurlShareHandle of ours?
+fn is_curl_object(h: &ObjectHandle) -> bool {
+    REG.with(|r| {
+        let r = r.borrow();
+        lookup(&r.easy, h).is_some()
+            || lookup(&r.multi, h).is_some()
+            || lookup(&r.share, h).is_some()
+    })
 }
 
 fn register_easy(host: &mut dyn Host, easy: Easy) -> Result<Value, Thrown> {
@@ -732,6 +746,188 @@ fn is_valid_option(option: i64) -> bool {
     .contains(&option)
 }
 
+// ---------------------------------------------------------------------------
+// libcurl's own argument checks
+// ---------------------------------------------------------------------------
+
+/// Would libcurl 8.x's `curl_easy_setopt` (setopt.c, with the features of the
+/// libcurl php 8.5.8 links: no NTLM, RTMP, SMB, c-ares or TLS-SRP) refuse this
+/// long value? CURLE_BAD_FUNCTION_ARGUMENT / CURLE_NOT_BUILT_IN make php's
+/// curl_setopt() return false.
+fn libcurl_rejects_long(option: i64, v: i64) -> bool {
+    let u = v as u64;
+    match option {
+        // timeouts, sizes and counters: no negatives
+        13 | 19 | 20 | 71 | 78 | 98 | 112 | 114 | 155 | 156 | 178 | 193 | 194 | 212 | 214 | 215
+        | 227 | 271 | 280 | 281 | 288 | 314 | 326 | 30117 | 30145 | 30146 => v < 0,
+        // -1 means "unset"/"forever"
+        14 | 21 | 68 | 92 | 321 | 30115 => v < -1,
+        // enumerations
+        51 | 110 | 113 | 129 | 141 | 154 => !(0..=2).contains(&v),
+        33 | 52 | 119 | 138 => !(0..=3).contains(&v),
+        101 => !(0..=7).contains(&v),
+        189 => !(1..=11).contains(&v),
+        84 => !matches!(v, 0..=5 | 30 | 31),
+        // ports
+        3 | 59 | 139 | 140 => !(0..=65535).contains(&v),
+        // CURLOPT_NEW_FILE_PERMS / NEW_DIRECTORY_PERMS
+        159 | 160 => !(0..=0o777).contains(&v),
+        // CURLOPT_ADDRESS_SCOPE
+        171 => v < 0 || v > u32::MAX as i64,
+        // CURLOPT_SSLVERSION / PROXY_SSLVERSION: CURL_SSLVERSION_* in the low
+        // 16 bits (SSLv2/SSLv3 refused), CURL_SSLVERSION_MAX_* above.
+        32 | 250 => {
+            let lo = u & 0xffff;
+            let hi = u & 0xffff_0000;
+            lo >= 8 || lo == 2 || lo == 3 || hi >= 8 << 16
+        }
+        // CURLOPT_HTTPAUTH / PROXYAUTH: DIGEST_IE folds into DIGEST, NTLM is
+        // not built in; some auth bit (0..30) must remain.
+        107 | 111 => {
+            if u == 0 {
+                return false;
+            }
+            let mut a = u;
+            if a & 16 != 0 {
+                a = (a | 2) & !16;
+            }
+            a &= !8;
+            a & 0x7fff_ffff == 0
+        }
+        // CURLOPT_SOCKS5_AUTH: only CURLAUTH_BASIC | CURLAUTH_GSSAPI
+        267 => u & !5 != 0,
+        // CURLOPT_ALTSVC_CTRL
+        286 => v == 0,
+        // CURLOPT_SSL_FALSESTART: not supported by the TLS backend
+        233 => true,
+        _ => false,
+    }
+}
+
+/// The protocols this libcurl is built with (curl_version()['protocols']),
+/// as CURLPROTO_* bits.
+const BUILT_PROTOCOLS: &[(&str, i64)] = &[
+    ("dict", 512),
+    ("file", 1024),
+    ("ftp", 4),
+    ("ftps", 8),
+    ("gopher", 33554432),
+    ("gophers", 536870912),
+    ("http", 1),
+    ("https", 2),
+    ("imap", 4096),
+    ("imaps", 8192),
+    ("ldap", 128),
+    ("ldaps", 256),
+    ("mqtt", 268435456),
+    ("mqtts", 1 << 32),
+    ("pop3", 16384),
+    ("pop3s", 32768),
+    ("rtsp", 262144),
+    ("scp", 16),
+    ("sftp", 32),
+    ("smtp", 65536),
+    ("smtps", 131072),
+    ("telnet", 64),
+    ("tftp", 2048),
+    ("ws", 1073741824),
+    ("wss", 2147483648),
+];
+
+/// libcurl's protocol2num() for CURLOPT_PROTOCOLS_STR / REDIR_PROTOCOLS_STR:
+/// "all", or a comma list of built-in scheme names (case-insensitive, empty
+/// items skipped). `None` = CURLE_BAD_FUNCTION_ARGUMENT.
+fn protocols_from_str(s: &[u8]) -> Option<i64> {
+    if s.is_empty() {
+        return None;
+    }
+    if s.eq_ignore_ascii_case(b"all") {
+        return Some(CURLPROTO_ALL);
+    }
+    let mut bits = 0i64;
+    for item in s.split(|&b| b == b',') {
+        if item.is_empty() {
+            continue;
+        }
+        bits |= BUILT_PROTOCOLS
+            .iter()
+            .find(|(n, _)| n.as_bytes().eq_ignore_ascii_case(item))?
+            .1;
+    }
+    Some(bits)
+}
+
+/// libcurl's refusals for string options.
+fn libcurl_rejects_str(option: i64, s: &[u8]) -> bool {
+    match option {
+        // CURLOPT_PROTOCOLS_STR / REDIR_PROTOCOLS_STR
+        10318 | 10319 => protocols_from_str(s).is_none(),
+        // CURLOPT_INTERFACE
+        10062 => s.is_empty(),
+        // CURLOPT_SSLENGINE: no OpenSSL engines are available
+        10089 => !s.is_empty(),
+        // CURLOPT_TLSAUTH_TYPE / PROXY_TLSAUTH_TYPE: only "SRP"
+        10206 | 10253 => !s.eq_ignore_ascii_case(b"SRP"),
+        // KRBLEVEL, DNS_SERVERS, DNS_INTERFACE, DNS_LOCAL_IP4/6: not built in
+        10063 | 10211 | 10221 | 10222 | 10223 => true,
+        _ => false,
+    }
+}
+
+/// php's `zval_get_string()` for an option value: arrays warn "Array to
+/// string conversion", objects go through `__toString` or throw.
+fn zval_get_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> {
+    match deref(v) {
+        Value::Array(_) => {
+            host.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
+            Ok(b"Array".to_vec())
+        }
+        o @ Value::Object(_) => {
+            let has = match &o {
+                Value::Object(h) => {
+                    let class = h.borrow().class;
+                    host.class_has_method(class, b"__tostring")
+                }
+                _ => false,
+            };
+            if has {
+                let mut cb = PhpArray::new();
+                cb.push(o.clone());
+                cb.push(Value::str("__toString"));
+                let r = host.call_callable(&Value::Array(cb), &[])?;
+                return Ok(conv::to_string_bytes(&deref(&r)));
+            }
+            Err(Thrown::error(
+                "Error",
+                format!(
+                    "Object of class {} could not be converted to string",
+                    value_name(host, &o)
+                ),
+            ))
+        }
+        Value::Closure(_) => Err(Thrown::error(
+            "Error",
+            "Object of class Closure could not be converted to string",
+        )),
+        other => Ok(conv::to_string_bytes(&other)),
+    }
+}
+
+/// php's `zval_get_long()` for an option value (objects warn and give 1).
+fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Thrown> {
+    let v = deref(v);
+    if matches!(v, Value::Object(_) | Value::Closure(_)) {
+        host.emit_diagnostic(
+            crate::E_WARNING,
+            &format!(
+                "Object of class {} could not be converted to int",
+                value_name(host, &v)
+            ),
+        )?;
+    }
+    Ok(conv::to_int(&v))
+}
+
 /// `_php_curl_setopt`: apply one option. `Ok(false)` = php returns false.
 fn setopt(
     host: &mut dyn Host,
@@ -813,11 +1009,17 @@ fn setopt(
     }
 
     if STRING_OPTS.contains(&option) {
-        let s = conv::to_string_bytes(&value);
+        let s = zval_get_string(host, &value)?;
         check_nul(f, &s)?;
+        if libcurl_rejects_str(option, &s) {
+            return Ok(false);
+        }
+        let protocols = protocols_from_str(&s);
         let s = String::from_utf8_lossy(&s).into_owned();
         let mut e = easy.borrow_mut();
         match option {
+            10318 => e.protocols = protocols.unwrap_or(CURLPROTO_ALL),
+            10319 => e.redir_protocols = protocols.unwrap_or(CURLPROTO_ALL),
             OPT_CAINFO => e.cainfo = Some(s),
             OPT_CAPATH => e.capath = Some(s),
             OPT_COOKIE => e.cookie = Some(s),
@@ -833,12 +1035,20 @@ fn setopt(
 
     match option {
         OPT_URL => {
-            let s = conv::to_string_bytes(&value);
+            let s = zval_get_string(host, &value)?;
             check_nul(f, &s)?;
             easy.borrow_mut().url = String::from_utf8_lossy(&s).into_owned();
         }
         OPT_SSL_VERIFYHOST => {
-            let v = conv::to_int(&value);
+            let mut v = zval_get_long(host, &value)?;
+            if v == 1 {
+                crate::notice(
+                    host,
+                    f,
+                    "CURLOPT_SSL_VERIFYHOST no longer accepts the value 1, value 2 will be used instead",
+                )?;
+                v = 2;
+            }
             easy.borrow_mut().misc.insert(option, Value::Int(v));
         }
         OPT_RETURNTRANSFER => {
@@ -861,13 +1071,31 @@ fn setopt(
         OPT_FILE | OPT_WRITEHEADER | OPT_INFILE | OPT_STDERR => {
             let stream = match &value {
                 Value::Null => None,
-                Value::Resource(r) if r.type_name == "stream" => Some(value.clone()),
+                Value::Resource(r) if r.type_name == "stream" && host.stream_is_open(&value) => {
+                    Some(value.clone())
+                }
+                Value::Resource(_) => {
+                    return Err(Thrown::type_error(format!(
+                        "{f}(): supplied resource is not a valid File-Handle resource"
+                    )))
+                }
                 _ => {
                     return Err(Thrown::type_error(format!(
                         "{f}(): supplied argument is not a valid File-Handle resource"
                     )))
                 }
             };
+            // FILE / WRITEHEADER / STDERR: what->mode[0] != 'r' || what->mode[1] == '+'.
+            if option != OPT_INFILE {
+                if let Some(mode) = stream.as_ref().and_then(|s| host.stream_mode(s)) {
+                    if mode.first() == Some(&b'r') && mode.get(1) != Some(&b'+') {
+                        return Err(Thrown::error(
+                            "ValueError",
+                            format!("{f}(): The provided file handle must be writable"),
+                        ));
+                    }
+                }
+            }
             let mut e = easy.borrow_mut();
             match option {
                 OPT_FILE => {
@@ -901,17 +1129,23 @@ fn setopt(
             // precedence for the effective method.
             e.post = true;
             e.upload = false;
-            e.postfields = Some(match &value {
+            let pf = match &value {
                 Value::Array(_) => value.clone(),
-                other => Value::str(conv::to_string_bytes(other)),
-            });
+                other => {
+                    drop(e);
+                    let s = zval_get_string(host, other)?;
+                    e = easy.borrow_mut();
+                    Value::str(s)
+                }
+            };
+            e.postfields = Some(pf);
         }
         OPT_CUSTOMREQUEST | OPT_RANGE | OPT_USERPWD | OPT_USERNAME | OPT_PASSWORD
         | OPT_ENCODING => {
             let s = if matches!(value, Value::Null) {
                 None
             } else {
-                let b = conv::to_string_bytes(&value);
+                let b = zval_get_string(host, &value)?;
                 check_nul(f, &b)?;
                 Some(String::from_utf8_lossy(&b).into_owned())
             };
@@ -945,10 +1179,10 @@ fn setopt(
                     slist_name(option).unwrap_or("")
                 )));
             };
-            let lines: Vec<Vec<u8>> = a
-                .iter()
-                .map(|(_, v)| conv::to_string_bytes(&deref(v)))
-                .collect();
+            let mut lines: Vec<Vec<u8>> = Vec::with_capacity(a.len());
+            for (_, v) in a.iter() {
+                lines.push(zval_get_string(host, v)?);
+            }
             let mut e = easy.borrow_mut();
             if option == OPT_HTTPHEADER {
                 e.httpheader = lines;
@@ -957,7 +1191,10 @@ fn setopt(
             }
         }
         _ if is_valid_option(option) && option < 10000 || (30000..40000).contains(&option) => {
-            let v = conv::to_int(&value);
+            let v = zval_get_long(host, &value)?;
+            if libcurl_rejects_long(option, v) {
+                return Ok(false);
+            }
             let mut e = easy.borrow_mut();
             match option {
                 OPT_HEADER => e.include_header = v != 0,
@@ -1005,8 +1242,11 @@ fn setopt(
         }
         _ if is_valid_option(option) => {
             // Remaining file-path / blob options: stored, string-coerced.
-            let s = conv::to_string_bytes(&value);
+            let s = zval_get_string(host, &value)?;
             check_nul(f, &s)?;
+            if libcurl_rejects_str(option, &s) {
+                return Ok(false);
+            }
             easy.borrow_mut().misc.insert(option, Value::str(s));
         }
         _ => {
@@ -1209,27 +1449,153 @@ fn build_spec(host: &mut dyn Host, easy: &Rc<RefCell<Easy>>) -> Spec {
             .misc
             .get(&OPT_SSL_VERIFYPEER)
             .is_none_or(|v| conv::to_int(v) != 0),
+        unrestricted_auth: e
+            .misc
+            .get(&OPT_UNRESTRICTED_AUTH)
+            .is_some_and(|v| conv::to_int(v) != 0),
+        autoreferer: e
+            .misc
+            .get(&OPT_AUTOREFERER)
+            .is_some_and(|v| conv::to_int(v) != 0),
     }
 }
 
-/// Call a user callback with the handle flagged as "in callback".
+/// php's `_php_curl_verify_handlers`: a stream handler whose resource has
+/// been closed is dropped (with a warning when `report`), falling back to
+/// the default handler.
+fn verify_handlers(
+    host: &mut dyn Host,
+    f: &str,
+    easy: &Rc<RefCell<Easy>>,
+    report: bool,
+) -> Result<(), Thrown> {
+    let gone =
+        |host: &dyn Host, v: &Option<Value>| v.as_ref().is_some_and(|s| !host.stream_is_open(s));
+    let (stderr, infile, header, write) = {
+        let e = easy.borrow();
+        (
+            gone(host, &e.misc.get(&OPT_STDERR).cloned()),
+            gone(host, &e.infile),
+            gone(host, &e.header_stream),
+            gone(host, &e.write_stream),
+        )
+    };
+    for (bad, option, msg) in [
+        (
+            stderr,
+            OPT_STDERR,
+            "CURLOPT_STDERR resource has gone away, resetting to stderr",
+        ),
+        (
+            infile,
+            OPT_INFILE,
+            "CURLOPT_INFILE resource has gone away, resetting to default",
+        ),
+        (
+            header,
+            OPT_WRITEHEADER,
+            "CURLOPT_WRITEHEADER resource has gone away, resetting to default",
+        ),
+        (
+            write,
+            OPT_FILE,
+            "CURLOPT_FILE resource has gone away, resetting to default",
+        ),
+    ] {
+        if !bad {
+            continue;
+        }
+        {
+            let mut e = easy.borrow_mut();
+            match option {
+                OPT_STDERR => {
+                    e.misc.remove(&OPT_STDERR);
+                }
+                OPT_INFILE => e.infile = None,
+                OPT_WRITEHEADER => {
+                    e.header_stream = None;
+                    e.header = HeaderMethod::Ignore;
+                }
+                _ => {
+                    e.write_stream = None;
+                    e.write = WriteMethod::Stdout;
+                }
+            }
+        }
+        if report {
+            crate::warn(host, f, msg)?;
+        }
+    }
+    Ok(())
+}
+
+thread_local! {
+    /// The exception a curl callback threw, held until the curl function that
+    /// drove the transfer returns (php leaves it in EG(exception) while
+    /// libcurl finishes; zend_call_function then skips every later callback).
+    static PENDING: RefCell<Option<Thrown>> = const { RefCell::new(None) };
+}
+
+/// Re-throw the exception a callback raised during this call, if any.
+fn take_pending() -> Result<(), Thrown> {
+    match PENDING.with(|p| p.borrow_mut().take()) {
+        Some(t) => Err(t),
+        None => Ok(()),
+    }
+}
+
+/// Call a user callback with the handle flagged as "in callback". `None` is
+/// php's undefined retval: the callback threw (or an exception is already
+/// pending, so it was not called) and the caller keeps its default result.
 fn call_cb(
     host: &mut dyn Host,
     easy: &Rc<RefCell<Easy>>,
     cb: &Value,
     args: Vec<Value>,
-) -> Result<Value, Thrown> {
+) -> Result<Option<Value>, Thrown> {
+    if PENDING.with(|p| p.borrow().is_some()) {
+        return Ok(None);
+    }
     let was = std::mem::replace(&mut easy.borrow_mut().in_callback, true);
     let r = host.call_callable(cb, &args);
     easy.borrow_mut().in_callback = was;
-    r
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(t) if t.is_catchable() => {
+            PENDING.with(|p| *p.borrow_mut() = Some(t));
+            Ok(None)
+        }
+        Err(t) => Err(t),
+    }
 }
 
 struct Sink {
+    /// The php function driving the transfer (for warnings).
+    f: &'static str,
     write: WriteMethod,
     write_stream: Option<Value>,
     write_fn: Option<Value>,
+    header: HeaderMethod,
+    header_stream: Option<Value>,
     ret: Vec<u8>,
+}
+
+impl Sink {
+    /// After a callback returned: php re-verifies the stream handlers (the
+    /// callback may have closed one) and libcurl uses what is left.
+    fn after_cb(&mut self, host: &mut dyn Host, easy: &Rc<RefCell<Easy>>) -> Result<(), Thrown> {
+        verify_handlers(host, self.f, easy, true)?;
+        let e = easy.borrow();
+        if self.write == WriteMethod::File && e.write_stream.is_none() {
+            self.write = e.write;
+            self.write_stream = None;
+        }
+        if self.header == HeaderMethod::File && e.header_stream.is_none() {
+            self.header = e.header;
+            self.header_stream = None;
+        }
+        Ok(())
+    }
 }
 
 /// Body bytes → the handle's write handler. `Some((passed, returned))` on a
@@ -1260,7 +1626,13 @@ fn write_body(
                     &cb,
                     vec![obj.clone(), Value::str(data.to_vec())],
                 )?;
-                let n = conv::to_int(&deref(&r));
+                let n = match r {
+                    Some(r) => {
+                        sink.after_cb(host, easy)?;
+                        conv::to_int(&deref(&r))
+                    }
+                    None => data.len() as i64,
+                };
                 if n != data.len() as i64 {
                     return Ok(Some((data.len(), n)));
                 }
@@ -1275,15 +1647,19 @@ fn write_body(
 /// final CURLcode.
 fn deliver(
     host: &mut dyn Host,
+    f: &'static str,
     obj: &Value,
     easy: &Rc<RefCell<Easy>>,
     out: Outcome,
 ) -> Result<i64, Thrown> {
     let e = easy.borrow().clone();
     let mut sink = Sink {
+        f,
         write: e.write,
         write_stream: e.write_stream.clone(),
         write_fn: e.write_fn.clone(),
+        header: e.header,
+        header_stream: e.header_stream.clone(),
         ret: Vec::new(),
     };
     let mut errno = out.errno;
@@ -1292,10 +1668,10 @@ fn deliver(
 
     'hdr: for block in &out.header_blocks {
         for line in block {
-            match e.header {
+            match sink.header {
                 HeaderMethod::Ignore => {}
                 HeaderMethod::File => {
-                    if let Some(s) = &e.header_stream {
+                    if let Some(s) = &sink.header_stream {
                         host.stream_write(s, line);
                     }
                 }
@@ -1303,7 +1679,13 @@ fn deliver(
                     if let Some(cb) = &e.header_fn {
                         let r =
                             call_cb(host, easy, cb, vec![obj.clone(), Value::str(line.clone())])?;
-                        let n = conv::to_int(&deref(&r));
+                        let n = match r {
+                            Some(r) => {
+                                sink.after_cb(host, easy)?;
+                                conv::to_int(&deref(&r))
+                            }
+                            None => line.len() as i64,
+                        };
                         if n != line.len() as i64 {
                             errno = 23;
                             error = format!(
@@ -1355,7 +1737,10 @@ fn deliver(
                     Value::Int(0),
                 ],
             )?;
-            if conv::to_int(&deref(&r)) != 0 {
+            if r.is_some() {
+                sink.after_cb(host, easy)?;
+            }
+            if r.is_some_and(|r| conv::to_int(&deref(&r)) != 0) {
                 errno = 42;
                 error = "Callback aborted".into();
                 aborted = true;
@@ -1387,7 +1772,10 @@ fn deliver(
                     Value::Int(0),
                 ],
             )?;
-            if conv::to_int(&deref(&r)) != 0 {
+            if r.is_some() {
+                sink.after_cb(host, easy)?;
+            }
+            if r.is_some_and(|r| conv::to_int(&deref(&r)) != 0) {
                 errno = 42;
                 error = "Callback aborted".into();
             }
@@ -1408,11 +1796,13 @@ fn deliver(
 
 fn fn_curl_exec(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (h, easy) = easy_arg(host, "curl_exec", 1, &args[0])?;
+    verify_handlers(host, "curl_exec", &easy, true)?;
     easy.borrow_mut().cleanup();
     let spec = build_spec(host, &easy);
     let out = net::perform(&spec);
     let obj = Value::Object(h);
-    let errno = deliver(host, &obj, &easy, out)?;
+    let errno = deliver(host, "curl_exec", &obj, &easy, out)?;
+    take_pending()?;
     let mut e = easy.borrow_mut();
     if errno != 0 {
         e.ret_buf = None;
@@ -1644,6 +2034,12 @@ fn fn_curl_strerror(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 }
 
 fn fn_curl_close(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    crate::deprecated_fn(
+        host,
+        "curl_close",
+        "8.5",
+        "as it has no effect since PHP 8.0",
+    )?;
     let (_, easy) = easy_arg(host, "curl_close", 1, &args[0])?;
     if easy.borrow().in_callback {
         return Err(Thrown::error(
@@ -1663,20 +2059,70 @@ fn fn_curl_reset(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "curl_reset(): Attempt to reset cURL handle from a callback",
         ));
     }
-    let multi = e.multi;
-    *e = Easy::new();
-    e.multi = multi;
+    // curl_easy_reset + _php_curl_reset_handlers: CURLOPT_PRIVATE and the
+    // last error (ch->err) are php-side state that survive.
+    let fresh = Easy {
+        multi: e.multi,
+        private: e.private.take(),
+        errno: e.errno,
+        error: std::mem::take(&mut e.error),
+        ..Easy::new()
+    };
+    *e = fresh;
     Ok(Value::Null)
 }
 
-fn fn_curl_copy_handle(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let (_, easy) = easy_arg(host, "curl_copy_handle", 1, &args[0])?;
+/// The state of a duplicated easy handle (curl_easy_duphandle plus php's
+/// handler copies): options and callbacks carry over, transfer state does not.
+fn dup_easy(easy: &Rc<RefCell<Easy>>) -> Easy {
     let mut copy = easy.borrow().clone();
     copy.multi = MultiState::Idle;
     copy.in_callback = false;
     copy.info = None;
     copy.cleanup();
+    copy
+}
+
+fn fn_curl_copy_handle(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (_, easy) = easy_arg(host, "curl_copy_handle", 1, &args[0])?;
+    let copy = dup_easy(&easy);
     register_easy(host, copy)
+}
+
+/// `clone` of a curl object, part one (before the copy exists): the class
+/// name when it is a CurlMultiHandle / CurlShareHandle, whose clone_obj
+/// handler is NULL ("Trying to clone an uncloneable object of class ...").
+pub fn curl_uncloneable(h: &ObjectHandle) -> Option<&'static str> {
+    REG.with(|r| {
+        let r = r.borrow();
+        if lookup(&r.multi, h).is_some() {
+            Some("CurlMultiHandle")
+        } else if lookup(&r.share, h).is_some() {
+            Some("CurlShareHandle")
+        } else {
+            None
+        }
+    })
+}
+
+/// `clone` of a curl object, part two: php's curl_clone_obj gives the clone
+/// its own copy of the easy handle, as curl_copy_handle() does.
+pub fn curl_cloned(src: &ObjectHandle, dst: &ObjectHandle) {
+    let Some(easy) = REG.with(|r| lookup(&r.borrow().easy, src)) else {
+        return;
+    };
+    let copy = dup_easy(&easy);
+    REG.with(|r| {
+        let mut r = r.borrow_mut();
+        r.sweep();
+        r.easy.insert(
+            key_of(dst),
+            Entry {
+                obj: Rc::downgrade(dst),
+                data: Rc::new(RefCell::new(copy)),
+            },
+        );
+    });
 }
 
 fn arg_str(host: &dyn Host, f: &str, n: usize, pname: &str, v: &Value) -> Result<Vec<u8>, Thrown> {
@@ -1860,6 +2306,7 @@ fn same_obj(a: &Value, b: &ObjectHandle) -> bool {
 fn fn_curl_multi_add_handle(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (_, multi) = multi_arg(host, "curl_multi_add_handle", &args[0])?;
     let (eh, easy) = easy_arg(host, "curl_multi_add_handle", 2, &args[1])?;
+    verify_handlers(host, "curl_multi_add_handle", &easy, true)?;
     let mut e = easy.borrow_mut();
     let code = if e.multi != MultiState::Idle {
         7
@@ -1926,6 +2373,13 @@ fn start_pending(host: &mut dyn Host, multi: &Rc<RefCell<Multi>>) {
 
 fn fn_curl_multi_exec(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (_, multi) = multi_arg(host, "curl_multi_exec", &args[0])?;
+    let handles = multi.borrow().handles.clone();
+    for hv in &handles {
+        if let Some(easy) = obj_handle(hv).and_then(|h| REG.with(|r| lookup(&r.borrow().easy, &h)))
+        {
+            verify_handlers(host, "curl_multi_exec", &easy, true)?;
+        }
+    }
     start_pending(host, &multi);
     // Collect finished transfers.
     let done: Vec<(Value, Outcome)> = {
@@ -1943,7 +2397,9 @@ fn fn_curl_multi_exec(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
             continue;
         };
         easy.borrow_mut().multi = MultiState::Idle;
-        let code = deliver(host, &hv, &easy, out)?;
+        // A callback's exception is held (see call_cb) so every finished
+        // transfer is still delivered and reported before it is re-thrown.
+        let code = deliver(host, "curl_multi_exec", &hv, &easy, out)?;
         // Still part of the multi (php keeps it until remove_handle).
         easy.borrow_mut().multi = if multi.borrow().handles.iter().any(|v| same_obj(v, &h)) {
             MultiState::Running(0)
@@ -1957,6 +2413,7 @@ fn fn_curl_multi_exec(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
         set_ref(slot, Value::Int(running));
     }
     multi.borrow_mut().errno = 0;
+    take_pending()?;
     Ok(Value::Int(0))
 }
 
@@ -2041,6 +2498,7 @@ fn fn_curl_multi_close(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
     for hv in handles {
         if let Some(h) = obj_handle(&hv) {
             if let Some(easy) = REG.with(|r| lookup(&r.borrow().easy, &h)) {
+                verify_handlers(host, "curl_multi_close", &easy, true)?;
                 easy.borrow_mut().multi = MultiState::Idle;
             }
         }
@@ -2130,6 +2588,12 @@ fn fn_curl_share_setopt(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 }
 
 fn fn_curl_share_close(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    crate::deprecated_fn(
+        host,
+        "curl_share_close",
+        "8.5",
+        "as it has no effect since PHP 8.0",
+    )?;
     share_arg(host, "curl_share_close", &args[0])?;
     Ok(Value::Null)
 }

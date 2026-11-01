@@ -17,7 +17,7 @@ pub mod dump;
 pub mod module;
 pub mod streams;
 
-pub use ext::curl::is_curl_handle;
+pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};
 
 mod arr_fns;
@@ -358,6 +358,14 @@ pub trait Host {
     fn stream_rewind(&mut self, _res: &Value) -> bool {
         false
     }
+    /// Is `res` a stream resource that is still open (not `fclose`d)?
+    fn stream_is_open(&self, _res: &Value) -> bool {
+        true
+    }
+    /// The mode a stream was opened with (`"r"`, `"w+b"`, ...), when known.
+    fn stream_mode(&self, _res: &Value) -> Option<Vec<u8>> {
+        None
+    }
 
     // --- reflection introspection --------------------------------------------
     // Backing for the `Reflection*` classes. Return PHP `Value`s the prelude
@@ -404,6 +412,47 @@ pub trait Host {
     fn reflect_class_constants(&self, _class: &[u8]) -> Option<Value> {
         None
     }
+    /// The diagnostic sink: a `php_error_docref` of `level` (`E_WARNING`,
+    /// `E_NOTICE`, `E_DEPRECATED`, ...) whose `message` already carries the
+    /// `func(): ` prefix. Builtins call it at every site php warns at; the
+    /// engine-wide sink (error_reporting mask, `@`, `set_error_handler`, the
+    /// `Warning: ... in F on line N` display) is placeholder #32, so the
+    /// default — and for now every host — discards it. The `Result` lets a
+    /// future user error handler throw (e.g. composer's `ErrorException`).
+    fn emit_diagnostic(&mut self, _level: i64, _message: &str) -> Result<(), Thrown> {
+        Ok(())
+    }
+}
+
+/// `E_WARNING`.
+pub const E_WARNING: i64 = 2;
+/// `E_NOTICE`.
+pub const E_NOTICE: i64 = 8;
+/// `E_DEPRECATED`.
+pub const E_DEPRECATED: i64 = 8192;
+
+/// `php_error_docref(NULL, E_WARNING, msg)` from builtin `fname`.
+pub fn warn(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
+    host.emit_diagnostic(E_WARNING, &format!("{fname}(): {msg}"))
+}
+
+/// `php_error_docref(NULL, E_NOTICE, msg)` from builtin `fname`.
+pub fn notice(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
+    host.emit_diagnostic(E_NOTICE, &format!("{fname}(): {msg}"))
+}
+
+/// The `#[\Deprecated]` notice php raises on calling a deprecated function:
+/// `Function f() is deprecated since V, MSG`.
+pub fn deprecated_fn(
+    host: &mut dyn Host,
+    fname: &str,
+    since: &str,
+    msg: &str,
+) -> Result<(), Thrown> {
+    host.emit_diagnostic(
+        E_DEPRECATED,
+        &format!("Function {fname}() is deprecated since {since}, {msg}"),
+    )
 }
 
 /// A native builtin function over owned values.

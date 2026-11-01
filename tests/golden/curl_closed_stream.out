@@ -1,0 +1,25 @@
+== FILE closed before exec
+body text
+bool(true)
+body text
+bool(true)
+== WRITEHEADER closed before exec
+string(10) "body text
+"
+== FILE closed in a header callback
+body text
+bool(true)
+== open streams still work
+bool(true)
+string(10) "body text
+"
+== multi
+int(0)
+body text
+
+int(0)
+== setopt with a closed stream
+curl_setopt(): supplied resource is not a valid File-Handle resource
+curl_setopt(): supplied resource is not a valid File-Handle resource
+curl_setopt(): supplied resource is not a valid File-Handle resource
+curl_setopt(): supplied resource is not a valid File-Handle resource

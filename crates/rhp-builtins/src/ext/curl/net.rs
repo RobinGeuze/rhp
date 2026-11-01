@@ -4,9 +4,9 @@
 //! the `curl_getinfo()` numbers. Delivery of that outcome to PHP (streams,
 //! callbacks, return buffers) happens on the VM thread in `mod.rs`.
 //!
-//! HTTP(S) rides on `ureq` (rustls TLS with bundled Mozilla roots), with
-//! redirects followed here (not by ureq) so every hop's headers reach the header
-//! handler and `redirect_count` is exact, the way libcurl reports them.
+//! HTTP(S) is a small HTTP/1.1 client of our own over rustls (bundled Mozilla
+//! roots), with redirects followed here so every hop's headers reach the
+//! header handler and `redirect_count` is exact, the way libcurl reports them.
 //! `file://` is served directly, mirroring libcurl's FILE protocol (including
 //! its synthesized `Content-Length` / `Accept-ranges` / `Last-Modified` header
 //! lines).
@@ -73,6 +73,11 @@ pub struct Spec {
     pub capath: Option<String>,
     /// CURLOPT_SSL_VERIFYPEER (default on).
     pub verify_peer: bool,
+    /// CURLOPT_UNRESTRICTED_AUTH: keep credentials/cookies on redirects to
+    /// another host.
+    pub unrestricted_auth: bool,
+    /// CURLOPT_AUTOREFERER.
+    pub autoreferer: bool,
 }
 
 /// The transfer numbers `curl_getinfo()` reports.
@@ -424,28 +429,73 @@ fn perform_file(spec: &Spec, url: &str, mut info: Info, start: Instant) -> Outco
     }
 }
 
-/// Filter resolved addresses by CURLOPT_IPRESOLVE.
-struct FamilyResolver(i64);
+// ---------------------------------------------------------------------------
+// HTTP/1.1 transport
+//
+// A small client of our own instead of ureq, so the exchange is libcurl's:
+// the exact request header set and order (no injected User-Agent or
+// Accept-Encoding, `Name:` removes a default), the response header lines
+// passed on byte-for-byte as the server sent them, and no content decoding
+// unless CURLOPT_ENCODING asked for it.
+// ---------------------------------------------------------------------------
 
-impl ureq::Resolver for FamilyResolver {
-    fn resolve(&self, netloc: &str) -> std::io::Result<Vec<SocketAddr>> {
-        let addrs: Vec<SocketAddr> = netloc.to_socket_addrs()?.collect();
-        Ok(addrs
-            .into_iter()
-            .filter(|a| match self.0 {
-                1 => a.is_ipv4(),
-                2 => a.is_ipv6(),
-                _ => true,
-            })
-            .collect())
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
+use ureq::rustls;
+
+/// libcurl's ALL_CONTENT_ENCODINGS: what CURLOPT_ENCODING "" advertises.
+pub const ALL_ENCODINGS: &str = "deflate, gzip, br, zstd";
+
+/// libcurl's DEFAULT_CONNECT_TIMEOUT.
+const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 300_000;
+
+enum Stream {
+    Plain(TcpStream),
+    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
+}
+
+impl Stream {
+    fn tcp(&self) -> &TcpStream {
+        match self {
+            Stream::Plain(s) => s,
+            Stream::Tls(t) => &t.sock,
+        }
     }
 }
 
+impl Read for Stream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Stream::Plain(s) => s.read(buf),
+            Stream::Tls(t) => match t.read(buf) {
+                // A peer that closes without close_notify: treat as EOF, as
+                // libcurl's OpenSSL backend does for HTTP framing purposes.
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(0),
+                r => r,
+            },
+        }
+    }
+}
+
+impl Write for Stream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Stream::Plain(s) => s.write(buf),
+            Stream::Tls(t) => t.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Stream::Plain(s) => s.flush(),
+            Stream::Tls(t) => t.flush(),
+        }
+    }
+}
+
+type Conn = BufReader<Stream>;
+
 #[derive(Clone, PartialEq, Eq, Hash)]
-struct AgentKey {
-    proxy: Option<String>,
-    connect_timeout_ms: u64,
-    ipresolve: i64,
+struct TlsKey {
     /// CURLOPT_CAINFO in effect (None = bundled Mozilla roots).
     cainfo: Option<String>,
     /// CURLOPT_SSL_VERIFYPEER = 0.
@@ -454,27 +504,27 @@ struct AgentKey {
 
 /// Accepts any server certificate (CURLOPT_SSL_VERIFYPEER = 0).
 #[derive(Debug)]
-struct NoVerify(Arc<ureq::rustls::crypto::CryptoProvider>);
+struct NoVerify(Arc<rustls::crypto::CryptoProvider>);
 
-impl ureq::rustls::client::danger::ServerCertVerifier for NoVerify {
+impl rustls::client::danger::ServerCertVerifier for NoVerify {
     fn verify_server_cert(
         &self,
-        _end_entity: &ureq::rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[ureq::rustls::pki_types::CertificateDer<'_>],
-        _server_name: &ureq::rustls::pki_types::ServerName<'_>,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
         _ocsp_response: &[u8],
-        _now: ureq::rustls::pki_types::UnixTime,
-    ) -> Result<ureq::rustls::client::danger::ServerCertVerified, ureq::rustls::Error> {
-        Ok(ureq::rustls::client::danger::ServerCertVerified::assertion())
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
         &self,
         message: &[u8],
-        cert: &ureq::rustls::pki_types::CertificateDer<'_>,
-        dss: &ureq::rustls::DigitallySignedStruct,
-    ) -> Result<ureq::rustls::client::danger::HandshakeSignatureValid, ureq::rustls::Error> {
-        ureq::rustls::crypto::verify_tls12_signature(
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
             message,
             cert,
             dss,
@@ -485,10 +535,10 @@ impl ureq::rustls::client::danger::ServerCertVerifier for NoVerify {
     fn verify_tls13_signature(
         &self,
         message: &[u8],
-        cert: &ureq::rustls::pki_types::CertificateDer<'_>,
-        dss: &ureq::rustls::DigitallySignedStruct,
-    ) -> Result<ureq::rustls::client::danger::HandshakeSignatureValid, ureq::rustls::Error> {
-        ureq::rustls::crypto::verify_tls13_signature(
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
             message,
             cert,
             dss,
@@ -496,17 +546,18 @@ impl ureq::rustls::client::danger::ServerCertVerifier for NoVerify {
         )
     }
 
-    fn supported_verify_schemes(&self) -> Vec<ureq::rustls::SignatureScheme> {
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
         self.0.signature_verification_algorithms.supported_schemes()
     }
 }
 
-/// The TLS configuration for `key`, or libcurl's (errno, message) when the CA
-/// bundle cannot be used. `Ok(None)` = ureq's default (bundled roots).
-fn tls_config(key: &AgentKey) -> Result<Option<Arc<ureq::rustls::ClientConfig>>, (i64, String)> {
-    use ureq::rustls;
-    if key.cainfo.is_none() && !key.insecure {
-        return Ok(None);
+/// The TLS configuration for `key` (cached), or libcurl's (errno, message)
+/// when the CA bundle cannot be used.
+fn tls_config(key: &TlsKey) -> Result<Arc<rustls::ClientConfig>, (i64, String)> {
+    static CACHE: OnceLock<Mutex<HashMap<TlsKey, Arc<rustls::ClientConfig>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(c) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
+        return Ok(c.clone());
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = rustls::ClientConfig::builder_with_provider(provider.clone())
@@ -517,12 +568,11 @@ fn tls_config(key: &AgentKey) -> Result<Option<Arc<ureq::rustls::ClientConfig>>,
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(NoVerify(provider)))
             .with_no_client_auth()
-    } else {
+    } else if let Some(path) = &key.cainfo {
         use rustls::pki_types::pem::PemObject;
-        let path = key.cainfo.clone().unwrap_or_default();
         let bad = || (77, format!("error setting certificate file: {path}"));
         let mut roots = rustls::RootCertStore::empty();
-        let iter = rustls::pki_types::CertificateDer::pem_file_iter(&path).map_err(|_| bad())?;
+        let iter = rustls::pki_types::CertificateDer::pem_file_iter(path).map_err(|_| bad())?;
         for cert in iter.flatten() {
             let _ = roots.add(cert);
         }
@@ -530,48 +580,407 @@ fn tls_config(key: &AgentKey) -> Result<Option<Arc<ureq::rustls::ClientConfig>>,
             return Err(bad());
         }
         builder.with_root_certificates(roots).with_no_client_auth()
+    } else {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        builder.with_root_certificates(roots).with_no_client_auth()
     };
-    Ok(Some(Arc::new(config)))
+    let config = Arc::new(config);
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key.clone(), config.clone());
+    Ok(config)
 }
 
-/// One pooled agent per distinct connection configuration, shared by every
-/// transfer (and every multi worker thread), so keep-alive connections are
-/// reused across handles — like libcurl's shared connection cache.
-fn agent_for(spec: &Spec) -> Result<ureq::Agent, (i64, String)> {
-    static AGENTS: OnceLock<Mutex<HashMap<AgentKey, ureq::Agent>>> = OnceLock::new();
-    let key = AgentKey {
-        proxy: spec.proxy.clone().filter(|p| !p.is_empty()),
-        connect_timeout_ms: spec.connect_timeout_ms,
-        ipresolve: spec.ipresolve,
-        cainfo: spec.cainfo.clone().filter(|c| !c.is_empty()),
-        insecure: !spec.verify_peer,
-    };
-    let map = AGENTS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(a) = map.get(&key) {
-        return Ok(a.clone());
+/// Where a pooled connection leads.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct PoolKey {
+    scheme: String,
+    host: String,
+    port: u16,
+    proxy: Option<(String, u16)>,
+    tls: TlsKey,
+    ipresolve: i64,
+}
+
+/// Idle keep-alive connections, shared by every transfer (and every multi
+/// worker thread) like libcurl's connection cache.
+fn pool() -> &'static Mutex<HashMap<PoolKey, Vec<Conn>>> {
+    static POOL: OnceLock<Mutex<HashMap<PoolKey, Vec<Conn>>>> = OnceLock::new();
+    POOL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Is an idle connection still usable (open, nothing unexpected pending)?
+fn alive(c: &Conn) -> bool {
+    if !c.buffer().is_empty() {
+        return false;
     }
-    let mut b = ureq::AgentBuilder::new()
-        .redirects(0)
-        .user_agent("")
-        .max_idle_connections_per_host(8)
-        .timeout_connect(Duration::from_millis(if key.connect_timeout_ms > 0 {
-            key.connect_timeout_ms
-        } else {
-            300_000
-        }))
-        .resolver(FamilyResolver(key.ipresolve));
-    if let Some(p) = &key.proxy {
-        if let Ok(proxy) = ureq::Proxy::new(p) {
-            b = b.proxy(proxy);
+    let tcp = c.get_ref().tcp();
+    if tcp.set_nonblocking(true).is_err() {
+        return false;
+    }
+    let mut b = [0u8; 1];
+    let r = tcp.peek(&mut b);
+    let _ = tcp.set_nonblocking(false);
+    matches!(r, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+}
+
+fn checkout(key: &PoolKey) -> Option<Conn> {
+    let mut p = pool().lock().unwrap_or_else(|e| e.into_inner());
+    let list = p.get_mut(key)?;
+    while let Some(c) = list.pop() {
+        if alive(&c) {
+            return Some(c);
         }
     }
-    if let Some(cfg) = tls_config(&key)? {
-        b = b.tls_config(cfg);
+    None
+}
+
+fn checkin(key: PoolKey, c: Conn) {
+    let mut p = pool().lock().unwrap_or_else(|e| e.into_inner());
+    let list = p.entry(key).or_default();
+    if list.len() < 8 {
+        list.push(c);
     }
-    let agent = b.build();
-    map.insert(key, agent.clone());
-    Ok(agent)
+}
+
+/// CURLOPT_PROXY, parsed.
+#[derive(Clone)]
+struct Proxy {
+    host: String,
+    port: u16,
+    /// `Proxy-Authorization` credentials (`user:password`).
+    auth: Option<String>,
+}
+
+fn parse_proxy(p: &str) -> Result<Option<Proxy>, (i64, String)> {
+    if p.is_empty() {
+        return Ok(None);
+    }
+    let full = if scheme_of(p).is_some() {
+        p.to_string()
+    } else {
+        format!("http://{p}")
+    };
+    let u = url::Url::parse(&full).map_err(|_| (5, format!("Could not resolve proxy: {p}")))?;
+    if !matches!(u.scheme(), "http") {
+        return Err((4, format!("Unsupported proxy scheme for '{}'", u.scheme())));
+    }
+    let host = u
+        .host_str()
+        .unwrap_or("")
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    if host.is_empty() {
+        return Err((5, format!("Could not resolve proxy: {p}")));
+    }
+    let auth = if u.username().is_empty() && u.password().is_none() {
+        None
+    } else {
+        let user = String::from_utf8_lossy(&percent_decode(u.username())).into_owned();
+        let pass =
+            String::from_utf8_lossy(&percent_decode(u.password().unwrap_or(""))).into_owned();
+        Some(format!("{user}:{pass}"))
+    };
+    // libcurl's default proxy port.
+    Ok(Some(Proxy {
+        host,
+        port: u.port().unwrap_or(1080),
+        auth,
+    }))
+}
+
+/// Resolve and connect, honouring CURLOPT_IPRESOLVE and the connect timeout.
+fn tcp_connect(
+    host: &str,
+    port: u16,
+    ipresolve: i64,
+    timeout: Duration,
+    start: Instant,
+    is_proxy: bool,
+) -> Result<TcpStream, (i64, String)> {
+    let addrs: Vec<SocketAddr> = (host, port)
+        .to_socket_addrs()
+        .map(|a| {
+            a.filter(|a| match ipresolve {
+                1 => a.is_ipv4(),
+                2 => a.is_ipv6(),
+                _ => true,
+            })
+            .collect()
+        })
+        .unwrap_or_default();
+    if addrs.is_empty() {
+        return Err(if is_proxy {
+            (5, format!("Could not resolve proxy: {host}"))
+        } else {
+            (6, format!("Could not resolve host: {host}"))
+        });
+    }
+    let mut timed_out = false;
+    for a in addrs {
+        let left = timeout.saturating_sub(start.elapsed());
+        if left.is_zero() {
+            timed_out = true;
+            break;
+        }
+        match TcpStream::connect_timeout(&a, left) {
+            Ok(s) => {
+                let _ = s.set_nodelay(true);
+                return Ok(s);
+            }
+            Err(e) => {
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) {
+                    timed_out = true;
+                }
+            }
+        }
+    }
+    let ms = start.elapsed().as_millis();
+    Err(if timed_out {
+        (28, format!("Connection timed out after {ms} milliseconds"))
+    } else {
+        (
+            7,
+            format!(
+                "Failed to connect to {host}:{port} after {ms} ms: Could not connect to server"
+            ),
+        )
+    })
+}
+
+/// A TLS failure, as libcurl (OpenSSL backend) reports it: certificate
+/// problems are CURLE_PEER_FAILED_VERIFICATION (60), other handshake failures
+/// CURLE_SSL_CONNECT_ERROR (35).
+fn tls_error(e: &std::io::Error, host: &str) -> (i64, String) {
+    use rustls::{CertificateError, Error as TlsError};
+    if matches!(
+        e.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    ) {
+        return (28, "SSL connection timeout".into());
+    }
+    let verify = |msg: &str, code: u32| {
+        (
+            60,
+            format!("SSL certificate OpenSSL verify result: {msg} ({code})"),
+        )
+    };
+    match e.get_ref().and_then(|i| i.downcast_ref::<TlsError>()) {
+        Some(TlsError::InvalidCertificate(c)) => match c {
+            CertificateError::Expired | CertificateError::ExpiredContext { .. } => {
+                verify("certificate has expired", 10)
+            }
+            CertificateError::NotValidYet | CertificateError::NotValidYetContext { .. } => {
+                verify("certificate is not yet valid", 9)
+            }
+            CertificateError::UnknownIssuer => verify("unable to get local issuer certificate", 20),
+            CertificateError::Revoked => verify("certificate revoked", 23),
+            CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. } => (
+                60,
+                format!(
+                    "SSL: no alternative certificate subject name matches target hostname '{host}'"
+                ),
+            ),
+            other => (60, format!("SSL certificate problem: {other:?}")),
+        },
+        Some(other) => (35, format!("TLS connect error: {other}")),
+        None => (35, format!("TLS connect error: {e}")),
+    }
+}
+
+fn tls_handshake(
+    mut tcp: TcpStream,
+    host: &str,
+    cfg: Arc<rustls::ClientConfig>,
+) -> Result<Stream, (i64, String)> {
+    let name = rustls::pki_types::ServerName::try_from(host.to_string())
+        .map_err(|e| (35, format!("TLS connect error: {e}")))?;
+    let mut conn = rustls::ClientConnection::new(cfg, name)
+        .map_err(|e| (35, format!("TLS connect error: {e}")))?;
+    while conn.is_handshaking() {
+        if let Err(e) = conn.complete_io(&mut tcp) {
+            return Err(tls_error(&e, host));
+        }
+    }
+    Ok(Stream::Tls(Box::new(rustls::StreamOwned::new(conn, tcp))))
+}
+
+/// Read one header block (status line .. blank line), raw. `Ok(None)` = the
+/// peer closed before sending anything.
+fn read_head(conn: &mut Conn) -> std::io::Result<Option<Vec<Vec<u8>>>> {
+    let mut lines: Vec<Vec<u8>> = Vec::new();
+    let mut total = 0usize;
+    loop {
+        let mut line = Vec::new();
+        let n = conn.read_until(b'\n', &mut line)?;
+        if n == 0 {
+            if lines.is_empty() {
+                return Ok(None);
+            }
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        total += n;
+        if total > 300 * 1024 {
+            return Err(std::io::Error::other("header too large"));
+        }
+        let blank = line == b"\r\n" || line == b"\n";
+        lines.push(line);
+        if blank {
+            return Ok(Some(lines));
+        }
+    }
+}
+
+/// `HTTP/1.1 200 OK` → ("HTTP/1.1", 200).
+fn status_of(line: &[u8]) -> Option<(String, i64)> {
+    let s = String::from_utf8_lossy(line);
+    let s = s.trim_end();
+    let mut it = s.splitn(3, ' ');
+    let ver = it.next()?;
+    if !ver.starts_with("HTTP/") {
+        return None;
+    }
+    let code: i64 = it.next()?.trim().parse().ok()?;
+    if !(100..1000).contains(&code) {
+        return None;
+    }
+    Some((ver.to_string(), code))
+}
+
+/// A header line's (name, trimmed value).
+fn split_header(line: &[u8]) -> Option<(String, String)> {
+    let c = line.iter().position(|&b| b == b':')?;
+    let name = String::from_utf8_lossy(&line[..c]).trim().to_string();
+    let value = String::from_utf8_lossy(&line[c + 1..]).trim().to_string();
+    Some((name, value))
+}
+
+/// The first value of header `name` in a raw block.
+fn header_value(block: &[Vec<u8>], name: &str) -> Option<String> {
+    block
+        .iter()
+        .skip(1)
+        .filter_map(|l| split_header(l))
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v)
+}
+
+enum Framing {
+    Empty,
+    Length(u64),
+    Chunked,
+    Eof,
+}
+
+/// Read a response body per its framing. Returns whether the connection is
+/// left at a message boundary (reusable).
+fn read_body(conn: &mut Conn, framing: &Framing, out: &mut Vec<u8>) -> std::io::Result<bool> {
+    match framing {
+        Framing::Empty => Ok(true),
+        Framing::Length(n) => {
+            let got = conn.take(*n).read_to_end(out)?;
+            if (got as u64) < *n {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            Ok(true)
+        }
+        Framing::Eof => {
+            conn.read_to_end(out)?;
+            Ok(false)
+        }
+        Framing::Chunked => loop {
+            let mut line = Vec::new();
+            if conn.read_until(b'\n', &mut line)? == 0 {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            let text = String::from_utf8_lossy(&line);
+            let size_s = text.split(';').next().unwrap_or("").trim();
+            let size = u64::from_str_radix(size_s, 16)
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "chunk"))?;
+            if size == 0 {
+                // trailers up to the blank line
+                loop {
+                    let mut t = Vec::new();
+                    if conn.read_until(b'\n', &mut t)? == 0 || t == b"\r\n" || t == b"\n" {
+                        return Ok(true);
+                    }
+                }
+            }
+            let got = (&mut *conn).take(size).read_to_end(out)?;
+            if (got as u64) < size {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            let mut crlf = Vec::new();
+            conn.read_until(b'\n', &mut crlf)?;
+        },
+    }
+}
+
+/// Undo `Content-Encoding` (only when CURLOPT_ENCODING is set), like
+/// libcurl's content_encoding.c. Codings are listed in the order applied.
+fn decode_body(body: Vec<u8>, codings: &str) -> Result<Vec<u8>, (i64, String)> {
+    let mut data = body;
+    for c in codings.split(',').map(|s| s.trim()).rev() {
+        let lc = c.to_ascii_lowercase();
+        let mut out = Vec::new();
+        let r = match lc.as_str() {
+            "" | "identity" | "none" => continue,
+            "gzip" | "x-gzip" => flate2::read::MultiGzDecoder::new(&data[..])
+                .read_to_end(&mut out)
+                .map(|_| ()),
+            "deflate" => flate2::read::ZlibDecoder::new(&data[..])
+                .read_to_end(&mut out)
+                .map(|_| ())
+                .or_else(|_| {
+                    out.clear();
+                    flate2::read::DeflateDecoder::new(&data[..])
+                        .read_to_end(&mut out)
+                        .map(|_| ())
+                }),
+            "br" => brotli_decompressor::Decompressor::new(&data[..], 4096)
+                .read_to_end(&mut out)
+                .map(|_| ()),
+            "zstd" => {
+                let mut src = &data[..];
+                let mut r = Ok(());
+                while !src.is_empty() {
+                    match ruzstd::decoding::StreamingDecoder::new(&mut src) {
+                        Ok(mut d) => {
+                            if let Err(e) = d.read_to_end(&mut out) {
+                                r = Err(e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            r = Err(std::io::Error::other(e.to_string()));
+                            break;
+                        }
+                    }
+                }
+                r
+            }
+            _ => {
+                return Err((
+                    61,
+                    "Unrecognized content encoding type. libcurl understands deflate, gzip, br, zstd content encodings.".into(),
+                ))
+            }
+        };
+        if let Err(e) = r {
+            return Err((
+                61,
+                format!("Error while processing content unencoding: {e}"),
+            ));
+        }
+        data = out;
+    }
+    Ok(data)
 }
 
 fn base64(input: &[u8]) -> String {
@@ -597,276 +1006,339 @@ fn base64(input: &[u8]) -> String {
     out
 }
 
-/// The request headers to send: libcurl's defaults overlaid by the user's
-/// CURLOPT_HTTPHEADER lines (`Name:` removes a header, `Name;` sends it empty).
-fn request_headers(spec: &Spec) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    let mut removed: Vec<String> = Vec::new();
-    for line in &spec.headers {
-        let line = String::from_utf8_lossy(line).into_owned();
-        let line = line.trim_end_matches(['\r', '\n']);
-        if let Some(c) = line.find(':') {
-            let name = line[..c].trim().to_string();
-            let value = line[c + 1..].trim().to_string();
-            if name.is_empty() {
+/// One CURLOPT_HTTPHEADER entry, classified like Curl_add_custom_headers.
+struct Custom {
+    /// The header name as written.
+    name: String,
+    /// The line to send (`Name;` becomes `Name:`), or `None` when the entry
+    /// only suppresses a default (`Name:` with a blank value) or is not a
+    /// header at all.
+    line: Option<Vec<u8>>,
+}
+
+fn custom_headers(spec: &Spec) -> Vec<Custom> {
+    let mut out = Vec::new();
+    for raw in &spec.headers {
+        let mut line = raw.clone();
+        while matches!(line.last(), Some(b'\r' | b'\n')) {
+            line.pop();
+        }
+        if let Some(c) = line.iter().position(|&b| b == b':') {
+            if c == 0 {
                 continue;
             }
-            if value.is_empty() {
-                removed.push(name.to_ascii_lowercase());
+            let blank = line[c + 1..].iter().all(|b| b.is_ascii_whitespace());
+            out.push(Custom {
+                name: String::from_utf8_lossy(&line[..c]).into_owned(),
+                line: if blank { None } else { Some(line) },
+            });
+        } else if let Some(sc) = line.iter().position(|&b| b == b';') {
+            if sc == 0 || !line[sc + 1..].iter().all(|b| b.is_ascii_whitespace()) {
+                continue;
+            }
+            let name = String::from_utf8_lossy(&line[..sc]).into_owned();
+            // `Name;` (nothing after the semicolon) sends an empty `Name:`.
+            let send = if line.len() == sc + 1 {
+                let mut l = line[..sc].to_vec();
+                l.push(b':');
+                Some(l)
             } else {
-                out.push((name, value));
-            }
-        } else if let Some(name) = line.strip_suffix(';') {
-            let name = name.trim();
-            if !name.is_empty() {
-                out.push((name.to_string(), String::new()));
-            }
+                None
+            };
+            out.push(Custom { name, line: send });
         }
     }
-    let has = |out: &Vec<(String, String)>, n: &str| {
-        out.iter().any(|(k, _)| k.eq_ignore_ascii_case(n)) || removed.iter().any(|r| r == n)
-    };
-    let mut defaults: Vec<(String, String)> = Vec::new();
-    if let Some(ua) = &spec.useragent {
-        if !has(&out, "user-agent") {
-            defaults.push(("User-Agent".into(), ua.clone()));
+    out
+}
+
+/// What varies per request hop.
+struct Hop<'a> {
+    method: &'a str,
+    /// Request target: origin-form, or the absolute URL through a proxy.
+    target: String,
+    /// `host[:port]` for the Host header.
+    host_hdr: String,
+    /// Credentials/cookies may go to this host (first host, or
+    /// CURLOPT_UNRESTRICTED_AUTH).
+    allowed: bool,
+    /// A custom Host header applies (not a redirect to another host).
+    custom_host_ok: bool,
+    referer: Option<&'a str>,
+    http_proxy: Option<&'a Proxy>,
+    body: Option<&'a [u8]>,
+    body_content_type: Option<&'a str>,
+}
+
+/// Build the request head the way libcurl's Curl_http() lays it out.
+fn build_request(spec: &Spec, hop: &Hop, customs: &[Custom]) -> Vec<u8> {
+    let has = |n: &str| customs.iter().any(|c| c.name.eq_ignore_ascii_case(n));
+    let mut r: Vec<u8> = Vec::new();
+    let ver = if spec.http_version == 1 { "1.0" } else { "1.1" };
+    r.extend_from_slice(format!("{} {} HTTP/{ver}\r\n", hop.method, hop.target).as_bytes());
+    let custom_host = customs.iter().find(|c| c.name.eq_ignore_ascii_case("host"));
+    match custom_host {
+        Some(c) if hop.custom_host_ok => {
+            // `Host:` alone suppresses the header; otherwise "Host:" + the
+            // rest of the user's line.
+            if let Some(l) = &c.line {
+                r.extend_from_slice(b"Host:");
+                r.extend_from_slice(&l[c.name.len() + 1..]);
+                r.extend_from_slice(b"\r\n");
+            }
+        }
+        _ => r.extend_from_slice(format!("Host: {}\r\n", hop.host_hdr).as_bytes()),
+    }
+    if let Some(p) = hop.http_proxy {
+        if let Some(a) = &p.auth {
+            if !has("proxy-authorization") {
+                r.extend_from_slice(
+                    format!("Proxy-Authorization: Basic {}\r\n", base64(a.as_bytes())).as_bytes(),
+                );
+            }
         }
     }
     if let Some(up) = &spec.userpwd {
-        if !has(&out, "authorization") {
-            defaults.push((
-                "Authorization".into(),
-                format!("Basic {}", base64(up.as_bytes())),
-            ));
+        if hop.allowed && !has("authorization") {
+            r.extend_from_slice(
+                format!("Authorization: Basic {}\r\n", base64(up.as_bytes())).as_bytes(),
+            );
         }
     }
-    if let Some(r) = &spec.referer {
-        if !has(&out, "referer") {
-            defaults.push(("Referer".into(), r.clone()));
+    if let Some(range) = &spec.range {
+        if !range.is_empty() && !has("range") {
+            r.extend_from_slice(format!("Range: bytes={range}\r\n").as_bytes());
         }
+    }
+    if let Some(ua) = &spec.useragent {
+        if !ua.is_empty() && !has("user-agent") {
+            r.extend_from_slice(format!("User-Agent: {ua}\r\n").as_bytes());
+        }
+    }
+    if !has("accept") {
+        r.extend_from_slice(b"Accept: */*\r\n");
+    }
+    if let Some(enc) = &spec.encoding {
+        let v = if enc.is_empty() { ALL_ENCODINGS } else { enc };
+        if !has("accept-encoding") {
+            r.extend_from_slice(format!("Accept-Encoding: {v}\r\n").as_bytes());
+        }
+    }
+    if let Some(rf) = hop.referer {
+        if !has("referer") {
+            r.extend_from_slice(format!("Referer: {rf}\r\n").as_bytes());
+        }
+    }
+    if hop.http_proxy.is_some() && !has("proxy-connection") {
+        r.extend_from_slice(b"Proxy-Connection: Keep-Alive\r\n");
     }
     if let Some(c) = &spec.cookie {
-        if !has(&out, "cookie") {
-            defaults.push(("Cookie".into(), c.clone()));
+        if hop.allowed && !has("cookie") {
+            r.extend_from_slice(format!("Cookie: {c}\r\n").as_bytes());
         }
     }
-    if let Some(r) = &spec.range {
-        if !has(&out, "range") {
-            defaults.push(("Range".into(), format!("bytes={r}")));
+    let multipart = hop
+        .body_content_type
+        .is_some_and(|ct| ct.starts_with("multipart/"));
+    for c in customs {
+        let Some(line) = &c.line else { continue };
+        let n = c.name.to_ascii_lowercase();
+        if n == "host"
+            || (!hop.allowed && (n == "authorization" || n == "cookie"))
+            || (multipart && (n == "content-type" || n == "content-length"))
+        {
+            continue;
         }
+        r.extend_from_slice(line);
+        r.extend_from_slice(b"\r\n");
     }
-    match &spec.encoding {
-        Some(e) if !has(&out, "accept-encoding") => {
-            let v = if e.is_empty() {
-                "gzip".to_string()
-            } else {
-                e.clone()
-            };
-            defaults.push(("Accept-Encoding".into(), v));
+    if let Some(b) = hop.body {
+        if !has("content-length") || multipart {
+            r.extend_from_slice(format!("Content-Length: {}\r\n", b.len()).as_bytes());
         }
-        None if !has(&out, "accept-encoding") => {
-            // libcurl sends no Accept-Encoding without CURLOPT_ENCODING; ask for
-            // the identity coding so the body arrives exactly as libcurl's would.
-            defaults.push(("Accept-Encoding".into(), "identity".into()));
-        }
-        _ => {}
-    }
-    if spec.body.is_some() || spec.post {
-        if let Some(ct) = &spec.body_content_type {
-            if !has(&out, "content-type") {
-                defaults.push(("Content-Type".into(), ct.clone()));
+        if let Some(ct) = hop.body_content_type {
+            if multipart || !has("content-type") {
+                r.extend_from_slice(format!("Content-Type: {ct}\r\n").as_bytes());
             }
         }
     }
-    defaults.extend(out);
-    defaults
+    r.extend_from_slice(b"\r\n");
+    r
 }
 
-fn is_timeout(t: &ureq::Transport) -> bool {
-    use std::error::Error;
-    let mut src: Option<&(dyn Error + 'static)> = t.source();
-    while let Some(e) = src {
-        if let Some(io) = e.downcast_ref::<std::io::Error>() {
-            if matches!(
-                io.kind(),
-                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-            ) {
-                return true;
+/// Present an HTTP/1.x header block the way libcurl reports an h2 exchange:
+/// `HTTP/2 <code> ` status line, lowercase names, no hop-by-hop headers.
+fn as_h2(block: &[Vec<u8>], code: i64) -> Vec<Vec<u8>> {
+    let mut out = vec![format!("HTTP/2 {code} \r\n").into_bytes()];
+    for l in block.iter().skip(1) {
+        if let Some((n, v)) = split_header(l) {
+            let n = n.to_ascii_lowercase();
+            if !H1_ONLY_HEADERS.contains(&n.as_str()) {
+                out.push(format!("{n}: {v}\r\n").into_bytes());
             }
         }
-        src = e.source();
     }
-    let s = t.to_string().to_ascii_lowercase();
-    s.contains("timed out") || s.contains("timeout")
+    out.push(b"\r\n".to_vec());
+    out
 }
 
-fn host_port(url: &url::Url) -> (String, u16) {
-    let host = url.host_str().unwrap_or("").to_string();
-    let port = url.port_or_known_default().unwrap_or(0);
-    (host, port)
+fn io_error_kind_timeout(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    )
 }
 
-/// Map a ureq transport failure onto libcurl's (errno, message).
-/// A TLS failure inside a transport error, as libcurl (OpenSSL backend)
-/// reports it: certificate problems are CURLE_PEER_FAILED_VERIFICATION (60),
-/// other handshake failures CURLE_SSL_CONNECT_ERROR (35).
-fn tls_error(t: &ureq::Transport, host: &str) -> Option<(i64, String)> {
-    use std::error::Error;
-    use ureq::rustls::{CertificateError, Error as TlsError};
-    let mut src: Option<&(dyn Error + 'static)> = t.source();
-    let mut found: Option<&TlsError> = None;
-    while let Some(e) = src {
-        if let Some(r) = e.downcast_ref::<TlsError>() {
-            found = Some(r);
-            break;
-        }
-        if let Some(io) = e.downcast_ref::<std::io::Error>() {
-            if let Some(r) = io.get_ref().and_then(|i| i.downcast_ref::<TlsError>()) {
-                found = Some(r);
-                break;
-            }
-        }
-        src = e.source();
+fn recv_error(e: &std::io::Error) -> (i64, String) {
+    if e.kind() == std::io::ErrorKind::ConnectionReset {
+        (56, "Recv failure: Connection reset by peer".into())
+    } else {
+        (56, format!("Recv failure: {e}"))
     }
-    let verify = |msg: &str, code: u32| {
-        (
-            60,
-            format!("SSL certificate OpenSSL verify result: {msg} ({code})"),
-        )
+}
+
+/// Open (or reuse) a connection for `key`. Returns the connection and
+/// whether it came from the pool. CONNECT response headers through a proxy
+/// are appended to `blocks`.
+fn open_conn(
+    spec: &Spec,
+    key: &PoolKey,
+    proxy: Option<&Proxy>,
+    tls: Option<Arc<rustls::ClientConfig>>,
+    start: Instant,
+    allow_reuse: bool,
+    blocks: &mut Vec<Vec<Vec<u8>>>,
+) -> Result<(Conn, bool), (i64, String)> {
+    if allow_reuse {
+        if let Some(c) = checkout(key) {
+            return Ok((c, true));
+        }
+    }
+    let mut ct = Duration::from_millis(if spec.connect_timeout_ms > 0 {
+        spec.connect_timeout_ms
+    } else {
+        DEFAULT_CONNECT_TIMEOUT_MS
+    });
+    if spec.timeout_ms > 0 {
+        ct = ct.min(Duration::from_millis(spec.timeout_ms));
+    }
+    let (chost, cport) = match proxy {
+        Some(p) => (p.host.as_str(), p.port),
+        None => (key.host.as_str(), key.port),
     };
-    Some(match found? {
-        TlsError::InvalidCertificate(c) => match c {
-            CertificateError::Expired | CertificateError::ExpiredContext { .. } => {
-                verify("certificate has expired", 10)
+    let tcp = tcp_connect(chost, cport, key.ipresolve, ct, start, proxy.is_some())?;
+    set_timeouts(&tcp, spec, start);
+    let tcp = match (proxy, &tls) {
+        (Some(p), Some(_)) => {
+            // Tunnel through the proxy with CONNECT.
+            let hp = host_hdr(&key.host, key.port);
+            let mut req = format!("CONNECT {hp} HTTP/1.1\r\nHost: {hp}\r\n");
+            if let Some(a) = &p.auth {
+                req.push_str(&format!(
+                    "Proxy-Authorization: Basic {}\r\n",
+                    base64(a.as_bytes())
+                ));
             }
-            CertificateError::NotValidYet | CertificateError::NotValidYetContext { .. } => {
-                verify("certificate is not yet valid", 9)
+            if let Some(ua) = spec.useragent.as_deref().filter(|u| !u.is_empty()) {
+                req.push_str(&format!("User-Agent: {ua}\r\n"));
             }
-            CertificateError::UnknownIssuer => verify("unable to get local issuer certificate", 20),
-            CertificateError::Revoked => verify("certificate revoked", 23),
-            CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. } => {
-                (
-                    60,
-                    format!(
-                    "SSL: no alternative certificate subject name matches target hostname '{host}'"
-                ),
-                )
+            req.push_str("Proxy-Connection: Keep-Alive\r\n\r\n");
+            let mut c = BufReader::new(Stream::Plain(tcp));
+            c.get_mut()
+                .write_all(req.as_bytes())
+                .map_err(|e| (55, format!("Send failure: {e}")))?;
+            let head = match read_head(&mut c) {
+                Ok(Some(h)) => h,
+                Ok(None) => return Err((56, "Proxy CONNECT aborted".into())),
+                Err(e) => return Err(recv_error(&e)),
+            };
+            let code = status_of(&head[0]).map_or(0, |(_, c)| c);
+            blocks.push(head);
+            if code / 100 != 2 {
+                return Err((56, format!("CONNECT tunnel failed, response {code}")));
             }
-            other => (60, format!("SSL certificate problem: {other:?}")),
-        },
-        other => (35, format!("TLS connect error: {other}")),
-    })
+            match c.into_inner() {
+                Stream::Plain(t) => t,
+                Stream::Tls(_) => unreachable!(),
+            }
+        }
+        _ => tcp,
+    };
+    let stream = match tls {
+        Some(cfg) => tls_handshake(tcp, &key.host, cfg)?,
+        None => Stream::Plain(tcp),
+    };
+    Ok((BufReader::new(stream), false))
 }
 
-fn transport_error(
-    t: &ureq::Transport,
-    url: &url::Url,
-    elapsed: Duration,
-    got: usize,
-) -> (i64, String) {
-    let ms = elapsed.as_millis();
-    let (host, port) = host_port(url);
-    let host_disp = host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_string();
-    if let Some(e) = tls_error(t, &host_disp) {
-        return e;
-    }
-    match t.kind() {
-        ureq::ErrorKind::Dns => (6, format!("Could not resolve host: {host_disp}")),
-        ureq::ErrorKind::ConnectionFailed => {
-            if is_timeout(t) {
-                (28, format!("Connection timed out after {ms} milliseconds"))
-            } else {
-                (
-                    7,
-                    format!(
-                        "Failed to connect to {host}:{port} after {ms} ms: Could not connect to server"
-                    ),
-                )
-            }
-        }
-        ureq::ErrorKind::InvalidUrl => {
-            (3, "URL rejected: Malformed input to a URL function".into())
-        }
-        ureq::ErrorKind::UnknownScheme => {
-            (1, format!("Protocol \"{}\" not supported", url.scheme()))
-        }
-        ureq::ErrorKind::InvalidProxyUrl => (5, "Could not resolve proxy".into()),
-        ureq::ErrorKind::ProxyConnect | ureq::ErrorKind::ProxyUnauthorized => {
-            (56, "CONNECT tunnel failed".into())
-        }
-        ureq::ErrorKind::BadStatus | ureq::ErrorKind::BadHeader => (8, "Weird server reply".into()),
-        _ => {
-            if is_timeout(t) {
-                (
-                    28,
-                    format!(
-                        "Operation timed out after {ms} milliseconds with {got} bytes received"
-                    ),
-                )
-            } else {
-                let msg = t.to_string();
-                let lower = msg.to_ascii_lowercase();
-                if lower.contains("certificate") || lower.contains("invalidcertificate") {
-                    (
-                        60,
-                        format!("SSL certificate problem: {}", t.message().unwrap_or(&msg)),
-                    )
-                } else if lower.contains("tls")
-                    || lower.contains("handshake")
-                    || lower.contains("alert")
-                {
-                    (
-                        35,
-                        format!("TLS connect error: {}", t.message().unwrap_or(&msg)),
-                    )
-                } else if lower.contains("reset") {
-                    (56, "Recv failure: Connection reset by peer".into())
-                } else {
-                    (56, format!("Recv failure: {}", t.message().unwrap_or(&msg)))
-                }
-            }
-        }
-    }
+/// Read/write timeouts from what is left of CURLOPT_TIMEOUT.
+fn set_timeouts(tcp: &TcpStream, spec: &Spec, start: Instant) {
+    let t = if spec.timeout_ms > 0 {
+        let left = Duration::from_millis(spec.timeout_ms).saturating_sub(start.elapsed());
+        Some(left.max(Duration::from_millis(1)))
+    } else {
+        None
+    };
+    let _ = tcp.set_read_timeout(t);
+    let _ = tcp.set_write_timeout(t);
+}
+
+/// `host[:port]` with the scheme's default port left out, IPv6 bracketed.
+fn host_hdr(host: &str, port: u16) -> String {
+    let h = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    format!("{h}:{port}")
 }
 
 fn perform_http(spec: &Spec, url_s: String, mut info: Info, start: Instant) -> Outcome {
-    let agent = match agent_for(spec) {
-        Ok(a) => a,
+    let tls_key = TlsKey {
+        cainfo: spec.cainfo.clone().filter(|c| !c.is_empty()),
+        insecure: !spec.verify_peer,
+    };
+    let proxy = match spec.proxy.as_deref().map(parse_proxy).transpose() {
+        Ok(p) => p.flatten(),
         Err((errno, msg)) => {
             info.scheme = scheme_of(&url_s);
             return fail(info, errno, msg, start);
         }
     };
+    info.used_proxy = proxy.is_some() as i64;
+    let customs = custom_headers(spec);
     let mut url_s = url_s;
     let mut method = spec.method();
     let mut body = spec.upload.clone().or_else(|| spec.body.clone());
+    let mut body_ct = if spec.upload.is_some() {
+        None
+    } else {
+        spec.body_content_type.clone()
+    };
+    let mut referer = spec.referer.clone();
     let mut header_blocks: Vec<Vec<Vec<u8>>> = Vec::new();
     let mut header_size: i64 = 0;
     let mut request_size: i64 = 0;
     let mut redirects: i64 = 0;
     let mut redirect_us: i64 = 0;
-    info.used_proxy = spec.proxy.as_deref().map_or(0, |p| !p.is_empty() as i64);
-    let headers = request_headers(spec);
+    let mut first: Option<(String, u16, String)> = None;
+    macro_rules! bail {
+        ($errno:expr, $msg:expr) => {{
+            info.header_size = header_size;
+            info.request_size = request_size;
+            info.redirect_count = redirects;
+            let mut o = fail(info, $errno, $msg, start);
+            o.header_blocks = header_blocks;
+            return o;
+        }};
+    }
     loop {
         let parsed = match url::Url::parse(&url_s) {
             Ok(u) => u,
-            Err(url::ParseError::EmptyHost) => {
-                return fail(info, 3, "URL rejected: No host part in the URL", start)
-            }
-            Err(_) => {
-                return fail(
-                    info,
-                    3,
-                    "URL rejected: Malformed input to a URL function",
-                    start,
-                )
-            }
+            Err(url::ParseError::EmptyHost) => bail!(3, "URL rejected: No host part in the URL"),
+            Err(_) => bail!(3, "URL rejected: Malformed input to a URL function"),
         };
         if parsed.host_str().is_none_or(|h| h.is_empty()) {
-            return fail(info, 3, "URL rejected: No host part in the URL", start);
+            bail!(3, "URL rejected: No host part in the URL");
         }
         let scheme = parsed.scheme().to_string();
         info.scheme = Some(scheme.clone());
@@ -877,40 +1349,150 @@ fn perform_http(spec: &Spec, url_s: String, mut info: Info, start: Instant) -> O
         };
         info.effective_url = url_s.clone();
         info.effective_method = method.clone();
-        let hop_start = Instant::now();
-        let mut req = agent.request(&method, &url_s);
-        if spec.timeout_ms > 0 {
-            let spent = start.elapsed();
-            let total = Duration::from_millis(spec.timeout_ms);
-            req = req.timeout(total.saturating_sub(spent).max(Duration::from_millis(1)));
-        }
-        for (k, v) in &headers {
-            req = req.set(k, v);
-        }
-        // Approximate request size: request line + headers.
-        request_size += (method.len() + parsed.path().len() + 12) as i64
-            + headers
-                .iter()
-                .map(|(k, v)| (k.len() + v.len() + 4) as i64)
-                .sum::<i64>()
-            + 2;
-        let result = match &body {
-            Some(b) => req.send_bytes(b),
-            None if method == "POST" || method == "PUT" => req.send_bytes(&[]),
-            None => req.call(),
-        };
-        let resp = match result {
-            Ok(r) => r,
-            Err(ureq::Error::Status(_, r)) => r,
-            Err(ureq::Error::Transport(t)) => {
-                let (errno, msg) = transport_error(&t, &parsed, start.elapsed(), 0);
-                info.header_size = header_size;
-                info.request_size = request_size;
-                info.redirect_count = redirects;
-                let mut o = fail(info, errno, msg, start);
-                o.header_blocks = header_blocks;
-                return o;
+        let host = parsed
+            .host_str()
+            .unwrap_or("")
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
+        let port = parsed.port_or_known_default().unwrap_or(80);
+        let this = (host.to_ascii_lowercase(), port, scheme.clone());
+        let first_ref = first.get_or_insert_with(|| this.clone());
+        let allowed = spec.unrestricted_auth || *first_ref == this;
+        let custom_host_ok = first_ref.0 == this.0;
+        let tls = if scheme == "https" {
+            match tls_config(&tls_key) {
+                Ok(c) => Some(c),
+                Err((e, m)) => bail!(e, m),
             }
+        } else {
+            None
+        };
+        let host_header = if parsed.port().is_some() {
+            host_hdr(&host, port)
+        } else if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host.clone()
+        };
+        let http_proxy = proxy.as_ref().filter(|_| tls.is_none());
+        let target = if http_proxy.is_some() {
+            let mut u = parsed.clone();
+            u.set_fragment(None);
+            u.to_string()
+        } else {
+            let mut t = parsed.path().to_string();
+            if let Some(q) = parsed.query() {
+                t.push('?');
+                t.push_str(q);
+            }
+            t
+        };
+        let send_body = body.as_deref();
+        let req = build_request(
+            spec,
+            &Hop {
+                method: &method,
+                target,
+                host_hdr: host_header,
+                allowed,
+                custom_host_ok,
+                referer: referer.as_deref(),
+                http_proxy,
+                body: send_body,
+                body_content_type: if send_body.is_some() {
+                    body_ct.as_deref()
+                } else {
+                    None
+                },
+            },
+            &customs,
+        );
+        let key = PoolKey {
+            scheme: scheme.clone(),
+            host: host.clone(),
+            port,
+            proxy: proxy.as_ref().map(|p| (p.host.clone(), p.port)),
+            tls: tls_key.clone(),
+            ipresolve: spec.ipresolve,
+        };
+        let hop_start = Instant::now();
+        // Send; a pooled connection the server has meanwhile dropped is
+        // retried once on a fresh one.
+        let mut allow_reuse = true;
+        let (mut conn, mut head) = loop {
+            let (mut conn, reused) = match open_conn(
+                spec,
+                &key,
+                proxy.as_ref(),
+                tls.clone(),
+                start,
+                allow_reuse,
+                &mut header_blocks,
+            ) {
+                Ok(c) => c,
+                Err((e, m)) => bail!(e, m),
+            };
+            set_timeouts(conn.get_ref().tcp(), spec, start);
+            let sent = conn.get_mut().write_all(&req).and_then(|_| {
+                if let Some(b) = send_body {
+                    conn.get_mut().write_all(b)?;
+                }
+                conn.get_mut().flush()
+            });
+            if let Err(e) = sent {
+                if reused {
+                    allow_reuse = false;
+                    continue;
+                }
+                if io_error_kind_timeout(&e) {
+                    let ms = start.elapsed().as_millis();
+                    bail!(
+                        28,
+                        format!(
+                            "Operation timed out after {ms} milliseconds with 0 bytes received"
+                        )
+                    );
+                }
+                bail!(55, format!("Send failure: {e}"));
+            }
+            match read_head(&mut conn) {
+                Ok(Some(h)) => break (conn, h),
+                Ok(None) if reused => allow_reuse = false,
+                Err(_) if reused => allow_reuse = false,
+                Ok(None) => bail!(52, "Empty reply from server"),
+                Err(e) if io_error_kind_timeout(&e) => {
+                    let ms = start.elapsed().as_millis();
+                    bail!(
+                        28,
+                        format!(
+                            "Operation timed out after {ms} milliseconds with 0 bytes received"
+                        )
+                    );
+                }
+                Err(e) => bail!(recv_error(&e).0, recv_error(&e).1),
+            }
+        };
+        request_size += (req.len() + send_body.map_or(0, |b| b.len())) as i64;
+        let h2 = scheme == "https" && !matches!(spec.http_version, 1 | 2);
+        // Informational responses (100 Continue, ...) reach the header
+        // handler too, then the real response follows.
+        let (version, status) = loop {
+            let Some((ver, code)) = status_of(&head[0]) else {
+                bail!(1, "Received HTTP/0.9 when not allowed");
+            };
+            if (100..200).contains(&code) && code != 101 {
+                let block = if h2 { as_h2(&head, code) } else { head };
+                header_size += block.iter().map(|l| l.len() as i64).sum::<i64>();
+                header_blocks.push(block);
+                head = match read_head(&mut conn) {
+                    Ok(Some(h)) => h,
+                    Ok(None) => bail!(52, "Empty reply from server"),
+                    Err(e) => bail!(recv_error(&e).0, recv_error(&e).1),
+                };
+                continue;
+            }
+            break (ver, code);
         };
         let elapsed = start.elapsed();
         info.namelookup_us = us(elapsed);
@@ -921,74 +1503,51 @@ fn perform_http(spec: &Spec, url_s: String, mut info: Info, start: Instant) -> O
         if scheme == "https" {
             info.appconnect_us = us(elapsed);
         }
-        let remote = resp.remote_addr();
-        info.primary_ip = remote.ip().to_string();
-        info.primary_port = remote.port() as i64;
-        let local = resp.local_addr();
-        info.local_ip = local.ip().to_string();
-        info.local_port = local.port() as i64;
+        let tcp = conn.get_ref().tcp();
+        if let Ok(remote) = tcp.peer_addr() {
+            info.primary_ip = remote.ip().to_string();
+            info.primary_port = remote.port() as i64;
+        }
+        if let Ok(local) = tcp.local_addr() {
+            info.local_ip = local.ip().to_string();
+            info.local_port = local.port() as i64;
+        }
         info.conn_id = 0;
-        // libcurl negotiates HTTP/2 over TLS by default (CURL_HTTP_VERSION_2TLS)
-        // and every mainstream package host speaks it; ureq is HTTP/1.1-only, so
-        // present https responses the way libcurl reports an h2 exchange:
-        // `HTTP/2 <code> ` status line (no reason phrase), lowercase header
-        // names, no hop-by-hop headers, CURLINFO_HTTP_VERSION = 3. Forcing
-        // CURL_HTTP_VERSION_1_0/1_1 keeps the HTTP/1.x presentation.
-        let h2 = scheme == "https" && !matches!(spec.http_version, 1 | 2);
         info.http_version = if h2 {
             HTTP_VERSION_2
-        } else if resp.http_version() == "HTTP/1.0" {
+        } else if version == "HTTP/1.0" {
             HTTP_VERSION_1_0
         } else {
             HTTP_VERSION_1_1
         };
-        let status = resp.status() as i64;
         info.http_code = status;
-        // Rebuild the raw header block, preserving order and duplicates.
-        let mut block: Vec<Vec<u8>> = Vec::new();
-        block.push(if h2 {
-            format!("HTTP/2 {} \r\n", resp.status()).into_bytes()
-        } else {
-            format!(
-                "{} {} {}\r\n",
-                resp.http_version(),
-                resp.status(),
-                resp.status_text()
-            )
-            .into_bytes()
-        });
-        let names = resp.headers_names();
-        let mut seen: HashMap<String, usize> = HashMap::new();
-        for n in &names {
-            let k = seen.entry(n.clone()).or_insert(0);
-            if let Some(v) = resp.all(n).get(*k) {
-                if h2 {
-                    if !H1_ONLY_HEADERS.contains(&n.as_str()) {
-                        block.push(format!("{n}: {v}\r\n").into_bytes());
-                    }
-                } else {
-                    block.push(format!("{}: {}\r\n", display_name(n), v).into_bytes());
-                }
-            }
-            *k += 1;
-        }
-        block.push(b"\r\n".to_vec());
+        let content_type = header_value(&head, "content-type");
+        let content_length = header_value(&head, "content-length");
+        let chunked = header_value(&head, "transfer-encoding")
+            .is_some_and(|v| v.to_ascii_lowercase().contains("chunked"));
+        let content_encoding = header_value(&head, "content-encoding");
+        let location = header_value(&head, "location");
+        let conn_close = header_value(&head, "connection")
+            .is_some_and(|v| v.to_ascii_lowercase().contains("close"))
+            || (version == "HTTP/1.0"
+                && !header_value(&head, "connection")
+                    .is_some_and(|v| v.to_ascii_lowercase().contains("keep-alive")));
+        let block = if h2 { as_h2(&head, status) } else { head };
         header_size += block.iter().map(|l| l.len() as i64).sum::<i64>();
         header_blocks.push(block);
         info.header_size = header_size;
         info.request_size = request_size;
-        info.content_type = resp.header("content-type").map(|s| s.to_string());
-        info.content_length_download = resp
-            .header("content-length")
+        info.content_type = content_type;
+        info.content_length_download = content_length
+            .as_deref()
             .and_then(|v| v.trim().parse::<f64>().ok())
             .unwrap_or(-1.0);
-        info.size_upload = body.as_ref().map_or(0, |b| b.len() as i64);
-        info.content_length_upload = if body.is_some() {
+        info.size_upload = send_body.map_or(0, |b| b.len() as i64);
+        info.content_length_upload = if send_body.is_some() {
             info.size_upload as f64
         } else {
             -1.0
         };
-        let location = resp.header("location").map(|s| s.to_string());
         let next = location
             .as_deref()
             .and_then(|l| parsed.join(l).ok())
@@ -1008,29 +1567,64 @@ fn perform_http(spec: &Spec, url_s: String, mut info: Info, start: Instant) -> O
             };
         }
 
+        let framing = if method == "HEAD" || status == 204 || status == 304 {
+            Framing::Empty
+        } else if chunked {
+            Framing::Chunked
+        } else if let Some(n) = content_length
+            .as_deref()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            Framing::Length(n)
+        } else {
+            Framing::Eof
+        };
         let follow = spec.follow && is_redirect;
         let mut data = Vec::new();
-        if !(method == "HEAD" || spec.nobody) || follow {
-            let mut reader = resp.into_reader();
-            if let Err(e) = (&mut reader).take(1 << 34).read_to_end(&mut data) {
+        match read_body(&mut conn, &framing, &mut data) {
+            Ok(reusable) => {
+                if reusable && !conn_close {
+                    checkin(key, conn);
+                }
+            }
+            Err(e) => {
                 info.size_download = data.len() as i64;
-                info.redirect_count = redirects;
-                let timed_out = matches!(
-                    e.kind(),
-                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                );
                 let ms = start.elapsed().as_millis();
-                let (errno, msg) = if timed_out {
-                    (
-                        28,
-                        format!(
-                            "Operation timed out after {ms} milliseconds with {} bytes received",
-                            data.len()
+                let (errno, msg) = if io_error_kind_timeout(&e) {
+                    match framing {
+                        Framing::Length(n) => (
+                            28,
+                            format!(
+                                "Operation timed out after {ms} milliseconds with {} out of {n} bytes received",
+                                data.len()
+                            ),
                         ),
-                    )
+                        _ => (
+                            28,
+                            format!(
+                                "Operation timed out after {ms} milliseconds with {} bytes received",
+                                data.len()
+                            ),
+                        ),
+                    }
+                } else if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                    match framing {
+                        Framing::Length(n) => (
+                            18,
+                            format!(
+                                "transfer closed with {} bytes remaining to read",
+                                n.saturating_sub(data.len() as u64)
+                            ),
+                        ),
+                        _ => (
+                            18,
+                            "transfer closed with outstanding read data remaining".into(),
+                        ),
+                    }
                 } else {
-                    (56, format!("Recv failure: {e}"))
+                    recv_error(&e)
                 };
+                info.redirect_count = redirects;
                 let mut o = fail(info, errno, msg, start);
                 o.header_blocks = header_blocks;
                 o.body = data;
@@ -1040,15 +1634,10 @@ fn perform_http(spec: &Spec, url_s: String, mut info: Info, start: Instant) -> O
 
         if follow {
             if redirects >= spec.max_redirs && spec.max_redirs >= 0 {
-                info.redirect_count = redirects;
-                let mut o = fail(
-                    info,
+                bail!(
                     47,
-                    format!("Maximum ({}) redirects followed", spec.max_redirs),
-                    start,
+                    format!("Maximum ({}) redirects followed", spec.max_redirs)
                 );
-                o.header_blocks = header_blocks;
-                return o;
             }
             let next = next.unwrap_or_default();
             let next_scheme = scheme_of(&next).unwrap_or_default();
@@ -1057,15 +1646,10 @@ fn perform_http(spec: &Spec, url_s: String, mut info: Info, start: Instant) -> O
                 .find(|(n, _)| *n == next_scheme)
                 .map_or(0, |(_, b)| *b);
             if spec.redir_protocols & bit == 0 || (bit != PROTO_HTTP && bit != PROTO_HTTPS) {
-                info.redirect_count = redirects;
-                let mut o = fail(
-                    info,
+                bail!(
                     1,
-                    format!("Protocol \"{next_scheme}\" not supported or disabled in libcurl"),
-                    start,
+                    format!("Protocol \"{next_scheme}\" not supported or disabled in libcurl")
                 );
-                o.header_blocks = header_blocks;
-                return o;
             }
             redirects += 1;
             redirect_us += us(hop_start.elapsed());
@@ -1077,14 +1661,35 @@ fn perform_http(spec: &Spec, url_s: String, mut info: Info, start: Instant) -> O
                     method = "GET".into();
                 }
                 body = None;
+                body_ct = None;
+            }
+            if spec.autoreferer {
+                let mut u = parsed.clone();
+                u.set_fragment(None);
+                let _ = u.set_username("");
+                let _ = u.set_password(None);
+                referer = Some(u.to_string());
             }
             url_s = next;
             continue;
         }
 
+        if let Some(ce) = content_encoding.filter(|_| spec.encoding.is_some()) {
+            info.size_download = data.len() as i64;
+            match decode_body(data, &ce) {
+                Ok(d) => data = d,
+                Err((e, m)) => {
+                    info.redirect_count = redirects;
+                    let mut o = fail(info, e, m, start);
+                    o.header_blocks = header_blocks;
+                    return o;
+                }
+            }
+        } else {
+            info.size_download = data.len() as i64;
+        }
         info.redirect_count = redirects;
         info.redirect_us = redirect_us;
-        info.size_download = data.len() as i64;
         info.total_us = us(start.elapsed());
         return Outcome {
             header_blocks,
@@ -1094,20 +1699,4 @@ fn perform_http(spec: &Spec, url_s: String, mut info: Info, start: Instant) -> O
             info,
         };
     }
-}
-
-/// ureq lowercases header names; restore the conventional `Title-Case` that
-/// HTTP/1.1 servers send (header names are case-insensitive either way).
-fn display_name(n: &str) -> String {
-    let mut out = String::with_capacity(n.len());
-    let mut up = true;
-    for c in n.chars() {
-        if up {
-            out.extend(c.to_uppercase());
-        } else {
-            out.push(c);
-        }
-        up = c == '-';
-    }
-    out
 }

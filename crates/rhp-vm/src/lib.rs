@@ -87,6 +87,8 @@ pub struct Vm {
     main_script_path: Option<Vec<u8>>,
     // Open stream resources (fopen family), keyed by resource id.
     streams: HashMap<u32, StreamState>,
+    // The fopen() mode of each stream opened by stream_open.
+    stream_modes: HashMap<u32, Vec<u8>>,
     next_resource_id: u32,
     // Stream-context resources (`stream_context_create`), id -> options array.
     stream_contexts: HashMap<u32, Value>,
@@ -448,7 +450,19 @@ impl Host for Vm {
             let data = self.wrapper_for(path).and_then(|w| w.get_contents(path))?;
             StreamState::Mem { buf: data, pos: 0 }
         };
-        Some(self.make_stream(state, "stream"))
+        let res = self.make_stream(state, "stream");
+        if let Some(id) = res_id(&res) {
+            self.stream_modes.insert(id, mode.to_vec());
+        }
+        Some(res)
+    }
+
+    fn stream_is_open(&self, res: &Value) -> bool {
+        res_id(res).is_some_and(|id| self.streams.contains_key(&id))
+    }
+
+    fn stream_mode(&self, res: &Value) -> Option<Vec<u8>> {
+        res_id(res).and_then(|id| self.stream_modes.get(&id).cloned())
     }
 
     fn stream_write(&mut self, res: &Value, data: &[u8]) -> Option<usize> {
@@ -529,6 +543,7 @@ impl Host for Vm {
 
     fn stream_close(&mut self, res: &Value) -> bool {
         let Some(id) = res_id(res) else { return false };
+        self.stream_modes.remove(&id);
         match self.streams.remove(&id) {
             Some(StreamState::FileWrite { buf, url }) => self
                 .wrapper_for(&url)
@@ -1026,6 +1041,7 @@ impl Vm {
             wrappers,
             main_script_path: None,
             streams: HashMap::new(),
+            stream_modes: HashMap::new(),
             next_resource_id: 1,
             stream_contexts: HashMap::new(),
             last_response_headers: Vec::new(),
@@ -2818,6 +2834,12 @@ impl Vm {
                             "__clone method called on non-object",
                         ));
                     };
+                    if let Some(class) = rhp_builtins::curl_uncloneable(&h) {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!("Trying to clone an uncloneable object of class {class}"),
+                        ));
+                    }
                     let (cls, props) = {
                         let od = h.borrow();
                         (od.class, od.properties.clone())
@@ -2829,6 +2851,7 @@ impl Vm {
                         id,
                         properties: props,
                     }));
+                    rhp_builtins::curl_cloned(&h, &new_obj);
                     self.reg_set(top, dst, Value::Object(new_obj.clone()));
                     if let Some(m) = self.lookup_method(cls, b"__clone") {
                         self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;
@@ -4592,8 +4615,10 @@ fn eval_cmp(kind: CmpKind, a: &Value, b: &Value) -> Value {
         CmpKind::NotIdentical => Value::Bool(!ops::strict_eq(a, b)),
         CmpKind::Lt => Value::Bool(ops::loose_compare(a, b).is_lt()),
         CmpKind::Le => Value::Bool(ops::loose_compare(a, b).is_le()),
-        CmpKind::Gt => Value::Bool(ops::loose_compare(a, b).is_gt()),
-        CmpKind::Ge => Value::Bool(ops::loose_compare(a, b).is_ge()),
+        // php compiles `a > b` as `b < a` (and `>=` as `<=`), which matters
+        // for uncomparable operands (both orders compare as 1).
+        CmpKind::Gt => Value::Bool(ops::loose_compare(b, a).is_lt()),
+        CmpKind::Ge => Value::Bool(ops::loose_compare(b, a).is_le()),
         CmpKind::Spaceship => ops::spaceship(a, b),
     }
 }

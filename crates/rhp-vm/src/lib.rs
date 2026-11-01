@@ -7144,6 +7144,16 @@ impl Vm {
             if let Some(caller_ci) = caller_proto.cv_var_names.iter().position(|n| n == name) {
                 let rc = self.promote(caller_top, caller_ci as Reg);
                 frame.regs[ci] = Value::Ref(rc);
+            } else if name.as_bytes() != b"this"
+                && !main.superglobals.iter().any(|(r, _)| *r as usize == ci)
+            {
+                // A variable the caller has no slot for still lives in the
+                // caller's scope: the global symbol table at top level (so an
+                // included script sees `$argv`), else its by-name table.
+                let Err(rc) = self.var_var_slot(caller_top, name.as_bytes()) else {
+                    unreachable!("no slot named {name:?} in the caller")
+                };
+                frame.regs[ci] = Value::Ref(rc);
             }
         }
         self.bind_superglobals(&mut frame);

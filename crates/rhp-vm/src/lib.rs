@@ -2186,6 +2186,15 @@ impl Vm {
             }
         }
         self.last_error = Some((level, msg.as_bytes().to_vec(), file.clone(), line));
+        if level == 256 {
+            // E_USER_ERROR is fatal: displayed with the backtrace, then the
+            // request bails out (shutdown functions still run; exit 255).
+            let trace = Value::Array(self.build_trace_ex(false, false));
+            let trace = builtins::php_fns::trace_to_string(self, &trace);
+            self.display_error_trace(level, "Fatal error", msg.as_bytes(), &file, line, &trace);
+            self.pending_throw = Some(Thrown::Exit(255));
+            return;
+        }
         if self.silence > 0 && level & SILENCE_KEEPS == 0 {
             return;
         }
@@ -4344,6 +4353,20 @@ impl Vm {
     /// (stdout through the output buffers, or stderr without the leading
     /// newline for "stderr").
     fn display_error(&mut self, ty: i64, label: &str, message: &[u8], file: &[u8], line: i64) {
+        self.display_error_trace(ty, label, message, file, line, b"");
+    }
+
+    /// [`Vm::display_error`] with php 8.5's `fatal_error_backtraces` block
+    /// (`Stack trace:\n#0 …`) after the location.
+    fn display_error_trace(
+        &mut self,
+        ty: i64,
+        label: &str,
+        message: &[u8],
+        file: &[u8],
+        line: i64,
+        trace: &[u8],
+    ) {
         if builtins::php_fns::error_reporting_level(self) & ty == 0 {
             return;
         }
@@ -4353,6 +4376,11 @@ impl Vm {
         let mut tail = b" in ".to_vec();
         tail.extend_from_slice(file);
         tail.extend_from_slice(format!(" on line {line}\n").as_bytes());
+        if !trace.is_empty() {
+            tail.extend_from_slice(b"Stack trace:\n");
+            tail.extend_from_slice(trace);
+            tail.push(b'\n');
+        }
         if log {
             // error_log unset: the CLI SAPI's log_message writes to stderr.
             let mut m = format!("PHP {label}:  ").into_bytes();

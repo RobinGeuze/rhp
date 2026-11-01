@@ -205,3 +205,43 @@ fn require_missing_is_fatal_like_php() {
     assert_eq!(String::from_utf8_lossy(&php), String::from_utf8_lossy(&rhp));
     assert_eq!(php, b"before\n");
 }
+
+#[test]
+fn included_files_and_declared_classes_in_order_like_php() {
+    if !php_available() {
+        return;
+    }
+    let dir = case_dir("incorder");
+    write(
+        &dir.join("b.php"),
+        "<?php class FromB {} require __DIR__ . '/c.php';",
+    );
+    write(
+        &dir.join("c.php"),
+        "<?php trait FromC {} interface IFromC {}",
+    );
+    write(&dir.join("a.php"), "<?php class FromA {}");
+    // phpunit's TestSuiteLoader diffs get_declared_classes() around a require
+    // to find the test class.
+    write(
+        &dir.join("main.php"),
+        "<?php
+        $before = get_declared_classes();
+        require_once __DIR__ . '/b.php';
+        include __DIR__ . '/a.php';
+        require_once __DIR__ . '/c.php';
+        var_dump(array_values(array_diff(get_declared_classes(), $before)));
+        var_dump(array_map('basename', get_included_files()) === array_map('basename', get_required_files()));
+        foreach (get_included_files() as $f) { echo basename($f), \"\\n\"; }
+        var_dump(trait_exists('FromC'), end(get_declared_traits()), end(get_declared_interfaces()));
+        echo (new ReflectionClass('FromA'))->getFileName() === __DIR__ . '/a.php' ? \"ok\\n\" : \"bad\\n\";
+        ",
+    );
+    let main = dir.join("main.php");
+    let (php, rhp) = (run_php(&main), run_rhp(&main));
+    assert_eq!(
+        String::from_utf8_lossy(&php),
+        String::from_utf8_lossy(&rhp),
+        "include order / declared classes differ"
+    );
+}

@@ -1,0 +1,29 @@
+string(3) "A|B"
+bool(true)
+int(2)
+string(2) "Zz"
+string(19) "ReflectionUnionType"
+bool(true)
+string(5) "never"
+string(7) "MyUnion"
+int(1)
+array(2) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(4) "dyn*"
+}
+int(2)
+NULL
+bool(true)
+array(3) {
+  [0]=>
+  string(8) "abstract"
+  [1]=>
+  string(9) "protected"
+  [2]=>
+  string(6) "static"
+}
+string(15) "ReflectionClass"
+string(1) "q"
+string(1) "w"

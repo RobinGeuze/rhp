@@ -476,7 +476,11 @@ class ReflectionClass implements Reflector {
     }
     public function getConstant(string $name): mixed {
         $i = __reflect('const', $this->name, $name);
-        return $i === null ? false : $i['value'];
+        if ($i === null) {
+            __reflect('deprecated', 'ReflectionClass::getConstant() for a non-existent constant is deprecated, use ReflectionClass::hasConstant() to check if the constant exists');
+            return false;
+        }
+        return $i['value'];
     }
     public function getReflectionConstant(string $name): ReflectionClassConstant|false {
         return $this->hasConstant($name) ? new ReflectionClassConstant($this->name, $name) : false;
@@ -633,6 +637,7 @@ class ReflectionProperty implements Reflector {
     public function getValue(?object $object = null): mixed {
         if ($this->__i['static']) { return __reflect('static_props', $this->class)[$this->name] ?? null; }
         if ($object === null) { throw new TypeError('ReflectionProperty::getValue(): Argument #1 ($object) must be provided for instance properties'); }
+        if (!($object instanceof $this->class)) { throw new ReflectionException('Given object is not an instance of the class this property was declared in'); }
         if ($this->__i['type'] !== null && !isset($this->__i['dynamic']) && !__reflect('is_init', $object, $this->class, $this->name)) {
             throw new Error('Typed property ' . $this->class . '::$' . $this->name . ' must not be accessed before initialization');
         }
@@ -653,6 +658,7 @@ class ReflectionProperty implements Reflector {
     public function isInitialized(?object $object = null): bool {
         if ($this->__i['static']) { return true; }
         if ($object === null) { throw new TypeError('ReflectionProperty::isInitialized(): Argument #1 ($object) must be provided for instance properties'); }
+        if (!($object instanceof $this->class)) { throw new ReflectionException('Given object is not an instance of the class this property was declared in'); }
         return __reflect('is_init', $object, $this->class, $this->name);
     }
     public function isPublic(): bool { return $this->__i['vis'] === 1; }

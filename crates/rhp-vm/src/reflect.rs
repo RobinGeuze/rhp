@@ -547,16 +547,7 @@ impl Vm {
             mods |= 65536;
         }
         put(&mut a, "modifiers", Value::Int(mods));
-        put(
-            &mut a,
-            "abstract",
-            Value::Bool(
-                explicit
-                    || (e.kind == ClassKind::Class && has_abstract)
-                    || e.kind == ClassKind::Interface
-                    || (e.kind == ClassKind::Trait && has_abstract),
-            ),
-        );
+        put(&mut a, "abstract", Value::Bool(explicit || has_abstract));
         put(&mut a, "final", Value::Bool(is_final));
         put(&mut a, "readonly", Value::Bool(e.flags.is_readonly));
         let instantiable = e.kind == ClassKind::Class
@@ -570,7 +561,7 @@ impl Vm {
         let cloneable = e.kind == ClassKind::Class
             && !explicit
             && !has_abstract
-            && !matches!(full.as_slice(), b"Generator" | b"Closure")
+            && full.as_slice() != b"Generator"
             && match e.methods.get(&b"__clone"[..]) {
                 Some(m) => m.visibility == Visibility::Public,
                 None => true,

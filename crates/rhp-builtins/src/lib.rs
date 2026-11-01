@@ -1523,6 +1523,8 @@ pub fn module_prelude() -> String {
     let mut s = String::new();
     s.push_str(fs_fns::PRELUDE_PHP);
     s.push('\n');
+    s.push_str(stdext_fns::PRELUDE_PHP);
+    s.push('\n');
     for md in ext::modules() {
         if !md.prelude_php.is_empty() {
             s.push_str(md.prelude_php);

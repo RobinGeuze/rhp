@@ -33,7 +33,7 @@ fn key_to_value(k: &ArrayKey) -> Value {
 /// "Object of class X could not be converted to int", `__toString`): the
 /// first exception (e.g. from a throwing error handler) is kept in `err` and
 /// the remaining comparisons are skipped.
-fn cmp_flagged_cx(
+pub(crate) fn cmp_flagged_cx(
     host: &mut dyn Host,
     a: &Value,
     b: &Value,

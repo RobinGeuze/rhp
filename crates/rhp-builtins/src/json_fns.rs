@@ -538,6 +538,72 @@ fn fn_json_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     }
 }
 
+/// `json_validate(string $json, int $depth = 512, int $flags = 0)`.
+fn fn_json_validate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let json = conv::to_string_bytes(&deref(&args[0]));
+    let depth = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(512);
+    let flags = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    if flags != 0 && flags != JSON_INVALID_UTF8_IGNORE {
+        return Err(Thrown::error(
+            "ValueError",
+            "json_validate(): Argument #3 ($flags) must be a valid flag (allowed flags: JSON_INVALID_UTF8_IGNORE)",
+        ));
+    }
+    if json.is_empty() {
+        set_last_error(JSON_ERROR_SYNTAX);
+        return Ok(Value::Bool(false));
+    }
+    set_last_error(JSON_ERROR_NONE);
+    if depth <= 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "json_validate(): Argument #2 ($depth) must be greater than 0",
+        ));
+    }
+    if depth > i32::MAX as i64 {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "json_validate(): Argument #2 ($depth) must be less than {}",
+                i32::MAX
+            ),
+        ));
+    }
+    let json: Vec<u8> = if flags & JSON_INVALID_UTF8_IGNORE != 0 {
+        String::from_utf8_lossy(&json)
+            .replace('\u{FFFD}', "")
+            .into_bytes()
+    } else {
+        json
+    };
+    if std::str::from_utf8(&json).is_err() {
+        set_last_error(JSON_ERROR_UTF8);
+        return Ok(Value::Bool(false));
+    }
+    let mut p = Parser {
+        s: &json,
+        i: 0,
+        max_depth: depth,
+        assoc: true,
+        bigint_as_string: false,
+        host,
+    };
+    p.skip_ws();
+    let code = match p.parse_value(1) {
+        Ok(_) => {
+            p.skip_ws();
+            if p.i != p.s.len() {
+                JSON_ERROR_SYNTAX
+            } else {
+                JSON_ERROR_NONE
+            }
+        }
+        Err(code) => code,
+    };
+    set_last_error(code);
+    Ok(Value::Bool(code == JSON_ERROR_NONE))
+}
+
 fn throw_or_null(host: &mut dyn Host, flags: i64, code: i64) -> Result<Value, Thrown> {
     if flags & JSON_THROW_ON_ERROR != 0 {
         Err(json_exception(host, code))
@@ -862,6 +928,7 @@ pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
     }
     reg!("json_encode", fn_json_encode, 1, Some(3));
     reg!("json_decode", fn_json_decode, 1, Some(4));
+    reg!("json_validate", fn_json_validate, 1, Some(3));
     reg!("json_last_error", fn_json_last_error, 0, Some(0));
     reg!("json_last_error_msg", fn_json_last_error_msg, 0, Some(0));
 }

@@ -84,6 +84,7 @@ mod query_fns;
 mod runtime_fns;
 mod serialize_fns;
 mod sort_fns;
+mod stdext_fns;
 mod str_fns;
 mod strarr2_fns;
 mod strcmp_fns;
@@ -663,6 +664,32 @@ pub trait Host {
         None
     }
 
+    /// The request's original `$_SERVER['argv']` (php's
+    /// `PG(http_globals)[TRACK_VARS_SERVER]`, unaffected by script writes to
+    /// `$_SERVER`), for `getopt`. Default: none.
+    fn cli_argv(&self) -> Option<Vec<Vec<u8>>> {
+        None
+    }
+
+    /// `get_included_files()`: the main script, then every included file in
+    /// inclusion order. Default: none.
+    fn included_files(&self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+
+    /// `get_class_methods()`: the class's method names in php's member order,
+    /// filtered by visibility from the calling scope. Default: none.
+    fn class_method_names(&self, _class_id: u32) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+
+    /// The file of the innermost user-code frame (php's
+    /// `zend_get_executed_filename`), for `Phar::running` / `Phar::mapPhar`.
+    /// Default: the main script.
+    fn executing_file(&self) -> Option<Vec<u8>> {
+        self.running_main_path()
+    }
+
     // --- stream resources (fopen family) -------------------------------------
     // Streams are resource Values whose state lives in the VM; these are the
     // `fopen`/`fwrite`/… primitives. Defaults are no-ops (hosts without streams).
@@ -1041,6 +1068,7 @@ pub fn reset_request_state() {
     ext::mbstring::reset_state();
     strsearch_fns::reset_state();
     php_fns::reset_state();
+    stdext_fns::reset_state();
 }
 
 /// The builtin function table, keyed by lowercase name (PHP function names are
@@ -1170,6 +1198,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("ini_parse", Box::new(ini_parse::register)),
         ("arraycmp_fns", Box::new(arraycmp_fns::register)),
         ("sysmisc_fns", Box::new(sysmisc_fns::register)),
+        ("stdext_fns", Box::new(stdext_fns::register)),
         ("proc_fns", Box::new(proc_fns::register)),
         // Exact-semantics filesystem builtins; registered last so they replace
         // older approximations in file_fns/stream_fns.
@@ -1467,6 +1496,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     .chain(json_fns::json_constants())
     .chain(info_fns::constants())
     .chain(fs_fns::constants())
+    .chain(stdext_fns::constants())
     // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with their module.
     .chain(ext::modules().into_iter().flat_map(|md| (md.constants)()))
     .collect()

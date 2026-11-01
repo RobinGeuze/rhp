@@ -128,6 +128,8 @@ pub struct Vm {
     fcc_scope: std::cell::Cell<Option<(Option<ClassId>, Option<ClassId>)>>,
     // Resolved real paths already included (for the `_once` variants).
     included_files: std::collections::HashSet<Vec<u8>>,
+    // The same files in first-inclusion order (`get_included_files`).
+    included_order: Vec<Vec<u8>>,
     // Registered `spl_autoload_register` callables, in call order.
     autoloaders: Vec<Value>,
     /// Lowercased class names whose autoload is in progress (php's
@@ -603,6 +605,64 @@ impl Host for Vm {
         self.main_script_path.clone()
     }
 
+    fn cli_argv(&self) -> Option<Vec<Vec<u8>>> {
+        Some(self.argv.clone())
+    }
+
+    fn included_files(&self) -> Vec<Vec<u8>> {
+        // The main script counts when it is a real file (not `-r` code or a
+        // script read from stdin).
+        let main = self.main_script_path.clone().or_else(|| {
+            let f = self.stack.first()?.proto.debug.file.as_bytes();
+            std::path::Path::new(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(f))
+                .is_file()
+                .then(|| f.to_vec())
+        });
+        let mut out: Vec<Vec<u8>> = main.into_iter().collect();
+        for f in &self.included_order {
+            if !out.contains(f) {
+                out.push(f.clone());
+            }
+        }
+        out
+    }
+
+    fn class_method_names(&self, class_id: u32) -> Vec<Vec<u8>> {
+        let Some(entry) = self.classes.get(class_id as usize) else {
+            return Vec::new();
+        };
+        let (scope, _, _) = self.callable_scope();
+        let related = |a: ClassId, b: ClassId| {
+            self.class(a).ancestors.contains(&b) || self.class(b).ancestors.contains(&a)
+        };
+        entry
+            .methods
+            .values()
+            .filter(|m| {
+                !(is_prelude_proto(&m.proto) && is_engine_helper_name(m.proto.name.as_bytes()))
+            })
+            .filter(|m| match m.visibility {
+                rhp_values::Visibility::Public => true,
+                rhp_values::Visibility::Protected => {
+                    scope.is_some_and(|s| related(m.defining_class, s))
+                }
+                rhp_values::Visibility::Private => scope == Some(m.defining_class),
+            })
+            .map(|m| m.proto.name.as_bytes().to_vec())
+            .collect()
+    }
+
+    fn executing_file(&self) -> Option<Vec<u8>> {
+        // The innermost user-code frame (prelude frames have no file).
+        self.stack
+            .iter()
+            .rev()
+            .map(|f| f.proto.debug.file.as_bytes())
+            .find(|f| !f.is_empty())
+            .map(|f| f.to_vec())
+            .or_else(|| self.main_script_path.clone())
+    }
+
     fn has_streams(&self) -> bool {
         true
     }
@@ -824,7 +884,13 @@ impl Host for Vm {
     fn stream_read(&mut self, res: &Value, len: i64) -> Option<Vec<u8>> {
         let id = res_id(res)?;
         match self.streams.get_mut(&id)? {
-            StreamState::Mem { buf, pos, eof, .. } => {
+            StreamState::Mem {
+                buf,
+                pos,
+                eof,
+                temp,
+                ..
+            } => {
                 let avail = buf.len().saturating_sub(*pos);
                 let take = if len < 0 {
                     avail
@@ -839,6 +905,12 @@ impl Host for Vm {
                 // A position past the end (fseek beyond EOF) reads nothing.
                 let out = buf.get(*pos..*pos + take).unwrap_or_default().to_vec();
                 *pos += take;
+                // php://temp is a buffered stream over a memory stream: the
+                // buffer fill drains the inner stream, so consuming the last
+                // byte already leaves the stream at eof.
+                if temp.is_some() && *pos >= buf.len() {
+                    *eof = true;
+                }
                 Some(out)
             }
             StreamState::File(f) => {
@@ -2218,6 +2290,7 @@ impl Vm {
             includer: None,
             fcc_scope: std::cell::Cell::new(None),
             included_files: std::collections::HashSet::new(),
+            included_order: Vec::new(),
             autoloaders: Vec::new(),
             in_autoload: Default::default(),
             pending_named: None,
@@ -2385,7 +2458,8 @@ impl Vm {
             ArrayKey::from_bytes(b"SCRIPT_NAME"),
             Value::str(script.clone()),
         );
-        let script_fn = self.main_script_path.clone().unwrap_or(script.clone());
+        // `-r` code / a script read from stdin has no script file.
+        let script_fn = self.main_script_path.clone().unwrap_or_default();
         server.insert(
             ArrayKey::from_bytes(b"SCRIPT_FILENAME"),
             Value::str(script_fn),
@@ -3428,7 +3502,13 @@ impl Vm {
     fn stream_gets_impl(&mut self, res: &Value, max: Option<usize>) -> Option<Vec<u8>> {
         let id = res_id(res)?;
         match self.streams.get_mut(&id)? {
-            StreamState::Mem { buf, pos, eof, .. } => {
+            StreamState::Mem {
+                buf,
+                pos,
+                eof,
+                temp,
+                ..
+            } => {
                 if *pos >= buf.len() {
                     *eof = true;
                     return None;
@@ -3450,6 +3530,9 @@ impl Vm {
                 }
                 let line = buf[start..end].to_vec();
                 *pos = end;
+                if temp.is_some() && *pos >= buf.len() {
+                    *eof = true;
+                }
                 Some(line)
             }
             StreamState::File(f) => f.gets(max),
@@ -6797,7 +6880,9 @@ impl Vm {
         if kind.is_once() && self.included_files.contains(&realpath) {
             return Ok(Value::Bool(true));
         }
-        self.included_files.insert(realpath.clone());
+        if self.included_files.insert(realpath.clone()) {
+            self.included_order.push(realpath.clone());
+        }
         // php opens each included file as a stream resource (closed again
         // after compiling): it uses up a resource id.
         self.next_resource_id += 1;

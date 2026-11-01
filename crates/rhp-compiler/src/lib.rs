@@ -451,7 +451,11 @@ fn as_reference<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
 /// last slash.
 fn dirname(path: &[u8]) -> Vec<u8> {
     match path.iter().rposition(|&b| b == b'/') {
-        None => b".".to_vec(),
+        // php (zend_compile `__DIR__`): a "." directory — "Command line
+        // code", "Standard input code" — becomes the current directory.
+        None => std::env::current_dir()
+            .map(|d| d.into_os_string().into_encoded_bytes())
+            .unwrap_or_else(|_| b".".to_vec()),
         Some(0) => b"/".to_vec(),
         Some(i) => path[..i].to_vec(),
     }
@@ -3999,6 +4003,8 @@ impl ProtoBuilder {
                     _ if matches!(
                         global_lc.as_deref().unwrap_or(&name_lc),
                         b"end" | b"reset" | b"next" | b"prev" | b"current" | b"key" | b"each"
+                    ) || rhp_bytecode::builtin_prefers_ref(
+                        global_lc.as_deref().unwrap_or(&name_lc),
                     ) =>
                     {
                         slots.push(ArgSlot::Value(self.compile_expr(p.value)?))

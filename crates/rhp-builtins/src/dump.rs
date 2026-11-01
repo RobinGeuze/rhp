@@ -35,6 +35,10 @@ fn mangled_props(host: &dyn crate::Host, h: &rhp_values::ObjectHandle) -> Vec<(P
 /// php's `get_debug_info` view (`var_dump`, `print_r`): the properties, plus
 /// an ArrayObject / ArrayIterator's storage as its private `storage`.
 fn debug_props(host: &dyn crate::Host, h: &rhp_values::ObjectHandle) -> Vec<(PhpStr, Value)> {
+    // SimpleXML's get_debug_info view, materialized by the caller
+    if let Some(v) = crate::ext::simplexml::debug_view(h.borrow().id) {
+        return v;
+    }
     let mut props = mangled_props(host, h);
     if let Some(st) = crate::spl_array_debug_storage(h) {
         props.push(st);
@@ -185,9 +189,20 @@ fn var_dump_value(
                         *next += 1;
                     }
                 };
+                // SimpleXML's debug view is a hash with integer keys
+                let int_keys = crate::ext::simplexml::debug_view(obj_id).is_some();
                 for (i, (k, val)) in props.iter().enumerate() {
                     dump_uninit(out, i, &mut next_uninit);
                     sp(indent + 2, out);
+                    if int_keys && !k.is_empty() && k.as_bytes().iter().all(|c| c.is_ascii_digit())
+                    {
+                        out.push(b'[');
+                        out.extend_from_slice(k.as_bytes());
+                        out.extend_from_slice(b"]=>\n");
+                        let shared = shared.get(i).copied().unwrap_or(false);
+                        var_dump_value(host, out, val, shared, indent + 2, seen);
+                        continue;
+                    }
                     out.extend_from_slice(b"[\"");
                     let (name, owner) = unmangle_prop(k.as_bytes());
                     out.extend_from_slice(name);

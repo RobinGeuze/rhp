@@ -294,7 +294,9 @@ impl Encoder {
         }
         // get_properties_for(JSON): an ArrayObject / ArrayIterator encodes
         // its storage (always as an object).
+        let sxe = crate::ext::simplexml::sxe_props(host, &Value::Object(h.clone()), false);
         let props: Vec<(PhpStr, Value)> = match crate::spl_array_storage(h) {
+            _ if sxe.is_some() => sxe.unwrap_or_default(),
             Some((Value::Array(a), _)) => a
                 .iter()
                 .map(|(k, v)| {

@@ -6,6 +6,7 @@
 //! `__nm`, and the namespace filter `__ns` / `__p` (is-prefix). The class is
 //! PHP-source ([`PRELUDE_PHP`]) forwarding to `__sxe($op, ...)`.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use rhp_values::{conv, ArrayKey, PhpArray, PhpStr, Value};
@@ -1046,6 +1047,329 @@ fn set_attr(doc: &mut Doc, el: NodeId, name: &[u8], val: &[u8]) {
     a.content = val.to_vec();
     let id = doc.add(a);
     doc.insert(el, id, None);
+}
+
+// ---------------------------------------------------------------- property views
+
+fn is_blank_text(doc: &Doc, id: NodeId) -> bool {
+    let n = &doc.nodes[id];
+    matches!(n.kind, Kind::Text | Kind::CData)
+        && n.content
+            .iter()
+            .all(|&c| matches!(c, b' ' | b'\t' | b'\n' | b'\r'))
+}
+
+/// libxml2's node->name as SimpleXML sees it (text nodes are "text",
+/// comments "comment", CDATA sections have none).
+fn sxe_node_name(doc: &Doc, id: NodeId) -> Option<Vec<u8>> {
+    let n = &doc.nodes[id];
+    match n.kind {
+        Kind::Element | Kind::Attr | Kind::Pi | Kind::EntityRef => Some(n.name.clone()),
+        Kind::Text => Some(b"text".to_vec()),
+        Kind::Comment => Some(b"comment".to_vec()),
+        _ => None,
+    }
+}
+
+/// What a property view entry holds before objects are materialized.
+enum PropVal {
+    Str(Vec<u8>),
+    Node(NodeId),
+    Arr(Vec<PropVal>),
+    Assoc(Vec<(Vec<u8>, Vec<u8>)>),
+}
+
+fn props_add(rv: &mut Vec<(Vec<u8>, PropVal)>, name: Vec<u8>, v: PropVal) {
+    if let Some((_, existing)) = rv.iter_mut().find(|(k, _)| *k == name) {
+        match existing {
+            PropVal::Arr(a) => a.push(v),
+            _ => {
+                let old = std::mem::replace(existing, PropVal::Arr(Vec::new()));
+                if let PropVal::Arr(a) = existing {
+                    a.push(old);
+                    a.push(v);
+                }
+            }
+        }
+    } else {
+        rv.push((name, v));
+    }
+}
+
+/// _get_base_node_value: the text of a leaf element, else the element.
+fn base_node_value(doc: &Doc, id: NodeId) -> PropVal {
+    let n = &doc.nodes[id];
+    if let Some(c) = n.first {
+        if doc.nodes[c].kind == Kind::Text && !is_blank_text(doc, c) {
+            return PropVal::Str(direct_text(doc, id));
+        }
+    }
+    PropVal::Node(id)
+}
+
+/// php's sxe_get_prop_hash, unmaterialized. Numeric keys are `None`.
+fn prop_hash(doc: &Doc, x: &Sxe, is_debug: bool) -> Vec<(Option<Vec<u8>>, PropVal)> {
+    let mut named: Vec<(Vec<u8>, PropVal)> = Vec::new();
+    let mut order: Vec<Option<Vec<u8>>> = Vec::new();
+    let mut numeric: Vec<PropVal> = Vec::new();
+    let add_named = |named: &mut Vec<(Vec<u8>, PropVal)>,
+                     order: &mut Vec<Option<Vec<u8>>>,
+                     k: Vec<u8>,
+                     v: PropVal| {
+        if !named.iter().any(|(n, _)| *n == k) {
+            order.push(Some(k.clone()));
+        }
+        props_add(named, k, v);
+    };
+    let first = first_node(doc, x);
+    if is_debug || x.t != T_CHILD {
+        let node = if x.t == T_ELEMENT { first } else { Some(x.n) };
+        if let Some(node) = node {
+            if doc.nodes[node].kind == Kind::Element {
+                let test = x.name.is_some() && x.t == T_ATTRLIST;
+                let mut attrs = Vec::new();
+                for &a in &doc.nodes[node].attrs {
+                    let an = &doc.nodes[a];
+                    if (!test || Some(&an.name) == x.name.as_ref())
+                        && match_ns(doc, a, &x.ns, x.is_prefix)
+                    {
+                        attrs.push((an.name.clone(), an.content.clone()));
+                    }
+                }
+                if !attrs.is_empty() {
+                    add_named(
+                        &mut named,
+                        &mut order,
+                        b"@attributes".to_vec(),
+                        PropVal::Assoc(attrs),
+                    );
+                }
+            }
+        }
+    }
+    if let Some(node) = first {
+        if x.t != T_ATTRLIST {
+            let nd = &doc.nodes[node];
+            if nd.kind == Kind::Attr {
+                numeric.push(PropVal::Str(nd.content.clone()));
+                order.push(None);
+            } else {
+                let mut use_iter = false;
+                let mut cur: Option<NodeId> = Some(node);
+                if x.t != T_CHILD {
+                    let leaf_sibling_list = x.t != T_NONE
+                        && nd.first.is_some()
+                        && nd.parent.is_some()
+                        && nd.next.is_some()
+                        && nd.first.and_then(|c| doc.nodes[c].next).is_none()
+                        && nd.first.and_then(|c| doc.nodes[c].first).is_none()
+                        && nd
+                            .parent
+                            .map(|p| doc.nodes[p].first != doc.nodes[p].last)
+                            .unwrap_or(false);
+                    if leaf_sibling_list {
+                        use_iter = true;
+                    } else {
+                        cur = nd.first;
+                    }
+                } else {
+                    cur = nd.first;
+                }
+                let iter_items = if use_iter { items(doc, x) } else { Vec::new() };
+                let mut idx = 0;
+                if use_iter {
+                    cur = iter_items.first().copied();
+                }
+                while let Some(c) = cur {
+                    let cn = &doc.nodes[c];
+                    let skip_text = cn.first.is_some()
+                        || cn.prev.is_some()
+                        || cn.next.is_some()
+                        || is_blank_text(doc, c);
+                    let mut handled = false;
+                    if skip_text {
+                        if cn.kind == Kind::Text {
+                            handled = true;
+                        }
+                    } else if cn.kind == Kind::Text {
+                        if !cn.content.is_empty() {
+                            numeric.push(PropVal::Str(cn.content.clone()));
+                            order.push(None);
+                        }
+                        handled = true;
+                    }
+                    if !handled {
+                        let ns_ok =
+                            cn.kind != Kind::Element || match_ns(doc, c, &x.ns, x.is_prefix);
+                        if ns_ok {
+                            if let Some(name) = sxe_node_name(doc, c) {
+                                let v = base_node_value(doc, c);
+                                if use_iter {
+                                    numeric.push(v);
+                                    order.push(None);
+                                } else {
+                                    add_named(&mut named, &mut order, name, v);
+                                }
+                            }
+                        }
+                    }
+                    if use_iter {
+                        idx += 1;
+                        cur = iter_items.get(idx).copied();
+                    } else {
+                        cur = doc.nodes[c].next;
+                    }
+                }
+            }
+        }
+    }
+    // reassemble in insertion order
+    let mut out = Vec::new();
+    let mut nums = numeric.into_iter();
+    let mut named_map: Vec<(Vec<u8>, Option<PropVal>)> =
+        named.into_iter().map(|(k, v)| (k, Some(v))).collect();
+    for o in order {
+        match o {
+            None => {
+                if let Some(v) = nums.next() {
+                    out.push((None, v));
+                }
+            }
+            Some(k) => {
+                if let Some((_, slot)) = named_map.iter_mut().find(|(n, _)| *n == k) {
+                    if let Some(v) = slot.take() {
+                        out.push((Some(k), v));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn materialize(host: &mut dyn Host, x: &Sxe, v: PropVal) -> Value {
+    match v {
+        PropVal::Str(s) => Value::str(s),
+        PropVal::Node(id) => {
+            let ns = x.ns.clone().filter(|n| !n.is_empty());
+            make(host, &x.class, x.d, id, T_NONE, None, ns, x.is_prefix)
+        }
+        PropVal::Arr(items) => {
+            let mut a = PhpArray::new();
+            for i in items {
+                let v = materialize(host, x, i);
+                a.push(v);
+            }
+            Value::Array(a)
+        }
+        PropVal::Assoc(pairs) => {
+            let mut a = PhpArray::new();
+            for (k, v) in pairs {
+                a.insert(ArrayKey::from_bytes(&k), Value::str(v));
+            }
+            Value::Array(a)
+        }
+    }
+}
+
+/// A SimpleXMLElement's property table as var_dump / print_r (`is_debug`)
+/// or json_encode / casts see it; None for any other value.
+pub fn sxe_props(host: &mut dyn Host, v: &Value, is_debug: bool) -> Option<Vec<(PhpStr, Value)>> {
+    let x = sxe_of(host, v)?;
+    if !is_sxe_object(v) {
+        return None;
+    }
+    let raw = tree::with_doc(x.d, |doc| prop_hash(doc, &x, is_debug))?;
+    let mut out = Vec::new();
+    let mut next = 0i64;
+    for (k, pv) in raw {
+        let val = materialize(host, &x, pv);
+        let key = match k {
+            Some(k) => {
+                if let Some(n) = std::str::from_utf8(&k)
+                    .ok()
+                    .and_then(|s| s.parse::<i64>().ok())
+                {
+                    next = next.max(n + 1);
+                }
+                PhpStr::from_bytes(k)
+            }
+            None => {
+                let key = PhpStr::from_bytes(next.to_string().into_bytes());
+                next += 1;
+                key
+            }
+        };
+        out.push((key, val));
+    }
+    Some(out)
+}
+
+/// Whether `v` is a SimpleXMLElement (by its internal slots).
+pub fn is_sxe_object(v: &Value) -> bool {
+    let Value::Object(h) = v else {
+        return false;
+    };
+    let b = h.borrow();
+    b.properties
+        .contains_key(&PhpStr::from_bytes(b"__nm".to_vec()))
+        && b.properties
+            .contains_key(&PhpStr::from_bytes(b"__t".to_vec()))
+        && b.properties
+            .contains_key(&PhpStr::from_bytes(b"__xns".to_vec()))
+}
+
+thread_local! {
+    static DEBUG_VIEWS: RefCell<HashMap<u32, Vec<(PhpStr, Value)>>> = RefCell::new(HashMap::new());
+}
+
+/// Before var_dump / print_r (which only get `&dyn Host`): materialize the
+/// debug property views of every SimpleXMLElement reachable from `v`.
+pub fn prepare_debug(host: &mut dyn Host, v: &Value, depth: usize) {
+    if depth > 64 {
+        return;
+    }
+    match v {
+        Value::Ref(r) => {
+            let inner = r.borrow().clone();
+            prepare_debug(host, &inner, depth + 1);
+        }
+        Value::Array(a) => {
+            let vals: Vec<Value> = a.iter().map(|(_, v)| v.clone()).collect();
+            for x in vals {
+                prepare_debug(host, &x, depth + 1);
+            }
+        }
+        Value::Object(h) => {
+            let id = h.borrow().id;
+            if DEBUG_VIEWS.with(|m| m.borrow().contains_key(&id)) {
+                return;
+            }
+            if is_sxe_object(v) {
+                if let Some(props) = sxe_props(host, v, true) {
+                    DEBUG_VIEWS.with(|m| m.borrow_mut().insert(id, props.clone()));
+                    for (_, pv) in props {
+                        prepare_debug(host, &pv, depth + 1);
+                    }
+                }
+            } else {
+                let vals: Vec<Value> = h.borrow().properties.values().cloned().collect();
+                for x in vals {
+                    prepare_debug(host, &x, depth + 1);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The prepared debug view of object `id`, if it is a SimpleXMLElement.
+pub fn debug_view(id: u32) -> Option<Vec<(PhpStr, Value)>> {
+    DEBUG_VIEWS.with(|m| m.borrow().get(&id).cloned())
+}
+
+pub fn clear_debug() {
+    DEBUG_VIEWS.with(|m| m.borrow_mut().clear());
 }
 
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {

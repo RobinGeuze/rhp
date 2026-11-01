@@ -1519,7 +1519,9 @@ use rhp_semantics::{deref, ops};
 fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
     for a in args {
+        ext::simplexml::prepare_debug(host, a, 0);
         dump::var_dump(host, &mut out, a, 0);
+        ext::simplexml::clear_debug();
     }
     host.write_out(&out);
     Ok(Value::Null)
@@ -1527,7 +1529,9 @@ fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
+    ext::simplexml::prepare_debug(host, &args[0], 0);
     dump::print_r(host, &mut out, &args[0], 0);
+    ext::simplexml::clear_debug();
     let return_mode = args.get(1).map(conv::to_bool).unwrap_or(false);
     if return_mode {
         Ok(Value::str(out))

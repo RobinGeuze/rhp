@@ -108,7 +108,7 @@ class DOMDocumentFragment extends DOMNode implements DOMParentNode {
     public function replaceChildren(...$nodes): void { while ($this->firstChild) { $this->removeChild($this->firstChild); } $this->append(...$nodes); }
 }
 
-class DOMNodeList implements IteratorAggregate, Countable {
+class DOMNodeList implements IteratorAggregate, Countable, ArrayAccess {
     public $__d; public $__n; public $__m; public $__a; public $__b;
     public function __get($name) {
         if ($name === 'length') { return __dom('listLen', $this->__d, $this->__n, $this->__m, $this->__a, $this->__b); }
@@ -117,13 +117,25 @@ class DOMNodeList implements IteratorAggregate, Countable {
     public function __isset($name) { return $name === 'length'; }
     public function count(): int { return __dom('listLen', $this->__d, $this->__n, $this->__m, $this->__a, $this->__b); }
     public function item(int $index) { return __dom('listItem', $this->__d, $this->__n, $this->__m, $this->__a, $this->__b, $index); }
+    // dimension reads (php's read_dimension handler): numeric offsets only
+    public function offsetGet($o): mixed {
+        if (is_string($o) && !is_numeric($o)) { return null; }
+        return $this->item((int) $o);
+    }
+    public function offsetExists($o): bool {
+        if (is_string($o) && !is_numeric($o)) { return false; }
+        $o = (int) $o;
+        return $o >= 0 && $o < $this->count();
+    }
+    public function offsetSet($o, $v): void { throw new Error('Cannot use object of type ' . static::class . ' as array'); }
+    public function offsetUnset($o): void { throw new Error('Cannot use object of type ' . static::class . ' as array'); }
     public function getIterator(): Iterator {
         $i = 0;
         while (($n = __dom('listItem', $this->__d, $this->__n, $this->__m, $this->__a, $this->__b, $i)) !== null) { yield $i => $n; $i++; }
     }
 }
 
-class DOMNamedNodeMap implements IteratorAggregate, Countable {
+class DOMNamedNodeMap implements IteratorAggregate, Countable, ArrayAccess {
     public $__d; public $__n;
     public function __get($name) {
         if ($name === 'length') { return __dom('mapLen', $this->__d, $this->__n); }
@@ -134,6 +146,18 @@ class DOMNamedNodeMap implements IteratorAggregate, Countable {
     public function getNamedItemNS(?string $namespace, string $localName): ?DOMNode { return __dom('mapNamedNS', $this->__d, $this->__n, $namespace, $localName); }
     public function item(int $index): ?DOMNode { return __dom('mapItem', $this->__d, $this->__n, $index); }
     public function count(): int { return __dom('mapLen', $this->__d, $this->__n); }
+    // dimension reads: names look up attributes, numbers index them
+    public function offsetGet($o): mixed {
+        if (is_string($o) && !is_numeric($o)) { return $this->getNamedItem($o); }
+        return $this->item((int) $o);
+    }
+    public function offsetExists($o): bool {
+        if (is_string($o) && !is_numeric($o)) { return $this->getNamedItem($o) !== null; }
+        $o = (int) $o;
+        return $o >= 0 && $o < $this->count();
+    }
+    public function offsetSet($o, $v): void { throw new Error('Cannot use object of type ' . static::class . ' as array'); }
+    public function offsetUnset($o): void { throw new Error('Cannot use object of type ' . static::class . ' as array'); }
     public function getIterator(): Iterator {
         $len = __dom('mapLen', $this->__d, $this->__n);
         for ($i = 0; $i < $len; $i++) { $a = __dom('mapItem', $this->__d, $this->__n, $i); if ($a === null) { break; } yield $a->localName => $a; }

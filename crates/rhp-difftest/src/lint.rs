@@ -269,6 +269,21 @@ pub fn main(args: &[String]) -> ExitCode {
         }
     }
     files.sort_by(|a, b| a.key.cmp(&b.key));
+    // The same root given twice is scanned once; two *different* files under one key
+    // (roots with the same directory name, `a/src` and `b/src`) would make
+    // the known list ambiguous, so refuse that.
+    if let Some(w) = files.windows(2).find(|w| {
+        w[0].key == w[1].key && w[0].path.canonicalize().ok() != w[1].path.canonicalize().ok()
+    }) {
+        eprintln!(
+            "rhp-difftest lint: {} and {} both map to the list key {:?}; \
+             scan roots must have distinct directory names",
+            w[0].path.display(),
+            w[1].path.display(),
+            w[0].key
+        );
+        return ExitCode::from(2);
+    }
     files.dedup_by(|a, b| a.key == b.key);
 
     // Compiler panics are reported as refusals; keep their default

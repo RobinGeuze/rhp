@@ -21,6 +21,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 import urllib.error
@@ -85,14 +86,20 @@ def cmd_smoke(apps):
             print(out.stderr)
             failed += 1
         port = free_port()
+        # The server's log goes to a temp file, printed if anything fails (a
+        # 500 under php -S is otherwise undiagnosable in CI).
+        log = tempfile.TemporaryFile()
         srv = subprocess.Popen(
             [php, "-S", f"127.0.0.1:{port}", "-t", a["docroot"], a["front_controller"]],
             cwd=d,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
         )
+        failed_before = failed
         try:
-            for _ in range(50):
+            for _ in range(100):
+                if srv.poll() is not None:
+                    break
                 try:
                     socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
                     break
@@ -110,12 +117,18 @@ def cmd_smoke(apps):
                         got = r.status
                 except urllib.error.HTTPError as e:
                     got = e.code
+                except (urllib.error.URLError, OSError) as e:
+                    got = f"error ({e})"
                 ok = str(got) == want
                 failed += not ok
                 print(f"[{a['name']}] {method} {path} -> {got} {'ok' if ok else f'FAIL (want {want})'}")
         finally:
             srv.terminate()
             srv.wait()
+            if failed != failed_before:
+                log.seek(0)
+                print(f"[{a['name']}] php -S log:\n{log.read().decode(errors='replace')}")
+            log.close()
     if failed:
         sys.exit(f"{failed} smoke check(s) failed")
 
@@ -126,6 +139,13 @@ def cmd_lint(apps, write_known, extra):
     for a in apps:
         d = HERE / a["name"]
         known = d / a["known_refused"]
+        if not write_known and not known.is_file():
+            print(
+                f"[{a['name']}] no {known.relative_to(REPO)}; create it with "
+                f"`python3 tests/apps/apps.py lint {a['name']} --write-known`"
+            )
+            failed.append(a["name"])
+            continue
         cmd = [exe, "lint", "-q", *(str(d / p) for p in a["lint"])]
         cmd += ["--write-known" if write_known else "--check-known", str(known)]
         cmd += extra

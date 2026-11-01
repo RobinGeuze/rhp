@@ -48,6 +48,7 @@ pub struct ResolvedMethod {
     pub visibility: Visibility,
     pub is_static: bool,
     pub is_abstract: bool,
+    pub is_final: bool,
 }
 
 #[derive(Clone)]
@@ -203,6 +204,23 @@ impl Vm {
             }
         }
         for m in &proto.methods {
+            if let Some(existing) = methods.get(&lc(m.name.as_bytes())) {
+                // Private methods are not inherited (except constructors).
+                let private = existing.visibility == Visibility::Private
+                    && !m.name.as_bytes().eq_ignore_ascii_case(b"__construct");
+                if existing.is_final && existing.defining_class != id && !private {
+                    return Err(Thrown::error(
+                        "Error",
+                        format!(
+                            "Cannot override final method {}::{}()",
+                            String::from_utf8_lossy(
+                                self.classes[existing.defining_class as usize].name.as_bytes()
+                            ),
+                            String::from_utf8_lossy(existing.proto.name.as_bytes())
+                        ),
+                    ));
+                }
+            }
             insert_method(
                 &mut methods,
                 lc(m.name.as_bytes()),
@@ -212,6 +230,7 @@ impl Vm {
                     visibility: m.visibility,
                     is_static: m.is_static,
                     is_abstract: m.is_abstract,
+                    is_final: m.is_final,
                 },
             );
         }

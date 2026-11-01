@@ -504,10 +504,11 @@ impl<'a> Lexer<'a> {
         match lower.as_slice() {
             b"yield" => {
                 let w = self.ws_or_comments(e);
+                // `"from"[^a-zA-Z0-9_\x80-\xff]`: at end of input the class
+                // matches re2c's NUL sentinel.
                 if w > 0
                     && self.starts_ci(e + w, b"from")
-                    && e + w + 4 < self.s.len()
-                    && !is_label_char(self.s[e + w + 4])
+                    && (e + w + 4 >= self.s.len() || !is_label_char(self.s[e + w + 4]))
                 {
                     return self.push(T_YIELD_FROM, e + w + 4);
                 }
@@ -1085,6 +1086,14 @@ impl Lexer<'_> {
                     need -= 1;
                     if need == 0 {
                         if self.p < self.s.len() {
+                            // A closing `?>\n` defers its line increment
+                            // (CG(increment_lineno)) to the next scan, which
+                            // never happens: the rest keeps the tag's line.
+                            if id == T_CLOSE_TAG {
+                                if let Some(t) = self.out.last() {
+                                    self.line = t.line;
+                                }
+                            }
                             let e = self.s.len();
                             self.push(T_INLINE_HTML, e);
                         }

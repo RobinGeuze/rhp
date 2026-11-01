@@ -169,6 +169,8 @@ pub struct ClassFlags {
     pub is_abstract: bool,
     pub is_final: bool,
     pub is_readonly: bool,
+    /// `#[\AllowDynamicProperties]` (php's ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES).
+    pub allow_dynamic: bool,
 }
 
 // ---------------------------------------------------------------------------

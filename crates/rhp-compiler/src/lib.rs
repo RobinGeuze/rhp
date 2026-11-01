@@ -685,6 +685,19 @@ fn has_modifier(mods: &rhp_frontend::cst::Sequence<Modifier>, want: fn(&Modifier
     mods.iter().any(want)
 }
 
+/// Whether the attribute lists carry `#[AllowDynamicProperties]`.
+fn has_allow_dynamic(
+    lists: &rhp_frontend::cst::Sequence<rhp_frontend::cst::AttributeList>,
+) -> bool {
+    lists.iter().any(|l| {
+        l.attributes.iter().any(|a| {
+            let n = identifier_raw(&a.name);
+            let n = n.strip_prefix(b"\\").unwrap_or(n);
+            n.eq_ignore_ascii_case(b"AllowDynamicProperties")
+        })
+    })
+}
+
 fn compile_class(
     class: &Class,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
@@ -694,6 +707,7 @@ fn compile_class(
         is_abstract: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Abstract(_))),
         is_final: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Final(_))),
         is_readonly: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Readonly(_))),
+        allow_dynamic: has_allow_dynamic(&class.attribute_lists),
     };
     // Single inheritance: a class `extends` one parent.
     let parent = class.extends.as_ref().and_then(|e| {
@@ -767,6 +781,7 @@ fn compile_anon_class(
         is_abstract: false,
         is_final: true,
         is_readonly: has_modifier(&ac.modifiers, |m| matches!(m, Modifier::Readonly(_))),
+        allow_dynamic: has_allow_dynamic(&ac.attribute_lists),
     };
     let m = compile_members(&ac.members, sigs, &name)?;
     Ok(ClassProto {
@@ -836,6 +851,7 @@ fn compile_enum(
             is_abstract: false,
             is_final: true,
             is_readonly: false,
+            allow_dynamic: false,
         },
         parent: None,
         interfaces,
@@ -3015,7 +3031,7 @@ impl ProtoBuilder {
                     let key = self.alloc_temp();
                     self.emit(Instr::LoadInt { dst: key, n: idx });
                     let val = self.alloc_temp();
-                    self.emit(Instr::DimFetch {
+                    self.emit(Instr::DimFetchList {
                         dst: val,
                         arr: src,
                         key,
@@ -3026,7 +3042,7 @@ impl ProtoBuilder {
                 ArrayElement::KeyValue(kv) => {
                     let key = self.compile_expr(kv.key)?;
                     let val = self.alloc_temp();
-                    self.emit(Instr::DimFetch {
+                    self.emit(Instr::DimFetchList {
                         dst: val,
                         arr: src,
                         key,
@@ -4829,7 +4845,7 @@ impl ProtoBuilder {
                 let arr = self.compile_quiet(aa.array)?;
                 let key = self.compile_expr(aa.index)?;
                 let dst = self.alloc_temp();
-                self.emit(Instr::DimFetch { dst, arr, key });
+                self.emit(Instr::DimFetchIs { dst, arr, key });
                 Ok(dst)
             }
             Expression::Access(Access::Property(pa)) => {

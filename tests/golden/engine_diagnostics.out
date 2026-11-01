@@ -1,0 +1,77 @@
+[2] Undefined array key "y" @engine_diagnostics.php:9
+[2] Undefined array key 3 @engine_diagnostics.php:9
+[2] Trying to access array offset on null @engine_diagnostics.php:9
+[2] Trying to access array offset on false @engine_diagnostics.php:9
+[2] Trying to access array offset on int @engine_diagnostics.php:9
+[2] Trying to access array offset on float @engine_diagnostics.php:9
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+[2] Uninitialized string offset 5 @engine_diagnostics.php:10
+[2] Uninitialized string offset -5 @engine_diagnostics.php:10
+[2] Illegal string offset "1x" @engine_diagnostics.php:10
+[2] String offset cast occurred @engine_diagnostics.php:10
+string(0) ""
+string(0) ""
+string(1) "b"
+string(1) "b"
+string(1) "b"
+TypeError: Cannot access offset of type string on string
+Error: Cannot use object of type stdClass as array
+[2] Undefined array key 1 @engine_diagnostics.php:13
+NULL
+[2] Cannot use int as array @engine_diagnostics.php:14
+[2] Cannot use string as array @engine_diagnostics.php:14
+[2] Undefined array key "k" @engine_diagnostics.php:15
+[2] Trying to access array offset on int @engine_diagnostics.php:16
+[2] Undefined array key "m" @engine_diagnostics.php:16
+[2] Trying to access array offset on null @engine_diagnostics.php:16
+NULL
+NULL
+bool(false)
+bool(true)
+int(3)
+string(1) "d"
+string(1) "b"
+[2] Undefined array key 1 @engine_diagnostics.php:18
+[8192] Using null as an array offset is deprecated, use an empty string instead @engine_diagnostics.php:18
+[2] Undefined array key "" @engine_diagnostics.php:18
+[8192] Implicit conversion from float 1.5 to int loses precision @engine_diagnostics.php:18
+[2] Undefined array key 1 @engine_diagnostics.php:18
+NULL
+NULL
+NULL
+[2] Undefined property: A::$nope @engine_diagnostics.php:22
+[2] Attempt to read property "x" on null @engine_diagnostics.php:22
+[2] Attempt to read property "x" on false @engine_diagnostics.php:22
+[2] Attempt to read property "x" on int @engine_diagnostics.php:22
+NULL
+NULL
+NULL
+NULL
+[2] Undefined property: A::$d @engine_diagnostics.php:23
+NULL
+string(4) "dflt"
+[8192] Creation of dynamic property A::$dyn is deprecated @engine_diagnostics.php:24
+Attempt to assign property "foo" on null
+[2] Array to string conversion @engine_diagnostics.php:30
+Array
+[2] Array to string conversion @engine_diagnostics.php:30
+string(7) "v=Array"
+[8192] strlen(): Passing null to parameter #1 ($string) of type string is deprecated @engine_diagnostics.php:32
+[8192] str_replace(): Passing null to parameter #3 ($subject) of type array|string is deprecated @engine_diagnostics.php:32
+[8192] trim(): Passing null to parameter #1 ($string) of type string is deprecated @engine_diagnostics.php:32
+int(0)
+string(0) ""
+array(1) {
+  [0]=>
+  string(0) ""
+}
+strlen(): Argument #1 ($string) must be of type string, array given
+array_keys(): Argument #1 ($array) must be of type array, string given
+caught: Undefined array key "missing"
+NULL
+string(30) "Undefined array key "silenced""

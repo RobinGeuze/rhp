@@ -2308,13 +2308,13 @@ impl Vm {
                 let denied = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
                     PropRes::Slot(k) => {
                         if let Some(v) = h.borrow().properties.get(&k) {
-                            return Ok(v.clone());
+                            return Ok(deref(v));
                         }
                         None
                     }
                     PropRes::Dynamic => {
                         if let Some(v) = h.borrow().properties.get(&pname) {
-                            return Ok(v.clone());
+                            return Ok(deref(v));
                         }
                         None
                     }
@@ -2334,11 +2334,39 @@ impl Vm {
                                 vis,
                             ))
                         }
-                        None => Value::Null,
+                        None => {
+                            let msg = format!(
+                                "Undefined property: {}::${}",
+                                String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                                String::from_utf8_lossy(pname.as_bytes())
+                            );
+                            self.diag(2, &msg)?;
+                            Value::Null
+                        }
                     },
                 }
             }
-            _ => Value::Null,
+            Value::Closure(_) => {
+                let msg = format!(
+                    "Undefined property: Closure::${}",
+                    String::from_utf8_lossy(pname.as_bytes())
+                );
+                self.diag(2, &msg)?;
+                Value::Null
+            }
+            other => {
+                let msg = format!(
+                    "Attempt to read property \"{}\" on {}",
+                    String::from_utf8_lossy(pname.as_bytes()),
+                    match other {
+                        Value::Bool(true) => "true",
+                        Value::Bool(false) => "false",
+                        ref o => type_lc(o),
+                    }
+                );
+                self.diag(2, &msg)?;
+                Value::Null
+            }
         })
     }
 
@@ -2562,7 +2590,9 @@ impl Vm {
                 ));
             }
             let scope = self.stack[top].defining_class;
-            let (key, denied) = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+            let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
+            let is_dyn = matches!(res, PropRes::Dynamic);
+            let (key, denied) = match res {
                 PropRes::Slot(k) => (k, None),
                 PropRes::Dynamic => (pname.clone(), None),
                 PropRes::Denied(vis) => (pname.clone(), Some(vis)),
@@ -2598,6 +2628,9 @@ impl Vm {
                         vis,
                     ));
                 }
+                if is_dyn {
+                    self.check_dynamic_prop(top, cls, &pname)?;
+                }
             }
             let mut od = h.borrow_mut();
             let slot = classes::prop_slot_mut(&self.classes, &mut od, key);
@@ -2609,8 +2642,63 @@ impl Vm {
                 }
                 other => *other = val,
             }
+            return Ok(());
         }
-        Ok(())
+        Err(Thrown::error(
+            "Error",
+            format!(
+                "Attempt to assign property \"{}\" on {}",
+                String::from_utf8_lossy(pname.as_bytes()),
+                match &o {
+                    Value::Bool(true) => "true",
+                    Value::Bool(false) => "false",
+                    other => type_lc(other),
+                }
+            ),
+        ))
+    }
+
+    /// Creating a dynamic property (zend_forbidden_dynamic_property /
+    /// zend_deprecated_dynamic_property): an Error on enums and readonly
+    /// classes, else deprecated unless the class (or a parent) allows it.
+    fn check_dynamic_prop(
+        &mut self,
+        top: usize,
+        cls: ClassId,
+        pname: &PhpStr,
+    ) -> Result<(), Thrown> {
+        let e = self.class(cls);
+        let cname = String::from_utf8_lossy(e.name.as_bytes()).into_owned();
+        let p = String::from_utf8_lossy(pname.as_bytes()).into_owned();
+        if e.kind == ClassKind::Enum || e.flags.is_readonly {
+            return Err(Thrown::error(
+                "Error",
+                format!("Cannot create dynamic property {cname}::${p}"),
+            ));
+        }
+        let mut c = Some(cls);
+        while let Some(id) = c {
+            let ce = self.class(id);
+            if ce.flags.allow_dynamic
+                || ce.name.as_bytes().eq_ignore_ascii_case(b"stdClass")
+                || ce.name.as_bytes() == b"__PHP_Incomplete_Class"
+            {
+                return Ok(());
+            }
+            c = ce.parent;
+        }
+        // Engine-internal (prelude) code manages its own objects.
+        if (0..=top)
+            .rev()
+            .take(1)
+            .any(|i| is_prelude_proto(&self.stack[i].proto))
+        {
+            return Ok(());
+        }
+        self.diag(
+            8192,
+            &format!("Creation of dynamic property {cname}::${p} is deprecated"),
+        )
     }
 
     /// Dispatch a method call on `h` by name (generator methods, user method with
@@ -4541,7 +4629,9 @@ impl Vm {
                 }
                 Instr::Concat { dst, a, b } => {
                     let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
-                    let v = if matches!(x, Value::Object(_)) || matches!(y, Value::Object(_)) {
+                    let v = if matches!(x, Value::Object(_) | Value::Array(_))
+                        || matches!(y, Value::Object(_) | Value::Array(_))
+                    {
                         let mut bytes = self.to_string_vm(&x)?;
                         bytes.extend_from_slice(&self.to_string_vm(&y)?);
                         Value::str(bytes)
@@ -4881,17 +4971,20 @@ impl Vm {
                 Instr::DimFetch { dst, arr, key } => {
                     let a = self.reg_get(top, arr);
                     let k = self.reg_get(top, key);
-                    // `$obj[$k]` on an ArrayAccess object dispatches offsetGet.
-                    if let Value::Object(h) = &a {
-                        if self.class_implements(h.borrow().class, b"ArrayAccess") {
-                            let m = self.lookup_method(h.borrow().class, b"offsetget").unwrap();
-                            let r =
-                                self.call_sync(&m, Some(h.clone()), h.borrow().class, vec![k])?;
-                            self.reg_set(top, dst, r);
-                            continue;
-                        }
-                    }
-                    self.reg_set(top, dst, dim_fetch(&a, &k));
+                    let r = self.dim_read(&a, &k, DimMode::Read)?;
+                    self.reg_set(top, dst, r);
+                }
+                Instr::DimFetchIs { dst, arr, key } => {
+                    let a = self.reg_get(top, arr);
+                    let k = self.reg_get(top, key);
+                    let r = self.dim_read(&a, &k, DimMode::Is)?;
+                    self.reg_set(top, dst, r);
+                }
+                Instr::DimFetchList { dst, arr, key } => {
+                    let a = self.reg_get(top, arr);
+                    let k = self.reg_get(top, key);
+                    let r = self.dim_read(&a, &k, DimMode::List)?;
+                    self.reg_set(top, dst, r);
                 }
 
                 // -- lvalue cursor --
@@ -7337,6 +7430,9 @@ impl Vm {
                 ),
             ));
         }
+        if let Value::Array(_) = d {
+            self.diag(2, "Array to string conversion")?;
+        }
         Ok(conv::to_string_bytes(&d))
     }
 
@@ -7698,29 +7794,32 @@ impl Vm {
     }
 
     /// [`Vm::invoke_builtin_ex`] for an already looked-up builtin.
-    /// zpp's string parameters: a `Stringable` object passed to a builtin's
-    /// `string` parameter is converted with `__toString()`, any other object
-    /// is a TypeError. Builtins that stringify the elements of a `mixed` /
-    /// array argument (`implode`, `sprintf`, …) get those converted too.
-    fn coerce_builtin_string_args(&mut self, name: &str, args: &mut [Value]) -> Result<(), Thrown> {
-        if !args
-            .iter()
-            .any(|a| matches!(a, Value::Object(_) | Value::Closure(_) | Value::Array(_)))
-        {
-            return Ok(());
-        }
-        let params = builtins::stub_params::string_params(name);
-        for &(pos, pname, ty, variadic) in params {
+    /// zpp's checks on a builtin's scalar / array typed parameters (from
+    /// php's stubs): a `Stringable` object passed to a `string` parameter is
+    /// converted with `__toString()`; other objects, and arrays where no
+    /// array is accepted, are TypeErrors; null to a non-nullable scalar is
+    /// deprecated (to an array, a TypeError). Builtins that stringify the
+    /// elements of a `mixed` / array argument (`implode`, `sprintf`, …) get
+    /// those converted too. `user`: called from user code (engine-internal
+    /// prelude calls only get the conversions).
+    fn coerce_builtin_args(
+        &mut self,
+        name: &str,
+        args: &mut [Value],
+        user: bool,
+    ) -> Result<(), Thrown> {
+        let params = builtins::stub_params::params(name);
+        for &(pos, pname, ty, variadic, nullable, has_str, has_arr) in params {
             let range = if variadic {
                 pos as usize..args.len()
             } else {
                 pos as usize..(pos as usize + 1).min(args.len())
             };
             for i in range {
-                let given = match &args[i] {
+                let given: Vec<u8> = match &args[i] {
                     Value::Object(h) => {
                         let cls = h.borrow().class;
-                        if self.lookup_method(cls, b"__tostring").is_some() {
+                        if has_str && self.lookup_method(cls, b"__tostring").is_some() {
                             let s = self.to_string_vm(&args[i])?;
                             args[i] = Value::str(s);
                             continue;
@@ -7728,6 +7827,23 @@ impl Vm {
                         self.class(cls).name.as_bytes().to_vec()
                     }
                     Value::Closure(_) => b"Closure".to_vec(),
+                    Value::Array(_) if !has_arr && user => b"array".to_vec(),
+                    Value::Null if !nullable && user => {
+                        if has_str || ty != "array" {
+                            let msg = format!(
+                                "{name}(): Passing null to parameter #{} (${pname}) of type {ty} is deprecated",
+                                i + 1
+                            );
+                            self.diag(8192, &msg)?;
+                            continue;
+                        }
+                        b"null".to_vec()
+                    }
+                    Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bool(_)
+                        if (ty == "array" || ty == "?array") && user =>
+                    {
+                        type_lc(&args[i]).as_bytes().to_vec()
+                    }
                     _ => continue,
                 };
                 return Err(Thrown::type_error(format!(
@@ -7747,9 +7863,9 @@ impl Vm {
             _ => None,
         };
         if let Some((from, arrays)) = elems {
-            for i in from..args.len() {
+            for arg in args.iter_mut().skip(from) {
                 if arrays {
-                    let Value::Array(a) = &args[i] else { continue };
+                    let Value::Array(a) = &*arg else { continue };
                     let hits: Vec<ArrayKey> = a
                         .iter()
                         .filter(|(_, v)| self.is_stringable(&deref(v)))
@@ -7764,10 +7880,10 @@ impl Vm {
                         let s = self.to_string_vm(&v)?;
                         a.insert(k, Value::str(s));
                     }
-                    args[i] = Value::Array(a);
-                } else if self.is_stringable(&args[i]) {
-                    let s = self.to_string_vm(&args[i])?;
-                    args[i] = Value::str(s);
+                    *arg = Value::Array(a);
+                } else if self.is_stringable(arg) {
+                    let s = self.to_string_vm(arg)?;
+                    *arg = Value::str(s);
                 }
             }
         }
@@ -7795,7 +7911,9 @@ impl Vm {
         self.reap_dropped_streams();
         let count_error = builtin_arg_count_error(builtin, args.len());
         if count_error.is_none() {
-            self.coerce_builtin_string_args(builtin.name, &mut args)?;
+            let caller = self.stack.len().saturating_sub(1);
+            let user = !self.stack.is_empty() && !self.is_internal_frame(caller);
+            self.coerce_builtin_args(builtin.name, &mut args, user)?;
         }
         // A builtin called from engine-internal (prelude) code is not a php
         // frame, and php compiles a few calls to opcodes (no frame either).
@@ -8177,6 +8295,210 @@ fn isset_dim(container: &Value, key: &Value) -> bool {
     }
 }
 
+/// The fetch kind of a dimension read: php's `BP_VAR_R`, `BP_VAR_IS`
+/// (isset / `??`) and `ZEND_FETCH_LIST_R`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DimMode {
+    Read,
+    Is,
+    List,
+}
+
+impl Vm {
+    /// Raise a diagnostic from inside an instruction; an exception thrown by
+    /// the user error handler is returned to be thrown at this point.
+    pub(crate) fn diag(&mut self, level: i64, msg: &str) -> Result<(), Thrown> {
+        self.raise_error(level, msg);
+        match self.pending_throw.take() {
+            Some(t) => Err(t),
+            None => Ok(()),
+        }
+    }
+
+    /// php's array-offset key conversion for a read (`zend_fetch_dimension_
+    /// address_inner` / `slow_index_convert`), with its diagnostics. `None`:
+    /// an illegal offset type (TypeError raised by the caller).
+    fn dim_key(&mut self, key: &Value, quiet: bool) -> Result<Option<ArrayKey>, Thrown> {
+        match key {
+            Value::Null if !quiet => self.diag(
+                8192,
+                "Using null as an array offset is deprecated, use an empty string instead",
+            )?,
+            Value::Float(f) if !quiet && (!f.is_finite() || f.fract() != 0.0) => {
+                let shown =
+                    String::from_utf8_lossy(&rhp_values::fmt::float_serialize(*f)).into_owned();
+                self.diag(
+                    8192,
+                    &format!("Implicit conversion from float {shown} to int loses precision"),
+                )?
+            }
+            Value::Resource(r) if !quiet => self.diag(
+                2,
+                &format!(
+                    "Resource ID#{} used as offset, casting to integer ({})",
+                    r.id, r.id
+                ),
+            )?,
+            _ => {}
+        }
+        Ok(ArrayKey::from_value(key))
+    }
+
+    /// A dimension read `$c[$k]` with php's diagnostics: undefined keys,
+    /// string offsets, scalar containers and ArrayAccess dispatch.
+    fn dim_read(&mut self, container: &Value, key: &Value, mode: DimMode) -> Result<Value, Thrown> {
+        let quiet = mode == DimMode::Is;
+        match container {
+            Value::Array(a) => {
+                let Some(k) = self.dim_key(key, quiet)? else {
+                    return Err(Thrown::type_error(format!(
+                        "Cannot access offset of type {} on array",
+                        self.offset_type_name(key)
+                    )));
+                };
+                match a.get(&k) {
+                    Some(v) => Ok(deref(v)),
+                    None => {
+                        if !quiet {
+                            let msg = match &k {
+                                ArrayKey::Int(n) => format!("Undefined array key {n}"),
+                                ArrayKey::Str(s) => format!(
+                                    "Undefined array key \"{}\"",
+                                    String::from_utf8_lossy(s.as_bytes())
+                                ),
+                            };
+                            self.diag(2, &msg)?;
+                        }
+                        Ok(Value::Null)
+                    }
+                }
+            }
+            Value::Object(h) => {
+                let cls = h.borrow().class;
+                if self.class_implements(cls, b"ArrayAccess") {
+                    if quiet {
+                        // zend_std_read_dimension(BP_VAR_IS): offsetExists first.
+                        let ex = self.lookup_method(cls, b"offsetexists").unwrap();
+                        let r = self.call_sync(&ex, Some(h.clone()), cls, vec![key.clone()])?;
+                        if !conv::to_bool(&r) {
+                            return Ok(Value::Null);
+                        }
+                    }
+                    let m = self.lookup_method(cls, b"offsetget").unwrap();
+                    return self.call_sync(&m, Some(h.clone()), cls, vec![key.clone()]);
+                }
+                Err(Thrown::error(
+                    "Error",
+                    format!(
+                        "Cannot use object of type {} as array",
+                        String::from_utf8_lossy(self.class(cls).name.as_bytes())
+                    ),
+                ))
+            }
+            Value::Closure(_) => Err(Thrown::error(
+                "Error",
+                "Cannot use object of type Closure as array",
+            )),
+            Value::Str(s) if mode != DimMode::List => {
+                let bytes = s.as_bytes();
+                let offset = match key {
+                    Value::Int(n) => *n,
+                    Value::Str(ks) => {
+                        let kb = ks.as_bytes();
+                        match conv::scan_number(kb) {
+                            Some((conv::Num::Int(n), end)) => {
+                                let trailing =
+                                    !kb[end..].iter().all(|b| b" \t\n\r\x0b\x0c".contains(b));
+                                if trailing && !quiet {
+                                    self.diag(
+                                        2,
+                                        &format!(
+                                            "Illegal string offset \"{}\"",
+                                            String::from_utf8_lossy(kb)
+                                        ),
+                                    )?;
+                                }
+                                n
+                            }
+                            _ => {
+                                if quiet {
+                                    return Ok(Value::Null);
+                                }
+                                return Err(Thrown::type_error(
+                                    "Cannot access offset of type string on string",
+                                ));
+                            }
+                        }
+                    }
+                    Value::Float(_) | Value::Null | Value::Bool(_) => {
+                        if !quiet {
+                            self.diag(2, "String offset cast occurred")?;
+                        }
+                        conv::to_int(key)
+                    }
+                    _ => {
+                        if quiet {
+                            return Ok(Value::Null);
+                        }
+                        return Err(Thrown::type_error(format!(
+                            "Cannot access offset of type {} on string",
+                            self.offset_type_name(key)
+                        )));
+                    }
+                };
+                let len = bytes.len() as i64;
+                let i = if offset < 0 { len + offset } else { offset };
+                if i >= 0 && i < len {
+                    Ok(Value::str(vec![bytes[i as usize]]))
+                } else if quiet {
+                    Ok(Value::Null)
+                } else {
+                    self.diag(2, &format!("Uninitialized string offset {offset}"))?;
+                    Ok(Value::str(""))
+                }
+            }
+            Value::Null => Ok(Value::Null).and_then(|v| {
+                if mode == DimMode::Read {
+                    self.diag(2, "Trying to access array offset on null")?;
+                }
+                Ok(v)
+            }),
+            other => {
+                if !quiet {
+                    let ty = match other {
+                        Value::Bool(true) => "true",
+                        Value::Bool(false) => "false",
+                        Value::Int(_) => "int",
+                        Value::Float(_) => "float",
+                        Value::Str(_) => "string",
+                        Value::Resource(_) => "resource",
+                        _ => "null",
+                    };
+                    let msg = if mode == DimMode::List {
+                        format!("Cannot use {ty} as array")
+                    } else {
+                        format!("Trying to access array offset on {ty}")
+                    };
+                    self.diag(2, &msg)?;
+                }
+                Ok(Value::Null)
+            }
+        }
+    }
+
+    /// zend_zval_value_name for an illegal offset.
+    fn offset_type_name(&self, key: &Value) -> String {
+        match key {
+            Value::Object(h) => {
+                String::from_utf8_lossy(self.class(h.borrow().class).name.as_bytes()).into_owned()
+            }
+            Value::Closure(_) => "Closure".into(),
+            v => v.type_name().to_string(),
+        }
+    }
+}
+
+#[allow(dead_code)]
 fn dim_fetch(container: &Value, key: &Value) -> Value {
     match deref(container) {
         Value::Array(a) => match ArrayKey::from_value(key) {

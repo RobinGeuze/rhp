@@ -269,6 +269,20 @@ pub enum Instr {
         arr: Reg,
         key: Reg,
     },
+    /// `DimFetch` in isset/`??` context (`BP_VAR_IS`): no diagnostics, and an
+    /// absent string offset reads as Null.
+    DimFetchIs {
+        dst: Reg,
+        arr: Reg,
+        key: Reg,
+    },
+    /// `DimFetch` for a `list()`/`[...] =` destructuring element
+    /// (`ZEND_FETCH_LIST_R`).
+    DimFetchList {
+        dst: Reg,
+        arr: Reg,
+        key: Reg,
+    },
 
     // -- lvalue cursor: descend a root CV by keys/appends, then commit --
     // Emitted contiguously (no interleaving); the VM holds the cursor between them.

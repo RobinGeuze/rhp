@@ -906,14 +906,10 @@ struct NState {
 
 #[derive(Clone, Debug)]
 enum Nfa {
-    /// `counters`: libxml2 compiles this model with counters, which keeps it
-    /// out of the compact (deterministic) form — its "not expected" errors
-    /// then carry no expected list.
     Thompson {
         states: Vec<NState>,
         start: usize,
         end: usize,
-        counters: bool,
     },
     All(Vec<(Label, bool)>),
 }
@@ -1027,18 +1023,7 @@ fn compile(p: &Particle) -> Nfa {
         states: b.states,
         start,
         end,
-        counters: uses_counters(p),
     }
-}
-
-/// Whether libxml2's content-model builder needs a counter for `p`
-/// (xmlSchemaBuildAContentModel).
-fn uses_counters(p: &Particle) -> bool {
-    counted_here(p)
-        || match &p.term {
-            Term::Seq(ps) | Term::Choice(ps) | Term::All(ps) => ps.iter().any(uses_counters),
-            _ => false,
-        }
 }
 
 /// Whether `p` itself (not its children) gets a libxml2 counter.
@@ -1775,12 +1760,7 @@ impl V<'_> {
 
     fn model(&mut self, el: NodeId, nfa: &Nfa, mixed: bool, kids: &[NodeId]) {
         match nfa {
-            Nfa::Thompson {
-                states,
-                start,
-                end,
-                counters: _,
-            } => {
+            Nfa::Thompson { states, start, end } => {
                 let mut cur = vec![*start];
                 let mut plain = cur.clone();
                 closure(states, &mut cur, true);

@@ -1160,7 +1160,7 @@ fn prop_value(doc: &Doc, n: NodeId, name: &[u8]) -> Pv {
         b"internalSubset" if k == Kind::DocType => V(match dt().subset {
             Some(decls) => s(decls
                 .iter()
-                .flat_map(|x| x.iter().copied().chain([b'\n']))
+                .flat_map(|x| x.iter().copied().chain(*b"\n"))
                 .collect::<Vec<u8>>()),
             None => Value::Null,
         }),

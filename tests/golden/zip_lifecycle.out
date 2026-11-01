@@ -1,0 +1,40 @@
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+array(4) {
+  [0]=>
+  string(1) "."
+  [1]=>
+  string(2) ".."
+  [2]=>
+  string(10) "c:\win.txt"
+  [3]=>
+  string(1) "d"
+}
+string(1) "w"
+bool(true)
+int(300)
+int(0)
+int(250)
+int(300)
+int(0)
+bool(false)
+int(15)
+string(22) "Entry has been changed"
+bool(false)
+bool(false)
+bool(false)
+2: ZipArchive::addFile(): No such file or directory
+ZipArchive::addFile(): Argument #1 ($filepath) must not contain any null bytes
+bool(true)
+bool(true)
+int(250)
+int(28)
+int(28)
+ZipArchive::open(): Argument #1 ($filename) must not contain any null bytes
+bool(false)
+bool(false)
+bool(true)
+bool(true)
+done

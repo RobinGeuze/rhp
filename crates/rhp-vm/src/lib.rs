@@ -150,10 +150,14 @@ pub struct Vm {
     // Response header lines from the last http(s) request (status line first).
     last_response_headers: Vec<Vec<u8>>,
     // Open ZipArchive handles, id -> parsed archive.
-    zip_archives: HashMap<u32, builtins::zip_ext::ZipState>,
-    next_zip_id: u32,
     // CLI arguments ($argv / $_SERVER['argv']); argv[0] is the script name.
     argv: Vec<Vec<u8>>,
+    // `@` nesting depth: diagnostics are recorded but not displayed while > 0.
+    silence: u32,
+    // Active `@` regions: (frame depth, silence level to restore).
+    silence_stack: Vec<(usize, u32)>,
+    // The last raised diagnostic (`error_get_last`): type, message, file, line.
+    last_error: Option<(i64, Vec<u8>, Vec<u8>, i64)>,
 }
 
 /// The backing state of an open stream resource.
@@ -196,6 +200,7 @@ struct GenState {
 }
 
 mod classes;
+mod compare;
 
 /// A function-static slot: (proto address, class it runs as, variable name).
 type StaticKey = (usize, Option<ClassId>, Vec<u8>);
@@ -213,6 +218,22 @@ enum CursorRoot {
 }
 
 impl Host for Vm {
+    fn raise_diagnostic(&mut self, level: i64, msg: &str) {
+        self.emit_diagnostic(level, msg);
+    }
+
+    fn last_error(&self) -> Option<(i64, Vec<u8>, Vec<u8>, i64)> {
+        self.last_error.clone()
+    }
+
+    fn clear_last_error(&mut self) {
+        self.last_error = None;
+    }
+
+    fn compare_cx(&mut self) -> Option<&mut dyn rhp_semantics::ops::CompareCx> {
+        Some(self)
+    }
+
     fn write_out(&mut self, bytes: &[u8]) {
         match self.ob_stack.last_mut() {
             Some(buf) => buf.extend_from_slice(bytes),
@@ -426,53 +447,6 @@ impl Host for Vm {
         }
         out.extend(f.extra_args.iter().cloned());
         out
-    }
-
-    fn zip_open(&mut self, path: &[u8]) -> i64 {
-        // Read the file (through the stream layer so phar:// etc. work).
-        let bytes = match self.stream_get_contents(path) {
-            Some(b) => b,
-            None => return -9, // ER_NOENT
-        };
-        match builtins::zip_ext::ZipState::open(bytes) {
-            Some(state) => {
-                let id = self.next_zip_id;
-                self.next_zip_id += 1;
-                self.zip_archives.insert(id, state);
-                id as i64
-            }
-            None => -19, // ER_NOZIP
-        }
-    }
-    fn zip_count(&mut self, id: i64) -> i64 {
-        self.zip_archives
-            .get(&(id as u32))
-            .map(|z| z.count() as i64)
-            .unwrap_or(0)
-    }
-    fn zip_name_index(&mut self, id: i64, i: i64) -> Option<Vec<u8>> {
-        self.zip_archives
-            .get_mut(&(id as u32))
-            .and_then(|z| z.name_index(i as usize))
-    }
-    fn zip_stat_index(&mut self, id: i64, i: i64) -> Option<(Vec<u8>, u64, u64)> {
-        self.zip_archives
-            .get_mut(&(id as u32))
-            .and_then(|z| z.stat_index(i as usize))
-    }
-    fn zip_get_from_name(&mut self, id: i64, name: &[u8]) -> Option<Vec<u8>> {
-        self.zip_archives
-            .get_mut(&(id as u32))
-            .and_then(|z| z.get_from_name(name))
-    }
-    fn zip_extract_to(&mut self, id: i64, dest: &[u8]) -> bool {
-        self.zip_archives
-            .get_mut(&(id as u32))
-            .map(|z| z.extract_to(dest))
-            .unwrap_or(false)
-    }
-    fn zip_close(&mut self, id: i64) {
-        self.zip_archives.remove(&(id as u32));
     }
 
     fn running_main_path(&self) -> Option<Vec<u8>> {
@@ -1020,7 +994,12 @@ impl Host for Vm {
     }
 
     fn class_has_method(&self, class_id: u32, method: &[u8]) -> bool {
-        self.lookup_method(class_id, method).is_some()
+        match self.lookup_method(class_id, method) {
+            // `__`-prefixed helpers of built-in (prelude) classes are engine
+            // plumbing, invisible to php code; real magic methods stay.
+            Some(m) => !(is_prelude_proto(&m.proto) && is_engine_helper_name(method)),
+            None => false,
+        }
     }
 
     fn class_has_property(&self, class_id: u32, prop: &[u8]) -> bool {
@@ -1333,6 +1312,7 @@ impl Vm {
         for reg in builtins::stream_wrappers() {
             wrappers.insert(reg.scheme.as_bytes().to_vec(), (reg.factory)());
         }
+        rhp_values::set_object_free_hook(builtins::zip_ext::object_freed);
         Vm {
             out: Vec::new(),
             prop_guards: Default::default(),
@@ -1374,10 +1354,42 @@ impl Vm {
             next_resource_id: 1,
             stream_contexts: HashMap::new(),
             last_response_headers: Vec::new(),
-            zip_archives: HashMap::new(),
-            next_zip_id: 0,
             argv: Vec::new(),
+            silence: 0,
+            silence_stack: Vec::new(),
+            last_error: None,
         }
+    }
+
+    /// Raise a php diagnostic (`E_WARNING`, `E_NOTICE`, …): record it for
+    /// `error_get_last()` and display it (CLI `display_errors=1`) unless an
+    /// `@` is in effect.
+    pub(crate) fn emit_diagnostic(&mut self, level: i64, msg: &str) {
+        // The innermost user frame: prelude (built-in PHP-source) code has no
+        // line map, and php reports internal functions at their caller.
+        let (file, line) = match (0..self.stack.len())
+            .rev()
+            .find(|&i| !is_prelude_proto(&self.stack[i].proto))
+        {
+            None => (Vec::new(), 0),
+            Some(i) => (self.current_file(i), self.current_line(i) as i64),
+        };
+        self.last_error = Some((level, msg.as_bytes().to_vec(), file.clone(), line));
+        if self.silence > 0 {
+            return;
+        }
+        let label = match level {
+            1 | 16 | 64 | 256 => "Fatal error",
+            2 | 32 | 128 | 512 => "Warning",
+            8 | 1024 => "Notice",
+            8192 | 16384 => "Deprecated",
+            4096 => "Recoverable fatal error",
+            _ => "Unknown error",
+        };
+        let mut out = format!("\n{label}: {msg} in ").into_bytes();
+        out.extend_from_slice(&file);
+        out.extend_from_slice(format!(" on line {line}\n").as_bytes());
+        self.write_out(&out);
     }
 
     /// Set the CLI argument vector (`$argv`; `argv[0]` is the script name).
@@ -3381,14 +3393,18 @@ impl Vm {
                 }
 
                 Instr::Cmp { dst, a, b, kind } => {
-                    let (mut x, mut y) = (self.reg_get(top, a), self.reg_get(top, b));
-                    if !matches!(kind, CmpKind::Identical | CmpKind::NotIdentical) {
-                        // php casts an object compared with a string through
-                        // `__toString` (zend_std_compare_objects).
-                        x = self.cmp_stringify(x, &y)?;
-                        y = self.cmp_stringify(y, &x)?;
+                    let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+                    let r = self.eval_cmp(kind, &x, &y)?;
+                    self.reg_set(top, dst, r);
+                }
+                Instr::BeginSilence => {
+                    self.silence_stack.push((self.stack.len(), self.silence));
+                    self.silence += 1;
+                }
+                Instr::EndSilence => {
+                    if let Some((_, lvl)) = self.silence_stack.pop() {
+                        self.silence = lvl;
                     }
-                    self.reg_set(top, dst, eval_cmp(kind, &x, &y));
                 }
 
                 Instr::Echo { src } => {
@@ -4663,6 +4679,39 @@ impl Vm {
     /// catch (bind + jump) or finally (re-raise after) in the current frame,
     /// else pop and continue in the caller. Returns `Ok` when a handler is
     /// installed (re-enter `run_frames`), `Err` when it escapes the top frame.
+    fn eval_cmp(&mut self, kind: CmpKind, a: &Value, b: &Value) -> Result<Value, Thrown> {
+        use std::cmp::Ordering;
+        Ok(match kind {
+            CmpKind::Eq => Value::Bool(self.compare_values(a, b)? == Ordering::Equal),
+            CmpKind::Ne => Value::Bool(self.compare_values(a, b)? != Ordering::Equal),
+            CmpKind::Identical => Value::Bool(ops::strict_eq(a, b)),
+            CmpKind::NotIdentical => Value::Bool(!ops::strict_eq(a, b)),
+            CmpKind::Lt => Value::Bool(self.compare_values(a, b)?.is_lt()),
+            CmpKind::Le => Value::Bool(self.compare_values(a, b)?.is_le()),
+            // php evaluates `a > b` as `b < a` (ZEND_IS_SMALLER with swapped
+            // operands), so uncomparable pairs are false in both directions.
+            CmpKind::Gt => Value::Bool(self.compare_values(b, a)?.is_lt()),
+            CmpKind::Ge => Value::Bool(self.compare_values(b, a)?.is_le()),
+            CmpKind::Spaceship => Value::Int(match self.compare_values(a, b)? {
+                Ordering::Less => -1,
+                Ordering::Equal => 0,
+                Ordering::Greater => 1,
+            }),
+        })
+    }
+
+    /// An exception was caught at frame depth `depth`: end every `@` region
+    /// opened at or above it (php's live-range cleanup of ZEND_END_SILENCE).
+    fn unsilence_frames(&mut self, depth: usize) {
+        while let Some(&(d, lvl)) = self.silence_stack.last() {
+            if d < depth {
+                break;
+            }
+            self.silence = lvl;
+            self.silence_stack.pop();
+        }
+    }
+
     fn unwind(&mut self, thrown: Thrown, floor: usize) -> Result<UnwindResult, Thrown> {
         // An engine error becomes a real object here, before any frame is popped,
         // so its file/line/trace describe the throw point.
@@ -4712,6 +4761,7 @@ impl Vm {
                                 self.stack[top].regs[vr as usize] = obj;
                             }
                             self.stack[top].pc = arm.target as usize;
+                            self.unsilence_frames(top + 1);
                             return Ok(UnwindResult::Caught);
                         }
                     }
@@ -4719,6 +4769,7 @@ impl Vm {
                 if let Some(fin) = region.finally {
                     self.push_pending(top, fin, FinallyCont::Rethrow(thrown));
                     self.stack[top].pc = fin as usize;
+                    self.unsilence_frames(top + 1);
                     return Ok(UnwindResult::Caught);
                 }
             }
@@ -5956,18 +6007,6 @@ impl Vm {
         }
     }
 
-    /// For a loose comparison against a string: an object with `__toString`
-    /// becomes its string form; anything else is returned unchanged.
-    fn cmp_stringify(&mut self, v: Value, other: &Value) -> Result<Value, Thrown> {
-        if let (Value::Object(h), Value::Str(_)) = (deref(&v), deref(other)) {
-            let cls = h.borrow().class;
-            if self.lookup_method(cls, b"__tostring").is_some() {
-                return Ok(Value::str(self.to_string_vm(&v)?));
-            }
-        }
-        Ok(v)
-    }
-
     /// Stringify a value, invoking `__toString` on objects that define it.
     // Takes `&mut self` because stringifying an object may run its `__toString`.
     #[allow(clippy::wrong_self_convention)]
@@ -6992,6 +7031,36 @@ fn type_lc(v: &Value) -> &'static str {
     }
 }
 
+/// Built-in PHP-source (prelude) code is compiled without a line map.
+fn is_prelude_proto(p: &FunctionProto) -> bool {
+    p.debug.lines.iter().all(|&(_, l)| l == 0)
+}
+
+/// A `__`-prefixed method name that is not one of php's magic methods.
+fn is_engine_helper_name(name: &[u8]) -> bool {
+    const MAGIC: &[&[u8]] = &[
+        b"__construct",
+        b"__destruct",
+        b"__call",
+        b"__callstatic",
+        b"__get",
+        b"__set",
+        b"__isset",
+        b"__unset",
+        b"__sleep",
+        b"__wakeup",
+        b"__serialize",
+        b"__unserialize",
+        b"__tostring",
+        b"__invoke",
+        b"__set_state",
+        b"__clone",
+        b"__debuginfo",
+    ];
+    let lc = name.to_ascii_lowercase();
+    lc.starts_with(b"__") && !MAGIC.contains(&lc.as_slice())
+}
+
 fn array_key_to_value(k: &ArrayKey) -> Value {
     match k {
         ArrayKey::Int(n) => Value::Int(*n),
@@ -7044,18 +7113,4 @@ fn required_params(proto: &FunctionProto) -> usize {
         .iter()
         .filter(|p| p.default.is_none() && !p.variadic)
         .count()
-}
-
-fn eval_cmp(kind: CmpKind, a: &Value, b: &Value) -> Value {
-    match kind {
-        CmpKind::Eq => Value::Bool(ops::loose_eq(a, b)),
-        CmpKind::Ne => Value::Bool(!ops::loose_eq(a, b)),
-        CmpKind::Identical => Value::Bool(ops::strict_eq(a, b)),
-        CmpKind::NotIdentical => Value::Bool(!ops::strict_eq(a, b)),
-        CmpKind::Lt => Value::Bool(ops::loose_compare(a, b).is_lt()),
-        CmpKind::Le => Value::Bool(ops::loose_compare(a, b).is_le()),
-        CmpKind::Gt => Value::Bool(ops::loose_compare(a, b).is_gt()),
-        CmpKind::Ge => Value::Bool(ops::loose_compare(a, b).is_ge()),
-        CmpKind::Spaceship => ops::spaceship(a, b),
-    }
 }

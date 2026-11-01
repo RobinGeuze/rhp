@@ -1,0 +1,86 @@
+0 b4 w0: 14 7a80350d44f7af1e2f1c4d7c4b31315c
+bool(true)
+bool(true)
+0 b1 w0: 14 f3cea56bf9115371a573fa1aff5c8c33
+bool(true)
+bool(true)
+0 b9 w0: 14 4059d198768f9f8dc9372dc1c54bc3c3
+bool(true)
+bool(true)
+0 b9 w30: 14 4059d198768f9f8dc9372dc1c54bc3c3
+bool(true)
+bool(true)
+0 b5 w250: 14 6d7357c9f5ef4d57af462b7420c576a4
+bool(true)
+bool(true)
+3 b4 w0: 38 7d67da296bad9d25700095970ef493e6
+bool(true)
+bool(true)
+3 b1 w0: 38 913569a0519bace01c5d224a9f854f0d
+bool(true)
+bool(true)
+3 b9 w0: 38 1483086321fdf1f018226d5ce6e64df4
+bool(true)
+bool(true)
+3 b9 w30: 38 1483086321fdf1f018226d5ce6e64df4
+bool(true)
+bool(true)
+3 b5 w250: 38 3b762c721d03be6a0441f9729ec10127
+bool(true)
+bool(true)
+6000 b4 w0: 53 9d6c5756549c06e5b92c04757e7334a7
+bool(true)
+bool(true)
+6000 b1 w0: 53 85e9026938b93f39d69dd57111879503
+bool(true)
+bool(true)
+6000 b9 w0: 53 06163b9803573e9392302ff75eb53dfd
+bool(true)
+bool(true)
+6000 b9 w30: 53 06163b9803573e9392302ff75eb53dfd
+bool(true)
+bool(true)
+6000 b5 w250: 53 44d8319417ce8a26fffe4d4c1fa67141
+bool(true)
+bool(true)
+30000 b4 w0: 9504 0e6fbbc7f7b03cc54833b7362337bc4f
+bool(true)
+bool(true)
+30000 b1 w0: 9504 45259d300cd0049384e257cffe2f105f
+bool(true)
+bool(true)
+30000 b9 w0: 9504 206910c0b62d55177dfbc933eadb7c23
+bool(true)
+bool(true)
+30000 b9 w30: 9504 206910c0b62d55177dfbc933eadb7c23
+bool(true)
+bool(true)
+30000 b5 w250: 9504 a72e4d10c776d1cca73f1d313e849b7d
+bool(true)
+bool(true)
+425a683417724538509000000000
+425a6839314159265359648cbb73000000010038002000219819846177245385090648cbb730
+string(0) ""
+int(-5)
+int(-4)
+string(0) ""
+string(2) "hi"
+bzcompress(): Argument #2 ($block_size) must be between 1 and 9
+bzcompress(): Argument #2 ($block_size) must be between 1 and 9
+bzcompress(): Argument #3 ($work_factor) must be between 0 and 250
+bzcompress(): Argument #3 ($work_factor) must be between 0 and 250
+int(25)
+string(130) "425a6839314159265359e60df5d1000005598000104000100036275c102000314c00134287a9ea3231a991b707d45d8c4ca3156eb04be2ee48a70a121cc1beba20"
+string(25) "bzip2 stream data
+line 2
+"
+bool(true)
+int(20)
+bool(true)
+string(20) "written with bzwrite"
+string(7) "written"
+string(13) " with bzwrite"
+bool(true)
+string(6) "first|"
+bzopen(): Argument #2 ($mode) must be either "r" or "w"
+bool(true)

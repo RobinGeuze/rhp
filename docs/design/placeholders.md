@@ -47,8 +47,8 @@ priority order rather than rediscovered one framework crash at a time.
 | 24 | Phar bzip2 entries unsupported | `ext/phar/mod.rs:124` | bz2-compressed phars | low | low |
 | 25 | Phar is **read-only**; `createDefaultStub`→`""`, `canCompress`→false | `ext/phar/mod.rs:426`,`:429` | phar writing/creation; self-update | high | low |
 | 26 | Phar tar/zip formats unsupported | `ext/phar/mod.rs` (native-only) | tar/zip phars | med | low |
-| 27 | zlib compressors not byte-identical to php | `ext/zlib/mod.rs:10` | byte-exact compressed output (hashes of it) | med | low |
-| 28 | `gzopen` family + `compress.zlib://` wrapper missing | `ext/zlib/mod.rs:13` | streamed gzip read/write, tgz install | med | med |
+| 27 | ~~zlib compressors not byte-identical to php~~ — **done**: C zlib with php's deflateInit2 params (`ext/zlib/zraw.rs`) | — | — | — | — |
+| 28 | ~~`gzopen` family + `compress.zlib://` wrapper missing~~ — **done** (whole-buffer streams; gzopen's level/strategy mode letters are ignored on write) | `ext/zlib/mod.rs` | — | low | low |
 | 29 | `spl_autoload_unregister` — no-op true, never removes | `ext/spl/mod.rs:39` | dynamic autoloader swapping | med | low |
 | 30 | `Closure::bindTo`/`Closure::call` instance methods missing | `compiler/lib.rs:805` | rebinding via instance form; scoped invoke | med | high |
 | 31 | var_dump object ids — monotonic, no handle recycling | `vm/classes.rs:321` | byte-exact `var_dump`/`spl_object_id` vs php | high | low |
@@ -435,7 +435,12 @@ The module is deliberately "READ-ONLY, native format only"
   pure-Rust default. Accept that byte-parity requires matching php's zlib version.
 - **Effort/priority:** med / low.
 
-### 4.2 `gzopen` family + `compress.zlib://` wrapper missing
+### 4.2 `gzopen` family + `compress.zlib://` wrapper — DONE
+- **Status:** implemented: `gzopen`/`gzread`/`gzwrite`/`gzgets`/`gzeof`/`gzclose`/… are
+  the stream functions over a `compress.zlib://` `StreamWrapper` (transparent read of
+  plain files, concatenated members; writes match php's zlib stream bytes). Remaining
+  gap: a level digit in `gzopen`'s mode (`wb9`) is ignored. `compress.bzip2://` +
+  `bzopen` likewise (`ext/bz2`). The notes below are historical.
 - **Now:** only the six string↔string functions exist (`ext/zlib/mod.rs:112-128`);
   the header defers `gzopen`/`gzread`/… and the `compress.zlib://` wrapper to "a
   later (resource) stage" (`:13-14`).

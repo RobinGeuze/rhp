@@ -1182,3 +1182,41 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("GMP_VERSION", Value::str("6.3.0")),
     ]
 }
+
+/// One operand of the `GMP` object `compare` handler: a GMP object's decimal
+/// `num`, or any other value with its `zend_zval_value_name`.
+pub enum CmpOperand {
+    Gmp(Vec<u8>),
+    Other(Value, String),
+}
+
+/// `gmp_compare`: both operands are converted to GMP (`is_operator` rules:
+/// base-0 integer strings, ints, weak scalars except null); a failed
+/// conversion throws, which php reports as uncomparable.
+pub fn compare_handler(a: CmpOperand, b: CmpOperand) -> Result<i32, Thrown> {
+    fn conv_op(o: CmpOperand) -> Result<BigInt, Thrown> {
+        let bad = |name: &str| {
+            Thrown::type_error(format!(
+                "Number must be of type GMP|string|int, {name} given"
+            ))
+        };
+        match o {
+            CmpOperand::Gmp(n) => Ok(BigInt::parse_bytes(&n, 10).unwrap_or_default()),
+            CmpOperand::Other(v, name) => match deref(&v) {
+                Value::Int(i) => Ok(BigInt::from(i)),
+                Value::Str(s) => parse_str_auto(s.as_bytes())
+                    .ok_or_else(|| Thrown::error("ValueError", "Number is not an integer string")),
+                Value::Bool(b) => Ok(BigInt::from(b as i64)),
+                Value::Float(f) if f.is_finite() && f.abs() < 9.2e18 => Ok(bigint_from_f64(f)),
+                _ => Err(bad(&name)),
+            },
+        }
+    }
+    let x = conv_op(a)?;
+    let y = conv_op(b)?;
+    Ok(match x.cmp(&y) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    })
+}

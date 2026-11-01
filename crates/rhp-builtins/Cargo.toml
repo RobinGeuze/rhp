@@ -38,8 +38,13 @@ bcrypt = "0.17"
 argon2 = "0.6"
 password-hash = { version = "0.6", features = ["phc", "alloc"] }
 
-# zlib + phar per-file compression: raw DEFLATE / zlib / gzip (pure-Rust backend).
-flate2 = "1.1"
+# zlib + phar per-file compression + ZipArchive writing: raw DEFLATE / zlib /
+# gzip. Backed by C zlib (system libz, or libz-sys's bundled copy) rather than
+# miniz_oxide so compressed bytes are identical to php's (which links zlib).
+flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
+# Direct zlib calls where php's exact deflateInit2 parameters matter (memLevel 9,
+# sync flushes): gzencode & co., the compress.zlib:// wrapper, ZipArchive.
+libz-sys = "1.1"
 
 # phar per-file bzip2 compression (pure-Rust backend, no libbz2 dependency).
 bzip2 = "0.5"

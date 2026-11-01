@@ -216,7 +216,7 @@ fn fn_array_combine(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // array_search
 // ---------------------------------------------------------------------------
 
-fn fn_array_search(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_array_search(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let needle = deref(&args[0]);
     let a = want_array(deref(&args[1]), "array_search")?;
     let strict = args
@@ -227,7 +227,7 @@ fn fn_array_search(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         let hit = if strict {
             ops::strict_eq(&needle, v)
         } else {
-            ops::loose_eq(&needle, v)
+            crate::host_loose_eq(host, &needle, v)?
         };
         if hit {
             return Ok(key_to_value(k));
@@ -240,10 +240,39 @@ fn fn_array_search(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // array_unique (SORT_STRING semantics — the default)
 // ---------------------------------------------------------------------------
 
-fn fn_array_unique(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_array_unique(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let a = want_array(deref(&args[0]), "array_unique")?;
-    // Only the default flag (SORT_STRING) is implemented; values are compared
-    // by their string representation.
+    let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(2);
+    if flags != 2 && a.len() > 1 {
+        // SORT_REGULAR / SORT_NUMERIC / SORT_LOCALE_STRING: php sorts and drops
+        // neighbours that compare equal, keeping the earliest; for a consistent
+        // comparator that is "first occurrence of each equal group".
+        let mut kept: Vec<(ArrayKey, Value)> = Vec::new();
+        for (k, v) in a.iter() {
+            let v = deref(v);
+            let mut dup = false;
+            for (_, kv) in &kept {
+                let eq = match flags & !8 {
+                    1 => conv::to_float(kv) == conv::to_float(&v),
+                    5 => conv::to_string_bytes(kv) == conv::to_string_bytes(&v),
+                    _ => crate::host_loose_eq(host, kv, &v)?,
+                };
+                if eq {
+                    dup = true;
+                    break;
+                }
+            }
+            if !dup {
+                kept.push((k.clone(), v));
+            }
+        }
+        let mut out = PhpArray::new();
+        for (k, v) in kept {
+            out.insert(k, v);
+        }
+        return Ok(Value::Array(out));
+    }
+    // SORT_STRING (the default): values are compared by their string form.
     let mut seen: HashSet<Vec<u8>> = HashSet::new();
     let mut out = PhpArray::new();
     for (k, v) in a.iter() {

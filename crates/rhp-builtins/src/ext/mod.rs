@@ -10,6 +10,7 @@
 use crate::module::{no_constants, no_wrappers, ModuleDef};
 
 pub mod bcmath;
+pub mod bz2;
 pub mod ctype;
 pub mod gmp;
 pub mod hash;
@@ -19,6 +20,7 @@ pub mod password;
 pub mod phar;
 pub mod reflection;
 pub mod spl;
+pub mod tokenizer;
 pub mod zip;
 pub mod zlib;
 
@@ -89,11 +91,25 @@ pub fn modules() -> Vec<ModuleDef> {
             wrappers: no_wrappers,
         },
         ModuleDef {
+            name: "bz2",
+            functions: bz2::register,
+            constants: no_constants,
+            prelude_php: "",
+            wrappers: bz2::wrappers,
+        },
+        ModuleDef {
+            name: "tokenizer",
+            functions: tokenizer::register,
+            constants: tokenizer::constants,
+            prelude_php: tokenizer::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
             name: "zlib",
             functions: zlib::register,
             constants: zlib::constants,
             prelude_php: "",
-            wrappers: no_wrappers,
+            wrappers: zlib::wrappers,
         },
         ModuleDef {
             name: "openssl",

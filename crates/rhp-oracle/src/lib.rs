@@ -472,8 +472,8 @@ impl<'a> Interp<'a> {
             Op::NotIdentical(_) => Value::Bool(!ops::strict_eq(&l, &r)),
             Op::LessThan(_) => Value::Bool(ops::loose_compare(&l, &r).is_lt()),
             Op::LessThanOrEqual(_) => Value::Bool(ops::loose_compare(&l, &r).is_le()),
-            Op::GreaterThan(_) => Value::Bool(ops::loose_compare(&l, &r).is_gt()),
-            Op::GreaterThanOrEqual(_) => Value::Bool(ops::loose_compare(&l, &r).is_ge()),
+            Op::GreaterThan(_) => Value::Bool(ops::loose_compare(&r, &l).is_lt()),
+            Op::GreaterThanOrEqual(_) => Value::Bool(ops::loose_compare(&r, &l).is_le()),
             Op::Spaceship(_) => ops::spaceship(&l, &r),
             Op::And(_) | Op::Or(_) | Op::LowAnd(_) | Op::LowOr(_) | Op::NullCoalesce(_) => {
                 unreachable!("handled above")

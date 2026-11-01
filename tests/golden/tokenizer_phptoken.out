@@ -1,0 +1,67 @@
+394 'T_OPEN_TAG' "<?php\n" L1 @0 ignorable
+392 'T_COMMENT' "\/\/ hi" L2 @6 ignorable
+397 'T_WHITESPACE' "\n" L2 @11 ignorable
+310 'T_FUNCTION' "function" L3 @12
+397 'T_WHITESPACE' " " L3 @20 ignorable
+262 'T_STRING' "f" L3 @21
+40 '(' "(" L3 @22
+266 'T_VARIABLE' "$a" L3 @23
+41 ')' ")" L3 @25
+397 'T_WHITESPACE' " " L3 @26 ignorable
+123 '{' "{" L3 @27
+397 'T_WHITESPACE' " " L3 @28 ignorable
+313 'T_RETURN' "return" L3 @29
+397 'T_WHITESPACE' " " L3 @35 ignorable
+266 'T_VARIABLE' "$a" L3 @36
+397 'T_WHITESPACE' " " L3 @38 ignorable
+43 '+' "+" L3 @39
+397 'T_WHITESPACE' " " L3 @40 ignorable
+260 'T_LNUMBER' "1" L3 @41
+59 ';' ";" L3 @42
+397 'T_WHITESPACE' " " L3 @43 ignorable
+125 '}' "}" L3 @44
+397 'T_WHITESPACE' "\n" L3 @45 ignorable
+291 'T_ECHO' "echo" L4 @46
+397 'T_WHITESPACE' " " L4 @50 ignorable
+34 '"' "\"" L4 @51
+268 'T_ENCAPSED_AND_WHITESPACE' "x" L4 @52
+401 'T_CURLY_OPEN' "{" L4 @53
+266 'T_VARIABLE' "$y" L4 @54
+125 '}' "}" L4 @56
+34 '"' "\"" L4 @57
+59 ';' ";" L4 @58
+397 'T_WHITESPACE' "\n" L4 @59 ignorable
+bool(true)
+string(2) "$x"
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+bool(false)
+PhpToken::is(): Argument #1 ($kind) must be of type string|int|array, float given
+PhpToken::is(): Argument #1 ($kind) must only have elements of type string|int, float given
+int(262)
+string(3) "foo"
+int(-1)
+int(-1)
+string(8) "T_STRING"
+NULL
+string(1) ";"
+MyToken   FOO
+int(0)
+string(8) "T_STRING"
+string(8) "T_STRING"
+string(14) "T_DOUBLE_COLON"
+string(14) "T_DOUBLE_COLON"
+string(7) "UNKNOWN"
+string(7) "UNKNOWN"
+int(262)
+int(266)
+int(394)
+int(411)
+int(408)
+int(388)
+int(1)
+bool(true)
+bool(true)
+bool(true)

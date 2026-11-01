@@ -151,7 +151,7 @@ mod engine {
     impl Regex {
         /// Compile a pattern body (raw bytes) with the given compile options.
         /// Returns `None` if PCRE2 rejects the pattern.
-        pub fn compile(body: &[u8], options: u32) -> Option<Regex> {
+        pub fn compile(body: &[u8], options: u32) -> Result<Regex, String> {
             let mut errcode: i32 = 0;
             let mut erroffset: usize = 0;
             let code = unsafe {
@@ -165,11 +165,14 @@ mod engine {
                 )
             };
             if code.is_null() {
-                return None;
+                let mut buf = [0u8; 256];
+                let n = unsafe { pcre2_get_error_message_8(errcode, buf.as_mut_ptr(), buf.len()) };
+                let msg = String::from_utf8_lossy(&buf[..n.max(0) as usize]).into_owned();
+                return Err(format!("Compilation failed: {msg} at offset {erroffset}"));
             }
             let ncaptures = pattern_info_usize(code, PCRE2_INFO_CAPTURECOUNT);
             let names = read_name_table(code, ncaptures);
-            Some(Regex {
+            Ok(Regex {
                 code,
                 ncaptures,
                 names,
@@ -363,76 +366,90 @@ fn int_arg(args: &[Value], i: usize, default: i64) -> i64 {
 // pattern parsing: `/body/flags`, `#body#flags`, `(body)flags`, …
 // ---------------------------------------------------------------------------
 
-/// Parse a delimited php pattern and compile it. Returns `None` on any invalid
-/// pattern (bad delimiter, unterminated, unknown modifier, uncompilable body),
-/// mirroring php's "warn and return false/null" behaviour (we skip the warning
-/// and surface the failure to the caller).
-fn compile(pattern: &[u8]) -> Option<Regex> {
+/// Parse a delimited php pattern and compile it (pcre_get_compiled_regex_cache).
+/// `Err` carries php's warning text (bad delimiter, unterminated, unknown
+/// modifier, "Compilation failed: …"); the caller reports it.
+fn compile(pattern: &[u8]) -> Result<Regex, String> {
     set_last_error(PREG_NO_ERROR);
     let re = compile_inner(pattern);
-    if re.is_none() {
+    if let Err(m) = &re {
         set_last_error(PREG_INTERNAL_ERROR);
+        COMPILE_ERR.with(|c| *c.borrow_mut() = Some(m.clone()));
     }
     re
 }
 
-fn compile_inner(pattern: &[u8]) -> Option<Regex> {
-    use pcre2_sys::*;
-    // Leading whitespace is not permitted by php; the first byte is the delimiter.
-    if pattern.is_empty() {
-        return None;
+thread_local! {
+    /// The warning of the last failed compile not yet reported (the replace
+    /// helpers run without the host; their builtin reports it).
+    static COMPILE_ERR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Report (from builtin `fname`) a compile failure the host-less helpers hit.
+fn flush_compile_warning(host: &mut dyn Host, fname: &str) -> Result<(), Thrown> {
+    if let Some(m) = COMPILE_ERR.with(|c| c.borrow_mut().take()) {
+        crate::warn(host, fname, &m)?;
     }
-    let delim = pattern[0];
+    Ok(())
+}
+
+/// [`compile`], raising php's warning from builtin `fname` on failure.
+fn compile_warn(host: &mut dyn Host, fname: &str, pattern: &[u8]) -> Result<Option<Regex>, Thrown> {
+    match compile(pattern) {
+        Ok(re) => Ok(Some(re)),
+        Err(msg) => {
+            COMPILE_ERR.with(|c| c.borrow_mut().take());
+            crate::warn(host, fname, &msg)?;
+            set_last_error(PREG_INTERNAL_ERROR);
+            Ok(None)
+        }
+    }
+}
+
+fn compile_inner(pattern: &[u8]) -> Result<Regex, String> {
+    use pcre2_sys::*;
+    // Leading whitespace is skipped; the next byte is the delimiter.
+    let start = pattern
+        .iter()
+        .position(|b| !b" \t\n\r\x0b\x0c".contains(b))
+        .ok_or_else(|| "Empty regular expression".to_string())?;
+    let delim = pattern[start];
+    if delim.is_ascii_alphanumeric() || delim == b'\\' || delim == 0 {
+        return Err("Delimiter must not be alphanumeric, backslash, or NUL byte".into());
+    }
     let close = match delim {
         b'(' => b')',
         b'{' => b'}',
         b'[' => b']',
         b'<' => b'>',
-        // Delimiter may not be a backslash, alphanumeric, or whitespace.
-        d if d.is_ascii_alphanumeric() || d == b'\\' || d.is_ascii_whitespace() => return None,
         d => d,
     };
     let bracketed = delim != close;
-
-    // Locate the closing delimiter. For bracket delimiters we balance nesting
-    // (respecting backslash escapes); for symmetric delimiters the closing one
-    // is the last unescaped occurrence.
-    let body_start = 1;
-    let close_pos = if bracketed {
-        let mut depth = 1usize;
-        let mut i = body_start;
-        let mut found = None;
-        while i < pattern.len() {
-            match pattern[i] {
-                b'\\' => i += 1, // skip the escaped byte
-                b if b == delim => depth += 1,
-                b if b == close => {
-                    depth -= 1;
-                    if depth == 0 {
-                        found = Some(i);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
+    let body_start = start + 1;
+    let mut i = body_start;
+    let mut depth = 1usize;
+    let close_pos = loop {
+        if i >= pattern.len() {
+            return Err(if bracketed {
+                format!("No ending matching delimiter '{}' found", close as char)
+            } else {
+                format!("No ending delimiter '{}' found", close as char)
+            });
         }
-        found?
-    } else {
-        // Last unescaped occurrence of the delimiter after position 0.
-        let mut i = body_start;
-        let mut last = None;
-        while i < pattern.len() {
-            if pattern[i] == b'\\' {
-                i += 2;
-                continue;
-            }
-            if pattern[i] == close {
-                last = Some(i);
-            }
-            i += 1;
+        let b = pattern[i];
+        if b == b'\\' && i + 1 < pattern.len() {
+            i += 2;
+            continue;
         }
-        last?
+        if b == close {
+            depth -= 1;
+            if !bracketed || depth == 0 {
+                break i;
+            }
+        } else if bracketed && b == delim {
+            depth += 1;
+        }
+        i += 1;
     };
 
     let body = &pattern[body_start..close_pos];
@@ -444,6 +461,7 @@ fn compile_inner(pattern: &[u8]) -> Option<Regex> {
         match f {
             b'i' => options |= PCRE2_CASELESS,
             b'm' => options |= PCRE2_MULTILINE,
+            b'n' => options |= PCRE2_NO_AUTO_CAPTURE,
             b's' => options |= PCRE2_DOTALL,
             b'x' => options |= PCRE2_EXTENDED,
             b'A' => options |= PCRE2_ANCHORED,
@@ -454,8 +472,9 @@ fn compile_inner(pattern: &[u8]) -> Option<Regex> {
             // non-ASCII, exactly as php's `u` modifier does).
             b'u' => options |= PCRE2_UTF | PCRE2_UCP,
             // php accepts these for backward compatibility; both are no-ops here.
-            b'S' | b'X' => {}
-            _ => return None, // unknown / unsupported modifier (e, z, …)
+            b'S' | b'X' | b' ' | b'\n' | b'\r' => {}
+            0 => return Err("NUL byte is not a valid modifier".into()),
+            c => return Err(format!("Unknown modifier '{}'", c as char)),
         }
     }
 
@@ -563,8 +582,8 @@ fn write_ref(arg: Option<&Value>, value: Value) {
 // preg_match
 // ---------------------------------------------------------------------------
 
-fn fn_preg_match(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(re) = compile(&bytes_of(&args[0])) else {
+fn fn_preg_match(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Some(re) = compile_warn(host, "preg_match", &bytes_of(&args[0]))? else {
         return Ok(Value::Bool(false));
     };
     let subject = bytes_of(&args[1]);
@@ -591,8 +610,8 @@ fn fn_preg_match(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // preg_match_all
 // ---------------------------------------------------------------------------
 
-fn fn_preg_match_all(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(re) = compile(&bytes_of(&args[0])) else {
+fn fn_preg_match_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Some(re) = compile_warn(host, "preg_match_all", &bytes_of(&args[0]))? else {
         return Ok(Value::Bool(false));
     };
     let subject = bytes_of(&args[1]);
@@ -780,7 +799,7 @@ fn replace_one(
     subject: &[u8],
     limit: i64,
 ) -> Option<(Vec<u8>, usize)> {
-    let re = compile(pattern)?;
+    let re = compile(pattern).ok()?;
     replace_driver(&re, subject, limit, |ov, out| {
         expand(
             replacement,
@@ -819,7 +838,7 @@ fn as_list(v: &Value) -> (Vec<Vec<u8>>, bool) {
     }
 }
 
-fn fn_preg_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn preg_replace_impl(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (pats, _pat_is_arr) = as_list(&args[0]);
     let (reps, rep_is_arr) = as_list(&args[1]);
     let limit = int_arg(args, 3, -1);
@@ -882,7 +901,7 @@ fn cb_string(
     let unmatched_null = flags & PREG_UNMATCHED_AS_NULL != 0;
     let mut cur = subject.to_vec();
     for (pat, cb) in pairs {
-        let Some(re) = compile(pat) else {
+        let Ok(re) = compile(pat) else {
             return Ok(None);
         };
         let names = re.names().to_vec();
@@ -935,7 +954,7 @@ fn cb_subject(
     }
 }
 
-fn fn_preg_replace_callback(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn preg_replace_callback_impl(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (pats, _) = as_list(&args[0]);
     let cb = deref(&args[1]);
     let limit = int_arg(args, 3, -1);
@@ -949,7 +968,7 @@ fn fn_preg_replace_callback(host: &mut dyn Host, args: &[Value]) -> Result<Value
 
 /// `preg_replace_callback_array($pattern, $subject, $limit, &$count, $flags)`:
 /// each `pattern => callback` pair is applied in turn to the whole subject.
-fn fn_preg_replace_callback_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn preg_replace_callback_array_impl(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let map = match deref(&args[0]) {
         Value::Array(a) => a,
         other => {
@@ -986,6 +1005,42 @@ fn fn_preg_replace_callback_array(host: &mut dyn Host, args: &[Value]) -> Result
     Ok(cur)
 }
 
+/// Run a replace builtin whose helpers compile without the host, then report
+/// a compile failure they hit (php warns from the builtin).
+fn with_compile_warning(
+    host: &mut dyn Host,
+    fname: &str,
+    args: &[Value],
+    f: crate::NativeFn,
+) -> Result<Value, Thrown> {
+    COMPILE_ERR.with(|c| c.borrow_mut().take());
+    let r = f(host, args);
+    flush_compile_warning(host, fname)?;
+    r
+}
+
+fn fn_preg_replace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    with_compile_warning(host, "preg_replace", args, preg_replace_impl)
+}
+
+fn fn_preg_replace_callback(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    with_compile_warning(
+        host,
+        "preg_replace_callback",
+        args,
+        preg_replace_callback_impl,
+    )
+}
+
+fn fn_preg_replace_callback_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    with_compile_warning(
+        host,
+        "preg_replace_callback_array",
+        args,
+        preg_replace_callback_array_impl,
+    )
+}
+
 fn fn_preg_last_error(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(LAST_ERROR.with(|c| c.get())))
 }
@@ -1010,8 +1065,8 @@ fn fn_preg_last_error_msg(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Th
 // preg_split
 // ---------------------------------------------------------------------------
 
-fn fn_preg_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(re) = compile(&bytes_of(&args[0])) else {
+fn fn_preg_split(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Some(re) = compile_warn(host, "preg_split", &bytes_of(&args[0]))? else {
         return Ok(Value::Bool(false));
     };
     let subject = bytes_of(&args[1]);
@@ -1107,8 +1162,8 @@ fn fn_preg_quote(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // preg_grep
 // ---------------------------------------------------------------------------
 
-fn fn_preg_grep(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(re) = compile(&bytes_of(&args[0])) else {
+fn fn_preg_grep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Some(re) = compile_warn(host, "preg_grep", &bytes_of(&args[0]))? else {
         return Ok(Value::Bool(false));
     };
     let Value::Array(input) = deref(&args[1]) else {

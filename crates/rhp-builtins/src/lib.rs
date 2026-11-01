@@ -1513,7 +1513,10 @@ fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    dump::var_export(host, &mut out, &args[0], 1);
+    let circular = dump::var_export(host, &mut out, &args[0], 1);
+    for _ in 0..circular {
+        host.emit_diagnostic(E_WARNING, "var_export does not handle circular references")?;
+    }
     let return_mode = args.get(1).map(conv::to_bool).unwrap_or(false);
     if return_mode {
         Ok(Value::str(out))

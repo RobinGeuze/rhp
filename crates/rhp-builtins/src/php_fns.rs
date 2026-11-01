@@ -972,29 +972,6 @@ fn fn_setlocale(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str("C"))
 }
 
-fn is_utf8ish(cs: &str) -> bool {
-    matches!(cs, "UTF-8" | "UTF8" | "")
-}
-
-/// `iconv($from, $to, $string)` — pragmatic subset: UTF-8↔UTF-8 (and same
-/// charset) passes through; `ASCII`/`US-ASCII` targets drop non-ASCII (honouring
-/// `//IGNORE`/`//TRANSLIT` best-effort); other charsets pass through unchanged.
-fn fn_iconv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let from = String::from_utf8_lossy(&str_arg(args, 0)).to_uppercase();
-    let to_raw = String::from_utf8_lossy(&str_arg(args, 1)).to_uppercase();
-    let data = str_arg(args, 2);
-    let from_c = from.split("//").next().unwrap_or("");
-    let to_c = to_raw.split("//").next().unwrap_or("");
-    if from_c == to_c || (is_utf8ish(from_c) && is_utf8ish(to_c)) {
-        return Ok(Value::str(data));
-    }
-    if matches!(to_c, "ASCII" | "US-ASCII") {
-        let out: Vec<u8> = data.into_iter().filter(|&b| b < 0x80).collect();
-        return Ok(Value::str(out));
-    }
-    Ok(Value::str(data))
-}
-
 /// `Closure::fromCallable($callable)`: wrap a callable in a Closure (a closure is
 /// returned as-is), mirroring the first-class-callable `MakeFcc` wrapping.
 fn fn_closure_from_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1457,7 +1434,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "php_ini_loaded_file", fn_php_ini_loaded_file, 0, Some(0));
     put(m, "setlocale", fn_setlocale, 2, None);
     put(m, "assert", fn_assert, 1, Some(2));
-    put(m, "iconv", fn_iconv, 3, Some(3));
     put(m, "random_bytes", fn_random_bytes, 1, Some(1));
     put(m, "random_int", fn_random_int, 2, Some(2));
     put(m, "mt_rand", fn_mt_rand, 0, Some(2));

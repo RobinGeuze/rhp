@@ -62,6 +62,8 @@ fn is_shared_ref(_host: &dyn crate::Host, _v: &Value) -> bool {
 struct Seen {
     arrays: Vec<usize>,
     objects: Vec<u32>,
+    /// Cycles `var_export` cut short (each one is a php warning).
+    circular: usize,
 }
 
 /// One `var_dump` value; `shared` marks a nested PHP reference with `&`.
@@ -322,8 +324,12 @@ fn print_r_key(k: &ArrayKey) -> Vec<u8> {
 }
 
 /// `var_export` of one value — php's `php_var_export_ex`; `level` starts at 1.
-pub fn var_export(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, level: usize) {
-    var_export_value(host, out, v, level, &mut Seen::default());
+/// Returns how many circular references were cut short (php warns "var_export
+/// does not handle circular references" for each).
+pub fn var_export(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, level: usize) -> usize {
+    let mut seen = Seen::default();
+    var_export_value(host, out, v, level, &mut seen);
+    seen.circular
 }
 
 /// One `var_export` value. A container already being exported (a cycle) is
@@ -342,6 +348,7 @@ fn var_export_value(
         _ => false,
     };
     if recursive {
+        seen.circular += 1;
         out.extend_from_slice(b"NULL");
         return;
     }

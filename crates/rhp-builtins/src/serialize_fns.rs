@@ -209,9 +209,14 @@ impl Serializer {
         if !incomplete && host.class_has_method(class_id, b"__sleep") {
             let names = match deref(&call(host, "__sleep")?) {
                 Value::Array(a) => a,
-                // php warns "C::__sleep() should return an array only
-                // containing the names of instance-variables to serialize".
                 _ => {
+                    host.emit_diagnostic(
+                        crate::E_WARNING,
+                        &format!(
+                            "serialize(): {}::__sleep() should return an array only containing the names of instance-variables to serialize",
+                            String::from_utf8_lossy(&cname)
+                        ),
+                    )?;
                     out.extend_from_slice(b"N;");
                     return Ok(());
                 }
@@ -238,10 +243,27 @@ impl Serializer {
                 let hit = [&n[..], &priv_[..], &prot[..]]
                     .iter()
                     .find_map(|want| props.iter().find(|(k, _)| k.as_bytes() == *want));
-                if let Some((k, v)) = hit {
-                    if !picked.iter().any(|(pk, _)| pk == k) {
-                        picked.push((k.clone(), v.clone()));
+                match hit {
+                    Some((k, v)) => {
+                        if !picked.iter().any(|(pk, _)| pk == k) {
+                            picked.push((k.clone(), v.clone()));
+                        } else {
+                            host.emit_diagnostic(
+                                crate::E_WARNING,
+                                &format!(
+                                    "serialize(): \"{}\" is returned from __sleep() multiple times",
+                                    String::from_utf8_lossy(&n)
+                                ),
+                            )?;
+                        }
                     }
+                    None => host.emit_diagnostic(
+                        crate::E_WARNING,
+                        &format!(
+                            "serialize(): \"{}\" returned as member variable from __sleep() but does not exist",
+                            String::from_utf8_lossy(&n)
+                        ),
+                    )?,
                 }
             }
             head(out, &cname, picked.len());
@@ -341,6 +363,10 @@ struct Parser<'a, 'h> {
     /// php's call order (they run once the whole payload has been parsed).
     pending: Vec<(Value, Option<Value>)>,
     allowed: Allowed,
+    /// Where php's "Error at offset" points: the innermost failure.
+    err_pos: Option<usize>,
+    /// A value was expected but the container ended (`}`).
+    unexpected_end: bool,
 }
 
 fn malformed<T>() -> PResult<T> {
@@ -378,14 +404,30 @@ impl<'a> Parser<'a, '_> {
     /// `"<len bytes>"` after a length prefix.
     fn read_quoted(&mut self, len: usize) -> PResult<Vec<u8>> {
         self.expect(b'"')?;
-        let bytes = self
-            .b
-            .get(self.pos..self.pos + len)
-            .ok_or(Fail::Malformed)?
-            .to_vec();
+        let Some(bytes) = self.b.get(self.pos..self.pos + len) else {
+            // php points just past the type letter and colon (`start + 2`).
+            let at = self.b[..self.pos]
+                .iter()
+                .rposition(|&c| c == b':')
+                .unwrap_or(0);
+            let at = self.b[..at]
+                .iter()
+                .rposition(|&c| c == b':')
+                .map_or(0, |i| i + 1);
+            return self.fail_at(at);
+        };
+        let bytes = bytes.to_vec();
         self.pos += len;
-        self.expect(b'"')?;
+        if self.expect(b'"').is_err() {
+            return self.fail_at(self.pos);
+        }
         Ok(bytes)
+    }
+
+    /// Fail with php's error offset at `pos` (unless an inner failure set it).
+    fn fail_at<T>(&mut self, pos: usize) -> PResult<T> {
+        self.err_pos.get_or_insert(pos);
+        malformed()
     }
 
     /// A key (array key / property name): parsed without a var_hash slot.
@@ -397,7 +439,11 @@ impl<'a> Parser<'a, '_> {
                 let v = cell.borrow().clone();
                 Ok(v)
             }
-            _ => malformed(),
+            Some(b'}') => {
+                self.unexpected_end = true;
+                self.fail_at(self.pos)
+            }
+            _ => self.fail_at(self.pos),
         }
     }
 
@@ -421,6 +467,15 @@ impl<'a> Parser<'a, '_> {
     }
 
     fn parse_into(&mut self, cell: &Cell) -> PResult<()> {
+        let start = self.pos;
+        let r = self.parse_into_inner(cell);
+        if matches!(r, Err(Fail::Malformed)) {
+            self.err_pos.get_or_insert(start);
+        }
+        r
+    }
+
+    fn parse_into_inner(&mut self, cell: &Cell) -> PResult<()> {
         let v = match self.b.get(self.pos).copied() {
             Some(b'N') => {
                 self.pos += 1;
@@ -453,7 +508,9 @@ impl<'a> Parser<'a, '_> {
                 self.expect(b':')?;
                 let len = self.read_len(b':')?;
                 let content = self.read_quoted(len)?;
-                self.expect(b';')?;
+                if self.expect(b';').is_err() {
+                    return self.fail_at(self.pos);
+                }
                 Value::str(content)
             }
             Some(b'r') => {
@@ -480,10 +537,17 @@ impl<'a> Parser<'a, '_> {
                     let val = self.parse_slot()?;
                     arr.insert(key, val);
                 }
-                self.expect(b'}')?;
+                if self.expect(b'}').is_err() {
+                    return self.fail_at(self.pos);
+                }
                 Value::Array(arr)
             }
             Some(b'O') => return self.parse_object(cell),
+            Some(b'}') => {
+                // php: "this is the case where we have less data than planned"
+                self.unexpected_end = true;
+                return self.fail_at(self.pos);
+            }
             Some(b'E') => {
                 self.pos += 1;
                 self.expect(b':')?;
@@ -507,10 +571,14 @@ impl<'a> Parser<'a, '_> {
             .position(|&c| c == b':')
             .ok_or(Fail::Malformed)?;
         let (class, case) = (&body[..colon], &body[colon + 1..]);
-        let cid = self
-            .host
-            .resolve_class_autoload(class)?
-            .ok_or(Fail::Malformed)?;
+        let Some(cid) = self.host.resolve_class_autoload(class)? else {
+            let msg = format!(
+                "unserialize(): Class '{}' not found",
+                String::from_utf8_lossy(class)
+            );
+            self.host.emit_diagnostic(crate::E_WARNING, &msg)?;
+            return malformed();
+        };
         if !self.host.is_enum_class(cid) {
             return malformed();
         }
@@ -755,15 +823,40 @@ fn fn_unserialize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         referenced: HashSet::new(),
         pending: Vec::new(),
         allowed,
+        err_pos: None,
+        unexpected_end: false,
     };
     // php tolerates trailing "extra data" at the top level: it still returns
     // the parsed value (only emits a warning). Malformed/incomplete input
     // yields `false`.
+    let total = bytes.len();
+    if total == 0 {
+        return Ok(Value::Bool(false));
+    }
     let v = match p.parse_slot() {
         Ok(v) => v,
-        Err(Fail::Malformed) => return Ok(Value::Bool(false)),
+        Err(Fail::Malformed) => {
+            let at = p.err_pos.unwrap_or(0);
+            if p.unexpected_end {
+                crate::warn(p.host, "unserialize", "Unexpected end of serialized data")?;
+            }
+            crate::warn(
+                p.host,
+                "unserialize",
+                &format!("Error at offset {at} of {total} bytes"),
+            )?;
+            return Ok(Value::Bool(false));
+        }
         Err(Fail::Thrown(t)) => return Err(t),
     };
+    if p.pos < total {
+        let at = p.pos;
+        crate::warn(
+            p.host,
+            "unserialize",
+            &format!("Extra data starting at offset {at} of {total} bytes"),
+        )?;
+    }
     let (mut objs, mut cells) = (HashSet::new(), HashSet::new());
     let v = deref(&p.unwrap(v, &mut objs, &mut cells));
     let pending: Vec<(Value, Option<Value>)> = std::mem::take(&mut p.pending)

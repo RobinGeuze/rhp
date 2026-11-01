@@ -453,10 +453,15 @@ fn fn_bin2hex(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(to_hex(&s)))
 }
 
-fn fn_hex2bin(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_hex2bin(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = bytes_of(&args[0]);
     // Odd length or non-hex input: php emits a warning and returns false.
     if !s.len().is_multiple_of(2) {
+        crate::warn(
+            host,
+            "hex2bin",
+            "Hexadecimal input string must have an even length",
+        )?;
         return Ok(Value::Bool(false));
     }
     let mut out = Vec::with_capacity(s.len() / 2);
@@ -465,7 +470,10 @@ fn fn_hex2bin(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         let lo = hex_val(pair[1]);
         match (hi, lo) {
             (Some(h), Some(l)) => out.push((h << 4) | l),
-            _ => return Ok(Value::Bool(false)),
+            _ => {
+                crate::warn(host, "hex2bin", "Input string must be hexadecimal string")?;
+                return Ok(Value::Bool(false));
+            }
         }
     }
     Ok(Value::str(out))

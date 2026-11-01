@@ -11,8 +11,8 @@
 //! while `iconv_strlen` / `iconv_substr` report it. `_php_iconv_show_error`'s
 //! E_NOTICE / E_WARNING texts go to the host's diagnostic sink.
 //!
-//! `iconv()` itself (with its platform-specific //TRANSLIT tables) still lives
-//! in `php_fns`.
+//! `iconv()` converts through the same tables (`//TRANSLIT` with libiconv's
+//! spellings of the common Latin letters).
 
 use std::collections::HashMap;
 
@@ -1030,6 +1030,153 @@ fn fn_iconv_mime_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     })
 }
 
+/// libiconv's `//TRANSLIT` spelling of a code point the target lacks (the
+/// common Latin letters and symbols); `None` = not transliterable.
+fn translit(cp: u32) -> Option<&'static str> {
+    Some(match cp {
+        0xe0 => "`a",
+        0xe1 => "'a",
+        0xe2 => "^a",
+        0xe3 => "~a",
+        0xe4 => "\"a",
+        0xe5 => "a",
+        0xe8 => "`e",
+        0xe9 => "'e",
+        0xea => "^e",
+        0xeb => "\"e",
+        0xec => "`i",
+        0xed => "'i",
+        0xee => "^i",
+        0xef => "\"i",
+        0xf2 => "`o",
+        0xf3 => "'o",
+        0xf4 => "^o",
+        0xf5 => "~o",
+        0xf6 => "\"o",
+        0xf8 => "o",
+        0xf9 => "`u",
+        0xfa => "'u",
+        0xfb => "^u",
+        0xfc => "\"u",
+        0xfd => "'y",
+        0xff => "\"y",
+        0xf1 => "~n",
+        0xe7 => "c",
+        0xc0 => "`A",
+        0xc1 => "'A",
+        0xc2 => "^A",
+        0xc3 => "~A",
+        0xc4 => "\"A",
+        0xc5 => "A",
+        0xc8 => "`E",
+        0xc9 => "'E",
+        0xca => "^E",
+        0xcb => "\"E",
+        0xcc => "`I",
+        0xcd => "'I",
+        0xce => "^I",
+        0xcf => "\"I",
+        0xd2 => "`O",
+        0xd3 => "'O",
+        0xd4 => "^O",
+        0xd5 => "~O",
+        0xd6 => "\"O",
+        0xd8 => "O",
+        0xd9 => "`U",
+        0xda => "'U",
+        0xdb => "^U",
+        0xdc => "\"U",
+        0xdd => "'Y",
+        0xd1 => "~N",
+        0xc7 => "C",
+        0xdf => "ss",
+        0xe6 => "ae",
+        0xc6 => "AE",
+        0x153 => "oe",
+        0x152 => "OE",
+        0x20ac => "EUR",
+        0xa3 => "lb",
+        0xa9 => "(C)",
+        0xae => "(R)",
+        0x2122 => "TM",
+        0x2018 | 0x2019 => "'",
+        0x201c | 0x201d => "\"",
+        0x2013 | 0x2014 => "-",
+        0x2026 => "...",
+        0xa0 => " ",
+        0xb2 => "^2",
+        0xb3 => "^3",
+        0xb9 => "^1",
+        _ => return None,
+    })
+}
+
+/// `iconv($from_encoding, $to_encoding, $string)` (php_iconv_string): the
+/// `//IGNORE` / `//TRANSLIT` suffixes of the target are honoured; failures
+/// raise `_php_iconv_show_error`'s diagnostics and return false.
+fn fn_iconv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let from_name = str_arg(host, args, 0, "iconv", "from_encoding")?;
+    let to_name = str_arg(host, args, 1, "iconv", "to_encoding")?;
+    let data = str_arg(host, args, 2, "iconv", "string")?;
+    let upper = String::from_utf8_lossy(&to_name).to_ascii_uppercase();
+    let ignore = upper.contains("//IGNORE");
+    let trans = upper.contains("//TRANSLIT");
+    let (Some(from), Some(to)) = (charset(&from_name), charset(&to_name)) else {
+        show_error(host, "iconv", Err::WrongCharset, &to_name, &from_name)?;
+        return Ok(Value::Bool(false));
+    };
+    // Decode, skipping illegal input under //IGNORE.
+    let mut cps = Vec::with_capacity(data.len());
+    let mut rest: &[u8] = &data;
+    loop {
+        let (got, stop) = decode(from, rest);
+        match stop {
+            Stop::End => {
+                cps.extend(got);
+                break;
+            }
+            Stop::Illegal if ignore => {
+                let used = encode(from, &got).map_or(0, |b| b.len());
+                cps.extend(got);
+                rest = rest.get(used + 1..).unwrap_or(&[]);
+            }
+            other => {
+                show_error(
+                    host,
+                    "iconv",
+                    Err::from_stop(other).unwrap_or(Err::Unknown),
+                    &to_name,
+                    &from_name,
+                )?;
+                return Ok(Value::Bool(false));
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(cps.len());
+    for &cp in &cps {
+        if let Some(b) = encode(to, &[cp]) {
+            out.extend_from_slice(&b);
+            continue;
+        }
+        if trans {
+            match translit(cp)
+                .and_then(|t| encode(to, &t.chars().map(|c| c as u32).collect::<Vec<_>>()))
+            {
+                Some(b) => out.extend_from_slice(&b),
+                None if ignore => {}
+                None => out.push(b'?'),
+            }
+            continue;
+        }
+        if ignore {
+            continue;
+        }
+        show_error(host, "iconv", Err::IllegalSeq, &to_name, &from_name)?;
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::str(out))
+}
+
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     fn put(
         m: &mut HashMap<&'static str, Builtin>,
@@ -1048,6 +1195,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
             },
         );
     }
+    put(m, "iconv", fn_iconv, 3, Some(3));
     put(m, "iconv_strlen", fn_iconv_strlen, 1, Some(2));
     put(m, "iconv_substr", fn_iconv_substr, 2, Some(4));
     put(m, "iconv_strpos", fn_iconv_strpos, 2, Some(4));

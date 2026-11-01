@@ -1,0 +1,72 @@
+[2] preg_match(): Compilation failed: missing closing parenthesis at offset 1
+[2] preg_match(): Empty regular expression
+[2] preg_match(): Delimiter must not be alphanumeric, backslash, or NUL byte
+[2] preg_match(): No ending delimiter '/' found
+[2] preg_match(): No ending matching delimiter ')' found
+[2] preg_match(): Unknown modifier 'z'
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+[2] preg_match(): Unknown modifier 'b'
+int(1)
+bool(false)
+int(1)
+[2] preg_replace(): Compilation failed: missing closing parenthesis at offset 1
+[2] preg_replace_callback(): Compilation failed: missing terminating ] for character class at offset 1
+[2] preg_split(): Compilation failed: missing closing parenthesis at offset 1
+[2] preg_grep(): Compilation failed: missing closing parenthesis at offset 1
+NULL
+NULL
+bool(false)
+bool(false)
+string(14) "Internal error"
+[2] unserialize(): Error at offset 0 of 7 bytes
+bool(false)
+[2] unserialize(): Error at offset 0 of 3 bytes
+bool(false)
+[2] unserialize(): Extra data starting at offset 4 of 5 bytes
+int(5)
+[2] unserialize(): Unexpected end of serialized data
+[2] unserialize(): Error at offset 9 of 10 bytes
+bool(false)
+[2] unserialize(): Error at offset 13 of 13 bytes
+bool(false)
+[2] unserialize(): Error at offset 10 of 10 bytes
+bool(false)
+[2] unserialize(): Error at offset 2 of 10 bytes
+bool(false)
+[2] unserialize(): Error at offset 17 of 20 bytes
+bool(false)
+[2] unserialize(): Unexpected end of serialized data
+[2] unserialize(): Error at offset 26 of 27 bytes
+bool(false)
+[2] unserialize(): Error at offset 0 of 4 bytes
+bool(false)
+bool(false)
+[2] unserialize(): Class 'X' not found
+[2] unserialize(): Error at offset 0 of 10 bytes
+bool(false)
+[2] hex2bin(): Hexadecimal input string must have an even length
+[2] hex2bin(): Input string must be hexadecimal string
+bool(false)
+bool(false)
+[8] iconv(): Detected an illegal character in input string
+[2] iconv(): Wrong encoding, conversion from "NOPE" to "ASCII" is not allowed
+[8] iconv(): Detected an incomplete multibyte character in input string
+bool(false)
+bool(false)
+string(1) "a"
+bool(false)
+string(2) "e9"
+[2] var_export does not handle circular references
+(object) array(
+   'c' => NULL,
+)
+[2] serialize(): "nonexist" returned as member variable from __sleep() but does not exist
+[2] serialize(): "a" is returned from __sleep() multiple times
+O:1:"S":1:{s:1:"a";i:1;}
+[2] serialize(): S2::__sleep() should return an array only containing the names of instance-variables to serialize
+N;

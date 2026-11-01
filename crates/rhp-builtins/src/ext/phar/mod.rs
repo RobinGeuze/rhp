@@ -417,6 +417,17 @@ impl PharWrapper {
 
     fn map_phar(&self, path: &[u8], alias: Option<&[u8]>, bytes: Vec<u8>) -> Result<(), String> {
         let mut arc = PharArchive::parse(bytes, path)?;
+        // A stored (implicit) alias is enforced over an explicit one.
+        if let Some(a) = alias {
+            if !arc.alias.is_empty() && arc.alias != a {
+                return Err(format!(
+                    "cannot load phar \"{}\" with implicit alias \"{}\" under different alias \"{}\"",
+                    String::from_utf8_lossy(path),
+                    String::from_utf8_lossy(&arc.alias),
+                    String::from_utf8_lossy(a)
+                ));
+            }
+        }
         arc.path = path.to_vec();
         self.install(path, alias, Rc::new(arc));
         Ok(())
@@ -478,6 +489,23 @@ fn normalize(entry: &[u8]) -> Vec<u8> {
 }
 
 impl PharWrapper {
+    /// The length of the registered archive key that `rest` (a `phar://` URL
+    /// without the scheme) lies in, opening the archive by path if needed.
+    fn archive_prefix_len(&self, rest: &[u8]) -> Option<usize> {
+        if !self.has_archive_for(rest) {
+            self.open_from_path(rest);
+        }
+        self.archives
+            .borrow()
+            .keys()
+            .filter(|key| {
+                rest == key.as_slice()
+                    || (rest.len() > key.len() && rest.starts_with(key) && rest[key.len()] == b'/')
+            })
+            .map(|k| k.len())
+            .max()
+    }
+
     fn has_archive_for(&self, rest: &[u8]) -> bool {
         self.archives.borrow().keys().any(|key| {
             rest == key.as_slice()
@@ -602,9 +630,13 @@ fn fn_phar_mapphar(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
         .first()
         .map(|v| conv::to_string_bytes(&deref(v)))
         .filter(|a| !a.is_empty());
-    let path = host
-        .running_main_path()
-        .ok_or_else(|| Thrown::error("PharException", "cannot determine the running phar"))?;
+    // php's phar_open_executed_filename: the file currently executing.
+    let path = host.executing_file().ok_or_else(|| {
+        Thrown::error(
+            "PharException",
+            "cannot initialize a phar outside of PHP execution",
+        )
+    })?;
     let bytes = host
         .stream_get_contents(&path)
         .ok_or_else(|| Thrown::error("PharException", "cannot read the running phar"))?;
@@ -612,7 +644,7 @@ fn fn_phar_mapphar(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
         pw.map_phar(&path, alias.as_deref(), bytes)
             .map_err(|e| Thrown::error("PharException", &e))
     })?;
-    Ok(Value::Null)
+    Ok(Value::Bool(true))
 }
 
 /// `Phar::loadPhar($filename, $alias)`: load an external phar by path.
@@ -632,25 +664,27 @@ fn fn_phar_loadphar(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
     Ok(Value::Bool(true))
 }
 
-/// `Phar::running($retphar)`: the URL (or path) of the running phar. Used only by
-/// composer's self-update; returns "" when not running inside a phar.
+/// `Phar::running($retphar)`: when the currently executing file is inside a
+/// phar (`phar://<archive>/<entry>`), the `phar://<archive>` URL (or, with
+/// `$retphar = false`, the archive path); otherwise "".
 fn fn_phar_running(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let retphar = args
         .first()
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(true);
-    match host.running_main_path() {
-        Some(p) => {
-            if retphar {
-                let mut s = b"phar://".to_vec();
-                s.extend_from_slice(&p);
-                Ok(Value::str(s))
-            } else {
-                Ok(Value::str(p))
-            }
-        }
-        None => Ok(Value::str("")),
+    let Some(fname) = host.executing_file() else {
+        return Ok(Value::str(""));
+    };
+    if fname.len() < 7 || !fname[..7].eq_ignore_ascii_case(b"phar://") {
+        return Ok(Value::str(""));
     }
+    let rest = &fname[7..];
+    let arch_len = with_phar_wrapper(host, |pw| Ok(pw.archive_prefix_len(rest)))?;
+    Ok(match arch_len {
+        Some(n) if retphar => Value::str(fname[..n + 7].to_vec()),
+        Some(n) => Value::str(rest[..n].to_vec()),
+        None => Value::str(""),
+    })
 }
 
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {

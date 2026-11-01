@@ -846,7 +846,7 @@ fn fn_stream_socket_server(host: &mut dyn Host, args: &[Value]) -> Result<Value,
                 fname,
                 &format!(
                     "Unable to connect to {} ({})",
-                    String::from_utf8_lossy(&address),
+                    c_str(&address),
                     text.as_deref().unwrap_or("Unknown error")
                 ),
             )?;
@@ -857,6 +857,12 @@ fn fn_stream_socket_server(host: &mut dyn Host, args: &[Value]) -> Result<Value,
             Ok(Value::Bool(false))
         }
     }
+}
+
+/// A string as php's `%s` of a `char *` prints it: up to the first NUL.
+fn c_str(s: &[u8]) -> String {
+    let end = s.iter().position(|&b| b == 0).unwrap_or(s.len());
+    String::from_utf8_lossy(&s[..end]).into_owned()
 }
 
 /// php's `php_addslashes` (for the host in the connect warning).
@@ -939,11 +945,14 @@ fn fsockopen_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Va
         .unwrap_or(default_socket_timeout(host) as f64);
     let max = u64::MAX as f64 / 1_000_000.0;
     if timeout != -1.0 && !(0.0..=max).contains(&timeout) {
+        // php 8.5.8 reports this as argument #6 (no such parameter, so no
+        // name) and hands the double limit to an integer format: what prints
+        // is the double's bit pattern (on arm64; garbage elsewhere).
         return Err(Thrown::error(
             "ValueError",
             format!(
-                "{fname}(): Argument #5 ($timeout) must be -1 or between 0 and {}",
-                max as u64
+                "{fname}(): Argument #6 must be -1 or between 0 and {}",
+                max.to_bits()
             ),
         ));
     }
@@ -971,13 +980,15 @@ fn fsockopen_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Va
                 fname,
                 &format!(
                     "Unable to connect to {}:{} ({})",
-                    String::from_utf8_lossy(&hostname),
+                    c_str(&hostname),
                     port,
                     text.as_deref().unwrap_or("Unknown error")
                 ),
             )?;
             write_ref(args.get(2), Value::Int(code as i64));
-            write_ref(args.get(3), Value::str(text.unwrap_or_default()));
+            if let Some(t) = text {
+                write_ref(args.get(3), Value::str(t));
+            }
             Ok(Value::Bool(false))
         }
     }
@@ -1393,6 +1404,21 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "pfsockopen", fn_pfsockopen, 1, Some(5));
     put(m, "stream_set_timeout", fn_stream_set_timeout, 2, Some(3));
     put(m, "socket_set_timeout", fn_stream_set_timeout, 2, Some(3));
+    // php's aliases
+    put(
+        m,
+        "socket_get_status",
+        crate::fs_fns::fn_stream_get_meta_data,
+        1,
+        Some(1),
+    );
+    put(
+        m,
+        "socket_set_blocking",
+        crate::stream_fns::fn_stream_set_blocking,
+        2,
+        Some(2),
+    );
     put(
         m,
         "stream_set_read_buffer",

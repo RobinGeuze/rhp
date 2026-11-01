@@ -24,7 +24,7 @@ fn fn_is_resource(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     ))
 }
 
-fn fn_stream_set_blocking(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+pub(crate) fn fn_stream_set_blocking(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let res = deref(&args[0]);
     let on = conv::to_bool(&deref(&args[1]));
     Ok(Value::Bool(host.stream_set_blocking(&res, on)))

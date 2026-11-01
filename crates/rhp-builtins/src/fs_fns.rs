@@ -1365,7 +1365,10 @@ fn fn_stream_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
         .unwrap_or(Value::Bool(false)))
 }
 
-fn fn_stream_get_meta_data(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+pub(crate) fn fn_stream_get_meta_data(
+    host: &mut dyn Host,
+    args: &[Value],
+) -> Result<Value, Thrown> {
     let (h, _) = stream_param(host, args, 0, "stream_get_meta_data", "stream")?;
     let Some(m) = host.stream_meta(&h) else {
         return Ok(Value::Bool(false));

@@ -112,28 +112,48 @@ pub fn host_loose_eq(host: &mut dyn Host, a: &Value, b: &Value) -> Result<bool, 
     Ok(host_compare(host, a, b)? == std::cmp::Ordering::Equal)
 }
 
+/// One userland output-control function ([`Host::output_control`]).
+#[derive(Clone)]
+pub enum ObCall {
+    /// `ob_start($callback, $chunk_size, $flags)` (`callback` null: the
+    /// "default output handler").
+    Start {
+        callback: Value,
+        chunk_size: i64,
+        flags: i64,
+    },
+    Flush,
+    Clean,
+    EndFlush,
+    EndClean,
+    GetFlush,
+    GetClean,
+    GetContents,
+    GetLength,
+    GetLevel,
+    ListHandlers,
+    GetStatus {
+        full: bool,
+    },
+    ImplicitFlush(bool),
+    /// `flush()`: sapi_flush.
+    SapiFlush,
+}
+
 /// The interpreter surface a builtin may use. Implemented by the VM and the oracle.
 pub trait Host {
     /// Append bytes to the single output sink (stdout / output buffer).
     fn write_out(&mut self, bytes: &[u8]);
 
-    /// Output buffering (`ob_*`). Defaults make the stack a no-op for hosts
-    /// (e.g. the oracle) that don't implement it.
-    fn ob_start(&mut self) {}
-    fn ob_get_contents(&self) -> Option<Vec<u8>> {
-        None
-    }
-    fn ob_get_level(&self) -> usize {
-        0
-    }
-    fn ob_get_clean(&mut self) -> Option<Vec<u8>> {
-        None
-    }
-    fn ob_end_clean(&mut self) -> bool {
-        false
-    }
-    fn ob_end_flush(&mut self) -> bool {
-        false
+    /// A userland output-control call (main/output.c's `ob_*`, `flush`),
+    /// arguments already parsed; the host owns the handler stack and raises
+    /// php's notices. Default: unsupported (hosts without output buffering,
+    /// e.g. the oracle).
+    fn output_control(&mut self, _call: ObCall) -> Result<Value, Thrown> {
+        Err(Thrown::unsupported(
+            "output buffering",
+            "this host has no output handler stack",
+        ))
     }
 
     /// Raise a php diagnostic (`E_WARNING` = 2, `E_NOTICE` = 8, …) at the
@@ -1461,6 +1481,21 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("M_E", Value::Float(std::f64::consts::E)),
         ("M_SQRT2", Value::Float(std::f64::consts::SQRT_2)),
         ("PHP_FLOAT_DIG", Value::Int(15)),
+        // main/php_output.h
+        ("PHP_OUTPUT_HANDLER_START", Value::Int(0x01)),
+        ("PHP_OUTPUT_HANDLER_WRITE", Value::Int(0x00)),
+        ("PHP_OUTPUT_HANDLER_FLUSH", Value::Int(0x04)),
+        ("PHP_OUTPUT_HANDLER_CLEAN", Value::Int(0x02)),
+        ("PHP_OUTPUT_HANDLER_FINAL", Value::Int(0x08)),
+        ("PHP_OUTPUT_HANDLER_CONT", Value::Int(0x00)),
+        ("PHP_OUTPUT_HANDLER_END", Value::Int(0x08)),
+        ("PHP_OUTPUT_HANDLER_CLEANABLE", Value::Int(0x10)),
+        ("PHP_OUTPUT_HANDLER_FLUSHABLE", Value::Int(0x20)),
+        ("PHP_OUTPUT_HANDLER_REMOVABLE", Value::Int(0x40)),
+        ("PHP_OUTPUT_HANDLER_STDFLAGS", Value::Int(0x70)),
+        ("PHP_OUTPUT_HANDLER_STARTED", Value::Int(0x1000)),
+        ("PHP_OUTPUT_HANDLER_DISABLED", Value::Int(0x2000)),
+        ("PHP_OUTPUT_HANDLER_PROCESSED", Value::Int(0x4000)),
     ]
     .into_iter()
     .chain(preg_fns::preg_constants())

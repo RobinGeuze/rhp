@@ -1,0 +1,148 @@
+ONE THREE 
+phases: array (
+  0 => 
+  array (
+    0 => 'one ',
+    1 => 5,
+  ),
+  1 => 
+  array (
+    0 => 'two ',
+    1 => 2,
+  ),
+  2 => 
+  array (
+    0 => 'three ',
+    1 => 8,
+  ),
+)
+[abcd][efghij][]
+chunks: array (
+  0 => 
+  array (
+    0 => 'abcd',
+    1 => 1,
+  ),
+  1 => 
+  array (
+    0 => 'efghij',
+    1 => 0,
+  ),
+  2 => 
+  array (
+    0 => '',
+    1 => 8,
+  ),
+)
+chunks discarded: array (
+  0 => 
+  array (
+    0 => '12345678',
+    1 => 1,
+  ),
+  1 => 
+  array (
+    0 => '',
+    1 => 10,
+  ),
+)
+| true
+<data>| false
+| NULL
+| ''
+0| 0
+42| 42
+1.5| 1.5
+s| 's'
+TS
+ab
+calls=1 flags=12401
+status: array (
+  0 => 
+  array (
+    'name' => 'default output handler',
+    'type' => 0,
+    'flags' => 112,
+    'level' => 0,
+    'chunk_size' => 0,
+    'buffer_size' => 16384,
+    'buffer_used' => 0,
+  ),
+  1 => 
+  array (
+    'name' => '{closure:LINE 63}',
+    'type' => 1,
+    'flags' => 113,
+    'level' => 1,
+    'chunk_size' => 10,
+    'buffer_size' => 4096,
+    'buffer_used' => 3,
+  ),
+)
+top: '{closure:LINE 63} level=1'
+len: 3
+level: 2
+inner: 'xyz'
+empty status: array (
+)
+empty full status: array (
+)
+no buffer: array (
+  0 => false,
+  1 => false,
+  2 => 0,
+  3 => 
+  array (
+  ),
+  4 => false,
+)
+flags 64: array (
+  0 => 
+  array (
+    0 => 64,
+    1 => false,
+    2 => false,
+    3 => 145,
+  ),
+  1 => true,
+  2 => 0,
+)
+flags 80: array (
+  0 => 
+  array (
+    0 => 80,
+    1 => false,
+    2 => true,
+    3 => 0,
+  ),
+  1 => true,
+  2 => 0,
+)
+dataflags 12415: array (
+  0 => 
+  array (
+    0 => 112,
+    1 => true,
+    2 => true,
+    3 => 0,
+  ),
+  1 => true,
+  2 => 0,
+)
+data[E8] ob_clean(): Failed to delete buffer of default output handler (0)
+[E8] ob_end_clean(): Failed to discard buffer of default output handler (0)
+flags 32: array (
+  0 => 
+  array (
+    0 => 32,
+    1 => true,
+    2 => false,
+    3 => 71,
+    4 => '[E8] ob_clean(): Failed to delete buffer of default output handler (0)
+[E8] ob_end_clean(): Failed to discard buffer of default output handler (0)
+',
+  ),
+  1 => false,
+  2 => 1,
+)
+

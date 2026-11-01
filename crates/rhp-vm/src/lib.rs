@@ -1011,8 +1011,9 @@ struct Frame {
     defining_class: Option<ClassId>,
     /// The late-static-binding class (`static::`); None outside methods.
     called_class: Option<ClassId>,
-    /// What a `finally` block must do when it finishes (set by the unwinder).
-    pending: Option<FinallyCont>,
+    /// What each running `finally` block (keyed by its start pc) must do when
+    /// it finishes: re-raise, return, or jump on (php's per-finally fast_call).
+    pending: Vec<(u32, FinallyCont)>,
     /// A synchronous (re-entrant) call: when this frame returns, `do_return`
     /// hands the value back to the Rust caller instead of delivering to a reg.
     capture: bool,
@@ -1049,12 +1050,24 @@ enum UnwindResult {
     Escaped(Thrown),
 }
 
+/// The innermost try/catch with a `finally` whose protected range holds `pc`
+/// (and, for a jump, does not hold `target`): its finally block's start pc.
+fn enclosing_finally(proto: &FunctionProto, pc: u32, target: Option<u32>) -> Option<u32> {
+    proto.exception_table.iter().find_map(|r| {
+        let f = r.finally?;
+        let holds = |p: u32| p >= r.start && p < r.end;
+        (holds(pc) && !target.is_some_and(holds)).then_some(f)
+    })
+}
+
 /// What to do after a `finally` block completes.
 enum FinallyCont {
     /// An exception was in flight (no catch matched); re-raise after finally.
     Rethrow(Thrown),
     /// A `return` crossed out of the try/catch; complete it after finally.
     Return(Value),
+    /// A `break`/`continue` crossed out of the try/catch; jump after finally.
+    Jump(u32),
 }
 
 impl Frame {
@@ -1067,7 +1080,7 @@ impl Frame {
             ret_dst,
             defining_class: None,
             called_class: None,
-            pending: None,
+            pending: Vec::new(),
             capture: false,
             argc: 0,
             extra_args: Vec::new(),
@@ -3143,18 +3156,50 @@ impl Vm {
                         _ => return Err(Thrown::type_error("Can only throw objects")),
                     }
                 }
-                Instr::FinallyEnd => match self.stack[top].pending.take() {
-                    Some(FinallyCont::Rethrow(t)) => return Err(t),
-                    Some(FinallyCont::Return(v)) => {
-                        if let Some(done) = self.do_return(v) {
-                            return Ok(done);
+                Instr::FinallyEnd => {
+                    let pc = self.stack[top].pc as u32 - 1;
+                    let proto = self.stack[top].proto.clone();
+                    let fin = proto
+                        .exception_table
+                        .iter()
+                        .find(|r| r.finally.is_some() && r.finally_end == pc)
+                        .and_then(|r| r.finally);
+                    let cont = fin.and_then(|f| {
+                        let pend = &mut self.stack[top].pending;
+                        let i = pend.iter().position(|(k, _)| *k == f)?;
+                        Some(pend.remove(i).1)
+                    });
+                    match cont {
+                        Some(FinallyCont::Rethrow(t)) => return Err(t),
+                        Some(FinallyCont::Return(v)) => {
+                            // An outer finally still has to run first.
+                            if let Some(f2) = enclosing_finally(&proto, pc, None) {
+                                self.push_pending(top, f2, FinallyCont::Return(v));
+                                self.stack[top].pc = f2 as usize;
+                            } else if let Some(done) = self.do_return(v) {
+                                return Ok(done);
+                            }
                         }
+                        Some(FinallyCont::Jump(target)) => {
+                            self.jump_through_finally(top, &proto, pc, target)
+                        }
+                        None => {}
                     }
-                    None => {}
-                },
+                }
                 Instr::SetPendingRet { src } => {
                     let v = self.reg_get(top, src);
-                    self.stack[top].pending = Some(FinallyCont::Return(v));
+                    let pc = self.stack[top].pc as u32 - 1;
+                    let proto = self.stack[top].proto.clone();
+                    self.drop_left_finallies(top, &proto, pc);
+                    if let Some(f) = enclosing_finally(&proto, pc, None) {
+                        self.push_pending(top, f, FinallyCont::Return(v));
+                    }
+                }
+                Instr::JmpFinally { target } => {
+                    let pc = self.stack[top].pc as u32 - 1;
+                    let proto = self.stack[top].proto.clone();
+                    self.drop_left_finallies(top, &proto, pc);
+                    self.jump_through_finally(top, &proto, pc, target);
                 }
 
                 // -- OOP --
@@ -3711,12 +3756,31 @@ impl Vm {
             let proto = self.stack[top].proto.clone();
             // The throwing pc has already been advanced past the faulting instr.
             let throw_pc = (self.stack[top].pc as u32).saturating_sub(1);
-            if let Some(region) = proto
-                .exception_table
-                .iter()
-                .find(|r| throw_pc >= r.start && throw_pc < r.end)
-            {
-                let region = region.clone();
+            let in_try = |r: &&rhp_bytecode::ExRegion| throw_pc >= r.start && throw_pc < r.end;
+            let handler = proto.exception_table.iter().find(in_try).cloned();
+            // Thrown from inside a running finally block and not handled
+            // within it: the exception (or return) that block was finishing
+            // is discarded, and a pending exception becomes the innermost
+            // `previous` of the new one (zend_exception_set_previous).
+            let in_finally = proto.exception_table.iter().filter(|r| {
+                r.finally
+                    .is_some_and(|f| throw_pc >= f && throw_pc <= r.finally_end)
+            });
+            for f in in_finally {
+                let fin = f.finally.unwrap_or(0);
+                let handled_inside = handler
+                    .as_ref()
+                    .is_some_and(|h| h.start >= fin && h.end <= f.finally_end);
+                if !handled_inside {
+                    let pend = &mut self.stack[top].pending;
+                    if let Some(i) = pend.iter().position(|(k, _)| *k == fin) {
+                        if let (_, FinallyCont::Rethrow(prev)) = pend.remove(i) {
+                            self.chain_previous(&thrown, prev);
+                        }
+                    }
+                }
+            }
+            if let Some(region) = handler {
                 if let Some(cls) = self.thrown_class_id(&thrown) {
                     for arm in &region.catches {
                         if arm
@@ -3734,12 +3798,82 @@ impl Vm {
                     }
                 }
                 if let Some(fin) = region.finally {
-                    self.stack[top].pending = Some(FinallyCont::Rethrow(thrown));
+                    self.push_pending(top, fin, FinallyCont::Rethrow(thrown));
                     self.stack[top].pc = fin as usize;
                     return Ok(UnwindResult::Caught);
                 }
             }
             self.stack.pop();
+        }
+    }
+
+    /// Record what the finally block starting at `fin` does when it ends.
+    fn push_pending(&mut self, top: usize, fin: u32, cont: FinallyCont) {
+        let pend = &mut self.stack[top].pending;
+        pend.retain(|(k, _)| *k != fin);
+        pend.push((fin, cont));
+    }
+
+    /// A `return`/`break` leaving the finally blocks that contain `pc`
+    /// discards whatever those blocks were finishing.
+    fn drop_left_finallies(&mut self, top: usize, proto: &FunctionProto, pc: u32) {
+        if self.stack[top].pending.is_empty() {
+            return;
+        }
+        for r in &proto.exception_table {
+            if let Some(f) = r.finally {
+                if pc >= f && pc <= r.finally_end {
+                    self.stack[top].pending.retain(|(k, _)| *k != f);
+                }
+            }
+        }
+    }
+
+    /// Jump to `target`, first running the innermost enclosing finally that
+    /// `target` is outside of (the jump resumes when that block ends).
+    fn jump_through_finally(&mut self, top: usize, proto: &FunctionProto, pc: u32, target: u32) {
+        if let Some(f) = enclosing_finally(proto, pc, Some(target)) {
+            self.push_pending(top, f, FinallyCont::Jump(target));
+            self.stack[top].pc = f as usize;
+        } else {
+            self.stack[top].pc = target as usize;
+        }
+    }
+
+    /// zend_exception_set_previous: append `prev` at the end of `thrown`'s
+    /// `previous` chain, unless it is already part of it (no cycles).
+    fn chain_previous(&self, thrown: &Thrown, prev: Thrown) {
+        let (Thrown::Object(ex), Thrown::Object(add)) = (thrown, &prev) else {
+            return;
+        };
+        if Rc::ptr_eq(ex, add) {
+            return;
+        }
+        let key = rhp_values::PhpStr::from("previous");
+        let previous_of = |o: &ObjectHandle| match o.borrow().properties.get(&key).map(deref) {
+            Some(Value::Object(p)) => Some(p),
+            _ => None,
+        };
+        // `add`'s own chain must not already contain `ex`.
+        let mut anc = previous_of(add);
+        while let Some(a) = anc {
+            if Rc::ptr_eq(&a, ex) {
+                return;
+            }
+            anc = previous_of(&a);
+        }
+        let mut cur = ex.clone();
+        loop {
+            match previous_of(&cur) {
+                None => {
+                    cur.borrow_mut()
+                        .properties
+                        .insert(key, Value::Object(add.clone()));
+                    return;
+                }
+                Some(p) if Rc::ptr_eq(&p, add) => return,
+                Some(p) => cur = p,
+            }
         }
     }
 

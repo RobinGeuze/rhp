@@ -1719,6 +1719,9 @@ struct ProtoBuilder {
 /// as code positions and patched once the loop's exit/continue labels are known.
 #[derive(Default)]
 struct LoopCtx {
+    /// `finally_rets.len()` when the loop was entered: a break/continue
+    /// inside more try-with-finally levels than this must run them.
+    finally_depth: usize,
     break_jumps: Vec<usize>,
     continue_jumps: Vec<usize>,
 }
@@ -1835,7 +1838,10 @@ impl ProtoBuilder {
 
     /// Patch a placeholder `Nop` at `pos` into a jump to `target`.
     fn patch_jmp(&mut self, pos: usize, target: u32) {
-        self.code[pos] = Instr::Jmp { target };
+        self.code[pos] = match self.code[pos] {
+            Instr::JmpFinally { .. } => Instr::JmpFinally { target },
+            _ => Instr::Jmp { target },
+        };
     }
 
     fn here(&self) -> u32 {
@@ -2434,7 +2440,10 @@ impl ProtoBuilder {
         let cond = self.compile_expr(w.condition)?;
         let jf = self.code.len();
         self.emit(Instr::Nop); // JmpFalse cond -> end
-        self.loops.push(LoopCtx::default());
+        self.loops.push(LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            ..LoopCtx::default()
+        });
         match &w.body {
             WhileBody::Statement(s) => self.compile_stmt(s)?,
             WhileBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
@@ -2450,7 +2459,10 @@ impl ProtoBuilder {
 
     fn compile_do_while(&mut self, d: &rhp_frontend::cst::DoWhile) -> Result<(), Thrown> {
         let top = self.here();
-        self.loops.push(LoopCtx::default());
+        self.loops.push(LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            ..LoopCtx::default()
+        });
         self.compile_stmt(d.statement)?;
         let ctx = self.loops.pop().unwrap();
         let cont = self.here(); // continue -> re-test the condition
@@ -2479,7 +2491,10 @@ impl ProtoBuilder {
             self.emit(Instr::Nop); // JmpFalse last -> end
             Some((last.unwrap(), pos))
         };
-        self.loops.push(LoopCtx::default());
+        self.loops.push(LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            ..LoopCtx::default()
+        });
         match &f.body {
             ForBody::Statement(s) => self.compile_stmt(s)?,
             ForBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
@@ -2534,7 +2549,10 @@ impl ProtoBuilder {
         self.emit(Instr::Nop); // Jmp -> default body or end
 
         // Case bodies in source order (fall-through: no jumps between them).
-        self.loops.push(LoopCtx::default()); // switch is one break/continue level
+        self.loops.push(LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            ..LoopCtx::default()
+        }); // switch is one break/continue level
         let mut starts = vec![0u32; cases.len()];
         for (idx, case) in cases.iter().enumerate() {
             starts[idx] = self.here();
@@ -2621,7 +2639,10 @@ impl ProtoBuilder {
             let fetch_pos = self.code.len();
             self.emit(Instr::Nop); // FeFetchRef
 
-            self.loops.push(LoopCtx::default());
+            self.loops.push(LoopCtx {
+                finally_depth: self.finally_rets.len(),
+                ..LoopCtx::default()
+            });
             match &fe.body {
                 ForeachBody::Statement(s) => self.compile_stmt(s)?,
                 ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
@@ -2682,7 +2703,10 @@ impl ProtoBuilder {
             }
         }
 
-        self.loops.push(LoopCtx::default());
+        self.loops.push(LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            ..LoopCtx::default()
+        });
         match &fe.body {
             ForeachBody::Statement(s) => self.compile_stmt(s)?,
             ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
@@ -2801,11 +2825,14 @@ impl ProtoBuilder {
             });
         }
 
+        let catches_end = self.here();
+        let mut finally_end = 0;
         let finally_pc = if let Some(fin) = &t.finally_clause {
             // Stop routing returns into THIS finally while compiling its body.
             let pending_rets = self.finally_rets.pop().unwrap();
             let fpc = self.here();
             self.compile_stmts(fin.block.statements.iter())?;
+            finally_end = self.here();
             self.emit(Instr::FinallyEnd);
             // Patch `return`s that crossed out of try/catch to enter the finally.
             for pos in pending_rets {
@@ -2822,12 +2849,24 @@ impl ProtoBuilder {
             self.patch_jmp(j, norm_target);
         }
 
+        let has_catches = !catch_arms.is_empty();
         self.exception_table.push(ExRegion {
             start: try_start,
             end: try_end,
             catches: catch_arms,
             finally: finally_pc,
+            finally_end,
         });
+        // An exception escaping a catch body still runs the finally.
+        if finally_pc.is_some() && has_catches {
+            self.exception_table.push(ExRegion {
+                start: try_end,
+                end: catches_end,
+                catches: Vec::new(),
+                finally: finally_pc,
+                finally_end,
+            });
+        }
         Ok(())
     }
 
@@ -2919,7 +2958,11 @@ impl ProtoBuilder {
         }
         let idx = self.loops.len() - n;
         let pos = self.code.len();
-        self.emit(Instr::Nop); // patched to Jmp at loop close
+        if self.finally_rets.len() > self.loops[idx].finally_depth {
+            self.emit(Instr::JmpFinally { target: 0 }); // patched at loop close
+        } else {
+            self.emit(Instr::Nop); // patched to Jmp at loop close
+        }
         if is_break {
             self.loops[idx].break_jumps.push(pos);
         } else {

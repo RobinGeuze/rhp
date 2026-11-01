@@ -720,7 +720,12 @@ impl Vm {
         self.bind_frame(&callee, &args, &mut frame)?;
         self.bind_superglobals(&mut frame);
         let strict = self.caller_strict();
-        self.check_arg_types(&callee, &mut frame, strict, Some(method.defining_class))?;
+        self.check_arg_types(
+            &callee,
+            &mut frame,
+            Some(strict),
+            Some(method.defining_class),
+        )?;
         if let (Some(this_cv), Some(obj)) = (callee.this_cv, this) {
             frame.regs[this_cv as usize] = Value::Object(obj);
         }
@@ -750,6 +755,7 @@ impl Vm {
             Some(class_id),
             Some(class_id),
             Vec::new(),
+            None,
         )
     }
 
@@ -804,7 +810,7 @@ impl Vm {
     }
 
     /// php's `zend_zval_value_name`.
-    fn zval_value_name(&self, v: &Value) -> String {
+    pub(crate) fn zval_value_name(&self, v: &Value) -> String {
         match v {
             Value::Bool(true) => "true".into(),
             Value::Bool(false) => "false".into(),

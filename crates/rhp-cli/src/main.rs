@@ -13,7 +13,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use rhp_compiler::compile_with_source;
+use rhp_compiler::{compile_include, compile_with_source};
 use rhp_frontend::Arena;
 use rhp_values::{Thrown, Value};
 use rhp_vm::{IncludeError, Vm};
@@ -184,7 +184,7 @@ fn main() -> ExitCode {
         if let Some((message, line)) = parsed.parse_error() {
             return Err(IncludeError::Parse { message, line });
         }
-        Ok(compile_with_source(parsed.program(), src, file)?)
+        Ok(compile_include(parsed.program(), src, file)?)
     });
     // Unbuffered stdout reaches the process before each stderr write.
     vm.set_direct_stdout(true);

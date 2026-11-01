@@ -515,8 +515,23 @@ pub fn compile_with_source(
     source: &[u8],
     file: &str,
 ) -> Result<Program, Thrown> {
-    // Line info applies to user code only; the prelude (compiled first) keeps an
-    // empty map, so set the real line starts after the prelude is built.
+    compile_program(program, source, file, true)
+}
+
+/// Compile a file for `include`/`require`/`eval` into an already-running VM:
+/// like [`compile_with_source`] but without the built-in prelude (the VM
+/// skips an included program's first `num_prelude_*` entries anyway, so
+/// this program carries none and reports a prelude count of zero).
+pub fn compile_include(program: &AstProgram, source: &[u8], file: &str) -> Result<Program, Thrown> {
+    compile_program(program, source, file, false)
+}
+
+fn compile_program(
+    program: &AstProgram,
+    source: &[u8],
+    file: &str,
+    with_prelude: bool,
+) -> Result<Program, Thrown> {
     LINE_STARTS.with(|ls| ls.borrow_mut().clear());
     SRC_FILE.with(|f| *f.borrow_mut() = file.as_bytes().to_vec());
     STRICT_TYPES.with(|s| *s.borrow_mut() = detect_strict_types(program));
@@ -554,10 +569,14 @@ pub fn compile_with_source(
     METHOD_REF.with(|m| *m.borrow_mut() = collect_method_refs(&flat));
 
     // Hoist top-level function + class declarations. Start the class list with
-    // the built-in exception hierarchy (the "prelude").
-    let (mut classes, mut functions) = {
-        let (c, f) = prelude_classes()?;
-        (c, f)
+    // the built-in exception hierarchy (the "prelude"), compiled once per
+    // thread and copied from the cache.
+    let (mut classes, mut functions) = if with_prelude {
+        let p = prelude_classes()?;
+        CLOSURES.with(|c| *c.borrow_mut() = p.closures.clone());
+        (p.classes.clone(), p.functions.clone())
+    } else {
+        (Vec::new(), Vec::new())
     };
     let num_prelude_classes = classes.len();
     let num_prelude_functions = functions.len();
@@ -1491,17 +1510,76 @@ class DateTimeImmutable implements DateTimeInterface {
 }
 "##;
 
-#[allow(clippy::type_complexity)]
-fn prelude_classes() -> Result<(Vec<ClassProto>, Vec<Rc<FunctionProto>>), Thrown> {
+/// The compiled prelude: built-in classes, helper functions, and the
+/// closures their bodies declare (always program closures `0..n`).
+struct PreludeParts {
+    classes: Vec<ClassProto>,
+    functions: Vec<Rc<FunctionProto>>,
+    closures: Vec<Rc<FunctionProto>>,
+}
+
+thread_local! {
+    /// The prelude, compiled on first use and shared by every later compile on
+    /// this thread (protos hold `Rc`s, so the cache is per thread — matching
+    /// the VM-per-thread model). It depends on no per-file state: it is
+    /// compiled in an isolated compiler context (see [`prelude_classes`]).
+    static PRELUDE_CACHE: RefCell<Option<Rc<PreludeParts>>> = const { RefCell::new(None) };
+}
+
+/// The compiled prelude, compiling it on this thread's first call.
+fn prelude_classes() -> Result<Rc<PreludeParts>, Thrown> {
+    if let Some(p) = PRELUDE_CACHE.with(|c| c.borrow().clone()) {
+        return Ok(p);
+    }
+    let parts = Rc::new(prelude_classes_isolated()?);
+    PRELUDE_CACHE.with(|c| *c.borrow_mut() = Some(parts.clone()));
+    Ok(parts)
+}
+
+/// Compile the prelude with the per-file compiler state (thread-locals) set to
+/// a fixed, prelude-only context, restoring the caller's state afterwards, so
+/// the result is independent of whichever file happened to trigger it.
+fn prelude_classes_isolated() -> Result<PreludeParts, Thrown> {
     // Prelude / built-in classes are never strict-typed (coercive calls).
     let saved_strict = STRICT_TYPES.with(|s| std::mem::replace(&mut *s.borrow_mut(), false));
     // Prelude protos carry an empty file name: the VM treats them as internal
     // code (skipped for exception file/line, `[internal function]` in traces).
     let saved_file = SRC_FILE.with(|f| std::mem::take(&mut *f.borrow_mut()));
+    // No line map: prelude line numbers are never surfaced.
+    let saved_lines = LINE_STARTS.with(|l| std::mem::take(&mut *l.borrow_mut()));
+    let saved_ns =
+        NS_CTX.with(|c| std::mem::replace(&mut *c.borrow_mut(), Rc::new(NsContext::default())));
+    let saved_trait = IN_TRAIT.with(|t| std::mem::replace(&mut *t.borrow_mut(), false));
+    let saved_method_ref = METHOD_REF.with(|m| std::mem::take(&mut *m.borrow_mut()));
+    let saved_closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let saved_anon = ANON_CLASSES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let saved_cond = COND_CLASSES.with(|c| std::mem::take(&mut *c.borrow_mut()));
     let r = prelude_classes_inner();
+    // Closures the prelude declares occupy closure indices `0..n`; a program
+    // with the prelude re-seeds them first. Anonymous / nested classes would
+    // index per-file tables the cached copy cannot carry.
+    let closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let leaked = ANON_CLASSES.with(|c| !c.borrow().is_empty())
+        || COND_CLASSES.with(|c| !c.borrow().0.is_empty());
     STRICT_TYPES.with(|s| *s.borrow_mut() = saved_strict);
     SRC_FILE.with(|f| *f.borrow_mut() = saved_file);
-    r
+    LINE_STARTS.with(|l| *l.borrow_mut() = saved_lines);
+    NS_CTX.with(|c| *c.borrow_mut() = saved_ns);
+    IN_TRAIT.with(|t| *t.borrow_mut() = saved_trait);
+    METHOD_REF.with(|m| *m.borrow_mut() = saved_method_ref);
+    CLOSURES.with(|c| *c.borrow_mut() = saved_closures);
+    ANON_CLASSES.with(|c| *c.borrow_mut() = saved_anon);
+    COND_CLASSES.with(|c| *c.borrow_mut() = saved_cond);
+    assert!(
+        !leaked,
+        "prelude must not declare anonymous or nested classes"
+    );
+    let (classes, functions) = r?;
+    Ok(PreludeParts {
+        classes,
+        functions,
+        closures,
+    })
 }
 
 #[allow(clippy::type_complexity)]
@@ -1511,6 +1589,14 @@ fn prelude_classes_inner() -> Result<(Vec<ClassProto>, Vec<Rc<FunctionProto>>), 
     let src = format!("{PRELUDE}\n{}", rhp_builtins::module_prelude());
     let arena = rhp_frontend::Arena::new();
     let parsed = arena.parse(b"<prelude>", src.as_bytes());
+    // Method calls inside the prelude see the prelude's own by-ref signatures.
+    let flat: Vec<(Rc<NsContext>, &Statement)> = parsed
+        .program()
+        .statements
+        .iter()
+        .map(|s| (Rc::new(NsContext::default()), s))
+        .collect();
+    METHOD_REF.with(|m| *m.borrow_mut() = collect_method_refs(&flat));
     let sigs = Rc::new(std::collections::HashMap::new());
     let mut classes = Vec::new();
     let mut functions = Vec::new();

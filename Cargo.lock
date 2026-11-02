@@ -1465,6 +1465,7 @@ dependencies = [
  "rhp-compiler",
  "rhp-frontend",
  "rhp-oracle",
+ "rhp-sapi",
  "rhp-values",
  "rhp-vm",
 ]
@@ -1513,6 +1514,17 @@ dependencies = [
  "rhp-frontend",
  "rhp-semantics",
  "rhp-values",
+]
+
+[[package]]
+name = "rhp-sapi"
+version = "0.0.0"
+dependencies = [
+ "rhp-builtins",
+ "rhp-compiler",
+ "rhp-frontend",
+ "rhp-values",
+ "rhp-vm",
 ]
 
 [[package]]

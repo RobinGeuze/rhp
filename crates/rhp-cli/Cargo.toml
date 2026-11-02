@@ -10,6 +10,7 @@ name = "rhp"
 path = "src/main.rs"
 
 [dependencies]
+rhp-sapi = { path = "../rhp-sapi" }
 rhp-oracle = { path = "../rhp-oracle" }
 rhp-compiler = { path = "../rhp-compiler" }
 rhp-vm = { path = "../rhp-vm" }

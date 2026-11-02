@@ -127,6 +127,7 @@ jobs:
             ext/session/tests
             ext/filter/tests
             ext/zlib/tests
+            ext/opcache/tests
       - uses: ./.github/actions/setup-php
         with:
           php-version: '8.5'

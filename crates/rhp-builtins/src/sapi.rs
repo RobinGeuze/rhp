@@ -895,11 +895,6 @@ fn fn_header_register_callback(host: &mut dyn Host, args: &[Value]) -> Result<Va
     Ok(Value::Bool(true))
 }
 
-fn fn_flush(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    host.sapi_flush();
-    Ok(Value::Null)
-}
-
 fn fn_apache_request_headers(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     let mut a = PhpArray::new();
     for (k, v) in host.request_headers() {
@@ -1025,7 +1020,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         1,
         1,
     );
-    put("flush", fn_flush, 0, 0);
     put("getallheaders", fn_apache_request_headers, 0, 0);
     put("apache_request_headers", fn_apache_request_headers, 0, 0);
     put("apache_response_headers", fn_apache_response_headers, 0, 0);

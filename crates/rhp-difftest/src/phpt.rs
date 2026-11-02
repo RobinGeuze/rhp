@@ -195,6 +195,9 @@ fn test_ini(phpt: &Phpt, dir: &Path) -> Result<Vec<String>, String> {
         let (k, v) = line.split_once('=').unwrap_or((&line, ""));
         let (k, v) = (k.trim(), v.trim().trim_matches('"'));
         let noop = defaults.get(k) == Some(&v)
+            || defaults
+                .get(k)
+                .is_some_and(|d| ini_bool(d).is_some() && ini_bool(d) == ini_bool(v))
             || (k.starts_with("opcache.") && !(k == "opcache.enable_cli" && v == "1"));
         if !noop {
             return Err(format!("ini:{k}"));
@@ -202,6 +205,16 @@ fn test_ini(phpt: &Phpt, dir: &Path) -> Result<Vec<String>, String> {
         out.push(line.to_string());
     }
     Ok(out)
+}
+
+/// A boolean-looking ini value (`0`/`Off`/`false`/`no`, `1`/`On`/…), so
+/// `output_buffering=0` counts as the default `Off`.
+fn ini_bool(v: &str) -> Option<bool> {
+    match v.to_ascii_lowercase().as_str() {
+        "0" | "off" | "false" | "no" => Some(false),
+        "1" | "on" | "true" | "yes" => Some(true),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2129,6 +2142,10 @@ mod tests {
         assert_eq!(test_ini(&p, dir).unwrap_err(), "ini:precision");
         let p = Phpt::parse(b"--INI--\nopcache.enable_cli=1\n--FILE--\n");
         assert!(test_ini(&p, dir).is_err());
+        let p = Phpt::parse(b"--INI--\noutput_buffering=0\ndisplay_errors=On\n--FILE--\n");
+        assert_eq!(test_ini(&p, dir).unwrap().len(), 2);
+        let p = Phpt::parse(b"--INI--\noutput_buffering=4096\n--FILE--\n");
+        assert_eq!(test_ini(&p, dir).unwrap_err(), "ini:output_buffering");
     }
 
     #[test]

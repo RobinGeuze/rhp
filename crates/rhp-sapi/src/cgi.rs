@@ -619,7 +619,8 @@ fn parse_options(args: &[String], cgi: bool, skip: bool) -> Result<Opts, (String
                 Opt::End => break,
                 Opt::Char(b'd', Some(kv)) => {
                     let (k, v) = kv.split_once('=').unwrap_or((&kv, "1"));
-                    o.ini.push((k.trim().to_string(), v.trim().to_string()));
+                    o.ini
+                        .push((k.trim().to_string(), crate::ini_define_value(v)));
                 }
                 _ => {}
             }

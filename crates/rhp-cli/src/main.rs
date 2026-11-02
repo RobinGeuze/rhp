@@ -53,7 +53,7 @@ fn main() -> ExitCode {
     let mut ini: Vec<(String, String)> = Vec::new();
     let mut add_ini = |kv: &str| {
         let (k, v) = kv.split_once('=').unwrap_or((kv, "1"));
-        ini.push((k.trim().to_string(), v.trim().to_string()));
+        ini.push((k.trim().to_string(), rhp_sapi::ini_define_value(v)));
     };
     while i < args.len() {
         let a = args[i].as_str();

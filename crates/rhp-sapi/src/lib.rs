@@ -207,6 +207,36 @@ fn fatal(vm: &mut Vm, t: Thrown) -> i32 {
     255
 }
 
+/// The value php gives a `-d key=value` setting (php_ini_builder_define,
+/// shared by php-cli and php-cgi): one starting with a character other than
+/// an alphanumeric or a quote is taken literally; otherwise it goes through
+/// the ini scanner, which unquotes a quoted string, stops a bare value at a
+/// `;` comment, and maps the bareword booleans (`On`/`Yes`/`True` → "1",
+/// `Off`/`No`/`False`/`None`/`Null` → ""). Constant expressions
+/// (`E_ALL & ~E_NOTICE`) are not evaluated.
+pub fn ini_define_value(raw: &str) -> String {
+    let v = raw.trim();
+    let Some(first) = v.chars().next() else {
+        return String::new();
+    };
+    if first == '"' || first == '\'' {
+        let inner = &v[1..];
+        return match inner.find(first) {
+            Some(end) => inner[..end].to_string(),
+            None => inner.to_string(),
+        };
+    }
+    if !first.is_ascii_alphanumeric() {
+        return v.to_string();
+    }
+    let v = v.split(';').next().unwrap_or("").trim_end();
+    match v.to_ascii_lowercase().as_str() {
+        "on" | "yes" | "true" => "1".to_string(),
+        "off" | "no" | "false" | "none" | "null" => String::new(),
+        _ => v.to_string(),
+    }
+}
+
 /// The CLI front end's run: `rhp [options] script.php args...` semantics.
 pub fn run_cli(script: Script, ini: Vec<(String, String)>, args: Vec<Vec<u8>>) -> i32 {
     // PHP_BINARY is this engine's own executable (composer re-invokes it for
@@ -231,5 +261,27 @@ pub fn run_cli(script: Script, ini: Vec<(String, String)>, args: Vec<Vec<u8>>) -
             eprintln!("rhp: cannot read {path}: {error}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ini_define_value as v;
+
+    #[test]
+    fn ini_define_values_match_php() {
+        assert_eq!(v("On"), "1");
+        assert_eq!(v("on "), "1");
+        assert_eq!(v("TRUE"), "1");
+        assert_eq!(v("true;x"), "1");
+        assert_eq!(v("off"), "");
+        assert_eq!(v("NULL"), "");
+        assert_eq!(v("none"), "");
+        assert_eq!(v("\"On\""), "On");
+        assert_eq!(v("'On'"), "On");
+        assert_eq!(v(""), "");
+        assert_eq!(v("-1"), "-1");
+        assert_eq!(v("128M"), "128M");
+        assert_eq!(v("/a;b"), "/a;b");
     }
 }

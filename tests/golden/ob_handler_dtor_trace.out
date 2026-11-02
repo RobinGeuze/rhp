@@ -1,0 +1,8 @@
+[E8192] ob_end_flush(): Producing output from user output handler wrap is deprecated
+M[main|9]
+after
+Error: Object of class stdClass could not be converted to string
+  ob_end_flush
+level 0
+[E8192] PHP Request Shutdown: Producing output from user output handler wrap is deprecated
+M[end|9]

@@ -71,9 +71,9 @@ pub struct Vm {
     prop_guards: std::collections::HashSet<(u32, &'static [u8], PhpStr)>,
     /// Write output directly to stdout instead of `out` (the CLI).
     stdout_passthrough: bool,
-    /// Output-buffering stack (`ob_start`): `echo`/`print` write to the top
-    /// buffer when non-empty, else straight to `out`.
-    ob_stack: Vec<Vec<u8>>,
+    /// The output layer (main/output.c): the `ob_start` handler stack every
+    /// write passes through on its way to [`Vm::emit_stdout`].
+    output: output::Output,
     stack: Vec<Frame>,
     functions: Vec<Rc<FunctionProto>>,
     fn_names: HashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
@@ -324,6 +324,7 @@ struct GenState {
 
 mod classes;
 mod compare;
+mod output;
 mod request;
 
 /// A function-static slot: (proto address, class it runs as, variable name).
@@ -385,43 +386,11 @@ impl Host for Vm {
     }
 
     fn write_out(&mut self, bytes: &[u8]) {
-        match self.ob_stack.last_mut() {
-            Some(buf) => buf.extend_from_slice(bytes),
-            None => self.emit_stdout(bytes),
-        }
+        self.output_write(bytes);
     }
 
-    fn ob_start(&mut self) {
-        self.ob_stack.push(Vec::new());
-    }
-
-    fn ob_get_contents(&self) -> Option<Vec<u8>> {
-        self.ob_stack.last().cloned()
-    }
-
-    fn ob_get_level(&self) -> usize {
-        self.ob_stack.len()
-    }
-
-    /// Pop the top buffer and return its contents (`ob_get_clean`).
-    fn ob_get_clean(&mut self) -> Option<Vec<u8>> {
-        self.ob_stack.pop()
-    }
-
-    /// Pop the top buffer and discard it (`ob_end_clean`).
-    fn ob_end_clean(&mut self) -> bool {
-        self.ob_stack.pop().is_some()
-    }
-
-    /// Pop the top buffer and write its contents to the next sink (`ob_end_flush`).
-    fn ob_end_flush(&mut self) -> bool {
-        match self.ob_stack.pop() {
-            Some(buf) => {
-                self.write_out(&buf);
-                true
-            }
-            None => false,
-        }
+    fn output_control(&mut self, call: builtins::ObCall) -> Result<Value, Thrown> {
+        self.output_control_call(call)
     }
 
     fn class_name(&self, class_id: u32) -> Option<Vec<u8>> {
@@ -463,16 +432,6 @@ impl Host for Vm {
 
     fn response(&mut self) -> Option<&mut builtins::sapi::Response> {
         Some(&mut self.sapi.response)
-    }
-
-    fn sapi_flush(&mut self) {
-        match self.sapi.sapi.as_mut() {
-            Some(s) => s.flush(),
-            None => {
-                use std::io::Write;
-                let _ = std::io::stdout().flush();
-            }
-        }
     }
 
     fn log_message(&mut self, msg: &[u8]) {
@@ -2266,7 +2225,7 @@ impl Vm {
             out: Vec::new(),
             prop_guards: Default::default(),
             stdout_passthrough: false,
-            ob_stack: Vec::new(),
+            output: output::Output::default(),
             stack: Vec::new(),
             functions: Vec::new(),
             fn_names: HashMap::new(),
@@ -2341,7 +2300,6 @@ impl Vm {
     /// and the display / log step (masked by `error_reporting` and `@`). An
     /// exception from the handler becomes `pending_throw`.
     pub(crate) fn raise_error(&mut self, level: i64, msg: &str) {
-        let docref = std::mem::take(&mut self.sapi.docref_msg);
         // The innermost user frame: prelude (built-in PHP-source) code has no
         // line map, and php reports internal functions at their caller.
         let (file, line) = match (0..self.stack.len())
@@ -2352,6 +2310,12 @@ impl Vm {
             None => (Vec::new(), 0),
             Some(i) => (self.current_file(i), self.current_line(i) as i64),
         };
+        self.raise_error_at(level, msg, file, line);
+    }
+
+    /// [`Vm::raise_error`] reported at `file`:`line`.
+    pub(crate) fn raise_error_at(&mut self, level: i64, msg: &str, file: Vec<u8>, line: i64) {
+        let docref = std::mem::take(&mut self.sapi.docref_msg);
         if self.pending_throw.is_some() {
             return; // php skips diagnostics while an exception is pending
         }
@@ -3777,9 +3741,16 @@ impl Vm {
             }
         }
         self.destructibles.clear();
-        // 3. php_output_end_all: flush each buffer into the one below it.
-        while let Some(buf) = self.ob_stack.pop() {
-            builtins::Host::write_out(self, &buf);
+        // 3. php_output_end_all: finalize each buffer into the one below it
+        // (an exception from a handler is fatal here).
+        self.enter_shutdown_scope();
+        self.output_end_all();
+        if let Some(t) = self.pending_throw.take() {
+            self.enter_shutdown_scope();
+            if let Some(c) = on_throw(self, t)? {
+                status = c;
+            }
+            self.output_end_all();
         }
         self.stack.clear();
         Ok(status)
@@ -3881,6 +3852,10 @@ impl Vm {
                     self.constants.remove(k);
                 }
             }
+            // php_request_startup: the output_handler / output_buffering
+            // buffer opens before php_hash_environment builds the request
+            // superglobals (whose warnings then land in it).
+            self.output_startup();
             self.seed_superglobals();
         }
         // Install (hoist) all declared functions, keyed case-insensitively.
@@ -6559,17 +6534,18 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::Exit { arg } => {
-                    // A string message is printed (code 0); an int is the code.
+                    // A string message is printed through the output buffers (code
+                    // 0); an int is the code.
                     let code = match self.reg_get(top, arg) {
                         Value::Int(n) => n as i32,
                         Value::Str(s) => {
-                            self.emit_stdout(s.as_bytes());
+                            self.output_write(s.as_bytes());
                             0
                         }
                         Value::Null => 0,
                         other => {
                             let s = conv::to_string_bytes(&other);
-                            self.emit_stdout(&s);
+                            self.output_write(&s);
                             0
                         }
                     };
@@ -8906,11 +8882,12 @@ enum DimMode {
 }
 
 impl Vm {
-    /// `echo` / `print` / inline HTML: write through the output layer; a
-    /// throw from the `header_register_callback` callback the first output
-    /// byte ran surfaces here.
+    /// `echo` / `print` / inline HTML: write through the output layer; an
+    /// exception an output handler threw, or one from the
+    /// `header_register_callback` callback the first output byte ran,
+    /// surfaces at the statement.
     fn echo_out(&mut self, bytes: &[u8]) -> Result<(), Thrown> {
-        self.write_out(bytes);
+        self.output_write(bytes);
         match self.pending_throw.take() {
             Some(t) => Err(t),
             None => Ok(()),

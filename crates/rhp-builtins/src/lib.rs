@@ -1041,6 +1041,12 @@ pub fn reset_request_state() {
     ext::mbstring::reset_state();
     strsearch_fns::reset_state();
     php_fns::reset_state();
+    zip_ext::reset_state();
+    ext::curl::reset_state();
+    ext::openssl::reset_state();
+    ext::bz2::reset_state();
+    ext::intl::error_reset();
+    rhp_values::reset_dropped_streams();
 }
 
 /// The builtin function table, keyed by lowercase name (PHP function names are

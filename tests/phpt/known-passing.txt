@@ -2289,6 +2289,7 @@ ext/date/tests/DateInterval_format.phpt
 ext/date/tests/DateInterval_format_a.phpt
 ext/date/tests/DateInterval_write_property_return.phpt
 ext/date/tests/DateTimeImmutable_inherited_serialization.phpt
+ext/date/tests/DateTimeImmutable_modify_invalid_format.phpt
 ext/date/tests/DateTimeInterval_inherited_serialization.phpt
 ext/date/tests/DateTime_add-massive.phpt
 ext/date/tests/DateTime_clone_basic1.phpt
@@ -2779,8 +2780,13 @@ ext/intl/tests/bug74264.phpt
 ext/intl/tests/bug74433.phpt
 ext/intl/tests/grapheme2.phpt
 ext/intl/tests/grapheme_empty.phpt
+ext/intl/tests/grapheme_empty_offset_multibyte.phpt
 ext/intl/tests/grapheme_out_of_bounds.phpt
+ext/intl/tests/grapheme_search_empty_haystack.phpt
 ext/intl/tests/grapheme_str_split.phpt
+ext/intl/tests/grapheme_strrpos_negative_offset_overlap.phpt
+ext/intl/tests/grapheme_strstr_canonical_match.phpt
+ext/intl/tests/grapheme_strstr_supplementary_prefix.phpt
 ext/intl/tests/idn.phpt
 ext/intl/tests/idn_bug76829.phpt
 ext/intl/tests/idn_uts46_basic.phpt
@@ -3060,6 +3066,7 @@ ext/pcre/tests/gh15205_1.phpt
 ext/pcre/tests/gh16184.phpt
 ext/pcre/tests/gh16189.phpt
 ext/pcre/tests/gh17122.phpt
+ext/pcre/tests/gh21134.phpt
 ext/pcre/tests/grep.phpt
 ext/pcre/tests/invalid_utf8.phpt
 ext/pcre/tests/marks.phpt

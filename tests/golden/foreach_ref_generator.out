@@ -1,0 +1,18 @@
+array(2) {
+  [0]=>
+  string(1) "X"
+  [1]=>
+  string(1) "Y"
+}
+int(1)
+int(5)
+a
+b
+{"a":10,"b":20}
+{"a":1,"b":2}
+int(1)
+int(1)
+Exception: You can only iterate a generator by-reference if it declared that it yields by-reference
+Error: An iterator cannot be used with foreach by reference
+int(6)
+q=b

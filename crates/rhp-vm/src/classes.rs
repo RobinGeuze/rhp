@@ -64,6 +64,9 @@ pub struct ClassEntry {
     /// The declaration this entry was linked from (Reflection metadata:
     /// attributes, doc comments, lines, declared member order).
     pub proto: Rc<ClassProto>,
+    /// Declaring file and line (empty file: a built-in class).
+    pub decl_file: PhpStr,
+    pub decl_line: u32,
 }
 
 #[derive(Clone)]
@@ -277,10 +280,15 @@ pub(crate) fn set_access_err(
     op: &str,
     (sv, decl, name): (Visibility, ClassId, PhpStr),
 ) -> Thrown {
-    let v = if sv == Visibility::Private {
-        "private(set)"
-    } else {
-        "protected(set)"
+    // php names a protected(set) readonly property "protected(set) readonly".
+    let readonly = classes[decl as usize]
+        .props
+        .values()
+        .any(|pe| pe.declaring_class == decl && pe.name == name && pe.readonly);
+    let v = match sv {
+        Visibility::Private => "private(set)",
+        _ if readonly => "protected(set) readonly",
+        _ => "protected(set)",
     };
     let from = match called {
         Some(c) => format!(
@@ -410,23 +418,9 @@ pub(crate) fn mangled_prop_key(entry: &ClassEntry, key: &PhpStr) -> PhpStr {
     }
 }
 
-/// Whether php early-binds this top-level declaration at compile time
-/// (zend_compile_class_decl): not when it implements interfaces (an
-/// implicit `Stringable` from `__toString`, `UnitEnum` for an enum included)
-/// or uses traits — such a class exists only once its declaration runs,
-/// which lets a file declare it conditionally and `return` before a
-/// fallback definition. Anonymous classes are always available.
-fn early_bindable(p: &ClassProto) -> bool {
-    if p.name.as_bytes().windows(11).any(|w| w == b"@anonymous\0") {
-        return true;
-    }
-    p.kind != ClassKind::Enum
-        && p.interfaces.is_empty()
-        && p.traits.is_empty()
-        && !p
-            .methods
-            .iter()
-            .any(|m| m.name.as_bytes().eq_ignore_ascii_case(b"__tostring"))
+/// A generated anonymous-class name (`Prefix@anonymous\0file:line$n`).
+fn is_anon_name(name: &[u8]) -> bool {
+    name.windows(10).any(|w| w == b"@anonymous")
 }
 
 fn kind_word(k: ClassKind) -> &'static str {
@@ -528,51 +522,94 @@ impl Vm {
         start..start + prog.classes.len() - prog.num_prelude_classes
     }
 
-    /// Hoist (early-bind) the top-level classes in `range`
-    /// whose parent/interfaces/traits are available — possibly from each
-    /// other. The others stay undeclared until their `DeclareClass` runs.
+    /// Hoist (early-bind) the top-level classes in `range`, in declaration
+    /// order, as php's compiler does (zend_compile_class_decl): only a class
+    /// with no interfaces (an implicit `Stringable` from `__toString`
+    /// counts, as do an enum's and an interface's `extends` list) and no
+    /// traits, whose parent — if any — is already declared. The others stay
+    /// undeclared until their `DeclareClass` runs.
     pub(crate) fn hoist_decl_classes(
         &mut self,
         range: std::ops::Range<usize>,
     ) -> Result<(), Thrown> {
-        // One pass in source order, as php's compiler does: a class whose
-        // parent is declared further down the file is not early-bound.
-        for i in range {
+        for i in range.clone() {
             if self.decl_classes[i].1 {
                 continue;
             }
             let proto = self.decl_classes[i].0.clone();
-            if self.class_ids.contains_key(&lc(proto.name.as_bytes()))
-                || !self.deps_ready(&proto)
-                || !early_bindable(&proto)
-            {
+            if is_anon_name(proto.name.as_bytes()) {
                 continue;
             }
-            self.link_class(&proto)?;
+            let early = proto.interfaces.is_empty()
+                && proto.traits.is_empty()
+                && proto.kind != ClassKind::Enum
+                && !(proto.kind == ClassKind::Interface && proto.parent.is_some())
+                && !proto
+                    .methods
+                    .iter()
+                    .any(|m| m.name.as_bytes().eq_ignore_ascii_case(b"__tostring"))
+                && proto
+                    .parent
+                    .as_ref()
+                    .is_none_or(|p| self.class_ids.contains_key(&lc(p.as_bytes())));
+            if !early || self.class_ids.contains_key(&lc(proto.name.as_bytes())) {
+                continue;
+            }
+            self.link_slot(i, &proto)?;
             self.decl_classes[i].1 = true;
+        }
+        // Anonymous classes (registered with the file's classes under their
+        // generated names) are linked up front, once their dependencies are.
+        loop {
+            let mut progressed = false;
+            for i in range.clone() {
+                let proto = &self.decl_classes[i].0;
+                if self.decl_classes[i].1
+                    || !is_anon_name(proto.name.as_bytes())
+                    || self.class_ids.contains_key(&lc(proto.name.as_bytes()))
+                    || !self.deps_ready(proto)
+                {
+                    continue;
+                }
+                let proto = proto.clone();
+                self.link_slot(i, &proto)?;
+                self.decl_classes[i].1 = true;
+                progressed = true;
+            }
+            if !progressed {
+                break;
+            }
         }
         Ok(())
     }
 
     /// Run-time class declaration (`DeclareClass`): link the class now,
-    /// autoloading missing dependencies. A no-op if it was hoisted.
+    /// autoloading missing dependencies. A no-op if it was hoisted; running
+    /// an executed declaration again (a nested class in a function called
+    /// twice, a loop) is php's redeclaration error.
     pub(crate) fn declare_class_at(&mut self, slot: usize) -> Result<(), Thrown> {
         let Some((proto, done)) = self.decl_classes.get(slot) else {
             return Ok(());
         };
-        if *done {
+        if *done && !self.decl_runtime.contains(&slot) {
             return Ok(());
         }
         let proto = proto.clone();
-        if self.class_ids.contains_key(&lc(proto.name.as_bytes())) {
-            return Err(Thrown::error(
-                "Error",
+        if let Some(&old) = self.class_ids.get(&lc(proto.name.as_bytes())) {
+            // zend_class_redeclaration_error: a fatal compile error.
+            let old = &self.classes[old as usize];
+            let name = String::from_utf8_lossy(old.name.as_bytes());
+            let msg = if old.decl_file.is_empty() {
+                format!("Cannot redeclare {} {name}", kind_word(old.kind))
+            } else {
                 format!(
-                    "Cannot declare {} {}, because the name is already in use",
-                    kind_word(proto.kind),
-                    String::from_utf8_lossy(proto.name.as_bytes())
-                ),
-            ));
+                    "Cannot redeclare {} {name} (previously declared in {}:{})",
+                    kind_word(old.kind),
+                    String::from_utf8_lossy(old.decl_file.as_bytes()),
+                    old.decl_line
+                )
+            };
+            return Err(self.fatal_compile_error(&msg));
         }
         let deps = proto
             .parent
@@ -612,8 +649,20 @@ impl Vm {
         if marked {
             self.in_autoload.remove(&self_key);
         }
-        self.link_class(&proto)?;
+        self.link_slot(slot, &proto)?;
         self.decl_classes[slot].1 = true;
+        self.decl_runtime.insert(slot);
+        Ok(())
+    }
+
+    /// Link the class compiled into `decl_classes` slot `slot`, recording
+    /// that slot as its class-table position.
+    fn link_slot(&mut self, slot: usize, proto: &ClassProto) -> Result<(), Thrown> {
+        let id = self.classes.len();
+        self.link_class(proto)?;
+        if let Some(o) = self.class_order.get_mut(id) {
+            *o = slot;
+        }
         Ok(())
     }
 
@@ -1031,6 +1080,8 @@ impl Vm {
             .collect();
 
         self.class_ids.insert(lc(proto.name.as_bytes()), id);
+        // Not compiled into a slot (prelude): after everything compiled so far.
+        self.class_order.push(self.decl_classes.len());
         self.classes.push(ClassEntry {
             name: proto.name.clone(),
             kind: proto.kind,
@@ -1049,6 +1100,8 @@ impl Vm {
             enum_backing: proto.enum_backing,
             updated: false,
             proto: Rc::new(proto.clone()),
+            decl_file: proto.decl_file.clone(),
+            decl_line: proto.decl_line,
         });
 
         // Enum cases: materialize one singleton object per case and expose it as
@@ -1159,6 +1212,18 @@ impl Vm {
                     },
                     _ => None,
                 };
+                // `new class …` whose dependencies were not available at
+                // load: declare it now (php's DECLARE_ANON_CLASS).
+                if let Some(n) = name.as_ref().filter(|n| is_anon_name(n)) {
+                    let slot = self
+                        .decl_classes
+                        .iter()
+                        .position(|(p, done)| !done && p.name.as_bytes() == &n[..]);
+                    if let Some(slot) = slot {
+                        self.declare_class_at(slot)?;
+                        return self.resolve_class_by_name(n);
+                    }
+                }
                 match name {
                     Some(n) if self.try_autoload(&n)? => self.resolve_class_by_name(&n),
                     _ => Err(e),

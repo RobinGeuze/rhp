@@ -1,0 +1,17 @@
+Exception: Cannot rewind a generator that was already run
+Exception: Cannot traverse an already closed generator
+Exception: Cannot rewind a generator that was already run
+1
+2
+Exception: You can only iterate a generator by-reference if it declared that it yields by-reference
+[8] Only variable references should be yielded by reference (line 16)
+Exception: Cannot rewind a generator that was already run
+1
+[8] Only variable references should be yielded by reference (line 16)
+2
+Exception: Cannot traverse an already closed generator
+[8] Only variable references should be yielded by reference (line 26)
+int(2)
+NULL
+[8] Only variable references should be yielded by reference (line 31)
+string(1) "p"

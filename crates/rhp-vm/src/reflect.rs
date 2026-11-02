@@ -256,8 +256,15 @@ impl Vm {
             }
             b"declared" => {
                 let want = arg_bytes(args, 0);
+                // Built-in classes first, then class-table (compile) order.
+                let mut ids: Vec<usize> = (0..self.classes.len()).collect();
+                ids.sort_by_key(|&id| {
+                    let user = id >= self.internal_classes;
+                    (user, if user { self.class_order[id] } else { 0 }, id)
+                });
                 let mut out = PhpArray::new();
-                for e in &self.classes {
+                for id in ids {
+                    let e = &self.classes[id];
                     let ok = match want.as_slice() {
                         b"interface" => e.kind == ClassKind::Interface,
                         b"trait" => e.kind == ClassKind::Trait,

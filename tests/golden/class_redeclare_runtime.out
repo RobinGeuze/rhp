@@ -1,0 +1,3 @@
+declared
+64: Cannot redeclare class Inner (previously declared in class_redeclare_runtime.php:15)
+class_redeclare_runtime.php:15

@@ -52,6 +52,40 @@ enum LvalRoot {
     StaticPropDyn(ClassRef, Reg),
     /// `$$name` / `${expr}`: the variable named by the register's value.
     VarVar(Reg),
+    /// `$GLOBALS[<name reg>]`: a global variable by name.
+    Global(Reg),
+}
+
+/// `$GLOBALS[<index>]`: the index expression when `e` is that form.
+fn globals_index<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
+    match e {
+        Expression::ArrayAccess(aa) if is_globals_var(aa.array) => Some(aa.index),
+        _ => None,
+    }
+}
+
+/// Is `e` the bare `$GLOBALS` variable?
+fn is_globals_var(e: &Expression) -> bool {
+    matches!(e, Expression::Variable(Variable::Direct(d)) if strip_dollar(d.name) == b"GLOBALS")
+}
+
+/// php's compile-time errors for `$GLOBALS` as (the root of) a write target:
+/// only `$GLOBALS[$name]...` may be written.
+fn check_globals_write(target: &Expression) -> Result<(), Thrown> {
+    match target {
+        e if is_globals_var(e) => Err(Thrown::error(
+            "Error",
+            "$GLOBALS can only be modified using the $GLOBALS[$name] = $value syntax",
+        )),
+        Expression::ArrayAppend(ap) if is_globals_var(ap.array) => {
+            Err(Thrown::error("Error", "Cannot append to $GLOBALS"))
+        }
+        Expression::ArrayAccess(aa) if is_globals_var(aa.array) => Ok(()),
+        Expression::ArrayAccess(aa) => check_globals_write(aa.array),
+        Expression::ArrayAppend(ap) => check_globals_write(ap.array),
+        Expression::Parenthesized(p) => check_globals_write(p.expression),
+        _ => Ok(()),
+    }
 }
 
 /// The body form of a closure being lowered.
@@ -506,6 +540,11 @@ fn dirname(path: &[u8]) -> Vec<u8> {
     }
 }
 
+/// The file being compiled (a class declaration's `info.user.filename`).
+fn decl_file() -> PhpStr {
+    SRC_FILE.with(|f| PhpStr::from_bytes(f.borrow().clone()))
+}
+
 /// 1-based line number for a byte offset, via the current `LINE_STARTS`.
 fn line_of(offset: u32) -> u32 {
     LINE_STARTS.with(|ls| {
@@ -702,12 +741,9 @@ fn compile_program(
         // A top-level class is hoisted at load when its parent/interfaces
         // are available; otherwise it is declared when this point is reached.
         if is_class_like(stmt) {
-            // The declaration (and so an autoload it triggers, or an error
-            // for a missing parent/interface) runs at the class's line.
-            c.cur_line = {
-                use mago_span::HasSpan;
-                line_of(stmt.span().start.offset)
-            };
+            // php's DECLARE_CLASS line: the class keyword's (the decl's
+            // line_start), not the attributes' or modifiers'.
+            c.cur_line = classes[num_prelude_classes + top_class_idx as usize].decl_line;
             c.emit(Instr::DeclareClass {
                 class_idx: top_class_idx,
             });
@@ -1079,6 +1115,8 @@ fn compile_class(
         enum_backing: None,
         meta,
         file: PhpStr::from_bytes(src_file()),
+        decl_file: decl_file(),
+        decl_line: line_of(class.class.span.start.offset),
     })
 }
 
@@ -1133,6 +1171,8 @@ fn compile_anon_class(
         ac.right_brace.end.offset,
     )?;
     Ok(ClassProto {
+        decl_file: decl_file(),
+        decl_line: line_of(ac.class.span.start.offset),
         name,
         kind: ClassKind::Class,
         flags,
@@ -1223,6 +1263,8 @@ fn compile_enum(
         constants: m.constants,
         enum_cases: m.enum_cases,
         enum_backing: backing,
+        decl_file: decl_file(),
+        decl_line: line_of(en.r#enum.span.start.offset),
     })
 }
 
@@ -1485,6 +1527,8 @@ fn compile_trait(
     Ok(ClassProto {
         meta,
         file: PhpStr::from_bytes(src_file()),
+        decl_file: decl_file(),
+        decl_line: line_of(t.r#trait.span.start.offset),
         name,
         kind: ClassKind::Trait,
         flags: ClassFlags::default(),
@@ -2091,6 +2135,8 @@ fn compile_interface(
         enum_backing: None,
         meta,
         file: PhpStr::from_bytes(src_file()),
+        decl_file: decl_file(),
+        decl_line: line_of(iface.interface.span.start.offset),
     })
 }
 
@@ -2748,9 +2794,10 @@ impl ProtoBuilder {
                 self.scan_expr_vars(fe.expression);
                 match &fe.target {
                     ForeachTarget::Value(t) => self.scan_expr_vars(t.value),
+                    // php compiles the value variable before the key's.
                     ForeachTarget::KeyValue(t) => {
-                        self.scan_expr_vars(t.key);
                         self.scan_expr_vars(t.value);
+                        self.scan_expr_vars(t.key);
                     }
                 }
                 match &fe.body {
@@ -2999,6 +3046,7 @@ impl ProtoBuilder {
 
     /// Record a nested class declaration and emit its `DeclareClass`.
     fn emit_cond_class(&mut self, proto: ClassProto) {
+        self.cur_line = proto.decl_line;
         let class_idx = COND_CLASSES.with(|c| {
             let mut c = c.borrow_mut();
             c.0.push(proto);
@@ -3457,9 +3505,12 @@ impl ProtoBuilder {
     fn compile_foreach(&mut self, fe: &rhp_frontend::cst::Foreach) -> Result<(), Thrown> {
         // Resolve key + value targets. A value target may be a destructuring
         // pattern, which binds into a protected element register per iteration.
-        let (key_cv, val_expr) = match &fe.target {
-            ForeachTarget::Value(t) => (Reg::MAX, t.value),
-            ForeachTarget::KeyValue(t) => (self.foreach_target_cv(t.key)?, t.value),
+        // php compiles the iterated expression, then the value variable, then
+        // the key variable: their CVs (so the global symbol table's and
+        // get_defined_vars()'s order) are created in that order.
+        let (key_expr, val_expr) = match &fe.target {
+            ForeachTarget::Value(t) => (None, t.value),
+            ForeachTarget::KeyValue(t) => (Some(t.key), t.value),
         };
 
         // By-reference foreach: `foreach ($a as &$v)` / `... as $k => &$v`.
@@ -3478,7 +3529,6 @@ impl ProtoBuilder {
                     "only a simple `&$v` loop variable is supported",
                 ));
             };
-            let val_cv = self.cv(strip_dollar(d.name));
             // The source must be assignable so its elements can be referenced: a
             // simple variable uses its slot directly; a property / array-element /
             // static-property is promoted to a reference held in a temp (the VM's
@@ -3496,12 +3546,15 @@ impl ProtoBuilder {
                     self.emit(Instr::MakeRefLval { dst: r });
                     r
                 }
-                _ => {
-                    return Err(Thrown::error(
-                        "Error",
-                        "Cannot create references to elements of a temporary array expression",
-                    ))
-                }
+                // Any other expression (a call, `new`, a literal …): php
+                // iterates the temporary itself (FE_RESET_RW on a TMP) — a
+                // by-ref generator / its elements are referenced in place.
+                _ => self.compile_expr(fe.expression)?,
+            };
+            let val_cv = self.cv(strip_dollar(d.name));
+            let key_cv = match key_expr {
+                Some(k) => self.foreach_target_cv(k)?,
+                None => Reg::MAX,
             };
             let pos_reg = self.alloc_temp();
             let saved_floor = self.temp_floor;
@@ -3556,6 +3609,12 @@ impl ProtoBuilder {
             // Destructuring, `$$n`, `$a[k]`, `$o->p`: fetch into a temporary
             // and store it like a list() element.
             _ => (self.alloc_temp(), Some(val_expr)),
+        };
+        // The key variable is created after the value variable, as php does
+        // (observable in the order of `$GLOBALS`).
+        let key_cv = match key_expr {
+            Some(k) => self.foreach_target_cv(k)?,
+            None => Reg::MAX,
         };
         // php stores the value target before assigning the key, so a key
         // variable used inside the target (`$k => $$k`) is the previous one.
@@ -3641,6 +3700,7 @@ impl ProtoBuilder {
 
     fn compile_unset(&mut self, u: &rhp_frontend::cst::Unset) -> Result<(), Thrown> {
         for v in u.values.iter() {
+            check_globals_write(v)?;
             match v {
                 Expression::Variable(Variable::Direct(d)) => {
                     // A CV can't be removed; null is observably equivalent to
@@ -3651,6 +3711,10 @@ impl ProtoBuilder {
                 Expression::Variable(var) => {
                     let name = self.var_name_reg(var)?;
                     self.emit(Instr::UnsetVarVar { name });
+                }
+                Expression::ArrayAccess(_) if globals_index(v).is_some() => {
+                    let name = self.compile_expr(globals_index(v).unwrap())?;
+                    self.emit(Instr::UnsetGlobal { name });
                 }
                 Expression::ArrayAccess(_) => {
                     let mut steps = Vec::new();
@@ -3800,6 +3864,7 @@ impl ProtoBuilder {
     /// Store `src` into a single destructuring target (variable, nested pattern,
     /// array element, or property).
     fn store_to_target(&mut self, target: &Expression, src: Reg) -> Result<(), Thrown> {
+        check_globals_write(target)?;
         match target {
             Expression::Variable(Variable::Direct(d)) => {
                 let cv = self.cv(strip_dollar(d.name));
@@ -3940,6 +4005,11 @@ impl ProtoBuilder {
         match expr {
             Expression::Literal(lit) => self.compile_literal(lit),
             Expression::Parenthesized(p) => self.compile_expr(p.expression),
+            Expression::Variable(Variable::Direct(d)) if strip_dollar(d.name) == b"GLOBALS" => {
+                let dst = self.alloc_temp();
+                self.emit(Instr::FetchGlobals { dst });
+                Ok(dst)
+            }
             Expression::Variable(Variable::Direct(d)) => Ok(self.cv(strip_dollar(d.name))),
             Expression::Variable(v) => self.compile_variable(v),
             Expression::Binary(b) => self.compile_binary(b),
@@ -3949,6 +4019,12 @@ impl ProtoBuilder {
             Expression::Conditional(c) => self.compile_conditional(c),
             Expression::Array(arr) => self.compile_array(arr.elements.iter()),
             Expression::LegacyArray(arr) => self.compile_array(arr.elements.iter()),
+            Expression::ArrayAccess(aa) if is_globals_var(aa.array) => {
+                let name = self.compile_expr(aa.index)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::FetchGlobal { dst, name });
+                Ok(dst)
+            }
             Expression::ArrayAccess(aa) => {
                 let arr = self.compile_expr(aa.array)?;
                 let key = self.compile_expr(aa.index)?;
@@ -4341,6 +4417,7 @@ impl ProtoBuilder {
         pre: bool,
         delta: i8,
     ) -> Result<Reg, Thrown> {
+        check_globals_write(target)?;
         match target {
             Expression::Variable(Variable::Direct(d)) => {
                 let cv = self.cv(strip_dollar(d.name));
@@ -4462,6 +4539,26 @@ impl ProtoBuilder {
                     let r = self.alloc_temp();
                     let k = self.intern_const(Value::str(l.value.unwrap_or(l.raw).to_vec()));
                     self.emit(Instr::LoadConst { dst: r, k });
+                    r
+                }
+                // Simple syntax `"$a[key]"`: an unquoted key is a string
+                // literal, not a constant.
+                StringPart::Expression(Expression::ArrayAccess(aa))
+                    if matches!(aa.index, Expression::Identifier(_)) =>
+                {
+                    let Expression::Identifier(id) = aa.index else {
+                        unreachable!()
+                    };
+                    let k = self.intern_const(Value::str(id.value().to_vec()));
+                    let key = self.alloc_temp();
+                    self.emit(Instr::LoadConst { dst: key, k });
+                    let r = self.alloc_temp();
+                    if is_globals_var(aa.array) {
+                        self.emit(Instr::FetchGlobal { dst: r, name: key });
+                    } else {
+                        let arr = self.compile_expr(aa.array)?;
+                        self.emit(Instr::DimFetch { dst: r, arr, key });
+                    }
                     r
                 }
                 StringPart::Expression(e) => self.compile_expr(e)?,
@@ -4852,25 +4949,54 @@ impl ProtoBuilder {
         let (key, value) = match y {
             Yield::Value(v) => {
                 let value = match v.value {
+                    // A by-reference generator yields a reference to the
+                    // variable / element / property (ZEND_YIELD, BP_VAR_W).
+                    Some(e) if self.returns_ref => self.compile_yield_ref(e)?,
                     Some(e) => self.compile_expr(e)?,
                     None => {
                         let t = self.alloc_temp();
                         self.emit(Instr::LoadNull { dst: t });
-                        t
+                        if self.returns_ref {
+                            // A bare `yield` yields null, without the
+                            // "Only variable references" notice.
+                            let r = self.alloc_temp();
+                            self.emit(Instr::MakeRefVal { dst: r, src: t });
+                            r
+                        } else {
+                            t
+                        }
                     }
                 };
                 (Reg::MAX, value)
             }
             Yield::Pair(p) => {
                 let key = self.compile_expr(p.key)?;
-                let value = self.compile_expr(p.value)?;
+                let value = if self.returns_ref {
+                    self.compile_yield_ref(p.value)?
+                } else {
+                    self.compile_expr(p.value)?
+                };
                 (key, value)
+            }
+            Yield::From(_) if self.returns_ref => {
+                return Err(Thrown::error(
+                    "Error",
+                    "Cannot use \"yield from\" inside a by-reference generator",
+                ))
             }
             Yield::From(yf) => return self.compile_yield_from(yf.iterator),
         };
         let dst = self.alloc_temp();
         self.emit(Instr::Yield { dst, key, value });
         Ok(dst)
+    }
+
+    /// The value a by-reference generator yields: a reference to a variable
+    /// / element / property, or a by-reference call's result; anything else
+    /// is a plain value, which the VM's `Yield` answers with php's "Only
+    /// variable references should be yielded by reference" notice.
+    fn compile_yield_ref(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+        self.compile_ref_source(e)
     }
 
     /// `yield from $iterable`: re-yield each element (keys preserved); the
@@ -5299,6 +5425,10 @@ impl ProtoBuilder {
             Expression::Variable(Variable::Direct(d)) => {
                 Ok(LvalRoot::Cv(self.cv(strip_dollar(d.name))))
             }
+            Expression::ArrayAccess(aa) if is_globals_var(aa.array) => {
+                let name = self.compile_expr(aa.index)?;
+                Ok(LvalRoot::Global(name))
+            }
             Expression::ArrayAccess(aa) => {
                 let root = self.collect_lvalue_steps(aa.array, steps)?;
                 let key = self.compile_expr(aa.index)?;
@@ -5353,6 +5483,7 @@ impl ProtoBuilder {
                 self.emit(Instr::LvalStaticPropDyn { class, name })
             }
             LvalRoot::VarVar(name) => self.emit(Instr::LvalVarVar { name }),
+            LvalRoot::Global(name) => self.emit(Instr::LvalGlobal { name }),
         }
         for step in steps {
             match step {
@@ -5395,6 +5526,13 @@ impl ProtoBuilder {
     /// Produce a register holding a `Ref` to a reference-assignment source: a
     /// simple variable's slot, or a property / array-element / static-prop lvalue.
     fn compile_ref_source(&mut self, src: &Expression) -> Result<Reg, Thrown> {
+        if is_globals_var(src) {
+            return Err(Thrown::error(
+                "Error",
+                "Cannot acquire reference to $GLOBALS",
+            ));
+        }
+        check_globals_write(src)?;
         match src {
             Expression::Variable(Variable::Direct(v)) => {
                 let name = strip_dollar(v.name);
@@ -6039,6 +6177,7 @@ impl ProtoBuilder {
     }
 
     fn compile_assignment(&mut self, a: &rhp_frontend::cst::Assignment) -> Result<Reg, Thrown> {
+        check_globals_write(a.lhs)?;
         // Destructuring: `[$a, $b] = ...` / `list($a, $b) = ...`.
         if matches!(a.operator, AssignmentOperator::Assign(_)) {
             if let Expression::Array(arr) = a.lhs {
@@ -6065,6 +6204,12 @@ impl ProtoBuilder {
                     Expression::Variable(Variable::Direct(src)),
                 ) = (a.lhs, u.operand)
                 {
+                    if strip_dollar(src.name) == b"GLOBALS" {
+                        return Err(Thrown::error(
+                            "Error",
+                            "Cannot acquire reference to $GLOBALS",
+                        ));
+                    }
                     if strip_dollar(src.name) != b"this" {
                         let dst_cv = self.cv(strip_dollar(dst.name));
                         let src_cv = self.cv(strip_dollar(src.name));
@@ -6314,6 +6459,18 @@ impl ProtoBuilder {
                         self.emit(Instr::FetchVarVar {
                             dst: t,
                             name: *name,
+                        });
+                        t
+                    }
+                    // `$GLOBALS[$k] ??= v`: a quiet read of the global.
+                    LvalRoot::Global(name) => {
+                        let all = self.alloc_temp();
+                        self.emit(Instr::FetchGlobals { dst: all });
+                        let t = self.alloc_temp();
+                        self.emit(Instr::DimFetchIs {
+                            dst: t,
+                            arr: all,
+                            key: *name,
                         });
                         t
                     }

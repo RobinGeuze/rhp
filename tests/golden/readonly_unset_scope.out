@@ -1,0 +1,7 @@
+ok
+Error: Cannot unset protected(set) readonly property P::$x from global scope
+Error: Cannot unset protected(set) readonly property P::$x from scope Other
+ok
+Error: Cannot unset protected(set) readonly property Exp::$x from global scope
+Error: Cannot modify protected(set) readonly property Exp::$x from global scope
+Error: Cannot unset readonly property Priv::$x

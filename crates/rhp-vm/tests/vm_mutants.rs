@@ -204,7 +204,20 @@ fn append_to_empty_string_is_error() {
 }
 
 #[test]
+fn empty_string_is_a_string_container() {
+    // php >= 7.1: "" is not autovivified — `[]` on it is an Error and an
+    // offset write writes into the string.
+    let (_out, class) = run_throws("<?php $x=''; $x[]=5;");
+    assert_eq!(class, "Error");
+    assert_eq!(
+        run("<?php $x=''; $x[2]='a'; var_dump($x);"),
+        "string(3) \"  a\"\n"
+    );
+}
+
+#[test]
 fn append_to_nonempty_string_is_error() {
+    // php: Error "[] operator not supported for strings"
     let (_out, class) = run_throws("<?php $s='hi'; $s[]='x';");
     assert_eq!(class, "Error");
 }

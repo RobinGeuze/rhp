@@ -1,0 +1,53 @@
+bool(true)
+bool(true)
+string(3) "inc"
+string(3) "inc"
+bool(true)
+int(5)
+string(3) "inc"
+int(5)
+string(3) "bin"
+string(7) "changed"
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  ["k"]=>
+  array(1) {
+    ["deep"]=>
+    bool(true)
+  }
+}
+int(12)
+string(2) "ab"
+bool(true)
+bool(false)
+string(4) "dflt"
+bool(false)
+bool(true)
+bool(false)
+bool(false)
+int(12)
+bool(true)
+bool(false)
+int(1)
+int(2)
+int(1)
+int(6)
+int(99)
+array(2) {
+  [0]=>
+  string(1) "q"
+  [1]=>
+  int(2)
+}
+int(2)
+array(2) {
+  [0]=>
+  string(2) "z1"
+  [1]=>
+  string(2) "z2"
+}
+[2] Undefined global variable $neverSet
+NULL

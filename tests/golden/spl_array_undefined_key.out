@@ -1,0 +1,23 @@
+[2] Undefined array key "zz" (line 9)
+[2] Undefined array key "yy" (line 9)
+NULL
+NULL
+int(1)
+string(4) "dflt"
+bool(false)
+[2] Undefined array key "x" (line 10)
+[2] Undefined array key "n" (line 11)
+[2] Undefined array key "c" (line 12)
+Array
+(
+    [a] => Array
+        (
+            [b] => 1
+            [c] => z
+        )
+
+    [x] => y
+    [n] => 1
+)
+[2] Undefined array key 5 (line 15)
+NULL

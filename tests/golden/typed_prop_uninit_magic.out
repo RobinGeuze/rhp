@@ -1,0 +1,26 @@
+int(1)
+__set(q)
+bool(false)
+bool(true)
+string(4) "dflt"
+Error: Typed property Q::$q must not be accessed before initialization
+__unset(q)
+__isset(q)
+__get(q)
+bool(true)
+int(42)
+array(1) {
+  [0]=>
+  int(1)
+}
+__get(n)
+int(42)
+__set(n)
+__isset(n)
+bool(true)
+__get(n)
+int(42)
+Typed property P::$x must not be accessed before initialization
+int(9)
+Cannot modify private(set) property Asym::$bar from global scope
+Asym::__set(bar)

@@ -3928,6 +3928,26 @@ impl ProtoBuilder {
                     self.emit(Instr::LoadConst { dst: r, k });
                     r
                 }
+                // Simple syntax `"$a[key]"`: an unquoted key is a string
+                // literal, not a constant.
+                StringPart::Expression(Expression::ArrayAccess(aa))
+                    if matches!(aa.index, Expression::Identifier(_)) =>
+                {
+                    let Expression::Identifier(id) = aa.index else {
+                        unreachable!()
+                    };
+                    let k = self.intern_const(Value::str(id.value().to_vec()));
+                    let key = self.alloc_temp();
+                    self.emit(Instr::LoadConst { dst: key, k });
+                    let r = self.alloc_temp();
+                    if is_globals_var(aa.array) {
+                        self.emit(Instr::FetchGlobal { dst: r, name: key });
+                    } else {
+                        let arr = self.compile_expr(aa.array)?;
+                        self.emit(Instr::DimFetch { dst: r, arr, key });
+                    }
+                    r
+                }
                 StringPart::Expression(e) => self.compile_expr(e)?,
                 StringPart::BracedExpression(b) => self.compile_expr(b.expression)?,
             };

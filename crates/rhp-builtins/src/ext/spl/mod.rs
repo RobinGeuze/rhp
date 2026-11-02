@@ -148,7 +148,7 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
     }
     public function count(): int { return count($this->__s); }
     public function offsetExists($k): bool { return isset($this->__s[$k]); }
-    public function offsetGet($k): mixed { return $this->__s[$k] ?? null; }
+    public function offsetGet($k): mixed { return $this->__s[$k]; }
     public function offsetSet($k, $v): void { if ($k === null) { $this->__s[] = $v; } else { $this->__s[$k] = $v; } }
     public function offsetUnset($k): void { unset($this->__s[$k]); }
     public function getArrayCopy(): array { return $this->__s; }
@@ -185,7 +185,7 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
     public function setIteratorClass(string $iteratorClass): void { $this->__i = $iteratorClass; }
     public function count(): int { return count($this->__s); }
     public function offsetExists($k): bool { return isset($this->__s[$k]); }
-    public function offsetGet($k): mixed { return $this->__s[$k] ?? null; }
+    public function offsetGet($k): mixed { return $this->__s[$k]; }
     public function offsetSet($k, $v): void { if ($k === null) { $this->__s[] = $v; } else { $this->__s[$k] = $v; } }
     public function offsetUnset($k): void { unset($this->__s[$k]); }
     public function getArrayCopy(): array { return $this->__s; }

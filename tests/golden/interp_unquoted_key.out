@@ -1,0 +1,5 @@
+lit viaconst three neg zero-one u
+[2] Undefined array key "zz" (line 11)
+missing: []
+global x
+heredoc: lit global x

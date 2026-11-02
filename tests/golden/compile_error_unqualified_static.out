@@ -1,0 +1,7 @@
+before
+
+Fatal error: Type declaration 'static' must be unqualified in F(13) : eval()'d code on line 3
+Stack trace:
+#0 F(17): load()
+#1 {main}
+shutdown: 64 Type declaration 'static' must be unqualified @3 F(13) : eval()'d code

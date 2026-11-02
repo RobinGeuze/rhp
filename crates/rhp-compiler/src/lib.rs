@@ -125,6 +125,11 @@ thread_local! {
     /// Byte offsets of each line start in the source currently being compiled
     /// (empty while compiling the prelude; whose line numbers are never surfaced).
     static LINE_STARTS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    /// The earliest compile error (source offset, line, message) recorded by
+    /// [`compile_fatal`] in the file being compiled.
+    static COMPILE_FATAL: RefCell<Option<(u32, u32, String)>> = const { RefCell::new(None) };
+    /// See [`compile_error_line`].
+    static COMPILE_ERROR_LINE: RefCell<u32> = const { RefCell::new(0) };
     /// The file name reported in debug info / exception getFile().
     static SRC_FILE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     /// The user source being compiled (empty for the prelude), for lexical
@@ -220,10 +225,110 @@ fn collect_hint(h: &Hint, out: &mut rhp_bytecode::TypeHint) {
         Hint::Object(_) => out.kinds.push(K::Object),
         Hint::Mixed(_) => out.kinds.push(K::Mixed),
         Hint::Iterable(_) => out.kinds.push(K::Iterable),
-        Hint::Identifier(id) => out
-            .kinds
-            .push(K::Named(PhpStr::from_bytes(resolve_class_name(id)))),
+        Hint::Identifier(id) => {
+            check_type_name(id);
+            out.kinds
+                .push(K::Named(PhpStr::from_bytes(resolve_class_name(id))))
+        }
     }
+}
+
+/// zend_compile_single_typename's compile errors for a class-name type: a
+/// builtin type name written fully qualified (`\int`) or namespace-relative
+/// (`namespace\static`) is "Type declaration '%s' must be unqualified" (php
+/// 8.5.12 added `static` to the builtin list); `\self` is an invalid class
+/// name; and a class name ending in a reserved word (`Foo\int`) is refused.
+fn check_type_name(id: &Identifier) {
+    use mago_span::HasSpan;
+    const BUILTIN: [&[u8]; 13] = [
+        b"null",
+        b"true",
+        b"false",
+        b"int",
+        b"float",
+        b"string",
+        b"bool",
+        b"void",
+        b"never",
+        b"iterable",
+        b"object",
+        b"mixed",
+        b"static",
+    ];
+    const RESERVED: [&[u8]; 17] = [
+        b"bool",
+        b"false",
+        b"float",
+        b"int",
+        b"null",
+        b"parent",
+        b"self",
+        b"static",
+        b"string",
+        b"true",
+        b"void",
+        b"never",
+        b"iterable",
+        b"object",
+        b"mixed",
+        b"array",
+        b"callable",
+    ];
+    let at = id.span().start.offset;
+    let (name, prefix): (Vec<u8>, &str) = match id {
+        Identifier::FullyQualified(f) => (strip_lead_bs(f.value), "\\"),
+        Identifier::Qualified(q) if starts_with_ci(q.value, b"namespace\\") => {
+            (q.value[b"namespace\\".len()..].to_vec(), "namespace\\")
+        }
+        _ => (identifier_raw(id).to_vec(), ""),
+    };
+    let lc = name.to_ascii_lowercase();
+    if !prefix.is_empty() && BUILTIN.contains(&lc.as_slice()) {
+        let msg = format!(
+            "Type declaration '{}' must be unqualified",
+            String::from_utf8_lossy(&lc)
+        );
+        return compile_fatal(at, msg);
+    }
+    // zend_resolve_class_name: `\self` / `namespace\parent` name no class.
+    if !prefix.is_empty() && (lc == b"self" || lc == b"parent") {
+        let msg = format!(
+            "'{prefix}{}' is an invalid class name",
+            String::from_utf8_lossy(&name)
+        );
+        return compile_fatal(at, msg);
+    }
+    // zend_assert_valid_class_name(…, "a type name") on the resolved name,
+    // whose unqualified tail must not be a reserved name (`Foo\int`).
+    let resolved = resolve_class_name(id);
+    let tail = resolved.rsplit(|&b| b == b'\\').next().unwrap_or(&resolved);
+    if RESERVED.contains(&tail.to_ascii_lowercase().as_slice()) {
+        let msg = format!(
+            "Cannot use \"{}\" as a type name as it is reserved",
+            String::from_utf8_lossy(&resolved)
+        );
+        compile_fatal(at, msg);
+    }
+}
+
+/// Record an E_COMPILE_ERROR found at source `offset` of the file being
+/// compiled. The compile still finishes (so callers need no error plumbing),
+/// then fails with the earliest recorded error (see [`compile_program`]).
+fn compile_fatal(offset: u32, message: String) {
+    let line = line_of(offset);
+    COMPILE_FATAL.with(|f| {
+        let mut f = f.borrow_mut();
+        if f.as_ref().is_none_or(|(o, _, _)| offset < *o) {
+            *f = Some((offset, line, message));
+        }
+    });
+}
+
+/// The line of the compile error (E_COMPILE_ERROR) behind the last
+/// `Thrown::Error { class: "CompileError", .. }` a compile entry point of this
+/// thread returned. The SAPI reports it as a fatal error at that line.
+pub fn compile_error_line() -> u32 {
+    COMPILE_ERROR_LINE.with(|l| *l.borrow())
 }
 
 /// Whether the program's leading statement is `declare(strict_types=1)`.
@@ -648,6 +753,25 @@ pub fn compile_include(program: &AstProgram, source: &[u8], file: &str) -> Resul
 }
 
 fn compile_program(
+    program: &AstProgram,
+    source: &[u8],
+    file: &str,
+    with_prelude: bool,
+) -> Result<Program, Thrown> {
+    COMPILE_FATAL.with(|f| *f.borrow_mut() = None);
+    let r = compile_program_inner(program, source, file, with_prelude);
+    // A recorded compile error came first in source order (compilation stops
+    // at the first one in php), so it wins over a later refusal too.
+    match COMPILE_FATAL.with(|f| f.borrow_mut().take()) {
+        Some((_, line, message)) => {
+            COMPILE_ERROR_LINE.with(|l| *l.borrow_mut() = line);
+            Err(Thrown::error("CompileError", message))
+        }
+        None => r,
+    }
+}
+
+fn compile_program_inner(
     program: &AstProgram,
     source: &[u8],
     file: &str,

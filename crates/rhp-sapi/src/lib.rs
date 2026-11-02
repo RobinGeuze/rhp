@@ -110,8 +110,23 @@ fn install_includer(vm: &mut Vm) {
         if let Some((message, line)) = parsed.parse_error() {
             return Err(IncludeError::Parse { message, line });
         }
-        Ok(compile_include(parsed.program(), src, file)?)
+        compile_include(parsed.program(), src, file).map_err(include_error)
     });
+}
+
+/// A compile entry point's failure as the includer reports it: a compile
+/// error (E_COMPILE_ERROR) is a located fatal, anything else is thrown.
+pub fn include_error(t: Thrown) -> IncludeError {
+    match t {
+        Thrown::Error {
+            class: "CompileError",
+            message,
+        } => IncludeError::Compile {
+            message,
+            line: rhp_compiler::compile_error_line(),
+        },
+        t => IncludeError::Thrown(t),
+    }
 }
 
 /// Run one request on a fresh engine: compile the script, run it with the
@@ -184,6 +199,15 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     let program = match compile_with_source(parsed.program(), &source, &file) {
         Ok(p) => p,
         Err(t) => {
+            let t = match include_error(t) {
+                IncludeError::Compile { message, line } => {
+                    vm.compile_error(&message, file.as_bytes(), line);
+                    vm.finish_request();
+                    return Outcome::Exit(255);
+                }
+                IncludeError::Thrown(t) => t,
+                IncludeError::Parse { .. } => unreachable!("not built by include_error"),
+            };
             let code = fatal(&mut vm, t);
             vm.finish_request();
             return Outcome::Exit(code);

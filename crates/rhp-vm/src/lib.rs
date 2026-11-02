@@ -66,7 +66,10 @@ type Includer = Box<dyn FnMut(&str, &[u8]) -> Result<Program, IncludeError>>;
 pub enum IncludeError {
     /// A syntax error: becomes a catchable `ParseError` at (file, `line`).
     Parse { message: String, line: u32 },
-    /// Anything else (a compile-time Error, an unsupported construct, …).
+    /// A compile error (E_COMPILE_ERROR) at `line`: a fatal error, not an
+    /// exception — the request bails out (shutdown functions still run).
+    Compile { message: String, line: u32 },
+    /// Anything else (an unsupported construct, …).
     Thrown(Thrown),
 }
 
@@ -8541,11 +8544,33 @@ impl Vm {
         match compiled {
             Ok(p) => Ok(p),
             Err(IncludeError::Thrown(t)) => Err(t),
+            Err(IncludeError::Compile { message, line }) => {
+                self.compile_error(&message, file.as_bytes(), line);
+                Err(Thrown::Exit(255))
+            }
             Err(IncludeError::Parse { message, line }) => Err(self.materialize(
                 Thrown::error("ParseError", message),
                 Some((file.as_bytes().to_vec(), line)),
             )),
         }
+    }
+
+    /// php_error_cb for an E_COMPILE_ERROR at `file:line`: recorded for
+    /// error_get_last(), displayed with php 8.5's backtrace (the frames
+    /// running the include/eval, `#0 {main}` for the main script), and
+    /// objects are no longer destructed. The caller bails out (exit 255).
+    pub fn compile_error(&mut self, message: &str, file: &[u8], line: u32) {
+        let backtraces = self.ini_get(b"fatal_error_backtraces").unwrap_or_default();
+        let trace = if ini_bool(&backtraces) {
+            let trace = Value::Array(self.build_trace_ex(false, false));
+            builtins::php_fns::trace_to_string(self, &trace)
+        } else {
+            Vec::new()
+        };
+        let line = line as i64;
+        self.last_error = Some((64, message.as_bytes().to_vec(), file.to_vec(), line));
+        self.display_error_trace(64, "Fatal error", message.as_bytes(), file, line, &trace);
+        self.destructibles.clear();
     }
 
     /// The main script failed to parse: php reports `Parse error: …` through

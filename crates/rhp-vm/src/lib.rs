@@ -4597,7 +4597,12 @@ impl Vm {
             } else {
                 // Only php-cli defines the standard stream constants (web
                 // code tests `defined('STDIN')` to detect a console).
-                for k in [&b"STDIN"[..], b"STDOUT", b"STDERR"] {
+                for k in [
+                    &b"STDIN"[..],
+                    b"STDOUT",
+                    b"STDERR",
+                    b"PHP_CLI_PROCESS_TITLE",
+                ] {
                     self.constants.remove(k);
                 }
             }

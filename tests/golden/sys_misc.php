@@ -28,7 +28,7 @@ foreach (['192.168.1.1', '0.0.0.0', '255.255.255.255', '192.168.01.1', '1.2.3', 
 foreach ([0, -1, 3232235777, 4294967296, 16909060, PHP_INT_MAX] as $n) {
     var_dump(long2ip($n));
 }
-var_dump(zend_version(), get_cfg_var('nope'));
+var_dump(zend_version() === '4.' . PHP_MINOR_VERSION . '.' . PHP_RELEASE_VERSION, get_cfg_var('nope'));
 var_dump(cli_set_process_title('rhp-test'));
 var_dump(array_keys(gettimeofday()), is_float(gettimeofday(true)));
 $l = @lcg_value();

@@ -173,11 +173,14 @@ fn print_info(flag: i64) -> Vec<u8> {
         o.table_start();
         o.row(&["System", &php_get_uname(b'a')]);
         o.row(&["Build Date", version::BUILD_DATE]);
-        o.row(&["Build Provider", "rhp"]);
+        o.row(&["Build Provider", version::BUILD_PROVIDER]);
         o.row(&["Configure Command", " './configure' "]);
         o.row(&["Server API", "Command Line Interface"]);
         o.row(&["Virtual Directory Support", "disabled"]);
-        o.row(&["Configuration File (php.ini) Path", "/usr/local/etc/php"]);
+        o.row(&[
+            "Configuration File (php.ini) Path",
+            version::CONFIG_FILE_PATH,
+        ]);
         o.row(&["Loaded Configuration File", "(none)"]);
         o.row(&["Scan this dir for additional .ini files", "(none)"]);
         o.row(&["Additional .ini files parsed", "(none)"]);

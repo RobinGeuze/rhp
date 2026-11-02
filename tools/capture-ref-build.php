@@ -56,17 +56,20 @@ row("ini_get_all()[memory_hard_limit_percent]",
     array_key_exists('memory_hard_limit_percent', $all) ? $all['memory_hard_limit_percent'] : '(absent)');
 
 echo "# build\n";
-foreach (['PHP_BUILD_DATE', 'PHP_PREFIX', 'PHP_BINDIR', 'PHP_EXTENSION_DIR',
-          'DEFAULT_INCLUDE_PATH'] as $c) {
+foreach (['PHP_BUILD_DATE', 'PHP_BUILD_PROVIDER', 'PHP_PREFIX', 'PHP_BINDIR', 'PHP_SBINDIR',
+          'PHP_MANDIR', 'PHP_LIBDIR', 'PHP_DATADIR', 'PHP_SYSCONFDIR', 'PHP_LOCALSTATEDIR',
+          'PHP_CONFIG_FILE_PATH', 'PHP_CONFIG_FILE_SCAN_DIR', 'PHP_SHLIB_SUFFIX',
+          'PHP_EXTENSION_DIR', 'DEFAULT_INCLUDE_PATH', 'PEAR_INSTALL_DIR',
+          'PEAR_EXTENSION_DIR'] as $c) {
     row($c, defined($c) ? constant($c) : '(undefined)');
 }
 row("ini_get('include_path')", ini_get('include_path'));
 row("ini_get('extension_dir')", ini_get('extension_dir'));
-info_rows(['Build Date']);
+info_rows(['Build Date', 'Build Provider', 'Configuration File (php.ini) Path']);
 foreach (['PCRE_VERSION', 'PCRE_VERSION_MAJOR', 'PCRE_VERSION_MINOR', 'LIBXML_VERSION',
           'LIBXML_DOTTED_VERSION', 'ICONV_VERSION', 'MB_ONIGURUMA_VERSION',
           'OPENSSL_VERSION_TEXT', 'OPENSSL_VERSION_NUMBER', 'INTL_ICU_VERSION',
-          'INTL_ICU_DATA_VERSION', 'GMP_VERSION'] as $c) {
+          'INTL_ICU_DATA_VERSION', 'GMP_VERSION', 'ZLIB_VERSION', 'ZLIB_VERNUM'] as $c) {
     row($c, defined($c) ? constant($c) : '(undefined)');
 }
 ext_row('zip', 'ZipArchive::LIBZIP_VERSION', fn () => ZipArchive::LIBZIP_VERSION);

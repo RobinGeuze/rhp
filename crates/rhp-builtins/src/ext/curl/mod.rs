@@ -9,8 +9,8 @@
 //! for `file://`). `curl_multi_*` runs each added transfer on its own worker
 //! thread — real concurrency — and delivers the results (header/body handlers,
 //! callbacks, `curl_multi_info_read` messages) on the VM thread from
-//! `curl_multi_exec`. `curl_version()` reports the libcurl that php 8.5.8 links
-//! here, so version-dependent output (composer's `lib-curl*` platform
+//! `curl_multi_exec`. `curl_version()` reports the libcurl the reference php
+//! links ([`crate::version::curl`]), so version-dependent output (composer's `lib-curl*` platform
 //! packages, its User-Agent) is identical.
 
 use std::cell::RefCell;

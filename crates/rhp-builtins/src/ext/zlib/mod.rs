@@ -447,24 +447,8 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     }
 }
 
-fn zlib_version() -> String {
-    // SAFETY: zlibVersion returns a static NUL-terminated string.
-    unsafe {
-        std::ffi::CStr::from_ptr(libz_sys::zlibVersion())
-            .to_string_lossy()
-            .into_owned()
-    }
-}
-
 /// `ZLIB_*` / `FORCE_*` constants.
 pub fn constants() -> Vec<(&'static str, Value)> {
-    let ver = zlib_version();
-    let nums: Vec<i64> = ver
-        .split('.')
-        .map(|p| p.parse::<i64>().unwrap_or(0))
-        .collect();
-    let at = |i: usize| nums.get(i).copied().unwrap_or(0) & 0xF;
-    let vernum = (at(0) << 12) | (at(1) << 8) | (at(2) << 4) | at(3);
     vec![
         ("FORCE_GZIP", Value::Int(31)),
         ("FORCE_DEFLATE", Value::Int(15)),
@@ -482,8 +466,10 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("ZLIB_RLE", Value::Int(3)),
         ("ZLIB_FIXED", Value::Int(4)),
         ("ZLIB_DEFAULT_STRATEGY", Value::Int(0)),
-        ("ZLIB_VERSION", Value::str(ver.into_bytes())),
-        ("ZLIB_VERNUM", Value::Int(vernum)),
+        // The zlib headers the reference php was compiled against, not the
+        // libz this process happens to link.
+        ("ZLIB_VERSION", Value::str(crate::version::ZLIB_VERSION)),
+        ("ZLIB_VERNUM", Value::Int(crate::version::ZLIB_VERNUM)),
         ("ZLIB_OK", Value::Int(0)),
         ("ZLIB_STREAM_END", Value::Int(1)),
         ("ZLIB_NEED_DICT", Value::Int(2)),

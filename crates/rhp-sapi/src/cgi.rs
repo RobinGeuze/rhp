@@ -646,7 +646,10 @@ fn parse_options(args: &[String], cgi: bool, skip: bool) -> Result<Opts, (String
                     o.script_file = v;
                     o.no_headers = true;
                 }
-                Opt::Char(c @ (b'a' | b'i' | b'l' | b'm' | b's' | b'v' | b'w'), _) => {
+                Opt::Char(b'v', _) => {
+                    return Err((rhp_builtins::version::banner("cgi-fcgi"), 0));
+                }
+                Opt::Char(c @ (b'a' | b'i' | b'l' | b'm' | b's' | b'w'), _) => {
                     eprintln!("rhp --cgi: option -{} is not supported", c as char);
                     return Err((String::new(), 1));
                 }

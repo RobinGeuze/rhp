@@ -318,7 +318,18 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
         return __reflect('closure', $this->__l, $object);
     }
     public function getModifiers(): int { return $this->__i['modifiers']; }
-    public function invoke(?object $object = null, mixed ...$args): mixed { return $this->invokeArgs($object, $args); }
+    // invoke() repeats invokeArgs() instead of calling it: a nested prelude
+    // call would add a frame to the backtrace of what the method throws.
+    public function invoke(?object $object = null, mixed ...$args): mixed {
+        if ($this->__i['abstract']) { throw new ReflectionException('Trying to invoke abstract method ' . $this->class . '::' . $this->name . '()'); }
+        if ($this->__i['static']) { return __reflect_invoke(null, $this->class, $this->name, $args); }
+        if ($object === null) { throw new ReflectionException('Trying to invoke non static method ' . $this->class . '::' . $this->name . '() without an object'); }
+        if ($this->__l instanceof Closure) {
+            if (!($object instanceof Closure)) { throw new ReflectionException('Given object is not an instance of the class this method was declared in'); }
+            return call_user_func_array($object, $args);
+        }
+        return __reflect_invoke($object, $this->class, $this->name, $args);
+    }
     public function invokeArgs(?object $object = null, array $args = []): mixed {
         if ($this->__i['abstract']) { throw new ReflectionException('Trying to invoke abstract method ' . $this->class . '::' . $this->name . '()'); }
         if ($this->__i['static']) { return __reflect_invoke(null, $this->class, $this->name, $args); }

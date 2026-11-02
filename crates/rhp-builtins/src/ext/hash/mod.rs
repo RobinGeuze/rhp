@@ -678,36 +678,51 @@ fn pbkdf2(
     pass: &[u8],
     salt: &[u8],
     iterations: i64,
-    key_len: usize,
+    out_len: usize,
 ) -> Option<Vec<u8>> {
-    let h_len = digest(algo, b"")?.len();
-    let out_len = if key_len == 0 { h_len } else { key_len };
     if let Some(out) = pbkdf2_fast(algo, pass, salt, iterations, out_len) {
         return Some(out);
     }
-    pbkdf2_generic(algo, pass, salt, iterations, key_len)
+    pbkdf2_generic(algo, pass, salt, iterations, out_len)
 }
 
+/// PBKDF2 for the digests without a RustCrypto implementation, the HMAC key
+/// padded once: H((K ^ opad) || H((K ^ ipad) || m)).
 fn pbkdf2_generic(
     algo: &[u8],
     pass: &[u8],
     salt: &[u8],
     iterations: i64,
-    key_len: usize,
+    out_len: usize,
 ) -> Option<Vec<u8>> {
     let h_len = digest(algo, b"")?.len();
-    // php: $length defaults to 0 meaning "the full digest length" (as hex this is
-    // 2*h_len chars). The raw length produced is key_len when given, else h_len.
-    let out_len = if key_len == 0 { h_len } else { key_len };
+    let block = hmac_block_size(algo)?;
+    let mut k = if pass.len() > block {
+        digest(algo, pass)?
+    } else {
+        pass.to_vec()
+    };
+    k.resize(block, 0);
+    let mut inner: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
+    let mut outer: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
+    let mut mac = |msg: &[u8]| -> Option<Vec<u8>> {
+        inner.truncate(block);
+        inner.extend_from_slice(msg);
+        let d = digest(algo, &inner)?;
+        outer.truncate(block);
+        outer.extend_from_slice(&d);
+        digest(algo, &outer)
+    };
     let blocks = out_len.div_ceil(h_len);
     let mut out = Vec::with_capacity(blocks * h_len);
+    let mut salt_block = salt.to_vec();
     for i in 1..=blocks as u32 {
-        let mut salt_block = salt.to_vec();
+        salt_block.truncate(salt.len());
         salt_block.extend_from_slice(&i.to_be_bytes());
-        let mut u = hmac(algo, pass, &salt_block)?;
+        let mut u = mac(&salt_block)?;
         let mut t = u.clone();
         for _ in 1..iterations {
-            u = hmac(algo, pass, &u)?;
+            u = mac(&u)?;
             for (ti, ui) in t.iter_mut().zip(u.iter()) {
                 *ti ^= *ui;
             }
@@ -795,7 +810,7 @@ fn fn_hash_pbkdf2(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let pass = bytes_of(&args[1]);
     let salt = bytes_of(&args[2]);
     let iterations = as_int(&args[3]);
-    let key_len = args.get(4).map(as_int).unwrap_or(0).max(0) as usize;
+    let length = args.get(4).map(as_int).unwrap_or(0);
     let binary = as_bool(args.get(5));
     if hmac_block_size(&algo).is_none() {
         return Err(Thrown::error(
@@ -809,9 +824,23 @@ fn fn_hash_pbkdf2(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "hash_pbkdf2(): Argument #4 ($iterations) must be greater than 0",
         ));
     }
-    match pbkdf2(&algo, &pass, &salt, iterations, key_len) {
-        // raw form yields key_len (or h_len) bytes; hex form yields key_len hex
-        // chars (php truncates the *hex string*, not the bytes, when length is set)
+    if length < 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "hash_pbkdf2(): Argument #5 ($length) must be greater than or equal to 0",
+        ));
+    }
+    let key_len = length as usize;
+    // $length counts the output: bytes when raw, hex digits otherwise (0:
+    // the digest's full length), so only ceil(length / 2) bytes are derived
+    // for hex output.
+    let h_len = digest(&algo, b"").map_or(0, |d| d.len());
+    let raw_len = match (key_len, binary) {
+        (0, _) => h_len,
+        (n, true) => n,
+        (n, false) => n.div_ceil(2),
+    };
+    match pbkdf2(&algo, &pass, &salt, iterations, raw_len) {
         Some(raw) => {
             if binary {
                 Ok(Value::str(raw))

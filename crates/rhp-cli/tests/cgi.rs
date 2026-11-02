@@ -200,9 +200,9 @@ fn cgi_matches_php_cgi() {
         return;
     };
     let rhp = Path::new(env!("CARGO_BIN_EXE_rhp"));
-    // rhp is php 8.5: another minor version's php-cgi (CI's 8.4 leg) is
-    // not a reference. A different 8.5 patch release only changes the
-    // X-Powered-By version, which is normalised below.
+    // rhp is php 8.5: another minor version's php-cgi (a contributor's
+    // older php, say) is not a reference. A different 8.5 patch release only
+    // changes the X-Powered-By version, which is normalised below.
     let ours = rhp_version(rhp);
     let Some(theirs) = version(&php) else {
         eprintln!("{}: no version; skipping", php.display());

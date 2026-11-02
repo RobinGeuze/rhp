@@ -4481,8 +4481,16 @@ impl ProtoBuilder {
 
     fn compile_array<'a>(
         &mut self,
-        els: impl Iterator<Item = &'a ArrayElement<'a>>,
+        els: impl Iterator<Item = &'a ArrayElement<'a>> + Clone,
     ) -> Result<Reg, Thrown> {
+        // An array of plain literals (CallMap-style data files) is one
+        // constant: no per-element temporaries, no runtime building.
+        if let Some(v) = literal_array(els.clone()) {
+            let k = self.intern_const(v);
+            let dst = self.alloc_temp();
+            self.emit(Instr::LoadConst { dst, k });
+            return Ok(dst);
+        }
         let dst = self.alloc_temp();
         self.emit(Instr::NewArray { dst, cap: 0 });
         for el in els {
@@ -6845,6 +6853,55 @@ fn fold_const_array<'a>(els: impl Iterator<Item = &'a ArrayElement<'a>>) -> Resu
         }
     }
     Ok(Value::Array(a))
+}
+
+/// An array literal built only from int/string-keyed scalar literals,
+/// `true`/`false`/`null` and nested such arrays, as its value (`None` when
+/// building it could raise a diagnostic or needs runtime evaluation).
+fn literal_array<'a>(els: impl Iterator<Item = &'a ArrayElement<'a>>) -> Option<Value> {
+    fn scalar(e: &Expression) -> Option<Value> {
+        match e {
+            Expression::Literal(l) => Some(literal_value(l)),
+            Expression::Array(arr) => literal_array(arr.elements.iter()),
+            Expression::LegacyArray(arr) => literal_array(arr.elements.iter()),
+            Expression::ConstantAccess(ca) => match identifier_name(&ca.name) {
+                b"true" | b"TRUE" | b"True" => Some(Value::Bool(true)),
+                b"false" | b"FALSE" | b"False" => Some(Value::Bool(false)),
+                b"null" | b"NULL" | b"Null" => Some(Value::Null),
+                _ => None,
+            },
+            Expression::UnaryPrefix(u) => match (&u.operator, scalar(u.operand)?) {
+                (UnaryPrefixOperator::Negation(_), Value::Int(n)) => {
+                    n.checked_neg().map(Value::Int)
+                }
+                (UnaryPrefixOperator::Negation(_), Value::Float(f)) => Some(Value::Float(-f)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    let mut a = PhpArray::new();
+    for el in els {
+        match el {
+            ArrayElement::KeyValue(kv) => {
+                // Only int / string keys: float, bool and null keys convert
+                // with diagnostics or php-specific rules at run time.
+                let key = match scalar(kv.key)? {
+                    Value::Int(n) => ArrayKey::Int(n),
+                    k @ Value::Str(_) => ArrayKey::from_value(&k)?,
+                    _ => return None,
+                };
+                // A PHP_INT_MAX key makes a later append fail at run time.
+                if matches!(key, ArrayKey::Int(i64::MAX)) {
+                    return None;
+                }
+                a.insert(key, scalar(kv.value)?);
+            }
+            ArrayElement::Value(v) => a.push(scalar(v.value)?),
+            _ => return None,
+        }
+    }
+    Some(Value::Array(a))
 }
 
 /// Extract the class name(s) a `catch` clause's type hint names (`A` or `A|B`).

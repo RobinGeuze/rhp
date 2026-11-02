@@ -1,0 +1,106 @@
+array(10) {
+  [0]=>
+  int(1)
+  ["a"]=>
+  array(5) {
+    [0]=>
+    bool(true)
+    [1]=>
+    NULL
+    [2]=>
+    int(-5)
+    [3]=>
+    float(-1.5)
+    [4]=>
+    int(9)
+  }
+  [7]=>
+  string(1) "x"
+  [8]=>
+  string(1) "b"
+  ["08"]=>
+  int(2)
+  [9223372036854775806]=>
+  int(1)
+  [9223372036854775807]=>
+  string(1) "c"
+  [-3]=>
+  string(3) "neg"
+  [16]=>
+  string(3) "hex"
+  ["z"]=>
+  string(5) "added"
+}
+array(9) {
+  [0]=>
+  int(1)
+  ["a"]=>
+  array(4) {
+    [0]=>
+    bool(true)
+    [1]=>
+    NULL
+    [2]=>
+    int(-5)
+    [3]=>
+    float(-1.5)
+  }
+  [7]=>
+  string(1) "x"
+  [8]=>
+  string(1) "b"
+  ["08"]=>
+  int(2)
+  [9223372036854775806]=>
+  int(1)
+  [9223372036854775807]=>
+  string(1) "c"
+  [-3]=>
+  string(3) "neg"
+  [16]=>
+  string(3) "hex"
+}
+array(3) {
+  [0]=>
+  array(2) {
+    ["id"]=>
+    int(0)
+    ["tags"]=>
+    array(3) {
+      [0]=>
+      string(1) "x"
+      [1]=>
+      string(1) "y"
+      [2]=>
+      string(2) "t0"
+    }
+  }
+  [1]=>
+  array(2) {
+    ["id"]=>
+    int(1)
+    ["tags"]=>
+    array(3) {
+      [0]=>
+      string(1) "x"
+      [1]=>
+      string(1) "y"
+      [2]=>
+      string(2) "t1"
+    }
+  }
+  [2]=>
+  array(2) {
+    ["id"]=>
+    int(2)
+    ["tags"]=>
+    array(3) {
+      [0]=>
+      string(1) "x"
+      [1]=>
+      string(1) "y"
+      [2]=>
+      string(2) "t2"
+    }
+  }
+}

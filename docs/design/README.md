@@ -9,6 +9,7 @@ synthesizes the four design docs in this directory — read them for the "why":
 - [`value-model.md`](./value-model.md) — the owned `Value` enum, `PhpStr`/`PhpArray`/`PhpRef`, COW vs aliasing, key normalization.
 - [`php-semantics.md`](./php-semantics.md) — byte-exact PHP 8.5.8 output/number/comparison/cast rules; the `precision=14` vs `serialize_precision=-1` split.
 - [`builtins-min.md`](./builtins-min.md) — minimal builtin set, `NativeFn` signature, refused functions.
+- [`sapi.md`](./sapi.md) — the request layer (`rhp-sapi`): the `Sapi` trait and `RequestInfo` an embedding server provides, the request lifecycle, one `Vm` per thread, and the road to `-S`, server embedding and FastCGI.
 
 Non-negotiable invariant threaded through everything: **the arena holds the AST
 (borrowed `'arena`); the runtime holds only OWNED `'static` values.** A value

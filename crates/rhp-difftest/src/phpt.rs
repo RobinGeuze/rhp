@@ -15,6 +15,7 @@
 //! `--emit-fixtures` writes minimised, self-contained repros of mutant
 //! divergences for triage into the golden suite.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::fs;
@@ -1009,7 +1010,7 @@ struct Invocation<'a> {
     /// CGI candidate instead of the CLIs.
     cgi: Option<&'a CgiRequest>,
     /// The test directory as it was before any engine ran (plus our script).
-    snapshot: BTreeSet<PathBuf>,
+    snapshot: Snapshot,
 }
 
 impl Ctx {
@@ -1274,7 +1275,7 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
     } else {
         None
     };
-    let pristine = snapshot(&dir);
+    let pristine = pristine_snapshot(&dir);
     let mut inv = Invocation {
         dir: &dir,
         script: &script,
@@ -1283,7 +1284,7 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
         args: &args,
         stdin,
         clean: phpt.section("CLEAN").map(|c| (clean_script.as_path(), c)),
-        snapshot: pristine.clone(),
+        snapshot: (*pristine).clone(),
         cgi: cgi_req.as_ref(),
     };
 
@@ -1305,7 +1306,12 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
     if fs::write(&script, &file).is_err() {
         return skipped(rel, "unwritable work dir");
     }
-    inv.snapshot = snapshot(&dir);
+    inv.snapshot = match script.file_name() {
+        Some(name) if script.parent() == Some(dir.as_path()) => {
+            pristine.with_new_file(&dir, Path::new(name))
+        }
+        _ => snapshot(&dir),
+    };
     let php_out = ctx.php_script(&inv);
     if let Some(key) = php_anomaly(&php_out) {
         record_php_finding(ctx, &inv, sinks, rel, None, &file, key);
@@ -1629,7 +1635,7 @@ fn emit_fixture(
         args: &[],
         stdin: None,
         clean: None,
-        snapshot: BTreeSet::new(),
+        snapshot: Snapshot::default(),
         cgi: None,
     };
     let php = ctx.php(&here, &[], &php_path);
@@ -1678,30 +1684,130 @@ fn tree_root(rel: &str) -> String {
     }
 }
 
-/// Every path under `dir` (relative), without following symlinks.
-fn snapshot(dir: &Path) -> BTreeSet<PathBuf> {
-    fn walk(root: &Path, rel: &Path, out: &mut BTreeSet<PathBuf>) {
-        let Ok(entries) = fs::read_dir(root.join(rel)) else {
+/// What a test directory held before a run: every path under it (relative,
+/// symlinks not followed), plus a change stamp for each directory so
+/// [`restore`] only lists the directories a run touched.
+#[derive(Clone, Debug, Default)]
+struct Snapshot {
+    paths: BTreeSet<PathBuf>,
+    /// Each directory (relative, "" for the root), its stamp, and how many
+    /// entries it holds. [`restore`] re-stamps a directory it put back
+    /// exactly, so later restores skip it again.
+    dirs: Vec<SnapDir>,
+}
+
+#[derive(Clone, Debug)]
+struct SnapDir {
+    rel: PathBuf,
+    stamp: std::cell::Cell<DirStamp>,
+    entries: usize,
+}
+
+impl Snapshot {
+    /// Whether every directory still carries its recorded stamp.
+    fn is_current(&self, dir: &Path) -> bool {
+        self.dirs
+            .iter()
+            .all(|d| DirStamp::of(&dir.join(&d.rel)) == Some(d.stamp.get()))
+    }
+
+    /// This snapshot plus `name`, just created directly in `dir`.
+    fn with_new_file(&self, dir: &Path, name: &Path) -> Snapshot {
+        let mut s = self.clone();
+        if s.paths.insert(name.to_path_buf()) {
+            if let Some(root) = s.dirs.iter_mut().find(|d| d.rel.as_os_str().is_empty()) {
+                root.entries += 1;
+            }
+        }
+        if let (Some(root), Some(now)) = (
+            s.dirs.iter().find(|d| d.rel.as_os_str().is_empty()),
+            DirStamp::of(dir),
+        ) {
+            root.stamp.set(now);
+        }
+        s
+    }
+}
+
+thread_local! {
+    /// Per worker: the pristine snapshot of each test directory it has run.
+    static SNAPSHOTS: RefCell<HashMap<PathBuf, std::rc::Rc<Snapshot>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// `snapshot(dir)`, reused from this worker's last test in `dir` when no
+/// directory under it has changed since (each run ends with a restore that
+/// re-stamps what it put back).
+fn pristine_snapshot(dir: &Path) -> std::rc::Rc<Snapshot> {
+    if let Some(s) = SNAPSHOTS.with(|m| m.borrow().get(dir).cloned()) {
+        if s.is_current(dir) {
+            return s;
+        }
+    }
+    let s = std::rc::Rc::new(snapshot(dir));
+    SNAPSHOTS.with(|m| m.borrow_mut().insert(dir.to_path_buf(), s.clone()));
+    s
+}
+
+/// Adding, removing or renaming an entry updates a directory's mtime and
+/// ctime; ctime can't be set back from user space, so an unchanged stamp
+/// means the directory's own entries are as they were.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DirStamp {
+    ino: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+impl DirStamp {
+    fn of(p: &Path) -> Option<DirStamp> {
+        use std::os::unix::fs::MetadataExt;
+        let m = fs::symlink_metadata(p).ok().filter(|m| m.is_dir())?;
+        Some(DirStamp {
+            ino: m.ino(),
+            mtime: (m.mtime(), m.mtime_nsec()),
+            ctime: (m.ctime(), m.ctime_nsec()),
+        })
+    }
+}
+
+fn snapshot(dir: &Path) -> Snapshot {
+    fn walk(root: &Path, rel: &Path, out: &mut Snapshot) {
+        let here = root.join(rel);
+        // Stamp before listing: a change racing the listing then still
+        // shows up as a changed stamp.
+        let Some(stamp) = DirStamp::of(&here) else {
             return;
         };
+        let Ok(entries) = fs::read_dir(&here) else {
+            return;
+        };
+        let slot = out.dirs.len();
+        out.dirs.push(SnapDir {
+            rel: rel.to_path_buf(),
+            stamp: std::cell::Cell::new(stamp),
+            entries: 0,
+        });
         for e in entries.flatten() {
+            out.dirs[slot].entries += 1;
             let sub = rel.join(e.file_name());
             let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
-            out.insert(sub.clone());
+            out.paths.insert(sub.clone());
             if is_dir {
                 walk(root, &sub, out);
             }
         }
     }
-    let mut out = BTreeSet::new();
+    let mut out = Snapshot::default();
     walk(dir, Path::new(""), &mut out);
     out
 }
 
 /// Delete everything under `dir` that isn't in `keep` (files a run created).
-/// Tests sometimes chmod what they create, so retry once after making the
-/// path (and, for a directory, its contents) writable again.
-fn restore(dir: &Path, keep: &BTreeSet<PathBuf>) {
+/// Only directories whose stamp changed are listed; anything new inside one
+/// is removed whole. Tests sometimes chmod what they create, so retry once
+/// after making the path (and, for a directory, its contents) writable again.
+fn restore(dir: &Path, keep: &Snapshot) {
     use std::os::unix::fs::PermissionsExt;
     fn make_writable(p: &Path) {
         let _ = fs::set_permissions(p, fs::Permissions::from_mode(0o700));
@@ -1718,30 +1824,106 @@ fn restore(dir: &Path, keep: &BTreeSet<PathBuf>) {
             Err(_) => Ok(()),
         }
     }
-    // Children sort after their parent, so reverse order removes them first.
-    for rel in snapshot(dir).iter().rev() {
-        if keep.contains(rel) {
-            continue;
+    for d in &keep.dirs {
+        let here = dir.join(&d.rel);
+        match DirStamp::of(&here) {
+            Some(now) if now == d.stamp.get() => continue,
+            None => continue,
+            Some(_) => {}
         }
-        let p = dir.join(rel);
-        if remove(&p).is_err() {
-            if let Some(parent) = p.parent() {
-                let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        let Ok(entries) = fs::read_dir(&here) else {
+            continue;
+        };
+        let (mut kept, mut clean) = (0, true);
+        for e in entries.flatten() {
+            if keep.paths.contains(&d.rel.join(e.file_name())) {
+                kept += 1;
+                continue;
             }
-            make_writable(&p);
-            let _ = remove(&p);
+            let p = e.path();
+            if remove(&p).is_err() {
+                let _ = fs::set_permissions(&here, fs::Permissions::from_mode(0o700));
+                make_writable(&p);
+                clean &= remove(&p).is_ok();
+            }
+        }
+        // Back to exactly the snapshot's entries: record the new stamp. (If
+        // a run deleted an original entry, leave the stamp stale so the
+        // next pristine_snapshot() walks the directory again.)
+        if clean && kept == d.entries {
+            if let Some(now) = DirStamp::of(&here) {
+                d.stamp.set(now);
+            }
         }
     }
 }
 
+/// Scratch copies `w{i}` (i in `ids`) under `work` of every tree in `roots`,
+/// made in parallel; returns their canonical paths.
+fn make_worker_roots(
+    work: &Path,
+    ids: std::ops::Range<usize>,
+    roots: &BTreeSet<String>,
+    php_src: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    let dirs: Vec<PathBuf> = ids.map(|i| work.join(format!("w{i}"))).collect();
+    let errors: Vec<String> = std::thread::scope(|s| {
+        let handles: Vec<_> = dirs
+            .iter()
+            .map(|w| {
+                s.spawn(move || {
+                    roots.iter().find_map(|r| {
+                        copy_tree(&php_src.join(r), &w.join(r))
+                            .err()
+                            .map(|e| format!("copying {r}: {e}"))
+                    })
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok().flatten())
+            .collect()
+    });
+    if let Some(e) = errors.into_iter().next() {
+        return Err(e);
+    }
+    Ok(dirs
+        .into_iter()
+        .map(|w| w.canonicalize().unwrap_or(w))
+        .collect())
+}
+
+/// Copy the tree `from` to `to`. On macOS a fresh destination is first tried
+/// as one APFS `clonefile()` (copy-on-write, near-instant for a whole test
+/// tree); anything else falls back to a file-by-file copy.
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    if !to.exists() {
+        use std::os::unix::ffi::OsStrExt;
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let c = |p: &Path| std::ffi::CString::new(p.as_os_str().as_bytes()).ok();
+        if let (Some(src), Some(dst)) = (c(from), c(to)) {
+            const CLONE_NOFOLLOW: u32 = 0x0001;
+            // SAFETY: both are valid NUL-terminated paths.
+            if unsafe { libc::clonefile(src.as_ptr(), dst.as_ptr(), CLONE_NOFOLLOW) } == 0 {
+                return Ok(());
+            }
+        }
+    }
+    copy_tree_files(from, to)
+}
+
+fn copy_tree_files(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
     for e in fs::read_dir(from)? {
         let e = e?;
         let (src, dst) = (e.path(), to.join(e.file_name()));
         let t = e.file_type()?;
         if t.is_dir() {
-            copy_tree(&src, &dst)?;
+            copy_tree_files(&src, &dst)?;
         } else if t.is_file() {
             fs::copy(&src, &dst)?;
         }
@@ -1866,7 +2048,7 @@ fn version_skew(ctx: &Ctx, scratch: &Path) -> Option<(String, String)> {
         args: &[],
         stdin: None,
         clean: None,
-        snapshot: BTreeSet::new(),
+        snapshot: Snapshot::default(),
         cgi: None,
     };
     let php = String::from_utf8_lossy(&ctx.php(&inv, &[], &script).out)
@@ -1911,6 +2093,45 @@ fn is_cgi_test(root: &Path, rel: &str) -> bool {
 }
 
 /// Run `tests` across the worker roots (one worker per root), sorted by path.
+/// The fixed instant every process starts its clock at under `--faketime`.
+const FAKETIME_START: &str = "@2026-01-01 12:00:00";
+
+/// The environment that loads libfaketime (`lib`, or `auto`: the usual
+/// install locations) into every process, all clocks starting at
+/// [`FAKETIME_START`] and then running at normal speed.
+fn faketime_env(lib: &str) -> Result<Vec<(String, String)>, String> {
+    const CANDIDATES: &[&str] = &[
+        "/opt/homebrew/opt/libfaketime/lib/faketime/libfaketime.1.dylib",
+        "/usr/local/opt/libfaketime/lib/faketime/libfaketime.1.dylib",
+        "/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1",
+        "/usr/lib/aarch64-linux-gnu/faketime/libfaketime.so.1",
+        "/usr/lib/faketime/libfaketime.so.1",
+        "/usr/local/lib/faketime/libfaketime.so.1",
+    ];
+    let path = if lib == "auto" {
+        CANDIDATES
+            .iter()
+            .find(|p| Path::new(p).is_file())
+            .map(|p| p.to_string())
+            .ok_or("--faketime auto: libfaketime not found (brew install libfaketime / apt install libfaketime)")?
+    } else if Path::new(lib).is_file() {
+        lib.to_string()
+    } else {
+        return Err(format!("--faketime: no such library {lib:?}"));
+    };
+    let mut env = vec![("FAKETIME".to_string(), FAKETIME_START.to_string())];
+    if cfg!(target_os = "macos") {
+        env.push(("DYLD_INSERT_LIBRARIES".into(), path));
+        env.push(("DYLD_FORCE_FLAT_NAMESPACE".into(), "1".into()));
+    } else {
+        env.push(("LD_PRELOAD".into(), path));
+    }
+    Ok(env)
+}
+
+/// Confirming runs per job slot (they mostly sleep; see `--write-known`).
+const CONFIRM_OVERSUBSCRIBE: usize = 4;
+
 fn run_parallel(ctx: &Ctx, roots: &[PathBuf], tests: &[String], sinks: &Sinks) -> Vec<TestResult> {
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
@@ -1967,6 +2188,12 @@ running:
   --timeout <secs>       per-process timeout (default: 10)
   --work <dir>           scratch copy of the test trees (default: a temp dir)
   --keep-work            don't delete the scratch copy
+  --faketime <lib|auto>  run every php/rhp process under libfaketime, all starting
+                         at the same instant (FAKETIME=\"@2026-01-01 12:00:00\"), so
+                         tests that print the date/time compare equal; the
+                         --write-known confirmation re-run then needs no 1.1s gap.
+                         `auto` looks in the usual Homebrew/Debian locations
+                         (also env RHP_FAKETIME)
 mutation:
   --mutate <n>           run <n> first-order mutants of every passing test
   --mutate-all           mutate every test; for tests rhp doesn't match yet, mutants
@@ -1995,6 +2222,7 @@ struct Opts {
     timeout: u64,
     work: Option<PathBuf>,
     keep_work: bool,
+    faketime: Option<String>,
     mutate: usize,
     mutate_all: bool,
     seed: u64,
@@ -2022,6 +2250,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         timeout: 10,
         work: None,
         keep_work: false,
+        faketime: std::env::var("RHP_FAKETIME").ok().filter(|v| !v.is_empty()),
         mutate: 0,
         mutate_all: false,
         seed: 0xC0FFEE,
@@ -2060,6 +2289,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             "--timeout" => o.timeout = num(val()?)?.max(1),
             "--work" => o.work = Some(val()?.into()),
             "--keep-work" => o.keep_work = true,
+            "--faketime" => o.faketime = Some(val()?),
             "--mutate" => o.mutate = num(val()?)? as usize,
             "--mutate-all" => o.mutate_all = true,
             "--seed" => o.seed = num(val()?)?,
@@ -2167,46 +2397,37 @@ pub fn main(args: &[String]) -> ExitCode {
         .unwrap_or_else(|| std::env::temp_dir().join(format!("rhp-phpt-{}", std::process::id())));
     let roots: BTreeSet<String> = tests.iter().map(|t| tree_root(t)).collect();
     let jobs = o.jobs.min(tests.len());
-    let worker_roots: Vec<PathBuf> = (0..jobs).map(|i| work.join(format!("w{i}"))).collect();
-    let copy_errors: Vec<String> = std::thread::scope(|s| {
-        let handles: Vec<_> = worker_roots
-            .iter()
-            .map(|w| {
-                let (roots, php_src) = (&roots, &o.php_src);
-                s.spawn(move || {
-                    roots.iter().find_map(|r| {
-                        copy_tree(&php_src.join(r), &w.join(r))
-                            .err()
-                            .map(|e| format!("copying {r}: {e}"))
-                    })
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .filter_map(|h| h.join().ok().flatten())
-            .collect()
-    });
-    if let Some(e) = copy_errors.first() {
-        eprintln!("rhp-difftest phpt: {e}");
-        return ExitCode::from(2);
-    }
-    let worker_roots: Vec<PathBuf> = worker_roots
-        .into_iter()
-        .map(|w| w.canonicalize().unwrap_or(w))
-        .collect();
+    let worker_roots = match make_worker_roots(&work, 0..jobs, &roots, &o.php_src) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("rhp-difftest phpt: {e}");
+            return ExitCode::from(2);
+        }
+    };
     if let Some(d) = &o.fixtures {
         let _ = fs::create_dir_all(d);
     }
 
     let php_ini: Vec<String> = PHP_DEFAULT_INI.iter().map(|s| s.to_string()).collect();
+    let mut base_env: Vec<(String, String)> = BASE_ENV
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let faketime = match o.faketime.as_deref().map(faketime_env).transpose() {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("rhp-difftest phpt: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    if let Some(f) = &faketime {
+        eprintln!("phpt: clocks faked from {FAKETIME_START} ({})", f[1].1);
+        base_env.extend(f.iter().cloned());
+    }
     let ctx = Ctx {
         php_modules: php_modules(&php_ini),
         php_ini,
-        base_env: BASE_ENV
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect(),
+        base_env,
         rhp_bin,
         timeout: Duration::from_secs(o.timeout),
         mutate: o.mutate,
@@ -2266,18 +2487,42 @@ pub fn main(args: &[String]) -> ExitCode {
             .filter(|r| r.status == Status::Match)
             .map(|r| r.test.clone())
             .collect();
+        // Under --faketime every process's clock starts at the same instant
+        // whatever the wall clock says, so a gap between the engines proves
+        // nothing: the re-run only catches other nondeterminism.
+        let skew = if faketime.is_some() {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(1100)
+        };
         eprintln!(
-            "phpt: confirming {} matches (re-run with 1.1s between engines)",
-            matched.len()
+            "phpt: confirming {} matches (re-run{})",
+            matched.len(),
+            if skew.is_zero() {
+                String::new()
+            } else {
+                format!(" with {:.1}s between engines", skew.as_secs_f64())
+            }
         );
         let confirm_ctx = Ctx {
             mutate: 0,
             fixtures: None,
             php_findings: None,
-            skew: Duration::from_millis(1100),
+            skew,
             ..ctx.clone()
         };
-        let again = run_parallel(&confirm_ctx, &worker_roots, &matched, &Sinks::default());
+        // Each confirming run spends the gap asleep, so run several per core:
+        // extra scratch copies, for the trees the matches live in.
+        let mut pool = worker_roots.clone();
+        if !skew.is_zero() {
+            let confirm_roots: BTreeSet<String> = matched.iter().map(|t| tree_root(t)).collect();
+            let extra = (jobs * CONFIRM_OVERSUBSCRIBE).min(matched.len()).max(jobs);
+            match make_worker_roots(&work, jobs..extra, &confirm_roots, &o.php_src) {
+                Ok(more) => pool.extend(more),
+                Err(e) => eprintln!("phpt: confirming on {jobs} workers only ({e})"),
+            }
+        }
+        let again = run_parallel(&confirm_ctx, &pool, &matched, &Sinks::default());
         for r in again.into_iter().filter(|r| r.status != Status::Match) {
             if let Some(orig) = results.iter_mut().find(|o| o.test == r.test) {
                 orig.status = Status::Mismatch;
@@ -2743,8 +2988,20 @@ READ of size 8 at 0x6020 thread T0\n\
         fs::write(d.join("new_dir/sub/f"), b"z").unwrap();
         fs::set_permissions(d.join("new_dir"), fs::Permissions::from_mode(0o000)).unwrap();
         restore(&d, &snap);
-        assert_eq!(snapshot(&d), snap);
+        assert_eq!(snapshot(&d).paths, snap.paths);
         assert_eq!(fs::read(d.join("keep.txt")).unwrap(), b"x");
+        // A run that puts a directory's mtime back is still caught (ctime).
+        let mtime = fs::metadata(d.join("keep_dir"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        fs::write(d.join("keep_dir/sneaky.txt"), b"y").unwrap();
+        fs::File::open(d.join("keep_dir"))
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        restore(&d, &snap);
+        assert_eq!(snapshot(&d).paths, snap.paths);
         let _ = fs::remove_dir_all(&d);
     }
 

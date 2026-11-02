@@ -99,7 +99,20 @@ const PREG_GREP_INVERT: i64 = 1;
 
 /// A compiled match: one `Option<(start, end)>` per group index `0..=ncaptures`
 /// (`None` = the group did not participate). Byte offsets into the subject.
-type Ovector = Vec<Option<(usize, usize)>>;
+/// Also carries the last `(*MARK:name)` passed on the matching path (php
+/// adds it to `$matches` as `"MARK"`).
+#[derive(Clone, Debug, Default)]
+struct Ovector {
+    groups: Vec<Option<(usize, usize)>>,
+    mark: Option<Vec<u8>>,
+}
+
+impl std::ops::Deref for Ovector {
+    type Target = Vec<Option<(usize, usize)>>;
+    fn deref(&self) -> &Self::Target {
+        &self.groups
+    }
+}
 
 mod engine {
     use super::Ovector;
@@ -227,7 +240,16 @@ mod engine {
                     out.push(Some((s, e)));
                 }
             }
-            Ok(Some(out))
+            // The mark name is a NUL-terminated string preceded by its
+            // length unit (valid until the next match on this data block).
+            let mp = unsafe { pcre2_get_mark_8(md.ptr) };
+            let mark = if mp.is_null() {
+                None
+            } else {
+                let len = unsafe { *mp.sub(1) } as usize;
+                Some(unsafe { std::slice::from_raw_parts(mp, len) }.to_vec())
+            };
+            Ok(Some(Ovector { groups: out, mark }))
         }
 
         /// A single match at `start` (as `preg_match` uses). `Err(())` surfaces
@@ -566,6 +588,9 @@ fn build_match(
         }
         arr.insert(ArrayKey::Int(i as i64), val);
     }
+    if let Some(m) = &ov.mark {
+        arr.insert(ArrayKey::Str(PhpStr::from("MARK")), Value::str(m.clone()));
+    }
     arr
 }
 
@@ -701,6 +726,16 @@ fn fn_preg_match_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
                 );
             }
             outer.insert(ArrayKey::Int(i as i64), Value::Array(col));
+        }
+        // `$matches['MARK'][$n]` for each match that passed a mark.
+        let mut marks = PhpArray::new();
+        for (n, ov) in all.iter().enumerate() {
+            if let Some(m) = &ov.mark {
+                marks.insert(ArrayKey::Int(n as i64), Value::str(m.clone()));
+            }
+        }
+        if !marks.is_empty() {
+            outer.insert(ArrayKey::Str(PhpStr::from("MARK")), Value::Array(marks));
         }
         outer
     };

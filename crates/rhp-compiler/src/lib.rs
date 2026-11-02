@@ -2761,7 +2761,7 @@ impl ProtoBuilder {
                     }
                 }
             }
-            // `goto`/`label` are not implemented, but deferred to runtime so a
+            // A label marks a jump target; duplicates are php's compile error.
             Statement::Label(l) => {
                 let name = l.name.value.to_vec();
                 if self.labels.contains_key(&name) {

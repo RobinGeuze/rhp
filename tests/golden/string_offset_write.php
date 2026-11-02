@@ -39,3 +39,9 @@ t(function () { $s = "abc"; $s[[]] = "W"; });
 $f = false; $f[] = 1; var_dump($f);
 $g = false; $g['k']['j'] = 2; var_dump($g);
 $h = null; $h[] = 1; var_dump($h);
+
+// A diagnostic handler that replaces the string abandons the write.
+set_error_handler(function ($no, $str) { global $s; echo "[$str]\n"; $s = 5; return true; });
+$s = "abc"; $s[1.5] = 'x'; var_dump($s);
+$s = "abc"; $s[1] = 'xy'; var_dump($s);
+$s = "abc"; $s["1x"] = 'x'; var_dump($s);

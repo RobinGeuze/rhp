@@ -44,3 +44,9 @@ array(1) {
   [0]=>
   int(1)
 }
+[String offset cast occurred]
+int(5)
+[Only the first byte will be assigned to the string offset]
+int(5)
+[Illegal string offset "1x"]
+int(5)

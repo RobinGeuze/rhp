@@ -4485,8 +4485,10 @@ impl Vm {
                 )))
             }
         };
+        // A diagnostic handler may have replaced the string: php abandons
+        // the write then.
         let Value::Str(s) = deref(&self.cursor_read_steps(top, &steps[..i])) else {
-            unreachable!("cursor_string_step found a string")
+            return Ok(());
         };
         let len = s.as_bytes().len() as i64;
         if offset < -len {
@@ -4512,7 +4514,7 @@ impl Vm {
         // Re-read: a diagnostic handler may have changed the string.
         let mut bytes = match deref(&self.cursor_read_steps(top, &steps[..i])) {
             Value::Str(s) => s.as_bytes().to_vec(),
-            _ => s.as_bytes().to_vec(),
+            _ => return Ok(()),
         };
         if at >= bytes.len() {
             bytes.resize(at + 1, b' ');

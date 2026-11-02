@@ -366,9 +366,18 @@ class SplFixedArray implements IteratorAggregate, ArrayAccess, Countable, JsonSe
     public function getSize(): int { return $this->__size; }
     public function setSize(int $size): bool {
         if ($size < 0) { throw new ValueError('SplFixedArray::setSize(): Argument #1 ($size) must be greater than or equal to 0'); }
-        if ($size < $this->__size) { $this->__d = array_slice($this->__d, 0, $size); }
-        elseif ($size > $this->__size) { $this->__d = array_merge($this->__d, array_fill(0, $size - $this->__size, null)); }
-        $this->__size = $size;
+        if ($size < $this->__size) {
+            // spl_fixedarray_resize: the array is cut to its new size before
+            // the dropped elements are destroyed, so their destructors see
+            // (and may resize) the shrunk array.
+            $dropped = array_slice($this->__d, $size);
+            $this->__d = array_slice($this->__d, 0, $size);
+            $this->__size = $size;
+            unset($dropped);
+        } elseif ($size > $this->__size) {
+            $this->__d = array_merge($this->__d, array_fill(0, $size - $this->__size, null));
+            $this->__size = $size;
+        }
         return true;
     }
     public function toArray(): array { return $this->__d; }

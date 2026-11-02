@@ -1485,6 +1485,7 @@ dependencies = [
 name = "rhp-difftest"
 version = "0.0.0"
 dependencies = [
+ "flate2",
  "libc",
  "pcre2",
  "rhp-compiler",

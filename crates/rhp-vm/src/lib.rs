@@ -94,6 +94,9 @@ pub struct Vm {
     /// operand): each file's top-level class-likes then its nested ones, with
     /// whether the declaration has already happened (hoisted or executed).
     decl_classes: Vec<(ClassProto, bool)>,
+    /// `decl_classes` slots declared by an executed `DeclareClass` (not
+    /// early-bound): running that declaration again is a redeclaration.
+    decl_runtime: std::collections::HashSet<usize>,
     constants: HashMap<Vec<u8>, Value>,
     /// User-defined constant names in definition order (`get_defined_constants`).
     user_const_order: Vec<Vec<u8>>,
@@ -112,6 +115,9 @@ pub struct Vm {
     // cursor never nests.
     cursor_root: CursorRoot,
     cursor_steps: Vec<CursorStep>,
+    // The global's name when the open cursor is rooted at `$GLOBALS[name]`
+    // (`$GLOBALS[name] = &$v` rebinds the symbol-table entry itself).
+    cursor_global: Option<Vec<u8>>,
     // OOP class table (see `classes` module).
     classes: Vec<classes::ClassEntry>,
     class_ids: HashMap<Vec<u8>, ClassId>, // lowercase name -> id
@@ -237,6 +243,10 @@ pub struct Vm {
     finished_main: Option<Frame>,
     // The shutdown sequence's stack ({main} as an internal frame) is set up.
     in_shutdown_scope: bool,
+    // A fatal error bailed out (php_error_cb's zend_objects_store_mark_destructed):
+    // objects with an id below this never run their destructor (shutdown
+    // functions still run). 0: no bailout.
+    destructed_below: u32,
     // Per-run extension state (`Host::module_state`), by module key.
     module_states: HashMap<&'static str, Box<dyn std::any::Any>>,
 }
@@ -323,6 +333,9 @@ struct GenState {
     auto_key: i64,
     /// Register in the frame that receives the `send()` value on resume.
     resume_dst: Reg,
+    /// php's ZEND_GENERATOR_AT_FIRST_YIELD: started, and not resumed since
+    /// (only then can it be rewound).
+    at_first_yield: bool,
 }
 
 mod classes;
@@ -2222,6 +2235,7 @@ impl Vm {
             fn_names: HashMap::new(),
             closures: Vec::new(),
             decl_classes: Vec::new(),
+            decl_runtime: std::collections::HashSet::new(),
             constants,
             user_const_order: Vec::new(),
             max_depth: 1 << 16,
@@ -2231,6 +2245,7 @@ impl Vm {
             direct_stdout: false,
             cursor_root: CursorRoot::Cv(0),
             cursor_steps: Vec::new(),
+            cursor_global: None,
             classes: Vec::new(),
             class_ids: HashMap::new(),
             next_object_id: 1,
@@ -2278,6 +2293,7 @@ impl Vm {
             ctor_frames: Vec::new(),
             finished_main: None,
             in_shutdown_scope: false,
+            destructed_below: 0,
             module_states: HashMap::new(),
         }
     }
@@ -2306,6 +2322,7 @@ impl Vm {
         let trace = Value::Array(self.build_trace_ex(false, false));
         let trace = builtins::php_fns::trace_to_string(self, &trace);
         self.display_error_trace(64, "Fatal error", msg.as_bytes(), &file, line, &trace);
+        self.destructed_below = self.next_object_id;
         Thrown::Exit(255)
     }
 
@@ -2362,6 +2379,7 @@ impl Vm {
             let trace = Value::Array(self.build_trace_ex(false, false));
             let trace = builtins::php_fns::trace_to_string(self, &trace);
             self.display_error_trace(level, "Fatal error", msg.as_bytes(), &file, line, &trace);
+            self.destructed_below = self.next_object_id;
             self.pending_throw = Some(Thrown::Exit(255));
             return;
         }
@@ -2758,50 +2776,40 @@ impl Vm {
             PropRes::Dynamic => Some(pname.clone()),
             PropRes::Denied(_) => None,
         };
-        if let PropRes::Slot(k) = &res {
-            if let Err(e) = classes::set_access_ok(&self.classes, cls, scope, k) {
-                let called = self.stack[top].called_class;
-                return Err(classes::set_access_err(&self.classes, called, "unset", e));
-            }
-        }
         let present = key
             .as_ref()
             .is_some_and(|k| h.borrow().properties.contains_key(k));
+        // zend_std_unset_property: an initialized readonly property can never
+        // be unset; otherwise the (explicit or implicit) set visibility rules.
         if let PropRes::Slot(k) = &res {
             if let Some(pe) = self.class(cls).props.get(k).filter(|pe| pe.readonly) {
-                let cname = String::from_utf8_lossy(self.class(pe.declaring_class).name.as_bytes())
-                    .into_owned();
-                let p = String::from_utf8_lossy(pe.name.as_bytes()).into_owned();
                 if present {
                     return Err(Thrown::error(
                         "Error",
-                        format!("Cannot unset readonly property {cname}::${p}"),
+                        format!(
+                            "Cannot unset readonly property {}::${}",
+                            String::from_utf8_lossy(self.class(pe.declaring_class).name.as_bytes()),
+                            String::from_utf8_lossy(pe.name.as_bytes())
+                        ),
                     ));
                 }
-                if scope != Some(pe.declaring_class) {
-                    let from = match scope {
-                        Some(s) => format!(
-                            "scope {}",
-                            String::from_utf8_lossy(self.class(s).name.as_bytes())
-                        ),
-                        None => "global scope".into(),
-                    };
-                    // A public readonly property is implicitly protected(set):
-                    // php's asymmetric-visibility error.
-                    let decl = pe.declaring_class;
-                    let related = scope.is_some_and(|s| {
-                        self.class(s).ancestors.contains(&decl)
-                            || self.class(decl).ancestors.contains(&s)
-                    });
-                    let vis = if pe_public_implicit_set(self, cls, k) && !related {
-                        "protected(set) readonly"
-                    } else {
-                        "readonly"
-                    };
-                    return Err(Thrown::error(
-                        "Error",
-                        format!("Cannot unset {vis} property {cname}::${p} from {from}"),
-                    ));
+            }
+            let called = self.stack[top].called_class;
+            if let Err(e) = classes::set_access_ok(&self.classes, cls, scope, k) {
+                return Err(classes::set_access_err(&self.classes, called, "unset", e));
+            }
+            // A public readonly property is implicitly protected(set).
+            if pe_public_implicit_set(self, cls, k) {
+                let pe = &self.class(cls).props[k];
+                let decl = pe.declaring_class;
+                let related = scope.is_some_and(|s| {
+                    s == decl
+                        || self.class(s).ancestors.contains(&decl)
+                        || self.class(decl).ancestors.contains(&s)
+                });
+                if !related {
+                    let e = (rhp_values::Visibility::Protected, decl, pe.name.clone());
+                    return Err(classes::set_access_err(&self.classes, called, "unset", e));
                 }
             }
         }
@@ -3774,6 +3782,9 @@ impl Vm {
     /// Call `__destruct` on `h` (already removed from the tracking list, so it
     /// runs at most once).
     fn call_destructor(&mut self, h: ObjectHandle) -> Result<(), Thrown> {
+        if h.borrow().id < self.destructed_below {
+            return Ok(()); // marked destructed by a fatal error's bailout
+        }
         let cls = h.borrow().class;
         if let Some(m) = self.lookup_method(cls, b"__destruct") {
             self.call_sync(&m, Some(h), cls, Vec::new())?;
@@ -4028,6 +4039,7 @@ impl Vm {
         // nested declarations, are declared when execution reaches them.
         self.install_classes(&prog.classes[..prog.num_prelude_classes])?;
         self.decl_classes.clear();
+        self.decl_runtime.clear();
         let top = self.register_decl_classes(prog, 0);
         self.hoist_decl_classes(top)?;
         let mut main_frame = Frame::new(prog.main.clone(), 0);
@@ -4080,33 +4092,22 @@ impl Vm {
     fn cursor_read(&mut self, top: usize) -> Result<Value, Thrown> {
         self.cursor_settle_offsets(top)?;
         let steps = std::mem::take(&mut self.cursor_steps);
-        let r = self.cursor_read_magic(top, &steps);
+        let r = self.cursor_read_magic(top, &steps, false);
         self.cursor_steps = steps;
         r
     }
 
-    fn cursor_read_magic(&mut self, top: usize, steps: &[CursorStep]) -> Result<Value, Thrown> {
+    /// `incdec`: for `++`/`--` (else a compound assignment), which only
+    /// changes the error for a string offset.
+    fn cursor_read_magic(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+        incdec: bool,
+    ) -> Result<Value, Thrown> {
         match self.cursor_magic_split(top, steps) {
             MagicSplit::Plain => {
-                // `$o->typed .= …` / `$o->typed++` on an uninitialized typed
-                // property: the read is php's "must not be accessed" Error.
-                if let Some((CursorStep::Prop(name), parent)) = steps.split_last() {
-                    if let Value::Object(h) = deref(&self.cursor_read_steps(top, parent)) {
-                        let cls = h.borrow().class;
-                        let scope = self.stack[top].defining_class;
-                        if let PropRes::Slot(k) =
-                            classes::resolve_prop(&self.classes, cls, scope, name)
-                        {
-                            // (Absent and typed: never initialized, or unset
-                            // with no `__get` to defer to.)
-                            if !h.borrow().properties.contains_key(&k) {
-                                if let Some(e) = self.typed_slot(cls, &k) {
-                                    return Err(e);
-                                }
-                            }
-                        }
-                    }
-                }
+                self.cursor_rw_checks(top, steps, incdec)?;
                 Ok(self.cursor_read_steps(top, steps))
             }
             MagicSplit::Leaf(h, name) => self.prop_fetch(top, Value::Object(h), name),
@@ -4126,9 +4127,116 @@ impl Vm {
                 }
                 let cell = self.aa_fetch_w(&h, &steps[i], key, DimFetch::Rw)?;
                 let rest = &steps[i + 1..];
-                self.with_cursor_root(cell, |vm| vm.cursor_read_magic(top, rest))
+                self.with_cursor_root(cell, |vm| vm.cursor_read_magic(top, rest, incdec))
             }
         }
+    }
+
+    /// The diagnostics of php's read-for-write fetches along a compound
+    /// assignment / `++` path (FETCH_DIM_RW / FETCH_OBJ_RW, then the leaf
+    /// read): "Undefined array key" for each key missing from an array (or
+    /// indexed under a null about to be autovivified), "Undefined property"
+    /// for an absent property, and the "must not be accessed before
+    /// initialization" Error for an uninitialized typed one. Containers the
+    /// write itself rejects (scalars, strings, ArrayAccess) end the walk.
+    fn cursor_rw_checks(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+        incdec: bool,
+    ) -> Result<(), Thrown> {
+        // `None`: the slot does not exist yet (the write creates it as null).
+        let mut cur = Some(deref(&self.cursor_root_value(top)));
+        let mut warnings: Vec<String> = Vec::new();
+        for (i, step) in steps.iter().enumerate() {
+            cur = match (cur, step) {
+                // A string container: no read-modify-write through its offsets.
+                (Some(Value::Str(_)), CursorStep::Append) => {
+                    self.flush_rw_warnings(warnings)?;
+                    return Err(Thrown::error(
+                        "Error",
+                        "[] operator not supported for strings",
+                    ));
+                }
+                (Some(Value::Str(_)), CursorStep::Key(k)) => {
+                    self.flush_rw_warnings(warnings)?;
+                    let cx = PropCtx {
+                        classes: &self.classes,
+                        scope: self.stack[top].defining_class,
+                        called: self.stack[top].called_class,
+                    };
+                    let checked = string_offset(k, false, &cx);
+                    self.flush_path_diags()?;
+                    checked?;
+                    let rest = &steps[i + 1..];
+                    return Err(match rest.first() {
+                        None if incdec => {
+                            Thrown::error("Error", "Cannot increment/decrement string offsets")
+                        }
+                        None => Thrown::error(
+                            "Error",
+                            "Cannot use assign-op operators with string offsets",
+                        ),
+                        Some(_) => string_offset_misuse(rest, false),
+                    });
+                }
+                (None | Some(Value::Null), CursorStep::Key(k)) => {
+                    match ArrayKey::from_value(&deref(k)) {
+                        Some(key) => warnings.push(undefined_key_msg(&key)),
+                        None => break,
+                    }
+                    None
+                }
+                (Some(Value::Array(a)), CursorStep::Key(k)) => {
+                    let Some(key) = ArrayKey::from_value(&deref(k)) else {
+                        break;
+                    };
+                    match a.get(&key) {
+                        Some(v) => Some(deref(v)),
+                        None => {
+                            warnings.push(undefined_key_msg(&key));
+                            None
+                        }
+                    }
+                }
+                (None | Some(Value::Null) | Some(Value::Array(_)), CursorStep::Append) => None,
+                (Some(Value::Object(h)), CursorStep::Prop(name)) => {
+                    let cls = h.borrow().class;
+                    let scope = self.stack[top].defining_class;
+                    let key = match classes::resolve_prop(&self.classes, cls, scope, name) {
+                        PropRes::Slot(k) => k,
+                        PropRes::Dynamic => name.clone(),
+                        PropRes::Denied(_) => break,
+                    };
+                    let present = h.borrow().properties.get(&key).map(deref);
+                    match present {
+                        Some(v) => Some(v),
+                        None => {
+                            // Absent and typed: never initialized, or unset
+                            // with no `__get` to defer to.
+                            if let Some(e) = self.typed_slot(cls, &key) {
+                                return Err(e);
+                            }
+                            warnings.push(format!(
+                                "Undefined property: {}::${}",
+                                String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                                String::from_utf8_lossy(name.as_bytes())
+                            ));
+                            None
+                        }
+                    }
+                }
+                _ => break,
+            };
+        }
+        self.flush_rw_warnings(warnings)
+    }
+
+    fn flush_rw_warnings(&mut self, warnings: Vec<String>) -> Result<(), Thrown> {
+        for w in warnings {
+            self.diag(2, &w)?;
+        }
+        Ok(())
     }
 
     /// The cursor root's current value.
@@ -4253,7 +4361,7 @@ impl Vm {
                     scope: self.stack[top].defining_class,
                     called: self.stack[top].called_class,
                 };
-                return match &self.cursor_root {
+                let r = match &self.cursor_root {
                     CursorRoot::Cv(r) => {
                         let r = *r as usize;
                         make_ref_path(&mut self.stack[top].regs[r], steps, &cx)
@@ -4264,6 +4372,8 @@ impl Vm {
                         c
                     }
                 };
+                self.flush_path_diags()?;
+                return r;
             }
             MagicSplit::Leaf(h, name) => (steps.len() - 1, h, name),
             MagicSplit::Nested(i, h, name) => (i, h, name),
@@ -4396,6 +4506,7 @@ impl Vm {
                 r
             }
         };
+        self.flush_path_diags()?;
         // The overwritten element may have held the last reference to an
         // object: its destructor runs before the next statement, as in php.
         if !self.destructibles.is_empty() {
@@ -5119,16 +5230,27 @@ impl Vm {
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
         };
-        match &self.cursor_root {
+        let r = match &self.cursor_root {
             CursorRoot::Cv(r) => unset_path(&mut self.stack[top].regs[*r as usize], steps, &cx),
             CursorRoot::Cell(rc) => {
                 let rc = rc.clone();
-                unset_path(&mut rc.borrow_mut(), steps, &cx);
+                let r = unset_path(&mut rc.borrow_mut(), steps, &cx);
+                r
             }
-        }
+        };
+        self.flush_path_diags()?;
         // The removed element may have held the last reference to an object.
         if !self.destructibles.is_empty() {
             self.dtor_check = true;
+        }
+        r
+    }
+
+    /// Emit the diagnostics a cursor-path walk queued ([`path_diag`]).
+    fn flush_path_diags(&mut self) -> Result<(), Thrown> {
+        let diags = PATH_DIAGS.with(|d| std::mem::take(&mut *d.borrow_mut()));
+        for (level, msg) in diags {
+            self.diag(level, &msg)?;
         }
         Ok(())
     }
@@ -5794,6 +5916,7 @@ impl Vm {
                 // -- lvalue cursor --
                 Instr::LvalCv { cv } => {
                     self.cursor_root = CursorRoot::Cv(cv);
+                    self.cursor_global = None;
                     self.cursor_steps.clear();
                 }
                 Instr::LvalKey { key } => {
@@ -5815,11 +5938,13 @@ impl Vm {
                     self.check_static_prop_access(top, cls, &pname)?;
                     let cell = self.static_prop_cell(cls, &pname)?;
                     self.cursor_root = CursorRoot::Cell(cell);
+                    self.cursor_global = None;
                     self.cursor_steps.clear();
                 }
                 Instr::LvalGlobal { name } => {
                     let n = conv::to_string_bytes(&self.reg_get(top, name));
                     self.cursor_root = CursorRoot::Cell(self.global_cell(&n));
+                    self.cursor_global = Some(n);
                     self.cursor_steps.clear();
                 }
                 Instr::FetchGlobal { dst, name } => {
@@ -5865,6 +5990,15 @@ impl Vm {
                     // target becomes a reference to the same cell.
                     let v = self.stack[top].regs[src as usize].clone();
                     let steps = std::mem::take(&mut self.cursor_steps);
+                    // `$GLOBALS['x'] = &$v`: the symbol-table entry itself
+                    // becomes the reference (like `$x = &$v` in global scope).
+                    if let (true, Some(n), Value::Ref(rc)) =
+                        (steps.is_empty(), self.cursor_global.take(), &v)
+                    {
+                        self.ref_globals.insert(n.clone());
+                        self.rebind_global(&n, rc.clone());
+                        continue;
+                    }
                     self.cursor_write(top, &steps, v)?;
                 }
                 Instr::MakeRefLval { dst } => {
@@ -5893,7 +6027,7 @@ impl Vm {
                             continue;
                         }
                     }
-                    let old = self.cursor_read_magic(top, &steps)?;
+                    let old = self.cursor_read_magic(top, &steps, true)?;
                     let new = inc_dec_value(&old, delta as i64);
                     self.cursor_write(top, &steps, new.clone())?;
                     self.reg_set(top, dst, if pre { new } else { old });
@@ -5929,7 +6063,8 @@ impl Vm {
                             let oid = obj.borrow().id;
                             let ocls = obj.borrow().class;
                             if self.generators.contains_key(&oid) {
-                                self.gen_ensure_started(oid)?;
+                                self.gen_check_open(oid)?;
+                                self.gen_rewind(oid)?;
                                 self.reg_set(top, arr_reg, Value::Object(obj));
                                 self.reg_set(top, pos_reg, Value::Int(0));
                             } else if self.class_implements(ocls, b"Iterator") {
@@ -6064,13 +6199,16 @@ impl Vm {
                         }
                         let oid = obj.borrow().id;
                         if let Some(g) = self.generators.get(&oid) {
-                            if g.frame.as_ref().is_some_and(|f| !f.proto.returns_ref) {
+                            let by_value_gen =
+                                g.frame.as_ref().is_some_and(|f| !f.proto.returns_ref);
+                            self.gen_check_open(oid)?;
+                            if by_value_gen {
                                 return Err(Thrown::error(
                                     "Exception",
                                     "You can only iterate a generator by-reference if it declared that it yields by-reference",
                                 ));
                             }
-                            self.gen_ensure_started(oid)?;
+                            self.gen_rewind(oid)?;
                             let mut st = PhpArray::new();
                             st.push(Value::Object(obj));
                             st.push(Value::Bool(false));
@@ -7089,7 +7227,14 @@ impl Vm {
                     } else if proto.returns_ref {
                         // A reference made by MakeRef/MakeRefLval, or a plain
                         // value (php: "Only variable references…" notice).
-                        self.stack[top].regs[value as usize].clone()
+                        let v = self.stack[top].regs[value as usize].clone();
+                        if !matches!(v, Value::Ref(_)) {
+                            self.diag(
+                                8,
+                                "Only variable references should be yielded by reference",
+                            )?;
+                        }
+                        v
                     } else {
                         self.reg_get(top, value)
                     };
@@ -7832,6 +7977,7 @@ impl Vm {
                 return_val: Value::Null,
                 auto_key: 0,
                 resume_dst: 0,
+                at_first_yield: false,
             },
         );
         Value::Object(obj)
@@ -7848,6 +7994,7 @@ impl Vm {
             if g.status == GenStatus::Finished {
                 return Ok(());
             }
+            g.at_first_yield = false;
             (
                 g.frame.take().expect("suspended generator frame"),
                 g.status,
@@ -7907,6 +8054,34 @@ impl Vm {
     fn gen_ensure_started(&mut self, id: u32) -> Result<(), Thrown> {
         if self.generators.get(&id).map(|g| g.status) == Some(GenStatus::NotStarted) {
             self.advance_gen(id, Value::Null)?;
+            if let Some(g) = self.generators.get_mut(&id) {
+                g.at_first_yield = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// zend_generator_rewind: start the generator; one resumed past its
+    /// first `yield` cannot go back.
+    fn gen_rewind(&mut self, id: u32) -> Result<(), Thrown> {
+        self.gen_ensure_started(id)?;
+        if self.generators.get(&id).is_some_and(|g| !g.at_first_yield) {
+            return Err(Thrown::error(
+                "Exception",
+                "Cannot rewind a generator that was already run",
+            ));
+        }
+        Ok(())
+    }
+
+    /// zend_generator_get_iterator's first check: a finished generator
+    /// cannot be iterated again.
+    fn gen_check_open(&self, id: u32) -> Result<(), Thrown> {
+        if self.generators.get(&id).map(|g| g.status) == Some(GenStatus::Finished) {
+            return Err(Thrown::error(
+                "Exception",
+                "Cannot traverse an already closed generator",
+            ));
         }
         Ok(())
     }
@@ -7949,7 +8124,7 @@ impl Vm {
                 Ok(deref(&self.generators[&id].current_val))
             })(),
             b"rewind" => (|| {
-                self.gen_ensure_started(id)?;
+                self.gen_rewind(id)?;
                 Ok(Value::Null)
             })(),
             b"getreturn" => Ok(self.generators[&id].return_val.clone()),
@@ -9723,18 +9898,18 @@ fn read_path(slot: &Value, steps: &[CursorStep], cx: &PropCtx) -> Value {
 }
 
 /// Make `slot` an array (autovivifying null/"" ), or error on a non-empty scalar.
-fn autovivify(slot: &mut Value, head: &CursorStep, cx: &PropCtx) -> Result<(), Thrown> {
+fn autovivify(slot: &mut Value, cx: &PropCtx) -> Result<(), Thrown> {
     match slot {
-        Value::Str(s) if !s.is_empty() && matches!(head, CursorStep::Append) => Err(Thrown::error(
-            "Error",
-            "[] operator not supported for strings",
-        )),
         Value::Array(_) => Ok(()),
         Value::Null => {
             *slot = Value::Array(PhpArray::new());
             Ok(())
         }
-        Value::Str(s) if s.is_empty() => {
+        Value::Bool(false) => {
+            path_diag(
+                8192,
+                "Automatic conversion of false to array is deprecated".into(),
+            );
             *slot = Value::Array(PhpArray::new());
             Ok(())
         }
@@ -9759,6 +9934,149 @@ fn autovivify(slot: &mut Value, head: &CursorStep, cx: &PropCtx) -> Result<(), T
             "Cannot use a scalar value as an array",
         )),
     }
+}
+
+thread_local! {
+    /// Diagnostics raised inside the pure cursor-path walkers
+    /// ([`assign_path`] / [`make_ref_path`] / [`unset_path`]), emitted by
+    /// the VM right after the walk ([`Vm::flush_path_diags`]).
+    static PATH_DIAGS: RefCell<Vec<(i64, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+fn path_diag(level: i64, msg: String) {
+    PATH_DIAGS.with(|d| d.borrow_mut().push((level, msg)));
+}
+
+/// The array key for a write / fetch-for-write with `k`: php's null-offset
+/// and fractional-float deprecations, the TypeError for an unusable key.
+fn write_key_of(k: &Value, cx: &PropCtx) -> Result<ArrayKey, Thrown> {
+    match deref(k) {
+        Value::Null => path_diag(
+            8192,
+            "Using null as an array offset is deprecated, use an empty string instead".into(),
+        ),
+        Value::Float(f) if f.is_finite() && f.fract() != 0.0 => path_diag(
+            8192,
+            format!(
+                "Implicit conversion from float {} to int loses precision",
+                String::from_utf8_lossy(&conv::to_string_bytes(&Value::Float(f)))
+            ),
+        ),
+        _ => {}
+    }
+    ArrayKey::from_value(k).ok_or_else(|| illegal_offset_on_array(k, cx))
+}
+
+/// php's zend_check_string_offset: the integer offset for a write / unset
+/// of string offset `k` ("Illegal string offset" / "String offset cast
+/// occurred" warnings; a non-integer key is a TypeError, or for unset php's
+/// "Cannot unset string offsets").
+fn string_offset(k: &Value, unset: bool, cx: &PropCtx) -> Result<i64, Thrown> {
+    let illegal = |ty: String| {
+        if unset {
+            Thrown::error("Error", "Cannot unset string offsets")
+        } else {
+            Thrown::type_error(format!("Cannot access offset of type {ty} on string"))
+        }
+    };
+    match deref(k) {
+        Value::Int(n) => Ok(n),
+        Value::Str(ks) => {
+            let kb = ks.as_bytes();
+            match conv::scan_number(kb) {
+                Some((conv::Num::Int(n), end)) => {
+                    let trailing = !kb[end..].iter().all(|b| b" \t\n\r\x0b\x0c".contains(b));
+                    if trailing && !unset {
+                        path_diag(
+                            2,
+                            format!("Illegal string offset \"{}\"", String::from_utf8_lossy(kb)),
+                        );
+                    }
+                    Ok(n)
+                }
+                _ => Err(illegal("string".into())),
+            }
+        }
+        v @ (Value::Float(_) | Value::Null | Value::Bool(_)) => {
+            path_diag(2, "String offset cast occurred".into());
+            Ok(conv::to_int(&v))
+        }
+        Value::Object(h) => Err(illegal(
+            h.try_borrow()
+                .map(|b| {
+                    String::from_utf8_lossy(cx.classes[b.class as usize].name.as_bytes())
+                        .into_owned()
+                })
+                .unwrap_or_default(),
+        )),
+        Value::Closure(_) => Err(illegal("Closure".into())),
+        other => Err(illegal(type_lc(&other).to_string())),
+    }
+}
+
+/// php's zend_wrong_string_offset_error for a fetch below a string offset
+/// (`$str[0][…]`, `$str[0]->p`) or a reference to one.
+fn string_offset_misuse(rest: &[CursorStep], make_ref: bool) -> Thrown {
+    let msg = match rest.first() {
+        None if make_ref => "Cannot create references to/from string offsets",
+        Some(CursorStep::Prop(_)) => "Cannot use string offset as an object",
+        _ => "Cannot use string offset as an array",
+    };
+    Thrown::error("Error", msg)
+}
+
+/// `$str[$k] = $value` (zend_assign_to_string_offset): replace one byte,
+/// padding with spaces past the end.
+fn assign_string_offset(
+    slot: &mut Value,
+    k: &Value,
+    value: &Value,
+    cx: &PropCtx,
+) -> Result<(), Thrown> {
+    let offset = string_offset(k, false, cx)?;
+    let Value::Str(s) = slot else {
+        unreachable!("caller checked for a string")
+    };
+    let len = s.as_bytes().len() as i64;
+    if offset < -len {
+        path_diag(2, format!("Illegal string offset {offset}"));
+        return Ok(());
+    }
+    let at = if offset < 0 { offset + len } else { offset } as usize;
+    let bytes = match deref(value) {
+        Value::Array(_) => {
+            path_diag(2, "Array to string conversion".into());
+            b"Array".to_vec()
+        }
+        Value::Object(_) | Value::Closure(_) => {
+            return Err(Thrown::unsupported(
+                "string offset write of an object",
+                "converting an object to string here needs __toString dispatch",
+            ))
+        }
+        v => conv::to_string_bytes(&v),
+    };
+    let Some(&c) = bytes.first() else {
+        return Err(Thrown::error(
+            "Error",
+            "Cannot assign an empty string to a string offset",
+        ));
+    };
+    if bytes.len() != 1 {
+        path_diag(
+            2,
+            "Only the first byte will be assigned to the string offset".into(),
+        );
+    }
+    let mut out = s.as_bytes().to_vec();
+    if at >= out.len() {
+        out.resize(at, b' ');
+        out.push(c);
+    } else {
+        out[at] = c;
+    }
+    *slot = Value::str(out);
+    Ok(())
 }
 
 /// Write `value` at a cursor path, autovivifying + COW-bubbling along the way.
@@ -9802,16 +10120,25 @@ fn assign_path(
         let child = classes::prop_slot_mut(cx.classes, &mut od, key);
         return assign_path(child, rest, value, cx);
     }
-    autovivify(slot, head, cx)?;
+    if let Value::Str(_) = slot {
+        let CursorStep::Key(k) = head else {
+            return Err(Thrown::error(
+                "Error",
+                "[] operator not supported for strings",
+            ));
+        };
+        if rest.is_empty() {
+            return assign_string_offset(slot, k, &value, cx);
+        }
+        string_offset(k, false, cx)?;
+        return Err(string_offset_misuse(rest, false));
+    }
+    autovivify(slot, cx)?;
     let Value::Array(arr) = slot else {
         unreachable!("autovivify ensures array")
     };
     let child = match head {
-        CursorStep::Key(k) => {
-            let key =
-                ArrayKey::from_value(k).ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
-            arr.get_or_insert_mut(key)
-        }
+        CursorStep::Key(k) => arr.get_or_insert_mut(write_key_of(k, cx)?),
         CursorStep::Append => arr.append_mut(),
         CursorStep::Prop(_) => unreachable!("handled above"),
     };
@@ -9873,16 +10200,22 @@ fn make_ref_path(
         let child = classes::prop_slot_mut(cx.classes, &mut od, key);
         return make_ref_path(child, rest, cx);
     }
-    autovivify(slot, head, cx)?;
+    if let Value::Str(_) = slot {
+        let CursorStep::Key(k) = head else {
+            return Err(Thrown::error(
+                "Error",
+                "[] operator not supported for strings",
+            ));
+        };
+        string_offset(k, false, cx)?;
+        return Err(string_offset_misuse(rest, true));
+    }
+    autovivify(slot, cx)?;
     let Value::Array(arr) = slot else {
         unreachable!("autovivify ensures array")
     };
     let child = match head {
-        CursorStep::Key(k) => {
-            let key =
-                ArrayKey::from_value(k).ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
-            arr.get_or_insert_mut(key)
-        }
+        CursorStep::Key(k) => arr.get_or_insert_mut(write_key_of(k, cx)?),
         CursorStep::Append => arr.append_mut(),
         CursorStep::Prop(_) => unreachable!("handled above"),
     };
@@ -9890,41 +10223,86 @@ fn make_ref_path(
 }
 
 /// Remove the leaf key of a cursor path (COW), descending to the parent first.
-fn unset_path(slot: &mut Value, steps: &[CursorStep], cx: &PropCtx) {
+fn unset_path(slot: &mut Value, steps: &[CursorStep], cx: &PropCtx) -> Result<(), Thrown> {
     if let Value::Ref(rc) = slot {
         let mut inner = rc.borrow_mut();
         return unset_path(&mut inner, steps, cx);
     }
     let Some((head, rest)) = steps.split_first() else {
-        return;
+        return Ok(());
     };
     match head {
         CursorStep::Prop(name) => {
-            let Value::Object(h) = slot else { return };
+            let Value::Object(h) = slot else {
+                return Ok(());
+            };
             let h = h.clone();
             let mut od = h.borrow_mut();
             let Ok(key) = cx.key(od.class, name) else {
-                return;
+                return Ok(());
             };
             if rest.is_empty() {
                 od.properties.shift_remove(&key);
             } else if let Some(child) = od.properties.get_mut(&key) {
-                unset_path(child, rest, cx);
+                unset_path(child, rest, cx)?;
             }
         }
         CursorStep::Key(k) => {
-            let Value::Array(arr) = slot else { return };
+            let arr = match slot {
+                Value::Array(arr) => arr,
+                // ZEND_UNSET_DIM / FETCH_DIM_UNSET on a string.
+                Value::Str(_) if rest.is_empty() => {
+                    return Err(Thrown::error("Error", "Cannot unset string offsets"))
+                }
+                Value::Str(_) => {
+                    string_offset(k, true, cx)?;
+                    return Err(string_offset_misuse(rest, false));
+                }
+                Value::Bool(false) if rest.is_empty() => {
+                    path_diag(
+                        8192,
+                        "Automatic conversion of false to array is deprecated".into(),
+                    );
+                    return Ok(());
+                }
+                Value::Bool(true) | Value::Int(_) | Value::Float(_) | Value::Resource(_)
+                    if rest.is_empty() =>
+                {
+                    return Err(Thrown::error(
+                        "Error",
+                        "Cannot unset offset in a non-array variable",
+                    ))
+                }
+                _ => return Ok(()),
+            };
             let Some(key) = ArrayKey::from_value(k) else {
-                return;
+                if !rest.is_empty() {
+                    return Err(illegal_offset_on_array(k, cx));
+                }
+                let ty = match deref(k) {
+                    Value::Object(h) => h
+                        .try_borrow()
+                        .map(|b| {
+                            String::from_utf8_lossy(cx.classes[b.class as usize].name.as_bytes())
+                                .into_owned()
+                        })
+                        .unwrap_or_default(),
+                    Value::Closure(_) => "Closure".into(),
+                    other => type_lc(&other).to_string(),
+                };
+                return Err(Thrown::type_error(format!(
+                    "Cannot unset offset of type {ty} on array"
+                )));
             };
             if rest.is_empty() {
                 arr.remove(&key);
             } else if let Some(child) = arr.get_mut(&key) {
-                unset_path(child, rest, cx);
+                unset_path(child, rest, cx)?;
             }
         }
         CursorStep::Append => {}
     }
+    Ok(())
 }
 
 /// For by-reference foreach: promote the array element at insertion index `pos`
@@ -10186,6 +10564,33 @@ fn array_key_to_value(k: &ArrayKey) -> Value {
         ArrayKey::Int(n) => Value::Int(*n),
         ArrayKey::Str(s) => Value::Str(s.clone()),
     }
+}
+
+/// php's "Undefined array key" warning text for `k`.
+fn undefined_key_msg(k: &ArrayKey) -> String {
+    match k {
+        ArrayKey::Int(n) => format!("Undefined array key {n}"),
+        ArrayKey::Str(s) => format!(
+            "Undefined array key \"{}\"",
+            String::from_utf8_lossy(s.as_bytes())
+        ),
+    }
+}
+
+/// php's "Cannot access offset of type T on array" TypeError (an array
+/// write/fetch-for-write with an unusable key).
+fn illegal_offset_on_array(k: &Value, cx: &PropCtx) -> Thrown {
+    let ty = match deref(k) {
+        Value::Object(h) => h
+            .try_borrow()
+            .map(|b| {
+                String::from_utf8_lossy(cx.classes[b.class as usize].name.as_bytes()).into_owned()
+            })
+            .unwrap_or_default(),
+        Value::Closure(_) => "Closure".into(),
+        other => type_lc(&other).to_string(),
+    };
+    Thrown::type_error(format!("Cannot access offset of type {ty} on array"))
 }
 
 /// Bind positional `args` to a callee's parameter CV registers (by value), with

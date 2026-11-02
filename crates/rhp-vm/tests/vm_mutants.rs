@@ -191,10 +191,14 @@ fn string_out_of_bounds_index_is_empty_string() {
 // --- autovivify (lib.rs ~1764-1776): empty string vivifies, scalar errors ---
 
 #[test]
-fn append_to_empty_string_autovivifies_array() {
+fn empty_string_is_a_string_container() {
+    // php >= 7.1: "" is not autovivified — `[]` on it is an Error and an
+    // offset write writes into the string.
+    let (_out, class) = run_throws("<?php $x=''; $x[]=5;");
+    assert_eq!(class, "Error");
     assert_eq!(
-        run("<?php $x=''; $x[]=5; print_r($x);"),
-        "Array\n(\n    [0] => 5\n)\n"
+        run("<?php $x=''; $x[2]='a'; var_dump($x);"),
+        "string(3) \"  a\"\n"
     );
 }
 

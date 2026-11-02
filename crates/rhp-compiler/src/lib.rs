@@ -64,6 +64,25 @@ fn is_globals_var(e: &Expression) -> bool {
     matches!(e, Expression::Variable(Variable::Direct(d)) if strip_dollar(d.name) == b"GLOBALS")
 }
 
+/// php's compile-time errors for `$GLOBALS` as (the root of) a write target:
+/// only `$GLOBALS[$name]...` may be written.
+fn check_globals_write(target: &Expression) -> Result<(), Thrown> {
+    match target {
+        e if is_globals_var(e) => Err(Thrown::error(
+            "Error",
+            "$GLOBALS can only be modified using the $GLOBALS[$name] = $value syntax",
+        )),
+        Expression::ArrayAppend(ap) if is_globals_var(ap.array) => {
+            Err(Thrown::error("Error", "Cannot append to $GLOBALS"))
+        }
+        Expression::ArrayAccess(aa) if is_globals_var(aa.array) => Ok(()),
+        Expression::ArrayAccess(aa) => check_globals_write(aa.array),
+        Expression::ArrayAppend(ap) => check_globals_write(ap.array),
+        Expression::Parenthesized(p) => check_globals_write(p.expression),
+        _ => Ok(()),
+    }
+}
+
 /// The body form of a closure being lowered.
 enum ClosureBody<'a> {
     /// Arrow function: a single expression, implicitly `return`ed.
@@ -2273,9 +2292,10 @@ impl ProtoBuilder {
                 self.scan_expr_vars(fe.expression);
                 match &fe.target {
                     ForeachTarget::Value(t) => self.scan_expr_vars(t.value),
+                    // php compiles the value variable before the key's.
                     ForeachTarget::KeyValue(t) => {
-                        self.scan_expr_vars(t.key);
                         self.scan_expr_vars(t.value);
+                        self.scan_expr_vars(t.key);
                     }
                 }
                 match &fe.body {
@@ -2892,9 +2912,12 @@ impl ProtoBuilder {
     fn compile_foreach(&mut self, fe: &rhp_frontend::cst::Foreach) -> Result<(), Thrown> {
         // Resolve key + value targets. A value target may be a destructuring
         // pattern, which binds into a protected element register per iteration.
-        let (key_cv, val_expr) = match &fe.target {
-            ForeachTarget::Value(t) => (Reg::MAX, t.value),
-            ForeachTarget::KeyValue(t) => (self.foreach_target_cv(t.key)?, t.value),
+        // php compiles the iterated expression, then the value variable, then
+        // the key variable: their CVs (so the global symbol table's and
+        // get_defined_vars()'s order) are created in that order.
+        let (key_expr, val_expr) = match &fe.target {
+            ForeachTarget::Value(t) => (None, t.value),
+            ForeachTarget::KeyValue(t) => (Some(t.key), t.value),
         };
 
         // By-reference foreach: `foreach ($a as &$v)` / `... as $k => &$v`.
@@ -2913,7 +2936,6 @@ impl ProtoBuilder {
                     "only a simple `&$v` loop variable is supported",
                 ));
             };
-            let val_cv = self.cv(strip_dollar(d.name));
             // The source must be assignable so its elements can be referenced: a
             // simple variable uses its slot directly; a property / array-element /
             // static-property is promoted to a reference held in a temp (the VM's
@@ -2935,6 +2957,11 @@ impl ProtoBuilder {
                 // iterates the temporary itself (FE_RESET_RW on a TMP) — a
                 // by-ref generator / its elements are referenced in place.
                 _ => self.compile_expr(fe.expression)?,
+            };
+            let val_cv = self.cv(strip_dollar(d.name));
+            let key_cv = match key_expr {
+                Some(k) => self.foreach_target_cv(k)?,
+                None => Reg::MAX,
             };
             let pos_reg = self.alloc_temp();
             let saved_floor = self.temp_floor;
@@ -2990,6 +3017,10 @@ impl ProtoBuilder {
                     "variable or destructuring only",
                 ))
             }
+        };
+        let key_cv = match key_expr {
+            Some(k) => self.foreach_target_cv(k)?,
+            None => Reg::MAX,
         };
 
         let saved_floor = self.temp_floor;
@@ -3062,6 +3093,7 @@ impl ProtoBuilder {
 
     fn compile_unset(&mut self, u: &rhp_frontend::cst::Unset) -> Result<(), Thrown> {
         for v in u.values.iter() {
+            check_globals_write(v)?;
             match v {
                 Expression::Variable(Variable::Direct(d)) => {
                     // A CV can't be removed; null is observably equivalent to
@@ -3219,6 +3251,7 @@ impl ProtoBuilder {
     /// Store `src` into a single destructuring target (variable, nested pattern,
     /// array element, or property).
     fn store_to_target(&mut self, target: &Expression, src: Reg) -> Result<(), Thrown> {
+        check_globals_write(target)?;
         match target {
             Expression::Variable(Variable::Direct(d)) => {
                 let cv = self.cv(strip_dollar(d.name));
@@ -3773,6 +3806,7 @@ impl ProtoBuilder {
         pre: bool,
         delta: i8,
     ) -> Result<Reg, Thrown> {
+        check_globals_write(target)?;
         match target {
             Expression::Variable(Variable::Direct(d)) => {
                 let cv = self.cv(strip_dollar(d.name));
@@ -4279,12 +4313,20 @@ impl ProtoBuilder {
                 let value = match v.value {
                     // A by-reference generator yields a reference to the
                     // variable / element / property (ZEND_YIELD, BP_VAR_W).
-                    Some(e) if self.returns_ref => self.compile_ref_source(e)?,
+                    Some(e) if self.returns_ref => self.compile_yield_ref(e)?,
                     Some(e) => self.compile_expr(e)?,
                     None => {
                         let t = self.alloc_temp();
                         self.emit(Instr::LoadNull { dst: t });
-                        t
+                        if self.returns_ref {
+                            // A bare `yield` yields null, without the
+                            // "Only variable references" notice.
+                            let r = self.alloc_temp();
+                            self.emit(Instr::MakeRefVal { dst: r, src: t });
+                            r
+                        } else {
+                            t
+                        }
                     }
                 };
                 (Reg::MAX, value)
@@ -4292,17 +4334,31 @@ impl ProtoBuilder {
             Yield::Pair(p) => {
                 let key = self.compile_expr(p.key)?;
                 let value = if self.returns_ref {
-                    self.compile_ref_source(p.value)?
+                    self.compile_yield_ref(p.value)?
                 } else {
                     self.compile_expr(p.value)?
                 };
                 (key, value)
+            }
+            Yield::From(_) if self.returns_ref => {
+                return Err(Thrown::error(
+                    "Error",
+                    "Cannot use \"yield from\" inside a by-reference generator",
+                ))
             }
             Yield::From(yf) => return self.compile_yield_from(yf.iterator),
         };
         let dst = self.alloc_temp();
         self.emit(Instr::Yield { dst, key, value });
         Ok(dst)
+    }
+
+    /// The value a by-reference generator yields: a reference to a variable
+    /// / element / property, or a by-reference call's result; anything else
+    /// is a plain value, which the VM's `Yield` answers with php's "Only
+    /// variable references should be yielded by reference" notice.
+    fn compile_yield_ref(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+        self.compile_ref_source(e)
     }
 
     /// `yield from $iterable`: re-yield each element (keys preserved); the
@@ -4785,6 +4841,13 @@ impl ProtoBuilder {
     /// Produce a register holding a `Ref` to a reference-assignment source: a
     /// simple variable's slot, or a property / array-element / static-prop lvalue.
     fn compile_ref_source(&mut self, src: &Expression) -> Result<Reg, Thrown> {
+        if is_globals_var(src) {
+            return Err(Thrown::error(
+                "Error",
+                "Cannot acquire reference to $GLOBALS",
+            ));
+        }
+        check_globals_write(src)?;
         match src {
             Expression::Variable(Variable::Direct(v)) => {
                 let name = strip_dollar(v.name);
@@ -5325,6 +5388,7 @@ impl ProtoBuilder {
     }
 
     fn compile_assignment(&mut self, a: &rhp_frontend::cst::Assignment) -> Result<Reg, Thrown> {
+        check_globals_write(a.lhs)?;
         // Destructuring: `[$a, $b] = ...` / `list($a, $b) = ...`.
         if matches!(a.operator, AssignmentOperator::Assign(_)) {
             if let Expression::Array(arr) = a.lhs {
@@ -5351,6 +5415,12 @@ impl ProtoBuilder {
                     Expression::Variable(Variable::Direct(src)),
                 ) = (a.lhs, u.operand)
                 {
+                    if strip_dollar(src.name) == b"GLOBALS" {
+                        return Err(Thrown::error(
+                            "Error",
+                            "Cannot acquire reference to $GLOBALS",
+                        ));
+                    }
                     if strip_dollar(src.name) != b"this" {
                         let dst_cv = self.cv(strip_dollar(dst.name));
                         let src_cv = self.cv(strip_dollar(src.name));

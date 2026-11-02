@@ -274,10 +274,15 @@ pub(crate) fn set_access_err(
     op: &str,
     (sv, decl, name): (Visibility, ClassId, PhpStr),
 ) -> Thrown {
-    let v = if sv == Visibility::Private {
-        "private(set)"
-    } else {
-        "protected(set)"
+    // php names a protected(set) readonly property "protected(set) readonly".
+    let readonly = classes[decl as usize]
+        .props
+        .values()
+        .any(|pe| pe.declaring_class == decl && pe.name == name && pe.readonly);
+    let v = match sv {
+        Visibility::Private => "private(set)",
+        _ if readonly => "protected(set) readonly",
+        _ => "protected(set)",
     };
     let from = match called {
         Some(c) => format!(
@@ -573,12 +578,14 @@ impl Vm {
     }
 
     /// Run-time class declaration (`DeclareClass`): link the class now,
-    /// autoloading missing dependencies. A no-op if it was hoisted.
+    /// autoloading missing dependencies. A no-op if it was hoisted; running
+    /// an executed declaration again (a nested class in a function called
+    /// twice, a loop) is php's redeclaration error.
     pub(crate) fn declare_class_at(&mut self, slot: usize) -> Result<(), Thrown> {
         let Some((proto, done)) = self.decl_classes.get(slot) else {
             return Ok(());
         };
-        if *done {
+        if *done && !self.decl_runtime.contains(&slot) {
             return Ok(());
         }
         let proto = proto.clone();
@@ -619,6 +626,7 @@ impl Vm {
         }
         self.link_class(&proto)?;
         self.decl_classes[slot].1 = true;
+        self.decl_runtime.insert(slot);
         Ok(())
     }
 

@@ -20,6 +20,9 @@ $cases = [
     ['*', '.hidden', FNM_PERIOD], ['*', '.hidden', 0], ['\*', '*', 0], ['\*', '\*', FNM_NOESCAPE],
     ['A*', 'abc', FNM_CASEFOLD], ['A*', 'abc', 0], ['src/*/x', 'src/a/x', FNM_PATHNAME], ['', '', 0],
 ];
+$flname = fn($f) => match ($f) {
+    0 => '0', FNM_NOESCAPE => 'NOESCAPE', FNM_PATHNAME => 'PATHNAME', FNM_PERIOD => 'PERIOD', FNM_CASEFOLD => 'CASEFOLD',
+};
 foreach ($cases as [$p, $s, $fl]) {
-    echo json_encode($p), ' ', json_encode($s), ' ', $fl, ' => ', var_export(fnmatch($p, $s, $fl), true), "\n";
+    echo json_encode($p), ' ', json_encode($s), ' ', $flname($fl), ' => ', var_export(fnmatch($p, $s, $fl), true), "\n";
 }

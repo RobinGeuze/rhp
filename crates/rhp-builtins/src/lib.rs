@@ -1438,7 +1438,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("MB_ONIGURUMA_VERSION", Value::str("6.9.10")),
         ("DIRECTORY_SEPARATOR", Value::str("/")),
         ("PATH_SEPARATOR", Value::str(":")),
-        ("PHP_MAXPATHLEN", Value::Int(1024)),
+        ("PHP_MAXPATHLEN", Value::Int(libc::PATH_MAX as i64)), // MAXPATHLEN: 1024 on macOS, 4096 on Linux
         ("PHP_BINDIR", Value::str("/usr/bin")),
         ("LC_CTYPE", Value::Int(0)),
         ("LC_NUMERIC", Value::Int(1)),

@@ -60,7 +60,6 @@ var_dump(pcntl_sigprocmask(SIG_SETMASK, [], $old));
 [$a, $b] = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
 $s = socket_import_stream($a);
 unset($a);
-fwrite($b, "x");
 var_dump(feof($b));
 unset($s);
 var_dump(fread($b, 10), feof($b));

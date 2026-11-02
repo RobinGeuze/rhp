@@ -37,7 +37,7 @@ $o->byRef($arr['k']['j']);
 $o->byRef($obj->q);
 V::sRef($arr['s']);
 var_dump($arr, $obj->q);
-var_dump($o->magic($arr['zz']), isset($arr['zz']));
+var_dump(@$o->magic($arr['zz']), isset($arr['zz']));
 $n = null;
 var_dump($n?->byRef($arr['ns']), isset($arr['ns']));
 $i = 0;

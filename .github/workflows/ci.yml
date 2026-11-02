@@ -81,7 +81,14 @@ jobs:
       - name: Full workspace suite against php ${{ matrix.php }}
         env:
           RHP_PHP: php
-        run: cargo test --workspace --all-targets --no-fail-fast
+        # The CGI fixtures run the real php-cgi, not the shim: the shim's
+        # extra `-d extension=…` arguments change php-cgi's option parsing
+        # (argument numbers, `-q`, script detection), and bash reorders the
+        # environment that getallheaders() reports. They need no shared ext.
+        run: |
+          export PHP_CGI="$(command -v "php-cgi${{ matrix.php }}")"
+          echo "PHP_CGI=$PHP_CGI"
+          cargo test --workspace --all-targets --no-fail-fast
       - name: Extension differential sweeps
         env:
           RHP_PHP: php
@@ -110,10 +117,17 @@ jobs:
           ref: ${{ steps.ref.outputs.sha }}
           path: php-src
           persist-credentials: false
+          # tests/ includes tests/basic; the last four hold CGI tests
+          # (--GET--/--POST--/--CGI--/...), which run under php-cgi.
           sparse-checkout: |
             Zend/tests
             tests
             ext/standard/tests
+            sapi/cgi/tests
+            ext/session/tests
+            ext/filter/tests
+            ext/zlib/tests
+            ext/opcache/tests
       - uses: ./.github/actions/setup-php
         with:
           php-version: '8.5'
@@ -121,7 +135,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release -p rhp-cli -p rhp-difftest
       - name: Known-passing php-src tests still match
-        run: target/release/rhp-difftest phpt --php-src php-src --check-known tests/phpt/known-passing.txt
+        run: >-
+          target/release/rhp-difftest phpt --php-src php-src
+          --php-cgi "$(command -v php-cgi)"
+          --check-known tests/phpt/known-passing.txt
 
   # Pinned framework fixture apps (tests/apps/apps.toml): the matrix is read
   # from the manifest, so adding an app version needs no workflow change.
@@ -139,6 +156,7 @@ jobs:
   # the lockfile hash), smoke-test its routes under php, then the compile-only
   # ratchet: `rhp-difftest lint --check-known` fails only on a file rhp newly
   # refuses; listed files that now compile are a notice, never a failure.
+  # Last, the request diff ratchet (`rhp-difftest app --check-known`).
   apps-lint:
     name: app ${{ matrix.app }}
     needs: apps-matrix
@@ -162,6 +180,10 @@ jobs:
         run: python3 tests/apps/apps.py setup ${{ matrix.app }}
       - name: Smoke-test the app under php
         run: python3 tests/apps/apps.py smoke ${{ matrix.app }}
-      - run: cargo build --release -p rhp-difftest
+      - run: cargo build --release -p rhp-difftest -p rhp-cli
       - name: No new compile refusals
         run: python3 tests/apps/apps.py lint ${{ matrix.app }}
+      # The request corpus through php-cgi and `rhp --cgi`: fails only when a
+      # request in known-passing-requests.txt stops answering like php-cgi.
+      - name: Known requests still answer like php-cgi
+        run: python3 tests/apps/apps.py diff ${{ matrix.app }}

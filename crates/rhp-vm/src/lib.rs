@@ -71,9 +71,9 @@ pub struct Vm {
     prop_guards: std::collections::HashSet<(u32, &'static [u8], PhpStr)>,
     /// Write output directly to stdout instead of `out` (the CLI).
     stdout_passthrough: bool,
-    /// Output-buffering stack (`ob_start`): `echo`/`print` write to the top
-    /// buffer when non-empty, else straight to `out`.
-    ob_stack: Vec<Vec<u8>>,
+    /// The output layer (main/output.c): the `ob_start` handler stack every
+    /// write passes through on its way to [`Vm::emit_stdout`].
+    output: output::Output,
     stack: Vec<Frame>,
     functions: Vec<Rc<FunctionProto>>,
     fn_names: HashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
@@ -217,6 +217,25 @@ pub struct Vm {
     in_shutdown_scope: bool,
     // Per-run extension state (`Host::module_state`), by module key.
     module_states: HashMap<&'static str, Box<dyn std::any::Any>>,
+    /// The server API layer: sink, response headers, request input.
+    sapi: request::SapiState,
+}
+
+/// Whether a diagnostic text is a builtin's `php_error_docref` message:
+/// it starts with `name(…): ` (a function or `Class::method`).
+fn is_docref_message(msg: &str) -> bool {
+    let b = msg.as_bytes();
+    let n = b
+        .iter()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b':' | b'\\'))
+        .count();
+    if n == 0 || b.get(n) != Some(&b'(') {
+        return false;
+    }
+    match b[n..].iter().position(|&c| c == b')') {
+        Some(close) => b[n + close + 1..].starts_with(b": "),
+        None => false,
+    }
 }
 
 /// Whether `name` is a builtin visible to user code. `__`-prefixed builtins
@@ -305,6 +324,8 @@ struct GenState {
 
 mod classes;
 mod compare;
+mod output;
+mod request;
 
 /// A function-static slot: (proto address, class it runs as, variable name).
 type StaticKey = (usize, Option<ClassId>, Vec<u8>);
@@ -323,7 +344,12 @@ enum CursorRoot {
 
 impl Host for Vm {
     fn raise_diagnostic(&mut self, level: i64, msg: &str) {
+        // A builtin's `php_error_docref` ("func(): …"): HTML-escaped when
+        // html_errors is on (engine and sapi errors are not, nor are the
+        // E_USER_* messages trigger_error passes through as given).
+        self.sapi.docref_msg = level & (256 | 512 | 1024 | 16384) == 0 && is_docref_message(msg);
         self.raise_error(level, msg);
+        self.sapi.docref_msg = false;
     }
 
     fn take_pending_throw(&mut self) -> Option<Thrown> {
@@ -360,43 +386,11 @@ impl Host for Vm {
     }
 
     fn write_out(&mut self, bytes: &[u8]) {
-        match self.ob_stack.last_mut() {
-            Some(buf) => buf.extend_from_slice(bytes),
-            None => self.emit_stdout(bytes),
-        }
+        self.output_write(bytes);
     }
 
-    fn ob_start(&mut self) {
-        self.ob_stack.push(Vec::new());
-    }
-
-    fn ob_get_contents(&self) -> Option<Vec<u8>> {
-        self.ob_stack.last().cloned()
-    }
-
-    fn ob_get_level(&self) -> usize {
-        self.ob_stack.len()
-    }
-
-    /// Pop the top buffer and return its contents (`ob_get_clean`).
-    fn ob_get_clean(&mut self) -> Option<Vec<u8>> {
-        self.ob_stack.pop()
-    }
-
-    /// Pop the top buffer and discard it (`ob_end_clean`).
-    fn ob_end_clean(&mut self) -> bool {
-        self.ob_stack.pop().is_some()
-    }
-
-    /// Pop the top buffer and write its contents to the next sink (`ob_end_flush`).
-    fn ob_end_flush(&mut self) -> bool {
-        match self.ob_stack.pop() {
-            Some(buf) => {
-                self.write_out(&buf);
-                true
-            }
-            None => false,
-        }
+    fn output_control(&mut self, call: builtins::ObCall) -> Result<Value, Thrown> {
+        self.output_control_call(call)
     }
 
     fn class_name(&self, class_id: u32) -> Option<Vec<u8>> {
@@ -433,7 +427,40 @@ impl Host for Vm {
     }
 
     fn output_started(&self) -> bool {
-        !self.out.is_empty()
+        self.sapi.response.sent
+    }
+
+    fn response(&mut self) -> Option<&mut builtins::sapi::Response> {
+        Some(&mut self.sapi.response)
+    }
+
+    fn log_message(&mut self, msg: &[u8]) {
+        match self.sapi.sapi.as_mut() {
+            Some(s) => s.log_message(msg),
+            None => {
+                use std::io::Write;
+                let mut e = std::io::stderr();
+                let _ = e.write_all(msg);
+                let _ = e.write_all(b"\n");
+                let _ = e.flush();
+            }
+        }
+    }
+
+    fn request_headers(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.sapi
+            .request
+            .as_ref()
+            .map(|r| r.headers.clone())
+            .unwrap_or_default()
+    }
+
+    fn request_info(&self) -> Option<&builtins::sapi::RequestInfo> {
+        self.sapi.request.as_ref()
+    }
+
+    fn body_state(&mut self) -> Option<&mut builtins::rfc1867::BodyState> {
+        Some(&mut self.sapi.body)
     }
 
     fn get_const(&self, name: &[u8]) -> Option<Value> {
@@ -467,6 +494,9 @@ impl Host for Vm {
     // --- stream layer: dispatch to the per-run wrapper registry ---------------
 
     fn stream_get_contents(&self, url: &[u8]) -> Option<Vec<u8>> {
+        if url.eq_ignore_ascii_case(b"php://input") {
+            return Some(self.request_body());
+        }
         if url.eq_ignore_ascii_case(b"php://stdin") {
             // A fresh php://stdin stream (a dup of fd 0) read to EOF.
             let fd = builtins::fdstream::dup_raw(0)?;
@@ -639,6 +669,19 @@ impl Host for Vm {
                 self.fd_names.insert(id, (path.to_vec(), mode.to_vec()));
             }
             return Some(v);
+        } else if path.eq_ignore_ascii_case(b"php://input") {
+            // The request body: a read-only buffer, re-readable per open.
+            return Some(self.make_stream(
+                StreamState::Mem {
+                    buf: self.request_body(),
+                    pos: 0,
+                    skew: 0,
+                    eof: false,
+                    temp: None,
+                    mode: MemMode::ReadOnly,
+                },
+                "stream",
+            ));
         } else if path == b"php://memory" || path.starts_with(b"php://temp") {
             let temp = path.starts_with(b"php://temp").then(|| path.to_vec());
             let is_temp = temp.is_some();
@@ -783,7 +826,7 @@ impl Host for Vm {
         };
         match act {
             Act::Out if self.output_streams.contains(&id) => self.write_out(data),
-            Act::Out => self.emit_stdout(data),
+            Act::Out => self.emit_raw_stdout(data),
             Act::Err => self.write_stderr(data),
             Act::Buf => match self.streams.get_mut(&id)? {
                 StreamState::Mem {
@@ -2190,7 +2233,7 @@ impl Vm {
             out: Vec::new(),
             prop_guards: Default::default(),
             stdout_passthrough: false,
-            ob_stack: Vec::new(),
+            output: output::Output::default(),
             stack: Vec::new(),
             functions: Vec::new(),
             fn_names: HashMap::new(),
@@ -2251,6 +2294,7 @@ impl Vm {
             finished_main: None,
             in_shutdown_scope: false,
             module_states: HashMap::new(),
+            sapi: Default::default(),
         }
     }
 
@@ -2270,9 +2314,16 @@ impl Vm {
             .rev()
             .find(|&i| !is_prelude_proto(&self.stack[i].proto))
         {
+            None if self.sapi.startup => (b"Unknown".to_vec(), 0),
             None => (Vec::new(), 0),
             Some(i) => (self.current_file(i), self.current_line(i) as i64),
         };
+        self.raise_error_at(level, msg, file, line);
+    }
+
+    /// [`Vm::raise_error`] reported at `file`:`line`.
+    pub(crate) fn raise_error_at(&mut self, level: i64, msg: &str, file: Vec<u8>, line: i64) {
+        let docref = std::mem::take(&mut self.sapi.docref_msg);
         if self.pending_throw.is_some() {
             return; // php skips diagnostics while an exception is pending
         }
@@ -2330,7 +2381,9 @@ impl Vm {
             4096 => "Recoverable fatal error",
             _ => "Unknown error",
         };
+        self.sapi.docref_msg = docref;
         self.display_error(level, label, msg.as_bytes(), &file, line);
+        self.sapi.docref_msg = false;
     }
 
     /// Set the CLI argument vector (`$argv`; `argv[0]` is the script name).
@@ -2355,6 +2408,10 @@ impl Vm {
     /// Populate the superglobal global cells ($_SERVER, $argv, …) for a CLI run.
     fn seed_superglobals(&mut self) {
         use rhp_values::{ArrayKey, PhpArray};
+        if self.sapi.request.is_some() {
+            self.seed_request_superglobals();
+            return;
+        }
         let argv_arr = {
             let mut a = PhpArray::new();
             for arg in &self.argv {
@@ -3544,6 +3601,30 @@ impl Vm {
 
     /// Unbuffered-by-default script output (see [`Vm::set_stdout_passthrough`]).
     fn emit_stdout(&mut self, data: &[u8]) {
+        if self.sapi_write(data) {
+            return;
+        }
+        self.legacy_stdout(data);
+    }
+
+    /// A write to the `STDOUT` stream: php writes the descriptor directly,
+    /// bypassing the output layer (no headers, no SAPI buffering).
+    fn emit_raw_stdout(&mut self, data: &[u8]) {
+        if let Some(s) = self.sapi.sapi.as_mut() {
+            use std::io::Write;
+            // php's SAPIs write the descriptor unbuffered: what the SAPI
+            // holds (headers, body) goes out first.
+            s.flush();
+            let mut so = std::io::stdout().lock();
+            let _ = so.write_all(data);
+            let _ = so.flush();
+            return;
+        }
+        self.legacy_stdout(data);
+    }
+
+    /// Output without a SAPI: collected for [`Vm::output`] or passed through.
+    fn legacy_stdout(&mut self, data: &[u8]) {
         if self.stdout_passthrough || self.direct_stdout {
             use std::io::Write;
             let mut so = std::io::stdout().lock();
@@ -3668,9 +3749,16 @@ impl Vm {
             }
         }
         self.destructibles.clear();
-        // 3. php_output_end_all: flush each buffer into the one below it.
-        while let Some(buf) = self.ob_stack.pop() {
-            builtins::Host::write_out(self, &buf);
+        // 3. php_output_end_all: finalize each buffer into the one below it
+        // (an exception from a handler is fatal here).
+        self.enter_shutdown_scope();
+        self.output_end_all();
+        if let Some(t) = self.pending_throw.take() {
+            self.enter_shutdown_scope();
+            if let Some(c) = on_throw(self, t)? {
+                status = c;
+            }
+            self.output_end_all();
         }
         self.stack.clear();
         Ok(status)
@@ -3761,9 +3849,21 @@ impl Vm {
             let stdin = self.make_stream(StreamState::Stdin, "stream");
             let stdout = self.make_stream(StreamState::Stdout, "stream");
             let stderr = self.make_stream(StreamState::Stderr, "stream");
-            self.constants.insert(b"STDIN".to_vec(), stdin);
-            self.constants.insert(b"STDOUT".to_vec(), stdout);
-            self.constants.insert(b"STDERR".to_vec(), stderr);
+            if builtins::sapi::sapi_name() == "cli" {
+                self.constants.insert(b"STDIN".to_vec(), stdin);
+                self.constants.insert(b"STDOUT".to_vec(), stdout);
+                self.constants.insert(b"STDERR".to_vec(), stderr);
+            } else {
+                // Only php-cli defines the standard stream constants (web
+                // code tests `defined('STDIN')` to detect a console).
+                for k in [&b"STDIN"[..], b"STDOUT", b"STDERR"] {
+                    self.constants.remove(k);
+                }
+            }
+            // php_request_startup: the output_handler / output_buffering
+            // buffer opens before php_hash_environment builds the request
+            // superglobals (whose warnings then land in it).
+            self.output_startup();
             self.seed_superglobals();
         }
         // Install (hoist) all declared functions, keyed case-insensitively.
@@ -4596,6 +4696,10 @@ impl Vm {
     /// Write to the process's stderr (after pending stdout, in CLI mode).
     fn write_stderr(&mut self, data: &[u8]) {
         use std::io::Write;
+        if let Some(s) = self.sapi.sapi.as_mut() {
+            s.write_stderr(data);
+            return;
+        }
         if self.direct_stdout {
             self.flush_stdout();
         }
@@ -4622,12 +4726,26 @@ impl Vm {
         line: i64,
         trace: &[u8],
     ) {
+        let docref = std::mem::take(&mut self.sapi.docref_msg);
+        if ty & (1 | 4 | 16 | 64 | 256 | 4096) != 0 {
+            // php_error_cb's bailout: a 200 becomes a 500 when nothing shows.
+            self.fatal_status();
+        }
         if builtins::php_fns::error_reporting_level(self) & ty == 0 {
             return;
         }
         let ini = |vm: &Self, n: &[u8]| vm.ini_get(n).unwrap_or_default();
         let log = ini_bool(&ini(self, b"log_errors"));
-        let mode = display_errors_mode(&ini(self, b"display_errors"));
+        let mut mode = display_errors_mode(&ini(self, b"display_errors"));
+        if matches!(mode, DisplayErrors::Stderr)
+            && !matches!(
+                builtins::sapi::sapi_name().as_str(),
+                "cli" | "cgi" | "phpdbg"
+            )
+        {
+            // Only the cli / cgi / phpdbg SAPIs honour display_errors=stderr.
+            mode = DisplayErrors::Stdout;
+        }
         let mut tail = b" in ".to_vec();
         tail.extend_from_slice(file);
         tail.extend_from_slice(format!(" on line {line}\n").as_bytes());
@@ -4642,8 +4760,14 @@ impl Vm {
             m.extend_from_slice(&tail);
             let target = ini(self, b"error_log");
             if target.is_empty() || target == b"syslog" {
-                // error_log unset: the CLI SAPI's log_message writes to stderr.
-                self.write_stderr(&m);
+                // error_log unset: the SAPI's log_message (the CLI's writes
+                // to stderr).
+                if self.sapi.sapi.is_some() {
+                    let line = m.strip_suffix(b"\n").unwrap_or(&m).to_vec();
+                    builtins::Host::log_message(self, &line);
+                } else {
+                    self.write_stderr(&m);
+                }
             } else {
                 // php_log_err: append "[d-M-Y H:i:s e] message" to the file.
                 let stamp = self
@@ -4669,13 +4793,27 @@ impl Vm {
             }
         }
         let html = ini_bool(&ini(self, b"html_errors"));
-        if html && matches!(mode, DisplayErrors::Stdout) {
+        if html && !matches!(mode, DisplayErrors::Off) {
+            // php_error_cb's html branch: E_ERROR / E_PARSE escape the
+            // message and drop the trace; others show it as given (a
+            // builtin's docref message was escaped when it was built).
+            let fatal = ty == 1 || ty == 4;
             let mut m = ini(self, b"error_prepend_string");
             m.extend_from_slice(format!("<br />\n<b>{label}</b>:  ").as_bytes());
-            m.extend_from_slice(message);
+            if fatal || docref {
+                let charset = ini(self, b"default_charset");
+                m.extend_from_slice(&builtins::sapi::escape_html(message, &charset));
+            } else {
+                m.extend_from_slice(message);
+            }
             m.extend_from_slice(b" in <b>");
             m.extend_from_slice(file);
-            m.extend_from_slice(format!("</b> on line <b>{line}</b><br />\n").as_bytes());
+            m.extend_from_slice(format!("</b> on line <b>{line}</b><br />").as_bytes());
+            if !fatal && !trace.is_empty() {
+                m.extend_from_slice(b"\nStack trace:\n");
+                m.extend_from_slice(trace);
+            }
+            m.push(b'\n');
             m.extend_from_slice(&ini(self, b"error_append_string"));
             self.write_out(&m);
             return;
@@ -4798,7 +4936,16 @@ impl Vm {
                 self.top_level_throw(t)?.unwrap_or(0)
             }
         };
-        self.shutdown_sequence(status, &mut |vm, t| vm.top_level_throw(t))
+        let status = self.shutdown_sequence(status, &mut |vm, t| vm.top_level_throw(t))?;
+        // php_request_shutdown sends the headers if no output did: a throw
+        // from the header_register_callback callback is reported there.
+        if self.sapi.sapi.is_some() {
+            self.sapi_send_headers();
+            if let Some(t) = self.pending_throw.take() {
+                return Ok(self.top_level_throw(t)?.unwrap_or(255));
+            }
+        }
+        Ok(status)
     }
 
     /// The `$this` of the current frame, if it is bound to an object.
@@ -5061,16 +5208,16 @@ impl Vm {
                 Instr::Echo { src } => {
                     let v = self.reg_get(top, src);
                     let bytes = self.to_string_vm(&v)?;
-                    self.write_out(&bytes);
+                    self.echo_out(&bytes)?;
                 }
                 Instr::EchoConst { k } => {
                     let bytes = conv::to_string_bytes(&proto.consts[k as usize]);
-                    self.write_out(&bytes);
+                    self.echo_out(&bytes)?;
                 }
                 Instr::Print { dst, src } => {
                     let v = self.reg_get(top, src);
                     let bytes = self.to_string_vm(&v)?;
-                    self.write_out(&bytes);
+                    self.echo_out(&bytes)?;
                     self.reg_set(top, dst, Value::Int(1));
                 }
 
@@ -6396,17 +6543,18 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::Exit { arg } => {
-                    // A string message is printed (code 0); an int is the code.
+                    // A string message is printed through the output buffers (code
+                    // 0); an int is the code.
                     let code = match self.reg_get(top, arg) {
                         Value::Int(n) => n as i32,
                         Value::Str(s) => {
-                            self.emit_stdout(s.as_bytes());
+                            self.output_write(s.as_bytes());
                             0
                         }
                         Value::Null => 0,
                         other => {
                             let s = conv::to_string_bytes(&other);
-                            self.emit_stdout(&s);
+                            self.output_write(&s);
                             0
                         }
                     };
@@ -8743,6 +8891,18 @@ enum DimMode {
 }
 
 impl Vm {
+    /// `echo` / `print` / inline HTML: write through the output layer; an
+    /// exception an output handler threw, or one from the
+    /// `header_register_callback` callback the first output byte ran,
+    /// surfaces at the statement.
+    fn echo_out(&mut self, bytes: &[u8]) -> Result<(), Thrown> {
+        self.output_write(bytes);
+        match self.pending_throw.take() {
+            Some(t) => Err(t),
+            None => Ok(()),
+        }
+    }
+
     /// Raise a diagnostic from inside an instruction; an exception thrown by
     /// the user error handler is returned to be thrown at this point.
     pub(crate) fn diag(&mut self, level: i64, msg: &str) -> Result<(), Thrown> {

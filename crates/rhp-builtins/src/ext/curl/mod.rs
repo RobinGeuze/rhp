@@ -398,6 +398,12 @@ thread_local! {
     static REG: RefCell<Registry> = RefCell::new(Registry::default());
 }
 
+/// Forget every handle and pending callback exception (a new request).
+pub(crate) fn reset_state() {
+    REG.with(|r| *r.borrow_mut() = Registry::default());
+    PENDING.with(|p| *p.borrow_mut() = None);
+}
+
 fn obj_handle(v: &Value) -> Option<ObjectHandle> {
     match v {
         Value::Object(h) => Some(h.clone()),

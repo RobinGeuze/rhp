@@ -153,7 +153,7 @@ fn ts_arg(args: &[Value], i: usize) -> i64 {
 }
 
 /// `date()` / `gmdate()` (php_date.c `date_format` with `localtime`).
-fn php_date(format: &[u8], ts: i64, localtime: bool) -> Vec<u8> {
+pub(crate) fn php_date(format: &[u8], ts: i64, localtime: bool) -> Vec<u8> {
     use crate::dt_oop_fns::{format_dt_x, ZoneX};
     if !localtime {
         let x = ZoneX {

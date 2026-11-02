@@ -45,6 +45,9 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     // XML family: reported so composer resolution passes for packages that
     // require ext-xml/ext-dom (symfony etc.). Runtime XML support is partial.
     "libxml",
+    // Built in but disabled (php's CLI default; the CGI harness runs php
+    // with opcache.enable=0): the functions exist and report "not started".
+    "Zend OPcache",
     "pcntl",
     "Phar",
     "posix",
@@ -67,6 +70,9 @@ pub(crate) fn loaded_extension_names() -> &'static [&'static str] {
 /// The loaded extension matching `name` case-insensitively (php's module
 /// lookup lowercases), if any.
 pub(crate) fn loaded_ext(name: &[u8]) -> Option<&'static str> {
+    if name.eq_ignore_ascii_case(b"cgi-fcgi") {
+        return crate::sapi::is_cgi().then_some("cgi-fcgi");
+    }
     LOADED_EXTS
         .iter()
         .copied()
@@ -100,6 +106,11 @@ fn fn_get_loaded_extensions(host: &mut dyn Host, args: &[Value]) -> Result<Value
         for e in LOADED_EXTS {
             a.push(Value::str(*e));
         }
+        if crate::sapi::is_cgi() {
+            a.push(Value::str("cgi-fcgi"));
+        }
+    } else {
+        a.push(Value::str("Zend OPcache"));
     }
     Ok(Value::Array(a))
 }
@@ -122,7 +133,7 @@ fn fn_phpversion(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_php_sapi_name(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str("cli"))
+    Ok(Value::str(crate::sapi::sapi_name()))
 }
 
 /// rhp has no php.ini, so this reports "no scanned files".
@@ -579,41 +590,76 @@ fn fn_debug_print_backtrace(host: &mut dyn Host, args: &[Value]) -> Result<Value
     Ok(Value::Null)
 }
 
-fn fn_ob_start(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    host.ob_start();
-    Ok(Value::Bool(true))
+fn ob(host: &mut dyn Host, call: crate::ObCall) -> Result<Value, Thrown> {
+    host.output_control(call)
 }
 
-fn fn_ob_get_contents(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(host
-        .ob_get_contents()
-        .map(Value::str)
-        .unwrap_or(Value::Bool(false)))
+fn fn_ob_start(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let callback = args.first().map(deref).unwrap_or(Value::Null);
+    let chunk_size = crate::argparse::int_param(host, args, 1, "ob_start", "chunk_size", 0)?;
+    let flags = crate::argparse::int_param(host, args, 2, "ob_start", "flags", 0x70)?;
+    ob(
+        host,
+        crate::ObCall::Start {
+            callback,
+            chunk_size,
+            flags,
+        },
+    )
 }
 
-fn fn_ob_get_clean(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(host
-        .ob_get_clean()
-        .map(Value::str)
-        .unwrap_or(Value::Bool(false)))
+fn fn_ob_flush(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    ob(host, crate::ObCall::Flush)
 }
 
-fn fn_ob_get_level(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(host.ob_get_level() as i64))
-}
-
-fn fn_ob_end_clean(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.ob_end_clean()))
+fn fn_ob_clean(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    ob(host, crate::ObCall::Clean)
 }
 
 fn fn_ob_end_flush(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.ob_end_flush()))
+    ob(host, crate::ObCall::EndFlush)
+}
+
+fn fn_ob_end_clean(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    ob(host, crate::ObCall::EndClean)
 }
 
 fn fn_ob_get_flush(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    let contents = host.ob_get_contents();
-    host.ob_end_flush();
-    Ok(contents.map(Value::str).unwrap_or(Value::Bool(false)))
+    ob(host, crate::ObCall::GetFlush)
+}
+
+fn fn_ob_get_clean(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    ob(host, crate::ObCall::GetClean)
+}
+
+fn fn_ob_get_contents(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    ob(host, crate::ObCall::GetContents)
+}
+
+fn fn_ob_get_length(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    ob(host, crate::ObCall::GetLength)
+}
+
+fn fn_ob_get_level(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    ob(host, crate::ObCall::GetLevel)
+}
+
+fn fn_ob_list_handlers(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    ob(host, crate::ObCall::ListHandlers)
+}
+
+fn fn_ob_get_status(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let full = crate::argparse::bool_param(host, args, 0, "ob_get_status", "full_status", false)?;
+    ob(host, crate::ObCall::GetStatus { full })
+}
+
+fn fn_ob_implicit_flush(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let on = crate::argparse::bool_param(host, args, 0, "ob_implicit_flush", "enable", true)?;
+    ob(host, crate::ObCall::ImplicitFlush(on))
+}
+
+fn fn_flush(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    ob(host, crate::ObCall::SapiFlush)
 }
 
 /// One `putenv` change: name and new value (`None` = unset).
@@ -1389,12 +1435,19 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         Some(2),
     );
     put(m, "ob_start", fn_ob_start, 0, Some(3));
-    put(m, "ob_get_contents", fn_ob_get_contents, 0, Some(0));
-    put(m, "ob_get_clean", fn_ob_get_clean, 0, Some(0));
-    put(m, "ob_get_level", fn_ob_get_level, 0, Some(0));
-    put(m, "ob_end_clean", fn_ob_end_clean, 0, Some(0));
+    put(m, "ob_flush", fn_ob_flush, 0, Some(0));
+    put(m, "ob_clean", fn_ob_clean, 0, Some(0));
     put(m, "ob_end_flush", fn_ob_end_flush, 0, Some(0));
+    put(m, "ob_end_clean", fn_ob_end_clean, 0, Some(0));
     put(m, "ob_get_flush", fn_ob_get_flush, 0, Some(0));
+    put(m, "ob_get_clean", fn_ob_get_clean, 0, Some(0));
+    put(m, "ob_get_contents", fn_ob_get_contents, 0, Some(0));
+    put(m, "ob_get_length", fn_ob_get_length, 0, Some(0));
+    put(m, "ob_get_level", fn_ob_get_level, 0, Some(0));
+    put(m, "ob_list_handlers", fn_ob_list_handlers, 0, Some(0));
+    put(m, "ob_get_status", fn_ob_get_status, 0, Some(1));
+    put(m, "ob_implicit_flush", fn_ob_implicit_flush, 0, Some(1));
+    put(m, "flush", fn_flush, 0, Some(0));
     put(m, "getenv", fn_getenv, 0, Some(1));
     put(m, "putenv", fn_putenv, 1, Some(1));
     put(m, "set_error_handler", fn_set_handler, 1, Some(2));
@@ -1414,6 +1467,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         Some(0),
     );
     put(m, "trigger_error", fn_trigger_error, 1, Some(2));
+    put(m, "user_error", fn_trigger_error, 1, Some(2));
     put(m, "error_reporting", fn_error_reporting, 0, Some(1));
     put(m, "error_get_last", fn_error_get_last, 0, Some(0));
     put(m, "error_clear_last", fn_error_clear_last, 0, Some(0));

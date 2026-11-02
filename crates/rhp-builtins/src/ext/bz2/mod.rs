@@ -199,6 +199,11 @@ thread_local! {
     static BZ_ERRORS: std::cell::RefCell<HashMap<u32, i64>> = std::cell::RefCell::new(HashMap::new());
 }
 
+/// Forget stream error states (a new request: resource ids restart).
+pub(crate) fn reset_state() {
+    BZ_ERRORS.with(|e| e.borrow_mut().clear());
+}
+
 fn bz_errno(args: &[Value]) -> i64 {
     match args.first().map(deref) {
         Some(Value::Resource(r)) => BZ_ERRORS.with(|t| t.borrow().get(&r.id).copied().unwrap_or(0)),

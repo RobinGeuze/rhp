@@ -1,7 +1,7 @@
 name: Set up php for rhp's differential tests
 description: >
-  Install php via setup-php, plus a `php` shim that force-loads shared
-  extensions whenever the harness runs `php -n`.
+  Install php and php-cgi via setup-php, plus `php` / `php-cgi` shims that
+  force-load shared extensions whenever the harness runs them with `-n`.
 
 # rhp's harness runs php with `-n` (no ini) for deterministic output.
 # Debian/Ubuntu php ships most extensions as shared modules enabled via ini,
@@ -11,6 +11,9 @@ description: >
 # injects an extension only if its .so exists and php hasn't compiled it in.
 # Either mistake would print a startup warning to stdout and corrupt every
 # comparison. Non-`-n` invocations pass through untouched.
+#
+# php-cgi (the reference for CGI .phpt tests and `rhp-difftest app`) gets the
+# same shim, next to the `php` one: the harness finds php-cgi beside php.
 
 inputs:
   php-version:
@@ -29,24 +32,49 @@ runs:
           sysvmsg, sysvsem, sysvshm, tokenizer, xml, xmlreader, xmlwriter, zip
         coverage: none
 
-    - name: Install php shim that force-loads extensions under -n
+    # The php-cgi must be the same build as php: a runner-image php-cgi of
+    # another minor version on PATH would make every CGI comparison
+    # meaningless. Debian names it php-cgi<major.minor>.
+    - name: Make sure the matching php-cgi is installed
       shell: bash
       run: |
-        REAL="$(command -v php)"
+        v="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
+        full="$(php -r 'echo PHP_VERSION;')"
+        if ! command -v "php-cgi$v" >/dev/null 2>&1; then
+          echo "setup-php installed no php-cgi$v; installing php$v-cgi"
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends "php$v-cgi"
+        fi
+        cgi="$(command -v "php-cgi$v")"
+        ver="$("$cgi" -n -v)"
+        ver="${ver%%$'\n'*}"
+        echo "$cgi: $ver"
+        case "$ver" in
+          "PHP $full "*) ;;
+          *) echo "$cgi is not php $full"; exit 1 ;;
+        esac
+
+    - name: Install php and php-cgi shims that force-load extensions under -n
+      shell: bash
+      run: |
         EXTDIR="$(php-config --extension-dir)"
         builtin="$(php -n -m | tr 'A-Z' 'a-z')"
         inject="-d extension_dir=$EXTDIR"
         for e in bcmath bz2 calendar ctype curl dom exif fileinfo gettext gmp iconv intl \
-                 mbstring pcntl phar posix shmop simplexml sockets sodium sysvmsg \
-                 sysvsem sysvshm tokenizer xml xmlreader xmlwriter zip; do
+                 mbstring openssl pcntl phar posix session shmop simplexml sockets sodium \
+                 sysvmsg sysvsem sysvshm tokenizer xml xmlreader xmlwriter zip; do
           if ! grep -qx "$e" <<<"$builtin" && [ -f "$EXTDIR/$e.so" ]; then
             inject="$inject -d extension=$e"
           fi
         done
-        echo "shim injects under -n: $inject"
+        echo "shims inject under -n: $inject"
         SHIM="$HOME/php-shim"
         mkdir -p "$SHIM"
-        cat > "$SHIM/php" <<EOF
+        v="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
+        for bin in php php-cgi; do
+          # php-cgi: the versioned binary checked in the step above.
+          REAL="$(command -v "$bin$([ "$bin" = php-cgi ] && echo "$v")")"
+          cat > "$SHIM/$bin" <<EOF
         #!/usr/bin/env bash
         for a in "\$@"; do
           if [ "\$a" = "-n" ]; then
@@ -55,7 +83,8 @@ runs:
         done
         exec "$REAL" "\$@"
         EOF
-        chmod +x "$SHIM/php"
+          chmod +x "$SHIM/$bin"
+        done
         echo "$SHIM" >> "$GITHUB_PATH"
 
     - name: Confirm extensions load under -n with clean stdout
@@ -68,3 +97,15 @@ runs:
           echo "php -n prints startup noise on stdout:"; echo "$out"; exit 1
         fi
         php -n -r 'foreach (["bcmath","ctype","gmp","mbstring","phar"] as $e) { if (!extension_loaded($e)) { fwrite(STDERR, "missing $e\n"); exit(1); } } echo "required extensions loaded\n";'
+        # php-cgi: a CGI request must answer with headers and a clean body.
+        dir="$(mktemp -d)"
+        echo '<?php echo implode(",", array_map("strtolower", get_loaded_extensions()));' > "$dir/t.php"
+        out="$(env -i PATH="$PATH" REDIRECT_STATUS=1 REQUEST_METHOD=GET SCRIPT_FILENAME="$dir/t.php" php-cgi -n -d opcache.enable=0)"
+        rm -rf "$dir"
+        echo "php-cgi -n: $(command -v php-cgi)"; echo "$out"
+        body="$(printf '%s' "$out" | sed '1,/^\r\?$/d')"
+        for e in mbstring ctype tokenizer dom; do
+          if ! tr ',' '\n' <<<"$body" | grep -qx "$e"; then
+            echo "php-cgi -n is missing $e (or printed startup noise)"; exit 1
+          fi
+        done

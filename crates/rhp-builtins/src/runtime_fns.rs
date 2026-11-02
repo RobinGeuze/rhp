@@ -154,12 +154,14 @@ thread_local! {
 pub(crate) fn reset_state() {
     INI.with(|m| m.borrow_mut().clear());
     TZ.with(|t| *t.borrow_mut() = None);
-    RESPONSE_CODE.with(|c| *c.borrow_mut() = 0);
     rhp_values::fmt::reset_precision();
 }
 
 /// Is a directive's owning module loaded in this engine?
 fn module_loaded(module: &str) -> bool {
+    if module == "cgi-fcgi" {
+        return crate::sapi::is_cgi();
+    }
     crate::php_fns::loaded_ext(module.as_bytes()).is_some()
 }
 
@@ -179,7 +181,12 @@ pub(crate) fn ini_value(name: &[u8]) -> Option<Option<Vec<u8>>> {
     if let Some(v) = INI.with(|m| m.borrow().get(&key).cloned()) {
         return Some(v);
     }
-    Some(e.2.map(|s| s.as_bytes().to_vec()))
+    Some(ini_default(e))
+}
+
+/// A directive's startup value: the SAPI's ini default, else the built-in one.
+fn ini_default(e: &(&'static str, &'static str, Option<&'static str>, u8)) -> Option<Vec<u8>> {
+    crate::sapi::sapi_ini_default(e.1).or_else(|| e.2.map(|s| s.as_bytes().to_vec()))
 }
 
 /// Store a runtime override for a directive (`ini_set` / `set_include_path`).
@@ -243,7 +250,7 @@ pub(crate) fn c_atol(s: &[u8]) -> i64 {
 /// `zend_ini_parse_quantity` (signed): digits with an optional 0x/0o/0b
 /// prefix, then an optional k/m/g suffix as the last character. Malformed
 /// input keeps the valid leading part (php warns and does the same).
-fn ini_parse_quantity(s: &[u8]) -> i64 {
+pub(crate) fn ini_parse_quantity(s: &[u8]) -> i64 {
     let ws = |c: u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
     let mut a = 0;
     let mut b = s.len();
@@ -437,7 +444,7 @@ fn fn_ini_get_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             let mut d = PhpArray::new();
             d.insert(
                 ArrayKey::from_bytes(b"global_value"),
-                ini_opt_value(e.2.map(|s| s.as_bytes().to_vec())),
+                ini_opt_value(ini_default(e)),
             );
             d.insert(ArrayKey::from_bytes(b"local_value"), ini_opt_value(cur));
             d.insert(ArrayKey::from_bytes(b"access"), Value::Int(e.3 as i64));
@@ -519,8 +526,20 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             let log_target = ini_value(b"error_log").flatten().filter(|v| !v.is_empty());
             match log_target {
                 Some(path) if ty == 0 => {
+                    // php_log_err: "[d-M-Y H:i:s e] message\n".
                     let p = String::from_utf8_lossy(&path).into_owned();
-                    let mut line = msg;
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    let mut line = b"[".to_vec();
+                    line.extend_from_slice(&crate::datetime_fns::php_date(
+                        b"d-M-Y H:i:s e",
+                        now,
+                        true,
+                    ));
+                    line.extend_from_slice(b"] ");
+                    line.extend_from_slice(&msg);
                     line.push(b'\n');
                     let _ = std::fs::OpenOptions::new()
                         .create(true)
@@ -528,93 +547,11 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         .open(p)
                         .and_then(|mut f| f.write_all(&line));
                 }
-                _ => {
-                    let mut e = std::io::stderr();
-                    let _ = e.write_all(&msg);
-                    let _ = e.write_all(b"\n");
-                    let _ = e.flush();
-                }
+                _ => host.log_message(&msg),
             }
             Ok(Value::Bool(true))
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// headers (CLI SAPI)
-// ---------------------------------------------------------------------------
-
-thread_local! {
-    static RESPONSE_CODE: RefCell<i64> = const { RefCell::new(0) };
-}
-
-fn fn_header(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let h = str_param(host, args, 0, "header", "header")?;
-    let _replace = bool_param(host, args, 1, "header", "replace", true)?;
-    let code = int_param(host, args, 2, "header", "response_code", 0)?;
-    if host.output_started() {
-        // php: Warning "Cannot modify header information - headers already sent"
-        return Ok(Value::Null);
-    }
-    if code > 0 {
-        RESPONSE_CODE.with(|c| *c.borrow_mut() = code);
-    }
-    if h.len() >= 5 && h[..5].eq_ignore_ascii_case(b"HTTP/") {
-        // sapi_extract_response_code: atoi after the first space.
-        if let Some(sp) = h.iter().position(|&b| b == b' ') {
-            let rest = &h[sp + 1..];
-            let n: i64 = rest
-                .iter()
-                .take_while(|b| b.is_ascii_digit())
-                .fold(0, |a, &b| a * 10 + (b - b'0') as i64);
-            if n > 0 {
-                RESPONSE_CODE.with(|c| *c.borrow_mut() = n);
-            }
-        }
-    } else if code == 0 && h.len() >= 9 && h[..9].eq_ignore_ascii_case(b"location:") {
-        RESPONSE_CODE.with(|c| {
-            let cur = *c.borrow();
-            if !(300..=399).contains(&cur) && cur != 201 {
-                *c.borrow_mut() = 302;
-            }
-        });
-    }
-    Ok(Value::Null)
-}
-
-fn fn_headers_sent(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.output_started()))
-}
-
-fn fn_headers_list(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    // The CLI SAPI never stores headers.
-    Ok(Value::Array(PhpArray::new()))
-}
-
-fn fn_header_remove(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let _ = str_or_null_param(host, args, 0, "header_remove", "name")?;
-    Ok(Value::Null)
-}
-
-fn fn_http_response_code(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let code = int_param(host, args, 0, "http_response_code", "response_code", 0)?;
-    let old = RESPONSE_CODE.with(|c| *c.borrow());
-    if code != 0 {
-        if host.output_started() {
-            return Ok(Value::Bool(false));
-        }
-        RESPONSE_CODE.with(|c| *c.borrow_mut() = code);
-        return Ok(if old != 0 {
-            Value::Int(old)
-        } else {
-            Value::Bool(true)
-        });
-    }
-    Ok(if old != 0 {
-        Value::Int(old)
-    } else {
-        Value::Bool(false)
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -656,9 +593,4 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         1,
     );
     put("error_log", fn_error_log, 1, 4);
-    put("header", fn_header, 1, 3);
-    put("headers_sent", fn_headers_sent, 0, 2);
-    put("headers_list", fn_headers_list, 0, 0);
-    put("header_remove", fn_header_remove, 0, 1);
-    put("http_response_code", fn_http_response_code, 0, 1);
 }

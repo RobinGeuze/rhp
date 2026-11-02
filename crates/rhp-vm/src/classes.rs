@@ -529,26 +529,21 @@ impl Vm {
         &mut self,
         range: std::ops::Range<usize>,
     ) -> Result<(), Thrown> {
-        loop {
-            let mut progressed = false;
-            for i in range.clone() {
-                if self.decl_classes[i].1 {
-                    continue;
-                }
-                let proto = self.decl_classes[i].0.clone();
-                if self.class_ids.contains_key(&lc(proto.name.as_bytes()))
-                    || !self.deps_ready(&proto)
-                    || !early_bindable(&proto)
-                {
-                    continue;
-                }
-                self.link_class(&proto)?;
-                self.decl_classes[i].1 = true;
-                progressed = true;
+        // One pass in source order, as php's compiler does: a class whose
+        // parent is declared further down the file is not early-bound.
+        for i in range {
+            if self.decl_classes[i].1 {
+                continue;
             }
-            if !progressed {
-                break;
+            let proto = self.decl_classes[i].0.clone();
+            if self.class_ids.contains_key(&lc(proto.name.as_bytes()))
+                || !self.deps_ready(&proto)
+                || !early_bindable(&proto)
+            {
+                continue;
             }
+            self.link_class(&proto)?;
+            self.decl_classes[i].1 = true;
         }
         Ok(())
     }

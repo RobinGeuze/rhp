@@ -2081,6 +2081,9 @@ struct Frame {
     extra_args: Vec<Value>,
     /// `include`/`require`/`eval` frame: the construct name shown in traces.
     include_kind: Option<&'static str>,
+    /// `include`/`require`/`eval` frame: the frame whose variable scope it
+    /// runs in.
+    include_caller: Option<usize>,
     /// Variables created by name (`$$n = v`) that have no compiled slot.
     dyn_vars: HashMap<Vec<u8>, Rc<RefCell<Value>>>,
 }
@@ -2144,6 +2147,7 @@ impl Frame {
             holes: 0,
             extra_args: Vec::new(),
             include_kind: None,
+            include_caller: None,
             dyn_vars: HashMap::new(),
         }
     }
@@ -3032,8 +3036,18 @@ impl Vm {
         let o = self.reg_get(top, obj);
         let arr = self.reg_get(top, args);
         if let Value::Closure(_) = o {
-            let (argv, _named) = self.split_call_args(&arr)?;
-            let r = self.closure_method(&o, &mname, argv)?;
+            let (mut argv, named) = self.split_call_args(&arr)?;
+            let r = match mname.to_ascii_lowercase().as_slice() {
+                b"__invoke" if !named.is_empty() => self.call_named(&o, argv, named, None)?,
+                b"call" if !named.is_empty() && !argv.is_empty() => {
+                    let new_this = argv.remove(0);
+                    let bound = self
+                        .closure_bind(&o, &new_this, &new_this)
+                        .unwrap_or(Value::Null);
+                    self.call_named(&bound, argv, named, None)?
+                }
+                _ => self.closure_method(&o, &mname, argv)?,
+            };
             self.reg_set(top, dst, r);
             return Ok(());
         }
@@ -4026,6 +4040,7 @@ impl Vm {
                     classes: &self.classes,
                     scope: self.stack[top].defining_class,
                     called: self.stack[top].called_class,
+                    false_conv: Default::default(),
                 };
                 Ok(read_path(&got, &steps[i + 1..], &cx))
             }
@@ -4136,12 +4151,20 @@ impl Vm {
         self.cursor_readonly_check(top, steps, true)?;
         let (i, h, name) = match self.cursor_magic_split(top, steps) {
             MagicSplit::Plain => {
+                if let Some(i) = self.cursor_string_step(top, steps) {
+                    return Err(Self::string_offset_error(
+                        steps,
+                        i,
+                        "Cannot create references to/from string offsets",
+                    ));
+                }
                 let cx = PropCtx {
                     classes: &self.classes,
                     scope: self.stack[top].defining_class,
                     called: self.stack[top].called_class,
+                    false_conv: Default::default(),
                 };
-                return match &self.cursor_root {
+                let r = match &self.cursor_root {
                     CursorRoot::Cv(r) => {
                         let r = *r as usize;
                         make_ref_path(&mut self.stack[top].regs[r], steps, &cx)
@@ -4152,6 +4175,10 @@ impl Vm {
                         c
                     }
                 };
+                if cx.false_conv.get() {
+                    self.diag(8192, "Automatic conversion of false to array is deprecated")?;
+                }
+                return r;
             }
             MagicSplit::Leaf(h, name) => (steps.len() - 1, h, name),
             MagicSplit::Nested(i, h, name) => (i, h, name),
@@ -4169,6 +4196,7 @@ impl Vm {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
+            false_conv: Default::default(),
         };
         match &self.cursor_root {
             CursorRoot::Cv(r) => read_path(&self.stack[top].regs[*r as usize], steps, &cx),
@@ -4244,6 +4272,9 @@ impl Vm {
                 return self.with_cursor_root(cell, |vm| vm.cursor_write(top, rest, v));
             }
         }
+        if let Some(i) = self.cursor_string_step(top, steps) {
+            return self.string_offset_write(top, steps, i, v);
+        }
         // `$obj[$k] = v` / `$obj[] = v` on an ArrayAccess object -> offsetSet.
         if steps.len() == 1 {
             if let (Some(h), Some(key)) = (self.cursor_root_obj(top), aa_key(&steps[0])) {
@@ -4259,8 +4290,9 @@ impl Vm {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
+            false_conv: Default::default(),
         };
-        match &self.cursor_root {
+        let r = match &self.cursor_root {
             CursorRoot::Cv(r) => {
                 let r = *r as usize;
                 assign_path(&mut self.stack[top].regs[r], steps, v, &cx)
@@ -4268,6 +4300,148 @@ impl Vm {
             CursorRoot::Cell(rc) => {
                 let rc = rc.clone();
                 let r = assign_path(&mut rc.borrow_mut(), steps, v, &cx);
+                r
+            }
+        };
+        if cx.false_conv.get() {
+            self.diag(8192, "Automatic conversion of false to array is deprecated")?;
+        }
+        r
+    }
+
+    /// The index of the first cursor step that indexes into a string (`$s[..]`
+    /// / `$s[]`), if the path reaches one (no magic properties on the way).
+    fn cursor_string_step(&self, top: usize, steps: &[CursorStep]) -> Option<usize> {
+        let cx = PropCtx {
+            classes: &self.classes,
+            scope: self.stack[top].defining_class,
+            called: self.stack[top].called_class,
+            false_conv: Default::default(),
+        };
+        let mut cur = deref(&self.cursor_root_value(top));
+        for (i, step) in steps.iter().enumerate() {
+            match (&cur, step) {
+                (Value::Str(_), CursorStep::Key(_) | CursorStep::Append) => return Some(i),
+                (Value::Array(_), CursorStep::Key(_)) | (Value::Object(_), CursorStep::Prop(_)) => {
+                    cur = deref(&read_path(&cur, std::slice::from_ref(step), &cx));
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// The error for a write-context use of string step `i` that is not a
+    /// plain one-byte assignment (`what` names the operation on the leaf).
+    fn string_offset_error(steps: &[CursorStep], i: usize, what: &str) -> Thrown {
+        let msg = match (&steps[i], steps.get(i + 1)) {
+            (CursorStep::Append, _) => "[] operator not supported for strings",
+            (_, Some(CursorStep::Prop(_))) => "Cannot use string offset as an object",
+            (_, Some(_)) => "Cannot use string offset as an array",
+            (_, None) => what,
+        };
+        Thrown::error("Error", msg)
+    }
+
+    /// `$s[$k] = v` (zend_assign_to_string_offset): replace / append one
+    /// byte, padding with spaces; step `i` of the cursor path is the offset.
+    fn string_offset_write(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+        i: usize,
+        v: Value,
+    ) -> Result<(), Thrown> {
+        let (CursorStep::Key(key), None) = (&steps[i], steps.get(i + 1)) else {
+            return Err(Self::string_offset_error(steps, i, ""));
+        };
+        if matches!(v, Value::Ref(_)) {
+            return Err(Thrown::error(
+                "Error",
+                "Cannot create references to/from string offsets",
+            ));
+        }
+        let offset = match deref(key) {
+            Value::Int(n) => n,
+            Value::Str(ks) => {
+                let kb = ks.as_bytes();
+                match conv::scan_number(kb) {
+                    Some((conv::Num::Int(n), end)) => {
+                        if !kb[end..].iter().all(|b| b" \t\n\r\x0b\x0c".contains(b)) {
+                            self.diag(
+                                2,
+                                &format!("Illegal string offset \"{}\"", String::from_utf8_lossy(kb)),
+                            )?;
+                        }
+                        n
+                    }
+                    _ => {
+                        return Err(Thrown::type_error(
+                            "Cannot access offset of type string on string",
+                        ))
+                    }
+                }
+            }
+            k @ (Value::Float(_) | Value::Null | Value::Bool(_)) => {
+                self.diag(2, "String offset cast occurred")?;
+                match k {
+                    Value::Float(f) if !f.is_finite() || f.abs() >= 9.2e18 => 0,
+                    k => conv::to_int(&k),
+                }
+            }
+            k => {
+                return Err(Thrown::type_error(format!(
+                    "Cannot access offset of type {} on string",
+                    self.offset_type_name(&k)
+                )))
+            }
+        };
+        let Value::Str(s) = deref(&self.cursor_read_steps(top, &steps[..i])) else {
+            unreachable!("cursor_string_step found a string")
+        };
+        let len = s.as_bytes().len() as i64;
+        if offset < -len {
+            return self.diag(2, &format!("Illegal string offset {offset}"));
+        }
+        let at = if offset < 0 { offset + len } else { offset } as usize;
+        let src = match &v {
+            Value::Str(b) => b.as_bytes().to_vec(),
+            other => self.to_string_vm(other)?,
+        };
+        let Some(&c) = src.first() else {
+            return Err(Thrown::error(
+                "Error",
+                "Cannot assign an empty string to a string offset",
+            ));
+        };
+        if src.len() > 1 {
+            self.diag(2, "Only the first byte will be assigned to the string offset")?;
+        }
+        // Re-read: a diagnostic handler may have changed the string.
+        let mut bytes = match deref(&self.cursor_read_steps(top, &steps[..i])) {
+            Value::Str(s) => s.as_bytes().to_vec(),
+            _ => s.as_bytes().to_vec(),
+        };
+        if at >= bytes.len() {
+            bytes.resize(at + 1, b' ');
+        }
+        bytes[at] = c;
+        let cx = PropCtx {
+            classes: &self.classes,
+            scope: self.stack[top].defining_class,
+            called: self.stack[top].called_class,
+            false_conv: Default::default(),
+        };
+        let prefix = &steps[..i];
+        let new = Value::str(bytes);
+        match &self.cursor_root {
+            CursorRoot::Cv(r) => {
+                let r = *r as usize;
+                assign_path(&mut self.stack[top].regs[r], prefix, new, &cx)
+            }
+            CursorRoot::Cell(rc) => {
+                let rc = rc.clone();
+                let r = assign_path(&mut rc.borrow_mut(), prefix, new, &cx);
                 r
             }
         }
@@ -4971,6 +5145,7 @@ impl Vm {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
+            false_conv: Default::default(),
         };
         match &self.cursor_root {
             CursorRoot::Cv(r) => unset_path(&mut self.stack[top].regs[*r as usize], steps, &cx),
@@ -4996,7 +5171,15 @@ impl Vm {
         {
             return Some(Ok(i as Reg));
         }
-        let table = if top == 0 && self.stack[top].include_kind.is_none() {
+        // An include/eval frame has no scope of its own: a variable it has no
+        // slot for lives in the including scope.
+        if let Some(caller) = self.stack[top].include_caller {
+            return match self.var_var_lookup(caller, name)? {
+                Ok(cv) => Some(Err(self.slot_cell_ro(caller, cv))),
+                Err(cell) => Some(Err(cell)),
+            };
+        }
+        let table = if top == 0 {
             &self.globals
         } else {
             &self.stack[top].dyn_vars
@@ -5004,12 +5187,53 @@ impl Vm {
         table.get(name).map(|c| Err(c.clone()))
     }
 
+    /// Make the variable `name` of frame `top` (a variable-variable) an alias
+    /// of `cell`, as `global $$n` does.
+    fn var_var_bind(&mut self, top: usize, name: &[u8], cell: Rc<RefCell<Value>>) {
+        let proto = &self.stack[top].proto;
+        if let Some(i) = proto
+            .cv_var_names
+            .iter()
+            .take(proto.num_cvs as usize)
+            .position(|n| n.as_bytes() == name)
+        {
+            self.stack[top].regs[i] = Value::Ref(cell);
+        } else if let Some(caller) = self.stack[top].include_caller {
+            self.var_var_bind(caller, name, cell);
+        } else if top == 0 {
+            self.globals.insert(name.to_vec(), cell);
+        } else {
+            self.stack[top].dyn_vars.insert(name.to_vec(), cell);
+        }
+    }
+
+    /// The cell behind CV `cv` of frame `top` when it is already a reference,
+    /// else a detached copy (read-only use).
+    fn slot_cell_ro(&self, top: usize, cv: Reg) -> Rc<RefCell<Value>> {
+        match &self.stack[top].regs[cv as usize] {
+            Value::Ref(rc) => rc.clone(),
+            v => Rc::new(RefCell::new(v.clone())),
+        }
+    }
+
     /// [`Self::var_var_lookup`], creating the variable when it does not exist.
     fn var_var_slot(&mut self, top: usize, name: &[u8]) -> Result<Reg, Rc<RefCell<Value>>> {
-        if let Some(found) = self.var_var_lookup(top, name) {
-            return found;
+        let proto = &self.stack[top].proto;
+        if let Some(i) = proto
+            .cv_var_names
+            .iter()
+            .take(proto.num_cvs as usize)
+            .position(|n| n.as_bytes() == name)
+        {
+            return Ok(i as Reg);
         }
-        if top == 0 && self.stack[top].include_kind.is_none() {
+        if let Some(caller) = self.stack[top].include_caller {
+            return Err(match self.var_var_slot(caller, name) {
+                Ok(cv) => self.promote(caller, cv),
+                Err(cell) => cell,
+            });
+        }
+        if top == 0 {
             return Err(self.global_cell(name));
         }
         Err(self.stack[top]
@@ -5399,6 +5623,14 @@ impl Vm {
                     };
                     self.stack[top].regs[cv as usize] = Value::Ref(cell);
                 }
+                Instr::BindGlobalDyn { name } => {
+                    let gname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let cell = match self.main_cv_names.get(&gname).copied() {
+                        Some(mreg) => self.promote(0, mreg),
+                        None => self.global_cell(&gname),
+                    };
+                    self.var_var_bind(top, &gname, cell);
+                }
                 Instr::BindStatic { cv, name, init } => {
                     let sname = proto.names[name as usize].as_bytes().to_vec();
                     let key = self.static_key(top, &proto, sname);
@@ -5568,6 +5800,13 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchLvalRw { dst } => {
+                    if let Some(i) = self.cursor_string_step(top, &self.cursor_steps) {
+                        return Err(Self::string_offset_error(
+                            &self.cursor_steps,
+                            i,
+                            "Cannot use assign-op operators with string offsets",
+                        ));
+                    }
                     let v = self.cursor_read(top)?;
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
@@ -5594,6 +5833,13 @@ impl Vm {
                 }
                 Instr::IncDecLval { dst, pre, delta } => {
                     let steps = std::mem::take(&mut self.cursor_steps);
+                    if let Some(i) = self.cursor_string_step(top, &steps) {
+                        return Err(Self::string_offset_error(
+                            &steps,
+                            i,
+                            "Cannot increment/decrement string offsets",
+                        ));
+                    }
                     let old = self.cursor_read_magic(top, &steps)?;
                     let new = inc_dec_value(&old, delta as i64);
                     self.cursor_write(top, &steps, new.clone())?;
@@ -6041,7 +6287,7 @@ impl Vm {
                     argc,
                 } => {
                     let o = self.reg_get(top, obj);
-                    let mname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let mname = dyn_method_name(&self.reg_get(top, name))?;
                     if let Value::Closure(_) = o {
                         let args: Vec<Value> =
                             (0..argc).map(|i| self.reg_get(top, base + i)).collect();
@@ -6237,7 +6483,7 @@ impl Vm {
                     base,
                     argc,
                 } => {
-                    let mname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let mname = dyn_method_name(&self.reg_get(top, name))?;
                     self.do_call_static(top, class, mname, dst, base, argc)?;
                 }
                 Instr::InstanceOf { dst, val, class } => {
@@ -6461,7 +6707,7 @@ impl Vm {
                     name,
                     args,
                 } => {
-                    let mname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let mname = dyn_method_name(&self.reg_get(top, name))?;
                     self.call_method_args(top, obj, mname, args, dst)?;
                 }
                 Instr::CallStaticV {
@@ -6479,7 +6725,7 @@ impl Vm {
                     name,
                     args,
                 } => {
-                    let mname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let mname = dyn_method_name(&self.reg_get(top, name))?;
                     self.call_static_args(top, class, mname, args, dst)?;
                 }
 
@@ -7090,22 +7336,9 @@ impl Vm {
                 .push(Rc::new(rebase_proto_c(proto, base, cbase as u32)));
             self.fn_names.insert(lc, idx);
         }
-        // classes: skip the re-emitted built-in prelude (always the first N); a
-        // user class past that is fatal to redeclare.
-        for c in prog.classes.iter().skip(prog.num_prelude_classes) {
-            if self
-                .class_ids
-                .contains_key(&c.name.as_bytes().to_ascii_lowercase())
-            {
-                return Err(Thrown::error(
-                    "Error",
-                    format!(
-                        "Cannot declare class {}, because the name is already in use",
-                        String::from_utf8_lossy(c.name.as_bytes())
-                    ),
-                ));
-            }
-        }
+        // classes: a top-level class whose name is already taken is not
+        // early-bound; its declaration statement fails when (if) it runs, so
+        // a file may `return` before a fallback definition.
         let top = self.register_decl_classes(prog, base);
         self.hoist_decl_classes(top)?;
         // constants: define_const skips an already-defined name.
@@ -7134,6 +7367,7 @@ impl Vm {
         let mut frame = Frame::new(main.clone(), 0);
         frame.capture = true;
         frame.include_kind = Some(kind);
+        frame.include_caller = Some(caller_top);
         frame.defining_class = self.stack[caller_top].defining_class;
         frame.called_class = self.stack[caller_top].called_class;
 
@@ -9161,6 +9395,9 @@ struct PropCtx<'a> {
     scope: Option<ClassId>,
     /// The called (LSB) class, named by asymmetric-visibility errors.
     called: Option<ClassId>,
+    /// Set when a write autovivified `false` into an array (the caller raises
+    /// php's deprecation).
+    false_conv: std::cell::Cell<bool>,
 }
 
 impl PropCtx<'_> {
@@ -9227,19 +9464,32 @@ fn read_path(slot: &Value, steps: &[CursorStep], cx: &PropCtx) -> Value {
     }
 }
 
-/// Make `slot` an array (autovivifying null/"" ), or error on a non-empty scalar.
-fn autovivify(slot: &mut Value) -> Result<(), Thrown> {
+/// The method name of `$o->$m()` / `C::$m()`: php requires a string.
+fn dyn_method_name(v: &Value) -> Result<Vec<u8>, Thrown> {
+    match deref(v) {
+        Value::Str(s) => Ok(s.as_bytes().to_vec()),
+        _ => Err(Thrown::error("Error", "Method name must be a string")),
+    }
+}
+
+/// Make `slot` an array (autovivifying null, and false with a deprecation),
+/// or error on any other scalar (strings are handled by the caller).
+fn autovivify(slot: &mut Value, cx: &PropCtx) -> Result<(), Thrown> {
     match slot {
         Value::Array(_) => Ok(()),
+        Value::Bool(false) => {
+            cx.false_conv.set(true);
+            *slot = Value::Array(PhpArray::new());
+            Ok(())
+        }
         Value::Null => {
             *slot = Value::Array(PhpArray::new());
             Ok(())
         }
-        Value::Str(s) if s.is_empty() => {
-            *slot = Value::Array(PhpArray::new());
-            Ok(())
-        }
-        _ => Err(Thrown::type_error("Cannot use a scalar value as an array")),
+        _ => Err(Thrown::error(
+            "Error",
+            "Cannot use a scalar value as an array",
+        )),
     }
 }
 
@@ -9278,7 +9528,7 @@ fn assign_path(
         let child = classes::prop_slot_mut(cx.classes, &mut od, key);
         return assign_path(child, rest, value, cx);
     }
-    autovivify(slot)?;
+    autovivify(slot, cx)?;
     let Value::Array(arr) = slot else {
         unreachable!("autovivify ensures array")
     };
@@ -9349,7 +9599,7 @@ fn make_ref_path(
         let child = classes::prop_slot_mut(cx.classes, &mut od, key);
         return make_ref_path(child, rest, cx);
     }
-    autovivify(slot)?;
+    autovivify(slot, cx)?;
     let Value::Array(arr) = slot else {
         unreachable!("autovivify ensures array")
     };

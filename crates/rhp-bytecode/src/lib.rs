@@ -641,6 +641,11 @@ pub enum Instr {
         cv: Reg,
         name: NIdx,
     },
+    /// `global $$n` / `global ${expr}`: bind the current scope's variable
+    /// named by register `name` to that global.
+    BindGlobalDyn {
+        name: Reg,
+    },
     /// `static $x = <const>`: bind CV `cv` to a per-function persistent cell,
     /// initialized to const `init` (`u32::MAX` = null) on first execution.
     BindStatic {

@@ -2555,6 +2555,9 @@ impl ProtoBuilder {
                         let cv = self.cv(var);
                         let name = self.intern_name(var);
                         self.emit(Instr::BindGlobal { cv, name });
+                    } else {
+                        let name = self.var_name_reg(v)?;
+                        self.emit(Instr::BindGlobalDyn { name });
                     }
                 }
             }

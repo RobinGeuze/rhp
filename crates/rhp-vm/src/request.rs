@@ -133,8 +133,12 @@ impl Vm {
             ));
             return;
         }
-        if let Some(req) = self.sapi.request.as_ref() {
-            self.sapi.body.buffer_rest(&req.body);
+        let over = match self.sapi.request.as_ref() {
+            Some(req) => self.sapi.body.read_standard(&req.body, max),
+            None => false,
+        };
+        if over {
+            self.startup_warning(&rfc1867::actual_length_exceeds(max));
         }
     }
 
@@ -426,7 +430,13 @@ impl Vm {
         let mut post = PhpArray::new();
         match &kind[..] {
             b"application/x-www-form-urlencoded" => {
-                let (a, over) = sapi::post_form_vars(&req.body, max_vars);
+                // php_std_post_handler parses what the reader buffered.
+                let data = self
+                    .sapi
+                    .body
+                    .buffered()
+                    .unwrap_or_else(|| self.sapi.body.remaining(&req.body).to_vec());
+                let (a, over) = sapi::post_form_vars(&data, max_vars);
                 self.input_vars_exceeded(over, max_vars);
                 post = a;
             }
@@ -435,6 +445,7 @@ impl Vm {
                 let len = req.content_length.unwrap_or(req.body.len() as i64);
                 let mut out = rfc1867::parse(
                     self.sapi.body.remaining(&req.body),
+                    self.sapi.body.read_bytes(),
                     &rfc1867::content_type_dup(ct),
                     len,
                     &lim,

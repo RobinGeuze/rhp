@@ -28,6 +28,17 @@ use crate::{Builtin, Host};
 /// `FILLUNIT`: the multipart buffer's minimum size.
 const FILLUNIT: usize = 1024 * 5;
 
+/// `SAPI_POST_BLOCK_SIZE`: the block `sapi_read_standard_form_data` reads
+/// the body in.
+pub const SAPI_POST_BLOCK_SIZE: usize = 0x40000;
+
+/// The warning php raises once more than `post_max_size` bytes of a body
+/// were actually read, whatever its `Content-Length` said
+/// (GHSA-2cv3-554h-jpmh).
+pub fn actual_length_exceeds(post_max_size: i64) -> String {
+    format!("Actual POST length does not match Content-Length, and exceeds {post_max_size} bytes")
+}
+
 /// `UPLOAD_ERR_*`.
 const UPLOAD_ERR_INI_SIZE: i64 = 1;
 const UPLOAD_ERR_FORM_SIZE: i64 = 2;
@@ -75,6 +86,38 @@ impl BodyState {
     pub fn buffer_rest(&self, body: &[u8]) {
         *self.buffered.borrow_mut() = Some(self.remaining(body).to_vec());
         self.consumed.set(body.len());
+    }
+
+    /// `SG(read_post_bytes)`: body bytes read from the SAPI so far.
+    pub fn read_bytes(&self) -> usize {
+        self.consumed.get()
+    }
+
+    /// `sapi_read_standard_form_data`'s read loop (the declared length is
+    /// within `post_max_size`): the rest of the body is read in
+    /// [`SAPI_POST_BLOCK_SIZE`] blocks into a new `request_body`, stopping
+    /// after the block that takes the bytes read past `post_max_size` (a
+    /// body longer than its `Content-Length`). True when it stopped so: the
+    /// caller raises [`actual_length_exceeds`] and still parses what was
+    /// read.
+    pub fn read_standard(&self, body: &[u8], post_max_size: i64) -> bool {
+        let rest = self.remaining(body);
+        let mut off = 0;
+        let mut over = false;
+        loop {
+            let n = SAPI_POST_BLOCK_SIZE.min(rest.len() - off);
+            off += n;
+            self.consumed.set(self.consumed.get() + n);
+            if post_max_size > 0 && self.consumed.get() as i64 > post_max_size {
+                over = true;
+                break;
+            }
+            if n < SAPI_POST_BLOCK_SIZE {
+                break;
+            }
+        }
+        *self.buffered.borrow_mut() = Some(rest[..off].to_vec());
+        over
     }
 
     /// The buffered body (`request_body`), if a reader made one.
@@ -239,6 +282,10 @@ struct MBuf<'a> {
     bufsize: usize,
     boundary: Vec<u8>,
     boundary_next: Vec<u8>,
+    /// `SG(read_post_bytes)` before this parse started reading.
+    read_before: usize,
+    /// `post_max_size` (<= 0: no limit).
+    post_max_size: i64,
 }
 
 impl<'a> MBuf<'a> {
@@ -257,7 +304,20 @@ impl<'a> MBuf<'a> {
             bufsize,
             boundary: b,
             boundary_next: bn,
+            read_before: 0,
+            post_max_size: 0,
         }
+    }
+
+    /// `SG(read_post_bytes)`: everything read from the SAPI so far.
+    fn read_post_bytes(&self) -> usize {
+        self.read_before + self.src_pos
+    }
+
+    /// More than `post_max_size` bytes were read (the body was longer than
+    /// its `Content-Length`).
+    fn over_limit(&self) -> bool {
+        self.post_max_size > 0 && self.read_post_bytes() as i64 > self.post_max_size
     }
 
     /// `fill_buffer`.
@@ -267,6 +327,10 @@ impl<'a> MBuf<'a> {
                 .copy_within(self.begin..self.begin + self.bytes, 0);
         }
         self.begin = 0;
+        // GHSA-2cv3-554h-jpmh: stop reading once over post_max_size.
+        if self.over_limit() {
+            return 0;
+        }
         let want = self.bufsize - self.bytes;
         let n = want.min(self.src.len() - self.src_pos);
         self.buffer[self.bytes..self.bytes + n]
@@ -599,9 +663,11 @@ fn open_upload_temp(dir: &[u8], diags: &mut Vec<Diag>) -> Option<Vec<u8>> {
 }
 
 /// `rfc1867_post_handler`: parse a multipart body (`src`, what is left of
-/// the request body) into `post` / `files`.
+/// the request body; `read_before`: the body bytes read before it, php's
+/// `SG(read_post_bytes)`) into `post` / `files`.
 pub fn parse(
     src: &[u8],
+    read_before: usize,
     content_type_dup: &[u8],
     content_length: i64,
     lim: &Limits,
@@ -656,6 +722,8 @@ pub fn parse(
     }
 
     let mut mb = MBuf::new(src, boundary);
+    mb.read_before = read_before;
+    mb.post_max_size = lim.post_max_size;
     let mut protected: HashSet<Vec<u8>> = HashSet::new();
     let mut uploaded: Vec<Vec<u8>> = Vec::new();
     let mut count: i64 = 0;
@@ -936,6 +1004,11 @@ pub fn parse(
             Value::Int(size),
             false,
         );
+    }
+    // fileupload_done.
+    if mb.over_limit() {
+        out.diags
+            .push(Diag::Sapi(actual_length_exceeds(lim.post_max_size)));
     }
     out.consumed = mb.src_pos;
     out.uploaded = Some(uploaded);
@@ -1252,8 +1325,15 @@ fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
             )?;
             return Ok(false);
         }
-        if let Some(s) = host.body_state() {
-            s.buffer_rest(&body);
+        let over = host
+            .body_state()
+            .is_some_and(|s| s.read_standard(&body, lim.post_max_size));
+        if over {
+            crate::warn(
+                host,
+                "request_parse_body",
+                &actual_length_exceeds(lim.post_max_size),
+            )?;
         }
         Ok(true)
     };
@@ -1279,12 +1359,13 @@ fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
             }
         }
         b"multipart/form-data" => {
-            let rest = match host.body_state() {
-                Some(s) => s.remaining(&body).to_vec(),
-                None => Vec::new(),
+            let (rest, read_before) = match host.body_state() {
+                Some(s) => (s.remaining(&body).to_vec(), s.read_bytes()),
+                None => (Vec::new(), 0),
             };
             let mut out = parse(
                 &rest,
+                read_before,
                 &content_type_dup(&ct),
                 content_length,
                 &lim,

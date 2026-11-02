@@ -5,6 +5,10 @@ class XMLWriter {
     public function openMemory(): bool { if ($this->__w !== null) { __xw('free', $this->__w); } $this->__w = __xw('openMemory', 0); return true; }
     public static function toMemory(): static { $w = new static(); $w->openMemory(); return $w; }
     public static function toUri(string $uri): static { $w = new static(); $w->openUri($uri); return $w; }
+    public static function toStream($stream): static {
+        if (!is_resource($stream)) { throw new TypeError('XMLWriter::toStream(): Argument #1 ($stream) must be of type resource, ' . get_debug_type($stream) . ' given'); }
+        $w = new static(); $w->__w = __xw('openStream', 0, $stream); return $w;
+    }
     private function __chk() { if ($this->__w === null) { throw new Error('Invalid or uninitialized XMLWriter object'); } return $this->__w; }
     public function __destruct() { if ($this->__w !== null) { __xw('flush', $this->__w, true); __xw('free', $this->__w); $this->__w = null; } }
     public function setIndent(bool $enable): bool { return __xw('setIndent', $this->__chk(), $enable); }
@@ -48,7 +52,13 @@ class XMLWriter {
     public function outputMemory(bool $flush = true): string { return __xw('outputMemory', $this->__chk(), $flush); }
     public function flush(bool $empty = true): string|int { return __xw('flush', $this->__chk(), $empty); }
 }
-function xmlwriter_open_uri(string $uri): XMLWriter|false { $w = new XMLWriter(); return $w->openUri($uri) ? $w : false; }
+function xmlwriter_open_uri(string $uri): XMLWriter|false {
+    $w = new XMLWriter();
+    $r = __xw('openUri', 0, $uri, 'xmlwriter_open_uri');
+    if ($r === false) { return false; }
+    $w->__w = $r;
+    return $w;
+}
 function xmlwriter_open_memory(): XMLWriter|false { $w = new XMLWriter(); $w->openMemory(); return $w; }
 function xmlwriter_set_indent(XMLWriter $writer, bool $enable): bool { return $writer->setIndent($enable); }
 function xmlwriter_set_indent_string(XMLWriter $writer, string $indentation): bool { return $writer->setIndentString($indentation); }

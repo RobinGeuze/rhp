@@ -372,7 +372,8 @@ fn by_tag(doc: &Doc, root: NodeId, name: &[u8]) -> Vec<NodeId> {
     all.into_iter()
         .filter(|&x| {
             let n = &doc.nodes[x];
-            n.kind == Kind::Element && (name == b"*" || n.qname() == name)
+            // legacy DOM compares libxml2's node->name: the local part
+            n.kind == Kind::Element && (name == b"*" || n.name == name)
         })
         .collect()
 }

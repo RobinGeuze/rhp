@@ -60,6 +60,7 @@ struct Entry {
 enum Target {
     Memory,
     Uri(Vec<u8>),
+    Stream(Value),
 }
 
 struct Writer {
@@ -73,6 +74,12 @@ struct Writer {
     doindent: bool,
     qchar: u8,
     started_doc: bool,
+    /// libxml2 sets writer->doc->encoding from startDocument; without one,
+    /// attribute values escape non-ASCII as character references.
+    doc_encoding: bool,
+    /// The output encoder startDocument installed (php hands the encoding
+    /// to xmlFindCharEncodingHandler): applied when output leaves the buffer.
+    out_enc: Option<Vec<u8>>,
 }
 
 impl Writer {
@@ -87,6 +94,21 @@ impl Writer {
             doindent: true,
             qchar: b'"',
             started_doc: false,
+            doc_encoding: false,
+            out_enc: None,
+        }
+    }
+
+    /// Take (or copy) the buffered output through the output encoder.
+    fn take_out(&mut self, take: bool) -> Vec<u8> {
+        let data = if take {
+            std::mem::take(&mut self.out)
+        } else {
+            self.out.clone()
+        };
+        match &self.out_enc {
+            Some(e) => crate::ext::libxml::tree::encode_output(data, e),
+            None => data,
         }
     }
 
@@ -122,7 +144,7 @@ impl Writer {
             }
             self.out.push(b'=');
             self.out.push(self.qchar);
-            escape_attr(&mut self.out, &u, true);
+            escape_attr(&mut self.out, &u, self.doc_encoding);
             self.out.push(self.qchar);
         }
     }
@@ -176,6 +198,8 @@ impl Writer {
             .extend_from_slice(&version.unwrap_or_else(|| b"1.0".to_vec()));
         self.out.push(self.qchar);
         if let Some(e) = encoding.filter(|e| !e.is_empty()) {
+            self.doc_encoding = true;
+            self.out_enc = Some(e.clone());
             self.out.extend_from_slice(b" encoding=");
             self.out.push(self.qchar);
             self.out.extend_from_slice(&e);
@@ -409,7 +433,7 @@ impl Writer {
     fn write_string(&mut self, content: &[u8]) -> bool {
         match self.top() {
             Some(St::Attribute) => {
-                escape_attr(&mut self.out, content, true);
+                escape_attr(&mut self.out, content, self.doc_encoding);
                 true
             }
             Some(St::Name) | Some(St::Text) => {
@@ -682,14 +706,11 @@ fn with_w<R>(id: i64, f: impl FnOnce(&mut Writer) -> R) -> Option<R> {
 
 fn flush_target(host: &mut dyn Host, id: i64, empty: bool) -> Value {
     let r = with_w(id, |w| {
-        let data = if empty {
-            std::mem::take(&mut w.out)
-        } else {
-            w.out.clone()
-        };
+        let data = w.take_out(empty);
         let target = match &w.target {
             Target::Memory => None,
-            Target::Uri(u) => Some(u.clone()),
+            Target::Uri(u) => Some(Err(u.clone())),
+            Target::Stream(v) => Some(Ok(v.clone())),
         };
         if target.is_some() {
             w.out.clear();
@@ -701,10 +722,15 @@ fn flush_target(host: &mut dyn Host, id: i64, empty: bool) -> Value {
     };
     match target {
         None => Value::str(data),
-        Some(uri) => {
+        Some(t) => {
             let n = data.len();
             if !data.is_empty() {
-                write_uri(host, &uri, &data);
+                match t {
+                    Err(uri) => write_uri(host, &uri, &data),
+                    Ok(stream) => {
+                        host.stream_write(&stream, &data);
+                    }
+                }
             }
             Value::Int(n as i64)
         }
@@ -739,10 +765,14 @@ fn fn_xw(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 Target::Memory
             } else {
                 let uri = bytes(args, 2);
+                let fname = match arg(args, 3) {
+                    Value::Null => "XMLWriter::openUri".to_string(),
+                    v => String::from_utf8_lossy(&conv::to_string_bytes(&v)).into_owned(),
+                };
                 if uri.is_empty() {
                     return Err(Thrown::Error {
                         class: "ValueError",
-                        message: "XMLWriter::openUri(): Argument #1 ($uri) cannot be empty".into(),
+                        message: format!("{fname}(): Argument #1 ($uri) cannot be empty"),
                     });
                 }
                 if !matches!(&uri[..], b"php://output" | b"php://stdout") {
@@ -750,7 +780,7 @@ fn fn_xw(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         String::from_utf8_lossy(uri.strip_prefix(b"file://").unwrap_or(&uri))
                             .into_owned();
                     if std::fs::write(&path, b"").is_err() {
-                        crate::warn(host, "XMLWriter::openUri", "Unable to resolve file path")?;
+                        crate::warn(host, &fname, "Unable to resolve file path")?;
                         return Ok(Value::Bool(false));
                     }
                 }
@@ -765,6 +795,20 @@ fn fn_xw(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             WRITERS.with(|w| w.borrow_mut().insert(new_id, Writer::new(target)));
             Ok(Value::Int(new_id))
         }
+        "openStream" => {
+            let stream = arg(args, 2);
+            let new_id = NEXT.with(|n| {
+                let mut n = n.borrow_mut();
+                let v = *n;
+                *n += 1;
+                v
+            });
+            WRITERS.with(|w| {
+                w.borrow_mut()
+                    .insert(new_id, Writer::new(Target::Stream(stream)))
+            });
+            Ok(Value::Int(new_id))
+        }
         "free" => {
             WRITERS.with(|w| w.borrow_mut().remove(&id));
             Ok(Value::Null)
@@ -772,14 +816,7 @@ fn fn_xw(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         "flush" => Ok(flush_target(host, id, conv::to_bool(&arg(args, 2)))),
         "outputMemory" => {
             let flush = conv::to_bool(&arg(args, 2));
-            Ok(with_w(id, |w| {
-                if flush {
-                    Value::str(std::mem::take(&mut w.out))
-                } else {
-                    Value::str(w.out.clone())
-                }
-            })
-            .unwrap_or(Value::str(Vec::new())))
+            Ok(with_w(id, |w| Value::str(w.take_out(flush))).unwrap_or(Value::str(Vec::new())))
         }
         "setIndent" => {
             let on = conv::to_bool(&arg(args, 2));
@@ -925,7 +962,7 @@ fn fn_xw(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             });
             if op == "endDocument" && r == Some(true) {
                 // xmlTextWriterEndDocument flushes the output buffer
-                if with_w(id, |w| matches!(w.target, Target::Uri(_))).unwrap_or(false) {
+                if with_w(id, |w| !matches!(w.target, Target::Memory)).unwrap_or(false) {
                     flush_target(host, id, true);
                 }
             }

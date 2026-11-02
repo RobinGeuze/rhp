@@ -308,6 +308,22 @@ fn fn_xr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 }
             }
         }
+        "stream" => {
+            let stream = arg(args, 2);
+            let mut data = Vec::new();
+            while let Some(chunk) = host.stream_read(&stream, 8192) {
+                if chunk.is_empty() {
+                    break;
+                }
+                data.extend_from_slice(&chunk);
+            }
+            let flags = conv::to_int(&arg(args, 4));
+            let url = match arg(args, 5) {
+                Value::Null => None,
+                v => Some(conv::to_string_bytes(&v)),
+            };
+            Ok(Value::Int(open_reader(host, data, url, flags)))
+        }
         "close" => {
             READERS.with(|m| m.borrow_mut().remove(&id));
             Ok(Value::Bool(true))
@@ -747,6 +763,10 @@ class XMLReader {
     }
     public static function fromString(string $source, ?string $encoding = null, int $flags = 0): static {
         $r = new static(); $r->__r = __xr('xml', 0, $source, $encoding, $flags); return $r;
+    }
+    public static function fromStream($stream, ?string $encoding = null, int $flags = 0, ?string $documentUri = null): static {
+        if (!is_resource($stream)) { throw new TypeError('XMLReader::fromStream(): Argument #1 ($stream) must be of type resource, ' . get_debug_type($stream) . ' given'); }
+        $r = new static(); $r->__r = __xr('stream', 0, $stream, $encoding, $flags, $documentUri); return $r;
     }
     public static function fromUri(string $uri, ?string $encoding = null, int $flags = 0): static {
         $r = new static(); $id = __xr('open', 0, $uri, $encoding, $flags);

@@ -30,11 +30,13 @@ class DOMNode {
     public $__n;
 
     public function __get($name) {
+        if ($this->__d === null) { throw new DOMException('Invalid State Error', 11); }
         $v = __dom('get', $this->__d, $this->__n, $name);
         if (is_array($v) && isset($v['__unknown'])) { return $this->$name; }
         return $v;
     }
     public function __set($name, $value) {
+        if ($this->__d === null) { throw new DOMException('Invalid State Error', 11); }
         $r = __dom('set', $this->__d, $this->__n, $name, $value);
         if ($r === 'ro') { throw new Error('Cannot modify readonly property ' . static::class . '::$' . $name); }
         if ($r === false) { __dom('dynprop', static::class, $name); $this->$name = $value; }

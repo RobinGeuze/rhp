@@ -51,6 +51,7 @@ jobs:
             /Zend/tests/
             /tests/
             /ext/*/tests/
+            /sapi/cgi/tests/
       - uses: ./.github/actions/setup-php
         with:
           php-version: '8.5'

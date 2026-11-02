@@ -17,6 +17,8 @@
 #   setup             commands run with php after install, in order
 #   lint              paths scanned by `rhp-difftest lint`
 #   known_refused     the lint ratchet list
+#   known_requests    the request-diff ratchet (`rhp-difftest app`; corpus in
+#                     requests.toml next to it)
 #   smoke             "METHOD PATH STATUS" requests checked under php -S
 
 [[app]]
@@ -30,6 +32,7 @@ install = "composer install --no-scripts --no-interaction"
 setup = ["php bin/console cache:warmup"]
 lint = ["vendor", "src", "config", "public"]
 known_refused = "known-refused.txt"
+known_requests = "known-passing-requests.txt"
 smoke = [
     "GET / 200",
     "GET /hello/rhp 200",
@@ -50,6 +53,7 @@ install = "composer install --no-scripts --no-interaction"
 setup = ["php artisan package:discover"]
 lint = ["vendor", "app", "bootstrap", "config", "routes", "public"]
 known_refused = "known-refused.txt"
+known_requests = "known-passing-requests.txt"
 smoke = [
     "GET / 200",
     "GET /hello/rhp 200",

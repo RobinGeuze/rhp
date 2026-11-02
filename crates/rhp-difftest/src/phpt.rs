@@ -65,7 +65,30 @@ impl Phpt {
     pub fn has(&self, name: &str) -> bool {
         self.sections.contains_key(name)
     }
+
+    /// run-tests.php's `sectionNotEmpty()`: PHP's `!empty()` on the raw body.
+    fn not_empty(&self, name: &str) -> bool {
+        self.section(name)
+            .is_some_and(|b| !b.is_empty() && b != b"0")
+    }
+
+    /// run-tests.php's `TestFile::isCGI()`: the test runs under `php-cgi -C`.
+    pub fn is_cgi(&self) -> bool {
+        self.has("CGI") || CGI_SECTIONS.iter().any(|s| self.not_empty(s))
+    }
 }
+
+/// Sections whose non-empty presence makes run-tests.php use the CGI SAPI.
+const CGI_SECTIONS: &[&str] = &[
+    "GET",
+    "POST",
+    "GZIP_POST",
+    "DEFLATE_POST",
+    "POST_RAW",
+    "PUT",
+    "COOKIE",
+    "EXPECTHEADERS",
+];
 
 /// `--NAME--` on a line of its own (trailing whitespace allowed).
 fn section_header(line: &[u8]) -> Option<String> {
@@ -77,19 +100,12 @@ fn section_header(line: &[u8]) -> Option<String> {
         .then(|| String::from_utf8_lossy(inner).into_owned())
 }
 
-/// Sections whose semantics this runner doesn't reproduce (CGI/web input,
-/// debugger, redirection, timing-sensitive or resource-conflicting tests).
+/// Sections whose semantics this runner doesn't reproduce (debugger,
+/// redirection, timing-sensitive or resource-conflicting tests). Web input
+/// (`--GET--`, `--POST--`, `--CGI--`, ...) runs through the CGI SAPI instead;
+/// see [`Phpt::is_cgi`] and [`CgiRequest`].
 const UNSUPPORTED_SECTIONS: &[&str] = &[
-    "POST",
-    "POST_RAW",
-    "PUT",
-    "GET",
-    "COOKIE",
-    "GZIP_POST",
-    "DEFLATE_POST",
-    "CGI",
     "HEADERS",
-    "EXPECTHEADERS",
     "PHPDBG",
     "REDIRECTTEST",
     "CAPTURE_STDIO",
@@ -177,7 +193,9 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
 
 /// A test's `--INI--` as php `-d` args, or the key rhp can't honour (rhp has
 /// no INI support, so a test is only runnable when its INI is a no-op for us).
-fn test_ini(phpt: &Phpt, dir: &Path) -> Result<Vec<String>, String> {
+/// With `pass_through` (CGI tests, whose request layer takes `-d`), every
+/// setting is passed to both engines instead.
+fn test_ini(phpt: &Phpt, dir: &Path, pass_through: bool) -> Result<Vec<String>, String> {
     let Some(body) = phpt.section("INI") else {
         return Ok(Vec::new());
     };
@@ -199,7 +217,7 @@ fn test_ini(phpt: &Phpt, dir: &Path) -> Result<Vec<String>, String> {
                 .get(k)
                 .is_some_and(|d| ini_bool(d).is_some() && ini_bool(d) == ini_bool(v))
             || (k.starts_with("opcache.") && !(k == "opcache.enable_cli" && v == "1"));
-        if !noop {
+        if !noop && !pass_through {
             return Err(format!("ini:{k}"));
         }
         out.push(line.to_string());
@@ -214,6 +232,210 @@ fn ini_bool(v: &str) -> Option<bool> {
         "0" | "off" | "false" | "no" => Some(false),
         "1" | "on" | "true" | "yes" => Some(true),
         _ => None,
+    }
+}
+
+/// A CGI test's request, built exactly as run-tests.php builds it
+/// (`run-tests.php` around `$env['REDIRECT_STATUS'] = '1'`): the CGI
+/// environment and the request body fed on stdin.
+pub struct CgiRequest {
+    pub env: BTreeMap<String, String>,
+    pub body: Option<Vec<u8>>,
+}
+
+/// PHP's `trim()` character set.
+fn php_trim(b: &[u8]) -> &[u8] {
+    let ws = |c: &u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | b'\0' | 0x0b);
+    let start = b.iter().position(|c| !ws(c)).unwrap_or(b.len());
+    let end = b.iter().rposition(|c| !ws(c)).map_or(start, |e| e + 1);
+    &b[start..end]
+}
+
+/// `--POST_RAW--` / `--PUT--`: a leading `Content-Type:` line becomes the
+/// CONTENT_TYPE (unless the test's ENV set one); every other line is the body.
+fn raw_request(section: &[u8], env: &mut BTreeMap<String, String>) -> Vec<u8> {
+    let mut request = Vec::new();
+    let mut started = false;
+    for line in php_trim(section).split(|&b| b == b'\n') {
+        if env.get("CONTENT_TYPE").is_none_or(|v| v.is_empty())
+            && line.len() >= 13
+            && line[..13].eq_ignore_ascii_case(b"content-type:")
+        {
+            let v = String::from_utf8_lossy(&line[13..]).replace('\r', "");
+            env.insert("CONTENT_TYPE".into(), v.trim().to_string());
+            continue;
+        }
+        if started {
+            request.push(b'\n');
+        }
+        started = true;
+        request.extend_from_slice(line);
+    }
+    request
+}
+
+/// A test's `--ENV--` exactly as run-tests.php reads it: `{PWD}` is the
+/// test's directory, each line is trimmed and split at the first `=`.
+fn run_tests_env(phpt: &Phpt, dir: &Path) -> Vec<(String, String)> {
+    let Some(body) = phpt.section("ENV") else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(body)
+        .replace("{PWD}", &dir.to_string_lossy())
+        .split('\n')
+        .filter_map(|l| {
+            let (k, v) = l.trim().split_once('=')?;
+            (!k.is_empty() && k != "0").then(|| (k.to_string(), v.to_string()))
+        })
+        .collect()
+}
+
+/// Build a CGI test's environment and stdin. `test_env` is its `--ENV--`
+/// section, which run-tests applies first (an ENV value wins wherever
+/// run-tests only fills an empty variable).
+pub fn cgi_request(
+    phpt: &Phpt,
+    script: &Path,
+    test_env: &[(String, String)],
+) -> Result<CgiRequest, String> {
+    use flate2::write::{GzEncoder, ZlibEncoder};
+    let mut env: BTreeMap<String, String> = [
+        "REDIRECT_STATUS",
+        "QUERY_STRING",
+        "PATH_TRANSLATED",
+        "SCRIPT_FILENAME",
+        "REQUEST_METHOD",
+        "CONTENT_TYPE",
+        "CONTENT_LENGTH",
+    ]
+    .iter()
+    .map(|k| (k.to_string(), String::new()))
+    .collect();
+    env.extend(test_env.iter().cloned());
+    let empty = |env: &BTreeMap<String, String>, k: &str| env.get(k).is_none_or(|v| v.is_empty());
+    let set = |env: &mut BTreeMap<String, String>, k: &str, v: String| {
+        env.insert(k.to_string(), v);
+    };
+    let script = script.to_string_lossy().into_owned();
+    set(&mut env, "REDIRECT_STATUS", "1".into());
+    if empty(&env, "QUERY_STRING") {
+        let q = phpt.section("GET").map(php_trim).unwrap_or_default();
+        set(
+            &mut env,
+            "QUERY_STRING",
+            String::from_utf8_lossy(q).into_owned(),
+        );
+    }
+    for k in ["PATH_TRANSLATED", "SCRIPT_FILENAME"] {
+        if empty(&env, k) {
+            set(&mut env, k, script.clone());
+        }
+    }
+    let cookie = phpt.section("COOKIE").map(php_trim).unwrap_or_default();
+    set(
+        &mut env,
+        "HTTP_COOKIE",
+        String::from_utf8_lossy(cookie).into_owned(),
+    );
+
+    let compress = |raw: &[u8], gzip: bool| -> Vec<u8> {
+        let level = flate2::Compression::new(9);
+        if gzip {
+            let mut e = GzEncoder::new(Vec::new(), level);
+            let _ = e.write_all(raw);
+            e.finish().unwrap_or_default()
+        } else {
+            let mut e = ZlibEncoder::new(Vec::new(), level);
+            let _ = e.write_all(raw);
+            e.finish().unwrap_or_default()
+        }
+    };
+    let urlencoded = "application/x-www-form-urlencoded".to_string();
+    let body = if phpt.not_empty("POST_RAW") || phpt.not_empty("PUT") {
+        let put = !phpt.not_empty("POST_RAW");
+        let request = raw_request(
+            phpt.section(if put { "PUT" } else { "POST_RAW" }).unwrap(),
+            &mut env,
+        );
+        set(&mut env, "CONTENT_LENGTH", request.len().to_string());
+        if put {
+            set(&mut env, "REQUEST_METHOD", "PUT".into());
+        } else if empty(&env, "REQUEST_METHOD") {
+            set(&mut env, "REQUEST_METHOD", "POST".into());
+        }
+        if request.is_empty() {
+            return Err("borked: empty request".into());
+        }
+        Some(request)
+    } else if phpt.not_empty("POST") {
+        let post = php_trim(phpt.section("POST").unwrap()).to_vec();
+        set(&mut env, "REQUEST_METHOD", "POST".into());
+        if empty(&env, "CONTENT_TYPE") {
+            set(&mut env, "CONTENT_TYPE", urlencoded);
+        }
+        if empty(&env, "CONTENT_LENGTH") {
+            set(&mut env, "CONTENT_LENGTH", post.len().to_string());
+        }
+        Some(post)
+    } else if phpt.not_empty("GZIP_POST") || phpt.not_empty("DEFLATE_POST") {
+        let gzip = phpt.not_empty("GZIP_POST");
+        let raw = phpt
+            .section(if gzip { "GZIP_POST" } else { "DEFLATE_POST" })
+            .unwrap();
+        let post = compress(php_trim(raw), gzip);
+        let encoding = if gzip { "gzip" } else { "deflate" };
+        set(&mut env, "HTTP_CONTENT_ENCODING", encoding.into());
+        set(&mut env, "REQUEST_METHOD", "POST".into());
+        set(&mut env, "CONTENT_TYPE", urlencoded);
+        set(&mut env, "CONTENT_LENGTH", post.len().to_string());
+        Some(post)
+    } else {
+        set(&mut env, "REQUEST_METHOD", "GET".into());
+        set(&mut env, "CONTENT_TYPE", String::new());
+        set(&mut env, "CONTENT_LENGTH", String::new());
+        None
+    };
+    Ok(CgiRequest { env, body })
+}
+
+/// run-tests.php appends `-- <ARGS>` only to a GET request's command line;
+/// a request with a body (POST, PUT, ...) gets the script alone.
+fn cgi_passes_args(req: &CgiRequest) -> bool {
+    req.body.is_none()
+}
+
+/// A CGI response split the way run-tests.php splits it
+/// (`/^(.*?)\r?\n\r?\n(.*)/s`): `(headers, body)`, or `None` when there is
+/// no blank line.
+pub fn split_cgi(out: &[u8]) -> Option<(&[u8], &[u8])> {
+    (0..out.len()).find_map(|i| {
+        if out[i] != b'\n' {
+            return None;
+        }
+        let head = &out[..i];
+        let head = head.strip_suffix(b"\r").unwrap_or(head);
+        match out.get(i + 1) {
+            Some(b'\n') => Some((head, &out[i + 2..])),
+            Some(b'\r') if out.get(i + 2) == Some(&b'\n') => Some((head, &out[i + 3..])),
+            _ => None,
+        }
+    })
+}
+
+/// Rewrite php's `X-Powered-By: PHP/<php>` header to rhp's version, so a
+/// patch-level skew between the host php and rhp doesn't fail every CGI test.
+fn normalise_powered_by(out: &mut Vec<u8>, php: &str, rhp: &str) {
+    let Some((head, _)) = split_cgi(out) else {
+        return;
+    };
+    let from = format!("X-Powered-By: PHP/{php}");
+    let to = format!("X-Powered-By: PHP/{rhp}");
+    let head_len = head.len();
+    if let Some(at) = out[..head_len]
+        .windows(from.len())
+        .position(|w| w == from.as_bytes())
+    {
+        out.splice(at..at + from.len(), to.bytes());
     }
 }
 
@@ -736,6 +958,14 @@ fn classify(php: &Outcome, rhp: &Outcome) -> Verdict {
 // running a test
 // ---------------------------------------------------------------------------
 
+/// The two CGI engines: the reference php-cgi and the candidate command
+/// (default `<rhp> --cgi`); both get run-tests.php's CGI arguments appended.
+#[derive(Clone)]
+struct CgiEngines {
+    php_cgi: PathBuf,
+    candidate: Vec<String>,
+}
+
 #[derive(Clone)]
 struct Ctx {
     rhp_bin: PathBuf,
@@ -753,9 +983,12 @@ struct Ctx {
     /// Where to write repros of runs in which php itself misbehaved.
     php_findings: Option<PathBuf>,
     minimize: bool,
-    /// php's `PHP_VERSION`, when it differs from rhp's: a test whose php output
-    /// contains it is printing the engine version, which can't match.
-    version_skew: Option<String>,
+    /// `(php's PHP_VERSION, rhp's)`, when they differ: a test whose php output
+    /// contains php's is printing the engine version, which can't match (and
+    /// a CGI response's `X-Powered-By` is rewritten to rhp's).
+    version_skew: Option<(String, String)>,
+    /// The CGI engines, when php-cgi was found (CGI tests skip otherwise).
+    cgi: Option<CgiEngines>,
     /// Pause between the php and rhp runs of a test. The `--write-known`
     /// confirmation pass sets it past a second, so any test whose output
     /// depends on the current time diverges deterministically.
@@ -772,6 +1005,9 @@ struct Invocation<'a> {
     stdin: Option<&'a [u8]>,
     /// `--CLEAN--` script path + body, run after every engine run.
     clean: Option<(&'a Path, &'a [u8])>,
+    /// A CGI test's request: the script then runs under `php-cgi -C` and the
+    /// CGI candidate instead of the CLIs.
+    cgi: Option<&'a CgiRequest>,
     /// The test directory as it was before any engine ran (plus our script).
     snapshot: BTreeSet<PathBuf>,
 }
@@ -800,7 +1036,52 @@ impl Ctx {
         run_proc(cmd, inv.stdin, timeout)
     }
 
+    /// `<program> -C -n -d opcache.enable=0 <ini> -f <script> [-- args]` with
+    /// the request's CGI environment: run-tests.php's CGI command line.
+    /// opcache is built into php 8.5 and on by default under CGI; the
+    /// reference always runs with it off (rhp mimics "built in, disabled").
+    fn cgi_cmd(&self, program: &[String], inv: &Invocation, req: &CgiRequest) -> Command {
+        let mut cmd = Command::new(&program[0]);
+        cmd.args(&program[1..])
+            .args(["-C", "-n", "-d", "opcache.enable=0"])
+            .current_dir(inv.dir)
+            .envs(self.base_env.iter().cloned())
+            .envs(req.env.iter());
+        for kv in self.php_ini.iter().chain(inv.ini) {
+            cmd.arg("-d").arg(kv);
+        }
+        cmd.arg("-f").arg(inv.script);
+        if cgi_passes_args(req) && !inv.args.is_empty() {
+            cmd.arg("--").args(inv.args);
+        }
+        cmd
+    }
+
+    /// A CGI test's SKIPIF runs under php-cgi with `-q` (no headers), with
+    /// the test's `--ENV--` but without the request variables, as
+    /// run-tests.php runs it.
+    fn php_skipif(&self, inv: &Invocation, script: &Path) -> Outcome {
+        let (Some(_), Some(cgi)) = (inv.cgi, &self.cgi) else {
+            return self.php(inv, inv.ini, script);
+        };
+        let mut cmd = Command::new(&cgi.php_cgi);
+        cmd.args(["-n", "-q", "-d", "opcache.enable=0"])
+            .current_dir(inv.dir)
+            .envs(self.base_env.iter().cloned())
+            .envs(inv.env.iter().cloned());
+        for kv in self.php_ini.iter().chain(inv.ini) {
+            cmd.arg("-d").arg(kv);
+        }
+        cmd.args(["-d", "display_errors=1", "-d", "display_startup_errors=0"])
+            .arg(script);
+        run_proc(cmd, None, self.timeout)
+    }
+
     fn rhp(&self, inv: &Invocation) -> Outcome {
+        if let (Some(req), Some(cgi)) = (inv.cgi, &self.cgi) {
+            let cmd = self.cgi_cmd(&cgi.candidate, inv, req);
+            return run_proc(cmd, req.body.as_deref(), self.timeout);
+        }
         let mut cmd = Command::new(&self.rhp_bin);
         cmd.current_dir(inv.dir)
             .envs(self.base_env.iter().cloned())
@@ -831,7 +1112,21 @@ impl Ctx {
     }
 
     fn php_script_within(&self, inv: &Invocation, timeout: Duration) -> Outcome {
-        let out = self.php_within(inv, inv.ini, inv.script, timeout);
+        let out = match (inv.cgi, &self.cgi) {
+            (Some(req), Some(cgi)) => {
+                let program = [cgi.php_cgi.to_string_lossy().into_owned()];
+                let mut out = run_proc(
+                    self.cgi_cmd(&program, inv, req),
+                    req.body.as_deref(),
+                    timeout,
+                );
+                if let Some((php, rhp)) = &self.version_skew {
+                    normalise_powered_by(&mut out.out, php, rhp);
+                }
+                out
+            }
+            _ => self.php_within(inv, inv.ini, inv.script, timeout),
+        };
         self.reset(inv);
         out
     }
@@ -910,6 +1205,10 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
     if let Some(s) = UNSUPPORTED_SECTIONS.iter().find(|s| phpt.has(s)) {
         return skipped(rel, format!("section:{s}"));
     }
+    let is_cgi = phpt.is_cgi();
+    if is_cgi && ctx.cgi.is_none() {
+        return skipped(rel, "cgi-unavailable");
+    }
     let file = match (phpt.section("FILE"), phpt.section("FILE_EXTERNAL")) {
         (Some(f), _) => f.to_vec(),
         (None, Some(ext)) => {
@@ -930,7 +1229,7 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
     if let Some(m) = SUBPROCESS_MARKERS.iter().find(|m| mentions(m)) {
         return skipped(rel, format!("subprocess:{m}"));
     }
-    let ini = match test_ini(&phpt, &dir) {
+    let ini = match test_ini(&phpt, &dir, is_cgi) {
         Ok(ini) => ini,
         Err(reason) => return skipped(rel, reason),
     };
@@ -964,6 +1263,17 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
     let stem = rel.trim_end_matches(".phpt");
     let script = root.join(format!("{stem}.php"));
     let clean_script = root.join(format!("{stem}.clean.php"));
+    if (phpt.has("GZIP_POST") || phpt.has("DEFLATE_POST")) && !ctx.php_modules.contains("zlib") {
+        return skipped(rel, "ext:zlib");
+    }
+    let cgi_req = if is_cgi {
+        match cgi_request(&phpt, &script, &run_tests_env(&phpt, &dir)) {
+            Ok(r) => Some(r),
+            Err(e) => return skipped(rel, e),
+        }
+    } else {
+        None
+    };
     let pristine = snapshot(&dir);
     let mut inv = Invocation {
         dir: &dir,
@@ -974,6 +1284,7 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
         stdin,
         clean: phpt.section("CLEAN").map(|c| (clean_script.as_path(), c)),
         snapshot: pristine.clone(),
+        cgi: cgi_req.as_ref(),
     };
 
     if let Some(skipif) = phpt.section("SKIPIF") {
@@ -981,7 +1292,7 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
         if fs::write(&skip_script, skipif).is_err() {
             return skipped(rel, "unwritable work dir");
         }
-        let out = ctx.php(&inv, &ini, &skip_script);
+        let out = ctx.php_skipif(&inv, &skip_script);
         let _ = fs::remove_file(&skip_script);
         restore(&dir, &pristine);
         let text = String::from_utf8_lossy(&out.out);
@@ -1000,7 +1311,8 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
         record_php_finding(ctx, &inv, sinks, rel, None, &file, key);
         let _ = fs::write(&script, &file); // the repro run may have rewritten it
     }
-    if let Some(v) = &ctx.version_skew {
+    // (A CGI response's X-Powered-By already carries rhp's version here.)
+    if let Some((v, _)) = &ctx.version_skew {
         if php_out.out.windows(v.len()).any(|w| w == v.as_bytes()) {
             let _ = fs::remove_file(&script);
             restore(&dir, &pristine);
@@ -1014,9 +1326,20 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
     // can differ run to run; php-src marks it with EXPECTF/EXPECTREGEX. When
     // the engines differ but both satisfy the test's own spec, it passes —
     // exactly run-tests.php's verdict.
+    // A CGI run's spec is about the body; its headers must still be equal.
+    let spec_holds = |php: &[u8], rhp: &[u8]| match (is_cgi, split_cgi(php), split_cgi(rhp)) {
+        (false, ..) => {
+            spec_matches(&phpt, php) == Some(true) && spec_matches(&phpt, rhp) == Some(true)
+        }
+        (true, Some((ph, pb)), Some((rh, rb))) => {
+            normalise(ph) == normalise(rh)
+                && spec_matches(&phpt, pb) == Some(true)
+                && spec_matches(&phpt, rb) == Some(true)
+        }
+        _ => false,
+    };
     if matches!(v.status, Status::Mismatch | Status::DiagnosticsOnly)
-        && spec_matches(&phpt, &php_out.out) == Some(true)
-        && spec_matches(&phpt, &rhp_out.out) == Some(true)
+        && spec_holds(&php_out.out, &rhp_out.out)
     {
         v = verdict(Status::Match, "spec");
     }
@@ -1058,8 +1381,9 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
             }
             sinks.mstats.lock().unwrap().compared += 1;
             if mv.status != Status::Match {
-                if let (Some(dirf), Status::Mismatch | Status::RhpCrash) =
-                    (&ctx.fixtures, mv.status)
+                // Golden fixtures are CLI programs: a CGI mutant can't move there.
+                if let (Some(dirf), Status::Mismatch | Status::RhpCrash, false) =
+                    (&ctx.fixtures, mv.status, is_cgi)
                 {
                     emit_fixture(ctx, &inv, dirf, rel, k, &m, mv.status);
                 }
@@ -1306,6 +1630,7 @@ fn emit_fixture(
         stdin: None,
         clean: None,
         snapshot: BTreeSet::new(),
+        cgi: None,
     };
     let php = ctx.php(&here, &[], &php_path);
     let rhp = ctx.rhp(&here);
@@ -1529,8 +1854,8 @@ fn print_clusters<'a>(items: impl Iterator<Item = (&'a str, &'a str)>, top: usiz
     }
 }
 
-/// php's `PHP_VERSION` if rhp reports a different one, else `None`.
-fn version_skew(ctx: &Ctx, scratch: &Path) -> Option<String> {
+/// `(php's PHP_VERSION, rhp's)` if they differ, else `None`.
+fn version_skew(ctx: &Ctx, scratch: &Path) -> Option<(String, String)> {
     let script = scratch.join("__rhp_phpt_version.php");
     fs::write(&script, b"<?php echo PHP_VERSION;").ok()?;
     let inv = Invocation {
@@ -1542,6 +1867,7 @@ fn version_skew(ctx: &Ctx, scratch: &Path) -> Option<String> {
         stdin: None,
         clean: None,
         snapshot: BTreeSet::new(),
+        cgi: None,
     };
     let php = String::from_utf8_lossy(&ctx.php(&inv, &[], &script).out)
         .trim()
@@ -1550,7 +1876,38 @@ fn version_skew(ctx: &Ctx, scratch: &Path) -> Option<String> {
         .trim()
         .to_string();
     let _ = fs::remove_file(&script);
-    (!php.is_empty() && php != rhp).then_some(php)
+    (!php.is_empty() && php != rhp).then_some((php, rhp))
+}
+
+/// The php-cgi to use as the CGI reference: `--php-cgi`, `RHP_PHP_CGI`, the
+/// `php-cgi` next to the `php` in use (setup-php and Homebrew install them
+/// side by side, and CI's `-n` shims live side by side too), or on `PATH`.
+pub(crate) fn find_php_cgi(explicit: Option<&Path>) -> Option<PathBuf> {
+    if let Some(p) = explicit {
+        return Some(p.to_path_buf());
+    }
+    if let Some(p) = std::env::var_os("RHP_PHP_CGI") {
+        return Some(PathBuf::from(p));
+    }
+    let on_path = |name: &str| -> Option<PathBuf> {
+        if name.contains('/') {
+            return Some(PathBuf::from(name));
+        }
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|d| d.join(name))
+            .find(|p| p.is_file())
+    };
+    let php = on_path(&php_bin())?;
+    let beside = php.parent()?.join("php-cgi");
+    if beside.is_file() {
+        return Some(beside);
+    }
+    on_path("php-cgi")
+}
+
+/// Whether the file at `root/rel` is a CGI test (for `--cgi-only`).
+fn is_cgi_test(root: &Path, rel: &str) -> bool {
+    fs::read(root.join(rel)).is_ok_and(|d| Phpt::parse(&d).is_cgi())
 }
 
 /// Run `tests` across the worker roots (one worker per root), sorted by path.
@@ -1597,8 +1954,15 @@ selection:
   --filter <substr>      only tests whose path contains <substr> (repeatable)
   --limit <n>            run at most <n> tests
   --check-known <file>   run only the listed tests; exit 1 if any no longer match
+  --cgi-only             only CGI tests (--GET--/--POST--/--CGI--/... sections)
 running:
   --rhp <bin>            rhp binary (default: `rhp` next to this binary, or env RHP_BIN)
+  --php-cgi <bin>        reference for CGI tests (default: env RHP_PHP_CGI, else the
+                         php-cgi next to php, else on PATH; CGI tests skip without one)
+  --cgi-candidate <cmd>  CGI command compared against php-cgi, split on whitespace
+                         (default: \"<rhp> --cgi\", or env RHP_CGI_CANDIDATE); both get
+                         `-C -n -d opcache.enable=0 -d <ini>... -f <script> [-- args]`
+                         and run-tests.php's CGI environment, body on stdin
   --jobs <n>             parallel workers (default: all cores)
   --timeout <secs>       per-process timeout (default: 10)
   --work <dir>           scratch copy of the test trees (default: a temp dir)
@@ -1623,7 +1987,10 @@ struct Opts {
     filters: Vec<String>,
     limit: Option<usize>,
     check_known: Option<PathBuf>,
+    cgi_only: bool,
     rhp: Option<PathBuf>,
+    php_cgi: Option<PathBuf>,
+    cgi_candidate: Option<String>,
     jobs: usize,
     timeout: u64,
     work: Option<PathBuf>,
@@ -1647,7 +2014,10 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         filters: Vec::new(),
         limit: None,
         check_known: None,
+        cgi_only: false,
         rhp: std::env::var_os("RHP_BIN").map(PathBuf::from),
+        php_cgi: None,
+        cgi_candidate: std::env::var("RHP_CGI_CANDIDATE").ok(),
         jobs: std::thread::available_parallelism().map_or(4, |n| n.get()),
         timeout: 10,
         work: None,
@@ -1683,6 +2053,9 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             "--limit" => o.limit = Some(num(val()?)? as usize),
             "--check-known" => o.check_known = Some(val()?.into()),
             "--rhp" => o.rhp = Some(val()?.into()),
+            "--cgi-only" => o.cgi_only = true,
+            "--php-cgi" => o.php_cgi = Some(val()?.into()),
+            "--cgi-candidate" => o.cgi_candidate = Some(val()?),
             "--jobs" => o.jobs = (num(val()?)? as usize).max(1),
             "--timeout" => o.timeout = num(val()?)?.max(1),
             "--work" => o.work = Some(val()?.into()),
@@ -1732,6 +2105,16 @@ pub fn main(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
     let rhp_bin = rhp_bin.canonicalize().unwrap_or(rhp_bin);
+    let cgi = find_php_cgi(o.php_cgi.as_deref())
+        .filter(|p| p.is_file())
+        .map(|php_cgi| CgiEngines {
+            php_cgi: php_cgi.canonicalize().unwrap_or(php_cgi),
+            candidate: match &o.cgi_candidate {
+                Some(c) => c.split_whitespace().map(String::from).collect(),
+                None => vec![rhp_bin.to_string_lossy().into_owned(), "--cgi".into()],
+            },
+        })
+        .filter(|c| !c.candidate.is_empty());
     if !crate::php_available() {
         eprintln!("rhp-difftest phpt: no `php` binary (set RHP_PHP)");
         return ExitCode::from(2);
@@ -1760,6 +2143,9 @@ pub fn main(args: &[String]) -> ExitCode {
     }
     if !o.filters.is_empty() {
         tests.retain(|t| o.filters.iter().any(|f| t.contains(f.as_str())));
+    }
+    if o.cgi_only {
+        tests.retain(|t| is_cgi_test(&o.php_src, t));
     }
     if let Some(n) = o.limit {
         tests.truncate(n);
@@ -1831,15 +2217,25 @@ pub fn main(args: &[String]) -> ExitCode {
         minimize: o.minimize,
         skew: Duration::ZERO,
         version_skew: None,
+        cgi,
     };
     let ctx = Ctx {
         version_skew: version_skew(&ctx, &worker_roots[0]),
         ..ctx
     };
-    if let Some(v) = &ctx.version_skew {
+    if let Some((v, r)) = &ctx.version_skew {
         eprintln!(
-            "phpt: php is {v} but rhp reports another version; tests printing it are skipped"
+            "phpt: php is {v} but rhp reports {r}; tests printing it are skipped \
+             (a CGI response's X-Powered-By is rewritten to {r})"
         );
+    }
+    match &ctx.cgi {
+        Some(c) => eprintln!(
+            "phpt: CGI tests: {} vs `{}`",
+            c.php_cgi.display(),
+            c.candidate.join(" ")
+        ),
+        None => eprintln!("phpt: no php-cgi found (pass --php-cgi); CGI tests are skipped"),
     }
     eprintln!(
         "phpt: {} tests in {} tree(s), {} jobs{}",
@@ -2137,15 +2533,18 @@ mod tests {
     fn ini_noops_run_others_skip() {
         let dir = Path::new("/w");
         let p = Phpt::parse(b"--INI--\nprecision=14\nopcache.enable=0\n--FILE--\n");
-        assert_eq!(test_ini(&p, dir).unwrap().len(), 2);
+        assert_eq!(test_ini(&p, dir, false).unwrap().len(), 2);
         let p = Phpt::parse(b"--INI--\nprecision=10\n--FILE--\n");
-        assert_eq!(test_ini(&p, dir).unwrap_err(), "ini:precision");
+        assert_eq!(test_ini(&p, dir, false).unwrap_err(), "ini:precision");
         let p = Phpt::parse(b"--INI--\nopcache.enable_cli=1\n--FILE--\n");
-        assert!(test_ini(&p, dir).is_err());
+        assert!(test_ini(&p, dir, false).is_err());
         let p = Phpt::parse(b"--INI--\noutput_buffering=0\ndisplay_errors=On\n--FILE--\n");
-        assert_eq!(test_ini(&p, dir).unwrap().len(), 2);
+        assert_eq!(test_ini(&p, dir, false).unwrap().len(), 2);
         let p = Phpt::parse(b"--INI--\noutput_buffering=4096\n--FILE--\n");
-        assert_eq!(test_ini(&p, dir).unwrap_err(), "ini:output_buffering");
+        assert_eq!(
+            test_ini(&p, dir, false).unwrap_err(),
+            "ini:output_buffering"
+        );
     }
 
     #[test]
@@ -2384,5 +2783,77 @@ READ of size 8 at 0x6020 thread T0\n\
     #[test]
     fn json_escaping() {
         assert_eq!(json_str("a\"b\\c\nd\u{1}"), "\"a\\\"b\\\\c\\nd\\u0001\"");
+    }
+
+    #[test]
+    fn cgi_detection_follows_run_tests() {
+        let cgi = |s: &[u8]| Phpt::parse(s).is_cgi();
+        assert!(cgi(b"--CGI--\n--FILE--\n<?php\n"));
+        assert!(cgi(b"--GET--\na=1\n--FILE--\n<?php\n"));
+        assert!(cgi(b"--EXPECTHEADERS--\nStatus: 404\n--FILE--\n<?php\n"));
+        assert!(!cgi(b"--GET--\n--FILE--\n<?php\n"));
+        assert!(!cgi(b"--FILE--\n<?php\n"));
+    }
+
+    #[test]
+    fn cgi_requests_match_run_tests() {
+        let script = Path::new("/w/t.php");
+        let env = |r: &CgiRequest, k: &str| r.env.get(k).cloned().unwrap_or_default();
+
+        let p = Phpt::parse(b"--GET--\na=1&b=2\n--COOKIE--\nc=3\n--FILE--\n<?php\n");
+        let r = cgi_request(&p, script, &[]).unwrap();
+        assert_eq!(env(&r, "REQUEST_METHOD"), "GET");
+        assert_eq!(env(&r, "QUERY_STRING"), "a=1&b=2");
+        assert_eq!(env(&r, "HTTP_COOKIE"), "c=3");
+        assert_eq!(env(&r, "SCRIPT_FILENAME"), "/w/t.php");
+        assert_eq!(env(&r, "PATH_TRANSLATED"), "/w/t.php");
+        assert_eq!(env(&r, "REDIRECT_STATUS"), "1");
+        assert!(r.env.contains_key("CONTENT_LENGTH") && r.body.is_none());
+        assert!(cgi_passes_args(&r), "a GET gets `-- <ARGS>`");
+
+        let p = Phpt::parse(b"--POST--\nx=1\n\n--FILE--\n<?php\n");
+        let r = cgi_request(&p, script, &[]).unwrap();
+        assert!(!cgi_passes_args(&r), "run-tests drops ARGS for a POST");
+        assert_eq!(env(&r, "REQUEST_METHOD"), "POST");
+        assert_eq!(env(&r, "CONTENT_TYPE"), "application/x-www-form-urlencoded");
+        assert_eq!(env(&r, "CONTENT_LENGTH"), "3");
+        assert_eq!(r.body.as_deref(), Some(&b"x=1"[..]));
+
+        let p = Phpt::parse(
+            b"--POST_RAW--\nContent-Type: multipart/form-data; boundary=x1\r\n--x1\r\nbody\r\n--x1--\n--FILE--\n<?php\n",
+        );
+        let r = cgi_request(&p, script, &[("REQUEST_METHOD".into(), "PUT".into())]).unwrap();
+        assert_eq!(env(&r, "CONTENT_TYPE"), "multipart/form-data; boundary=x1");
+        assert_eq!(env(&r, "REQUEST_METHOD"), "PUT"); // ENV wins where run-tests only fills
+        assert_eq!(r.body.as_deref(), Some(&b"--x1\r\nbody\r\n--x1--"[..]));
+        assert_eq!(env(&r, "CONTENT_LENGTH"), "18");
+
+        let p = Phpt::parse(b"--GZIP_POST--\na=b\n--FILE--\n<?php\n");
+        let r = cgi_request(&p, script, &[]).unwrap();
+        assert_eq!(env(&r, "HTTP_CONTENT_ENCODING"), "gzip");
+        let body = r.body.unwrap();
+        assert_eq!(&body[..2], b"\x1f\x8b");
+        let mut plain = Vec::new();
+        flate2::read::GzDecoder::new(&body[..])
+            .read_to_end(&mut plain)
+            .unwrap();
+        assert_eq!(plain, b"a=b");
+    }
+
+    #[test]
+    fn cgi_output_splits_and_version_is_rewritten() {
+        let out = b"X-Powered-By: PHP/8.5.9\r\nContent-type: text/html; charset=UTF-8\r\n\r\nbody PHP/8.5.9";
+        let (h, b) = split_cgi(out).unwrap();
+        assert_eq!(
+            h,
+            &b"X-Powered-By: PHP/8.5.9\r\nContent-type: text/html; charset=UTF-8"[..]
+        );
+        assert_eq!(b, b"body PHP/8.5.9");
+        assert_eq!(split_cgi(b"a\n\nb").unwrap(), (&b"a"[..], &b"b"[..]));
+        assert!(split_cgi(b"no blank line\r\n").is_none());
+        let mut v = out.to_vec();
+        normalise_powered_by(&mut v, "8.5.9", "8.5.8");
+        assert!(v.starts_with(b"X-Powered-By: PHP/8.5.8\r\n"));
+        assert!(v.ends_with(b"body PHP/8.5.9"), "the body is left alone");
     }
 }

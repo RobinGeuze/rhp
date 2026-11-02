@@ -1144,6 +1144,7 @@ pub(crate) fn quantity_error(v: &[u8]) -> Option<String> {
     }
     let inv = escaped(v);
     let mut d = a;
+    let negative = v[d] == b'-';
     if v[d] == b'+' || v[d] == b'-' {
         d += 1;
     }
@@ -1156,19 +1157,25 @@ pub(crate) fn quantity_error(v: &[u8]) -> Option<String> {
         return no_digits();
     }
     let mut base_digits: fn(u8) -> bool = |c: u8| c.is_ascii_digit();
+    // ZEND_STRTOUL's base: 0 (decimal, or octal after a leading 0) unless
+    // an explicit prefix picked one.
+    let mut radix = if v[d] == b'0' { 8 } else { 10 };
     if v[d] == b'0' && d + 1 < b && !v[d + 1].is_ascii_digit() {
         match v[d + 1] {
             b'g' | b'G' | b'm' | b'M' | b'k' | b'K' => {}
             b'x' | b'X' => {
                 base_digits = |c| c.is_ascii_hexdigit();
+                radix = 16;
                 d += 2;
             }
             b'o' | b'O' => {
                 base_digits = |c| (b'0'..=b'7').contains(&c);
+                radix = 8;
                 d += 2;
             }
             b'b' | b'B' => {
                 base_digits = |c| c == b'0' || c == b'1';
+                radix = 2;
                 d += 2;
             }
             c => {
@@ -1188,24 +1195,72 @@ pub(crate) fn quantity_error(v: &[u8]) -> Option<String> {
     while e < b && base_digits(v[e]) {
         e += 1;
     }
+    // strtoul's ERANGE, then the signed-result check (only PHP_INT_MIN may
+    // have its top bit set).
+    let mut value: u64 = 0;
+    let mut overflow = false;
+    for &c in &v[d..e] {
+        let digit = (c as char).to_digit(radix);
+        let Some(digit) = digit else { break };
+        match value
+            .checked_mul(u64::from(radix))
+            .and_then(|x| x.checked_add(u64::from(digit)))
+        {
+            Some(x) => value = x,
+            None => {
+                overflow = true;
+                value = u64::MAX;
+            }
+        }
+    }
+    let mut signed = value as i64;
+    if !overflow {
+        if negative && value == 1u64 << 63 {
+            signed = i64::MIN;
+        } else if signed < 0 {
+            overflow = true;
+        } else if negative {
+            signed = -signed;
+        }
+    }
+    let out_of_range = || {
+        Some(format!(
+            "Invalid quantity \"{inv}\": value is out of range, using overflow result for backwards compatibility"
+        ))
+    };
     while e < b && ws(v[e]) {
         e += 1;
     }
     if e == b {
-        return None;
+        return if overflow { out_of_range() } else { None };
     }
     let last = v[b - 1];
     let interp = escaped(&v[..e]);
     let chr = escaped(&[last]);
-    if !matches!(last, b'g' | b'G' | b'm' | b'M' | b'k' | b'K') {
-        return Some(format!(
-            "Invalid quantity \"{inv}\": unknown multiplier \"{chr}\", interpreting as \"{interp}\" for backwards compatibility"
-        ));
+    let factor: i64 = match last {
+        b'g' | b'G' => 1 << 30,
+        b'm' | b'M' => 1 << 20,
+        b'k' | b'K' => 1 << 10,
+        _ => {
+            return Some(format!(
+                "Invalid quantity \"{inv}\": unknown multiplier \"{chr}\", interpreting as \"{interp}\" for backwards compatibility"
+            ))
+        }
+    };
+    if !overflow {
+        overflow = if signed > 0 {
+            signed > i64::MAX / factor
+        } else {
+            signed < i64::MIN / factor
+        };
     }
     if e != b - 1 {
         return Some(format!(
             "Invalid quantity \"{inv}\", interpreting as \"{interp}{chr}\" for backwards compatibility"
         ));
+    }
+    if overflow {
+        return out_of_range();
     }
     None
 }
@@ -1455,6 +1510,29 @@ mod tests {
     #[test]
     fn quantity_errors() {
         assert!(quantity_error(b"128M").is_none());
+        // Messages captured from php 8.5.12 (ini_set('memory_hard_limit_percent', …)).
+        let range = |v: &str| {
+            format!("Invalid quantity \"{v}\": value is out of range, using overflow result for backwards compatibility")
+        };
+        for v in [
+            "99999999999999999999",
+            "9223372036854775808",
+            "-9223372036854775809",
+            "9007199254740992G",
+            "0x8000000000000000",
+            "-9007199254740993G",
+        ] {
+            assert_eq!(quantity_error(v.as_bytes()), Some(range(v)), "{v}");
+        }
+        for v in [
+            "9223372036854775807",
+            "-9223372036854775808",
+            "8589934591G",
+            "-8589934592G",
+            "0x7fffffffffffffff",
+        ] {
+            assert_eq!(quantity_error(v.as_bytes()), None, "{v}");
+        }
         assert!(quantity_error(b"1GB")
             .unwrap()
             .contains("unknown multiplier \"B\""));

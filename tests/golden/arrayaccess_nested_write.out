@@ -1,0 +1,66 @@
+get(w) [8] Indirect modification of overloaded element of AA has no effect
+
+exists(w) get(w) get(w) [8] Indirect modification of overloaded element of AA has no effect
+
+array(1) {
+  ["w"]=>
+  array(1) {
+    ["x"]=>
+    NULL
+  }
+}
+rget(a) 
+exists(a) rget(a) rget(a) 
+rget() 
+array(2) {
+  ["a"]=>
+  array(2) {
+    ["b"]=>
+    int(1)
+    ["c"]=>
+    int(2)
+  }
+  ["null"]=>
+  array(1) {
+    ["z"]=>
+    int(3)
+  }
+}
+set(k) 
+set(obj) 
+get(obj) 
+get(obj) 
+stdClass Object
+(
+    [p] => 1
+    [q] => Array
+        (
+            [x] => 2
+        )
+
+)
+array(2) {
+  ["a"]=>
+  array(2) {
+    ["b"]=>
+    int(1)
+    ["c"]=>
+    int(2)
+  }
+  ["n"]=>
+  array(1) {
+    [0]=>
+    int(3)
+  }
+}
+array(1) {
+  ["x"]=>
+  array(1) {
+    ["y"]=>
+    int(1)
+  }
+}
+U Object
+(
+    [__x] => 1
+)

@@ -251,6 +251,12 @@ pub enum Instr {
         arr: Reg,
         src: Reg,
     },
+    /// `f(...$src)`: unpack an array or Traversable into the argument array
+    /// `arr` (int keys positional, string keys named).
+    ArgSpread {
+        arr: Reg,
+        src: Reg,
+    },
     /// `[&$x]` / `[k => &$x]`: push/insert the raw `Value::Ref` in `val` so the
     /// element aliases the source variable (no deref).
     ArrPushRef {
@@ -418,6 +424,12 @@ pub enum Instr {
         what: CIdx,
         why: CIdx,
     },
+    /// A call result passed for a by-reference parameter: raise php's notice
+    /// "Only variables should be passed by reference" and pass the value.
+    SendNoRef {
+        dst: Reg,
+        src: Reg,
+    },
     /// `eval($code)`: compile the PHP source in `src` at runtime and run it in
     /// the current variable scope; the script's return value lands in `dst`.
     Eval {
@@ -468,6 +480,22 @@ pub enum Instr {
         dst: Reg,
         class: ClassRef,
         name: NIdx,
+        args: Reg,
+    },
+    /// `$o->$m(...$args)` / `$o->$m(name: v)`: `CallMethodV` with the method
+    /// name a runtime string in register `name`.
+    CallMethodDynV {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+        args: Reg,
+    },
+    /// `C::$m(...$args)` / `C::$m(name: v)`: `CallStaticV` with the method
+    /// name a runtime string in register `name`.
+    CallStaticDynV {
+        dst: Reg,
+        class: ClassRef,
+        name: Reg,
         args: Reg,
     },
     /// `$o->p` (value context).
@@ -619,6 +647,11 @@ pub enum Instr {
         cv: Reg,
         name: NIdx,
     },
+    /// `global $$n` / `global ${expr}`: bind the current scope's variable
+    /// named by register `name` to that global.
+    BindGlobalDyn {
+        name: Reg,
+    },
     /// `static $x = <const>`: bind CV `cv` to a per-function persistent cell,
     /// initialized to const `init` (`u32::MAX` = null) on first execution.
     BindStatic {
@@ -671,6 +704,44 @@ pub enum Instr {
     LvalStaticProp {
         class: ClassRef,
         name: NIdx,
+    },
+    /// Cursor root: `C::${expr}` / `C::$$x` (static-property name in a register).
+    LvalStaticPropDyn {
+        class: ClassRef,
+        name: Reg,
+    },
+    /// `C::${expr}` (value context): `FetchStaticProp` with a runtime name.
+    FetchStaticPropDyn {
+        dst: Reg,
+        class: ClassRef,
+        name: Reg,
+    },
+    /// `FetchStaticPropIs` with a runtime name.
+    FetchStaticPropDynIs {
+        dst: Reg,
+        class: ClassRef,
+        name: Reg,
+    },
+    /// `$$name` / `${expr}` read: the current scope's variable of that name
+    /// (null when it does not exist).
+    FetchVarVar {
+        dst: Reg,
+        name: Reg,
+    },
+    /// Cursor root: the current scope's variable named by register `name`
+    /// (created on write), for `$$name = v`, `${expr}[] = v`, ….
+    LvalVarVar {
+        name: Reg,
+    },
+    /// `$$name = &<src>`: make the current scope's variable named by register
+    /// `name` an alias of the reference in `src`.
+    BindVarVarRef {
+        name: Reg,
+        src: Reg,
+    },
+    /// `unset($$name)`: remove the current scope's variable of that name.
+    UnsetVarVar {
+        name: Reg,
     },
     /// Declare a class at this statement. `class_idx` is file-local: indices
     /// below the file's user top-level class count name `Program::classes`

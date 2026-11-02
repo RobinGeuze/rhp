@@ -1,0 +1,67 @@
+2
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(5)
+}
+NULL
+NULL
+NULL
+int(3)
+int(1)
+string(8) "priv:x:B"
+string(8) "priv:z:y"
+string(17) "__call:priv:["q"]"
+string(17) "__call:nope:[1,2]"
+string(25) "__call:nope:{"0":1,"k":2}"
+string(21) "__callStatic:nope:[1]"
+string(25) "__callStatic:nope:{"z":3}"
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(5)
+  [2]=>
+  array(2) {
+    [0]=>
+    int(6)
+    [1]=>
+    int(7)
+  }
+}
+array(3) {
+  [0]=>
+  int(8)
+  [1]=>
+  int(9)
+  [2]=>
+  array(0) {
+  }
+}
+int(3)
+Error: Call to a member function f() on null
+int(1)
+enum(E::X)
+array(2) {
+  [0]=>
+  array(2) {
+    [0]=>
+    int(3)
+    [1]=>
+    int(0)
+  }
+  [1]=>
+  array(2) {
+    [0]=>
+    int(4)
+    [1]=>
+    int(0)
+  }
+}

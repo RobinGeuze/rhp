@@ -404,6 +404,25 @@ pub(crate) fn mangled_prop_key(entry: &ClassEntry, key: &PhpStr) -> PhpStr {
     }
 }
 
+/// Whether php early-binds this top-level declaration at compile time
+/// (zend_compile_class_decl): not when it implements interfaces (an
+/// implicit `Stringable` from `__toString`, `UnitEnum` for an enum included)
+/// or uses traits — such a class exists only once its declaration runs,
+/// which lets a file declare it conditionally and `return` before a
+/// fallback definition. Anonymous classes are always available.
+fn early_bindable(p: &ClassProto) -> bool {
+    if p.name.as_bytes().windows(11).any(|w| w == b"@anonymous\0") {
+        return true;
+    }
+    p.kind != ClassKind::Enum
+        && p.interfaces.is_empty()
+        && p.traits.is_empty()
+        && !p
+            .methods
+            .iter()
+            .any(|m| m.name.as_bytes().eq_ignore_ascii_case(b"__tostring"))
+}
+
 fn kind_word(k: ClassKind) -> &'static str {
     match k {
         ClassKind::Interface => "interface",
@@ -510,25 +529,21 @@ impl Vm {
         &mut self,
         range: std::ops::Range<usize>,
     ) -> Result<(), Thrown> {
-        loop {
-            let mut progressed = false;
-            for i in range.clone() {
-                if self.decl_classes[i].1 {
-                    continue;
-                }
-                let proto = self.decl_classes[i].0.clone();
-                if self.class_ids.contains_key(&lc(proto.name.as_bytes()))
-                    || !self.deps_ready(&proto)
-                {
-                    continue;
-                }
-                self.link_class(&proto)?;
-                self.decl_classes[i].1 = true;
-                progressed = true;
+        // One pass in source order, as php's compiler does: a class whose
+        // parent is declared further down the file is not early-bound.
+        for i in range {
+            if self.decl_classes[i].1 {
+                continue;
             }
-            if !progressed {
-                break;
+            let proto = self.decl_classes[i].0.clone();
+            if self.class_ids.contains_key(&lc(proto.name.as_bytes()))
+                || !self.deps_ready(&proto)
+                || !early_bindable(&proto)
+            {
+                continue;
             }
+            self.link_class(&proto)?;
+            self.decl_classes[i].1 = true;
         }
         Ok(())
     }

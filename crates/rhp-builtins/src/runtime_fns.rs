@@ -150,7 +150,7 @@ thread_local! {
     static INI: RefCell<HashMap<String, Option<Vec<u8>>>> = RefCell::new(HashMap::new());
 }
 
-/// Reset this module's per-request state (a new Vm / Interp).
+/// Reset this module's per-request state (a new Vm).
 pub(crate) fn reset_state() {
     INI.with(|m| m.borrow_mut().clear());
     TZ.with(|t| *t.borrow_mut() = None);

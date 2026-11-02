@@ -1,0 +1,14 @@
+kept caught boom level=0
+abccaught chunk
+
+flags after throw: 12401
+[E8192] ob_end_flush(): Producing output from user output handler side_effect is deprecated
+<main>
+below: hello
+[outer 9:(inner 9:body
+[E8] ob_end_flush(): Failed to send buffer of inner (1)
+bye
+shutdown 1 level=2
+{S9:opened in shutdown | shutdown 2 level=3
+dtor level=3
+})]

@@ -400,6 +400,11 @@ thread_local! {
     static KEYS: RefCell<Vec<Slot>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Forget every key (a new request).
+pub(crate) fn reset_state() {
+    KEYS.with(|k| k.borrow_mut().clear());
+}
+
 fn key_of(v: &Value) -> Option<Rc<PubKey>> {
     let Value::Object(h) = deref(v) else {
         return None;

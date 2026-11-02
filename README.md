@@ -8,7 +8,8 @@ register-based bytecode, and runs it on a VM.
 > Status: early. The core language (scalars, operators, type juggling, arrays,
 > variables, string interpolation, a starter standard library) runs and is
 > verified byte-for-byte against real `php` 8.5. Control flow, user functions,
-> and OOP are in progress. Extensions and non-CLI SAPIs are future work.
+> and OOP are in progress. A php-cgi compatible SAPI (`rhp --cgi`) and an
+> embeddable request layer (`rhp-sapi`) exist; `-S` and FastCGI are future work.
 
 ## Design
 
@@ -36,10 +37,23 @@ a compiler/VM bug — not a semantic one.
 | `rhp-compiler` | AST → bytecode; owns the structural refusals |
 | `rhp-vm` | the register VM |
 | `rhp-oracle` | tree-walking differential oracle |
-| `rhp-cli` | the CLI SAPI + differential test runner |
+| `rhp-sapi` | the request layer: `run_request`, the `Sapi` trait a server implements, the CLI and CGI SAPIs |
+| `rhp-cli` | the `rhp` command: argv front end over `rhp-sapi` (`rhp script.php`, `-r`, `--cgi`) |
+| `rhp-difftest` | differential harnesses against php / php-cgi (php-src `.phpt`, fixture apps, extensions) |
 
 Full design docs are in [`docs/design/`](docs/design/) — start with
 [`bytecode.md`](docs/design/bytecode.md).
+
+### Running web requests
+
+`rhp --cgi` behaves like `php-cgi` (same environment variables, same
+`Status:`/header/body output), and is diffed byte-for-byte against it. For
+embedding in a web server, `rhp-sapi` is a library: the server implements
+the `Sapi` trait (body writer, `send_headers`, flush, log), fills in a
+`RequestInfo` (server variables, query string, cookies, body) and calls
+`rhp_sapi::run_request` on a worker thread, with one fresh engine per
+request and engine values that stay thread-local (`Rc`, not `Send`). See
+[`docs/design/sapi.md`](docs/design/sapi.md).
 
 ## Non-goals / refused by design
 

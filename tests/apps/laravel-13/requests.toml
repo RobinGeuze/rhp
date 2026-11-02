@@ -1,0 +1,88 @@
+# Request corpus for `rhp-difftest app laravel-13` (see tests/apps/README.md).
+#
+# Every request runs through php-cgi and then through rhp --cgi, on this same
+# directory, each engine starting from the same pristine state.
+
+# Writable state, restored from the pristine snapshot before each engine.
+state = [
+    "storage/framework/views",
+    "storage/framework/cache",
+    "storage/framework/sessions",
+    "storage/logs",
+    "bootstrap/cache",
+]
+
+# No warm-up: Laravel compiles Blade views lazily, so each engine compiles
+# them itself and the compiled views are diffed as @files.
+# (bootstrap/cache/{packages,services}.php come from `artisan package:discover`
+# at setup; they are SAPI-independent manifests.)
+warmup = "none"
+
+# Laravel encrypts its cookies (AES-256-CBC + HMAC-SHA256) with a random IV:
+# the harness decrypts them with the fixed APP_KEY from .env, checks the MAC,
+# and shows `name=decrypted(<prefix>|<value>)`, the value alpha-renamed.
+encrypted_cookies = "laravel"
+
+# Capture group 1 is a random token, alpha-renamed consistently across
+# headers, bodies, steps and written files (session file names + contents).
+tokens = [
+    'name="csrf-token" content="([^"]+)"',
+    'name="_token" value="([^"]+)"',
+    # session files; a 419 stores a token no response shows
+    '"_token":"([A-Za-z0-9]+)"',
+]
+
+[[request]]
+id = "home"
+path = "/"
+status = 200
+
+[[request]]
+id = "hello-world"
+path = "/hello/world"
+status = 200
+
+[[request]]
+id = "api-json"
+path = "/api/json?a=1&b[]=x"
+status = 200
+
+[[request]]
+id = "not-found"
+path = "/nope"
+status = 404
+
+# No session, no token: the CSRF middleware answers 419.
+[[request]]
+id = "submit-no-token"
+method = "POST"
+path = "/submit"
+status = 419
+body = "x=1"
+
+# A flow: the GET starts a session and sets XSRF-TOKEN; the POSTs replay the
+# engine's own cookie jar and send the token back, once the way axios does
+# (X-XSRF-TOKEN = the encrypted cookie) and once as a form field (_token =
+# the decrypted token).
+[[request]]
+id = "csrf-get"
+flow = "csrf"
+path = "/hello/flow"
+status = 200
+
+[[request]]
+id = "csrf-post-header"
+flow = "csrf"
+method = "POST"
+path = "/submit"
+status = 200
+headers = ["X-XSRF-TOKEN: {cookie:XSRF-TOKEN}"]
+body = "x=1&y=two"
+
+[[request]]
+id = "csrf-post-field"
+flow = "csrf"
+method = "POST"
+path = "/submit"
+status = 200
+body = "_token={cookie-plain:XSRF-TOKEN}&list[]=a&list[]=b"

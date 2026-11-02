@@ -127,6 +127,9 @@ thread_local! {
     static LINE_STARTS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
     /// The file name reported in debug info / exception getFile().
     static SRC_FILE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// The user source being compiled (empty for the prelude), for lexical
+    /// details the AST drops (the newline a `?>` swallows).
+    static SRC_BYTES: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     /// Whether the file being compiled declared `strict_types=1` (php's
     /// caller-decides coercion rule); stamped on every proto built from it.
     static STRICT_TYPES: RefCell<bool> = const { RefCell::new(false) };
@@ -546,6 +549,23 @@ fn decl_file() -> PhpStr {
 }
 
 /// 1-based line number for a byte offset, via the current `LINE_STARTS`.
+/// php's lexer folds one newline (`\n`, `\r\n` or `\r`) right after `?>`
+/// into the closing tag: drop it from inline text that starts there.
+fn strip_close_tag_newline(offset: u32, text: &[u8]) -> &[u8] {
+    let after_close = SRC_BYTES.with(|b| {
+        let b = b.borrow();
+        let o = offset as usize;
+        o >= 2 && o <= b.len() && &b[o - 2..o] == b"?>"
+    });
+    if !after_close {
+        return text;
+    }
+    match text {
+        [b'\r', b'\n', rest @ ..] | [b'\n', rest @ ..] | [b'\r', rest @ ..] => rest,
+        _ => text,
+    }
+}
+
 fn line_of(offset: u32) -> u32 {
     LINE_STARTS.with(|ls| {
         let ls = ls.borrow();
@@ -635,6 +655,7 @@ fn compile_program(
 ) -> Result<Program, Thrown> {
     LINE_STARTS.with(|ls| ls.borrow_mut().clear());
     DOC_SRC.with(|d| *d.borrow_mut() = (Rc::new(Vec::new()), None));
+    SRC_BYTES.with(|b| b.borrow_mut().clear());
     SRC_FILE.with(|f| *f.borrow_mut() = file.as_bytes().to_vec());
     STRICT_TYPES.with(|s| *s.borrow_mut() = detect_strict_types(program));
     let user_line_starts = build_line_starts(source);
@@ -696,6 +717,7 @@ fn compile_program(
     // From here on we compile user code, so install its line map.
     LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
     DOC_SRC.with(|d| *d.borrow_mut() = (Rc::new(source.to_vec()), None));
+    SRC_BYTES.with(|b| *b.borrow_mut() = source.to_vec());
     let user_constants: Vec<(PhpStr, Value)> = Vec::new();
     for (ctx, stmt) in &flat {
         use mago_span::HasSpan;
@@ -1678,6 +1700,7 @@ class OverflowException extends RuntimeException {}
 class UnderflowException extends RuntimeException {}
 class UnexpectedValueException extends RuntimeException {}
 class JsonException extends Exception {}
+class RequestParseBodyException extends Exception {}
 class DateError extends Error {}
 class DateObjectError extends DateError {}
 class DateRangeError extends DateError {}
@@ -3068,8 +3091,17 @@ impl ProtoBuilder {
             Statement::OpeningTag(_) | Statement::ClosingTag(_) | Statement::Noop(_) => {}
             Statement::Inline(inline) => {
                 if inline.kind.is_text() {
-                    let k = self.intern_const(Value::str(inline.value.to_vec()));
-                    self.emit(Instr::EchoConst { k });
+                    let text = strip_close_tag_newline(inline.span().start.offset, inline.value);
+                    // php's `?>` token includes the newline: the HTML after
+                    // it starts on the next line.
+                    let skipped = inline.value.len() - text.len();
+                    if skipped > 0 {
+                        self.cur_line = line_of(inline.span().start.offset + skipped as u32);
+                    }
+                    if !text.is_empty() {
+                        let k = self.intern_const(Value::str(text.to_vec()));
+                        self.emit(Instr::EchoConst { k });
+                    }
                 }
             }
             Statement::Echo(e) => {

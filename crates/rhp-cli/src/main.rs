@@ -1,40 +1,52 @@
-//! rhp CLI SAPI: `rhp [options] script.php [args...]` or `rhp [options] -r code`.
+//! The `rhp` command: argv parsing that picks a SAPI mode and hands the
+//! request to the `rhp-sapi` library.
 //!
-//! Reads a file (or `-r` code), parses it, compiles it to bytecode, and runs it
-//! on the register VM, writing output straight to stdout as it is produced (as
-//! php's CLI does), and exits with the script's exit code. Parse errors,
-//! compile-time refusals, and uncaught throws go to stderr with a nonzero exit.
-//!
-//! The php CLI options composer and friends pass when re-invoking `PHP_BINARY`
-//! are accepted: `-n`, `-q`, `-H`, `-e`, `-c <path>` (ignored), `-d
-//! key[=value]` (ini settings), `-f <file>`, `-r <code>`, and `--` to end
-//! option parsing.
+//! - `rhp [options] script.php [args...]` / `rhp [options] -r code`: php-cli.
+//!   The php CLI options composer and friends pass when re-invoking
+//!   `PHP_BINARY` are accepted: `-n`, `-q`, `-H`, `-e`, `-c <path>`
+//!   (ignored), `-d key[=value]` (ini settings), `-f <file>`, `-r <code>`,
+//!   and `--` to end option parsing.
+//! - `rhp --cgi [php-cgi options] [script.php [args...]]`, or the binary
+//!   invoked as `php-cgi`: php-cgi (request from the CGI environment,
+//!   `Status:` + headers + body on stdout).
 
-use std::io::Write;
 use std::process::ExitCode;
 
-use rhp_compiler::{compile_include, compile_with_source};
-use rhp_frontend::Arena;
-use rhp_values::{Thrown, Value};
-use rhp_vm::{IncludeError, Vm};
-
-/// What to run.
-enum Script {
-    File(String),
-    Code(String),
-    /// No script file and no `-r`: the script is read from standard input.
-    Stdin,
-}
+use rhp_sapi::Script;
 
 fn usage() -> ExitCode {
-    eprintln!("usage: rhp [options] <script.php> [args...] | rhp [options] -r <code> [args...]");
+    eprintln!("usage: rhp [options] <script.php> [args...] | rhp [options] -r <code> [args...] | rhp --cgi [options] [script.php]");
     ExitCode::from(1)
+}
+
+fn exit(code: i32) -> ExitCode {
+    ExitCode::from(code.clamp(0, 255) as u8)
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
 
-    // --- option parsing (php_cli.c's getopt subset) ---------------------------
+    // --- SAPI selection -------------------------------------------------------
+    let argv0_cgi = args
+        .first()
+        .and_then(|a| std::path::Path::new(a).file_name())
+        .is_some_and(|n| n == "php-cgi");
+    if argv0_cgi {
+        return exit(rhp_sapi::cgi::main(
+            &args,
+            rhp_sapi::cgi::CgiEnv::from_process(),
+        ));
+    }
+    if args.get(1).map(String::as_str) == Some("--cgi") {
+        let mut cgi_args = vec![args[0].clone()];
+        cgi_args.extend(args[2..].iter().cloned());
+        return exit(rhp_sapi::cgi::main(
+            &cgi_args,
+            rhp_sapi::cgi::CgiEnv::from_process(),
+        ));
+    }
+
+    // --- CLI option parsing (php_cli.c's getopt subset) -----------------------
     let mut i = 1;
     let mut script: Option<Script> = None;
     // `--` ends option parsing; what follows are the script's arguments
@@ -44,7 +56,7 @@ fn main() -> ExitCode {
     let mut ini: Vec<(String, String)> = Vec::new();
     let mut add_ini = |kv: &str| {
         let (k, v) = kv.split_once('=').unwrap_or((kv, "1"));
-        ini.push((k.trim().to_string(), v.trim().to_string()));
+        ini.push((k.trim().to_string(), rhp_sapi::ini_define_value(v)));
     };
     while i < args.len() {
         let a = args[i].as_str();
@@ -111,131 +123,6 @@ fn main() -> ExitCode {
             _ => Script::Stdin,
         },
     };
-
-    // --- load the source ------------------------------------------------------
-    let (file, source, argv0) = match &script {
-        Script::File(path) => {
-            let source = match std::fs::read(path) {
-                Ok(bytes) => bytes,
-                // php opens a directory fine and reads it as an empty script.
-                Err(_) if std::path::Path::new(path).is_dir() => Vec::new(),
-                Err(_) => {
-                    eprintln!("Could not open input file: {path}");
-                    return ExitCode::from(1);
-                }
-            };
-            // php reports the resolved real path in __FILE__ / __DIR__ / getFile().
-            let file = std::fs::canonicalize(path)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| path.clone());
-            (file, source, path.clone())
-        }
-        Script::Stdin => {
-            let mut src = Vec::new();
-            if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut src) {
-                eprintln!("rhp: cannot read standard input: {e}");
-                return ExitCode::from(1);
-            }
-            (
-                "Standard input code".to_string(),
-                src,
-                "Standard input code".to_string(),
-            )
-        }
-        Script::Code(code) => {
-            let mut src = b"<?php ".to_vec();
-            src.extend_from_slice(code.as_bytes());
-            (
-                "Command line code".to_string(),
-                src,
-                "Standard input code".to_string(),
-            )
-        }
-    };
-
-    let arena = Arena::new();
-    let parsed = arena.parse(file.as_bytes(), &source);
-    if let Some((message, line)) = parsed.parse_error() {
-        let mut vm = Vm::new();
-        for (k, v) in &ini {
-            vm.set_ini(k.as_bytes(), v.as_bytes());
-        }
-        vm.set_direct_stdout(true);
-        vm.report_parse_error(&message, &file, line);
-        vm.flush_stdout();
-        let _ = std::io::stdout().flush();
-        return ExitCode::from(255);
-    }
-
-    // Compile to owned bytecode; the arena can be dropped after this.
-    let program = match compile_with_source(parsed.program(), &source, &file) {
-        Ok(p) => p,
-        Err(t) => return ExitCode::from(fatal(t).clamp(0, 255) as u8),
-    };
-
-    let mut vm = Vm::new();
-    // Like the php CLI, write output unbuffered so it interleaves with stderr
-    // and with the output of child processes in the order it was produced.
-    vm.set_stdout_passthrough(true);
-    for (k, v) in &ini {
-        vm.set_ini(k.as_bytes(), v.as_bytes());
-    }
-    // PHP_BINARY is this engine's own executable (composer re-invokes it for
-    // `@php` scripts).
-    if let Ok(exe) = std::env::current_exe() {
-        let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
-        vm.set_constant(
-            "PHP_BINARY",
-            Value::str(exe.to_string_lossy().into_owned().into_bytes()),
-        );
-    }
-    if let Script::File(_) = script {
-        // The top-level script's path, so `Phar::mapPhar` can parse the running phar.
-        vm.set_main_script_path(file.as_bytes().to_vec());
-    }
-    // $argv / $_SERVER['argv']: the script name as given, then its arguments.
-    let mut argv = vec![argv0.into_bytes()];
-    argv.extend(args[i..].iter().map(|s| s.as_bytes().to_vec()));
-    vm.set_argv(argv);
-    // Teach the VM how to compile an included file (keeps the VM compiler-agnostic).
-    vm.set_includer(|file: &str, src: &[u8]| {
-        let arena = Arena::new();
-        let parsed = arena.parse(file.as_bytes(), src);
-        if let Some((message, line)) = parsed.parse_error() {
-            return Err(IncludeError::Parse { message, line });
-        }
-        Ok(compile_include(parsed.program(), src, file)?)
-    });
-    // Unbuffered stdout reaches the process before each stderr write.
-    vm.set_direct_stdout(true);
-    // The CLI request: run, report an uncaught throwable (per display_errors /
-    // log_errors / error_reporting), then shutdown functions, destructors and
-    // the output-buffer flush.
-    let code = match vm.run_main(&program) {
-        Ok(code) => code,
-        Err(t) => fatal(t),
-    };
-    vm.flush_stdout();
-    let _ = std::io::stdout().flush();
-    ExitCode::from(code.clamp(0, 255) as u8)
-}
-
-/// Report an uncaught throwable (or honour `exit`); returns the exit code.
-fn fatal(t: Thrown) -> i32 {
-    match t {
-        Thrown::Exit(code) => code,
-        Thrown::Error { class, message } => {
-            eprintln!("PHP Fatal error:  Uncaught {class}: {message}");
-            255
-        }
-        Thrown::Object(_) => {
-            // Uncaught user exception (details rendered to stderr only).
-            eprintln!("PHP Fatal error:  Uncaught exception");
-            255
-        }
-        t @ Thrown::Unsupported { .. } => {
-            eprintln!("{}", t.unsupported_message().unwrap_or_default());
-            255
-        }
-    }
+    let rest = args[i..].iter().map(|s| s.as_bytes().to_vec()).collect();
+    exit(rhp_sapi::run_cli(script, ini, rest))
 }

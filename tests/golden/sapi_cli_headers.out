@@ -1,0 +1,87 @@
+never
+first output
+array(17) {
+  [0]=>
+  array(2) {
+    [0]=>
+    string(3) "cli"
+    [1]=>
+    string(3) "cli"
+  }
+  [1]=>
+  bool(false)
+  [2]=>
+  bool(false)
+  [3]=>
+  array(2) {
+    [0]=>
+    array(0) {
+    }
+    [1]=>
+    int(302)
+  }
+  [4]=>
+  array(2) {
+    [0]=>
+    int(302)
+    [1]=>
+    int(201)
+  }
+  [5]=>
+  array(2) {
+    [0]=>
+    bool(true)
+    [1]=>
+    bool(true)
+  }
+  [6]=>
+  array(0) {
+  }
+  [7]=>
+  array(0) {
+  }
+  [8]=>
+  bool(true)
+  [9]=>
+  array(3) {
+    [0]=>
+    bool(false)
+    [1]=>
+    string(0) ""
+    [2]=>
+    int(0)
+  }
+  [10]=>
+  array(2) {
+    [0]=>
+    bool(false)
+    [1]=>
+    bool(false)
+  }
+  [11]=>
+  string(103) "setcookie(): Argument #1 ($name) cannot contain "=", ",", ";", " ", "\t", "\r", "\n", "\013", or "\014""
+  [12]=>
+  string(38) "setcookie(): option "bogus" is invalid"
+  [13]=>
+  array(3) {
+    [0]=>
+    bool(true)
+    [1]=>
+    string(20) "sapi_cli_headers.php"
+    [2]=>
+    int(36)
+  }
+  [14]=>
+  bool(false)
+  [15]=>
+  bool(false)
+  [16]=>
+  array(0) {
+  }
+}
+Array
+(
+    [0] => E2: Cannot modify header information - headers already sent by (output started at sapi_cli_headers.php:36) @38
+    [1] => E2: Cannot modify header information - headers already sent by (output started at sapi_cli_headers.php:36) @39
+    [2] => E2: http_response_code(): Cannot set response code - headers already sent (output started at sapi_cli_headers.php:36) @40
+)

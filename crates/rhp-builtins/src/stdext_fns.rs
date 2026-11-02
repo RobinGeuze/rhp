@@ -3,7 +3,7 @@
 //! `shuffle`, `array_rand`, `str_shuffle`), `array_change_key_case`,
 //! `array_multisort`, `settype`, `fnmatch`, process introspection
 //! (`getrusage`, `gc_status`, `sys_getloadavg`, `memory_reset_peak_usage`,
-//! `gc_mem_caches`), opcache's disabled-state API, `getopt` and `readline`.
+//! `gc_mem_caches`), `getopt` and `readline`.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -696,12 +696,6 @@ fn fn_sys_getloadavg(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown>
     Ok(Value::Array(a))
 }
 
-/// opcache is not enabled for the CLI (`opcache.enable_cli=0`): the status
-/// / invalidate / reset family all report false.
-fn fn_false(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(false))
-}
-
 // --- getopt (main/getopt.c + ext/standard/basic_functions.c) -----------------
 
 struct OptSpec {
@@ -1039,10 +1033,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     );
     put("gc_mem_caches", fn_gc_mem_caches, 0, Some(0));
     put("sys_getloadavg", fn_sys_getloadavg, 0, Some(0));
-    put("opcache_get_status", fn_false, 0, Some(1));
-    put("opcache_invalidate", fn_false, 1, Some(2));
-    put("opcache_is_script_cached", fn_false, 1, Some(1));
-    put("opcache_reset", fn_false, 0, Some(0));
     put("getopt", fn_getopt, 1, Some(3));
     put("readline", fn_readline, 0, Some(1));
     put("readline_add_history", fn_readline_add_history, 1, Some(1));

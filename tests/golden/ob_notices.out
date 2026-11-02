@@ -1,0 +1,80 @@
+[E8] ob_flush(): Failed to flush buffer. No buffer to flush
+[E8] ob_clean(): Failed to delete buffer. No buffer to delete
+[E8] ob_end_flush(): Failed to delete and flush buffer. No buffer to delete or flush
+[E8] ob_end_clean(): Failed to delete buffer. No buffer to delete
+[E8] ob_get_flush(): Failed to delete and flush buffer. No buffer to delete or flush
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+int(0)
+array(0) {
+}
+array(0) {
+}
+[E2] ob_start(): no array or string given
+[E8] ob_start(): Failed to create buffer
+bool(false)
+[E2] ob_start(): function "nonexistent_fn" not found or invalid function name
+[E8] ob_start(): Failed to create buffer
+bool(false)
+[E2] ob_start(): class "NoSuchClass" not found
+[E8] ob_start(): Failed to create buffer
+bool(false)
+[E2] ob_start(): class C does not have a method "nope"
+[E8] ob_start(): Failed to create buffer
+bool(false)
+[E2] ob_start(): class C does not have a method "nope"
+[E8] ob_start(): Failed to create buffer
+bool(false)
+[E2] ob_start(): array callback must have exactly two members
+[E8] ob_start(): Failed to create buffer
+bool(false)
+[E2] ob_start(): cannot access private method C::priv()
+[E8] ob_start(): Failed to create buffer
+bool(false)
+[E2] ob_start(): first array member is not a valid class name or object
+[E8] ob_start(): Failed to create buffer
+bool(false)
+int(0)
+[E8192] ob_start(): Passing null to parameter #2 ($chunk_size) of type int is deprecated
+TypeError: ob_start(): Argument #2 ($chunk_size) must be of type int, string given
+[E8192] ob_start(): Passing null to parameter #3 ($flags) of type int is deprecated
+bool(true)
+[E8] ob_end_clean(): Failed to discard buffer of default output handler (0)
+bool(true)
+[E8] ob_end_clean(): Failed to discard buffer of default output handler (1)
+TypeError: ob_start(): Argument #3 ($flags) must be of type int, array given
+ob_get_status(): Argument #1 ($full_status) must be of type bool, array given
+chunk_size=0 buffer_size=16384
+chunk_size=5000 buffer_size=8192
+16384,32768,32768,49152,106496
+x[E8] ob_flush(): Failed to flush buffer of C::f (3)
+[E8] ob_clean(): Failed to delete buffer of C::f (3)
+[E8] ob_end_flush(): Failed to send buffer of C::f (3)
+[E8] ob_end_clean(): Failed to discard buffer of C::f (3)
+[E8] ob_get_flush(): Failed to send buffer of C::f (3)
+[E8] ob_get_flush(): Failed to delete buffer of C::f (3)
+[E8] ob_get_clean(): Failed to discard buffer of C::f (3)
+[E8] ob_get_clean(): Failed to delete buffer of C::f (3)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+string(219) "x[E8] ob_flush(): Failed to flush buffer of C::f (3)
+[E8] ob_clean(): Failed to delete buffer of C::f (3)
+[E8] ob_end_flush(): Failed to send buffer of C::f (3)
+[E8] ob_end_clean(): Failed to discard buffer of C::f (3)
+"
+string(331) "x[E8] ob_flush(): Failed to flush buffer of C::f (3)
+[E8] ob_clean(): Failed to delete buffer of C::f (3)
+[E8] ob_end_flush(): Failed to send buffer of C::f (3)
+[E8] ob_end_clean(): Failed to discard buffer of C::f (3)
+[E8] ob_get_flush(): Failed to send buffer of C::f (3)
+[E8] ob_get_flush(): Failed to delete buffer of C::f (3)
+"
+int(4)

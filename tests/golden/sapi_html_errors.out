@@ -1,0 +1,12 @@
+<br />
+<b>Notice</b>:  plain <notice> & "quotes" in <b>FILE</b> on line <b>7</b><br />
+<br />
+<b>Warning</b>:  it's a warning in <b>FILE</b> on line <b>8</b><br />
+<br />
+<b>Deprecated</b>:  deprecated in <b>FILE</b> on line <b>9</b><br />
+<br />
+<b>Warning</b>:  Undefined array key "missing" in <b>FILE</b> on line <b>11</b><br />
+1
+
+Notice: back to text in FILE on line 14
+done

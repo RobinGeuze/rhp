@@ -331,7 +331,7 @@ fn b64_reverse(byte: u8) -> i16 {
 }
 
 /// Mirrors php's `php_base64_decode_ex`. Returns `None` for php `false`.
-fn base64_decode(input: &[u8], strict: bool) -> Option<Vec<u8>> {
+pub(crate) fn base64_decode(input: &[u8], strict: bool) -> Option<Vec<u8>> {
     let mut out = vec![0u8; input.len() + 4];
     let mut i: usize = 0; // count of data (non-pad) chars consumed
     let mut j: usize = 0; // output byte index

@@ -24,6 +24,7 @@ mod snefru;
 mod tiger;
 
 use crate::{Builtin, Host, Thrown};
+pub(crate) use primitives::base64_decode;
 use primitives::{crc32 as crc32_ieee, md5, sha1, sha256, to_hex};
 
 // ---------------------------------------------------------------------------

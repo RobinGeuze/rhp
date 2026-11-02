@@ -162,6 +162,11 @@ fn fn_openssl_x509_parse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
     Ok(Value::Array(out))
 }
 
+/// Reset per-request state (keys held by OpenSSLAsymmetricKey objects).
+pub(crate) fn reset_state() {
+    pkey::reset_state();
+}
+
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     fn put(
         m: &mut HashMap<&'static str, Builtin>,

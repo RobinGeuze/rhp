@@ -388,6 +388,24 @@ fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value
     if e.3 & PHP_INI_USER == 0 {
         return Ok(Value::Bool(false));
     }
+    if name == b"memory_hard_limit_percent" {
+        // OnChangeMemoryHardLimitPercent: zend_ini_parse_quantity_warn, then
+        // the range check. rhp has no hard limit to apply the value to.
+        if let Some(err) = crate::rfc1867::quantity_error(&newv) {
+            host.emit_diagnostic(
+                crate::E_WARNING,
+                &format!("Invalid \"memory_hard_limit_percent\" setting. {err}"),
+            )?;
+        }
+        let q = ini_parse_quantity(&newv);
+        if q < 100 && q != -1 {
+            host.emit_diagnostic(
+                crate::E_WARNING,
+                "memory_hard_limit_percent must be >= 100, or -1",
+            )?;
+            return Ok(Value::Bool(false));
+        }
+    }
     if ini_validate(&name, &newv).is_err() {
         // php: the directive's handler warns (where it does) and refuses.
         return Ok(Value::Bool(false));

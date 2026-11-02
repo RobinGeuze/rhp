@@ -1129,7 +1129,7 @@ fn escaped(s: &[u8]) -> String {
 }
 
 /// The warning `zend_ini_parse_quantity` reports for a malformed quantity.
-fn quantity_error(v: &[u8]) -> Option<String> {
+pub(crate) fn quantity_error(v: &[u8]) -> Option<String> {
     let ws = |c: u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
     let mut a = 0;
     let mut b = v.len();

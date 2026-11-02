@@ -1,0 +1,54 @@
+bool(true)
+string(6) "strlen"
+string(6) "strlen"
+bool(false)
+string(4) "nope"
+string(4) "nope"
+bool(true)
+string(4) "A::s"
+string(4) "A::s"
+bool(true)
+string(4) "A::m"
+string(4) "A::m"
+bool(false)
+string(4) "A::x"
+string(4) "A::x"
+bool(false)
+string(5) "Array"
+string(5) "Array"
+bool(false)
+string(5) "Array"
+string(5) "Array"
+bool(true)
+string(11) "A::__invoke"
+string(11) "A::__invoke"
+bool(false)
+string(2) "42"
+string(2) "42"
+bool(false)
+string(0) ""
+string(0) ""
+bool(false)
+string(3) "1.5"
+string(3) "1.5"
+bool(false)
+string(1) "1"
+string(1) "1"
+bool(true)
+string(4) "A::s"
+string(4) "A::s"
+bool(false)
+string(5) "Array"
+string(5) "Array"
+bool(false)
+string(18) "stdClass::__invoke"
+string(18) "stdClass::__invoke"
+bool(true)
+string(25) "{closure:A::closures():8}"
+bool(true)
+string(25) "{closure:A::closures():8}"
+bool(true)
+string(4) "A::m"
+bool(true)
+string(6) "strlen"
+string(6) "strlen"

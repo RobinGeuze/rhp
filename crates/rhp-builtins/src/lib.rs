@@ -562,6 +562,12 @@ pub trait Host {
 
     /// The class name of an object value, if any (for `instanceof`-style checks
     /// inside builtins). Default: none.
+    /// A closure's function name (`{closure:scope:line}`), for
+    /// `is_callable`'s `$callable_name`. Default: unknown.
+    fn closure_name(&self, _closure: &Value) -> Option<Vec<u8>> {
+        None
+    }
+
     fn object_class_name(&self, _obj: &Value) -> Option<Vec<u8>> {
         None
     }
@@ -1155,7 +1161,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "is_array"       => fn_is_array, 1, Some(1);
             "is_scalar"      => fn_is_scalar, 1, Some(1);
             "is_object"      => fn_is_object, 1, Some(1);
-            "is_callable"    => fn_is_callable, 1, Some(2);
+            "is_callable"    => fn_is_callable, 1, Some(3);
             "define"         => fn_define, 2, Some(3);
             "defined"        => fn_defined, 1, Some(1);
             "constant"       => fn_constant, 1, Some(1);
@@ -1742,6 +1748,9 @@ fn fn_is_finite(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_is_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
+    if let Some(Value::Ref(rc)) = args.get(2) {
+        *rc.borrow_mut() = Value::str(callable_name(host, &v));
+    }
     // `$syntax_only`: only the callable's shape is checked.
     if args.get(1).is_some_and(|f| conv::to_bool(&deref(f))) {
         match &v {
@@ -1758,6 +1767,39 @@ fn fn_is_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         }
     }
     Ok(Value::Bool(host.check_callable(&v)?.is_none()))
+}
+
+/// zend_get_callable_name_ex: `is_callable`'s `$callable_name`.
+fn callable_name(host: &dyn Host, v: &Value) -> Vec<u8> {
+    let class_of = |h: &rhp_values::ObjectHandle| {
+        let cls = h.borrow().class;
+        host.class_name(cls).unwrap_or_default()
+    };
+    match v {
+        Value::Array(a) if a.len() == 2 => {
+            let parts: Vec<Value> = a.iter().map(|(_, x)| deref(x)).collect();
+            let method = match &parts[1] {
+                Value::Str(m) => m.as_bytes().to_vec(),
+                _ => return b"Array".to_vec(),
+            };
+            let class = match &parts[0] {
+                Value::Str(c) => c.as_bytes().to_vec(),
+                Value::Object(h) => class_of(h),
+                _ => return b"Array".to_vec(),
+            };
+            [&class[..], b"::", &method[..]].concat()
+        }
+        Value::Array(_) => b"Array".to_vec(),
+        Value::Closure(cd) => match &cd.wrapped {
+            // A first-class callable names what it wraps (`strlen`, `A::m`).
+            Some(w) => callable_name(host, &deref(w)),
+            None => host
+                .closure_name(v)
+                .unwrap_or_else(|| b"Closure::__invoke".to_vec()),
+        },
+        Value::Object(h) => [&class_of(h)[..], b"::__invoke"].concat(),
+        other => conv::to_string_bytes(other),
+    }
 }
 
 /// zpp's `f` check: "F(): Argument #N ($callback) must be a valid callback, …".

@@ -1886,6 +1886,16 @@ impl Host for Vm {
         Some(self.params_to_value(&m.proto))
     }
 
+    fn closure_name(&self, closure: &Value) -> Option<Vec<u8>> {
+        match deref(closure) {
+            Value::Closure(cd) if cd.wrapped.is_none() => self
+                .closures
+                .get(cd.fnidx as usize)
+                .map(|p| p.name.as_bytes().to_vec()),
+            _ => None,
+        }
+    }
+
     fn reflect_callable_params(&self, callable: &Value) -> Option<Value> {
         let proto = match deref(callable) {
             Value::Closure(cd) if cd.wrapped.is_none() => {

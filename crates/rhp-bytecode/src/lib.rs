@@ -1279,6 +1279,8 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         "preg_match" | "preg_match_all" => &[false, false, true],
         // `flock($stream, $operation, &$would_block)`.
         "flock" => &[false, false, true],
+        // `is_callable($value, $syntax_only, &$callable_name)`.
+        "is_callable" => &[false, false, true],
         // `xml_parse_into_struct($parser, $data, &$values, &$index)`.
         "xml_parse_into_struct" => &[false, false, true, true],
         // curl_multi_exec(&$still_running), curl_multi_info_read(&$queued_messages).

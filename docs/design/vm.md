@@ -1,5 +1,11 @@
 # rhp — VM execution architecture
 
+> **Historical document.** Written while the VM was planned inside
+> `rhp-runtime`, next to the tree-walker it calls the *oracle*. The VM was built
+> in its own crates instead ([`bytecode.md`](./bytecode.md) supersedes this doc
+> where they differ), and the oracle was later removed (2026-11). Read the
+> oracle and `rhp-runtime` passages below as history.
+
 The execution core is a **register-based bytecode compiler + VM**. The
 tree-walker in `rhp-runtime/src/lib.rs` is demoted to a *differential oracle*
 (`Interp`): it stays byte-for-byte correct on the subset it covers and is run

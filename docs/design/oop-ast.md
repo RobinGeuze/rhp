@@ -3,10 +3,10 @@
 Scope: the complete `mago-syntax-1.58.2` CST surface the compiler must lower for
 OOP. Source: `.../mago-syntax-1.58.2/src/cst/cst/` (arena-allocated; `'arena`
 elided below). Exact Rust variant/field names are authoritative; each row has a
-one-line interpreter note. OOP is **VM-only** (the oracle is frozen and skips
-OOP fixtures). ISA framing: the OOP opcodes (`New`, `FetchProp`/`AssignProp`,
-`CallMethod`, `CallStatic`, `InstanceOf`, `Clone`, late static binding) are
-"same encoding and calling convention" as the rest of the ISA
+one-line interpreter note. ISA framing: the OOP opcodes (`New`,
+`FetchProp`/`AssignProp`, `CallMethod`, `CallStatic`, `InstanceOf`, `Clone`,
+late static binding) are "same encoding and calling convention" as the rest of
+the ISA
 (`bytecode.md` §OOP-deferred). `Program` already reserves `pub classes: Vec<PhpStr>`
 and `Value::Object` carries a `ClassId(u32)` indexing a class table **in the `Vm`**.
 

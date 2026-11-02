@@ -269,7 +269,7 @@ Why this is the right pragmatic first cut:
 - Declared and dynamic properties live in the *same* map, so dynamic properties
   (and the 8.5 deprecation notice) fall out for free — no second container.
 - `FxBuildHasher` on a short interned `PhpStr` key is fast; correctness and
-  oracle parity come first, and property access is not yet the proven
+  php parity come first, and property access is not yet the proven
   bottleneck.
 
 ### How to move to packed offsets later **without an ISA change**
@@ -433,5 +433,4 @@ only non-receiver-cached dispatch forms are `self::`/`parent::`/`static::`
   [`value-model.md`](./value-model.md) §5 states.
 - All semantics claims above are probed against `php` 8.5.8; the probes
   (LSB `B`/`A/B`, dynamic-property deprecation, `Closure::bind` private access)
-  are reproduced inline in (a)/(b) and should become golden fixtures (VM-only;
-  the frozen oracle skips OOP fixtures).
+  are reproduced inline in (a)/(b) and should become golden fixtures.

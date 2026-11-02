@@ -289,11 +289,17 @@ the VM for `running_main_path()` (it already canonicalizes + reads the script).
 4. **zlib module** (6 fns + constants) — independent, any time.
 5. **M2**: resources (`Value::Resource`, fopen/fread/gzopen), `ZipArchive`, tar.
 
-**Test strategy:** the tree-walker **oracle has no namespaces/streams**, so these
-go in **CLI differential tests** (real `rhp` vs `php`), like `tests/include.rs` /
-`tests/namespaces.rs` — *not* golden fixtures (golden runs through the oracle).
-Build small phars in-test with `php -d phar.readonly=0`, and gate on a real
-`composer.phar` when present (skip when absent / no `php`).
+**Test strategy:** behaviour that one self-contained script can show
+(namespaces, streams, types) belongs in a **golden fixture**:
+`tests/golden/NAME.php` plus php's output as `NAME.out`, which the VM test
+holds byte for byte without needing php. Use a **CLI differential test** (real
+`rhp` vs `php`, like `tests/include.rs` / `tests/phar.rs`) only when a case
+needs more than one script's stdout: several files in a temp dir, an
+argv/stdin/exit-code contract, or a phar built in-test with
+`php -d phar.readonly=0`; gate on a real `composer.phar` when present (skip
+when absent / no `php`). (This section originally sent namespace and stream
+tests to the CLI suite because goldens also ran through the tree-walking
+oracle, which lacked both; the oracle has since been removed.)
 
 ---
 

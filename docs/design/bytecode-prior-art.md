@@ -1,8 +1,7 @@
 # Bytecode VM prior art → rhp ISA recommendations
 
 Status: design input for the register-based bytecode compiler + VM that becomes
-rhp's primary execution core. The tiny tree-walker (`rhp-runtime/src/lib.rs`)
-is kept **only** as a differential oracle. Ground truth: local `php` **8.5.8**.
+rhp's primary execution core. Ground truth: local `php` **8.5.8**.
 
 This document surveys four reference designs and distills concrete, rhp-specific
 recommendations. It is written against the pieces we already built and will reuse
@@ -183,8 +182,8 @@ inline interleaving — it keeps instructions **fixed-shape and immutable/sharea
 - Start **monomorphic** (one `(class → target)` pair with a guard + slow-path
   fallback). The field is wide enough to later point at a small polymorphic cache
   bucket without an ISA change.
-- The slow path on a miss is a call into the ordinary resolver (the same code the
-  tree-walker oracle uses), which also fills the cache — mirroring Zend.
+- The slow path on a miss is a call into the ordinary resolver, which also fills
+  the cache — mirroring Zend.
 
 ---
 
@@ -284,8 +283,8 @@ structure. Concrete ISA properties to adopt now:
   calls); revisit only if profiling warrants.
 - **Refusals** stay structural in the lowerer (construct nodes) + `is_refused()`
   (functions); refused constructs never acquire an opcode.
-- **Oracle:** the existing tree-walker stays as the differential test oracle against
-  `php` 8.5.8; every VM opcode's result is validated byte-for-byte through it.
+- **Testing:** VM results are validated byte-for-byte against `php` 8.5.8 (golden
+  fixtures plus live diffs).
 
 Net: borrow Zend's CV/const-pool/side-cache/helper-ABI, borrow Lua's small 3-address
 register core, reject Zend's operand-type explosion and `OP_DATA` kludge and CPython's

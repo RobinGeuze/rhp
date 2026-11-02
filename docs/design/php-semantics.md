@@ -2,7 +2,7 @@
 
 Captured by running the local `php` binary: **PHP 8.5.8 (cli) (NTS), Zend Engine v4.5.8**, Homebrew build, on darwin.
 
-Every snippet below was executed with `php -r '<snippet>'` (or as a script file). The output shown is the **exact stdout** unless a line is explicitly labeled a warning/error (those go to **stderr** in the CLI SAPI). These are the semantics our tree-walking interpreter must reproduce; the golden fixtures in `tests/golden/` assert a subset of them.
+Every snippet below was executed with `php -r '<snippet>'` (or as a script file). The output shown is the **exact stdout** unless a line is explicitly labeled a warning/error (those go to **stderr** in the CLI SAPI). These are the semantics rhp must reproduce; the golden fixtures in `tests/golden/` assert a subset of them.
 
 Key ini defaults that govern number formatting:
 

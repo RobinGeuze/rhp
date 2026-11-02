@@ -13,8 +13,7 @@ this doc is the terse union. Nothing in `bytecode.md`/`value-model.md` changes;
 this only *adds* `Instr` variants, side tables, and `Vm`/`Frame`/`FunctionProto`
 fields.
 
-**OOP is VM-only.** The tree-walking oracle is frozen and skips OOP fixtures, so
-the only parity net is `php ⟷ vm` (`bytecode.md` §6). That raises the bar on
+**The only parity net is `php ⟷ vm`** (`bytecode.md` §6). That raises the bar on
 first-time correctness — hence the inline probes, which must become golden
 fixtures.
 

@@ -3,8 +3,7 @@
 Status: design, execution core (register bytecode compiler + VM). Target
 semantics: PHP 8.5 (ground truth: local `php` 8.5.8). This document fixes the
 **instruction set, chunk format, register model, and lowering patterns** for the
-primary execution engine. The tiny tree-walker in `rhp-runtime/src/lib.rs`
-survives only as a differential oracle; this ISA is what actually runs.
+execution engine.
 
 Read first (this doc assumes them and reuses them verbatim):
 

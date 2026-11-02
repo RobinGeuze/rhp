@@ -1,0 +1,53 @@
+<root><a>1</a></root> => true
+<root ver="x"><a>1</a></root> => false
+  [2/1824 L1 C0] "Element 'root', attribute 'ver': 'x' is not a valid value of the atomic type 'xs:decimal'.\n"
+<root bogus="1"><a>1</a></root> => false
+  [2/1866 L1 C0] "Element 'root', attribute 'bogus': The attribute 'bogus' is not allowed.\n"
+<root><a>abc</a></root> => false
+  [2/1824 L1 C0] "Element 'a': 'abc' is not a valid value of the atomic type 'xs:integer'.\n"
+<root><b req="1"/></root> => false
+  [2/1871 L1 C0] "Element 'b': This element is not expected. Expected is ( a ).\n"
+<root><a>1</a><b/></root> => false
+  [2/1868 L1 C0] "Element 'b': The attribute 'req' is required but missing.\n"
+<root><a>1</a><b req="1" bool="maybe" en="three" loc="r" un="min"/></root> => false
+  [2/1824 L1 C0] "Element 'b', attribute 'bool': 'maybe' is not a valid value of the atomic type 'xs:boolean'.\n"
+  [2/1840 L1 C0] "Element 'b', attribute 'en': [facet 'enumeration'] The value 'three' is not an element of the set {'one', 'two'}.\n"
+  [2/1840 L1 C0] "Element 'b', attribute 'loc': [facet 'enumeration'] The value 'r' is not an element of the set {'p', 'q'}.\n"
+  [2/1826 L1 C0] "Element 'b', attribute 'un': 'min' is not a valid value of the union type 'unionType'.\n"
+<root><a>1</a><zz/></root> => false
+  [2/1871 L1 C0] "Element 'zz': This element is not expected. Expected is one of ( b, c, d, e, f ).\n"
+<root><a>1</a><c/><d/></root> => false
+  [2/1871 L1 C0] "Element 'd': This element is not expected. Expected is one of ( e, f ).\n"
+<root><a>1</a><e><y/><x/></e></root> => false
+  [2/1871 L1 C0] "Element 'e': Missing child element(s). Expected is ( z ).\n"
+<root><a>1</a><e><z/><z/></e></root> => false
+  [2/1871 L1 C0] "Element 'z': This element is not expected.\n"
+<root><a>1</a>text</root> => false
+  [2/1843 L1 C0] "Element 'root': Character content other than whitespace is not allowed because the content type is 'element-only'.\n"
+<other/> => false
+  [2/1845 L1 C0] "Element 'other': No matching global declaration available for the validation root.\n"
+<root><a>1</a><b req="x"><q/></b></root> => false
+  [2/1841 L1 C0] "Element 'b': Element content is not allowed, because the content type is empty.\n"
+<root><a>1</a><f>0</f></root> => false
+  [2/1824 L1 C0] "Element 'f': '0' is not a valid value of the atomic type 'xs:positiveInteger'.\n"
+<root><a> 5 </a><b req="1" bool=" true " un="max"/></root> => true
+<root>
+<a>1</a>
+<b req='1'>text</b></root> => false
+  [2/1841 L3 C0] "Element 'b': Character content is not allowed, because the content type is empty.\n"
+<root></root> => false
+  [2/1871 L1 C0] "Element 'root': Missing child element(s). Expected is ( a ).\n"
+<root><a>1</a><b req="1"/><e/></root> => false
+  [2/1871 L1 C0] "Element 'e': Missing child element(s). Expected is one of ( x, y, z ).\n"
+W[2]: DOMDocument::schemaValidateSource(): Element 'root', attribute 'bogus': The attribute 'bogus' is not allowed.
+W[2]: DOMDocument::schemaValidateSource(): Element 'a': 'x' is not a valid value of the atomic type 'xs:integer'.
+bool(false)
+W[2]: DOMDocument::schemaValidateSource(): element decl. 'root', attribute 'type': The QName value 'nope' does not resolve to a(n) type definition.
+W[2]: DOMDocument::schemaValidateSource(): Invalid Schema
+bool(false)
+W[2]: DOMDocument::schemaValidateSource(): The XML document 'in_memory_buffer' is not a schema document.
+W[2]: DOMDocument::schemaValidateSource(): Invalid Schema
+bool(false)
+W[2]: DOMDocument::schemaValidateSource(): The XML document 'in_memory_buffer' is not a schema document.
+W[2]: DOMDocument::schemaValidateSource(): Invalid Schema
+bool(false)

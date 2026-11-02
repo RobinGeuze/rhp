@@ -1,0 +1,9 @@
+S A []
+PI x y
+D "<!--c-->"
+E A
+boom Q
+0 boom [internal]
+1 xml_parse xml_parser_handlers.php:21
+0 thrower [internal]
+1 xml_parse xml_parser_handlers.php:32

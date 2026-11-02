@@ -319,6 +319,9 @@ pub enum Instr {
         pos_reg: Reg,
         src: Reg,
         end: Pc,
+        /// `yield from` delegation: a generator source is attached where it
+        /// stands (started, not rewound) instead of being rewound.
+        delegate: bool,
     }, // snapshot src; pos=0; if not-array/empty -> jmp end
     FeFetch {
         arr_reg: Reg,
@@ -1258,6 +1261,8 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         "preg_match" | "preg_match_all" => &[false, false, true],
         // `flock($stream, $operation, &$would_block)`.
         "flock" => &[false, false, true],
+        // `xml_parse_into_struct($parser, $data, &$values, &$index)`.
+        "xml_parse_into_struct" => &[false, false, true, true],
         // curl_multi_exec(&$still_running), curl_multi_info_read(&$queued_messages).
         "curl_multi_exec" | "curl_multi_info_read" => &[false, true],
         // `&$count` at position 4.

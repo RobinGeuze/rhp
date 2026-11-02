@@ -13,10 +13,12 @@ pub mod bcmath;
 pub mod bz2;
 pub mod ctype;
 pub mod curl;
+pub mod dom;
 pub mod gmp;
 pub mod hash;
 pub mod iconv;
 pub mod intl;
+pub mod libxml;
 pub mod mbstring;
 pub mod openssl;
 pub mod password;
@@ -24,8 +26,12 @@ pub mod pcntl;
 pub mod phar;
 pub mod posix;
 pub mod reflection;
+pub mod simplexml;
 pub mod spl;
 pub mod tokenizer;
+pub mod xml;
+pub mod xmlreader;
+pub mod xmlwriter;
 pub mod zip;
 pub mod zlib;
 pub mod zpp;
@@ -164,6 +170,48 @@ pub fn modules() -> Vec<ModuleDef> {
             functions: pcntl::register,
             constants: pcntl::constants,
             prelude_php: "",
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "libxml",
+            functions: libxml::register,
+            constants: libxml::constants,
+            prelude_php: libxml::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "dom",
+            functions: dom::register,
+            constants: dom::constants,
+            prelude_php: dom::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "SimpleXML",
+            functions: simplexml::register,
+            constants: no_constants,
+            prelude_php: simplexml::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "xml",
+            functions: xml::register,
+            constants: xml::constants,
+            prelude_php: xml::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "xmlreader",
+            functions: xmlreader::register,
+            constants: no_constants,
+            prelude_php: xmlreader::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "xmlwriter",
+            functions: xmlwriter::register,
+            constants: no_constants,
+            prelude_php: xmlwriter::PRELUDE_PHP,
             wrappers: no_wrappers,
         },
     ]

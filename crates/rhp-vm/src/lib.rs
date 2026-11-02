@@ -6157,6 +6157,7 @@ impl Vm {
 
                 Instr::Neg { dst, a } => {
                     let v = self.reg_get(top, a);
+                    let v = self.sxe_operand(v);
                     let r = ops::negate(&v)?;
                     self.reg_set(top, dst, r);
                 }
@@ -6166,7 +6167,7 @@ impl Vm {
                 }
                 Instr::Not { dst, a } => {
                     let v = self.reg_get(top, a);
-                    self.reg_set(top, dst, Value::Bool(!conv::to_bool(&v)));
+                    self.reg_set(top, dst, Value::Bool(!self.truthy(&v)));
                 }
                 Instr::IncDec {
                     dst,
@@ -6175,7 +6176,8 @@ impl Vm {
                     delta,
                 } => {
                     let cur = self.reg_get(top, cv);
-                    let new = self.inc_dec_vm(&cur, delta as i64)?;
+                    let operand = self.sxe_operand(cur.clone());
+                    let new = self.inc_dec_vm(&operand, delta as i64)?;
                     self.cv_assign(top, cv, new.clone());
                     self.reg_set(top, dst, if pre { new } else { cur });
                 }
@@ -6187,13 +6189,23 @@ impl Vm {
                         Value::Object(h) if rhp_builtins::is_curl_handle(&v) => {
                             h.borrow().id as i64
                         }
+                        // SimpleXML's cast handler: the node's text.
+                        Value::Object(h) if self.is_sxe(h) => conv::to_int(&Value::str(
+                            rhp_builtins::sxe_string(&v).unwrap_or_default(),
+                        )),
                         _ => conv::to_int(&v),
                     };
                     self.reg_set(top, dst, Value::Int(n));
                 }
                 Instr::CastFloat { dst, a } => {
                     let v = self.reg_get(top, a);
-                    self.reg_set(top, dst, Value::Float(conv::to_float(&v)));
+                    let f = match &v {
+                        Value::Object(h) if self.is_sxe(h) => conv::to_float(&Value::str(
+                            rhp_builtins::sxe_string(&v).unwrap_or_default(),
+                        )),
+                        _ => conv::to_float(&v),
+                    };
+                    self.reg_set(top, dst, Value::Float(f));
                 }
                 Instr::CastString { dst, a } => {
                     let v = self.reg_get(top, a);
@@ -6202,12 +6214,18 @@ impl Vm {
                 }
                 Instr::CastBool { dst, a } => {
                     let v = self.reg_get(top, a);
-                    self.reg_set(top, dst, Value::Bool(conv::to_bool(&v)));
+                    self.reg_set(top, dst, Value::Bool(self.truthy(&v)));
                 }
                 Instr::CastArray { dst, a } => {
                     let v = self.reg_get(top, a);
                     let out = match &v {
                         // get_properties_for(ARRAY_CAST): an ArrayObject's storage.
+                        Value::Object(h) if self.is_sxe(h) => {
+                            match builtins::sxe_props_array(self, &v) {
+                                Some(a) => Value::Array(a),
+                                None => self.object_to_array_mangled(h),
+                            }
+                        }
                         Value::Object(h) => match builtins::spl_array_storage(h) {
                             Some((st @ Value::Array(_), _)) => st,
                             _ => self.object_to_array_mangled(h),
@@ -6261,12 +6279,12 @@ impl Vm {
                     }
                 }
                 Instr::JmpTrue { cond, target } => {
-                    if conv::to_bool(&self.reg_get(top, cond)) {
+                    if self.truthy(&self.reg_get(top, cond)) {
                         self.stack[top].pc = target as usize;
                     }
                 }
                 Instr::JmpFalse { cond, target } => {
-                    if !conv::to_bool(&self.reg_get(top, cond)) {
+                    if !self.truthy(&self.reg_get(top, cond)) {
                         self.stack[top].pc = target as usize;
                     }
                 }
@@ -6741,6 +6759,7 @@ impl Vm {
                     pos_reg,
                     src,
                     end,
+                    delegate,
                 } => {
                     match self.reg_get(top, src) {
                         Value::Array(a) if !a.is_empty() => {
@@ -6765,8 +6784,14 @@ impl Vm {
                             let oid = obj.borrow().id;
                             let ocls = obj.borrow().class;
                             if self.generators.contains_key(&oid) {
-                                self.gen_check_open(oid)?;
-                                self.gen_rewind(oid)?;
+                                if delegate {
+                                    // ZEND_YIELD_FROM attaches the generator
+                                    // as it stands; no rewind.
+                                    self.gen_ensure_started(oid)?;
+                                } else {
+                                    self.gen_check_open(oid)?;
+                                    self.gen_rewind(oid)?;
+                                }
                                 self.reg_set(top, arr_reg, Value::Object(obj));
                                 self.reg_set(top, pos_reg, Value::Int(0));
                             } else if self.class_implements(ocls, b"Iterator") {
@@ -9855,6 +9880,7 @@ impl Vm {
         f: fn(&Value, &Value) -> Result<Value, Thrown>,
     ) -> Result<(), Thrown> {
         let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+        let (x, y) = (self.sxe_operand(x), self.sxe_operand(y));
         let v = f(&x, &y)?;
         self.reg_set(top, dst, v);
         Ok(())
@@ -9863,6 +9889,12 @@ impl Vm {
     /// Infallible binary op (bitwise/concat).
     fn bin_inf(&mut self, top: usize, dst: Reg, a: Reg, b: Reg, f: fn(&Value, &Value) -> Value) {
         let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+        // zendi_try_get_long: SimpleXML casts straight to int
+        let as_int = |v: Value| match self.sxe_operand(v) {
+            Value::Float(f) => Value::Int(conv::to_int(&Value::Float(f))),
+            other => other,
+        };
+        let (x, y) = (as_int(x), as_int(y));
         let v = f(&x, &y);
         self.reg_set(top, dst, v);
     }
@@ -11290,6 +11322,40 @@ fn prelude_null_coercion(ty: &rhp_bytecode::TypeHint) -> Option<(&'static str, V
         K::String => Some(("string", Value::str(""))),
         K::Bool => Some(("bool", Value::Bool(false))),
         _ => None,
+    }
+}
+
+impl Vm {
+    /// Whether `h` is a `SimpleXMLElement` (whose cast handler the VM's
+    /// int/float/bool conversions honour).
+    fn is_sxe(&self, h: &ObjectHandle) -> bool {
+        // Hot path (every object in a condition): no allocation.
+        match self.class_ids.get(b"simplexmlelement".as_slice()) {
+            Some(t) => self.class(h.borrow().class).ancestors.contains(t),
+            None => false,
+        }
+    }
+
+    /// SimpleXML's `cast_object(_IS_NUMBER)` for arithmetic operands: the
+    /// node's text as a number (`convert_scalar_to_number`, silent). Any other
+    /// value is returned unchanged.
+    fn sxe_operand(&self, v: Value) -> Value {
+        match &v {
+            Value::Object(h) if self.is_sxe(h) => {
+                let s = Value::str(rhp_builtins::sxe_string(&v).unwrap_or_default());
+                conv::to_number(&s).0.to_value()
+            }
+            _ => v,
+        }
+    }
+
+    /// `(bool) $v`, with SimpleXML's cast handler (an empty element list is
+    /// false).
+    fn truthy(&self, v: &Value) -> bool {
+        match v {
+            Value::Object(h) if self.is_sxe(h) => rhp_builtins::sxe_bool(v),
+            _ => conv::to_bool(v),
+        }
     }
 }
 

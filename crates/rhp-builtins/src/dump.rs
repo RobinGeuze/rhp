@@ -127,6 +127,28 @@ pub fn clear_debug_info() {
 /// ArrayObject / ArrayIterator's storage as its private `storage`.
 fn debug_props(host: &dyn crate::Host, h: &rhp_values::ObjectHandle) -> Vec<(ArrayKey, Value)> {
     let id = h.borrow().id;
+    // SimpleXML's get_debug_info view, materialized by the caller (a hash
+    // whose numeric names are integer keys)
+    if let Some(v) = crate::ext::simplexml::debug_view(id) {
+        return v
+            .into_iter()
+            .map(|(k, v)| {
+                let b = k.as_bytes();
+                let int = if !b.is_empty() && b.iter().all(|c| c.is_ascii_digit()) {
+                    std::str::from_utf8(b)
+                        .ok()
+                        .and_then(|t| t.parse::<i64>().ok())
+                        .filter(|n| n.to_string().as_bytes() == b)
+                } else {
+                    None
+                };
+                match int {
+                    Some(n) => (ArrayKey::Int(n), v),
+                    None => (ArrayKey::Str(k), v),
+                }
+            })
+            .collect();
+    }
     if let Some(info) = DEBUG_INFO.with(|m| m.borrow().get(&id).cloned()) {
         return info.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     }
@@ -537,7 +559,14 @@ fn var_export_value(
             let is_enum = host.is_enum_class(class_id);
             // get_properties_for(VAR_EXPORT): an ArrayObject's storage keeps
             // its integer keys; property names are always string keys.
+            let sxe = crate::ext::simplexml::debug_view(h.borrow().id);
             let props: Vec<(ArrayKey, Value)> = match crate::spl_array_storage(h) {
+                // SimpleXML's property view (materialized by the caller)
+                _ if sxe.is_some() => sxe
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(k, v)| (ArrayKey::Str(k), v))
+                    .collect(),
                 Some((Value::Array(a), _)) => {
                     a.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
                 }

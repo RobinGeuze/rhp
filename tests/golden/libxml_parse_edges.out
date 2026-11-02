@@ -1,0 +1,179 @@
+"<a><!----x--><\/a>" => false
+  L3 C80 1:8 "Double hyphen within comment\n"
+"<a><!--x----><\/a>" => false
+  L3 C80 1:9 "Double hyphen within comment: <!--x\n"
+"<a><!--a-b--c--d--><\/a>" => false
+  L3 C80 1:11 "Double hyphen within comment: <!--a-b\n"
+  L3 C80 1:14 "Double hyphen within comment: <!--a-b--c\n"
+"<a><!--\nx\ny--z--><\/a>" => false
+  L3 C80 3:2 "Double hyphen within comment: <!--\nx\ny\n"
+"<a><!--\u00e9--x--><\/a>" => false
+  L3 C80 1:11 "Comment must not contain '--' (double-hyphen)\n"
+"<a><!---x--><\/a>" => true
+   NULL 1.0 false
+  "<a><!---x--><\/a>"
+"<a><!--x---><\/a>" => false
+  L3 C80 1:9 "Double hyphen within comment: <!--x\n"
+  L3 C45 1:17 "Comment not terminated\n"
+  L3 C77 1:17 "Premature end of data in tag a line 1\n"
+"<a><!--x\u0001--y--><\/a>" => false
+  L3 C9 1:9 "xmlParseComment: invalid xmlChar value 1\n"
+  L3 C9 1:9 "PCDATA invalid Char value 1\n"
+"<!-- a -- b --><a\/>" => false
+  L3 C80 1:8 "Double hyphen within comment: <!-- a \n"
+"<a><!--yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy--z--><\/a>" => false
+  L3 C80 1:68 "Double hyphen within comment: <!--yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n"
+"<a><!--x--y" => false
+  L3 C80 1:9 "Double hyphen within comment: <!--x\n"
+  L3 C45 1:12 "Comment not terminated\n"
+  L3 C77 1:12 "Premature end of data in tag a line 1\n"
+"<a><!--\u00e9--y" => false
+  L3 C80 1:11 "Comment must not contain '--' (double-hyphen)\n"
+  L3 C45 1:12 "Comment not terminated \n<!--\u00e9-\n"
+  L3 C77 1:12 "Premature end of data in tag a line 1\n"
+"<a><!-- ok --><\/a>" => true
+   NULL 1.0 false
+  "<a><!-- ok --><\/a>"
+"<?xml version=\"2.0\"?><a\/>" => false
+  L3 C108 1:20 "Unsupported version '2.0'\n"
+"<?xml version=\"1.1\"?><a\/>" => true
+  L1 C97 1:20 "Unsupported version '1.1'\n"
+   NULL 1.1 false
+  "<a\/>"
+"<?xml version=\"1.x\"?><a\/>" => false
+  L3 C34 1:18 "String not closed expecting \" or '\n"
+  L1 C97 1:18 "Unsupported version '1.'\n"
+  L3 C65 1:18 "Blank needed here\n"
+  L3 C57 1:18 "parsing XML declaration: '?>' expected\n"
+"<?xml version=\"2\"?><a\/>" => false
+  L3 C96 1:18 "Malformed declaration expecting version\n"
+"<?xml version=\"1.0\"encoding=\"UTF-8\"?><a\/>" => false
+  L3 C65 1:20 "Blank needed here\n"
+"<?xml version=\"1.0\" encoding=\"UTF-8\"standalone=\"yes\"?><a\/>" => true
+   'UTF-8' 1.0 true
+  "<a\/>"
+"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"standalone=\"yes\"?><a\/>" => false
+  L3 C65 1:42 "Blank needed here\n"
+"<?xml encoding=\"UTF-8\"?><a\/>" => false
+  L3 C96 1:7 "Malformed declaration expecting version\n"
+  L3 C65 1:7 "Blank needed here\n"
+"<?xml version=\"1.0?><a\/>" => false
+  L3 C34 1:19 "String not closed expecting \" or '\n"
+"<?xml version=1.0?><a\/>" => false
+  L3 C33 1:15 "String not started expecting ' or \"\n"
+  L3 C96 1:15 "Malformed declaration expecting version\n"
+  L3 C65 1:15 "Blank needed here\n"
+  L3 C57 1:15 "parsing XML declaration: '?>' expected\n"
+"<?xml version=\"1.0\" standalone=\"maybe\"?><a\/>" => false
+  L3 C78 1:33 "standalone accepts only 'yes' or 'no'\n"
+  L3 C34 1:33 "String not closed expecting \" or '\n"
+  L3 C57 1:33 "parsing XML declaration: '?>' expected\n"
+"<?xml version=\"1.0\" standalone=yes?><a\/>" => false
+  L3 C33 1:32 "String not started expecting ' or \"\n"
+  L3 C57 1:32 "parsing XML declaration: '?>' expected\n"
+"<?xml version=\"1.0\" standalone=\"yes?><a\/>" => false
+  L3 C34 1:36 "String not closed expecting \" or '\n"
+"<?xml version=\"1.0\" ?><a\/>" => true
+   NULL 1.0 false
+  "<a\/>"
+"<?xml  version = \"1.0\" encoding = 'utf-8' standalone = \"no\" ?><a\/>" => true
+   'utf-8' 1.0 false
+  "<a\/>"
+"<?xml version=\"1.0\"> <a\/>" => false
+  L3 C65 1:20 "Blank needed here\n"
+  L3 C57 1:20 "parsing XML declaration: '?>' expected\n"
+"<?xml version=\"1.0\" foo=\"bar\"?><a\/>" => false
+  L3 C57 1:21 "parsing XML declaration: '?>' expected\n"
+"<a:b:c\/>" => true
+  L2 C202 1:5 "Failed to parse QName 'a:b:'\n"
+  L2 C201 1:7 "Namespace prefix a on b:c is not defined\n"
+   NULL 1.0 false
+  "<a:b:c\/>"
+"<a xmlns:a=\"u\"><a:b:c\/><\/a:b:c>" => false
+  L2 C202 1:20 "Failed to parse QName 'a:b:'\n"
+  L3 C76 1:32 "Opening and ending tag mismatch: a line 1 and a:b:c\n"
+"<a :b=\"1\"\/>" => true
+  L2 C202 1:6 "Failed to parse QName ':b'\n"
+   NULL 1.0 false
+  "<a :b=\"1\"\/>"
+"<a b:=\"1\"\/>" => true
+  L2 C202 1:6 "Failed to parse QName 'b:'\n"
+   NULL 1.0 false
+  "<a b:=\"1\"\/>"
+"<a xmlns:a=\"u\"><a:b:c><\/a:b:c><\/a>" => true
+  L2 C202 1:20 "Failed to parse QName 'a:b:'\n"
+   NULL 1.0 false
+  "<a xmlns:a=\"u\"><a:b:c\/><\/a>"
+"<a b=\"x\u0001y\"\/>" => false
+  L3 C9 1:8 "invalid character in attribute value\n"
+  L3 C65 1:8 "attributes construct error\n"
+  L3 C73 1:8 "Couldn't find end of Start Tag a line 1\n"
+  L3 C5 1:8 "Extra content at the end of the document\n"
+"<r><a b=\"x\u0001y\">t<\/a><\/r>" => false
+  L3 C9 1:11 "invalid character in attribute value\n"
+  L3 C65 1:11 "attributes construct error\n"
+  L3 C73 1:11 "Couldn't find end of Start Tag a line 1\n"
+  L3 C9 1:11 "PCDATA invalid Char value 1\n"
+  L3 C76 1:20 "Opening and ending tag mismatch: r line 1 and a\n"
+  L3 C5 1:20 "Extra content at the end of the document\n"
+ => false
+  L3 C9 1:8 "Input is not proper UTF-8, indicate encoding !\nBytes: 0xFF 0x79 0x22 0x2F\n"
+"<a><![CDATA[\u0001]]><\/a>" => false
+  L3 C63 1:13 "Unregistered error message\n"
+  L3 C9 1:13 "PCDATA invalid Char value 1\n"
+  L3 C62 1:14 "Sequence ']]>' not allowed in content\n"
+"<a><![CDATA[x\u0001]]><\/a>" => false
+  L3 C63 1:14 "Unregistered error message\n"
+  L3 C9 1:14 "PCDATA invalid Char value 1\n"
+  L3 C62 1:15 "Sequence ']]>' not allowed in content\n"
+"<a><![CDATA[xy\u0001]]><\/a>" => false
+  L3 C63 1:15 "CData section not finished\n\n"
+  L3 C9 1:15 "PCDATA invalid Char value 1\n"
+  L3 C62 1:16 "Sequence ']]>' not allowed in content\n"
+"<a><?pi \u0001?><\/a>" => false
+  L3 C47 1:9 "ParsePI: PI pi never end ...\n"
+  L3 C9 1:9 "PCDATA invalid Char value 1\n"
+"<a><?pi x\u0001y?>z<\/a>" => false
+  L3 C47 1:10 "ParsePI: PI pi never end ...\n"
+  L3 C9 1:10 "PCDATA invalid Char value 1\n"
+"<a>x\u0001y<\/a>" => false
+  L3 C9 1:5 "PCDATA invalid Char value 1\n"
+"<a>\u0001\u0002<\/a>" => false
+  L3 C9 1:4 "PCDATA invalid Char value 1\n"
+  L3 C9 1:5 "PCDATA invalid Char value 2\n"
+"<a>x\u0001]]><\/a>" => false
+  L3 C9 1:5 "PCDATA invalid Char value 1\n"
+  L3 C62 1:6 "Sequence ']]>' not allowed in content\n"
+"<a><b>\u0001<\/b><c\/><\/a>" => false
+  L3 C9 1:7 "PCDATA invalid Char value 1\n"
+ => true
+  c485c487 'ISO-8859-2' 1.0 false
+  "<a>\u0105\u0107<\/a>"
+ => true
+  e282ace2809c 'windows-1252' 1.0 false
+  "<a>\u20ac\u201c<\/a>"
+ => true
+  e282acc593 'ISO-8859-15' 1.0 false
+  "<a>\u20ac\u0153<\/a>"
+ => true
+  c3a9 'latin1' 1.0 false
+  "<a>\u00e9<\/a>"
+"<?xml version=\"1.0\" encoding=\"UTF-16\"?><a\/>" => false
+  L3 C81 1:38 "Document labelled UTF-16 but has UTF-8 content\n"
+3c3f786d6c2076657273696f6e3d22312e302220656e636f64696e673d2277696e646f77732d31323532223f3e0a3c723e80fc3c2f723e0a
+3c3f786d6c2076657273696f6e3d22312e302220656e636f64696e673d2249534f2d383835392d32223f3e0a3c723eb1e93c2f723e0a
+<?xml version="1.0"?>
+<a>
+  <b></b>
+  <c>t</c>
+  <d>
+    <e></e>
+  </d>
+</a>
+<a>
+  <b></b>
+  <c>t</c>
+  <d>
+    <e></e>
+  </d>
+</a>

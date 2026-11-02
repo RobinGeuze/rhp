@@ -3666,6 +3666,7 @@ impl ProtoBuilder {
             pos_reg,
             src,
             end,
+            delegate: false,
         };
         self.code[fetch_pos] = Instr::FeFetch {
             arr_reg,
@@ -5029,6 +5030,7 @@ impl ProtoBuilder {
             pos_reg,
             src,
             end,
+            delegate: true,
         };
         self.code[fetch_pos] = Instr::FeFetch {
             arr_reg,

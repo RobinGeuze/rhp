@@ -1,0 +1,179 @@
+object(SimpleXMLElement)#1 (7) {
+  ["@attributes"]=>
+  array(2) {
+    ["a"]=>
+    string(1) "1"
+    ["b"]=>
+    string(3) "two"
+  }
+  ["item"]=>
+  array(2) {
+    [0]=>
+    string(3) "one"
+    [1]=>
+    string(7) "twotail"
+  }
+  ["other"]=>
+  object(SimpleXMLElement)#2 (0) {
+  }
+  ["c"]=>
+  object(SimpleXMLElement)#3 (1) {
+    ["d"]=>
+    array(2) {
+      [0]=>
+      string(1) "1"
+      [1]=>
+      string(1) "2"
+    }
+  }
+  ["comment"]=>
+  object(SimpleXMLElement)#4 (0) {
+  }
+  ["e"]=>
+  object(SimpleXMLElement)#5 (0) {
+  }
+  ["f"]=>
+  object(SimpleXMLElement)#6 (0) {
+  }
+}
+SimpleXMLElement Object
+(
+    [@attributes] => Array
+        (
+            [a] => 1
+            [b] => two
+        )
+
+    [item] => Array
+        (
+            [0] => one
+            [1] => twotail
+        )
+
+    [other] => SimpleXMLElement Object
+        (
+        )
+
+    [c] => SimpleXMLElement Object
+        (
+            [d] => Array
+                (
+                    [0] => 1
+                    [1] => 2
+                )
+
+        )
+
+    [comment] => SimpleXMLElement Object
+        (
+        )
+
+    [e] => SimpleXMLElement Object
+        (
+        )
+
+    [f] => SimpleXMLElement Object
+        (
+        )
+
+)
+
+SimpleXMLElement Object
+(
+    [@attributes] => Array
+        (
+            [id] => x
+        )
+
+    [0] => one
+    [1] => twotail
+)
+SimpleXMLElement Object
+(
+    [0] => 1
+    [1] => 2
+)
+SimpleXMLElement Object
+(
+    [0] => 1
+)
+SimpleXMLElement Object
+(
+    [@attributes] => Array
+        (
+            [a] => 1
+            [b] => two
+        )
+
+)
+SimpleXMLElement Object
+(
+    [@attributes] => Array
+        (
+            [a] => 1
+            [b] => two
+        )
+
+    [item] => Array
+        (
+            [0] => one
+            [1] => twotail
+        )
+
+    [other] => SimpleXMLElement Object
+        (
+        )
+
+    [c] => SimpleXMLElement Object
+        (
+            [d] => Array
+                (
+                    [0] => 1
+                    [1] => 2
+                )
+
+        )
+
+    [comment] => SimpleXMLElement Object
+        (
+        )
+
+    [e] => SimpleXMLElement Object
+        (
+        )
+
+    [f] => SimpleXMLElement Object
+        (
+        )
+
+)
+{"@attributes":{"a":"1","b":"two"},"item":["one","twotail"],"other":{},"c":{"d":["1","2"]},"comment":{},"e":{},"f":{}}
+{"d":["1","2"]}
+{"b":["1","2"],"c":"t"}
+array(2) {
+  ["name"]=>
+  string(1) "x"
+  ["list"]=>
+  array(1) {
+    ["i"]=>
+    array(2) {
+      [0]=>
+      string(1) "1"
+      [1]=>
+      string(1) "2"
+    }
+  }
+}
+SimpleXMLElement Object
+(
+    [0] => hi
+)
+SimpleXMLElement Object
+(
+)
+bool(true)
+bool(false)
+string(1) "i"
+NULL
+string(1) "2"
+string(1) "a"

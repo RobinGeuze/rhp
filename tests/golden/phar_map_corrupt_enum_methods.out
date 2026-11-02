@@ -1,0 +1,28 @@
+PharException: manifest cannot be larger than 100 MB in phar "FILE"
+PharException: manifest cannot be larger than 100 MB in phar "FILE"
+string(0) ""
+string(0) ""
+array(4) {
+  [0]=>
+  string(3) "own"
+  [1]=>
+  string(5) "cases"
+  [2]=>
+  string(4) "from"
+  [3]=>
+  string(7) "tryFrom"
+}
+array(1) {
+  [0]=>
+  string(5) "cases"
+}
+array(4) {
+  [0]=>
+  string(3) "own"
+  [1]=>
+  string(5) "cases"
+  [2]=>
+  string(4) "from"
+  [3]=>
+  string(7) "tryFrom"
+}

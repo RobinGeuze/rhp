@@ -117,8 +117,10 @@ fn main() -> ExitCode {
         Script::File(path) => {
             let source = match std::fs::read(path) {
                 Ok(bytes) => bytes,
-                Err(e) => {
-                    eprintln!("rhp: cannot read {path}: {e}");
+                // php opens a directory fine and reads it as an empty script.
+                Err(_) if std::path::Path::new(path).is_dir() => Vec::new(),
+                Err(_) => {
+                    eprintln!("Could not open input file: {path}");
                     return ExitCode::from(1);
                 }
             };

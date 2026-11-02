@@ -661,7 +661,7 @@ impl Host for Vm {
         let related = |a: ClassId, b: ClassId| {
             self.class(a).ancestors.contains(&b) || self.class(b).ancestors.contains(&a)
         };
-        entry
+        let mut names: Vec<Vec<u8>> = entry
             .methods
             .values()
             .filter(|m| {
@@ -675,7 +675,16 @@ impl Host for Vm {
                 rhp_values::Visibility::Private => scope == Some(m.defining_class),
             })
             .map(|m| m.proto.name.as_bytes().to_vec())
-            .collect()
+            .collect();
+        // An enum's built-in statics (registered after its own methods).
+        if entry.kind == ClassKind::Enum {
+            names.push(b"cases".to_vec());
+            if entry.enum_backing.is_some() {
+                names.push(b"from".to_vec());
+                names.push(b"tryFrom".to_vec());
+            }
+        }
+        names
     }
 
     fn executing_file(&self) -> Option<Vec<u8>> {

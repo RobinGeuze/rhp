@@ -4,6 +4,7 @@ Zend/tests/ArrayAccess/bug30346.phpt
 Zend/tests/ArrayAccess/bug33710.phpt
 Zend/tests/ArrayAccess/bug78356.phpt
 Zend/tests/ErrorException_construct.phpt
+Zend/tests/__debugInfo_reference.phpt
 Zend/tests/abstract-static.phpt
 Zend/tests/abstract_method_optional_params.phpt
 Zend/tests/access_modifiers/access_modifiers_011.phpt
@@ -477,6 +478,9 @@ Zend/tests/ctor_promotion/ctor_promotion_basic.phpt
 Zend/tests/ctor_promotion/ctor_promotion_final.phpt
 Zend/tests/ctor_promotion/ctor_promotion_trait.phpt
 Zend/tests/ctor_promotion/ctor_promotion_untyped_default.phpt
+Zend/tests/debug_info/bug69537.phpt
+Zend/tests/debug_info/debug_info.phpt
+Zend/tests/debug_info/recursive_debug_info.phpt
 Zend/tests/declare/bug43027.phpt
 Zend/tests/declare/gh18033_2.phpt
 Zend/tests/dereference/dereference_001.phpt
@@ -827,6 +831,7 @@ Zend/tests/gh13670_001.phpt
 Zend/tests/gh13670_002.phpt
 Zend/tests/gh13670_003.phpt
 Zend/tests/gh14003.phpt
+Zend/tests/gh14456.phpt
 Zend/tests/gh14969.phpt
 Zend/tests/gh15712.phpt
 Zend/tests/gh18833.phpt
@@ -941,6 +946,7 @@ Zend/tests/inheritance/bug41961.phpt
 Zend/tests/inheritance/bug42211.phpt
 Zend/tests/inheritance/bug43200_2.phpt
 Zend/tests/inheritance/bug43703.phpt
+Zend/tests/inheritance/bug44141.phpt
 Zend/tests/inheritance/bug48215.phpt
 Zend/tests/inheritance/bug48215_2.phpt
 Zend/tests/inheritance/bug50810.phpt
@@ -1602,9 +1608,12 @@ Zend/tests/type_coercion/float_to_int/no_warnings_compatible_float_vars.phpt
 Zend/tests/type_coercion/float_to_int/no_warnings_compatible_string_float_vars.phpt
 Zend/tests/type_coercion/settype/settype_array.phpt
 Zend/tests/type_coercion/settype/settype_bool.phpt
+Zend/tests/type_coercion/settype/settype_double.phpt
+Zend/tests/type_coercion/settype/settype_int.phpt
 Zend/tests/type_coercion/settype/settype_null.phpt
 Zend/tests/type_coercion/settype/settype_object.phpt
 Zend/tests/type_coercion/settype/settype_resource.phpt
+Zend/tests/type_coercion/settype/settype_string.phpt
 Zend/tests/type_coercion/type_casts/cast_to_array.phpt
 Zend/tests/type_coercion/type_casts/cast_to_bool.phpt
 Zend/tests/type_coercion/type_casts/cast_to_object.phpt
@@ -2275,6 +2284,7 @@ ext/standard/tests/array/sort/array_multisort_natural.phpt
 ext/standard/tests/array/sort/array_multisort_natural_case.phpt
 ext/standard/tests/array/sort/array_multisort_natural_incase.phpt
 ext/standard/tests/array/sort/array_multisort_stability.phpt
+ext/standard/tests/array/sort/array_multisort_variation1.phpt
 ext/standard/tests/array/sort/array_multisort_variation10.phpt
 ext/standard/tests/array/sort/array_multisort_variation11.phpt
 ext/standard/tests/array/sort/array_multisort_variation2.phpt
@@ -2633,6 +2643,8 @@ ext/standard/tests/file/fopen_unlink.phpt
 ext/standard/tests/file/fopen_variation1.phpt
 ext/standard/tests/file/fopen_variation12.phpt
 ext/standard/tests/file/fopen_variation13.phpt
+ext/standard/tests/file/fopen_variation16.phpt
+ext/standard/tests/file/fopen_variation17.phpt
 ext/standard/tests/file/fopen_variation19.phpt
 ext/standard/tests/file/fopen_variation6.phpt
 ext/standard/tests/file/fopen_variation7.phpt
@@ -3701,6 +3713,7 @@ tests/lang/operators/predec_basiclong_64bit.phpt
 tests/lang/operators/preinc_basiclong_64bit.phpt
 tests/lang/operators/subtract_basiclong_64bit.phpt
 tests/lang/passByReference_008.phpt
+tests/lang/passByReference_009.phpt
 tests/lang/returnByReference.001.phpt
 tests/lang/static_basic_001.phpt
 tests/lang/string/unicode_escape.phpt

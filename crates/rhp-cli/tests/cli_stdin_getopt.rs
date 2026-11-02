@@ -120,3 +120,19 @@ var_dump(getopt('a'));
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A script path that can't be opened: php's "Could not open input file"
+/// on stderr with exit 1; a directory runs as an empty script.
+#[test]
+fn unopenable_script() {
+    if !php_available() {
+        return;
+    }
+    let missing = "/nonexistent-rhp-dir/missing-script.php";
+    same(&["-n", missing], &[missing], b"");
+    let dir = std::env::temp_dir().join(format!("rhp_cli_dir_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = dir.to_str().unwrap();
+    same(&["-n", d], &[d], b"");
+    let _ = std::fs::remove_dir_all(&dir);
+}

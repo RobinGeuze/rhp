@@ -83,6 +83,15 @@ fn fn_spl_deprecated(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     Ok(Value::Null)
 }
 
+/// `__spl_user_props($object)`: the object's properties by mangled name,
+/// without the engine slots of SPL prelude classes (for `__debugInfo`).
+fn fn_spl_user_props(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match deref(&args[0]) {
+        Value::Object(h) => Ok(Value::Array(host.object_props_mangled(&h))),
+        _ => Ok(Value::Array(rhp_values::PhpArray::new())),
+    }
+}
+
 fn fn_spl_object_hash(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match deref(&args[0]) {
         Value::Object(h) => {
@@ -138,6 +147,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "spl_object_id", fn_spl_object_id, 1, Some(1));
     put(m, "spl_object_hash", fn_spl_object_hash, 1, Some(1));
     put(m, "__spl_deprecated", fn_spl_deprecated, 1, Some(1));
+    put(m, "__spl_user_props", fn_spl_user_props, 1, Some(1));
 }
 
 /// SPL / core data-structure classes implemented in PHP (ArrayIterator and
@@ -274,17 +284,6 @@ class SplQueue extends SplDoublyLinkedList {
 
 class SplStack extends SplDoublyLinkedList {
     public function __construct() { $this->__lifo = true; }
-}
-
-/* An object's own (non-engine) properties, mangled, for __debugInfo views. */
-function __spl_user_props(object $o): array {
-    $r = [];
-    foreach (get_mangled_object_vars($o) as $k => $v) {
-        $p = strrpos((string) $k, "\0");
-        $n = $p === false ? (string) $k : substr($k, $p + 1);
-        if (strncmp($n, '__', 2) !== 0) { $r[$k] = $v; }
-    }
-    return $r;
 }
 
 function iterator_to_array($iterator, $preserve_keys = true) {

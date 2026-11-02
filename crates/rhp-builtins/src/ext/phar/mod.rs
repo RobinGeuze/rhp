@@ -70,12 +70,42 @@ impl PharArchive {
     /// Parse a native phar from its full file bytes, verifying the signature.
     fn parse(data: Vec<u8>, path: &[u8]) -> Result<PharArchive, String> {
         // Manifest begins just after `__HALT_COMPILER` + optional `(); ?>` + newline.
-        let manifest_start = halt_offset(&data).ok_or("no __HALT_COMPILER in stub")?;
+        let manifest_start = halt_offset(&data).ok_or_else(|| {
+            format!(
+                "internal corruption of phar \"{}\" (__HALT_COMPILER(); not found)",
+                String::from_utf8_lossy(path)
+            )
+        })?;
         let mut pos = manifest_start;
-        let manifest_len = u32le(&data, pos).ok_or("truncated manifest length")? as usize;
+        // phar_parse_pharfile's header checks, in its order and wording.
+        let corrupt = |what: &str| {
+            format!(
+                "internal corruption of phar \"{}\" ({what})",
+                String::from_utf8_lossy(path)
+            )
+        };
+        let manifest_len = u32le(&data, pos)
+            .ok_or_else(|| corrupt("truncated manifest at manifest length"))?
+            as usize;
+        if manifest_len > 1048576 * 100 {
+            return Err(format!(
+                "manifest cannot be larger than 100 MB in phar \"{}\"",
+                String::from_utf8_lossy(path)
+            ));
+        }
         pos += 4;
+        // MANIFEST_FIXED_LEN: count, API version, flags, alias length, metadata length.
+        if manifest_len < 18 || data.len() < pos + manifest_len {
+            return Err(corrupt("truncated manifest header"));
+        }
         let data_start = pos + manifest_len; // file data begins here
         let num_files = u32le(&data, pos).ok_or("truncated file count")? as usize;
+        if num_files == 0 {
+            return Err(format!(
+                "in phar \"{}\", manifest claims to have zero entries.  Phars must have at least 1 entry",
+                String::from_utf8_lossy(path)
+            ));
+        }
         pos += 4;
         pos += 2; // API version (big-endian nibbles; not needed to read)
         let global_flags = u32le(&data, pos).ok_or("truncated global flags")?;

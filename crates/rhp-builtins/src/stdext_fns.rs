@@ -1216,18 +1216,15 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
 
 /// The procedural `date_*` / `timezone_*` API over the DateTime classes
 /// (ext/date's function aliases), plus `utf8_encode` / `utf8_decode`.
+/// `date_create(_immutable)_from_format` and
+/// `date_interval_create_from_date_string` are left out until their
+/// `createFromFormat` / `createFromDateString` methods exist.
 pub const PRELUDE_PHP: &str = r#"
 function date_create(string $datetime = "now", ?DateTimeZone $timezone = null): DateTime|false {
     try { return new DateTime($datetime, $timezone); } catch (Exception $e) { return false; }
 }
 function date_create_immutable(string $datetime = "now", ?DateTimeZone $timezone = null): DateTimeImmutable|false {
     try { return new DateTimeImmutable($datetime, $timezone); } catch (Exception $e) { return false; }
-}
-function date_create_from_format(string $format, string $datetime, ?DateTimeZone $timezone = null): DateTime|false {
-    return DateTime::createFromFormat($format, $datetime, $timezone);
-}
-function date_create_immutable_from_format(string $format, string $datetime, ?DateTimeZone $timezone = null): DateTimeImmutable|false {
-    return DateTimeImmutable::createFromFormat($format, $datetime, $timezone);
 }
 function date_format(DateTimeInterface $object, string $format): string { return $object->format($format); }
 function date_modify(DateTime $object, string $modifier): DateTime|false {
@@ -1251,9 +1248,6 @@ function date_time_set(DateTime $object, int $hour, int $minute, int $second = 0
     return $object->setTime($hour, $minute, $second, $microsecond);
 }
 function date_interval_format(DateInterval $object, string $format): string { return $object->format($format); }
-function date_interval_create_from_date_string(string $datetime): DateInterval|false {
-    return DateInterval::createFromDateString($datetime);
-}
 function timezone_open(string $timezone): DateTimeZone|false {
     try { return new DateTimeZone($timezone); } catch (Exception $e) {
         __stdext_warning("timezone_open(): Unknown or bad timezone ($timezone)");

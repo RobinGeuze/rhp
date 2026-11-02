@@ -2311,7 +2311,17 @@ impl ProtoBuilder {
             Construct::IncludeOnce(i) => self.scan_expr_vars(i.value),
             Construct::Require(i) => self.scan_expr_vars(i.value),
             Construct::RequireOnce(i) => self.scan_expr_vars(i.value),
-            _ => {}
+            Construct::Eval(e) => self.scan_expr_vars(e.value),
+            Construct::Exit(e) => {
+                if let Some(list) = &e.arguments {
+                    self.scan_args(list);
+                }
+            }
+            Construct::Die(d) => {
+                if let Some(list) = &d.arguments {
+                    self.scan_args(list);
+                }
+            }
         }
     }
 
@@ -5809,7 +5819,21 @@ fn collect_vars(expr: &Expression, out: &mut Vec<Vec<u8>>) {
             Construct::Print(p) => collect_vars(p.value, out),
             Construct::Empty(e) => collect_vars(e.value, out),
             Construct::Isset(i) => i.values.iter().for_each(|v| collect_vars(v, out)),
-            _ => {}
+            Construct::Include(i) => collect_vars(i.value, out),
+            Construct::IncludeOnce(i) => collect_vars(i.value, out),
+            Construct::Require(i) => collect_vars(i.value, out),
+            Construct::RequireOnce(i) => collect_vars(i.value, out),
+            Construct::Eval(e) => collect_vars(e.value, out),
+            Construct::Exit(e) => {
+                if let Some(list) = &e.arguments {
+                    collect_arg_vars(list, out);
+                }
+            }
+            Construct::Die(d) => {
+                if let Some(list) = &d.arguments {
+                    collect_arg_vars(list, out);
+                }
+            }
         },
         Expression::Call(call) => {
             use rhp_frontend::cst::Call;

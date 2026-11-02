@@ -7046,12 +7046,26 @@ impl Vm {
         frame.called_class = self.stack[caller_top].called_class;
 
         // Bind each CV to the caller's same-named variable (shared via a Ref).
+        // In the global scope ({main} or includes nested from it) a name the
+        // caller never mentions is still a global: share the global's cell, so
+        // `$argv` or a variable set by an earlier include is visible.
         let caller_proto = self.stack[caller_top].proto.clone();
+        let global_scope = (0..=caller_top)
+            .rev()
+            .find(|&i| i == 0 || self.stack[i].include_kind.is_none())
+            == Some(0);
         for ci in 0..main.cv_var_names.len() {
             let name = &main.cv_var_names[ci];
             if let Some(caller_ci) = caller_proto.cv_var_names.iter().position(|n| n == name) {
                 let rc = self.promote(caller_top, caller_ci as Reg);
                 frame.regs[ci] = Value::Ref(rc);
+            } else if global_scope && ci < main.num_cvs as usize && name.as_bytes() != b"this" {
+                let gname = name.as_bytes().to_vec();
+                let cell = match self.main_cv_names.get(&gname).copied() {
+                    Some(mreg) => self.promote(0, mreg),
+                    None => self.global_cell(&gname),
+                };
+                frame.regs[ci] = Value::Ref(cell);
             }
         }
         self.bind_superglobals(&mut frame);

@@ -1,0 +1,12 @@
+bool(true)
+bool(true)
+string(10) "unset-main"
+string(6) "from a"
+string(6) "from a"
+string(1) "L"
+bool(false)
+string(1) "C"
+string(8) "returned"
+string(8) "returned"
+int(7)
+end

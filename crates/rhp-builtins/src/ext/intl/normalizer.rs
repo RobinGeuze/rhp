@@ -13,7 +13,9 @@ use icu_properties::props::DefaultIgnorableCodePoint;
 use icu_properties::CodePointSetData;
 use rhp_values::Value;
 
-use super::{as_utf8, error_reset, error_set, U_ILLEGAL_ARGUMENT_ERROR, U_INVALID_CHAR_FOUND};
+use super::{
+    as_utf8, error_reset, error_set, icu_fold_extra, U_ILLEGAL_ARGUMENT_ERROR, U_INVALID_CHAR_FOUND,
+};
 use crate::ext::zpp::{int_arg_or, str_arg, value_error};
 use crate::{Host, Thrown};
 
@@ -34,7 +36,15 @@ fn nfkc_casefold(s: &str) -> String {
             .filter(|&c| !ignorable.contains(c))
             .map(|c| c as u32)
             .collect();
-        let folded = crate::ext::mbstring::case_fold_full(&cps);
+        let mut folded = Vec::with_capacity(cps.len());
+        for &cp in &cps {
+            let f = crate::ext::mbstring::case_fold_full(&[cp]);
+            match icu_fold_extra(cp) {
+                // a folding newer than php's mbstring tables
+                Some(x) if f == [cp] => folded.push(x),
+                _ => folded.extend(f),
+            }
+        }
         let st: String = folded.iter().filter_map(|&c| char::from_u32(c)).collect();
         let next = nfkd.normalize(&st).into_owned();
         if next == cur {

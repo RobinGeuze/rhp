@@ -3011,14 +3011,36 @@ impl Vm {
             }
             _ => cls,
         };
-        // Forward $this to a non-static method iff it is-a the target class.
-        let this = if m.is_static {
-            None
-        } else {
-            self.current_this(top)
-                .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))
-        };
+        let this = self.static_call_this(top, &m, cls)?;
         self.enter_method(top, &m, this, called, dst, base, argc)
+    }
+
+    /// The `$this` a `C::m()` call forwards (ZEND_INIT_STATIC_METHOD_CALL):
+    /// the caller's object when it is-a `cls`; a non-static method without
+    /// one is "Non-static method C::m() cannot be called statically".
+    fn static_call_this(
+        &self,
+        top: usize,
+        m: &classes::ResolvedMethod,
+        cls: ClassId,
+    ) -> Result<Option<ObjectHandle>, Thrown> {
+        if m.is_static {
+            return Ok(None);
+        }
+        match self
+            .current_this(top)
+            .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))
+        {
+            Some(h) => Ok(Some(h)),
+            None => Err(Thrown::error(
+                "Error",
+                format!(
+                    "Non-static method {}::{}() cannot be called statically",
+                    String::from_utf8_lossy(self.class(m.defining_class).name.as_bytes()),
+                    String::from_utf8_lossy(m.proto.name.as_bytes())
+                ),
+            )),
+        }
     }
 
     /// `$o->m(...)` with the arguments in an array (spread / named arguments):
@@ -3172,12 +3194,7 @@ impl Vm {
             }
             _ => cls,
         };
-        let this = if m.is_static {
-            None
-        } else {
-            self.current_this(top)
-                .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))
-        };
+        let this = self.static_call_this(top, &m, cls)?;
         let (argv, named) = self.split_call_args(&arr)?;
         let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
         self.push_method_frame(&m, this, called, argv, dst)
@@ -4047,6 +4064,14 @@ impl Vm {
         }
     }
 
+    /// Drop the cursor's hold on a by-name / static-property cell once the
+    /// write is done, so a value released later (`unset($$n)`) is freed then.
+    fn cursor_release(&mut self) {
+        if matches!(self.cursor_root, CursorRoot::Cell(_)) {
+            self.cursor_root = CursorRoot::Cv(0);
+        }
+    }
+
     /// The cursor root's current value.
     fn cursor_root_value(&self, top: usize) -> Value {
         match &self.cursor_root {
@@ -4370,7 +4395,10 @@ impl Vm {
                         if !kb[end..].iter().all(|b| b" \t\n\r\x0b\x0c".contains(b)) {
                             self.diag(
                                 2,
-                                &format!("Illegal string offset \"{}\"", String::from_utf8_lossy(kb)),
+                                &format!(
+                                    "Illegal string offset \"{}\"",
+                                    String::from_utf8_lossy(kb)
+                                ),
                             )?;
                         }
                         n
@@ -4415,7 +4443,10 @@ impl Vm {
             ));
         };
         if src.len() > 1 {
-            self.diag(2, "Only the first byte will be assigned to the string offset")?;
+            self.diag(
+                2,
+                "Only the first byte will be assigned to the string offset",
+            )?;
         }
         // Re-read: a diagnostic handler may have changed the string.
         let mut bytes = match deref(&self.cursor_read_steps(top, &steps[..i])) {
@@ -5207,6 +5238,32 @@ impl Vm {
         }
     }
 
+    /// `unset($$n)`: drop frame `top`'s variable `name` (a compiled slot
+    /// becomes null, as `unset($x)` does; a by-name variable is removed).
+    fn var_var_unset(&mut self, top: usize, name: &[u8]) {
+        let proto = &self.stack[top].proto;
+        if let Some(i) = proto
+            .cv_var_names
+            .iter()
+            .take(proto.num_cvs as usize)
+            .position(|n| n.as_bytes() == name)
+        {
+            self.reg_set(top, i as Reg, Value::Null);
+        } else if let Some(caller) = self.stack[top].include_caller {
+            self.var_var_unset(caller, name);
+        } else if top == 0 {
+            if let Some(c) = self.globals.remove(name) {
+                if matches!(&*c.borrow(), Value::Object(_) | Value::Array(_)) {
+                    self.dtor_check = true;
+                }
+            }
+        } else if let Some(c) = self.stack[top].dyn_vars.remove(name) {
+            if matches!(&*c.borrow(), Value::Object(_) | Value::Array(_)) {
+                self.dtor_check = true;
+            }
+        }
+    }
+
     /// The cell behind CV `cv` of frame `top` when it is already a reference,
     /// else a detached copy (read-only use).
     fn slot_cell_ro(&self, top: usize, cv: Reg) -> Rc<RefCell<Value>> {
@@ -5393,7 +5450,7 @@ impl Vm {
                     delta,
                 } => {
                     let cur = self.reg_get(top, cv);
-                    let new = inc_dec_value(&cur, delta as i64);
+                    let new = self.inc_dec_vm(&cur, delta as i64)?;
                     self.cv_assign(top, cv, new.clone());
                     self.reg_set(top, dst, if pre { new } else { cur });
                 }
@@ -5533,17 +5590,42 @@ impl Vm {
                     }
                 }
                 Instr::ArrSpread { arr, src } => {
-                    let spread = self.reg_get(top, src);
-                    if let Value::Array(inner) = spread {
-                        if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
-                            for (k, iv) in inner.iter() {
-                                match k {
-                                    ArrayKey::Int(_) => a.push(iv.clone()),
-                                    ArrayKey::Str(_) => a.insert(k.clone(), iv.clone()),
-                                }
+                    let entries = self.unpack_entries(top, src, false)?;
+                    if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
+                        for (k, iv) in entries {
+                            match k {
+                                ArrayKey::Int(_) => a.push(iv),
+                                ArrayKey::Str(_) => a.insert(k, iv),
                             }
                         }
                     }
+                }
+                Instr::ArgSpread { arr, src } => {
+                    let entries = self.unpack_entries(top, src, true)?;
+                    let Value::Array(mut a) =
+                        std::mem::replace(&mut self.stack[top].regs[arr as usize], Value::Null)
+                    else {
+                        unreachable!("ArgSpread target is the argument array")
+                    };
+                    for (k, iv) in entries {
+                        match k {
+                            ArrayKey::Int(_) => a.push(iv),
+                            ArrayKey::Str(s) => {
+                                let key = ArrayKey::Str(s.clone());
+                                if a.get(&key).is_some() {
+                                    return Err(Thrown::error(
+                                        "Error",
+                                        format!(
+                                            "Named parameter ${} overwrites previous argument",
+                                            String::from_utf8_lossy(s.as_bytes())
+                                        ),
+                                    ));
+                                }
+                                a.insert(key, iv);
+                            }
+                        }
+                    }
+                    self.stack[top].regs[arr as usize] = Value::Array(a);
                 }
 
                 Instr::Call {
@@ -5693,7 +5775,19 @@ impl Vm {
                     argc,
                 } => {
                     let c = self.reg_get(top, callee);
-                    let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+                    // A user closure binds by-reference parameters to the
+                    // variables passed (the window holds them as `Ref`s);
+                    // anything else gets plain values.
+                    let raw = matches!(&c, Value::Closure(cd) if cd.wrapped.is_none());
+                    let args: Vec<Value> = (0..argc)
+                        .map(|i| {
+                            if raw {
+                                self.stack[top].regs[(base + i) as usize].clone()
+                            } else {
+                                self.reg_get(top, base + i)
+                            }
+                        })
+                        .collect();
                     let strict = self.caller_strict();
                     let out = self.call_callable_value_mode(&c, args, Some(strict))?;
                     self.reg_set(top, dst, out);
@@ -5769,6 +5863,18 @@ impl Vm {
                     };
                     self.cursor_steps.clear();
                 }
+                Instr::BindVarVarRef { name, src } => {
+                    let vname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let cell = match &self.stack[top].regs[src as usize] {
+                        Value::Ref(rc) => rc.clone(),
+                        v => Rc::new(RefCell::new(v.clone())),
+                    };
+                    self.var_var_bind(top, &vname, cell);
+                }
+                Instr::UnsetVarVar { name } => {
+                    let vname = conv::to_string_bytes(&self.reg_get(top, name));
+                    self.var_var_unset(top, &vname);
+                }
                 Instr::FetchVarVar { dst, name } => {
                     let vname = conv::to_string_bytes(&self.reg_get(top, name));
                     let v = match self.var_var_lookup(top, &vname) {
@@ -5813,23 +5919,29 @@ impl Vm {
                 Instr::AssignLval { src } => {
                     let v = self.reg_get(top, src);
                     let steps = std::mem::take(&mut self.cursor_steps);
-                    self.cursor_write(top, &steps, v)?;
+                    let r = self.cursor_write(top, &steps, v);
+                    self.cursor_release();
+                    r?;
                 }
                 Instr::AssignLvalRef { src } => {
                     // Raw (non-deref) value: `src` holds a `Ref`, so the cursor
                     // target becomes a reference to the same cell.
                     let v = self.stack[top].regs[src as usize].clone();
                     let steps = std::mem::take(&mut self.cursor_steps);
-                    self.cursor_write(top, &steps, v)?;
+                    let r = self.cursor_write(top, &steps, v);
+                    self.cursor_release();
+                    r?;
                 }
                 Instr::MakeRefLval { dst } => {
                     let steps = std::mem::take(&mut self.cursor_steps);
-                    let cell = self.cursor_make_ref(top, &steps)?;
-                    self.reg_set(top, dst, Value::Ref(cell));
+                    let cell = self.cursor_make_ref(top, &steps);
+                    self.cursor_release();
+                    self.reg_set(top, dst, Value::Ref(cell?));
                 }
                 Instr::UnsetLval => {
                     let steps = std::mem::take(&mut self.cursor_steps);
                     self.cursor_unset(top, &steps);
+                    self.cursor_release();
                 }
                 Instr::IncDecLval { dst, pre, delta } => {
                     let steps = std::mem::take(&mut self.cursor_steps);
@@ -5841,8 +5953,9 @@ impl Vm {
                         ));
                     }
                     let old = self.cursor_read_magic(top, &steps)?;
-                    let new = inc_dec_value(&old, delta as i64);
+                    let new = self.inc_dec_vm(&old, delta as i64)?;
                     self.cursor_write(top, &steps, new.clone())?;
+                    self.cursor_release();
                     self.reg_set(top, dst, if pre { new } else { old });
                 }
 
@@ -6967,6 +7080,9 @@ impl Vm {
                 }
             }
             let popped = self.stack.pop();
+            if let Some(f) = &popped {
+                self.include_writeback(f);
+            }
             let depth = self.stack.len();
             if let Some((_, ptr)) = self.ctor_frames.pop_if(|c| c.0 == depth) {
                 // The constructor threw: its object will never be destructed.
@@ -7409,6 +7525,50 @@ impl Vm {
         }
     }
 
+    /// An include/eval frame that is finishing shares its caller's variables
+    /// through the cells bound at entry; a variable it re-bound (`$a = &$b`,
+    /// `global $a`, `static $a`) or unset carries that over to the including
+    /// scope, as php's shared symbol table does.
+    fn include_writeback(&mut self, frame: &Frame) {
+        let Some(caller) = frame.include_caller else {
+            return;
+        };
+        if caller >= self.stack.len() {
+            return;
+        }
+        let proto = frame.proto.clone();
+        for (ci, name) in proto.cv_var_names.iter().enumerate() {
+            if name.as_bytes() == b"this"
+                || proto.superglobals.iter().any(|(r, _)| *r as usize == ci)
+            {
+                continue;
+            }
+            let Some(slot) = frame.regs.get(ci) else {
+                continue;
+            };
+            let current = match self.var_var_lookup(caller, name.as_bytes()) {
+                Some(Ok(cv)) => match &self.stack[caller].regs[cv as usize] {
+                    Value::Ref(rc) => Some(rc.clone()),
+                    _ => None,
+                },
+                Some(Err(rc)) => Some(rc),
+                None => None,
+            };
+            match slot {
+                Value::Ref(rc) => {
+                    if !current.is_some_and(|c| Rc::ptr_eq(&c, rc)) {
+                        self.var_var_bind(caller, name.as_bytes(), rc.clone());
+                    }
+                }
+                Value::Null => self.var_var_unset(caller, name.as_bytes()),
+                v => {
+                    let cell = Rc::new(RefCell::new(v.clone()));
+                    self.var_var_bind(caller, name.as_bytes(), cell);
+                }
+            }
+        }
+    }
+
     /// Push a capture frame for a closure (captures bound to CVs `0..nc`, params
     /// after) and drive it to completion (re-entrant; exceptions handled within).
     fn run_closure_sync(
@@ -7508,6 +7668,157 @@ impl Vm {
             .lookup_method(cls, name)
             .ok_or_else(|| Thrown::error("Error", "Iterator method not found"))?;
         self.call_sync(&m, Some(h.clone()), cls, Vec::new())
+    }
+
+    /// `++` / `--` (`delta` +1 / -1): php's increment_function /
+    /// decrement_function, diagnostics and Perl-style string increment
+    /// included.
+    fn inc_dec_vm(&mut self, v: &Value, delta: i64) -> Result<Value, Thrown> {
+        let inc = delta > 0;
+        let what = if inc { "Increment" } else { "Decrement" };
+        match deref(v) {
+            Value::Null if !inc => {
+                self.diag(
+                    2,
+                    "Decrement on type null has no effect, this will change in the next major version of PHP",
+                )?;
+                Ok(Value::Null)
+            }
+            Value::Bool(b) => {
+                self.diag(
+                    2,
+                    &format!(
+                        "{what} on type bool has no effect, this will change in the next major version of PHP"
+                    ),
+                )?;
+                Ok(Value::Bool(b))
+            }
+            Value::Str(s) if conv::numeric_string(s.as_bytes()).is_none() => {
+                let b = s.as_bytes();
+                if !inc {
+                    if b.is_empty() {
+                        self.diag(
+                            8192,
+                            "Decrement on empty string is deprecated as non-numeric",
+                        )?;
+                        return Ok(Value::Int(-1));
+                    }
+                    self.diag(
+                        8192,
+                        "Decrement on non-numeric string has no effect and is deprecated",
+                    )?;
+                    return Ok(Value::Str(s));
+                }
+                self.diag(
+                    8192,
+                    "Increment on non-numeric string is deprecated, use str_increment() instead",
+                )?;
+                Ok(Value::str(perl_increment(b)))
+            }
+            arr @ Value::Array(_) => Err(Thrown::type_error(format!(
+                "Cannot {} {}",
+                what.to_ascii_lowercase(),
+                self.zval_value_name(&arr)
+            ))),
+            other => Ok(inc_dec_value(&other, delta)),
+        }
+    }
+
+    /// The entries `...$src` unpacks (ZEND_SEND_UNPACK when `args`, else
+    /// ZEND_ADD_ARRAY_UNPACK): an array's elements as they are, or what a
+    /// Traversable yields (numeric-string keys count as positional).
+    fn unpack_entries(
+        &mut self,
+        top: usize,
+        src: Reg,
+        args: bool,
+    ) -> Result<Vec<(ArrayKey, Value)>, Thrown> {
+        let v = self.reg_get(top, src);
+        let h = match v {
+            Value::Array(a) => return Ok(a.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+            Value::Object(h) if self.class_implements(h.borrow().class, b"Traversable") => h,
+            other => {
+                let msg = format!(
+                    "Only arrays and Traversables can be unpacked, {} given",
+                    self.zval_value_name(&other)
+                );
+                return Err(
+                    if args || matches!(other, Value::Object(_) | Value::Closure(_)) {
+                        Thrown::type_error(msg)
+                    } else {
+                        Thrown::error("Error", msg)
+                    },
+                );
+            }
+        };
+        let mut it = h;
+        while self.class_implements(it.borrow().class, b"IteratorAggregate") {
+            match self.call_iter_method(&it, b"getiterator")? {
+                Value::Object(next)
+                    if self.class_implements(next.borrow().class, b"Traversable") =>
+                {
+                    it = next
+                }
+                _ => {
+                    let cls = it.borrow().class;
+                    return Err(Thrown::error(
+                        "Exception",
+                        format!(
+                            "Objects returned by {}::getIterator() must be traversable or implement interface Iterator",
+                            String::from_utf8_lossy(self.class(cls).name.as_bytes())
+                        ),
+                    ));
+                }
+            }
+        }
+        let id = it.borrow().id;
+        let is_gen = self.generators.contains_key(&id);
+        let mut out = Vec::new();
+        if is_gen {
+            self.gen_ensure_started(id)?;
+        } else {
+            self.call_iter_method(&it, b"rewind")?;
+        }
+        loop {
+            let (k, v) = if is_gen {
+                let g = &self.generators[&id];
+                if g.status == GenStatus::Finished {
+                    break;
+                }
+                (g.current_key.clone(), g.current_val.clone())
+            } else {
+                if !conv::to_bool(&self.call_iter_method(&it, b"valid")?) {
+                    break;
+                }
+                let v = self.call_iter_method(&it, b"current")?;
+                let k = self.call_iter_method(&it, b"key")?;
+                (k, v)
+            };
+            let key = match deref(&k) {
+                Value::Int(n) => ArrayKey::Int(n),
+                Value::Str(s) => match ArrayKey::from_bytes(s.as_bytes()) {
+                    ArrayKey::Int(n) => ArrayKey::Int(n),
+                    _ => ArrayKey::Str(s),
+                },
+                _ => {
+                    return Err(Thrown::error(
+                        "Error",
+                        if args {
+                            "Keys must be of type int|string during argument unpacking"
+                        } else {
+                            "Keys must be of type int|string during array unpacking"
+                        },
+                    ))
+                }
+            };
+            out.push((key, deref(&v)));
+            if is_gen {
+                self.advance_gen(id, Value::Null)?;
+            } else {
+                self.call_iter_method(&it, b"next")?;
+            }
+        }
+        Ok(out)
     }
 
     /// `(array) $object`: every property, keyed with php's visibility mangling —
@@ -8322,6 +8633,7 @@ impl Vm {
         if !self.destructibles.is_empty() {
             self.dtor_check = true;
         }
+        self.include_writeback(&frame);
         // A synchronous (re-entrant) call returns its value to the Rust caller.
         if frame.capture {
             return Some(value);
@@ -9462,6 +9774,43 @@ fn read_path(slot: &Value, steps: &[CursorStep], cx: &PropCtx) -> Value {
         }
         _ => Value::Null,
     }
+}
+
+/// php's increment_string: `"a"++` is `"b"`, `"Az"++` is `"Ba"`, `"zz"++` is
+/// `"aaa"`; the carry stops at the first non-alphanumeric byte; `""` is `"1"`.
+fn perl_increment(s: &[u8]) -> Vec<u8> {
+    if s.is_empty() {
+        return b"1".to_vec();
+    }
+    let mut v = s.to_vec();
+    let mut pos = v.len();
+    let mut carry = false;
+    let mut last = 0u8;
+    while pos > 0 {
+        pos -= 1;
+        let (lo, hi) = match v[pos] {
+            b'a'..=b'z' => (b'a', b'z'),
+            b'A'..=b'Z' => (b'A', b'Z'),
+            b'0'..=b'9' => (b'0', b'9'),
+            _ => {
+                carry = false;
+                break;
+            }
+        };
+        last = lo;
+        if v[pos] == hi {
+            v[pos] = lo;
+            carry = true;
+        } else {
+            v[pos] += 1;
+            carry = false;
+            break;
+        }
+    }
+    if carry {
+        v.insert(0, if last == b'0' { b'1' } else { last });
+    }
+    v
 }
 
 /// The method name of `$o->$m()` / `C::$m()`: php requires a string.

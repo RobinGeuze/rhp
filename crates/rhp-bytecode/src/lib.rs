@@ -251,6 +251,12 @@ pub enum Instr {
         arr: Reg,
         src: Reg,
     },
+    /// `f(...$src)`: unpack an array or Traversable into the argument array
+    /// `arr` (int keys positional, string keys named).
+    ArgSpread {
+        arr: Reg,
+        src: Reg,
+    },
     /// `[&$x]` / `[k => &$x]`: push/insert the raw `Value::Ref` in `val` so the
     /// element aliases the source variable (no deref).
     ArrPushRef {
@@ -725,6 +731,16 @@ pub enum Instr {
     /// Cursor root: the current scope's variable named by register `name`
     /// (created on write), for `$$name = v`, `${expr}[] = v`, ….
     LvalVarVar {
+        name: Reg,
+    },
+    /// `$$name = &<src>`: make the current scope's variable named by register
+    /// `name` an alias of the reference in `src`.
+    BindVarVarRef {
+        name: Reg,
+        src: Reg,
+    },
+    /// `unset($$name)`: remove the current scope's variable of that name.
+    UnsetVarVar {
         name: Reg,
     },
     /// Declare a class at this statement. `class_idx` is file-local: indices

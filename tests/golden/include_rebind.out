@@ -1,0 +1,14 @@
+string(2) "GB"
+bool(false)
+string(1) "T"
+string(1) "T"
+string(17) "caught in include"
+string(5) "fresh"
+string(3) "old"
+string(2) "T2"
+string(2) "GB"
+bool(false)
+string(1) "T"
+string(17) "caught in include"
+string(5) "fresh"
+string(19) "changed in function"

@@ -3000,13 +3000,16 @@ impl ProtoBuilder {
 
         let (val_cv, val_pattern): (Reg, Option<&Expression>) = match val_expr {
             Expression::Variable(Variable::Direct(d)) => (self.cv(strip_dollar(d.name)), None),
-            Expression::Array(_) | Expression::List(_) => (self.alloc_temp(), Some(val_expr)),
-            _ => {
-                return Err(Thrown::unsupported(
-                    "foreach target",
-                    "variable or destructuring only",
-                ))
-            }
+            // Destructuring, `$$n`, `$a[k]`, `$o->p`: fetch into a temporary
+            // and store it like a list() element.
+            _ => (self.alloc_temp(), Some(val_expr)),
+        };
+        // php stores the value target before assigning the key, so a key
+        // variable used inside the target (`$k => $$k`) is the previous one.
+        let (fetch_key, key_after) = if val_pattern.is_some() && key_cv != Reg::MAX {
+            (self.alloc_temp(), Some(key_cv))
+        } else {
+            (key_cv, None)
         };
 
         let saved_floor = self.temp_floor;
@@ -3023,8 +3026,11 @@ impl ProtoBuilder {
             match pattern {
                 Expression::Array(arr) => self.destructure_into(arr.elements.iter(), val_cv)?,
                 Expression::List(lst) => self.destructure_into(lst.elements.iter(), val_cv)?,
-                _ => unreachable!(),
+                other => self.store_to_target(other, val_cv)?,
             }
+        }
+        if let Some(cv) = key_after {
+            self.emit(Instr::Assign { cv, src: fetch_key });
         }
 
         self.loops.push(LoopCtx {
@@ -3052,7 +3058,7 @@ impl ProtoBuilder {
         self.code[fetch_pos] = Instr::FeFetch {
             arr_reg,
             pos_reg,
-            key_cv,
+            key_cv: fetch_key,
             val_cv,
             end,
         };
@@ -3088,6 +3094,10 @@ impl ProtoBuilder {
                     // unset for isset/??/empty.
                     let cv = self.cv(strip_dollar(d.name));
                     self.emit(Instr::LoadNull { dst: cv });
+                }
+                Expression::Variable(var) => {
+                    let name = self.var_name_reg(var)?;
+                    self.emit(Instr::UnsetVarVar { name });
                 }
                 Expression::ArrayAccess(_) => {
                     let mut steps = Vec::new();
@@ -3246,6 +3256,7 @@ impl ProtoBuilder {
             Expression::List(lst) => self.destructure_into(lst.elements.iter(), src)?,
             Expression::ArrayAccess(_)
             | Expression::ArrayAppend(_)
+            | Expression::Variable(_)
             | Expression::Access(Access::Property(_))
             | Expression::Access(Access::StaticProperty(_)) => {
                 let mut steps = Vec::new();
@@ -3783,7 +3794,9 @@ impl ProtoBuilder {
                 });
                 Ok(dst)
             }
+            Expression::Parenthesized(p) => self.compile_inc_dec(p.expression, pre, delta),
             Expression::ArrayAccess(_)
+            | Expression::Variable(_)
             | Expression::Access(Access::Property(_))
             | Expression::Access(Access::StaticProperty(_)) => {
                 let mut steps = Vec::new();
@@ -4205,7 +4218,15 @@ impl ProtoBuilder {
                     }
                 }
             } else {
-                slots.push(ArgSlot::Value(self.compile_expr(p.value)?));
+                let mut r = self.compile_expr(p.value)?;
+                // A variable's value is taken when its argument is evaluated
+                // (php's SEND_VAR), before later arguments can change it.
+                if (r as usize) < self.cv_map.len() && i + 1 < fc.argument_list.arguments.len() {
+                    let t = self.alloc_temp();
+                    self.emit(Instr::Mov { dst: t, src: r });
+                    r = t;
+                }
+                slots.push(ArgSlot::Value(r));
             }
         }
         let argc = slots.len() as u16;
@@ -4253,30 +4274,10 @@ impl ProtoBuilder {
             return Ok(dst);
         }
 
-        let mut argregs = Vec::new();
-        for arg in fc.argument_list.arguments.iter() {
-            let p = match arg {
-                Argument::Positional(p) if p.ellipsis.is_none() => p,
-                Argument::Positional(_) => {
-                    return Err(Thrown::unsupported(
-                        "argument spread",
-                        "call-site spread is deferred",
-                    ))
-                }
-                Argument::Named(_) => {
-                    return Err(Thrown::unsupported("named arguments", "deferred"))
-                }
-            };
-            argregs.push(self.compile_expr(p.value)?);
-        }
-        let argc = argregs.len() as u16;
-        let base = self.alloc_temps(argc.max(1));
-        for (i, r) in argregs.into_iter().enumerate() {
-            self.emit(Instr::Mov {
-                dst: base + i as Reg,
-                src: r,
-            });
-        }
+        // The callee is only known at run time, so (as for method calls) a
+        // simple-variable argument travels as a reference; a by-value
+        // parameter dereferences it.
+        let (base, argc) = self.compile_arg_window_ex(Some(&fc.argument_list), &[], true)?;
         let dst = self.alloc_temp();
         self.emit(Instr::CallDyn {
             dst,
@@ -4916,7 +4917,7 @@ impl ProtoBuilder {
                     Argument::Positional(p) => {
                         let r = self.compile_expr(p.value)?;
                         if p.ellipsis.is_some() {
-                            self.emit(Instr::ArrSpread { arr: dst, src: r });
+                            self.emit(Instr::ArgSpread { arr: dst, src: r });
                         } else {
                             self.emit(Instr::ArrPush { arr: dst, val: r });
                         }
@@ -4977,7 +4978,15 @@ impl ProtoBuilder {
                         continue;
                     }
                 }
-                slots.push(Slot::Value(self.compile_expr(p.value)?));
+                let mut r = self.compile_expr(p.value)?;
+                // A variable's value is taken when its argument is evaluated
+                // (php's SEND_VAR), before later arguments can change it.
+                if (r as usize) < self.cv_map.len() && i + 1 < list.arguments.len() {
+                    let t = self.alloc_temp();
+                    self.emit(Instr::Mov { dst: t, src: r });
+                    r = t;
+                }
+                slots.push(Slot::Value(r));
             }
         }
         let argc = slots.len() as u16;
@@ -5467,6 +5476,13 @@ impl ProtoBuilder {
                     let dst_cv = self.cv(strip_dollar(dst.name));
                     self.emit(Instr::RefAssign { dst_cv, src: r });
                     return Ok(dst_cv);
+                }
+                // `$$n =& <src>`: alias the variable named at run time.
+                if let Expression::Variable(var) = a.lhs {
+                    let name = self.var_name_reg(var)?;
+                    let r = self.compile_ref_source(u.operand)?;
+                    self.emit(Instr::BindVarVarRef { name, src: r });
+                    return Ok(r);
                 }
                 // `<lvalue> =& <src>`: make the destination element/property a
                 // reference to the source.

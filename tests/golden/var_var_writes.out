@@ -1,0 +1,39 @@
+[8192] Increment on non-numeric string is deprecated, use str_increment() instead
+string(2) "1y"
+int(4)
+int(4)
+int(5)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+int(2)
+int(3)
+string(3) "two"
+int(2)
+int(9)
+dtor
+after unset
+dtor
+after unset g
+string(15) "set via var-var"
+string(1) "K"
+int(1)
+int(5)
+int(2)
+int(3)
+string(1) "v"
+string(6) "second"
+int(2)
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+array(2) {
+  ["none"]=>
+  int(1)
+  ["a"]=>
+  int(2)
+}

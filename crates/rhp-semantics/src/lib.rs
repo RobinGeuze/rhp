@@ -59,7 +59,10 @@ pub fn inc_dec_value(v: &Value, delta: i64) -> Value {
         },
         Value::Float(f) => Value::Float(f + delta as f64),
         Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
-            Some(conv::Num::Int(n)) => Value::Int(n + delta),
+            Some(conv::Num::Int(n)) => match n.checked_add(delta) {
+                Some(r) => Value::Int(r),
+                None => Value::Float(n as f64 + delta as f64),
+            },
             Some(conv::Num::Float(f)) => Value::Float(f + delta as f64),
             None => Value::Str(s),
         },

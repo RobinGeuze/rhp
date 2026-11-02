@@ -29,6 +29,36 @@ fn usage() -> ExitCode {
     ExitCode::from(1)
 }
 
+/// The value php gives a `-d key=value` setting (php_ini_builder_define):
+/// one starting with a character other than an alphanumeric or a quote is
+/// taken literally; otherwise it goes through the ini scanner, which unquotes
+/// a quoted string, stops a bare value at a `;` comment, and maps the
+/// bareword booleans (`On`/`Yes`/`True` → "1", `Off`/`No`/`False`/`None`/
+/// `Null` → ""). Constant expressions (`E_ALL & ~E_NOTICE`) are not
+/// evaluated.
+fn ini_define_value(raw: &str) -> String {
+    let v = raw.trim();
+    let Some(first) = v.chars().next() else {
+        return String::new();
+    };
+    if first == '"' || first == '\'' {
+        let inner = &v[1..];
+        return match inner.find(first) {
+            Some(end) => inner[..end].to_string(),
+            None => inner.to_string(),
+        };
+    }
+    if !first.is_ascii_alphanumeric() {
+        return v.to_string();
+    }
+    let v = v.split(';').next().unwrap_or("").trim_end();
+    match v.to_ascii_lowercase().as_str() {
+        "on" | "yes" | "true" => "1".to_string(),
+        "off" | "no" | "false" | "none" | "null" => String::new(),
+        _ => v.to_string(),
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
 
@@ -39,7 +69,7 @@ fn main() -> ExitCode {
     let mut ini: Vec<(String, String)> = Vec::new();
     let mut add_ini = |kv: &str| {
         let (k, v) = kv.split_once('=').unwrap_or((kv, "1"));
-        ini.push((k.trim().to_string(), v.trim().to_string()));
+        ini.push((k.trim().to_string(), ini_define_value(v)));
     };
     while i < args.len() {
         let a = args[i].as_str();
@@ -217,5 +247,27 @@ fn fatal(t: Thrown) -> i32 {
             eprintln!("{}", t.unsupported_message().unwrap_or_default());
             255
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ini_define_value as v;
+
+    #[test]
+    fn ini_define_values_match_php() {
+        assert_eq!(v("On"), "1");
+        assert_eq!(v("on "), "1");
+        assert_eq!(v("TRUE"), "1");
+        assert_eq!(v("true;x"), "1");
+        assert_eq!(v("off"), "");
+        assert_eq!(v("NULL"), "");
+        assert_eq!(v("none"), "");
+        assert_eq!(v("\"On\""), "On");
+        assert_eq!(v("'On'"), "On");
+        assert_eq!(v(""), "");
+        assert_eq!(v("-1"), "-1");
+        assert_eq!(v("128M"), "128M");
+        assert_eq!(v("/a;b"), "/a;b");
     }
 }

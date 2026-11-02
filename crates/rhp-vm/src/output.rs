@@ -68,7 +68,7 @@ const DEFAULT_HANDLER_NAME: &[u8] = b"default output handler";
 /// reports as `buffer_size` in `ob_get_status()`.
 fn initbuf_size(s: usize) -> usize {
     if s > 0 {
-        (s + 0xfff) & !0xfff
+        s.saturating_add(0xfff) & !0xfff
     } else {
         0x4000
     }
@@ -102,6 +102,9 @@ pub(crate) struct Output {
     active: Option<HRef>,
     running: Option<HRef>,
     flags: u32,
+    /// Opening the ini `output_handler` before the script runs (diagnostics
+    /// say `PHP Request Startup` / `Unknown`).
+    starting: bool,
 }
 
 impl Default for Output {
@@ -111,6 +114,7 @@ impl Default for Output {
             active: None,
             running: None,
             flags: O_ACTIVATED,
+            starting: false,
         }
     }
 }
@@ -200,7 +204,10 @@ impl Vm {
         // OnUpdateLong: "On" etc. read as 0 (atol), so php ignores them.
         let buffering = rhp_builtins::php_fns::atol(&ini(self, b"output_buffering"));
         if !handler.is_empty() {
+            self.output.starting = true;
+            // No autoloader is registered yet, so resolving cannot throw.
             let _ = self.ob_start_user(&Value::str(handler), 0, H_STDFLAGS);
+            self.output.starting = false;
         } else if buffering != 0 {
             let chunk = if buffering > 1 { buffering as usize } else { 0 };
             self.handler_start(Handler::new(
@@ -224,6 +231,9 @@ impl Vm {
     /// running builtin, else the innermost user function (`main` at top
     /// level), else `PHP Request Shutdown` / `Unknown` (no code running).
     fn docref_prefix(&self) -> String {
+        if self.output.starting {
+            return "PHP Request Startup: ".to_string();
+        }
         if let Some(nc) = self.native_calls.last() {
             if nc.caller + 1 >= self.stack.len() {
                 return format!("{}(): ", nc.name);
@@ -253,7 +263,7 @@ impl Vm {
 
     fn ob_diag(&mut self, level: i64, msg: &str) {
         let m = format!("{}{}", self.docref_prefix(), msg);
-        if self.no_code_running() {
+        if self.no_code_running() || self.output.starting {
             self.raise_error_at(level, &m, b"Unknown".to_vec(), 0);
         } else {
             self.raise_error(level, &m);
@@ -310,6 +320,9 @@ impl Vm {
     /// Keep the first exception a handler threw for the running statement.
     fn ob_pending(&mut self, t: Thrown) {
         if self.pending_throw.is_none() {
+            // Build the Error object now, while the builtin that ran the
+            // handler (`ob_end_flush()` …) is still on the trace.
+            let t = self.materialize(t, None);
             self.pending_throw = Some(t);
         }
     }
@@ -419,7 +432,7 @@ impl Vm {
             if avail <= data.len() {
                 let grow_int = initbuf_size(hb.size);
                 let grow_buf = initbuf_size(data.len() - avail);
-                hb.buf_size += grow_int.max(grow_buf);
+                hb.buf_size = hb.buf_size.saturating_add(grow_int.max(grow_buf));
             }
             hb.buf.extend_from_slice(data);
             if hb.size != 0 && hb.buf.len() >= hb.size {
@@ -467,6 +480,15 @@ impl Vm {
                     // `exit` leaves the handler's frames behind.
                     self.stack.truncate(depth);
                 }
+                // php destructs the handler's locals as its frame ends, while
+                // it still counts as running (their output is the handler's).
+                let r = match r {
+                    Ok(v) if self.dtor_check && !self.destructibles.is_empty() => {
+                        self.dtor_check = false;
+                        self.collect_released().map(|()| v)
+                    }
+                    r => r,
+                };
                 if !self.output_activated() {
                     // A fatal error inside the handler tore the stack down.
                     if let Err(t) = r {
@@ -768,8 +790,14 @@ impl Vm {
         a.insert(k("type"), Value::Int(h.flags & 0xf));
         a.insert(k("flags"), Value::Int(h.flags));
         a.insert(k("level"), Value::Int(h.level as i64));
-        a.insert(k("chunk_size"), Value::Int(h.size as i64));
-        a.insert(k("buffer_size"), Value::Int(h.buf_size as i64));
+        a.insert(
+            k("chunk_size"),
+            Value::Int(i64::try_from(h.size).unwrap_or(i64::MAX)),
+        );
+        a.insert(
+            k("buffer_size"),
+            Value::Int(i64::try_from(h.buf_size).unwrap_or(i64::MAX)),
+        );
         a.insert(k("buffer_used"), Value::Int(h.buf.len() as i64));
         Value::Array(a)
     }

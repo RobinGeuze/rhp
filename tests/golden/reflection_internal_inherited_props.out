@@ -1,0 +1,36 @@
+RuntimeException Exception::message
+RuntimeException Exception::code
+RuntimeException Exception::file
+RuntimeException Exception::line
+bool(false)
+LogicException Exception::message
+LogicException Exception::code
+LogicException Exception::file
+LogicException Exception::line
+bool(false)
+Exception Exception::message
+Exception Exception::string
+Exception Exception::code
+Exception Exception::file
+Exception Exception::line
+Exception Exception::trace
+Exception Exception::previous
+bool(true)
+TypeError Error::message
+TypeError Error::code
+TypeError Error::file
+TypeError Error::line
+bool(false)
+Error Error::message
+Error Error::string
+Error Error::code
+Error Error::file
+Error Error::line
+Error Error::trace
+Error Error::previous
+bool(true)
+AppException::extra
+Exception::message
+Exception::code
+Exception::file
+Exception::line

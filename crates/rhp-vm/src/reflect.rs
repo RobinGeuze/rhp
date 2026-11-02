@@ -717,7 +717,13 @@ impl Vm {
         // A built-in class's table is filled by inheritance first.
         if internal {
             if let Some(p) = e.parent {
-                out = self.prop_order(p);
+                out = self.prop_order_ex(p, with_private);
+                // A parent's private properties are not inherited.
+                if !with_private {
+                    out.retain(|(n, decl, st)| {
+                        self.prop_vis(*decl, n, *st) != Some(Visibility::Private)
+                    });
+                }
             }
         }
         for (n, st) in own {

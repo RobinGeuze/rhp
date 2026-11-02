@@ -45,8 +45,16 @@ foreach (["\u{94D}\u{915}", "a\u{94D}\u{915}\u{94D}\u{937}", "\u{915}\u{94D}\u{9
     echo bin2hex($s), ' ', grapheme_strlen($s), ' ', $j(grapheme_str_split($s)), "\n";
 }
 
-// NFKC_Casefold with Unicode 18 case pairs.
+// NFKC_Casefold with Unicode 18 case pairs; raw decompositions.
 foreach (["\u{A7DD}", "\u{AB6C}", "\u{1DF40}", "\u{1DF95}", "\u{1C4}"] as $s) {
     echo bin2hex($s), ' ', bin2hex(normalizer_normalize($s, Normalizer::NFKC_CF)), ' ',
         var_export(normalizer_is_normalized($s, Normalizer::NFKC_CF), true), "\n";
+}
+foreach (["\u{FFDA}", "\u{1C4}", "\u{F77}", "\u{3300}", "\u{FDFA}", "\u{E9}", "a"] as $s) {
+    echo bin2hex($s), ' ', var_export(normalizer_get_raw_decomposition($s, Normalizer::FORM_KC), true), ' ',
+        var_export(normalizer_get_raw_decomposition($s), true), "\n";
+}
+foreach (['', 'aa', "\xF5", "\xC3", "\xE2\x82"] as $s) {
+    var_dump(normalizer_get_raw_decomposition($s));
+    echo intl_get_error_message(), "\n";
 }

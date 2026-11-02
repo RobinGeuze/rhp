@@ -144,8 +144,14 @@ fn raw_decomposition(form: i64, c: char) -> Option<String> {
         Decomposed::Singleton(a) => Some(a.to_string()),
         Decomposed::Expansion(a, b) => Some([a, b].iter().collect()),
     };
+    if matches!(form, FORM_KD | FORM_KC | FORM_KC_CF) {
+        if let Ok(i) = super::icu_tables::RAW_COMPAT.binary_search_by_key(&(c as u32), |e| e.0) {
+            return Some(super::icu_tables::RAW_COMPAT[i].1.to_string());
+        }
+    }
     if matches!(form, FORM_KD | FORM_KC | FORM_KC_CF) && canon.is_none() {
-        // compatibility mapping: approximated by the full NFKD when it differs.
+        // compatibility mapping: the full NFKD when it differs (the table
+        // above holds the mappings where that isn't the one-level one).
         let s = c.to_string();
         let k = DecomposingNormalizerBorrowed::new_nfkd().normalize(&s);
         if k != s {
@@ -163,19 +169,18 @@ pub(super) fn fn_get_raw_decomposition(
     error_reset();
     let s = str_arg(host, args, 0, f, "string")?;
     let form = int_arg_or(host, args, 1, f, "form", FORM_C)?;
-    let one = as_utf8(&s).and_then(|t| {
-        let mut it = t.chars();
-        match (it.next(), it.next()) {
-            (Some(c), None) => Some(c),
-            _ => None,
-        }
-    });
-    let Some(c) = one else {
+    // U8_NEXT: one (possibly ill-formed) sequence must span the whole input
+    // (an empty input counts as reading one byte past it).
+    if s.is_empty() || super::grapheme::u8_fwd_1(&s, 0) != s.len() {
         error_set(
             f,
             U_ILLEGAL_ARGUMENT_ERROR,
             "Input string must be exactly one UTF-8 encoded code point long.",
         );
+        return Ok(Value::Null);
+    }
+    let Some(c) = as_utf8(&s).and_then(|t| t.chars().next()) else {
+        error_set(f, U_ILLEGAL_ARGUMENT_ERROR, "Code point out of range");
         return Ok(Value::Null);
     };
     Ok(match raw_decomposition(form, c) {

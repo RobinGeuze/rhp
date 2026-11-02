@@ -35,3 +35,20 @@ eaadac eaad8b false
 f09dbd80 f09dbd81 false
 f09dbe95 7373 false
 c784 64c5be false
+efbf9a 'ㅡ' NULL
+c784 'DŽ' NULL
+e0bdb7 'ྲཱྀ' NULL
+e38c80 'アパート' NULL
+efb7ba 'صلى الله عليه وسلم' NULL
+c3a9 'é' 'é'
+61 NULL NULL
+NULL
+normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long.: U_ILLEGAL_ARGUMENT_ERROR
+NULL
+normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long.: U_ILLEGAL_ARGUMENT_ERROR
+NULL
+normalizer_get_raw_decomposition(): Code point out of range: U_ILLEGAL_ARGUMENT_ERROR
+NULL
+normalizer_get_raw_decomposition(): Code point out of range: U_ILLEGAL_ARGUMENT_ERROR
+NULL
+normalizer_get_raw_decomposition(): Code point out of range: U_ILLEGAL_ARGUMENT_ERROR

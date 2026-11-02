@@ -5,20 +5,8 @@ use rhp_difftest::sweeps;
 use rhp_difftest::{php_available, Diff};
 
 fn expect_match(name: &str, diff: Diff) {
-    match diff {
-        Diff::Match => {}
-        Diff::Mismatch { php, rhp } => {
-            let (p, q) = (String::from_utf8_lossy(&php), String::from_utf8_lossy(&rhp));
-            let first = p
-                .lines()
-                .zip(q.lines())
-                .find(|(a, b)| a != b)
-                .map(|(a, b)| format!("php={a} rhp={b}"))
-                .unwrap_or_else(|| "length differs".to_string());
-            panic!("[{name}] MISMATCH: {first}");
-        }
-        Diff::PhrustErr(e) => panic!("[{name}] rhp error: {e}"),
-        Diff::PhpErr(e) => panic!("[{name}] php error: {e}"),
+    if let Some(why) = diff.failure() {
+        panic!("[{name}] {why}");
     }
 }
 

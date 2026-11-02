@@ -9,7 +9,7 @@
 //! so the suite stays green during buildout. It must be empty for full coverage.
 
 use rhp_difftest::sweeps::{hash_algo, php_hash_algos};
-use rhp_difftest::{default_byte_corpus, php_available, Diff};
+use rhp_difftest::{default_byte_corpus, php_available};
 
 /// Algorithms still being implemented (table-heavy, verified via the sweep).
 /// Empty — rhp covers the full php `hash_algos()` set.
@@ -35,14 +35,9 @@ fn hash_matches_php_over_corpus() {
         if PENDING.contains(&algo.as_str()) {
             continue;
         }
-        match hash_algo(algo, &corpus) {
-            Diff::Match => covered += 1,
-            Diff::Mismatch { php, rhp } => {
-                let (p, q) = first_diff(&php, &rhp);
-                failures.push(format!("{algo}: MISMATCH (php={p} rhp={q})"));
-            }
-            Diff::PhrustErr(e) => failures.push(format!("{algo}: rhp error: {}", one_line(&e))),
-            Diff::PhpErr(e) => failures.push(format!("{algo}: php error: {}", one_line(&e))),
+        match hash_algo(algo, &corpus).failure() {
+            None => covered += 1,
+            Some(why) => failures.push(format!("{algo}: {why}")),
         }
     }
     eprintln!("[hash] {covered} algorithm(s) byte-identical to php");
@@ -52,18 +47,4 @@ fn hash_matches_php_over_corpus() {
         failures.len(),
         failures.join("\n")
     );
-}
-
-fn first_diff(php: &[u8], rhp: &[u8]) -> (String, String) {
-    let (ps, qs) = (String::from_utf8_lossy(php), String::from_utf8_lossy(rhp));
-    for (a, b) in ps.lines().zip(qs.lines()) {
-        if a != b {
-            return (a.to_string(), b.to_string());
-        }
-    }
-    (format!("<{} B>", php.len()), format!("<{} B>", rhp.len()))
-}
-
-fn one_line(s: &str) -> String {
-    s.lines().next().unwrap_or("").to_string()
 }

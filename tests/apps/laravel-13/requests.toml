@@ -35,24 +35,29 @@ tokens = [
 [[request]]
 id = "home"
 path = "/"
+status = 200
 
 [[request]]
 id = "hello-world"
 path = "/hello/world"
+status = 200
 
 [[request]]
 id = "api-json"
 path = "/api/json?a=1&b[]=x"
+status = 200
 
 [[request]]
 id = "not-found"
 path = "/nope"
+status = 404
 
 # No session, no token: the CSRF middleware answers 419.
 [[request]]
 id = "submit-no-token"
 method = "POST"
 path = "/submit"
+status = 419
 body = "x=1"
 
 # A flow: the GET starts a session and sets XSRF-TOKEN; the POSTs replay the
@@ -63,12 +68,14 @@ body = "x=1"
 id = "csrf-get"
 flow = "csrf"
 path = "/hello/flow"
+status = 200
 
 [[request]]
 id = "csrf-post-header"
 flow = "csrf"
 method = "POST"
 path = "/submit"
+status = 200
 headers = ["X-XSRF-TOKEN: {cookie:XSRF-TOKEN}"]
 body = "x=1&y=two"
 
@@ -77,4 +84,5 @@ id = "csrf-post-field"
 flow = "csrf"
 method = "POST"
 path = "/submit"
+status = 200
 body = "_token={cookie-plain:XSRF-TOKEN}&list[]=a&list[]=b"

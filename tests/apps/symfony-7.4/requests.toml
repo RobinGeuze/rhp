@@ -24,29 +24,36 @@ tokens = ['PHPSESSID=([A-Za-z0-9,-]+)']
 [[request]]
 id = "home"
 path = "/"
+status = 200
 
 [[request]]
 id = "hello-bob"
 path = "/hello/Bob"
+status = 200
 
 [[request]]
 id = "json-query"
 path = "/json?a=1&b[]=x"
+status = 200
 
 [[request]]
 id = "twig-ann"
 path = "/twig/Ann"
+status = 200
 
 [[request]]
 id = "submit-post"
 method = "POST"
 path = "/submit"
+status = 201
 body = "x=1&y=two&list[]=a&list[]=b"
 
 [[request]]
 id = "not-found"
 path = "/nope"
+status = 404
 
 [[request]]
 id = "method-not-allowed"
 path = "/submit"
+status = 405

@@ -385,6 +385,12 @@ pub fn cgi_request(
     Ok(CgiRequest { env, body })
 }
 
+/// run-tests.php appends `-- <ARGS>` only to a GET request's command line;
+/// a request with a body (POST, PUT, ...) gets the script alone.
+fn cgi_passes_args(req: &CgiRequest) -> bool {
+    req.body.is_none()
+}
+
 /// A CGI response split the way run-tests.php splits it
 /// (`/^(.*?)\r?\n\r?\n(.*)/s`): `(headers, body)`, or `None` when there is
 /// no blank line.
@@ -1032,14 +1038,15 @@ impl Ctx {
             cmd.arg("-d").arg(kv);
         }
         cmd.arg("-f").arg(inv.script);
-        if !inv.args.is_empty() {
+        if cgi_passes_args(req) && !inv.args.is_empty() {
             cmd.arg("--").args(inv.args);
         }
         cmd
     }
 
-    /// A CGI test's SKIPIF runs under php-cgi with `-q` (no headers) and
-    /// without the request environment, as run-tests.php runs it.
+    /// A CGI test's SKIPIF runs under php-cgi with `-q` (no headers), with
+    /// the test's `--ENV--` but without the request variables, as
+    /// run-tests.php runs it.
     fn php_skipif(&self, inv: &Invocation, script: &Path) -> Outcome {
         let (Some(_), Some(cgi)) = (inv.cgi, &self.cgi) else {
             return self.php(inv, inv.ini, script);
@@ -1047,7 +1054,8 @@ impl Ctx {
         let mut cmd = Command::new(&cgi.php_cgi);
         cmd.args(["-n", "-q", "-d", "opcache.enable=0"])
             .current_dir(inv.dir)
-            .envs(self.base_env.iter().cloned());
+            .envs(self.base_env.iter().cloned())
+            .envs(inv.env.iter().cloned());
         for kv in self.php_ini.iter().chain(inv.ini) {
             cmd.arg("-d").arg(kv);
         }
@@ -2781,9 +2789,11 @@ READ of size 8 at 0x6020 thread T0\n\
         assert_eq!(env(&r, "PATH_TRANSLATED"), "/w/t.php");
         assert_eq!(env(&r, "REDIRECT_STATUS"), "1");
         assert!(r.env.contains_key("CONTENT_LENGTH") && r.body.is_none());
+        assert!(cgi_passes_args(&r), "a GET gets `-- <ARGS>`");
 
         let p = Phpt::parse(b"--POST--\nx=1\n\n--FILE--\n<?php\n");
         let r = cgi_request(&p, script, &[]).unwrap();
+        assert!(!cgi_passes_args(&r), "run-tests drops ARGS for a POST");
         assert_eq!(env(&r, "REQUEST_METHOD"), "POST");
         assert_eq!(env(&r, "CONTENT_TYPE"), "application/x-www-form-urlencoded");
         assert_eq!(env(&r, "CONTENT_LENGTH"), "3");

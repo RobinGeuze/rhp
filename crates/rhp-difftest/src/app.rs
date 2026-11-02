@@ -75,6 +75,9 @@ struct Request {
     /// Requests sharing a flow share a cookie jar (per engine); a request
     /// without one starts with an empty jar.
     flow: Option<String>,
+    /// The status the reference must answer with (`status = 404`); without
+    /// it, any status below 500. See [`reference_failures`].
+    status: Option<u16>,
 }
 
 struct Corpus {
@@ -197,6 +200,14 @@ fn load_corpus(app: &App, path: &Path) -> Result<Corpus, String> {
             body: str_of(r, "body").unwrap_or_default().into_bytes(),
             content_type: str_of(r, "content_type"),
             flow: str_of(r, "flow"),
+            status: match r.get("status") {
+                None => None,
+                Some(v) => Some(
+                    v.as_integer()
+                        .and_then(|n| u16::try_from(n).ok())
+                        .ok_or_else(|| format!("{id}: status must be an HTTP status code"))?,
+                ),
+            },
             id,
         });
     }
@@ -1169,6 +1180,33 @@ fn first_difference(a: &Result<Response, String>, b: &Result<Response, String>) 
     }
 }
 
+/// Requests the reference php-cgi did not answer the way the corpus says it
+/// does: not sent, no CGI response (spawn failure, timeout, startup noise),
+/// or the wrong status (any 5xx when the request names none). Such a run
+/// says nothing about the candidate: a broken php-cgi setup (a missing
+/// extension, an unwritable cache) would otherwise just turn every request
+/// DIFF, or worse, SAME when both engines print the same error page.
+fn reference_failures(requests: &[Request], responses: &[Result<Response, String>]) -> Vec<String> {
+    requests
+        .iter()
+        .zip(responses)
+        .filter_map(|(req, r)| {
+            let why = match r {
+                Err(e) => format!("not sent: {e}"),
+                Ok(r) => match (&r.error, req.status) {
+                    (Some(e), _) => e.clone(),
+                    (None, Some(want)) if r.status != want => {
+                        format!("status {} (the corpus expects {want})", r.status)
+                    }
+                    (None, None) if r.status >= 500 => format!("status {}", r.status),
+                    _ => return None,
+                },
+            };
+            Some(format!("{} {} {}: {why}", req.id, req.method, req.uri))
+        })
+        .collect()
+}
+
 struct Verdict {
     id: String,
     same: bool,
@@ -1532,6 +1570,15 @@ fn run_app(o: &Opts, target: &str, php_cgi: &Path, candidate: &[String]) -> Resu
     let same = verdicts.iter().filter(|v| v.same).count();
     println!("{}: {same} same, {} diff", app.name, verdicts.len() - same);
 
+    let broken = reference_failures(&corpus.requests, &runs[0].responses);
+    if !broken.is_empty() {
+        return Err(format!(
+            "the reference php-cgi did not answer {} request(s) as the corpus expects \
+             (a setup problem, not an rhp one; see --out/-v):\n  {}",
+            broken.len(),
+            broken.join("\n  ")
+        ));
+    }
     if let Some(p) = &o.write_known {
         let mut s = format!(
             "# {} requests rhp answers like php-cgi (rhp-difftest app --write-known).\n\
@@ -1633,6 +1680,52 @@ mod tests {
         assert_eq!(r.body, b"nope");
         assert_eq!(parse_response(b"Content-type: x\r\n\r\n").status, 200);
         assert!(parse_response(b"garbage").error.is_some());
+    }
+
+    #[test]
+    fn a_broken_reference_is_a_harness_error() {
+        let req = |id: &str, status: Option<u16>| Request {
+            id: id.into(),
+            method: "GET".into(),
+            uri: "/".into(),
+            headers: Vec::new(),
+            body: Vec::new(),
+            content_type: None,
+            flow: None,
+            status,
+        };
+        let ok = |status| {
+            Ok(Response {
+                status,
+                ..Response::default()
+            })
+        };
+        let reqs = [
+            req("fine", None),
+            req("fine-404", Some(404)),
+            req("crashed", None),
+            req("wrong-status", Some(419)),
+            req("unsent", None),
+            req("error-page", None),
+        ];
+        let resps = [
+            ok(200),
+            ok(404),
+            Ok(Response {
+                error: Some("no CGI header block".into()),
+                ..Response::default()
+            }),
+            ok(200),
+            Err("no cookie \"XSRF-TOKEN\" in the jar".into()),
+            ok(500),
+        ];
+        let bad = reference_failures(&reqs, &resps);
+        let ids: Vec<&str> = bad.iter().map(|b| b.split(' ').next().unwrap()).collect();
+        assert_eq!(ids, ["crashed", "wrong-status", "unsent", "error-page"]);
+        assert!(
+            bad[1].ends_with("status 200 (the corpus expects 419)"),
+            "{bad:?}"
+        );
     }
 
     #[test]

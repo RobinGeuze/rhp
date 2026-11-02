@@ -63,8 +63,13 @@ target/release/rhp-difftest app symfony-7.4 --candidate "$(command -v php-cgi)" 
 
 Each app's `requests.toml` is its request corpus: `[[request]]` entries with
 an `id`, `method`, `path` (plus query), `headers` (`"Name: value"` strings),
-`body`, `content_type` and an optional `flow`. Requests in one flow share a
-cookie jar; other requests start with an empty one. Header values and bodies
+`body`, `content_type`, an optional `flow` and the expected `status`.
+Requests in one flow share a cookie jar; other requests start with an empty
+one. The `status` is checked against the reference only (any status below
+500 when it is left out): if php-cgi doesn't answer as the corpus says, the
+run stops with exit code 2, because a broken php-cgi setup would otherwise
+make every request `DIFF`, or `SAME` when both engines print the same error
+page. Header values and bodies
 can use `{cookie:NAME}`, which is the jar's URL-decoded value, and
 `{cookie-plain:NAME}`, which is the decrypted Laravel cookie value.
 

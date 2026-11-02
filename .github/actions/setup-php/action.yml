@@ -32,16 +32,27 @@ runs:
           sysvmsg, sysvsem, sysvshm, tokenizer, xml, xmlreader, xmlwriter, zip
         coverage: none
 
-    - name: Make sure php-cgi is installed
+    # The php-cgi must be the same build as php: a runner-image php-cgi of
+    # another minor version on PATH would make every CGI comparison
+    # meaningless. Debian names it php-cgi<major.minor>.
+    - name: Make sure the matching php-cgi is installed
       shell: bash
       run: |
-        if ! command -v php-cgi >/dev/null 2>&1; then
-          v="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
-          echo "setup-php installed no php-cgi; installing php$v-cgi"
+        v="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
+        full="$(php -r 'echo PHP_VERSION;')"
+        if ! command -v "php-cgi$v" >/dev/null 2>&1; then
+          echo "setup-php installed no php-cgi$v; installing php$v-cgi"
+          sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends "php$v-cgi"
         fi
-        command -v php-cgi
-        php-cgi -v | head -1
+        cgi="$(command -v "php-cgi$v")"
+        ver="$("$cgi" -n -v)"
+        ver="${ver%%$'\n'*}"
+        echo "$cgi: $ver"
+        case "$ver" in
+          "PHP $full "*) ;;
+          *) echo "$cgi is not php $full"; exit 1 ;;
+        esac
 
     - name: Install php and php-cgi shims that force-load extensions under -n
       shell: bash
@@ -59,8 +70,10 @@ runs:
         echo "shims inject under -n: $inject"
         SHIM="$HOME/php-shim"
         mkdir -p "$SHIM"
+        v="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
         for bin in php php-cgi; do
-          REAL="$(command -v "$bin")"
+          # php-cgi: the versioned binary checked in the step above.
+          REAL="$(command -v "$bin$([ "$bin" = php-cgi ] && echo "$v")")"
           cat > "$SHIM/$bin" <<EOF
         #!/usr/bin/env bash
         for a in "\$@"; do

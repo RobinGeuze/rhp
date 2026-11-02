@@ -12,7 +12,8 @@
 //! - `script PATH`: `SCRIPT_FILENAME`.
 //! - `ini k=v`: a `-d k=v` option.
 //! - `stdin BODY`: the request body (`CONTENT_LENGTH` set to its length
-//!   unless given by `env`).
+//!   unless given by `env`); several `stdin` lines are concatenated.
+//! - `stdinrep N TEXT`: append `TEXT` repeated `N` times to the body.
 //! - `nocgi`: command-line mode (no CGI variables at all); `arg A` adds an
 //!   argument after the options.
 //! - `cwd DIR`: the directory both binaries start in.
@@ -75,7 +76,12 @@ fn spec(php: &Path) -> Spec {
                 "script" => script_filename = Some(rest.to_string()),
                 "ini" => s.ini.push(rest.to_string()),
                 "arg" => s.args.push(rest.to_string()),
-                "stdin" => s.stdin = unescape(rest),
+                "stdin" => s.stdin.extend(unescape(rest)),
+                "stdinrep" => {
+                    let (n, text) = rest.split_once(' ').unwrap_or((rest, ""));
+                    let n: usize = n.parse().expect("stdinrep count");
+                    s.stdin.extend(unescape(text).repeat(n));
+                }
                 "nocgi" => s.nocgi = true,
                 "cwd" => s.cwd = Some(rest.to_string()),
                 "" => {}
@@ -262,4 +268,63 @@ fn cgi_matches_php_cgi() {
         fixtures.len(),
         failures.join("\n")
     );
+}
+
+/// Uploaded files live in `upload_tmp_dir` until the request ends: the ones
+/// the script did not move away are deleted then (php's
+/// `destroy_uploaded_files_hash`), under php-cgi and `rhp --cgi` alike.
+#[test]
+fn uploads_are_deleted_after_the_request() {
+    let base = std::env::temp_dir().join(format!("rhp-cgi-uploads-{}", std::process::id()));
+    let tmp = base.join("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let script = base.join("upload.php");
+    std::fs::write(
+        &script,
+        "<?php\nvar_dump(move_uploaded_file($_FILES['a']['tmp_name'], __DIR__ . '/tmp/kept.txt'));\n\
+         var_dump(count(glob(__DIR__ . '/tmp/php*')));\n",
+    )
+    .unwrap();
+    let body = "--XX\r\nContent-Disposition: form-data; name=\"a\"; filename=\"a.txt\"\r\n\r\nA\r\n\
+                --XX\r\nContent-Disposition: form-data; name=\"b\"; filename=\"b.txt\"\r\n\r\nB\r\n--XX--\r\n";
+    let s = Spec {
+        env: vec![
+            ("REDIRECT_STATUS".into(), "1".into()),
+            ("REQUEST_METHOD".into(), "POST".into()),
+            (
+                "SCRIPT_FILENAME".into(),
+                script.to_string_lossy().into_owned(),
+            ),
+            (
+                "CONTENT_TYPE".into(),
+                "multipart/form-data; boundary=XX".into(),
+            ),
+            ("CONTENT_LENGTH".into(), body.len().to_string()),
+        ],
+        ini: vec![format!("upload_tmp_dir={}", tmp.display())],
+        stdin: body.as_bytes().to_vec(),
+        ..Spec::default()
+    };
+    let mut engines: Vec<(PathBuf, Vec<&str>)> =
+        vec![(PathBuf::from(env!("CARGO_BIN_EXE_rhp")), vec!["--cgi"])];
+    if let Some(php) = php_cgi() {
+        engines.push((php, vec![]));
+    }
+    for (bin, pre) in &engines {
+        let r = run(bin, pre, &s);
+        let out = String::from_utf8_lossy(&r.stdout).into_owned();
+        assert!(
+            out.ends_with("bool(true)\nint(1)\n"),
+            "{}: {out}",
+            bin.display()
+        );
+        let mut left: Vec<String> = std::fs::read_dir(&tmp)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["kept.txt"], "{}", bin.display());
+        std::fs::remove_file(tmp.join("kept.txt")).unwrap();
+    }
+    std::fs::remove_dir_all(&base).unwrap();
 }

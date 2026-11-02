@@ -1,0 +1,2 @@
+env REQUEST_METHOD=PUT
+stdin a=1

@@ -23,9 +23,7 @@ use rhp_vm::{IncludeError, Vm};
 
 pub mod cgi;
 
-pub use rhp_builtins::sapi::{
-    set_multipart_handler, MultipartHandler, RequestInfo, Response, Sapi,
-};
+pub use rhp_builtins::sapi::{RequestInfo, Response, Sapi};
 
 /// What to run.
 pub enum Script {

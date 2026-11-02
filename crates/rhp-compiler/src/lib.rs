@@ -1259,6 +1259,7 @@ class OverflowException extends RuntimeException {}
 class UnderflowException extends RuntimeException {}
 class UnexpectedValueException extends RuntimeException {}
 class JsonException extends Exception {}
+class RequestParseBodyException extends Exception {}
 class DateError extends Error {}
 class DateObjectError extends DateError {}
 class DateRangeError extends DateError {}

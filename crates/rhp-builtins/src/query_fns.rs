@@ -289,6 +289,17 @@ pub(crate) fn register_variable_ex(
     val: Vec<u8>,
     cookie: bool,
 ) {
+    register_variable_value(root, var_name, Value::str(val), cookie)
+}
+
+/// [`register_variable_ex`] with any value (the upload parser registers
+/// `$_FILES[..][error]` / `[size]` as ints).
+pub(crate) fn register_variable_value(
+    root: &mut PhpArray,
+    var_name: &[u8],
+    value: Value,
+    cookie: bool,
+) {
     // C string: the name stops at its first NUL.
     let var_name = match var_name.iter().position(|&b| b == 0) {
         Some(p) => &var_name[..p],
@@ -314,7 +325,6 @@ pub(crate) fn register_variable_ex(
     if var_len == 0 {
         return;
     }
-    let value = Value::str(val);
     let Some(mut ip) = bracket else {
         // plain var
         let index = &var[..var_len];

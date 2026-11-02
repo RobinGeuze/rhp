@@ -267,22 +267,12 @@ pub struct RequestInfo {
     pub proto_num: i64,
 }
 
-/// The `multipart/form-data` body parser (php's `rfc1867_post_handler`):
-/// given the body and the full Content-Type value, fill `$_POST` and
-/// `$_FILES`. Unset: multipart bodies leave both empty (php with
-/// `enable_post_data_reading=0`).
-pub type MultipartHandler = fn(&mut dyn Host, &[u8], &[u8], &mut PhpArray, &mut PhpArray);
-
 thread_local! {
     /// The running engine's SAPI name (`php_sapi_name()`).
     static SAPI_NAME: RefCell<String> = RefCell::new(String::from("cli"));
     /// The SAPI's ini defaults (`sapi_module.ini_defaults`), by directive.
     static SAPI_INI: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
 }
-
-/// The multipart parser, when one is installed (process-wide: every
-/// worker thread's requests use it).
-static MULTIPART: std::sync::RwLock<Option<MultipartHandler>> = std::sync::RwLock::new(None);
 
 /// Install the running engine's SAPI name and ini defaults (per thread: one
 /// engine per thread at a time). [`crate::reset_request_state`] goes back
@@ -296,19 +286,6 @@ pub fn set_sapi(name: &str, ini_defaults: &[(&str, &str)]) {
             m.insert((*k).to_string(), v.as_bytes().to_vec());
         }
     });
-}
-
-/// Install the `multipart/form-data` body parser (see [`MultipartHandler`]),
-/// for every thread.
-pub fn set_multipart_handler(h: Option<MultipartHandler>) {
-    if let Ok(mut m) = MULTIPART.write() {
-        *m = h;
-    }
-}
-
-/// The installed multipart parser.
-pub fn multipart_handler() -> Option<MultipartHandler> {
-    MULTIPART.read().ok().and_then(|m| *m)
 }
 
 /// The running engine's SAPI name.

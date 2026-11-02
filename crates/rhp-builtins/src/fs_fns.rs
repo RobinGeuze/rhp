@@ -1601,7 +1601,7 @@ fn fn_realpath(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .unwrap_or(Value::Bool(false)))
 }
 
-fn open_temp(dir: &[u8], pfx: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn open_temp(dir: &[u8], pfx: &[u8]) -> Option<Vec<u8>> {
     if dir.is_empty() {
         return None;
     }

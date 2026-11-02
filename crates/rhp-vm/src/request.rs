@@ -7,6 +7,7 @@
 //! php-cli's header semantics: nothing stored, `headers_sent()` true after
 //! the first output byte.
 
+use rhp_builtins::rfc1867::{self, BodyState, Diag};
 use rhp_builtins::sapi::{self, RequestInfo, Response, Sapi, TreatData};
 use rhp_builtins::{self as builtins, Host};
 use rhp_values::{ArrayKey, PhpArray, Value};
@@ -30,6 +31,9 @@ pub(crate) struct SapiState {
     pub(crate) startup: bool,
     /// The body exceeded `post_max_size`: `$_POST` stays empty.
     pub(crate) post_too_big: bool,
+    /// What has been read of the request body, and this request's uploads
+    /// (deleted when the request ends).
+    pub(crate) body: BodyState,
 }
 
 impl Vm {
@@ -88,14 +92,20 @@ impl Vm {
     /// in Unknown on line 0, as php's docref reports it with no function
     /// running).
     fn startup_warning(&mut self, msg: &str) {
+        self.startup_diag(2, &format!("PHP Request Startup: {msg}"));
+    }
+
+    /// A diagnostic raised during request startup (in Unknown on line 0).
+    fn startup_diag(&mut self, level: i64, msg: &str) {
         self.sapi.startup = true;
-        self.raise_error(2, &format!("PHP Request Startup: {msg}"));
+        self.raise_error(level, msg);
         self.sapi.startup = false;
     }
 
-    /// `sapi_read_standard_form_data`'s size check: a POST body (any type
-    /// but multipart, whose parser checks it itself) over `post_max_size`
-    /// is not parsed into `$_POST` (`php://input` still reads it).
+    /// `sapi_activate`'s `sapi_read_post_data`: a POST body of any type but
+    /// multipart (whose parser reads it later, itself) is buffered by
+    /// `sapi_read_standard_form_data`, unless it is over `post_max_size`:
+    /// then it is not parsed into `$_POST` (`php://input` still reads it).
     fn check_post_size(&mut self) {
         let Some(req) = self.sapi.request.as_ref() else {
             return;
@@ -104,7 +114,7 @@ impl Vm {
             return;
         };
         if req.method.as_deref() != Some(b"POST")
-            || (ct.len() >= 19 && ct[..19].eq_ignore_ascii_case(b"multipart/form-data"))
+            || rfc1867::media_type(ct) == b"multipart/form-data"
         {
             return;
         }
@@ -121,6 +131,10 @@ impl Vm {
             self.startup_warning(&format!(
                 "POST Content-Length of {len} bytes exceeds the limit of {max} bytes"
             ));
+            return;
+        }
+        if let Some(req) = self.sapi.request.as_ref() {
+            self.sapi.body.buffer_rest(&req.body);
         }
     }
 
@@ -131,6 +145,8 @@ impl Vm {
         if let Some(s) = self.sapi.sapi.as_mut() {
             s.flush();
         }
+        // sapi_deactivate_destroy: uploads not moved away are deleted.
+        self.sapi.body.cleanup();
     }
 
     /// Write bytes through the output layer (output buffers, then the
@@ -247,12 +263,13 @@ impl Vm {
         );
     }
 
-    /// The request body (`php://input`): empty without a request.
+    /// The request body (`php://input`): what the POST readers left of it
+    /// (empty without a request).
     pub(crate) fn request_body(&self) -> Vec<u8> {
         self.sapi
             .request
             .as_ref()
-            .map(|r| r.body.clone())
+            .map(|r| self.sapi.body.input(&r.body))
             .unwrap_or_default()
     }
 
@@ -384,7 +401,7 @@ impl Vm {
     }
 
     /// `sapi_read_post_data` + the post handlers: urlencoded bodies fill
-    /// `$_POST`; multipart goes to the installed handler (none: empty).
+    /// `$_POST`, multipart ones `$_POST` and `$_FILES` (`rfc1867`).
     fn read_post(&mut self, req: &RequestInfo, max_vars: i64, files: &mut PhpArray) -> PhpArray {
         let reading = crate::ini_bool(
             &self
@@ -411,8 +428,25 @@ impl Vm {
                 post = a;
             }
             b"multipart/form-data" => {
-                if let Some(h) = sapi::multipart_handler() {
-                    h(self, &req.body, ct, &mut post, files);
+                let lim = rfc1867::Limits::new(self, &rfc1867::BodyOptions::default());
+                let len = req.content_length.unwrap_or(req.body.len() as i64);
+                let mut out = rfc1867::parse(
+                    self.sapi.body.remaining(&req.body),
+                    &rfc1867::content_type_dup(ct),
+                    len,
+                    &lim,
+                    &mut post,
+                    files,
+                );
+                self.sapi.body.apply(&mut out);
+                for d in out.diags {
+                    match d {
+                        Diag::Emit(m) => self.startup_warning(&m),
+                        Diag::Notice(m) => {
+                            self.startup_diag(8, &format!("PHP Request Startup: {m}"))
+                        }
+                        Diag::Sapi(m) => self.startup_diag(2, &m),
+                    }
                 }
             }
             _ => {}

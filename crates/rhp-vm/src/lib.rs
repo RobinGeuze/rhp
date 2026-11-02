@@ -455,6 +455,14 @@ impl Host for Vm {
             .unwrap_or_default()
     }
 
+    fn request_info(&self) -> Option<&builtins::sapi::RequestInfo> {
+        self.sapi.request.as_ref()
+    }
+
+    fn body_state(&mut self) -> Option<&mut builtins::rfc1867::BodyState> {
+        Some(&mut self.sapi.body)
+    }
+
     fn get_const(&self, name: &[u8]) -> Option<Value> {
         self.constants.get(name).cloned()
     }

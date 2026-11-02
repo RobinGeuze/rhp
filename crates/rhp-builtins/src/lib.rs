@@ -82,6 +82,7 @@ mod preg_fns;
 mod printf_fns;
 mod proc_fns;
 mod query_fns;
+pub mod rfc1867;
 mod runtime_fns;
 pub mod sapi;
 mod serialize_fns;
@@ -459,6 +460,17 @@ pub trait Host {
     /// The request headers (`getallheaders()`), in order. Default: none.
     fn request_headers(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
         Vec::new()
+    }
+
+    /// The request a SAPI handed the engine (`SG(request_info)`), if any.
+    fn request_info(&self) -> Option<&sapi::RequestInfo> {
+        None
+    }
+
+    /// The request body's read state and uploads (`request_parse_body`,
+    /// `is_uploaded_file`, `move_uploaded_file`). Default: none.
+    fn body_state(&mut self) -> Option<&mut rfc1867::BodyState> {
+        None
     }
 
     /// The [`ClassKind`] of a class id (class / interface / trait / enum), used by
@@ -1238,6 +1250,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("query_fns", Box::new(query_fns::register)),
         ("runtime_fns", Box::new(runtime_fns::register)),
         ("sapi", Box::new(sapi::register)),
+        ("rfc1867", Box::new(rfc1867::register)),
         ("opcache_fns", Box::new(opcache_fns::register)),
         ("ini_parse", Box::new(ini_parse::register)),
         ("arraycmp_fns", Box::new(arraycmp_fns::register)),

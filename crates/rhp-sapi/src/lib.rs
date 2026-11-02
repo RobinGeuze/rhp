@@ -164,7 +164,7 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     let program = match compile_with_source(parsed.program(), &source, &file) {
         Ok(p) => p,
         Err(t) => {
-            let code = fatal(t);
+            let code = fatal(&mut vm, t);
             vm.finish_request();
             return Outcome::Exit(code);
         }
@@ -185,30 +185,26 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     install_includer(&mut vm);
     let code = match vm.run_main(&program) {
         Ok(code) => code,
-        Err(t) => fatal(t),
+        Err(t) => fatal(&mut vm, t),
     };
     vm.finish_request();
     Outcome::Exit(code)
 }
 
 /// Report an uncaught throwable (or honour `exit`); returns the exit code.
-fn fatal(t: Thrown) -> i32 {
-    match t {
-        Thrown::Exit(code) => code,
+/// The report goes to the SAPI's error stream, not the process's stderr.
+fn fatal(vm: &mut Vm, t: Thrown) -> i32 {
+    let msg = match t {
+        Thrown::Exit(code) => return code,
         Thrown::Error { class, message } => {
-            eprintln!("PHP Fatal error:  Uncaught {class}: {message}");
-            255
+            format!("PHP Fatal error:  Uncaught {class}: {message}")
         }
-        Thrown::Object(_) => {
-            // Uncaught user exception (details rendered to stderr only).
-            eprintln!("PHP Fatal error:  Uncaught exception");
-            255
-        }
-        t @ Thrown::Unsupported { .. } => {
-            eprintln!("{}", t.unsupported_message().unwrap_or_default());
-            255
-        }
-    }
+        // Uncaught user exception (details rendered to stderr only).
+        Thrown::Object(_) => "PHP Fatal error:  Uncaught exception".to_string(),
+        t @ Thrown::Unsupported { .. } => t.unsupported_message().unwrap_or_default(),
+    };
+    vm.write_error_stream(format!("{msg}\n").as_bytes());
+    255
 }
 
 /// The CLI front end's run: `rhp [options] script.php args...` semantics.

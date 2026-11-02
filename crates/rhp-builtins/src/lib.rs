@@ -1063,6 +1063,11 @@ pub fn c_atol(s: &[u8]) -> i64 {
     runtime_fns::c_atol(s)
 }
 
+/// `zend_ini_parse_quantity`: `8M` → 8388608.
+pub fn ini_parse_quantity(s: &[u8]) -> i64 {
+    runtime_fns::ini_parse_quantity(s)
+}
+
 /// A startup ini setting (`php -d name=value`): any registered directive,
 /// applied to the engine state it drives (precision, ...). Unknown names are
 /// ignored. Call after [`reset_request_state`].
@@ -1262,7 +1267,9 @@ pub fn lookup(name: &str) -> Option<&'static Builtin> {
 /// [`lookup`] for a name that is already lowercase (no allocation).
 pub fn lookup_lc(name_lc: &str) -> Option<&'static Builtin> {
     let b = registry().get(name_lc)?;
-    if matches!(name_lc.as_bytes().first(), Some(b'a' | b'g')) && sapi::builtin_hidden(name_lc) {
+    if matches!(name_lc.as_bytes().first(), Some(b'a' | b'c' | b'g'))
+        && sapi::builtin_hidden(name_lc)
+    {
         return None;
     }
     Some(b)
@@ -1449,6 +1456,9 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("STDIN", Value::Int(0)),
         ("STDOUT", Value::Int(1)),
         ("STDERR", Value::Int(2)),
+        ("CONNECTION_ABORTED", Value::Int(1)),
+        ("CONNECTION_NORMAL", Value::Int(0)),
+        ("CONNECTION_TIMEOUT", Value::Int(2)),
         ("STR_PAD_RIGHT", Value::Int(1)),
         ("STR_PAD_LEFT", Value::Int(0)),
         ("STR_PAD_BOTH", Value::Int(2)),

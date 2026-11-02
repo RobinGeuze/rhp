@@ -241,7 +241,12 @@ fn is_forbidden(mangled: &[u8], pre: &[u8]) -> bool {
         || (mangled.starts_with(b"__Secure-") && !pre.starts_with(b"__Secure-"))
 }
 
-const MAX_NESTING: usize = 64;
+/// `max_input_nesting_level` (default 64).
+fn max_nesting() -> i64 {
+    crate::runtime_fns::ini_value(b"max_input_nesting_level")
+        .flatten()
+        .map_or(64, |v| crate::runtime_fns::c_atol(&v))
+}
 
 /// Walk to `path` inside `root`, creating/replacing arrays as php does, and
 /// return the target array. Each path element is `Some(key)` or `None` (`[]`
@@ -325,13 +330,14 @@ pub(crate) fn register_variable_ex(
 
     // Array form: collect path segments.
     let mut index: Option<Vec<u8>> = Some(var[..var_len].to_vec());
+    let top = sym_key(&var[..var_len]);
+    let max_nest = max_nesting();
     let mut cur: &mut PhpArray = root;
-    let mut nest = 0usize;
+    let mut nest = 0i64;
     loop {
         nest += 1;
-        if nest > MAX_NESTING {
-            // too deep: php drops the top-level variable entirely
-            return;
+        if nest > max_nest {
+            break;
         }
         // var[ip] == '['
         let mut p = ip + 1;
@@ -407,6 +413,8 @@ pub(crate) fn register_variable_ex(
         }
         return;
     }
+    // Too deeply nested: php drops the whole top-level variable.
+    root.remove(&top);
 }
 
 fn fn_parse_str(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -518,6 +526,35 @@ pub fn treat_data(
             TreatData::Form => url_decode(name),
         };
         register_variable_ex(&mut out, &name, val, kind == TreatData::Cookie);
+    }
+    (out, false)
+}
+
+/// `php_std_post_handler` (`add_post_vars`): an urlencoded request body
+/// into `$_POST`. Unlike [`treat_data`] it splits on `&` only (never
+/// `arg_separator.input`), counts empty pairs, and checks
+/// `max_input_vars` after registering (so one variable more is kept).
+/// Returns the array and whether the limit was exceeded.
+pub fn post_form_vars(body: &[u8], max_vars: i64) -> (PhpArray, bool) {
+    let mut out = PhpArray::new();
+    let mut ptr = 0;
+    let mut count = 0i64;
+    while ptr < body.len() {
+        let vsep = body[ptr..]
+            .iter()
+            .position(|&b| b == b'&')
+            .map_or(body.len(), |p| ptr + p);
+        let pair = &body[ptr..vsep];
+        let (name, val) = match pair.iter().position(|&b| b == b'=') {
+            Some(k) => (url_decode(&pair[..k]), url_decode(&pair[k + 1..])),
+            None => (url_decode(pair), Vec::new()),
+        };
+        register_variable_ex(&mut out, &name, val, false);
+        ptr = if vsep == body.len() { vsep } else { vsep + 1 };
+        count += 1;
+        if count > max_vars {
+            return (out, true);
+        }
     }
     (out, false)
 }

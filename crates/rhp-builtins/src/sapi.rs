@@ -27,7 +27,7 @@ use rhp_values::{conv, ArrayKey, PhpArray, Thrown, Value};
 use crate::argparse::{bool_param, int_param, str_or_null_param, str_param};
 use crate::{Builtin, Host};
 
-pub use crate::query_fns::{treat_data, url_decode, TreatData};
+pub use crate::query_fns::{post_form_vars, treat_data, url_decode, TreatData};
 
 /// What a server embedding the engine provides for one request (php's
 /// `sapi_module_struct`). Every method but [`Sapi::name`] and
@@ -248,6 +248,9 @@ pub struct RequestInfo {
     pub content_type: Option<Vec<u8>>,
     /// The request body (`php://input`, `$_POST`), already read.
     pub body: Vec<u8>,
+    /// The declared `Content-Length` (`post_max_size` is checked against
+    /// it); `None`: the body's length.
+    pub content_length: Option<i64>,
     /// The request start time (`REQUEST_TIME_FLOAT`), seconds since the epoch.
     pub request_time: f64,
     /// Request headers for `getallheaders()` / `apache_request_headers()`.
@@ -330,13 +333,16 @@ pub(crate) fn reset_state() {
 /// Builtins that exist only under some SAPIs (php registers them as SAPI
 /// `additional_functions`): hidden from lookup elsewhere.
 pub fn builtin_hidden(name_lc: &str) -> bool {
-    matches!(
-        name_lc,
+    match name_lc {
         "getallheaders"
-            | "apache_request_headers"
-            | "apache_response_headers"
-            | "apache_child_terminate"
-    ) && !is_cgi()
+        | "apache_request_headers"
+        | "apache_response_headers"
+        | "apache_child_terminate" => !is_cgi(),
+        "cli_set_process_title" | "cli_get_process_title" => {
+            SAPI_NAME.with(|n| n.borrow().as_str() != "cli")
+        }
+        _ => false,
+    }
 }
 
 /// php's `escape_html` for `html_errors`: `htmlspecialchars` with
@@ -902,6 +908,32 @@ fn fn_apache_request_headers(host: &mut dyn Host, _args: &[Value]) -> Result<Val
     Ok(Value::Array(a))
 }
 
+/// `ignore_user_abort(?bool $enable = null)`: the old setting; the engine
+/// never sees the client go away, so the setting has no other effect.
+fn fn_ignore_user_abort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let old = crate::runtime_fns::ini_value(b"ignore_user_abort")
+        .flatten()
+        .map(|v| i64::from(crate::c_atol(&v) != 0 || v.eq_ignore_ascii_case(b"on")))
+        .unwrap_or(0);
+    match args.first().map(deref) {
+        None | Some(Value::Null) => {}
+        Some(_) => {
+            let on = bool_param(host, args, 0, "ignore_user_abort", "enable", false)?;
+            crate::runtime_fns::ini_store(
+                b"ignore_user_abort",
+                if on { b"1".to_vec() } else { b"0".to_vec() },
+            );
+        }
+    }
+    Ok(Value::Int(old))
+}
+
+/// `connection_status()` / `connection_aborted()`: always CONNECTION_NORMAL
+/// (no abort detection yet).
+fn fn_connection_status(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(0))
+}
+
 /// php-cgi's `apache_child_terminate`: only meaningful under FastCGI.
 fn fn_apache_child_terminate(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Null)
@@ -998,4 +1030,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put("apache_request_headers", fn_apache_request_headers, 0, 0);
     put("apache_response_headers", fn_apache_response_headers, 0, 0);
     put("apache_child_terminate", fn_apache_child_terminate, 0, 0);
+    put("ignore_user_abort", fn_ignore_user_abort, 0, 1);
+    put("connection_status", fn_connection_status, 0, 0);
+    put("connection_aborted", fn_connection_status, 0, 0);
 }

@@ -25,6 +25,11 @@ pub(crate) struct SapiState {
     /// The message being displayed came from a builtin's
     /// `php_error_docref` (HTML-escaped under html_errors).
     pub(crate) docref_msg: bool,
+    /// Request startup is running (php's `during_request_startup`):
+    /// diagnostics are reported in "Unknown" on line 0.
+    pub(crate) startup: bool,
+    /// The body exceeded `post_max_size`: `$_POST` stays empty.
+    pub(crate) post_too_big: bool,
 }
 
 impl Vm {
@@ -63,6 +68,8 @@ impl Vm {
     /// php_request_startup's header step: `X-Powered-By` when expose_php.
     /// Call after ini settings are applied, before running the script.
     pub fn start_request(&mut self) {
+        // sapi_activate reads the POST body before the headers are set up.
+        self.check_post_size();
         let expose = self.ini_get(b"expose_php").unwrap_or_default();
         if crate::ini_bool(&expose) && !self.sapi.response.sent {
             let line = format!("X-Powered-By: PHP/{}", builtins::PHP_VERSION);
@@ -74,6 +81,46 @@ impl Vm {
             let r = &mut self.sapi.response;
             r.no_headers = true;
             r.sent = true;
+        }
+    }
+
+    /// A warning raised during request startup ("PHP Request Startup: …"
+    /// in Unknown on line 0, as php's docref reports it with no function
+    /// running).
+    fn startup_warning(&mut self, msg: &str) {
+        self.sapi.startup = true;
+        self.raise_error(2, &format!("PHP Request Startup: {msg}"));
+        self.sapi.startup = false;
+    }
+
+    /// `sapi_read_standard_form_data`'s size check: a POST body (any type
+    /// but multipart, whose parser checks it itself) over `post_max_size`
+    /// is not parsed into `$_POST` (`php://input` still reads it).
+    fn check_post_size(&mut self) {
+        let Some(req) = self.sapi.request.as_ref() else {
+            return;
+        };
+        let Some(ct) = req.content_type.as_deref() else {
+            return;
+        };
+        if req.method.as_deref() != Some(b"POST")
+            || (ct.len() >= 19 && ct[..19].eq_ignore_ascii_case(b"multipart/form-data"))
+        {
+            return;
+        }
+        let len = req.content_length.unwrap_or(req.body.len() as i64);
+        let reading = self
+            .ini_get(b"enable_post_data_reading")
+            .unwrap_or_default();
+        if !crate::ini_bool(&reading) {
+            return;
+        }
+        let max = builtins::ini_parse_quantity(&self.ini_get(b"post_max_size").unwrap_or_default());
+        if max > 0 && len > max {
+            self.sapi.post_too_big = true;
+            self.startup_warning(&format!(
+                "POST Content-Length of {len} bytes exceeds the limit of {max} bytes"
+            ));
         }
     }
 
@@ -101,6 +148,12 @@ impl Vm {
     /// before the script runs, e.g. php-cgi's 404 "No input file").
     pub fn response_mut(&mut self) -> &mut Response {
         &mut self.sapi.response
+    }
+
+    /// Write to the request's error stream (the SAPI's `write_stderr`; the
+    /// process's stderr without one).
+    pub fn write_error_stream(&mut self, data: &[u8]) {
+        self.write_stderr(data);
     }
 
     /// The installed SAPI (to recover its state after the request).
@@ -209,6 +262,22 @@ impl Vm {
         let Some(req) = self.sapi.request.take() else {
             return;
         };
+        self.sapi.startup = true;
+        self.seed_request_superglobals_from(&req);
+        self.sapi.startup = false;
+        self.sapi.request = Some(req);
+    }
+
+    /// "Input variables exceeded N" for one request input.
+    fn input_vars_exceeded(&mut self, exceeded: bool, max_vars: i64) {
+        if exceeded {
+            self.startup_warning(&format!(
+                "Input variables exceeded {max_vars}. To increase the limit change max_input_vars in php.ini."
+            ));
+        }
+    }
+
+    fn seed_request_superglobals_from(&mut self, req: &RequestInfo) {
         let ini = |vm: &Self, n: &[u8]| vm.ini_get(n).unwrap_or_default();
         let order = ini(self, b"variables_order");
         let has = |c: u8| order.iter().any(|b| b.eq_ignore_ascii_case(&c));
@@ -216,29 +285,34 @@ impl Vm {
         let max_vars = builtins::c_atol(&ini(self, b"max_input_vars"));
 
         let get = if has(b'G') {
-            parse(
+            let (a, over) = parse(
                 TreatData::Form,
                 req.query_string.as_deref(),
                 &seps,
                 max_vars,
-            )
+            );
+            self.input_vars_exceeded(over, max_vars);
+            a
         } else {
             PhpArray::new()
         };
         let mut files = PhpArray::new();
+        // sapi_activate reads the body only for a method of exactly "POST";
+        // php_auto_globals_create_post skips it once output (a startup
+        // warning) sent the headers.
         let post = if has(b'P')
+            && !self.sapi.post_too_big
             && !self.sapi.response.sent
-            && req
-                .method
-                .as_deref()
-                .is_some_and(|m| m.eq_ignore_ascii_case(b"POST"))
+            && req.method.as_deref() == Some(b"POST")
         {
-            self.read_post(&req, &seps, max_vars, &mut files)
+            self.read_post(req, max_vars, &mut files)
         } else {
             PhpArray::new()
         };
         let cookie = if has(b'C') {
-            parse(TreatData::Cookie, req.cookie.as_deref(), &seps, max_vars)
+            let (a, over) = parse(TreatData::Cookie, req.cookie.as_deref(), &seps, max_vars);
+            self.input_vars_exceeded(over, max_vars);
+            a
         } else {
             PhpArray::new()
         };
@@ -302,7 +376,6 @@ impl Vm {
             set(self, b"argv", Value::Array(argv_array(argv)));
             set(self, b"argc", Value::Int(argv.len() as i64));
         }
-        self.sapi.request = Some(req);
     }
 
     /// A directive's value, `None` when it is registered with a null value.
@@ -312,13 +385,7 @@ impl Vm {
 
     /// `sapi_read_post_data` + the post handlers: urlencoded bodies fill
     /// `$_POST`; multipart goes to the installed handler (none: empty).
-    fn read_post(
-        &mut self,
-        req: &RequestInfo,
-        seps: &[u8],
-        max_vars: i64,
-        files: &mut PhpArray,
-    ) -> PhpArray {
+    fn read_post(&mut self, req: &RequestInfo, max_vars: i64, files: &mut PhpArray) -> PhpArray {
         let reading = crate::ini_bool(
             &self
                 .ini_get(b"enable_post_data_reading")
@@ -339,7 +406,9 @@ impl Vm {
         let mut post = PhpArray::new();
         match &kind[..] {
             b"application/x-www-form-urlencoded" => {
-                post = parse(TreatData::Form, Some(&req.body), seps, max_vars);
+                let (a, over) = sapi::post_form_vars(&req.body, max_vars);
+                self.input_vars_exceeded(over, max_vars);
+                post = a;
             }
             b"multipart/form-data" => {
                 if let Some(h) = sapi::multipart_handler() {
@@ -352,10 +421,10 @@ impl Vm {
     }
 }
 
-fn parse(kind: TreatData, data: Option<&[u8]>, seps: &[u8], max_vars: i64) -> PhpArray {
+fn parse(kind: TreatData, data: Option<&[u8]>, seps: &[u8], max_vars: i64) -> (PhpArray, bool) {
     match data {
-        Some(d) if !d.is_empty() => sapi::treat_data(kind, d, seps, max_vars).0,
-        _ => PhpArray::new(),
+        Some(d) if !d.is_empty() => sapi::treat_data(kind, d, seps, max_vars),
+        _ => (PhpArray::new(), false),
     }
 }
 

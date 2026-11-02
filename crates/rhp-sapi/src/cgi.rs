@@ -203,6 +203,10 @@ pub struct CgiRequest {
     pub request_uri: Option<Vec<u8>>,
     /// 404 when the path did not resolve to a file.
     pub response_code: i64,
+    /// SCRIPT_FILENAME or PATH_TRANSLATED was set: only then does php
+    /// take the method, query string and content type/length from the
+    /// environment.
+    pub from_env: bool,
 }
 
 fn is_regular_file(p: &[u8]) -> bool {
@@ -252,6 +256,7 @@ pub fn init_request_info(env: &mut CgiEnv, fix_pathinfo: bool, discard_path: boo
     let Some(_) = script_path_translated else {
         return req;
     };
+    req.from_env = true;
     let mut env_path_info = env.get("PATH_INFO");
     let mut env_script_name = env.get("SCRIPT_NAME");
     if fix_pathinfo {
@@ -414,7 +419,184 @@ fn usage() -> String {
     "Usage: php-cgi [-q] [-h] [-s] [-v] [-i] [-f <file>]\n       php-cgi <file> [args...]\n  -a               Run interactively\n  -b <address:port>|<port> Bind Path for external FASTCGI Server mode\n  -C               Do not chdir to the script's directory\n  -c <path>|<file> Look for php.ini file in this directory\n  -n               No php.ini file will be used\n  -d foo[=bar]     Define INI entry foo with value 'bar'\n  -e               Generate extended information for debugger/profiler\n  -f <file>        Parse <file>.  Implies `-q'\n  -h               This help\n  -i               PHP information\n  -l               Syntax check only (lint)\n  -m               Show compiled in modules\n  -q               Quiet-mode.  Suppress HTTP Header output.\n  -s               Display colour syntax highlighted source.\n  -v               Version number\n  -w               Display source with stripped comments and whitespace.\n  -T <count>       Measure execution time of script repeated <count> times.\n".to_string()
 }
 
-/// php-cgi's command line, as `php_getopt` reads it.
+/// php-cgi's option table (`OPTIONS` in cgi_main.c): (char, needs a
+/// value, long name).
+const OPTIONS: &[(u8, bool, &str)] = &[
+    (b'a', false, "interactive"),
+    (b'b', true, "bindpath"),
+    (b'C', false, "no-chdir"),
+    (b'c', true, "php-ini"),
+    (b'd', true, "define"),
+    (b'e', false, "profile-info"),
+    (b'f', true, "file"),
+    (b'h', false, "help"),
+    (b'i', false, "info"),
+    (b'l', false, "syntax-check"),
+    (b'm', false, "modules"),
+    (b'n', false, "no-php-ini"),
+    (b'q', false, "no-header"),
+    (b's', false, "syntax-highlight"),
+    (b's', false, "syntax-highlighting"),
+    (b'w', false, "strip"),
+    (b'?', false, "usage"),
+    (b'v', false, "version"),
+    (b'T', true, "timing"),
+];
+
+/// One `php_getopt` result.
+enum Opt {
+    /// No more options (`php_optind` is the first operand).
+    End,
+    /// An invalid option (reported on stderr when asked to).
+    Invalid,
+    /// An option and its value.
+    Char(u8, Option<String>),
+}
+
+/// A port of php's `php_getopt` (main/getopt.c): bundled short options
+/// (`-qC`), `-dfoo` / `-d foo` / `-d=foo` values, `--long[=value]` names,
+/// and its error messages.
+struct PhpGetopt<'a> {
+    args: &'a [String],
+    optind: usize,
+    optchr: usize,
+    dash: bool,
+}
+
+impl<'a> PhpGetopt<'a> {
+    fn new(args: &'a [String]) -> Self {
+        PhpGetopt {
+            args,
+            optind: 1,
+            optchr: 0,
+            dash: false,
+        }
+    }
+
+    /// Byte `i` of argument `ind`, 0 past its end (a C string).
+    fn at(&self, ind: usize, i: usize) -> u8 {
+        self.args
+            .get(ind)
+            .and_then(|a| a.as_bytes().get(i).copied())
+            .unwrap_or(0)
+    }
+
+    fn error(&self, ind: usize, chr: usize, what: &str, show: bool) -> Opt {
+        if show {
+            let c = self.at(ind, chr) as char;
+            let msg = match what {
+                "colon" => ": in flags".to_string(),
+                "nf" => format!("option not found {c}"),
+                _ => format!("no argument for option {c}"),
+            };
+            eprintln!("Error in argument {ind}, char {}: {msg}", chr + 1);
+        }
+        Opt::Invalid
+    }
+
+    fn next(&mut self, show: bool) -> Opt {
+        let argc = self.args.len();
+        if self.optind >= argc {
+            return Opt::End;
+        }
+        let ind = self.optind;
+        if !self.dash && (self.at(ind, 0) != b'-' || self.at(ind, 1) == 0) {
+            return Opt::End;
+        }
+        let arg = self.args[ind].as_bytes();
+        let mut idx: Option<usize> = None;
+        let mut arg_start;
+        if arg.len() >= 2 && arg[0] == b'-' && arg[1] == b'-' {
+            if arg.len() == 2 {
+                self.optind += 1;
+                return Opt::End;
+            }
+            arg_start = 2;
+            let mut arg_end = arg.len() - 1;
+            match arg[arg_start..arg_end].iter().position(|&b| b == b'=') {
+                Some(p) => {
+                    arg_end = p;
+                    arg_start += 1;
+                }
+                None => arg_end -= 1,
+            }
+            let name = &arg[2..(2 + arg_end).min(arg.len())];
+            match OPTIONS.iter().position(|o| o.2.as_bytes() == name) {
+                Some(i) => idx = Some(i),
+                None => {
+                    self.optind += 1;
+                    return self.error(self.optind - 1, self.optchr, "arg", show);
+                }
+            }
+            self.optchr = 0;
+            self.dash = false;
+            arg_start += OPTIONS[idx.unwrap_or(0)].2.len();
+        } else {
+            if !self.dash {
+                self.dash = true;
+                self.optchr = 1;
+            }
+            if self.at(ind, self.optchr) == b':' {
+                self.dash = false;
+                self.optind += 1;
+                return self.error(self.optind - 1, self.optchr, "colon", show);
+            }
+            arg_start = 1 + self.optchr;
+        }
+        let i = match idx {
+            Some(i) => i,
+            None => {
+                let c = self.at(ind, self.optchr);
+                match OPTIONS.iter().position(|o| o.0 == c) {
+                    Some(i) => i,
+                    None => {
+                        let (errind, errchr) = (ind, self.optchr);
+                        if self.at(ind, self.optchr + 1) == 0 {
+                            self.dash = false;
+                            self.optind += 1;
+                        } else {
+                            self.optchr += 1;
+                        }
+                        return self.error(errind, errchr, "nf", show);
+                    }
+                }
+            }
+        };
+        let (c, need_param, _) = OPTIONS[i];
+        if need_param {
+            self.dash = false;
+            if self.at(ind, arg_start) == 0 {
+                self.optind += 1;
+                if self.optind == argc {
+                    return self.error(self.optind - 1, self.optchr, "arg", show);
+                }
+                let v = self.args[self.optind].clone();
+                self.optind += 1;
+                return Opt::Char(c, Some(v));
+            }
+            if self.at(ind, arg_start) == b'=' {
+                arg_start += 1;
+            }
+            let v = String::from_utf8_lossy(&arg[arg_start.min(arg.len())..]).into_owned();
+            self.optind += 1;
+            return Opt::Char(c, Some(v));
+        }
+        let long = arg.len() >= 2 && arg[0] == b'-' && arg[1] == b'-';
+        if arg_start >= 2 && !long {
+            if self.at(ind, self.optchr + 1) == 0 {
+                self.dash = false;
+                self.optind += 1;
+            } else {
+                self.optchr += 1;
+            }
+        } else {
+            self.optind += 1;
+        }
+        Opt::Char(c, None)
+    }
+}
+
+/// php-cgi's command line after its three `php_getopt` passes.
 #[derive(Default)]
 struct Opts {
     ini: Vec<(String, String)>,
@@ -425,78 +607,53 @@ struct Opts {
     optind: usize,
 }
 
-/// Options taking an argument (php-cgi's OPTIONS table).
-fn takes_arg(c: u8) -> bool {
-    matches!(c, b'b' | b'c' | b'd' | b'f' | b'T' | b'z')
-}
-
-/// `php_getopt` over php-cgi's options. `Err(code)` for -h / unknown
-/// options (usage printed).
-fn getopt(args: &[String], cgi: bool) -> Result<Opts, (String, i32)> {
+/// php-cgi's option passes: `-d` (skipped for a `-…` query string), the
+/// usage check (`-h`, invalid options; same skip), then in command-line
+/// mode `-C` / `-q` / `-f`. `Err((stdout text, exit code))` to stop.
+fn parse_options(args: &[String], cgi: bool, skip: bool) -> Result<Opts, (String, i32)> {
     let mut o = Opts::default();
-    let mut i = 1;
-    while i < args.len() {
-        let a = args[i].as_bytes();
-        if a == b"--" {
-            i += 1;
-            break;
-        }
-        if a.len() < 2 || a[0] != b'-' {
-            break;
-        }
-        let c = a[1];
-        let inline = &args[i][2..];
-        let mut arg = None;
-        if takes_arg(c) {
-            if !inline.is_empty() {
-                arg = Some(inline.to_string());
-                i += 1;
-            } else if let Some(n) = args.get(i + 1) {
-                arg = Some(n.clone());
-                i += 2;
-            } else {
-                return Err((
-                    format!(
-                        "Error in argument {}, char 2: no argument for option {}\n{}",
-                        i,
-                        c as char,
-                        usage()
-                    ),
-                    1,
-                ));
+    if !skip {
+        let mut g = PhpGetopt::new(args);
+        loop {
+            match g.next(false) {
+                Opt::End => break,
+                Opt::Char(b'd', Some(kv)) => {
+                    let (k, v) = kv.split_once('=').unwrap_or((&kv, "1"));
+                    o.ini.push((k.trim().to_string(), v.trim().to_string()));
+                }
+                _ => {}
             }
-        } else {
-            i += 1;
         }
-        match c {
-            b'd' => {
-                let kv = arg.unwrap_or_default();
-                let (k, v) = kv.split_once('=').unwrap_or((&kv, "1"));
-                o.ini.push((k.trim().to_string(), v.trim().to_string()));
-            }
-            b'c' | b'n' | b'b' | b'e' | b'T' | b'z' => {}
-            b'C' if !cgi => o.no_chdir = true,
-            b'q' if !cgi => o.no_headers = true,
-            b'f' if !cgi => {
-                o.script_file = arg;
-                o.no_headers = true;
-            }
-            b'h' | b'?' => return Err((usage(), 0)),
-            b'C' | b'q' | b'f' => {}
-            _ => {
-                return Err((
-                    format!(
-                        "Error in argument {}, char 2: option not found {}\n{}",
-                        i,
-                        c as char,
-                        usage()
-                    ),
-                    1,
-                ))
+        let mut g = PhpGetopt::new(args);
+        loop {
+            match g.next(true) {
+                Opt::End => break,
+                Opt::Invalid => return Err((usage(), 1)),
+                Opt::Char(b'h' | b'?', _) => return Err((usage(), 0)),
+                _ => {}
             }
         }
     }
-    o.optind = i;
+    let mut g = PhpGetopt::new(args);
+    if !cgi {
+        loop {
+            match g.next(false) {
+                Opt::End => break,
+                Opt::Char(b'C', _) => o.no_chdir = true,
+                Opt::Char(b'q', _) => o.no_headers = true,
+                Opt::Char(b'f', v) => {
+                    o.script_file = v;
+                    o.no_headers = true;
+                }
+                Opt::Char(c @ (b'a' | b'i' | b'l' | b'm' | b's' | b'v' | b'w'), _) => {
+                    eprintln!("rhp --cgi: option -{} is not supported", c as char);
+                    return Err((String::new(), 1));
+                }
+                _ => {}
+            }
+        }
+    }
+    o.optind = g.optind;
     Ok(o)
 }
 
@@ -564,19 +721,12 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
             }
         }
     }
-    let opts = if skip_getopt {
-        Opts {
-            optind: 1,
-            ..Default::default()
-        }
-    } else {
-        match getopt(args, cgi) {
-            Ok(o) => o,
-            Err((msg, code)) => {
-                print!("{msg}");
-                let _ = std::io::stdout().flush();
-                return code;
-            }
+    let opts = match parse_options(args, cgi, skip_getopt) {
+        Ok(o) => o,
+        Err((msg, code)) => {
+            print!("{msg}");
+            let _ = std::io::stdout().flush();
+            return code;
         }
     };
     let ini = opts.ini.clone();
@@ -598,7 +748,8 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
     let info = init_request_info(&mut env, fix_pathinfo, discard_path);
     let mut path_translated = info.path_translated.clone();
     let mut argv: Option<Vec<Vec<u8>>> = None;
-    let mut query_string = env.get("QUERY_STRING");
+    let from_env = |k: &str| if info.from_env { env.get(k) } else { None };
+    let mut query_string = from_env("QUERY_STRING");
     let mut no_headers = false;
     if !cgi {
         no_headers = opts.no_headers;
@@ -636,7 +787,14 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
         eprintln!("rhp --cgi: no script given");
         return 1;
     };
-    if let Err(e) = std::fs::File::open(&script) {
+    // php_fopen_primary_script: a directory is no script either.
+    let opened = std::fs::File::open(&script).and_then(|f| {
+        if f.metadata()?.is_dir() {
+            return Err(std::io::ErrorKind::IsADirectory.into());
+        }
+        Ok(f)
+    });
+    if let Err(e) = opened {
         let (code, msg): (i64, &[u8]) = if e.kind() == std::io::ErrorKind::PermissionDenied {
             (403, b"Access denied.\n")
         } else {
@@ -645,10 +803,14 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
         bare_response(&ini, code, msg, no_headers);
         return 255;
     }
+    // The script was opened relative to the starting directory; the chdir
+    // below must not change which file runs.
+    let script = std::path::absolute(&script)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or(script);
 
     // The request body: CONTENT_LENGTH bytes from stdin.
-    let content_length = env
-        .get("CONTENT_LENGTH")
+    let content_length = from_env("CONTENT_LENGTH")
         .map(|v| rhp_builtins::c_atol(&v))
         .unwrap_or(0);
     let mut body = Vec::new();
@@ -671,11 +833,14 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
         server,
         headers: cgi_request_headers(&env.0),
         env: env.0.clone(),
-        method: env.get("REQUEST_METHOD"),
+        method: from_env("REQUEST_METHOD"),
         query_string,
         cookie: env.get("HTTP_COOKIE"),
-        content_type: Some(env.get("CONTENT_TYPE").unwrap_or_default()),
+        content_type: info
+            .from_env
+            .then(|| env.get("CONTENT_TYPE").unwrap_or_default()),
         body,
+        content_length: Some(content_length),
         request_time,
         argv,
         no_headers,

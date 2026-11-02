@@ -526,8 +526,20 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             let log_target = ini_value(b"error_log").flatten().filter(|v| !v.is_empty());
             match log_target {
                 Some(path) if ty == 0 => {
+                    // php_log_err: "[d-M-Y H:i:s e] message\n".
                     let p = String::from_utf8_lossy(&path).into_owned();
-                    let mut line = msg;
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    let mut line = b"[".to_vec();
+                    line.extend_from_slice(&crate::datetime_fns::php_date(
+                        b"d-M-Y H:i:s e",
+                        now,
+                        true,
+                    ));
+                    line.extend_from_slice(b"] ");
+                    line.extend_from_slice(&msg);
                     line.push(b'\n');
                     let _ = std::fs::OpenOptions::new()
                         .create(true)

@@ -1425,6 +1425,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         Some(0),
     );
     put(m, "trigger_error", fn_trigger_error, 1, Some(2));
+    put(m, "user_error", fn_trigger_error, 1, Some(2));
     put(m, "error_reporting", fn_error_reporting, 0, Some(1));
     put(m, "error_get_last", fn_error_get_last, 0, Some(0));
     put(m, "error_clear_last", fn_error_clear_last, 0, Some(0));

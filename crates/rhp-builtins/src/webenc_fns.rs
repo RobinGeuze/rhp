@@ -168,8 +168,171 @@ fn html_escape(s: &[u8]) -> Vec<u8> {
     out
 }
 
+const ENT_HTML_QUOTE_SINGLE: i64 = 1;
+const ENT_HTML_QUOTE_DOUBLE: i64 = 2;
+const ENT_HTML_IGNORE_ERRORS: i64 = 4;
+const ENT_HTML_SUBSTITUTE_ERRORS: i64 = 8;
+const ENT_HTML_DOC_TYPE_MASK: i64 = 16 | 32;
+const ENT_HTML_DOC_HTML401: i64 = 0;
+const ENT_HTML_DOC_XML1: i64 = 16;
+
+/// Length of the UTF-8 sequence at `s[pos..]`, or `Err(advance)` for an
+/// invalid one — php's `get_next_char` (cs_utf_8), UTR #36 strategy 2.
+fn utf8_next(s: &[u8], pos: usize) -> Result<usize, usize> {
+    let lead = |c: u8| c < 0x80 || (0xc2..=0xf4).contains(&c);
+    let trail = |c: u8| (0x80..=0xbf).contains(&c);
+    let avail = s.len() - pos;
+    let c = s[pos];
+    if c < 0x80 {
+        Ok(1)
+    } else if c < 0xc2 {
+        Err(1)
+    } else if c < 0xe0 {
+        if avail < 2 {
+            return Err(1);
+        }
+        if !trail(s[pos + 1]) {
+            return Err(if lead(s[pos + 1]) { 1 } else { 2 });
+        }
+        Ok(2)
+    } else if c < 0xf0 {
+        if avail < 3 || !trail(s[pos + 1]) || !trail(s[pos + 2]) {
+            return Err(if avail < 2 || lead(s[pos + 1]) {
+                1
+            } else if avail < 3 || lead(s[pos + 2]) {
+                2
+            } else {
+                3
+            });
+        }
+        let cp = ((c as u32 & 0x0f) << 12)
+            | ((s[pos + 1] as u32 & 0x3f) << 6)
+            | (s[pos + 2] as u32 & 0x3f);
+        if cp < 0x800 || (0xd800..=0xdfff).contains(&cp) {
+            return Err(3);
+        }
+        Ok(3)
+    } else if c < 0xf5 {
+        if avail < 4 || !trail(s[pos + 1]) || !trail(s[pos + 2]) || !trail(s[pos + 3]) {
+            return Err(if avail < 2 || lead(s[pos + 1]) {
+                1
+            } else if avail < 3 || lead(s[pos + 2]) {
+                2
+            } else if avail < 4 || lead(s[pos + 3]) {
+                3
+            } else {
+                4
+            });
+        }
+        let cp = ((c as u32 & 0x07) << 18)
+            | ((s[pos + 1] as u32 & 0x3f) << 12)
+            | ((s[pos + 2] as u32 & 0x3f) << 6)
+            | (s[pos + 3] as u32 & 0x3f);
+        if !(0x10000..=0x10ffff).contains(&cp) {
+            return Err(4);
+        }
+        Ok(4)
+    } else {
+        Err(1)
+    }
+}
+
+/// With `double_encode` off: the length of a valid entity body after `&`
+/// (up to and excluding `;`), as php_escape_html_entities_ex accepts it.
+fn existing_entity_len(s: &[u8], doctype: i64) -> Option<usize> {
+    if s.first() == Some(&b'#') {
+        let hex = matches!(s.get(1), Some(b'x' | b'X'));
+        let start = if hex { 2 } else { 1 };
+        let mut j = start;
+        while j < s.len()
+            && (if hex {
+                s[j].is_ascii_hexdigit()
+            } else {
+                s[j].is_ascii_digit()
+            })
+        {
+            j += 1;
+        }
+        if j == start || s.get(j) != Some(&b';') {
+            return None;
+        }
+        let digits = std::str::from_utf8(&s[start..j]).ok()?;
+        let v = u64::from_str_radix(digits, if hex { 16 } else { 10 }).unwrap_or(u64::MAX);
+        return (v <= 0x10ffff).then_some(j);
+    }
+    let n = s.iter().take_while(|b| b.is_ascii_alphanumeric()).count();
+    if n == 0 || s.get(n) != Some(&b';') {
+        return None;
+    }
+    let name = &s[..n];
+    let known = if doctype == ENT_HTML_DOC_XML1 {
+        matches!(name, b"amp" | b"lt" | b"gt" | b"quot" | b"apos")
+    } else {
+        NAMED_ENTITIES.iter().any(|(e, _)| *e == name)
+            || (doctype != ENT_HTML_DOC_HTML401 && name == b"apos")
+    };
+    known.then_some(n)
+}
+
+/// php_escape_html_entities_ex with all=0 (htmlspecialchars) for UTF-8.
+fn html_escape_flags(s: &[u8], flags: i64, double_encode: bool) -> Vec<u8> {
+    let doctype = flags & ENT_HTML_DOC_TYPE_MASK;
+    let mut out = Vec::with_capacity(s.len());
+    let mut i = 0;
+    while i < s.len() {
+        let n = match utf8_next(s, i) {
+            Ok(n) => n,
+            Err(adv) => {
+                i += adv;
+                if flags & ENT_HTML_IGNORE_ERRORS != 0 {
+                    continue;
+                } else if flags & ENT_HTML_SUBSTITUTE_ERRORS != 0 {
+                    out.extend_from_slice(b"\xEF\xBF\xBD");
+                    continue;
+                }
+                return Vec::new();
+            }
+        };
+        let b = s[i];
+        match b {
+            b'&' => {
+                if !double_encode {
+                    if let Some(len) = existing_entity_len(&s[i + 1..], doctype) {
+                        out.extend_from_slice(&s[i..i + len + 2]);
+                        i += len + 2;
+                        continue;
+                    }
+                }
+                out.extend_from_slice(b"&amp;");
+            }
+            b'<' => out.extend_from_slice(b"&lt;"),
+            b'>' => out.extend_from_slice(b"&gt;"),
+            b'"' if flags & ENT_HTML_QUOTE_DOUBLE != 0 => out.extend_from_slice(b"&quot;"),
+            b'\'' if flags & ENT_HTML_QUOTE_SINGLE != 0 => {
+                if doctype == ENT_HTML_DOC_HTML401 {
+                    out.extend_from_slice(b"&#039;")
+                } else {
+                    out.extend_from_slice(b"&apos;")
+                }
+            }
+            _ => out.extend_from_slice(&s[i..i + n]),
+        }
+        i += n;
+    }
+    out
+}
+
 fn fn_htmlspecialchars(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(html_escape(&bytes_of(&args[0]))))
+    let s = bytes_of(&args[0]);
+    let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(11);
+    let double_encode = args
+        .get(3)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(true);
+    if flags == 11 && double_encode && std::str::from_utf8(&s).is_ok() {
+        return Ok(Value::str(html_escape(&s)));
+    }
+    Ok(Value::str(html_escape_flags(&s, flags, double_encode)))
 }
 
 /// `htmlspecialchars_decode`: reverses ONLY the htmlspecialchars entities.

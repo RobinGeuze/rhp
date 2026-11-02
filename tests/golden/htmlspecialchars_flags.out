@@ -1,0 +1,26 @@
+default       a&amp;b &lt;c&gt; &quot;d&quot; &#039;e&#039; &amp;amp; &amp;#39; &amp;#x41; &amp;apos; &amp;bogus; &amp;nbsp; &amp;#99999999;
+  no-double   a&amp;b &lt;c&gt; &quot;d&quot; &#039;e&#039; &amp; &#39; &#x41; &amp;apos; &amp;bogus; &nbsp; &amp;#99999999;
+ENT_COMPAT    a&amp;b &lt;c&gt; &quot;d&quot; 'e' &amp;amp; &amp;#39; &amp;#x41; &amp;apos; &amp;bogus; &amp;nbsp; &amp;#99999999;
+  no-double   a&amp;b &lt;c&gt; &quot;d&quot; 'e' &amp; &#39; &#x41; &amp;apos; &amp;bogus; &nbsp; &amp;#99999999;
+ENT_NOQUOTES  a&amp;b &lt;c&gt; "d" 'e' &amp;amp; &amp;#39; &amp;#x41; &amp;apos; &amp;bogus; &amp;nbsp; &amp;#99999999;
+  no-double   a&amp;b &lt;c&gt; "d" 'e' &amp; &#39; &#x41; &amp;apos; &amp;bogus; &nbsp; &amp;#99999999;
+ENT_QUOTES    a&amp;b &lt;c&gt; &quot;d&quot; &#039;e&#039; &amp;amp; &amp;#39; &amp;#x41; &amp;apos; &amp;bogus; &amp;nbsp; &amp;#99999999;
+  no-double   a&amp;b &lt;c&gt; &quot;d&quot; &#039;e&#039; &amp; &#39; &#x41; &amp;apos; &amp;bogus; &nbsp; &amp;#99999999;
+XML1|QUOTES   a&amp;b &lt;c&gt; &quot;d&quot; &apos;e&apos; &amp;amp; &amp;#39; &amp;#x41; &amp;apos; &amp;bogus; &amp;nbsp; &amp;#99999999;
+  no-double   a&amp;b &lt;c&gt; &quot;d&quot; &apos;e&apos; &amp; &#39; &#x41; &apos; &amp;bogus; &amp;nbsp; &amp;#99999999;
+XHTML|QUOTES  a&amp;b &lt;c&gt; &quot;d&quot; &apos;e&apos; &amp;amp; &amp;#39; &amp;#x41; &amp;apos; &amp;bogus; &amp;nbsp; &amp;#99999999;
+  no-double   a&amp;b &lt;c&gt; &quot;d&quot; &apos;e&apos; &amp; &#39; &#x41; &apos; &amp;bogus; &nbsp; &amp;#99999999;
+HTML5|QUOTES  a&amp;b &lt;c&gt; &quot;d&quot; &apos;e&apos; &amp;amp; &amp;#39; &amp;#x41; &amp;apos; &amp;bogus; &amp;nbsp; &amp;#99999999;
+  no-double   a&amp;b &lt;c&gt; &quot;d&quot; &apos;e&apos; &amp; &#39; &#x41; &apos; &amp;bogus; &nbsp; &amp;#99999999;
+single only   a&amp;b &lt;c&gt; "d" &#039;e&#039; &amp;amp; &amp;#39; &amp;#x41; &amp;apos; &amp;bogus; &amp;nbsp; &amp;#99999999;
+  no-double   a&amp;b &lt;c&gt; "d" &#039;e&#039; &amp; &#39; &#x41; &amp;apos; &amp;bogus; &nbsp; &amp;#99999999;
+int(16)
+int(32)
+int(4)
+int(8)
+int(128)
+string(46) "78efbfbd79efbfbd7aefbfbd266c743befbfbd2667743b"
+string(0) ""
+string(22) "78797a266c743b2667743b"
+string(46) "78efbfbd79efbfbd7aefbfbd266c743befbfbd2667743b"
+string(28) "ünï ✓ 😀 &apos;q&apos;"

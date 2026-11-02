@@ -5676,6 +5676,20 @@ impl ProtoBuilder {
         ref_mask: &[bool],
         over_approx: bool,
     ) -> Result<(Reg, u16), Thrown> {
+        self.compile_arg_window_t(args, ref_mask, over_approx, None)
+    }
+
+    /// [`compile_arg_window_ex`] for a call whose callee is resolved at run
+    /// time: a property / array-element argument asks the callee (`target`)
+    /// whether that parameter is by-reference (php's SEND_FUNC_ARG) and is
+    /// then passed as a reference to the lvalue, else by value.
+    fn compile_arg_window_t(
+        &mut self,
+        args: Option<&rhp_frontend::cst::ArgumentList>,
+        ref_mask: &[bool],
+        over_approx: bool,
+        target: Option<ArgRefTarget>,
+    ) -> Result<(Reg, u16), Thrown> {
         enum Slot {
             Value(Reg),
             Ref(Reg),
@@ -5698,6 +5712,20 @@ impl ProtoBuilder {
                         continue;
                     }
                 }
+                if let Some(t) = target {
+                    if matches!(
+                        p.value,
+                        Expression::ArrayAccess(_)
+                            | Expression::Access(Access::Property(_))
+                            | Expression::Access(Access::StaticProperty(_))
+                    ) && !is_globals_var(p.value)
+                        && !lvalue_rooted_at_globals(p.value)
+                    {
+                        let r = self.compile_func_arg(p.value, t, i as u16)?;
+                        slots.push(Slot::Ref(r));
+                        continue;
+                    }
+                }
                 let r = self.compile_expr(p.value)?;
                 let r = self.snapshot_arg(list, i, p.value, r);
                 slots.push(Slot::Value(r));
@@ -5713,6 +5741,51 @@ impl ProtoBuilder {
             }
         }
         Ok((base, argc))
+    }
+
+    /// One SEND_FUNC_ARG argument: `$t = callee-param-is-ref ? &lvalue :
+    /// lvalue` into a temp (the caller passes it on with `MakeRef`, which
+    /// a by-value parameter dereferences).
+    fn compile_func_arg(
+        &mut self,
+        e: &Expression,
+        target: ArgRefTarget,
+        idx: u16,
+    ) -> Result<Reg, Thrown> {
+        let flag = self.alloc_temp();
+        match target {
+            ArgRefTarget::Method(obj, name) => self.emit(Instr::MethodArgIsRef {
+                dst: flag,
+                obj,
+                name,
+                idx,
+            }),
+            ArgRefTarget::Static(class, name) => self.emit(Instr::StaticArgIsRef {
+                dst: flag,
+                class,
+                name,
+                idx,
+            }),
+        }
+        let t = self.alloc_temp();
+        let jf = self.code.len();
+        self.emit(Instr::Nop); // JmpFalse flag -> by_value
+        let mut steps = Vec::new();
+        let root = self.collect_lvalue_steps(e, &mut steps)?;
+        self.emit_cursor(root, &steps);
+        self.emit(Instr::MakeRefLval { dst: t });
+        let jend = self.code.len();
+        self.emit(Instr::Nop); // Jmp -> end
+        let by_value = self.here();
+        self.code[jf] = Instr::JmpFalse {
+            cond: flag,
+            target: by_value,
+        };
+        let v = self.compile_expr(e)?;
+        self.emit(Instr::Mov { dst: t, src: v });
+        let end = self.here();
+        self.code[jend] = Instr::Jmp { target: end };
+        Ok(t)
     }
 
     /// A by-value argument that is a plain variable compiles to the variable's
@@ -5814,7 +5887,13 @@ impl ProtoBuilder {
             return Ok(dst);
         }
         let mask = self.method_ref_mask(b"__construct");
-        let (base, argc) = self.compile_arg_window_ex(inst.argument_list.as_ref(), &mask, true)?;
+        let ctor = self.intern_name(b"__construct");
+        let (base, argc) = self.compile_arg_window_t(
+            inst.argument_list.as_ref(),
+            &mask,
+            true,
+            Some(ArgRefTarget::Static(class, ctor)),
+        )?;
         let dst = self.alloc_temp();
         let cache = self.alloc_cache();
         self.emit(Instr::New {
@@ -6015,7 +6094,12 @@ impl ProtoBuilder {
                         return Ok(dst);
                     }
                     let mask = self.name_ref_mask(name);
-                    let (base, argc) = self.compile_arg_window_ex(Some(args), &mask, true)?;
+                    let (base, argc) = self.compile_arg_window_t(
+                        Some(args),
+                        &mask,
+                        true,
+                        Some(ArgRefTarget::Method(obj, name)),
+                    )?;
                     let dst = self.alloc_temp();
                     let cache = self.alloc_cache();
                     self.emit(Instr::CallMethod {
@@ -6081,7 +6165,12 @@ impl ProtoBuilder {
             match sel {
                 Sel::Static(name) => {
                     let mask = self.name_ref_mask(name);
-                    let (base, argc) = self.compile_arg_window_ex(Some(args), &mask, true)?;
+                    let (base, argc) = self.compile_arg_window_t(
+                        Some(args),
+                        &mask,
+                        true,
+                        Some(ArgRefTarget::Method(dst, name)),
+                    )?;
                     let cache = self.alloc_cache();
                     self.emit(Instr::CallMethod {
                         dst: t,
@@ -6137,8 +6226,12 @@ impl ProtoBuilder {
                     return Ok(dst);
                 }
                 let mask = self.name_ref_mask(name);
-                let (base, argc) =
-                    self.compile_arg_window_ex(Some(&smc.argument_list), &mask, true)?;
+                let (base, argc) = self.compile_arg_window_t(
+                    Some(&smc.argument_list),
+                    &mask,
+                    true,
+                    Some(ArgRefTarget::Static(class, name)),
+                )?;
                 let dst = self.alloc_temp();
                 let cache = self.alloc_cache();
                 self.emit(Instr::CallStatic {
@@ -6940,3 +7033,23 @@ fn expr_kind(e: &Expression) -> &'static str {
 const _: fn() = || {
     let _ = FnIdx::default;
 };
+
+/// The callee a SEND_FUNC_ARG check asks: a method on the object in a
+/// register, or a static method / constructor of a class.
+#[derive(Clone, Copy)]
+enum ArgRefTarget {
+    Method(Reg, NIdx),
+    Static(ClassRef, NIdx),
+}
+
+/// Whether an lvalue chain (`$GLOBALS['a']['b']`, `$GLOBALS['o']->p`) starts
+/// at `$GLOBALS`, which cannot be referenced.
+fn lvalue_rooted_at_globals(e: &Expression) -> bool {
+    match e {
+        Expression::ArrayAccess(a) => is_globals_var(a.array) || lvalue_rooted_at_globals(a.array),
+        Expression::Access(Access::Property(p)) => {
+            is_globals_var(p.object) || lvalue_rooted_at_globals(p.object)
+        }
+        _ => false,
+    }
+}

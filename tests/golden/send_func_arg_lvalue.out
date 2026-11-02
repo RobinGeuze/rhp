@@ -1,0 +1,41 @@
+array(1) {
+  ["base"]=>
+  int(1)
+}
+array(2) {
+  ["x"]=>
+  int(2)
+  ["y"]=>
+  int(1)
+}
+NULL
+bool(false)
+NULL
+bool(false)
+array(2) {
+  ["k"]=>
+  array(1) {
+    ["j"]=>
+    string(3) "set"
+  }
+  ["s"]=>
+  string(6) "static"
+}
+string(3) "set"
+
+Warning: Undefined array key "zz" in /Users/robing/gits/rhp/.claude/worktrees/wf_01e7afd0-1d2-19/tests/golden/send_func_arg_lvalue.php on line 40
+string(5) "magic"
+bool(false)
+NULL
+bool(false)
+array(3) {
+  [0]=>
+  string(3) "set"
+  [1]=>
+  int(0)
+  [2]=>
+  int(0)
+}
+int(1)
+Class "MissingClass" not found
+bool(false)

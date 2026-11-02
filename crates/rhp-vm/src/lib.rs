@@ -7612,6 +7612,33 @@ impl Vm {
                     let cls = h.borrow().class;
                     self.invoke_method(top, h, cls, mname, dst, base, argc)?;
                 }
+                Instr::MethodArgIsRef {
+                    dst,
+                    obj,
+                    name,
+                    idx,
+                } => {
+                    let r = match self.reg_get(top, obj) {
+                        Value::Object(h) => {
+                            let cls = h.borrow().class;
+                            let m = self.lookup_method(cls, proto.names[name as usize].as_bytes());
+                            m.is_some_and(|m| param_is_ref(&m.proto, idx))
+                        }
+                        _ => false,
+                    };
+                    self.reg_set(top, dst, Value::Bool(r));
+                }
+                Instr::StaticArgIsRef {
+                    dst,
+                    class,
+                    name,
+                    idx,
+                } => {
+                    let cls = self.resolve_class_autoload(top, class)?;
+                    let m = self.lookup_method(cls, proto.names[name as usize].as_bytes());
+                    let r = m.is_some_and(|m| param_is_ref(&m.proto, idx));
+                    self.reg_set(top, dst, Value::Bool(r));
+                }
                 Instr::CallStatic {
                     dst,
                     class,
@@ -11748,4 +11775,14 @@ fn required_params(proto: &FunctionProto) -> usize {
         .iter()
         .filter(|p| p.default.is_none() && !p.variadic)
         .count()
+}
+
+/// Whether argument `idx` binds to a by-reference parameter of `p` (a
+/// by-reference variadic covers every argument from its position on).
+fn param_is_ref(p: &FunctionProto, idx: u16) -> bool {
+    let i = idx as usize;
+    match p.params.get(i) {
+        Some(param) => param.by_ref,
+        None => p.params.last().is_some_and(|l| l.variadic && l.by_ref),
+    }
 }

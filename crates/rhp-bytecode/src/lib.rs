@@ -563,6 +563,24 @@ pub enum Instr {
         name: NIdx,
         cache: CacheIdx,
     },
+    /// SEND_FUNC_ARG's question for a call resolved at run time: whether
+    /// parameter `idx` of method `name` on the object in `obj` is by
+    /// reference (false for a non-object / unknown / magic method).
+    MethodArgIsRef {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+        idx: u16,
+    },
+    /// The same for static method (or constructor) `name` of `class`; the
+    /// class is resolved (autoloaded) first, as php's INIT_STATIC_METHOD_CALL
+    /// / NEW do before the arguments.
+    StaticArgIsRef {
+        dst: Reg,
+        class: ClassRef,
+        name: NIdx,
+        idx: u16,
+    },
     /// `$o->m(args)`.
     CallMethod {
         dst: Reg,

@@ -3856,7 +3856,6 @@ tests/lang/throw_variation_001.phpt
 tests/lang/type_hints_001.phpt
 tests/lang/zend_throw_exception_001.phpt
 tests/output/bug46897.phpt
-tests/output/bug60282.phpt
 tests/output/bug60321.phpt
 tests/output/bug60768.phpt
 tests/output/bug65593.phpt

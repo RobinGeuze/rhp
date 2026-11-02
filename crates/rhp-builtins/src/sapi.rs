@@ -346,15 +346,18 @@ pub fn builtin_hidden(name_lc: &str) -> bool {
 }
 
 /// php's `escape_html` for `html_errors`: `htmlspecialchars` with
-/// ENT_COMPAT (`&`, `<`, `>`, `"`), invalid UTF-8 substituted.
-pub fn escape_html(s: &[u8]) -> Vec<u8> {
+/// ENT_COMPAT (`&`, `<`, `>`, `"`) in `default_charset`. Under UTF-8 (also
+/// php's fallback for a charset it does not know) invalid sequences are
+/// substituted (the retry with ENT_HTML_SUBSTITUTE_ERRORS); a single-byte
+/// charset such as Windows-1251 passes every byte through.
+pub fn escape_html(s: &[u8], charset: &[u8]) -> Vec<u8> {
     let owned;
     let s: &[u8] = match std::str::from_utf8(s) {
-        Ok(_) => s,
-        Err(_) => {
+        Err(_) if !is_non_utf8_charset(charset) => {
             owned = String::from_utf8_lossy(s).into_owned().into_bytes();
             &owned
         }
+        _ => s,
     };
     let mut out = Vec::with_capacity(s.len());
     for &b in s {
@@ -367,6 +370,48 @@ pub fn escape_html(s: &[u8]) -> Vec<u8> {
         }
     }
     out
+}
+
+/// A charset name from html.c's `charset_map` other than UTF-8 (the
+/// multi-byte ones are treated bytewise too).
+fn is_non_utf8_charset(charset: &[u8]) -> bool {
+    const NAMES: &[&str] = &[
+        "iso-8859-1",
+        "iso8859-1",
+        "iso-8859-15",
+        "iso8859-15",
+        "iso-8859-5",
+        "iso8859-5",
+        "cp866",
+        "866",
+        "ibm866",
+        "cp1251",
+        "windows-1251",
+        "win-1251",
+        "1251",
+        "cp1252",
+        "windows-1252",
+        "1252",
+        "koi8-r",
+        "koi8-ru",
+        "koi8r",
+        "big5",
+        "950",
+        "gb2312",
+        "936",
+        "big5-hkscs",
+        "shift_jis",
+        "sjis",
+        "sjis-win",
+        "cp932",
+        "932",
+        "euc-jp",
+        "eucjp",
+        "eucjp-win",
+        "macroman",
+    ];
+    let c = String::from_utf8_lossy(charset).trim().to_ascii_lowercase();
+    NAMES.contains(&c.as_str())
 }
 
 /// `get_default_content_type`: `default_mimetype` plus `; charset=` for

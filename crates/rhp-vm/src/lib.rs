@@ -4793,7 +4793,8 @@ impl Vm {
             let mut m = ini(self, b"error_prepend_string");
             m.extend_from_slice(format!("<br />\n<b>{label}</b>:  ").as_bytes());
             if fatal || docref {
-                m.extend_from_slice(&builtins::sapi::escape_html(message));
+                let charset = ini(self, b"default_charset");
+                m.extend_from_slice(&builtins::sapi::escape_html(message, &charset));
             } else {
                 m.extend_from_slice(message);
             }

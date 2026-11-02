@@ -2401,7 +2401,6 @@ ext/date/tests/strtotime-relative.phpt
 ext/date/tests/strtotime_basic2.phpt
 ext/date/tests/time_basic.phpt
 ext/date/tests/timestamp-in-dst.phpt
-ext/dba/tests/dba_ndbm.phpt
 ext/dom/tests/DOM4_ChildNode_wrong_document.phpt
 ext/dom/tests/DOM4_DOMNode_ElementSiblings.phpt
 ext/dom/tests/DOM4_DOMNode_after.phpt
@@ -2719,6 +2718,7 @@ ext/hash/tests/hash_hmac_basic.phpt
 ext/hash/tests/hash_hmac_error.phpt
 ext/hash/tests/hash_init_error.phpt
 ext/hash/tests/hash_pbkdf2_basic.phpt
+ext/hash/tests/hash_pbkdf2_error.phpt
 ext/hash/tests/hash_pbkdf2_large_length.phpt
 ext/hash/tests/hash_update_file.phpt
 ext/hash/tests/hash_update_stream.phpt
@@ -2934,7 +2934,6 @@ ext/mbstring/tests/mb_substr_count_variation4.phpt
 ext/mbstring/tests/mb_substr_error2.phpt
 ext/mbstring/tests/simpletest.phpt
 ext/mbstring/tests/unicode_versions.phpt
-ext/mysqli/tests/mysqli_constants_categories.phpt
 ext/opcache/tests/assign_obj_exceptions.phpt
 ext/opcache/tests/assign_static_prop_ref_result.phpt
 ext/opcache/tests/bug81015.phpt
@@ -3119,21 +3118,6 @@ ext/pcre/tests/request47456.phpt
 ext/pcre/tests/split.phpt
 ext/pcre/tests/study.phpt
 ext/pcre/tests/ungreedy.phpt
-ext/pdo_odbc/tests/autocommit.phpt
-ext/pdo_odbc/tests/autocommit_change_mode.phpt
-ext/pdo_odbc/tests/bug44643.phpt
-ext/pdo_odbc/tests/bug67465.phpt
-ext/pdo_odbc/tests/bug80783.phpt
-ext/pdo_odbc/tests/bug80783a.phpt
-ext/pdo_odbc/tests/get_attribute_server.phpt
-ext/pdo_odbc/tests/gh22349.phpt
-ext/pdo_odbc/tests/gh23443.phpt
-ext/pdo_odbc/tests/gh23444.phpt
-ext/pdo_odbc/tests/gh9372.phpt
-ext/pdo_odbc/tests/long_columns.phpt
-ext/pdo_odbc/tests/max_columns.phpt
-ext/pdo_odbc/tests/pdoodbc_001.phpt
-ext/pdo_odbc/tests/pdoodbc_002.phpt
 ext/phar/tests/003.phpt
 ext/phar/tests/003a.phpt
 ext/phar/tests/005.phpt
@@ -5899,7 +5883,6 @@ ext/standard/tests/versioning/phpversion.phpt
 ext/standard/tests/versioning/version_compare.phpt
 ext/standard/tests/versioning/version_compare_invalid_operator.phpt
 ext/standard/tests/versioning/version_compare_op_abbrev.phpt
-ext/tidy/tests/001.phpt
 ext/tokenizer/tests/001.phpt
 ext/tokenizer/tests/002.phpt
 ext/tokenizer/tests/003.phpt

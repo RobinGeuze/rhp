@@ -277,7 +277,7 @@ NOT   dst, a      — Bool(!conv::to_bool(deref(a)))
 ```
 CAST_INT    dst, a — Int(conv::to_int(a))          CAST_FLOAT dst, a — Float(conv::to_float(a))
 CAST_STRING dst, a — Str(conv::to_string_bytes(a)) CAST_BOOL  dst, a — Bool(conv::to_bool(a))
-CAST_ARRAY  dst, a — (array) cast (scalar→1-elem, null→[], array→self; see tree-walker `cast_to_array`)
+CAST_ARRAY  dst, a — (array) cast (scalar→1-elem, null→[], array→self; see `rhp_semantics::cast_to_array`)
 ```
 
 `(object)` is phase 7. `(unset)`/`(real)`/`(void)` have **no opcode** — the

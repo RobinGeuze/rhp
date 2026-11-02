@@ -586,7 +586,109 @@ fn hmac(algo: &[u8], key: &[u8], msg: &[u8]) -> Option<Vec<u8>> {
 // PBKDF2 (RFC 2898) over HMAC
 // ---------------------------------------------------------------------------
 
+/// PBKDF2 over a RustCrypto digest, the way php's `hash_pbkdf2` runs it: the
+/// HMAC key's ipad/opad blocks are hashed once and each HMAC resumes from a
+/// copy of those two states. Same bytes as the generic path below, at half the
+/// compressions and without per-block allocations (a 32 MiB key took 6x php's
+/// time before).
+fn pbkdf2_with<D: Digest + Clone>(
+    block: usize,
+    pass: &[u8],
+    salt: &[u8],
+    iterations: i64,
+    out_len: usize,
+) -> Vec<u8> {
+    let mut k = if pass.len() > block {
+        D::digest(pass).to_vec()
+    } else {
+        pass.to_vec()
+    };
+    k.resize(block, 0);
+    let mut inner = D::new();
+    inner.update(k.iter().map(|b| b ^ 0x36).collect::<Vec<u8>>());
+    let mut outer = D::new();
+    outer.update(k.iter().map(|b| b ^ 0x5c).collect::<Vec<u8>>());
+    let prf = |parts: &[&[u8]]| {
+        let mut c = inner.clone();
+        for p in parts {
+            c.update(p);
+        }
+        let ih = c.finalize();
+        let mut c = outer.clone();
+        c.update(&ih);
+        c.finalize()
+    };
+    let h_len = <D as Digest>::output_size();
+    let blocks = out_len.div_ceil(h_len);
+    let mut out = Vec::with_capacity(blocks * h_len);
+    for i in 1..=blocks as u32 {
+        let mut u = prf(&[salt, &i.to_be_bytes()]);
+        let mut t = u.clone();
+        for _ in 1..iterations {
+            u = prf(&[&u]);
+            for (ti, ui) in t.iter_mut().zip(u.iter()) {
+                *ti ^= *ui;
+            }
+        }
+        out.extend_from_slice(&t);
+    }
+    out.truncate(out_len);
+    out
+}
+
+/// [`pbkdf2_with`] for the algorithms backed by a RustCrypto digest; `None`
+/// sends the rest (tiger, snefru, haval) down the generic path.
+fn pbkdf2_fast(
+    algo: &[u8],
+    pass: &[u8],
+    salt: &[u8],
+    iterations: i64,
+    out_len: usize,
+) -> Option<Vec<u8>> {
+    let b = hmac_block_size(algo)?;
+    let (p, s, n, l) = (pass, salt, iterations, out_len);
+    Some(match algo {
+        b"md2" => pbkdf2_with::<md2::Md2>(b, p, s, n, l),
+        b"md4" => pbkdf2_with::<md4::Md4>(b, p, s, n, l),
+        b"md5" => pbkdf2_with::<::md5::Md5>(b, p, s, n, l),
+        b"sha1" => pbkdf2_with::<::sha1::Sha1>(b, p, s, n, l),
+        b"sha224" => pbkdf2_with::<sha2::Sha224>(b, p, s, n, l),
+        b"sha256" => pbkdf2_with::<sha2::Sha256>(b, p, s, n, l),
+        b"sha384" => pbkdf2_with::<sha2::Sha384>(b, p, s, n, l),
+        b"sha512/224" => pbkdf2_with::<sha2::Sha512_224>(b, p, s, n, l),
+        b"sha512/256" => pbkdf2_with::<sha2::Sha512_256>(b, p, s, n, l),
+        b"sha512" => pbkdf2_with::<sha2::Sha512>(b, p, s, n, l),
+        b"sha3-224" => pbkdf2_with::<sha3::Sha3_224>(b, p, s, n, l),
+        b"sha3-256" => pbkdf2_with::<sha3::Sha3_256>(b, p, s, n, l),
+        b"sha3-384" => pbkdf2_with::<sha3::Sha3_384>(b, p, s, n, l),
+        b"sha3-512" => pbkdf2_with::<sha3::Sha3_512>(b, p, s, n, l),
+        b"ripemd128" => pbkdf2_with::<ripemd::Ripemd128>(b, p, s, n, l),
+        b"ripemd160" => pbkdf2_with::<ripemd::Ripemd160>(b, p, s, n, l),
+        b"ripemd256" => pbkdf2_with::<ripemd::Ripemd256>(b, p, s, n, l),
+        b"ripemd320" => pbkdf2_with::<ripemd::Ripemd320>(b, p, s, n, l),
+        b"whirlpool" => pbkdf2_with::<whirlpool::Whirlpool>(b, p, s, n, l),
+        b"gost" => pbkdf2_with::<gost94::Gost94Test>(b, p, s, n, l),
+        b"gost-crypto" => pbkdf2_with::<gost94::Gost94CryptoPro>(b, p, s, n, l),
+        _ => return None,
+    })
+}
+
 fn pbkdf2(
+    algo: &[u8],
+    pass: &[u8],
+    salt: &[u8],
+    iterations: i64,
+    key_len: usize,
+) -> Option<Vec<u8>> {
+    let h_len = digest(algo, b"")?.len();
+    let out_len = if key_len == 0 { h_len } else { key_len };
+    if let Some(out) = pbkdf2_fast(algo, pass, salt, iterations, out_len) {
+        return Some(out);
+    }
+    pbkdf2_generic(algo, pass, salt, iterations, key_len)
+}
+
+fn pbkdf2_generic(
     algo: &[u8],
     pass: &[u8],
     salt: &[u8],

@@ -1,0 +1,32 @@
+
+Warning: DOMDocument::createElement(): unterminated entity reference               < in /Users/robing/gits/rhp/.claude/worktrees/wf_01e7afd0-1d2-11/tests/golden/dom_save_escape.php on line 10
+
+Warning: DOMDocument::saveXML(): xmlEscapeEntities : char out of range in /Users/robing/gits/rhp/.claude/worktrees/wf_01e7afd0-1d2-11/tests/golden/dom_save_escape.php on line 15
+<?xml version="1.0"?>
+<r><a>y&#xD;z	q</a><b/><c></c><d>&#xE8;</d><e>after</e><![CDATA[cd]]></r>
+<r><a>y&#13;z	q</a><b/><c>xy</c><d>�(</d><e>after</e><![CDATA[cd]]></r>
+y&#13;z	q
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<r a="ü">ü&#13;</r>
+<r a="Ã¼">Ã¼&#13;</r>
+<r><a>y&#xD;z	q</a><b></b><c>xy</c><d>�(</d><e>after</e>cd</r>
+
+Warning: DOMDocument::saveXML(): string is not in UTF-8 in /Users/robing/gits/rhp/.claude/worktrees/wf_01e7afd0-1d2-11/tests/golden/dom_save_escape.php on line 30
+
+Warning: DOMDocument::saveXML(): invalid character value in /Users/robing/gits/rhp/.claude/worktrees/wf_01e7afd0-1d2-11/tests/golden/dom_save_escape.php on line 30
+
+Warning: DOMDocument::saveXML(): xmlEscapeEntities : char out of range in /Users/robing/gits/rhp/.claude/worktrees/wf_01e7afd0-1d2-11/tests/golden/dom_save_escape.php on line 30
+
+Warning: DOMDocument::saveXML(): invalid character value in /Users/robing/gits/rhp/.claude/worktrees/wf_01e7afd0-1d2-11/tests/golden/dom_save_escape.php on line 30
+<?xml version="1.0"?>
+<r><a></a><b></b><c></c><e></e><f>x</f><g>ok &#x1F600;</g></r>
+<?xml version="1.0"?>
+<r><a></a><b></b><c></c><e></e><f>x</f><g>ok &#x1F600;</g></r>
+2 1400 0 0 "string is not in UTF-8\n"
+2 1401 0 0 "invalid character value\n"
+2 1 0 0 "xmlEscapeEntities : char out of range"
+2 1401 0 0 "invalid character value\n"
+1401
+<?xml version="1.0"?>
+<r><a></a><b></b><c></c><e></e><f>x</f><g>ok &#x1F600;</g></r>
+4

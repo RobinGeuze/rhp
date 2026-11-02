@@ -728,6 +728,7 @@ fn fn_sxe(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             let Some(node) = node else {
                 return Ok(Value::Bool(false));
             };
+            tree::take_save_diags();
             let out = tree::with_doc(d, |doc| {
                 let opts = SaveOpts {
                     format: false,
@@ -740,6 +741,7 @@ fn fn_sxe(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 }
             })
             .unwrap_or_default();
+            lx::report_save_diags(host, "SimpleXMLElement::asXML")?;
             match opt_bytes(args, 2) {
                 Some(f) => Ok(Value::Bool(
                     std::fs::write(String::from_utf8_lossy(&f).as_ref(), &out).is_ok(),
@@ -1326,22 +1328,40 @@ thread_local! {
 /// Before var_dump / print_r (which only get `&dyn Host`): materialize the
 /// debug property views of every SimpleXMLElement reachable from `v`.
 pub fn prepare_debug(host: &mut dyn Host, v: &Value, depth: usize) {
+    let mut seen = std::collections::HashSet::new();
+    prepare_debug_in(host, v, depth, &mut seen);
+}
+
+/// Walk `v` once (each object / reference cell visited at most once, so
+/// cyclic graphs stay linear), recording SimpleXMLElement debug views.
+fn prepare_debug_in(
+    host: &mut dyn Host,
+    v: &Value,
+    depth: usize,
+    seen: &mut std::collections::HashSet<usize>,
+) {
     if depth > 64 {
         return;
     }
     match v {
         Value::Ref(r) => {
+            if !seen.insert(std::rc::Rc::as_ptr(r) as *const () as usize) {
+                return;
+            }
             let inner = r.borrow().clone();
-            prepare_debug(host, &inner, depth + 1);
+            prepare_debug_in(host, &inner, depth + 1, seen);
         }
         Value::Array(a) => {
             let vals: Vec<Value> = a.iter().map(|(_, v)| v.clone()).collect();
             for x in vals {
-                prepare_debug(host, &x, depth + 1);
+                prepare_debug_in(host, &x, depth + 1, seen);
             }
         }
         Value::Object(h) => {
             let id = h.borrow().id;
+            if !seen.insert(std::rc::Rc::as_ptr(h) as *const () as usize) {
+                return;
+            }
             if DEBUG_VIEWS.with(|m| m.borrow().contains_key(&id)) {
                 return;
             }
@@ -1349,13 +1369,13 @@ pub fn prepare_debug(host: &mut dyn Host, v: &Value, depth: usize) {
                 if let Some(props) = sxe_props(host, v, true) {
                     DEBUG_VIEWS.with(|m| m.borrow_mut().insert(id, props.clone()));
                     for (_, pv) in props {
-                        prepare_debug(host, &pv, depth + 1);
+                        prepare_debug_in(host, &pv, depth + 1, seen);
                     }
                 }
             } else {
                 let vals: Vec<Value> = h.borrow().properties.values().cloned().collect();
                 for x in vals {
-                    prepare_debug(host, &x, depth + 1);
+                    prepare_debug_in(host, &x, depth + 1, seen);
                 }
             }
         }

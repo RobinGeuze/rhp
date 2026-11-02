@@ -133,6 +133,37 @@ pub fn report(
     Ok(())
 }
 
+/// Report the serializer's diagnostics (see `tree::take_save_diags`). The
+/// output-module ones are structured errors (they also become the last
+/// error); code 1 comes through libxml2's generic channel, which php turns
+/// into an XML_ERR_INTERNAL_ERROR record without touching the last error.
+pub fn report_save_diags(host: &mut dyn Host, fname: &str) -> Result<(), Thrown> {
+    for (code, msg) in tree::take_save_diags() {
+        if code == 1 {
+            let internal = STATE.with(|s| {
+                let mut s = s.borrow_mut();
+                if s.use_internal {
+                    s.errors.push(plain_error(2, 1, 0, 0, msg.to_string()));
+                    true
+                } else {
+                    false
+                }
+            });
+            if !internal {
+                crate::warn(host, fname, msg)?;
+            }
+        } else {
+            report(
+                host,
+                fname,
+                vec![plain_error(2, code, 7, 0, msg.to_string())],
+                Ctx::Plain,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// A non-parser error record (validation, I/O): no file/column.
 pub fn plain_error(level: i32, code: i32, domain: i32, line: i32, msg: String) -> XmlError {
     XmlError {

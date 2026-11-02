@@ -9242,9 +9242,10 @@ impl Vm {
     /// Whether `h` is a `SimpleXMLElement` (whose cast handler the VM's
     /// int/float/bool conversions honour).
     fn is_sxe(&self, h: &ObjectHandle) -> bool {
-        match self.resolve_class_by_name(b"SimpleXMLElement") {
-            Ok(t) => self.class(h.borrow().class).ancestors.contains(&t),
-            Err(_) => false,
+        // Hot path (every object in a condition): no allocation.
+        match self.class_ids.get(b"simplexmlelement".as_slice()) {
+            Some(t) => self.class(h.borrow().class).ancestors.contains(t),
+            None => false,
         }
     }
 

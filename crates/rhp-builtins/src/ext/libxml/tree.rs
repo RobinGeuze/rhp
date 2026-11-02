@@ -543,7 +543,83 @@ fn utf8_char(s: &[u8]) -> Option<(u32, usize)> {
     Some((c, len))
 }
 
+/// A serializer diagnostic: (code, message). Code 1 is libxml2's generic
+/// error channel ("xmlEscapeEntities : char out of range"); 1400/1401 are
+/// XML_SAVE_NOT_UTF8 / XML_SAVE_CHAR_INVALID from the output module.
+pub type SaveDiag = (i32, &'static str);
+
+thread_local! {
+    static SAVE_DIAGS: RefCell<Vec<SaveDiag>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drain the diagnostics the last dump_doc/dump_node produced.
+pub fn take_save_diags() -> Vec<SaveDiag> {
+    SAVE_DIAGS.with(|d| std::mem::take(&mut *d.borrow_mut()))
+}
+
+fn is_xml_char(c: u32) -> bool {
+    matches!(c, 0x9 | 0xA | 0xD | 0x20..=0xD7FF | 0xE000..=0xFFFD | 0x10000..=0x10FFFF)
+}
+
+/// libxml2 2.9's `xmlEscapeEntities` (document output without an
+/// encoding): non-ASCII as hex character references, decoded without
+/// checking continuation bytes. An invalid byte aborts the whole text
+/// node (nothing of it is written); a truncated sequence keeps the prefix.
+fn escape_entities(out: &mut Vec<u8>, s: &[u8]) {
+    let mut buf = Vec::with_capacity(s.len());
+    let mut i = 0;
+    let fail = |d: SaveDiag| SAVE_DIAGS.with(|v| v.borrow_mut().push(d));
+    while i < s.len() {
+        let c = s[i];
+        match c {
+            b'<' => buf.extend_from_slice(b"&lt;"),
+            b'>' => buf.extend_from_slice(b"&gt;"),
+            b'&' => buf.extend_from_slice(b"&amp;"),
+            0x20..=0x7F | b'\n' | b'\t' => buf.push(c),
+            b'\r' => buf.extend_from_slice(b"&#xD;"),
+            0x80.. => {
+                let (len, init) = match c {
+                    0x80..=0xBF => {
+                        fail((1400, "string is not in UTF-8\n"));
+                        return;
+                    }
+                    0xC0..=0xDF => (2, (c & 0x1F) as u32),
+                    0xE0..=0xEF => (3, (c & 0x0F) as u32),
+                    0xF0..=0xF7 => (4, (c & 0x07) as u32),
+                    _ => {
+                        fail((1401, "invalid character value\n"));
+                        return;
+                    }
+                };
+                if s.len() - i < len {
+                    break;
+                }
+                let mut v = init;
+                for &x in &s[i + 1..i + len] {
+                    v = (v << 6) | (x & 0x3F) as u32;
+                }
+                if !is_xml_char(v) {
+                    fail((1401, "invalid character value\n"));
+                    return;
+                }
+                buf.extend_from_slice(format!("&#x{v:X};").as_bytes());
+                i += len;
+                continue;
+            }
+            _ => {
+                fail((1, "xmlEscapeEntities : char out of range"));
+                return;
+            }
+        }
+        i += 1;
+    }
+    out.extend_from_slice(&buf);
+}
+
 fn escape_text(out: &mut Vec<u8>, s: &[u8], esc: Esc) {
+    if esc == Esc::Entities {
+        return escape_entities(out, s);
+    }
     let mut i = 0;
     while i < s.len() {
         let c = s[i];
@@ -789,7 +865,7 @@ pub fn quote(out: &mut Vec<u8>, s: &[u8]) {
 
 /// Transcode UTF-8 output into the document's declared encoding (libxml2
 /// writes unrepresentable characters as decimal character references).
-fn encode_output(s: Vec<u8>, enc: &[u8]) -> Vec<u8> {
+pub fn encode_output(s: Vec<u8>, enc: &[u8]) -> Vec<u8> {
     let e = enc.to_ascii_uppercase();
     let limit: u32 = match &e[..] {
         b"ISO-8859-1" | b"LATIN1" | b"ISO_8859-1" | b"ISO-LATIN-1" => 0xFF,

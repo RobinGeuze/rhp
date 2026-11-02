@@ -2268,9 +2268,12 @@ fn save_xml(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         no_empty_tag: flags & 4 != 0,
     };
     match nodev {
-        Value::Null => Ok(s(
-            tree::with_doc(d, |doc| tree::dump_doc(doc, &opts)).unwrap_or_default()
-        )),
+        Value::Null => {
+            tree::take_save_diags();
+            let out = tree::with_doc(d, |doc| tree::dump_doc(doc, &opts)).unwrap_or_default();
+            lx::report_save_diags(host, "DOMDocument::saveXML")?;
+            Ok(s(out))
+        }
         v => {
             let Some((nd, nn)) = ids_of(&v) else {
                 return Ok(Value::Bool(false));

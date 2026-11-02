@@ -84,6 +84,8 @@ thread_local! {
     static LINE_STARTS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
     /// The file name reported in debug info / exception getFile().
     static SRC_FILE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// The user source being compiled (to see what precedes inline HTML).
+    static SRC_BYTES: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     /// Whether the file being compiled declared `strict_types=1` (php's
     /// caller-decides coercion rule); stamped on every proto built from it.
     static STRICT_TYPES: RefCell<bool> = const { RefCell::new(false) };
@@ -606,6 +608,7 @@ fn compile_program(
     COND_CLASSES.with(|c| c.borrow_mut().1 = num_top_classes);
     // From here on we compile user code, so install its line map.
     LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
+    SRC_BYTES.with(|b| *b.borrow_mut() = program.source_text.to_vec());
     let user_constants: Vec<(PhpStr, Value)> = Vec::new();
     for (ctx, stmt) in &flat {
         use mago_span::HasSpan;
@@ -2451,8 +2454,24 @@ impl ProtoBuilder {
             Statement::OpeningTag(_) | Statement::ClosingTag(_) | Statement::Noop(_) => {}
             Statement::Inline(inline) => {
                 if inline.kind.is_text() {
-                    let k = self.intern_const(Value::str(inline.value.to_vec()));
-                    self.emit(Instr::EchoConst { k });
+                    let mut text: &[u8] = inline.value;
+                    let start = inline.span().start.offset as usize;
+                    let after_closing_tag = SRC_BYTES.with(|b| {
+                        start >= 2 && b.borrow().get(start - 2..start) == Some(&b"?>"[..])
+                    });
+                    if after_closing_tag {
+                        // php's `?>` token includes one following newline.
+                        text = text
+                            .strip_prefix(b"\r\n")
+                            .or_else(|| text.strip_prefix(b"\n"))
+                            .unwrap_or(text);
+                        let skipped = inline.value.len() - text.len();
+                        self.cur_line = line_of(inline.span().start.offset + skipped as u32);
+                    }
+                    if !text.is_empty() {
+                        let k = self.intern_const(Value::str(text.to_vec()));
+                        self.emit(Instr::EchoConst { k });
+                    }
                 }
             }
             Statement::Echo(e) => {

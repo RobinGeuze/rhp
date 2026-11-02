@@ -75,6 +75,7 @@ mod ini_table;
 mod json_fns;
 mod math_fns;
 mod misc_fns;
+mod opcache_fns;
 mod parse_fns;
 pub mod php_fns;
 mod preg_fns;
@@ -82,6 +83,7 @@ mod printf_fns;
 mod proc_fns;
 mod query_fns;
 mod runtime_fns;
+pub mod sapi;
 mod serialize_fns;
 mod sort_fns;
 mod str_fns;
@@ -415,6 +417,31 @@ pub trait Host {
     /// SAPI sends headers on first output, so this is `headers_sent()`.
     fn output_started(&self) -> bool {
         false
+    }
+
+    /// The request's header store (`SG(sapi_headers)`, `headers_sent`):
+    /// `header()` and friends operate on it. Default: none (a host without a
+    /// response; the header builtins then do nothing).
+    fn response(&mut self) -> Option<&mut sapi::Response> {
+        None
+    }
+
+    /// `flush()`: the SAPI's flush (`sapi_flush`). Default: nothing.
+    fn sapi_flush(&mut self) {}
+
+    /// One `error_log()` / log_errors line for the SAPI's logger (php's
+    /// `sapi_module.log_message`; no trailing newline). Default: stderr.
+    fn log_message(&mut self, msg: &[u8]) {
+        use std::io::Write;
+        let mut e = std::io::stderr();
+        let _ = e.write_all(msg);
+        let _ = e.write_all(b"\n");
+        let _ = e.flush();
+    }
+
+    /// The request headers (`getallheaders()`), in order. Default: none.
+    fn request_headers(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        Vec::new()
     }
 
     /// The [`ClassKind`] of a class id (class / interface / trait / enum), used by
@@ -1022,6 +1049,25 @@ macro_rules! builtins {
 
 pub use php_fns::{apply_env_overrides, env_overrides};
 
+/// The php version this engine reports (`PHP_VERSION`).
+pub const PHP_VERSION: &str = "8.5.8";
+
+/// A directive's current value: `None` = unknown directive, `Some(None)` =
+/// registered with a null value.
+pub fn ini_value(name: &[u8]) -> Option<Option<Vec<u8>>> {
+    runtime_fns::ini_value(name)
+}
+
+/// C `atol`: leading blanks, sign, digits.
+pub fn c_atol(s: &[u8]) -> i64 {
+    runtime_fns::c_atol(s)
+}
+
+/// `zend_ini_parse_quantity`: `8M` → 8388608.
+pub fn ini_parse_quantity(s: &[u8]) -> i64 {
+    runtime_fns::ini_parse_quantity(s)
+}
+
 /// A startup ini setting (`php -d name=value`): any registered directive,
 /// applied to the engine state it drives (precision, ...). Unknown names are
 /// ignored. Call after [`reset_request_state`].
@@ -1041,6 +1087,13 @@ pub fn reset_request_state() {
     ext::mbstring::reset_state();
     strsearch_fns::reset_state();
     php_fns::reset_state();
+    sapi::reset_state();
+    zip_ext::reset_state();
+    ext::curl::reset_state();
+    ext::openssl::reset_state();
+    ext::bz2::reset_state();
+    ext::intl::error_reset();
+    rhp_values::reset_dropped_streams();
 }
 
 /// The builtin function table, keyed by lowercase name (PHP function names are
@@ -1167,6 +1220,8 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("strsearch_fns", Box::new(strsearch_fns::register)),
         ("query_fns", Box::new(query_fns::register)),
         ("runtime_fns", Box::new(runtime_fns::register)),
+        ("sapi", Box::new(sapi::register)),
+        ("opcache_fns", Box::new(opcache_fns::register)),
         ("ini_parse", Box::new(ini_parse::register)),
         ("arraycmp_fns", Box::new(arraycmp_fns::register)),
         ("sysmisc_fns", Box::new(sysmisc_fns::register)),
@@ -1206,12 +1261,18 @@ mod registry_tests {
 /// Case-insensitive builtin lookup.
 pub fn lookup(name: &str) -> Option<&'static Builtin> {
     let lower = name.to_ascii_lowercase();
-    registry().get(lower.as_str())
+    lookup_lc(&lower)
 }
 
 /// [`lookup`] for a name that is already lowercase (no allocation).
 pub fn lookup_lc(name_lc: &str) -> Option<&'static Builtin> {
-    registry().get(name_lc)
+    let b = registry().get(name_lc)?;
+    if matches!(name_lc.as_bytes().first(), Some(b'a' | b'c' | b'g'))
+        && sapi::builtin_hidden(name_lc)
+    {
+        return None;
+    }
+    Some(b)
 }
 
 /// `(PHP_OS, PHP_OS_FAMILY)` for the platform this engine was built for.
@@ -1395,6 +1456,9 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("STDIN", Value::Int(0)),
         ("STDOUT", Value::Int(1)),
         ("STDERR", Value::Int(2)),
+        ("CONNECTION_ABORTED", Value::Int(1)),
+        ("CONNECTION_NORMAL", Value::Int(0)),
+        ("CONNECTION_TIMEOUT", Value::Int(2)),
         ("STR_PAD_RIGHT", Value::Int(1)),
         ("STR_PAD_LEFT", Value::Int(0)),
         ("STR_PAD_BOTH", Value::Int(2)),

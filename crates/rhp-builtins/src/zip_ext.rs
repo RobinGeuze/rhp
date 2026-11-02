@@ -685,6 +685,11 @@ thread_local! {
     static ARCHIVES: RefCell<HashMap<i64, Archive>> = RefCell::new(HashMap::new());
 }
 
+/// Drop every open archive (a new request: object ids restart).
+pub(crate) fn reset_state() {
+    ARCHIVES.with(|t| t.borrow_mut().clear());
+}
+
 pub fn insert(id: i64, a: Archive) {
     ARCHIVES.with(|t| t.borrow_mut().insert(id, a));
 }

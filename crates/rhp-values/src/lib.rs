@@ -61,6 +61,16 @@ thread_local! {
     static DROPPED_STREAMS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Forget queued stream drops (a new engine on this thread: resource ids
+/// restart, so a stale id would free the new request's stream).
+pub fn reset_dropped_streams() {
+    let _ = DROPPED_STREAMS.try_with(|q| {
+        if let Ok(mut q) = q.try_borrow_mut() {
+            q.clear();
+        }
+    });
+}
+
 impl Drop for ResourceData {
     fn drop(&mut self) {
         // Streams and processes are freed on their last reference (php's

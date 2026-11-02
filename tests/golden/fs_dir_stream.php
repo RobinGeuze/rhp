@@ -1,6 +1,6 @@
 <?php
 // opendir/readdir/rewinddir/closedir, dir() + Directory, scandir.
-// (Wrapped in a function + try so the php-free oracle skips this fixture.)
+// (Everything runs inside main(), wrapped in a try.)
 function rm_tree($p) {
     if (is_link($p) || is_file($p)) { unlink($p); return; }
     if (!is_dir($p)) return;

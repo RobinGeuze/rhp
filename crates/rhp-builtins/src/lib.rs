@@ -172,7 +172,8 @@ pub enum ObCall {
     SapiFlush,
 }
 
-/// The interpreter surface a builtin may use. Implemented by the VM and the oracle.
+/// The interpreter surface a builtin may use. Implemented by the VM (and by
+/// the minimal hosts in unit tests, which rely on the default bodies).
 pub trait Host {
     /// Append bytes to the single output sink (stdout / output buffer).
     fn write_out(&mut self, bytes: &[u8]);
@@ -180,7 +181,7 @@ pub trait Host {
     /// A userland output-control call (main/output.c's `ob_*`, `flush`),
     /// arguments already parsed; the host owns the handler stack and raises
     /// php's notices. Default: unsupported (hosts without output buffering,
-    /// e.g. the oracle).
+    /// e.g. the unit-test hosts).
     fn output_control(&mut self, _call: ObCall) -> Result<Value, Thrown> {
         Err(Thrown::unsupported(
             "output buffering",
@@ -653,8 +654,8 @@ pub trait Host {
 
     // --- stream layer (file:// / phar:// / …) --------------------------------
     // Defaults implement only `file://` via std::fs, so hosts without a wrapper
-    // registry (the oracle) still read local files; the VM overrides these to
-    // dispatch through its per-run wrapper registry.
+    // registry (the unit-test hosts) still read local files; the VM overrides
+    // these to dispatch through its per-run wrapper registry.
 
     /// Whole-file read through the stream layer (`file_get_contents`, include).
     fn stream_get_contents(&self, url: &[u8]) -> Option<Vec<u8>> {

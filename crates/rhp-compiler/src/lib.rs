@@ -6986,7 +6986,8 @@ fn non_const_err() -> Thrown {
     )
 }
 
-/// Fold a literal AST node to its runtime value (same rules as the oracle).
+/// Fold a literal AST node to its runtime value (php's scanner rules: an
+/// integer literal past `i64::MAX` becomes a float).
 fn literal_value(lit: &Literal) -> Value {
     match lit {
         Literal::Integer(i) => match i.value {

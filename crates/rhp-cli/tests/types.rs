@@ -1,7 +1,6 @@
 //! Differential tests for `declare(strict_types=1)` enforcement and coercive-mode
 //! parameter/return type coercion. Compares the built `rhp` binary against the
-//! real `php`. Skips when no `php` is on PATH. (These live here, not in the golden
-//! suite, because the tree-walker oracle does not enforce types.)
+//! real `php`. Skips when no `php` is on PATH.
 
 use std::path::Path;
 use std::process::Command;

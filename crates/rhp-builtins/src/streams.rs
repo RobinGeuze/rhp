@@ -290,9 +290,10 @@ pub fn file_wrapper() -> Rc<dyn StreamWrapper> {
     Rc::new(FileWrapper)
 }
 
-// --- defaults for hosts without a registry (the oracle) ----------------------
-// These implement only `file://` via std::fs, so the tree-walker keeps working
-// on plain local paths; any non-file scheme is unsupported there.
+// --- plain-file defaults -----------------------------------------------------
+// These implement only `file://` via std::fs; any other scheme fails. They back
+// the `Host` stream defaults (hosts without a wrapper registry) and the inner
+// file access of the compress.zlib:// and compress.bzip2:// wrappers.
 
 pub fn default_get_contents(url: &[u8]) -> Option<Vec<u8>> {
     let (scheme, _) = split_scheme(url);

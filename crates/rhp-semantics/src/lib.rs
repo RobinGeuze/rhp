@@ -1,8 +1,8 @@
-//! PHP operator + value-operation semantics, shared by both execution tiers
-//! (the bytecode VM and the tree-walking oracle) so neither reimplements them.
+//! PHP operator + value-operation semantics, shared by the bytecode VM, the
+//! compiler (constant folding) and `rhp-builtins` so none reimplements them.
 //!
 //! Depends only on `rhp-values` (which now owns `Thrown`), so it sits below
-//! both tiers and below `rhp-builtins`.
+//! the VM, the compiler and `rhp-builtins`.
 
 use rhp_values::conv;
 use rhp_values::{PhpArray, Value};

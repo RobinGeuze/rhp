@@ -429,7 +429,7 @@ fn lookup<T>(map: &HashMap<usize, Entry<T>>, h: &ObjectHandle) -> Option<Rc<RefC
 fn new_object(host: &mut dyn Host, class: &str) -> Result<(Value, ObjectHandle), Thrown> {
     let v = host
         .instantiate(class.as_bytes(), Vec::new())
-        // A host without object support (the tree-walking oracle) skips curl.
+        // A host without an object model (a unit-test host) cannot run curl.
         .ok_or_else(|| Thrown::unsupported("curl", format!("cannot instantiate {class}")))?;
     let h = obj_handle(&v).ok_or_else(|| Thrown::error("Error", "curl: bad object"))?;
     // The handle classes use zend_objects_not_comparable.

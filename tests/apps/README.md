@@ -1,8 +1,8 @@
 # Framework fixture apps
 
 Real, pinned framework applications that rhp is measured against: today a
-compile-only ratchet (`rhp-difftest lint`), later the request harness
-(`rhp --cgi` / `rhp -S` diffed against php).
+compile-only ratchet (`rhp-difftest lint`) and the request diff
+(`rhp-difftest app`: `rhp --cgi` against php-cgi).
 
 | app           | framework                                   | notes                                   |
 |---------------|---------------------------------------------|-----------------------------------------|
@@ -52,6 +52,78 @@ today (keys are `<scanned dir name>/<path>`, e.g. `vendor/symfony/...`).
 - `--php-lint` additionally runs `php -l` on each refused file and sets aside
   the ones php rejects too (broken or deliberately invalid vendor files).
 
+## The request diff (`rhp-difftest app`)
+
+```sh
+cargo build --release -p rhp-cli -p rhp-difftest
+python3 tests/apps/apps.py diff                       # --check-known, per app
+target/release/rhp-difftest app laravel-13 --out /tmp/appdiff -v
+target/release/rhp-difftest app symfony-7.4 --candidate "$(command -v php-cgi)"  # self-check
+```
+
+Each app's `requests.toml` is its request corpus: `[[request]]` entries with
+an `id`, `method`, `path` (plus query), `headers` (`"Name: value"` strings),
+`body`, `content_type` and an optional `flow`. Requests in one flow share a
+cookie jar; other requests start with an empty one. Header values and bodies
+can use `{cookie:NAME}`, which is the jar's URL-decoded value, and
+`{cookie-plain:NAME}`, which is the decrypted Laravel cookie value.
+
+### How a run works
+
+1. The harness snapshots the app's writable `state` dirs, and produces the
+   pristine state (see warm-up below).
+2. It runs the whole corpus through the reference
+   `php-cgi -n -d opcache.enable=0`, then through the candidate
+   `rhp --cgi -n -d opcache.enable=0`. The runs are sequential and use the
+   same absolute app path. The state is restored from the pristine snapshot
+   before each engine. Every request gets `env -i` plus `PATH`, `HOME`,
+   `TZ=UTC`, `LANG=C` and the CGI variables (`SCRIPT_FILENAME`,
+   `SCRIPT_NAME`, `REQUEST_URI`, `QUERY_STRING`, `REQUEST_METHOD`,
+   `HTTP_HOST`, `SERVER_*`, `REMOTE_ADDR`, `CONTENT_TYPE`/`LENGTH`,
+   `HTTP_COOKIE`, `HTTP_*` from `headers`, `REDIRECT_STATUS=1` and
+   `DOCUMENT_ROOT`). The body goes on stdin. Each engine keeps its own cookie
+   jar: php's cookies are never replayed to rhp.
+3. Responses are parsed into a status, an ordered list of headers, the body
+   and stderr. Named rules then normalize them, and the report lists the
+   rules that fired:
+
+   | rule | what it does |
+   |------|--------------|
+   | `date-header` | Rewrites `Date`, `Last-Modified` and `Expires` values to `<HTTPDATE>` |
+   | `cookie-expires` | Rewrites the `expires=` attribute of a `Set-Cookie` to `<DATE>`. `Max-Age` is kept |
+   | `php-version` | Rewrites php's version in `X-Powered-By` to the candidate's |
+   | `laravel-cookie` | Decrypts encrypted cookies with the `APP_KEY` from `.env` (AES-256-CBC, with the MAC checked) and shows them as `decrypted(<prefix>\|<value>)` |
+   | `token-rename` | Renames each capture of the corpus `tokens` patterns, and each decrypted cookie value, to `<TOKn>`. Numbering follows the order of first appearance in the run, so equal tokens stay equal across headers, bodies, steps and written files |
+   | `log-timestamp` | Masks ISO 8601 and `Y-m-d H:i:s` timestamps in stderr and in written files |
+   | `mask:<name>` | Applies a corpus `[[mask]]` (`name`, `pattern`, `replace`, `in = ["body", "headers", "stderr", "files"]`) |
+
+4. The files each engine created, changed or deleted under the state dirs,
+   such as compiled Blade views, the Twig cache and session files, are
+   normalized the same way and compared as the pseudo-request `@files`.
+
+When the run ends, the state dirs are put back as they were found.
+`--check-known known-passing-requests.txt` fails only when a listed id is not
+`SAME`. Ids that are newly `SAME` are printed as hints. Both lists start
+empty, because rhp can't serve the apps yet. `--write-known` regenerates a
+list. Run it twice to check determinism.
+
+### Warm-up: the Symfony prod cache
+
+A cache warmed by `bin/console cache:warmup` is built by the CLI SAPI: the
+container is compiled under `PHP_SAPI=cli`, and the cache adapter is chosen
+by `PhpFilesAdapter::isSupported()`, which looks at the SAPI and the opcache
+state. So the Symfony corpus sets `warmup = "corpus"`. The harness first
+clears `var/cache` (what setup's CLI warm-up left), then runs the whole
+corpus once through php-cgi. That snapshot is the pristine state for both
+engines, and is the same thing a deploy does: warm once, serve many.
+
+The snapshot then drops `var/cache/prod/twig` (`warmup_drop`), so each engine
+compiles the Twig templates itself and the compiled output is diffed under
+`@files`. With the container warm, rhp only has to *serve* the app; whether it
+can also *compile* the container is a separate check for later, run from an
+empty cache. Laravel uses `warmup = "none"`: its views compile lazily, so
+each engine compiles them.
+
 ## Adding a framework version
 
 1. Create the app in `tests/apps/<framework>-<version>/`, e.g.
@@ -67,7 +139,10 @@ today (keys are `<scanned dir name>/<path>`, e.g. `vendor/symfony/...`).
    php; then `cargo build --release -p rhp-difftest` and
    `python3 tests/apps/apps.py lint <name> --write-known` to create its
    `known-refused.txt`.
-5. Commit the app files, the lockfile, the list and the manifest entry. The CI
+5. Copy `requests.toml` and an empty `known-passing-requests.txt` from the
+   existing app of that framework. `python3 tests/apps/apps.py diff <name> --
+   --candidate "$(command -v php-cgi)"` must report every request `SAME`.
+6. Commit the app files, the lockfile, the lists and the manifest entry. The CI
    matrix picks the new entry up automatically.
 
 ## Findings recorded when the fixtures were created

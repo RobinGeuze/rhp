@@ -6,11 +6,14 @@
     python3 tests/apps/apps.py setup [APP...]       # composer install + setup
     python3 tests/apps/apps.py smoke [APP...]       # console --version + routes under php -S
     python3 tests/apps/apps.py lint [APP...] [--write-known] [-- LINT ARGS]
+    python3 tests/apps/apps.py diff [APP...] [--write-known] [-- APP ARGS]
 
 With no APP, every app in the manifest. `lint` runs `rhp-difftest lint` over
 the app's `lint` paths with `--check-known <known_refused>` (or
-`--write-known` to regenerate the list); the binary is $RHP_DIFFTEST or
-target/release/rhp-difftest. CI runs exactly these commands.
+`--write-known` to regenerate the list). `diff` runs `rhp-difftest app`
+(the app's requests.toml through php-cgi and `rhp --cgi`) with
+`--check-known <known_requests>` (or `--write-known`). The binary is
+$RHP_DIFFTEST or target/release/rhp-difftest. CI runs exactly these commands.
 
 Needs python >= 3.11 (tomllib), php and composer.
 """
@@ -156,6 +159,22 @@ def cmd_lint(apps, write_known, extra):
         sys.exit(f"lint failed for: {', '.join(failed)}")
 
 
+def cmd_diff(apps, write_known, extra):
+    exe = os.environ.get("RHP_DIFFTEST") or str(REPO / "target/release/rhp-difftest")
+    failed = []
+    for a in apps:
+        d = HERE / a["name"]
+        known = d / a.get("known_requests", "known-passing-requests.txt")
+        cmd = [exe, "app", str(d)]
+        cmd += ["--write-known" if write_known else "--check-known", str(known)]
+        cmd += extra
+        print(f"[{a['name']}] $ {shlex.join(cmd)}", flush=True)
+        if subprocess.run(cmd).returncode != 0:
+            failed.append(a["name"])
+    if failed:
+        sys.exit(f"app diff failed for: {', '.join(failed)}")
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
@@ -178,6 +197,8 @@ def main(argv):
         cmd_smoke(select(apps, names))
     elif sub == "lint":
         cmd_lint(select(apps, names), write_known, extra)
+    elif sub == "diff":
+        cmd_diff(select(apps, names), write_known, extra)
     else:
         sys.exit(f"unknown command {sub!r}; see --help")
 

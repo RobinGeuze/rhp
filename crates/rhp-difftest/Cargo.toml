@@ -20,4 +20,10 @@ rhp-vm = { path = "../rhp-vm" }
 rhp-values = { path = "../rhp-values" }
 libc = "0.2"
 pcre2 = "0.2"
+toml = "0.9"
+aes = "0.8"
+cbc = "0.1"
+hmac = "0.13"
+sha2 = "0.11"
+base64 = "0.22"
 flate2 = { version = "1.1", default-features = false, features = ["zlib"] }

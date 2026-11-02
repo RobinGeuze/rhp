@@ -21,6 +21,7 @@ pub mod streams;
 pub mod stub_params;
 
 pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};
+pub use ext::sockets::is_socket_object;
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};
 
 mod argparse;
@@ -97,6 +98,13 @@ mod sysmisc_fns;
 mod tzdb;
 mod webenc_fns;
 pub mod zip_ext;
+
+/// The engine's object free hook (`rhp_values::set_object_free_hook`): lets
+/// the extensions with per-object native state release it.
+pub fn object_freed(id: u32) {
+    zip_ext::object_freed(id);
+    ext::sockets::object_freed();
+}
 
 /// `zend_compare` from inside a builtin, with the host's object semantics.
 pub fn host_compare(

@@ -28,7 +28,12 @@ fn deref(v: &Value) -> Value {
 /// as php holds a reference) and its last error.
 struct Sock {
     obj: Weak<RefCell<ObjectData>>,
+    /// Held so the resource stays alive, as php's `zstream` reference does.
+    #[allow(dead_code)]
     stream: Value,
+    /// php's `bsd_socket`: the stream's descriptor number at import time
+    /// (still used after an `fclose` of the stream, as php does).
+    fd: i32,
     error: i32,
 }
 
@@ -54,35 +59,66 @@ fn obj_handle(v: &Value) -> Option<ObjectHandle> {
     }
 }
 
-/// The descriptor behind a `Socket` argument (TypeError for anything else).
+/// The object free hook's part for sockets: drop the entries of `Socket`s
+/// that just died, releasing their stream reference then (php frees the
+/// socket, and with it its `zstream` reference, at refcount 0) instead of
+/// whenever the next import tidies up — by which time, with several runs
+/// on one thread, the stream id may name another run's resource.
+pub(crate) fn object_freed() {
+    let dead: Vec<Sock> = REG
+        .try_with(|r| {
+            let Ok(mut r) = r.try_borrow_mut() else {
+                return Vec::new();
+            };
+            if r.socks.is_empty() {
+                return Vec::new();
+            }
+            let keys: Vec<usize> = r
+                .socks
+                .iter()
+                .filter(|(_, s)| s.obj.strong_count() == 0)
+                .map(|(k, _)| *k)
+                .collect();
+            keys.iter().filter_map(|k| r.socks.remove(k)).collect()
+        })
+        .unwrap_or_default();
+    // Released outside the registry borrow.
+    drop(dead);
+}
+
+/// Is `h` a `Socket` of ours?
+pub fn is_socket_object(h: &ObjectHandle) -> bool {
+    lookup(h).is_some()
+}
+
+/// The registry key and descriptor of the `Socket` object `h`.
+fn lookup(h: &ObjectHandle) -> Option<(usize, i32)> {
+    let k = key_of(h);
+    REG.with(|r| {
+        r.borrow().socks.get(&k).and_then(|s| {
+            let live = s.obj.upgrade()?;
+            Rc::ptr_eq(&live, h).then_some((k, s.fd))
+        })
+    })
+}
+
+/// The descriptor behind a `Socket` argument (TypeError for anything else;
+/// `nullable` is php's `?Socket`).
 fn socket_arg(
     host: &dyn Host,
     args: &[Value],
     i: usize,
     fname: &str,
+    nullable: bool,
 ) -> Result<(usize, i32), Thrown> {
     let v = args.get(i).map(deref).unwrap_or(Value::Null);
-    if let Some(h) = obj_handle(&v) {
-        let k = key_of(&h);
-        let stream = REG.with(|r| {
-            r.borrow().socks.get(&k).and_then(|s| {
-                let live = s.obj.upgrade()?;
-                Rc::ptr_eq(&live, &h).then(|| s.stream.clone())
-            })
-        });
-        if let Some(s) = stream {
-            return match host.stream_fd(&s) {
-                Some(fd) => Ok((k, fd)),
-                None => Err(Thrown::error(
-                    "Error",
-                    "Cannot perform operation on closed socket",
-                )),
-            };
-        }
+    if let Some(found) = obj_handle(&v).and_then(|h| lookup(&h)) {
+        return Ok(found);
     }
     Err(Thrown::type_error(format!(
-        "{fname}(): Argument #{} ($socket) must be of type Socket, {} given",
+        "{fname}(): Argument #{} ($socket) must be of type {}Socket, {} given",
         i + 1,
+        if nullable { "?" } else { "" },
         zpp_type_name(host, &v)
     )))
 }
@@ -148,10 +184,15 @@ fn fn_socket_import_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value,
         )?;
         return Ok(Value::Bool(false));
     }
+    let Some(fd) = host.stream_fd(&stream) else {
+        return Ok(Value::Bool(false));
+    };
     let v = host
         .instantiate(b"Socket", Vec::new())
         .ok_or_else(|| Thrown::unsupported(fname, "cannot instantiate Socket"))?;
     let h = obj_handle(&v).ok_or_else(|| Thrown::error("Error", "sockets: bad object"))?;
+    // Socket uses zend_objects_not_comparable.
+    rhp_semantics::ops::set_not_comparable_hook(super::not_comparable_object);
     REG.with(|r| {
         let mut r = r.borrow_mut();
         r.socks.retain(|_, s| s.obj.strong_count() > 0);
@@ -160,6 +201,7 @@ fn fn_socket_import_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value,
             Sock {
                 obj: Rc::downgrade(&h),
                 stream,
+                fd,
                 error: 0,
             },
         );
@@ -187,7 +229,7 @@ fn getsockopt_raw<T>(fd: i32, level: i32, name: i32, val: &mut T) -> Result<(), 
 
 fn fn_socket_get_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "socket_get_option";
-    let (key, fd) = socket_arg(host, args, 0, fname)?;
+    let (key, fd) = socket_arg(host, args, 0, fname, false)?;
     let level = zpp_long(host, args, 1, fname, "level")? as i32;
     let opt = zpp_long(host, args, 2, fname, "option")? as i32;
     let fail = |host: &mut dyn Host, e: i32| -> Result<Value, Thrown> {
@@ -245,7 +287,7 @@ fn array_long(host: &mut dyn Host, a: &PhpArray, k: &str, fname: &str) -> Result
 
 fn fn_socket_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "socket_set_option";
-    let (key, fd) = socket_arg(host, args, 0, fname)?;
+    let (key, fd) = socket_arg(host, args, 0, fname, false)?;
     let level = zpp_long(host, args, 1, fname, "level")? as i32;
     let opt = zpp_long(host, args, 2, fname, "option")? as i32;
     let value = args.get(3).map(deref).unwrap_or(Value::Null);
@@ -306,7 +348,7 @@ fn fn_socket_last_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     match args.first().map(deref) {
         None | Some(Value::Null) => Ok(Value::Int(REG.with(|r| r.borrow().last_error) as i64)),
         Some(_) => {
-            let (key, _) = socket_arg(host, args, 0, "socket_last_error")?;
+            let (key, _) = socket_arg(host, args, 0, "socket_last_error", true)?;
             Ok(Value::Int(
                 REG.with(|r| r.borrow().socks.get(&key).map_or(0, |s| s.error)) as i64,
             ))
@@ -318,7 +360,7 @@ fn fn_socket_clear_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     match args.first().map(deref) {
         None | Some(Value::Null) => REG.with(|r| r.borrow_mut().last_error = 0),
         Some(_) => {
-            let (key, _) = socket_arg(host, args, 0, "socket_clear_error")?;
+            let (key, _) = socket_arg(host, args, 0, "socket_clear_error", true)?;
             REG.with(|r| {
                 if let Some(s) = r.borrow_mut().socks.get_mut(&key) {
                     s.error = 0;

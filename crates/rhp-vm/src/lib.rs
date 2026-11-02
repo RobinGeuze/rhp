@@ -2262,7 +2262,7 @@ impl Vm {
         for reg in builtins::stream_wrappers() {
             wrappers.insert(reg.scheme.as_bytes().to_vec(), (reg.factory)());
         }
-        rhp_values::set_object_free_hook(builtins::zip_ext::object_freed);
+        rhp_values::set_object_free_hook(builtins::object_freed);
         Vm {
             out: Vec::new(),
             prop_guards: Default::default(),
@@ -6145,7 +6145,8 @@ impl Vm {
                             .class(cls)
                             .name
                             .as_bytes()
-                            .eq_ignore_ascii_case(b"WeakReference");
+                            .eq_ignore_ascii_case(b"WeakReference")
+                        || rhp_builtins::is_socket_object(&h);
                     if uncloneable {
                         return Err(Thrown::error(
                             "Error",

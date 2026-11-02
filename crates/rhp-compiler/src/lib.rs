@@ -671,6 +671,9 @@ fn compile_program(
         // A top-level class is hoisted at load when its parent/interfaces
         // are available; otherwise it is declared when this point is reached.
         if is_class_like(stmt) {
+            // php's DECLARE_CLASS line: the class keyword's (the decl's
+            // line_start), not the attributes' or modifiers'.
+            c.cur_line = classes[num_prelude_classes + top_class_idx as usize].decl_line;
             c.emit(Instr::DeclareClass {
                 class_idx: top_class_idx,
             });
@@ -798,7 +801,7 @@ fn compile_class(
         enum_cases: Vec::new(),
         enum_backing: None,
         decl_file: decl_file(),
-        decl_line: line_of(class.name.span.start.offset),
+        decl_line: line_of(class.class.span.start.offset),
     })
 }
 
@@ -844,7 +847,7 @@ fn compile_anon_class(
     let m = compile_members(&ac.members, sigs, &name)?;
     Ok(ClassProto {
         decl_file: decl_file(),
-        decl_line: line_of(ac.span().start.offset),
+        decl_line: line_of(ac.class.span.start.offset),
         name,
         kind: ClassKind::Class,
         flags,
@@ -923,7 +926,7 @@ fn compile_enum(
         enum_cases: m.enum_cases,
         enum_backing: backing,
         decl_file: decl_file(),
-        decl_line: line_of(en.name.span.start.offset),
+        decl_line: line_of(en.r#enum.span.start.offset),
     })
 }
 
@@ -1140,7 +1143,7 @@ fn compile_trait(
     let m = m?;
     Ok(ClassProto {
         decl_file: decl_file(),
-        decl_line: line_of(t.name.span.start.offset),
+        decl_line: line_of(t.r#trait.span.start.offset),
         name,
         kind: ClassKind::Trait,
         flags: ClassFlags::default(),
@@ -1716,7 +1719,7 @@ fn compile_interface(
         enum_cases: Vec::new(),
         enum_backing: None,
         decl_file: decl_file(),
-        decl_line: line_of(iface.name.span.start.offset),
+        decl_line: line_of(iface.interface.span.start.offset),
     })
 }
 
@@ -2460,6 +2463,7 @@ impl ProtoBuilder {
 
     /// Record a nested class declaration and emit its `DeclareClass`.
     fn emit_cond_class(&mut self, proto: ClassProto) {
+        self.cur_line = proto.decl_line;
         let class_idx = COND_CLASSES.with(|c| {
             let mut c = c.borrow_mut();
             c.0.push(proto);
@@ -4273,6 +4277,9 @@ impl ProtoBuilder {
         let (key, value) = match y {
             Yield::Value(v) => {
                 let value = match v.value {
+                    // A by-reference generator yields a reference to the
+                    // variable / element / property (ZEND_YIELD, BP_VAR_W).
+                    Some(e) if self.returns_ref => self.compile_ref_source(e)?,
                     Some(e) => self.compile_expr(e)?,
                     None => {
                         let t = self.alloc_temp();
@@ -4284,7 +4291,11 @@ impl ProtoBuilder {
             }
             Yield::Pair(p) => {
                 let key = self.compile_expr(p.key)?;
-                let value = self.compile_expr(p.value)?;
+                let value = if self.returns_ref {
+                    self.compile_ref_source(p.value)?
+                } else {
+                    self.compile_expr(p.value)?
+                };
                 (key, value)
             }
             Yield::From(yf) => return self.compile_yield_from(yf.iterator),

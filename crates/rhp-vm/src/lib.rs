@@ -48,6 +48,15 @@ enum MagicSplit {
     Offset(usize, ObjectHandle),
 }
 
+/// How an ArrayAccess element is fetched below a nested write (php's
+/// BP_VAR_W / BP_VAR_RW / BP_VAR_UNSET).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DimFetch {
+    W,
+    Rw,
+    Unset,
+}
+
 /// SAPI-injected callback that parses + compiles an included file's source into
 /// a `Program`, keeping the VM compiler-agnostic (see the `includer` field).
 type Includer = Box<dyn FnMut(&str, &[u8]) -> Result<Program, IncludeError>>;
@@ -2777,9 +2786,21 @@ impl Vm {
                         ),
                         None => "global scope".into(),
                     };
+                    // A public readonly property is implicitly protected(set):
+                    // php's asymmetric-visibility error.
+                    let decl = pe.declaring_class;
+                    let related = scope.is_some_and(|s| {
+                        self.class(s).ancestors.contains(&decl)
+                            || self.class(decl).ancestors.contains(&s)
+                    });
+                    let vis = if pe_public_implicit_set(self, cls, k) && !related {
+                        "protected(set) readonly"
+                    } else {
+                        "readonly"
+                    };
                     return Err(Thrown::error(
                         "Error",
-                        format!("Cannot unset readonly property {cname}::${p} from {from}"),
+                        format!("Cannot unset {vis} property {cname}::${p} from {from}"),
                     ));
                 }
             }
@@ -3772,6 +3793,12 @@ impl Vm {
             return Ok(());
         }
         self.dtor_pending_checks = 0;
+        self.collect_released_now()
+    }
+
+    /// Destruct every tracked object nothing references any more (a full
+    /// scan, repeated until no destructor releases further objects).
+    fn collect_released_now(&mut self) -> Result<(), Thrown> {
         loop {
             if !self.destructibles.iter().any(|h| Rc::strong_count(h) == 1) {
                 return Ok(());
@@ -3864,6 +3891,12 @@ impl Vm {
                 let mut p = (*main.proto).clone();
                 p.debug.file = rhp_values::PhpStr::from("");
                 main.pc = p.code.len();
+                // {main}'s temporaries are dead once it finished (php frees
+                // TMP/VAR slots as it goes): only its variables keep values.
+                let ncv = (p.num_cvs as usize).min(main.regs.len());
+                for r in &mut main.regs[ncv..] {
+                    *r = Value::Null;
+                }
                 main.proto = Rc::new(p);
                 self.stack.push(main);
             }
@@ -3901,6 +3934,18 @@ impl Vm {
                 if Rc::strong_count(&cell) != 2 + frame_slots {
                     continue; // (+1: our clone)
                 }
+                // A Closure is an object too: freeing the last one releases
+                // what it captured.
+                let sole_closure =
+                    matches!(&*cell.borrow(), Value::Closure(c) if Rc::strong_count(c) == 1);
+                if sole_closure {
+                    self.globals.shift_remove(&name[..]);
+                    let v = std::mem::replace(&mut *cell.borrow_mut(), Value::Null);
+                    drop(v);
+                    self.collect_released_now()?;
+                    changed = true;
+                    continue;
+                }
                 let h = match &*cell.borrow() {
                     Value::Object(h) => h.clone(),
                     _ => continue,
@@ -3922,6 +3967,8 @@ impl Vm {
                     self.call_destructor(h)?;
                 }
                 drop(v);
+                // Objects only the freed one held die with it.
+                self.collect_released_now()?;
                 changed = true;
             }
             if !changed {
@@ -4031,6 +4078,7 @@ impl Vm {
     /// Read the value at the current cursor (root + steps) for a compound
     /// assignment / increment: a magic property along the way reads via `__get`.
     fn cursor_read(&mut self, top: usize) -> Result<Value, Thrown> {
+        self.cursor_settle_offsets(top)?;
         let steps = std::mem::take(&mut self.cursor_steps);
         let r = self.cursor_read_magic(top, &steps);
         self.cursor_steps = steps;
@@ -4039,7 +4087,28 @@ impl Vm {
 
     fn cursor_read_magic(&mut self, top: usize, steps: &[CursorStep]) -> Result<Value, Thrown> {
         match self.cursor_magic_split(top, steps) {
-            MagicSplit::Plain => Ok(self.cursor_read_steps(top, steps)),
+            MagicSplit::Plain => {
+                // `$o->typed .= …` / `$o->typed++` on an uninitialized typed
+                // property: the read is php's "must not be accessed" Error.
+                if let Some((CursorStep::Prop(name), parent)) = steps.split_last() {
+                    if let Value::Object(h) = deref(&self.cursor_read_steps(top, parent)) {
+                        let cls = h.borrow().class;
+                        let scope = self.stack[top].defining_class;
+                        if let PropRes::Slot(k) =
+                            classes::resolve_prop(&self.classes, cls, scope, name)
+                        {
+                            // (Absent and typed: never initialized, or unset
+                            // with no `__get` to defer to.)
+                            if !h.borrow().properties.contains_key(&k) {
+                                if let Some(e) = self.typed_slot(cls, &k) {
+                                    return Err(e);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(self.cursor_read_steps(top, steps))
+            }
             MagicSplit::Leaf(h, name) => self.prop_fetch(top, Value::Object(h), name),
             MagicSplit::Nested(i, h, name) => {
                 let got = self.prop_fetch(top, Value::Object(h), name)?;
@@ -4055,7 +4124,7 @@ impl Vm {
                 if i + 1 == steps.len() {
                     return Ok(deref(&self.aa_offset_get(&h, key)?));
                 }
-                let cell = self.aa_fetch_w(&h, key)?;
+                let cell = self.aa_fetch_w(&h, &steps[i], key, DimFetch::Rw)?;
                 let rest = &steps[i + 1..];
                 self.with_cursor_root(cell, |vm| vm.cursor_read_magic(top, rest))
             }
@@ -4200,7 +4269,7 @@ impl Vm {
             MagicSplit::Nested(i, h, name) => (i, h, name),
             MagicSplit::Offset(i, h) => {
                 let key = aa_key(&steps[i]).unwrap_or(Value::Null);
-                let cell = self.aa_fetch_w(&h, key)?;
+                let cell = self.aa_fetch_w(&h, &steps[i], key, DimFetch::W)?;
                 let rest = &steps[i + 1..];
                 if rest.is_empty() {
                     return Ok(cell);
@@ -4306,7 +4375,7 @@ impl Vm {
                     }
                     return Ok(());
                 }
-                let cell = self.aa_fetch_w(&h, key)?;
+                let cell = self.aa_fetch_w(&h, &steps[i], key, DimFetch::W)?;
                 let rest = &steps[i + 1..];
                 return self.with_cursor_root(cell, |vm| vm.cursor_write(top, rest, v));
             }
@@ -4316,7 +4385,7 @@ impl Vm {
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
         };
-        match &self.cursor_root {
+        let r = match &self.cursor_root {
             CursorRoot::Cv(r) => {
                 let r = *r as usize;
                 assign_path(&mut self.stack[top].regs[r], steps, v, &cx)
@@ -4326,7 +4395,13 @@ impl Vm {
                 let r = assign_path(&mut rc.borrow_mut(), steps, v, &cx);
                 r
             }
+        };
+        // The overwritten element may have held the last reference to an
+        // object: its destructor runs before the next statement, as in php.
+        if !self.destructibles.is_empty() {
+            self.dtor_check = true;
         }
+        r
     }
 
     /// Source line of the instruction currently executing in frame `top`.
@@ -5034,7 +5109,7 @@ impl Vm {
                     }
                     return Ok(());
                 }
-                let cell = self.aa_fetch_w(&h, key)?;
+                let cell = self.aa_fetch_w(&h, &steps[i], key, DimFetch::Unset)?;
                 let rest = &steps[i + 1..];
                 return self.with_cursor_root(cell, |vm| vm.cursor_unset(top, rest));
             }
@@ -5051,6 +5126,10 @@ impl Vm {
                 unset_path(&mut rc.borrow_mut(), steps, &cx);
             }
         }
+        // The removed element may have held the last reference to an object.
+        if !self.destructibles.is_empty() {
+            self.dtor_check = true;
+        }
         Ok(())
     }
 
@@ -5063,27 +5142,160 @@ impl Vm {
         }
     }
 
+    /// Before a read-modify-write (compound assignment / `++`) through an
+    /// ArrayAccess object that is not the leaf: fetch that element once (php's
+    /// single FETCH_DIM_RW), and re-root the open cursor at the result so the
+    /// read and the following write both go there.
+    fn cursor_settle_offsets(&mut self, top: usize) -> Result<(), Thrown> {
+        loop {
+            let steps = std::mem::take(&mut self.cursor_steps);
+            match self.cursor_magic_split(top, &steps) {
+                MagicSplit::Offset(i, h) if i + 1 < steps.len() => {
+                    let key = aa_key(&steps[i]).unwrap_or(Value::Null);
+                    let cell = self.aa_fetch_w(&h, &steps[i], key, DimFetch::Rw)?;
+                    self.cursor_root = CursorRoot::Cell(cell);
+                    self.cursor_steps = steps[i + 1..].to_vec();
+                }
+                _ => {
+                    self.cursor_steps = steps;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     /// An ArrayAccess element fetched for writing below it (php's
     /// FETCH_DIM_W/RW/UNSET on an object): `offsetGet`, whose result is the
     /// cell further writes land in — a temporary unless it returned by
     /// reference ("Indirect modification of overloaded element" notice when
     /// that temporary is not an object, which writes could still reach).
-    fn aa_fetch_w(&mut self, h: &ObjectHandle, key: Value) -> Result<Rc<RefCell<Value>>, Thrown> {
+    /// ArrayObject / ArrayIterator without a user `offsetGet` hand out their
+    /// storage element directly (spl_array_get_dimension_ptr).
+    fn aa_fetch_w(
+        &mut self,
+        h: &ObjectHandle,
+        step: &CursorStep,
+        key: Value,
+        mode: DimFetch,
+    ) -> Result<Rc<RefCell<Value>>, Thrown> {
+        if let Some(cell) = self.spl_array_dim_ptr(h, step, &key, mode)? {
+            return Ok(cell);
+        }
         let got = self.aa_offset_get(h, key)?;
         Ok(match got {
             Value::Ref(rc) => rc,
             other => {
                 if !matches!(other, Value::Object(_) | Value::Closure(_)) {
-                    let cls = h.borrow().class;
-                    let msg = format!(
-                        "Indirect modification of overloaded element of {} has no effect",
-                        String::from_utf8_lossy(self.class(cls).name.as_bytes())
-                    );
-                    self.diag(8, &msg)?;
+                    self.indirect_overloaded_notice(h)?;
                 }
                 Rc::new(RefCell::new(other))
             }
         })
+    }
+
+    fn indirect_overloaded_notice(&mut self, h: &ObjectHandle) -> Result<(), Thrown> {
+        let cls = h.borrow().class;
+        let msg = format!(
+            "Indirect modification of overloaded element of {} has no effect",
+            String::from_utf8_lossy(self.class(cls).name.as_bytes())
+        );
+        self.diag(8, &msg)
+    }
+
+    /// The built-in ArrayObject / ArrayIterator class `h` derives from, when
+    /// its `method` is still the built-in one (not overridden in user code).
+    fn spl_array_owner(&self, h: &ObjectHandle, method: &[u8]) -> Option<ClassId> {
+        let cls = h.borrow().class;
+        let m = self.lookup_method(cls, method)?;
+        let owner = self.class(m.defining_class).name.as_bytes();
+        (owner == b"ArrayObject" || owner == b"ArrayIterator").then_some(m.defining_class)
+    }
+
+    /// A reference to the backing array of a built-in ArrayObject /
+    /// ArrayIterator (`owner` declares the storage property).
+    fn spl_array_storage(
+        &mut self,
+        h: &ObjectHandle,
+        owner: ClassId,
+    ) -> Result<Rc<RefCell<Value>>, Thrown> {
+        let cx = PropCtx {
+            classes: &self.classes,
+            scope: Some(owner),
+            called: Some(owner),
+        };
+        let mut obj = Value::Object(h.clone());
+        make_ref_path(&mut obj, &[CursorStep::Prop(PhpStr::from("__s"))], &cx)
+    }
+
+    /// php's spl_array_get_dimension_ptr for a built-in ArrayObject /
+    /// ArrayIterator whose `offsetGet` is not overridden: the storage element
+    /// itself (created as null for a write; "Undefined array key" first for a
+    /// read-modify-write). `None`: not such an object.
+    fn spl_array_dim_ptr(
+        &mut self,
+        h: &ObjectHandle,
+        step: &CursorStep,
+        key: &Value,
+        mode: DimFetch,
+    ) -> Result<Option<Rc<RefCell<Value>>>, Thrown> {
+        let Some(owner) = self.spl_array_owner(h, b"offsetget") else {
+            return Ok(None);
+        };
+        // `$ao[][...]`: no offset — php's uninitialized_zval.
+        if matches!(step, CursorStep::Append) {
+            self.indirect_overloaded_notice(h)?;
+            return Ok(Some(Rc::new(RefCell::new(Value::Null))));
+        }
+        let storage = self.spl_array_storage(h, owner)?;
+        let akey = match deref(key) {
+            Value::Null => {
+                self.diag(
+                    8192,
+                    "Using null as an array offset is deprecated, use an empty string instead",
+                )?;
+                Some(rhp_values::ArrayKey::from_bytes(b""))
+            }
+            k => rhp_values::ArrayKey::from_value(&k),
+        };
+        let Some(akey) = akey else {
+            return Err(Thrown::type_error(format!(
+                "Cannot access offset of type {} on {}",
+                type_lc(key),
+                String::from_utf8_lossy(self.class(h.borrow().class).name.as_bytes())
+            )));
+        };
+        let exists = matches!(&*storage.borrow(), Value::Array(a) if a.get(&akey).is_some());
+        if !exists {
+            match mode {
+                DimFetch::Unset => {
+                    self.indirect_overloaded_notice(h)?;
+                    return Ok(Some(Rc::new(RefCell::new(Value::Null))));
+                }
+                DimFetch::Rw => {
+                    let msg = match array_key_to_value(&akey) {
+                        Value::Int(n) => format!("Undefined array key {n}"),
+                        k => format!(
+                            "Undefined array key \"{}\"",
+                            String::from_utf8_lossy(&conv::to_string_bytes(&k))
+                        ),
+                    };
+                    self.diag(2, &msg)?;
+                }
+                DimFetch::W => {}
+            }
+        }
+        let cx = PropCtx {
+            classes: &self.classes,
+            scope: Some(owner),
+            called: Some(owner),
+        };
+        let mut slot = storage.borrow_mut();
+        make_ref_path(
+            &mut slot,
+            &[CursorStep::Key(array_key_to_value(&akey))],
+            &cx,
+        )
+        .map(Some)
     }
 
     /// Promote a CV slot to a shared reference cell, returning the cell. If the
@@ -5497,6 +5709,7 @@ impl Vm {
                         }
                     };
                     self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                    self.sync_global_cv(top, cv);
                 }
                 Instr::BindStaticOrJmp { cv, name, target } => {
                     let sname = proto.names[name as usize].as_bytes().to_vec();
@@ -5504,6 +5717,7 @@ impl Vm {
                     if let Some(c) = self.statics.get(&key) {
                         let cell = c.clone();
                         self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                        self.sync_global_cv(top, cv);
                         self.stack[top].pc = target as usize;
                     }
                 }
@@ -5517,6 +5731,7 @@ impl Vm {
                         .or_insert_with(|| Rc::new(RefCell::new(v)))
                         .clone();
                     self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                    self.sync_global_cv(top, cv);
                 }
                 Instr::DeclareConst { name, src } => {
                     let cname = proto.names[name as usize].as_bytes().to_vec();
@@ -5662,6 +5877,7 @@ impl Vm {
                     self.cursor_unset(top, &steps)?;
                 }
                 Instr::IncDecLval { dst, pre, delta } => {
+                    self.cursor_settle_offsets(top)?;
                     let steps = std::mem::take(&mut self.cursor_steps);
                     // `$obj[$k]++` on an ArrayAccess object: php fetches the
                     // element for RW (offsetGet) and increments that; there
@@ -5669,7 +5885,7 @@ impl Vm {
                     if let MagicSplit::Offset(i, h) = self.cursor_magic_split(top, &steps) {
                         if i + 1 == steps.len() {
                             let key = aa_key(&steps[i]).unwrap_or(Value::Null);
-                            let cell = self.aa_fetch_w(&h, key)?;
+                            let cell = self.aa_fetch_w(&h, &steps[i], key, DimFetch::Rw)?;
                             let old = deref(&cell.borrow());
                             let new = inc_dec_value(&old, delta as i64);
                             *cell.borrow_mut() = new.clone();
@@ -5823,9 +6039,17 @@ impl Vm {
                         let mut obj = h;
                         let mut traversable = false;
                         while self.class_implements(obj.borrow().class, b"IteratorAggregate") {
+                            // A built-in ArrayObject iterates its storage itself.
+                            if self.spl_array_owner(&obj, b"getiterator").is_some() {
+                                break;
+                            }
                             traversable = true;
                             match self.call_iter_method(&obj, b"getiterator")? {
-                                Value::Object(it) => obj = it,
+                                Value::Object(it)
+                                    if self.class_implements(it.borrow().class, b"Traversable") =>
+                                {
+                                    obj = it
+                                }
                                 _ => {
                                     let cls = obj.borrow().class;
                                     return Err(Thrown::error(
@@ -5850,6 +6074,20 @@ impl Vm {
                             let mut st = PhpArray::new();
                             st.push(Value::Object(obj));
                             st.push(Value::Bool(false));
+                            self.reg_set(top, pos_reg, Value::Array(st));
+                            continue;
+                        }
+                        // ArrayObject / ArrayIterator (unless `current()` is
+                        // overridden): by reference over the backing array.
+                        let spl = self
+                            .spl_array_owner(&obj, b"getiterator")
+                            .or_else(|| self.spl_array_owner(&obj, b"current"));
+                        if let Some(owner) = spl {
+                            // `pos_reg` holds [storage reference, position].
+                            let cell = self.spl_array_storage(&obj, owner)?;
+                            let mut st = PhpArray::new();
+                            st.push(Value::Ref(cell));
+                            st.push(Value::Int(0));
                             self.reg_set(top, pos_reg, Value::Array(st));
                             continue;
                         }
@@ -5884,6 +6122,27 @@ impl Vm {
                     // top of each iteration but the first, then alias the loop
                     // variable to the yielded reference.
                     if let Value::Array(st) = self.reg_get(top, pos_reg) {
+                        // ArrayObject / ArrayIterator storage (see FeResetRef).
+                        if let (Some(Value::Ref(cell)), Some(Value::Int(pos))) = (
+                            st.get_index(0).map(|e| e.1.clone()),
+                            st.get_index(1).map(|e| e.1.clone()),
+                        ) {
+                            let fetched = foreach_promote(&mut cell.borrow_mut(), pos as usize);
+                            match fetched {
+                                Some((k, elem_rc)) => {
+                                    self.bind_ref_cv(top, val_cv, elem_rc);
+                                    if key_cv != Reg::MAX {
+                                        self.cv_assign(top, key_cv, array_key_to_value(&k));
+                                    }
+                                    let mut st = PhpArray::new();
+                                    st.push(Value::Ref(cell));
+                                    st.push(Value::Int(pos + 1));
+                                    self.reg_set(top, pos_reg, Value::Array(st));
+                                }
+                                None => self.stack[top].pc = end as usize,
+                            }
+                            continue;
+                        }
                         let (Some(Value::Object(g)), Some(Value::Bool(fetched))) = (
                             st.get_index(0).map(|e| e.1.clone()),
                             st.get_index(1).map(|e| e.1.clone()),
@@ -6195,6 +6454,9 @@ impl Vm {
                     let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
                     let val = self.reg_get(top, src);
                     self.prop_store(top, o, pname, val)?;
+                    if !self.destructibles.is_empty() {
+                        self.dtor_check = true; // the old value may be released
+                    }
                 }
                 Instr::CallMethodDyn {
                     dst,
@@ -6230,6 +6492,9 @@ impl Vm {
                     let pname = proto.names[name as usize].clone();
                     let val = self.reg_get(top, src);
                     self.prop_store(top, o, pname, val)?;
+                    if !self.destructibles.is_empty() {
+                        self.dtor_check = true; // the old value may be released
+                    }
                 }
                 Instr::IssetDim { dst, arr, key } => {
                     let a = self.reg_get(top, arr);
@@ -6275,11 +6540,17 @@ impl Vm {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     self.prop_unset(top, o, pname)?;
+                    if !self.destructibles.is_empty() {
+                        self.dtor_check = true;
+                    }
                 }
                 Instr::UnsetPropDyn { obj, name } => {
                     let o = self.reg_get(top, obj);
                     let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
                     self.prop_unset(top, o, pname)?;
+                    if !self.destructibles.is_empty() {
+                        self.dtor_check = true;
+                    }
                 }
                 Instr::FetchStaticProp {
                     dst, class, name, ..
@@ -6815,6 +7086,10 @@ impl Vm {
                     // writes reach it; any other value is yielded as is.
                     let val = if proto.returns_ref && value < proto.num_cvs {
                         Value::Ref(self.promote(top, value))
+                    } else if proto.returns_ref {
+                        // A reference made by MakeRef/MakeRefLval, or a plain
+                        // value (php: "Only variable references…" notice).
+                        self.stack[top].regs[value as usize].clone()
                     } else {
                         self.reg_get(top, value)
                     };
@@ -9493,6 +9768,12 @@ fn assign_path(
     value: Value,
     cx: &PropCtx,
 ) -> Result<(), Thrown> {
+    // `lval = &$x` (a `Ref` value at the leaf) rebinds the slot itself: it
+    // does not write through a reference the slot already held.
+    if steps.is_empty() && matches!(value, Value::Ref(_)) {
+        *slot = value;
+        return Ok(());
+    }
     // Descend through a reference to its underlying storage.
     if let Value::Ref(rc) = slot {
         let mut inner = rc.borrow_mut();

@@ -1,0 +1,42 @@
+int(1)
+int(3)
+int(1)
+int(5)
+int(5)
+int(9)
+int(1)
+int(5)
+rebound
+dtor 1
+released
+array(2) {
+  ["a"]=>
+  array(1) {
+    ["x"]=>
+    int(11)
+  }
+  ["n"]=>
+  array(1) {
+    ["m"]=>
+    int(3)
+  }
+}
+array(1) {
+  ["z"]=>
+  string(2) "q!"
+}
+array(3) {
+  [0]=>
+  int(10)
+  [1]=>
+  int(20)
+  [2]=>
+  int(30)
+}
+array(2) {
+  ["a"]=>
+  string(2) "a!"
+  ["b"]=>
+  string(2) "b!"
+}
+dtor 2

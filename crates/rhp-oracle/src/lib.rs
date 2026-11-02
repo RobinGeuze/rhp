@@ -41,6 +41,8 @@ pub struct Interp<'a> {
     bc_scale: i64,
     /// php-cli's response: headers are never stored; sent on first output.
     response: builtins::sapi::Response,
+    /// The running program's source text.
+    source: &'a [u8],
 }
 
 impl Host for Interp<'_> {
@@ -89,6 +91,7 @@ impl<'a> Interp<'a> {
             constants,
             functions: HashMap::new(),
             bc_scale: 0,
+            source: b"",
         }
     }
 
@@ -100,6 +103,7 @@ impl<'a> Interp<'a> {
     /// Run a parsed program to completion. Returns the process exit code.
     /// `program` borrows a `rhp_frontend::Arena` that must outlive the call.
     pub fn run(&mut self, program: &'a Program<'a>) -> Result<i32, Thrown> {
+        self.source = program.source_text;
         // Hoist top-level function declarations.
         for stmt in program.statements.iter() {
             if let Statement::Function(func) = stmt {
@@ -129,7 +133,16 @@ impl<'a> Interp<'a> {
             Statement::Inline(inline) => {
                 // Inline HTML is emitted verbatim; a shebang line is not.
                 if inline.kind.is_text() {
-                    let bytes = inline.value.to_vec();
+                    // A `?>` swallows the one newline right after it.
+                    let start = inline.span.start.offset as usize;
+                    let mut text: &[u8] = inline.value;
+                    if start >= 2 && self.source.get(start - 2..start) == Some(&b"?>"[..]) {
+                        text = text
+                            .strip_prefix(b"\r\n")
+                            .or_else(|| text.strip_prefix(b"\n"))
+                            .unwrap_or(text);
+                    }
+                    let bytes = text.to_vec();
                     self.write_out(&bytes);
                 }
                 Ok(Flow::Normal)

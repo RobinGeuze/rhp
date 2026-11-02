@@ -188,20 +188,25 @@ fn string_out_of_bounds_index_is_empty_string() {
     );
 }
 
-// --- autovivify (lib.rs ~1764-1776): empty string vivifies, scalar errors ---
+// --- autovivify: null vivifies, strings and other scalars error -----------
 
 #[test]
-fn append_to_empty_string_autovivifies_array() {
+fn append_to_empty_string_is_error() {
+    // php 8: `[]` on any string (even "") is "[] operator not supported for strings".
     assert_eq!(
-        run("<?php $x=''; $x[]=5; print_r($x);"),
+        run("<?php $x=''; try { $x[]=5; } catch (\\Error $e) { echo $e->getMessage(); }"),
+        "[] operator not supported for strings"
+    );
+    assert_eq!(
+        run("<?php $x=null; $x[]=5; print_r($x);"),
         "Array\n(\n    [0] => 5\n)\n"
     );
 }
 
 #[test]
-fn append_to_nonempty_string_is_type_error() {
+fn append_to_nonempty_string_is_error() {
     let (_out, class) = run_throws("<?php $s='hi'; $s[]='x';");
-    assert_eq!(class, "TypeError");
+    assert_eq!(class, "Error");
 }
 
 // --- bind_params / required_params (lib.rs ~1901-1939): arg count error ------

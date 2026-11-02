@@ -38,35 +38,37 @@ bcrypt = "0.17"
 argon2 = "0.6"
 password-hash = { version = "0.6", features = ["phc", "alloc"] }
 
-# zlib + phar per-file compression + ZipArchive writing: raw DEFLATE / zlib /
-# gzip. Backed by C zlib (system libz, or libz-sys's bundled copy) rather than
+# zlib + phar per-file compression + ZipArchive: raw DEFLATE / zlib / gzip,
+# CRC-32. Backed by C zlib (system libz, or libz-sys's bundled copy) rather than
 # miniz_oxide so compressed bytes are identical to php's (which links zlib).
 flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
 # Direct zlib calls where php's exact deflateInit2 parameters matter (memLevel 9,
 # sync flushes): gzencode & co., the compress.zlib:// wrapper, ZipArchive.
 libz-sys = "1.1"
 
-# phar per-file bzip2 compression (pure-Rust backend, no libbz2 dependency).
+# bz2 extension, the compress.bzip2:// wrapper, phar and ZipArchive bzip2
+# entries. Not pure Rust: bzip2-sys links C libbz2 (the system one via
+# pkg-config, else its bundled 1.0.8 source), the library php's ext/bz2 wraps,
+# so compressed bytes match php's.
 bzip2 = "0.5"
 
 # openssl extension: pure-Rust X.509 certificate parsing (openssl_x509_parse).
 x509-parser = { version = "0.18", features = ["verify"] }
 
 # HTTP(S) client for the stream http:// / https:// wrappers (rustls TLS with
-# bundled Mozilla roots — no system OpenSSL dependency).
+# bundled Mozilla roots — no system OpenSSL dependency). ext/curl also takes
+# its rustls from here (`ureq::rustls`), so dropping ureq needs a direct
+# rustls dependency.
 ureq = "2.12"
-# URL joining for curl redirects (already in the tree via ureq).
+# ext/curl: parsing request and proxy URLs, resolving redirect Locations
+# (already in the tree via ureq).
 url = "2.5"
-# ext/curl's own HTTP/1.1 transport: the Mozilla roots ureq bundles, plus the
-# brotli / zstd decoders behind CURLOPT_ENCODING (libcurl's "deflate, gzip,
-# br, zstd"). All pure Rust.
+# ext/curl's own HTTP/1.1 transport (over ureq's rustls): the Mozilla roots
+# ureq bundles, plus the brotli / zstd decoders behind CURLOPT_ENCODING
+# (libcurl's "deflate, gzip, br, zstd"; deflate/gzip go through flate2).
 webpki-roots = "0.26"
 brotli-decompressor = "4"
 ruzstd = "0.8"
-
-# zip extension: reading/extracting .zip archives (ZipArchive). Pure-Rust
-# (deflate via the same miniz_oxide backend as flate2).
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 # CSPRNG for random_bytes/random_int/mt_rand.
 getrandom = "0.2"

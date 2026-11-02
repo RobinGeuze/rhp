@@ -55,3 +55,10 @@ try { foreach ($m as $v) {} } catch (InvalidArgumentException $e) { echo $e->get
 $fi = new SplFileInfo('x');
 try { $fi->setInfoClass('stdClass'); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
 try { $fi->setFileClass('SplFileInfo'); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+
+// Iteration reads the live elements (php-cs-fixer's Tokens writes while
+// iterating), including through a subclass.
+class Toks extends SplFixedArray {}
+$t = Toks::fromArray(['a', 'b', 'c']);
+foreach ($t as $k => $v) { echo "$k=$v "; if ($k === 0) { $t[2] = 'late'; } } echo "\n";
+var_dump(get_class($t), $t->toArray());

@@ -177,3 +177,13 @@ attached
 Sub-Iterator is associated with NULL
 SplFileInfo::setInfoClass(): Argument #1 ($class) must be a class name derived from SplFileInfo, stdClass given
 SplFileInfo::setFileClass(): Argument #1 ($class) must be a class name derived from SplFileObject, SplFileInfo given
+0=a 1=b 2=late 
+string(13) "SplFixedArray"
+array(3) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "b"
+  [2]=>
+  string(4) "late"
+}

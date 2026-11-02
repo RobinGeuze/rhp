@@ -411,7 +411,11 @@ class SplFixedArray implements IteratorAggregate, ArrayAccess, Countable, JsonSe
         if ($i < 0 || $i >= $this->__size) { throw new OutOfBoundsException('Index invalid or out of range'); }
         $this->__d[$i] = null;
     }
-    public function getIterator(): Iterator { return new ArrayIterator($this->__d); }
+    // php's InternalIterator reads the live elements: writes made while
+    // iterating (php-cs-fixer's Tokens) are seen.
+    public function getIterator(): Iterator {
+        for ($i = 0; $i < $this->__size; $i++) { yield $i => $this->__d[$i]; }
+    }
     public function __debugInfo(): array {
         $r = $this->__d;
         foreach (__spl_user_props($this) as $k => $v) { $r[$k] = $v; }

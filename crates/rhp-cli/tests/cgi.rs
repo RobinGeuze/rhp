@@ -15,6 +15,7 @@
 //!   unless given by `env`).
 //! - `nocgi`: command-line mode (no CGI variables at all); `arg A` adds an
 //!   argument after the options.
+//! - `cwd DIR`: the directory both binaries start in.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -48,6 +49,7 @@ struct Spec {
     args: Vec<String>,
     stdin: Vec<u8>,
     nocgi: bool,
+    cwd: Option<String>,
 }
 
 fn unescape(s: &str) -> Vec<u8> {
@@ -75,6 +77,7 @@ fn spec(php: &Path) -> Spec {
                 "arg" => s.args.push(rest.to_string()),
                 "stdin" => s.stdin = unescape(rest),
                 "nocgi" => s.nocgi = true,
+                "cwd" => s.cwd = Some(rest.to_string()),
                 "" => {}
                 other => panic!("{}: unknown directive {other}", php.display()),
             }
@@ -99,6 +102,21 @@ fn spec(php: &Path) -> Spec {
     s
 }
 
+fn replace(hay: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(hay.len());
+    let mut i = 0;
+    while i < hay.len() {
+        if hay[i..].starts_with(from) {
+            out.extend_from_slice(to);
+            i += from.len();
+        } else {
+            out.push(hay[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 struct Run {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
@@ -118,6 +136,9 @@ fn run(bin: &Path, pre: &[&str], s: &Spec) -> Run {
         cmd.arg("-d").arg(i);
     }
     cmd.args(&s.args);
+    if let Some(dir) = &s.cwd {
+        cmd.current_dir(dir);
+    }
     for (k, v) in &s.env {
         cmd.env(k, v);
     }
@@ -141,6 +162,31 @@ fn run(bin: &Path, pre: &[&str], s: &Spec) -> Run {
     }
 }
 
+/// The `X.Y.Z` version php-cgi reports for `-n -v` (`PHP 8.5.8 (cgi-fcgi) …`).
+fn version(bin: &Path) -> Option<String> {
+    let out = Command::new(bin).args(["-n", "-v"]).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let v = text.strip_prefix("PHP ")?.split_whitespace().next()?;
+    Some(v.to_string())
+}
+
+/// rhp's `PHP_VERSION`.
+fn rhp_version(rhp: &Path) -> String {
+    let out = Command::new(rhp)
+        .args(["-n", "-r", "echo PHP_VERSION;"])
+        .output()
+        .expect("rhp -r");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn minor(v: &str) -> &str {
+    let mut it = v.match_indices('.');
+    match it.nth(1) {
+        Some((i, _)) => &v[..i],
+        None => v,
+    }
+}
+
 #[test]
 fn cgi_matches_php_cgi() {
     let Some(php) = php_cgi() else {
@@ -148,6 +194,20 @@ fn cgi_matches_php_cgi() {
         return;
     };
     let rhp = Path::new(env!("CARGO_BIN_EXE_rhp"));
+    // rhp is php 8.5: another minor version's php-cgi (CI's 8.4 leg) is
+    // not a reference. A different 8.5 patch release only changes the
+    // X-Powered-By version, which is normalised below.
+    let ours = rhp_version(rhp);
+    let Some(theirs) = version(&php) else {
+        eprintln!("{}: no version; skipping", php.display());
+        return;
+    };
+    if minor(&ours) != minor(&theirs) {
+        eprintln!("php-cgi is {theirs}, rhp is {ours}; skipping");
+        return;
+    }
+    let powered = |v: &str| format!("X-Powered-By: PHP/{v}\r\n").into_bytes();
+    let (their_powered, our_powered) = (powered(&theirs), powered(&ours));
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cgi");
     let dir = std::fs::canonicalize(dir).expect("tests/cgi");
     let mut fixtures: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -165,7 +225,10 @@ fn cgi_matches_php_cgi() {
             continue;
         }
         let s = spec(f);
-        let want = run(&php, &[], &s);
+        let mut want = run(&php, &[], &s);
+        if their_powered != our_powered {
+            want.stdout = replace(&want.stdout, &their_powered, &our_powered);
+        }
         let got = run(rhp, &["--cgi"], &s);
         let mut diffs = Vec::new();
         if want.stdout != got.stdout {

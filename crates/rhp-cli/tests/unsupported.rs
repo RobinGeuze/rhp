@@ -1,11 +1,10 @@
 //! Engine refusals (`RHP_UNSUPPORTED: …`) name the file and line of the
 //! refused construct — in the main script, in included files, and for
-//! refusals deferred to run time. (Goldens can't express these: php supports
+//! builtins refused at run time. (Goldens can't express these: php supports
 //! the constructs, so there is no php output to compare against.)
 //!
-//! The location tests use backtick shell execution, which rhp refuses by
-//! design (so they stay valid as features land). The `??=` wording test uses
-//! a construct refused only for now; delete it once `??=` is supported.
+//! The tests use constructs rhp refuses by design (backtick shell execution,
+//! create_function), so they stay valid as features land.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -77,30 +76,6 @@ fn main_script_refusal_names_file_and_line() {
 }
 
 #[test]
-fn compound_coalesce_names_the_actual_target() {
-    let c = Case::new("target");
-    let prop = c.file("prop.php", "<?php\n$o = new stdClass;\n$o->p ??= 1;\n");
-    let err = run(&prop).1;
-    assert!(
-        refusal(&err).starts_with("RHP_UNSUPPORTED: ??= on a property is not supported"),
-        "{err}"
-    );
-    let sprop = c.file(
-        "sprop.php",
-        "<?php\nclass K { public static $s; }\n\nK::$s ??= 1;\n",
-    );
-    let err = run(&sprop).1;
-    assert_eq!(
-        refusal(&err),
-        format!(
-            "RHP_UNSUPPORTED: ??= on a static property is not supported \
-             (use a full assignment for now) in {} on line 4",
-            sprop.display()
-        )
-    );
-}
-
-#[test]
 fn included_file_refusal_names_included_file() {
     let c = Case::new("include");
     let inc = c.file(
@@ -139,23 +114,6 @@ fn property_default_refusal_names_expression_line() {
              (never spawns a shell; refused by design) in {} on line 6",
             main.display()
         )
-    );
-}
-
-#[test]
-fn deferred_refusal_names_file_and_line() {
-    let c = Case::new("deferred");
-    let main = c.file(
-        "main.php",
-        "<?php\necho \"a\\n\";\n\ngoto end;\nend:\necho \"b\\n\";\n",
-    );
-    let (out, err, _) = run(&main);
-    assert_eq!(out, "a\n", "a deferred refusal throws only when reached");
-    let line = refusal(&err);
-    assert!(line.starts_with("RHP_UNSUPPORTED: goto"), "{line}");
-    assert!(
-        line.ends_with(&format!(" in {} on line 4", main.display())),
-        "{line}"
     );
 }
 

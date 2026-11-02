@@ -1,0 +1,52 @@
+string(6) "hi   x"
+string(3) "abZ"
+[2] Illegal string offset -5 (line 18)
+string(3) "abc"
+string(3) "aZc"
+string(3) "aWc"
+[2] String offset cast occurred (line 21)
+[2] Only the first byte will be assigned to the string offset (line 21)
+string(3) "aQc"
+string(3) "a7c"
+[2] String offset cast occurred (line 23)
+string(3) "aTc"
+[2] String offset cast occurred (line 24)
+string(3) "Nbc"
+array(1) {
+  ["s"]=>
+  string(3) "aXc"
+}
+string(3) "Ybc"
+Error: [] operator not supported for strings
+Error: [] operator not supported for strings
+Error: Cannot use a scalar value as an array
+Error: Cannot use string offset as an array
+Error: Cannot use assign-op operators with string offsets
+Error: Cannot increment/decrement string offsets
+TypeError: Cannot access offset of type string on string
+Error: Cannot assign an empty string to a string offset
+Error: Cannot create references to/from string offsets
+TypeError: Cannot access offset of type array on string
+[8192] Automatic conversion of false to array is deprecated (line 39)
+array(1) {
+  [0]=>
+  int(1)
+}
+[8192] Automatic conversion of false to array is deprecated (line 40)
+array(1) {
+  ["k"]=>
+  array(1) {
+    ["j"]=>
+    int(2)
+  }
+}
+array(1) {
+  [0]=>
+  int(1)
+}
+[String offset cast occurred]
+int(5)
+[Only the first byte will be assigned to the string offset]
+int(5)
+[Illegal string offset "1x"]
+int(5)

@@ -21,6 +21,8 @@ pub mod streams;
 pub mod stub_params;
 
 pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};
+pub use ext::simplexml::{sxe_bool, sxe_props_array, sxe_same_node, sxe_string};
+pub use ext::sockets::is_socket_object;
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};
 
 mod argparse;
@@ -50,6 +52,8 @@ pub struct StreamMeta {
     pub eof: bool,
     /// php's `blocked` (false after stream_set_blocking($s, false)).
     pub blocked: bool,
+    /// php's `timed_out` (a socket read / write hit its timeout).
+    pub timed_out: bool,
 }
 
 /// pcntl's asynchronous signal delivery: the VM polls
@@ -65,6 +69,7 @@ mod datetime_fns;
 mod dt_oop_fns;
 mod ext;
 pub use ext::gmp::{compare_handler as gmp_compare_handler, CmpOperand as GmpCmpOperand};
+mod class_fns;
 mod file_fns;
 mod filter_fns;
 mod fs_fns;
@@ -86,7 +91,9 @@ pub mod rfc1867;
 mod runtime_fns;
 pub mod sapi;
 mod serialize_fns;
+mod socket_fns;
 mod sort_fns;
+mod stdext_fns;
 mod str_fns;
 mod strarr2_fns;
 mod strcmp_fns;
@@ -97,6 +104,28 @@ mod sysmisc_fns;
 mod tzdb;
 mod webenc_fns;
 pub mod zip_ext;
+
+/// The engine's object free hook (`rhp_values::set_object_free_hook`): lets
+/// the extensions with per-object native state release it.
+pub fn object_freed(id: u32) {
+    zip_ext::object_freed(id);
+    ext::sockets::object_freed();
+}
+
+/// The internal opaque-handle classes php declares `@strict-properties` and
+/// `@not-serializable` (`ZEND_ACC_NO_DYNAMIC_PROPERTIES |
+/// ZEND_ACC_NOT_SERIALIZABLE`): `Socket` and the curl handles. Their names
+/// are taken by the prelude, so a user class cannot carry one.
+pub fn is_opaque_handle_class(name: &[u8]) -> bool {
+    [
+        &b"Socket"[..],
+        b"CurlHandle",
+        b"CurlMultiHandle",
+        b"CurlShareHandle",
+    ]
+    .iter()
+    .any(|n| n.eq_ignore_ascii_case(name))
+}
 
 /// `zend_compare` from inside a builtin, with the host's object semantics.
 pub fn host_compare(
@@ -262,6 +291,12 @@ pub trait Host {
 
     /// Whether a class id names an enum (for `var_dump` rendering). Default: no.
     fn is_enum_class(&self, _class_id: u32) -> bool {
+        false
+    }
+
+    /// Whether objects of a class are `ZEND_ACC_NOT_SERIALIZABLE` (the
+    /// Reflection objects, WeakReference, …). Default: no.
+    fn not_serializable(&self, _class_id: u32) -> bool {
         false
     }
 
@@ -583,6 +618,12 @@ pub trait Host {
 
     /// The class name of an object value, if any (for `instanceof`-style checks
     /// inside builtins). Default: none.
+    /// A closure's function name (`{closure:scope:line}`), for
+    /// `is_callable`'s `$callable_name`. Default: unknown.
+    fn closure_name(&self, _closure: &Value) -> Option<Vec<u8>> {
+        None
+    }
+
     fn object_class_name(&self, _obj: &Value) -> Option<Vec<u8>> {
         None
     }
@@ -719,6 +760,20 @@ pub trait Host {
         None
     }
 
+    /// The request's original `$_SERVER['argv']` (php's
+    /// `PG(http_globals)[TRACK_VARS_SERVER]`, unaffected by script writes to
+    /// `$_SERVER`), for `getopt`. Default: none.
+    fn cli_argv(&self) -> Option<Vec<Vec<u8>>> {
+        None
+    }
+
+    /// The file of the innermost user-code frame (php's
+    /// `zend_get_executed_filename`), for `Phar::running` / `Phar::mapPhar`.
+    /// Default: the main script.
+    fn executing_file(&self) -> Option<Vec<u8>> {
+        self.running_main_path()
+    }
+
     // --- stream resources (fopen family) -------------------------------------
     // Streams are resource Values whose state lives in the VM; these are the
     // `fopen`/`fwrite`/… primitives. Defaults are no-ops (hosts without streams).
@@ -851,6 +906,27 @@ pub trait Host {
     fn stream_set_blocking(&mut self, _res: &Value, _blocking: bool) -> bool {
         true
     }
+    /// Wrap a socket descriptor as a socket `stream` resource (php's
+    /// `php_netstream_data_t` stream). Default: unsupported.
+    fn stream_from_socket(
+        &mut self,
+        _fd: std::os::fd::OwnedFd,
+        _info: fdstream::SockInfo,
+    ) -> Option<Value> {
+        None
+    }
+    /// The socket state of a socket stream (`None` for any other stream).
+    fn stream_sock_info(&self, _res: &Value) -> Option<fdstream::SockInfo> {
+        None
+    }
+    /// `stream_set_timeout` (`None` = wait forever): false unless `res` is a
+    /// socket stream.
+    fn stream_set_timeout(&mut self, _res: &Value, _timeout: Option<(i64, i64)>) -> bool {
+        false
+    }
+    /// Flush whatever the host holds back before the process forks
+    /// (`pcntl_fork`), so the child does not write it a second time.
+    fn prepare_fork(&mut self) {}
     /// Register an opaque native resource (e.g. a `process` handle) and return
     /// its resource Value. Default: unsupported (`Null`).
     fn resource_insert(
@@ -933,13 +1009,24 @@ pub trait Host {
     }
     /// Set an object property bypassing visibility (`ReflectionProperty::setValue`),
     /// resolving `name` as class `class` would see it (its own private first).
-    fn reflect_set_prop(&mut self, _obj: &Value, _class: &[u8], _name: &[u8], _val: Value) -> bool {
-        false
+    fn reflect_set_prop(
+        &mut self,
+        _obj: &Value,
+        _class: &[u8],
+        _name: &[u8],
+        _val: Value,
+    ) -> Result<(), Thrown> {
+        Ok(())
     }
     /// Read an object property bypassing visibility (`ReflectionProperty::getValue`),
     /// resolving `name` as class `class` would see it (its own private first).
-    fn reflect_get_prop(&self, obj: &Value, _class: &[u8], name: &[u8]) -> Option<Value> {
-        self.object_prop(obj, name)
+    fn reflect_get_prop(
+        &mut self,
+        obj: &Value,
+        _class: &[u8],
+        name: &[u8],
+    ) -> Result<Option<Value>, Thrown> {
+        Ok(self.object_prop(obj, name))
     }
     /// Parameter descriptors for a class method (`ReflectionMethod::getParameters`).
     fn reflect_method_params(&self, _class: &[u8], _method: &[u8]) -> Option<Value> {
@@ -953,6 +1040,12 @@ pub trait Host {
     /// an array of `{name, value, public, protected, private}`.
     fn reflect_class_constants(&self, _class: &[u8]) -> Option<Value> {
         None
+    }
+    /// A Reflection / introspection metadata query (`op` names it; see the
+    /// VM's `reflect` module): class / method / property / constant /
+    /// attribute descriptors, declared-class and included-file lists, ….
+    fn reflect_op(&mut self, _op: &[u8], _args: &[Value]) -> Result<Value, Thrown> {
+        Ok(Value::Null)
     }
     /// [`Host::raise_diagnostic`], returning the exception a user error
     /// handler threw (e.g. composer's `ErrorException`) so the builtin can
@@ -1109,6 +1202,7 @@ pub fn ini_startup_set(name: &[u8], value: &[u8]) {
 /// overlay). Engines call this on construction so state never leaks from one
 /// script run to the next on the same thread.
 pub fn reset_request_state() {
+    ext::libxml::reset_state();
     runtime_fns::reset_state();
     sysmisc_fns::reset_state();
     preg_fns::reset_state();
@@ -1116,6 +1210,7 @@ pub fn reset_request_state() {
     ext::mbstring::reset_state();
     strsearch_fns::reset_state();
     php_fns::reset_state();
+    stdext_fns::reset_state();
     sapi::reset_state();
     zip_ext::reset_state();
     ext::curl::reset_state();
@@ -1148,7 +1243,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "is_array"       => fn_is_array, 1, Some(1);
             "is_scalar"      => fn_is_scalar, 1, Some(1);
             "is_object"      => fn_is_object, 1, Some(1);
-            "is_callable"    => fn_is_callable, 1, Some(1);
+            "is_callable"    => fn_is_callable, 1, Some(3);
             "define"         => fn_define, 2, Some(3);
             "defined"        => fn_defined, 1, Some(1);
             "constant"       => fn_constant, 1, Some(1);
@@ -1246,15 +1341,18 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("php_fns", Box::new(php_fns::register)),
         ("info_fns", Box::new(info_fns::register)),
         ("stream_fns", Box::new(stream_fns::register)),
+        ("socket_fns", Box::new(socket_fns::register)),
         ("strsearch_fns", Box::new(strsearch_fns::register)),
         ("query_fns", Box::new(query_fns::register)),
         ("runtime_fns", Box::new(runtime_fns::register)),
+        ("class_fns", Box::new(class_fns::register)),
         ("sapi", Box::new(sapi::register)),
         ("rfc1867", Box::new(rfc1867::register)),
         ("opcache_fns", Box::new(opcache_fns::register)),
         ("ini_parse", Box::new(ini_parse::register)),
         ("arraycmp_fns", Box::new(arraycmp_fns::register)),
         ("sysmisc_fns", Box::new(sysmisc_fns::register)),
+        ("stdext_fns", Box::new(stdext_fns::register)),
         ("proc_fns", Box::new(proc_fns::register)),
         // Exact-semantics filesystem builtins; registered last so they replace
         // older approximations in file_fns/stream_fns.
@@ -1431,7 +1529,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("MB_ONIGURUMA_VERSION", Value::str("6.9.10")),
         ("DIRECTORY_SEPARATOR", Value::str("/")),
         ("PATH_SEPARATOR", Value::str(":")),
-        ("PHP_MAXPATHLEN", Value::Int(1024)),
+        ("PHP_MAXPATHLEN", Value::Int(libc::PATH_MAX as i64)), // MAXPATHLEN: 1024 on macOS, 4096 on Linux
         ("PHP_BINDIR", Value::str("/usr/bin")),
         ("LC_CTYPE", Value::Int(0)),
         ("LC_NUMERIC", Value::Int(1)),
@@ -1547,6 +1645,11 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("ENT_NOQUOTES", Value::Int(0)),
         ("ENT_HTML401", Value::Int(0)),
         ("ENT_HTML5", Value::Int(48)),
+        ("ENT_XML1", Value::Int(16)),
+        ("ENT_XHTML", Value::Int(32)),
+        ("ENT_IGNORE", Value::Int(4)),
+        ("ENT_SUBSTITUTE", Value::Int(8)),
+        ("ENT_DISALLOWED", Value::Int(128)),
         ("PHP_ROUND_HALF_UP", Value::Int(1)),
         ("PHP_ROUND_HALF_DOWN", Value::Int(2)),
         ("ARRAY_FILTER_USE_KEY", Value::Int(2)),
@@ -1576,6 +1679,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     .chain(json_fns::json_constants())
     .chain(info_fns::constants())
     .chain(fs_fns::constants())
+    .chain(stdext_fns::constants())
+    .chain(socket_fns::constants())
     // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with their module.
     .chain(ext::modules().into_iter().flat_map(|md| (md.constants)()))
     .collect()
@@ -1587,6 +1692,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
 pub fn module_prelude() -> String {
     let mut s = String::new();
     s.push_str(fs_fns::PRELUDE_PHP);
+    s.push('\n');
+    s.push_str(stdext_fns::PRELUDE_PHP);
     s.push('\n');
     for md in ext::modules() {
         if !md.prelude_php.is_empty() {
@@ -1626,7 +1733,17 @@ use rhp_semantics::{deref, ops};
 fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
     for a in args {
-        dump::var_dump(host, &mut out, a, 0);
+        ext::simplexml::prepare_debug(host, a, 0);
+        let r = dump::resolve_debug_info(host, a);
+        if r.is_ok() {
+            dump::var_dump(host, &mut out, a, 0);
+        }
+        dump::clear_debug_info();
+        ext::simplexml::clear_debug();
+        if let Err(t) = r {
+            host.write_out(&out);
+            return Err(t);
+        }
     }
     host.write_out(&out);
     Ok(Value::Null)
@@ -1634,7 +1751,14 @@ fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    dump::print_r(host, &mut out, &args[0], 0);
+    ext::simplexml::prepare_debug(host, &args[0], 0);
+    let r = dump::resolve_debug_info(host, &args[0]);
+    if r.is_ok() {
+        dump::print_r(host, &mut out, &args[0], 0);
+    }
+    dump::clear_debug_info();
+    ext::simplexml::clear_debug();
+    r?;
     let return_mode = args.get(1).map(conv::to_bool).unwrap_or(false);
     if return_mode {
         Ok(Value::str(out))
@@ -1646,7 +1770,9 @@ fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
+    ext::simplexml::prepare_debug(host, &args[0], 0);
     let circular = dump::var_export(host, &mut out, &args[0], 1);
+    ext::simplexml::clear_debug();
     for _ in 0..circular {
         host.emit_diagnostic(E_WARNING, "var_export does not handle circular references")?;
     }
@@ -1730,7 +1856,59 @@ fn fn_is_finite(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_is_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.check_callable(&args[0])?.is_none()))
+    let v = deref(&args[0]);
+    if let Some(Value::Ref(rc)) = args.get(2) {
+        *rc.borrow_mut() = Value::str(callable_name(host, &v));
+    }
+    // `$syntax_only`: only the callable's shape is checked.
+    if args.get(1).is_some_and(|f| conv::to_bool(&deref(f))) {
+        match &v {
+            Value::Str(_) | Value::Closure(_) => return Ok(Value::Bool(true)),
+            Value::Array(a) if a.len() == 2 => {
+                let parts: Vec<Value> = a.iter().map(|(_, x)| deref(x)).collect();
+                return Ok(Value::Bool(
+                    matches!(parts[0], Value::Str(_) | Value::Object(_))
+                        && matches!(parts[1], Value::Str(_)),
+                ));
+            }
+            Value::Object(_) => {}
+            _ => return Ok(Value::Bool(false)),
+        }
+    }
+    Ok(Value::Bool(host.check_callable(&v)?.is_none()))
+}
+
+/// zend_get_callable_name_ex: `is_callable`'s `$callable_name`.
+fn callable_name(host: &dyn Host, v: &Value) -> Vec<u8> {
+    let class_of = |h: &rhp_values::ObjectHandle| {
+        let cls = h.borrow().class;
+        host.class_name(cls).unwrap_or_default()
+    };
+    match v {
+        Value::Array(a) if a.len() == 2 => {
+            let parts: Vec<Value> = a.iter().map(|(_, x)| deref(x)).collect();
+            let method = match &parts[1] {
+                Value::Str(m) => m.as_bytes().to_vec(),
+                _ => return b"Array".to_vec(),
+            };
+            let class = match &parts[0] {
+                Value::Str(c) => c.as_bytes().to_vec(),
+                Value::Object(h) => class_of(h),
+                _ => return b"Array".to_vec(),
+            };
+            [&class[..], b"::", &method[..]].concat()
+        }
+        Value::Array(_) => b"Array".to_vec(),
+        Value::Closure(cd) => match &cd.wrapped {
+            // A first-class callable names what it wraps (`strlen`, `A::m`).
+            Some(w) => callable_name(host, &deref(w)),
+            None => host
+                .closure_name(v)
+                .unwrap_or_else(|| b"Closure::__invoke".to_vec()),
+        },
+        Value::Object(h) => [&class_of(h)[..], b"::__invoke"].concat(),
+        other => conv::to_string_bytes(other),
+    }
 }
 
 /// zpp's `f` check: "F(): Argument #N ($callback) must be a valid callback, …".
@@ -1793,6 +1971,10 @@ fn fn_intval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         if is_curl_handle(&v) {
             return Ok(Value::Int(h.borrow().id as i64));
         }
+    }
+    // SimpleXML's cast handler: the node's text.
+    if let Some(t) = ext::simplexml::sxe_scalar_text(&v) {
+        return Ok(Value::Int(conv::to_int(&t)));
     }
     // `base` applies only to a string argument; base 10 is plain integer conversion.
     if base == 10 {
@@ -1866,14 +2048,42 @@ fn detect_prefix(rest: &[u8], base: i64) -> (usize, i64) {
 }
 
 fn fn_floatval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    if let Some(t) = ext::simplexml::sxe_scalar_text(&deref(&args[0])) {
+        return Ok(Value::Float(conv::to_float(&t)));
+    }
     Ok(Value::Float(conv::to_float(&args[0])))
 }
 
-fn fn_strval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_strval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // zval_get_string: objects go through their cast handler (`__toString`).
+    let v = deref(&args[0]);
+    if let Value::Object(h) = &v {
+        let mut cb = PhpArray::new();
+        cb.push(v.clone());
+        cb.push(Value::str("__toString"));
+        let cb = Value::Array(cb);
+        if host.is_callable_value(&cb) {
+            return Ok(Value::str(conv::to_string_bytes(
+                &host.call_callable(&cb, &[])?,
+            )));
+        }
+        let class = host.class_name(h.borrow().class).unwrap_or_default();
+        return Err(Thrown::error(
+            "Error",
+            format!(
+                "Object of class {} could not be converted to string",
+                String::from_utf8_lossy(&class)
+            ),
+        ));
+    }
     Ok(Value::str(conv::to_string_bytes(&args[0])))
 }
 
 fn fn_boolval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = deref(&args[0]);
+    if ext::simplexml::is_sxe_object(&v) {
+        return Ok(Value::Bool(sxe_bool(&v)));
+    }
     Ok(Value::Bool(conv::to_bool(&args[0])))
 }
 
@@ -2580,6 +2790,14 @@ fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let prop = conv::to_string_bytes(&deref(&args[1]));
     let found = match deref(&args[0]) {
+        // SimpleXML's has_property handler: a child element (or attribute)
+        // of that name.
+        v @ Value::Object(_) if ext::simplexml::is_sxe_object(&v) => {
+            let mut cb = PhpArray::new();
+            cb.push(v.clone());
+            cb.push(Value::str("__isset"));
+            conv::to_bool(&host.call_callable(&Value::Array(cb), &[Value::str(prop)])?)
+        }
         Value::Object(h) => {
             let cid = h.borrow().class;
             // An object matches on a declared member (instance or static) OR a
@@ -2673,6 +2891,9 @@ fn fn_iterator_to_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 fn fn_get_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match deref(&args[0]) {
         Value::Object(h) => {
+            if let Some(a) = sxe_props_array(host, &deref(&args[0])) {
+                return Ok(Value::Array(a));
+            }
             if let Some(v) = host.object_vars(&args[0]) {
                 return Ok(v);
             }

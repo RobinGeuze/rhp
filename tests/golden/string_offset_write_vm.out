@@ -1,0 +1,73 @@
+[2] Only the first byte will be assigned to the string offset (line 22)
+string(6) "Qlc  z"
+[2] Illegal string offset -10 (line 24)
+[2] String offset cast occurred (line 25)
+[2] Illegal string offset "2x" (line 26)
+string(6) "Qfi  z"
+string(3) "  a"
+array(1) {
+  ["s"]=>
+  string(3) "Xbc"
+}
+Error: Cannot assign an empty string to a string offset
+Error: [] operator not supported for strings
+Error: [] operator not supported for strings
+TypeError: Cannot access offset of type string on string
+Error: Cannot use string offset as an array
+TypeError: Cannot access offset of type string on string
+Error: Cannot use assign-op operators with string offsets
+Error: Cannot increment/decrement string offsets
+Error: Cannot create references to/from string offsets
+Error: Cannot unset string offsets
+Error: Cannot use string offset as an array
+Error: Cannot unset offset in a non-array variable
+TypeError: Cannot access offset of type stdClass on array
+TypeError: Cannot access offset of type array on array
+TypeError: Cannot unset offset of type array on array
+[8192] Automatic conversion of false to array is deprecated (line 52)
+array(1) {
+  [0]=>
+  int(1)
+}
+[8192] Automatic conversion of false to array is deprecated (line 55)
+array(1) {
+  ["f"]=>
+  array(1) {
+    ["k"]=>
+    int(2)
+  }
+}
+[8192] Automatic conversion of false to array is deprecated (line 58)
+[2] Undefined array key "z" (line 61)
+[2] Undefined array key "a" (line 62)
+[2] Undefined array key "b" (line 62)
+[2] Undefined array key "n" (line 63)
+array(3) {
+  ["z"]=>
+  string(1) "q"
+  ["a"]=>
+  array(1) {
+    ["b"]=>
+    int(2)
+  }
+  ["n"]=>
+  int(1)
+}
+[2] Undefined property: stdClass::$arr (line 66)
+[2] Undefined array key "k" (line 66)
+stdClass Object
+(
+    [arr] => Array
+        (
+            [k] => x
+        )
+
+)
+[8192] Using null as an array offset is deprecated, use an empty string instead (line 70)
+[8192] Implicit conversion from float 1.5 to int loses precision (line 71)
+array(2) {
+  [""]=>
+  string(8) "null key"
+  [1]=>
+  string(9) "float key"
+}

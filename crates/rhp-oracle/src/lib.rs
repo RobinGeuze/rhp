@@ -865,6 +865,18 @@ impl<'a> Interp<'a> {
         }
 
         let Some(builtin) = builtins::lookup(&name_str) else {
+            // Functions the VM gets from the PHP-source prelude (hash_init,
+            // iterator_apply, …) are not loaded here: unsupported, not missing.
+            let decl = format!("function {}(", name_str.to_ascii_lowercase());
+            if builtins::module_prelude()
+                .to_ascii_lowercase()
+                .contains(&decl)
+            {
+                return Err(Thrown::unsupported(
+                    "prelude function",
+                    format!("{name_str}() is defined in the VM prelude"),
+                ));
+            }
             return Err(Thrown::error(
                 "Error",
                 format!("Call to undefined function {name_str}()"),

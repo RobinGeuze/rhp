@@ -1,0 +1,10 @@
+array
+counter=1
+array
+counter=2
+array(2) {
+  [0]=>
+  int(20)
+  [1]=>
+  string(4) "made"
+}

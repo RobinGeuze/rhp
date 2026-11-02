@@ -35,6 +35,8 @@ pub enum Script {
     File(String),
     /// Inline code (`-r`), run as "Command line code".
     Code(String),
+    /// No script file and no `-r`: the script is read from standard input.
+    Stdin,
 }
 
 /// One request for [`run_request`].
@@ -121,6 +123,8 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
         Script::File(path) => {
             let source = match std::fs::read(path) {
                 Ok(bytes) => bytes,
+                // php opens a directory fine and reads it as an empty script.
+                Err(_) if std::path::Path::new(path).is_dir() => Vec::new(),
                 Err(e) => {
                     return Outcome::CannotRead {
                         path: path.clone(),
@@ -133,6 +137,20 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| path.clone());
             (file, source, path.clone())
+        }
+        Script::Stdin => {
+            let mut src = Vec::new();
+            if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut src) {
+                return Outcome::CannotRead {
+                    path: "standard input".to_string(),
+                    error: e.to_string(),
+                };
+            }
+            (
+                "Standard input code".to_string(),
+                src,
+                "Standard input code".to_string(),
+            )
         }
         Script::Code(code) => {
             let mut src = b"<?php ".to_vec();
@@ -259,8 +277,8 @@ pub fn run_cli(script: Script, ini: Vec<(String, String)>, args: Vec<Vec<u8>>) -
     };
     match run_request(Box::new(CliSapi), req) {
         Outcome::Exit(code) => code,
-        Outcome::CannotRead { path, error } => {
-            eprintln!("rhp: cannot read {path}: {error}");
+        Outcome::CannotRead { path, .. } => {
+            eprintln!("Could not open input file: {path}");
             1
         }
     }

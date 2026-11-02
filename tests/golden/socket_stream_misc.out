@@ -1,0 +1,110 @@
+int(4)
+int(8)
+int(4)
+int(2)
+int(1)
+int(0)
+int(1)
+int(2)
+int(2)
+int(1)
+int(1)
+int(2)
+int(0)
+int(6)
+int(17)
+int(2)
+int(1)
+int(121)
+int(120)
+array(2) {
+  [0]=>
+  resource(4) of type (stream)
+  [1]=>
+  resource(5) of type (stream)
+}
+int(8)
+string(4) "one
+"
+array(7) {
+  ["timed_out"]=>
+  bool(false)
+  ["blocked"]=>
+  bool(true)
+  ["eof"]=>
+  bool(false)
+  ["stream_type"]=>
+  string(14) "generic_socket"
+  ["mode"]=>
+  string(2) "r+"
+  ["unread_bytes"]=>
+  int(4)
+  ["seekable"]=>
+  bool(false)
+}
+bool(false)
+string(4) "two
+"
+bool(true)
+bool(true)
+int(0)
+string(0) ""
+bool(true)
+string(11) "unix_socket"
+bool(true)
+string(10) "over unix
+"
+string(8) "and back"
+bool(false)
+int(0)
+string(0) ""
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+string(10) "udp_socket"
+string(10) "udp_socket"
+int(8)
+string(4) "data"
+string(14) "127.0.0.1:PORT"
+string(8) "datagram"
+string(14) "127.0.0.1:PORT"
+int(5)
+string(5) "reply"
+bool(false)
+[2] stream_socket_client(): Unable to connect to foo://bar (Unable to find the socket transport "foo" - did you forget to enable it when you configured PHP?)
+bool(false)
+string(96) "Unable to find the socket transport "foo" - did you forget to enable it when you configured PHP?"
+[2] stream_socket_client(): Unable to connect to tcp://nocolon (Failed to parse address "nocolon")
+bool(false)
+int(0)
+string(33) "Failed to parse address "nocolon""
+[2] stream_socket_client(): Unable to connect to tcp://[::1 (Failed to parse IPv6 address "[::1")
+bool(false)
+int(0)
+string(35) "Failed to parse IPv6 address "[::1""
+[2] stream_socket_server(): Unable to connect to bogus://x (Unable to find the socket transport "bogus" - did you forget to enable it when you configured PHP?)
+bool(false)
+int(0)
+string(98) "Unable to find the socket transport "bogus" - did you forget to enable it when you configured PHP?"
+[2] stream_socket_server(): Unable to connect to tcp://127.0.0.1 (Failed to parse address "127.0.0.1")
+bool(false)
+int(0)
+string(35) "Failed to parse address "127.0.0.1""
+bool(false)
+int(0)
+string(22) "Address already in use"
+bool(false)
+resource(19) of type (stream)
+bool(false)
+bool(true)
+int(8192)
+int(100)
+int(0)
+bool(false)
+bool(false)
+bool(false)
+stream_socket_shutdown(): Argument #2 ($mode) must be one of STREAM_SHUT_RD, STREAM_SHUT_WR, or STREAM_SHUT_RDWR
+stream_set_chunk_size(): Argument #2 ($size) must be greater than 0
+stream_socket_recvfrom(): Argument #2 ($length) must be greater than 0
+stream_socket_client(): Argument #4 ($timeout) must be a finite value

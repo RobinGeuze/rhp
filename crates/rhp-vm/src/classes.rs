@@ -61,6 +61,12 @@ pub struct ClassEntry {
     /// static properties) have all been evaluated — php's
     /// `ZEND_ACC_CONSTANTS_UPDATED`. See [`Vm::update_class_constants`].
     pub updated: bool,
+    /// The declaration this entry was linked from (Reflection metadata:
+    /// attributes, doc comments, lines, declared member order).
+    pub proto: Rc<ClassProto>,
+    /// Declaring file and line (empty file: a built-in class).
+    pub decl_file: PhpStr,
+    pub decl_line: u32,
 }
 
 #[derive(Clone)]
@@ -108,6 +114,9 @@ impl PropEntry {
 #[derive(Clone)]
 pub struct StaticProp {
     pub cell: Rc<RefCell<Value>>,
+    /// The declared default (php's `default_static_members_table`), shared
+    /// like `cell` by inheriting classes; what Reflection reports.
+    pub default: Rc<RefCell<Value>>,
     /// A not-yet-evaluated non-constant initializer for `cell`.
     pub init: Option<Rc<FunctionProto>>,
     pub visibility: Visibility,
@@ -271,10 +280,15 @@ pub(crate) fn set_access_err(
     op: &str,
     (sv, decl, name): (Visibility, ClassId, PhpStr),
 ) -> Thrown {
-    let v = if sv == Visibility::Private {
-        "private(set)"
-    } else {
-        "protected(set)"
+    // php names a protected(set) readonly property "protected(set) readonly".
+    let readonly = classes[decl as usize]
+        .props
+        .values()
+        .any(|pe| pe.declaring_class == decl && pe.name == name && pe.readonly);
+    let v = match sv {
+        Visibility::Private => "private(set)",
+        _ if readonly => "protected(set) readonly",
+        _ => "protected(set)",
     };
     let from = match called {
         Some(c) => format!(
@@ -404,6 +418,11 @@ pub(crate) fn mangled_prop_key(entry: &ClassEntry, key: &PhpStr) -> PhpStr {
     }
 }
 
+/// A generated anonymous-class name (`Prefix@anonymous\0file:line$n`).
+fn is_anon_name(name: &[u8]) -> bool {
+    name.windows(10).any(|w| w == b"@anonymous")
+}
+
 fn kind_word(k: ClassKind) -> &'static str {
     match k {
         ClassKind::Interface => "interface",
@@ -503,26 +522,57 @@ impl Vm {
         start..start + prog.classes.len() - prog.num_prelude_classes
     }
 
-    /// Hoist (early-bind) the top-level classes in `range`
-    /// whose parent/interfaces/traits are available — possibly from each
-    /// other. The others stay undeclared until their `DeclareClass` runs.
+    /// Hoist (early-bind) the top-level classes in `range`, in declaration
+    /// order, as php's compiler does (zend_compile_class_decl): only a class
+    /// with no interfaces (an implicit `Stringable` from `__toString`
+    /// counts, as do an enum's and an interface's `extends` list) and no
+    /// traits, whose parent — if any — is already declared. The others stay
+    /// undeclared until their `DeclareClass` runs.
     pub(crate) fn hoist_decl_classes(
         &mut self,
         range: std::ops::Range<usize>,
     ) -> Result<(), Thrown> {
+        for i in range.clone() {
+            if self.decl_classes[i].1 {
+                continue;
+            }
+            let proto = self.decl_classes[i].0.clone();
+            if is_anon_name(proto.name.as_bytes()) {
+                continue;
+            }
+            let early = proto.interfaces.is_empty()
+                && proto.traits.is_empty()
+                && proto.kind != ClassKind::Enum
+                && !(proto.kind == ClassKind::Interface && proto.parent.is_some())
+                && !proto
+                    .methods
+                    .iter()
+                    .any(|m| m.name.as_bytes().eq_ignore_ascii_case(b"__tostring"))
+                && proto
+                    .parent
+                    .as_ref()
+                    .is_none_or(|p| self.class_ids.contains_key(&lc(p.as_bytes())));
+            if !early || self.class_ids.contains_key(&lc(proto.name.as_bytes())) {
+                continue;
+            }
+            self.link_slot(i, &proto)?;
+            self.decl_classes[i].1 = true;
+        }
+        // Anonymous classes (registered with the file's classes under their
+        // generated names) are linked up front, once their dependencies are.
         loop {
             let mut progressed = false;
             for i in range.clone() {
-                if self.decl_classes[i].1 {
-                    continue;
-                }
-                let proto = self.decl_classes[i].0.clone();
-                if self.class_ids.contains_key(&lc(proto.name.as_bytes()))
-                    || !self.deps_ready(&proto)
+                let proto = &self.decl_classes[i].0;
+                if self.decl_classes[i].1
+                    || !is_anon_name(proto.name.as_bytes())
+                    || self.class_ids.contains_key(&lc(proto.name.as_bytes()))
+                    || !self.deps_ready(proto)
                 {
                     continue;
                 }
-                self.link_class(&proto)?;
+                let proto = proto.clone();
+                self.link_slot(i, &proto)?;
                 self.decl_classes[i].1 = true;
                 progressed = true;
             }
@@ -534,24 +584,32 @@ impl Vm {
     }
 
     /// Run-time class declaration (`DeclareClass`): link the class now,
-    /// autoloading missing dependencies. A no-op if it was hoisted.
+    /// autoloading missing dependencies. A no-op if it was hoisted; running
+    /// an executed declaration again (a nested class in a function called
+    /// twice, a loop) is php's redeclaration error.
     pub(crate) fn declare_class_at(&mut self, slot: usize) -> Result<(), Thrown> {
         let Some((proto, done)) = self.decl_classes.get(slot) else {
             return Ok(());
         };
-        if *done {
+        if *done && !self.decl_runtime.contains(&slot) {
             return Ok(());
         }
         let proto = proto.clone();
-        if self.class_ids.contains_key(&lc(proto.name.as_bytes())) {
-            return Err(Thrown::error(
-                "Error",
+        if let Some(&old) = self.class_ids.get(&lc(proto.name.as_bytes())) {
+            // zend_class_redeclaration_error: a fatal compile error.
+            let old = &self.classes[old as usize];
+            let name = String::from_utf8_lossy(old.name.as_bytes());
+            let msg = if old.decl_file.is_empty() {
+                format!("Cannot redeclare {} {name}", kind_word(old.kind))
+            } else {
                 format!(
-                    "Cannot declare {} {}, because the name is already in use",
-                    kind_word(proto.kind),
-                    String::from_utf8_lossy(proto.name.as_bytes())
-                ),
-            ));
+                    "Cannot redeclare {} {name} (previously declared in {}:{})",
+                    kind_word(old.kind),
+                    String::from_utf8_lossy(old.decl_file.as_bytes()),
+                    old.decl_line
+                )
+            };
+            return Err(self.fatal_compile_error(&msg));
         }
         let deps = proto
             .parent
@@ -559,10 +617,26 @@ impl Vm {
             .map(|n| ("Class", n))
             .chain(proto.interfaces.iter().map(|n| ("Interface", n)))
             .chain(proto.traits.iter().map(|n| ("Trait", n)));
+        // php registers the class (unlinked) before loading its dependencies,
+        // so a lookup of it from an autoloader finds it and does not recurse
+        // into autoloading it again (it just is not usable yet).
+        let self_key = lc(proto.name.as_bytes());
+        let marked = self.in_autoload.insert(self_key.clone());
         for (what, n) in deps.collect::<Vec<_>>() {
-            if !self.class_ids.contains_key(&lc(n.as_bytes()))
-                && !self.try_autoload(n.as_bytes())?
-            {
+            let loaded = self.class_ids.contains_key(&lc(n.as_bytes()))
+                || match self.try_autoload(n.as_bytes()) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        if marked {
+                            self.in_autoload.remove(&self_key);
+                        }
+                        return Err(e);
+                    }
+                };
+            if !loaded {
+                if marked {
+                    self.in_autoload.remove(&self_key);
+                }
                 return Err(Thrown::error(
                     "Error",
                     format!(
@@ -572,8 +646,23 @@ impl Vm {
                 ));
             }
         }
-        self.link_class(&proto)?;
+        if marked {
+            self.in_autoload.remove(&self_key);
+        }
+        self.link_slot(slot, &proto)?;
         self.decl_classes[slot].1 = true;
+        self.decl_runtime.insert(slot);
+        Ok(())
+    }
+
+    /// Link the class compiled into `decl_classes` slot `slot`, recording
+    /// that slot as its class-table position.
+    fn link_slot(&mut self, slot: usize, proto: &ClassProto) -> Result<(), Thrown> {
+        let id = self.classes.len();
+        self.link_class(proto)?;
+        if let Some(o) = self.class_order.get_mut(id) {
+            *o = slot;
+        }
         Ok(())
     }
 
@@ -670,6 +759,24 @@ impl Vm {
                     is_final: m.is_final,
                 },
             );
+        }
+        // php copies interface methods into the implementing class's function
+        // table (do_inherit_iface_method): an abstract class / interface lists
+        // the abstract methods it inherits from its interfaces.
+        // (Built-in prelude classes implement their interfaces natively.)
+        let ifaces_for_methods: &[PhpStr] =
+            if self.internal_classes > 0 || proto.kind == ClassKind::Interface {
+                &proto.interfaces
+            } else {
+                &[]
+            };
+        for iname in ifaces_for_methods {
+            let iid = self.class_ids[&lc(iname.as_bytes())];
+            for (k, m) in &self.classes[iid as usize].methods {
+                if !methods.contains_key(k) {
+                    methods.insert(k.clone(), m.clone());
+                }
+            }
         }
         let own_methods = proto.methods.iter().map(|m| lc(m.name.as_bytes()));
         let trait_methods: Vec<Vec<u8>> = proto
@@ -771,12 +878,13 @@ impl Vm {
             for (k, sp) in self.classes[tid as usize].static_props.clone() {
                 // Each using class gets its own cell, seeded from the trait's
                 // (an unevaluated initializer is re-run in the using class).
-                let v = sp.cell.borrow().clone();
+                let v = sp.default.borrow().clone();
                 let prototype = static_proto(&static_props, &k);
                 static_props.insert(
                     k,
                     StaticProp {
-                        cell: Rc::new(RefCell::new(v)),
+                        cell: Rc::new(RefCell::new(v.clone())),
+                        default: Rc::new(RefCell::new(v)),
                         init: sp.init.clone(),
                         visibility: sp.visibility,
                         declaring_class: id,
@@ -796,9 +904,11 @@ impl Vm {
                 ConstInitProto::Thunk(thunk) => Some(thunk.clone()),
             };
             let prototype = static_proto(&static_props, sp.name.as_bytes());
+            let default = cell.borrow().clone();
             static_props.insert(
                 sp.name.as_bytes().to_vec(),
                 StaticProp {
+                    default: Rc::new(RefCell::new(default)),
                     cell,
                     init,
                     visibility: sp.visibility,
@@ -883,23 +993,83 @@ impl Vm {
         // php's `zend_do_implement_interfaces`: parent's list, then own direct
         // interfaces (deduped), then for each own interface its inherited
         // interfaces appended in reverse (`zend_do_inherit_interfaces`).
-        let mut interfaces: Vec<ClassId> = parent
-            .map(|p| self.classes[p as usize].interfaces.clone())
-            .unwrap_or_default();
-        let num_parent = interfaces.len();
-        for iname in &proto.interfaces {
-            let iid = self.class_ids[&lc(iname.as_bytes())];
-            if !interfaces.contains(&iid) {
-                interfaces.push(iid);
+        // Without own interfaces php inherits the parent's list through
+        // `zend_do_inherit_interfaces`, which walks it backwards.
+        let mut interfaces: Vec<ClassId> = Vec::new();
+        if self.internal_classes == 0 {
+            // A built-in (prelude) class, registered the way php registers
+            // internal ones: its own `__toString` implements Stringable when
+            // its methods are registered, then the parent's interfaces are
+            // inherited (backwards), then each declared interface is
+            // implemented (`zend_class_implements`) with its own parents
+            // appended backwards.
+            let stringable = self.class_ids.get(&b"stringable"[..]).copied();
+            let declares_to_string = proto.kind != ClassKind::Interface
+                && proto
+                    .methods
+                    .iter()
+                    .any(|m| m.name.as_bytes().eq_ignore_ascii_case(b"__toString"));
+            if let (true, Some(sid)) = (declares_to_string, stringable) {
+                interfaces.push(sid);
+            }
+            let add_with_parents = |interfaces: &mut Vec<ClassId>, iid: ClassId| {
+                let ce_num = interfaces.len();
+                for &inh in self.classes[iid as usize].interfaces.iter().rev() {
+                    if !interfaces[..ce_num].contains(&inh) {
+                        interfaces.push(inh);
+                    }
+                }
+            };
+            if let Some(p) = parent {
+                for &inh in self.classes[p as usize].interfaces.iter().rev() {
+                    if !interfaces.contains(&inh) {
+                        interfaces.push(inh);
+                    }
+                }
+            }
+            for iname in &proto.interfaces {
+                let iid = self.class_ids[&lc(iname.as_bytes())];
+                if !interfaces.contains(&iid) {
+                    interfaces.push(iid);
+                    add_with_parents(&mut interfaces, iid);
+                }
+            }
+        } else {
+            // php's `zend_do_link_class`: with own interfaces the parent's
+            // list is copied as is; without, `zend_do_inherit_interfaces`
+            // inherits it walking backwards.
+            if let Some(p) = parent {
+                interfaces = self.classes[p as usize].interfaces.clone();
+                if proto.interfaces.is_empty() {
+                    interfaces.reverse();
+                }
+            }
+            let num_parent = interfaces.len();
+            for iname in &proto.interfaces {
+                let iid = self.class_ids[&lc(iname.as_bytes())];
+                if !interfaces.contains(&iid) {
+                    interfaces.push(iid);
+                }
+            }
+            let num_direct = interfaces.len();
+            for i in num_parent..num_direct {
+                let iid = interfaces[i];
+                let ce_num = interfaces.len();
+                for &inh in self.classes[iid as usize].interfaces.iter().rev() {
+                    if !interfaces[..ce_num].contains(&inh) {
+                        interfaces.push(inh);
+                    }
+                }
             }
         }
-        let num_direct = interfaces.len();
-        for i in num_parent..num_direct {
-            let iid = interfaces[i];
-            let ce_num = interfaces.len();
-            for &inh in self.classes[iid as usize].interfaces.iter().rev() {
-                if !interfaces[..ce_num].contains(&inh) {
-                    interfaces.push(inh);
+        // A `__toString` imported from a trait: php adds Stringable at link
+        // time (the compiler only sees the class's own methods).
+        if proto.kind != ClassKind::Trait && methods.contains_key(&b"__tostring"[..]) {
+            if let Some(&sid) = self.class_ids.get(&b"stringable"[..]) {
+                if !ancestors.contains(&sid) {
+                    interfaces.push(sid);
+                    ancestors.push(sid);
+                    ancestors.sort_unstable();
                 }
             }
         }
@@ -910,6 +1080,8 @@ impl Vm {
             .collect();
 
         self.class_ids.insert(lc(proto.name.as_bytes()), id);
+        // Not compiled into a slot (prelude): after everything compiled so far.
+        self.class_order.push(self.decl_classes.len());
         self.classes.push(ClassEntry {
             name: proto.name.clone(),
             kind: proto.kind,
@@ -927,6 +1099,9 @@ impl Vm {
             enum_cases: Vec::new(),
             enum_backing: proto.enum_backing,
             updated: false,
+            proto: Rc::new(proto.clone()),
+            decl_file: proto.decl_file.clone(),
+            decl_line: proto.decl_line,
         });
 
         // Enum cases: materialize one singleton object per case and expose it as
@@ -1037,6 +1212,18 @@ impl Vm {
                     },
                     _ => None,
                 };
+                // `new class …` whose dependencies were not available at
+                // load: declare it now (php's DECLARE_ANON_CLASS).
+                if let Some(n) = name.as_ref().filter(|n| is_anon_name(n)) {
+                    let slot = self
+                        .decl_classes
+                        .iter()
+                        .position(|(p, done)| !done && p.name.as_bytes() == &n[..]);
+                    if let Some(slot) = slot {
+                        self.declare_class_at(slot)?;
+                        return self.resolve_class_by_name(n);
+                    }
+                }
                 match name {
                     Some(n) if self.try_autoload(&n)? => self.resolve_class_by_name(&n),
                     _ => Err(e),
@@ -1529,6 +1716,7 @@ impl Vm {
         for name in pending_statics {
             let sp = &self.classes[cls as usize].static_props[&name];
             let (decl, cell, thunk) = (sp.declaring_class, sp.cell.clone(), sp.init.clone());
+            let default = sp.default.clone();
             let ty = sp.ty.clone();
             // An inherited slot aliases the parent's cell (already updated).
             if decl == cls {
@@ -1537,6 +1725,7 @@ impl Vm {
                     if let Some(ty) = ty {
                         v = self.verify_prop_init_type(v, &ty, cls, &name)?;
                     }
+                    *default.borrow_mut() = v.clone();
                     *cell.borrow_mut() = v;
                 }
             }

@@ -1,0 +1,28 @@
+true
+false
+  [2/1824 L1] Element '{urn:cfg}cfg', attribute 'level': 'x' is not a valid value of the atomic type '{urn:cfg}levelType'.
+  [2/1826 L1] Element '{urn:cfg}cfg', attribute 'columns': 'wide' is not a valid value of the union type '{urn:cfg}columnsType'.
+  [2/1824 L1] Element '{urn:cfg}cfg', attribute 'strict': 'yes' is not a valid value of the atomic type 'xs:boolean'.
+false
+  [2/1867 L1] Element '{urn:cfg}cfg', attribute 'bogus': The attribute 'bogus' is not allowed.
+  [2/1871 L1] Element '{urn:cfg}unknown': This element is not expected.
+false
+  [2/1871 L1] Element '{urn:cfg}suites': Missing child element(s). Expected is one of ( {urn:cfg}facet, {urn:cfg}suite ).
+false
+  [2/1868 L1] Element '{urn:cfg}suite': The attribute 'name' is required but missing.
+  [2/1842 L1] Element '{urn:cfg}dir': Element content is not allowed, because the content type is a simple type definition.
+  [2/1846 L1] Element '{urn:cfg}facet': The element declaration is abstract.
+false
+  [2/1871 L1] Element '{urn:cfg}dir': This element is not expected. Expected is ( {urn:cfg}exclude ).
+  [2/1868 L1] Element '{urn:cfg}ini': The attribute 'name' is required but missing.
+  [2/1868 L1] Element '{urn:cfg}ini': The attribute 'value' is required but missing.
+false
+  [2/1845 L1] Element 'cfg': No matching global declaration available for the validation root.
+false
+  [2/1843 L1] Element '{urn:cfg}php': Character content other than whitespace is not allowed because the content type is 'element-only'.
+W[2]: DOMDocument::schemaValidateSource(): Invalid Schema
+bool(false)
+  [2/3004] element decl. 'cfg', attribute 'type': The QName value 'nope' does not resolve to a(n) type definition.
+W[2]: DOMDocument::schemaValidateSource(): Invalid Schema
+bool(false)
+  [2/1772] The XML document 'in_memory_buffer' is not a schema document.

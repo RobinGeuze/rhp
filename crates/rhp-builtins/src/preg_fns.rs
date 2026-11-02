@@ -99,7 +99,20 @@ const PREG_GREP_INVERT: i64 = 1;
 
 /// A compiled match: one `Option<(start, end)>` per group index `0..=ncaptures`
 /// (`None` = the group did not participate). Byte offsets into the subject.
-type Ovector = Vec<Option<(usize, usize)>>;
+/// Also carries the last `(*MARK:name)` passed on the matching path (php
+/// adds it to `$matches` as `"MARK"`).
+#[derive(Clone, Debug, Default)]
+struct Ovector {
+    groups: Vec<Option<(usize, usize)>>,
+    mark: Option<Vec<u8>>,
+}
+
+impl std::ops::Deref for Ovector {
+    type Target = Vec<Option<(usize, usize)>>;
+    fn deref(&self) -> &Self::Target {
+        &self.groups
+    }
+}
 
 mod engine {
     use super::Ovector;
@@ -227,7 +240,16 @@ mod engine {
                     out.push(Some((s, e)));
                 }
             }
-            Ok(Some(out))
+            // The mark name is a NUL-terminated string preceded by its
+            // length unit (valid until the next match on this data block).
+            let mp = unsafe { pcre2_get_mark_8(md.ptr) };
+            let mark = if mp.is_null() {
+                None
+            } else {
+                let len = unsafe { *mp.sub(1) } as usize;
+                Some(unsafe { std::slice::from_raw_parts(mp, len) }.to_vec())
+            };
+            Ok(Some(Ovector { groups: out, mark }))
         }
 
         /// A single match at `start` (as `preg_match` uses). `Err(())` surfaces
@@ -566,6 +588,9 @@ fn build_match(
         }
         arr.insert(ArrayKey::Int(i as i64), val);
     }
+    if let Some(m) = &ov.mark {
+        arr.insert(ArrayKey::Str(PhpStr::from("MARK")), Value::str(m.clone()));
+    }
     arr
 }
 
@@ -578,6 +603,42 @@ fn write_ref(arg: Option<&Value>, value: Value) {
     }
 }
 
+/// php_pcre_match_impl's start offset: a negative one counts from the end
+/// (clamped to 0); one past the subject fails with PREG_INTERNAL_ERROR
+/// after `$matches` was reset to an empty array.
+fn start_offset(
+    f: &str,
+    subject: &[u8],
+    offset: i64,
+    matches: Option<&Value>,
+) -> Result<Option<usize>, Thrown> {
+    if offset == i64::MIN {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "{f}(): Argument #5 ($offset) must be greater than {}",
+                i64::MIN
+            ),
+        ));
+    }
+    let len = subject.len() as i64;
+    let start = if offset < 0 {
+        if offset.unsigned_abs() <= len as u64 {
+            len + offset
+        } else {
+            0
+        }
+    } else {
+        offset
+    };
+    if start > len {
+        write_ref(matches, Value::Array(PhpArray::new()));
+        set_last_error(PREG_INTERNAL_ERROR);
+        return Ok(None);
+    }
+    Ok(Some(start as usize))
+}
+
 // ---------------------------------------------------------------------------
 // preg_match
 // ---------------------------------------------------------------------------
@@ -588,7 +649,10 @@ fn fn_preg_match(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
     let subject = bytes_of(&args[1]);
     let flags = int_arg(args, 3, 0);
-    let offset = int_arg(args, 4, 0).max(0) as usize;
+    let Some(offset) = start_offset("preg_match", &subject, int_arg(args, 4, 0), args.get(2))?
+    else {
+        return Ok(Value::Bool(false));
+    };
     let offset_capture = flags & PREG_OFFSET_CAPTURE != 0;
     let unmatched_null = flags & PREG_UNMATCHED_AS_NULL != 0;
 
@@ -620,7 +684,10 @@ fn fn_preg_match_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     let set_order = flags_raw & PREG_SET_ORDER != 0;
     let offset_capture = flags_raw & PREG_OFFSET_CAPTURE != 0;
     let unmatched_null = flags_raw & PREG_UNMATCHED_AS_NULL != 0;
-    let offset = int_arg(args, 4, 0).max(0) as usize;
+    let Some(offset) = start_offset("preg_match_all", &subject, int_arg(args, 4, 0), args.get(2))?
+    else {
+        return Ok(Value::Bool(false));
+    };
     let names = re.names().to_vec();
     let ngroups = re.ncaptures() + 1;
 
@@ -645,11 +712,9 @@ fn fn_preg_match_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
         outer
     } else {
         // PATTERN_ORDER: one array per group (named group by name then index).
-        // All groups are included (no trailing trim). With zero matches, php
-        // emits only `[0 => []]`.
+        // All groups are included (no trailing trim), even with zero matches.
         let mut outer = PhpArray::new();
-        let groups = if count == 0 { 1 } else { ngroups };
-        for i in 0..groups {
+        for i in 0..ngroups {
             let mut col = PhpArray::new();
             for ov in &all {
                 col.push(group_value(ov, &subject, i, offset_capture, unmatched_null));
@@ -661,6 +726,16 @@ fn fn_preg_match_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
                 );
             }
             outer.insert(ArrayKey::Int(i as i64), Value::Array(col));
+        }
+        // `$matches['MARK'][$n]` for each match that passed a mark.
+        let mut marks = PhpArray::new();
+        for (n, ov) in all.iter().enumerate() {
+            if let Some(m) = &ov.mark {
+                marks.insert(ArrayKey::Int(n as i64), Value::str(m.clone()));
+            }
+        }
+        if !marks.is_empty() {
+            outer.insert(ArrayKey::Str(PhpStr::from("MARK")), Value::Array(marks));
         }
         outer
     };

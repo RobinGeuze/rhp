@@ -127,6 +127,18 @@ impl CompareCx for Vm {
                 _ => None,
             });
         }
+        if self.is_sxe(obj) {
+            // sxe_object_cast_ex: the node's text, converted.
+            let v = Value::Object(obj.clone());
+            let text = || Value::str(rhp_builtins::sxe_string(&v).unwrap_or_default());
+            return Ok(match target {
+                CastTarget::Bool => Some(Value::Bool(rhp_builtins::sxe_bool(&v))),
+                CastTarget::Str => Some(text()),
+                CastTarget::Int => Some(Value::Int(conv::to_int(&text()))),
+                CastTarget::Float => Some(Value::Float(conv::to_float(&text()))),
+                _ => None,
+            });
+        }
         match target {
             CastTarget::Bool => Ok(Some(Value::Bool(true))),
             CastTarget::Str => {
@@ -154,6 +166,18 @@ impl CompareCx for Vm {
         if self.is_gmp(obj) {
             let (x, y) = (self.gmp_operand(a), self.gmp_operand(b));
             return Some(rhp_builtins::gmp_compare_handler(x, y));
+        }
+        if self.is_sxe(obj) {
+            // sxe_objects_compare: two SimpleXML objects are equal only when
+            // they wrap the same node; otherwise uncomparable.
+            let (Value::Object(x), Value::Object(y)) = (a, b) else {
+                return None;
+            };
+            if !self.is_sxe(x) || !self.is_sxe(y) {
+                return None;
+            }
+            let same = rhp_builtins::sxe_same_node(a, b);
+            return Some(Ok(if same { 0 } else { 1 }));
         }
         let cls = obj.borrow().class;
         if self.class_is(cls, b"DateTimeInterface") {

@@ -22,8 +22,8 @@ use rhp_frontend::cst::{
     Access, Argument, ArrayElement, AssignmentOperator, BinaryOperator, Class, ClassLikeMember,
     ClassLikeMemberSelector, CompositeString, Construct, Expression, ForBody, ForeachBody,
     ForeachTarget, Hint, Identifier, IfBody, Literal, MagicConstant, Match, MatchArm, MethodBody,
-    Modifier, Program as AstProgram, Property, PropertyItem, Statement, StringPart, SwitchBody,
-    SwitchCase, UnaryPrefixOperator, Variable, WhileBody,
+    Modifier, Node, Program as AstProgram, Property, PropertyItem, Statement, StringPart,
+    SwitchBody, SwitchCase, UnaryPrefixOperator, Variable, WhileBody,
 };
 use rhp_values::{ClassFlags, ClassKind, Visibility};
 
@@ -45,8 +45,47 @@ enum CursorStep {
 
 /// Where an lvalue cursor roots.
 enum LvalRoot {
+    /// A register: a CV, or a temporary holding a call result.
     Cv(Reg),
     StaticProp(ClassRef, NIdx),
+    /// `C::${expr}`: static property with a runtime name.
+    StaticPropDyn(ClassRef, Reg),
+    /// `$$name` / `${expr}`: the variable named by the register's value.
+    VarVar(Reg),
+    /// `$GLOBALS[<name reg>]`: a global variable by name.
+    Global(Reg),
+}
+
+/// `$GLOBALS[<index>]`: the index expression when `e` is that form.
+fn globals_index<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
+    match e {
+        Expression::ArrayAccess(aa) if is_globals_var(aa.array) => Some(aa.index),
+        _ => None,
+    }
+}
+
+/// Is `e` the bare `$GLOBALS` variable?
+fn is_globals_var(e: &Expression) -> bool {
+    matches!(e, Expression::Variable(Variable::Direct(d)) if strip_dollar(d.name) == b"GLOBALS")
+}
+
+/// php's compile-time errors for `$GLOBALS` as (the root of) a write target:
+/// only `$GLOBALS[$name]...` may be written.
+fn check_globals_write(target: &Expression) -> Result<(), Thrown> {
+    match target {
+        e if is_globals_var(e) => Err(Thrown::error(
+            "Error",
+            "$GLOBALS can only be modified using the $GLOBALS[$name] = $value syntax",
+        )),
+        Expression::ArrayAppend(ap) if is_globals_var(ap.array) => {
+            Err(Thrown::error("Error", "Cannot append to $GLOBALS"))
+        }
+        Expression::ArrayAccess(aa) if is_globals_var(aa.array) => Ok(()),
+        Expression::ArrayAccess(aa) => check_globals_write(aa.array),
+        Expression::ArrayAppend(ap) => check_globals_write(ap.array),
+        Expression::Parenthesized(p) => check_globals_write(p.expression),
+        _ => Ok(()),
+    }
 }
 
 /// The body form of a closure being lowered.
@@ -73,6 +112,10 @@ thread_local! {
     static COND_CLASSES: RefCell<(Vec<ClassProto>, u32)> = const { RefCell::new((Vec::new(), 0)) };
 }
 
+/// The source bytes doc comments are looked up in, and its token stream
+/// (lexed on the first lookup).
+type DocSource = (Rc<Vec<u8>>, Option<Rc<Vec<rhp_frontend::Token>>>);
+
 thread_local! {
     /// Method name (lowercase) -> per-position "could be by-reference" mask: true
     /// at position i if ANY method of that name declares `&` there. A call site
@@ -93,6 +136,14 @@ thread_local! {
     /// Whether a trait body is being compiled: `__CLASS__` there names the
     /// *using* class, so it is lowered to a runtime `self::class`.
     static IN_TRAIT: RefCell<bool> = const { RefCell::new(false) };
+    /// Whether an interface body is being compiled (its property
+    /// declarations, hooked or not, contribute no runtime members).
+    static IN_INTERFACE: RefCell<bool> = const { RefCell::new(false) };
+    /// The user source being compiled and its full token stream (comments
+    /// included), for locating declarations' doc comments. Empty while
+    /// compiling the prelude.
+    static DOC_SRC: RefCell<DocSource> =
+        RefCell::new((Rc::new(Vec::new()), None));
 }
 
 /// Lower a mago type hint to the bytecode [`rhp_bytecode::TypeHint`] (resolving
@@ -102,9 +153,24 @@ fn type_hint(h: &Hint) -> rhp_bytecode::TypeHint {
         nullable: false,
         intersection: false,
         kinds: Vec::new(),
+        groups: Vec::new(),
+        explicit_null: false,
     };
     collect_hint(h, &mut out);
     out
+}
+
+/// The class names of a (parenthesized) intersection hint `A&B&C`.
+fn intersection_names(h: &Hint, out: &mut Vec<PhpStr>) {
+    match h {
+        Hint::Parenthesized(p) => intersection_names(p.hint, out),
+        Hint::Intersection(i) => {
+            intersection_names(i.left, out);
+            intersection_names(i.right, out);
+        }
+        Hint::Identifier(id) => out.push(PhpStr::from_bytes(resolve_class_name(id))),
+        _ => {}
+    }
 }
 
 fn collect_hint(h: &Hint, out: &mut rhp_bytecode::TypeHint) {
@@ -116,8 +182,21 @@ fn collect_hint(h: &Hint, out: &mut rhp_bytecode::TypeHint) {
         }
         Hint::Parenthesized(p) => collect_hint(p.hint, out),
         Hint::Union(u) => {
-            collect_hint(u.left, out);
-            collect_hint(u.right, out);
+            // A DNF member `(A&B)` of a union is an intersection group.
+            for side in [u.left, u.right] {
+                match side {
+                    Hint::Parenthesized(p) if matches!(p.hint, Hint::Intersection(_)) => {
+                        let mut g = Vec::new();
+                        intersection_names(p.hint, &mut g);
+                        out.groups.push(g);
+                    }
+                    Hint::Null(_) => {
+                        out.nullable = true;
+                        out.explicit_null = true;
+                    }
+                    other => collect_hint(other, out),
+                }
+            }
         }
         Hint::Intersection(i) => {
             out.intersection = true;
@@ -454,10 +533,19 @@ fn as_reference<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
 /// last slash.
 fn dirname(path: &[u8]) -> Vec<u8> {
     match path.iter().rposition(|&b| b == b'/') {
-        None => b".".to_vec(),
+        // php (zend_compile `__DIR__`): a "." directory — "Command line
+        // code", "Standard input code" — becomes the current directory.
+        None => std::env::current_dir()
+            .map(|d| d.into_os_string().into_encoded_bytes())
+            .unwrap_or_else(|_| b".".to_vec()),
         Some(0) => b"/".to_vec(),
         Some(i) => path[..i].to_vec(),
     }
+}
+
+/// The file being compiled (a class declaration's `info.user.filename`).
+fn decl_file() -> PhpStr {
+    SRC_FILE.with(|f| PhpStr::from_bytes(f.borrow().clone()))
 }
 
 /// 1-based line number for a byte offset, via the current `LINE_STARTS`.
@@ -566,6 +654,7 @@ fn compile_program(
     with_prelude: bool,
 ) -> Result<Program, Thrown> {
     LINE_STARTS.with(|ls| ls.borrow_mut().clear());
+    DOC_SRC.with(|d| *d.borrow_mut() = (Rc::new(Vec::new()), None));
     SRC_BYTES.with(|b| b.borrow_mut().clear());
     SRC_FILE.with(|f| *f.borrow_mut() = file.as_bytes().to_vec());
     STRICT_TYPES.with(|s| *s.borrow_mut() = detect_strict_types(program));
@@ -627,6 +716,7 @@ fn compile_program(
     COND_CLASSES.with(|c| c.borrow_mut().1 = num_top_classes);
     // From here on we compile user code, so install its line map.
     LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
+    DOC_SRC.with(|d| *d.borrow_mut() = (Rc::new(source.to_vec()), None));
     SRC_BYTES.with(|b| *b.borrow_mut() = source.to_vec());
     let user_constants: Vec<(PhpStr, Value)> = Vec::new();
     for (ctx, stmt) in &flat {
@@ -656,10 +746,10 @@ fn compile_program(
     for (_ctx, stmt) in &flat {
         c.scan_stmt_vars(stmt);
     }
-    c.num_cvs = c.cv_map.len() as u16;
-    c.next_temp = c.num_cvs;
-    c.high_water = c.num_cvs;
-    c.temp_floor = c.num_cvs;
+    for (_ctx, stmt) in &flat {
+        c.scan_node_vars(Node::Statement(stmt));
+    }
+    c.freeze_cvs();
 
     let mut top_class_idx = 0u32;
     for (ctx, stmt) in &flat {
@@ -673,6 +763,9 @@ fn compile_program(
         // A top-level class is hoisted at load when its parent/interfaces
         // are available; otherwise it is declared when this point is reached.
         if is_class_like(stmt) {
+            // php's DECLARE_CLASS line: the class keyword's (the decl's
+            // line_start), not the attributes' or modifiers'.
+            c.cur_line = classes[num_prelude_classes + top_class_idx as usize].decl_line;
             c.emit(Instr::DeclareClass {
                 class_idx: top_class_idx,
             });
@@ -692,7 +785,7 @@ fn compile_program(
         .map(|n| PhpStr::from_bytes(n.clone()))
         .collect();
     Ok(Program {
-        main: Rc::new(c.finish()),
+        main: Rc::new(c.finish()?),
         functions,
         classes,
         closures,
@@ -756,6 +849,239 @@ fn has_allow_dynamic(
     })
 }
 
+/// php's scanner keeps the last `/** */` comment until a declaration claims
+/// it (its "backup" point: a function/class name, a property / parameter
+/// variable, a constant name) or a `}` resets it. Approximate that by walking
+/// back from `pos` over the tokens that can sit between a doc comment and the
+/// claiming point (whitespace, other comments, attribute groups, modifiers and
+/// keywords, type hints): the first doc comment reached is the declaration's.
+fn doc_comment_before(pos: u32) -> Option<PhpStr> {
+    use rhp_frontend::TokenKind as T;
+    let (src, toks) = DOC_SRC.with(|d| {
+        let mut d = d.borrow_mut();
+        if d.1.is_none() {
+            let has_doc = d.0.windows(3).any(|w| w == b"/**");
+            let toks = if has_doc {
+                rhp_frontend::tokens(&d.0)
+            } else {
+                Vec::new()
+            };
+            d.1 = Some(Rc::new(toks));
+        }
+        (d.0.clone(), d.1.clone().unwrap_or_default())
+    });
+    if toks.is_empty() {
+        return None;
+    }
+    let pos = pos as usize;
+    let mut i = toks.partition_point(|t| t.end <= pos);
+    let mut attr_depth = 0usize;
+    let mut paren_depth = 0usize;
+    while i > 0 {
+        i -= 1;
+        let t = toks[i];
+        if attr_depth > 0 {
+            match t.kind {
+                T::RightBracket => attr_depth += 1,
+                T::LeftBracket | T::HashLeftBracket => attr_depth -= 1,
+                _ => {}
+            }
+            continue;
+        }
+        match t.kind {
+            T::DocBlockComment => {
+                let text = &src[t.start..t.end];
+                // `"/**"{WHITESPACE}` — `/**/` is a plain comment.
+                if text.len() > 4 && text[3].is_ascii_whitespace() {
+                    return Some(PhpStr::from_bytes(text.to_vec()));
+                }
+            }
+            T::Whitespace | T::SingleLineComment | T::HashComment | T::MultiLineComment => {}
+            T::RightBracket => attr_depth = 1,
+            T::RightParenthesis => paren_depth += 1,
+            T::LeftParenthesis => {
+                if paren_depth == 0 {
+                    return None;
+                }
+                paren_depth -= 1;
+            }
+            T::Identifier
+            | T::QualifiedIdentifier
+            | T::FullyQualifiedIdentifier
+            | T::Question
+            | T::Pipe
+            | T::Ampersand
+            | T::DotDotDot => {}
+            k if k.is_keyword() => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Compile `#[...]` attribute groups: each attribute's resolved class name
+/// and its argument list as an array (folded when constant, else a thunk run
+/// in `class_name`'s scope when Reflection asks for the arguments).
+fn compile_attributes(
+    lists: &rhp_frontend::cst::Sequence<rhp_frontend::cst::AttributeList>,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: Option<&PhpStr>,
+) -> Result<Vec<rhp_bytecode::AttributeProto>, Thrown> {
+    use rhp_frontend::cst::PartialArgument as PA;
+    let mut out = Vec::new();
+    for list in lists.iter() {
+        for a in list.attributes.iter() {
+            let name = PhpStr::from_bytes(resolve_class_name(&a.name));
+            let args = match &a.argument_list {
+                None => None,
+                Some(al) => {
+                    // (name, expr) pairs; positional args have no name.
+                    let mut items: Vec<(Option<&[u8]>, &Expression)> = Vec::new();
+                    for arg in al.arguments.iter() {
+                        match arg {
+                            PA::Positional(p) => items.push((None, p.value)),
+                            PA::Named(n) => items.push((Some(n.name.value), n.value)),
+                            _ => {}
+                        }
+                    }
+                    let folded: Result<Vec<Value>, Thrown> =
+                        items.iter().map(|(_, e)| fold_const(e)).collect();
+                    match folded {
+                        Ok(vals) => {
+                            let mut arr = PhpArray::new();
+                            for ((n, _), v) in items.iter().zip(vals) {
+                                match n {
+                                    Some(n) => arr.insert(ArrayKey::from_bytes(n), v),
+                                    None => arr.push(v),
+                                }
+                            }
+                            Some(ConstInitProto::Const(Value::Array(arr)))
+                        }
+                        Err(_) => {
+                            let mut c = ProtoBuilder::new(PhpStr::from("{init}"));
+                            c.sigs = sigs.clone();
+                            c.class_name = class_name.cloned();
+                            c.scope_kind = ScopeKind::Init;
+                            for (_, e) in &items {
+                                c.scan_expr_vars(e);
+                            }
+                            c.num_cvs = c.cv_map.len() as u16;
+                            c.next_temp = c.num_cvs;
+                            c.high_water = c.num_cvs;
+                            c.temp_floor = c.num_cvs;
+                            let dst = c.alloc_temp();
+                            c.emit(Instr::NewArray { dst, cap: 0 });
+                            for (n, e) in &items {
+                                let val = c.compile_expr(e)?;
+                                match n {
+                                    Some(n) => {
+                                        let key = c.load_string_const(n);
+                                        c.emit(Instr::ArrSet { arr: dst, key, val });
+                                    }
+                                    None => c.emit(Instr::ArrPush { arr: dst, val }),
+                                }
+                            }
+                            c.emit(Instr::Ret { src: dst });
+                            Some(ConstInitProto::Thunk(Rc::new(c.finish()?)))
+                        }
+                    }
+                }
+            };
+            out.push(rhp_bytecode::AttributeProto { name, args });
+        }
+    }
+    Ok(out)
+}
+
+/// Reflection metadata of a declaration: its attributes, the doc comment
+/// claimed at `doc_pos`, and the line span `[start, end]` (byte offsets).
+fn decl_meta(
+    lists: &rhp_frontend::cst::Sequence<rhp_frontend::cst::AttributeList>,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: Option<&PhpStr>,
+    doc_pos: u32,
+    start: u32,
+    end: u32,
+) -> Result<rhp_bytecode::DeclMeta, Thrown> {
+    Ok(rhp_bytecode::DeclMeta {
+        attributes: compile_attributes(lists, sigs, class_name)?,
+        doc_comment: doc_comment_before(doc_pos),
+        start_line: line_of(start),
+        offset: start,
+        end_line: line_of(end.saturating_sub(1).max(start)),
+    })
+}
+
+/// Reflection data for a parameter default: a standalone thunk for a
+/// non-constant default, and the constant's name when the default is a bare
+/// constant / class-constant reference.
+fn param_default_meta(
+    p: &rhp_frontend::cst::FunctionLikeParameter,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: Option<&PhpStr>,
+) -> (Option<Rc<FunctionProto>>, Option<PhpStr>) {
+    let Some(dv) = &p.default_value else {
+        return (None, None);
+    };
+    let e = dv.value;
+    let cname = match e {
+        Expression::ConstantAccess(ca) => {
+            let n = identifier_raw(&ca.name);
+            let n = n.strip_prefix(b"\\").unwrap_or(n);
+            let lcn = n.to_ascii_lowercase();
+            (!matches!(lcn.as_slice(), b"true" | b"false" | b"null"))
+                .then(|| PhpStr::from_bytes(n.to_vec()))
+        }
+        Expression::Access(Access::ClassConstant(cca)) => {
+            let class: Option<Vec<u8>> = match cca.class {
+                Expression::Identifier(id) => Some(identifier_raw(id).to_vec()),
+                Expression::Self_(_) => Some(b"self".to_vec()),
+                Expression::Static(_) => Some(b"static".to_vec()),
+                Expression::Parent(_) => Some(b"parent".to_vec()),
+                _ => None,
+            };
+            match (&cca.constant, class) {
+                (rhp_frontend::cst::ClassLikeConstantSelector::Identifier(c), Some(mut cl)) => {
+                    cl.extend_from_slice(b"::");
+                    cl.extend_from_slice(c.value);
+                    Some(PhpStr::from_bytes(cl))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let thunk = if fold_const(e).is_err() {
+        compile_const_thunk(e, sigs, class_name).ok()
+    } else {
+        None
+    };
+    (thunk, cname)
+}
+
+/// php's `add_stringable_interface`: a class-like (not a trait) declaring
+/// `__toString` implicitly implements `Stringable`.
+fn add_stringable(interfaces: &mut Vec<PhpStr>, methods: &[MethodProto], self_name: &PhpStr) {
+    if self_name.as_bytes().eq_ignore_ascii_case(b"Stringable") {
+        return;
+    }
+    if methods
+        .iter()
+        .any(|m| m.name.as_bytes().eq_ignore_ascii_case(b"__toString"))
+        && !interfaces
+            .iter()
+            .any(|i| i.as_bytes().eq_ignore_ascii_case(b"Stringable"))
+    {
+        interfaces.push(PhpStr::from("Stringable"));
+    }
+}
+
+/// The span offsets `(start, end)` of an AST node.
+fn span_of(n: &impl mago_span::HasSpan) -> (u32, u32) {
+    let s = n.span();
+    (s.start.offset, s.end.offset)
+}
+
 fn compile_class(
     class: &Class,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
@@ -786,6 +1112,16 @@ fn compile_class(
         .unwrap_or_default();
 
     let m = compile_members(&class.members, sigs, &name)?;
+    let mut interfaces = interfaces;
+    add_stringable(&mut interfaces, &m.methods, &name);
+    let meta = decl_meta(
+        &class.attribute_lists,
+        sigs,
+        Some(&name),
+        class.name.span.start.offset,
+        class.class.span.start.offset,
+        class.right_brace.end.offset,
+    )?;
     Ok(ClassProto {
         name,
         kind: ClassKind::Class,
@@ -799,6 +1135,10 @@ fn compile_class(
         constants: m.constants,
         enum_cases: Vec::new(),
         enum_backing: None,
+        meta,
+        file: PhpStr::from_bytes(src_file()),
+        decl_file: decl_file(),
+        decl_line: line_of(class.class.span.start.offset),
     })
 }
 
@@ -842,7 +1182,19 @@ fn compile_anon_class(
         allow_dynamic: has_allow_dynamic(&ac.attribute_lists),
     };
     let m = compile_members(&ac.members, sigs, &name)?;
+    let mut interfaces = interfaces;
+    add_stringable(&mut interfaces, &m.methods, &name);
+    let meta = decl_meta(
+        &ac.attribute_lists,
+        sigs,
+        Some(&name),
+        ac.class.span.start.offset,
+        ac.class.span.start.offset,
+        ac.right_brace.end.offset,
+    )?;
     Ok(ClassProto {
+        decl_file: decl_file(),
+        decl_line: line_of(ac.class.span.start.offset),
         name,
         kind: ClassKind::Class,
         flags,
@@ -855,6 +1207,8 @@ fn compile_anon_class(
         constants: m.constants,
         enum_cases: Vec::new(),
         enum_backing: None,
+        meta,
+        file: PhpStr::from_bytes(src_file()),
     })
 }
 
@@ -901,7 +1255,18 @@ fn compile_enum(
     }
 
     let m = compile_members(&en.members, sigs, &name)?;
+    add_stringable(&mut interfaces, &m.methods, &name);
+    let meta = decl_meta(
+        &en.attribute_lists,
+        sigs,
+        Some(&name),
+        en.name.span.start.offset,
+        en.r#enum.span.start.offset,
+        en.right_brace.end.offset,
+    )?;
     Ok(ClassProto {
+        meta,
+        file: PhpStr::from_bytes(src_file()),
         name,
         kind: ClassKind::Enum,
         // Enums are implicitly final.
@@ -920,6 +1285,8 @@ fn compile_enum(
         constants: m.constants,
         enum_cases: m.enum_cases,
         enum_backing: backing,
+        decl_file: decl_file(),
+        decl_line: line_of(en.r#enum.span.start.offset),
     })
 }
 
@@ -937,13 +1304,11 @@ fn compile_const_thunk(
     c.class_name = class_name.cloned(); // for `__CLASS__`
     c.scope_kind = ScopeKind::Init;
     c.scan_expr_vars(expr); // const-exprs use no $vars, but be safe
-    c.num_cvs = c.cv_map.len() as u16;
-    c.next_temp = c.num_cvs;
-    c.high_water = c.num_cvs;
-    c.temp_floor = c.num_cvs;
+    c.scan_node_vars(Node::Expression(expr));
+    c.freeze_cvs();
     let r = c.compile_expr(expr)?;
     c.emit(Instr::Ret { src: r });
-    Ok(Rc::new(c.finish()))
+    Ok(Rc::new(c.finish()?))
 }
 
 /// Fold an initializer to a constant, or fall back to a runtime thunk.
@@ -1043,25 +1408,36 @@ fn compile_member(
             out.methods.push(mp);
             out.props.extend(promoted);
         }
+        ClassLikeMember::Property(_) if IN_INTERFACE.with(|f| *f.borrow()) => {}
         ClassLikeMember::Property(Property::Plain(p)) => {
             let visibility = modifiers_visibility(&p.modifiers);
             let set_visibility = modifiers_set_visibility(&p.modifiers);
             let is_static = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Static(_)));
             let is_readonly = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
             let hint = p.hint.as_ref().map(type_hint);
+            let attributes = compile_attributes(&p.attribute_lists, sigs, Some(class_name))?;
+            let (pstart, pend) = span_of(p);
             for item in p.items.iter() {
                 let (var, default) = match item {
                     PropertyItem::Concrete(c) => (
-                        c.variable.name,
+                        &c.variable,
                         coerce_prop_default(
                             prop_default_or_thunk(c.value, sigs, Some(class_name))?,
                             hint.as_ref(),
                         ),
                     ),
-                    PropertyItem::Abstract(a) => (a.variable.name, PropDefaultProto::None),
+                    PropertyItem::Abstract(a) => (&a.variable, PropDefaultProto::None),
                 };
-                let pname = PhpStr::from_bytes(strip_dollar(var).to_vec());
+                let meta = rhp_bytecode::DeclMeta {
+                    attributes: attributes.clone(),
+                    doc_comment: doc_comment_before(var.span.start.offset),
+                    start_line: line_of(pstart),
+                    offset: var.span.start.offset,
+                    end_line: line_of(pend),
+                };
+                let pname = PhpStr::from_bytes(strip_dollar(var.name).to_vec());
                 if is_static {
+                    let has_default = !matches!(default, PropDefaultProto::None);
                     let init = match default {
                         PropDefaultProto::Const(v) => ConstInitProto::Const(v),
                         PropDefaultProto::Init(t) => ConstInitProto::Thunk(t),
@@ -1073,6 +1449,8 @@ fn compile_member(
                         is_readonly,
                         init,
                         type_hint: hint.clone(),
+                        meta,
+                        has_default,
                     });
                 } else {
                     out.props.push(PropProto {
@@ -1082,6 +1460,8 @@ fn compile_member(
                         is_readonly,
                         default,
                         type_hint: hint.clone(),
+                        meta,
+                        promoted: false,
                     });
                 }
             }
@@ -1092,6 +1472,9 @@ fn compile_member(
         ClassLikeMember::Constant(c) => {
             let visibility = modifiers_visibility(&c.modifiers);
             let hint = c.hint.as_ref().map(type_hint);
+            let is_final = has_modifier(&c.modifiers, |m| matches!(m, Modifier::Final(_)));
+            let attributes = compile_attributes(&c.attribute_lists, sigs, Some(class_name))?;
+            let (cstart, cend) = span_of(c);
             for item in c.items.iter() {
                 out.constants.push(ConstProto {
                     name: PhpStr::from_bytes(item.name.value.to_vec()),
@@ -1101,6 +1484,14 @@ fn compile_member(
                         hint.as_ref(),
                     ),
                     type_hint: hint.clone(),
+                    meta: rhp_bytecode::DeclMeta {
+                        attributes: attributes.clone(),
+                        doc_comment: doc_comment_before(item.name.span.start.offset),
+                        start_line: line_of(cstart),
+                        offset: item.name.span.start.offset,
+                        end_line: line_of(cend),
+                    },
+                    is_final,
                 });
             }
         }
@@ -1118,8 +1509,21 @@ fn compile_member(
                     Some(const_init_or_thunk(b.value, sigs, Some(class_name))?),
                 ),
             };
+            let name_off = match &ec.item {
+                EnumCaseItem::Unit(u) => u.name.span.start.offset,
+                EnumCaseItem::Backed(b) => b.name.span.start.offset,
+            };
+            let (cstart, cend) = span_of(ec);
+            let meta = decl_meta(
+                &ec.attribute_lists,
+                sigs,
+                Some(class_name),
+                name_off,
+                cstart,
+                cend,
+            )?;
             out.enum_cases
-                .push(rhp_bytecode::EnumCaseProto { name, value });
+                .push(rhp_bytecode::EnumCaseProto { name, value, meta });
         }
     }
     Ok(())
@@ -1134,7 +1538,19 @@ fn compile_trait(
     let m = compile_members(&t.members, sigs, &name);
     IN_TRAIT.with(|f| *f.borrow_mut() = saved);
     let m = m?;
+    let meta = decl_meta(
+        &t.attribute_lists,
+        sigs,
+        Some(&name),
+        t.name.span.start.offset,
+        t.r#trait.span.start.offset,
+        t.right_brace.end.offset,
+    )?;
     Ok(ClassProto {
+        meta,
+        file: PhpStr::from_bytes(src_file()),
+        decl_file: decl_file(),
+        decl_line: line_of(t.r#trait.span.start.offset),
         name,
         kind: ClassKind::Trait,
         flags: ClassFlags::default(),
@@ -1153,19 +1569,44 @@ fn compile_trait(
 /// The built-in exception/throwable class hierarchy, as PHP source. Compiled
 /// and prepended to every program so `throw`/`catch` and engine errors work.
 const PRELUDE: &str = r##"<?php
-interface Stringable {}
-interface Throwable extends Stringable {}
+interface Stringable { public function __toString(): string; }
+interface Throwable extends Stringable {
+    public function getMessage(): string;
+    public function getCode();
+    public function getFile(): string;
+    public function getLine(): int;
+    public function getTrace(): array;
+    public function getPrevious(): ?Throwable;
+    public function getTraceAsString(): string;
+}
 interface UnitEnum {}
 interface BackedEnum extends UnitEnum {}
 interface Traversable {}
-interface Iterator extends Traversable {}
-interface IteratorAggregate extends Traversable {}
-interface OuterIterator extends Iterator {}
-interface RecursiveIterator extends Iterator {}
-interface JsonSerializable {}
-interface Serializable {}
-interface ArrayAccess {}
-interface Countable {}
+interface Iterator extends Traversable {
+    public function current(): mixed;
+    public function next(): void;
+    public function key(): mixed;
+    public function valid(): bool;
+    public function rewind(): void;
+}
+interface IteratorAggregate extends Traversable { public function getIterator(): Traversable; }
+interface OuterIterator extends Iterator { public function getInnerIterator(): ?Iterator; }
+interface RecursiveIterator extends Iterator {
+    public function hasChildren(): bool;
+    public function getChildren(): ?RecursiveIterator;
+}
+interface JsonSerializable { public function jsonSerialize(): mixed; }
+interface Serializable {
+    public function serialize();
+    public function unserialize(string $data);
+}
+interface ArrayAccess {
+    public function offsetExists(mixed $offset): bool;
+    public function offsetGet(mixed $offset): mixed;
+    public function offsetSet(mixed $offset, mixed $value): void;
+    public function offsetUnset(mixed $offset): void;
+}
+interface Countable { public function count(): int; }
 final class Generator implements Iterator {}
 class stdClass {}
 final class __PHP_Incomplete_Class {}
@@ -1678,25 +2119,30 @@ fn compile_interface(
                 .collect()
         })
         .unwrap_or_default();
-    let mut constants = Vec::new();
-    for member in iface.members.iter() {
-        if let ClassLikeMember::Constant(c) = member {
-            let visibility = modifiers_visibility(&c.modifiers);
-            let hint = c.hint.as_ref().map(type_hint);
-            for item in c.items.iter() {
-                constants.push(ConstProto {
-                    name: PhpStr::from_bytes(item.name.value.to_vec()),
-                    visibility,
-                    value: coerce_const_init(
-                        const_init_or_thunk(item.value, sigs, Some(&name))?,
-                        hint.as_ref(),
-                    ),
-                    type_hint: hint.clone(),
-                });
-            }
-        }
-        // Interface method signatures / properties contribute no runtime members.
-    }
+    // Constants and (abstract) method signatures; interface properties
+    // contribute no runtime members.
+    let saved = IN_INTERFACE.with(|f| std::mem::replace(&mut *f.borrow_mut(), true));
+    let m = compile_members(&iface.members, sigs, &name);
+    IN_INTERFACE.with(|f| *f.borrow_mut() = saved);
+    let m = m?;
+    let methods: Vec<MethodProto> = m
+        .methods
+        .into_iter()
+        .map(|mut mp| {
+            mp.is_abstract = true;
+            mp
+        })
+        .collect();
+    let mut interfaces = interfaces;
+    add_stringable(&mut interfaces, &methods, &name);
+    let meta = decl_meta(
+        &iface.attribute_lists,
+        sigs,
+        Some(&name),
+        iface.name.span.start.offset,
+        iface.interface.span.start.offset,
+        iface.right_brace.end.offset,
+    )?;
     Ok(ClassProto {
         name,
         kind: ClassKind::Interface,
@@ -1704,12 +2150,16 @@ fn compile_interface(
         parent: None,
         interfaces,
         traits: Vec::new(),
-        methods: Vec::new(),
+        methods,
         props: Vec::new(),
         static_props: Vec::new(),
-        constants,
+        constants: m.constants,
         enum_cases: Vec::new(),
         enum_backing: None,
+        meta,
+        file: PhpStr::from_bytes(src_file()),
+        decl_file: decl_file(),
+        decl_line: line_of(iface.interface.span.start.offset),
     })
 }
 
@@ -1756,9 +2206,11 @@ fn compile_method(
                     rhp_bytecode::Default::Init(0)
                 }
             });
+        let attributes = compile_attributes(&p.attribute_lists, sigs, Some(class_name))?;
         if !p.modifiers.is_empty() {
             let vis = modifiers_visibility(&p.modifiers);
             let ro = has_modifier(&p.modifiers, |md| matches!(md, Modifier::Readonly(_)));
+            let (pstart, pend) = span_of(p);
             promoted.push(PropProto {
                 name: PhpStr::from_bytes(var.to_vec()),
                 visibility: vis,
@@ -1766,9 +2218,18 @@ fn compile_method(
                 is_readonly: ro,
                 default: PropDefaultProto::None,
                 type_hint: p.hint.as_ref().map(type_hint),
+                meta: rhp_bytecode::DeclMeta {
+                    attributes: attributes.clone(),
+                    doc_comment: doc_comment_before(p.variable.span.start.offset),
+                    start_line: line_of(pstart),
+                    offset: pstart,
+                    end_line: line_of(pend),
+                },
+                promoted: true,
             });
             promo_stores.push((c.intern_name(var), cv));
         }
+        let dmeta = param_default_meta(p, sigs, Some(class_name));
         params.push(rhp_bytecode::ParamInfo {
             name: pname,
             cv,
@@ -1780,6 +2241,10 @@ fn compile_method(
                 use mago_span::HasSpan;
                 line_of(p.span().start.offset)
             },
+            attributes,
+            promoted: !p.modifiers.is_empty(),
+            default_thunk: dmeta.0,
+            default_const: dmeta.1,
         });
     }
     let num_params = params.len() as u16;
@@ -1793,10 +2258,10 @@ fn compile_method(
     for s in body_stmts {
         c.scan_stmt_vars(s);
     }
-    c.num_cvs = c.cv_map.len() as u16;
-    c.next_temp = c.num_cvs;
-    c.high_water = c.num_cvs;
-    c.temp_floor = c.num_cvs;
+    for s in body_stmts {
+        c.scan_node_vars(Node::Statement(s));
+    }
+    c.freeze_cvs();
 
     // Non-constant parameter defaults (e.g. `= self::CONST`), before promotion/body.
     c.emit_param_defaults(&nonconst_defaults)?;
@@ -1813,13 +2278,21 @@ fn compile_method(
     }
     c.emit(Instr::RetNull);
 
-    let mut proto = c.finish();
+    let mut proto = c.finish()?;
     proto.num_params = num_params;
     proto.params = params;
     proto.this_cv = if is_static { None } else { Some(0) };
     proto.is_static = is_static;
     proto.is_generator = body_stmts.iter().any(stmt_has_yield);
     proto.return_type = m.return_type_hint.as_ref().map(|r| type_hint(&r.hint));
+    proto.meta = decl_meta(
+        &m.attribute_lists,
+        sigs,
+        Some(class_name),
+        m.name.span.start.offset,
+        m.function.span.start.offset,
+        span_of(m).1,
+    )?;
 
     let mp = MethodProto {
         name,
@@ -1840,6 +2313,7 @@ fn compile_function(
 ) -> Result<FunctionProto, Thrown> {
     let fname = join_ns(&cur_ns(), func.name.value);
     let mut c = ProtoBuilder::new(PhpStr::from_bytes(fname));
+    let c_sigs = sigs.clone();
     c.sigs = sigs;
     c.returns_ref = func.ampersand.is_some();
 
@@ -1859,6 +2333,7 @@ fn compile_function(
                     rhp_bytecode::Default::Init(0)
                 }
             });
+        let dmeta = param_default_meta(p, &c.sigs.clone(), None);
         params.push(rhp_bytecode::ParamInfo {
             name,
             cv,
@@ -1870,6 +2345,10 @@ fn compile_function(
                 use mago_span::HasSpan;
                 line_of(p.span().start.offset)
             },
+            attributes: compile_attributes(&p.attribute_lists, &c.sigs, None)?,
+            promoted: false,
+            default_thunk: dmeta.0,
+            default_const: dmeta.1,
         });
     }
     let num_params = params.len() as u16;
@@ -1878,10 +2357,10 @@ fn compile_function(
     for s in func.body.statements.iter() {
         c.scan_stmt_vars(s);
     }
-    c.num_cvs = c.cv_map.len() as u16;
-    c.next_temp = c.num_cvs;
-    c.high_water = c.num_cvs;
-    c.temp_floor = c.num_cvs;
+    for s in func.body.statements.iter() {
+        c.scan_node_vars(Node::Statement(s));
+    }
+    c.freeze_cvs();
 
     c.emit_param_defaults(&nonconst_defaults)?;
 
@@ -1890,11 +2369,19 @@ fn compile_function(
     }
     c.emit(Instr::RetNull);
 
-    let mut proto = c.finish();
+    let mut proto = c.finish()?;
     proto.num_params = num_params;
     proto.params = params;
     proto.is_generator = block_has_yield(&func.body.statements);
     proto.return_type = func.return_type_hint.as_ref().map(|r| type_hint(&r.hint));
+    proto.meta = decl_meta(
+        &func.attribute_lists,
+        &c_sigs,
+        None,
+        func.name.span.start.offset,
+        func.function.span.start.offset,
+        span_of(func).1,
+    )?;
     Ok(proto)
 }
 
@@ -1947,6 +2434,17 @@ struct ProtoBuilder {
     /// gives the call opcode the line of the callee name (or `new`), not the
     /// statement's, which is what getLine() and traces report.
     call_lines: Vec<u32>,
+    /// Set once the CV pre-pass is done: every `$var` of the body must already
+    /// have its slot (a later slot would alias a temporary).
+    cvs_frozen: bool,
+    /// The enclosing loop/switch and finally-body scopes (unique ids; finally
+    /// bodies have the high bit set), for checking `goto` jumps.
+    goto_scope: Vec<u32>,
+    goto_serial: u32,
+    /// `label:` name -> (pc, scope path at the label).
+    labels: HashMap<Vec<u8>, (u32, Vec<u32>)>,
+    /// Pending `goto`s: placeholder position, label, scope path, line.
+    gotos: Vec<(usize, Vec<u8>, Vec<u32>, u32)>,
 }
 
 /// A break/continue target under construction. Jump placeholders are recorded
@@ -1984,10 +2482,68 @@ impl ProtoBuilder {
             cur_line: 0,
             lines: Vec::new(),
             call_lines: Vec::new(),
+            cvs_frozen: false,
+            goto_scope: Vec::new(),
+            goto_serial: 0,
+            labels: HashMap::new(),
+            gotos: Vec::new(),
         }
     }
 
-    fn finish(self) -> FunctionProto {
+    /// Enter a loop/switch (`finally == false`) or finally-body scope.
+    fn enter_goto_scope(&mut self, finally: bool) {
+        self.goto_serial += 1;
+        let id = self.goto_serial | if finally { 1 << 31 } else { 0 };
+        self.goto_scope.push(id);
+    }
+
+    /// Bind each `goto` to its label (php's zend_resolve_goto_label plus the
+    /// finally checks of pass_two): the label must exist, must not be inside a
+    /// loop/switch the `goto` is not in, and the jump may not cross a finally
+    /// body boundary. A jump out of a try/catch with a finally runs it first.
+    fn resolve_gotos(&mut self) -> Result<(), Thrown> {
+        for (pos, name, scope, line) in std::mem::take(&mut self.gotos) {
+            let label = String::from_utf8_lossy(&name).into_owned();
+            let Some((target, lscope)) = self.labels.get(&name) else {
+                return Err(compile_error(
+                    format!("'goto' to undefined label '{label}'"),
+                    line,
+                ));
+            };
+            let common = scope
+                .iter()
+                .zip(lscope.iter())
+                .take_while(|(a, b)| a == b)
+                .count();
+            if lscope[common..].iter().any(|id| id & (1 << 31) != 0) {
+                return Err(compile_error(
+                    "jump into a finally block is disallowed",
+                    line,
+                ));
+            }
+            if scope[common..].iter().any(|id| id & (1 << 31) != 0) {
+                return Err(compile_error(
+                    "jump out of a finally block is disallowed",
+                    line,
+                ));
+            }
+            if common < lscope.len() {
+                return Err(compile_error(
+                    "'goto' into loop or switch statement is disallowed",
+                    line,
+                ));
+            }
+            let target = *target;
+            self.code[pos] = match self.code[pos] {
+                Instr::JmpFinally { .. } => Instr::JmpFinally { target },
+                _ => Instr::Jmp { target },
+            };
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<FunctionProto, Thrown> {
+        self.resolve_gotos()?;
         let mut proto = FunctionProto::new(self.name);
         proto.num_cvs = self.num_cvs;
         proto.num_registers = self.high_water.max(self.num_cvs);
@@ -2013,7 +2569,7 @@ impl ProtoBuilder {
             .collect();
         proto.strict_types = STRICT_TYPES.with(|s| *s.borrow());
         proto.returns_ref = self.returns_ref;
-        proto
+        Ok(proto)
     }
 
     fn alloc_cache(&mut self) -> rhp_bytecode::CacheIdx {
@@ -2038,7 +2594,9 @@ impl ProtoBuilder {
                 | Instr::CallMethodDyn { .. }
                 | Instr::CallStatic { .. }
                 | Instr::CallStaticV { .. }
-                | Instr::CallStaticDyn { .. },
+                | Instr::CallStaticDyn { .. }
+                | Instr::CallMethodDynV { .. }
+                | Instr::CallStaticDynV { .. },
                 Some(&l),
             ) if l != 0 => l,
             _ => self.cur_line,
@@ -2086,6 +2644,11 @@ impl ProtoBuilder {
         if let Some(i) = self.cv_map.iter().position(|n| n == var_name) {
             return i as Reg;
         }
+        debug_assert!(
+            !self.cvs_frozen,
+            "CV ${} was missed by the pre-pass (its slot would alias a temporary)",
+            String::from_utf8_lossy(var_name)
+        );
         let r = self.cv_map.len() as Reg;
         self.cv_map.push(var_name.to_vec());
         r
@@ -2165,15 +2728,6 @@ impl ProtoBuilder {
         let i = self.consts.len() as CIdx;
         self.consts.push(v);
         i
-    }
-
-    /// Emit a runtime-deferred "unsupported" error (eval/goto): interns the two
-    /// message halves and emits `DeferredUnsupported`, which throws only if the
-    /// instruction is actually executed.
-    fn emit_deferred_unsupported(&mut self, what: &str, why: &str) {
-        let what = self.intern_const(Value::str(what.as_bytes().to_vec()));
-        let why = self.intern_const(Value::str(why.as_bytes().to_vec()));
-        self.emit(Instr::DeferredUnsupported { what, why });
     }
 
     // -- CV pre-pass --
@@ -2263,9 +2817,10 @@ impl ProtoBuilder {
                 self.scan_expr_vars(fe.expression);
                 match &fe.target {
                     ForeachTarget::Value(t) => self.scan_expr_vars(t.value),
+                    // php compiles the value variable before the key's.
                     ForeachTarget::KeyValue(t) => {
-                        self.scan_expr_vars(t.key);
                         self.scan_expr_vars(t.value);
+                        self.scan_expr_vars(t.key);
                     }
                 }
                 match &fe.body {
@@ -2445,14 +3000,76 @@ impl ProtoBuilder {
             Construct::IncludeOnce(i) => self.scan_expr_vars(i.value),
             Construct::Require(i) => self.scan_expr_vars(i.value),
             Construct::RequireOnce(i) => self.scan_expr_vars(i.value),
+            Construct::Eval(e) => self.scan_expr_vars(e.value),
+            Construct::Exit(e) => {
+                if let Some(list) = &e.arguments {
+                    self.scan_args(list);
+                }
+            }
+            Construct::Die(d) => {
+                if let Some(list) = &d.arguments {
+                    self.scan_args(list);
+                }
+            }
+        }
+    }
+
+    /// Completeness backstop for the CV pre-pass: walk every node of the body
+    /// (not entering nested function/class scopes, whose variables are their
+    /// own) and give each `$name` still missing a slot. A closure contributes
+    /// its `use` variables; an arrow function nothing (it captures only
+    /// variables the enclosing scope already has).
+    fn scan_node_vars(&mut self, node: Node) {
+        match node {
+            Node::DirectVariable(d) => {
+                self.cv(strip_dollar(d.name));
+                return;
+            }
+            Node::Closure(cl) => {
+                if let Some(u) = &cl.use_clause {
+                    for v in u.variables.iter() {
+                        self.cv(strip_dollar(v.variable.name));
+                    }
+                }
+                return;
+            }
+            Node::AnonymousClass(ac) => {
+                if let Some(args) = &ac.argument_list {
+                    self.scan_node_vars(Node::PartialArgumentList(args));
+                }
+                return;
+            }
+            // `C::$p`: the `$p` is the property name, not a local.
+            Node::StaticPropertyAccess(spa) => {
+                self.scan_node_vars(Node::Expression(spa.class));
+                return;
+            }
+            Node::ArrowFunction(_)
+            | Node::Function(_)
+            | Node::Class(_)
+            | Node::Interface(_)
+            | Node::Trait(_)
+            | Node::Enum(_)
+            | Node::AttributeList(_) => return,
             _ => {}
         }
+        node.visit_children(|ch| self.scan_node_vars(ch));
+    }
+
+    /// End the CV pre-pass: CVs occupy `[0, num_cvs)`, temporaries follow.
+    fn freeze_cvs(&mut self) {
+        self.num_cvs = self.cv_map.len() as u16;
+        self.next_temp = self.num_cvs;
+        self.high_water = self.num_cvs;
+        self.temp_floor = self.num_cvs;
+        self.cvs_frozen = true;
     }
 
     // -- statement lowering --
 
     /// Record a nested class declaration and emit its `DeclareClass`.
     fn emit_cond_class(&mut self, proto: ClassProto) {
+        self.cur_line = proto.decl_line;
         let class_idx = COND_CLASSES.with(|c| {
             let mut c = c.borrow_mut();
             c.0.push(proto);
@@ -2571,6 +3188,9 @@ impl ProtoBuilder {
                         let cv = self.cv(var);
                         let name = self.intern_name(var);
                         self.emit(Instr::BindGlobal { cv, name });
+                    } else {
+                        let name = self.var_name_reg(v)?;
+                        self.emit(Instr::BindGlobalDyn { name });
                     }
                 }
             }
@@ -2653,15 +3273,34 @@ impl ProtoBuilder {
                     }
                 }
             }
-            // `goto`/`label` are not implemented, but deferred to runtime so a
-            // file that merely contains a `goto` (down an unexecuted branch) still
-            // loads. A label is a no-op marker; an executed `goto` throws.
-            Statement::Label(_) => {}
-            Statement::Goto(_) => {
-                self.emit_deferred_unsupported(
-                    "goto statement",
-                    "not implemented in the phase-1 compiler",
-                );
+            // A label marks a jump target; duplicates are php's compile error.
+            Statement::Label(l) => {
+                let name = l.name.value.to_vec();
+                if self.labels.contains_key(&name) {
+                    return Err(compile_error(
+                        format!("Label '{}' already defined", String::from_utf8_lossy(&name)),
+                        self.cur_line,
+                    ));
+                }
+                let here = self.here();
+                self.labels.insert(name, (here, self.goto_scope.clone()));
+            }
+            // Bound to its label when the function is finished. Inside a
+            // try/catch with a finally, the jump runs the finally blocks it
+            // leaves (JmpFinally leaves any that contain the target alone).
+            Statement::Goto(g) => {
+                let pos = self.code.len();
+                if self.finally_rets.is_empty() {
+                    self.emit(Instr::Nop);
+                } else {
+                    self.emit(Instr::JmpFinally { target: 0 });
+                }
+                self.gotos.push((
+                    pos,
+                    g.label.value.to_vec(),
+                    self.goto_scope.clone(),
+                    self.cur_line,
+                ));
             }
             other => {
                 return Err(Thrown::unsupported(
@@ -2751,11 +3390,13 @@ impl ProtoBuilder {
             finally_depth: self.finally_rets.len(),
             ..LoopCtx::default()
         });
+        self.enter_goto_scope(false);
         match &w.body {
             WhileBody::Statement(s) => self.compile_stmt(s)?,
             WhileBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
         }
         let ctx = self.loops.pop().unwrap();
+        self.goto_scope.pop();
         self.emit(Instr::Jmp { target: top });
         let end = self.here();
         self.code[jf] = Instr::JmpFalse { cond, target: end };
@@ -2770,8 +3411,10 @@ impl ProtoBuilder {
             finally_depth: self.finally_rets.len(),
             ..LoopCtx::default()
         });
+        self.enter_goto_scope(false);
         self.compile_stmt(d.statement)?;
         let ctx = self.loops.pop().unwrap();
+        self.goto_scope.pop();
         let cont = self.here(); // continue -> re-test the condition
         let cond = self.compile_expr(d.condition)?;
         self.emit(Instr::JmpTrue { cond, target: top });
@@ -2802,11 +3445,13 @@ impl ProtoBuilder {
             finally_depth: self.finally_rets.len(),
             ..LoopCtx::default()
         });
+        self.enter_goto_scope(false);
         match &f.body {
             ForBody::Statement(s) => self.compile_stmt(s)?,
             ForBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
         }
         let ctx = self.loops.pop().unwrap();
+        self.goto_scope.pop();
         let cont = self.here(); // continue -> increments
         for e in f.increments.iter() {
             self.compile_expr(e)?;
@@ -2860,6 +3505,7 @@ impl ProtoBuilder {
             finally_depth: self.finally_rets.len(),
             ..LoopCtx::default()
         }); // switch is one break/continue level
+        self.enter_goto_scope(false);
         let mut starts = vec![0u32; cases.len()];
         for (idx, case) in cases.iter().enumerate() {
             starts[idx] = self.here();
@@ -2869,6 +3515,7 @@ impl ProtoBuilder {
             }
         }
         let ctx = self.loops.pop().unwrap();
+        self.goto_scope.pop();
         let end = self.here();
 
         for (idx, pos, cond) in dispatch {
@@ -2890,9 +3537,12 @@ impl ProtoBuilder {
     fn compile_foreach(&mut self, fe: &rhp_frontend::cst::Foreach) -> Result<(), Thrown> {
         // Resolve key + value targets. A value target may be a destructuring
         // pattern, which binds into a protected element register per iteration.
-        let (key_cv, val_expr) = match &fe.target {
-            ForeachTarget::Value(t) => (Reg::MAX, t.value),
-            ForeachTarget::KeyValue(t) => (self.foreach_target_cv(t.key)?, t.value),
+        // php compiles the iterated expression, then the value variable, then
+        // the key variable: their CVs (so the global symbol table's and
+        // get_defined_vars()'s order) are created in that order.
+        let (key_expr, val_expr) = match &fe.target {
+            ForeachTarget::Value(t) => (None, t.value),
+            ForeachTarget::KeyValue(t) => (Some(t.key), t.value),
         };
 
         // By-reference foreach: `foreach ($a as &$v)` / `... as $k => &$v`.
@@ -2911,7 +3561,6 @@ impl ProtoBuilder {
                     "only a simple `&$v` loop variable is supported",
                 ));
             };
-            let val_cv = self.cv(strip_dollar(d.name));
             // The source must be assignable so its elements can be referenced: a
             // simple variable uses its slot directly; a property / array-element /
             // static-property is promoted to a reference held in a temp (the VM's
@@ -2929,12 +3578,15 @@ impl ProtoBuilder {
                     self.emit(Instr::MakeRefLval { dst: r });
                     r
                 }
-                _ => {
-                    return Err(Thrown::error(
-                        "Error",
-                        "Cannot create references to elements of a temporary array expression",
-                    ))
-                }
+                // Any other expression (a call, `new`, a literal …): php
+                // iterates the temporary itself (FE_RESET_RW on a TMP) — a
+                // by-ref generator / its elements are referenced in place.
+                _ => self.compile_expr(fe.expression)?,
+            };
+            let val_cv = self.cv(strip_dollar(d.name));
+            let key_cv = match key_expr {
+                Some(k) => self.foreach_target_cv(k)?,
+                None => Reg::MAX,
             };
             let pos_reg = self.alloc_temp();
             let saved_floor = self.temp_floor;
@@ -2950,11 +3602,14 @@ impl ProtoBuilder {
                 finally_depth: self.finally_rets.len(),
                 ..LoopCtx::default()
             });
+
+            self.enter_goto_scope(false);
             match &fe.body {
                 ForeachBody::Statement(s) => self.compile_stmt(s)?,
                 ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
             }
             let ctx = self.loops.pop().unwrap();
+            self.goto_scope.pop();
             self.emit(Instr::Jmp {
                 target: fetch_label,
             });
@@ -2983,13 +3638,22 @@ impl ProtoBuilder {
 
         let (val_cv, val_pattern): (Reg, Option<&Expression>) = match val_expr {
             Expression::Variable(Variable::Direct(d)) => (self.cv(strip_dollar(d.name)), None),
-            Expression::Array(_) | Expression::List(_) => (self.alloc_temp(), Some(val_expr)),
-            _ => {
-                return Err(Thrown::unsupported(
-                    "foreach target",
-                    "variable or destructuring only",
-                ))
-            }
+            // Destructuring, `$$n`, `$a[k]`, `$o->p`: fetch into a temporary
+            // and store it like a list() element.
+            _ => (self.alloc_temp(), Some(val_expr)),
+        };
+        // The key variable is created after the value variable, as php does
+        // (observable in the order of `$GLOBALS`).
+        let key_cv = match key_expr {
+            Some(k) => self.foreach_target_cv(k)?,
+            None => Reg::MAX,
+        };
+        // php stores the value target before assigning the key, so a key
+        // variable used inside the target (`$k => $$k`) is the previous one.
+        let (fetch_key, key_after) = if val_pattern.is_some() && key_cv != Reg::MAX {
+            (self.alloc_temp(), Some(key_cv))
+        } else {
+            (key_cv, None)
         };
 
         let saved_floor = self.temp_floor;
@@ -3006,19 +3670,25 @@ impl ProtoBuilder {
             match pattern {
                 Expression::Array(arr) => self.destructure_into(arr.elements.iter(), val_cv)?,
                 Expression::List(lst) => self.destructure_into(lst.elements.iter(), val_cv)?,
-                _ => unreachable!(),
+                other => self.store_to_target(other, val_cv)?,
             }
+        }
+        if let Some(cv) = key_after {
+            self.emit(Instr::Assign { cv, src: fetch_key });
         }
 
         self.loops.push(LoopCtx {
             finally_depth: self.finally_rets.len(),
             ..LoopCtx::default()
         });
+
+        self.enter_goto_scope(false);
         match &fe.body {
             ForeachBody::Statement(s) => self.compile_stmt(s)?,
             ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
         }
         let ctx = self.loops.pop().unwrap();
+        self.goto_scope.pop();
         self.emit(Instr::Jmp {
             target: fetch_label,
         });
@@ -3028,11 +3698,12 @@ impl ProtoBuilder {
             pos_reg,
             src,
             end,
+            delegate: false,
         };
         self.code[fetch_pos] = Instr::FeFetch {
             arr_reg,
             pos_reg,
-            key_cv,
+            key_cv: fetch_key,
             val_cv,
             end,
         };
@@ -3062,12 +3733,21 @@ impl ProtoBuilder {
 
     fn compile_unset(&mut self, u: &rhp_frontend::cst::Unset) -> Result<(), Thrown> {
         for v in u.values.iter() {
+            check_globals_write(v)?;
             match v {
                 Expression::Variable(Variable::Direct(d)) => {
                     // A CV can't be removed; null is observably equivalent to
                     // unset for isset/??/empty.
                     let cv = self.cv(strip_dollar(d.name));
                     self.emit(Instr::LoadNull { dst: cv });
+                }
+                Expression::Variable(var) => {
+                    let name = self.var_name_reg(var)?;
+                    self.emit(Instr::UnsetVarVar { name });
+                }
+                Expression::ArrayAccess(_) if globals_index(v).is_some() => {
+                    let name = self.compile_expr(globals_index(v).unwrap())?;
+                    self.emit(Instr::UnsetGlobal { name });
                 }
                 Expression::ArrayAccess(_) => {
                     let mut steps = Vec::new();
@@ -3133,7 +3813,9 @@ impl ProtoBuilder {
             // Stop routing returns into THIS finally while compiling its body.
             let pending_rets = self.finally_rets.pop().unwrap();
             let fpc = self.here();
+            self.enter_goto_scope(true);
             self.compile_stmts(fin.block.statements.iter())?;
+            self.goto_scope.pop();
             finally_end = self.here();
             self.emit(Instr::FinallyEnd);
             // Patch `return`s that crossed out of try/catch to enter the finally.
@@ -3215,6 +3897,7 @@ impl ProtoBuilder {
     /// Store `src` into a single destructuring target (variable, nested pattern,
     /// array element, or property).
     fn store_to_target(&mut self, target: &Expression, src: Reg) -> Result<(), Thrown> {
+        check_globals_write(target)?;
         match target {
             Expression::Variable(Variable::Direct(d)) => {
                 let cv = self.cv(strip_dollar(d.name));
@@ -3224,6 +3907,7 @@ impl ProtoBuilder {
             Expression::List(lst) => self.destructure_into(lst.elements.iter(), src)?,
             Expression::ArrayAccess(_)
             | Expression::ArrayAppend(_)
+            | Expression::Variable(_)
             | Expression::Access(Access::Property(_))
             | Expression::Access(Access::StaticProperty(_)) => {
                 let mut steps = Vec::new();
@@ -3354,11 +4038,13 @@ impl ProtoBuilder {
         match expr {
             Expression::Literal(lit) => self.compile_literal(lit),
             Expression::Parenthesized(p) => self.compile_expr(p.expression),
+            Expression::Variable(Variable::Direct(d)) if strip_dollar(d.name) == b"GLOBALS" => {
+                let dst = self.alloc_temp();
+                self.emit(Instr::FetchGlobals { dst });
+                Ok(dst)
+            }
             Expression::Variable(Variable::Direct(d)) => Ok(self.cv(strip_dollar(d.name))),
-            Expression::Variable(_) => Err(Thrown::unsupported(
-                "indirect/nested variable",
-                "variable-variables are refused / deferred",
-            )),
+            Expression::Variable(v) => self.compile_variable(v),
             Expression::Binary(b) => self.compile_binary(b),
             Expression::UnaryPrefix(u) => self.compile_unary_prefix(u),
             Expression::UnaryPostfix(u) => self.compile_unary_postfix(u),
@@ -3366,6 +4052,12 @@ impl ProtoBuilder {
             Expression::Conditional(c) => self.compile_conditional(c),
             Expression::Array(arr) => self.compile_array(arr.elements.iter()),
             Expression::LegacyArray(arr) => self.compile_array(arr.elements.iter()),
+            Expression::ArrayAccess(aa) if is_globals_var(aa.array) => {
+                let name = self.compile_expr(aa.index)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::FetchGlobal { dst, name });
+                Ok(dst)
+            }
             Expression::ArrayAccess(aa) => {
                 let arr = self.compile_expr(aa.array)?;
                 let key = self.compile_expr(aa.index)?;
@@ -3758,6 +4450,7 @@ impl ProtoBuilder {
         pre: bool,
         delta: i8,
     ) -> Result<Reg, Thrown> {
+        check_globals_write(target)?;
         match target {
             Expression::Variable(Variable::Direct(d)) => {
                 let cv = self.cv(strip_dollar(d.name));
@@ -3770,7 +4463,9 @@ impl ProtoBuilder {
                 });
                 Ok(dst)
             }
+            Expression::Parenthesized(p) => self.compile_inc_dec(p.expression, pre, delta),
             Expression::ArrayAccess(_)
+            | Expression::Variable(_)
             | Expression::Access(Access::Property(_))
             | Expression::Access(Access::StaticProperty(_)) => {
                 let mut steps = Vec::new();
@@ -3818,8 +4513,16 @@ impl ProtoBuilder {
 
     fn compile_array<'a>(
         &mut self,
-        els: impl Iterator<Item = &'a ArrayElement<'a>>,
+        els: impl Iterator<Item = &'a ArrayElement<'a>> + Clone,
     ) -> Result<Reg, Thrown> {
+        // An array of plain literals (CallMap-style data files) is one
+        // constant: no per-element temporaries, no runtime building.
+        if let Some(v) = literal_array(els.clone()) {
+            let k = self.intern_const(v);
+            let dst = self.alloc_temp();
+            self.emit(Instr::LoadConst { dst, k });
+            return Ok(dst);
+        }
         let dst = self.alloc_temp();
         self.emit(Instr::NewArray { dst, cap: 0 });
         for el in els {
@@ -3877,6 +4580,26 @@ impl ProtoBuilder {
                     let r = self.alloc_temp();
                     let k = self.intern_const(Value::str(l.value.unwrap_or(l.raw).to_vec()));
                     self.emit(Instr::LoadConst { dst: r, k });
+                    r
+                }
+                // Simple syntax `"$a[key]"`: an unquoted key is a string
+                // literal, not a constant.
+                StringPart::Expression(Expression::ArrayAccess(aa))
+                    if matches!(aa.index, Expression::Identifier(_)) =>
+                {
+                    let Expression::Identifier(id) = aa.index else {
+                        unreachable!()
+                    };
+                    let k = self.intern_const(Value::str(id.value().to_vec()));
+                    let key = self.alloc_temp();
+                    self.emit(Instr::LoadConst { dst: key, k });
+                    let r = self.alloc_temp();
+                    if is_globals_var(aa.array) {
+                        self.emit(Instr::FetchGlobal { dst: r, name: key });
+                    } else {
+                        let arr = self.compile_expr(aa.array)?;
+                        self.emit(Instr::DimFetch { dst: r, arr, key });
+                    }
                     r
                 }
                 StringPart::Expression(e) => self.compile_expr(e)?,
@@ -4121,6 +4844,8 @@ impl ProtoBuilder {
             Ref(Reg),
             /// A by-ref argument that is a property / array-element lvalue.
             RefLval(&'e Expression<'e>),
+            /// A call result for a by-ref parameter (passed with a notice).
+            NoRef(Reg),
         }
         let mut slots = Vec::new();
         for (i, arg) in fc.argument_list.arguments.iter().enumerate() {
@@ -4152,12 +4877,30 @@ impl ProtoBuilder {
                     | Expression::Access(Access::StaticProperty(_)) => {
                         slots.push(ArgSlot::RefLval(p.value))
                     }
+                    // A call result for a by-ref parameter: php passes it
+                    // anyway with "Only variables should be passed by reference"
+                    // (ZEND_SEND_VAR_NO_REF / SEND_FUNC_ARG). `current`/`key`
+                    // take their array by value in php 8, and prefer-ref
+                    // parameters accept a temporary silently.
+                    Expression::Call(_) => {
+                        let r = self.compile_expr(p.value)?;
+                        if matches!(
+                            global_lc.as_deref().unwrap_or(&name_lc),
+                            b"current" | b"key" | b"array_multisort" | b"extract"
+                        ) {
+                            slots.push(ArgSlot::Value(r))
+                        } else {
+                            slots.push(ArgSlot::NoRef(r))
+                        }
+                    }
                     // The internal-pointer functions are lenient in php: passing a
                     // non-variable only warns and operates on a copy. Fall back to
                     // by-value rather than the hard error other by-ref builtins get.
                     _ if matches!(
                         global_lc.as_deref().unwrap_or(&name_lc),
                         b"end" | b"reset" | b"next" | b"prev" | b"current" | b"key" | b"each"
+                    ) || rhp_bytecode::builtin_prefers_ref(
+                        global_lc.as_deref().unwrap_or(&name_lc),
                     ) =>
                     {
                         slots.push(ArgSlot::Value(self.compile_expr(p.value)?))
@@ -4174,7 +4917,11 @@ impl ProtoBuilder {
                     }
                 }
             } else {
-                slots.push(ArgSlot::Value(self.compile_expr(p.value)?));
+                // A variable's value is taken when its argument is evaluated
+                // (php's SEND_VAR), before later arguments can change it.
+                let r = self.compile_expr(p.value)?;
+                let r = self.snapshot_arg(&fc.argument_list, i, p.value, r);
+                slots.push(ArgSlot::Value(r));
             }
         }
         let argc = slots.len() as u16;
@@ -4184,6 +4931,7 @@ impl ProtoBuilder {
             match slot {
                 ArgSlot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
                 ArgSlot::Ref(cv) => self.emit(Instr::MakeRef { dst, cv }),
+                ArgSlot::NoRef(src) => self.emit(Instr::SendNoRef { dst, src }),
                 ArgSlot::RefLval(expr) => {
                     let mut steps = Vec::new();
                     let root = self.collect_lvalue_steps(expr, &mut steps)?;
@@ -4221,30 +4969,10 @@ impl ProtoBuilder {
             return Ok(dst);
         }
 
-        let mut argregs = Vec::new();
-        for arg in fc.argument_list.arguments.iter() {
-            let p = match arg {
-                Argument::Positional(p) if p.ellipsis.is_none() => p,
-                Argument::Positional(_) => {
-                    return Err(Thrown::unsupported(
-                        "argument spread",
-                        "call-site spread is deferred",
-                    ))
-                }
-                Argument::Named(_) => {
-                    return Err(Thrown::unsupported("named arguments", "deferred"))
-                }
-            };
-            argregs.push(self.compile_expr(p.value)?);
-        }
-        let argc = argregs.len() as u16;
-        let base = self.alloc_temps(argc.max(1));
-        for (i, r) in argregs.into_iter().enumerate() {
-            self.emit(Instr::Mov {
-                dst: base + i as Reg,
-                src: r,
-            });
-        }
+        // The callee is only known at run time, so (as for method calls) a
+        // simple-variable argument travels as a reference; a by-value
+        // parameter dereferences it.
+        let (base, argc) = self.compile_arg_window_ex(Some(&fc.argument_list), &[], true)?;
         let dst = self.alloc_temp();
         self.emit(Instr::CallDyn {
             dst,
@@ -4262,25 +4990,54 @@ impl ProtoBuilder {
         let (key, value) = match y {
             Yield::Value(v) => {
                 let value = match v.value {
+                    // A by-reference generator yields a reference to the
+                    // variable / element / property (ZEND_YIELD, BP_VAR_W).
+                    Some(e) if self.returns_ref => self.compile_yield_ref(e)?,
                     Some(e) => self.compile_expr(e)?,
                     None => {
                         let t = self.alloc_temp();
                         self.emit(Instr::LoadNull { dst: t });
-                        t
+                        if self.returns_ref {
+                            // A bare `yield` yields null, without the
+                            // "Only variable references" notice.
+                            let r = self.alloc_temp();
+                            self.emit(Instr::MakeRefVal { dst: r, src: t });
+                            r
+                        } else {
+                            t
+                        }
                     }
                 };
                 (Reg::MAX, value)
             }
             Yield::Pair(p) => {
                 let key = self.compile_expr(p.key)?;
-                let value = self.compile_expr(p.value)?;
+                let value = if self.returns_ref {
+                    self.compile_yield_ref(p.value)?
+                } else {
+                    self.compile_expr(p.value)?
+                };
                 (key, value)
+            }
+            Yield::From(_) if self.returns_ref => {
+                return Err(Thrown::error(
+                    "Error",
+                    "Cannot use \"yield from\" inside a by-reference generator",
+                ))
             }
             Yield::From(yf) => return self.compile_yield_from(yf.iterator),
         };
         let dst = self.alloc_temp();
         self.emit(Instr::Yield { dst, key, value });
         Ok(dst)
+    }
+
+    /// The value a by-reference generator yields: a reference to a variable
+    /// / element / property, or a by-reference call's result; anything else
+    /// is a plain value, which the VM's `Yield` answers with php's "Only
+    /// variable references should be yielded by reference" notice.
+    fn compile_yield_ref(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+        self.compile_ref_source(e)
     }
 
     /// `yield from $iterable`: re-yield each element (keys preserved); the
@@ -4313,6 +5070,7 @@ impl ProtoBuilder {
             pos_reg,
             src,
             end,
+            delegate: true,
         };
         self.code[fetch_pos] = Instr::FeFetch {
             arr_reg,
@@ -4488,6 +5246,14 @@ impl ProtoBuilder {
             },
             af.return_type_hint.as_ref().map(|r| &r.hint),
             af.ampersand.is_some(),
+            decl_meta(
+                &af.attribute_lists,
+                &self.sigs,
+                self.class_name.as_ref(),
+                af.r#fn.span.end.offset,
+                af.r#fn.span.start.offset,
+                span_of(af).1,
+            )?,
         )
     }
 
@@ -4521,6 +5287,14 @@ impl ProtoBuilder {
             },
             cl.return_type_hint.as_ref().map(|r| &r.hint),
             cl.ampersand.is_some(),
+            decl_meta(
+                &cl.attribute_lists,
+                &self.sigs,
+                self.class_name.as_ref(),
+                cl.function.span.end.offset,
+                cl.function.span.start.offset,
+                span_of(cl).1,
+            )?,
         )
     }
 
@@ -4537,6 +5311,7 @@ impl ProtoBuilder {
         closure_offset: u32,
         ret_hint: Option<&Hint>,
         returns_ref: bool,
+        meta: rhp_bytecode::DeclMeta,
     ) -> Result<Reg, Thrown> {
         let nc = captures.len() as u16;
 
@@ -4571,6 +5346,7 @@ impl ProtoBuilder {
                         rhp_bytecode::Default::Init(0)
                     }
                 });
+            let dmeta = param_default_meta(p, &c.sigs.clone(), c.class_name.clone().as_ref());
             params.push(rhp_bytecode::ParamInfo {
                 name,
                 cv,
@@ -4582,18 +5358,27 @@ impl ProtoBuilder {
                     use mago_span::HasSpan;
                     line_of(p.span().start.offset)
                 },
+                attributes: compile_attributes(&p.attribute_lists, &c.sigs, c.class_name.as_ref())?,
+                promoted: false,
+                default_thunk: dmeta.0,
+                default_const: dmeta.1,
             });
         }
         let num_params = params.len() as u16;
 
         match body {
-            ClosureBody::Arrow(e) => c.scan_expr_vars(e),
-            ClosureBody::Block(b) => b.statements.iter().for_each(|s| c.scan_stmt_vars(s)),
+            ClosureBody::Arrow(e) => {
+                c.scan_expr_vars(e);
+                c.scan_node_vars(Node::Expression(e));
+            }
+            ClosureBody::Block(b) => {
+                b.statements.iter().for_each(|s| c.scan_stmt_vars(s));
+                b.statements
+                    .iter()
+                    .for_each(|s| c.scan_node_vars(Node::Statement(s)));
+            }
         }
-        c.num_cvs = c.cv_map.len() as u16;
-        c.next_temp = c.num_cvs;
-        c.high_water = c.num_cvs;
-        c.temp_floor = c.num_cvs;
+        c.freeze_cvs();
 
         c.emit_param_defaults(&nonconst_defaults)?;
 
@@ -4622,16 +5407,18 @@ impl ProtoBuilder {
         } else {
             c.cv_map.iter().position(|n| n == b"this").map(|i| i as Reg)
         };
-        let mut proto = c.finish();
+        let mut proto = c.finish()?;
         proto.this_cv = this_cv;
         proto.num_params = num_params;
         proto.params = params;
         proto.num_captures = nc;
         proto.is_static = is_static;
         proto.return_type = ret_hint.map(type_hint);
-        if let ClosureBody::Block(b) = body {
-            proto.is_generator = block_has_yield(&b.statements);
-        }
+        proto.meta = meta;
+        proto.is_generator = match body {
+            ClosureBody::Block(b) => block_has_yield(&b.statements),
+            ClosureBody::Arrow(e) => expr_has_yield(e),
+        };
 
         let fnidx = CLOSURES.with(|cls| {
             let mut v = cls.borrow_mut();
@@ -4680,6 +5467,10 @@ impl ProtoBuilder {
             Expression::Variable(Variable::Direct(d)) => {
                 Ok(LvalRoot::Cv(self.cv(strip_dollar(d.name))))
             }
+            Expression::ArrayAccess(aa) if is_globals_var(aa.array) => {
+                let name = self.compile_expr(aa.index)?;
+                Ok(LvalRoot::Global(name))
+            }
             Expression::ArrayAccess(aa) => {
                 let root = self.collect_lvalue_steps(aa.array, steps)?;
                 let key = self.compile_expr(aa.index)?;
@@ -4702,12 +5493,26 @@ impl ProtoBuilder {
             Expression::Access(Access::StaticProperty(spa)) => {
                 // Static property is the cursor root, not a step.
                 let class = self.class_ref(spa.class)?;
-                let name = self.static_prop_name(&spa.property)?;
-                Ok(LvalRoot::StaticProp(class, name))
+                Ok(match self.static_prop_sel(&spa.property)? {
+                    Sel::Static(name) => LvalRoot::StaticProp(class, name),
+                    Sel::Dyn(name) => LvalRoot::StaticPropDyn(class, name),
+                })
             }
-            _ => Err(Thrown::unsupported(
-                "assignment target",
-                "only variables, array elements, and properties are supported",
+            Expression::Variable(v) => Ok(LvalRoot::VarVar(self.var_name_reg(v)?)),
+            Expression::Parenthesized(p) => self.collect_lvalue_steps(p.expression, steps),
+            Expression::Access(Access::NullSafeProperty(_))
+            | Expression::Call(rhp_frontend::cst::Call::NullSafeMethod(_)) => Err(Thrown::error(
+                "Error",
+                "Can't use nullsafe operator in write context",
+            )),
+            // `f()[$k] = v`, `A::g()->p[] = v`: php allows a call result as the
+            // container (zend_delayed_compile_var on a call). The cursor roots
+            // at the temporary; objects are handles, so writes through one land
+            // in the shared object (an `ArrayAccess` root goes to `offsetSet`).
+            Expression::Call(_) => Ok(LvalRoot::Cv(self.compile_expr(target)?)),
+            _ => Err(Thrown::error(
+                "Error",
+                "Cannot use temporary expression in write context",
             )),
         }
     }
@@ -4716,6 +5521,11 @@ impl ProtoBuilder {
         match root {
             LvalRoot::Cv(cv) => self.emit(Instr::LvalCv { cv }),
             LvalRoot::StaticProp(class, name) => self.emit(Instr::LvalStaticProp { class, name }),
+            LvalRoot::StaticPropDyn(class, name) => {
+                self.emit(Instr::LvalStaticPropDyn { class, name })
+            }
+            LvalRoot::VarVar(name) => self.emit(Instr::LvalVarVar { name }),
+            LvalRoot::Global(name) => self.emit(Instr::LvalGlobal { name }),
         }
         for step in steps {
             match step {
@@ -4758,6 +5568,13 @@ impl ProtoBuilder {
     /// Produce a register holding a `Ref` to a reference-assignment source: a
     /// simple variable's slot, or a property / array-element / static-prop lvalue.
     fn compile_ref_source(&mut self, src: &Expression) -> Result<Reg, Thrown> {
+        if is_globals_var(src) {
+            return Err(Thrown::error(
+                "Error",
+                "Cannot acquire reference to $GLOBALS",
+            ));
+        }
+        check_globals_write(src)?;
         match src {
             Expression::Variable(Variable::Direct(v)) => {
                 let name = strip_dollar(v.name);
@@ -4814,10 +5631,35 @@ impl ProtoBuilder {
         }
     }
 
-    fn static_prop_name(&mut self, v: &Variable) -> Result<NIdx, Thrown> {
+    /// The name of `C::$name` (static) or `C::${expr}` / `C::$$x` (runtime).
+    fn static_prop_sel(&mut self, v: &Variable) -> Result<Sel, Thrown> {
         match v {
-            Variable::Direct(d) => Ok(self.intern_name(strip_dollar(d.name))),
-            _ => Err(Thrown::unsupported("dynamic static property", "deferred")),
+            Variable::Direct(d) => Ok(Sel::Static(self.intern_name(strip_dollar(d.name)))),
+            other => Ok(Sel::Dyn(self.var_name_reg(other)?)),
+        }
+    }
+
+    /// The register holding a variable-variable's *name*: `${expr}` is the
+    /// expression's value, `$$x` the value of `$x` (recursively). For a direct
+    /// `$x` (only reached as the root of `C::$x` lowering) the name itself.
+    fn var_name_reg(&mut self, v: &Variable) -> Result<Reg, Thrown> {
+        match v {
+            Variable::Indirect(iv) => self.compile_expr(iv.expression),
+            Variable::Nested(nv) => self.compile_variable(nv.variable),
+            Variable::Direct(d) => Ok(self.load_string_const(strip_dollar(d.name))),
+        }
+    }
+
+    /// A variable in value context: a CV, or a variable-variable read.
+    fn compile_variable(&mut self, v: &Variable) -> Result<Reg, Thrown> {
+        match v {
+            Variable::Direct(d) => Ok(self.cv(strip_dollar(d.name))),
+            other => {
+                let name = self.var_name_reg(other)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::FetchVarVar { dst, name });
+                Ok(dst)
+            }
         }
     }
 
@@ -4835,7 +5677,7 @@ impl ProtoBuilder {
                     Argument::Positional(p) => {
                         let r = self.compile_expr(p.value)?;
                         if p.ellipsis.is_some() {
-                            self.emit(Instr::ArrSpread { arr: dst, src: r });
+                            self.emit(Instr::ArgSpread { arr: dst, src: r });
                         } else {
                             self.emit(Instr::ArrPush { arr: dst, val: r });
                         }
@@ -4874,6 +5716,20 @@ impl ProtoBuilder {
         ref_mask: &[bool],
         over_approx: bool,
     ) -> Result<(Reg, u16), Thrown> {
+        self.compile_arg_window_t(args, ref_mask, over_approx, None)
+    }
+
+    /// [`compile_arg_window_ex`] for a call whose callee is resolved at run
+    /// time: a property / array-element argument asks the callee (`target`)
+    /// whether that parameter is by-reference (php's SEND_FUNC_ARG) and is
+    /// then passed as a reference to the lvalue, else by value.
+    fn compile_arg_window_t(
+        &mut self,
+        args: Option<&rhp_frontend::cst::ArgumentList>,
+        ref_mask: &[bool],
+        over_approx: bool,
+        target: Option<ArgRefTarget>,
+    ) -> Result<(Reg, u16), Thrown> {
         enum Slot {
             Value(Reg),
             Ref(Reg),
@@ -4896,7 +5752,22 @@ impl ProtoBuilder {
                         continue;
                     }
                 }
-                slots.push(Slot::Value(self.compile_expr(p.value)?));
+                if let Some(t) = target {
+                    if matches!(
+                        p.value,
+                        Expression::ArrayAccess(_)
+                            | Expression::Access(Access::Property(_))
+                            | Expression::Access(Access::StaticProperty(_))
+                    ) && variable_rooted_lvalue(p.value)
+                    {
+                        let r = self.compile_func_arg(p.value, t, i as u16)?;
+                        slots.push(Slot::Ref(r));
+                        continue;
+                    }
+                }
+                let r = self.compile_expr(p.value)?;
+                let r = self.snapshot_arg(list, i, p.value, r);
+                slots.push(Slot::Value(r));
             }
         }
         let argc = slots.len() as u16;
@@ -4909,6 +5780,80 @@ impl ProtoBuilder {
             }
         }
         Ok((base, argc))
+    }
+
+    /// One SEND_FUNC_ARG argument: `$t = callee-param-is-ref ? &lvalue :
+    /// lvalue` into a temp (the caller passes it on with `MakeRef`, which
+    /// a by-value parameter dereferences).
+    fn compile_func_arg(
+        &mut self,
+        e: &Expression,
+        target: ArgRefTarget,
+        idx: u16,
+    ) -> Result<Reg, Thrown> {
+        let flag = self.alloc_temp();
+        match target {
+            ArgRefTarget::Method(obj, name) => self.emit(Instr::MethodArgIsRef {
+                dst: flag,
+                obj,
+                name,
+                idx,
+            }),
+            ArgRefTarget::Static(class, name) => self.emit(Instr::StaticArgIsRef {
+                dst: flag,
+                class,
+                name,
+                idx,
+            }),
+        }
+        let t = self.alloc_temp();
+        let jf = self.code.len();
+        self.emit(Instr::Nop); // JmpFalse flag -> by_value
+        let mut steps = Vec::new();
+        let root = self.collect_lvalue_steps(e, &mut steps)?;
+        self.emit_cursor(root, &steps);
+        self.emit(Instr::MakeRefLval { dst: t });
+        let jend = self.code.len();
+        self.emit(Instr::Nop); // Jmp -> end
+        let by_value = self.here();
+        self.code[jf] = Instr::JmpFalse {
+            cond: flag,
+            target: by_value,
+        };
+        let v = self.compile_expr(e)?;
+        self.emit(Instr::Mov { dst: t, src: v });
+        let end = self.here();
+        self.code[jend] = Instr::Jmp { target: end };
+        Ok(t)
+    }
+
+    /// A by-value argument that is a plain variable compiles to the variable's
+    /// own register, which is only read when the argument window is filled
+    /// after every argument ran. Snapshot it into a temp now when a later
+    /// argument could change it (`f($m, g($m))` with a by-ref `g`): php
+    /// evaluates arguments strictly left to right.
+    fn snapshot_arg(
+        &mut self,
+        list: &rhp_frontend::cst::ArgumentList,
+        i: usize,
+        expr: &Expression,
+        r: Reg,
+    ) -> Reg {
+        let later_may_write = list.arguments.iter().skip(i + 1).any(|a| {
+            !matches!(
+                a,
+                Argument::Positional(q) if matches!(
+                    q.value,
+                    Expression::Literal(_) | Expression::Variable(Variable::Direct(_))
+                )
+            )
+        });
+        if !later_may_write || !matches!(expr, Expression::Variable(Variable::Direct(_))) {
+            return r;
+        }
+        let t = self.alloc_temp();
+        self.emit(Instr::Mov { dst: t, src: r });
+        t
     }
 
     /// The by-ref mask for a method/constructor name (empty if none).
@@ -4981,7 +5926,13 @@ impl ProtoBuilder {
             return Ok(dst);
         }
         let mask = self.method_ref_mask(b"__construct");
-        let (base, argc) = self.compile_arg_window_ex(inst.argument_list.as_ref(), &mask, true)?;
+        let ctor = self.intern_name(b"__construct");
+        let (base, argc) = self.compile_arg_window_t(
+            inst.argument_list.as_ref(),
+            &mask,
+            true,
+            Some(ArgRefTarget::Static(class, ctor)),
+        )?;
         let dst = self.alloc_temp();
         let cache = self.alloc_cache();
         self.emit(Instr::New {
@@ -5047,9 +5998,11 @@ impl ProtoBuilder {
             }
             Expression::Access(Access::StaticProperty(spa)) => {
                 let class = self.class_ref(spa.class)?;
-                let name = self.static_prop_name(&spa.property)?;
                 let dst = self.alloc_temp();
-                self.emit(Instr::FetchStaticPropIs { dst, class, name });
+                match self.static_prop_sel(&spa.property)? {
+                    Sel::Static(name) => self.emit(Instr::FetchStaticPropIs { dst, class, name }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchStaticPropDynIs { dst, class, name }),
+                }
                 Ok(dst)
             }
             _ => self.compile_expr(e),
@@ -5106,15 +6059,19 @@ impl ProtoBuilder {
             }
             Access::StaticProperty(spa) => {
                 let class = self.class_ref(spa.class)?;
-                let name = self.static_prop_name(&spa.property)?;
                 let dst = self.alloc_temp();
-                let cache = self.alloc_cache();
-                self.emit(Instr::FetchStaticProp {
-                    dst,
-                    class,
-                    name,
-                    cache,
-                });
+                match self.static_prop_sel(&spa.property)? {
+                    Sel::Static(name) => {
+                        let cache = self.alloc_cache();
+                        self.emit(Instr::FetchStaticProp {
+                            dst,
+                            class,
+                            name,
+                            cache,
+                        });
+                    }
+                    Sel::Dyn(name) => self.emit(Instr::FetchStaticPropDyn { dst, class, name }),
+                }
                 Ok(dst)
             }
             Access::ClassConstant(cca) => {
@@ -5176,7 +6133,12 @@ impl ProtoBuilder {
                         return Ok(dst);
                     }
                     let mask = self.name_ref_mask(name);
-                    let (base, argc) = self.compile_arg_window_ex(Some(args), &mask, true)?;
+                    let (base, argc) = self.compile_arg_window_t(
+                        Some(args),
+                        &mask,
+                        true,
+                        Some(ArgRefTarget::Method(obj, name)),
+                    )?;
                     let dst = self.alloc_temp();
                     let cache = self.alloc_cache();
                     self.emit(Instr::CallMethod {
@@ -5190,11 +6152,16 @@ impl ProtoBuilder {
                     return Ok(dst);
                 }
                 Sel::Dyn(name) => {
-                    if has_spread(args) {
-                        return Err(Thrown::unsupported(
-                            "dynamic method call with argument spread",
-                            "deferred",
-                        ));
+                    if has_spread(args) || has_named(args) {
+                        let args = self.build_args_array(Some(args))?;
+                        let dst = self.alloc_temp();
+                        self.emit(Instr::CallMethodDynV {
+                            dst,
+                            obj,
+                            name,
+                            args,
+                        });
+                        return Ok(dst);
                     }
                     let (base, argc) = self.compile_arg_window_ex(Some(args), &[], true)?;
                     let dst = self.alloc_temp();
@@ -5215,19 +6182,56 @@ impl ProtoBuilder {
         self.emit(Instr::Mov { dst, src: obj });
         let jn = self.code.len();
         self.emit(Instr::Nop); // JmpNull dst -> Lnull
-        let name = self.selector_name(selector)?;
-        let mask = self.name_ref_mask(name);
-        let (base, argc) = self.compile_arg_window_ex(Some(args), &mask, true)?;
-        let cache = self.alloc_cache();
+        let sel = self.compile_selector(selector)?;
         let t = self.alloc_temp();
-        self.emit(Instr::CallMethod {
-            dst: t,
-            obj: dst,
-            name,
-            base,
-            argc,
-            cache,
-        });
+        if has_spread(args) || has_named(args) {
+            let args = self.build_args_array(Some(args))?;
+            match sel {
+                Sel::Static(name) => self.emit(Instr::CallMethodV {
+                    dst: t,
+                    obj: dst,
+                    name,
+                    args,
+                }),
+                Sel::Dyn(name) => self.emit(Instr::CallMethodDynV {
+                    dst: t,
+                    obj: dst,
+                    name,
+                    args,
+                }),
+            }
+        } else {
+            match sel {
+                Sel::Static(name) => {
+                    let mask = self.name_ref_mask(name);
+                    let (base, argc) = self.compile_arg_window_t(
+                        Some(args),
+                        &mask,
+                        true,
+                        Some(ArgRefTarget::Method(dst, name)),
+                    )?;
+                    let cache = self.alloc_cache();
+                    self.emit(Instr::CallMethod {
+                        dst: t,
+                        obj: dst,
+                        name,
+                        base,
+                        argc,
+                        cache,
+                    });
+                }
+                Sel::Dyn(name) => {
+                    let (base, argc) = self.compile_arg_window_ex(Some(args), &[], true)?;
+                    self.emit(Instr::CallMethodDyn {
+                        dst: t,
+                        obj: dst,
+                        name,
+                        base,
+                        argc,
+                    });
+                }
+            }
+        }
         self.emit(Instr::Mov { dst, src: t });
         let jend = self.code.len();
         self.emit(Instr::Nop); // Jmp end
@@ -5261,8 +6265,12 @@ impl ProtoBuilder {
                     return Ok(dst);
                 }
                 let mask = self.name_ref_mask(name);
-                let (base, argc) =
-                    self.compile_arg_window_ex(Some(&smc.argument_list), &mask, true)?;
+                let (base, argc) = self.compile_arg_window_t(
+                    Some(&smc.argument_list),
+                    &mask,
+                    true,
+                    Some(ArgRefTarget::Static(class, name)),
+                )?;
                 let dst = self.alloc_temp();
                 let cache = self.alloc_cache();
                 self.emit(Instr::CallStatic {
@@ -5276,11 +6284,16 @@ impl ProtoBuilder {
                 Ok(dst)
             }
             Sel::Dyn(name) => {
-                if has_spread(&smc.argument_list) {
-                    return Err(Thrown::unsupported(
-                        "dynamic static call with argument spread",
-                        "deferred",
-                    ));
+                if has_spread(&smc.argument_list) || has_named(&smc.argument_list) {
+                    let args = self.build_args_array(Some(&smc.argument_list))?;
+                    let dst = self.alloc_temp();
+                    self.emit(Instr::CallStaticDynV {
+                        dst,
+                        class,
+                        name,
+                        args,
+                    });
+                    return Ok(dst);
                 }
                 let (base, argc) =
                     self.compile_arg_window_ex(Some(&smc.argument_list), &[], true)?;
@@ -5298,6 +6311,7 @@ impl ProtoBuilder {
     }
 
     fn compile_assignment(&mut self, a: &rhp_frontend::cst::Assignment) -> Result<Reg, Thrown> {
+        check_globals_write(a.lhs)?;
         // Destructuring: `[$a, $b] = ...` / `list($a, $b) = ...`.
         if matches!(a.operator, AssignmentOperator::Assign(_)) {
             if let Expression::Array(arr) = a.lhs {
@@ -5324,6 +6338,12 @@ impl ProtoBuilder {
                     Expression::Variable(Variable::Direct(src)),
                 ) = (a.lhs, u.operand)
                 {
+                    if strip_dollar(src.name) == b"GLOBALS" {
+                        return Err(Thrown::error(
+                            "Error",
+                            "Cannot acquire reference to $GLOBALS",
+                        ));
+                    }
                     if strip_dollar(src.name) != b"this" {
                         let dst_cv = self.cv(strip_dollar(dst.name));
                         let src_cv = self.cv(strip_dollar(src.name));
@@ -5338,6 +6358,13 @@ impl ProtoBuilder {
                     let dst_cv = self.cv(strip_dollar(dst.name));
                     self.emit(Instr::RefAssign { dst_cv, src: r });
                     return Ok(dst_cv);
+                }
+                // `$$n =& <src>`: alias the variable named at run time.
+                if let Expression::Variable(var) = a.lhs {
+                    let name = self.var_name_reg(var)?;
+                    let r = self.compile_ref_source(u.operand)?;
+                    self.emit(Instr::BindVarVarRef { name, src: r });
+                    return Ok(r);
                 }
                 // `<lvalue> =& <src>`: make the destination element/property a
                 // reference to the source.
@@ -5360,6 +6387,10 @@ impl ProtoBuilder {
                     "unsupported `=&` source/target form",
                 ));
             }
+        }
+
+        if matches!(a.operator, AssignmentOperator::Coalesce(_)) {
+            return self.compile_coalesce_assign(a.lhs, a.rhs);
         }
 
         // Simple single-level `$o->prop = v`: a dedicated opcode so the VM can
@@ -5398,13 +6429,15 @@ impl ProtoBuilder {
             }
         }
 
-        // Array-element / property / static-property target: use the lvalue cursor.
+        // Array-element / property / static-property / variable-variable
+        // target: use the lvalue cursor.
         if matches!(
             a.lhs,
             Expression::ArrayAccess(_)
                 | Expression::ArrayAppend(_)
                 | Expression::Access(Access::Property(_))
                 | Expression::Access(Access::StaticProperty(_))
+                | Expression::Variable(Variable::Indirect(_) | Variable::Nested(_))
         ) {
             let mut steps = Vec::new();
             let root = self.collect_lvalue_steps(a.lhs, &mut steps)?;
@@ -5477,9 +6510,153 @@ impl ProtoBuilder {
         self.emit(Instr::Assign { cv, src: value_reg });
         Ok(value_reg)
     }
+
+    /// `lhs ??= rhs` (php's ZEND_ASSIGN_COALESCE): fetch `lhs` quietly (isset
+    /// semantics: no undefined-key/property diagnostics, `ArrayAccess` via
+    /// `offsetExists`/`offsetGet`, `__isset`/`__get`); when it is not null that
+    /// is the result and nothing is written or evaluated further. Otherwise
+    /// evaluate `rhs` and assign it. Sub-expressions of `lhs` (keys, objects)
+    /// are evaluated exactly once.
+    fn compile_coalesce_assign(
+        &mut self,
+        lhs: &Expression,
+        rhs: &Expression,
+    ) -> Result<Reg, Thrown> {
+        let dst = self.alloc_temp();
+        match lhs {
+            Expression::Parenthesized(p) => return self.compile_coalesce_assign(p.expression, rhs),
+            Expression::Variable(Variable::Direct(d)) => {
+                let cv = self.cv(strip_dollar(d.name));
+                self.emit(Instr::Mov { dst, src: cv });
+                let jnn = self.code.len();
+                self.emit(Instr::Nop); // JmpNotNull dst -> end
+                let r = self.compile_expr(rhs)?;
+                self.emit(Instr::Assign { cv, src: r });
+                self.emit(Instr::Mov { dst, src: cv });
+                let end = self.here();
+                self.code[jnn] = Instr::JmpNotNull {
+                    src: dst,
+                    target: end,
+                };
+            }
+            // Single-level `$o->p ??= v`: the write is a plain property store,
+            // so an inaccessible/undefined property routes to `__set`.
+            // The container is fetched quietly too (php compiles the whole
+            // left side in BP_VAR_IS mode for the check).
+            Expression::Access(Access::Property(pa)) => {
+                let obj = self.compile_quiet(pa.object)?;
+                let sel = self.compile_selector(&pa.property)?;
+                match sel {
+                    Sel::Static(name) => self.emit(Instr::FetchPropIs { dst, obj, name }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchPropDynIs { dst, obj, name }),
+                }
+                let jnn = self.code.len();
+                self.emit(Instr::Nop);
+                let r = self.compile_expr(rhs)?;
+                match sel {
+                    Sel::Static(name) => self.emit(Instr::StoreProp { obj, name, src: r }),
+                    Sel::Dyn(name) => self.emit(Instr::StorePropDyn { obj, name, src: r }),
+                }
+                self.emit(Instr::Mov { dst, src: r });
+                let end = self.here();
+                self.code[jnn] = Instr::JmpNotNull {
+                    src: dst,
+                    target: end,
+                };
+            }
+            _ => {
+                let mut steps = Vec::new();
+                let root = self.collect_lvalue_steps(lhs, &mut steps)?;
+                // Quiet read along the same (pre-evaluated) path.
+                let mut cur = match &root {
+                    LvalRoot::Cv(r) => *r,
+                    LvalRoot::StaticProp(class, name) => {
+                        let t = self.alloc_temp();
+                        self.emit(Instr::FetchStaticPropIs {
+                            dst: t,
+                            class: *class,
+                            name: *name,
+                        });
+                        t
+                    }
+                    LvalRoot::StaticPropDyn(class, name) => {
+                        let t = self.alloc_temp();
+                        self.emit(Instr::FetchStaticPropDynIs {
+                            dst: t,
+                            class: *class,
+                            name: *name,
+                        });
+                        t
+                    }
+                    LvalRoot::VarVar(name) => {
+                        let t = self.alloc_temp();
+                        self.emit(Instr::FetchVarVar {
+                            dst: t,
+                            name: *name,
+                        });
+                        t
+                    }
+                    // `$GLOBALS[$k] ??= v`: a quiet read of the global.
+                    LvalRoot::Global(name) => {
+                        let all = self.alloc_temp();
+                        self.emit(Instr::FetchGlobals { dst: all });
+                        let t = self.alloc_temp();
+                        self.emit(Instr::DimFetchIs {
+                            dst: t,
+                            arr: all,
+                            key: *name,
+                        });
+                        t
+                    }
+                };
+                for step in &steps {
+                    let t = self.alloc_temp();
+                    match step {
+                        CursorStep::Key(key) => self.emit(Instr::DimFetchIs {
+                            dst: t,
+                            arr: cur,
+                            key: *key,
+                        }),
+                        CursorStep::Prop(name) => self.emit(Instr::FetchPropIs {
+                            dst: t,
+                            obj: cur,
+                            name: *name,
+                        }),
+                        CursorStep::PropDyn(name) => self.emit(Instr::FetchPropDynIs {
+                            dst: t,
+                            obj: cur,
+                            name: *name,
+                        }),
+                        CursorStep::Append => {
+                            return Err(Thrown::error("Error", "Cannot use [] for reading"))
+                        }
+                    }
+                    cur = t;
+                }
+                self.emit(Instr::Mov { dst, src: cur });
+                let jnn = self.code.len();
+                self.emit(Instr::Nop);
+                let r = self.compile_expr(rhs)?;
+                self.emit_cursor(root, &steps);
+                self.emit(Instr::AssignLval { src: r });
+                self.emit(Instr::Mov { dst, src: r });
+                let end = self.here();
+                self.code[jnn] = Instr::JmpNotNull {
+                    src: dst,
+                    target: end,
+                };
+            }
+        }
+        Ok(dst)
+    }
 }
 
 // --- free helpers ---------------------------------------------------------
+
+/// A php compile-time fatal error (E_COMPILE_ERROR) at `line`.
+fn compile_error(msg: impl Into<String>, _line: u32) -> Thrown {
+    Thrown::error("Error", msg)
+}
 
 fn strip_dollar(name: &[u8]) -> &[u8] {
     name.strip_prefix(b"$").unwrap_or(name)
@@ -5500,106 +6677,37 @@ fn block_has_yield(stmts: &rhp_frontend::cst::Sequence<Statement>) -> bool {
 }
 
 fn stmt_has_yield(s: &Statement) -> bool {
-    use rhp_frontend::cst::{ForBody, IfBody, SwitchBody, SwitchCase, WhileBody};
-    match s {
-        Statement::Expression(e) => expr_has_yield(e.expression),
-        Statement::Echo(e) => e.values.iter().any(|v| expr_has_yield(v)),
-        Statement::Return(r) => r.value.map(expr_has_yield).unwrap_or(false),
-        Statement::Block(b) => block_has_yield(&b.statements),
-        Statement::If(i) => {
-            expr_has_yield(i.condition)
-                || match &i.body {
-                    IfBody::Statement(b) => {
-                        stmt_has_yield(b.statement)
-                            || b.else_if_clauses
-                                .iter()
-                                .any(|c| expr_has_yield(c.condition) || stmt_has_yield(c.statement))
-                            || b.else_clause
-                                .as_ref()
-                                .map(|e| stmt_has_yield(e.statement))
-                                .unwrap_or(false)
-                    }
-                    IfBody::ColonDelimited(b) => {
-                        b.statements.iter().any(stmt_has_yield)
-                            || b.else_if_clauses.iter().any(|c| {
-                                expr_has_yield(c.condition)
-                                    || c.statements.iter().any(stmt_has_yield)
-                            })
-                            || b.else_clause
-                                .as_ref()
-                                .map(|e| e.statements.iter().any(stmt_has_yield))
-                                .unwrap_or(false)
-                    }
-                }
-        }
-        Statement::While(w) => {
-            expr_has_yield(w.condition)
-                || match &w.body {
-                    WhileBody::Statement(s) => stmt_has_yield(s),
-                    WhileBody::ColonDelimited(b) => b.statements.iter().any(stmt_has_yield),
-                }
-        }
-        Statement::DoWhile(d) => stmt_has_yield(d.statement) || expr_has_yield(d.condition),
-        Statement::For(f) => {
-            f.initializations.iter().any(|e| expr_has_yield(e))
-                || f.conditions.iter().any(|e| expr_has_yield(e))
-                || f.increments.iter().any(|e| expr_has_yield(e))
-                || match &f.body {
-                    ForBody::Statement(s) => stmt_has_yield(s),
-                    ForBody::ColonDelimited(b) => b.statements.iter().any(stmt_has_yield),
-                }
-        }
-        Statement::Foreach(fe) => {
-            expr_has_yield(fe.expression)
-                || match &fe.body {
-                    ForeachBody::Statement(s) => stmt_has_yield(s),
-                    ForeachBody::ColonDelimited(b) => b.statements.iter().any(stmt_has_yield),
-                }
-        }
-        Statement::Switch(sw) => {
-            expr_has_yield(sw.expression) || {
-                let cases = match &sw.body {
-                    SwitchBody::BraceDelimited(b) => &b.cases,
-                    SwitchBody::ColonDelimited(b) => &b.cases,
-                };
-                cases.iter().any(|c| match c {
-                    SwitchCase::Expression(e) => {
-                        expr_has_yield(e.expression) || e.statements.iter().any(stmt_has_yield)
-                    }
-                    SwitchCase::Default(d) => d.statements.iter().any(stmt_has_yield),
-                })
-            }
-        }
-        Statement::Try(t) => {
-            t.block.statements.iter().any(stmt_has_yield)
-                || t.catch_clauses
-                    .iter()
-                    .any(|c| c.block.statements.iter().any(stmt_has_yield))
-                || t.finally_clause
-                    .as_ref()
-                    .map(|f| f.block.statements.iter().any(stmt_has_yield))
-                    .unwrap_or(false)
-        }
-        _ => false,
-    }
+    node_has_yield(Node::Statement(s))
 }
 
 fn expr_has_yield(e: &Expression) -> bool {
-    match e {
-        Expression::Yield(_) => true,
-        Expression::Parenthesized(p) => expr_has_yield(p.expression),
-        Expression::Assignment(a) => expr_has_yield(a.lhs) || expr_has_yield(a.rhs),
-        Expression::Binary(b) => expr_has_yield(b.lhs) || expr_has_yield(b.rhs),
-        Expression::UnaryPrefix(u) => expr_has_yield(u.operand),
-        Expression::UnaryPostfix(u) => expr_has_yield(u.operand),
-        Expression::Conditional(c) => {
-            expr_has_yield(c.condition)
-                || c.then.map(expr_has_yield).unwrap_or(false)
-                || expr_has_yield(c.r#else)
+    node_has_yield(Node::Expression(e))
+}
+
+/// Any `yield` / `yield from` below `node`, not counting nested function-likes
+/// and class bodies (their yields are their own).
+fn node_has_yield(node: Node) -> bool {
+    match node {
+        Node::Expression(Expression::Yield(_)) => return true,
+        Node::Closure(_)
+        | Node::ArrowFunction(_)
+        | Node::Function(_)
+        | Node::Class(_)
+        | Node::Interface(_)
+        | Node::Trait(_)
+        | Node::Enum(_)
+        | Node::AttributeList(_) => return false,
+        Node::AnonymousClass(ac) => {
+            return ac
+                .argument_list
+                .as_ref()
+                .is_some_and(|l| node_has_yield(Node::PartialArgumentList(l)));
         }
-        // `yield` inside a nested closure/arrow/function belongs to that one.
-        _ => false,
+        _ => {}
     }
+    let mut found = false;
+    node.visit_children(|ch| found = found || node_has_yield(ch));
+    found
 }
 
 fn has_named(list: &rhp_frontend::cst::ArgumentList) -> bool {
@@ -5779,6 +6887,55 @@ fn fold_const_array<'a>(els: impl Iterator<Item = &'a ArrayElement<'a>>) -> Resu
     Ok(Value::Array(a))
 }
 
+/// An array literal built only from int/string-keyed scalar literals,
+/// `true`/`false`/`null` and nested such arrays, as its value (`None` when
+/// building it could raise a diagnostic or needs runtime evaluation).
+fn literal_array<'a>(els: impl Iterator<Item = &'a ArrayElement<'a>>) -> Option<Value> {
+    fn scalar(e: &Expression) -> Option<Value> {
+        match e {
+            Expression::Literal(l) => Some(literal_value(l)),
+            Expression::Array(arr) => literal_array(arr.elements.iter()),
+            Expression::LegacyArray(arr) => literal_array(arr.elements.iter()),
+            Expression::ConstantAccess(ca) => match identifier_name(&ca.name) {
+                b"true" | b"TRUE" | b"True" => Some(Value::Bool(true)),
+                b"false" | b"FALSE" | b"False" => Some(Value::Bool(false)),
+                b"null" | b"NULL" | b"Null" => Some(Value::Null),
+                _ => None,
+            },
+            Expression::UnaryPrefix(u) => match (&u.operator, scalar(u.operand)?) {
+                (UnaryPrefixOperator::Negation(_), Value::Int(n)) => {
+                    n.checked_neg().map(Value::Int)
+                }
+                (UnaryPrefixOperator::Negation(_), Value::Float(f)) => Some(Value::Float(-f)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    let mut a = PhpArray::new();
+    for el in els {
+        match el {
+            ArrayElement::KeyValue(kv) => {
+                // Only int / string keys: float, bool and null keys convert
+                // with diagnostics or php-specific rules at run time.
+                let key = match scalar(kv.key)? {
+                    Value::Int(n) => ArrayKey::Int(n),
+                    k @ Value::Str(_) => ArrayKey::from_value(&k)?,
+                    _ => return None,
+                };
+                // A PHP_INT_MAX key makes a later append fail at run time.
+                if matches!(key, ArrayKey::Int(i64::MAX)) {
+                    return None;
+                }
+                a.insert(key, scalar(kv.value)?);
+            }
+            ArrayElement::Value(v) => a.push(scalar(v.value)?),
+            _ => return None,
+        }
+    }
+    Some(Value::Array(a))
+}
+
 /// Extract the class name(s) a `catch` clause's type hint names (`A` or `A|B`).
 fn hint_class_names(hint: &Hint) -> Result<Vec<PhpStr>, Thrown> {
     fn collect(hint: &Hint, out: &mut Vec<PhpStr>) -> Result<(), Thrown> {
@@ -5902,142 +7059,51 @@ fn stmt_kind(s: &Statement) -> &'static str {
 /// keeps only names that are CVs in the enclosing scope). Does not mutate the
 /// builder, unlike [`ProtoBuilder::scan_expr_vars`].
 fn collect_vars(expr: &Expression, out: &mut Vec<Vec<u8>>) {
+    collect_node_vars(Node::Expression(expr), out);
+}
+
+/// [`collect_vars`] over any node: every `$name` below it (in source order,
+/// deduplicated), entering nested arrow functions but not other function or
+/// class scopes; a closure contributes its `use` variables.
+fn collect_node_vars(node: Node, out: &mut Vec<Vec<u8>>) {
     let push = |name: &[u8], out: &mut Vec<Vec<u8>>| {
         if !out.iter().any(|n| n == name) {
             out.push(name.to_vec());
         }
     };
-    match expr {
-        Expression::Variable(Variable::Direct(d)) => push(strip_dollar(d.name), out),
-        Expression::Parenthesized(p) => collect_vars(p.expression, out),
-        Expression::Binary(b) => {
-            collect_vars(b.lhs, out);
-            collect_vars(b.rhs, out);
+    match node {
+        Node::DirectVariable(d) => {
+            push(strip_dollar(d.name), out);
+            return;
         }
-        Expression::UnaryPrefix(u) => collect_vars(u.operand, out),
-        Expression::UnaryPostfix(u) => collect_vars(u.operand, out),
-        Expression::Assignment(a) => {
-            collect_vars(a.lhs, out);
-            collect_vars(a.rhs, out);
-        }
-        Expression::Conditional(c) => {
-            collect_vars(c.condition, out);
-            if let Some(t) = &c.then {
-                collect_vars(t, out);
-            }
-            collect_vars(c.r#else, out);
-        }
-        Expression::Array(arr) => collect_array_vars(arr.elements.iter(), out),
-        Expression::LegacyArray(arr) => collect_array_vars(arr.elements.iter(), out),
-        Expression::List(lst) => collect_array_vars(lst.elements.iter(), out),
-        Expression::ArrayAccess(aa) => {
-            collect_vars(aa.array, out);
-            collect_vars(aa.index, out);
-        }
-        Expression::ArrayAppend(ap) => collect_vars(ap.array, out),
-        Expression::CompositeString(cs) => {
-            let parts = match cs {
-                CompositeString::Interpolated(i) => Some(&i.parts),
-                CompositeString::Document(d) => Some(&d.parts),
-                CompositeString::ShellExecute(_) => None,
-            };
-            if let Some(parts) = parts {
-                for part in parts.iter() {
-                    match part {
-                        StringPart::Expression(e) => collect_vars(e, out),
-                        StringPart::BracedExpression(b) => collect_vars(b.expression, out),
-                        StringPart::Literal(_) => {}
-                    }
-                }
-            }
-        }
-        Expression::Match(m) => {
-            collect_vars(m.expression, out);
-            for arm in m.arms.iter() {
-                match arm {
-                    MatchArm::Expression(a) => {
-                        a.conditions.iter().for_each(|c| collect_vars(c, out));
-                        collect_vars(a.expression, out);
-                    }
-                    MatchArm::Default(a) => collect_vars(a.expression, out),
-                }
-            }
-        }
-        Expression::Instantiation(inst) => {
-            collect_vars(inst.class, out);
-            if let Some(list) = &inst.argument_list {
-                collect_arg_vars(list, out);
-            }
-        }
-        Expression::Access(acc) => match acc {
-            Access::Property(pa) => collect_vars(pa.object, out),
-            Access::NullSafeProperty(pa) => collect_vars(pa.object, out),
-            Access::StaticProperty(spa) => collect_vars(spa.class, out),
-            Access::ClassConstant(cca) => collect_vars(cca.class, out),
-        },
-        Expression::Clone(cl) => collect_vars(cl.object, out),
-        Expression::Throw(t) => collect_vars(t.exception, out),
-        Expression::Construct(c) => match c {
-            Construct::Print(p) => collect_vars(p.value, out),
-            Construct::Empty(e) => collect_vars(e.value, out),
-            Construct::Isset(i) => i.values.iter().for_each(|v| collect_vars(v, out)),
-            _ => {}
-        },
-        Expression::Call(call) => {
-            use rhp_frontend::cst::Call;
-            match call {
-                Call::Function(fc) => {
-                    collect_vars(fc.function, out);
-                    collect_arg_vars(&fc.argument_list, out);
-                }
-                Call::Method(mc) => {
-                    collect_vars(mc.object, out);
-                    collect_arg_vars(&mc.argument_list, out);
-                }
-                Call::NullSafeMethod(mc) => {
-                    collect_vars(mc.object, out);
-                    collect_arg_vars(&mc.argument_list, out);
-                }
-                Call::StaticMethod(smc) => {
-                    collect_vars(smc.class, out);
-                    collect_arg_vars(&smc.argument_list, out);
-                }
-            }
-        }
-        // Nested closure/arrow: only the vars it needs from *our* scope matter.
-        Expression::ArrowFunction(af) => collect_vars(af.expression, out),
-        Expression::Closure(cl) => {
+        Node::Closure(cl) => {
             if let Some(uses) = &cl.use_clause {
                 for u in uses.variables.iter() {
                     push(strip_dollar(u.variable.name), out);
                 }
             }
+            return;
         }
+        Node::AnonymousClass(ac) => {
+            if let Some(args) = &ac.argument_list {
+                collect_node_vars(Node::PartialArgumentList(args), out);
+            }
+            return;
+        }
+        // `C::$p`: the `$p` is the property name, not a variable.
+        Node::StaticPropertyAccess(spa) => {
+            collect_node_vars(Node::Expression(spa.class), out);
+            return;
+        }
+        Node::Function(_)
+        | Node::Class(_)
+        | Node::Interface(_)
+        | Node::Trait(_)
+        | Node::Enum(_)
+        | Node::AttributeList(_) => return,
         _ => {}
     }
-}
-
-fn collect_arg_vars(list: &rhp_frontend::cst::ArgumentList, out: &mut Vec<Vec<u8>>) {
-    for arg in list.arguments.iter() {
-        match arg {
-            Argument::Positional(p) => collect_vars(p.value, out),
-            Argument::Named(n) => collect_vars(n.value, out),
-        }
-    }
-}
-
-fn collect_array_vars<'a>(els: impl Iterator<Item = &'a ArrayElement<'a>>, out: &mut Vec<Vec<u8>>) {
-    for el in els {
-        match el {
-            ArrayElement::KeyValue(kv) => {
-                collect_vars(kv.key, out);
-                collect_vars(kv.value, out);
-            }
-            ArrayElement::Value(v) => collect_vars(v.value, out),
-            ArrayElement::Variadic(v) => collect_vars(v.value, out),
-            ArrayElement::Missing(_) => {}
-        }
-    }
+    node.visit_children(|ch| collect_node_vars(ch, out));
 }
 
 fn expr_kind(e: &Expression) -> &'static str {
@@ -6055,3 +7121,25 @@ fn expr_kind(e: &Expression) -> &'static str {
 const _: fn() = || {
     let _ = FnIdx::default;
 };
+
+/// The callee a SEND_FUNC_ARG check asks: a method on the object in a
+/// register, or a static method / constructor of a class.
+#[derive(Clone, Copy)]
+enum ArgRefTarget {
+    Method(Reg, NIdx),
+    Static(ClassRef, NIdx),
+}
+
+/// Whether `e` is a `$var[...]` / `$var->p` / `C::$p[...]` chain rooted at a
+/// variable other than `$GLOBALS` or at a static property: the arguments
+/// SEND_FUNC_ARG can bind by reference (a chain on a call result or other
+/// temporary is passed by value).
+fn variable_rooted_lvalue(e: &Expression) -> bool {
+    match e {
+        Expression::Variable(Variable::Direct(_)) => !is_globals_var(e),
+        Expression::Access(Access::StaticProperty(_)) => true,
+        Expression::ArrayAccess(a) => variable_rooted_lvalue(a.array),
+        Expression::Access(Access::Property(p)) => variable_rooted_lvalue(p.object),
+        _ => false,
+    }
+}

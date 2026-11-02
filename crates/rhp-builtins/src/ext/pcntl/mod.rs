@@ -515,6 +515,254 @@ fn fn_strerror(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(s))
 }
 
+fn write_ref(arg: Option<&Value>, value: Value) {
+    if let Some(Value::Ref(rc)) = arg {
+        *rc.borrow_mut() = value;
+    }
+}
+
+fn set_last_error(host: &mut dyn Host, e: i32) {
+    if let Some(st) = state(host) {
+        st.last_error = e;
+    }
+}
+
+/// `pcntl_fork()`: fork(2). The host first hands anything it holds back to
+/// the process (so the child does not repeat it); the child continues with a
+/// copy of the whole engine, as php's does.
+fn fn_fork(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    host.prepare_fork();
+    let id = unsafe { libc::fork() };
+    if id == -1 {
+        let e = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        set_last_error(host, e);
+        let what = match e {
+            libc::EAGAIN => ": Reached the maximum limit of number of processes",
+            libc::ENOMEM => ": Insufficient memory",
+            libc::ENOSYS => ": Unimplemented",
+            libc::EBADF => ": File descriptor concurrency issue",
+            // php's default case prints the bare number.
+            _ => "",
+        };
+        crate::warn(host, "pcntl_fork", &format!("Error {e}{what}"))?;
+    }
+    Ok(Value::Int(id as i64))
+}
+
+/// php's `PHP_RUSAGE_TO_ARRAY`.
+// `as` casts: the field widths differ across platforms (macOS vs Linux).
+#[allow(clippy::unnecessary_cast)]
+fn rusage_array(ru: &libc::rusage) -> Value {
+    let mut a = rhp_values::PhpArray::new();
+    let mut put = |k: &str, v: i64| {
+        a.insert(
+            rhp_values::ArrayKey::from_bytes(k.as_bytes()),
+            Value::Int(v),
+        );
+    };
+    put("ru_oublock", ru.ru_oublock as i64);
+    put("ru_inblock", ru.ru_inblock as i64);
+    put("ru_msgsnd", ru.ru_msgsnd as i64);
+    put("ru_msgrcv", ru.ru_msgrcv as i64);
+    put("ru_maxrss", ru.ru_maxrss as i64);
+    put("ru_ixrss", ru.ru_ixrss as i64);
+    put("ru_idrss", ru.ru_idrss as i64);
+    put("ru_minflt", ru.ru_minflt as i64);
+    put("ru_majflt", ru.ru_majflt as i64);
+    put("ru_nsignals", ru.ru_nsignals as i64);
+    put("ru_nvcsw", ru.ru_nvcsw as i64);
+    put("ru_nivcsw", ru.ru_nivcsw as i64);
+    put("ru_nswap", ru.ru_nswap as i64);
+    put("ru_utime.tv_usec", ru.ru_utime.tv_usec as i64);
+    put("ru_utime.tv_sec", ru.ru_utime.tv_sec as i64);
+    put("ru_stime.tv_usec", ru.ru_stime.tv_usec as i64);
+    put("ru_stime.tv_sec", ru.ru_stime.tv_sec as i64);
+    Value::Array(a)
+}
+
+/// Shared body of `pcntl_waitpid` / `pcntl_wait`: wait4(2), writing the
+/// status (and, when asked for, the resource usage) back.
+fn wait_common(
+    host: &mut dyn Host,
+    pid: i64,
+    status_arg: Option<&Value>,
+    options: i64,
+    rusage_arg: Option<&Value>,
+) -> Value {
+    let mut status = status_arg.map_or(0, |v| conv::to_int(&deref(v))) as i32;
+    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+    if rusage_arg.is_some() {
+        write_ref(rusage_arg, Value::Array(rhp_values::PhpArray::new()));
+    }
+    // Our queueing handlers carry SA_RESTART like php's, so a signal only
+    // interrupts the wait (EINTR, -1) when a handler asked for no restart.
+    let child = unsafe { libc::wait4(pid as libc::pid_t, &mut status, options as i32, &mut ru) };
+    if child < 0 {
+        let e = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        set_last_error(host, e);
+    }
+    if child > 0 && rusage_arg.is_some() {
+        write_ref(rusage_arg, rusage_array(&ru));
+    }
+    write_ref(status_arg, Value::Int(status as i64));
+    Value::Int(child as i64)
+}
+
+fn fn_waitpid(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let pid = zpp_long(host, args, 0, "pcntl_waitpid", "process_id")?;
+    let options = match args.get(2) {
+        Some(_) => zpp_long(host, args, 2, "pcntl_waitpid", "flags")?,
+        None => 0,
+    };
+    Ok(wait_common(host, pid, args.get(1), options, args.get(3)))
+}
+
+fn fn_wait(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let options = match args.get(1) {
+        Some(_) => zpp_long(host, args, 1, "pcntl_wait", "flags")?,
+        None => 0,
+    };
+    Ok(wait_common(host, -1, args.first(), options, args.get(2)))
+}
+
+/// php's `zval_try_get_long` (`zendi_try_get_long`): `None` when the value
+/// cannot be an int (non-numeric string, array, …). A fractional float
+/// raises the "loses precision" deprecation, a leading-numeric string the
+/// "non-numeric value" warning.
+fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Thrown> {
+    // ZEND_DOUBLE_FITS_LONG
+    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+    let fits = |f: f64| f.is_finite() && (-TWO_63..TWO_63).contains(&f);
+    Ok(Some(match v {
+        Value::Null | Value::Bool(false) => 0,
+        Value::Bool(true) => 1,
+        Value::Int(n) => *n,
+        Value::Float(f) => {
+            if !fits(*f) {
+                0
+            } else {
+                if f.fract() != 0.0 {
+                    let shown =
+                        String::from_utf8_lossy(&rhp_values::fmt::float_serialize(*f)).into_owned();
+                    host.emit_diagnostic(
+                        crate::E_DEPRECATED,
+                        &format!("Implicit conversion from float {shown} to int loses precision"),
+                    )?;
+                }
+                *f as i64
+            }
+        }
+        Value::Str(s) => {
+            let b = s.as_bytes();
+            let Some((num, end)) = conv::scan_number(b) else {
+                return Ok(None);
+            };
+            if !b[end..]
+                .iter()
+                .all(|&c| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
+            {
+                host.emit_diagnostic(crate::E_WARNING, "A non-numeric value encountered")?;
+            }
+            match num {
+                conv::Num::Int(n) => n,
+                conv::Num::Float(f) => {
+                    // zend_dval_to_lval_cap: saturate (NaN is 0).
+                    let l = if f.is_nan() {
+                        0
+                    } else if fits(f) {
+                        f as i64
+                    } else if f > 0.0 {
+                        i64::MAX
+                    } else {
+                        i64::MIN
+                    };
+                    if !fits(f) || f.fract() != 0.0 {
+                        host.emit_diagnostic(
+                            crate::E_DEPRECATED,
+                            &format!(
+                                "Implicit conversion from float-string \"{}\" to int loses precision",
+                                String::from_utf8_lossy(b)
+                            ),
+                        )?;
+                    }
+                    l
+                }
+            }
+        }
+        _ => return Ok(None),
+    }))
+}
+
+/// `pcntl_sigprocmask($mode, $signals, &$old_signals)`.
+fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let how = zpp_long(host, args, 0, "pcntl_sigprocmask", "mode")?;
+    if how != libc::SIG_BLOCK as i64
+        && how != libc::SIG_UNBLOCK as i64
+        && how != libc::SIG_SETMASK as i64
+    {
+        return Err(Thrown::error(
+            "ValueError",
+            "pcntl_sigprocmask(): Argument #1 ($mode) must be one of SIG_BLOCK, SIG_UNBLOCK, or SIG_SETMASK",
+        ));
+    }
+    let sigs = match deref(&args[1]) {
+        Value::Array(a) => a,
+        other => {
+            return Err(Thrown::type_error(format!(
+                "pcntl_sigprocmask(): Argument #2 ($signals) must be of type array, {} given",
+                value_name(&other)
+            )))
+        }
+    };
+    if sigs.is_empty() && how != libc::SIG_SETMASK as i64 {
+        return Err(Thrown::error(
+            "ValueError",
+            "pcntl_sigprocmask(): Argument #2 ($signals) must not be empty",
+        ));
+    }
+    let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+    let mut old: libc::sigset_t = unsafe { std::mem::zeroed() };
+    unsafe {
+        libc::sigemptyset(&mut set);
+        libc::sigemptyset(&mut old);
+    }
+    for (_, v) in sigs.iter() {
+        let v = deref(v);
+        let Some(n) = try_get_long(host, &v)? else {
+            return Err(Thrown::type_error(format!(
+                "pcntl_sigprocmask(): Argument #2 ($signals) signals must be of type int, {} given",
+                value_name(&v)
+            )));
+        };
+        if !(1..NUM_SIGNALS).contains(&n) {
+            return Err(Thrown::error(
+                "ValueError",
+                format!(
+                    "pcntl_sigprocmask(): Argument #2 ($signals) signals must be between 1 and {}",
+                    NUM_SIGNALS - 1
+                ),
+            ));
+        }
+        unsafe { libc::sigaddset(&mut set, n as i32) };
+    }
+    if unsafe { libc::sigprocmask(how as i32, &set, &mut old) } != 0 {
+        let e = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        set_last_error(host, e);
+        crate::warn(host, "pcntl_sigprocmask", &crate::streams::strerror(e))?;
+        return Ok(Value::Bool(false));
+    }
+    if args.get(2).is_some() {
+        let mut a = rhp_values::PhpArray::new();
+        for s in 1..NUM_SIGNALS {
+            if unsafe { libc::sigismember(&old, s as i32) } == 1 {
+                a.push(Value::Int(s));
+            }
+        }
+        write_ref(args.get(2), Value::Array(a));
+    }
+    Ok(Value::Bool(true))
+}
+
 macro_rules! wfn {
     ($name:ident, $php:literal, |$s:ident| $body:expr) => {
         fn $name(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -593,6 +841,28 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PRIO_PGRP", Value::Int(libc::PRIO_PGRP as i64)),
         ("PRIO_USER", Value::Int(libc::PRIO_USER as i64)),
         ("PRIO_PROCESS", Value::Int(libc::PRIO_PROCESS as i64)),
+        ("PCNTL_EINTR", i(libc::EINTR)),
+        ("PCNTL_ECHILD", i(libc::ECHILD)),
+        ("PCNTL_EINVAL", i(libc::EINVAL)),
+        ("PCNTL_EAGAIN", i(libc::EAGAIN)),
+        ("PCNTL_ESRCH", i(libc::ESRCH)),
+        ("PCNTL_EACCES", i(libc::EACCES)),
+        ("PCNTL_EPERM", i(libc::EPERM)),
+        ("PCNTL_ENOMEM", i(libc::ENOMEM)),
+        ("PCNTL_E2BIG", i(libc::E2BIG)),
+        ("PCNTL_EFAULT", i(libc::EFAULT)),
+        ("PCNTL_EIO", i(libc::EIO)),
+        ("PCNTL_EISDIR", i(libc::EISDIR)),
+        ("PCNTL_ELOOP", i(libc::ELOOP)),
+        ("PCNTL_EMFILE", i(libc::EMFILE)),
+        ("PCNTL_ENAMETOOLONG", i(libc::ENAMETOOLONG)),
+        ("PCNTL_ENFILE", i(libc::ENFILE)),
+        ("PCNTL_ENOENT", i(libc::ENOENT)),
+        ("PCNTL_ENOEXEC", i(libc::ENOEXEC)),
+        ("PCNTL_ENOTDIR", i(libc::ENOTDIR)),
+        ("PCNTL_ETXTBSY", i(libc::ETXTBSY)),
+        ("PCNTL_ENOSPC", i(libc::ENOSPC)),
+        ("PCNTL_EUSERS", i(libc::EUSERS)),
     ];
     #[cfg(target_os = "linux")]
     {
@@ -638,6 +908,10 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "pcntl_get_last_error", fn_get_last_error, 0, Some(0));
     put(m, "pcntl_errno", fn_get_last_error, 0, Some(0));
     put(m, "pcntl_strerror", fn_strerror, 1, Some(1));
+    put(m, "pcntl_fork", fn_fork, 0, Some(0));
+    put(m, "pcntl_waitpid", fn_waitpid, 2, Some(4));
+    put(m, "pcntl_wait", fn_wait, 1, Some(3));
+    put(m, "pcntl_sigprocmask", fn_sigprocmask, 2, Some(3));
     put(m, "pcntl_wifexited", fn_wifexited, 1, Some(1));
     put(m, "pcntl_wifstopped", fn_wifstopped, 1, Some(1));
     put(m, "pcntl_wifsignaled", fn_wifsignaled, 1, Some(1));

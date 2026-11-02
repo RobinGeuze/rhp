@@ -1,0 +1,119 @@
+bool(false)
+bool(true)
+"<a>" => false
+  [3/77 L1 C4 F''] "Premature end of data in tag a line 1\n"
+"<a><\/b>" => false
+  [3/76 L1 C8 F''] "Opening and ending tag mismatch: a line 1 and b\n"
+"abc" => false
+  [3/4 L1 C1 F''] "Start tag expected, '<' not found\n"
+" " => false
+  [3/4 L1 C2 F''] "Start tag expected, '<' not found\n"
+"<a>\n<b>\n<\/a>" => false
+  [3/76 L3 C5 F''] "Opening and ending tag mismatch: b line 2 and a\n"
+  [3/77 L3 C5 F''] "Premature end of data in tag a line 1\n"
+"<a b=\"1\" b=\"2\"\/>" => false
+  [3/42 L1 C15 F''] "Attribute b redefined\n"
+"<a b=1\/>" => false
+  [3/39 L1 C6 F''] "AttValue: \" or ' expected\n"
+  [3/65 L1 C6 F''] "attributes construct error\n"
+  [3/73 L1 C6 F''] "Couldn't find end of Start Tag a line 1\n"
+  [3/5 L1 C6 F''] "Extra content at the end of the document\n"
+"<a b\/>" => false
+  [3/41 L1 C5 F''] "Specification mandates value for attribute b\n"
+"<a>&foo;<\/a>" => false
+  [3/26 L1 C9 F''] "Entity 'foo' not defined\n"
+"<a>&;<\/a>" => false
+  [3/68 L1 C5 F''] "xmlParseEntityRef: no name\n"
+"<a>&amp<\/a>" => false
+  [3/23 L1 C8 F''] "EntityRef: expecting ';'\n"
+"<a><!-- x <\/a>" => false
+  [3/45 L1 C15 F''] "Comment not terminated\n"
+  [3/77 L1 C15 F''] "Premature end of data in tag a line 1\n"
+"<a\/><b\/>" => false
+  [3/5 L1 C5 F''] "Extra content at the end of the document\n"
+"<a\/>x" => false
+  [3/5 L1 C5 F''] "Extra content at the end of the document\n"
+"<1a\/>" => false
+  [3/68 L1 C2 F''] "StartTag: invalid element name\n"
+  [3/5 L1 C2 F''] "Extra content at the end of the document\n"
+"<a" => false
+  [3/73 L1 C3 F''] "Couldn't find end of Start Tag a line 1\n"
+"<a b=\"1\"" => false
+  [3/65 L1 C9 F''] "attributes construct error\n"
+  [3/73 L1 C9 F''] "Couldn't find end of Start Tag a line 1\n"
+"<x:a\/>" => true
+  [2/201 L1 C5 F''] "Namespace prefix x on a is not defined\n"
+ => false
+  [3/9 L1 C4 F''] "Input is not proper UTF-8, indicate encoding !\nBytes: 0xE9 0x3C 0x2F 0x61\n"
+"<a\/><?xml version=\"1.0\"?>" => false
+  [3/64 L1 C10 F''] "XML declaration allowed only at the start of the document\n"
+"<a>\u0001<\/a>" => false
+  [3/9 L1 C4 F''] "PCDATA invalid Char value 1\n"
+"<a><![CDATA[x<\/a>" => false
+  [3/63 L1 C18 F''] "CData section not finished\nx<\/\n"
+  [3/77 L1 C18 F''] "Premature end of data in tag a line 1\n"
+"<?xml version=\"1.0\" encoding=\"bogus\"?><a\/>" => false
+  [3/32 L1 C37 F''] "Unsupported encoding bogus\n"
+"<a>]]><\/a>" => false
+  [3/62 L1 C4 F''] "Sequence ']]>' not allowed in content\n"
+"<a b=\"<\"\/>" => false
+  [3/38 L1 C7 F''] "Unescaped '<' not allowed in attributes values\n"
+  [3/65 L1 C7 F''] "attributes construct error\n"
+  [3/73 L1 C7 F''] "Couldn't find end of Start Tag a line 1\n"
+  [3/5 L1 C7 F''] "Extra content at the end of the document\n"
+"<a xmlns:x=\"\"\/>" => true
+  [2/200 L1 C14 F''] "xmlns:x: Empty XML namespace is not allowed\n"
+"<a>\n  <b c='1'>\n<\/a>" => false
+  [3/76 L3 C5 F''] "Opening and ending tag mismatch: b line 2 and a\n"
+  [3/77 L3 C5 F''] "Premature end of data in tag a line 1\n"
+"<a xmlns='u'\/>" => true
+  [1/100 L1 C13 F''] "xmlns: URI u is not absolute\n"
+bool(true)
+bool(true)
+int(77)
+int(1)
+bool(true)
+int(0)
+int(77)
+bool(false)
+W[2]: DOMDocument::loadXML(): Opening and ending tag mismatch: b line 2 and a in Entity, line: 2
+W[2]: DOMDocument::loadXML(): Premature end of data in tag a line 1 in Entity, line: 2
+W[2]: DOMDocument::loadXML(): Namespace prefix x on a is not defined in Entity, line: 1
+W[2]: simplexml_load_string(): namespace error : Namespace prefix x on a is not defined
+W[2]: simplexml_load_string(): <x:a/>
+W[2]: simplexml_load_string():     ^
+W[2]: simplexml_load_string(): Entity: line 3: parser error : Opening and ending tag mismatch: b line 2 and a
+W[2]: simplexml_load_string(): </a>
+W[2]: simplexml_load_string():     ^
+W[2]: simplexml_load_string(): Entity: line 3: parser error : Premature end of data in tag a line 1
+W[2]: simplexml_load_string(): </a>
+W[2]: simplexml_load_string():     ^
+W[2]: simplexml_load_string(): Entity: line 1: parser error : Attribute c redefined
+W[2]: simplexml_load_string(): <a>	<b c='1' c='2'/></a>
+W[2]: simplexml_load_string():    	              ^
+W[2]: simplexml_load_string(): Entity: line 1: parser error : Start tag expected, '<' not found
+W[2]: simplexml_load_string(): xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+W[2]: simplexml_load_string(): ^
+W[2]: simplexml_load_string(): Entity: line 1: parser error : Opening and ending tag mismatch: a line 1 and b
+W[2]: simplexml_load_string(): yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy</b>
+W[2]: simplexml_load_string():                                                                                ^
+int(20913)
+string(6) "2.9.13"
+int(2)
+int(2048)
+int(16384)
+int(1)
+W[2]: DOMDocument::load(): Opening and ending tag mismatch: q line 2 and r in FILE, line: 2
+W[2]: DOMDocument::load(): Premature end of data in tag r line 1 in FILE, line: 2
+bool(false)
+W[2]: simplexml_load_file(): FILE:2: parser error : Opening and ending tag mismatch: q line 2 and r
+W[2]: simplexml_load_file(): <q></r>
+W[2]: simplexml_load_file():        ^
+W[2]: simplexml_load_file(): FILE:2: parser error : Premature end of data in tag r line 1
+W[2]: simplexml_load_file(): <q></r>
+W[2]: simplexml_load_file():        ^
+bool(false)
+2 FILE Opening and ending tag mismatch: q line 2 and r
+2 FILE Premature end of data in tag r line 1
+W[2]: DOMDocument::load(): I/O warning : failed to load external entity "FILE.missing"
+bool(false)

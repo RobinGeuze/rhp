@@ -1,0 +1,58 @@
+array(2) {
+  [0]=>
+  int(11)
+  [1]=>
+  int(2)
+}
+array(1) {
+  ["x"]=>
+  int(5)
+}
+int(1)
+string(1) "v"
+int(1)
+int(2)
+[8] Only variables should be passed by reference
+string(1) "b"
+[8] Only variables should be passed by reference
+string(1) "c"
+[8] Only variables should be passed by reference
+bool(true)
+int(1)
+int(0)
+int(1)
+array(1) {
+  [0]=>
+  int(2)
+}
+int(6)
+int(6)
+int(6)
+int(6)
+string(2) "z1"
+bool(true)
+bool(false)
+5
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+bool(true)
+string(4) "dflt"
+int(1)
+int(1)
+int(11)
+array(1) {
+  ["k"]=>
+  string(1) "v"
+}
+bool(true)
+bool(false)
+int(11)
+array(1) {
+  ["k"]=>
+  string(1) "v"
+}
+Access to undeclared static property C::$nope

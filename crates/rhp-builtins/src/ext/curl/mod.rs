@@ -433,12 +433,12 @@ fn new_object(host: &mut dyn Host, class: &str) -> Result<(Value, ObjectHandle),
         .ok_or_else(|| Thrown::unsupported("curl", format!("cannot instantiate {class}")))?;
     let h = obj_handle(&v).ok_or_else(|| Thrown::error("Error", "curl: bad object"))?;
     // The handle classes use zend_objects_not_comparable.
-    rhp_semantics::ops::set_not_comparable_hook(is_curl_object);
+    rhp_semantics::ops::set_not_comparable_hook(super::not_comparable_object);
     Ok((v, h))
 }
 
 /// Is `h` a CurlHandle / CurlMultiHandle / CurlShareHandle of ours?
-fn is_curl_object(h: &ObjectHandle) -> bool {
+pub(crate) fn is_curl_object(h: &ObjectHandle) -> bool {
     REG.with(|r| {
         let r = r.borrow();
         lookup(&r.easy, h).is_some()
@@ -920,7 +920,7 @@ fn zval_get_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> {
 }
 
 /// php's `zval_get_long()` for an option value (objects warn and give 1).
-fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Thrown> {
+pub(crate) fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Thrown> {
     let v = deref(v);
     if matches!(v, Value::Object(_) | Value::Closure(_)) {
         host.emit_diagnostic(

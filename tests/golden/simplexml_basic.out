@@ -1,0 +1,63 @@
+string(1) "1"
+int(1)
+string(3) "two"
+bool(true)
+bool(false)
+string(0) ""
+bool(true)
+bool(false)
+int(2)
+int(3)
+string(4) "root"
+item x [one]
+item y [twotail]
+child item
+child item
+child other
+s
+twotail
+bool(false)
+bool(true)
+bool(true)
+no
+a=1
+b=two
+<?xml version="1.0"?>
+<root a="1" b="two"><item id="x">one</item><item id="y">two<sub>s</sub>tail</item><other/><p:q xmlns:p="urn:p">pq</p:q></root>
+
+<item id="x">one</item>
+<?xml version="1.0"?>
+<root a="1" b="two"><item id="x">one</item><item id="y">two<sub>s</sub>tail</item><other/><p:q xmlns:p="urn:p">pq</p:q><new k="v">v&amp;w</new></root>
+
+int(1)
+string(2) "pq"
+int(1)
+string(1) "y"
+bool(true)
+bool(true)
+string(5) ""one""
+int(3)
+bool(true)
+bool(true)
+src
+lib
+string(3) "lib"
+string(10) "DOMElement"
+string(12) "projectFiles"
+W[2]: SimpleXMLElement::__construct(): Entity: line 1: parser error : Couldn't find end of Start Tag bad line 1
+W[2]: SimpleXMLElement::__construct(): <bad
+W[2]: SimpleXMLElement::__construct():     ^
+Exception: String could not be parsed as XML
+W[2]: simplexml_load_string(): Entity: line 1: parser error : Couldn't find end of Start Tag x line 1
+W[2]: simplexml_load_string(): <x
+W[2]: simplexml_load_string():   ^
+bool(false)
+float(3)
+12
+string(16) "SimpleXMLElement"
+array(0) {
+}
+array(1) {
+  ["p"]=>
+  string(5) "urn:p"
+}

@@ -251,6 +251,12 @@ pub enum Instr {
         arr: Reg,
         src: Reg,
     },
+    /// `f(...$src)`: unpack an array or Traversable into the argument array
+    /// `arr` (int keys positional, string keys named).
+    ArgSpread {
+        arr: Reg,
+        src: Reg,
+    },
     /// `[&$x]` / `[k => &$x]`: push/insert the raw `Value::Ref` in `val` so the
     /// element aliases the source variable (no deref).
     ArrPushRef {
@@ -313,6 +319,9 @@ pub enum Instr {
         pos_reg: Reg,
         src: Reg,
         end: Pc,
+        /// `yield from` delegation: a generator source is attached where it
+        /// stands (started, not rewound) instead of being rewound.
+        delegate: bool,
     }, // snapshot src; pos=0; if not-array/empty -> jmp end
     FeFetch {
         arr_reg: Reg,
@@ -418,6 +427,12 @@ pub enum Instr {
         what: CIdx,
         why: CIdx,
     },
+    /// A call result passed for a by-reference parameter: raise php's notice
+    /// "Only variables should be passed by reference" and pass the value.
+    SendNoRef {
+        dst: Reg,
+        src: Reg,
+    },
     /// `eval($code)`: compile the PHP source in `src` at runtime and run it in
     /// the current variable scope; the script's return value lands in `dst`.
     Eval {
@@ -468,6 +483,22 @@ pub enum Instr {
         dst: Reg,
         class: ClassRef,
         name: NIdx,
+        args: Reg,
+    },
+    /// `$o->$m(...$args)` / `$o->$m(name: v)`: `CallMethodV` with the method
+    /// name a runtime string in register `name`.
+    CallMethodDynV {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+        args: Reg,
+    },
+    /// `C::$m(...$args)` / `C::$m(name: v)`: `CallStaticV` with the method
+    /// name a runtime string in register `name`.
+    CallStaticDynV {
+        dst: Reg,
+        class: ClassRef,
+        name: Reg,
         args: Reg,
     },
     /// `$o->p` (value context).
@@ -531,6 +562,24 @@ pub enum Instr {
         class: ClassRef,
         name: NIdx,
         cache: CacheIdx,
+    },
+    /// SEND_FUNC_ARG's question for a call resolved at run time: whether
+    /// parameter `idx` of method `name` on the object in `obj` is by
+    /// reference (false for a non-object / unknown / magic method).
+    MethodArgIsRef {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+        idx: u16,
+    },
+    /// The same for static method (or constructor) `name` of `class`; the
+    /// class is resolved (autoloaded) first, as php's INIT_STATIC_METHOD_CALL
+    /// / NEW do before the arguments.
+    StaticArgIsRef {
+        dst: Reg,
+        class: ClassRef,
+        name: NIdx,
+        idx: u16,
     },
     /// `$o->m(args)`.
     CallMethod {
@@ -619,6 +668,11 @@ pub enum Instr {
         cv: Reg,
         name: NIdx,
     },
+    /// `global $$n` / `global ${expr}`: bind the current scope's variable
+    /// named by register `name` to that global.
+    BindGlobalDyn {
+        name: Reg,
+    },
     /// `static $x = <const>`: bind CV `cv` to a per-function persistent cell,
     /// initialized to const `init` (`u32::MAX` = null) on first execution.
     BindStatic {
@@ -671,6 +725,64 @@ pub enum Instr {
     LvalStaticProp {
         class: ClassRef,
         name: NIdx,
+    },
+    /// Cursor root: `C::${expr}` / `C::$$x` (static-property name in a register).
+    LvalStaticPropDyn {
+        class: ClassRef,
+        name: Reg,
+    },
+    /// `C::${expr}` (value context): `FetchStaticProp` with a runtime name.
+    FetchStaticPropDyn {
+        dst: Reg,
+        class: ClassRef,
+        name: Reg,
+    },
+    /// `FetchStaticPropIs` with a runtime name.
+    FetchStaticPropDynIs {
+        dst: Reg,
+        class: ClassRef,
+        name: Reg,
+    },
+    /// `$$name` / `${expr}` read: the current scope's variable of that name
+    /// (null when it does not exist).
+    FetchVarVar {
+        dst: Reg,
+        name: Reg,
+    },
+    /// Cursor root: the current scope's variable named by register `name`
+    /// (created on write), for `$$name = v`, `${expr}[] = v`, ….
+    LvalVarVar {
+        name: Reg,
+    },
+    /// `$$name = &<src>`: make the current scope's variable named by register
+    /// `name` an alias of the reference in `src`.
+    BindVarVarRef {
+        name: Reg,
+        src: Reg,
+    },
+    /// `unset($$name)`: remove the current scope's variable of that name.
+    UnsetVarVar {
+        name: Reg,
+    },
+    /// Cursor root: the global variable named by `name` (a runtime string
+    /// register), i.e. `$GLOBALS[$name]...` as an lvalue (php 8.1+: element
+    /// writes through `$GLOBALS` go to the global symbol table).
+    LvalGlobal {
+        name: Reg,
+    },
+    /// `$GLOBALS[$name]` read: the global variable's value ("Undefined global
+    /// variable" warning when absent).
+    FetchGlobal {
+        dst: Reg,
+        name: Reg,
+    },
+    /// Bare `$GLOBALS` read: a by-value copy of the global symbol table.
+    FetchGlobals {
+        dst: Reg,
+    },
+    /// `unset($GLOBALS[$name])`: remove the global variable.
+    UnsetGlobal {
+        name: Reg,
     },
     /// Declare a class at this statement. `class_idx` is file-local: indices
     /// below the file's user top-level class count name `Program::classes`
@@ -797,6 +909,42 @@ pub struct ParamInfo {
     /// Source line of the parameter declaration (php raises argument
     /// TypeError / ArgumentCountError at the failing parameter's line).
     pub line: u32,
+    /// `#[...]` attributes on the parameter (Reflection metadata only).
+    pub attributes: Vec<AttributeProto>,
+    /// A constructor-promoted parameter (`public function __construct(private $x)`).
+    pub promoted: bool,
+    /// A non-constant default compiled as a standalone thunk, for
+    /// `ReflectionParameter::getDefaultValue()` (the call path evaluates it
+    /// inline in the prologue instead).
+    pub default_thunk: Option<Rc<FunctionProto>>,
+    /// The default is a constant reference (`= PHP_EOL`, `= self::X`): its
+    /// name, for `getDefaultValueConstantName()`.
+    pub default_const: Option<PhpStr>,
+}
+
+/// A compiled `#[Name(args)]` attribute (Reflection metadata only).
+#[derive(Clone)]
+pub struct AttributeProto {
+    /// The attribute class name, namespace/use-resolved (no leading `\`).
+    pub name: PhpStr,
+    /// The argument list as an array (int keys for positional arguments,
+    /// string keys for named ones) — folded, or a thunk evaluated lazily in
+    /// the declaring scope (`ReflectionAttribute::getArguments()`); `None`
+    /// when the attribute has no argument list.
+    pub args: Option<ConstInitProto>,
+}
+
+/// Declaration metadata surfaced by Reflection: attributes, the doc comment
+/// and the declaration's source line span.
+#[derive(Clone, Default)]
+pub struct DeclMeta {
+    pub attributes: Vec<AttributeProto>,
+    /// The `/** ... */` comment php's scanner attaches to the declaration.
+    pub doc_comment: Option<PhpStr>,
+    pub start_line: u32,
+    pub end_line: u32,
+    /// Byte offset of the declaration (orders members declared on one line).
+    pub offset: u32,
 }
 
 /// A declared parameter / return type: a (possibly nullable) union or
@@ -807,6 +955,12 @@ pub struct TypeHint {
     pub nullable: bool,
     pub intersection: bool,
     pub kinds: Vec<TypeKind>,
+    /// DNF intersection groups of a union (`(A&B)|C|null`): each inner list is
+    /// one parenthesized intersection; `kinds` holds the union's other members.
+    pub groups: Vec<Vec<PhpStr>>,
+    /// `null` was spelled as a union member (`int|null`), not `?int`; only
+    /// matters for how Reflection prints a multi-member union.
+    pub explicit_null: bool,
 }
 
 /// One member of a declared type.
@@ -937,6 +1091,8 @@ pub struct FunctionProto {
     /// `eval`'d script's `{main}` to the *calling* scope's variables by name
     /// (php executes include/eval in the enclosing variable scope).
     pub cv_var_names: Vec<PhpStr>,
+    /// Reflection metadata (attributes, doc comment, line span).
+    pub meta: DeclMeta,
 }
 
 impl FunctionProto {
@@ -966,6 +1122,7 @@ impl FunctionProto {
             strict_types: false,
             returns_ref: false,
             cv_var_names: Vec::new(),
+            meta: DeclMeta::default(),
         }
     }
 }
@@ -1050,6 +1207,14 @@ pub struct ClassProto {
     /// Backing type of a backed enum (`Int`/`Str`); `None` for a pure enum or a
     /// non-enum class.
     pub enum_backing: Option<EnumBacking>,
+    /// Reflection metadata (attributes, doc comment, line span).
+    pub meta: DeclMeta,
+    /// The declaring file (empty for built-in prelude classes).
+    pub file: PhpStr,
+    /// Where the declaration starts (file, line): php's
+    /// `info.user.filename` / `line_start`, used by "Cannot redeclare class".
+    pub decl_file: PhpStr,
+    pub decl_line: u32,
 }
 
 /// One compiled enum case.
@@ -1059,6 +1224,7 @@ pub struct EnumCaseProto {
     /// The backing value — folded, or a thunk evaluating a constant expression
     /// on first access — or `None` for a pure enum.
     pub value: Option<ConstInitProto>,
+    pub meta: DeclMeta,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1075,6 +1241,15 @@ static SSCANF_REF_MASK: [bool; 64] = {
     m[1] = false;
     m
 };
+
+/// By-ref mask with every position by reference (`array_multisort`).
+static ALL_REF_MASK: [bool; 64] = [true; 64];
+
+/// Builtins whose by-reference parameters are `ZEND_SEND_PREFER_REF`: a
+/// non-variable argument is passed by value instead of being an error.
+pub fn builtin_prefers_ref(name_lc: &[u8]) -> bool {
+    matches!(name_lc, b"array_multisort")
+}
 
 /// Per-parameter by-reference flags for builtins whose arguments are passed by
 /// reference (the array-mutating sort/stack family, and the `preg_*` out-params
@@ -1104,12 +1279,23 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         "preg_match" | "preg_match_all" => &[false, false, true],
         // `flock($stream, $operation, &$would_block)`.
         "flock" => &[false, false, true],
+        // `is_callable($value, $syntax_only, &$callable_name)`.
+        "is_callable" => &[false, false, true],
+        // `xml_parse_into_struct($parser, $data, &$values, &$index)`.
+        "xml_parse_into_struct" => &[false, false, true, true],
         // curl_multi_exec(&$still_running), curl_multi_info_read(&$queued_messages).
         "curl_multi_exec" | "curl_multi_info_read" => &[false, true],
         // `&$count` at position 4.
         "preg_replace" | "preg_replace_callback" => &[false, false, false, false, true],
         // `preg_replace_callback_array($pattern, $subject, $limit, &$count)`.
         "preg_replace_callback_array" => &[false, false, false, true],
+        // `settype(&$var, $type)`.
+        "settype" => &[true],
+        // `getopt($short, $long, &$rest_index)`.
+        "getopt" => &[false, false, true],
+        // `array_multisort(&$array, &...$rest)`: every position prefers a
+        // reference (sort flags may be passed as plain values).
+        "array_multisort" => &ALL_REF_MASK,
         // `parse_str($string, &$result)`.
         "parse_str" => &[false, true],
         // `headers_sent(&$filename, &$line)`.
@@ -1120,6 +1306,16 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         "system" | "passthru" => &[false, true],
         // `stream_select(&$read, &$write, &$except, …)`.
         "stream_select" => &[true, true, true],
+        // Socket streams: `&$error_code, &$error_message` / `&$peer_name` /
+        // `&$address`.
+        "stream_socket_server" | "stream_socket_client" => &[false, true, true],
+        "fsockopen" | "pfsockopen" => &[false, false, true, true],
+        "stream_socket_accept" => &[false, false, true],
+        "stream_socket_recvfrom" => &[false, false, false, true],
+        // pcntl: `&$status` (and `&$resource_usage`), `&$old_signals`.
+        "pcntl_waitpid" => &[false, true, false, true],
+        "pcntl_wait" => &[true, false, true],
+        "pcntl_sigprocmask" => &[false, false, true],
         _ => &[],
     }
 }
@@ -1146,6 +1342,9 @@ pub struct PropProto {
     /// Declared type (`None` = untyped); a lazily evaluated default is
     /// checked against it (php's `update_property`).
     pub type_hint: Option<TypeHint>,
+    pub meta: DeclMeta,
+    /// Declared by constructor promotion.
+    pub promoted: bool,
 }
 
 #[derive(Clone)]
@@ -1156,6 +1355,9 @@ pub struct StaticPropProto {
     pub init: ConstInitProto,
     /// Declared type (`None` = untyped).
     pub type_hint: Option<TypeHint>,
+    pub meta: DeclMeta,
+    /// Declared with an explicit default (`static $x = 1;`).
+    pub has_default: bool,
 }
 
 #[derive(Clone)]
@@ -1165,6 +1367,8 @@ pub struct ConstProto {
     pub value: ConstInitProto,
     /// Declared type of a typed class constant (`None` = untyped).
     pub type_hint: Option<TypeHint>,
+    pub meta: DeclMeta,
+    pub is_final: bool,
 }
 
 /// A property's per-instance default, as compiled.

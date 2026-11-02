@@ -23,6 +23,15 @@ inputs:
 runs:
   using: composite
   steps:
+    # Debian/Ubuntu php reads the system zoneinfo, and Ubuntu moved the
+    # legacy zone names (US/Eastern, EST5EDT, GMT+0, ...) to tzdata-legacy.
+    # Without it php rejects IDs the php-src date tests use.
+    - name: Install legacy timezone names
+      shell: bash
+      run: |
+        if command -v apt-get >/dev/null 2>&1; then
+          sudo apt-get install -y --no-install-recommends tzdata-legacy || true
+        fi
     - uses: shivammathur/setup-php@v2
       with:
         php-version: ${{ inputs.php-version }}

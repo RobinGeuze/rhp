@@ -1,0 +1,94 @@
+array(7) {
+  [0]=>
+  string(1) "a"
+  ["k"]=>
+  string(1) "?"
+  [1]=>
+  array(2) {
+    [0]=>
+    string(1) "x"
+    ["?"]=>
+    string(1) "?"
+  }
+  ["?"]=>
+  int(1)
+  [2]=>
+  float(2.5)
+  [3]=>
+  NULL
+  [4]=>
+  bool(true)
+}
+array(2) {
+  [0]=>
+  string(5) "café"
+  ["n"]=>
+  array(1) {
+    [0]=>
+    string(2) "ü"
+  }
+}
+string(5) "café"
+string(5) "café"
+string(4) "caf�"
+string(8) "636166e9"
+mb_convert_encoding(): Argument #3 ($from_encoding) contains invalid encoding "nope"
+mb_convert_encoding(): Argument #2 ($to_encoding) must be a valid encoding, "nope" given
+string(3) "cde"
+string(3) "éb"
+string(7) "éb€c"
+string(4) "€c"
+string(4) "aéb"
+string(0) ""
+string(0) ""
+string(2) "bc"
+string(0) ""
+int(63)
+bool(true)
+string(4) "none"
+bool(true)
+string(4) "long"
+bool(true)
+int(63)
+mb_substitute_character(): Argument #1 ($substitute_character) is not a valid codepoint
+mb_substitute_character(): Argument #1 ($substitute_character) must be "none", "long", "entity" or a valid codepoint
+int(79)
+string(6) "BASE64"
+bool(true)
+bool(true)
+array(11) {
+  [0]=>
+  string(14) "ANSI_X3.4-1968"
+  [1]=>
+  string(8) "iso-ir-6"
+  [2]=>
+  string(14) "ANSI_X3.4-1986"
+  [3]=>
+  string(16) "ISO_646.irv:1991"
+  [4]=>
+  string(8) "US-ASCII"
+  [5]=>
+  string(9) "ISO646-US"
+  [6]=>
+  string(2) "us"
+  [7]=>
+  string(6) "IBM367"
+  [8]=>
+  string(7) "IBM-367"
+  [9]=>
+  string(5) "cp367"
+  [10]=>
+  string(7) "csASCII"
+}
+array(1) {
+  [0]=>
+  string(4) "utf8"
+}
+array(2) {
+  [0]=>
+  string(9) "ISO8859-1"
+  [1]=>
+  string(6) "latin1"
+}
+int(3)
+mb_encoding_aliases(): Argument #1 ($encoding) must be a valid encoding, "nope" given

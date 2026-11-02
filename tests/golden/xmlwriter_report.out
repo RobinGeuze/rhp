@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<testSuite xmlns="https://xml.phpunit.de/testSuite">
+ <tests>
+  <testClass name="A\B&lt;&amp;&gt;&quot;'&#10;&#9;">
+   <testMethod id="A::b with data set &quot;x&quot;"/>
+  </testClass>
+  <phpt file="&#xFC;.phpt"/>
+ </tests>
+ <groups>
+  <group name="default">
+   <issue><![CDATA[x ]]> y]]></issue>
+   <e:x>text &amp; &lt;stuff&gt;</e:x>
+   <empty/>
+   <emptystr></emptystr>
+loose &lt;text&gt;   <!-- hi -->
+</group>
+ </groups>
+</testSuite>
+--
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<a>
+	<b>x</b>
+	<c>
+		<d/>
+	</c>
+</a>
+--
+bool(false)
+string(49) "XMLWriter::openUri(): Unable to resolve file path"
+int(36)
+<?xml version="1.0"?>
+<r>
+ <x>1</x>
+</r>

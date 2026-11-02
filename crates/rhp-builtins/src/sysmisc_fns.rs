@@ -178,7 +178,13 @@ fn fn_gettimeofday(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     Ok(Value::Array(a))
 }
 
-fn fn_lcg_value(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+fn fn_lcg_value(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    crate::deprecated_fn(
+        host,
+        "lcg_value",
+        "8.4",
+        "use \\Random\\Randomizer::getFloat() instead",
+    )?;
     let mut b = [0u8; 8];
     let _ = getrandom::getrandom(&mut b);
     // 53 random bits → [0, 1).

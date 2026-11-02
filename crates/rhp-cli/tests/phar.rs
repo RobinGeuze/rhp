@@ -115,3 +115,60 @@ fn phar_runs_like_php() {
     );
     assert!(!php.is_empty());
 }
+
+/// `Phar::running()` reports only a phar that is actually executing (not the
+/// main script), `Phar::mapPhar` maps the file that calls it (a phar required
+/// from a wrapper script), and an explicit alias that contradicts the stored
+/// one is refused with php's message.
+#[test]
+fn phar_running_and_map_from_wrapper() {
+    if !php_available() || !can_build_phar() {
+        eprintln!("[phar] no php / phar.readonly locked — skipping");
+        return;
+    }
+    let dir = case_dir("wrap");
+    build_phar(
+        &dir,
+        "s",
+        r#"<?php
+        $p = new Phar(__DIR__.'/s.phar');
+        $p->addFromString('a.php', '<?php echo "in a: ", basename(Phar::running()), " ", basename(Phar::running(false)), "\n"; require "phar://s.phar/b.php";');
+        $p->addFromString('b.php', '<?php echo "in b: ", basename(__FILE__), "\n";');
+        $p->setStub('<?php Phar::mapPhar("s.phar"); require "phar://s.phar/a.php"; __HALT_COMPILER();');
+        $q = new Phar(__DIR__.'/al.phar', 0, 'implicit.phar');
+        $q->addFromString('x.php', '<?php echo "x\n";');
+        $q->setStub('<?php __HALT_COMPILER();');
+        "#,
+    );
+    write(
+        &dir.join("wrap.php"),
+        r#"<?php
+namespace A;
+var_dump(\Phar::running(), \Phar::running(false));
+require __DIR__ . '/s.phar';
+var_dump(\Phar::running());
+try { \Phar::loadPhar(__DIR__ . '/al.phar', 'other.phar'); } catch (\PharException $e) { echo str_replace(__DIR__, 'DIR', $e->getMessage()), "\n"; }
+var_dump(\Phar::loadPhar(__DIR__ . '/al.phar', 'implicit.phar'));
+include 'phar://implicit.phar/x.php';
+"#,
+    );
+    for target in ["wrap.php", "s.phar"] {
+        let path = dir.join(target);
+        let php = Command::new("php")
+            .arg("-n")
+            .arg(&path)
+            .output()
+            .expect("php");
+        let rhp = Command::new(env!("CARGO_BIN_EXE_rhp"))
+            .arg(&path)
+            .output()
+            .expect("rhp");
+        assert_eq!(
+            String::from_utf8_lossy(&php.stdout),
+            String::from_utf8_lossy(&rhp.stdout),
+            "{target}: stdout differs"
+        );
+        assert_eq!(php.status.code(), rhp.status.code(), "{target}: exit code");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

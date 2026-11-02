@@ -169,6 +169,13 @@ fn fn_array_fill(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "array_fill(): Argument #2 ($count) must be greater than or equal to 0",
         ));
     }
+    // HT_MAX_SIZE on 64-bit builds.
+    if count > 0x4000_0000 {
+        return Err(Thrown::error(
+            "ValueError",
+            "array_fill(): Argument #2 ($count) is too large",
+        ));
+    }
     let val = deref(&args[2]);
     let mut out = PhpArray::new();
     // PHP 8: keys are consecutive starting at `start` (incl. negative starts).

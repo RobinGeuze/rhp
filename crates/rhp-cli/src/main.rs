@@ -49,6 +49,9 @@ fn main() -> ExitCode {
     // --- CLI option parsing (php_cli.c's getopt subset) -----------------------
     let mut i = 1;
     let mut script: Option<Script> = None;
+    // `--` ends option parsing; what follows are the script's arguments
+    // (php_cli.c then reads the script from stdin).
+    let mut dashdash = false;
     // `-d key[=value]` ini settings (`-n`: no php.ini, always the case here).
     let mut ini: Vec<(String, String)> = Vec::new();
     let mut add_ini = |kv: &str| {
@@ -60,6 +63,7 @@ fn main() -> ExitCode {
         match a {
             "--" => {
                 i += 1;
+                dashdash = true;
                 break;
             }
             "-n" | "-q" | "-H" | "-e" => i += 1,
@@ -112,11 +116,11 @@ fn main() -> ExitCode {
             s
         }
         None => match args.get(i) {
-            Some(p) => {
+            Some(p) if !dashdash => {
                 i += 1;
                 Script::File(p.clone())
             }
-            None => return usage(),
+            _ => Script::Stdin,
         },
     };
     let rest = args[i..].iter().map(|s| s.as_bytes().to_vec()).collect();

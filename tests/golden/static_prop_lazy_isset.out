@@ -1,0 +1,9 @@
+bool(true)
+int(1)
+bool(false)
+bool(true)
+string(2) "W!"
+bool(false)
+bool(true)
+bool(false)
+string(12) "inaccessible"

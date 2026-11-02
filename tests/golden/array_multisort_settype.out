@@ -1,0 +1,142 @@
+array(5) {
+  ["a"]=>
+  int(1)
+  ["b"]=>
+  int(2)
+  [5]=>
+  int(3)
+  ["Ä"]=>
+  int(4)
+  ["mix"]=>
+  int(5)
+}
+array(5) {
+  ["A"]=>
+  int(1)
+  ["B"]=>
+  int(2)
+  [5]=>
+  int(3)
+  ["Ä"]=>
+  int(4)
+  ["MIX"]=>
+  int(5)
+}
+array(1) {
+  ["a"]=>
+  int(2)
+}
+bool(true)
+array(4) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(1)
+  [2]=>
+  int(2)
+  [3]=>
+  int(3)
+}
+array(4) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "z"
+  [2]=>
+  string(1) "b"
+  [3]=>
+  string(1) "c"
+}
+array(3) {
+  [0]=>
+  int(3)
+  [1]=>
+  int(2)
+  [2]=>
+  int(1)
+}
+array(3) {
+  ["x"]=>
+  string(1) "c"
+  ["z"]=>
+  string(1) "b"
+  ["y"]=>
+  string(1) "a"
+}
+array(4) {
+  [0]=>
+  int(0)
+  [1]=>
+  int(10)
+  [2]=>
+  int(100)
+  [3]=>
+  int(100)
+}
+array(4) {
+  [0]=>
+  int(4)
+  [1]=>
+  int(1)
+  [2]=>
+  int(3)
+  [3]=>
+  int(2)
+}
+array(4) {
+  [0]=>
+  string(1) "1"
+  [1]=>
+  int(2)
+  [2]=>
+  int(9)
+  [3]=>
+  string(2) "10"
+}
+array(3) {
+  ["a"]=>
+  string(5) "alice"
+  ["b"]=>
+  string(3) "Bob"
+  [0]=>
+  string(5) "Carol"
+}
+bool(true)
+ValueError: Array sizes are inconsistent
+TypeError: array_multisort(): Argument #3 must be an array or a sort flag that has not already been specified
+ValueError: array_multisort(): Argument #2 must be a valid sort flag
+TypeError: array_multisort(): Argument #2 must be an array or a sort flag
+bool(true)
+int(12)
+float(1.5)
+array(1) {
+  [0]=>
+  int(1)
+}
+string(0) ""
+bool(true)
+stdClass Object
+(
+    [0] => 1
+    [k] => 2
+)
+
+NULL
+int(3)
+settype(): Argument #2 ($type) must be a valid type
+Cannot convert to resource type
+bool(true)
+bool(false)
+int(4)
+string(12) "Syntax error"
+bool(false)
+string(28) "Maximum stack depth exceeded"
+bool(false)
+int(4)
+bool(true)
+int(0)
+bool(false)
+string(56) "Malformed UTF-8 characters, possibly incorrectly encoded"
+bool(true)
+json_validate(): Argument #2 ($depth) must be greater than 0
+json_validate(): Argument #3 ($flags) must be a valid flag (allowed flags: JSON_INVALID_UTF8_IGNORE)

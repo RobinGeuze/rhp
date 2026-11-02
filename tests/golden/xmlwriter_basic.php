@@ -1,0 +1,52 @@
+<?php
+// XMLWriter: libxml2 xmlTextWriter output (indentation, escaping, namespaces).
+foreach ([false, true] as $ind) {
+$w = new XMLWriter();
+$w->openMemory();
+$w->setIndent($ind);
+$w->startDocument('1.0', 'UTF-8');
+$w->startElement('root');
+$w->writeAttribute('a', "x<\"&'\n\t");
+$w->startElement('child');
+$w->text('t<>&"\'');
+$w->endElement();
+$w->writeElement('empty');
+$w->writeElement('emptystr', '');
+$w->startElement('mixed');
+$w->text('before');
+$w->startElement('in');
+$w->endElement();
+$w->text('after');
+$w->endElement();
+$w->startElement('cd');
+$w->writeCdata('x]]>y');
+$w->endElement();
+$w->writeComment(' c ');
+$w->startElement('nested');
+$w->startElement('deep');
+$w->writeAttribute('k', 'v');
+$w->endElement();
+$w->fullEndElement();
+$w->startElementNs('p', 'nsel', 'urn:p');
+$w->writeAttributeNs('q', 'at', 'urn:q', 'v');
+$w->endElement();
+$w->writePi('pi', 'data');
+$w->endElement();
+$w->endDocument();
+var_dump($w->outputMemory());
+}
+$w = xmlwriter_open_memory();
+xmlwriter_set_indent($w, true);
+xmlwriter_set_indent_string($w, "\t");
+xmlwriter_start_element($w, 'a');
+xmlwriter_start_element($w, 'b');
+xmlwriter_text($w, 'x');
+xmlwriter_end_element($w);
+xmlwriter_end_element($w);
+echo xmlwriter_output_memory($w);
+var_dump($w->endElement(), $w->flush());
+$f = tempnam(sys_get_temp_dir(), 'xw');
+$w = new XMLWriter(); var_dump($w->openUri($f)); $w->startDocument(); $w->writeElement('z', 'q'); $w->endDocument(); var_dump($w->flush()); unset($w);
+echo file_get_contents($f); unlink($f);
+$w = new XMLWriter(); $w->openMemory(); $w->startDocument('1.0', 'UTF-8', 'yes'); $w->startElement('x'); var_dump($w->outputMemory(false)); $w->endDocument(); echo $w->outputMemory();
+$w = new XMLWriter(); $w->openMemory(); $w->setIndent(true); $w->startElement('t'); $w->writeAttribute('a','1'); $w->startElement('u'); $w->writeCdata('c'); $w->endElement(); $w->startElement('v'); $w->text('x'); $w->startElement('w'); $w->endElement(); $w->endElement(); $w->endElement(); echo $w->outputMemory();

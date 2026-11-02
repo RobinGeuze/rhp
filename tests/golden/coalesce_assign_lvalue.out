@@ -1,0 +1,72 @@
+int(1)
+f() called
+int(2)
+int(2)
+string(5) "fresh"
+array(1) {
+  ["x"]=>
+  int(1)
+}
+array(1) {
+  ["a"]=>
+  array(1) {
+    ["b"]=>
+    int(3)
+  }
+}
+int(100)
+int(100)
+int(2)
+array(2) {
+  [0]=>
+  string(1) "x"
+  [1]=>
+  string(1) "y"
+}
+key_of(a)
+key_of(a)
+array(1) {
+  ["a"]=>
+  int(1)
+}
+object(stdClass)#1 (4) {
+  ["p"]=>
+  int(5)
+  ["q"]=>
+  array(1) {
+    ["r"]=>
+    string(4) "deep"
+  }
+  ["dyn"]=>
+  string(1) "D"
+  ["dyn2"]=>
+  string(2) "D2"
+}
+int(7)
+array(1) {
+  ["q"]=>
+  int(4)
+}
+offsetExists(has)
+offsetGet(has)
+offsetExists(no)
+offsetSet(no)
+offsetExists(nul)
+offsetGet(nul)
+offsetSet(nul)
+array(3) {
+  ["has"]=>
+  int(1)
+  ["nul"]=>
+  int(7)
+  ["no"]=>
+  int(6)
+}
+__isset(hidden)
+__set(hidden)
+__isset(absent)
+__set(absent)
+__isset(set)
+__get(set)
+string(1) "S"
+string(1) "t"

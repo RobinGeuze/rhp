@@ -1,0 +1,50 @@
+m(10,20) []
+f(10,20) [30]
+m(10,20) []
+m(1,2) []
+f(2,1) []
+f(x,y) []
+Error: Keys must be of type int|string during argument unpacking
+Error: Cannot use positional argument after named argument during unpacking
+Error: Named parameter $a overwrites previous argument
+TypeError: Only arrays and Traversables can be unpacked, int given
+TypeError: Only arrays and Traversables can be unpacked, null given
+TypeError: Only arrays and Traversables can be unpacked, stdClass given
+TypeError: Only arrays and Traversables can be unpacked, stdClass given
+Error: Keys must be of type int|string during array unpacking
+array(5) {
+  ["a"]=>
+  int(1)
+  [0]=>
+  int(2)
+  [1]=>
+  int(3)
+  ["x"]=>
+  int(9)
+  [2]=>
+  int(4)
+}
+array(2) {
+  [0]=>
+  int(7)
+  [1]=>
+  int(8)
+}
+f(7,8) []
+f(7,8) []
+inst C2
+inst C2
+inst C2
+inst C3
+inst C3
+Error: Non-static method C2::inst() cannot be called statically
+Error: Non-static method C2::inst() cannot be called statically
+Error: Non-static method C2::inst() cannot be called statically
+Error: Non-static method C2::inst() cannot be called statically
+closure(1,2) -
+closure(4,3) -
+closure(7,0) A
+closure(8,9) A
+closure(1,0) A
+Error: Method name must be a string
+Error: Method name must be a string

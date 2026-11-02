@@ -16,7 +16,7 @@
 //!   `apache_request_headers` / `apache_response_headers`.
 //!
 //! The SAPI name and its ini defaults are per thread (one engine per thread
-//! at a time, see [`set_sapi_name`]); everything else lives in the engine.
+//! at a time, see [`set_sapi`]); everything else lives in the engine.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -251,6 +251,9 @@ pub struct RequestInfo {
     /// The declared `Content-Length` (`post_max_size` is checked against
     /// it); `None`: the body's length.
     pub content_length: Option<i64>,
+    /// The `Authorization` header (php-cgi: `HTTP_AUTHORIZATION`), which
+    /// yields `PHP_AUTH_USER` / `PHP_AUTH_PW` / `PHP_AUTH_DIGEST`.
+    pub authorization: Option<Vec<u8>>,
     /// The request start time (`REQUEST_TIME_FLOAT`), seconds since the epoch.
     pub request_time: f64,
     /// Request headers for `getallheaders()` / `apache_request_headers()`.
@@ -1015,6 +1018,33 @@ pub fn cgi_request_headers(env: &[(Vec<u8>, Vec<u8>)]) -> Vec<(Vec<u8>, Vec<u8>)
         out.push((name, v.clone()));
     }
     out
+}
+
+/// `php_handle_auth_data`: the `$_SERVER` entries an `Authorization` header
+/// yields — `PHP_AUTH_USER` / `PHP_AUTH_PW` for `Basic` (loose base64, the
+/// password only when non-empty), `PHP_AUTH_DIGEST` for `Digest`.
+pub fn auth_server_vars(auth: &[u8]) -> Vec<(&'static [u8], Vec<u8>)> {
+    // php keeps C strings: everything stops at the first NUL.
+    fn cstr(s: &[u8]) -> Vec<u8> {
+        s.iter().take_while(|&&b| b != 0).copied().collect()
+    }
+    let has_prefix = |p: &[u8]| auth.len() >= p.len() && auth[..p.len()].eq_ignore_ascii_case(p);
+    if has_prefix(b"Basic ") {
+        if let Some(user) = crate::ext::hash::base64_decode(&auth[6..], false) {
+            if let Some(colon) = user.iter().position(|&b| b == b':') {
+                let mut out = vec![(&b"PHP_AUTH_USER"[..], cstr(&user[..colon]))];
+                let pass = cstr(&user[colon + 1..]);
+                if !pass.is_empty() {
+                    out.push((&b"PHP_AUTH_PW"[..], pass));
+                }
+                return out;
+            }
+        }
+    }
+    if has_prefix(b"Digest ") {
+        return vec![(&b"PHP_AUTH_DIGEST"[..], cstr(&auth[7..]))];
+    }
+    Vec::new()
 }
 
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {

@@ -842,6 +842,7 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
             .then(|| env.get("CONTENT_TYPE").unwrap_or_default()),
         body,
         content_length: Some(content_length),
+        authorization: from_env("HTTP_AUTHORIZATION"),
         request_time,
         argv,
         no_headers,

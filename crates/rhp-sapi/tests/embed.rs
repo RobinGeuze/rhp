@@ -139,3 +139,59 @@ fn post_bodies_over_post_max_size_are_not_parsed() {
         "body:array(0) {\n}\nstring(7) \"a=1&b=2\"\n"
     );
 }
+
+/// The body bytes, joined across `ub_write` calls.
+fn body(ev: &[String]) -> String {
+    ev.iter().filter_map(|e| e.strip_prefix("body:")).collect()
+}
+
+#[test]
+fn authorization_yields_php_auth_vars() {
+    let info = RequestInfo {
+        authorization: Some(b"Basic dXNlcjpwYXNz".to_vec()),
+        ..get()
+    };
+    let (ev, _) = run(
+        "echo $_SERVER['PHP_AUTH_USER'], ':', $_SERVER['PHP_AUTH_PW'];",
+        &[],
+        info,
+    );
+    assert_eq!(body(&ev), "user:pass");
+}
+
+/// The threading model: one engine per OS thread, several threads at once.
+/// Each worker builds its own (non-`Send`) SAPI; per-thread engine state
+/// (the SAPI name, ini, globals, constants, output) must not leak across
+/// threads or across the requests one thread runs in turn.
+#[test]
+fn concurrent_requests_on_worker_threads_are_isolated() {
+    let code = "function f() { static $n = 0; return ++$n; } \
+                $leak = ($leak ?? 0) + 1; \
+                if (!defined('K')) { define('K', $_GET['t']); } \
+                ini_set('precision', '3'); \
+                echo $_GET['t'], '/', $_GET['i'], ' ', f(), ' ', $leak, ' ', K, ' ', \
+                     ini_get('precision') === '3' ? 'p' : '?', ' ', php_sapi_name();";
+    let workers: Vec<_> = (0..4)
+        .map(|t| {
+            std::thread::spawn(move || {
+                let mut bodies = Vec::new();
+                for i in 0..20 {
+                    let info = RequestInfo {
+                        query_string: Some(format!("t={t}&i={i}").into_bytes()),
+                        ..get()
+                    };
+                    let (ev, o) = run(code, &[], info);
+                    assert_eq!(o, Outcome::Exit(0));
+                    bodies.push(body(&ev));
+                }
+                bodies
+            })
+        })
+        .collect();
+    for (t, w) in workers.into_iter().enumerate() {
+        let bodies = w.join().expect("worker panicked");
+        for (i, b) in bodies.iter().enumerate() {
+            assert_eq!(b, &format!("{t}/{i} 1 1 {t} p embed-test"));
+        }
+    }
+}

@@ -338,6 +338,9 @@ impl Vm {
             for (k, v) in &req.server {
                 import_env_var(&mut server, k, v);
             }
+            for (k, v) in sapi::auth_server_vars(req.authorization.as_deref().unwrap_or_default()) {
+                server.insert(ArrayKey::from_bytes(k), Value::str(v));
+            }
             server.insert(
                 ArrayKey::from_bytes(b"REQUEST_TIME_FLOAT"),
                 Value::Float(req.request_time),

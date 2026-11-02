@@ -13,6 +13,10 @@
 //! Provided SAPIs: [`CliSapi`] (php-cli: unbuffered stdout, no headers) and
 //! [`cgi::CgiSapi`] (php-cgi: `Status:` + headers + body on stdout);
 //! [`cgi::main`] is the `php-cgi` front end.
+//!
+//! The full contract (lifecycle, threading model, what is process-wide,
+//! the road to `-S` / server embedding / FastCGI) is in
+//! `docs/design/sapi.md`.
 
 use std::io::Write;
 

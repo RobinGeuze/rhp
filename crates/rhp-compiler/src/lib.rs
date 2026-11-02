@@ -1799,7 +1799,7 @@ class DateTime implements DateTimeInterface {
         }
         $r = __dt_parse((string)$datetime, $now[0], $now[1], $defoff);
         if (!$r[0]) {
-            throw new DateMalformedStringException("DateTime::__construct(): Failed to parse time string (".$datetime.")");
+            throw new DateMalformedStringException(isset($r[1]) ? "Failed to parse time string (".$datetime.")".$r[1] : "DateTime::__construct(): Failed to parse time string (".$datetime.")");
         }
         $this->ts = $r[1];
         $this->us = $r[2];
@@ -1845,7 +1845,7 @@ class DateTime implements DateTimeInterface {
     public function modify($modifier) {
         $r = __dt_modify($this->ts, $this->us, $this->off, (string)$modifier);
         if (!$r[0]) {
-            throw new DateMalformedStringException("DateTime::modify(): Failed to parse time string (".$modifier.")");
+            throw new DateMalformedStringException("DateTime::modify(): Failed to parse time string (".$modifier.")".($r[1] ?? ''));
         }
         $this->ts = $r[1];
         $this->us = $r[2];
@@ -1911,7 +1911,7 @@ class DateTimeImmutable implements DateTimeInterface {
         }
         $r = __dt_parse((string)$datetime, $now[0], $now[1], $defoff);
         if (!$r[0]) {
-            throw new DateMalformedStringException("DateTimeImmutable::__construct(): Failed to parse time string (".$datetime.")");
+            throw new DateMalformedStringException(isset($r[1]) ? "Failed to parse time string (".$datetime.")".$r[1] : "DateTimeImmutable::__construct(): Failed to parse time string (".$datetime.")");
         }
         $this->ts = $r[1];
         $this->us = $r[2];
@@ -1961,7 +1961,7 @@ class DateTimeImmutable implements DateTimeInterface {
     public function modify($modifier) {
         $r = __dt_modify($this->ts, $this->us, $this->off, (string)$modifier);
         if (!$r[0]) {
-            throw new DateMalformedStringException("DateTimeImmutable::modify(): Failed to parse time string (".$modifier.")");
+            throw new DateMalformedStringException("DateTimeImmutable::modify(): Failed to parse time string (".$modifier.")".($r[1] ?? ''));
         }
         $n = clone $this;
         $n->ts = $r[1];

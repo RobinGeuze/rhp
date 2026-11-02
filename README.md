@@ -13,17 +13,16 @@ register-based bytecode, and runs it on a VM.
 
 ## Design
 
-Two execution tiers over one shared, verified semantics layer:
+One execution core over one shared, verified semantics layer: an
+AST→bytecode compiler (`rhp-compiler`) emits a data-only register ISA
+(`rhp-bytecode`) that the **bytecode VM** (`rhp-vm`) runs. Operators
+(`rhp-semantics`) and builtins (`rhp-builtins`) are shared libraries, so each
+PHP rule is implemented once.
 
-- **Bytecode VM** (`rhp-vm`) — the primary core: an AST→bytecode compiler
-  (`rhp-compiler`) over a data-only register ISA (`rhp-bytecode`).
-- **Tree-walking oracle** (`rhp-oracle`) — a small interpreter kept purely as
-  a *differential* reference.
-
-Both run every fixture in `tests/golden/` and must match the output of the real
-`php` binary **byte-for-byte**. Because all operators and builtins are shared
-code (`rhp-semantics`, `rhp-builtins`), a VM≠oracle divergence can only be
-a compiler/VM bug — not a semantic one.
+The VM runs every fixture in `tests/golden/` and must match the output the real
+`php` binary recorded for it **byte-for-byte**. `rhp-difftest` also diffs rhp
+against a live `php` / `php-cgi` on the php-src `.phpt` corpus, fixture apps and
+extension sweeps.
 
 ### Crates
 
@@ -36,7 +35,6 @@ a compiler/VM bug — not a semantic one.
 | `rhp-bytecode` | the register ISA (data only) |
 | `rhp-compiler` | AST → bytecode; owns the structural refusals |
 | `rhp-vm` | the register VM |
-| `rhp-oracle` | tree-walking differential oracle |
 | `rhp-sapi` | the request layer: `run_request`, the `Sapi` trait a server implements, the CLI and CGI SAPIs |
 | `rhp-cli` | the `rhp` command: argv front end over `rhp-sapi` (`rhp script.php`, `-r`, `--cgi`) |
 | `rhp-difftest` | differential harnesses against php / php-cgi (php-src `.phpt`, fixture apps, extensions) |
@@ -57,9 +55,11 @@ request and engine values that stay thread-local (`Rc`, not `Send`). See
 
 ## Non-goals / refused by design
 
-`eval`, `extract`, `compact`, `create_function`, `include`/`require`, backticks,
-and the `(unset)` cast are **deliberately not implemented** — they are refused
-structurally at compile time, never silently mis-executed.
+`extract`, `compact`, `create_function`, backticks and the `(unset)` cast are
+**deliberately not implemented**. Backticks and the cast are refused at compile
+time, the functions when called; either way rhp stops with an `RHP_UNSUPPORTED`
+message naming the construct and its file and line, and never silently
+mis-executes. (`include`/`require` and `eval` are supported.)
 
 ## Build & test
 

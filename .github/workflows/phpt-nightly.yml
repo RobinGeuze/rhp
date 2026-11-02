@@ -46,12 +46,14 @@ jobs:
           ref: ${{ steps.ref.outputs.sha }}
           path: php-src
           persist-credentials: false
+          # The same trees as the per-PR ratchet (ci.yml's phpt job), so every
+          # test that passes here is one CI can check.
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /Zend/tests/
             /tests/
             /ext/*/tests/
-            /sapi/cgi/tests/
+            /sapi/*/tests/
       - uses: ./.github/actions/setup-php
         with:
           php-version: '8.5'
@@ -77,8 +79,9 @@ jobs:
         if: always()
         run: |
           strip() { grep -v '^#' "$1" | sort; }
-          # Only the trees the per-PR ratchet checks out are ratchet candidates.
-          strip out/passing-all.txt | grep -E '^(tests/|Zend/tests/|ext/standard/tests/)' > out/passing.txt || true
+          # The checkout is the per-PR ratchet's, so every passing test is a
+          # ratchet candidate, and every known-passing test ran tonight.
+          strip out/passing-all.txt > out/passing.txt
           strip tests/phpt/known-passing.txt > out/known.txt
           comm -13 out/known.txt out/passing.txt > out/newly-passing.txt
           comm -23 out/known.txt out/passing.txt > out/no-longer-passing.txt

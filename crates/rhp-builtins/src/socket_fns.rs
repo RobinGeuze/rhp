@@ -50,6 +50,9 @@ const STREAM_SERVER_LISTEN: i64 = 8;
 const STREAM_OOB: i64 = 1;
 const STREAM_PEEK: i64 = 2;
 
+/// The largest buffer `stream_socket_recvfrom` hands to one `recv`.
+const RECV_CAP: usize = 16 << 20;
+
 /// php's `PHP_TIMEOUT_ERROR_VALUE`.
 const TIMEOUT_ERR: i32 = libc::ETIMEDOUT;
 
@@ -229,6 +232,14 @@ fn getaddresses(
     name: &[u8],
     socktype: i32,
 ) -> Result<Vec<Addr>, (String, Result<(), Thrown>)> {
+    resolve(name, socktype).map_err(|msg| {
+        let w = crate::warn(host, fname, &msg);
+        (msg, w)
+    })
+}
+
+/// [`getaddresses`] without the warning: the error text on failure.
+fn resolve(name: &[u8], socktype: i32) -> Result<Vec<Addr>, String> {
     let cname = CString::new(name.to_vec()).unwrap_or_default();
     let v6_ok = unsafe {
         let s = libc::socket(libc::AF_INET6, libc::SOCK_DGRAM, 0);
@@ -261,8 +272,7 @@ fn getaddresses(
                 errno()
             )
         };
-        let w = crate::warn(host, fname, &msg);
-        return Err((msg, w));
+        return Err(msg);
     }
     let mut out = Vec::new();
     let mut p = res;
@@ -387,6 +397,14 @@ fn now() -> std::time::Instant {
     std::time::Instant::now()
 }
 
+/// The instant a timeout `tv` from now ends (`None` when it is beyond what
+/// the clock can represent: as good as forever).
+fn deadline((s, us): (i64, i64)) -> Option<std::time::Instant> {
+    let d = std::time::Duration::from_secs(s.max(0) as u64)
+        + std::time::Duration::from_micros(us.max(0) as u64);
+    now().checked_add(d)
+}
+
 /// php's `php_network_connect_socket`: a non-blocking `connect`, then (unless
 /// asynchronous) a poll for completion within `timeout` and `SO_ERROR`; the
 /// original blocking mode is restored for a synchronous connect.
@@ -405,8 +423,7 @@ fn connect_socket(fd: RawFd, addr: &Addr, asynchronous: bool, timeout: Tv) -> Re
             return Ok(true);
         }
         error = 0;
-        let limit = timeout
-            .map(|(s, us)| now() + std::time::Duration::from_micros((s * 1_000_000 + us) as u64));
+        let limit = timeout.and_then(deadline);
         let mut working = timeout;
         loop {
             let r = poll_fd(fd, libc::POLLIN | libc::POLLOUT, working);
@@ -557,10 +574,8 @@ fn xport_client(
     let mut bindto: Option<(Vec<u8>, i32)> = None;
     if let Some(b) = ctx_socket_opt(host, ctx, "bindto") {
         match b {
-            Value::Str(s) => match parse_ip_address(s.as_bytes()) {
-                Ok(v) => bindto = Some(v),
-                Err(t) => return Ok(fail(0, Some(t))),
-            },
+            // An unparsable address is dropped: php connects without binding.
+            Value::Str(s) => bindto = parse_ip_address(s.as_bytes()).ok(),
             _ => {
                 return Ok(fail(
                     0,
@@ -571,6 +586,8 @@ fn xport_client(
     }
     let nodelay = proto == Proto::Tcp
         && ctx_socket_opt(host, ctx, "tcp_nodelay").is_some_and(|v| conv::to_bool(&v));
+    let broadcast = proto == Proto::Udp
+        && ctx_socket_opt(host, ctx, "so_broadcast").is_some_and(|v| conv::to_bool(&v));
     let addrs = match getaddresses(host, fname, &hostname, proto.socktype()) {
         Ok(a) => a,
         Err((t, w)) => {
@@ -578,8 +595,7 @@ fn xport_client(
             return Ok(fail(0, Some(t)));
         }
     };
-    let limit = timeout
-        .map(|(s, us)| now() + std::time::Duration::from_micros((s * 1_000_000 + us) as u64));
+    let limit = timeout.and_then(deadline);
     let mut working = timeout;
     let mut last: (i32, Option<String>) = (0, None);
     for mut a in addrs {
@@ -590,14 +606,24 @@ fn xport_client(
         if fam == libc::AF_INET6 && bindto.as_ref().is_some_and(|(b, _)| !b.contains(&b':')) {
             continue;
         }
+        if fam == libc::AF_INET
+            && bindto
+                .as_ref()
+                .is_some_and(|(b, _)| b.contains(&b':') || b == b"0")
+        {
+            // An IPv4 socket cannot bind to an IPv6 address: php drops the
+            // bind address for this and every later attempt.
+            bindto = None;
+        }
         a.set_port(port as u16);
         let Some(fd) = new_socket(fam, proto.socktype()) else {
             continue;
         };
         if let Some((b, bport)) = &bindto {
-            if !(fam == libc::AF_INET && (b.contains(&b':') || b == b"0")) {
-                bind_local(host, fname, fd.as_raw_fd(), fam, b, *bport)?;
-            }
+            bind_local(host, fname, fd.as_raw_fd(), fam, b, *bport)?;
+        }
+        if broadcast {
+            setsockopt_int(fd.as_raw_fd(), libc::SOL_SOCKET, libc::SO_BROADCAST, 1);
         }
         if nodelay {
             setsockopt_int(fd.as_raw_fd(), libc::IPPROTO_TCP, libc::TCP_NODELAY, 1);
@@ -1120,40 +1146,68 @@ fn fn_stream_socket_pair(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     Ok(Value::Array(out))
 }
 
-/// php's `php_network_parse_network_address_with_port` (numeric hosts only).
-fn parse_network_address(s: &[u8]) -> Option<Addr> {
-    let text = String::from_utf8_lossy(s).into_owned();
-    let (h, p) = if let Some(rest) = text.strip_prefix('[') {
-        let end = rest.find(']')?;
-        let port = rest[end + 1..].strip_prefix(':')?;
-        (rest[..end].to_string(), port)
+/// php's `php_network_parse_network_address_with_port`: `[v6]:port` or
+/// `host:port` (split at the first colon); a numeric address first, else the
+/// first address the resolver gives (a resolver failure warns).
+fn parse_network_address(
+    host: &mut dyn Host,
+    fname: &str,
+    s: &[u8],
+) -> Result<Option<Addr>, Thrown> {
+    let (h, p): (&[u8], &[u8]) = if s.first() == Some(&b'[') {
+        let Some(end) = s[1..].iter().position(|&b| b == b']').map(|e| e + 1) else {
+            return Ok(None);
+        };
+        if s.get(end + 1) != Some(&b':') {
+            return Ok(None);
+        }
+        (&s[1..end], &s[end + 2..])
     } else {
-        let c = text.rfind(':')?;
-        (text[..c].to_string(), &text[c + 1..])
+        let Some(c) = s.iter().position(|&b| b == b':') else {
+            return Ok(None);
+        };
+        (&s[..c], &s[c + 1..])
     };
-    let port = atoi(p.as_bytes()) as u16;
+    // `estrndup` + C string calls: the host ends at its first NUL.
+    let h = &h[..h.iter().position(|&b| b == 0).unwrap_or(h.len())];
+    let port = atoi(p) as u16;
+    let text = String::from_utf8_lossy(h).into_owned();
     let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
-    if let Ok(v4) = h.parse::<std::net::Ipv4Addr>() {
-        let sin = unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in) };
-        sin.sin_family = libc::AF_INET as libc::sa_family_t;
-        sin.sin_port = port.to_be();
-        sin.sin_addr.s_addr = u32::from(v4).to_be();
-        return Some(Addr {
-            storage,
-            len: std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-        });
-    }
-    if let Ok(v6) = h.parse::<std::net::Ipv6Addr>() {
+    if let Ok(v6) = text.parse::<std::net::Ipv6Addr>() {
         let sin6 = unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6) };
         sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
         sin6.sin6_port = port.to_be();
         sin6.sin6_addr.s6_addr = v6.octets();
-        return Some(Addr {
+        return Ok(Some(Addr {
             storage,
             len: std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
-        });
+        }));
     }
-    None
+    if let Ok(v4) = text.parse::<std::net::Ipv4Addr>() {
+        let sin = unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in) };
+        sin.sin_family = libc::AF_INET as libc::sa_family_t;
+        sin.sin_port = port.to_be();
+        sin.sin_addr.s_addr = u32::from(v4).to_be();
+        return Ok(Some(Addr {
+            storage,
+            len: std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+        }));
+    }
+    match resolve(h, libc::SOCK_DGRAM) {
+        Ok(addrs) => Ok(addrs
+            .into_iter()
+            .find(|a| matches!(a.family(), libc::AF_INET | libc::AF_INET6))
+            .map(|mut a| {
+                a.set_port(port);
+                a
+            })),
+        Err(msg) => {
+            // php_network_getaddresses warns itself, then the caller again.
+            crate::warn(host, fname, &msg)?;
+            crate::warn(host, fname, &format!("Failed to resolve `{text}': {msg}"))?;
+            Ok(None)
+        }
+    }
 }
 
 fn fn_stream_socket_sendto(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1171,7 +1225,7 @@ fn fn_stream_socket_sendto(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     let addr = if target.is_empty() {
         None
     } else {
-        match parse_network_address(&target) {
+        match parse_network_address(host, fname, &target)? {
             Some(a) => Some(a),
             None => {
                 crate::warn(
@@ -1179,7 +1233,7 @@ fn fn_stream_socket_sendto(host: &mut dyn Host, args: &[Value]) -> Result<Value,
                     fname,
                     &format!(
                         "Failed to parse `{}' into a valid network address",
-                        String::from_utf8_lossy(&target)
+                        c_str(&target)
                     ),
                 )?;
                 return Ok(Value::Bool(false));
@@ -1240,7 +1294,10 @@ fn fn_stream_socket_recvfrom(host: &mut dyn Host, args: &[Value]) -> Result<Valu
     if flags & STREAM_PEEK != 0 {
         f |= libc::MSG_PEEK;
     }
-    let mut buf = vec![0u8; len as usize];
+    // php allocates `$length` bytes up front (a huge length exhausts its
+    // memory limit); one recv never returns more than a socket buffer, so a
+    // bounded buffer reads the same.
+    let mut buf = vec![0u8; (len as usize).min(RECV_CAP)];
     let mut sa: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
     let mut sl = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
     let r = unsafe {
@@ -1271,11 +1328,62 @@ fn fn_stream_socket_recvfrom(host: &mut dyn Host, args: &[Value]) -> Result<Valu
 }
 
 /// `stream_socket_enable_crypto`: TLS over socket streams is not
-/// implemented; a request to enable it fails.
+/// implemented; a request to enable it on a socket fails. Any other stream
+/// answers as php's does for a stream without the crypto API: a warning,
+/// then false for a setup (enable) and true for a disable.
 fn fn_stream_socket_enable_crypto(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "stream_socket_enable_crypto";
-    let _ = stream_arg(host, args, 0, fname, "stream")?;
-    Ok(Value::Bool(false))
+    let s = stream_arg(host, args, 0, fname, "stream")?;
+    let enable = match args.get(1).map(deref) {
+        Some(v @ (Value::Array(_) | Value::Object(_) | Value::Resource(_))) => {
+            return Err(Thrown::type_error(format!(
+                "{fname}(): Argument #2 ($enable) must be of type bool, {} given",
+                zpp_type_name(host, &v)
+            )))
+        }
+        Some(v) => conv::to_bool(&v),
+        None => false,
+    };
+    let method_null = match args.get(2).map(deref) {
+        None | Some(Value::Null) => true,
+        Some(_) => {
+            zpp_long(host, args, 2, fname, "crypto_method")?;
+            false
+        }
+    };
+    match args.get(3).map(deref) {
+        None | Some(Value::Null) => {}
+        Some(_) => {
+            crate::fs_fns::stream_param(host, args, 3, fname, "session_stream").map_err(|e| {
+                let v = args.get(3).map(deref).unwrap_or(Value::Null);
+                if matches!(v, Value::Resource(_)) {
+                    e
+                } else {
+                    Thrown::type_error(format!(
+                        "{fname}(): Argument #4 ($session_stream) must be of type resource or null, {} given",
+                        zpp_type_name(host, &v)
+                    ))
+                }
+            })?;
+        }
+    }
+    if enable && method_null {
+        return Err(Thrown::error(
+            "ValueError",
+            format!("{fname}(): Argument #3 ($crypto_method) must be specified when enabling encryption"),
+        ));
+    }
+    // tcp sockets carry openssl's ops in php (the "tcp" transport is
+    // openssl's); every other stream lacks the crypto API.
+    if host
+        .stream_sock_info(&s)
+        .is_some_and(|i| i.stream_type == "tcp_socket/ssl")
+    {
+        return Ok(Value::Bool(false));
+    }
+    crate::warn(host, fname, "This stream does not support SSL/crypto")?;
+    // A failed setup is false; the enable step's NOTIMPL (-2) reads as true.
+    Ok(Value::Bool(!enable))
 }
 
 fn fn_stream_set_timeout(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1323,6 +1431,17 @@ fn fn_stream_set_chunk_size(host: &mut dyn Host, args: &[Value]) -> Result<Value
         .map(|st| st.0.insert(id, size).unwrap_or(8192))
         .unwrap_or(8192);
     Ok(Value::Int(prev))
+}
+
+/// `stream_get_transports()`: the socket transports registered here (php
+/// with openssl also lists `ssl`, `tls`, `tlsv1.x`; TLS is not implemented,
+/// so those are left out rather than advertised and then refused).
+fn fn_stream_get_transports(_host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let mut a = PhpArray::new();
+    for t in ["tcp", "udp", "unix", "udg"] {
+        a.push(Value::str(t));
+    }
+    Ok(Value::Array(a))
 }
 
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
@@ -1401,6 +1520,13 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         Some(4),
     );
     put(m, "fsockopen", fn_fsockopen, 1, Some(5));
+    put(
+        m,
+        "stream_get_transports",
+        fn_stream_get_transports,
+        0,
+        Some(0),
+    );
     put(m, "pfsockopen", fn_pfsockopen, 1, Some(5));
     put(m, "stream_set_timeout", fn_stream_set_timeout, 2, Some(3));
     put(m, "socket_set_timeout", fn_stream_set_timeout, 2, Some(3));

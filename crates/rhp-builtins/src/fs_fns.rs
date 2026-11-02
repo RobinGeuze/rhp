@@ -1311,7 +1311,17 @@ fn fn_fread(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_fwrite(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (h, _) = stream_param(host, args, 0, "fwrite", "stream")?;
-    let mut data = str_arg(args, 1);
+    // Borrow a string argument rather than copying it: a large write to a
+    // non-blocking socket should reach send() as promptly as php's does.
+    let arg = args.get(1).map(deref).unwrap_or(Value::Null);
+    let owned;
+    let mut data: &[u8] = match &arg {
+        Value::Str(s) => s.as_bytes(),
+        v => {
+            owned = conv::to_string_bytes(v);
+            &owned
+        }
+    };
     match args.get(2).map(deref) {
         None | Some(Value::Null) => {}
         Some(v) => {
@@ -1320,7 +1330,7 @@ fn fn_fwrite(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 return Ok(Value::Int(0));
             }
             if (n as usize) < data.len() {
-                data.truncate(n as usize);
+                data = &data[..n as usize];
             }
         }
     }
@@ -1328,7 +1338,7 @@ fn fn_fwrite(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Int(0));
     }
     Ok(host
-        .stream_write(&h, &data)
+        .stream_write(&h, data)
         .map(|n| Value::Int(n as i64))
         .unwrap_or(Value::Bool(false)))
 }

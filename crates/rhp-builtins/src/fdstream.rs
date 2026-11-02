@@ -90,7 +90,11 @@ pub struct SendError {
 pub fn poll_fd(fd: RawFd, events: libc::c_short, timeout: Option<(i64, i64)>) -> i32 {
     let ms = match timeout {
         None => -1,
-        Some((s, us)) => (s.max(0) * 1000 + us.max(0) / 1000).min(i32::MAX as i64) as i32,
+        Some((s, us)) => s
+            .max(0)
+            .saturating_mul(1000)
+            .saturating_add(us.max(0) / 1000)
+            .min(i32::MAX as i64) as i32,
     };
     let mut p = libc::pollfd {
         fd,

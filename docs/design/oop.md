@@ -1,7 +1,8 @@
 # rhp OOP — authoritative build spec (phase 7, VM-only)
 
 Status: **build spec. Implement from this.** Target semantics: PHP 8.5 (ground
-truth: local `php` 8.5.8; every behavior below was probed against it). This is
+truth: the reference `php`, see `crates/rhp-builtins/src/version.rs`; every behavior below was probed
+against it, originally 8.5.8). This is
 the single, non-contradictory synthesis of the four research docs
 ([`oop-ast.md`](./oop-ast.md), [`oop-model.md`](./oop-model.md),
 [`oop-isa.md`](./oop-isa.md), [`oop-prior-art.md`](./oop-prior-art.md)) and the

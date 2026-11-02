@@ -1,5 +1,5 @@
 //! php 8.5 token ids (ext/tokenizer/tokenizer_data.c / zend_language_parser.y),
-//! generated from `get_defined_constants(true)['tokenizer']` of php 8.5.8.
+//! generated from `get_defined_constants(true)['tokenizer']` of php 8.5.8 (unchanged in 8.5.12).
 #![allow(dead_code)]
 
 pub const T_LNUMBER: i64 = 260;

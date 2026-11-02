@@ -1,6 +1,7 @@
 # rhp differential-testing corpus
 
-Self-contained, single-file PHP scripts used to stress the VM against php 8.5.8.
+Self-contained, single-file PHP scripts used to stress the VM against the reference php
+(`crates/rhp-builtins/src/version.rs`).
 No file I/O, no include/require/eval, no superglobals. Each `*.php` is run under
 both the real `php` binary and the rhp VM and compared byte-for-byte.
 

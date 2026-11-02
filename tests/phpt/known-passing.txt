@@ -3019,6 +3019,7 @@ ext/pcre/tests/gh16189.phpt
 ext/pcre/tests/gh17122.phpt
 ext/pcre/tests/grep.phpt
 ext/pcre/tests/invalid_utf8.phpt
+ext/pcre/tests/marks.phpt
 ext/pcre/tests/match_flags.phpt
 ext/pcre/tests/match_flags2.phpt
 ext/pcre/tests/match_flags3.phpt

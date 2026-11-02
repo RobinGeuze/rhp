@@ -198,8 +198,8 @@ abstract class ReflectionFunctionAbstract implements Reflector {
     public function getDocComment(): string|false { return $this->__i['doc']; }
     public function getStartLine(): int|false { return $this->__i['start']; }
     public function getEndLine(): int|false { return $this->__i['end']; }
-    public function getExtension(): ?ReflectionExtension { return $this->__i['internal'] ? new ReflectionExtension('standard') : null; }
-    public function getExtensionName(): string|false { return $this->__i['internal'] ? 'standard' : false; }
+    public function getExtension(): ?ReflectionExtension { return $this->__i['ext'] === false ? null : new ReflectionExtension($this->__i['ext']); }
+    public function getExtensionName(): string|false { return $this->__i['ext']; }
     public function getFileName(): string|false { return $this->__i['file']; }
     public function getName(): string { return $this->__i['name']; }
     public function getNamespaceName(): string { return $this->__i['ns']; }
@@ -269,7 +269,7 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
             $cn = $c['name'];
         }
         $i = __reflect('fn', [$cn, $method]);
-        if ($i === null || ($i['vis'] === 4 && strcasecmp($i['class'], $cn) !== 0 && !__reflect('is_a', $i['class'], $cn))) {
+        if ($i === null) {
             throw new ReflectionException('Method ' . $cn . '::' . $method . '() does not exist');
         }
         $this->__i = $i;
@@ -417,13 +417,10 @@ class ReflectionClass implements Reflector {
     public function getDocComment(): string|false { return $this->__c['doc']; }
     public function getConstructor(): ?ReflectionMethod { return $this->hasMethod('__construct') ? new ReflectionMethod($this->name, '__construct') : null; }
     public function hasMethod(string $name): bool {
-        $l = strtolower($name);
-        foreach (__reflect('methods', $this->name) as $m) { if (strtolower($m[0]) === $l) { return true; } }
-        return false;
+        return __reflect('fn', [$this->name, $name]) !== null;
     }
     public function getMethod(string $name): ReflectionMethod {
-        $l = strtolower($name);
-        foreach (__reflect('methods', $this->name) as $m) { if (strtolower($m[0]) === $l) { return new ReflectionMethod($this->name, $m[0]); } }
+        if (__reflect('fn', [$this->name, $name]) !== null) { return new ReflectionMethod($this->__o ?? $this->name, $name); }
         throw new ReflectionException('Method ' . $this->name . '::' . $name . '() does not exist');
     }
     public function getMethods(?int $filter = null): array {
@@ -681,7 +678,13 @@ class ReflectionProperty implements Reflector {
     public function getSettableType(): ?ReflectionType { return Reflection::__type($this->__i['type']); }
     public function hasType(): bool { return $this->__i['type'] !== null; }
     public function hasDefaultValue(): bool { return $this->__i['hasDefault']; }
-    public function getDefaultValue(): mixed { return $this->__i['default']; }
+    public function getDefaultValue(): mixed {
+        if (!$this->__i['hasDefault']) {
+            __reflect('deprecated', 'ReflectionProperty::getDefaultValue() for a property without a default value is deprecated, use ReflectionProperty::hasDefaultValue() to check if the default value exists');
+            return null;
+        }
+        return $this->__i['default'];
+    }
     public function getAttributes(?string $name = null, int $flags = 0): array { return Reflection::__attrs($this->__i['attrs'], $name, $flags, 'ReflectionProperty'); }
     public function hasHooks(): bool { return false; }
     public function getHooks(): array { return []; }
@@ -792,7 +795,11 @@ final class ReflectionFiber {
 
 class ReflectionExtension implements Reflector {
     public string $name;
-    public function __construct(string $name) { $this->name = $name; }
+    public function __construct(string $name) {
+        if (!extension_loaded($name)) { throw new ReflectionException('Extension "' . $name . '" does not exist'); }
+        foreach (get_loaded_extensions() as $e) { if (strcasecmp($e, $name) === 0) { $name = $e; break; } }
+        $this->name = $name;
+    }
     public function getName(): string { return $this->name; }
     public function getVersion(): ?string { $v = phpversion($this->name); return $v === false ? null : $v; }
     public function info(): void {}

@@ -13,6 +13,15 @@ use rhp_values::{ArrayKey, ClassId, ClassKind, PhpArray, PhpStr, Thrown, Value, 
 use crate::classes::ResolvedMethod;
 use crate::{deref, Vm};
 
+/// The extension a built-in function / class belongs to (lowercase table).
+fn ext_lookup(table: &[(&str, &'static str)], name: &[u8]) -> Option<&'static str> {
+    let key = lc(name);
+    table
+        .binary_search_by(|(n, _)| n.as_bytes().cmp(&key[..]))
+        .ok()
+        .map(|i| table[i].1)
+}
+
 fn put(a: &mut PhpArray, k: &str, v: Value) {
     a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
 }
@@ -173,6 +182,12 @@ impl Vm {
                 let mut names: Vec<(Vec<u8>, ClassId)> = e
                     .constants
                     .iter()
+                    // A parent's private constants are not inherited.
+                    .filter(|(_, c)| {
+                        c.declaring_class == cid
+                            || !matches!(c.visibility, Visibility::Private)
+                            || e.traits.contains(&c.declaring_class)
+                    })
                     .map(|(k, c)| (k.clone(), c.declaring_class))
                     .collect();
                 // Own constants and enum cases in declaration order first.
@@ -466,6 +481,9 @@ impl Vm {
             return None;
         }
         let n = self.classes[cid as usize].name.as_bytes();
+        if let Some(x) = ext_lookup(crate::ext_names::CLASSES, n) {
+            return Some(x);
+        }
         Some(if n.starts_with(b"Reflect") {
             "Reflection"
         } else if n.starts_with(b"Date") {
@@ -674,6 +692,13 @@ impl Vm {
     /// static interleaved in declaration order), trait properties, then the
     /// parent's (minus redeclared names and the parent's privates).
     pub(crate) fn prop_order(&self, cid: ClassId) -> Vec<(PhpStr, ClassId, bool)> {
+        self.prop_order_ex(cid, false)
+    }
+
+    /// [`Vm::prop_order`]; `with_private` also keeps the ancestors' private
+    /// properties (php's `properties_info` holds them; `get_class_vars`
+    /// shows them to their declaring scope).
+    fn prop_order_ex(&self, cid: ClassId, with_private: bool) -> Vec<(PhpStr, ClassId, bool)> {
         let e = &self.classes[cid as usize];
         let mut out: Vec<(PhpStr, ClassId, bool)> = Vec::new();
         let own = own_props_ordered(&e.proto);
@@ -701,11 +726,11 @@ impl Vm {
             }
         }
         if let Some(p) = e.parent {
-            for (n, decl, st) in self.prop_order(p) {
+            for (n, decl, st) in self.prop_order_ex(p, with_private) {
                 if out.iter().any(|(x, _, _)| *x == n) {
                     continue;
                 }
-                if self.prop_vis(decl, &n, st) == Some(Visibility::Private) {
+                if !with_private && self.prop_vis(decl, &n, st) == Some(Visibility::Private) {
                     continue;
                 }
                 out.push((n, decl, st));
@@ -902,6 +927,12 @@ impl Vm {
             return Ok(Value::Null);
         };
         let decl = c.declaring_class;
+        if decl != cid
+            && matches!(c.visibility, Visibility::Private)
+            && !self.classes[cid as usize].traits.contains(&decl)
+        {
+            return Ok(Value::Null);
+        }
         let display = self.classes[cid as usize].name.as_bytes().to_vec();
         if c.init.is_some() {
             // Evaluate a pending constant expression (php's
@@ -972,7 +1003,7 @@ impl Vm {
     /// `getDefaultProperties()` (statics first) / `get_class_vars()`
     /// (`vars` = true: instance first, visibility-filtered by the caller).
     fn default_props(&self, cid: ClassId, vars: bool) -> Value {
-        let order = self.prop_order(cid);
+        let order = self.prop_order_ex(cid, vars);
         let scope = self.stack.last().and_then(|f| f.defining_class);
         let mut statics = PhpArray::new();
         let mut inst = PhpArray::new();
@@ -1163,6 +1194,14 @@ impl Vm {
                 };
                 let mname = rhp_values::conv::to_string_bytes(&v[1]);
                 match self.lookup_method(cid, &mname) {
+                    // An engine-internal helper of a prelude class is not a
+                    // user-visible method.
+                    Some(m)
+                        if self.is_internal_class(m.defining_class)
+                            && crate::is_engine_helper_name(m.proto.name.as_bytes()) =>
+                    {
+                        None
+                    }
                     Some(m) => Some(FnSubject::Method { class: cid, m }),
                     None => self
                         .enum_builtin_names(cid)
@@ -1254,6 +1293,12 @@ impl Vm {
         put(&mut a, "short", s(&short));
         put(&mut a, "ns", s(&ns));
         put(&mut a, "internal", Value::Bool(internal));
+        let ext = match sub {
+            _ if !internal => None,
+            FnSubject::Method { m, .. } => self.class_extension(m.defining_class),
+            _ => Some(ext_lookup(crate::ext_names::FUNCTIONS, &name).unwrap_or("standard")),
+        };
+        put(&mut a, "ext", ext.map_or(Value::Bool(false), |x| s(x.as_bytes())));
         if internal {
             put(&mut a, "file", Value::Bool(false));
             put(&mut a, "start", Value::Bool(false));
@@ -1535,6 +1580,7 @@ impl Vm {
     fn enum_builtin_info(&self, cid: ClassId, name: &'static str) -> Value {
         let cname = self.classes[cid as usize].name.clone();
         let mut a = PhpArray::new();
+        put(&mut a, "ext", s(b"Core"));
         put(&mut a, "name", s(name.as_bytes()));
         put(&mut a, "short", s(name.as_bytes()));
         put(&mut a, "ns", s(b""));
@@ -1592,6 +1638,13 @@ impl Vm {
     fn builtin_fn_info(&self, name: &'static str) -> Value {
         let b = rhp_builtins::registry().get(name);
         let mut a = PhpArray::new();
+        put(
+            &mut a,
+            "ext",
+            s(ext_lookup(crate::ext_names::FUNCTIONS, name.as_bytes())
+                .unwrap_or("standard")
+                .as_bytes()),
+        );
         put(&mut a, "name", s(name.as_bytes()));
         put(&mut a, "short", s(name.as_bytes()));
         put(&mut a, "ns", s(b""));

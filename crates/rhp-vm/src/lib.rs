@@ -308,6 +308,7 @@ struct GenState {
 
 mod classes;
 mod compare;
+mod ext_names;
 mod reflect;
 
 /// A function-static slot: (proto address, class it runs as, variable name).

@@ -275,9 +275,11 @@ thread_local! {
     static SAPI_NAME: RefCell<String> = RefCell::new(String::from("cli"));
     /// The SAPI's ini defaults (`sapi_module.ini_defaults`), by directive.
     static SAPI_INI: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
-    /// The multipart parser, when one is installed.
-    static MULTIPART: RefCell<Option<MultipartHandler>> = const { RefCell::new(None) };
 }
+
+/// The multipart parser, when one is installed (process-wide: every
+/// worker thread's requests use it).
+static MULTIPART: std::sync::RwLock<Option<MultipartHandler>> = std::sync::RwLock::new(None);
 
 /// Install the running engine's SAPI name and ini defaults (per thread: one
 /// engine per thread at a time). [`crate::reset_request_state`] goes back
@@ -293,14 +295,17 @@ pub fn set_sapi(name: &str, ini_defaults: &[(&str, &str)]) {
     });
 }
 
-/// Install the `multipart/form-data` body parser (see [`MultipartHandler`]).
+/// Install the `multipart/form-data` body parser (see [`MultipartHandler`]),
+/// for every thread.
 pub fn set_multipart_handler(h: Option<MultipartHandler>) {
-    MULTIPART.with(|m| *m.borrow_mut() = h);
+    if let Ok(mut m) = MULTIPART.write() {
+        *m = h;
+    }
 }
 
 /// The installed multipart parser.
 pub fn multipart_handler() -> Option<MultipartHandler> {
-    MULTIPART.with(|m| *m.borrow())
+    MULTIPART.read().ok().and_then(|m| *m)
 }
 
 /// The running engine's SAPI name.

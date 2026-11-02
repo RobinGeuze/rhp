@@ -4,7 +4,7 @@
 //! (tests/golden/{var_dump,print_r,var_export}_nested.out).
 
 use rhp_values::conv;
-use rhp_values::{fmt, ArrayKey, PhpStr, Value};
+use rhp_values::{fmt, ArrayKey, PhpStr, Thrown, Value};
 
 fn sp(n: usize, out: &mut Vec<u8>) {
     out.extend(std::iter::repeat_n(b' ', n));
@@ -32,14 +32,120 @@ fn mangled_props(host: &dyn crate::Host, h: &rhp_values::ObjectHandle) -> Vec<(P
         .collect()
 }
 
-/// php's `get_debug_info` view (`var_dump`, `print_r`): the properties, plus
-/// an ArrayObject / ArrayIterator's storage as its private `storage`.
-fn debug_props(host: &dyn crate::Host, h: &rhp_values::ObjectHandle) -> Vec<(PhpStr, Value)> {
+thread_local! {
+    /// `__debugInfo()` results for the objects of the value being dumped,
+    /// by object id (resolved up front by [`resolve_debug_info`], since the
+    /// formatters only see a `&dyn Host`).
+    static DEBUG_INFO: std::cell::RefCell<std::collections::HashMap<u32, rhp_values::PhpArray>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Call `__debugInfo()` on every object reachable from `v` whose class
+/// defines it (php's `get_debug_info` for `var_dump` / `print_r`), so the
+/// formatters print its array instead of the properties. The results stay
+/// installed until [`clear_debug_info`].
+pub fn resolve_debug_info(host: &mut dyn crate::Host, v: &Value) -> Result<(), Thrown> {
+    let mut seen_arrays = Vec::new();
+    let mut seen_objects = Vec::new();
+    resolve_debug_info_in(host, v, &mut seen_arrays, &mut seen_objects)
+}
+
+fn resolve_debug_info_in(
+    host: &mut dyn crate::Host,
+    v: &Value,
+    seen_arrays: &mut Vec<usize>,
+    seen_objects: &mut Vec<u32>,
+) -> Result<(), Thrown> {
+    match deref(v) {
+        Value::Array(a) => {
+            if seen_arrays.contains(&a.data_ptr()) {
+                return Ok(());
+            }
+            seen_arrays.push(a.data_ptr());
+            for (_, val) in a.iter() {
+                resolve_debug_info_in(host, val, seen_arrays, seen_objects)?;
+            }
+        }
+        Value::Object(h) => {
+            let (id, class) = {
+                let b = h.borrow();
+                (b.id, b.class)
+            };
+            if seen_objects.contains(&id) {
+                return Ok(());
+            }
+            seen_objects.push(id);
+            let children: Vec<Value> = if host.class_has_method(class, b"__debuginfo") {
+                let mut cb = rhp_values::PhpArray::new();
+                cb.push(Value::Object(h.clone()));
+                cb.push(Value::str("__debugInfo"));
+                let info = match deref(&host.call_callable(&Value::Array(cb), &[])?) {
+                    Value::Array(a) => a,
+                    Value::Null => {
+                        // php raises this mid-dump; rhp formats after
+                        // resolving, so it comes before the dump output.
+                        let cname = host.class_name(class).unwrap_or_default();
+                        host.emit_diagnostic(
+                            crate::E_DEPRECATED,
+                            &format!(
+                                "Returning null from {}::__debugInfo() is deprecated, return an empty array instead",
+                                String::from_utf8_lossy(&cname)
+                            ),
+                        )?;
+                        rhp_values::PhpArray::new()
+                    }
+                    _ => {
+                        return Err(Thrown::error("Error", "__debuginfo() must return an array"));
+                    }
+                };
+                let vals = info.iter().map(|(_, v)| v.clone()).collect();
+                DEBUG_INFO.with(|m| m.borrow_mut().insert(id, info));
+                vals
+            } else {
+                h.borrow()
+                    .properties
+                    .iter()
+                    .map(|(_, v)| v.clone())
+                    .collect()
+            };
+            for c in &children {
+                resolve_debug_info_in(host, c, seen_arrays, seen_objects)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Drop the `__debugInfo()` results installed by [`resolve_debug_info`].
+pub fn clear_debug_info() {
+    DEBUG_INFO.with(|m| m.borrow_mut().clear());
+}
+
+/// php's `get_debug_info` view (`var_dump`, `print_r`): a `__debugInfo()`
+/// result when the class defines one, else the properties, plus an
+/// ArrayObject / ArrayIterator's storage as its private `storage`.
+fn debug_props(host: &dyn crate::Host, h: &rhp_values::ObjectHandle) -> Vec<(ArrayKey, Value)> {
+    let id = h.borrow().id;
+    if let Some(info) = DEBUG_INFO.with(|m| m.borrow().get(&id).cloned()) {
+        return info.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    }
     let mut props = mangled_props(host, h);
     if let Some(st) = crate::spl_array_debug_storage(h) {
         props.push(st);
     }
     props
+        .into_iter()
+        .map(|(k, v)| (ArrayKey::Str(k), v))
+        .collect()
+}
+
+/// A debug-view key as raw bytes (an integer key as its digits).
+fn key_bytes(k: &ArrayKey) -> Vec<u8> {
+    match k {
+        ArrayKey::Int(n) => n.to_string().into_bytes(),
+        ArrayKey::Str(s) => s.as_bytes().to_vec(),
+    }
 }
 
 /// `var_dump` of one value at the given indentation (spaces). `host` supplies
@@ -135,7 +241,7 @@ fn var_dump_value(
                 // `enum(Name::Case)` — the case is the object's `name` property.
                 let case = props
                     .iter()
-                    .find(|(k, _)| k.as_bytes() == b"name")
+                    .find(|(k, _)| matches!(k, ArrayKey::Str(s) if s.as_bytes() == b"name"))
                     .map(|(_, v)| conv::to_string_bytes(v))
                     .unwrap_or_default();
                 out.extend_from_slice(format!("{amp}enum(").as_bytes());
@@ -158,7 +264,12 @@ fn var_dump_value(
                     )
                     .as_bytes(),
                 );
-                let uninit = host.uninit_props(h);
+                // A __debugInfo() view lists only its own entries.
+                let uninit = if DEBUG_INFO.with(|m| m.borrow().contains_key(&obj_id)) {
+                    Vec::new()
+                } else {
+                    host.uninit_props(h)
+                };
                 let mut next_uninit = 0usize;
                 let dump_uninit = |out: &mut Vec<u8>, upto: usize, next: &mut usize| {
                     while let Some((k, ty, pos)) = uninit.get(*next) {
@@ -188,6 +299,14 @@ fn var_dump_value(
                 for (i, (k, val)) in props.iter().enumerate() {
                     dump_uninit(out, i, &mut next_uninit);
                     sp(indent + 2, out);
+                    let k = match k {
+                        ArrayKey::Int(n) => {
+                            out.extend_from_slice(format!("[{n}]=>\n").as_bytes());
+                            var_dump_value(host, out, val, false, indent + 2, seen);
+                            continue;
+                        }
+                        ArrayKey::Str(s) => s,
+                    };
                     out.extend_from_slice(b"[\"");
                     let (name, owner) = unmangle_prop(k.as_bytes());
                     out.extend_from_slice(name);
@@ -276,7 +395,8 @@ fn print_r_value(
             let entries: Vec<(Vec<u8>, Value)> = debug_props(host, h)
                 .into_iter()
                 .map(|(k, v)| {
-                    let label = match unmangle_prop(k.as_bytes()) {
+                    let k = key_bytes(&k);
+                    let label = match unmangle_prop(&k) {
                         (name, None) => name.to_vec(),
                         (name, Some(b"*")) => [name, b":protected"].concat(),
                         (name, Some(class)) => [name, b":", class, b":private"].concat(),

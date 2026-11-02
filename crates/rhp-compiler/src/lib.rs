@@ -496,7 +496,11 @@ fn as_reference<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
 /// last slash.
 fn dirname(path: &[u8]) -> Vec<u8> {
     match path.iter().rposition(|&b| b == b'/') {
-        None => b".".to_vec(),
+        // php (zend_compile `__DIR__`): a "." directory — "Command line
+        // code", "Standard input code" — becomes the current directory.
+        None => std::env::current_dir()
+            .map(|d| d.into_os_string().into_encoded_bytes())
+            .unwrap_or_else(|_| b".".to_vec()),
         Some(0) => b"/".to_vec(),
         Some(i) => path[..i].to_vec(),
     }
@@ -2926,17 +2930,17 @@ impl ProtoBuilder {
             Construct::IncludeOnce(i) => self.scan_expr_vars(i.value),
             Construct::Require(i) => self.scan_expr_vars(i.value),
             Construct::RequireOnce(i) => self.scan_expr_vars(i.value),
+            Construct::Eval(e) => self.scan_expr_vars(e.value),
             Construct::Exit(e) => {
-                if let Some(args) = &e.arguments {
-                    self.scan_args(args);
+                if let Some(list) = &e.arguments {
+                    self.scan_args(list);
                 }
             }
-            Construct::Die(e) => {
-                if let Some(args) = &e.arguments {
-                    self.scan_args(args);
+            Construct::Die(d) => {
+                if let Some(list) = &d.arguments {
+                    self.scan_args(list);
                 }
             }
-            _ => {}
         }
     }
 
@@ -4757,6 +4761,8 @@ impl ProtoBuilder {
                     _ if matches!(
                         global_lc.as_deref().unwrap_or(&name_lc),
                         b"end" | b"reset" | b"next" | b"prev" | b"current" | b"key" | b"each"
+                    ) || rhp_bytecode::builtin_prefers_ref(
+                        global_lc.as_deref().unwrap_or(&name_lc),
                     ) =>
                     {
                         slots.push(ArgSlot::Value(self.compile_expr(p.value)?))
@@ -4773,14 +4779,10 @@ impl ProtoBuilder {
                     }
                 }
             } else {
-                let mut r = self.compile_expr(p.value)?;
                 // A variable's value is taken when its argument is evaluated
                 // (php's SEND_VAR), before later arguments can change it.
-                if (r as usize) < self.cv_map.len() && i + 1 < fc.argument_list.arguments.len() {
-                    let t = self.alloc_temp();
-                    self.emit(Instr::Mov { dst: t, src: r });
-                    r = t;
-                }
+                let r = self.compile_expr(p.value)?;
+                let r = self.snapshot_arg(&fc.argument_list, i, p.value, r);
                 slots.push(ArgSlot::Value(r));
             }
         }
@@ -5556,14 +5558,8 @@ impl ProtoBuilder {
                         continue;
                     }
                 }
-                let mut r = self.compile_expr(p.value)?;
-                // A variable's value is taken when its argument is evaluated
-                // (php's SEND_VAR), before later arguments can change it.
-                if (r as usize) < self.cv_map.len() && i + 1 < list.arguments.len() {
-                    let t = self.alloc_temp();
-                    self.emit(Instr::Mov { dst: t, src: r });
-                    r = t;
-                }
+                let r = self.compile_expr(p.value)?;
+                let r = self.snapshot_arg(list, i, p.value, r);
                 slots.push(Slot::Value(r));
             }
         }
@@ -5577,6 +5573,35 @@ impl ProtoBuilder {
             }
         }
         Ok((base, argc))
+    }
+
+    /// A by-value argument that is a plain variable compiles to the variable's
+    /// own register, which is only read when the argument window is filled
+    /// after every argument ran. Snapshot it into a temp now when a later
+    /// argument could change it (`f($m, g($m))` with a by-ref `g`): php
+    /// evaluates arguments strictly left to right.
+    fn snapshot_arg(
+        &mut self,
+        list: &rhp_frontend::cst::ArgumentList,
+        i: usize,
+        expr: &Expression,
+        r: Reg,
+    ) -> Reg {
+        let later_may_write = list.arguments.iter().skip(i + 1).any(|a| {
+            !matches!(
+                a,
+                Argument::Positional(q) if matches!(
+                    q.value,
+                    Expression::Literal(_) | Expression::Variable(Variable::Direct(_))
+                )
+            )
+        });
+        if !later_may_write || !matches!(expr, Expression::Variable(Variable::Direct(_))) {
+            return r;
+        }
+        let t = self.alloc_temp();
+        self.emit(Instr::Mov { dst: t, src: r });
+        t
     }
 
     /// The by-ref mask for a method/constructor name (empty if none).

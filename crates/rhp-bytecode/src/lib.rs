@@ -1197,6 +1197,15 @@ static SSCANF_REF_MASK: [bool; 64] = {
     m
 };
 
+/// By-ref mask with every position by reference (`array_multisort`).
+static ALL_REF_MASK: [bool; 64] = [true; 64];
+
+/// Builtins whose by-reference parameters are `ZEND_SEND_PREFER_REF`: a
+/// non-variable argument is passed by value instead of being an error.
+pub fn builtin_prefers_ref(name_lc: &[u8]) -> bool {
+    matches!(name_lc, b"array_multisort")
+}
+
 /// Per-parameter by-reference flags for builtins whose arguments are passed by
 /// reference (the array-mutating sort/stack family, and the `preg_*` out-params
 /// `&$matches` / `&$count`). The call site emits `MakeRef` for each flagged
@@ -1231,6 +1240,13 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         "preg_replace" | "preg_replace_callback" => &[false, false, false, false, true],
         // `preg_replace_callback_array($pattern, $subject, $limit, &$count)`.
         "preg_replace_callback_array" => &[false, false, false, true],
+        // `settype(&$var, $type)`.
+        "settype" => &[true],
+        // `getopt($short, $long, &$rest_index)`.
+        "getopt" => &[false, false, true],
+        // `array_multisort(&$array, &...$rest)`: every position prefers a
+        // reference (sort flags may be passed as plain values).
+        "array_multisort" => &ALL_REF_MASK,
         // `parse_str($string, &$result)`.
         "parse_str" => &[false, true],
         // Program execution: `&$pipes`, `&$output` / `&$result_code`.

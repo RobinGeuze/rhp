@@ -1052,22 +1052,8 @@ fn fn_random_int(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(rand_range(min, max)))
 }
 
-fn fn_mt_rand(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    if args.len() >= 2 {
-        let min = conv::to_int(&deref(&args[0]));
-        let max = conv::to_int(&deref(&args[1]));
-        Ok(Value::Int(rand_range(min, max)))
-    } else {
-        Ok(Value::Int(rand_range(0, 2147483647)))
-    }
-}
-
 fn fn_getrandmax(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(2147483647))
-}
-
-fn fn_noop_null(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Null)
 }
 
 fn fn_uniqid(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1436,12 +1422,8 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "assert", fn_assert, 1, Some(2));
     put(m, "random_bytes", fn_random_bytes, 1, Some(1));
     put(m, "random_int", fn_random_int, 2, Some(2));
-    put(m, "mt_rand", fn_mt_rand, 0, Some(2));
-    put(m, "rand", fn_mt_rand, 0, Some(2));
     put(m, "mt_getrandmax", fn_getrandmax, 0, Some(0));
     put(m, "getrandmax", fn_getrandmax, 0, Some(0));
-    put(m, "mt_srand", fn_noop_null, 0, Some(2));
-    put(m, "srand", fn_noop_null, 0, Some(2));
     put(m, "uniqid", fn_uniqid, 0, Some(2));
     put(m, "time", fn_time, 0, Some(0));
     put(m, "microtime", fn_microtime, 0, Some(1));

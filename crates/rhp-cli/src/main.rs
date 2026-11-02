@@ -22,6 +22,8 @@ use rhp_vm::{IncludeError, Vm};
 enum Script {
     File(String),
     Code(String),
+    /// No script file and no `-r`: the script is read from standard input.
+    Stdin,
 }
 
 fn usage() -> ExitCode {
@@ -35,6 +37,9 @@ fn main() -> ExitCode {
     // --- option parsing (php_cli.c's getopt subset) ---------------------------
     let mut i = 1;
     let mut script: Option<Script> = None;
+    // `--` ends option parsing; what follows are the script's arguments
+    // (php_cli.c then reads the script from stdin).
+    let mut dashdash = false;
     // `-d key[=value]` ini settings (`-n`: no php.ini, always the case here).
     let mut ini: Vec<(String, String)> = Vec::new();
     let mut add_ini = |kv: &str| {
@@ -46,6 +51,7 @@ fn main() -> ExitCode {
         match a {
             "--" => {
                 i += 1;
+                dashdash = true;
                 break;
             }
             "-n" | "-q" | "-H" | "-e" => i += 1,
@@ -98,11 +104,11 @@ fn main() -> ExitCode {
             s
         }
         None => match args.get(i) {
-            Some(p) => {
+            Some(p) if !dashdash => {
                 i += 1;
                 Script::File(p.clone())
             }
-            None => return usage(),
+            _ => Script::Stdin,
         },
     };
 
@@ -111,8 +117,10 @@ fn main() -> ExitCode {
         Script::File(path) => {
             let source = match std::fs::read(path) {
                 Ok(bytes) => bytes,
-                Err(e) => {
-                    eprintln!("rhp: cannot read {path}: {e}");
+                // php opens a directory fine and reads it as an empty script.
+                Err(_) if std::path::Path::new(path).is_dir() => Vec::new(),
+                Err(_) => {
+                    eprintln!("Could not open input file: {path}");
                     return ExitCode::from(1);
                 }
             };
@@ -121,6 +129,18 @@ fn main() -> ExitCode {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| path.clone());
             (file, source, path.clone())
+        }
+        Script::Stdin => {
+            let mut src = Vec::new();
+            if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut src) {
+                eprintln!("rhp: cannot read standard input: {e}");
+                return ExitCode::from(1);
+            }
+            (
+                "Standard input code".to_string(),
+                src,
+                "Standard input code".to_string(),
+            )
         }
         Script::Code(code) => {
             let mut src = b"<?php ".to_vec();

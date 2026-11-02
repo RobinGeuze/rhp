@@ -641,6 +641,21 @@ impl Host for Vm {
         self.main_script_path.clone()
     }
 
+    fn cli_argv(&self) -> Option<Vec<Vec<u8>>> {
+        Some(self.argv.clone())
+    }
+
+    fn executing_file(&self) -> Option<Vec<u8>> {
+        // The innermost user-code frame (prelude frames have no file).
+        self.stack
+            .iter()
+            .rev()
+            .map(|f| f.proto.debug.file.as_bytes())
+            .find(|f| !f.is_empty())
+            .map(|f| f.to_vec())
+            .or_else(|| self.main_script_path.clone())
+    }
+
     fn has_streams(&self) -> bool {
         true
     }
@@ -862,7 +877,13 @@ impl Host for Vm {
     fn stream_read(&mut self, res: &Value, len: i64) -> Option<Vec<u8>> {
         let id = res_id(res)?;
         match self.streams.get_mut(&id)? {
-            StreamState::Mem { buf, pos, eof, .. } => {
+            StreamState::Mem {
+                buf,
+                pos,
+                eof,
+                temp,
+                ..
+            } => {
                 let avail = buf.len().saturating_sub(*pos);
                 let take = if len < 0 {
                     avail
@@ -877,6 +898,12 @@ impl Host for Vm {
                 // A position past the end (fseek beyond EOF) reads nothing.
                 let out = buf.get(*pos..*pos + take).unwrap_or_default().to_vec();
                 *pos += take;
+                // php://temp is a buffered stream over a memory stream: the
+                // buffer fill drains the inner stream, so consuming the last
+                // byte already leaves the stream at eof.
+                if temp.is_some() && *pos >= buf.len() {
+                    *eof = true;
+                }
                 Some(out)
             }
             StreamState::File(f) => {
@@ -2336,7 +2363,18 @@ impl Vm {
         if self.pending_throw.is_some() {
             return; // php skips diagnostics while an exception is pending
         }
+        // A diagnostic prelude code silenced with `@` is engine plumbing (php's
+        // C implementation raises none): it only updates error_get_last().
+        // (`silence_stack` records the stack depth at each `@`.)
+        let prelude_silenced = self.silence > 0
+            && self.silence_stack.last().is_some_and(|&(depth, _)| {
+                depth
+                    .checked_sub(1)
+                    .and_then(|i| self.stack.get(i))
+                    .is_some_and(|f| is_prelude_proto(&f.proto))
+            });
         let handler = match self.error_handlers.last() {
+            _ if prelude_silenced => None,
             Some((h, mask)) if !matches!(h, Value::Null | Value::Bool(false)) => {
                 (mask & level != 0).then(|| h.clone())
             }
@@ -2445,7 +2483,8 @@ impl Vm {
             ArrayKey::from_bytes(b"SCRIPT_NAME"),
             Value::str(script.clone()),
         );
-        let script_fn = self.main_script_path.clone().unwrap_or(script.clone());
+        // `-r` code / a script read from stdin has no script file.
+        let script_fn = self.main_script_path.clone().unwrap_or_default();
         server.insert(
             ArrayKey::from_bytes(b"SCRIPT_FILENAME"),
             Value::str(script_fn),
@@ -3509,7 +3548,7 @@ impl Vm {
     /// `caller` is `Some(strict_types)` for a call from user code, `None` for
     /// a call made by a builtin (coercive, and the error has no call site).
     fn check_arg_types(
-        &self,
+        &mut self,
         proto: &FunctionProto,
         frame: &mut Frame,
         caller: Option<bool>,
@@ -3531,6 +3570,28 @@ impl Vm {
             match self.check_one(&cur, ty, strict, ctx) {
                 Ok(None) => {}
                 Ok(Some(coerced)) => frame.regs[p.cv as usize] = coerced,
+                // A prelude (built-in) function takes null for a scalar
+                // parameter like an internal one in coercive mode: deprecated,
+                // then coerced (zend_null_arg_deprecated).
+                Err(())
+                    if !strict
+                        && is_prelude_proto(proto)
+                        && matches!(deref(&cur), Value::Null)
+                        && prelude_null_coercion(ty).is_some() =>
+                {
+                    let (tname, zero) = prelude_null_coercion(ty).unwrap();
+                    let fname = self.func_display_name(proto, ctx);
+                    let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
+                        .into_owned();
+                    let msg = format!(
+                        "{fname}(): Passing null to parameter #{} (${pname}) of type {tname} is deprecated",
+                        i + 1
+                    );
+                    if let Err(t) = self.diag(8192, &msg) {
+                        return Err((i, t));
+                    }
+                    frame.regs[p.cv as usize] = zero;
+                }
                 Err(()) => {
                     let fname = self.func_display_name(proto, ctx);
                     let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
@@ -3538,7 +3599,10 @@ impl Vm {
                     // php appends the call site when the caller is user code (the
                     // new frame has not been pushed yet: the caller is the top);
                     // a callback invoked by a builtin (`caller == None`) has none.
+                    // Prelude (built-in PHP-source) functions report like
+                    // internal ones: no call site.
                     let site = caller
+                        .filter(|_| !is_prelude_proto(proto))
                         .and_then(|_| self.user_call_site())
                         .map(|(file, line)| {
                             format!(
@@ -3702,7 +3766,13 @@ impl Vm {
     fn stream_gets_impl(&mut self, res: &Value, max: Option<usize>) -> Option<Vec<u8>> {
         let id = res_id(res)?;
         match self.streams.get_mut(&id)? {
-            StreamState::Mem { buf, pos, eof, .. } => {
+            StreamState::Mem {
+                buf,
+                pos,
+                eof,
+                temp,
+                ..
+            } => {
                 if *pos >= buf.len() {
                     *eof = true;
                     return None;
@@ -3724,6 +3794,9 @@ impl Vm {
                 }
                 let line = buf[start..end].to_vec();
                 *pos = end;
+                if temp.is_some() && *pos >= buf.len() {
+                    *eof = true;
+                }
                 Some(line)
             }
             StreamState::File(f) => f.gets(max),
@@ -4927,6 +5000,14 @@ impl Vm {
                 break;
             }
             let f = &self.stack[i];
+            // A prelude class's `__`-prefixed helper is engine plumbing with
+            // no php counterpart: it never shows in a trace.
+            if f.include_kind.is_none()
+                && is_prelude_proto(&f.proto)
+                && is_engine_helper_name(f.proto.name.as_bytes())
+            {
+                continue;
+            }
             let mut e = PhpArray::new();
             if !self.is_internal_frame(i - 1) && !self.native_active_from(i - 1) {
                 e.insert(k(b"file"), file_of(i - 1));
@@ -5062,6 +5143,44 @@ impl Vm {
         Err(t)
     }
 
+    /// zend_std_get_constructor's visibility check for `new C` run by frame
+    /// `top`: "Call to private C::__construct() from global scope".
+    /// Engine-internal (prelude) code may construct anything.
+    fn check_ctor_access(&self, top: usize, cls: ClassId) -> Result<(), Thrown> {
+        let Some(m) = self.lookup_method(cls, b"__construct") else {
+            return Ok(());
+        };
+        if m.visibility == rhp_values::Visibility::Public
+            || is_prelude_proto(&self.stack[top].proto)
+        {
+            return Ok(());
+        }
+        let scope = self.stack[top].defining_class;
+        if self.check_access(scope, m.defining_class, m.visibility) {
+            return Ok(());
+        }
+        let v = if m.visibility == rhp_values::Visibility::Private {
+            "private"
+        } else {
+            "protected"
+        };
+        let from = match scope {
+            Some(c) => format!(
+                "scope {}",
+                String::from_utf8_lossy(self.class(c).name.as_bytes())
+            ),
+            None => "global scope".to_string(),
+        };
+        Err(Thrown::error(
+            "Error",
+            format!(
+                "Call to {v} {}::{}() from {from}",
+                String::from_utf8_lossy(self.class(m.defining_class).name.as_bytes()),
+                String::from_utf8_lossy(m.proto.name.as_bytes())
+            ),
+        ))
+    }
+
     /// "Too few arguments to function f(), N passed[ in F on line L] and
     /// {exactly|at least} M expected" (zend_missing_arg_error).
     fn arg_count_error(&self, proto: &FunctionProto, frame: &Frame, passed: usize) -> Thrown {
@@ -5073,6 +5192,22 @@ impl Vm {
             "at least"
         };
         let name = self.func_display_name(proto, frame.defining_class);
+        if is_prelude_proto(proto) {
+            // A built-in implemented in the PHP prelude reports like an
+            // internal function (zend_wrong_parameters_count_error).
+            let which = if proto.params.iter().any(|p| p.variadic) {
+                "at least"
+            } else {
+                which
+            };
+            return Thrown::error(
+                "ArgumentCountError",
+                format!(
+                    "{name}() expects {which} {required} argument{}, {passed} given",
+                    if required == 1 { "" } else { "s" }
+                ),
+            );
+        }
         let msg = match self.user_call_site() {
             Some((file, line)) => format!(
                 "Too few arguments to function {name}(), {passed} passed in {} on line {line} and {which} {required} expected",
@@ -5362,7 +5497,7 @@ impl Vm {
         }
     }
 
-    fn cursor_unset(&mut self, top: usize, steps: &[CursorStep]) {
+    fn cursor_unset(&mut self, top: usize, steps: &[CursorStep]) -> Result<(), Thrown> {
         // `unset($obj[$k])` on an ArrayAccess object -> offsetUnset.
         if steps.len() == 1 {
             if let (Some(h), Some(CursorStep::Key(k))) = (self.cursor_root_obj(top), steps.first())
@@ -5370,9 +5505,9 @@ impl Vm {
                 let cls = h.borrow().class;
                 if self.class_implements(cls, b"ArrayAccess") {
                     if let Some(m) = self.lookup_method(cls, b"offsetunset") {
-                        let _ = self.call_sync(&m, Some(h), cls, vec![k.clone()]);
+                        self.call_sync(&m, Some(h), cls, vec![k.clone()])?;
                     }
-                    return;
+                    return Ok(());
                 }
             }
         }
@@ -5389,6 +5524,7 @@ impl Vm {
                 unset_path(&mut rc.borrow_mut(), steps, &cx);
             }
         }
+        Ok(())
     }
 
     /// Where the variable `name` of frame `top` lives, for a variable-variable:
@@ -6146,8 +6282,9 @@ impl Vm {
                 }
                 Instr::UnsetLval => {
                     let steps = std::mem::take(&mut self.cursor_steps);
-                    self.cursor_unset(top, &steps);
+                    let r = self.cursor_unset(top, &steps);
                     self.cursor_release();
+                    r?;
                 }
                 Instr::IncDecLval { dst, pre, delta } => {
                     let steps = std::mem::take(&mut self.cursor_steps);
@@ -6538,6 +6675,7 @@ impl Vm {
                             "Cannot directly construct Directory, use dir() instead",
                         ));
                     }
+                    self.check_ctor_access(top, cls)?;
                     self.update_class_constants(cls)?;
                     let obj = self.new_object(cls);
                     self.reg_set(top, dst, Value::Object(obj.clone()));
@@ -6994,6 +7132,7 @@ impl Vm {
                             ),
                         ));
                     }
+                    self.check_ctor_access(top, cls)?;
                     self.update_class_constants(cls)?;
                     let obj = self.new_object(cls);
                     self.reg_set(top, dst, Value::Object(obj.clone()));
@@ -7060,12 +7199,19 @@ impl Vm {
                     match v {
                         Some(v) => {
                             let bare = cname.rsplit(|&c| c == b'\\').next().unwrap_or(&cname);
-                            if bare == b"E_STRICT" && self.constants.contains_key(&b"E_STRICT"[..])
-                            {
-                                self.diag(
-                                    8192,
+                            let deprecation = match bare {
+                                b"E_STRICT" => Some(
                                     "Constant E_STRICT is deprecated since 8.4, the error level was removed",
-                                )?;
+                                ),
+                                b"MT_RAND_PHP" => Some(
+                                    "Constant MT_RAND_PHP is deprecated since 8.3, as it uses a biased non-standard variant of Mt19937",
+                                ),
+                                _ => None,
+                            };
+                            if let Some(msg) = deprecation {
+                                if self.constants.contains_key(bare) {
+                                    self.diag(8192, msg)?;
+                                }
                             }
                             self.reg_set(top, dst, v);
                         }
@@ -10244,9 +10390,28 @@ fn type_lc(v: &Value) -> &'static str {
     }
 }
 
+/// The type name and zero value a null argument coerces to for a scalar
+/// parameter of an internal function, or `None` when the type accepts null
+/// or is not a single scalar (unions print in php's own order).
+fn prelude_null_coercion(ty: &rhp_bytecode::TypeHint) -> Option<(&'static str, Value)> {
+    use rhp_bytecode::TypeKind as K;
+    if ty.nullable || ty.intersection || ty.kinds.len() != 1 {
+        return None;
+    }
+    match ty.kinds[0] {
+        K::Int => Some(("int", Value::Int(0))),
+        K::Float => Some(("float", Value::Float(0.0))),
+        K::String => Some(("string", Value::str(""))),
+        K::Bool => Some(("bool", Value::Bool(false))),
+        _ => None,
+    }
+}
+
 /// Built-in PHP-source (prelude) code is compiled without a line map.
+/// It also carries no file name: a user function with an empty body has no
+/// line entries either, but it does have its file.
 fn is_prelude_proto(p: &FunctionProto) -> bool {
-    p.debug.lines.iter().all(|&(_, l)| l == 0)
+    p.debug.file.is_empty() && p.debug.lines.iter().all(|&(_, l)| l == 0)
 }
 
 impl Vm {

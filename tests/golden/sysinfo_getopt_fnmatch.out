@@ -1,0 +1,105 @@
+array(17) {
+  [0]=>
+  string(10) "ru_oublock"
+  [1]=>
+  string(10) "ru_inblock"
+  [2]=>
+  string(9) "ru_msgsnd"
+  [3]=>
+  string(9) "ru_msgrcv"
+  [4]=>
+  string(9) "ru_maxrss"
+  [5]=>
+  string(8) "ru_ixrss"
+  [6]=>
+  string(8) "ru_idrss"
+  [7]=>
+  string(9) "ru_minflt"
+  [8]=>
+  string(9) "ru_majflt"
+  [9]=>
+  string(11) "ru_nsignals"
+  [10]=>
+  string(8) "ru_nvcsw"
+  [11]=>
+  string(9) "ru_nivcsw"
+  [12]=>
+  string(8) "ru_nswap"
+  [13]=>
+  string(16) "ru_utime.tv_usec"
+  [14]=>
+  string(15) "ru_utime.tv_sec"
+  [15]=>
+  string(16) "ru_stime.tv_usec"
+  [16]=>
+  string(15) "ru_stime.tv_sec"
+}
+bool(true)
+bool(true)
+array(12) {
+  [0]=>
+  string(7) "running"
+  [1]=>
+  string(9) "protected"
+  [2]=>
+  string(4) "full"
+  [3]=>
+  string(4) "runs"
+  [4]=>
+  string(9) "collected"
+  [5]=>
+  string(9) "threshold"
+  [6]=>
+  string(11) "buffer_size"
+  [7]=>
+  string(5) "roots"
+  [8]=>
+  string(16) "application_time"
+  [9]=>
+  string(14) "collector_time"
+  [10]=>
+  string(15) "destructor_time"
+  [11]=>
+  string(9) "free_time"
+}
+int(0)
+int(0)
+int(10001)
+bool(false)
+bool(true)
+NULL
+bool(true)
+int(3)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+array(0) {
+}
+int(1)
+array(0) {
+}
+int(0)
+int(8192)
+int(100)
+stream_set_chunk_size(): Argument #2 ($size) must be greater than 0
+bool(true)
+int(4)
+int(16)
+"*.php" "a.php" 0 => true
+"*.php" "dir\/a.php" 0 => true
+"*.php" "dir\/a.php" 2 => false
+"a?c" "abc" 0 => true
+"a?c" "ac" 0 => false
+"[a-c]x" "bx" 0 => true
+"[!a-c]x" "dx" 0 => true
+"[!a-c]x" "ax" 0 => false
+"*" ".hidden" 4 => false
+"*" ".hidden" 0 => true
+"\\*" "*" 0 => true
+"\\*" "\\*" 1 => true
+"A*" "abc" 16 => true
+"A*" "abc" 0 => false
+"src\/*\/x" "src\/a\/x" 2 => true
+"" "" 0 => true

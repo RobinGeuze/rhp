@@ -578,6 +578,42 @@ fn write_ref(arg: Option<&Value>, value: Value) {
     }
 }
 
+/// php_pcre_match_impl's start offset: a negative one counts from the end
+/// (clamped to 0); one past the subject fails with PREG_INTERNAL_ERROR
+/// after `$matches` was reset to an empty array.
+fn start_offset(
+    f: &str,
+    subject: &[u8],
+    offset: i64,
+    matches: Option<&Value>,
+) -> Result<Option<usize>, Thrown> {
+    if offset == i64::MIN {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "{f}(): Argument #5 ($offset) must be greater than {}",
+                i64::MIN
+            ),
+        ));
+    }
+    let len = subject.len() as i64;
+    let start = if offset < 0 {
+        if offset.unsigned_abs() <= len as u64 {
+            len + offset
+        } else {
+            0
+        }
+    } else {
+        offset
+    };
+    if start > len {
+        write_ref(matches, Value::Array(PhpArray::new()));
+        set_last_error(PREG_INTERNAL_ERROR);
+        return Ok(None);
+    }
+    Ok(Some(start as usize))
+}
+
 // ---------------------------------------------------------------------------
 // preg_match
 // ---------------------------------------------------------------------------
@@ -588,7 +624,10 @@ fn fn_preg_match(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
     let subject = bytes_of(&args[1]);
     let flags = int_arg(args, 3, 0);
-    let offset = int_arg(args, 4, 0).max(0) as usize;
+    let Some(offset) = start_offset("preg_match", &subject, int_arg(args, 4, 0), args.get(2))?
+    else {
+        return Ok(Value::Bool(false));
+    };
     let offset_capture = flags & PREG_OFFSET_CAPTURE != 0;
     let unmatched_null = flags & PREG_UNMATCHED_AS_NULL != 0;
 
@@ -620,7 +659,10 @@ fn fn_preg_match_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     let set_order = flags_raw & PREG_SET_ORDER != 0;
     let offset_capture = flags_raw & PREG_OFFSET_CAPTURE != 0;
     let unmatched_null = flags_raw & PREG_UNMATCHED_AS_NULL != 0;
-    let offset = int_arg(args, 4, 0).max(0) as usize;
+    let Some(offset) = start_offset("preg_match_all", &subject, int_arg(args, 4, 0), args.get(2))?
+    else {
+        return Ok(Value::Bool(false));
+    };
     let names = re.names().to_vec();
     let ngroups = re.ncaptures() + 1;
 
@@ -645,11 +687,9 @@ fn fn_preg_match_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
         outer
     } else {
         // PATTERN_ORDER: one array per group (named group by name then index).
-        // All groups are included (no trailing trim). With zero matches, php
-        // emits only `[0 => []]`.
+        // All groups are included (no trailing trim), even with zero matches.
         let mut outer = PhpArray::new();
-        let groups = if count == 0 { 1 } else { ngroups };
-        for i in 0..groups {
+        for i in 0..ngroups {
             let mut col = PhpArray::new();
             for ov in &all {
                 col.push(group_value(ov, &subject, i, offset_capture, unmatched_null));

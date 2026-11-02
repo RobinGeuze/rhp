@@ -299,11 +299,15 @@ impl Vm {
             }
             b"included" => {
                 let mut out = PhpArray::new();
+                // The main script counts when it is a real file (not `-r`
+                // code or a script read from stdin).
                 let main = self.main_script_path.clone().or_else(|| {
-                    self.stack
-                        .first()
-                        .map(|f| f.proto.debug.file.as_bytes().to_vec())
-                        .filter(|f| !f.is_empty())
+                    let f = self.stack.first()?.proto.debug.file.as_bytes();
+                    std::path::Path::new(
+                        <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(f),
+                    )
+                    .is_file()
+                    .then(|| f.to_vec())
                 });
                 if let Some(m) = &main {
                     out.push(s(m));

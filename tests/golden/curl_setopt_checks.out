@@ -33,9 +33,9 @@ COOKIEFILE Str: true
 string(26) "http://example.invalid/str"
 HTTPHEADER: Object of class stdClass could not be converted to string
 bool(true)
-string(5) "Array"
+bool(false)
 bool(true)
-string(4) "12.5"
+bool(false)
 == SSL_VERIFYHOST
 bool(true)
 bool(true)
@@ -53,7 +53,7 @@ PORT           99999=false -1=false 0=true 80=true 65535=true 65536=false
 FOLLOWLOCATION 0=true 1=true 2=true 3=true 4=false -1=false
 BUFFERSIZE     -1=false 0=true 1024=true
 INFILESIZE     -2=false -1=true 0=true
-HTTPAUTH       0=true 1=true 8=false 4294967279=true 2147483648=false 16=true 4294967278=true
+HTTPAUTH       0=true 1=true 8=false 4294967023=true 2147483648=false 16=true 4294967022=true
 PROXYAUTH      8=false 9=true
 SOCKS5_AUTH    0=true 1=true 4=true 5=true 2=false -1=false
 NEW_FILE_PERMS 420=true 511=true 512=false -1=false
@@ -64,17 +64,17 @@ ALTSVC_CTRL    0=false 1=true
 SSL_FALSESTART 0=false 1=false
 PROTOCOLS_STR: 'nope'=false ''=false 'all'=true 'ALL'=true 'http'=true 'HTTP,https'=true 'http,,https'=true 'http,'=true 'all,http'=false 'http '=false 'rtmp'=false 'smb'=false 'file,ftp,sftp'=true
 REDIR_PROTOCOLS_STR: 'nope'=false ''=false 'all'=true 'ALL'=true 'http'=true 'HTTP,https'=true 'http,,https'=true 'http,'=true 'all,http'=false 'http '=false 'rtmp'=false 'smb'=false 'file,ftp,sftp'=true
-INTERFACE '' => false
+INTERFACE '' => true
 INTERFACE 'lo0' => true
 SSLENGINE '' => true
 SSLENGINE 'x' => false
 DNS_SERVERS '' => false
 DNS_SERVERS '1.1.1.1' => false
-TLSAUTH_TYPE 'SRP' => true
-TLSAUTH_TYPE 'srp' => true
+TLSAUTH_TYPE 'SRP' => false
+TLSAUTH_TYPE 'srp' => false
 TLSAUTH_TYPE 'x' => false
 TLSAUTH_TYPE '' => false
-PROXY_TLSAUTH_TYPE 'SRP' => true
+PROXY_TLSAUTH_TYPE 'SRP' => false
 PROXY_TLSAUTH_TYPE 'tls' => false
 bool(false)
 bool(false)

@@ -1,4 +1,4 @@
-//! The `curl` extension's constants, as php 8.5.8 defines them against the
+//! The `curl` extension's constants, as the reference php defines them against the
 //! libcurl it reports in `curl_version()` (generated from
 //! `get_defined_constants(true)['curl']`, in php's registration order).
 
@@ -250,8 +250,8 @@ pub(super) const CONSTANTS: &[(&str, i64)] = &[
     ("CURL_VERSION_SSL", 4),
     ("CURL_VERSION_SSPI", 2048),
     ("CURLOPT_HTTPAUTH", 107),
-    ("CURLAUTH_ANY", 4294967279),
-    ("CURLAUTH_ANYSAFE", 4294967278),
+    ("CURLAUTH_ANY", 4294967023),
+    ("CURLAUTH_ANYSAFE", 4294967022),
     ("CURLAUTH_BASIC", 1),
     ("CURLAUTH_DIGEST", 2),
     ("CURLAUTH_GSSNEGOTIATE", 4),

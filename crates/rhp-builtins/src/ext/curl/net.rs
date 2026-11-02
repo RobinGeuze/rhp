@@ -84,6 +84,8 @@ pub struct Spec {
 #[derive(Clone, Debug)]
 pub struct Info {
     pub effective_url: String,
+    /// libcurl fails CURLINFO_EFFECTIVE_URL (an unparsable URL, before a transfer).
+    pub no_effective_url: bool,
     pub content_type: Option<String>,
     pub http_code: i64,
     pub header_size: i64,
@@ -124,6 +126,7 @@ impl Info {
     pub fn fresh(url: &str, method: &str) -> Info {
         Info {
             effective_url: url.to_string(),
+            no_effective_url: false,
             content_type: None,
             http_code: 0,
             header_size: 0,

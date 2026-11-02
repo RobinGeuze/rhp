@@ -50,3 +50,17 @@ try {
     echo $e->getMessage(), "\n";
 }
 var_dump(isset($arr['x']));
+
+// Chains on temporaries / constants are always passed by value.
+class K {
+    const MAP = ['a' => 'const'];
+    public function make() { $o = new stdClass; $o->p = 'tmp'; return $o; }
+    public function show() {
+        $v = new V;
+        var_dump($v->byVal(self::MAP['a']));
+        var_dump($v->byVal($this->make()->p));
+        var_dump($v->byVal(['lit'][0]));
+        var_dump($v->byVal(K::MAP['a']));
+    }
+}
+(new K)->show();

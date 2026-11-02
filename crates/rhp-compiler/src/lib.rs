@@ -5718,8 +5718,7 @@ impl ProtoBuilder {
                         Expression::ArrayAccess(_)
                             | Expression::Access(Access::Property(_))
                             | Expression::Access(Access::StaticProperty(_))
-                    ) && !is_globals_var(p.value)
-                        && !lvalue_rooted_at_globals(p.value)
+                    ) && variable_rooted_lvalue(p.value)
                     {
                         let r = self.compile_func_arg(p.value, t, i as u16)?;
                         slots.push(Slot::Ref(r));
@@ -7042,14 +7041,16 @@ enum ArgRefTarget {
     Static(ClassRef, NIdx),
 }
 
-/// Whether an lvalue chain (`$GLOBALS['a']['b']`, `$GLOBALS['o']->p`) starts
-/// at `$GLOBALS`, which cannot be referenced.
-fn lvalue_rooted_at_globals(e: &Expression) -> bool {
+/// Whether `e` is a `$var[...]` / `$var->p` / `C::$p[...]` chain rooted at a
+/// variable other than `$GLOBALS` or at a static property: the arguments
+/// SEND_FUNC_ARG can bind by reference (a chain on a call result or other
+/// temporary is passed by value).
+fn variable_rooted_lvalue(e: &Expression) -> bool {
     match e {
-        Expression::ArrayAccess(a) => is_globals_var(a.array) || lvalue_rooted_at_globals(a.array),
-        Expression::Access(Access::Property(p)) => {
-            is_globals_var(p.object) || lvalue_rooted_at_globals(p.object)
-        }
+        Expression::Variable(Variable::Direct(_)) => !is_globals_var(e),
+        Expression::Access(Access::StaticProperty(_)) => true,
+        Expression::ArrayAccess(a) => variable_rooted_lvalue(a.array),
+        Expression::Access(Access::Property(p)) => variable_rooted_lvalue(p.object),
         _ => false,
     }
 }

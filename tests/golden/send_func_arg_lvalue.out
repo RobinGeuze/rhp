@@ -39,3 +39,7 @@ array(3) {
 int(1)
 Class "MissingClass" not found
 bool(false)
+string(5) "const"
+string(3) "tmp"
+string(3) "lit"
+string(5) "const"

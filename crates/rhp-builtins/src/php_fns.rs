@@ -45,6 +45,9 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     // XML family: reported so composer resolution passes for packages that
     // require ext-xml/ext-dom (symfony etc.). Runtime XML support is partial.
     "libxml",
+    // Built in but disabled (php's CLI default; the CGI harness runs php
+    // with opcache.enable=0): the functions exist and report "not started".
+    "Zend OPcache",
     "pcntl",
     "Phar",
     "posix",
@@ -67,6 +70,9 @@ pub(crate) fn loaded_extension_names() -> &'static [&'static str] {
 /// The loaded extension matching `name` case-insensitively (php's module
 /// lookup lowercases), if any.
 pub(crate) fn loaded_ext(name: &[u8]) -> Option<&'static str> {
+    if name.eq_ignore_ascii_case(b"cgi-fcgi") {
+        return crate::sapi::is_cgi().then_some("cgi-fcgi");
+    }
     LOADED_EXTS
         .iter()
         .copied()
@@ -100,6 +106,11 @@ fn fn_get_loaded_extensions(host: &mut dyn Host, args: &[Value]) -> Result<Value
         for e in LOADED_EXTS {
             a.push(Value::str(*e));
         }
+        if crate::sapi::is_cgi() {
+            a.push(Value::str("cgi-fcgi"));
+        }
+    } else {
+        a.push(Value::str("Zend OPcache"));
     }
     Ok(Value::Array(a))
 }
@@ -122,7 +133,7 @@ fn fn_phpversion(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_php_sapi_name(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str("cli"))
+    Ok(Value::str(crate::sapi::sapi_name()))
 }
 
 /// rhp has no php.ini, so this reports "no scanned files".

@@ -39,11 +39,20 @@ pub struct Interp<'a> {
     constants: HashMap<Vec<u8>, Value>,
     functions: HashMap<Vec<u8>, &'a Function<'a>>, // lowercase name -> declaration
     bc_scale: i64,
+    /// php-cli's response: headers are never stored; sent on first output.
+    response: builtins::sapi::Response,
 }
 
 impl Host for Interp<'_> {
     fn write_out(&mut self, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            self.response.sent = true;
+        }
         self.out.extend_from_slice(bytes);
+    }
+
+    fn response(&mut self) -> Option<&mut builtins::sapi::Response> {
+        Some(&mut self.response)
     }
 
     fn output_started(&self) -> bool {
@@ -75,6 +84,7 @@ impl<'a> Interp<'a> {
         }
         Interp {
             out: Vec::new(),
+            response: Default::default(),
             vars: HashMap::new(),
             constants,
             functions: HashMap::new(),

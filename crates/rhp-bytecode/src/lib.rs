@@ -1112,6 +1112,8 @@ pub fn builtin_ref_params(name_lc: &str) -> &'static [bool] {
         "preg_replace_callback_array" => &[false, false, false, true],
         // `parse_str($string, &$result)`.
         "parse_str" => &[false, true],
+        // `headers_sent(&$filename, &$line)`.
+        "headers_sent" => &[true, true],
         // Program execution: `&$pipes`, `&$output` / `&$result_code`.
         "proc_open" => &[false, false, true],
         "exec" => &[false, true, true],

@@ -28,7 +28,7 @@ fn url_encode_into(out: &mut Vec<u8>, s: &[u8], raw: bool) {
     }
 }
 
-fn url_encode(s: &[u8], raw: bool) -> Vec<u8> {
+pub(crate) fn url_encode(s: &[u8], raw: bool) -> Vec<u8> {
     let mut v = Vec::with_capacity(s.len());
     url_encode_into(&mut v, s, raw);
     v
@@ -209,7 +209,7 @@ fn hexv(b: u8) -> Option<u8> {
 }
 
 /// `php_url_decode`: `+` → space, `%XX` → byte, malformed escapes kept.
-fn url_decode(s: &[u8]) -> Vec<u8> {
+pub fn url_decode(s: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len());
     let mut i = 0;
     while i < s.len() {
@@ -273,6 +273,17 @@ fn descend<'a>(arr: &'a mut PhpArray, key: Option<&[u8]>) -> Option<&'a mut PhpA
 
 /// `php_register_variable_ex(var_name, val, array)`.
 fn register_variable(root: &mut PhpArray, var_name: &[u8], val: Vec<u8>) {
+    register_variable_ex(root, var_name, val, false)
+}
+
+/// [`register_variable`]; `cookie`: the target is `$_COOKIE`, where a
+/// duplicate top-level name keeps the first value (rfc2965 ordering).
+pub(crate) fn register_variable_ex(
+    root: &mut PhpArray,
+    var_name: &[u8],
+    val: Vec<u8>,
+    cookie: bool,
+) {
     // C string: the name stops at its first NUL.
     let var_name = match var_name.iter().position(|&b| b == 0) {
         Some(p) => &var_name[..p],
@@ -303,6 +314,9 @@ fn register_variable(root: &mut PhpArray, var_name: &[u8], val: Vec<u8>) {
         // plain var
         let index = &var[..var_len];
         if is_forbidden(index, var_name) {
+            return;
+        }
+        if cookie && root.get(&sym_key(index)).is_some() {
             return;
         }
         root.insert(sym_key(index), value);
@@ -421,6 +435,91 @@ fn fn_parse_str(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         *r.borrow_mut() = Value::Array(out);
     }
     Ok(Value::Null)
+}
+
+/// `php_raw_url_decode`: `%XX` → byte (no `+` → space).
+pub(crate) fn raw_url_decode(s: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len());
+    let mut i = 0;
+    while i < s.len() {
+        if s[i] == b'%' && i + 2 < s.len() {
+            if let (Some(h), Some(l)) = (hexv(s[i + 1]), hexv(s[i + 2])) {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(s[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Which request input `php_default_treat_data` parses.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TreatData {
+    /// The query string (`$_GET`) or an urlencoded body (`$_POST`):
+    /// split on any `arg_separator.input` byte, names and values
+    /// `php_url_decode`d.
+    Form,
+    /// The `Cookie` header (`$_COOKIE`): split on `;`, leading blanks
+    /// dropped from names, values raw-url-decoded, first duplicate wins.
+    Cookie,
+}
+
+/// `php_default_treat_data`: parse request input into a superglobal array.
+/// Returns the array and whether `max_input_vars` cut the input short.
+pub fn treat_data(
+    kind: TreatData,
+    data: &[u8],
+    separators: &[u8],
+    max_vars: i64,
+) -> (PhpArray, bool) {
+    let mut out = PhpArray::new();
+    let data = match data.iter().position(|&b| b == 0) {
+        Some(p) => &data[..p],
+        None => data,
+    };
+    let seps: &[u8] = match kind {
+        TreatData::Form => separators,
+        TreatData::Cookie => b";",
+    };
+    let mut count = 0i64;
+    for var in data.split(|b| seps.contains(b)).filter(|t| !t.is_empty()) {
+        let mut var = var;
+        if kind == TreatData::Cookie {
+            let lead = var
+                .iter()
+                .take_while(|&&b| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
+                .count();
+            var = &var[lead..];
+            if var.is_empty() || var[0] == b'=' {
+                continue;
+            }
+        }
+        let eq = var.iter().position(|&b| b == b'=');
+        count += 1;
+        if count > max_vars {
+            return (out, true);
+        }
+        let (name, val) = match eq {
+            Some(p) => {
+                let raw = &var[p + 1..];
+                let v = match kind {
+                    TreatData::Cookie => raw_url_decode(raw),
+                    TreatData::Form => url_decode(raw),
+                };
+                (&var[..p], v)
+            }
+            None => (var, Vec::new()),
+        };
+        let name = match kind {
+            TreatData::Cookie => name.to_vec(),
+            TreatData::Form => url_decode(name),
+        };
+        register_variable_ex(&mut out, &name, val, kind == TreatData::Cookie);
+    }
+    (out, false)
 }
 
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {

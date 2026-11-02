@@ -203,6 +203,8 @@ pub struct Vm {
     // Set when a reference to an object may have been dropped (a frame
     // returned, a variable holding an object was overwritten or unset).
     dtor_check: bool,
+    // Class ids below this are built-in (native or PHP-prelude) classes.
+    builtin_class_end: usize,
     // Checks requested since the last full scan of `destructibles` (scans of a
     // long list are rationed to keep the cost amortized).
     dtor_pending_checks: usize,
@@ -2253,6 +2255,7 @@ impl Vm {
             stdin_reader: None,
             destructibles: Vec::new(),
             dtor_check: false,
+            builtin_class_end: 0,
             dtor_pending_checks: 0,
             ctor_frames: Vec::new(),
             finished_main: None,
@@ -3979,6 +3982,7 @@ impl Vm {
         // classes (those whose dependencies are available); the rest, and
         // nested declarations, are declared when execution reaches them.
         self.install_classes(&prog.classes[..prog.num_prelude_classes])?;
+        self.builtin_class_end = self.classes.len();
         self.decl_classes.clear();
         let top = self.register_decl_classes(prog, 0);
         self.hoist_decl_classes(top)?;
@@ -4300,16 +4304,47 @@ impl Vm {
         if let Some(i) = self.cursor_string_step(top, steps) {
             return self.string_offset_write(top, steps, i, v);
         }
-        // `$obj[$k] = v` / `$obj[] = v` on an ArrayAccess object -> offsetSet.
-        if steps.len() == 1 {
-            if let (Some(h), Some(key)) = (self.cursor_root_obj(top), aa_key(&steps[0])) {
-                let cls = h.borrow().class;
-                if self.class_implements(cls, b"ArrayAccess") {
-                    let m = self.lookup_method(cls, b"offsetset").unwrap();
-                    self.call_sync(&m, Some(h), cls, vec![key, v])?;
-                    return Ok(());
-                }
+        // `$obj[$k] = v` / `$obj[] = v` on an ArrayAccess object -> offsetSet;
+        // `$obj[$k][...] = v` writes into what offsetGet returns (php's
+        // BP_VAR_W dim fetch on an object: a non-reference, non-object
+        // result is a temporary, with a notice).
+        if let Some((i, h)) = self.cursor_aa_split(top, steps) {
+            let cls = h.borrow().class;
+            let key = aa_key(&steps[i]).unwrap_or(Value::Null);
+            let rest = &steps[i + 1..];
+            if rest.is_empty() {
+                let m = self.lookup_method(cls, b"offsetset").unwrap();
+                self.call_sync(&m, Some(h), cls, vec![key, v])?;
+                return Ok(());
             }
+            let m = self.lookup_method(cls, b"offsetget").unwrap();
+            if (m.defining_class as usize) < self.builtin_class_end {
+                // An internal container (ArrayObject, SplFixedArray, ...)
+                // hands out its element itself: read it, write into it, and
+                // store it back.
+                let cur = deref(&self.call_sync(&m, Some(h.clone()), cls, vec![key.clone()])?);
+                let cell = Rc::new(RefCell::new(cur));
+                self.with_cursor_root(cell.clone(), |vm| vm.cursor_write(top, rest, v))?;
+                let new = cell.borrow().clone();
+                let set = self.lookup_method(cls, b"offsetset").unwrap();
+                self.call_sync(&set, Some(h), cls, vec![key, new])?;
+                return Ok(());
+            }
+            let got = self.call_sync(&m, Some(h), cls, vec![key])?;
+            let cell = match got {
+                Value::Ref(rc) => rc,
+                other => {
+                    if !matches!(other, Value::Object(_)) {
+                        let msg = format!(
+                            "Indirect modification of overloaded element of {} has no effect",
+                            String::from_utf8_lossy(self.class(cls).name.as_bytes())
+                        );
+                        self.diag(8, &msg)?;
+                    }
+                    Rc::new(RefCell::new(other))
+                }
+            };
+            return self.with_cursor_root(cell, |vm| vm.cursor_write(top, rest, v));
         }
         let cx = PropCtx {
             classes: &self.classes,
@@ -4347,6 +4382,32 @@ impl Vm {
         for (i, step) in steps.iter().enumerate() {
             match (&cur, step) {
                 (Value::Str(_), CursorStep::Key(_) | CursorStep::Append) => return Some(i),
+                (Value::Array(_), CursorStep::Key(_)) | (Value::Object(_), CursorStep::Prop(_)) => {
+                    cur = deref(&read_path(&cur, std::slice::from_ref(step), &cx));
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// The first cursor step that indexes (`[$k]` / `[]`) into an ArrayAccess
+    /// object, with that object, if the path reaches one.
+    fn cursor_aa_split(&self, top: usize, steps: &[CursorStep]) -> Option<(usize, ObjectHandle)> {
+        let cx = PropCtx {
+            classes: &self.classes,
+            scope: self.stack[top].defining_class,
+            called: self.stack[top].called_class,
+            false_conv: Default::default(),
+        };
+        let mut cur = deref(&self.cursor_root_value(top));
+        for (i, step) in steps.iter().enumerate() {
+            match (&cur, step) {
+                (Value::Object(h), CursorStep::Key(_) | CursorStep::Append) => {
+                    return self
+                        .class_implements(h.borrow().class, b"ArrayAccess")
+                        .then(|| (i, h.clone()));
+                }
                 (Value::Array(_), CursorStep::Key(_)) | (Value::Object(_), CursorStep::Prop(_)) => {
                     cur = deref(&read_path(&cur, std::slice::from_ref(step), &cx));
                 }
@@ -9862,14 +9923,22 @@ fn assign_path(
         // Descend into an object property (handle semantics: no COW).
         let handle = match slot {
             Value::Object(h) => h.clone(),
-            Value::Null => {
-                return Err(Thrown::error("Error", "Attempt to assign property on null"))
-            }
+            // zend_throw_non_object_error: the property itself is assigned;
+            // a write further down the path modifies it.
             other => {
+                let shown = match other {
+                    Value::Bool(true) => "true",
+                    Value::Bool(false) => "false",
+                    o => type_lc(o),
+                };
                 return Err(Thrown::error(
                     "Error",
-                    format!("Attempt to assign property on {}", type_lc(other)),
-                ))
+                    format!(
+                        "Attempt to {} property \"{}\" on {shown}",
+                        if rest.is_empty() { "assign" } else { "modify" },
+                        String::from_utf8_lossy(name.as_bytes())
+                    ),
+                ));
             }
         };
         let mut od = handle.borrow_mut();
@@ -10048,10 +10117,14 @@ fn is_prelude_proto(p: &FunctionProto) -> bool {
 impl Vm {
     /// Whether class `c` is a built-in class implemented in the PHP prelude.
     fn is_prelude_class(&self, c: ClassId) -> bool {
-        self.class(c)
-            .methods
-            .values()
-            .any(|m| m.defining_class == c && is_prelude_proto(&m.proto))
+        // A user class whose methods all lack a line map (empty bodies) is
+        // still a user class.
+        (c as usize) < self.builtin_class_end
+            && self
+                .class(c)
+                .methods
+                .values()
+                .any(|m| m.defining_class == c && is_prelude_proto(&m.proto))
     }
 
     /// Reading the absent (uninitialized) slot `key` of a typed property:

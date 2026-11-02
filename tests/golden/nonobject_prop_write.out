@@ -1,0 +1,10 @@
+Error: Attempt to modify property "y" on null
+Error: Attempt to modify property "y" on int
+Error: Attempt to modify property "p" on false
+Error: Attempt to modify property "p" on true
+Error: Attempt to modify property "p" on string
+Error: Attempt to modify property "p" on array
+Error: Attempt to assign property "deep" on int
+Error: Attempt to modify property "deep" on int
+Error: Attempt to modify property "p" on null
+Error: Attempt to assign property "p" on null

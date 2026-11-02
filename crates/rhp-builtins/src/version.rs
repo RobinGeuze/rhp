@@ -199,9 +199,13 @@ pub const ICU_VERSION: &str = "79.1";
 pub const ICU_DATA_VERSION: &str = "79.1";
 /// `ZipArchive::LIBZIP_VERSION`.
 pub const LIBZIP_VERSION: &str = libzip!();
-/// `LIBXML_VERSION`, `LIBXML_DOTTED_VERSION`.
+/// `LIBXML_VERSION`, `LIBXML_DOTTED_VERSION` (the libxml2 headers php was
+/// compiled against).
 pub const LIBXML_VERSION: i64 = 20913;
 pub const LIBXML_DOTTED_VERSION: &str = "2.9.13";
+/// `LIBXML_LOADED_VERSION`: the libxml2 php loads at run time
+/// (`xmlParserVersion`); on the reference it is the compiled-against one.
+pub const LIBXML_LOADED_VERSION: &str = "20913";
 /// `ICONV_VERSION`.
 pub const ICONV_VERSION: &str = "1.11";
 /// `MB_ONIGURUMA_VERSION`.

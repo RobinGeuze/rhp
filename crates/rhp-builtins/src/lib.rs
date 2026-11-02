@@ -1387,6 +1387,21 @@ mod registry_tests {
         dups.sort();
         assert!(dups.is_empty(), "duplicate builtins:\n{}", dups.join("\n"));
     }
+
+    /// Every constant has one definition. The engines load `constants()`
+    /// into a map, so a second definition silently overrides the first, and
+    /// a version bump made in one copy (version.rs) would not take effect.
+    #[test]
+    fn no_duplicate_constants() {
+        let mut seen = std::collections::HashSet::new();
+        let mut dups: Vec<&str> = constants()
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| !seen.insert(*name))
+            .collect();
+        dups.sort();
+        assert!(dups.is_empty(), "constants defined twice: {dups:?}");
+    }
 }
 
 /// Case-insensitive builtin lookup.
@@ -1521,27 +1536,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("DATE_RFC850", Value::str("l, d-M-y H:i:s T")),
         ("DATE_RFC1036", Value::str("D, d M y H:i:s O")),
         ("DATE_RFC1123", Value::str("D, d M Y H:i:s O")),
-        ("LIBXML_VERSION", Value::Int(version::LIBXML_VERSION)),
-        (
-            "LIBXML_DOTTED_VERSION",
-            Value::str(version::LIBXML_DOTTED_VERSION),
-        ),
-        ("LIBXML_COMPACT", Value::Int(65536)),
-        ("LIBXML_NOBLANKS", Value::Int(256)),
-        ("LIBXML_NOENT", Value::Int(2)),
-        ("LIBXML_NOERROR", Value::Int(32)),
-        ("LIBXML_NOWARNING", Value::Int(64)),
-        ("LIBXML_NONET", Value::Int(2048)),
-        ("LIBXML_PARSEHUGE", Value::Int(524288)),
-        ("LIBXML_DTDLOAD", Value::Int(4)),
-        ("LIBXML_DTDATTR", Value::Int(8)),
-        ("LIBXML_DTDVALID", Value::Int(16)),
-        ("LIBXML_HTML_NOIMPLIED", Value::Int(8192)),
-        ("LIBXML_HTML_NODEFDTD", Value::Int(4)),
-        ("LIBXML_ERR_NONE", Value::Int(0)),
-        ("LIBXML_ERR_WARNING", Value::Int(1)),
-        ("LIBXML_ERR_ERROR", Value::Int(2)),
-        ("LIBXML_ERR_FATAL", Value::Int(3)),
+        // LIBXML_* live with the libxml module (ext/libxml).
         ("FILE_USE_INCLUDE_PATH", Value::Int(1)),
         ("FILE_IGNORE_NEW_LINES", Value::Int(2)),
         ("FILE_SKIP_EMPTY_LINES", Value::Int(4)),
@@ -1549,9 +1544,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("FILE_NO_DEFAULT_CONTEXT", Value::Int(16)),
         ("FILE_TEXT", Value::Int(0)),
         ("FILE_BINARY", Value::Int(0)),
-        ("SEEK_SET", Value::Int(0)),
-        ("SEEK_CUR", Value::Int(1)),
-        ("SEEK_END", Value::Int(2)),
+        // SEEK_* come from fs_fns::constants().
         ("LOCK_SH", Value::Int(1)),
         ("LOCK_EX", Value::Int(2)),
         ("LOCK_UN", Value::Int(3)),

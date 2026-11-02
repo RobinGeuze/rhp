@@ -1099,9 +1099,22 @@ fn estimate_demerits(w: u32) -> u64 {
 /// weight after each string (strings are visited last to first). None of the
 /// supported encodings has a `check` hook.
 fn guess_encoding(strings: &[Vec<u8>], list: &[Enc]) -> Enc {
-    if list.len() == 1 || (strings.len() == 1 && strings[0].is_empty()) {
-        return list[0];
+    guess_encoding_ex(strings, list, false).unwrap_or(list[0])
+}
+
+/// `mb_guess_encoding_for_strings`: with `strict`, an encoding a string is
+/// invalid in drops out, and `None` means none is left.
+fn guess_encoding_ex(strings: &[Vec<u8>], list: &[Enc], strict: bool) -> Option<Enc> {
+    if list.len() == 1 {
+        if strict && strings.iter().any(|s| !is_valid(list[0], s)) {
+            return None;
+        }
+        return Some(list[0]);
     }
+    if strings.len() == 1 && strings[0].is_empty() {
+        return Some(list[0]);
+    }
+    let mut removed = vec![false; list.len()];
     let len = list.len();
     let mult: Vec<f32> = (0..len)
         .map(|i| (1.0 + (0.3 * i as f64) / len as f64) as f32)
@@ -1115,6 +1128,9 @@ fn guess_encoding(strings: &[Vec<u8>], list: &[Enc]) -> Enc {
                 &s[..]
             };
             for cp in decode(enc, bytes) {
+                if cp == ERR && strict {
+                    removed[i] = true;
+                }
                 demerits[i] += if cp == ERR {
                     1000
                 } else {
@@ -1129,13 +1145,13 @@ fn guess_encoding(strings: &[Vec<u8>], list: &[Enc]) -> Enc {
             };
         }
     }
-    let mut best = 0;
-    for i in 1..len {
-        if demerits[i] < demerits[best] {
-            best = i;
+    let mut best: Option<usize> = None;
+    for i in 0..len {
+        if !removed[i] && best.is_none_or(|b| demerits[i] < demerits[b]) {
+            best = Some(i);
         }
     }
-    list[best]
+    best.map(|b| list[b])
 }
 
 /// `mb_convert_variables($to_encoding, $from_encoding, &$var, &...$vars)`:
@@ -1425,14 +1441,102 @@ fn is_valid(enc: Enc, bytes: &[u8]) -> bool {
     }
 }
 
-fn fn_mb_check_encoding(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_mb_check_encoding(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // No value given: php returns true.
     let value = match args.first().map(deref) {
         None | Some(Value::Null) => return Ok(Value::Bool(true)),
-        Some(v) => conv::to_string_bytes(&v),
+        Some(v @ Value::Array(_)) => v,
+        Some(Value::Object(_) | Value::Closure(_) | Value::Resource(_)) => {
+            return Err(Thrown::type_error(format!(
+                "mb_check_encoding(): Argument #1 ($value) must be of type array|string|null, {} given",
+                crate::argparse::value_name(host, &deref(&args[0]))
+            )))
+        }
+        Some(v) => Value::str(conv::to_string_bytes(&v)),
     };
     let enc = arg_enc(args, 1, "mb_check_encoding", 2)?;
-    Ok(Value::Bool(is_valid(enc, &value)))
+    Ok(Value::Bool(check_encoding_value(
+        enc,
+        &value,
+        &mut Vec::new(),
+    )))
+}
+
+/// `php_mb_check_encoding_recursive`: string keys and values must be valid;
+/// nested arrays recurse; other scalars pass; anything else fails.
+fn check_encoding_value(enc: Enc, v: &Value, seen: &mut Vec<usize>) -> bool {
+    match deref(v) {
+        Value::Str(s) => is_valid(enc, s.as_bytes()),
+        Value::Array(a) => {
+            if seen.contains(&a.data_ptr()) {
+                return false;
+            }
+            seen.push(a.data_ptr());
+            let ok = a.iter().all(|(k, val)| {
+                (match k {
+                    rhp_values::ArrayKey::Str(s) => is_valid(enc, s.as_bytes()),
+                    rhp_values::ArrayKey::Int(_) => true,
+                }) && check_encoding_value(enc, val, seen)
+            });
+            seen.pop();
+            ok
+        }
+        Value::Int(_) | Value::Float(_) | Value::Null | Value::Bool(_) => true,
+        _ => false,
+    }
+}
+
+/// An encoding list argument (`"A,B"` string or array, `auto` expanding to
+/// the detect order): php's `php_mb_parse_encoding_list` /
+/// `php_mb_parse_encoding_array`. `arg` names the argument in errors.
+fn enc_list(f: &str, arg: &str, v: &Value) -> Result<Vec<Enc>, Thrown> {
+    let (names, is_array) = match &v {
+        Value::Array(a) => (a.iter().map(|(_, v)| bytes_of(v)).collect(), true),
+        v => (
+            conv::to_string_bytes(v)
+                .split(|&c| c == b',')
+                .map(|p| p.trim_ascii().to_vec())
+                .collect::<Vec<_>>(),
+            false,
+        ),
+    };
+    let mut list = Vec::new();
+    for n in &names {
+        if n.eq_ignore_ascii_case(b"auto") {
+            for e in [Enc::Ascii, Enc::Utf8] {
+                if !list.contains(&e) {
+                    list.push(e);
+                }
+            }
+            continue;
+        }
+        if n.is_empty() && !is_array && names.len() == 1 {
+            break;
+        }
+        match resolve_enc(n) {
+            Some(e) => {
+                if !list.contains(&e) {
+                    list.push(e)
+                }
+            }
+            None => {
+                return Err(Thrown::error(
+                    "ValueError",
+                    format!(
+                        "{f}(): {arg} contains invalid encoding \"{}\"",
+                        String::from_utf8_lossy(n)
+                    ),
+                ))
+            }
+        }
+    }
+    if list.is_empty() {
+        return Err(Thrown::error(
+            "ValueError",
+            format!("{f}(): {arg} must specify at least one encoding"),
+        ));
+    }
+    Ok(list)
 }
 
 /// `mb_convert_encoding(array|string $string, string $to, array|string|null $from)`.
@@ -1450,57 +1554,7 @@ fn fn_mb_convert_encoding(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
     })?;
     let from: Vec<Enc> = match args.get(2).map(deref) {
         None | Some(Value::Null) => vec![internal_enc()],
-        Some(v) => {
-            let (names, is_array) = match &v {
-                Value::Array(a) => (a.iter().map(|(_, v)| bytes_of(v)).collect(), true),
-                v => (
-                    conv::to_string_bytes(v)
-                        .split(|&c| c == b',')
-                        .map(|p| p.trim_ascii().to_vec())
-                        .collect::<Vec<_>>(),
-                    false,
-                ),
-            };
-            let mut list = Vec::new();
-            for n in &names {
-                if n.eq_ignore_ascii_case(b"auto") {
-                    for e in [Enc::Ascii, Enc::Utf8] {
-                        if !list.contains(&e) {
-                            list.push(e);
-                        }
-                    }
-                    continue;
-                }
-                if n.is_empty() && !is_array && names.len() == 1 {
-                    break;
-                }
-                match resolve_enc(n) {
-                    Some(e) => {
-                        if !list.contains(&e) {
-                            list.push(e)
-                        }
-                    }
-                    None => {
-                        return Err(Thrown::error(
-                            "ValueError",
-                            format!(
-                            "{f}(): Argument #3 ($from_encoding) contains invalid encoding \"{}\"",
-                            String::from_utf8_lossy(n)
-                        ),
-                        ))
-                    }
-                }
-            }
-            if list.is_empty() {
-                return Err(Thrown::error(
-                    "ValueError",
-                    format!(
-                        "{f}(): Argument #3 ($from_encoding) must specify at least one encoding"
-                    ),
-                ));
-            }
-            list
-        }
+        Some(v) => enc_list(f, "Argument #3 ($from_encoding)", &v)?,
     };
     let conv_one = |s: &[u8]| -> Vec<u8> {
         let enc = guess_encoding(&[s.to_vec()], &from);
@@ -1766,16 +1820,20 @@ fn fn_mb_encoding_aliases(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
 /// Pragmatic detector covering the common case: returns `"UTF-8"` for valid
 /// (non-ASCII-containing) UTF-8, `"ASCII"` for a 7-bit string, and `false` for
 /// bytes that are neither. The full php candidate-list machinery is not modelled.
-fn fn_mb_detect_encoding(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
-    if s.iter().all(|&b| b < 0x80) {
-        return Ok(Value::str("ASCII"));
-    }
-    if std::str::from_utf8(&s).is_ok() {
-        Ok(Value::str("UTF-8"))
-    } else {
-        Ok(Value::Bool(false))
-    }
+/// `mb_detect_encoding(string $string, array|string|null $encodings = null,
+/// bool $strict = false)`: php's demerit-scoring guess over the list
+/// (default: the detect order, ASCII then UTF-8).
+fn fn_mb_detect_encoding(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = crate::argparse::str_param(host, args, 0, "mb_detect_encoding", "string")?;
+    let list = match args.get(1).map(deref) {
+        None | Some(Value::Null) => vec![Enc::Ascii, Enc::Utf8],
+        Some(v) => enc_list("mb_detect_encoding", "Argument #2 ($encodings)", &v)?,
+    };
+    let strict = crate::argparse::bool_param(host, args, 2, "mb_detect_encoding", "strict", false)?;
+    Ok(match guess_encoding_ex(&[s], &list, strict) {
+        Some(e) => Value::str(enc_name(e)),
+        None => Value::Bool(false),
+    })
 }
 
 // ---------------------------------------------------------------------------

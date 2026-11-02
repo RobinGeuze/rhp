@@ -910,11 +910,11 @@ pub fn constants() -> Vec<(&'static str, Value)> {
 /// is identical to php's streaming state machines).
 pub const PRELUDE_PHP: &str = r#"
 final class HashContext {
-    public readonly string $algo;
-    private $__d = ''; private $__k = null; private $__done = false;
+    private $__algo = ''; private $__d = ''; private $__k = null; private $__done = false;
     private function __construct() {}
+    public function __debugInfo(): array { return ['algo' => $this->__algo]; }
     public static function __make(string $algo, $key): HashContext {
-        $c = new HashContext(); $c->algo = $algo; $c->__k = $key; return $c;
+        $c = new HashContext(); $c->__algo = $algo; $c->__k = $key; return $c;
     }
     public static function __feed(HashContext $c, string $fn, string $data): void {
         if ($c->__done) { throw new TypeError("$fn(): Argument #1 (\$context) must be a valid, non-finalized HashContext"); }
@@ -923,13 +923,13 @@ final class HashContext {
     public static function __final(HashContext $c, bool $binary): string {
         if ($c->__done) { throw new TypeError("hash_final(): Argument #1 (\$context) must be a valid, non-finalized HashContext"); }
         $c->__done = true;
-        $r = $c->__k === null ? hash($c->algo, $c->__d, $binary) : hash_hmac($c->algo, $c->__d, $c->__k, $binary);
+        $r = $c->__k === null ? hash($c->__algo, $c->__d, $binary) : hash_hmac($c->__algo, $c->__d, $c->__k, $binary);
         $c->__d = '';
         return $r;
     }
     public static function __copy(HashContext $c): HashContext {
         if ($c->__done) { throw new TypeError("hash_copy(): Argument #1 (\$context) must be a valid, non-finalized HashContext"); }
-        $n = HashContext::__make($c->algo, $c->__k); $n->__d = $c->__d; return $n;
+        $n = HashContext::__make($c->__algo, $c->__k); $n->__d = $c->__d; return $n;
     }
 }
 function hash_init(string $algo, int $flags = 0, string $key = "", array $options = []): HashContext {
@@ -960,7 +960,13 @@ function hash_update_stream(HashContext $context, $stream, int $length = -1): in
 }
 function hash_update_file(HashContext $context, string $filename, $stream_context = null): bool {
     $data = @file_get_contents($filename);
-    if ($data === false) { return false; }
+    if ($data === false) {
+        $e = error_get_last();
+        if ($e !== null && str_starts_with($e['message'], 'file_get_contents(')) {
+            __stdext_warning('hash_update_file(' . substr($e['message'], strlen('file_get_contents(')));
+        }
+        return false;
+    }
     HashContext::__feed($context, 'hash_update_file', $data);
     return true;
 }

@@ -4031,7 +4031,9 @@ impl ProtoBuilder {
                     }
                 }
             } else {
-                slots.push(ArgSlot::Value(self.compile_expr(p.value)?));
+                let r = self.compile_expr(p.value)?;
+                let r = self.snapshot_arg(&fc.argument_list, i, p.value, r);
+                slots.push(ArgSlot::Value(r));
             }
         }
         let argc = slots.len() as u16;
@@ -4753,7 +4755,9 @@ impl ProtoBuilder {
                         continue;
                     }
                 }
-                slots.push(Slot::Value(self.compile_expr(p.value)?));
+                let r = self.compile_expr(p.value)?;
+                let r = self.snapshot_arg(list, i, p.value, r);
+                slots.push(Slot::Value(r));
             }
         }
         let argc = slots.len() as u16;
@@ -4766,6 +4770,35 @@ impl ProtoBuilder {
             }
         }
         Ok((base, argc))
+    }
+
+    /// A by-value argument that is a plain variable compiles to the variable's
+    /// own register, which is only read when the argument window is filled
+    /// after every argument ran. Snapshot it into a temp now when a later
+    /// argument could change it (`f($m, g($m))` with a by-ref `g`): php
+    /// evaluates arguments strictly left to right.
+    fn snapshot_arg(
+        &mut self,
+        list: &rhp_frontend::cst::ArgumentList,
+        i: usize,
+        expr: &Expression,
+        r: Reg,
+    ) -> Reg {
+        let later_may_write = list.arguments.iter().skip(i + 1).any(|a| {
+            !matches!(
+                a,
+                Argument::Positional(q) if matches!(
+                    q.value,
+                    Expression::Literal(_) | Expression::Variable(Variable::Direct(_))
+                )
+            )
+        });
+        if !later_may_write || !matches!(expr, Expression::Variable(Variable::Direct(_))) {
+            return r;
+        }
+        let t = self.alloc_temp();
+        self.emit(Instr::Mov { dst: t, src: r });
+        t
     }
 
     /// The by-ref mask for a method/constructor name (empty if none).

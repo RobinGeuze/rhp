@@ -236,6 +236,7 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
 }
 
 class SplDoublyLinkedList implements Iterator, Countable, ArrayAccess {
+    const IT_MODE_LIFO = 2; const IT_MODE_FIFO = 0; const IT_MODE_DELETE = 1; const IT_MODE_KEEP = 0;
     protected $__d = [];
     protected $__p = 0;
     protected $__lifo = false;
@@ -253,7 +254,12 @@ class SplDoublyLinkedList implements Iterator, Countable, ArrayAccess {
     public function offsetGet($i): mixed { return $this->__d[$i]; }
     public function offsetSet($i, $v): void { if ($i === null) { $this->__d[] = $v; } else { $this->__d[$i] = $v; } }
     public function offsetUnset($i): void { array_splice($this->__d, $i, 1); }
-    public function setIteratorMode($mode): void { $this->__lifo = (bool)($mode & 2); }
+    public function setIteratorMode($mode): void { $this->__lifo = (bool)($mode & 2); $this->__del = (bool)($mode & 1); }
+    protected $__del = false;
+    public function __debugInfo(): array {
+        $f = ($this->__lifo ? 2 : 0) | ($this->__del ? 1 : 0) | ($this instanceof SplQueue || $this instanceof SplStack ? 4 : 0);
+        return __spl_user_props($this) + ["\0SplDoublyLinkedList\0flags" => $f, "\0SplDoublyLinkedList\0dllist" => $this->__d];
+    }
     public function rewind(): void { $this->__p = $this->__lifo ? count($this->__d) - 1 : 0; }
     public function current(): mixed { return $this->__d[$this->__p] ?? null; }
     public function key(): mixed { return $this->__p; }
@@ -268,6 +274,17 @@ class SplQueue extends SplDoublyLinkedList {
 
 class SplStack extends SplDoublyLinkedList {
     public function __construct() { $this->__lifo = true; }
+}
+
+/* An object's own (non-engine) properties, mangled, for __debugInfo views. */
+function __spl_user_props(object $o): array {
+    $r = [];
+    foreach (get_mangled_object_vars($o) as $k => $v) {
+        $p = strrpos((string) $k, "\0");
+        $n = $p === false ? (string) $k : substr($k, $p + 1);
+        if (strncmp($n, '__', 2) !== 0) { $r[$k] = $v; }
+    }
+    return $r;
 }
 
 function iterator_to_array($iterator, $preserve_keys = true) {
@@ -321,31 +338,89 @@ final class WeakMap implements ArrayAccess, Countable, IteratorAggregate {
     }
 }
 
-class SplFixedArray implements ArrayAccess, Countable, Iterator {
+class SplFixedArray implements IteratorAggregate, ArrayAccess, Countable, JsonSerializable {
     private $__d = [];
     private $__size = 0;
-    private $__p = 0;
-    public function __construct($size = 0) { $this->__size = $size; for ($i = 0; $i < $size; $i++) { $this->__d[$i] = null; } }
+    public function __construct(int $size = 0) {
+        if ($size < 0) { throw new ValueError('SplFixedArray::__construct(): Argument #1 ($size) must be greater than or equal to 0'); }
+        $this->__size = $size; $this->__d = $size > 0 ? array_fill(0, $size, null) : [];
+    }
+    /* spl_offset_convert_to_ulong: an index as php converts it, or a TypeError. */
+    private static function __idx($i): int {
+        if (is_int($i)) { return $i; }
+        if (is_bool($i)) { return (int) $i; }
+        if (is_float($i)) {
+            if (!is_finite($i) || $i >= 9.2233720368547758E+18 || $i < -9.2233720368547758E+18) {
+                __stdext_warning('The float ' . var_export($i, true) . ' is not representable as an int, cast occurred');
+                return is_finite($i) ? (int) $i : 0;
+            }
+            if ($i != (int) $i) {
+                __stdext_deprecated('Implicit conversion from float ' . var_export($i, true) . ' to int loses precision');
+            }
+            return (int) $i;
+        }
+        if (is_string($i) && preg_match('/^(0|-?[1-9][0-9]*)$/D', $i) && (string) (int) $i === $i) { return (int) $i; }
+        if (is_resource($i)) { return (int) $i; }
+        throw new TypeError('Cannot access offset of type ' . get_debug_type($i) . ' on SplFixedArray');
+    }
     public function count(): int { return $this->__size; }
     public function getSize(): int { return $this->__size; }
-    public function setSize($size): void {
-        if ($size < $this->__size) { for ($i = $size; $i < $this->__size; $i++) { unset($this->__d[$i]); } }
-        else { for ($i = $this->__size; $i < $size; $i++) { $this->__d[$i] = null; } }
+    public function setSize(int $size): bool {
+        if ($size < 0) { throw new ValueError('SplFixedArray::setSize(): Argument #1 ($size) must be greater than or equal to 0'); }
+        if ($size < $this->__size) { $this->__d = array_slice($this->__d, 0, $size); }
+        elseif ($size > $this->__size) { $this->__d = array_merge($this->__d, array_fill(0, $size - $this->__size, null)); }
         $this->__size = $size;
+        return true;
     }
     public function toArray(): array { return $this->__d; }
-    public static function fromArray($array) { $a = new SplFixedArray(count($array)); $i = 0; foreach ($array as $v) { $a[$i++] = $v; } return $a; }
-    public function offsetExists($i): bool { return $i >= 0 && $i < $this->__size && $this->__d[$i] !== null; }
-    public function offsetGet($i): mixed { if ($i < 0 || $i >= $this->__size) { throw new RuntimeException("Index invalid or out of range"); } return $this->__d[$i]; }
-    public function offsetSet($i, $v): void { if ($i < 0 || $i >= $this->__size) { throw new RuntimeException("Index invalid or out of range"); } $this->__d[$i] = $v; }
-    public function offsetUnset($i): void { if ($i >= 0 && $i < $this->__size) { $this->__d[$i] = null; } }
-    public function rewind(): void { $this->__p = 0; }
-    public function current(): mixed { return $this->__d[$this->__p] ?? null; }
-    public function key(): mixed { return $this->__p; }
-    public function next(): void { $this->__p++; }
-    public function valid(): bool { return $this->__p < $this->__size; }
-}
-"#
+    public function jsonSerialize(): array { return $this->__d; }
+    public static function fromArray(array $array, bool $preserveKeys = true): SplFixedArray {
+        $a = new SplFixedArray();
+        if ($array === []) { return $a; }
+        if ($preserveKeys) {
+            $max = -1;
+            foreach ($array as $k => $_) {
+                if (!is_int($k) || $k < 0) { throw new InvalidArgumentException('array must contain only positive integer keys'); }
+                if ($k > $max) { $max = $k; }
+            }
+            $a->__d = array_fill(0, $max + 1, null);
+            foreach ($array as $k => $v) { $a->__d[$k] = $v; }
+            $a->__size = $max + 1;
+        } else {
+            $a->__d = array_values($array);
+            $a->__size = count($array);
+        }
+        return $a;
+    }
+    public function offsetExists($index): bool {
+        $i = self::__idx($index);
+        return $i >= 0 && $i < $this->__size && $this->__d[$i] !== null;
+    }
+    public function offsetGet($index): mixed {
+        $i = self::__idx($index);
+        if ($i < 0 || $i >= $this->__size) { throw new OutOfBoundsException('Index invalid or out of range'); }
+        return $this->__d[$i];
+    }
+    public function offsetSet($index, mixed $value): void {
+        if ($index === null) { throw new Error('[] operator not supported for SplFixedArray'); }
+        $i = self::__idx($index);
+        if ($i < 0 || $i >= $this->__size) { throw new OutOfBoundsException('Index invalid or out of range'); }
+        $this->__d[$i] = $value;
+    }
+    public function offsetUnset($index): void {
+        $i = self::__idx($index);
+        if ($i < 0 || $i >= $this->__size) { throw new OutOfBoundsException('Index invalid or out of range'); }
+        $this->__d[$i] = null;
+    }
+    public function getIterator(): Iterator { return new ArrayIterator($this->__d); }
+    public function __debugInfo(): array {
+        $r = $this->__d;
+        foreach (__spl_user_props($this) as $k => $v) { $r[$k] = $v; }
+        return $r;
+    }
+    public function __serialize(): array { return $this->__d; }
+    public function __unserialize(array $data): void { $this->__d = array_values($data); $this->__size = count($data); }
+}"#
     };
 }
 

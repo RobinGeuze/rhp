@@ -84,8 +84,7 @@ int(0)
 int(8192)
 int(100)
 stream_set_chunk_size(): Argument #2 ($size) must be greater than 0
-int(1)
-int(2)
+bool(true)
 int(4)
 int(16)
 "*.php" "a.php" 0 => true

@@ -16,7 +16,7 @@ interface SplSubject {
 }
 
 class SplObjectStorage implements Countable, SeekableIterator, ArrayAccess {
-    private $__o = []; private $__v = []; private $__k = []; private $__p = 0; private $__pos = -1;
+    private $__o = []; private $__v = []; private $__k = []; private $__p = 0; private $__pos = -1; private $__rw = false;
     public function attach(object $object, mixed $info = null): void {
         __spl_deprecated('Method SplObjectStorage::attach() is deprecated since 8.5, use method SplObjectStorage::offsetSet() instead');
         $this->offsetSet($object, $info);
@@ -41,14 +41,19 @@ class SplObjectStorage implements Countable, SeekableIterator, ArrayAccess {
         foreach ($this->__o as $h => $o) { if (!$storage->offsetExists($o)) { unset($this->__o[$h], $this->__v[$h]); } }
         return count($this->__o);
     }
-    private function __curHash() { return $this->__pos >= 0 ? ($this->__k[$this->__pos] ?? null) : null; }
+    // The storage's own position starts at the first element, as php's
+    // HashTable cursor does, until the first explicit rewind().
+    private function __curHash() {
+        if (!$this->__rw) { $this->rewind(); }
+        return $this->__pos >= 0 ? ($this->__k[$this->__pos] ?? null) : null;
+    }
     public function getInfo(): mixed { $h = $this->__curHash(); return ($h === null || !array_key_exists($h, $this->__o)) ? null : $this->__v[$h]; }
     public function setInfo(mixed $info): void { $h = $this->__curHash(); if ($h !== null && array_key_exists($h, $this->__o)) { $this->__v[$h] = $info; } }
     public function count(int $mode = COUNT_NORMAL): int {
         if ($mode === COUNT_RECURSIVE) { $n = count($this->__o); foreach ($this->__o as $o) { $n += count((array) $o, COUNT_RECURSIVE) * 0; } return $n; }
         return count($this->__o);
     }
-    public function rewind(): void { $this->__k = array_keys($this->__o); $this->__p = 0; $this->__pos = $this->__k ? 0 : -1; }
+    public function rewind(): void { $this->__rw = true; $this->__k = array_keys($this->__o); $this->__p = 0; $this->__pos = $this->__k ? 0 : -1; }
     public function valid(): bool { return $this->__curHash() !== null; }
     public function key(): int { return $this->__p; }
     public function current(): object {
@@ -56,7 +61,7 @@ class SplObjectStorage implements Countable, SeekableIterator, ArrayAccess {
         if ($h === null || !array_key_exists($h, $this->__o)) { throw new RuntimeException('Called current() on invalid iterator'); }
         return $this->__o[$h];
     }
-    private function __fwd(): void { if ($this->__pos >= 0) { $this->__pos++; if ($this->__pos >= count($this->__k)) { $this->__pos = -1; } } }
+    private function __fwd(): void { if (!$this->__rw) { $this->rewind(); } if ($this->__pos >= 0) { $this->__pos++; if ($this->__pos >= count($this->__k)) { $this->__pos = -1; } } }
     public function next(): void { $this->__fwd(); $this->__p++; }
     public function seek(int $offset): void {
         if ($offset < 0 || $offset >= count($this->__o)) { throw new OutOfBoundsException("Seek position $offset is out of range"); }
@@ -472,7 +477,7 @@ class LimitIterator extends IteratorIterator {
         return false;
     }
     private function __seek(int $pos): void {
-        if ($pos != $this->__pos && $pos < $this->__off) {
+        if ($pos < $this->__off) {
             throw new OutOfBoundsException("Cannot seek to $pos which is below the offset {$this->__off}");
         }
         if ($pos >= $this->__off + $this->__cnt && $this->__cnt != -1) {
@@ -772,9 +777,6 @@ class MultipleIterator implements Iterator {
     public function getFlags(): int { return $this->__flags; }
     public function setFlags(int $flags): void { $this->__flags = $flags; }
     public function attachIterator(Iterator $iterator, string|int|null $info = null): void {
-        if (($this->__flags & self::MIT_KEYS_ASSOC) && $info === null) {
-            throw new InvalidArgumentException('Sub-Iterator is associated with NULL');
-        }
         $h = spl_object_id($iterator);
         if ($info !== null) {
             foreach ($this->__infos as $oh => $i) {

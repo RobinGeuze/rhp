@@ -12,7 +12,8 @@ $f = fopen('php://memory', 'r');
 var_dump(stream_set_read_buffer($f, 0), stream_set_chunk_size($f, 100), stream_set_chunk_size($f, 50));
 try { stream_set_chunk_size($f, 0); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }
 
-var_dump(FNM_NOESCAPE, FNM_PATHNAME, FNM_PERIOD, FNM_CASEFOLD);
+// FNM_NOESCAPE / FNM_PATHNAME are the C library's values (they differ by platform).
+var_dump(FNM_NOESCAPE !== FNM_PATHNAME, FNM_PERIOD, FNM_CASEFOLD);
 $cases = [
     ['*.php', 'a.php', 0], ['*.php', 'dir/a.php', 0], ['*.php', 'dir/a.php', FNM_PATHNAME],
     ['a?c', 'abc', 0], ['a?c', 'ac', 0], ['[a-c]x', 'bx', 0], ['[!a-c]x', 'dx', 0], ['[!a-c]x', 'ax', 0],

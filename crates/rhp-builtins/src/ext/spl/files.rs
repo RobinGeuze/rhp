@@ -31,6 +31,9 @@ class SplFileInfo implements Stringable {
     }
     public function getBasename(string $suffix = ''): string { return basename($this->getFilename(), $suffix); }
     public function getPathname(): string { return $this->__path; }
+    public function __debugInfo(): array {
+        return __spl_user_props($this) + ["\0SplFileInfo\0pathName" => $this->getPathname(), "\0SplFileInfo\0fileName" => $this->getFilename()];
+    }
     public function getPerms(): int|false { return $this->__stat('getPerms', 'fileperms'); }
     public function getInode(): int|false { return $this->__stat('getInode', 'fileinode'); }
     public function getSize(): int|false { return $this->__stat('getSize', 'filesize'); }
@@ -76,8 +79,14 @@ class SplFileInfo implements Stringable {
             throw $e;
         }
     }
-    public function setFileClass(string $class = SplFileObject::class): void { $this->__fileClass = $class; }
-    public function setInfoClass(string $class = SplFileInfo::class): void { $this->__infoClass = $class; }
+    public function setFileClass(string $class = SplFileObject::class): void {
+        if (!is_a($class, 'SplFileObject', true)) { throw new TypeError("SplFileInfo::setFileClass(): Argument #1 (\$class) must be a class name derived from SplFileObject, $class given"); }
+        $this->__fileClass = $class;
+    }
+    public function setInfoClass(string $class = SplFileInfo::class): void {
+        if (!is_a($class, 'SplFileInfo', true)) { throw new TypeError("SplFileInfo::setInfoClass(): Argument #1 (\$class) must be a class name derived from SplFileInfo, $class given"); }
+        $this->__infoClass = $class;
+    }
     public function __toString(): string { return $this->getPathname(); }
 }
 
@@ -322,6 +331,9 @@ class SplFileObject extends SplFileInfo implements RecursiveIterator, SeekableIt
         $this->__d = $separator; $this->__e = $enclosure;
     }
     public function getCsvControl(): array { return [$this->__d, $this->__e, $this->__esc]; }
+    public function __debugInfo(): array {
+        return parent::__debugInfo() + ["\0SplFileObject\0openMode" => $this->__mode, "\0SplFileObject\0delimiter" => $this->__d, "\0SplFileObject\0enclosure" => $this->__e];
+    }
     public function flock(int $operation, &$wouldBlock = null): bool { return flock($this->__fp, $operation, $wouldBlock); }
     public function fflush(): bool { return fflush($this->__fp); }
     public function ftell(): int|false { return ftell($this->__fp); }

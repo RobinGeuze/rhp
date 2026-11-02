@@ -1,4 +1,6 @@
 <?php
+// Diagnostics print without the (machine-specific) script path.
+set_error_handler(function ($no, $msg) { echo "[$no] $msg\n"; return true; });
 // The procedural date_*/timezone_* aliases and utf8_encode/utf8_decode.
 var_dump(date_create("garbage"), timezone_open("Nope/X"));
 $d = date_create("2020-01-02 03:04:05", timezone_open("UTC"));

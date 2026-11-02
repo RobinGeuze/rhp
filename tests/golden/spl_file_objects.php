@@ -1,4 +1,6 @@
 <?php
+// Diagnostics print without the (machine-specific) script path.
+set_error_handler(function ($no, $msg) { echo "[$no] $msg\n"; return true; });
 $i = new SplFileInfo("foo.txt"); var_dump($i->getPath(), $i->getFilename(), $i->getPathname(), $i->getExtension(), $i->getBasename(".txt"));
 $i = new SplFileInfo("/a/b/"); var_dump($i->getPath(), $i->getFilename(), $i->getPathname(), (string)$i);
 $i = new SplFileInfo("/"); var_dump($i->getPath(), $i->getFilename(), $i->getPathname());

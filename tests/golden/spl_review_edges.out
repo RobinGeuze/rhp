@@ -1,0 +1,179 @@
+object(SplFixedArray)#1 (3) {
+  [0]=>
+  int(1)
+  [1]=>
+  NULL
+  [2]=>
+  string(1) "x"
+}
+object(SplMinHeap)#2 (3) {
+  ["flags":"SplHeap":private]=>
+  int(0)
+  ["isCorrupted":"SplHeap":private]=>
+  bool(false)
+  ["heap":"SplHeap":private]=>
+  array(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(3)
+  }
+}
+object(SplPriorityQueue)#3 (3) {
+  ["flags":"SplPriorityQueue":private]=>
+  int(1)
+  ["isCorrupted":"SplPriorityQueue":private]=>
+  bool(false)
+  ["heap":"SplPriorityQueue":private]=>
+  array(1) {
+    [0]=>
+    array(2) {
+      ["data"]=>
+      string(1) "a"
+      ["priority"]=>
+      int(2)
+    }
+  }
+}
+object(SplStack)#4 (2) {
+  ["flags":"SplDoublyLinkedList":private]=>
+  int(6)
+  ["dllist":"SplDoublyLinkedList":private]=>
+  array(1) {
+    [0]=>
+    int(1)
+  }
+}
+object(SplDoublyLinkedList)#5 (2) {
+  ["flags":"SplDoublyLinkedList":private]=>
+  int(1)
+  ["dllist":"SplDoublyLinkedList":private]=>
+  array(1) {
+    [0]=>
+    string(1) "d"
+  }
+}
+object(SplObjectStorage)#6 (1) {
+  ["storage":"SplObjectStorage":private]=>
+  array(1) {
+    [0]=>
+    array(2) {
+      ["obj"]=>
+      object(SplFixedArray)#1 (3) {
+        [0]=>
+        int(1)
+        [1]=>
+        NULL
+        [2]=>
+        string(1) "x"
+      }
+      ["inf"]=>
+      string(3) "inf"
+    }
+  }
+}
+object(SplFileInfo)#7 (2) {
+  ["pathName":"SplFileInfo":private]=>
+  string(12) "dir/name.txt"
+  ["fileName":"SplFileInfo":private]=>
+  string(8) "name.txt"
+}
+object(HashContext)#8 (1) {
+  ["algo"]=>
+  string(4) "sha1"
+}
+SplFixedArray Object
+(
+    [0] => 1
+    [1] => 
+    [2] => x
+)
+SplMinHeap Object
+(
+    [flags:SplHeap:private] => 0
+    [isCorrupted:SplHeap:private] => 
+    [heap:SplHeap:private] => Array
+        (
+            [0] => 1
+            [1] => 3
+        )
+
+)
+
+"1": false true null "dflt" u 
+1.5: [8192] Implicit conversion from float 1.5 to int loses precision
+false [8192] Implicit conversion from float 1.5 to int loses precision
+true [8192] Implicit conversion from float 1.5 to int loses precision
+null [8192] Implicit conversion from float 1.5 to int loses precision
+"dflt" [8192] Implicit conversion from float 1.5 to int loses precision
+u 
+"x": TypeError: Cannot access offset of type string on SplFixedArray | TypeError: Cannot access offset of type string on SplFixedArray | TypeError: Cannot access offset of type string on SplFixedArray | TypeError: Cannot access offset of type string on SplFixedArray | TypeError: Cannot access offset of type string on SplFixedArray | 
+"01": TypeError: Cannot access offset of type string on SplFixedArray | TypeError: Cannot access offset of type string on SplFixedArray | TypeError: Cannot access offset of type string on SplFixedArray | TypeError: Cannot access offset of type string on SplFixedArray | TypeError: Cannot access offset of type string on SplFixedArray | 
+-1: false true OutOfBoundsException: Index invalid or out of range | "dflt" OutOfBoundsException: Index invalid or out of range | 
+3: false true OutOfBoundsException: Index invalid or out of range | "dflt" OutOfBoundsException: Index invalid or out of range | 
+null: TypeError: Cannot access offset of type null on SplFixedArray | TypeError: Cannot access offset of type null on SplFixedArray | TypeError: Cannot access offset of type null on SplFixedArray | TypeError: Cannot access offset of type null on SplFixedArray | TypeError: Cannot access offset of type null on SplFixedArray | 
+true: false true null "dflt" u 
+false: true false "a" "a" u 
+[]: TypeError: Cannot access offset of type array on SplFixedArray | TypeError: Cannot access offset of type array on SplFixedArray | TypeError: Cannot access offset of type array on SplFixedArray | TypeError: Cannot access offset of type array on SplFixedArray | TypeError: Cannot access offset of type array on SplFixedArray | 
+1.0e+30: [2] The float 1.0E+30 is not representable as an int, cast occurred
+false [2] The float 1.0E+30 is not representable as an int, cast occurred
+true [2] The float 1.0E+30 is not representable as an int, cast occurred
+OutOfBoundsException: Index invalid or out of range | [2] The float 1.0E+30 is not representable as an int, cast occurred
+"dflt" [2] The float 1.0E+30 is not representable as an int, cast occurred
+OutOfBoundsException: Index invalid or out of range | 
+"-1": false true OutOfBoundsException: Index invalid or out of range | "dflt" OutOfBoundsException: Index invalid or out of range | 
+Error: [] operator not supported for SplFixedArray
+bool(true)
+array(5) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  NULL
+  [2]=>
+  NULL
+  [3]=>
+  NULL
+  [4]=>
+  NULL
+}
+bool(true)
+array(1) {
+  [0]=>
+  string(1) "a"
+}
+ValueError: SplFixedArray::setSize(): Argument #1 ($size) must be greater than or equal to 0
+ValueError: SplFixedArray::__construct(): Argument #1 ($size) must be greater than or equal to 0
+TypeError: SplFixedArray::__construct(): Argument #1 ($size) must be of type int, string given
+array(3) {
+  [0]=>
+  string(1) "b"
+  [1]=>
+  NULL
+  [2]=>
+  string(1) "a"
+}
+array(2) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "b"
+}
+InvalidArgumentException: array must contain only positive integer keys
+int(3)
+string(7) "[1,2,3]"
+bool(true)
+bool(false)
+0=1 [0][1][2]1=2 [0][1][2]2=3 [0][1][2]
+bool(true)
+int(0)
+bool(true)
+int(1)
+int(1)
+int(2)
+int(1)
+Cannot seek to 0 which is below the offset 1
+string(1) "c"
+attached
+Sub-Iterator is associated with NULL
+SplFileInfo::setInfoClass(): Argument #1 ($class) must be a class name derived from SplFileInfo, stdClass given
+SplFileInfo::setFileClass(): Argument #1 ($class) must be a class name derived from SplFileObject, SplFileInfo given

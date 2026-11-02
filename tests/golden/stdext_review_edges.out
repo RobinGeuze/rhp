@@ -1,0 +1,90 @@
+[2] Object of class stdClass could not be converted to int
+int(1)
+[2] Object of class S could not be converted to int
+int(1)
+int(5)
+[2] Object of class Closure could not be converted to int
+int(1)
+[2] Object of class stdClass could not be converted to float
+float(1)
+[2] Object of class S could not be converted to float
+float(1)
+float(6)
+[2] Object of class Closure could not be converted to float
+float(1)
+Error: Object of class stdClass could not be converted to string
+string(3) "str"
+string(14) "Resource id #7"
+Error: Object of class Closure could not be converted to string
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+array_multisort(): Argument #3 must be an array or a sort flag that has not already been specified
+array_multisort(): Argument #1 ($array) must be an array or a sort flag that has not already been specified
+array_multisort(): Argument #2 must be an array or a sort flag
+array_multisort(): Argument #2 must be a valid sort flag
+array(0) {
+}
+array(0) {
+}
+string(2) "{}"
+[2] hash_update_file(/nonexistent/rhp-review-file): Failed to open stream: No such file or directory
+bool(false)
+[2] hash_update_file(/nonexistent/rhp-review-file): Failed to open stream: No such file or directory
+bool(false)
+616263 null 'ASCII' 'ASCII'
+616263 "ASCII" 'ASCII' 'ASCII'
+616263 "ISO-8859-1" 'ISO-8859-1' 'ISO-8859-1'
+616263 "ASCII,UTF-8" 'ASCII' 'ASCII'
+616263 "UTF-8,ASCII" 'UTF-8' 'UTF-8'
+616263 ["ISO-8859-1","UTF-8"] 'ISO-8859-1' 'ISO-8859-1'
+616263 ["UTF-8","ISO-8859-1"] 'UTF-8' 'UTF-8'
+616263 "auto" 'ASCII' 'ASCII'
+ null 'ASCII' 'ASCII'
+ "ASCII" 'ASCII' 'ASCII'
+ "ISO-8859-1" 'ISO-8859-1' 'ISO-8859-1'
+ "ASCII,UTF-8" 'ASCII' 'ASCII'
+ "UTF-8,ASCII" 'UTF-8' 'UTF-8'
+ ["ISO-8859-1","UTF-8"] 'ISO-8859-1' 'ISO-8859-1'
+ ["UTF-8","ISO-8859-1"] 'UTF-8' 'UTF-8'
+ "auto" 'ASCII' 'ASCII'
+e9 null 'ASCII' false
+e9 "ASCII" 'ASCII' false
+e9 "ISO-8859-1" 'ISO-8859-1' 'ISO-8859-1'
+e9 "ASCII,UTF-8" 'ASCII' false
+e9 "UTF-8,ASCII" 'UTF-8' false
+e9 ["ISO-8859-1","UTF-8"] 'ISO-8859-1' 'ISO-8859-1'
+e9 ["UTF-8","ISO-8859-1"] 'ISO-8859-1' 'ISO-8859-1'
+e9 "auto" 'ASCII' false
+636166c3a9 null 'UTF-8' 'UTF-8'
+636166c3a9 "ASCII" 'ASCII' false
+636166c3a9 "ISO-8859-1" 'ISO-8859-1' 'ISO-8859-1'
+636166c3a9 "ASCII,UTF-8" 'UTF-8' 'UTF-8'
+636166c3a9 "UTF-8,ASCII" 'UTF-8' 'UTF-8'
+636166c3a9 ["ISO-8859-1","UTF-8"] 'UTF-8' 'UTF-8'
+636166c3a9 ["UTF-8","ISO-8859-1"] 'UTF-8' 'UTF-8'
+636166c3a9 "auto" 'UTF-8' 'UTF-8'
+c3a9e9 null 'UTF-8' false
+c3a9e9 "ASCII" 'ASCII' false
+c3a9e9 "ISO-8859-1" 'ISO-8859-1' 'ISO-8859-1'
+c3a9e9 "ASCII,UTF-8" 'UTF-8' false
+c3a9e9 "UTF-8,ASCII" 'UTF-8' false
+c3a9e9 ["ISO-8859-1","UTF-8"] 'ISO-8859-1' 'ISO-8859-1'
+c3a9e9 ["UTF-8","ISO-8859-1"] 'ISO-8859-1' 'ISO-8859-1'
+c3a9e9 "auto" 'UTF-8' false
+mb_detect_encoding(): Argument #2 ($encodings) contains invalid encoding "NOPE"
+mb_detect_encoding(): Argument #2 ($encodings) must specify at least one encoding
+bool(false)
+bool(false)
+bool(true)
+mb_check_encoding(): Argument #1 ($value) must be of type array|string|null, stdClass given
+0 1 ["ab"] 0 2 [[["a",1],["a",3]]] No error
+3 0 [] 0 1 [[["a",3]]] No error
+4 0 [] 0 0 [[]] No error
+5 false [] 1 false [] Internal error
+-1 0 [] 0 1 [[["a",3]]] No error
+-3 1 ["ab"] 0 2 [[["a",1],["a",3]]] No error
+-10 1 ["ab"] 0 2 [[["a",1],["a",3]]] No error
+preg_match(): Argument #5 ($offset) must be greater than -9223372036854775808
+array_fill(): Argument #2 ($count) is too large

@@ -1,4 +1,6 @@
 <?php
+// Diagnostics print without the (machine-specific) script path.
+set_error_handler(function ($no, $msg) { echo "[$no] $msg\n"; return true; });
 // SplFixedArray isset, SplObjectStorage (8.5 deprecations, addAll/removeAll/
 // seek/serialize), heaps + SplPriorityQueue (php's heap order), SPL iterators.
 $a = new SplFixedArray(3); $a[1] = 5; var_dump(isset($a[0]), isset($a[1]), isset($a[5]), $a->offsetExists(1));

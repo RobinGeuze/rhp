@@ -1,0 +1,65 @@
+object(DI)#1 (4) {
+  ["q"]=>
+  int(2)
+  [5]=>
+  string(4) "five"
+  ["priv":"DI":private]=>
+  int(3)
+  ["prot":protected]=>
+  array(1) {
+    [0]=>
+    object(DN)#3 (0) {
+    }
+  }
+}
+object(DS)#2 (1) {
+  ["me"]=>
+  *RECURSION*
+}
+DI Object
+(
+    [q] => 2
+    [5] => five
+    [priv:DI:private] => 3
+    [prot:protected] => Array
+        (
+            [0] => DN Object
+                (
+                )
+
+        )
+
+)
+DS Object
+(
+    [me] => DS Object
+ *RECURSION*
+)
+
+Call to private Priv::__construct() from global scope
+Call to protected Prot::__construct() from global scope
+Call to private HashContext::__construct() from global scope
+bool(true)
+bool(true)
+[1,0,2]
+[1,0,5]
+int(1)
+array(1) {
+  [0]=>
+  string(1) "a"
+}
+int(1)
+array(1) {
+  [0]=>
+  string(1) "b"
+}
+unset 5 refused
+hash_update(): Argument #2 ($data) must be of type string, array given
+hash_final() expects at least 1 argument, 0 given
+[8192] SplFixedArray::__construct(): Passing null to parameter #1 ($size) of type int is deprecated
+int(0)
+[8192] Constant MT_RAND_PHP is deprecated since 8.3, as it uses a biased non-standard variant of Mt19937
+[8192] The MT_RAND_PHP variant of Mt19937 is deprecated
+int(46)
+[8192] Function lcg_value() is deprecated since 8.4, use \Random\Randomizer::getFloat() instead
+bool(true)

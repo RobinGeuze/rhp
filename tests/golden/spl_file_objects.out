@@ -99,8 +99,7 @@ d"
   [1]=>
   string(1) "e"
 }
-
-Deprecated: SplFileObject::fputcsv(): the $escape parameter must be provided, as its default value will change, either explicitly or via SplFileObject::setCsvControl() in /Users/robing/gits/rhp/.claude/worktrees/wf_01e7afd0-1d2-9/tests/golden/spl_file_objects.php on line 23
+[8192] SplFileObject::fputcsv(): the $escape parameter must be provided, as its default value will change, either explicitly or via SplFileObject::setCsvControl()
 array(3) {
   [0]=>
   string(1) ","

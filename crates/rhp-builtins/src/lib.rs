@@ -1563,7 +1563,15 @@ use rhp_semantics::{deref, ops};
 fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
     for a in args {
-        dump::var_dump(host, &mut out, a, 0);
+        let r = dump::resolve_debug_info(host, a);
+        if r.is_ok() {
+            dump::var_dump(host, &mut out, a, 0);
+        }
+        dump::clear_debug_info();
+        if let Err(t) = r {
+            host.write_out(&out);
+            return Err(t);
+        }
     }
     host.write_out(&out);
     Ok(Value::Null)
@@ -1571,7 +1579,12 @@ fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    dump::print_r(host, &mut out, &args[0], 0);
+    let r = dump::resolve_debug_info(host, &args[0]);
+    if r.is_ok() {
+        dump::print_r(host, &mut out, &args[0], 0);
+    }
+    dump::clear_debug_info();
+    r?;
     let return_mode = args.get(1).map(conv::to_bool).unwrap_or(false);
     if return_mode {
         Ok(Value::str(out))

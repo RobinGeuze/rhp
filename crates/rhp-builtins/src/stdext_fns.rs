@@ -361,6 +361,16 @@ const SORT_ASC: i64 = 4;
 const SORT_DESC: i64 = 3;
 const SORT_FLAG_CASE: i64 = 8;
 
+/// php names only the declared parameter (`$array`); variadic `$rest`
+/// arguments are reported by position alone.
+fn multisort_arg(i: usize) -> String {
+    if i == 0 {
+        "1 ($array)".to_string()
+    } else {
+        (i + 1).to_string()
+    }
+}
+
 /// `array_multisort(array &$array, mixed &...$rest)`.
 fn fn_array_multisort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // (array slot, sort type, descending)
@@ -378,7 +388,7 @@ fn fn_array_multisort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
                     if !order_ok {
                         return Err(Thrown::type_error(format!(
                             "array_multisort(): Argument #{} must be an array or a sort flag that has not already been specified",
-                            i + 1
+                            multisort_arg(i)
                         )));
                     }
                     arrays.last_mut().unwrap().2 = f == SORT_DESC;
@@ -388,7 +398,7 @@ fn fn_array_multisort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
                     if !type_ok {
                         return Err(Thrown::type_error(format!(
                             "array_multisort(): Argument #{} must be an array or a sort flag that has not already been specified",
-                            i + 1
+                            multisort_arg(i)
                         )));
                     }
                     arrays.last_mut().unwrap().1 = f;
@@ -399,7 +409,7 @@ fn fn_array_multisort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
                         "ValueError",
                         format!(
                             "array_multisort(): Argument #{} must be a valid sort flag",
-                            i + 1
+                            multisort_arg(i)
                         ),
                     ))
                 }
@@ -407,7 +417,7 @@ fn fn_array_multisort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
             _ => {
                 return Err(Thrown::type_error(format!(
                     "array_multisort(): Argument #{} must be an array or a sort flag",
-                    i + 1
+                    multisort_arg(i)
                 )))
             }
         }
@@ -465,21 +475,55 @@ fn fn_array_multisort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
 fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let ty = str_param(host, args, 1, "settype", "type")?.to_ascii_lowercase();
     let cur = deref(&args[0]);
+    // convert_to_long / convert_to_double: an object warns and becomes 1.
+    let object_warn = |host: &mut dyn Host, to: &str| -> Result<(), Thrown> {
+        if matches!(cur, Value::Object(_) | Value::Closure(_)) {
+            host.emit_diagnostic(
+                crate::E_WARNING,
+                &format!(
+                    "Object of class {} could not be converted to {to}",
+                    value_name(host, &cur)
+                ),
+            )?;
+        }
+        Ok(())
+    };
     let new = match ty.as_slice() {
-        b"integer" | b"int" => Value::Int(conv::to_int(&cur)),
-        b"float" | b"double" => Value::Float(conv::to_float(&cur)),
+        b"integer" | b"int" => {
+            object_warn(host, "int")?;
+            Value::Int(conv::to_int(&cur))
+        }
+        b"float" | b"double" => {
+            object_warn(host, "float")?;
+            Value::Float(conv::to_float(&cur))
+        }
         b"string" => match &cur {
             Value::Array(_) => {
                 host.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
                 Value::str("Array")
             }
-            _ => Value::str(str_param(
-                host,
-                std::slice::from_ref(&cur),
-                0,
-                "settype",
-                "var",
-            )?),
+            // convert_to_string: only __toString converts an object; a
+            // failure is an Error, not a parameter TypeError.
+            Value::Object(_) | Value::Closure(_) => {
+                let mut cb = PhpArray::new();
+                cb.push(cur.clone());
+                cb.push(Value::str("__toString"));
+                let cb = Value::Array(cb);
+                if matches!(cur, Value::Object(_)) && host.is_callable_value(&cb) {
+                    Value::str(conv::to_string_bytes(&deref(
+                        &host.call_callable(&cb, &[])?,
+                    )))
+                } else {
+                    return Err(Thrown::error(
+                        "Error",
+                        format!(
+                            "Object of class {} could not be converted to string",
+                            value_name(host, &cur)
+                        ),
+                    ));
+                }
+            }
+            _ => Value::str(conv::to_string_bytes(&cur)),
         },
         b"array" => match &cur {
             Value::Array(_) => cur.clone(),
@@ -1167,6 +1211,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         Some(1),
     );
     put("__stdext_deprecated", fn_stdext_deprecated, 1, Some(1));
+    put("__stdext_warning", fn_stdext_warning, 1, Some(1));
 }
 
 /// The procedural `date_*` / `timezone_*` API over the DateTime classes
@@ -1187,7 +1232,7 @@ function date_create_immutable_from_format(string $format, string $datetime, ?Da
 function date_format(DateTimeInterface $object, string $format): string { return $object->format($format); }
 function date_modify(DateTime $object, string $modifier): DateTime|false {
     try { return $object->modify($modifier); } catch (DateMalformedStringException $e) {
-        trigger_error('date_modify(): ' . substr($e->getMessage(), strlen('DateTime::modify(): ')), E_USER_WARNING);
+        __stdext_warning('date_modify(): ' . substr($e->getMessage(), strlen('DateTime::modify(): ')));
         return false;
     }
 }
@@ -1211,7 +1256,7 @@ function date_interval_create_from_date_string(string $datetime): DateInterval|f
 }
 function timezone_open(string $timezone): DateTimeZone|false {
     try { return new DateTimeZone($timezone); } catch (Exception $e) {
-        trigger_error("timezone_open(): Unknown or bad timezone ($timezone)", E_USER_WARNING);
+        __stdext_warning("timezone_open(): Unknown or bad timezone ($timezone)");
         return false;
     }
 }
@@ -1231,6 +1276,13 @@ function utf8_decode(string $string): string {
 fn fn_stdext_deprecated(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let msg = conv::to_string_bytes(&deref(&args[0]));
     host.emit_diagnostic(crate::E_DEPRECATED, &String::from_utf8_lossy(&msg))?;
+    Ok(Value::Null)
+}
+
+/// `__stdext_warning($message)`: E_WARNING from a prelude function.
+fn fn_stdext_warning(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let msg = conv::to_string_bytes(&deref(&args[0]));
+    host.emit_diagnostic(crate::E_WARNING, &String::from_utf8_lossy(&msg))?;
     Ok(Value::Null)
 }
 

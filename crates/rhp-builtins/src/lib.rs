@@ -21,7 +21,7 @@ pub mod streams;
 pub mod stub_params;
 
 pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};
-pub use ext::simplexml::{sxe_bool, sxe_string};
+pub use ext::simplexml::{sxe_bool, sxe_props_array, sxe_same_node, sxe_string};
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};
 
 mod argparse;
@@ -1548,7 +1548,9 @@ fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
+    ext::simplexml::prepare_debug(host, &args[0], 0);
     let circular = dump::var_export(host, &mut out, &args[0], 1);
+    ext::simplexml::clear_debug();
     for _ in 0..circular {
         host.emit_diagnostic(E_WARNING, "var_export does not handle circular references")?;
     }
@@ -1696,6 +1698,10 @@ fn fn_intval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             return Ok(Value::Int(h.borrow().id as i64));
         }
     }
+    // SimpleXML's cast handler: the node's text.
+    if let Some(t) = ext::simplexml::sxe_scalar_text(&v) {
+        return Ok(Value::Int(conv::to_int(&t)));
+    }
     // `base` applies only to a string argument; base 10 is plain integer conversion.
     if base == 10 {
         return Ok(Value::Int(conv::to_int(&v)));
@@ -1768,14 +1774,42 @@ fn detect_prefix(rest: &[u8], base: i64) -> (usize, i64) {
 }
 
 fn fn_floatval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    if let Some(t) = ext::simplexml::sxe_scalar_text(&deref(&args[0])) {
+        return Ok(Value::Float(conv::to_float(&t)));
+    }
     Ok(Value::Float(conv::to_float(&args[0])))
 }
 
-fn fn_strval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_strval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // zval_get_string: objects go through their cast handler (`__toString`).
+    let v = deref(&args[0]);
+    if let Value::Object(h) = &v {
+        let mut cb = PhpArray::new();
+        cb.push(v.clone());
+        cb.push(Value::str("__toString"));
+        let cb = Value::Array(cb);
+        if host.is_callable_value(&cb) {
+            return Ok(Value::str(conv::to_string_bytes(
+                &host.call_callable(&cb, &[])?,
+            )));
+        }
+        let class = host.class_name(h.borrow().class).unwrap_or_default();
+        return Err(Thrown::error(
+            "Error",
+            format!(
+                "Object of class {} could not be converted to string",
+                String::from_utf8_lossy(&class)
+            ),
+        ));
+    }
     Ok(Value::str(conv::to_string_bytes(&args[0])))
 }
 
 fn fn_boolval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = deref(&args[0]);
+    if ext::simplexml::is_sxe_object(&v) {
+        return Ok(Value::Bool(sxe_bool(&v)));
+    }
     Ok(Value::Bool(conv::to_bool(&args[0])))
 }
 
@@ -2482,6 +2516,14 @@ fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let prop = conv::to_string_bytes(&deref(&args[1]));
     let found = match deref(&args[0]) {
+        // SimpleXML's has_property handler: a child element (or attribute)
+        // of that name.
+        v @ Value::Object(_) if ext::simplexml::is_sxe_object(&v) => {
+            let mut cb = PhpArray::new();
+            cb.push(v.clone());
+            cb.push(Value::str("__isset"));
+            conv::to_bool(&host.call_callable(&Value::Array(cb), &[Value::str(prop)])?)
+        }
         Value::Object(h) => {
             let cid = h.borrow().class;
             // An object matches on a declared member (instance or static) OR a
@@ -2575,6 +2617,9 @@ fn fn_iterator_to_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 fn fn_get_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match deref(&args[0]) {
         Value::Object(h) => {
+            if let Some(a) = sxe_props_array(host, &deref(&args[0])) {
+                return Ok(Value::Array(a));
+            }
             if let Some(v) = host.object_vars(&args[0]) {
                 return Ok(v);
             }

@@ -238,6 +238,30 @@ pub fn sxe_string(v: &Value) -> Option<Vec<u8>> {
     })
 }
 
+/// sxe_objects_compare: whether two SimpleXML objects wrap the same node
+/// (a child/attribute list wraps its parent element).
+pub fn sxe_same_node(a: &Value, b: &Value) -> bool {
+    let (Value::Object(x), Value::Object(y)) = (a, b) else {
+        return false;
+    };
+    let key = |h| {
+        (
+            conv::to_int(&slot(h, b"__d")),
+            conv::to_int(&slot(h, b"__n")),
+        )
+    };
+    key(x) == key(y)
+}
+
+/// A SimpleXMLElement's text as a string value (its scalar cast source), or
+/// `None` for anything else.
+pub fn sxe_scalar_text(v: &Value) -> Option<Value> {
+    if !is_sxe_object(v) {
+        return None;
+    }
+    Some(Value::str(sxe_string(v).unwrap_or_default()))
+}
+
 /// `(bool) $sxe`: true when it has a node.
 pub fn sxe_bool(v: &Value) -> bool {
     target_node(v).is_some()
@@ -486,6 +510,34 @@ fn fn_sxe(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     }
                 }
             });
+            Ok(Value::Null)
+        }
+        "clone" => {
+            // sxe_object_clone: the root element copies the whole document;
+            // any other node is deep-copied (detached) into the same one.
+            let is_root = tree::with_doc(d, |doc| {
+                doc.nodes[x.n].parent == Some(0) && doc.nodes[x.n].kind == Kind::Element
+            })
+            .unwrap_or(false);
+            let (nd, nn) = if is_root {
+                let Some(copy) = tree::clone_doc(d) else {
+                    return Ok(Value::Null);
+                };
+                let root = copy.root().unwrap_or(x.n);
+                (tree::register(copy), root)
+            } else {
+                let nn = tree::with_doc(d, |doc| doc.clone_node(x.n, true)).unwrap_or(x.n);
+                (d, nn)
+            };
+            if let Value::Object(h) = &this {
+                let mut b = h.borrow_mut();
+                b.properties
+                    .insert(PhpStr::from_bytes(b"__d".to_vec()), Value::Int(nd as i64));
+                b.properties
+                    .insert(PhpStr::from_bytes(b"__n".to_vec()), Value::Int(nn as i64));
+                b.properties
+                    .insert(PhpStr::from_bytes(b"__it".to_vec()), Value::Null);
+            }
             Ok(Value::Null)
         }
         "unset" => {
@@ -744,7 +796,7 @@ fn fn_sxe(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             lx::report_save_diags(host, "SimpleXMLElement::asXML")?;
             match opt_bytes(args, 2) {
                 Some(f) => Ok(Value::Bool(
-                    std::fs::write(String::from_utf8_lossy(&f).as_ref(), &out).is_ok(),
+                    lx::save_to_uri(host, "SimpleXMLElement::asXML", &f, &out)?.is_some(),
                 )),
                 None => Ok(Value::str(out)),
             }
@@ -878,14 +930,25 @@ fn fn_sxe(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         }
                     }
                 }
+                // xmlNewChild: the value is parsed for entity references
+                let mut warn = None;
                 if let Some(v) = &val {
-                    let t = doc.new_text(Kind::Text, &decode_basic(v));
-                    doc.append(c, t);
+                    match dom::string_node_list(doc, v) {
+                        Ok(ids) => {
+                            for i in ids {
+                                doc.append(c, i);
+                            }
+                        }
+                        Err(e) => warn = Some(e),
+                    }
                 }
                 doc.append(node, c);
-                c
-            })
-            .unwrap_or(0);
+                (c, warn)
+            });
+            let (id, warn) = id.unwrap_or((0, None));
+            if let Some(w) = warn {
+                lx::report_tree_error(host, "SimpleXMLElement::addChild", &w)?;
+            }
             Ok(make(
                 host,
                 &x.class,
@@ -1001,37 +1064,6 @@ fn read_plain(host: &mut dyn Host, path: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
 fn is_int_string(s: &[u8]) -> bool {
     let b = s.strip_prefix(b"-").unwrap_or(s);
     !b.is_empty() && b.iter().all(|c| c.is_ascii_digit()) && (b == b"0" || b[0] != b'0')
-}
-
-/// Predefined entities and character references only (addChild values).
-fn decode_basic(v: &[u8]) -> Vec<u8> {
-    let mut doc = Doc::new();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < v.len() {
-        if v[i] == b'&' {
-            if let Some(end) = v[i..].iter().position(|&c| c == b';') {
-                let name = &v[i + 1..i + end];
-                let rep: Option<Vec<u8>> = match name {
-                    b"lt" => Some(b"<".to_vec()),
-                    b"gt" => Some(b">".to_vec()),
-                    b"amp" => Some(b"&".to_vec()),
-                    b"quot" => Some(b"\"".to_vec()),
-                    b"apos" => Some(b"'".to_vec()),
-                    _ => None,
-                };
-                if let Some(r) = rep {
-                    out.extend(r);
-                    i += end + 1;
-                    continue;
-                }
-            }
-        }
-        out.push(v[i]);
-        i += 1;
-    }
-    let _ = &mut doc;
-    out
 }
 
 fn set_attr(doc: &mut Doc, el: NodeId, name: &[u8], val: &[u8]) {
@@ -1307,6 +1339,17 @@ pub fn sxe_props(host: &mut dyn Host, v: &Value, is_debug: bool) -> Option<Vec<(
     Some(out)
 }
 
+/// `sxe_get_properties` as an array: what `(array)` and `get_object_vars`
+/// see. `None` when `v` is not a SimpleXMLElement.
+pub fn sxe_props_array(host: &mut dyn Host, v: &Value) -> Option<PhpArray> {
+    let props = sxe_props(host, v, false)?;
+    let mut arr = PhpArray::new();
+    for (k, val) in props {
+        arr.insert(ArrayKey::from_bytes(k.as_bytes()), val);
+    }
+    Some(arr)
+}
+
 /// Whether `v` is a SimpleXMLElement (by its internal slots).
 pub fn is_sxe_object(v: &Value) -> bool {
     let Value::Object(h) = v else {
@@ -1468,6 +1511,9 @@ class SimpleXMLElement implements Stringable, Countable, RecursiveIterator, Arra
     public function next(): void { $this->__i++; }
     public function hasChildren(): bool { return isset($this->__it[$this->__i]) && __sxe('hasChildren', $this, $this->__it[$this->__i]); }
     public function getChildren(): ?static { $c = $this->current(); return $c === null ? null : $c->children(); }
+    public function __sleep(): array { throw new Exception("Serialization of '" . static::class . "' is not allowed"); }
+    public function __wakeup(): void { throw new Exception("Unserialization of '" . static::class . "' is not allowed"); }
+    public function __clone() { __sxe('clone', $this); }
 }
 
 class SimpleXMLIterator extends SimpleXMLElement {}

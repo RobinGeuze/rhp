@@ -809,6 +809,22 @@ fn fn_xw(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             });
             Ok(Value::Int(new_id))
         }
+        "chkName" => {
+            // XMLW_NAME_CHK: (op, 0, name, "fn(): Argument #N ($p)", subject)
+            let name = bytes(args, 2);
+            if crate::ext::dom::valid_name(&name) {
+                return Ok(Value::Null);
+            }
+            Err(Thrown::Error {
+                class: "ValueError",
+                message: format!(
+                    "{} must be a valid {}, \"{}\" given",
+                    String::from_utf8_lossy(&bytes(args, 3)),
+                    String::from_utf8_lossy(&bytes(args, 4)),
+                    String::from_utf8_lossy(&name)
+                ),
+            })
+        }
         "free" => {
             WRITERS.with(|w| w.borrow_mut().remove(&id));
             Ok(Value::Null)

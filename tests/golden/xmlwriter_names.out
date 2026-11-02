@@ -1,0 +1,36 @@
+XMLWriter::startAttribute(): Argument #2 must be a valid attribute name, "1x" given
+xmlwriter_start_attribute(): Argument #2 ($name) must be a valid attribute name, "1x" given
+XMLWriter::writeAttribute(): Argument #2 ($value) must be a valid attribute name, "1x" given
+xmlwriter_write_attribute(): Argument #2 ($name) must be a valid attribute name, "1x" given
+XMLWriter::startAttributeNs(): Argument #3 ($namespace) must be a valid attribute name, "1x" given
+xmlwriter_start_attribute_ns(): Argument #3 ($name) must be a valid attribute name, "1x" given
+XMLWriter::writeAttributeNs(): Argument #3 ($namespace) must be a valid attribute name, "a b" given
+xmlwriter_write_attribute_ns(): Argument #3 ($name) must be a valid attribute name, "a b" given
+XMLWriter::startElement(): Argument #2 must be a valid element name, "" given
+xmlwriter_start_element(): Argument #2 ($name) must be a valid element name, "" given
+XMLWriter::startElementNs(): Argument #3 ($namespace) must be a valid element name, "-x" given
+xmlwriter_start_element_ns(): Argument #3 ($name) must be a valid element name, "-x" given
+XMLWriter::writeElement(): Argument #2 ($content) must be a valid element name, "" given
+xmlwriter_write_element(): Argument #2 ($name) must be a valid element name, "" given
+XMLWriter::writeElementNs(): Argument #3 ($namespace) must be a valid element name, "1" given
+xmlwriter_write_element_ns(): Argument #3 ($name) must be a valid element name, "1" given
+XMLWriter::startPi(): Argument #2 must be a valid PI target, "1x" given
+xmlwriter_start_pi(): Argument #2 ($target) must be a valid PI target, "1x" given
+XMLWriter::writePi(): Argument #2 ($content) must be a valid PI target, "x y" given
+xmlwriter_write_pi(): Argument #2 ($target) must be a valid PI target, "x y" given
+XMLWriter::startDtdElement(): Argument #2 must be a valid element name, "1" given
+xmlwriter_start_dtd_element(): Argument #2 ($qualifiedName) must be a valid element name, "1" given
+XMLWriter::writeDtdElement(): Argument #2 ($content) must be a valid element name, "1" given
+xmlwriter_write_dtd_element(): Argument #2 ($name) must be a valid element name, "1" given
+XMLWriter::startDtdAttlist(): Argument #2 must be a valid element name, "1" given
+xmlwriter_start_dtd_attlist(): Argument #2 ($name) must be a valid element name, "1" given
+XMLWriter::writeDtdAttlist(): Argument #2 ($content) must be a valid element name, "1" given
+xmlwriter_write_dtd_attlist(): Argument #2 ($name) must be a valid element name, "1" given
+XMLWriter::startDtdEntity(): Argument #2 ($isParam) must be a valid attribute name, "1x" given
+xmlwriter_start_dtd_entity(): Argument #2 ($name) must be a valid attribute name, "1x" given
+XMLWriter::writeDtdEntity(): Argument #2 ($content) must be a valid element name, "1x" given
+xmlwriter_write_dtd_entity(): Argument #2 ($name) must be a valid element name, "1x" given
+bool(true)
+bool(true)
+bool(true)
+<a:b x:y="1"><p:c

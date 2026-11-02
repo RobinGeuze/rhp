@@ -3,6 +3,7 @@
 //! codes, messages, line and column numbers for the common malformations,
 //! and applying libxml2's blank-node heuristic for `keepBlanks = 0`.
 
+use super::charset;
 use super::tree::{Doc, DocTypeInfo, Kind, Node, NodeId, XML_NS};
 
 #[derive(Clone, Debug)]
@@ -97,6 +98,8 @@ struct P<'o> {
     sax: Option<Vec<SaxEv>>,
     /// Input offset of the first fatal error.
     fatal_at: Option<usize>,
+    /// The input was UTF-16 (BOM), transcoded by `normalize_input`.
+    utf16_input: bool,
 }
 
 /// An attribute as parsed: (prefix, local name, value, line).
@@ -285,31 +288,48 @@ impl P<'_> {
         Some(self.s[st..self.pos].to_vec())
     }
 
-    /// `xmlParseQName`: (prefix, local). A malformed QName falls back to the
-    /// whole Name as local part, like libxml2.
+    /// `xmlParseQName` (libxml2 2.9.13): (prefix, local). A malformed QName
+    /// raises XML_NS_ERR_QNAME and is repaired the way libxml2 does it.
     fn parse_qname(&mut self) -> Option<(Vec<u8>, Vec<u8>)> {
-        let st = self.pos;
         let Some(l) = self.parse_ncname() else {
-            // e.g. ":a" — libxml2 parses a plain Name
-            self.pos = st;
-            return self.parse_name().map(|n| (Vec::new(), n));
+            if self.cur() == b':' {
+                // e.g. ":a": a plain Name
+                let n = self.parse_name()?;
+                let msg = format!("Failed to parse QName '{}'\n", String::from_utf8_lossy(&n));
+                self.err(LEVEL_ERROR, 202, msg);
+                return Some((Vec::new(), n));
+            }
+            return None;
+        };
+        if self.cur() != b':' {
+            return Some((Vec::new(), l));
+        }
+        self.pos += 1;
+        let p = l;
+        let Some(l) = self.parse_ncname() else {
+            // "a:" — prefix, then an Nmtoken (or nothing)
+            let msg = format!("Failed to parse QName '{}:'\n", String::from_utf8_lossy(&p));
+            self.err(LEVEL_ERROR, 202, msg);
+            let st = self.pos;
+            while !self.eof() && is_name_char(self.cur()) {
+                self.pos += 1;
+            }
+            let tok = &self.s[st..self.pos];
+            return Some((Vec::new(), [&p[..], b":", tok].concat()));
         };
         if self.cur() == b':' {
+            // "a:b:c" — prefix a, local "b:c"
+            let msg = format!(
+                "Failed to parse QName '{}:{}:'\n",
+                String::from_utf8_lossy(&p),
+                String::from_utf8_lossy(&l)
+            );
+            self.err(LEVEL_ERROR, 202, msg);
             self.pos += 1;
-            let st2 = self.pos;
-            match self.parse_ncname() {
-                Some(local) if self.cur() != b':' => return Some((l, local)),
-                _ => {
-                    // "a:" / "a:b:c": the whole Name, unprefixed
-                    self.pos = st2;
-                    while !self.eof() && is_name_char(self.cur()) {
-                        self.pos += 1;
-                    }
-                    return Some((Vec::new(), self.s[st..self.pos].to_vec()));
-                }
-            }
+            let rest = self.parse_name().unwrap_or_default();
+            return Some((p, [&l[..], b":", &rest[..]].concat()));
         }
-        Some((Vec::new(), l))
+        Some((p, l))
     }
 
     // ------------------------------------------------------------ document
@@ -399,44 +419,82 @@ impl P<'_> {
         self.quoted().map(Some)
     }
 
+    /// `xmlParseVersionInfo` / `xmlParseVersionNum`: `version = '1.x'`.
+    fn version_info(&mut self) -> Option<Vec<u8>> {
+        if !self.starts(b"version") {
+            return None;
+        }
+        self.pos += 7;
+        self.skip_blanks();
+        if self.cur() != b'=' {
+            self.fatal(75, "Specification mandates value for attribute version\n");
+            return None;
+        }
+        self.pos += 1;
+        self.skip_blanks();
+        let q = self.cur();
+        if q != b'"' && q != b'\'' {
+            self.fatal(33, "String not started expecting ' or \"\n");
+            return None;
+        }
+        self.pos += 1;
+        // VersionNum ::= [0-9] '.' [0-9]*
+        let st = self.pos;
+        let mut version = None;
+        if self.cur().is_ascii_digit() {
+            self.pos += 1;
+            if self.cur() == b'.' {
+                self.pos += 1;
+                while self.cur().is_ascii_digit() {
+                    self.pos += 1;
+                }
+                version = Some(self.s[st..self.pos].to_vec());
+            }
+        }
+        if self.cur() != q {
+            self.fatal(34, "String not closed expecting \" or '\n");
+        } else {
+            self.pos += 1;
+        }
+        version
+    }
+
     fn xml_decl(&mut self) {
+        self.xml_decl_inner();
+        self.check_utf8();
+    }
+
+    /// `xmlParseXMLDecl`.
+    fn xml_decl_inner(&mut self) {
         self.pos += 5;
-        match self.decl_attr(b"version") {
-            Some(Some(v)) => {
-                if !v.starts_with(b"1.") {
-                    self.err(
-                        LEVEL_WARNING,
-                        97,
-                        format!("Unsupported version '{}'\n", String::from_utf8_lossy(&v)),
-                    );
+        self.skip_blanks();
+        match self.version_info() {
+            None => self.fatal(96, "Malformed declaration expecting version\n"),
+            Some(v) => {
+                if v != b"1.0" {
+                    let msg = format!("Unsupported version '{}'\n", String::from_utf8_lossy(&v));
+                    if v.starts_with(b"1.") {
+                        self.err(LEVEL_WARNING, 97, msg);
+                    } else {
+                        self.err(LEVEL_FATAL, 108, msg);
+                    }
                 }
                 self.doc.version = Some(v);
             }
-            _ => {
-                self.fatal(96, "Malformed declaration expecting version\n");
-                self.halt();
+        }
+        if !is_blank(self.cur()) {
+            if self.starts(b"?>") {
+                self.pos += 2;
                 return;
             }
+            self.fatal(65, "Blank needed here\n");
         }
         match self.decl_attr(b"encoding") {
             Some(Some(e)) => {
                 let up = e.to_ascii_uppercase();
-                let known = matches!(
-                    &up[..],
-                    b"UTF-8"
-                        | b"UTF8"
-                        | b"ISO-8859-1"
-                        | b"ISO_8859-1"
-                        | b"LATIN1"
-                        | b"ISO-LATIN-1"
-                        | b"US-ASCII"
-                        | b"ASCII"
-                        | b"UTF-16"
-                        | b"WINDOWS-1252"
-                        | b"CP1252"
-                        | b"ISO-8859-15"
-                        | b"ISO-8859-2"
-                );
+                let single = charset::single_byte(&e);
+                let utf16 = matches!(&up[..], b"UTF-16" | b"UTF16");
+                let known = matches!(&up[..], b"UTF-8" | b"UTF8") || utf16 || single.is_some();
                 if !known {
                     self.err(
                         LEVEL_FATAL,
@@ -446,47 +504,73 @@ impl P<'_> {
                     self.halt();
                     return;
                 }
-                if matches!(
-                    &up[..],
-                    b"ISO-8859-1"
-                        | b"ISO_8859-1"
-                        | b"LATIN1"
-                        | b"ISO-LATIN-1"
-                        | b"WINDOWS-1252"
-                        | b"CP1252"
-                        | b"ISO-8859-15"
-                ) {
+                if utf16 && !self.utf16_input {
+                    self.fatal(81, "Document labelled UTF-16 but has UTF-8 content\n");
+                    self.halt();
+                    return;
+                }
+                if let Some(cs) = single.filter(|c| *c != charset::SingleByte::Ascii) {
                     // transcode the rest of the input to UTF-8
-                    let rest: Vec<u8> = self.s[self.pos..].to_vec();
                     let mut conv = self.s[..self.pos].to_vec();
-                    for &b in &rest {
-                        push_utf8(&mut conv, b as u32);
-                    }
+                    conv.extend(cs.decode(&self.s[self.pos..]));
                     self.s = conv;
                 }
                 self.doc.encoding = Some(e);
             }
             Some(None) => {}
             None => {
-                self.fatal(32, "Blank needed here\n");
+                self.fatal(34, "String not closed expecting \" or '\n");
                 self.halt();
                 return;
             }
         }
-        match self.decl_attr(b"standalone") {
-            Some(Some(v)) => {
-                self.doc.standalone = match &v[..] {
-                    b"yes" => 1,
-                    b"no" => 0,
-                    _ => {
-                        self.fatal(78, "standalone accepts only 'yes' or 'no'\n");
-                        -1
-                    }
-                };
+        // (libxml2 only switches — and then checks — for a non-UTF-8 encoding)
+        let switched = self.doc.encoding.as_ref().is_some_and(|e| {
+            !matches!(
+                &e.to_ascii_uppercase()[..],
+                b"UTF-8" | b"UTF8" | b"UTF-16" | b"UTF16"
+            )
+        });
+        if switched && !is_blank(self.cur()) {
+            if self.starts(b"?>") {
+                self.pos += 2;
+                return;
             }
-            Some(None) => {}
-            None => {
-                self.fatal(78, "standalone accepts only 'yes' or 'no'\n");
+            self.fatal(65, "Blank needed here\n");
+        }
+        // xmlParseSDDecl
+        self.skip_blanks();
+        if self.starts(b"standalone") {
+            self.pos += 10;
+            self.skip_blanks();
+            if self.cur() != b'=' {
+                self.fatal(
+                    75,
+                    "Specification mandates value for attribute standalone\n",
+                );
+            } else {
+                self.pos += 1;
+                self.skip_blanks();
+                let q = self.cur();
+                if q == b'"' || q == b'\'' {
+                    self.pos += 1;
+                    if self.starts(b"no") {
+                        self.doc.standalone = 0;
+                        self.pos += 2;
+                    } else if self.starts(b"yes") {
+                        self.doc.standalone = 1;
+                        self.pos += 3;
+                    } else {
+                        self.fatal(78, "standalone accepts only 'yes' or 'no'\n");
+                    }
+                    if self.cur() != q {
+                        self.fatal(34, "String not closed expecting \" or '\n");
+                    } else {
+                        self.pos += 1;
+                    }
+                } else {
+                    self.fatal(33, "String not started expecting ' or \"\n");
+                }
             }
         }
         self.skip_blanks();
@@ -504,7 +588,6 @@ impl P<'_> {
                 self.pos += 1;
             }
         }
-        self.check_utf8();
     }
 
     /// libxml2 halts on the first byte sequence that isn't UTF-8.
@@ -824,10 +907,11 @@ impl P<'_> {
                 return;
             }
             if c < 0x20 && !is_blank(c) {
+                // xmlParseCharDataComplex: report, skip the character, go on
                 let text = self.s[st..self.pos].to_vec();
-                self.emit_text(parent, &text, false);
+                self.emit_text(parent, &text, blank);
                 self.err(LEVEL_FATAL, 9, format!("PCDATA invalid Char value {c}\n"));
-                self.halt();
+                self.pos += 1;
                 return;
             }
             if !is_blank(c) {
@@ -971,24 +1055,147 @@ impl P<'_> {
         None
     }
 
-    fn comment(&mut self, parent: NodeId) {
-        match self.comment_raw() {
-            Some(v) => {
-                if let Some(i) = v.windows(2).position(|w| w == b"--") {
-                    let _ = i;
-                    self.fatal(80, "Double hyphen within comment\n");
-                }
-                let line = self.line();
-                if self.sax.is_some() && parent != 0 {
-                    self.sax_push(SaxEv::Comment(v.clone()));
-                }
-                let mut n = Node::new(Kind::Comment);
-                n.content = v;
-                n.line = line;
-                self.add_child(parent, n);
-            }
-            None => self.fatal(45, "Comment not terminated\n"),
+    /// The character at `at` (decoded UTF-8) and its length; `(0, 0)` at the
+    /// end of the input or at the first byte that isn't UTF-8 (`stop`).
+    fn char_at(&self, at: usize, stop: usize) -> (u32, usize) {
+        if at >= stop {
+            return (0, 0);
         }
+        let c = self.s[at];
+        let n = match c {
+            0..=0x7F => return (c as u32, 1),
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            _ => 4,
+        };
+        let end = (at + n).min(stop);
+        match std::str::from_utf8(&self.s[at..end])
+            .ok()
+            .and_then(|t| t.chars().next())
+        {
+            Some(ch) => (ch as u32, ch.len_utf8()),
+            None => (c as u32, 1),
+        }
+    }
+
+    /// `xmlParseComment` + `xmlParseCommentComplex` (libxml2 2.9.13): the
+    /// ASCII fast path reports `--` with the text so far, the general path
+    /// with the generic message; a bad character ends the comment early.
+    fn comment(&mut self, parent: NodeId) {
+        self.pos += 4;
+        let st = self.pos;
+        let stop = self.bad_utf8.as_ref().map_or(self.s.len(), |b| b.0);
+        loop {
+            while self.pos < stop {
+                let c = self.s[self.pos];
+                if (c > b'-' && c <= 0x7F) || (0x20..b'-').contains(&c) || c == b'\t' || c == b'\n'
+                {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+            if self.pos < stop && self.s[self.pos] == b'-' {
+                if self.nxt(1) == b'-' {
+                    if self.nxt(2) == b'>' {
+                        let v = self.s[st..self.pos].to_vec();
+                        self.pos += 3;
+                        self.add_comment(parent, v);
+                        return;
+                    }
+                    if self.pos > st {
+                        let shown = &self.s[st..self.pos.min(st + 50)];
+                        let msg = format!(
+                            "Double hyphen within comment: <!--{}\n",
+                            String::from_utf8_lossy(shown)
+                        );
+                        self.err(LEVEL_FATAL, 80, msg);
+                    } else {
+                        self.fatal(80, "Double hyphen within comment\n");
+                    }
+                    self.pos += 2;
+                    continue;
+                }
+                self.pos += 1;
+                continue;
+            }
+            break;
+        }
+        // xmlParseCommentComplex
+        let mut buf = self.s[st..self.pos].to_vec();
+        let (q, ql) = self.char_at(self.pos, stop);
+        if q == 0 {
+            return self.comment_not_terminated(stop);
+        }
+        if !is_xml_char(q) {
+            let msg = format!("xmlParseComment: invalid xmlChar value {q}\n");
+            self.err(LEVEL_FATAL, 9, msg);
+            return;
+        }
+        self.pos += ql;
+        let (r, rl) = self.char_at(self.pos, stop);
+        if r == 0 {
+            return self.comment_not_terminated(stop);
+        }
+        if !is_xml_char(r) {
+            // (libxml2 reports the previous character here)
+            let msg = format!("xmlParseComment: invalid xmlChar value {q}\n");
+            self.err(LEVEL_FATAL, 9, msg);
+            return;
+        }
+        self.pos += rl;
+        let (mut q, mut r) = (q, r);
+        let (mut cur, mut l) = self.char_at(self.pos, stop);
+        if cur == 0 {
+            return self.comment_not_terminated(stop);
+        }
+        while is_xml_char(cur) && (cur != b'>' as u32 || r != b'-' as u32 || q != b'-' as u32) {
+            if r == b'-' as u32 && q == b'-' as u32 {
+                self.fatal(80, "Comment must not contain '--' (double-hyphen)\n");
+            }
+            push_utf8(&mut buf, q);
+            q = r;
+            r = cur;
+            self.pos += l;
+            (cur, l) = self.char_at(self.pos, stop);
+        }
+        if cur == 0 {
+            if self.pos >= stop && self.bad_utf8.is_some() {
+                self.report_bad_utf8();
+                return;
+            }
+            let shown = &buf[..buf.len().min(50)];
+            let msg = format!(
+                "Comment not terminated \n<!--{}\n",
+                String::from_utf8_lossy(shown)
+            );
+            self.err(LEVEL_FATAL, 45, msg);
+        } else if !is_xml_char(cur) {
+            let msg = format!("xmlParseComment: invalid xmlChar value {cur}\n");
+            self.err(LEVEL_FATAL, 9, msg);
+        } else {
+            self.pos += 1;
+            self.add_comment(parent, buf);
+        }
+    }
+
+    fn comment_not_terminated(&mut self, stop: usize) {
+        if self.pos >= stop && self.bad_utf8.is_some() {
+            self.report_bad_utf8();
+            return;
+        }
+        self.fatal(45, "Comment not terminated\n");
+    }
+
+    fn add_comment(&mut self, parent: NodeId, v: Vec<u8>) {
+        let line = self.line();
+        if self.sax.is_some() && parent != 0 {
+            self.sax_push(SaxEv::Comment(v.clone()));
+        }
+        let mut n = Node::new(Kind::Comment);
+        n.content = v;
+        n.line = line;
+        self.add_child(parent, n);
     }
 
     fn pi(&mut self, parent: NodeId) {
@@ -1029,6 +1236,10 @@ impl P<'_> {
         }
         let st = self.pos;
         while self.pos < self.s.len() {
+            let c = self.cur();
+            if c < 0x20 && !is_blank(c) {
+                break; // not a Char: the PI never ends
+            }
             if self.starts(b"?>") {
                 let data = self.s[st..self.pos].to_vec();
                 self.pos += 2;
@@ -1057,6 +1268,16 @@ impl P<'_> {
         self.pos += 9;
         let st = self.pos;
         while self.pos < self.s.len() {
+            let c = self.cur();
+            if c < 0x20 && !is_blank(c) {
+                // xmlParseCDSect: a non-Char among the first two characters
+                // is a bare XML_ERR_CDATA_NOT_FINISHED
+                if self.pos - st < 2 {
+                    self.fatal(63, "Unregistered error message\n");
+                    return;
+                }
+                break;
+            }
             if self.starts(b"]]>") {
                 let data = self.s[st..self.pos].to_vec();
                 self.pos += 3;
@@ -1076,7 +1297,7 @@ impl P<'_> {
             }
             self.pos += 1;
         }
-        let got = &self.s[st..];
+        let got = &self.s[st..self.pos];
         if got.len() < 2 {
             self.fatal(63, "CData section not finished\n");
         } else {
@@ -1155,7 +1376,15 @@ impl P<'_> {
                     out.push(b' ');
                     self.pos += 1;
                 }
+                _ if c < 0x20 => {
+                    self.fatal(9, "invalid character in attribute value\n");
+                    return None;
+                }
                 _ => {
+                    if self.bad_utf8.as_ref().is_some_and(|b| b.0 == self.pos) {
+                        self.report_bad_utf8();
+                        return None;
+                    }
                     out.push(c);
                     self.pos += 1;
                 }
@@ -1207,6 +1436,10 @@ impl P<'_> {
                 self.pos += 1;
                 self.skip_blanks();
                 val = self.att_value();
+                if self.halted {
+                    self.ns.truncate(ns_mark);
+                    return;
+                }
             } else {
                 let an = if ap.is_empty() {
                     al.clone()
@@ -1444,9 +1677,12 @@ impl P<'_> {
             self.ns.truncate(ns_mark);
             return;
         }
-        // end tag
+        // end tag (xmlParseQNameAndCompare: a matching name raises nothing)
         self.pos += 2;
-        let got = self.parse_qname().map(|(p, l)| {
+        let n_err = self.errors.len();
+        let got = self.parse_qname();
+        self.errors.truncate(n_err);
+        let got = got.map(|(p, l)| {
             if p.is_empty() {
                 l
             } else {
@@ -1609,6 +1845,7 @@ fn parse_inner(
         bad_utf8: None,
         sax: None,
         fatal_at: None,
+        utf16_input: input.starts_with(&[0xFF, 0xFE]) || input.starts_with(&[0xFE, 0xFF]),
     };
     p.doc.version = None;
     if sax {

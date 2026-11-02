@@ -432,7 +432,14 @@ fn var_export_value(
             let is_enum = host.is_enum_class(class_id);
             // get_properties_for(VAR_EXPORT): an ArrayObject's storage keeps
             // its integer keys; property names are always string keys.
+            let sxe = crate::ext::simplexml::debug_view(h.borrow().id);
             let props: Vec<(ArrayKey, Value)> = match crate::spl_array_storage(h) {
+                // SimpleXML's property view (materialized by the caller)
+                _ if sxe.is_some() => sxe
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(k, v)| (ArrayKey::Str(k), v))
+                    .collect(),
                 Some((Value::Array(a), _)) => {
                     a.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
                 }

@@ -1,4 +1,6 @@
 <?php
+// diagnostics without the (machine-specific) script path
+set_error_handler(function ($no, $msg) { echo "E$no: $msg\n"; return true; });
 // libxml2 2.9 serializer escaping: a document without an encoding goes
 // through xmlEscapeEntities (hex char refs; an invalid byte drops the whole
 // text node with a diagnostic), a node dump or an encoded document through

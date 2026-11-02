@@ -3,6 +3,7 @@
 //! libxml glue: the error list behind `libxml_use_internal_errors` /
 //! `libxml_get_errors`, the `LibXMLError` class and the `LIBXML_*` constants.
 
+pub mod charset;
 pub mod parser;
 pub mod tree;
 pub mod xpath;
@@ -162,6 +163,58 @@ pub fn report_save_diags(host: &mut dyn Host, fname: &str) -> Result<(), Thrown>
         }
     }
     Ok(())
+}
+
+/// A libxml2 tree-module error (`xmlTreeErr`, e.g. XML_TREE_UNTERMINATED_ENTITY
+/// = 1302): an XML_FROM_TREE record with line -1, or a warning from `fname`.
+pub fn report_tree_error(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
+    report(
+        host,
+        fname,
+        vec![plain_error(2, 1302, 2, -1, format!("{msg}\n"))],
+        Ctx::Plain,
+    )
+}
+
+/// The user function a property hook runs on behalf of (what php's
+/// `get_active_function_name` reports for a DOM property write): the frame
+/// below the prelude's `__set`, or `main` at top level.
+pub fn active_user_function(host: &dyn Host) -> String {
+    let st = host.call_stack();
+    let mut it = st.iter().skip_while(|(f, ..)| f.as_slice() != b"__set");
+    if it.next().is_none() {
+        return "main".into();
+    }
+    match it.next() {
+        Some((f, c, ..)) if !f.is_empty() => match c {
+            Some(c) => format!(
+                "{}::{}",
+                String::from_utf8_lossy(c),
+                String::from_utf8_lossy(f)
+            ),
+            None => String::from_utf8_lossy(f).into_owned(),
+        },
+        _ => "main".into(),
+    }
+}
+
+/// Write serialized output to `path` through the stream layer (libxml's
+/// php_libxml_streams_IO_open_write_wrapper): the byte count, or `None` after
+/// php's "Failed to open stream" warning from `fname`.
+pub fn save_to_uri(
+    host: &mut dyn Host,
+    fname: &str,
+    path: &[u8],
+    data: &[u8],
+) -> Result<Option<usize>, Thrown> {
+    crate::streams::clear_errno();
+    match host.stream_put_contents(path, data) {
+        Some(_) => Ok(Some(data.len())),
+        None => {
+            crate::open_failed(host, fname, path)?;
+            Ok(None)
+        }
+    }
 }
 
 /// A non-parser error record (validation, I/O): no file/column.

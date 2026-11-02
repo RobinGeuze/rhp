@@ -1,4 +1,6 @@
 <?php
+// diagnostics without the (machine-specific) script path
+set_error_handler(function ($no, $msg) { echo "E$no: $msg\n"; return true; });
 // Building report documents (junit/checkstyle style) with DOM: escaping,
 // formatOutput, node saves, XPath over the result, importNode.
 $d = new DOMDocument('1.0', 'UTF-8');
@@ -47,7 +49,7 @@ echo strlen($n2->saveXML()), "\n";
 // load with whitespace handling
 $w = new DOMDocument; $w->preserveWhiteSpace = false; $w->loadXML("<a>\n  <b>x</b>\n  <c/>\n</a>"); $w->formatOutput = true; echo $w->saveXML();
 $w = new DOMDocument; $w->loadXML("<a>\n  <b>x</b>\n  <c/>\n</a>"); $w->formatOutput = true; echo $w->saveXML();
-$w = new DOMDocument; var_dump(@$w->loadXML(''));
+$w = new DOMDocument; try { var_dump(@$w->loadXML('')); } catch (ValueError $e) { echo get_class($e), ': ', $e->getMessage(), "\n"; }
 try { $d->createElement('1bad'); } catch (DOMException $ex) { echo get_class($ex), ' ', $ex->getCode(), ' ', $ex->getMessage(), "\n"; }
 var_dump($d->save(sys_get_temp_dir() . '/rhp-dom-test.xml'));
 echo file_get_contents(sys_get_temp_dir() . '/rhp-dom-test.xml') === $d->saveXML() ? "eq\n" : "ne\n";

@@ -522,7 +522,7 @@ struct Ser<'a> {
     opts: &'a SaveOpts,
 }
 
-fn utf8_char(s: &[u8]) -> Option<(u32, usize)> {
+pub(crate) fn utf8_char(s: &[u8]) -> Option<(u32, usize)> {
     let b = s[0];
     let (len, init) = match b {
         0xC0..=0xDF => (2, (b & 0x1F) as u32),
@@ -707,6 +707,13 @@ impl Ser<'_> {
                     return;
                 }
                 self.out.push(b'>');
+                if n.first.is_none() {
+                    // XML_SAVE_NO_EMPTY: "<a></a>", no formatting inside
+                    self.out.extend_from_slice(b"</");
+                    self.out.extend_from_slice(&n.qname());
+                    self.out.push(b'>');
+                    return;
+                }
                 let mut cf = format;
                 if cf {
                     let mut c = n.first;
@@ -866,36 +873,10 @@ pub fn quote(out: &mut Vec<u8>, s: &[u8]) {
 /// Transcode UTF-8 output into the document's declared encoding (libxml2
 /// writes unrepresentable characters as decimal character references).
 pub fn encode_output(s: Vec<u8>, enc: &[u8]) -> Vec<u8> {
-    let e = enc.to_ascii_uppercase();
-    let limit: u32 = match &e[..] {
-        b"ISO-8859-1" | b"LATIN1" | b"ISO_8859-1" | b"ISO-LATIN-1" => 0xFF,
-        b"US-ASCII" | b"ASCII" => 0x7F,
-        _ => return s,
-    };
-    let mut out = Vec::with_capacity(s.len());
-    let mut i = 0;
-    while i < s.len() {
-        if s[i] < 0x80 {
-            out.push(s[i]);
-            i += 1;
-            continue;
-        }
-        match utf8_char(&s[i..]) {
-            Some((cp, len)) => {
-                if cp <= limit {
-                    out.push(cp as u8);
-                } else {
-                    out.extend_from_slice(format!("&#{cp};").as_bytes());
-                }
-                i += len;
-            }
-            None => {
-                out.push(s[i]);
-                i += 1;
-            }
-        }
+    match super::charset::single_byte(enc) {
+        Some(cs) => cs.encode(&s),
+        None => s,
     }
-    out
 }
 
 /// `xmlDocDumpFormatMemoryEnc`: the whole document with its XML declaration.

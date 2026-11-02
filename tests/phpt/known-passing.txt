@@ -1869,6 +1869,7 @@ ext/dom/tests/DOMDocument_createProcessingInstruction_error.phpt
 ext/dom/tests/DOMDocument_documentURI_basic.phpt
 ext/dom/tests/DOMDocument_getElementsByTagNameNS_match_any_namespace.phpt
 ext/dom/tests/DOMDocument_getElementsByTagName_liveness.phpt
+ext/dom/tests/DOMDocument_getElementsByTagName_liveness_simplexml.phpt
 ext/dom/tests/DOMDocument_getElementsByTagName_liveness_tree_walk.phpt
 ext/dom/tests/DOMDocument_implementationRead_basic.phpt
 ext/dom/tests/DOMDocument_json_encode.phpt
@@ -1877,6 +1878,7 @@ ext/dom/tests/DOMDocument_loadXML_basic.phpt
 ext/dom/tests/DOMDocument_loadXML_error1.phpt
 ext/dom/tests/DOMDocument_loadXML_error2_pre2_11.phpt
 ext/dom/tests/DOMDocument_loadXML_error3.phpt
+ext/dom/tests/DOMDocument_loadXML_error4.phpt
 ext/dom/tests/DOMDocument_loadXML_error5.phpt
 ext/dom/tests/DOMDocument_loadXML_error6.phpt
 ext/dom/tests/DOMDocument_loadXML_variation1.phpt
@@ -1885,6 +1887,7 @@ ext/dom/tests/DOMDocument_load_basic.phpt
 ext/dom/tests/DOMDocument_load_error1.phpt
 ext/dom/tests/DOMDocument_load_error2_pre2_11.phpt
 ext/dom/tests/DOMDocument_load_error3.phpt
+ext/dom/tests/DOMDocument_load_error4.phpt
 ext/dom/tests/DOMDocument_load_error5.phpt
 ext/dom/tests/DOMDocument_load_variation3.phpt
 ext/dom/tests/DOMDocument_preserveWhiteSpace_basic.phpt
@@ -1991,10 +1994,12 @@ ext/dom/tests/delayed_freeing/element_uaf_crash.phpt
 ext/dom/tests/delayed_freeing/namespace_definition_crash.phpt
 ext/dom/tests/delayed_freeing/namespace_xmlns_declaration.phpt
 ext/dom/tests/dom002.phpt
+ext/dom/tests/dom003.phpt
 ext/dom/tests/dom004.phpt
 ext/dom/tests/dom006.phpt
 ext/dom/tests/dom_comment_basic.phpt
 ext/dom/tests/dom_comment_variation.phpt
+ext/dom/tests/dom_set_attr_node.phpt
 ext/dom/tests/domchardata.phpt
 ext/dom/tests/domdocument_createentityreference_001.phpt
 ext/dom/tests/fragments_multiple_nodes_DOMParentNode.phpt
@@ -2042,6 +2047,7 @@ ext/simplexml/tests/002.phpt
 ext/simplexml/tests/004.phpt
 ext/simplexml/tests/005.phpt
 ext/simplexml/tests/006.phpt
+ext/simplexml/tests/007.phpt
 ext/simplexml/tests/009.phpt
 ext/simplexml/tests/009b.phpt
 ext/simplexml/tests/010.phpt
@@ -2058,6 +2064,8 @@ ext/simplexml/tests/023.phpt
 ext/simplexml/tests/025.phpt
 ext/simplexml/tests/026.phpt
 ext/simplexml/tests/029.phpt
+ext/simplexml/tests/032.phpt
+ext/simplexml/tests/034.phpt
 ext/simplexml/tests/035.phpt
 ext/simplexml/tests/036.phpt
 ext/simplexml/tests/037.phpt
@@ -2079,10 +2087,14 @@ ext/simplexml/tests/bug41867.phpt
 ext/simplexml/tests/bug41947.phpt
 ext/simplexml/tests/bug42259.phpt
 ext/simplexml/tests/bug42369.phpt
+ext/simplexml/tests/bug44478.phpt
 ext/simplexml/tests/bug45553.phpt
 ext/simplexml/tests/bug46003.phpt
 ext/simplexml/tests/bug46047.phpt
+ext/simplexml/tests/bug46048.phpt
 ext/simplexml/tests/bug48601.phpt
+ext/simplexml/tests/bug53033.phpt
+ext/simplexml/tests/bug54973.phpt
 ext/simplexml/tests/bug61335.phpt
 ext/simplexml/tests/bug62328.phpt
 ext/simplexml/tests/bug66084_1.phpt
@@ -2096,6 +2108,7 @@ ext/simplexml/tests/bug72971.phpt
 ext/simplexml/tests/bug75245.phpt
 ext/simplexml/tests/count_return_type_will_change.phpt
 ext/simplexml/tests/feature55218.phpt
+ext/simplexml/tests/gh10200.phpt
 ext/simplexml/tests/gh10983.phpt
 ext/simplexml/tests/gh12192.phpt
 ext/simplexml/tests/gh12208.phpt
@@ -3478,6 +3491,8 @@ ext/standard/tests/strings/hex2bin_basic.phpt
 ext/standard/tests/strings/hex2bin_error.phpt
 ext/standard/tests/strings/html_entity_decode1.phpt
 ext/standard/tests/strings/html_entity_decode_html4.phpt
+ext/standard/tests/strings/htmlentities-utf-3.phpt
+ext/standard/tests/strings/htmlentities19.phpt
 ext/standard/tests/strings/htmlspecialchars.phpt
 ext/standard/tests/strings/htmlspecialchars_basic.phpt
 ext/standard/tests/strings/htmlspecialchars_decode_variation3.phpt

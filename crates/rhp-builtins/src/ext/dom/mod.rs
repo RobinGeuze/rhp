@@ -276,7 +276,7 @@ fn split_qname(q: &[u8]) -> (Vec<u8>, Vec<u8>) {
 
 /// libxml2's `xmlStringGetNodeList`: element content given in escaped form.
 /// Returns the new child nodes, or an "unterminated entity" warning text.
-fn string_node_list(doc: &mut Doc, v: &[u8]) -> Result<Vec<NodeId>, String> {
+pub(crate) fn string_node_list(doc: &mut Doc, v: &[u8]) -> Result<Vec<NodeId>, String> {
     let mut out = Vec::new();
     let mut buf = Vec::new();
     let mut i = 0;
@@ -524,9 +524,9 @@ fn fn_dom(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             let Value::Str(data) = out else {
                 return Ok(Value::Bool(false));
             };
-            match std::fs::write(String::from_utf8_lossy(&fname).as_ref(), data.as_bytes()) {
-                Ok(()) => Ok(Value::Int(data.len() as i64)),
-                Err(_) => Ok(Value::Bool(false)),
+            match lx::save_to_uri(host, "DOMDocument::save", &fname, data.as_bytes())? {
+                Some(n) => Ok(Value::Int(n as i64)),
+                None => Ok(Value::Bool(false)),
             }
         }
         "get" => get_prop(host, d, n, &bytes(args, 3)),
@@ -1212,7 +1212,8 @@ fn set_prop(
                         }
                     });
                     if let Some(Err(e)) = r {
-                        crate::warn(host, "main", &e)?;
+                        let f = lx::active_user_function(host);
+                        lx::report_tree_error(host, &f, &e)?;
                     }
                 }
                 Kind::Text | Kind::CData | Kind::Comment | Kind::Pi => {
@@ -1944,7 +1945,7 @@ fn create(host: &mut dyn Host, d: DocId, args: &[Value]) -> Result<Value, Thrown
                 return Ok(Value::Bool(false));
             };
             if let Some(w) = w {
-                crate::warn(host, "DOMDocument::createElement", &w)?;
+                lx::report_tree_error(host, "DOMDocument::createElement", &w)?;
             }
             Ok(wrap(host, d, el))
         }
@@ -1970,16 +1971,25 @@ fn create(host: &mut dyn Host, d: DocId, args: &[Value]) -> Result<Value, Thrown
                 } else {
                     doc.nodes[el].name = q.clone();
                 }
+                let mut warn = None;
                 if !value.is_empty() {
-                    if let Ok(ids) = string_node_list(doc, &value) {
-                        for i in ids {
-                            doc.append(el, i);
+                    match string_node_list(doc, &value) {
+                        Ok(ids) => {
+                            for i in ids {
+                                doc.append(el, i);
+                            }
                         }
+                        Err(e) => warn = Some(e),
                     }
                 }
-                el
-            })
-            .unwrap_or(0);
+                (el, warn)
+            });
+            let Some((el, w)) = el else {
+                return Ok(Value::Bool(false));
+            };
+            if let Some(w) = w {
+                lx::report_tree_error(host, "DOMDocument::createElementNS", &w)?;
+            }
             Ok(wrap(host, d, el))
         }
         b"text" | b"comment" | b"cdata" => {

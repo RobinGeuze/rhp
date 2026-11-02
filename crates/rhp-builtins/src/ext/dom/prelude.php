@@ -74,8 +74,8 @@ class DOMNode {
         $p = __dom('nodePath', $this->__d, $this->__n); $q = __dom('nodePath', $other->__d, $other->__n);
         return strcmp($p, $q) < 0 ? 4 : 2;
     }
-    public function __sleep(): array { throw new Exception("Serialization of '" . static::class . "' is not allowed"); }
-    public function __wakeup(): void { throw new Exception("Unserialization of '" . static::class . "' is not allowed"); }
+    public function __sleep(): array { throw new Exception("Serialization of '" . static::class . "' is not allowed, unless serialization methods are implemented in a subclass"); }
+    public function __wakeup(): void { throw new Exception("Unserialization of '" . static::class . "' is not allowed, unless unserialization methods are implemented in a subclass"); }
 
     // ParentNode / ChildNode helpers
     protected function __nodes(array $nodes) {
@@ -311,6 +311,8 @@ class DOMProcessingInstruction extends DOMNode {
 }
 
 class DOMXPath {
+    public function __sleep(): array { throw new Exception("Serialization of '" . static::class . "' is not allowed"); }
+    public function __wakeup(): void { throw new Exception("Unserialization of '" . static::class . "' is not allowed"); }
     public $__doc; public $__d; public $__ns = []; public $__reg = true;
     public function __construct(DOMDocument $document, bool $registerNodeNS = true) {
         $this->__doc = $document; $this->__d = $document->__d; $this->__reg = $registerNodeNS;

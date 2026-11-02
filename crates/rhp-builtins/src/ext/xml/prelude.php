@@ -1,5 +1,7 @@
 
 final class XMLParser {
+    public function __sleep(): array { throw new Exception("Serialization of 'XMLParser' is not allowed"); }
+    public function __wakeup(): void { throw new Exception("Unserialization of 'XMLParser' is not allowed"); }
     public static $__ok = false;
     public function __construct() {
         if (!self::$__ok) { throw new Error('Cannot directly construct XMLParser, use xml_parser_create() or xml_parser_create_ns() instead'); }

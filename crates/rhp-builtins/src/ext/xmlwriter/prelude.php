@@ -15,20 +15,20 @@ class XMLWriter {
     public function setIndentString(string $indentation): bool { return __xw('setIndentString', $this->__chk(), $indentation); }
     public function startComment(): bool { return __xw('startComment', $this->__chk()); }
     public function endComment(): bool { return __xw('endComment', $this->__chk()); }
-    public function startAttribute(string $name): bool { return __xw('startAttribute', $this->__chk(), $name); }
+    public function startAttribute(string $name): bool { $__w = $this->__chk(); __xw('chkName', 0, $name, 'XMLWriter::startAttribute(): Argument #2', 'attribute name'); return __xw('startAttribute', $__w, $name); }
     public function endAttribute(): bool { return __xw('endAttribute', $this->__chk()); }
-    public function writeAttribute(string $name, string $value): bool { return __xw('writeAttribute', $this->__chk(), $name, $value); }
-    public function startAttributeNs(?string $prefix, string $name, ?string $namespace): bool { return __xw('startAttributeNs', $this->__chk(), $prefix, $name, $namespace); }
-    public function writeAttributeNs(?string $prefix, string $name, ?string $namespace, string $value): bool { return __xw('writeAttributeNs', $this->__chk(), $prefix, $name, $namespace, $value); }
-    public function startElement(string $name): bool { return __xw('startElement', $this->__chk(), $name); }
+    public function writeAttribute(string $name, string $value): bool { $__w = $this->__chk(); __xw('chkName', 0, $name, 'XMLWriter::writeAttribute(): Argument #2 ($value)', 'attribute name'); return __xw('writeAttribute', $__w, $name, $value); }
+    public function startAttributeNs(?string $prefix, string $name, ?string $namespace): bool { $__w = $this->__chk(); __xw('chkName', 0, $name, 'XMLWriter::startAttributeNs(): Argument #3 ($namespace)', 'attribute name'); return __xw('startAttributeNs', $__w, $prefix, $name, $namespace); }
+    public function writeAttributeNs(?string $prefix, string $name, ?string $namespace, string $value): bool { $__w = $this->__chk(); __xw('chkName', 0, $name, 'XMLWriter::writeAttributeNs(): Argument #3 ($namespace)', 'attribute name'); return __xw('writeAttributeNs', $__w, $prefix, $name, $namespace, $value); }
+    public function startElement(string $name): bool { $__w = $this->__chk(); __xw('chkName', 0, $name, 'XMLWriter::startElement(): Argument #2', 'element name'); return __xw('startElement', $__w, $name); }
     public function endElement(): bool { return __xw('endElement', $this->__chk()); }
     public function fullEndElement(): bool { return __xw('fullEndElement', $this->__chk()); }
-    public function startElementNs(?string $prefix, string $name, ?string $namespace): bool { return __xw('startElementNs', $this->__chk(), $prefix, $name, $namespace); }
-    public function writeElement(string $name, ?string $content = null): bool { return __xw('writeElement', $this->__chk(), $name, $content); }
-    public function writeElementNs(?string $prefix, string $name, ?string $namespace, ?string $content = null): bool { return __xw('writeElementNs', $this->__chk(), $prefix, $name, $namespace, $content); }
-    public function startPi(string $target): bool { return __xw('startPi', $this->__chk(), $target); }
+    public function startElementNs(?string $prefix, string $name, ?string $namespace): bool { $__w = $this->__chk(); __xw('chkName', 0, $name, 'XMLWriter::startElementNs(): Argument #3 ($namespace)', 'element name'); return __xw('startElementNs', $__w, $prefix, $name, $namespace); }
+    public function writeElement(string $name, ?string $content = null): bool { $__w = $this->__chk(); __xw('chkName', 0, $name, 'XMLWriter::writeElement(): Argument #2 ($content)', 'element name'); return __xw('writeElement', $__w, $name, $content); }
+    public function writeElementNs(?string $prefix, string $name, ?string $namespace, ?string $content = null): bool { $__w = $this->__chk(); __xw('chkName', 0, $name, 'XMLWriter::writeElementNs(): Argument #3 ($namespace)', 'element name'); return __xw('writeElementNs', $__w, $prefix, $name, $namespace, $content); }
+    public function startPi(string $target): bool { $__w = $this->__chk(); __xw('chkName', 0, $target, 'XMLWriter::startPi(): Argument #2', 'PI target'); return __xw('startPi', $__w, $target); }
     public function endPi(): bool { return __xw('endPi', $this->__chk()); }
-    public function writePi(string $target, string $content): bool { return __xw('writePi', $this->__chk(), $target, $content); }
+    public function writePi(string $target, string $content): bool { $__w = $this->__chk(); __xw('chkName', 0, $target, 'XMLWriter::writePi(): Argument #2 ($content)', 'PI target'); return __xw('writePi', $__w, $target, $content); }
     public function startCdata(): bool { return __xw('startCdata', $this->__chk()); }
     public function endCdata(): bool { return __xw('endCdata', $this->__chk()); }
     public function writeCdata(string $content): bool { return __xw('writeCdata', $this->__chk(), $content); }
@@ -40,15 +40,15 @@ class XMLWriter {
     public function startDtd(string $qualifiedName, ?string $publicId = null, ?string $systemId = null): bool { return __xw('startDtd', $this->__chk(), $qualifiedName, $publicId, $systemId); }
     public function endDtd(): bool { return __xw('endDtd', $this->__chk()); }
     public function writeDtd(string $name, ?string $publicId = null, ?string $systemId = null, ?string $content = null): bool { return __xw('writeDtd', $this->__chk(), $name, $publicId, $systemId, $content); }
-    public function startDtdElement(string $qualifiedName): bool { return __xw('startDtdElement', $this->__chk(), $qualifiedName); }
+    public function startDtdElement(string $qualifiedName): bool { $__w = $this->__chk(); __xw('chkName', 0, $qualifiedName, 'XMLWriter::startDtdElement(): Argument #2', 'element name'); return __xw('startDtdElement', $__w, $qualifiedName); }
     public function endDtdElement(): bool { return __xw('endDtdElement', $this->__chk()); }
-    public function writeDtdElement(string $name, string $content): bool { return __xw('writeDtdElement', $this->__chk(), $name, $content); }
-    public function startDtdAttlist(string $name): bool { return __xw('startDtdAttlist', $this->__chk(), $name); }
+    public function writeDtdElement(string $name, string $content): bool { $__w = $this->__chk(); __xw('chkName', 0, $name, 'XMLWriter::writeDtdElement(): Argument #2 ($content)', 'element name'); return __xw('writeDtdElement', $__w, $name, $content); }
+    public function startDtdAttlist(string $name): bool { $__w = $this->__chk(); __xw('chkName', 0, $name, 'XMLWriter::startDtdAttlist(): Argument #2', 'element name'); return __xw('startDtdAttlist', $__w, $name); }
     public function endDtdAttlist(): bool { return __xw('endDtdAttlist', $this->__chk()); }
-    public function writeDtdAttlist(string $name, string $content): bool { return __xw('writeDtdAttlist', $this->__chk(), $name, $content); }
-    public function startDtdEntity(string $name, bool $isParam): bool { return __xw('startDtdEntity', $this->__chk(), $name, $isParam); }
+    public function writeDtdAttlist(string $name, string $content): bool { $__w = $this->__chk(); __xw('chkName', 0, $name, 'XMLWriter::writeDtdAttlist(): Argument #2 ($content)', 'element name'); return __xw('writeDtdAttlist', $__w, $name, $content); }
+    public function startDtdEntity(string $name, bool $isParam): bool { $__w = $this->__chk(); __xw('chkName', 0, $name, 'XMLWriter::startDtdEntity(): Argument #2 ($isParam)', 'attribute name'); return __xw('startDtdEntity', $__w, $name, $isParam); }
     public function endDtdEntity(): bool { return __xw('endDtdEntity', $this->__chk()); }
-    public function writeDtdEntity(string $name, string $content, bool $isParam = false, ?string $publicId = null, ?string $systemId = null, ?string $notationData = null): bool { return __xw('writeDtdEntity', $this->__chk(), $name, $content, $isParam); }
+    public function writeDtdEntity(string $name, string $content, bool $isParam = false, ?string $publicId = null, ?string $systemId = null, ?string $notationData = null): bool { $__w = $this->__chk(); __xw('chkName', 0, $name, 'XMLWriter::writeDtdEntity(): Argument #2 ($content)', 'element name'); return __xw('writeDtdEntity', $__w, $name, $content, $isParam); }
     public function outputMemory(bool $flush = true): string { return __xw('outputMemory', $this->__chk(), $flush); }
     public function flush(bool $empty = true): string|int { return __xw('flush', $this->__chk(), $empty); }
 }
@@ -64,20 +64,20 @@ function xmlwriter_set_indent(XMLWriter $writer, bool $enable): bool { return $w
 function xmlwriter_set_indent_string(XMLWriter $writer, string $indentation): bool { return $writer->setIndentString($indentation); }
 function xmlwriter_start_comment(XMLWriter $writer): bool { return $writer->startComment(); }
 function xmlwriter_end_comment(XMLWriter $writer): bool { return $writer->endComment(); }
-function xmlwriter_start_attribute(XMLWriter $writer, string $name): bool { return $writer->startAttribute($name); }
+function xmlwriter_start_attribute(XMLWriter $writer, string $name): bool { __xw('chkName', 0, $name, 'xmlwriter_start_attribute(): Argument #2 ($name)', 'attribute name'); return $writer->startAttribute($name); }
 function xmlwriter_end_attribute(XMLWriter $writer): bool { return $writer->endAttribute(); }
-function xmlwriter_write_attribute(XMLWriter $writer, string $name, string $value): bool { return $writer->writeAttribute($name, $value); }
-function xmlwriter_start_attribute_ns(XMLWriter $writer, ?string $prefix, string $name, ?string $namespace): bool { return $writer->startAttributeNs($prefix, $name, $namespace); }
-function xmlwriter_write_attribute_ns(XMLWriter $writer, ?string $prefix, string $name, ?string $namespace, string $value): bool { return $writer->writeAttributeNs($prefix, $name, $namespace, $value); }
-function xmlwriter_start_element(XMLWriter $writer, string $name): bool { return $writer->startElement($name); }
+function xmlwriter_write_attribute(XMLWriter $writer, string $name, string $value): bool { __xw('chkName', 0, $name, 'xmlwriter_write_attribute(): Argument #2 ($name)', 'attribute name'); return $writer->writeAttribute($name, $value); }
+function xmlwriter_start_attribute_ns(XMLWriter $writer, ?string $prefix, string $name, ?string $namespace): bool { __xw('chkName', 0, $name, 'xmlwriter_start_attribute_ns(): Argument #3 ($name)', 'attribute name'); return $writer->startAttributeNs($prefix, $name, $namespace); }
+function xmlwriter_write_attribute_ns(XMLWriter $writer, ?string $prefix, string $name, ?string $namespace, string $value): bool { __xw('chkName', 0, $name, 'xmlwriter_write_attribute_ns(): Argument #3 ($name)', 'attribute name'); return $writer->writeAttributeNs($prefix, $name, $namespace, $value); }
+function xmlwriter_start_element(XMLWriter $writer, string $name): bool { __xw('chkName', 0, $name, 'xmlwriter_start_element(): Argument #2 ($name)', 'element name'); return $writer->startElement($name); }
 function xmlwriter_end_element(XMLWriter $writer): bool { return $writer->endElement(); }
 function xmlwriter_full_end_element(XMLWriter $writer): bool { return $writer->fullEndElement(); }
-function xmlwriter_start_element_ns(XMLWriter $writer, ?string $prefix, string $name, ?string $namespace): bool { return $writer->startElementNs($prefix, $name, $namespace); }
-function xmlwriter_write_element(XMLWriter $writer, string $name, ?string $content = null): bool { return $writer->writeElement($name, $content); }
-function xmlwriter_write_element_ns(XMLWriter $writer, ?string $prefix, string $name, ?string $namespace, ?string $content = null): bool { return $writer->writeElementNs($prefix, $name, $namespace, $content); }
-function xmlwriter_start_pi(XMLWriter $writer, string $target): bool { return $writer->startPi($target); }
+function xmlwriter_start_element_ns(XMLWriter $writer, ?string $prefix, string $name, ?string $namespace): bool { __xw('chkName', 0, $name, 'xmlwriter_start_element_ns(): Argument #3 ($name)', 'element name'); return $writer->startElementNs($prefix, $name, $namespace); }
+function xmlwriter_write_element(XMLWriter $writer, string $name, ?string $content = null): bool { __xw('chkName', 0, $name, 'xmlwriter_write_element(): Argument #2 ($name)', 'element name'); return $writer->writeElement($name, $content); }
+function xmlwriter_write_element_ns(XMLWriter $writer, ?string $prefix, string $name, ?string $namespace, ?string $content = null): bool { __xw('chkName', 0, $name, 'xmlwriter_write_element_ns(): Argument #3 ($name)', 'element name'); return $writer->writeElementNs($prefix, $name, $namespace, $content); }
+function xmlwriter_start_pi(XMLWriter $writer, string $target): bool { __xw('chkName', 0, $target, 'xmlwriter_start_pi(): Argument #2 ($target)', 'PI target'); return $writer->startPi($target); }
 function xmlwriter_end_pi(XMLWriter $writer): bool { return $writer->endPi(); }
-function xmlwriter_write_pi(XMLWriter $writer, string $target, string $content): bool { return $writer->writePi($target, $content); }
+function xmlwriter_write_pi(XMLWriter $writer, string $target, string $content): bool { __xw('chkName', 0, $target, 'xmlwriter_write_pi(): Argument #2 ($target)', 'PI target'); return $writer->writePi($target, $content); }
 function xmlwriter_start_cdata(XMLWriter $writer): bool { return $writer->startCdata(); }
 function xmlwriter_end_cdata(XMLWriter $writer): bool { return $writer->endCdata(); }
 function xmlwriter_write_cdata(XMLWriter $writer, string $content): bool { return $writer->writeCdata($content); }
@@ -89,14 +89,14 @@ function xmlwriter_write_comment(XMLWriter $writer, string $content): bool { ret
 function xmlwriter_start_dtd(XMLWriter $writer, string $qualifiedName, ?string $publicId = null, ?string $systemId = null): bool { return $writer->startDtd($qualifiedName, $publicId, $systemId); }
 function xmlwriter_end_dtd(XMLWriter $writer): bool { return $writer->endDtd(); }
 function xmlwriter_write_dtd(XMLWriter $writer, string $name, ?string $publicId = null, ?string $systemId = null, ?string $content = null): bool { return $writer->writeDtd($name, $publicId, $systemId, $content); }
-function xmlwriter_start_dtd_element(XMLWriter $writer, string $qualifiedName): bool { return $writer->startDtdElement($qualifiedName); }
+function xmlwriter_start_dtd_element(XMLWriter $writer, string $qualifiedName): bool { __xw('chkName', 0, $qualifiedName, 'xmlwriter_start_dtd_element(): Argument #2 ($qualifiedName)', 'element name'); return $writer->startDtdElement($qualifiedName); }
 function xmlwriter_end_dtd_element(XMLWriter $writer): bool { return $writer->endDtdElement(); }
-function xmlwriter_write_dtd_element(XMLWriter $writer, string $name, string $content): bool { return $writer->writeDtdElement($name, $content); }
-function xmlwriter_start_dtd_attlist(XMLWriter $writer, string $name): bool { return $writer->startDtdAttlist($name); }
+function xmlwriter_write_dtd_element(XMLWriter $writer, string $name, string $content): bool { __xw('chkName', 0, $name, 'xmlwriter_write_dtd_element(): Argument #2 ($name)', 'element name'); return $writer->writeDtdElement($name, $content); }
+function xmlwriter_start_dtd_attlist(XMLWriter $writer, string $name): bool { __xw('chkName', 0, $name, 'xmlwriter_start_dtd_attlist(): Argument #2 ($name)', 'element name'); return $writer->startDtdAttlist($name); }
 function xmlwriter_end_dtd_attlist(XMLWriter $writer): bool { return $writer->endDtdAttlist(); }
-function xmlwriter_write_dtd_attlist(XMLWriter $writer, string $name, string $content): bool { return $writer->writeDtdAttlist($name, $content); }
-function xmlwriter_start_dtd_entity(XMLWriter $writer, string $name, bool $isParam): bool { return $writer->startDtdEntity($name, $isParam); }
+function xmlwriter_write_dtd_attlist(XMLWriter $writer, string $name, string $content): bool { __xw('chkName', 0, $name, 'xmlwriter_write_dtd_attlist(): Argument #2 ($name)', 'element name'); return $writer->writeDtdAttlist($name, $content); }
+function xmlwriter_start_dtd_entity(XMLWriter $writer, string $name, bool $isParam): bool { __xw('chkName', 0, $name, 'xmlwriter_start_dtd_entity(): Argument #2 ($name)', 'attribute name'); return $writer->startDtdEntity($name, $isParam); }
 function xmlwriter_end_dtd_entity(XMLWriter $writer): bool { return $writer->endDtdEntity(); }
-function xmlwriter_write_dtd_entity(XMLWriter $writer, string $name, string $content, bool $isParam = false, ?string $publicId = null, ?string $systemId = null, ?string $notationData = null): bool { return $writer->writeDtdEntity($name, $content, $isParam, $publicId, $systemId, $notationData); }
+function xmlwriter_write_dtd_entity(XMLWriter $writer, string $name, string $content, bool $isParam = false, ?string $publicId = null, ?string $systemId = null, ?string $notationData = null): bool { __xw('chkName', 0, $name, 'xmlwriter_write_dtd_entity(): Argument #2 ($name)', 'element name'); return $writer->writeDtdEntity($name, $content, $isParam, $publicId, $systemId, $notationData); }
 function xmlwriter_output_memory(XMLWriter $writer, bool $flush = true): string { return $writer->outputMemory($flush); }
 function xmlwriter_flush(XMLWriter $writer, bool $empty = true): string|int { return $writer->flush($empty); }

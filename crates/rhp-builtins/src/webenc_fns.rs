@@ -175,6 +175,214 @@ const ENT_HTML_SUBSTITUTE_ERRORS: i64 = 8;
 const ENT_HTML_DOC_TYPE_MASK: i64 = 16 | 32;
 const ENT_HTML_DOC_HTML401: i64 = 0;
 const ENT_HTML_DOC_XML1: i64 = 16;
+const ENT_HTML_DOC_XHTML: i64 = 32;
+const ENT_HTML_DOC_HTML5: i64 = 48;
+const ENT_HTML_SUBSTITUTE_DISALLOWED_CHARS: i64 = 128;
+
+/// php's `entity_charset` families (html.c charset_map): how
+/// `get_next_char` splits the input.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Charset {
+    Utf8,
+    /// ISO-8859-1: single bytes that are Unicode code points.
+    Latin1,
+    /// Other single-byte charsets (cp1252, KOI8-R, ...).
+    SingleByte,
+    Big5,
+    Gb2312,
+    Big5Hkscs,
+    Sjis,
+    EucJp,
+}
+
+/// `determine_charset`: the charset named by `hint` (case-insensitive), or
+/// UTF-8 (with php's warning for an unknown name).
+fn determine_charset(host: &mut dyn Host, fname: &str, hint: &[u8]) -> Result<Charset, Thrown> {
+    // a C string: the name ends at the first NUL
+    let hint = &hint[..hint.iter().position(|&b| b == 0).unwrap_or(hint.len())];
+    if hint.is_empty() {
+        return Ok(Charset::Utf8);
+    }
+    let up = hint.to_ascii_uppercase();
+    Ok(match &up[..] {
+        b"UTF-8" => Charset::Utf8,
+        b"ISO-8859-1" | b"ISO8859-1" => Charset::Latin1,
+        b"ISO-8859-15" | b"ISO8859-15" | b"CP1252" | b"WINDOWS-1252" | b"1252" | b"KOI8-R"
+        | b"KOI8-RU" | b"KOI8R" | b"CP1251" | b"WINDOWS-1251" | b"WIN-1251" | b"ISO8859-5"
+        | b"ISO-8859-5" | b"CP866" | b"866" | b"IBM866" | b"MACROMAN" => Charset::SingleByte,
+        b"BIG5" | b"950" => Charset::Big5,
+        b"GB2312" | b"936" => Charset::Gb2312,
+        b"BIG5-HKSCS" => Charset::Big5Hkscs,
+        b"SHIFT_JIS" | b"SJIS" | b"932" | b"SJIS-WIN" | b"CP932" => Charset::Sjis,
+        b"EUCJP" | b"EUC-JP" | b"EUCJP-WIN" => Charset::EucJp,
+        _ => {
+            crate::warn(
+                host,
+                fname,
+                &format!(
+                    "Charset \"{}\" is not supported, assuming UTF-8",
+                    String::from_utf8_lossy(hint)
+                ),
+            )?;
+            Charset::Utf8
+        }
+    })
+}
+
+/// `get_next_char` for the non-UTF-8 charsets: (character, length), or
+/// `Err(advance)` for an invalid multibyte sequence.
+fn next_char_cs(cs: Charset, s: &[u8], pos: usize) -> Result<(u32, usize), usize> {
+    let c = s[pos];
+    let avail = s.len() - pos;
+    let next = s.get(pos + 1).copied().unwrap_or(0);
+    let gb_lead = |c: u8| c != 0x8E && c != 0x8F && c != 0xA0 && c != 0xFF;
+    let gb_trail = |c: u8| (0xA1..=0xFE).contains(&c);
+    let sjis_lead = |c: u8| c != 0x80 && c != 0xA0 && c < 0xFD;
+    let sjis_trail = |c: u8| c >= 0x40 && c != 0x7F && c < 0xFD;
+    match cs {
+        Charset::Utf8 => {
+            let n = utf8_next(s, pos)?;
+            let mut cp = (c as u32) & [0x7F, 0x1F, 0x0F, 0x07][n - 1];
+            for &b in &s[pos + 1..pos + n] {
+                cp = (cp << 6) | (b as u32 & 0x3F);
+            }
+            Ok((cp, n))
+        }
+        Charset::Latin1 | Charset::SingleByte => Ok((c as u32, 1)),
+        Charset::Big5 | Charset::Big5Hkscs => {
+            if !(0x81..=0xFE).contains(&c) {
+                return Ok((c as u32, 1));
+            }
+            if avail < 2 {
+                return Err(1);
+            }
+            if (0x40..=0x7E).contains(&next) || (0xA1..=0xFE).contains(&next) {
+                Ok((((c as u32) << 8) | next as u32, 2))
+            } else if cs == Charset::Big5 || (next != 0x80 && next != 0xFF) {
+                Err(1)
+            } else {
+                Err(2)
+            }
+        }
+        Charset::Gb2312 => {
+            if (0xA1..=0xFE).contains(&c) {
+                if avail < 2 {
+                    return Err(1);
+                }
+                if gb_trail(next) {
+                    Ok((((c as u32) << 8) | next as u32, 2))
+                } else if gb_lead(next) {
+                    Err(1)
+                } else {
+                    Err(2)
+                }
+            } else if gb_lead(c) {
+                Ok((c as u32, 1))
+            } else {
+                Err(1)
+            }
+        }
+        Charset::Sjis => {
+            if (0x81..=0x9F).contains(&c) || (0xE0..=0xFC).contains(&c) {
+                if avail < 2 {
+                    return Err(1);
+                }
+                if sjis_trail(next) {
+                    Ok((((c as u32) << 8) | next as u32, 2))
+                } else if sjis_lead(next) {
+                    Err(1)
+                } else {
+                    Err(2)
+                }
+            } else if c < 0x80 || (0xA1..=0xDF).contains(&c) {
+                Ok((c as u32, 1))
+            } else {
+                Err(1)
+            }
+        }
+        Charset::EucJp => {
+            let bad = |b: u8| if b != 0xA0 && b != 0xFF { 1 } else { 2 };
+            if (0xA1..=0xFE).contains(&c) {
+                if avail < 2 {
+                    return Err(1);
+                }
+                if (0xA1..=0xFE).contains(&next) {
+                    Ok((((c as u32) << 8) | next as u32, 2))
+                } else {
+                    Err(bad(next))
+                }
+            } else if c == 0x8E {
+                if avail < 2 {
+                    return Err(1);
+                }
+                if (0xA1..=0xDF).contains(&next) {
+                    Ok((((c as u32) << 8) | next as u32, 2))
+                } else {
+                    Err(bad(next))
+                }
+            } else if c == 0x8F {
+                let b2 = s.get(pos + 2).copied().unwrap_or(0);
+                let hi = |b: u8| (0xA1..=0xFE).contains(&b);
+                if avail < 3 || !hi(next) || !hi(b2) {
+                    if avail < 2 || (next != 0xA0 && next != 0xFF) {
+                        Err(1)
+                    } else if avail < 3 || (b2 != 0xA0 && b2 != 0xFF) {
+                        Err(2)
+                    } else {
+                        Err(3)
+                    }
+                } else {
+                    Ok((((c as u32) << 16) | ((next as u32) << 8) | b2 as u32, 3))
+                }
+            } else if c != 0xA0 && c != 0xFF {
+                Ok((c as u32, 1))
+            } else {
+                Err(1)
+            }
+        }
+    }
+}
+
+/// `unicode_cp_is_allowed`.
+fn unicode_cp_is_allowed(cp: u32, doctype: i64) -> bool {
+    match doctype {
+        ENT_HTML_DOC_HTML401 => {
+            (0x20..=0x7E).contains(&cp)
+                || matches!(cp, 0x0A | 0x09 | 0x0D)
+                || (0xA0..=0xD7FF).contains(&cp)
+                || (0xE000..=0x10FFFF).contains(&cp)
+        }
+        ENT_HTML_DOC_HTML5 => {
+            (0x20..=0x7E).contains(&cp)
+                || ((0x09..=0x0D).contains(&cp) && cp != 0x0B)
+                || (0xA0..=0xD7FF).contains(&cp)
+                || ((0xE000..=0x10FFFF).contains(&cp)
+                    && (cp & 0xFFFF) < 0xFFFE
+                    && !(0xFDD0..=0xFDEF).contains(&cp))
+        }
+        ENT_HTML_DOC_XHTML | ENT_HTML_DOC_XML1 => {
+            (0x20..=0xD7FF).contains(&cp)
+                || matches!(cp, 0x0A | 0x09 | 0x0D)
+                || ((0xE000..=0x10FFFF).contains(&cp) && cp != 0xFFFE && cp != 0xFFFF)
+        }
+        _ => true,
+    }
+}
+
+/// `numeric_entity_is_allowed`.
+fn numeric_entity_is_allowed(cp: u32, doctype: i64) -> bool {
+    match doctype {
+        ENT_HTML_DOC_HTML401 => cp <= 0x10FFFF,
+        ENT_HTML_DOC_HTML5 => {
+            (0x20..=0x7E).contains(&cp)
+                || ((0x09..=0x0C).contains(&cp) && cp != 0x0B)
+                || ((0xA0..=0x10FFFF).contains(&cp)
+                    && (cp & 0xFFFF) < 0xFFFE
+                    && !(0xFDD0..=0xFDEF).contains(&cp))
+        }
+        _ => unicode_cp_is_allowed(cp, doctype),
+    }
+}
 
 /// Length of the UTF-8 sequence at `s[pos..]`, or `Err(advance)` for an
 /// invalid one — php's `get_next_char` (cs_utf_8), UTR #36 strategy 2.
@@ -239,26 +447,47 @@ fn utf8_next(s: &[u8], pos: usize) -> Result<usize, usize> {
 
 /// With `double_encode` off: the length of a valid entity body after `&`
 /// (up to and excluding `;`), as php_escape_html_entities_ex accepts it.
-fn existing_entity_len(s: &[u8], doctype: i64) -> Option<usize> {
+fn existing_entity_len(s: &[u8], doctype: i64, flags: i64) -> Option<usize> {
     if s.first() == Some(&b'#') {
+        // process_numeric_entity: ZEND_STRTOL (which also takes a "0x"
+        // prefix in base 16) up to a ';', at most 0x10FFFF
         let hex = matches!(s.get(1), Some(b'x' | b'X'));
-        let start = if hex { 2 } else { 1 };
-        let mut j = start;
-        while j < s.len()
-            && (if hex {
-                s[j].is_ascii_hexdigit()
+        let mut j = if hex { 2 } else { 1 };
+        let digit = |c: u8| {
+            if hex {
+                c.is_ascii_hexdigit()
             } else {
-                s[j].is_ascii_digit()
-            })
+                c.is_ascii_digit()
+            }
+        };
+        if !s.get(j).copied().is_some_and(digit) {
+            return None;
+        }
+        if hex
+            && s.get(j) == Some(&b'0')
+            && matches!(s.get(j + 1), Some(b'x' | b'X'))
+            && s.get(j + 2).is_some_and(|c| c.is_ascii_hexdigit())
         {
+            j += 2;
+        }
+        let start = j;
+        while j < s.len() && digit(s[j]) {
             j += 1;
         }
-        if j == start || s.get(j) != Some(&b';') {
+        if s.get(j) != Some(&b';') {
             return None;
         }
         let digits = std::str::from_utf8(&s[start..j]).ok()?;
         let v = u64::from_str_radix(digits, if hex { 16 } else { 10 }).unwrap_or(u64::MAX);
-        return (v <= 0x10ffff).then_some(j);
+        if v > 0x10FFFF {
+            return None;
+        }
+        if flags & ENT_HTML_SUBSTITUTE_DISALLOWED_CHARS != 0
+            && !numeric_entity_is_allowed(v as u32, doctype)
+        {
+            return None;
+        }
+        return Some(j);
     }
     let n = s.iter().take_while(|b| b.is_ascii_alphanumeric()).count();
     if n == 0 || s.get(n) != Some(&b';') {
@@ -274,30 +503,34 @@ fn existing_entity_len(s: &[u8], doctype: i64) -> Option<usize> {
     known.then_some(n)
 }
 
-/// php_escape_html_entities_ex with all=0 (htmlspecialchars) for UTF-8.
-fn html_escape_flags(s: &[u8], flags: i64, double_encode: bool) -> Vec<u8> {
+/// php_escape_html_entities_ex with all=0 (htmlspecialchars).
+fn html_escape_flags(s: &[u8], flags: i64, double_encode: bool, cs: Charset) -> Vec<u8> {
     let doctype = flags & ENT_HTML_DOC_TYPE_MASK;
+    let replacement: &[u8] = if cs == Charset::Utf8 {
+        b"\xEF\xBF\xBD"
+    } else {
+        b"&#xFFFD;"
+    };
     let mut out = Vec::with_capacity(s.len());
     let mut i = 0;
     while i < s.len() {
-        let n = match utf8_next(s, i) {
-            Ok(n) => n,
+        let (ch, n) = match next_char_cs(cs, s, i) {
+            Ok(x) => x,
             Err(adv) => {
                 i += adv;
                 if flags & ENT_HTML_IGNORE_ERRORS != 0 {
                     continue;
                 } else if flags & ENT_HTML_SUBSTITUTE_ERRORS != 0 {
-                    out.extend_from_slice(b"\xEF\xBF\xBD");
+                    out.extend_from_slice(replacement);
                     continue;
                 }
                 return Vec::new();
             }
         };
-        let b = s[i];
-        match b {
-            b'&' => {
+        match ch {
+            0x26 => {
                 if !double_encode {
-                    if let Some(len) = existing_entity_len(&s[i + 1..], doctype) {
+                    if let Some(len) = existing_entity_len(&s[i + 1..], doctype, flags) {
                         out.extend_from_slice(&s[i..i + len + 2]);
                         i += len + 2;
                         continue;
@@ -305,34 +538,51 @@ fn html_escape_flags(s: &[u8], flags: i64, double_encode: bool) -> Vec<u8> {
                 }
                 out.extend_from_slice(b"&amp;");
             }
-            b'<' => out.extend_from_slice(b"&lt;"),
-            b'>' => out.extend_from_slice(b"&gt;"),
-            b'"' if flags & ENT_HTML_QUOTE_DOUBLE != 0 => out.extend_from_slice(b"&quot;"),
-            b'\'' if flags & ENT_HTML_QUOTE_SINGLE != 0 => {
+            0x3C => out.extend_from_slice(b"&lt;"),
+            0x3E => out.extend_from_slice(b"&gt;"),
+            0x22 if flags & ENT_HTML_QUOTE_DOUBLE != 0 => out.extend_from_slice(b"&quot;"),
+            0x27 if flags & ENT_HTML_QUOTE_SINGLE != 0 => {
                 if doctype == ENT_HTML_DOC_HTML401 {
                     out.extend_from_slice(b"&#039;")
                 } else {
                     out.extend_from_slice(b"&apos;")
                 }
             }
-            _ => out.extend_from_slice(&s[i..i + n]),
+            0x22 | 0x27 => out.push(ch as u8),
+            _ => {
+                let disallowed = flags & ENT_HTML_SUBSTITUTE_DISALLOWED_CHARS != 0
+                    && match cs {
+                        Charset::Utf8 | Charset::Latin1 => !unicode_cp_is_allowed(ch, doctype),
+                        // no tables: only the C0 range is known to be Unicode
+                        _ => ch <= 0x7D && !unicode_cp_is_allowed(ch, doctype),
+                    };
+                if disallowed {
+                    out.extend_from_slice(replacement);
+                } else {
+                    out.extend_from_slice(&s[i..i + n]);
+                }
+            }
         }
         i += n;
     }
     out
 }
 
-fn fn_htmlspecialchars(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_htmlspecialchars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = bytes_of(&args[0]);
     let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(11);
+    let cs = match args.get(2).map(deref) {
+        None | Some(Value::Null) => Charset::Utf8,
+        Some(v) => determine_charset(host, "htmlspecialchars", &conv::to_string_bytes(&v))?,
+    };
     let double_encode = args
         .get(3)
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(true);
-    if flags == 11 && double_encode && std::str::from_utf8(&s).is_ok() {
+    if flags == 11 && double_encode && cs == Charset::Utf8 && std::str::from_utf8(&s).is_ok() {
         return Ok(Value::str(html_escape(&s)));
     }
-    Ok(Value::str(html_escape_flags(&s, flags, double_encode)))
+    Ok(Value::str(html_escape_flags(&s, flags, double_encode, cs)))
 }
 
 /// `htmlspecialchars_decode`: reverses ONLY the htmlspecialchars entities.

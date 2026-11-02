@@ -4363,6 +4363,14 @@ impl Vm {
                 break;
             }
             let f = &self.stack[i];
+            // `__`-prefixed helper functions of the built-in (prelude) code
+            // are engine plumbing: php's trace has no frame for them.
+            if f.include_kind.is_none()
+                && is_prelude_proto(&f.proto)
+                && is_engine_helper_name(f.proto.name.as_bytes())
+            {
+                continue;
+            }
             let mut e = PhpArray::new();
             if !self.is_internal_frame(i - 1) && !self.native_active_from(i - 1) {
                 e.insert(k(b"file"), file_of(i - 1));
@@ -4812,6 +4820,32 @@ impl Vm {
                 }
             }
         }
+        // `unset($o->magic[...][$k])`: the property comes from `__get`
+        // (FETCH_OBJ_UNSET → read_property); the dimension unset then applies
+        // to what it returned — offsetUnset on an ArrayAccess object, a no-op
+        // on a temporary array.
+        if let MagicSplit::Nested(i, h, name) = self.cursor_magic_split(top, steps) {
+            if let Some(CursorStep::Key(k)) = steps.last() {
+                let Ok(got) = self.prop_fetch(top, Value::Object(h), name) else {
+                    return;
+                };
+                let cx = PropCtx {
+                    classes: &self.classes,
+                    scope: self.stack[top].defining_class,
+                    called: self.stack[top].called_class,
+                };
+                let container = read_path(&got, &steps[i + 1..steps.len() - 1], &cx);
+                if let Value::Object(c) = container {
+                    let cls = c.borrow().class;
+                    if self.class_implements(cls, b"ArrayAccess") {
+                        if let Some(m) = self.lookup_method(cls, b"offsetunset") {
+                            let _ = self.call_sync(&m, Some(c), cls, vec![k.clone()]);
+                        }
+                    }
+                }
+            }
+            return;
+        }
         let cx = PropCtx {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
@@ -4958,6 +4992,7 @@ impl Vm {
 
                 Instr::Neg { dst, a } => {
                     let v = self.reg_get(top, a);
+                    let v = self.sxe_operand(v);
                     let r = ops::negate(&v)?;
                     self.reg_set(top, dst, r);
                 }
@@ -4976,7 +5011,7 @@ impl Vm {
                     delta,
                 } => {
                     let cur = self.reg_get(top, cv);
-                    let new = inc_dec_value(&cur, delta as i64);
+                    let new = inc_dec_value(&self.sxe_operand(cur.clone()), delta as i64);
                     self.cv_assign(top, cv, new.clone());
                     self.reg_set(top, dst, if pre { new } else { cur });
                 }
@@ -5019,6 +5054,12 @@ impl Vm {
                     let v = self.reg_get(top, a);
                     let out = match &v {
                         // get_properties_for(ARRAY_CAST): an ArrayObject's storage.
+                        Value::Object(h) if self.is_sxe(h) => {
+                            match builtins::sxe_props_array(self, &v) {
+                                Some(a) => Value::Array(a),
+                                None => self.object_to_array_mangled(h),
+                            }
+                        }
                         Value::Object(h) => match builtins::spl_array_storage(h) {
                             Some((st @ Value::Array(_), _)) => st,
                             _ => self.object_to_array_mangled(h),
@@ -8134,6 +8175,7 @@ impl Vm {
         f: fn(&Value, &Value) -> Result<Value, Thrown>,
     ) -> Result<(), Thrown> {
         let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+        let (x, y) = (self.sxe_operand(x), self.sxe_operand(y));
         let v = f(&x, &y)?;
         self.reg_set(top, dst, v);
         Ok(())
@@ -8142,6 +8184,12 @@ impl Vm {
     /// Infallible binary op (bitwise/concat).
     fn bin_inf(&mut self, top: usize, dst: Reg, a: Reg, b: Reg, f: fn(&Value, &Value) -> Value) {
         let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+        // zendi_try_get_long: SimpleXML casts straight to int
+        let as_int = |v: Value| match self.sxe_operand(v) {
+            Value::Float(f) => Value::Int(conv::to_int(&Value::Float(f))),
+            other => other,
+        };
+        let (x, y) = (as_int(x), as_int(y));
         let v = f(&x, &y);
         self.reg_set(top, dst, v);
     }
@@ -9246,6 +9294,19 @@ impl Vm {
         match self.class_ids.get(b"simplexmlelement".as_slice()) {
             Some(t) => self.class(h.borrow().class).ancestors.contains(t),
             None => false,
+        }
+    }
+
+    /// SimpleXML's `cast_object(_IS_NUMBER)` for arithmetic operands: the
+    /// node's text as a number (`convert_scalar_to_number`, silent). Any other
+    /// value is returned unchanged.
+    fn sxe_operand(&self, v: Value) -> Value {
+        match &v {
+            Value::Object(h) if self.is_sxe(h) => {
+                let s = Value::str(rhp_builtins::sxe_string(&v).unwrap_or_default());
+                conv::to_number(&s).0.to_value()
+            }
+            _ => v,
         }
     }
 

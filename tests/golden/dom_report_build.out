@@ -59,8 +59,7 @@ PHPUnit\Framework\ExpectationFailedException
 float(10)
 string(1) "3"
 float(4)
-
-Warning: DOMDocument::saveXML(): xmlEscapeEntities : char out of range in /Users/robing/gits/rhp/.claude/worktrees/wf_01e7afd0-1d2-11/tests/golden/dom_report_build.php on line 46
+E2: DOMDocument::saveXML(): xmlEscapeEntities : char out of range
 471
 <?xml version="1.0"?>
 <a>
@@ -72,9 +71,7 @@ Warning: DOMDocument::saveXML(): xmlEscapeEntities : char out of range in /Users
   <b>x</b>
   <c/>
 </a>
-
-Fatal error: Uncaught ValueError: DOMDocument::loadXML(): Argument #1 ($source) must not be empty in /Users/robing/gits/rhp/.claude/worktrees/wf_01e7afd0-1d2-11/tests/golden/dom_report_build.php:50
-Stack trace:
-#0 /Users/robing/gits/rhp/.claude/worktrees/wf_01e7afd0-1d2-11/tests/golden/dom_report_build.php(50): DOMDocument->loadXML('')
-#1 {main}
-  thrown in /Users/robing/gits/rhp/.claude/worktrees/wf_01e7afd0-1d2-11/tests/golden/dom_report_build.php on line 50
+ValueError: DOMDocument::loadXML(): Argument #1 ($source) must not be empty
+DOMException 5 Invalid Character Error
+int(463)
+eq

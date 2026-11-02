@@ -81,8 +81,7 @@ pub(super) fn parse(url: &[u8], flags: Flags) -> Result<Vec<u8>, UrlError> {
     }
     let scheme_len = scheme_len(url, flags.guess_scheme);
     let mut out = Vec::with_capacity(url.len() + 8);
-    let path_etc: &[u8];
-    if scheme_len > 0 && url[..scheme_len].eq_ignore_ascii_case(b"file") {
+    let path_etc: &[u8] = if scheme_len > 0 && url[..scheme_len].eq_ignore_ascii_case(b"file") {
         // file: URLs: no host but localhost / 127.0.0.1 (POSIX libcurl).
         if url.len() <= 6 {
             return Err(UrlError::BadFileUrl);
@@ -101,7 +100,7 @@ pub(super) fn parse(url: &[u8], flags: Flags) -> Result<Vec<u8>, UrlError> {
             }
         }
         out.extend_from_slice(b"file://");
-        path_etc = path;
+        path
     } else {
         let (scheme, host_part): (Vec<u8>, &[u8]) = if scheme_len > 0 {
             let after = &url[scheme_len + 1..];
@@ -134,8 +133,8 @@ pub(super) fn parse(url: &[u8], flags: Flags) -> Result<Vec<u8>, UrlError> {
         if let Some(p) = port {
             out.extend_from_slice(format!(":{p}").as_bytes());
         }
-        path_etc = &host_part[host_len..];
-    }
+        &host_part[host_len..]
+    };
     // Fragment, then query, then path, each checked for junk.
     let frag_at = path_etc.iter().position(|&c| c == b'#');
     let (before_frag, fragment) = match frag_at {

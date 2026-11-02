@@ -278,7 +278,7 @@ impl Vm {
     }
 
     /// Request shutdown with no php code on the stack (php_output_end_all).
-    fn no_code_running(&self) -> bool {
+    pub(crate) fn no_code_running(&self) -> bool {
         self.in_shutdown_scope && self.stack.len() <= 1 && self.native_calls.is_empty()
     }
 

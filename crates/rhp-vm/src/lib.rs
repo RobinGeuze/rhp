@@ -6280,21 +6280,27 @@ impl Vm {
             match self.run_frames() {
                 Ok(v) => return Ok(v),
                 Err(thrown) => {
-                    if !thrown.is_catchable() {
-                        // Exit / Unsupported: straight to the SAPI (keeping
-                        // {main}'s globals for the shutdown sequence). A
-                        // refusal raised by a builtin is located first.
-                        let thrown = self.locate_unsupported(thrown);
-                        self.stack.truncate(1);
-                        if let Some(main) = self.stack.pop() {
-                            self.finished_main = Some(main);
+                    // An `exit` in a destructor run while unwinding ends the
+                    // request like any other exit.
+                    let thrown = if thrown.is_catchable() {
+                        match self.unwind(thrown, 0) {
+                            Ok(UnwindResult::Caught) => continue, // handler installed; re-enter
+                            Ok(UnwindResult::Escaped(t)) => return Err(t), // uncaught
+                            Err(t) if t.is_catchable() => return Err(t),
+                            Err(t) => t,
                         }
-                        return Err(thrown);
+                    } else {
+                        thrown
+                    };
+                    // Exit / Unsupported: straight to the SAPI (keeping
+                    // {main}'s globals for the shutdown sequence). A
+                    // refusal raised by a builtin is located first.
+                    let thrown = self.locate_unsupported(thrown);
+                    self.stack.truncate(1);
+                    if let Some(main) = self.stack.pop() {
+                        self.finished_main = Some(main);
                     }
-                    match self.unwind(thrown, 0)? {
-                        UnwindResult::Caught => {}                 // handler installed; re-enter
-                        UnwindResult::Escaped(t) => return Err(t), // uncaught
-                    }
+                    return Err(thrown);
                 }
             }
         }
@@ -8271,7 +8277,7 @@ impl Vm {
     fn unwind(&mut self, thrown: Thrown, floor: usize) -> Result<UnwindResult, Thrown> {
         // An engine error becomes a real object here, before any frame is popped,
         // so its file/line/trace describe the throw point.
-        let thrown = self.materialize(thrown, None);
+        let mut thrown = self.materialize(thrown, None);
         loop {
             if self.stack.len() <= floor {
                 return Ok(UnwindResult::Escaped(thrown)); // escaped the (sub)run
@@ -8343,6 +8349,28 @@ impl Vm {
             if self.stack.is_empty() && floor == 0 {
                 // An uncaught exception left {main}: keep its globals.
                 self.finished_main = popped;
+                continue;
+            }
+            // zend_leave_helper: the frame's variables are freed before the
+            // caller handles the exception, so its locals are destructed
+            // ahead of the caller's catch / finally.
+            drop(popped);
+            if let Err(e) = self.collect_released() {
+                if !e.is_catchable() {
+                    // `exit` in such a destructor discards the exception.
+                    return Err(e);
+                }
+                // A destructor threw: the new exception carries on, with the
+                // unwinding one as its innermost previous — unless no php
+                // frame is left below (a destructor or callback run from
+                // shutdown): php frees a top call's variables after
+                // restoring the NULL execute_data, so the new exception is
+                // reported on its own and the unwinding one is dropped.
+                let e = self.materialize(e, None);
+                if !self.stack.is_empty() && !self.no_code_running() {
+                    self.chain_previous(&e, thrown);
+                }
+                thrown = e;
             }
         }
     }

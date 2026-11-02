@@ -236,9 +236,9 @@ rug         = { version = "1", optional = true }
 ```
 
 The crate always compiles with zero native libs (today's behavior). A parity
-build opts in with `--features native-all`. `rhp-vm` and `rhp-cli` forward
-the feature (`rhp-vm/native-pcre2 = ["rhp-builtins/native-pcre2"]`) so a
-single top-level flag selects the build.
+build opts in with `--features native-all`. `rhp-vm`, `rhp-sapi` and
+`rhp-cli` forward the feature (`rhp-vm/native-pcre2 =
+["rhp-builtins/native-pcre2"]`) so a single top-level flag selects the build.
 
 ### 4.2 One builtin, two backends, one public body
 
@@ -616,7 +616,7 @@ pulled in: `ZEND_SET_ALIGNED`, `zend_string`, `zend_string_safe_alloc`,
   marshals `return_value` back to an owned `Value` and frees the arena. All state
   is thread-local.
 - **Feature gating:** `rhp-builtins/zendshim` → `rhp-zendshim`; forwarded
-  up through `rhp-vm` and `rhp-cli`. Builtins register as
+  up through `rhp-vm`, `rhp-sapi` and `rhp-cli`. Builtins register as
   `__zendshim_demo` / `__zendshim_bin2hex` (prefixed, so they never shadow the
   pure-Rust builtins and can be diffed against them).
 

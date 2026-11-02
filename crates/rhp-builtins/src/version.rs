@@ -5,6 +5,14 @@
 //! is printed by `tools/capture-ref-build.php`; `crates/rhp-cli/tests/ref_build.rs`
 //! runs that script under both php and rhp and requires identical output.
 //!
+//! Built for another platform (Linux), rhp keeps the reference's release,
+//! [`BUILD_DATE`] and library versions: they describe behaviour rhp
+//! implements the same way everywhere (PCRE, ICU, libcurl, ...). Only the
+//! values that describe the platform follow the Ubuntu php CI runs against
+//! (setup-php's build): the install paths, [`BUILD_PROVIDER`],
+//! [`ZEND_VM_KIND`] and libcurl's host triple. There ref_build compares the
+//! release section only.
+//!
 //! Bumping to a new patch release (e.g. 8.5.13):
 //! 1. upgrade the reference php (`brew upgrade php`), and check out the
 //!    matching php-src tag; put its commit in `tests/phpt/php-src.ref`;
@@ -39,7 +47,7 @@ macro_rules! prefix {
         concat!("/opt/homebrew/Cellar/php/8.5.", release!(), brew_rev!())
     };
 }
-// Elsewhere: the Debian/Ubuntu package layout.
+// Elsewhere: the Ubuntu (Debian) package layout.
 #[cfg(not(target_os = "macos"))]
 macro_rules! prefix {
     () => {
@@ -85,7 +93,9 @@ pub const ZEND_EXTENSION_API: &str = concat!("4", php_api!());
 pub const ZEND_VM_KIND: &str = "ZEND_VM_KIND_TAILCALL";
 #[cfg(not(target_os = "macos"))]
 pub const ZEND_VM_KIND: &str = "ZEND_VM_KIND_HYBRID";
-/// `PHP_BUILD_DATE` (`__DATE__ " " __TIME__` of the reference build).
+/// `PHP_BUILD_DATE` (`__DATE__ " " __TIME__` of the reference build). The
+/// same on every platform: it names the build rhp mirrors, not a Linux
+/// package's (whose rebuilds would each change it).
 pub const BUILD_DATE: &str = "Oct 19 2026 17:02:46";
 
 /// A decimal literal as an integer, at compile time.
@@ -139,7 +149,10 @@ pub const MANDIR: &str = concat!(prefix!(), "/share/man");
 /// `PHP_LIBDIR`.
 pub const LIBDIR: &str = concat!(prefix!(), "/lib/php");
 /// `PHP_DATADIR`.
+#[cfg(target_os = "macos")]
 pub const DATADIR: &str = concat!(prefix!(), "/share/php");
+#[cfg(not(target_os = "macos"))]
+pub const DATADIR: &str = "/usr/share/php/8.5";
 /// `PHP_SHLIB_SUFFIX`.
 pub const SHLIB_SUFFIX: &str = "so";
 /// `PEAR_EXTENSION_DIR` (= `PHP_EXTENSION_DIR`).
@@ -164,8 +177,9 @@ pub const CONFIG_FILE_PATH: &str = "/opt/homebrew/etc/php/8.5";
 #[cfg(target_os = "macos")]
 pub const CONFIG_FILE_SCAN_DIR: &str = "/opt/homebrew/etc/php/8.5/conf.d";
 
+/// What setup-php's Ubuntu build reports.
 #[cfg(not(target_os = "macos"))]
-pub const BUILD_PROVIDER: &str = "Debian";
+pub const BUILD_PROVIDER: &str = "Ubuntu";
 #[cfg(not(target_os = "macos"))]
 pub const PEAR_INSTALL_DIR: &str = "/usr/share/php";
 #[cfg(not(target_os = "macos"))]
@@ -224,7 +238,15 @@ pub mod curl {
     pub const AGE: i64 = 11;
     /// The `CURL_VERSION_*` feature bits (no TLS-SRP: OpenSSL 4 dropped SRP).
     pub const FEATURES: i64 = 1472137101;
+    /// The triple libcurl was configured for: the reference's on macOS, the
+    /// target's GNU triple elsewhere, as Ubuntu's libcurl reports it
+    /// (x86_64's for any architecture but aarch64).
+    #[cfg(target_os = "macos")]
     pub const HOST: &str = "aarch64-apple-darwin27.0.0";
+    #[cfg(all(not(target_os = "macos"), target_arch = "aarch64"))]
+    pub const HOST: &str = "aarch64-unknown-linux-gnu";
+    #[cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))]
+    pub const HOST: &str = "x86_64-pc-linux-gnu";
     pub const SSL_VERSION: &str = "OpenSSL/4.1.0";
     /// The libz libcurl links at run time (not [`super::ZLIB_VERSION`],
     /// php's compile-time zlib, although on the reference they agree).

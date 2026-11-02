@@ -514,10 +514,17 @@ impl Vm {
                     }
                     Err(t) => {
                         if at_shutdown {
-                            self.ob_shutdown_bailout(t);
-                            return Status::Failure;
+                            // zend_throw_exception_internal with no frame: the
+                            // user exception handler runs right here (its
+                            // output lands in this handler's buffer, which the
+                            // failure passes on); without one, bail out.
+                            if let Some(t) = self.handle_uncaught(t) {
+                                self.ob_shutdown_bailout(t);
+                                return Status::Failure;
+                            }
+                        } else {
+                            self.ob_pending(t);
                         }
-                        self.ob_pending(t);
                         Status::Failure
                     }
                 }

@@ -709,6 +709,7 @@ Zend/tests/error_reporting/error_reporting02.phpt
 Zend/tests/error_reporting/error_reporting06.phpt
 Zend/tests/error_reporting/error_reporting07.phpt
 Zend/tests/eval_parse_error_with_doc_comment.phpt
+Zend/tests/ex_func_null_during_property_write.phpt
 Zend/tests/exception_set_previous_leak.phpt
 Zend/tests/exception_with_by_ref_message.phpt
 Zend/tests/exceptions/bug26698.phpt
@@ -1019,6 +1020,7 @@ Zend/tests/gh20672.phpt
 Zend/tests/gh20714.phpt
 Zend/tests/gh21603.phpt
 Zend/tests/gh21605.phpt
+Zend/tests/gh23232.phpt
 Zend/tests/ghsa-rwp7-7vc6-8477_001.phpt
 Zend/tests/ghsa-rwp7-7vc6-8477_002.phpt
 Zend/tests/ghsa-rwp7-7vc6-8477_003.phpt
@@ -1273,6 +1275,7 @@ Zend/tests/magic_methods/bug48248.phpt
 Zend/tests/magic_methods/bug48533.phpt
 Zend/tests/magic_methods/bug50394.phpt
 Zend/tests/magic_methods/bug51822.phpt
+Zend/tests/magic_methods/bug52361.phpt
 Zend/tests/magic_methods/bug52484.phpt
 Zend/tests/magic_methods/bug52484_2.phpt
 Zend/tests/magic_methods/bug52484_3.phpt
@@ -1933,6 +1936,7 @@ Zend/tests/type_declarations/intersection_types/variance/valid5.phpt
 Zend/tests/type_declarations/intersection_types/variance/valid6.phpt
 Zend/tests/type_declarations/intersection_types/variance/valid7.phpt
 Zend/tests/type_declarations/intersection_types/variance/valid8.phpt
+Zend/tests/type_declarations/iterable/bug76198.phpt
 Zend/tests/type_declarations/iterable/iterable_alias_redundancy_object_1.phpt
 Zend/tests/type_declarations/iterable/iterable_alias_redundancy_object_2.phpt
 Zend/tests/type_declarations/iterable/iterable_alias_redundancy_object_variance.phpt
@@ -1968,11 +1972,14 @@ Zend/tests/type_declarations/mixed/validation/mixed_return_strict_success.phpt
 Zend/tests/type_declarations/mixed/validation/mixed_return_weak_error.phpt
 Zend/tests/type_declarations/mixed/validation/mixed_return_weak_success.phpt
 Zend/tests/type_declarations/relative_types/bug43332_1.phpt
+Zend/tests/type_declarations/relative_types/bug43332_2.phpt
 Zend/tests/type_declarations/relative_types/parent_is_not_proto.phpt
 Zend/tests/type_declarations/relative_types/relative_type_in_closures.phpt
 Zend/tests/type_declarations/relative_types/relative_type_in_evaled_class_using_trait.phpt
 Zend/tests/type_declarations/relative_types/relative_type_in_evaled_trait.phpt
 Zend/tests/type_declarations/relative_types/self_on_closure_in_method.phpt
+Zend/tests/type_declarations/relative_types/static/fully_qualified_static.phpt
+Zend/tests/type_declarations/relative_types/static/namespace_relative_static.phpt
 Zend/tests/type_declarations/relative_types/static/static_type_in_final_class.phpt
 Zend/tests/type_declarations/relative_types/traits/trait_parent_type_in_class_no_parent1.phpt
 Zend/tests/type_declarations/relative_types/traits/trait_parent_type_in_class_no_parent2.phpt
@@ -1981,6 +1988,7 @@ Zend/tests/type_declarations/relative_types/traits/trait_parent_type_in_class_no
 Zend/tests/type_declarations/return_separation.phpt
 Zend/tests/type_declarations/scalar_none.phpt
 Zend/tests/type_declarations/scalar_null.phpt
+Zend/tests/type_declarations/scalar_relative_typehint_disallowed.phpt
 Zend/tests/type_declarations/scalar_strict_64bit.phpt
 Zend/tests/type_declarations/scalar_strict_declaration_placement_004.phpt
 Zend/tests/type_declarations/scalar_strict_declaration_placement_005.phpt
@@ -2074,6 +2082,8 @@ Zend/tests/type_declarations/variance/unlinked_parent_2.phpt
 Zend/tests/type_declarations/weak_call_strict.phpt
 Zend/tests/type_declarations/weak_explicit_call_strict.phpt
 Zend/tests/typehints/fq_nullable.phpt
+Zend/tests/typehints/fully_qualified_scalar.phpt
+Zend/tests/typehints/namespace_relative_scalar.phpt
 Zend/tests/unary_minus_const_expr_consistency.phpt
 Zend/tests/uncaught_exception_error_supression.phpt
 Zend/tests/unexpected_ref_bug.phpt

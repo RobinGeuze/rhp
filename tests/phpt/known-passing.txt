@@ -1011,7 +1011,6 @@ Zend/tests/gh20672.phpt
 Zend/tests/gh20714.phpt
 Zend/tests/gh21603.phpt
 Zend/tests/gh21605.phpt
-Zend/tests/gh23232.phpt
 Zend/tests/ghsa-rwp7-7vc6-8477_001.phpt
 Zend/tests/ghsa-rwp7-7vc6-8477_002.phpt
 Zend/tests/ghsa-rwp7-7vc6-8477_003.phpt
@@ -2740,12 +2739,8 @@ ext/intl/tests/bug74264.phpt
 ext/intl/tests/bug74433.phpt
 ext/intl/tests/grapheme2.phpt
 ext/intl/tests/grapheme_empty.phpt
-ext/intl/tests/grapheme_empty_offset_multibyte.phpt
 ext/intl/tests/grapheme_out_of_bounds.phpt
 ext/intl/tests/grapheme_str_split.phpt
-ext/intl/tests/grapheme_strrpos_negative_offset_overlap.phpt
-ext/intl/tests/grapheme_strstr_canonical_match.phpt
-ext/intl/tests/grapheme_strstr_supplementary_prefix.phpt
 ext/intl/tests/idn.phpt
 ext/intl/tests/idn_bug76829.phpt
 ext/intl/tests/idn_uts46_basic.phpt
@@ -3929,7 +3924,6 @@ ext/spl/tests/recursiveiteratoriterator_getsubiterator_variation.phpt
 ext/spl/tests/recursiveiteratoriterator_getsubiterator_variation_002.phpt
 ext/spl/tests/recursiveiteratoriterator_getsubiterator_variation_003.phpt
 ext/spl/tests/recursiveiteratoriterator_next_during_endchildren.phpt
-ext/spl/tests/recursiveiteratoriterator_next_during_valid.phpt
 ext/spl/tests/recursiveiteratoriterator_nextelement_basic.phpt
 ext/spl/tests/recursiveiteratoriterator_rewind_during_next.phpt
 ext/spl/tests/regexIterator_flags_basic.phpt
@@ -5171,7 +5165,6 @@ ext/standard/tests/network/bindto.phpt
 ext/standard/tests/network/bug55472.phpt
 ext/standard/tests/network/fsockopen_basic.phpt
 ext/standard/tests/network/fsockopen_error.phpt
-ext/standard/tests/network/fsockopen_timeout_out_of_range.phpt
 ext/standard/tests/network/fsockopen_variation1.phpt
 ext/standard/tests/network/fsockopen_variation2.phpt
 ext/standard/tests/network/gethostbyaddr_basic1.phpt
@@ -5293,7 +5286,6 @@ ext/standard/tests/streams/eagain_is_not_an_error.phpt
 ext/standard/tests/streams/ftp_dirstream_oob.phpt
 ext/standard/tests/streams/gh10406.phpt
 ext/standard/tests/streams/gh11418.phpt
-ext/standard/tests/streams/gh14780.phpt
 ext/standard/tests/streams/gh15980.phpt
 ext/standard/tests/streams/gh8472.phpt
 ext/standard/tests/streams/ghsa-3cr5-j632-f35r.phpt
@@ -5814,7 +5806,6 @@ ext/xml/tests/xml_parser_get_option_variation3.phpt
 ext/xml/tests/xml_parser_get_option_variation4.phpt
 ext/xml/tests/xml_parser_set_option_basic.phpt
 ext/xml/tests/xml_parser_set_option_nonexistent_option.phpt
-ext/xml/tests/xml_set_handler_reentrancy.phpt
 ext/xml/tests/xml_set_processing_instruction_handler_basic.phpt
 ext/xmlreader/tests/004.phpt
 ext/xmlreader/tests/005.phpt
@@ -5919,9 +5910,6 @@ ext/zip/tests/oo_close.phpt
 ext/zip/tests/oo_delete.phpt
 ext/zip/tests/oo_ext_zip.phpt
 ext/zip/tests/oo_extract.phpt
-ext/zip/tests/oo_extract_crc.phpt
-ext/zip/tests/oo_get_from_crc_empty.phpt
-ext/zip/tests/oo_get_from_length.phpt
 ext/zip/tests/oo_getnameindex.phpt
 ext/zip/tests/oo_namelocate.phpt
 ext/zip/tests/oo_open.phpt

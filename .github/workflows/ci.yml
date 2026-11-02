@@ -110,10 +110,47 @@ jobs:
           ref: ${{ steps.ref.outputs.sha }}
           path: php-src
           persist-credentials: false
+          # Every directory tests/phpt/known-passing.txt draws from.
           sparse-checkout: |
-            Zend/tests
-            tests
+            ext/bcmath/tests
+            ext/bz2/tests
+            ext/ctype/tests
+            ext/curl/tests
+            ext/date/tests
+            ext/dba/tests
+            ext/dom/tests
+            ext/filter/tests
+            ext/gmp/tests
+            ext/hash/tests
+            ext/iconv/tests
+            ext/intl/tests
+            ext/json/tests
+            ext/libxml/tests
+            ext/mbstring/tests
+            ext/mysqli/tests
+            ext/opcache/tests
+            ext/pcntl/tests
+            ext/pcre/tests
+            ext/pdo_odbc/tests
+            ext/phar/tests
+            ext/posix/tests
+            ext/random/tests
+            ext/readline/tests
+            ext/reflection/tests
+            ext/simplexml/tests
+            ext/sockets/tests
+            ext/sodium/tests
+            ext/spl/tests
             ext/standard/tests
+            ext/tidy/tests
+            ext/tokenizer/tests
+            ext/xml/tests
+            ext/xmlreader/tests
+            ext/xmlwriter/tests
+            ext/zip/tests
+            ext/zlib/tests
+            tests
+            Zend/tests
       - uses: ./.github/actions/setup-php
         with:
           php-version: '8.5'

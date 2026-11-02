@@ -214,6 +214,10 @@ fn cgi_matches_php_cgi() {
     }
     let powered = |v: &str| format!("X-Powered-By: PHP/{v}\r\n").into_bytes();
     let (their_powered, our_powered) = (powered(&theirs), powered(&ours));
+    // php-cgi prints its own file name in the usage text; Debian's is
+    // `php-cgi8.5`, rhp always says `php-cgi`.
+    let their_name = php.file_name().unwrap().to_string_lossy().into_owned();
+    let mut version_skipped = Vec::new();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cgi");
     let dir = std::fs::canonicalize(dir).expect("tests/cgi");
     let mut fixtures: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -234,6 +238,26 @@ fn cgi_matches_php_cgi() {
         let mut want = run(&php, &[], &s);
         if their_powered != our_powered {
             want.stdout = replace(&want.stdout, &their_powered, &our_powered);
+            // Anything else printing php's version (headers_list(),
+            // PHP_VERSION, var_dump lengths) can't match another patch
+            // release: skip it, as the phpt runner does.
+            let v = theirs.as_bytes();
+            if want.stdout.windows(v.len()).any(|w| w == v) {
+                version_skipped.push(name);
+                continue;
+            }
+        }
+        if their_name != "php-cgi" {
+            want.stdout = replace(
+                &want.stdout,
+                format!("Usage: {their_name} ").as_bytes(),
+                b"Usage: php-cgi ",
+            );
+            want.stdout = replace(
+                &want.stdout,
+                format!("       {their_name} <file>").as_bytes(),
+                b"       php-cgi <file>",
+            );
         }
         let got = run(rhp, &["--cgi"], &s);
         let mut diffs = Vec::new();
@@ -260,6 +284,13 @@ fn cgi_matches_php_cgi() {
         if !diffs.is_empty() {
             failures.push(format!("== {name}\n{}", diffs.join("\n")));
         }
+    }
+    if !version_skipped.is_empty() {
+        eprintln!(
+            "php-cgi is {theirs}, rhp is {ours}: skipped {} fixture(s) that print the version: {}",
+            version_skipped.len(),
+            version_skipped.join(", ")
+        );
     }
     assert!(
         failures.is_empty(),

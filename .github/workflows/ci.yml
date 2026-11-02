@@ -81,7 +81,14 @@ jobs:
       - name: Full workspace suite against php ${{ matrix.php }}
         env:
           RHP_PHP: php
-        run: cargo test --workspace --all-targets --no-fail-fast
+        # The CGI fixtures run the real php-cgi, not the shim: the shim's
+        # extra `-d extension=…` arguments change php-cgi's option parsing
+        # (argument numbers, `-q`, script detection), and bash reorders the
+        # environment that getallheaders() reports. They need no shared ext.
+        run: |
+          export PHP_CGI="$(command -v "php-cgi${{ matrix.php }}")"
+          echo "PHP_CGI=$PHP_CGI"
+          cargo test --workspace --all-targets --no-fail-fast
       - name: Extension differential sweeps
         env:
           RHP_PHP: php

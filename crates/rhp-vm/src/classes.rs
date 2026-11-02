@@ -111,6 +111,9 @@ impl PropEntry {
 #[derive(Clone)]
 pub struct StaticProp {
     pub cell: Rc<RefCell<Value>>,
+    /// The declared default (php's `default_static_members_table`), shared
+    /// like `cell` by inheriting classes; what Reflection reports.
+    pub default: Rc<RefCell<Value>>,
     /// A not-yet-evaluated non-constant initializer for `cell`.
     pub init: Option<Rc<FunctionProto>>,
     pub visibility: Visibility,
@@ -697,11 +700,12 @@ impl Vm {
         // table (do_inherit_iface_method): an abstract class / interface lists
         // the abstract methods it inherits from its interfaces.
         // (Built-in prelude classes implement their interfaces natively.)
-        let ifaces_for_methods: &[PhpStr] = if self.internal_classes > 0 {
-            &proto.interfaces
-        } else {
-            &[]
-        };
+        let ifaces_for_methods: &[PhpStr] =
+            if self.internal_classes > 0 || proto.kind == ClassKind::Interface {
+                &proto.interfaces
+            } else {
+                &[]
+            };
         for iname in ifaces_for_methods {
             let iid = self.class_ids[&lc(iname.as_bytes())];
             for (k, m) in &self.classes[iid as usize].methods {
@@ -810,12 +814,13 @@ impl Vm {
             for (k, sp) in self.classes[tid as usize].static_props.clone() {
                 // Each using class gets its own cell, seeded from the trait's
                 // (an unevaluated initializer is re-run in the using class).
-                let v = sp.cell.borrow().clone();
+                let v = sp.default.borrow().clone();
                 let prototype = static_proto(&static_props, &k);
                 static_props.insert(
                     k,
                     StaticProp {
-                        cell: Rc::new(RefCell::new(v)),
+                        cell: Rc::new(RefCell::new(v.clone())),
+                        default: Rc::new(RefCell::new(v)),
                         init: sp.init.clone(),
                         visibility: sp.visibility,
                         declaring_class: id,
@@ -835,9 +840,11 @@ impl Vm {
                 ConstInitProto::Thunk(thunk) => Some(thunk.clone()),
             };
             let prototype = static_proto(&static_props, sp.name.as_bytes());
+            let default = cell.borrow().clone();
             static_props.insert(
                 sp.name.as_bytes().to_vec(),
                 StaticProp {
+                    default: Rc::new(RefCell::new(default)),
                     cell,
                     init,
                     visibility: sp.visibility,
@@ -922,23 +929,83 @@ impl Vm {
         // php's `zend_do_implement_interfaces`: parent's list, then own direct
         // interfaces (deduped), then for each own interface its inherited
         // interfaces appended in reverse (`zend_do_inherit_interfaces`).
-        let mut interfaces: Vec<ClassId> = parent
-            .map(|p| self.classes[p as usize].interfaces.clone())
-            .unwrap_or_default();
-        let num_parent = interfaces.len();
-        for iname in &proto.interfaces {
-            let iid = self.class_ids[&lc(iname.as_bytes())];
-            if !interfaces.contains(&iid) {
-                interfaces.push(iid);
+        // Without own interfaces php inherits the parent's list through
+        // `zend_do_inherit_interfaces`, which walks it backwards.
+        let mut interfaces: Vec<ClassId> = Vec::new();
+        if self.internal_classes == 0 {
+            // A built-in (prelude) class, registered the way php registers
+            // internal ones: its own `__toString` implements Stringable when
+            // its methods are registered, then the parent's interfaces are
+            // inherited (backwards), then each declared interface is
+            // implemented (`zend_class_implements`) with its own parents
+            // appended backwards.
+            let stringable = self.class_ids.get(&b"stringable"[..]).copied();
+            let declares_to_string = proto.kind != ClassKind::Interface
+                && proto
+                    .methods
+                    .iter()
+                    .any(|m| m.name.as_bytes().eq_ignore_ascii_case(b"__toString"));
+            if let (true, Some(sid)) = (declares_to_string, stringable) {
+                interfaces.push(sid);
+            }
+            let add_with_parents = |interfaces: &mut Vec<ClassId>, iid: ClassId| {
+                let ce_num = interfaces.len();
+                for &inh in self.classes[iid as usize].interfaces.iter().rev() {
+                    if !interfaces[..ce_num].contains(&inh) {
+                        interfaces.push(inh);
+                    }
+                }
+            };
+            if let Some(p) = parent {
+                for &inh in self.classes[p as usize].interfaces.iter().rev() {
+                    if !interfaces.contains(&inh) {
+                        interfaces.push(inh);
+                    }
+                }
+            }
+            for iname in &proto.interfaces {
+                let iid = self.class_ids[&lc(iname.as_bytes())];
+                if !interfaces.contains(&iid) {
+                    interfaces.push(iid);
+                    add_with_parents(&mut interfaces, iid);
+                }
+            }
+        } else {
+            // php's `zend_do_link_class`: with own interfaces the parent's
+            // list is copied as is; without, `zend_do_inherit_interfaces`
+            // inherits it walking backwards.
+            if let Some(p) = parent {
+                interfaces = self.classes[p as usize].interfaces.clone();
+                if proto.interfaces.is_empty() {
+                    interfaces.reverse();
+                }
+            }
+            let num_parent = interfaces.len();
+            for iname in &proto.interfaces {
+                let iid = self.class_ids[&lc(iname.as_bytes())];
+                if !interfaces.contains(&iid) {
+                    interfaces.push(iid);
+                }
+            }
+            let num_direct = interfaces.len();
+            for i in num_parent..num_direct {
+                let iid = interfaces[i];
+                let ce_num = interfaces.len();
+                for &inh in self.classes[iid as usize].interfaces.iter().rev() {
+                    if !interfaces[..ce_num].contains(&inh) {
+                        interfaces.push(inh);
+                    }
+                }
             }
         }
-        let num_direct = interfaces.len();
-        for i in num_parent..num_direct {
-            let iid = interfaces[i];
-            let ce_num = interfaces.len();
-            for &inh in self.classes[iid as usize].interfaces.iter().rev() {
-                if !interfaces[..ce_num].contains(&inh) {
-                    interfaces.push(inh);
+        // A `__toString` imported from a trait: php adds Stringable at link
+        // time (the compiler only sees the class's own methods).
+        if proto.kind != ClassKind::Trait && methods.contains_key(&b"__tostring"[..]) {
+            if let Some(&sid) = self.class_ids.get(&b"stringable"[..]) {
+                if !ancestors.contains(&sid) {
+                    interfaces.push(sid);
+                    ancestors.push(sid);
+                    ancestors.sort_unstable();
                 }
             }
         }
@@ -1569,6 +1636,7 @@ impl Vm {
         for name in pending_statics {
             let sp = &self.classes[cls as usize].static_props[&name];
             let (decl, cell, thunk) = (sp.declaring_class, sp.cell.clone(), sp.init.clone());
+            let default = sp.default.clone();
             let ty = sp.ty.clone();
             // An inherited slot aliases the parent's cell (already updated).
             if decl == cls {
@@ -1577,6 +1645,7 @@ impl Vm {
                     if let Some(ty) = ty {
                         v = self.verify_prop_init_type(v, &ty, cls, &name)?;
                     }
+                    *default.borrow_mut() = v.clone();
                     *cell.borrow_mut() = v;
                 }
             }

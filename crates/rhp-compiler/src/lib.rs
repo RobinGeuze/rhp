@@ -1449,7 +1449,15 @@ fn compile_trait(
 /// and prepended to every program so `throw`/`catch` and engine errors work.
 const PRELUDE: &str = r##"<?php
 interface Stringable { public function __toString(): string; }
-interface Throwable extends Stringable {}
+interface Throwable extends Stringable {
+    public function getMessage(): string;
+    public function getCode();
+    public function getFile(): string;
+    public function getLine(): int;
+    public function getTrace(): array;
+    public function getPrevious(): ?Throwable;
+    public function getTraceAsString(): string;
+}
 interface UnitEnum {}
 interface BackedEnum extends UnitEnum {}
 interface Traversable {}
@@ -1460,7 +1468,7 @@ interface Iterator extends Traversable {
     public function valid(): bool;
     public function rewind(): void;
 }
-interface IteratorAggregate extends Traversable { public function getIterator(): Iterator; }
+interface IteratorAggregate extends Traversable { public function getIterator(): Traversable; }
 interface OuterIterator extends Iterator { public function getInnerIterator(): ?Iterator; }
 interface RecursiveIterator extends Iterator {
     public function hasChildren(): bool;

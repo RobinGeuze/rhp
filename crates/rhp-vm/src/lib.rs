@@ -421,6 +421,39 @@ impl Host for Vm {
             .is_some_and(|c| c.kind == ClassKind::Enum)
     }
 
+    fn not_serializable(&self, class_id: u32) -> bool {
+        const NO_SERIALIZE: &[&[u8]] = &[
+            b"Closure",
+            b"Generator",
+            b"WeakReference",
+            b"WeakMap",
+            b"Fiber",
+            b"CurlHandle",
+            b"CurlMultiHandle",
+            b"CurlShareHandle",
+            b"OpenSSLAsymmetricKey",
+            b"OpenSSLCertificate",
+            b"OpenSSLCertificateSigningRequest",
+        ];
+        let mut c = (class_id as usize)
+            .lt(&self.classes.len())
+            .then_some(class_id);
+        while let Some(id) = c {
+            if (id as usize) < self.internal_classes {
+                let n = self.classes[id as usize].name.as_bytes();
+                if (n.starts_with(b"Reflection")
+                    && n.len() > 10
+                    && !n.eq_ignore_ascii_case(b"ReflectionException"))
+                    || NO_SERIALIZE.iter().any(|x| n.eq_ignore_ascii_case(x))
+                {
+                    return true;
+                }
+            }
+            c = self.classes[id as usize].parent;
+        }
+        false
+    }
+
     fn define_const(&mut self, name: &[u8], value: Value) -> bool {
         if self.constants.contains_key(name) {
             return false;
@@ -1565,26 +1598,36 @@ impl Host for Vm {
         Ok(objval)
     }
 
-    fn reflect_set_prop(&mut self, obj: &Value, class: &[u8], name: &[u8], val: Value) -> bool {
-        if let Value::Object(h) = deref(obj) {
-            let key = self.reflect_prop_key(&h, class, name);
-            let mut od = h.borrow_mut();
-            *classes::prop_slot_mut(&self.classes, &mut od, key) = val;
-            true
-        } else {
-            false
-        }
+    fn reflect_set_prop(
+        &mut self,
+        obj: &Value,
+        class: &[u8],
+        name: &[u8],
+        val: Value,
+    ) -> Result<(), Thrown> {
+        // ReflectionProperty::setValue: write_property under
+        // EG(fake_scope) = the reflected class; an internal call, so
+        // coercive typing.
+        let scope = self.resolve_class_by_name(class).ok();
+        let top = self.stack.len() - 1;
+        let pname = PhpStr::from_bytes(name.to_vec());
+        self.prop_store_as(top, deref(obj), pname, val, scope, scope, false)
     }
 
-    fn reflect_get_prop(&self, obj: &Value, class: &[u8], name: &[u8]) -> Option<Value> {
-        match deref(obj) {
-            Value::Object(h) => {
-                let key = self.reflect_prop_key(&h, class, name);
-                let v = h.borrow().properties.get(&key).map(deref);
-                v
-            }
-            _ => None,
+    fn reflect_get_prop(
+        &mut self,
+        obj: &Value,
+        class: &[u8],
+        name: &[u8],
+    ) -> Result<Option<Value>, Thrown> {
+        // read_property under EG(fake_scope) = the reflected class.
+        let o = deref(obj);
+        if !matches!(o, Value::Object(_)) {
+            return Ok(None);
         }
+        let scope = self.resolve_class_by_name(class).ok();
+        let pname = PhpStr::from_bytes(name.to_vec());
+        self.prop_fetch_as(o, pname, scope).map(Some)
     }
 
     fn is_internal_slot(&self, class_id: u32, key: &PhpStr) -> bool {
@@ -2444,10 +2487,21 @@ impl Vm {
     /// may be autoloadable; we don't reject on a name we can't see).
     /// Read property `pname` off `o` (visibility-checked, `__get` fallback).
     fn prop_fetch(&mut self, top: usize, o: Value, pname: PhpStr) -> Result<Value, Thrown> {
+        let scope = self.stack[top].defining_class;
+        self.prop_fetch_as(o, pname, scope)
+    }
+
+    /// [`Vm::prop_fetch`] from an explicit scope (php's `EG(fake_scope)`,
+    /// as `ReflectionProperty::getValue` reads).
+    fn prop_fetch_as(
+        &mut self,
+        o: Value,
+        pname: PhpStr,
+        scope: Option<ClassId>,
+    ) -> Result<Value, Thrown> {
         Ok(match o {
             Value::Object(h) => {
                 let cls = h.borrow().class;
-                let scope = self.stack[top].defining_class;
                 let mut absent_slot = None;
                 let denied = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
                     PropRes::Slot(k) => {
@@ -2751,6 +2805,25 @@ impl Vm {
         pname: PhpStr,
         val: Value,
     ) -> Result<(), Thrown> {
+        let scope = self.stack[top].defining_class;
+        let called = self.stack[top].called_class;
+        let strict = self.stack[top].proto.strict_types;
+        self.prop_store_as(top, o, pname, val, scope, called, strict)
+    }
+
+    /// [`Vm::prop_store`] from an explicit scope (php's `EG(fake_scope)`,
+    /// as `ReflectionProperty::setValue` writes).
+    #[allow(clippy::too_many_arguments)]
+    fn prop_store_as(
+        &mut self,
+        top: usize,
+        o: Value,
+        pname: PhpStr,
+        val: Value,
+        scope: Option<ClassId>,
+        called: Option<ClassId>,
+        strict: bool,
+    ) -> Result<(), Thrown> {
         if let Value::Object(h) = o {
             let cls = h.borrow().class;
             if self.is_directory_class(cls) {
@@ -2765,7 +2838,6 @@ impl Vm {
                     },
                 ));
             }
-            let scope = self.stack[top].defining_class;
             let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
             let is_dyn = matches!(res, PropRes::Dynamic);
             let (key, denied) = match res {
@@ -2784,7 +2856,6 @@ impl Vm {
                             return Ok(());
                         }
                     }
-                    let called = self.stack[top].called_class;
                     return Err(classes::set_access_err(&self.classes, called, "modify", e));
                 }
             }
@@ -2823,7 +2894,6 @@ impl Vm {
             } else {
                 let present = h.borrow().properties.contains_key(&key);
                 self.check_readonly_write(&h, &key, present, scope)?;
-                let strict = self.stack[top].proto.strict_types;
                 self.verify_prop_type(cls, &key, val, strict)?
             };
             let mut od = h.borrow_mut();
@@ -3518,6 +3588,44 @@ impl Vm {
     fn is_directory_class(&self, cls: ClassId) -> bool {
         let n = self.class(cls).name.as_bytes();
         n.len() == 9 && n.eq_ignore_ascii_case(b"Directory")
+    }
+
+    /// Objects of this class have no `clone_obj` handler in php ("Trying
+    /// to clone an uncloneable object"): enums, and the built-in classes
+    /// below together with every subclass of them.
+    pub(crate) fn uncloneable_class(&self, cls: ClassId) -> bool {
+        const NO_CLONE: &[&[u8]] = &[
+            b"Exception",
+            b"Error",
+            b"Generator",
+            b"WeakReference",
+            b"Fiber",
+            b"Directory",
+            b"IteratorIterator",
+            b"RecursiveIteratorIterator",
+            b"ZipArchive",
+            b"CurlMultiHandle",
+            b"CurlShareHandle",
+            b"OpenSSLAsymmetricKey",
+            b"OpenSSLCertificate",
+            b"OpenSSLCertificateSigningRequest",
+        ];
+        if self.class(cls).kind == ClassKind::Enum {
+            return true;
+        }
+        let mut c = Some(cls);
+        while let Some(id) = c {
+            if (id as usize) < self.internal_classes {
+                let n = self.class(id).name.as_bytes();
+                if (n.starts_with(b"Reflection") && n.len() > 10)
+                    || NO_CLONE.iter().any(|x| n.eq_ignore_ascii_case(x))
+                {
+                    return true;
+                }
+            }
+            c = self.class(id).parent;
+        }
+        false
     }
 
     /// Allocate a stream resource backed by `state`, returning its resource Value.
@@ -6080,14 +6188,8 @@ impl Vm {
                         }
                         (od.class, props)
                     };
-                    let uncloneable = self.is_directory_class(cls)
-                        || self.class(cls).kind == ClassKind::Enum
-                        || self.generators.contains_key(&h.borrow().id)
-                        || self
-                            .class(cls)
-                            .name
-                            .as_bytes()
-                            .eq_ignore_ascii_case(b"WeakReference");
+                    let uncloneable =
+                        self.uncloneable_class(cls) || self.generators.contains_key(&h.borrow().id);
                     if uncloneable {
                         return Err(Thrown::error(
                             "Error",
@@ -7101,24 +7203,6 @@ impl Vm {
 
     /// Snapshot an object's accessible (public from `caller` scope) properties as
     /// an array, for `foreach` over a plain object.
-    /// Storage key Reflection uses for property `name` of `h` when the
-    /// `ReflectionProperty` belongs to class `class`: that class's own private
-    /// first, else the visible declaration (visibility is bypassed).
-    fn reflect_prop_key(&self, h: &ObjectHandle, class: &[u8], name: &[u8]) -> PhpStr {
-        let cls = h.borrow().class;
-        let name = PhpStr::from_bytes(name.to_vec());
-        let scope = self.resolve_class_by_name(class).ok();
-        match classes::resolve_prop(&self.classes, cls, scope, &name) {
-            PropRes::Slot(k) => k,
-            PropRes::Dynamic => name,
-            PropRes::Denied(_) => self.classes[cls as usize]
-                .prop_visible
-                .get(&name)
-                .cloned()
-                .unwrap_or(name),
-        }
-    }
-
     fn object_prop_array(&self, h: &ObjectHandle, top: usize) -> PhpArray {
         let caller = self.stack[top].defining_class;
         let b = h.borrow();

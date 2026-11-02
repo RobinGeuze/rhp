@@ -376,7 +376,7 @@ impl Vm {
                 let Value::Object(h) = obj else {
                     return Ok(Value::Bool(false));
                 };
-                let cid = self.refl_class(&args[1..])?;
+                let cid = self.refl_class(args.get(1..).unwrap_or(&[]))?;
                 let name = PhpStr::from_bytes(arg_bytes(args, 2));
                 let key = self.decl_prop_key(cid, &name);
                 let b = h.borrow();
@@ -579,10 +579,10 @@ impl Vm {
         let cloneable = e.kind == ClassKind::Class
             && !explicit
             && !has_abstract
-            && full.as_slice() != b"Generator"
             && match e.methods.get(&b"__clone"[..]) {
                 Some(m) => m.visibility == Visibility::Public,
-                None => true,
+                // (php's Exception / Error declare a private __clone.)
+                None => !self.uncloneable_class(cid),
             };
         put(&mut a, "cloneable", Value::Bool(cloneable));
         put(
@@ -826,7 +826,7 @@ impl Vm {
                     sp.ty.clone(),
                     false,
                     true,
-                    deref(&sp.cell.borrow()),
+                    deref(&sp.default.borrow()),
                 )
             })
         };
@@ -1026,21 +1026,37 @@ impl Vm {
                 }
             }
             let e = &self.classes[cid as usize];
+            // A typed property without a default is uninitialized:
+            // get_class_vars lists it as null, getDefaultProperties skips it.
             if is_static {
                 if let Some(sp) = e.static_props.get(name.as_bytes()) {
+                    let uninit = sp.ty.is_some()
+                        && !self
+                            .find_prop_meta(sp.declaring_class, name.as_bytes())
+                            .is_some_and(|(_, _, has)| has);
+                    if uninit && !vars {
+                        continue;
+                    }
                     statics.insert(
                         ArrayKey::from_bytes(name.as_bytes()),
-                        deref(&sp.cell.borrow()),
+                        if uninit {
+                            Value::Null
+                        } else {
+                            deref(&sp.default.borrow())
+                        },
                     );
                 }
             } else if let Some(key) = self.decl_prop_key(cid, &name) {
                 let pe = &e.props[&key];
-                // A typed property without a default is uninitialized: not
-                // listed by get_class_vars / getDefaultProperties.
-                if pe.starts_uninit() {
-                    continue;
-                }
-                inst.insert(ArrayKey::from_bytes(name.as_bytes()), pe.default.clone());
+                let v = if pe.starts_uninit() {
+                    if !vars {
+                        continue;
+                    }
+                    Value::Null
+                } else {
+                    pe.default.clone()
+                };
+                inst.insert(ArrayKey::from_bytes(name.as_bytes()), v);
             }
         }
         let (first, second) = if vars {
@@ -1086,7 +1102,12 @@ impl Vm {
         let Value::Array(key) = arg(args, 0) else {
             return Ok(Value::Array(PhpArray::new()));
         };
-        let k: Vec<Value> = key.iter().map(|(_, v)| v.clone()).collect();
+        let mut k: Vec<Value> = key.iter().map(|(_, v)| v.clone()).collect();
+        // A forged key (the prelude's helpers are callable from PHP) must
+        // not index out of bounds.
+        if k.len() < 4 {
+            k.resize(4, Value::Null);
+        }
         let kind = rhp_values::conv::to_string_bytes(&k[0]);
         let idx_of = |v: &Value| rhp_values::conv::to_int(v) as usize;
         // (attribute, scope class)
@@ -1298,7 +1319,11 @@ impl Vm {
             FnSubject::Method { m, .. } => self.class_extension(m.defining_class),
             _ => Some(ext_lookup(crate::ext_names::FUNCTIONS, &name).unwrap_or("standard")),
         };
-        put(&mut a, "ext", ext.map_or(Value::Bool(false), |x| s(x.as_bytes())));
+        put(
+            &mut a,
+            "ext",
+            ext.map_or(Value::Bool(false), |x| s(x.as_bytes())),
+        );
         if internal {
             put(&mut a, "file", Value::Bool(false));
             put(&mut a, "start", Value::Bool(false));
@@ -1321,8 +1346,14 @@ impl Vm {
             Some(t) => self.type_desc(t, scope_ctx),
             None => Value::Null,
         };
-        // An internal interface method's return type is tentative.
-        let tentative = internal && matches!(sub, FnSubject::Method { m, .. } if m.is_abstract);
+        // An internal interface method's return type is tentative, except
+        // in the interfaces php 8.0 introduced with real types.
+        let tentative = internal
+            && matches!(sub, FnSubject::Method { m, .. } if m.is_abstract
+            && !matches!(
+                self.classes[m.defining_class as usize].name.as_bytes(),
+                b"Stringable" | b"Throwable" | b"Reflector"
+            ));
         if tentative {
             put(&mut a, "ret", Value::Null);
             put(&mut a, "tentative", ret);

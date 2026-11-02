@@ -71,7 +71,7 @@ fn fn_get_prop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = str_arg(args, 1);
     let class = str_arg(args, 2);
     Ok(host
-        .reflect_get_prop(&obj, &class, &name)
+        .reflect_get_prop(&obj, &class, &name)?
         .unwrap_or(Value::Null))
 }
 
@@ -81,7 +81,7 @@ fn fn_set_prop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = str_arg(args, 1);
     let val = deref(&args[2]);
     let class = str_arg(args, 3);
-    host.reflect_set_prop(&obj, &class, &name, val);
+    host.reflect_set_prop(&obj, &class, &name, val)?;
     Ok(Value::Null)
 }
 

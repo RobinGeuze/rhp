@@ -56,6 +56,12 @@ class Reflection {
         if ($modifiers & (128 | 65536)) { $r[] = 'readonly'; }
         return $r;
     }
+    // #[\Deprecated] marks a function, method, class constant or enum case
+    // ZEND_ACC_DEPRECATED.
+    public static function __deprecated($descs) {
+        foreach ($descs as $d) { if (strcasecmp($d[0], 'Deprecated') === 0) { return true; } }
+        return false;
+    }
     public static function __attrs($descs, $name, $flags, $who) {
         if ($flags & ~2) {
             throw new ValueError($who . '::getAttributes(): Argument #2 ($flags) must be a valid attribute filter flag');
@@ -185,7 +191,7 @@ abstract class ReflectionFunctionAbstract implements Reflector {
     protected $__l;
     public function inNamespace(): bool { return $this->__i['ns'] !== ''; }
     public function isClosure(): bool { return isset($this->__i['closure']); }
-    public function isDeprecated(): bool { return false; }
+    public function isDeprecated(): bool { return Reflection::__deprecated($this->__i['attrs']); }
     public function isInternal(): bool { return $this->__i['internal']; }
     public function isUserDefined(): bool { return !$this->__i['internal']; }
     public function isGenerator(): bool { return $this->__i['generator']; }
@@ -207,7 +213,7 @@ abstract class ReflectionFunctionAbstract implements Reflector {
     public function getNumberOfRequiredParameters(): int { return $this->__i['nreq']; }
     public function getParameters(): array {
         $o = [];
-        foreach ($this->__i['params'] as $p) { $o[] = new ReflectionParameter([$this->__l, $this->__i, $p], null); }
+        foreach ($this->__i['params'] as $p) { $o[] = ReflectionParameter::__make($this->__l, $this->__i, $p); }
         return $o;
     }
     public function getShortName(): string { return $this->__i['short']; }
@@ -261,6 +267,21 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
             $objectOrMethod = $p[0];
             $method = $p[1];
         }
+        if ($objectOrMethod instanceof Closure && strcasecmp($method, '__invoke') === 0) {
+            // php's closure invoke handler: an internal public method of
+            // Closure with the closure's own signature.
+            $i = __reflect('fn', $objectOrMethod);
+            unset($i['closure'], $i['this'], $i['scope'], $i['calledScope'], $i['used']);
+            $i = ['name' => '__invoke', 'short' => '__invoke', 'ns' => '', 'class' => 'Closure', 'internal' => true,
+                  'ext' => 'Core', 'file' => false, 'start' => false, 'end' => false, 'doc' => false, 'attrs' => [],
+                  'vis' => 1, 'modifiers' => 1, 'static' => false, 'abstract' => false, 'final' => false,
+                  'prototype' => null] + $i;
+            $this->__i = $i;
+            $this->__l = $objectOrMethod;
+            $this->name = '__invoke';
+            $this->class = 'Closure';
+            return;
+        }
         if (is_object($objectOrMethod)) {
             $cn = __reflect('class_of', $objectOrMethod);
         } else {
@@ -302,6 +323,10 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
         if ($this->__i['abstract']) { throw new ReflectionException('Trying to invoke abstract method ' . $this->class . '::' . $this->name . '()'); }
         if ($this->__i['static']) { return __reflect_invoke(null, $this->class, $this->name, $args); }
         if ($object === null) { throw new ReflectionException('Trying to invoke non static method ' . $this->class . '::' . $this->name . '() without an object'); }
+        if ($this->__l instanceof Closure) {
+            if (!($object instanceof Closure)) { throw new ReflectionException('Given object is not an instance of the class this method was declared in'); }
+            return call_user_func_array($object, $args);
+        }
         return __reflect_invoke($object, $this->class, $this->name, $args);
     }
     public function getDeclaringClass(): ReflectionClass { return new ReflectionClass($this->class); }
@@ -317,11 +342,48 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
 class ReflectionParameter implements Reflector {
     public string $name;
     private $__l; private $__f; private $__p;
-    public function __construct($function, int|string|null $param) {
-        if (is_array($function) && $param === null && count($function) === 3 && is_array($function[2])) {
-            [$this->__l, $this->__f, $this->__p] = $function;
+    private static $__mk = null;
+    public static function __make($l, $f, $p) {
+        self::$__mk = [$l, $f, $p];
+        try { return new ReflectionParameter(null, 0); } finally { self::$__mk = null; }
+    }
+    public function __construct($function, int|string $param) {
+        if (self::$__mk !== null) {
+            [$this->__l, $this->__f, $this->__p] = self::$__mk;
+            self::$__mk = null;
         } else {
-            $f = is_array($function) ? new ReflectionMethod($function[0], $function[1]) : new ReflectionFunction($function);
+            if (is_string($function)) {
+                $f = new ReflectionFunction($function);
+            } elseif (is_array($function)) {
+                if (!array_key_exists(0, $function) || !array_key_exists(1, $function)) {
+                    throw new ReflectionException('Expected array($object, $method) or array($classname, $method)');
+                }
+                $c = $function[0];
+                if (is_object($c)) {
+                    $cn = __reflect('class_of', $c);
+                } else {
+                    $c = (string)$c;
+                    $cr = __reflect('class', $c, true);
+                    if ($cr === null) { throw new ReflectionException('Class "' . $c . '" does not exist'); }
+                    $cn = $cr['name'];
+                }
+                $m = (string)$function[1];
+                if ($c instanceof Closure && strcasecmp($m, '__invoke') === 0) {
+                    $f = new ReflectionMethod($c, '__invoke');
+                } else {
+                    if (__reflect('fn', [$cn, $m]) === null) { throw new ReflectionException('Method ' . $cn . '::' . $m . '() does not exist'); }
+                    $f = new ReflectionMethod($cn, $m);
+                }
+            } elseif ($function instanceof Closure) {
+                $f = new ReflectionFunction($function);
+            } elseif (is_object($function)) {
+                $cn = __reflect('class_of', $function);
+                if (__reflect('fn', [$cn, '__invoke']) === null) { throw new ReflectionException('Method ' . $cn . '::__invoke() does not exist'); }
+                $f = new ReflectionMethod($cn, '__invoke');
+            } else {
+                $t = match (true) { $function === null => 'null', is_bool($function) => var_export($function, true), default => get_debug_type($function) };
+                throw new ReflectionException('ReflectionParameter::__construct(): Argument #1 ($function) must be a string, an array(class, method), or a callable object, ' . $t . ' given');
+            }
             $found = null;
             foreach ($f->getParameters() as $rp) {
                 if (is_int($param) ? $rp->getPosition() === $param : $rp->name === $param) { $found = $rp; break; }
@@ -396,7 +458,9 @@ class ReflectionClass implements Reflector {
     protected $__o;
     public function __construct(object|string $objectOrClass) {
         if (is_object($objectOrClass)) {
-            $this->__o = $objectOrClass;
+            // Only a ReflectionObject keeps the object (php's intern->obj):
+            // dynamic properties and the closure's __invoke come from it.
+            if ($this instanceof ReflectionObject) { $this->__o = $objectOrClass; }
             $objectOrClass = __reflect('class_of', $objectOrClass);
         }
         $c = __reflect('class', $objectOrClass, true);
@@ -417,9 +481,11 @@ class ReflectionClass implements Reflector {
     public function getDocComment(): string|false { return $this->__c['doc']; }
     public function getConstructor(): ?ReflectionMethod { return $this->hasMethod('__construct') ? new ReflectionMethod($this->name, '__construct') : null; }
     public function hasMethod(string $name): bool {
+        if ($this->name === 'Closure' && strcasecmp($name, '__invoke') === 0) { return true; }
         return __reflect('fn', [$this->name, $name]) !== null;
     }
     public function getMethod(string $name): ReflectionMethod {
+        if ($this->__o instanceof Closure && strcasecmp($name, '__invoke') === 0) { return new ReflectionMethod($this->__o, '__invoke'); }
         if (__reflect('fn', [$this->name, $name]) !== null) { return new ReflectionMethod($this->__o ?? $this->name, $name); }
         throw new ReflectionException('Method ' . $this->name . '::' . $name . '() does not exist');
     }
@@ -505,7 +571,13 @@ class ReflectionClass implements Reflector {
         $cls = $this->name;
         return new $cls(...$args);
     }
-    public function newInstanceWithoutConstructor(): object { return __reflect_new_instance_noctor($this->name); }
+    public function newInstanceWithoutConstructor(): object {
+        // Internal final classes with their own object handlers.
+        if ($this->__c['internal'] && $this->isFinal() && in_array(strtolower($this->name), ['generator', '__php_incomplete_class', 'closure', 'gmp', 'weakreference', 'weakmap', 'fiber', 'reflectionreference', 'reflectiongenerator', 'reflectionfiber', 'curlhandle', 'curlmultihandle', 'curlsharehandle', 'opensslasymmetrickey', 'opensslcertificate', 'opensslcertificatesigningrequest', 'inflatecontext', 'deflatecontext', 'hashcontext', 'bcmath\\number'], true)) {
+            throw new ReflectionException('Class ' . $this->name . ' is an internal class marked as final that cannot be instantiated without invoking its constructor');
+        }
+        return __reflect_new_instance_noctor($this->name);
+    }
     public function newInstanceArgs(array $args = []): ?object {
         $ctor = __reflect('fn', [$this->name, '__construct']);
         if ($ctor === null) {
@@ -642,9 +714,17 @@ class ReflectionProperty implements Reflector {
     }
     public function setValue(mixed $objectOrValue, mixed $value = null): void {
         if ($this->__i['static']) {
-            __reflect('set_static', $this->class, $this->name, func_num_args() === 1 ? $objectOrValue : $value);
+            if (func_num_args() === 1) {
+                __reflect('deprecated', 'Calling ReflectionProperty::setValue() with a single argument is deprecated');
+                $value = $objectOrValue;
+            } elseif ($objectOrValue !== null && !is_object($objectOrValue)) {
+                __reflect('deprecated', 'Calling ReflectionProperty::setValue() with a 1st argument which is not null or an object is deprecated');
+            }
+            __reflect('set_static', $this->class, $this->name, $value);
             return;
         }
+        if (func_num_args() < 2) { throw new ArgumentCountError('ReflectionProperty::setValue() expects exactly 2 arguments, ' . func_num_args() . ' given'); }
+        if (!is_object($objectOrValue)) { throw new TypeError('ReflectionProperty::setValue(): Argument #1 ($objectOrValue) must be of type object, ' . get_debug_type($objectOrValue) . ' given'); }
         __reflect_set_prop($objectOrValue, $this->name, $value, $this->class);
     }
     public function getRawValue(object $object): mixed { return $this->getValue($object); }
@@ -723,7 +803,7 @@ class ReflectionClassConstant implements Reflector {
     public function getDocComment(): string|false { return $this->__i['doc']; }
     public function getAttributes(?string $name = null, int $flags = 0): array { return Reflection::__attrs($this->__i['attrs'], $name, $flags, 'ReflectionClassConstant'); }
     public function isEnumCase(): bool { return $this->__i['case']; }
-    public function isDeprecated(): bool { return false; }
+    public function isDeprecated(): bool { return Reflection::__deprecated($this->__i['attrs']); }
     public function hasType(): bool { return $this->__i['type'] !== null; }
     public function getType(): ?ReflectionType { return Reflection::__type($this->__i['type']); }
 }

@@ -50,6 +50,13 @@ fn fn_get_defined_functions(host: &mut dyn Host, args: &[Value]) -> Result<Value
         "exclude_disabled",
         true,
     )?;
+    if !args.is_empty() {
+        crate::deprecated(
+            host,
+            "get_defined_functions",
+            "The $exclude_disabled parameter has no effect since PHP 8.0",
+        )?;
+    }
     host.reflect_op(b"functions", &[])
 }
 
@@ -74,9 +81,26 @@ fn fn_get_class_methods(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 }
 
 fn fn_get_class_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = str_param(host, args, 0, "get_class_vars", "class")?;
-    if host.resolve_class_autoload(&name)?.is_none() {
-        return Ok(Value::Bool(false));
+    // zpp "C": the argument as a string naming a class, else a TypeError.
+    let v = deref(&args[0]);
+    let name: Vec<u8> = match &v {
+        Value::Str(s) => s.as_bytes().to_vec(),
+        Value::Array(_) => {
+            host.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
+            b"Array".to_vec()
+        }
+        Value::Object(_) | Value::Closure(_) => value_name(host, &v).into_bytes(),
+        other => rhp_values::conv::to_string_bytes(other),
+    };
+    let found = match &v {
+        Value::Str(_) => host.resolve_class_autoload(&name)?,
+        _ => None,
+    };
+    if found.is_none() {
+        return Err(Thrown::type_error(format!(
+            "get_class_vars(): Argument #1 ($class) must be a valid class name, {} given",
+            String::from_utf8_lossy(&name)
+        )));
     }
     host.reflect_op(b"default_props", &[Value::str(name), Value::Bool(true)])
 }

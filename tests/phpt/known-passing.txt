@@ -1843,6 +1843,7 @@ Zend/tests/zend_operators.phpt
 Zend/tests/zend_signed_multiply-64bit-2.phpt
 Zend/tests/zend_signed_multiply-64bit.phpt
 Zend/tests/zend_strtod.phpt
+ext/reflection/tests/001.phpt
 ext/reflection/tests/003.phpt
 ext/reflection/tests/004.phpt
 ext/reflection/tests/005.phpt
@@ -1857,9 +1858,11 @@ ext/reflection/tests/022.phpt
 ext/reflection/tests/023.phpt
 ext/reflection/tests/028.phpt
 ext/reflection/tests/ReflectionAttribute_newInstance_deprecated.phpt
+ext/reflection/tests/ReflectionClassConstant_isDeprecated_userland.phpt
 ext/reflection/tests/ReflectionClassConstant_isEnumCase.phpt
 ext/reflection/tests/ReflectionClassConstant_toString_error.phpt
 ext/reflection/tests/ReflectionClassConstant_unset_name.phpt
+ext/reflection/tests/ReflectionClass_CannotClone_basic.phpt
 ext/reflection/tests/ReflectionClass_FileInfo_basic.phpt
 ext/reflection/tests/ReflectionClass_constructor_001.phpt
 ext/reflection/tests/ReflectionClass_getConstant_basic.phpt
@@ -1875,6 +1878,7 @@ ext/reflection/tests/ReflectionClass_getExtension_variation.phpt
 ext/reflection/tests/ReflectionClass_getInterfaceNames_basic.phpt
 ext/reflection/tests/ReflectionClass_getInterfaces_001.phpt
 ext/reflection/tests/ReflectionClass_getInterfaces_002.phpt
+ext/reflection/tests/ReflectionClass_getMethod_001.phpt
 ext/reflection/tests/ReflectionClass_getMethods_001.phpt
 ext/reflection/tests/ReflectionClass_getMethods_003.phpt
 ext/reflection/tests/ReflectionClass_getMethods_004.phpt
@@ -1891,6 +1895,7 @@ ext/reflection/tests/ReflectionClass_getStaticPropertyValue_001.phpt
 ext/reflection/tests/ReflectionClass_hasConstant_001.phpt
 ext/reflection/tests/ReflectionClass_hasConstant_002.phpt
 ext/reflection/tests/ReflectionClass_hasConstant_basic.phpt
+ext/reflection/tests/ReflectionClass_hasMethod_001.phpt
 ext/reflection/tests/ReflectionClass_hasMethod_002.phpt
 ext/reflection/tests/ReflectionClass_hasMethod_basic.phpt
 ext/reflection/tests/ReflectionClass_hasProperty_001.phpt
@@ -1927,6 +1932,7 @@ ext/reflection/tests/ReflectionEnum_isBacked.phpt
 ext/reflection/tests/ReflectionExtension_constructor_basic.phpt
 ext/reflection/tests/ReflectionExtension_double_construct.phpt
 ext/reflection/tests/ReflectionExtension_getClassNames_variation1.phpt
+ext/reflection/tests/ReflectionExtension_getName_basic.phpt
 ext/reflection/tests/ReflectionExtension_getVersion_basic.phpt
 ext/reflection/tests/ReflectionExtension_isPersistant.phpt
 ext/reflection/tests/ReflectionExtension_isTemporary.phpt
@@ -1939,6 +1945,7 @@ ext/reflection/tests/ReflectionFunction_getNamespaceName.phpt
 ext/reflection/tests/ReflectionFunction_isAnonymous.phpt
 ext/reflection/tests/ReflectionFunction_isClosure_basic.phpt
 ext/reflection/tests/ReflectionFunction_isDeprecated_basic.phpt
+ext/reflection/tests/ReflectionFunction_isDeprecated_userland.phpt
 ext/reflection/tests/ReflectionFunction_isGenerator_basic.phpt
 ext/reflection/tests/ReflectionFunction_isVariadic_basic.phpt
 ext/reflection/tests/ReflectionMethod_basic1.phpt
@@ -1956,6 +1963,8 @@ ext/reflection/tests/ReflectionMethod_hasPrototype_basic.phpt
 ext/reflection/tests/ReflectionMethod_invokeArgs_basic.phpt
 ext/reflection/tests/ReflectionMethod_invokeArgs_error1.phpt
 ext/reflection/tests/ReflectionMethod_invoke_on_abstract_method_after_setAccessible.phpt
+ext/reflection/tests/ReflectionMethod_isDeprecated_interface.phpt
+ext/reflection/tests/ReflectionMethod_isDeprecated_parent.phpt
 ext/reflection/tests/ReflectionMethod_returnsReference_basic.phpt
 ext/reflection/tests/ReflectionNamedType.phpt
 ext/reflection/tests/ReflectionObject_FileInfo_basic.phpt
@@ -2005,6 +2014,7 @@ ext/reflection/tests/asymmetric_visibility_write.phpt
 ext/reflection/tests/bug26640.phpt
 ext/reflection/tests/bug29523.phpt
 ext/reflection/tests/bug29828.phpt
+ext/reflection/tests/bug30146.phpt
 ext/reflection/tests/bug30209.phpt
 ext/reflection/tests/bug30856.phpt
 ext/reflection/tests/bug30961.phpt
@@ -2045,7 +2055,11 @@ ext/reflection/tests/bug64936.phpt
 ext/reflection/tests/bug70674.phpt
 ext/reflection/tests/bug70960.phpt
 ext/reflection/tests/bug70982.phpt
+ext/reflection/tests/bug71018.phpt
+ext/reflection/tests/bug72174.phpt
+ext/reflection/tests/bug74949.phpt
 ext/reflection/tests/bug75231.phpt
+ext/reflection/tests/bug76936.phpt
 ext/reflection/tests/bug77325.phpt
 ext/reflection/tests/bug77772.phpt
 ext/reflection/tests/bug78697.phpt
@@ -2054,18 +2068,22 @@ ext/reflection/tests/bug78895.phpt
 ext/reflection/tests/bug79062.phpt
 ext/reflection/tests/bug79115.phpt
 ext/reflection/tests/bug79487.phpt
+ext/reflection/tests/bug79683.phpt
 ext/reflection/tests/bug79820.phpt
 ext/reflection/tests/bug80370.phpt
+ext/reflection/tests/bug80821.phpt
 ext/reflection/tests/bug81208.phpt
 ext/reflection/tests/bug81681.phpt
 ext/reflection/tests/closures_002.phpt
 ext/reflection/tests/closures_003_v1.phpt
+ext/reflection/tests/closures_004.phpt
 ext/reflection/tests/closures_005.phpt
 ext/reflection/tests/default_value_leak.phpt
 ext/reflection/tests/gh10623.phpt
 ext/reflection/tests/gh12908.phpt
 ext/reflection/tests/gh18373.phpt
 ext/reflection/tests/gh20895.phpt
+ext/reflection/tests/gh8080.phpt
 ext/reflection/tests/iterable_Reflection.phpt
 ext/reflection/tests/new_in_attributes.phpt
 ext/reflection/tests/readonly_class.phpt
@@ -2074,6 +2092,7 @@ ext/reflection/tests/static_properties_002.phpt
 ext/reflection/tests/static_properties_with_typed_class_constants1.phpt
 ext/reflection/tests/static_type.phpt
 ext/reflection/tests/traits003.phpt
+ext/reflection/tests/types/ReflectionType_002.phpt
 ext/reflection/tests/types/ReflectionType_possible_types.phpt
 ext/reflection/tests/types/bug80190.phpt
 ext/reflection/tests/types/dnf_types.phpt

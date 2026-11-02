@@ -105,3 +105,43 @@ fn by_ref_foreach_and_reference_binding() {
         "#,
     );
 }
+
+/// The prelude's native `__reflect*` helpers are reachable from PHP code
+/// (and a Reflection subclass can forge their arguments): garbage input
+/// must raise or return, never panic the engine.
+#[test]
+fn reflect_helpers_survive_garbage() {
+    let dir: PathBuf = std::env::temp_dir().join("rhp_refl_garbage");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("t.php");
+    std::fs::write(
+        &f,
+        r#"<?php
+        $ops = ['class', 'class_of', 'methods', 'props', 'consts', 'const', 'prop', 'fn',
+                'attr_args', 'param_default', 'is_a', 'static_props', 'set_static',
+                'default_props', 'is_init', 'obj_props', 'closure', 'nope'];
+        $vals = [null, 0, -1, PHP_INT_MAX, '', "\0", 'stdClass', [], [1], ['stdClass'],
+                 [1, 2, 3], new stdClass, function () {}, [new stdClass, 'x']];
+        foreach ($ops as $op) {
+            foreach ($vals as $a) {
+                foreach ([[], [$a], [$a, $a], [$a, 0, $a]] as $args) {
+                    try { __reflect($op, ...$args); } catch (Throwable $e) {}
+                }
+            }
+        }
+        echo "ok\n";
+        "#,
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rhp"))
+        .arg(&f)
+        .output()
+        .expect("run rhp");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        out.status.success() && out.stdout.ends_with(b"ok\n"),
+        "rhp failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

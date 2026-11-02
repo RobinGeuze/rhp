@@ -243,6 +243,12 @@ pub trait Host {
         false
     }
 
+    /// Whether objects of a class are `ZEND_ACC_NOT_SERIALIZABLE` (the
+    /// Reflection objects, WeakReference, …). Default: no.
+    fn not_serializable(&self, _class_id: u32) -> bool {
+        false
+    }
+
     /// Whether the property slot `key` (storage key) of an object of class
     /// `class_id` is engine-internal state of a built-in class (the prelude's
     /// `__`-prefixed slots): php keeps such state outside the property table,
@@ -878,13 +884,24 @@ pub trait Host {
     }
     /// Set an object property bypassing visibility (`ReflectionProperty::setValue`),
     /// resolving `name` as class `class` would see it (its own private first).
-    fn reflect_set_prop(&mut self, _obj: &Value, _class: &[u8], _name: &[u8], _val: Value) -> bool {
-        false
+    fn reflect_set_prop(
+        &mut self,
+        _obj: &Value,
+        _class: &[u8],
+        _name: &[u8],
+        _val: Value,
+    ) -> Result<(), Thrown> {
+        Ok(())
     }
     /// Read an object property bypassing visibility (`ReflectionProperty::getValue`),
     /// resolving `name` as class `class` would see it (its own private first).
-    fn reflect_get_prop(&self, obj: &Value, _class: &[u8], name: &[u8]) -> Option<Value> {
-        self.object_prop(obj, name)
+    fn reflect_get_prop(
+        &mut self,
+        obj: &Value,
+        _class: &[u8],
+        name: &[u8],
+    ) -> Result<Option<Value>, Thrown> {
+        Ok(self.object_prop(obj, name))
     }
     /// Parameter descriptors for a class method (`ReflectionMethod::getParameters`).
     fn reflect_method_params(&self, _class: &[u8], _method: &[u8]) -> Option<Value> {

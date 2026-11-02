@@ -1,0 +1,142 @@
+-- setValue
+int(12)
+TypeError: Cannot assign string to property P::$n of type int
+TypeError: Cannot assign array to property P::$n of type int
+TypeError: ReflectionProperty::setValue(): Argument #1 ($objectOrValue) must be of type object, int given
+ArgumentCountError: ReflectionProperty::setValue() expects exactly 2 arguments, 1 given
+int(7)
+Error: Cannot modify readonly property P::$ro
+int(42)
+__set q
+-- statics and defaults
+array(6) {
+  ["u"]=>
+  NULL
+  ["v"]=>
+  NULL
+  ["pt"]=>
+  NULL
+  ["s"]=>
+  int(1)
+  ["t"]=>
+  NULL
+  ["ps"]=>
+  string(1) "p"
+}
+array(3) {
+  ["s"]=>
+  int(1)
+  ["ps"]=>
+  string(1) "p"
+  ["v"]=>
+  NULL
+}
+int(1)
+[8192] Calling ReflectionProperty::setValue() with a single argument is deprecated
+int(9)
+[8192] Calling ReflectionProperty::setValue() with a 1st argument which is not null or an object is deprecated
+int(10)
+int(11)
+-- interface order
+A1: J,Stringable,I2,I1
+A2: I1,I2,Stringable,J
+A3: J,Stringable,I2,I1
+A4: J,Stringable,I2,I1,Countable
+WithTrait: Stringable
+Exception: Stringable,Throwable
+ErrorException: Throwable,Stringable
+TypeError: Throwable,Stringable
+ArgumentCountError: Stringable,Throwable
+ReflectionClass: Stringable,Reflector
+ReflectionObject: Reflector,Stringable
+bool(true)
+array(8) {
+  [0]=>
+  string(10) "getMessage"
+  [1]=>
+  string(7) "getCode"
+  [2]=>
+  string(7) "getFile"
+  [3]=>
+  string(7) "getLine"
+  [4]=>
+  string(8) "getTrace"
+  [5]=>
+  string(11) "getPrevious"
+  [6]=>
+  string(16) "getTraceAsString"
+  [7]=>
+  string(10) "__toString"
+}
+string(6) "string"
+NULL
+string(11) "Traversable"
+-- clone / serialize
+Exception: Serialization of 'ReflectionClass' is not allowed
+Exception: Serialization of 'MyRC' is not allowed
+Exception: Unserialization of 'ReflectionClass' is not allowed
+Exception: Serialization of 'WeakReference' is not allowed
+Error: Trying to clone an uncloneable object of class ReflectionClass
+Error: Trying to clone an uncloneable object of class Exception
+Error: Trying to clone an uncloneable object of class MyEx
+Error: Trying to clone an uncloneable object of class IteratorIterator
+MyEx cloneable: true
+Exception cloneable: false
+MyRC cloneable: false
+ArrayObject cloneable: true
+IteratorIterator cloneable: false
+Reflection cloneable: true
+ReflectionException: Class Closure is an internal class marked as final that cannot be instantiated without invoking its constructor
+ReflectionException: Class Generator is an internal class marked as final that cannot be instantiated without invoking its constructor
+ReflectionException: Class WeakMap is an internal class marked as final that cannot be instantiated without invoking its constructor
+Attribute
+MyRC
+-- closure __invoke
+string(8) "__invoke"
+string(7) "Closure"
+bool(true)
+bool(false)
+int(1)
+int(3)
+string(3) "int"
+int(42)
+ReflectionException: Given object is not an instance of the class this method was declared in
+bool(true)
+string(8) "__invoke"
+bool(true)
+ReflectionException: Method Closure::__invoke() does not exist
+-- ReflectionParameter lookup
+string(1) "b"
+int(2)
+ReflectionException: ReflectionParameter::__construct(): Argument #1 ($function) must be a string, an array(class, method), or a callable object, int given
+ReflectionException: ReflectionParameter::__construct(): Argument #1 ($function) must be a string, an array(class, method), or a callable object, null given
+ReflectionException: ReflectionParameter::__construct(): Argument #1 ($function) must be a string, an array(class, method), or a callable object, true given
+ReflectionException: Class "1" does not exist
+ReflectionException: Expected array($object, $method) or array($classname, $method)
+ReflectionException: Method stdClass::nope() does not exist
+ReflectionException: Method stdClass::__invoke() does not exist
+ReflectionException: Function nope() does not exist
+ReflectionException: The parameter specified by its offset could not be found
+ReflectionException: The parameter specified by its name could not be found
+-- Deprecated
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+bool(false)
+-- getValue / dynamic properties
+__get u
+string(5) "magic"
+string(1) "p"
+bool(false)
+int(0)
+bool(true)
+int(1)
+bool(true)
+-- introspection builtins
+TypeError: get_class_vars(): Argument #1 ($class) must be a valid class name, NoSuchClass given
+TypeError: get_class_vars(): Argument #1 ($class) must be a valid class name, 5 given
+array(0) {
+}
+[8192] get_defined_functions(): The $exclude_disabled parameter has no effect since PHP 8.0
+bool(true)

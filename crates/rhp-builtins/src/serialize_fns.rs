@@ -147,10 +147,13 @@ impl Serializer {
     ) -> Result<(), Thrown> {
         let class_id = h.borrow().class;
         let mut cname = host.class_name(class_id).unwrap_or_default();
-        if cname.eq_ignore_ascii_case(b"Generator") {
+        if host.not_serializable(class_id) || cname.eq_ignore_ascii_case(b"Generator") {
             return Err(Thrown::error(
                 "Exception",
-                "Serialization of 'Generator' is not allowed",
+                format!(
+                    "Serialization of '{}' is not allowed",
+                    String::from_utf8_lossy(&cname)
+                ),
             ));
         }
         if host.is_enum_class(class_id) {
@@ -618,6 +621,16 @@ impl<'a> Parser<'a, '_> {
         let (obj, has_unserialize, has_wakeup) = match cid {
             Some(cid) => {
                 let name = self.host.class_name(cid).unwrap_or_else(|| cname.clone());
+                if self.host.not_serializable(cid) {
+                    return Err(Thrown::error(
+                        "Exception",
+                        format!(
+                            "Unserialization of '{}' is not allowed",
+                            String::from_utf8_lossy(&name)
+                        ),
+                    )
+                    .into());
+                }
                 // Enums / interfaces / abstract classes throw "Cannot
                 // instantiate ...".
                 let obj = self.host.reflect_new_instance(&name, Vec::new(), false)?;

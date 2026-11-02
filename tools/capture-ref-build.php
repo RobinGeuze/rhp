@@ -65,7 +65,7 @@ foreach (['PHP_BUILD_DATE', 'PHP_BUILD_PROVIDER', 'PHP_PREFIX', 'PHP_BINDIR', 'P
 }
 row("ini_get('include_path')", ini_get('include_path'));
 row("ini_get('extension_dir')", ini_get('extension_dir'));
-info_rows(['Build Date', 'Build Provider', 'Configuration File (php.ini) Path']);
+info_rows(['Build Date', 'Build System', 'Build Provider', 'Configuration File (php.ini) Path']);
 foreach (['PCRE_VERSION', 'PCRE_VERSION_MAJOR', 'PCRE_VERSION_MINOR', 'LIBXML_VERSION',
           'LIBXML_DOTTED_VERSION', 'LIBXML_LOADED_VERSION', 'ICONV_VERSION', 'MB_ONIGURUMA_VERSION',
           'OPENSSL_VERSION_TEXT', 'OPENSSL_VERSION_NUMBER', 'INTL_ICU_VERSION',

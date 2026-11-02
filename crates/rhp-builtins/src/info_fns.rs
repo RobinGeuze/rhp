@@ -173,6 +173,7 @@ fn print_info(flag: i64) -> Vec<u8> {
         o.table_start();
         o.row(&["System", &php_get_uname(b'a')]);
         o.row(&["Build Date", version::BUILD_DATE]);
+        o.row(&["Build System", version::BUILD_SYSTEM]);
         o.row(&["Build Provider", version::BUILD_PROVIDER]);
         o.row(&["Configure Command", " './configure' "]);
         o.row(&["Server API", "Command Line Interface"]);

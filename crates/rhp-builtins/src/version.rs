@@ -10,17 +10,18 @@
 //! implements the same way everywhere (PCRE, ICU, libcurl, ...). Only the
 //! values that describe the platform follow the Ubuntu php CI runs against
 //! (setup-php's build): the install paths, [`BUILD_PROVIDER`],
-//! [`ZEND_VM_KIND`] and libcurl's host triple. There ref_build compares the
-//! release section only.
+//! [`BUILD_SYSTEM`], [`ZEND_VM_KIND`] and libcurl's host triple. There
+//! ref_build compares the release section only.
 //!
 //! Bumping to a new patch release (e.g. 8.5.13):
 //! 1. upgrade the reference php (`brew upgrade php`), and check out the
 //!    matching php-src tag; put its commit in `tests/phpt/php-src.ref`;
 //! 2. edit `release!()`, `brew_rev!()` and [`BUILD_DATE`] below (every other
 //!    version number is derived from them), then run
-//!    `php -n tools/capture-ref-build.php` and copy any changed library value
-//!    into this file; `cargo test -p rhp-cli --test ref_build` fails on the
-//!    reference host until rhp and php agree;
+//!    `php -n tools/capture-ref-build.php` and copy any changed library or
+//!    build value (e.g. [`BUILD_SYSTEM`]) into this file;
+//!    `cargo test -p rhp-cli --test ref_build` fails on the reference host
+//!    until rhp and php agree;
 //! 3. regenerate the phpt ratchet. No golden or test spells out the release.
 
 /// `PHP_RELEASE_VERSION`, as a literal so it can be spliced with `concat!`.
@@ -97,6 +98,17 @@ pub const ZEND_VM_KIND: &str = "ZEND_VM_KIND_HYBRID";
 /// same on every platform: it names the build rhp mirrors, not a Linux
 /// package's (whose rebuilds would each change it).
 pub const BUILD_DATE: &str = "Oct 19 2026 17:02:46";
+/// phpinfo's "Build System": `uname -a` of the host the reference bottle
+/// was built on. Homebrew builds a bottle per macOS version and CPU, so its
+/// Darwin major version and architecture name the bottle; ref_build compares
+/// the build section only against a Homebrew php that agrees on both.
+#[cfg(target_os = "macos")]
+pub const BUILD_SYSTEM: &str =
+    "Darwin Golden-Gate-arm64.local 27.0.0 Darwin Kernel Version 27.0.0: \
+    Tue Aug 11 21:00:07 PDT 2026; root:xnu-13432.1.9~1/RELEASE_ARM64_VMAPPLE arm64";
+/// What setup-php's Ubuntu php reports: just the kernel name.
+#[cfg(not(target_os = "macos"))]
+pub const BUILD_SYSTEM: &str = "Linux";
 
 /// A decimal literal as an integer, at compile time.
 const fn parse_int(s: &str) -> i64 {

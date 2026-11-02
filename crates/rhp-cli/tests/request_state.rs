@@ -5,7 +5,6 @@
 
 use rhp_compiler::compile_with_source;
 use rhp_frontend::Arena;
-use rhp_oracle::Interp;
 use rhp_vm::Vm;
 
 const DIRTY: &[u8] = br#"<?php
@@ -42,43 +41,12 @@ fn run_vm(source: &[u8]) -> String {
     String::from_utf8_lossy(vm.output()).into_owned()
 }
 
-fn run_oracle(source: &[u8]) -> String {
-    let arena = Arena::new();
-    let parsed = arena.parse(b"t.php", source);
-    let mut interp = Interp::new();
-    if let Err(e) = interp.run(parsed.program()) {
-        panic!("{e:?}");
-    }
-    String::from_utf8_lossy(interp.output()).into_owned()
-}
-
 #[test]
 fn vm_state_does_not_leak_between_engines() {
     let clean = run_vm(CHECK);
     assert_eq!(clean, CLEAN);
     assert_eq!(run_vm(DIRTY), "2 0 dirty");
     assert_eq!(run_vm(CHECK), clean);
-    assert!(std::env::var_os("RHP_REQUEST_STATE_TEST").is_none());
-}
-
-/// The oracle has no preg support: drop those parts of the scripts.
-fn without_preg(src: &[u8]) -> Vec<u8> {
-    String::from_utf8_lossy(src)
-        .lines()
-        .filter(|l| !l.starts_with("preg_") && !l.starts_with("echo preg_"))
-        .map(|l| l.replace("preg_last_error(), ' ', ", ""))
-        .collect::<Vec<_>>()
-        .join("\n")
-        .into_bytes()
-}
-
-#[test]
-fn oracle_state_does_not_leak_between_engines() {
-    let check = without_preg(CHECK);
-    let clean = run_oracle(&check);
-    assert_eq!(clean, CLEAN.replacen(" 0 0 ", " 0 ", 1));
-    assert_eq!(run_oracle(&without_preg(DIRTY)), "0 dirty");
-    assert_eq!(run_oracle(&check), clean);
     assert!(std::env::var_os("RHP_REQUEST_STATE_TEST").is_none());
 }
 

@@ -726,14 +726,6 @@ impl Host for Vm {
             .or_else(|| self.main_script_path.clone())
     }
 
-    fn has_streams(&self) -> bool {
-        true
-    }
-
-    fn supports_signals(&self) -> bool {
-        true
-    }
-
     fn stream_open(&mut self, path: &[u8], mode: &[u8]) -> Option<Value> {
         let writable = mode
             .iter()

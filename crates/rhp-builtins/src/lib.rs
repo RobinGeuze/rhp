@@ -778,20 +778,6 @@ pub trait Host {
     // Streams are resource Values whose state lives in the VM; these are the
     // `fopen`/`fwrite`/… primitives. Defaults are no-ops (hosts without streams).
 
-    /// Whether this host delivers signals to PHP callbacks (pcntl). The
-    /// signal queue is process-wide, so only one interpreter per process (the
-    /// VM) may own it. Default: no — `pcntl_signal` with a callable is then
-    /// unsupported.
-    fn supports_signals(&self) -> bool {
-        false
-    }
-
-    /// Whether this host implements stream resources at all (`fopen` on a
-    /// host without them is unsupported rather than a silent failure).
-    fn has_streams(&self) -> bool {
-        false
-    }
-
     /// `fopen($path, $mode)` → a resource, or None on failure.
     fn stream_open(&mut self, _path: &[u8], _mode: &[u8]) -> Option<Value> {
         None

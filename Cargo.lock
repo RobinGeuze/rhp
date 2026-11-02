@@ -1512,7 +1512,6 @@ version = "0.0.0"
 dependencies = [
  "rhp-compiler",
  "rhp-frontend",
- "rhp-oracle",
  "rhp-sapi",
  "rhp-values",
  "rhp-vm",
@@ -1557,18 +1556,6 @@ dependencies = [
  "mago-database",
  "mago-syntax",
  "mago-syntax-core",
-]
-
-[[package]]
-name = "rhp-oracle"
-version = "0.0.0"
-dependencies = [
- "mago-syntax",
- "rhp-builtins",
- "rhp-bytecode",
- "rhp-frontend",
- "rhp-semantics",
- "rhp-values",
 ]
 
 [[package]]

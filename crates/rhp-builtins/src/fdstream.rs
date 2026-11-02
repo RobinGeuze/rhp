@@ -59,6 +59,9 @@ pub struct SockInfo {
     /// The address the stream was opened with (php's `orig_path`, the meta
     /// data `uri`); none for accepted sockets and socket pairs.
     pub uri: Option<Vec<u8>>,
+    /// Opened persistent (`STREAM_CLIENT_PERSISTENT`, `pfsockopen`): the
+    /// resource is a `persistent stream`.
+    pub persistent: bool,
     /// The peer closed the connection, as seen by a liveness check (`feof`).
     peer_closed: std::cell::Cell<bool>,
 }
@@ -72,6 +75,7 @@ impl SockInfo {
             blocked: true,
             no_io: false,
             uri: None,
+            persistent: false,
             peer_closed: std::cell::Cell::new(false),
         }
     }
@@ -90,11 +94,12 @@ pub struct SendError {
 pub fn poll_fd(fd: RawFd, events: libc::c_short, timeout: Option<(i64, i64)>) -> i32 {
     let ms = match timeout {
         None => -1,
+        // php's `php_tvtoto`; a negative total (e.g. stream_set_timeout($s,
+        // -5)) reaches poll(2) as negative: wait forever.
         Some((s, us)) => s
-            .max(0)
             .saturating_mul(1000)
-            .saturating_add(us.max(0) / 1000)
-            .min(i32::MAX as i64) as i32,
+            .saturating_add(us / 1000)
+            .clamp(-1, i32::MAX as i64) as i32,
     };
     let mut p = libc::pollfd {
         fd,

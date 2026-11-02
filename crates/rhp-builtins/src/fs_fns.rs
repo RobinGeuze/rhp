@@ -1394,11 +1394,21 @@ fn fn_stream_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
         .unwrap_or(Value::Bool(false)))
 }
 
-pub(crate) fn fn_stream_get_meta_data(
+fn fn_stream_get_meta_data(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    stream_get_meta_data_impl(host, args, "stream_get_meta_data")
+}
+
+/// `socket_get_status`: php's alias of `stream_get_meta_data`.
+pub(crate) fn fn_socket_get_status(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    stream_get_meta_data_impl(host, args, "socket_get_status")
+}
+
+fn stream_get_meta_data_impl(
     host: &mut dyn Host,
     args: &[Value],
+    fname: &str,
 ) -> Result<Value, Thrown> {
-    let (h, _) = stream_param(host, args, 0, "stream_get_meta_data", "stream")?;
+    let (h, _) = stream_param(host, args, 0, fname, "stream")?;
     let Some(m) = host.stream_meta(&h) else {
         return Ok(Value::Bool(false));
     };

@@ -106,6 +106,21 @@ pub fn object_freed(id: u32) {
     ext::sockets::object_freed();
 }
 
+/// The internal opaque-handle classes php declares `@strict-properties` and
+/// `@not-serializable` (`ZEND_ACC_NO_DYNAMIC_PROPERTIES |
+/// ZEND_ACC_NOT_SERIALIZABLE`): `Socket` and the curl handles. Their names
+/// are taken by the prelude, so a user class cannot carry one.
+pub fn is_opaque_handle_class(name: &[u8]) -> bool {
+    [
+        &b"Socket"[..],
+        b"CurlHandle",
+        b"CurlMultiHandle",
+        b"CurlShareHandle",
+    ]
+    .iter()
+    .any(|n| n.eq_ignore_ascii_case(name))
+}
+
 /// `zend_compare` from inside a builtin, with the host's object semantics.
 pub fn host_compare(
     host: &mut dyn Host,

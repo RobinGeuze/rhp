@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
-use rhp_values::{conv, ArrayKey, ObjectData, ObjectHandle, PhpArray, Value};
+use rhp_values::{ArrayKey, ObjectData, ObjectHandle, PhpArray, Value};
 
 use crate::proc_fns::{zpp_long, zpp_type_name};
 use crate::{Builtin, Host, Thrown};
@@ -265,68 +265,119 @@ fn fn_socket_get_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         }
     }
     let mut v: libc::c_int = 0;
-    match getsockopt_raw(fd, level, opt, &mut v) {
-        Ok(()) => Ok(Value::Int(v as i64)),
-        Err(e) => fail(host, e),
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    let r = unsafe {
+        libc::getsockopt(
+            fd,
+            level,
+            opt,
+            &mut v as *mut libc::c_int as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    if r != 0 {
+        return fail(host, errno());
+    }
+    if len == 1 {
+        // A one-byte option: just that (native-order first) byte.
+        v = v.to_ne_bytes()[0] as libc::c_int;
+    }
+    Ok(Value::Int(v as i64))
+}
+
+/// The option table of an array-valued option: the array, or an object's
+/// property table (php's `Z_OBJPROP_P`); `None` for anything else.
+fn option_table(v: &Value) -> Option<PhpArray> {
+    match v {
+        Value::Array(a) => Some(a.clone()),
+        Value::Object(h) => {
+            let mut a = PhpArray::new();
+            for (k, val) in h.borrow().properties.iter() {
+                a.insert(ArrayKey::from_bytes(k.as_bytes()), val.clone());
+            }
+            Some(a)
+        }
+        _ => None,
     }
 }
 
-/// An int-valued key of an option array (`l_onoff`, `sec`, …).
-fn array_long(host: &mut dyn Host, a: &PhpArray, k: &str, fname: &str) -> Result<i64, Thrown> {
-    match a.get(&ArrayKey::from_bytes(k.as_bytes())) {
-        Some(v) => Ok(conv::to_int(&deref(v))),
-        None => {
-            let _ = host;
-            Err(Thrown::error(
+/// The value of key `k` of an option table (`l_onoff`, `sec`, …), or php's
+/// "must have key" ValueError.
+fn table_entry(a: &PhpArray, k: &str, fname: &str) -> Result<Value, Thrown> {
+    a.get(&ArrayKey::from_bytes(k.as_bytes()))
+        .map(deref)
+        .ok_or_else(|| {
+            Thrown::error(
                 "ValueError",
                 format!("{fname}(): Argument #4 ($value) must have key \"{k}\""),
-            ))
-        }
-    }
+            )
+        })
 }
 
 fn fn_socket_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    use crate::ext::curl::zval_get_long;
     let fname = "socket_set_option";
     let (key, fd) = socket_arg(host, args, 0, fname, false)?;
-    let level = zpp_long(host, args, 1, fname, "level")? as i32;
-    let opt = zpp_long(host, args, 2, fname, "option")? as i32;
+    let level = zpp_long(host, args, 1, fname, "level")?;
+    let opt = zpp_long(host, args, 2, fname, "option")?;
     let value = args.get(3).map(deref).unwrap_or(Value::Null);
     let set = |p: *const libc::c_void, len: usize| unsafe {
-        libc::setsockopt(fd, level, opt, p, len as libc::socklen_t)
+        libc::setsockopt(fd, level as i32, opt as i32, p, len as libc::socklen_t)
     };
-    let r = if level == libc::SOL_SOCKET && opt == libc::SO_LINGER {
-        let Value::Array(a) = &value else {
+    // php switches on the option name alone (whatever the level), except
+    // that IPPROTO_IP / IPPROTO_IPV6 options go to the multicast handlers,
+    // which hand everything they do not know to the plain int case.
+    let by_name = level != libc::IPPROTO_IP as i64 && level != libc::IPPROTO_IPV6 as i64;
+    let r = if by_name && opt == libc::SO_LINGER as i64 {
+        let Some(a) = option_table(&value) else {
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #4 ($value) must be of type array when argument #3 ($option) is SO_LINGER, {} given",
                 zpp_type_name(host, &value)
             )));
         };
+        let onoff = table_entry(&a, "l_onoff", fname)?;
+        let linger = table_entry(&a, "l_linger", fname)?;
+        let onoff = zval_get_long(host, &onoff)?;
+        let linger = zval_get_long(host, &linger)?;
+        for (k, v) in [("l_onoff", onoff), ("l_linger", linger)] {
+            if !(0..=u16::MAX as i64).contains(&v) {
+                return Err(Thrown::error(
+                    "ValueError",
+                    format!(
+                        "{fname}(): Argument #4 ($value) \"{k}\" must be between 0 and {}",
+                        u16::MAX
+                    ),
+                ));
+            }
+        }
         let l = libc::linger {
-            l_onoff: array_long(host, a, "l_onoff", fname)? as _,
-            l_linger: array_long(host, a, "l_linger", fname)? as _,
+            l_onoff: onoff as _,
+            l_linger: linger as _,
         };
         set(
             &l as *const _ as *const libc::c_void,
             std::mem::size_of::<libc::linger>(),
         )
-    } else if level == libc::SOL_SOCKET && (opt == libc::SO_RCVTIMEO || opt == libc::SO_SNDTIMEO) {
-        let Value::Array(a) = &value else {
+    } else if by_name && (opt == libc::SO_RCVTIMEO as i64 || opt == libc::SO_SNDTIMEO as i64) {
+        let Some(a) = option_table(&value) else {
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #4 ($value) must be of type array when argument #3 ($option) is {}, {} given",
-                if opt == libc::SO_RCVTIMEO { "SO_RCVTIMEO" } else { "SO_SNDTIMEO" },
+                if opt == libc::SO_RCVTIMEO as i64 { "SO_RCVTIMEO" } else { "SO_SNDTIMEO" },
                 zpp_type_name(host, &value)
             )));
         };
+        let sec = table_entry(&a, "sec", fname)?;
+        let usec = table_entry(&a, "usec", fname)?;
         let tv = libc::timeval {
-            tv_sec: array_long(host, a, "sec", fname)? as _,
-            tv_usec: array_long(host, a, "usec", fname)? as _,
+            tv_sec: zval_get_long(host, &sec)? as _,
+            tv_usec: zval_get_long(host, &usec)? as _,
         };
         set(
             &tv as *const _ as *const libc::c_void,
             std::mem::size_of::<libc::timeval>(),
         )
     } else {
-        let v = conv::to_int(&value) as libc::c_int;
+        let v = zval_get_long(host, &value)? as libc::c_int;
         set(
             &v as *const _ as *const libc::c_void,
             std::mem::size_of::<libc::c_int>(),
@@ -341,6 +392,16 @@ fn fn_socket_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 
 fn fn_socket_strerror(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let e = zpp_long(host, args, 0, "socket_strerror", "error_code")?;
+    if i32::try_from(e).is_err() {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "socket_strerror(): Argument #1 ($error_code) must be between {} and {}",
+                i32::MIN,
+                i32::MAX
+            ),
+        ));
+    }
     Ok(Value::str(sockets_strerror(e as i32)))
 }
 

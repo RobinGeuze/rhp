@@ -914,7 +914,7 @@ fn zval_get_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> {
 }
 
 /// php's `zval_get_long()` for an option value (objects warn and give 1).
-fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Thrown> {
+pub(crate) fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Thrown> {
     let v = deref(v);
     if matches!(v, Value::Object(_) | Value::Closure(_)) {
         host.emit_diagnostic(

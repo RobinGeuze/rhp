@@ -1,0 +1,55 @@
+resource(6) of type (persistent stream)
+string(17) "persistent stream"
+bool(true)
+resource(7) of type (persistent stream)
+bool(false)
+bool(true)
+resource(8) of type (persistent stream)
+bool(false)
+bool(false)
+string(5) "fresh"
+string(14) "tcp_socket/ssl"
+TypeError: stream_select(): supplied argument is not a valid stream resource
+array(2) {
+  ["k"]=>
+  resource(14) of type (stream)
+  ["n"]=>
+  int(1)
+}
+TypeError: stream_select(): supplied resource is not a valid stream resource
+int(2)
+ValueError: No stream arrays were passed
+TypeError: socket_set_blocking(): Argument #1 ($stream) must be of type resource, string given
+TypeError: socket_get_status(): Argument #1 ($stream) must be of type resource, int given
+[8192] Function socket_set_timeout() is deprecated since 8.5, use stream_set_timeout() instead
+TypeError: socket_set_timeout(): Argument #1 ($stream) must be of type resource, null given
+TypeError: stream_set_blocking(): Argument #2 ($enable) must be of type bool, array given
+TypeError: stream_set_write_buffer(): Argument #1 ($stream) must be of type resource, string given
+int(-1)
+int(-1)
+int(-1)
+int(-1)
+int(0)
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+Error: Cannot create dynamic property Socket::$prop
+bool(false)
+Exception: Serialization of 'Socket' is not allowed
+Exception: Unserialization of 'Socket' is not allowed
+Exception: Unserialization of 'CurlHandle' is not allowed
+[2] Object of class stdClass could not be converted to int
+bool(true)
+ValueError: socket_set_option(): Argument #4 ($value) "l_onoff" must be between 0 and 65535
+bool(true)
+array(2) {
+  ["l_onoff"]=>
+  int(1)
+  ["l_linger"]=>
+  int(3)
+}
+ValueError: socket_set_option(): Argument #4 ($value) must have key "usec"
+ValueError: socket_strerror(): Argument #1 ($error_code) must be between -2147483648 and 2147483647
+ValueError: socket_strerror(): Argument #1 ($error_code) must be between -2147483648 and 2147483647
+bool(true)

@@ -24,10 +24,40 @@ fn fn_is_resource(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     ))
 }
 
-pub(crate) fn fn_stream_set_blocking(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let res = deref(&args[0]);
-    let on = conv::to_bool(&deref(&args[1]));
+fn set_blocking_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
+    let (res, _) = crate::fs_fns::stream_param(host, args, 0, fname, "stream")?;
+    let on = crate::argparse::bool_param(host, args, 1, fname, "enable", true)?;
     Ok(Value::Bool(host.stream_set_blocking(&res, on)))
+}
+
+fn fn_stream_set_blocking(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    set_blocking_impl(host, args, "stream_set_blocking")
+}
+
+pub(crate) fn fn_socket_set_blocking(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    set_blocking_impl(host, args, "socket_set_blocking")
+}
+
+/// `stream_set_write_buffer` / `set_file_buffer`: php's WRITE_BUFFER option
+/// is only implemented by stdio streams backed by a `FILE*` (popen, the
+/// CLI's STDIN/STDOUT/STDERR); every other stream (plain files, memory,
+/// sockets, wrappers) answers -1.
+fn write_buffer_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
+    let (res, _) = crate::fs_fns::stream_param(host, args, 0, fname, "stream")?;
+    crate::proc_fns::zpp_long(host, args, 1, fname, "size")?;
+    let file_backed = host.stream_sock_info(&res).is_none()
+        && host.stream_meta(&res).is_some_and(|m| {
+            m.stream_type == "STDIO" && (m.wrapper_type.is_empty() || m.wrapper_type == "PHP")
+        });
+    Ok(Value::Int(if file_backed { 0 } else { -1 }))
+}
+
+fn fn_stream_set_write_buffer(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    write_buffer_impl(host, args, "stream_set_write_buffer")
+}
+
+fn fn_set_file_buffer(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    write_buffer_impl(host, args, "set_file_buffer")
 }
 
 fn fn_get_resource_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -158,10 +188,6 @@ fn fn_stream_get_wrappers(host: &mut dyn Host, _args: &[Value]) -> Result<Value,
     Ok(Value::Array(a))
 }
 
-fn fn_zero(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(0))
-}
-
 fn fn_false(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(false))
 }
@@ -231,8 +257,14 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     );
     // No-op stream knobs (accepted so framework output code runs).
     put(m, "stream_set_blocking", fn_stream_set_blocking, 2, Some(2));
-    put(m, "stream_set_write_buffer", fn_zero, 2, Some(2));
-    put(m, "set_file_buffer", fn_zero, 2, Some(2));
+    put(
+        m,
+        "stream_set_write_buffer",
+        fn_stream_set_write_buffer,
+        2,
+        Some(2),
+    );
+    put(m, "set_file_buffer", fn_set_file_buffer, 2, Some(2));
     // TTY detection: `stream_isatty` lives with the process functions
     // (proc_fns), `posix_isatty` in ext/posix.
     put(m, "sapi_windows_vt100_support", fn_false, 1, Some(2));

@@ -153,6 +153,15 @@ impl Serializer {
                 "Serialization of 'Generator' is not allowed",
             ));
         }
+        if crate::is_opaque_handle_class(&cname) {
+            return Err(Thrown::error(
+                "Exception",
+                format!(
+                    "Serialization of '{}' is not allowed",
+                    String::from_utf8_lossy(&cname)
+                ),
+            ));
+        }
         if host.is_enum_class(class_id) {
             let case = h
                 .borrow()
@@ -618,6 +627,15 @@ impl<'a> Parser<'a, '_> {
         let (obj, has_unserialize, has_wakeup) = match cid {
             Some(cid) => {
                 let name = self.host.class_name(cid).unwrap_or_else(|| cname.clone());
+                if crate::is_opaque_handle_class(&name) {
+                    return Err(Fail::Thrown(Thrown::error(
+                        "Exception",
+                        format!(
+                            "Unserialization of '{}' is not allowed",
+                            String::from_utf8_lossy(&name)
+                        ),
+                    )));
+                }
                 // Enums / interfaces / abstract classes throw "Cannot
                 // instantiate ...".
                 let obj = self.host.reflect_new_instance(&name, Vec::new(), false)?;

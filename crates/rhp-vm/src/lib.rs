@@ -961,8 +961,13 @@ impl Host for Vm {
         info: builtins::fdstream::SockInfo,
     ) -> Option<Value> {
         let blocked = info.blocked;
+        let ty = if info.persistent {
+            "persistent stream"
+        } else {
+            "stream"
+        };
         let st = StreamState::Fd(builtins::fdstream::FdStream::new_socket(fd, info));
-        let v = self.make_stream(st, "stream");
+        let v = self.make_stream(st, ty);
         if !blocked {
             if let Some(id) = res_id(&v) {
                 self.nonblocking.insert(id);
@@ -1034,7 +1039,9 @@ impl Host for Vm {
 
     fn stream_set_blocking(&mut self, res: &Value, blocking: bool) -> bool {
         let Some(id) = res_id(res) else { return false };
-        if self.streams.contains_key(&id) {
+        // A memory stream has no blocking option (php answers NOTIMPL, which
+        // stream_set_blocking reports as success): `blocked` stays true.
+        if matches!(self.streams.get(&id), Some(s) if !matches!(s, StreamState::Mem { .. })) {
             if blocking {
                 self.nonblocking.remove(&id);
             } else {
@@ -2931,7 +2938,10 @@ impl Vm {
         let e = self.class(cls);
         let cname = String::from_utf8_lossy(e.name.as_bytes()).into_owned();
         let p = String::from_utf8_lossy(pname.as_bytes()).into_owned();
-        if e.kind == ClassKind::Enum || e.flags.is_readonly {
+        if e.kind == ClassKind::Enum
+            || e.flags.is_readonly
+            || builtins::is_opaque_handle_class(e.name.as_bytes())
+        {
             return Err(Thrown::error(
                 "Error",
                 format!("Cannot create dynamic property {cname}::${p}"),

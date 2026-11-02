@@ -833,11 +833,57 @@ fn context_arg(host: &mut dyn Host, args: &[Value], i: usize) -> Value {
 }
 
 fn wrap_socket(host: &mut dyn Host, fd: OwnedFd, proto: Proto, no_io: bool, uri: &[u8]) -> Value {
+    wrap_socket_ex(host, fd, proto, no_io, uri, None)
+}
+
+/// [`wrap_socket`], registering the stream under `persistent_key` (a
+/// `persistent stream` resource) when given.
+fn wrap_socket_ex(
+    host: &mut dyn Host,
+    fd: OwnedFd,
+    proto: Proto,
+    no_io: bool,
+    uri: &[u8],
+    persistent_key: Option<&[u8]>,
+) -> Value {
     let mut info = SockInfo::new(proto.stream_type(), default_sock_tv(host));
     info.uri = Some(uri.to_vec());
     info.no_io = no_io;
-    host.stream_from_socket(fd, info)
-        .unwrap_or(Value::Bool(false))
+    info.persistent = persistent_key.is_some();
+    let v = host
+        .stream_from_socket(fd, info)
+        .unwrap_or(Value::Bool(false));
+    if let (Some(key), Value::Resource(_)) = (persistent_key, &v) {
+        if let Some(reg) = persistent_registry(host) {
+            reg.0.insert(key.to_vec(), v.clone());
+        }
+    }
+    v
+}
+
+/// php's persistent stream list (`EG(persistent_list)`) for the socket
+/// transports: persistent id → the stream resource.
+#[derive(Default)]
+struct PersistentSockets(HashMap<Vec<u8>, Value>);
+
+fn persistent_registry(host: &mut dyn Host) -> Option<&mut PersistentSockets> {
+    host.module_state("persistent_sockets", || Box::<PersistentSockets>::default())
+        .and_then(|st| st.downcast_mut::<PersistentSockets>())
+}
+
+/// php's `php_stream_from_persistent_id` + the liveness check of
+/// `_php_stream_xport_create`: the live stream already open under `key`, if
+/// any (a dead one is closed and forgotten).
+fn persistent_lookup(host: &mut dyn Host, key: &[u8]) -> Option<Value> {
+    let v = persistent_registry(host)?.0.get(key).cloned()?;
+    if !host.resource_closed(&v) && !host.stream_eof(&v) {
+        return Some(v);
+    }
+    if !host.resource_closed(&v) {
+        host.stream_close(&v);
+    }
+    persistent_registry(host)?.0.remove(key);
+    None
 }
 
 fn fn_stream_socket_server(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -925,15 +971,32 @@ fn fn_stream_socket_client(host: &mut dyn Host, args: &[Value]) -> Result<Value,
         Some(_) => zpp_long(host, args, 4, fname, "flags")?,
         None => STREAM_CLIENT_CONNECT,
     };
-    let _persistent = flags & STREAM_CLIENT_PERSISTENT != 0;
+    let persistent_key = (flags & STREAM_CLIENT_PERSISTENT != 0).then(|| {
+        let mut k = b"stream_socket_client__".to_vec();
+        k.extend_from_slice(&address);
+        k
+    });
     let ctx = context_arg(host, args, 5);
     let tv = timeout_tv(timeout);
     write_ref(args.get(1), Value::Int(0));
     write_ref(args.get(2), Value::str(""));
+    if let Some(v) = persistent_key
+        .as_deref()
+        .and_then(|k| persistent_lookup(host, k))
+    {
+        return Ok(v);
+    }
     let connect = flags & STREAM_CLIENT_CONNECT != 0;
     let asynchronous = flags & STREAM_CLIENT_ASYNC_CONNECT != 0;
     match xport_client(host, fname, &address, connect, asynchronous, tv, &ctx)? {
-        Opened::Ok(fd, proto) => Ok(wrap_socket(host, fd, proto, false, &address)),
+        Opened::Ok(fd, proto) => Ok(wrap_socket_ex(
+            host,
+            fd,
+            proto,
+            false,
+            &address,
+            persistent_key.as_deref(),
+        )),
         Opened::Fail {
             code,
             text,
@@ -961,6 +1024,7 @@ fn fn_stream_socket_client(host: &mut dyn Host, args: &[Value]) -> Result<Value,
 }
 
 fn fsockopen_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
+    let persistent = fname == "pfsockopen";
     need_streams(host, fname)?;
     let hostname = zpp_string(host, args, 0, fname, "hostname")?;
     let port = match args.get(1) {
@@ -987,11 +1051,32 @@ fn fsockopen_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Va
     if port > 0 {
         target.extend_from_slice(format!(":{port}").as_bytes());
     }
+    let persistent_key = persistent.then(|| {
+        let mut k = b"pfsockopen__".to_vec();
+        k.extend_from_slice(&hostname);
+        k.extend_from_slice(format!(":{port}").as_bytes());
+        k
+    });
+    if let Some(v) = persistent_key
+        .as_deref()
+        .and_then(|k| persistent_lookup(host, k))
+    {
+        write_ref(args.get(2), Value::Int(0));
+        write_ref(args.get(3), Value::str(""));
+        return Ok(v);
+    }
     match xport_client(host, fname, &target, true, false, tv, &Value::Null)? {
         Opened::Ok(fd, proto) => {
             write_ref(args.get(2), Value::Int(0));
             write_ref(args.get(3), Value::str(""));
-            Ok(wrap_socket(host, fd, proto, false, &target))
+            Ok(wrap_socket_ex(
+                host,
+                fd,
+                proto,
+                false,
+                &target,
+                persistent_key.as_deref(),
+            ))
         }
         Opened::Fail {
             code,
@@ -1387,14 +1472,28 @@ fn fn_stream_socket_enable_crypto(host: &mut dyn Host, args: &[Value]) -> Result
 }
 
 fn fn_stream_set_timeout(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let fname = "stream_set_timeout";
+    set_timeout_impl(host, args, "stream_set_timeout")
+}
+
+fn fn_socket_set_timeout(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // #[\Deprecated(since: '8.5')], raised before the arguments are parsed.
+    crate::deprecated_fn(
+        host,
+        "socket_set_timeout",
+        "8.5",
+        "use stream_set_timeout() instead",
+    )?;
+    set_timeout_impl(host, args, "socket_set_timeout")
+}
+
+fn set_timeout_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
     let s = stream_arg(host, args, 0, fname, "stream")?;
     let secs = zpp_long(host, args, 1, fname, "seconds")?;
     let usecs = match args.get(2) {
         Some(_) => zpp_long(host, args, 2, fname, "microseconds")?,
         None => 0,
     };
-    let sec = secs + usecs / 1_000_000;
+    let sec = secs.wrapping_add(usecs / 1_000_000);
     let usec = usecs % 1_000_000;
     let tv = if sec == -1 { None } else { Some((sec, usec)) };
     Ok(Value::Bool(host.stream_set_timeout(&s, tv)))
@@ -1529,19 +1628,19 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     );
     put(m, "pfsockopen", fn_pfsockopen, 1, Some(5));
     put(m, "stream_set_timeout", fn_stream_set_timeout, 2, Some(3));
-    put(m, "socket_set_timeout", fn_stream_set_timeout, 2, Some(3));
+    put(m, "socket_set_timeout", fn_socket_set_timeout, 2, Some(3));
     // php's aliases
     put(
         m,
         "socket_get_status",
-        crate::fs_fns::fn_stream_get_meta_data,
+        crate::fs_fns::fn_socket_get_status,
         1,
         Some(1),
     );
     put(
         m,
         "socket_set_blocking",
-        crate::stream_fns::fn_stream_set_blocking,
+        crate::stream_fns::fn_socket_set_blocking,
         2,
         Some(2),
     );

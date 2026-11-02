@@ -537,13 +537,14 @@ fn fn_fork(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
         let e = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         set_last_error(host, e);
         let what = match e {
-            libc::EAGAIN => "Reached the maximum limit of number of processes".to_string(),
-            libc::ENOMEM => "Insufficient memory".to_string(),
-            libc::ENOSYS => "Unimplemented".to_string(),
-            libc::EBADF => "File descriptor concurrency issue".to_string(),
-            _ => crate::streams::strerror(e),
+            libc::EAGAIN => ": Reached the maximum limit of number of processes",
+            libc::ENOMEM => ": Insufficient memory",
+            libc::ENOSYS => ": Unimplemented",
+            libc::EBADF => ": File descriptor concurrency issue",
+            // php's default case prints the bare number.
+            _ => "",
         };
-        crate::warn(host, "pcntl_fork", &format!("Error {e}: {what}"))?;
+        crate::warn(host, "pcntl_fork", &format!("Error {e}{what}"))?;
     }
     Ok(Value::Int(id as i64))
 }

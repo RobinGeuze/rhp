@@ -216,6 +216,8 @@ enum MultiState {
 #[derive(Clone)]
 struct Easy {
     url: String,
+    /// CURLOPT_URL as given (bytes; `url` is its lossy UTF-8 form).
+    url_raw: Vec<u8>,
     /// CURLOPT_URL was set (libcurl's URL is NULL until then).
     url_set: bool,
     write: WriteMethod,
@@ -273,6 +275,7 @@ impl Easy {
     fn new() -> Easy {
         Easy {
             url: String::new(),
+            url_raw: Vec::new(),
             url_set: false,
             write: WriteMethod::Stdout,
             write_stream: None,
@@ -683,6 +686,7 @@ fn fn_curl_init(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 let s = conv::to_string_bytes(&v);
                 check_nul("curl_init", &s)?;
                 easy.url = String::from_utf8_lossy(&s).into_owned();
+                easy.url_raw = s;
                 easy.url_set = true;
             }
         }
@@ -875,10 +879,12 @@ fn libcurl_rejects_str(option: i64, s: &[u8]) -> bool {
         10318 | 10319 => protocols_from_str(s).is_none(),
         // CURLOPT_SSLENGINE: no OpenSSL engines are available
         10089 => !s.is_empty(),
-        // KRBLEVEL, DNS_SERVERS, DNS_INTERFACE, DNS_LOCAL_IP4/6, and
-        // TLSAUTH_TYPE / PROXY_TLSAUTH_TYPE (no TLS-SRP with OpenSSL 4):
-        // not built in
-        10063 | 10206 | 10211 | 10221 | 10222 | 10223 | 10253 => true,
+        // KRBLEVEL, DNS_SERVERS, DNS_INTERFACE, DNS_LOCAL_IP4/6, and the
+        // TLS-SRP options (no SRP with OpenSSL 4): TLSAUTH_USERNAME /
+        // _PASSWORD / _TYPE and their PROXY_ variants: not built in
+        10063 | 10204 | 10205 | 10206 | 10211 | 10221 | 10222 | 10223 | 10251 | 10252 | 10253 => {
+            true
+        }
         _ => false,
     }
 }
@@ -1048,6 +1054,7 @@ fn setopt(
             check_nul(f, &s)?;
             let mut e = easy.borrow_mut();
             e.url = String::from_utf8_lossy(&s).into_owned();
+            e.url_raw = s;
             e.url_set = true;
         }
         OPT_SSL_VERIFYHOST => {
@@ -1431,6 +1438,9 @@ fn build_spec(host: &mut dyn Host, easy: &Rc<RefCell<Easy>>) -> Spec {
         });
     Spec {
         url: e.url.clone(),
+        url_raw: e.url_raw.clone(),
+        url_set: e.url_set,
+        path_as_is: e.path_as_is(),
         custom_request: e.custom_request.clone(),
         nobody: e.nobody,
         post: e.post,
@@ -1995,6 +2005,18 @@ fn info_array(i: &Info) -> PhpArray {
     a
 }
 
+impl Easy {
+    /// CURLOPT_PATH_AS_IS.
+    fn path_as_is(&self) -> bool {
+        self.misc
+            .get(&OPT_PATH_AS_IS)
+            .is_some_and(|v| conv::to_int(v) != 0)
+    }
+}
+
+/// CURLOPT_PATH_AS_IS.
+const OPT_PATH_AS_IS: i64 = 234;
+
 fn current_info(e: &Easy) -> Info {
     match &e.info {
         Some(i) => i.clone(),
@@ -2003,7 +2025,7 @@ fn current_info(e: &Easy) -> Info {
             // parser rebuilds it ("" while unset), failing when it doesn't parse.
             let mut i = Info::fresh("", &e.method());
             if e.url_set {
-                match urlapi::pre_transfer_url(&e.url) {
+                match urlapi::pre_transfer_url(&e.url_raw, e.path_as_is()) {
                     Some(u) => i.effective_url = u,
                     None => i.no_effective_url = true,
                 }

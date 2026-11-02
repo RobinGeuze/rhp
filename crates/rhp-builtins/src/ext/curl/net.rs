@@ -40,6 +40,11 @@ const H1_ONLY_HEADERS: &[&str] = &[
 #[derive(Clone, Debug)]
 pub struct Spec {
     pub url: String,
+    /// CURLOPT_URL's bytes, and whether it was set at all.
+    pub url_raw: Vec<u8>,
+    pub url_set: bool,
+    /// CURLOPT_PATH_AS_IS.
+    pub path_as_is: bool,
     pub custom_request: Option<String>,
     pub nobody: bool,
     /// POST requested (CURLOPT_POST or CURLOPT_POSTFIELDS).
@@ -83,7 +88,7 @@ pub struct Spec {
 /// The transfer numbers `curl_getinfo()` reports.
 #[derive(Clone, Debug)]
 pub struct Info {
-    pub effective_url: String,
+    pub effective_url: Vec<u8>,
     /// libcurl fails CURLINFO_EFFECTIVE_URL (an unparsable URL, before a transfer).
     pub no_effective_url: bool,
     pub content_type: Option<String>,
@@ -125,7 +130,7 @@ impl Info {
     /// The state of a handle that has not performed a transfer yet.
     pub fn fresh(url: &str, method: &str) -> Info {
         Info {
-            effective_url: url.to_string(),
+            effective_url: url.as_bytes().to_vec(),
             no_effective_url: false,
             content_type: None,
             http_code: 0,
@@ -257,22 +262,24 @@ pub fn perform(spec: &Spec) -> Outcome {
     info.cainfo = spec.cainfo.clone();
     info.capath = spec.capath.clone();
     info.referer = spec.referer.clone();
-    if spec.url.is_empty() {
+    if !spec.url_set {
         return fail(info, 3, "No URL set", start);
     }
-    // libcurl guesses http:// for scheme-less URLs.
-    let url = match scheme_of(&spec.url) {
-        Some(_) => spec.url.clone(),
-        None => {
-            if spec.url.contains(char::is_whitespace) {
-                return fail(
-                    info,
-                    3,
-                    "URL rejected: Malformed input to a URL function",
-                    start,
-                );
-            }
-            format!("http://{}", spec.url)
+    // libcurl parses the URL first (guessing a scheme where it has none)
+    // and transfers what its parser rebuilt; a URL it rejects is never
+    // tried and leaves no effective URL behind.
+    let flags = super::urlapi::Flags {
+        guess_scheme: true,
+        path_as_is: spec.path_as_is,
+    };
+    let url = match super::urlapi::parse(&spec.url_raw, flags) {
+        Ok(u) => {
+            info.effective_url = u.clone();
+            String::from_utf8_lossy(&u).into_owned()
+        }
+        Err(e) => {
+            info.no_effective_url = true;
+            return fail(info, 3, format!("URL rejected: {}", e.text()), start);
         }
     };
     let scheme = scheme_of(&url).unwrap_or_default();
@@ -1352,7 +1359,7 @@ fn perform_http(spec: &Spec, url_s: String, mut info: Info, start: Instant) -> O
         } else {
             PROTO_HTTP
         };
-        info.effective_url = url_s.clone();
+        info.effective_url = url_s.clone().into_bytes();
         info.effective_method = method.clone();
         let host = parsed
             .host_str()

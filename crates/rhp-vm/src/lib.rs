@@ -7635,6 +7635,22 @@ impl Vm {
                             continue;
                         }
                     }
+                    // zend_std_has_dimension: an object without ArrayAccess
+                    // throws (like empty() and `??` already do).
+                    let cls_name = match deref(&a) {
+                        Value::Object(h) => Some(self.class(h.borrow().class).name.clone()),
+                        Value::Closure(_) => Some(PhpStr::from("Closure")),
+                        _ => None,
+                    };
+                    if let Some(n) = cls_name {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Cannot use object of type {} as array",
+                                String::from_utf8_lossy(n.as_bytes())
+                            ),
+                        ));
+                    }
                     self.reg_set(top, dst, Value::Bool(isset_dim(&a, &k)));
                 }
                 Instr::IssetProp { dst, obj, name } => {

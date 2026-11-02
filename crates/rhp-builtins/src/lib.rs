@@ -19,6 +19,7 @@ pub mod memstream;
 pub mod module;
 pub mod streams;
 pub mod stub_params;
+pub mod version;
 
 pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};
 pub use ext::simplexml::{sxe_bool, sxe_props_array, sxe_same_node, sxe_string};
@@ -1172,7 +1173,7 @@ macro_rules! builtins {
 pub use php_fns::{apply_env_overrides, env_overrides};
 
 /// The php version this engine reports (`PHP_VERSION`).
-pub const PHP_VERSION: &str = "8.5.8";
+pub const PHP_VERSION: &str = version::PHP_VERSION;
 
 /// A directive's current value: `None` = unknown directive, `Some(None)` =
 /// registered with a null value.
@@ -1454,12 +1455,15 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PHP_FLOAT_EPSILON", Value::Float(f64::EPSILON)),
         ("PHP_FLOAT_MAX", Value::Float(f64::MAX)),
         ("PHP_FLOAT_MIN", Value::Float(f64::MIN_POSITIVE)),
-        ("PHP_VERSION", Value::str("8.5.8")),
-        ("PHP_MAJOR_VERSION", Value::Int(8)),
-        ("PHP_MINOR_VERSION", Value::Int(5)),
-        ("PHP_RELEASE_VERSION", Value::Int(8)),
-        ("PHP_EXTRA_VERSION", Value::str("")),
-        ("PHP_VERSION_ID", Value::Int(80508)),
+        ("PHP_VERSION", Value::str(version::PHP_VERSION)),
+        ("PHP_MAJOR_VERSION", Value::Int(version::PHP_MAJOR_VERSION)),
+        ("PHP_MINOR_VERSION", Value::Int(version::PHP_MINOR_VERSION)),
+        (
+            "PHP_RELEASE_VERSION",
+            Value::Int(version::PHP_RELEASE_VERSION),
+        ),
+        ("PHP_EXTRA_VERSION", Value::str(version::PHP_EXTRA_VERSION)),
+        ("PHP_VERSION_ID", Value::Int(version::PHP_VERSION_ID)),
         ("PHP_SAPI", Value::str("cli")),
         // php reports its own executable; so do we (composer spawns PHP_BINARY).
         (
@@ -1477,10 +1481,16 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("ZEND_DEBUG_BUILD", Value::Bool(false)),
         ("PHP_DEBUG", Value::Int(0)),
         ("PHP_ZTS", Value::Int(0)),
-        ("PCRE_VERSION", Value::str("10.47 2025-10-21")),
-        ("PCRE_VERSION_MAJOR", Value::Int(10)),
-        ("PCRE_VERSION_MINOR", Value::Int(47)),
-        ("ICONV_VERSION", Value::str("1.11")),
+        ("PCRE_VERSION", Value::str(version::PCRE_VERSION)),
+        (
+            "PCRE_VERSION_MAJOR",
+            Value::Int(version::PCRE_VERSION_MAJOR),
+        ),
+        (
+            "PCRE_VERSION_MINOR",
+            Value::Int(version::PCRE_VERSION_MINOR),
+        ),
+        ("ICONV_VERSION", Value::str(version::ICONV_VERSION)),
         ("ICONV_IMPL", Value::str("libiconv")),
         ("ICONV_MIBENUM_ASCII", Value::Int(3)),
         ("DATE_ATOM", Value::str("Y-m-d\\TH:i:sP")),
@@ -1494,8 +1504,11 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("DATE_RFC850", Value::str("l, d-M-y H:i:s T")),
         ("DATE_RFC1036", Value::str("D, d M y H:i:s O")),
         ("DATE_RFC1123", Value::str("D, d M Y H:i:s O")),
-        ("LIBXML_VERSION", Value::Int(20913)),
-        ("LIBXML_DOTTED_VERSION", Value::str("2.9.13")),
+        ("LIBXML_VERSION", Value::Int(version::LIBXML_VERSION)),
+        (
+            "LIBXML_DOTTED_VERSION",
+            Value::str(version::LIBXML_DOTTED_VERSION),
+        ),
         ("LIBXML_COMPACT", Value::Int(65536)),
         ("LIBXML_NOBLANKS", Value::Int(256)),
         ("LIBXML_NOENT", Value::Int(2)),
@@ -1526,11 +1539,18 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("LOCK_EX", Value::Int(2)),
         ("LOCK_UN", Value::Int(3)),
         ("LOCK_NB", Value::Int(4)),
-        ("MB_ONIGURUMA_VERSION", Value::str("6.9.10")),
+        (
+            "MB_ONIGURUMA_VERSION",
+            Value::str(version::ONIGURUMA_VERSION),
+        ),
         ("DIRECTORY_SEPARATOR", Value::str("/")),
         ("PATH_SEPARATOR", Value::str(":")),
         ("PHP_MAXPATHLEN", Value::Int(libc::PATH_MAX as i64)), // MAXPATHLEN: 1024 on macOS, 4096 on Linux
-        ("PHP_BINDIR", Value::str("/usr/bin")),
+        ("PHP_BINDIR", Value::str(version::BINDIR)),
+        ("PHP_PREFIX", Value::str(version::PREFIX)),
+        ("PHP_EXTENSION_DIR", Value::str(version::EXTENSION_DIR)),
+        ("DEFAULT_INCLUDE_PATH", Value::str(version::INCLUDE_PATH)),
+        ("PHP_BUILD_DATE", Value::str(version::BUILD_DATE)),
         ("LC_CTYPE", Value::Int(0)),
         ("LC_NUMERIC", Value::Int(1)),
         ("LC_TIME", Value::Int(2)),

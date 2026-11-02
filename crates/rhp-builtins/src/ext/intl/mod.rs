@@ -238,8 +238,11 @@ class Normalizer {
 pub fn constants() -> Vec<(&'static str, Value)> {
     let mut v = vec![
         ("INTL_MAX_LOCALE_LEN", Value::Int(156)),
-        ("INTL_ICU_VERSION", Value::str("78.3")),
-        ("INTL_ICU_DATA_VERSION", Value::str("78.3")),
+        ("INTL_ICU_VERSION", Value::str(crate::version::ICU_VERSION)),
+        (
+            "INTL_ICU_DATA_VERSION",
+            Value::str(crate::version::ICU_DATA_VERSION),
+        ),
         ("GRAPHEME_EXTR_COUNT", Value::Int(0)),
         ("GRAPHEME_EXTR_MAXBYTES", Value::Int(1)),
         ("GRAPHEME_EXTR_MAXCHARS", Value::Int(2)),

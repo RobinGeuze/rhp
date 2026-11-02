@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use rhp_values::{conv, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{version, Builtin, Host, Thrown};
 
 pub const INFO_GENERAL: i64 = 1;
 pub const INFO_CREDITS: i64 = 2;
@@ -169,10 +169,10 @@ fn print_info(flag: i64) -> Vec<u8> {
     let mut o = Info(Vec::new());
     o.print("phpinfo()\n");
     if flag & INFO_GENERAL != 0 {
-        o.row(&["PHP Version", "8.5.8"]);
+        o.row(&["PHP Version", version::PHP_VERSION]);
         o.table_start();
         o.row(&["System", &php_get_uname(b'a')]);
-        o.row(&["Build Date", "Jan  1 2026 00:00:00"]);
+        o.row(&["Build Date", version::BUILD_DATE]);
         o.row(&["Build Provider", "rhp"]);
         o.row(&["Configure Command", " './configure' "]);
         o.row(&["Server API", "Command Line Interface"]);
@@ -181,11 +181,17 @@ fn print_info(flag: i64) -> Vec<u8> {
         o.row(&["Loaded Configuration File", "(none)"]);
         o.row(&["Scan this dir for additional .ini files", "(none)"]);
         o.row(&["Additional .ini files parsed", "(none)"]);
-        o.row(&["PHP API", "20250925"]);
-        o.row(&["PHP Extension", "20250925"]);
-        o.row(&["Zend Extension", "420250925"]);
-        o.row(&["Zend Extension Build", "API420250925,NTS"]);
-        o.row(&["PHP Extension Build", "API20250925,NTS"]);
+        o.row(&["PHP API", version::PHP_API]);
+        o.row(&["PHP Extension", version::PHP_API]);
+        o.row(&["Zend Extension", version::ZEND_EXTENSION_API]);
+        o.row(&[
+            "Zend Extension Build",
+            &format!("API{},NTS", version::ZEND_EXTENSION_API),
+        ]);
+        o.row(&[
+            "PHP Extension Build",
+            &format!("API{},NTS", version::PHP_API),
+        ]);
         o.row(&["PHP Integer Size", "64 bits"]);
         o.row(&["Debug Build", "no"]);
         o.row(&["Thread Safety", "disabled"]);
@@ -203,7 +209,10 @@ fn print_info(flag: i64) -> Vec<u8> {
         o.table_start();
         o.print("\n");
         o.print("This program makes use of the Zend Scripting Language Engine:\n");
-        o.print("Zend Engine v4.5.8, Copyright (c) Zend Technologies\n");
+        o.print(&format!(
+            "Zend Engine v{}, Copyright (c) Zend Technologies\n",
+            version::ZEND_VERSION
+        ));
     }
     if flag & INFO_CONFIGURATION != 0 {
         o.hr();
@@ -220,7 +229,7 @@ fn print_info(flag: i64) -> Vec<u8> {
             o.section(e);
             o.table_start();
             if e.eq_ignore_ascii_case("core") {
-                o.row(&["PHP Version", "8.5.8"]);
+                o.row(&["PHP Version", version::PHP_VERSION]);
                 print_core_ini(&mut o);
             } else {
                 o.row(&[&format!("{e} support"), "enabled"]);

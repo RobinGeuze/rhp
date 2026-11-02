@@ -1,16 +1,8 @@
-//! php 8.5.8 (`php -n`) ini directive table, generated from `ini_get_all()`:
+//! The reference php's (`php -n`, see `version.rs`) ini directive table, generated from `ini_get_all()`:
 //! (owning module lowercased, name, default value or None, access mask).
 
-// Compile-time paths differ per platform's usual php build: Homebrew on macOS,
-// Debian/Ubuntu packages elsewhere. They show up in include failure messages.
-#[cfg(target_os = "macos")]
-const INCLUDE_PATH: &str = ".:/opt/homebrew/Cellar/php/8.5.8/share/php/pear";
-#[cfg(not(target_os = "macos"))]
-const INCLUDE_PATH: &str = ".:/usr/share/php";
-#[cfg(target_os = "macos")]
-const EXTENSION_DIR: &str = "/opt/homebrew/Cellar/php/8.5.8/lib/php/20250925";
-#[cfg(not(target_os = "macos"))]
-const EXTENSION_DIR: &str = "/usr/lib/php/20250925";
+// Compile-time paths (they show up in include failure messages).
+use crate::version::{EXTENSION_DIR, INCLUDE_PATH};
 
 pub(crate) const INI_TABLE: &[(&str, &str, Option<&str>, u8)] = &[
     ("core", "allow_url_fopen", Some("1"), 4),
@@ -120,6 +112,7 @@ pub(crate) const INI_TABLE: &[(&str, &str, Option<&str>, u8)] = &[
     ("mbstring", "mbstring.regex_stack_limit", Some("100000"), 7),
     ("mbstring", "mbstring.strict_detection", Some("0"), 7),
     ("mbstring", "mbstring.substitute_character", None, 7),
+    ("core", "memory_hard_limit_percent", None, 7),
     ("core", "memory_limit", Some("128M"), 7),
     ("mysqli", "mysqli.allow_local_infile", Some("0"), 4),
     ("mysqli", "mysqli.allow_persistent", Some("1"), 4),

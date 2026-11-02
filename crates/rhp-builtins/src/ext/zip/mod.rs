@@ -430,7 +430,8 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     );
 }
 
-pub const PRELUDE_PHP: &str = r#"
+pub const PRELUDE_PHP: &str = concat!(
+    r#"
 class ZipArchive implements Countable {
     public $lastId = -1;
     public $status = 0;
@@ -469,7 +470,9 @@ class ZipArchive implements Countable {
     const OPSYS_DEFAULT = 3;
     const EM_NONE = 0; const EM_TRAD_PKWARE = 1; const EM_AES_128 = 257; const EM_AES_192 = 258;
     const EM_AES_256 = 259; const EM_UNKNOWN = 65535;
-    const LIBZIP_VERSION = '1.11.4';
+    const LIBZIP_VERSION = '"#,
+    crate::version::libzip!(),
+    r#"';
     const LENGTH_TO_END = 0; const LENGTH_UNCHECKED = -2;
 
     // The open archive is keyed by spl_object_id($this) on the Rust side, so
@@ -651,4 +654,5 @@ class ZipArchive implements Countable {
     public static function isCompressionMethodSupported(int $method, bool $enc = true): bool { return in_array($method, [-1, 0, 8], true); }
     public static function isEncryptionMethodSupported(int $method, bool $enc = true): bool { return $method === 0; }
 }
-"#;
+"#
+);

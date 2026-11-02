@@ -1179,7 +1179,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("GMP_LITTLE_ENDIAN", Value::Int(4)),
         ("GMP_BIG_ENDIAN", Value::Int(8)),
         ("GMP_NATIVE_ENDIAN", Value::Int(16)),
-        ("GMP_VERSION", Value::str("6.3.0")),
+        ("GMP_VERSION", Value::str(crate::version::GMP_VERSION)),
     ]
 }
 

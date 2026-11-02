@@ -126,8 +126,11 @@ pub struct Vm {
     /// The scope a first-class callable was created in, while its wrapped
     /// callable is resolved (php resolves `$this->priv(...)` at creation).
     fcc_scope: std::cell::Cell<Option<(Option<ClassId>, Option<ClassId>)>>,
-    // Resolved real paths already included (for the `_once` variants).
-    included_files: std::collections::HashSet<Vec<u8>>,
+    // Resolved real paths already included (for the `_once` variants), in
+    // inclusion order (`get_included_files`).
+    included_files: indexmap::IndexSet<Vec<u8>>,
+    /// Classes `[0, internal_classes)` are the built-in (prelude) ones.
+    internal_classes: usize,
     // Registered `spl_autoload_register` callables, in call order.
     autoloaders: Vec<Value>,
     /// Lowercased class names whose autoload is in progress (php's
@@ -203,8 +206,6 @@ pub struct Vm {
     // Set when a reference to an object may have been dropped (a frame
     // returned, a variable holding an object was overwritten or unset).
     dtor_check: bool,
-    // Class ids below this are built-in (native or PHP-prelude) classes.
-    builtin_class_end: usize,
     // Checks requested since the last full scan of `destructibles` (scans of a
     // long list are rationed to keep the cost amortized).
     dtor_pending_checks: usize,
@@ -307,6 +308,8 @@ struct GenState {
 
 mod classes;
 mod compare;
+mod ext_names;
+mod reflect;
 
 /// A function-static slot: (proto address, class it runs as, variable name).
 type StaticKey = (usize, Option<ClassId>, Vec<u8>);
@@ -416,6 +419,39 @@ impl Host for Vm {
         self.classes
             .get(class_id as usize)
             .is_some_and(|c| c.kind == ClassKind::Enum)
+    }
+
+    fn not_serializable(&self, class_id: u32) -> bool {
+        const NO_SERIALIZE: &[&[u8]] = &[
+            b"Closure",
+            b"Generator",
+            b"WeakReference",
+            b"WeakMap",
+            b"Fiber",
+            b"CurlHandle",
+            b"CurlMultiHandle",
+            b"CurlShareHandle",
+            b"OpenSSLAsymmetricKey",
+            b"OpenSSLCertificate",
+            b"OpenSSLCertificateSigningRequest",
+        ];
+        let mut c = (class_id as usize)
+            .lt(&self.classes.len())
+            .then_some(class_id);
+        while let Some(id) = c {
+            if (id as usize) < self.internal_classes {
+                let n = self.classes[id as usize].name.as_bytes();
+                if (n.starts_with(b"Reflection")
+                    && n.len() > 10
+                    && !n.eq_ignore_ascii_case(b"ReflectionException"))
+                    || NO_SERIALIZE.iter().any(|x| n.eq_ignore_ascii_case(x))
+                {
+                    return true;
+                }
+            }
+            c = self.classes[id as usize].parent;
+        }
+        false
     }
 
     fn define_const(&mut self, name: &[u8], value: Value) -> bool {
@@ -1562,26 +1598,36 @@ impl Host for Vm {
         Ok(objval)
     }
 
-    fn reflect_set_prop(&mut self, obj: &Value, class: &[u8], name: &[u8], val: Value) -> bool {
-        if let Value::Object(h) = deref(obj) {
-            let key = self.reflect_prop_key(&h, class, name);
-            let mut od = h.borrow_mut();
-            *classes::prop_slot_mut(&self.classes, &mut od, key) = val;
-            true
-        } else {
-            false
-        }
+    fn reflect_set_prop(
+        &mut self,
+        obj: &Value,
+        class: &[u8],
+        name: &[u8],
+        val: Value,
+    ) -> Result<(), Thrown> {
+        // ReflectionProperty::setValue: write_property under
+        // EG(fake_scope) = the reflected class; an internal call, so
+        // coercive typing.
+        let scope = self.resolve_class_by_name(class).ok();
+        let top = self.stack.len() - 1;
+        let pname = PhpStr::from_bytes(name.to_vec());
+        self.prop_store_as(top, deref(obj), pname, val, scope, scope, false)
     }
 
-    fn reflect_get_prop(&self, obj: &Value, class: &[u8], name: &[u8]) -> Option<Value> {
-        match deref(obj) {
-            Value::Object(h) => {
-                let key = self.reflect_prop_key(&h, class, name);
-                let v = h.borrow().properties.get(&key).map(deref);
-                v
-            }
-            _ => None,
+    fn reflect_get_prop(
+        &mut self,
+        obj: &Value,
+        class: &[u8],
+        name: &[u8],
+    ) -> Result<Option<Value>, Thrown> {
+        // read_property under EG(fake_scope) = the reflected class.
+        let o = deref(obj);
+        if !matches!(o, Value::Object(_)) {
+            return Ok(None);
         }
+        let scope = self.resolve_class_by_name(class).ok();
+        let pname = PhpStr::from_bytes(name.to_vec());
+        self.prop_fetch_as(o, pname, scope).map(Some)
     }
 
     fn is_internal_slot(&self, class_id: u32, key: &PhpStr) -> bool {
@@ -1677,6 +1723,10 @@ impl Host for Vm {
             arr.push(Value::Array(d));
         }
         Some(Value::Array(arr))
+    }
+
+    fn reflect_op(&mut self, op: &[u8], args: &[Value]) -> Result<Value, Thrown> {
+        Vm::reflect_op(self, op, args)
     }
 
     fn reflect_method_params(&self, class: &[u8], method: &[u8]) -> Option<Value> {
@@ -2226,7 +2276,8 @@ impl Vm {
             bc_scale: 0,
             includer: None,
             fcc_scope: std::cell::Cell::new(None),
-            included_files: std::collections::HashSet::new(),
+            included_files: indexmap::IndexSet::new(),
+            internal_classes: 0,
             autoloaders: Vec::new(),
             in_autoload: Default::default(),
             pending_named: None,
@@ -2255,7 +2306,6 @@ impl Vm {
             stdin_reader: None,
             destructibles: Vec::new(),
             dtor_check: false,
-            builtin_class_end: 0,
             dtor_pending_checks: 0,
             ctor_frames: Vec::new(),
             finished_main: None,
@@ -2444,10 +2494,21 @@ impl Vm {
     /// may be autoloadable; we don't reject on a name we can't see).
     /// Read property `pname` off `o` (visibility-checked, `__get` fallback).
     fn prop_fetch(&mut self, top: usize, o: Value, pname: PhpStr) -> Result<Value, Thrown> {
+        let scope = self.stack[top].defining_class;
+        self.prop_fetch_as(o, pname, scope)
+    }
+
+    /// [`Vm::prop_fetch`] from an explicit scope (php's `EG(fake_scope)`,
+    /// as `ReflectionProperty::getValue` reads).
+    fn prop_fetch_as(
+        &mut self,
+        o: Value,
+        pname: PhpStr,
+        scope: Option<ClassId>,
+    ) -> Result<Value, Thrown> {
         Ok(match o {
             Value::Object(h) => {
                 let cls = h.borrow().class;
-                let scope = self.stack[top].defining_class;
                 let mut absent_slot = None;
                 let denied = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
                     PropRes::Slot(k) => {
@@ -2751,6 +2812,25 @@ impl Vm {
         pname: PhpStr,
         val: Value,
     ) -> Result<(), Thrown> {
+        let scope = self.stack[top].defining_class;
+        let called = self.stack[top].called_class;
+        let strict = self.stack[top].proto.strict_types;
+        self.prop_store_as(top, o, pname, val, scope, called, strict)
+    }
+
+    /// [`Vm::prop_store`] from an explicit scope (php's `EG(fake_scope)`,
+    /// as `ReflectionProperty::setValue` writes).
+    #[allow(clippy::too_many_arguments)]
+    fn prop_store_as(
+        &mut self,
+        top: usize,
+        o: Value,
+        pname: PhpStr,
+        val: Value,
+        scope: Option<ClassId>,
+        called: Option<ClassId>,
+        strict: bool,
+    ) -> Result<(), Thrown> {
         if let Value::Object(h) = o {
             let cls = h.borrow().class;
             if self.is_directory_class(cls) {
@@ -2765,7 +2845,6 @@ impl Vm {
                     },
                 ));
             }
-            let scope = self.stack[top].defining_class;
             let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
             let is_dyn = matches!(res, PropRes::Dynamic);
             let (key, denied) = match res {
@@ -2784,7 +2863,6 @@ impl Vm {
                             return Ok(());
                         }
                     }
-                    let called = self.stack[top].called_class;
                     return Err(classes::set_access_err(&self.classes, called, "modify", e));
                 }
             }
@@ -2823,7 +2901,6 @@ impl Vm {
             } else {
                 let present = h.borrow().properties.contains_key(&key);
                 self.check_readonly_write(&h, &key, present, scope)?;
-                let strict = self.stack[top].proto.strict_types;
                 self.verify_prop_type(cls, &key, val, strict)?
             };
             let mut od = h.borrow_mut();
@@ -3301,8 +3378,16 @@ impl Vm {
         if matches!(v, Value::Null) && ty.nullable {
             return true;
         }
+        // DNF: any intersection group fully matched satisfies the union.
+        if ty.groups.iter().any(|g| {
+            g.iter()
+                .all(|n| self.kind_matches(v, &rhp_bytecode::TypeKind::Named(n.clone()), ctx))
+        }) {
+            return true;
+        }
         if ty.kinds.is_empty() {
-            return true; // only-null / unknown: don't reject
+            // only-null / unknown: don't reject (a DNF union already failed)
+            return ty.groups.is_empty();
         }
         if ty.intersection {
             ty.kinds.iter().all(|k| self.kind_matches(v, k, ctx))
@@ -3691,6 +3776,44 @@ impl Vm {
         n.len() == 9 && n.eq_ignore_ascii_case(b"Directory")
     }
 
+    /// Objects of this class have no `clone_obj` handler in php ("Trying
+    /// to clone an uncloneable object"): enums, and the built-in classes
+    /// below together with every subclass of them.
+    pub(crate) fn uncloneable_class(&self, cls: ClassId) -> bool {
+        const NO_CLONE: &[&[u8]] = &[
+            b"Exception",
+            b"Error",
+            b"Generator",
+            b"WeakReference",
+            b"Fiber",
+            b"Directory",
+            b"IteratorIterator",
+            b"RecursiveIteratorIterator",
+            b"ZipArchive",
+            b"CurlMultiHandle",
+            b"CurlShareHandle",
+            b"OpenSSLAsymmetricKey",
+            b"OpenSSLCertificate",
+            b"OpenSSLCertificateSigningRequest",
+        ];
+        if self.class(cls).kind == ClassKind::Enum {
+            return true;
+        }
+        let mut c = Some(cls);
+        while let Some(id) = c {
+            if (id as usize) < self.internal_classes {
+                let n = self.class(id).name.as_bytes();
+                if (n.starts_with(b"Reflection") && n.len() > 10)
+                    || NO_CLONE.iter().any(|x| n.eq_ignore_ascii_case(x))
+                {
+                    return true;
+                }
+            }
+            c = self.class(id).parent;
+        }
+        false
+    }
+
     /// Allocate a stream resource backed by `state`, returning its resource Value.
     fn make_stream(&mut self, state: StreamState, type_name: &'static str) -> Value {
         let id = self.next_resource_id;
@@ -3982,7 +4105,7 @@ impl Vm {
         // classes (those whose dependencies are available); the rest, and
         // nested declarations, are declared when execution reaches them.
         self.install_classes(&prog.classes[..prog.num_prelude_classes])?;
-        self.builtin_class_end = self.classes.len();
+        self.internal_classes = self.classes.len();
         self.decl_classes.clear();
         let top = self.register_decl_classes(prog, 0);
         self.hoist_decl_classes(top)?;
@@ -4318,7 +4441,7 @@ impl Vm {
                 return Ok(());
             }
             let m = self.lookup_method(cls, b"offsetget").unwrap();
-            if (m.defining_class as usize) < self.builtin_class_end {
+            if (m.defining_class as usize) < self.internal_classes {
                 // An internal container (ArrayObject, SplFixedArray, ...)
                 // hands out its element itself: read it, write into it, and
                 // store it back.
@@ -4645,7 +4768,7 @@ impl Vm {
         if has(&K::Mixed) {
             return "mixed".into();
         }
-        let mut parts: Vec<String> = Vec::new();
+        let mut parts: Vec<String> = dnf_group_strings(ty);
         for k in &ty.kinds {
             match k {
                 K::Named(n) => parts.push(String::from_utf8_lossy(n.as_bytes()).into_owned()),
@@ -4691,7 +4814,7 @@ impl Vm {
             if parts.is_empty() {
                 return "null".into();
             }
-            if parts.len() == 1 {
+            if parts.len() == 1 && ty.groups.is_empty() {
                 return format!("?{}", parts[0]);
             }
             let mut out = parts.join(sep);
@@ -6748,14 +6871,8 @@ impl Vm {
                         }
                         (od.class, props)
                     };
-                    let uncloneable = self.is_directory_class(cls)
-                        || self.class(cls).kind == ClassKind::Enum
-                        || self.generators.contains_key(&h.borrow().id)
-                        || self
-                            .class(cls)
-                            .name
-                            .as_bytes()
-                            .eq_ignore_ascii_case(b"WeakReference");
+                    let uncloneable =
+                        self.uncloneable_class(cls) || self.generators.contains_key(&h.borrow().id);
                     if uncloneable {
                         return Err(Thrown::error(
                             "Error",
@@ -7923,24 +8040,6 @@ impl Vm {
 
     /// Snapshot an object's accessible (public from `caller` scope) properties as
     /// an array, for `foreach` over a plain object.
-    /// Storage key Reflection uses for property `name` of `h` when the
-    /// `ReflectionProperty` belongs to class `class`: that class's own private
-    /// first, else the visible declaration (visibility is bypassed).
-    fn reflect_prop_key(&self, h: &ObjectHandle, class: &[u8], name: &[u8]) -> PhpStr {
-        let cls = h.borrow().class;
-        let name = PhpStr::from_bytes(name.to_vec());
-        let scope = self.resolve_class_by_name(class).ok();
-        match classes::resolve_prop(&self.classes, cls, scope, &name) {
-            PropRes::Slot(k) => k,
-            PropRes::Dynamic => name,
-            PropRes::Denied(_) => self.classes[cls as usize]
-                .prop_visible
-                .get(&name)
-                .cloned()
-                .unwrap_or(name),
-        }
-    }
-
     fn object_prop_array(&self, h: &ObjectHandle, top: usize) -> PhpArray {
         let caller = self.stack[top].defining_class;
         let b = h.borrow();
@@ -9362,6 +9461,20 @@ fn weak_scalar_coerce(d: &Value, ty: &rhp_bytecode::TypeHint) -> Option<Value> {
     None
 }
 
+/// The `(A&B)` members of a DNF type, as php prints them.
+fn dnf_group_strings(ty: &rhp_bytecode::TypeHint) -> Vec<String> {
+    ty.groups
+        .iter()
+        .map(|g| {
+            let names: Vec<String> = g
+                .iter()
+                .map(|n| String::from_utf8_lossy(n.as_bytes()).into_owned())
+                .collect();
+            format!("({})", names.join("&"))
+        })
+        .collect()
+}
+
 /// Human-readable form of a declared type, for TypeError messages.
 fn type_string(ty: &rhp_bytecode::TypeHint) -> String {
     // php's zend_type_to_string: class names first (declaration order), then
@@ -9380,7 +9493,7 @@ fn type_string(ty: &rhp_bytecode::TypeHint) -> String {
         return parts.join("&");
     }
     let has = |want: &dyn Fn(&K) -> bool| ty.kinds.iter().any(want);
-    let mut parts: Vec<String> = Vec::new();
+    let mut parts: Vec<String> = dnf_group_strings(ty);
     for k in &ty.kinds {
         match k {
             K::Named(n) => parts.push(String::from_utf8_lossy(n.as_bytes()).into_owned()),
@@ -9427,7 +9540,7 @@ fn type_string(ty: &rhp_bytecode::TypeHint) -> String {
         parts.push("never".into());
     }
     if ty.nullable || has(&|k| matches!(k, K::Null)) {
-        if parts.len() == 1 {
+        if parts.len() == 1 && ty.groups.is_empty() {
             return format!("?{}", parts[0]);
         }
         parts.push("null".into());
@@ -10141,7 +10254,7 @@ impl Vm {
     fn is_prelude_class(&self, c: ClassId) -> bool {
         // A user class whose methods all lack a line map (empty bodies) is
         // still a user class.
-        (c as usize) < self.builtin_class_end
+        (c as usize) < self.internal_classes
             && self
                 .class(c)
                 .methods

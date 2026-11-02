@@ -65,6 +65,7 @@ mod datetime_fns;
 mod dt_oop_fns;
 mod ext;
 pub use ext::gmp::{compare_handler as gmp_compare_handler, CmpOperand as GmpCmpOperand};
+mod class_fns;
 mod file_fns;
 mod filter_fns;
 mod fs_fns;
@@ -239,6 +240,12 @@ pub trait Host {
 
     /// Whether a class id names an enum (for `var_dump` rendering). Default: no.
     fn is_enum_class(&self, _class_id: u32) -> bool {
+        false
+    }
+
+    /// Whether objects of a class are `ZEND_ACC_NOT_SERIALIZABLE` (the
+    /// Reflection objects, WeakReference, …). Default: no.
+    fn not_serializable(&self, _class_id: u32) -> bool {
         false
     }
 
@@ -877,13 +884,24 @@ pub trait Host {
     }
     /// Set an object property bypassing visibility (`ReflectionProperty::setValue`),
     /// resolving `name` as class `class` would see it (its own private first).
-    fn reflect_set_prop(&mut self, _obj: &Value, _class: &[u8], _name: &[u8], _val: Value) -> bool {
-        false
+    fn reflect_set_prop(
+        &mut self,
+        _obj: &Value,
+        _class: &[u8],
+        _name: &[u8],
+        _val: Value,
+    ) -> Result<(), Thrown> {
+        Ok(())
     }
     /// Read an object property bypassing visibility (`ReflectionProperty::getValue`),
     /// resolving `name` as class `class` would see it (its own private first).
-    fn reflect_get_prop(&self, obj: &Value, _class: &[u8], name: &[u8]) -> Option<Value> {
-        self.object_prop(obj, name)
+    fn reflect_get_prop(
+        &mut self,
+        obj: &Value,
+        _class: &[u8],
+        name: &[u8],
+    ) -> Result<Option<Value>, Thrown> {
+        Ok(self.object_prop(obj, name))
     }
     /// Parameter descriptors for a class method (`ReflectionMethod::getParameters`).
     fn reflect_method_params(&self, _class: &[u8], _method: &[u8]) -> Option<Value> {
@@ -897,6 +915,12 @@ pub trait Host {
     /// an array of `{name, value, public, protected, private}`.
     fn reflect_class_constants(&self, _class: &[u8]) -> Option<Value> {
         None
+    }
+    /// A Reflection / introspection metadata query (`op` names it; see the
+    /// VM's `reflect` module): class / method / property / constant /
+    /// attribute descriptors, declared-class and included-file lists, ….
+    fn reflect_op(&mut self, _op: &[u8], _args: &[Value]) -> Result<Value, Thrown> {
+        Ok(Value::Null)
     }
     /// [`Host::raise_diagnostic`], returning the exception a user error
     /// handler threw (e.g. composer's `ErrorException`) so the builtin can
@@ -1066,7 +1090,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "is_array"       => fn_is_array, 1, Some(1);
             "is_scalar"      => fn_is_scalar, 1, Some(1);
             "is_object"      => fn_is_object, 1, Some(1);
-            "is_callable"    => fn_is_callable, 1, Some(1);
+            "is_callable"    => fn_is_callable, 1, Some(2);
             "define"         => fn_define, 2, Some(3);
             "defined"        => fn_defined, 1, Some(1);
             "constant"       => fn_constant, 1, Some(1);
@@ -1167,6 +1191,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("strsearch_fns", Box::new(strsearch_fns::register)),
         ("query_fns", Box::new(query_fns::register)),
         ("runtime_fns", Box::new(runtime_fns::register)),
+        ("class_fns", Box::new(class_fns::register)),
         ("ini_parse", Box::new(ini_parse::register)),
         ("arraycmp_fns", Box::new(arraycmp_fns::register)),
         ("sysmisc_fns", Box::new(sysmisc_fns::register)),
@@ -1621,7 +1646,23 @@ fn fn_is_finite(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_is_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.check_callable(&args[0])?.is_none()))
+    let v = deref(&args[0]);
+    // `$syntax_only`: only the callable's shape is checked.
+    if args.get(1).is_some_and(|f| conv::to_bool(&deref(f))) {
+        match &v {
+            Value::Str(_) | Value::Closure(_) => return Ok(Value::Bool(true)),
+            Value::Array(a) if a.len() == 2 => {
+                let parts: Vec<Value> = a.iter().map(|(_, x)| deref(x)).collect();
+                return Ok(Value::Bool(
+                    matches!(parts[0], Value::Str(_) | Value::Object(_))
+                        && matches!(parts[1], Value::Str(_)),
+                ));
+            }
+            Value::Object(_) => {}
+            _ => return Ok(Value::Bool(false)),
+        }
+    }
+    Ok(Value::Bool(host.check_callable(&v)?.is_none()))
 }
 
 /// zpp's `f` check: "F(): Argument #N ($callback) must be a valid callback, …".

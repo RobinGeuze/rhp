@@ -1,0 +1,287 @@
+string(14) "App\Model\User"
+string(4) "User"
+string(9) "App\Model"
+bool(true)
+bool(true)
+bool(false)
+bool(false)
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+string(23) "reflection_metadata.php"
+int(40)
+int(64)
+bool(false)
+int(32)
+string(14) "App\Model\Base"
+array(2) {
+  [0]=>
+  string(17) "App\Model\HasName"
+  [1]=>
+  string(9) "Countable"
+}
+array(1) {
+  [0]=>
+  string(16) "App\Model\Greets"
+}
+array(1) {
+  [0]=>
+  string(16) "App\Model\Greets"
+}
+array(7) {
+  [0]=>
+  string(27) "App\Model\User::__construct"
+  [1]=>
+  string(21) "App\Model\User::count"
+  [2]=>
+  string(20) "App\Model\User::kind"
+  [3]=>
+  string(20) "App\Model\User::make"
+  [4]=>
+  string(22) "App\Model\User::secret"
+  [5]=>
+  string(21) "App\Model\User::greet"
+  [6]=>
+  string(23) "App\Model\Base::getName"
+}
+array(2) {
+  [0]=>
+  string(4) "make"
+  [1]=>
+  string(6) "secret"
+}
+array(6) {
+  [0]=>
+  string(18) "App\Model\User::db"
+  [1]=>
+  string(21) "App\Model\User::email"
+  [2]=>
+  string(19) "App\Model\User::key"
+  [3]=>
+  string(22) "App\Model\User::active"
+  [4]=>
+  string(24) "App\Model\User::greeting"
+  [5]=>
+  string(18) "App\Model\Base::id"
+}
+array(4) {
+  [0]=>
+  string(2) "db"
+  [1]=>
+  string(5) "email"
+  [2]=>
+  string(6) "active"
+  [3]=>
+  string(8) "greeting"
+}
+array(2) {
+  ["ROLE"]=>
+  string(4) "user"
+  ["VERSION"]=>
+  int(2)
+}
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+int(4)
+int(1)
+string(18) "/**
+ * A user.
+ */"
+int(64)
+bool(true)
+bool(false)
+string(13) "App\Model\Tag"
+array(2) {
+  [0]=>
+  string(6) "entity"
+  ["opts"]=>
+  array(1) {
+    ["table"]=>
+    string(5) "users"
+  }
+}
+int(1)
+bool(true)
+string(6) "entity"
+string(13) "App\Model\Tag"
+array(1) {
+  ["name"]=>
+  string(6) "second"
+}
+int(1)
+bool(true)
+string(6) "second"
+int(2)
+int(2)
+int(0)
+int(0)
+string(3) "key"
+int(0)
+string(10) "string|int"
+bool(false)
+bool(false)
+bool(false)
+bool(true)
+bool(false)
+string(16) "App\Model\Inject"
+int(32)
+NULL
+string(5) "email"
+int(1)
+string(6) "string"
+bool(false)
+bool(true)
+bool(false)
+bool(false)
+bool(true)
+string(5) "x@y.z"
+string(6) "active"
+int(2)
+string(4) "bool"
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+string(4) "rest"
+int(3)
+string(3) "int"
+bool(false)
+bool(true)
+bool(true)
+bool(false)
+bool(false)
+string(19) "ReflectionUnionType"
+array(2) {
+  [0]=>
+  string(6) "string"
+  [1]=>
+  string(3) "int"
+}
+bool(true)
+bool(true)
+string(6) "?array"
+bool(true)
+array(1) {
+  [0]=>
+  string(7) "private"
+}
+string(6) "?array"
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+bool(false)
+string(5) "float"
+float(3.141592653589793)
+bool(true)
+string(0) ""
+string(4) "user"
+bool(true)
+bool(true)
+string(6) "static"
+string(19) "ReflectionNamedType"
+string(14) "App\Model\User"
+bool(false)
+string(19) "ReflectionNamedType"
+string(9) "?callable"
+bool(true)
+string(19) "ReflectionUnionType"
+string(25) "(Iterator&Countable)|null"
+bool(true)
+string(26) "/**
+     * Counts.
+     */"
+int(60)
+int(60)
+array(1) {
+  [0]=>
+  string(1) "m"
+}
+string(9) "Countable"
+bool(true)
+string(24) "/** Returns the name. */"
+string(17) "App\Model\HasName"
+bool(true)
+string(9) "?stdClass"
+bool(true)
+NULL
+string(2) "db"
+bool(false)
+bool(true)
+int(2177)
+bool(false)
+bool(false)
+bool(true)
+bool(true)
+string(10) "string|int"
+string(16) "App\Model\Inject"
+string(13) "/** the id */"
+bool(true)
+int(0)
+int(0)
+int(42)
+bool(true)
+string(4) "user"
+bool(true)
+bool(true)
+string(14) "App\Model\User"
+int(33)
+bool(true)
+string(6) "string"
+int(2)
+string(1) "S"
+string(17) "/** spades doc */"
+bool(false)
+array(3) {
+  ["Hearts"]=>
+  enum(App\Model\Suit::Hearts)
+  ["Spades"]=>
+  enum(App\Model\Suit::Spades)
+  ["Wild"]=>
+  enum(App\Model\Suit::Spades)
+}
+string(16) "App\Model\helper"
+string(6) "helper"
+string(9) "App\Model"
+bool(true)
+string(4) "void"
+int(2)
+bool(true)
+array(1) {
+  [0]=>
+  string(1) "u"
+}
+NULL
+int(3)
+bool(true)
+bool(true)
+bool(true)
+string(44) "Method App\Model\User::nope() does not exist"
+string(45) "Property App\Model\User::$nope does not exist"
+string(32) "Class "Nope\Nope" does not exist"
+string(30) "Function nope() does not exist"
+string(92) "ReflectionClass::getAttributes(): Argument #2 ($flags) must be a valid attribute filter flag"
+int(1)
+int(128)
+int(32)
+int(127)
+array(3) {
+  ["db"]=>
+  NULL
+  ["greeting"]=>
+  string(2) "hi"
+  ["id"]=>
+  int(0)
+}
+array(0) {
+}
+string(5) "q@q.q"
+bool(true)

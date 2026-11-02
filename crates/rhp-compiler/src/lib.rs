@@ -78,6 +78,10 @@ thread_local! {
     static COND_CLASSES: RefCell<(Vec<ClassProto>, u32)> = const { RefCell::new((Vec::new(), 0)) };
 }
 
+/// The source bytes doc comments are looked up in, and its token stream
+/// (lexed on the first lookup).
+type DocSource = (Rc<Vec<u8>>, Option<Rc<Vec<rhp_frontend::Token>>>);
+
 thread_local! {
     /// Method name (lowercase) -> per-position "could be by-reference" mask: true
     /// at position i if ANY method of that name declares `&` there. A call site
@@ -95,6 +99,14 @@ thread_local! {
     /// Whether a trait body is being compiled: `__CLASS__` there names the
     /// *using* class, so it is lowered to a runtime `self::class`.
     static IN_TRAIT: RefCell<bool> = const { RefCell::new(false) };
+    /// Whether an interface body is being compiled (its property
+    /// declarations, hooked or not, contribute no runtime members).
+    static IN_INTERFACE: RefCell<bool> = const { RefCell::new(false) };
+    /// The user source being compiled and its full token stream (comments
+    /// included), for locating declarations' doc comments. Empty while
+    /// compiling the prelude.
+    static DOC_SRC: RefCell<DocSource> =
+        RefCell::new((Rc::new(Vec::new()), None));
 }
 
 /// Lower a mago type hint to the bytecode [`rhp_bytecode::TypeHint`] (resolving
@@ -104,9 +116,24 @@ fn type_hint(h: &Hint) -> rhp_bytecode::TypeHint {
         nullable: false,
         intersection: false,
         kinds: Vec::new(),
+        groups: Vec::new(),
+        explicit_null: false,
     };
     collect_hint(h, &mut out);
     out
+}
+
+/// The class names of a (parenthesized) intersection hint `A&B&C`.
+fn intersection_names(h: &Hint, out: &mut Vec<PhpStr>) {
+    match h {
+        Hint::Parenthesized(p) => intersection_names(p.hint, out),
+        Hint::Intersection(i) => {
+            intersection_names(i.left, out);
+            intersection_names(i.right, out);
+        }
+        Hint::Identifier(id) => out.push(PhpStr::from_bytes(resolve_class_name(id))),
+        _ => {}
+    }
 }
 
 fn collect_hint(h: &Hint, out: &mut rhp_bytecode::TypeHint) {
@@ -118,8 +145,21 @@ fn collect_hint(h: &Hint, out: &mut rhp_bytecode::TypeHint) {
         }
         Hint::Parenthesized(p) => collect_hint(p.hint, out),
         Hint::Union(u) => {
-            collect_hint(u.left, out);
-            collect_hint(u.right, out);
+            // A DNF member `(A&B)` of a union is an intersection group.
+            for side in [u.left, u.right] {
+                match side {
+                    Hint::Parenthesized(p) if matches!(p.hint, Hint::Intersection(_)) => {
+                        let mut g = Vec::new();
+                        intersection_names(p.hint, &mut g);
+                        out.groups.push(g);
+                    }
+                    Hint::Null(_) => {
+                        out.nullable = true;
+                        out.explicit_null = true;
+                    }
+                    other => collect_hint(other, out),
+                }
+            }
         }
         Hint::Intersection(i) => {
             out.intersection = true;
@@ -551,6 +591,7 @@ fn compile_program(
     with_prelude: bool,
 ) -> Result<Program, Thrown> {
     LINE_STARTS.with(|ls| ls.borrow_mut().clear());
+    DOC_SRC.with(|d| *d.borrow_mut() = (Rc::new(Vec::new()), None));
     SRC_FILE.with(|f| *f.borrow_mut() = file.as_bytes().to_vec());
     STRICT_TYPES.with(|s| *s.borrow_mut() = detect_strict_types(program));
     let user_line_starts = build_line_starts(source);
@@ -611,6 +652,7 @@ fn compile_program(
     COND_CLASSES.with(|c| c.borrow_mut().1 = num_top_classes);
     // From here on we compile user code, so install its line map.
     LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
+    DOC_SRC.with(|d| *d.borrow_mut() = (Rc::new(source.to_vec()), None));
     let user_constants: Vec<(PhpStr, Value)> = Vec::new();
     for (ctx, stmt) in &flat {
         use mago_span::HasSpan;
@@ -656,8 +698,8 @@ fn compile_program(
         // A top-level class is hoisted at load when its parent/interfaces
         // are available; otherwise it is declared when this point is reached.
         if is_class_like(stmt) {
-            // Errors raised while declaring it (missing parent/interface)
-            // report the declaration's line.
+            // The declaration (and so an autoload it triggers, or an error
+            // for a missing parent/interface) runs at the class's line.
             c.cur_line = {
                 use mago_span::HasSpan;
                 line_of(stmt.span().start.offset)
@@ -745,6 +787,239 @@ fn has_allow_dynamic(
     })
 }
 
+/// php's scanner keeps the last `/** */` comment until a declaration claims
+/// it (its "backup" point: a function/class name, a property / parameter
+/// variable, a constant name) or a `}` resets it. Approximate that by walking
+/// back from `pos` over the tokens that can sit between a doc comment and the
+/// claiming point (whitespace, other comments, attribute groups, modifiers and
+/// keywords, type hints): the first doc comment reached is the declaration's.
+fn doc_comment_before(pos: u32) -> Option<PhpStr> {
+    use rhp_frontend::TokenKind as T;
+    let (src, toks) = DOC_SRC.with(|d| {
+        let mut d = d.borrow_mut();
+        if d.1.is_none() {
+            let has_doc = d.0.windows(3).any(|w| w == b"/**");
+            let toks = if has_doc {
+                rhp_frontend::tokens(&d.0)
+            } else {
+                Vec::new()
+            };
+            d.1 = Some(Rc::new(toks));
+        }
+        (d.0.clone(), d.1.clone().unwrap_or_default())
+    });
+    if toks.is_empty() {
+        return None;
+    }
+    let pos = pos as usize;
+    let mut i = toks.partition_point(|t| t.end <= pos);
+    let mut attr_depth = 0usize;
+    let mut paren_depth = 0usize;
+    while i > 0 {
+        i -= 1;
+        let t = toks[i];
+        if attr_depth > 0 {
+            match t.kind {
+                T::RightBracket => attr_depth += 1,
+                T::LeftBracket | T::HashLeftBracket => attr_depth -= 1,
+                _ => {}
+            }
+            continue;
+        }
+        match t.kind {
+            T::DocBlockComment => {
+                let text = &src[t.start..t.end];
+                // `"/**"{WHITESPACE}` — `/**/` is a plain comment.
+                if text.len() > 4 && text[3].is_ascii_whitespace() {
+                    return Some(PhpStr::from_bytes(text.to_vec()));
+                }
+            }
+            T::Whitespace | T::SingleLineComment | T::HashComment | T::MultiLineComment => {}
+            T::RightBracket => attr_depth = 1,
+            T::RightParenthesis => paren_depth += 1,
+            T::LeftParenthesis => {
+                if paren_depth == 0 {
+                    return None;
+                }
+                paren_depth -= 1;
+            }
+            T::Identifier
+            | T::QualifiedIdentifier
+            | T::FullyQualifiedIdentifier
+            | T::Question
+            | T::Pipe
+            | T::Ampersand
+            | T::DotDotDot => {}
+            k if k.is_keyword() => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Compile `#[...]` attribute groups: each attribute's resolved class name
+/// and its argument list as an array (folded when constant, else a thunk run
+/// in `class_name`'s scope when Reflection asks for the arguments).
+fn compile_attributes(
+    lists: &rhp_frontend::cst::Sequence<rhp_frontend::cst::AttributeList>,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: Option<&PhpStr>,
+) -> Result<Vec<rhp_bytecode::AttributeProto>, Thrown> {
+    use rhp_frontend::cst::PartialArgument as PA;
+    let mut out = Vec::new();
+    for list in lists.iter() {
+        for a in list.attributes.iter() {
+            let name = PhpStr::from_bytes(resolve_class_name(&a.name));
+            let args = match &a.argument_list {
+                None => None,
+                Some(al) => {
+                    // (name, expr) pairs; positional args have no name.
+                    let mut items: Vec<(Option<&[u8]>, &Expression)> = Vec::new();
+                    for arg in al.arguments.iter() {
+                        match arg {
+                            PA::Positional(p) => items.push((None, p.value)),
+                            PA::Named(n) => items.push((Some(n.name.value), n.value)),
+                            _ => {}
+                        }
+                    }
+                    let folded: Result<Vec<Value>, Thrown> =
+                        items.iter().map(|(_, e)| fold_const(e)).collect();
+                    match folded {
+                        Ok(vals) => {
+                            let mut arr = PhpArray::new();
+                            for ((n, _), v) in items.iter().zip(vals) {
+                                match n {
+                                    Some(n) => arr.insert(ArrayKey::from_bytes(n), v),
+                                    None => arr.push(v),
+                                }
+                            }
+                            Some(ConstInitProto::Const(Value::Array(arr)))
+                        }
+                        Err(_) => {
+                            let mut c = ProtoBuilder::new(PhpStr::from("{init}"));
+                            c.sigs = sigs.clone();
+                            c.class_name = class_name.cloned();
+                            c.scope_kind = ScopeKind::Init;
+                            for (_, e) in &items {
+                                c.scan_expr_vars(e);
+                            }
+                            c.num_cvs = c.cv_map.len() as u16;
+                            c.next_temp = c.num_cvs;
+                            c.high_water = c.num_cvs;
+                            c.temp_floor = c.num_cvs;
+                            let dst = c.alloc_temp();
+                            c.emit(Instr::NewArray { dst, cap: 0 });
+                            for (n, e) in &items {
+                                let val = c.compile_expr(e)?;
+                                match n {
+                                    Some(n) => {
+                                        let key = c.load_string_const(n);
+                                        c.emit(Instr::ArrSet { arr: dst, key, val });
+                                    }
+                                    None => c.emit(Instr::ArrPush { arr: dst, val }),
+                                }
+                            }
+                            c.emit(Instr::Ret { src: dst });
+                            Some(ConstInitProto::Thunk(Rc::new(c.finish()?)))
+                        }
+                    }
+                }
+            };
+            out.push(rhp_bytecode::AttributeProto { name, args });
+        }
+    }
+    Ok(out)
+}
+
+/// Reflection metadata of a declaration: its attributes, the doc comment
+/// claimed at `doc_pos`, and the line span `[start, end]` (byte offsets).
+fn decl_meta(
+    lists: &rhp_frontend::cst::Sequence<rhp_frontend::cst::AttributeList>,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: Option<&PhpStr>,
+    doc_pos: u32,
+    start: u32,
+    end: u32,
+) -> Result<rhp_bytecode::DeclMeta, Thrown> {
+    Ok(rhp_bytecode::DeclMeta {
+        attributes: compile_attributes(lists, sigs, class_name)?,
+        doc_comment: doc_comment_before(doc_pos),
+        start_line: line_of(start),
+        offset: start,
+        end_line: line_of(end.saturating_sub(1).max(start)),
+    })
+}
+
+/// Reflection data for a parameter default: a standalone thunk for a
+/// non-constant default, and the constant's name when the default is a bare
+/// constant / class-constant reference.
+fn param_default_meta(
+    p: &rhp_frontend::cst::FunctionLikeParameter,
+    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
+    class_name: Option<&PhpStr>,
+) -> (Option<Rc<FunctionProto>>, Option<PhpStr>) {
+    let Some(dv) = &p.default_value else {
+        return (None, None);
+    };
+    let e = dv.value;
+    let cname = match e {
+        Expression::ConstantAccess(ca) => {
+            let n = identifier_raw(&ca.name);
+            let n = n.strip_prefix(b"\\").unwrap_or(n);
+            let lcn = n.to_ascii_lowercase();
+            (!matches!(lcn.as_slice(), b"true" | b"false" | b"null"))
+                .then(|| PhpStr::from_bytes(n.to_vec()))
+        }
+        Expression::Access(Access::ClassConstant(cca)) => {
+            let class: Option<Vec<u8>> = match cca.class {
+                Expression::Identifier(id) => Some(identifier_raw(id).to_vec()),
+                Expression::Self_(_) => Some(b"self".to_vec()),
+                Expression::Static(_) => Some(b"static".to_vec()),
+                Expression::Parent(_) => Some(b"parent".to_vec()),
+                _ => None,
+            };
+            match (&cca.constant, class) {
+                (rhp_frontend::cst::ClassLikeConstantSelector::Identifier(c), Some(mut cl)) => {
+                    cl.extend_from_slice(b"::");
+                    cl.extend_from_slice(c.value);
+                    Some(PhpStr::from_bytes(cl))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let thunk = if fold_const(e).is_err() {
+        compile_const_thunk(e, sigs, class_name).ok()
+    } else {
+        None
+    };
+    (thunk, cname)
+}
+
+/// php's `add_stringable_interface`: a class-like (not a trait) declaring
+/// `__toString` implicitly implements `Stringable`.
+fn add_stringable(interfaces: &mut Vec<PhpStr>, methods: &[MethodProto], self_name: &PhpStr) {
+    if self_name.as_bytes().eq_ignore_ascii_case(b"Stringable") {
+        return;
+    }
+    if methods
+        .iter()
+        .any(|m| m.name.as_bytes().eq_ignore_ascii_case(b"__toString"))
+        && !interfaces
+            .iter()
+            .any(|i| i.as_bytes().eq_ignore_ascii_case(b"Stringable"))
+    {
+        interfaces.push(PhpStr::from("Stringable"));
+    }
+}
+
+/// The span offsets `(start, end)` of an AST node.
+fn span_of(n: &impl mago_span::HasSpan) -> (u32, u32) {
+    let s = n.span();
+    (s.start.offset, s.end.offset)
+}
+
 fn compile_class(
     class: &Class,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
@@ -775,6 +1050,16 @@ fn compile_class(
         .unwrap_or_default();
 
     let m = compile_members(&class.members, sigs, &name)?;
+    let mut interfaces = interfaces;
+    add_stringable(&mut interfaces, &m.methods, &name);
+    let meta = decl_meta(
+        &class.attribute_lists,
+        sigs,
+        Some(&name),
+        class.name.span.start.offset,
+        class.class.span.start.offset,
+        class.right_brace.end.offset,
+    )?;
     Ok(ClassProto {
         name,
         kind: ClassKind::Class,
@@ -788,6 +1073,8 @@ fn compile_class(
         constants: m.constants,
         enum_cases: Vec::new(),
         enum_backing: None,
+        meta,
+        file: PhpStr::from_bytes(src_file()),
     })
 }
 
@@ -831,6 +1118,16 @@ fn compile_anon_class(
         allow_dynamic: has_allow_dynamic(&ac.attribute_lists),
     };
     let m = compile_members(&ac.members, sigs, &name)?;
+    let mut interfaces = interfaces;
+    add_stringable(&mut interfaces, &m.methods, &name);
+    let meta = decl_meta(
+        &ac.attribute_lists,
+        sigs,
+        Some(&name),
+        ac.class.span.start.offset,
+        ac.class.span.start.offset,
+        ac.right_brace.end.offset,
+    )?;
     Ok(ClassProto {
         name,
         kind: ClassKind::Class,
@@ -844,6 +1141,8 @@ fn compile_anon_class(
         constants: m.constants,
         enum_cases: Vec::new(),
         enum_backing: None,
+        meta,
+        file: PhpStr::from_bytes(src_file()),
     })
 }
 
@@ -890,7 +1189,18 @@ fn compile_enum(
     }
 
     let m = compile_members(&en.members, sigs, &name)?;
+    add_stringable(&mut interfaces, &m.methods, &name);
+    let meta = decl_meta(
+        &en.attribute_lists,
+        sigs,
+        Some(&name),
+        en.name.span.start.offset,
+        en.r#enum.span.start.offset,
+        en.right_brace.end.offset,
+    )?;
     Ok(ClassProto {
+        meta,
+        file: PhpStr::from_bytes(src_file()),
         name,
         kind: ClassKind::Enum,
         // Enums are implicitly final.
@@ -1030,25 +1340,36 @@ fn compile_member(
             out.methods.push(mp);
             out.props.extend(promoted);
         }
+        ClassLikeMember::Property(_) if IN_INTERFACE.with(|f| *f.borrow()) => {}
         ClassLikeMember::Property(Property::Plain(p)) => {
             let visibility = modifiers_visibility(&p.modifiers);
             let set_visibility = modifiers_set_visibility(&p.modifiers);
             let is_static = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Static(_)));
             let is_readonly = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
             let hint = p.hint.as_ref().map(type_hint);
+            let attributes = compile_attributes(&p.attribute_lists, sigs, Some(class_name))?;
+            let (pstart, pend) = span_of(p);
             for item in p.items.iter() {
                 let (var, default) = match item {
                     PropertyItem::Concrete(c) => (
-                        c.variable.name,
+                        &c.variable,
                         coerce_prop_default(
                             prop_default_or_thunk(c.value, sigs, Some(class_name))?,
                             hint.as_ref(),
                         ),
                     ),
-                    PropertyItem::Abstract(a) => (a.variable.name, PropDefaultProto::None),
+                    PropertyItem::Abstract(a) => (&a.variable, PropDefaultProto::None),
                 };
-                let pname = PhpStr::from_bytes(strip_dollar(var).to_vec());
+                let meta = rhp_bytecode::DeclMeta {
+                    attributes: attributes.clone(),
+                    doc_comment: doc_comment_before(var.span.start.offset),
+                    start_line: line_of(pstart),
+                    offset: var.span.start.offset,
+                    end_line: line_of(pend),
+                };
+                let pname = PhpStr::from_bytes(strip_dollar(var.name).to_vec());
                 if is_static {
+                    let has_default = !matches!(default, PropDefaultProto::None);
                     let init = match default {
                         PropDefaultProto::Const(v) => ConstInitProto::Const(v),
                         PropDefaultProto::Init(t) => ConstInitProto::Thunk(t),
@@ -1060,6 +1381,8 @@ fn compile_member(
                         is_readonly,
                         init,
                         type_hint: hint.clone(),
+                        meta,
+                        has_default,
                     });
                 } else {
                     out.props.push(PropProto {
@@ -1069,6 +1392,8 @@ fn compile_member(
                         is_readonly,
                         default,
                         type_hint: hint.clone(),
+                        meta,
+                        promoted: false,
                     });
                 }
             }
@@ -1079,6 +1404,9 @@ fn compile_member(
         ClassLikeMember::Constant(c) => {
             let visibility = modifiers_visibility(&c.modifiers);
             let hint = c.hint.as_ref().map(type_hint);
+            let is_final = has_modifier(&c.modifiers, |m| matches!(m, Modifier::Final(_)));
+            let attributes = compile_attributes(&c.attribute_lists, sigs, Some(class_name))?;
+            let (cstart, cend) = span_of(c);
             for item in c.items.iter() {
                 out.constants.push(ConstProto {
                     name: PhpStr::from_bytes(item.name.value.to_vec()),
@@ -1088,6 +1416,14 @@ fn compile_member(
                         hint.as_ref(),
                     ),
                     type_hint: hint.clone(),
+                    meta: rhp_bytecode::DeclMeta {
+                        attributes: attributes.clone(),
+                        doc_comment: doc_comment_before(item.name.span.start.offset),
+                        start_line: line_of(cstart),
+                        offset: item.name.span.start.offset,
+                        end_line: line_of(cend),
+                    },
+                    is_final,
                 });
             }
         }
@@ -1105,8 +1441,21 @@ fn compile_member(
                     Some(const_init_or_thunk(b.value, sigs, Some(class_name))?),
                 ),
             };
+            let name_off = match &ec.item {
+                EnumCaseItem::Unit(u) => u.name.span.start.offset,
+                EnumCaseItem::Backed(b) => b.name.span.start.offset,
+            };
+            let (cstart, cend) = span_of(ec);
+            let meta = decl_meta(
+                &ec.attribute_lists,
+                sigs,
+                Some(class_name),
+                name_off,
+                cstart,
+                cend,
+            )?;
             out.enum_cases
-                .push(rhp_bytecode::EnumCaseProto { name, value });
+                .push(rhp_bytecode::EnumCaseProto { name, value, meta });
         }
     }
     Ok(())
@@ -1121,7 +1470,17 @@ fn compile_trait(
     let m = compile_members(&t.members, sigs, &name);
     IN_TRAIT.with(|f| *f.borrow_mut() = saved);
     let m = m?;
+    let meta = decl_meta(
+        &t.attribute_lists,
+        sigs,
+        Some(&name),
+        t.name.span.start.offset,
+        t.r#trait.span.start.offset,
+        t.right_brace.end.offset,
+    )?;
     Ok(ClassProto {
+        meta,
+        file: PhpStr::from_bytes(src_file()),
         name,
         kind: ClassKind::Trait,
         flags: ClassFlags::default(),
@@ -1140,19 +1499,44 @@ fn compile_trait(
 /// The built-in exception/throwable class hierarchy, as PHP source. Compiled
 /// and prepended to every program so `throw`/`catch` and engine errors work.
 const PRELUDE: &str = r##"<?php
-interface Stringable {}
-interface Throwable extends Stringable {}
+interface Stringable { public function __toString(): string; }
+interface Throwable extends Stringable {
+    public function getMessage(): string;
+    public function getCode();
+    public function getFile(): string;
+    public function getLine(): int;
+    public function getTrace(): array;
+    public function getPrevious(): ?Throwable;
+    public function getTraceAsString(): string;
+}
 interface UnitEnum {}
 interface BackedEnum extends UnitEnum {}
 interface Traversable {}
-interface Iterator extends Traversable {}
-interface IteratorAggregate extends Traversable {}
-interface OuterIterator extends Iterator {}
-interface RecursiveIterator extends Iterator {}
-interface JsonSerializable {}
-interface Serializable {}
-interface ArrayAccess {}
-interface Countable {}
+interface Iterator extends Traversable {
+    public function current(): mixed;
+    public function next(): void;
+    public function key(): mixed;
+    public function valid(): bool;
+    public function rewind(): void;
+}
+interface IteratorAggregate extends Traversable { public function getIterator(): Traversable; }
+interface OuterIterator extends Iterator { public function getInnerIterator(): ?Iterator; }
+interface RecursiveIterator extends Iterator {
+    public function hasChildren(): bool;
+    public function getChildren(): ?RecursiveIterator;
+}
+interface JsonSerializable { public function jsonSerialize(): mixed; }
+interface Serializable {
+    public function serialize();
+    public function unserialize(string $data);
+}
+interface ArrayAccess {
+    public function offsetExists(mixed $offset): bool;
+    public function offsetGet(mixed $offset): mixed;
+    public function offsetSet(mixed $offset, mixed $value): void;
+    public function offsetUnset(mixed $offset): void;
+}
+interface Countable { public function count(): int; }
 final class Generator implements Iterator {}
 class stdClass {}
 final class __PHP_Incomplete_Class {}
@@ -1664,25 +2048,30 @@ fn compile_interface(
                 .collect()
         })
         .unwrap_or_default();
-    let mut constants = Vec::new();
-    for member in iface.members.iter() {
-        if let ClassLikeMember::Constant(c) = member {
-            let visibility = modifiers_visibility(&c.modifiers);
-            let hint = c.hint.as_ref().map(type_hint);
-            for item in c.items.iter() {
-                constants.push(ConstProto {
-                    name: PhpStr::from_bytes(item.name.value.to_vec()),
-                    visibility,
-                    value: coerce_const_init(
-                        const_init_or_thunk(item.value, sigs, Some(&name))?,
-                        hint.as_ref(),
-                    ),
-                    type_hint: hint.clone(),
-                });
-            }
-        }
-        // Interface method signatures / properties contribute no runtime members.
-    }
+    // Constants and (abstract) method signatures; interface properties
+    // contribute no runtime members.
+    let saved = IN_INTERFACE.with(|f| std::mem::replace(&mut *f.borrow_mut(), true));
+    let m = compile_members(&iface.members, sigs, &name);
+    IN_INTERFACE.with(|f| *f.borrow_mut() = saved);
+    let m = m?;
+    let methods: Vec<MethodProto> = m
+        .methods
+        .into_iter()
+        .map(|mut mp| {
+            mp.is_abstract = true;
+            mp
+        })
+        .collect();
+    let mut interfaces = interfaces;
+    add_stringable(&mut interfaces, &methods, &name);
+    let meta = decl_meta(
+        &iface.attribute_lists,
+        sigs,
+        Some(&name),
+        iface.name.span.start.offset,
+        iface.interface.span.start.offset,
+        iface.right_brace.end.offset,
+    )?;
     Ok(ClassProto {
         name,
         kind: ClassKind::Interface,
@@ -1690,12 +2079,14 @@ fn compile_interface(
         parent: None,
         interfaces,
         traits: Vec::new(),
-        methods: Vec::new(),
+        methods,
         props: Vec::new(),
         static_props: Vec::new(),
-        constants,
+        constants: m.constants,
         enum_cases: Vec::new(),
         enum_backing: None,
+        meta,
+        file: PhpStr::from_bytes(src_file()),
     })
 }
 
@@ -1742,9 +2133,11 @@ fn compile_method(
                     rhp_bytecode::Default::Init(0)
                 }
             });
+        let attributes = compile_attributes(&p.attribute_lists, sigs, Some(class_name))?;
         if !p.modifiers.is_empty() {
             let vis = modifiers_visibility(&p.modifiers);
             let ro = has_modifier(&p.modifiers, |md| matches!(md, Modifier::Readonly(_)));
+            let (pstart, pend) = span_of(p);
             promoted.push(PropProto {
                 name: PhpStr::from_bytes(var.to_vec()),
                 visibility: vis,
@@ -1752,9 +2145,18 @@ fn compile_method(
                 is_readonly: ro,
                 default: PropDefaultProto::None,
                 type_hint: p.hint.as_ref().map(type_hint),
+                meta: rhp_bytecode::DeclMeta {
+                    attributes: attributes.clone(),
+                    doc_comment: doc_comment_before(p.variable.span.start.offset),
+                    start_line: line_of(pstart),
+                    offset: pstart,
+                    end_line: line_of(pend),
+                },
+                promoted: true,
             });
             promo_stores.push((c.intern_name(var), cv));
         }
+        let dmeta = param_default_meta(p, sigs, Some(class_name));
         params.push(rhp_bytecode::ParamInfo {
             name: pname,
             cv,
@@ -1766,6 +2168,10 @@ fn compile_method(
                 use mago_span::HasSpan;
                 line_of(p.span().start.offset)
             },
+            attributes,
+            promoted: !p.modifiers.is_empty(),
+            default_thunk: dmeta.0,
+            default_const: dmeta.1,
         });
     }
     let num_params = params.len() as u16;
@@ -1806,6 +2212,14 @@ fn compile_method(
     proto.is_static = is_static;
     proto.is_generator = body_stmts.iter().any(stmt_has_yield);
     proto.return_type = m.return_type_hint.as_ref().map(|r| type_hint(&r.hint));
+    proto.meta = decl_meta(
+        &m.attribute_lists,
+        sigs,
+        Some(class_name),
+        m.name.span.start.offset,
+        m.function.span.start.offset,
+        span_of(m).1,
+    )?;
 
     let mp = MethodProto {
         name,
@@ -1826,6 +2240,7 @@ fn compile_function(
 ) -> Result<FunctionProto, Thrown> {
     let fname = join_ns(&cur_ns(), func.name.value);
     let mut c = ProtoBuilder::new(PhpStr::from_bytes(fname));
+    let c_sigs = sigs.clone();
     c.sigs = sigs;
     c.returns_ref = func.ampersand.is_some();
 
@@ -1845,6 +2260,7 @@ fn compile_function(
                     rhp_bytecode::Default::Init(0)
                 }
             });
+        let dmeta = param_default_meta(p, &c.sigs.clone(), None);
         params.push(rhp_bytecode::ParamInfo {
             name,
             cv,
@@ -1856,6 +2272,10 @@ fn compile_function(
                 use mago_span::HasSpan;
                 line_of(p.span().start.offset)
             },
+            attributes: compile_attributes(&p.attribute_lists, &c.sigs, None)?,
+            promoted: false,
+            default_thunk: dmeta.0,
+            default_const: dmeta.1,
         });
     }
     let num_params = params.len() as u16;
@@ -1881,6 +2301,14 @@ fn compile_function(
     proto.params = params;
     proto.is_generator = block_has_yield(&func.body.statements);
     proto.return_type = func.return_type_hint.as_ref().map(|r| type_hint(&r.hint));
+    proto.meta = decl_meta(
+        &func.attribute_lists,
+        &c_sigs,
+        None,
+        func.name.span.start.offset,
+        func.function.span.start.offset,
+        span_of(func).1,
+    )?;
     Ok(proto)
 }
 
@@ -4648,6 +5076,14 @@ impl ProtoBuilder {
             },
             af.return_type_hint.as_ref().map(|r| &r.hint),
             af.ampersand.is_some(),
+            decl_meta(
+                &af.attribute_lists,
+                &self.sigs,
+                self.class_name.as_ref(),
+                af.r#fn.span.end.offset,
+                af.r#fn.span.start.offset,
+                span_of(af).1,
+            )?,
         )
     }
 
@@ -4681,6 +5117,14 @@ impl ProtoBuilder {
             },
             cl.return_type_hint.as_ref().map(|r| &r.hint),
             cl.ampersand.is_some(),
+            decl_meta(
+                &cl.attribute_lists,
+                &self.sigs,
+                self.class_name.as_ref(),
+                cl.function.span.end.offset,
+                cl.function.span.start.offset,
+                span_of(cl).1,
+            )?,
         )
     }
 
@@ -4697,6 +5141,7 @@ impl ProtoBuilder {
         closure_offset: u32,
         ret_hint: Option<&Hint>,
         returns_ref: bool,
+        meta: rhp_bytecode::DeclMeta,
     ) -> Result<Reg, Thrown> {
         let nc = captures.len() as u16;
 
@@ -4731,6 +5176,7 @@ impl ProtoBuilder {
                         rhp_bytecode::Default::Init(0)
                     }
                 });
+            let dmeta = param_default_meta(p, &c.sigs.clone(), c.class_name.clone().as_ref());
             params.push(rhp_bytecode::ParamInfo {
                 name,
                 cv,
@@ -4742,6 +5188,10 @@ impl ProtoBuilder {
                     use mago_span::HasSpan;
                     line_of(p.span().start.offset)
                 },
+                attributes: compile_attributes(&p.attribute_lists, &c.sigs, c.class_name.as_ref())?,
+                promoted: false,
+                default_thunk: dmeta.0,
+                default_const: dmeta.1,
             });
         }
         let num_params = params.len() as u16;
@@ -4794,6 +5244,7 @@ impl ProtoBuilder {
         proto.num_captures = nc;
         proto.is_static = is_static;
         proto.return_type = ret_hint.map(type_hint);
+        proto.meta = meta;
         proto.is_generator = match body {
             ClosureBody::Block(b) => block_has_yield(&b.statements),
             ClosureBody::Arrow(e) => expr_has_yield(e),

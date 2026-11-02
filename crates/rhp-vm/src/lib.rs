@@ -871,7 +871,21 @@ impl Host for Vm {
             StreamState::Stderr => Act::Err,
             StreamState::Mem { .. } | StreamState::FileWrite { .. } => Act::Buf,
             StreamState::File(f) => return f.write(data),
-            StreamState::Fd(f) => return f.write(data),
+            StreamState::Fd(f) => {
+                let r = f.write(data);
+                if let Some(e) = f.take_send_error() {
+                    // php_sockop_write's notice, under the calling builtin.
+                    let func = self.native_calls.last().map_or("fwrite", |n| n.name);
+                    let msg = format!(
+                        "{func}(): Send of {} bytes failed with errno={} {}",
+                        e.count,
+                        e.errno,
+                        builtins::streams::strerror(e.errno)
+                    );
+                    self.raise_error(builtins::E_NOTICE, &msg);
+                }
+                return r;
+            }
             StreamState::Stdin | StreamState::Dir { .. } => Act::No,
         };
         match act {
@@ -1046,6 +1060,50 @@ impl Host for Vm {
         Some(self.make_stream(st, "stream"))
     }
 
+    fn stream_from_socket(
+        &mut self,
+        fd: std::os::fd::OwnedFd,
+        info: builtins::fdstream::SockInfo,
+    ) -> Option<Value> {
+        let blocked = info.blocked;
+        let ty = if info.persistent {
+            "persistent stream"
+        } else {
+            "stream"
+        };
+        let st = StreamState::Fd(builtins::fdstream::FdStream::new_socket(fd, info));
+        let v = self.make_stream(st, ty);
+        if !blocked {
+            if let Some(id) = res_id(&v) {
+                self.nonblocking.insert(id);
+            }
+        }
+        Some(v)
+    }
+
+    fn stream_sock_info(&self, res: &Value) -> Option<builtins::fdstream::SockInfo> {
+        match self.streams.get(&res_id(res)?)? {
+            StreamState::Fd(f) => f.sock().cloned(),
+            _ => None,
+        }
+    }
+
+    fn stream_set_timeout(&mut self, res: &Value, timeout: Option<(i64, i64)>) -> bool {
+        let Some(id) = res_id(res) else { return false };
+        match self.streams.get_mut(&id) {
+            Some(StreamState::Fd(f)) => f.set_timeout(timeout),
+            _ => false,
+        }
+    }
+
+    fn prepare_fork(&mut self) {
+        if self.direct_stdout || self.stdout_passthrough {
+            self.flush_stdout();
+        }
+        use std::io::Write;
+        let _ = std::io::stderr().flush();
+    }
+
     fn stream_dup_fd(&mut self, res: &Value) -> Result<std::os::fd::OwnedFd, &'static str> {
         use builtins::fdstream::dup_raw;
         let id = res_id(res).ok_or("Unknown")?;
@@ -1086,7 +1144,9 @@ impl Host for Vm {
 
     fn stream_set_blocking(&mut self, res: &Value, blocking: bool) -> bool {
         let Some(id) = res_id(res) else { return false };
-        if self.streams.contains_key(&id) {
+        // A memory stream has no blocking option (php answers NOTIMPL, which
+        // stream_set_blocking reports as success): `blocked` stays true.
+        if matches!(self.streams.get(&id), Some(s) if !matches!(s, StreamState::Mem { .. })) {
             if blocking {
                 self.nonblocking.remove(&id);
             } else {
@@ -1338,6 +1398,7 @@ impl Host for Vm {
                     seekable: true,
                     eof,
                     blocked: true,
+                    timed_out: false,
                 });
             }
             Some(match self.streams.get(&id)? {
@@ -1350,7 +1411,24 @@ impl Host for Vm {
                     seekable: true,
                     eof: f.eof(),
                     blocked: true,
+                    timed_out: false,
                 },
+                // A socket: php's META_DATA_API answer (timed_out, blocked,
+                // eof from the socket layer), no wrapper / uri.
+                StreamState::Fd(f) if f.sock().is_some() => {
+                    let s = f.sock()?;
+                    M {
+                        wrapper_type: "",
+                        stream_type: s.stream_type,
+                        mode: b"r+".to_vec(),
+                        uri: s.uri.clone().unwrap_or_default(),
+                        unread_bytes: f.unread() as i64,
+                        seekable: false,
+                        eof: f.eof_flag(),
+                        blocked: s.blocked,
+                        timed_out: s.timed_out,
+                    }
+                }
                 StreamState::Fd(f) => match self.fd_names.get(&id) {
                     Some((uri, mode)) => M {
                         wrapper_type: "PHP",
@@ -1358,9 +1436,10 @@ impl Host for Vm {
                         mode: mode.clone(),
                         uri: uri.clone(),
                         unread_bytes: 0,
-                        seekable: f.tell() != -1,
+                        seekable: f.is_seekable(),
                         eof: f.eof(),
                         blocked: true,
+                        timed_out: false,
                     },
                     // A pipe (proc_open, popen): no wrapper, no uri; the mode is
                     // the descriptor's direction.
@@ -1373,9 +1452,10 @@ impl Host for Vm {
                         },
                         uri: Vec::new(),
                         unread_bytes: 0,
-                        seekable: f.tell() != -1,
+                        seekable: f.is_seekable(),
                         eof: f.eof(),
                         blocked: true,
+                        timed_out: false,
                     },
                 },
                 StreamState::Dir { .. } => M {
@@ -1387,6 +1467,7 @@ impl Host for Vm {
                     seekable: true,
                     eof: false,
                     blocked: true,
+                    timed_out: false,
                 },
                 StreamState::Mem {
                     eof, temp, mode, ..
@@ -1403,6 +1484,7 @@ impl Host for Vm {
                     seekable: true,
                     eof: *eof,
                     blocked: true,
+                    timed_out: false,
                 },
                 StreamState::FileWrite { url, .. } => M {
                     wrapper_type: "plainfile",
@@ -1413,6 +1495,7 @@ impl Host for Vm {
                     seekable: true,
                     eof: false,
                     blocked: true,
+                    timed_out: false,
                 },
                 st @ (StreamState::Stdin | StreamState::Stdout | StreamState::Stderr) => {
                     let (fd, mode, uri): (i32, &[u8], &[u8]) = match st {
@@ -1434,6 +1517,7 @@ impl Host for Vm {
                         seekable,
                         eof: false,
                         blocked: true,
+                        timed_out: false,
                     }
                 }
             })
@@ -2315,7 +2399,7 @@ impl Vm {
         for reg in builtins::stream_wrappers() {
             wrappers.insert(reg.scheme.as_bytes().to_vec(), (reg.factory)());
         }
-        rhp_values::set_object_free_hook(builtins::zip_ext::object_freed);
+        rhp_values::set_object_free_hook(builtins::object_freed);
         Vm {
             out: Vec::new(),
             prop_guards: Default::default(),
@@ -3185,7 +3269,10 @@ impl Vm {
         let e = self.class(cls);
         let cname = String::from_utf8_lossy(e.name.as_bytes()).into_owned();
         let p = String::from_utf8_lossy(pname.as_bytes()).into_owned();
-        if e.kind == ClassKind::Enum || e.flags.is_readonly {
+        if e.kind == ClassKind::Enum
+            || e.flags.is_readonly
+            || builtins::is_opaque_handle_class(e.name.as_bytes())
+        {
             return Err(Thrown::error(
                 "Error",
                 format!("Cannot create dynamic property {cname}::${p}"),
@@ -7612,8 +7699,9 @@ impl Vm {
                         }
                         (od.class, props)
                     };
-                    let uncloneable =
-                        self.uncloneable_class(cls) || self.generators.contains_key(&h.borrow().id);
+                    let uncloneable = self.uncloneable_class(cls)
+                        || self.generators.contains_key(&h.borrow().id)
+                        || rhp_builtins::is_socket_object(&h);
                     if uncloneable {
                         return Err(Thrown::error(
                             "Error",

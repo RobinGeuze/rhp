@@ -3,8 +3,7 @@
 //! `shuffle`, `array_rand`, `str_shuffle`), `array_change_key_case`,
 //! `array_multisort`, `settype`, `fnmatch`, process introspection
 //! (`getrusage`, `gc_status`, `sys_getloadavg`, `memory_reset_peak_usage`,
-//! `gc_mem_caches`), opcache's disabled-state API, `getopt`, `readline` and
-//! the `stream_set_read_buffer` / `stream_set_chunk_size` knobs.
+//! `gc_mem_caches`), opcache's disabled-state API, `getopt` and `readline`.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -130,12 +129,10 @@ impl Mt {
 
 thread_local! {
     static MT: RefCell<Option<Mt>> = const { RefCell::new(None) };
-    static CHUNK_SIZES: RefCell<HashMap<u32, i64>> = RefCell::new(HashMap::new());
 }
 
 pub(crate) fn reset_state() {
     MT.with(|m| *m.borrow_mut() = None);
-    CHUNK_SIZES.with(|c| c.borrow_mut().clear());
 }
 
 fn random_seed() -> u32 {
@@ -1004,35 +1001,6 @@ fn fn_true(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(true))
 }
 
-fn stream_id(host: &dyn Host, args: &[Value], func: &str) -> Result<u32, Thrown> {
-    match deref(&args[0]) {
-        Value::Resource(r) => Ok(r.id),
-        other => Err(Thrown::type_error(format!(
-            "{func}(): Argument #1 ($stream) must be of type resource, {} given",
-            value_name(host, &other)
-        ))),
-    }
-}
-
-fn fn_stream_set_read_buffer(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    stream_id(host, args, "stream_set_read_buffer")?;
-    let _ = int_param(host, args, 1, "stream_set_read_buffer", "size", 0)?;
-    Ok(Value::Int(0))
-}
-
-fn fn_stream_set_chunk_size(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let id = stream_id(host, args, "stream_set_chunk_size")?;
-    let size = int_param(host, args, 1, "stream_set_chunk_size", "size", 0)?;
-    if size <= 0 {
-        return Err(Thrown::error(
-            "ValueError",
-            "stream_set_chunk_size(): Argument #2 ($size) must be greater than 0",
-        ));
-    }
-    let old = CHUNK_SIZES.with(|c| c.borrow_mut().insert(id, size).unwrap_or(8192));
-    Ok(Value::Int(old))
-}
-
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: Option<usize>| {
         m.insert(
@@ -1079,18 +1047,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put("readline", fn_readline, 0, Some(1));
     put("readline_add_history", fn_readline_add_history, 1, Some(1));
     put("readline_clear_history", fn_true, 0, Some(0));
-    put(
-        "stream_set_read_buffer",
-        fn_stream_set_read_buffer,
-        2,
-        Some(2),
-    );
-    put(
-        "stream_set_chunk_size",
-        fn_stream_set_chunk_size,
-        2,
-        Some(2),
-    );
     put("__stdext_deprecated", fn_stdext_deprecated, 1, Some(1));
     put("__stdext_warning", fn_stdext_warning, 1, Some(1));
 }

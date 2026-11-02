@@ -1,0 +1,93 @@
+resource(5) of type (stream)
+int(0)
+string(0) ""
+string(6) "stream"
+string(14) "127.0.0.1:PORT"
+bool(false)
+array(8) {
+  ["timed_out"]=>
+  bool(false)
+  ["blocked"]=>
+  bool(true)
+  ["eof"]=>
+  bool(false)
+  ["stream_type"]=>
+  string(14) "tcp_socket/ssl"
+  ["mode"]=>
+  string(2) "r+"
+  ["unread_bytes"]=>
+  int(0)
+  ["seekable"]=>
+  bool(false)
+  ["uri"]=>
+  string(17) "tcp://127.0.0.1:0"
+}
+resource(6) of type (stream)
+int(0)
+string(0) ""
+resource(7) of type (stream)
+string(14) "127.0.0.1:PORT"
+bool(true)
+string(14) "127.0.0.1:PORT"
+int(12)
+int(1)
+array(1) {
+  [7]=>
+  resource(7) of type (stream)
+}
+string(6) "hello
+"
+int(1)
+int(1)
+array(0) {
+}
+string(6) "world
+"
+int(1)
+array(1) {
+  [0]=>
+  int(3)
+}
+int(0)
+array(0) {
+}
+bool(true)
+string(0) ""
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+string(14) "tcp_socket/ssl"
+string(2) "r+"
+bool(false)
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+string(3) "abc"
+bool(false)
+string(4) "0123"
+string(6) "456789"
+bool(true)
+string(0) ""
+bool(true)
+bool(true)
+int(14)
+string(14) "still writable"
+bool(false)
+bool(true)
+bool(true)
+resource(10) of type (stream)
+int(0)
+string(0) ""
+string(5) "pong
+"
+bool(true)
+int(1)
+int(1)
+string(14) "127.0.0.1:PORT"
+string(6) "async
+"
+bool(false)
+string(7) "Unknown"

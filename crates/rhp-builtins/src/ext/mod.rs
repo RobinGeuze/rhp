@@ -27,6 +27,7 @@ pub mod phar;
 pub mod posix;
 pub mod reflection;
 pub mod simplexml;
+pub mod sockets;
 pub mod spl;
 pub mod tokenizer;
 pub mod xml;
@@ -35,6 +36,13 @@ pub mod xmlwriter;
 pub mod zip;
 pub mod zlib;
 pub mod zpp;
+
+/// Objects of the extension classes that install
+/// `zend_objects_not_comparable` (curl handles, `Socket`): the predicate
+/// behind [`rhp_semantics::ops::set_not_comparable_hook`].
+pub(crate) fn not_comparable_object(h: &rhp_values::ObjectHandle) -> bool {
+    curl::is_curl_object(h) || sockets::is_socket_object(h)
+}
 
 /// Every discrete extension, in registration order.
 pub fn modules() -> Vec<ModuleDef> {
@@ -212,6 +220,13 @@ pub fn modules() -> Vec<ModuleDef> {
             functions: xmlwriter::register,
             constants: no_constants,
             prelude_php: xmlwriter::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
+        ModuleDef {
+            name: "sockets",
+            functions: sockets::register,
+            constants: sockets::constants,
+            prelude_php: sockets::PRELUDE_PHP,
             wrappers: no_wrappers,
         },
     ]

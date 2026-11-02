@@ -978,7 +978,7 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         let item = deref(item);
         let (childend, parentend, kind) = match &item {
             Value::Resource(r) => {
-                if r.type_name != "stream" {
+                if r.type_name != "stream" && r.type_name != "persistent stream" {
                     return Err(Thrown::type_error(
                         "proc_open(): supplied resource is not a valid stream resource",
                     ));
@@ -1155,6 +1155,10 @@ fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
     }
     let mut max_fd: RawFd = 0;
     let mut nsets = 0;
+    // php's `php_stream_from_zval_no_verify` on an element that is not a
+    // stream raises a TypeError but carries on: the select still runs (and
+    // rewrites the arrays) before the exception surfaces.
+    let mut pending: Option<Thrown> = None;
     for (i, a) in arrays.iter().enumerate() {
         if let Some(a) = a {
             for (_, el) in a.iter() {
@@ -1165,6 +1169,12 @@ fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
                         max_fd = max_fd.max(fd);
                         nsets += 1;
                     }
+                } else if !matches!(el, Value::Resource(_)) {
+                    pending.get_or_insert_with(|| {
+                        Thrown::type_error(
+                            "stream_select(): supplied argument is not a valid stream resource",
+                        )
+                    });
                 } else if let Some(m) = host.stream_meta(&el) {
                     crate::warn(
                         host,
@@ -1174,10 +1184,18 @@ fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
                             m.stream_type
                         ),
                     )?;
+                } else {
+                    // A closed stream or another kind of resource.
+                    pending.get_or_insert_with(|| {
+                        Thrown::type_error(
+                            "stream_select(): supplied resource is not a valid stream resource",
+                        )
+                    });
                 }
             }
         }
     }
+    // (php chains the TypeError as the ValueError's previous exception.)
     if nsets == 0 {
         return Err(Thrown::error("ValueError", "No stream arrays were passed"));
     }
@@ -1227,22 +1245,26 @@ fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
                     write_ref(args.get(i), Value::Array(PhpArray::new()));
                 }
             }
-            return Ok(Value::Int(n));
+            return pending.map_or(Ok(Value::Int(n)), Err);
         }
     }
 
     let (rp, rest) = sets.split_at_mut(1);
     let (wp, ep) = rest.split_at_mut(1);
-    let n = loop {
-        let n = unsafe { libc::select(max_fd + 1, &mut rp[0], &mut wp[0], &mut ep[0], tvp) };
-        if n == -1 && errno() == libc::EINTR && tvp.is_null() {
-            continue;
-        }
-        break n;
-    };
+    // No retry on EINTR: php reports an interrupted select (a signal
+    // arrived) as a warning and false, so the handler runs right after.
+    let n = unsafe { libc::select(max_fd + 1, &mut rp[0], &mut wp[0], &mut ep[0], tvp) };
     if n == -1 {
-        // php: "Unable to select [%d]: %s (max_fd=%d)"
-        return Ok(Value::Bool(false));
+        let e = errno();
+        crate::warn(
+            host,
+            "stream_select",
+            &format!(
+                "Unable to select [{e}]: {} (max_fd={max_fd})",
+                crate::streams::strerror(e)
+            ),
+        )?;
+        return pending.map_or(Ok(Value::Bool(false)), Err);
     }
     for (i, a) in arrays.iter().enumerate() {
         let Some(a) = a else { continue };
@@ -1256,7 +1278,7 @@ fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         }
         write_ref(args.get(i), Value::Array(kept));
     }
-    Ok(Value::Int(n as i64))
+    pending.map_or(Ok(Value::Int(n as i64)), Err)
 }
 
 /// `stream_isatty($stream)`: isatty(2) on the stream's fd.

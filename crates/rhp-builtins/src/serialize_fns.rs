@@ -147,7 +147,10 @@ impl Serializer {
     ) -> Result<(), Thrown> {
         let class_id = h.borrow().class;
         let mut cname = host.class_name(class_id).unwrap_or_default();
-        if host.not_serializable(class_id) || cname.eq_ignore_ascii_case(b"Generator") {
+        if host.not_serializable(class_id)
+            || cname.eq_ignore_ascii_case(b"Generator")
+            || crate::is_opaque_handle_class(&cname)
+        {
             return Err(Thrown::error(
                 "Exception",
                 format!(
@@ -621,7 +624,7 @@ impl<'a> Parser<'a, '_> {
         let (obj, has_unserialize, has_wakeup) = match cid {
             Some(cid) => {
                 let name = self.host.class_name(cid).unwrap_or_else(|| cname.clone());
-                if self.host.not_serializable(cid) {
+                if self.host.not_serializable(cid) || crate::is_opaque_handle_class(&name) {
                     return Err(Thrown::error(
                         "Exception",
                         format!(

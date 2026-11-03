@@ -1,9 +1,8 @@
-//! AST → bytecode compiler (Phase-1 subset).
+//! AST → bytecode compiler.
 //!
-//! Lowers a `rhp_frontend::ParsedFile` into a `rhp_bytecode::Program`.
-//! Owns the **structural refusals** (eval/include/backticks/`(unset)`-cast,
-//! variable-variable writes): those nodes never produce an opcode — the
-//! compiler returns `Err(Thrown::Unsupported)` at compile time (§4 of the spec).
+//! Lowers a parsed `rhp_frontend` program into a `rhp_bytecode::Program`.
+//! A construct rhp does not implement yet never produces an opcode: the
+//! compiler returns `Err(Thrown::Unsupported)` for the whole file.
 //!
 //! Register model (spec §2.2): a pre-pass assigns one CV register per named
 //! `$var` so CVs occupy `[0, num_cvs)`; temporaries bump above and are freed at
@@ -759,6 +758,7 @@ fn compile_program(
 ) -> Result<Program, Thrown> {
     COMPILE_FATAL.with(|f| *f.borrow_mut() = None);
     let r = compile_program_inner(program, source, file, with_prelude);
+    clear_file_state();
     // A recorded compile error came first in source order (compilation stops
     // at the first one in php), so it wins over a later refusal too.
     match COMPILE_FATAL.with(|f| f.borrow_mut().take()) {
@@ -768,6 +768,24 @@ fn compile_program(
         }
         None => r,
     }
+}
+
+/// Drop the per-file compiler state, so a thread does not keep the last
+/// compiled file's source, tokens and tables alive (an error return can
+/// also leave the class and closure sinks filled).
+fn clear_file_state() {
+    SRC_BYTES.with(|b| std::mem::take(&mut *b.borrow_mut()));
+    DOC_SRC.with(|d| *d.borrow_mut() = (Rc::new(Vec::new()), None));
+    LINE_STARTS.with(|l| std::mem::take(&mut *l.borrow_mut()));
+    METHOD_REF.with(|m| std::mem::take(&mut *m.borrow_mut()));
+    NS_CTX.with(|c| *c.borrow_mut() = Rc::new(NsContext::default()));
+    SRC_FILE.with(|f| std::mem::take(&mut *f.borrow_mut()));
+    STRICT_TYPES.with(|s| *s.borrow_mut() = false);
+    IN_TRAIT.with(|t| *t.borrow_mut() = false);
+    IN_INTERFACE.with(|i| *i.borrow_mut() = false);
+    CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    ANON_CLASSES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    COND_CLASSES.with(|c| std::mem::take(&mut *c.borrow_mut()));
 }
 
 fn compile_program_inner(
@@ -3407,7 +3425,7 @@ impl ProtoBuilder {
             other => {
                 return Err(Thrown::unsupported(
                     format!("{} statement", stmt_kind(other)),
-                    "not implemented in the phase-1 compiler",
+                    "not implemented",
                 ))
             }
         }
@@ -4232,7 +4250,7 @@ impl ProtoBuilder {
             Expression::MagicConstant(mc) => self.compile_magic_const(mc),
             other => Err(Thrown::unsupported(
                 format!("{} expression", expr_kind(other)),
-                "not implemented in the phase-1 compiler",
+                "not implemented",
             )),
         }
     }
@@ -4499,12 +4517,7 @@ impl ProtoBuilder {
                     "removed/refused in PHP 8",
                 ))
             }
-            Op::Reference(_) => {
-                return Err(Thrown::unsupported(
-                    "& reference",
-                    "references arrive in phase 6",
-                ))
-            }
+            Op::Reference(_) => return Err(Thrown::unsupported("& reference", "not implemented")),
             Op::ErrorControl(_) => {
                 self.emit(Instr::BeginSilence);
                 let a = self.compile_expr(u.operand)?;

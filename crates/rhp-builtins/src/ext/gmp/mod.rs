@@ -1162,7 +1162,13 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
 pub const PRELUDE_PHP: &str = r#"
 class GMP {
     public $num = "0";
-    public function __construct($num = 0) { $this->num = (string)$num; }
+    public function __construct(int|string $num = 0, int $base = 0) {
+        try {
+            $this->num = gmp_strval(gmp_init($num, $base));
+        } catch (\ValueError $e) {
+            throw new \ValueError(str_replace('gmp_init()', 'GMP::__construct()', $e->getMessage()));
+        }
+    }
     public function __toString() { return (string)$this->num; }
 }
 "#;

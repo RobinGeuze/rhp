@@ -442,8 +442,10 @@ fn fn_touch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(ok))
 }
 
-fn fn_true1(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(true))
+/// `clearstatcache(): void`. rhp keeps no stat or realpath cache, so both
+/// parameters have nothing to clear.
+fn fn_clearstatcache(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Null)
 }
 
 fn fn_chmod(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -555,7 +557,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         1,
         Some(1),
     );
-    put(m, "clearstatcache", fn_true1, 0, Some(2));
+    put(m, "clearstatcache", fn_clearstatcache, 0, Some(2));
     put(m, "readlink", fn_readlink, 1, Some(1));
     put(m, "symlink", fn_symlink, 2, Some(2));
     put(m, "disk_free_space", fn_disk_free_space, 1, Some(1));

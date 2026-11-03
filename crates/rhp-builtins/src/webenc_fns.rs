@@ -449,45 +449,13 @@ fn utf8_next(s: &[u8], pos: usize) -> Result<usize, usize> {
 /// (up to and excluding `;`), as php_escape_html_entities_ex accepts it.
 fn existing_entity_len(s: &[u8], doctype: i64, flags: i64) -> Option<usize> {
     if s.first() == Some(&b'#') {
-        // process_numeric_entity: ZEND_STRTOL (which also takes a "0x"
-        // prefix in base 16) up to a ';', at most 0x10FFFF
-        let hex = matches!(s.get(1), Some(b'x' | b'X'));
-        let mut j = if hex { 2 } else { 1 };
-        let digit = |c: u8| {
-            if hex {
-                c.is_ascii_hexdigit()
-            } else {
-                c.is_ascii_digit()
-            }
-        };
-        if !s.get(j).copied().is_some_and(digit) {
-            return None;
-        }
-        if hex
-            && s.get(j) == Some(&b'0')
-            && matches!(s.get(j + 1), Some(b'x' | b'X'))
-            && s.get(j + 2).is_some_and(|c| c.is_ascii_hexdigit())
-        {
-            j += 2;
-        }
-        let start = j;
-        while j < s.len() && digit(s[j]) {
-            j += 1;
-        }
-        if s.get(j) != Some(&b';') {
-            return None;
-        }
-        let digits = std::str::from_utf8(&s[start..j]).ok()?;
-        let v = u64::from_str_radix(digits, if hex { 16 } else { 10 }).unwrap_or(u64::MAX);
-        if v > 0x10FFFF {
-            return None;
-        }
+        let (v, semi) = process_numeric_entity(&s[1..])?;
         if flags & ENT_HTML_SUBSTITUTE_DISALLOWED_CHARS != 0
-            && !numeric_entity_is_allowed(v as u32, doctype)
+            && !numeric_entity_is_allowed(v, doctype)
         {
             return None;
         }
-        return Some(j);
+        return Some(semi + 1);
     }
     let n = s.iter().take_while(|b| b.is_ascii_alphanumeric()).count();
     if n == 0 || s.get(n) != Some(&b';') {
@@ -503,8 +471,44 @@ fn existing_entity_len(s: &[u8], doctype: i64, flags: i64) -> Option<usize> {
     known.then_some(n)
 }
 
-/// php_escape_html_entities_ex with all=0 (htmlspecialchars).
-fn html_escape_flags(s: &[u8], flags: i64, double_encode: bool, cs: Charset) -> Vec<u8> {
+/// CHARSET_PARTIAL_SUPPORT: the multibyte charsets other than UTF-8, for
+/// which htmlentities only substitutes the basic entities.
+fn charset_partial_support(cs: Charset) -> bool {
+    matches!(
+        cs,
+        Charset::Big5 | Charset::Gb2312 | Charset::Big5Hkscs | Charset::Sjis | Charset::EucJp
+    )
+}
+
+/// The HTML 4.01 entity name of a code point (entity_ms_table_html4).
+fn html4_entity_for(cp: u32) -> Option<&'static [u8]> {
+    use std::sync::OnceLock;
+    static MAP: OnceLock<HashMap<u32, &'static [u8]>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        let mut m = HashMap::new();
+        for (name, bytes) in NAMED_ENTITIES {
+            m.entry(utf8_cp(bytes)).or_insert(*name);
+        }
+        m.insert(0x27, b"#039".as_slice());
+        m
+    })
+    .get(&cp)
+    .copied()
+}
+
+/// The code point of the single UTF-8 character `b`.
+fn utf8_cp(b: &[u8]) -> u32 {
+    std::str::from_utf8(b)
+        .ok()
+        .and_then(|s| s.chars().next())
+        .map_or(0, |c| c as u32)
+}
+
+/// php_escape_html_entities_ex: htmlspecialchars (`all` false) and
+/// htmlentities (`all` true, already limited by LIMIT_ALL). With `all`, the
+/// caller has ruled out the HTML 5 table and the single-byte charsets whose
+/// Unicode mapping rhp lacks.
+fn html_escape_flags(s: &[u8], flags: i64, double_encode: bool, cs: Charset, all: bool) -> Vec<u8> {
     let doctype = flags & ENT_HTML_DOC_TYPE_MASK;
     let replacement: &[u8] = if cs == Charset::Utf8 {
         b"\xEF\xBF\xBD"
@@ -527,40 +531,54 @@ fn html_escape_flags(s: &[u8], flags: i64, double_encode: bool, cs: Charset) -> 
                 return Vec::new();
             }
         };
-        match ch {
-            0x26 => {
-                if !double_encode {
-                    if let Some(len) = existing_entity_len(&s[i + 1..], doctype, flags) {
-                        out.extend_from_slice(&s[i..i + len + 2]);
-                        i += len + 2;
-                        continue;
-                    }
-                }
-                out.extend_from_slice(b"&amp;");
-            }
-            0x3C => out.extend_from_slice(b"&lt;"),
-            0x3E => out.extend_from_slice(b"&gt;"),
-            0x22 if flags & ENT_HTML_QUOTE_DOUBLE != 0 => out.extend_from_slice(b"&quot;"),
-            0x27 if flags & ENT_HTML_QUOTE_SINGLE != 0 => {
-                if doctype == ENT_HTML_DOC_HTML401 {
-                    out.extend_from_slice(b"&#039;")
-                } else {
-                    out.extend_from_slice(b"&apos;")
+        if ch == 0x26 {
+            if !double_encode {
+                if let Some(len) = existing_entity_len(&s[i + 1..], doctype, flags) {
+                    out.extend_from_slice(&s[i..i + len + 2]);
+                    i += len + 2;
+                    continue;
                 }
             }
-            0x22 | 0x27 => out.push(ch as u8),
-            _ => {
-                let disallowed = flags & ENT_HTML_SUBSTITUTE_DISALLOWED_CHARS != 0
-                    && match cs {
-                        Charset::Utf8 | Charset::Latin1 => !unicode_cp_is_allowed(ch, doctype),
-                        // no tables: only the C0 range is known to be Unicode
-                        _ => ch <= 0x7D && !unicode_cp_is_allowed(ch, doctype),
-                    };
-                if disallowed {
-                    out.extend_from_slice(replacement);
-                } else {
-                    out.extend_from_slice(&s[i..i + n]);
-                }
+            out.extend_from_slice(b"&amp;");
+            i += n;
+            continue;
+        }
+        if (ch == 0x27 && flags & ENT_HTML_QUOTE_SINGLE == 0)
+            || (ch == 0x22 && flags & ENT_HTML_QUOTE_DOUBLE == 0)
+        {
+            out.extend_from_slice(&s[i..i + n]);
+            i += n;
+            continue;
+        }
+        let rep: Option<&[u8]> = if all {
+            html4_entity_for(ch)
+        } else {
+            match ch {
+                0x3C => Some(b"lt"),
+                0x3E => Some(b"gt"),
+                0x22 => Some(b"quot"),
+                0x27 if doctype == ENT_HTML_DOC_HTML401 => Some(b"#039"),
+                0x27 => Some(b"apos"),
+                _ => None,
+            }
+        };
+        if let Some(rep) = rep {
+            out.push(b'&');
+            out.extend_from_slice(rep);
+            out.push(b';');
+        } else {
+            let disallowed = flags & ENT_HTML_SUBSTITUTE_DISALLOWED_CHARS != 0
+                && match cs {
+                    Charset::Utf8 | Charset::Latin1 => !unicode_cp_is_allowed(ch, doctype),
+                    // mapped to Unicode (ASCII only here, see the caller)
+                    Charset::SingleByte if all => !unicode_cp_is_allowed(ch, doctype),
+                    // no tables: only the C0 range is known to be Unicode
+                    _ => ch <= 0x7D && !unicode_cp_is_allowed(ch, doctype),
+                };
+            if disallowed {
+                out.extend_from_slice(replacement);
+            } else {
+                out.extend_from_slice(&s[i..i + n]);
             }
         }
         i += n;
@@ -568,220 +586,267 @@ fn html_escape_flags(s: &[u8], flags: i64, double_encode: bool, cs: Charset) -> 
     out
 }
 
-fn fn_htmlspecialchars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+/// php_html_entities: the shared body of htmlspecialchars and htmlentities.
+fn html_entities(
+    host: &mut dyn Host,
+    args: &[Value],
+    fname: &str,
+    all: bool,
+) -> Result<Value, Thrown> {
     let s = bytes_of(&args[0]);
     let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(11);
     let cs = match args.get(2).map(deref) {
         None | Some(Value::Null) => Charset::Utf8,
-        Some(v) => determine_charset(host, "htmlspecialchars", &conv::to_string_bytes(&v))?,
+        Some(v) => determine_charset(host, fname, &conv::to_string_bytes(&v))?,
     };
     let double_encode = args
         .get(3)
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(true);
-    if flags == 11 && double_encode && cs == Charset::Utf8 && std::str::from_utf8(&s).is_ok() {
+    if s.is_empty() {
+        return Ok(Value::str(""));
+    }
+    let doctype = flags & ENT_HTML_DOC_TYPE_MASK;
+    let mut all = all;
+    if all {
+        if charset_partial_support(cs) {
+            crate::notice(
+                host,
+                fname,
+                "Only basic entities substitution is supported for multi-byte encodings other than UTF-8; functionality is equivalent to htmlspecialchars",
+            )?;
+        }
+        all = !charset_partial_support(cs) && doctype != ENT_HTML_DOC_XML1;
+    }
+    if all && doctype == ENT_HTML_DOC_HTML5 {
+        return Err(Thrown::unsupported(
+            format!("{fname}() with ENT_HTML5"),
+            "the HTML 5 entity table is not implemented",
+        ));
+    }
+    if all && cs == Charset::SingleByte && s.iter().any(|&b| b >= 0x80) {
+        return Err(Thrown::unsupported(
+            format!("{fname}() for this charset"),
+            "its Unicode mapping is not implemented",
+        ));
+    }
+    if !all
+        && flags == 11
+        && double_encode
+        && cs == Charset::Utf8
+        && std::str::from_utf8(&s).is_ok()
+    {
         return Ok(Value::str(html_escape(&s)));
     }
-    Ok(Value::str(html_escape_flags(&s, flags, double_encode, cs)))
+    Ok(Value::str(html_escape_flags(
+        &s,
+        flags,
+        double_encode,
+        cs,
+        all,
+    )))
 }
 
-/// `htmlspecialchars_decode`: reverses ONLY the htmlspecialchars entities.
-/// Default ENT_QUOTES|ENT_HTML401 → `&amp; &lt; &gt; &quot; &#039; &#39;`
-/// (note: `&apos;` is NOT decoded — it is an HTML5 entity).
-fn fn_htmlspecialchars_decode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
-    // longest-match-first, single left-to-right pass (no re-scan of output).
-    const PAIRS: &[(&[u8], u8)] = &[
-        (b"&amp;", b'&'),
-        (b"&lt;", b'<'),
-        (b"&gt;", b'>'),
-        (b"&quot;", b'"'),
-        (b"&#039;", b'\''),
-        (b"&#39;", b'\''),
-    ];
-    let mut out = Vec::with_capacity(s.len());
-    let mut i = 0;
-    'outer: while i < s.len() {
-        if s[i] == b'&' {
-            for (pat, rep) in PAIRS {
-                if s[i..].starts_with(pat) {
-                    out.push(*rep);
-                    i += pat.len();
-                    continue 'outer;
-                }
-            }
+fn fn_htmlspecialchars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    html_entities(host, args, "htmlspecialchars", false)
+}
+
+fn fn_htmlentities(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    html_entities(host, args, "htmlentities", true)
+}
+
+/// process_numeric_entity on the text after `&#`: the code point and the
+/// index of the closing `;`. ZEND_STRTOL in base 16 also takes a `0x` prefix.
+fn process_numeric_entity(s: &[u8]) -> Option<(u32, usize)> {
+    let hex = matches!(s.first(), Some(b'x' | b'X'));
+    let mut j = usize::from(hex);
+    let digit = |c: u8| {
+        if hex {
+            c.is_ascii_hexdigit()
+        } else {
+            c.is_ascii_digit()
         }
-        out.push(s[i]);
-        i += 1;
+    };
+    if !s.get(j).copied().is_some_and(digit) {
+        return None;
     }
-    Ok(Value::str(out))
+    if hex
+        && s.get(j) == Some(&b'0')
+        && matches!(s.get(j + 1), Some(b'x' | b'X'))
+        && s.get(j + 2).is_some_and(|c| c.is_ascii_hexdigit())
+    {
+        j += 2;
+    }
+    let start = j;
+    while j < s.len() && digit(s[j]) {
+        j += 1;
+    }
+    if s.get(j) != Some(&b';') {
+        return None;
+    }
+    let digits = std::str::from_utf8(&s[start..j]).ok()?;
+    let v = u64::from_str_radix(digits, if hex { 16 } else { 10 }).unwrap_or(u64::MAX);
+    (v <= 0x10FFFF).then_some((v as u32, j))
 }
 
-/// Reverse of [`NAMED_ENTITIES`]: UTF-8 byte sequence → canonical HTML 4.01
-/// entity name. First-wins over the decode table, so the 5 base entities
-/// (`quot`/`amp`/`lt`/`gt`) take their single-byte code points.
-fn entity_rev_map() -> &'static std::collections::HashMap<&'static [u8], &'static [u8]> {
-    use std::sync::OnceLock;
-    static MAP: OnceLock<std::collections::HashMap<&'static [u8], &'static [u8]>> = OnceLock::new();
-    MAP.get_or_init(|| {
-        let mut m = std::collections::HashMap::new();
-        for (name, bytes) in NAMED_ENTITIES {
-            m.entry(*bytes).or_insert(*name);
+/// resolve_named_entity_html against unescape_inverse_map(all, flags).
+fn resolve_named_entity(name: &[u8], all: bool, doctype: i64) -> Option<u32> {
+    let basic = |name: &[u8], apos: bool| match name {
+        b"amp" => Some(0x26),
+        b"lt" => Some(0x3C),
+        b"gt" => Some(0x3E),
+        b"quot" => Some(0x22),
+        b"apos" if apos => Some(0x27),
+        _ => None,
+    };
+    match (all, doctype) {
+        (true, ENT_HTML_DOC_HTML401 | ENT_HTML_DOC_XHTML) => NAMED_ENTITIES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, b)| utf8_cp(b)),
+        (true, _) => basic(name, true),
+        (false, ENT_HTML_DOC_HTML401) => basic(name, false),
+        (false, _) => basic(name, true),
+    }
+}
+
+/// map_from_unicode for a non-UTF-8 output charset: `Ok(None)` when the code
+/// point has no byte there. The single-byte tables beyond ASCII are missing.
+fn map_from_unicode(code: u32, cs: Charset, fname: &str) -> Result<Option<u8>, Thrown> {
+    Ok(match cs {
+        Charset::Utf8 | Charset::Latin1 => (code <= 0xFF).then_some(code as u8),
+        Charset::SingleByte if code < 0x7F => Some(code as u8),
+        Charset::SingleByte => {
+            return Err(Thrown::unsupported(
+                format!("{fname}() for this charset"),
+                "its Unicode mapping is not implemented",
+            ))
         }
-        m
+        Charset::Sjis | Charset::EucJp => {
+            ((0x20..=0x7D).contains(&code) && code != 0x5C).then_some(code as u8)
+        }
+        Charset::Big5 | Charset::Big5Hkscs | Charset::Gb2312 => {
+            (0x20..=0x7D).contains(&code).then_some(code as u8)
+        }
     })
 }
 
-/// Encode one run of valid UTF-8, replacing each code point that has an HTML 4.01
-/// named entity with `&name;`. The single quote has no HTML 4.01 named entity, so
-/// under the php 8.1+ default (ENT_QUOTES) it becomes `&#039;`.
-fn entity_encode_str(s: &str, out: &mut Vec<u8>) {
-    let map = entity_rev_map();
-    let mut buf = [0u8; 4];
-    for ch in s.chars() {
-        if ch == '\'' {
-            out.extend_from_slice(b"&#039;");
-            continue;
-        }
-        let bytes = ch.encode_utf8(&mut buf).as_bytes();
-        if let Some(name) = map.get(bytes) {
-            out.push(b'&');
-            out.extend_from_slice(name);
-            out.push(b';');
-        } else {
-            out.extend_from_slice(bytes);
-        }
+/// php_unescape_html_entities / traverse_for_entities: html_entity_decode
+/// (`all`) and htmlspecialchars_decode.
+fn unescape_html(
+    s: &[u8],
+    all: bool,
+    flags: i64,
+    cs: Charset,
+    fname: &str,
+) -> Result<Vec<u8>, Thrown> {
+    if !s.contains(&b'&') {
+        return Ok(s.to_vec());
     }
-}
-
-/// `htmlentities`: like `htmlspecialchars` but every code point with an HTML 4.01
-/// named entity is converted (`é` → `&eacute;`, `€` → `&euro;`, …), not just the
-/// 5 base characters. Input is treated as UTF-8 (the php 8.x default charset);
-/// malformed byte sequences are substituted with U+FFFD, matching the php 8.1+
-/// default `ENT_SUBSTITUTE`. The full HTML 4.01 named-entity set is covered via
-/// the shared [`NAMED_ENTITIES`] table (not just the Latin-1 range).
-fn fn_htmlentities(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let input = bytes_of(&args[0]);
-    let mut out = Vec::with_capacity(input.len());
-    let mut i = 0;
-    while i < input.len() {
-        match std::str::from_utf8(&input[i..]) {
-            Ok(valid) => {
-                entity_encode_str(valid, &mut out);
-                break;
-            }
-            Err(e) => {
-                let good = e.valid_up_to();
-                if good > 0 {
-                    // SAFETY: bytes 0..good validated by from_utf8 above.
-                    entity_encode_str(std::str::from_utf8(&input[i..i + good]).unwrap(), &mut out);
-                    i += good;
-                }
-                out.extend_from_slice(&[0xEF, 0xBF, 0xBD]); // U+FFFD
-                match e.error_len() {
-                    Some(n) => i += n,
-                    None => break, // truncated sequence at end of input
-                }
-            }
-        }
+    let doctype = flags & ENT_HTML_DOC_TYPE_MASK;
+    if all && doctype == ENT_HTML_DOC_HTML5 {
+        return Err(Thrown::unsupported(
+            format!("{fname}() with ENT_HTML5"),
+            "the HTML 5 entity table is not implemented",
+        ));
     }
-    Ok(Value::str(out))
-}
-
-/// Is a unicode scalar permitted as a numeric entity target (UTF-8, HTML401)?
-/// Matches php's `unicode_cp_is_allowed`: tab/LF/CR, 0x20..0x7E, and
-/// 0xA0..=0x10FFFF excluding the UTF-16 surrogate range.
-fn cp_allowed(cp: u32) -> bool {
-    matches!(cp, 0x09 | 0x0a | 0x0d)
-        || (0x20..=0x7e).contains(&cp)
-        || (0xa0..=0x10ffff).contains(&cp) && !(0xd800..=0xdfff).contains(&cp)
-}
-
-fn fn_html_entity_decode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
     let mut out = Vec::with_capacity(s.len());
     let mut i = 0;
     while i < s.len() {
-        if s[i] != b'&' {
-            out.push(s[i]);
-            i += 1;
-            continue;
+        let Some(off) = s[i..].iter().position(|&b| b == b'&') else {
+            out.extend_from_slice(&s[i..]);
+            break;
+        };
+        out.extend_from_slice(&s[i..i + off]);
+        i += off;
+        if s.len() - i < 4 {
+            out.extend_from_slice(&s[i..]);
+            break;
         }
-        // Try numeric: &#DDD; or &#xHH; / &#XHH; (semicolon required).
-        if i + 1 < s.len() && s[i + 1] == b'#' {
-            if let Some((cp, consumed)) = parse_numeric_entity(&s[i..]) {
-                if cp_allowed(cp) {
-                    push_utf8(&mut out, cp);
-                    i += consumed;
-                    continue;
-                }
-            }
+        // (code point, index of the closing ';')
+        let parsed = if s[i + 1] == b'#' {
+            process_numeric_entity(&s[i + 2..])
+                .map(|(code, semi)| (code, i + 2 + semi))
+                .filter(|&(code, _)| {
+                    if !all && !matches!(code, 0x22 | 0x26 | 0x27 | 0x3C | 0x3E) {
+                        return false;
+                    }
+                    unicode_cp_is_allowed(code, doctype)
+                        && !(doctype == ENT_HTML_DOC_HTML5 && code == 0x0D)
+                })
+        } else {
+            let name_start = i + 1;
+            let window = (s.len() - name_start).min(32);
+            s[name_start..name_start + window]
+                .iter()
+                .position(|&b| b == b';')
+                .filter(|&len| len > 0)
+                .and_then(|len| {
+                    let name = &s[name_start..name_start + len];
+                    let code = resolve_named_entity(name, all, doctype)
+                        .or((doctype == ENT_HTML_DOC_XHTML && name == b"apos").then_some(0x27))?;
+                    Some((code, name_start + len))
+                })
+        };
+        let Some((code, end)) = parsed else {
             out.push(b'&');
             i += 1;
             continue;
-        }
-        // Try a named entity (semicolon required). Longest match wins.
-        if let Some((bytes, consumed)) = match_named_entity(&s[i..]) {
-            out.extend_from_slice(bytes);
-            i += consumed;
+        };
+        // A complete entity left as is: copy up to the ';', which the next
+        // round copies as plain text.
+        let quote_kept = (code == 0x27 && flags & ENT_HTML_QUOTE_SINGLE == 0)
+            || (code == 0x22 && flags & ENT_HTML_QUOTE_DOUBLE == 0);
+        let byte = match cs {
+            _ if quote_kept => None,
+            Charset::Utf8 => None,
+            _ => map_from_unicode(code, cs, fname)?,
+        };
+        if quote_kept || (cs != Charset::Utf8 && byte.is_none()) {
+            out.extend_from_slice(&s[i..end]);
+            i = end;
             continue;
         }
-        out.push(b'&');
-        i += 1;
+        match byte {
+            Some(b) => out.push(b),
+            None => push_utf8(&mut out, code),
+        }
+        i = end + 1;
     }
-    Ok(Value::str(out))
+    Ok(out)
 }
 
-/// Parse `&#...;` at the start of `s`; returns (codepoint, bytes_consumed).
-fn parse_numeric_entity(s: &[u8]) -> Option<(u32, usize)> {
-    // s[0] == '&', s[1] == '#'
-    let mut j = 2;
-    let hex = j < s.len() && (s[j] == b'x' || s[j] == b'X');
-    if hex {
-        j += 1;
-    }
-    let digits_start = j;
-    let mut cp: u64 = 0;
-    while j < s.len() {
-        let d = if hex {
-            hex_val(s[j])
-        } else {
-            if s[j].is_ascii_digit() {
-                Some(s[j] - b'0')
-            } else {
-                None
-            }
-        };
-        match d {
-            Some(v) => {
-                cp = cp
-                    .saturating_mul(if hex { 16 } else { 10 })
-                    .saturating_add(v as u64);
-                j += 1;
-            }
-            None => break,
-        }
-    }
-    if j == digits_start || j >= s.len() || s[j] != b';' {
-        return None; // no digits, or missing terminating ';'
-    }
-    Some((cp.min(0x7fff_ffff) as u32, j + 1))
+fn fn_htmlspecialchars_decode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = bytes_of(&args[0]);
+    let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(11);
+    // php decodes as ISO-8859-1: the charset does not matter for the
+    // basic entities.
+    Ok(Value::str(unescape_html(
+        &s,
+        false,
+        flags,
+        Charset::Latin1,
+        "htmlspecialchars_decode",
+    )?))
 }
 
-/// Match a named entity `&name;` at the start of `s` (longest name wins).
-fn match_named_entity(s: &[u8]) -> Option<(&'static [u8], usize)> {
-    let mut best: Option<(&'static [u8], usize)> = None;
-    for (name, bytes) in NAMED_ENTITIES {
-        let full = name.len() + 2; // '&' + name + ';'
-        if s.len() >= full && s[0] == b'&' && &s[1..1 + name.len()] == *name && s[full - 1] == b';'
-        {
-            match best {
-                Some((_, blen)) if blen >= full => {}
-                _ => best = Some((*bytes, full)),
-            }
-        }
+fn fn_html_entity_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = bytes_of(&args[0]);
+    let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(11);
+    if !s.contains(&b'&') {
+        return Ok(Value::str(s));
     }
-    best
+    let cs = match args.get(2).map(deref) {
+        None | Some(Value::Null) => Charset::Utf8,
+        Some(v) => determine_charset(host, "html_entity_decode", &conv::to_string_bytes(&v))?,
+    };
+    Ok(Value::str(unescape_html(
+        &s,
+        true,
+        flags,
+        cs,
+        "html_entity_decode",
+    )?))
 }
 
 // ---------------------------------------------------------------------------

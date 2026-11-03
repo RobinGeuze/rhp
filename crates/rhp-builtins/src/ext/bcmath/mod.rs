@@ -526,6 +526,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "bccomp", fn_bccomp, 2, Some(3));
     put(m, "bcfloor", fn_bcfloor, 1, Some(1));
     put(m, "bcceil", fn_bcceil, 1, Some(1));
-    put(m, "bcround", fn_bcround, 1, Some(3));
+    // $mode takes a RoundingMode, which rhp lacks.
+    put(m, "bcround", fn_bcround, 1, Some(2));
     put(m, "bcscale", fn_bcscale, 0, Some(1));
 }

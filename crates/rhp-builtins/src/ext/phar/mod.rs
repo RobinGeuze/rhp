@@ -863,7 +863,8 @@ class PharData extends RecursiveDirectoryIterator implements Countable, ArrayAcc
         $e = $this->__entry($name);
         return PharFileInfo::__make($this->__dir . '/' . $e['name'], $this->__file, $e);
     }
-    public function count(): int { return count($this->__ents); }
+    // php parses $mode and ignores it.
+    public function count(int $mode = COUNT_NORMAL): int { return count($this->__ents); }
     public function offsetExists($localName): bool { return $this->__entry((string) $localName) !== null; }
     public function offsetGet($localName): PharFileInfo {
         if ($this->__entry((string) $localName) === null) {

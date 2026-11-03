@@ -105,12 +105,16 @@ fn deref(v: &Value) -> Value {
 
 fn fn_json_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    // php keeps `(int)$depth`.
+    let max_depth = args.get(2).map_or(512, |v| conv::to_int(&deref(v)) as i32);
     let mut out = Vec::new();
     set_last_error(JSON_ERROR_NONE);
     let mut enc = Encoder {
         flags,
         arrays: Vec::new(),
         objects: Vec::new(),
+        depth: 0,
+        max_depth,
     };
     // An exception thrown by a jsonSerialize() propagates; the encoder's own
     // error code then stays NONE.
@@ -142,15 +146,30 @@ fn indent(out: &mut Vec<u8>, level: usize) {
     }
 }
 
-/// php's `php_json_encoder`: the flags plus the containers being encoded
-/// (recursion protection).
+/// php's `php_json_encoder`: the flags, the containers being encoded
+/// (recursion protection) and the nesting depth against `$depth`.
 struct Encoder {
     flags: i64,
     arrays: Vec<usize>,
     objects: Vec<u32>,
+    depth: i32,
+    max_depth: i32,
 }
 
 impl Encoder {
+    /// Close one array or object level: php checks the depth after its
+    /// elements, so an empty container counts too.
+    fn leave_level(&mut self) -> bool {
+        if self.depth > self.max_depth {
+            set_last_error(JSON_ERROR_DEPTH);
+            if self.flags & JSON_PARTIAL_OUTPUT_ON_ERROR == 0 {
+                return false;
+            }
+        }
+        self.depth -= 1;
+        true
+    }
+
     /// A failure `code`: with JSON_PARTIAL_OUTPUT_ON_ERROR, `subst` is written
     /// in place of the value and encoding continues.
     fn fail(&self, code: i64, out: &mut Vec<u8>, subst: &[u8]) -> bool {
@@ -335,7 +354,11 @@ impl Encoder {
         pretty: bool,
     ) -> Result<bool, Thrown> {
         out.push(b'{');
+        self.depth += 1;
         if props.is_empty() {
+            if !self.leave_level() {
+                return Ok(false);
+            }
             out.push(b'}');
             return Ok(true);
         }
@@ -354,6 +377,9 @@ impl Encoder {
             if !self.value(host, val, out, level + 1)? {
                 return Ok(false);
             }
+        }
+        if !self.leave_level() {
+            return Ok(false);
         }
         if pretty {
             out.push(b'\n');
@@ -379,7 +405,11 @@ impl Encoder {
                 .all(|(i, (k, _))| matches!(k, ArrayKey::Int(n) if *n == i as i64));
         let (open, close) = if is_list { (b'[', b']') } else { (b'{', b'}') };
         out.push(open);
+        self.depth += 1;
         if a.is_empty() {
+            if !self.leave_level() {
+                return Ok(false);
+            }
             out.push(close);
             return Ok(true);
         }
@@ -404,6 +434,9 @@ impl Encoder {
             if !self.value(host, val, out, level + 1)? {
                 return Ok(false);
             }
+        }
+        if !self.leave_level() {
+            return Ok(false);
         }
         if pretty {
             out.push(b'\n');

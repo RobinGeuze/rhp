@@ -1866,7 +1866,27 @@ fn fn_fgetcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let sep = ch(2, b',').unwrap_or(b',');
     let enc = ch(3, b'"').unwrap_or(b'"');
     let esc = ch(4, b'\\');
-    let Some(mut buf) = host.stream_gets(&h) else {
+    // $length: the first line is read up to that many bytes (0 or null:
+    // the whole line); continuation lines are read whole.
+    let len = match args.get(1).map(deref) {
+        None | Some(Value::Null) => 0,
+        Some(v) => conv::to_int(&v),
+    };
+    if !(0..i64::MAX).contains(&len) {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "fgetcsv(): Argument #2 ($length) must be between 0 and {}",
+                i64::MAX - 1
+            ),
+        ));
+    }
+    let first = if len == 0 {
+        host.stream_gets(&h)
+    } else {
+        host.stream_gets_max(&h, len as usize)
+    };
+    let Some(mut buf) = first else {
         return Ok(Value::Bool(false));
     };
     // An enclosure left open at the end of the line continues on the next.
@@ -2047,7 +2067,7 @@ fn fn_stream_is_local(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
 }
 
 /// php_resolve_path() against the default include_path (".").
-fn resolve_include_path(name: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn resolve_include_path(name: &[u8]) -> Option<Vec<u8>> {
     if name.contains(&0) {
         return None;
     }

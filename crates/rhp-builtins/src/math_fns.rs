@@ -7,10 +7,8 @@
 //!
 //! Notes on fidelity:
 //! - `floor`/`ceil`/`round`/`sqrt`/trig/… always return `float`, as in PHP.
-//! - `round()` reproduces PHP's pre-rounding algorithm (the classic
-//!   `_php_math_round` with a 15-significant-digit pre-round) so that e.g.
-//!   `round(2.675, 2) == 2.68` and `round(1.55, 1) == 1.6`. Only the default
-//!   `PHP_ROUND_HALF_UP` (half away from zero) mode is implemented.
+//! - `round()` ports php 8.5's `_php_math_round` with every rounding mode
+//!   (RoundingMode itself is not implemented, its int values are).
 //! - `pow()` returns `int` only for an int base with a non-negative int
 //!   exponent that does not overflow `i64`; otherwise `float`.
 //! - `hexdec`/`bindec`/`octdec`/`base_convert` reproduce PHP's `_php_math_*`
@@ -52,22 +50,36 @@ fn fn_ceil(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_round(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
-    let value = f(&args[0]);
+    let value = deref(&args[0]);
     let places = args
         .get(1)
         .map(conv::to_int)
         .unwrap_or(0)
-        .clamp(i32::MIN as i64 + 1, i32::MAX as i64) as i32;
-    // 3rd arg (mode) is accepted for arity parity but only HALF_UP is modelled.
-    Ok(Value::Float(php_round(value, places)))
+        .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    let mode = args.get(2).map(conv::to_int).unwrap_or(PHP_ROUND_HALF_UP);
+    if !(1..=8).contains(&mode) {
+        return Err(Thrown::error(
+            "ValueError",
+            "round(): Argument #3 ($mode) must be a valid rounding mode (RoundingMode::*)",
+        ));
+    }
+    Ok(Value::Float(match value {
+        // A long that needs no rounding.
+        Value::Int(n) if places >= 0 => n as f64,
+        v => php_math_round(conv::to_float(&v), places, mode),
+    }))
 }
 
-/// `(int)floor(log10(|value|))`.
-fn php_intlog10abs(value: f64) -> i32 {
-    value.abs().log10().floor() as i32
-}
+// php_math_round_mode.h; 5..8 are reachable as ints too.
+const PHP_ROUND_HALF_UP: i64 = 1;
+const PHP_ROUND_HALF_DOWN: i64 = 2;
+const PHP_ROUND_HALF_EVEN: i64 = 3;
+const PHP_ROUND_HALF_ODD: i64 = 4;
+const PHP_ROUND_CEILING: i64 = 5;
+const PHP_ROUND_FLOOR: i64 = 6;
+const PHP_ROUND_TOWARD_ZERO: i64 = 7;
 
-/// `10^power` for `power >= 0`, using an exact small table like PHP.
+/// `php_intpow10`: an exact table for 0..=22, else C `pow`.
 fn php_intpow10(power: i32) -> f64 {
     const P: [f64; 23] = [
         1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
@@ -76,82 +88,104 @@ fn php_intpow10(power: i32) -> f64 {
     if (0..=22).contains(&power) {
         P[power as usize]
     } else {
-        10f64.powi(power)
+        10f64.powf(power as f64)
     }
 }
 
-/// Round half away from zero (PHP_ROUND_HALF_UP), matching `php_round_helper`.
-fn php_round_helper(value: f64) -> f64 {
-    if value >= 0.0 {
-        let mut t = (value + 0.5).floor();
-        if t - value > 0.5 {
-            t -= 1.0;
-        } else if t - value <= -0.5 {
-            t += 1.0;
+/// `php_round_helper`: round the integral part `integral` of `value`
+/// (scaled by `exponent`) in `mode`.
+fn php_round_helper(integral: f64, value: f64, exponent: f64, places: i32, mode: i64) -> f64 {
+    let scale = |x: f64| {
+        if places > 0 {
+            (x / exponent).abs()
+        } else {
+            (x * exponent).abs()
         }
-        t
-    } else {
-        let mut t = (value - 0.5).ceil();
-        if t - value < -0.5 {
-            t += 1.0;
-        } else if t - value >= 0.5 {
-            t -= 1.0;
+    };
+    let basic_edge = || scale(integral + 0.5f64.copysign(integral));
+    let zero_edge = || scale(integral);
+    let away = integral + 1f64.copysign(integral);
+    let value_abs = value.abs();
+    let even = || integral % 2.0 == 0.0;
+    match mode {
+        PHP_ROUND_HALF_UP if value_abs >= basic_edge() => away,
+        PHP_ROUND_HALF_DOWN if value_abs > basic_edge() => away,
+        PHP_ROUND_CEILING if value > 0.0 && value_abs > zero_edge() => integral + 1.0,
+        PHP_ROUND_FLOOR if value < 0.0 && value_abs > zero_edge() => integral - 1.0,
+        PHP_ROUND_HALF_EVEN | PHP_ROUND_HALF_ODD => {
+            let edge = basic_edge();
+            let odd_mode = mode == PHP_ROUND_HALF_ODD;
+            if value_abs > edge || (value_abs == edge && even() == odd_mode) {
+                away
+            } else {
+                integral
+            }
         }
-        t
+        PHP_ROUND_HALF_UP
+        | PHP_ROUND_HALF_DOWN
+        | PHP_ROUND_CEILING
+        | PHP_ROUND_FLOOR
+        | PHP_ROUND_TOWARD_ZERO => integral,
+        // PHP_ROUND_AWAY_FROM_ZERO
+        _ if value_abs > zero_edge() => away,
+        _ => integral,
     }
 }
 
-/// Port of PHP 8.x `_php_math_round` (default HALF_UP mode).
-fn php_round(value: f64, places: i32) -> f64 {
+/// Port of php 8.5's `_php_math_round`.
+fn php_math_round(value: f64, places: i32, mode: i64) -> f64 {
     if !value.is_finite() || value == 0.0 {
         return value;
     }
-
-    let precision_places = 14 - php_intlog10abs(value);
-    let f1 = php_intpow10(places.abs());
-    let mut tmp_value;
-
-    if precision_places > places && precision_places - 15 < places {
-        let use_precision = precision_places.max(-60); // -(4 * DBL_DIG)
-        let f2 = php_intpow10(use_precision.abs());
-        tmp_value = if use_precision >= 0 {
-            value * f2
-        } else {
-            value / f2
-        };
-        tmp_value = php_round_helper(tmp_value);
-
-        let use_precision = (places - use_precision).max(-60);
-        let f2 = php_intpow10(use_precision.abs());
-        tmp_value = if use_precision >= 0 {
-            tmp_value * f2
-        } else {
-            tmp_value / f2
-        };
-        tmp_value = php_round_helper(tmp_value);
-    } else {
-        tmp_value = if places >= 0 { value * f1 } else { value / f1 };
-        if tmp_value.abs() >= 1e15 {
-            return value;
-        }
-        tmp_value = php_round_helper(tmp_value);
+    if places == 0 && value == value.trunc() {
+        return value;
     }
-
+    let places = places.max(i32::MIN + 1);
+    let exponent = php_intpow10(places.abs());
+    let scaled = if places > 0 {
+        value * exponent
+    } else {
+        value / exponent
+    };
+    // The integral part may be one too small in magnitude through float
+    // error (0.285 * 1e10 = 2849999999.9999995): take the next one when it
+    // scales back to exactly `value`.
+    let (mut tmp, next) = if value >= 0.0 {
+        let t = scaled.floor();
+        (t, t + 1.0)
+    } else {
+        let t = scaled.ceil();
+        (t, t - 1.0)
+    };
+    let back = if places > 0 {
+        next / exponent
+    } else {
+        next * exponent
+    };
+    if back == value {
+        tmp = next;
+    }
+    // Beyond the precision: rounding is pointless.
+    if tmp.abs() >= 1e16 {
+        return value;
+    }
+    tmp = php_round_helper(tmp, value, exponent, places, mode);
     if places.abs() < 23 {
         if places > 0 {
-            tmp_value /= f1;
+            tmp / exponent
         } else {
-            tmp_value *= f1;
+            tmp * exponent
         }
     } else {
-        let s = format!("{:.15}e{}", tmp_value, -places);
-        tmp_value = s.parse().unwrap_or(value);
-        if !tmp_value.is_finite() || tmp_value == 0.0 {
-            tmp_value = value;
+        // snprintf("%15fe%d") then zend_strtod; php's snprintf prints no
+        // sign for -0.0.
+        let tmp = if tmp == 0.0 { 0.0 } else { tmp };
+        let s = format!("{tmp:15.6}e{}", -(places as i64));
+        match s.trim().parse::<f64>() {
+            Ok(v) if v.is_finite() => v,
+            _ => value,
         }
     }
-
-    tmp_value
 }
 
 // ---------------------------------------------------------------------------

@@ -72,6 +72,14 @@ fn fn_get_resource_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 }
 
 fn fn_stream_context_create(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // stream_context_set_params is not implemented: refuse params rather
+    // than drop them.
+    if matches!(args.get(1).map(deref), Some(Value::Array(p)) if !p.is_empty()) {
+        return Err(Thrown::unsupported(
+            "stream_context_create() argument #2 ($params)",
+            "not implemented",
+        ));
+    }
     let options = args
         .first()
         .map(deref)
@@ -188,10 +196,6 @@ fn fn_stream_get_wrappers(host: &mut dyn Host, _args: &[Value]) -> Result<Value,
     Ok(Value::Array(a))
 }
 
-fn fn_false(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(false))
-}
-
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     fn put(
         m: &mut HashMap<&'static str, Builtin>,
@@ -266,6 +270,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     );
     put(m, "set_file_buffer", fn_set_file_buffer, 2, Some(2));
     // TTY detection: `stream_isatty` lives with the process functions
-    // (proc_fns), `posix_isatty` in ext/posix.
-    put(m, "sapi_windows_vt100_support", fn_false, 1, Some(2));
+    // (proc_fns), `posix_isatty` in ext/posix. sapi_windows_vt100_support
+    // exists on Windows only.
 }

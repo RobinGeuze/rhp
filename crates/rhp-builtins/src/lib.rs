@@ -1254,7 +1254,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "boolval"        => fn_boolval, 1, Some(1);
             "strlen"         => fn_strlen, 1, Some(1);
             "count"          => fn_count, 1, Some(2);
-            "sizeof"         => fn_count, 1, Some(2);
+            "sizeof"         => fn_sizeof, 1, Some(2);
             "intdiv"         => fn_intdiv, 2, Some(2);
             "str_repeat"     => fn_str_repeat, 2, Some(2);
             "abs"            => fn_abs, 1, Some(1);
@@ -1692,6 +1692,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("ENT_DISALLOWED", Value::Int(128)),
         ("PHP_ROUND_HALF_UP", Value::Int(1)),
         ("PHP_ROUND_HALF_DOWN", Value::Int(2)),
+        ("PHP_ROUND_HALF_EVEN", Value::Int(3)),
+        ("PHP_ROUND_HALF_ODD", Value::Int(4)),
         ("ARRAY_FILTER_USE_KEY", Value::Int(2)),
         ("ARRAY_FILTER_USE_BOTH", Value::Int(1)),
         ("M_PI", Value::Float(std::f64::consts::PI)),
@@ -1970,6 +1972,12 @@ pub fn require_callback(
 fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
     let value = deref(&args[1]).clone();
+    if args.get(2).is_some_and(|v| conv::to_bool(&deref(v))) {
+        host.emit_diagnostic(
+            E_WARNING,
+            "define(): Argument #3 ($case_insensitive) is ignored since declaration of case-insensitive constants is no longer supported",
+        )?;
+    }
     Ok(Value::Bool(host.define_const(&name, value)))
 }
 
@@ -2132,8 +2140,55 @@ fn fn_strlen(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(conv::to_string_bytes(&args[0]).len() as i64))
 }
 
+/// php_count_recursive: an array met again through a reference warns
+/// "Recursion detected" and counts 0.
+fn count_recursive(
+    host: &mut dyn Host,
+    fname: &str,
+    a: &rhp_values::PhpArray,
+    seen: &mut Vec<usize>,
+) -> Result<i64, Thrown> {
+    if seen.contains(&a.data_ptr()) {
+        host.emit_diagnostic(E_WARNING, &format!("{fname}(): Recursion detected"))?;
+        return Ok(0);
+    }
+    seen.push(a.data_ptr());
+    let mut n = a.len() as i64;
+    for (_, v) in a.iter() {
+        if let Value::Array(sub) = deref(v) {
+            n += count_recursive(host, fname, &sub, seen)?;
+        }
+    }
+    seen.pop();
+    Ok(n)
+}
+
 fn fn_count(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    count_impl(host, args, "count")
+}
+
+/// sizeof() is count() under its own name, which its errors carry.
+fn fn_sizeof(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    count_impl(host, args, "sizeof")
+}
+
+fn count_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
+    let mode = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    if mode != 0 && mode != 1 {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "{fname}(): Argument #2 ($mode) must be either COUNT_NORMAL or COUNT_RECURSIVE"
+            ),
+        ));
+    }
     match deref(&args[0]) {
+        Value::Array(a) if mode == 1 => Ok(Value::Int(count_recursive(
+            host,
+            fname,
+            &a,
+            &mut Vec::new(),
+        )?)),
         Value::Array(a) => Ok(Value::Int(a.len() as i64)),
         // A Countable object: count($obj) calls $obj->count().
         obj @ Value::Object(_) => {
@@ -2147,12 +2202,13 @@ fn fn_count(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 let r = host.call_callable(&callable, &[])?;
                 return Ok(Value::Int(conv::to_int(&deref(&r))));
             }
-            Err(Thrown::type_error(
-                "count(): Argument #1 ($value) must be of type Countable|array, object given",
-            ))
+            Err(Thrown::type_error(format!(
+                "{fname}(): Argument #1 ($value) must be of type Countable|array, {} given",
+                argparse::value_name(host, &obj)
+            )))
         }
         other => Err(Thrown::type_error(format!(
-            "count(): Argument #1 ($value) must be of type Countable|array, {} given",
+            "{fname}(): Argument #1 ($value) must be of type Countable|array, {} given",
             other.type_name_lower()
         ))),
     }

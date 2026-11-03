@@ -28,9 +28,21 @@ const BODY_MIN: &[&str] = &[
     "array_uintersect_uassoc",
 ];
 
-/// A registration's arity is what its body implements. It must be php's:
-/// a lower maximum would refuse arguments php takes, a higher minimum would
-/// reject calls php accepts.
+/// Parameters php declares that the body does not implement yet: the
+/// registration's maximum stops before them, so such an argument is refused
+/// (RHP_UNSUPPORTED) instead of ignored.
+const NOT_IMPLEMENTED: &[(&str, usize)] = &[
+    // $mode: RoundingMode is not implemented.
+    ("bcround", 2),
+    // $flags: only the heading is printed.
+    ("phpcredits", 0),
+];
+
+/// A registration's arity is php's, except for the parameters listed in
+/// [`NOT_IMPLEMENTED`]: a lower maximum would refuse arguments php takes, a
+/// higher minimum would reject calls php accepts. That each body reads all
+/// of its registered parameters is not checked here; a body that ignores
+/// one must lower its maximum and be listed.
 #[test]
 fn registry_arity_matches_stubs() {
     let mut bad = Vec::new();
@@ -42,7 +54,13 @@ fn registry_arity_matches_stubs() {
             continue;
         };
         let min_ok = b.min_args == f.min_args() || BODY_MIN.contains(&name);
-        if !min_ok || b.max_args != f.max_args() {
+        let max_ok = match NOT_IMPLEMENTED.iter().find(|(n, _)| *n == name) {
+            Some(&(_, implemented)) => {
+                b.max_args == Some(implemented) && f.max_args().is_some_and(|m| m > implemented)
+            }
+            None => b.max_args == f.max_args(),
+        };
+        if !min_ok || !max_ok {
             bad.push(format!(
                 "{name}: registered {}..{:?}, stub {}..{:?}",
                 b.min_args,

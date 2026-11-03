@@ -216,6 +216,15 @@ pub fn wrappers() -> Vec<WrapperReg> {
     }]
 }
 
+/// `$use_include_path`: php_stream_open_wrapper's USE_PATH resolves the
+/// inner path when that file exists on the include path.
+fn include_path_arg(args: &[Value], i: usize, path: Vec<u8>) -> Vec<u8> {
+    if !args.get(i).is_some_and(|v| conv::to_bool(&deref(v))) {
+        return path;
+    }
+    crate::fs_fns::resolve_include_path(inner(&path)).unwrap_or(path)
+}
+
 fn zlib_url(path: &[u8]) -> Vec<u8> {
     if path.starts_with(SCHEME_PREFIX) {
         path.to_vec()
@@ -274,7 +283,7 @@ pub(crate) fn warn_open_failed(host: &mut dyn Host, func: &str, path: &[u8], mod
 }
 
 fn fn_gzopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = bytes_arg(args, 0);
+    let path = include_path_arg(args, 2, bytes_arg(args, 0));
     let mode = bytes_arg(args, 1);
     if mode.contains(&b'+') {
         host.raise_diagnostic(
@@ -319,7 +328,7 @@ fn fn_gzopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_gzfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = bytes_arg(args, 0);
+    let path = include_path_arg(args, 1, bytes_arg(args, 0));
     let Some(data) = host.stream_get_contents(&zlib_url(&path)) else {
         warn_open_failed(host, "gzfile", inner(&path), b"rb");
         return Ok(Value::Bool(false));
@@ -339,7 +348,7 @@ fn fn_gzfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_readgzfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = bytes_arg(args, 0);
+    let path = include_path_arg(args, 1, bytes_arg(args, 0));
     let Some(data) = host.stream_get_contents(&zlib_url(&path)) else {
         warn_open_failed(host, "readgzfile", inner(&path), b"rb");
         return Ok(Value::Bool(false));

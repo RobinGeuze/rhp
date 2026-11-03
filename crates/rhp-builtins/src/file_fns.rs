@@ -225,6 +225,17 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         let ctx = args.get(2).map(deref).unwrap_or(Value::Null);
         return Ok(crate::http::fetch(host, &url, &ctx));
     }
+    let use_include_path = args.get(1).is_some_and(|v| conv::to_bool(&deref(v)));
+    if !use_include_path {
+        if !reserve_file_read(&url, offset, maxlen) {
+            host.consume_resource_ids(1);
+            return Ok(Value::str(""));
+        }
+        if let Some(part) = read_file_part(&url, offset, maxlen) {
+            host.consume_resource_ids(1);
+            return Ok(part.map_or(Value::Bool(false), Value::str));
+        }
+    }
     crate::streams::clear_errno();
     match host.stream_get_contents(&url) {
         Some(bytes) => {
@@ -268,6 +279,75 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             Ok(Value::Bool(false))
         }
     }
+}
+
+/// A local path given without a scheme or as `file://`.
+fn plain_path(url: &[u8]) -> Option<&std::ffi::OsStr> {
+    use std::os::unix::ffi::OsStrExt;
+    match crate::streams::split_scheme(url) {
+        (b"file", p) => Some(std::ffi::OsStr::from_bytes(
+            p.strip_prefix(b"file://").unwrap_or(p),
+        )),
+        _ => None,
+    }
+}
+
+/// php_stream_copy_to_mem's first block for a plain file: the size left
+/// after the read position plus a chunk (at most `$length`), allocated
+/// fallibly. `false` when that crosses memory_limit (then recorded) and
+/// file_get_contents() returns "" without reading.
+fn reserve_file_read(url: &[u8], offset: i64, maxlen: Option<usize>) -> bool {
+    const CHUNK: usize = 8192;
+    if maxlen == Some(0) {
+        return true;
+    }
+    let Some(path) = plain_path(url) else {
+        return true;
+    };
+    // (A regular file php can open: stat before opening, a FIFO would block.)
+    let size = match std::fs::metadata(path) {
+        Ok(m) if m.is_file() && m.len() > 0 => m.len() as i64,
+        _ => return true,
+    };
+    if std::fs::File::open(path).is_err() {
+        return true;
+    }
+    let pos = if offset < 0 { size + offset } else { offset };
+    let mut len = (size - pos).max(0) as usize + CHUNK;
+    if let Some(m) = maxlen {
+        if m < 4 * CHUNK || len > m {
+            len = m;
+        }
+    }
+    rhp_values::mem::reserve_str(len)
+}
+
+/// file_get_contents() of part of a regular file (`$offset` or `$length`
+/// given): read only that part, as php does, not the whole file (which may
+/// be past memory_limit). `Some(None)`: a negative offset before the start
+/// (the seek fails). `None`: not a regular file, left to the wrapper.
+fn read_file_part(url: &[u8], offset: i64, maxlen: Option<usize>) -> Option<Option<Vec<u8>>> {
+    use std::io::{Read, Seek, SeekFrom};
+    if offset == 0 && maxlen.is_none() {
+        return None;
+    }
+    let path = plain_path(url)?;
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len() as i64;
+    // A plain file may be positioned past its end (reads nothing).
+    let start = match offset {
+        o if o < 0 && -o > len => return Some(None),
+        o if o < 0 => len + o,
+        o => o.min(len),
+    };
+    f.seek(SeekFrom::Start(start as u64)).ok()?;
+    let want = ((len - start) as usize).min(maxlen.unwrap_or(usize::MAX));
+    let mut out = Vec::with_capacity(want);
+    f.take(want as u64).read_to_end(&mut out).ok()?;
+    Some(Some(out))
 }
 
 fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

@@ -253,15 +253,28 @@ impl IniRules {
             .iter()
             .filter_map(|kv| kv.split_once('='))
             .collect();
-        let mut out = Vec::new();
+        // run-tests' settings2array: `name=value` lines only, both sides
+        // trimmed, the last value of a name kept.
+        let mut settings: Vec<(String, String)> = Vec::new();
         for line in String::from_utf8_lossy(body).lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
                 continue;
             }
             let line = substitute_ini(line, dir)?;
-            let (k, v) = line.split_once('=').unwrap_or((&line, ""));
-            let (k, v) = (k.trim(), v.trim().trim_matches('"'));
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            let (k, v) = (php_trim_str(k), php_trim_str(v));
+            match settings.iter_mut().find(|(n, _)| n == k) {
+                Some(s) if k != "extension" && k != "zend_extension" => s.1 = v.to_string(),
+                _ => settings.push((k.to_string(), v.to_string())),
+            }
+        }
+        let mut out = Vec::new();
+        for (k, v) in &settings {
+            let line = format!("{k}={v}");
+            let (k, v) = (k.as_str(), v.trim_matches('"'));
             if let Some(reason) = opcache_skip(k, v) {
                 return Err(reason.into());
             }
@@ -377,6 +390,11 @@ fn ini_bool(v: &str) -> Option<bool> {
 pub struct CgiRequest {
     pub env: BTreeMap<String, String>,
     pub body: Option<Vec<u8>>,
+}
+
+/// [`php_trim`] on a `str`.
+fn php_trim_str(s: &str) -> &str {
+    s.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\0' | '\x0b'))
 }
 
 /// PHP's `trim()` character set.
@@ -2964,6 +2982,15 @@ mod tests {
         assert!(test_ini(&p).is_ok());
         let p = Phpt::parse(b"--INI--\nopcache.file_cache={PWD}\n--FILE--\n");
         assert_eq!(test_ini(&p).unwrap_err(), "opcache:file_cache");
+        // As run-tests' settings2array: trimmed, the last value kept, and a
+        // line without '=' dropped.
+        let p = Phpt::parse(
+            b"--INI--\nerror_reporting = E_ALL\nprecision=10\nprecision = 12 \nflag\n--FILE--\n",
+        );
+        assert_eq!(
+            test_ini(&p).unwrap(),
+            ["error_reporting=E_ALL", "precision=12"]
+        );
         // --rhp-ini
         let rules = IniRules {
             probe: IniProbe::new(None, &[]),

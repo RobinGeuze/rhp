@@ -520,6 +520,8 @@ Zend/tests/concat/assign_concat_array_empty_string.phpt
 Zend/tests/concat/bug32833.phpt
 Zend/tests/concat/bug40809.phpt
 Zend/tests/concat/bug44069.phpt
+Zend/tests/concat/bug79836.phpt
+Zend/tests/concat/bug79836_1.phpt
 Zend/tests/concat/bug79836_2.phpt
 Zend/tests/concat/bug79836_3.phpt
 Zend/tests/concat/bug81705.phpt
@@ -883,6 +885,7 @@ Zend/tests/gc/gc_025.phpt
 Zend/tests/gc/gc_027.phpt
 Zend/tests/gc/gc_032.phpt
 Zend/tests/gc/gc_034.phpt
+Zend/tests/gc/gc_036.phpt
 Zend/tests/gc/gc_044.phpt
 Zend/tests/gc/gc_050.phpt
 Zend/tests/gc_051.phpt
@@ -1327,6 +1330,7 @@ Zend/tests/magic_methods/bug69427.phpt
 Zend/tests/magic_methods/bug70223.phpt
 Zend/tests/magic_methods/bug70967.phpt
 Zend/tests/magic_methods/bug71359.phpt
+Zend/tests/magic_methods/bug71818.phpt
 Zend/tests/magic_methods/bug72177.phpt
 Zend/tests/magic_methods/bug72177_2.phpt
 Zend/tests/magic_methods/bug72813.phpt
@@ -2463,6 +2467,7 @@ ext/date/tests/date_modify-2.phpt
 ext/date/tests/date_sub_basic.phpt
 ext/date/tests/date_time_immutable001.phpt
 ext/date/tests/date_time_set_basic1.phpt
+ext/date/tests/date_timestamp_set.phpt
 ext/date/tests/default-timezone-1.phpt
 ext/date/tests/default-timezone-2.phpt
 ext/date/tests/format-negative-timestamp.phpt
@@ -7241,6 +7246,8 @@ tests/func/005.phpt
 tests/func/006.phpt
 tests/func/007.phpt
 tests/func/009.phpt
+tests/func/011.phpt
+tests/func/bug64523.phpt
 tests/func/ini_alter.phpt
 tests/lang/001.phpt
 tests/lang/002.phpt

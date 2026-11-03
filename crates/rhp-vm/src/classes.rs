@@ -421,7 +421,6 @@ pub(crate) fn mangled_prop_key(entry: &ClassEntry, key: &PhpStr) -> PhpStr {
     }
 }
 
-/// A generated anonymous-class name (`Prefix@anonymous\0file:line$n`).
 /// Where a program's class declarations go in the declaration table.
 pub(crate) struct DeclRanges {
     pub(crate) top: std::ops::Range<usize>,
@@ -440,6 +439,7 @@ pub(crate) fn decl_layout(prog: &rhp_bytecode::Program) -> (usize, usize, usize)
     (user.len() - anon, prog.cond_classes.len(), anon)
 }
 
+/// A generated anonymous-class name (`Prefix@anonymous\0file:line$n`).
 pub(crate) fn is_anon_name(name: &[u8]) -> bool {
     name.windows(10).any(|w| w == b"@anonymous")
 }

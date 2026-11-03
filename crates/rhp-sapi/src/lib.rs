@@ -136,6 +136,10 @@ pub fn include_error(t: Thrown) -> IncludeError {
 /// nothing did, and flush. Parse errors are displayed per `display_errors`
 /// (exit 255); uncaught throwables are reported like php does.
 pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
+    // php refuses to start when preloading fails.
+    if !preload(&*sapi, &req.ini) {
+        return Outcome::Exit(1);
+    }
     let (file, source, argv0) = match &req.script {
         Script::File(path) => {
             let source = match std::fs::read(path) {
@@ -190,26 +194,34 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     }
     vm.start_request();
 
-    let arena = Arena::new();
-    let parsed = arena.parse(file.as_bytes(), &source);
-    if let Some((message, line)) = parsed.parse_error() {
-        vm.report_parse_error(&message, &file, line);
-        vm.finish_request();
-        return Outcome::Exit(255);
-    }
-    // Compile to owned bytecode; the arena can be dropped after this.
-    let program = match compile_with_source(parsed.program(), &source, &file) {
+    // Compile to owned bytecode (the arena is dropped after this). A script
+    // file goes through the compiled-script cache; `-r` code and standard
+    // input never do, as in php.
+    let compile = |source: &[u8]| {
+        let arena = Arena::new();
+        let parsed = arena.parse(file.as_bytes(), source);
+        if let Some((message, line)) = parsed.parse_error() {
+            return Err(IncludeError::Parse { message, line });
+        }
+        compile_with_source(parsed.program(), source, &file).map_err(include_error)
+    };
+    let compiled = match req.script {
+        Script::File(_) => vm.compile_main(&file, &argv0, source, compile),
+        _ => compile(&source).map(std::rc::Rc::new),
+    };
+    let program = match compiled {
         Ok(p) => p,
-        Err(t) => {
-            let t = match include_error(t) {
-                IncludeError::Compile { message, line } => {
-                    vm.compile_error(&message, file.as_bytes(), line);
-                    vm.finish_request();
-                    return Outcome::Exit(255);
-                }
-                IncludeError::Thrown(t) => t,
-                IncludeError::Parse { .. } => unreachable!("not built by include_error"),
-            };
+        Err(IncludeError::Parse { message, line }) => {
+            vm.report_parse_error(&message, &file, line);
+            vm.finish_request();
+            return Outcome::Exit(255);
+        }
+        Err(IncludeError::Compile { message, line }) => {
+            vm.compile_error(&message, file.as_bytes(), line);
+            vm.finish_request();
+            return Outcome::Exit(255);
+        }
+        Err(IncludeError::Thrown(t)) => {
             let code = fatal(&mut vm, t);
             vm.finish_request();
             return Outcome::Exit(code);
@@ -235,6 +247,73 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     };
     vm.finish_request();
     Outcome::Exit(code)
+}
+
+/// The SAPI `opcache.preload` runs under: the request's SAPI name and ini
+/// defaults, output straight to the process's stdout, no headers (php's
+/// `preload_ub_write` and friends).
+struct PreloadSapi {
+    name: String,
+    defaults: Vec<(&'static str, &'static str)>,
+}
+
+impl Sapi for PreloadSapi {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn ini_defaults(&self) -> Vec<(&'static str, &'static str)> {
+        self.defaults.clone()
+    }
+
+    fn stores_headers(&self) -> bool {
+        false
+    }
+
+    fn ub_write(&mut self, data: &[u8]) {
+        let mut so = std::io::stdout().lock();
+        let _ = so.write_all(data);
+        let _ = so.flush();
+    }
+
+    fn flush(&mut self) {
+        let _ = std::io::stdout().flush();
+    }
+}
+
+/// Run `opcache.preload` once per thread, before the first request that
+/// has opcache on (php runs it at startup). Its functions and classes are
+/// then declared in every request on this thread. False: preloading failed.
+fn preload(sapi: &dyn Sapi, ini: &[(String, String)]) -> bool {
+    let set = |k: &str, v: &str| k == "opcache.preload" && !v.is_empty();
+    if !ini.iter().any(|(k, v)| set(k, v)) && !sapi.ini_defaults().iter().any(|(k, v)| set(k, v)) {
+        return true;
+    }
+    let mut vm = Vm::new();
+    vm.set_sapi(Box::new(PreloadSapi {
+        name: sapi.name().to_string(),
+        defaults: sapi.ini_defaults(),
+    }));
+    for (k, v) in ini {
+        vm.set_ini(k.as_bytes(), v.as_bytes());
+    }
+    let Some(path) = vm.preload_pending() else {
+        return true;
+    };
+    let file = std::fs::canonicalize(&path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.clone());
+    install_includer(&mut vm);
+    let ok = vm.run_preload(&path, |source| {
+        let arena = Arena::new();
+        let parsed = arena.parse(file.as_bytes(), source);
+        if let Some((message, line)) = parsed.parse_error() {
+            return Err(IncludeError::Parse { message, line });
+        }
+        compile_with_source(parsed.program(), source, &file).map_err(include_error)
+    });
+    vm.finish_request();
+    ok
 }
 
 /// Report an uncaught throwable (or honour `exit`); returns the exit code.

@@ -1039,6 +1039,12 @@ pub trait Host {
     fn reflect_op(&mut self, _op: &[u8], _args: &[Value]) -> Result<Value, Thrown> {
         Ok(Value::Null)
     }
+    /// An `opcache_*` function (`op` is the name without the prefix, the
+    /// arguments already checked) answered by the host's compiled-script
+    /// cache. `None`: the accelerator isn't started for this request.
+    fn opcache_op(&mut self, _op: &str, _args: &[Value]) -> Option<Result<Value, Thrown>> {
+        None
+    }
     /// [`Host::raise_diagnostic`], returning the exception a user error
     /// handler threw (e.g. composer's `ErrorException`) so the builtin can
     /// stop right there with `?`.
@@ -1181,6 +1187,14 @@ pub fn c_atol(s: &[u8]) -> i64 {
 pub fn ini_parse_quantity(s: &[u8]) -> i64 {
     runtime_fns::ini_parse_quantity(s)
 }
+
+/// A directive's startup value (`-d`, else the SAPI's or the built-in
+/// default): what php's PHP_INI_SYSTEM directives keep. `None` = unknown.
+pub fn ini_startup_value(name: &[u8]) -> Option<Vec<u8>> {
+    runtime_fns::ini_default_value(name).map(Option::unwrap_or_default)
+}
+
+pub use opcache_fns::asctime_local;
 
 /// A startup ini setting (`php -d name=value`): any registered directive,
 /// applied to the engine state it drives (precision, ...). Unknown names are

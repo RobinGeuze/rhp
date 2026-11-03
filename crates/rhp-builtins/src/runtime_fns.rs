@@ -550,7 +550,7 @@ fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value
     for w in &warnings {
         host.emit_diagnostic(crate::E_WARNING, w)?;
     }
-    if !ok {
+    if !ok || !crate::opcache_fns::on_modify(host, &name, &newv)? {
         return Ok(Value::Bool(false));
     }
     if ini_validate(&name, &newv).is_err() {

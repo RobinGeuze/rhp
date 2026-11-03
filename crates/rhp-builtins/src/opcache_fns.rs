@@ -1,7 +1,7 @@
-//! Zend OPcache, built in but not started (php-cli's default, and php-cgi
-//! run with `opcache.enable=0`): the functions exist, so feature detection
-//! (`function_exists('opcache_invalidate')`) sees them, and each reports
-//! the "not started" result php gives.
+//! Zend OPcache's functions. The compiled-script cache itself lives in the
+//! host (`Host::opcache_op`); when it isn't started (php-cli without
+//! `opcache.enable_cli`, or `opcache.enable=0`) each function reports what
+//! php reports then, so feature detection still sees them.
 
 use std::collections::HashMap;
 
@@ -88,24 +88,58 @@ fn ini_bool(v: &[u8]) -> bool {
     matches!(&l[..], b"on" | b"yes" | b"true") || crate::runtime_fns::c_atol(&l) != 0
 }
 
-fn fn_opcache_get_status(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    bool_param(host, args, 0, "opcache_get_status", "include_scripts", true)?;
-    Ok(Value::Bool(false))
+/// `validate_api_restriction`: with `opcache.restrict_api` set, only a
+/// script whose path starts with it may use the API.
+fn api_allowed(host: &mut dyn Host) -> Result<bool, Thrown> {
+    let restrict = host.ini_get(b"opcache.restrict_api").unwrap_or_default();
+    if restrict.is_empty() {
+        return Ok(true);
+    }
+    let main = host.running_main_path().unwrap_or_default();
+    if main.starts_with(&restrict) {
+        return Ok(true);
+    }
+    host.emit_diagnostic(
+        crate::E_WARNING,
+        "Zend OPcache API is restricted by \"restrict_api\" configuration directive",
+    )?;
+    Ok(false)
 }
 
-fn fn_opcache_reset(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(false))
+fn fn_opcache_get_status(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let scripts = bool_param(host, args, 0, "opcache_get_status", "include_scripts", true)?;
+    if !api_allowed(host)? {
+        return Ok(Value::Bool(false));
+    }
+    host.opcache_op("get_status", &[Value::Bool(scripts)])
+        .unwrap_or(Ok(Value::Bool(false)))
+}
+
+fn fn_opcache_reset(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    if !api_allowed(host)? {
+        return Ok(Value::Bool(false));
+    }
+    host.opcache_op("reset", &[])
+        .unwrap_or(Ok(Value::Bool(false)))
 }
 
 fn fn_opcache_invalidate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    str_param(host, args, 0, "opcache_invalidate", "filename")?;
-    bool_param(host, args, 1, "opcache_invalidate", "force", false)?;
-    Ok(Value::Bool(false))
+    let name = str_param(host, args, 0, "opcache_invalidate", "filename")?;
+    let force = bool_param(host, args, 1, "opcache_invalidate", "force", false)?;
+    if !api_allowed(host)? {
+        return Ok(Value::Bool(false));
+    }
+    host.opcache_op("invalidate", &[Value::str(name), Value::Bool(force)])
+        .unwrap_or(Ok(Value::Bool(false)))
 }
 
 fn fn_opcache_is_script_cached(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    str_param(host, args, 0, "opcache_is_script_cached", "filename")?;
-    Ok(Value::Bool(false))
+    let name = str_param(host, args, 0, "opcache_is_script_cached", "filename")?;
+    if !api_allowed(host)? {
+        return Ok(Value::Bool(false));
+    }
+    host.opcache_op("is_script_cached", &[Value::str(name)])
+        .unwrap_or(Ok(Value::Bool(false)))
 }
 
 fn fn_opcache_is_script_cached_in_file_cache(
@@ -119,11 +153,18 @@ fn fn_opcache_is_script_cached_in_file_cache(
         "opcache_is_script_cached_in_file_cache",
         "filename",
     )?;
+    if !api_allowed(host)? {
+        return Ok(Value::Bool(false));
+    }
+    // No file cache.
     Ok(Value::Bool(false))
 }
 
 fn fn_opcache_compile_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    str_param(host, args, 0, "opcache_compile_file", "filename")?;
+    let name = str_param(host, args, 0, "opcache_compile_file", "filename")?;
+    if let Some(r) = host.opcache_op("compile_file", &[Value::str(name)]) {
+        return r;
+    }
     host.emit_diagnostic(
         crate::E_NOTICE,
         "Zend OPcache has not been properly started, can't compile file",
@@ -136,6 +177,9 @@ fn fn_opcache_jit_blacklist(_: &mut dyn Host, _args: &[Value]) -> Result<Value, 
 }
 
 fn fn_opcache_get_configuration(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    if !api_allowed(host)? {
+        return Ok(Value::Bool(false));
+    }
     let mut d = PhpArray::new();
     for &(name, ty) in DIRECTIVES {
         let raw = host.ini_get(name.as_bytes()).unwrap_or_default();
@@ -168,11 +212,128 @@ fn fn_opcache_get_configuration(host: &mut dyn Host, _args: &[Value]) -> Result<
     let mut out = PhpArray::new();
     out.insert(ArrayKey::from_bytes(b"directives"), Value::Array(d));
     out.insert(ArrayKey::from_bytes(b"version"), Value::Array(version));
-    out.insert(
-        ArrayKey::from_bytes(b"blacklist"),
-        Value::Array(PhpArray::new()),
-    );
+    let blacklist = host
+        .opcache_op("blacklist", &[])
+        .transpose()?
+        .unwrap_or_else(|| Value::Array(PhpArray::new()));
+    out.insert(ArrayKey::from_bytes(b"blacklist"), blacklist);
     Ok(Value::Array(out))
+}
+
+/// `asctime(localtime(t))` without its newline (`opcache_get_status()`'s
+/// `last_used`): the process's local time zone, not `date.timezone`.
+pub fn asctime_local(t: i64) -> String {
+    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    // SAFETY: localtime_r only writes the tm it is given.
+    let tm = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        let tt = t as libc::time_t;
+        if libc::localtime_r(&tt, &mut tm).is_null() {
+            return String::new();
+        }
+        tm
+    };
+    format!(
+        "{} {}{:3} {:02}:{:02}:{:02} {}",
+        DAYS[tm.tm_wday.rem_euclid(7) as usize],
+        MONTHS[tm.tm_mon.rem_euclid(12) as usize],
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec,
+        tm.tm_year + 1900
+    )
+}
+
+/// Whether php's JIT is enabled (`JIT_G(enabled)`): opcache started,
+/// `opcache.jit` not "disable" at startup, and a JIT buffer.
+pub(crate) fn jit_enabled() -> bool {
+    let startup = |n: &[u8]| crate::ini_startup_value(n).unwrap_or_default();
+    let cli = crate::sapi::sapi_name() == "cli";
+    let started = ini_bool(&startup(b"opcache.enable"))
+        && (!cli || ini_bool(&startup(b"opcache.enable_cli")));
+    let mode = startup(b"opcache.jit").to_ascii_lowercase();
+    started
+        && mode != b"disable"
+        && jit_mode_valid(&mode)
+        && crate::runtime_fns::ini_parse_quantity(&startup(b"opcache.jit_buffer_size")) > 0
+}
+
+/// The runtime OnModify handlers of `opcache.enable` (OnEnable: it may only
+/// be switched off) and `opcache.jit` (OnUpdateJit). `Ok(false)`: refused.
+pub(crate) fn on_modify(host: &mut dyn Host, name: &[u8], v: &[u8]) -> Result<bool, Thrown> {
+    match name {
+        b"opcache.enable" if crate::runtime_fns::ini_parse_bool(v) => {
+            let cur = host.ini_get(name).unwrap_or_default();
+            if crate::runtime_fns::ini_parse_bool(&cur) {
+                return Ok(true);
+            }
+            host.emit_diagnostic(
+                crate::E_WARNING,
+                "Zend OPcache can't be temporarily enabled (it may be only disabled until the end of request)",
+            )?;
+            Ok(false)
+        }
+        b"opcache.jit" if !jit_enabled() => {
+            host.emit_diagnostic(
+                crate::E_WARNING,
+                "Cannot change opcache.jit setting at run-time (JIT is disabled)",
+            )?;
+            Ok(false)
+        }
+        b"opcache.jit" if !jit_mode_valid(v) => {
+            host.emit_diagnostic(
+                crate::E_WARNING,
+                "Invalid \"opcache.jit\" setting. Should be \"disable\", \"on\", \"off\", \"tracing\", \"function\" or 4-digit number",
+            )?;
+            Ok(false)
+        }
+        _ => Ok(true),
+    }
+}
+
+/// `zend_jit_config`'s accepted values.
+pub(crate) fn jit_mode_valid(mode: &[u8]) -> bool {
+    let m = mode.to_ascii_lowercase();
+    if matches!(
+        &m[..],
+        b"disable"
+            | b""
+            | b"0"
+            | b"off"
+            | b"no"
+            | b"false"
+            | b"1"
+            | b"on"
+            | b"yes"
+            | b"true"
+            | b"tracing"
+            | b"function"
+    ) {
+        return true;
+    }
+    let Ok(s) = std::str::from_utf8(&m) else {
+        return false;
+    };
+    let Ok(mut jit) = s.parse::<i64>() else {
+        return false;
+    };
+    if jit < 0 || jit % 10 == 0 || jit % 10 > 5 {
+        return false;
+    }
+    jit /= 10;
+    if jit % 10 > 5 || jit % 10 == 4 {
+        return false;
+    }
+    jit /= 10;
+    if jit % 10 > 2 {
+        return false;
+    }
+    jit /= 10;
+    jit % 10 <= 1 && jit / 10 == 0
 }
 
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {

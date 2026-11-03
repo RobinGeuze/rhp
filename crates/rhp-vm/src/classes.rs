@@ -419,7 +419,7 @@ pub(crate) fn mangled_prop_key(entry: &ClassEntry, key: &PhpStr) -> PhpStr {
 }
 
 /// A generated anonymous-class name (`Prefix@anonymous\0file:line$n`).
-fn is_anon_name(name: &[u8]) -> bool {
+pub(crate) fn is_anon_name(name: &[u8]) -> bool {
     name.windows(10).any(|w| w == b"@anonymous")
 }
 
@@ -657,7 +657,7 @@ impl Vm {
 
     /// Link the class compiled into `decl_classes` slot `slot`, recording
     /// that slot as its class-table position.
-    fn link_slot(&mut self, slot: usize, proto: &ClassProto) -> Result<(), Thrown> {
+    pub(crate) fn link_slot(&mut self, slot: usize, proto: &ClassProto) -> Result<(), Thrown> {
         let id = self.classes.len();
         self.link_class(proto)?;
         if let Some(o) = self.class_order.get_mut(id) {
@@ -666,7 +666,7 @@ impl Vm {
         Ok(())
     }
 
-    fn deps_ready(&self, p: &ClassProto) -> bool {
+    pub(crate) fn deps_ready(&self, p: &ClassProto) -> bool {
         let known = |n: &PhpStr| self.class_ids.contains_key(&lc(n.as_bytes()));
         p.parent.as_ref().is_none_or(known)
             && p.interfaces.iter().all(known)

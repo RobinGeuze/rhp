@@ -133,13 +133,48 @@ The HTTP status is in the `Response` that `send_headers` received, not in
 ### Lower level
 
 `run_request` is a convenience over `Vm`. A server that needs to step
-in between (to cache compiled scripts, for instance) can drive it directly:
+in between can drive it directly:
 `Vm::new()`, `set_sapi` (right away, before anything else), `set_ini` for
 each setting, `set_request`, `start_request` (post-size check,
 `X-Powered-By`), compile, `run_main` (script, shutdown functions,
 destructors, output-buffer flush, headers if still unsent), and finally
 `finish_request` (headers, `Sapi::flush`, upload cleanup). Dropping the
-`Vm` also deletes this request's uploaded temp files.
+`Vm` also deletes this request's uploaded temp files. Compile the main
+script with `Vm::compile_main` to go through the compiled-script cache
+(below); run `opcache.preload` first with `Vm::preload_pending` and
+`Vm::run_preload` on an engine of its own, as `run_request` does.
+
+## The compiled-script cache (opcache)
+
+`rhp-vm`'s `opcache` module is Zend OPcache without the optimizer and the
+JIT. A request's main script and every `include` / `require` of an
+unchanged file reuse its compiled `Program`, with php's settings:
+`opcache.enable` (web SAPIs; on by default) / `opcache.enable_cli`,
+`validate_timestamps`, `revalidate_freq`, `file_update_protection`
+(a file changed in the last 2 s is compiled but not cached),
+`max_accelerated_files`, `max_file_size`, `memory_consumption` and
+`blacklist_filename`. `opcache_get_status()` and the other `opcache_*`
+functions report it; `opcache_reset()` takes effect at the next request.
+
+- **Per thread.** A `Program` holds `Rc`s, so the cache is a
+  `thread_local!`: every request served on a worker thread shares it, as
+  php-fpm workers share their shared-memory segment. Once bytecode is
+  `Arc`-based it can become process-wide behind a lock; only the module
+  touches it.
+- **Nothing per-request is cached.** A `Program` is immutable and the VM
+  copies the protos it runs into the request, so statics, class statics,
+  constants and globals start fresh in every request.
+- **Preload.** `opcache.preload` runs once per thread, before its first
+  request, on an engine of its own (its output goes to stdout). The
+  functions and classes it declared are declared again at the start of
+  every request; a preloaded file included later doesn't redeclare them.
+  A failed preload (parse error, uncaught exception) fails the request
+  with exit status 1, as php refuses to start.
+- **Not implemented:** the file cache (`opcache.file_cache`), the
+  optimizer and its debug output, the JIT (`opcache_get_status()['jit']`
+  reports what the settings select), `opcache.preload_user`, the inheritance
+  cache, and php's sharing of a file's statics between two includes of it
+  in one request.
 
 ## Request lifecycle
 
@@ -211,9 +246,7 @@ build. Concurrency comes from threads, never from sharing an engine:
   needed beyond today's API: a streaming body reader (`Sapi::read_body`,
   so uploads don't have to be buffered first), `max_execution_time`
   enforcement with an interrupt flag the server can also set when a client
-  disconnects (`connection_aborted()`), a per-`Vm` working directory, and a
-  compiled-script cache shared between requests on one thread (a
-  thread-local opcache).
+  disconnects (`connection_aborted()`) and a per-`Vm` working directory.
 - **FastCGI.** A `cgi-fcgi` front end that reads FastCGI records, builds a
   `RequestInfo` from the params, and writes stdout records through a
   `Sapi`. It reuses `cgi::CgiSapi`'s header logic and `php_sapi_name()`

@@ -45,14 +45,17 @@ impl PreloadRec {
         }
     }
 
-    /// The program's class declarations (user top-level, then nested).
+    /// The program's class declarations (top-level, nested, anonymous).
     fn decl_count(&self) -> usize {
-        self.prog.classes.len() - self.prog.num_prelude_classes + self.prog.cond_classes.len()
+        let (top, nested, anon) = crate::classes::decl_layout(&self.prog);
+        top + nested + anon
     }
 
-    /// Its top-level class declarations (anonymous ones included).
-    fn top_decl_count(&self) -> usize {
-        self.prog.classes.len() - self.prog.num_prelude_classes
+    /// The table slots of its top-level and anonymous class declarations.
+    fn top_slots(&self) -> impl Iterator<Item = usize> {
+        let (top, nested, anon) = crate::classes::decl_layout(&self.prog);
+        let b = self.decl_base;
+        (b..b + top).chain(b + top + nested..b + top + nested + anon)
     }
 }
 
@@ -75,13 +78,16 @@ pub(crate) struct Preload {
     functions: Vec<(usize, FnOrigin)>,
     /// Classes to link, in link order: (program, class declaration).
     classes: Vec<(usize, usize)>,
+    /// `class_alias()`es of preloaded classes: (lowercase alias, index into
+    /// `classes`).
+    aliases: Vec<(Vec<u8>, usize)>,
     fn_names: std::collections::HashSet<Vec<u8>>,
     memory: i64,
 }
 
 impl Preload {
     pub(crate) fn has_file(&self, path: &[u8]) -> bool {
-        self.programs.iter().any(|(p, _)| p == path)
+        !path.is_empty() && self.programs.iter().any(|(p, _)| p == path)
     }
 
     pub(crate) fn has_function(&self, lcname: &[u8]) -> bool {
@@ -188,10 +194,7 @@ impl Vm {
     /// no statement for (files it only compiled), in passes until nothing
     /// changes; warn about the ones that still can't be linked.
     fn preload_link(&mut self, recs: &[PreloadRec]) {
-        let slots: Vec<usize> = recs
-            .iter()
-            .flat_map(|r| r.decl_base..r.decl_base + r.top_decl_count())
-            .collect();
+        let slots: Vec<usize> = recs.iter().flat_map(|r| r.top_slots()).collect();
         let pending = |vm: &Vm, slot: usize| {
             let (proto, done) = &vm.decl_classes[slot];
             let anon = crate::classes::is_anon_name(proto.name.as_bytes());
@@ -232,7 +235,10 @@ impl Vm {
                 continue;
             }
             let proto = proto.clone();
-            let name = String::from_utf8_lossy(proto.name.as_bytes()).into_owned();
+            // A C string: an anonymous class's name stops at its NUL.
+            let raw = proto.name.as_bytes();
+            let shown = &raw[..raw.iter().position(|&c| c == 0).unwrap_or(raw.len())];
+            let name = String::from_utf8_lossy(shown).into_owned();
             let file = proto.decl_file.as_bytes().to_vec();
             let line = proto.decl_line as i64;
             let anon = crate::classes::is_anon_name(proto.name.as_bytes());
@@ -360,19 +366,35 @@ impl Vm {
             functions.push(origin);
         }
         let mut classes = Vec::new();
+        let mut class_index = std::collections::HashMap::new();
         for cid in self.internal_classes..self.classes.len() {
             let Some(&slot) = self.class_order.get(cid) else {
                 continue;
             };
             if let Some(r) = find(&|r| slot >= r.decl_base && slot < r.decl_base + r.decl_count()) {
+                class_index.insert(cid as u32, classes.len());
                 classes.push((r, slot - recs[r].decl_base));
             }
         }
+        let mut aliases: Vec<(Vec<u8>, usize)> = self
+            .class_ids
+            .iter()
+            .filter_map(|(name, cid)| {
+                let i = *class_index.get(cid)?;
+                let own = self.classes[*cid as usize]
+                    .name
+                    .as_bytes()
+                    .to_ascii_lowercase();
+                (*name != own).then(|| (name.clone(), i))
+            })
+            .collect();
+        aliases.sort();
         let memory = programs.iter().map(|(_, p)| program_size(p)).sum::<i64>() / 4;
         Some(Preload {
             programs,
             functions,
             classes,
+            aliases,
             fn_names,
             memory,
         })
@@ -418,7 +440,8 @@ impl Vm {
         // Linking ran (and warned) while preloading; replaying it is quiet.
         let last_error = self.last_error.clone();
         self.silence += 1;
-        for &(p, local) in &pre.classes {
+        let mut linked = vec![None; pre.classes.len()];
+        for (i, &(p, local)) in pre.classes.iter().enumerate() {
             let slot = bases[p].1 + local;
             let proto = self.decl_classes[slot].0.clone();
             let anon = crate::classes::is_anon_name(proto.name.as_bytes());
@@ -429,8 +452,15 @@ impl Vm {
             {
                 continue;
             }
+            let id = self.classes.len() as u32;
             if self.link_slot(slot, &proto).is_ok() {
                 self.decl_classes[slot].1 = true;
+                linked[i] = Some(id);
+            }
+        }
+        for (alias, i) in &pre.aliases {
+            if let Some(id) = linked[*i] {
+                self.class_ids.entry(alias.clone()).or_insert(id);
             }
         }
         self.silence -= 1;
@@ -476,7 +506,7 @@ pub(super) fn cache_preloaded(c: &mut Cache, pre: &Preload, main: Option<Rc<Prog
         }
     };
     let mut main = main;
-    for (path, p) in &pre.programs {
+    for (path, p) in pre.programs.iter().filter(|(path, _)| !path.is_empty()) {
         let s = entry(c, main.take(), Some(p.clone()), program_size(p));
         c.scripts.insert(path.clone(), s);
     }
@@ -503,10 +533,16 @@ pub(super) fn preload_report(pre: &Preload) -> PhpArray {
     let mut classes = PhpArray::new();
     for &(p, local) in &pre.classes {
         let prog = &pre.programs[p].1;
+        // The declaration table's order: top-level, nested, anonymous.
         let user = &prog.classes[prog.num_prelude_classes..];
-        let c = user
-            .get(local)
-            .or_else(|| prog.cond_classes.get(local - user.len()));
+        let (top, nested, _) = crate::classes::decl_layout(prog);
+        let c = if local < top {
+            user.get(local)
+        } else if local < top + nested {
+            prog.cond_classes.get(local - top)
+        } else {
+            user.get(local - nested)
+        };
         if let Some(c) = c {
             classes.push(Value::str(c.name.as_bytes().to_vec()));
         }
@@ -515,7 +551,7 @@ pub(super) fn preload_report(pre: &Preload) -> PhpArray {
         out.insert(s(b"classes"), Value::Array(classes));
     }
     let mut scripts = PhpArray::new();
-    for (path, _) in &pre.programs {
+    for (path, _) in pre.programs.iter().filter(|(path, _)| !path.is_empty()) {
         scripts.push(Value::str(path.clone()));
     }
     out.insert(s(b"scripts"), Value::Array(scripts));

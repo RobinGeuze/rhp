@@ -8595,9 +8595,10 @@ impl Vm {
             .ok_or_else(|| Thrown::error("Error", "eval is not available"))?;
         let compiled = cb(&file, &source);
         self.includer = Some(cb);
-        let prog = self.included_program(compiled, &file)?;
+        let prog = Rc::new(self.included_program(compiled, &file)?);
 
-        let main = self.install_included(&prog)?;
+        // eval()'d declarations are preloaded too (recorded without a file).
+        let main = self.install_file(b"", &prog)?;
         self.run_included(main, top, "eval")
     }
 
@@ -8880,7 +8881,7 @@ impl Vm {
             self.functions.len(),
         );
         let preloaded = self.preloaded.as_ref().is_some_and(|p| p.has_file(path));
-        let main = self.install_included_ex(prog, preloaded)?;
+        let main = self.install_included(prog, preloaded)?;
         if let Some(rec) = self.preload_rec.as_mut() {
             rec.push(opcache::PreloadRec::new(
                 path,
@@ -8896,13 +8897,9 @@ impl Vm {
     /// Merge an included program's declarations into the running VM, rebasing its
     /// program-global closure indices by the current closure count. Returns the
     /// rebased `{main}` to execute.
-    fn install_included(&mut self, prog: &Program) -> Result<Rc<FunctionProto>, Thrown> {
-        self.install_included_ex(prog, false)
-    }
-
     /// `preloaded`: the file was preloaded, and php removed its declarations
     /// of what preloading declared: those are skipped, not redeclared.
-    fn install_included_ex(
+    fn install_included(
         &mut self,
         prog: &Program,
         preloaded: bool,

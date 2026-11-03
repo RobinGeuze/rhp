@@ -589,10 +589,11 @@ pub trait Host {
     /// Set the bcmath default scale (`bcscale($scale)`).
     fn set_bc_scale(&mut self, _scale: i64) {}
 
-    /// Instantiate a named class, materializing its property defaults and then
-    /// overriding/adding the given properties (no constructor is run). Used by
-    /// object-returning builtins (e.g. `gmp_*` returning `GMP`, `date_create`).
-    /// Returns `None` if the host has no such class / no object model.
+    /// Instantiate a named class with its property defaults, then set the
+    /// given properties (no constructor is run), as object-returning builtins
+    /// do (`gmp_*` returning `GMP`, `simplexml_load_string`). `None` if the
+    /// host has no such class or no object model, or when evaluating the
+    /// class's defaults threw (the host throws that once the builtin returns).
     fn instantiate(&mut self, _class_name: &[u8], _props: Vec<(Vec<u8>, Value)>) -> Option<Value> {
         None
     }

@@ -2023,7 +2023,17 @@ impl Host for Vm {
 
     fn instantiate(&mut self, class_name: &[u8], props: Vec<(Vec<u8>, Value)>) -> Option<Value> {
         let cls = self.resolve_class_by_name(class_name).ok()?;
-        self.update_class_constants(cls).ok()?;
+        // php's internal classes always have their defaults evaluated. A
+        // user class only gets here as a SimpleXMLElement subclass, which
+        // php_sxe_object_new creates without zend_update_class_constants:
+        // a failing constant expression throws only where it is used.
+        if self.is_internal_class(cls) {
+            if let Err(t) = self.update_class_constants(cls) {
+                // php's EG(exception): thrown once the builtin returns.
+                self.pending_throw.get_or_insert(t);
+                return None;
+            }
+        }
         let obj = self.new_object(cls);
         {
             let mut b = obj.borrow_mut();

@@ -87,7 +87,7 @@ pub fn hash(
         )
     };
     let mut out = vec![0u8; hashlen];
-    let mut encoded = vec![0 as c_char; encodedlen];
+    let mut encoded = vec![0u8; encodedlen];
     let status = unsafe {
         argon2_hash(
             t_cost,
@@ -99,7 +99,7 @@ pub fn hash(
             salt.len(),
             out.as_mut_ptr().cast(),
             out.len(),
-            encoded.as_mut_ptr(),
+            encoded.as_mut_ptr().cast(),
             encoded.len(),
             ty as c_int,
             rhp_argon2_version_number,
@@ -108,9 +108,8 @@ pub fn hash(
     if status != OK {
         return Err(status);
     }
-    Ok(unsafe { CStr::from_ptr(encoded.as_ptr()) }
-        .to_bytes()
-        .to_vec())
+    let encoded = CStr::from_bytes_until_nul(&encoded).expect("argon2_hash writes a C string");
+    Ok(encoded.to_bytes().to_vec())
 }
 
 /// `argon2_verify(encoded, pwd, pwdlen, type) == ARGON2_OK`.

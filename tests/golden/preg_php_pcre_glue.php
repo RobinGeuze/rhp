@@ -31,6 +31,27 @@ $cases = [
         preg_match('/\p{Ll}(\p{L}((\p{Ll}\p{Ll})))/', 'aeiou'), preg_last_error_msg(),
         ini_restore('pcre.recursion_limit'), ini_restore('pcre.jit')],
     'array subject entry' => fn() => preg_replace_callback('~\A.~', fn($m) => "'$m[0]'", [['xyz']]),
+    'grep stops at an error' => fn() => [ini_set('pcre.jit', '0'), ini_set('pcre.backtrack_limit', '1000'),
+        preg_grep('/(a+)+$/', ['a', 'b', str_repeat('a', 24) . 'b', 'a']), preg_last_error_msg(),
+        preg_grep('/(a+)+$/', ['a', 'b', str_repeat('a', 24) . 'b', 'a'], PREG_GREP_INVERT),
+        ini_restore('pcre.backtrack_limit'), ini_restore('pcre.jit')],
+    'grep array entry' => fn() => preg_grep('/a/', ['a', ['x'], 'b']),
+    'callback returns array' => fn() => preg_replace_callback('/a/', fn($m) => [], 'aa'),
+    'callback returns object' => fn() => [(function () {
+        try {
+            return preg_replace_callback('/a/', fn($m) => new stdClass, 'aa');
+        } catch (Error $e) {
+            return $e->getMessage();
+        }
+    })(), preg_last_error_msg()],
+    'compile warnings in order' => fn() => preg_replace('/(/', 'x', ['a', ['b'], 'c']),
+    'callback and compile warnings in order' => fn() => preg_replace_callback(['/a/', '/(/'], function ($m) {
+        echo "cb\n";
+        return 'X';
+    }, ['a', 'a']),
+    'limit quantity warnings' => fn() => [ini_set('pcre.backtrack_limit', 'abc'), ini_set('pcre.recursion_limit', '1x'),
+        ini_set('pcre.recursion_limit', '99999999999999999999'), ini_get('pcre.backtrack_limit'),
+        ini_restore('pcre.backtrack_limit'), ini_restore('pcre.recursion_limit')],
     'caseless restrict' => fn() => [preg_match('/AskZ/iur', "A\u{17f}kZ"), preg_match('/AskZ/iu', "A\u{17f}kZ")],
     'unknown modifier' => fn() => preg_replace('/(.)/e', 'x', 'abc'),
 ];

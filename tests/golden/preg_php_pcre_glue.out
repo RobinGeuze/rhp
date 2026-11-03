@@ -20,6 +20,27 @@ backtrack limit, no JIT: ["1","1000000",false,"Backtrack limit exhausted",null,n
 recursion limit, no JIT: ["1","100000",false,"Recursion limit exhausted",null,null]
 warning: Array to string conversion
 array subject entry: ["'A'rray"]
+grep stops at an error: ["1","1000000",["a"],"Backtrack limit exhausted",{"1":"b"},null,null]
+warning: Array to string conversion
+grep array entry: ["a",["x"]]
+warning: Array to string conversion
+warning: Array to string conversion
+callback returns array: "ArrayArray"
+callback returns object: ["Object of class stdClass could not be converted to string","Internal error"]
+warning: preg_replace(): Compilation failed: missing closing parenthesis at offset 1
+warning: Array to string conversion
+warning: preg_replace(): Compilation failed: missing closing parenthesis at offset 1
+warning: preg_replace(): Compilation failed: missing closing parenthesis at offset 1
+compile warnings in order: []
+cb
+warning: preg_replace_callback(): Compilation failed: missing closing parenthesis at offset 1
+cb
+warning: preg_replace_callback(): Compilation failed: missing closing parenthesis at offset 1
+callback and compile warnings in order: []
+warning: Invalid "pcre.backtrack_limit" setting. Invalid quantity "abc": no valid leading digits, interpreting as "0" for backwards compatibility
+warning: Invalid "pcre.recursion_limit" setting. Invalid quantity "1x": unknown multiplier "x", interpreting as "1" for backwards compatibility
+warning: Invalid "pcre.recursion_limit" setting. Invalid quantity "99999999999999999999": value is out of range, using overflow result for backwards compatibility
+limit quantity warnings: ["1000000","100000","1x","abc",null,null]
 caseless restrict: [0,1]
 warning: preg_replace(): Unknown modifier 'e'
 unknown modifier: null

@@ -3136,6 +3136,7 @@ ext/pcre/tests/preg_replace_callback_array2.phpt
 ext/pcre/tests/preg_replace_callback_array_error.phpt
 ext/pcre/tests/preg_replace_callback_array_fatal_error.phpt
 ext/pcre/tests/preg_replace_callback_array_numeric_index_error.phpt
+ext/pcre/tests/preg_replace_callback_array_trampoline.phpt
 ext/pcre/tests/preg_replace_callback_basic.phpt
 ext/pcre/tests/preg_replace_callback_error1.phpt
 ext/pcre/tests/preg_replace_callback_flags.phpt

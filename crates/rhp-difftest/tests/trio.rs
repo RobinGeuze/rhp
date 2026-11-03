@@ -56,7 +56,17 @@ fn password_cross_verifies_with_php() {
     // NB: hashes contain `$`, so they MUST sit in single-quoted PHP strings.
     for (pw, algo) in [
         ("hunter2", "PASSWORD_BCRYPT"),
-        ("sukru-key", "PASSWORD_BCRYPT"),
+        ("sukru-key", "PASSWORD_BCRYPT, ['cost' => 5]"),
+        ("hunter2", "PASSWORD_ARGON2I"),
+        (
+            "sukru-key",
+            "PASSWORD_ARGON2I, ['memory_cost' => 1024, 'time_cost' => 1]",
+        ),
+        ("hunter2", "PASSWORD_ARGON2ID"),
+        (
+            "sukru-key",
+            "PASSWORD_ARGON2ID, ['memory_cost' => 2048, 'time_cost' => 2, 'threads' => 3]",
+        ),
     ] {
         // rhp hashes -> php verifies
         let h = run_rhp(format!("<?php echo password_hash('{pw}', {algo});").as_bytes())

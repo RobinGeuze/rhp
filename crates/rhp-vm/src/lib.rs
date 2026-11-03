@@ -5497,12 +5497,16 @@ impl Vm {
         let Some((idx, err)) = failed else {
             return Ok(());
         };
-        let line = proto.params.get(idx).map(|p| p.line).unwrap_or(0);
-        let at = (proto.debug.file.as_bytes().to_vec(), line);
+        // A prelude callee has no file of its own: like an internal function,
+        // the error belongs to the calling user frame (the throw site).
+        let at = (!is_prelude_proto(&proto)).then(|| {
+            let line = proto.params.get(idx).map(|p| p.line).unwrap_or(0);
+            (proto.debug.file.as_bytes().to_vec(), line)
+        });
         let mut pushed = Frame::new(proto.clone(), Reg::MAX);
         std::mem::swap(&mut pushed, frame);
         self.stack.push(pushed);
-        let t = self.materialize(err, Some(at));
+        let t = self.materialize(err, at);
         let mut popped = self.stack.pop().expect("pushed frame");
         std::mem::swap(&mut popped, frame);
         Err(t)
@@ -5566,6 +5570,12 @@ impl Vm {
         let (name, min, max) = match frame.defining_class {
             Some(cls) if self.is_internal_class(cls) => {
                 let cname = self.class(cls).name.as_bytes();
+                // Its php body throws without parsing any argument.
+                if cname.eq_ignore_ascii_case(b"WeakReference")
+                    && proto.name.as_bytes().eq_ignore_ascii_case(b"__construct")
+                {
+                    return None;
+                }
                 let st = builtins::signatures::method(cname, proto.name.as_bytes())?;
                 let name = format!("{}::{}", String::from_utf8_lossy(cname), st.name);
                 (name, st.min_args(), st.max_args())
@@ -5576,19 +5586,19 @@ impl Vm {
                 (f.name.to_string(), f.min_args(), f.max_args())
             }
         };
-        let exact = max == Some(min);
-        let (which, bound) = match max {
-            _ if passed < min => (if exact { "exactly" } else { "at least" }, min),
-            Some(max) if passed > max => (if exact { "exactly" } else { "at most" }, max),
-            _ => return None,
-        };
-        Some(Thrown::error(
-            "ArgumentCountError",
-            format!(
-                "{name}() expects {which} {bound} argument{}, {passed} given",
-                if bound == 1 { "" } else { "s" }
-            ),
-        ))
+        if let Some(e) = zpp_count_error(&name, min, max, passed) {
+            return Some(e);
+        }
+        // php takes the argument but the prelude body declares no such
+        // parameter (and reads none through func_get_args): refuse it rather
+        // than ignore it.
+        if passed > proto.params.len() && !proto.params.iter().any(|p| p.variadic) {
+            return Some(Thrown::unsupported(
+                format!("{name}() argument #{}", proto.params.len() + 1),
+                "not implemented",
+            ));
+        }
+        None
     }
 
     /// "Too few arguments to function f(), N passed[ in F on line L] and
@@ -9369,6 +9379,14 @@ impl Vm {
         name_lc: &[u8],
         args: &[Value],
     ) -> Option<Result<Value, Thrown>> {
+        if matches!(
+            name_lc,
+            b"current" | b"key" | b"valid" | b"next" | b"send" | b"rewind" | b"getreturn"
+        ) {
+            if let Some(e) = native_method_count_error("Generator", name_lc, args.len()) {
+                return Some(Err(e));
+            }
+        }
         Some(match name_lc {
             b"current" => (|| {
                 self.gen_ensure_started(id)?;
@@ -9511,7 +9529,11 @@ impl Vm {
         mname: &[u8],
         mut args: Vec<Value>,
     ) -> Result<Value, Thrown> {
-        match mname.to_ascii_lowercase().as_slice() {
+        let lc = mname.to_ascii_lowercase();
+        if let Some(e) = native_method_count_error("Closure", &lc, args.len()) {
+            return Err(e);
+        }
+        match lc.as_slice() {
             b"bindto" => {
                 let new_this = args.first().cloned().unwrap_or(Value::Null);
                 let scope = args.get(1).cloned().unwrap_or_else(|| Value::str("static"));
@@ -9520,12 +9542,6 @@ impl Vm {
                     .unwrap_or(Value::Null))
             }
             b"call" => {
-                if args.is_empty() {
-                    return Err(Thrown::error(
-                        "ArgumentCountError",
-                        "Closure::call() expects at least 1 argument, 0 given",
-                    ));
-                }
                 // Temporarily binds `$this` AND the scope to the new object.
                 let new_this = args.remove(0);
                 let bound = self
@@ -10543,11 +10559,24 @@ fn undefined_function(name: &rhp_values::PhpStr) -> Thrown {
     )
 }
 
+/// Functions whose php body accepts one of two exact argument counts and
+/// checks that itself, before any type check.
+fn two_form_arity(name: &str) -> Option<[usize; 2]> {
+    match name {
+        // ZEND_NUM_ARGS() == 0 returns early, then zpp(2, 2).
+        "rand" | "mt_rand" => Some([0, 2]),
+        // A 2-argument call takes an array $from; the error says "exactly".
+        "strtr" => Some([2, 3]),
+        _ => None,
+    }
+}
+
 /// zend_wrong_parameters_count_error: "f() expects exactly 1 argument, 0 given".
 /// The bounds are php's (the stub's), except that the minimum never drops
 /// below the registration's: the array_u* callback functions check a larger
-/// minimum in their bodies, as php does. An argument for a parameter php
-/// declares but the body does not implement is refused, never ignored.
+/// minimum in their bodies, as php does. An argument beyond the registered
+/// maximum is a parameter php declares but the body does not implement: it
+/// is refused, never ignored.
 fn builtin_arg_count_error(
     b: &builtins::Builtin,
     sig: Option<&builtins::signatures::Func>,
@@ -10558,8 +10587,22 @@ fn builtin_arg_count_error(
         Some(s) => (s.min_args().max(b.min_args), s.max_args()),
         None => (b.min_args, b.max_args),
     };
-    let max = max.unwrap_or(usize::MAX);
-    if n >= min && n <= max {
+    if let Some(counts) = two_form_arity(b.name) {
+        if !counts.contains(&n) {
+            // The smallest non-zero count when below it, else the largest.
+            let low = if counts[0] == 0 { counts[1] } else { counts[0] };
+            let bound = if n < low { low } else { counts[1] };
+            return Some(Thrown::error(
+                "ArgumentCountError",
+                format!(
+                    "{}() expects exactly {bound} argument{}, {n} given",
+                    b.name,
+                    if bound == 1 { "" } else { "s" }
+                ),
+            ));
+        }
+    }
+    if n >= min && n <= max.unwrap_or(usize::MAX) {
         return match (sig, b.max_args) {
             (Some(s), Some(implemented)) if n > implemented => Some(Thrown::unsupported(
                 format!(
@@ -10573,22 +10616,37 @@ fn builtin_arg_count_error(
             _ => None,
         };
     }
-    // strtr parses either exactly 2 or exactly 3 arguments.
-    let (which, bound) = if min == max || b.name == "strtr" {
-        ("exactly", if n < min { min } else { max })
-    } else if n < min {
-        ("at least", min)
-    } else {
-        ("at most", max)
+    zpp_count_error(b.name, min, max, n)
+}
+
+/// zend_wrong_parameters_count_error for `name` with php's bounds.
+fn zpp_count_error(name: &str, min: usize, max: Option<usize>, passed: usize) -> Option<Thrown> {
+    let exact = max == Some(min);
+    let (which, bound) = match max {
+        _ if passed < min => (if exact { "exactly" } else { "at least" }, min),
+        Some(max) if passed > max => (if exact { "exactly" } else { "at most" }, max),
+        _ => return None,
     };
     Some(Thrown::error(
         "ArgumentCountError",
         format!(
-            "{}() expects {which} {bound} argument{}, {n} given",
-            b.name,
+            "{name}() expects {which} {bound} argument{}, {passed} given",
             if bound == 1 { "" } else { "s" }
         ),
     ))
+}
+
+/// The stub's arity check for a method the VM implements natively
+/// (Generator, Closure).
+fn native_method_count_error(class: &str, method: &[u8], passed: usize) -> Option<Thrown> {
+    use builtins::signatures::Signature;
+    let st = builtins::signatures::method(class.as_bytes(), method)?;
+    zpp_count_error(
+        &format!("{class}::{}", st.name),
+        st.min_args(),
+        st.max_args(),
+        passed,
+    )
 }
 
 /// Calls php compiles to dedicated opcodes instead of a function call

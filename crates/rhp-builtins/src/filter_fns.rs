@@ -138,7 +138,7 @@ fn parse_opts(arg: Option<&Value>) -> Opts {
 // filter_var
 // ---------------------------------------------------------------------------
 
-fn fn_filter_var(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_filter_var(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let value = deref(&args[0]);
     let filter = args
         .get(1)
@@ -146,7 +146,7 @@ fn fn_filter_var(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .unwrap_or(FILTER_DEFAULT);
     let opts = parse_opts(args.get(2));
 
-    let result = run_filter(&value, filter, &opts);
+    let result = run_filter(host, &value, filter, &opts)?;
     Ok(match result {
         Some(v) => v,
         None => {
@@ -163,15 +163,20 @@ fn fn_filter_var(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// `Some(value)` on success, `None` on validation failure (array/object input
 /// always fails). The caller maps `None` onto false / null / default.
-fn run_filter(value: &Value, filter: i64, opts: &Opts) -> Option<Value> {
+fn run_filter(
+    host: &mut dyn Host,
+    value: &Value,
+    filter: i64,
+    opts: &Opts,
+) -> Result<Option<Value>, Thrown> {
     if matches!(value, Value::Array(_) | Value::Object(_)) {
-        return None;
+        return Ok(None);
     }
-    match filter {
+    Ok(match filter {
         FILTER_VALIDATE_INT => validate_int(value, opts),
         FILTER_VALIDATE_FLOAT => validate_float(value, opts),
         FILTER_VALIDATE_BOOLEAN => validate_bool(value),
-        FILTER_VALIDATE_EMAIL => validate_email(value, opts.flags),
+        FILTER_VALIDATE_EMAIL => validate_email(host, value, opts.flags)?,
         FILTER_VALIDATE_URL => validate_url(value, opts),
         FILTER_VALIDATE_IP => validate_ip(value, opts),
         FILTER_VALIDATE_MAC => validate_mac(value),
@@ -182,7 +187,7 @@ fn run_filter(value: &Value, filter: i64, opts: &Opts) -> Option<Value> {
         FILTER_SANITIZE_SPECIAL_CHARS => Some(Value::str(sanitize_special_chars(value))),
         FILTER_DEFAULT => Some(Value::str(conv::to_string_bytes(value))),
         _ => None,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -512,18 +517,19 @@ const EMAIL_REGEXP1: &str = concat!(
     r"))){3}))\]))$/iD",
 );
 
-fn validate_email(value: &Value, flags: i64) -> Option<Value> {
+fn validate_email(host: &mut dyn Host, value: &Value, flags: i64) -> Result<Option<Value>, Thrown> {
     let s = conv::to_string_bytes(value);
     // RFC 2821's 320-octet maximum, checked before the regex as php does.
     if s.len() > 320 {
-        return None;
+        return Ok(None);
     }
     let re = if flags & FLAG_EMAIL_UNICODE != 0 {
         EMAIL_REGEXP0
     } else {
         EMAIL_REGEXP1
     };
-    crate::preg_fns::fixed_pattern_matches(re.as_bytes(), &s).then(|| Value::str(s))
+    let ok = crate::preg_fns::fixed_pattern_matches(host, "filter_var", re.as_bytes(), &s)?;
+    Ok(ok.then(|| Value::str(s)))
 }
 
 // ---------------------------------------------------------------------------

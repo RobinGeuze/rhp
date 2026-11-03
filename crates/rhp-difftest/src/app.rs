@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
-use pcre2::bytes::{Regex, RegexBuilder};
+use rhp_builtins::pcre::Pattern as Regex;
 
 use crate::phpt::split_cgi;
 
@@ -113,9 +113,7 @@ fn strs_of(t: &toml::Table, k: &str) -> Result<Vec<String>, String> {
 }
 
 fn regex(p: &str) -> Result<Regex, String> {
-    RegexBuilder::new()
-        .build(p)
-        .map_err(|e| format!("bad regex {p:?}: {e}"))
+    Regex::new(p, 0).map_err(|e| format!("bad regex {p:?}: {e}"))
 }
 
 /// `KEY=value` from a dotenv file (no interpolation; quotes stripped).
@@ -781,15 +779,17 @@ fn replace_bytes(hay: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
 fn regex_replace(re: &Regex, hay: &[u8], rep: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(hay.len());
     let mut last = 0;
-    for caps in re.captures_iter(hay).flatten() {
-        let m = caps.get(0).unwrap();
-        out.extend_from_slice(&hay[last..m.start()]);
+    for caps in re.captures_all(hay) {
+        let Some((start, end)) = caps[0] else {
+            continue;
+        };
+        out.extend_from_slice(&hay[last..start]);
         let mut i = 0;
         while i < rep.len() {
             if rep[i] == b'$' && i + 1 < rep.len() && rep[i + 1].is_ascii_digit() {
                 let n = (rep[i + 1] - b'0') as usize;
-                if let Some(g) = caps.get(n) {
-                    out.extend_from_slice(g.as_bytes());
+                if let Some((s, e)) = caps.get(n).copied().flatten() {
+                    out.extend_from_slice(&hay[s..e]);
                 }
                 i += 2;
             } else {
@@ -797,7 +797,7 @@ fn regex_replace(re: &Regex, hay: &[u8], rep: &[u8]) -> Vec<u8> {
                 i += 1;
             }
         }
-        last = m.end();
+        last = end;
     }
     out.extend_from_slice(&hay[last..]);
     out
@@ -978,9 +978,9 @@ impl<'a> Normalizer<'a> {
             .tokens
             .iter()
             .flat_map(|re| {
-                re.captures_iter(hay)
-                    .flatten()
-                    .filter_map(|c| c.get(1).map(|m| m.as_bytes().to_vec()))
+                re.captures_all(hay)
+                    .into_iter()
+                    .filter_map(|c| c.get(1).copied().flatten().map(|(s, e)| hay[s..e].to_vec()))
                     .collect::<Vec<_>>()
             })
             .collect();

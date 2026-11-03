@@ -27,6 +27,45 @@ pub(crate) fn value_name(host: &dyn Host, v: &Value) -> String {
     }
 }
 
+/// php's `zval_get_string()`: arrays warn "Array to string conversion",
+/// objects go through `__toString` or throw.
+pub(crate) fn zval_get_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> {
+    match deref(v) {
+        Value::Array(_) => {
+            host.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
+            Ok(b"Array".to_vec())
+        }
+        o @ Value::Object(_) => {
+            let has = match &o {
+                Value::Object(h) => {
+                    let class = h.borrow().class;
+                    host.class_has_method(class, b"__tostring")
+                }
+                _ => false,
+            };
+            if has {
+                let mut cb = PhpArray::new();
+                cb.push(o.clone());
+                cb.push(Value::str("__toString"));
+                let r = host.call_callable(&Value::Array(cb), &[])?;
+                return Ok(conv::to_string_bytes(&deref(&r)));
+            }
+            Err(Thrown::error(
+                "Error",
+                format!(
+                    "Object of class {} could not be converted to string",
+                    value_name(host, &o)
+                ),
+            ))
+        }
+        Value::Closure(_) => Err(Thrown::error(
+            "Error",
+            "Object of class Closure could not be converted to string",
+        )),
+        other => Ok(conv::to_string_bytes(&other)),
+    }
+}
+
 fn type_error(host: &dyn Host, func: &str, n: usize, pname: &str, want: &str, v: &Value) -> Thrown {
     Thrown::type_error(format!(
         "{func}(): Argument #{n} (${pname}) must be of type {want}, {} given",

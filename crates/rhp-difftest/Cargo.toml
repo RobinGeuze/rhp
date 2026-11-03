@@ -18,8 +18,9 @@ rhp-compiler = { path = "../rhp-compiler" }
 rhp-frontend = { path = "../rhp-frontend" }
 rhp-vm = { path = "../rhp-vm" }
 rhp-values = { path = "../rhp-values" }
+# EXPECTF and app masks use rhp-builtins' PCRE2, so the binary links one copy.
+rhp-builtins = { path = "../rhp-builtins" }
 libc = "0.2"
-pcre2 = "0.2"
 toml = "0.9"
 aes = "0.8"
 cbc = "0.1"

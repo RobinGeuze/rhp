@@ -18,6 +18,7 @@ pub mod dump;
 pub mod fdstream;
 pub mod memstream;
 pub mod module;
+pub mod pcre;
 pub mod streams;
 pub mod stub_params;
 pub mod version;
@@ -1502,15 +1503,6 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PHP_CLI_PROCESS_TITLE", Value::Bool(true)),
         ("PHP_DEBUG", Value::Bool(false)),
         ("PHP_ZTS", Value::Bool(false)),
-        ("PCRE_VERSION", Value::str(version::PCRE_VERSION)),
-        (
-            "PCRE_VERSION_MAJOR",
-            Value::Int(version::PCRE_VERSION_MAJOR),
-        ),
-        (
-            "PCRE_VERSION_MINOR",
-            Value::Int(version::PCRE_VERSION_MINOR),
-        ),
         ("ICONV_VERSION", Value::str(version::ICONV_VERSION)),
         ("ICONV_IMPL", Value::str("libiconv")),
         ("ICONV_MIBENUM_ASCII", Value::Int(3)),

@@ -6,6 +6,13 @@ less reimplementation, and if so, *which* native code and *how*?
 **Ground truth:** the reference `php` (8.5.12, PCRE 10.49 2026-09-28; every
 version is in `crates/rhp-builtins/src/version.rs`). Written against 8.5.8 / PCRE 10.47.
 
+> **Superseded in part (Phase L, 2026-11).** [`libraries.md`](./libraries.md)
+> is the current policy: rhp links the C libraries php links, statically where
+> possible, with no pure-Rust or bundled fallback. The feature-gated
+> pure-Rust default (§4.1, §7), "libxml2 — defer" (§6 item 8) and "leave
+> json/date/hash/mbstring-core pure-Rust" (§6 summary, §8 item 5) no longer
+> hold. PCRE2 is linked from the system library, not through `pcre2-sys`.
+
 This doc distinguishes three very different things that all get called
 "extensions", gives a verdict on each, then proposes a concrete
 **native-backed builtin** architecture that fits the existing
@@ -445,7 +452,8 @@ version-pinning fragility, cross-compile pain.
    **Oniguruma** (`onig`), since it *is* oniguruma in PHP — treat like regex
    (opt-in native), but it is niche → low priority.
 
-8. **libxml2 (dom/simplexml) — defer.** Large surface, and `quick-xml`/`roxmltree`
+8. **libxml2 (dom/simplexml) — defer.** *(Superseded: rhp is to link libxml2;
+   see [`libraries.md`](./libraries.md).)* Large surface, and `quick-xml`/`roxmltree`
    are *different* parsers (error recovery, entity handling differ from
    libxml2). If strict parity is needed, bind libxml2 (feasible, Category 2);
    otherwise defer the whole DOM family.
@@ -458,7 +466,9 @@ version-pinning fragility, cross-compile pain.
 
 **Summary ordering:** PCRE2 (now) → ICU (when `intl` is on the roadmap) →
 leave json/date/hash/mbstring-core pure-Rust → gmp/bcmath/openssl/libxml2/zlib
-opt-in only when a concrete parity requirement forces it.
+opt-in only when a concrete parity requirement forces it. *(Superseded by
+[`libraries.md`](./libraries.md): date and mbstring are to compile php-src's
+own C, and the library-backed extensions to link their libraries.)*
 
 ---
 
@@ -518,6 +528,7 @@ Every Category-2 adoption adds a C dependency, so the architecture makes them
    pure-Rust build rather than approximate.
 5. **Keep date, hashing, mbstring-core, and json pure-Rust**; adopt
    gmp/bcmath/openssl/libxml2/zlib natives only against a specific parity need.
+   *(Superseded by [`libraries.md`](./libraries.md).)*
 
 ---
 

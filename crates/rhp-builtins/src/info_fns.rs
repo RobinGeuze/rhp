@@ -235,6 +235,8 @@ fn print_info(flag: i64) -> Vec<u8> {
             if e.eq_ignore_ascii_case("core") {
                 o.row(&["PHP Version", version::PHP_VERSION]);
                 print_core_ini(&mut o);
+            } else if *e == "pcre" {
+                print_pcre(&mut o);
             } else {
                 o.row(&[&format!("{e} support"), "enabled"]);
             }
@@ -280,6 +282,39 @@ fn print_info(flag: i64) -> Vec<u8> {
         o.print("questions about PHP licensing, please contact license@php.net.\n");
     }
     o.0
+}
+
+/// PHP_MINFO_FUNCTION(pcre), then its ini entries.
+fn print_pcre(o: &mut Info) {
+    o.row(&[
+        "PCRE (Perl Compatible Regular Expressions) Support",
+        "enabled",
+    ]);
+    o.row(&["PCRE Library Version", &crate::pcre::version()]);
+    o.row(&["PCRE Unicode Version", &crate::pcre::unicode_version()]);
+    let jit = crate::pcre::jit_supported();
+    o.row(&["PCRE JIT Support", if jit { "enabled" } else { "disabled" }]);
+    if let Some(t) = crate::pcre::jit_target() {
+        o.row(&["PCRE JIT Target", &t]);
+    }
+    o.table_start();
+    o.header(&["Directive", "Local Value", "Master Value"]);
+    for name in ["pcre.backtrack_limit", "pcre.jit", "pcre.recursion_limit"] {
+        let Some(local) = crate::runtime_fns::ini_value(name.as_bytes()) else {
+            continue;
+        };
+        let master = crate::runtime_fns::ini_default_value(name.as_bytes()).flatten();
+        let show = |v: Option<Vec<u8>>| {
+            let v = v.unwrap_or_default();
+            if name == "pcre.jit" {
+                let on = crate::runtime_fns::ini_parse_bool(&v);
+                (if on { "On" } else { "Off" }).to_string()
+            } else {
+                String::from_utf8_lossy(&v).into_owned()
+            }
+        };
+        o.row(&[name, &show(local), &show(master)]);
+    }
 }
 
 fn print_core_ini(o: &mut Info) {

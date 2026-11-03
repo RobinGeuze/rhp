@@ -15,6 +15,80 @@ const IDS: &str = "crates/rhp-builtins/src/ext/tokenizer/ids.rs";
 const LANG: &str = "crates/rhp-builtins/src/zend/language_parser_tables.rs";
 const INI: &str = "crates/rhp-builtins/src/zend/ini_parser_tables.rs";
 
+/// The language parser's rules whose actions rhp runs (zend/language_parser.rs):
+/// a name for each, and the rule as Bison prints it in yyparse's reduce switch.
+const LANG_RULES: &[(&str, &str)] = &[
+    (
+        "TOP_HALT_COMPILER",
+        "top_statement: \"'__halt_compiler'\" '(' ')' ';'",
+    ),
+    (
+        "INNER_HALT_COMPILER",
+        "inner_statement: \"'__halt_compiler'\" '(' ')' ';'",
+    ),
+    ("IDENTIFIER_SEMI_RESERVED", "identifier: semi_reserved"),
+    (
+        "TRAIT_ALIAS_RESERVED",
+        "trait_alias: trait_method_reference \"'as'\" reserved_non_modifiers",
+    ),
+    (
+        "CLASS_CONST_DECL_SEMI_RESERVED",
+        "class_const_decl: semi_reserved '=' expr backup_doc_comment",
+    ),
+    ("CLASS_MODIFIERS_FIRST", "class_modifiers: class_modifier"),
+    (
+        "CLASS_MODIFIERS_ADD",
+        "class_modifiers: class_modifiers class_modifier",
+    ),
+    (
+        "ANON_CLASS_MODIFIERS_FIRST",
+        "anonymous_class_modifiers: class_modifier",
+    ),
+    (
+        "ANON_CLASS_MODIFIERS_ADD",
+        "anonymous_class_modifiers: anonymous_class_modifiers class_modifier",
+    ),
+    (
+        "MEMBER_MODIFIERS_FIRST",
+        "non_empty_member_modifiers: member_modifier",
+    ),
+    (
+        "MEMBER_MODIFIERS_ADD",
+        "non_empty_member_modifiers: non_empty_member_modifiers member_modifier",
+    ),
+    (
+        "CPP_MODIFIERS",
+        "optional_cpp_modifiers: non_empty_member_modifiers",
+    ),
+    (
+        "PROPERTY_MODIFIERS",
+        "property_modifiers: non_empty_member_modifiers",
+    ),
+    (
+        "METHOD_MODIFIERS",
+        "method_modifiers: non_empty_member_modifiers",
+    ),
+    (
+        "CLASS_CONST_MODIFIERS",
+        "class_const_modifiers: non_empty_member_modifiers",
+    ),
+    (
+        "PROPERTY_HOOK_MODIFIERS",
+        "property_hook_modifiers: non_empty_member_modifiers",
+    ),
+    (
+        "TRAIT_ALIAS_MODIFIER_IDENTIFIER",
+        "trait_alias: trait_method_reference \"'as'\" member_modifier identifier",
+    ),
+    (
+        "TRAIT_ALIAS_MODIFIER",
+        "trait_alias: trait_method_reference \"'as'\" member_modifier",
+    ),
+];
+
+/// Mid-rule actions (Bison numbers them `$@N`), found by the call they make.
+const LANG_ACTIONS: &[(&str, &str)] = &[("DECLARE_ENCODING", "zend_handle_encoding_declaration(")];
+
 pub fn main(args: &[String]) -> ExitCode {
     let check = args.iter().any(|a| a == "--check");
     finish("parser", check, files(args))
@@ -34,8 +108,20 @@ fn files(args: &[String]) -> Result<Vec<(&'static str, String)>, String> {
     let kinds = token_kinds(&ini_h, "ini_tokentype")?;
     Ok(vec![
         (IDS, token_ids(&header, &grammar)?),
-        (LANG, tables(&lang, "Zend/zend_language_parser.c", None)?),
-        (INI, tables(&ini, "Zend/zend_ini_parser.c", Some(&kinds))?),
+        (
+            LANG,
+            tables(
+                &lang,
+                "Zend/zend_language_parser.c",
+                None,
+                LANG_RULES,
+                LANG_ACTIONS,
+            )?,
+        ),
+        (
+            INI,
+            tables(&ini, "Zend/zend_ini_parser.c", Some(&kinds), &[], &[])?,
+        ),
     ])
 }
 
@@ -151,9 +237,16 @@ fn token_kinds(header: &str, enum_name: &str) -> Result<Vec<(String, i64)>, Stri
     Ok(out)
 }
 
-/// The tables Bison's yacc.c skeleton drives, as a `bison::Tables`, and
-/// the token kinds (above `error` and `invalid token`) when given.
-fn tables(c: &str, what: &str, kinds: Option<&[(String, i64)]>) -> Result<String, String> {
+/// The tables Bison's yacc.c skeleton drives, as a `bison::Tables`, the
+/// token kinds (above `error` and `invalid token`) when given, and the
+/// numbers of `rules` and `actions`.
+fn tables(
+    c: &str,
+    what: &str,
+    kinds: Option<&[(String, i64)]>,
+    rules: &[(&str, &str)],
+    actions: &[(&str, &str)],
+) -> Result<String, String> {
     if !c.contains("#define YYBISON_VERSION") || !c.contains("#define YYSKELETON_NAME \"yacc.c\"") {
         return Err(format!("{what}: not a Bison yacc.c parser"));
     }
@@ -174,6 +267,30 @@ fn tables(c: &str, what: &str, kinds: Option<&[(String, i64)]>) -> Result<String
             writeln!(o, "pub const {n}: i32 = {v};").unwrap();
         }
         o.push('\n');
+    }
+    if !rules.is_empty() {
+        o.push_str(
+            "/// The rules whose actions rhp runs, by their number in yyparse's\n\
+             /// reduce switch.\n\
+             pub mod rule {\n",
+        );
+        for (name, text) in rules {
+            writeln!(
+                o,
+                "    pub const {name}: usize = {};",
+                rule_number(c, text)?
+            )
+            .unwrap();
+        }
+        for (name, call) in actions {
+            writeln!(
+                o,
+                "    pub const {name}: usize = {};",
+                action_rule(c, call)?
+            )
+            .unwrap();
+        }
+        o.push_str("}\n\n");
     }
     o.push_str("pub static TABLES: Tables = Tables {\n");
     for (field, name) in [
@@ -240,6 +357,38 @@ fn tables(c: &str, what: &str, kinds: Option<&[(String, i64)]>) -> Result<String
     }
     o.push_str("];\n");
     Ok(o)
+}
+
+/// The number of the rule Bison prints as `case N: /* <text>  */`.
+fn rule_number(c: &str, text: &str) -> Result<usize, String> {
+    let comment = format!(": /* {text}  */");
+    c.lines()
+        .find_map(|l| {
+            let n = l
+                .trim_start()
+                .strip_prefix("case ")?
+                .strip_suffix(&comment)?;
+            n.parse().ok()
+        })
+        .ok_or(format!("no rule {text:?} in yyparse"))
+}
+
+/// The number of the one rule whose action contains `call`.
+fn action_rule(c: &str, call: &str) -> Result<usize, String> {
+    let mut case = None;
+    let mut found = Vec::new();
+    for l in c.lines() {
+        if let Some(rest) = l.trim_start().strip_prefix("case ") {
+            case = rest.split(':').next().and_then(|n| n.parse::<usize>().ok());
+        }
+        if l.contains(call) {
+            found.extend(case);
+        }
+    }
+    match found[..] {
+        [n] => Ok(n),
+        _ => Err(format!("{} actions call {call:?}, not one", found.len())),
+    }
 }
 
 fn define_line<'a>(c: &'a str, name: &str) -> Result<&'a str, String> {

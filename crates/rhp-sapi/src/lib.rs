@@ -20,6 +20,7 @@
 
 use std::io::Write;
 
+pub use rhp_builtins::zend::ParseFailure;
 use rhp_compiler::{compile_include, compile_with_source};
 use rhp_frontend::{Arena, Parsed};
 use rhp_values::{Thrown, Value};
@@ -104,11 +105,19 @@ impl Sapi for CliSapi {
     }
 }
 
-/// The parse error php raises for `src`: its own grammar and scanner errors
-/// (`rhp_builtins::zend`). For code php parses but mago-syntax does not,
-/// mago's error.
-pub fn parse_error(parsed: &Parsed, src: &[u8]) -> Option<(String, u32)> {
-    rhp_builtins::zend::syntax_error(src).or_else(|| parsed.parse_error())
+/// The error php raises parsing `src`: its own grammar, scanner and grammar
+/// action errors (`rhp_builtins::zend`). For code php parses but mago-syntax
+/// does not (mago's bugs, or its recursion limit on deeply nested code),
+/// mago's error, which is not php's.
+pub fn parse_error(parsed: &Parsed, src: &[u8]) -> Option<ParseFailure> {
+    rhp_builtins::zend::syntax_error(src).or_else(|| {
+        let (message, line) = parsed.parse_error()?;
+        Some(ParseFailure {
+            class: "ParseError",
+            message,
+            line,
+        })
+    })
 }
 
 /// The includer every SAPI installs: parse + compile an included file.
@@ -116,8 +125,12 @@ fn install_includer(vm: &mut Vm) {
     vm.set_includer(|file: &str, src: &[u8]| {
         let arena = Arena::new();
         let parsed = arena.parse(file.as_bytes(), src);
-        if let Some((message, line)) = parse_error(&parsed, src) {
-            return Err(IncludeError::Parse { message, line });
+        if let Some(f) = parse_error(&parsed, src) {
+            return Err(IncludeError::Parse {
+                class: f.class,
+                message: f.message,
+                line: f.line,
+            });
         }
         compile_include(parsed.program(), src, file).map_err(include_error)
     });
@@ -199,10 +212,14 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
 
     let arena = Arena::new();
     let parsed = arena.parse(file.as_bytes(), &source);
-    if let Some((message, line)) = parse_error(&parsed, &source) {
+    if let Some(f) = parse_error(&parsed, &source) {
         // line 0: php raised it outside any file
-        let at = if line == 0 { "[no active file]" } else { &file };
-        vm.report_parse_error(&message, at, line);
+        let at = if f.line == 0 {
+            "[no active file]"
+        } else {
+            &file
+        };
+        vm.report_parse_error(f.class, &f.message, at, f.line);
         vm.finish_request();
         return Outcome::Exit(255);
     }

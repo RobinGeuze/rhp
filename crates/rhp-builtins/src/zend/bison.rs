@@ -1,8 +1,9 @@
 //! The parts of Bison's yacc.c skeleton (3.8.2) that decide whether a token
-//! stream parses and how a syntax error is worded: the LR driver without
-//! semantic actions, `yypcontext_expected_tokens`, `yy_syntax_error_arguments`,
-//! `yysyntax_error` and the default `yytnamerr`. The tables come from php's
-//! own Bison output (`*_tables.rs`).
+//! stream parses and how a syntax error is worded: the LR driver (the parser
+//! runs the actions it needs through [`Parser::reduce`]),
+//! `yypcontext_expected_tokens`, `yy_syntax_error_arguments`, `yysyntax_error`
+//! and the default `yytnamerr`. The tables come from php's own Bison output
+//! (`*_tables.rs`).
 //!
 //! The skeleton is GPL-3.0-or-later with the Bison exception, which lets a
 //! parser built from it (and this port of the parts a parser uses) be
@@ -36,10 +37,37 @@ const SYM_UNDEF: i32 = 2;
 /// `YYARGS_MAX`: the unexpected token and at most four expected ones.
 const ARGS_MAX: usize = 5;
 
+/// The scanner and the grammar actions one parser runs over the automaton.
+pub trait Parser {
+    /// yylex: the next token (0 at the end, a character's code, or a token
+    /// id) and its semantic value.
+    fn lex(&mut self) -> (i32, u32);
+
+    /// The action of `rule` over the values of its right-hand side: the
+    /// rule's value, or `None` when the action raised an error (YYERROR or
+    /// YYABORT; php's grammars have no `error` token, so both end the parse).
+    /// Bison's default action is `$$ = $1`.
+    fn reduce(&mut self, rule: usize, rhs: &[u32]) -> Option<u32> {
+        let _ = rule;
+        Some(rhs.first().copied().unwrap_or(0))
+    }
+}
+
+/// A [`Parser`] that only scans.
+struct Tokens<F>(F);
+
+impl<F: FnMut() -> i32> Parser for Tokens<F> {
+    fn lex(&mut self) -> (i32, u32) {
+        ((self.0)(), 0)
+    }
+}
+
 /// How a parse ended.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
     Accept,
+    /// A grammar action raised an error.
+    Aborted,
     /// A syntax error: `args` are the symbols `yysyntax_error` reports, the
     /// unexpected token first. Empty when there was no lookahead.
     SyntaxError {
@@ -71,14 +99,21 @@ impl Tables {
     }
 
     /// Runs the automaton over the tokens `lex` returns (yylex's numbers:
-    /// 0 at the end, a character's code, or a token id), stopping at the
-    /// first syntax error. php's grammars do nothing in their actions that
-    /// changes which input parses, so none are run.
-    pub fn parse(&self, mut lex: impl FnMut() -> i32) -> Outcome {
+    /// 0 at the end, a character's code, or a token id), with no actions,
+    /// stopping at the first syntax error.
+    pub fn parse(&self, lex: impl FnMut() -> i32) -> Outcome {
+        self.run(&mut Tokens(lex))
+    }
+
+    /// Runs the automaton over `p`'s tokens and actions, stopping at the
+    /// first syntax error or failed action.
+    pub fn run(&self, p: &mut impl Parser) -> Outcome {
         let mut stack: Vec<i32> = vec![0];
+        // the semantic values, one per stack entry
+        let mut values: Vec<u32> = vec![0];
         let mut state = 0;
         // None: no lookahead (yychar == YYEMPTY)
-        let mut lookahead: Option<i32> = None;
+        let mut lookahead: Option<(i32, u32)> = None;
         loop {
             if stack.len() as i32 >= self.maxdepth {
                 return Outcome::MemoryExhausted;
@@ -89,26 +124,23 @@ impl Tables {
             let mut n = self.pact[state as usize] as i32;
             let mut rule = None;
             if n != self.pact_ninf {
-                let token = *lookahead.get_or_insert_with(|| {
-                    let c = lex();
-                    if c <= 0 {
-                        0
-                    } else {
-                        self.translate(c)
-                    }
+                let (token, value) = *lookahead.get_or_insert_with(|| {
+                    let (c, value) = p.lex();
+                    (if c <= 0 { 0 } else { self.translate(c) }, value)
                 });
                 n += token;
                 match (self.check_at(n), self.table_at(n)) {
                     (Some(c), Some(t)) if c == token => {
                         if t <= 0 {
                             if t == self.table_ninf {
-                                return self.error(state, lookahead);
+                                return self.error(state, Some(token));
                             }
                             rule = Some(-t);
                         } else {
                             // shift
                             state = t;
                             stack.push(state);
+                            values.push(value);
                             lookahead = None;
                             continue;
                         }
@@ -121,14 +153,20 @@ impl Tables {
                 None => {
                     let d = self.defact[state as usize] as i32;
                     if d == 0 {
-                        return self.error(state, lookahead);
+                        return self.error(state, lookahead.map(|l| l.0));
                     }
                     d
                 }
             };
             // reduce
             let len = self.r2[rule as usize] as usize;
-            stack.truncate(stack.len() - len);
+            let base = stack.len() - len;
+            let Some(value) = p.reduce(rule as usize, &values[base..]) else {
+                return Outcome::Aborted;
+            };
+            stack.truncate(base);
+            values.truncate(base);
+            values.push(value);
             let top = *stack.last().unwrap();
             let lhs = self.r1[rule as usize] as i32 - self.ntokens;
             let i = self.pgoto[lhs as usize] as i32 + top;

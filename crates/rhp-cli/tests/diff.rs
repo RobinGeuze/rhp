@@ -27,8 +27,12 @@ fn run_vm(source: &[u8], name: &str) -> Result<Vec<u8>, Thrown> {
     vm.set_includer(|file: &str, src: &[u8]| {
         let arena = Arena::new();
         let parsed = arena.parse(file.as_bytes(), src);
-        if let Some((message, line)) = rhp_sapi::parse_error(&parsed, src) {
-            return Err(IncludeError::Parse { message, line });
+        if let Some(f) = rhp_sapi::parse_error(&parsed, src) {
+            return Err(IncludeError::Parse {
+                class: f.class,
+                message: f.message,
+                line: f.line,
+            });
         }
         compile_include(parsed.program(), src, file).map_err(rhp_sapi::include_error)
     });

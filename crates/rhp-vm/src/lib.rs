@@ -59,8 +59,13 @@ type Includer = Box<dyn FnMut(&str, &[u8]) -> Result<Program, IncludeError>>;
 /// Why the SAPI's includer could not produce a `Program`.
 #[derive(Debug)]
 pub enum IncludeError {
-    /// A syntax error: becomes a catchable `ParseError` at (file, `line`).
-    Parse { message: String, line: u32 },
+    /// The parser refused the file: a catchable `class` (`ParseError`, or
+    /// `CompileError` from a grammar action) at (file, `line`).
+    Parse {
+        class: &'static str,
+        message: String,
+        line: u32,
+    },
     /// A compile error (E_COMPILE_ERROR) at `line`: a fatal error, not an
     /// exception — the request bails out (shutdown functions still run).
     Compile { message: String, line: u32 },
@@ -8585,11 +8590,17 @@ impl Vm {
                 Err(Thrown::Exit(255))
             }
             // raised outside the file: where the include/eval runs
-            Err(IncludeError::Parse { message, line: 0 }) => {
-                Err(Thrown::error("ParseError", message))
-            }
-            Err(IncludeError::Parse { message, line }) => Err(self.materialize(
-                Thrown::error("ParseError", message),
+            Err(IncludeError::Parse {
+                class,
+                message,
+                line: 0,
+            }) => Err(Thrown::error(class, message)),
+            Err(IncludeError::Parse {
+                class,
+                message,
+                line,
+            }) => Err(self.materialize(
+                Thrown::error(class, message),
                 Some((file.as_bytes().to_vec(), line)),
             )),
         }
@@ -8613,16 +8624,17 @@ impl Vm {
         self.destructibles.clear();
     }
 
-    /// The main script failed to parse: php reports `Parse error: …` through
-    /// the usual display/log path (exit status 255 is the SAPI's job).
-    pub fn report_parse_error(&mut self, message: &str, file: &str, line: u32) {
-        self.display_error(
-            4,
-            "Parse error",
-            message.as_bytes(),
-            file.as_bytes(),
-            line as i64,
-        );
+    /// The main script failed to parse: php reports the uncaught `class`
+    /// (zend_exception_error) as `Parse error: …` (E_PARSE) or, for a
+    /// CompileError, `Fatal error: …` (E_COMPILE_ERROR) through the usual
+    /// display/log path (exit status 255 is the SAPI's job).
+    pub fn report_parse_error(&mut self, class: &str, message: &str, file: &str, line: u32) {
+        let (ty, label) = if class == "ParseError" {
+            (4, "Parse error")
+        } else {
+            (64, "Fatal error")
+        };
+        self.display_error(ty, label, message.as_bytes(), file.as_bytes(), line as i64);
     }
 
     fn do_include(

@@ -1267,7 +1267,8 @@ fn syntax_error(src: &[u8], mode: i64) -> Option<(Vec<u8>, u32)> {
         Tok::Ch(c) => c as i32,
     });
     match outcome {
-        Outcome::Accept => None,
+        // no actions run, so none fails
+        Outcome::Accept | Outcome::Aborted => None,
         Outcome::MemoryExhausted => Some((b"memory exhausted".to_vec(), lx.lineno)),
         Outcome::SyntaxError { args } => Some((
             bison::syntax_error_message(&TABLES, &args, |n, _| bison::default_tnamerr(n)),

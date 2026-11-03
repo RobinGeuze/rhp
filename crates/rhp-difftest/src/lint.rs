@@ -111,7 +111,9 @@ pub fn lint_source(file: &str, src: &[u8]) -> Result<(), Refusal> {
     let res = catch_unwind(AssertUnwindSafe(|| {
         let arena = Arena::new();
         let parsed = arena.parse(file.as_bytes(), src);
-        let error = rhp_builtins::zend::syntax_error(src).or_else(|| parsed.parse_error());
+        let error = rhp_builtins::zend::syntax_error(src)
+            .map(|f| (f.message, f.line))
+            .or_else(|| parsed.parse_error());
         if let Some((message, line)) = error {
             return Err(Refusal::Parse { line, message });
         }

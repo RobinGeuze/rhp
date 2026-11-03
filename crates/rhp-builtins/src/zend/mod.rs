@@ -9,4 +9,4 @@ mod language_parser;
 #[rustfmt::skip]
 mod language_parser_tables;
 
-pub use language_parser::syntax_error;
+pub use language_parser::{syntax_error, ParseFailure};

@@ -6,6 +6,30 @@
 
 use super::bison::Tables;
 
+/// The rules whose actions rhp runs, by their number in yyparse's
+/// reduce switch.
+pub mod rule {
+    pub const TOP_HALT_COMPILER: usize = 115;
+    pub const INNER_HALT_COMPILER: usize = 150;
+    pub const IDENTIFIER_SEMI_RESERVED: usize = 85;
+    pub const TRAIT_ALIAS_RESERVED: usize = 346;
+    pub const CLASS_CONST_DECL_SEMI_RESERVED: usize = 395;
+    pub const CLASS_MODIFIERS_FIRST: usize = 198;
+    pub const CLASS_MODIFIERS_ADD: usize = 199;
+    pub const ANON_CLASS_MODIFIERS_FIRST: usize = 200;
+    pub const ANON_CLASS_MODIFIERS_ADD: usize = 201;
+    pub const MEMBER_MODIFIERS_FIRST: usize = 360;
+    pub const MEMBER_MODIFIERS_ADD: usize = 361;
+    pub const CPP_MODIFIERS: usize = 269;
+    pub const PROPERTY_MODIFIERS: usize = 354;
+    pub const METHOD_MODIFIERS: usize = 357;
+    pub const CLASS_CONST_MODIFIERS: usize = 359;
+    pub const PROPERTY_HOOK_MODIFIERS: usize = 384;
+    pub const TRAIT_ALIAS_MODIFIER_IDENTIFIER: usize = 347;
+    pub const TRAIT_ALIAS_MODIFIER: usize = 348;
+    pub const DECLARE_ENCODING: usize = 169;
+}
+
 pub static TABLES: Tables = Tables {
     final_state: 3,
     last: 11317,

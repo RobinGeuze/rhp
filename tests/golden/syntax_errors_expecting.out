@@ -31,6 +31,18 @@ bok
 Invalid indentation - tabs and spaces cannot be mixed @2
 ok
 ok
+syntax error, unexpected string content "abc", expecting end of file @3
+syntax error, unexpected single-quoted string "a" @1
+CompileError: Multiple access type modifiers are not allowed @3
+CompileError: Cannot use the final modifier on an abstract method @1
+CompileError: Cannot use the readonly modifier on a class constant @1
+CompileError: Cannot use the static modifier on a parameter @1
+CompileError: Cannot use the public modifier on a property hook @1
+CompileError: Multiple final modifiers are not allowed @1
+CompileError: Cannot use the abstract modifier on an anonymous class @1
+CompileError: Cannot use the readonly modifier on a method @1
+CompileError: __HALT_COMPILER() can only be used from the outermost scope @2
+ParseError: Cannot use "<?=" as an identifier @2
 string(36) "syntax error, unexpected integer "1""
 int(3)
 string(0) ""

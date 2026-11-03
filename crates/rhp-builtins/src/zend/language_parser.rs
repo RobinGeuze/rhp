@@ -2,38 +2,62 @@
 //! scanner feeds php's own LALR automaton (Zend/zend_language_parser.y, Bison
 //! tables from the release tarball), with the scanner's parser-mode errors
 //! (bracket nesting, `(real)`, octal literals, unterminated comments, `\u{}`
-//! escapes, heredoc indentation) raised when php's scanner raises them.
+//! escapes, heredoc indentation) raised when php's scanner raises them, and
+//! the grammar actions that refuse code (modifier lists, a nested
+//! `__halt_compiler()`, `<?=` as an identifier) run as php runs them.
 
 use super::bison::{self, Outcome};
-use super::language_parser_tables::TABLES;
+use super::language_parser_tables::{rule, TABLES};
 use crate::ext::tokenizer::ids::*;
 use crate::ext::tokenizer::lexer::{self, Tok};
 
-/// The first error php raises compiling `src`, as `(message, line)`: a
-/// syntax error (`syntax error, unexpected …, expecting …`) or a scanner
-/// error. `None` when php's grammar accepts the file. Line 0: php raises the
-/// error outside the file (the includer's line for include/eval, no file
-/// at all for the main script).
-pub fn syntax_error(src: &[u8]) -> Option<(String, u32)> {
+/// Why php refuses to compile a file: the exception it throws (a
+/// `ParseError`, or a `CompileError` from a grammar action), with php's
+/// message and line. Line 0: php raises it outside the file (the includer's
+/// line for include/eval, no file at all for the main script).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseFailure {
+    pub class: &'static str,
+    pub message: String,
+    pub line: u32,
+}
+
+const PARSE_ERROR: &str = "ParseError";
+const COMPILE_ERROR: &str = "CompileError";
+
+/// The first error php raises parsing `src`: a syntax error (`syntax error,
+/// unexpected …, expecting …`), a scanner error or a grammar action's error.
+/// `None` when php's parser accepts the file.
+pub fn syntax_error(src: &[u8]) -> Option<ParseFailure> {
     let toks = lexer::tokenize(src);
     let mut feed = Feed {
         src,
         toks: &toks,
         i: 0,
         nesting: Vec::new(),
-        halt: None,
+        stopped: false,
         last: None,
         strings: Vec::new(),
+        modifier_lists: Vec::new(),
+        declares: Vec::new(),
         error: None,
         final_line: 1 + count_newlines(src),
     };
-    let outcome = TABLES.parse(|| feed.next());
+    let outcome = TABLES.run(&mut feed);
     if let Some(e) = feed.error.take() {
         return Some(e);
     }
+    let failure = |message: String, line| {
+        Some(ParseFailure {
+            class: PARSE_ERROR,
+            message,
+            line,
+        })
+    };
     match outcome {
-        Outcome::Accept => None,
-        Outcome::MemoryExhausted => Some(("memory exhausted".into(), feed.line())),
+        // an action that fails records its error
+        Outcome::Accept | Outcome::Aborted => None,
+        Outcome::MemoryExhausted => failure("memory exhausted".into(), feed.line()),
         Outcome::SyntaxError { args } => {
             let at_end = args.first() == Some(&0);
             let msg = bison::syntax_error_message(&TABLES, &args, |name, unexpected| {
@@ -46,29 +70,119 @@ pub fn syntax_error(src: &[u8]) -> Option<(String, u32)> {
                     expected_name(name)
                 }
             });
-            Some((String::from_utf8_lossy(&msg).into_owned(), feed.line()))
+            // yysyntax_error's buffer is read as a C string
+            let msg = msg.split(|&c| c == 0).next().unwrap_or_default();
+            failure(String::from_utf8_lossy(msg).into_owned(), feed.line())
         }
     }
 }
 
 /// The scanner as the parser pulls tokens from it (`zendlex` in parser
 /// mode): whitespace, comments and open tags are skipped, `<?=` is `echo`,
-/// `?>` is `;`, and lexing stops after `__halt_compiler();`.
+/// `?>` is `;`, and lexing stops once the parser takes `__halt_compiler();`
+/// as a top-level statement. The semantic value of a token is its id as
+/// scanned (`<?=` stays T_OPEN_TAG_WITH_ECHO).
 struct Feed<'a> {
     src: &'a [u8],
     toks: &'a [Tok],
     i: usize,
     /// The scanner's nest_location_stack: (bracket, line).
     nesting: Vec<(u8, u32)>,
-    /// Significant tokens still to come after T_HALT_COMPILER.
-    halt: Option<u8>,
+    /// zend_stop_lexing() ran.
+    stopped: bool,
     /// The token last handed to the parser (None: end of file).
     last: Option<usize>,
     /// The strings being scanned, innermost last (code inside `{$ }` is
     /// `Ctx::Code`).
     strings: Vec<Ctx>,
-    error: Option<(String, u32)>,
+    /// The values of `non_empty_member_modifiers`: lists of modifier tokens.
+    modifier_lists: Vec<Vec<u32>>,
+    /// The `(` of each `declare(` whose list the parser has not finished.
+    declares: Vec<usize>,
+    error: Option<ParseFailure>,
     final_line: u32,
+}
+
+impl bison::Parser for Feed<'_> {
+    fn lex(&mut self) -> (i32, u32) {
+        let id = self.next();
+        let raw = match self.last {
+            Some(i) if id > 0 && id != SCANNER_ERROR => self.toks[i].id as u32,
+            _ => 0,
+        };
+        (id, raw)
+    }
+
+    /// The actions of the rules that can refuse code; the others keep
+    /// `$$ = $1`, which carries a modifier or keyword token up to them.
+    fn reduce(&mut self, r: usize, rhs: &[u32]) -> Option<u32> {
+        let value = match r {
+            rule::TOP_HALT_COMPILER => {
+                self.stopped = true;
+                Ok(0)
+            }
+            rule::INNER_HALT_COMPILER => {
+                Err("__HALT_COMPILER() can only be used from the outermost scope".to_string())
+            }
+            rule::IDENTIFIER_SEMI_RESERVED
+            | rule::CLASS_CONST_DECL_SEMI_RESERVED
+            | rule::TRAIT_ALIAS_RESERVED => {
+                // zend_lex_tstring
+                let t = if r == rule::TRAIT_ALIAS_RESERVED {
+                    rhs[2]
+                } else {
+                    rhs[0]
+                };
+                if t == T_OPEN_TAG_WITH_ECHO as u32 {
+                    let line = self.line();
+                    self.error = Some(ParseFailure {
+                        class: PARSE_ERROR,
+                        message: "Cannot use \"<?=\" as an identifier".into(),
+                        line,
+                    });
+                    return None;
+                }
+                Ok(rhs[0])
+            }
+            rule::CLASS_MODIFIERS_FIRST => Ok(class_flag(rhs[0])),
+            rule::CLASS_MODIFIERS_ADD => add_class_modifier(rhs[0], class_flag(rhs[1])),
+            rule::ANON_CLASS_MODIFIERS_FIRST => add_anonymous_class_modifier(0, class_flag(rhs[0])),
+            rule::ANON_CLASS_MODIFIERS_ADD => {
+                add_anonymous_class_modifier(rhs[0], class_flag(rhs[1]))
+            }
+            rule::MEMBER_MODIFIERS_FIRST => {
+                self.modifier_lists.push(vec![rhs[0]]);
+                Ok(self.modifier_lists.len() as u32 - 1)
+            }
+            rule::MEMBER_MODIFIERS_ADD => {
+                self.modifier_lists[rhs[0] as usize].push(rhs[1]);
+                Ok(rhs[0])
+            }
+            rule::CPP_MODIFIERS => self.modifier_list(Target::Cpp, rhs[0]),
+            rule::PROPERTY_MODIFIERS => self.modifier_list(Target::Property, rhs[0]),
+            rule::METHOD_MODIFIERS => self.modifier_list(Target::Method, rhs[0]),
+            rule::CLASS_CONST_MODIFIERS => self.modifier_list(Target::Constant, rhs[0]),
+            rule::PROPERTY_HOOK_MODIFIERS => self.modifier_list(Target::PropertyHook, rhs[0]),
+            rule::TRAIT_ALIAS_MODIFIER_IDENTIFIER | rule::TRAIT_ALIAS_MODIFIER => {
+                modifier_token_to_flag(Target::Method, rhs[2])
+            }
+            rule::DECLARE_ENCODING => self.encoding_declaration(),
+            _ => return Some(rhs.first().copied().unwrap_or(0)),
+        };
+        match value {
+            Ok(v) => Some(v),
+            Err(message) => {
+                // a CompileError thrown while compiling: CG(zend_lineno)
+                let line = self.line();
+                self.error = Some(ParseFailure {
+                    class: COMPILE_ERROR,
+                    message,
+                    line,
+                });
+                None
+            }
+        }
+    }
 }
 
 impl Feed<'_> {
@@ -78,6 +192,10 @@ impl Feed<'_> {
             return self.final_line;
         };
         let t = &self.toks[i];
+        if self.unclosed_single_quote(t) {
+            // the scanner returns it without HANDLE_NEWLINES
+            return t.line as u32;
+        }
         let mut line = t.line as u32 + count_newlines(t.text(self.src));
         if defers_newline(self.src, self.toks, i) {
             line -= 1;
@@ -85,16 +203,76 @@ impl Feed<'_> {
         line
     }
 
-    fn fail(&mut self, msg: String, line: u32) -> i32 {
-        self.error = Some((msg, line));
+    /// The T_ENCAPSED_AND_WHITESPACE the scanner returns for a `'` (or `b'`)
+    /// in code that is never closed.
+    fn unclosed_single_quote(&self, t: &Tok) -> bool {
+        let text = t.text(self.src);
+        t.id == T_ENCAPSED_AND_WHITESPACE
+            && matches!(self.strings.last(), None | Some(Ctx::Code))
+            && (text.starts_with(b"'") || text.starts_with(b"b'") || text.starts_with(b"B'"))
+    }
+
+    fn fail(&mut self, message: String, line: u32) -> i32 {
+        self.error = Some(ParseFailure {
+            class: PARSE_ERROR,
+            message,
+            line,
+        });
         SCANNER_ERROR
+    }
+
+    fn modifier_list(&self, target: Target, list: u32) -> Result<u32, String> {
+        modifier_list_to_flags(target, &self.modifier_lists[list as usize])
+    }
+
+    /// zend_handle_encoding_declaration's check on the `declare(…)` list
+    /// just parsed: an `encoding` value must be a literal.
+    fn encoding_declaration(&mut self) -> Result<u32, String> {
+        let Some(open) = self.declares.pop() else {
+            return Ok(0);
+        };
+        // the list's tokens up to its `)`, split at its commas
+        let mut entries: Vec<Vec<usize>> = vec![Vec::new()];
+        let mut depth = 0;
+        for (k, t) in self.toks.iter().enumerate().skip(open + 1) {
+            if matches!(t.id, T_WHITESPACE | T_COMMENT | T_DOC_COMMENT) {
+                continue;
+            }
+            match t.id {
+                0x28 | 0x5B | 0x7B | T_CURLY_OPEN | T_DOLLAR_OPEN_CURLY_BRACES | T_ATTRIBUTE => {
+                    depth += 1
+                }
+                0x29 if depth == 0 => break,
+                0x29 | 0x5D | 0x7D => depth -= 1,
+                0x2C if depth == 0 => {
+                    entries.push(Vec::new());
+                    continue;
+                }
+                _ => {}
+            }
+            entries.last_mut().unwrap().push(k);
+        }
+        for e in &entries {
+            // const_decl: T_STRING '=' expr
+            let [name, _, value @ ..] = &e[..] else {
+                continue;
+            };
+            let ids: Vec<i64> = value.iter().map(|&k| self.toks[k].id).collect();
+            let named = self.toks[*name]
+                .text(self.src)
+                .eq_ignore_ascii_case(b"encoding");
+            if named && !is_literal(&ids) {
+                return Err("Encoding must be a literal".into());
+            }
+        }
+        Ok(0)
     }
 
     fn next(&mut self) -> i32 {
         if self.error.is_some() {
             return SCANNER_ERROR;
         }
-        if self.halt == Some(0) {
+        if self.stopped {
             return self.end();
         }
         while let Some(t) = self.toks.get(self.i) {
@@ -112,6 +290,9 @@ impl Feed<'_> {
                     continue;
                 }
                 _ => {}
+            }
+            if t.id == 0x28 && self.last.is_some_and(|p| self.toks[p].id == T_DECLARE) {
+                self.declares.push(i);
             }
             self.last = Some(i);
             if let Some(e) = self.string_context(i) {
@@ -150,11 +331,6 @@ impl Feed<'_> {
                 T_CLOSE_TAG => b';' as i64,
                 id => id,
             };
-            match self.halt {
-                Some(n) => self.halt = Some(n - 1),
-                None if id == T_HALT_COMPILER && self.nesting.is_empty() => self.halt = Some(3),
-                None => {}
-            }
             return id as i32;
         }
         self.end()
@@ -218,7 +394,7 @@ impl Feed<'_> {
 
     /// END, or the scanner's check_nesting_at_end error.
     fn end(&mut self) -> i32 {
-        if self.halt != Some(0) {
+        if !self.stopped {
             self.last = None;
         }
         if let Some(&(o, ol)) = self.nesting.last() {
@@ -227,6 +403,211 @@ impl Feed<'_> {
         }
         0
     }
+}
+
+/// Whether an expression's tokens make a literal (ZEND_AST_ZVAL) in php's
+/// parser: numbers, strings and heredocs without variables, in parentheses
+/// or joined by `.` (zend_ast_create_concat_op folds those).
+fn is_literal(t: &[i64]) -> bool {
+    let mut i = 0;
+    loop {
+        let n = literal_atom(&t[i..]);
+        if n == 0 {
+            return false;
+        }
+        i += n;
+        match t.get(i) {
+            None => return true,
+            Some(0x2E) => i += 1,
+            Some(_) => return false,
+        }
+    }
+}
+
+/// The length of the literal operand at the start of `t` (0: none).
+fn literal_atom(t: &[i64]) -> usize {
+    match t {
+        [T_LNUMBER | T_DNUMBER | T_CONSTANT_ENCAPSED_STRING, ..] => 1,
+        [T_START_HEREDOC, T_END_HEREDOC, ..] => 2,
+        [T_START_HEREDOC, T_ENCAPSED_AND_WHITESPACE, T_END_HEREDOC, ..] => 3,
+        [0x28, ..] => {
+            let mut depth = 0;
+            for (k, &id) in t.iter().enumerate() {
+                match id {
+                    0x28 => depth += 1,
+                    0x29 => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return if is_literal(&t[1..k]) { k + 1 } else { 0 };
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            0
+        }
+        _ => 0,
+    }
+}
+
+/// zend_modifier_target.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Target {
+    Property,
+    Method,
+    Constant,
+    Cpp,
+    PropertyHook,
+}
+
+// The ZEND_ACC_* flags the modifier checks use.
+const ACC_PUBLIC: u32 = 1 << 0;
+const ACC_PROTECTED: u32 = 1 << 1;
+const ACC_PRIVATE: u32 = 1 << 2;
+const ACC_PPP_MASK: u32 = ACC_PUBLIC | ACC_PROTECTED | ACC_PRIVATE;
+const ACC_STATIC: u32 = 1 << 4;
+const ACC_FINAL: u32 = 1 << 5;
+const ACC_ABSTRACT: u32 = 1 << 6;
+const ACC_EXPLICIT_ABSTRACT_CLASS: u32 = 1 << 6;
+const ACC_READONLY: u32 = 1 << 7;
+const ACC_PUBLIC_SET: u32 = 1 << 10;
+const ACC_PROTECTED_SET: u32 = 1 << 11;
+const ACC_PRIVATE_SET: u32 = 1 << 12;
+const ACC_PPP_SET_MASK: u32 = ACC_PUBLIC_SET | ACC_PROTECTED_SET | ACC_PRIVATE_SET;
+const ACC_READONLY_CLASS: u32 = 1 << 16;
+const ACC_NO_DYNAMIC_PROPERTIES: u32 = 1 << 13;
+
+/// class_modifier's action.
+fn class_flag(token: u32) -> u32 {
+    match token as i64 {
+        T_ABSTRACT => ACC_EXPLICIT_ABSTRACT_CLASS,
+        T_FINAL => ACC_FINAL,
+        _ => ACC_READONLY_CLASS | ACC_NO_DYNAMIC_PROPERTIES,
+    }
+}
+
+/// zend_add_class_modifier.
+fn add_class_modifier(flags: u32, new_flag: u32) -> Result<u32, String> {
+    let new_flags = flags | new_flag;
+    let both = |f: u32| flags & f != 0 && new_flag & f != 0;
+    if both(ACC_EXPLICIT_ABSTRACT_CLASS) {
+        return Err("Multiple abstract modifiers are not allowed".into());
+    }
+    if both(ACC_FINAL) {
+        return Err("Multiple final modifiers are not allowed".into());
+    }
+    if both(ACC_READONLY_CLASS) {
+        return Err("Multiple readonly modifiers are not allowed".into());
+    }
+    if new_flags & ACC_EXPLICIT_ABSTRACT_CLASS != 0 && new_flags & ACC_FINAL != 0 {
+        return Err("Cannot use the final modifier on an abstract class".into());
+    }
+    Ok(new_flags)
+}
+
+/// zend_add_anonymous_class_modifier.
+fn add_anonymous_class_modifier(flags: u32, new_flag: u32) -> Result<u32, String> {
+    if new_flag & ACC_EXPLICIT_ABSTRACT_CLASS != 0 {
+        return Err("Cannot use the abstract modifier on an anonymous class".into());
+    }
+    if new_flag & ACC_FINAL != 0 {
+        return Err("Cannot use the final modifier on an anonymous class".into());
+    }
+    if flags & ACC_READONLY_CLASS != 0 && new_flag & ACC_READONLY_CLASS != 0 {
+        return Err("Multiple readonly modifiers are not allowed".into());
+    }
+    Ok(flags | new_flag)
+}
+
+/// zend_modifier_token_to_string.
+fn modifier_name(token: u32) -> &'static str {
+    match token as i64 {
+        T_PUBLIC => "public",
+        T_PROTECTED => "protected",
+        T_PRIVATE => "private",
+        T_STATIC => "static",
+        T_FINAL => "final",
+        T_READONLY => "readonly",
+        T_ABSTRACT => "abstract",
+        T_PUBLIC_SET => "public(set)",
+        T_PROTECTED_SET => "protected(set)",
+        _ => "private(set)",
+    }
+}
+
+/// zend_modifier_token_to_flag.
+fn modifier_token_to_flag(target: Target, token: u32) -> Result<u32, String> {
+    use Target::*;
+    let flag = match token as i64 {
+        T_PUBLIC if target != PropertyHook => Some(ACC_PUBLIC),
+        T_PROTECTED if target != PropertyHook => Some(ACC_PROTECTED),
+        T_PRIVATE if target != PropertyHook => Some(ACC_PRIVATE),
+        T_READONLY if matches!(target, Property | Cpp) => Some(ACC_READONLY),
+        T_ABSTRACT if matches!(target, Method | Property) => Some(ACC_ABSTRACT),
+        T_FINAL => Some(ACC_FINAL),
+        T_STATIC if matches!(target, Property | Method) => Some(ACC_STATIC),
+        T_PUBLIC_SET if matches!(target, Property | Cpp) => Some(ACC_PUBLIC_SET),
+        T_PROTECTED_SET if matches!(target, Property | Cpp) => Some(ACC_PROTECTED_SET),
+        T_PRIVATE_SET if matches!(target, Property | Cpp) => Some(ACC_PRIVATE_SET),
+        _ => None,
+    };
+    flag.ok_or_else(|| {
+        let member = match target {
+            Property => "property",
+            Method => "method",
+            Constant => "class constant",
+            Cpp => "parameter",
+            PropertyHook => "property hook",
+        };
+        format!(
+            "Cannot use the {} modifier on a {member}",
+            modifier_name(token)
+        )
+    })
+}
+
+/// zend_modifier_list_to_flags.
+fn modifier_list_to_flags(target: Target, tokens: &[u32]) -> Result<u32, String> {
+    let mut flags = 0;
+    for &token in tokens {
+        let new_flag = modifier_token_to_flag(target, token)?;
+        // zend_add_member_modifier's errors come before a duplicate's
+        let duplicate = flags & new_flag != 0;
+        flags = add_member_modifier(flags, new_flag, target)?;
+        if duplicate {
+            return Err(format!(
+                "Multiple {} modifiers are not allowed",
+                modifier_name(token)
+            ));
+        }
+    }
+    Ok(flags)
+}
+
+/// zend_add_member_modifier.
+fn add_member_modifier(flags: u32, new_flag: u32, target: Target) -> Result<u32, String> {
+    let new_flags = flags | new_flag;
+    if flags & ACC_PPP_MASK != 0 && new_flag & ACC_PPP_MASK != 0 {
+        return Err("Multiple access type modifiers are not allowed".into());
+    }
+    if new_flags & ACC_ABSTRACT != 0 && new_flags & ACC_FINAL != 0 {
+        match target {
+            Target::Method => {
+                return Err("Cannot use the final modifier on an abstract method".into())
+            }
+            Target::Property => {
+                return Err("Cannot use the final modifier on an abstract property".into())
+            }
+            _ => {}
+        }
+    }
+    if matches!(target, Target::Property | Target::Cpp)
+        && flags & ACC_PPP_SET_MASK != 0
+        && new_flag & ACC_PPP_SET_MASK != 0
+    {
+        return Err("Multiple access type modifiers are not allowed".into());
+    }
+    Ok(new_flags)
 }
 
 /// `report_bad_nesting`.
@@ -561,13 +942,21 @@ fn unexpected_name(name: &str, text: &[u8]) -> Vec<u8> {
     }
     let mut m = toktype.to_vec();
     m.extend_from_slice(b" \"");
-    if content.len() > 33 {
-        m.extend_from_slice(&content[..30]);
+    let truncated = content.len() > 33;
+    if truncated {
+        content = &content[..30];
+    }
+    // snprintf's `%.*s` stops at a NUL, but yysyntax_error advances by the
+    // full length, past the string's end: the message ends after this name
+    let nul = content.iter().position(|&c| c == 0);
+    m.extend_from_slice(&content[..nul.unwrap_or(content.len())]);
+    if truncated {
         m.extend_from_slice(b"...");
-    } else {
-        m.extend_from_slice(content);
     }
     m.push(b'"');
+    if nul.is_some() {
+        m.push(0);
+    }
     m
 }
 

@@ -76,8 +76,8 @@ fn apply_parse_mode(toks: &mut [Tok]) {
 
 fn lex(host: &mut dyn Host, code: &[u8], flags: i64) -> Result<Vec<Tok>, Thrown> {
     if flags & TOKEN_PARSE != 0 {
-        if let Some((message, line)) = crate::zend::syntax_error(code) {
-            return Err(parse_error(host, message, line));
+        if let Some(f) = crate::zend::syntax_error(code) {
+            return Err(parse_error(host, f));
         }
     }
     let mut toks = lexer::tokenize(code);
@@ -87,12 +87,17 @@ fn lex(host: &mut dyn Host, code: &[u8], flags: i64) -> Result<Vec<Tok>, Thrown>
     Ok(toks)
 }
 
-/// The ParseError of a TOKEN_PARSE run: php locates it at the error's line
-/// in a nameless file.
-fn parse_error(host: &mut dyn Host, message: String, line: u32) -> Thrown {
-    let fallback = Thrown::error("ParseError", message.clone());
+/// The ParseError (or CompileError) of a TOKEN_PARSE run: php locates it at
+/// the error's line in a nameless file.
+fn parse_error(host: &mut dyn Host, f: crate::zend::ParseFailure) -> Thrown {
+    let crate::zend::ParseFailure {
+        class,
+        message,
+        line,
+    } = f;
+    let fallback = Thrown::error(class, message.clone());
     let Ok(e @ Value::Object(_)) =
-        host.reflect_new_instance(b"ParseError", vec![Value::str(message)], true)
+        host.reflect_new_instance(class.as_bytes(), vec![Value::str(message)], true)
     else {
         return fallback;
     };

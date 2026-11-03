@@ -41,6 +41,29 @@ t("echo <<<END\n      a\n     b\n     END;");
 t("echo <<<END\n\t   a\n\t\tEND;");
 t('__halt_compiler(); }}}}');
 t('return 7;');
+// an unclosed single quote: php reports the line it starts on
+t("echo 1;\n\n'abc\n\ndef");
+// the token text stops at a NUL, and so does the message
+t("function f(\$x 'a\0b'");
+// grammar actions that refuse code throw a CompileError
+function c($code) {
+    try {
+        eval($code);
+        echo "ok\n";
+    } catch (CompileError $e) {
+        echo get_class($e), ": ", $e->getMessage(), " @", $e->getLine(), "\n";
+    }
+}
+c("class A {\n    public\n    private \$x;\n}");
+c('class A { final abstract function f(); }');
+c('class A { readonly const X = 1; }');
+c('class A { function __construct(static $x) {} }');
+c('class A { public $x { public get; } }');
+c('final final class A {}');
+c('$o = new abstract class {};');
+c('trait T {} class A { use T { f as readonly g; } }');
+c("if (1):\n    __halt_compiler();\nendif;");
+c("trait T {} class B { use T {\n    f as g?><?= as h;\n} }");
 try {
     token_get_all("<?php\n\n1 1;", TOKEN_PARSE);
 } catch (ParseError $e) {

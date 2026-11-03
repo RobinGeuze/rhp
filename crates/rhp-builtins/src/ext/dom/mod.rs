@@ -220,11 +220,13 @@ fn err_message(code: i64) -> &'static str {
 /// either way the method then returns false.
 fn dom_throw(host: &mut dyn Host, code: i64, strict: bool) -> Result<Value, Thrown> {
     if strict {
-        host.call_callable(
-            &s(b"__dom_throw".to_vec()),
-            &[Value::Int(code), s(err_message(code).as_bytes().to_vec())],
-        )?;
-        return Ok(Value::Bool(false));
+        let args = vec![s(err_message(code)), Value::Int(code)];
+        let e = match host.reflect_new_instance(b"DOMException", args, true) {
+            Ok(Value::Object(h)) => Thrown::Object(h),
+            Ok(_) => Thrown::error("DOMException", err_message(code)),
+            Err(t) => t,
+        };
+        return Err(e);
     }
     host.emit_diagnostic(crate::E_WARNING, err_message(code))?;
     Ok(Value::Bool(false))

@@ -1,0 +1,17 @@
+string(0) ""
+string(0) ""
+string(2) "rr"
+string(2) "rr"
+string(1) "h"
+bool(false)
+bool(true)
+string(4) "MyEl"
+int(14)
+string(4) "MyEl"
+string(0) ""
+<?xml version="1.0"?>
+<a><b>t</b><p>set</p><q>typed</q></a>
+{"b":"t","p":"set","q":"typed"}
+b MyEl t
+p MyEl set
+q MyEl typed

@@ -6,7 +6,7 @@ or outright no-ops a piece of PHP behaviour, with a concrete plan to finish each
 **Ground truth:** the reference `php` (the differential oracle; see `crates/rhp-builtins/src/version.rs`). Every item below
 was confirmed by reading the cited `file:line` in `crates/` and, where relevant,
 by comparing against php's documented behaviour. The goal that orders the roadmap
-is the north star — run `composer.phar` end to end (`modules-and-streams.md`) and
+is the north star — run `composer.phar` end to end (`history/modules-and-streams.md`) and
 then real frameworks.
 
 Nothing here is a *bug* in the sense of "wrong where it claims to be right": each
@@ -200,7 +200,7 @@ The original notes:
   is the Reflection extension itself (a separate, large work item — `modules.md`
   M2 names Reflection as the next composer milestone). The list should be derived
   from actually-registered modules, not hand-maintained, once the `ModuleDef`
-  system (`modules-and-streams.md` §1) is in place.
+  system (`history/modules-and-streams.md` §1) is in place.
 - **Effort/priority:** (a) low / high — delete one line to stop lying.
   (b) high / high — Reflection is the M2 blocker for `composer list`/`about`.
 
@@ -265,7 +265,7 @@ The original notes:
 - **OK because:** rhp's streams are synchronous in-memory/file; blocking and
   buffering have no observable effect.
 - **Full impl:** only meaningful once real sockets/pipes exist (networking is out
-  of scope for composer per `modules-and-streams.md`). Leave as accept-and-ignore.
+  of scope for composer per `history/modules-and-streams.md`). Leave as accept-and-ignore.
 - **Effort/priority:** low / low.
 
 ### 2.3 `stream_isatty` / `posix_isatty` / `sapi_windows_vt100_support` → false
@@ -360,7 +360,7 @@ The module is deliberately "READ-ONLY, native format only"
   handled (`:118-122`).
 - **Breaks:** bz2-compressed phars.
 - **Full impl:** add a pure-Rust bzip2 decoder (`bzip2-rs`, or `bzip2` crate with a
-  pure backend per `modules-and-streams.md` §5) and decompress in the `BZ2` arm.
+  pure backend per `history/modules-and-streams.md` §5) and decompress in the `BZ2` arm.
 - **Effort/priority:** low / low.
 
 ### 3.3 Read-only: no write/create; `createDefaultStub`→`""`, `canCompress`→false
@@ -374,7 +374,7 @@ The module is deliberately "READ-ONLY, native format only"
   phar — so this blocks `composer self-update` specifically.
 - **Full impl:** a native-format manifest *writer* (emit stub + manifest + data +
   recomputed signature), a writable `Phar` object model (per-VM open-archive state
-  keyed by handle, as the zip plan in `modules-and-streams.md` §4 describes), and
+  keyed by handle, as the zip plan in `history/modules-and-streams.md` §4 describes), and
   `createDefaultStub` producing php's canonical stub source. Large; gated behind
   `phar.readonly` semantics.
 - **Effort/priority:** high / low (not needed for `install`; only self-update).
@@ -386,7 +386,7 @@ The module is deliberately "READ-ONLY, native format only"
 - **Breaks:** tar-based and zip-based phars (some tools ship these).
 - **Full impl:** detect the format and dispatch to a tar reader (`tar` crate) or a
   zip reader (`zip` crate) — the same crates the M2 install path needs for
-  tgz/zip dist (`modules-and-streams.md` §4-5), so this rides along with that work.
+  tgz/zip dist (`history/modules-and-streams.md` §4-5), so this rides along with that work.
 - **Effort/priority:** med / low.
 
 ---
@@ -616,7 +616,7 @@ packages, then **general framework compatibility**, then long-tail parity.
 
 ### For `composer install` (M2 critical path)
 1. **Reflection extension** (#1.10b) — named as the M2 blocker in
-   `modules-and-streams.md`; also stop `extension_loaded('reflection')` lying today
+   `history/modules-and-streams.md`; also stop `extension_loaded('reflection')` lying today
    (#1.10a, one-line). *High effort, highest priority.*
 2. **`register_shutdown_function` actually runs** (#1.5) — composer plugins and
    error paths depend on it. *High / high.*
@@ -626,7 +626,7 @@ packages, then **general framework compatibility**, then long-tail parity.
    composer probes writability and changes directories during install.
    *Med / med.*
 5. **`gzopen` + `compress.zlib://`** (#4.2) and **tar/zip phar + ZipArchive**
-   (#3.4, and `modules-and-streams.md` §4) — needed to unpack tgz/zip dist archives.
+   (#3.4, and `history/modules-and-streams.md` §4) — needed to unpack tgz/zip dist archives.
    *Med / med.* (Networking to *fetch* them is out of scope per the modules doc.)
 
 ### For general framework compatibility
@@ -658,7 +658,7 @@ packages, then **general framework compatibility**, then long-tail parity.
     them*.
 
 The through-line: items 1–5 are gated by the composer-install goal and the
-`modules-and-streams.md` M2 plan; items 6–12 are what turns "runs composer" into
+`history/modules-and-streams.md` M2 plan; items 6–12 are what turns "runs composer" into
 "runs a framework"; everything in the long tail is parity polish the differential
 harness already lets rhp defer safely (by both sides staying silent, or by keeping
 the diverging surface — object ids, compressed bytes — out of the byte-exact

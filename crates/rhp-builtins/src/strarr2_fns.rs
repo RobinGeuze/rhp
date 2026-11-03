@@ -6,13 +6,6 @@
 //! Every function here is verified byte-for-byte against the local php 8.5.8
 //! binary (see the `#[cfg(test)]` block — expected values hardcoded from
 //! `php -r '...'` output).
-//!
-//! Wire this module into `lib.rs` with:
-//! ```ignore
-//! mod strarr2_fns;                 // near the other `mod` lines
-//! // ...and inside registry(), after building `m`:
-//! strarr2_fns::register(&mut m);
-//! ```
 
 use std::collections::HashMap;
 

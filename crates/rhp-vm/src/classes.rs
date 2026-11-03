@@ -3,7 +3,7 @@
 //! look up methods/static props. See `docs/design/oop.md`.
 //!
 //! Inheritance is flattened at link time (parent merged first, own members
-//! override) for O(1), inline-cacheable dispatch.
+//! override) for O(1) dispatch.
 
 use std::cell::RefCell;
 use std::rc::Rc;

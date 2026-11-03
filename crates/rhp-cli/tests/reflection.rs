@@ -106,9 +106,9 @@ fn by_ref_foreach_and_reference_binding() {
     );
 }
 
-/// The prelude's native `__reflect*` helpers are reachable from PHP code
-/// (and a Reflection subclass can forge their arguments): garbage input
-/// must raise or return, never panic the engine.
+/// Only prelude code can call the native `__reflect*` helpers, but a
+/// Reflection subclass can forge the protected state the prelude passes
+/// them: garbage there must raise or return, never panic the engine.
 #[test]
 fn reflect_helpers_survive_garbage() {
     let dir: PathBuf = std::env::temp_dir().join("rhp_refl_garbage");
@@ -118,15 +118,30 @@ fn reflect_helpers_survive_garbage() {
     std::fs::write(
         &f,
         r#"<?php
-        $ops = ['class', 'class_of', 'methods', 'props', 'consts', 'const', 'prop', 'fn',
-                'attr_args', 'param_default', 'is_a', 'static_props', 'set_static',
-                'default_props', 'is_init', 'obj_props', 'closure', 'nope'];
+        error_reporting(0);
+        trait Forge { function forge($slot, $v) { $this->$slot = $v; return $this; } }
+        class F extends ReflectionFunction { use Forge; }
+        class M extends ReflectionMethod { use Forge; }
+        class C extends ReflectionClass { use Forge; }
+        class O extends ReflectionObject { use Forge; }
         $vals = [null, 0, -1, PHP_INT_MAX, '', "\0", 'stdClass', [], [1], ['stdClass'],
                  [1, 2, 3], new stdClass, function () {}, [new stdClass, 'x']];
-        foreach ($ops as $op) {
-            foreach ($vals as $a) {
-                foreach ([[], [$a], [$a, $a], [$a, 0, $a]] as $args) {
-                    try { __reflect($op, ...$args); } catch (Throwable $e) {}
+        $subjects = [
+            [F::class, ['strlen'], ['__i', '__l']],
+            [M::class, ['ArrayObject', 'count'], ['__i', '__l']],
+            [C::class, ['ArrayObject'], ['__c', '__o']],
+            [O::class, [new ArrayObject([1])], ['__c', '__o']],
+        ];
+        foreach ($subjects as [$cls, $ctor, $slots]) {
+            foreach ($slots as $slot) {
+                foreach ($vals as $v) {
+                    $o = (new $cls(...$ctor))->forge($slot, $v);
+                    foreach (get_class_methods($o) as $m) {
+                        if (in_array($m, ['forge', '__construct'], true)) { continue; }
+                        foreach ([[], [$v], [$v, $v]] as $args) {
+                            try { $o->$m(...$args); } catch (Throwable $e) {}
+                        }
+                    }
                 }
             }
         }

@@ -174,10 +174,6 @@ impl FdStream {
         self.sock.as_ref()
     }
 
-    pub fn sock_mut(&mut self) -> Option<&mut SockInfo> {
-        self.sock.as_mut()
-    }
-
     /// The failed send of the last `write`, if it failed (taken).
     pub fn take_send_error(&mut self) -> Option<SendError> {
         self.last_send_error.take()
@@ -644,39 +640,6 @@ impl FdStream {
     pub fn close(&mut self) {
         self.fd = None;
     }
-}
-
-/// Open a local path the way php's plain-files wrapper does
-/// (`php_stream_parse_fopen_modes` + `open(2)` with mode 0666): `r` read-only,
-/// `w` create + truncate, `a` create + append, `x` exclusive create, `c`
-/// create; `+` makes it read-write, `e` close-on-exec, `n` non-blocking. A
-/// leading `file://` is stripped. `None` for an unknown mode or a failed open.
-pub fn open_plain_file(path: &[u8], mode: &[u8]) -> Option<OwnedFd> {
-    let mut flags = match mode.first()? {
-        b'r' => 0,
-        b'w' => libc::O_TRUNC | libc::O_CREAT,
-        b'a' => libc::O_CREAT | libc::O_APPEND,
-        b'x' => libc::O_CREAT | libc::O_EXCL,
-        b'c' => libc::O_CREAT,
-        _ => return None,
-    };
-    if mode.contains(&b'+') {
-        flags |= libc::O_RDWR;
-    } else if flags != 0 {
-        flags |= libc::O_WRONLY;
-    } else {
-        flags |= libc::O_RDONLY;
-    }
-    if mode.contains(&b'e') {
-        flags |= libc::O_CLOEXEC;
-    }
-    if mode.contains(&b'n') {
-        flags |= libc::O_NONBLOCK;
-    }
-    let path = path.strip_prefix(b"file://").unwrap_or(path);
-    let c = std::ffi::CString::new(path).ok()?;
-    let fd = unsafe { libc::open(c.as_ptr(), flags, 0o666 as libc::c_uint) };
-    (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 /// Toggle `O_NONBLOCK` on an fd; true on success.

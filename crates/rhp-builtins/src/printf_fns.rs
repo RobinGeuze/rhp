@@ -1,31 +1,6 @@
-//! Native printf output-family builtins (`vprintf` / `fprintf` / `vfprintf`).
-//! Every one of these reuses the single sprintf formatting core in
-//! [`crate::str_fns::do_sprintf`] — no format-spec parsing is reimplemented
-//! here. Each function is verified byte-for-byte against the local php 8.5.8
-//! binary (see the `#[cfg(test)]` block — expected values are hardcoded from
-//! `php -r '...'` output).
-//!
-//! COLLISIONS: `sprintf`, `printf` and `vsprintf` are ALL already registered by
-//! `str_fns` (and already go through `do_sprintf`), so none of the three is
-//! re-registered here. This module only adds the genuinely-missing members of
-//! the family: `vprintf`, `fprintf` and `vfprintf`. (`printf`/`vsprintf`
-//! equivalents are still exercised in the tests below for completeness.)
-//!
-//! Stream handling: rhp models no real stream resources, so the `$stream`
-//! argument of `fprintf`/`vfprintf` is accepted but ignored — every formatted
-//! result is written to the single host output sink (as `write_out`). Thus
-//! `fprintf(STDOUT, ...)` behaves exactly like `printf(...)`, and
-//! `fprintf(STDERR, ...)` also lands on the host output. In real php
-//! `STDOUT`/`STDERR` are `resource` values (there is no resource `Value` in this
-//! engine); they are not registered as constants, since any first argument is
-//! simply ignored. For reference `(int) STDOUT == 2` and `(int) STDERR == 3`.
-//!
-//! Wire this module into `lib.rs` with:
-//! ```ignore
-//! mod printf_fns;             // near the other `mod` lines
-//! // ...and inside registry(), before returning `m`:
-//! printf_fns::register(&mut m);
-//! ```
+//! `vprintf`, `fprintf` and `vfprintf`, over the sprintf core in
+//! [`crate::str_fns::do_sprintf`] (`sprintf`, `printf` and `vsprintf` live
+//! in `str_fns`). `fprintf`/`vfprintf` write to the stream argument.
 
 use std::collections::HashMap;
 

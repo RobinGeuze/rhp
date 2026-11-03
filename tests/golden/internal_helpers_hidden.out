@@ -1,0 +1,21 @@
+__reflect: false
+  Error: Call to undefined function __reflect()
+__reflect_invoke: false
+  Error: Call to undefined function __reflect_invoke()
+__reflect_meta: false
+  Error: Call to undefined function __reflect_meta()
+__xml_fn: false
+  Error: Call to undefined function __xml_fn()
+Error: Call to undefined function __reflect()
+Error: Call to undefined function __reflect_meta()
+Error: Call to undefined function __xmlwriter_fn()
+__dom_throw: false
+Error: Call to undefined function __dom_throw()
+TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, function "__reflect" not found or invalid function name
+is_callable: false
+TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, function "__dom_throw" not found or invalid function name
+TypeError: Failed to create closure from callable: function "__dom_throw" not found or invalid function name
+ReflectionException: Function __dom_throw() does not exist
+\strlen: true
+mine true
+ArrayObject

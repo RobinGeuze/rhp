@@ -1,13 +1,13 @@
 # rhp — crate reorganization & migration plan (tree-walker → bytecode VM)
 
-Status: design. Supersedes the 5-crate layout in `README.md §1` once executed.
+Status: design. Supersedes the 5-crate layout in `scaffold.md` §1 once executed.
 
 > **Historical document.** This plan was executed. The tree-walking
 > *differential oracle* (`rhp-oracle`) it creates was later removed (2026-11),
 > so the VM is now rhp's only engine, and the refusal invariant below is also
 > out of date (`include`/`require` and `eval` now run). Read every oracle
-> passage here as history; [`bytecode.md`](./bytecode.md) and the project
-> [README](../../README.md) describe the current layout.
+> passage here as history; [`bytecode.md`](../bytecode.md) and the project
+> [README](../../../README.md) describe the current layout.
 
 This plan reorganizes the workspace so the **register VM** is the primary
 execution core and the tree-walker becomes a **differential oracle**, with the

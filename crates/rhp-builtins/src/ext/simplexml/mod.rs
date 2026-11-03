@@ -281,6 +281,29 @@ fn parse_doc(
     Ok(doc.map(tree::register))
 }
 
+/// The `?string $class_name` argument, parsed as zpp's `C!`: null is
+/// SimpleXMLElement, anything else must name (autoloading) SimpleXMLElement
+/// or a subclass of it. An autoloader's exception propagates.
+fn class_arg(host: &mut dyn Host, fname: &str, v: Value) -> Result<Vec<u8>, Thrown> {
+    let name = match v {
+        Value::Null => return Ok(b"SimpleXMLElement".to_vec()),
+        v => conv::to_string_bytes(&v),
+    };
+    if let Some(id) = host.resolve_class_autoload(&name)? {
+        let canonical = host.class_name(id).unwrap_or_else(|| name.clone());
+        if host.reflect_is_a(&canonical, b"SimpleXMLElement") {
+            return Ok(canonical);
+        }
+    }
+    Err(Thrown::Error {
+        class: "TypeError",
+        message: format!(
+            "{fname}(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, {} given",
+            String::from_utf8_lossy(&name)
+        ),
+    })
+}
+
 fn load_common(host: &mut dyn Host, args: &[Value], is_file: bool) -> Result<Value, Thrown> {
     let fname = if is_file {
         "simplexml_load_file"
@@ -288,10 +311,7 @@ fn load_common(host: &mut dyn Host, args: &[Value], is_file: bool) -> Result<Val
         "simplexml_load_string"
     };
     let src = bytes(args, 0);
-    let class = match arg(args, 1) {
-        Value::Null => b"SimpleXMLElement".to_vec(),
-        v => conv::to_string_bytes(&v),
-    };
+    let class = class_arg(host, fname, arg(args, 1))?;
     let flags = conv::to_int(&arg(args, 2));
     let ns = bytes(args, 3);
     let is_prefix = conv::to_bool(&arg(args, 4));
@@ -326,19 +346,16 @@ fn fn_load_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_import_dom(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = arg(args, 0);
-    let class = match arg(args, 1) {
-        Value::Null => b"SimpleXMLElement".to_vec(),
-        v => conv::to_string_bytes(&v),
-    };
+    let class = class_arg(host, "simplexml_import_dom", arg(args, 1))?;
     let Some((d, n)) = dom::ids_of(&v) else {
         return Err(Thrown::Error {
             class: "TypeError",
-            message: "simplexml_import_dom(): Argument #1 ($node) must be of type SimpleXMLElement|DOMNode".into(),
+            message: "simplexml_import_dom(): Argument #1 ($node) must be a valid XML node".into(),
         });
     };
     let target = tree::with_doc(d, |doc| match doc.nodes[n].kind {
         Kind::Document => doc.root(),
-        Kind::Element | Kind::Attr => Some(n),
+        Kind::Element => Some(n),
         _ => None,
     })
     .flatten();
@@ -1429,6 +1446,10 @@ fn prepare_debug_in(
 /// The prepared debug view of object `id`, if it is a SimpleXMLElement.
 pub fn debug_view(id: u32) -> Option<Vec<(PhpStr, Value)>> {
     DEBUG_VIEWS.with(|m| m.borrow().get(&id).cloned())
+}
+
+pub fn has_debug_view(id: u32) -> bool {
+    DEBUG_VIEWS.with(|m| m.borrow().contains_key(&id))
 }
 
 pub fn clear_debug() {

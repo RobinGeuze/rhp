@@ -286,8 +286,10 @@ fn var_dump_value(
                     )
                     .as_bytes(),
                 );
-                // A __debugInfo() view lists only its own entries.
-                let uninit = if DEBUG_INFO.with(|m| m.borrow().contains_key(&obj_id)) {
+                // A __debugInfo() or SimpleXML view lists only its own entries.
+                let uninit = if DEBUG_INFO.with(|m| m.borrow().contains_key(&obj_id))
+                    || crate::ext::simplexml::has_debug_view(obj_id)
+                {
                     Vec::new()
                 } else {
                     host.uninit_props(h)

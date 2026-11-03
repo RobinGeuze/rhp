@@ -4,8 +4,8 @@ Status: **build spec. Implement from this.** Target semantics: PHP 8.5 (ground
 truth: the reference `php`, see `crates/rhp-builtins/src/version.rs`; every behavior below was probed
 against it, originally 8.5.8). This is
 the single, non-contradictory synthesis of the four research docs
-([`oop-ast.md`](./oop-ast.md), [`oop-model.md`](./oop-model.md),
-[`oop-isa.md`](./oop-isa.md), [`oop-prior-art.md`](./oop-prior-art.md)) and the
+([`oop-ast.md`](./history/oop-ast.md), [`oop-model.md`](./oop-model.md),
+[`oop-isa.md`](./history/oop-isa.md), [`oop-prior-art.md`](./history/oop-prior-art.md)) and the
 continuation of [`bytecode.md`](./bytecode.md) §2.4 ("phase 7: `New`,
 `FetchProp`, `CallMethod`, `CallStatic`, `InstanceOf`, `Clone`, late static
 binding — same encoding and calling convention; omitted there"). Where the
@@ -403,6 +403,9 @@ with `LvalStaticProp` as root instead of `LvalCv`). Everything after
 code byte-for-byte.
 
 ### 3.4 Inline-cache slot plan (reserved, `ClassId`-guarded, monomorphic)
+
+(Not built. The reserved `InlineCache` table and the `cache` operands were
+never read and have been removed; lookups probe the flattened class table.)
 
 `InlineCache { class_id: u32, payload: u32 }` already exists (`Cell`-based, no
 atomics). Every IC-bearing opcode carries `cache: CacheIdx` from day one so the

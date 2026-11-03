@@ -14,10 +14,9 @@ use rhp_values::{PhpArray, Value};
 
 pub use rhp_values::Thrown;
 
-pub mod dump;
+pub(crate) mod dump;
 pub mod fdstream;
-pub mod memstream;
-pub mod module;
+pub(crate) mod module;
 pub mod pcre;
 pub mod signatures;
 pub mod streams;
@@ -82,7 +81,7 @@ mod fs_fns;
 mod html;
 #[rustfmt::skip]
 mod html_tables;
-pub mod http;
+pub(crate) mod http;
 mod inet;
 mod info_fns;
 mod ini_parse;
@@ -114,7 +113,7 @@ mod strtotime_fns;
 mod sysmisc_fns;
 mod tzdb;
 mod webenc_fns;
-pub mod zip_ext;
+pub(crate) mod zip_ext;
 
 /// Built-in classes with a native `dtor_obj` handler, which runs with a host
 /// before the object's `__destruct` (see [`object_dtor`]).
@@ -378,13 +377,6 @@ pub trait Host {
         Ok(self.class_constant(class, name))
     }
 
-    /// Evaluate every pending initializer of `class` (its constants, property
-    /// defaults and static properties) — php's `zend_update_class_constants`,
-    /// done before reflection reads them. A no-op for unknown classes.
-    fn update_class_constants(&mut self, _class: &[u8]) -> Result<(), Thrown> {
-        Ok(())
-    }
-
     /// Invoke a PHP callable (for `array_map`/`array_filter`/…). Default: refused.
     fn call_callable(&mut self, _callable: &Value, _args: &[Value]) -> Result<Value, Thrown> {
         Err(Thrown::unsupported(
@@ -511,12 +503,6 @@ pub trait Host {
         Vec::new()
     }
 
-    /// Has any output reached the real (unbuffered) output stream? The CLI
-    /// SAPI sends headers on first output, so this is `headers_sent()`.
-    fn output_started(&self) -> bool {
-        false
-    }
-
     /// The request's header store (`SG(sapi_headers)`, `headers_sent`):
     /// `header()` and friends operate on it. Default: none (a host without a
     /// response; the header builtins then do nothing).
@@ -603,10 +589,14 @@ pub trait Host {
     /// Set the bcmath default scale (`bcscale($scale)`).
     fn set_bc_scale(&mut self, _scale: i64) {}
 
-    /// Instantiate a named class, materializing its property defaults and then
-    /// overriding/adding the given properties (no constructor is run). Used by
-    /// object-returning builtins (e.g. `gmp_*` returning `GMP`, `date_create`).
-    /// Returns `None` if the host has no such class / no object model.
+    /// Instantiate a named class, then set the given properties (no
+    /// constructor is run), as object-returning builtins do (`gmp_*`
+    /// returning `GMP`, `simplexml_load_string`). An internal class gets its
+    /// evaluated property defaults; a user class (a SimpleXMLElement
+    /// subclass) is created without evaluating its defaults and without the
+    /// slots it declares. `None` if the host has no such class or no object
+    /// model, or when evaluating an internal class's defaults threw (the
+    /// host throws that once the builtin returns).
     fn instantiate(&mut self, _class_name: &[u8], _props: Vec<(Vec<u8>, Value)>) -> Option<Value> {
         None
     }
@@ -1007,19 +997,9 @@ pub trait Host {
         None
     }
 
-    // --- reflection introspection --------------------------------------------
-    // Backing for the `Reflection*` classes. Return PHP `Value`s the prelude
-    // classes read; defaults are empty (hosts without a class model).
+    // --- classes and reflection ---------------------------------------------
 
-    /// Class metadata for `ReflectionClass`: an assoc array (name, shortName,
-    /// namespaceName, isAbstract, isInterface, isInstantiable, isFinal, isEnum,
-    /// parent|false, interfaces[], methods[], constants{}, properties[]), or None
-    /// if the class does not exist.
-    fn reflect_meta(&self, _name: &[u8]) -> Option<Value> {
-        None
-    }
-    /// Whether class `name`'s ancestry includes `other` (incl. self) — for
-    /// `implementsInterface`/`isSubclassOf`/`instanceof`-by-name.
+    /// Whether class `name` is `other` or has it as an ancestor.
     fn reflect_is_a(&self, _name: &[u8], _other: &[u8]) -> bool {
         false
     }
@@ -1055,19 +1035,6 @@ pub trait Host {
         name: &[u8],
     ) -> Result<Option<Value>, Thrown> {
         Ok(self.object_prop(obj, name))
-    }
-    /// Parameter descriptors for a class method (`ReflectionMethod::getParameters`).
-    fn reflect_method_params(&self, _class: &[u8], _method: &[u8]) -> Option<Value> {
-        None
-    }
-    /// Parameter descriptors for a callable (`ReflectionFunction::getParameters`).
-    fn reflect_callable_params(&self, _callable: &Value) -> Option<Value> {
-        None
-    }
-    /// Class-constant descriptors for `ReflectionClass::getReflectionConstants`:
-    /// an array of `{name, value, public, protected, private}`.
-    fn reflect_class_constants(&self, _class: &[u8]) -> Option<Value> {
-        None
     }
     /// A Reflection / introspection metadata query (`op` names it; see the
     /// VM's `reflect` module): class / method / property / constant /
@@ -1402,8 +1369,6 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("stdext_fns", Box::new(stdext_fns::register)),
         ("crypt_fns", Box::new(crypt_fns::register)),
         ("proc_fns", Box::new(proc_fns::register)),
-        // Exact-semantics filesystem builtins; registered last so they replace
-        // older approximations in file_fns/stream_fns.
         ("fs_fns", Box::new(fs_fns::register)),
     ];
     v.extend(rest);
@@ -1488,26 +1453,6 @@ fn php_os() -> (&'static str, &'static str) {
 }
 
 /// Engine constants (`PHP_EOL`, `PHP_INT_MAX`, …).
-/// php's `PHP_OS`: the build host's uname sysname (configure-time constant).
-#[cfg(target_os = "linux")]
-pub const PHP_OS: &str = "Linux";
-#[cfg(target_os = "macos")]
-pub const PHP_OS: &str = "Darwin";
-#[cfg(target_os = "freebsd")]
-pub const PHP_OS: &str = "FreeBSD";
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
-pub const PHP_OS: &str = "Unknown";
-
-/// php's `PHP_OS_FAMILY` (`Linux`, `Darwin`, `BSD`, …).
-#[cfg(target_os = "linux")]
-pub const PHP_OS_FAMILY: &str = "Linux";
-#[cfg(target_os = "macos")]
-pub const PHP_OS_FAMILY: &str = "Darwin";
-#[cfg(target_os = "freebsd")]
-pub const PHP_OS_FAMILY: &str = "BSD";
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
-pub const PHP_OS_FAMILY: &str = "Unknown";
-
 pub fn constants() -> Vec<(&'static str, Value)> {
     vec![
         ("PHP_EOL", Value::str("\n")),
@@ -1665,9 +1610,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("E_NOTICE", Value::Int(8)),
         ("COUNT_NORMAL", Value::Int(0)),
         ("COUNT_RECURSIVE", Value::Int(1)),
-        // Standard streams: this engine has no resource Value, so these are
-        // placeholder ints. fprintf/vfprintf ignore the stream and write to the
-        // single output sink, so the value is never inspected in practice.
+        // Placeholders: the VM binds the stream resources when a request
+        // starts (php-cli), or removes them (other SAPIs).
         ("STDIN", Value::Int(0)),
         ("STDOUT", Value::Int(1)),
         ("STDERR", Value::Int(2)),

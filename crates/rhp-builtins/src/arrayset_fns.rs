@@ -12,13 +12,6 @@
 //! `array_sum`, `array_product`, `in_array`, `array_key_exists` live in
 //! `lib.rs`; `array_replace` and `array_merge_recursive` live in
 //! `strarr2_fns.rs`.
-//!
-//! Wire this module into `lib.rs` with:
-//! ```ignore
-//! mod arrayset_fns;                 // near the other `mod` lines
-//! // ...and inside registry(), after building `m`:
-//! arrayset_fns::register(&mut m);
-//! ```
 
 use std::collections::HashMap;
 

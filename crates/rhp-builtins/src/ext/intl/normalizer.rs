@@ -1,21 +1,10 @@
-//! `normalizer_*` — Unicode normalization
-//! (php-src `ext/intl/normalizer/normalizer_normalize.cpp`).
-//!
-//! NFC / NFD / NFKC / NFKD come straight from `icu_normalizer`. ICU's
-//! `NFKC_Casefold` (`Normalizer::NFKC_CF`) has no ICU4X counterpart and is
-//! computed from its definition: NFKC of the full case folding (applied to the
-//! compatibility decomposition until stable) with Default_Ignorable code points
-//! removed.
+//! `normalizer_*` — Unicode normalization, ported from php-src
+//! `ext/intl/normalizer/normalizer_normalize.cpp` onto ICU's `unorm2`.
 
-use icu_normalizer::properties::{CanonicalDecompositionBorrowed, Decomposed};
-use icu_normalizer::{ComposingNormalizerBorrowed, DecomposingNormalizerBorrowed};
-use icu_properties::props::DefaultIgnorableCodePoint;
-use icu_properties::CodePointSetData;
 use rhp_values::Value;
 
-use super::{
-    as_utf8, error_reset, error_set, icu_fold_extra, U_ILLEGAL_ARGUMENT_ERROR, U_INVALID_CHAR_FOUND,
-};
+use super::sys::{self, UChar, UErrorCode, UNormalizer2};
+use super::{error_reset, error_set, error_set_code, error_set_msg, utf16_to_utf8, utf8_to_utf16};
 use crate::ext::zpp::{int_arg_or, str_arg, value_error};
 use crate::{Host, Thrown};
 
@@ -25,166 +14,208 @@ const FORM_C: i64 = 16;
 const FORM_KC: i64 = 32;
 const FORM_KC_CF: i64 = 48;
 
-fn nfkc_casefold(s: &str) -> String {
-    let nfkd = DecomposingNormalizerBorrowed::new_nfkd();
-    let ignorable = CodePointSetData::new::<DefaultIgnorableCodePoint>();
-    let mut cur: String = nfkd.normalize(s).into_owned();
-    // fold + NFKD until a fixed point (bounded; converges in 1-2 rounds).
-    for _ in 0..4 {
-        let cps: Vec<u32> = cur
-            .chars()
-            .filter(|&c| !ignorable.contains(c))
-            .map(|c| c as u32)
-            .collect();
-        let mut folded = Vec::with_capacity(cps.len());
-        for &cp in &cps {
-            let f = crate::ext::mbstring::case_fold_full(&[cp]);
-            match icu_fold_extra(cp) {
-                // a folding newer than php's mbstring tables
-                Some(x) if f == [cp] => folded.push(x),
-                _ => folded.extend(f),
+/// `intl_get_normalizer`: ICU's singleton for `form`, or null with
+/// `U_ILLEGAL_ARGUMENT_ERROR`.
+fn get_normalizer(form: i64, status: &mut UErrorCode) -> *const UNormalizer2 {
+    // SAFETY: the getters return ICU-owned singletons.
+    unsafe {
+        match form {
+            FORM_C => sys::unorm2_getNFCInstance(status),
+            FORM_D => sys::unorm2_getNFDInstance(status),
+            FORM_KC => sys::unorm2_getNFKCInstance(status),
+            FORM_KD => sys::unorm2_getNFKDInstance(status),
+            FORM_KC_CF => sys::unorm2_getNFKCCasefoldInstance(status),
+            _ => {
+                *status = sys::U_ILLEGAL_ARGUMENT_ERROR;
+                std::ptr::null()
             }
         }
-        let st: String = folded.iter().filter_map(|&c| char::from_u32(c)).collect();
-        let next = nfkd.normalize(&st).into_owned();
-        if next == cur {
-            break;
-        }
-        cur = next;
-    }
-    ComposingNormalizerBorrowed::new_nfkc()
-        .normalize(&cur)
-        .into_owned()
-}
-
-fn normalize(form: i64, s: &str) -> String {
-    match form {
-        FORM_D => DecomposingNormalizerBorrowed::new_nfd()
-            .normalize(s)
-            .into_owned(),
-        FORM_KD => DecomposingNormalizerBorrowed::new_nfkd()
-            .normalize(s)
-            .into_owned(),
-        FORM_KC => ComposingNormalizerBorrowed::new_nfkc()
-            .normalize(s)
-            .into_owned(),
-        FORM_KC_CF => nfkc_casefold(s),
-        _ => ComposingNormalizerBorrowed::new_nfc()
-            .normalize(s)
-            .into_owned(),
     }
 }
 
-fn is_normalized(form: i64, s: &str) -> bool {
-    match form {
-        FORM_D => DecomposingNormalizerBorrowed::new_nfd().is_normalized(s),
-        FORM_KD => DecomposingNormalizerBorrowed::new_nfkd().is_normalized(s),
-        FORM_KC => ComposingNormalizerBorrowed::new_nfkc().is_normalized(s),
-        FORM_KC_CF => nfkc_casefold(s) == s,
-        _ => ComposingNormalizerBorrowed::new_nfc().is_normalized(s),
+/// `intl_normalize` into `dst`; returns the length needed.
+fn normalize_into(form: i64, src: &[UChar], dst: &mut [UChar], status: &mut UErrorCode) -> i32 {
+    let norm = get_normalizer(form, status);
+    if sys::failure(*status) {
+        return -1;
+    }
+    // SAFETY: `dst` holds at least its length plus one unit (see callers).
+    unsafe {
+        sys::unorm2_normalize(
+            norm,
+            src.as_ptr(),
+            src.len() as i32,
+            dst.as_mut_ptr(),
+            dst.len() as i32,
+            status,
+        )
     }
 }
 
-fn valid_form(form: i64) -> bool {
-    matches!(form, FORM_D | FORM_KD | FORM_C | FORM_KC | FORM_KC_CF)
+fn form_arg(host: &mut dyn Host, args: &[Value], f: &str) -> Result<(Vec<u8>, i64), Thrown> {
+    let s = str_arg(host, args, 0, f, "string")?;
+    let form = int_arg_or(host, args, 1, f, "form", FORM_C)?;
+    Ok((s, form))
+}
+
+fn invalid_form(f: &str) -> Thrown {
+    value_error(f, 2, "form", "must be a a valid normalization form")
 }
 
 pub(super) fn fn_normalize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let f = "normalizer_normalize";
-    error_reset();
-    let s = str_arg(host, args, 0, f, "string")?;
-    let form = int_arg_or(host, args, 1, f, "form", FORM_C)?;
-    if !valid_form(form) {
-        return Err(value_error(
-            f,
-            2,
-            "form",
-            "must be a a valid normalization form",
-        ));
-    }
-    let Some(t) = as_utf8(&s) else {
-        error_set(
-            f,
-            U_INVALID_CHAR_FOUND,
-            "Error converting input string to UTF-16",
-        );
-        return Ok(Value::Bool(false));
-    };
-    Ok(Value::str(normalize(form, t).into_bytes()))
+    normalize(host, args, "normalizer_normalize")
 }
 
 pub(super) fn fn_is_normalized(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let f = "normalizer_is_normalized";
-    error_reset();
-    let s = str_arg(host, args, 0, f, "string")?;
-    let form = int_arg_or(host, args, 1, f, "form", FORM_C)?;
-    if !valid_form(form) {
-        return Err(value_error(
-            f,
-            2,
-            "form",
-            "must be a a valid normalization form",
-        ));
-    }
-    let Some(t) = as_utf8(&s) else {
-        error_set(
-            f,
-            U_INVALID_CHAR_FOUND,
-            "Error converting string to UTF-16.",
-        );
-        return Ok(Value::Bool(false));
-    };
-    Ok(Value::Bool(is_normalized(form, t)))
-}
-
-/// The one-level (raw) decomposition mapping of `c`, if it has one.
-fn raw_decomposition(form: i64, c: char) -> Option<String> {
-    let canon = match CanonicalDecompositionBorrowed::new().decompose(c) {
-        Decomposed::Default => None,
-        Decomposed::Singleton(a) => Some(a.to_string()),
-        Decomposed::Expansion(a, b) => Some([a, b].iter().collect()),
-    };
-    if matches!(form, FORM_KD | FORM_KC | FORM_KC_CF) {
-        if let Ok(i) = super::icu_tables::RAW_COMPAT.binary_search_by_key(&(c as u32), |e| e.0) {
-            return Some(super::icu_tables::RAW_COMPAT[i].1.to_string());
-        }
-    }
-    if matches!(form, FORM_KD | FORM_KC | FORM_KC_CF) && canon.is_none() {
-        // compatibility mapping: the full NFKD when it differs (the table
-        // above holds the mappings where that isn't the one-level one).
-        let s = c.to_string();
-        let k = DecomposingNormalizerBorrowed::new_nfkd().normalize(&s);
-        if k != s {
-            return Some(k.into_owned());
-        }
-    }
-    canon
+    is_normalized(host, args, "normalizer_is_normalized")
 }
 
 pub(super) fn fn_get_raw_decomposition(
     host: &mut dyn Host,
     args: &[Value],
 ) -> Result<Value, Thrown> {
-    let f = "normalizer_get_raw_decomposition";
+    get_raw_decomposition(host, args, "normalizer_get_raw_decomposition")
+}
+
+/// `__normalizer($method, ...)`: the `Normalizer` class's static methods,
+/// which php's errors name `Normalizer::<method>`.
+pub(super) fn fn_method(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let method = match args.first() {
+        Some(Value::Str(s)) => s.as_bytes().to_vec(),
+        _ => Vec::new(),
+    };
+    let rest = args.get(1..).unwrap_or(&[]);
+    match &method[..] {
+        b"normalize" => normalize(host, rest, "Normalizer::normalize"),
+        b"isNormalized" => is_normalized(host, rest, "Normalizer::isNormalized"),
+        b"getRawDecomposition" => {
+            get_raw_decomposition(host, rest, "Normalizer::getRawDecomposition")
+        }
+        _ => Ok(Value::Null),
+    }
+}
+
+fn normalize(host: &mut dyn Host, args: &[Value], f: &str) -> Result<Value, Thrown> {
     error_reset();
-    let s = str_arg(host, args, 0, f, "string")?;
-    let form = int_arg_or(host, args, 1, f, "form", FORM_C)?;
-    // U8_NEXT: one (possibly ill-formed) sequence must span the whole input
-    // (an empty input counts as reading one byte past it).
-    if s.is_empty() || super::grapheme::u8_fwd_1(&s, 0) != s.len() {
-        error_set(
+    let (input, form) = form_arg(host, args, f)?;
+    let expansion = match form {
+        FORM_D | FORM_KD => 3,
+        FORM_C | FORM_KC | FORM_KC_CF => 1,
+        _ => return Err(invalid_form(f)),
+    };
+    let uinput = match utf8_to_utf16(&input) {
+        Ok(u) => u,
+        Err(st) => {
+            error_set(f, st, "Error converting input string to UTF-16");
+            return Ok(Value::Bool(false));
+        }
+    };
+    let mut cap = uinput.len() * expansion;
+    // safe_femalloc(cap + 1, sizeof(UChar), 0, fallible): one unit more than
+    // the capacity ICU is told.
+    if !rhp_values::mem::reserve_safe(cap + 1, 2, 0) {
+        return Ok(Value::Bool(false));
+    }
+    let mut buf: Vec<UChar> = vec![0; cap + 1];
+    let mut status = sys::U_ZERO_ERROR;
+    let mut needed = normalize_into(form, &uinput, &mut buf[..cap], &mut status);
+    if sys::failure(status)
+        && status != sys::U_BUFFER_OVERFLOW_ERROR
+        && status != sys::U_STRING_NOT_TERMINATED_WARNING
+    {
+        error_set_msg(f, "Error normalizing string");
+        return Ok(Value::Bool(false));
+    }
+    if needed as i64 > cap as i64 {
+        cap = needed as usize;
+        drop(buf);
+        if !rhp_values::mem::reserve_safe(cap + 1, 2, 0) {
+            return Ok(Value::Bool(false));
+        }
+        buf = vec![0; cap + 1];
+        status = sys::U_ZERO_ERROR;
+        needed = normalize_into(form, &uinput, &mut buf[..cap], &mut status);
+        if sys::failure(status) {
+            error_set_msg(f, "Error normalizing string");
+            return Ok(Value::Bool(false));
+        }
+    }
+    match utf16_to_utf8(&buf[..needed as usize]) {
+        Ok(s) => Ok(Value::str(s)),
+        Err(st) => {
+            error_set(f, st, "error converting normalized text UTF-8");
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+fn is_normalized(host: &mut dyn Host, args: &[Value], f: &str) -> Result<Value, Thrown> {
+    error_reset();
+    let (input, form) = form_arg(host, args, f)?;
+    if !matches!(form, FORM_D | FORM_KD | FORM_C | FORM_KC | FORM_KC_CF) {
+        return Err(invalid_form(f));
+    }
+    let uinput = match utf8_to_utf16(&input) {
+        Ok(u) => u,
+        Err(st) => {
+            error_set(f, st, "Error converting string to UTF-16.");
+            return Ok(Value::Bool(false));
+        }
+    };
+    let mut status = sys::U_ZERO_ERROR;
+    let norm = get_normalizer(form, &mut status);
+    let normalized = !sys::failure(status)
+        // SAFETY: a live normalizer over `uinput`.
+        && unsafe {
+            sys::unorm2_isNormalized(norm, uinput.as_ptr(), uinput.len() as i32, &mut status)
+        } != 0;
+    if sys::failure(status) {
+        error_set_msg(
             f,
-            U_ILLEGAL_ARGUMENT_ERROR,
+            "Error testing if string is the given normalization form.",
+        );
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(normalized))
+}
+
+fn get_raw_decomposition(host: &mut dyn Host, args: &[Value], f: &str) -> Result<Value, Thrown> {
+    error_reset();
+    let (input, form) = form_arg(host, args, f)?;
+    let mut status = sys::U_ZERO_ERROR;
+    let norm = get_normalizer(form, &mut status);
+    // U8_NEXT: one (possibly ill-formed) sequence must span the input; an
+    // empty input reads its terminating NUL, one byte past the end.
+    if input.is_empty() || super::grapheme::u8_fwd_1(&input, 0) != input.len() {
+        error_set_code(sys::U_ILLEGAL_ARGUMENT_ERROR);
+        error_set_msg(
+            f,
             "Input string must be exactly one UTF-8 encoded code point long.",
         );
         return Ok(Value::Null);
     }
-    let Some(c) = as_utf8(&s).and_then(|t| t.chars().next()) else {
-        error_set(f, U_ILLEGAL_ARGUMENT_ERROR, "Code point out of range");
+    // An ill-formed sequence decodes to U_SENTINEL (-1).
+    let Some(c) = std::str::from_utf8(&input)
+        .ok()
+        .and_then(|t| t.chars().next())
+    else {
+        error_set_code(sys::U_ILLEGAL_ARGUMENT_ERROR);
+        error_set_msg(f, "Code point out of range");
         return Ok(Value::Null);
     };
-    Ok(match raw_decomposition(form, c) {
-        Some(d) => Value::str(d.into_bytes()),
-        None => Value::Null,
+    let mut buf: [UChar; 32] = [0; 32];
+    // SAFETY: a 32-unit buffer; with a failed `status` (an invalid form,
+    // null `norm`) ICU returns 0 without touching it.
+    let len = unsafe {
+        sys::unorm2_getRawDecomposition(norm, c as i32, buf.as_mut_ptr(), 32, &mut status)
+    };
+    if len == -1 {
+        return Ok(Value::Null);
+    }
+    // php converts without checking the result (its converter resets the
+    // status first, so an invalid form gives "").
+    Ok(match utf16_to_utf8(&buf[..len.clamp(0, 32) as usize]) {
+        Ok(s) => Value::str(s),
+        Err(_) => Value::Null,
     })
 }

@@ -22,7 +22,8 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
   where php reads a header macro, a runtime getter where php calls one.
   `PCRE_VERSION` comes from `pcre2_config()`, `PCRE_VERSION_MAJOR`/`MINOR`
   from pcre2.h; `LIBXML_VERSION`/`LIBXML_DOTTED_VERSION` from xmlversion.h
-  and `LIBXML_LOADED_VERSION` from `xmlParserVersion`. `version.rs` keeps
+  and `LIBXML_LOADED_VERSION` from `xmlParserVersion`; `INTL_ICU_VERSION`/
+  `INTL_ICU_DATA_VERSION` from ICU's uvernum.h. `version.rs` keeps
   hard-coded values only for libraries rhp does not link yet; each goes when
   its library is linked.
 
@@ -31,7 +32,7 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 | Kind | Linked | Examples |
 |---|---|---|
 | Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, argon2 (in `rhp-csrc`); later timelib, oniguruma, and libmbfl in its own crate (LGPL) |
-| A third-party library whose static archive is the build php links | static | PCRE2, libxml2 on Linux; later gmp, icu4c@79, openssl@4, curl |
+| A third-party library whose static archive is the build php links | static | PCRE2, ICU, libxml2 on Linux; later gmp, openssl@4, curl |
 | The listed exceptions below | dynamic | |
 
 A static archive is "the build php links" when it comes from the same package
@@ -45,6 +46,10 @@ rather than linking dynamically quietly.
   archive. macOS `/usr/lib`: libxml2, libxslt, libiconv, libz, libbz2,
   libedit, libffi. Linux: glibc's iconv.
 - Libraries with no static archive of php's version: Homebrew's libzip.
+- The C++ runtime a static C++ library needs (ICU): macOS's
+  /usr/lib/libc++, and on Linux the toolchain's libstdc++ (like libgcc_s,
+  which Rust links dynamically anyway). ICU's .pc files leave it to the
+  linker driver, so build.rs names it.
 
 Today rhp-builtins links:
 
@@ -52,10 +57,20 @@ Today rhp-builtins links:
 |---|---|---|
 | PCRE2 (libpcre2-8) | static, Homebrew pcre2 | static, libpcre2-dev (CI: php's release, see below) |
 | libxml2 | dynamic, the SDK's /usr/lib/libxml2.2.dylib (php's; found with `xcrun --show-sdk-path`) | static, libxml2-dev (CI: php's release, see below) |
+| ICU (libicui18n, libicuuc, libicudata) | static, Homebrew icu4c@79 (keg-only; php's formula) | static, libicu-dev (CI: 78.2, the release php links) |
 | zlib (via libz-sys; also crc32, adler32) | dynamic, /usr/lib/libz | dynamic, zlib1g |
 | bzip2 (bzip2 `=0.5.2`, feature `static`) | static, bzip2-sys's bundled C libbz2 1.0.8 | static, bzip2-sys's bundled C libbz2 1.0.8 |
 | php-src crypt C (via rhp-csrc) | static, compiled from php-8.5.12 | the same |
 | argon2 (via rhp-csrc) | static, compiled from release 20190702 | the same |
+
+ICU's data library is most of the size: linking ICU statically adds about
+35 MB to `rhp` (13.5 MB → 48 MB on the mac with ICU 79.1, 33.5 MB of it
+libicudata). ICU renames its C symbols with the major version
+(`ubrk_open_79`); `ext/intl/sys.rs` appends the `U_ICU_VERSION_MAJOR_NUM`
+of the linked uvernum.h, and build.rs refuses an ICU built with
+`U_DISABLE_RENAMING`. Homebrew names the formula by major version: when
+php's formula moves to a newer `icu4c@N`, the `ICU_*` rows in `native.rs`
+follow (ref_build's "linked" section fails until they do).
 
 zlib and bzip2 predate this policy and still go through their -sys crates.
 bzip2 is built from bzip2-sys's 1.0.8 source, not taken from macOS's
@@ -91,21 +106,25 @@ next to the distro's 10.46, outside dpkg. It becomes the copy php loads once
 `ldconfig` runs, so the setup-php action runs `ldconfig` straight away. The
 native-deps action then compares the PCRE2 and libxml2 versions php reports
 (`PCRE_VERSION`, `LIBXML_LOADED_VERSION`) with the distro's `-dev` packages.
-For each that differs, `build-from-source.sh` builds php's release from the
-upstream tarball, checked against `.github/actions/native-deps/sha256sums`
-(PCRE2: the checksums Homebrew's formula pins; libxml2: GNOME's published
-ones), static only, and points `PKG_CONFIG_PATH` at it. libxml2 is
+ICU has no source build: when php's `INTL_ICU_VERSION` is not the distro's
+libicu-dev, the job fails. For PCRE2 or libxml2 that differ,
+`build-from-source.sh` builds php's release from the upstream tarball,
+checked against `.github/actions/native-deps/sha256sums` (PCRE2: the
+checksums Homebrew's formula pins; libxml2: GNOME's published ones), static
+only, and points `PKG_CONFIG_PATH` at it. libxml2 is
 configured like Debian/Ubuntu's build where that changes parsing (zlib on,
 ICU off). A release with no recorded checksum fails the job; add its
 checksum.
 The `php` input names a php that is not the one on PATH (the nightly
 sanitizer build uses php-src's bundled PCRE2).
-`otool -L target/release/rhp` (or `ldd`) shows no libpcre2 (and on Linux no
-libxml2); `nm` shows the `pcre2_*` symbols. rhp-builtins'
-`pcre2_is_linked_statically` and `libxml2_is_linked_statically` tests check
-its own test binary, which is linked straight from the crate. The helper
-drops the library itself from a static link's `Libs.private`: a second,
-dynamic `-l` for it would override the static one.
+`otool -L target/release/rhp` (or `ldd`) shows no libpcre2 or libicu (and
+on Linux no libxml2); `nm` shows the `pcre2_*` symbols. rhp-builtins'
+`pcre2_is_linked_statically`, `libxml2_is_linked_statically` and
+`icu_is_linked_statically` tests check its own test binary, which is linked
+straight from the crate. The helper drops the library itself from a static
+link's `Libs.private`: a second, dynamic `-l` for it would override the
+static one. It also drops the ones that have rows of their own (ICU's
+libicuuc and libicudata), which those rows link statically.
 
 ## Compiled from source: rhp-csrc
 
@@ -167,6 +186,14 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   stack, settings and pattern cache live in a `thread_local!` in
   `rhp-builtins/src/pcre/mod.rs`, as php keeps them in TLS globals. Library
   handles are `!Send` and stay with their VM.
+- **ICU** keeps no state php changes: php never calls `uloc_setDefault`,
+  `u_setDataDirectory` or `u_setMemoryFunctions`, and neither does rhp.
+  Handles (break iterators, searches, collators) belong to one call or to
+  the thread (intl's character break iterator, cloned per call, as php's
+  `INTL_G(grapheme_iterator)`). Never call `u_cleanup`. ICU's default
+  locale comes from the environment (`LC_ALL`/`LC_MESSAGES`/`LANG`) once
+  per process, so the phpt harness and the live tests pin `LC_ALL=C` for
+  php and rhp alike.
 - **Per-thread hooks are installed when each VM starts.** libxml2's generic
   error handler, structured error handler and file I/O hooks are per thread
   in both 2.9 and 2.15: `ext::libxml::reset_state` sets php's handlers on the
@@ -258,5 +285,6 @@ Tables php-src owns are generated, committed, and checked by
 | Generator | Source | Output | Checked |
 |---|---|---|---|
 | `html-tables` | php-src `ext/standard/html_tables/` (+ `html_tables.h` for HTML5 ties) | `rhp-builtins/src/html_tables.rs` | CI job `generated` (php-src checkout) |
+| `intl-consts` | php-src `ext/intl` stubs: global constants' names, types, `@cvalue` and `#if` guards (values come from the linked ICU's headers when `ext/intl/shim.c` compiles) | `rhp-builtins/src/ext/intl/consts.h` | CI job `generated` (php-src checkout) |
 | `parser` | the release tarball (`tools/php-dist.sha256`): Bison's `zend_language_parser.{c,h}`, `zend_ini_parser.{c,h}`; the numbers of the grammar rules whose actions rhp runs | `ext/tokenizer/ids.rs`, `zend/*_parser_tables.rs` | CI job `generated` (tarball cached on the pin) |
 | `dumps` | the reference php: `tools/capture-ref-build.php tables`, plus constants gated on a newer library (`CONST_EXTRAS`) | `ini_table.rs`, `const_modules.rs` | `cargo test` on the reference host |

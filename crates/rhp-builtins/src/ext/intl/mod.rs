@@ -1,15 +1,13 @@
-//! The `intl` extension — the ICU-backed subset Composer and its bundled
+//! The `intl` extension — the subset Composer and its bundled
 //! `symfony/string` reach for: grapheme-cluster string functions
 //! (`grapheme_*`), Unicode normalization (`normalizer_*` / `Normalizer`) and
 //! IDNA (`idn_to_ascii` / `idn_to_utf8`), plus the global error state
 //! (`intl_get_error_code` / `intl_get_error_message`).
 //!
-//! php links ICU; rhp uses the ICU4X crates (`icu_segmenter`,
-//! `icu_normalizer`, `icu_properties`) which carry the same Unicode data, and a
-//! UTS #46 processor modelled on ICU's `uts46.cpp` (see [`idn`]). The few
-//! facts ICU4X has no API for (collation ignorables, case foldings newer than
-//! php's mbstring tables) are in `icu_tables.rs`, generated from the reference
-//! php's ICU by `gen_icu_tables.php`.
+//! Like php, rhp calls ICU4C (the build php links, see
+//! docs/design/libraries.md); each function is a port of php-src's
+//! ext/intl C. The global constants are php's (`consts.h`, generated from
+//! the stubs) with the linked ICU's values.
 //!
 //! `extension_loaded('intl')` stays false: the rest of the extension
 //! (Collator, NumberFormatter, Locale, …) is not implemented, and callers that
@@ -17,76 +15,90 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ffi::CStr;
+use std::ptr;
+use std::sync::OnceLock;
 
 use rhp_values::Value;
 
 use crate::{Builtin, Host, Thrown};
 
 mod grapheme;
-mod icu_tables;
 mod idn;
 mod normalizer;
-mod uconst;
+mod sys;
 
-/// Whether `cp` lies in one of the sorted inclusive `ranges`.
-fn in_ranges(ranges: &[(u32, u32)], cp: u32) -> bool {
-    ranges
-        .binary_search_by(|&(lo, hi)| {
-            if hi < cp {
-                std::cmp::Ordering::Less
-            } else if lo > cp {
-                std::cmp::Ordering::Greater
-            } else {
-                std::cmp::Ordering::Equal
+use sys::{UChar, UErrorCode};
+
+// ---------------------------------------------------------------------------
+// constants (consts.h through shim.c)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum ConstValue {
+    Int(i64),
+    Str(&'static str),
+}
+
+/// The shim's table, read once.
+fn const_table() -> &'static [(&'static str, ConstValue)] {
+    static TABLE: OnceLock<Vec<(&'static str, ConstValue)>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut out = Vec::new();
+        // SAFETY: the shim returns a static array ended by a null name; its
+        // strings are C literals.
+        unsafe {
+            let mut p = sys::rhp_intl_constants();
+            while !(*p).name.is_null() {
+                let name = CStr::from_ptr((*p).name).to_str().expect("ASCII name");
+                let value = if (*p).str.is_null() {
+                    ConstValue::Int((*p).value)
+                } else {
+                    ConstValue::Str(CStr::from_ptr((*p).str).to_str().expect("ASCII value"))
+                };
+                out.push((name, value));
+                p = p.add(1);
             }
+        }
+        out
+    })
+}
+
+/// The value of one of php's integer intl constants.
+pub(crate) fn int_const(name: &str) -> i64 {
+    match const_table().iter().find(|(n, _)| *n == name) {
+        Some((_, ConstValue::Int(v))) => *v,
+        _ => panic!("consts.h has no integer {name}"),
+    }
+}
+
+pub fn constants() -> Vec<(&'static str, Value)> {
+    const_table()
+        .iter()
+        .map(|&(n, v)| {
+            let v = match v {
+                ConstValue::Int(i) => Value::Int(i),
+                ConstValue::Str(s) => Value::str(s),
+            };
+            (n, v)
         })
-        .is_ok()
-}
-
-/// Completely ignorable in ICU's root collation (so `usearch` skips it).
-fn collation_ignorable(cp: u32) -> bool {
-    in_ranges(icu_tables::IGNORABLE, cp)
-}
-
-/// ICU's simple case folding of `cp` where it is newer than php's mbstring
-/// tables (which the fold helpers otherwise share).
-fn icu_fold_extra(cp: u32) -> Option<u32> {
-    icu_tables::FOLD_EXTRA
-        .binary_search_by_key(&cp, |&(c, _)| c)
-        .ok()
-        .map(|i| icu_tables::FOLD_EXTRA[i].1)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
 // global error state (intl_error.c)
 // ---------------------------------------------------------------------------
 
-/// ICU `UErrorCode`s the implemented functions can report.
-pub(crate) const U_ZERO_ERROR: i64 = 0;
-pub(crate) const U_ILLEGAL_ARGUMENT_ERROR: i64 = 1;
-pub(crate) const U_INVALID_CHAR_FOUND: i64 = 10;
-
 /// ICU's `u_errorName`.
-fn u_error_name(code: i64) -> &'static str {
-    match code {
-        66560 => return "U_STRINGPREP_PROHIBITED_ERROR",
-        66561 => return "U_STRINGPREP_UNASSIGNED_ERROR",
-        66562 => return "U_STRINGPREP_CHECK_BIDI_ERROR",
-        66816 => return "U_PLUGIN_TOO_HIGH",
-        66817 => return "U_PLUGIN_DIDNT_SET_LEVEL",
-        _ => {}
-    }
-    uconst::U_CONSTANTS
-        .iter()
-        .find(|(n, v)| {
-            *v == code && !n.ends_with("_START") && !n.ends_with("_LIMIT") && !n.ends_with("_FIRST")
-        })
-        .map(|(n, _)| *n)
-        .unwrap_or("[BOGUS UErrorCode]")
+fn u_error_name(code: UErrorCode) -> String {
+    // SAFETY: u_errorName returns a static string for every code.
+    unsafe { CStr::from_ptr(sys::u_errorName(code)) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 struct IntlError {
-    code: i64,
+    code: UErrorCode,
     msg: Option<String>,
 }
 
@@ -98,31 +110,39 @@ thread_local! {
 pub(crate) fn error_reset() {
     ERR.with(|e| {
         let mut e = e.borrow_mut();
-        e.code = U_ZERO_ERROR;
+        e.code = sys::U_ZERO_ERROR;
         e.msg = None;
     });
 }
 
-/// `intl_error_set(NULL, code, msg)`: the message is prefixed with the
+/// `intl_error_set_code(NULL, code)`.
+pub(crate) fn error_set_code(code: UErrorCode) {
+    ERR.with(|e| e.borrow_mut().code = code);
+}
+
+/// `intl_error_set_custom_msg(NULL, msg)`: the message is prefixed with the
 /// calling function's name, as php does for the global error.
-pub(crate) fn error_set(fname: &str, code: i64, msg: &str) {
-    ERR.with(|e| {
-        let mut e = e.borrow_mut();
-        e.code = code;
-        e.msg = Some(format!("{fname}(): {msg}"));
-    });
+pub(crate) fn error_set_msg(fname: &str, msg: &str) {
+    ERR.with(|e| e.borrow_mut().msg = Some(format!("{fname}(): {msg}")));
+}
+
+/// `intl_error_set(NULL, code, msg)`.
+pub(crate) fn error_set(fname: &str, code: UErrorCode, msg: &str) {
+    error_set_code(code);
+    error_set_msg(fname, msg);
 }
 
 fn fn_intl_get_error_code(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(ERR.with(|e| e.borrow().code)))
+    Ok(Value::Int(ERR.with(|e| e.borrow().code) as i64))
 }
 
 fn fn_intl_get_error_message(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     let s = ERR.with(|e| {
         let e = e.borrow();
+        let name = u_error_name(e.code);
         match &e.msg {
-            Some(m) => format!("{m}: {}", u_error_name(e.code)),
-            None => u_error_name(e.code).to_string(),
+            Some(m) => format!("{m}: {name}"),
+            None => name,
         }
     });
     Ok(Value::str(s.into_bytes()))
@@ -130,22 +150,101 @@ fn fn_intl_get_error_message(_: &mut dyn Host, _args: &[Value]) -> Result<Value,
 
 fn fn_intl_is_failure(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let code = super::zpp::int_arg(host, args, 0, "intl_is_failure", "errorCode")?;
-    Ok(Value::Bool(code > U_ZERO_ERROR))
+    Ok(Value::Bool(code > sys::U_ZERO_ERROR as i64))
 }
 
 fn fn_intl_error_name(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let code = super::zpp::int_arg(host, args, 0, "intl_error_name", "errorCode")?;
-    Ok(Value::str(u_error_name(code)))
+    // php passes the zend_long to u_errorName's UErrorCode (an int).
+    Ok(Value::str(u_error_name(code as i32)))
 }
 
 // ---------------------------------------------------------------------------
-// shared helpers
+// shared helpers (intl_convert.c)
 // ---------------------------------------------------------------------------
 
-/// `intl_convert_utf8_to_utf16` succeeds exactly when the input is well-formed
-/// UTF-8.
-pub(crate) fn as_utf8(b: &[u8]) -> Option<&str> {
-    std::str::from_utf8(b).ok()
+/// `intl_convert_utf8_to_utf16`: ICU's strict UTF-8 → UTF-16.
+pub(crate) fn utf8_to_utf16(src: &[u8]) -> Result<Vec<UChar>, UErrorCode> {
+    if src.len() > i32::MAX as usize {
+        return Err(sys::U_BUFFER_OVERFLOW_ERROR);
+    }
+    let mut status = sys::U_ZERO_ERROR;
+    let mut len = 0i32;
+    // SAFETY: a preflight (null buffer, zero capacity) over `src`.
+    unsafe {
+        sys::u_strFromUTF8(
+            ptr::null_mut(),
+            0,
+            &mut len,
+            src.as_ptr().cast(),
+            src.len() as i32,
+            &mut status,
+        );
+    }
+    if status != sys::U_BUFFER_OVERFLOW_ERROR && status != sys::U_STRING_NOT_TERMINATED_WARNING {
+        return Err(status);
+    }
+    let mut buf: Vec<UChar> = vec![0; len as usize + 1];
+    status = sys::U_ZERO_ERROR;
+    // SAFETY: `buf` holds `len + 1` units.
+    unsafe {
+        sys::u_strFromUTF8(
+            buf.as_mut_ptr(),
+            len + 1,
+            ptr::null_mut(),
+            src.as_ptr().cast(),
+            src.len() as i32,
+            &mut status,
+        );
+    }
+    if sys::failure(status) {
+        return Err(status);
+    }
+    buf.truncate(len as usize);
+    Ok(buf)
+}
+
+/// `intl_convert_utf16_to_utf8`.
+pub(crate) fn utf16_to_utf8(src: &[UChar]) -> Result<Vec<u8>, UErrorCode> {
+    let mut status = sys::U_ZERO_ERROR;
+    let mut len = 0i32;
+    // SAFETY: a preflight over `src`.
+    unsafe {
+        sys::u_strToUTF8(
+            ptr::null_mut(),
+            0,
+            &mut len,
+            src.as_ptr(),
+            src.len() as i32,
+            &mut status,
+        );
+    }
+    if status != sys::U_BUFFER_OVERFLOW_ERROR && status != sys::U_STRING_NOT_TERMINATED_WARNING {
+        return Err(status);
+    }
+    let mut buf: Vec<u8> = vec![0; len as usize];
+    status = sys::U_ZERO_ERROR;
+    // SAFETY: `buf` holds `len` bytes.
+    unsafe {
+        sys::u_strToUTF8(
+            buf.as_mut_ptr().cast(),
+            len,
+            ptr::null_mut(),
+            src.as_ptr(),
+            src.len() as i32,
+            &mut status,
+        );
+    }
+    if sys::failure(status) {
+        return Err(status);
+    }
+    Ok(buf)
+}
+
+/// php's `ZEND_HAS_OOM()`: an allocation crossed memory_limit, and the VM
+/// raises the error once the builtin returns.
+pub(crate) fn has_oom() -> bool {
+    rhp_values::mem::state().attention()
 }
 
 /// `Z_PARAM_PATH`: a string that must not contain NUL bytes.
@@ -245,11 +344,14 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         Some(2),
     );
 
+    put(m, "__normalizer", normalizer::fn_method, 1, None);
+
     put(m, "idn_to_ascii", idn::fn_idn_to_ascii, 1, Some(4));
     put(m, "idn_to_utf8", idn::fn_idn_to_utf8, 1, Some(4));
 }
 
-/// The `Normalizer` class: static wrappers over the procedural functions.
+/// The `Normalizer` class: its static methods share the procedural
+/// functions' code but name themselves in errors.
 pub const PRELUDE_PHP: &str = r#"
 class Normalizer {
     const FORM_D = 4;
@@ -262,45 +364,63 @@ class Normalizer {
     const NFKC = 32;
     const FORM_KC_CF = 48;
     const NFKC_CF = 48;
-    public static function normalize(string $string, int $form = 16): string|false { return normalizer_normalize($string, $form); }
-    public static function isNormalized(string $string, int $form = 16): bool { return normalizer_is_normalized($string, $form); }
-    public static function getRawDecomposition(string $string, int $form = 16): ?string { return normalizer_get_raw_decomposition($string, $form); }
+    public static function normalize(string $string, int $form = 16): string|false { return __normalizer('normalize', $string, $form); }
+    public static function isNormalized(string $string, int $form = 16): bool { return __normalizer('isNormalized', $string, $form); }
+    public static function getRawDecomposition(string $string, int $form = 16): ?string { return __normalizer('getRawDecomposition', $string, $form); }
 }
 "#;
 
-pub fn constants() -> Vec<(&'static str, Value)> {
-    let mut v = vec![
-        ("INTL_MAX_LOCALE_LEN", Value::Int(156)),
-        ("INTL_ICU_VERSION", Value::str(crate::version::ICU_VERSION)),
-        (
-            "INTL_ICU_DATA_VERSION",
-            Value::str(crate::version::ICU_DATA_VERSION),
-        ),
-        ("GRAPHEME_EXTR_COUNT", Value::Int(0)),
-        ("GRAPHEME_EXTR_MAXBYTES", Value::Int(1)),
-        ("GRAPHEME_EXTR_MAXCHARS", Value::Int(2)),
-        ("IDNA_DEFAULT", Value::Int(idn::IDNA_DEFAULT)),
-        ("IDNA_ALLOW_UNASSIGNED", Value::Int(1)),
-        ("IDNA_USE_STD3_RULES", Value::Int(2)),
-        ("IDNA_CHECK_BIDI", Value::Int(4)),
-        ("IDNA_CHECK_CONTEXTJ", Value::Int(8)),
-        ("IDNA_NONTRANSITIONAL_TO_ASCII", Value::Int(16)),
-        ("IDNA_NONTRANSITIONAL_TO_UNICODE", Value::Int(32)),
-        ("INTL_IDNA_VARIANT_UTS46", Value::Int(1)),
-        ("IDNA_ERROR_EMPTY_LABEL", Value::Int(1)),
-        ("IDNA_ERROR_LABEL_TOO_LONG", Value::Int(2)),
-        ("IDNA_ERROR_DOMAIN_NAME_TOO_LONG", Value::Int(4)),
-        ("IDNA_ERROR_LEADING_HYPHEN", Value::Int(8)),
-        ("IDNA_ERROR_TRAILING_HYPHEN", Value::Int(16)),
-        ("IDNA_ERROR_HYPHEN_3_4", Value::Int(32)),
-        ("IDNA_ERROR_LEADING_COMBINING_MARK", Value::Int(64)),
-        ("IDNA_ERROR_DISALLOWED", Value::Int(128)),
-        ("IDNA_ERROR_PUNYCODE", Value::Int(256)),
-        ("IDNA_ERROR_LABEL_HAS_DOT", Value::Int(512)),
-        ("IDNA_ERROR_INVALID_ACE_LABEL", Value::Int(1024)),
-        ("IDNA_ERROR_BIDI", Value::Int(2048)),
-        ("IDNA_ERROR_CONTEXTJ", Value::Int(4096)),
-    ];
-    v.extend(uconst::U_CONSTANTS.iter().map(|&(n, c)| (n, Value::Int(c))));
-    v
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uidna_info_layout_matches_the_headers() {
+        // SAFETY: a plain getter.
+        let size = unsafe { sys::rhp_intl_uidna_info_size() };
+        assert_eq!(size, std::mem::size_of::<sys::UIDNAInfo>());
+    }
+
+    #[test]
+    fn constants_come_from_the_linked_icu() {
+        let c = constants();
+        let get = |n: &str| {
+            c.iter()
+                .find(|(k, _)| *k == n)
+                .map(|(_, v)| rhp_values::conv::to_string_bytes(v))
+        };
+        assert_eq!(
+            get("INTL_ICU_VERSION").as_deref(),
+            Some(env!("RHP_U_ICU_VERSION").as_bytes())
+        );
+        assert_eq!(get("U_ZERO_ERROR").as_deref(), Some(&b"0"[..]));
+        assert_eq!(get("INTL_MAX_LOCALE_LEN").as_deref(), Some(&b"156"[..]));
+        assert_eq!(c.len(), 170);
+        assert_eq!(u_error_name(1), "U_ILLEGAL_ARGUMENT_ERROR");
+    }
+
+    #[test]
+    fn icu_is_linked_statically() {
+        if env!("RHP_ICU_UC_LINK_MODE") != "static" {
+            return;
+        }
+        // Make sure the test binary pulls in ICU.
+        assert!(!u_error_name(0).is_empty());
+        let exe = std::env::current_exe().unwrap();
+        let (tool, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+            ("otool", &["-L"])
+        } else {
+            ("ldd", &[])
+        };
+        let Ok(out) = std::process::Command::new(tool)
+            .args(args)
+            .arg(&exe)
+            .output()
+        else {
+            return;
+        };
+        let deps = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{tool} failed: {deps}");
+        assert!(!deps.contains("libicu"), "{deps}");
+    }
 }

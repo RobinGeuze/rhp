@@ -23,12 +23,14 @@ runs:
       env:
         PHP_BIN: ${{ inputs.php }}
       run: |
-        # PCRE2 (libpcre2-8.a) and libxml2 (libxml2.a), linked statically.
+        # PCRE2 (libpcre2-8.a), libxml2 (libxml2.a) and ICU (libicu*.a),
+        # linked statically.
         sudo apt-get update -q
         sudo apt-get install -y --no-install-recommends \
           pkg-config \
           libpcre2-dev \
-          libxml2-dev
+          libxml2-dev \
+          libicu-dev
         php="${PHP_BIN:-$(command -v php || true)}"
         build=""
         # compare <name> <pkg-config module> <php code printing the version php loads>
@@ -44,6 +46,16 @@ runs:
         compare pcre2 libpcre2-8 'echo strtok(PCRE_VERSION, " ");'
         # shellcheck disable=SC2016
         compare libxml2 libxml-2.0 '$v = (int) LIBXML_LOADED_VERSION; echo intdiv($v, 10000), ".", intdiv($v, 100) % 100, ".", $v % 100;'
+        # ICU has no source build here: its release must be the distro's.
+        if [ -n "$php" ]; then
+          have="$(pkg-config --modversion icu-uc)"
+          want="$("$php" -n -r 'echo defined("INTL_ICU_VERSION") ? INTL_ICU_VERSION : "";')"
+          echo "icu: the distro has $have; $php links ${want:-no intl}"
+          if [ -n "$want" ] && [ "$want" != "$have" ]; then
+            echo "::error::php links ICU $want but libicu-dev is $have; rhp must link php's ICU (docs/design/libraries.md)"
+            exit 1
+          fi
+        fi
         if [ -n "$php" ]; then
           # rhp's LIBXML_DOTTED_VERSION is its headers' and LIBXML_LOADED_VERSION
           # its library's: one release. php can differ only if it loads a

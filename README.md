@@ -70,7 +70,7 @@ cargo run -p rhp-cli -- script.php
 ```
 
 Requires Rust ≥ 1.99, the C libraries rhp links (macOS: `brew install pcre2`,
-already there as a php dependency; Debian/Ubuntu: `apt install libpcre2-dev`;
+already there as a php dependency; Debian/Ubuntu: `apt install pkg-config libpcre2-dev`;
 see [`docs/design/libraries.md`](docs/design/libraries.md)) and, for
 regenerating golden fixtures, a local `php` 8.5.
 rhp tracks the latest php 8.5 release (currently 8.5.12, Homebrew build): every

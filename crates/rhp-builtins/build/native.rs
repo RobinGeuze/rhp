@@ -6,7 +6,11 @@
 //! - read its version from its header and export the listed macros to the
 //!   crate as `RHP_<MACRO>` (`env!("RHP_PCRE2_MAJOR")`);
 //! - link it statically or dynamically as the row says for the target OS,
-//!   unless `RHP_<NAME>_LINK=static|dynamic` overrides that;
+//!   unless `RHP_<NAME>_LINK=static|dynamic` overrides that, and tell the
+//!   crate which as `env!("RHP_<NAME>_LINK_MODE")`. A static
+//!   archive is linked from a directory of its own under `OUT_DIR`, so the
+//!   linker cannot pick the shared library next to it (ld64 has no
+//!   `-Bstatic`, and Homebrew ships both);
 //! - fail the build, saying how to fix it, when the library, its header or
 //!   its static archive is missing. There is no bundled fallback.
 //!
@@ -50,6 +54,10 @@ pub struct Lib {
     pub install: &'static str,
 }
 
+// A static link's private dependencies (`Libs.private`) are linked
+// dynamically from the linker's default paths. One that is itself a Homebrew
+// or -dev library needs its own row.
+
 /// Every library rhp-builtins links.
 pub const LIBS: &[Lib] = &[Lib {
     name: "PCRE2",
@@ -61,7 +69,7 @@ pub const LIBS: &[Lib] = &[Lib {
     version: &["PCRE2_MAJOR", "PCRE2_MINOR"],
     macos: Mode::Static,
     linux: Mode::Static,
-    install: "macOS: brew install pcre2; Debian/Ubuntu: apt install libpcre2-dev",
+    install: "macOS: brew install pcre2; Debian/Ubuntu: apt install pkg-config libpcre2-dev",
 }];
 
 /// Where a library was found.
@@ -151,10 +159,16 @@ fn link(lib: &Lib) -> Result<(), String> {
         }
     }
 
-    println!("cargo:rustc-link-search=native={}", found.libdir.display());
+    let mode_name = if mode == Mode::Static {
+        "static"
+    } else {
+        "dynamic"
+    };
+    println!("cargo:rustc-env=RHP_{}_LINK_MODE={mode_name}", lib.name);
     match mode {
         Mode::Static => {
-            let archive = found.libdir.join(format!("lib{}.a", lib.link));
+            let file = format!("lib{}.a", lib.link);
+            let archive = found.libdir.join(&file);
             if !archive.is_file() {
                 return Err(format!(
                     "{} {version} ({}) has no static archive {}. rhp links {} statically; \
@@ -168,14 +182,38 @@ fn link(lib: &Lib) -> Result<(), String> {
                 ));
             }
             println!("cargo:rerun-if-changed={}", archive.display());
+            let dir = archive_dir(lib, &archive, &file)?;
+            println!("cargo:rustc-link-search=native={}", dir.display());
             println!("cargo:rustc-link-lib=static={}", lib.link);
             for p in &found.private {
                 println!("cargo:rustc-link-lib=dylib={p}");
             }
         }
-        Mode::Dynamic(_) => println!("cargo:rustc-link-lib=dylib={}", lib.link),
+        Mode::Dynamic(_) => {
+            println!("cargo:rustc-link-search=native={}", found.libdir.display());
+            println!("cargo:rustc-link-lib=dylib={}", lib.link);
+        }
     }
     Ok(())
+}
+
+/// `$OUT_DIR/native-<name>/` holding only a link to `archive`: the one
+/// search path a static link gets.
+fn archive_dir(lib: &Lib, archive: &Path, file: &str) -> Result<PathBuf, String> {
+    let out = env::var_os("OUT_DIR").ok_or_else(|| "OUT_DIR is not set".to_string())?;
+    let dir = PathBuf::from(out).join(format!("native-{}", lib.name.to_ascii_lowercase()));
+    let fail = |e: std::io::Error| format!("{}: {e}", dir.display());
+    if dir.exists() {
+        fs::remove_dir_all(&dir).map_err(fail)?;
+    }
+    fs::create_dir_all(&dir).map_err(fail)?;
+    let dest = dir.join(file);
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(archive, &dest);
+    #[cfg(not(unix))]
+    let linked = fs::copy(archive, &dest).map(|_| ());
+    linked.map_err(fail)?;
+    Ok(dir)
 }
 
 fn find(lib: &Lib, os: &str) -> Result<Found, String> {
@@ -217,6 +255,14 @@ fn find(lib: &Lib, os: &str) -> Result<Found, String> {
     }
     let pkg_config = match pkg_config_bin() {
         Some(bin) => format!("`{bin}` knows no {}", lib.pkg),
+        // Off macOS pkg-config is the only way the helper looks.
+        None if os != "macos" => {
+            return Err(format!(
+                "{} not found: pkg-config is not installed, and off macOS rhp finds \
+                 libraries only through it. Install pkg-config and {} ({}).",
+                lib.name, lib.name, lib.install
+            ))
+        }
         None => "no pkg-config".into(),
     };
     let looked: Vec<String> = match lib.brew {

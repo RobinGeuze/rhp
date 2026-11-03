@@ -61,11 +61,19 @@ binary that links two PCRE2 copies is wrong too, so rhp-difftest uses
 `RHP_<LIB>_LINK=static|dynamic` (e.g. `RHP_PCRE2_LINK=dynamic`) overrides the
 policy for one build, for experiments.
 
+The helper links a static archive from a directory under `OUT_DIR` that holds
+only that archive. Searching the library's own libdir would not work: ld64
+has no `-Bstatic`, so `-lpcre2-8` takes Homebrew's `libpcre2-8.dylib` next
+to the `.a`. A static link's `Libs.private` dependencies are linked
+dynamically from the default paths; one that is a Homebrew or `-dev`
+library needs its own row.
+
 **Checks.** `crates/rhp-cli/tests/ref_build.rs` requires the "linked" section
 of `tools/capture-ref-build.php` to print the same under rhp and the host's
 php 8.5. CI prints what its php links (the setup-php action's last step).
 `otool -L target/release/rhp` (or `ldd`) shows no libpcre2; `nm` shows the
-`pcre2_*` symbols.
+`pcre2_*` symbols. rhp-builtins' `pcre2_is_linked_statically` test checks
+its own test binary, which is linked straight from the crate.
 
 ## Licences
 

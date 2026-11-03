@@ -645,6 +645,31 @@ mod tests {
         re.find_all(subject, 0, usize::MAX, &mut out).map(|()| out)
     }
 
+    /// This test binary is linked straight from the crate, not through the
+    /// rlib, so it shows whether the build helper's static link holds.
+    #[test]
+    fn pcre2_is_linked_statically() {
+        if env!("RHP_PCRE2_LINK_MODE") != "static" {
+            return;
+        }
+        let exe = std::env::current_exe().unwrap();
+        let tool = if cfg!(target_os = "macos") {
+            ("otool", vec!["-L"])
+        } else {
+            ("ldd", vec![])
+        };
+        let Ok(out) = std::process::Command::new(tool.0)
+            .args(&tool.1)
+            .arg(&exe)
+            .output()
+        else {
+            return;
+        };
+        let deps = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{} failed: {deps}", tool.0);
+        assert!(!deps.contains("libpcre2"), "{deps}");
+    }
+
     #[test]
     fn header_and_library_agree() {
         let v = version();

@@ -7,20 +7,7 @@
 
 #include "zend_shim.h"
 
-void *rhp_csrc_emalloc(size_t size)
-{
-	void *p = malloc(size ? size : 1);
-	if (!p) {
-		fprintf(stderr, "Fatal error: Out of memory (allocating %zu bytes)\n", size);
-		abort();
-	}
-	return p;
-}
-
-void rhp_csrc_efree(void *ptr)
-{
-	free(ptr);
-}
+/* rhp_csrc_emalloc and rhp_csrc_efree are Rust (src/lib.rs). */
 
 char *rhp_csrc_estrdup(const char *s)
 {

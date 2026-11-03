@@ -13,9 +13,70 @@ pub mod argon2;
 #[cfg(feature = "crypt")]
 pub mod crypt;
 
+use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
+use std::ffi::c_void;
+
+/// Bytes before each block emalloc hands out: the block's layout size, for
+/// efree (C frees by pointer only). 16 keeps malloc's alignment.
+const EMALLOC_HEADER: usize = 16;
+
+/// zend_shim.h's `emalloc`: through Rust's global allocator, so vendored C
+/// counts against `memory_limit` like php's own emalloc. Never NULL.
+#[no_mangle]
+pub extern "C" fn rhp_csrc_emalloc(size: usize) -> *mut c_void {
+    let layout = size
+        .max(1)
+        .checked_add(EMALLOC_HEADER)
+        .and_then(|n| Layout::from_size_align(n, EMALLOC_HEADER).ok())
+        .unwrap_or_else(|| handle_alloc_error(Layout::new::<[u8; EMALLOC_HEADER]>()));
+    // SAFETY: the layout has a non-zero size; the header fits in front of
+    // the block and keeps it 16-byte aligned.
+    unsafe {
+        let base = alloc(layout);
+        if base.is_null() {
+            handle_alloc_error(layout);
+        }
+        (base as *mut usize).write(layout.size());
+        base.add(EMALLOC_HEADER) as *mut c_void
+    }
+}
+
+/// zend_shim.h's `efree`, for blocks from [`rhp_csrc_emalloc`].
+///
+/// # Safety
+///
+/// `ptr` is NULL or came from `rhp_csrc_emalloc` and is not used again.
+#[no_mangle]
+pub unsafe extern "C" fn rhp_csrc_efree(ptr: *mut c_void) {
+    if ptr.is_null() {
+        return;
+    }
+    let base = (ptr as *mut u8).sub(EMALLOC_HEADER);
+    let size = (base as *const usize).read();
+    dealloc(
+        base,
+        Layout::from_size_align_unchecked(size, EMALLOC_HEADER),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    #[test]
+    fn emalloc_blocks_round_trip() {
+        for size in [0usize, 1, 15, 16, 4096, 1 << 20] {
+            let p = super::rhp_csrc_emalloc(size) as *mut u8;
+            assert_eq!(p as usize % 16, 0);
+            // SAFETY: the block holds at least `size` bytes.
+            unsafe {
+                std::ptr::write_bytes(p, 0xab, size);
+                super::rhp_csrc_efree(p as *mut std::ffi::c_void);
+            }
+        }
+        // SAFETY: NULL is a no-op, as in php.
+        unsafe { super::rhp_csrc_efree(std::ptr::null_mut()) };
+    }
     use std::process::Command;
 
     /// Every global symbol the C archives define carries the rhp_ prefix

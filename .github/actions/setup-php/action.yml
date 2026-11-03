@@ -118,3 +118,20 @@ runs:
             echo "php-cgi -n is missing $e (or printed startup noise)"; exit 1
           fi
         done
+
+    # What this php links (docs/design/libraries.md): rhp must link the same
+    # library versions, and ref_build.rs checks the ones it already does.
+    - name: Report the libraries php links
+      shell: bash
+      run: |
+        php -n -i | grep -E '^(PCRE (Library|Unicode) Version|PCRE JIT|libXML (Compiled|Loaded) Version|ICU (version|Data version|Unicode version)|cURL Information|SSL Version|ZLib Version|libSSH Version|OpenSSL (Library|Header) Version|Libzip version|GMP version|iconv (implementation|library version)|Multibyte regex \(oniguruma\) version|("Olson" )?Timezone Database|Compiled Version|Linked Version|SQLite Library)' || true
+        bin="$(php -n -r 'echo PHP_BINARY;')"
+        extdir="$(php-config --extension-dir)"
+        loaded="$(php -n -m | tr 'A-Z' 'a-z')"
+        list() { if command -v ldd >/dev/null 2>&1; then ldd "$1"; else otool -L "$1"; fi; }
+        echo "== $bin"; list "$bin"
+        for so in "$extdir"/*.so; do
+          if grep -qx "$(basename "$so" .so)" <<<"$loaded"; then
+            echo "== $so"; list "$so"
+          fi
+        done

@@ -1,0 +1,18 @@
+name: Install rhp's native build dependencies
+description: >
+  apt-installs the C libraries rhp links (docs/design/libraries.md). Every job
+  that builds rhp uses this. To add a library, add its -dev package here and
+  its row in crates/rhp-builtins/build/native.rs.
+
+runs:
+  using: composite
+  steps:
+    - name: Install native build dependencies
+      shell: bash
+      run: |
+        # PCRE2: libpcre2-8.a, linked statically.
+        sudo apt-get update -q
+        sudo apt-get install -y --no-install-recommends \
+          pkg-config \
+          libpcre2-dev
+        echo "PCRE2: $(pkg-config --modversion libpcre2-8)"

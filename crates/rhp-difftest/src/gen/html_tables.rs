@@ -12,8 +12,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::path::Path;
+use std::process::ExitCode;
 
-use super::{emit, flag, read};
+use super::util::{finish, flag, read};
 
 const OUT: &str = "crates/rhp-builtins/src/html_tables.rs";
 
@@ -55,14 +56,18 @@ enum Row {
     Multi(Option<String>, Vec<(u32, String)>),
 }
 
-pub fn main(args: &[String]) -> Result<bool, String> {
+pub fn main(args: &[String]) -> ExitCode {
     let check = args.iter().any(|a| a == "--check");
+    finish("html-tables", check, files(args))
+}
+
+fn files(args: &[String]) -> Result<Vec<(&'static str, String)>, String> {
     let src =
         flag(args, "--php-src").ok_or("gen html-tables needs --php-src <php-src checkout>")?;
     let std = Path::new(src).join("ext/standard");
     let dir = std.join("html_tables");
     let header = read(&std.join("html_tables.h"))?;
-    emit(OUT, &generate(&dir, &header)?, check)
+    Ok(vec![(OUT, generate(&dir, &header)?)])
 }
 
 fn generate(dir: &Path, header: &str) -> Result<String, String> {

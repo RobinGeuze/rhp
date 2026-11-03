@@ -7,15 +7,20 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
+use std::process::ExitCode;
 
-use super::{emit, flag, read};
+use super::util::{finish, flag, read, repo_root};
 
 const IDS: &str = "crates/rhp-builtins/src/ext/tokenizer/ids.rs";
 const LANG: &str = "crates/rhp-builtins/src/zend/language_parser_tables.rs";
 const INI: &str = "crates/rhp-builtins/src/zend/ini_parser_tables.rs";
 
-pub fn main(args: &[String]) -> Result<bool, String> {
+pub fn main(args: &[String]) -> ExitCode {
     let check = args.iter().any(|a| a == "--check");
+    finish("parser", check, files(args))
+}
+
+fn files(args: &[String]) -> Result<Vec<(&'static str, String)>, String> {
     let dist =
         flag(args, "--php-dist").ok_or("gen parser needs --php-dist <extracted php-x.y.z>")?;
     let dist = Path::new(dist);
@@ -26,19 +31,12 @@ pub fn main(args: &[String]) -> Result<bool, String> {
     let lang = read(&zend.join("zend_language_parser.c"))?;
     let ini = read(&zend.join("zend_ini_parser.c"))?;
     let ini_h = read(&zend.join("zend_ini_parser.h"))?;
-    let mut ok = emit(IDS, &token_ids(&header, &grammar)?, check)?;
-    ok &= emit(
-        LANG,
-        &tables(&lang, "Zend/zend_language_parser.c", None)?,
-        check,
-    )?;
     let kinds = token_kinds(&ini_h, "ini_tokentype")?;
-    ok &= emit(
-        INI,
-        &tables(&ini, "Zend/zend_ini_parser.c", Some(&kinds))?,
-        check,
-    )?;
-    Ok(ok)
+    Ok(vec![
+        (IDS, token_ids(&header, &grammar)?),
+        (LANG, tables(&lang, "Zend/zend_language_parser.c", None)?),
+        (INI, tables(&ini, "Zend/zend_ini_parser.c", Some(&kinds))?),
+    ])
 }
 
 /// The tarball must be the release rhp reports and tools/php-dist.sha256 pins.
@@ -53,7 +51,7 @@ fn check_version(dist: &Path) -> Result<(), String> {
     if v != want {
         return Err(format!("the tarball is php {v}, rhp reports {want}"));
     }
-    let pin = read(&super::repo_root().join("tools/php-dist.sha256"))?;
+    let pin = read(&repo_root().join("tools/php-dist.sha256"))?;
     let name = format!("php-{want}.tar.xz");
     if !pin
         .lines()

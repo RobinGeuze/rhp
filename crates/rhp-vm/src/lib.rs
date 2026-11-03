@@ -5470,9 +5470,9 @@ impl Vm {
         frame.argc = args.len();
         // A named-argument call armed `pending_named` for this frame.
         let named = self.pending_named.take();
-        let too_many = self.internal_too_many_args(&proto, frame, args.len());
+        let count_error = self.internal_arg_count_error(&proto, frame, args.len());
         let failed = match bind_params(&proto, args, frame) {
-            _ if too_many.is_some() => too_many.map(|e| (0, e)),
+            _ if count_error.is_some() => count_error.map(|e| (0, e)),
             Err(missing) => Some((missing, self.arg_count_error(&proto, frame, args.len()))),
             Ok(()) => {
                 if let Some((holes, extra)) = named {
@@ -5546,10 +5546,10 @@ impl Vm {
         ))
     }
 
-    /// zpp's "expects at most" for a prelude function or a built-in class's
-    /// prelude method called with more arguments than its stub signature
-    /// declares (prelude code calling it is not checked).
-    fn internal_too_many_args(
+    /// zpp's ArgumentCountError for a prelude function or a built-in class's
+    /// prelude method called with an argument count its stub signature
+    /// rejects (prelude code calling it is not checked).
+    fn internal_arg_count_error(
         &self,
         proto: &FunctionProto,
         frame: &Frame,
@@ -5568,23 +5568,25 @@ impl Vm {
                 let cname = self.class(cls).name.as_bytes();
                 let st = builtins::signatures::method(cname, proto.name.as_bytes())?;
                 let name = format!("{}::{}", String::from_utf8_lossy(cname), st.name);
-                (name, st.min_args(), st.max_args()?)
+                (name, st.min_args(), st.max_args())
             }
             Some(_) => return None,
             None => {
                 let f = builtins::signatures::function(proto.name.as_bytes())?;
-                (f.name.to_string(), f.min_args(), f.max_args()?)
+                (f.name.to_string(), f.min_args(), f.max_args())
             }
         };
-        if passed <= max {
-            return None;
-        }
-        let which = if min == max { "exactly" } else { "at most" };
+        let exact = max == Some(min);
+        let (which, bound) = match max {
+            _ if passed < min => (if exact { "exactly" } else { "at least" }, min),
+            Some(max) if passed > max => (if exact { "exactly" } else { "at most" }, max),
+            _ => return None,
+        };
         Some(Thrown::error(
             "ArgumentCountError",
             format!(
-                "{name}() expects {which} {max} argument{}, {passed} given",
-                if max == 1 { "" } else { "s" }
+                "{name}() expects {which} {bound} argument{}, {passed} given",
+                if bound == 1 { "" } else { "s" }
             ),
         ))
     }

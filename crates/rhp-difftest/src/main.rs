@@ -22,6 +22,10 @@ use std::process::ExitCode;
 use rhp_difftest::sweeps::{self, hash_algo, php_hash_algos};
 use rhp_difftest::{default_byte_corpus, php_available, Diff};
 
+// The engine's memory accounting (memory_get_usage(), memory_limit).
+#[global_allocator]
+static ALLOC: rhp_values::mem::CountingAlloc = rhp_values::mem::CountingAlloc;
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("phpt") {

@@ -2148,7 +2148,9 @@ fn prelude_classes() -> Result<Rc<PreludeParts>, Thrown> {
     if let Some(p) = PRELUDE_CACHE.with(|c| c.borrow().clone()) {
         return Ok(p);
     }
-    let parts = Rc::new(prelude_classes_isolated()?);
+    // Compiled once per thread, kept for every later request: not counted
+    // against a request's memory.
+    let parts = rhp_values::mem::uncounted(|| prelude_classes_isolated().map(Rc::new))?;
     PRELUDE_CACHE.with(|c| *c.borrow_mut() = Some(parts.clone()));
     Ok(parts)
 }
@@ -3505,7 +3507,17 @@ impl ProtoBuilder {
         Ok(())
     }
 
+    /// php compiles `while` and `for` with a jump to the condition at the
+    /// bottom, and a jump checks for interrupts (a pending out-of-memory
+    /// error is raised before the first iteration). The condition stays at
+    /// the top here, behind a jump to it.
+    fn emit_loop_entry(&mut self) {
+        let next = self.here() + 1;
+        self.emit(Instr::Jmp { target: next });
+    }
+
     fn compile_while(&mut self, w: &rhp_frontend::cst::While) -> Result<(), Thrown> {
+        self.emit_loop_entry();
         let top = self.here();
         let cond = self.compile_expr(w.condition)?;
         let jf = self.code.len();
@@ -3552,6 +3564,7 @@ impl ProtoBuilder {
         for e in f.initializations.iter() {
             self.compile_expr(e)?;
         }
+        self.emit_loop_entry();
         let top = self.here();
         // All conditions evaluated for side effects; the LAST controls the loop.
         let jf = if f.conditions.is_empty() {

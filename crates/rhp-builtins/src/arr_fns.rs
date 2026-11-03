@@ -169,12 +169,21 @@ fn fn_array_fill(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "array_fill(): Argument #2 ($count) must be greater than or equal to 0",
         ));
     }
-    // HT_MAX_SIZE on 64-bit builds.
-    if count > 0x4000_0000 {
+    if count > i32::MAX as i64 {
         return Err(Thrown::error(
             "ValueError",
             "array_fill(): Argument #2 ($count) is too large",
         ));
+    }
+    // php sizes the array up front, fallibly: packed when the keys start in
+    // 0..count, else a hash.
+    let reserved = if (0..count).contains(&start) {
+        rhp_values::mem::reserve_packed_array((start + count) as usize)
+    } else {
+        count == 0 || rhp_values::mem::reserve_hash_array(count as usize)
+    };
+    if !reserved {
+        return Ok(Value::Null);
     }
     let val = deref(&args[2]);
     let mut out = PhpArray::new();
@@ -316,6 +325,20 @@ fn fn_array_pad(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Array(a));
     }
     let pad = abs - n;
+    // php sizes the result up front, fallibly: packed when the first key
+    // it inserts is an int (a list input, or pads going first).
+    let packed = size < 0
+        || a.iter()
+            .enumerate()
+            .all(|(i, (k, _))| matches!(k, ArrayKey::Int(n) if *n == i as i64));
+    let reserved = if packed {
+        rhp_values::mem::reserve_packed_array(abs)
+    } else {
+        rhp_values::mem::reserve_hash_array(abs)
+    };
+    if !reserved {
+        return Ok(Value::Null);
+    }
     let mut out = PhpArray::new();
     let append_original = |out: &mut PhpArray| {
         for (k, v) in a.iter() {

@@ -178,11 +178,15 @@ thread_local! {
 /// among those rhp applies.
 const QUANTITY_DIRECTIVES: &[&str] = &["pcre.backtrack_limit", "pcre.recursion_limit"];
 
-/// The warnings a directive's OnModify handler raises for `v`, and whether
-/// it accepts the value.
-fn on_modify_check(name: &[u8], v: &[u8]) -> (Vec<String>, bool) {
+/// The warnings a directive's OnModify handler raises for `v`, and the
+/// value it keeps (`None`: refused).
+fn on_modify_check(name: &[u8], v: &[u8]) -> (Vec<String>, Option<Vec<u8>>) {
     if name == b"memory_hard_limit_percent" {
-        return memory_hard_limit_percent_check(v);
+        let (warnings, ok) = memory_hard_limit_percent_check(v);
+        return (warnings, ok.then(|| v.to_vec()));
+    }
+    if name == b"memory_limit" {
+        return memory_limit_modify(v);
     }
     let mut warnings = Vec::new();
     if QUANTITY_DIRECTIVES.iter().any(|d| d.as_bytes() == name) {
@@ -191,7 +195,107 @@ fn on_modify_check(name: &[u8], v: &[u8]) -> (Vec<String>, bool) {
             warnings.push(format!("Invalid \"{name}\" setting. {err}"));
         }
     }
-    (warnings, true)
+    (warnings, Some(v.to_vec()))
+}
+
+/// OnChangeMemoryLimit (main.c): a value above max_memory_limit becomes
+/// max_memory_limit (without changing the allocator's limit, as in php),
+/// and one below the memory in use is refused.
+fn memory_limit_modify(v: &[u8]) -> (Vec<String>, Option<Vec<u8>>) {
+    let mut warnings = Vec::new();
+    let (value, err) = ini_parse_uquantity(v);
+    if let Some(err) = err {
+        warnings.push(format!("Invalid \"memory_limit\" setting. {err}"));
+    }
+    let max_raw = ini_value(b"max_memory_limit").flatten().unwrap_or_default();
+    let max = ini_parse_uquantity(&max_raw).0;
+    if value > max {
+        if value != u64::MAX {
+            warnings.push(format!(
+                "Failed to set memory_limit to {} bytes. Setting to max_memory_limit instead (currently: {} bytes)",
+                value as i64, max as i64
+            ));
+        }
+        return (warnings, Some(max_raw));
+    }
+    if !rhp_values::mem::set_limit(value as usize) {
+        warnings.push(format!(
+            "Failed to set memory limit to {} bytes (Current memory usage is {} bytes)",
+            value as i64,
+            rhp_values::mem::usage(true)
+        ));
+        return (warnings, None);
+    }
+    (warnings, Some(v.to_vec()))
+}
+
+/// `zend_ini_parse_uquantity`: the value and php's warning text. Only `-1`
+/// may be negative (it means the maximum); another sign is an out-of-range
+/// value that keeps its digits.
+pub(crate) fn ini_parse_uquantity(v: &[u8]) -> (u64, Option<String>) {
+    let ws = |c: &u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
+    let start = v.iter().position(|c| !ws(c)).unwrap_or(v.len());
+    let end = v.iter().rposition(|c| !ws(c)).map_or(start, |e| e + 1);
+    let t = &v[start..end];
+    if t == b"-1" {
+        return (u64::MAX, None);
+    }
+    let err = crate::rfc1867::quantity_error(v);
+    let out_of_range = |e: &Option<String>| e.as_ref().is_some_and(|m| m.contains("out of range"));
+    if let Some(rest) = t.strip_prefix(b"-") {
+        let value = ini_parse_quantity(rest) as u64;
+        let err = match err {
+            Some(m) if !m.contains("out of range") => Some(m),
+            _ => Some(format!(
+                "Invalid quantity \"{}\": value is out of range, using overflow result for backwards compatibility",
+                String::from_utf8_lossy(t)
+            )),
+        };
+        return (value, err);
+    }
+    let value = ini_parse_quantity(v) as u64;
+    // Signed overflow that still fits unsigned (2^63 ..< 2^64) is fine here.
+    if out_of_range(&err) && unsigned_fits(t) {
+        return (value, None);
+    }
+    (value, err)
+}
+
+/// Whether a quantity's digits times its suffix fit in 64 unsigned bits.
+fn unsigned_fits(t: &[u8]) -> bool {
+    let t = t.strip_prefix(b"+").unwrap_or(t);
+    let (body, factor) = match t.last() {
+        Some(b'g' | b'G') => (&t[..t.len() - 1], 1u64 << 30),
+        Some(b'm' | b'M') => (&t[..t.len() - 1], 1 << 20),
+        Some(b'k' | b'K') => (&t[..t.len() - 1], 1 << 10),
+        _ => (t, 1),
+    };
+    let body = body.trim_ascii_end();
+    let (digits, radix) = match body {
+        [b'0', b'x' | b'X', d @ ..] => (d, 16),
+        [b'0', b'o' | b'O', d @ ..] => (d, 8),
+        [b'0', b'b' | b'B', d @ ..] => (d, 2),
+        [b'0', d @ ..] if !d.is_empty() => (d, 8),
+        d => (d, 10),
+    };
+    let Ok(s) = std::str::from_utf8(digits) else {
+        return false;
+    };
+    u64::from_str_radix(s, radix)
+        .ok()
+        .and_then(|n| n.checked_mul(factor))
+        .is_some()
+}
+
+/// Give the allocator the limits the current `memory_limit` and
+/// `memory_hard_limit_percent` ask for (a request starts).
+pub fn apply_memory_limits() {
+    let v = ini_value(b"memory_limit").flatten().unwrap_or_default();
+    rhp_values::mem::force_limit(ini_parse_uquantity(&v).0.min(usize::MAX as u64) as usize);
+    let p = ini_value(b"memory_hard_limit_percent")
+        .flatten()
+        .map_or(-1, |p| ini_parse_quantity(&p));
+    rhp_values::mem::set_hard_limit_percent(p);
 }
 
 /// `ini_set` is changing `key`: zend_alter_ini_entry_ex marks it modified
@@ -218,6 +322,10 @@ fn memory_hard_limit_percent_check(v: &[u8]) -> (Vec<String>, bool) {
     let q = ini_parse_quantity(v);
     if q < 100 && q != -1 {
         warnings.push("memory_hard_limit_percent must be >= 100, or -1".to_string());
+        return (warnings, false);
+    }
+    if !rhp_values::mem::set_hard_limit_percent(q) {
+        warnings.push(format!("Failed to set memory_hard_limit_percent to {q}"));
         return (warnings, false);
     }
     (warnings, true)
@@ -318,18 +426,22 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
         return;
     };
     let key = String::from_utf8_lossy(name).into_owned();
-    let (warnings, ok) = if name == b"date.timezone" && !tz_valid(v) {
-        (vec![invalid_timezone(v, "PHP Startup")], false)
+    let (warnings, stored) = if name == b"date.timezone" && !tz_valid(v) {
+        (vec![invalid_timezone(v, "PHP Startup")], None)
     } else if let Some(w) = crate::opcache_fns::startup_check(name, v) {
         crate::opcache_fns::accel_log(name, crate::opcache_fns::LOG_WARNING, w);
-        (Vec::new(), false)
+        (Vec::new(), None)
     } else {
         on_modify_check(name, v)
     };
+    let ok = stored.is_some();
+    // A value the handler replaced (memory_limit clamped to
+    // max_memory_limit) is what the entry holds: restoring it is quiet.
+    let replaced = stored.as_deref().is_some_and(|s| s != v);
     STARTUP_DIAGS.with(|d| {
         let mut d = d.borrow_mut();
         d.startup.retain(|s| s.1 != key);
-        if ok && !warnings.is_empty() {
+        if ok && !replaced && !warnings.is_empty() {
             d.restore.insert(key.clone(), warnings.clone());
         } else {
             d.restore.remove(&key);
@@ -337,14 +449,22 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
         d.startup
             .extend(warnings.into_iter().map(|w| (pos, key.clone(), w)));
     });
-    if !ok {
+    let Some(v) = stored else {
         INI.with(|m| m.borrow_mut().remove(&key));
         INI_STARTUP.with(|m| m.borrow_mut().remove(&key));
         return;
+    };
+    ini_apply(name, Some(&v));
+    ini_store(name, v.clone());
+    INI_STARTUP.with(|m| m.borrow_mut().insert(key, v));
+    if name == b"max_memory_limit" {
+        // php registers max_memory_limit first: memory_limit's handler then
+        // runs against it, whatever the order of the -d options.
+        let ml = ini_default_value(b"memory_limit")
+            .flatten()
+            .unwrap_or_default();
+        ini_startup(b"memory_limit", &ml);
     }
-    ini_apply(name, Some(v));
-    ini_store(name, v.to_vec());
-    INI_STARTUP.with(|m| m.borrow_mut().insert(key, v.to_vec()));
 }
 
 fn ini_opt_value(v: Option<Vec<u8>>) -> Value {
@@ -470,10 +590,6 @@ pub(crate) fn ini_parse_quantity(s: &[u8]) -> i64 {
     v.wrapping_mul(factor) as i64
 }
 
-/// Process memory the engine reports (`memory_get_usage(true)`); a
-/// `memory_limit` below it is refused, as php's allocator does.
-const REAL_MEMORY_USAGE: i64 = 2_097_152;
-
 /// The `OnModify` validators of the directives whose values rhp checks or
 /// uses. `Err(())` means php's handler returns FAILURE (`ini_set` → false).
 fn ini_validate(name: &[u8], v: &[u8]) -> Result<(), ()> {
@@ -483,16 +599,6 @@ fn ini_validate(name: &[u8], v: &[u8]) -> Result<(), ()> {
                 Ok(())
             } else {
                 Err(())
-            }
-        }
-        b"memory_limit" => {
-            let q = ini_parse_quantity(v);
-            // zend_ini_parse_uquantity: only -1 may be negative (unlimited).
-            let q = if q < 0 && q != -1 { 0 } else { q };
-            if q != -1 && q < REAL_MEMORY_USAGE {
-                Err(())
-            } else {
-                Ok(())
             }
         }
         b"zend.assertions" => {
@@ -514,6 +620,8 @@ fn ini_validate(name: &[u8], v: &[u8]) -> Result<(), ()> {
 }
 
 /// Push a directive's (new) value into the engine state that uses it.
+/// (memory_limit's handler, `memory_limit_modify`, sets the allocator's
+/// limit itself, or leaves it when it clamps to max_memory_limit.)
 fn ini_apply(name: &[u8], v: Option<&[u8]>) {
     match name {
         b"precision" => rhp_values::fmt::set_precision(v.map_or(14, c_atol)),
@@ -553,11 +661,14 @@ fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value
         return Ok(Value::Bool(false));
     }
     mark_changed(&String::from_utf8_lossy(&name));
-    let (warnings, ok) = on_modify_check(&name, &newv);
+    let (warnings, stored) = on_modify_check(&name, &newv);
     for w in &warnings {
         host.emit_diagnostic(crate::E_WARNING, w)?;
     }
-    if !ok || !crate::opcache_fns::on_modify(host, &name, &newv)? {
+    let Some(newv) = stored else {
+        return Ok(Value::Bool(false));
+    };
+    if !crate::opcache_fns::on_modify(host, &name, &newv)? {
         return Ok(Value::Bool(false));
     }
     if name == b"date.timezone" && !tz_valid(&newv) {
@@ -604,6 +715,13 @@ fn fn_ini_restore(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         None => m.borrow_mut().remove(&key),
     });
     if let Some(v) = ini_value(&name) {
+        if name == b"memory_limit" {
+            // The handler on the startup value (already within
+            // max_memory_limit). Below the memory in use, the current limit
+            // stays.
+            let v = v.as_deref().map_or(u64::MAX, |v| ini_parse_uquantity(v).0);
+            rhp_values::mem::set_limit(v.min(usize::MAX as u64) as usize);
+        }
         ini_apply(&name, v.as_deref());
     }
     Ok(Value::Null)

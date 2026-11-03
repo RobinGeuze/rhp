@@ -988,6 +988,13 @@ fn fn_hash_pbkdf2(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         (n, true) => n,
         (n, false) => n.div_ceil(2),
     };
+    // safe_emalloc(loops, digest_size, 0) for the derived blocks: past the
+    // hard limit php exits; don't allocate (or abort) here either.
+    if h_len > 0
+        && !rhp_values::mem::alloc_check(((raw_len.max(1) - 1) / h_len + 1).saturating_mul(h_len))
+    {
+        return Ok(Value::Null);
+    }
     match pbkdf2(&algo, &pass, &salt, iterations, raw_len) {
         Some(raw) => {
             if binary {

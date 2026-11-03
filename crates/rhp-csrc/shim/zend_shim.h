@@ -61,7 +61,9 @@ typedef uint32_t zend_ulong;
 # define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #endif
 
-/* zend_alloc.h: php aborts the request when emalloc fails; so does this. */
+/* zend_alloc.h: Rust's global allocator (src/lib.rs), so this memory
+ * counts against memory_limit as php's emalloc does. Like a non-fallible
+ * emalloc it never returns NULL. */
 void *rhp_csrc_emalloc(size_t size);
 void rhp_csrc_efree(void *ptr);
 char *rhp_csrc_estrdup(const char *s);

@@ -7,6 +7,10 @@ use rhp_compiler::compile_with_source;
 use rhp_frontend::Arena;
 use rhp_vm::Vm;
 
+// The engine's memory accounting (memory_get_usage(), memory_limit).
+#[global_allocator]
+static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
+
 const DIRTY: &[u8] = br#"<?php
 ini_set('precision', 5);
 ini_set('serialize_precision', 3);

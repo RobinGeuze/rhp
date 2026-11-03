@@ -333,6 +333,12 @@ fn fn_str_pad(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         ));
     }
     let total_pad = target as usize - s.len();
+    // zend_string_safe_falloc(1, len, pad_chars), after the argument checks.
+    if (0..=2).contains(&ptype)
+        && !rhp_values::mem::reserve_safe(1, s.len(), rhp_values::mem::zstr_size(total_pad))
+    {
+        return Ok(Value::Null);
+    }
     let make = |n: usize| -> Vec<u8> {
         let mut v = Vec::with_capacity(n);
         while v.len() < n {

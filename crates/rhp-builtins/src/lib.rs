@@ -1241,7 +1241,7 @@ pub fn ini_startup_set(name: &[u8], value: &[u8]) {
     runtime_fns::ini_startup(name, value);
 }
 
-pub use runtime_fns::{take_shutdown_diagnostics, take_startup_diagnostics};
+pub use runtime_fns::{apply_memory_limits, take_shutdown_diagnostics, take_startup_diagnostics};
 
 /// Reset every builtin's per-request state (ini overrides, default timezone,
 /// precision, strtok/preg/json/mbstring state, process title, putenv
@@ -2186,7 +2186,12 @@ fn fn_boolval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_strlen(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(conv::to_string_bytes(&args[0]).len() as i64))
+    // Without copying the string (it may be most of memory_limit).
+    let n = match &args[0] {
+        Value::Str(s) => s.as_bytes().len(),
+        v => conv::to_string_bytes(v).len(),
+    };
+    Ok(Value::Int(n as i64))
 }
 
 /// php_count_recursive: an array met again through a reference warns
@@ -2281,6 +2286,13 @@ fn fn_intdiv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_str_repeat(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = conv::to_string_bytes(&args[0]);
     let n = conv::to_int(&args[1]).max(0) as usize;
+    // zend_string_safe_falloc(len, mult, 0): php refuses past memory_limit.
+    if !s.is_empty()
+        && n != 0
+        && !rhp_values::mem::reserve_safe(s.len(), n, rhp_values::mem::zstr_size(0))
+    {
+        return Ok(Value::Null);
+    }
     Ok(Value::str(s.repeat(n)))
 }
 
@@ -2648,6 +2660,47 @@ fn fn_array_reverse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(out))
 }
 
+/// range()'s RANGE_CHECK_{LONG,DOUBLE}_INIT_ARRAY: a ValueError when the
+/// result would exceed HT_MAX_SIZE elements. (php prints the lower bound
+/// as start and the higher as end, whatever the direction.)
+fn range_size_check(
+    start: conv::Num,
+    end: conv::Num,
+    step: f64,
+    float: bool,
+) -> Result<(), Thrown> {
+    const HT_MAX_SIZE: u64 = 0x4000_0000;
+    let msg = "The supplied range exceeds the maximum array size by";
+    if let (false, conv::Num::Int(a), conv::Num::Int(b)) = (float, start, end) {
+        let (lo, hi) = (a.min(b), a.max(b));
+        let step = step as u64;
+        let size = (hi as u64).wrapping_sub(lo as u64) / step;
+        if size >= HT_MAX_SIZE - 1 {
+            return Err(Thrown::error(
+                "ValueError",
+                format!(
+                    "{msg} {} elements: start={lo}, end={hi}, step={step}. Calculated size: {size}. Maximum size: {HT_MAX_SIZE}.",
+                    size - (HT_MAX_SIZE - 1)
+                ),
+            ));
+        }
+        return Ok(());
+    }
+    let (a, b) = (start.as_f64(), end.as_f64());
+    let (lo, hi) = (a.min(b), a.max(b));
+    let size = (hi - lo) / step + 1.0;
+    if size >= HT_MAX_SIZE as f64 {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "{msg} {:.1} elements: start={lo:.1}, end={hi:.1}, step={step:.1}. Max size: {HT_MAX_SIZE}",
+                size - HT_MAX_SIZE as f64
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn fn_range(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // Numeric ranges only (char ranges deferred).
     let start = conv::to_number(&deref(&args[0])).0;
@@ -2662,6 +2715,14 @@ fn fn_range(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         || matches!(end, conv::Num::Float(_))
         || step.fract() != 0.0;
     let (s, e) = (start.as_f64(), end.as_f64());
+    range_size_check(start, end, step, use_float)?;
+    // php sizes the result up front, fallibly.
+    let count = ((s - e).abs() / step).floor() + 1.0;
+    if count.is_finite()
+        && !rhp_values::mem::reserve_packed_array(count.min(u32::MAX as f64) as usize)
+    {
+        return Ok(Value::Null);
+    }
     if s <= e {
         let mut x = s;
         while x <= e + 1e-9 {
@@ -2730,12 +2791,31 @@ fn fn_implode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             ))
         }
     };
-    let mut out = Vec::new();
-    for (i, (_, v)) in arr.iter().enumerate() {
+    let parts: Vec<std::borrow::Cow<[u8]>> = arr
+        .iter()
+        .map(|(_, v)| match v {
+            Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
+            v => std::borrow::Cow::Owned(conv::to_string_bytes(v)),
+        })
+        .collect();
+    let len: usize = parts.iter().map(|p| p.len()).sum();
+    // zend_string_safe_falloc(n - 1, glue_len, len): the glue repeated per
+    // element can dwarf the input, so php checks the limit first.
+    if parts.len() > 1
+        && !rhp_values::mem::reserve_safe(
+            parts.len() - 1,
+            glue.len(),
+            rhp_values::mem::zstr_size(len),
+        )
+    {
+        return Ok(Value::Null);
+    }
+    let mut out = Vec::with_capacity(len + glue.len() * parts.len().saturating_sub(1));
+    for (i, p) in parts.iter().enumerate() {
         if i > 0 {
             out.extend_from_slice(&glue);
         }
-        out.extend_from_slice(&conv::to_string_bytes(v));
+        out.extend_from_slice(p);
     }
     Ok(Value::str(out))
 }

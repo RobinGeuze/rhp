@@ -158,8 +158,28 @@ pub fn negate(a: &Value) -> Result<Value, Thrown> {
 }
 
 pub fn concat(a: &Value, b: &Value) -> Value {
-    let mut bytes = conv::to_string_bytes(&crate::deref(a));
-    bytes.extend_from_slice(&conv::to_string_bytes(&crate::deref(b)));
+    // One buffer of the result's size, as php's concat allocates the result
+    // once (no copies of the operands, no growth slack counted against
+    // memory_limit).
+    let (a, b) = (crate::deref(a), crate::deref(b));
+    let a = match &a {
+        Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
+        v => std::borrow::Cow::Owned(conv::to_string_bytes(v)),
+    };
+    let b = match &b {
+        Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
+        v => std::borrow::Cow::Owned(conv::to_string_bytes(v)),
+    };
+    let len = a.len() + b.len();
+    // php's zend_string_alloc for the result: past the hard limit the VM
+    // stops at its next check, so don't allocate.
+    if !rhp_values::mem::alloc_check(rhp_values::mem::zstr_size(len)) {
+        return Value::Str(PhpStr::from_bytes(Vec::new()));
+    }
+    // (The whole block: a later in-place append can use the slack.)
+    let mut bytes = Vec::with_capacity(rhp_values::mem::block_size(len));
+    bytes.extend_from_slice(&a);
+    bytes.extend_from_slice(&b);
     Value::Str(PhpStr::from_bytes(bytes))
 }
 

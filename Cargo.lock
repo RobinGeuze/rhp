@@ -1415,6 +1415,7 @@ version = "0.0.0"
 dependencies = [
  "bstr",
  "indexmap",
+ "libc",
  "rustc-hash",
  "zmij",
 ]

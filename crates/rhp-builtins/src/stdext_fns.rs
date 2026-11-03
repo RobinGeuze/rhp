@@ -677,6 +677,7 @@ fn fn_gc_status(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_memory_reset_peak_usage(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    rhp_values::mem::reset_peak();
     Ok(Value::Null)
 }
 

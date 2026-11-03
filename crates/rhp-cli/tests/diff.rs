@@ -10,6 +10,10 @@ use rhp_frontend::Arena;
 use rhp_values::Thrown;
 use rhp_vm::{IncludeError, Vm};
 
+// The engine's memory accounting (memory_get_usage(), memory_limit).
+#[global_allocator]
+static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
+
 fn golden_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/golden")

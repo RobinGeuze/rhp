@@ -1303,6 +1303,12 @@ fn fn_fread(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "fread(): Argument #2 ($length) must be greater than 0",
         ));
     }
+    // php_stream_read_to_str allocates `len` bytes up front, fallibly.
+    if !rhp_values::mem::reserve_str(len as usize)
+        || !crate::socket_fns::reserve_read_chunk(host, &h)
+    {
+        return Ok(Value::Null);
+    }
     Ok(host
         .stream_read(&h, len)
         .map(Value::str)
@@ -2013,6 +2019,9 @@ fn fn_stream_get_line(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
     }
     if max == 0 {
         max = 8192;
+    }
+    if !crate::socket_fns::reserve_read_chunk(host, &h) {
+        return Ok(Value::Null);
     }
     let ending = str_arg(args, 2);
     let mut out = Vec::new();

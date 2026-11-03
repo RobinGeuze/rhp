@@ -375,6 +375,15 @@ struct Parser<'a, 'h> {
     unexpected_end: bool,
 }
 
+/// php's var_unserializer gives up once memory_limit was crossed (the VM
+/// then reports it).
+fn oom_stop() -> PResult<()> {
+    if rhp_values::mem::state().attention() {
+        return malformed();
+    }
+    Ok(())
+}
+
 fn malformed<T>() -> PResult<T> {
     Err(Fail::Malformed)
 }
@@ -542,6 +551,7 @@ impl<'a> Parser<'a, '_> {
                     let key = ArrayKey::from_value(&self.parse_key()?).ok_or(Fail::Malformed)?;
                     let val = self.parse_slot()?;
                     arr.insert(key, val);
+                    oom_stop()?;
                 }
                 if self.expect(b'}').is_err() {
                     return self.fail_at(self.pos);
@@ -662,6 +672,7 @@ impl<'a> Parser<'a, '_> {
                 let key = ArrayKey::from_value(&self.parse_key()?).ok_or(Fail::Malformed)?;
                 let val = self.parse_slot()?;
                 data.insert(key, val);
+                oom_stop()?;
             }
             self.expect(b'}')?;
             self.pending.push((obj, Some(Value::Array(data))));
@@ -677,6 +688,7 @@ impl<'a> Parser<'a, '_> {
             if !self.host.unserialize_set_prop(&obj, &key, val) {
                 return malformed();
             }
+            oom_stop()?;
         }
         self.expect(b'}')?;
         if has_wakeup {

@@ -7,6 +7,10 @@ use std::rc::Rc;
 
 use rhp_sapi::{run_request, Outcome, Request, RequestInfo, Response, Sapi, Script};
 
+// The engine's memory accounting (memory_get_usage(), memory_limit).
+#[global_allocator]
+static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
+
 /// A SAPI capturing the response into shared buffers.
 #[derive(Clone, Default)]
 struct Capture {

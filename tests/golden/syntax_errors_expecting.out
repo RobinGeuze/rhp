@@ -1,0 +1,36 @@
+syntax error, unexpected end of file, expecting "," or ";" @1
+syntax error, unexpected token ";", expecting "]" @1
+syntax error, unexpected token "}" @1
+syntax error, unexpected token "}", expecting ";" @1
+syntax error, unexpected token ";", expecting identifier or variable or "{" or "$" @1
+syntax error, unexpected token ";", expecting "}" @1
+syntax error, unexpected double-quote mark, expecting "-" or identifier or variable or number @1
+syntax error, unexpected token "{", expecting "(" @1
+syntax error, unexpected variable "$y" @2
+syntax error, unexpected identifier "bar" @1
+syntax error, unexpected token "\", expecting "," or ";" @1
+syntax error, unexpected token "&" @1
+syntax error, unexpected end of file, expecting variable or "${" or "{$" @1
+syntax error, unexpected end of file, expecting "`" @1
+syntax error, unexpected integer "1", expecting "," or ";" @3
+syntax error, unexpected integer "1" @1
+syntax error, unexpected double-quoted string "y" @1
+syntax error, unexpected integer "1" @1
+syntax error, unexpected token "function", expecting "]" @2
+syntax error, unexpected token "endwhile", expecting "elseif" or "else" or "endif" @1
+syntax error, unexpected character 0x01, expecting end of file @1
+Invalid numeric literal @1
+The (real) cast has been removed, use (float) instead @1
+Unterminated comment starting line 1 @1
+Invalid UTF-8 codepoint escape sequence @1
+Invalid UTF-8 codepoint escape sequence: Codepoint too large @1
+Unclosed '(' does not match ']' @1
+Unmatched '}' @2
+ a
+bok
+Invalid indentation - tabs and spaces cannot be mixed @2
+ok
+ok
+string(36) "syntax error, unexpected integer "1""
+int(3)
+string(0) ""

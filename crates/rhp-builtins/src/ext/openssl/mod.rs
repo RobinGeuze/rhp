@@ -84,6 +84,12 @@ struct LibCtx(*mut sys::OSSL_LIB_CTX);
 
 impl Drop for LibCtx {
     fn drop(&mut self) {
+        // The thread's keys and certificates go first: they hold the context.
+        let objects = NATIVES
+            .try_with(|m| m.try_borrow_mut().map(|mut m| std::mem::take(&mut *m)).ok())
+            .ok()
+            .flatten();
+        drop(objects);
         if !self.0.is_null() {
             unsafe { sys::OSSL_LIB_CTX_free(self.0) };
         }

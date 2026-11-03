@@ -650,6 +650,11 @@ fn openssl(lib: &Lib) -> Result<(), String> {
             found.via
         ));
     }
+    // openssl-sys links only libssl and libcrypto: the rest of a static
+    // libcrypto's Libs.private is linked dynamically, as for the other rows.
+    for p in &found.private {
+        println!("cargo:rustc-link-lib=dylib={p}");
+    }
     for name in ["libcrypto.a", "libssl.a"] {
         let archive = found.libdir.join(name);
         if !archive.is_file() {

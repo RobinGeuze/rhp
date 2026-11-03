@@ -5,12 +5,6 @@
 //! without pulling in the compiler or VM. Every operand is a small `Copy` index
 //! or immediate; all heap data (`Value`s, interned names) lives in side tables
 //! on [`FunctionProto`], so `Instr: Copy`.
-//!
-//! This is grown incrementally: the variants below cover language phases 1–4
-//! (output, scalars/expressions, casts, builtin calls, array literals,
-//! constants). Control-flow, user functions, and full array lvalues add more
-//! variants in later phases — the encoding and the side-table design do not
-//! change.
 
 use std::rc::Rc;
 
@@ -24,8 +18,6 @@ pub type NIdx = u32; // index into FunctionProto.names (interned identifier byte
 /// on namespaced unqualified function/const references (see `Call`/`FetchConst`).
 pub const NO_NAME: NIdx = u32::MAX;
 pub type Pc = u32; // instruction index into FunctionProto.code (NOT a byte offset)
-pub type FnIdx = u32; // index into Program.functions
-pub type CacheIdx = u32; // index into a per-proto inline-cache side table (reserved)
 
 /// Comparison kind for the single `Cmp` opcode (all route to `ops::`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,7 +36,7 @@ pub enum CmpKind {
 /// One bytecode instruction. `Copy`, fixed-width, one variant per opcode.
 #[derive(Clone, Copy, Debug)]
 pub enum Instr {
-    // -- move / const / load (phase 1-2) --
+    // -- move / const / load --
     Nop,
     Mov {
         dst: Reg,
@@ -66,13 +58,13 @@ pub enum Instr {
         n: i64,
     },
 
-    // -- variable store (ref-aware; phase 2/6) --
+    // -- variable store (ref-aware) --
     Assign {
         cv: Reg,
         src: Reg,
     },
 
-    // -- arithmetic / bitwise / unary (phase 2) — route to ops:: --
+    // -- arithmetic / bitwise / unary — route to ops:: --
     Add {
         dst: Reg,
         a: Reg,
@@ -153,7 +145,7 @@ pub enum Instr {
         delta: i8,
     },
 
-    // -- casts (phase 2) --
+    // -- casts --
     CastInt {
         dst: Reg,
         a: Reg,
@@ -186,7 +178,7 @@ pub enum Instr {
     /// `@expr` end: restore the display state saved by `BeginSilence`.
     EndSilence,
 
-    // -- compare (phase 2) — route to ops:: --
+    // -- compare — route to ops:: --
     Cmp {
         dst: Reg,
         a: Reg,
@@ -194,7 +186,7 @@ pub enum Instr {
         kind: CmpKind,
     },
 
-    // -- output (phase 1) --
+    // -- output --
     Echo {
         src: Reg,
     },
@@ -206,7 +198,7 @@ pub enum Instr {
         src: Reg,
     },
 
-    // -- jumps / branches (phase 3) --
+    // -- jumps / branches --
     Jmp {
         target: Pc,
     },
@@ -233,7 +225,7 @@ pub enum Instr {
         target: Pc,
     },
 
-    // -- arrays (phase 4; literals first) --
+    // -- arrays --
     NewArray {
         dst: Reg,
         cap: u32,
@@ -347,9 +339,9 @@ pub enum Instr {
         end: Pc,
     },
 
-    // -- calls / return (phase 1 builtins; user functions later) --
-    /// Resolve `name` (case-insensitive): refused → Unsupported; builtin →
-    /// call with `regs[base..base+argc]`; user function (later) → push frame.
+    // -- calls / return --
+    /// Resolve `name` (case-insensitive): a user function pushes a frame, a
+    /// builtin is called with `regs[base..base+argc]`.
     /// `fallback` is a second name to try if `name` misses (`NO_NAME` if none):
     /// an unqualified call inside a namespace resolves `Ns\name` first, then the
     /// global `name` (PHP's fall-back-to-global rule).
@@ -419,14 +411,6 @@ pub enum Instr {
     ThrowMatchError {
         subject: Reg,
     },
-    /// A construct the compiler accepts syntactically but refuses to run (goto,
-    /// …): the refusal is deferred to runtime so a file that merely *contains*
-    /// it — down an unexecuted branch — still compiles and loads. `what`/`why`
-    /// are interned message strings.
-    DeferredUnsupported {
-        what: CIdx,
-        why: CIdx,
-    },
     /// A call result passed for a by-reference parameter: raise php's notice
     /// "Only variables should be passed by reference" and pass the value.
     SendNoRef {
@@ -458,14 +442,13 @@ pub enum Instr {
         target: Pc,
     },
 
-    // -- OOP (phase 7) --
+    // -- OOP --
     /// `new C(args)`: allocate into `dst`, then run `__construct` via the window.
     New {
         dst: Reg,
         class: ClassRef,
         base: Reg,
         argc: u16,
-        cache: CacheIdx,
     },
     /// Variadic `new` / method / static calls: `args` holds a `PhpArray`.
     NewV {
@@ -506,7 +489,6 @@ pub enum Instr {
         dst: Reg,
         obj: Reg,
         name: NIdx,
-        cache: CacheIdx,
     },
     /// `$o->$p` / `$o->{expr}`: the property name is a runtime string in `name`.
     FetchPropDyn {
@@ -554,14 +536,12 @@ pub enum Instr {
         dst: Reg,
         class: ClassRef,
         name: NIdx,
-        cache: CacheIdx,
     },
     /// `C::K` / `C::class`.
     FetchClassConst {
         dst: Reg,
         class: ClassRef,
         name: NIdx,
-        cache: CacheIdx,
     },
     /// SEND_FUNC_ARG's question for a call resolved at run time: whether
     /// parameter `idx` of method `name` on the object in `obj` is by
@@ -588,7 +568,6 @@ pub enum Instr {
         name: NIdx,
         base: Reg,
         argc: u16,
-        cache: CacheIdx,
     },
     /// `C::m(args)` / `self::` / `static::` / `parent::`.
     CallStatic {
@@ -597,7 +576,6 @@ pub enum Instr {
         name: NIdx,
         base: Reg,
         argc: u16,
-        cache: CacheIdx,
     },
     /// `C::$m(args)` / `$class::$m(args)`: static call whose method name is a
     /// runtime string in register `name`.
@@ -838,12 +816,6 @@ pub enum Instr {
         name: NIdx,
         fallback: NIdx,
     },
-    /// Emitted only for a structurally-refused construct on a reachable path;
-    /// raises the uncatchable `Thrown::Unsupported`.
-    Refuse {
-        feature: NIdx,
-        reason: NIdx,
-    },
     /// `__halt_compiler()`: stop this proto as a top-level return.
     Halt,
     /// End of an expression statement: the temporaries `[from, to)` it used are
@@ -896,14 +868,14 @@ impl IncludeKind {
     }
 }
 
-/// A by-value/by-ref/variadic parameter (used from phase 5).
+/// A by-value/by-ref/variadic parameter.
 #[derive(Clone)]
 pub struct ParamInfo {
     pub name: NIdx,
     pub cv: Reg,
     pub by_ref: bool,
     pub variadic: bool,
-    pub default: Option<Default>,
+    pub default: Option<ParamDefault>,
     /// Declared type (for `strict_types` enforcement / coercion); None = untyped.
     pub type_hint: Option<TypeHint>,
     /// Source line of the parameter declaration (php raises argument
@@ -987,13 +959,17 @@ pub enum TypeKind {
     Named(PhpStr),
 }
 
+/// A parameter's default value.
 #[derive(Clone, Copy)]
-pub enum Default {
+pub enum ParamDefault {
+    /// A constant default folded at compile time: an index into `consts`.
     Const(CIdx),
-    Init(Pc),
+    /// A non-constant default, evaluated by the prologue code `JmpIfArg`
+    /// skips when the argument is passed.
+    Init,
 }
 
-/// A protected region in the exception table (used from phase 3+). Protects the
+/// A protected region in the exception table. Protects the
 /// half-open instruction range `[start, end)`.
 #[derive(Clone)]
 pub struct ExRegion {
@@ -1013,26 +989,11 @@ pub struct CatchArm {
     pub target: Pc,
 }
 
-/// Per-proto inline-cache slot (reserved; `Cell`-based ICs land in phase 5/7).
-#[derive(Clone, Default)]
-pub struct InlineCache {
-    pub class_id: u32,
-    pub payload: u32,
-}
-
-#[derive(Clone, Default)]
-pub struct ProtoFlags {
-    pub has_finally: bool,
-    pub uses_ref: bool,
-    pub generator: bool,
-}
-
 /// Debug side-table: never consulted for semantics.
 #[derive(Clone, Default)]
 pub struct DebugInfo {
     pub file: PhpStr,
     pub lines: Vec<(Pc, u32)>,
-    pub cv_names: Vec<NIdx>,
 }
 
 /// One compiled PHP function/method/closure, or the script body (`"{main}"`).
@@ -1052,9 +1013,7 @@ pub struct FunctionProto {
     pub consts: Vec<Value>,
     pub names: Vec<PhpStr>,
     pub exception_table: Vec<ExRegion>,
-    pub caches: Vec<InlineCache>,
     pub debug: DebugInfo,
-    pub flags: ProtoFlags,
     /// CV holding `$this` for an instance method; `None` otherwise.
     pub this_cv: Option<Reg>,
     /// True for a `static function` (no `$this` binding).
@@ -1108,9 +1067,7 @@ impl FunctionProto {
             consts: Vec::new(),
             names: Vec::new(),
             exception_table: Vec::new(),
-            caches: Vec::new(),
             debug: DebugInfo::default(),
-            flags: ProtoFlags::default(),
             this_cv: None,
             is_static: false,
             num_captures: 0,
@@ -1149,12 +1106,6 @@ pub struct Program {
     /// Anonymous closure / arrow-function protos, indexed by the `fnidx` operand
     /// of `MakeClosure` and by `ClosureData::fnidx`.
     pub closures: Vec<Rc<FunctionProto>>,
-    /// User-defined global constants (`const NAME = <const-expr>;`), folded at
-    /// compile time; the VM installs them into its constant table at startup.
-    pub constants: Vec<(PhpStr, Value)>,
-    /// {main}'s variable names indexed by CV register, so the VM can bind a
-    /// function's `global $x` to the top-level variable's slot.
-    pub main_var_names: Vec<PhpStr>,
     /// How many leading entries of `classes` are the built-in prelude (always
     /// re-emitted per compile). An included file's prelude classes are skipped on
     /// merge; user classes past this count fatally redeclare if already defined.
@@ -1175,7 +1126,7 @@ pub struct Program {
 /// names its class. `Copy`, owns no heap.
 #[derive(Clone, Copy, Debug)]
 pub enum ClassRef {
-    /// `Foo` — interned name; resolved to a `ClassId` at run time (IC-cacheable).
+    /// `Foo` — interned name; resolved to a `ClassId` at run time.
     Name(NIdx),
     /// `self` — the current frame's defining class.
     SelfClass,
@@ -1209,10 +1160,9 @@ pub struct ClassProto {
     pub enum_backing: Option<EnumBacking>,
     /// Reflection metadata (attributes, doc comment, line span).
     pub meta: DeclMeta,
-    /// The declaring file (empty for built-in prelude classes).
-    pub file: PhpStr,
     /// Where the declaration starts (file, line): php's
-    /// `info.user.filename` / `line_start`, used by "Cannot redeclare class".
+    /// `info.user.filename` / `line_start`. The file is empty for a
+    /// built-in prelude class.
     pub decl_file: PhpStr,
     pub decl_line: u32,
 }

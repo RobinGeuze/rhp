@@ -14,9 +14,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_bytecode::{
-    CIdx, ClassProto, ClassRef, CmpKind, ConstInitProto, ConstProto, FnIdx, FunctionProto,
-    IncludeKind, Instr, MethodProto, NIdx, Program, PropDefaultProto, PropProto, Reg,
-    StaticPropProto,
+    CIdx, ClassProto, ClassRef, CmpKind, ConstInitProto, ConstProto, FunctionProto, IncludeKind,
+    Instr, MethodProto, NIdx, Program, PropDefaultProto, PropProto, Reg, StaticPropProto,
 };
 use rhp_frontend::cst::{
     Access, Argument, ArrayElement, AssignmentOperator, BinaryOperator, Class, ClassLikeMember,
@@ -842,7 +841,6 @@ fn compile_program_inner(
     LINE_STARTS.with(|ls| *ls.borrow_mut() = user_line_starts);
     DOC_SRC.with(|d| *d.borrow_mut() = (Rc::new(source.to_vec()), None));
     SRC_BYTES.with(|b| *b.borrow_mut() = source.to_vec());
-    let user_constants: Vec<(PhpStr, Value)> = Vec::new();
     for (ctx, stmt) in &flat {
         use mago_span::HasSpan;
         set_ns_ctx(ctx);
@@ -903,18 +901,11 @@ fn compile_program_inner(
     let closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
     classes.extend(ANON_CLASSES.with(|c| std::mem::take(&mut *c.borrow_mut())));
     let cond_classes = COND_CLASSES.with(|c| std::mem::take(&mut c.borrow_mut().0));
-    let main_var_names: Vec<PhpStr> = c
-        .cv_map
-        .iter()
-        .map(|n| PhpStr::from_bytes(n.clone()))
-        .collect();
     Ok(Program {
         main: Rc::new(c.finish()?),
         functions,
         classes,
         closures,
-        constants: user_constants,
-        main_var_names,
         num_prelude_classes,
         num_prelude_functions,
         cond_classes,
@@ -1260,7 +1251,6 @@ fn compile_class(
         enum_cases: Vec::new(),
         enum_backing: None,
         meta,
-        file: PhpStr::from_bytes(src_file()),
         decl_file: decl_file(),
         decl_line: line_of(class.class.span.start.offset),
     })
@@ -1332,7 +1322,6 @@ fn compile_anon_class(
         enum_cases: Vec::new(),
         enum_backing: None,
         meta,
-        file: PhpStr::from_bytes(src_file()),
     })
 }
 
@@ -1390,7 +1379,6 @@ fn compile_enum(
     )?;
     Ok(ClassProto {
         meta,
-        file: PhpStr::from_bytes(src_file()),
         name,
         kind: ClassKind::Enum,
         // Enums are implicitly final.
@@ -1672,7 +1660,6 @@ fn compile_trait(
     )?;
     Ok(ClassProto {
         meta,
-        file: PhpStr::from_bytes(src_file()),
         decl_file: decl_file(),
         decl_line: line_of(t.r#trait.span.start.offset),
         name,
@@ -2283,7 +2270,6 @@ fn compile_interface(
         enum_cases: Vec::new(),
         enum_backing: None,
         meta,
-        file: PhpStr::from_bytes(src_file()),
         decl_file: decl_file(),
         decl_line: line_of(iface.interface.span.start.offset),
     })
@@ -2329,7 +2315,7 @@ fn compile_method(
                 Ok(d) => d,
                 Err(_) => {
                     nonconst_defaults.push((idx as u16, cv, dv.value));
-                    rhp_bytecode::Default::Init(0)
+                    rhp_bytecode::ParamDefault::Init
                 }
             });
         let attributes = compile_attributes(&p.attribute_lists, sigs, Some(class_name))?;
@@ -2456,7 +2442,7 @@ fn compile_function(
                 Ok(d) => d,
                 Err(_) => {
                     nonconst_defaults.push((idx as u16, cv, dv.value));
-                    rhp_bytecode::Default::Init(0)
+                    rhp_bytecode::ParamDefault::Init
                 }
             });
         let dmeta = param_default_meta(p, &c.sigs.clone(), None);
@@ -2537,7 +2523,6 @@ struct ProtoBuilder {
     consts: Vec<Value>,
     names: Vec<PhpStr>,
     cv_map: Vec<Vec<u8>>, // index = Reg, value = variable name bytes
-    caches: Vec<rhp_bytecode::InlineCache>,
     exception_table: Vec<rhp_bytecode::ExRegion>,
     /// Per enclosing try-with-finally: positions of pending-return jump
     /// placeholders to patch to the finally entry.
@@ -2596,7 +2581,6 @@ impl ProtoBuilder {
             consts: Vec::new(),
             names: Vec::new(),
             cv_map: Vec::new(),
-            caches: Vec::new(),
             exception_table: Vec::new(),
             finally_rets: Vec::new(),
             num_cvs: 0,
@@ -2676,9 +2660,7 @@ impl ProtoBuilder {
         proto.code = self.code;
         proto.consts = self.consts;
         proto.names = self.names;
-        proto.caches = self.caches;
         proto.exception_table = self.exception_table;
-        proto.debug.cv_names = (0..self.cv_map.len() as u32).collect();
         proto.cv_var_names = self
             .cv_map
             .iter()
@@ -2696,12 +2678,6 @@ impl ProtoBuilder {
         proto.strict_types = STRICT_TYPES.with(|s| *s.borrow());
         proto.returns_ref = self.returns_ref;
         Ok(proto)
-    }
-
-    fn alloc_cache(&mut self) -> rhp_bytecode::CacheIdx {
-        let idx = self.caches.len() as rhp_bytecode::CacheIdx;
-        self.caches.push(rhp_bytecode::InlineCache::default());
-        idx
     }
 
     // -- register / pool management --
@@ -2817,9 +2793,9 @@ impl ProtoBuilder {
     /// Evaluate a parameter default to a constant and intern it. Only
     /// compile-time constants are supported (literals, `[]`, true/false/null,
     /// negated numeric literals); other expressions are deferred.
-    fn const_default(&mut self, e: &Expression) -> Result<rhp_bytecode::Default, Thrown> {
+    fn const_default(&mut self, e: &Expression) -> Result<rhp_bytecode::ParamDefault, Thrown> {
         let v = self.const_value(e)?;
-        Ok(rhp_bytecode::Default::Const(self.intern_const(v)))
+        Ok(rhp_bytecode::ParamDefault::Const(self.intern_const(v)))
     }
 
     /// Emit prologue code for non-constant parameter defaults (e.g.
@@ -4278,12 +4254,10 @@ impl ProtoBuilder {
             // Inside a trait, `__CLASS__` is the class using it (php resolves
             // it at runtime, like `self::class`).
             let name = self.intern_name(b"class");
-            let cache = self.alloc_cache();
             self.emit(Instr::FetchClassConst {
                 dst,
                 class: ClassRef::SelfClass,
                 name,
-                cache,
             });
             return Ok(dst);
         }
@@ -4939,13 +4913,11 @@ impl ProtoBuilder {
         self.emit(Instr::LoadConst { dst: base, k });
         let class = ClassRef::Name(self.intern_name(b"Error"));
         let dst = self.alloc_temp();
-        let cache = self.alloc_cache();
         self.emit(Instr::New {
             dst,
             class,
             base,
             argc: 1,
-            cache,
         });
         self.emit(Instr::Throw { src: dst });
         dst
@@ -5271,7 +5243,6 @@ impl ProtoBuilder {
         let jf = self.code.len();
         self.emit(Instr::Nop); // JmpFalse is_gen -> lnull
         let base = self.alloc_temps(1);
-        let cache = self.alloc_cache();
         let name = self.intern_name(b"getReturn");
         self.emit(Instr::CallMethod {
             dst,
@@ -5279,7 +5250,6 @@ impl ProtoBuilder {
             name,
             base,
             argc: 0,
-            cache,
         });
         let jend = self.code.len();
         self.emit(Instr::Nop); // Jmp -> lend
@@ -5522,7 +5492,7 @@ impl ProtoBuilder {
                     Ok(d) => d,
                     Err(_) => {
                         nonconst_defaults.push((idx as u16, cv, dv.value));
-                        rhp_bytecode::Default::Init(0)
+                        rhp_bytecode::ParamDefault::Init
                     }
                 });
             let dmeta = param_default_meta(p, &c.sigs.clone(), c.class_name.clone().as_ref());
@@ -6078,13 +6048,11 @@ impl ProtoBuilder {
             });
         }
         let dst = self.alloc_temp();
-        let cache = self.alloc_cache();
         self.emit(Instr::New {
             dst,
             class,
             base,
             argc,
-            cache,
         });
         Ok(dst)
     }
@@ -6113,13 +6081,11 @@ impl ProtoBuilder {
             Some(ArgRefTarget::Static(class, ctor)),
         )?;
         let dst = self.alloc_temp();
-        let cache = self.alloc_cache();
         self.emit(Instr::New {
             dst,
             class,
             base,
             argc,
-            cache,
         });
         Ok(dst)
     }
@@ -6195,13 +6161,7 @@ impl ProtoBuilder {
                 let dst = self.alloc_temp();
                 match self.compile_selector(&pa.property)? {
                     Sel::Static(name) => {
-                        let cache = self.alloc_cache();
-                        self.emit(Instr::FetchProp {
-                            dst,
-                            obj,
-                            name,
-                            cache,
-                        });
+                        self.emit(Instr::FetchProp { dst, obj, name });
                     }
                     Sel::Dyn(name) => self.emit(Instr::FetchPropDyn { dst, obj, name }),
                 }
@@ -6215,13 +6175,11 @@ impl ProtoBuilder {
                 let jn = self.code.len();
                 self.emit(Instr::Nop); // JmpNull dst -> Lnull
                 let name = self.selector_name(&npa.property)?;
-                let cache = self.alloc_cache();
                 let t = self.alloc_temp();
                 self.emit(Instr::FetchProp {
                     dst: t,
                     obj: dst,
                     name,
-                    cache,
                 });
                 self.emit(Instr::Mov { dst, src: t });
                 let jend = self.code.len();
@@ -6241,13 +6199,7 @@ impl ProtoBuilder {
                 let dst = self.alloc_temp();
                 match self.static_prop_sel(&spa.property)? {
                     Sel::Static(name) => {
-                        let cache = self.alloc_cache();
-                        self.emit(Instr::FetchStaticProp {
-                            dst,
-                            class,
-                            name,
-                            cache,
-                        });
+                        self.emit(Instr::FetchStaticProp { dst, class, name });
                     }
                     Sel::Dyn(name) => self.emit(Instr::FetchStaticPropDyn { dst, class, name }),
                 }
@@ -6277,13 +6229,7 @@ impl ProtoBuilder {
                     _ => return Err(Thrown::unsupported("dynamic class constant", "deferred")),
                 };
                 let dst = self.alloc_temp();
-                let cache = self.alloc_cache();
-                self.emit(Instr::FetchClassConst {
-                    dst,
-                    class,
-                    name,
-                    cache,
-                });
+                self.emit(Instr::FetchClassConst { dst, class, name });
                 Ok(dst)
             }
         }
@@ -6319,14 +6265,12 @@ impl ProtoBuilder {
                         Some(ArgRefTarget::Method(obj, name)),
                     )?;
                     let dst = self.alloc_temp();
-                    let cache = self.alloc_cache();
                     self.emit(Instr::CallMethod {
                         dst,
                         obj,
                         name,
                         base,
                         argc,
-                        cache,
                     });
                     return Ok(dst);
                 }
@@ -6389,14 +6333,12 @@ impl ProtoBuilder {
                         true,
                         Some(ArgRefTarget::Method(dst, name)),
                     )?;
-                    let cache = self.alloc_cache();
                     self.emit(Instr::CallMethod {
                         dst: t,
                         obj: dst,
                         name,
                         base,
                         argc,
-                        cache,
                     });
                 }
                 Sel::Dyn(name) => {
@@ -6451,14 +6393,12 @@ impl ProtoBuilder {
                     Some(ArgRefTarget::Static(class, name)),
                 )?;
                 let dst = self.alloc_temp();
-                let cache = self.alloc_cache();
                 self.emit(Instr::CallStatic {
                     dst,
                     class,
                     name,
                     base,
                     argc,
-                    cache,
                 });
                 Ok(dst)
             }
@@ -7319,11 +7259,6 @@ fn expr_kind(e: &Expression) -> &'static str {
         _ => "this",
     }
 }
-
-// FnIdx is reserved for user-function references (phase 5+).
-const _: fn() = || {
-    let _ = FnIdx::default;
-};
 
 /// The callee a SEND_FUNC_ARG check asks: a method on the object in a
 /// register, or a static method / constructor of a class.

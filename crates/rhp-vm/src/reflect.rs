@@ -515,7 +515,7 @@ impl Vm {
             put(&mut a, "end", Value::Bool(false));
             put(&mut a, "doc", Value::Bool(false));
         } else {
-            put(&mut a, "file", Value::Str(p.file.clone()));
+            put(&mut a, "file", Value::Str(p.decl_file.clone()));
             put(&mut a, "start", Value::Int(p.meta.start_line as i64));
             put(&mut a, "end", Value::Int(p.meta.end_line as i64));
             put(&mut a, "doc", opt_str(&p.meta.doc_comment));
@@ -1287,7 +1287,7 @@ impl Vm {
             return Ok(Value::Null);
         };
         match &p.default {
-            Some(rhp_bytecode::Default::Const(k)) => Ok(proto.consts[*k as usize].clone()),
+            Some(rhp_bytecode::ParamDefault::Const(k)) => Ok(proto.consts[*k as usize].clone()),
             _ => match &p.default_thunk {
                 Some(t) => {
                     let scope = match sub {
@@ -1605,7 +1605,7 @@ impl Vm {
                         // nullable.
                         let implicit_null = matches!(
                             &p.default,
-                            Some(rhp_bytecode::Default::Const(k))
+                            Some(rhp_bytecode::ParamDefault::Const(k))
                                 if matches!(proto.consts[*k as usize], Value::Null)
                         );
                         if implicit_null && !t.nullable {

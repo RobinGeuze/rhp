@@ -12,8 +12,8 @@ use std::rc::Rc;
 use classes::{Deny, PropRes};
 use rhp_builtins::{self as builtins, Host};
 use rhp_bytecode::{
-    ClassProto, ClassRef, CmpKind, ConstInitProto, Default as ParamDefault, FunctionProto,
-    IncludeKind, Instr, NIdx, Program, PropDefaultProto, Reg,
+    ClassProto, ClassRef, CmpKind, ConstInitProto, FunctionProto, IncludeKind, Instr, NIdx,
+    ParamDefault, Program, PropDefaultProto, Reg,
 };
 use rhp_semantics::{cast_to_array, inc_dec_value, ops};
 use rhp_values::{
@@ -4513,16 +4513,6 @@ impl Vm {
         }
         // Register anonymous closure / arrow-function protos (indexed by fnidx).
         self.closures = prog.closures.clone();
-        // Install user-defined global constants.
-        for (name, value) in &prog.constants {
-            if self
-                .constants
-                .insert(name.as_bytes().to_vec(), value.clone())
-                .is_none()
-            {
-                self.user_const_order.push(name.as_bytes().to_vec());
-            }
-        }
         // Link the built-in prelude classes, then hoist the user's top-level
         // classes (those whose dependencies are available); the rest, and
         // nested declarations, are declared when execution reaches them.
@@ -7368,14 +7358,6 @@ impl Vm {
                     // The callee works on a private copy.
                     self.reg_set(top, dst, Value::Ref(Rc::new(RefCell::new(v))));
                 }
-                Instr::DeferredUnsupported { what, why } => {
-                    let what = conv::to_string_bytes(&proto.consts[what as usize]);
-                    let why = conv::to_string_bytes(&proto.consts[why as usize]);
-                    return Err(self.locate_unsupported(Thrown::unsupported(
-                        String::from_utf8_lossy(&what).into_owned(),
-                        String::from_utf8_lossy(&why).into_owned(),
-                    )));
-                }
                 Instr::Eval { dst, src } => {
                     let v = self.do_eval(top, src)?;
                     self.reg_set(top, dst, v);
@@ -8110,14 +8092,6 @@ impl Vm {
                             ))
                         }
                     }
-                }
-
-                Instr::Refuse { feature, .. } => {
-                    let f = proto.names[feature as usize].as_bytes().to_vec();
-                    return Err(self.locate_unsupported(Thrown::unsupported(
-                        String::from_utf8_lossy(&f).into_owned(),
-                        "refused construct",
-                    )));
                 }
 
                 Instr::Ret { src } => {
@@ -8910,10 +8884,6 @@ impl Vm {
             self.skip_preloaded_decls(cbase);
         }
         self.hoist_decl_classes(top)?;
-        // constants: define_const skips an already-defined name.
-        for (n, v) in &prog.constants {
-            self.define_const(n.as_bytes(), v.clone());
-        }
         Ok(Rc::new(rebase_proto_c(&prog.main, base, cbase as u32)))
     }
 
@@ -10276,7 +10246,7 @@ impl Vm {
                     let p = &proto.params[i];
                     match &p.default {
                         Some(ParamDefault::Const(k)) => out.push(proto.consts[*k as usize].clone()),
-                        Some(ParamDefault::Init(_)) => out.push(Value::Null),
+                        Some(ParamDefault::Init) => out.push(Value::Null),
                         None => {
                             let fname = match class {
                                 Some(c) => format!(
@@ -12228,7 +12198,7 @@ fn bind_params(proto: &FunctionProto, args: &[Value], frame: &mut Frame) -> Resu
         } else if let Some(def) = &p.default {
             match def {
                 ParamDefault::Const(k) => regs[p.cv as usize] = proto.consts[*k as usize].clone(),
-                ParamDefault::Init(_) => {} // non-constant defaults: deferred
+                ParamDefault::Init => {} // non-constant defaults: deferred
             }
         } else {
             return Err(i);

@@ -12,8 +12,9 @@ pcre2-sys = "0.2.10"
 libc = "0.2"
 
 # `hash` extension algorithms. Pure-Rust (RustCrypto et al.) where a faithful
-# 1:1 implementation exists; the oddballs with no crate (snefru, haval, php's
-# 4-pass tiger, the murmur/fnv/crc/adler variants) are hand-rolled in `hash/`.
+# 1:1 implementation exists; crc32b and adler32 use zlib (libz-sys). The
+# oddballs with no crate (snefru, haval, php's 4-pass tiger, crc32 (bzip2),
+# crc32c, fnv, joaat, murmur) are hand-rolled in `hash/`.
 digest = "0.11"
 md2 = "0.11"
 md4 = "0.11"
@@ -43,7 +44,8 @@ password-hash = { version = "0.6", features = ["phc", "alloc"] }
 # miniz_oxide so compressed bytes are identical to php's (which links zlib).
 flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
 # Direct zlib calls where php's exact deflateInit2 parameters matter (memLevel 9,
-# sync flushes): gzencode & co., the compress.zlib:// wrapper, ZipArchive.
+# sync flushes): gzencode & co., the compress.zlib:// wrapper, ZipArchive; also
+# crc32() / hash('crc32b') / adler32 and ZipArchive entry CRCs.
 libz-sys = "1.1"
 
 # bz2 extension, the compress.bzip2:// wrapper, phar and ZipArchive bzip2

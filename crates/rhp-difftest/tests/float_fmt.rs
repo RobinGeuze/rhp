@@ -25,9 +25,14 @@ fn corpus() -> Vec<f64> {
             }
         }
     }
-    // Every power of two and its neighbours.
-    for e in -1074..=1023 {
-        let p = 2f64.powi(e);
+    // Every power of two and its neighbours, built from bits: powi gives 0.0
+    // below 2^-1023.
+    for e in -1074i32..=1023 {
+        let p = if e >= -1022 {
+            f64::from_bits(((e + 1023) as u64) << 52)
+        } else {
+            f64::from_bits(1u64 << (e + 1074))
+        };
         v.push(p);
         v.push(f64::from_bits(p.to_bits() + 1));
         if p.to_bits() > 1 {

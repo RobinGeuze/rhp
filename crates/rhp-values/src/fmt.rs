@@ -126,7 +126,7 @@ fn gcvt(f: f64, mode: Mode) -> Vec<u8> {
 /// up instead (php `-887777373534812.2`, std `...812.3`).
 fn shortest_digits(abs: f64) -> (Vec<u8>, i32) {
     let mut buf = zmij::Buffer::new();
-    // zmij prints "12.34", "0.001234", "12340000000.0", "1.234e33" or "5e-7".
+    // zmij prints "12.34", "0.001234", "12340000000.0", "1.234e+33" or "5e-7".
     let s = buf.format_finite(abs).as_bytes();
     let (mantissa, exp) = match s.iter().position(|&b| b == b'e') {
         Some(e) => {

@@ -8665,8 +8665,9 @@ impl Vm {
     ) -> Result<Value, Thrown> {
         let path_str = String::from_utf8_lossy(&raw_path).into_owned();
         builtins::streams::clear_errno();
-        // A file that is gone may still be served from the compiled-script
-        // cache, which php looks up by name before opening anything.
+        // php looks a script up in opcache by the name it was asked for
+        // before opening anything: a valid cached absolute path needs neither
+        // realpath nor open, and a file that is gone may still be served.
         let found = if self.opcache_fast_hit(&raw_path) {
             Some((raw_path.clone(), IncludeSource::Cached))
         } else {

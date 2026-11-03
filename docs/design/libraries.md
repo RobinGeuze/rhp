@@ -46,10 +46,13 @@ rather than linking dynamically quietly.
   archive. macOS `/usr/lib`: libxml2, libxslt, libiconv, libz, libbz2,
   libedit, libffi. Linux: glibc's iconv.
 - Libraries with no static archive of php's version: Homebrew's libzip.
-- The C++ runtime a static C++ library needs (ICU): macOS's
-  /usr/lib/libc++, and on Linux the toolchain's libstdc++ (like libgcc_s,
-  which Rust links dynamically anyway). ICU's .pc files leave it to the
-  linker driver, so build.rs names it.
+- The C++ runtime a static C++ library needs (ICU), which php also loads
+  dynamically. macOS: the SDK has no static libc++, only /usr/lib/libc++.
+  Linux: Ubuntu ships libstdc++.a, but libstdc++ is GPL-3.0 with the GCC
+  Runtime Library Exception, and "never GPL" (see [Licences](#licences))
+  keeps it out of the binary; the system's libstdc++.so is used, as libgcc_s
+  is for Rust's std. ICU's .pc files leave the runtime to the linker
+  driver, so build.rs names it.
 
 Today rhp-builtins links:
 

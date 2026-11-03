@@ -76,10 +76,16 @@ impl Vm {
     /// An interrupt point outside the instruction loop (a builtin returned,
     /// the main script or a shutdown function ended): raise a recorded
     /// crossing.
+    #[inline]
     pub(crate) fn oom_interrupt(&mut self) -> Result<(), Thrown> {
-        if !self.mem.attention() {
-            return Ok(());
+        if self.mem.attention() {
+            return self.oom_interrupt_slow();
         }
+        Ok(())
+    }
+
+    #[cold]
+    fn oom_interrupt_slow(&mut self) -> Result<(), Thrown> {
         if let Some(oom) = self.mem.take_oom() {
             if let Oom::Hard { .. } = oom {
                 return Err(self.hard_limit_exit(oom));

@@ -336,9 +336,9 @@ fn fatal(vm: &mut Vm, t: Thrown) -> i32 {
 /// shared by php-cli and php-cgi): one starting with a character other than
 /// an alphanumeric or a quote is taken literally; otherwise it goes through
 /// the ini scanner, which unquotes a quoted string, stops a bare value at a
-/// `;` comment, and maps the bareword booleans (`On`/`Yes`/`True` → "1",
-/// `Off`/`No`/`False`/`None`/`Null` → ""). Constant expressions
-/// (`E_ALL & ~E_NOTICE`) are not evaluated.
+/// `;` comment, maps the bareword booleans (`On`/`Yes`/`True` → "1",
+/// `Off`/`No`/`False`/`None`/`Null` → ""), replaces a constant's name by
+/// its value and evaluates `| & ^ ~ !` expressions (`E_ALL & ~E_NOTICE`).
 pub fn ini_define_value(raw: &str) -> String {
     let v = raw.trim();
     let Some(first) = v.chars().next() else {
@@ -358,8 +358,137 @@ pub fn ini_define_value(raw: &str) -> String {
     match v.to_ascii_lowercase().as_str() {
         "on" | "yes" | "true" => "1".to_string(),
         "off" | "no" | "false" | "none" | "null" => String::new(),
-        _ => v.to_string(),
+        _ => ini_expr(v),
     }
+}
+
+/// The ini parser's value grammar (zend_ini_parser.y): runs of value
+/// characters, a constant name standing for its value, and the integer
+/// operators `| & ^` (one precedence, left to right) and prefix `~ !`,
+/// computed as C `int`s.
+fn ini_expr(v: &str) -> String {
+    const OPS: &[u8] = b"&|^~()!";
+    let b = v.as_bytes();
+    // Operands are the text between operators, constants substituted.
+    let operand = |s: &str| -> String {
+        let mut out = String::new();
+        let mut word = String::new();
+        let flush = |w: &mut String, out: &mut String| {
+            let ident = w
+                .bytes()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
+                && w.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_');
+            match ident.then(|| ini_constant(w)).flatten() {
+                Some(c) => out.push_str(&c),
+                None => out.push_str(w),
+            }
+            w.clear();
+        };
+        for ch in s.chars() {
+            if ch == ' ' || ch == '\t' {
+                flush(&mut word, &mut out);
+                out.push(ch);
+            } else {
+                word.push(ch);
+            }
+        }
+        flush(&mut word, &mut out);
+        out
+    };
+    if !b.iter().any(|c| OPS.contains(c)) {
+        return operand(v);
+    }
+    // Recursive descent over the token stream.
+    enum Tok {
+        Op(u8),
+        Val(String),
+    }
+    let mut toks = Vec::new();
+    let mut start = 0;
+    for (i, c) in b.iter().enumerate() {
+        if OPS.contains(c) {
+            let text = v[start..i].trim();
+            if !text.is_empty() {
+                toks.push(Tok::Val(operand(text)));
+            }
+            toks.push(Tok::Op(*c));
+            start = i + 1;
+        }
+    }
+    let text = v[start..].trim();
+    if !text.is_empty() {
+        toks.push(Tok::Val(operand(text)));
+    }
+    fn atoi(s: &str) -> i32 {
+        let s = s.trim_start();
+        let (neg, digits) = match s.as_bytes().first() {
+            Some(b'-') => (true, &s[1..]),
+            Some(b'+') => (false, &s[1..]),
+            _ => (false, s),
+        };
+        let n = digits
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .fold(0i64, |n, d| {
+                n.wrapping_mul(10).wrapping_add((d - b'0') as i64)
+            });
+        (if neg { -n } else { n }) as i32
+    }
+    fn unary(t: &[Tok], i: &mut usize) -> i32 {
+        match t.get(*i) {
+            Some(Tok::Op(b'~')) => {
+                *i += 1;
+                !unary(t, i)
+            }
+            Some(Tok::Op(b'!')) => {
+                *i += 1;
+                (unary(t, i) == 0) as i32
+            }
+            Some(Tok::Op(b'(')) => {
+                *i += 1;
+                let v = binary(t, i);
+                if matches!(t.get(*i), Some(Tok::Op(b')'))) {
+                    *i += 1;
+                }
+                v
+            }
+            Some(Tok::Val(s)) => {
+                *i += 1;
+                atoi(s)
+            }
+            _ => 0,
+        }
+    }
+    fn binary(t: &[Tok], i: &mut usize) -> i32 {
+        let mut acc = unary(t, i);
+        while let Some(Tok::Op(op @ (b'|' | b'&' | b'^'))) = t.get(*i) {
+            *i += 1;
+            let rhs = unary(t, i);
+            acc = match op {
+                b'|' => acc | rhs,
+                b'&' => acc & rhs,
+                _ => acc ^ rhs,
+            };
+        }
+        acc
+    }
+    binary(&toks, &mut 0).to_string()
+}
+
+/// A constant's value as the ini scanner substitutes it.
+fn ini_constant(name: &str) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static CONSTANTS: OnceLock<HashMap<&'static str, Vec<u8>>> = OnceLock::new();
+    let m = CONSTANTS.get_or_init(|| {
+        rhp_builtins::constants()
+            .into_iter()
+            .filter(|(_, v)| !matches!(v, Value::Array(_) | Value::Object(_)))
+            .map(|(n, v)| (n, rhp_values::conv::to_string_bytes(&v)))
+            .collect()
+    });
+    m.get(name).map(|v| String::from_utf8_lossy(v).into_owned())
 }
 
 /// The CLI front end's run: `rhp [options] script.php args...` semantics.
@@ -408,5 +537,13 @@ mod tests {
         assert_eq!(v("-1"), "-1");
         assert_eq!(v("128M"), "128M");
         assert_eq!(v("/a;b"), "/a;b");
+        // Constants and the ini expression operators.
+        assert_eq!(v("E_ALL"), "30719");
+        assert_eq!(v("E_ALL & ~E_DEPRECATED"), "22527");
+        assert_eq!(v("E_ALL^E_NOTICE"), "30711");
+        assert_eq!(v("E_ALL & ~(E_NOTICE | E_WARNING)"), "30709");
+        assert_eq!(v("files"), "files");
+        assert_eq!(v("Europe/London"), "Europe/London");
+        assert_eq!(v("UTF-8"), "UTF-8");
     }
 }

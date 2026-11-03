@@ -8797,8 +8797,10 @@ impl Vm {
 
     /// Resolve an include path to `(key, source)`: for a schemed URL
     /// (`phar://`, …) the wrapper's contents; otherwise the real path of
-    /// the first candidate that opens as a file — absolute as-is, else
-    /// relative to the including file's directory, then CWD.
+    /// the first candidate that opens as a file, in php_resolve_path's
+    /// order: an absolute or `./` / `../` path as is (relative to the
+    /// working directory), else each include_path entry, then the
+    /// including file's directory.
     fn resolve_include_file(&self, top: usize, path: &str) -> Option<(Vec<u8>, IncludeSource)> {
         use std::path::{Path, PathBuf};
         // Schemed URLs: no candidate search — the wrapper owns resolution. The
@@ -8813,15 +8815,23 @@ impl Vm {
         }
         let p = Path::new(path);
         let mut candidates: Vec<PathBuf> = Vec::new();
-        if p.is_absolute() {
+        let include_path = self.ini_get(b"include_path").unwrap_or_default();
+        let dotted = path.starts_with("./") || path.starts_with("../");
+        if p.is_absolute() || dotted || include_path.is_empty() {
             candidates.push(p.to_path_buf());
         } else {
+            for dir in include_path.split(|&c| c == b':') {
+                // Entries that are stream wrappers (`phar://…`) aren't searched.
+                if dir.is_empty() || dir.windows(3).any(|w| w == b"://") {
+                    continue;
+                }
+                candidates.push(Path::new(&*String::from_utf8_lossy(dir)).join(p));
+            }
             let cur = self.current_file(top);
             let cur = String::from_utf8_lossy(&cur).into_owned();
-            if let Some(dir) = Path::new(&cur).parent() {
+            if let Some(dir) = Path::new(&cur).parent().filter(|d| d.is_absolute()) {
                 candidates.push(dir.join(p));
             }
-            candidates.push(p.to_path_buf()); // relative to CWD
         }
         for cand in candidates {
             let Ok(canon) = std::fs::canonicalize(&cand) else {

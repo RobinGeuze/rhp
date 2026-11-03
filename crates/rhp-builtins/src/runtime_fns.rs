@@ -318,7 +318,11 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
         return;
     };
     let key = String::from_utf8_lossy(name).into_owned();
-    let (warnings, ok) = on_modify_check(name, v);
+    let (warnings, ok) = if name == b"date.timezone" && !tz_valid(v) {
+        (vec![invalid_timezone(v, "PHP Startup")], false)
+    } else {
+        on_modify_check(name, v)
+    };
     STARTUP_DIAGS.with(|d| {
         let mut d = d.borrow_mut();
         d.startup.retain(|s| s.1 != key);
@@ -553,6 +557,11 @@ fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value
     if !ok || !crate::opcache_fns::on_modify(host, &name, &newv)? {
         return Ok(Value::Bool(false));
     }
+    if name == b"date.timezone" && !tz_valid(&newv) {
+        let func = format!("{func}()");
+        host.emit_diagnostic(crate::E_WARNING, &invalid_timezone(&newv, &func))?;
+        return Ok(Value::Bool(false));
+    }
     if ini_validate(&name, &newv).is_err() {
         // php: the directive's handler warns (where it does) and refuses.
         return Ok(Value::Bool(false));
@@ -649,6 +658,19 @@ thread_local! {
 /// Is `id` a known timezone identifier (case-insensitive, as timelib)?
 pub(crate) fn tz_valid(id: &[u8]) -> bool {
     id.eq_ignore_ascii_case(b"UTC") || crate::tzdb::load(id).is_some()
+}
+
+/// OnUpdate_date_timezone's warning (a docref from `func`): php falls back
+/// to `date_default_timezone_set()`'s zone, else UTC.
+fn invalid_timezone(v: &[u8], func: &str) -> String {
+    let fallback = TZ
+        .with(|t| t.borrow().clone())
+        .unwrap_or_else(|| b"UTC".to_vec());
+    format!(
+        "{func}: Invalid date.timezone value '{}', using '{}' instead",
+        String::from_utf8_lossy(v),
+        String::from_utf8_lossy(&fallback)
+    )
 }
 
 /// The effective default timezone name: `date_default_timezone_set()`, then a

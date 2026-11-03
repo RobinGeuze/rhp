@@ -141,14 +141,15 @@ ICU off). A release with no recorded checksum fails the job; add its
 checksum.
 The `php` input names a php that is not the one on PATH (the nightly
 sanitizer build uses php-src's bundled PCRE2).
-`otool -L target/release/rhp` (or `ldd`) shows no libpcre2 or libicu (and
-on Linux no libxml2); `nm` shows the `pcre2_*` symbols. rhp-builtins'
-`pcre2_is_linked_statically`, `libxml2_is_linked_statically` and
-`icu_is_linked_statically` tests check its own test binary, which is linked
-straight from the crate. The helper drops the library itself from a static
-link's `Libs.private`: a second, dynamic `-l` for it would override the
-static one. It also drops the ones that have rows of their own (ICU's
-libicuuc and libicudata), which those rows link statically.
+`otool -L target/release/rhp` (or `ldd`) shows no libpcre2, libicu, libssl
+or libcrypto (and on Linux no libxml2); `nm` shows the `pcre2_*` symbols.
+rhp-builtins' `pcre2_is_linked_statically`, `libxml2_is_linked_statically`,
+`icu_is_linked_statically` and `openssl_is_linked_statically` tests check its
+own test binary, which is linked straight from the crate. The helper drops
+the library itself from a static link's `Libs.private`: a second, dynamic
+`-l` for it would override the static one. It also drops the ones that have
+rows of their own (ICU's libicuuc and libicudata), which those rows link
+statically.
 
 ## Compiled from source: rhp-csrc
 

@@ -221,26 +221,10 @@ impl Vm {
         builtins::Host::write_out(self, data);
     }
 
-    /// The response as it stands (status, headers, whether they were sent).
-    pub fn response(&self) -> &Response {
-        &self.sapi.response
-    }
-
-    /// Mutable access to the response (a front end setting the status
-    /// before the script runs, e.g. php-cgi's 404 "No input file").
-    pub fn response_mut(&mut self) -> &mut Response {
-        &mut self.sapi.response
-    }
-
     /// Write to the request's error stream (the SAPI's `write_stderr`; the
     /// process's stderr without one).
     pub fn write_error_stream(&mut self, data: &[u8]) {
         self.write_stderr(data);
-    }
-
-    /// The installed SAPI (to recover its state after the request).
-    pub fn take_sapi(&mut self) -> Option<Box<dyn Sapi>> {
-        self.sapi.sapi.take()
     }
 
     /// Where the currently executing user code is (file, line), if any.

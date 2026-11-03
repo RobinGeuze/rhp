@@ -93,8 +93,6 @@ pub struct Vm {
     out: Vec<u8>,
     /// Active magic-accessor guards: (object id, accessor, property name).
     prop_guards: std::collections::HashSet<(u32, &'static [u8], PhpStr)>,
-    /// Write output directly to stdout instead of `out` (the CLI).
-    stdout_passthrough: bool,
     /// The output layer (main/output.c): the `ob_start` handler stack every
     /// write passes through on its way to [`Vm::emit_stdout`].
     output: output::Output,
@@ -124,9 +122,6 @@ pub struct Vm {
     exception_handlers: Vec<Value>,
     /// `register_shutdown_function` callbacks with their arguments, in order.
     shutdown_functions: Vec<(Value, Vec<Value>)>,
-    /// CLI mode: unbuffered stdout is written to the process's stdout before
-    /// anything goes to stderr, so the two streams interleave as in php.
-    direct_stdout: bool,
     // lvalue cursor: a root in the current frame (CV or a static-prop cell) +
     // pending path steps. Cursor opcodes are emitted contiguously, so a single
     // cursor never nests.
@@ -541,10 +536,6 @@ impl Host for Vm {
             .iter()
             .filter_map(|n| self.constants.get(n).map(|v| (n.clone(), v.clone())))
             .collect()
-    }
-
-    fn output_started(&self) -> bool {
-        self.sapi.response.sent
     }
 
     fn response(&mut self) -> Option<&mut builtins::sapi::Response> {
@@ -1171,9 +1162,6 @@ impl Host for Vm {
     }
 
     fn prepare_fork(&mut self) {
-        if self.direct_stdout || self.stdout_passthrough {
-            self.flush_stdout();
-        }
         use std::io::Write;
         let _ = std::io::stderr().flush();
     }
@@ -2377,7 +2365,6 @@ impl Vm {
         Vm {
             out: Vec::new(),
             prop_guards: Default::default(),
-            stdout_passthrough: false,
             output: output::Output::default(),
             stack: Vec::new(),
             functions: Vec::new(),
@@ -2392,7 +2379,6 @@ impl Vm {
             native_calls: Vec::new(),
             exception_handlers: Vec::new(),
             shutdown_functions: Vec::new(),
-            direct_stdout: false,
             cursor_root: CursorRoot::Cv(0),
             cursor_steps: Vec::new(),
             cursor_global: None,
@@ -4161,19 +4147,13 @@ impl Vm {
         self.includer = Some(Box::new(f));
     }
 
-    /// Write script output straight to the process stdout (unbuffered, like
-    /// the php CLI) instead of collecting it for [`Vm::output`], so it
-    /// interleaves correctly with stderr and child-process output.
-    pub fn set_stdout_passthrough(&mut self, on: bool) {
-        self.stdout_passthrough = on;
-    }
-
-    /// Unbuffered-by-default script output (see [`Vm::set_stdout_passthrough`]).
+    /// Output past the output buffers: to the SAPI, or collected for
+    /// [`Vm::output`] without one.
     fn emit_stdout(&mut self, data: &[u8]) {
         if self.sapi_write(data) {
             return;
         }
-        self.legacy_stdout(data);
+        self.out.extend_from_slice(data);
     }
 
     /// A write to the `STDOUT` stream: php writes the descriptor directly,
@@ -4189,19 +4169,7 @@ impl Vm {
             let _ = so.flush();
             return;
         }
-        self.legacy_stdout(data);
-    }
-
-    /// Output without a SAPI: collected for [`Vm::output`] or passed through.
-    fn legacy_stdout(&mut self, data: &[u8]) {
-        if self.stdout_passthrough || self.direct_stdout {
-            use std::io::Write;
-            let mut so = std::io::stdout().lock();
-            let _ = so.write_all(data);
-            let _ = so.flush();
-        } else {
-            self.out.extend_from_slice(data);
-        }
+        self.out.extend_from_slice(data);
     }
 
     pub fn output(&self) -> &[u8] {
@@ -5577,14 +5545,8 @@ impl Vm {
         String::from_utf8_lossy(self.class(obj.borrow().class).name.as_bytes()).into_owned()
     }
 
-    /// CLI SAPI mode: pending unbuffered stdout is handed to the process
-    /// before every stderr write, so stdout/stderr interleave as under php.
-    pub fn set_direct_stdout(&mut self, on: bool) {
-        self.direct_stdout = on;
-    }
-
     /// Write pending unbuffered output to the process's stdout.
-    pub fn flush_stdout(&mut self) {
+    pub(crate) fn flush_stdout(&mut self) {
         use std::io::Write;
         let mut o = std::io::stdout().lock();
         let _ = o.write_all(&self.out);
@@ -5592,15 +5554,12 @@ impl Vm {
         self.out.clear();
     }
 
-    /// Write to the process's stderr (after pending stdout, in CLI mode).
+    /// Write to the SAPI's error stream, or the process's stderr.
     fn write_stderr(&mut self, data: &[u8]) {
         use std::io::Write;
         if let Some(s) = self.sapi.sapi.as_mut() {
             s.write_stderr(data);
             return;
-        }
-        if self.direct_stdout {
-            self.flush_stdout();
         }
         let _ = std::io::stderr().write_all(data);
     }
@@ -8887,8 +8846,6 @@ impl Vm {
         Ok(Rc::new(rebase_proto_c(&prog.main, base, cbase as u32)))
     }
 
-    /// Run an included `{main}` to completion (isolated scope; it shares the VM's
-    /// function/class/constant tables) and return its value.
     /// Run an included / eval'd script's `{main}` **in the calling scope**: its
     /// CVs are bound by name to the caller frame's variables (shared cells), so
     /// writes are visible to the caller and reads see the caller's current
@@ -10939,10 +10896,10 @@ fn normalize_url(url: &[u8]) -> Vec<u8> {
     out
 }
 
-/// No instruction rewriting — the bases are applied at run time.
 /// Clone a proto, stamping its `closure_base` so its file-local `MakeClosure`
 /// indices resolve into the VM's flat closure table (whose tail holds this
-/// file's closures), and its `class_base` likewise for `DeclareClass`.
+/// file's closures), and its `class_base` likewise for `DeclareClass`. No
+/// instruction is rewritten: the bases are applied at run time.
 fn rebase_proto_c(proto: &FunctionProto, base: u32, cbase: u32) -> FunctionProto {
     let mut p = proto.clone();
     p.closure_base = base;

@@ -504,12 +504,6 @@ pub trait Host {
         Vec::new()
     }
 
-    /// Has any output reached the real (unbuffered) output stream? The CLI
-    /// SAPI sends headers on first output, so this is `headers_sent()`.
-    fn output_started(&self) -> bool {
-        false
-    }
-
     /// The request's header store (`SG(sapi_headers)`, `headers_sent`):
     /// `header()` and friends operate on it. Default: none (a host without a
     /// response; the header builtins then do nothing).

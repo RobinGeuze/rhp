@@ -188,13 +188,11 @@ impl Vm {
         self.output.flags |= O_SENT;
     }
 
-    /// sapi_flush: push buffered response bytes to the client.
-    /// The installed SAPI's `flush`; without one, pending CLI output goes
-    /// to the process's stdout.
+    /// sapi_flush: push buffered response bytes to the client (the
+    /// installed SAPI's `flush`).
     fn sapi_flush(&mut self) {
         match self.sapi.sapi.as_mut() {
             Some(s) => s.flush(),
-            None if self.direct_stdout => self.flush_stdout(),
             None => {
                 use std::io::Write;
                 let _ = std::io::stdout().flush();

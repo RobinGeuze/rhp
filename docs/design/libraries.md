@@ -51,8 +51,9 @@ Today rhp-builtins links:
 | bzip2 (bzip2 `=0.5.2`, feature `static`) | static, bzip2-sys's bundled C libbz2 1.0.8 | static, bzip2-sys's bundled C libbz2 1.0.8 |
 
 zlib and bzip2 predate this policy and still go through their -sys crates.
-Known gap: libz-sys builds its bundled zlib when it finds no system zlib, a
-silent fallback.
+bzip2 is built from bzip2-sys's 1.0.8 source, not taken from macOS's
+/usr/lib/libbz2 as the list above would have it. Known gap: libz-sys builds
+its bundled zlib when it finds no system zlib, a silent fallback.
 
 **Never a silent fallback.** A missing library or static archive is a build
 error that says what to install. rhp does not use -sys crates that quietly

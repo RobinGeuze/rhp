@@ -18,6 +18,10 @@ use std::time::Instant;
 
 use rhp_sapi::{run_request, Outcome, Request, RequestInfo, Sapi, Script};
 
+// As an embedding server installs it (memory_get_usage(), memory_limit).
+#[global_allocator]
+static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
+
 #[derive(Clone, Default)]
 struct Body(Rc<RefCell<Vec<u8>>>);
 

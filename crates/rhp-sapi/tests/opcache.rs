@@ -12,6 +12,10 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use rhp_sapi::{run_request, Outcome, Request, RequestInfo, Sapi, Script};
 
+// The engine's memory accounting (memory_get_usage(), memory_limit).
+#[global_allocator]
+static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
+
 #[derive(Clone, Default)]
 struct Capture {
     body: Rc<RefCell<Vec<u8>>>,
@@ -322,5 +326,51 @@ fn a_failed_preload_fails_every_request_on_the_thread() {
             assert_eq!(outcome, Outcome::Exit(1));
             assert!(!body.contains("ran"), "{body}");
         }
+    });
+}
+
+/// php compiles a script into the request heap without opcache, and into
+/// shared memory with it: a cached program is never the request's memory,
+/// neither when compiled nor when discarded.
+#[test]
+fn cached_programs_are_outside_the_request_memory() {
+    on_own_thread(|| {
+        let d = Dir::new("memory");
+        let body: String = (0..2000)
+            .map(|i| format!("    $v{i} = 'value {i}' . PHP_EOL;\n"))
+            .collect();
+        d.file(
+            "lib.php",
+            &format!("<?php\nfunction f() {{\n{body}}}\n"),
+            500,
+        );
+        let main = d.file(
+            "main.php",
+            r#"<?php
+            $before = memory_get_usage();
+            include __DIR__ . '/lib.php';
+            echo memory_get_usage() - $before;
+            "#,
+            500,
+        );
+        let discard = d.file(
+            "discard.php",
+            r#"<?php
+            $before = memory_get_usage();
+            opcache_invalidate(__DIR__ . '/lib.php', true);
+            echo memory_get_usage() - $before;
+            "#,
+            500,
+        );
+        let grew = |script: &Path, ini: &[(&str, &str)], time| -> i64 {
+            request(script, ini, time).parse().unwrap()
+        };
+        let uncached = grew(&main, &[("opcache.enable", "0")], 1000);
+        let miss = grew(&main, &[], 1001);
+        let hit = grew(&main, &[], 1002);
+        assert!(uncached > hit + 100_000, "uncached {uncached}, hit {hit}");
+        assert!((miss - hit).abs() < 4096, "miss {miss}, hit {hit}");
+        let discarded = grew(&discard, &[], 1003);
+        assert!(discarded >= 0, "invalidating gave back {discarded}");
     });
 }

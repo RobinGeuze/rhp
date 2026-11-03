@@ -126,8 +126,16 @@ thread_local! {
     static CACHE: RefCell<Cache> = RefCell::new(Cache::default());
 }
 
+/// Change the thread's cache. What it keeps from one request to the next
+/// is php's shared memory, not the request heap, so this is left out of
+/// the request's memory accounting.
 fn with_cache<R>(f: impl FnOnce(&mut Cache) -> R) -> R {
-    CACHE.with(|c| f(&mut c.borrow_mut()))
+    rhp_values::mem::uncounted(|| CACHE.with(|c| f(&mut c.borrow_mut())))
+}
+
+/// Read the cache into a value for the request (counted as the request's).
+fn read_cache<R>(f: impl FnOnce(&Cache) -> R) -> R {
+    CACHE.with(|c| f(&c.borrow()))
 }
 
 /// A request's view of the cache (php's per-request `ZCG` fields).
@@ -390,11 +398,12 @@ impl Vm {
     /// Write the cache's pending `zend_accel_error` lines to opcache's log.
     fn flush_accel_log(&mut self) {
         let msgs = with_cache(|c| std::mem::take(&mut c.log));
-        for (level, msg) in msgs {
-            if let Some(line) = builtins::accel_log_line(level, &msg) {
+        for (level, msg) in &msgs {
+            if let Some(line) = builtins::accel_log_line(*level, msg) {
                 self.write_accel_log(&line, &builtins::accel_log_dest());
             }
         }
+        rhp_values::mem::uncounted(|| drop(msgs));
     }
 
     fn ini(&self, name: &[u8]) -> Vec<u8> {
@@ -578,7 +587,7 @@ impl Vm {
             // keep it with the script.
             Some(None) => {
                 let src = source();
-                let p = Rc::new(compile(self, &src)?);
+                let p = rhp_values::mem::uncounted(|| compile(self, &src).map(Rc::new))?;
                 with_cache(|c| {
                     if let Some(s) = c.scripts.get_mut(path) {
                         let extra = program_size(&p);
@@ -606,7 +615,13 @@ impl Vm {
         } else {
             self.opcache_cacheable(path, request_time)
         };
-        let program = Rc::new(compile(self, &src)?);
+        // A program the cache keeps is compiled outside the request's
+        // accounting, as php moves it to shared memory.
+        let program = if cacheable.is_some() {
+            rhp_values::mem::uncounted(|| compile(self, &src).map(Rc::new))?
+        } else {
+            Rc::new(compile(self, &src)?)
+        };
         if let Some(timestamp) = cacheable {
             self.opcache_store(path, kind, &program, if validate { timestamp } else { 0 });
             with_cache(|c| {
@@ -762,7 +777,7 @@ impl Vm {
             "invalidate" => Value::Bool(self.opcache_invalidate(&path_arg(), bool_arg(1))),
             "reset" => Value::Bool(self.opcache_reset()),
             "compile_file" => return Some(self.opcache_compile_file(&path_arg())),
-            "blacklist" => Value::Array(with_cache(|c| {
+            "blacklist" => Value::Array(read_cache(|c| {
                 let mut a = PhpArray::new();
                 for e in c.startup.iter().flat_map(|s| &s.blacklist) {
                     a.push(Value::str(e.clone()));
@@ -836,7 +851,7 @@ impl Vm {
         let freq = self.ini_long(b"opcache.revalidate_freq");
         let request_time = self.opcache_request().request_time;
         let key = self.persistent_key(given, b"").unwrap_or_default();
-        with_cache(|c| {
+        read_cache(|c| {
             let real = if c.scripts.contains_key(given) {
                 given.to_vec()
             } else {
@@ -856,7 +871,7 @@ impl Vm {
             return false;
         }
         let key = self.persistent_key(path, b"").unwrap_or_default();
-        let Some(real) = with_cache(|c| {
+        let Some(real) = read_cache(|c| {
             if c.scripts.contains_key(path) {
                 Some(path.to_vec())
             } else {
@@ -958,7 +973,7 @@ impl Vm {
         let validate = ini_flag(&self.ini(b"opcache.validate_timestamps"));
         let jit = self.jit_status();
         let s = |b: &[u8]| ArrayKey::from_bytes(b);
-        with_cache(|c| {
+        read_cache(|c| {
             let st = c.startup.as_ref();
             let budget = st.map_or(0, |s| s.memory_consumption);
             let strings = st.map_or(0, |s| s.interned_strings_buffer);

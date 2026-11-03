@@ -1399,7 +1399,7 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
             }
         }
     }
-    let env: Vec<(String, String)> = phpt
+    let mut env: Vec<(String, String)> = phpt
         .section("ENV")
         .map(|b| {
             String::from_utf8_lossy(b)
@@ -1409,6 +1409,12 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
                 .collect()
         })
         .unwrap_or_default();
+    // ext/curl's server.inc starts `TEST_PHP_EXECUTABLE -S` as the HTTP peer
+    // of the transfers under test: php's CLI server for both engines (rhp
+    // has no -S). The server only answers; curl is the code compared.
+    if rel.starts_with("ext/curl/tests/") {
+        env.push(("TEST_PHP_EXECUTABLE".into(), php_bin()));
+    }
     let args: Vec<String> = phpt
         .section("ARGS")
         .map(|b| {

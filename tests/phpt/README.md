@@ -43,7 +43,10 @@ How it compares, mirroring `run-tests.php`:
   runner executes `--CLEAN--` and restores the test's directory, so php and rhp
   (and every mutant) start from the same files.
 - Tests that spawn "the php under test" (`TEST_PHP_EXECUTABLE`, `PHP_BINARY`)
-  are skipped, because rhp's CLI doesn't accept php's flags.
+  are skipped, because rhp's CLI doesn't accept php's flags. ext/curl's
+  tests start php's CLI server through their `server.inc` as the HTTP peer
+  of the transfers under test: both engines get `TEST_PHP_EXECUTABLE=php`
+  there (rhp has no `-S`).
 - `--write-known` re-runs every match with 1.1s between the two engines, and
   leaves out any test that then diverges. That keeps output depending on the
   current time out of the list.

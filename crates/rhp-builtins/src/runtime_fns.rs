@@ -153,20 +153,57 @@ thread_local! {
 }
 
 /// Diagnostics of startup (`-d`) ini values, and of re-applying them when a
-/// runtime change is undone at request end (`zend_ini_deactivate`).
+/// runtime change is undone (`ini_restore`, `zend_ini_deactivate` at request
+/// end).
 #[derive(Default)]
 struct StartupDiags {
-    /// Raised while the `-d` values were applied (module startup).
-    startup: Vec<String>,
-    /// memory_hard_limit_percent's startup value warned but was accepted:
-    /// php warns again when restoring it after an `ini_set`.
-    restore_warning: Option<String>,
-    /// memory_hard_limit_percent was changed by `ini_set` this request.
-    changed: bool,
+    /// Raised while the `-d` values were applied (module startup): the
+    /// directive's INI_TABLE position (php applies them in registration
+    /// order), its name, the message.
+    startup: Vec<(usize, String, String)>,
+    /// Directives whose accepted startup value warned: php's handler warns
+    /// again each time it restores that value.
+    restore: HashMap<String, Vec<String>>,
+    /// Directives `ini_set` changed this request, in order
+    /// (`EG(modified_ini_directives)`).
+    changed: Vec<String>,
 }
 
 thread_local! {
     static STARTUP_DIAGS: RefCell<StartupDiags> = RefCell::new(StartupDiags::default());
+}
+
+/// Directives whose handler parses the value with
+/// `zend_ini_parse_quantity_warn` (OnUpdateLong and handlers built on it),
+/// among those rhp applies.
+const QUANTITY_DIRECTIVES: &[&str] = &["pcre.backtrack_limit", "pcre.recursion_limit"];
+
+/// The warnings a directive's OnModify handler raises for `v`, and whether
+/// it accepts the value.
+fn on_modify_check(name: &[u8], v: &[u8]) -> (Vec<String>, bool) {
+    if name == b"memory_hard_limit_percent" {
+        return memory_hard_limit_percent_check(v);
+    }
+    let mut warnings = Vec::new();
+    if QUANTITY_DIRECTIVES.iter().any(|d| d.as_bytes() == name) {
+        if let Some(err) = crate::rfc1867::quantity_error(v) {
+            let name = String::from_utf8_lossy(name);
+            warnings.push(format!("Invalid \"{name}\" setting. {err}"));
+        }
+    }
+    (warnings, true)
+}
+
+/// `ini_set` is changing `key`: zend_alter_ini_entry_ex marks it modified
+/// before its handler runs, so it is restored at request end even when the
+/// handler refuses the new value.
+fn mark_changed(key: &str) {
+    STARTUP_DIAGS.with(|d| {
+        let mut d = d.borrow_mut();
+        if !d.changed.iter().any(|c| c == key) {
+            d.changed.push(key.to_string());
+        }
+    });
 }
 
 /// OnChangeMemoryHardLimitPercent's checks: the warnings to raise, and
@@ -188,7 +225,9 @@ fn memory_hard_limit_percent_check(v: &[u8]) -> (Vec<String>, bool) {
 
 /// The warnings raised while applying the startup (`-d`) ini values, once.
 pub fn take_startup_diagnostics() -> Vec<String> {
-    STARTUP_DIAGS.with(|d| std::mem::take(&mut d.borrow_mut().startup))
+    let mut diags = STARTUP_DIAGS.with(|d| std::mem::take(&mut d.borrow_mut().startup));
+    diags.sort_by_key(|d| d.0);
+    diags.into_iter().map(|d| d.2).collect()
 }
 
 /// The warnings raised at request end when startup values are restored
@@ -197,10 +236,12 @@ pub fn take_shutdown_diagnostics() -> Vec<String> {
     STARTUP_DIAGS.with(|d| {
         let mut d = d.borrow_mut();
         let changed = std::mem::take(&mut d.changed);
-        match &d.restore_warning {
-            Some(w) if changed => vec![w.clone()],
-            _ => Vec::new(),
-        }
+        changed
+            .iter()
+            .filter_map(|k| d.restore.get(k))
+            .flatten()
+            .cloned()
+            .collect()
     })
 }
 
@@ -263,28 +304,40 @@ pub(crate) fn ini_store(name: &[u8], v: Vec<u8>) {
     INI.with(|m| m.borrow_mut().insert(key, Some(v)));
 }
 
-/// `-d name=value` at startup: no INI_USER / validator checks.
+/// `-d name=value` at startup: no INI_USER / validator checks. The
+/// directive's handler runs: its warnings are reported "in Unknown on line
+/// 0", and a refused value leaves the default (NULL for
+/// memory_hard_limit_percent). A later `-d` for the same name replaces an
+/// earlier one, as in php's configuration hash.
 pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
-    if name == b"memory_hard_limit_percent" && ini_entry(name).is_some() {
-        // Its on_modify handler runs at startup too: warnings are reported
-        // "in Unknown on line 0" and a refused value leaves it NULL.
-        let (warnings, ok) = memory_hard_limit_percent_check(v);
-        STARTUP_DIAGS.with(|d| {
-            let mut d = d.borrow_mut();
-            d.restore_warning = if ok { warnings.first().cloned() } else { None };
-            d.startup.extend(warnings);
-        });
-        if !ok {
-            INI.with(|m| m.borrow_mut().remove("memory_hard_limit_percent"));
-            return;
+    let Some(pos) = INI_TABLE
+        .iter()
+        .position(|e| e.1.as_bytes() == name)
+        .filter(|_| ini_entry(name).is_some())
+    else {
+        return;
+    };
+    let key = String::from_utf8_lossy(name).into_owned();
+    let (warnings, ok) = on_modify_check(name, v);
+    STARTUP_DIAGS.with(|d| {
+        let mut d = d.borrow_mut();
+        d.startup.retain(|s| s.1 != key);
+        if ok && !warnings.is_empty() {
+            d.restore.insert(key.clone(), warnings.clone());
+        } else {
+            d.restore.remove(&key);
         }
+        d.startup
+            .extend(warnings.into_iter().map(|w| (pos, key.clone(), w)));
+    });
+    if !ok {
+        INI.with(|m| m.borrow_mut().remove(&key));
+        INI_STARTUP.with(|m| m.borrow_mut().remove(&key));
+        return;
     }
-    if ini_entry(name).is_some() {
-        ini_apply(name, Some(v));
-        ini_store(name, v.to_vec());
-        let key = String::from_utf8_lossy(name).into_owned();
-        INI_STARTUP.with(|m| m.borrow_mut().insert(key, v.to_vec()));
-    }
+    ini_apply(name, Some(v));
+    ini_store(name, v.to_vec());
+    INI_STARTUP.with(|m| m.borrow_mut().insert(key, v.to_vec()));
 }
 
 fn ini_opt_value(v: Option<Vec<u8>>) -> Value {
@@ -492,17 +545,13 @@ fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value
     if e.3 & PHP_INI_USER == 0 {
         return Ok(Value::Bool(false));
     }
-    if name == b"memory_hard_limit_percent" {
-        // OnChangeMemoryHardLimitPercent: zend_ini_parse_quantity_warn, then
-        // the range check. rhp has no hard limit to apply the value to.
-        let (warnings, ok) = memory_hard_limit_percent_check(&newv);
-        for w in &warnings {
-            host.emit_diagnostic(crate::E_WARNING, w)?;
-        }
-        if !ok {
-            return Ok(Value::Bool(false));
-        }
-        STARTUP_DIAGS.with(|d| d.borrow_mut().changed = true);
+    mark_changed(&String::from_utf8_lossy(&name));
+    let (warnings, ok) = on_modify_check(&name, &newv);
+    for w in &warnings {
+        host.emit_diagnostic(crate::E_WARNING, w)?;
+    }
+    if !ok {
+        return Ok(Value::Bool(false));
     }
     if ini_validate(&name, &newv).is_err() {
         // php: the directive's handler warns (where it does) and refuses.
@@ -525,6 +574,17 @@ fn fn_ini_alter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_ini_restore(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = str_param(host, args, 0, "ini_restore", "option")?;
     let key = String::from_utf8_lossy(&name).into_owned();
+    // zend_restore_ini_entry: a directive ini_set changed is no longer
+    // modified, and its handler runs again on the startup value.
+    let restore = STARTUP_DIAGS.with(|d| {
+        let mut d = d.borrow_mut();
+        let pos = d.changed.iter().position(|c| *c == key)?;
+        d.changed.remove(pos);
+        d.restore.get(&key).cloned()
+    });
+    for w in restore.unwrap_or_default() {
+        host.emit_diagnostic(crate::E_WARNING, &w)?;
+    }
     // Back to the startup value (`-d`), else the default.
     let startup = INI_STARTUP.with(|m| m.borrow().get(&key).cloned());
     INI.with(|m| match startup {
@@ -565,7 +625,7 @@ fn fn_ini_get_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             let mut d = PhpArray::new();
             d.insert(
                 ArrayKey::from_bytes(b"global_value"),
-                ini_opt_value(ini_default(e)),
+                ini_opt_value(ini_default_value(e.1.as_bytes()).flatten()),
             );
             d.insert(ArrayKey::from_bytes(b"local_value"), ini_opt_value(cur));
             d.insert(ArrayKey::from_bytes(b"access"), Value::Int(e.3 as i64));

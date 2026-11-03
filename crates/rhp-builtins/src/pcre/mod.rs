@@ -175,6 +175,8 @@ pub(crate) fn reset() {
 
 /// A `pcre.*` directive changed (ini_set, ini_restore, `-d`): push the new
 /// value into the match context the way its OnUpdate handler does.
+/// OnUpdateLong's "Invalid quantity" warnings are raised by the ini layer
+/// (runtime_fns `on_modify_check`).
 pub(crate) fn ini_update(name: &[u8], value: &[u8]) {
     STATE.with(|s| {
         let mut s = s.borrow_mut();

@@ -23,12 +23,19 @@ runs:
       env:
         PHP_BIN: ${{ inputs.php }}
       run: |
-        # PCRE2 (libpcre2-8.a) and libxml2 (libxml2.a), linked statically.
+        # PCRE2 (libpcre2-8.a), libxml2 (libxml2.a) and libcurl (libcurl.a),
+        # linked statically. libcurl.a's own dependencies are linked
+        # dynamically; Ubuntu 26.04's libcurl4-openssl-dev pulls in their -dev
+        # packages, 24.04's does not.
         sudo apt-get update -q
         sudo apt-get install -y --no-install-recommends \
           pkg-config \
           libpcre2-dev \
-          libxml2-dev
+          libxml2-dev \
+          libcurl4-openssl-dev \
+          libbrotli-dev libidn2-dev libkrb5-dev libldap-dev libnghttp2-dev \
+          libpsl-dev librtmp-dev libssh-dev libssh2-1-dev libssl-dev libzstd-dev \
+          zlib1g-dev
         php="${PHP_BIN:-$(command -v php || true)}"
         build=""
         # compare <name> <pkg-config module> <php code printing the version php loads>
@@ -45,6 +52,15 @@ runs:
         # shellcheck disable=SC2016
         compare libxml2 libxml-2.0 '$v = (int) LIBXML_LOADED_VERSION; echo intdiv($v, 10000), ".", intdiv($v, 100) % 100, ".", $v % 100;'
         if [ -n "$php" ]; then
+          # libcurl has no source build here: php must link the distro's.
+          # shellcheck disable=SC2016
+          curl_want="$("$php" -n -r 'echo function_exists("curl_version") ? curl_version()["version"] : "";')"
+          curl_have="$(pkg-config --modversion libcurl)"
+          echo "libcurl: the distro has $curl_have; $php links ${curl_want:-no libcurl}"
+          if [ -n "$curl_want" ] && [ "$curl_want" != "$curl_have" ]; then
+            echo "::error::$php links libcurl $curl_want, but the distro's libcurl4-openssl-dev is $curl_have. rhp links the distro's libcurl.a and cannot build another release."
+            exit 1
+          fi
           # rhp's LIBXML_DOTTED_VERSION is its headers' and LIBXML_LOADED_VERSION
           # its library's: one release. php can differ only if it loads a
           # libxml2 other than the one it was compiled against.

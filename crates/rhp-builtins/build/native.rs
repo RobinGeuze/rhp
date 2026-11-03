@@ -61,9 +61,10 @@ pub struct Lib {
     pub install: &'static str,
 }
 
-// A static link's private dependencies (`Libs.private`) are linked
-// dynamically from the linker's default paths. One that is itself a Homebrew
-// or -dev library needs its own row.
+// A static link's private dependencies (its .pc file's `Libs.private` and
+// `Requires.private`) are linked by [`link_private`]: on macOS statically
+// when a Homebrew formula ships the archive, else from the SDK; elsewhere
+// dynamically.
 
 /// Every library rhp-builtins links.
 pub const LIBS: &[Lib] = &[
@@ -98,6 +99,22 @@ pub const LIBS: &[Lib] = &[
         install: "macOS: the Command Line Tools SDK (xcode-select --install); \
                   Debian/Ubuntu: apt install pkg-config libxml2-dev",
     },
+    // php links Homebrew's keg-only curl on macOS, not the SDK's older one.
+    Lib {
+        name: "CURL",
+        pkg: "libcurl",
+        brew: Some("curl"),
+        macos_sdk: false,
+        link: "curl",
+        incdir: "",
+        header: "curl/curlver.h",
+        macros: &["LIBCURL_VERSION"],
+        version: &["LIBCURL_VERSION"],
+        macos: Mode::Static,
+        linux: Mode::Static,
+        install: "macOS: brew install curl; Debian/Ubuntu: apt install pkg-config \
+                  libcurl4-openssl-dev",
+    },
 ];
 
 /// A library [`link_all`] linked.
@@ -113,8 +130,8 @@ struct Found {
     libdir: PathBuf,
     /// The .pc file's version, when there is one.
     pc_version: Option<String>,
-    /// Other libraries a static link needs (`Libs.private`).
-    private: Vec<String>,
+    /// The .pc file, when there is one.
+    pc_file: Option<PathBuf>,
     via: String,
 }
 
@@ -226,11 +243,11 @@ fn link(lib: &Lib) -> Result<PathBuf, String> {
                 ));
             }
             println!("cargo:rerun-if-changed={}", archive.display());
-            let dir = archive_dir(lib, &archive, &file)?;
+            let dir = archive_dir(&lib.name.to_ascii_lowercase(), &archive, &file)?;
             println!("cargo:rustc-link-search=native={}", dir.display());
             println!("cargo:rustc-link-lib=static={}", lib.link);
-            for p in &found.private {
-                println!("cargo:rustc-link-lib=dylib={p}");
+            if let Some(pc) = &found.pc_file {
+                link_private(lib, pc, &os)?;
             }
         }
         Mode::Dynamic(_) => {
@@ -241,11 +258,11 @@ fn link(lib: &Lib) -> Result<PathBuf, String> {
     Ok(include)
 }
 
-/// `$OUT_DIR/native-<name>/` holding only a link to `archive`: the one
+/// `$OUT_DIR/native-<key>/` holding only a link to `archive`: the one
 /// search path a static link gets.
-fn archive_dir(lib: &Lib, archive: &Path, file: &str) -> Result<PathBuf, String> {
+fn archive_dir(key: &str, archive: &Path, file: &str) -> Result<PathBuf, String> {
     let out = env::var_os("OUT_DIR").ok_or_else(|| "OUT_DIR is not set".to_string())?;
-    let dir = PathBuf::from(out).join(format!("native-{}", lib.name.to_ascii_lowercase()));
+    let dir = PathBuf::from(out).join(format!("native-{key}"));
     let fail = |e: std::io::Error| format!("{}: {e}", dir.display());
     if dir.exists() {
         fs::remove_dir_all(&dir).map_err(fail)?;
@@ -258,6 +275,294 @@ fn archive_dir(lib: &Lib, archive: &Path, file: &str) -> Result<PathBuf, String>
     let linked = fs::copy(archive, &dest).map(|_| ());
     linked.map_err(fail)?;
     Ok(dir)
+}
+
+/// Link the libraries a static archive needs, read from its .pc file.
+///
+/// macOS: each `-l` of the .pc (and of the .pc files it requires) that a
+/// Homebrew formula ships as `lib<name>.a` is linked statically, with that
+/// archive's own dependencies; Homebrew's .pc files name Cellar paths, which
+/// are mapped to the formula's opt prefix (the build php's dylibs load).
+/// Every other `-l` must be an OS library in the SDK, and `-framework`s are
+/// linked as frameworks.
+///
+/// Elsewhere the archive's direct dependencies are linked dynamically: its
+/// `Libs.private`, and the `Libs` of the modules in its `Requires.private`.
+fn link_private(lib: &Lib, pc_file: &Path, os: &str) -> Result<(), String> {
+    if os == "macos" {
+        link_private_macos(lib, pc_file)
+    } else {
+        link_private_dynamic(lib, pc_file)
+    }
+}
+
+fn link_private_macos(lib: &Lib, pc_file: &Path) -> Result<(), String> {
+    // Only the Homebrew prefix the library itself comes from.
+    let roots: Vec<PathBuf> = brew_roots()
+        .into_iter()
+        .filter(|r| pc_file.starts_with(r))
+        .collect();
+    let mut queue = std::collections::VecDeque::from([pc_file.to_path_buf()]);
+    let mut seen_pc = Vec::new();
+    let mut seen = vec![lib.link.to_string()];
+    let mut statics: Vec<(String, PathBuf)> = Vec::new();
+    let mut dylibs: Vec<String> = Vec::new();
+    let mut frameworks: Vec<String> = Vec::new();
+    while let Some(pcf) = queue.pop_front() {
+        let key = fs::canonicalize(&pcf).unwrap_or_else(|_| pcf.clone());
+        if seen_pc.contains(&key) {
+            continue;
+        }
+        seen_pc.push(key);
+        println!("cargo:rerun-if-changed={}", pcf.display());
+        let pc = read_pc(&pcf).ok_or_else(|| format!("{}: unreadable", pcf.display()))?;
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        let mut names = Vec::new();
+        for w in pc.libs.iter().chain(&pc.libs_private) {
+            if let Some(d) = w.strip_prefix("-L") {
+                dirs.push(brew_opt_path(Path::new(d), &roots));
+            } else if let Some(n) = w.strip_prefix("-l") {
+                names.push(n.to_string());
+            } else if let Some(f) = w.strip_prefix("-framework ") {
+                if !frameworks.iter().any(|x| x == f) {
+                    frameworks.push(f.to_string());
+                }
+            }
+        }
+        if let Some(d) = &pc.libdir {
+            dirs.insert(0, brew_opt_path(d, &roots));
+        }
+        dirs.extend(roots.iter().map(|r| r.join("lib")));
+        for n in names {
+            if seen.contains(&n) {
+                continue;
+            }
+            seen.push(n.clone());
+            let file = format!("lib{n}.a");
+            match dirs.iter().map(|d| d.join(&file)).find(|a| a.is_file()) {
+                Some(a) => {
+                    if let Some(p) = pc_naming(&a, &n) {
+                        queue.push_back(p);
+                    }
+                    statics.push((n, a));
+                }
+                None => dylibs.push(n),
+            }
+        }
+        let mut pcdirs: Vec<PathBuf> = pcf.parent().map(Path::to_path_buf).into_iter().collect();
+        pcdirs.extend(dirs.iter().map(|d| d.join("pkgconfig")));
+        for m in pc.requires.iter().chain(&pc.requires_private) {
+            let file = format!("{m}.pc");
+            if let Some(p) = pcdirs.iter().map(|d| d.join(&file)).find(|p| p.is_file()) {
+                queue.push_back(p);
+            }
+        }
+    }
+    for (n, a) in &statics {
+        println!("cargo:rerun-if-changed={}", a.display());
+        let key = format!("{}-{n}", lib.name.to_ascii_lowercase());
+        let dir = archive_dir(&key, a, &format!("lib{n}.a"))?;
+        println!("cargo:rustc-link-search=native={}", dir.display());
+        println!("cargo:rustc-link-lib=static={n}");
+    }
+    let sdk_lib = sdk_root(lib)?.join("usr/lib");
+    for n in &dylibs {
+        if !sdk_lib.join(format!("lib{n}.tbd")).is_file() {
+            return Err(format!(
+                "{} needs lib{n}, which is neither a static archive in Homebrew nor an OS \
+                 library in the SDK ({}). Install the formula that ships it.",
+                lib.name,
+                sdk_lib.display()
+            ));
+        }
+        println!("cargo:rustc-link-lib=dylib={n}");
+    }
+    for f in &frameworks {
+        println!("cargo:rustc-link-lib=framework={f}");
+    }
+    Ok(())
+}
+
+fn link_private_dynamic(lib: &Lib, pc_file: &Path) -> Result<(), String> {
+    println!("cargo:rerun-if-changed={}", pc_file.display());
+    let pc = read_pc(pc_file).ok_or_else(|| format!("{}: unreadable", pc_file.display()))?;
+    let mut words = pc.libs_private.clone();
+    if !pc.requires_private.is_empty() {
+        if let Some(bin) = pkg_config_bin() {
+            // A module that is not installed is skipped: its libraries are
+            // usually in Libs.private too, and the linker names a missing one.
+            for m in &pc.requires_private {
+                if let Ok(out) = Command::new(&bin).args(["--libs", m.as_str()]).output() {
+                    if out.status.success() {
+                        let s = String::from_utf8_lossy(&out.stdout).into_owned();
+                        words.extend(s.split_whitespace().map(str::to_string));
+                    }
+                }
+            }
+        }
+    }
+    let mut done: Vec<&str> = vec![lib.link];
+    for w in &words {
+        if let Some(d) = w.strip_prefix("-L") {
+            println!("cargo:rustc-link-search=native={d}");
+        }
+    }
+    for w in &words {
+        let Some(n) = w.strip_prefix("-l") else {
+            continue;
+        };
+        if done.contains(&n) {
+            continue;
+        }
+        done.push(n);
+        match n.strip_prefix(':') {
+            // `-l:libfoo.a`: that file, by name.
+            Some(file) if file.ends_with(".a") => {
+                println!("cargo:rustc-link-lib=static:+verbatim={file}")
+            }
+            Some(file) => println!("cargo:rustc-link-lib=dylib:+verbatim={file}"),
+            None => println!("cargo:rustc-link-lib=dylib={n}"),
+        }
+    }
+    Ok(())
+}
+
+/// A path under `<brew>/Cellar/<formula>/<version>/` as the same path under
+/// `<brew>/opt/<formula>/`: the installed version, which a .pc file written
+/// before an upgrade of the formula may not name.
+fn brew_opt_path(p: &Path, roots: &[PathBuf]) -> PathBuf {
+    for r in roots {
+        if let Ok(rest) = p.strip_prefix(r.join("Cellar")) {
+            let mut parts = rest.components();
+            if let (Some(formula), Some(_version)) = (parts.next(), parts.next()) {
+                return r.join("opt").join(formula).join(parts.as_path());
+            }
+        }
+    }
+    p.to_path_buf()
+}
+
+/// The .pc file next to static archive `a` (in its `pkgconfig`
+/// subdirectory) whose `Libs` links `-l<name>`.
+fn pc_naming(a: &Path, name: &str) -> Option<PathBuf> {
+    let dir = a.parent()?.join("pkgconfig");
+    let want = format!("-l{name}");
+    let mut entries: Vec<PathBuf> = fs::read_dir(&dir)
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "pc"))
+        .collect();
+    entries.sort();
+    entries
+        .into_iter()
+        .find(|p| read_pc(p).is_some_and(|pc| pc.libs.contains(&want)))
+}
+
+/// What the helper reads from a .pc file, with `${var}`s expanded.
+#[derive(Default)]
+struct Pc {
+    version: Option<String>,
+    /// The words of `Libs` and `Libs.private`; `-framework X` is one word.
+    libs: Vec<String>,
+    libs_private: Vec<String>,
+    /// The modules `Requires` and `Requires.private` name.
+    requires: Vec<String>,
+    requires_private: Vec<String>,
+    libdir: Option<PathBuf>,
+}
+
+fn read_pc(path: &Path) -> Option<Pc> {
+    let text = fs::read_to_string(path).ok()?;
+    let mut vars: Vec<(String, String)> = Vec::new();
+    if let Some(dir) = path.parent() {
+        vars.push(("pcfiledir".into(), dir.display().to_string()));
+    }
+    let expand = |s: &str, vars: &[(String, String)]| -> String {
+        let mut s = s.to_string();
+        for _ in 0..16 {
+            let Some(start) = s.find("${") else { break };
+            let Some(len) = s[start..].find('}') else {
+                break;
+            };
+            let name = &s[start + 2..start + len];
+            let value = vars
+                .iter()
+                .rev()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            s.replace_range(start..start + len + 1, &value);
+        }
+        s
+    };
+    let mut pc = Pc::default();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let colon = line.find(':');
+        let eq = line.find('=');
+        match (colon, eq) {
+            (Some(c), e) if e.is_none_or(|e| c < e) => {
+                let value = expand(line[c + 1..].trim(), &vars);
+                match &line[..c] {
+                    "Version" => pc.version = Some(value),
+                    "Libs" => pc.libs = lib_words(&value),
+                    "Libs.private" => pc.libs_private = lib_words(&value),
+                    "Requires" => pc.requires = modules(&value),
+                    "Requires.private" => pc.requires_private = modules(&value),
+                    _ => {}
+                }
+            }
+            (_, Some(e)) => {
+                let name = line[..e].trim().to_string();
+                let value = expand(line[e + 1..].trim(), &vars);
+                if name == "libdir" {
+                    pc.libdir = Some(PathBuf::from(&value));
+                }
+                vars.push((name, value));
+            }
+            _ => {}
+        }
+    }
+    Some(pc)
+}
+
+fn lib_words(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut words = s.split_whitespace();
+    while let Some(w) = words.next() {
+        if w == "-framework" {
+            if let Some(f) = words.next() {
+                out.push(format!("-framework {f}"));
+            }
+        } else {
+            out.push(w.to_string());
+        }
+    }
+    out
+}
+
+/// The module names in a `Requires` line, without version constraints.
+fn modules(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut skip = false;
+    for w in s.split(|c: char| c == ',' || c.is_whitespace()) {
+        if w.is_empty() {
+            continue;
+        }
+        if skip {
+            skip = false;
+            continue;
+        }
+        if matches!(w, "=" | "<" | ">" | "<=" | ">=" | "!=") {
+            skip = true;
+            continue;
+        }
+        out.push(w.to_string());
+    }
+    out
 }
 
 fn find(lib: &Lib, os: &str) -> Result<Found, String> {
@@ -295,15 +600,13 @@ fn find(lib: &Lib, os: &str) -> Result<Found, String> {
             .join(lib.header)
             .is_file()
         {
-            let pc = parse_pc(
-                &prefix.join("lib/pkgconfig").join(format!("{}.pc", lib.pkg)),
-                lib.link,
-            );
+            let pc_file = prefix.join("lib/pkgconfig").join(format!("{}.pc", lib.pkg));
+            let pc_version = read_pc(&pc_file).and_then(|pc| pc.version);
             return Ok(Found {
                 include: prefix.join("include"),
                 libdir: prefix.join("lib"),
-                pc_version: pc.as_ref().map(|p| p.0.clone()),
-                private: pc.map(|p| p.1).unwrap_or_default(),
+                pc_file: pc_version.is_some().then_some(pc_file),
+                pc_version,
                 via: format!("Homebrew {}", prefix.display()),
             });
         }
@@ -341,8 +644,30 @@ fn find(lib: &Lib, os: &str) -> Result<Found, String> {
 /// An OS library in the macOS SDK: headers under `$SDK/usr/include`, the
 /// `.tbd` stub under `$SDK/usr/lib`. The SDK has no .pc files.
 fn find_sdk(lib: &Lib) -> Result<Found, String> {
+    let sdk = sdk_root(lib)?;
+    let include = sdk.join("usr/include");
+    if !include.join(lib.incdir).join(lib.header).is_file() {
+        return Err(format!(
+            "{} not found: no {} in the SDK {}. Install it ({}).",
+            lib.name,
+            lib.header,
+            include.join(lib.incdir).display(),
+            lib.install
+        ));
+    }
+    Ok(Found {
+        include,
+        libdir: sdk.join("usr/lib"),
+        pc_version: None,
+        pc_file: None,
+        via: format!("the macOS SDK {}", sdk.display()),
+    })
+}
+
+/// `$SDKROOT`, else `xcrun --show-sdk-path`.
+fn sdk_root(lib: &Lib) -> Result<PathBuf, String> {
     println!("cargo:rerun-if-env-changed=SDKROOT");
-    let sdk = match env::var("SDKROOT") {
+    Ok(match env::var("SDKROOT") {
         Ok(p) if !p.is_empty() => PathBuf::from(p),
         _ => {
             let out = Command::new("xcrun")
@@ -362,23 +687,6 @@ fn find_sdk(lib: &Lib) -> Result<Found, String> {
             }
             PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
         }
-    };
-    let include = sdk.join("usr/include");
-    if !include.join(lib.incdir).join(lib.header).is_file() {
-        return Err(format!(
-            "{} not found: no {} in the SDK {}. Install it ({}).",
-            lib.name,
-            lib.header,
-            include.join(lib.incdir).display(),
-            lib.install
-        ));
-    }
-    Ok(Found {
-        include,
-        libdir: sdk.join("usr/lib"),
-        pc_version: None,
-        private: Vec::new(),
-        via: format!("the macOS SDK {}", sdk.display()),
     })
 }
 
@@ -432,44 +740,16 @@ fn pkg_config(bin: &str, lib: &Lib, extra_paths: &[PathBuf]) -> Option<Found> {
     let version = run(&["--modversion"])?;
     let include = run(&["--variable=includedir"])?;
     let libdir = run(&["--variable=libdir"])?;
-    let libs = run(&["--static", "--libs-only-l"]).unwrap_or_default();
+    let pc_file = run(&["--variable=pcfiledir"])
+        .map(|d| PathBuf::from(d).join(format!("{module}.pc")))
+        .filter(|f| f.is_file());
     Some(Found {
         include: PathBuf::from(include),
         libdir: PathBuf::from(libdir),
         pc_version: Some(version),
-        private: link_names(&libs, lib.link),
+        pc_file,
         via: format!("{bin} {module}"),
     })
-}
-
-/// The `-l` names in `flags`, minus the library itself (`own`, its link
-/// name: a second `-l` for it would turn the static link dynamic).
-fn link_names(flags: &str, own: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for f in flags.split_whitespace() {
-        if let Some(l) = f.strip_prefix("-l") {
-            if l != own && !out.iter().any(|o| o == l) {
-                out.push(l.to_string());
-            }
-        }
-    }
-    out
-}
-
-/// `Version` and the `-l` names of `Libs.private` from a .pc file, minus
-/// `own`.
-fn parse_pc(path: &Path, own: &str) -> Option<(String, Vec<String>)> {
-    let text = fs::read_to_string(path).ok()?;
-    let mut version = None;
-    let mut private = Vec::new();
-    for line in text.lines() {
-        if let Some(v) = line.strip_prefix("Version:") {
-            version = Some(v.trim().to_string());
-        } else if let Some(v) = line.strip_prefix("Libs.private:") {
-            private = link_names(v, own);
-        }
-    }
-    Some((version?, private))
 }
 
 /// The value of `#define NAME value` in a C header, without quotes or a

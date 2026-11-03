@@ -8,8 +8,9 @@
 > `Interp` type and the refusal list (`include`/`require` and `eval` now run)
 > are all out of date. For the current design read the project
 > [README](../../README.md), [`bytecode.md`](./bytecode.md) (compiler + VM),
-> [`sapi.md`](./sapi.md) (request layer), [`extensions.md`](./extensions.md)
-> and, for exact php behaviour, [`php-semantics.md`](./php-semantics.md) and
+> [`sapi.md`](./sapi.md) (request layer), [`extensions.md`](./extensions.md),
+> [`libraries.md`](./libraries.md) (the C libraries rhp links) and, for exact
+> php behaviour, [`php-semantics.md`](./php-semantics.md) and
 > [`value-model.md`](./value-model.md).
 
 rhp is a PHP execution engine in Rust: a tree-walking interpreter over the

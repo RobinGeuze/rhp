@@ -195,7 +195,18 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
 /// Directives whose effect rhp implements: a test that sets one runs, and
 /// rhp gets the setting as `-d` too. Every `opcache.*` directive also
 /// reaches rhp (see [`opcache_skip`] for the ones whose tests can't match).
-const RHP_INI: &[&str] = &["pcre.backtrack_limit", "pcre.jit", "pcre.recursion_limit"];
+const RHP_INI: &[&str] = &[
+    "date.timezone",
+    "display_errors",
+    "error_reporting",
+    "html_errors",
+    "include_path",
+    "pcre.backtrack_limit",
+    "pcre.jit",
+    "pcre.recursion_limit",
+    "precision",
+    "serialize_precision",
+];
 
 /// The `name` of a `name=value` setting.
 fn ini_key(kv: &str) -> &str {
@@ -2928,14 +2939,16 @@ mod tests {
         let test_ini = |p: &Phpt| rules.test_ini(p, dir, false);
         let p = Phpt::parse(b"--INI--\nprecision=14\nopcache.enable=0\n--FILE--\n");
         assert_eq!(test_ini(&p).unwrap().len(), 2);
-        let p = Phpt::parse(b"--INI--\nprecision=10\n--FILE--\n");
-        assert_eq!(test_ini(&p).unwrap_err(), "ini:precision");
+        let p = Phpt::parse(b"--INI--\nvariables_order=GPS\n--FILE--\n");
+        assert_eq!(test_ini(&p).unwrap_err(), "ini:variables_order");
         let p = Phpt::parse(b"--INI--\noutput_buffering=0\ndisplay_errors=On\n--FILE--\n");
         assert_eq!(test_ini(&p).unwrap().len(), 2);
         let p = Phpt::parse(b"--INI--\noutput_buffering=4096\n--FILE--\n");
         assert_eq!(test_ini(&p).unwrap_err(), "ini:output_buffering");
         // Directives rhp applies run, and only those reach rhp.
-        let p = Phpt::parse(b"--INI--\npcre.jit=0\nprecision=14\nopcache.jit=tracing\n--FILE--\n");
+        let p = Phpt::parse(
+            b"--INI--\npcre.jit=0\noutput_buffering=0\nopcache.jit=tracing\n--FILE--\n",
+        );
         let ini = test_ini(&p).unwrap();
         assert_eq!(ini.len(), 3);
         let to_rhp: Vec<&String> = ini.iter().filter(|kv| rules.rhp_applies(kv)).collect();
@@ -2954,10 +2967,13 @@ mod tests {
         // --rhp-ini
         let rules = IniRules {
             probe: IniProbe::new(None, &[]),
-            extra: vec!["precision".into()],
+            extra: vec!["variables_order".into()],
         };
-        let p = Phpt::parse(b"--INI--\nprecision=10\n--FILE--\n");
-        assert_eq!(rules.test_ini(&p, dir, false).unwrap(), ["precision=10"]);
+        let p = Phpt::parse(b"--INI--\nvariables_order=GPS\n--FILE--\n");
+        assert_eq!(
+            rules.test_ini(&p, dir, false).unwrap(),
+            ["variables_order=GPS"]
+        );
     }
 
     #[test]

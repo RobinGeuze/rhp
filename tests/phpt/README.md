@@ -26,9 +26,17 @@ How it compares, mirroring `run-tests.php`:
   says how many matches came about this way.
 - php gets run-tests' INI overrides and environment (offline,
   non-interactive). Slow and timing-sensitive tests are skipped too.
-- A test whose `--INI--` changes a directive runs only if rhp applies that
-  directive (`RHP_INI` in `crates/rhp-difftest/src/phpt.rs`, e.g. `pcre.jit`);
-  both engines then get the setting.
+- A test's `--INI--` setting that leaves php's effective value as run-tests'
+  defaults have it (`ini_get()`, asked of the php under test once per
+  setting) is a no-op. A setting that changes it runs only if rhp applies
+  the directive (`RHP_INI` in `crates/rhp-difftest/src/phpt.rs`, e.g.
+  `pcre.jit`, `error_reporting`, and every `opcache.*`); both engines then get
+  the setting. `--rhp-ini <directive>` runs the tests a directive blocks, to
+  measure it before adding it.
+- `opcache.enable_cli=1` tests run with opcache on in both engines (rhp has
+  the compiled-script cache, no optimizer and no JIT). Tests that dump
+  opcodes (`opcache.opt_debug_level`) or JIT code (`opcache.jit_debug`), or
+  use the file cache, are skipped with an `opcache:` reason.
 - Each worker has its own copy of the test trees. After every engine run, the
   runner executes `--CLEAN--` and restores the test's directory, so php and rhp
   (and every mutant) start from the same files.

@@ -992,14 +992,15 @@ mod tests {
     }
 
     #[test]
-    fn error_ring_keeps_the_last_sixteen() {
+    fn error_ring_holds_the_last_fifteen() {
         ERRORS.with(|c| c.set(None));
+        // OpenSSL's own queue holds fewer than 16: move it over each time
         for _ in 0..20 {
             let bio = mem_buf(b"garbage");
             let k = backend::pem_read_bio_public_key(bio.p);
             assert!(k.is_null());
+            store_errors();
         }
-        store_errors();
         let mut n = 0;
         let mut host = crate::diag_test::DiagHost::default();
         while let Ok(Value::Str(_)) = fn_error_string(&mut host, &[]) {

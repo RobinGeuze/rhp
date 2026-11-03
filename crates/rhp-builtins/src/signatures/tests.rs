@@ -12,9 +12,9 @@ fn tables_are_sorted_for_lookup() {
         .all(|w| (lc(w[0].class), lc(w[0].name)) < (lc(w[1].class), lc(w[1].name))));
 }
 
-/// Callback functions whose php body requires more arguments than their
-/// arginfo (`array_udiff(): expects at least 2 arguments`); rhp's
-/// registration carries that minimum.
+/// Functions whose php body requires more arguments than their arginfo
+/// (`array_udiff(): expects at least 2 arguments`; openssl_cms_verify's zpp
+/// wants `$flags`); rhp's registration carries that minimum.
 const BODY_MIN: &[&str] = &[
     "array_diff_uassoc",
     "array_diff_ukey",
@@ -26,6 +26,7 @@ const BODY_MIN: &[&str] = &[
     "array_uintersect",
     "array_uintersect_assoc",
     "array_uintersect_uassoc",
+    "openssl_cms_verify",
 ];
 
 /// Parameters php declares that the body does not implement yet: the

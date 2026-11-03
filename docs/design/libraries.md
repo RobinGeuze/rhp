@@ -259,11 +259,12 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   - printf-style callbacks are C functions in the shim that format with
     `vasprintf` (no length limit, like php's `vspprintf`) and hand Rust the
     finished message;
-  - a handle whose free can call back into PHP (an XMLWriter flushing to a
-    stream) is freed in the class's native `dtor_obj`
-    (`rhp_builtins::object_dtor`), which the engine runs with a host before
-    `__destruct`, as php does. The object-free hook has no host; it frees
-    only what php's `dtor_obj` would have skipped.
+  - a library handle lives in its object's payload; one whose free can call
+    back into PHP (an XMLWriter flushing to a stream) is freed by the class's
+    `dtor_obj` handler, which the engine runs with a host before
+    `__destruct`, as php does. The payload's `Drop` (php's `free_obj`) has
+    no host; it frees only what `dtor_obj` would have skipped. See
+    [object-handlers.md](./object-handlers.md).
 - **OpenSSL's library context.** php 8.5 runs ext/openssl in its own
   `OSSL_LIB_CTX` (`openssl.libctx=custom`, the default): one per thread
   (module globals under ZTS), loaded with `CONF_modules_load_file_ex` from

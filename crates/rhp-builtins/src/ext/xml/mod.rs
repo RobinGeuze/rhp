@@ -2,8 +2,11 @@
 //! parser (php's `XML_SAX_IMPL` "libxml"). [`compat`] ports ext/xml/compat.c,
 //! the libxml2 SAX handlers that imitate expat; this module ports
 //! ext/xml/xml.c, the handlers that call PHP and the `xml_*` functions.
-//! The `XMLParser` class is declared in PHP ([`PRELUDE_PHP`]); its state
-//! lives here, keyed by object id, and is freed with the object.
+//! The `XMLParser` class and the `xml_*` functions are declared in PHP
+//! ([`PRELUDE_PHP`]); the functions call [`FUNCTIONS`] through `__xml_fn`,
+//! except the native `xml_parse_into_struct`.
+//! A parser's state lives here, keyed by object id, and is freed with the
+//! object.
 
 mod compat;
 
@@ -15,7 +18,7 @@ use std::rc::{Rc, Weak};
 use rhp_values::{conv, ArrayKey, ObjectData, ObjectHandle, PhpArray, PhpRef, PhpStr, Value};
 
 use crate::ext::libxml::{ffi, sys};
-use crate::ext::zpp::{deref, given_type};
+use crate::ext::zpp::{deref, given_type, long_arg};
 use crate::{Builtin, Host, Thrown};
 
 const XML_MAXLEVEL: i32 = 255;
@@ -715,6 +718,8 @@ fn create(host: &mut dyn Host, args: &[Value], ns_support: bool) -> Result<Value
     }));
     compat::parser_create(&parser, separator);
     PARSERS.with(|m| m.borrow_mut().insert(id, parser));
+    // XMLParser uses zend_objects_not_comparable.
+    rhp_semantics::ops::set_not_comparable_hook(super::not_comparable_object);
     Ok(obj)
 }
 
@@ -1031,6 +1036,8 @@ fn fn_set_object(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 continue;
             }
             if !object_has_method(host, &new_this, &name) {
+                // zend_fcc_dtor ran before the check: the slot stays empty.
+                p.borrow_mut().h[slot] = None;
                 let class = host.object_class_name(&new_this).unwrap_or_default();
                 return Err(crate::ext::zpp::value_error(
                     F,
@@ -1100,6 +1107,10 @@ fn try_array_init(args: &[Value], i: usize) -> PhpRef {
     }
 }
 
+/// Native, unlike the other `xml_*` functions: the VM does not bind a PHP
+/// function's by-reference parameters passed by name, so a wrapper would
+/// drop `values:` and `index:` silently, where a builtin refuses named
+/// arguments.
 fn fn_parse_into_struct(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     const F: &str = "xml_parse_into_struct";
     let p = parser_arg(host, args, 0, F)?;
@@ -1130,8 +1141,8 @@ fn fn_get_error_code(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     Ok(Value::Int(unsafe { sys::rhp_xml_ctxt_errno(ctxt) } as i64))
 }
 
-fn fn_error_string(_host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let code = conv::to_int(&arg(args, 0));
+fn fn_error_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let code = long_arg(host, args, 0, "xml_error_string", "error_code")?;
     Ok(Value::str(compat::error_string(code)))
 }
 
@@ -1204,7 +1215,7 @@ fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Thrown> {
 fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     const F: &str = "xml_parser_set_option";
     let p = parser_arg(host, args, 0, F)?;
-    let opt = conv::to_int(&arg(args, 1));
+    let opt = long_arg(host, args, 1, F, "option")?;
     let value = arg(args, 2);
     if !matches!(value, Value::Bool(_) | Value::Int(_) | Value::Str(_)) {
         let msg = format!(
@@ -1269,8 +1280,9 @@ fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 fn fn_parser_get_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     const F: &str = "xml_parser_get_option";
     let p = parser_arg(host, args, 0, F)?;
+    let opt = long_arg(host, args, 1, F, "option")?;
     let s = p.borrow();
-    Ok(match conv::to_int(&arg(args, 1)) {
+    Ok(match opt {
         OPT_CASE_FOLDING => Value::Bool(s.case_folding),
         OPT_SKIP_TAGSTART => Value::Int(s.toffset as i64),
         OPT_SKIP_WHITE => Value::Bool(s.skipwhite),
@@ -1287,90 +1299,91 @@ fn fn_parser_get_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     })
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("xml_parser_create", fn_parser_create, 0, 1);
-    put("xml_parser_create_ns", fn_parser_create_ns, 0, 2);
-    put("xml_set_object", fn_set_object, 2, 2);
-    put("xml_set_element_handler", fn_set_element_handler, 3, 3);
-    put(
+/// The `xml_*` functions the prelude's PHP wrappers call through `__xml_fn`
+/// (so that named arguments and typed parameters work); all but
+/// `xml_parse_into_struct`.
+const FUNCTIONS: &[(&str, crate::NativeFn)] = &[
+    ("xml_parser_create", fn_parser_create),
+    ("xml_parser_create_ns", fn_parser_create_ns),
+    ("xml_set_object", fn_set_object),
+    ("xml_set_element_handler", fn_set_element_handler),
+    (
         "xml_set_character_data_handler",
         fn_set_character_data_handler,
-        2,
-        2,
-    );
-    put(
+    ),
+    (
         "xml_set_processing_instruction_handler",
         fn_set_processing_instruction_handler,
-        2,
-        2,
-    );
-    put("xml_set_default_handler", fn_set_default_handler, 2, 2);
-    put(
+    ),
+    ("xml_set_default_handler", fn_set_default_handler),
+    (
         "xml_set_unparsed_entity_decl_handler",
         fn_set_unparsed_entity_decl_handler,
-        2,
-        2,
-    );
-    put(
+    ),
+    (
         "xml_set_notation_decl_handler",
         fn_set_notation_decl_handler,
-        2,
-        2,
-    );
-    put(
+    ),
+    (
         "xml_set_external_entity_ref_handler",
         fn_set_external_entity_ref_handler,
-        2,
-        2,
-    );
-    put(
+    ),
+    (
         "xml_set_start_namespace_decl_handler",
         fn_set_start_namespace_decl_handler,
-        2,
-        2,
-    );
-    put(
+    ),
+    (
         "xml_set_end_namespace_decl_handler",
         fn_set_end_namespace_decl_handler,
-        2,
-        2,
-    );
-    put("xml_parse", fn_parse, 2, 3);
-    put("xml_parse_into_struct", fn_parse_into_struct, 3, 4);
-    put("xml_get_error_code", fn_get_error_code, 1, 1);
-    put("xml_error_string", fn_error_string, 1, 1);
-    put(
-        "xml_get_current_line_number",
-        fn_get_current_line_number,
-        1,
-        1,
-    );
-    put(
+    ),
+    ("xml_parse", fn_parse),
+    ("xml_get_error_code", fn_get_error_code),
+    ("xml_error_string", fn_error_string),
+    ("xml_get_current_line_number", fn_get_current_line_number),
+    (
         "xml_get_current_column_number",
         fn_get_current_column_number,
-        1,
-        1,
+    ),
+    ("xml_get_current_byte_index", fn_get_current_byte_index),
+    ("xml_parser_free", fn_parser_free),
+    ("xml_parser_set_option", fn_parser_set_option),
+    ("xml_parser_get_option", fn_parser_get_option),
+];
+
+/// `__xml_fn($function, ...$args)`.
+fn fn_dispatch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = conv::to_string_bytes(&arg(args, 0));
+    let Some(&(_, f)) = FUNCTIONS.iter().find(|(n, _)| n.as_bytes() == name) else {
+        return Err(Thrown::error(
+            "Error",
+            format!(
+                "Call to undefined function {}()",
+                String::from_utf8_lossy(&name)
+            ),
+        ));
+    };
+    f(host, &args[1..])
+}
+
+pub fn register(m: &mut HashMap<&'static str, Builtin>) {
+    m.insert(
+        "__xml_fn",
+        Builtin {
+            name: "__xml_fn",
+            func: fn_dispatch,
+            min_args: 1,
+            max_args: None,
+        },
     );
-    put(
-        "xml_get_current_byte_index",
-        fn_get_current_byte_index,
-        1,
-        1,
+    m.insert(
+        "xml_parse_into_struct",
+        Builtin {
+            name: "xml_parse_into_struct",
+            func: fn_parse_into_struct,
+            min_args: 3,
+            max_args: Some(4),
+        },
     );
-    put("xml_parser_free", fn_parser_free, 1, 1);
-    put("xml_parser_set_option", fn_parser_set_option, 3, 3);
-    put("xml_parser_get_option", fn_parser_get_option, 2, 2);
 }
 
 pub fn constants() -> Vec<(&'static str, Value)> {

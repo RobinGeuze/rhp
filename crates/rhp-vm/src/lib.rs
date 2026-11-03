@@ -417,7 +417,12 @@ impl Host for Vm {
     }
 
     fn caller_strict_types(&self) -> bool {
-        self.caller_strict()
+        // The user code calling the builtin: a prelude wrapper is internal.
+        self.stack
+            .iter()
+            .rev()
+            .find(|f| !is_prelude_proto(&f.proto))
+            .is_some_and(|f| f.proto.strict_types)
     }
 
     fn last_error(&self) -> Option<(i64, Vec<u8>, Vec<u8>, i64)> {

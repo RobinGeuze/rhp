@@ -1,0 +1,59 @@
+-- comparison
+bool(false)
+int(1)
+bool(true)
+bool(true)
+bool(false)
+-- int parameters
+TypeError: xml_error_string(): Argument #1 ($error_code) must be of type int, string given
+E8192: Implicit conversion from float 1.5 to int loses precision
+string(9) "No memory"
+E8192: Implicit conversion from float-string "1.5" to int loses precision
+string(9) "No memory"
+string(22) "Invalid document start"
+string(22) "Invalid document start"
+TypeError: xml_error_string(): Argument #1 ($error_code) must be of type int, string given
+TypeError: xml_error_string(): Argument #1 ($error_code) must be of type int, string given
+E8192: xml_error_string(): Passing null to parameter #1 ($error_code) of type int is deprecated
+string(8) "No error"
+string(9) "No memory"
+string(22) "Invalid document start"
+TypeError: xml_error_string(): Argument #1 ($error_code) must be of type int, float given
+TypeError: xml_error_string(): Argument #1 ($error_code) must be of type int, float given
+TypeError: xml_error_string(): Argument #1 ($error_code) must be of type int, array given
+TypeError: xml_error_string(): Argument #1 ($error_code) must be of type int, stdClass given
+TypeError: xml_parser_set_option(): Argument #2 ($option) must be of type int, string given
+ValueError: xml_parser_set_option(): Argument #2 ($option) must be a XML_OPTION_* constant
+bool(true)
+bool(true)
+E8192: Implicit conversion from float 1.5 to int loses precision
+bool(true)
+E8192: xml_parser_get_option(): Passing null to parameter #2 ($option) of type int is deprecated
+ValueError: xml_parser_get_option(): Argument #2 ($option) must be a XML_OPTION_* constant
+-- named arguments
+bool(true)
+bool(false)
+S u#a
+C t
+int(1)
+int(0)
+string(31) "Not well-formed (invalid token)"
+-- typed parameters
+TypeError: xml_parse(): Argument #2 ($data) must be of type string, array given
+E8192: xml_parse(): Passing null to parameter #2 ($data) of type string is deprecated
+int(1)
+TypeError: xml_parse(): Argument #1 ($parser) must be of type XMLParser, string given
+TypeError: xml_parser_create(): Argument #1 ($encoding) must be of type ?string, array given
+TypeError: xml_set_element_handler(): Argument #1 ($parser) must be of type XMLParser, string given
+TypeError: xml_set_character_data_handler(): Argument #2 ($handler) must be of type callable|string|null
+E8192: Function xml_parser_free() is deprecated since 8.5, as it has no effect since PHP 8.0
+TypeError: xml_parser_free(): Argument #1 ($parser) must be of type XMLParser, string given
+E8192: Function xml_set_object() is deprecated since 8.4, provide a proper method callable to xml_set_*_handler() functions
+TypeError: xml_set_object(): Argument #1 ($parser) must be of type XMLParser, string given
+-- xml_set_object
+E8192: Function xml_set_object() is deprecated since 8.4, provide a proper method callable to xml_set_*_handler() functions
+E8192: xml_set_element_handler(): Passing non-callable strings is deprecated since 8.4
+E8192: Function xml_set_object() is deprecated since 8.4, provide a proper method callable to xml_set_*_handler() functions
+ValueError: xml_set_object(): Argument #2 ($object) cannot safely swap to object of class H2 as method "e" does not exist, which was set via xml_set_element_handler()
+H2::s A
+int(1)

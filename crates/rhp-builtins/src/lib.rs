@@ -115,11 +115,12 @@ pub mod zip_ext;
 pub fn object_freed(id: u32) {
     zip_ext::object_freed(id);
     ext::sockets::object_freed();
+    ext::xml::object_freed(id);
 }
 
 /// The internal opaque-handle classes php declares `@strict-properties` and
 /// `@not-serializable` (`ZEND_ACC_NO_DYNAMIC_PROPERTIES |
-/// ZEND_ACC_NOT_SERIALIZABLE`): `Socket` and the curl handles. Their names
+/// ZEND_ACC_NOT_SERIALIZABLE`): `Socket`, the curl handles and `XMLParser`. Their names
 /// are taken by the prelude, so a user class cannot carry one.
 pub fn is_opaque_handle_class(name: &[u8]) -> bool {
     [
@@ -127,6 +128,7 @@ pub fn is_opaque_handle_class(name: &[u8]) -> bool {
         b"CurlHandle",
         b"CurlMultiHandle",
         b"CurlShareHandle",
+        b"XMLParser",
     ]
     .iter()
     .any(|n| n.eq_ignore_ascii_case(name))
@@ -256,6 +258,12 @@ pub trait Host {
     }
     /// `restore_error_handler`: pop back to the previous error handler.
     fn restore_error_handler(&mut self) {}
+
+    /// Whether the code calling the running builtin declared
+    /// `strict_types=1` (zpp then coerces no scalars). Default: no.
+    fn caller_strict_types(&self) -> bool {
+        false
+    }
 
     /// Inside an `@` region (error_reporting then reads as the fatal mask).
     fn silenced(&self) -> bool {

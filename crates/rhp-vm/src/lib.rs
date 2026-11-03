@@ -416,6 +416,10 @@ impl Host for Vm {
         self.silence > 0
     }
 
+    fn caller_strict_types(&self) -> bool {
+        self.caller_strict()
+    }
+
     fn last_error(&self) -> Option<(i64, Vec<u8>, Vec<u8>, i64)> {
         self.last_error.clone()
     }
@@ -4220,6 +4224,7 @@ impl Vm {
             b"OpenSSLAsymmetricKey",
             b"OpenSSLCertificate",
             b"OpenSSLCertificateSigningRequest",
+            b"XMLParser",
         ];
         if self.class(cls).kind == ClassKind::Enum {
             return true;

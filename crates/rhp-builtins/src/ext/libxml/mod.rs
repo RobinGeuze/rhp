@@ -124,6 +124,7 @@ pub fn reset_state() {
         s.entity_loader_disabled = false;
     });
     thread_init();
+    crate::ext::xml::reset_state();
 }
 
 /// php_libxml_uses_internal_errors

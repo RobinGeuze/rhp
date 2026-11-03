@@ -266,16 +266,26 @@ fn concat_reports_php_sizes_and_stops_at_the_hard_limit() {
     // The result's zend_string size; growing a huge string in place checks
     // only the growth; past twice the limit php-cli exits 137. (Each
     // crossing is on the line of the last call, which php reports.)
-    assert_same(
-        "concat_size",
-        r#"<?php
+    //
+    // php grows a huge block in place only when the address range after it
+    // is free (a fixed mmap on macOS, mremap on Linux). macOS's bottom-up
+    // layout leaves room; Linux's top-down one usually doesn't, so php
+    // copies instead and checks the full size, which can cross the hard
+    // limit earlier. rhp always grows in place, so the sizes, and for
+    // concat_size the outcome, are compared on macOS only.
+    let in_place = cfg!(target_os = "macos");
+    if in_place {
+        assert_same(
+            "concat_size",
+            r#"<?php
 ini_set('memory_limit', '8M');
 $a = str_repeat('a', 3 << 20); $b = $a . $a . $a;
 echo strlen($b), "\n";
 if ($b) { echo "not reached\n"; }
 "#,
-        true,
-    );
+            true,
+        );
+    }
     assert_same(
         "concat_double",
         r#"<?php
@@ -283,7 +293,7 @@ ini_set('memory_limit', '32M');
 $s = str_repeat('x', 1 << 20);
 while (true) $s .= $s;
 "#,
-        true,
+        in_place,
     );
     assert_same(
         "concat_hard",
@@ -293,7 +303,7 @@ ini_set('memory_limit', '32M');
 $a = str_repeat('x', 12 << 20); $b = $a . $a . $a . $a . $a . $a;
 echo strlen($b), "\n";
 "#,
-        true,
+        in_place,
     );
 }
 

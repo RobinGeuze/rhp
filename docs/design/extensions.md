@@ -237,7 +237,7 @@ rug         = { version = "1", optional = true }
 ```
 
 The crate always compiles with zero native libs (today's behavior). A parity
-build opts in with `--features native-all`. `rhp-vm`, `rhp-oracle`, and
+build opts in with `--features native-all`. `rhp-vm`, `rhp-sapi` and
 `rhp-cli` forward the feature (`rhp-vm/native-pcre2 =
 ["rhp-builtins/native-pcre2"]`) so a single top-level flag selects the build.
 
@@ -304,8 +304,7 @@ the native backend subordinate to it:
    asserts fancy-vs-pcre2 agree on a corpus (and both agree with php). Where
    they *cannot* agree (the fancy-regex limitations list), the fixture is a
    "native-only" case: gate it `#[cfg(feature = "native-pcre2")]` so the
-   pure-Rust build legitimately skips it rather than failing — analogous to how
-   the oracle *skips* features it doesn't implement (`diff.rs:100-101`).
+   pure-Rust build legitimately skips it rather than failing.
 3. **Capture provenance.** Record, next to the goldens, the exact lib versions
    PHP used (PCRE, ICU, JSON — from `PCRE_VERSION`,
    `INTL_ICU_VERSION`; now `crates/rhp-builtins/src/version.rs`, checked by
@@ -364,8 +363,7 @@ builtins are stateless `fn`s, so this is the one piece that needs a home.
 Cleanest fit: a **new defaulted `Host` method pair**
 (`set_json_last_error(code)` / `json_last_error() -> i64`), mirroring the
 existing `define_const`/`get_const` pattern (`lib.rs:55-63`). The VM stores a
-single `i64` in request state; the oracle can store it too or refuse
-`json_last_error` (harness then skips it, per `diff.rs:100`). `JSON_THROW_ON_ERROR`
+single `i64` in request state. `JSON_THROW_ON_ERROR`
 returns `Err(Thrown::Object(...))` built from the prelude's `JsonException`.
 
 ### Test plan
@@ -620,7 +618,7 @@ pulled in: `ZEND_SET_ALIGNED`, `zend_string`, `zend_string_safe_alloc`,
   marshals `return_value` back to an owned `Value` and frees the arena. All state
   is thread-local.
 - **Feature gating:** `rhp-builtins/zendshim` → `rhp-zendshim`; forwarded
-  up through `rhp-vm`, `rhp-oracle`, `rhp-cli`. Builtins register as
+  up through `rhp-vm`, `rhp-sapi` and `rhp-cli`. Builtins register as
   `__zendshim_demo` / `__zendshim_bin2hex` (prefixed, so they never shadow the
   pure-Rust builtins and can be diffed against them).
 

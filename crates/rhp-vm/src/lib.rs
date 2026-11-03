@@ -2,13 +2,8 @@
 //!
 //! Executes a `rhp_bytecode::Program`. Every arithmetic/compare/concat/cast
 //! opcode is a thin wrapper over the verified `rhp_semantics::ops` / value
-//! `conv` functions, and calls go through `rhp_builtins` — so the VM and the
-//! tree-walking oracle are semantically identical by construction, and any
-//! differential mismatch localizes to a compiler-lowering bug (spec §2.3).
-//!
-//! Phase-1 scope: a single `{main}` frame, builtin calls, no user functions /
-//! exceptions yet (the explicit call stack + exception table are in place for
-//! those phases).
+//! `conv` functions, and calls go through `rhp_builtins`, so operator and
+//! builtin semantics live in one place shared with the rest of the engine.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -727,14 +722,6 @@ impl Host for Vm {
             .find(|f| !f.is_empty())
             .map(|f| f.to_vec())
             .or_else(|| self.main_script_path.clone())
-    }
-
-    fn has_streams(&self) -> bool {
-        true
-    }
-
-    fn supports_signals(&self) -> bool {
-        true
     }
 
     fn stream_open(&mut self, path: &[u8], mode: &[u8]) -> Option<Value> {

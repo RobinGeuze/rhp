@@ -1,17 +1,12 @@
-//! Differential golden test. The **VM** is held strictly to the committed
-//! `NAME.out` (captured from the reference php, see `rhp_builtins::version`)
-//! on every fixture. The tree-walking
-//! **oracle** is a secondary, php-free cross-check: it is held to the same
-//! output on every fixture it supports, and simply *skips* fixtures that use
-//! features it doesn't implement (it reports them as `Thrown::Unsupported`).
-//! This lets the VM lead on advanced features (references, …) while the oracle
-//! keeps guarding the shared core.
+//! Golden test: the VM is held strictly to the committed `NAME.out`
+//! (captured from the reference php, see `rhp_builtins::version`) on every
+//! fixture in `tests/golden`. It needs no php binary, so it also runs in the
+//! php-free CI job.
 
 use std::path::PathBuf;
 
 use rhp_compiler::{compile_include, compile_with_source};
 use rhp_frontend::Arena;
-use rhp_oracle::Interp;
 use rhp_values::Thrown;
 use rhp_vm::{IncludeError, Vm};
 
@@ -41,15 +36,6 @@ fn run_vm(source: &[u8], name: &str) -> Result<Vec<u8>, Thrown> {
     // output-buffer flush.
     vm.run_main(&program)?;
     Ok(vm.output().to_vec())
-}
-
-fn run_oracle(source: &[u8], name: &str) -> Result<Vec<u8>, Thrown> {
-    let arena = Arena::new();
-    let parsed = arena.parse(name.as_bytes(), source);
-    assert!(!parsed.has_parse_errors(), "{name}: unexpected parse error");
-    let mut interp = Interp::new();
-    interp.run(parsed.program())?;
-    Ok(interp.output().to_vec())
 }
 
 fn cases() -> Vec<PathBuf> {
@@ -94,54 +80,6 @@ fn vm_matches_php_baseline() {
     assert!(
         failures.is_empty(),
         "[VM] {} failure(s):\n{}",
-        failures.len(),
-        failures.join("\n")
-    );
-}
-
-/// The oracle must match php on every fixture it supports; unsupported ones skip.
-#[test]
-fn oracle_matches_php_on_supported() {
-    let cases = cases();
-    let mut passed = 0;
-    let mut skipped = 0;
-    let mut failures = Vec::new();
-    for php in &cases {
-        let name = php.file_stem().unwrap().to_string_lossy().into_owned();
-        let Ok(expected) = std::fs::read(php.with_extension("out")) else {
-            continue;
-        };
-        let source = std::fs::read(php).expect("read php");
-        let file = php.to_string_lossy().into_owned();
-        match std::panic::catch_unwind(|| run_oracle(&source, &file)) {
-            Ok(Ok(actual)) if actual == expected => passed += 1,
-            Ok(Ok(actual)) => failures.push(format!(
-                "{name}: MISMATCH\n  expected: {:?}\n  actual:   {:?}",
-                String::from_utf8_lossy(&expected),
-                String::from_utf8_lossy(&actual),
-            )),
-            // Features the oracle doesn't implement are skipped, not failed.
-            Ok(Err(Thrown::Unsupported { .. })) => skipped += 1,
-            // The oracle has no uncaught-throwable renderer (the VM's
-            // `run_main` does that): fixtures ending in one are VM-only.
-            Ok(Err(Thrown::Error { .. } | Thrown::Object(_)))
-                if expected
-                    .windows(22)
-                    .any(|w| w == b"\nFatal error: Uncaught") =>
-            {
-                skipped += 1
-            }
-            Ok(Err(e)) => failures.push(format!("{name}: oracle error: {e:?}")),
-            Err(_) => failures.push(format!("{name}: panicked")),
-        }
-    }
-    eprintln!(
-        "[oracle] golden: {passed}/{} passed, {skipped} skipped (unsupported)",
-        cases.len()
-    );
-    assert!(
-        failures.is_empty(),
-        "[oracle] {} failure(s):\n{}",
         failures.len(),
         failures.join("\n")
     );

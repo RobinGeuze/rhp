@@ -358,9 +358,9 @@ pub struct ArrayData {
     pub entries: IndexMap<ArrayKey, Value, FxBuildHasher>,
     /// Next integer index for `$a[] = ...`. `None` = no int key ever inserted
     /// (fresh append is 0). High-water mark; never lowered by `unset`.
-    pub next_int: Option<i64>,
+    next_int: Option<i64>,
     /// True once an append would overflow i64 (next element already occupied).
-    pub append_disabled: bool,
+    append_disabled: bool,
     /// Internal pointer for `current`/`next`/`prev`/`end`/`reset`/`key`.
     pub pos: usize,
 }
@@ -461,10 +461,6 @@ impl PhpArray {
     /// The (key, value) at insertion position `i` (for `foreach` iteration).
     pub fn get_index(&self, i: usize) -> Option<(&ArrayKey, &Value)> {
         self.0.entries.get_index(i)
-    }
-
-    pub fn next_int(&self) -> Option<i64> {
-        self.0.next_int
     }
 
     /// COW mutable access to the backing buffer.

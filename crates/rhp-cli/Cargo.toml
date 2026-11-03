@@ -11,7 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 rhp-sapi = { path = "../rhp-sapi" }
-rhp-oracle = { path = "../rhp-oracle" }
+
+[dev-dependencies]
 rhp-compiler = { path = "../rhp-compiler" }
 rhp-vm = { path = "../rhp-vm" }
 rhp-frontend = { path = "../rhp-frontend" }

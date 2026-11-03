@@ -447,12 +447,6 @@ fn fn_signal(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             value_name(&handler)
         )));
     }
-    if !host.supports_signals() {
-        return Err(Thrown::unsupported(
-            "pcntl_signal",
-            "signal delivery to PHP callbacks needs the VM",
-        ));
-    }
     let queue_handler = signal_handler
         as extern "C" fn(i32, *mut libc::siginfo_t, *mut libc::c_void)
         as libc::sighandler_t;

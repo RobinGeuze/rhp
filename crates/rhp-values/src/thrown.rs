@@ -1,6 +1,6 @@
 //! The interpreter's unwinding type, at the leaf of the crate graph so that
-//! `rhp-semantics` (operators), `rhp-builtins`, and both execution tiers
-//! can all return `Result<_, Thrown>` without a dependency cycle.
+//! `rhp-semantics` (operators), `rhp-builtins`, the compiler and the VM can
+//! all return `Result<_, Thrown>` without a dependency cycle.
 
 /// Unwinds the interpreter: a real PHP `Throwable`, an engine refusal for an
 /// unsupported high-risk feature, or `exit`/`die`.

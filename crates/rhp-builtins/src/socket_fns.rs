@@ -90,16 +90,6 @@ fn zpp_double_or_null(
     })
 }
 
-/// Socket streams live in the VM; a host without stream resources (the
-/// oracle) reports them unsupported.
-fn need_streams(host: &dyn Host, fname: &str) -> Result<(), Thrown> {
-    if host.has_streams() {
-        Ok(())
-    } else {
-        Err(Thrown::unsupported(fname, "socket streams need the VM"))
-    }
-}
-
 /// php's timeout double → timeval (`None` when negative or too large).
 fn timeout_tv(t: f64) -> Tv {
     if t < 0.0 || t >= u64::MAX as f64 / 1_000_000.0 {
@@ -890,7 +880,6 @@ fn persistent_lookup(host: &mut dyn Host, key: &[u8]) -> Option<Value> {
 
 fn fn_stream_socket_server(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "stream_socket_server";
-    need_streams(host, fname)?;
     let address = zpp_string(host, args, 0, fname, "address")?;
     let flags = match args.get(3) {
         Some(_) => zpp_long(host, args, 3, fname, "flags")?,
@@ -957,7 +946,6 @@ fn addslashes(s: &[u8]) -> String {
 
 fn fn_stream_socket_client(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "stream_socket_client";
-    need_streams(host, fname)?;
     let address = zpp_string(host, args, 0, fname, "address")?;
     let timeout = match zpp_double_or_null(host, args, 3, fname, "timeout")? {
         None => default_socket_timeout(host) as f64,
@@ -1027,7 +1015,6 @@ fn fn_stream_socket_client(host: &mut dyn Host, args: &[Value]) -> Result<Value,
 
 fn fsockopen_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
     let persistent = fname == "pfsockopen";
-    need_streams(host, fname)?;
     let hostname = zpp_string(host, args, 0, fname, "hostname")?;
     let port = match args.get(1) {
         Some(_) => zpp_long(host, args, 1, fname, "port")?,
@@ -1207,7 +1194,6 @@ fn fn_stream_socket_shutdown(host: &mut dyn Host, args: &[Value]) -> Result<Valu
 
 fn fn_stream_socket_pair(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "stream_socket_pair";
-    need_streams(host, fname)?;
     let domain = zpp_long(host, args, 0, fname, "domain")?;
     let ty = zpp_long(host, args, 1, fname, "type")?;
     let proto = zpp_long(host, args, 2, fname, "protocol")?;

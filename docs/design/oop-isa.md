@@ -10,10 +10,8 @@ opcodes that §2.4 of that doc deferred ("`New`, `FetchProp`/`AssignProp`,
 `bytecode.md` still holds; this doc only *adds* variants and side tables, it
 changes none.
 
-**The oracle is frozen and skips OOP fixtures: OOP is VM-only.** There is no
-tree-walker parity net here, so the differential gate is `php ⟷ vm` alone
-(`bytecode.md` §6). That raises the bar on getting the semantics right the first
-time, hence the probes inline.
+**The differential gate is `php ⟷ vm` alone** (`bytecode.md` §6). That raises
+the bar on getting the semantics right the first time, hence the probes inline.
 
 Read first and reused verbatim: [`value-model.md`](./value-model.md) §5 (the
 `ObjectData`/`ObjectHandle` model — **objects are handle types**,

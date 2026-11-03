@@ -8,11 +8,9 @@
 //! [`Parsed`] whose lifetime is tied to it. The borrow checker then guarantees
 //! the AST cannot outlive the arena — no `unsafe` anywhere.
 //!
-//! This is sound *and* sufficient because both execution tiers consume the AST
-//! within a single scope: the bytecode compiler turns it into **owned**
-//! `rhp_bytecode` (no `'arena` borrow escapes), and the tree-walking oracle
-//! finishes its run before the arena drops. Only owned `Value`s / output bytes
-//! ever leave the scope.
+//! This is sound *and* sufficient because the AST is consumed within a single
+//! scope: the bytecode compiler turns it into **owned** `rhp_bytecode` (no
+//! `'arena` borrow escapes) before the arena drops.
 
 use mago_allocator::LocalArena;
 use mago_database::file::FileId;

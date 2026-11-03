@@ -150,7 +150,6 @@ thread_local! {
     static INI: RefCell<HashMap<String, Option<Vec<u8>>>> = RefCell::new(HashMap::new());
 }
 
-/// Reset this module's per-request state (a new Vm / Interp).
 /// Diagnostics of startup (`-d`) ini values, and of re-applying them when a
 /// runtime change is undone at request end (`zend_ini_deactivate`).
 #[derive(Default)]
@@ -203,6 +202,7 @@ pub fn take_shutdown_diagnostics() -> Vec<String> {
     })
 }
 
+/// Reset this module's per-request state (a new Vm).
 pub(crate) fn reset_state() {
     INI.with(|m| m.borrow_mut().clear());
     STARTUP_DIAGS.with(|d| *d.borrow_mut() = StartupDiags::default());

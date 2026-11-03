@@ -1,5 +1,17 @@
 # rhp — implementation spec (scaffold contract)
 
+> **Historical document — not the current design.** This is the original
+> scaffold contract for rhp's first engine, a tree-walking interpreter in an
+> `rhp-runtime` crate. When the bytecode compiler + VM replaced it, the
+> tree-walker was kept for a while as a differential "oracle", then removed
+> (2026-11). Nothing below is authoritative any more: the crate layout, the
+> `Interp` type and the refusal list (`include`/`require` and `eval` now run)
+> are all out of date. For the current design read the project
+> [README](../../README.md), [`bytecode.md`](./bytecode.md) (compiler + VM),
+> [`sapi.md`](./sapi.md) (request layer), [`extensions.md`](./extensions.md)
+> and, for exact php behaviour, [`php-semantics.md`](./php-semantics.md) and
+> [`value-model.md`](./value-model.md).
+
 rhp is a PHP execution engine in Rust: a tree-walking interpreter over the
 mago-syntax CST with a CLI SAPI, targeting **PHP 8.5 semantics** (ground truth:
 the reference `php`, 8.5.12 — see `crates/rhp-builtins/src/version.rs`). This document is the single authoritative build contract. It

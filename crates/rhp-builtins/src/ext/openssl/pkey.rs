@@ -424,7 +424,7 @@ fn is_key_object(host: &dyn Host, v: &Value) -> bool {
 
 fn wrap_key(host: &mut dyn Host, key: Rc<PubKey>) -> Result<Value, Thrown> {
     let Some(obj) = host.instantiate(b"OpenSSLAsymmetricKey", Vec::new()) else {
-        // a host without native object construction (the oracle)
+        // a host without native object construction (a unit-test host)
         return Err(Thrown::unsupported(
             "OpenSSLAsymmetricKey",
             "host cannot instantiate internal classes",

@@ -14,7 +14,7 @@
 //! (round-to-N vs. shortest).
 //!
 //! These are pure numeric→bytes helpers (no PHP value logic), kept here so both
-//! the VM, the oracle (echo), and `rhp-builtins` (var_dump) can share them.
+//! the VM (echo) and `rhp-builtins` (var_dump) can share them.
 
 use std::cell::Cell;
 

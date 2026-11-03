@@ -3,8 +3,7 @@
 Status: design, execution core (register bytecode compiler + VM). Target
 semantics: PHP 8.5 (ground truth: the reference `php`, see `crates/rhp-builtins/src/version.rs`; probed on 8.5.8). This document fixes the
 **instruction set, chunk format, register model, and lowering patterns** for the
-primary execution engine. The tiny tree-walker in `rhp-runtime/src/lib.rs`
-survives only as a differential oracle; this ISA is what actually runs.
+execution engine.
 
 Read first (this doc assumes them and reuses them verbatim):
 
@@ -278,7 +277,7 @@ NOT   dst, a      — Bool(!conv::to_bool(deref(a)))
 ```
 CAST_INT    dst, a — Int(conv::to_int(a))          CAST_FLOAT dst, a — Float(conv::to_float(a))
 CAST_STRING dst, a — Str(conv::to_string_bytes(a)) CAST_BOOL  dst, a — Bool(conv::to_bool(a))
-CAST_ARRAY  dst, a — (array) cast (scalar→1-elem, null→[], array→self; see tree-walker `cast_to_array`)
+CAST_ARRAY  dst, a — (array) cast (scalar→1-elem, null→[], array→self; see `rhp_semantics::cast_to_array`)
 ```
 
 `(object)` is phase 7. `(unset)`/`(real)`/`(void)` have **no opcode** — the

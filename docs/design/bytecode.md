@@ -6,6 +6,13 @@ register-based bytecode compiler + VM that becomes rhp's primary execution
 core. Where the four research docs disagree, **this doc wins**; their resolved
 decisions are folded in and the losing alternatives are noted inline.
 
+> **Historical note (2026-11).** This spec planned two tiers: the VM and the
+> old tree-walker, kept as a differential *oracle* (`rhp-oracle`). The oracle
+> has since been removed and the VM is rhp's only engine. The oracle mentions
+> left below (the §1 crate table and graph, §2.3, §2.5, §4, the §7 migration
+> steps) record the design as planned and executed; §6 and §8 item 10 describe
+> the test setup as it is today.
+
 Synthesizes: [`isa.md`](./isa.md) (instruction set), [`vm.md`](./vm.md) (VM
 runtime), [`bytecode-prior-art.md`](./bytecode-prior-art.md) (Zend/Lua lessons),
 [`reorg.md`](./reorg.md) (crate layout + migration). Read first and reused
@@ -670,40 +677,29 @@ try/catch/finally (exception_table: {[Ltry,Lend)->catch Lcatch, finally Lfin}):
 
 ---
 
-## 6. Differential harness (`rhp-cli`)
+## 6. Differential harness
 
-Both tiers expose the **same entrypoint shape** so the runner can diff
-php ⟷ vm ⟷ oracle on identical inputs, byte-exact stdout + exit code.
+> **Changed since this spec was written.** The original plan diffed three
+> engines (php ⟷ vm ⟷ the tree-walking oracle) through a shared `Engine`
+> trait, with the oracle as a php-free cross-check on the subset it covered.
+> The VM went on to hold every golden by itself, and the oracle was removed
+> (2026-11). This section describes the harness as it is now.
 
-```rust
-pub struct Outcome { pub stdout: Vec<u8>, pub exit: i32, pub error: Option<Thrown> }
-
-pub trait Engine { fn execute(pf: &ParsedFile) -> Outcome; }   // implemented by BOTH Vm and the oracle Interp
-
-impl Engine for Vm {
-    fn execute(pf: &ParsedFile) -> Outcome {
-        let prog = match rhp_compiler::compile(pf) {
-            Ok(p)  => p,
-            Err(t) => return Outcome { stdout: Vec::new(), exit: 255, error: Some(t) },  // compile-time refusal
-        };
-        let mut vm = Vm::new();
-        let r = vm.run(&prog);
-        finish(vm.output().to_vec(), r)    // → Outcome (exit code + optional error)
-    }
-}
-impl Engine for Interp { /* wraps the existing tree-walker run(&ParsedFile) */ }
-```
-
-Runner (`rhp-cli/src/runner.rs`, a `#[test]` / xtask): glob
-`tests/golden/*.php` (21 today; also `.phpt`), and for each produce three
-`Outcome`s — real `php` 8.5.8 via `Command::new("php")`, `Vm::execute`,
-`Interp::execute`. **Product gate:** `php.stdout == vm.stdout && php.exit ==
-vm.exit`. **Cross-check (php-free):** `oracle.stdout == vm.stdout` on the
-oracle's covered subset — because operators/builtins are *shared code* (§2.3),
-the oracle is an independent check of exactly the compiler + VM loop, where the
-bugs live. A mismatch reports the fixture, the first differing byte offset, and
-all three streams. `.phpt` parses `--TEST--/--FILE--/--EXPECT[F]--`; refused-
-feature cases assert the `RHP_UNSUPPORTED` marker instead of a byte match.
+- **Goldens** (`tests/golden/NAME.php` + `NAME.out`). `NAME.out` is the exact
+  stdout the reference `php` printed for the fixture.
+  `crates/rhp-cli/tests/diff.rs` (`vm_matches_php_baseline`) compiles every
+  fixture, runs it on the VM the way the CLI does (include/eval via the CLI
+  includer; `run_main`'s uncaught-throwable report, shutdown functions and
+  output flush), and requires byte-identical output. It needs no `php` binary,
+  so it also runs in the "test (no php)" CI job.
+- **Live php diffs.** The built `rhp` and a real `php` / `php-cgi` run the same
+  input and their outputs are compared byte for byte: the `rhp-cli` tests that
+  shell out (argv, stdin, multi-file includes, exit codes, CGI; they skip when
+  no `php` is on `PATH`), and `rhp-difftest` (the php-src `.phpt` corpus with
+  its known-passing ratchet in `tests/phpt/`, fixture apps, extension sweeps).
+- **Refusals** have no php output to compare against, so their tests
+  (`crates/rhp-cli/tests/unsupported.rs`) assert the `RHP_UNSUPPORTED` marker
+  instead.
 
 ---
 
@@ -793,7 +789,7 @@ unaffected); 5–10 build the VM path and wire the runner.
    one explicit terminator per basic block. Never bury an opcode's semantics in
    the loop such that a helper can't be extracted — the JIT calls the same
    `ops::`/`NativeFn` on cold paths.
-10. **Oracle parity is the regression net.** Because operators/builtins are
-    shared, vm≠oracle on the covered subset *always* means a compiler/VM-loop bug;
-    keep the oracle running green on every golden so a VM regression is caught
-    without needing the `php` binary.
+10. **The goldens are the regression net.** Every `tests/golden/*.out` is php's
+    own output, and the VM is held to all of them without needing the `php`
+    binary (§6), so a VM regression fails CI even where no php is installed.
+    Keep every golden green, and add a fixture alongside each fix.

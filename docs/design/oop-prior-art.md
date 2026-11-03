@@ -1,7 +1,7 @@
 # rhp OOP — prior art on object models + method dispatch
 
 Status: **design input** for the OOP phase (bytecode.md "phase 7"). Target
-semantics: PHP 8.5 (ground truth: local `php` 8.5.8, probed inline below). This
+semantics: PHP 8.5 (ground truth: the reference `php` (see `crates/rhp-builtins/src/version.rs`), probed inline below on 8.5.8). This
 doc surveys how Zend (PHP's own engine) and V8 model objects and dispatch
 methods, then distills a concrete, rhp-shaped first cut. It does not change
 the ISA: OOP keeps "the same encoding and calling convention" promised in

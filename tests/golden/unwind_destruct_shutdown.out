@@ -1,0 +1,10 @@
+end
+shutdown fn
+dtor main
+dtor inner
+
+Fatal error: Uncaught Exception: from inner in F:15
+Stack trace:
+#0 [internal function]: C->__destruct()
+#1 {main}
+  thrown in F on line 15

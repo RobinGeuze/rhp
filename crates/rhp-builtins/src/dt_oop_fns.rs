@@ -670,11 +670,37 @@ fn trim_left(b: &[u8]) -> &[u8] {
     &b[s..]
 }
 
+/// timelib's `TIMELIB_ERR_EMPTY_STRING`, as php's DateMalformedStringException
+/// message ends for it: the string is empty once C `isspace` bytes are
+/// trimmed (timelib 2022.17, php 8.5.9+: whitespace-only strings too).
+const EMPTY_STRING_ERROR: &[u8] = b" at position 0 ( ): Empty string";
+
+/// Nothing but C `isspace` bytes (or nothing at all).
+fn is_blank(s: &[u8]) -> bool {
+    s.iter()
+        .all(|&b| matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'))
+}
+
+/// A failed parse: `[false]`, or `[false, suffix]` when the error is known
+/// (the prelude appends it to "Failed to parse time string (…)").
+fn parse_failure(known: Option<&[u8]>) -> Value {
+    let mut v = vec![Value::Bool(false)];
+    if let Some(m) = known {
+        v.push(Value::str(m.to_vec()));
+    }
+    list(v)
+}
+
 fn fn_dt_parse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = arg_str(args, 0);
     let now_sec = arg_int(args, 1);
     let now_us = arg_int(args, 2);
     let default_off = arg_int(args, 3);
+    // An empty string is "now" (php_date_initialize); a whitespace-only one
+    // is timelib's "Empty string" error.
+    if !s.is_empty() && is_blank(&s) {
+        return Ok(parse_failure(Some(EMPTY_STRING_ERROR)));
+    }
     match parse_datetime(&s, now_sec, now_us, default_off) {
         Some((ts, us, off, zname)) => Ok(list(vec![
             Value::Bool(true),
@@ -780,13 +806,16 @@ fn fn_dt_modify(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let us = arg_int(args, 1);
     let off = arg_int(args, 2);
     let s = arg_str(args, 3);
+    if is_blank(&s) {
+        return Ok(parse_failure(Some(EMPTY_STRING_ERROR)));
+    }
     match apply_modify(ts, us, off, &s) {
         Some((ts, us)) => Ok(list(vec![
             Value::Bool(true),
             Value::Int(ts),
             Value::Int(us),
         ])),
-        None => Ok(list(vec![Value::Bool(false)])),
+        None => Ok(parse_failure(None)),
     }
 }
 

@@ -61,7 +61,10 @@ type Includer = Box<dyn FnMut(&str, &[u8]) -> Result<Program, IncludeError>>;
 pub enum IncludeError {
     /// A syntax error: becomes a catchable `ParseError` at (file, `line`).
     Parse { message: String, line: u32 },
-    /// Anything else (a compile-time Error, an unsupported construct, …).
+    /// A compile error (E_COMPILE_ERROR) at `line`: a fatal error, not an
+    /// exception — the request bails out (shutdown functions still run).
+    Compile { message: String, line: u32 },
+    /// Anything else (an unsupported construct, …).
     Thrown(Thrown),
 }
 
@@ -4581,7 +4584,12 @@ impl Vm {
             } else {
                 // Only php-cli defines the standard stream constants (web
                 // code tests `defined('STDIN')` to detect a console).
-                for k in [&b"STDIN"[..], b"STDOUT", b"STDERR"] {
+                for k in [
+                    &b"STDIN"[..],
+                    b"STDOUT",
+                    b"STDERR",
+                    b"PHP_CLI_PROCESS_TITLE",
+                ] {
                     self.constants.remove(k);
                 }
             }
@@ -6264,21 +6272,27 @@ impl Vm {
             match self.run_frames() {
                 Ok(v) => return Ok(v),
                 Err(thrown) => {
-                    if !thrown.is_catchable() {
-                        // Exit / Unsupported: straight to the SAPI (keeping
-                        // {main}'s globals for the shutdown sequence). A
-                        // refusal raised by a builtin is located first.
-                        let thrown = self.locate_unsupported(thrown);
-                        self.stack.truncate(1);
-                        if let Some(main) = self.stack.pop() {
-                            self.finished_main = Some(main);
+                    // An `exit` in a destructor run while unwinding ends the
+                    // request like any other exit.
+                    let thrown = if thrown.is_catchable() {
+                        match self.unwind(thrown, 0) {
+                            Ok(UnwindResult::Caught) => continue, // handler installed; re-enter
+                            Ok(UnwindResult::Escaped(t)) => return Err(t), // uncaught
+                            Err(t) if t.is_catchable() => return Err(t),
+                            Err(t) => t,
                         }
-                        return Err(thrown);
+                    } else {
+                        thrown
+                    };
+                    // Exit / Unsupported: straight to the SAPI (keeping
+                    // {main}'s globals for the shutdown sequence). A
+                    // refusal raised by a builtin is located first.
+                    let thrown = self.locate_unsupported(thrown);
+                    self.stack.truncate(1);
+                    if let Some(main) = self.stack.pop() {
+                        self.finished_main = Some(main);
                     }
-                    match self.unwind(thrown, 0)? {
-                        UnwindResult::Caught => {}                 // handler installed; re-enter
-                        UnwindResult::Escaped(t) => return Err(t), // uncaught
-                    }
+                    return Err(thrown);
                 }
             }
         }
@@ -7613,6 +7627,22 @@ impl Vm {
                             continue;
                         }
                     }
+                    // zend_std_has_dimension: an object without ArrayAccess
+                    // throws (like empty() and `??` already do).
+                    let cls_name = match deref(&a) {
+                        Value::Object(h) => Some(self.class(h.borrow().class).name.clone()),
+                        Value::Closure(_) => Some(PhpStr::from("Closure")),
+                        _ => None,
+                    };
+                    if let Some(n) = cls_name {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Cannot use object of type {} as array",
+                                String::from_utf8_lossy(n.as_bytes())
+                            ),
+                        ));
+                    }
                     self.reg_set(top, dst, Value::Bool(isset_dim(&a, &k)));
                 }
                 Instr::IssetProp { dst, obj, name } => {
@@ -8255,7 +8285,7 @@ impl Vm {
     fn unwind(&mut self, thrown: Thrown, floor: usize) -> Result<UnwindResult, Thrown> {
         // An engine error becomes a real object here, before any frame is popped,
         // so its file/line/trace describe the throw point.
-        let thrown = self.materialize(thrown, None);
+        let mut thrown = self.materialize(thrown, None);
         loop {
             if self.stack.len() <= floor {
                 return Ok(UnwindResult::Escaped(thrown)); // escaped the (sub)run
@@ -8327,6 +8357,28 @@ impl Vm {
             if self.stack.is_empty() && floor == 0 {
                 // An uncaught exception left {main}: keep its globals.
                 self.finished_main = popped;
+                continue;
+            }
+            // zend_leave_helper: the frame's variables are freed before the
+            // caller handles the exception, so its locals are destructed
+            // ahead of the caller's catch / finally.
+            drop(popped);
+            if let Err(e) = self.collect_released() {
+                if !e.is_catchable() {
+                    // `exit` in such a destructor discards the exception.
+                    return Err(e);
+                }
+                // A destructor threw: the new exception carries on, with the
+                // unwinding one as its innermost previous — unless no php
+                // frame is left below (a destructor or callback run from
+                // shutdown): php frees a top call's variables after
+                // restoring the NULL execute_data, so the new exception is
+                // reported on its own and the unwinding one is dropped.
+                let e = self.materialize(e, None);
+                if !self.stack.is_empty() && !self.no_code_running() {
+                    self.chain_previous(&e, thrown);
+                }
+                thrown = e;
             }
         }
     }
@@ -8528,11 +8580,33 @@ impl Vm {
         match compiled {
             Ok(p) => Ok(p),
             Err(IncludeError::Thrown(t)) => Err(t),
+            Err(IncludeError::Compile { message, line }) => {
+                self.compile_error(&message, file.as_bytes(), line);
+                Err(Thrown::Exit(255))
+            }
             Err(IncludeError::Parse { message, line }) => Err(self.materialize(
                 Thrown::error("ParseError", message),
                 Some((file.as_bytes().to_vec(), line)),
             )),
         }
+    }
+
+    /// php_error_cb for an E_COMPILE_ERROR at `file:line`: recorded for
+    /// error_get_last(), displayed with php 8.5's backtrace (the frames
+    /// running the include/eval, `#0 {main}` for the main script), and
+    /// objects are no longer destructed. The caller bails out (exit 255).
+    pub fn compile_error(&mut self, message: &str, file: &[u8], line: u32) {
+        let backtraces = self.ini_get(b"fatal_error_backtraces").unwrap_or_default();
+        let trace = if ini_bool(&backtraces) {
+            let trace = Value::Array(self.build_trace_ex(false, false));
+            builtins::php_fns::trace_to_string(self, &trace)
+        } else {
+            Vec::new()
+        };
+        let line = line as i64;
+        self.last_error = Some((64, message.as_bytes().to_vec(), file.to_vec(), line));
+        self.display_error_trace(64, "Fatal error", message.as_bytes(), file, line, &trace);
+        self.destructibles.clear();
     }
 
     /// The main script failed to parse: php reports `Parse error: …` through

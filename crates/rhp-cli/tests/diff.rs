@@ -1,6 +1,7 @@
 //! Golden test: the VM is held strictly to the committed `NAME.out`
-//! (captured from php 8.5.8) on every fixture in `tests/golden`. It needs no
-//! php binary, so it also runs in the php-free CI job.
+//! (captured from the reference php, see `rhp_builtins::version`) on every
+//! fixture in `tests/golden`. It needs no php binary, so it also runs in the
+//! php-free CI job.
 
 use std::path::PathBuf;
 
@@ -29,7 +30,7 @@ fn run_vm(source: &[u8], name: &str) -> Result<Vec<u8>, Thrown> {
         if let Some((message, line)) = parsed.parse_error() {
             return Err(IncludeError::Parse { message, line });
         }
-        Ok(compile_include(parsed.program(), src, file)?)
+        compile_include(parsed.program(), src, file).map_err(rhp_sapi::include_error)
     });
     // The whole CLI request: uncaught-throwable report, shutdown functions,
     // output-buffer flush.

@@ -1,7 +1,7 @@
 # rhp bytecode ISA — the register VM core
 
 Status: design, execution core (register bytecode compiler + VM). Target
-semantics: PHP 8.5 (ground truth: local `php` 8.5.8). This document fixes the
+semantics: PHP 8.5 (ground truth: the reference `php`, see `crates/rhp-builtins/src/version.rs`; probed on 8.5.8). This document fixes the
 **instruction set, chunk format, register model, and lowering patterns** for the
 execution engine.
 

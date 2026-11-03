@@ -3,7 +3,8 @@
 **Status:** design / research. No engine behavior changes here.
 **Question:** can `rhp` reuse native C code to get byte-exact PHP behavior with
 less reimplementation, and if so, *which* native code and *how*?
-**Ground truth:** local `php` 8.5.8, PCRE 10.47 (2025-10-21), bundled `ext/json` 8.5.8.
+**Ground truth:** the reference `php` (8.5.12, PCRE 10.49 2026-09-28; every
+version is in `crates/rhp-builtins/src/version.rs`). Written against 8.5.8 / PCRE 10.47.
 
 This doc distinguishes three very different things that all get called
 "extensions", gives a verdict on each, then proposes a concrete
@@ -149,7 +150,7 @@ wrapper logic around it:
   `\G`, `(?'name'…)`, and `\d\w\s` being Unicode-aware vs PCRE's ASCII-default.
   Those are *semantic* mismatches no amount of wrapping fixes — only PCRE2
   itself matches PCRE2.
-- **Version matters.** PCRE2 10.47 (what this PHP ships) and ICU releases change
+- **Version matters.** PCRE2 (10.49 in the reference php) and ICU releases change
   matchable Unicode property data, collation tables, and casing between
   versions. ICU is the worst offender: output depends on the **CLDR/ICU data
   version**, so even "the same ICU API" gives different collation keys across
@@ -292,7 +293,7 @@ Key design rules this encodes:
 ### 4.3 Keeping byte-exactness tested (the differential harness is the gate)
 
 The harness in `crates/rhp-cli/tests/diff.rs` holds the VM strictly to
-committed `.out` files captured from php 8.5.8, over `tests/golden/*.php`. Make
+committed `.out` files captured from the reference php, over `tests/golden/*.php`. Make
 the native backend subordinate to it:
 
 1. **Same fixtures, both backends.** Golden `.out`s are captured from php once.
@@ -305,8 +306,9 @@ the native backend subordinate to it:
    "native-only" case: gate it `#[cfg(feature = "native-pcre2")]` so the
    pure-Rust build legitimately skips it rather than failing.
 3. **Capture provenance.** Record, next to the goldens, the exact lib versions
-   PHP used (PCRE 10.47, ICU X, JSON 8.5.8 — from `PCRE_VERSION`,
-   `INTL_ICU_VERSION`). A native build that links a *different* version is
+   PHP used (PCRE, ICU, JSON — from `PCRE_VERSION`,
+   `INTL_ICU_VERSION`; now `crates/rhp-builtins/src/version.rs`, checked by
+   `tools/capture-ref-build.php`). A native build that links a *different* version is
    expected to diverge on version-sensitive fixtures; the harness turns that
    into a visible failure instead of silent drift.
 4. **Fuzz the wrapper, not the lib.** Differentially fuzz `rhp preg_match`
@@ -392,7 +394,7 @@ version-pinning fragility, cross-compile pain.
    pure-Rust engine (`fancy-regex`) is a *different regex language* and can
    never be byte-exact (possessive quantifiers, recursion, `\G`, ASCII `\d`,
    JIT backtrack limits). PCRE2 *is* what PHP runs. The §4.2 worked example is
-   built for exactly this. **Caveat:** pin to PHP's PCRE2 major (10.47 here);
+   built for exactly this. **Caveat:** pin to PHP's PCRE2 version (`version.rs`);
    bundle it for reproducibility (§7). Keep fancy-regex as the no-C fallback for
    the common pattern subset.
 

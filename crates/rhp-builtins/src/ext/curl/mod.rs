@@ -9,8 +9,8 @@
 //! for `file://`). `curl_multi_*` runs each added transfer on its own worker
 //! thread — real concurrency — and delivers the results (header/body handlers,
 //! callbacks, `curl_multi_info_read` messages) on the VM thread from
-//! `curl_multi_exec`. `curl_version()` reports the libcurl that php 8.5.8 links
-//! here, so version-dependent output (composer's `lib-curl*` platform
+//! `curl_multi_exec`. `curl_version()` reports the libcurl the reference php
+//! links ([`crate::version::curl`]), so version-dependent output (composer's `lib-curl*` platform
 //! packages, its User-Agent) is identical.
 
 use std::cell::RefCell;
@@ -25,6 +25,7 @@ use crate::{Builtin, Host, Thrown};
 
 mod consts;
 mod net;
+mod urlapi;
 
 use net::{Info, Outcome, Spec};
 
@@ -215,6 +216,10 @@ enum MultiState {
 #[derive(Clone)]
 struct Easy {
     url: String,
+    /// CURLOPT_URL as given (bytes; `url` is its lossy UTF-8 form).
+    url_raw: Vec<u8>,
+    /// CURLOPT_URL was set (libcurl's URL is NULL until then).
+    url_set: bool,
     write: WriteMethod,
     write_stream: Option<Value>,
     write_fn: Option<Value>,
@@ -270,6 +275,8 @@ impl Easy {
     fn new() -> Easy {
         Easy {
             url: String::new(),
+            url_raw: Vec::new(),
+            url_set: false,
             write: WriteMethod::Stdout,
             write_stream: None,
             write_fn: None,
@@ -679,6 +686,8 @@ fn fn_curl_init(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 let s = conv::to_string_bytes(&v);
                 check_nul("curl_init", &s)?;
                 easy.url = String::from_utf8_lossy(&s).into_owned();
+                easy.url_raw = s;
+                easy.url_set = true;
             }
         }
     }
@@ -757,7 +766,7 @@ fn is_valid_option(option: i64) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Would libcurl 8.x's `curl_easy_setopt` (setopt.c, with the features of the
-/// libcurl php 8.5.8 links: no NTLM, RTMP, SMB, c-ares or TLS-SRP) refuse this
+/// libcurl the reference php links: no NTLM, RTMP, SMB, c-ares or TLS-SRP) refuse this
 /// long value? CURLE_BAD_FUNCTION_ARGUMENT / CURLE_NOT_BUILT_IN make php's
 /// curl_setopt() return false.
 fn libcurl_rejects_long(option: i64, v: i64) -> bool {
@@ -868,14 +877,14 @@ fn libcurl_rejects_str(option: i64, s: &[u8]) -> bool {
     match option {
         // CURLOPT_PROTOCOLS_STR / REDIR_PROTOCOLS_STR
         10318 | 10319 => protocols_from_str(s).is_none(),
-        // CURLOPT_INTERFACE
-        10062 => s.is_empty(),
         // CURLOPT_SSLENGINE: no OpenSSL engines are available
         10089 => !s.is_empty(),
-        // CURLOPT_TLSAUTH_TYPE / PROXY_TLSAUTH_TYPE: only "SRP"
-        10206 | 10253 => !s.eq_ignore_ascii_case(b"SRP"),
-        // KRBLEVEL, DNS_SERVERS, DNS_INTERFACE, DNS_LOCAL_IP4/6: not built in
-        10063 | 10211 | 10221 | 10222 | 10223 => true,
+        // KRBLEVEL, DNS_SERVERS, DNS_INTERFACE, DNS_LOCAL_IP4/6, and the
+        // TLS-SRP options (no SRP with OpenSSL 4): TLSAUTH_USERNAME /
+        // _PASSWORD / _TYPE and their PROXY_ variants: not built in
+        10063 | 10204 | 10205 | 10206 | 10211 | 10221 | 10222 | 10223 | 10251 | 10252 | 10253 => {
+            true
+        }
         _ => false,
     }
 }
@@ -1043,7 +1052,10 @@ fn setopt(
         OPT_URL => {
             let s = zval_get_string(host, &value)?;
             check_nul(f, &s)?;
-            easy.borrow_mut().url = String::from_utf8_lossy(&s).into_owned();
+            let mut e = easy.borrow_mut();
+            e.url = String::from_utf8_lossy(&s).into_owned();
+            e.url_raw = s;
+            e.url_set = true;
         }
         OPT_SSL_VERIFYHOST => {
             let mut v = zval_get_long(host, &value)?;
@@ -1426,6 +1438,9 @@ fn build_spec(host: &mut dyn Host, easy: &Rc<RefCell<Easy>>) -> Spec {
         });
     Spec {
         url: e.url.clone(),
+        url_raw: e.url_raw.clone(),
+        url_set: e.url_set,
+        path_as_is: e.path_as_is(),
         custom_request: e.custom_request.clone(),
         nobody: e.nobody,
         post: e.post,
@@ -1855,6 +1870,7 @@ fn info_value(i: &Info, option: i64) -> Option<Value> {
     let ty = option & 0xf00000;
     let n = option & 0xfffff;
     let v = match (ty, n) {
+        (T_STRING, 1) if i.no_effective_url => return None,
         (T_STRING, 1) => Value::str(i.effective_url.clone()),
         (T_LONG, 2) => Value::Int(i.http_code),
         (T_DOUBLE, 3) => Value::Float(secs(i.total_us)),
@@ -1926,7 +1942,9 @@ fn info_array(i: &Info) -> PhpArray {
     let mut a = PhpArray::new();
     let s = |o: &Option<String>| Value::str(o.clone().unwrap_or_default());
     let mut put = |k: &str, v: Value| a.insert(akey(k), v);
-    put("url", Value::str(i.effective_url.clone()));
+    if !i.no_effective_url {
+        put("url", Value::str(i.effective_url.clone()));
+    }
     put("content_type", opt_s(&i.content_type));
     put("http_code", Value::Int(i.http_code));
     put("header_size", Value::Int(i.header_size));
@@ -1987,10 +2005,33 @@ fn info_array(i: &Info) -> PhpArray {
     a
 }
 
+impl Easy {
+    /// CURLOPT_PATH_AS_IS.
+    fn path_as_is(&self) -> bool {
+        self.misc
+            .get(&OPT_PATH_AS_IS)
+            .is_some_and(|v| conv::to_int(v) != 0)
+    }
+}
+
+/// CURLOPT_PATH_AS_IS.
+const OPT_PATH_AS_IS: i64 = 234;
+
 fn current_info(e: &Easy) -> Info {
     match &e.info {
         Some(i) => i.clone(),
-        None => Info::fresh(&e.url, &e.method()),
+        None => {
+            // Before a transfer libcurl 8.23 reports CURLOPT_URL as its URL
+            // parser rebuilds it ("" while unset), failing when it doesn't parse.
+            let mut i = Info::fresh("", &e.method());
+            if e.url_set {
+                match urlapi::pre_transfer_url(&e.url_raw, e.path_as_is()) {
+                    Some(u) => i.effective_url = u,
+                    None => i.no_effective_url = true,
+                }
+            }
+            i
+        }
     }
 }
 
@@ -2190,9 +2231,10 @@ fn fn_curl_upkeep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 
 fn fn_curl_version(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     let mut a = PhpArray::new();
-    let features: i64 = 1472153485;
-    a.insert(akey("version_number"), Value::Int(529664));
-    a.insert(akey("age"), Value::Int(11));
+    use crate::version::curl as v;
+    let features: i64 = v::FEATURES;
+    a.insert(akey("version_number"), Value::Int(v::VERSION_NUMBER));
+    a.insert(akey("age"), Value::Int(v::AGE));
     a.insert(akey("features"), Value::Int(features));
     let feats: &[(&str, i64)] = &[
         ("AsynchDNS", 1 << 7),
@@ -2231,10 +2273,10 @@ fn fn_curl_version(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     }
     a.insert(akey("feature_list"), Value::Array(fl));
     a.insert(akey("ssl_version_number"), Value::Int(0));
-    a.insert(akey("version"), Value::str("8.21.0"));
-    a.insert(akey("host"), Value::str("aarch64-apple-darwin25.4.0"));
-    a.insert(akey("ssl_version"), Value::str("OpenSSL/3.6.4"));
-    a.insert(akey("libz_version"), Value::str("1.2.12"));
+    a.insert(akey("version"), Value::str(v::VERSION));
+    a.insert(akey("host"), Value::str(v::HOST));
+    a.insert(akey("ssl_version"), Value::str(v::SSL_VERSION));
+    a.insert(akey("libz_version"), Value::str(v::LIBZ_VERSION));
     let mut protos = PhpArray::new();
     for p in [
         "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap", "imaps",
@@ -2248,9 +2290,9 @@ fn fn_curl_version(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     a.insert(akey("ares_num"), Value::Int(0));
     a.insert(akey("libidn"), Value::str(""));
     a.insert(akey("iconv_ver_num"), Value::Int(0));
-    a.insert(akey("libssh_version"), Value::str("libssh2/1.11.1"));
-    a.insert(akey("brotli_ver_num"), Value::Int(16785408));
-    a.insert(akey("brotli_version"), Value::str("brotli/1.2.0"));
+    a.insert(akey("libssh_version"), Value::str(v::LIBSSH_VERSION));
+    a.insert(akey("brotli_ver_num"), Value::Int(v::BROTLI_VER_NUM));
+    a.insert(akey("brotli_version"), Value::str(v::BROTLI_VERSION));
     Ok(Value::Array(a))
 }
 

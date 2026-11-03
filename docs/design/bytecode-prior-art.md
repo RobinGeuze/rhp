@@ -1,7 +1,8 @@
 # Bytecode VM prior art → rhp ISA recommendations
 
 Status: design input for the register-based bytecode compiler + VM that becomes
-rhp's primary execution core. Ground truth: local `php` **8.5.8**.
+rhp's primary execution core. Ground truth: the reference `php` (see
+`crates/rhp-builtins/src/version.rs`).
 
 This document surveys four reference designs and distills concrete, rhp-specific
 recommendations. It is written against the pieces we already built and will reuse

@@ -70,3 +70,6 @@ cargo run -p rhp-cli -- script.php
 ```
 
 Requires Rust ≥ 1.99 and (for regenerating golden fixtures) a local `php` 8.5.
+rhp tracks the latest php 8.5 release (currently 8.5.12, Homebrew build): every
+version and build value it reports lives in `crates/rhp-builtins/src/version.rs`,
+and `tools/capture-ref-build.php` prints them from a php for comparison.

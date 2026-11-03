@@ -3,7 +3,7 @@
 **Status:** engineering backlog (as of 2026-10-25).
 **Purpose:** catalogue every place where rhp currently fakes, stubs, approximates,
 or outright no-ops a piece of PHP behaviour, with a concrete plan to finish each.
-**Ground truth:** local `php` 8.5.8 (the differential oracle). Every item below
+**Ground truth:** the reference `php` (the differential oracle; see `crates/rhp-builtins/src/version.rs`). Every item below
 was confirmed by reading the cited `file:line` in `crates/` and, where relevant,
 by comparing against php's documented behaviour. The goal that orders the roadmap
 is the north star — run `composer.phar` end to end (`modules-and-streams.md`) and

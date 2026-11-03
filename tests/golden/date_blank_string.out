@@ -1,0 +1,42 @@
+""
+DateTime: ok
+DateTime::modify: "DateTime::modify(): Failed to parse time string () at position 0 ( ): Empty string"
+DateTimeImmutable: ok
+DateTimeImmutable::modify: "DateTimeImmutable::modify(): Failed to parse time string () at position 0 ( ): Empty string"
+bool(false)
+" "
+DateTime: "Failed to parse time string ( ) at position 0 ( ): Empty string"
+DateTime::modify: "DateTime::modify(): Failed to parse time string ( ) at position 0 ( ): Empty string"
+DateTimeImmutable: "Failed to parse time string ( ) at position 0 ( ): Empty string"
+DateTimeImmutable::modify: "DateTimeImmutable::modify(): Failed to parse time string ( ) at position 0 ( ): Empty string"
+bool(false)
+"  "
+DateTime: "Failed to parse time string (  ) at position 0 ( ): Empty string"
+DateTime::modify: "DateTime::modify(): Failed to parse time string (  ) at position 0 ( ): Empty string"
+DateTimeImmutable: "Failed to parse time string (  ) at position 0 ( ): Empty string"
+DateTimeImmutable::modify: "DateTimeImmutable::modify(): Failed to parse time string (  ) at position 0 ( ): Empty string"
+bool(false)
+"\t\n "
+DateTime: "Failed to parse time string (\t\n ) at position 0 ( ): Empty string"
+DateTime::modify: "DateTime::modify(): Failed to parse time string (\t\n ) at position 0 ( ): Empty string"
+DateTimeImmutable: "Failed to parse time string (\t\n ) at position 0 ( ): Empty string"
+DateTimeImmutable::modify: "DateTimeImmutable::modify(): Failed to parse time string (\t\n ) at position 0 ( ): Empty string"
+bool(false)
+"\u000b"
+DateTime: "Failed to parse time string (\u000b) at position 0 ( ): Empty string"
+DateTime::modify: "DateTime::modify(): Failed to parse time string (\u000b) at position 0 ( ): Empty string"
+DateTimeImmutable: "Failed to parse time string (\u000b) at position 0 ( ): Empty string"
+DateTimeImmutable::modify: "DateTimeImmutable::modify(): Failed to parse time string (\u000b) at position 0 ( ): Empty string"
+bool(false)
+"\f"
+DateTime: "Failed to parse time string (\f) at position 0 ( ): Empty string"
+DateTime::modify: "DateTime::modify(): Failed to parse time string (\f) at position 0 ( ): Empty string"
+DateTimeImmutable: "Failed to parse time string (\f) at position 0 ( ): Empty string"
+DateTimeImmutable::modify: "DateTimeImmutable::modify(): Failed to parse time string (\f) at position 0 ( ): Empty string"
+bool(false)
+"\r"
+DateTime: "Failed to parse time string (\r) at position 0 ( ): Empty string"
+DateTime::modify: "DateTime::modify(): Failed to parse time string (\r) at position 0 ( ): Empty string"
+DateTimeImmutable: "Failed to parse time string (\r) at position 0 ( ): Empty string"
+DateTimeImmutable::modify: "DateTimeImmutable::modify(): Failed to parse time string (\r) at position 0 ( ): Empty string"
+bool(false)

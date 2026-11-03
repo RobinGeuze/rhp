@@ -1,7 +1,8 @@
 # rhp OOP ISA — classes, objects, methods (phase 7)
 
 Status: **build spec (implement from this).** Target semantics: PHP 8.5 (ground
-truth: local `php` 8.5.8; every behavior below was probed against it). This is
+truth: the reference `php`, see `crates/rhp-builtins/src/version.rs`; every behavior below was probed
+against it, originally 8.5.8). This is
 the phase-7 continuation of [`bytecode.md`](./bytecode.md) — it adds the object
 opcodes that §2.4 of that doc deferred ("`New`, `FetchProp`/`AssignProp`,
 `CallMethod`, `CallStatic`, `InstanceOf`, `Clone`, late static binding are

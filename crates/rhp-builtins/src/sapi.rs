@@ -249,7 +249,9 @@ pub struct RequestInfo {
     /// The request body (`php://input`, `$_POST`), already read.
     pub body: Vec<u8>,
     /// The declared `Content-Length` (`post_max_size` is checked against
-    /// it); `None`: the body's length.
+    /// it); `None`: the body's length. A body longer than this (a chunked
+    /// request: `Some(0)`) is read only until more than `post_max_size`
+    /// bytes were read, as php's readers do (GHSA-2cv3-554h-jpmh).
     pub content_length: Option<i64>,
     /// The `Authorization` header (php-cgi: `HTTP_AUTHORIZATION`), which
     /// yields `PHP_AUTH_USER` / `PHP_AUTH_PW` / `PHP_AUTH_DIGEST`.

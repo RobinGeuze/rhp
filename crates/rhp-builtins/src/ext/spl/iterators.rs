@@ -95,7 +95,15 @@ class SplObjectStorage implements Countable, SeekableIterator, ArrayAccess {
             if (!is_object($s[$i])) { throw new UnexpectedValueException('Non-object key'); }
             $this->offsetSet($s[$i], $s[$i + 1]);
         }
-        foreach ($data[1] as $k => $v) { $this->$k = $v; }
+        // Member names come mangled ("\0*\0a", "\0Class\0a"), as
+        // get_mangled_object_vars() / __serialize() wrote them.
+        foreach ($data[1] as $k => $v) {
+            $k = (string)$k;
+            if ($k !== '' && $k[0] === "\0") {
+                $p = strpos($k, "\0", 1); $c = substr($k, 1, $p - 1); $n = substr($k, $p + 1);
+                \Closure::bind(function () use ($n, $v) { $this->$n = $v; }, $this, $c === '*' ? static::class : $c)();
+            } else { $this->$k = $v; }
+        }
     }
     public function __debugInfo() {
         $st = [];
@@ -257,7 +265,12 @@ class RecursiveIteratorIterator implements OuterIterator {
             $st = $this->__st[$this->__level];
             if ($st === 4) { $it->next(); $st = 0; }
             if ($st === 0) {
-                $st = $it->valid() ? 1 : 5;
+                $level = $this->__level;
+                $valid = $it->valid();
+                // valid() re-entered next()/rewind() and moved the iterator
+                // on (php 8.5.12, php-src efbf473): that call already advanced.
+                if ($this->__level !== $level || ($this->__its[$level] ?? null) !== $it) { return; }
+                $st = $valid ? 1 : 5;
             }
             if ($st === 1) {
                 if ($this->callHasChildren()) {

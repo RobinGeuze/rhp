@@ -1,0 +1,1 @@
+ini memory_hard_limit_percent=50

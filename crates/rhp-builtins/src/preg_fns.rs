@@ -178,9 +178,15 @@ mod engine {
                 )
             };
             if code.is_null() {
-                let mut buf = [0u8; 256];
-                let n = unsafe { pcre2_get_error_message_8(errcode, buf.as_mut_ptr(), buf.len()) };
-                let msg = String::from_utf8_lossy(&buf[..n.max(0) as usize]).into_owned();
+                // php 8.5.10+ (GH-21134) words the \C-under-`u` error itself.
+                let msg = if errcode == PCRE2_ERROR_BACKSLASH_C_CALLER_DISABLED as i32 {
+                    "using \\C is incompatible with the 'u' modifier".to_string()
+                } else {
+                    let mut buf = [0u8; 256];
+                    let n =
+                        unsafe { pcre2_get_error_message_8(errcode, buf.as_mut_ptr(), buf.len()) };
+                    String::from_utf8_lossy(&buf[..n.max(0) as usize]).into_owned()
+                };
                 return Err(format!("Compilation failed: {msg} at offset {erroffset}"));
             }
             let ncaptures = pattern_info_usize(code, PCRE2_INFO_CAPTURECOUNT);
@@ -492,7 +498,8 @@ fn compile_inner(pattern: &[u8]) -> Result<Regex, String> {
             b'J' => options |= PCRE2_DUPNAMES,
             // `u`: UTF mode + Unicode properties (UCP is what makes \d\w\s match
             // non-ASCII, exactly as php's `u` modifier does).
-            b'u' => options |= PCRE2_UTF | PCRE2_UCP,
+            // \C is unsafe in UTF mode: php forbids it (GH-21134).
+            b'u' => options |= PCRE2_UTF | PCRE2_UCP | PCRE2_NEVER_BACKSLASH_C,
             // php accepts these for backward compatibility; both are no-ops here.
             b'S' | b'X' | b' ' | b'\n' | b'\r' => {}
             0 => return Err("NUL byte is not a valid modifier".into()),

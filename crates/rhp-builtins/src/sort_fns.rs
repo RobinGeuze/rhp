@@ -376,24 +376,83 @@ fn with_array_data<R>(arg: &Value, f: impl FnOnce(&mut rhp_values::ArrayData) ->
     }
 }
 
-/// Z_PARAM_ARRAY_OR_OBJECT of the internal-pointer functions: an object is
-/// deprecated (and has no pointer here: `None`), anything else is a
-/// TypeError.
-fn ptr_arg(host: &mut dyn Host, fname: &str, arg: &Value) -> Result<Option<()>, Thrown> {
+/// Z_PARAM_ARRAY_OR_OBJECT of the internal-pointer functions: an array
+/// (`None`), or an object (deprecated) whose property table they walk;
+/// anything else is a TypeError.
+fn ptr_arg(
+    host: &mut dyn Host,
+    fname: &str,
+    arg: &Value,
+) -> Result<Option<rhp_values::ObjectHandle>, Thrown> {
     match deref(arg) {
-        Value::Array(_) => Ok(Some(())),
-        Value::Object(_) => {
+        Value::Array(_) => Ok(None),
+        Value::Object(h) => {
             crate::deprecated(
                 host,
                 fname,
                 &format!("Calling {fname}() on an object is deprecated"),
             )?;
-            Ok(None)
+            Ok(Some(h))
         }
         other => Err(Thrown::type_error(format!(
             "{fname}(): Argument #1 ($array) must be of type array, {} given",
             crate::argparse::value_name(host, &other)
         ))),
+    }
+}
+
+thread_local! {
+    /// The internal pointer of each object's property table, by object id.
+    static OBJECT_POS: std::cell::RefCell<std::collections::HashMap<u32, usize>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Forget a freed object's internal pointer.
+pub(crate) fn object_freed(id: u32) {
+    let _ = OBJECT_POS.try_with(|m| m.borrow_mut().remove(&id));
+}
+
+/// The table php's Z_OBJPROP gives the internal-pointer functions: the
+/// property table by mangled name (an ArrayObject's storage is not in it).
+fn object_table(host: &mut dyn Host, h: &rhp_values::ObjectHandle) -> Vec<(Value, Value)> {
+    let b = h.borrow();
+    b.properties
+        .iter()
+        .filter(|(k, _)| !host.is_internal_slot(b.class, k))
+        .map(|(k, v)| (Value::Str(host.mangled_prop_name(b.class, k)), deref(v)))
+        .collect()
+}
+
+/// Which internal-pointer operation to run.
+#[derive(Clone, Copy)]
+enum PtrOp {
+    Reset,
+    End,
+    Next,
+    Prev,
+    Current,
+    Key,
+}
+
+/// An internal-pointer function on an object's property table.
+fn object_ptr(host: &mut dyn Host, h: &rhp_values::ObjectHandle, op: PtrOp) -> Value {
+    let table = object_table(host, h);
+    let id = h.borrow().id;
+    let pos = OBJECT_POS.with(|m| m.borrow().get(&id).copied().unwrap_or(0));
+    let pos = match op {
+        PtrOp::Reset => 0,
+        PtrOp::End => table.len().saturating_sub(1),
+        PtrOp::Next => pos.saturating_add(1),
+        PtrOp::Prev if pos == 0 || pos == usize::MAX => usize::MAX,
+        PtrOp::Prev => pos - 1,
+        PtrOp::Current | PtrOp::Key => pos,
+    };
+    OBJECT_POS.with(|m| m.borrow_mut().insert(id, pos));
+    match (op, table.get(pos)) {
+        (PtrOp::Key, Some((k, _))) => k.clone(),
+        (PtrOp::Key, None) => Value::Null,
+        (_, Some((_, v))) => v.clone(),
+        (_, None) => Value::Bool(false),
     }
 }
 
@@ -405,8 +464,8 @@ fn elem_at(d: &rhp_values::ArrayData, pos: usize) -> Value {
 }
 
 fn fn_reset(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    if ptr_arg(host, "reset", &args[0])?.is_none() {
-        return Ok(Value::Bool(false));
+    if let Some(h) = ptr_arg(host, "reset", &args[0])? {
+        return Ok(object_ptr(host, &h, PtrOp::Reset));
     }
     Ok(with_array_data(&args[0], |d| {
         d.pos = 0;
@@ -416,8 +475,8 @@ fn fn_reset(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_end(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    if ptr_arg(host, "end", &args[0])?.is_none() {
-        return Ok(Value::Bool(false));
+    if let Some(h) = ptr_arg(host, "end", &args[0])? {
+        return Ok(object_ptr(host, &h, PtrOp::End));
     }
     Ok(with_array_data(&args[0], |d| {
         let n = d.entries.len();
@@ -432,8 +491,8 @@ fn fn_end(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_next(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    if ptr_arg(host, "next", &args[0])?.is_none() {
-        return Ok(Value::Bool(false));
+    if let Some(h) = ptr_arg(host, "next", &args[0])? {
+        return Ok(object_ptr(host, &h, PtrOp::Next));
     }
     Ok(with_array_data(&args[0], |d| {
         d.pos = d.pos.saturating_add(1);
@@ -443,8 +502,8 @@ fn fn_next(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_prev(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    if ptr_arg(host, "prev", &args[0])?.is_none() {
-        return Ok(Value::Bool(false));
+    if let Some(h) = ptr_arg(host, "prev", &args[0])? {
+        return Ok(object_ptr(host, &h, PtrOp::Prev));
     }
     Ok(with_array_data(&args[0], |d| {
         if d.pos == 0 {
@@ -459,15 +518,15 @@ fn fn_prev(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_current(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    if ptr_arg(host, "current", &args[0])?.is_none() {
-        return Ok(Value::Bool(false));
+    if let Some(h) = ptr_arg(host, "current", &args[0])? {
+        return Ok(object_ptr(host, &h, PtrOp::Current));
     }
     Ok(with_array_data(&args[0], |d| elem_at(d, d.pos)).unwrap_or(Value::Bool(false)))
 }
 
 fn fn_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    if ptr_arg(host, "key", &args[0])?.is_none() {
-        return Ok(Value::Null);
+    if let Some(h) = ptr_arg(host, "key", &args[0])? {
+        return Ok(object_ptr(host, &h, PtrOp::Key));
     }
     Ok(with_array_data(&args[0], |d| {
         d.entries

@@ -114,6 +114,7 @@ pub mod zip_ext;
 /// the extensions with per-object native state release it.
 pub fn object_freed(id: u32) {
     zip_ext::object_freed(id);
+    sort_fns::object_freed(id);
     ext::sockets::object_freed();
 }
 

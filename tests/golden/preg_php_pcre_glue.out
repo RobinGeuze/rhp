@@ -1,0 +1,27 @@
+replace limit: "xbxaaac"
+replace bad utf8 entry: [{"0":"x","2":"b"},1,"No error"]
+replace string fails, count: [null,0]
+filter array: [{"0":"x","k":"cx"},2]
+filter string: [null,"bxb"]
+filter arrays: ["A:1","B:a"]
+replacement array, pattern string: "TypeError: preg_replace(): Argument #1 ($pattern) must be of type array when argument #2 ($replacement) is an array, string given"
+split no_empty limit: ["a",",b,c"]
+split negative limit: ["a,b"]
+split unset group offset: [["a",0],["",-1],[",",1],["b",2]]
+split empty no_empty: []
+split utf8 empty: [["a",0],["\u00f1",1],["b",3]]
+match flags: "ValueError: preg_match(): Argument #4 ($flags) must be a PREG_* constant"
+match_all flags: "ValueError: preg_match_all(): Argument #4 ($flags) must be a PREG_* constant"
+bad utf8 offset: [false,[],"The offset did not correspond to the beginning of a valid UTF-8 code point"]
+offset past end: [false,[],"Internal error"]
+dupnames: [1,{"0":"foo","g":"foo","1":"foo","2":null}]
+match_all partial on error: ["1","1000000",false,[["1"],[""]],"Backtrack limit exhausted",false,[["1"]],null,null]
+backtrack limit, no JIT: ["1","1000000",false,"Backtrack limit exhausted",null,null,"1"]
+recursion limit, no JIT: ["1","100000",false,"Recursion limit exhausted",null,null]
+warning: Array to string conversion
+array subject entry: ["'A'rray"]
+caseless restrict: [0,1]
+warning: preg_replace(): Unknown modifier 'e'
+unknown modifier: null
+cb 1
+stop

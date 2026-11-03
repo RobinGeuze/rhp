@@ -428,10 +428,13 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
     let key = String::from_utf8_lossy(name).into_owned();
     let (warnings, stored) = on_modify_check(name, v);
     let ok = stored.is_some();
+    // A value the handler replaced (memory_limit clamped to
+    // max_memory_limit) is what the entry holds: restoring it is quiet.
+    let replaced = stored.as_deref().is_some_and(|s| s != v);
     STARTUP_DIAGS.with(|d| {
         let mut d = d.borrow_mut();
         d.startup.retain(|s| s.1 != key);
-        if ok && !warnings.is_empty() {
+        if ok && !replaced && !warnings.is_empty() {
             d.restore.insert(key.clone(), warnings.clone());
         } else {
             d.restore.remove(&key);
@@ -610,18 +613,14 @@ fn ini_validate(name: &[u8], v: &[u8]) -> Result<(), ()> {
 }
 
 /// Push a directive's (new) value into the engine state that uses it.
+/// (memory_limit's handler, `memory_limit_modify`, sets the allocator's
+/// limit itself, or leaves it when it clamps to max_memory_limit.)
 fn ini_apply(name: &[u8], v: Option<&[u8]>) {
     match name {
         b"precision" => rhp_values::fmt::set_precision(v.map_or(14, c_atol)),
         b"serialize_precision" => rhp_values::fmt::set_serialize_precision(v.map_or(-1, c_atol)),
         b"pcre.backtrack_limit" | b"pcre.recursion_limit" | b"pcre.jit" => {
             crate::pcre::ini_update(name, v.unwrap_or_default())
-        }
-        b"memory_limit" => {
-            // A restore below the memory in use keeps the current limit
-            // (php retries once the request's memory is gone).
-            let v = v.map_or(u64::MAX, |v| ini_parse_uquantity(v).0);
-            rhp_values::mem::set_limit(v.min(usize::MAX as u64) as usize);
         }
         _ => {}
     }
@@ -701,6 +700,13 @@ fn fn_ini_restore(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         None => m.borrow_mut().remove(&key),
     });
     if let Some(v) = ini_value(&name) {
+        if name == b"memory_limit" {
+            // The handler on the startup value (already within
+            // max_memory_limit). Below the memory in use, the current limit
+            // stays.
+            let v = v.as_deref().map_or(u64::MAX, |v| ini_parse_uquantity(v).0);
+            rhp_values::mem::set_limit(v.min(usize::MAX as u64) as usize);
+        }
         ini_apply(&name, v.as_deref());
     }
     Ok(Value::Null)

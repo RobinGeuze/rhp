@@ -2877,7 +2877,6 @@ ext/libxml/tests/003.phpt
 ext/libxml/tests/004.phpt
 ext/libxml/tests/bug42112.phpt
 ext/libxml/tests/bug63389.phpt
-ext/libxml/tests/bug79191.phpt
 ext/libxml/tests/libxml_get_external_entity_loader.phpt
 ext/libxml/tests/libxml_set_external_entity_loader_error2.phpt
 ext/mbstring/tests/bug43840.phpt

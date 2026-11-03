@@ -175,7 +175,9 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   loader, libxslt's error function) are set once, to a dispatcher that reads
   thread-local VM state: libxml2's entity loader runs php's loader on a
   thread whose VM installed the glue while a builtin is running, and
-  libxml2's own otherwise.
+  libxml2's own otherwise. Nothing on libxml2 loads external entities yet
+  (ext/xml keeps php's no-DTD-loading options), so the dispatcher and the
+  stream input hooks are first exercised when DOM moves to libxml2 (L3c).
 - **No process-global side effects from a VM:** no `setlocale` (use
   `newlocale`/`uselocale`), no relative paths handed to a library that opens
   files itself (absolutize against the VM's cwd), no `putenv("TZ=…")`.
@@ -191,10 +193,18 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
     operation running, as in php, where handlers then see `EG(exception)`
     and do nothing (`ffi::aborted`); `exit` and other non-exceptions stop it
     through the function the builtin registered (`ffi::set_stop`, e.g.
-    `xmlStopParser`);
+    `xmlStopParser`). That leaves the stopped state behind: after `exit` in
+    an ext/xml handler, a shutdown function sees error 111 (user stop) and
+    the byte index libxml2 resets, where php's longjmp leaves the parser as
+    it was;
   - printf-style callbacks are C functions in the shim that format with
     `vasprintf` (no length limit, like php's `vspprintf`) and hand Rust the
-    finished message.
+    finished message;
+  - a handle whose free can call back into PHP (an XMLWriter flushing to a
+    stream) is freed in the class's native `dtor_obj`
+    (`rhp_builtins::object_dtor`), which the engine runs with a host before
+    `__destruct`, as php does. The object-free hook has no host; it frees
+    only what php's `dtor_obj` would have skipped.
 - **Guard aborts.** A C library that can abort the process (libgmp on huge
   sizes) needs size checks first: with one VM per thread, an abort kills
   every request.

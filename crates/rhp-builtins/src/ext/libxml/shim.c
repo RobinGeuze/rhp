@@ -27,8 +27,10 @@
 #include <libxml/xmlwriter.h>
 #include <libxml/HTMLparser.h>
 #include <libxml/xmlsave.h>
-#ifdef LIBXML_SCHEMAS_ENABLED
+#if defined(LIBXML_SCHEMAS_ENABLED) || defined(LIBXML_RELAXNG_ENABLED)
 #include <libxml/relaxng.h>
+#endif
+#ifdef LIBXML_SCHEMAS_ENABLED
 #include <libxml/xmlschemas.h>
 #include <libxml/xmlschemastypes.h>
 #endif

@@ -6,7 +6,8 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_char, c_int, c_void, OsStr};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::ptr;
 use std::rc::Rc;
 
@@ -200,9 +201,9 @@ fn valid_file_path(source: &[u8]) -> Option<Vec<u8>> {
     if has_scheme && !is_file_uri {
         return Some(source.to_vec());
     }
-    let path = String::from_utf8_lossy(source).into_owned();
-    let resolved = match std::fs::canonicalize(&path) {
-        Ok(p) => p.to_string_lossy().into_owned().into_bytes(),
+    // VCWD_REALPATH, else expand_filepath; paths stay bytes.
+    let resolved = match std::fs::canonicalize(OsStr::from_bytes(source)) {
+        Ok(p) => p.into_os_string().into_vec(),
         Err(_) => crate::ext::dom::expand_filepath(source),
     };
     // expand_filepath fails on a path longer than MAXPATHLEN.
@@ -210,7 +211,7 @@ fn valid_file_path(source: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let dir = zend_dirname(source);
-    if !dir.is_empty() && std::fs::metadata(String::from_utf8_lossy(&dir).as_ref()).is_err() {
+    if !dir.is_empty() && std::fs::metadata(OsStr::from_bytes(&dir)).is_err() {
         return None;
     }
     Some(resolved)

@@ -439,8 +439,8 @@ php-src under the PHP License (section 4).
 ------------------------------------------------------------------------------
 
 php-src's ext/standard/crypt_blowfish.c and crypt_blowfish.h (bcrypt),
-compiled unmodified by crates/rhp-csrc. crypt_blowfish.c states (and
-crypt_blowfish.h the same, for 2000-2011):
+compiled unmodified by crates/rhp-csrc. From crypt_blowfish.c's header
+(crypt_blowfish.h states the first three paragraphs, for 2000-2011):
 
   Written by Solar Designer <solar at openwall.com> in 1998-2015.
   No copyright is claimed, and the software is hereby placed in the public

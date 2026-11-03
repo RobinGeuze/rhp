@@ -12,6 +12,7 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 - **Where php runs its own C** with no Zend dependency (libmbfl, timelib,
   crypt), rhp compiles that C from the pinned php-src tag, in
   `crates/rhp-csrc` (see [Compiled from source](#compiled-from-source-rhp-csrc)).
+  LGPL C such as libmbfl goes in its own crate (see [Licences](#licences)).
 - **Where php-src owns the data** (stubs, entity tables, Bison tables), rhp
   generates it from php-src.
 - A pure-Rust crate replaces library behaviour only with evidence: it is
@@ -27,7 +28,7 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 
 | Kind | Linked | Examples |
 |---|---|---|
-| Code rhp compiles (`rhp-csrc`): php-src C, frozen vendored libraries | static | php-src's crypt C, argon2; later libmbfl, timelib, oniguruma |
+| Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, argon2 (in `rhp-csrc`); later timelib, oniguruma, and libmbfl in its own crate (LGPL) |
 | A third-party library whose static archive is the build php links | static | PCRE2; later gmp, icu4c@79, openssl@4, curl |
 | The listed exceptions below | dynamic | |
 
@@ -96,7 +97,7 @@ its own test binary, which is linked straight from the crate.
 ## Compiled from source: rhp-csrc
 
 `crates/rhp-csrc` holds the C rhp compiles itself, with `cc`, into static
-archives:
+archives, except LGPL C (see [Licences](#licences)):
 
 - **php-src's own C**, copied unmodified into `vendor/php-src` by
   `crates/rhp-csrc/tools/sync-php-src-c.sh <php-src-dir>` from a checkout at
@@ -187,10 +188,11 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
 
 ## Adding C to rhp-csrc
 
-1. php-src C: add the files to `FILES` in `tools/sync-php-src-c.sh` and run
-   it on a php-src checkout at the pinned commit. A frozen library: write a
-   `tools/sync-<lib>.sh` like `sync-argon2.sh` (release tarball, pinned
-   SHA-256, file list) and run it.
+1. php-src C: add the files to `FILES` in
+   `crates/rhp-csrc/tools/sync-php-src-c.sh` and run it on a php-src
+   checkout at the pinned commit. A frozen library: write a
+   `crates/rhp-csrc/tools/sync-<lib>.sh` like `sync-argon2.sh` (release
+   tarball, pinned SHA-256, file list) and run it.
 2. Add a cargo feature and its build to `build.rs`; php-src C goes through
    `php_src()`. Missing Zend or PHP definitions go in `shim/zend_shim.h`;
    never add a second shim.

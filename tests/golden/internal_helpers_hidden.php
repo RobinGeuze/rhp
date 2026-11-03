@@ -35,6 +35,21 @@ try {
 } catch (Error $e) {
     echo get_class($e), ": ", $e->getMessage(), "\n";
 }
+// Nor through any callable form.
+echo "is_callable: ", var_export(is_callable('__dom_throw'), true), "\n";
+foreach ([
+    fn() => call_user_func('__dom_throw', 12, 'x'),
+    fn() => Closure::fromCallable('__dom_throw'),
+    fn() => new ReflectionFunction('__dom_throw'),
+] as $f) {
+    try {
+        $f();
+        echo "reached\n";
+    } catch (Throwable $e) {
+        echo get_class($e), ": ", $e->getMessage(), "\n";
+    }
+}
+echo "\\strlen: ", var_export(function_exists('\strlen'), true), "\n";
 // A user function may still use the prefix.
 function __mine() { return "mine"; }
 echo __mine(), " ", var_export(function_exists('__mine'), true), "\n";

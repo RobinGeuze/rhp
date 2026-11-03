@@ -1,6 +1,4 @@
 
-function __dom_throw($code, $msg) { throw new DOMException($msg, $code); }
-
 final class DOMException extends Exception {
     public $code = 0;
 }
@@ -241,7 +239,7 @@ class DOMElement extends DOMNode implements DOMParentNode, DOMChildNode {
             case 'beforeend': $this->appendChild($element); return $element;
             case 'afterend': if (!$this->parentNode) { return null; } $this->parentNode->insertBefore($element, $this->nextSibling); return $element;
         }
-        __dom_throw(12, 'Syntax Error');
+        throw new DOMException('Syntax Error', 12);
     }
     public function insertAdjacentText(string $where, string $data): void {
         $this->insertAdjacentElement2($where, $this->ownerDocument->createTextNode($data));
@@ -253,7 +251,7 @@ class DOMElement extends DOMNode implements DOMParentNode, DOMChildNode {
             case 'beforeend': $this->appendChild($node); return;
             case 'afterend': if ($this->parentNode) { $this->parentNode->insertBefore($node, $this->nextSibling); } return;
         }
-        __dom_throw(12, 'Syntax Error');
+        throw new DOMException('Syntax Error', 12);
     }
 }
 

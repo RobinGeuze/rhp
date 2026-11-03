@@ -1874,12 +1874,7 @@ impl Host for Vm {
     }
 
     fn function_exists(&self, name: &[u8]) -> bool {
-        let lc = name.to_ascii_lowercase();
-        match self.fn_names.get(&lc) {
-            // A prelude `__` helper is engine plumbing, like a `__` builtin.
-            Some(&i) => !(lc.starts_with(b"__") && is_prelude_proto(&self.functions[i])),
-            None => user_visible_builtin(name),
-        }
+        self.fn_names.contains_key(&name.to_ascii_lowercase()) || user_visible_builtin(name)
     }
 
     fn closure_bind(&self, closure: &Value, new_this: &Value, scope: &Value) -> Option<Value> {
@@ -2362,14 +2357,24 @@ impl Vm {
         (None, p)
     }
 
-    /// Whether a direct call from `caller` to `name` (resolved by
-    /// [`Vm::resolve_fn`] to `user`) must fail as undefined: `__`-prefixed
-    /// builtins and prelude functions are engine helpers behind the prelude
-    /// classes, and php has no function by such a name.
-    fn internal_fn_hidden(&self, caller: &FunctionProto, user: Option<usize>, name: &[u8]) -> bool {
-        name.starts_with(b"__")
-            && !is_prelude_proto(caller)
-            && user.is_none_or(|i| is_prelude_proto(&self.functions[i]))
+    /// The user function a direct call from `caller` to `name` (resolved by
+    /// [`Vm::resolve_fn`] to `user`) runs, `None` for a builtin, or `Err`
+    /// when the call must fail as undefined. `__`-prefixed builtins are
+    /// engine helpers behind the prelude classes: prelude code always gets
+    /// the builtin (a user function of that name doesn't shadow it), user
+    /// code never does (php has no function by such a name).
+    fn engine_helper_call(
+        caller: &FunctionProto,
+        user: Option<usize>,
+        name: &[u8],
+    ) -> Result<Option<usize>, ()> {
+        if !name.starts_with(b"__") {
+            Ok(user)
+        } else if is_prelude_proto(caller) {
+            Ok(None)
+        } else {
+            user.map(Some).ok_or(())
+        }
     }
 
     pub fn new() -> Self {
@@ -4501,6 +4506,11 @@ impl Vm {
         }
         // Install (hoist) all declared functions, keyed case-insensitively.
         for (idx, proto) in prog.functions.iter().enumerate() {
+            // Engine helpers are `__` builtins, not prelude functions, so a
+            // user function may take any `__` name.
+            debug_assert!(
+                idx >= prog.num_prelude_functions || !proto.name.as_bytes().starts_with(b"__")
+            );
             self.functions.push(proto.clone());
             self.fn_names
                 .insert(proto.name.as_bytes().to_ascii_lowercase(), idx);
@@ -6575,9 +6585,9 @@ impl Vm {
                     fallback,
                 } => {
                     let (user, fname) = self.resolve_fn(name, fallback, &proto.names);
-                    if self.internal_fn_hidden(&proto, user, &fname) {
+                    let Ok(user) = Self::engine_helper_call(&proto, user, &fname) else {
                         return Err(undefined_function(&proto.names[name as usize]));
-                    }
+                    };
                     if let Some(reason) =
                         builtins::is_refused(std::str::from_utf8(&fname).unwrap_or(""))
                     {
@@ -7929,9 +7939,9 @@ impl Vm {
                     fallback,
                 } => {
                     let (user, fname) = self.resolve_fn(name, fallback, &proto.names);
-                    if self.internal_fn_hidden(&proto, user, &fname) {
+                    let Ok(user) = Self::engine_helper_call(&proto, user, &fname) else {
                         return Err(undefined_function(&proto.names[name as usize]));
-                    }
+                    };
                     if let Some(reason) =
                         builtins::is_refused(std::str::from_utf8(&fname).unwrap_or(""))
                     {

@@ -114,7 +114,10 @@ fn fn_get_loaded_extensions(host: &mut dyn Host, args: &[Value]) -> Result<Value
 }
 
 fn fn_function_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.function_exists(&str_arg(args, 0))))
+    // A leading "\" is ignored, as in zif_function_exists.
+    let name = str_arg(args, 0);
+    let name = name.strip_prefix(b"\\").unwrap_or(&name);
+    Ok(Value::Bool(host.function_exists(name)))
 }
 
 fn fn_phpversion(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

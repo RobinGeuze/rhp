@@ -279,9 +279,7 @@ impl Vm {
                 for f in &self.functions {
                     let name = lc(f.name.as_bytes());
                     if f.debug.file.is_empty() {
-                        if !name.starts_with(b"__") {
-                            internal.push(name);
-                        }
+                        internal.push(name);
                     } else {
                         user.push(s(&name));
                     }

@@ -1,0 +1,11 @@
+ArrayObject
+1
+int(1)
+string(1) "A"
+t
+DOMException: Invalid Character Error (5)
+user __reflect, user __xml_fn, user __sxe, user __dom, user __dom_throw
+user __dom_throw
+bool(true)
+bool(true)
+bool(true)

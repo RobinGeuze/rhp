@@ -404,6 +404,9 @@ code byte-for-byte.
 
 ### 3.4 Inline-cache slot plan (reserved, `ClassId`-guarded, monomorphic)
 
+(Not built. The reserved `InlineCache` table and the `cache` operands were
+never read and have been removed; lookups probe the flattened class table.)
+
 `InlineCache { class_id: u32, payload: u32 }` already exists (`Cell`-based, no
 atomics). Every IC-bearing opcode carries `cache: CacheIdx` from day one so the
 ISA shape never changes when the IC is filled. Guard-and-fill, same every site

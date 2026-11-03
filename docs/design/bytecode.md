@@ -12,6 +12,13 @@ decisions are folded in and the losing alternatives are noted inline.
 > left below (the §1 crate table and graph, §2.3, §2.5, §4, the §7 migration
 > steps) record the design as planned and executed; §6 and §8 item 10 describe
 > the test setup as it is today.
+>
+> The instruction set and the proto layout have grown since:
+> `crates/rhp-bytecode/src/lib.rs` is the authority. The reserved inline-cache
+> plumbing (`InlineCache`, `caches`, the `cache` operands), `ProtoFlags`,
+> `DebugInfo.cv_names`, `FnIdx` and the `Refuse` opcode were never used and
+> are gone; `Default` is now `ParamDefault { Const(CIdx), Init }`. `eval`
+> and `include`/`require` run (§4 lists them as refused).
 
 Synthesizes: [`isa.md`](./history/isa.md) (instruction set), [`vm.md`](./history/vm.md) (VM
 runtime), [`bytecode-prior-art.md`](./history/bytecode-prior-art.md) (Zend/Lua lessons),
@@ -393,6 +400,9 @@ OOP opcodes (`New`, `FetchProp`/`AssignProp`, `CallMethod`, `CallStatic`,
 calling convention; omitted here.
 
 ### 2.5 Inline caches, constants, names
+
+(Not built: there are no inline caches. Method and property lookups probe
+the flattened class table's hash maps; see the note at the top.)
 
 - `caches: Vec<InlineCache>` is a Zend-style **side** table (not interleaved),
   `Cell`-based (single-threaded ⇒ no atomics), **monomorphic to start**, guarded

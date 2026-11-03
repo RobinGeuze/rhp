@@ -1,19 +1,10 @@
-//! The PCRE `preg_*` builtin family, backed by the **real PCRE2 library**
-//! (`libpcre2-8`) via the low-level `pcre2-sys` bindings.
+//! The PCRE `preg_*` builtin family: ext/pcre/php_pcre.c's glue over the
+//! real PCRE2 (see [`crate::pcre`] for the library and its per-thread state).
 //!
-//! This is the exact regex engine php itself uses (`ext/pcre`), so matching is
-//! byte-for-byte identical to php 8.5 for every construct PCRE2 supports:
-//! possessive quantifiers (`a++`, `a*+`), atomic groups, recursion/subroutines
-//! (`(?R)`, `(?1)`, `\g<1>`), `\G`, lookbehind, all three named-group spellings
-//! (`(?P<n>)`, `(?<n>)`, `(?'n')`), and ASCII-vs-Unicode character classes.
-//!
-//! Wire this module into `lib.rs` with:
-//! ```ignore
-//! mod preg_fns;               // near the other `mod` lines
-//! // ...and inside registry(), before returning `m`:
-//! preg_fns::register(&mut m);
-//! ```
-//! and add the `PREG_*` constants (see [`preg_constants`]) to `constants()`.
+//! Matching is PCRE2's own, so every construct behaves as in php. This file
+//! ports php's part: delimiter and modifier parsing, the compiled-pattern
+//! cache, `$matches` shaping, php's `$1`/`\1`/`${1}` replacements, the
+//! empty-match iteration and preg_last_error().
 //!
 //! ## Byte semantics
 //! php strings are *byte* strings, and so is PCRE2's 8-bit API: patterns and
@@ -23,10 +14,10 @@
 //!
 //! ## Modifiers → compile options
 //! The trailing modifier letters map to PCRE2 compile options exactly as php
-//! maps them: `i`=CASELESS, `m`=MULTILINE, `s`=DOTALL, `x`=EXTENDED,
-//! `A`=ANCHORED, `D`=DOLLAR_ENDONLY, `U`=UNGREEDY, `J`=DUPNAMES,
-//! `u`=UTF|UCP (UCP is what makes `\d \w \s` Unicode-aware; without `u` they
-//! stay ASCII-only, matching php). `S` and `X` are accepted as no-ops (as php
+//! maps them: `i`=CASELESS, `m`=MULTILINE, `n`=NO_AUTO_CAPTURE, `s`=DOTALL,
+//! `x`=EXTENDED, `A`=ANCHORED, `D`=DOLLAR_ENDONLY, `U`=UNGREEDY,
+//! `J`=DUPNAMES, `r`=EXTRA_CASELESS_RESTRICT (PCRE2 10.43+),
+//! `u`=UTF|UCP|NEVER_BACKSLASH_C. `S` and `X` are accepted as no-ops (as php
 //! does); any other modifier letter is rejected → `false`/`null`.
 //!
 //! ## Empty-match iteration
@@ -34,18 +25,16 @@
 //! php's exact empty-match handling: after an empty match, the next attempt is
 //! retried with `PCRE2_ANCHORED | PCRE2_NOTEMPTY_ATSTART`, and only on failure
 //! is the start advanced by one code unit (one byte, or one UTF-8 character
-//! under `u`). This reproduces php's output for lazy/optional sub-patterns such
-//! as `/a*?/` where a naive "advance after every empty match" loop would not.
+//! under `u`).
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use rhp_semantics::deref;
 use rhp_values::{ArrayKey, PhpArray, PhpStr, Value};
 
+use crate::pcre::{self, sys::*, JitIssue, Ovector, Regex};
 use crate::{Builtin, Host, Thrown};
-
-/// php's default `pcre.backtrack_limit`.
-const BACKTRACK_LIMIT: u32 = 1_000_000;
 
 // `preg_last_error()` codes.
 const PREG_NO_ERROR: i64 = 0;
@@ -63,6 +52,7 @@ thread_local! {
 
 pub(crate) fn reset_state() {
     set_last_error(0);
+    pcre::reset();
 }
 
 fn set_last_error(code: i64) {
@@ -71,7 +61,6 @@ fn set_last_error(code: i64) {
 
 /// `pcre_handle_exec_error`: map a PCRE2 match error code to php's.
 fn set_exec_error(rc: i32) {
-    use pcre2_sys::*;
     let code = match rc {
         PCRE2_ERROR_MATCHLIMIT => PREG_BACKTRACK_LIMIT_ERROR,
         PCRE2_ERROR_DEPTHLIMIT => PREG_RECURSION_LIMIT_ERROR,
@@ -93,286 +82,10 @@ const PREG_SPLIT_OFFSET_CAPTURE: i64 = 4;
 const PREG_UNMATCHED_AS_NULL: i64 = 512;
 const PREG_GREP_INVERT: i64 = 1;
 
-// ---------------------------------------------------------------------------
-// PCRE2 engine wrapper (thin RAII layer over `pcre2-sys`)
-// ---------------------------------------------------------------------------
-
-/// A compiled match: one `Option<(start, end)>` per group index `0..=ncaptures`
-/// (`None` = the group did not participate). Byte offsets into the subject.
-/// Also carries the last `(*MARK:name)` passed on the matching path (php
-/// adds it to `$matches` as `"MARK"`).
-#[derive(Clone, Debug, Default)]
-struct Ovector {
-    groups: Vec<Option<(usize, usize)>>,
-    mark: Option<Vec<u8>>,
+/// One match from `start`; a PCRE2 error sets preg_last_error() and is `Err`.
+fn find_at(re: &Regex, subject: &[u8], start: usize) -> Result<Option<Ovector>, ()> {
+    re.find_at(subject, start).map_err(set_exec_error)
 }
-
-impl std::ops::Deref for Ovector {
-    type Target = Vec<Option<(usize, usize)>>;
-    fn deref(&self) -> &Self::Target {
-        &self.groups
-    }
-}
-
-mod engine {
-    use super::Ovector;
-    use pcre2_sys::*;
-    use std::ptr;
-
-    /// A compiled PCRE2 pattern. Owns the `pcre2_code` and frees it on drop.
-    pub struct Regex {
-        code: *mut pcre2_code_8,
-        /// Number of capturing subpatterns (group 0 excluded).
-        ncaptures: usize,
-        /// Index → name map, length `ncaptures + 1` (index 0 and unnamed = None).
-        names: Vec<Option<String>>,
-        /// Whether the pattern was compiled with PCRE2_UTF (the `u` modifier).
-        utf: bool,
-    }
-
-    impl Drop for Regex {
-        fn drop(&mut self) {
-            unsafe { pcre2_code_free_8(self.code) };
-        }
-    }
-
-    /// Owns a `pcre2_match_data` sized for a given pattern; freed on drop.
-    struct MatchData {
-        ptr: *mut pcre2_match_data_8,
-        /// Match context carrying php's `pcre.backtrack_limit` (1000000).
-        mctx: *mut pcre2_match_context_8,
-    }
-    impl MatchData {
-        fn new(re: &Regex) -> MatchData {
-            let ptr = unsafe { pcre2_match_data_create_from_pattern_8(re.code, ptr::null_mut()) };
-            assert!(!ptr.is_null(), "pcre2 match data allocation failed");
-            let mctx = unsafe { pcre2_match_context_create_8(ptr::null_mut()) };
-            assert!(!mctx.is_null(), "pcre2 match context allocation failed");
-            unsafe { pcre2_set_match_limit_8(mctx, super::BACKTRACK_LIMIT) };
-            MatchData { ptr, mctx }
-        }
-    }
-    impl Drop for MatchData {
-        fn drop(&mut self) {
-            unsafe {
-                pcre2_match_data_free_8(self.ptr);
-                pcre2_match_context_free_8(self.mctx);
-            }
-        }
-    }
-
-    impl Regex {
-        /// Compile a pattern body (raw bytes) with the given compile options.
-        /// Returns `None` if PCRE2 rejects the pattern.
-        pub fn compile(body: &[u8], options: u32) -> Result<Regex, String> {
-            let mut errcode: i32 = 0;
-            let mut erroffset: usize = 0;
-            let code = unsafe {
-                pcre2_compile_8(
-                    body.as_ptr(),
-                    body.len(),
-                    options,
-                    &mut errcode,
-                    &mut erroffset,
-                    ptr::null_mut(),
-                )
-            };
-            if code.is_null() {
-                // php 8.5.10+ (GH-21134) words the \C-under-`u` error itself.
-                let msg = if errcode == PCRE2_ERROR_BACKSLASH_C_CALLER_DISABLED as i32 {
-                    "using \\C is incompatible with the 'u' modifier".to_string()
-                } else {
-                    let mut buf = [0u8; 256];
-                    let n =
-                        unsafe { pcre2_get_error_message_8(errcode, buf.as_mut_ptr(), buf.len()) };
-                    String::from_utf8_lossy(&buf[..n.max(0) as usize]).into_owned()
-                };
-                return Err(format!("Compilation failed: {msg} at offset {erroffset}"));
-            }
-            let ncaptures = pattern_info_usize(code, PCRE2_INFO_CAPTURECOUNT);
-            let names = read_name_table(code, ncaptures);
-            Ok(Regex {
-                code,
-                ncaptures,
-                names,
-                utf: options & PCRE2_UTF != 0,
-            })
-        }
-
-        pub fn ncaptures(&self) -> usize {
-            self.ncaptures
-        }
-        pub fn names(&self) -> &[Option<String>] {
-            &self.names
-        }
-
-        /// One match attempt at byte offset `start` with the given match
-        /// `options`. `Ok(Some(ov))` on a match, `Ok(None)` on no-match,
-        /// `Err(())` on any other PCRE2 error (e.g. invalid UTF-8 subject).
-        fn try_match(
-            &self,
-            subject: &[u8],
-            start: usize,
-            options: u32,
-            md: &MatchData,
-        ) -> Result<Option<Ovector>, ()> {
-            let rc = unsafe {
-                pcre2_match_8(
-                    self.code,
-                    subject.as_ptr(),
-                    subject.len(),
-                    start,
-                    options,
-                    md.ptr,
-                    md.mctx,
-                )
-            };
-            if rc == PCRE2_ERROR_NOMATCH {
-                return Ok(None);
-            }
-            if rc < 0 {
-                super::set_exec_error(rc);
-                return Err(());
-            }
-            let ov = unsafe { pcre2_get_ovector_pointer_8(md.ptr) };
-            let n = self.ncaptures + 1;
-            let mut out = Vec::with_capacity(n);
-            for i in 0..n {
-                let s = unsafe { *ov.add(2 * i) };
-                let e = unsafe { *ov.add(2 * i + 1) };
-                if s == PCRE2_UNSET || e == PCRE2_UNSET {
-                    out.push(None);
-                } else {
-                    out.push(Some((s, e)));
-                }
-            }
-            // The mark name is a NUL-terminated string preceded by its
-            // length unit (valid until the next match on this data block).
-            let mp = unsafe { pcre2_get_mark_8(md.ptr) };
-            let mark = if mp.is_null() {
-                None
-            } else {
-                let len = unsafe { *mp.sub(1) } as usize;
-                Some(unsafe { std::slice::from_raw_parts(mp, len) }.to_vec())
-            };
-            Ok(Some(Ovector { groups: out, mark }))
-        }
-
-        /// A single match at `start` (as `preg_match` uses). `Err(())` surfaces
-        /// as php's `false`.
-        pub fn find_at(&self, subject: &[u8], start: usize) -> Result<Option<Ovector>, ()> {
-            let md = MatchData::new(self);
-            self.try_match(subject, start.min(subject.len()), 0, &md)
-        }
-
-        /// Collect every match from `start`, replicating php's empty-match
-        /// iteration (ANCHORED|NOTEMPTY_ATSTART retry, then advance one unit).
-        pub fn find_all(&self, subject: &[u8], start: usize) -> Result<Vec<Ovector>, ()> {
-            let md = MatchData::new(self);
-            let mut out = Vec::new();
-            let mut pos = start.min(subject.len());
-            let mut notempty = false;
-            loop {
-                let opts = if notempty {
-                    PCRE2_ANCHORED | PCRE2_NOTEMPTY_ATSTART
-                } else {
-                    0
-                };
-                match self.try_match(subject, pos, opts, &md)? {
-                    Some(ov) => {
-                        let (s, e) = ov[0].unwrap();
-                        out.push(ov);
-                        notempty = e == s;
-                        pos = e;
-                    }
-                    None => {
-                        if notempty && pos < subject.len() {
-                            pos += self.unit_len(subject, pos);
-                            notempty = false;
-                        } else {
-                            break;
-                        }
-                    }
-                }
-                if pos > subject.len() {
-                    break;
-                }
-            }
-            Ok(out)
-        }
-
-        /// Length of the code unit at `pos` to skip past an empty match: one
-        /// UTF-8 character under `u`, otherwise one byte (matches php's
-        /// `calculate_unit_length`).
-        fn unit_len(&self, subject: &[u8], pos: usize) -> usize {
-            if !self.utf {
-                return 1;
-            }
-            let mut end = pos + 1;
-            while end < subject.len() && (subject[end] & 0xC0) == 0x80 {
-                end += 1;
-            }
-            end - pos
-        }
-    }
-
-    fn pattern_info_usize(code: *const pcre2_code_8, what: u32) -> usize {
-        let mut v: usize = 0;
-        unsafe {
-            pcre2_pattern_info_8(code, what, &mut v as *mut usize as *mut libc::c_void);
-        }
-        v
-    }
-    fn pattern_info_u32(code: *const pcre2_code_8, what: u32) -> u32 {
-        let mut v: u32 = 0;
-        unsafe {
-            pcre2_pattern_info_8(code, what, &mut v as *mut u32 as *mut libc::c_void);
-        }
-        v
-    }
-
-    /// Read PCRE2's name table into an index→name map of length `ncaptures + 1`.
-    /// Each 8-bit name-table entry is `[group_hi, group_lo, name bytes..., 0]`.
-    fn read_name_table(code: *const pcre2_code_8, ncaptures: usize) -> Vec<Option<String>> {
-        let mut names = vec![None; ncaptures + 1];
-        let count = pattern_info_u32(code, PCRE2_INFO_NAMECOUNT) as usize;
-        if count == 0 {
-            return names;
-        }
-        let entry_size = pattern_info_u32(code, PCRE2_INFO_NAMEENTRYSIZE) as usize;
-        let mut table: *const u8 = ptr::null();
-        unsafe {
-            pcre2_pattern_info_8(
-                code,
-                PCRE2_INFO_NAMETABLE,
-                &mut table as *mut *const u8 as *mut libc::c_void,
-            );
-        }
-        for k in 0..count {
-            let entry = unsafe { table.add(k * entry_size) };
-            let hi = unsafe { *entry } as usize;
-            let lo = unsafe { *entry.add(1) } as usize;
-            let group = (hi << 8) | lo;
-            // name bytes follow, NUL-terminated.
-            let mut name = Vec::new();
-            let mut j = 2usize;
-            loop {
-                let b = unsafe { *entry.add(j) };
-                if b == 0 {
-                    break;
-                }
-                name.push(b);
-                j += 1;
-            }
-            if group < names.len() {
-                names[group] = Some(String::from_utf8_lossy(&name).into_owned());
-            }
-        }
-        names
-    }
-}
-
-use engine::Regex;
 
 // ---------------------------------------------------------------------------
 // small shared helpers
@@ -381,6 +94,12 @@ use engine::Regex;
 /// `(string)` bytes of a value (after deref).
 fn bytes_of(v: &Value) -> Vec<u8> {
     rhp_values::conv::to_string_bytes(&deref(v))
+}
+
+/// An array entry or a callback's result as a string (zval_get_string): an
+/// array warns, an object goes through `__toString` or throws.
+fn entry_bytes(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> {
+    crate::argparse::zval_get_string(host, v)
 }
 
 /// `(int)` of a value (after deref). Default when the arg is absent.
@@ -394,48 +113,55 @@ fn int_arg(args: &[Value], i: usize, default: i64) -> i64 {
 // pattern parsing: `/body/flags`, `#body#flags`, `(body)flags`, …
 // ---------------------------------------------------------------------------
 
-/// Parse a delimited php pattern and compile it (pcre_get_compiled_regex_cache).
-/// `Err` carries php's warning text (bad delimiter, unterminated, unknown
-/// modifier, "Compilation failed: …"); the caller reports it.
-fn compile(pattern: &[u8]) -> Result<Regex, String> {
+/// pcre_get_compiled_regex_cache: a cached pattern, or parse and compile it.
+/// A failed compile or a JIT problem warns from builtin `fname` right away,
+/// as php does; `None` means the pattern did not compile.
+fn compile_warn(
+    host: &mut dyn Host,
+    fname: &str,
+    pattern: &[u8],
+) -> Result<Option<Rc<Regex>>, Thrown> {
     set_last_error(PREG_NO_ERROR);
-    let re = compile_inner(pattern);
-    if let Err(m) = &re {
-        set_last_error(PREG_INTERNAL_ERROR);
-        COMPILE_ERR.with(|c| *c.borrow_mut() = Some(m.clone()));
+    if let Some(re) = pcre::cache_get(pattern) {
+        return Ok(Some(re));
     }
-    re
-}
-
-thread_local! {
-    /// The warning of the last failed compile not yet reported (the replace
-    /// helpers run without the host; their builtin reports it).
-    static COMPILE_ERR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Report (from builtin `fname`) a compile failure the host-less helpers hit.
-fn flush_compile_warning(host: &mut dyn Host, fname: &str) -> Result<(), Thrown> {
-    if let Some(m) = COMPILE_ERR.with(|c| c.borrow_mut().take()) {
+    let mut warnings = Vec::new();
+    let mut jit_issue = None;
+    let re = compile_inner(pattern, &mut jit_issue);
+    match jit_issue {
+        Some(JitIssue::NoMemory) => warnings.push(
+            "Allocation of JIT memory failed, PCRE JIT will be disabled. \
+             This is likely caused by security restrictions. \
+             Either grant PHP permission to allocate executable memory, or set pcre.jit=0"
+                .to_string(),
+        ),
+        // php also sets PREG_INTERNAL_ERROR here, but every caller resets
+        // the code before matching.
+        Some(JitIssue::Failed(m)) => warnings.push(format!("JIT compilation failed: {m}")),
+        None => {}
+    }
+    let re = match re {
+        Ok(re) => {
+            let re = Rc::new(re);
+            pcre::cache_put(pattern.to_vec(), re.clone());
+            Some(re)
+        }
+        Err(m) => {
+            warnings.push(m);
+            set_last_error(PREG_INTERNAL_ERROR);
+            None
+        }
+    };
+    let err = LAST_ERROR.with(|c| c.get());
+    for m in warnings {
         crate::warn(host, fname, &m)?;
     }
-    Ok(())
+    // A warning handler may have run preg functions of its own.
+    set_last_error(err);
+    Ok(re)
 }
 
-/// [`compile`], raising php's warning from builtin `fname` on failure.
-fn compile_warn(host: &mut dyn Host, fname: &str, pattern: &[u8]) -> Result<Option<Regex>, Thrown> {
-    match compile(pattern) {
-        Ok(re) => Ok(Some(re)),
-        Err(msg) => {
-            COMPILE_ERR.with(|c| c.borrow_mut().take());
-            crate::warn(host, fname, &msg)?;
-            set_last_error(PREG_INTERNAL_ERROR);
-            Ok(None)
-        }
-    }
-}
-
-fn compile_inner(pattern: &[u8]) -> Result<Regex, String> {
-    use pcre2_sys::*;
+fn compile_inner(pattern: &[u8], jit_issue: &mut Option<JitIssue>) -> Result<Regex, String> {
     // Leading whitespace is skipped; the next byte is the delimiter.
     let start = pattern
         .iter()
@@ -485,6 +211,7 @@ fn compile_inner(pattern: &[u8]) -> Result<Regex, String> {
 
     // Translate trailing modifier letters into PCRE2 compile options.
     let mut options: u32 = 0;
+    let mut extra: u32 = 0;
     for &f in flag_bytes {
         match f {
             b'i' => options |= PCRE2_CASELESS,
@@ -494,6 +221,7 @@ fn compile_inner(pattern: &[u8]) -> Result<Regex, String> {
             b'x' => options |= PCRE2_EXTENDED,
             b'A' => options |= PCRE2_ANCHORED,
             b'D' => options |= PCRE2_DOLLAR_ENDONLY,
+            b'r' if pcre::HAVE_CASELESS_RESTRICT => extra |= PCRE2_EXTRA_CASELESS_RESTRICT,
             b'U' => options |= PCRE2_UNGREEDY,
             b'J' => options |= PCRE2_DUPNAMES,
             // `u`: UTF mode + Unicode properties (UCP is what makes \d\w\s match
@@ -507,7 +235,15 @@ fn compile_inner(pattern: &[u8]) -> Result<Regex, String> {
         }
     }
 
-    Regex::compile(body, options)
+    Regex::compile(body, options, extra, jit_issue).map_err(|e| {
+        // php 8.5.10+ (GH-21134) words the \C-under-`u` error itself.
+        let msg = if e.code == PCRE2_ERROR_BACKSLASH_C_CALLER_DISABLED {
+            "using \\C is incompatible with the 'u' modifier".to_string()
+        } else {
+            e.message
+        };
+        format!("Compilation failed: {msg} at offset {}", e.offset)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -591,7 +327,13 @@ fn build_match(
     for i in 0..=last {
         let val = group_value(ov, subject, i, offset_capture, unmatched_null);
         if let Some(name) = names.get(i).and_then(|o| o.as_ref()) {
-            arr.insert(ArrayKey::Str(PhpStr::from(name.as_str())), val.clone());
+            // add_named: under (?J) several groups share a name; an unset
+            // one never replaces a set one.
+            let key = ArrayKey::Str(PhpStr::from(name.as_str()));
+            let unset = ov.get(i).and_then(|o| *o).is_none();
+            if !unset || arr.get(&key).is_none() {
+                arr.insert(key, val.clone());
+            }
         }
         arr.insert(ArrayKey::Int(i as i64), val);
     }
@@ -610,12 +352,15 @@ fn write_ref(arg: Option<&Value>, value: Value) {
     }
 }
 
-/// php_pcre_match_impl's start offset: a negative one counts from the end
-/// (clamped to 0); one past the subject fails with PREG_INTERNAL_ERROR
-/// after `$matches` was reset to an empty array.
-fn start_offset(
+/// php_do_pcre_match after the compile, up to the first match attempt: the
+/// offset check, `$matches = []`, the flags check, then the start offset (a
+/// negative one counts from the end, clamped to 0; one past the subject
+/// fails with PREG_INTERNAL_ERROR). `Ok(None)` means return false.
+fn match_setup(
     f: &str,
+    global: bool,
     subject: &[u8],
+    flags: i64,
     offset: i64,
     matches: Option<&Value>,
 ) -> Result<Option<usize>, Thrown> {
@@ -626,6 +371,14 @@ fn start_offset(
                 "{f}(): Argument #5 ($offset) must be greater than {}",
                 i64::MIN
             ),
+        ));
+    }
+    write_ref(matches, Value::Array(PhpArray::new()));
+    let order = flags & 0xff;
+    if order != 0 && (!global || !(PREG_PATTERN_ORDER..=PREG_SET_ORDER).contains(&order)) {
+        return Err(Thrown::error(
+            "ValueError",
+            format!("{f}(): Argument #4 ($flags) must be a PREG_* constant"),
         ));
     }
     let len = subject.len() as i64;
@@ -639,7 +392,6 @@ fn start_offset(
         offset
     };
     if start > len {
-        write_ref(matches, Value::Array(PhpArray::new()));
         set_last_error(PREG_INTERNAL_ERROR);
         return Ok(None);
     }
@@ -656,14 +408,15 @@ fn fn_preg_match(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
     let subject = bytes_of(&args[1]);
     let flags = int_arg(args, 3, 0);
-    let Some(offset) = start_offset("preg_match", &subject, int_arg(args, 4, 0), args.get(2))?
+    let offset = int_arg(args, 4, 0);
+    let Some(offset) = match_setup("preg_match", false, &subject, flags, offset, args.get(2))?
     else {
         return Ok(Value::Bool(false));
     };
     let offset_capture = flags & PREG_OFFSET_CAPTURE != 0;
     let unmatched_null = flags & PREG_UNMATCHED_AS_NULL != 0;
 
-    match re.find_at(&subject, offset) {
+    match find_at(&re, &subject, offset) {
         Ok(Some(ov)) => {
             let arr = build_match(&ov, &subject, re.names(), offset_capture, unmatched_null);
             write_ref(args.get(2), Value::Array(arr));
@@ -686,22 +439,26 @@ fn fn_preg_match_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
         return Ok(Value::Bool(false));
     };
     let subject = bytes_of(&args[1]);
-    let flags_raw = int_arg(args, 3, 0);
-    // The ordering flag lives in the low bits; default is PREG_PATTERN_ORDER.
-    let set_order = flags_raw & PREG_SET_ORDER != 0;
-    let offset_capture = flags_raw & PREG_OFFSET_CAPTURE != 0;
-    let unmatched_null = flags_raw & PREG_UNMATCHED_AS_NULL != 0;
-    let Some(offset) = start_offset("preg_match_all", &subject, int_arg(args, 4, 0), args.get(2))?
+    let flags = int_arg(args, 3, 0);
+    let offset = int_arg(args, 4, 0);
+    let Some(offset) = match_setup("preg_match_all", true, &subject, flags, offset, args.get(2))?
     else {
         return Ok(Value::Bool(false));
     };
+    // The ordering flag lives in the low bits; default is PREG_PATTERN_ORDER.
+    let set_order = flags & 0xff == PREG_SET_ORDER;
+    let offset_capture = flags & PREG_OFFSET_CAPTURE != 0;
+    let unmatched_null = flags & PREG_UNMATCHED_AS_NULL != 0;
     let names = re.names().to_vec();
     let ngroups = re.ncaptures() + 1;
 
-    let all = match re.find_all(&subject, offset) {
-        Ok(v) => v,
-        Err(()) => return Ok(Value::Bool(false)),
-    };
+    // On an error php still fills `$matches` with what it found before it,
+    // then returns false.
+    let mut all = Vec::new();
+    let ok = re
+        .find_all(&subject, offset, usize::MAX, &mut all)
+        .map_err(set_exec_error)
+        .is_ok();
 
     let count = all.len();
     let result = if set_order {
@@ -748,7 +505,11 @@ fn fn_preg_match_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     };
 
     write_ref(args.get(2), Value::Array(result));
-    Ok(Value::Int(count as i64))
+    Ok(if ok {
+        Value::Int(count as i64)
+    } else {
+        Value::Bool(false)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -839,10 +600,12 @@ fn read_num(b: &[u8], start: usize) -> Option<(usize, usize)> {
 // the core replace driver (shared by preg_replace / preg_replace_callback)
 // ---------------------------------------------------------------------------
 
-/// Replace matches in `subject`, producing bytes. `make_rep` produces the
-/// replacement bytes for each match (template expansion or a callback). Returns
-/// `(output, replacement_count)`. `limit < 0` means unlimited. `Err(())` on a
-/// PCRE2 error during matching.
+/// Replace matches in `subject`, producing bytes. `make_rep` appends the
+/// replacement for each match as it is found (template expansion or a
+/// callback) and returns false to stop. Returns `(output, replacement_count)`.
+/// `limit < 0` means unlimited. `Err(())` on a PCRE2 error, or when
+/// `make_rep` stopped (PREG_INTERNAL_ERROR, as php's error path sets for a
+/// match count); either sets preg_last_error().
 fn replace_driver<F>(
     re: &Regex,
     subject: &[u8],
@@ -850,21 +613,27 @@ fn replace_driver<F>(
     mut make_rep: F,
 ) -> Result<(Vec<u8>, usize), ()>
 where
-    F: FnMut(&Ovector, &mut Vec<u8>),
+    F: FnMut(&Ovector, &mut Vec<u8>) -> bool,
 {
-    let matches = re.find_all(subject, 0)?;
+    let max = usize::try_from(limit).unwrap_or(usize::MAX);
     let mut out: Vec<u8> = Vec::with_capacity(subject.len());
     let mut last = 0usize;
     let mut n = 0usize;
-    for ov in &matches {
-        if limit >= 0 && n as i64 >= limit {
-            break;
+    if max > 0 {
+        for m in re.matches(subject, 0) {
+            let ov = m.map_err(set_exec_error)?;
+            let (s, e) = ov[0].unwrap();
+            out.extend_from_slice(&subject[last..s]);
+            if !make_rep(&ov, &mut out) {
+                set_last_error(PREG_INTERNAL_ERROR);
+                return Err(());
+            }
+            last = e;
+            n += 1;
+            if n == max {
+                break;
+            }
         }
-        let (s, e) = ov[0].unwrap();
-        out.extend_from_slice(&subject[last..s]);
-        make_rep(ov, &mut out);
-        last = e;
-        n += 1;
     }
     out.extend_from_slice(&subject[last.min(subject.len())..]);
     Ok((out, n))
@@ -874,41 +643,35 @@ where
 // preg_replace
 // ---------------------------------------------------------------------------
 
-/// Apply one (pattern, replacement-template) pair to a byte subject.
-fn replace_one(
-    pattern: &[u8],
-    replacement: &[u8],
-    subject: &[u8],
-    limit: i64,
-) -> Option<(Vec<u8>, usize)> {
-    let re = compile(pattern).ok()?;
-    replace_driver(&re, subject, limit, |ov, out| {
-        expand(
-            replacement,
-            |g| group_bytes(ov, subject, g).unwrap_or(b""),
-            out,
-        )
-    })
-    .ok()
-}
-
 /// Run every (pattern, replacement) pair over a single subject in sequence.
 /// `pats`/`reps` are parallel lists; a missing replacement means "".
+/// `Ok(None)` is a compile or match failure.
 fn replace_subject(
+    host: &mut dyn Host,
+    fname: &str,
     pats: &[Vec<u8>],
     reps: &[Vec<u8>],
     subject: &[u8],
     limit: i64,
     count: &mut usize,
-) -> Option<Vec<u8>> {
+) -> Result<Option<Vec<u8>>, Thrown> {
     let mut cur = subject.to_vec();
     for (i, pat) in pats.iter().enumerate() {
         let rep = reps.get(i).map(|v| v.as_slice()).unwrap_or(b"");
-        let (next, n) = replace_one(pat, rep, &cur, limit)?;
+        let Some(re) = compile_warn(host, fname, pat)? else {
+            return Ok(None);
+        };
+        let res = replace_driver(&re, &cur, limit, |ov, out| {
+            expand(rep, |g| group_bytes(ov, &cur, g).unwrap_or(b""), out);
+            true
+        });
+        let Ok((next, n)) = res else {
+            return Ok(None);
+        };
         *count += n;
         cur = next;
     }
-    Some(cur)
+    Ok(Some(cur))
 }
 
 /// Collect a pattern/replacement argument into a list of byte vectors. A scalar
@@ -920,23 +683,30 @@ fn as_list(v: &Value) -> (Vec<Vec<u8>>, bool) {
     }
 }
 
-fn preg_replace_impl(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let (pats, _pat_is_arr) = as_list(&args[0]);
+/// _preg_replace_common: preg_replace, or preg_filter (`filter`), which keeps
+/// only the subjects something was replaced in. A subject whose replacement
+/// fails is left out of an array result, and makes a string result null.
+fn preg_replace_common(
+    host: &mut dyn Host,
+    args: &[Value],
+    fname: &str,
+    filter: bool,
+) -> Result<Value, Thrown> {
+    let (pats, pat_is_arr) = as_list(&args[0]);
     let (reps, rep_is_arr) = as_list(&args[1]);
+    if rep_is_arr && !pat_is_arr {
+        return Err(Thrown::type_error(format!(
+            "{fname}(): Argument #1 ($pattern) must be of type array when argument #2 ($replacement) is an array, string given"
+        )));
+    }
     let limit = int_arg(args, 3, -1);
     let mut count = 0usize;
 
-    // If replacement is a scalar but pattern is an array, reuse it for each.
+    // A scalar replacement applies to every pattern.
     let reps: Vec<Vec<u8>> = if rep_is_arr {
         reps
     } else {
-        vec![reps.into_iter().next().unwrap_or_default()]
-    };
-    let reps_for_each: Vec<Vec<u8>> = if rep_is_arr {
-        reps.clone()
-    } else {
-        // scalar replacement: apply the same template to every pattern
-        vec![reps[0].clone(); pats.len()]
+        vec![reps.into_iter().next().unwrap_or_default(); pats.len()]
     };
 
     let result = match deref(&args[2]) {
@@ -944,25 +714,36 @@ fn preg_replace_impl(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             // subject is an array: return an array with the same keys.
             let mut out = PhpArray::new();
             for (k, sv) in subjects.iter() {
-                let sb = bytes_of(sv);
-                match replace_subject(&pats, &reps_for_each, &sb, limit, &mut count) {
-                    Some(r) => out.insert(k.clone(), Value::str(r)),
-                    None => return Ok(Value::Null),
+                let before = count;
+                let sb = entry_bytes(host, sv)?;
+                if let Some(r) = replace_subject(host, fname, &pats, &reps, &sb, limit, &mut count)?
+                {
+                    if !filter || count > before {
+                        out.insert(k.clone(), Value::str(r));
+                    }
                 }
             }
             Value::Array(out)
         }
         other => {
             let sb = bytes_of(&other);
-            match replace_subject(&pats, &reps_for_each, &sb, limit, &mut count) {
-                Some(r) => Value::str(r),
-                None => return Ok(Value::Null),
+            match replace_subject(host, fname, &pats, &reps, &sb, limit, &mut count)? {
+                Some(r) if !filter || count > 0 => Value::str(r),
+                _ => Value::Null,
             }
         }
     };
 
     write_ref(args.get(4), Value::Int(count as i64));
     Ok(result)
+}
+
+fn fn_preg_replace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    preg_replace_common(host, args, "preg_replace", false)
+}
+
+fn fn_preg_filter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    preg_replace_common(host, args, "preg_filter", true)
 }
 
 // ---------------------------------------------------------------------------
@@ -973,6 +754,7 @@ fn preg_replace_impl(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 /// (`php_replace_in_subject_func`). `Ok(None)` = a compile/match failure.
 fn cb_string(
     host: &mut dyn Host,
+    fname: &str,
     pairs: &[(Vec<u8>, Value)],
     subject: &[u8],
     limit: i64,
@@ -983,27 +765,34 @@ fn cb_string(
     let unmatched_null = flags & PREG_UNMATCHED_AS_NULL != 0;
     let mut cur = subject.to_vec();
     for (pat, cb) in pairs {
-        let Ok(re) = compile(pat) else {
+        let Some(re) = compile_warn(host, fname, pat)? else {
             return Ok(None);
         };
         let names = re.names().to_vec();
-        // Errors from the callback propagate out as a `Thrown`.
+        // An exception from the callback, or from converting its result
+        // (preg_do_repl_func), stops matching and propagates.
         let mut pending: Result<(), Thrown> = Ok(());
         let src = cur.clone();
-        let (bytes, n) = match replace_driver(&re, &src, limit, |ov, out| {
-            if pending.is_err() {
-                return;
-            }
+        let res = replace_driver(&re, &src, limit, |ov, out| {
             let m = build_match(ov, &src, &names, offset_capture, unmatched_null);
-            match host.call_callable(cb, &[Value::Array(m)]) {
-                Ok(v) => out.extend_from_slice(&bytes_of(&v)),
-                Err(e) => pending = Err(e),
+            let rep = host
+                .call_callable(cb, &[Value::Array(m)])
+                .and_then(|v| entry_bytes(host, &v));
+            match rep {
+                Ok(b) => {
+                    out.extend_from_slice(&b);
+                    true
+                }
+                Err(e) => {
+                    pending = Err(e);
+                    false
+                }
             }
-        }) {
-            Ok(r) => r,
-            Err(()) => return Ok(None),
-        };
+        });
         pending?;
+        let Ok((bytes, n)) = res else {
+            return Ok(None);
+        };
         *count += n;
         cur = bytes;
     }
@@ -1014,6 +803,7 @@ fn cb_string(
 /// out of the result (php); a failing string subject yields `None`.
 fn cb_subject(
     host: &mut dyn Host,
+    fname: &str,
     pairs: &[(Vec<u8>, Value)],
     subject: Value,
     limit: i64,
@@ -1024,33 +814,43 @@ fn cb_subject(
         Value::Array(subjects) => {
             let mut out = PhpArray::new();
             for (k, sv) in subjects.iter() {
-                if let Some(r) = cb_string(host, pairs, &bytes_of(sv), limit, flags, count)? {
+                let sb = entry_bytes(host, sv)?;
+                if let Some(r) = cb_string(host, fname, pairs, &sb, limit, flags, count)? {
                     out.insert(k.clone(), Value::str(r));
                 }
             }
             Ok(Some(Value::Array(out)))
         }
         other => {
-            Ok(cb_string(host, pairs, &bytes_of(&other), limit, flags, count)?.map(Value::str))
+            let sb = bytes_of(&other);
+            Ok(cb_string(host, fname, pairs, &sb, limit, flags, count)?.map(Value::str))
         }
     }
 }
 
-fn preg_replace_callback_impl(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_preg_replace_callback(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (pats, _) = as_list(&args[0]);
     let cb = deref(&args[1]);
     let limit = int_arg(args, 3, -1);
     let flags = int_arg(args, 5, 0);
     let pairs: Vec<(Vec<u8>, Value)> = pats.into_iter().map(|p| (p, cb.clone())).collect();
     let mut count = 0usize;
-    let result = cb_subject(host, &pairs, deref(&args[2]), limit, flags, &mut count)?;
+    let result = cb_subject(
+        host,
+        "preg_replace_callback",
+        &pairs,
+        deref(&args[2]),
+        limit,
+        flags,
+        &mut count,
+    )?;
     write_ref(args.get(4), Value::Int(count as i64));
     Ok(result.unwrap_or(Value::Null))
 }
 
 /// `preg_replace_callback_array($pattern, $subject, $limit, &$count, $flags)`:
 /// each `pattern => callback` pair is applied in turn to the whole subject.
-fn preg_replace_callback_array_impl(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_preg_replace_callback_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let map = match deref(&args[0]) {
         Value::Array(a) => a,
         other => {
@@ -1078,49 +878,14 @@ fn preg_replace_callback_array_impl(host: &mut dyn Host, args: &[Value]) -> Resu
             return Err(Thrown::type_error("preg_replace_callback_array(): Argument #1 ($pattern) must contain only valid callbacks"));
         }
         let pairs = [(pat.as_bytes().to_vec(), cb)];
-        match cb_subject(host, &pairs, cur, limit, flags, &mut count)? {
+        let fname = "preg_replace_callback_array";
+        match cb_subject(host, fname, &pairs, cur, limit, flags, &mut count)? {
             Some(v) => cur = v,
             None => return Ok(Value::Null),
         }
     }
     write_ref(args.get(3), Value::Int(count as i64));
     Ok(cur)
-}
-
-/// Run a replace builtin whose helpers compile without the host, then report
-/// a compile failure they hit (php warns from the builtin).
-fn with_compile_warning(
-    host: &mut dyn Host,
-    fname: &str,
-    args: &[Value],
-    f: crate::NativeFn,
-) -> Result<Value, Thrown> {
-    COMPILE_ERR.with(|c| c.borrow_mut().take());
-    let r = f(host, args);
-    flush_compile_warning(host, fname)?;
-    r
-}
-
-fn fn_preg_replace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    with_compile_warning(host, "preg_replace", args, preg_replace_impl)
-}
-
-fn fn_preg_replace_callback(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    with_compile_warning(
-        host,
-        "preg_replace_callback",
-        args,
-        preg_replace_callback_impl,
-    )
-}
-
-fn fn_preg_replace_callback_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    with_compile_warning(
-        host,
-        "preg_replace_callback_array",
-        args,
-        preg_replace_callback_array_impl,
-    )
 }
 
 fn fn_preg_last_error(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -1152,56 +917,66 @@ fn fn_preg_split(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Bool(false));
     };
     let subject = bytes_of(&args[1]);
-    let limit = int_arg(args, 2, -1);
     let flags = int_arg(args, 3, 0);
     let no_empty = flags & PREG_SPLIT_NO_EMPTY != 0;
     let delim_capture = flags & PREG_SPLIT_DELIM_CAPTURE != 0;
     let offset_capture = flags & PREG_SPLIT_OFFSET_CAPTURE != 0;
-
-    let all = match re.find_all(&subject, 0) {
-        Ok(v) => v,
-        Err(()) => return Ok(Value::Bool(false)),
+    // php_pcre_split_impl: -1 and 0 mean no limit; any other limit below 2
+    // returns the whole subject. Pieces left out by NO_EMPTY don't count.
+    let mut limit = match int_arg(args, 2, -1) {
+        0 => -1,
+        l => l,
     };
 
     let mut out = PhpArray::new();
-    // Emit a piece honouring NO_EMPTY and OFFSET_CAPTURE.
-    let emit = |out: &mut PhpArray, piece: &[u8], off: usize| {
-        if no_empty && piece.is_empty() {
-            return;
-        }
+    // One piece; `None` offsets are an unset group's (offset -1).
+    let push = |out: &mut PhpArray, piece: &[u8], off: Option<usize>| {
         let v = Value::str(piece.to_vec());
         out.push(if offset_capture {
-            pair(v, off as i64)
+            pair(v, off.map_or(-1, |o| o as i64))
         } else {
             v
         });
     };
 
-    let mut next = 0usize; // start of the current (unemitted) text piece
-                           // `pieces` = number of text pieces already emitted (one per match iteration).
-    for (pieces, ov) in all.iter().enumerate() {
-        // limit>0: once we have limit-1 text pieces, the remainder is the last.
-        if limit > 0 && pieces as i64 >= limit - 1 {
-            break;
-        }
-        let (s, e) = ov[0].unwrap();
-        emit(&mut out, &subject[next..s], next);
-        if delim_capture {
-            let last = last_participating(ov);
-            for i in 1..=last {
-                match group_bytes(ov, &subject, i) {
-                    Some(g) => emit(&mut out, g, ov[i].unwrap().0),
-                    None => emit(&mut out, b"", s),
+    let mut last = 0usize; // end of the last match: where the next piece starts
+    if limit == -1 || limit > 1 {
+        for m in re.matches(&subject, 0) {
+            let Ok(ov) = m.map_err(set_exec_error) else {
+                return Ok(Value::Bool(false));
+            };
+            let (s, e) = ov[0].unwrap();
+            if e < s {
+                // \K in a lookahead made the match end before it starts.
+                set_last_error(PREG_INTERNAL_ERROR);
+                return Ok(Value::Bool(false));
+            }
+            if !no_empty || s != last {
+                push(&mut out, &subject[last..s], Some(last));
+                if limit != -1 {
+                    limit -= 1;
                 }
             }
+            if delim_capture {
+                for g in ov.iter().take(last_participating(&ov) + 1).skip(1) {
+                    match *g {
+                        Some((gs, ge)) if !no_empty || gs != ge => {
+                            push(&mut out, &subject[gs..ge], Some(gs))
+                        }
+                        None if !no_empty => push(&mut out, b"", None),
+                        _ => {}
+                    }
+                }
+            }
+            last = e;
+            if limit != -1 && limit <= 1 {
+                break;
+            }
         }
-        next = e;
     }
-    emit(
-        &mut out,
-        &subject[next.min(subject.len())..],
-        next.min(subject.len()),
-    );
+    if !no_empty || last < subject.len() {
+        push(&mut out, &subject[last..], Some(last));
+    }
 
     Ok(Value::Array(out))
 }
@@ -1256,11 +1031,13 @@ fn fn_preg_grep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let invert = int_arg(args, 2, 0) & PREG_GREP_INVERT != 0;
     let mut out = PhpArray::new();
     for (k, v) in input.iter() {
-        let b = bytes_of(v);
-        let matched = match re.find_at(&b, 0) {
-            Ok(opt) => opt.is_some(),
-            Err(()) => return Ok(Value::Bool(false)),
+        let b = entry_bytes(host, v)?;
+        // A match error stops the scan; the entries kept so far are the
+        // result (php_pcre_grep_impl).
+        let Ok(found) = find_at(&re, &b, 0) else {
+            break;
         };
+        let matched = found.is_some();
         if matched != invert {
             out.insert(k.clone(), v.clone());
         }
@@ -1272,8 +1049,9 @@ fn fn_preg_grep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // registration + constants
 // ---------------------------------------------------------------------------
 
-/// The `PREG_*` constants this module relies on, for inclusion in lib.rs
-/// `constants()`. Values verified against `php -r 'echo PREG_*;'` (php 8.5.8).
+/// The pcre extension's constants, for lib.rs `constants()`. The `PCRE_*`
+/// ones describe the linked PCRE2 as php_pcre.c does: `PCRE_VERSION` from
+/// pcre2_config at run time, MAJOR/MINOR from the header.
 pub fn preg_constants() -> Vec<(&'static str, Value)> {
     vec![
         ("PREG_PATTERN_ORDER", Value::Int(PREG_PATTERN_ORDER)),
@@ -1309,7 +1087,10 @@ pub fn preg_constants() -> Vec<(&'static str, Value)> {
             "PREG_JIT_STACKLIMIT_ERROR",
             Value::Int(PREG_JIT_STACKLIMIT_ERROR),
         ),
-        ("PCRE_JIT_SUPPORT", Value::Bool(true)),
+        ("PCRE_VERSION", Value::str(pcre::version())),
+        ("PCRE_VERSION_MAJOR", Value::Int(pcre::MAJOR)),
+        ("PCRE_VERSION_MINOR", Value::Int(pcre::MINOR)),
+        ("PCRE_JIT_SUPPORT", Value::Bool(pcre::jit_supported())),
     ]
 }
 
@@ -1336,6 +1117,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "preg_match", fn_preg_match, 2, Some(5));
     put(m, "preg_match_all", fn_preg_match_all, 2, Some(5));
     put(m, "preg_replace", fn_preg_replace, 3, Some(5));
+    put(m, "preg_filter", fn_preg_filter, 3, Some(5));
     put(
         m,
         "preg_replace_callback",

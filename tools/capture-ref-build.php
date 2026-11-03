@@ -7,7 +7,8 @@
 //     rhp -n tools/capture-ref-build.php      # must print the same
 //
 // crates/rhp-cli/tests/ref_build.rs runs both and compares them: the
-// "release" section whenever php is the same release as rhp, the "build"
+// "release" section whenever php is the same release as rhp, the "linked"
+// section (libraries rhp links itself) against any php 8.5, the "build"
 // section only against the reference build (Homebrew php on macOS).
 // To bump rhp to a new php release, upgrade the reference php, run this
 // script and copy the changed values into version.rs.
@@ -55,6 +56,13 @@ $all = ini_get_all(null, false);
 row("ini_get_all()[memory_hard_limit_percent]",
     array_key_exists('memory_hard_limit_percent', $all) ? $all['memory_hard_limit_percent'] : '(absent)');
 
+// Libraries rhp links itself (docs/design/libraries.md): the versions must
+// be the ones php links, on every machine.
+echo "# linked\n";
+foreach (['PCRE_VERSION', 'PCRE_VERSION_MAJOR', 'PCRE_VERSION_MINOR'] as $c) {
+    row($c, defined($c) ? constant($c) : '(undefined)');
+}
+
 echo "# build\n";
 foreach (['PHP_BUILD_DATE', 'PHP_BUILD_PROVIDER', 'PHP_PREFIX', 'PHP_BINDIR', 'PHP_SBINDIR',
           'PHP_MANDIR', 'PHP_LIBDIR', 'PHP_DATADIR', 'PHP_SYSCONFDIR', 'PHP_LOCALSTATEDIR',
@@ -66,7 +74,7 @@ foreach (['PHP_BUILD_DATE', 'PHP_BUILD_PROVIDER', 'PHP_PREFIX', 'PHP_BINDIR', 'P
 row("ini_get('include_path')", ini_get('include_path'));
 row("ini_get('extension_dir')", ini_get('extension_dir'));
 info_rows(['Build Date', 'Build System', 'Build Provider', 'Configuration File (php.ini) Path']);
-foreach (['PCRE_VERSION', 'PCRE_VERSION_MAJOR', 'PCRE_VERSION_MINOR', 'LIBXML_VERSION',
+foreach (['LIBXML_VERSION',
           'LIBXML_DOTTED_VERSION', 'LIBXML_LOADED_VERSION', 'ICONV_VERSION', 'MB_ONIGURUMA_VERSION',
           'OPENSSL_VERSION_TEXT', 'OPENSSL_VERSION_NUMBER', 'INTL_ICU_VERSION',
           'INTL_ICU_DATA_VERSION', 'GMP_VERSION', 'ZLIB_VERSION', 'ZLIB_VERNUM'] as $c) {

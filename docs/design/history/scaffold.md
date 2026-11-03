@@ -7,11 +7,11 @@
 > (2026-11). Nothing below is authoritative any more: the crate layout, the
 > `Interp` type and the refusal list (`include`/`require` and `eval` now run)
 > are all out of date. For the current design read the project
-> [README](../../README.md), [`bytecode.md`](./bytecode.md) (compiler + VM),
-> [`sapi.md`](./sapi.md) (request layer), [`extensions.md`](./extensions.md),
-> [`libraries.md`](./libraries.md) (the C rhp links or compiles) and, for exact
-> php behaviour, [`php-semantics.md`](./php-semantics.md) and
-> [`value-model.md`](./value-model.md).
+> [README](../../../README.md), [`bytecode.md`](../bytecode.md) (compiler + VM),
+> [`sapi.md`](../sapi.md) (request layer), [`extensions.md`](../extensions.md),
+> [`libraries.md`](../libraries.md) (the C rhp links or compiles) and, for exact
+> php behaviour, [`php-semantics.md`](../php-semantics.md) and
+> [`value-model.md`](../value-model.md).
 
 rhp is a PHP execution engine in Rust: a tree-walking interpreter over the
 mago-syntax CST with a CLI SAPI, targeting **PHP 8.5 semantics** (ground truth:
@@ -19,10 +19,10 @@ the reference `php`, 8.5.12 — see `crates/rhp-builtins/src/version.rs`). This 
 synthesizes the four design docs in this directory — read them for the "why":
 
 - [`ast-surface.md`](./ast-surface.md) — every `Statement`/`Expression` variant, operators, casts, high-risk nodes, phase→node checklist.
-- [`value-model.md`](./value-model.md) — the owned `Value` enum, `PhpStr`/`PhpArray`/`PhpRef`, COW vs aliasing, key normalization.
-- [`php-semantics.md`](./php-semantics.md) — byte-exact PHP 8.5.8 output/number/comparison/cast rules; the `precision=14` vs `serialize_precision=-1` split.
+- [`value-model.md`](../value-model.md) — the owned `Value` enum, `PhpStr`/`PhpArray`/`PhpRef`, COW vs aliasing, key normalization.
+- [`php-semantics.md`](../php-semantics.md) — byte-exact PHP 8.5.8 output/number/comparison/cast rules; the `precision=14` vs `serialize_precision=-1` split.
 - [`builtins-min.md`](./builtins-min.md) — minimal builtin set, `NativeFn` signature, refused functions.
-- [`sapi.md`](./sapi.md) — the request layer (`rhp-sapi`): the `Sapi` trait and `RequestInfo` an embedding server provides, the request lifecycle, one `Vm` per thread, and the road to `-S`, server embedding and FastCGI.
+- [`sapi.md`](../sapi.md) — the request layer (`rhp-sapi`): the `Sapi` trait and `RequestInfo` an embedding server provides, the request lifecycle, one `Vm` per thread, and the road to `-S`, server embedding and FastCGI.
 
 Non-negotiable invariant threaded through everything: **the arena holds the AST
 (borrowed `'arena`); the runtime holds only OWNED `'static` values.** A value

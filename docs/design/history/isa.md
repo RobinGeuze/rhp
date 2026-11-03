@@ -7,8 +7,8 @@ execution engine.
 
 Read first (this doc assumes them and reuses them verbatim):
 
-- [`value-model.md`](./value-model.md) — the owned `Value` enum, `PhpStr`/`PhpArray`/`PhpRef`, COW vs aliasing, `ArrayKey` normalization.
-- [`php-semantics.md`](./php-semantics.md) — byte-exact output/number/compare/cast rules; the precision-14 vs serialize_precision-−1 split.
+- [`value-model.md`](../value-model.md) — the owned `Value` enum, `PhpStr`/`PhpArray`/`PhpRef`, COW vs aliasing, `ArrayKey` normalization.
+- [`php-semantics.md`](../php-semantics.md) — byte-exact output/number/compare/cast rules; the precision-14 vs serialize_precision-−1 split.
 - [`ast-surface.md`](./ast-surface.md) — every `Statement`/`Expression`/operator node the compiler lowers from.
 - `crates/rhp-runtime/src/ops.rs` — PHP operator semantics over `Value`. **The VM calls these; it never reimplements operators.**
 - `crates/rhp-values/src/{lib.rs,conv.rs,fmt.rs}` — `Value`, `conv::*`, `fmt::*`.

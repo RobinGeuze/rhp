@@ -5,7 +5,7 @@
 //! Format (verified against composer.phar): `[stub] [manifest] [file data]
 //! [signature]`, little-endian except the 2-byte API version. The stub is PHP
 //! ending in `__HALT_COMPILER();`; the manifest begins just after. See
-//! `docs/design/modules-and-streams.md` §3 for the exact field layout.
+//! `docs/design/history/modules-and-streams.md` §3 for the exact field layout.
 //!
 //! Scope: READ-ONLY, native format only. Compressed entries use raw DEFLATE
 //! (via `flate2`) or bzip2 (via the `bzip2` crate over C libbz2); tar/zip-based

@@ -13,11 +13,11 @@ decisions are folded in and the losing alternatives are noted inline.
 > steps) record the design as planned and executed; §6 and §8 item 10 describe
 > the test setup as it is today.
 
-Synthesizes: [`isa.md`](./isa.md) (instruction set), [`vm.md`](./vm.md) (VM
-runtime), [`bytecode-prior-art.md`](./bytecode-prior-art.md) (Zend/Lua lessons),
-[`reorg.md`](./reorg.md) (crate layout + migration). Read first and reused
+Synthesizes: [`isa.md`](./history/isa.md) (instruction set), [`vm.md`](./history/vm.md) (VM
+runtime), [`bytecode-prior-art.md`](./history/bytecode-prior-art.md) (Zend/Lua lessons),
+[`reorg.md`](./history/reorg.md) (crate layout + migration). Read first and reused
 verbatim: [`value-model.md`](./value-model.md), [`php-semantics.md`](./php-semantics.md),
-[`ast-surface.md`](./ast-surface.md), and the already-built crates below.
+[`ast-surface.md`](./history/ast-surface.md), and the already-built crates below.
 
 Non-negotiable invariants (unchanged): single-threaded (`Rc`/`RefCell`, never
 `Arc`); `Value`s are owned `'static`; the arena holds only the AST, consumed and

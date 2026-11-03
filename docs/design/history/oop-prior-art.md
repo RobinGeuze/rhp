@@ -5,17 +5,17 @@ semantics: PHP 8.5 (ground truth: the reference `php` (see `crates/rhp-builtins/
 doc surveys how Zend (PHP's own engine) and V8 model objects and dispatch
 methods, then distills a concrete, rhp-shaped first cut. It does not change
 the ISA: OOP keeps "the same encoding and calling convention" promised in
-[`bytecode.md`](./bytecode.md) §2.4 and reuses the reserved inline-cache side
-table ([`bytecode.md`](./bytecode.md) §2.5) and the `ClassId` handle model fixed
-in [`value-model.md`](./value-model.md) §5.
+[`bytecode.md`](../bytecode.md) §2.4 and reuses the reserved inline-cache side
+table ([`bytecode.md`](../bytecode.md) §2.5) and the `ClassId` handle model fixed
+in [`value-model.md`](../value-model.md) §5.
 
 Non-negotiable invariants carried in from the rest of the design:
 
 - Single-threaded `Rc`/`RefCell`; no `Arc`/`Mutex`, no atomics in caches.
 - `Value` is owned `'static` and pointer-sized: an object carries a
   `class: ClassId(u32)`, **not** an `Rc<ClassEntry>`. The class table lives in
-  the `Vm`, never in a `Value` ([`value-model.md`](./value-model.md) §5,
-  [`bytecode.md`](./bytecode.md) §3.1).
+  the `Vm`, never in a `Value` ([`value-model.md`](../value-model.md) §5,
+  [`bytecode.md`](../bytecode.md) §3.1).
 - Objects are **handle** types (`ObjectHandle = Rc<RefCell<ObjectData>>`):
   assignment shares, `clone` shallow-copies + new id, `===` is `Rc::ptr_eq`.
 - Opcodes stay thin wrappers that delegate to `ops::`/`conv::`/`registry()`;
@@ -178,10 +178,10 @@ The ISA already has the slots:
   178–183). `class_id` is the guard key; `payload` is the resolved target
   (a `MethodId` / flattened method-table index, or a property **slot index**).
 - `CacheIdx = u32` is a reserved operand type, and `CallUser`/`CallByName`
-  already carry a `cache` field ([`bytecode.md`](./bytecode.md) §2.4, §2.5).
+  already carry a `cache` field ([`bytecode.md`](../bytecode.md) §2.4, §2.5).
 
 So the phase-7 OOP opcodes (spelled out as reserved in
-[`bytecode.md`](./bytecode.md) §2.4: `New`, `FetchProp`/`AssignProp`,
+[`bytecode.md`](../bytecode.md) §2.4: `New`, `FetchProp`/`AssignProp`,
 `CallMethod`, `CallStatic`, `InstanceOf`, `Clone`) each carry a `cache: CacheIdx`
 operand into that side table. Dispatch in the VM:
 
@@ -203,7 +203,7 @@ self.enter_method_call(method, obj, /*called_scope=*/cid, dst, base, argc)?;
 
 Key properties, all already consistent with the design:
 
-- **Monomorphic to start** ([`bytecode.md`](./bytecode.md) §2.5 says exactly
+- **Monomorphic to start** ([`bytecode.md`](../bytecode.md) §2.5 says exactly
   this). One-entry, `ClassId`-guarded. Polymorphic (a small inline `[(ClassId,
   payload); 4]`) and megamorphic fallback are a later tuning step that does not
   touch the opcode shape — only the `InlineCache` struct and the miss handler.
@@ -251,7 +251,7 @@ the (class, slot), and index directly thereafter.**
 
 ### Recommended first cut for rhp: name-keyed `IndexMap` now
 
-[`value-model.md`](./value-model.md) §5 already fixes
+[`value-model.md`](../value-model.md) §5 already fixes
 `ObjectData.properties: IndexMap<PhpStr, Value, FxBuildHasher>` in declaration/
 insertion order. For the first cut, **keep this and resolve properties by name**:
 
@@ -412,8 +412,8 @@ only non-receiver-cached dispatch forms are `self::`/`parent::`/`static::`
 ## Appendix — concrete rhp touch points (for the implementer)
 
 - Uncomment/define `Program.classes` ([`bytecode.rs`] line 255 /
-  [`bytecode.md`](./bytecode.md) §2.1) as `Vec<ClassEntry>`; add `DeclareClass`
-  alongside the reserved `DeclareFn` ([`bytecode.md`](./bytecode.md) §2.4 misc).
+  [`bytecode.md`](../bytecode.md) §2.1) as `Vec<ClassEntry>`; add `DeclareClass`
+  alongside the reserved `DeclareFn` ([`bytecode.md`](../bytecode.md) §2.4 misc).
 - Add to the `Vm`: `classes: Vec<ClassEntry>`, `class_ids: HashMap<Vec<u8>,
   ClassId>` (the slots `bytecode.md` §3.1 already notes as "phase 7"). Seed from
   the program's class list during `install`.
@@ -430,7 +430,7 @@ only non-receiver-cached dispatch forms are `self::`/`parent::`/`static::`
   receiver's `ClassId`.
 - `clone` ([`ast-surface.md`](./ast-surface.md) §3 `Clone`) is the one object "copy":
   new `id`, new `Rc`, cloned property map/slots, then run `__clone` — exactly as
-  [`value-model.md`](./value-model.md) §5 states.
+  [`value-model.md`](../value-model.md) §5 states.
 - All semantics claims above are probed against `php` 8.5.8; the probes
   (LSB `B`/`A/B`, dynamic-property deprecation, `Closure::bind` private access)
   are reproduced inline in (a)/(b) and should become golden fixtures.

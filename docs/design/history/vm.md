@@ -2,7 +2,7 @@
 
 > **Historical document.** Written while the VM was planned inside
 > `rhp-runtime`, next to the tree-walker it calls the *oracle*. The VM was built
-> in its own crates instead ([`bytecode.md`](./bytecode.md) supersedes this doc
+> in its own crates instead ([`bytecode.md`](../bytecode.md) supersedes this doc
 > where they differ), and the oracle was later removed (2026-11). Read the
 > oracle and `rhp-runtime` passages below as history.
 
@@ -442,7 +442,7 @@ impl<'a> Compiler<'a> {
 ## 4. Exception unwinding at runtime
 
 Real throws and engine refusals both ride `Err(Thrown)` (the same decision the
-oracle made in `README.md §3`), so Rust's `?` does the per-opcode unwinding for
+oracle made in `scaffold.md` §3), so Rust's `?` does the per-opcode unwinding for
 free. Cross-frame unwinding is driven by a per-proto **exception table**, not by
 scanning instructions.
 

@@ -2816,7 +2816,18 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
                 )),
             }
         }
-        None => Ok(Value::Bool(false)),
+        // The calling scope's parent.
+        None => {
+            host.emit_diagnostic(
+                E_DEPRECATED,
+                "Calling get_parent_class() without arguments is deprecated",
+            )?;
+            Ok(host
+                .caller_scope()
+                .and_then(|c| host.class_parent_name(c))
+                .map(Value::str)
+                .unwrap_or(Value::Bool(false)))
+        }
         Some(other) => Err(Thrown::type_error(format!(
             "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, {} given",
             argparse::value_name(host, &other)

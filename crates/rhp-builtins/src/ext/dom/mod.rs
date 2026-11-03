@@ -2231,40 +2231,52 @@ pub fn read_source(host: &mut dyn Host, path: &[u8]) -> Option<(Vec<u8>, Vec<u8>
 /// php's `_dom_get_valid_file_path` / `expand_filepath`: the absolute path
 /// (symlinks in the existing leading part resolved) libxml2 is handed.
 pub fn expand_filepath(path: &[u8]) -> Vec<u8> {
-    let p = String::from_utf8_lossy(path).into_owned();
-    if p.contains("://") {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    if path.windows(3).any(|w| w == b"://") {
         return path.to_vec();
     }
-    let full = if p.starts_with('/') {
-        p
+    let full = if path.starts_with(b"/") {
+        path.to_vec()
     } else {
-        let cwd = std::env::current_dir()
-            .map(|d| d.to_string_lossy().into_owned())
+        let mut cwd = std::env::current_dir()
+            .map(|d| d.into_os_string().into_vec())
             .unwrap_or_default();
-        format!("{cwd}/{p}")
+        cwd.push(b'/');
+        cwd.extend_from_slice(path);
+        cwd
     };
-    let mut parts: Vec<&str> = Vec::new();
-    for seg in full.split('/') {
+    let mut parts: Vec<&[u8]> = Vec::new();
+    for seg in full.split(|&b| b == b'/') {
         match seg {
-            "" | "." => {}
-            ".." => {
+            b"" | b"." => {}
+            b".." => {
                 parts.pop();
             }
             s => parts.push(s),
         }
     }
+    let join = |segs: &[&[u8]]| {
+        let mut out = Vec::new();
+        for seg in segs {
+            out.push(b'/');
+            out.extend_from_slice(seg);
+        }
+        out
+    };
     for keep in (1..=parts.len()).rev() {
-        let head = format!("/{}", parts[..keep].join("/"));
-        if let Ok(real) = std::fs::canonicalize(&head) {
-            let mut out = real.to_string_lossy().into_owned();
-            for seg in &parts[keep..] {
-                out.push('/');
-                out.push_str(seg);
-            }
-            return out.into_bytes();
+        if let Ok(real) = std::fs::canonicalize(OsStr::from_bytes(&join(&parts[..keep]))) {
+            let mut out = real.into_os_string().into_vec();
+            out.extend_from_slice(&join(&parts[keep..]));
+            return out;
         }
     }
-    format!("/{}", parts.join("/")).into_bytes()
+    let out = join(&parts);
+    if out.is_empty() {
+        b"/".to_vec()
+    } else {
+        out
+    }
 }
 
 fn save_xml(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

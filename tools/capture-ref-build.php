@@ -90,7 +90,8 @@ row("ini_get_all()[memory_hard_limit_percent]",
 // Libraries rhp links itself (docs/design/libraries.md): the versions must
 // be the ones php links, on every machine.
 echo "# linked\n";
-foreach (['PCRE_VERSION', 'PCRE_VERSION_MAJOR', 'PCRE_VERSION_MINOR'] as $c) {
+foreach (['PCRE_VERSION', 'PCRE_VERSION_MAJOR', 'PCRE_VERSION_MINOR',
+          'LIBXML_VERSION', 'LIBXML_DOTTED_VERSION', 'LIBXML_LOADED_VERSION'] as $c) {
     row($c, defined($c) ? constant($c) : '(undefined)');
 }
 
@@ -105,8 +106,7 @@ foreach (['PHP_BUILD_DATE', 'PHP_BUILD_PROVIDER', 'PHP_PREFIX', 'PHP_BINDIR', 'P
 row("ini_get('include_path')", ini_get('include_path'));
 row("ini_get('extension_dir')", ini_get('extension_dir'));
 info_rows(['Build Date', 'Build System', 'Build Provider', 'Configuration File (php.ini) Path']);
-foreach (['LIBXML_VERSION',
-          'LIBXML_DOTTED_VERSION', 'LIBXML_LOADED_VERSION', 'ICONV_VERSION', 'MB_ONIGURUMA_VERSION',
+foreach (['ICONV_VERSION', 'MB_ONIGURUMA_VERSION',
           'OPENSSL_VERSION_TEXT', 'OPENSSL_VERSION_NUMBER', 'INTL_ICU_VERSION',
           'INTL_ICU_DATA_VERSION', 'GMP_VERSION', 'ZLIB_VERSION', 'ZLIB_VERNUM'] as $c) {
     row($c, defined($c) ? constant($c) : '(undefined)');

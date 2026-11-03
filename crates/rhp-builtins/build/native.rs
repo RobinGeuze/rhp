@@ -2,7 +2,8 @@
 //!
 //! One [`Lib`] row per library. For each row:
 //! - locate it with pkg-config, or on macOS without pkg-config, through
-//!   Homebrew's opt prefix;
+//!   Homebrew's opt prefix; an OS library on macOS comes from the SDK
+//!   (`xcrun --show-sdk-path`);
 //! - read its version from its header and export the listed macros to the
 //!   crate as `RHP_<MACRO>` (`env!("RHP_PCRE2_MAJOR")`);
 //! - link it statically or dynamically as the row says for the target OS,
@@ -39,9 +40,15 @@ pub struct Lib {
     /// Homebrew formula: its opt prefix is searched on macOS, and its
     /// pkgconfig directory is put on `PKG_CONFIG_PATH` (keg-only formulae).
     pub brew: Option<&'static str>,
+    /// macOS: take headers and library from the SDK (an OS library php also
+    /// takes from there) instead of pkg-config or Homebrew.
+    pub macos_sdk: bool,
     /// The library to link, as in `-l<link>`.
     pub link: &'static str,
-    /// Header, relative to the include directory, that defines `macros`.
+    /// The subdirectory of the include directory that C code puts on its
+    /// `-I` path ("" for the include directory itself).
+    pub incdir: &'static str,
+    /// Header, relative to `incdir`, that defines `macros`.
     pub header: &'static str,
     /// Header macros exported to the crate as `RHP_<MACRO>`.
     pub macros: &'static [&'static str],
@@ -59,18 +66,46 @@ pub struct Lib {
 // or -dev library needs its own row.
 
 /// Every library rhp-builtins links.
-pub const LIBS: &[Lib] = &[Lib {
-    name: "PCRE2",
-    pkg: "libpcre2-8",
-    brew: Some("pcre2"),
-    link: "pcre2-8",
-    header: "pcre2.h",
-    macros: &["PCRE2_MAJOR", "PCRE2_MINOR"],
-    version: &["PCRE2_MAJOR", "PCRE2_MINOR"],
-    macos: Mode::Static,
-    linux: Mode::Static,
-    install: "macOS: brew install pcre2; Debian/Ubuntu: apt install pkg-config libpcre2-dev",
-}];
+pub const LIBS: &[Lib] = &[
+    Lib {
+        name: "PCRE2",
+        pkg: "libpcre2-8",
+        brew: Some("pcre2"),
+        macos_sdk: false,
+        link: "pcre2-8",
+        incdir: "",
+        header: "pcre2.h",
+        macros: &["PCRE2_MAJOR", "PCRE2_MINOR"],
+        version: &["PCRE2_MAJOR", "PCRE2_MINOR"],
+        macos: Mode::Static,
+        linux: Mode::Static,
+        install: "macOS: brew install pcre2; Debian/Ubuntu: apt install pkg-config libpcre2-dev",
+    },
+    // php takes libxml2 from the OS on macOS (/usr/lib/libxml2.2.dylib);
+    // the version constants come from src/ext/libxml/shim.c.
+    Lib {
+        name: "LIBXML2",
+        pkg: "libxml-2.0",
+        brew: None,
+        macos_sdk: true,
+        link: "xml2",
+        incdir: "libxml2",
+        header: "libxml/xmlversion.h",
+        macros: &[],
+        version: &["LIBXML_DOTTED_VERSION"],
+        macos: Mode::Dynamic("an OS library with no static archive (/usr/lib)"),
+        linux: Mode::Static,
+        install: "macOS: the Command Line Tools SDK (xcode-select --install); \
+                  Debian/Ubuntu: apt install pkg-config libxml2-dev",
+    },
+];
+
+/// A library [`link_all`] linked.
+pub struct Linked {
+    pub name: &'static str,
+    /// The directory to put on a C compiler's `-I` path for it.
+    pub include: PathBuf,
+}
 
 /// Where a library was found.
 struct Found {
@@ -84,7 +119,7 @@ struct Found {
 }
 
 /// Link every row of [`LIBS`].
-pub fn link_all() {
+pub fn link_all() -> Vec<Linked> {
     for var in [
         "PKG_CONFIG",
         "PKG_CONFIG_PATH",
@@ -94,19 +129,27 @@ pub fn link_all() {
     ] {
         println!("cargo:rerun-if-env-changed={var}");
     }
+    let mut linked = Vec::new();
     for lib in LIBS {
-        if let Err(e) = link(lib) {
-            eprintln!("\nerror: {e}\n");
-            panic!("{}: {e}", lib.name);
+        match link(lib) {
+            Ok(include) => linked.push(Linked {
+                name: lib.name,
+                include,
+            }),
+            Err(e) => {
+                eprintln!("\nerror: {e}\n");
+                panic!("{}: {e}", lib.name);
+            }
         }
     }
+    linked
 }
 
 fn target_os() -> String {
     env::var("CARGO_CFG_TARGET_OS").unwrap_or_default()
 }
 
-fn link(lib: &Lib) -> Result<(), String> {
+fn link(lib: &Lib) -> Result<PathBuf, String> {
     let override_var = format!("RHP_{}_LINK", lib.name);
     println!("cargo:rerun-if-env-changed={override_var}");
     let os = target_os();
@@ -123,7 +166,8 @@ fn link(lib: &Lib) -> Result<(), String> {
     }
 
     let found = find(lib, &os)?;
-    let header = found.include.join(lib.header);
+    let include = found.include.join(lib.incdir);
+    let header = include.join(lib.header);
     let text = fs::read_to_string(&header).map_err(|e| {
         format!(
             "{} found via {} but its header {} is unreadable ({e}). Install it ({}).",
@@ -194,7 +238,7 @@ fn link(lib: &Lib) -> Result<(), String> {
             println!("cargo:rustc-link-lib=dylib={}", lib.link);
         }
     }
-    Ok(())
+    Ok(include)
 }
 
 /// `$OUT_DIR/native-<name>/` holding only a link to `archive`: the one
@@ -217,6 +261,9 @@ fn archive_dir(lib: &Lib, archive: &Path, file: &str) -> Result<PathBuf, String>
 }
 
 fn find(lib: &Lib, os: &str) -> Result<Found, String> {
+    if os == "macos" && lib.macos_sdk {
+        return find_sdk(lib);
+    }
     let brew_prefixes: Vec<PathBuf> = match (os, lib.brew) {
         ("macos", Some(formula)) => brew_roots()
             .into_iter()
@@ -231,7 +278,7 @@ fn find(lib: &Lib, os: &str) -> Result<Found, String> {
             .map(|p| p.join("lib/pkgconfig"))
             .filter(|p| p.is_dir())
             .collect();
-        if let Some(f) = pkg_config(&bin, lib.pkg, &extra) {
+        if let Some(f) = pkg_config(&bin, lib, &extra) {
             return Ok(f);
         }
         if brew_prefixes.is_empty() {
@@ -242,8 +289,16 @@ fn find(lib: &Lib, os: &str) -> Result<Found, String> {
         }
     }
     for prefix in &brew_prefixes {
-        if prefix.join("include").join(lib.header).is_file() {
-            let pc = parse_pc(&prefix.join("lib/pkgconfig").join(format!("{}.pc", lib.pkg)));
+        if prefix
+            .join("include")
+            .join(lib.incdir)
+            .join(lib.header)
+            .is_file()
+        {
+            let pc = parse_pc(
+                &prefix.join("lib/pkgconfig").join(format!("{}.pc", lib.pkg)),
+                lib.link,
+            );
             return Ok(Found {
                 include: prefix.join("include"),
                 libdir: prefix.join("lib"),
@@ -283,6 +338,50 @@ fn find(lib: &Lib, os: &str) -> Result<Found, String> {
     ))
 }
 
+/// An OS library in the macOS SDK: headers under `$SDK/usr/include`, the
+/// `.tbd` stub under `$SDK/usr/lib`. The SDK has no .pc files.
+fn find_sdk(lib: &Lib) -> Result<Found, String> {
+    println!("cargo:rerun-if-env-changed=SDKROOT");
+    let sdk = match env::var("SDKROOT") {
+        Ok(p) if !p.is_empty() => PathBuf::from(p),
+        _ => {
+            let out = Command::new("xcrun")
+                .arg("--show-sdk-path")
+                .output()
+                .map_err(|e| {
+                    format!(
+                        "{} not found: xcrun did not run ({e}). Install it ({}).",
+                        lib.name, lib.install
+                    )
+                })?;
+            if !out.status.success() {
+                return Err(format!(
+                    "{} not found: `xcrun --show-sdk-path` failed. Install it ({}).",
+                    lib.name, lib.install
+                ));
+            }
+            PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
+        }
+    };
+    let include = sdk.join("usr/include");
+    if !include.join(lib.incdir).join(lib.header).is_file() {
+        return Err(format!(
+            "{} not found: no {} in the SDK {}. Install it ({}).",
+            lib.name,
+            lib.header,
+            include.join(lib.incdir).display(),
+            lib.install
+        ));
+    }
+    Ok(Found {
+        include,
+        libdir: sdk.join("usr/lib"),
+        pc_version: None,
+        private: Vec::new(),
+        via: format!("the macOS SDK {}", sdk.display()),
+    })
+}
+
 fn brew_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Ok(p) = env::var("HOMEBREW_PREFIX") {
@@ -313,7 +412,8 @@ fn pkg_config_bin() -> Option<String> {
     })
 }
 
-fn pkg_config(bin: &str, module: &str, extra_paths: &[PathBuf]) -> Option<Found> {
+fn pkg_config(bin: &str, lib: &Lib, extra_paths: &[PathBuf]) -> Option<Found> {
+    let module = lib.pkg;
     let mut path: Vec<PathBuf> = extra_paths.to_vec();
     if let Some(p) = env::var_os("PKG_CONFIG_PATH") {
         path.extend(env::split_paths(&p));
@@ -333,17 +433,17 @@ fn pkg_config(bin: &str, module: &str, extra_paths: &[PathBuf]) -> Option<Found>
     let include = run(&["--variable=includedir"])?;
     let libdir = run(&["--variable=libdir"])?;
     let libs = run(&["--static", "--libs-only-l"]).unwrap_or_default();
-    let own = module.strip_prefix("lib").unwrap_or(module);
     Some(Found {
         include: PathBuf::from(include),
         libdir: PathBuf::from(libdir),
         pc_version: Some(version),
-        private: link_names(&libs, own),
+        private: link_names(&libs, lib.link),
         via: format!("{bin} {module}"),
     })
 }
 
-/// The `-l` names in `flags`, minus the library itself.
+/// The `-l` names in `flags`, minus the library itself (`own`, its link
+/// name: a second `-l` for it would turn the static link dynamic).
 fn link_names(flags: &str, own: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for f in flags.split_whitespace() {
@@ -356,11 +456,10 @@ fn link_names(flags: &str, own: &str) -> Vec<String> {
     out
 }
 
-/// `Version` and the `-l` names of `Libs.private` from a .pc file.
-fn parse_pc(path: &Path) -> Option<(String, Vec<String>)> {
+/// `Version` and the `-l` names of `Libs.private` from a .pc file, minus
+/// `own`.
+fn parse_pc(path: &Path, own: &str) -> Option<(String, Vec<String>)> {
     let text = fs::read_to_string(path).ok()?;
-    let own = path.file_stem()?.to_str()?;
-    let own = own.strip_prefix("lib").unwrap_or(own);
     let mut version = None;
     let mut private = Vec::new();
     for line in text.lines() {

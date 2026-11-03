@@ -23,63 +23,65 @@ runs:
       env:
         PHP_BIN: ${{ inputs.php }}
       run: |
-        # PCRE2: libpcre2-8.a, linked statically.
+        # PCRE2 (libpcre2-8.a) and libxml2 (libxml2.a), linked statically.
         sudo apt-get update -q
         sudo apt-get install -y --no-install-recommends \
           pkg-config \
-          libpcre2-dev
-        have="$(pkg-config --modversion libpcre2-8)"
+          libpcre2-dev \
+          libxml2-dev
         php="${PHP_BIN:-$(command -v php || true)}"
-        want="$have"
+        build=""
+        # compare <name> <pkg-config module> <php code printing the version php loads>
+        compare() {
+          local have want
+          have="$(pkg-config --modversion "$2")"
+          want="$have"
+          if [ -n "$php" ]; then want="$("$php" -n -r "$3")"; fi
+          echo "$1: the distro has $have; ${php:-no php} links $want"
+          if [ "$want" != "$have" ]; then build="$build $1-$want"; fi
+        }
+        # shellcheck disable=SC2016 # PHP code, not shell
+        compare pcre2 libpcre2-8 'echo strtok(PCRE_VERSION, " ");'
+        # shellcheck disable=SC2016
+        compare libxml2 libxml-2.0 '$v = (int) LIBXML_LOADED_VERSION; echo intdiv($v, 10000), ".", intdiv($v, 100) % 100, ".", $v % 100;'
         if [ -n "$php" ]; then
-          # shellcheck disable=SC2016 # PHP code, not shell
-          want="$("$php" -n -r 'echo strtok(PCRE_VERSION, " ");')"
+          # rhp's LIBXML_DOTTED_VERSION is its headers' and LIBXML_LOADED_VERSION
+          # its library's: one release. php can differ only if it loads a
+          # libxml2 other than the one it was compiled against.
+          # shellcheck disable=SC2016
+          "$php" -n -r 'echo "libxml2: php compiled against ", LIBXML_DOTTED_VERSION, ", loads ", LIBXML_LOADED_VERSION, "\n";'
         fi
-        echo "PCRE2: the distro has $have; ${php:-no php} links $want"
-        echo "pcre2=$want" >> "$GITHUB_OUTPUT"
+        echo "build=${build# }" >> "$GITHUB_OUTPUT"
         echo "os=$(. /etc/os-release && echo "$ID-$VERSION_ID")" >> "$GITHUB_OUTPUT"
-        if [ "$want" != "$have" ]; then
-          echo "pcre2-build=true" >> "$GITHUB_OUTPUT"
-        fi
 
-    # php links a PCRE2 the distro has no -dev package for (setup-php's php
+    # php links a release the distro has no -dev package for (setup-php's php
     # on a new Ubuntu ships its own newer libpcre2-8.so). Build that release
     # from its checksummed tarball, static only, and point pkg-config at it.
-    - name: Restore PCRE2 ${{ steps.apt.outputs.pcre2 }}
-      if: steps.apt.outputs.pcre2-build == 'true'
-      id: pcre2-cache
+    - name: Restore source builds (${{ steps.apt.outputs.build }})
+      if: steps.apt.outputs.build != ''
+      id: cache
       uses: actions/cache@v4
       with:
-        path: ~/.cache/rhp-native/pcre2-${{ steps.apt.outputs.pcre2 }}
-        key: pcre2-${{ steps.apt.outputs.pcre2 }}-${{ steps.apt.outputs.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/native-deps/**') }}
-    - name: Build PCRE2 ${{ steps.apt.outputs.pcre2 }}, the release php links
-      if: steps.apt.outputs.pcre2-build == 'true' && steps.pcre2-cache.outputs.cache-hit != 'true'
+        path: ~/.cache/rhp-native
+        key: native-${{ steps.apt.outputs.build }}-${{ steps.apt.outputs.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/native-deps/**') }}
+    - name: Build the releases php links (${{ steps.apt.outputs.build }})
+      if: steps.apt.outputs.build != '' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
-        V: ${{ steps.apt.outputs.pcre2 }}
+        BUILD: ${{ steps.apt.outputs.build }}
       run: |
-        tarball="pcre2-$V.tar.bz2"
-        sum="$(awk -v f="$tarball" '$2 == f { print $1 }' "$GITHUB_ACTION_PATH/sha256sums")"
-        if [ -z "$sum" ]; then
-          echo "::error::php links PCRE2 $V, and .github/actions/native-deps/sha256sums has no checksum for $tarball. Add the release tarball's SHA-256 (Homebrew's pcre2 formula pins it)."
-          exit 1
-        fi
-        tmp="$(mktemp -d)"
-        curl -fsSL --retry 3 -o "$tmp/$tarball" \
-          "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-$V/$tarball"
-        echo "$sum  $tmp/$tarball" | sha256sum -c -
-        tar -xjf "$tmp/$tarball" -C "$tmp"
-        cd "$tmp/pcre2-$V"
-        ./configure --prefix="$HOME/.cache/rhp-native/pcre2-$V" \
-          --disable-shared --enable-static --with-pic --enable-jit
-        make -j"$(nproc)"
-        make install
-    - name: Use PCRE2 ${{ steps.apt.outputs.pcre2 }}
-      if: steps.apt.outputs.pcre2-build == 'true'
+        for lib in $BUILD; do
+          "$GITHUB_ACTION_PATH/build-from-source.sh" "${lib%-*}" "${lib##*-}"
+        done
+    - name: Use the source builds
+      if: steps.apt.outputs.build != ''
       shell: bash
       env:
-        V: ${{ steps.apt.outputs.pcre2 }}
+        BUILD: ${{ steps.apt.outputs.build }}
       run: |
-        pc="$HOME/.cache/rhp-native/pcre2-$V/lib/pkgconfig"
-        echo "PKG_CONFIG_PATH=$pc${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
-        echo "PCRE2: $(PKG_CONFIG_PATH="$pc" pkg-config --modversion libpcre2-8) from $pc"
+        path="${PKG_CONFIG_PATH:-}"
+        for lib in $BUILD; do
+          path="$HOME/.cache/rhp-native/$lib/lib/pkgconfig${path:+:$path}"
+        done
+        echo "PKG_CONFIG_PATH=$path" >> "$GITHUB_ENV"
+        PKG_CONFIG_PATH="$path" pkg-config --modversion libpcre2-8 libxml-2.0

@@ -1290,6 +1290,7 @@ version = "0.0.0"
 dependencies = [
  "brotli-decompressor",
  "bzip2",
+ "cc",
  "digest",
  "flate2",
  "getrandom",

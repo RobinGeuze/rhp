@@ -217,7 +217,8 @@ pub const EXT_DOM: &str = "20031129";
 
 // --- linked libraries --------------------------------------------------------
 
-// PCRE_VERSION and friends come from the linked PCRE2 (crate::pcre).
+// PCRE_VERSION and friends come from the linked PCRE2 (crate::pcre), the
+// LIBXML_* versions from the linked libxml2 (crate::ext::libxml).
 /// `OPENSSL_VERSION_TEXT` / `OPENSSL_VERSION_NUMBER` (the headers php was
 /// compiled against; curl reports its own runtime OpenSSL below).
 pub const OPENSSL_VERSION_TEXT: &str = "OpenSSL 4.0.3 29 Sep 2026";
@@ -227,13 +228,6 @@ pub const ICU_VERSION: &str = "79.1";
 pub const ICU_DATA_VERSION: &str = "79.1";
 /// `ZipArchive::LIBZIP_VERSION`.
 pub const LIBZIP_VERSION: &str = libzip!();
-/// `LIBXML_VERSION`, `LIBXML_DOTTED_VERSION` (the libxml2 headers php was
-/// compiled against).
-pub const LIBXML_VERSION: i64 = 20913;
-pub const LIBXML_DOTTED_VERSION: &str = "2.9.13";
-/// `LIBXML_LOADED_VERSION`: the libxml2 php loads at run time
-/// (`xmlParserVersion`); on the reference it is the compiled-against one.
-pub const LIBXML_LOADED_VERSION: &str = "20913";
 /// `ICONV_VERSION`.
 pub const ICONV_VERSION: &str = "1.11";
 /// `MB_ONIGURUMA_VERSION`.
@@ -300,15 +294,6 @@ mod tests {
         assert_eq!(
             ZLIB_VERNUM,
             (at(0) << 12) | (at(1) << 8) | (at(2) << 4) | at(3)
-        );
-        assert_eq!(
-            LIBXML_DOTTED_VERSION,
-            format!(
-                "{}.{}.{}",
-                LIBXML_VERSION / 10000,
-                LIBXML_VERSION / 100 % 100,
-                LIBXML_VERSION % 100
-            )
         );
     }
 }

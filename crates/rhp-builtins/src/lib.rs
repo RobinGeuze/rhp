@@ -116,17 +116,33 @@ mod tzdb;
 mod webenc_fns;
 pub mod zip_ext;
 
+/// Built-in classes with a native `dtor_obj` handler, which runs with a host
+/// before the object's `__destruct` (see [`object_dtor`]).
+pub fn has_native_dtor(class: &[u8]) -> bool {
+    class.eq_ignore_ascii_case(b"XMLWriter")
+}
+
+/// `dtor_obj` for an object whose class (or a parent) is listed by
+/// [`has_native_dtor`]. The engine calls it once, where php would, before the
+/// user's `__destruct`.
+pub fn object_dtor(host: &mut dyn Host, obj: &rhp_values::ObjectHandle) -> Result<(), Thrown> {
+    let id = obj.borrow().id;
+    ext::xmlwriter::object_dtor(host, id)
+}
+
 /// The engine's object free hook (`rhp_values::set_object_free_hook`): lets
 /// the extensions with per-object native state release it.
 pub fn object_freed(id: u32) {
     zip_ext::object_freed(id);
     sort_fns::object_freed(id);
     ext::sockets::object_freed();
+    ext::xml::object_freed(id);
+    ext::xmlwriter::object_freed(id);
 }
 
 /// The internal opaque-handle classes php declares `@strict-properties` and
 /// `@not-serializable` (`ZEND_ACC_NO_DYNAMIC_PROPERTIES |
-/// ZEND_ACC_NOT_SERIALIZABLE`): `Socket` and the curl handles. Their names
+/// ZEND_ACC_NOT_SERIALIZABLE`): `Socket`, the curl handles and `XMLParser`. Their names
 /// are taken by the prelude, so a user class cannot carry one.
 pub fn is_opaque_handle_class(name: &[u8]) -> bool {
     [
@@ -134,6 +150,7 @@ pub fn is_opaque_handle_class(name: &[u8]) -> bool {
         b"CurlHandle",
         b"CurlMultiHandle",
         b"CurlShareHandle",
+        b"XMLParser",
     ]
     .iter()
     .any(|n| n.eq_ignore_ascii_case(name))
@@ -263,6 +280,12 @@ pub trait Host {
     }
     /// `restore_error_handler`: pop back to the previous error handler.
     fn restore_error_handler(&mut self) {}
+
+    /// Whether the code calling the running builtin declared
+    /// `strict_types=1` (zpp then coerces no scalars). Default: no.
+    fn caller_strict_types(&self) -> bool {
+        false
+    }
 
     /// Inside an `@` region (error_reporting then reads as the fatal mask).
     fn silenced(&self) -> bool {

@@ -67,6 +67,9 @@ pub struct ClassEntry {
     /// Declaring file and line (empty file: a built-in class).
     pub decl_file: PhpStr,
     pub decl_line: u32,
+    /// The class or a parent is a built-in class with a native `dtor_obj`
+    /// ([`rhp_builtins::object_dtor`]).
+    pub native_dtor: bool,
 }
 
 #[derive(Clone)]
@@ -1079,6 +1082,9 @@ impl Vm {
             .map(|t| self.class_ids[&lc(t.as_bytes())])
             .collect();
 
+        let native_dtor = parent.is_some_and(|p| self.classes[p as usize].native_dtor)
+            || (proto.decl_file.is_empty() && rhp_builtins::has_native_dtor(proto.name.as_bytes()));
+
         self.class_ids.insert(lc(proto.name.as_bytes()), id);
         // Not compiled into a slot (prelude): after everything compiled so far.
         self.class_order.push(self.decl_classes.len());
@@ -1102,6 +1108,7 @@ impl Vm {
             proto: Rc::new(proto.clone()),
             decl_file: proto.decl_file.clone(),
             decl_line: proto.decl_line,
+            native_dtor,
         });
 
         // Enum cases: materialize one singleton object per case and expose it as

@@ -1556,6 +1556,7 @@ dependencies = [
  "bstr",
  "indexmap",
  "rustc-hash",
+ "zmij",
 ]
 
 [[package]]

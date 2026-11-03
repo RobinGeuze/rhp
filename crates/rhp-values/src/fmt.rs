@@ -100,11 +100,7 @@ fn gcvt(f: f64, mode: Mode) -> Vec<u8> {
             let s = format!("{:.*e}", p - 1, abs);
             split_exp(&s)
         }
-        Mode::Shortest => {
-            // "{:e}" gives the shortest round-trip mantissa in exp form.
-            let s = format!("{:e}", abs);
-            split_exp(&s)
-        }
+        Mode::Shortest => shortest_digits(abs),
     };
 
     // Threshold for switching to exponential notation, matching zend_gcvt:
@@ -124,7 +120,38 @@ fn gcvt(f: f64, mode: Mode) -> Vec<u8> {
     [sign, &body].concat()
 }
 
-/// Parse a Rust `{:e}` / `{:.*e}` string "d.dddde±XX" into (digit_string, exp10).
+/// Shortest round-trip digits of a finite, non-zero `abs` and the power of ten
+/// of the leading digit, as zend_dtoa mode 0 produces them. When two shortest
+/// candidates are equally close, both pick the even one; std's `{:e}` rounds
+/// up instead (php `-887777373534812.2`, std `...812.3`).
+fn shortest_digits(abs: f64) -> (Vec<u8>, i32) {
+    let mut buf = zmij::Buffer::new();
+    // zmij prints "12.34", "0.001234", "12340000000.0", "1.234e33" or "5e-7".
+    let s = buf.format_finite(abs).as_bytes();
+    let (mantissa, exp) = match s.iter().position(|&b| b == b'e') {
+        Some(e) => {
+            let exp = std::str::from_utf8(&s[e + 1..])
+                .ok()
+                .and_then(|x| x.parse::<i32>().ok())
+                .expect("zmij exponent");
+            (&s[..e], exp)
+        }
+        None => (s, 0),
+    };
+    let point = mantissa
+        .iter()
+        .position(|&b| b == b'.')
+        .unwrap_or(mantissa.len());
+    let mut digits: Vec<u8> = mantissa.iter().copied().filter(|&b| b != b'.').collect();
+    let lead = digits
+        .iter()
+        .position(|&b| b != b'0')
+        .expect("non-zero value");
+    digits.drain(..lead);
+    (digits, point as i32 - 1 - lead as i32 + exp)
+}
+
+/// Parse a Rust `{:.*e}` string "d.dddde±XX" into (digit_string, exp10).
 /// The returned digit string has the decimal point removed.
 fn split_exp(s: &str) -> (Vec<u8>, i32) {
     let bytes = s.as_bytes();
@@ -236,5 +263,21 @@ mod tests {
         assert_eq!(ser(1e17), "1.0E+17");
         assert_eq!(ser(1.0), "1");
         assert_eq!(ser(-0.0), "-0");
+    }
+
+    #[test]
+    fn shortest_ties_round_half_even() {
+        // php -n -r 'var_export(...)', minus var_export's ".0" suffix. The ties
+        // are built from exact parts (a literal would trip clippy).
+        assert_eq!(ser(-(887777373534812.0 + 0.25)), "-887777373534812.2");
+        assert_eq!(ser(123456789012345.0 + 0.625), "123456789012345.62");
+        assert_eq!(ser(70368744177664.0 + 0.125), "70368744177664.12");
+        assert_eq!(ser(2f64.powi(-25)), "2.9802322387695312E-8");
+        assert_eq!(ser(1.1529215046068472e18), "1.1529215046068472E+18");
+        assert_eq!(ser(5e-324), "5.0E-324");
+        assert_eq!(ser(f64::MAX), "1.7976931348623157E+308");
+        assert_eq!(ser(1e23), "1.0E+23");
+        assert_eq!(ser(0.000123), "0.000123");
+        assert_eq!(ser(123456.0), "123456");
     }
 }

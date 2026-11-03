@@ -7,11 +7,11 @@
 //! `php` binary over a broad generated corpus.
 //!
 //! Where a faithful pure-Rust crate exists we use it (RustCrypto's `md2`, `md4`,
-//! `sha2`, `sha3`, `ripemd`, `whirlpool`, `tiger`, `gost94`; `xxhash-rust`).
-//! The non-crypto and legacy oddballs with no 1:1 crate are hand-rolled here or
-//! in the sibling `hash_*` modules: the CRC/adler/FNV/joaat/murmur variants
-//! below, and the table-heavy `snefru`, `haval` and 4-pass `tiger` in their own
-//! files.
+//! `md-5`, `sha1`, `sha2`, `sha3`, `ripemd`, `whirlpool`, `tiger`, `gost94`;
+//! `xxhash-rust`); crc32b and adler32 go through the linked zlib. The oddballs
+//! with no 1:1 implementation are hand-rolled: the crc32/crc32c, FNV, joaat and
+//! murmur variants below, and the table-heavy `snefru`, `haval` and 4-pass
+//! `tiger` in their own files.
 
 use std::collections::HashMap;
 
@@ -23,9 +23,10 @@ mod primitives;
 mod snefru;
 mod tiger;
 
+use crate::ext::zlib::zraw as zlib;
 use crate::{Builtin, Host, Thrown};
 pub(crate) use primitives::base64_decode;
-use primitives::{crc32 as crc32_ieee, md5, sha1, sha256, to_hex};
+use primitives::to_hex;
 
 // ---------------------------------------------------------------------------
 // value helpers
@@ -65,10 +66,10 @@ pub(crate) fn digest(algo: &[u8], data: &[u8]) -> Option<Vec<u8>> {
     Some(match algo {
         b"md2" => dg::<md2::Md2>(data),
         b"md4" => dg::<md4::Md4>(data),
-        b"md5" => md5(data).to_vec(),
-        b"sha1" => sha1(data).to_vec(),
+        b"md5" => dg::<::md5::Md5>(data),
+        b"sha1" => dg::<::sha1::Sha1>(data),
         b"sha224" => dg::<sha2::Sha224>(data),
-        b"sha256" => sha256(data).to_vec(),
+        b"sha256" => dg::<sha2::Sha256>(data),
         b"sha384" => dg::<sha2::Sha384>(data),
         b"sha512/224" => dg::<sha2::Sha512_224>(data),
         b"sha512/256" => dg::<sha2::Sha512_256>(data),
@@ -91,10 +92,10 @@ pub(crate) fn digest(algo: &[u8], data: &[u8]) -> Option<Vec<u8>> {
         b"snefru" | b"snefru256" => snefru::snefru256(data).to_vec(),
         b"gost" => dg::<gost94::Gost94Test>(data),
         b"gost-crypto" => dg::<gost94::Gost94CryptoPro>(data),
-        b"adler32" => adler32(data).to_be_bytes().to_vec(),
+        b"adler32" => zlib::adler32(data).to_be_bytes().to_vec(),
         // PHP emits the non-reflected "crc32" little-endian (unlike crc32b/crc32c)
         b"crc32" => crc32_msb(data).to_le_bytes().to_vec(),
-        b"crc32b" => crc32_ieee(data).to_be_bytes().to_vec(),
+        b"crc32b" => zlib::crc32(data).to_be_bytes().to_vec(),
         b"crc32c" => crc32c(data).to_be_bytes().to_vec(),
         b"fnv132" => fnv1_32(data).to_be_bytes().to_vec(),
         b"fnv1a32" => fnv1a_32(data).to_be_bytes().to_vec(),
@@ -170,23 +171,8 @@ fn tiger3(data: &[u8], width: usize) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// adler-32 (RFC 1950)
-// ---------------------------------------------------------------------------
-
-fn adler32(data: &[u8]) -> u32 {
-    const MOD: u32 = 65521;
-    let (mut a, mut b) = (1u32, 0u32);
-    for &byte in data {
-        a = (a + byte as u32) % MOD;
-        b = (b + a) % MOD;
-    }
-    (b << 16) | a
-}
-
-// ---------------------------------------------------------------------------
-// CRC-32 variants
+// CRC-32 variants zlib doesn't have (crc32b and adler32 go through zlib)
 //   crc32  = MSB-first, poly 0x04C11DB7 (PHP's "crc32", non-reflected)
-//   crc32b = reflected IEEE (see hash_fns::crc32) — handled in dispatch
 //   crc32c = reflected Castagnoli, poly 0x82F63B78
 // ---------------------------------------------------------------------------
 

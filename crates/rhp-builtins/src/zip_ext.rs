@@ -548,11 +548,7 @@ impl Archive {
                     comp,
                 } => (*method, flags & !0x0008, *crc, *size, comp.clone()),
                 Data::New(d) => {
-                    let crc = {
-                        let mut h = flate2::Crc::new();
-                        h.update(d);
-                        h.sum()
-                    };
+                    let crc = crate::ext::zlib::zraw::crc32(d);
                     let want_store = e.method == 0 || d.is_empty() || e.is_dir();
                     let deflated = if want_store {
                         None

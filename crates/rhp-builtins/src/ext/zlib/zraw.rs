@@ -230,3 +230,24 @@ pub fn gunzip_transparent(data: &[u8]) -> Option<Vec<u8>> {
     }
     Some(out)
 }
+
+/// CRC-32 (reflected 0xEDB88320): php's `crc32()`, `hash('crc32b')` and the
+/// zip entry checksum.
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut crc: z::uLong = 0;
+    for chunk in data.chunks(c_uint::MAX as usize) {
+        // SAFETY: `chunk` is a live slice of the length passed.
+        crc = unsafe { z::crc32(crc, chunk.as_ptr(), chunk.len() as c_uint) };
+    }
+    crc as u32
+}
+
+/// Adler-32 (RFC 1950): `hash('adler32')`.
+pub fn adler32(data: &[u8]) -> u32 {
+    let mut sum: z::uLong = 1;
+    for chunk in data.chunks(c_uint::MAX as usize) {
+        // SAFETY: `chunk` is a live slice of the length passed.
+        sum = unsafe { z::adler32(sum, chunk.as_ptr(), chunk.len() as c_uint) };
+    }
+    sum as u32
+}

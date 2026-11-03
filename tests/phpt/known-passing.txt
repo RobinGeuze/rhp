@@ -4952,7 +4952,6 @@ ext/standard/tests/file/copy_variation7.phpt
 ext/standard/tests/file/copy_variation8.phpt
 ext/standard/tests/file/copy_variation9.phpt
 ext/standard/tests/file/directory_wrapper_fstat_basic.phpt
-ext/standard/tests/file/disk_free_space_basic.phpt
 ext/standard/tests/file/fclose_variation1.phpt
 ext/standard/tests/file/feof_basic.phpt
 ext/standard/tests/file/fflush_basic.phpt

@@ -224,13 +224,29 @@ entering or leaving a function, a builtin returning, the end of the script.
 The request then ends like any fatal error: shutdown functions run, the
 exit status is 255, a 200 becomes a 500 when the error isn't displayed.
 The next request on the thread starts from zero. Builtins that know a big
-size first (`str_repeat`, `array_fill`, `fread`, …) refuse it before
-allocating, as php's fallible allocations do.
+size first refuse it before allocating, as php's fallible allocations do:
+`str_repeat`, `str_pad`, `implode`, `array_fill`, `array_pad`, `range`,
+`fread`, `stream_get_line`, `file_get_contents` (plain files) and
+`unserialize`.
 
 php's hard limit (twice `memory_limit`, or `memory_hard_limit_percent`)
-kills php-cli with exit 137. rhp checks it where a script picks a size the
-VM then allocates (a far string offset): php-cli exits as php does, any
-other SAPI ends just the request with the fatal error.
+kills php-cli with exit 137. rhp checks it where the VM or a builtin
+allocates a size it knows first but php can't refuse: string concatenation
+(`.`, `.=`, interpolation), a far string offset, `hash_pbkdf2`. php-cli
+exits as php does; any other SAPI ends just the request with the fatal
+error.
+
+What still escapes the limit, until more builtins are mirrored:
+
+- A builtin without a pre-check (`str_replace`, `explode`, `array_merge`,
+  …) allocates as much as its input asks for and only reports the
+  crossing when it returns. One call can use far more than the limit.
+- An allocation the system refuses aborts the process (Rust's
+  `handle_alloc_error`), taking every request on it down. php's hard
+  limit stops such sizes first; rhp stops them only where it checks.
+- Arrays grow without a hard-limit check. Growth is at most a doubling
+  per insert, and the crossing is raised at the next interrupt check, so
+  a VM loop can't run away; a builtin that builds a big array can.
 
 Limits of the model:
 

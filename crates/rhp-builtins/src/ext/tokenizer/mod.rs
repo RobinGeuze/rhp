@@ -74,10 +74,10 @@ fn apply_parse_mode(toks: &mut [Tok]) {
     }
 }
 
-fn lex(code: &[u8], flags: i64) -> Result<Vec<Tok>, Thrown> {
+fn lex(host: &mut dyn Host, code: &[u8], flags: i64) -> Result<Vec<Tok>, Thrown> {
     if flags & TOKEN_PARSE != 0 {
-        if let Some((message, _line)) = crate::zend::syntax_error(code) {
-            return Err(Thrown::error("ParseError", message));
+        if let Some((message, line)) = crate::zend::syntax_error(code) {
+            return Err(parse_error(host, message, line));
         }
     }
     let mut toks = lexer::tokenize(code);
@@ -87,11 +87,29 @@ fn lex(code: &[u8], flags: i64) -> Result<Vec<Tok>, Thrown> {
     Ok(toks)
 }
 
-fn fn_token_get_all(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+/// The ParseError of a TOKEN_PARSE run: php locates it at the error's line
+/// in a nameless file.
+fn parse_error(host: &mut dyn Host, message: String, line: u32) -> Thrown {
+    let fallback = Thrown::error("ParseError", message.clone());
+    let Ok(e @ Value::Object(_)) =
+        host.reflect_new_instance(b"ParseError", vec![Value::str(message)], true)
+    else {
+        return fallback;
+    };
+    let located = host
+        .reflect_set_prop(&e, b"Error", b"file", Value::str(""))
+        .and_then(|_| host.reflect_set_prop(&e, b"Error", b"line", Value::Int(line as i64)));
+    match (located, e) {
+        (Ok(()), Value::Object(o)) => Thrown::Object(o),
+        _ => fallback,
+    }
+}
+
+fn fn_token_get_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let code = conv::to_string_bytes(&deref(&args[0]));
     let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     let mut out = PhpArray::new();
-    for t in lex(&code, flags)? {
+    for t in lex(host, &code, flags)? {
         if t.id < 256 {
             out.push(Value::str(t.text(&code).to_vec()));
         } else {
@@ -107,11 +125,11 @@ fn fn_token_get_all(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// `[id, text, line, pos]` for every token (single chars get their byte as id);
 /// backs `PhpToken::tokenize`.
-fn fn_token_list(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_token_list(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let code = conv::to_string_bytes(&deref(&args[0]));
     let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     let mut out = PhpArray::new();
-    for t in lex(&code, flags)? {
+    for t in lex(host, &code, flags)? {
         let mut a = PhpArray::new();
         a.push(Value::Int(t.id));
         a.push(Value::str(t.text(&code).to_vec()));

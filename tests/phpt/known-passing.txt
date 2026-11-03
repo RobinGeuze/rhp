@@ -3114,10 +3114,14 @@ ext/intl/tests/intl_error_name.phpt
 ext/intl/tests/intl_icu_data_version_constant.phpt
 ext/intl/tests/intl_icu_version_constant.phpt
 ext/intl/tests/intl_is_failure.phpt
+ext/intl/tests/normalizer_get_raw_decomposition.phpt
 ext/intl/tests/normalizer_normalize.phpt
 ext/intl/tests/normalizer_normalize_kc_cf.phpt
 ext/intl/tests/oom_grapheme_levenshtein_rows.phpt
+ext/intl/tests/oom_grapheme_levenshtein_utf16.phpt
 ext/intl/tests/oom_grapheme_str_split.phpt
+ext/intl/tests/oom_normalizer_normalize.phpt
+ext/intl/tests/oom_normalizer_normalize_func.phpt
 ext/json/tests/001.phpt
 ext/json/tests/002.phpt
 ext/json/tests/003.phpt

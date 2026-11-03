@@ -52,10 +52,9 @@ pub(crate) static CLASSES: &[ClassHandlers] = &[
     },
 ];
 
-/// The storage of an ArrayObject / ArrayIterator (or a subclass) and the
-/// base class that owns it; `None` with `STD_PROP_LIST`, where the
-/// properties are the properties.
-fn spl_array_storage(h: &ObjectHandle) -> Option<(Value, &'static str)> {
+/// The storage of an ArrayObject / ArrayIterator (or a subclass); `None`
+/// with `STD_PROP_LIST`, where the properties are the properties.
+fn spl_array_storage(h: &ObjectHandle) -> Option<Value> {
     let b = h.borrow();
     for base in ["ArrayObject", "ArrayIterator"] {
         let key = |n: &str| PhpStr::from(format!("\0{base}\0{n}").as_str());
@@ -67,7 +66,7 @@ fn spl_array_storage(h: &ObjectHandle) -> Option<(Value, &'static str)> {
             if flags.unwrap_or(0) & 1 != 0 {
                 return None;
             }
-            return Some((deref(s), base));
+            return Some(deref(s));
         }
     }
     None
@@ -86,7 +85,7 @@ fn spl_array_get_properties_for(
     match purpose {
         PropPurpose::ArrayCast | PropPurpose::VarExport | PropPurpose::Json => {
             Ok(match spl_array_storage(h) {
-                Some((Value::Array(a), _)) => Some(a),
+                Some(Value::Array(a)) => Some(a),
                 _ => None,
             })
         }

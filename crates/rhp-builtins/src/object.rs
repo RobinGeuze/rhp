@@ -15,8 +15,8 @@ use crate::Host;
 /// What a property table is fetched for (php's `zend_prop_purpose`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PropPurpose {
-    /// `var_dump`, `print_r`, `debug_zval_refcount` (php's default: the
-    /// `__debugInfo()` result, else the properties).
+    /// `var_dump`, `print_r` (php's default: the `__debugInfo()` result,
+    /// else the properties).
     Debug,
     /// `(array)`.
     ArrayCast,

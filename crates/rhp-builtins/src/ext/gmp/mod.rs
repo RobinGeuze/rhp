@@ -1425,7 +1425,9 @@ fn shift_operands(
             format!("{what} must be greater than or equal to 0"),
         ));
     }
-    let Some(x) = operator_operand(host, a)? else {
+    // A failed conversion of the number is the operand-type error (php
+    // chains the conversion's ValueError as its previous exception).
+    let Ok(Some(x)) = operator_operand(host, a) else {
         return Err(unsupported(host));
     };
     let shift = u32::try_from(shift).map_err(|_| {

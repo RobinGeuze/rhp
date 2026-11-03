@@ -1070,7 +1070,10 @@ pub fn tokenize(src: &[u8]) -> Vec<Tok> {
         stack: Vec::new(),
         labels: Vec::new(),
         line: 1,
-        out: Vec::with_capacity(src.len() / 4),
+        // About a token per 4 bytes, for the first 64 KiB only: a long
+        // token (a string, inline HTML) mustn't charge memory_limit 10
+        // bytes per source byte.
+        out: Vec::with_capacity(src.len().min(1 << 16) / 4),
     };
     lx.run_with_halt();
     lx.out

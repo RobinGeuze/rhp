@@ -31,12 +31,11 @@ const BODY_MIN: &[&str] = &[
 /// Parameters php declares that the body does not implement yet: the
 /// registration's maximum stops before them, so such an argument is refused
 /// (RHP_UNSUPPORTED) instead of ignored.
-const NOT_IMPLEMENTED: &[(&str, usize)] = &[
-    // $mode: RoundingMode is not implemented.
-    ("bcround", 2),
-    // $flags: only the heading is printed.
-    ("phpcredits", 0),
-];
+///
+/// None at present: a body that cannot honour a parameter for some values
+/// refuses those values itself (bcround's RoundingMode, a non-empty
+/// stream_context_create $params).
+const NOT_IMPLEMENTED: &[(&str, usize)] = &[];
 
 /// A registration's arity is php's, except for the parameters listed in
 /// [`NOT_IMPLEMENTED`]: a lower maximum would refuse arguments php takes, a

@@ -466,7 +466,21 @@ fn fn_bcceil(_host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(Dec { mant: q, scale: 0 }.format(0)))
 }
 
-fn fn_bcround(_host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_bcround(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // $mode takes a RoundingMode, which rhp does not implement: anything a
+    // php script can pass is a zpp TypeError, except a RoundingMode case.
+    if let Some(mode) = args.get(2).map(deref) {
+        let name = crate::argparse::value_name(host, &mode);
+        if name.eq_ignore_ascii_case("RoundingMode") {
+            return Err(Thrown::unsupported(
+                "bcround() argument #3 ($mode)",
+                "RoundingMode is not implemented",
+            ));
+        }
+        return Err(Thrown::type_error(format!(
+            "bcround(): Argument #3 ($mode) must be of type RoundingMode, {name} given"
+        )));
+    }
     let a = operand(args, 0, "bcround", 1, "num")?;
     let places = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     let r = bc_round(&a, places);
@@ -526,7 +540,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "bccomp", fn_bccomp, 2, Some(3));
     put(m, "bcfloor", fn_bcfloor, 1, Some(1));
     put(m, "bcceil", fn_bcceil, 1, Some(1));
-    // $mode takes a RoundingMode, which rhp lacks.
-    put(m, "bcround", fn_bcround, 1, Some(2));
+    put(m, "bcround", fn_bcround, 1, Some(3));
     put(m, "bcscale", fn_bcscale, 0, Some(1));
 }

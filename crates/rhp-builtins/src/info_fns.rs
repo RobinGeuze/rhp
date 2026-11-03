@@ -343,8 +343,7 @@ fn fn_phpcredits(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     for (name, func, min, max) in [
         ("phpinfo", fn_phpinfo as crate::NativeFn, 0, 1),
-        // Only the heading is printed: $flags is not implemented.
-        ("phpcredits", fn_phpcredits, 0, 0),
+        ("phpcredits", fn_phpcredits, 0, 1),
         ("php_uname", fn_php_uname, 0, 1),
     ] {
         m.insert(

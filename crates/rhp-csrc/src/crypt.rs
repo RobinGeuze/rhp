@@ -12,21 +12,26 @@ pub const MAX_SALT_LEN: usize = 123;
 /// The `*_crypt_r`/`_rn` signature: key, setting, output buffer, its size.
 type CryptR = unsafe extern "C" fn(*const c_char, *const c_char, *mut c_char, c_int) -> *mut c_char;
 
+// The C symbols carry glue/prefix_crypt.h's rhp_ prefix.
 extern "C" {
+    #[link_name = "rhp_crypt_extended_init"]
     fn _crypt_extended_init();
     fn rhp_crypt_des(key: *const c_char, setting: *const c_char, out: *mut c_char) -> c_int;
+    #[link_name = "rhp_php_crypt_blowfish_rn"]
     fn php_crypt_blowfish_rn(
         key: *const c_char,
         setting: *const c_char,
         output: *mut c_char,
         size: c_int,
     ) -> *mut c_char;
+    #[link_name = "rhp_php_sha256_crypt_r"]
     fn php_sha256_crypt_r(
         key: *const c_char,
         salt: *const c_char,
         buffer: *mut c_char,
         buflen: c_int,
     ) -> *mut c_char;
+    #[link_name = "rhp_php_sha512_crypt_r"]
     fn php_sha512_crypt_r(
         key: *const c_char,
         salt: *const c_char,

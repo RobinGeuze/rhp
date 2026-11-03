@@ -14,6 +14,7 @@ pub enum Type {
 /// `ARGON2_OK`.
 pub const OK: i32 = 0;
 
+// The argon2 functions carry glue/prefix_argon2.h's rhp_ prefix.
 extern "C" {
     static rhp_argon2_min_memory: u64;
     static rhp_argon2_max_memory: u64;
@@ -22,6 +23,7 @@ extern "C" {
     static rhp_argon2_max_lanes: u64;
     static rhp_argon2_version_number: u32;
 
+    #[link_name = "rhp_argon2_hash"]
     fn argon2_hash(
         t_cost: u32,
         m_cost: u32,
@@ -37,9 +39,12 @@ extern "C" {
         ty: c_int,
         version: u32,
     ) -> c_int;
+    #[link_name = "rhp_argon2_verify"]
     fn argon2_verify(encoded: *const c_char, pwd: *const c_void, pwdlen: usize, ty: c_int)
         -> c_int;
+    #[link_name = "rhp_argon2_error_message"]
     fn argon2_error_message(error_code: c_int) -> *const c_char;
+    #[link_name = "rhp_argon2_encodedlen"]
     fn argon2_encodedlen(
         t_cost: u32,
         m_cost: u32,

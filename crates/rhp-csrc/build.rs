@@ -1,8 +1,10 @@
 //! Compiles the vendored C into static archives, one per enabled feature.
 //! Optimisation is fixed (php builds with -O2, libargon2 with -O3) so debug
-//! builds hash at release speed; the output bytes don't depend on it.
+//! builds hash at release speed; the output bytes don't depend on it. Each
+//! archive force-includes glue/prefix_<lib>.h, which gives every global symbol
+//! an rhp_ prefix.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn main() {
     let crypt = std::env::var_os("CARGO_FEATURE_CRYPT").is_some();
@@ -16,6 +18,8 @@ fn main() {
             "ext/standard/crypt_sha256.c",
             "ext/standard/crypt_sha512.c",
         ])
+        .flag("-include")
+        .flag(glue("prefix_crypt.h"))
         .file("glue/crypt.c")
         .compile("rhp_csrc_crypt");
         rerun(&["shim", "glue", "vendor/php-src"]);
@@ -29,7 +33,9 @@ fn main() {
             .opt_level(3)
             .warnings(false)
             .flag("-pthread")
-            .flag("-fvisibility=hidden");
+            .flag("-fvisibility=hidden")
+            .flag("-include")
+            .flag(glue("prefix_argon2.h"));
         for f in [
             "src/argon2.c",
             "src/core.c",
@@ -63,6 +69,12 @@ fn php_src(files: &[&str]) -> cc::Build {
         b.file(vendor.join(f));
     }
     b
+}
+
+fn glue(header: &str) -> PathBuf {
+    Path::new(&std::env::var_os("CARGO_MANIFEST_DIR").unwrap())
+        .join("glue")
+        .join(header)
 }
 
 fn rerun(dirs: &[&str]) {

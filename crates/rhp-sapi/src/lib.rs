@@ -340,19 +340,20 @@ fn fatal(vm: &mut Vm, t: Thrown) -> i32 {
 /// `Off`/`No`/`False`/`None`/`Null` → ""), replaces a constant's name by
 /// its value and evaluates `| & ^ ~ !` expressions (`E_ALL & ~E_NOTICE`).
 pub fn ini_define_value(raw: &str) -> String {
-    let v = raw.trim();
-    let Some(first) = v.chars().next() else {
+    let Some(first) = raw.chars().next() else {
         return String::new();
     };
+    if !first.is_ascii_alphanumeric() && first != '"' && first != '\'' {
+        // Quoted by php_ini_builder_define, leading whitespace included.
+        return raw.to_string();
+    }
+    let v = raw.trim_end();
     if first == '"' || first == '\'' {
         let inner = &v[1..];
         return match inner.find(first) {
             Some(end) => inner[..end].to_string(),
             None => inner.to_string(),
         };
-    }
-    if !first.is_ascii_alphanumeric() {
-        return v.to_string();
     }
     let v = v.split(';').next().unwrap_or("").trim_end();
     match v.to_ascii_lowercase().as_str() {
@@ -476,6 +477,96 @@ fn ini_expr(v: &str) -> String {
     binary(&toks, &mut 0).to_string()
 }
 
+/// The constants that exist when php parses `-d` settings (php_init_config):
+/// Zend's standard constants and main's. Extensions register theirs later,
+/// so `SORT_DESC` or `M_PI` stay literal.
+const INI_CONSTANTS: &[&str] = &[
+    // Zend/zend_constants.stub.php
+    "E_ERROR",
+    "E_WARNING",
+    "E_PARSE",
+    "E_NOTICE",
+    "E_CORE_ERROR",
+    "E_CORE_WARNING",
+    "E_COMPILE_ERROR",
+    "E_COMPILE_WARNING",
+    "E_USER_ERROR",
+    "E_USER_WARNING",
+    "E_USER_NOTICE",
+    "E_STRICT",
+    "E_RECOVERABLE_ERROR",
+    "E_DEPRECATED",
+    "E_USER_DEPRECATED",
+    "E_ALL",
+    "DEBUG_BACKTRACE_PROVIDE_OBJECT",
+    "DEBUG_BACKTRACE_IGNORE_ARGS",
+    "ZEND_THREAD_SAFE",
+    "ZEND_DEBUG_BUILD",
+    "ZEND_VM_KIND",
+    // main/main.stub.php
+    "PHP_VERSION",
+    "PHP_MAJOR_VERSION",
+    "PHP_MINOR_VERSION",
+    "PHP_RELEASE_VERSION",
+    "PHP_EXTRA_VERSION",
+    "PHP_VERSION_ID",
+    "PHP_BUILD_DATE",
+    "PHP_BUILD_PROVIDER",
+    "PHP_ZTS",
+    "PHP_DEBUG",
+    "PHP_OS",
+    "PHP_OS_FAMILY",
+    "DEFAULT_INCLUDE_PATH",
+    "PEAR_INSTALL_DIR",
+    "PEAR_EXTENSION_DIR",
+    "PHP_EXTENSION_DIR",
+    "PHP_PREFIX",
+    "PHP_BINDIR",
+    "PHP_SBINDIR",
+    "PHP_MANDIR",
+    "PHP_LIBDIR",
+    "PHP_DATADIR",
+    "PHP_SYSCONFDIR",
+    "PHP_LOCALSTATEDIR",
+    "PHP_CONFIG_FILE_PATH",
+    "PHP_CONFIG_FILE_SCAN_DIR",
+    "PHP_SHLIB_SUFFIX",
+    "PHP_EOL",
+    "PHP_MAXPATHLEN",
+    "PHP_INT_MAX",
+    "PHP_INT_MIN",
+    "PHP_INT_SIZE",
+    "PHP_FD_SETSIZE",
+    "PHP_FLOAT_DIG",
+    "PHP_FLOAT_EPSILON",
+    "PHP_FLOAT_MAX",
+    "PHP_FLOAT_MIN",
+    "PHP_OUTPUT_HANDLER_START",
+    "PHP_OUTPUT_HANDLER_WRITE",
+    "PHP_OUTPUT_HANDLER_FLUSH",
+    "PHP_OUTPUT_HANDLER_CLEAN",
+    "PHP_OUTPUT_HANDLER_FINAL",
+    "PHP_OUTPUT_HANDLER_CONT",
+    "PHP_OUTPUT_HANDLER_END",
+    "PHP_OUTPUT_HANDLER_CLEANABLE",
+    "PHP_OUTPUT_HANDLER_FLUSHABLE",
+    "PHP_OUTPUT_HANDLER_REMOVABLE",
+    "PHP_OUTPUT_HANDLER_STDFLAGS",
+    "PHP_OUTPUT_HANDLER_STARTED",
+    "PHP_OUTPUT_HANDLER_DISABLED",
+    "PHP_OUTPUT_HANDLER_PROCESSED",
+    "UPLOAD_ERR_OK",
+    "UPLOAD_ERR_INI_SIZE",
+    "UPLOAD_ERR_FORM_SIZE",
+    "UPLOAD_ERR_PARTIAL",
+    "UPLOAD_ERR_NO_FILE",
+    "UPLOAD_ERR_NO_TMP_DIR",
+    "UPLOAD_ERR_CANT_WRITE",
+    "UPLOAD_ERR_EXTENSION",
+    "PHP_SAPI",
+    "PHP_BINARY",
+];
+
 /// A constant's value as the ini scanner substitutes it.
 fn ini_constant(name: &str) -> Option<String> {
     use std::collections::HashMap;
@@ -484,6 +575,7 @@ fn ini_constant(name: &str) -> Option<String> {
     let m = CONSTANTS.get_or_init(|| {
         rhp_builtins::constants()
             .into_iter()
+            .filter(|(n, _)| INI_CONSTANTS.contains(n))
             .filter(|(_, v)| !matches!(v, Value::Array(_) | Value::Object(_)))
             .map(|(n, v)| (n, rhp_values::conv::to_string_bytes(&v)))
             .collect()
@@ -542,6 +634,12 @@ mod tests {
         assert_eq!(v("E_ALL & ~E_DEPRECATED"), "22527");
         assert_eq!(v("E_ALL^E_NOTICE"), "30711");
         assert_eq!(v("E_ALL & ~(E_NOTICE | E_WARNING)"), "30709");
+        assert_eq!(v("PHP_INT_SIZE"), "8");
+        // Extension constants don't exist yet when php parses `-d`.
+        assert_eq!(v("SORT_DESC"), "SORT_DESC");
+        assert_eq!(v("M_PI"), "M_PI");
+        // A value starting with whitespace is literal.
+        assert_eq!(v(" E_ALL"), " E_ALL");
         assert_eq!(v("files"), "files");
         assert_eq!(v("Europe/London"), "Europe/London");
         assert_eq!(v("UTF-8"), "UTF-8");

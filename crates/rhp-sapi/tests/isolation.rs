@@ -98,6 +98,7 @@ fn sequential_requests_are_isolated() {
     };
     let (c2, o2) = run(second, info);
     assert_eq!(o2, Outcome::Exit(0));
+    let powered = format!("X-Powered-By: PHP/{}", rhp_builtins::version::PHP_VERSION);
     let want = r#"array(1) {
   ["r"]=>
   string(3) "two"
@@ -111,9 +112,11 @@ bool(false)
 int(200)
 array(1) {
   [0]=>
-  string(23) "X-Powered-By: PHP/8.5.8"
+  string(LEN) "POWERED"
 }
-"#;
+"#
+    .replace("LEN", &powered.len().to_string())
+    .replace("POWERED", &powered);
     assert_eq!(body(&c2), want);
     assert_eq!(*c2.code.borrow(), 200);
     assert!(!c2.headers.borrow().iter().any(|h| h == b"X-First: 1"));

@@ -232,9 +232,12 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     vec![
         (
             "OPENSSL_VERSION_TEXT",
-            Value::str("OpenSSL 3.6.3 9 Jun 2026"),
+            Value::str(crate::version::OPENSSL_VERSION_TEXT),
         ),
-        ("OPENSSL_VERSION_NUMBER", Value::Int(811597872)),
+        (
+            "OPENSSL_VERSION_NUMBER",
+            Value::Int(crate::version::OPENSSL_VERSION_NUMBER),
+        ),
         ("OPENSSL_RAW_DATA", Value::Int(1)),
         ("OPENSSL_ZERO_PADDING", Value::Int(2)),
         ("OPENSSL_ALGO_SHA1", Value::Int(1)),

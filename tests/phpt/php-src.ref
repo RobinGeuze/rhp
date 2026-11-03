@@ -1,3 +1,5 @@
-# php-src commit the phpt ratchet runs against (PHP-8.5 branch, 2026-10-21).
-# Regenerate known-passing.txt when bumping this.
-73e2bad976d950438aacd9a4829732dcb0010fd1
+# php-src commit the phpt ratchet runs against: the php-8.5.12 tag.
+# It must always be the release tag of the reference php binary (see
+# crates/rhp-builtins/src/version.rs). Regenerate known-passing.txt when
+# bumping this.
+136e049ac10b032c83018e65b63b6df858943750

@@ -19,6 +19,7 @@ pub mod memstream;
 pub mod module;
 pub mod streams;
 pub mod stub_params;
+pub mod version;
 
 pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};
 pub use ext::simplexml::{sxe_bool, sxe_props_array, sxe_same_node, sxe_string};
@@ -1172,7 +1173,7 @@ macro_rules! builtins {
 pub use php_fns::{apply_env_overrides, env_overrides};
 
 /// The php version this engine reports (`PHP_VERSION`).
-pub const PHP_VERSION: &str = "8.5.8";
+pub const PHP_VERSION: &str = version::PHP_VERSION;
 
 /// A directive's current value: `None` = unknown directive, `Some(None)` =
 /// registered with a null value.
@@ -1196,6 +1197,8 @@ pub fn ini_parse_quantity(s: &[u8]) -> i64 {
 pub fn ini_startup_set(name: &[u8], value: &[u8]) {
     runtime_fns::ini_startup(name, value);
 }
+
+pub use runtime_fns::{take_shutdown_diagnostics, take_startup_diagnostics};
 
 /// Reset every builtin's per-request state (ini overrides, default timezone,
 /// precision, strtok/preg/json/mbstring state, process title, putenv
@@ -1384,6 +1387,21 @@ mod registry_tests {
         dups.sort();
         assert!(dups.is_empty(), "duplicate builtins:\n{}", dups.join("\n"));
     }
+
+    /// Every constant has one definition. The engines load `constants()`
+    /// into a map, so a second definition silently overrides the first, and
+    /// a version bump made in one copy (version.rs) would not take effect.
+    #[test]
+    fn no_duplicate_constants() {
+        let mut seen = std::collections::HashSet::new();
+        let mut dups: Vec<&str> = constants()
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| !seen.insert(*name))
+            .collect();
+        dups.sort();
+        assert!(dups.is_empty(), "constants defined twice: {dups:?}");
+    }
 }
 
 /// Case-insensitive builtin lookup.
@@ -1454,12 +1472,15 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PHP_FLOAT_EPSILON", Value::Float(f64::EPSILON)),
         ("PHP_FLOAT_MAX", Value::Float(f64::MAX)),
         ("PHP_FLOAT_MIN", Value::Float(f64::MIN_POSITIVE)),
-        ("PHP_VERSION", Value::str("8.5.8")),
-        ("PHP_MAJOR_VERSION", Value::Int(8)),
-        ("PHP_MINOR_VERSION", Value::Int(5)),
-        ("PHP_RELEASE_VERSION", Value::Int(8)),
-        ("PHP_EXTRA_VERSION", Value::str("")),
-        ("PHP_VERSION_ID", Value::Int(80508)),
+        ("PHP_VERSION", Value::str(version::PHP_VERSION)),
+        ("PHP_MAJOR_VERSION", Value::Int(version::PHP_MAJOR_VERSION)),
+        ("PHP_MINOR_VERSION", Value::Int(version::PHP_MINOR_VERSION)),
+        (
+            "PHP_RELEASE_VERSION",
+            Value::Int(version::PHP_RELEASE_VERSION),
+        ),
+        ("PHP_EXTRA_VERSION", Value::str(version::PHP_EXTRA_VERSION)),
+        ("PHP_VERSION_ID", Value::Int(version::PHP_VERSION_ID)),
         ("PHP_SAPI", Value::str("cli")),
         // php reports its own executable; so do we (composer spawns PHP_BINARY).
         (
@@ -1475,12 +1496,33 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PHP_OS_FAMILY", Value::str(php_os().1)),
         ("ZEND_THREAD_SAFE", Value::Bool(false)),
         ("ZEND_DEBUG_BUILD", Value::Bool(false)),
-        ("PHP_DEBUG", Value::Int(0)),
-        ("PHP_ZTS", Value::Int(0)),
-        ("PCRE_VERSION", Value::str("10.47 2025-10-21")),
-        ("PCRE_VERSION_MAJOR", Value::Int(10)),
-        ("PCRE_VERSION_MINOR", Value::Int(47)),
-        ("ICONV_VERSION", Value::str("1.11")),
+        ("ZEND_VM_KIND", Value::str(version::ZEND_VM_KIND)),
+        ("TRUE", Value::Bool(true)),
+        ("FALSE", Value::Bool(false)),
+        ("NULL", Value::Null),
+        ("PHP_FD_SETSIZE", Value::Int(1024)),
+        ("UPLOAD_ERR_OK", Value::Int(0)),
+        ("UPLOAD_ERR_INI_SIZE", Value::Int(1)),
+        ("UPLOAD_ERR_FORM_SIZE", Value::Int(2)),
+        ("UPLOAD_ERR_PARTIAL", Value::Int(3)),
+        ("UPLOAD_ERR_NO_FILE", Value::Int(4)),
+        ("UPLOAD_ERR_NO_TMP_DIR", Value::Int(6)),
+        ("UPLOAD_ERR_CANT_WRITE", Value::Int(7)),
+        ("UPLOAD_ERR_EXTENSION", Value::Int(8)),
+        // php-cli only (the VM drops it under other SAPIs, like STDIN).
+        ("PHP_CLI_PROCESS_TITLE", Value::Bool(true)),
+        ("PHP_DEBUG", Value::Bool(false)),
+        ("PHP_ZTS", Value::Bool(false)),
+        ("PCRE_VERSION", Value::str(version::PCRE_VERSION)),
+        (
+            "PCRE_VERSION_MAJOR",
+            Value::Int(version::PCRE_VERSION_MAJOR),
+        ),
+        (
+            "PCRE_VERSION_MINOR",
+            Value::Int(version::PCRE_VERSION_MINOR),
+        ),
+        ("ICONV_VERSION", Value::str(version::ICONV_VERSION)),
         ("ICONV_IMPL", Value::str("libiconv")),
         ("ICONV_MIBENUM_ASCII", Value::Int(3)),
         ("DATE_ATOM", Value::str("Y-m-d\\TH:i:sP")),
@@ -1494,24 +1536,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("DATE_RFC850", Value::str("l, d-M-y H:i:s T")),
         ("DATE_RFC1036", Value::str("D, d M y H:i:s O")),
         ("DATE_RFC1123", Value::str("D, d M Y H:i:s O")),
-        ("LIBXML_VERSION", Value::Int(20913)),
-        ("LIBXML_DOTTED_VERSION", Value::str("2.9.13")),
-        ("LIBXML_COMPACT", Value::Int(65536)),
-        ("LIBXML_NOBLANKS", Value::Int(256)),
-        ("LIBXML_NOENT", Value::Int(2)),
-        ("LIBXML_NOERROR", Value::Int(32)),
-        ("LIBXML_NOWARNING", Value::Int(64)),
-        ("LIBXML_NONET", Value::Int(2048)),
-        ("LIBXML_PARSEHUGE", Value::Int(524288)),
-        ("LIBXML_DTDLOAD", Value::Int(4)),
-        ("LIBXML_DTDATTR", Value::Int(8)),
-        ("LIBXML_DTDVALID", Value::Int(16)),
-        ("LIBXML_HTML_NOIMPLIED", Value::Int(8192)),
-        ("LIBXML_HTML_NODEFDTD", Value::Int(4)),
-        ("LIBXML_ERR_NONE", Value::Int(0)),
-        ("LIBXML_ERR_WARNING", Value::Int(1)),
-        ("LIBXML_ERR_ERROR", Value::Int(2)),
-        ("LIBXML_ERR_FATAL", Value::Int(3)),
+        // LIBXML_* live with the libxml module (ext/libxml).
         ("FILE_USE_INCLUDE_PATH", Value::Int(1)),
         ("FILE_IGNORE_NEW_LINES", Value::Int(2)),
         ("FILE_SKIP_EMPTY_LINES", Value::Int(4)),
@@ -1519,18 +1544,44 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("FILE_NO_DEFAULT_CONTEXT", Value::Int(16)),
         ("FILE_TEXT", Value::Int(0)),
         ("FILE_BINARY", Value::Int(0)),
-        ("SEEK_SET", Value::Int(0)),
-        ("SEEK_CUR", Value::Int(1)),
-        ("SEEK_END", Value::Int(2)),
+        // SEEK_* come from fs_fns::constants().
         ("LOCK_SH", Value::Int(1)),
         ("LOCK_EX", Value::Int(2)),
         ("LOCK_UN", Value::Int(3)),
         ("LOCK_NB", Value::Int(4)),
-        ("MB_ONIGURUMA_VERSION", Value::str("6.9.10")),
+        (
+            "MB_ONIGURUMA_VERSION",
+            Value::str(version::ONIGURUMA_VERSION),
+        ),
         ("DIRECTORY_SEPARATOR", Value::str("/")),
         ("PATH_SEPARATOR", Value::str(":")),
         ("PHP_MAXPATHLEN", Value::Int(libc::PATH_MAX as i64)), // MAXPATHLEN: 1024 on macOS, 4096 on Linux
-        ("PHP_BINDIR", Value::str("/usr/bin")),
+        ("PHP_BINDIR", Value::str(version::BINDIR)),
+        ("PHP_PREFIX", Value::str(version::PREFIX)),
+        ("PHP_EXTENSION_DIR", Value::str(version::EXTENSION_DIR)),
+        ("DEFAULT_INCLUDE_PATH", Value::str(version::INCLUDE_PATH)),
+        ("PHP_BUILD_DATE", Value::str(version::BUILD_DATE)),
+        ("PHP_BUILD_PROVIDER", Value::str(version::BUILD_PROVIDER)),
+        ("PEAR_INSTALL_DIR", Value::str(version::PEAR_INSTALL_DIR)),
+        (
+            "PEAR_EXTENSION_DIR",
+            Value::str(version::PEAR_EXTENSION_DIR),
+        ),
+        ("PHP_SBINDIR", Value::str(version::SBINDIR)),
+        ("PHP_MANDIR", Value::str(version::MANDIR)),
+        ("PHP_LIBDIR", Value::str(version::LIBDIR)),
+        ("PHP_DATADIR", Value::str(version::DATADIR)),
+        ("PHP_SYSCONFDIR", Value::str(version::SYSCONFDIR)),
+        ("PHP_LOCALSTATEDIR", Value::str(version::LOCALSTATEDIR)),
+        (
+            "PHP_CONFIG_FILE_PATH",
+            Value::str(version::CONFIG_FILE_PATH),
+        ),
+        (
+            "PHP_CONFIG_FILE_SCAN_DIR",
+            Value::str(version::CONFIG_FILE_SCAN_DIR),
+        ),
+        ("PHP_SHLIB_SUFFIX", Value::str(version::SHLIB_SUFFIX)),
         ("LC_CTYPE", Value::Int(0)),
         ("LC_NUMERIC", Value::Int(1)),
         ("LC_TIME", Value::Int(2)),

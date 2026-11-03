@@ -195,3 +195,118 @@ fn concurrent_requests_on_worker_threads_are_isolated() {
         }
     }
 }
+
+/// A POST whose body is longer than its declared `Content-Length` (an
+/// embedding server delivering a chunked body: `read_post` hands over every
+/// byte while `content_length` stays 0).
+fn lying_post(content_type: &str, body: Vec<u8>) -> RequestInfo {
+    RequestInfo {
+        method: Some(b"POST".to_vec()),
+        content_type: Some(content_type.as_bytes().to_vec()),
+        body,
+        content_length: Some(0),
+        response_code: 200,
+        ..Default::default()
+    }
+}
+
+const LIMIT_INI: [(&str, &str); 3] = [
+    ("post_max_size", "100K"),
+    ("display_errors", "0"),
+    ("log_errors", "1"),
+];
+
+/// `"a=" . str_repeat('a', 1 MiB)`.
+fn big_form() -> Vec<u8> {
+    let mut d = b"a=".to_vec();
+    d.extend(std::iter::repeat_n(b'a', 1024 * 1024));
+    d
+}
+
+/// The multipart body of the GHSA-2cv3-554h-jpmh phpt.
+fn multipart(value: &[u8]) -> Vec<u8> {
+    let mut d = b"--b\r\nContent-Disposition: form-data; name=\"a\"\r\nContent-Type: application/octet-stream\r\n\r\n".to_vec();
+    d.extend_from_slice(value);
+    d.extend_from_slice(b"\r\n\r\n--b--\r\n");
+    d
+}
+
+/// GHSA-2cv3-554h-jpmh (tests/basic/GHSA-2cv3-554h-jpmh_urlencoded.phpt):
+/// `sapi_read_standard_form_data` stops after the 256 KiB block that takes
+/// the bytes read past post_max_size, warns, and `$_POST` holds what was
+/// read.
+#[test]
+fn urlencoded_body_longer_than_content_length_stops_at_post_max_size() {
+    let small = lying_post("application/x-www-form-urlencoded", b"a=hello".to_vec());
+    let (ev, _) = run("var_dump(strlen($_POST['a']));", &LIMIT_INI, small);
+    assert!(!ev.iter().any(|e| e.starts_with("log:")), "{ev:?}");
+    assert_eq!(body(&ev), "int(5)\n");
+
+    let (ev, _) = run(
+        "var_dump(strlen($_POST['a'] ?? '') < 100*1024+0x40000, strlen($_POST['a']), strlen(file_get_contents('php://input')));",
+        &LIMIT_INI,
+        lying_post("application/x-www-form-urlencoded", big_form()),
+    );
+    assert!(
+        ev.contains(&"log:PHP Warning:  PHP Request Startup: Actual POST length does not match Content-Length, and exceeds 102400 bytes in Unknown on line 0".to_string()),
+        "{ev:?}"
+    );
+    assert_eq!(body(&ev), "bool(true)\nint(262142)\nint(262144)\n");
+}
+
+/// GHSA-2cv3-554h-jpmh (tests/basic/GHSA-2cv3-554h-jpmh_multipart.phpt):
+/// the multipart reader stops filling its buffer once more than
+/// post_max_size bytes were read, and warns through `sapi_error` (no
+/// "PHP Request Startup" prefix).
+#[test]
+fn multipart_body_longer_than_content_length_stops_at_post_max_size() {
+    let ct = "multipart/form-data; boundary=b";
+    let (ev, _) = run(
+        "var_dump(strlen($_POST['a']));",
+        &LIMIT_INI,
+        lying_post(ct, multipart(b"hello")),
+    );
+    assert!(!ev.iter().any(|e| e.starts_with("log:")), "{ev:?}");
+    assert_eq!(body(&ev), "int(7)\n");
+
+    let (ev, _) = run(
+        "var_dump(strlen($_POST['a'] ?? '') < 100*1024);",
+        &LIMIT_INI,
+        lying_post(ct, multipart(&vec![b'a'; 1024 * 1024])),
+    );
+    assert!(
+        ev.contains(&"log:PHP Warning:  Actual POST length does not match Content-Length, and exceeds 102400 bytes in Unknown on line 0".to_string()),
+        "{ev:?}"
+    );
+    assert_eq!(body(&ev), "bool(true)\n");
+}
+
+/// request_parse_body() reads through the same readers: the urlencoded
+/// warning names the function (`php_error_docref`), the multipart one
+/// (`sapi_error`) does not.
+#[test]
+fn request_parse_body_stops_at_post_max_size() {
+    let ini = [("enable_post_data_reading", "0"), ("display_errors", "1")];
+    let (ev, _) = run(
+        "[$p] = request_parse_body(['post_max_size' => '100K']); var_dump(strlen($p['a']));",
+        &ini,
+        lying_post("application/x-www-form-urlencoded", big_form()),
+    );
+    assert_eq!(
+        body(&ev),
+        "\nWarning: request_parse_body(): Actual POST length does not match Content-Length, and exceeds 102400 bytes in Command line code on line 1\nint(262142)\n"
+    );
+
+    let (ev, _) = run(
+        "[$p] = request_parse_body(['post_max_size' => '100K']); var_dump(strlen($p['a'] ?? '') < 100*1024);",
+        &ini,
+        lying_post(
+            "multipart/form-data; boundary=b",
+            multipart(&vec![b'a'; 1024 * 1024]),
+        ),
+    );
+    assert_eq!(
+        body(&ev),
+        "\nWarning: Actual POST length does not match Content-Length, and exceeds 102400 bytes in Command line code on line 1\nbool(true)\n"
+    );
+}

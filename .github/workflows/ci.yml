@@ -40,7 +40,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   # The suite with NO `php` on PATH: the VM is validated byte-for-byte against
-  # the committed `.out` golden fixtures (captured from php 8.5.8), and every
+  # the committed `.out` golden fixtures (captured from the reference php,
+  # crates/rhp-builtins/src/version.rs), and every
   # live-php test guards on `php_available()` and skips. Proves the suite is
   # green for a contributor without php installed. (ubuntu-latest ships its own
   # php, so we remove it first.)
@@ -117,48 +118,17 @@ jobs:
           ref: ${{ steps.ref.outputs.sha }}
           path: php-src
           persist-credentials: false
-          # Every directory tests/phpt/known-passing.txt draws from. tests/
-          # includes tests/basic; sapi/cgi/tests, ext/session/tests and a few
-          # others hold CGI tests (--GET--/--POST--/--CGI--/...), run under php-cgi.
+          # Every test tree known-passing.txt may list (non-cone, as the
+          # nightly does): tests/ includes tests/basic; sapi/cgi/tests,
+          # ext/session/tests and a few others hold CGI tests
+          # (--GET--/--POST--/--CGI--/...), run under php-cgi; tests also
+          # include helpers from other trees' tests/ directories.
+          sparse-checkout-cone-mode: false
           sparse-checkout: |
-            ext/bcmath/tests
-            ext/bz2/tests
-            ext/ctype/tests
-            ext/curl/tests
-            ext/date/tests
-            ext/dom/tests
-            ext/filter/tests
-            ext/gmp/tests
-            ext/hash/tests
-            ext/iconv/tests
-            ext/intl/tests
-            ext/json/tests
-            ext/libxml/tests
-            ext/mbstring/tests
-            ext/opcache/tests
-            ext/pcntl/tests
-            ext/pcre/tests
-            ext/phar/tests
-            ext/posix/tests
-            ext/random/tests
-            ext/readline/tests
-            ext/reflection/tests
-            ext/session/tests
-            ext/simplexml/tests
-            ext/sockets/tests
-            ext/sodium/tests
-            ext/spl/tests
-            ext/standard/tests
-            ext/tidy/tests
-            ext/tokenizer/tests
-            ext/xml/tests
-            ext/xmlreader/tests
-            ext/xmlwriter/tests
-            ext/zip/tests
-            ext/zlib/tests
-            sapi/cgi/tests
-            tests
-            Zend/tests
+            /Zend/tests/
+            /tests/
+            /ext/*/tests/
+            /sapi/*/tests/
       - uses: ./.github/actions/setup-php
         with:
           php-version: '8.5'

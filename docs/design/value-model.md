@@ -1,7 +1,7 @@
 # rhp runtime value model
 
 Status: design, phase 1 (tree-walking interpreter). Target semantics: PHP 8.5
-(ground truth: local `php` 8.5.8). This document fixes the concrete Rust types
+(ground truth: the reference `php`, see `crates/rhp-builtins/src/version.rs`; probed on 8.5.8). This document fixes the concrete Rust types
 for the runtime `Value` (the zval analogue) and its sub-structures.
 
 All behavior claims below were verified against `php` 8.5.8; the probed cases are

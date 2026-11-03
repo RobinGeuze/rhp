@@ -6,7 +6,10 @@
 //!
 //! php links ICU; rhp uses the ICU4X crates (`icu_segmenter`,
 //! `icu_normalizer`, `icu_properties`) which carry the same Unicode data, and a
-//! UTS #46 processor modelled on ICU's `uts46.cpp` (see [`idn`]).
+//! UTS #46 processor modelled on ICU's `uts46.cpp` (see [`idn`]). The few
+//! facts ICU4X has no API for (collation ignorables, case foldings newer than
+//! php's mbstring tables) are in `icu_tables.rs`, generated from the reference
+//! php's ICU by `gen_icu_tables.php`.
 //!
 //! `extension_loaded('intl')` stays false: the rest of the extension
 //! (Collator, NumberFormatter, Locale, …) is not implemented, and callers that
@@ -20,9 +23,39 @@ use rhp_values::Value;
 use crate::{Builtin, Host, Thrown};
 
 mod grapheme;
+mod icu_tables;
 mod idn;
 mod normalizer;
 mod uconst;
+
+/// Whether `cp` lies in one of the sorted inclusive `ranges`.
+fn in_ranges(ranges: &[(u32, u32)], cp: u32) -> bool {
+    ranges
+        .binary_search_by(|&(lo, hi)| {
+            if hi < cp {
+                std::cmp::Ordering::Less
+            } else if lo > cp {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
+}
+
+/// Completely ignorable in ICU's root collation (so `usearch` skips it).
+fn collation_ignorable(cp: u32) -> bool {
+    in_ranges(icu_tables::IGNORABLE, cp)
+}
+
+/// ICU's simple case folding of `cp` where it is newer than php's mbstring
+/// tables (which the fold helpers otherwise share).
+fn icu_fold_extra(cp: u32) -> Option<u32> {
+    icu_tables::FOLD_EXTRA
+        .binary_search_by_key(&cp, |&(c, _)| c)
+        .ok()
+        .map(|i| icu_tables::FOLD_EXTRA[i].1)
+}
 
 // ---------------------------------------------------------------------------
 // global error state (intl_error.c)
@@ -238,8 +271,11 @@ class Normalizer {
 pub fn constants() -> Vec<(&'static str, Value)> {
     let mut v = vec![
         ("INTL_MAX_LOCALE_LEN", Value::Int(156)),
-        ("INTL_ICU_VERSION", Value::str("78.3")),
-        ("INTL_ICU_DATA_VERSION", Value::str("78.3")),
+        ("INTL_ICU_VERSION", Value::str(crate::version::ICU_VERSION)),
+        (
+            "INTL_ICU_DATA_VERSION",
+            Value::str(crate::version::ICU_DATA_VERSION),
+        ),
         ("GRAPHEME_EXTR_COUNT", Value::Int(0)),
         ("GRAPHEME_EXTR_MAXBYTES", Value::Int(1)),
         ("GRAPHEME_EXTR_MAXCHARS", Value::Int(2)),

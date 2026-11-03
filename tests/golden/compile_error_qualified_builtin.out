@@ -1,0 +1,5 @@
+NULL
+
+Fatal error: Type declaration 'mixed' must be unqualified in F(13) : eval()'d code on line 5
+Stack trace:
+#0 {main}

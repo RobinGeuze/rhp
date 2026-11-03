@@ -1,4 +1,4 @@
-//! php 8.5.8's constant → module table (generated from
+//! php 8.5.8's (re-checked against 8.5.12) constant → module table (generated from
 //! `get_defined_constants(true)`), in php's registration order. Used to
 //! categorize and order `get_defined_constants()` output.
 

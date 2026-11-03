@@ -31,6 +31,8 @@ pub(crate) struct SapiState {
     pub(crate) startup: bool,
     /// The body exceeded `post_max_size`: `$_POST` stays empty.
     pub(crate) post_too_big: bool,
+    /// php-cgi: module-startup warnings shown after the response body.
+    pub(crate) deferred_startup_diags: Vec<String>,
     /// What has been read of the request body, and this request's uploads
     /// (deleted when the request ends).
     pub(crate) body: BodyState,
@@ -72,6 +74,17 @@ impl Vm {
     /// php_request_startup's header step: `X-Powered-By` when expose_php.
     /// Call after ini settings are applied, before running the script.
     pub fn start_request(&mut self) {
+        // Warnings from applying the -d values (module startup): php-cli
+        // shows them before anything else; php-cgi's reach the client only
+        // after the response body.
+        let diags = builtins::take_startup_diagnostics();
+        if builtins::sapi::is_cgi() {
+            self.sapi.deferred_startup_diags = diags;
+        } else {
+            for d in diags {
+                self.module_startup_warning(&d);
+            }
+        }
         // sapi_activate reads the POST body before the headers are set up.
         self.check_post_size();
         let expose = self.ini_get(b"expose_php").unwrap_or_default();
@@ -93,6 +106,24 @@ impl Vm {
     /// running).
     fn startup_warning(&mut self, msg: &str) {
         self.startup_diag(2, &format!("PHP Request Startup: {msg}"));
+    }
+
+    /// php_error_cb for a warning raised before the module finished
+    /// starting up: never recorded for `error_get_last()` nor passed to a
+    /// handler; displayed when display_errors and display_startup_errors
+    /// allow, otherwise always logged.
+    fn module_startup_warning(&mut self, msg: &str) {
+        let ini = |vm: &Self, n: &[u8]| vm.ini_get(n).unwrap_or_default();
+        let shown = !matches!(
+            crate::display_errors_mode(&ini(self, b"display_errors")),
+            crate::DisplayErrors::Off
+        ) && crate::ini_bool(&ini(self, b"display_startup_errors"));
+        if shown {
+            self.display_error(2, "Warning", msg.as_bytes(), b"Unknown", 0);
+        } else {
+            let line = format!("PHP Warning:  {msg} in Unknown on line 0\n");
+            self.write_stderr(line.as_bytes());
+        }
     }
 
     /// A diagnostic raised during request startup (in Unknown on line 0).
@@ -133,14 +164,28 @@ impl Vm {
             ));
             return;
         }
-        if let Some(req) = self.sapi.request.as_ref() {
-            self.sapi.body.buffer_rest(&req.body);
+        let over = match self.sapi.request.as_ref() {
+            Some(req) => self.sapi.body.read_standard(&req.body, max),
+            None => false,
+        };
+        if over {
+            self.startup_warning(&rfc1867::actual_length_exceeds(max));
         }
     }
 
     /// php_request_shutdown's tail: send the headers if no output did, then
     /// flush the SAPI. Call after [`Vm::run_main`].
     pub fn finish_request(&mut self) {
+        // zend_ini_deactivate restores startup values changed at runtime
+        // (re-running their handlers); php-cgi's deferred startup warnings
+        // come out with them.
+        for d in std::mem::take(&mut self.sapi.deferred_startup_diags) {
+            self.module_startup_warning(&d);
+        }
+        // The module is up by now: the usual display / log rules apply.
+        for d in builtins::take_shutdown_diagnostics() {
+            self.display_error(2, "Warning", d.as_bytes(), b"Unknown", 0);
+        }
         self.sapi_send_headers();
         if let Some(s) = self.sapi.sapi.as_mut() {
             s.flush();
@@ -426,7 +471,13 @@ impl Vm {
         let mut post = PhpArray::new();
         match &kind[..] {
             b"application/x-www-form-urlencoded" => {
-                let (a, over) = sapi::post_form_vars(&req.body, max_vars);
+                // php_std_post_handler parses what the reader buffered.
+                let data = self
+                    .sapi
+                    .body
+                    .buffered()
+                    .unwrap_or_else(|| self.sapi.body.remaining(&req.body).to_vec());
+                let (a, over) = sapi::post_form_vars(&data, max_vars);
                 self.input_vars_exceeded(over, max_vars);
                 post = a;
             }
@@ -435,6 +486,7 @@ impl Vm {
                 let len = req.content_length.unwrap_or(req.body.len() as i64);
                 let mut out = rfc1867::parse(
                     self.sapi.body.remaining(&req.body),
+                    self.sapi.body.read_bytes(),
                     &rfc1867::content_type_dup(ct),
                     len,
                     &lim,

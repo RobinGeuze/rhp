@@ -2,7 +2,7 @@
 
 rhp is a PHP execution engine in Rust: a tree-walking interpreter over the
 mago-syntax CST with a CLI SAPI, targeting **PHP 8.5 semantics** (ground truth:
-local `php` 8.5.8). This document is the single authoritative build contract. It
+the reference `php`, 8.5.12 — see `crates/rhp-builtins/src/version.rs`). This document is the single authoritative build contract. It
 synthesizes the four design docs in this directory — read them for the "why":
 
 - [`ast-surface.md`](./ast-surface.md) — every `Statement`/`Expression` variant, operators, casts, high-risk nodes, phase→node checklist.

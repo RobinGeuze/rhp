@@ -1,0 +1,40 @@
+dtor inner
+mid finally
+dtor mid
+caught x
+outer continues
+dtor outer
+--
+dtor g
+caught y
+--
+h finally
+dtor h
+caught z
+--
+Exception: from dtor prev=orig
+--
+T2 dtor
+b finally
+LogicException:dtor2
+RuntimeException:orig2
+--
+dtor local
+dtor M
+caught m
+--
+dtor cb1
+caught cb
+--
+caught ctor
+--
+v1
+dtor gen
+caught gen
+--
+dtor c
+caught cl
+--
+dtor m
+1
+end

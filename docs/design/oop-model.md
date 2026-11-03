@@ -1,7 +1,7 @@
 # rhp OOP runtime object + class model
 
 Status: **design, phase 7 (OOP, VM-only).** Target semantics: PHP 8.5 (ground
-truth: local `php` 8.5.8). The tree-walking oracle is **frozen** and skips OOP
+truth: the reference `php`, see `crates/rhp-builtins/src/version.rs`; probed on 8.5.8). The tree-walking oracle is **frozen** and skips OOP
 fixtures; objects exist only on the register VM. This doc fixes the concrete
 Rust types for the runtime **class table** and **object model**, extending the
 `value-model.md` §5 object sketch, and says how `FunctionProto`/`Program`/`Frame`

@@ -1,0 +1,72 @@
+99999999999999999999
+  W: Invalid "memory_hard_limit_percent" setting. Invalid quantity "99999999999999999999": value is out of range, using overflow result for backwards compatibility
+string(0) ""
+9223372036854775808
+  W: Invalid "memory_hard_limit_percent" setting. Invalid quantity "9223372036854775808": value is out of range, using overflow result for backwards compatibility
+  W: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+-9223372036854775809
+  W: Invalid "memory_hard_limit_percent" setting. Invalid quantity "-9223372036854775809": value is out of range, using overflow result for backwards compatibility
+  W: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+9007199254740992G
+  W: Invalid "memory_hard_limit_percent" setting. Invalid quantity "9007199254740992G": value is out of range, using overflow result for backwards compatibility
+  W: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+0x8000000000000000
+  W: Invalid "memory_hard_limit_percent" setting. Invalid quantity "0x8000000000000000": value is out of range, using overflow result for backwards compatibility
+  W: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+-9007199254740993G
+  W: Invalid "memory_hard_limit_percent" setting. Invalid quantity "-9007199254740993G": value is out of range, using overflow result for backwards compatibility
+  W: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+9223372036854775807
+string(0) ""
+-9223372036854775808
+  W: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+8589934591G
+string(0) ""
+-8589934592G
+  W: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+0x7fffffffffffffff
+string(0) ""
+99999999999999999999k
+  W: Invalid "memory_hard_limit_percent" setting. Invalid quantity "99999999999999999999k": value is out of range, using overflow result for backwards compatibility
+  W: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+99999999999999999999kk
+  W: Invalid "memory_hard_limit_percent" setting. Invalid quantity "99999999999999999999kk", interpreting as "99999999999999999999k" for backwards compatibility
+  W: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+99999999999999999999x
+  W: Invalid "memory_hard_limit_percent" setting. Invalid quantity "99999999999999999999x": unknown multiplier "x", interpreting as "99999999999999999999" for backwards compatibility
+string(0) ""
+0777777777777777777777777
+  W: Invalid "memory_hard_limit_percent" setting. Invalid quantity "0777777777777777777777777": value is out of range, using overflow result for backwards compatibility
+string(0) ""
+0200
+string(0) ""
+0x64
+string(0) ""
+0b1100100
+string(0) ""
+0o144
+string(0) ""
+-99999999999999999999
+  W: Invalid "memory_hard_limit_percent" setting. Invalid quantity "-99999999999999999999": value is out of range, using overflow result for backwards compatibility
+string(0) ""
+100
+string(0) ""
+-1
+string(0) ""
+abc
+  W: Invalid "memory_hard_limit_percent" setting. Invalid quantity "abc": no valid leading digits, interpreting as "0" for backwards compatibility
+  W: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+1e3
+  W: Invalid "memory_hard_limit_percent" setting. Invalid quantity "1e3": unknown multiplier "3", interpreting as "1" for backwards compatibility
+  W: memory_hard_limit_percent must be >= 100, or -1
+bool(false)

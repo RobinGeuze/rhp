@@ -413,9 +413,15 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
 pub fn constants() -> Vec<(&'static str, Value)> {
     let i = Value::Int;
     vec![
-        ("LIBXML_VERSION", i(20913)),
-        ("LIBXML_DOTTED_VERSION", Value::str(b"2.9.13".to_vec())),
-        ("LIBXML_LOADED_VERSION", Value::str(b"20913".to_vec())),
+        ("LIBXML_VERSION", i(crate::version::LIBXML_VERSION)),
+        (
+            "LIBXML_DOTTED_VERSION",
+            Value::str(crate::version::LIBXML_DOTTED_VERSION),
+        ),
+        (
+            "LIBXML_LOADED_VERSION",
+            Value::str(crate::version::LIBXML_LOADED_VERSION),
+        ),
         ("LIBXML_RECOVER", i(1)),
         ("LIBXML_NOENT", i(2)),
         ("LIBXML_DTDLOAD", i(4)),

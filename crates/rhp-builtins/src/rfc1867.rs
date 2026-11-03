@@ -28,6 +28,17 @@ use crate::{Builtin, Host};
 /// `FILLUNIT`: the multipart buffer's minimum size.
 const FILLUNIT: usize = 1024 * 5;
 
+/// `SAPI_POST_BLOCK_SIZE`: the block `sapi_read_standard_form_data` reads
+/// the body in.
+pub const SAPI_POST_BLOCK_SIZE: usize = 0x40000;
+
+/// The warning php raises once more than `post_max_size` bytes of a body
+/// were actually read, whatever its `Content-Length` said
+/// (GHSA-2cv3-554h-jpmh).
+pub fn actual_length_exceeds(post_max_size: i64) -> String {
+    format!("Actual POST length does not match Content-Length, and exceeds {post_max_size} bytes")
+}
+
 /// `UPLOAD_ERR_*`.
 const UPLOAD_ERR_INI_SIZE: i64 = 1;
 const UPLOAD_ERR_FORM_SIZE: i64 = 2;
@@ -75,6 +86,38 @@ impl BodyState {
     pub fn buffer_rest(&self, body: &[u8]) {
         *self.buffered.borrow_mut() = Some(self.remaining(body).to_vec());
         self.consumed.set(body.len());
+    }
+
+    /// `SG(read_post_bytes)`: body bytes read from the SAPI so far.
+    pub fn read_bytes(&self) -> usize {
+        self.consumed.get()
+    }
+
+    /// `sapi_read_standard_form_data`'s read loop (the declared length is
+    /// within `post_max_size`): the rest of the body is read in
+    /// [`SAPI_POST_BLOCK_SIZE`] blocks into a new `request_body`, stopping
+    /// after the block that takes the bytes read past `post_max_size` (a
+    /// body longer than its `Content-Length`). True when it stopped so: the
+    /// caller raises [`actual_length_exceeds`] and still parses what was
+    /// read.
+    pub fn read_standard(&self, body: &[u8], post_max_size: i64) -> bool {
+        let rest = self.remaining(body);
+        let mut off = 0;
+        let mut over = false;
+        loop {
+            let n = SAPI_POST_BLOCK_SIZE.min(rest.len() - off);
+            off += n;
+            self.consumed.set(self.consumed.get() + n);
+            if post_max_size > 0 && self.consumed.get() as i64 > post_max_size {
+                over = true;
+                break;
+            }
+            if n < SAPI_POST_BLOCK_SIZE {
+                break;
+            }
+        }
+        *self.buffered.borrow_mut() = Some(rest[..off].to_vec());
+        over
     }
 
     /// The buffered body (`request_body`), if a reader made one.
@@ -239,6 +282,10 @@ struct MBuf<'a> {
     bufsize: usize,
     boundary: Vec<u8>,
     boundary_next: Vec<u8>,
+    /// `SG(read_post_bytes)` before this parse started reading.
+    read_before: usize,
+    /// `post_max_size` (<= 0: no limit).
+    post_max_size: i64,
 }
 
 impl<'a> MBuf<'a> {
@@ -257,7 +304,20 @@ impl<'a> MBuf<'a> {
             bufsize,
             boundary: b,
             boundary_next: bn,
+            read_before: 0,
+            post_max_size: 0,
         }
+    }
+
+    /// `SG(read_post_bytes)`: everything read from the SAPI so far.
+    fn read_post_bytes(&self) -> usize {
+        self.read_before + self.src_pos
+    }
+
+    /// More than `post_max_size` bytes were read (the body was longer than
+    /// its `Content-Length`).
+    fn over_limit(&self) -> bool {
+        self.post_max_size > 0 && self.read_post_bytes() as i64 > self.post_max_size
     }
 
     /// `fill_buffer`.
@@ -267,6 +327,10 @@ impl<'a> MBuf<'a> {
                 .copy_within(self.begin..self.begin + self.bytes, 0);
         }
         self.begin = 0;
+        // GHSA-2cv3-554h-jpmh: stop reading once over post_max_size.
+        if self.over_limit() {
+            return 0;
+        }
         let want = self.bufsize - self.bytes;
         let n = want.min(self.src.len() - self.src_pos);
         self.buffer[self.bytes..self.bytes + n]
@@ -599,9 +663,11 @@ fn open_upload_temp(dir: &[u8], diags: &mut Vec<Diag>) -> Option<Vec<u8>> {
 }
 
 /// `rfc1867_post_handler`: parse a multipart body (`src`, what is left of
-/// the request body) into `post` / `files`.
+/// the request body; `read_before`: the body bytes read before it, php's
+/// `SG(read_post_bytes)`) into `post` / `files`.
 pub fn parse(
     src: &[u8],
+    read_before: usize,
     content_type_dup: &[u8],
     content_length: i64,
     lim: &Limits,
@@ -656,6 +722,8 @@ pub fn parse(
     }
 
     let mut mb = MBuf::new(src, boundary);
+    mb.read_before = read_before;
+    mb.post_max_size = lim.post_max_size;
     let mut protected: HashSet<Vec<u8>> = HashSet::new();
     let mut uploaded: Vec<Vec<u8>> = Vec::new();
     let mut count: i64 = 0;
@@ -937,6 +1005,11 @@ pub fn parse(
             false,
         );
     }
+    // fileupload_done.
+    if mb.over_limit() {
+        out.diags
+            .push(Diag::Sapi(actual_length_exceeds(lim.post_max_size)));
+    }
     out.consumed = mb.src_pos;
     out.uploaded = Some(uploaded);
     out
@@ -1056,7 +1129,7 @@ fn escaped(s: &[u8]) -> String {
 }
 
 /// The warning `zend_ini_parse_quantity` reports for a malformed quantity.
-fn quantity_error(v: &[u8]) -> Option<String> {
+pub(crate) fn quantity_error(v: &[u8]) -> Option<String> {
     let ws = |c: u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
     let mut a = 0;
     let mut b = v.len();
@@ -1071,6 +1144,7 @@ fn quantity_error(v: &[u8]) -> Option<String> {
     }
     let inv = escaped(v);
     let mut d = a;
+    let negative = v[d] == b'-';
     if v[d] == b'+' || v[d] == b'-' {
         d += 1;
     }
@@ -1083,19 +1157,25 @@ fn quantity_error(v: &[u8]) -> Option<String> {
         return no_digits();
     }
     let mut base_digits: fn(u8) -> bool = |c: u8| c.is_ascii_digit();
+    // ZEND_STRTOUL's base: 0 (decimal, or octal after a leading 0) unless
+    // an explicit prefix picked one.
+    let mut radix = if v[d] == b'0' { 8 } else { 10 };
     if v[d] == b'0' && d + 1 < b && !v[d + 1].is_ascii_digit() {
         match v[d + 1] {
             b'g' | b'G' | b'm' | b'M' | b'k' | b'K' => {}
             b'x' | b'X' => {
                 base_digits = |c| c.is_ascii_hexdigit();
+                radix = 16;
                 d += 2;
             }
             b'o' | b'O' => {
                 base_digits = |c| (b'0'..=b'7').contains(&c);
+                radix = 8;
                 d += 2;
             }
             b'b' | b'B' => {
                 base_digits = |c| c == b'0' || c == b'1';
+                radix = 2;
                 d += 2;
             }
             c => {
@@ -1115,24 +1195,72 @@ fn quantity_error(v: &[u8]) -> Option<String> {
     while e < b && base_digits(v[e]) {
         e += 1;
     }
+    // strtoul's ERANGE, then the signed-result check (only PHP_INT_MIN may
+    // have its top bit set).
+    let mut value: u64 = 0;
+    let mut overflow = false;
+    for &c in &v[d..e] {
+        let digit = (c as char).to_digit(radix);
+        let Some(digit) = digit else { break };
+        match value
+            .checked_mul(u64::from(radix))
+            .and_then(|x| x.checked_add(u64::from(digit)))
+        {
+            Some(x) => value = x,
+            None => {
+                overflow = true;
+                value = u64::MAX;
+            }
+        }
+    }
+    let mut signed = value as i64;
+    if !overflow {
+        if negative && value == 1u64 << 63 {
+            signed = i64::MIN;
+        } else if signed < 0 {
+            overflow = true;
+        } else if negative {
+            signed = -signed;
+        }
+    }
+    let out_of_range = || {
+        Some(format!(
+            "Invalid quantity \"{inv}\": value is out of range, using overflow result for backwards compatibility"
+        ))
+    };
     while e < b && ws(v[e]) {
         e += 1;
     }
     if e == b {
-        return None;
+        return if overflow { out_of_range() } else { None };
     }
     let last = v[b - 1];
     let interp = escaped(&v[..e]);
     let chr = escaped(&[last]);
-    if !matches!(last, b'g' | b'G' | b'm' | b'M' | b'k' | b'K') {
-        return Some(format!(
-            "Invalid quantity \"{inv}\": unknown multiplier \"{chr}\", interpreting as \"{interp}\" for backwards compatibility"
-        ));
+    let factor: i64 = match last {
+        b'g' | b'G' => 1 << 30,
+        b'm' | b'M' => 1 << 20,
+        b'k' | b'K' => 1 << 10,
+        _ => {
+            return Some(format!(
+                "Invalid quantity \"{inv}\": unknown multiplier \"{chr}\", interpreting as \"{interp}\" for backwards compatibility"
+            ))
+        }
+    };
+    if !overflow {
+        overflow = if signed > 0 {
+            signed > i64::MAX / factor
+        } else {
+            signed < i64::MIN / factor
+        };
     }
     if e != b - 1 {
         return Some(format!(
             "Invalid quantity \"{inv}\", interpreting as \"{interp}{chr}\" for backwards compatibility"
         ));
+    }
+    if overflow {
+        return out_of_range();
     }
     None
 }
@@ -1252,8 +1380,15 @@ fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
             )?;
             return Ok(false);
         }
-        if let Some(s) = host.body_state() {
-            s.buffer_rest(&body);
+        let over = host
+            .body_state()
+            .is_some_and(|s| s.read_standard(&body, lim.post_max_size));
+        if over {
+            crate::warn(
+                host,
+                "request_parse_body",
+                &actual_length_exceeds(lim.post_max_size),
+            )?;
         }
         Ok(true)
     };
@@ -1279,12 +1414,13 @@ fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
             }
         }
         b"multipart/form-data" => {
-            let rest = match host.body_state() {
-                Some(s) => s.remaining(&body).to_vec(),
-                None => Vec::new(),
+            let (rest, read_before) = match host.body_state() {
+                Some(s) => (s.remaining(&body).to_vec(), s.read_bytes()),
+                None => (Vec::new(), 0),
             };
             let mut out = parse(
                 &rest,
+                read_before,
                 &content_type_dup(&ct),
                 content_length,
                 &lim,
@@ -1374,6 +1510,29 @@ mod tests {
     #[test]
     fn quantity_errors() {
         assert!(quantity_error(b"128M").is_none());
+        // Messages captured from php 8.5.12 (ini_set('memory_hard_limit_percent', …)).
+        let range = |v: &str| {
+            format!("Invalid quantity \"{v}\": value is out of range, using overflow result for backwards compatibility")
+        };
+        for v in [
+            "99999999999999999999",
+            "9223372036854775808",
+            "-9223372036854775809",
+            "9007199254740992G",
+            "0x8000000000000000",
+            "-9007199254740993G",
+        ] {
+            assert_eq!(quantity_error(v.as_bytes()), Some(range(v)), "{v}");
+        }
+        for v in [
+            "9223372036854775807",
+            "-9223372036854775808",
+            "8589934591G",
+            "-8589934592G",
+            "0x7fffffffffffffff",
+        ] {
+            assert_eq!(quantity_error(v.as_bytes()), None, "{v}");
+        }
         assert!(quantity_error(b"1GB")
             .unwrap()
             .contains("unknown multiplier \"B\""));

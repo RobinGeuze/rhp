@@ -2,7 +2,7 @@
 
 Status: design input for the register-based bytecode compiler + VM that becomes
 rhp's primary execution core. The tiny tree-walker (`rhp-runtime/src/lib.rs`)
-is kept **only** as a differential oracle. Ground truth: local `php` **8.5.8**.
+is kept **only** as a differential oracle. Ground truth: the reference `php` (see `crates/rhp-builtins/src/version.rs`).
 
 This document surveys four reference designs and distills concrete, rhp-specific
 recommendations. It is written against the pieces we already built and will reuse

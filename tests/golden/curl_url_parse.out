@@ -1,0 +1,260 @@
+"687474703a2f2f782f612f2e2e2f62" => string(10) "http://x/b"
+string(10) "http://x/b"
+"687474703a2f2f783a3030303038302f" => string(12) "http://x:80/"
+string(12) "http://x:80/"
+"687474703a2f2f783a303030303030303030303038302f" => string(12) "http://x:80/"
+string(12) "http://x:80/"
+"687474703a2f2f783a30303030302f" => string(11) "http://x:0/"
+string(11) "http://x:0/"
+"687474703a2f2f783a3036353533362f" => bool(false)
+string(12) "(no url key)"
+"687474703a2f2f5b666538303a3a3125657468305d2f" => string(24) "http://[fe80::1%25eth0]/"
+string(24) "http://[fe80::1%25eth0]/"
+"687474703a2f2f5b666538303a3a312532355d2f" => bool(false)
+string(12) "(no url key)"
+"687474703a2f2f5b666538303a3a31255d2f" => bool(false)
+string(12) "(no url key)"
+"687474703a2f2f5b666538303a3a3125325d2f" => string(21) "http://[fe80::1%252]/"
+string(21) "http://[fe80::1%252]/"
+"687474703a2f2f5b3a3a312532353235785d2f" => string(17) "http://[::1%25x]/"
+string(17) "http://[::1%25x]/"
+"687474703a2f2f5b3a3a3125323525323534315d2f" => bool(false)
+string(12) "(no url key)"
+"687474703a2f2f5b253361253361315d2f" => string(13) "http://[::1]/"
+string(13) "http://[::1]/"
+"687474703a2f2f5b3a3a312532356162636465666768696a6b6c6d6e6f705d2f" => bool(false)
+string(12) "(no url key)"
+"687474703a2f2f5b3a3a312e322e332e345d2f" => string(19) "http://[::1.2.3.4]/"
+string(19) "http://[::1.2.3.4]/"
+"687474703a2f2f5b3a3a302e302e312e305d2f" => string(15) "http://[::100]/"
+string(15) "http://[::100]/"
+"687474703a2f2f5b3a3a666666663a303a315d2f" => string(20) "http://[::ffff:0:1]/"
+string(20) "http://[::ffff:0:1]/"
+"687474703a2f2f5b3a3a414243445d2f" => string(16) "http://[::abcd]/"
+string(16) "http://[::abcd]/"
+"687474703a2f2f5b313a303a303a313a303a303a303a315d2f" => string(20) "http://[1:0:0:1::1]/"
+string(20) "http://[1:0:0:1::1]/"
+"687474703a2f2f5b3a3a666666663a312e322e332e30345d2f" => bool(false)
+string(12) "(no url key)"
+"687474703a2f2f782e2e2f" => bool(false)
+string(12) "(no url key)"
+"687474703a2f2f782e2e2e2f" => bool(false)
+string(12) "(no url key)"
+"687474703a2f2f2e2f" => bool(false)
+string(12) "(no url key)"
+"687474703a2f2f2e2e782f" => string(11) "http://..x/"
+string(11) "http://..x/"
+"687474703a2f2f782e792e2f" => string(12) "http://x.y./"
+string(12) "http://x.y./"
+"687474703a2f2f787c792f" => bool(false)
+string(12) "(no url key)"
+"687474703a2f2f78253763792f" => bool(false)
+string(12) "(no url key)"
+"687474703a2f2f61253265622f" => string(11) "http://a.b/"
+string(11) "http://a.b/"
+"687474703a2f2f782532652e2f" => bool(false)
+string(12) "(no url key)"
+"687474703a2f2f782f2532652532652f61" => string(10) "http://x/a"
+string(10) "http://x/a"
+"687474703a2f2f782f612f2532452f62" => string(12) "http://x/a/b"
+string(12) "http://x/a/b"
+"687474703a2f2f782f612f2e2532652f62" => string(10) "http://x/b"
+string(10) "http://x/b"
+"687474703a2f2f782f2532652532652532662f61" => string(20) "http://x/%2e%2e%2f/a"
+string(20) "http://x/%2e%2e%2f/a"
+"687474703a2f2f782f80" => string(10) "http://x/€"
+string(10) "http://x/€"
+"687474703a2f2f78802f" => string(10) "http://x€/"
+string(10) "http://x€/"
+"687474703a2f2f782f6180623f812382" => string(16) "http://x/a€b?#‚"
+string(16) "http://x/a€b?#‚"
+"687474703a2f2f782f7f" => bool(false)
+string(12) "(no url key)"
+"687474703a2f2f752040782f" => bool(false)
+string(12) "(no url key)"
+"687474703a2f2f782f3f612062" => bool(false)
+string(12) "(no url key)"
+"687474703a2f2f782f612f2e2e2f62" => string(15) "http://x/a/../b"
+string(15) "http://x/a/../b"
+"687474703a2f2f78" => string(9) "http://x/"
+string(9) "http://x/"
+"687474703a2f2f782f2532652532652f61" => string(17) "http://x/%2e%2e/a"
+string(17) "http://x/%2e%2e/a"
+"687474703a2f2f782f2e2f612f" => string(13) "http://x/./a/"
+string(13) "http://x/./a/"
+"66696c653a2f2f2f612f2e2e2f62" => string(14) "file:///a/../b"
+string(14) "file:///a/../b"
+unset: bool(false)
+int(3)
+string(10) "No URL set"
+string(0) ""
+string(0) ""
+int(46)
+empty: bool(false)
+int(3)
+string(47) "URL rejected: Malformed input to a URL function"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"http:\/\/a\/b c": bool(false)
+int(3)
+string(22) "URL rejected: Bad path"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"http:\/\/": bool(false)
+int(3)
+string(29) "URL rejected: No host present"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"http:\/\/x:99999\/": bool(false)
+int(3)
+string(70) "URL rejected: Port number was not a decimal number between 0 and 65535"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"http:x": bool(false)
+int(3)
+string(70) "URL rejected: Port number was not a decimal number between 0 and 65535"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"http:\/\/x\\ty\/": bool(false)
+int(3)
+string(26) "URL rejected: Bad hostname"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"x y": bool(false)
+int(3)
+string(26) "URL rejected: Bad hostname"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"\/\/x\/": bool(false)
+int(3)
+string(29) "URL rejected: No host present"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"data:text\/plain,hi": bool(false)
+int(3)
+string(70) "URL rejected: Port number was not a decimal number between 0 and 65535"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"http:\/\/x\/?a=1#f g": bool(false)
+int(3)
+string(26) "URL rejected: Bad fragment"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"http:\/\/x\/a b?c d": bool(false)
+int(3)
+string(23) "URL rejected: Bad query"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"http:\/\/a@b@c\/": bool(false)
+int(3)
+string(26) "URL rejected: Bad hostname"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"file:\/\/h\/x": bool(false)
+int(3)
+string(29) "URL rejected: Bad file:// URL"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"file:\/": bool(false)
+int(3)
+string(29) "URL rejected: Bad file:// URL"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"http:\/\/\/\/x\/": bool(false)
+int(3)
+string(60) "URL rejected: Unsupported number of slashes following scheme"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"http:\/\/[zz]\/": bool(false)
+int(3)
+string(30) "URL rejected: Bad IPv6 address"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"http:\/\/[::1]x\/": bool(false)
+int(3)
+string(70) "URL rejected: Port number was not a decimal number between 0 and 65535"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"http:\/\/x|y\/": bool(false)
+int(3)
+string(26) "URL rejected: Bad hostname"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"http:\/\/u:p w@x\/": bool(false)
+int(3)
+string(26) "URL rejected: Bad password"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"http:\/\/x\/\u0001": bool(false)
+int(3)
+string(22) "URL rejected: Bad path"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"x:\/": bool(false)
+int(3)
+string(29) "URL rejected: No host present"
+bool(false)
+string(12) "(no url key)"
+int(45)
+"nope": bool(false)
+int(1)
+string(27) "Protocol "http" is disabled"
+string(12) "http://nope/"
+string(12) "http://nope/"
+int(46)
+"HTTP:\/\/Nope:80": bool(false)
+int(1)
+string(27) "Protocol "http" is disabled"
+string(15) "http://Nope:80/"
+string(15) "http://Nope:80/"
+int(46)
+"x\/..\/a": bool(false)
+int(1)
+string(27) "Protocol "http" is disabled"
+string(10) "http://x/a"
+string(10) "http://x/a"
+int(46)
+"mailto:a@b": bool(false)
+int(1)
+string(27) "Protocol "http" is disabled"
+string(9) "http://b/"
+string(9) "http://b/"
+int(46)
+"12.5": bool(false)
+int(1)
+string(27) "Protocol "http" is disabled"
+string(16) "http://12.0.0.5/"
+string(16) "http://12.0.0.5/"
+int(46)
+"FTP.x\/y": bool(false)
+int(1)
+string(26) "Protocol "ftp" is disabled"
+string(13) "ftp://FTP.x/y"
+string(13) "ftp://FTP.x/y"
+int(46)
+as-is: bool(false)
+int(1)
+string(27) "Protocol "http" is disabled"
+string(15) "http://x/a/../b"
+string(15) "http://x/a/../b"
+int(46)

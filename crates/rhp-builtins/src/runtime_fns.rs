@@ -148,6 +148,8 @@ const PHP_INI_USER: u8 = 1;
 thread_local! {
     /// Runtime `ini_set` overrides (name → current value; `None` = null).
     static INI: RefCell<HashMap<String, Option<Vec<u8>>>> = RefCell::new(HashMap::new());
+    /// Startup (`-d`) values: phpinfo's "Master Value".
+    static INI_STARTUP: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
 }
 
 /// Diagnostics of startup (`-d`) ini values, and of re-applying them when a
@@ -205,6 +207,7 @@ pub fn take_shutdown_diagnostics() -> Vec<String> {
 /// Reset this module's per-request state (a new Vm).
 pub(crate) fn reset_state() {
     INI.with(|m| m.borrow_mut().clear());
+    INI_STARTUP.with(|m| m.borrow_mut().clear());
     STARTUP_DIAGS.with(|d| *d.borrow_mut() = StartupDiags::default());
     TZ.with(|t| *t.borrow_mut() = None);
     rhp_values::fmt::reset_precision();
@@ -224,6 +227,8 @@ fn ini_entry(
     INI_TABLE
         .iter()
         .find(|e| e.1.as_bytes() == name && module_loaded(e.0))
+        // php registers pcre.jit only when the PCRE2 it links has a JIT.
+        .filter(|e| e.1 != "pcre.jit" || crate::pcre::jit_supported())
 }
 
 /// Current value of an ini directive: `None` = unknown directive,
@@ -233,6 +238,16 @@ pub(crate) fn ini_value(name: &[u8]) -> Option<Option<Vec<u8>>> {
     let key = String::from_utf8_lossy(name).into_owned();
     if let Some(v) = INI.with(|m| m.borrow().get(&key).cloned()) {
         return Some(v);
+    }
+    Some(ini_default(e))
+}
+
+/// A directive's startup value (phpinfo's "Master Value"): `None` = unknown.
+pub(crate) fn ini_default_value(name: &[u8]) -> Option<Option<Vec<u8>>> {
+    let e = ini_entry(name)?;
+    let key = String::from_utf8_lossy(name);
+    if let Some(v) = INI_STARTUP.with(|m| m.borrow().get(key.as_ref()).cloned()) {
+        return Some(Some(v));
     }
     Some(ini_default(e))
 }
@@ -267,6 +282,8 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
     if ini_entry(name).is_some() {
         ini_apply(name, Some(v));
         ini_store(name, v.to_vec());
+        let key = String::from_utf8_lossy(name).into_owned();
+        INI_STARTUP.with(|m| m.borrow_mut().insert(key, v.to_vec()));
     }
 }
 
@@ -441,8 +458,19 @@ fn ini_apply(name: &[u8], v: Option<&[u8]>) {
     match name {
         b"precision" => rhp_values::fmt::set_precision(v.map_or(14, c_atol)),
         b"serialize_precision" => rhp_values::fmt::set_serialize_precision(v.map_or(-1, c_atol)),
+        b"pcre.backtrack_limit" | b"pcre.recursion_limit" | b"pcre.jit" => {
+            crate::pcre::ini_update(name, v.unwrap_or_default())
+        }
         _ => {}
     }
+}
+
+/// `zend_ini_parse_bool`: "true", "yes", "on" (any case), else atoi != 0.
+pub(crate) fn ini_parse_bool(v: &[u8]) -> bool {
+    [&b"true"[..], b"yes", b"on"]
+        .iter()
+        .any(|w| v.eq_ignore_ascii_case(w))
+        || c_atol(v) as i32 != 0
 }
 
 fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value, Thrown> {
@@ -497,7 +525,12 @@ fn fn_ini_alter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_ini_restore(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = str_param(host, args, 0, "ini_restore", "option")?;
     let key = String::from_utf8_lossy(&name).into_owned();
-    INI.with(|m| m.borrow_mut().remove(&key));
+    // Back to the startup value (`-d`), else the default.
+    let startup = INI_STARTUP.with(|m| m.borrow().get(&key).cloned());
+    INI.with(|m| match startup {
+        Some(v) => m.borrow_mut().insert(key, Some(v)),
+        None => m.borrow_mut().remove(&key),
+    });
     if let Some(v) = ini_value(&name) {
         ini_apply(&name, v.as_deref());
     }

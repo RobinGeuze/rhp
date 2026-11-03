@@ -774,10 +774,8 @@ fn spec_matches(phpt: &Phpt, out: &[u8]) -> Option<bool> {
     } else {
         wanted
     };
-    let re = pcre2::bytes::RegexBuilder::new()
-        .dotall(true)
-        .build(&format!("^{re}$"))
-        .ok()?;
+    let re =
+        rhp_builtins::pcre::Pattern::new(&format!("^{re}$"), rhp_builtins::pcre::DOTALL).ok()?;
     re.is_match(&normalise(out)).ok()
 }
 

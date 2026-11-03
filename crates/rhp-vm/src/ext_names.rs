@@ -591,6 +591,7 @@ pub(crate) const FUNCTIONS: &[(&str, &str)] = &[
     ("posix_ttyname", "posix"),
     ("posix_uname", "posix"),
     ("pow", "standard"),
+    ("preg_filter", "pcre"),
     ("preg_grep", "pcre"),
     ("preg_last_error", "pcre"),
     ("preg_last_error_msg", "pcre"),

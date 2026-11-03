@@ -5,9 +5,12 @@
 //! is printed by `tools/capture-ref-build.php`; `crates/rhp-cli/tests/ref_build.rs`
 //! runs that script under both php and rhp and requires identical output.
 //!
+//! Libraries rhp links report their own versions (PCRE2: `crate::pcre`); the
+//! ones still listed here are for code that does not link its library yet.
+//!
 //! Built for another platform (Linux), rhp keeps the reference's release,
-//! [`BUILD_DATE`] and library versions: they describe behaviour rhp
-//! implements the same way everywhere (PCRE, ICU, libcurl, ...). Only the
+//! [`BUILD_DATE`] and the library versions below: they describe behaviour rhp
+//! implements the same way everywhere (ICU, libcurl, ...). Only the
 //! values that describe the platform follow the Ubuntu php CI runs against
 //! (setup-php's build): the install paths, [`BUILD_PROVIDER`],
 //! [`BUILD_SYSTEM`], [`ZEND_VM_KIND`] and libcurl's host triple. There
@@ -111,7 +114,7 @@ pub const BUILD_SYSTEM: &str =
 pub const BUILD_SYSTEM: &str = "Linux";
 
 /// A decimal literal as an integer, at compile time.
-const fn parse_int(s: &str) -> i64 {
+pub(crate) const fn parse_int(s: &str) -> i64 {
     let b = s.as_bytes();
     assert!(!b.is_empty());
     let mut n = 0i64;
@@ -212,10 +215,7 @@ pub const EXT_DOM: &str = "20031129";
 
 // --- linked libraries --------------------------------------------------------
 
-/// `PCRE_VERSION`, `PCRE_VERSION_MAJOR`, `PCRE_VERSION_MINOR`.
-pub const PCRE_VERSION: &str = "10.49 2026-09-28";
-pub const PCRE_VERSION_MAJOR: i64 = 10;
-pub const PCRE_VERSION_MINOR: i64 = 49;
+// PCRE_VERSION and friends come from the linked PCRE2 (crate::pcre).
 /// `OPENSSL_VERSION_TEXT` / `OPENSSL_VERSION_NUMBER` (the headers php was
 /// compiled against; curl reports its own runtime OpenSSL below).
 pub const OPENSSL_VERSION_TEXT: &str = "OpenSSL 4.0.3 29 Sep 2026";
@@ -288,10 +288,6 @@ mod tests {
             )
         );
         assert_eq!(ZEND_VERSION, format!("4.5.{PHP_RELEASE_VERSION}"));
-        assert_eq!(
-            PCRE_VERSION.split(' ').next().unwrap(),
-            format!("{PCRE_VERSION_MAJOR}.{PCRE_VERSION_MINOR}")
-        );
         assert!(EXTENSION_DIR.ends_with(PHP_API));
         // ZLIB_VERNUM packs the dotted version one hex digit per component.
         let z: Vec<i64> = ZLIB_VERSION

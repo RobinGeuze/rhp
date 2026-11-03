@@ -192,8 +192,8 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   the thread (intl's character break iterator, cloned per call, as php's
   `INTL_G(grapheme_iterator)`). Never call `u_cleanup`. ICU's default
   locale comes from the environment (`LC_ALL`/`LC_MESSAGES`/`LANG`) once
-  per process, so the phpt harness and the live tests pin `LC_ALL=C` for
-  php and rhp alike.
+  per process, so the phpt harness and the intl live tests
+  (`crates/rhp-cli/tests/intl.rs`) run php and rhp with `LC_ALL=C`.
 - **Per-thread hooks are installed when each VM starts.** libxml2's generic
   error handler, structured error handler and file I/O hooks are per thread
   in both 2.9 and 2.15: `ext::libxml::reset_state` sets php's handlers on the

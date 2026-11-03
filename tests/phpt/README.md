@@ -25,7 +25,10 @@ How it compares, mirroring `run-tests.php`:
   like `run-tests.php` and matched with PCRE, the test passes. The summary
   says how many matches came about this way.
 - php gets run-tests' INI overrides and environment (offline,
-  non-interactive). Slow and timing-sensitive tests are skipped too.
+  non-interactive). Slow and timing-sensitive tests are skipped too. Both
+  engines run with `LC_ALL=C`, so the locale (libc's, and ICU's default
+  locale behind intl) is the same on every machine; run-tests itself passes
+  the caller's environment through.
 - `--INI--` is read as run-tests' `settings2array` reads it: `name=value`
   lines, both sides trimmed, the last value of a name kept.
 - A test's `--INI--` setting that leaves php's effective value as run-tests'

@@ -158,12 +158,14 @@ const PHP_DEFAULT_INI: &[&str] = &[
 
 /// Environment run-tests.php provides by default (offline, non-interactive),
 /// plus skipping slow and timing-sensitive tests, which would make a CI
-/// ratchet flaky.
+/// ratchet flaky, and one locale for every machine: libc and ICU's default
+/// locale (intl) come from it.
 const BASE_ENV: &[(&str, &str)] = &[
     ("NO_INTERACTION", "1"),
     ("SKIP_ONLINE_TESTS", "1"),
     ("SKIP_SLOW_TESTS", "1"),
     ("SKIP_PERF_SENSITIVE", "1"),
+    ("LC_ALL", "C"),
 ];
 
 /// Tests that spawn "the php under test" as a subprocess. rhp's CLI doesn't

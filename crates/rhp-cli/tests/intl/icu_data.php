@@ -1,5 +1,6 @@
 <?php
-// php 8.5.12 grapheme_* search fixes and ICU 79.1 (Unicode 18) data.
+// grapheme_* search edge cases and data that changes between ICU releases
+// (grapheme rules, new Unicode characters, case folding).
 $j = fn($v) => json_encode($v, JSON_UNESCAPED_UNICODE);
 
 // Empty needle: grapheme offsets, not UTF-16 offsets.
@@ -36,16 +37,16 @@ foreach ([["abc", "b$S"], ["ébc", "b$S"], ["é{$S}bc", "bc"], ["éb{$S}c", "bc"
         grapheme_stripos($h, $n), grapheme_strripos($h, $n), grapheme_strstr($h, $n)]), "\n";
 }
 
-// ICU 79 grapheme boundaries: GB9c is now Linker Extend* × Consonant, new
-// Unicode 18 Extend characters, and former reserved Extended_Pictographic
-// code points that are now plain symbols.
+// Grapheme boundaries ICU 79 changed: GB9c became Linker Extend* × Consonant,
+// new Unicode 18 Extend characters, and formerly reserved
+// Extended_Pictographic code points that are now plain symbols.
 foreach (["\u{94D}\u{915}", "a\u{94D}\u{915}\u{94D}\u{937}", "\u{915}\u{94D}\u{94D}\u{915}", "a\u{5C8}",
     "b\u{1ADE}", "a\u{10ECB}", "\u{1F600}\u{200D}\u{1F7DA}", "\u{1F600}\u{200D}\u{1F600}",
     "\u{1CF5}\u{915}", "\u{915}\u{94D}\u{11B0A}", "x\u{1D127}"] as $s) {
     echo bin2hex($s), ' ', grapheme_strlen($s), ' ', $j(grapheme_str_split($s)), "\n";
 }
 
-// NFKC_Casefold with Unicode 18 case pairs; raw decompositions.
+// NFKC_Casefold of Unicode 18 case pairs; raw decompositions.
 foreach (["\u{A7DD}", "\u{AB6C}", "\u{1DF40}", "\u{1DF95}", "\u{1C4}"] as $s) {
     echo bin2hex($s), ' ', bin2hex(normalizer_normalize($s, Normalizer::NFKC_CF)), ' ',
         var_export(normalizer_is_normalized($s, Normalizer::NFKC_CF), true), "\n";

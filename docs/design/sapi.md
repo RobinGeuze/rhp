@@ -238,6 +238,10 @@ Limits of the model:
   it is subtracted from the freeing thread; counters saturate at zero.
   Memory allocated before the request and freed during it (engine
   startup data) makes the counts read low by that much.
+- Data kept from one request to the next (a compiled-script cache) belongs
+  inside `rhp_values::mem::uncounted`, as php's opcache memory is outside
+  the request heap; otherwise the request that built it is charged and a
+  later one credited when it is freed.
 - rhp's data structures are not php's: an array of ints takes about three
   times php's memory, strings about the same. Scripts close to the limit
   can fail earlier (or later) than under php, and "tried to allocate N" for

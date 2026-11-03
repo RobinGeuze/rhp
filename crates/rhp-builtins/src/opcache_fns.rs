@@ -262,6 +262,94 @@ pub(crate) fn jit_enabled() -> bool {
         && crate::runtime_fns::ini_parse_quantity(&startup(b"opcache.jit_buffer_size")) > 0
 }
 
+/// `zend_accel_error` levels.
+pub(crate) const LOG_WARNING: i64 = 2;
+
+thread_local! {
+    /// Messages for opcache's own log, raised before the request starts.
+    /// (the directive's position in php's registration order, level, message)
+    static ACCEL_LOG: std::cell::RefCell<Vec<(usize, i64, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Queue a message from a directive's startup handler for opcache's log
+/// (written by [`take_accel_log`]'s caller once the settings are known, in
+/// php's registration order).
+pub(crate) fn accel_log(name: &[u8], level: i64, msg: String) {
+    let pos = DIRECTIVES
+        .iter()
+        .position(|(n, _)| n.as_bytes() == name)
+        .unwrap_or(usize::MAX);
+    ACCEL_LOG.with(|l| {
+        let mut l = l.borrow_mut();
+        l.retain(|e| e.0 != pos);
+        l.push((pos, level, msg));
+    });
+}
+
+/// The queued opcache log lines `opcache.log_verbosity_level` lets through,
+/// formatted as `zend_accel_error` writes them, with where they go
+/// (`opcache.error_log`; empty for stderr).
+pub fn take_accel_log() -> (Vec<String>, Vec<u8>) {
+    let mut msgs = ACCEL_LOG.with(|l| std::mem::take(&mut *l.borrow_mut()));
+    msgs.sort_by_key(|m| m.0);
+    let ini = |n: &[u8]| crate::ini_startup_value(n).unwrap_or_default();
+    let verbosity = crate::c_atol(&ini(b"opcache.log_verbosity_level"));
+    let now = crate::zip_ext::now();
+    let lines = msgs
+        .into_iter()
+        .filter(|(_, level, _)| *level <= verbosity)
+        .map(|(_, level, msg)| {
+            let kind = match level {
+                0 => "Fatal Error",
+                1 => "Error",
+                2 => "Warning",
+                3 => "Message",
+                _ => "Debug",
+            };
+            format!(
+                "{} ({}): {kind} {msg}\n",
+                asctime_local(now),
+                std::process::id()
+            )
+        })
+        .collect();
+    let dest = ini(b"opcache.error_log");
+    (lines, if dest == b"stderr" { Vec::new() } else { dest })
+}
+
+/// The startup OnUpdate handlers of opcache's sized directives: the
+/// warning when they refuse a value (which then keeps its default).
+pub(crate) fn startup_check(name: &[u8], v: &[u8]) -> Option<String> {
+    let n = crate::c_atol(v) as i32;
+    let msg = match name {
+        b"opcache.memory_consumption" if n < 8 => {
+            "opcache.memory_consumption is set below the required 8MB.\n".to_string()
+        }
+        b"opcache.max_accelerated_files" if n < 200 => {
+            "opcache.max_accelerated_files is set below the required minimum (200).\n".to_string()
+        }
+        b"opcache.max_accelerated_files" if n > 1_000_000 => {
+            "opcache.max_accelerated_files is set above the limit (1000000).\n".to_string()
+        }
+        b"opcache.max_wasted_percentage" if n <= 0 || n > 50 => {
+            "opcache.max_wasted_percentage must be set between 1 and 50.\n".to_string()
+        }
+        b"opcache.interned_strings_buffer" => {
+            let q = crate::runtime_fns::ini_parse_quantity(v);
+            if q < 0 {
+                format!("opcache.interned_strings_buffer must be greater than or equal to 0, {q} given.\n")
+            } else if q > 32767 {
+                format!("opcache.interned_strings_buffer must be less than or equal to 32767, {q} given.\n")
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+    Some(msg)
+}
+
 /// The runtime OnModify handlers of `opcache.enable` (OnEnable: it may only
 /// be switched off) and `opcache.jit` (OnUpdateJit). `Ok(false)`: refused.
 pub(crate) fn on_modify(host: &mut dyn Host, name: &[u8], v: &[u8]) -> Result<bool, Thrown> {

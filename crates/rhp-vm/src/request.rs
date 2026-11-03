@@ -74,6 +74,21 @@ impl Vm {
     /// php_request_startup's header step: `X-Powered-By` when expose_php.
     /// Call after ini settings are applied, before running the script.
     pub fn start_request(&mut self) {
+        // opcache's own log (its ini handlers' warnings at module startup).
+        let (lines, dest) = builtins::take_accel_log();
+        for line in lines {
+            if dest.is_empty() {
+                self.write_stderr(line.as_bytes());
+            } else {
+                use std::io::Write;
+                let path = String::from_utf8_lossy(&dest).into_owned();
+                let _ = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(path)
+                    .and_then(|mut f| f.write_all(line.as_bytes()));
+            }
+        }
         // Warnings from applying the -d values (module startup): php-cli
         // shows them before anything else; php-cgi's reach the client only
         // after the response body.

@@ -320,6 +320,9 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
     let key = String::from_utf8_lossy(name).into_owned();
     let (warnings, ok) = if name == b"date.timezone" && !tz_valid(v) {
         (vec![invalid_timezone(v, "PHP Startup")], false)
+    } else if let Some(w) = crate::opcache_fns::startup_check(name, v) {
+        crate::opcache_fns::accel_log(name, crate::opcache_fns::LOG_WARNING, w);
+        (Vec::new(), false)
     } else {
         on_modify_check(name, v)
     };

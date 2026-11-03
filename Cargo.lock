@@ -1456,6 +1456,7 @@ dependencies = [
  "num-traits",
  "password-hash",
  "pcre2-sys",
+ "rhp-csrc",
  "rhp-semantics",
  "rhp-values",
  "ripemd",

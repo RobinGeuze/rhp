@@ -67,6 +67,7 @@ mod arr_fns;
 mod arraycmp_fns;
 mod arrayset_fns;
 mod const_modules;
+mod crypt_fns;
 mod datetime_fns;
 mod dt_oop_fns;
 mod ext;
@@ -1344,6 +1345,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("arraycmp_fns", Box::new(arraycmp_fns::register)),
         ("sysmisc_fns", Box::new(sysmisc_fns::register)),
         ("stdext_fns", Box::new(stdext_fns::register)),
+        ("crypt_fns", Box::new(crypt_fns::register)),
         ("proc_fns", Box::new(proc_fns::register)),
         // Exact-semantics filesystem builtins; registered last so they replace
         // older approximations in file_fns/stream_fns.
@@ -1719,6 +1721,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     .chain(info_fns::constants())
     .chain(fs_fns::constants())
     .chain(stdext_fns::constants())
+    .chain(crypt_fns::constants())
     .chain(socket_fns::constants())
     // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with their module.
     .chain(ext::modules().into_iter().flat_map(|md| (md.constants)()))

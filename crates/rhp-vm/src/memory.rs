@@ -51,7 +51,7 @@ impl Vm {
             return Ok(());
         };
         let (d0, p0) = d.at;
-        let interrupt = depth != d0 || pc != p0 + 1 || self.cond_jump_checks(top, p0);
+        let interrupt = depth != d0 || pc != p0 + 1 || self.jump_checks(top, p0);
         if interrupt {
             return Err(self.raise_oom());
         }
@@ -61,11 +61,14 @@ impl Vm {
         Ok(())
     }
 
-    /// php's conditional jumps check for interrupts unless the condition is
-    /// a bool (their fast path): did the one at `pc` in frame `top`?
-    fn cond_jump_checks(&self, top: usize, pc: usize) -> bool {
+    /// Did the instruction at `pc` in frame `top`, which went on to the next
+    /// one, check for interrupts? A jump always does (the one to a loop's
+    /// condition, see the compiler); a conditional jump not taken does
+    /// unless its condition is a bool (php's fast path).
+    fn jump_checks(&self, top: usize, pc: usize) -> bool {
         let f = &self.stack[top];
         match f.proto.code.get(pc) {
+            Some(Instr::Jmp { .. }) => true,
             Some(Instr::JmpTrue { cond, .. } | Instr::JmpFalse { cond, .. }) => {
                 !matches!(self.reg_get(top, *cond), Value::Bool(_))
             }

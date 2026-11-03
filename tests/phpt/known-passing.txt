@@ -2659,6 +2659,7 @@ ext/filter/tests/044.phpt
 ext/filter/tests/046.phpt
 ext/filter/tests/049.phpt
 ext/filter/tests/051.phpt
+ext/filter/tests/058.phpt
 ext/filter/tests/CVE-2007-1900.phpt
 ext/filter/tests/bug39846.phpt
 ext/filter/tests/bug42718-2.phpt
@@ -5290,6 +5291,7 @@ ext/standard/tests/math/cos_basic.phpt
 ext/standard/tests/math/cosh_basic.phpt
 ext/standard/tests/math/cosh_basiclong_64bit.phpt
 ext/standard/tests/math/deg2rad_basic.phpt
+ext/standard/tests/math/deg2rad_basiclong_64bit.phpt
 ext/standard/tests/math/exp_basiclong_64bit.phpt
 ext/standard/tests/math/expm1_basiclong_64bit.phpt
 ext/standard/tests/math/fdiv.phpt
@@ -5328,6 +5330,7 @@ ext/standard/tests/math/pow-operator.phpt
 ext/standard/tests/math/pow_basic2.phpt
 ext/standard/tests/math/pow_basic_64bit.phpt
 ext/standard/tests/math/rad2deg_basic.phpt
+ext/standard/tests/math/rad2deg_basiclong_64bit.phpt
 ext/standard/tests/math/round.phpt
 ext/standard/tests/math/round_basiclong_64bit.phpt
 ext/standard/tests/math/round_large_exp.phpt
@@ -5353,6 +5356,7 @@ ext/standard/tests/network/fsockopen_error.phpt
 ext/standard/tests/network/fsockopen_variation1.phpt
 ext/standard/tests/network/fsockopen_variation2.phpt
 ext/standard/tests/network/gethostbyaddr_basic1.phpt
+ext/standard/tests/network/gethostbyaddr_error.phpt
 ext/standard/tests/network/gethostbyname_basic003.phpt
 ext/standard/tests/network/gethostbyname_error001.phpt
 ext/standard/tests/network/gethostbyname_error002.phpt

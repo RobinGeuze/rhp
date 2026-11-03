@@ -93,11 +93,6 @@ jobs:
         run: |
           export PHP_CGI="$(command -v php-cgi8.5)"
           echo "PHP_CGI=$PHP_CGI"
-          # TEMP diagnostics for the PCRE2 parity check.
-          php -n -r 'echo "php: PCRE_VERSION=", PCRE_VERSION, " MINOR=", PCRE_VERSION_MINOR, "\n";'
-          dpkg -l 'libpcre2*' | tail -n +6 || true
-          ldconfig -p | grep pcre2-8 || true
-          ls -la /usr/lib/x86_64-linux-gnu/libpcre2-8.so* /usr/lib/x86_64-linux-gnu/glibc-hwcaps/*/libpcre2-8.so* 2>/dev/null || true
           cargo test --workspace --all-targets --no-fail-fast
 
   # php-src .phpt ratchet: every test in tests/phpt/known-passing.txt must

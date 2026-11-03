@@ -1614,7 +1614,6 @@ Zend/tests/oom_unserialize_001.phpt
 Zend/tests/oom_unserialize_002.phpt
 Zend/tests/oom_unserialize_003.phpt
 Zend/tests/oom_unserialize_011.phpt
-Zend/tests/oom_unserialize_012.phpt
 Zend/tests/oom_unserialize_013.phpt
 Zend/tests/oom_unserialize_014.phpt
 Zend/tests/oom_unserialize_015.phpt

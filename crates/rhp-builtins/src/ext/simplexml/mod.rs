@@ -271,12 +271,18 @@ pub(crate) static CLASSES: &[ClassHandlers] = &[ClassHandlers {
     handlers: &SXE_HANDLERS,
 }];
 
+/// sxe_object_cast: a string from a subclass's `__toString()` first, then
 /// sxe_object_cast_ex: the node's text, converted.
 fn sxe_object_cast(
-    _: &mut dyn Host,
+    host: &mut dyn Host,
     h: &rhp_values::ObjectHandle,
     target: CastTarget,
 ) -> Result<Option<Value>, Thrown> {
+    if target == CastTarget::Str {
+        if let Some(s) = host.std_cast_object(h, target)? {
+            return Ok(Some(s));
+        }
+    }
     let v = Value::Object(h.clone());
     let text = || Value::str(sxe_string(&v).unwrap_or_default());
     Ok(match target {

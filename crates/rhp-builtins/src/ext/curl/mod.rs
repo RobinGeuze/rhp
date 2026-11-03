@@ -473,14 +473,14 @@ pub(crate) const CLASSES: &[ClassHandlers] = &[
 /// curl_cast_object: `(int)` of a handle is its object id, as it was the
 /// resource id before handles were objects.
 fn curl_cast_object(
-    _: &mut dyn Host,
+    host: &mut dyn Host,
     h: &ObjectHandle,
     target: CastTarget,
 ) -> Result<Option<Value>, Thrown> {
-    Ok(match target {
-        CastTarget::Int => Some(Value::Int(h.borrow().id as i64)),
-        t => object::std_cast(t),
-    })
+    match target {
+        CastTarget::Int => Ok(Some(Value::Int(h.borrow().id as i64))),
+        t => host.std_cast_object(h, t),
+    }
 }
 
 fn register_easy(host: &mut dyn Host, easy: Easy) -> Result<Value, Thrown> {

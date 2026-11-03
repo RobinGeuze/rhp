@@ -500,6 +500,14 @@ impl Host for Vm {
         self.classes.get(class_id as usize)?.handlers
     }
 
+    fn std_cast_object(
+        &mut self,
+        obj: &ObjectHandle,
+        target: CastTarget,
+    ) -> Result<Option<Value>, Thrown> {
+        self.std_cast(obj, target)
+    }
+
     fn define_const(&mut self, name: &[u8], value: Value) -> bool {
         if self.constants.contains_key(name) {
             return false;

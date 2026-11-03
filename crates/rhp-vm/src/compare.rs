@@ -29,20 +29,27 @@ impl Vm {
         if let Some(f) = self.handlers_of(obj).and_then(|t| t.cast_object) {
             return f(self, obj, target);
         }
-        match target {
-            CastTarget::Str => {
-                let cls = obj.borrow().class;
-                match self.lookup_method(cls, b"__tostring") {
-                    Some(m) => {
-                        let r = self.call_sync(&m, Some(obj.clone()), cls, Vec::new())?;
-                        Ok(Some(Value::Str(PhpStr::from_bytes(
-                            rhp_values::conv::to_string_bytes(&r),
-                        ))))
-                    }
-                    None => Ok(None),
-                }
+        self.std_cast(obj, target)
+    }
+
+    /// `zend_std_cast_object_tostring`.
+    pub(crate) fn std_cast(
+        &mut self,
+        obj: &ObjectHandle,
+        target: CastTarget,
+    ) -> Result<Option<Value>, Thrown> {
+        if target != CastTarget::Str {
+            return Ok(rhp_builtins::object::std_cast_non_string(target));
+        }
+        let cls = obj.borrow().class;
+        match self.lookup_method(cls, b"__tostring") {
+            Some(m) => {
+                let r = self.call_sync(&m, Some(obj.clone()), cls, Vec::new())?;
+                Ok(Some(Value::Str(PhpStr::from_bytes(
+                    rhp_values::conv::to_string_bytes(&r),
+                ))))
             }
-            t => Ok(rhp_builtins::object::std_cast(t)),
+            None => Ok(None),
         }
     }
 

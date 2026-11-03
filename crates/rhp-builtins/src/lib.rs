@@ -306,6 +306,17 @@ pub trait Host {
         None
     }
 
+    /// php's `zend_std_cast_object_tostring` for `obj`: `__toString()` for a
+    /// string, true for bool, FAILURE (`Ok(None)`) otherwise; what a
+    /// `cast_object` handler defers to. Default: no `__toString()` call.
+    fn std_cast_object(
+        &mut self,
+        _obj: &rhp_values::ObjectHandle,
+        target: object::CastTarget,
+    ) -> Result<Option<Value>, Thrown> {
+        Ok(object::std_cast_non_string(target))
+    }
+
     /// Whether the property slot `key` (storage key) of an object of class
     /// `class_id` is engine-internal state of a built-in class (the prelude's
     /// `__`-prefixed slots): php keeps such state outside the property table,

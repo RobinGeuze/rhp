@@ -77,9 +77,9 @@ pub type DoOperationFn =
     fn(&mut dyn Host, Op, &Value, Option<&Value>) -> Result<Option<Value>, Thrown>;
 
 /// `cast_object`: the converted value, or `Ok(None)` for FAILURE. A class
-/// that registers one replaces php's default (`__toString` for strings,
-/// true for bool, failure otherwise) for every target, so it handles the
-/// targets it does not convert by returning [`std_cast`]'s answer.
+/// that registers one replaces php's default for every target, so it hands
+/// the targets it does not convert to [`Host::std_cast_object`] (php's
+/// `zend_std_cast_object_tostring`), as curl's and SimpleXML's do.
 pub type CastFn = fn(&mut dyn Host, &ObjectHandle, CastTarget) -> Result<Option<Value>, Thrown>;
 
 /// `dtor_obj`: runs once, with a host, before the object's `__destruct`.
@@ -146,10 +146,10 @@ pub fn not_comparable(_: &mut dyn Host, _: &Value, _: &Value) -> Result<Option<i
     Ok(Some(1))
 }
 
-/// php's `zend_std_cast_object_tostring` for a class without a
-/// `cast_object` handler, minus the `__toString` call, which needs the
-/// engine: strings are `None` here and the engine calls `__toString`.
-pub fn std_cast(target: CastTarget) -> Option<Value> {
+/// php's `zend_std_cast_object_tostring` for every target but strings,
+/// which need the engine to call `__toString()` (see
+/// [`Host::std_cast_object`]).
+pub fn std_cast_non_string(target: CastTarget) -> Option<Value> {
     match target {
         CastTarget::Bool => Some(Value::Bool(true)),
         _ => None,

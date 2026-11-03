@@ -710,6 +710,8 @@ pub(crate) fn env_get(name: &[u8]) -> Option<Vec<u8>> {
         .map(|v| v.to_string_lossy().into_owned().into_bytes())
 }
 
+/// `$local_only` (arg 2) skips the SAPI's own environment. rhp's SAPIs
+/// keep the request environment in the process one, so both lookups agree.
 fn fn_getenv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match args.first() {
         Some(v) if !matches!(deref(v), Value::Null) => {
@@ -1428,7 +1430,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "ob_get_status", fn_ob_get_status, 0, Some(1));
     put(m, "ob_implicit_flush", fn_ob_implicit_flush, 0, Some(1));
     put(m, "flush", fn_flush, 0, Some(0));
-    put(m, "getenv", fn_getenv, 0, Some(1));
+    put(m, "getenv", fn_getenv, 0, Some(2));
     put(m, "putenv", fn_putenv, 1, Some(1));
     put(m, "set_error_handler", fn_set_handler, 1, Some(2));
     put(m, "restore_error_handler", fn_restore_handler, 0, Some(0));

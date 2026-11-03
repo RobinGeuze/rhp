@@ -376,6 +376,27 @@ fn with_array_data<R>(arg: &Value, f: impl FnOnce(&mut rhp_values::ArrayData) ->
     }
 }
 
+/// Z_PARAM_ARRAY_OR_OBJECT of the internal-pointer functions: an object is
+/// deprecated (and has no pointer here: `None`), anything else is a
+/// TypeError.
+fn ptr_arg(host: &mut dyn Host, fname: &str, arg: &Value) -> Result<Option<()>, Thrown> {
+    match deref(arg) {
+        Value::Array(_) => Ok(Some(())),
+        Value::Object(_) => {
+            crate::deprecated(
+                host,
+                fname,
+                &format!("Calling {fname}() on an object is deprecated"),
+            )?;
+            Ok(None)
+        }
+        other => Err(Thrown::type_error(format!(
+            "{fname}(): Argument #1 ($array) must be of type array, {} given",
+            crate::argparse::value_name(host, &other)
+        ))),
+    }
+}
+
 fn elem_at(d: &rhp_values::ArrayData, pos: usize) -> Value {
     d.entries
         .get_index(pos)
@@ -383,7 +404,10 @@ fn elem_at(d: &rhp_values::ArrayData, pos: usize) -> Value {
         .unwrap_or(Value::Bool(false))
 }
 
-fn fn_reset(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_reset(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    if ptr_arg(host, "reset", &args[0])?.is_none() {
+        return Ok(Value::Bool(false));
+    }
     Ok(with_array_data(&args[0], |d| {
         d.pos = 0;
         elem_at(d, 0)
@@ -391,7 +415,10 @@ fn fn_reset(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     .unwrap_or(Value::Bool(false)))
 }
 
-fn fn_end(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_end(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    if ptr_arg(host, "end", &args[0])?.is_none() {
+        return Ok(Value::Bool(false));
+    }
     Ok(with_array_data(&args[0], |d| {
         let n = d.entries.len();
         d.pos = n.saturating_sub(1);
@@ -404,7 +431,10 @@ fn fn_end(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     .unwrap_or(Value::Bool(false)))
 }
 
-fn fn_next(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_next(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    if ptr_arg(host, "next", &args[0])?.is_none() {
+        return Ok(Value::Bool(false));
+    }
     Ok(with_array_data(&args[0], |d| {
         d.pos = d.pos.saturating_add(1);
         elem_at(d, d.pos)
@@ -412,7 +442,10 @@ fn fn_next(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     .unwrap_or(Value::Bool(false)))
 }
 
-fn fn_prev(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_prev(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    if ptr_arg(host, "prev", &args[0])?.is_none() {
+        return Ok(Value::Bool(false));
+    }
     Ok(with_array_data(&args[0], |d| {
         if d.pos == 0 {
             d.pos = usize::MAX; // past-begin
@@ -425,11 +458,17 @@ fn fn_prev(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     .unwrap_or(Value::Bool(false)))
 }
 
-fn fn_current(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_current(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    if ptr_arg(host, "current", &args[0])?.is_none() {
+        return Ok(Value::Bool(false));
+    }
     Ok(with_array_data(&args[0], |d| elem_at(d, d.pos)).unwrap_or(Value::Bool(false)))
 }
 
-fn fn_key(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    if ptr_arg(host, "key", &args[0])?.is_none() {
+        return Ok(Value::Null);
+    }
     Ok(with_array_data(&args[0], |d| {
         d.entries
             .get_index(d.pos)

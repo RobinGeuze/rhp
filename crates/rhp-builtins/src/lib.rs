@@ -454,6 +454,12 @@ pub trait Host {
         None
     }
 
+    /// The class scope of the code calling the builtin
+    /// (`zend_get_executed_scope`), if any.
+    fn caller_scope(&self) -> Option<u32> {
+        None
+    }
+
     /// An object's properties accessible from the calling code's class scope
     /// (`zend_check_property_access`), in property-table order — for
     /// `http_build_query` on objects. Default: every property.
@@ -1279,7 +1285,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "str_contains"   => fn_str_contains, 2, Some(2);
             "ord"            => fn_ord, 1, Some(1);
             "chr"            => fn_chr, 1, Some(1);
-            "get_class"      => fn_get_class, 1, Some(1);
+            "get_class"      => fn_get_class, 0, Some(1);
             "get_parent_class" => fn_get_parent_class, 0, Some(1);
             "is_a"           => fn_is_a, 2, Some(3);
             "is_subclass_of" => fn_is_subclass_of, 2, Some(3);
@@ -2709,7 +2715,20 @@ fn fn_str_contains(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match deref(&args[0]) {
+    let Some(obj) = args.first() else {
+        let Some(name) = host.caller_scope().and_then(|c| host.class_name(c)) else {
+            return Err(Thrown::error(
+                "Error",
+                "get_class() without arguments must be called from within a class",
+            ));
+        };
+        host.emit_diagnostic(
+            E_DEPRECATED,
+            "Calling get_class() without arguments is deprecated",
+        )?;
+        return Ok(Value::str(name));
+    };
+    match deref(obj) {
         Value::Object(h) => {
             let cid = h.borrow().class;
             Ok(host
@@ -2717,9 +2736,10 @@ fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 .map(Value::str)
                 .unwrap_or(Value::Bool(false)))
         }
-        _ => Err(Thrown::type_error(
-            "get_class(): Argument #1 ($object) must be of type object",
-        )),
+        other => Err(Thrown::type_error(format!(
+            "get_class(): Argument #1 ($object) must be of type object, {} given",
+            argparse::value_name(host, &other)
+        ))),
     }
 }
 

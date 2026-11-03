@@ -2043,6 +2043,11 @@ impl Host for Vm {
         Some((parents, ifaces, traits))
     }
 
+    fn caller_scope(&self) -> Option<u32> {
+        // A builtin runs on its caller's frame.
+        self.stack.last().and_then(|f| f.defining_class)
+    }
+
     fn object_scoped_props(&self, obj: &Value) -> Vec<(PhpStr, Value)> {
         let Value::Object(h) = deref(obj) else {
             return Vec::new();

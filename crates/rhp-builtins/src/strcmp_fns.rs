@@ -421,7 +421,7 @@ fn eq_ci(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Replace every non-overlapping (left-to-right) case-insensitive occurrence.
-fn ireplace_all(subject: &[u8], search: &[u8], replace: &[u8]) -> Vec<u8> {
+fn ireplace_all(subject: &[u8], search: &[u8], replace: &[u8], n: &mut i64) -> Vec<u8> {
     if search.is_empty() {
         return subject.to_vec();
     }
@@ -430,6 +430,7 @@ fn ireplace_all(subject: &[u8], search: &[u8], replace: &[u8]) -> Vec<u8> {
     while i < subject.len() {
         if i + search.len() <= subject.len() && eq_ci(&subject[i..i + search.len()], search) {
             out.extend_from_slice(replace);
+            *n += 1;
             i += search.len();
         } else {
             out.push(subject[i]);
@@ -444,6 +445,7 @@ fn ireplace_one_subject(
     subject: &[u8],
     search: &Value,
     replace: &Value,
+    n: &mut i64,
 ) -> Result<Vec<u8>, Thrown> {
     match search {
         Value::Array(searches) => {
@@ -457,7 +459,7 @@ fn ireplace_one_subject(
                         .unwrap_or_default(),
                     other => bytes_of(other),
                 };
-                cur = ireplace_all(&cur, &sbytes, &rbytes);
+                cur = ireplace_all(&cur, &sbytes, &rbytes, n);
             }
             Ok(cur)
         }
@@ -467,7 +469,12 @@ fn ireplace_one_subject(
                     "str_ireplace(): Argument #2 ($replace) must be of type string when argument #1 ($search) is a string",
                 ));
             }
-            Ok(ireplace_all(subject, &bytes_of(search), &bytes_of(replace)))
+            Ok(ireplace_all(
+                subject,
+                &bytes_of(search),
+                &bytes_of(replace),
+                n,
+            ))
         }
     }
 }
@@ -476,17 +483,32 @@ fn fn_str_ireplace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let search = deref(&args[0]);
     let replace = deref(&args[1]);
     let subject = deref(&args[2]);
-    if let Value::Array(items) = subject {
+    let mut n = 0;
+    let out = if let Value::Array(items) = subject {
         let mut out = PhpArray::new();
         for (k, v) in items.iter() {
-            let res = ireplace_one_subject(&bytes_of(v), &search, &replace)?;
+            // Array and object elements are copied unchanged.
+            if matches!(deref(v), Value::Array(_) | Value::Object(_)) {
+                out.insert(k.clone(), v.clone());
+                continue;
+            }
+            let res = ireplace_one_subject(&bytes_of(v), &search, &replace, &mut n)?;
             out.insert(k.clone(), Value::str(res));
         }
-        Ok(Value::Array(out))
+        Value::Array(out)
     } else {
-        let res = ireplace_one_subject(&bytes_of(&subject), &search, &replace)?;
-        Ok(Value::str(res))
+        Value::str(ireplace_one_subject(
+            &bytes_of(&subject),
+            &search,
+            &replace,
+            &mut n,
+        )?)
+    };
+    // `&$count`, written when passed.
+    if let Some(Value::Ref(r)) = args.get(3) {
+        *r.borrow_mut() = Value::Int(n);
     }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------

@@ -349,7 +349,18 @@ fn similar_char(t1: &[u8], t2: &[u8]) -> usize {
 fn fn_similar_text(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let a = bytes_of(&args[0]);
     let b = bytes_of(&args[1]);
-    Ok(Value::Int(similar_char(&a, &b) as i64))
+    let total = a.len() + b.len();
+    let sim = if total == 0 { 0 } else { similar_char(&a, &b) };
+    // `&$percent`, written when passed.
+    if let Some(Value::Ref(r)) = args.get(2) {
+        let pct = if total == 0 {
+            0.0
+        } else {
+            sim as f64 * 200.0 / total as f64
+        };
+        *r.borrow_mut() = Value::Float(pct);
+    }
+    Ok(Value::Int(sim as i64))
 }
 
 // ---------------------------------------------------------------------------
@@ -555,8 +566,8 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "similar_text", fn_similar_text, 2, Some(3));
     put(m, "str_word_count", fn_str_word_count, 1, Some(3));
     put(m, "chunk_split", fn_chunk_split, 1, Some(3));
-    put(m, "array_diff_key", fn_array_diff_key, 2, None);
-    put(m, "array_intersect_key", fn_array_intersect_key, 2, None);
+    put(m, "array_diff_key", fn_array_diff_key, 1, None);
+    put(m, "array_intersect_key", fn_array_intersect_key, 1, None);
     put(m, "array_replace", fn_array_replace, 1, None);
     put(
         m,

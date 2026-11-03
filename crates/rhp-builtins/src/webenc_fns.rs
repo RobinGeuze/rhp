@@ -888,92 +888,202 @@ fn fn_quotemeta(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_strip_tags(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(strip_tags(&bytes_of(&args[0]))))
+    let allow = match args.get(1).map(deref) {
+        None | Some(Value::Null) => None,
+        // Each element becomes `<tag>`; an empty array allows nothing.
+        Some(Value::Array(a)) => {
+            let mut set = Vec::new();
+            for (_, v) in a.iter() {
+                set.push(b'<');
+                set.extend_from_slice(&rhp_values::conv::to_string_bytes(&deref(v)));
+                set.push(b'>');
+            }
+            (!set.is_empty()).then_some(set)
+        }
+        Some(v) => Some(bytes_of(&v)),
+    };
+    Ok(Value::str(strip_tags(
+        &bytes_of(&args[0]),
+        allow.as_deref(),
+    )))
 }
 
-#[derive(PartialEq)]
-enum St {
-    Text,
-    Tag,     // inside <...>
-    Comment, // inside <!-- ... -->
-    Decl,    // inside <! ... > (declaration, not a comment)
-    Php,     // inside <? ... ?>
+/// php_tag_find: is the tag in `tag` (`<a href=..>`, `</a>`), normalized to
+/// `<a>`, in the allowed `set`?
+fn tag_find(tag: &[u8], set: &[u8]) -> bool {
+    if tag.is_empty() {
+        return false;
+    }
+    let at = |i: usize| tag.get(i).copied().unwrap_or(0);
+    let mut norm = Vec::with_capacity(tag.len() + 1);
+    let mut seen = false;
+    let mut t = 0;
+    while t < tag.len() {
+        let c = at(t).to_ascii_lowercase();
+        match c {
+            b'<' => norm.push(c),
+            b'>' => break,
+            _ if !is_space(c) => {
+                seen = true;
+                if c != b'/' || (t > 0 && at(t - 1) != b'<' && at(t + 1) != b'>') {
+                    norm.push(c);
+                }
+            }
+            _ if seen => break,
+            _ => {}
+        }
+        t += 1;
+    }
+    norm.push(b'>');
+    // strstr: the set ends at its first NUL.
+    let set = &set[..set.iter().position(|&b| b == 0).unwrap_or(set.len())];
+    set.windows(norm.len()).any(|w| w == norm)
 }
 
-fn strip_tags(s: &[u8]) -> Vec<u8> {
+/// php_strip_tags_ex: the state machine over text (0), an HTML tag (1),
+/// PHP code (2), `<!...>` (3) and an HTML comment (4). With `allow`, a tag
+/// in that set is kept.
+fn strip_tags(s: &[u8], allow: Option<&[u8]>) -> Vec<u8> {
+    let allow = allow.map(|a| a.to_ascii_lowercase());
+    // The C reads one byte past the end, a NUL.
+    let at = |i: usize| s.get(i).copied().unwrap_or(0);
     let mut out = Vec::with_capacity(s.len());
-    let mut state = St::Text;
-    let mut depth = 0usize; // nested '<' within a Tag
-    let mut quote = 0u8; // 0 = not in quote, else the active quote byte
-    let mut i = 0;
-    while i < s.len() {
-        let c = s[i];
+    let mut tbuf: Vec<u8> = Vec::new();
+    let (mut lc, mut br, mut depth, mut in_q) = (0u8, 0i32, 0i32, 0u8);
+    let mut is_xml = false;
+    let mut state = 0u8;
+    let toggle = |in_q: u8, c: u8| if in_q != 0 { 0 } else { c };
+    for p in 0..s.len() {
+        let c = s[p];
+        let prev = |n: usize| if p >= n { s[p - n] } else { 0 };
+        // A byte of the tag being read in state 1.
+        let mut reg_char = false;
         match state {
-            St::Text => {
-                if c == b'<' {
-                    let nxt = s.get(i + 1).copied().unwrap_or(0);
-                    if is_space(nxt) {
-                        out.push(c); // '<' followed by whitespace is literal
-                    } else if nxt == b'!' {
-                        if s.get(i + 2) == Some(&b'-') && s.get(i + 3) == Some(&b'-') {
-                            state = St::Comment;
-                            i += 4;
-                            continue;
+            0 => match c {
+                0 => {}
+                b'<' if in_q != 0 => {}
+                b'<' if is_space(at(p + 1)) => out.push(c),
+                b'<' => {
+                    lc = b'<';
+                    state = 1;
+                    if allow.is_some() {
+                        tbuf.push(b'<');
+                    }
+                }
+                b'>' if depth > 0 => depth -= 1,
+                b'>' if in_q != 0 => {}
+                _ => out.push(c),
+            },
+            1 => match c {
+                0 => {}
+                b'<' if in_q != 0 => {}
+                b'<' if is_space(at(p + 1)) => reg_char = true,
+                b'<' => depth += 1,
+                b'>' if depth > 0 => depth -= 1,
+                b'>' if in_q != 0 => {}
+                b'>' => {
+                    lc = b'>';
+                    if !(is_xml && prev(1) == b'-') {
+                        in_q = 0;
+                        state = 0;
+                        is_xml = false;
+                        if let Some(set) = &allow {
+                            tbuf.push(b'>');
+                            if tag_find(&tbuf, set) {
+                                out.extend_from_slice(&tbuf);
+                            }
+                            tbuf.clear();
                         }
-                        state = St::Decl;
-                        i += 2;
-                        continue;
-                    } else if nxt == b'?' {
-                        state = St::Php;
-                        i += 2;
-                        continue;
-                    } else {
-                        state = St::Tag;
-                        depth = 0;
-                        quote = 0;
-                    }
-                } else {
-                    out.push(c);
-                }
-            }
-            St::Tag => {
-                if quote != 0 {
-                    if c == quote {
-                        quote = 0;
-                    }
-                } else if c == b'"' || c == b'\'' {
-                    quote = c;
-                } else if c == b'<' {
-                    depth += 1;
-                } else if c == b'>' {
-                    if depth > 0 {
-                        depth -= 1;
-                    } else {
-                        state = St::Text;
                     }
                 }
-            }
-            St::Comment => {
-                if c == b'-' && s.get(i + 1) == Some(&b'-') && s.get(i + 2) == Some(&b'>') {
-                    state = St::Text;
-                    i += 3;
-                    continue;
+                b'"' | b'\'' => {
+                    if p != 0 && (in_q == 0 || c == in_q) {
+                        in_q = toggle(in_q, c);
+                    }
+                    reg_char = true;
                 }
-            }
-            St::Decl => {
-                if c == b'>' {
-                    state = St::Text;
+                b'!' if prev(1) == b'<' => {
+                    state = 3;
+                    lc = c;
                 }
-            }
-            St::Php => {
-                if c == b'?' && s.get(i + 1) == Some(&b'>') {
-                    state = St::Text;
-                    i += 2;
-                    continue;
+                b'?' if prev(1) == b'<' => {
+                    br = 0;
+                    state = 2;
+                }
+                _ => reg_char = true,
+            },
+            2 => match c {
+                b'(' if lc != b'"' && lc != b'\'' => {
+                    lc = b'(';
+                    br += 1;
+                }
+                b')' if lc != b'"' && lc != b'\'' => {
+                    lc = b')';
+                    br -= 1;
+                }
+                b'>' if depth > 0 => depth -= 1,
+                b'>' if in_q != 0 => {}
+                b'>' => {
+                    if br == 0 && p >= 1 && lc != b'"' && prev(1) == b'?' {
+                        in_q = 0;
+                        state = 0;
+                        tbuf.clear();
+                    }
+                }
+                b'"' | b'\'' if p >= 1 && prev(1) != b'\\' => {
+                    if lc == c {
+                        lc = 0;
+                    } else if lc != b'\\' {
+                        lc = c;
+                    }
+                    if in_q == 0 || c == in_q {
+                        in_q = toggle(in_q, c);
+                    }
+                }
+                // `<?xml` is not PHP: back to a tag.
+                b'l' | b'L'
+                    if p > 4
+                        && prev(1).eq_ignore_ascii_case(&b'm')
+                        && prev(2).eq_ignore_ascii_case(&b'x')
+                        && prev(3) == b'?'
+                        && prev(4) == b'<' =>
+                {
+                    state = 1;
+                    is_xml = true;
+                }
+                _ => {}
+            },
+            3 => match c {
+                b'>' if depth > 0 => depth -= 1,
+                b'>' if in_q != 0 => {}
+                b'>' => {
+                    in_q = 0;
+                    state = 0;
+                    tbuf.clear();
+                }
+                b'"' | b'\'' if p != 0 && prev(1) != b'\\' && (in_q == 0 || c == in_q) => {
+                    in_q = toggle(in_q, c);
+                }
+                b'-' if p >= 2 && prev(1) == b'-' && prev(2) == b'!' => state = 4,
+                // `<!DOCTYPE` is a tag.
+                b'E' | b'e'
+                    if p > 6 && (1..=6).all(|n| prev(n).eq_ignore_ascii_case(&b"epytcod"[n])) =>
+                {
+                    state = 1
+                }
+                _ => {}
+            },
+            _ => {
+                if c == b'>' && in_q == 0 && p >= 2 && prev(1) == b'-' && prev(2) == b'-' {
+                    in_q = 0;
+                    state = 0;
+                    tbuf.clear();
                 }
             }
         }
-        i += 1;
+        if reg_char && allow.is_some() {
+            tbuf.push(c);
+        }
     }
     out
 }
@@ -1265,7 +1375,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "stripslashes", fn_stripslashes, 1, Some(1));
     put(m, "quotemeta", fn_quotemeta, 1, Some(1));
     // strip_tags: basic (no allowed-tags list) — single-argument form only.
-    put(m, "strip_tags", fn_strip_tags, 1, Some(1));
+    put(m, "strip_tags", fn_strip_tags, 1, Some(2));
     put(m, "parse_url", fn_parse_url, 1, Some(2));
 }
 

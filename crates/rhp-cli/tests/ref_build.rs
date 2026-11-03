@@ -137,6 +137,21 @@ fn rhp_links_what_php_links() {
         eprintln!("php is {minor:?}, not 8.5: no reference; skipping");
         return;
     }
+    // TEMP diagnostics (CI sees php report a PCRE2 the report step didn't).
+    for var in ["LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "PATH"] {
+        eprintln!("{var}={:?}", std::env::var_os(var));
+    }
+    let clean = Command::new(&php)
+        .args(["-n", script])
+        .env_remove("LD_LIBRARY_PATH")
+        .env_remove("DYLD_LIBRARY_PATH")
+        .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    eprintln!(
+        "php without cargo's library path: {:?}",
+        clean.as_deref().map(|s| section(s, "linked"))
+    );
     assert_eq!(
         section(&ours, "linked"),
         section(&theirs, "linked"),

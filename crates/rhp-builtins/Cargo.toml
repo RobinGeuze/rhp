@@ -77,17 +77,7 @@ ruzstd = "0.8"
 # CSPRNG for random_bytes/random_int/mt_rand.
 getrandom = "0.2"
 
-# intl extension: ICU4X grapheme segmentation, normalization (incl. the UTS #46
-# mapping) and character properties, plus the idna crate's Punycode codec.
-# (icu_normalizer / icu_properties / idna were already in the tree via url.)
-# `unstable` exposes the state-machine grapheme data (`new_neo`), the only
-# ICU4X grapheme data with ICU 79's rules (GB9c `Linker Extend* × Consonant`);
-# pinned to a minor version because that API is semver-exempt.
-icu_segmenter = { version = "~2.4", features = ["unstable"] }
-icu_normalizer = "2"
-icu_properties = "2"
-idna = "1"
-
 [build-dependencies]
-# Compiles src/ext/libxml/shim.c against the headers of the libxml2 it links.
+# Compiles the libxml2 and ICU shims against the headers of the libraries it
+# links.
 cc = "1.9"

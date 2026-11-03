@@ -63,7 +63,7 @@ pub struct Lib {
 
 // A static link's private dependencies (`Libs.private`) are linked
 // dynamically from the linker's default paths. One that is itself a Homebrew
-// or -dev library needs its own row.
+// or -dev library needs its own row, which then links it instead.
 
 /// Every library rhp-builtins links.
 pub const LIBS: &[Lib] = &[
@@ -98,7 +98,55 @@ pub const LIBS: &[Lib] = &[
         install: "macOS: the Command Line Tools SDK (xcode-select --install); \
                   Debian/Ubuntu: apt install pkg-config libxml2-dev",
     },
+    // ICU: three archives, in link order. Their C++ code needs the C++
+    // runtime, which build.rs links (the .pc files leave it out).
+    Lib {
+        name: "ICU_I18N",
+        pkg: "icu-i18n",
+        brew: Some("icu4c@79"),
+        macos_sdk: false,
+        link: "icui18n",
+        incdir: "",
+        header: "unicode/uvernum.h",
+        macros: &[],
+        version: &["U_ICU_VERSION"],
+        macos: Mode::Static,
+        linux: Mode::Static,
+        install: ICU_INSTALL,
+    },
+    Lib {
+        name: "ICU_UC",
+        pkg: "icu-uc",
+        brew: Some("icu4c@79"),
+        macos_sdk: false,
+        link: "icuuc",
+        incdir: "",
+        header: "unicode/uvernum.h",
+        macros: &["U_ICU_VERSION", "U_ICU_VERSION_MAJOR_NUM"],
+        version: &["U_ICU_VERSION"],
+        macos: Mode::Static,
+        linux: Mode::Static,
+        install: ICU_INSTALL,
+    },
+    // No .pc of its own: icu-uc's names it in Libs.private.
+    Lib {
+        name: "ICU_DATA",
+        pkg: "icu-uc",
+        brew: Some("icu4c@79"),
+        macos_sdk: false,
+        link: "icudata",
+        incdir: "",
+        header: "unicode/uvernum.h",
+        macros: &[],
+        version: &["U_ICU_VERSION"],
+        macos: Mode::Static,
+        linux: Mode::Static,
+        install: ICU_INSTALL,
+    },
 ];
+
+const ICU_INSTALL: &str =
+    "macOS: brew install icu4c@79; Debian/Ubuntu: apt install pkg-config libicu-dev";
 
 /// A library [`link_all`] linked.
 pub struct Linked {
@@ -229,8 +277,11 @@ fn link(lib: &Lib) -> Result<PathBuf, String> {
             let dir = archive_dir(lib, &archive, &file)?;
             println!("cargo:rustc-link-search=native={}", dir.display());
             println!("cargo:rustc-link-lib=static={}", lib.link);
+            // A dependency with a row of its own is linked by that row.
             for p in &found.private {
-                println!("cargo:rustc-link-lib=dylib={p}");
+                if !LIBS.iter().any(|l| l.link == p) {
+                    println!("cargo:rustc-link-lib=dylib={p}");
+                }
             }
         }
         Mode::Dynamic(_) => {

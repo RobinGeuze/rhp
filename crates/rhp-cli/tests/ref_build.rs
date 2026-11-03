@@ -10,7 +10,8 @@
 //!
 //! The "linked" section holds the versions of the libraries rhp links
 //! itself. It must match any php 8.5 on the same machine (Homebrew's on the
-//! mac, setup-php's on CI): rhp has to link what php links.
+//! mac, setup-php's on CI): rhp has to link what php links. The ICU rows are
+//! left out when that php has no intl under `-n`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -137,9 +138,21 @@ fn rhp_links_what_php_links() {
         eprintln!("php is {minor:?}, not 8.5: no reference; skipping");
         return;
     }
+    let (mut linked_ours, mut linked_theirs) =
+        (section(&ours, "linked"), section(&theirs, "linked"));
+    // A php without intl under -n (built without it, or a shared module that
+    // -n leaves out) has no ICU version to compare.
+    if linked_theirs.contains(&"INTL_ICU_VERSION = '(undefined)'") {
+        eprintln!(
+            "{} -n has no intl: ICU versions not compared",
+            php.display()
+        );
+        linked_ours.retain(|l| !l.starts_with("INTL_"));
+        linked_theirs.retain(|l| !l.starts_with("INTL_"));
+    }
     assert_eq!(
-        section(&ours, "linked"),
-        section(&theirs, "linked"),
+        linked_ours,
+        linked_theirs,
         "rhp links other library versions than {}: install the libraries it links \
          (docs/design/libraries.md) and rebuild",
         php.display()

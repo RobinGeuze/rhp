@@ -142,7 +142,7 @@ jobs:
           --check-known tests/phpt/known-passing.txt
 
   # The committed generated tables still match their sources: php-src's
-  # entity tables, and the Bison output in the php release tarball (the git
+  # entity tables and intl stubs, and the Bison output in the php release tarball (the git
   # tag has none). The tarball is pinned in tools/php-dist.sha256 and cached
   # on that pin, so php.net is fetched once per release.
   generated:
@@ -163,6 +163,9 @@ jobs:
           sparse-checkout: |
             /ext/standard/html_tables/
             /ext/standard/html_tables.h
+            /ext/intl/php_intl.stub.php
+            /ext/intl/collator/collator.stub.php
+            /ext/intl/common/common.stub.php
       - uses: actions/cache@v4
         with:
           path: php-dist
@@ -183,6 +186,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p rhp-difftest
       - run: target/debug/rhp-difftest gen html-tables --php-src php-src --check
+      - run: target/debug/rhp-difftest gen intl-consts --php-src php-src --check
       - run: target/debug/rhp-difftest gen parser --php-dist "$PHP_DIST" --check
 
   # Pinned framework fixture apps (tests/apps/apps.toml): the matrix is read

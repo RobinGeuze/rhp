@@ -10,7 +10,7 @@
 //!
 //! Built for another platform (Linux), rhp keeps the reference's release,
 //! [`BUILD_DATE`] and the library versions below: they describe behaviour rhp
-//! implements the same way everywhere (ICU, libcurl, ...). Only the
+//! implements the same way everywhere (libcurl, ...). Only the
 //! values that describe the platform follow the Ubuntu php CI runs against
 //! (setup-php's build): the install paths, [`BUILD_PROVIDER`],
 //! [`BUILD_SYSTEM`], [`ZEND_VM_KIND`] and libcurl's host triple. There
@@ -218,14 +218,12 @@ pub const EXT_DOM: &str = "20031129";
 // --- linked libraries --------------------------------------------------------
 
 // PCRE_VERSION and friends come from the linked PCRE2 (crate::pcre), the
-// LIBXML_* versions from the linked libxml2 (crate::ext::libxml).
+// LIBXML_* versions from the linked libxml2 (crate::ext::libxml), the
+// INTL_ICU_* versions from the linked ICU (crate::ext::intl).
 /// `OPENSSL_VERSION_TEXT` / `OPENSSL_VERSION_NUMBER` (the headers php was
 /// compiled against; curl reports its own runtime OpenSSL below).
 pub const OPENSSL_VERSION_TEXT: &str = "OpenSSL 4.0.3 29 Sep 2026";
 pub const OPENSSL_VERSION_NUMBER: i64 = 0x4000_0030;
-/// `INTL_ICU_VERSION`, `INTL_ICU_DATA_VERSION`.
-pub const ICU_VERSION: &str = "79.1";
-pub const ICU_DATA_VERSION: &str = "79.1";
 /// `ZipArchive::LIBZIP_VERSION`.
 pub const LIBZIP_VERSION: &str = libzip!();
 /// `ICONV_VERSION`.

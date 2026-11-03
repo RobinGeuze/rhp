@@ -507,16 +507,6 @@ fn lower_full(cps: &[u32]) -> Vec<u32> {
     out
 }
 
-/// Simple Unicode case folding (`MB_CASE_FOLD_SIMPLE`), shared with intl.
-pub(crate) fn case_fold_simple(cps: &[u32]) -> Vec<u32> {
-    map_simple(cps, mb_tables::MAP_FOLD_SIMPLE)
-}
-
-/// Full Unicode case folding (`MB_CASE_FOLD`), shared with the intl module.
-pub(crate) fn case_fold_full(cps: &[u32]) -> Vec<u32> {
-    fold_full(cps)
-}
-
 fn fold_full(cps: &[u32]) -> Vec<u32> {
     let mut out = Vec::with_capacity(cps.len());
     for &cp in cps {

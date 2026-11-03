@@ -314,8 +314,8 @@ the native backend subordinate to it:
    pure-Rust build legitimately skips it rather than failing.
 3. **Capture provenance.** Record, next to the goldens, the exact lib versions
    PHP used (PCRE, ICU, JSON — from `PCRE_VERSION`,
-   `INTL_ICU_VERSION`; now `crates/rhp-builtins/src/version.rs`, checked by
-   `tools/capture-ref-build.php`). A native build that links a *different* version is
+   `INTL_ICU_VERSION`; now read from the linked libraries, checked by the
+   "linked" section of `tools/capture-ref-build.php`). A native build that links a *different* version is
    expected to diverge on version-sensitive fixtures; the harness turns that
    into a visible failure instead of silent drift.
 4. **Fuzz the wrapper, not the lib.** Differentially fuzz `rhp preg_match`

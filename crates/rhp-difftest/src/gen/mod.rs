@@ -5,13 +5,15 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod html_tables;
 mod parser;
 
 pub fn main(args: &[String]) -> ExitCode {
     let rest = args.get(1..).unwrap_or_default();
     let r = match args.first().map(String::as_str) {
+        Some("html-tables") => html_tables::main(rest),
         Some("parser") => parser::main(rest),
-        _ => Err("usage: rhp-difftest gen <parser> [--check] …".into()),
+        _ => Err("usage: rhp-difftest gen <html-tables|parser> [--check] …".into()),
     };
     match r {
         Ok(true) => ExitCode::SUCCESS,

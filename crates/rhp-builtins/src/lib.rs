@@ -78,6 +78,9 @@ mod class_fns;
 mod file_fns;
 mod filter_fns;
 mod fs_fns;
+mod html;
+#[rustfmt::skip]
+mod html_tables;
 pub mod http;
 mod inet;
 mod info_fns;
@@ -1320,6 +1323,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
     }
     let rest: Vec<(&'static str, Registrar)> = vec![
         ("webenc_fns", Box::new(webenc_fns::register)),
+        ("html", Box::new(html::register)),
         ("datetime_fns", Box::new(datetime_fns::register)),
         ("dt_oop_fns", Box::new(dt_oop_fns::register)),
         ("strtotime_fns", Box::new(strtotime_fns::register)),
@@ -1685,6 +1689,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("ENT_IGNORE", Value::Int(4)),
         ("ENT_SUBSTITUTE", Value::Int(8)),
         ("ENT_DISALLOWED", Value::Int(128)),
+        ("HTML_SPECIALCHARS", Value::Int(0)),
+        ("HTML_ENTITIES", Value::Int(1)),
         ("PHP_ROUND_HALF_UP", Value::Int(1)),
         ("PHP_ROUND_HALF_DOWN", Value::Int(2)),
         ("ARRAY_FILTER_USE_KEY", Value::Int(2)),

@@ -5,23 +5,29 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod dumps;
 mod html_tables;
 mod parser;
 
 pub fn main(args: &[String]) -> ExitCode {
-    let rest = args.get(1..).unwrap_or_default();
-    let r = match args.first().map(String::as_str) {
-        Some("html-tables") => html_tables::main(rest),
-        Some("parser") => parser::main(rest),
-        _ => Err("usage: rhp-difftest gen <html-tables|parser> [--check] …".into()),
-    };
-    match r {
+    match run(args) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(e) => {
             eprintln!("rhp-difftest gen: {e}");
             ExitCode::from(2)
         }
+    }
+}
+
+/// Runs one generator: `Ok(false)` when `--check` found a stale file.
+pub fn run(args: &[String]) -> Result<bool, String> {
+    let rest = args.get(1..).unwrap_or_default();
+    match args.first().map(String::as_str) {
+        Some("dumps") => dumps::main(rest),
+        Some("html-tables") => html_tables::main(rest),
+        Some("parser") => parser::main(rest),
+        _ => Err("usage: rhp-difftest gen <dumps|html-tables|parser> [--check] …".into()),
     }
 }
 

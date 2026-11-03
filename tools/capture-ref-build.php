@@ -12,6 +12,12 @@
 // section only against the reference build (Homebrew php on macOS).
 // To bump rhp to a new php release, upgrade the reference php, run this
 // script and copy the changed values into version.rs.
+//
+//     php -n tools/capture-ref-build.php tables
+//
+// prints the reference build's ini directives and constant modules instead
+// (php-cgi: `php-cgi -n -q -f tools/capture-ref-build.php -- tables`), which
+// `rhp-difftest gen dumps` turns into ini_table.rs and const_modules.rs.
 
 function row(string $key, mixed $value): void
 {
@@ -38,6 +44,31 @@ function info_rows(array $keys, bool $zend = false): void
 function ext_row(string $ext, string $key, callable $value): void
 {
     row($key, extension_loaded($ext) ? $value() : "($ext not loaded)");
+}
+
+if (($argv[1] ?? '') === 'tables') {
+    // ini_get_all() with each directive's owning module: the (lowercase)
+    // name ini_get_all() takes; "core" lists every directive
+    $owner = [];
+    foreach (array_merge(get_loaded_extensions(), get_loaded_extensions(true)) as $ext) {
+        $ext = strtolower($ext);
+        foreach ($ext === 'core' ? [] : ini_get_all($ext, true) as $name => $_) {
+            $owner[$name] = $ext;
+        }
+    }
+    echo "# ini\n";
+    foreach (ini_get_all(null, true) as $name => $v) {
+        echo $owner[$name] ?? 'core', "\t", $name, "\t", $v['access'], "\t",
+            var_export($v['global_value'], true), "\n";
+    }
+    echo "# constants\n";
+    foreach (get_defined_constants(true) as $module => $constants) {
+        echo $module, "\t", implode(' ', array_keys($constants)), "\n";
+    }
+    echo "# paths\n";
+    row('PHP_EXTENSION_DIR', PHP_EXTENSION_DIR);
+    row('DEFAULT_INCLUDE_PATH', DEFAULT_INCLUDE_PATH);
+    exit;
 }
 
 echo "# release\n";

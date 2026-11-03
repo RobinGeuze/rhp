@@ -68,6 +68,7 @@ pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_inte
 mod arr_fns;
 mod arraycmp_fns;
 mod arrayset_fns;
+#[rustfmt::skip]
 mod const_modules;
 mod crypt_fns;
 mod datetime_fns;
@@ -85,6 +86,7 @@ pub mod http;
 mod inet;
 mod info_fns;
 mod ini_parse;
+#[rustfmt::skip]
 mod ini_table;
 mod json_fns;
 mod math_fns;

@@ -889,45 +889,6 @@ fn libcurl_rejects_str(option: i64, s: &[u8]) -> bool {
     }
 }
 
-/// php's `zval_get_string()` for an option value: arrays warn "Array to
-/// string conversion", objects go through `__toString` or throw.
-fn zval_get_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> {
-    match deref(v) {
-        Value::Array(_) => {
-            host.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
-            Ok(b"Array".to_vec())
-        }
-        o @ Value::Object(_) => {
-            let has = match &o {
-                Value::Object(h) => {
-                    let class = h.borrow().class;
-                    host.class_has_method(class, b"__tostring")
-                }
-                _ => false,
-            };
-            if has {
-                let mut cb = PhpArray::new();
-                cb.push(o.clone());
-                cb.push(Value::str("__toString"));
-                let r = host.call_callable(&Value::Array(cb), &[])?;
-                return Ok(conv::to_string_bytes(&deref(&r)));
-            }
-            Err(Thrown::error(
-                "Error",
-                format!(
-                    "Object of class {} could not be converted to string",
-                    value_name(host, &o)
-                ),
-            ))
-        }
-        Value::Closure(_) => Err(Thrown::error(
-            "Error",
-            "Object of class Closure could not be converted to string",
-        )),
-        other => Ok(conv::to_string_bytes(&other)),
-    }
-}
-
 /// php's `zval_get_long()` for an option value (objects warn and give 1).
 pub(crate) fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Thrown> {
     let v = deref(v);
@@ -1024,7 +985,7 @@ fn setopt(
     }
 
     if STRING_OPTS.contains(&option) {
-        let s = zval_get_string(host, &value)?;
+        let s = crate::argparse::zval_get_string(host, &value)?;
         check_nul(f, &s)?;
         if libcurl_rejects_str(option, &s) {
             return Ok(false);
@@ -1050,7 +1011,7 @@ fn setopt(
 
     match option {
         OPT_URL => {
-            let s = zval_get_string(host, &value)?;
+            let s = crate::argparse::zval_get_string(host, &value)?;
             check_nul(f, &s)?;
             let mut e = easy.borrow_mut();
             e.url = String::from_utf8_lossy(&s).into_owned();
@@ -1151,7 +1112,7 @@ fn setopt(
                 Value::Array(_) => value.clone(),
                 other => {
                     drop(e);
-                    let s = zval_get_string(host, other)?;
+                    let s = crate::argparse::zval_get_string(host, other)?;
                     e = easy.borrow_mut();
                     Value::str(s)
                 }
@@ -1163,7 +1124,7 @@ fn setopt(
             let s = if matches!(value, Value::Null) {
                 None
             } else {
-                let b = zval_get_string(host, &value)?;
+                let b = crate::argparse::zval_get_string(host, &value)?;
                 check_nul(f, &b)?;
                 Some(String::from_utf8_lossy(&b).into_owned())
             };
@@ -1199,7 +1160,7 @@ fn setopt(
             };
             let mut lines: Vec<Vec<u8>> = Vec::with_capacity(a.len());
             for (_, v) in a.iter() {
-                lines.push(zval_get_string(host, v)?);
+                lines.push(crate::argparse::zval_get_string(host, v)?);
             }
             let mut e = easy.borrow_mut();
             if option == OPT_HTTPHEADER {
@@ -1260,7 +1221,7 @@ fn setopt(
         }
         _ if is_valid_option(option) => {
             // Remaining file-path / blob options: stored, string-coerced.
-            let s = zval_get_string(host, &value)?;
+            let s = crate::argparse::zval_get_string(host, &value)?;
             check_nul(f, &s)?;
             if libcurl_rejects_str(option, &s) {
                 return Ok(false);

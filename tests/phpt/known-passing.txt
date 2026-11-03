@@ -2790,6 +2790,8 @@ ext/hash/tests/hash_init_error.phpt
 ext/hash/tests/hash_pbkdf2_basic.phpt
 ext/hash/tests/hash_pbkdf2_error.phpt
 ext/hash/tests/hash_pbkdf2_large_length.phpt
+ext/hash/tests/hash_pbkdf2_max_length.phpt
+ext/hash/tests/hash_pbkdf2_max_length_raw.phpt
 ext/hash/tests/hash_update_file.phpt
 ext/hash/tests/hash_update_stream.phpt
 ext/hash/tests/haval.phpt

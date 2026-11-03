@@ -2027,7 +2027,8 @@ impl Host for Vm {
         // user class only gets here as a SimpleXMLElement subclass, which
         // php_sxe_object_new creates without zend_update_class_constants:
         // a failing constant expression throws only where it is used.
-        if self.is_internal_class(cls) {
+        let internal = self.is_internal_class(cls);
+        if internal {
             if let Err(t) = self.update_class_constants(cls) {
                 // php's EG(exception): thrown once the builtin returns.
                 self.pending_throw.get_or_insert(t);
@@ -2035,6 +2036,21 @@ impl Host for Vm {
             }
         }
         let obj = self.new_object(cls);
+        if !internal {
+            // sxe's property handlers never look at declared properties:
+            // leave the subclass's slots out (as if unset) so every access
+            // reaches the magic accessors, i.e. the XML.
+            let declared: Vec<PhpStr> = self.classes[cls as usize]
+                .props
+                .iter()
+                .filter(|(_, pe)| !self.is_internal_class(pe.declaring_class))
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in declared {
+                obj.borrow_mut().properties.shift_remove(&k);
+                self.mark_typed_unset(&obj, &k);
+            }
+        }
         {
             let mut b = obj.borrow_mut();
             for (k, v) in props {

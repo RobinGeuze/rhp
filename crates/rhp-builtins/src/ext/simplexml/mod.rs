@@ -1448,6 +1448,10 @@ pub fn debug_view(id: u32) -> Option<Vec<(PhpStr, Value)>> {
     DEBUG_VIEWS.with(|m| m.borrow().get(&id).cloned())
 }
 
+pub fn has_debug_view(id: u32) -> bool {
+    DEBUG_VIEWS.with(|m| m.borrow().contains_key(&id))
+}
+
 pub fn clear_debug() {
     DEBUG_VIEWS.with(|m| m.borrow_mut().clear());
 }

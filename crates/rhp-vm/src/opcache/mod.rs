@@ -724,6 +724,19 @@ impl Vm {
         self.resolve_include_file(top, &p).map(|(rp, _)| rp)
     }
 
+    /// Whether the cache has a script under the name `given` (resolving to
+    /// `path`): php then doesn't open the file to look it up.
+    pub(crate) fn opcache_has_name(&mut self, given: &[u8], path: &[u8]) -> bool {
+        if !self.opcache_on() {
+            return false;
+        }
+        let key = self.persistent_key(given, path);
+        with_cache(|c| match &key {
+            None => c.scripts.get(path).is_some_and(|s| !s.corrupted),
+            Some(k) => c.keys.get(k).is_some_and(|p| p == path),
+        })
+    }
+
     /// The resolved path of a cached script requested by `given`, when it
     /// is served without a stat (timestamps not validated, within
     /// `revalidate_freq`, or preloaded).

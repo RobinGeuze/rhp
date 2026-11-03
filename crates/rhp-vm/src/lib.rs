@@ -8714,9 +8714,6 @@ impl Vm {
             return Ok(Value::Bool(true));
         }
         self.included_files.insert(realpath.clone());
-        // php opens each included file as a stream resource (closed again
-        // after compiling): it uses up a resource id.
-        self.next_resource_id += 1;
 
         let prog = self.compile_included_file(&realpath, raw_path.as_slice(), source)?;
         let main = self.install_file(&realpath, &prog)?;
@@ -8747,8 +8744,15 @@ impl Vm {
             vm.includer = Some(cb);
             r
         };
+        // php opens an included file as a stream resource (closed again
+        // after compiling), which uses up a resource id — unless opcache
+        // finds the script by the name it was asked for.
+        let opened = std::cell::Cell::new(false);
         let compiled = match source {
-            IncludeSource::Bytes(src) => compile(self, &src).map(Rc::new),
+            IncludeSource::Bytes(src) => {
+                opened.set(true);
+                compile(self, &src).map(Rc::new)
+            }
             IncludeSource::Cached => self.opcache_compile(
                 realpath,
                 given,
@@ -8757,7 +8761,9 @@ impl Vm {
                 &mut compile,
             ),
             IncludeSource::File(mut f) => {
+                opened.set(!self.opcache_has_name(given, realpath));
                 let mut read = || {
+                    opened.set(true);
                     let mut src = Vec::new();
                     let _ = std::io::Read::read_to_end(&mut f, &mut src);
                     src
@@ -8771,6 +8777,9 @@ impl Vm {
                 )
             }
         };
+        if opened.get() {
+            self.next_resource_id += 1;
+        }
         compiled.map_err(|e| self.include_error(e, &rp_str))
     }
 

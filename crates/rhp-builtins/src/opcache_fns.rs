@@ -293,29 +293,43 @@ pub(crate) fn accel_log(name: &[u8], level: i64, msg: String) {
 pub fn take_accel_log() -> (Vec<String>, Vec<u8>) {
     let mut msgs = ACCEL_LOG.with(|l| std::mem::take(&mut *l.borrow_mut()));
     msgs.sort_by_key(|m| m.0);
-    let ini = |n: &[u8]| crate::ini_startup_value(n).unwrap_or_default();
-    let verbosity = crate::c_atol(&ini(b"opcache.log_verbosity_level"));
-    let now = crate::zip_ext::now();
     let lines = msgs
         .into_iter()
-        .filter(|(_, level, _)| *level <= verbosity)
-        .map(|(_, level, msg)| {
-            let kind = match level {
-                0 => "Fatal Error",
-                1 => "Error",
-                2 => "Warning",
-                3 => "Message",
-                _ => "Debug",
-            };
-            format!(
-                "{} ({}): {kind} {msg}\n",
-                asctime_local(now),
-                std::process::id()
-            )
-        })
+        .filter_map(|(_, level, msg)| accel_log_line(level, &msg))
         .collect();
-    let dest = ini(b"opcache.error_log");
-    (lines, if dest == b"stderr" { Vec::new() } else { dest })
+    (lines, accel_log_dest())
+}
+
+/// `zend_accel_error`'s line for a message, when `opcache.log_verbosity_level`
+/// lets `level` through.
+pub fn accel_log_line(level: i64, msg: &str) -> Option<String> {
+    let verbosity = crate::c_atol(&crate::ini_startup_value(b"opcache.log_verbosity_level")?);
+    if level > verbosity {
+        return None;
+    }
+    let kind = match level {
+        0 => "Fatal Error",
+        1 => "Error",
+        2 => "Warning",
+        3 => "Message",
+        _ => "Debug",
+    };
+    let now = crate::zip_ext::now();
+    Some(format!(
+        "{} ({}): {kind} {msg}\n",
+        asctime_local(now),
+        std::process::id()
+    ))
+}
+
+/// Where opcache's log goes (`opcache.error_log`; empty: stderr).
+pub fn accel_log_dest() -> Vec<u8> {
+    let dest = crate::ini_startup_value(b"opcache.error_log").unwrap_or_default();
+    if dest == b"stderr" {
+        Vec::new()
+    } else {
+        dest
+    }
 }
 
 /// accel_finish_startup_preload_subprocess: `opcache.preload_user` only

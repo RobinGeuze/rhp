@@ -107,6 +107,9 @@ pub(crate) struct Cache {
     memory_exhausted: bool,
     used: i64,
     wasted: i64,
+    /// `zend_accel_error` lines raised inside the cache, written by the
+    /// engine once it has the cache back.
+    log: Vec<(i64, String)>,
     /// `opcache.preload`'s result, once run on this thread (it survives
     /// restarts, as php re-adds the preloaded scripts).
     preload: Option<Rc<Preload>>,
@@ -378,7 +381,21 @@ fn asctime(t: i64) -> String {
     builtins::asctime_local(t)
 }
 
+/// `zend_accel_error` levels.
+const LOG_INFO: i64 = 3;
+const LOG_DEBUG: i64 = 4;
+
 impl Vm {
+    /// Write the cache's pending `zend_accel_error` lines to opcache's log.
+    fn flush_accel_log(&mut self) {
+        let msgs = with_cache(|c| std::mem::take(&mut c.log));
+        for (level, msg) in msgs {
+            if let Some(line) = builtins::accel_log_line(level, &msg) {
+                self.write_accel_log(&line, &builtins::accel_log_dest());
+            }
+        }
+    }
+
     fn ini(&self, name: &[u8]) -> Vec<u8> {
         self.ini_get(name).unwrap_or_default()
     }
@@ -408,6 +425,7 @@ impl Vm {
                 enabled,
                 request_time,
             });
+            self.flush_accel_log();
         }
         self.opcache.as_ref().unwrap()
     }
@@ -452,6 +470,7 @@ impl Vm {
                     Restart::Hash => c.hash_restarts += 1,
                     Restart::User => c.manual_restarts += 1,
                 }
+                c.log.push((LOG_DEBUG, "Restarting!".into()));
                 // zend_reset_cache_vars, then preload_restart.
                 c.scripts.clear();
                 c.keys.clear();
@@ -485,6 +504,20 @@ impl Vm {
     /// `path` (a resolved path), or a fresh compile, cached when php would
     /// cache it. `source` reads the file; `compile` compiles its bytes.
     pub(crate) fn opcache_compile(
+        &mut self,
+        path: &[u8],
+        given: &[u8],
+        kind: Kind,
+        validated: bool,
+        source: &mut dyn FnMut() -> Vec<u8>,
+        compile: &mut Compile,
+    ) -> Result<Rc<Program>, IncludeError> {
+        let r = self.persistent_compile(path, given, kind, validated, source, compile);
+        self.flush_accel_log();
+        r
+    }
+
+    fn persistent_compile(
         &mut self,
         path: &[u8],
         given: &[u8],
@@ -528,8 +561,10 @@ impl Vm {
             if let Some(k) = &key {
                 let room = ((c.scripts.len() + c.keys.len()) as i64)
                     < c.startup.as_ref().map_or(0, |s| s.max_entries);
-                if room && c.scripts.contains_key(path) {
-                    c.keys.entry(k.clone()).or_insert_with(|| path.to_vec());
+                if room && c.scripts.contains_key(path) && !c.keys.contains_key(k) {
+                    c.keys.insert(k.clone(), path.to_vec());
+                    let shown = String::from_utf8_lossy(k).into_owned();
+                    c.log.push((LOG_INFO, format!("Added key '{shown}'")));
                 }
             }
         };
@@ -651,6 +686,8 @@ impl Vm {
             let base = BASE_SIZE + st.interned_strings_buffer + max_entries * HASH_ENTRY_SIZE;
             let existing = c.scripts.contains_key(path);
             if !existing && (c.scripts.len() + c.keys.len()) as i64 >= max_entries {
+                c.log
+                    .push((LOG_DEBUG, "No more entries in hash table!".into()));
                 c.memory_exhausted = true;
                 c.schedule_restart_if_necessary(Restart::Hash, budget, wasted_max);
                 return;
@@ -674,6 +711,8 @@ impl Vm {
                 corrupted: false,
                 seq,
             };
+            let shown = String::from_utf8_lossy(path).into_owned();
+            c.log.push((LOG_INFO, format!("Cached script '{shown}'")));
             match c.scripts.get_mut(path) {
                 // php updates a discarded entry in place.
                 Some(old) => {
@@ -862,6 +901,7 @@ impl Vm {
             return false;
         }
         with_cache(|c| c.schedule_restart(Restart::User));
+        self.flush_accel_log();
         true
     }
 
@@ -1058,6 +1098,13 @@ impl Cache {
         if self.restart_pending.is_none() {
             self.restart_pending = Some(reason);
             self.disabled = true;
+            let why = match reason {
+                Restart::Oom => "out of memory",
+                Restart::Hash => "hash overflow",
+                Restart::User => "user",
+            };
+            self.log
+                .push((LOG_DEBUG, format!("Restart Scheduled! Reason: {why}")));
         }
     }
 

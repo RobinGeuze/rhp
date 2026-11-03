@@ -137,3 +137,53 @@ array(1) {
 }
 warning: "syntax error, unexpected TC_FALLBACK, expecting TC_VARNAME in Unknown on line 1\n"
 bool(false)
+warning: "syntax error, unexpected end of file in Unknown on line 1\n"
+bool(false)
+array(2) {
+  ["a"]=>
+  string(4) "'abc"
+  ["b"]=>
+  string(1) "1"
+}
+warning: "syntax error, unexpected end of file in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected end of file in Unknown on line 2\n"
+bool(false)
+warning: "syntax error, unexpected end of file in Unknown on line 2\n"
+bool(false)
+warning: "syntax error, unexpected end of file in Unknown on line 2\n"
+bool(false)
+array(1) {
+  ["a"]=>
+  string(1) "x"
+}
+array(1) {
+  ["a"]=>
+  string(1) "x"
+}
+array(1) {
+  ["a"]=>
+  string(1) "x"
+}
+warning: "syntax error, unexpected end of file in Unknown on line 1\n"
+bool(false)
+array(1) {
+  ["a"]=>
+  string(3) "x$\"
+}
+warning: "syntax error, unexpected end of file in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected end of file in Unknown on line 2\n"
+bool(false)
+array(1) {
+  ["s"]=>
+  array(1) {
+    ["a"]=>
+    array(1) {
+      ["x"]=>
+      string(2) "'y"
+    }
+  }
+}
+warning: "syntax error, unexpected end of file in Unknown on line 2\n"
+bool(false)

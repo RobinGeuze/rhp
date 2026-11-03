@@ -129,6 +129,12 @@ impl<'a> Lexer<'a> {
         self.s.get(i).copied()
     }
 
+    /// Like `at`, but the C string's terminating NUL is there too: re2c's
+    /// DFA reads it like any byte (see `next`).
+    fn at0(&self, i: usize) -> Option<u8> {
+        self.at(i).or((i == self.s.len()).then_some(0))
+    }
+
     /// `[ \t]*` from `i`; returns the end position.
     fn ts(&self, mut i: usize) -> usize {
         while self.at(i).is_some_and(is_ts) {
@@ -161,7 +167,7 @@ impl<'a> Lexer<'a> {
         while let Some(p) = stack.pop() {
             for l in unit(self, p) {
                 let e = p + l;
-                if e <= self.s.len() && !reach[e] {
+                if e <= self.s.len() + 1 && !reach[e] {
                     reach[e] = true;
                     best = best.max(e);
                     stack.push(e);
@@ -183,7 +189,7 @@ impl<'a> Lexer<'a> {
                 if n != b'{' && n != 0 {
                     v.push(2);
                 }
-                if n == b'\\' && self.at(p + 2).is_some() {
+                if n == b'\\' && self.at0(p + 2).is_some() {
                     v.push(3);
                 }
             }
@@ -221,10 +227,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn fallback_chars(&self, p: usize) -> Vec<usize> {
-        match self.at(p) {
+        match self.at0(p) {
             Some(b'$') => self.literal_dollar(p),
             Some(b'\\') => {
-                if self.at(p + 1).is_some() {
+                if self.at0(p + 1).is_some() {
                     vec![2]
                 } else {
                     Vec::new()
@@ -236,10 +242,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn section_value_chars(&self, p: usize) -> Vec<usize> {
-        match self.at(p) {
+        match self.at0(p) {
             Some(b'$') => self.literal_dollar(p),
             Some(b'\\') => {
-                if self.at(p + 1).is_some() {
+                if self.at0(p + 1).is_some() {
                     vec![2]
                 } else {
                     Vec::new()
@@ -320,8 +326,11 @@ impl<'a> Lexer<'a> {
             return 0;
         }
         let mut k = j + 1;
-        while self.at(k).is_some_and(|c| c != b'\r' && c != b'\n') {
+        while self.at0(k).is_some_and(|c| c != b'\r' && c != b'\n') {
             k += 1;
+        }
+        if k > self.s.len() {
+            return k - i;
         }
         let nl = self.newline(k);
         if nl == 0 {
@@ -375,10 +384,10 @@ impl<'a> Lexer<'a> {
             }
             // R2 '...'
             if matches!(st, Value | SectionValue | Offset) && c0 == b'\'' {
-                if let Some(off) = self.s[i + 1..].iter().position(|&c| c == b'\'') {
-                    if off > 0 {
-                        cands.push((off + 2, 2));
-                    }
+                match self.s[i + 1..].iter().position(|&c| c == b'\'') {
+                    Some(0) => {}
+                    Some(off) => cands.push((off + 2, 2)),
+                    None => cands.push((self.s.len() + 1 - i, 2)),
                 }
             }
             // R3 "]"[ \t]*NEWLINE?
@@ -456,7 +465,7 @@ impl<'a> Lexer<'a> {
             if st == SectionRaw {
                 let mut j = i;
                 while self
-                    .at(j)
+                    .at0(j)
                     .is_some_and(|c| !matches!(c, b']' | b'\n' | b'\r'))
                 {
                     j += 1;
@@ -558,6 +567,13 @@ impl<'a> Lexer<'a> {
             }
             // R34 <*>[^]
             cands.push((1, 34));
+            // A rule that matched on past the terminating NUL: re2c's DFA
+            // read beyond YYLIMIT, and php's YYFILL returns 0 (end of input)
+            // without a token. That is an unclosed quote, a comment with no
+            // newline, or a trailing `\` that takes the NUL as ANY_CHAR.
+            if cands.iter().any(|&(len, _)| i + len > self.s.len()) {
+                return Tok::End;
+            }
 
             // Longest match; ties go to the earliest rule.
             let (len, rule) = cands.iter().copied().fold((0usize, 255u8), |best, c| {

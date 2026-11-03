@@ -781,8 +781,11 @@ impl Vm {
     }
 
     /// An include of an absolute path that is a cached script, still valid:
-    /// php finds it by that name and needs neither realpath nor open (only
-    /// the timestamp check's stat).
+    /// php finds it by that name without opening it. Outside the revalidate
+    /// window php also resolves the path and discards the script when it
+    /// now names another file (a path component became a symlink); this
+    /// checks only the mtime. Other includes always resolve the path first,
+    /// as php does with `opcache.revalidate_path=1`.
     pub(crate) fn opcache_fast_hit(&mut self, given: &[u8]) -> bool {
         if !given.starts_with(b"/") || !self.opcache_on() {
             return false;

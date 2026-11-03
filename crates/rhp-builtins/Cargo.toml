@@ -36,10 +36,9 @@ num-bigint = "0.4"
 num-traits = "0.2"
 num-integer = "0.1"
 
-# password_* : bcrypt + argon2 password hashing (faithful Rust 1:1).
-bcrypt = "0.17"
-argon2 = "0.6"
-password-hash = { version = "0.6", features = ["phc", "alloc"] }
+# crypt() and password_*: php-src's crypt C and the argon2 reference C php
+# links, compiled from source and linked statically.
+rhp-csrc = { path = "../rhp-csrc", default-features = false, features = ["crypt", "argon2"] }
 
 # zlib + phar per-file compression + ZipArchive: raw DEFLATE / zlib / gzip,
 # CRC-32. Backed by C zlib (system libz, or libz-sys's bundled copy) rather than

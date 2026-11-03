@@ -834,7 +834,7 @@ impl Vm {
     /// `filename_is_in_cache`: found by the name as given (an absolute
     /// path, or a relative one some include used), never by resolving it.
     fn opcache_is_cached(&mut self, path: &[u8]) -> bool {
-        if !self.opcache_request().enabled || path.is_empty() {
+        if !self.opcache_on() || path.is_empty() {
             return false;
         }
         let key = self.persistent_key(path, b"").unwrap_or_default();
@@ -870,7 +870,7 @@ impl Vm {
     /// validating timestamps, or when its file changed. True when the file
     /// was found in the cache (or resolves at all).
     fn opcache_invalidate(&mut self, path: &[u8], force: bool) -> bool {
-        if !self.opcache_request().enabled {
+        if !self.opcache_on() {
             return false;
         }
         let (real, mut found) = match self.opcache_resolve(path) {
@@ -897,7 +897,11 @@ impl Vm {
     /// request starts (until then cached scripts are still served, and
     /// nothing new is cached).
     fn opcache_reset(&mut self) -> bool {
-        if !self.opcache_request().enabled || !ini_flag(&self.ini(b"opcache.enable")) {
+        // php: ZCG(enabled), and the shared cache not already restarting.
+        if !self.opcache_request().started
+            || !ini_flag(&self.ini(b"opcache.enable"))
+            || with_cache(|c| c.disabled)
+        {
             return false;
         }
         with_cache(|c| c.schedule_restart(Restart::User));
@@ -932,7 +936,7 @@ impl Vm {
 
     /// `opcache_get_status()`.
     fn opcache_status(&mut self, scripts: bool) -> Value {
-        let enabled = self.opcache_request().enabled;
+        let enabled = self.opcache_on();
         let validate = ini_flag(&self.ini(b"opcache.validate_timestamps"));
         let jit = self.jit_status();
         let s = |b: &[u8]| ArrayKey::from_bytes(b);

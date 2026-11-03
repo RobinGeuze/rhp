@@ -253,6 +253,9 @@ crates/rhp-csrc also compiles some php-src C files unmodified (its
 vendor/php-src). Their original authors' terms are in sections 5 to 7;
 php-src's changes to them come under the PHP License.
 
+crates/rhp-builtins/src/signatures/table.rs is generated from php-src's
+*.stub.php files.
+
 This product includes PHP software, freely available from
 <http://www.php.net/software/>.
 

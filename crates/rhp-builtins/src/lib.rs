@@ -19,6 +19,7 @@ pub mod fdstream;
 pub mod memstream;
 pub mod module;
 pub mod pcre;
+pub mod signatures;
 pub mod streams;
 pub mod stub_params;
 pub mod version;

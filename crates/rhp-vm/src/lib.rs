@@ -8818,7 +8818,8 @@ impl Vm {
     /// the first candidate that opens as a file, in php_resolve_path's
     /// order: an absolute or `./` / `../` path as is (relative to the
     /// working directory), else each include_path entry, then the
-    /// including file's directory.
+    /// including file's directory; failing those, the plain open of the
+    /// name relative to the working directory.
     fn resolve_include_file(&self, top: usize, path: &str) -> Option<(Vec<u8>, IncludeSource)> {
         use std::path::{Path, PathBuf};
         // Schemed URLs: no candidate search — the wrapper owns resolution. The
@@ -8850,6 +8851,7 @@ impl Vm {
             if let Some(dir) = Path::new(&cur).parent().filter(|d| d.is_absolute()) {
                 candidates.push(dir.join(p));
             }
+            candidates.push(p.to_path_buf());
         }
         for cand in candidates {
             let Ok(canon) = std::fs::canonicalize(&cand) else {

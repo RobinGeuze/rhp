@@ -259,6 +259,28 @@ fn run_in(bin: &str, cwd: &Path, args: &[&str]) -> String {
 }
 
 #[test]
+fn include_falls_back_to_the_working_directory_like_php() {
+    if !php_available() {
+        return;
+    }
+    let dir = case_dir("cwdfallback").canonicalize().unwrap();
+    std::fs::create_dir_all(dir.join("app")).unwrap();
+    std::fs::create_dir_all(dir.join("cwd")).unwrap();
+    write(&dir.join("cwd/y.php"), "<?php echo \"cwd/y\\n\";");
+    // An include_path without '.', and y.php in neither it nor app/: only
+    // the plain open relative to the working directory finds it.
+    write(
+        &dir.join("app/m.php"),
+        "<?php set_include_path('/nonexistent'); var_dump(include 'y.php');",
+    );
+    let cwd = dir.join("cwd");
+    let php = run_in("php", &cwd, &["../app/m.php"]);
+    let rhp = run_in(env!("CARGO_BIN_EXE_rhp"), &cwd, &["../app/m.php"]);
+    assert_eq!(php, rhp);
+    assert_eq!(php, "cwd/y\nint(1)\n");
+}
+
+#[test]
 fn opcache_keeps_relative_includes_of_different_directories_apart() {
     if !php_available() {
         return;

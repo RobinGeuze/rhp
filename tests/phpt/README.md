@@ -26,6 +26,8 @@ How it compares, mirroring `run-tests.php`:
   says how many matches came about this way.
 - php gets run-tests' INI overrides and environment (offline,
   non-interactive). Slow and timing-sensitive tests are skipped too.
+- `--INI--` is read as run-tests' `settings2array` reads it: `name=value`
+  lines, both sides trimmed, the last value of a name kept.
 - A test's `--INI--` setting that leaves php's effective value as run-tests'
   defaults have it (`ini_get()`, asked of the php under test once per
   setting) is a no-op. A setting that changes it runs only if rhp applies

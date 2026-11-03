@@ -82,7 +82,7 @@ fn sign_extend(v: u64, n: usize) -> i64 {
 }
 
 /// `unpack(string $format, string $data, int $offset = 0): array|false`
-fn fn_unpack(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_unpack(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let format = conv::to_string_bytes(&deref(&args[0]));
     let data = conv::to_string_bytes(&deref(&args[1]));
     let mut pos = args
@@ -165,6 +165,35 @@ fn fn_unpack(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 out.insert(ArrayKey::from_bytes(key.as_bytes()), Value::str(s));
                 continue;
             }
+            'H' | 'h' => {
+                // php's unpack(): hex digits, high (H) or low (h) nibble first
+                let rest = data.len().saturating_sub(pos);
+                let size = if star { rest } else { count.div_ceil(2) };
+                if pos + size > data.len() {
+                    host.emit_diagnostic(
+                        crate::E_WARNING,
+                        &format!(
+                            "unpack(): Type {code}: not enough input values, need {size} values but only {rest} were provided"
+                        ),
+                    )?;
+                    return Ok(Value::Bool(false));
+                }
+                let mut len = size * 2;
+                if !star && count % 2 == 1 {
+                    len -= 1;
+                }
+                let mut shift = if code == 'h' { 0 } else { 4 };
+                let mut s = Vec::with_capacity(len);
+                for o in 0..len {
+                    let c = (data[pos + o / 2] >> shift) & 0xf;
+                    s.push(if c < 10 { b'0' + c } else { b'a' + c - 10 });
+                    shift = (shift + 4) & 7;
+                }
+                pos += size;
+                let key = if name.is_empty() { "1" } else { name };
+                out.insert(ArrayKey::from_bytes(key.as_bytes()), Value::str(s));
+                continue;
+            }
             _ => return Ok(Value::Bool(false)),
         };
 
@@ -198,7 +227,7 @@ fn fn_unpack(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 /// `pack(string $format, mixed ...$values): string` — subset of codes.
-fn fn_pack(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_pack(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let format = conv::to_string_bytes(&deref(&args[0]));
     let vals = &args[1..];
     let mut vi = 0usize;
@@ -260,6 +289,47 @@ fn fn_pack(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 let pad = if code == 'A' { b' ' } else { 0u8 };
                 for i in 0..len {
                     out.push(*s.get(i).unwrap_or(&pad));
+                }
+                continue;
+            }
+            'H' | 'h' => {
+                // php's pack(): hex digits, high (H) or low (h) nibble first
+                let s = vals
+                    .get(vi)
+                    .map(|v| conv::to_string_bytes(&deref(v)))
+                    .unwrap_or_default();
+                vi += 1;
+                let mut n = if star { s.len() } else { count };
+                if n > s.len() {
+                    host.emit_diagnostic(
+                        crate::E_WARNING,
+                        &format!("pack(): Type {code}: not enough characters in string"),
+                    )?;
+                    n = s.len();
+                }
+                let mut shift = if code == 'h' { 0 } else { 4 };
+                let mut first = true;
+                for &c in &s[..n] {
+                    let d = match c {
+                        b'0'..=b'9' => c - b'0',
+                        b'A'..=b'F' => c - b'A' + 10,
+                        b'a'..=b'f' => c - b'a' + 10,
+                        _ => {
+                            host.emit_diagnostic(
+                                crate::E_WARNING,
+                                &format!("pack(): Type {code}: illegal hex digit {}", c as char),
+                            )?;
+                            0
+                        }
+                    };
+                    if first {
+                        out.push(0);
+                    }
+                    first = !first;
+                    if let Some(last) = out.last_mut() {
+                        *last |= d << shift;
+                    }
+                    shift = (shift + 4) & 7;
                 }
                 continue;
             }

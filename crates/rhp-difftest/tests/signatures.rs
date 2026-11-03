@@ -149,7 +149,9 @@ fn render(kind: &str, a: &str, b: &str) -> Option<String> {
             };
             Some(format!(
                 "C {} [{}] {kind} {}{parent}",
-                c.name, c.ext, c.flags
+                c.name,
+                c.ext,
+                c.flags & signatures::CLASS_MODIFIERS
             ))
         }
         _ => {

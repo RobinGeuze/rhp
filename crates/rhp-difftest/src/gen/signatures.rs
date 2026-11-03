@@ -218,6 +218,9 @@ const M_DEPRECATED: u32 = 1 << 9;
 const C_FINAL: u32 = 32;
 const C_ABSTRACT: u32 = 64;
 const C_READONLY: u32 = 65536;
+const C_NO_DYNAMIC_PROPERTIES: u32 = 1 << 13;
+const C_ALLOW_DYNAMIC_PROPERTIES: u32 = 1 << 15;
+const C_NOT_SERIALIZABLE: u32 = 1 << 29;
 const K_CLASS: u8 = 0;
 const K_INTERFACE: u8 = 1;
 const K_TRAIT: u8 = 2;
@@ -457,6 +460,20 @@ fn walk_stmts(
                         Modifier::Readonly(_) => flags |= C_READONLY,
                         _ => {}
                     }
+                }
+                // gen_stub's ClassInfo::getFlagsByPhpVersion.
+                let start = attrs_start(&c.attribute_lists)
+                    .or_else(|| c.modifiers.first().map(modifier_start))
+                    .unwrap_or(c.class.span.start.offset);
+                for (tag, _) in doc_tags(f.doc(start)) {
+                    match tag.as_str() {
+                        "strict-properties" => flags |= C_NO_DYNAMIC_PROPERTIES,
+                        "not-serializable" => flags |= C_NOT_SERIALIZABLE,
+                        _ => {}
+                    }
+                }
+                if has_attr(&c.attribute_lists, "AllowDynamicProperties") {
+                    flags |= C_ALLOW_DYNAMIC_PROPERTIES;
                 }
                 let parent = c
                     .extends

@@ -8,7 +8,7 @@
 //! `docs/design/modules-and-streams.md` §3 for the exact field layout.
 //!
 //! Scope: READ-ONLY, native format only. Compressed entries use raw DEFLATE
-//! (via `flate2`) or bzip2 (via the pure-Rust `bzip2` backend); tar/zip-based
+//! (via `flate2`) or bzip2 (via the `bzip2` crate over C libbz2); tar/zip-based
 //! phars are not yet supported. Writing, extraction, iteration, and the
 //! compression APIs are deferred.
 

@@ -130,12 +130,76 @@ pub enum Diff {
     /// The C engine failed to run this source (bad corpus, not a rhp bug).
     PhpErr(String),
     /// rhp refused/threw/panicked (e.g. an unsupported feature or a real bug).
-    PhrustErr(String),
+    RhpErr(String),
+}
+
+/// Where a [`Diff::Mismatch`]'s two outputs first part ways. The sweeps print
+/// one row per generated case, so the row index names the failing input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FirstDifference {
+    /// The first row (0-based line) on which the outputs differ.
+    Row {
+        index: usize,
+        php: String,
+        rhp: String,
+    },
+    /// Every row both outputs have agrees; they differ in length (bytes).
+    Length { php: usize, rhp: usize },
+}
+
+impl std::fmt::Display for FirstDifference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FirstDifference::Row { index, php, rhp } => {
+                write!(f, "row {index}: php={php} rhp={rhp}")
+            }
+            FirstDifference::Length { php, rhp } => {
+                write!(f, "length differs (php {php} B, rhp {rhp} B)")
+            }
+        }
+    }
 }
 
 impl Diff {
     pub fn is_match(&self) -> bool {
         matches!(self, Diff::Match)
+    }
+
+    /// For a mismatch, the first row where php and rhp differ; `None` for
+    /// any other outcome.
+    pub fn first_difference(&self) -> Option<FirstDifference> {
+        let Diff::Mismatch { php, rhp } = self else {
+            return None;
+        };
+        let (p, q) = (String::from_utf8_lossy(php), String::from_utf8_lossy(rhp));
+        let row = p
+            .lines()
+            .zip(q.lines())
+            .enumerate()
+            .find(|(_, (a, b))| a != b);
+        Some(match row {
+            Some((index, (a, b))) => FirstDifference::Row {
+                index,
+                php: a.to_string(),
+                rhp: b.to_string(),
+            },
+            None => FirstDifference::Length {
+                php: php.len(),
+                rhp: rhp.len(),
+            },
+        })
+    }
+
+    /// What went wrong, for a test failure or report line: `None` on a
+    /// match, else `MISMATCH: <first difference>`, `rhp error: …` or
+    /// `php error: …`.
+    pub fn failure(&self) -> Option<String> {
+        match self {
+            Diff::Match => None,
+            Diff::Mismatch { .. } => self.first_difference().map(|d| format!("MISMATCH: {d}")),
+            Diff::RhpErr(e) => Some(format!("rhp error: {e}")),
+            Diff::PhpErr(e) => Some(format!("php error: {e}")),
+        }
     }
 }
 
@@ -147,7 +211,7 @@ pub fn diff_source(source: &[u8]) -> Diff {
     };
     let rhp = match run_rhp(source) {
         Ok(o) => o,
-        Err(e) => return Diff::PhrustErr(e),
+        Err(e) => return Diff::RhpErr(e),
     };
     if php == rhp {
         Diff::Match

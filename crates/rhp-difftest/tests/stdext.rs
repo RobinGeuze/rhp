@@ -4,23 +4,11 @@
 //! Each generates PHP from a deterministic RNG, runs it through `php -n` and
 //! the rhp VM, and requires identical output. Skips cleanly without `php`.
 
-use rhp_difftest::{diff_source, php_available, Diff, Rng};
+use rhp_difftest::{diff_source, php_available, Rng};
 
 fn expect_match(name: &str, src: &str) {
-    match diff_source(src.as_bytes()) {
-        Diff::Match => {}
-        Diff::Mismatch { php, rhp } => {
-            let (p, q) = (String::from_utf8_lossy(&php), String::from_utf8_lossy(&rhp));
-            let first = p
-                .lines()
-                .zip(q.lines())
-                .find(|(a, b)| a != b)
-                .map(|(a, b)| format!("php={a} rhp={b}"))
-                .unwrap_or_else(|| "length differs".to_string());
-            panic!("[{name}] MISMATCH: {first}\n--- source ---\n{src}");
-        }
-        Diff::PhrustErr(e) => panic!("[{name}] rhp error: {e}\n{src}"),
-        Diff::PhpErr(e) => panic!("[{name}] php error: {e}\n{src}"),
+    if let Some(why) = diff_source(src.as_bytes()).failure() {
+        panic!("[{name}] {why}\n--- source ---\n{src}");
     }
 }
 

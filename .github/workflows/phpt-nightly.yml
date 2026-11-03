@@ -79,8 +79,12 @@ jobs:
         if: always()
         run: |
           strip() { grep -v '^#' "$1" | sort; }
-          # The per-PR ratchet checks out the same trees: every passing test
-          # is a candidate, and every known-passing one is run here.
+          # The checkout is the per-PR ratchet's, so every passing test is a
+          # ratchet candidate and every known-passing test is in it. But
+          # --write-known lists only tests that ran and matched, so one that
+          # didn't match tonight regressed, was unsteady, or was skipped here:
+          # its SKIPIF, a php timeout, or a version-printing test when
+          # setup-php's 8.5 patch isn't the one rhp reports.
           strip out/passing-all.txt > out/passing.txt || true
           strip tests/phpt/known-passing.txt > out/known.txt
           comm -13 out/known.txt out/passing.txt > out/newly-passing.txt
@@ -89,7 +93,7 @@ jobs:
             echo "## phpt nightly (php-src ${{ steps.ref.outputs.sha }})"
             echo
             echo "- newly passing (add to \`tests/phpt/known-passing.txt\`): **$(wc -l < out/newly-passing.txt)**"
-            echo "- known-passing that didn't match tonight: **$(wc -l < out/no-longer-passing.txt)**"
+            echo "- known-passing that didn't match tonight (regressed, unsteady, or skipped): **$(wc -l < out/no-longer-passing.txt)**"
             echo "- mutant repros emitted: **$(find out/fixtures -name '*.php' 2>/dev/null | wc -l)**"
             echo "- runs where php itself crashed: **$(find out/php-findings -name '*.php' 2>/dev/null | wc -l)** repro(s)"
             echo

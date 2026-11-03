@@ -9,7 +9,10 @@ need no special handling.
 - `known-passing.txt` lists the tests rhp currently matches php on. CI (the
   `phpt` job) fails if one of them stops matching, goes missing, or is skipped
   for any reason other than its own `--SKIPIF--`. This list ratchets: add tests
-  as they start passing, and remove a line only for a deliberate reason.
+  as they start passing, and remove a line only for a deliberate reason. CI
+  and the nightly check out `Zend/tests`, `tests`, `ext/*/tests` and
+  `sapi/*/tests`: every php-src test except the 5 in `ext/intl/uchar/tests`
+  (none pass yet), which the list must not contain.
 
 How it compares, mirroring `run-tests.php`:
 
@@ -42,9 +45,11 @@ target/release/rhp-difftest phpt --php-src ../php-src --filter Zend/tests
 # Ratchet: what CI runs.
 target/release/rhp-difftest phpt --php-src ../php-src --check-known tests/phpt/known-passing.txt
 
-# Regenerate the list (after fixing things) from the same three trees CI checks out.
+# Regenerate the list (after fixing things) from the whole corpus, as the
+# nightly does. --write-known keeps only tests that ran and matched, so a
+# --filter here drops listed tests, and so do skips: CGI tests without a
+# php-cgi, version-printing tests when php's version isn't the one rhp reports.
 target/release/rhp-difftest phpt --php-src ../php-src \
-  --filter tests/lang/ --filter Zend/tests/ --filter ext/standard/tests/ \
   --write-known tests/phpt/known-passing.txt
 
 # Mutation: run 8 single-token mutants of every passing test through both

@@ -741,7 +741,7 @@ A small crate with a library, a binary, and integration tests:
 - `run_php(src)` feeds the source to `php -n` on stdin (no temp files, fixed UTC
   timezone) and captures stdout; `run_rhp(src)` compiles and runs it on the VM
   (catching engine panics as diffs). `diff_source(src)` runs both and classifies
-  the result `Match | Mismatch | PhpErr | PhrustErr`.
+  the result `Match | Mismatch | PhpErr | RhpErr`.
 - A dependency-free seeded `Rng` and `default_byte_corpus()` generate the inputs
   where bugs hide: the empty string, every block-boundary length
   (55/56/63/64/65/119/120/127/128…), human-readable vectors, and random binary

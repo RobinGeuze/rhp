@@ -1,0 +1,43 @@
+"a@b.com" 7 true true
+"\u00e9@b.de" 7 false true
+"user@ex\u00e4mple.com" 17 false false
+"a@b" 3 false false
+"\"quoted\"@example.com" 20 true true
+"\"a\\\"b\"@x.com" 12 true true
+"user@[IPv6:2001:db8::1]" 23 true true
+"user@[1.2.3.4]" 14 true true
+"a@b.c1" 6 true true
+"a@1b.bc" 7 true true
+"x@xn--bcher-kva.ch" 18 true true
+"a@b-.com" 8 false false
+"a..b@c.com" 10 false false
+".a@b.com" 8 false false
+"a.@b.com" 8 false false
+"a@b.com\n" 8 false false
+ 7 false false
+"\u00fc@\u00fc.de" 8 false false
+"a@[IPv6:::1]" 12 true true
+"a@[IPv6:1:2:3:4:5:6:7:8]" 24 true true
+"a@[IPv6:1::2:3.4.5.6]" 21 true true
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" 70 true true
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" 71 false false
+"a@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" 69 true true
+"a@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" 70 false false
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" 324 false false
+"A@B.COM" 7 true true
+"a@B.Com" 7 true true
+"\"\u0001\"@x.com" 9 true true
+"\"\\\\\"@x.com" 10 true true
+"\u00fc\u00f1\u00ee@\u00e7\u00f8.de" 14 false false
+"ab@cd" 5 false false
+"a@b.c-d" 7 true true
+"a@b.c--d" 8 true true
+"a@b.xn--p1ai" 12 true true
+"1@2.3" 5 false false
+"test@localhost.localdomain" 26 true true
+"" 0 false false
+bool(false)
+string(1) "x"
+int(0)
+int(4)
+int(4)

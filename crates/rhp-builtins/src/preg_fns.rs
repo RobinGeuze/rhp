@@ -258,6 +258,25 @@ mod engine {
             Ok(Some(Ovector { groups: out, mark }))
         }
 
+        /// Whether `subject` matches from offset 0, as an extension calling
+        /// pcre2_match directly sees it: any error counts as no match, and
+        /// `preg_last_error()` is left alone.
+        pub fn is_match(&self, subject: &[u8]) -> bool {
+            let md = MatchData::new(self);
+            let rc = unsafe {
+                pcre2_match_8(
+                    self.code,
+                    subject.as_ptr(),
+                    subject.len(),
+                    0,
+                    0,
+                    md.ptr,
+                    md.mctx,
+                )
+            };
+            rc >= 0
+        }
+
         /// A single match at `start` (as `preg_match` uses). `Err(())` surfaces
         /// as php's `false`.
         pub fn find_at(&self, subject: &[u8], start: usize) -> Result<Option<Ovector>, ()> {
@@ -432,6 +451,28 @@ fn compile_warn(host: &mut dyn Host, fname: &str, pattern: &[u8]) -> Result<Opti
             Ok(None)
         }
     }
+}
+
+thread_local! {
+    /// Fixed patterns of other extensions, compiled once per thread (php
+    /// keeps them in its regex cache).
+    static FIXED: std::cell::RefCell<HashMap<&'static [u8], std::rc::Rc<Regex>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Match `subject` against a fixed `/body/flags` pattern the way an extension
+/// does through pcre_get_compiled_regex + pcre2_match (filter's email check):
+/// no warning, no `preg_last_error()` update, errors count as no match.
+pub(crate) fn fixed_pattern_matches(pattern: &'static [u8], subject: &[u8]) -> bool {
+    let re = FIXED.with(|c| {
+        c.borrow_mut()
+            .entry(pattern)
+            .or_insert_with(|| {
+                std::rc::Rc::new(compile_inner(pattern).expect("fixed pattern compiles"))
+            })
+            .clone()
+    });
+    re.is_match(subject)
 }
 
 fn compile_inner(pattern: &[u8]) -> Result<Regex, String> {

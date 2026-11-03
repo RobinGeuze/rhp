@@ -78,8 +78,7 @@ jobs:
       - uses: ./.github/actions/setup-php
         with:
           php-version: '8.5'
-      # After setup-php, so apt resolves the -dev packages against the
-      # libraries php itself installed.
+      # After setup-php: rhp links the library versions this php links.
       - uses: ./.github/actions/native-deps
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -127,8 +126,7 @@ jobs:
       - uses: ./.github/actions/setup-php
         with:
           php-version: '8.5'
-      # After setup-php, so apt resolves the -dev packages against the
-      # libraries php itself installed.
+      # After setup-php: rhp links the library versions this php links.
       - uses: ./.github/actions/native-deps
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -169,8 +167,7 @@ jobs:
       - uses: ./.github/actions/setup-php
         with:
           php-version: '8.5'
-      # After setup-php, so apt resolves the -dev packages against the
-      # libraries php itself installed.
+      # After setup-php: rhp links the library versions this php links.
       - uses: ./.github/actions/native-deps
       - uses: actions/cache@v4
         with:

@@ -46,7 +46,7 @@ Today rhp-builtins links:
 
 | Library | macOS | Debian/Ubuntu |
 |---|---|---|
-| PCRE2 (libpcre2-8) | static, Homebrew pcre2 | static, libpcre2-dev |
+| PCRE2 (libpcre2-8) | static, Homebrew pcre2 | static, libpcre2-dev (CI: php's release, see below) |
 | zlib (via libz-sys) | dynamic, /usr/lib/libz | dynamic, zlib1g |
 | bzip2 (via bzip2-sys) | static, bundled 1.0.8 | system libbz2 if pkg-config finds it, else bundled 1.0.8 |
 
@@ -71,6 +71,18 @@ library needs its own row.
 **Checks.** `crates/rhp-cli/tests/ref_build.rs` requires the "linked" section
 of `tools/capture-ref-build.php` to print the same under rhp and the host's
 php 8.5. CI prints what its php links (the setup-php action's last step).
+
+On CI, php is not always the distro's build. setup-php's php on Ubuntu 26.04
+ships its own `libpcre2-8.so` (PCRE2 10.47, against which it was compiled)
+next to the distro's 10.46, outside dpkg. It becomes the copy php loads once
+`ldconfig` runs, so the setup-php action runs `ldconfig` straight away. The
+native-deps action then compares the PCRE2 php reports with the distro's
+`libpcre2-dev`. When they differ, it builds php's release from the upstream
+tarball, checked against `.github/actions/native-deps/sha256sums` (the
+checksums Homebrew's formula pins), static only, and points `PKG_CONFIG_PATH`
+at it. A release with no recorded checksum fails the job; add its checksum.
+The `php` input names a php that is not the one on PATH (the nightly
+sanitizer build uses php-src's bundled PCRE2).
 `otool -L target/release/rhp` (or `ldd`) shows no libpcre2; `nm` shows the
 `pcre2_*` symbols. rhp-builtins' `pcre2_is_linked_statically` test checks
 its own test binary, which is linked straight from the crate.
@@ -126,7 +138,9 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
 2. Declare the functions rhp calls in a hand-written `extern "C"` block
    (no bindgen). Put struct access and macros behind a small C shim with
    `_Static_assert` layout checks if needed.
-3. Add the `-dev` package to `.github/actions/native-deps`.
+3. Add the `-dev` package to `.github/actions/native-deps`. If CI's php can
+   link a release the distro has no `-dev` package for, build it there the
+   way PCRE2 is built.
 4. Read every version constant the way php's source reads it, and add the
    constants to the "linked" section of `tools/capture-ref-build.php`.
 5. Add the licence to `THIRD-PARTY-NOTICES`.

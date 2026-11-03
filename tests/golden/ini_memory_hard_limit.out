@@ -1,0 +1,40 @@
+array(3) {
+  ["global_value"]=>
+  NULL
+  ["local_value"]=>
+  NULL
+  ["access"]=>
+  int(7)
+}
+NULL
+string(0) ""
+'50' => warning: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+'150' => string(0) ""
+'-1' => string(3) "150"
+'abc' => warning: Invalid "memory_hard_limit_percent" setting. Invalid quantity "abc": no valid leading digits, interpreting as "0" for backwards compatibility
+warning: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+'-2' => warning: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+'' => warning: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+'100' => string(2) "-1"
+'1e3' => warning: Invalid "memory_hard_limit_percent" setting. Invalid quantity "1e3": unknown multiplier "3", interpreting as "1" for backwards compatibility
+warning: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+'200abc' => warning: Invalid "memory_hard_limit_percent" setting. Invalid quantity "200abc": unknown multiplier "c", interpreting as "200" for backwards compatibility
+string(3) "100"
+' 99' => warning: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+'0x100' => string(6) "200abc"
+'1k' => string(5) "0x100"
+NULL => warning: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+99 => warning: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+100.0 => string(2) "1k"
+true => warning: memory_hard_limit_percent must be >= 100, or -1
+bool(false)
+string(3) "100"
+string(0) ""

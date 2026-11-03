@@ -1,6 +1,6 @@
 # PHP 8.5 Ground-Truth Semantics (rhp compatibility spec)
 
-Captured by running the local `php` binary: **PHP 8.5.8 (cli) (NTS), Zend Engine v4.5.8**, Homebrew build, on darwin.
+Captured by running the local `php` binary: **PHP 8.5.8 (cli) (NTS), Zend Engine v4.5.8**, Homebrew build, on darwin. rhp now tracks the latest 8.5 release (see `crates/rhp-builtins/src/version.rs`).
 
 Every snippet below was executed with `php -r '<snippet>'` (or as a script file). The output shown is the **exact stdout** unless a line is explicitly labeled a warning/error (those go to **stderr** in the CLI SAPI). These are the semantics our tree-walking interpreter must reproduce; the golden fixtures in `tests/golden/` assert a subset of them.
 
@@ -449,6 +449,6 @@ Falsy values in PHP: `false`, `0`, `0.0`, `-0.0`, `""`, `"0"`, `[]`, `null`. Eve
 
 ## Golden fixtures
 
-21 `NAME.php` / `NAME.out` pairs live in `tests/golden/`. Each `.out` is the **exact stdout** of `php NAME.php` under PHP 8.5.8 (stderr/warnings excluded so the bytes are path-independent and deterministic). Fixtures avoid fatal-error cases (those are specified narratively above). The pairs:
+21 `NAME.php` / `NAME.out` pairs live in `tests/golden/`. Each `.out` is the **exact stdout** of `php NAME.php` under the reference php (stderr/warnings excluded so the bytes are path-independent and deterministic). Fixtures avoid fatal-error cases (those are specified narratively above). The pairs:
 
 `echo_int`, `echo_float_formats`, `echo_bool_null`, `var_dump_scalars`, `var_dump_nested`, `print_r_nested`, `var_export_nested`, `int_overflow`, `intdiv_mod`, `power_operator`, `bitwise`, `comparison_php8`, `spaceship`, `string_ordering`, `int_casts`, `float_casts`, `is_numeric_cases`, `numeric_string_arith`, `gettype_names`, `concatenation`, `bool_casts`.

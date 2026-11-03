@@ -1,0 +1,22 @@
+is_callable("::a")
+bool(false)
+is_callable("\::a")
+bool(false)
+is_callable("\Foo::a")
+autoload: 'Foo'
+bool(false)
+is_callable("Foo::a")
+autoload: 'Foo'
+bool(false)
+is_callable("\\::a")
+autoload: '\'
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+autoload: 'Bar'
+bool(false)
+Class "\" does not exist
+bool(false)
+bool(false)

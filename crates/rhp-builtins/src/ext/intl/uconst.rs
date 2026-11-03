@@ -1,4 +1,4 @@
-/// ICU `U_*` error-code constants (values from php 8.5.8 / ICU 78).
+/// ICU `U_*` error-code constants (values from php 8.5.8 / ICU 78; unchanged in 8.5.12 / ICU 79).
 pub(crate) const U_CONSTANTS: &[(&str, i64)] = &[
     ("U_USING_FALLBACK_WARNING", -128),
     ("U_ERROR_WARNING_START", -128),

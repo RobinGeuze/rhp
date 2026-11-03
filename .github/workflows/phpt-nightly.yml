@@ -46,8 +46,8 @@ jobs:
           ref: ${{ steps.ref.outputs.sha }}
           path: php-src
           persist-credentials: false
-          # The same trees as the per-PR ratchet (ci.yml's phpt job), so every
-          # test that passes here is one CI can check.
+          # The same trees as ci.yml's phpt ratchet (keep the two lists
+          # equal), so every test that passes here is a ratchet candidate.
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /Zend/tests/
@@ -85,7 +85,7 @@ jobs:
           # didn't match tonight regressed, was unsteady, or was skipped here:
           # its SKIPIF, a php timeout, or a version-printing test when
           # setup-php's 8.5 patch isn't the one rhp reports.
-          strip out/passing-all.txt > out/passing.txt
+          strip out/passing-all.txt > out/passing.txt || true
           strip tests/phpt/known-passing.txt > out/known.txt
           comm -13 out/known.txt out/passing.txt > out/newly-passing.txt
           comm -23 out/known.txt out/passing.txt > out/no-longer-passing.txt

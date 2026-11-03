@@ -313,7 +313,9 @@ fn sockaddr_text(sa: &libc::sockaddr_storage, sl: libc::socklen_t) -> Option<Vec
             }
             libc::AF_UNIX => {
                 let un = &*(sa as *const _ as *const libc::sockaddr_un);
-                let path: Vec<u8> = un.sun_path.iter().map(|&c| c as u8).collect();
+                // c_char is i8 or u8 depending on the target: `as u8` is an
+                // unnecessary cast (a clippy error) where it is already u8.
+                let path: Vec<u8> = un.sun_path.iter().map(|c| c.to_ne_bytes()[0]).collect();
                 // php: `sl - sizeof(sa_family_t)` bytes of an abstract name
                 // (on BSDs that includes one byte past the reported length).
                 let hdr = std::mem::size_of::<libc::sa_family_t>();

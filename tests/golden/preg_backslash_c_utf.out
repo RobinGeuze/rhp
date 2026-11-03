@@ -1,0 +1,14 @@
+E2: preg_match(): Compilation failed: using \C is incompatible with the 'u' modifier at offset 3
+bool(false)
+int(1)
+string(14) "Internal error"
+E2: preg_match_all(): Compilation failed: using \C is incompatible with the 'u' modifier at offset 6
+bool(false)
+NULL
+E2: preg_replace(): Compilation failed: using \C is incompatible with the 'u' modifier at offset 2
+NULL
+E2: preg_split(): Compilation failed: using \C is incompatible with the 'u' modifier at offset 2
+bool(false)
+int(1)
+int(2)
+int(1)

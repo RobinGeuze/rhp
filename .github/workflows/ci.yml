@@ -40,7 +40,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   # The suite with NO `php` on PATH: the VM is validated byte-for-byte against
-  # the committed `.out` golden fixtures (captured from php 8.5.8), and every
+  # the committed `.out` golden fixtures (captured from the reference php,
+  # crates/rhp-builtins/src/version.rs), and every
   # live-php test guards on `php_available()` and skips. Proves the suite is
   # green for a contributor without php installed. (ubuntu-latest ships its own
   # php, so we remove it first.)

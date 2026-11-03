@@ -9,27 +9,38 @@
 //!
 //! ICU's `usearch` (collation-based string search, tertiary strength, or
 //! secondary for the case-insensitive variants) is modelled as canonical
-//! equivalence (NFD), plus full case folding for the `i` variants, with matches
-//! required to start and end on grapheme boundaries.
+//! equivalence (NFD) with completely ignorable code points dropped, plus case
+//! folding for the `i` variants, with matches required to start and end on
+//! grapheme boundaries (and, for a needle that isn't itself ignorable, to
+//! start on a grapheme that isn't).
+//!
+//! Boundaries come from ICU4X's state-machine grapheme data
+//! (`GraphemeClusterSegmenter::new_neo`), which carries ICU 79's rules,
+//! including the simplified GB9c (`Linker Extend* × Consonant`).
 
 use icu_normalizer::DecomposingNormalizerBorrowed;
 use icu_segmenter::GraphemeClusterSegmenter;
 use rhp_values::{PhpArray, Value};
 
-use super::{as_utf8, error_set, path_arg, U_ILLEGAL_ARGUMENT_ERROR, U_INVALID_CHAR_FOUND};
+use super::{
+    as_utf8, collation_ignorable, error_set, icu_fold_extra, path_arg, U_ILLEGAL_ARGUMENT_ERROR,
+    U_INVALID_CHAR_FOUND,
+};
 use crate::ext::zpp::{bool_arg_or, int_arg, int_arg_or, opt_int_arg, str_arg, value_error};
 use crate::{Host, Thrown};
 
 /// Grapheme boundaries of valid UTF-8 text: always starts with 0 and ends with
 /// `s.len()` (just `[0]` for the empty string).
 fn breaks(s: &str) -> Vec<usize> {
-    GraphemeClusterSegmenter::new().segment_str(s).collect()
+    GraphemeClusterSegmenter::new_neo().segment_str(s).collect()
 }
 
 /// Boundaries of possibly ill-formed UTF-8 (ICU's `utext_openUTF8`, which
 /// reads ill-formed sequences as U+FFFD).
 fn breaks_bytes(b: &[u8]) -> Vec<usize> {
-    GraphemeClusterSegmenter::new().segment_utf8(b).collect()
+    GraphemeClusterSegmenter::new_neo()
+        .segment_utf8(b)
+        .collect()
 }
 
 /// `grapheme_ascii_check`: true when every byte is ASCII and there is no CRLF.
@@ -133,16 +144,29 @@ fn count_graphemes(s: &str) -> usize {
 }
 
 /// The comparison key of a piece of text for the collation-search model:
-/// its NFD, case-folded (and re-decomposed) when `fold`.
+/// its NFD without collation-ignorable code points, case-folded (and
+/// re-decomposed) when `fold`.
 fn key(s: &str, fold: bool) -> Vec<u32> {
     let nfd = DecomposingNormalizerBorrowed::new_nfd();
-    let d: Vec<u32> = nfd.normalize(s).chars().map(|c| c as u32).collect();
+    let d: Vec<u32> = nfd
+        .normalize(s)
+        .chars()
+        .map(|c| c as u32)
+        .filter(|&c| !collation_ignorable(c))
+        .collect();
     if !fold {
         return d;
     }
-    let folded = crate::ext::mbstring::case_fold_simple(&d);
+    let folded: Vec<u32> = crate::ext::mbstring::case_fold_simple(&d)
+        .into_iter()
+        .map(|c| icu_fold_extra(c).unwrap_or(c))
+        .collect();
     let st: String = folded.iter().filter_map(|&c| char::from_u32(c)).collect();
-    nfd.normalize(&st).chars().map(|c| c as u32).collect()
+    nfd.normalize(&st)
+        .chars()
+        .map(|c| c as u32)
+        .filter(|&c| !collation_ignorable(c))
+        .collect()
 }
 
 /// All candidate matches `(start, end)` (byte offsets on grapheme
@@ -152,6 +176,16 @@ fn matches(h: &str, b: &[usize], needle: &str, fold: bool) -> Vec<(usize, usize)
     let gkeys: Vec<Vec<u32>> = b.windows(2).map(|w| key(&h[w[0]..w[1]], fold)).collect();
     let mut out = Vec::new();
     for i in 0..gkeys.len() {
+        if !k.is_empty()
+            && h[b[i]..]
+                .chars()
+                .next()
+                .is_some_and(|c| collation_ignorable(c as u32))
+        {
+            // usearch starts a match at its first non-ignorable code point,
+            // which must then be a grapheme boundary
+            continue;
+        }
         let mut acc: Vec<u32> = Vec::new();
         let mut j = i;
         while j < gkeys.len() && acc.len() < k.len() {
@@ -165,14 +199,11 @@ fn matches(h: &str, b: &[usize], needle: &str, fold: bool) -> Vec<(usize, usize)
     out
 }
 
-fn utf16_len(s: &str) -> usize {
-    s.chars().map(char::len_utf16).sum()
-}
-
-/// `grapheme_strpos_utf16` as of php 8.5.8. Returns `Ok(Some((ret, puchar)))`
-/// where `ret` is the grapheme position (or, for an empty needle, php's raw
-/// UTF-16 offset) and `puchar` the match's UTF-16 offset (8.5.8 hands that,
-/// not a code point count, to `U8_FWD_N`); `Ok(None)` = not found / error.
+/// `grapheme_strpos_utf16` (php 8.5.12). Returns `Ok(Some((ret, start)))`
+/// where `ret` is the grapheme position and `start` the match's byte offset
+/// (php returns its code point count, which `U8_FWD_N` turns back into the
+/// same byte offset); `start` is `None` for an empty needle.
+/// `Ok(None)` = not found / error.
 fn strpos_utf16(
     fname: &str,
     h: &[u8],
@@ -181,6 +212,10 @@ fn strpos_utf16(
     fold: bool,
     last: bool,
 ) -> Result<Option<(usize, Option<usize>)>, Thrown> {
+    if h.is_empty() && !n.is_empty() {
+        // checked before any conversion; sets no error
+        return Ok(None);
+    }
     let Some(hs) = as_utf8(h) else {
         error_set(
             fname,
@@ -209,20 +244,11 @@ fn strpos_utf16(
     if ns.is_empty() {
         let pos = haystack_offset(&b, offset).ok_or_else(offset_err)?;
         let ret = if last && offset >= 0 {
-            utf16_len(hs)
+            count_graphemes(hs)
         } else {
-            utf16_len(&hs[..pos])
+            count_graphemes(&hs[..pos])
         };
         return Ok(Some((ret, None)));
-    }
-    if hs.is_empty() {
-        // ICU's usearch_open rejects an empty text (php 8.5.8 has no early out)
-        error_set(
-            fname,
-            U_ILLEGAL_ARGUMENT_ERROR,
-            "Error creating search object",
-        );
-        return Ok(None);
     }
     let mut offset_pos = 0;
     if offset != 0 {
@@ -230,17 +256,30 @@ fn strpos_utf16(
     }
     let all = matches(hs, &b, ns, fold);
     let found = if last {
-        if offset >= 0 {
+        if offset >= 0 && key(ns, fold).is_empty() {
+            // an all-ignorable needle "matches" at every code point, so
+            // usearch_last lands on the last one, which may not start a
+            // grapheme
+            hs.char_indices()
+                .last()
+                .map(|(p, _)| p)
+                .filter(|&p| p >= offset_pos && b.contains(&p))
+        } else if offset >= 0 {
             all.last().map(|m| m.0).filter(|&p| p >= offset_pos)
         } else {
-            // successive non-overlapping usearch_next() calls from 0
+            // usearch_next() from 0, each search resuming at the grapheme
+            // boundary following the previous match's start (so overlapping
+            // matches count)
             let mut prev = None;
             let mut cur = 0usize;
             loop {
                 match all.iter().find(|m| m.0 >= cur) {
-                    Some(&(s, e)) if s <= offset_pos => {
+                    Some(&(s, _)) if s <= offset_pos => {
                         prev = Some(s);
-                        cur = e.max(s + 1);
+                        match b.iter().find(|&&x| x > s) {
+                            Some(&next) => cur = next,
+                            None => break,
+                        }
                     }
                     _ => break,
                 }
@@ -250,10 +289,7 @@ fn strpos_utf16(
     } else {
         all.iter().map(|m| m.0).find(|&p| p >= offset_pos)
     };
-    Ok(found.map(|p| {
-        let g = b.iter().position(|&x| x == p).unwrap_or(0);
-        (g, Some(utf16_len(&hs[..p])))
-    }))
+    Ok(found.map(|p| (count_graphemes(&hs[..p]), Some(p))))
 }
 
 struct PosArgs {
@@ -312,11 +348,13 @@ pub(super) fn fn_strpos(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         (a.h.len() as i64 + a.offset) as usize
     };
     if a.offset >= 0 && ascii_check(&a.h) {
-        // (php 8.5.8 returns false here even for a non-ASCII needle)
-        return Ok(match memnstr(&a.h, noffset, &a.n) {
-            Some(p) => Value::Int(p as i64),
-            None => Value::Bool(false),
-        });
+        if let Some(p) = memnstr(&a.h, noffset, &a.n) {
+            return Ok(Value::Int(p as i64));
+        }
+        // a non-ASCII needle can still match canonically (K vs U+212A)
+        if ascii_check(&a.n) {
+            return Ok(Value::Bool(false));
+        }
     }
     Ok(ret_pos(strpos_utf16(
         f, &a.h, &a.n, a.offset, false, false,
@@ -495,30 +533,18 @@ fn strstr_common(host: &mut dyn Host, args: &[Value], fold: bool) -> Result<Valu
     let n = str_arg(host, args, 1, f, "needle")?;
     let part = bool_arg_or(host, args, 2, f, "beforeNeedle", false)?;
     path_arg(host, args, 3, f, "locale")?;
-    if !fold {
-        // php 8.5.8: raw byte search first; done if absent or the haystack is ASCII.
-        match memnstr(&h, 0, &n) {
-            None => return Ok(Value::Bool(false)),
-            Some(o) if ascii_check(&h) => {
-                return Ok(if part {
-                    Value::str(h[..o].to_vec())
-                } else {
-                    Value::str(h[o..].to_vec())
-                })
-            }
-            Some(_) => {}
-        }
+    if !fold && ascii_check(&h) && ascii_check(&n) {
+        // ASCII on both sides: a byte search is exact
+        return Ok(match memnstr(&h, 0, &n) {
+            None => Value::Bool(false),
+            Some(o) if part => Value::str(h[..o].to_vec()),
+            Some(o) => Value::str(h[o..].to_vec()),
+        });
     }
-    let Some((_, uchar)) = strpos_utf16(f, &h, &n, 0, fold, false)? else {
+    let Some((_, start)) = strpos_utf16(f, &h, &n, 0, fold, false)? else {
         return Ok(Value::Bool(false));
     };
-    // U8_FWD_N over the haystack by `uchar` code points (8.5.8 passes the
-    // UTF-16 offset here, which overshoots past astral / combining text).
-    let mut pos = 0usize;
-    if let Some(cnt) = uchar {
-        let t = as_utf8(&h).unwrap_or("");
-        pos = t.char_indices().nth(cnt).map(|(i, _)| i).unwrap_or(t.len());
-    }
+    let pos = start.unwrap_or(0);
     Ok(if part {
         Value::str(h[..pos].to_vec())
     } else {
@@ -707,7 +733,7 @@ fn ascii_check_quirk(p: &[u8], n: usize) -> bool {
 }
 
 /// ICU's `U8_FWD_1`: advance over one (possibly ill-formed) UTF-8 sequence.
-fn u8_fwd_1(s: &[u8], mut i: usize) -> usize {
+pub(super) fn u8_fwd_1(s: &[u8], mut i: usize) -> usize {
     let n = s.len();
     if i >= n {
         return i;

@@ -10,7 +10,7 @@ need Reflection next (M2).
 functions **and** classes, constants, and **stream wrappers**; (2) add a stream
 layer so file I/O and `include`/`require` dispatch by URL scheme; (3) implement
 `phar://` + `Phar` on top of it, far enough to **execute `composer.phar`**.
-**Ground truth:** local `php` 8.5.8 (has phar+zlib+zip+bz2). Everything below was
+**Ground truth:** the reference `php` (see `crates/rhp-builtins/src/version.rs`; has phar+zlib+zip+bz2). Everything below was
 verified against a real `composer.phar` (native format, 831 files, **all stored
 uncompressed**, **SHA-512** signed, API 1.1.0) and the current codebase.
 

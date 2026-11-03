@@ -168,7 +168,7 @@ fn run(bin: &Path, pre: &[&str], s: &Spec) -> Run {
     }
 }
 
-/// The `X.Y.Z` version php-cgi reports for `-n -v` (`PHP 8.5.8 (cgi-fcgi) …`).
+/// The `X.Y.Z` version php-cgi reports for `-n -v` (`PHP 8.5.12 (cgi-fcgi) …`).
 fn version(bin: &Path) -> Option<String> {
     let out = Command::new(bin).args(["-n", "-v"]).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout).into_owned();

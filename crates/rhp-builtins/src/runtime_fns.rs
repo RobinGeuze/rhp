@@ -151,8 +151,61 @@ thread_local! {
 }
 
 /// Reset this module's per-request state (a new Vm / Interp).
+/// Diagnostics of startup (`-d`) ini values, and of re-applying them when a
+/// runtime change is undone at request end (`zend_ini_deactivate`).
+#[derive(Default)]
+struct StartupDiags {
+    /// Raised while the `-d` values were applied (module startup).
+    startup: Vec<String>,
+    /// memory_hard_limit_percent's startup value warned but was accepted:
+    /// php warns again when restoring it after an `ini_set`.
+    restore_warning: Option<String>,
+    /// memory_hard_limit_percent was changed by `ini_set` this request.
+    changed: bool,
+}
+
+thread_local! {
+    static STARTUP_DIAGS: RefCell<StartupDiags> = RefCell::new(StartupDiags::default());
+}
+
+/// OnChangeMemoryHardLimitPercent's checks: the warnings to raise, and
+/// whether the value is accepted.
+fn memory_hard_limit_percent_check(v: &[u8]) -> (Vec<String>, bool) {
+    let mut warnings = Vec::new();
+    if let Some(err) = crate::rfc1867::quantity_error(v) {
+        warnings.push(format!(
+            "Invalid \"memory_hard_limit_percent\" setting. {err}"
+        ));
+    }
+    let q = ini_parse_quantity(v);
+    if q < 100 && q != -1 {
+        warnings.push("memory_hard_limit_percent must be >= 100, or -1".to_string());
+        return (warnings, false);
+    }
+    (warnings, true)
+}
+
+/// The warnings raised while applying the startup (`-d`) ini values, once.
+pub fn take_startup_diagnostics() -> Vec<String> {
+    STARTUP_DIAGS.with(|d| std::mem::take(&mut d.borrow_mut().startup))
+}
+
+/// The warnings raised at request end when startup values are restored
+/// over runtime changes, once.
+pub fn take_shutdown_diagnostics() -> Vec<String> {
+    STARTUP_DIAGS.with(|d| {
+        let mut d = d.borrow_mut();
+        let changed = std::mem::take(&mut d.changed);
+        match &d.restore_warning {
+            Some(w) if changed => vec![w.clone()],
+            _ => Vec::new(),
+        }
+    })
+}
+
 pub(crate) fn reset_state() {
     INI.with(|m| m.borrow_mut().clear());
+    STARTUP_DIAGS.with(|d| *d.borrow_mut() = StartupDiags::default());
     TZ.with(|t| *t.borrow_mut() = None);
     rhp_values::fmt::reset_precision();
 }
@@ -197,6 +250,20 @@ pub(crate) fn ini_store(name: &[u8], v: Vec<u8>) {
 
 /// `-d name=value` at startup: no INI_USER / validator checks.
 pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
+    if name == b"memory_hard_limit_percent" && ini_entry(name).is_some() {
+        // Its on_modify handler runs at startup too: warnings are reported
+        // "in Unknown on line 0" and a refused value leaves it NULL.
+        let (warnings, ok) = memory_hard_limit_percent_check(v);
+        STARTUP_DIAGS.with(|d| {
+            let mut d = d.borrow_mut();
+            d.restore_warning = if ok { warnings.first().cloned() } else { None };
+            d.startup.extend(warnings);
+        });
+        if !ok {
+            INI.with(|m| m.borrow_mut().remove("memory_hard_limit_percent"));
+            return;
+        }
+    }
     if ini_entry(name).is_some() {
         ini_apply(name, Some(v));
         ini_store(name, v.to_vec());
@@ -251,6 +318,8 @@ pub(crate) fn c_atol(s: &[u8]) -> i64 {
 /// prefix, then an optional k/m/g suffix as the last character. Malformed
 /// input keeps the valid leading part (php warns and does the same).
 pub(crate) fn ini_parse_quantity(s: &[u8]) -> i64 {
+    // zend_ini_parse_quantity (signed), overflow wrapping included: php
+    // keeps the overflowed result "for backwards compatibility".
     let ws = |c: u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
     let mut a = 0;
     let mut b = s.len();
@@ -265,56 +334,63 @@ pub(crate) fn ini_parse_quantity(s: &[u8]) -> i64 {
         return 0;
     }
     let mut i = 0;
-    let neg = match t[0] {
-        b'-' => {
-            i = 1;
-            true
-        }
-        b'+' => {
-            i = 1;
-            false
-        }
-        _ => false,
-    };
-    let mut base = 10;
-    if t.get(i) == Some(&b'0') {
-        match t.get(i + 1).map(|c| c.to_ascii_lowercase()) {
-            Some(b'x') => base = 16,
-            Some(b'o') => base = 8,
-            Some(b'b') => base = 2,
-            _ => {}
-        }
-        if base != 10 {
-            i += 2;
-        }
+    let neg = t[0] == b'-';
+    if matches!(t[0], b'-' | b'+') {
+        i = 1;
     }
-    let start = i;
-    let mut n: i64 = 0;
-    while let Some(d) = t.get(i).and_then(|c| (*c as char).to_digit(base)) {
-        n = n.saturating_mul(base as i64).saturating_add(d as i64);
-        i += 1;
-    }
-    if i == start {
+    if !t.get(i).is_some_and(u8::is_ascii_digit) {
         return 0;
     }
-    let shift = match t.last().map(|c| c.to_ascii_lowercase()) {
-        Some(b'k') if i < t.len() => 10,
-        Some(b'm') if i < t.len() => 20,
-        Some(b'g') if i < t.len() => 30,
-        _ => 0,
-    };
-    let v = if shift > 0 {
-        n.checked_shl(shift)
-            .filter(|r| r >> shift == n)
-            .unwrap_or(i64::MAX)
-    } else {
-        n
-    };
-    if neg {
-        v.saturating_neg()
-    } else {
-        v
+    // ZEND_STRTOUL's base 0: octal after a leading 0, unless a 0x/0o/0b
+    // prefix picks the base.
+    let mut radix = if t[i] == b'0' { 8 } else { 10 };
+    if t[i] == b'0' && t.get(i + 1).is_some_and(|c| !c.is_ascii_digit()) {
+        match t[i + 1] {
+            b'g' | b'G' | b'm' | b'M' | b'k' | b'K' => {}
+            b'x' | b'X' => radix = 16,
+            b'o' | b'O' => radix = 8,
+            b'b' | b'B' => radix = 2,
+            _ => return 0,
+        }
+        if radix != 8 || matches!(t[i + 1], b'o' | b'O') {
+            i += 2;
+            if !t.get(i).is_some_and(|c| (*c as char).is_digit(radix)) {
+                return 0;
+            }
+        }
     }
+    let mut v: u64 = 0;
+    let mut overflow = false;
+    while let Some(d) = t.get(i).and_then(|c| (*c as char).to_digit(radix)) {
+        match v
+            .checked_mul(u64::from(radix))
+            .and_then(|x| x.checked_add(u64::from(d)))
+        {
+            Some(x) => v = x,
+            None => overflow = true,
+        }
+        i += 1;
+    }
+    if overflow {
+        v = u64::MAX; // strtoul's ERANGE result
+    } else if neg && v == 1 << 63 {
+        // PHP_INT_MIN: 0 - v has the same bits.
+    } else if (v as i64) >= 0 && neg {
+        v = v.wrapping_neg();
+    }
+    while i < t.len() && ws(t[i]) {
+        i += 1;
+    }
+    if i == t.len() {
+        return v as i64;
+    }
+    let factor: u64 = match t[t.len() - 1] {
+        b'g' | b'G' => 1 << 30,
+        b'm' | b'M' => 1 << 20,
+        b'k' | b'K' => 1 << 10,
+        _ => return v as i64,
+    };
+    v.wrapping_mul(factor) as i64
 }
 
 /// Process memory the engine reports (`memory_get_usage(true)`); a
@@ -387,6 +463,18 @@ fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value
     };
     if e.3 & PHP_INI_USER == 0 {
         return Ok(Value::Bool(false));
+    }
+    if name == b"memory_hard_limit_percent" {
+        // OnChangeMemoryHardLimitPercent: zend_ini_parse_quantity_warn, then
+        // the range check. rhp has no hard limit to apply the value to.
+        let (warnings, ok) = memory_hard_limit_percent_check(&newv);
+        for w in &warnings {
+            host.emit_diagnostic(crate::E_WARNING, w)?;
+        }
+        if !ok {
+            return Ok(Value::Bool(false));
+        }
+        STARTUP_DIAGS.with(|d| d.borrow_mut().changed = true);
     }
     if ini_validate(&name, &newv).is_err() {
         // php: the directive's handler warns (where it does) and refuses.

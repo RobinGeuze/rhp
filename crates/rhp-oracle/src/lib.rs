@@ -65,6 +65,10 @@ impl Host for Interp<'_> {
         self.bc_scale
     }
 
+    fn get_const(&self, name: &[u8]) -> Option<Value> {
+        self.constants.get(name).cloned()
+    }
+
     fn set_bc_scale(&mut self, scale: i64) {
         self.bc_scale = scale;
     }

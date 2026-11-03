@@ -1,7 +1,7 @@
 # rhp bytecode — authoritative build spec
 
 Status: **build spec (implement from this).** Target semantics: PHP 8.5 (ground
-truth: local `php` 8.5.8). This is the single source of truth for the
+truth: the reference `php`, see `crates/rhp-builtins/src/version.rs`; probed on 8.5.8). This is the single source of truth for the
 register-based bytecode compiler + VM that becomes rhp's primary execution
 core. Where the four research docs disagree, **this doc wins**; their resolved
 decisions are folded in and the losing alternatives are noted inline.

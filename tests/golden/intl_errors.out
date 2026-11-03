@@ -23,11 +23,11 @@ NULL
 int(1)
 string(125) "normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long.: U_ILLEGAL_ARGUMENT_ERROR"
 grapheme_strpos: [false,false,false,false,0] 1 normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long.: U_ILLEGAL_ARGUMENT_ERROR
-grapheme_stripos: [false,false,false,false,0] 1 grapheme_stripos(): Error creating search object: U_ILLEGAL_ARGUMENT_ERROR
-grapheme_strrpos: [false,false,false,false,0] 1 grapheme_strrpos(): Error creating search object: U_ILLEGAL_ARGUMENT_ERROR
-grapheme_strripos: [false,false,false,false,0] 1 grapheme_strripos(): Error creating search object: U_ILLEGAL_ARGUMENT_ERROR
-grapheme_strstr: [false,false,false,false,""] 1 grapheme_strripos(): Error creating search object: U_ILLEGAL_ARGUMENT_ERROR
-grapheme_stristr: [false,false,false,false,""] 1 grapheme_stristr(): Error creating search object: U_ILLEGAL_ARGUMENT_ERROR
+grapheme_stripos: [false,false,false,false,0] 1 normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long.: U_ILLEGAL_ARGUMENT_ERROR
+grapheme_strrpos: [false,false,false,false,0] 1 normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long.: U_ILLEGAL_ARGUMENT_ERROR
+grapheme_strripos: [false,false,false,false,0] 1 normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long.: U_ILLEGAL_ARGUMENT_ERROR
+grapheme_strstr: [false,false,false,false,""] 1 normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long.: U_ILLEGAL_ARGUMENT_ERROR
+grapheme_stristr: [false,false,false,false,""] 1 normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long.: U_ILLEGAL_ARGUMENT_ERROR
 int(2)
 int(1)
 bool(false)

@@ -193,7 +193,7 @@ fn fn_lcg_value(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_zend_version(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str("4.5.8"))
+    Ok(Value::str(crate::version::ZEND_VERSION))
 }
 
 fn fn_get_cfg_var(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

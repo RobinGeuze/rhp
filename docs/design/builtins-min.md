@@ -1,6 +1,6 @@
 # Minimal Builtins for rhp Phases 1–4
 
-Status: design. Target semantics: **PHP 8.5** (ground truth: local `php` = 8.5.8).
+Status: design. Target semantics: **PHP 8.5** (ground truth: the reference `php`, see `crates/rhp-builtins/src/version.rs`; written against 8.5.8).
 All behavior in this document was verified by running the `php` binary; representative
 runs are reproduced inline.
 

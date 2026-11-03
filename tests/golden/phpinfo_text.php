@@ -9,7 +9,7 @@ $s = ob_get_clean();
 var_dump((bool) preg_match('{Configure Command(?: *</td><td class="v">| *=> *)(.*?)(?:</td>|$)}m', $s, $m));
 var_dump(str_contains($m[1], '--enable-sigchild'));
 $lines = explode("\n", $s);
-var_dump($lines[0], $lines[1], $lines[2]);
+var_dump($lines[0], $lines[1] === 'PHP Version => ' . PHP_VERSION, $lines[2]);
 var_dump(str_contains($s, "\nPHP Integer Size => 64 bits\n"), str_contains($s, "\nServer API => Command Line Interface\n"));
 var_dump(str_contains($s, "\nThis program makes use of the Zend Scripting Language Engine:\n"));
 var_dump(preg_match('/^System => (\S+) /m', $s, $m), $m[1] === PHP_OS, php_uname('s') === PHP_OS);

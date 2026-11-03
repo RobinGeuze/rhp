@@ -1,0 +1,13 @@
+isset($o[1]): Error: Cannot use object of type P as array
+empty($o[1]): Error: Cannot use object of type P as array
+isset($o["a"]): Error: Cannot use object of type P as array
+isset($o[1][2]): Error: Cannot use object of type P as array
+$o[1] ?? 5: Error: Cannot use object of type P as array
+isset($o->a[0]): bool(true)
+isset($c[0]): bool(false)
+closure: Error: Cannot use object of type Closure as array
+arrobj: bool(true)
+nested: bool(false)
+gen: Error: Cannot use object of type Generator as array
+Cannot use object of type P as array
+Cannot use object of type P as array

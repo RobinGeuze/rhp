@@ -5,7 +5,7 @@
 //!   The php CLI options composer and friends pass when re-invoking
 //!   `PHP_BINARY` are accepted: `-n`, `-q`, `-H`, `-e`, `-c <path>`
 //!   (ignored), `-d key[=value]` (ini settings), `-f <file>`, `-r <code>`,
-//!   and `--` to end option parsing.
+//!   `-v` / `--version`, and `--` to end option parsing.
 //! - `rhp --cgi [php-cgi options] [script.php [args...]]`, or the binary
 //!   invoked as `php-cgi`: php-cgi (request from the CGI environment,
 //!   `Status:` + headers + body on stdout).
@@ -67,6 +67,11 @@ fn main() -> ExitCode {
                 break;
             }
             "-n" | "-q" | "-H" | "-e" => i += 1,
+            // php prints the banner and exits as soon as getopt reaches -v.
+            "-v" | "--version" => {
+                print!("{}", rhp_sapi::version_banner("cli"));
+                return ExitCode::SUCCESS;
+            }
             "-d" => {
                 if let Some(kv) = args.get(i + 1) {
                     add_ini(kv);

@@ -80,9 +80,9 @@ pub(crate) fn loaded_ext(name: &[u8]) -> Option<&'static str> {
 /// `phpversion($ext)`: most bundled extensions report PHP_VERSION.
 fn ext_version(ext: &str) -> &'static str {
     match ext {
-        "dom" => "20031129",
-        "zip" => "1.22.8",
-        _ => "8.5.8",
+        "dom" => crate::version::EXT_DOM,
+        "zip" => crate::version::EXT_ZIP,
+        _ => crate::version::PHP_VERSION,
     }
 }
 
@@ -126,7 +126,7 @@ fn fn_phpversion(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 None => Ok(Value::Bool(false)),
             }
         }
-        _ => Ok(Value::str("8.5.8")),
+        _ => Ok(Value::str(crate::version::PHP_VERSION)),
     }
 }
 

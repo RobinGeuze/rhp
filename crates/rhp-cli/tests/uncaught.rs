@@ -237,3 +237,21 @@ fn parse_errors_main_eval_and_include() {
     );
     assert_same(&inc);
 }
+
+/// An arity error of a prelude-implemented builtin is reported at the
+/// caller's file and line, like php's internal functions.
+#[test]
+fn uncaught_prelude_arity_error_at_caller() {
+    if !php_available() {
+        return;
+    }
+    let dir = case_dir("prelude_arity");
+    let main = dir.join("main.php");
+    write(
+        &main,
+        "<?php\nfunction f() {\n    return new ArrayObject([], 0, 'ArrayIterator', 5);\n}\ntry {\n    iterator_to_array();\n} catch (ArgumentCountError $e) {\n    echo basename($e->getFile()), ':', $e->getLine(), \"\\n\";\n}\nf();\n",
+    );
+    let out = assert_same(&main);
+    assert!(out.contains("main.php:6"), "{out}");
+    assert!(out.contains("main.php on line 3"), "{out}");
+}

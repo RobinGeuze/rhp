@@ -21,7 +21,7 @@
 use std::io::Write;
 
 use rhp_compiler::{compile_include, compile_with_source};
-use rhp_frontend::Arena;
+use rhp_frontend::{Arena, Parsed};
 use rhp_values::{Thrown, Value};
 use rhp_vm::{IncludeError, Vm};
 
@@ -104,12 +104,19 @@ impl Sapi for CliSapi {
     }
 }
 
+/// The parse error php raises for `src`: its own grammar and scanner errors
+/// (`rhp_builtins::zend`). For code php parses but mago-syntax does not,
+/// mago's error.
+pub fn parse_error(parsed: &Parsed, src: &[u8]) -> Option<(String, u32)> {
+    rhp_builtins::zend::syntax_error(src).or_else(|| parsed.parse_error())
+}
+
 /// The includer every SAPI installs: parse + compile an included file.
 fn install_includer(vm: &mut Vm) {
     vm.set_includer(|file: &str, src: &[u8]| {
         let arena = Arena::new();
         let parsed = arena.parse(file.as_bytes(), src);
-        if let Some((message, line)) = parsed.parse_error() {
+        if let Some((message, line)) = parse_error(&parsed, src) {
             return Err(IncludeError::Parse { message, line });
         }
         compile_include(parsed.program(), src, file).map_err(include_error)
@@ -192,7 +199,7 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
 
     let arena = Arena::new();
     let parsed = arena.parse(file.as_bytes(), &source);
-    if let Some((message, line)) = parsed.parse_error() {
+    if let Some((message, line)) = parse_error(&parsed, &source) {
         vm.report_parse_error(&message, &file, line);
         vm.finish_request();
         return Outcome::Exit(255);

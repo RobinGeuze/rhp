@@ -92,6 +92,8 @@ struct Lexer<'a> {
     state: St,
     stack: Vec<St>,
     mode: i64,
+    /// SCNG(lineno), counted where php's scanner counts it.
+    lineno: u32,
 }
 
 fn is_label_char(c: u8) -> bool {
@@ -579,6 +581,7 @@ impl<'a> Lexer<'a> {
                 2 => return Tok::Raw(IV::s(&text[1..text.len() - 1])),
                 3 => {
                     self.state = Initial;
+                    self.lineno += 1;
                     return Tok::Ch(b']');
                 }
                 4 => {
@@ -688,6 +691,7 @@ impl<'a> Lexer<'a> {
                 16 => return Tok::Raw(IV::s(text)),
                 17 => {
                     self.state = Initial;
+                    self.lineno += 1;
                     return Tok::Eol;
                 }
                 18 => return Tok::Constant(IV::s(text)),
@@ -741,13 +745,14 @@ impl<'a> Lexer<'a> {
                         break;
                     }
                     self.pos = s;
+                    self.lineno += count_newlines(&self.s[i..s]);
                     return Tok::Quoted(IV::s(&escape_string(&self.s[i..s])));
                 }
                 29 => return Tok::Ws(IV::s(text)),
                 30 => continue,
-                31 => return Tok::Eol,
-                32 => {
+                31 | 32 => {
                     self.state = Initial;
+                    self.lineno += 1;
                     return Tok::Eol;
                 }
                 33 => {
@@ -758,6 +763,17 @@ impl<'a> Lexer<'a> {
             }
         }
     }
+}
+
+/// Newlines as zend_ini_escape_string counts them (`\n`, lone `\r`).
+fn count_newlines(t: &[u8]) -> u32 {
+    let mut n = 0;
+    for (i, &c) in t.iter().enumerate() {
+        if c == b'\n' || (c == b'\r' && t.get(i + 1) != Some(&b'\n')) {
+            n += 1;
+        }
+    }
+    n
 }
 
 fn trim_ws(mut t: &[u8]) -> &[u8] {
@@ -1189,20 +1205,84 @@ fn strtoul(s: &[u8]) -> i64 {
     (if neg { n.wrapping_neg() } else { n }) as i64
 }
 
-/// Parse ini text; `None` = syntax error (php returns false).
-fn parse_ini(host: &dyn Host, src: &[u8], sections: bool, mode: i64) -> Option<PhpArray> {
-    // The scanner sees a C string.
-    let src = match src.iter().position(|&b| b == 0) {
+/// The scanner sees a C string.
+fn c_string(src: &[u8]) -> &[u8] {
+    match src.iter().position(|&b| b == 0) {
         Some(p) => &src[..p],
         None => src,
-    };
-    let mut lx = Lexer {
-        s: src,
+    }
+}
+
+fn lexer(src: &[u8], mode: i64) -> Lexer<'_> {
+    Lexer {
+        s: c_string(src),
         pos: 0,
         state: St::Initial,
         stack: Vec::new(),
         mode,
+        lineno: 1,
+    }
+}
+
+/// zend_ini_parser.y's verdict on `src`: its syntax error message and line
+/// (zend_ini_scanner_get_lineno) when the grammar rejects it.
+fn syntax_error(src: &[u8], mode: i64) -> Option<(Vec<u8>, u32)> {
+    use crate::zend::bison::{self, Outcome};
+    use crate::zend::ini_parser_tables::{self as t, TABLES};
+    let mut lx = lexer(src, mode);
+    let outcome = TABLES.parse(|| match lx.next() {
+        Tok::End => 0,
+        Tok::Section => t::TC_SECTION,
+        Tok::Raw(_) => t::TC_RAW,
+        Tok::Constant(_) => t::TC_CONSTANT,
+        Tok::Number(_) => t::TC_NUMBER,
+        Tok::Str(_) => t::TC_STRING,
+        Tok::Ws(_) => t::TC_WHITESPACE,
+        Tok::Label(_) => t::TC_LABEL,
+        Tok::Offset(_) => t::TC_OFFSET,
+        Tok::DollarCurly => t::TC_DOLLAR_CURLY,
+        Tok::Varname(_) => t::TC_VARNAME,
+        Tok::Quoted(_) => t::TC_QUOTED_STRING,
+        Tok::Fallback => t::TC_FALLBACK,
+        Tok::BoolTrue(_) => t::BOOL_TRUE,
+        Tok::BoolFalse(_) => t::BOOL_FALSE,
+        Tok::Null(_) => t::NULL_NULL,
+        Tok::Eol => t::END_OF_LINE,
+        Tok::Ch(c) => c as i32,
+    });
+    match outcome {
+        Outcome::Accept => None,
+        Outcome::MemoryExhausted => Some((b"memory exhausted".to_vec(), lx.lineno)),
+        Outcome::SyntaxError { args } => Some((
+            bison::syntax_error_message(&TABLES, &args, |n, _| bison::default_tnamerr(n)),
+            lx.lineno,
+        )),
+    }
+}
+
+/// php's ini_error: the syntax error as an E_WARNING naming the file
+/// ("Unknown" for a string).
+fn report_syntax_error(
+    host: &mut dyn Host,
+    src: &[u8],
+    mode: i64,
+    file: &[u8],
+) -> Result<bool, Thrown> {
+    let Some((msg, line)) = syntax_error(src, mode) else {
+        return Ok(false);
     };
+    let mut m = String::from_utf8_lossy(&msg).into_owned();
+    m.push_str(&format!(
+        " in {} on line {line}\n",
+        String::from_utf8_lossy(file)
+    ));
+    host.emit_diagnostic(crate::E_WARNING, &m)?;
+    Ok(true)
+}
+
+/// Parse ini text; `None` = syntax error (php returns false).
+fn parse_ini(host: &dyn Host, src: &[u8], sections: bool, mode: i64) -> Option<PhpArray> {
+    let mut lx = lexer(src, mode);
     let first = lx.next();
     let mut p = Parser {
         lx,
@@ -1265,6 +1345,9 @@ fn fn_parse_ini_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
         // php: Warning "Invalid scanner mode"
         return Ok(Value::Bool(false));
     }
+    if report_syntax_error(host, &s, mode, b"Unknown")? {
+        return Ok(Value::Bool(false));
+    }
     Ok(match parse_ini(host, &s, sections, mode) {
         Some(a) => Value::Array(a),
         None => Value::Bool(false),
@@ -1291,6 +1374,9 @@ fn fn_parse_ini_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
         return Ok(Value::Bool(false));
     };
     if !mode_ok(mode) {
+        return Ok(Value::Bool(false));
+    }
+    if report_syntax_error(host, &src, mode, &path)? {
         return Ok(Value::Bool(false));
     }
     Ok(match parse_ini(host, &src, sections, mode) {

@@ -1424,7 +1424,6 @@ Zend/tests/magic_methods/bug69427.phpt
 Zend/tests/magic_methods/bug70223.phpt
 Zend/tests/magic_methods/bug70967.phpt
 Zend/tests/magic_methods/bug71359.phpt
-Zend/tests/magic_methods/bug71818.phpt
 Zend/tests/magic_methods/bug72177.phpt
 Zend/tests/magic_methods/bug72177_2.phpt
 Zend/tests/magic_methods/bug72813.phpt

@@ -6418,7 +6418,7 @@ impl Vm {
                     self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Shr))
                 }
                 Instr::Concat { dst, a, b } => {
-                    if self.concat_in_place(top, proto.num_cvs, dst, a, b) {
+                    if self.concat_in_place(top, &proto.code, pc, proto.num_cvs, dst, a, b) {
                         continue;
                     }
                     let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
@@ -11411,9 +11411,13 @@ fn assign_string_offset(
         );
     }
     if at >= s.len() {
-        // zend_string_realloc to the new length: past php's hard limit the
-        // VM exits instead.
-        if !rhp_values::mem::within_hard_limit(rhp_values::mem::zstr_size(at + 1)) {
+        // zend_string_extend to the new length (a realloc when unshared):
+        // past php's hard limit the VM exits instead.
+        let old = match s.get_mut() {
+            Some(b) => rhp_values::mem::zstr_size(b.len()),
+            None => 0,
+        };
+        if !rhp_values::mem::realloc_check(old, rhp_values::mem::zstr_size(at + 1)) {
             return Ok(());
         }
         let out = s.make_mut();

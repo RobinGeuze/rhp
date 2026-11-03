@@ -10,8 +10,8 @@
 
 use rhp_builtins::Host;
 use rhp_bytecode::{Instr, Reg};
-use rhp_values::mem::Oom;
-use rhp_values::{PhpArray, Thrown, Value};
+use rhp_values::mem::{self, Oom};
+use rhp_values::{PhpArray, PhpStr, Thrown, Value};
 
 use crate::{ini_bool, Vm};
 
@@ -131,25 +131,33 @@ impl Vm {
         Thrown::Exit(255)
     }
 
-    /// php's CONCAT on a temporary string it holds the only reference to:
-    /// extend it to exactly the new length instead of copying both operands
-    /// (`a . b . c` then needs one result buffer, as in php). `a` must be a
-    /// temporary (dead after this instruction) or the destination itself.
+    /// php's CONCAT / ASSIGN_OP on a string it holds the only reference
+    /// to: extend it instead of copying both operands (`a . b . c` needs one
+    /// result buffer, and `$s .= $x` appends, as in php). `a` is a temporary
+    /// (dead after this instruction), the destination itself, or a variable
+    /// that the next instruction (`code[pc + 1]`) assigns the result to.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn concat_in_place(
         &mut self,
         top: usize,
+        code: &[Instr],
+        pc: usize,
         num_cvs: u16,
         dst: Reg,
         a: Reg,
         b: Reg,
     ) -> bool {
-        if a == b || (a != dst && a < num_cvs) {
+        if a != dst && a < num_cvs {
+            let assigns_back = matches!(code.get(pc + 1),
+                Some(Instr::Assign { cv, src }) if *cv == a && *src == dst);
+            return assigns_back && dst != b && self.concat_assign_in_place(top, dst, a, b);
+        }
+        if a == b {
             return false;
         }
         let regs = &mut self.stack[top].regs;
-        let tail = match &regs[b as usize] {
-            Value::Str(s) => s.clone(),
-            _ => return false,
+        let Some(tail) = str_operand(&regs[b as usize]) else {
+            return false;
         };
         let Value::Str(head) = &mut regs[a as usize] else {
             return false;
@@ -157,11 +165,42 @@ impl Vm {
         let Some(buf) = head.get_mut() else {
             return false;
         };
-        buf.reserve_exact(tail.len());
-        buf.extend_from_slice(tail.as_bytes());
+        append(buf, Some(tail.as_bytes()));
         let v = std::mem::replace(&mut regs[a as usize], Value::Null);
         self.reg_set(top, dst, v);
         true
+    }
+
+    /// `$cv .= $x`: append to the variable's string (through a reference
+    /// too), then leave the result in `dst` for the Assign that follows.
+    fn concat_assign_in_place(&mut self, top: usize, dst: Reg, a: Reg, b: Reg) -> bool {
+        // `dst` may still hold the previous `.=`'s result (the same string).
+        self.reg_set(top, dst, Value::Null);
+        let regs = &mut self.stack[top].regs;
+        let tail = if a == b {
+            None
+        } else {
+            match str_operand(&regs[b as usize]) {
+                Some(s) => Some(s),
+                None => return false,
+            }
+        };
+        let tail = tail.as_ref().map(|t| t.as_bytes());
+        let result = match &mut regs[a as usize] {
+            Value::Ref(rc) => {
+                let rc = rc.clone();
+                let mut cell = rc.borrow_mut();
+                append_unique(&mut cell, tail)
+            }
+            v => append_unique(v, tail),
+        };
+        match result {
+            Some(s) => {
+                regs[dst as usize] = Value::Str(s);
+                true
+            }
+            None => false,
+        }
     }
 
     /// zend_mm_hard_limit_error: php-cli prints the message to stderr and
@@ -202,5 +241,45 @@ impl Vm {
     pub(crate) fn oom_reset(&mut self) {
         self.delayed_oom = None;
         self.mem.reset_oom();
+    }
+}
+
+/// A register's string, also through a reference (a global variable).
+fn str_operand(v: &Value) -> Option<PhpStr> {
+    match v {
+        Value::Str(s) => Some(s.clone()),
+        Value::Ref(rc) => match &*rc.borrow() {
+            Value::Str(s) => Some(s.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Append `tail` (`None`: the string itself) to a string only `v` holds;
+/// the new value, or `None` when `v` is not such a string.
+fn append_unique(v: &mut Value, tail: Option<&[u8]>) -> Option<PhpStr> {
+    let Value::Str(s) = v else {
+        return None;
+    };
+    append(s.get_mut()?, tail);
+    Some(s.clone())
+}
+
+/// php's zend_string_extend: grow to a block of the new length (it is
+/// counted as such anyway), checking the limit with php's string sizes.
+/// Past the hard limit nothing is appended: the VM stops at its next check.
+fn append(buf: &mut Vec<u8>, tail: Option<&[u8]>) {
+    let old = buf.len();
+    let new = old + tail.map_or(old, <[u8]>::len);
+    if new > buf.capacity() {
+        if !mem::realloc_check(mem::zstr_size(old), mem::zstr_size(new)) {
+            return;
+        }
+        buf.reserve_exact(mem::block_size(new) - old);
+    }
+    match tail {
+        Some(t) => buf.extend_from_slice(t),
+        None => buf.extend_from_within(..),
     }
 }

@@ -338,6 +338,8 @@ class DOMXPath {
     public function registerPhpFunctions(string|array|null $restrict = null): void {}
     public function registerPhpFunctionNS(string $namespaceURI, string $name, callable $callable): void {}
     public static function quote(string $str): string {
+        // php allocates the quoted string fallibly.
+        if (!__dom('reserve', strlen($str) + 2)) { return ''; }
         if (!str_contains($str, "'")) { return "'" . $str . "'"; }
         if (!str_contains($str, '"')) { return '"' . $str . '"'; }
         // php's concat() trick: alternate quote styles per run

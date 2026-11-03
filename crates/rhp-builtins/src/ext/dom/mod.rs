@@ -530,6 +530,9 @@ fn fn_dom(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             }
         }
         "get" => get_prop(host, d, n, &bytes(args, 3)),
+        // (op, len): a fallible zend_string_alloc, for prelude methods php
+        // allocates that way (false past memory_limit).
+        "reserve" => Ok(Value::Bool(rhp_values::mem::reserve_str(d))),
         "dynprop" => {
             // (op, class, name)
             let class = String::from_utf8_lossy(&bytes(args, 1)).into_owned();

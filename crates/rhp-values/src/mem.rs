@@ -17,7 +17,10 @@
 //! it, and the VM raises php's "Allowed memory size of N bytes exhausted"
 //! fatal error at its next safe point, as php 8.5 delays it to the VM's next
 //! interrupt check. Builtins that know a large size up front call [`reserve`]
-//! first and refuse, as php's fallible allocations do.
+//! first and refuse, as php's fallible allocations do. Operations that
+//! allocate a size they know but can't refuse (concatenation) call
+//! [`alloc_check`] / [`realloc_check`]: they record the crossing with php's
+//! size, and stop at php's hard limit instead of allocating.
 //!
 //! Counting starts at [`begin_request`], so engine startup and the prelude
 //! don't count. A block freed by a thread other than the one that allocated
@@ -230,6 +233,29 @@ impl MemState {
         false
     }
 
+    /// zend_mm_check_limit for a non-fallible allocation: past the hard
+    /// limit, records that (php exits there) and returns `false`; past the
+    /// limit, records the crossing and returns `true`.
+    fn check_hard_limit(&self, add: usize) -> bool {
+        let (limit, real) = (self.limit.get(), self.real());
+        if limit >= real && add <= limit - real {
+            return true;
+        }
+        let hard = self.hard_limit();
+        if real > hard || add > hard - real {
+            // Recorded even after another out-of-memory error.
+            self.pending.set(Some(Oom::Hard {
+                limit: hard,
+                tried: add,
+            }));
+            self.attention.set(true);
+            self.latched.set(true);
+            return false;
+        }
+        self.record(Oom::Limit { limit, tried: add });
+        true
+    }
+
     fn record(&self, oom: Oom) {
         if !self.latched.get() {
             self.latched.set(true);
@@ -288,6 +314,31 @@ impl MemState {
         } else {
             self.huge.set(self.huge.get().saturating_sub(r));
         }
+    }
+
+    #[inline]
+    fn on_realloc(&self, old: usize, new: usize) {
+        if old > MAX_LARGE && new > MAX_LARGE {
+            self.resize_huge(rounded(old), rounded(new));
+        } else {
+            self.on_free(old);
+            self.on_alloc(new);
+        }
+    }
+
+    /// zend_mm_realloc_huge: growing a huge block checks the limit for the
+    /// growth only.
+    #[cold]
+    #[inline(never)]
+    fn resize_huge(&self, old: usize, new: usize) {
+        if new <= old {
+            self.huge.set(self.huge.get().saturating_sub(old - new));
+            return;
+        }
+        self.check_limit(new - old);
+        self.huge.set(self.huge.get().saturating_add(new - old));
+        self.real_peak.set(self.real_peak.get().max(self.real()));
+        self.peak.set(self.peak.get().max(self.size()));
     }
 
     /// Whether a limit crossing waits for the VM or is being reported.
@@ -383,25 +434,44 @@ pub fn set_hard_limit_percent(percent: i64) -> bool {
     true
 }
 
-/// Whether a non-fallible allocation of `size` bytes stays within php's
-/// hard limit, past which php prints "Hard memory limit of N bytes
-/// exhausted" and exits. If not, that is recorded for the VM (even after
-/// another out-of-memory error) and the caller must not allocate. For the
-/// few operations that allocate a size the script picks (a far string
-/// offset).
-pub fn within_hard_limit(size: usize) -> bool {
+/// php's non-fallible allocation of a `size`-byte block (emalloc), checked
+/// before allocating: crossing `memory_limit` is recorded with php's size
+/// (the allocator would record the smaller Rust block). `false` past php's
+/// hard limit, where php prints "Hard memory limit of N bytes exhausted"
+/// and exits: that is recorded for the VM, and the caller must not
+/// allocate. Small and large blocks are left to the allocator.
+#[inline]
+pub fn alloc_check(size: usize) -> bool {
+    size <= MAX_LARGE || huge_check(0, size)
+}
+
+/// [`alloc_check`] for growing an `old`-byte block to `new` bytes
+/// (erealloc): when both are huge blocks, php checks only the growth.
+#[inline]
+pub fn realloc_check(old: usize, new: usize) -> bool {
+    new <= MAX_LARGE || new <= old || huge_check(old, new)
+}
+
+#[cold]
+#[inline(never)]
+fn huge_check(old: usize, new: usize) -> bool {
     let s = state();
-    if !s.active.get() || size <= MAX_LARGE {
+    if !s.active.get() {
         return true;
     }
-    let (limit, real, tried) = (s.hard_limit(), s.real(), rounded(size));
-    if real <= limit && tried <= limit - real {
-        return true;
-    }
-    s.pending.set(Some(Oom::Hard { limit, tried }));
-    s.attention.set(true);
-    s.latched.set(true);
-    false
+    let add = if old > MAX_LARGE {
+        rounded(new).saturating_sub(rounded(old))
+    } else {
+        rounded(new)
+    };
+    add == 0 || s.check_hard_limit(add)
+}
+
+/// The space zend_mm gives a block of `size` bytes (what it is counted
+/// as): a buffer may grow within it without another allocation.
+#[inline]
+pub fn block_size(size: usize) -> usize {
+    rounded(size)
 }
 
 /// Set the limit even below the current usage (a request's starting value).
@@ -574,10 +644,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let p = System.realloc(ptr, layout, new_size);
         if !p.is_null() {
-            Self::count(|s| {
-                s.on_free(layout.size());
-                s.on_alloc(new_size);
-            });
+            Self::count(|s| s.on_realloc(layout.size(), new_size));
         }
         p
     }
@@ -665,6 +732,46 @@ mod tests {
                 })
             );
             assert_eq!(zstr_size(3145728), 3145760);
+            end_request();
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn huge_growth_and_hard_limit() {
+        std::thread::spawn(|| {
+            const M: usize = 1 << 20;
+            begin_request();
+            force_limit(16 * M);
+            let s = state();
+            // Growing a huge block checks and counts the growth only.
+            s.on_alloc(8 * M);
+            s.on_realloc(8 * M, 16 * M);
+            assert_eq!(
+                s.take_oom(),
+                Some(Oom::Limit {
+                    limit: 16 * M,
+                    tried: 8 * M
+                })
+            );
+            assert_eq!(usage(true), CHUNK_SIZE + 16 * M);
+            s.on_realloc(16 * M, 4 * M);
+            assert_eq!(usage(true), CHUNK_SIZE + 4 * M);
+            s.reset_oom();
+            // Below the hard limit (twice the limit) a non-fallible
+            // allocation goes ahead; past it, it must not.
+            assert!(alloc_check(12 * M));
+            assert!(s.take_oom().is_some());
+            assert!(!realloc_check(4 * M, 40 * M));
+            assert_eq!(
+                s.take_oom(),
+                Some(Oom::Hard {
+                    limit: 32 * M,
+                    tried: 36 * M
+                })
+            );
+            assert!(alloc_check(MAX_LARGE));
             end_request();
         })
         .join()

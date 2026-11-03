@@ -214,6 +214,6 @@ Tables php-src owns are generated, committed, and checked by
 
 | Generator | Source | Output | Checked |
 |---|---|---|---|
-| `html-tables` | php-src `ext/standard/html_tables/` (+ `html_tables.h` for HTML5 ties) | `rhp-builtins/src/html_tables.rs` | CI (php-src checkout) |
-| `parser` | the release tarball (`tools/php-dist.sha256`): Bison's `zend_language_parser.{c,h}`, `zend_ini_parser.{c,h}` | `ext/tokenizer/ids.rs`, `zend/*_parser_tables.rs` | CI (tarball by URL) |
-| `dumps` | the reference php: `tools/capture-ref-build.php tables` | `ini_table.rs`, `const_modules.rs` | `cargo test` on the reference host |
+| `html-tables` | php-src `ext/standard/html_tables/` (+ `html_tables.h` for HTML5 ties) | `rhp-builtins/src/html_tables.rs` | CI job `generated` (php-src checkout) |
+| `parser` | the release tarball (`tools/php-dist.sha256`): Bison's `zend_language_parser.{c,h}`, `zend_ini_parser.{c,h}`; the numbers of the grammar rules whose actions rhp runs | `ext/tokenizer/ids.rs`, `zend/*_parser_tables.rs` | CI job `generated` (tarball cached on the pin) |
+| `dumps` | the reference php: `tools/capture-ref-build.php tables`, plus constants gated on a newer library (`CONST_EXTRAS`) | `ini_table.rs`, `const_modules.rs` | `cargo test` on the reference host |

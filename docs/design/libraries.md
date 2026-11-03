@@ -206,3 +206,14 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
    returns what php's C returns.
 5. Add each file's licence, as its header states it, to the crate's
    `license` expression, its `NOTICE` and `THIRD-PARTY-NOTICES`.
+
+## Generated tables
+
+Tables php-src owns are generated, committed, and checked by
+`rhp-difftest gen <name> --check` (`crates/rhp-difftest/src/gen/`):
+
+| Generator | Source | Output | Checked |
+|---|---|---|---|
+| `html-tables` | php-src `ext/standard/html_tables/` (+ `html_tables.h` for HTML5 ties) | `rhp-builtins/src/html_tables.rs` | CI (php-src checkout) |
+| `parser` | the release tarball (`tools/php-dist.sha256`): Bison's `zend_language_parser.{c,h}`, `zend_ini_parser.{c,h}` | `ext/tokenizer/ids.rs`, `zend/*_parser_tables.rs` | CI (tarball by URL) |
+| `dumps` | the reference php: `tools/capture-ref-build.php tables` | `ini_table.rs`, `const_modules.rs` | `cargo test` on the reference host |

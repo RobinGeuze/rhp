@@ -123,6 +123,8 @@ jobs:
             /tests/
             /ext/*/tests/
             /sapi/*/tests/
+            /ext/standard/html_tables/
+            /ext/standard/html_tables.h
       - uses: ./.github/actions/setup-php
         with:
           php-version: '8.5'
@@ -131,6 +133,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release -p rhp-cli -p rhp-difftest
+      # Committed generated tables still match their sources: php-src's
+      # entity tables, and the release tarball's Bison output (pinned in
+      # tools/php-dist.sha256; the git tag has no Bison output).
+      - name: Generated tables are up to date
+        run: |
+          target/release/rhp-difftest gen html-tables --php-src php-src --check
+          name=$(awk '{print $2}' tools/php-dist.sha256)
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$name" "https://www.php.net/distributions/$name"
+          (cd "$RUNNER_TEMP" && sha256sum -c "$GITHUB_WORKSPACE/tools/php-dist.sha256")
+          dir=${name%.tar.xz}
+          tar -xJf "$RUNNER_TEMP/$name" -C "$RUNNER_TEMP" "$dir/Zend" "$dir/main/php_version.h"
+          target/release/rhp-difftest gen parser --php-dist "$RUNNER_TEMP/$dir" --check
       - name: Known-passing php-src tests still match
         run: >-
           target/release/rhp-difftest phpt --php-src php-src

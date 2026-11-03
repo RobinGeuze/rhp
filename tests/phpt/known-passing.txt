@@ -13,8 +13,16 @@ Zend/tests/ErrorException_construct.phpt
 Zend/tests/__debugInfo_reference.phpt
 Zend/tests/abstract-static.phpt
 Zend/tests/abstract_method_optional_params.phpt
+Zend/tests/access_modifiers/access_modifiers_001.phpt
+Zend/tests/access_modifiers/access_modifiers_002.phpt
+Zend/tests/access_modifiers/access_modifiers_003.phpt
+Zend/tests/access_modifiers/access_modifiers_004.phpt
+Zend/tests/access_modifiers/access_modifiers_005.phpt
+Zend/tests/access_modifiers/access_modifiers_006.phpt
+Zend/tests/access_modifiers/access_modifiers_007.phpt
 Zend/tests/access_modifiers/access_modifiers_011.phpt
 Zend/tests/access_modifiers/access_modifiers_012.phpt
+Zend/tests/access_modifiers/access_modifiers_013.phpt
 Zend/tests/add_001.phpt
 Zend/tests/add_004.phpt
 Zend/tests/add_005.phpt
@@ -88,6 +96,8 @@ Zend/tests/asymmetric_visibility/cpp_protected.phpt
 Zend/tests/asymmetric_visibility/decrease_scope_private_private.phpt
 Zend/tests/asymmetric_visibility/decrease_scope_protected_protected.phpt
 Zend/tests/asymmetric_visibility/dim_add.phpt
+Zend/tests/asymmetric_visibility/duplicate_modifier.phpt
+Zend/tests/asymmetric_visibility/duplicate_modifier_2.phpt
 Zend/tests/asymmetric_visibility/nested_write.phpt
 Zend/tests/asymmetric_visibility/override_protected_public.phpt
 Zend/tests/asymmetric_visibility/private.phpt
@@ -352,6 +362,7 @@ Zend/tests/bug74546.phpt
 Zend/tests/bug74603.phpt
 Zend/tests/bug74810.phpt
 Zend/tests/bug75079.phpt
+Zend/tests/bug75218.phpt
 Zend/tests/bug75252.phpt
 Zend/tests/bug75474.phpt
 Zend/tests/bug76383.phpt
@@ -565,6 +576,7 @@ Zend/tests/constants/gh10709.phpt
 Zend/tests/constants/halt_compiler/bug54804.phpt
 Zend/tests/constants/halt_compiler/bug77738.phpt
 Zend/tests/constants/halt_compiler/halt01.phpt
+Zend/tests/constants/halt_compiler/halt03.phpt
 Zend/tests/constants/halt_compiler/halt_compiler5.phpt
 Zend/tests/constants/line_const_in_array.phpt
 Zend/tests/constants/magic_const_in_global_scope.phpt
@@ -584,6 +596,7 @@ Zend/tests/constexpr/new_dynamic_class_name.phpt
 Zend/tests/constexpr/new_invalid_operation_in_arg.phpt
 Zend/tests/constexpr/new_static.phpt
 Zend/tests/ctor_promotion/bug79897.phpt
+Zend/tests/ctor_promotion/ctor_promotion_additional_modifiers.phpt
 Zend/tests/ctor_promotion/ctor_promotion_attributes.phpt
 Zend/tests/ctor_promotion/ctor_promotion_basic.phpt
 Zend/tests/ctor_promotion/ctor_promotion_final.phpt
@@ -703,6 +716,8 @@ Zend/tests/errmsg/bug43344_6.phpt
 Zend/tests/errmsg/bug43344_7.phpt
 Zend/tests/errmsg/bug43344_8.phpt
 Zend/tests/errmsg/bug43344_9.phpt
+Zend/tests/errmsg/errmsg_009.phpt
+Zend/tests/errmsg/errmsg_010.phpt
 Zend/tests/errmsg/errmsg_024.phpt
 Zend/tests/errmsg/errmsg_040.phpt
 Zend/tests/errmsg/errmsg_044.phpt
@@ -1671,6 +1686,7 @@ Zend/tests/prop_const_expr/static_property_initializer.phpt
 Zend/tests/property_access_errors_for_guarded_properties.phpt
 Zend/tests/property_exists.phpt
 Zend/tests/property_guard_hash_val.phpt
+Zend/tests/property_hooks/abstract_prop_final.phpt
 Zend/tests/property_hooks/final_prop_promoted_5.phpt
 Zend/tests/property_hooks/get_by_ref_implemented_by_plain.phpt
 Zend/tests/property_hooks/gh15438_2.phpt
@@ -1678,9 +1694,15 @@ Zend/tests/property_hooks/gh19548.phpt
 Zend/tests/property_hooks/gh19548_002.phpt
 Zend/tests/property_hooks/interface_get_only.phpt
 Zend/tests/property_hooks/interface_get_only_readonly.phpt
+Zend/tests/property_hooks/invalid_hook_visibility.phpt
+Zend/tests/property_hooks/invalid_static.phpt
 Zend/tests/prototype_range.phpt
 Zend/tests/qm_assign_ref_unwrap_leak.phpt
+Zend/tests/readonly_classes/gh10377_2.phpt
+Zend/tests/readonly_classes/gh10377_3.phpt
+Zend/tests/readonly_classes/gh10377_4.phpt
 Zend/tests/readonly_classes/gh9285_success.phpt
+Zend/tests/readonly_classes/readonly_class_duplicated_modifier.phpt
 Zend/tests/readonly_classes/readonly_class_dynamic_property.phpt
 Zend/tests/readonly_classes/readonly_class_inheritance_success.phpt
 Zend/tests/readonly_classes/readonly_class_property1.phpt
@@ -1690,6 +1712,7 @@ Zend/tests/readonly_classes/readonly_interface.phpt
 Zend/tests/readonly_classes/readonly_trait.phpt
 Zend/tests/readonly_props/array_append_initialization.phpt
 Zend/tests/readonly_props/by_ref_foreach.phpt
+Zend/tests/readonly_props/multiple_modifiers.phpt
 Zend/tests/readonly_props/public_set_non_readonly.phpt
 Zend/tests/readonly_props/readonly_assign_no_sideeffect.phpt
 Zend/tests/readonly_props/readonly_clone_error1.phpt
@@ -1699,6 +1722,9 @@ Zend/tests/readonly_props/readonly_clone_error5.phpt
 Zend/tests/readonly_props/readonly_clone_error7.phpt
 Zend/tests/readonly_props/readonly_clone_success1.phpt
 Zend/tests/readonly_props/readonly_coercion_type_error.phpt
+Zend/tests/readonly_props/readonly_const.phpt
+Zend/tests/readonly_props/readonly_method.phpt
+Zend/tests/readonly_props/readonly_method_trait.phpt
 Zend/tests/readonly_props/readonly_trait_match.phpt
 Zend/tests/readonly_props/unset.phpt
 Zend/tests/readonly_props/visibility_change.phpt
@@ -1751,6 +1777,7 @@ Zend/tests/serialize/bug70187.phpt
 Zend/tests/serialize/bug70187_2.phpt
 Zend/tests/serialize/bug73900.phpt
 Zend/tests/serialize/bug76502.phpt
+Zend/tests/short_echo_as_identifier.phpt
 Zend/tests/static_global_scope.phpt
 Zend/tests/static_method_non_existing_class.phpt
 Zend/tests/static_variables/static_variable.phpt
@@ -2079,6 +2106,7 @@ Zend/tests/type_declarations/relative_types/self_on_closure_in_method.phpt
 Zend/tests/type_declarations/relative_types/static/fully_qualified_static.phpt
 Zend/tests/type_declarations/relative_types/static/namespace_relative_static.phpt
 Zend/tests/type_declarations/relative_types/static/static_type_in_final_class.phpt
+Zend/tests/type_declarations/relative_types/static/static_type_param.phpt
 Zend/tests/type_declarations/relative_types/static/static_type_property.phpt
 Zend/tests/type_declarations/relative_types/traits/trait_parent_type_in_class_no_parent1.phpt
 Zend/tests/type_declarations/relative_types/traits/trait_parent_type_in_class_no_parent2.phpt
@@ -6461,6 +6489,7 @@ tests/classes/__set__get_004.phpt
 tests/classes/__set__get_005.phpt
 tests/classes/__set_data_corrupt.phpt
 tests/classes/abstract_class.phpt
+tests/classes/abstract_final.phpt
 tests/classes/abstract_inherit.phpt
 tests/classes/array_access_001.phpt
 tests/classes/array_access_002.phpt
@@ -6514,6 +6543,8 @@ tests/classes/constants_error_006.phpt
 tests/classes/constants_error_007.phpt
 tests/classes/constants_scope_001.phpt
 tests/classes/constants_visibility_001.phpt
+tests/classes/constants_visibility_005.phpt
+tests/classes/constants_visibility_006.phpt
 tests/classes/constants_visibility_error_001.phpt
 tests/classes/constants_visibility_error_002.phpt
 tests/classes/ctor_dtor.phpt
@@ -6530,6 +6561,7 @@ tests/classes/factory_and_singleton_001.phpt
 tests/classes/factory_and_singleton_003.phpt
 tests/classes/factory_and_singleton_004.phpt
 tests/classes/final.phpt
+tests/classes/final_abstract.phpt
 tests/classes/incdec_property_001.phpt
 tests/classes/incdec_property_002.phpt
 tests/classes/incdec_property_003.phpt
@@ -6544,6 +6576,7 @@ tests/classes/interface_constant_inheritance_005.phpt
 tests/classes/interface_doubled.phpt
 tests/classes/interface_implemented.phpt
 tests/classes/interface_instantiate.phpt
+tests/classes/interface_method_final.phpt
 tests/classes/interface_optional_arg.phpt
 tests/classes/interface_optional_arg_002.phpt
 tests/classes/interface_optional_arg_003.phpt

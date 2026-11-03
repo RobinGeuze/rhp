@@ -554,8 +554,8 @@ pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
     add(m, "array_key_first", fn_array_key_first, 1, Some(1));
     add(m, "array_key_last", fn_array_key_last, 1, Some(1));
     add(m, "array_is_list", fn_array_is_list, 1, Some(1));
-    add(m, "array_diff", fn_array_diff, 2, None);
-    add(m, "array_intersect", fn_array_intersect, 2, None);
+    add(m, "array_diff", fn_array_diff, 1, None);
+    add(m, "array_intersect", fn_array_intersect, 1, None);
     add(m, "array_column", fn_array_column, 2, Some(3));
     add(m, "array_chunk", fn_array_chunk, 2, Some(3));
     add(m, "array_count_values", fn_array_count_values, 1, Some(1));

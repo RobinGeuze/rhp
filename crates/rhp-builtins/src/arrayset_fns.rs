@@ -249,12 +249,12 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
             },
         );
     }
-    put(m, "array_diff_assoc", fn_array_diff_assoc, 2, None);
+    put(m, "array_diff_assoc", fn_array_diff_assoc, 1, None);
     put(
         m,
         "array_intersect_assoc",
         fn_array_intersect_assoc,
-        2,
+        1,
         None,
     );
     put(

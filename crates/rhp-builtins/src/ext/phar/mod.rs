@@ -767,13 +767,13 @@ class Phar {
     const SHA256 = 3;
     const SHA512 = 4;
     const OPENSSL = 16;
-    public static function mapPhar($alias = null, $dataoffset = 0) { return __phar_mapphar($alias); }
-    public static function loadPhar($filename, $alias = null) { return __phar_loadphar($filename, $alias); }
-    public static function running($retphar = true) { return __phar_running($retphar); }
-    public static function canCompress($type = 0) { return $type === self::GZ || $type === self::BZ2 || $type === 0; }
-    public static function isValidPharFilename($filename, $executable = true) { return true; }
-    public static function interceptFileFuncs() {}
-    public static function createDefaultStub($index = null, $webindex = null) { return ""; }
+    final public static function mapPhar($alias = null, $dataoffset = 0) { return __phar_mapphar($alias); }
+    final public static function loadPhar($filename, $alias = null) { return __phar_loadphar($filename, $alias); }
+    final public static function running($retphar = true) { return __phar_running($retphar); }
+    final public static function canCompress($type = 0) { return $type === self::GZ || $type === self::BZ2 || $type === 0; }
+    final public static function isValidPharFilename($filename, $executable = true) { return true; }
+    final public static function interceptFileFuncs() {}
+    final public static function createDefaultStub($index = null, $webindex = null) { return ""; }
 }
 class PharFileInfo extends SplFileInfo {
     private $__c = ''; private $__d = false; private $__m = 0; private $__mode = 0666; private $__arc = '';
@@ -863,7 +863,8 @@ class PharData extends RecursiveDirectoryIterator implements Countable, ArrayAcc
         $e = $this->__entry($name);
         return PharFileInfo::__make($this->__dir . '/' . $e['name'], $this->__file, $e);
     }
-    public function count(): int { return count($this->__ents); }
+    // php parses $mode and ignores it.
+    public function count(int $mode = COUNT_NORMAL): int { return count($this->__ents); }
     public function offsetExists($localName): bool { return $this->__entry((string) $localName) !== null; }
     public function offsetGet($localName): PharFileInfo {
         if ($this->__entry((string) $localName) === null) {
@@ -1017,8 +1018,8 @@ class PharData extends RecursiveDirectoryIterator implements Countable, ArrayAcc
     public function startBuffering(): void {}
     public function stopBuffering(): void {}
     public function isBuffering(): bool { return false; }
-    public static function canCompress(int $compression = 0): bool { return Phar::canCompress($compression); }
-    public static function canWrite(): bool { return true; }
-    public static function isValidPharFilename(string $filename, bool $executable = true): bool { return true; }
+    final public static function canCompress(int $compression = 0): bool { return Phar::canCompress($compression); }
+    final public static function canWrite(): bool { return true; }
+    final public static function isValidPharFilename(string $filename, bool $executable = true): bool { return true; }
 }
 "#;

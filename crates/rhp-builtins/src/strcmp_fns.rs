@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use rhp_values::{conv, PhpArray, Value};
+use rhp_values::{conv, Value};
 
 use crate::{Builtin, Host, Thrown};
 
@@ -421,7 +421,7 @@ fn eq_ci(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Replace every non-overlapping (left-to-right) case-insensitive occurrence.
-fn ireplace_all(subject: &[u8], search: &[u8], replace: &[u8]) -> Vec<u8> {
+fn ireplace_all(subject: &[u8], search: &[u8], replace: &[u8], n: &mut i64) -> Vec<u8> {
     if search.is_empty() {
         return subject.to_vec();
     }
@@ -430,6 +430,7 @@ fn ireplace_all(subject: &[u8], search: &[u8], replace: &[u8]) -> Vec<u8> {
     while i < subject.len() {
         if i + search.len() <= subject.len() && eq_ci(&subject[i..i + search.len()], search) {
             out.extend_from_slice(replace);
+            *n += 1;
             i += search.len();
         } else {
             out.push(subject[i]);
@@ -439,54 +440,8 @@ fn ireplace_all(subject: &[u8], search: &[u8], replace: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Apply one (search, replace) pairing to a single subject (case-insensitive).
-fn ireplace_one_subject(
-    subject: &[u8],
-    search: &Value,
-    replace: &Value,
-) -> Result<Vec<u8>, Thrown> {
-    match search {
-        Value::Array(searches) => {
-            let mut cur = subject.to_vec();
-            for (i, (_, sv)) in searches.iter().enumerate() {
-                let sbytes = bytes_of(sv);
-                let rbytes = match replace {
-                    Value::Array(reps) => reps
-                        .get_index(i)
-                        .map(|(_, v)| bytes_of(v))
-                        .unwrap_or_default(),
-                    other => bytes_of(other),
-                };
-                cur = ireplace_all(&cur, &sbytes, &rbytes);
-            }
-            Ok(cur)
-        }
-        _ => {
-            if matches!(replace, Value::Array(_)) {
-                return Err(Thrown::type_error(
-                    "str_ireplace(): Argument #2 ($replace) must be of type string when argument #1 ($search) is a string",
-                ));
-            }
-            Ok(ireplace_all(subject, &bytes_of(search), &bytes_of(replace)))
-        }
-    }
-}
-
-fn fn_str_ireplace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let search = deref(&args[0]);
-    let replace = deref(&args[1]);
-    let subject = deref(&args[2]);
-    if let Value::Array(items) = subject {
-        let mut out = PhpArray::new();
-        for (k, v) in items.iter() {
-            let res = ireplace_one_subject(&bytes_of(v), &search, &replace)?;
-            out.insert(k.clone(), Value::str(res));
-        }
-        Ok(Value::Array(out))
-    } else {
-        let res = ireplace_one_subject(&bytes_of(&subject), &search, &replace)?;
-        Ok(Value::str(res))
-    }
+fn fn_str_ireplace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    crate::str_fns::str_replace_common(host, args, "str_ireplace", ireplace_all)
 }
 
 // ---------------------------------------------------------------------------
@@ -634,6 +589,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rhp_values::PhpArray;
 
     struct NullHost;
     impl Host for NullHost {

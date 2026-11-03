@@ -1,0 +1,14 @@
+ArrayObject::__construct() expects at most 3 arguments, 4 given @prelude_arity_location.php:7
+iterator_to_array() expects at least 1 argument, 0 given @prelude_arity_location.php:12
+ArgumentCountError: Generator::send() expects exactly 1 argument, 0 given
+ArgumentCountError: Generator::current() expects exactly 0 arguments, 1 given
+ArgumentCountError: Closure::bindTo() expects at least 1 argument, 0 given
+ArgumentCountError: Closure::call() expects at least 1 argument, 0 given
+ArgumentCountError: mt_rand() expects exactly 2 arguments, 3 given
+ArgumentCountError: mt_rand() expects exactly 2 arguments, 1 given
+ArgumentCountError: rand() expects exactly 2 arguments, 1 given
+ArgumentCountError: strtr() expects exactly 2 arguments, 1 given
+Error: Direct instantiation of WeakReference is not allowed, use WeakReference::create instead
+Error: end(): Argument #1 ($array) could not be passed by reference
+Error: sscanf(): Argument #4 could not be passed by reference
+Error: preg_match(): Argument #3 ($matches) could not be passed by reference

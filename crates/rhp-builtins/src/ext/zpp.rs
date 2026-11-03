@@ -125,6 +125,78 @@ pub fn int_arg(
     }
 }
 
+/// zpp `l` (`zend_parse_arg_long`) in the caller's typing mode, for a
+/// builtin that a prelude wrapper passes the raw argument: an int; in
+/// coercive mode also a bool, null (deprecated), or a float or numeric
+/// string that fits, with php's deprecation when a fraction is dropped.
+pub fn long_arg(
+    host: &mut dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<i64, Thrown> {
+    // ZEND_DOUBLE_FITS_LONG
+    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+    let fits = |f: f64| (-TWO_63..TWO_63).contains(&f);
+    let v = args.get(i).map(deref).unwrap_or(Value::Null);
+    if let Value::Int(n) = v {
+        return Ok(n);
+    }
+    // zend_wrong_parameter_type_error names the value (`true given`).
+    let wrong = |host: &dyn Host, v: &Value| {
+        Thrown::type_error(format!(
+            "{fname}(): Argument #{} (${pname}) must be of type int, {} given",
+            i + 1,
+            crate::argparse::value_name(host, v)
+        ))
+    };
+    if host.caller_strict_types() {
+        return Err(wrong(host, &v));
+    }
+    match &v {
+        Value::Bool(b) => Ok(*b as i64),
+        Value::Null => {
+            host.emit_diagnostic(
+                crate::E_DEPRECATED,
+                &format!(
+                    "{fname}(): Passing null to parameter #{} (${pname}) of type int is deprecated",
+                    i + 1
+                ),
+            )?;
+            Ok(0)
+        }
+        Value::Float(f) if fits(*f) => {
+            if f.fract() != 0.0 {
+                let shown =
+                    String::from_utf8_lossy(&rhp_values::fmt::float_serialize(*f)).into_owned();
+                host.emit_diagnostic(
+                    crate::E_DEPRECATED,
+                    &format!("Implicit conversion from float {shown} to int loses precision"),
+                )?;
+            }
+            Ok(*f as i64)
+        }
+        Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
+            Some(conv::Num::Int(n)) => Ok(n),
+            Some(conv::Num::Float(f)) if fits(f) => {
+                if f.fract() != 0.0 {
+                    host.emit_diagnostic(
+                        crate::E_DEPRECATED,
+                        &format!(
+                            "Implicit conversion from float-string \"{}\" to int loses precision",
+                            String::from_utf8_lossy(s.as_bytes())
+                        ),
+                    )?;
+                }
+                Ok(f as i64)
+            }
+            _ => Err(wrong(host, &v)),
+        },
+        _ => Err(wrong(host, &v)),
+    }
+}
+
 /// An optional `int` parameter with a default.
 pub fn int_arg_or(
     host: &mut dyn Host,

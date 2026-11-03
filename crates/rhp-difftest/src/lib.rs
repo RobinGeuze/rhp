@@ -18,6 +18,7 @@
 //! the crate's integration tests.
 
 pub mod app;
+pub mod gen;
 pub mod lint;
 pub mod mutate;
 pub mod phpt;

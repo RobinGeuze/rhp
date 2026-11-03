@@ -317,8 +317,11 @@ function iterator_apply($iterator, $callback, $args = null) {
 
 final class WeakReference {
     public $__o = null;
-    private function __construct() {}
-    public static function create($object) { $r = new WeakReference(); $r->__o = $object; return $r; }
+    private static $__make = false;
+    public function __construct() {
+        if (!self::$__make) { throw new Error('Direct instantiation of WeakReference is not allowed, use WeakReference::create instead'); }
+    }
+    public static function create($object) { self::$__make = true; $r = new WeakReference(); self::$__make = false; $r->__o = $object; return $r; }
     public function get() { return $this->__o; }
 }
 

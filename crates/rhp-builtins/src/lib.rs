@@ -19,9 +19,10 @@ pub mod fdstream;
 pub mod memstream;
 pub mod module;
 pub mod pcre;
+pub mod signatures;
 pub mod streams;
-pub mod stub_params;
 pub mod version;
+pub mod zend;
 
 pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};
 pub use ext::simplexml::{sxe_bool, sxe_props_array, sxe_same_node, sxe_string};
@@ -67,6 +68,7 @@ pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_inte
 mod arr_fns;
 mod arraycmp_fns;
 mod arrayset_fns;
+#[rustfmt::skip]
 mod const_modules;
 mod crypt_fns;
 mod datetime_fns;
@@ -77,10 +79,14 @@ mod class_fns;
 mod file_fns;
 mod filter_fns;
 mod fs_fns;
+mod html;
+#[rustfmt::skip]
+mod html_tables;
 pub mod http;
 mod inet;
 mod info_fns;
 mod ini_parse;
+#[rustfmt::skip]
 mod ini_table;
 mod json_fns;
 mod math_fns;
@@ -110,16 +116,33 @@ mod tzdb;
 mod webenc_fns;
 pub mod zip_ext;
 
+/// Built-in classes with a native `dtor_obj` handler, which runs with a host
+/// before the object's `__destruct` (see [`object_dtor`]).
+pub fn has_native_dtor(class: &[u8]) -> bool {
+    class.eq_ignore_ascii_case(b"XMLWriter")
+}
+
+/// `dtor_obj` for an object whose class (or a parent) is listed by
+/// [`has_native_dtor`]. The engine calls it once, where php would, before the
+/// user's `__destruct`.
+pub fn object_dtor(host: &mut dyn Host, obj: &rhp_values::ObjectHandle) -> Result<(), Thrown> {
+    let id = obj.borrow().id;
+    ext::xmlwriter::object_dtor(host, id)
+}
+
 /// The engine's object free hook (`rhp_values::set_object_free_hook`): lets
 /// the extensions with per-object native state release it.
 pub fn object_freed(id: u32) {
     zip_ext::object_freed(id);
+    sort_fns::object_freed(id);
     ext::sockets::object_freed();
+    ext::xml::object_freed(id);
+    ext::xmlwriter::object_freed(id);
 }
 
 /// The internal opaque-handle classes php declares `@strict-properties` and
 /// `@not-serializable` (`ZEND_ACC_NO_DYNAMIC_PROPERTIES |
-/// ZEND_ACC_NOT_SERIALIZABLE`): `Socket` and the curl handles. Their names
+/// ZEND_ACC_NOT_SERIALIZABLE`): `Socket`, the curl handles and `XMLParser`. Their names
 /// are taken by the prelude, so a user class cannot carry one.
 pub fn is_opaque_handle_class(name: &[u8]) -> bool {
     [
@@ -127,6 +150,7 @@ pub fn is_opaque_handle_class(name: &[u8]) -> bool {
         b"CurlHandle",
         b"CurlMultiHandle",
         b"CurlShareHandle",
+        b"XMLParser",
     ]
     .iter()
     .any(|n| n.eq_ignore_ascii_case(name))
@@ -256,6 +280,12 @@ pub trait Host {
     }
     /// `restore_error_handler`: pop back to the previous error handler.
     fn restore_error_handler(&mut self) {}
+
+    /// Whether the code calling the running builtin declared
+    /// `strict_types=1` (zpp then coerces no scalars). Default: no.
+    fn caller_strict_types(&self) -> bool {
+        false
+    }
 
     /// Inside an `@` region (error_reporting then reads as the fatal mask).
     fn silenced(&self) -> bool {
@@ -451,6 +481,12 @@ pub trait Host {
         &self,
         _class_id: u32,
     ) -> Option<(Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>)> {
+        None
+    }
+
+    /// The class scope of the code calling the builtin
+    /// (`zend_get_executed_scope`), if any.
+    fn caller_scope(&self) -> Option<u32> {
         None
     }
 
@@ -1248,7 +1284,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "boolval"        => fn_boolval, 1, Some(1);
             "strlen"         => fn_strlen, 1, Some(1);
             "count"          => fn_count, 1, Some(2);
-            "sizeof"         => fn_count, 1, Some(2);
+            "sizeof"         => fn_sizeof, 1, Some(2);
             "intdiv"         => fn_intdiv, 2, Some(2);
             "str_repeat"     => fn_str_repeat, 2, Some(2);
             "abs"            => fn_abs, 1, Some(1);
@@ -1279,7 +1315,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             "str_contains"   => fn_str_contains, 2, Some(2);
             "ord"            => fn_ord, 1, Some(1);
             "chr"            => fn_chr, 1, Some(1);
-            "get_class"      => fn_get_class, 1, Some(1);
+            "get_class"      => fn_get_class, 0, Some(1);
             "get_parent_class" => fn_get_parent_class, 0, Some(1);
             "is_a"           => fn_is_a, 2, Some(3);
             "is_subclass_of" => fn_is_subclass_of, 2, Some(3);
@@ -1319,6 +1355,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
     }
     let rest: Vec<(&'static str, Registrar)> = vec![
         ("webenc_fns", Box::new(webenc_fns::register)),
+        ("html", Box::new(html::register)),
         ("datetime_fns", Box::new(datetime_fns::register)),
         ("dt_oop_fns", Box::new(dt_oop_fns::register)),
         ("strtotime_fns", Box::new(strtotime_fns::register)),
@@ -1684,8 +1721,12 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("ENT_IGNORE", Value::Int(4)),
         ("ENT_SUBSTITUTE", Value::Int(8)),
         ("ENT_DISALLOWED", Value::Int(128)),
+        ("HTML_SPECIALCHARS", Value::Int(0)),
+        ("HTML_ENTITIES", Value::Int(1)),
         ("PHP_ROUND_HALF_UP", Value::Int(1)),
         ("PHP_ROUND_HALF_DOWN", Value::Int(2)),
+        ("PHP_ROUND_HALF_EVEN", Value::Int(3)),
+        ("PHP_ROUND_HALF_ODD", Value::Int(4)),
         ("ARRAY_FILTER_USE_KEY", Value::Int(2)),
         ("ARRAY_FILTER_USE_BOTH", Value::Int(1)),
         ("M_PI", Value::Float(std::f64::consts::PI)),
@@ -1964,6 +2005,12 @@ pub fn require_callback(
 fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
     let value = deref(&args[1]).clone();
+    if args.get(2).is_some_and(|v| conv::to_bool(&deref(v))) {
+        host.emit_diagnostic(
+            E_WARNING,
+            "define(): Argument #3 ($case_insensitive) is ignored since declaration of case-insensitive constants is no longer supported",
+        )?;
+    }
     Ok(Value::Bool(host.define_const(&name, value)))
 }
 
@@ -2126,8 +2173,55 @@ fn fn_strlen(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(conv::to_string_bytes(&args[0]).len() as i64))
 }
 
+/// php_count_recursive: an array met again through a reference warns
+/// "Recursion detected" and counts 0.
+fn count_recursive(
+    host: &mut dyn Host,
+    fname: &str,
+    a: &rhp_values::PhpArray,
+    seen: &mut Vec<usize>,
+) -> Result<i64, Thrown> {
+    if seen.contains(&a.data_ptr()) {
+        host.emit_diagnostic(E_WARNING, &format!("{fname}(): Recursion detected"))?;
+        return Ok(0);
+    }
+    seen.push(a.data_ptr());
+    let mut n = a.len() as i64;
+    for (_, v) in a.iter() {
+        if let Value::Array(sub) = deref(v) {
+            n += count_recursive(host, fname, &sub, seen)?;
+        }
+    }
+    seen.pop();
+    Ok(n)
+}
+
 fn fn_count(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    count_impl(host, args, "count")
+}
+
+/// sizeof() is count() under its own name, which its errors carry.
+fn fn_sizeof(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    count_impl(host, args, "sizeof")
+}
+
+fn count_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
+    let mode = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    if mode != 0 && mode != 1 {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "{fname}(): Argument #2 ($mode) must be either COUNT_NORMAL or COUNT_RECURSIVE"
+            ),
+        ));
+    }
     match deref(&args[0]) {
+        Value::Array(a) if mode == 1 => Ok(Value::Int(count_recursive(
+            host,
+            fname,
+            &a,
+            &mut Vec::new(),
+        )?)),
         Value::Array(a) => Ok(Value::Int(a.len() as i64)),
         // A Countable object: count($obj) calls $obj->count().
         obj @ Value::Object(_) => {
@@ -2141,12 +2235,13 @@ fn fn_count(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 let r = host.call_callable(&callable, &[])?;
                 return Ok(Value::Int(conv::to_int(&deref(&r))));
             }
-            Err(Thrown::type_error(
-                "count(): Argument #1 ($value) must be of type Countable|array, object given",
-            ))
+            Err(Thrown::type_error(format!(
+                "{fname}(): Argument #1 ($value) must be of type Countable|array, {} given",
+                argparse::value_name(host, &obj)
+            )))
         }
         other => Err(Thrown::type_error(format!(
-            "count(): Argument #1 ($value) must be of type Countable|array, {} given",
+            "{fname}(): Argument #1 ($value) must be of type Countable|array, {} given",
             other.type_name_lower()
         ))),
     }
@@ -2709,7 +2804,20 @@ fn fn_str_contains(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match deref(&args[0]) {
+    let Some(obj) = args.first() else {
+        let Some(name) = host.caller_scope().and_then(|c| host.class_name(c)) else {
+            return Err(Thrown::error(
+                "Error",
+                "get_class() without arguments must be called from within a class",
+            ));
+        };
+        host.emit_diagnostic(
+            E_DEPRECATED,
+            "Calling get_class() without arguments is deprecated",
+        )?;
+        return Ok(Value::str(name));
+    };
+    match deref(obj) {
         Value::Object(h) => {
             let cid = h.borrow().class;
             Ok(host
@@ -2717,9 +2825,10 @@ fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 .map(Value::str)
                 .unwrap_or(Value::Bool(false)))
         }
-        _ => Err(Thrown::type_error(
-            "get_class(): Argument #1 ($object) must be of type object",
-        )),
+        other => Err(Thrown::type_error(format!(
+            "get_class(): Argument #1 ($object) must be of type object, {} given",
+            argparse::value_name(host, &other)
+        ))),
     }
 }
 
@@ -2796,7 +2905,18 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
                 )),
             }
         }
-        None => Ok(Value::Bool(false)),
+        // The calling scope's parent.
+        None => {
+            host.emit_diagnostic(
+                E_DEPRECATED,
+                "Calling get_parent_class() without arguments is deprecated",
+            )?;
+            Ok(host
+                .caller_scope()
+                .and_then(|c| host.class_parent_name(c))
+                .map(Value::str)
+                .unwrap_or(Value::Bool(false)))
+        }
         Some(other) => Err(Thrown::type_error(format!(
             "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, {} given",
             argparse::value_name(host, &other)

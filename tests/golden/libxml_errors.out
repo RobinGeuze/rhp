@@ -97,8 +97,6 @@ W[2]: simplexml_load_string(): ^
 W[2]: simplexml_load_string(): Entity: line 1: parser error : Opening and ending tag mismatch: a line 1 and b
 W[2]: simplexml_load_string(): yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy</b>
 W[2]: simplexml_load_string():                                                                                ^
-int(20913)
-string(6) "2.9.13"
 int(2)
 int(2048)
 int(16384)

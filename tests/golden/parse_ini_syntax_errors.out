@@ -1,0 +1,189 @@
+warning: "syntax error, unexpected end of file, expecting TC_VARNAME in Unknown on line 2\n"
+bool(false)
+array(2) {
+  ["a"]=>
+  string(1) "b"
+  ["c"]=>
+  string(2) "${"
+}
+warning: "syntax error, unexpected end of file, expecting TC_VARNAME in Unknown on line 2\n"
+bool(false)
+warning: "syntax error, unexpected end of file, expecting ']' in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected end of file, expecting ']' in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected end of file, expecting ']' in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected END_OF_LINE, expecting '^' or '|' or '&' or ')' in Unknown on line 1\n"
+bool(false)
+array(1) {
+  ["a"]=>
+  string(2) "(1"
+}
+warning: "syntax error, unexpected END_OF_LINE, expecting '^' or '|' or '&' or ')' in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected '=' in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected '=' in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected '=' in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected end of file, expecting TC_DOLLAR_CURLY or TC_QUOTED_STRING or '\"' in Unknown on line 1\n"
+bool(false)
+array(1) {
+  ["a"]=>
+  string(2) ""x"
+}
+warning: "syntax error, unexpected end of file, expecting TC_DOLLAR_CURLY or TC_QUOTED_STRING or '\"' in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected ')' in Unknown on line 2\n"
+bool(false)
+array(2) {
+  ["a"]=>
+  string(1) "1"
+  ["b"]=>
+  string(1) ")"
+}
+warning: "syntax error, unexpected ')' in Unknown on line 2\n"
+bool(false)
+warning: "syntax error, unexpected end of file, expecting ']' in Unknown on line 3\n"
+bool(false)
+warning: "syntax error, unexpected end of file, expecting ']' in Unknown on line 3\n"
+bool(false)
+warning: "syntax error, unexpected end of file, expecting ']' in Unknown on line 3\n"
+bool(false)
+warning: "syntax error, unexpected end of file, expecting ']' in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected end of file, expecting ']' in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected end of file, expecting ']' in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected end of file, expecting TC_FALLBACK or '}' in Unknown on line 1\n"
+bool(false)
+array(1) {
+  ["a"]=>
+  string(3) "${b"
+}
+warning: "syntax error, unexpected end of file, expecting TC_FALLBACK or '}' in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected END_OF_LINE in Unknown on line 1\n"
+bool(false)
+array(1) {
+  ["a"]=>
+  string(3) "1 |"
+}
+warning: "syntax error, unexpected END_OF_LINE in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected '=' in Unknown on line 1\n"
+bool(false)
+array(1) {
+  ["a"]=>
+  string(3) "b=c"
+}
+warning: "syntax error, unexpected '=' in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected ')' in Unknown on line 3\n"
+bool(false)
+array(1) {
+  ["x"]=>
+  array(2) {
+    ["y"]=>
+    string(1) "1"
+    ["z"]=>
+    string(1) ")"
+  }
+}
+warning: "syntax error, unexpected ')' in Unknown on line 3\n"
+bool(false)
+warning: "syntax error, unexpected ')' in Unknown on line 2\n"
+bool(false)
+warning: "syntax error, unexpected '\"' in Unknown on line 2\n"
+bool(false)
+warning: "syntax error, unexpected ')' in Unknown on line 2\n"
+bool(false)
+array(1) {
+  ["a"]=>
+  string(3) "x y"
+}
+array(1) {
+  ["a"]=>
+  string(7) "'x' 'y'"
+}
+array(1) {
+  ["a"]=>
+  string(3) "x y"
+}
+warning: "syntax error, unexpected '}' in Unknown on line 4\n"
+bool(false)
+warning: "syntax error, unexpected '}' in Unknown on line 4\n"
+bool(false)
+warning: "syntax error, unexpected '}' in Unknown on line 4\n"
+bool(false)
+warning: "syntax error, unexpected END_OF_LINE in Unknown on line 2\n"
+bool(false)
+array(2) {
+  ["a"]=>
+  string(1) "1"
+  ["b"]=>
+  string(1) "("
+}
+warning: "syntax error, unexpected END_OF_LINE in Unknown on line 2\n"
+bool(false)
+warning: "syntax error, unexpected TC_FALLBACK, expecting TC_VARNAME in Unknown on line 1\n"
+bool(false)
+array(1) {
+  ["x"]=>
+  string(6) "${a:-b"
+}
+warning: "syntax error, unexpected TC_FALLBACK, expecting TC_VARNAME in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected end of file in Unknown on line 1\n"
+bool(false)
+array(2) {
+  ["a"]=>
+  string(4) "'abc"
+  ["b"]=>
+  string(1) "1"
+}
+warning: "syntax error, unexpected end of file in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected end of file in Unknown on line 2\n"
+bool(false)
+warning: "syntax error, unexpected end of file in Unknown on line 2\n"
+bool(false)
+warning: "syntax error, unexpected end of file in Unknown on line 2\n"
+bool(false)
+array(1) {
+  ["a"]=>
+  string(1) "x"
+}
+array(1) {
+  ["a"]=>
+  string(1) "x"
+}
+array(1) {
+  ["a"]=>
+  string(1) "x"
+}
+warning: "syntax error, unexpected end of file in Unknown on line 1\n"
+bool(false)
+array(1) {
+  ["a"]=>
+  string(3) "x$\"
+}
+warning: "syntax error, unexpected end of file in Unknown on line 1\n"
+bool(false)
+warning: "syntax error, unexpected end of file in Unknown on line 2\n"
+bool(false)
+array(1) {
+  ["s"]=>
+  array(1) {
+    ["a"]=>
+    array(1) {
+      ["x"]=>
+      string(2) "'y"
+    }
+  }
+}
+warning: "syntax error, unexpected end of file in Unknown on line 2\n"
+bool(false)

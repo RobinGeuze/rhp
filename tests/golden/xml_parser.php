@@ -1,5 +1,7 @@
 <?php
-// ext/xml: the expat-compatible SAX parser php builds on libxml2.
+// ext/xml: the expat-compatible SAX parser php builds on libxml2. Error
+// positions that differ between libxml2 releases are in
+// crates/rhp-difftest/tests/libxml.rs.
 set_error_handler(function ($no, $str) { echo "W[$no]: ", str_replace(getcwd(), "CWD", $str), "\n"; return true; });
 function run($xml, $opts = [], $chunks = null) {
     $p = xml_parser_create();
@@ -17,7 +19,6 @@ run("<?xml version=\"1.0\"?>\n<root a=\"1\" B='x'>\n  <item>x\ny &amp; z &#65;</
 run("<a>\xc3\xa9t\xc3\xa9</a>");
 run("<a><b>t</b>", [], ["<a>", "<b>t</b>", "</a>"]);
 run("<a><b></a>");
-run("<a>x</a><b/>");
 run("<a/>", [XML_OPTION_CASE_FOLDING => 0]);
 run("<root>\n <x> </x>\n</root>", [XML_OPTION_SKIP_WHITE => 1, XML_OPTION_CASE_FOLDING => false]);
 $p = xml_parser_create();

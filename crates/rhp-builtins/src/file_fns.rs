@@ -442,8 +442,10 @@ fn fn_touch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(ok))
 }
 
-fn fn_true1(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(true))
+/// `clearstatcache(): void`. rhp keeps no stat or realpath cache, so both
+/// parameters have nothing to clear.
+fn fn_clearstatcache(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Null)
 }
 
 fn fn_chmod(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -540,8 +542,8 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put(m, "pathinfo", fn_pathinfo, 1, Some(2));
     put(m, "getcwd", fn_getcwd, 0, Some(0));
     put(m, "file_get_contents", fn_file_get_contents, 1, Some(5));
-    put(m, "file_put_contents", fn_file_put_contents, 2, Some(3));
-    put(m, "unlink", fn_unlink, 1, Some(1));
+    put(m, "file_put_contents", fn_file_put_contents, 2, Some(4));
+    put(m, "unlink", fn_unlink, 1, Some(2));
     put(m, "rmdir", fn_rmdir, 1, Some(2));
     put(m, "rename", fn_rename, 2, Some(3));
     put(m, "touch", fn_touch, 1, Some(3));
@@ -555,7 +557,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         1,
         Some(1),
     );
-    put(m, "clearstatcache", fn_true1, 0, Some(2));
+    put(m, "clearstatcache", fn_clearstatcache, 0, Some(2));
     put(m, "readlink", fn_readlink, 1, Some(1));
     put(m, "symlink", fn_symlink, 2, Some(2));
     put(m, "disk_free_space", fn_disk_free_space, 1, Some(1));

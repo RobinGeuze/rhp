@@ -1,0 +1,60 @@
+[2] Array to string conversion @builtin_params.php:8
+array(4) {
+  [0]=>
+  string(2) "bb"
+  [1]=>
+  string(5) "Arrby"
+  [2]=>
+  string(2) "sb"
+  [3]=>
+  string(1) "5"
+}
+int(4)
+[2] Array to string conversion @builtin_params.php:9
+string(6) "zzrrzy"
+int(3)
+string(2) "xy"
+int(6)
+int(3)
+[2] count(): Recursion detected @builtin_params.php:14
+int(2)
+count(): Argument #2 ($mode) must be either COUNT_NORMAL or COUNT_RECURSIVE
+sizeof(): Argument #1 ($value) must be of type Countable|array, int given
+string(24) "&lt;a&gt;&amp;'"&eacute;"
+string(14) "&#039;&eacute;"
+string(8) "&eacute;"
+string(20) "&quot;&#039;é&apos;"
+string(9) "'&eacute;"
+string(19) ""&#039;&#x27;&apos;"
+string(1) "'"
+bool(false)
+string(28) "Maximum stack depth exceeded"
+bool(false)
+string(7) "[[1],2]"
+1: 3 -3 1.96 1200
+2: 2 -2 1.95 1200
+3: 2 -2 1.96 1200
+4: 3 -3 1.95 1200
+5: 3 -2 1.96 1300
+6: 2 -3 1.95 1200
+7: 2 -2 1.95 1200
+8: 3 -3 1.96 1300
+round(): Argument #3 ($mode) must be a valid rounding mode (RoundingMode::*)
+[2] define(): Argument #3 ($case_insensitive) is ignored since declaration of case-insensitive constants is no longer supported @builtin_params.php:26
+NULL
+string(3) "255"
+bool(false)
+[8192] current(): Calling current() on an object is deprecated @builtin_params.php:31
+[8192] key(): Calling key() on an object is deprecated @builtin_params.php:31
+[8192] next(): Calling next() on an object is deprecated @builtin_params.php:31
+[8192] key(): Calling key() on an object is deprecated @builtin_params.php:31
+[8192] next(): Calling next() on an object is deprecated @builtin_params.php:31
+[8192] reset(): Calling reset() on an object is deprecated @builtin_params.php:31
+[8192] end(): Calling end() on an object is deprecated @builtin_params.php:31
+int(10)
+string(1) "p"
+int(11)
+string(1) "q"
+bool(false)
+int(10)
+int(11)

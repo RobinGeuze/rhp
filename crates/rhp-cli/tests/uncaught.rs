@@ -236,4 +236,34 @@ fn parse_errors_main_eval_and_include() {
         "<?php\nfunction f() { include __DIR__ . '/bad.php'; }\nf();\n",
     );
     assert_same(&inc);
+    // A grammar action's CompileError: a fatal error for the main script,
+    // an uncaught CompileError from include.
+    let mods = dir.join("mods.php");
+    write(&mods, "<?php\nclass A {\n    public\n    public $x;\n}\n");
+    let out = assert_same(&mods);
+    assert!(out.contains("Fatal error: Multiple access type modifiers are not allowed"));
+    let inc_mods = dir.join("inc_mods.php");
+    write(
+        &inc_mods,
+        "<?php\necho 1;\ninclude __DIR__ . '/mods.php';\n",
+    );
+    assert_same(&inc_mods);
+}
+
+/// An arity error of a prelude-implemented builtin is reported at the
+/// caller's file and line, like php's internal functions.
+#[test]
+fn uncaught_prelude_arity_error_at_caller() {
+    if !php_available() {
+        return;
+    }
+    let dir = case_dir("prelude_arity");
+    let main = dir.join("main.php");
+    write(
+        &main,
+        "<?php\nfunction f() {\n    return new ArrayObject([], 0, 'ArrayIterator', 5);\n}\ntry {\n    iterator_to_array();\n} catch (ArgumentCountError $e) {\n    echo basename($e->getFile()), ':', $e->getLine(), \"\\n\";\n}\nf();\n",
+    );
+    let out = assert_same(&main);
+    assert!(out.contains("main.php:6"), "{out}");
+    assert!(out.contains("main.php on line 3"), "{out}");
 }

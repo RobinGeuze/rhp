@@ -102,13 +102,9 @@ pub(crate) fn digest(algo: &[u8], data: &[u8]) -> Option<Vec<u8>> {
         b"fnv164" => fnv1_64(data).to_be_bytes().to_vec(),
         b"fnv1a64" => fnv1a_64(data).to_be_bytes().to_vec(),
         b"joaat" => joaat(data).to_be_bytes().to_vec(),
-        b"murmur3a" => murmur3a(data).to_be_bytes().to_vec(),
-        b"murmur3c" => murmur3c(data),
-        b"murmur3f" => murmur3f(data),
-        b"xxh32" => xxhash_rust::xxh32::xxh32(data, 0).to_be_bytes().to_vec(),
-        b"xxh64" => xxhash_rust::xxh64::xxh64(data, 0).to_be_bytes().to_vec(),
-        b"xxh3" => xxhash_rust::xxh3::xxh3_64(data).to_be_bytes().to_vec(),
-        b"xxh128" => xxhash_rust::xxh3::xxh3_128(data).to_be_bytes().to_vec(),
+        b"murmur3a" | b"murmur3c" | b"murmur3f" | b"xxh32" | b"xxh64" | b"xxh3" | b"xxh128" => {
+            return seeded(algo, data, &Init::Seed(0))
+        }
         _ => {
             if let Some((bits, passes)) = parse_haval(algo) {
                 haval::haval(data, bits, passes)
@@ -117,6 +113,140 @@ pub(crate) fn digest(algo: &[u8], data: &[u8]) -> Option<Vec<u8>> {
             }
         }
     })
+}
+
+/// How a seeded algorithm (murmur3*, xxh*) starts: what its `hash_init`
+/// takes from `$options`.
+#[derive(Clone)]
+enum Init {
+    Seed(i64),
+    Secret(Vec<u8>),
+}
+
+/// The digest of a seeded algorithm.
+fn seeded(algo: &[u8], data: &[u8], init: &Init) -> Option<Vec<u8>> {
+    use xxhash_rust::{xxh3, xxh32, xxh64};
+    let seed = match init {
+        Init::Seed(n) => *n,
+        Init::Secret(_) => 0,
+    };
+    Some(match (algo, init) {
+        (b"xxh3", Init::Secret(k)) => xxh3::xxh3_64_with_secret(data, k).to_be_bytes().to_vec(),
+        (b"xxh128", Init::Secret(k)) => xxh3::xxh3_128_with_secret(data, k).to_be_bytes().to_vec(),
+        (b"murmur3a", _) => murmur3a(data, seed as u32).to_be_bytes().to_vec(),
+        (b"murmur3c", _) => murmur3c(data, seed as u32),
+        (b"murmur3f", _) => murmur3f(data, seed as u64),
+        (b"xxh32", _) => xxh32::xxh32(data, seed as u32).to_be_bytes().to_vec(),
+        (b"xxh64", _) => xxh64::xxh64(data, seed as u64).to_be_bytes().to_vec(),
+        (b"xxh3", _) => xxh3::xxh3_64_with_seed(data, seed as u64)
+            .to_be_bytes()
+            .to_vec(),
+        (b"xxh128", _) => xxh3::xxh3_128_with_seed(data, seed as u64)
+            .to_be_bytes()
+            .to_vec(),
+        _ => return None,
+    })
+}
+
+/// The `$options` php's hash_init reads (PHP_MURMUR3AInit, PHP_XXH32Init,
+/// _PHP_XXH3_Init, …), with their diagnostics from `fname`. `None`: the
+/// default start. Other algorithms ignore the options.
+fn hash_options(
+    host: &mut dyn Host,
+    fname: &str,
+    algo: &[u8],
+    opts: Option<&Value>,
+) -> Result<Option<Init>, Thrown> {
+    let Some(Value::Array(o)) = opts.map(crate::deref) else {
+        return Ok(None);
+    };
+    let get = |k: &[u8]| {
+        o.get(&rhp_values::ArrayKey::from_bytes(k))
+            .map(crate::deref)
+    };
+    let seed = get(b"seed");
+    const SEED_ZERO: &str =
+        "Passing a seed of a type other than int is deprecated because it is the same as setting the seed to 0";
+    Ok(match algo {
+        b"murmur3a" | b"murmur3c" | b"murmur3f" | b"xxh32" => match seed {
+            Some(Value::Int(n)) => Some(Init::Seed(n)),
+            Some(_) => {
+                crate::deprecated(host, fname, SEED_ZERO)?;
+                None
+            }
+            None => None,
+        },
+        // php's xxh64 also warns when the options have no seed at all.
+        b"xxh64" => match seed {
+            Some(Value::Int(n)) => Some(Init::Seed(n)),
+            _ => {
+                crate::deprecated(host, fname, SEED_ZERO)?;
+                None
+            }
+        },
+        b"xxh3" | b"xxh128" => {
+            let name = String::from_utf8_lossy(algo);
+            let secret = get(b"secret");
+            if seed.is_some() && secret.is_some() {
+                return Err(Thrown::error(
+                    "Error",
+                    format!(
+                        "{name}: Only one of seed or secret is to be passed for initialization"
+                    ),
+                ));
+            }
+            match (seed, secret) {
+                (Some(Value::Int(n)), _) => Some(Init::Seed(n)),
+                (Some(_), _) => {
+                    crate::deprecated(
+                        host,
+                        fname,
+                        "Passing a seed of a type other than int is deprecated because it is ignored",
+                    )?;
+                    None
+                }
+                (None, Some(k)) => {
+                    if !matches!(k, Value::Str(_)) {
+                        crate::deprecated(
+                            host,
+                            fname,
+                            "Passing a secret of a type other than string is deprecated because it implicitly converts to a string, potentially hiding bugs",
+                        )?;
+                    }
+                    let mut k = conv::to_string_bytes(&k);
+                    // XXH3_SECRET_SIZE_MIN; php keeps a 256-byte buffer.
+                    if k.len() < 136 {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "{name}: Secret length must be >= 136 bytes, {} bytes passed",
+                                k.len()
+                            ),
+                        ));
+                    }
+                    if k.len() > 256 {
+                        k.truncate(256);
+                        crate::warn(
+                            host,
+                            fname,
+                            &format!("{name}: Secret content exceeding 256 bytes discarded"),
+                        )?;
+                    }
+                    Some(Init::Secret(k))
+                }
+                (None, None) => None,
+            }
+        }
+        _ => None,
+    })
+}
+
+/// [`digest`] started from `init`.
+fn digest_init(algo: &[u8], data: &[u8], init: Option<&Init>) -> Option<Vec<u8>> {
+    match init {
+        Some(i) => seeded(algo, data, i),
+        None => digest(algo, data),
+    }
 }
 
 /// The internal block size (bytes) used by `hash_hmac` for a crypto algorithm,
@@ -261,14 +391,14 @@ fn joaat(data: &[u8]) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// MurmurHash3 (seed 0): murmur3a = x86_32, murmur3c = x86_128, murmur3f = x64_128
+// MurmurHash3: murmur3a = x86_32, murmur3c = x86_128, murmur3f = x64_128
 // PHP emits each hash word big-endian.
 // ---------------------------------------------------------------------------
 
-fn murmur3a(data: &[u8]) -> u32 {
+fn murmur3a(data: &[u8], seed: u32) -> u32 {
     const C1: u32 = 0xcc9e_2d51;
     const C2: u32 = 0x1b87_3593;
-    let mut h: u32 = 0;
+    let mut h: u32 = seed;
     let nblocks = data.len() / 4;
     for i in 0..nblocks {
         let mut k = u32::from_le_bytes([
@@ -317,12 +447,12 @@ fn fmix64(mut k: u64) -> u64 {
     k
 }
 
-fn murmur3c(data: &[u8]) -> Vec<u8> {
+fn murmur3c(data: &[u8], seed: u32) -> Vec<u8> {
     const C1: u32 = 0x239b_961b;
     const C2: u32 = 0xab0e_9789;
     const C3: u32 = 0x38b3_4ae5;
     const C4: u32 = 0xa1e3_8b93;
-    let (mut h1, mut h2, mut h3, mut h4) = (0u32, 0u32, 0u32, 0u32);
+    let (mut h1, mut h2, mut h3, mut h4) = (seed, seed, seed, seed);
     let nblocks = data.len() / 16;
     for i in 0..nblocks {
         let base = i * 16;
@@ -447,10 +577,10 @@ fn murmur3c(data: &[u8]) -> Vec<u8> {
     out
 }
 
-fn murmur3f(data: &[u8]) -> Vec<u8> {
+fn murmur3f(data: &[u8], seed: u64) -> Vec<u8> {
     const C1: u64 = 0x87c3_7b91_1142_53d5;
     const C2: u64 = 0x4cf5_ad43_2745_937f;
-    let (mut h1, mut h2) = (0u64, 0u64);
+    let (mut h1, mut h2) = (seed, seed);
     let nblocks = data.len() / 16;
     for i in 0..nblocks {
         let base = i * 16;
@@ -730,28 +860,58 @@ fn invalid_algo(func: &str) -> Thrown {
     )
 }
 
-fn fn_hash(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_hash(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let algo = bytes_of(&args[0]).to_ascii_lowercase();
     let data = bytes_of(&args[1]);
     let binary = as_bool(args.get(2));
-    match digest(&algo, &data) {
-        Some(raw) => Ok(Value::str(if binary { raw } else { to_hex(&raw) })),
-        None => Err(invalid_algo("hash")),
+    if digest(&algo, b"").is_none() {
+        return Err(invalid_algo("hash"));
     }
+    let init = hash_options(host, "hash", &algo, args.get(3))?;
+    let raw = digest_init(&algo, &data, init.as_ref()).unwrap_or_default();
+    Ok(Value::str(if binary { raw } else { to_hex(&raw) }))
 }
 
 fn fn_hash_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let algo = bytes_of(&args[0]).to_ascii_lowercase();
     let path = bytes_of(&args[1]);
     let binary = as_bool(args.get(2));
+    if digest(&algo, b"").is_none() {
+        return Err(invalid_algo("hash_file"));
+    }
     let Some(data) = host.stream_get_contents(&path) else {
         return Ok(Value::Bool(false));
     };
     host.consume_resource_ids(1);
-    match digest(&algo, &data) {
-        Some(raw) => Ok(Value::str(if binary { raw } else { to_hex(&raw) })),
-        None => Err(invalid_algo("hash_file")),
-    }
+    let init = hash_options(host, "hash_file", &algo, args.get(3))?;
+    let raw = digest_init(&algo, &data, init.as_ref()).unwrap_or_default();
+    Ok(Value::str(if binary { raw } else { to_hex(&raw) }))
+}
+
+/// `__hash_init_options($algo, $options)`: hash_init's reading of
+/// `$options`, as `[seed]`, `['secret' => k]` or null.
+fn fn_hash_init_options(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let algo = bytes_of(&args[0]).to_ascii_lowercase();
+    Ok(match hash_options(host, "hash_init", &algo, args.get(1))? {
+        Some(Init::Seed(n)) => Value::Int(n),
+        Some(Init::Secret(k)) => Value::str(k),
+        None => Value::Null,
+    })
+}
+
+/// `__hash_digest($algo, $data, $binary, $init)`: a HashContext's digest,
+/// `$init` from `__hash_init_options`.
+fn fn_hash_digest(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let algo = bytes_of(&args[0]).to_ascii_lowercase();
+    let data = bytes_of(&args[1]);
+    let binary = as_bool(args.get(2));
+    let init = match args.get(3).map(crate::deref) {
+        Some(Value::Int(n)) => Some(Init::Seed(n)),
+        Some(Value::Str(k)) => Some(Init::Secret(k.as_bytes().to_vec())),
+        _ => None,
+    };
+    let raw = digest_init(&algo, &data, init.as_ref()).ok_or_else(|| invalid_algo("hash_final"))?;
+    Ok(Value::str(if binary { raw } else { to_hex(&raw) }))
 }
 
 fn fn_md5_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -791,6 +951,8 @@ fn fn_hash_hmac(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
+/// `$options` (arg 6) goes to the hash's init, and only the seeded
+/// non-cryptographic algorithms read it, which pbkdf2 refuses.
 fn fn_hash_pbkdf2(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let algo = bytes_of(&args[0]).to_ascii_lowercase();
     let pass = bytes_of(&args[1]);
@@ -1008,11 +1170,13 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         );
     }
     put(m, "hash", fn_hash, 2, Some(4));
-    put(m, "hash_file", fn_hash_file, 2, Some(3));
+    put(m, "hash_file", fn_hash_file, 2, Some(4));
     put(m, "md5_file", fn_md5_file, 1, Some(2));
     put(m, "sha1_file", fn_sha1_file, 1, Some(2));
     put(m, "hash_hmac", fn_hash_hmac, 3, Some(4));
-    put(m, "hash_pbkdf2", fn_hash_pbkdf2, 4, Some(6));
+    put(m, "hash_pbkdf2", fn_hash_pbkdf2, 4, Some(7));
+    put(m, "__hash_init_options", fn_hash_init_options, 2, Some(2));
+    put(m, "__hash_digest", fn_hash_digest, 4, Some(4));
     put(m, "hash_equals", fn_hash_equals, 2, Some(2));
     put(m, "hash_algos", fn_hash_algos, 0, Some(0));
     put(m, "hash_hmac_algos", fn_hash_hmac_algos, 0, Some(0));
@@ -1028,11 +1192,11 @@ pub fn constants() -> Vec<(&'static str, Value)> {
 /// is identical to php's streaming state machines).
 pub const PRELUDE_PHP: &str = r#"
 final class HashContext {
-    private $__algo = ''; private $__d = ''; private $__k = null; private $__done = false;
+    private $__algo = ''; private $__d = ''; private $__k = null; private $__done = false; private $__init = null;
     private function __construct() {}
     public function __debugInfo(): array { return ['algo' => $this->__algo]; }
-    public static function __make(string $algo, $key): HashContext {
-        $c = new HashContext(); $c->__algo = $algo; $c->__k = $key; return $c;
+    public static function __make(string $algo, $key, $init = null): HashContext {
+        $c = new HashContext(); $c->__algo = $algo; $c->__k = $key; $c->__init = $init; return $c;
     }
     public static function __feed(HashContext $c, string $fn, string $data): void {
         if ($c->__done) { throw new TypeError("$fn(): Argument #1 (\$context) must be a valid, non-finalized HashContext"); }
@@ -1041,13 +1205,13 @@ final class HashContext {
     public static function __final(HashContext $c, bool $binary): string {
         if ($c->__done) { throw new TypeError("hash_final(): Argument #1 (\$context) must be a valid, non-finalized HashContext"); }
         $c->__done = true;
-        $r = $c->__k === null ? hash($c->__algo, $c->__d, $binary) : hash_hmac($c->__algo, $c->__d, $c->__k, $binary);
+        $r = $c->__k === null ? __hash_digest($c->__algo, $c->__d, $binary, $c->__init) : hash_hmac($c->__algo, $c->__d, $c->__k, $binary);
         $c->__d = '';
         return $r;
     }
     public static function __copy(HashContext $c): HashContext {
         if ($c->__done) { throw new TypeError("hash_copy(): Argument #1 (\$context) must be a valid, non-finalized HashContext"); }
-        $n = HashContext::__make($c->__algo, $c->__k); $n->__d = $c->__d; return $n;
+        $n = HashContext::__make($c->__algo, $c->__k, $c->__init); $n->__d = $c->__d; return $n;
     }
 }
 function hash_init(string $algo, int $flags = 0, string $key = "", array $options = []): HashContext {
@@ -1064,7 +1228,7 @@ function hash_init(string $algo, int $flags = 0, string $key = "", array $option
         }
         return HashContext::__make($algo, $key);
     }
-    return HashContext::__make($algo, null);
+    return HashContext::__make($algo, null, func_num_args() > 3 ? __hash_init_options($algo, $options) : null);
 }
 function hash_update(HashContext $context, string $data): true {
     HashContext::__feed($context, 'hash_update', $data);

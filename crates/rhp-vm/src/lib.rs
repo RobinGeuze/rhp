@@ -59,8 +59,13 @@ type Includer = Box<dyn FnMut(&str, &[u8]) -> Result<Program, IncludeError>>;
 /// Why the SAPI's includer could not produce a `Program`.
 #[derive(Debug)]
 pub enum IncludeError {
-    /// A syntax error: becomes a catchable `ParseError` at (file, `line`).
-    Parse { message: String, line: u32 },
+    /// The parser refused the file: a catchable `class` (`ParseError`, or
+    /// `CompileError` from a grammar action) at (file, `line`).
+    Parse {
+        class: &'static str,
+        message: String,
+        line: u32,
+    },
     /// A compile error (E_COMPILE_ERROR) at `line`: a fatal error, not an
     /// exception — the request bails out (shutdown functions still run).
     Compile { message: String, line: u32 },
@@ -365,10 +370,10 @@ struct GenState {
 
 mod classes;
 mod compare;
-mod ext_names;
 mod output;
 mod reflect;
 mod request;
+mod stub_default;
 
 /// A function-static slot: (proto address, class it runs as, variable name).
 type StaticKey = (usize, Option<ClassId>, Vec<u8>);
@@ -414,6 +419,15 @@ impl Host for Vm {
 
     fn silenced(&self) -> bool {
         self.silence > 0
+    }
+
+    fn caller_strict_types(&self) -> bool {
+        // The user code calling the builtin: a prelude wrapper is internal.
+        self.stack
+            .iter()
+            .rev()
+            .find(|f| !is_prelude_proto(&f.proto))
+            .is_some_and(|f| f.proto.strict_types)
     }
 
     fn last_error(&self) -> Option<(i64, Vec<u8>, Vec<u8>, i64)> {
@@ -2041,6 +2055,11 @@ impl Host for Vm {
         let ifaces = entry.interfaces.iter().map(|&i| name(i)).collect();
         let traits = entry.traits.iter().map(|&t| name(t)).collect();
         Some((parents, ifaces, traits))
+    }
+
+    fn caller_scope(&self) -> Option<u32> {
+        // A builtin runs on its caller's frame.
+        self.stack.last().and_then(|f| f.defining_class)
     }
 
     fn object_scoped_props(&self, obj: &Value) -> Vec<(PhpStr, Value)> {
@@ -4220,6 +4239,8 @@ impl Vm {
             b"OpenSSLAsymmetricKey",
             b"OpenSSLCertificate",
             b"OpenSSLCertificateSigningRequest",
+            b"XMLParser",
+            b"XMLWriter",
         ];
         if self.class(cls).kind == ClassKind::Enum {
             return true;
@@ -4330,25 +4351,32 @@ impl Vm {
 
     // -- object destruction & request shutdown ---------------------------------
 
-    /// Remember a new object whose class defines `__destruct`.
+    /// Remember a new object whose class defines `__destruct` or has a
+    /// native `dtor_obj`.
     pub(crate) fn track_destructible(&mut self, h: &ObjectHandle) {
         let cls = h.borrow().class;
-        if self.lookup_method(cls, b"__destruct").is_some() {
+        if self.class(cls).native_dtor || self.lookup_method(cls, b"__destruct").is_some() {
             self.destructibles.push(h.clone());
         }
     }
 
-    /// Call `__destruct` on `h` (already removed from the tracking list, so it
-    /// runs at most once).
+    /// Destruct `h` (already removed from the tracking list, so it runs at
+    /// most once): the class's native `dtor_obj` first, then `__destruct`
+    /// (zend_objects_destroy_object).
     fn call_destructor(&mut self, h: ObjectHandle) -> Result<(), Thrown> {
         if h.borrow().id < self.destructed_below {
             return Ok(()); // marked destructed by a fatal error's bailout
         }
         let cls = h.borrow().class;
+        let native = if self.class(cls).native_dtor {
+            builtins::object_dtor(self, &h)
+        } else {
+            Ok(())
+        };
         if let Some(m) = self.lookup_method(cls, b"__destruct") {
             self.call_sync(&m, Some(h), cls, Vec::new())?;
         }
-        Ok(())
+        native
     }
 
     /// Destruct every tracked object nothing else references any more (php
@@ -5465,7 +5493,9 @@ impl Vm {
         frame.argc = args.len();
         // A named-argument call armed `pending_named` for this frame.
         let named = self.pending_named.take();
+        let count_error = self.internal_arg_count_error(&proto, frame, args.len());
         let failed = match bind_params(&proto, args, frame) {
+            _ if count_error.is_some() => count_error.map(|e| (0, e)),
             Err(missing) => Some((missing, self.arg_count_error(&proto, frame, args.len()))),
             Ok(()) => {
                 if let Some((holes, extra)) = named {
@@ -5490,12 +5520,16 @@ impl Vm {
         let Some((idx, err)) = failed else {
             return Ok(());
         };
-        let line = proto.params.get(idx).map(|p| p.line).unwrap_or(0);
-        let at = (proto.debug.file.as_bytes().to_vec(), line);
+        // A prelude callee has no file of its own: like an internal function,
+        // the error belongs to the calling user frame (the throw site).
+        let at = (!is_prelude_proto(&proto)).then(|| {
+            let line = proto.params.get(idx).map(|p| p.line).unwrap_or(0);
+            (proto.debug.file.as_bytes().to_vec(), line)
+        });
         let mut pushed = Frame::new(proto.clone(), Reg::MAX);
         std::mem::swap(&mut pushed, frame);
         self.stack.push(pushed);
-        let t = self.materialize(err, Some(at));
+        let t = self.materialize(err, at);
         let mut popped = self.stack.pop().expect("pushed frame");
         std::mem::swap(&mut popped, frame);
         Err(t)
@@ -5537,6 +5571,57 @@ impl Vm {
                 String::from_utf8_lossy(m.proto.name.as_bytes())
             ),
         ))
+    }
+
+    /// zpp's ArgumentCountError for a prelude function or a built-in class's
+    /// prelude method called with an argument count its stub signature
+    /// rejects (prelude code calling it is not checked).
+    fn internal_arg_count_error(
+        &self,
+        proto: &FunctionProto,
+        frame: &Frame,
+        passed: usize,
+    ) -> Option<Thrown> {
+        use builtins::signatures::Signature;
+        if !is_prelude_proto(proto) {
+            return None;
+        }
+        let caller = self.stack.len().checked_sub(1)?;
+        if self.is_internal_frame(caller) {
+            return None;
+        }
+        let (name, min, max) = match frame.defining_class {
+            Some(cls) if self.is_internal_class(cls) => {
+                let cname = self.class(cls).name.as_bytes();
+                // Its php body throws without parsing any argument.
+                if cname.eq_ignore_ascii_case(b"WeakReference")
+                    && proto.name.as_bytes().eq_ignore_ascii_case(b"__construct")
+                {
+                    return None;
+                }
+                let st = builtins::signatures::method(cname, proto.name.as_bytes())?;
+                let name = format!("{}::{}", String::from_utf8_lossy(cname), st.name);
+                (name, st.min_args(), st.max_args())
+            }
+            Some(_) => return None,
+            None => {
+                let f = builtins::signatures::function(proto.name.as_bytes())?;
+                (f.name.to_string(), f.min_args(), f.max_args())
+            }
+        };
+        if let Some(e) = zpp_count_error(&name, min, max, passed) {
+            return Some(e);
+        }
+        // php takes the argument but the prelude body declares no such
+        // parameter (and reads none through func_get_args): refuse it rather
+        // than ignore it.
+        if passed > proto.params.len() && !proto.params.iter().any(|p| p.variadic) {
+            return Some(Thrown::unsupported(
+                format!("{name}() argument #{}", proto.params.len() + 1),
+                "not implemented",
+            ));
+        }
+        None
     }
 
     /// "Too few arguments to function f(), N passed[ in F on line L] and
@@ -8584,8 +8669,18 @@ impl Vm {
                 self.compile_error(&message, file.as_bytes(), line);
                 Err(Thrown::Exit(255))
             }
-            Err(IncludeError::Parse { message, line }) => Err(self.materialize(
-                Thrown::error("ParseError", message),
+            // raised outside the file: where the include/eval runs
+            Err(IncludeError::Parse {
+                class,
+                message,
+                line: 0,
+            }) => Err(Thrown::error(class, message)),
+            Err(IncludeError::Parse {
+                class,
+                message,
+                line,
+            }) => Err(self.materialize(
+                Thrown::error(class, message),
                 Some((file.as_bytes().to_vec(), line)),
             )),
         }
@@ -8609,16 +8704,17 @@ impl Vm {
         self.destructibles.clear();
     }
 
-    /// The main script failed to parse: php reports `Parse error: …` through
-    /// the usual display/log path (exit status 255 is the SAPI's job).
-    pub fn report_parse_error(&mut self, message: &str, file: &str, line: u32) {
-        self.display_error(
-            4,
-            "Parse error",
-            message.as_bytes(),
-            file.as_bytes(),
-            line as i64,
-        );
+    /// The main script failed to parse: php reports the uncaught `class`
+    /// (zend_exception_error) as `Parse error: …` (E_PARSE) or, for a
+    /// CompileError, `Fatal error: …` (E_COMPILE_ERROR) through the usual
+    /// display/log path (exit status 255 is the SAPI's job).
+    pub fn report_parse_error(&mut self, class: &str, message: &str, file: &str, line: u32) {
+        let (ty, label) = if class == "ParseError" {
+            (4, "Parse error")
+        } else {
+            (64, "Fatal error")
+        };
+        self.display_error(ty, label, message.as_bytes(), file.as_bytes(), line as i64);
     }
 
     fn do_include(
@@ -9317,6 +9413,14 @@ impl Vm {
         name_lc: &[u8],
         args: &[Value],
     ) -> Option<Result<Value, Thrown>> {
+        if matches!(
+            name_lc,
+            b"current" | b"key" | b"valid" | b"next" | b"send" | b"rewind" | b"getreturn"
+        ) {
+            if let Some(e) = native_method_count_error("Generator", name_lc, args.len()) {
+                return Some(Err(e));
+            }
+        }
         Some(match name_lc {
             b"current" => (|| {
                 self.gen_ensure_started(id)?;
@@ -9459,7 +9563,11 @@ impl Vm {
         mname: &[u8],
         mut args: Vec<Value>,
     ) -> Result<Value, Thrown> {
-        match mname.to_ascii_lowercase().as_slice() {
+        let lc = mname.to_ascii_lowercase();
+        if let Some(e) = native_method_count_error("Closure", &lc, args.len()) {
+            return Err(e);
+        }
+        match lc.as_slice() {
             b"bindto" => {
                 let new_this = args.first().cloned().unwrap_or(Value::Null);
                 let scope = args.get(1).cloned().unwrap_or_else(|| Value::str("static"));
@@ -9468,12 +9576,6 @@ impl Vm {
                     .unwrap_or(Value::Null))
             }
             b"call" => {
-                if args.is_empty() {
-                    return Err(Thrown::error(
-                        "ArgumentCountError",
-                        "Closure::call() expects at least 1 argument, 0 given",
-                    ));
-                }
                 // Temporarily binds `$this` AND the scope to the new object.
                 let new_this = args.remove(0);
                 let bound = self
@@ -10245,17 +10347,18 @@ impl Vm {
         // By-ref builtins (sort/array_push/preg_match/…) need their by-reference
         // positions kept as the `Value::Ref` the call site built, so they can
         // write back to the caller's variable. Other args deref to plain values.
-        let ref_mask = rhp_bytecode::builtin_ref_params(name_lc);
+        use builtins::signatures::Signature;
+        let sig = builtins::signatures::function(name_lc.as_bytes());
         let args: Vec<Value> = (0..argc)
             .map(|i| {
-                if ref_mask.get(i as usize).copied().unwrap_or(false) {
+                if sig.is_some_and(|s| s.by_ref(i as usize)) {
                     self.stack[top].regs[(base + i) as usize].clone()
                 } else {
                     self.reg_get(top, base + i)
                 }
             })
             .collect();
-        self.run_builtin(builtin, args, frameless)
+        self.run_builtin_sig(builtin, sig, args, frameless)
     }
 
     /// Call a builtin by name with a pre-collected argument vector.
@@ -10281,7 +10384,6 @@ impl Vm {
         self.run_builtin(builtin, args, frameless)
     }
 
-    /// [`Vm::invoke_builtin_ex`] for an already looked-up builtin.
     /// zpp's checks on a builtin's scalar / array typed parameters (from
     /// php's stubs): a `Stringable` object passed to a `string` parameter is
     /// converted with `__toString()`; other objects, and arrays where no
@@ -10293,17 +10395,20 @@ impl Vm {
     fn coerce_builtin_args(
         &mut self,
         name: &str,
+        sig: Option<&'static builtins::signatures::Func>,
         args: &mut [Value],
         user: bool,
     ) -> Result<(), Thrown> {
-        let params = builtins::stub_params::params(name);
-        for &(pos, pname, ty, variadic, nullable, has_str, has_arr, by_ref) in params {
-            let range = if variadic {
-                pos as usize..args.len()
+        let params = sig.map_or(&[][..], builtins::signatures::scalar_params);
+        for sp in params {
+            let (pos, pname, ty) = (sp.pos, sp.name, sp.ty);
+            let (nullable, has_str, has_arr) = (sp.nullable, sp.has_str, sp.has_arr);
+            let range = if sp.variadic {
+                pos..args.len()
             } else {
-                pos as usize..(pos as usize + 1).min(args.len())
+                pos..(pos + 1).min(args.len())
             };
-            if by_ref {
+            if sp.by_ref {
                 // `array &$array` (sort, usort, array_push, …): the referenced
                 // value must already be an array.
                 if user {
@@ -10405,20 +10510,33 @@ impl Vm {
         }
     }
 
+    /// [`Vm::invoke_builtin_ex`] for an already looked-up builtin.
     fn run_builtin(
         &mut self,
         builtin: &'static builtins::Builtin,
+        args: Vec<Value>,
+        frameless: bool,
+    ) -> Result<Value, Thrown> {
+        let sig = builtins::signatures::function(builtin.name.as_bytes());
+        self.run_builtin_sig(builtin, sig, args, frameless)
+    }
+
+    /// [`Vm::run_builtin`] with the builtin's stub signature.
+    fn run_builtin_sig(
+        &mut self,
+        builtin: &'static builtins::Builtin,
+        sig: Option<&'static builtins::signatures::Func>,
         mut args: Vec<Value>,
         frameless: bool,
     ) -> Result<Value, Thrown> {
         // Free streams whose last reference went away (php closes a resource
         // when its refcount drops to zero).
         self.reap_dropped_streams();
-        let count_error = builtin_arg_count_error(builtin, args.len());
+        let count_error = builtin_arg_count_error(builtin, sig, args.len());
         if count_error.is_none() {
             let caller = self.stack.len().saturating_sub(1);
             let user = !self.stack.is_empty() && !self.is_internal_frame(caller);
-            self.coerce_builtin_args(builtin.name, &mut args, user)?;
+            self.coerce_builtin_args(builtin.name, sig, &mut args, user)?;
         }
         // A builtin called from engine-internal (prelude) code is not a php
         // frame, and php compiles a few calls to opcodes (no frame either).
@@ -10475,27 +10593,94 @@ fn undefined_function(name: &rhp_values::PhpStr) -> Thrown {
     )
 }
 
-/// zend_wrong_parameters_count_error: "f() expects exactly 1 argument, 0 given".
-fn builtin_arg_count_error(b: &builtins::Builtin, n: usize) -> Option<Thrown> {
-    let max = b.max_args.unwrap_or(usize::MAX);
-    if n >= b.min_args && n <= max {
-        return None;
+/// Functions whose php body accepts one of two exact argument counts and
+/// checks that itself, before any type check.
+fn two_form_arity(name: &str) -> Option<[usize; 2]> {
+    match name {
+        // ZEND_NUM_ARGS() == 0 returns early, then zpp(2, 2).
+        "rand" | "mt_rand" => Some([0, 2]),
+        // A 2-argument call takes an array $from; the error says "exactly".
+        "strtr" => Some([2, 3]),
+        _ => None,
     }
-    let (which, bound) = if b.min_args == max {
-        ("exactly", b.min_args)
-    } else if n < b.min_args {
-        ("at least", b.min_args)
-    } else {
-        ("at most", max)
+}
+
+/// zend_wrong_parameters_count_error: "f() expects exactly 1 argument, 0 given".
+/// The bounds are php's (the stub's), except that the minimum never drops
+/// below the registration's: the array_u* callback functions check a larger
+/// minimum in their bodies, as php does. An argument beyond the registered
+/// maximum is a parameter php declares but the body does not implement: it
+/// is refused, never ignored.
+fn builtin_arg_count_error(
+    b: &builtins::Builtin,
+    sig: Option<&builtins::signatures::Func>,
+    n: usize,
+) -> Option<Thrown> {
+    use builtins::signatures::Signature;
+    let (min, max) = match sig {
+        Some(s) => (s.min_args().max(b.min_args), s.max_args()),
+        None => (b.min_args, b.max_args),
+    };
+    if let Some(counts) = two_form_arity(b.name) {
+        if !counts.contains(&n) {
+            // The smallest non-zero count when below it, else the largest.
+            let low = if counts[0] == 0 { counts[1] } else { counts[0] };
+            let bound = if n < low { low } else { counts[1] };
+            return Some(Thrown::error(
+                "ArgumentCountError",
+                format!(
+                    "{}() expects exactly {bound} argument{}, {n} given",
+                    b.name,
+                    if bound == 1 { "" } else { "s" }
+                ),
+            ));
+        }
+    }
+    if n >= min && n <= max.unwrap_or(usize::MAX) {
+        return match (sig, b.max_args) {
+            (Some(s), Some(implemented)) if n > implemented => Some(Thrown::unsupported(
+                format!(
+                    "{}() argument #{} (${})",
+                    b.name,
+                    implemented + 1,
+                    s.param(implemented).map_or("", |p| p.name)
+                ),
+                "not implemented",
+            )),
+            _ => None,
+        };
+    }
+    zpp_count_error(b.name, min, max, n)
+}
+
+/// zend_wrong_parameters_count_error for `name` with php's bounds.
+fn zpp_count_error(name: &str, min: usize, max: Option<usize>, passed: usize) -> Option<Thrown> {
+    let exact = max == Some(min);
+    let (which, bound) = match max {
+        _ if passed < min => (if exact { "exactly" } else { "at least" }, min),
+        Some(max) if passed > max => (if exact { "exactly" } else { "at most" }, max),
+        _ => return None,
     };
     Some(Thrown::error(
         "ArgumentCountError",
         format!(
-            "{}() expects {which} {bound} argument{}, {n} given",
-            b.name,
+            "{name}() expects {which} {bound} argument{}, {passed} given",
             if bound == 1 { "" } else { "s" }
         ),
     ))
+}
+
+/// The stub's arity check for a method the VM implements natively
+/// (Generator, Closure).
+fn native_method_count_error(class: &str, method: &[u8], passed: usize) -> Option<Thrown> {
+    use builtins::signatures::Signature;
+    let st = builtins::signatures::method(class.as_bytes(), method)?;
+    zpp_count_error(
+        &format!("{class}::{}", st.name),
+        st.min_args(),
+        st.max_args(),
+        passed,
+    )
 }
 
 /// Calls php compiles to dedicated opcodes instead of a function call

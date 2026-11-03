@@ -1,6 +1,6 @@
-# SHA-256 of PCRE2 release tarballs, as Homebrew's pcre2 formula pins them
-# (homebrew-core history). action.yml builds one when php links a PCRE2
-# the distro has no -dev package for.
+# SHA-256 of the release tarballs build-from-source.sh may build, when php
+# links a release the distro has no -dev package for.
+# PCRE2: as Homebrew's pcre2 formula pins them (homebrew-core history).
 e2a53984ff0b07dfdb5ae4486bbb9b21cca8e7df2434096cc9bf1b728c350bcb  pcre2-10.43.tar.bz2
 d34f02e113cf7193a1ebf2770d3ac527088d485d4e047ed10e5d217c6ef5de96  pcre2-10.44.tar.bz2
 21547f3516120c75597e5b30a992e27a592a31950b5140e7b8bfde3f192033c4  pcre2-10.45.tar.bz2
@@ -8,3 +8,8 @@ d34f02e113cf7193a1ebf2770d3ac527088d485d4e047ed10e5d217c6ef5de96  pcre2-10.44.ta
 47fe8c99461250d42f89e6e8fdaeba9da057855d06eb7fc08d9ca03fd08d7bc7  pcre2-10.47.tar.bz2
 b6c68fdf6f3ac31388b50aa89ff0fc49c00c987c16e7b5146491d12003f2c8ed  pcre2-10.48.tar.bz2
 53c156e1ba416a20da8e65395daa132da0d80e76910424caca3fcdae7831d384  pcre2-10.49.tar.bz2
+# libxml2: GNOME's published checksums
+# (download.gnome.org/sources/libxml2/2.15/libxml2-<v>.sha256sum).
+c8b9bc81f8b590c33af8cc6c336dbff2f53409973588a351c95f1c621b13d09d  libxml2-2.15.2.tar.xz
+78262a6e7ac170d6528ebfe2efccdf220191a5af6a6cd61ea4a9a9a5042c7a07  libxml2-2.15.3.tar.xz
+98087fd181d9070724f3fbc65c7377db03038eb92bd882374daff44940138821  libxml2-2.15.4.tar.xz

@@ -116,13 +116,15 @@ jobs:
           # nightly does): tests/ includes tests/basic; sapi/cgi/tests,
           # ext/session/tests and a few others hold CGI tests
           # (--GET--/--POST--/--CGI--/...), run under php-cgi; tests also
-          # include helpers from other trees' tests/ directories.
+          # include helpers from other trees' tests/ directories. The stubs
+          # feed `gen signatures --check`.
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /Zend/tests/
             /tests/
             /ext/*/tests/
             /sapi/*/tests/
+            **/*.stub.php
       - uses: ./.github/actions/setup-php
         with:
           php-version: '8.5'
@@ -131,11 +133,57 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release -p rhp-cli -p rhp-difftest
+      - name: Builtin signatures match php-src's stubs
+        run: target/release/rhp-difftest gen signatures --php-src php-src --check
       - name: Known-passing php-src tests still match
         run: >-
           target/release/rhp-difftest phpt --php-src php-src
           --php-cgi "$(command -v php-cgi)"
           --check-known tests/phpt/known-passing.txt
+
+  # The committed generated tables still match their sources: php-src's
+  # entity tables, and the Bison output in the php release tarball (the git
+  # tag has none). The tarball is pinned in tools/php-dist.sha256 and cached
+  # on that pin, so php.net is fetched once per release.
+  generated:
+    name: generated tables
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read pinned php-src commit
+        id: ref
+        run: echo "sha=$(grep -v '^#' tests/phpt/php-src.ref | head -1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: php/php-src
+          ref: ${{ steps.ref.outputs.sha }}
+          path: php-src
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /ext/standard/html_tables/
+            /ext/standard/html_tables.h
+      - uses: actions/cache@v4
+        with:
+          path: php-dist
+          key: php-dist-${{ hashFiles('tools/php-dist.sha256') }}
+      - name: Fetch and verify the pinned php release
+        run: |
+          name=$(awk '{print $2}' tools/php-dist.sha256)
+          mkdir -p php-dist
+          if [ ! -f "php-dist/$name" ]; then
+            curl -fsSL --retry 3 -o "php-dist/$name" "https://www.php.net/distributions/$name"
+          fi
+          (cd php-dist && sha256sum -c ../tools/php-dist.sha256)
+          dir=${name%.tar.xz}
+          tar -xJf "php-dist/$name" -C "$RUNNER_TEMP" "$dir/Zend" "$dir/main/php_version.h"
+          echo "PHP_DIST=$RUNNER_TEMP/$dir" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/native-deps
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p rhp-difftest
+      - run: target/debug/rhp-difftest gen html-tables --php-src php-src --check
+      - run: target/debug/rhp-difftest gen parser --php-dist "$PHP_DIST" --check
 
   # Pinned framework fixture apps (tests/apps/apps.toml): the matrix is read
   # from the manifest, so adding an app version needs no workflow change.

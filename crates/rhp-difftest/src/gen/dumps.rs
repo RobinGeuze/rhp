@@ -96,8 +96,11 @@ fn unexport(v: &str) -> Result<Option<String>, String> {
     Ok(Some(inner.replace("\\'", "'").replace("\\\\", "\\")))
 }
 
-/// `(module, name, access, default)` rows of an `# ini` section.
-fn ini_rows(text: &str) -> Result<Vec<(String, String, String, Option<String>)>, String> {
+/// One ini directive: (module, name, access, default).
+type IniRow = (String, String, String, Option<String>);
+
+/// The rows of an `# ini` section.
+fn ini_rows(text: &str) -> Result<Vec<IniRow>, String> {
     section(text, "ini")
         .into_iter()
         .map(|l| {

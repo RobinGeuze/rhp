@@ -157,10 +157,22 @@ const KEYWORDS: &[(&str, i64)] = &[
 ];
 
 pub fn keyword_id(label: &[u8]) -> Option<i64> {
-    KEYWORDS
-        .iter()
-        .find(|(k, _)| k.len() == label.len() && k.as_bytes().eq_ignore_ascii_case(label))
-        .map(|(_, id)| *id)
+    static SORTED: std::sync::OnceLock<Vec<(&[u8], i64)>> = std::sync::OnceLock::new();
+    let sorted = SORTED.get_or_init(|| {
+        let mut v: Vec<_> = KEYWORDS.iter().map(|(k, id)| (k.as_bytes(), *id)).collect();
+        v.sort();
+        v
+    });
+    let mut buf = [0u8; 16];
+    let lower = buf.get_mut(..label.len())?;
+    for (d, s) in lower.iter_mut().zip(label) {
+        *d = s.to_ascii_lowercase();
+    }
+    let lower = &*lower;
+    sorted
+        .binary_search_by(|(k, _)| (*k).cmp(lower))
+        .ok()
+        .map(|i| sorted[i].1)
 }
 
 /// Every keyword token id (the "semi-reserved" set TOKEN_PARSE may turn into T_STRING).

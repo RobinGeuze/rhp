@@ -7,6 +7,10 @@
 //! bottle itself (see [`bottle`]) the "build" section must match too, which
 //! catches a rebottle. Any other php is compared on the "release" section
 //! only, and only when it is the same release as rhp.
+//!
+//! The "linked" section holds the versions of the libraries rhp links
+//! itself. It must match any php 8.5 on the same machine (Homebrew's on the
+//! mac, setup-php's on CI): rhp has to link what php links.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -106,6 +110,39 @@ fn rhp_reports_the_reference_build() {
         section(&ours, "build"),
         section(&theirs, "build"),
         "build section differs from the reference php: update version.rs"
+    );
+}
+
+#[test]
+fn rhp_links_what_php_links() {
+    let php = PathBuf::from(std::env::var("RHP_PHP").unwrap_or_else(|_| "php".into()));
+    let rhp = Path::new(env!("CARGO_BIN_EXE_rhp"));
+    let script = script();
+    let script = script.to_str().unwrap();
+    let ours = run(rhp, &["-n", script]).expect("rhp runs the capture script");
+    assert!(!section(&ours, "linked").is_empty(), "{ours}");
+    let Some(theirs) = run(&php, &["-n", script]) else {
+        eprintln!("no php; skipping");
+        return;
+    };
+    let minor = run(
+        &php,
+        &[
+            "-n",
+            "-r",
+            "echo PHP_MAJOR_VERSION, '.', PHP_MINOR_VERSION;",
+        ],
+    );
+    if minor.as_deref() != Some("8.5") {
+        eprintln!("php is {minor:?}, not 8.5: no reference; skipping");
+        return;
+    }
+    assert_eq!(
+        section(&ours, "linked"),
+        section(&theirs, "linked"),
+        "rhp links other library versions than {}: install the libraries it links \
+         (docs/design/libraries.md) and rebuild",
+        php.display()
     );
 }
 

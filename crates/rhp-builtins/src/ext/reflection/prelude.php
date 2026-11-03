@@ -149,7 +149,7 @@ class ReflectionAttribute implements Reflector {
     const IS_INSTANCEOF = 2;
     public string $name;
     private $__d; private $__all;
-    public function __construct($d, $all = []) { $this->__d = $d; $this->__all = $all; $this->name = $d[0]; }
+    private function __construct($d, $all = []) { $this->__d = $d; $this->__all = $all; $this->name = $d[0]; }
     public function getName(): string { return $this->__d[0]; }
     public function getTarget(): int { return $this->__d[1]; }
     public function isRepeated(): bool { return $this->__d[2]; }
@@ -858,7 +858,7 @@ class ReflectionConstant implements Reflector {
 
 final class ReflectionReference {
     private $__id;
-    public function __construct($id) { $this->__id = $id; }
+    private function __construct($id) { $this->__id = $id; }
     public static function fromArrayElement(array $array, int|string $key): ?ReflectionReference {
         if (!array_key_exists($key, $array)) { throw new ReflectionException('Array key not found'); }
         $id = __reflect('ref_id', $array, $key);

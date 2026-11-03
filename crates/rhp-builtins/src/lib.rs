@@ -22,6 +22,7 @@ pub mod pcre;
 pub mod signatures;
 pub mod streams;
 pub mod version;
+pub mod zend;
 
 pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};
 pub use ext::simplexml::{sxe_bool, sxe_props_array, sxe_same_node, sxe_string};
@@ -67,6 +68,7 @@ pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_inte
 mod arr_fns;
 mod arraycmp_fns;
 mod arrayset_fns;
+#[rustfmt::skip]
 mod const_modules;
 mod crypt_fns;
 mod datetime_fns;
@@ -77,10 +79,14 @@ mod class_fns;
 mod file_fns;
 mod filter_fns;
 mod fs_fns;
+mod html;
+#[rustfmt::skip]
+mod html_tables;
 pub mod http;
 mod inet;
 mod info_fns;
 mod ini_parse;
+#[rustfmt::skip]
 mod ini_table;
 mod json_fns;
 mod math_fns;
@@ -1326,6 +1332,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
     }
     let rest: Vec<(&'static str, Registrar)> = vec![
         ("webenc_fns", Box::new(webenc_fns::register)),
+        ("html", Box::new(html::register)),
         ("datetime_fns", Box::new(datetime_fns::register)),
         ("dt_oop_fns", Box::new(dt_oop_fns::register)),
         ("strtotime_fns", Box::new(strtotime_fns::register)),
@@ -1691,6 +1698,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("ENT_IGNORE", Value::Int(4)),
         ("ENT_SUBSTITUTE", Value::Int(8)),
         ("ENT_DISALLOWED", Value::Int(128)),
+        ("HTML_SPECIALCHARS", Value::Int(0)),
+        ("HTML_ENTITIES", Value::Int(1)),
         ("PHP_ROUND_HALF_UP", Value::Int(1)),
         ("PHP_ROUND_HALF_DOWN", Value::Int(2)),
         ("PHP_ROUND_HALF_EVEN", Value::Int(3)),

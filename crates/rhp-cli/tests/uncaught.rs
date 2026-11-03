@@ -236,6 +236,18 @@ fn parse_errors_main_eval_and_include() {
         "<?php\nfunction f() { include __DIR__ . '/bad.php'; }\nf();\n",
     );
     assert_same(&inc);
+    // A grammar action's CompileError: a fatal error for the main script,
+    // an uncaught CompileError from include.
+    let mods = dir.join("mods.php");
+    write(&mods, "<?php\nclass A {\n    public\n    public $x;\n}\n");
+    let out = assert_same(&mods);
+    assert!(out.contains("Fatal error: Multiple access type modifiers are not allowed"));
+    let inc_mods = dir.join("inc_mods.php");
+    write(
+        &inc_mods,
+        "<?php\necho 1;\ninclude __DIR__ . '/mods.php';\n",
+    );
+    assert_same(&inc_mods);
 }
 
 /// An arity error of a prelude-implemented builtin is reported at the

@@ -92,6 +92,8 @@ struct Lexer<'a> {
     state: St,
     stack: Vec<St>,
     mode: i64,
+    /// SCNG(lineno), counted where php's scanner counts it.
+    lineno: u32,
 }
 
 fn is_label_char(c: u8) -> bool {
@@ -127,6 +129,12 @@ impl<'a> Lexer<'a> {
         self.s.get(i).copied()
     }
 
+    /// Like `at`, but the C string's terminating NUL is there too: re2c's
+    /// DFA reads it like any byte (see `next`).
+    fn at0(&self, i: usize) -> Option<u8> {
+        self.at(i).or((i == self.s.len()).then_some(0))
+    }
+
     /// `[ \t]*` from `i`; returns the end position.
     fn ts(&self, mut i: usize) -> usize {
         while self.at(i).is_some_and(is_ts) {
@@ -159,7 +167,7 @@ impl<'a> Lexer<'a> {
         while let Some(p) = stack.pop() {
             for l in unit(self, p) {
                 let e = p + l;
-                if e <= self.s.len() && !reach[e] {
+                if e <= self.s.len() + 1 && !reach[e] {
                     reach[e] = true;
                     best = best.max(e);
                     stack.push(e);
@@ -181,7 +189,7 @@ impl<'a> Lexer<'a> {
                 if n != b'{' && n != 0 {
                     v.push(2);
                 }
-                if n == b'\\' && self.at(p + 2).is_some() {
+                if n == b'\\' && self.at0(p + 2).is_some() {
                     v.push(3);
                 }
             }
@@ -219,10 +227,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn fallback_chars(&self, p: usize) -> Vec<usize> {
-        match self.at(p) {
+        match self.at0(p) {
             Some(b'$') => self.literal_dollar(p),
             Some(b'\\') => {
-                if self.at(p + 1).is_some() {
+                if self.at0(p + 1).is_some() {
                     vec![2]
                 } else {
                     Vec::new()
@@ -234,10 +242,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn section_value_chars(&self, p: usize) -> Vec<usize> {
-        match self.at(p) {
+        match self.at0(p) {
             Some(b'$') => self.literal_dollar(p),
             Some(b'\\') => {
-                if self.at(p + 1).is_some() {
+                if self.at0(p + 1).is_some() {
                     vec![2]
                 } else {
                     Vec::new()
@@ -318,8 +326,11 @@ impl<'a> Lexer<'a> {
             return 0;
         }
         let mut k = j + 1;
-        while self.at(k).is_some_and(|c| c != b'\r' && c != b'\n') {
+        while self.at0(k).is_some_and(|c| c != b'\r' && c != b'\n') {
             k += 1;
+        }
+        if k > self.s.len() {
+            return k - i;
         }
         let nl = self.newline(k);
         if nl == 0 {
@@ -373,10 +384,10 @@ impl<'a> Lexer<'a> {
             }
             // R2 '...'
             if matches!(st, Value | SectionValue | Offset) && c0 == b'\'' {
-                if let Some(off) = self.s[i + 1..].iter().position(|&c| c == b'\'') {
-                    if off > 0 {
-                        cands.push((off + 2, 2));
-                    }
+                match self.s[i + 1..].iter().position(|&c| c == b'\'') {
+                    Some(0) => {}
+                    Some(off) => cands.push((off + 2, 2)),
+                    None => cands.push((self.s.len() + 1 - i, 2)),
                 }
             }
             // R3 "]"[ \t]*NEWLINE?
@@ -454,7 +465,7 @@ impl<'a> Lexer<'a> {
             if st == SectionRaw {
                 let mut j = i;
                 while self
-                    .at(j)
+                    .at0(j)
                     .is_some_and(|c| !matches!(c, b']' | b'\n' | b'\r'))
                 {
                     j += 1;
@@ -556,6 +567,13 @@ impl<'a> Lexer<'a> {
             }
             // R34 <*>[^]
             cands.push((1, 34));
+            // A rule that matched on past the terminating NUL: re2c's DFA
+            // read beyond YYLIMIT, and php's YYFILL returns 0 (end of input)
+            // without a token. That is an unclosed quote, a comment with no
+            // newline, or a trailing `\` that takes the NUL as ANY_CHAR.
+            if cands.iter().any(|&(len, _)| i + len > self.s.len()) {
+                return Tok::End;
+            }
 
             // Longest match; ties go to the earliest rule.
             let (len, rule) = cands.iter().copied().fold((0usize, 255u8), |best, c| {
@@ -579,6 +597,7 @@ impl<'a> Lexer<'a> {
                 2 => return Tok::Raw(IV::s(&text[1..text.len() - 1])),
                 3 => {
                     self.state = Initial;
+                    self.lineno += 1;
                     return Tok::Ch(b']');
                 }
                 4 => {
@@ -688,6 +707,7 @@ impl<'a> Lexer<'a> {
                 16 => return Tok::Raw(IV::s(text)),
                 17 => {
                     self.state = Initial;
+                    self.lineno += 1;
                     return Tok::Eol;
                 }
                 18 => return Tok::Constant(IV::s(text)),
@@ -741,13 +761,14 @@ impl<'a> Lexer<'a> {
                         break;
                     }
                     self.pos = s;
+                    self.lineno += count_newlines(&self.s[i..s]);
                     return Tok::Quoted(IV::s(&escape_string(&self.s[i..s])));
                 }
                 29 => return Tok::Ws(IV::s(text)),
                 30 => continue,
-                31 => return Tok::Eol,
-                32 => {
+                31 | 32 => {
                     self.state = Initial;
+                    self.lineno += 1;
                     return Tok::Eol;
                 }
                 33 => {
@@ -758,6 +779,17 @@ impl<'a> Lexer<'a> {
             }
         }
     }
+}
+
+/// Newlines as zend_ini_escape_string counts them (`\n`, lone `\r`).
+fn count_newlines(t: &[u8]) -> u32 {
+    let mut n = 0;
+    for (i, &c) in t.iter().enumerate() {
+        if c == b'\n' || (c == b'\r' && t.get(i + 1) != Some(&b'\n')) {
+            n += 1;
+        }
+    }
+    n
 }
 
 fn trim_ws(mut t: &[u8]) -> &[u8] {
@@ -1189,20 +1221,85 @@ fn strtoul(s: &[u8]) -> i64 {
     (if neg { n.wrapping_neg() } else { n }) as i64
 }
 
-/// Parse ini text; `None` = syntax error (php returns false).
-fn parse_ini(host: &dyn Host, src: &[u8], sections: bool, mode: i64) -> Option<PhpArray> {
-    // The scanner sees a C string.
-    let src = match src.iter().position(|&b| b == 0) {
+/// The scanner sees a C string.
+fn c_string(src: &[u8]) -> &[u8] {
+    match src.iter().position(|&b| b == 0) {
         Some(p) => &src[..p],
         None => src,
-    };
-    let mut lx = Lexer {
-        s: src,
+    }
+}
+
+fn lexer(src: &[u8], mode: i64) -> Lexer<'_> {
+    Lexer {
+        s: c_string(src),
         pos: 0,
         state: St::Initial,
         stack: Vec::new(),
         mode,
+        lineno: 1,
+    }
+}
+
+/// zend_ini_parser.y's verdict on `src`: its syntax error message and line
+/// (zend_ini_scanner_get_lineno) when the grammar rejects it.
+fn syntax_error(src: &[u8], mode: i64) -> Option<(Vec<u8>, u32)> {
+    use crate::zend::bison::{self, Outcome};
+    use crate::zend::ini_parser_tables::{self as t, TABLES};
+    let mut lx = lexer(src, mode);
+    let outcome = TABLES.parse(|| match lx.next() {
+        Tok::End => 0,
+        Tok::Section => t::TC_SECTION,
+        Tok::Raw(_) => t::TC_RAW,
+        Tok::Constant(_) => t::TC_CONSTANT,
+        Tok::Number(_) => t::TC_NUMBER,
+        Tok::Str(_) => t::TC_STRING,
+        Tok::Ws(_) => t::TC_WHITESPACE,
+        Tok::Label(_) => t::TC_LABEL,
+        Tok::Offset(_) => t::TC_OFFSET,
+        Tok::DollarCurly => t::TC_DOLLAR_CURLY,
+        Tok::Varname(_) => t::TC_VARNAME,
+        Tok::Quoted(_) => t::TC_QUOTED_STRING,
+        Tok::Fallback => t::TC_FALLBACK,
+        Tok::BoolTrue(_) => t::BOOL_TRUE,
+        Tok::BoolFalse(_) => t::BOOL_FALSE,
+        Tok::Null(_) => t::NULL_NULL,
+        Tok::Eol => t::END_OF_LINE,
+        Tok::Ch(c) => c as i32,
+    });
+    match outcome {
+        // no actions run, so none fails
+        Outcome::Accept | Outcome::Aborted => None,
+        Outcome::MemoryExhausted => Some((b"memory exhausted".to_vec(), lx.lineno)),
+        Outcome::SyntaxError { args } => Some((
+            bison::syntax_error_message(&TABLES, &args, |n, _| bison::default_tnamerr(n)),
+            lx.lineno,
+        )),
+    }
+}
+
+/// php's ini_error: the syntax error as an E_WARNING naming the file
+/// ("Unknown" for a string).
+fn report_syntax_error(
+    host: &mut dyn Host,
+    src: &[u8],
+    mode: i64,
+    file: &[u8],
+) -> Result<bool, Thrown> {
+    let Some((msg, line)) = syntax_error(src, mode) else {
+        return Ok(false);
     };
+    let mut m = String::from_utf8_lossy(&msg).into_owned();
+    m.push_str(&format!(
+        " in {} on line {line}\n",
+        String::from_utf8_lossy(file)
+    ));
+    host.emit_diagnostic(crate::E_WARNING, &m)?;
+    Ok(true)
+}
+
+/// Parse ini text; `None` = syntax error (php returns false).
+fn parse_ini(host: &dyn Host, src: &[u8], sections: bool, mode: i64) -> Option<PhpArray> {
+    let mut lx = lexer(src, mode);
     let first = lx.next();
     let mut p = Parser {
         lx,
@@ -1265,6 +1362,9 @@ fn fn_parse_ini_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
         // php: Warning "Invalid scanner mode"
         return Ok(Value::Bool(false));
     }
+    if report_syntax_error(host, &s, mode, b"Unknown")? {
+        return Ok(Value::Bool(false));
+    }
     Ok(match parse_ini(host, &s, sections, mode) {
         Some(a) => Value::Array(a),
         None => Value::Bool(false),
@@ -1291,6 +1391,9 @@ fn fn_parse_ini_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
         return Ok(Value::Bool(false));
     };
     if !mode_ok(mode) {
+        return Ok(Value::Bool(false));
+    }
+    if report_syntax_error(host, &src, mode, &path)? {
         return Ok(Value::Bool(false));
     }
     Ok(match parse_ini(host, &src, sections, mode) {

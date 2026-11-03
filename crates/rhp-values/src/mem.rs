@@ -8,8 +8,9 @@
 //!   rounds it (16-byte granules up to 3 KiB, 4 KiB pages up to a chunk,
 //!   page-aligned huge blocks);
 //! - `real` / `real_peak`: memory taken from the system: 2 MiB chunks for the
-//!   small and large blocks plus the huge blocks, so `memory_get_usage(true)`
-//!   and the limit move in the same steps as php's.
+//!   small and large blocks (an emptied chunk stays, as zend_mm caches it,
+//!   until a lower limit needs it back) plus the huge blocks, so
+//!   `memory_get_usage(true)` and the limit move in the same steps as php's.
 //!
 //! The allocator never fails or unwinds because of the limit (a global
 //! allocator can't): crossing `memory_limit` records the size that crossed
@@ -28,11 +29,11 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// zend_mm's chunk: real usage grows and shrinks in these steps.
+/// zend_mm's chunk: real usage grows in these steps.
 pub const CHUNK_SIZE: usize = 2 * 1024 * 1024;
 /// zend_mm's page.
 const PAGE_SIZE: usize = 4096;
-/// Largest small (binned) block.
+/// Largest small block (zend_mm serves these from bins).
 const MAX_SMALL: usize = 3072;
 /// Largest block served from a chunk's pages (ZEND_MM_MAX_LARGE_SIZE); the
 /// first page of a chunk holds its header.

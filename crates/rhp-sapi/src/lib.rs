@@ -30,6 +30,17 @@ pub mod cgi;
 pub use rhp_builtins::sapi::{RequestInfo, Response, Sapi};
 /// The `-v` banner (`PHP 8.5.x (cli) (built: …)`) for a SAPI name.
 pub use rhp_builtins::version::banner as version_banner;
+/// The global allocator a binary that runs requests must install, for
+/// `memory_get_usage()` and `memory_limit`:
+///
+/// ```ignore
+/// #[global_allocator]
+/// static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
+/// ```
+///
+/// It is the system allocator plus per-thread accounting of the request
+/// running on that thread (see `docs/design/sapi.md`, *Memory*).
+pub use rhp_values::mem::CountingAlloc;
 
 /// What to run.
 pub enum Script {

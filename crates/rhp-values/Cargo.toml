@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 bstr.workspace = true
 indexmap.workspace = true
+libc = "0.2"
 rustc-hash.workspace = true
 # Shortest round-trip float digits (serialize_precision -1). Rounds exact ties
 # half-even like zend_dtoa mode 0; std's `{:e}` does not.

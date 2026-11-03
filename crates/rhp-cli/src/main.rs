@@ -14,6 +14,9 @@ use std::process::ExitCode;
 
 use rhp_sapi::Script;
 
+#[global_allocator]
+static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
+
 fn usage() -> ExitCode {
     eprintln!("usage: rhp [options] <script.php> [args...] | rhp [options] -r <code> [args...] | rhp --cgi [options] [script.php]");
     ExitCode::from(1)

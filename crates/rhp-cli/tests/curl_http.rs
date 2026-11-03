@@ -14,6 +14,10 @@ use rhp_compiler::compile_with_source;
 use rhp_frontend::Arena;
 use rhp_vm::Vm;
 
+// The engine's memory accounting (memory_get_usage(), memory_limit).
+#[global_allocator]
+static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
+
 /// `gzencode("compressed payload!")` as php produces it.
 const GZ_BODY: &[u8] = &[
     0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x13, 0x4b, 0xce, 0xcf, 0x2d, 0x28, 0x4a,

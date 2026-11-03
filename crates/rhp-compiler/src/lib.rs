@@ -2148,7 +2148,9 @@ fn prelude_classes() -> Result<Rc<PreludeParts>, Thrown> {
     if let Some(p) = PRELUDE_CACHE.with(|c| c.borrow().clone()) {
         return Ok(p);
     }
-    let parts = Rc::new(prelude_classes_isolated()?);
+    // Compiled once per thread, kept for every later request: not counted
+    // against a request's memory.
+    let parts = rhp_values::mem::uncounted(|| prelude_classes_isolated().map(Rc::new))?;
     PRELUDE_CACHE.with(|c| *c.borrow_mut() = Some(parts.clone()));
     Ok(parts)
 }

@@ -15,6 +15,7 @@ use rustc_hash::FxBuildHasher;
 
 pub mod conv;
 pub mod fmt;
+pub mod mem;
 pub mod thrown;
 
 pub use thrown::Thrown;
@@ -213,6 +214,11 @@ impl PhpStr {
     /// COW mutable access: clones the buffer iff it is currently shared.
     pub fn make_mut(&mut self) -> &mut BString {
         Rc::make_mut(&mut self.0)
+    }
+
+    /// Mutable access when this is the only handle to the buffer.
+    pub fn get_mut(&mut self) -> Option<&mut BString> {
+        Rc::get_mut(&mut self.0)
     }
 }
 

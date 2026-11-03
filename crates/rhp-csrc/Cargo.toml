@@ -1,0 +1,22 @@
+[package]
+name = "rhp-csrc"
+description = "php-src's own C, and frozen C libraries php links, vendored and compiled statically"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+# Our Rust, shim and glue: MIT OR Apache-2.0. Vendored (see NOTICE): php-src
+# (PHP-3.01), crypt_freesec (BSD-3-Clause), crypt_blowfish and crypt_sha256/512
+# (public domain), argon2 (CC0-1.0 OR Apache-2.0; Thomas Pornin's code in
+# src/encoding.c is CC0-1.0 only).
+license = "(MIT OR Apache-2.0) AND PHP-3.01 AND BSD-3-Clause AND LicenseRef-Public-Domain AND (CC0-1.0 OR Apache-2.0) AND CC0-1.0"
+links = "rhp_csrc"
+build = "build.rs"
+
+[features]
+# One feature per vendored library.
+default = ["crypt", "argon2"]
+crypt = []
+argon2 = []
+
+[build-dependencies]
+cc = "1.9"

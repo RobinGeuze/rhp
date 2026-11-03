@@ -10,7 +10,9 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
   matched php on both reference machines (the mac and CI link different
   versions of libxml2, ICU, PCRE2 and curl).
 - **Where php runs its own C** with no Zend dependency (libmbfl, timelib,
-  crypt), rhp compiles that C from the pinned php-src tag.
+  crypt), rhp compiles that C from the pinned php-src tag, in
+  `crates/rhp-csrc` (see [Compiled from source](#compiled-from-source-rhp-csrc)).
+  LGPL C such as libmbfl goes in its own crate (see [Licences](#licences)).
 - **Where php-src owns the data** (stubs, entity tables, Bison tables), rhp
   generates it from php-src.
 - A pure-Rust crate replaces library behaviour only with evidence: it is
@@ -26,7 +28,7 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 
 | Kind | Linked | Examples |
 |---|---|---|
-| Code rhp compiles: php-src C, frozen vendored libraries | static | libmbfl, timelib, argon2, oniguruma |
+| Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, argon2 (in `rhp-csrc`); later timelib, oniguruma, and libmbfl in its own crate (LGPL) |
 | A third-party library whose static archive is the build php links | static | PCRE2; later gmp, icu4c@79, openssl@4, curl |
 | The listed exceptions below | dynamic | |
 
@@ -49,11 +51,16 @@ Today rhp-builtins links:
 | PCRE2 (libpcre2-8) | static, Homebrew pcre2 | static, libpcre2-dev (CI: php's release, see below) |
 | zlib (via libz-sys; also crc32, adler32) | dynamic, /usr/lib/libz | dynamic, zlib1g |
 | bzip2 (bzip2 `=0.5.2`, feature `static`) | static, bzip2-sys's bundled C libbz2 1.0.8 | static, bzip2-sys's bundled C libbz2 1.0.8 |
+| php-src crypt C (via rhp-csrc) | static, compiled from php-8.5.12 | the same |
+| argon2 (via rhp-csrc) | static, compiled from release 20190702 | the same |
 
 zlib and bzip2 predate this policy and still go through their -sys crates.
 bzip2 is built from bzip2-sys's 1.0.8 source, not taken from macOS's
 /usr/lib/libbz2 as the list above would have it. Known gap: libz-sys builds
 its bundled zlib when it finds no system zlib, a silent fallback.
+rhp-csrc's code is the same on every machine, so it needs no row in
+`native.rs` or the native-deps action, only a C compiler (and `nm` for its
+test).
 
 **Never a silent fallback.** A missing library or static archive is a build
 error that says what to install. rhp does not use -sys crates that quietly
@@ -90,11 +97,45 @@ sanitizer build uses php-src's bundled PCRE2).
 `pcre2_*` symbols. rhp-builtins' `pcre2_is_linked_statically` test checks
 its own test binary, which is linked straight from the crate.
 
+## Compiled from source: rhp-csrc
+
+`crates/rhp-csrc` holds the C rhp compiles itself, with `cc`, into static
+archives, except LGPL C (see [Licences](#licences)):
+
+- **php-src's own C**, copied unmodified into `vendor/php-src` by
+  `crates/rhp-csrc/tools/sync-php-src-c.sh <php-src-dir>` from a checkout at
+  the commit `tests/phpt/php-src.ref` pins. Today: ext/standard's
+  crypt_freesec, crypt_blowfish, crypt_sha256 and crypt_sha512. All php-src
+  C shares one stand-in for the Zend and PHP headers, `shim/zend_shim.h`, and
+  builds with php's flags (`php_src()` in `build.rs`).
+- **Frozen libraries**, whose last release is the one php links: the argon2
+  reference C 20190702 in `vendor/argon2`, copied by
+  `crates/rhp-csrc/tools/sync-argon2.sh` from the release tarball, checked
+  against the SHA-256 Homebrew's formula pins. A library that still has
+  releases is linked from the system instead (above), so rhp follows the
+  version php links.
+
+Both scripts write `VERSION` and `SHA256SUMS` next to the files and change
+nothing when rerun. Vendored files are never edited; what php's build
+provides around them goes in the shim or in `glue/`.
+
+**The rhp_ prefix.** Every global symbol the C defines gets an `rhp_`
+prefix: each archive force-includes `glue/prefix_<lib>.h`, a list of
+`#define`s, so another static C library in the binary can neither clash with
+it nor bind to it. The crate's `archives_define_only_prefixed_symbols` test
+runs `nm` over the archives and fails on an unprefixed symbol or an
+unexpected archive. Rust calls the prefixed names through safe wrappers in
+`src/`, one module and one cargo feature per library.
+
+php reports no version for its crypt C or for libargon2
+(`ARGON2_VERSION_NUMBER` is the algorithm version, the `v=19` in a hash), so
+neither has a row in the "linked" section of `tools/capture-ref-build.php`.
+
 ## Licences
 
 - Never GPL.
 - Permissive licences (MIT, BSD, Apache-2.0, ISC, Zlib, curl, Unicode-3.0,
-  public domain) may be linked or vendored; their notices go in
+  CC0-1.0, public domain) may be linked or vendored; their notices go in
   `THIRD-PARTY-NOTICES`.
 - LGPL may be linked statically or vendored: rhp ships its source, so users
   can relink. Keep LGPL code in its own crate with an exact licence
@@ -147,3 +188,21 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
 4. Read every version constant the way php's source reads it, and add the
    constants to the "linked" section of `tools/capture-ref-build.php`.
 5. Add the licence to `THIRD-PARTY-NOTICES`.
+
+## Adding C to rhp-csrc
+
+1. php-src C: add the files to `FILES` in
+   `crates/rhp-csrc/tools/sync-php-src-c.sh` and run it on a php-src
+   checkout at the pinned commit. A frozen library: write a
+   `crates/rhp-csrc/tools/sync-<lib>.sh` like `sync-argon2.sh` (release
+   tarball, pinned SHA-256, file list) and run it.
+2. Add a cargo feature and its build to `build.rs`; php-src C goes through
+   `php_src()`. Missing Zend or PHP definitions go in `shim/zend_shim.h`;
+   never add a second shim.
+3. Add `glue/prefix_<lib>.h` with an `rhp_` `#define` for every global
+   symbol the C defines, force-include it (`-include`), and add the archive
+   to the prefix test's list.
+4. Wrap the C in a safe module in `src/` that takes what php passes and
+   returns what php's C returns.
+5. Add each file's licence, as its header states it, to the crate's
+   `license` expression, its `NOTICE` and `THIRD-PARTY-NOTICES`.

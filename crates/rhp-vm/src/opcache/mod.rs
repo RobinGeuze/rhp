@@ -489,6 +489,7 @@ impl Vm {
         path: &[u8],
         given: &[u8],
         kind: Kind,
+        validated: bool,
         source: &mut dyn FnMut() -> Vec<u8>,
         compile: &mut Compile,
     ) -> Result<Rc<Program>, IncludeError> {
@@ -502,7 +503,8 @@ impl Vm {
         // A cached script, still valid (validate_timestamp_and_record).
         let found = with_cache(|c| {
             let script = c.scripts.get_mut(path).filter(|s| !s.corrupted)?;
-            if validate
+            if !validated
+                && validate
                 && script.timestamp != 0
                 && !(freq != 0 && script.revalidate >= request_time)
             {
@@ -722,6 +724,35 @@ impl Vm {
         let top = self.stack.len().checked_sub(1)?;
         let p = String::from_utf8_lossy(path).into_owned();
         self.resolve_include_file(top, &p).map(|(rp, _)| rp)
+    }
+
+    /// An include of an absolute path that is a cached script, still valid:
+    /// php finds it by that name and needs neither realpath nor open (only
+    /// the timestamp check's stat).
+    pub(crate) fn opcache_fast_hit(&mut self, given: &[u8]) -> bool {
+        if !given.starts_with(b"/") || !self.opcache_on() {
+            return false;
+        }
+        let validate = ini_flag(&self.ini(b"opcache.validate_timestamps"));
+        let freq = self.ini_long(b"opcache.revalidate_freq");
+        let request_time = self.opcache_request().request_time;
+        with_cache(|c| {
+            let Some(s) = c
+                .scripts
+                .get_mut(given)
+                .filter(|s| !s.corrupted && s.include.is_some())
+            else {
+                return false;
+            };
+            if validate && s.timestamp != 0 && !(freq != 0 && s.revalidate >= request_time) {
+                // A changed file goes the long way: discarded, recompiled.
+                if mtime_and_size(given).is_none_or(|(m, _)| m != s.timestamp) {
+                    return false;
+                }
+                s.revalidate = request_time + freq;
+            }
+            true
+        })
     }
 
     /// Whether the cache has a script under the name `given` (resolving to

@@ -8666,10 +8666,14 @@ impl Vm {
         builtins::streams::clear_errno();
         // A file that is gone may still be served from the compiled-script
         // cache, which php looks up by name before opening anything.
-        let found = self.resolve_include_file(top, &path_str).or_else(|| {
-            self.opcache_cached_name(&raw_path)
-                .map(|real| (real, IncludeSource::Cached))
-        });
+        let found = if self.opcache_fast_hit(&raw_path) {
+            Some((raw_path.clone(), IncludeSource::Cached))
+        } else {
+            self.resolve_include_file(top, &path_str).or_else(|| {
+                self.opcache_cached_name(&raw_path)
+                    .map(|real| (real, IncludeSource::Cached))
+            })
+        };
         let (realpath, source) = match found {
             Some(found) => found,
             None => {
@@ -8757,6 +8761,7 @@ impl Vm {
                 realpath,
                 given,
                 opcache::Kind::Include,
+                true,
                 &mut Vec::new,
                 &mut compile,
             ),
@@ -8772,6 +8777,7 @@ impl Vm {
                     realpath,
                     given,
                     opcache::Kind::Include,
+                    false,
                     &mut read,
                     &mut compile,
                 )
@@ -8799,6 +8805,7 @@ impl Vm {
             path.as_bytes(),
             given.as_bytes(),
             opcache::Kind::Main,
+            false,
             &mut || source.take().unwrap_or_default(),
             &mut |_, src| (compile.take().expect("one compile per load"))(src),
         )

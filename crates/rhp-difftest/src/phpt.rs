@@ -192,8 +192,18 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
     "PHP Parse error:  ",
 ];
 
-/// A test's `--INI--` as php `-d` args, or the key rhp can't honour (rhp has
-/// no INI support, so a test is only runnable when its INI is a no-op for us).
+/// Directives whose effect rhp implements: a test that sets one runs, and
+/// rhp gets the setting as `-d` too.
+const RHP_INI: &[&str] = &["pcre.backtrack_limit", "pcre.jit", "pcre.recursion_limit"];
+
+/// Whether `kv` (`name=value`) sets a directive in [`RHP_INI`].
+fn rhp_applies(kv: &str) -> bool {
+    let k = kv.split_once('=').map_or(kv, |(k, _)| k).trim();
+    RHP_INI.contains(&k)
+}
+
+/// A test's `--INI--` as php `-d` args, or the key rhp can't honour (a test
+/// is only runnable when each setting is a no-op for rhp or in [`RHP_INI`]).
 /// With `pass_through` (CGI tests, whose request layer takes `-d`), every
 /// setting is passed to both engines instead.
 fn test_ini(phpt: &Phpt, dir: &Path, pass_through: bool) -> Result<Vec<String>, String> {
@@ -218,7 +228,7 @@ fn test_ini(phpt: &Phpt, dir: &Path, pass_through: bool) -> Result<Vec<String>, 
                 .get(k)
                 .is_some_and(|d| ini_bool(d).is_some() && ini_bool(d) == ini_bool(v))
             || (k.starts_with("opcache.") && !(k == "opcache.enable_cli" && v == "1"));
-        if !noop && !pass_through {
+        if !noop && !pass_through && !RHP_INI.contains(&k) {
             return Err(format!("ini:{k}"));
         }
         out.push(line.to_string());
@@ -1085,8 +1095,10 @@ impl Ctx {
         cmd.current_dir(inv.dir)
             .envs(self.base_env.iter().cloned())
             .envs(inv.env.iter().cloned());
-        // run-tests' ini overwrites, as php gets them.
-        for kv in &self.php_ini {
+        // run-tests' ini overwrites, as php gets them, then the test's
+        // settings rhp applies.
+        let test_ini = inv.ini.iter().filter(|kv| rhp_applies(kv));
+        for kv in self.php_ini.iter().chain(test_ini) {
             cmd.arg("-d").arg(kv);
         }
         cmd.arg(inv.script).args(inv.args);
@@ -2788,6 +2800,12 @@ mod tests {
             test_ini(&p, dir, false).unwrap_err(),
             "ini:output_buffering"
         );
+        // Directives rhp applies run, and only those reach rhp.
+        let p = Phpt::parse(b"--INI--\npcre.jit=0\nprecision=14\n--FILE--\n");
+        let ini = test_ini(&p, dir, false).unwrap();
+        assert_eq!(ini.len(), 2);
+        let to_rhp: Vec<&String> = ini.iter().filter(|kv| rhp_applies(kv)).collect();
+        assert_eq!(to_rhp, ["pcre.jit=0"]);
     }
 
     #[test]

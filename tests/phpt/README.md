@@ -26,6 +26,9 @@ How it compares, mirroring `run-tests.php`:
   says how many matches came about this way.
 - php gets run-tests' INI overrides and environment (offline,
   non-interactive). Slow and timing-sensitive tests are skipped too.
+- A test whose `--INI--` changes a directive runs only if rhp applies that
+  directive (`RHP_INI` in `crates/rhp-difftest/src/phpt.rs`, e.g. `pcre.jit`);
+  both engines then get the setting.
 - Each worker has its own copy of the test trees. After every engine run, the
   runner executes `--CLEAN--` and restores the test's directory, so php and rhp
   (and every mutant) start from the same files.

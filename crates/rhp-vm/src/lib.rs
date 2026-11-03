@@ -4225,6 +4225,7 @@ impl Vm {
             b"OpenSSLCertificate",
             b"OpenSSLCertificateSigningRequest",
             b"XMLParser",
+            b"XMLWriter",
         ];
         if self.class(cls).kind == ClassKind::Enum {
             return true;

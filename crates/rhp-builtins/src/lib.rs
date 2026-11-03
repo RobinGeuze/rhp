@@ -116,6 +116,7 @@ pub fn object_freed(id: u32) {
     zip_ext::object_freed(id);
     ext::sockets::object_freed();
     ext::xml::object_freed(id);
+    ext::xmlwriter::object_freed(id);
 }
 
 /// The internal opaque-handle classes php declares `@strict-properties` and

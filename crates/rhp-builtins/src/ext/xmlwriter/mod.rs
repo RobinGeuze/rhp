@@ -1,1005 +1,925 @@
-//! The `xmlwriter` extension: a port of libxml2's `xmlTextWriter` state
-//! machine (indentation, escaping and namespace-declaration output rules),
-//! with php's `XMLWriter` class (PHP-source, [`PRELUDE_PHP`]) and the
-//! procedural `xmlwriter_*` functions over it.
+//! The `xmlwriter` extension on libxml2's xmlTextWriter: a port of
+//! ext/xmlwriter/php_xmlwriter.c. The `XMLWriter` class is declared in PHP
+//! ([`PRELUDE_PHP`]) and calls `__xmlwriter` for its methods, the
+//! procedural `xmlwriter_*` functions `__xmlwriter_fn`. A writer belongs to
+//! its object (by id) and is freed with it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ffi::{c_char, c_int, c_void};
+use std::ptr;
+use std::rc::Rc;
 
 use rhp_values::{conv, Value};
 
-use crate::ext::libxml::tree::escape_attr;
+use crate::ext::libxml::io::Io;
+use crate::ext::libxml::sys::{self, cbytes};
+use crate::ext::libxml::{ffi, io};
+use crate::ext::zpp::{deref, given_type};
 use crate::{Builtin, Host, Thrown};
 
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
-
-fn arg(args: &[Value], i: usize) -> Value {
-    args.get(i).map(deref).unwrap_or(Value::Null)
-}
-
-fn bytes(args: &[Value], i: usize) -> Vec<u8> {
-    conv::to_string_bytes(&arg(args, i))
-}
-
-fn opt_bytes(args: &[Value], i: usize) -> Option<Vec<u8>> {
-    match arg(args, i) {
-        Value::Null => None,
-        v => Some(conv::to_string_bytes(&v)),
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum St {
-    Name,
-    Attribute,
-    Text,
-    Pi,
-    PiText,
-    Cdata,
-    Comment,
-    Dtd,
-    DtdText,
-    DtdElem,
-    DtdElemText,
-    DtdAttl,
-    DtdAttlText,
-    DtdEnty,
-    DtdEntyText,
-}
-
-struct Entry {
-    name: Vec<u8>,
-    state: St,
-}
-
-enum Target {
-    Memory,
-    Uri(Vec<u8>),
-    Stream(Value),
-}
-
+/// `ze_xmlwriter_object`: the writer and, for a memory writer, its buffer
+/// (owned by the writer's output buffer, freed by its close callback).
 struct Writer {
-    out: Vec<u8>,
-    target: Target,
-    nodes: Vec<Entry>, // innermost last
-    /// Pending namespace declarations of the open start tag: (prefix, uri).
-    nsstack: Vec<(Vec<u8>, Vec<u8>)>,
-    indent: bool,
-    ichar: Vec<u8>,
-    doindent: bool,
-    qchar: u8,
-    started_doc: bool,
-    /// libxml2 sets writer->doc->encoding from startDocument; without one,
-    /// attribute values escape non-ASCII as character references.
-    doc_encoding: bool,
-    /// The output encoder startDocument installed (php hands the encoding
-    /// to xmlFindCharEncodingHandler): applied when output leaves the buffer.
-    out_enc: Option<Vec<u8>>,
+    ptr: *mut sys::xmlTextWriter,
+    output: *mut Vec<u8>,
 }
 
-impl Writer {
-    fn new(target: Target) -> Writer {
-        Writer {
-            out: Vec::new(),
-            target,
-            nodes: Vec::new(),
-            nsstack: Vec::new(),
-            indent: false,
-            ichar: b" ".to_vec(),
-            doindent: true,
-            qchar: b'"',
-            started_doc: false,
-            doc_encoding: false,
-            out_enc: None,
+impl Drop for Writer {
+    /// xmlwriter_destroy_libxml_objects: also frees the output. Callbacks
+    /// that write to a php stream need a host; drop a writer inside
+    /// [`ffi::with_host`].
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { sys::xmlFreeTextWriter(self.ptr) };
         }
     }
-
-    /// Take (or copy) the buffered output through the output encoder.
-    fn take_out(&mut self, take: bool) -> Vec<u8> {
-        let data = if take {
-            std::mem::take(&mut self.out)
-        } else {
-            self.out.clone()
-        };
-        match &self.out_enc {
-            Some(e) => crate::ext::libxml::tree::encode_output(data, e),
-            None => data,
-        }
-    }
-
-    fn top(&self) -> Option<St> {
-        self.nodes.last().map(|e| e.state)
-    }
-
-    fn set_top(&mut self, s: St) {
-        if let Some(e) = self.nodes.last_mut() {
-            e.state = s;
-        }
-    }
-
-    fn write_indent(&mut self) {
-        let n = self.nodes.len();
-        if n >= 1 {
-            for _ in 0..n - 1 {
-                let ic = self.ichar.clone();
-                self.out.extend_from_slice(&ic);
-            }
-        }
-    }
-
-    fn output_ns_decl(&mut self) {
-        let decls = std::mem::take(&mut self.nsstack);
-        // libxml2 keeps them in a push-front list
-        for (p, u) in decls.into_iter().rev() {
-            self.out.push(b' ');
-            self.out.extend_from_slice(b"xmlns");
-            if !p.is_empty() {
-                self.out.push(b':');
-                self.out.extend_from_slice(&p);
-            }
-            self.out.push(b'=');
-            self.out.push(self.qchar);
-            escape_attr(&mut self.out, &u, self.doc_encoding);
-            self.out.push(self.qchar);
-        }
-    }
-
-    /// xmlTextWriterHandleStateDependencies.
-    fn handle_state(&mut self) {
-        match self.top() {
-            Some(St::Name) => {
-                self.output_ns_decl();
-                self.out.push(b'>');
-                self.set_top(St::Text);
-            }
-            Some(St::Pi) => {
-                self.out.push(b' ');
-                self.set_top(St::PiText);
-            }
-            Some(St::Dtd) => {
-                self.out.extend_from_slice(b" [");
-                self.set_top(St::DtdText);
-            }
-            Some(St::DtdElem) => {
-                self.out.push(b' ');
-                self.set_top(St::DtdElemText);
-            }
-            Some(St::DtdAttl) => {
-                self.out.push(b' ');
-                self.set_top(St::DtdAttlText);
-            }
-            Some(St::DtdEnty) => {
-                self.out.push(b' ');
-                self.out.push(self.qchar);
-                self.set_top(St::DtdEntyText);
-            }
-            _ => {}
-        }
-    }
-
-    fn start_document(
-        &mut self,
-        version: Option<Vec<u8>>,
-        encoding: Option<Vec<u8>>,
-        standalone: Option<Vec<u8>>,
-    ) -> bool {
-        if !self.nodes.is_empty() || self.started_doc {
-            return false;
-        }
-        self.started_doc = true;
-        self.out.extend_from_slice(b"<?xml version=");
-        self.out.push(self.qchar);
-        self.out
-            .extend_from_slice(&version.unwrap_or_else(|| b"1.0".to_vec()));
-        self.out.push(self.qchar);
-        if let Some(e) = encoding.filter(|e| !e.is_empty()) {
-            self.doc_encoding = true;
-            self.out_enc = Some(e.clone());
-            self.out.extend_from_slice(b" encoding=");
-            self.out.push(self.qchar);
-            self.out.extend_from_slice(&e);
-            self.out.push(self.qchar);
-        }
-        if let Some(s) = standalone.filter(|e| !e.is_empty()) {
-            self.out.extend_from_slice(b" standalone=");
-            self.out.push(self.qchar);
-            self.out.extend_from_slice(&s);
-            self.out.push(self.qchar);
-        }
-        self.out.extend_from_slice(b"?>\n");
-        true
-    }
-
-    fn end_document(&mut self) -> bool {
-        while let Some(st) = self.top() {
-            let ok = match st {
-                St::Name | St::Attribute | St::Text => self.end_element(),
-                St::Pi | St::PiText => self.end_pi(),
-                St::Cdata => self.end_cdata(),
-                St::Comment => self.end_comment(),
-                St::Dtd
-                | St::DtdText
-                | St::DtdElem
-                | St::DtdElemText
-                | St::DtdAttl
-                | St::DtdAttlText
-                | St::DtdEnty
-                | St::DtdEntyText => self.end_dtd(),
-            };
-            if !ok {
-                return false;
-            }
-        }
-        if !self.indent {
-            self.out.push(b'\n');
-        }
-        true
-    }
-
-    fn close_open_tag_for_child(&mut self) -> bool {
-        match self.top() {
-            Some(St::Pi) | Some(St::PiText) => return false,
-            Some(St::Attribute) => {
-                self.end_attribute();
-                self.output_ns_decl();
-                self.out.push(b'>');
-                if self.indent {
-                    self.out.push(b'\n');
-                }
-                self.set_top(St::Text);
-            }
-            Some(St::Name) => {
-                self.output_ns_decl();
-                self.out.push(b'>');
-                if self.indent {
-                    self.out.push(b'\n');
-                }
-                self.set_top(St::Text);
-            }
-            _ => {}
-        }
-        true
-    }
-
-    fn start_element(&mut self, name: &[u8]) -> bool {
-        if name.is_empty() {
-            return false;
-        }
-        if !self.close_open_tag_for_child() {
-            return false;
-        }
-        self.nodes.push(Entry {
-            name: name.to_vec(),
-            state: St::Name,
-        });
-        if self.indent {
-            self.write_indent();
-        }
-        self.out.push(b'<');
-        self.out.extend_from_slice(name);
-        true
-    }
-
-    fn start_element_ns(
-        &mut self,
-        prefix: Option<Vec<u8>>,
-        name: &[u8],
-        uri: Option<Vec<u8>>,
-    ) -> bool {
-        let q = match &prefix {
-            Some(p) if !p.is_empty() => [&p[..], b":", name].concat(),
-            _ => name.to_vec(),
-        };
-        if !self.start_element(&q) {
-            return false;
-        }
-        if let Some(u) = uri {
-            self.nsstack.push((prefix.unwrap_or_default(), u));
-        }
-        true
-    }
-
-    fn end_element(&mut self) -> bool {
-        let Some(st) = self.top() else {
-            return false;
-        };
-        match st {
-            St::Attribute | St::Name => {
-                if st == St::Attribute {
-                    self.end_attribute();
-                }
-                self.output_ns_decl();
-                if self.indent {
-                    self.doindent = true;
-                }
-                self.out.extend_from_slice(b"/>");
-            }
-            St::Text => {
-                if self.indent && self.doindent {
-                    self.write_indent();
-                }
-                self.doindent = true;
-                let name = self.nodes.last().unwrap().name.clone();
-                self.out.extend_from_slice(b"</");
-                self.out.extend_from_slice(&name);
-                self.out.push(b'>');
-            }
-            _ => return false,
-        }
-        if self.indent {
-            self.out.push(b'\n');
-        }
-        self.nodes.pop();
-        true
-    }
-
-    fn full_end_element(&mut self) -> bool {
-        let Some(st) = self.top() else {
-            return false;
-        };
-        match st {
-            St::Attribute | St::Name | St::Text => {
-                if st == St::Attribute {
-                    self.end_attribute();
-                }
-                if st != St::Text {
-                    self.output_ns_decl();
-                    self.out.push(b'>');
-                    if self.indent {
-                        self.doindent = false;
-                    }
-                }
-                if self.indent && self.doindent {
-                    self.write_indent();
-                }
-                self.doindent = true;
-                let name = self.nodes.last().unwrap().name.clone();
-                self.out.extend_from_slice(b"</");
-                self.out.extend_from_slice(&name);
-                self.out.push(b'>');
-            }
-            _ => return false,
-        }
-        if self.indent {
-            self.out.push(b'\n');
-        }
-        self.nodes.pop();
-        true
-    }
-
-    fn start_attribute(&mut self, name: &[u8]) -> bool {
-        if name.is_empty() {
-            return false;
-        }
-        match self.top() {
-            Some(St::Attribute) => {
-                self.end_attribute();
-            }
-            Some(St::Name) => {}
-            _ => return false,
-        }
-        self.out.push(b' ');
-        self.out.extend_from_slice(name);
-        self.out.push(b'=');
-        self.out.push(self.qchar);
-        self.set_top(St::Attribute);
-        true
-    }
-
-    fn start_attribute_ns(
-        &mut self,
-        prefix: Option<Vec<u8>>,
-        name: &[u8],
-        uri: Option<Vec<u8>>,
-    ) -> bool {
-        let q = match &prefix {
-            Some(p) if !p.is_empty() => [&p[..], b":", name].concat(),
-            _ => name.to_vec(),
-        };
-        if let Some(u) = uri {
-            let p = prefix.clone().unwrap_or_default();
-            if !self.nsstack.iter().any(|(x, _)| *x == p) {
-                self.nsstack.push((p, u));
-            }
-        }
-        self.start_attribute(&q)
-    }
-
-    fn end_attribute(&mut self) -> bool {
-        if self.top() != Some(St::Attribute) {
-            return false;
-        }
-        self.set_top(St::Name);
-        self.out.push(self.qchar);
-        true
-    }
-
-    fn write_raw(&mut self, content: &[u8]) -> bool {
-        if !self.nodes.is_empty() {
-            self.handle_state();
-        }
-        if self.indent {
-            self.doindent = false;
-        }
-        self.out.extend_from_slice(content);
-        true
-    }
-
-    fn write_string(&mut self, content: &[u8]) -> bool {
-        match self.top() {
-            Some(St::Attribute) => {
-                escape_attr(&mut self.out, content, self.doc_encoding);
-                true
-            }
-            Some(St::Name) | Some(St::Text) => {
-                let enc = encode_special(content);
-                self.write_raw(&enc)
-            }
-            _ => self.write_raw(content),
-        }
-    }
-
-    fn start_cdata(&mut self) -> bool {
-        match self.top() {
-            Some(St::Text) | None => {}
-            Some(St::Attribute) => {
-                self.end_attribute();
-                self.output_ns_decl();
-                self.out.push(b'>');
-                self.set_top(St::Text);
-            }
-            Some(St::Name) => {
-                self.output_ns_decl();
-                self.out.push(b'>');
-                self.set_top(St::Text);
-            }
-            Some(St::Cdata) => return false,
-            _ => return false,
-        }
-        self.nodes.push(Entry {
-            name: Vec::new(),
-            state: St::Cdata,
-        });
-        self.out.extend_from_slice(b"<![CDATA[");
-        true
-    }
-
-    fn end_cdata(&mut self) -> bool {
-        if self.top() != Some(St::Cdata) {
-            return false;
-        }
-        self.out.extend_from_slice(b"]]>");
-        self.nodes.pop();
-        true
-    }
-
-    fn start_comment(&mut self) -> bool {
-        match self.top() {
-            Some(St::Text) | None => {}
-            Some(St::Name) | Some(St::Attribute) => {
-                if self.top() == Some(St::Attribute) {
-                    self.end_attribute();
-                }
-                self.output_ns_decl();
-                self.out.push(b'>');
-                if self.indent {
-                    self.out.push(b'\n');
-                }
-                self.set_top(St::Text);
-            }
-            _ => return false,
-        }
-        self.nodes.push(Entry {
-            name: Vec::new(),
-            state: St::Comment,
-        });
-        if self.indent {
-            self.write_indent();
-        }
-        self.out.extend_from_slice(b"<!--");
-        true
-    }
-
-    fn end_comment(&mut self) -> bool {
-        if self.top() != Some(St::Comment) {
-            return false;
-        }
-        self.out.extend_from_slice(b"-->");
-        if self.indent {
-            self.out.push(b'\n');
-        }
-        self.nodes.pop();
-        true
-    }
-
-    fn start_pi(&mut self, target: &[u8]) -> bool {
-        if target.eq_ignore_ascii_case(b"xml") {
-            return false;
-        }
-        match self.top() {
-            Some(St::Attribute) | Some(St::Name) => {
-                if self.top() == Some(St::Attribute) {
-                    self.end_attribute();
-                }
-                self.output_ns_decl();
-                self.out.push(b'>');
-                self.set_top(St::Text);
-            }
-            Some(St::Text) | Some(St::Dtd) | None => {}
-            _ => return false,
-        }
-        self.nodes.push(Entry {
-            name: target.to_vec(),
-            state: St::Pi,
-        });
-        self.out.extend_from_slice(b"<?");
-        self.out.extend_from_slice(target);
-        true
-    }
-
-    fn end_pi(&mut self) -> bool {
-        match self.top() {
-            Some(St::Pi) | Some(St::PiText) => {
-                self.out.extend_from_slice(b"?>");
-            }
-            _ => return false,
-        }
-        if self.indent {
-            self.out.push(b'\n');
-        }
-        self.nodes.pop();
-        true
-    }
-
-    fn start_dtd(&mut self, name: &[u8], pubid: Option<Vec<u8>>, sysid: Option<Vec<u8>>) -> bool {
-        if !self.nodes.is_empty() {
-            return false;
-        }
-        self.nodes.push(Entry {
-            name: name.to_vec(),
-            state: St::Dtd,
-        });
-        self.out.extend_from_slice(b"<!DOCTYPE ");
-        self.out.extend_from_slice(name);
-        if let Some(p) = pubid {
-            self.out
-                .extend_from_slice(if self.indent { b"\n" } else { b" " });
-            self.out.extend_from_slice(b"PUBLIC ");
-            self.out.push(self.qchar);
-            self.out.extend_from_slice(&p);
-            self.out.push(self.qchar);
-            if let Some(s) = &sysid {
-                self.out
-                    .extend_from_slice(if self.indent { b"\n       " } else { b" " });
-                self.out.push(self.qchar);
-                self.out.extend_from_slice(s);
-                self.out.push(self.qchar);
-            }
-        } else if let Some(s) = sysid {
-            self.out
-                .extend_from_slice(if self.indent { b"\n" } else { b" " });
-            self.out.extend_from_slice(b"SYSTEM ");
-            self.out.push(self.qchar);
-            self.out.extend_from_slice(&s);
-            self.out.push(self.qchar);
-        }
-        true
-    }
-
-    fn end_dtd(&mut self) -> bool {
-        loop {
-            match self.top() {
-                Some(St::DtdText) => {
-                    self.out.push(b']');
-                    self.out.push(b'>');
-                    if self.indent {
-                        self.out.push(b'\n');
-                    }
-                    self.nodes.pop();
-                    return true;
-                }
-                Some(St::Dtd) => {
-                    self.out.push(b'>');
-                    if self.indent {
-                        self.out.push(b'\n');
-                    }
-                    self.nodes.pop();
-                    return true;
-                }
-                Some(St::DtdElem)
-                | Some(St::DtdElemText)
-                | Some(St::DtdAttl)
-                | Some(St::DtdAttlText) => {
-                    self.out.push(b'>');
-                    self.nodes.pop();
-                }
-                Some(St::DtdEnty) | Some(St::DtdEntyText) => {
-                    if self.top() == Some(St::DtdEntyText) {
-                        self.out.push(self.qchar);
-                    }
-                    self.out.push(b'>');
-                    self.nodes.pop();
-                }
-                _ => return false,
-            }
-        }
-    }
-
-    fn start_dtd_part(&mut self, kind: &[u8], name: &[u8], st: St) -> bool {
-        match self.top() {
-            Some(St::Dtd) => {
-                self.out.extend_from_slice(b" [");
-                if self.indent {
-                    self.out.push(b'\n');
-                }
-                self.set_top(St::DtdText);
-            }
-            Some(St::DtdText) | None => {}
-            _ => return false,
-        }
-        self.nodes.push(Entry {
-            name: name.to_vec(),
-            state: st,
-        });
-        if self.indent {
-            self.write_indent();
-        }
-        self.out.extend_from_slice(b"<!");
-        self.out.extend_from_slice(kind);
-        self.out.push(b' ');
-        self.out.extend_from_slice(name);
-        true
-    }
-
-    fn end_dtd_part(&mut self) -> bool {
-        match self.top() {
-            Some(St::DtdEntyText) => {
-                self.out.push(self.qchar);
-                self.out.push(b'>');
-            }
-            Some(St::DtdElem)
-            | Some(St::DtdElemText)
-            | Some(St::DtdAttl)
-            | Some(St::DtdAttlText)
-            | Some(St::DtdEnty) => {
-                self.out.push(b'>');
-            }
-            _ => return false,
-        }
-        if self.indent {
-            self.out.push(b'\n');
-        }
-        self.nodes.pop();
-        true
-    }
-}
-
-/// xmlEncodeSpecialChars.
-fn encode_special(s: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(s.len());
-    for &c in s {
-        match c {
-            b'<' => out.extend_from_slice(b"&lt;"),
-            b'>' => out.extend_from_slice(b"&gt;"),
-            b'&' => out.extend_from_slice(b"&amp;"),
-            b'"' => out.extend_from_slice(b"&quot;"),
-            b'\r' => out.extend_from_slice(b"&#13;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 thread_local! {
-    static WRITERS: RefCell<HashMap<i64, Writer>> = RefCell::new(HashMap::new());
-    static NEXT: RefCell<i64> = const { RefCell::new(1) };
+    static WRITERS: RefCell<HashMap<u32, Rc<Writer>>> = RefCell::new(HashMap::new());
 }
 
-fn with_w<R>(id: i64, f: impl FnOnce(&mut Writer) -> R) -> Option<R> {
-    WRITERS.with(|w| w.borrow_mut().get_mut(&id).map(f))
+/// A new request: object ids restart.
+pub(crate) fn reset_state() {
+    let old = WRITERS.with(|m| m.try_borrow_mut().map(|mut m| std::mem::take(&mut *m)).ok());
+    drop(old);
 }
 
-fn flush_target(host: &mut dyn Host, id: i64, empty: bool) -> Value {
-    let r = with_w(id, |w| {
-        let data = w.take_out(empty);
-        let target = match &w.target {
-            Target::Memory => None,
-            Target::Uri(u) => Some(Err(u.clone())),
-            Target::Stream(v) => Some(Ok(v.clone())),
-        };
-        if target.is_some() {
-            w.out.clear();
+/// `free_obj` for an XMLWriter whose `__destruct` did not run.
+pub(crate) fn object_freed(id: u32) {
+    let w = WRITERS
+        .try_with(|m| m.try_borrow_mut().ok().and_then(|mut m| m.remove(&id)))
+        .ok()
+        .flatten();
+    drop(w);
+}
+
+fn obj_id(v: &Value) -> Option<u32> {
+    match v {
+        Value::Object(h) => Some(h.borrow().id),
+        _ => None,
+    }
+}
+
+/// Attach `w` to the object, freeing the writer it had (inside the caller's
+/// host frame).
+fn set_writer(obj: &Value, w: Option<Writer>) {
+    let Some(id) = obj_id(obj) else { return };
+    let old = WRITERS.with(|m| {
+        let mut m = m.borrow_mut();
+        match w {
+            Some(w) => m.insert(id, Rc::new(w)),
+            None => m.remove(&id),
         }
-        (data, target)
     });
-    let Some((data, target)) = r else {
-        return Value::Bool(false);
+    drop(old);
+}
+
+fn writer_of(obj: &Value) -> Option<Rc<Writer>> {
+    let id = obj_id(obj)?;
+    WRITERS.with(|m| m.borrow().get(&id).cloned())
+}
+
+unsafe extern "C" fn memory_write(ctx: *mut c_void, buf: *const c_char, len: c_int) -> c_int {
+    ffi::guard(-1, || {
+        let out = unsafe { &mut *(ctx as *mut Vec<u8>) };
+        out.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(buf.cast::<u8>(), len.max(0) as usize)
+        });
+        len
+    })
+}
+
+unsafe extern "C" fn memory_close(ctx: *mut c_void) -> c_int {
+    ffi::guard(0, || {
+        drop(unsafe { Box::from_raw(ctx as *mut Vec<u8>) });
+        0
+    })
+}
+
+/// xml_writer_create_in_memory
+fn create_in_memory() -> Option<Writer> {
+    let output = Box::into_raw(Box::new(Vec::<u8>::new()));
+    unsafe {
+        let buf = sys::xmlOutputBufferCreateIO(
+            Some(memory_write),
+            Some(memory_close),
+            output.cast(),
+            ptr::null_mut(),
+        );
+        if buf.is_null() {
+            drop(Box::from_raw(output));
+            return None;
+        }
+        let w = sys::xmlNewTextWriter(buf);
+        if w.is_null() {
+            // Closing the buffer frees the output too.
+            sys::xmlOutputBufferClose(buf);
+            return None;
+        }
+        Some(Writer { ptr: w, output })
+    }
+}
+
+/// xml_writer_stream_close: the stream is not ours to close; drop the
+/// reference.
+unsafe extern "C" fn stream_close(ctx: *mut c_void) -> c_int {
+    ffi::guard(0, || {
+        drop(unsafe { Box::from_raw(ctx as *mut Io) });
+        0
+    })
+}
+
+/// zend_dirname
+fn zend_dirname(path: &[u8]) -> Vec<u8> {
+    let mut end = path.len();
+    while end > 1 && path[end - 1] == b'/' {
+        end -= 1;
+    }
+    match path[..end].iter().rposition(|&b| b == b'/') {
+        None => b".".to_vec(),
+        Some(0) => b"/".to_vec(),
+        Some(i) => {
+            let mut j = i;
+            while j > 1 && path[j - 1] == b'/' {
+                j -= 1;
+            }
+            path[..j].to_vec()
+        }
+    }
+}
+
+/// _xmlwriter_get_valid_file_path
+fn valid_file_path(source: &[u8]) -> Option<Vec<u8>> {
+    let mut source = source;
+    let has_scheme = unsafe {
+        let uri = sys::xmlCreateURI();
+        if uri.is_null() {
+            return None;
+        }
+        let c = cbytes(source);
+        let esc = sys::xmlURIEscapeStr(c.as_ptr(), c":".as_ptr().cast());
+        sys::xmlParseURIReference(uri, esc as *const c_char);
+        sys::rhp_xml_free(esc.cast());
+        let s = !sys::rhp_xml_uri_scheme(uri).is_null();
+        sys::xmlFreeURI(uri);
+        s
     };
-    match target {
-        None => Value::str(data),
-        Some(t) => {
-            let n = data.len();
-            if !data.is_empty() {
-                match t {
-                    Err(uri) => write_uri(host, &uri, &data),
-                    Ok(stream) => {
-                        host.stream_write(&stream, &data);
-                    }
-                }
+    let mut is_file_uri = false;
+    if has_scheme {
+        let lower = source.to_ascii_lowercase();
+        if lower.starts_with(b"file:///") {
+            if source.len() == 8 {
+                return None;
             }
-            Value::Int(n as i64)
+            is_file_uri = true;
+            source = &source[7..];
+        } else if lower.starts_with(b"file://localhost/") {
+            if source.len() == 17 {
+                return None;
+            }
+            is_file_uri = true;
+            source = &source[16..];
+        }
+    }
+    if has_scheme && !is_file_uri {
+        return Some(source.to_vec());
+    }
+    let path = String::from_utf8_lossy(source).into_owned();
+    let resolved = match std::fs::canonicalize(&path) {
+        Ok(p) => p.to_string_lossy().into_owned().into_bytes(),
+        Err(_) => crate::ext::dom::expand_filepath(source),
+    };
+    // expand_filepath fails on a path longer than MAXPATHLEN.
+    if resolved.len() >= libc::PATH_MAX as usize {
+        return None;
+    }
+    let dir = zend_dirname(source);
+    if !dir.is_empty() && std::fs::metadata(String::from_utf8_lossy(&dir).as_ref()).is_err() {
+        return None;
+    }
+    Some(resolved)
+}
+
+/// XMLW_NAME_CHK: xmlValidateName, else php's ValueError naming argument
+/// `arg_no` the way zend_argument_value_error does.
+fn name_chk(call: &Call, arg_no: usize, subject: &str, name: &[u8]) -> Result<(), Thrown> {
+    let c = cbytes(name);
+    if unsafe { sys::xmlValidateName(c.as_ptr(), 0) } == 0 {
+        return Ok(());
+    }
+    let shown = String::from_utf8_lossy(&c[..c.len() - 1]).into_owned();
+    Err(Thrown::error(
+        "ValueError",
+        format!(
+            "{}(): Argument #{arg_no}{} must be a valid {subject}, \"{shown}\" given",
+            call.fname,
+            call.param(arg_no)
+        ),
+    ))
+}
+
+/// One XMLWriter call: the method (`XMLWriter::m`) or the procedural
+/// function that shares its C implementation.
+struct Call {
+    fname: String,
+    /// The parameter names as zend_argument_error counts them: the method's,
+    /// or the function's (with `$writer` first).
+    params: Vec<&'static str>,
+}
+
+impl Call {
+    fn param(&self, n: usize) -> String {
+        match self.params.get(n - 1) {
+            Some(p) => format!(" (${p})"),
+            None => String::new(),
         }
     }
 }
 
-fn write_uri(host: &mut dyn Host, uri: &[u8], data: &[u8]) {
-    match uri {
-        b"php://output" | b"php://stdout" => host.write_out(data),
-        _ => {
-            use std::io::Write;
-            let path =
-                String::from_utf8_lossy(uri.strip_prefix(b"file://").unwrap_or(uri)).into_owned();
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(path)
-            {
-                let _ = f.write_all(data);
-            }
-        }
+/// (method, function, method parameters)
+const OPS: &[(&str, &str, &[&str])] = &[
+    ("openUri", "xmlwriter_open_uri", &["uri"]),
+    ("openMemory", "xmlwriter_open_memory", &[]),
+    ("setIndent", "xmlwriter_set_indent", &["enable"]),
+    (
+        "setIndentString",
+        "xmlwriter_set_indent_string",
+        &["indentation"],
+    ),
+    ("startComment", "xmlwriter_start_comment", &[]),
+    ("endComment", "xmlwriter_end_comment", &[]),
+    ("startAttribute", "xmlwriter_start_attribute", &["name"]),
+    ("endAttribute", "xmlwriter_end_attribute", &[]),
+    (
+        "writeAttribute",
+        "xmlwriter_write_attribute",
+        &["name", "value"],
+    ),
+    (
+        "startAttributeNs",
+        "xmlwriter_start_attribute_ns",
+        &["prefix", "name", "namespace"],
+    ),
+    (
+        "writeAttributeNs",
+        "xmlwriter_write_attribute_ns",
+        &["prefix", "name", "namespace", "value"],
+    ),
+    ("startElement", "xmlwriter_start_element", &["name"]),
+    ("endElement", "xmlwriter_end_element", &[]),
+    ("fullEndElement", "xmlwriter_full_end_element", &[]),
+    (
+        "startElementNs",
+        "xmlwriter_start_element_ns",
+        &["prefix", "name", "namespace"],
+    ),
+    (
+        "writeElement",
+        "xmlwriter_write_element",
+        &["name", "content"],
+    ),
+    (
+        "writeElementNs",
+        "xmlwriter_write_element_ns",
+        &["prefix", "name", "namespace", "content"],
+    ),
+    ("startPi", "xmlwriter_start_pi", &["target"]),
+    ("endPi", "xmlwriter_end_pi", &[]),
+    ("writePi", "xmlwriter_write_pi", &["target", "content"]),
+    ("startCdata", "xmlwriter_start_cdata", &[]),
+    ("endCdata", "xmlwriter_end_cdata", &[]),
+    ("writeCdata", "xmlwriter_write_cdata", &["content"]),
+    ("text", "xmlwriter_text", &["content"]),
+    ("writeRaw", "xmlwriter_write_raw", &["content"]),
+    (
+        "startDocument",
+        "xmlwriter_start_document",
+        &["version", "encoding", "standalone"],
+    ),
+    ("endDocument", "xmlwriter_end_document", &[]),
+    ("writeComment", "xmlwriter_write_comment", &["content"]),
+    (
+        "startDtd",
+        "xmlwriter_start_dtd",
+        &["qualifiedName", "publicId", "systemId"],
+    ),
+    ("endDtd", "xmlwriter_end_dtd", &[]),
+    (
+        "writeDtd",
+        "xmlwriter_write_dtd",
+        &["name", "publicId", "systemId", "content"],
+    ),
+    (
+        "startDtdElement",
+        "xmlwriter_start_dtd_element",
+        &["qualifiedName"],
+    ),
+    ("endDtdElement", "xmlwriter_end_dtd_element", &[]),
+    (
+        "writeDtdElement",
+        "xmlwriter_write_dtd_element",
+        &["name", "content"],
+    ),
+    ("startDtdAttlist", "xmlwriter_start_dtd_attlist", &["name"]),
+    ("endDtdAttlist", "xmlwriter_end_dtd_attlist", &[]),
+    (
+        "writeDtdAttlist",
+        "xmlwriter_write_dtd_attlist",
+        &["name", "content"],
+    ),
+    (
+        "startDtdEntity",
+        "xmlwriter_start_dtd_entity",
+        &["name", "isParam"],
+    ),
+    ("endDtdEntity", "xmlwriter_end_dtd_entity", &[]),
+    (
+        "writeDtdEntity",
+        "xmlwriter_write_dtd_entity",
+        &[
+            "name",
+            "content",
+            "isParam",
+            "publicId",
+            "systemId",
+            "notationData",
+        ],
+    ),
+    ("outputMemory", "xmlwriter_output_memory", &["flush"]),
+    ("flush", "xmlwriter_flush", &["empty"]),
+];
+
+fn op(method: &str) -> Option<&'static (&'static str, &'static str, &'static [&'static str])> {
+    OPS.iter().find(|o| o.0 == method)
+}
+
+fn s(a: &[Value], i: usize) -> Vec<u8> {
+    conv::to_string_bytes(&a.get(i).map(deref).unwrap_or(Value::Null))
+}
+
+fn os(a: &[Value], i: usize) -> Option<Vec<u8>> {
+    match a.get(i).map(deref) {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(conv::to_string_bytes(&v)),
     }
 }
 
-fn fn_xw(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let op = String::from_utf8_lossy(&bytes(args, 0)).into_owned();
-    let id = conv::to_int(&arg(args, 1));
-    let b = |x: bool| Ok(Value::Bool(x));
-    match op.as_str() {
-        "openMemory" | "openUri" => {
-            let target = if op == "openMemory" {
-                Target::Memory
-            } else {
-                let uri = bytes(args, 2);
-                let fname = match arg(args, 3) {
-                    Value::Null => "XMLWriter::openUri".to_string(),
-                    v => String::from_utf8_lossy(&conv::to_string_bytes(&v)).into_owned(),
-                };
-                if uri.is_empty() {
-                    return Err(Thrown::Error {
-                        class: "ValueError",
-                        message: format!("{fname}(): Argument #1 ($uri) cannot be empty"),
-                    });
-                }
-                if !matches!(&uri[..], b"php://output" | b"php://stdout") {
-                    let path =
-                        String::from_utf8_lossy(uri.strip_prefix(b"file://").unwrap_or(&uri))
-                            .into_owned();
-                    if std::fs::write(&path, b"").is_err() {
-                        crate::warn(host, &fname, "Unable to resolve file path")?;
-                        return Ok(Value::Bool(false));
-                    }
-                }
-                Target::Uri(uri)
-            };
-            let new_id = NEXT.with(|n| {
-                let mut n = n.borrow_mut();
-                let v = *n;
-                *n += 1;
-                v
-            });
-            WRITERS.with(|w| w.borrow_mut().insert(new_id, Writer::new(target)));
-            Ok(Value::Int(new_id))
-        }
-        "openStream" => {
-            let stream = arg(args, 2);
-            let new_id = NEXT.with(|n| {
-                let mut n = n.borrow_mut();
-                let v = *n;
-                *n += 1;
-                v
-            });
-            WRITERS.with(|w| {
-                w.borrow_mut()
-                    .insert(new_id, Writer::new(Target::Stream(stream)))
-            });
-            Ok(Value::Int(new_id))
-        }
-        "chkName" => {
-            // XMLW_NAME_CHK: (op, 0, name, "fn(): Argument #N ($p)", subject)
-            let name = bytes(args, 2);
-            if crate::ext::dom::valid_name(&name) {
-                return Ok(Value::Null);
-            }
-            Err(Thrown::Error {
-                class: "ValueError",
-                message: format!(
-                    "{} must be a valid {}, \"{}\" given",
-                    String::from_utf8_lossy(&bytes(args, 3)),
-                    String::from_utf8_lossy(&bytes(args, 4)),
-                    String::from_utf8_lossy(&name)
-                ),
-            })
-        }
-        "free" => {
-            WRITERS.with(|w| w.borrow_mut().remove(&id));
-            Ok(Value::Null)
-        }
-        "flush" => Ok(flush_target(host, id, conv::to_bool(&arg(args, 2)))),
-        "outputMemory" => {
-            let flush = conv::to_bool(&arg(args, 2));
-            Ok(with_w(id, |w| Value::str(w.take_out(flush))).unwrap_or(Value::str(Vec::new())))
-        }
+fn b(a: &[Value], i: usize, default: bool) -> bool {
+    a.get(i)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(default)
+}
+
+fn cp(v: &Option<Vec<u8>>) -> *const u8 {
+    v.as_ref().map_or(ptr::null(), |v| v.as_ptr())
+}
+
+/// The XMLWriter operation `method` on `this` with the method's arguments.
+fn run(
+    host: &mut dyn Host,
+    call: &Call,
+    method: &str,
+    this: &Value,
+    a: &[Value],
+) -> Result<Value, Thrown> {
+    match method {
+        "openUri" => return open_uri(host, call, Some(this), a),
+        "openMemory" => return open_memory(host, call, Some(this)),
+        _ => {}
+    }
+    // XMLWRITER_FROM_OBJECT
+    let Some(w) = writer_of(this) else {
+        return Err(Thrown::error(
+            "Error",
+            "Invalid or uninitialized XMLWriter object",
+        ));
+    };
+    let p = w.ptr;
+    let cs = |i: usize| Some(cbytes(&s(a, i)));
+    let cos = |i: usize| os(a, i).map(|v| cbytes(&v));
+    // php_xmlwriter_string_arg / php_xmlwriter_end: true unless -1.
+    let ok = |r: c_int| Ok(Value::Bool(r != -1));
+    macro_rules! c {
+        ($e:expr) => {{
+            let r = ffi::with_host(host, &call.fname, || unsafe { $e });
+            r?
+        }};
+    }
+    match method {
         "setIndent" => {
-            let on = conv::to_bool(&arg(args, 2));
-            b(with_w(id, |w| {
-                w.indent = on;
-                w.doindent = true;
-                true
-            })
-            .unwrap_or(false))
+            let on = b(a, 0, false);
+            Ok(Value::Bool(
+                c!(sys::xmlTextWriterSetIndent(p, on as c_int)) == 0,
+            ))
         }
         "setIndentString" => {
-            let s = bytes(args, 2);
-            b(with_w(id, |w| {
-                w.ichar = s;
-                true
-            })
-            .unwrap_or(false))
+            let v = cs(0);
+            ok(c!(sys::xmlTextWriterSetIndentString(p, cp(&v))))
         }
-        _ => {
-            let r = with_w(id, |w| -> bool {
-                match op.as_str() {
-                    "startDocument" => {
-                        w.start_document(opt_bytes(args, 2), opt_bytes(args, 3), opt_bytes(args, 4))
+        "startComment" => ok(c!(sys::xmlTextWriterStartComment(p))),
+        "endComment" => ok(c!(sys::xmlTextWriterEndComment(p))),
+        "startAttribute" => {
+            name_chk(call, 2, "attribute name", &s(a, 0))?;
+            let n = cs(0);
+            ok(c!(sys::xmlTextWriterStartAttribute(p, cp(&n))))
+        }
+        "endAttribute" => ok(c!(sys::xmlTextWriterEndAttribute(p))),
+        "writeAttribute" => {
+            name_chk(call, 2, "attribute name", &s(a, 0))?;
+            let (n, v) = (cs(0), cs(1));
+            ok(c!(sys::xmlTextWriterWriteAttribute(p, cp(&n), cp(&v))))
+        }
+        "startAttributeNs" => {
+            name_chk(call, 3, "attribute name", &s(a, 1))?;
+            let (pre, n, uri) = (cos(0), cs(1), cos(2));
+            ok(c!(sys::xmlTextWriterStartAttributeNS(
+                p,
+                cp(&pre),
+                cp(&n),
+                cp(&uri)
+            )))
+        }
+        "writeAttributeNs" => {
+            name_chk(call, 3, "attribute name", &s(a, 1))?;
+            let (pre, n, uri, v) = (cos(0), cs(1), cos(2), cs(3));
+            ok(c!(sys::xmlTextWriterWriteAttributeNS(
+                p,
+                cp(&pre),
+                cp(&n),
+                cp(&uri),
+                cp(&v)
+            )))
+        }
+        "startElement" => {
+            name_chk(call, 2, "element name", &s(a, 0))?;
+            let n = cs(0);
+            ok(c!(sys::xmlTextWriterStartElement(p, cp(&n))))
+        }
+        "endElement" => ok(c!(sys::xmlTextWriterEndElement(p))),
+        "fullEndElement" => ok(c!(sys::xmlTextWriterFullEndElement(p))),
+        "startElementNs" => {
+            name_chk(call, 3, "element name", &s(a, 1))?;
+            let (pre, n, uri) = (cos(0), cs(1), cos(2));
+            ok(c!(sys::xmlTextWriterStartElementNS(
+                p,
+                cp(&pre),
+                cp(&n),
+                cp(&uri)
+            )))
+        }
+        "writeElement" => {
+            name_chk(call, 2, "element name", &s(a, 0))?;
+            let (n, content) = (cs(0), cos(1));
+            let r = c!(match &content {
+                None => {
+                    if sys::xmlTextWriterStartElement(p, cp(&n)) == -1 {
+                        -1
+                    } else {
+                        sys::xmlTextWriterEndElement(p)
                     }
-                    "endDocument" => w.end_document(),
-                    "startElement" => w.start_element(&bytes(args, 2)),
-                    "startElementNs" => {
-                        w.start_element_ns(opt_bytes(args, 2), &bytes(args, 3), opt_bytes(args, 4))
-                    }
-                    "endElement" => w.end_element(),
-                    "fullEndElement" => w.full_end_element(),
-                    "startAttribute" => w.start_attribute(&bytes(args, 2)),
-                    "startAttributeNs" => w.start_attribute_ns(
-                        opt_bytes(args, 2),
-                        &bytes(args, 3),
-                        opt_bytes(args, 4),
-                    ),
-                    "endAttribute" => w.end_attribute(),
-                    "writeAttribute" => {
-                        w.start_attribute(&bytes(args, 2))
-                            && w.write_string(&bytes(args, 3))
-                            && w.end_attribute()
-                    }
-                    "writeAttributeNs" => {
-                        w.start_attribute_ns(
-                            opt_bytes(args, 2),
-                            &bytes(args, 3),
-                            opt_bytes(args, 4),
-                        ) && w.write_string(&bytes(args, 5))
-                            && w.end_attribute()
-                    }
-                    "writeElement" => {
-                        let ok = w.start_element(&bytes(args, 2));
-                        if !ok {
-                            return false;
-                        }
-                        if let Some(c) = opt_bytes(args, 3) {
-                            w.write_string(&c);
-                        }
-                        w.end_element()
-                    }
-                    "writeElementNs" => {
-                        let ok = w.start_element_ns(
-                            opt_bytes(args, 2),
-                            &bytes(args, 3),
-                            opt_bytes(args, 4),
-                        );
-                        if !ok {
-                            return false;
-                        }
-                        if let Some(c) = opt_bytes(args, 5) {
-                            w.write_string(&c);
-                        }
-                        w.end_element()
-                    }
-                    "text" => w.write_string(&bytes(args, 2)),
-                    "writeRaw" => w.write_raw(&bytes(args, 2)),
-                    "startCdata" => w.start_cdata(),
-                    "endCdata" => w.end_cdata(),
-                    "writeCdata" => {
-                        w.start_cdata() && w.write_raw(&bytes(args, 2)) && w.end_cdata()
-                    }
-                    "startComment" => w.start_comment(),
-                    "endComment" => w.end_comment(),
-                    "writeComment" => {
-                        w.start_comment() && w.write_raw(&bytes(args, 2)) && w.end_comment()
-                    }
-                    "startPi" => w.start_pi(&bytes(args, 2)),
-                    "endPi" => w.end_pi(),
-                    "writePi" => {
-                        w.start_pi(&bytes(args, 2)) && w.write_raw(&bytes(args, 3)) && w.end_pi()
-                    }
-                    "startDtd" => {
-                        w.start_dtd(&bytes(args, 2), opt_bytes(args, 3), opt_bytes(args, 4))
-                    }
-                    "endDtd" => w.end_dtd(),
-                    "writeDtd" => {
-                        let ok =
-                            w.start_dtd(&bytes(args, 2), opt_bytes(args, 3), opt_bytes(args, 4));
-                        if !ok {
-                            return false;
-                        }
-                        if let Some(sub) = opt_bytes(args, 5) {
-                            w.write_raw(&sub);
-                        }
-                        w.end_dtd()
-                    }
-                    "startDtdElement" => w.start_dtd_part(b"ELEMENT", &bytes(args, 2), St::DtdElem),
-                    "startDtdAttlist" => w.start_dtd_part(b"ATTLIST", &bytes(args, 2), St::DtdAttl),
-                    "startDtdEntity" => {
-                        let pe = conv::to_bool(&arg(args, 3));
-                        let name = if pe {
-                            [b"% ".as_slice(), &bytes(args, 2)].concat()
-                        } else {
-                            bytes(args, 2)
-                        };
-                        w.start_dtd_part(b"ENTITY", &name, St::DtdEnty)
-                    }
-                    "endDtdElement" | "endDtdAttlist" | "endDtdEntity" => w.end_dtd_part(),
-                    "writeDtdElement" => {
-                        w.start_dtd_part(b"ELEMENT", &bytes(args, 2), St::DtdElem)
-                            && w.write_raw(&bytes(args, 3))
-                            && w.end_dtd_part()
-                    }
-                    "writeDtdAttlist" => {
-                        w.start_dtd_part(b"ATTLIST", &bytes(args, 2), St::DtdAttl)
-                            && w.write_raw(&bytes(args, 3))
-                            && w.end_dtd_part()
-                    }
-                    "writeDtdEntity" => {
-                        let pe = conv::to_bool(&arg(args, 4));
-                        let name = if pe {
-                            [b"% ".as_slice(), &bytes(args, 2)].concat()
-                        } else {
-                            bytes(args, 2)
-                        };
-                        w.start_dtd_part(b"ENTITY", &name, St::DtdEnty)
-                            && w.write_raw(&bytes(args, 3))
-                            && w.end_dtd_part()
-                    }
-                    _ => false,
                 }
+                Some(_) => sys::xmlTextWriterWriteElement(p, cp(&n), cp(&content)),
             });
-            if op == "endDocument" && r == Some(true) {
-                // xmlTextWriterEndDocument flushes the output buffer
-                if with_w(id, |w| !matches!(w.target, Target::Memory)).unwrap_or(false) {
-                    flush_target(host, id, true);
+            ok(r)
+        }
+        "writeElementNs" => {
+            name_chk(call, 3, "element name", &s(a, 1))?;
+            let (pre, n, uri, content) = (cos(0), cs(1), cos(2), cos(3));
+            let r = c!(match &content {
+                None => {
+                    if sys::xmlTextWriterStartElementNS(p, cp(&pre), cp(&n), cp(&uri)) == -1 {
+                        -1
+                    } else {
+                        sys::xmlTextWriterEndElement(p)
+                    }
                 }
+                Some(_) =>
+                    sys::xmlTextWriterWriteElementNS(p, cp(&pre), cp(&n), cp(&uri), cp(&content)),
+            });
+            ok(r)
+        }
+        "startPi" => {
+            name_chk(call, 2, "PI target", &s(a, 0))?;
+            let n = cs(0);
+            ok(c!(sys::xmlTextWriterStartPI(p, cp(&n))))
+        }
+        "endPi" => ok(c!(sys::xmlTextWriterEndPI(p))),
+        "writePi" => {
+            name_chk(call, 2, "PI target", &s(a, 0))?;
+            let (n, v) = (cs(0), cs(1));
+            ok(c!(sys::xmlTextWriterWritePI(p, cp(&n), cp(&v))))
+        }
+        "startCdata" => ok(c!(sys::xmlTextWriterStartCDATA(p))),
+        "endCdata" => ok(c!(sys::xmlTextWriterEndCDATA(p))),
+        "writeCdata" => {
+            let v = cs(0);
+            ok(c!(sys::xmlTextWriterWriteCDATA(p, cp(&v))))
+        }
+        "writeRaw" => {
+            let v = cs(0);
+            ok(c!(sys::xmlTextWriterWriteRaw(p, cp(&v))))
+        }
+        "text" => {
+            let v = cs(0);
+            ok(c!(sys::xmlTextWriterWriteString(p, cp(&v))))
+        }
+        "writeComment" => {
+            let v = cs(0);
+            ok(c!(sys::xmlTextWriterWriteComment(p, cp(&v))))
+        }
+        "startDocument" => {
+            let (version, enc, alone) = (cos(0), os(a, 1), cos(2));
+            // `p!`: a path, no NUL bytes.
+            if enc.as_ref().is_some_and(|e| e.contains(&0)) {
+                return Err(Thrown::error(
+                    "ValueError",
+                    format!(
+                        "{}(): Argument #{}{} must not contain any null bytes",
+                        call.fname,
+                        call.params.len() - 1,
+                        call.param(call.params.len() - 1)
+                    ),
+                ));
             }
-            match r {
-                Some(x) => b(x),
-                None => Err(Thrown::Error {
-                    class: "Error",
-                    message: "Invalid or uninitialized XMLWriter object".into(),
-                }),
-            }
+            let enc = enc.map(|e| cbytes(&e));
+            ok(c!(sys::xmlTextWriterStartDocument(
+                p,
+                cp(&version).cast(),
+                cp(&enc).cast(),
+                cp(&alone).cast()
+            )))
+        }
+        "endDocument" => ok(c!(sys::xmlTextWriterEndDocument(p))),
+        "startDtd" => {
+            let (n, pubid, sysid) = (cs(0), cos(1), cos(2));
+            ok(c!(sys::xmlTextWriterStartDTD(
+                p,
+                cp(&n),
+                cp(&pubid),
+                cp(&sysid)
+            )))
+        }
+        "endDtd" => ok(c!(sys::xmlTextWriterEndDTD(p))),
+        "writeDtd" => {
+            let (n, pubid, sysid, subset) = (cs(0), cos(1), cos(2), cos(3));
+            ok(c!(sys::xmlTextWriterWriteDTD(
+                p,
+                cp(&n),
+                cp(&pubid),
+                cp(&sysid),
+                cp(&subset)
+            )))
+        }
+        "startDtdElement" => {
+            name_chk(call, 2, "element name", &s(a, 0))?;
+            let n = cs(0);
+            ok(c!(sys::xmlTextWriterStartDTDElement(p, cp(&n))))
+        }
+        "endDtdElement" => ok(c!(sys::xmlTextWriterEndDTDElement(p))),
+        "writeDtdElement" => {
+            name_chk(call, 2, "element name", &s(a, 0))?;
+            let (n, v) = (cs(0), cs(1));
+            ok(c!(sys::xmlTextWriterWriteDTDElement(p, cp(&n), cp(&v))))
+        }
+        "startDtdAttlist" => {
+            name_chk(call, 2, "element name", &s(a, 0))?;
+            let n = cs(0);
+            ok(c!(sys::xmlTextWriterStartDTDAttlist(p, cp(&n))))
+        }
+        "endDtdAttlist" => ok(c!(sys::xmlTextWriterEndDTDAttlist(p))),
+        "writeDtdAttlist" => {
+            name_chk(call, 2, "element name", &s(a, 0))?;
+            let (n, v) = (cs(0), cs(1));
+            ok(c!(sys::xmlTextWriterWriteDTDAttlist(p, cp(&n), cp(&v))))
+        }
+        "startDtdEntity" => {
+            name_chk(call, 2, "attribute name", &s(a, 0))?;
+            let (n, pe) = (cs(0), b(a, 1, false));
+            ok(c!(sys::xmlTextWriterStartDTDEntity(p, pe as c_int, cp(&n))))
+        }
+        "endDtdEntity" => ok(c!(sys::xmlTextWriterEndDTDEntity(p))),
+        "writeDtdEntity" => {
+            name_chk(call, 2, "element name", &s(a, 0))?;
+            let (n, content, pe) = (cs(0), cs(1), b(a, 2, false));
+            let (pubid, sysid, ndata) = (cos(3), cos(4), cos(5));
+            ok(c!(sys::xmlTextWriterWriteDTDEntity(
+                p,
+                pe as c_int,
+                cp(&n),
+                cp(&pubid),
+                cp(&sysid),
+                cp(&ndata),
+                cp(&content)
+            )))
+        }
+        "outputMemory" => flush(host, call, &w, b(a, 0, true), true),
+        "flush" => flush(host, call, &w, b(a, 0, true), false),
+        _ => Err(Thrown::error(
+            "Error",
+            format!("Call to undefined method XMLWriter::{method}()"),
+        )),
+    }
+}
+
+/// php_xmlwriter_flush
+fn flush(
+    host: &mut dyn Host,
+    call: &Call,
+    w: &Writer,
+    empty: bool,
+    force_string: bool,
+) -> Result<Value, Thrown> {
+    if force_string && w.output.is_null() {
+        return Ok(Value::str(Vec::new()));
+    }
+    let p = w.ptr;
+    let bytes = ffi::with_host(host, &call.fname, || unsafe { sys::xmlTextWriterFlush(p) })?;
+    if w.output.is_null() {
+        return Ok(Value::Int(bytes as i64));
+    }
+    // The buffer lives as long as the writer.
+    let out = unsafe { &mut *w.output };
+    Ok(Value::str(if empty {
+        std::mem::take(out)
+    } else {
+        out.clone()
+    }))
+}
+
+/// xmlwriter_open_uri / XMLWriter::openUri
+fn open_uri(
+    host: &mut dyn Host,
+    call: &Call,
+    this: Option<&Value>,
+    a: &[Value],
+) -> Result<Value, Thrown> {
+    let source = s(a, 0);
+    if source.contains(&0) {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "{}(): Argument #1 ($uri) must not contain any null bytes",
+                call.fname
+            ),
+        ));
+    }
+    if source.is_empty() {
+        return Err(Thrown::error(
+            "ValueError",
+            format!("{}(): Argument #1 ($uri) must not be empty", call.fname),
+        ));
+    }
+    let Some(valid) = valid_file_path(&source) else {
+        crate::warn(host, &call.fname, "Unable to resolve file path")?;
+        return Ok(Value::Bool(false));
+    };
+    let c = cbytes(&valid);
+    let ptr = ffi::with_host(host, &call.fname, || unsafe {
+        sys::xmlNewTextWriterFilename(c.as_ptr().cast(), 0)
+    })?;
+    if ptr.is_null() {
+        return Ok(Value::Bool(false));
+    }
+    attach(
+        host,
+        call,
+        this,
+        Writer {
+            ptr,
+            output: ptr::null_mut(),
+        },
+    )
+}
+
+/// xmlwriter_open_memory / XMLWriter::openMemory
+fn open_memory(host: &mut dyn Host, call: &Call, this: Option<&Value>) -> Result<Value, Thrown> {
+    let Some(w) = create_in_memory() else {
+        return Ok(Value::Bool(false));
+    };
+    attach(host, call, this, w)
+}
+
+/// A new writer for `this` (true), or for a new XMLWriter object.
+fn attach(
+    host: &mut dyn Host,
+    call: &Call,
+    this: Option<&Value>,
+    w: Writer,
+) -> Result<Value, Thrown> {
+    match this {
+        Some(obj) => {
+            ffi::with_host(host, &call.fname, || set_writer(obj, Some(w)))?;
+            Ok(Value::Bool(true))
+        }
+        None => {
+            let Some(obj) = host.instantiate(b"XMLWriter", Vec::new()) else {
+                return Ok(Value::Bool(false));
+            };
+            set_writer(&obj, Some(w));
+            Ok(obj)
         }
     }
+}
+
+/// xml_writer_create_static: a new object of the called class, its
+/// constructor run, holding `w`.
+fn create_static(
+    host: &mut dyn Host,
+    fname: &str,
+    class: &[u8],
+    w: Writer,
+) -> Result<Value, Thrown> {
+    match host.reflect_new_instance(class, Vec::new(), true) {
+        Ok(obj) => {
+            set_writer(&obj, Some(w));
+            Ok(obj)
+        }
+        Err(e) => {
+            ffi::with_host(host, fname, || drop(w))?;
+            Err(e)
+        }
+    }
+}
+
+/// `__xmlwriter_to($method, $class, ...$args)`: XMLWriter::toMemory,
+/// toUri and toStream.
+fn fn_to(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let method = s(args, 0);
+    let class = s(args, 1);
+    let a = &args[2.min(args.len())..];
+    match &method[..] {
+        b"toMemory" => {
+            let Some(w) = create_in_memory() else {
+                return Err(Thrown::error("Error", "Could not construct libxml writer"));
+            };
+            create_static(host, "XMLWriter::toMemory", &class, w)
+        }
+        b"toUri" => {
+            const F: &str = "XMLWriter::toUri";
+            let source = s(a, 0);
+            if source.contains(&0) {
+                return Err(Thrown::error(
+                    "ValueError",
+                    format!("{F}(): Argument #1 ($uri) must not contain any null bytes"),
+                ));
+            }
+            if source.is_empty() {
+                return Err(Thrown::error(
+                    "ValueError",
+                    format!("{F}(): Argument #1 ($uri) must not be empty"),
+                ));
+            }
+            let Some(valid) = valid_file_path(&source) else {
+                return Err(Thrown::error(
+                    "ValueError",
+                    format!("{F}(): Argument #1 ($uri) must resolve to a valid file path"),
+                ));
+            };
+            let c = cbytes(&valid);
+            let ptr = ffi::with_host(host, F, || unsafe {
+                sys::xmlNewTextWriterFilename(c.as_ptr().cast(), 0)
+            })?;
+            if ptr.is_null() {
+                return Err(Thrown::error("Error", "Could not construct libxml writer"));
+            }
+            create_static(
+                host,
+                F,
+                &class,
+                Writer {
+                    ptr,
+                    output: ptr::null_mut(),
+                },
+            )
+        }
+        _ => {
+            const F: &str = "XMLWriter::toStream";
+            let stream = a.first().map(deref).unwrap_or(Value::Null);
+            if !matches!(stream, Value::Resource(_)) {
+                return Err(Thrown::type_error(format!(
+                    "{F}(): Argument #1 ($stream) must be of type resource, {} given",
+                    given_type(host, &stream)
+                )));
+            }
+            if host.stream_kind(&stream).is_none() {
+                return Err(Thrown::type_error(format!(
+                    "{F}(): supplied resource is not a valid stream resource"
+                )));
+            }
+            let ctx = Io { res: stream }.into_raw();
+            let ptr = unsafe {
+                let buf = sys::xmlOutputBufferCreateIO(
+                    Some(io::io_write),
+                    Some(stream_close),
+                    ctx,
+                    ptr::null_mut(),
+                );
+                if buf.is_null() {
+                    stream_close(ctx);
+                    return Err(Thrown::error(
+                        "Error",
+                        "Could not construct libxml output buffer",
+                    ));
+                }
+                let w = sys::xmlNewTextWriter(buf);
+                if w.is_null() {
+                    sys::xmlOutputBufferClose(buf);
+                    return Err(Thrown::error("Error", "Could not construct libxml writer"));
+                }
+                w
+            };
+            create_static(
+                host,
+                F,
+                &class,
+                Writer {
+                    ptr,
+                    output: ptr::null_mut(),
+                },
+            )
+        }
+    }
+}
+
+/// `__xmlwriter($method, $this, ...$args)`: an XMLWriter method.
+fn fn_method(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let method = String::from_utf8_lossy(&s(args, 0)).into_owned();
+    let this = args.get(1).map(deref).unwrap_or(Value::Null);
+    let a = &args[2.min(args.len())..];
+    if method == "__destruct" {
+        // xmlwriter_object_dtor: free the writer while a host can take the
+        // last writes.
+        let w = obj_id(&this).and_then(|id| WRITERS.with(|m| m.borrow_mut().remove(&id)));
+        ffi::with_host(host, "XMLWriter::__destruct", || drop(w))?;
+        return Ok(Value::Null);
+    }
+    let Some(&(m, _, params)) = op(&method) else {
+        return Err(Thrown::error(
+            "Error",
+            format!("Call to undefined method XMLWriter::{method}()"),
+        ));
+    };
+    let call = Call {
+        fname: format!("XMLWriter::{m}"),
+        params: params.to_vec(),
+    };
+    run(host, &call, m, &this, a)
+}
+
+/// `__xmlwriter_fn($function, ...$args)`: a procedural `xmlwriter_*`
+/// function (PHP-source wrappers in the prelude, so that named arguments
+/// work), the writer first.
+fn fn_procedural(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let func = String::from_utf8_lossy(&s(args, 0)).into_owned();
+    let args = &args[1.min(args.len())..];
+    let Some(&(m, f, params)) = OPS.iter().find(|o| o.1 == func) else {
+        return Err(Thrown::error(
+            "Error",
+            format!("Call to undefined function {func}()"),
+        ));
+    };
+    let mut names = vec!["writer"];
+    names.extend_from_slice(params);
+    let call = Call {
+        fname: f.to_string(),
+        params: names,
+    };
+    match m {
+        "openUri" => return open_uri(host, &call, None, args),
+        "openMemory" => return open_memory(host, &call, None),
+        _ => {}
+    }
+    let this = args.first().map(deref).unwrap_or(Value::Null);
+    run(host, &call, m, &this, &args[1.min(args.len())..])
 }
 
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     m.insert(
-        "__xw",
+        "__xmlwriter_fn",
         Builtin {
-            name: "__xw",
-            func: fn_xw,
+            name: "__xmlwriter_fn",
+            func: fn_procedural,
             min_args: 1,
+            max_args: None,
+        },
+    );
+    m.insert(
+        "__xmlwriter",
+        Builtin {
+            name: "__xmlwriter",
+            func: fn_method,
+            min_args: 2,
+            max_args: None,
+        },
+    );
+    m.insert(
+        "__xmlwriter_to",
+        Builtin {
+            name: "__xmlwriter_to",
+            func: fn_to,
+            min_args: 2,
             max_args: None,
         },
     );

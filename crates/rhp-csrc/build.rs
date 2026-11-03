@@ -28,7 +28,8 @@ fn main() {
             .include(dir.join("src"))
             .opt_level(3)
             .warnings(false)
-            .flag("-pthread");
+            .flag("-pthread")
+            .flag("-fvisibility=hidden");
         for f in [
             "src/argon2.c",
             "src/core.c",

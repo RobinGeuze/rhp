@@ -325,6 +325,20 @@ fn fn_array_pad(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Array(a));
     }
     let pad = abs - n;
+    // php sizes the result up front, fallibly: packed when the first key
+    // it inserts is an int (a list input, or pads going first).
+    let packed = size < 0
+        || a.iter()
+            .enumerate()
+            .all(|(i, (k, _))| matches!(k, ArrayKey::Int(n) if *n == i as i64));
+    let reserved = if packed {
+        rhp_values::mem::reserve_packed_array(abs)
+    } else {
+        rhp_values::mem::reserve_hash_array(abs)
+    };
+    if !reserved {
+        return Ok(Value::Null);
+    }
     let mut out = PhpArray::new();
     let append_original = |out: &mut PhpArray| {
         for (k, v) in a.iter() {

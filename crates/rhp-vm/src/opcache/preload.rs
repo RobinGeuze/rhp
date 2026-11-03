@@ -374,6 +374,8 @@ impl Vm {
             fn_names.insert(f.name.as_bytes().to_ascii_lowercase());
             functions.push(origin);
         }
+        // preload_move_user_functions takes them last declared first.
+        functions.reverse();
         let mut classes = Vec::new();
         let mut class_index = std::collections::HashMap::new();
         for cid in self.internal_classes..self.classes.len() {

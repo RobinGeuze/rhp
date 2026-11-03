@@ -8584,6 +8584,10 @@ impl Vm {
                 self.compile_error(&message, file.as_bytes(), line);
                 Err(Thrown::Exit(255))
             }
+            // raised outside the file: where the include/eval runs
+            Err(IncludeError::Parse { message, line: 0 }) => {
+                Err(Thrown::error("ParseError", message))
+            }
             Err(IncludeError::Parse { message, line }) => Err(self.materialize(
                 Thrown::error("ParseError", message),
                 Some((file.as_bytes().to_vec(), line)),

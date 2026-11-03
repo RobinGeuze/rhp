@@ -11,7 +11,9 @@ use crate::ext::tokenizer::lexer::{self, Tok};
 
 /// The first error php raises compiling `src`, as `(message, line)`: a
 /// syntax error (`syntax error, unexpected …, expecting …`) or a scanner
-/// error. `None` when php's grammar accepts the file.
+/// error. `None` when php's grammar accepts the file. Line 0: php raises the
+/// error outside the file (the includer's line for include/eval, no file
+/// at all for the main script).
 pub fn syntax_error(src: &[u8]) -> Option<(String, u32)> {
     let toks = lexer::tokenize(src);
     let mut feed = Feed {
@@ -172,9 +174,21 @@ impl Feed<'_> {
                 let h = heredoc_info(src, toks, i);
                 self.strings.push(Ctx::Heredoc(h));
                 // an empty heredoc: the label is checked right away
-                if h.mixed && toks.get(i + 1).is_some_and(|n| n.id == T_END_HEREDOC) {
+                let empty = toks.get(i + 1).filter(|n| n.id == T_END_HEREDOC);
+                if empty.is_some_and(|n| label_indent(src, n).2) {
                     let line = t.line as u32 + count_newlines(t.text(src));
                     return Some((MIXED.into(), line));
+                }
+                // The scan-ahead's check on a body that starts with a
+                // variable. php raises it outside any compiled file: line 0
+                // (see `syntax_error`).
+                let first = toks.get(i + 1).map(|n| n.id);
+                let var = matches!(
+                    first,
+                    Some(T_VARIABLE | T_DOLLAR_OPEN_CURLY_BRACES | T_CURLY_OPEN)
+                );
+                if !h.nowdoc && h.indentation > 0 && var {
+                    return Some((body_indentation(h.indentation), 0));
                 }
             }
             T_END_HEREDOC => {
@@ -241,43 +255,65 @@ struct Heredoc {
     nowdoc: bool,
     indentation: usize,
     uses_spaces: bool,
-    mixed: bool,
 }
 
 const MIXED: &str = "Invalid indentation - tabs and spaces cannot be mixed";
 
-/// The heredoc T_START_HEREDOC at `i` opens, from its T_END_HEREDOC.
+fn body_indentation(n: usize) -> String {
+    format!("Invalid body indentation level (expecting an indentation level of at least {n})")
+}
+
+/// A closing label's leading whitespace: (length, spaces only, mixed).
+fn label_indent(src: &[u8], t: &Tok) -> (usize, bool, bool) {
+    let ws = t.text(src).iter().take_while(|&&c| c == b' ' || c == b'\t');
+    let (mut tabs, mut spaces, mut n) = (false, false, 0);
+    for &c in ws {
+        n += 1;
+        tabs |= c == b'\t';
+        spaces |= c == b' ';
+    }
+    (n, spaces && !tabs, tabs && spaces)
+}
+
+/// The indentation php strips from the heredoc T_START_HEREDOC at `i`
+/// opens. A heredoc's comes from its scan-ahead, which keeps the last
+/// closing label it meets after a heredoc body (an inner one's too, which
+/// counts when the heredoc's own label is missing) and stops at a label
+/// that mixes tabs and spaces; a nowdoc's is its own.
 fn heredoc_info(src: &[u8], toks: &[Tok], i: usize) -> Heredoc {
-    let nowdoc = toks[i].text(src).contains(&b'\'');
-    let mut depth = 0;
-    let mut end = None;
-    for t in &toks[i + 1..] {
+    let is_nowdoc = |t: &Tok| t.text(src).contains(&b'\'');
+    let nowdoc = is_nowdoc(&toks[i]);
+    let mut open = vec![nowdoc];
+    let mut label = (0, false);
+    for (k, t) in toks.iter().enumerate().skip(i + 1) {
         match t.id {
-            T_START_HEREDOC => depth += 1,
-            T_END_HEREDOC if depth == 0 => {
-                end = Some(t);
-                break;
+            T_START_HEREDOC => open.push(is_nowdoc(t)),
+            T_END_HEREDOC => {
+                let inner_nowdoc = open.pop().unwrap_or(false);
+                let with_body = toks[k - 1].id != T_START_HEREDOC;
+                let (n, spaces, mixed) = label_indent(src, t);
+                if open.is_empty() {
+                    if nowdoc || with_body {
+                        label = (n, spaces);
+                    }
+                    break;
+                }
+                if !nowdoc && with_body {
+                    if !inner_nowdoc {
+                        label = (n, spaces);
+                    }
+                    if mixed {
+                        break;
+                    }
+                }
             }
-            T_END_HEREDOC => depth -= 1,
             _ => {}
         }
     }
-    let ws: Vec<u8> = end
-        .map(|t| {
-            t.text(src)
-                .iter()
-                .copied()
-                .take_while(|&c| c == b' ' || c == b'\t')
-                .collect()
-        })
-        .unwrap_or_default();
-    let tabs = ws.contains(&b'\t');
-    let spaces = ws.contains(&b' ');
     Heredoc {
         nowdoc,
-        indentation: ws.len(),
-        uses_spaces: spaces && !tabs,
-        mixed: tabs && spaces,
+        indentation: label.0,
+        uses_spaces: label.1,
     }
 }
 
@@ -286,14 +322,28 @@ fn heredoc_info(src: &[u8], toks: &[Tok], i: usize) -> Heredoc {
 fn heredoc_body_error(src: &[u8], toks: &[Tok], i: usize, h: Heredoc) -> Option<(String, u32)> {
     let t = &toks[i];
     let line = t.line as u32;
-    let at_label = toks.get(i + 1).is_some_and(|n| n.id == T_END_HEREDOC);
-    if at_label && h.mixed {
+    let label = toks.get(i + 1).filter(|n| n.id == T_END_HEREDOC);
+    let at_label = label.is_some();
+    if label.is_some_and(|n| label_indent(src, n).2) {
         return Some((MIXED.into(), line));
     }
-    if h.indentation == 0 {
+    let mut value = t.text(src);
+    let (mut indentation, mut uses_spaces) = (h.indentation, h.uses_spaces);
+    if h.nowdoc && !at_label {
+        // an unterminated nowdoc: the whitespace after its last newline,
+        // unless that runs to the end of the file
+        let nl = value.iter().rposition(|&c| c == b'\n' || c == b'\r')?;
+        let ws = &value[nl + 1..];
+        let n = ws.iter().take_while(|&&c| c == b' ' || c == b'\t').count();
+        if n == ws.len() {
+            return None;
+        }
+        indentation = n;
+        uses_spaces = !ws[..n].contains(&b'\t');
+    }
+    if indentation == 0 {
         return None;
     }
-    let mut value = t.text(src);
     if at_label {
         let n = if value.ends_with(b"\r\n") { 2 } else { 1 };
         value = &value[..value.len().saturating_sub(n)];
@@ -304,14 +354,8 @@ fn heredoc_body_error(src: &[u8], toks: &[Tok], i: usize, h: Heredoc) -> Option<
                 .last()
                 .is_some_and(|&c| c == b'\n' || c == b'\r')
         });
-    strip_indentation_error(
-        value,
-        h.indentation,
-        h.uses_spaces,
-        newline_at_start,
-        at_label,
-    )
-    .map(|(m, n)| (m, line + n))
+    strip_indentation_error(value, indentation, uses_spaces, newline_at_start, at_label)
+        .map(|(m, n)| (m, line + n))
 }
 
 /// strip_multiline_string_indentation's errors, with the number of newlines
@@ -353,12 +397,7 @@ fn strip_indentation_error(
                 break;
             }
             if s == end || (v[s] != b' ' && v[s] != b'\t') {
-                return Some((
-                    format!(
-                        "Invalid body indentation level (expecting an indentation level of at least {indentation})"
-                    ),
-                    count,
-                ));
+                return Some((body_indentation(indentation), count));
             }
             if (!using_spaces && v[s] == b' ') || (using_spaces && v[s] == b'\t') {
                 return Some((MIXED.into(), count));

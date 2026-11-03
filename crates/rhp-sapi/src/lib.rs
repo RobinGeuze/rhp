@@ -200,7 +200,9 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     let arena = Arena::new();
     let parsed = arena.parse(file.as_bytes(), &source);
     if let Some((message, line)) = parse_error(&parsed, &source) {
-        vm.report_parse_error(&message, &file, line);
+        // line 0: php raised it outside any file
+        let at = if line == 0 { "[no active file]" } else { &file };
+        vm.report_parse_error(&message, at, line);
         vm.finish_request();
         return Outcome::Exit(255);
     }

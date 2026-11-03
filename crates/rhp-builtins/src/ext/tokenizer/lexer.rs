@@ -10,9 +10,18 @@ use super::ids::*;
 pub struct Tok {
     /// A `T_*` id (>= 256) or, for a single-character token, the byte itself.
     pub id: i64,
-    pub text: Vec<u8>,
     pub line: i64,
+    /// The token is `src[pos..end]`.
     pub pos: usize,
+    pub end: usize,
+    /// Scanned in ST_IN_SCRIPTING (where brackets count for nesting).
+    pub scripting: bool,
+}
+
+impl Tok {
+    pub fn text<'s>(&self, src: &'s [u8]) -> &'s [u8] {
+        &src[self.pos..self.end]
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -148,10 +157,9 @@ const KEYWORDS: &[(&str, i64)] = &[
 ];
 
 pub fn keyword_id(label: &[u8]) -> Option<i64> {
-    let l = label.to_ascii_lowercase();
     KEYWORDS
         .iter()
-        .find(|(k, _)| k.as_bytes() == l.as_slice())
+        .find(|(k, _)| k.len() == label.len() && k.as_bytes().eq_ignore_ascii_case(label))
         .map(|(_, id)| *id)
 }
 
@@ -226,14 +234,14 @@ impl<'a> Lexer<'a> {
         self.s.len() >= i + kw.len() && self.s[i..i + kw.len()].eq_ignore_ascii_case(kw)
     }
     fn push(&mut self, id: i64, end: usize) {
-        let text = self.s[self.p..end].to_vec();
         let line = self.line;
-        self.line += count_newlines(&text);
+        self.line += count_newlines(&self.s[self.p..end]);
         self.out.push(Tok {
             id,
-            text,
             line,
             pos: self.p,
+            end,
+            scripting: false,
         });
         self.p = end;
     }
@@ -428,7 +436,7 @@ impl<'a> Lexer<'a> {
             return self.push(id, p + 1);
         }
         for (op, id) in OPERATORS {
-            if s[p..].starts_with(op.as_bytes()) {
+            if op.as_bytes()[0] == c && s[p..].starts_with(op.as_bytes()) {
                 let id = *id;
                 if id == T_OBJECT_OPERATOR || id == T_NULLSAFE_OBJECT_OPERATOR {
                     self.push_state(St::LookingForProperty);
@@ -500,43 +508,42 @@ impl<'a> Lexer<'a> {
             };
             return self.push(id, qe);
         }
-        let lower = word.to_ascii_lowercase();
-        match lower.as_slice() {
-            b"yield" => {
-                let w = self.ws_or_comments(e);
-                // `"from"[^a-zA-Z0-9_\x80-\xff]`: at end of input the class
-                // matches re2c's NUL sentinel.
-                if w > 0
-                    && self.starts_ci(e + w, b"from")
-                    && (e + w + 4 >= self.s.len() || !is_label_char(self.s[e + w + 4]))
-                {
-                    return self.push(T_YIELD_FROM, e + w + 4);
+        let is = |w: &[u8]| word.eq_ignore_ascii_case(w);
+        if is(b"yield") {
+            let w = self.ws_or_comments(e);
+            // `"from"[^a-zA-Z0-9_\x80-\xff]`: at end of input the class
+            // matches re2c's NUL sentinel.
+            if w > 0
+                && self.starts_ci(e + w, b"from")
+                && (e + w + 4 >= self.s.len() || !is_label_char(self.s[e + w + 4]))
+            {
+                return self.push(T_YIELD_FROM, e + w + 4);
+            }
+        } else if is(b"enum") {
+            let w = self.ws_or_comments(e);
+            if w > 0 {
+                let n = e + w;
+                // re2c matches "extends"/"implements" as a literal prefix here
+                let is_ext = self.starts_ci(n, b"extends") || self.starts_ci(n, b"implements");
+                if is_ext {
+                    return self.push(T_STRING, e);
+                }
+                if is_label_start(self.at(n)) {
+                    return self.push(T_ENUM, e);
                 }
             }
-            b"enum" => {
-                let w = self.ws_or_comments(e);
-                if w > 0 {
-                    let n = e + w;
-                    // re2c matches "extends"/"implements" as a literal prefix here
-                    let is_ext = self.starts_ci(n, b"extends") || self.starts_ci(n, b"implements");
-                    if is_ext {
-                        return self.push(T_STRING, e);
-                    }
-                    if is_label_start(self.at(n)) {
-                        return self.push(T_ENUM, e);
-                    }
-                }
-                return self.push(T_STRING, e);
-            }
-            b"public" | b"protected" | b"private" if self.starts_ci(e, b"(set)") => {
-                let id = match lower.as_slice() {
-                    b"public" => T_PUBLIC_SET,
-                    b"protected" => T_PROTECTED_SET,
-                    _ => T_PRIVATE_SET,
-                };
-                return self.push(id, e + 5);
-            }
-            _ => {}
+            return self.push(T_STRING, e);
+        } else if (is(b"public") || is(b"protected") || is(b"private"))
+            && self.starts_ci(e, b"(set)")
+        {
+            let id = if is(b"public") {
+                T_PUBLIC_SET
+            } else if is(b"protected") {
+                T_PROTECTED_SET
+            } else {
+                T_PRIVATE_SET
+            };
+            return self.push(id, e + 5);
         }
         let id = keyword_id(word).unwrap_or(T_STRING);
         self.push(id, e)
@@ -1051,7 +1058,7 @@ pub fn tokenize(src: &[u8]) -> Vec<Tok> {
         stack: Vec::new(),
         labels: Vec::new(),
         line: 1,
-        out: Vec::new(),
+        out: Vec::with_capacity(src.len() / 4),
     };
     lx.run_with_halt();
     lx.out
@@ -1065,6 +1072,7 @@ impl Lexer<'_> {
         let mut need: i32 = -1;
         while self.p < self.s.len() {
             let before = self.out.len();
+            let scripting = self.state == St::Scripting;
             match self.state {
                 St::Initial => self.initial(),
                 St::Scripting => self.scripting(),
@@ -1079,6 +1087,9 @@ impl Lexer<'_> {
             }
             if self.out.len() == before {
                 continue;
+            }
+            for t in &mut self.out[before..] {
+                t.scripting = scripting;
             }
             let id = self.out.last().map(|t| t.id).unwrap_or(0);
             if need != -1 {

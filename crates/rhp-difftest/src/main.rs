@@ -10,6 +10,7 @@
 //!   rhp-difftest phpt --php-src ../php-src --filter Zend/tests --mutate 20
 //!   rhp-difftest lint vendor --check-known known-refused.txt  # compile-only scan
 //!   rhp-difftest app symfony-7.4 --check-known tests/apps/symfony-7.4/known-passing-requests.txt
+//!   rhp-difftest gen parser --php-dist php-8.5.12 --check  # generated tables (see gen/)
 //!
 //! Exit code is nonzero if any sweep produced a MISMATCH (or, with --strict,
 //! any rhp-unsupported feature; for `phpt --check-known`, any regression;
@@ -30,6 +31,9 @@ fn main() -> ExitCode {
     }
     if args.first().map(String::as_str) == Some("lint") {
         return rhp_difftest::lint::main(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("gen") {
+        return rhp_difftest::gen::main(&args[1..]);
     }
     let ext = args
         .iter()

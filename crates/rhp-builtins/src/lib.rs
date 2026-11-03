@@ -22,6 +22,7 @@ pub mod pcre;
 pub mod streams;
 pub mod stub_params;
 pub mod version;
+pub mod zend;
 
 pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};
 pub use ext::simplexml::{sxe_bool, sxe_props_array, sxe_same_node, sxe_string};

@@ -25,7 +25,9 @@
 //!    build value (e.g. [`BUILD_SYSTEM`]) into this file;
 //!    `cargo test -p rhp-cli --test ref_build` fails on the reference host
 //!    until rhp and php agree;
-//! 3. regenerate the phpt ratchet. No golden or test spells out the release.
+//! 3. pin the release tarball's SHA-256 (php.net's releases JSON) in
+//!    `tools/php-dist.sha256` and run `rhp-difftest gen parser` on it;
+//! 4. regenerate the phpt ratchet. No golden or test spells out the release.
 
 /// `PHP_RELEASE_VERSION`, as a literal so it can be spliced with `concat!`.
 macro_rules! release {

@@ -1,13 +1,13 @@
 //! The `tokenizer` extension: `token_get_all`, `token_name`, the `T_*`
 //! constants and `PhpToken`, on a port of the Zend scanner (`lexer`).
 //!
-//! `TOKEN_PARSE` re-tags semi-reserved keywords the parser would accept as
-//! identifiers (after `::`, method/const/enum-case names, named arguments,
-//! trait aliases) as `T_STRING`, like php's parser feedback does. Unlike php it
-//! does not run the parser, so invalid code does not throw a ParseError.
+//! `TOKEN_PARSE` runs php's parser (`crate::zend`): invalid code throws its
+//! ParseError. Semi-reserved keywords the parser would accept as identifiers
+//! (after `::`, method/const/enum-case names, named arguments, trait aliases)
+//! are re-tagged as `T_STRING` by a heuristic, not by the parser's feedback.
 
-mod ids;
-mod lexer;
+pub(crate) mod ids;
+pub(crate) mod lexer;
 
 use std::collections::HashMap;
 
@@ -74,25 +74,30 @@ fn apply_parse_mode(toks: &mut [Tok]) {
     }
 }
 
-fn lex(code: &[u8], flags: i64) -> Vec<Tok> {
+fn lex(code: &[u8], flags: i64) -> Result<Vec<Tok>, Thrown> {
+    if flags & TOKEN_PARSE != 0 {
+        if let Some((message, _line)) = crate::zend::syntax_error(code) {
+            return Err(Thrown::error("ParseError", message));
+        }
+    }
     let mut toks = lexer::tokenize(code);
     if flags & TOKEN_PARSE != 0 {
         apply_parse_mode(&mut toks);
     }
-    toks
+    Ok(toks)
 }
 
 fn fn_token_get_all(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let code = conv::to_string_bytes(&deref(&args[0]));
     let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     let mut out = PhpArray::new();
-    for t in lex(&code, flags) {
+    for t in lex(&code, flags)? {
         if t.id < 256 {
-            out.push(Value::str(t.text));
+            out.push(Value::str(t.text(&code).to_vec()));
         } else {
             let mut a = PhpArray::new();
             a.push(Value::Int(t.id));
-            a.push(Value::str(t.text));
+            a.push(Value::str(t.text(&code).to_vec()));
             a.push(Value::Int(t.line));
             out.push(Value::Array(a));
         }
@@ -106,10 +111,10 @@ fn fn_token_list(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let code = conv::to_string_bytes(&deref(&args[0]));
     let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     let mut out = PhpArray::new();
-    for t in lex(&code, flags) {
+    for t in lex(&code, flags)? {
         let mut a = PhpArray::new();
         a.push(Value::Int(t.id));
-        a.push(Value::str(t.text));
+        a.push(Value::str(t.text(&code).to_vec()));
         a.push(Value::Int(t.line));
         a.push(Value::Int(t.pos as i64));
         out.push(Value::Array(a));

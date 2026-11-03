@@ -87,3 +87,7 @@ icu_segmenter = { version = "~2.4", features = ["unstable"] }
 icu_normalizer = "2"
 icu_properties = "2"
 idna = "1"
+
+[build-dependencies]
+# Compiles src/ext/libxml/shim.c against the headers of the libxml2 it links.
+cc = "1.9"

@@ -21,15 +21,17 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 - **Version constants come from the library rhp linked:** a header macro
   where php reads a header macro, a runtime getter where php calls one.
   `PCRE_VERSION` comes from `pcre2_config()`, `PCRE_VERSION_MAJOR`/`MINOR`
-  from pcre2.h. `version.rs` keeps hard-coded values only for libraries rhp
-  does not link yet; each goes when its library is linked.
+  from pcre2.h; `LIBXML_VERSION`/`LIBXML_DOTTED_VERSION` from xmlversion.h
+  and `LIBXML_LOADED_VERSION` from `xmlParserVersion`. `version.rs` keeps
+  hard-coded values only for libraries rhp does not link yet; each goes when
+  its library is linked.
 
 ## Linking: static by default
 
 | Kind | Linked | Examples |
 |---|---|---|
 | Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, argon2 (in `rhp-csrc`); later timelib, oniguruma, and libmbfl in its own crate (LGPL) |
-| A third-party library whose static archive is the build php links | static | PCRE2; later gmp, icu4c@79, openssl@4, curl |
+| A third-party library whose static archive is the build php links | static | PCRE2, libxml2 on Linux; later gmp, icu4c@79, openssl@4, curl |
 | The listed exceptions below | dynamic | |
 
 A static archive is "the build php links" when it comes from the same package
@@ -49,6 +51,7 @@ Today rhp-builtins links:
 | Library | macOS | Debian/Ubuntu |
 |---|---|---|
 | PCRE2 (libpcre2-8) | static, Homebrew pcre2 | static, libpcre2-dev (CI: php's release, see below) |
+| libxml2 | dynamic, the SDK's /usr/lib/libxml2.2.dylib (php's; found with `xcrun --show-sdk-path`) | static, libxml2-dev (CI: php's release, see below) |
 | zlib (via libz-sys; also crc32, adler32) | dynamic, /usr/lib/libz | dynamic, zlib1g |
 | bzip2 (bzip2 `=0.5.2`, feature `static`) | static, bzip2-sys's bundled C libbz2 1.0.8 | static, bzip2-sys's bundled C libbz2 1.0.8 |
 | php-src crypt C (via rhp-csrc) | static, compiled from php-8.5.12 | the same |
@@ -86,16 +89,21 @@ On CI, php is not always the distro's build. setup-php's php on Ubuntu 26.04
 ships its own `libpcre2-8.so` (PCRE2 10.47, against which it was compiled)
 next to the distro's 10.46, outside dpkg. It becomes the copy php loads once
 `ldconfig` runs, so the setup-php action runs `ldconfig` straight away. The
-native-deps action then compares the PCRE2 php reports with the distro's
-`libpcre2-dev`. When they differ, it builds php's release from the upstream
-tarball, checked against `.github/actions/native-deps/sha256sums` (the
-checksums Homebrew's formula pins), static only, and points `PKG_CONFIG_PATH`
-at it. A release with no recorded checksum fails the job; add its checksum.
+native-deps action then compares the PCRE2 and libxml2 versions php reports
+(`PCRE_VERSION`, `LIBXML_LOADED_VERSION`) with the distro's `-dev` packages.
+For each that differs, `build-from-source.sh` builds php's release from the
+upstream tarball, checked against `.github/actions/native-deps/sha256sums`
+(PCRE2: the checksums Homebrew's formula pins; libxml2: GNOME's published
+ones), static only, and points `PKG_CONFIG_PATH` at it. libxml2 is
+configured like Debian/Ubuntu's build where that changes parsing (zlib on,
+ICU off). A release with no recorded checksum fails the job; add its
+checksum.
 The `php` input names a php that is not the one on PATH (the nightly
 sanitizer build uses php-src's bundled PCRE2).
-`otool -L target/release/rhp` (or `ldd`) shows no libpcre2; `nm` shows the
-`pcre2_*` symbols. rhp-builtins' `pcre2_is_linked_statically` test checks
-its own test binary, which is linked straight from the crate.
+`otool -L target/release/rhp` (or `ldd`) shows no libpcre2 (and on Linux no
+libxml2); `nm` shows the `pcre2_*` symbols. rhp-builtins'
+`pcre2_is_linked_statically` test checks its own test binary, which is
+linked straight from the crate.
 
 ## Compiled from source: rhp-csrc
 
@@ -157,15 +165,34 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   stack, settings and pattern cache live in a `thread_local!` in
   `rhp-builtins/src/pcre/mod.rs`, as php keeps them in TLS globals. Library
   handles are `!Send` and stay with their VM.
+- **Per-thread hooks are installed when each VM starts.** libxml2's generic
+  error handler, structured error handler and file I/O hooks are per thread
+  in both 2.9 and 2.15: `ext::libxml::reset_state` sets php's handlers on the
+  VM's thread, as php's RINIT does.
 - **Global hooks** a library offers only process-wide (libxml2's entity
   loader, libxslt's error function) are set once, to a dispatcher that reads
-  thread-local VM state.
+  thread-local VM state: libxml2's entity loader runs php's loader on a
+  thread whose VM installed the glue while a builtin is running, and
+  libxml2's own otherwise.
 - **No process-global side effects from a VM:** no `setlocale` (use
   `newlocale`/`uselocale`), no relative paths handed to a library that opens
   files itself (absolutize against the VM's cwd), no `putenv("TZ=…")`.
-- **C→Rust callbacks** are `extern "C"`, catch panics, find their VM through
-  a thread-local, and stop the C operation on `exit` or an exception, then
-  rethrow once it returns. php longjmps out of the library; rhp cannot.
+- **C→Rust callbacks** (`ext/libxml/ffi.rs`):
+  - a builtin runs the C call inside `ffi::with_host(host, fname, …)`, which
+    pushes its `Host` on a thread-local stack;
+  - every `extern "C"` callback runs its body in `ffi::guard`, which catches
+    a panic (it must not unwind into C), stops the C operation and resumes
+    the panic after the C call returns;
+  - a callback reaches PHP through `ffi::call_host`. What PHP throws is
+    stashed and rethrown by `with_host` once the C call returns: php
+    longjmps out of the library, rhp cannot. An exception leaves the C
+    operation running, as in php, where handlers then see `EG(exception)`
+    and do nothing (`ffi::aborted`); `exit` and other non-exceptions stop it
+    through the function the builtin registered (`ffi::set_stop`, e.g.
+    `xmlStopParser`);
+  - printf-style callbacks are C functions in the shim that format with
+    `vasprintf` (no length limit, like php's `vspprintf`) and hand Rust the
+    finished message.
 - **Guard aborts.** A C library that can abort the process (libgmp on huge
   sizes) needs size checks first: with one VM per thread, an abort kills
   every request.
@@ -173,18 +200,22 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
 ## Adding a library
 
 1. Add a row to `LIBS` in `crates/rhp-builtins/build/native.rs`: pkg-config
-   name, Homebrew formula, link name, the header that defines its version
-   macros, the macros to export, and the link mode per OS. The helper finds
-   it with pkg-config, or on macOS without pkg-config through
-   `/opt/homebrew/opt/<formula>` (`/usr/local/opt/<formula>`); checks the
-   header's version against the .pc file; links it; and exports each macro
-   as `env!("RHP_<MACRO>")`.
+   name, Homebrew formula (or `macos_sdk` for a library php takes from the
+   macOS SDK), link name, the header that defines its version macros, the
+   macros to export, and the link mode per OS. The helper finds it with
+   pkg-config, or on macOS without pkg-config through
+   `/opt/homebrew/opt/<formula>` (`/usr/local/opt/<formula>`) or the SDK
+   (`xcrun --show-sdk-path`); checks the header's version against the .pc
+   file; links it; exports each macro as `env!("RHP_<MACRO>")`; and returns
+   the include directory, for a C shim built against the same headers.
 2. Declare the functions rhp calls in a hand-written `extern "C"` block
    (no bindgen). Put struct access and macros behind a small C shim with
-   `_Static_assert` layout checks if needed.
+   `_Static_assert` layout checks if needed (libxml2: `ext/libxml/sys.rs`
+   and `shim.c`; its structs are opaque to Rust because their layouts
+   differ between releases).
 3. Add the `-dev` package to `.github/actions/native-deps`. If CI's php can
-   link a release the distro has no `-dev` package for, build it there the
-   way PCRE2 is built.
+   link a release the distro has no `-dev` package for, add the library to
+   its version comparison and to `build-from-source.sh`.
 4. Read every version constant the way php's source reads it, and add the
    constants to the "linked" section of `tools/capture-ref-build.php`.
 5. Add the licence to `THIRD-PARTY-NOTICES`.

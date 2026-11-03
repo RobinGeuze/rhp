@@ -233,7 +233,15 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         }
         if let Some(part) = read_file_part(&url, offset, maxlen) {
             host.consume_resource_ids(1);
-            return Ok(part.map_or(Value::Bool(false), Value::str));
+            let Some(part) = part else {
+                crate::warn(
+                    host,
+                    "file_get_contents",
+                    &format!("Failed to seek to position {offset} in the stream"),
+                )?;
+                return Ok(Value::Bool(false));
+            };
+            return Ok(Value::str(part));
         }
     }
     crate::streams::clear_errno();

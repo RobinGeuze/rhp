@@ -70,6 +70,9 @@ const SOURCES: &[(&str, &str)] = &[
 /// The generated file, relative to the workspace root.
 const OUT: &str = "crates/rhp-builtins/src/signatures/table.rs";
 
+/// The php-src commit the table is generated from.
+const PIN: &str = "tests/phpt/php-src.ref";
+
 const USAGE: &str =
     "usage: rhp-difftest gen signatures [--php-src <dir>] [--out <file>] [--check]\n\
   --php-src   php-src checkout at tests/phpt/php-src.ref (default: php-src)\n\
@@ -118,15 +121,24 @@ fn check_tag(php_src: &Path) -> Result<(), String> {
     if !php_src.join("Zend").is_dir() {
         return Err(format!("{} is not a php-src checkout", php_src.display()));
     }
-    let Ok(pin) = std::fs::read_to_string("tests/phpt/php-src.ref") else {
-        return Ok(());
+    // From the repo root (CI, the documented use), else from this crate's
+    // source location.
+    let pin = std::fs::read_to_string(PIN).or_else(|_| {
+        std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(PIN),
+        )
+    });
+    let Ok(pin) = pin else {
+        return Err(format!("{PIN} not found: run from the rhp checkout"));
     };
     let Some(pin) = pin
         .lines()
         .map(str::trim)
         .find(|l| !l.is_empty() && !l.starts_with('#'))
     else {
-        return Ok(());
+        return Err(format!("{PIN} names no commit"));
     };
     let head = std::process::Command::new("git")
         .arg("-C")

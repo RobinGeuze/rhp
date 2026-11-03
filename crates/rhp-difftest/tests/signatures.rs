@@ -82,6 +82,7 @@ foreach ($items as [$kind, $a, $b]) {
             $m->isDeprecated() ? ' deprecated' : '', sig_ret($m), ' (', sig_params($m, $values), ")\n";
     }
 }
+echo "END\n";
 "#;
 
 fn params(ps: &[Param]) -> String {
@@ -220,6 +221,10 @@ fn table_matches_php_reflection() {
     assert!(items.len() > 1000, "inventory too small: {}", items.len());
     let php = run_php(dump_script(&items, false).as_bytes()).expect("php dump");
     let php = String::from_utf8_lossy(&php);
+    assert!(
+        php.lines().any(|l| l == "END"),
+        "php's Reflection dump stopped early"
+    );
     let mut php_rows = std::collections::HashMap::new();
     for l in php.lines() {
         let key = match l.get(..2) {
@@ -289,6 +294,14 @@ fn rhp_reflection_matches_php() {
     let rhp = run_rhp(script.as_bytes()).expect("rhp dump");
     let php = String::from_utf8_lossy(&php);
     let rhp = String::from_utf8_lossy(&rhp);
+    // A dump that stopped early would drop the remaining rows silently.
+    for (who, out) in [("php", &php), ("rhp", &rhp)] {
+        let tail: Vec<&str> = out.lines().rev().take(5).collect();
+        assert!(
+            out.lines().any(|l| l == "END"),
+            "{who}'s Reflection dump stopped early; last lines: {tail:?}"
+        );
+    }
     // Rows keyed by kind and name; a class row is compared up to its
     // extension.
     let key = |l: &str| {

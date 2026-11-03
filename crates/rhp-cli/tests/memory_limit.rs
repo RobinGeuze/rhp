@@ -25,12 +25,12 @@ fn script(name: &str, code: &str) -> PathBuf {
     path
 }
 
-fn run(bin: &str, main: &Path) -> Output {
+fn run(bin: &str, args: &[&str], main: &Path) -> Output {
     let mut c = Command::new(bin);
     if bin == "php" {
         c.arg("-n");
     }
-    c.arg(main).output().expect("run engine")
+    c.args(args).arg(main).output().expect("run engine")
 }
 
 /// "tried to allocate 123 bytes" → "tried to allocate N bytes".
@@ -48,12 +48,17 @@ fn without_sizes(s: &str) -> String {
 }
 
 fn assert_same(name: &str, code: &str, exact: bool) -> String {
+    assert_same_with(name, &[], code, exact)
+}
+
+/// [`assert_same`] with `-d` options for both engines.
+fn assert_same_with(name: &str, args: &[&str], code: &str, exact: bool) -> String {
     if !php_available() {
         return String::new();
     }
     let main = script(name, code);
-    let php = run("php", &main);
-    let rhp = run(env!("CARGO_BIN_EXE_rhp"), &main);
+    let php = run("php", args, &main);
+    let rhp = run(env!("CARGO_BIN_EXE_rhp"), args, &main);
     let norm = |b: &[u8]| {
         let s = String::from_utf8_lossy(b).into_owned();
         if exact {
@@ -130,6 +135,7 @@ for ($i = 0; ; $i++) {
 
 #[test]
 fn recursion_that_allocates() {
+    // Where the limit is crossed depends on each engine's frames: no N.
     assert_same(
         "recurse",
         r#"<?php
@@ -140,7 +146,7 @@ function f($n) {
 }
 f(0);
 "#,
-        true,
+        false,
     );
 }
 
@@ -212,6 +218,135 @@ var_dump(memory_get_usage(true), memory_get_peak_usage(true));
 var_dump(ini_set('memory_hard_limit_percent', '50'), ini_set('memory_hard_limit_percent', '300'));
 var_dump(memory_reset_peak_usage());
 var_dump(is_int(memory_get_usage()), memory_get_usage() <= memory_get_peak_usage());
+"#,
+        true,
+    );
+}
+
+#[test]
+fn limit_above_max_memory_limit_keeps_the_old_one() {
+    // ini_set stores max_memory_limit's value but leaves the allocator's
+    // limit where it was (OnChangeMemoryLimit returns before setting it).
+    let code = r#"<?php
+var_dump(ini_set('memory_limit', '512M'), ini_get('memory_limit'));
+var_dump(ini_set('memory_limit', '-1'), ini_get('memory_limit'));
+$x = str_repeat('a', 40 << 20);
+echo "40M\n";
+$y = str_repeat('a', 40 << 20);
+echo "80M\n";
+$z = str_repeat('a', 100 << 20);
+echo "180M\n";
+"#;
+    assert_same_with("max_runtime", &["-d", "max_memory_limit=256M"], code, true);
+    assert_same_with(
+        "max_runtime64",
+        &["-d", "max_memory_limit=256M", "-d", "memory_limit=64M"],
+        code,
+        true,
+    );
+}
+
+#[test]
+fn clamped_startup_value_is_restored_quietly() {
+    // The startup warning is printed once: the entry holds the clamped value.
+    assert_same_with(
+        "max_startup",
+        &["-d", "memory_limit=64M", "-d", "max_memory_limit=32M"],
+        r#"<?php
+echo "x\n";
+ini_set('memory_limit', '16M');
+echo ini_get('memory_limit'), "\n";
+"#,
+        true,
+    );
+}
+
+#[test]
+fn concat_reports_php_sizes_and_stops_at_the_hard_limit() {
+    // The result's zend_string size; growing a huge string in place checks
+    // only the growth; past twice the limit php-cli exits 137. (Each
+    // crossing is on the line of the last call, which php reports.)
+    assert_same(
+        "concat_size",
+        r#"<?php
+ini_set('memory_limit', '8M');
+$a = str_repeat('a', 3 << 20); $b = $a . $a . $a;
+echo strlen($b), "\n";
+if ($b) { echo "not reached\n"; }
+"#,
+        true,
+    );
+    assert_same(
+        "concat_double",
+        r#"<?php
+ini_set('memory_limit', '32M');
+$s = str_repeat('x', 1 << 20);
+while (true) $s .= $s;
+"#,
+        true,
+    );
+    assert_same(
+        "concat_hard",
+        r#"<?php
+register_shutdown_function(function () { echo "not reached\n"; });
+ini_set('memory_limit', '32M');
+$a = str_repeat('x', 12 << 20); $b = $a . $a . $a . $a . $a . $a;
+echo strlen($b), "\n";
+"#,
+        true,
+    );
+}
+
+#[test]
+fn file_get_contents_refuses_a_file_past_the_limit() {
+    if !php_available() {
+        return;
+    }
+    let dir = std::env::temp_dir().join("rhp_memory_limit_fgc_data");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let big = dir.canonicalize().expect("canonical dir").join("big.bin");
+    std::fs::write(&big, vec![b'z'; 20 << 20]).expect("write data");
+    assert_same(
+        "fgc",
+        &format!(
+            r#"<?php
+ini_set('memory_limit', '8M');
+var_dump(strlen(file_get_contents('{}', false, null, 0, 100000)));
+$x = file_get_contents('{}');
+echo "not reached\n";
+"#,
+            big.display(),
+            big.display()
+        ),
+        true,
+    );
+}
+
+#[test]
+fn pending_error_is_raised_before_a_loop_starts() {
+    // php's while/for jump to their condition first: an interrupt check.
+    for (name, lp) in [
+        ("loop_for", "for ($i = 0; $i < 3; $i++) { echo $i; }"),
+        ("loop_while", "$i = 0; while ($i < 3) { echo $i++; }"),
+    ] {
+        assert_same(
+            name,
+            &format!(
+                "<?php\nini_set('memory_limit', '16M');\n$s = '';\n$s[20000000] = 'x';\necho strlen($s), \"\\n\";\n{lp}\n"
+            ),
+            true,
+        );
+    }
+}
+
+#[test]
+fn hash_pbkdf2_past_the_hard_limit() {
+    // Exits like php instead of aborting on the failed allocation.
+    assert_same(
+        "pbkdf2",
+        r#"<?php
+ini_set('memory_limit', '8M');
+hash_pbkdf2('md5', 'password', 'salt', 1, PHP_INT_MAX);
 "#,
         true,
     );

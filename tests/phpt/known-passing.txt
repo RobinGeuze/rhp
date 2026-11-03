@@ -1105,6 +1105,7 @@ Zend/tests/heredoc_nowdoc/bug47516.phpt
 Zend/tests/heredoc_nowdoc/bug76439.phpt
 Zend/tests/heredoc_nowdoc/bug76439_2.phpt
 Zend/tests/heredoc_nowdoc/flexible-heredoc-error1.phpt
+Zend/tests/heredoc_nowdoc/flexible-heredoc-error10.phpt
 Zend/tests/heredoc_nowdoc/flexible-heredoc-error11.phpt
 Zend/tests/heredoc_nowdoc/flexible-heredoc-error12.phpt
 Zend/tests/heredoc_nowdoc/flexible-heredoc-error13.phpt

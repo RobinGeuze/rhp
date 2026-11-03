@@ -170,11 +170,11 @@ functions report it; `opcache_reset()` takes effect at the next request.
   every request; a preloaded file included later doesn't redeclare them.
   A failed preload (parse error, uncaught exception) fails the request
   with exit status 1, as php refuses to start.
-- **Not implemented:** the file cache (`opcache.file_cache`), the
-  optimizer and its debug output, the JIT (`opcache_get_status()['jit']`
-  reports what the settings select), `opcache.preload_user`, the inheritance
-  cache, and php's sharing of a file's statics between two includes of it
-  in one request.
+- **Not implemented:** the file cache (`opcache.file_cache`: compiled
+  units aren't serialisable), the optimizer and its debug output, the JIT
+  (`opcache_get_status()['jit']` reports what the settings select),
+  switching to `opcache.preload_user` (only its warning), the inheritance
+  cache, `opcache.enable_file_override`, and caching `phar://` scripts.
 
 ## Request lifecycle
 

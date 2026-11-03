@@ -198,6 +198,52 @@ build. Concurrency comes from threads, never from sharing an engine:
   read-only or locked. A multi-threaded server must not rely on chdir; a
   per-`Vm` working directory is future work (see *Gaps*).
 
+## Memory
+
+`memory_limit` and `memory_get_usage()` need the binary to install the
+counting allocator, once:
+
+```rust
+#[global_allocator]
+static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
+```
+
+It is the system allocator plus per-thread counters (`rhp_values::mem`).
+While a request runs on a thread, they follow php's zend_mm: `size` counts
+blocks rounded about as zend_mm rounds them, real usage counts 2 MiB
+chunks (kept once emptied, as zend_mm caches them) plus huge blocks.
+Counting starts when the script starts (`Vm::run`; compiling the main
+script is not counted, as with opcache) and stops at `finish_request`.
+Without the allocator, requests run, `memory_get_usage()` reads 0, and
+only the builtins that check a size up front enforce the limit.
+
+The allocator can't fail or unwind, so it only records that the limit was
+crossed. As in php 8.5 (`zend_mm_delayed_error`), the VM raises "Allowed
+memory size of N bytes exhausted" at its next interrupt check: a jump,
+entering or leaving a function, a builtin returning, the end of the script.
+The request then ends like any fatal error: shutdown functions run, the
+exit status is 255, a 200 becomes a 500 when the error isn't displayed.
+The next request on the thread starts from zero. Builtins that know a big
+size first (`str_repeat`, `array_fill`, `fread`, …) refuse it before
+allocating, as php's fallible allocations do.
+
+php's hard limit (twice `memory_limit`, or `memory_hard_limit_percent`)
+kills php-cli with exit 137. rhp checks it where a script picks a size the
+VM then allocates (a far string offset): php-cli exits as php does, any
+other SAPI ends just the request with the fatal error.
+
+Limits of the model:
+
+- Per thread. A block freed on another thread than the one that allocated
+  it is subtracted from the freeing thread; counters saturate at zero.
+  Memory allocated before the request and freed during it (engine
+  startup data) makes the counts read low by that much.
+- rhp's data structures are not php's: an array of ints takes about three
+  times php's memory, strings about the same. Scripts close to the limit
+  can fail earlier (or later) than under php, and "tried to allocate N" for
+  a growing array differs. Sizes a builtin checks up front use php's
+  numbers.
+
 ## Where this goes
 
 - **`rhp -S` (built-in web server).** An HTTP/1.1 listener in `rhp-cli` (or

@@ -4,9 +4,9 @@
 //! It forwards to the system allocator and, while a request is active on the
 //! current thread, keeps zend_mm's statistics (Zend/zend_alloc.c) for it:
 //!
-//! - `size` / `peak`: bytes in use, each block rounded as zend_mm rounds it
-//!   (small bins up to 3 KiB, 4 KiB pages up to a chunk, page-aligned huge
-//!   blocks);
+//! - `size` / `peak`: bytes in use, each block rounded about as zend_mm
+//!   rounds it (16-byte granules up to 3 KiB, 4 KiB pages up to a chunk,
+//!   page-aligned huge blocks);
 //! - `real` / `real_peak`: memory taken from the system: 2 MiB chunks for the
 //!   small and large blocks plus the huge blocks, so `memory_get_usage(true)`
 //!   and the limit move in the same steps as php's.
@@ -79,7 +79,7 @@ impl Oom {
 /// usage fields; the VM reads [`MemState::attention`] between instructions.
 pub struct MemState {
     active: Cell<bool>,
-    size: Cell<usize>,
+    /// Peak of zend_mm's `size` (`paged + huge`).
     peak: Cell<usize>,
     /// Bytes of small and large blocks (served from chunks).
     paged: Cell<usize>,
@@ -105,7 +105,6 @@ thread_local! {
     static STATE: MemState = const {
         MemState {
             active: Cell::new(false),
-            size: Cell::new(0),
             peak: Cell::new(0),
             paged: Cell::new(0),
             chunks: Cell::new(1),
@@ -148,23 +147,25 @@ fn real_page_size() -> usize {
     }
 }
 
-/// The size zend_mm gives a block of `size` bytes: its bin, its pages, or
-/// (huge) the system pages.
+/// The space a block of `size` bytes takes: 16-byte granules for small
+/// blocks (zend_mm's bins round up a little more; this is on the hot path),
+/// 4 KiB pages up to a chunk, system pages for huge blocks.
+#[inline]
 fn rounded(size: usize) -> usize {
-    if size <= 64 {
-        (size.max(1) + 7) & !7
-    } else if size <= MAX_SMALL {
-        // Bins step by a quarter of the power of two below.
-        let step = (usize::BITS - (size - 1).leading_zeros() - 3) as usize;
-        let step = 1usize << step;
-        (size + step - 1) & !(step - 1)
+    if size <= MAX_SMALL {
+        (size + 15) & !15
     } else if size <= MAX_LARGE {
         (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
     } else {
-        let p = real_page_size();
-        size.checked_add(p - 1)
-            .map_or(usize::MAX & !(p - 1), |s| s & !(p - 1))
+        huge_rounded(size)
     }
+}
+
+#[cold]
+fn huge_rounded(size: usize) -> usize {
+    let p = real_page_size();
+    size.checked_add(p - 1)
+        .map_or(usize::MAX & !(p - 1), |s| s & !(p - 1))
 }
 
 /// zend_alloc.c's scale_by_percent: `value * percent / 100`, saturating.
@@ -236,29 +237,47 @@ impl MemState {
         }
     }
 
+    #[inline]
     fn on_alloc(&self, size: usize) {
         let r = rounded(size);
         if size <= MAX_LARGE {
             let paged = self.paged.get().saturating_add(r);
             self.paged.set(paged);
-            let need = chunks_for(paged);
-            if need > self.chunks.get() {
-                self.check_limit(CHUNK_SIZE);
-                self.chunks.set(need);
-                self.real_peak.set(self.real_peak.get().max(self.real()));
+            if paged > self.chunks.get() * MAX_LARGE {
+                self.grow_chunks(paged);
             }
         } else {
-            self.check_limit(r);
-            self.huge.set(self.huge.get().saturating_add(r));
-            self.real_peak.set(self.real_peak.get().max(self.real()));
+            self.add_huge(r);
         }
-        let s = self.size.get().saturating_add(r);
-        self.size.set(s);
+        let s = self.size();
         if s > self.peak.get() {
             self.peak.set(s);
         }
     }
 
+    /// zend_mm's `size`: every block, rounded.
+    fn size(&self) -> usize {
+        self.paged.get().saturating_add(self.huge.get())
+    }
+
+    /// The small and large blocks outgrew the chunks: take another one.
+    #[cold]
+    #[inline(never)]
+    fn grow_chunks(&self, paged: usize) {
+        self.check_limit(CHUNK_SIZE);
+        self.chunks.set(chunks_for(paged));
+        self.real_peak.set(self.real_peak.get().max(self.real()));
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn add_huge(&self, r: usize) {
+        self.check_limit(r);
+        self.huge.set(self.huge.get().saturating_add(r));
+        self.real_peak.set(self.real_peak.get().max(self.real()));
+    }
+
+    #[inline]
     fn on_free(&self, size: usize) {
         let r = rounded(size);
         if size <= MAX_LARGE {
@@ -268,7 +287,6 @@ impl MemState {
         } else {
             self.huge.set(self.huge.get().saturating_sub(r));
         }
-        self.size.set(self.size.get().saturating_sub(r));
     }
 
     /// Whether a limit crossing waits for the VM or is being reported.
@@ -312,7 +330,6 @@ impl MemState {
 /// Start counting this thread's allocations for a new request, from zero.
 pub fn begin_request() {
     let s = state();
-    s.size.set(0);
     s.peak.set(0);
     s.paged.set(0);
     s.chunks.set(1);
@@ -397,7 +414,7 @@ pub fn usage(real: bool) -> usize {
     if real {
         s.real_now()
     } else {
-        s.size.get()
+        s.size()
     }
 }
 
@@ -414,7 +431,7 @@ pub fn peak_usage(real: bool) -> usize {
 /// `memory_reset_peak_usage()`.
 pub fn reset_peak() {
     let s = state();
-    s.peak.set(s.size.get());
+    s.peak.set(s.size());
     s.real_peak.set(s.real());
 }
 
@@ -570,19 +587,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rounding_follows_zend_mm_bins_and_pages() {
-        let bins = [
-            8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448,
-            512, 640, 768, 896, 1024, 1280, 1536, 1792, 2048, 2560, 3072,
-        ];
-        let mut prev = 0;
-        for b in bins {
-            for size in prev + 1..=b {
-                assert_eq!(rounded(size), b, "size {size}");
-            }
-            prev = b;
-        }
-        assert_eq!(rounded(0), 8);
+    fn rounding_follows_zend_mm_pages() {
+        assert_eq!(rounded(1), 16);
+        assert_eq!(rounded(16), 16);
+        assert_eq!(rounded(17), 32);
+        assert_eq!(rounded(3072), 3072);
         assert_eq!(rounded(3073), 4096);
         assert_eq!(rounded(MAX_LARGE), MAX_LARGE);
         let p = real_page_size();

@@ -378,13 +378,6 @@ pub trait Host {
         Ok(self.class_constant(class, name))
     }
 
-    /// Evaluate every pending initializer of `class` (its constants, property
-    /// defaults and static properties) — php's `zend_update_class_constants`,
-    /// done before reflection reads them. A no-op for unknown classes.
-    fn update_class_constants(&mut self, _class: &[u8]) -> Result<(), Thrown> {
-        Ok(())
-    }
-
     /// Invoke a PHP callable (for `array_map`/`array_filter`/…). Default: refused.
     fn call_callable(&mut self, _callable: &Value, _args: &[Value]) -> Result<Value, Thrown> {
         Err(Thrown::unsupported(
@@ -1007,19 +1000,9 @@ pub trait Host {
         None
     }
 
-    // --- reflection introspection --------------------------------------------
-    // Backing for the `Reflection*` classes. Return PHP `Value`s the prelude
-    // classes read; defaults are empty (hosts without a class model).
+    // --- classes and reflection ---------------------------------------------
 
-    /// Class metadata for `ReflectionClass`: an assoc array (name, shortName,
-    /// namespaceName, isAbstract, isInterface, isInstantiable, isFinal, isEnum,
-    /// parent|false, interfaces[], methods[], constants{}, properties[]), or None
-    /// if the class does not exist.
-    fn reflect_meta(&self, _name: &[u8]) -> Option<Value> {
-        None
-    }
-    /// Whether class `name`'s ancestry includes `other` (incl. self) — for
-    /// `implementsInterface`/`isSubclassOf`/`instanceof`-by-name.
+    /// Whether class `name` is `other` or has it as an ancestor.
     fn reflect_is_a(&self, _name: &[u8], _other: &[u8]) -> bool {
         false
     }
@@ -1055,19 +1038,6 @@ pub trait Host {
         name: &[u8],
     ) -> Result<Option<Value>, Thrown> {
         Ok(self.object_prop(obj, name))
-    }
-    /// Parameter descriptors for a class method (`ReflectionMethod::getParameters`).
-    fn reflect_method_params(&self, _class: &[u8], _method: &[u8]) -> Option<Value> {
-        None
-    }
-    /// Parameter descriptors for a callable (`ReflectionFunction::getParameters`).
-    fn reflect_callable_params(&self, _callable: &Value) -> Option<Value> {
-        None
-    }
-    /// Class-constant descriptors for `ReflectionClass::getReflectionConstants`:
-    /// an array of `{name, value, public, protected, private}`.
-    fn reflect_class_constants(&self, _class: &[u8]) -> Option<Value> {
-        None
     }
     /// A Reflection / introspection metadata query (`op` names it; see the
     /// VM's `reflect` module): class / method / property / constant /

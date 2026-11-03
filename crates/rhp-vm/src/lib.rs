@@ -1675,89 +1675,6 @@ impl Host for Vm {
 
     // --- reflection -----------------------------------------------------------
 
-    fn reflect_meta(&self, name: &[u8]) -> Option<Value> {
-        let cid = self.resolve_class_by_name(name).ok()?;
-        let entry = &self.classes[cid as usize];
-        let full = entry.name.as_bytes().to_vec();
-        let (short, ns) = match full.iter().rposition(|&b| b == b'\\') {
-            Some(p) => (full[p + 1..].to_vec(), full[..p].to_vec()),
-            None => (full.clone(), Vec::new()),
-        };
-        let mut a = PhpArray::new();
-        a.insert(ArrayKey::from_bytes(b"name"), Value::str(full.clone()));
-        a.insert(ArrayKey::from_bytes(b"shortName"), Value::str(short));
-        a.insert(ArrayKey::from_bytes(b"namespaceName"), Value::str(ns));
-        a.insert(
-            ArrayKey::from_bytes(b"isAbstract"),
-            Value::Bool(entry.flags.is_abstract),
-        );
-        a.insert(
-            ArrayKey::from_bytes(b"isInterface"),
-            Value::Bool(entry.kind == ClassKind::Interface),
-        );
-        a.insert(
-            ArrayKey::from_bytes(b"isEnum"),
-            Value::Bool(entry.kind == ClassKind::Enum),
-        );
-        a.insert(
-            ArrayKey::from_bytes(b"isFinal"),
-            Value::Bool(entry.flags.is_final),
-        );
-        a.insert(
-            ArrayKey::from_bytes(b"isInstantiable"),
-            Value::Bool(entry.kind == ClassKind::Class && !entry.flags.is_abstract),
-        );
-        a.insert(
-            ArrayKey::from_bytes(b"parent"),
-            match entry.parent {
-                Some(p) => Value::str(self.classes[p as usize].name.as_bytes().to_vec()),
-                None => Value::Bool(false),
-            },
-        );
-        let mut ifaces = PhpArray::new();
-        for &anc in &entry.interfaces {
-            ifaces.push(Value::str(
-                self.classes[anc as usize].name.as_bytes().to_vec(),
-            ));
-        }
-        a.insert(ArrayKey::from_bytes(b"interfaces"), Value::Array(ifaces));
-        let mut methods = PhpArray::new();
-        for m in entry.methods.values() {
-            methods.push(Value::str(m.proto.name.as_bytes().to_vec()));
-        }
-        a.insert(ArrayKey::from_bytes(b"methods"), Value::Array(methods));
-        let mut consts = PhpArray::new();
-        for (k, c) in &entry.constants {
-            consts.insert(ArrayKey::from_bytes(k), c.value.clone());
-        }
-        a.insert(ArrayKey::from_bytes(b"constants"), Value::Array(consts));
-        // Reflection lists properties most-derived class first (php's order),
-        // while `entry.props` is the parent-first object layout `var_dump` uses.
-        let mut props = PhpArray::new();
-        let mut chain = vec![cid];
-        while let Some(p) = self.classes[*chain.last().unwrap() as usize].parent {
-            chain.push(p);
-        }
-        let rank = |c: ClassId| chain.iter().position(|&x| x == c).unwrap_or(chain.len());
-        // Only the declaration each name resolves to on this class, minus a
-        // parent's private (php's getProperties() never lists those).
-        let mut keys: Vec<(usize, &PhpStr)> = entry
-            .props
-            .iter()
-            .filter(|(k, p)| {
-                entry.prop_visible.get(&p.name) == Some(*k)
-                    && (p.visibility != rhp_values::Visibility::Private || p.declaring_class == cid)
-            })
-            .map(|(_, p)| (rank(p.declaring_class), &p.name))
-            .collect();
-        keys.sort_by_key(|&(r, _)| r); // stable: keeps declaration order within a class
-        for (_, k) in keys {
-            props.push(Value::str(k.as_bytes().to_vec()));
-        }
-        a.insert(ArrayKey::from_bytes(b"properties"), Value::Array(props));
-        Some(Value::Array(a))
-    }
-
     fn class_constant(&self, class: &[u8], name: &[u8]) -> Option<Value> {
         let cid = self.resolve_class_by_name(class).ok()?;
         self.classes[cid as usize]
@@ -1774,13 +1691,6 @@ impl Host for Vm {
             self.update_class_constants(cid)?;
         }
         self.class_const_value(cid, name, class, false)
-    }
-
-    fn update_class_constants(&mut self, class: &[u8]) -> Result<(), Thrown> {
-        match self.resolve_class_by_name(class) {
-            Ok(cid) => Vm::update_class_constants(self, cid),
-            Err(_) => Ok(()),
-        }
     }
 
     fn reflect_is_a(&self, name: &[u8], other: &[u8]) -> bool {
@@ -1925,43 +1835,12 @@ impl Host for Vm {
         Some(Value::Array(arr))
     }
 
-    fn reflect_class_constants(&self, class: &[u8]) -> Option<Value> {
-        use rhp_values::Visibility;
-        let cid = self.resolve_class_by_name(class).ok()?;
-        let mut arr = PhpArray::new();
-        for (name, c) in &self.classes[cid as usize].constants {
-            let mut d = PhpArray::new();
-            d.insert(ArrayKey::from_bytes(b"name"), Value::str(name.clone()));
-            d.insert(ArrayKey::from_bytes(b"value"), c.value.clone());
-            d.insert(
-                ArrayKey::from_bytes(b"public"),
-                Value::Bool(c.visibility == Visibility::Public),
-            );
-            d.insert(
-                ArrayKey::from_bytes(b"protected"),
-                Value::Bool(c.visibility == Visibility::Protected),
-            );
-            d.insert(
-                ArrayKey::from_bytes(b"private"),
-                Value::Bool(c.visibility == Visibility::Private),
-            );
-            arr.push(Value::Array(d));
-        }
-        Some(Value::Array(arr))
-    }
-
     fn reflect_op(&mut self, op: &[u8], args: &[Value]) -> Result<Value, Thrown> {
         Vm::reflect_op(self, op, args)
     }
 
     fn opcache_op(&mut self, op: &str, args: &[Value]) -> Option<Result<Value, Thrown>> {
         Vm::opcache_op(self, op, args)
-    }
-
-    fn reflect_method_params(&self, class: &[u8], method: &[u8]) -> Option<Value> {
-        let cid = self.resolve_class_by_name(class).ok()?;
-        let m = self.lookup_method(cid, method)?;
-        Some(self.params_to_value(&m.proto))
     }
 
     fn closure_name(&self, closure: &Value) -> Option<Vec<u8>> {
@@ -1972,20 +1851,6 @@ impl Host for Vm {
                 .map(|p| p.name.as_bytes().to_vec()),
             _ => None,
         }
-    }
-
-    fn reflect_callable_params(&self, callable: &Value) -> Option<Value> {
-        let proto = match deref(callable) {
-            Value::Closure(cd) if cd.wrapped.is_none() => {
-                self.closures.get(cd.fnidx as usize)?.clone()
-            }
-            Value::Str(s) => {
-                let i = *self.fn_names.get(&s.as_bytes().to_ascii_lowercase())?;
-                self.functions[i].clone()
-            }
-            _ => return None,
-        };
-        Some(self.params_to_value(&proto))
     }
 
     fn call_callable(&mut self, callable: &Value, args: &[Value]) -> Result<Value, Thrown> {
@@ -2021,7 +1886,12 @@ impl Host for Vm {
     }
 
     fn function_exists(&self, name: &[u8]) -> bool {
-        self.fn_names.contains_key(&name.to_ascii_lowercase()) || user_visible_builtin(name)
+        let lc = name.to_ascii_lowercase();
+        match self.fn_names.get(&lc) {
+            // A prelude `__` helper is engine plumbing, like a `__` builtin.
+            Some(&i) => !(lc.starts_with(b"__") && is_prelude_proto(&self.functions[i])),
+            None => user_visible_builtin(name),
+        }
     }
 
     fn closure_bind(&self, closure: &Value, new_this: &Value, scope: &Value) -> Option<Value> {
@@ -2476,6 +2346,16 @@ impl Vm {
             return (idx, f);
         }
         (None, p)
+    }
+
+    /// Whether a direct call from `caller` to `name` (resolved by
+    /// [`Vm::resolve_fn`] to `user`) must fail as undefined: `__`-prefixed
+    /// builtins and prelude functions are engine helpers behind the prelude
+    /// classes, and php has no function by such a name.
+    fn internal_fn_hidden(&self, caller: &FunctionProto, user: Option<usize>, name: &[u8]) -> bool {
+        name.starts_with(b"__")
+            && !is_prelude_proto(caller)
+            && user.is_none_or(|i| is_prelude_proto(&self.functions[i]))
     }
 
     pub fn new() -> Self {
@@ -3722,55 +3602,6 @@ impl Vm {
         let (argv, named) = self.split_call_args(&arr)?;
         let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
         self.push_method_frame(&m, this, called, argv, dst)
-    }
-
-    /// Build the parameter-descriptor array `ReflectionParameter` reads from.
-    fn params_to_value(&self, proto: &FunctionProto) -> Value {
-        let mut arr = PhpArray::new();
-        for p in &proto.params {
-            let mut d = PhpArray::new();
-            d.insert(
-                ArrayKey::from_bytes(b"name"),
-                Value::str(proto.names[p.name as usize].as_bytes().to_vec()),
-            );
-            d.insert(
-                ArrayKey::from_bytes(b"optional"),
-                Value::Bool(p.default.is_some() || p.variadic),
-            );
-            d.insert(ArrayKey::from_bytes(b"variadic"), Value::Bool(p.variadic));
-            d.insert(ArrayKey::from_bytes(b"byref"), Value::Bool(p.by_ref));
-            let (has_def, def) = match &p.default {
-                Some(rhp_bytecode::Default::Const(k)) => (true, proto.consts[*k as usize].clone()),
-                Some(rhp_bytecode::Default::Init(_)) => (true, Value::Null),
-                None => (false, Value::Null),
-            };
-            d.insert(ArrayKey::from_bytes(b"hasDefault"), Value::Bool(has_def));
-            d.insert(ArrayKey::from_bytes(b"default"), def);
-            match &p.type_hint {
-                Some(ty) => {
-                    let name = type_string(ty);
-                    let name = name.strip_prefix('?').unwrap_or(&name).to_string();
-                    d.insert(ArrayKey::from_bytes(b"hasType"), Value::Bool(true));
-                    d.insert(ArrayKey::from_bytes(b"type"), Value::str(name.into_bytes()));
-                    d.insert(
-                        ArrayKey::from_bytes(b"typeNullable"),
-                        Value::Bool(ty.nullable),
-                    );
-                    d.insert(
-                        ArrayKey::from_bytes(b"typeBuiltin"),
-                        Value::Bool(is_builtin_type(ty)),
-                    );
-                }
-                None => {
-                    d.insert(ArrayKey::from_bytes(b"hasType"), Value::Bool(false));
-                    d.insert(ArrayKey::from_bytes(b"type"), Value::Null);
-                    d.insert(ArrayKey::from_bytes(b"typeNullable"), Value::Bool(false));
-                    d.insert(ArrayKey::from_bytes(b"typeBuiltin"), Value::Bool(false));
-                }
-            }
-            arr.push(Value::Array(d));
-        }
-        Value::Array(arr)
     }
 
     fn value_instanceof(&self, v: &Value, name: &[u8]) -> bool {
@@ -6769,6 +6600,9 @@ impl Vm {
                     fallback,
                 } => {
                     let (user, fname) = self.resolve_fn(name, fallback, &proto.names);
+                    if self.internal_fn_hidden(&proto, user, &fname) {
+                        return Err(undefined_function(&proto.names[name as usize]));
+                    }
                     if let Some(reason) =
                         builtins::is_refused(std::str::from_utf8(&fname).unwrap_or(""))
                     {
@@ -8128,6 +7962,9 @@ impl Vm {
                     fallback,
                 } => {
                     let (user, fname) = self.resolve_fn(name, fallback, &proto.names);
+                    if self.internal_fn_hidden(&proto, user, &fname) {
+                        return Err(undefined_function(&proto.names[name as usize]));
+                    }
                     if let Some(reason) =
                         builtins::is_refused(std::str::from_utf8(&fname).unwrap_or(""))
                     {
@@ -10938,14 +10775,6 @@ fn kind_word(kind: ClassKind) -> &'static str {
         ClassKind::Enum => "enum",
         ClassKind::Class => "abstract class",
     }
-}
-
-/// Whether every member of a type is a built-in (non-class) type.
-fn is_builtin_type(ty: &rhp_bytecode::TypeHint) -> bool {
-    use rhp_bytecode::TypeKind as K;
-    ty.kinds
-        .iter()
-        .all(|k| !matches!(k, K::Named(_) | K::SelfType | K::StaticType | K::Parent))
 }
 
 /// php's `zend_verify_weak_scalar_type_hint`: coerce a scalar to the first of

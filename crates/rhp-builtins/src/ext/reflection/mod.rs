@@ -1,9 +1,8 @@
-//! A pragmatic subset of the `Reflection` extension — enough for Symfony
-//! Console / Composer command introspection. The `Reflection*` classes live in
-//! `PRELUDE_PHP` and lean on PHP itself (`call_user_func_array`, `get_class`)
-//! wherever possible; only the genuinely-native bits (class metadata, visibility-
-//! bypassing property access, instantiation, parameter descriptors) delegate to
-//! `__reflect_*` builtins backed by `Host`.
+//! The `Reflection` extension. The `Reflection*` classes are PHP source
+//! (`PRELUDE_PHP`) over `__reflect($op, ...)`, a metadata query the VM
+//! answers (its `reflect` module), plus a few `__reflect_*` helpers for
+//! instantiation, visibility-bypassing property access and invocation.
+//! Only prelude code can call these `__` builtins.
 
 use std::collections::HashMap;
 
@@ -20,44 +19,6 @@ fn deref(v: &Value) -> Value {
 
 fn str_arg(args: &[Value], i: usize) -> Vec<u8> {
     conv::to_string_bytes(&deref(&args[i]))
-}
-
-fn fn_meta(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(host.reflect_meta(&str_arg(args, 0)).unwrap_or(Value::Null))
-}
-
-/// `ReflectionClass::getConstants()`: evaluate pending constant expressions
-/// first (php's `zend_update_class_constants`), then list name => value.
-fn fn_constants(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = str_arg(args, 0);
-    host.update_class_constants(&name)?;
-    let consts = match host.reflect_meta(&name) {
-        Some(Value::Array(a)) => a
-            .get(&rhp_values::ArrayKey::from_bytes(b"constants"))
-            .cloned(),
-        _ => None,
-    };
-    Ok(consts.unwrap_or_else(|| Value::Array(rhp_values::PhpArray::new())))
-}
-
-fn fn_is_a(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = str_arg(args, 0);
-    let other = str_arg(args, 1);
-    let other = other.strip_prefix(b"\\").unwrap_or(&other);
-    Ok(Value::Bool(host.reflect_is_a(&name, other)))
-}
-
-fn args_vec(v: &Value) -> Vec<Value> {
-    match deref(v) {
-        Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn fn_new_instance(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = str_arg(args, 0);
-    let a = args.get(1).map(args_vec).unwrap_or_default();
-    host.reflect_new_instance(&name, a, true)
 }
 
 fn fn_new_instance_noctor(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -85,14 +46,6 @@ fn fn_set_prop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Null)
 }
 
-fn fn_method_params(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let class = str_arg(args, 0);
-    let method = str_arg(args, 1);
-    Ok(host
-        .reflect_method_params(&class, &method)
-        .unwrap_or_else(|| Value::Array(rhp_values::PhpArray::new())))
-}
-
 /// `__reflect_invoke($object, $class, $method, $args)`: ReflectionMethod::
 /// invoke(), which ignores visibility.
 fn fn_invoke(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -104,20 +57,6 @@ fn fn_invoke(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         _ => Vec::new(),
     };
     host.reflect_invoke(&obj, &class, &method, argv)
-}
-
-fn fn_func_params(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let c = deref(&args[0]);
-    Ok(host
-        .reflect_callable_params(&c)
-        .unwrap_or_else(|| Value::Array(rhp_values::PhpArray::new())))
-}
-
-fn fn_class_constants(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    host.update_class_constants(&str_arg(args, 0))?;
-    Ok(host
-        .reflect_class_constants(&str_arg(args, 0))
-        .unwrap_or_else(|| Value::Array(rhp_values::PhpArray::new())))
 }
 
 /// `__reflect($op, ...$args)`: a metadata query answered by the host (see
@@ -146,10 +85,6 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         );
     }
     put(m, "__reflect", fn_reflect, 1, None);
-    put(m, "__reflect_meta", fn_meta, 1, Some(1));
-    put(m, "__reflect_constants", fn_constants, 1, Some(1));
-    put(m, "__reflect_is_a", fn_is_a, 2, Some(2));
-    put(m, "__reflect_new_instance", fn_new_instance, 1, Some(2));
     put(
         m,
         "__reflect_new_instance_noctor",
@@ -159,16 +94,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     );
     put(m, "__reflect_get_prop", fn_get_prop, 3, Some(3));
     put(m, "__reflect_set_prop", fn_set_prop, 4, Some(4));
-    put(m, "__reflect_method_params", fn_method_params, 2, Some(2));
     put(m, "__reflect_invoke", fn_invoke, 4, Some(4));
-    put(m, "__reflect_func_params", fn_func_params, 1, Some(1));
-    put(
-        m,
-        "__reflect_class_constants",
-        fn_class_constants,
-        1,
-        Some(1),
-    );
 }
 
 /// The `Reflection*` classes and the engine's attribute classes

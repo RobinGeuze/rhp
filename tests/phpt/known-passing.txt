@@ -394,6 +394,7 @@ Zend/tests/bug76965.phpt
 Zend/tests/bug77589.phpt
 Zend/tests/bug77922.phpt
 Zend/tests/bug78151.phpt
+Zend/tests/bug78154.phpt
 Zend/tests/bug78271.phpt
 Zend/tests/bug78335.phpt
 Zend/tests/bug78396.phpt
@@ -1053,6 +1054,8 @@ Zend/tests/get_class_vars/get_class_vars_typed_props.phpt
 Zend/tests/get_defined_functions_basic.phpt
 Zend/tests/get_included_files_basic.phpt
 Zend/tests/get_mangled_object_vars.phpt
+Zend/tests/get_parent_class_001.phpt
+Zend/tests/get_parent_class_basic.phpt
 Zend/tests/get_required_files.phpt
 Zend/tests/gh10168/assign.phpt
 Zend/tests/gh10168/assign_dim.phpt
@@ -1212,6 +1215,7 @@ Zend/tests/heredoc_nowdoc/nowdoc_012.phpt
 Zend/tests/heredoc_nowdoc/nowdoc_015.phpt
 Zend/tests/heredoc_nowdoc/nowdoc_016.phpt
 Zend/tests/heredoc_nowdoc/nowdoc_017.phpt
+Zend/tests/iap_on_object_deprecated.phpt
 Zend/tests/in-de-crement/decrement_001_64bit.phpt
 Zend/tests/in-de-crement/decrement_diagnostic_change_type.phpt
 Zend/tests/in-de-crement/incdec_bool_exception.phpt
@@ -1742,6 +1746,10 @@ Zend/tests/oom_str_repeat.phpt
 Zend/tests/oom_unserialize_001.phpt
 Zend/tests/oom_unserialize_002.phpt
 Zend/tests/oom_unserialize_003.phpt
+Zend/tests/oom_unserialize_005.phpt
+Zend/tests/oom_unserialize_006.phpt
+Zend/tests/oom_unserialize_007.phpt
+Zend/tests/oom_unserialize_008.phpt
 Zend/tests/oom_unserialize_011.phpt
 Zend/tests/oom_unserialize_013.phpt
 Zend/tests/oom_unserialize_014.phpt
@@ -2677,6 +2685,7 @@ ext/date/tests/idate_basic.phpt
 ext/date/tests/idate_variation4.phpt
 ext/date/tests/idate_variation5.phpt
 ext/date/tests/idate_variation6.phpt
+ext/date/tests/ini_set_incorrect-002.phpt
 ext/date/tests/ini_set_incorrect.phpt
 ext/date/tests/microtime_basic.phpt
 ext/date/tests/mktime-1.phpt
@@ -3872,6 +3881,7 @@ ext/opcache/tests/sccp_loop_var_free.phpt
 ext/opcache/tests/ssa_bug_001.phpt
 ext/opcache/tests/ssa_bug_002.phpt
 ext/opcache/tests/ssa_bug_003.phpt
+ext/opcache/tests/ssa_bug_004.phpt
 ext/opcache/tests/ssa_bug_005.phpt
 ext/opcache/tests/ssa_bug_006.phpt
 ext/opcache/tests/ssa_bug_007.phpt
@@ -3887,6 +3897,7 @@ ext/opcache/tests/verify_return_instanceof.phpt
 ext/opcache/tests/wrong_inlining_002.phpt
 ext/opcache/tests/wrong_inlining_004.phpt
 ext/opcache/tests/wrong_inlining_005.phpt
+ext/opcache/tests/zzz_basic_logging.phpt
 ext/openssl/tests/bug38255.phpt
 ext/openssl/tests/bug61930.phpt
 ext/openssl/tests/bug79145.phpt
@@ -4037,6 +4048,7 @@ ext/pcre/tests/preg_grep_error1.phpt
 ext/pcre/tests/preg_match_all_basic.phpt
 ext/pcre/tests/preg_match_all_edit_basic.phpt
 ext/pcre/tests/preg_match_all_error1.phpt
+ext/pcre/tests/preg_match_all_error3.phpt
 ext/pcre/tests/preg_match_basic.phpt
 ext/pcre/tests/preg_match_basic_002.phpt
 ext/pcre/tests/preg_match_basic_edit.phpt
@@ -4207,6 +4219,7 @@ ext/reflection/tests/ReflectionClass_hasProperty_002.phpt
 ext/reflection/tests/ReflectionClass_hasProperty_basic.phpt
 ext/reflection/tests/ReflectionClass_isAbstract_basic.phpt
 ext/reflection/tests/ReflectionClass_isAnonymous.phpt
+ext/reflection/tests/ReflectionClass_isCloneable_001.phpt
 ext/reflection/tests/ReflectionClass_isCloneable_002.phpt
 ext/reflection/tests/ReflectionClass_isEnum.phpt
 ext/reflection/tests/ReflectionClass_isFinal_basic.phpt
@@ -5508,7 +5521,10 @@ ext/standard/tests/array/prev_error3.phpt
 ext/standard/tests/array/prev_variation2.phpt
 ext/standard/tests/array/range/bug21182.phpt
 ext/standard/tests/array/range/gh13094.phpt
+ext/standard/tests/array/range/range_bug70239_2.phpt
+ext/standard/tests/array/range/range_bug70239_3.phpt
 ext/standard/tests/array/range/range_inputs_float_basic.phpt
+ext/standard/tests/array/range/range_inputs_float_small_step_exhaustion.phpt
 ext/standard/tests/array/range/range_inputs_int_basic.phpt
 ext/standard/tests/array/range/range_inputs_int_with_float_step.phpt
 ext/standard/tests/array/range/range_inputs_numeric_basic.phpt
@@ -6735,6 +6751,7 @@ ext/standard/tests/strings/crypt_des_error.phpt
 ext/standard/tests/strings/crypt_sha256.phpt
 ext/standard/tests/strings/crypt_sha512.phpt
 ext/standard/tests/strings/crypt_variation1.phpt
+ext/standard/tests/strings/default_charset.phpt
 ext/standard/tests/strings/dirname_basic.phpt
 ext/standard/tests/strings/explode_variation4.phpt
 ext/standard/tests/strings/explode_variation5.phpt
@@ -7477,6 +7494,7 @@ tests/basic/bug45986.phpt
 tests/basic/bug53180.phpt
 tests/basic/bug55500.phpt
 tests/basic/bug61000.phpt
+tests/basic/bug67988.phpt
 tests/basic/bug73969.phpt
 tests/basic/bug78236.phpt
 tests/basic/bug78929.phpt

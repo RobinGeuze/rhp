@@ -3,15 +3,6 @@
 //! Every function here is verified byte-for-byte against the local php 8.5.8
 //! binary (see the `#[cfg(test)]` block — expected values are hardcoded from
 //! `php -r '...'` output).
-//!
-//! Wire this module into `lib.rs` with:
-//! ```ignore
-//! mod str_fns;                 // near the other `mod` / `pub mod` lines
-//! // ...and inside registry(), build `m` then before returning it:
-//! let mut m = builtins! { /* existing table */ };
-//! str_fns::register(&mut m);
-//! m
-//! ```
 
 use std::collections::HashMap;
 

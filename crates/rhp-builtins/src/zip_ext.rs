@@ -14,12 +14,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Read;
 
-pub const ER_OK: i64 = 0;
 pub const ER_NOENT: i64 = 9;
 pub const ER_EXISTS: i64 = 10;
 pub const ER_OPEN: i64 = 11;
-pub const ER_WRITE: i64 = 6;
-/// Opening a directory: libzip fails reading it.
 /// Opening a directory: libzip reports ZIP_ER_OPNOTSUPP.
 pub const ER_READ_DIR: i64 = 28;
 /// `ZIP_ER_CHANGED`: reading an entry whose data source is not committed.
@@ -27,13 +24,11 @@ pub const ER_CHANGED: i64 = 15;
 pub const ER_INVAL: i64 = 18;
 pub const ER_NOZIP: i64 = 19;
 pub const ER_INCONS: i64 = 21;
-pub const ER_DELETED: i64 = 23;
 pub const ER_RDONLY: i64 = 25;
 pub const ER_COMPNOTSUPP: i64 = 16;
 
 pub const FL_CREATE: i64 = 1;
 pub const FL_EXCL: i64 = 2;
-pub const FL_CHECKCONS: i64 = 4;
 pub const FL_TRUNCATE: i64 = 8;
 pub const FL_RDONLY: i64 = 16;
 

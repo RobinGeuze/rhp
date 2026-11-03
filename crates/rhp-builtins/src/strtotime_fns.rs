@@ -1,7 +1,7 @@
 //! `strtotime()` — parse an English date/time description into a Unix timestamp.
 //!
-//! Deterministic and UTC-only, verified byte-for-byte against php 8.5.8 with
-//! `php -d date.timezone=UTC`. The calendar/clock math (civil<->timestamp
+//! A string without its own zone is local time in the default zone. The
+//! calendar/clock math (civil<->timestamp
 //! conversions, month-length, broken-down time, 2-digit-year adjustment) is
 //! *reused* from [`crate::datetime_fns`] rather than re-implemented here; this
 //! module only adds the grammar on top.
@@ -26,15 +26,8 @@
 //! Case-insensitive; surrounding and internal whitespace is tolerated; commas
 //! are treated as separators. Anything else yields `false`.
 //!
-//! ## Out of scope (documented, intentionally refused or deferred)
-//! * Non-UTC timezones for the *base* clock: the engine timezone is UTC, so a
-//!   string without an explicit offset is interpreted as UTC. Explicit offsets
-//!   in the string (`+02:00`, `Z`, …) ARE honored for the absolute forms.
+//! ## Out of scope
 //! * Locale month/day names beyond English.
-//! * `date_create` / `date_create_immutable`: these must return a `DateTime` /
-//!   `DateTimeImmutable` *object*, which requires VM-level object construction
-//!   from a builtin. Deferred to the VM — the PHP prelude already exposes the
-//!   classes, so these should be thin prelude wrappers (`new DateTime($s)`).
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};

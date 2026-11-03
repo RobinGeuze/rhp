@@ -1,6 +1,6 @@
 //! Filesystem & path builtins (php `ext/standard` file functions): existence
-//! checks, `basename`/`dirname`, `realpath`/`getcwd`, and whole-file read/write.
-//! Local paths only (no stream wrappers / URLs yet).
+//! checks, `basename`/`dirname`/`pathinfo`, `getcwd`/`chdir`, and whole-file
+//! read/write through the stream wrappers.
 
 use std::collections::HashMap;
 use std::ffi::CString;

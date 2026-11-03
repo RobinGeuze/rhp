@@ -14,10 +14,9 @@ use rhp_values::{PhpArray, Value};
 
 pub use rhp_values::Thrown;
 
-pub mod dump;
+pub(crate) mod dump;
 pub mod fdstream;
-pub mod memstream;
-pub mod module;
+pub(crate) mod module;
 pub mod pcre;
 pub mod signatures;
 pub mod streams;
@@ -82,7 +81,7 @@ mod fs_fns;
 mod html;
 #[rustfmt::skip]
 mod html_tables;
-pub mod http;
+pub(crate) mod http;
 mod inet;
 mod info_fns;
 mod ini_parse;
@@ -114,7 +113,7 @@ mod strtotime_fns;
 mod sysmisc_fns;
 mod tzdb;
 mod webenc_fns;
-pub mod zip_ext;
+pub(crate) mod zip_ext;
 
 /// Built-in classes with a native `dtor_obj` handler, which runs with a host
 /// before the object's `__destruct` (see [`object_dtor`]).
@@ -1366,8 +1365,6 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("stdext_fns", Box::new(stdext_fns::register)),
         ("crypt_fns", Box::new(crypt_fns::register)),
         ("proc_fns", Box::new(proc_fns::register)),
-        // Exact-semantics filesystem builtins; registered last so they replace
-        // older approximations in file_fns/stream_fns.
         ("fs_fns", Box::new(fs_fns::register)),
     ];
     v.extend(rest);
@@ -1452,26 +1449,6 @@ fn php_os() -> (&'static str, &'static str) {
 }
 
 /// Engine constants (`PHP_EOL`, `PHP_INT_MAX`, …).
-/// php's `PHP_OS`: the build host's uname sysname (configure-time constant).
-#[cfg(target_os = "linux")]
-pub const PHP_OS: &str = "Linux";
-#[cfg(target_os = "macos")]
-pub const PHP_OS: &str = "Darwin";
-#[cfg(target_os = "freebsd")]
-pub const PHP_OS: &str = "FreeBSD";
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
-pub const PHP_OS: &str = "Unknown";
-
-/// php's `PHP_OS_FAMILY` (`Linux`, `Darwin`, `BSD`, …).
-#[cfg(target_os = "linux")]
-pub const PHP_OS_FAMILY: &str = "Linux";
-#[cfg(target_os = "macos")]
-pub const PHP_OS_FAMILY: &str = "Darwin";
-#[cfg(target_os = "freebsd")]
-pub const PHP_OS_FAMILY: &str = "BSD";
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
-pub const PHP_OS_FAMILY: &str = "Unknown";
-
 pub fn constants() -> Vec<(&'static str, Value)> {
     vec![
         ("PHP_EOL", Value::str("\n")),
@@ -1629,9 +1606,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("E_NOTICE", Value::Int(8)),
         ("COUNT_NORMAL", Value::Int(0)),
         ("COUNT_RECURSIVE", Value::Int(1)),
-        // Standard streams: this engine has no resource Value, so these are
-        // placeholder ints. fprintf/vfprintf ignore the stream and write to the
-        // single output sink, so the value is never inspected in practice.
+        // Placeholders: the VM binds the stream resources when a request
+        // starts (php-cli), or removes them (other SAPIs).
         ("STDIN", Value::Int(0)),
         ("STDOUT", Value::Int(1)),
         ("STDERR", Value::Int(2)),

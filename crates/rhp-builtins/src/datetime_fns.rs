@@ -1,16 +1,9 @@
-//! Native date/time builtins — deterministic, explicit-timestamp forms only.
+//! The procedural date/time builtins (`date`, `mktime`, `getdate`, `idate`, …).
 //!
 //! Local-time functions (`date`, `mktime`, `getdate`) use the default zone
 //! (`date_default_timezone_set()` → `date.timezone` → UTC) via [`crate::tzdb`];
 //! the `gm*` forms always use UTC. An omitted / null `$timestamp`
 //! (or omitted `mktime` component) falls back to the current time, as in php.
-//!
-//! Wire this module into `lib.rs` with:
-//! ```ignore
-//! mod datetime_fns;            // near the other `mod` lines
-//! // ...inside registry(), after the other module registrations:
-//! datetime_fns::register(&mut m);
-//! ```
 
 use std::collections::HashMap;
 

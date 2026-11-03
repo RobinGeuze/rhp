@@ -4,13 +4,6 @@
 //! binary (see the `#[cfg(test)]` block — expected values are hardcoded from
 //! `php -r '...'` output).
 //!
-//! Wire this module into `lib.rs` with:
-//! ```ignore
-//! mod filter_fns;                 // near the other `mod` lines
-//! // ...and inside registry(), before returning `m`:
-//! filter_fns::register(&mut m);
-//! ```
-//!
 //! Strings are byte strings. Scalars are converted with the standard PHP
 //! string cast before validation/sanitization (matching ext/filter), except
 //! that the INT and FLOAT validators short-circuit real int/float inputs.

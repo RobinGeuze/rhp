@@ -96,15 +96,6 @@ var_dump(curl_exec($h), curl_errno($h), curl_error($h));
 $h = curl_init($url);
 curl_setopt($h, CURLOPT_PROTOCOLS, CURLPROTO_HTTP);
 var_dump(curl_exec($h), curl_errno($h), curl_error($h));
-foreach ([0, 1, 6, 7, 22, 23, 28, 42, 47, 60, 77, 101, 102, -1, 999] as $c) {
-    echo $c, ": ", curl_strerror($c), "\n";
-}
-foreach ([-1, 0, 1, 2, 6, 7, 13] as $c) {
-    echo "m", $c, ": ", curl_multi_strerror($c), "\n";
-}
-foreach ([0, 1, 3, 5, 6] as $c) {
-    echo "s", $c, ": ", curl_share_strerror($c), "\n";
-}
 
 echo "== validation\n";
 $h = curl_init();

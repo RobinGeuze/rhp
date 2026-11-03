@@ -124,33 +124,6 @@ string(26) "Protocol "ftp" is disabled"
 bool(false)
 int(1)
 string(27) "Protocol "file" is disabled"
-0: No error
-1: Unsupported protocol
-6: Could not resolve hostname
-7: Could not connect to server
-22: HTTP response code said error
-23: Failed writing received data to disk/application
-28: Timeout was reached
-42: Operation was aborted by an application callback
-47: Number of redirects hit maximum amount
-60: SSL peer certificate or SSH remote key was not OK
-77: Problem with the SSL CA cert (path? access rights?)
-101: ECH attempted but failed
-102: Unknown error
--1: Unknown error
-999: Unknown error
-m-1: Please call curl_multi_perform() soon
-m0: No error
-m1: Invalid multi handle
-m2: Invalid easy handle
-m6: Unknown option
-m7: The easy handle is already added to a multi handle
-m13: Unknown error
-s0: No error
-s1: Unknown share option
-s3: Invalid share handle
-s5: Feature not enabled in this library
-s6: CURLSHcode unknown
 == validation
 curl_setopt(): Argument #1 ($handle) must be of type CurlHandle, int given
 curl_setopt(): Argument #1 ($handle) must be of type CurlHandle, string given

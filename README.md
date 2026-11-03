@@ -32,6 +32,7 @@ extension sweeps.
 | `rhp-frontend` | safe scoped wrapper over the mago-syntax arena parser |
 | `rhp-semantics` | PHP operator semantics (arithmetic, comparison, concat, …) |
 | `rhp-builtins` | native function + constant registry, `var_dump`/`print_r`/… |
+| `rhp-csrc` | php-src's own C (crypt) and frozen C libraries php links (argon2), vendored and linked statically |
 | `rhp-bytecode` | the register ISA (data only) |
 | `rhp-compiler` | AST → bytecode; owns the structural refusals |
 | `rhp-vm` | the register VM |

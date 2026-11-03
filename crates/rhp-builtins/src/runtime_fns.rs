@@ -447,6 +447,14 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
     ini_apply(name, Some(&v));
     ini_store(name, v.clone());
     INI_STARTUP.with(|m| m.borrow_mut().insert(key, v));
+    if name == b"max_memory_limit" {
+        // php registers max_memory_limit first: memory_limit's handler then
+        // runs against it, whatever the order of the -d options.
+        let ml = ini_default_value(b"memory_limit")
+            .flatten()
+            .unwrap_or_default();
+        ini_startup(b"memory_limit", &ml);
+    }
 }
 
 fn ini_opt_value(v: Option<Vec<u8>>) -> Value {

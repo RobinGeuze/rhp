@@ -169,7 +169,9 @@ impl Vm {
         } else {
             (file, line)
         };
-        if rhp_builtins::sapi::sapi_name() == "cli" {
+        // (Only php-cli itself: an engine run in-process, without a SAPI,
+        // must not take its host down.)
+        if self.sapi.sapi.is_some() && rhp_builtins::sapi::sapi_name() == "cli" {
             let mut m = oom.message().into_bytes();
             m.extend_from_slice(b" in ");
             m.extend_from_slice(&file);

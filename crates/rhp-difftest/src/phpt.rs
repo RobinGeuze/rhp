@@ -194,7 +194,14 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
 
 /// Directives whose effect rhp implements: a test that sets one runs, and
 /// rhp gets the setting as `-d` too.
-const RHP_INI: &[&str] = &["pcre.backtrack_limit", "pcre.jit", "pcre.recursion_limit"];
+const RHP_INI: &[&str] = &[
+    "max_memory_limit",
+    "memory_hard_limit_percent",
+    "memory_limit",
+    "pcre.backtrack_limit",
+    "pcre.jit",
+    "pcre.recursion_limit",
+];
 
 /// Whether `kv` (`name=value`) sets a directive in [`RHP_INI`].
 fn rhp_applies(kv: &str) -> bool {

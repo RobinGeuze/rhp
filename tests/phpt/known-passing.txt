@@ -3878,6 +3878,7 @@ ext/spl/tests/bug70561.phpt
 ext/spl/tests/bug70573.phpt
 ext/spl/tests/bug70852.phpt
 ext/spl/tests/bug70853.phpt
+ext/spl/tests/bug70868.phpt
 ext/spl/tests/bug70959.phpt
 ext/spl/tests/bug71028.phpt
 ext/spl/tests/bug71153.phpt
@@ -3937,6 +3938,7 @@ ext/spl/tests/gh11338.phpt
 ext/spl/tests/gh11972.phpt
 ext/spl/tests/gh13531.phpt
 ext/spl/tests/gh13685.phpt
+ext/spl/tests/gh14290.phpt
 ext/spl/tests/gh16054.phpt
 ext/spl/tests/gh16464.phpt
 ext/spl/tests/gh16477.phpt

@@ -44,7 +44,6 @@ class XMLWriter {
     public function writeDtdEntity(string $name, string $content, bool $isParam = false, ?string $publicId = null, ?string $systemId = null, ?string $notationData = null): bool { return __xmlwriter('writeDtdEntity', $this, $name, $content, $isParam, $publicId, $systemId, $notationData); }
     public function outputMemory(bool $flush = true): string { return __xmlwriter('outputMemory', $this, $flush); }
     public function flush(bool $empty = true): string|int { return __xmlwriter('flush', $this, $empty); }
-    public function __destruct() { __xmlwriter('__destruct', $this); }
 }
 function xmlwriter_open_uri(string $uri): XMLWriter|false { return __xmlwriter_fn('xmlwriter_open_uri', $uri); }
 function xmlwriter_open_memory(): XMLWriter|false { return __xmlwriter_fn('xmlwriter_open_memory'); }

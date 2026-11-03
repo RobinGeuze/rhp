@@ -4336,25 +4336,32 @@ impl Vm {
 
     // -- object destruction & request shutdown ---------------------------------
 
-    /// Remember a new object whose class defines `__destruct`.
+    /// Remember a new object whose class defines `__destruct` or has a
+    /// native `dtor_obj`.
     pub(crate) fn track_destructible(&mut self, h: &ObjectHandle) {
         let cls = h.borrow().class;
-        if self.lookup_method(cls, b"__destruct").is_some() {
+        if self.class(cls).native_dtor || self.lookup_method(cls, b"__destruct").is_some() {
             self.destructibles.push(h.clone());
         }
     }
 
-    /// Call `__destruct` on `h` (already removed from the tracking list, so it
-    /// runs at most once).
+    /// Destruct `h` (already removed from the tracking list, so it runs at
+    /// most once): the class's native `dtor_obj` first, then `__destruct`
+    /// (zend_objects_destroy_object).
     fn call_destructor(&mut self, h: ObjectHandle) -> Result<(), Thrown> {
         if h.borrow().id < self.destructed_below {
             return Ok(()); // marked destructed by a fatal error's bailout
         }
         let cls = h.borrow().class;
+        let native = if self.class(cls).native_dtor {
+            builtins::object_dtor(self, &h)
+        } else {
+            Ok(())
+        };
         if let Some(m) = self.lookup_method(cls, b"__destruct") {
             self.call_sync(&m, Some(h), cls, Vec::new())?;
         }
-        Ok(())
+        native
     }
 
     /// Destruct every tracked object nothing else references any more (php

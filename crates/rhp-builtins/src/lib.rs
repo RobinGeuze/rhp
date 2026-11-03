@@ -110,6 +110,20 @@ mod tzdb;
 mod webenc_fns;
 pub mod zip_ext;
 
+/// Built-in classes with a native `dtor_obj` handler, which runs with a host
+/// before the object's `__destruct` (see [`object_dtor`]).
+pub fn has_native_dtor(class: &[u8]) -> bool {
+    class.eq_ignore_ascii_case(b"XMLWriter")
+}
+
+/// `dtor_obj` for an object whose class (or a parent) is listed by
+/// [`has_native_dtor`]. The engine calls it once, where php would, before the
+/// user's `__destruct`.
+pub fn object_dtor(host: &mut dyn Host, obj: &rhp_values::ObjectHandle) -> Result<(), Thrown> {
+    let id = obj.borrow().id;
+    ext::xmlwriter::object_dtor(host, id)
+}
+
 /// The engine's object free hook (`rhp_values::set_object_free_hook`): lets
 /// the extensions with per-object native state release it.
 pub fn object_freed(id: u32) {

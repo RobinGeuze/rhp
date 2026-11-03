@@ -1,0 +1,16 @@
+<a>x</a>
+__destruct uri
+Error: Invalid or uninitialized XMLWriter object
+
+__destruct stream
+Error: Invalid or uninitialized XMLWriter object
+string(8) "<s>v</s>"
+<in>list</in>
+__destruct array
+Error: Invalid or uninitialized XMLWriter object
+bool(false)
+<plain>p</plain>
+end
+<g/>
+__destruct shutdown
+Error: Invalid or uninitialized XMLWriter object

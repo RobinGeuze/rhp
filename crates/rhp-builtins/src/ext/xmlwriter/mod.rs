@@ -46,7 +46,21 @@ pub(crate) fn reset_state() {
     drop(old);
 }
 
-/// `free_obj` for an XMLWriter whose `__destruct` did not run.
+/// xmlwriter_object_dtor: free the writer while a host can take its last
+/// writes (a URI or stream writer flushes on free). Methods called later,
+/// from a subclass's `__destruct`, find no writer, as in php.
+pub(crate) fn object_dtor(host: &mut dyn Host, id: u32) -> Result<(), Thrown> {
+    let w = WRITERS.with(|m| m.borrow_mut().remove(&id));
+    if w.is_none() {
+        return Ok(());
+    }
+    // php names the active function in diagnostics; no builtin is running.
+    ffi::with_host(host, "Unknown", || drop(w))
+}
+
+/// `free_obj` for an XMLWriter whose `dtor_obj` did not run (a fatal
+/// error's bailout, a constructor that threw): no host, so stream writes
+/// are lost.
 pub(crate) fn object_freed(id: u32) {
     let w = WRITERS
         .try_with(|m| m.try_borrow_mut().ok().and_then(|mut m| m.remove(&id)))
@@ -848,13 +862,6 @@ fn fn_method(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let method = String::from_utf8_lossy(&s(args, 0)).into_owned();
     let this = args.get(1).map(deref).unwrap_or(Value::Null);
     let a = &args[2.min(args.len())..];
-    if method == "__destruct" {
-        // xmlwriter_object_dtor: free the writer while a host can take the
-        // last writes.
-        let w = obj_id(&this).and_then(|id| WRITERS.with(|m| m.borrow_mut().remove(&id)));
-        ffi::with_host(host, "XMLWriter::__destruct", || drop(w))?;
-        return Ok(Value::Null);
-    }
     let Some(&(m, _, params)) = op(&method) else {
         return Err(Thrown::error(
             "Error",

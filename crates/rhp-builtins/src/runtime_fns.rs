@@ -663,11 +663,17 @@ pub(crate) fn tz_valid(id: &[u8]) -> bool {
     id.eq_ignore_ascii_case(b"UTC") || crate::tzdb::load(id).is_some()
 }
 
-/// OnUpdate_date_timezone's warning (a docref from `func`): php falls back
-/// to `date_default_timezone_set()`'s zone, else UTC.
+/// OnUpdate_date_timezone's warning (a docref from `func`): it names
+/// `DATEG(default_timezone)`, the date.timezone value in effect as stored,
+/// which is unset at startup (then "UTC").
 fn invalid_timezone(v: &[u8], func: &str) -> String {
-    let fallback = TZ
-        .with(|t| t.borrow().clone())
+    let fallback = if func == "PHP Startup" {
+        None
+    } else {
+        ini_value(b"date.timezone").flatten()
+    };
+    let fallback = fallback
+        .filter(|z| !z.is_empty())
         .unwrap_or_else(|| b"UTC".to_vec());
     format!(
         "{func}: Invalid date.timezone value '{}', using '{}' instead",

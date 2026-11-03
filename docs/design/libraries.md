@@ -102,8 +102,10 @@ The `php` input names a php that is not the one on PATH (the nightly
 sanitizer build uses php-src's bundled PCRE2).
 `otool -L target/release/rhp` (or `ldd`) shows no libpcre2 (and on Linux no
 libxml2); `nm` shows the `pcre2_*` symbols. rhp-builtins'
-`pcre2_is_linked_statically` test checks its own test binary, which is
-linked straight from the crate.
+`pcre2_is_linked_statically` and `libxml2_is_linked_statically` tests check
+its own test binary, which is linked straight from the crate. The helper
+drops the library itself from a static link's `Libs.private`: a second,
+dynamic `-l` for it would override the static one.
 
 ## Compiled from source: rhp-csrc
 

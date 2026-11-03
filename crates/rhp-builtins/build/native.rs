@@ -278,7 +278,7 @@ fn find(lib: &Lib, os: &str) -> Result<Found, String> {
             .map(|p| p.join("lib/pkgconfig"))
             .filter(|p| p.is_dir())
             .collect();
-        if let Some(f) = pkg_config(&bin, lib.pkg, &extra) {
+        if let Some(f) = pkg_config(&bin, lib, &extra) {
             return Ok(f);
         }
         if brew_prefixes.is_empty() {
@@ -295,7 +295,10 @@ fn find(lib: &Lib, os: &str) -> Result<Found, String> {
             .join(lib.header)
             .is_file()
         {
-            let pc = parse_pc(&prefix.join("lib/pkgconfig").join(format!("{}.pc", lib.pkg)));
+            let pc = parse_pc(
+                &prefix.join("lib/pkgconfig").join(format!("{}.pc", lib.pkg)),
+                lib.link,
+            );
             return Ok(Found {
                 include: prefix.join("include"),
                 libdir: prefix.join("lib"),
@@ -409,7 +412,8 @@ fn pkg_config_bin() -> Option<String> {
     })
 }
 
-fn pkg_config(bin: &str, module: &str, extra_paths: &[PathBuf]) -> Option<Found> {
+fn pkg_config(bin: &str, lib: &Lib, extra_paths: &[PathBuf]) -> Option<Found> {
+    let module = lib.pkg;
     let mut path: Vec<PathBuf> = extra_paths.to_vec();
     if let Some(p) = env::var_os("PKG_CONFIG_PATH") {
         path.extend(env::split_paths(&p));
@@ -429,17 +433,17 @@ fn pkg_config(bin: &str, module: &str, extra_paths: &[PathBuf]) -> Option<Found>
     let include = run(&["--variable=includedir"])?;
     let libdir = run(&["--variable=libdir"])?;
     let libs = run(&["--static", "--libs-only-l"]).unwrap_or_default();
-    let own = module.strip_prefix("lib").unwrap_or(module);
     Some(Found {
         include: PathBuf::from(include),
         libdir: PathBuf::from(libdir),
         pc_version: Some(version),
-        private: link_names(&libs, own),
+        private: link_names(&libs, lib.link),
         via: format!("{bin} {module}"),
     })
 }
 
-/// The `-l` names in `flags`, minus the library itself.
+/// The `-l` names in `flags`, minus the library itself (`own`, its link
+/// name: a second `-l` for it would turn the static link dynamic).
 fn link_names(flags: &str, own: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for f in flags.split_whitespace() {
@@ -452,11 +456,10 @@ fn link_names(flags: &str, own: &str) -> Vec<String> {
     out
 }
 
-/// `Version` and the `-l` names of `Libs.private` from a .pc file.
-fn parse_pc(path: &Path) -> Option<(String, Vec<String>)> {
+/// `Version` and the `-l` names of `Libs.private` from a .pc file, minus
+/// `own`.
+fn parse_pc(path: &Path, own: &str) -> Option<(String, Vec<String>)> {
     let text = fs::read_to_string(path).ok()?;
-    let own = path.file_stem()?.to_str()?;
-    let own = own.strip_prefix("lib").unwrap_or(own);
     let mut version = None;
     let mut private = Vec::new();
     for line in text.lines() {

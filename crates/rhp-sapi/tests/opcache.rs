@@ -30,6 +30,13 @@ impl Sapi for Capture {
 /// One request for `script` at `time` (seconds since the epoch), with
 /// opcache on and `ini` on top; returns the body.
 fn request(script: &Path, ini: &[(&str, &str)], time: u64) -> String {
+    let (outcome, body) = run(script, ini, time);
+    assert_eq!(outcome, Outcome::Exit(0));
+    body
+}
+
+/// [`request`], with its outcome.
+fn run(script: &Path, ini: &[(&str, &str)], time: u64) -> (Outcome, String) {
     let cap = Capture::default();
     let mut settings = vec![
         ("opcache.enable".to_string(), "1".to_string()),
@@ -51,9 +58,8 @@ fn request(script: &Path, ini: &[(&str, &str)], time: u64) -> String {
             php_binary: None,
         },
     );
-    assert_eq!(outcome, Outcome::Exit(0));
     let body = String::from_utf8_lossy(&cap.body.borrow()).into_owned();
-    body
+    (outcome, body)
 }
 
 /// A scratch directory of PHP files, removed when dropped.
@@ -300,5 +306,21 @@ fn preloaded_declarations_are_fresh_in_every_request() {
         let want = "bool(true)\nbool(true)\nbool(false)\nbool(false)\n12 1\npf\n";
         assert_eq!(request(&main, &ini, 1000), want);
         assert_eq!(request(&main, &ini, 1001), want);
+    });
+}
+
+#[test]
+fn a_failed_preload_fails_every_request_on_the_thread() {
+    on_own_thread(|| {
+        let d = Dir::new("preload-fail");
+        let pre = d.file("preload.php", "<?php throw new Exception('no');", 500);
+        let main = d.file("main.php", "<?php echo 'ran';", 500);
+        let path = pre.to_string_lossy().into_owned();
+        let ini = [("opcache.preload", path.as_str())];
+        for time in [1000, 1001] {
+            let (outcome, body) = run(&main, &ini, time);
+            assert_eq!(outcome, Outcome::Exit(1));
+            assert!(!body.contains("ran"), "{body}");
+        }
     });
 }

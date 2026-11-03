@@ -283,11 +283,15 @@ impl Sapi for PreloadSapi {
 
 /// Run `opcache.preload` once per thread, before the first request that
 /// has opcache on (php runs it at startup). Its functions and classes are
-/// then declared in every request on this thread. False: preloading failed.
+/// then declared in every request on this thread. False: preloading failed,
+/// now or in an earlier request on this thread (php doesn't start).
 fn preload(sapi: &dyn Sapi, ini: &[(String, String)]) -> bool {
     let set = |k: &str, v: &str| k == "opcache.preload" && !v.is_empty();
     if !ini.iter().any(|(k, v)| set(k, v)) && !sapi.ini_defaults().iter().any(|(k, v)| set(k, v)) {
         return true;
+    }
+    if let Some(ok) = Vm::preload_outcome() {
+        return ok;
     }
     let mut vm = Vm::new();
     vm.set_sapi(Box::new(PreloadSapi {

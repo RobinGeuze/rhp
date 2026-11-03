@@ -168,8 +168,10 @@ functions report it; `opcache_reset()` takes effect at the next request.
   request, on an engine of its own (its output goes to stdout). The
   functions and classes it declared are declared again at the start of
   every request; a preloaded file included later doesn't redeclare them.
-  A failed preload (parse error, uncaught exception) fails the request
-  with exit status 1, as php refuses to start.
+  A failed preload (parse error, uncaught exception) fails that request
+  and every later one on the thread with exit status 1, as php refuses
+  to start (`Vm::preload_outcome` tells an embedder that drives `Vm`
+  itself).
 - **Not implemented:** the file cache (`opcache.file_cache`: compiled
   units aren't serialisable), the optimizer and its debug output, the JIT
   (`opcache_get_status()['jit']` reports what the settings select),

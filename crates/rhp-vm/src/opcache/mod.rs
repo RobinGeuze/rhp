@@ -113,7 +113,8 @@ pub(crate) struct Cache {
     /// `opcache.preload`'s result, once run on this thread (it survives
     /// restarts, as php re-adds the preloaded scripts).
     preload: Option<Rc<Preload>>,
-    preload_tried: bool,
+    /// Whether `opcache.preload` succeeded, once it ran on this thread.
+    preload_result: Option<bool>,
 }
 
 mod preload;

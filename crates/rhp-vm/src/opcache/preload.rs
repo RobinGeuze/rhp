@@ -105,10 +105,17 @@ impl Vm {
         let started = ini_flag(&startup(b"opcache.enable"))
             && (!cli || ini_flag(&startup(b"opcache.enable_cli")));
         let script = startup(b"opcache.preload");
-        if !started || script.is_empty() || with_cache(|c| c.preload_tried) {
+        if !started || script.is_empty() || Vm::preload_outcome().is_some() {
             return None;
         }
         Some(String::from_utf8_lossy(&script).into_owned())
+    }
+
+    /// Whether `opcache.preload` succeeded on this thread, once it ran.
+    /// After a failure php doesn't start, so a server should fail every
+    /// later request on the thread too.
+    pub fn preload_outcome() -> Option<bool> {
+        with_cache(|c| c.preload_result)
     }
 
     /// Run the preload script in this fresh engine (php's `accel_preload`):
@@ -122,7 +129,8 @@ impl Vm {
         path: &str,
         compile: impl FnOnce(&[u8]) -> Result<Program, IncludeError>,
     ) -> bool {
-        with_cache(|c| c.preload_tried = true);
+        // A failure below leaves it failed.
+        with_cache(|c| c.preload_result = Some(false));
         builtins::preload_user_check();
         // Compiles bypass the cache while preloading (php's ZCG(enabled) = 0).
         self.opcache = Some(Request {
@@ -185,6 +193,7 @@ impl Vm {
         self.opcache = None;
         with_cache(|c| {
             c.preload = Some(preload.clone());
+            c.preload_result = Some(true);
             cache_preloaded(c, &preload, Some(prog), now());
         });
         true

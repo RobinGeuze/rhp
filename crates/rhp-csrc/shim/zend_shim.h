@@ -45,6 +45,8 @@ typedef uint32_t zend_ulong;
 #define EXPECTED(c) __builtin_expect(!!(c), 1)
 #define UNEXPECTED(c) __builtin_expect(!!(c), 0)
 #define ZEND_ASSERT(c) ((void)0)
+/* Thread-local as in ZTS builds (NTS has plain static): rhp runs one VM per
+ * thread. */
 #define ZEND_TLS static _Thread_local
 #define ZEND_SET_ALIGNED(alignment, decl) decl __attribute__((__aligned__(alignment)))
 #if defined(__has_attribute) && __has_attribute(nonstring)

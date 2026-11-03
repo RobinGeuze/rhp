@@ -478,67 +478,63 @@ fn fn_throwable_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
     Ok(Value::str(throwable_to_string(host, &args[0])))
 }
 
-/// `gethostbyaddr($ip)`: reverse DNS via getnameinfo(NI_NAMEREQD); the address
-/// itself when it has no name, false for a malformed address
-/// (ext/standard/dns.c php_gethostbyaddr).
-fn fn_gethostbyaddr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    use std::net::IpAddr;
-    let ip = str_arg(args, 0);
-    let Some(addr) = std::str::from_utf8(&ip)
-        .ok()
-        .and_then(|s| s.parse::<IpAddr>().ok())
-    else {
+/// `gethostbyaddr($ip)` (dns.c php_gethostbyaddr): inet_pton as AF_INET6, then
+/// AF_INET, then getnameinfo(NI_NAMEREQD). The address itself when it has no
+/// name; a warning and false when it is not an address.
+fn fn_gethostbyaddr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let ip = crate::argparse::path_param(host, args, 0, "gethostbyaddr", "ip")?;
+    let mut out = [0 as libc::c_char; 1025];
+    let name = |sa: *const libc::sockaddr, len: usize, out: &mut [libc::c_char]| {
+        // SAFETY: `sa` points at a zeroed sockaddr_in/_in6 of `len` bytes with
+        // family and address set (as php fills it), and `out` is writable for
+        // the length passed.
+        let rc = unsafe {
+            libc::getnameinfo(
+                sa,
+                len as libc::socklen_t,
+                out.as_mut_ptr(),
+                out.len() as libc::socklen_t,
+                std::ptr::null_mut(),
+                0,
+                libc::NI_NAMEREQD,
+            )
+        };
+        // SAFETY: getnameinfo NUL-terminated `out` on success.
+        (rc == 0).then(|| {
+            unsafe { std::ffi::CStr::from_ptr(out.as_ptr()) }
+                .to_bytes()
+                .to_vec()
+        })
+    };
+    let found = if let Some(a) = crate::inet::pton6(&ip) {
+        // SAFETY: all-zero is a valid sockaddr_in6.
+        let mut sa: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
+        sa.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+        sa.sin6_addr.s6_addr = a;
+        name(
+            &sa as *const _ as *const libc::sockaddr,
+            std::mem::size_of_val(&sa),
+            &mut out,
+        )
+    } else if let Some(a) = crate::inet::pton4(&ip) {
+        // SAFETY: all-zero is a valid sockaddr_in.
+        let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+        sa.sin_family = libc::AF_INET as libc::sa_family_t;
+        sa.sin_addr.s_addr = u32::from_ne_bytes(a);
+        name(
+            &sa as *const _ as *const libc::sockaddr,
+            std::mem::size_of_val(&sa),
+            &mut out,
+        )
+    } else {
+        crate::warn(
+            host,
+            "gethostbyaddr",
+            "Address is not a valid IPv4 or IPv6 address",
+        )?;
         return Ok(Value::Bool(false));
     };
-    let mut host = [0 as libc::c_char; 1025];
-    // SAFETY: the sockaddr structs are fully initialised for their family and
-    // `host` is a writable buffer of the advertised length.
-    let rc = unsafe {
-        match addr {
-            IpAddr::V4(v4) => {
-                let mut sa: libc::sockaddr_in = std::mem::zeroed();
-                sa.sin_family = libc::AF_INET as libc::sa_family_t;
-                sa.sin_addr.s_addr = u32::from_ne_bytes(v4.octets());
-                #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
-                {
-                    sa.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
-                }
-                libc::getnameinfo(
-                    &sa as *const _ as *const libc::sockaddr,
-                    std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-                    host.as_mut_ptr(),
-                    host.len() as libc::socklen_t,
-                    std::ptr::null_mut(),
-                    0,
-                    libc::NI_NAMEREQD,
-                )
-            }
-            IpAddr::V6(v6) => {
-                let mut sa: libc::sockaddr_in6 = std::mem::zeroed();
-                sa.sin6_family = libc::AF_INET6 as libc::sa_family_t;
-                sa.sin6_addr.s6_addr = v6.octets();
-                #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
-                {
-                    sa.sin6_len = std::mem::size_of::<libc::sockaddr_in6>() as u8;
-                }
-                libc::getnameinfo(
-                    &sa as *const _ as *const libc::sockaddr,
-                    std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
-                    host.as_mut_ptr(),
-                    host.len() as libc::socklen_t,
-                    std::ptr::null_mut(),
-                    0,
-                    libc::NI_NAMEREQD,
-                )
-            }
-        }
-    };
-    if rc != 0 {
-        return Ok(Value::str(ip));
-    }
-    // SAFETY: getnameinfo NUL-terminated `host` on success.
-    let name = unsafe { std::ffi::CStr::from_ptr(host.as_ptr()) };
-    Ok(Value::str(name.to_bytes().to_vec()))
+    Ok(Value::str(found.unwrap_or(ip)))
 }
 
 /// `debug_print_backtrace(int $options = 0, int $limit = 0)`: the trace in

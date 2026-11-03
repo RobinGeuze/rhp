@@ -15,8 +15,9 @@ indexmap = { workspace = true }
 # pcre2-sys would silently build its bundled copy instead.
 
 # `hash` extension algorithms. Pure-Rust (RustCrypto et al.) where a faithful
-# 1:1 implementation exists; the oddballs with no crate (snefru, haval, php's
-# 4-pass tiger, the murmur/fnv/crc/adler variants) are hand-rolled in `hash/`.
+# 1:1 implementation exists; crc32b and adler32 use zlib (libz-sys). The
+# oddballs with no crate (snefru, haval, php's 4-pass tiger, crc32 (bzip2),
+# crc32c, fnv, joaat, murmur) are hand-rolled in `hash/`.
 digest = "0.11"
 md2 = "0.11"
 md4 = "0.11"
@@ -45,14 +46,15 @@ rhp-csrc = { path = "../rhp-csrc", default-features = false, features = ["crypt"
 # miniz_oxide so compressed bytes are identical to php's (which links zlib).
 flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
 # Direct zlib calls where php's exact deflateInit2 parameters matter (memLevel 9,
-# sync flushes): gzencode & co., the compress.zlib:// wrapper, ZipArchive.
+# sync flushes): gzencode & co., the compress.zlib:// wrapper, ZipArchive; also
+# crc32() / hash('crc32b') / adler32 and ZipArchive entry CRCs.
 libz-sys = "1.1"
 
 # bz2 extension, the compress.bzip2:// wrapper, phar and ZipArchive bzip2
-# entries. Not pure Rust: bzip2-sys links C libbz2 (the system one via
-# pkg-config, else its bundled 1.0.8 source), the library php's ext/bz2 wraps,
-# so compressed bytes match php's.
-bzip2 = "0.5"
+# entries: C libbz2 1.0.8 (frozen, php's version) built from bzip2-sys's
+# bundled source and linked statically.
+# Pinned: bzip2 0.6 defaults to the pure-Rust libbz2-rs instead of C libbz2.
+bzip2 = { version = "=0.5.2", features = ["static"] }
 
 # openssl extension: pure-Rust X.509 certificate parsing (openssl_x509_parse).
 x509-parser = { version = "0.18", features = ["verify"] }

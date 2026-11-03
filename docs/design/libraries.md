@@ -49,12 +49,15 @@ Today rhp-builtins links:
 | Library | macOS | Debian/Ubuntu |
 |---|---|---|
 | PCRE2 (libpcre2-8) | static, Homebrew pcre2 | static, libpcre2-dev (CI: php's release, see below) |
-| zlib (via libz-sys) | dynamic, /usr/lib/libz | dynamic, zlib1g |
-| bzip2 (via bzip2-sys) | static, bundled 1.0.8 | system libbz2 if pkg-config finds it, else bundled 1.0.8 |
+| zlib (via libz-sys; also crc32, adler32) | dynamic, /usr/lib/libz | dynamic, zlib1g |
+| bzip2 (bzip2 `=0.5.2`, feature `static`) | static, bzip2-sys's bundled C libbz2 1.0.8 | static, bzip2-sys's bundled C libbz2 1.0.8 |
 | php-src crypt C (via rhp-csrc) | static, compiled from php-8.5.12 | the same |
 | argon2 (via rhp-csrc) | static, compiled from release 20190702 | the same |
 
 zlib and bzip2 predate this policy and still go through their -sys crates.
+bzip2 is built from bzip2-sys's 1.0.8 source, not taken from macOS's
+/usr/lib/libbz2 as the list above would have it. Known gap: libz-sys builds
+its bundled zlib when it finds no system zlib, a silent fallback.
 rhp-csrc's code is the same on every machine, so it needs no row in
 `native.rs` or the native-deps action, only a C compiler (and `nm` for its
 test).

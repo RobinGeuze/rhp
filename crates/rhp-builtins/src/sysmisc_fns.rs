@@ -121,37 +121,17 @@ fn fn_str_decrement(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 }
 
 fn fn_ip2long(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = str_param(host, args, 0, "ip2long", "ip")?;
-    if s.is_empty() || s.contains(&0) {
-        return Ok(Value::Bool(false));
-    }
-    // inet_pton(AF_INET): exactly four dot-separated decimal octets <= 255.
-    let mut parts = 0;
-    let mut n: u32 = 0;
-    for p in s.split(|&b| b == b'.') {
-        parts += 1;
-        if p.is_empty() || parts > 4 || !p.iter().all(u8::is_ascii_digit) {
-            return Ok(Value::Bool(false));
-        }
-        let mut o: u32 = 0;
-        for &d in p {
-            o = o * 10 + (d - b'0') as u32;
-            if o > 255 {
-                return Ok(Value::Bool(false));
-            }
-        }
-        n = (n << 8) | o;
-    }
-    if parts != 4 {
-        return Ok(Value::Bool(false));
-    }
-    Ok(Value::Int(n as i64))
+    let s = crate::argparse::path_param(host, args, 0, "ip2long", "ip")?;
+    Ok(match crate::inet::pton4(&s) {
+        Some(a) if !s.is_empty() => Value::Int(u32::from_be_bytes(a) as i64),
+        _ => Value::Bool(false),
+    })
 }
 
 fn fn_long2ip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let n = int_param(host, args, 0, "long2ip", "ip", 0)? as u64 as u32;
-    let ip = std::net::Ipv4Addr::from(n);
-    Ok(Value::str(ip.to_string().into_bytes()))
+    let text = crate::inet::ntop(&n.to_be_bytes()).expect("inet_ntop of an IPv4 address");
+    Ok(Value::str(text))
 }
 
 fn fn_gettimeofday(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

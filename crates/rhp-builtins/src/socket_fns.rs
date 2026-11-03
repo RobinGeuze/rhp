@@ -293,13 +293,18 @@ fn sockaddr_text(sa: &libc::sockaddr_storage, sl: libc::socklen_t) -> Option<Vec
         match sa.ss_family as i32 {
             libc::AF_INET => {
                 let sin = &*(sa as *const _ as *const libc::sockaddr_in);
-                let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
-                Some(format!("{}:{}", ip, u16::from_be(sin.sin_port)).into_bytes())
+                let ip = crate::inet::ntop(&sin.sin_addr.s_addr.to_ne_bytes()).unwrap_or_default();
+                let mut out = ip;
+                out.extend_from_slice(format!(":{}", u16::from_be(sin.sin_port)).as_bytes());
+                Some(out)
             }
             libc::AF_INET6 => {
                 let sin6 = &*(sa as *const _ as *const libc::sockaddr_in6);
-                let ip = std::net::Ipv6Addr::from(sin6.sin6_addr.s6_addr);
-                Some(format!("[{}]:{}", ip, u16::from_be(sin6.sin6_port)).into_bytes())
+                let ip = crate::inet::ntop(&sin6.sin6_addr.s6_addr)?;
+                let mut out = b"[".to_vec();
+                out.extend_from_slice(&ip);
+                out.extend_from_slice(format!("]:{}", u16::from_be(sin6.sin6_port)).as_bytes());
+                Some(out)
             }
             libc::AF_UNIX => {
                 let un = &*(sa as *const _ as *const libc::sockaddr_un);
@@ -645,30 +650,32 @@ fn bind_local(
     ip: &[u8],
     port: i32,
 ) -> Result<(), Thrown> {
+    // `bindto` is a C string to php: it ends at the first NUL.
+    let ip = &ip[..ip.iter().position(|&b| b == 0).unwrap_or(ip.len())];
     let text = String::from_utf8_lossy(ip).into_owned();
     let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
     let len = unsafe {
         if fam == libc::AF_INET {
-            match text.parse::<std::net::Ipv4Addr>() {
-                Ok(v4) => {
+            match crate::inet::pton4(ip) {
+                Some(a) => {
                     let sin = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in);
                     sin.sin_family = libc::AF_INET as libc::sa_family_t;
                     sin.sin_port = (port as u16).to_be();
-                    sin.sin_addr.s_addr = u32::from(v4).to_be();
+                    sin.sin_addr.s_addr = u32::from_ne_bytes(a);
                     std::mem::size_of::<libc::sockaddr_in>()
                 }
-                Err(_) => 0,
+                None => 0,
             }
         } else {
-            match text.parse::<std::net::Ipv6Addr>() {
-                Ok(v6) => {
+            match crate::inet::pton6(ip) {
+                Some(a) => {
                     let sin6 = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6);
                     sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
                     sin6.sin6_port = (port as u16).to_be();
-                    sin6.sin6_addr.s6_addr = v6.octets();
+                    sin6.sin6_addr.s6_addr = a;
                     std::mem::size_of::<libc::sockaddr_in6>()
                 }
-                Err(_) => 0,
+                None => 0,
             }
         }
     };
@@ -1246,21 +1253,21 @@ fn parse_network_address(
     let port = atoi(p) as u16;
     let text = String::from_utf8_lossy(h).into_owned();
     let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
-    if let Ok(v6) = text.parse::<std::net::Ipv6Addr>() {
+    if let Some(a) = crate::inet::pton6(h) {
         let sin6 = unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6) };
         sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
         sin6.sin6_port = port.to_be();
-        sin6.sin6_addr.s6_addr = v6.octets();
+        sin6.sin6_addr.s6_addr = a;
         return Ok(Some(Addr {
             storage,
             len: std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
         }));
     }
-    if let Ok(v4) = text.parse::<std::net::Ipv4Addr>() {
+    if let Some(a) = crate::inet::pton4(h) {
         let sin = unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in) };
         sin.sin_family = libc::AF_INET as libc::sa_family_t;
         sin.sin_port = port.to_be();
-        sin.sin_addr.s_addr = u32::from(v4).to_be();
+        sin.sin_addr.s_addr = u32::from_ne_bytes(a);
         return Ok(Some(Addr {
             storage,
             len: std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,

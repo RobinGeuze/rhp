@@ -3,11 +3,9 @@
 //! (The `ctype_*` tests moved to `ext::ctype`; the JSON builtins live in
 //! `json_fns`.) All behavior verified byte-for-byte against the local php 8.5.8.
 
-use std::net::{Ipv4Addr, Ipv6Addr};
-
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{inet, Builtin, Host, Thrown};
 
 /// Local deref: unwrap a `Ref` to an owned clone of its target.
 fn deref(v: &Value) -> Value {
@@ -21,37 +19,24 @@ fn deref(v: &Value) -> Value {
 // inet_pton / inet_ntop
 // ---------------------------------------------------------------------------
 
-/// `inet_pton(string $ip): string|false` — IPv4/IPv6 text to packed binary.
-fn fn_inet_pton(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let ip = conv::to_string_bytes(&deref(&args[0]));
-    let s = match std::str::from_utf8(&ip) {
-        Ok(s) => s,
-        Err(_) => return Ok(Value::Bool(false)),
+/// `inet_pton(string $ip): string|false` (basic_functions.c): AF_INET6 when the
+/// text has a ':', otherwise AF_INET if it has a '.'.
+fn fn_inet_pton(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let ip = crate::argparse::path_param(host, args, 0, "inet_pton", "ip")?;
+    let packed = if ip.contains(&b':') {
+        inet::pton6(&ip).map(|a| a.to_vec())
+    } else if ip.contains(&b'.') {
+        inet::pton4(&ip).map(|a| a.to_vec())
+    } else {
+        None
     };
-    if let Ok(v4) = s.parse::<Ipv4Addr>() {
-        return Ok(Value::str(v4.octets().to_vec()));
-    }
-    if let Ok(v6) = s.parse::<Ipv6Addr>() {
-        return Ok(Value::str(v6.octets().to_vec()));
-    }
-    Ok(Value::Bool(false))
+    Ok(packed.map_or(Value::Bool(false), Value::str))
 }
 
-/// `inet_ntop(string $binary): string|false` — packed binary to IP text.
-fn fn_inet_ntop(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let b = conv::to_string_bytes(&deref(&args[0]));
-    match b.len() {
-        4 => {
-            let o: [u8; 4] = [b[0], b[1], b[2], b[3]];
-            Ok(Value::str(Ipv4Addr::from(o).to_string().into_bytes()))
-        }
-        16 => {
-            let mut o = [0u8; 16];
-            o.copy_from_slice(&b);
-            Ok(Value::str(Ipv6Addr::from(o).to_string().into_bytes()))
-        }
-        _ => Ok(Value::Bool(false)),
-    }
+/// `inet_ntop(string $ip): string|false`: a 4- or 16-byte address as text.
+fn fn_inet_ntop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let b = crate::argparse::str_param(host, args, 0, "inet_ntop", "ip")?;
+    Ok(inet::ntop(&b).map_or(Value::Bool(false), Value::str))
 }
 
 // ---------------------------------------------------------------------------

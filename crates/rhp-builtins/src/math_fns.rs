@@ -321,12 +321,14 @@ fn fn_hypot(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Float(f(&args[0]).hypot(f(&args[1]))))
 }
 
+// math.c's operation order; `x * PI / 180` rounds differently on about a third
+// of inputs.
 fn fn_deg2rad(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Float(f(&args[0]) * std::f64::consts::PI / 180.0))
+    Ok(Value::Float((f(&args[0]) / 180.0) * std::f64::consts::PI))
 }
 
 fn fn_rad2deg(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Float(f(&args[0]) * 180.0 / std::f64::consts::PI))
+    Ok(Value::Float((f(&args[0]) / std::f64::consts::PI) * 180.0))
 }
 
 // ---------------------------------------------------------------------------

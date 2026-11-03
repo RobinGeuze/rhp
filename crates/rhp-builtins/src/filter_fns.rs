@@ -48,6 +48,7 @@ const FLAG_IPV6: i64 = 1 << 21; // 2097152
 const FLAG_PATH_REQUIRED: i64 = 1 << 18; // 262144
 const FLAG_QUERY_REQUIRED: i64 = 1 << 19; // 524288
 const FLAG_HOSTNAME: i64 = 1 << 20; // 1048576 (shares a bit with IPV4; context-specific)
+const FLAG_EMAIL_UNICODE: i64 = 1 << 20; // the same bit again, for EMAIL
 const FLAG_NULL_ON_FAILURE: i64 = 1 << 27; // 134217728
 
 // ---------------------------------------------------------------------------
@@ -137,7 +138,7 @@ fn parse_opts(arg: Option<&Value>) -> Opts {
 // filter_var
 // ---------------------------------------------------------------------------
 
-fn fn_filter_var(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_filter_var(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let value = deref(&args[0]);
     let filter = args
         .get(1)
@@ -145,7 +146,7 @@ fn fn_filter_var(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .unwrap_or(FILTER_DEFAULT);
     let opts = parse_opts(args.get(2));
 
-    let result = run_filter(&value, filter, &opts);
+    let result = run_filter(host, &value, filter, &opts)?;
     Ok(match result {
         Some(v) => v,
         None => {
@@ -162,15 +163,20 @@ fn fn_filter_var(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// `Some(value)` on success, `None` on validation failure (array/object input
 /// always fails). The caller maps `None` onto false / null / default.
-fn run_filter(value: &Value, filter: i64, opts: &Opts) -> Option<Value> {
+fn run_filter(
+    host: &mut dyn Host,
+    value: &Value,
+    filter: i64,
+    opts: &Opts,
+) -> Result<Option<Value>, Thrown> {
     if matches!(value, Value::Array(_) | Value::Object(_)) {
-        return None;
+        return Ok(None);
     }
-    match filter {
+    Ok(match filter {
         FILTER_VALIDATE_INT => validate_int(value, opts),
         FILTER_VALIDATE_FLOAT => validate_float(value, opts),
         FILTER_VALIDATE_BOOLEAN => validate_bool(value),
-        FILTER_VALIDATE_EMAIL => validate_email(value),
+        FILTER_VALIDATE_EMAIL => validate_email(host, value, opts.flags)?,
         FILTER_VALIDATE_URL => validate_url(value, opts),
         FILTER_VALIDATE_IP => validate_ip(value, opts),
         FILTER_VALIDATE_MAC => validate_mac(value),
@@ -181,7 +187,7 @@ fn run_filter(value: &Value, filter: i64, opts: &Opts) -> Option<Value> {
         FILTER_SANITIZE_SPECIAL_CHARS => Some(Value::str(sanitize_special_chars(value))),
         FILTER_DEFAULT => Some(Value::str(conv::to_string_bytes(value))),
         _ => None,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -464,101 +470,66 @@ fn validate_bool(value: &Value) -> Option<Value> {
 }
 
 // ---------------------------------------------------------------------------
-// FILTER_VALIDATE_EMAIL  (ASCII, Michael-Rushton-style, no EMAIL_UNICODE)
+// FILTER_VALIDATE_EMAIL
 // ---------------------------------------------------------------------------
 
-fn validate_email(value: &Value) -> Option<Value> {
+// php's own regexes (logical_filters.c), regexp0 for FILTER_FLAG_EMAIL_UNICODE
+// and regexp1 otherwise. php's comment on them:
+//
+//   The regex below is based on a regex by Michael Rushton.
+//   However, it is not identical.  I changed it to only consider routeable
+//   addresses as valid.  Michael's regex considers a@b a valid address
+//   which conflicts with section 2.3.5 of RFC 5321 [...]
+//
+//   Michael's regex carries this copyright:
+//
+//   Copyright © Michael Rushton 2009-10
+//   http://squiloople.com/
+//   Feel free to use and redistribute this code. But please keep this copyright notice.
+const EMAIL_REGEXP0: &str = concat!(
+    r"/^(?!(?:(?:\x22?\x5C[\x00-\x7E]\x22?)|(?:\x22?[^\x5C\x22]\x22?)){255,})(?!(?:(?:\x22?\x5",
+    r"C[\x00-\x7E]\x22?)|(?:\x22?[^\x5C\x22]\x22?)){65,}@)(?:(?:[\x21\x23-\x27\x2A\x2B\x2D\x2F",
+    r"-\x39\x3D\x3F\x5E-\x7E\pL\pN]+)|(?:\x22(?:[\x01-\x08\x0B\x0C\x0E-\x1F\x21\x23-\x5B\x5D-\",
+    r"x7F\pL\pN]|(?:\x5C[\x00-\x7F]))*\x22))(?:\.(?:(?:[\x21\x23-\x27\x2A\x2B\x2D\x2F-\x39\x3D",
+    r"\x3F\x5E-\x7E\pL\pN]+)|(?:\x22(?:[\x01-\x08\x0B\x0C\x0E-\x1F\x21\x23-\x5B\x5D-\x7F\pL\pN",
+    r"]|(?:\x5C[\x00-\x7F]))*\x22)))*@(?:(?:(?!.*[^.]{64,})(?:(?:(?:xn--)?[a-z0-9]+(?:-+[a-z0-",
+    r"9]+)*\.){1,126}){1,}(?:(?:[a-z][a-z0-9]*)|(?:(?:xn--)[a-z0-9]+))(?:-+[a-z0-9]+)*)|(?:\[(",
+    r"?:(?:IPv6:(?:(?:[a-f0-9]{1,4}(?::[a-f0-9]{1,4}){7})|(?:(?!(?:.*[a-f0-9][:\]]){7,})(?:[a-",
+    r"f0-9]{1,4}(?::[a-f0-9]{1,4}){0,5})?::(?:[a-f0-9]{1,4}(?::[a-f0-9]{1,4}){0,5})?)))|(?:(?:",
+    r"IPv6:(?:(?:[a-f0-9]{1,4}(?::[a-f0-9]{1,4}){5}:)|(?:(?!(?:.*[a-f0-9]:){5,})(?:[a-f0-9]{1,",
+    r"4}(?::[a-f0-9]{1,4}){0,3})?::(?:[a-f0-9]{1,4}(?::[a-f0-9]{1,4}){0,3}:)?)))?(?:(?:25[0-5]",
+    r")|(?:2[0-4][0-9])|(?:1[0-9]{2})|(?:[1-9]?[0-9]))(?:\.(?:(?:25[0-5])|(?:2[0-4][0-9])|(?:1",
+    r"[0-9]{2})|(?:[1-9]?[0-9]))){3}))\]))$/iDu",
+);
+const EMAIL_REGEXP1: &str = concat!(
+    r"/^(?!(?:(?:\x22?\x5C[\x00-\x7E]\x22?)|(?:\x22?[^\x5C\x22]\x22?)){255,})(?!(?:(?:\x22?\x5",
+    r"C[\x00-\x7E]\x22?)|(?:\x22?[^\x5C\x22]\x22?)){65,}@)(?:(?:[\x21\x23-\x27\x2A\x2B\x2D\x2F",
+    r"-\x39\x3D\x3F\x5E-\x7E]+)|(?:\x22(?:[\x01-\x08\x0B\x0C\x0E-\x1F\x21\x23-\x5B\x5D-\x7F]|(",
+    r"?:\x5C[\x00-\x7F]))*\x22))(?:\.(?:(?:[\x21\x23-\x27\x2A\x2B\x2D\x2F-\x39\x3D\x3F\x5E-\x7",
+    r"E]+)|(?:\x22(?:[\x01-\x08\x0B\x0C\x0E-\x1F\x21\x23-\x5B\x5D-\x7F]|(?:\x5C[\x00-\x7F]))*\",
+    r"x22)))*@(?:(?:(?!.*[^.]{64,})(?:(?:(?:xn--)?[a-z0-9]+(?:-+[a-z0-9]+)*\.){1,126}){1,}(?:(",
+    r"?:[a-z][a-z0-9]*)|(?:(?:xn--)[a-z0-9]+))(?:-+[a-z0-9]+)*)|(?:\[(?:(?:IPv6:(?:(?:[a-f0-9]",
+    r"{1,4}(?::[a-f0-9]{1,4}){7})|(?:(?!(?:.*[a-f0-9][:\]]){7,})(?:[a-f0-9]{1,4}(?::[a-f0-9]{1",
+    r",4}){0,5})?::(?:[a-f0-9]{1,4}(?::[a-f0-9]{1,4}){0,5})?)))|(?:(?:IPv6:(?:(?:[a-f0-9]{1,4}",
+    r"(?::[a-f0-9]{1,4}){5}:)|(?:(?!(?:.*[a-f0-9]:){5,})(?:[a-f0-9]{1,4}(?::[a-f0-9]{1,4}){0,3",
+    r"})?::(?:[a-f0-9]{1,4}(?::[a-f0-9]{1,4}){0,3}:)?)))?(?:(?:25[0-5])|(?:2[0-4][0-9])|(?:1[0",
+    r"-9]{2})|(?:[1-9]?[0-9]))(?:\.(?:(?:25[0-5])|(?:2[0-4][0-9])|(?:1[0-9]{2})|(?:[1-9]?[0-9]",
+    r"))){3}))\]))$/iD",
+);
+
+fn validate_email(host: &mut dyn Host, value: &Value, flags: i64) -> Result<Option<Value>, Thrown> {
     let s = conv::to_string_bytes(value);
-    // split on the last '@' (unquoted '@' is illegal in the local part, so any
-    // earlier '@' makes the local part invalid anyway).
-    let at = s.iter().rposition(|&c| c == b'@')?;
-    let local = &s[..at];
-    let domain = &s[at + 1..];
-    if valid_email_local(local) && valid_email_domain(domain) {
-        Some(Value::str(s))
+    // RFC 2821's 320-octet maximum, checked before the regex as php does.
+    if s.len() > 320 {
+        return Ok(None);
+    }
+    let re = if flags & FLAG_EMAIL_UNICODE != 0 {
+        EMAIL_REGEXP0
     } else {
-        None
-    }
-}
-
-/// Allowed unquoted local-part atom character (per php's email regex).
-fn is_atom_char(b: u8) -> bool {
-    matches!(b,
-        0x21 | 0x23..=0x27 | 0x2a | 0x2b | 0x2d | 0x2f | 0x30..=0x39
-        | 0x3d | 0x3f | 0x41..=0x5a | 0x5e..=0x7e)
-    // excludes: " ( ) , . : ; < > @ [ \ ] and controls / high bytes
-}
-
-fn valid_email_local(local: &[u8]) -> bool {
-    if local.is_empty() || local.len() > 64 {
-        return false;
-    }
-    // quoted string: "..."
-    if local.len() >= 2 && local[0] == b'"' && local[local.len() - 1] == b'"' {
-        return valid_quoted_local(&local[1..local.len() - 1]);
-    }
-    // dot-atom: non-empty atoms separated by single dots
-    local
-        .split(|&c| c == b'.')
-        .all(|atom| !atom.is_empty() && atom.iter().all(|&b| is_atom_char(b)))
-}
-
-/// Validate the inside of a quoted local part (between the quotes).
-fn valid_quoted_local(inner: &[u8]) -> bool {
-    let mut i = 0;
-    while i < inner.len() {
-        let b = inner[i];
-        if b == b'\\' {
-            // backslash escapes the next byte (which must be <= 0x7f)
-            match inner.get(i + 1) {
-                Some(&n) if n <= 0x7f => i += 2,
-                _ => return false,
-            }
-        } else {
-            // qtext: 0x01-0x08,0x0b,0x0c,0x0e-0x1f,0x21,0x23-0x5b,0x5d-0x7f
-            let ok = matches!(b,
-                0x01..=0x08 | 0x0b | 0x0c | 0x0e..=0x1f | 0x21 | 0x23..=0x5b | 0x5d..=0x7f);
-            if !ok {
-                return false;
-            }
-            i += 1;
-        }
-    }
-    true
-}
-
-fn valid_email_domain(domain: &[u8]) -> bool {
-    if domain.is_empty() || domain.len() > 255 {
-        return false;
-    }
-    // IP literal: [...]
-    if domain[0] == b'[' && domain[domain.len() - 1] == b']' {
-        let inner = &domain[1..domain.len() - 1];
-        if let Some(v6) = inner.strip_prefix(b"IPv6:") {
-            return valid_ipv6(v6);
-        }
-        return valid_ipv4(inner);
-    }
-    // hostname: at least two labels, each an alnum/hyphen label, and the TLD
-    // (last label) must begin with a letter — php rejects numeric-leading TLDs
-    // like "a@b.2" / "a@1.2.3.4".
-    let labels: Vec<&[u8]> = domain.split(|&c| c == b'.').collect();
-    if labels.len() < 2 || !labels.iter().all(|l| valid_host_label(l)) {
-        return false;
-    }
-    labels[labels.len() - 1][0].is_ascii_alphabetic()
-}
-
-/// A DNS-style label: alnum, internal hyphens allowed, no leading/trailing
-/// hyphen, length 1..=63.
-fn valid_host_label(l: &[u8]) -> bool {
-    if l.is_empty() || l.len() > 63 {
-        return false;
-    }
-    if l[0] == b'-' || l[l.len() - 1] == b'-' {
-        return false;
-    }
-    l.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'-')
+        EMAIL_REGEXP1
+    };
+    let ok = crate::preg_fns::fixed_pattern_matches(host, "filter_var", re.as_bytes(), &s)?;
+    Ok(ok.then(|| Value::str(s)))
 }
 
 // ---------------------------------------------------------------------------
@@ -714,6 +685,18 @@ fn validate_domain(value: &Value, opts: &Opts) -> Option<Value> {
         }
     }
     Some(Value::str(s))
+}
+
+/// A DNS-style label: alnum, internal hyphens allowed, no leading/trailing
+/// hyphen, length 1..=63.
+fn valid_host_label(l: &[u8]) -> bool {
+    if l.is_empty() || l.len() > 63 {
+        return false;
+    }
+    if l[0] == b'-' || l[l.len() - 1] == b'-' {
+        return false;
+    }
+    l.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 // ---------------------------------------------------------------------------
@@ -1232,6 +1215,18 @@ mod tests {
         }
         // 12 (int) -> "12" has no '@'
         assert!(is_false(&fv(Value::Int(12), FILTER_VALIDATE_EMAIL)));
+        // regexp0 allows letters outside ASCII; invalid UTF-8 fails under /u.
+        let uni = FLAG_EMAIL_UNICODE;
+        assert!(is_false(&fv(s("é@b.de"), FILTER_VALIDATE_EMAIL)));
+        assert_eq!(
+            as_str(&fvf(s("é@b.de"), FILTER_VALIDATE_EMAIL, uni)),
+            "é@b.de"
+        );
+        let bad_utf8 = Value::str(b"\xff@b.de".to_vec());
+        assert!(is_false(&fvf(bad_utf8, FILTER_VALIDATE_EMAIL, uni)));
+        // more than 320 octets
+        let long = format!("{}@b.com", "a".repeat(315));
+        assert!(is_false(&fv(s(&long), FILTER_VALIDATE_EMAIL)));
     }
 
     #[test]

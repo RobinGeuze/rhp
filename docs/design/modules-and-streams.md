@@ -270,7 +270,7 @@ the VM for `running_main_path()` (it already canonicalizes + reads the script).
 | `flate2` | `1.1` | default (`rust_backend`/miniz_oxide, pure Rust) | zlib module (now); compressed-phar (M1 opt) |
 | `zip` | `9` | `default-features=false`, `["deflate-flate2"]` | M2 (installs) |
 | `tar` | `0.4` | default (pure Rust) | M2 (tgz dist) |
-| `bzip2` | `0.6` | default (pure-Rust backend) | later (bz2 phar/dist) |
+| `bzip2` | `=0.5.2` | `static` (C libbz2 1.0.8, as php; 0.6 defaults to pure Rust) | done |
 
 `sha2` already present (phar signature). Avoid `zip`/`flate2` C-backed features.
 

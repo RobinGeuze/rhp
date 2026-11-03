@@ -128,18 +128,9 @@ fn compile_warn(
     let mut warnings = Vec::new();
     let mut jit_issue = None;
     let re = compile_inner(pattern, &mut jit_issue);
-    match jit_issue {
-        Some(JitIssue::NoMemory) => warnings.push(
-            "Allocation of JIT memory failed, PCRE JIT will be disabled. \
-             This is likely caused by security restrictions. \
-             Either grant PHP permission to allocate executable memory, or set pcre.jit=0"
-                .to_string(),
-        ),
-        // php also sets PREG_INTERNAL_ERROR here, but every caller resets
-        // the code before matching.
-        Some(JitIssue::Failed(m)) => warnings.push(format!("JIT compilation failed: {m}")),
-        None => {}
-    }
+    // A JIT failure also sets PREG_INTERNAL_ERROR in php, but every preg_*
+    // caller resets the code before matching.
+    warnings.extend(jit_issue.map(jit_warning));
     let re = match re {
         Ok(re) => {
             let re = Rc::new(re);
@@ -159,6 +150,51 @@ fn compile_warn(
     // A warning handler may have run preg functions of its own.
     set_last_error(err);
     Ok(re)
+}
+
+/// php's warning for a failed pcre2_jit_compile.
+fn jit_warning(issue: JitIssue) -> String {
+    match issue {
+        JitIssue::NoMemory => "Allocation of JIT memory failed, PCRE JIT will be disabled. \
+             This is likely caused by security restrictions. \
+             Either grant PHP permission to allocate executable memory, or set pcre.jit=0"
+            .to_string(),
+        JitIssue::Failed(m) => format!("JIT compilation failed: {m}"),
+    }
+}
+
+/// Match `subject` against a fixed `/body/flags` pattern the way an extension
+/// does through pcre_get_compiled_regex + pcre2_match (filter's email check):
+/// the shared pattern cache and match limits, and an error counts as no
+/// match. `preg_last_error()` is not reset. The one diagnostic is php's JIT
+/// warning (from builtin `fname`) when the first compile's JIT step fails.
+pub(crate) fn fixed_pattern_matches(
+    host: &mut dyn Host,
+    fname: &str,
+    pattern: &'static [u8],
+    subject: &[u8],
+) -> Result<bool, Thrown> {
+    let re = match pcre::cache_get(pattern) {
+        Some(re) => re,
+        None => {
+            let mut jit_issue = None;
+            let re =
+                Rc::new(compile_inner(pattern, &mut jit_issue).expect("fixed pattern compiles"));
+            pcre::cache_put(pattern.to_vec(), re.clone());
+            if let Some(issue) = jit_issue {
+                let internal = matches!(issue, JitIssue::Failed(_));
+                let warned = crate::warn(host, fname, &jit_warning(issue));
+                // php_pcre.c: pcre_handle_exec_error(PCRE2_ERROR_INTERNAL),
+                // which nothing on this path resets.
+                if internal {
+                    set_last_error(PREG_INTERNAL_ERROR);
+                }
+                warned?;
+            }
+            re
+        }
+    };
+    Ok(matches!(re.find_at(subject, 0), Ok(Some(_))))
 }
 
 fn compile_inner(pattern: &[u8], jit_issue: &mut Option<JitIssue>) -> Result<Regex, String> {

@@ -102,6 +102,27 @@ pub(crate) fn str_param(
     }
 }
 
+/// `Z_PARAM_PATH`: [`str_param`], plus a `ValueError` for a NUL byte.
+pub(crate) fn path_param(
+    host: &mut dyn Host,
+    args: &[Value],
+    i: usize,
+    func: &str,
+    pname: &str,
+) -> Result<Vec<u8>, Thrown> {
+    let s = str_param(host, args, i, func, pname)?;
+    if s.contains(&0) {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "{func}(): Argument #{} (${pname}) must not contain any null bytes",
+                i + 1
+            ),
+        ));
+    }
+    Ok(s)
+}
+
 /// `Z_PARAM_STR_OR_NULL`: absent or `null` → `None`.
 pub(crate) fn str_or_null_param(
     host: &mut dyn Host,

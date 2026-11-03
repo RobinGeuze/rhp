@@ -193,9 +193,8 @@ source instead only when it finds no system zlib.
 3. bzip2
 ------------------------------------------------------------------------------
 
-bzip2 1.0.8 through the bzip2-sys crate: the system libbz2 when pkg-config
-finds one, otherwise bzip2-sys's bundled 1.0.8 source, compiled and linked
-statically (the case on macOS without pkg-config).
+bzip2 1.0.8 through the bzip2-sys crate: its bundled 1.0.8 source, compiled
+and linked statically on every OS.
 
 
 --------------------------------------------------------------------------

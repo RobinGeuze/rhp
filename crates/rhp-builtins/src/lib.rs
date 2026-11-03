@@ -78,6 +78,7 @@ mod file_fns;
 mod filter_fns;
 mod fs_fns;
 pub mod http;
+mod inet;
 mod info_fns;
 mod ini_parse;
 mod ini_table;

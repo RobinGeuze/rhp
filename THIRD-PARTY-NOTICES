@@ -6,10 +6,15 @@ links, or contains code derived from, the third-party software below, under
 the licences given here. Rust crates rhp depends on carry their own licences
 in their package metadata (see Cargo.lock) and are not repeated here.
 
-1. PCRE2        BSD-3-Clause WITH PCRE2-exception; JIT: BSD-2-Clause
-2. zlib         Zlib
-3. bzip2        bzip2-1.0.6
-4. PHP          PHP-3.01; Zend Engine: Zend-2.0
+1. PCRE2           BSD-3-Clause WITH PCRE2-exception; JIT: BSD-2-Clause
+2. zlib            Zlib
+3. bzip2           bzip2-1.0.6
+4. PHP             PHP-3.01; Zend Engine: Zend-2.0
+5. FreeSec         BSD-3-Clause
+6. crypt_blowfish  public domain; fallback: a permissive licence
+7. SHA-crypt       public domain
+8. md5crypt        Beerware
+9. Argon2          CC0-1.0 OR Apache-2.0
 
 
 ------------------------------------------------------------------------------
@@ -245,6 +250,10 @@ in tests/phpt/php-src.ref): extension glue such as ext/pcre/php_pcre.c, and
 algorithms from main/, ext/ and Zend/. php-src is under the PHP License 3.01;
 its Zend/ directory is under the Zend Engine License 2.00. Both follow.
 
+crates/rhp-csrc also compiles some php-src C files unmodified (its
+vendor/php-src). Their original authors' terms are in sections 5 to 7;
+php-src's changes to them come under the PHP License.
+
 This product includes PHP software, freely available from
 <http://www.php.net/software/>.
 
@@ -376,3 +385,163 @@ OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 SUCH DAMAGE.
 
 --------------------------------------------------------------------
+
+
+------------------------------------------------------------------------------
+5. FreeSec
+------------------------------------------------------------------------------
+
+php-src's ext/standard/crypt_freesec.c (standard and extended DES crypt),
+compiled unmodified by crates/rhp-csrc. It states:
+
+  This version is derived from the original implementation of FreeSec
+  (release 1.1) by David Burren.  I've reviewed the changes made in
+  OpenBSD (as of 2.7) and modified the original code in a similar way
+  where applicable.  I've also made it reentrant and made a number of
+  other changes.
+  - Solar Designer <solar at openwall.com>
+
+  FreeSec: libcrypt for NetBSD
+
+  Copyright (c) 1994 David Burren
+  All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions
+  are met:
+  1. Redistributions of source code must retain the above copyright
+     notice, this list of conditions and the following disclaimer.
+  2. Redistributions in binary form must reproduce the above copyright
+     notice, this list of conditions and the following disclaimer in the
+     documentation and/or other materials provided with the distribution.
+  3. Neither the name of the author nor the names of other contributors
+     may be used to endorse or promote products derived from this software
+     without specific prior written permission.
+
+  THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+  ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+  ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+  OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+  HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+  OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+  SUCH DAMAGE.
+
+Its header, crypt_freesec.h, states no licence of its own; it comes with
+php-src under the PHP License (section 4).
+
+
+------------------------------------------------------------------------------
+6. crypt_blowfish
+------------------------------------------------------------------------------
+
+php-src's ext/standard/crypt_blowfish.c and crypt_blowfish.h (bcrypt),
+compiled unmodified by crates/rhp-csrc. crypt_blowfish.c states (and
+crypt_blowfish.h the same, for 2000-2011):
+
+  Written by Solar Designer <solar at openwall.com> in 1998-2015.
+  No copyright is claimed, and the software is hereby placed in the public
+  domain. In case this attempt to disclaim copyright and place the software
+  in the public domain is deemed null and void, then the software is
+  Copyright (c) 1998-2015 Solar Designer and it is hereby released to the
+  general public under the following terms:
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted.
+
+  There's ABSOLUTELY NO WARRANTY, express or implied.
+
+  It is my intent that you should be able to use this on your system,
+  as part of a software package, or anywhere else to improve security,
+  ensure compatibility, or for any other purpose. I would appreciate
+  it if you give credit where it is due and keep your modifications in
+  the public domain as well, but I don't require that in order to let
+  you place this code and any modifications you make under a license
+  of your choice.
+
+  This implementation is fully compatible with OpenBSD's bcrypt.c for prefix
+  "$2b$", originally by Niels Provos <provos at citi.umich.edu>, and it uses
+  some of his ideas. The password hashing algorithm was designed by David
+  Mazieres <dm at lcs.mit.edu>.
+
+
+------------------------------------------------------------------------------
+7. SHA-crypt
+------------------------------------------------------------------------------
+
+php-src's ext/standard/crypt_sha256.c and crypt_sha512.c, compiled
+unmodified by crates/rhp-csrc. crypt_sha256.c states (and crypt_sha512.c the
+same, for SHA512):
+
+  SHA256-based Unix crypt implementation.
+  Released into the Public Domain by Ulrich Drepper <drepper@redhat.com>.
+  Windows VC++ port by Pierre Joye <pierre@php.net>
+
+The port is php-src's change, under the PHP License (section 4).
+
+
+------------------------------------------------------------------------------
+8. md5crypt
+------------------------------------------------------------------------------
+
+crypt()'s MD5 hashes ("$1$", crates/rhp-builtins/src/crypt_fns.rs) are a Rust
+port of php_md5_crypt_r in php-src's ext/standard/php_crypt_r.c, which is
+under the PHP License (section 4) and states for this function:
+
+  ----------------------------------------------------------------------------
+  "THE BEER-WARE LICENSE" (Revision 42):
+  <phk@login.dknet.dk> wrote this file.  As long as you retain this notice you
+  can do whatever you want with this stuff. If we meet some day, and you think
+  this stuff is worth it, you can buy me a beer in return.   Poul-Henning Kamp
+  ----------------------------------------------------------------------------
+
+  from FreeBSD: crypt.c,v 1.5 1996/10/14 08:34:02 phk Exp
+  via OpenBSD: md5crypt.c,v 1.9 1997/07/23 20:58:27 kstailey Exp
+  via NetBSD: md5crypt.c,v 1.4.2.1 2002/01/22 19:31:59 he Exp
+
+
+------------------------------------------------------------------------------
+9. Argon2
+------------------------------------------------------------------------------
+
+The Argon2 reference C, release 20190702
+(https://github.com/P-H-C/phc-winner-argon2), the libargon2 php links:
+argon2.c, core.c, encoding.c, ref.c, thread.c and the BLAKE2b implementation
+it bundles (src/blake2/). Vendored unmodified in crates/rhp-csrc/vendor/argon2
+and compiled by crates/rhp-csrc. Every one of these files, BLAKE2b included,
+states:
+
+  Argon2 reference source code package - reference C implementations
+
+  Copyright 2015
+  Daniel Dinu, Dmitry Khovratovich, Jean-Philippe Aumasson, and Samuel Neves
+
+  You may use this work under the terms of a Creative Commons CC0 1.0
+  License/Waiver or the Apache Public License 2.0, at your option. The terms of
+  these licenses can be found at:
+
+  - CC0 1.0 Universal : http://creativecommons.org/publicdomain/zero/1.0
+  - Apache 2.0        : http://www.apache.org/licenses/LICENSE-2.0
+
+encoding.c also states, for its Base64 and parameter encoding:
+
+  The code was originally written by Thomas Pornin <pornin@bolet.org>,
+  to whom comments and remarks may be sent. It is released under what
+  should amount to Public Domain or its closest equivalent; the
+  following mantra is supposed to incarnate that fact with all the
+  proper legal rituals:
+
+  ---------------------------------------------------------------------
+  This file is provided under the terms of Creative Commons CC0 1.0
+  Public Domain Dedication. To the extent possible under law, the
+  author (Thomas Pornin) has waived all copyright and related or
+  neighboring rights to this file. This work is published from: Canada.
+  ---------------------------------------------------------------------
+
+  Copyright (c) 2015 Thomas Pornin
+
+Both licence texts are in crates/rhp-csrc/vendor/argon2/LICENSE. The Apache
+License 2.0 is also LICENSE-APACHE.

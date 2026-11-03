@@ -2549,6 +2549,47 @@ fn fn_array_reverse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(out))
 }
 
+/// range()'s RANGE_CHECK_{LONG,DOUBLE}_INIT_ARRAY: a ValueError when the
+/// result would exceed HT_MAX_SIZE elements. (php prints the lower bound
+/// as start and the higher as end, whatever the direction.)
+fn range_size_check(
+    start: conv::Num,
+    end: conv::Num,
+    step: f64,
+    float: bool,
+) -> Result<(), Thrown> {
+    const HT_MAX_SIZE: u64 = 0x4000_0000;
+    let msg = "The supplied range exceeds the maximum array size by";
+    if let (false, conv::Num::Int(a), conv::Num::Int(b)) = (float, start, end) {
+        let (lo, hi) = (a.min(b), a.max(b));
+        let step = step as u64;
+        let size = (hi as u64).wrapping_sub(lo as u64) / step;
+        if size >= HT_MAX_SIZE - 1 {
+            return Err(Thrown::error(
+                "ValueError",
+                format!(
+                    "{msg} {} elements: start={lo}, end={hi}, step={step}. Calculated size: {size}. Maximum size: {HT_MAX_SIZE}.",
+                    size - (HT_MAX_SIZE - 1)
+                ),
+            ));
+        }
+        return Ok(());
+    }
+    let (a, b) = (start.as_f64(), end.as_f64());
+    let (lo, hi) = (a.min(b), a.max(b));
+    let size = (hi - lo) / step + 1.0;
+    if size >= HT_MAX_SIZE as f64 {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "{msg} {:.1} elements: start={lo:.1}, end={hi:.1}, step={step:.1}. Max size: {HT_MAX_SIZE}",
+                size - HT_MAX_SIZE as f64
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn fn_range(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // Numeric ranges only (char ranges deferred).
     let start = conv::to_number(&deref(&args[0])).0;
@@ -2563,6 +2604,7 @@ fn fn_range(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         || matches!(end, conv::Num::Float(_))
         || step.fract() != 0.0;
     let (s, e) = (start.as_f64(), end.as_f64());
+    range_size_check(start, end, step, use_float)?;
     // php sizes the result up front, fallibly.
     let count = ((s - e).abs() / step).floor() + 1.0;
     if count.is_finite()

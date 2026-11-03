@@ -15,7 +15,7 @@ const USAGE: &str = "usage: rhp-difftest gen <name> [options] [--check]\n\
 generators:\n  dumps        ini and constant tables from the reference php\n\
 \x20 html-tables  HTML entity tables from php-src's ext/standard/html_tables\n\
 \x20 intl-consts  intl's global constants from php-src's ext/intl stubs\n\
-\x20 parser      token ids and Bison tables from the php release tarball\n\
+\x20 parser       token ids and Bison tables from the php release tarball\n\
 \x20 signatures   builtin signatures from php-src's *.stub.php\n";
 
 pub fn main(args: &[String]) -> ExitCode {

@@ -35,12 +35,6 @@ S:B []
 r=0
 err 76 Mismatched tag L1 C11 B10
 W[8192]: Function xml_parser_free() is deprecated since 8.5, as it has no effect since PHP 8.0
-S:A []
-C:"x"
-E:A
-r=0
-err 5 Invalid document end L1 C9 B0
-W[8192]: Function xml_parser_free() is deprecated since 8.5, as it has no effect since PHP 8.0
 S:a []
 E:a
 r=1

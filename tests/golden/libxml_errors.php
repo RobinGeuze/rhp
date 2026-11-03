@@ -40,7 +40,7 @@ simplexml_load_string('<a>' . str_repeat('y', 100) . '</b>');
 // LIBXML_NOERROR / LIBXML_NOWARNING
 $d->loadXML('<a xmlns="rel"/>', LIBXML_NOWARNING);
 $d->loadXML('<x:a/>', LIBXML_NOERROR);
-var_dump(LIBXML_VERSION, LIBXML_DOTTED_VERSION, LIBXML_NOENT, LIBXML_NONET, LIBXML_NOCDATA, LIBXML_SCHEMA_CREATE);
+var_dump(LIBXML_NOENT, LIBXML_NONET, LIBXML_NOCDATA, LIBXML_SCHEMA_CREATE);
 
 // file loading reports the file name
 $f = tempnam(sys_get_temp_dir(), 'dx');

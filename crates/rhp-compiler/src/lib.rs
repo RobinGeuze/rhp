@@ -4959,7 +4959,18 @@ impl ProtoBuilder {
             .get(&name_lc)
             .cloned()
             .or_else(|| global_lc.as_ref().and_then(|g| self.sigs.get(g).cloned()))
-            .or_else(|| builtin_by_ref(global_lc.as_deref().unwrap_or(&name_lc)));
+            .or_else(|| {
+                builtin_by_ref(
+                    global_lc.as_deref().unwrap_or(&name_lc),
+                    fc.argument_list.arguments.len(),
+                )
+            });
+        // `@prefer-ref` positions of the builtin (array_multisort, extract): a
+        // non-variable argument is passed by value, silently.
+        let prefer_ref = |i: usize| {
+            use rhp_builtins::signatures::Signature;
+            builtin_sig(global_lc.as_deref().unwrap_or(&name_lc)).is_some_and(|f| f.prefer_ref(i))
+        };
 
         // Compile each arg into a value reg, or (for a by-ref param) note the
         // variable's CV so it can be materialized as a reference.
@@ -5003,15 +5014,11 @@ impl ProtoBuilder {
                     }
                     // A call result for a by-ref parameter: php passes it
                     // anyway with "Only variables should be passed by reference"
-                    // (ZEND_SEND_VAR_NO_REF / SEND_FUNC_ARG). `current`/`key`
-                    // take their array by value in php 8, and prefer-ref
+                    // (ZEND_SEND_VAR_NO_REF / SEND_FUNC_ARG). prefer-ref
                     // parameters accept a temporary silently.
                     Expression::Call(_) => {
                         let r = self.compile_expr(p.value)?;
-                        if matches!(
-                            global_lc.as_deref().unwrap_or(&name_lc),
-                            b"current" | b"key" | b"array_multisort" | b"extract"
-                        ) {
+                        if prefer_ref(i) {
                             slots.push(ArgSlot::Value(r))
                         } else {
                             slots.push(ArgSlot::NoRef(r))
@@ -5022,10 +5029,8 @@ impl ProtoBuilder {
                     // by-value rather than the hard error other by-ref builtins get.
                     _ if matches!(
                         global_lc.as_deref().unwrap_or(&name_lc),
-                        b"end" | b"reset" | b"next" | b"prev" | b"current" | b"key" | b"each"
-                    ) || rhp_bytecode::builtin_prefers_ref(
-                        global_lc.as_deref().unwrap_or(&name_lc),
-                    ) =>
+                        b"end" | b"reset" | b"next" | b"prev"
+                    ) || prefer_ref(i) =>
                     {
                         slots.push(ArgSlot::Value(self.compile_expr(p.value)?))
                     }
@@ -6786,12 +6791,35 @@ fn strip_dollar(name: &[u8]) -> &[u8] {
     name.strip_prefix(b"$").unwrap_or(name)
 }
 
-/// By-reference parameter flags for a builtin, from the shared bytecode table.
-/// The call site emits `MakeRef` for each flagged position.
-fn builtin_by_ref(name_lc: &[u8]) -> Option<Vec<bool>> {
+/// The stub signature of a builtin rhp implements: a native one, or a
+/// function of the prelude.
+fn builtin_sig(name_lc: &[u8]) -> Option<&'static rhp_builtins::signatures::Func> {
+    let f = rhp_builtins::signatures::function(name_lc)?;
     let name = std::str::from_utf8(name_lc).ok()?;
-    let flags = rhp_bytecode::builtin_ref_params(name);
-    (!flags.is_empty()).then(|| flags.to_vec())
+    if rhp_builtins::registry().contains_key(name) {
+        return Some(f);
+    }
+    // While the prelude itself compiles, every function it calls exists.
+    let in_prelude = PRELUDE_CACHE.with(|c| match &*c.borrow() {
+        Some(p) => p
+            .functions
+            .iter()
+            .any(|pf| pf.name.as_bytes().eq_ignore_ascii_case(name_lc)),
+        None => true,
+    });
+    in_prelude.then_some(f)
+}
+
+/// By-reference flags for the first `argc` arguments of a builtin call, from
+/// its stub signature. The call site emits `MakeRef` for each flagged
+/// position.
+fn builtin_by_ref(name_lc: &[u8], argc: usize) -> Option<Vec<bool>> {
+    use rhp_builtins::signatures::Signature;
+    if !rhp_builtins::signatures::function(name_lc)?.has_by_ref() {
+        return None;
+    }
+    let f = builtin_sig(name_lc)?;
+    Some((0..argc.max(f.params.len())).map(|i| f.by_ref(i)).collect())
 }
 
 /// Does a function body contain a top-level `yield` (making it a generator)?

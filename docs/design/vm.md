@@ -550,9 +550,12 @@ opcode is emitted whenever the compiler sees a call whose name resolves to
 `builtins::lookup(name)` and is not a user function:
 
 1. Arguments are evaluated into a contiguous `[base .. base+argc)` window.
-2. Arity is checked against `Builtin::{min_args, max_args}` (the compiler can
-   pre-check fixed-arity calls and emit the `ArgumentCountError` inline; variadic
-   stays a runtime check), raising `ArgumentCountError` otherwise.
+2. Arity is php's, from the builtin's stub signature
+   (`rhp_builtins::signatures`, generated from php-src's `*.stub.php` by
+   `rhp-difftest gen signatures`), raising `ArgumentCountError` otherwise.
+   `Builtin::{min_args, max_args}` record what the body implements: an
+   argument for a parameter php declares but the body lacks is refused, and
+   a test keeps the registrations equal to the stubs.
 3. The handler calls `(builtin.func)(self, &args)` — `self` coerces to
    `&mut dyn Host`, so builtins keep operating on owned `Value`s with zero
    knowledge of frames, registers, or the arena.
@@ -560,9 +563,9 @@ opcode is emitted whenever the compiler sees a call whose name resolves to
    `dst`, `Err` into the unwinder.
 
 `is_refused()` names are rejected at **compile** time (a `Refuse` opcode / compile
-error), so a refused builtin never reaches dispatch. By-ref builtins (future
-`settype`-style) use the builtins-crate's ref entry point; the VM passes the
-`Value::Ref` slot rather than a cloned value.
+error), so a refused builtin never reaches dispatch. By-ref and `@prefer-ref`
+parameters also come from the stub signature: the compiler emits `MakeRef`
+for them and the VM passes the `Value::Ref` slot rather than a cloned value.
 
 ### 5.2 Operators: one opcode per `ops::` function
 

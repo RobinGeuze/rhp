@@ -13,14 +13,7 @@ use rhp_values::{ArrayKey, ClassId, ClassKind, PhpArray, PhpStr, Thrown, Value, 
 use crate::classes::ResolvedMethod;
 use crate::{deref, Vm};
 
-/// The extension a built-in function / class belongs to (lowercase table).
-fn ext_lookup(table: &[(&str, &'static str)], name: &[u8]) -> Option<&'static str> {
-    let key = lc(name);
-    table
-        .binary_search_by(|(n, _)| n.as_bytes().cmp(&key[..]))
-        .ok()
-        .map(|i| table[i].1)
-}
+use rhp_builtins::signatures::{self as sigs, Signature};
 
 fn put(a: &mut PhpArray, k: &str, v: Value) {
     a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
@@ -492,35 +485,7 @@ impl Vm {
             return None;
         }
         let n = self.classes[cid as usize].name.as_bytes();
-        if let Some(x) = ext_lookup(crate::ext_names::CLASSES, n) {
-            return Some(x);
-        }
-        Some(if n.starts_with(b"Reflect") {
-            "Reflection"
-        } else if n.starts_with(b"Date") {
-            "date"
-        } else if n.starts_with(b"Spl")
-            || n.ends_with(b"Iterator")
-            || n.starts_with(b"Array")
-            || n.ends_with(b"Exception")
-                && !n.starts_with(b"Json")
-                && n != b"Exception"
-                && n != b"ErrorException"
-        {
-            "SPL"
-        } else if n.starts_with(b"Json") {
-            "json"
-        } else if n.starts_with(b"Phar") {
-            "Phar"
-        } else if n == b"GMP" {
-            "gmp"
-        } else if n.starts_with(b"Zip") {
-            "zip"
-        } else if n.starts_with(b"Random") {
-            "random"
-        } else {
-            "Core"
-        })
+        Some(sigs::class(n).map_or("Core", |c| c.ext))
     }
 
     fn class_info(&self, cid: ClassId) -> Value {
@@ -1261,7 +1226,60 @@ impl Vm {
         }
     }
 
+    /// The stub row of an internal function (native or prelude) or of a
+    /// built-in class's method.
+    fn subject_stub_sig(&self, sub: &FnSubject) -> Option<StubSig> {
+        match sub {
+            FnSubject::Builtin(name) => sigs::function(name.as_bytes()).map(StubSig::of_fn),
+            FnSubject::Func(p) if p.debug.file.is_empty() => {
+                sigs::function(p.name.as_bytes()).map(StubSig::of_fn)
+            }
+            FnSubject::Method { m, .. } if self.is_internal_class(m.defining_class) => {
+                sigs::method(
+                    self.classes[m.defining_class as usize].name.as_bytes(),
+                    m.proto.name.as_bytes(),
+                )
+                .map(|m| StubSig {
+                    ret: m.ret,
+                    tentative: m.tentative(),
+                    deprecated: m.deprecated(),
+                    params: m.params,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn subject_stub(&self, sub: &FnSubject) -> Option<&'static [sigs::Param]> {
+        self.subject_stub_sig(sub).map(|s| s.params)
+    }
+
+    /// A stub default's value (zend_get_default_from_internal_arg_info).
+    fn stub_default(&mut self, text: &str) -> Result<Value, Thrown> {
+        crate::stub_default::eval(text, &mut |n| match n {
+            crate::stub_default::Name::Const(c) => {
+                let c = c.trim_start_matches('\\');
+                self.constants
+                    .get(c.as_bytes())
+                    .cloned()
+                    .ok_or_else(|| Thrown::error("Error", format!("Undefined constant \"{c}\"")))
+            }
+            crate::stub_default::Name::ClassConst(c, k) => {
+                let c = c.trim_start_matches('\\');
+                let cid = self.resolve_class_by_name(c.as_bytes())?;
+                self.class_const_value(cid, k.as_bytes(), c.as_bytes(), false)?
+                    .ok_or_else(|| Thrown::error("Error", format!("Undefined constant {c}::{k}")))
+            }
+        })
+    }
+
     fn param_default(&mut self, sub: &FnSubject, idx: usize) -> Result<Value, Thrown> {
+        if let Some(ps) = self.subject_stub(sub) {
+            return match ps.get(idx).and_then(sigs::Param::default) {
+                Some(text) => self.stub_default(text),
+                None => Ok(Value::Null),
+            };
+        }
         let Some(proto) = self.subject_proto(sub) else {
             return Ok(Value::Null);
         };
@@ -1334,7 +1352,7 @@ impl Vm {
         let ext = match sub {
             _ if !internal => None,
             FnSubject::Method { m, .. } => self.class_extension(m.defining_class),
-            _ => Some(ext_lookup(crate::ext_names::FUNCTIONS, &name).unwrap_or("standard")),
+            _ => Some(sigs::function(&name).map_or("standard", |f| f.ext)),
         };
         put(
             &mut a,
@@ -1363,15 +1381,40 @@ impl Vm {
             Some(t) => self.type_desc(t, scope_ctx),
             None => Value::Null,
         };
-        // An internal interface method's return type is tentative, except
-        // in the interfaces php 8.0 introduced with real types.
+        // A prelude function's or built-in class method's signature is
+        // php's, from its stub.
+        let stub = self.subject_stub_sig(sub);
+        if let Some(st) = &stub {
+            let ret = match st.ret {
+                "" => Value::Null,
+                r => self.stub_type_desc(r, false),
+            };
+            let (r, t) = if st.tentative {
+                (Value::Null, ret)
+            } else {
+                (ret, Value::Null)
+            };
+            put(&mut a, "ret", r);
+            put(&mut a, "tentative", t);
+            put(&mut a, "deprecated", Value::Bool(st.deprecated));
+            put(
+                &mut a,
+                "variadic",
+                Value::Bool(st.params.last().is_some_and(sigs::Param::variadic)),
+            );
+        }
+        // Without a stub row, an internal interface method's return type is
+        // tentative, except in the interfaces php 8.0 introduced with real
+        // types.
         let tentative = internal
             && matches!(sub, FnSubject::Method { m, .. } if m.is_abstract
             && !matches!(
                 self.classes[m.defining_class as usize].name.as_bytes(),
                 b"Stringable" | b"Throwable" | b"Reflector"
             ));
-        if tentative {
+        if stub.is_some() {
+            // (set above)
+        } else if tentative {
             put(&mut a, "ret", Value::Null);
             put(&mut a, "tentative", ret);
         } else {
@@ -1515,6 +1558,13 @@ impl Vm {
                 Value::Array(k)
             }),
         );
+        if let Some(st) = &stub {
+            let (params, nreq) = self.stub_params_desc(st.params);
+            put(&mut a, "params", Value::Array(params));
+            put(&mut a, "nreq", Value::Int(nreq as i64));
+            put(&mut a, "loc", loc);
+            return Value::Array(a);
+        }
         let mut params = PhpArray::new();
         let nreq = proto
             .params
@@ -1681,19 +1731,95 @@ impl Vm {
         Value::Array(a)
     }
 
-    /// A native builtin's descriptor, with parameters from the php stubs
-    /// where known.
+    /// Parameter descriptors for a stub row, and the required count.
+    fn stub_params_desc(&self, ps: &'static [sigs::Param]) -> (PhpArray, usize) {
+        let nreq = ps
+            .iter()
+            .rposition(|p| p.default.is_empty() && p.flags & (sigs::V | sigs::U) == 0)
+            .map_or(0, |i| i + 1);
+        let mut params = PhpArray::new();
+        for (i, p) in ps.iter().enumerate() {
+            let mut d = PhpArray::new();
+            put(&mut d, "name", s(p.name.as_bytes()));
+            put(&mut d, "pos", Value::Int(i as i64));
+            put(&mut d, "optional", Value::Bool(i >= nreq));
+            put(&mut d, "variadic", Value::Bool(p.variadic()));
+            put(&mut d, "byref", Value::Bool(p.by_ref()));
+            put(&mut d, "preferRef", Value::Bool(p.prefer_ref()));
+            put(&mut d, "promoted", Value::Bool(false));
+            put(&mut d, "hasDefault", Value::Bool(p.default().is_some()));
+            put(
+                &mut d,
+                "defaultConst",
+                match p.default().and_then(crate::stub_default::constant_name) {
+                    Some(c) => s(c.as_bytes()),
+                    None => Value::Null,
+                },
+            );
+            // Internal parameters print their arginfo default text.
+            put(
+                &mut d,
+                "defaultText",
+                match p.default() {
+                    Some(t) => s(t.as_bytes()),
+                    None => Value::Null,
+                },
+            );
+            put(
+                &mut d,
+                "type",
+                match p.ty {
+                    "" => Value::Null,
+                    t => self.stub_type_desc(t, false),
+                },
+            );
+            put(&mut d, "attrs", Value::Array(PhpArray::new()));
+            params.push(Value::Array(d));
+        }
+        (params, nreq)
+    }
+
+    /// A native builtin's descriptor, from its stub row when there is one.
     fn builtin_fn_info(&self, name: &'static str) -> Value {
         let b = rhp_builtins::registry().get(name);
+        let sig = sigs::function(name.as_bytes());
         let mut a = PhpArray::new();
         put(
             &mut a,
             "ext",
-            s(ext_lookup(crate::ext_names::FUNCTIONS, name.as_bytes())
-                .unwrap_or("standard")
-                .as_bytes()),
+            s(sig.map_or("standard", |f| f.ext).as_bytes()),
         );
-        put(&mut a, "name", s(name.as_bytes()));
+        put(&mut a, "name", s(sig.map_or(name, |f| f.name).as_bytes()));
+        if let Some(f) = sig {
+            put(&mut a, "short", s(name.as_bytes()));
+            put(&mut a, "ns", s(b""));
+            put(&mut a, "internal", Value::Bool(true));
+            put(&mut a, "file", Value::Bool(false));
+            put(&mut a, "start", Value::Bool(false));
+            put(&mut a, "end", Value::Bool(false));
+            put(&mut a, "doc", Value::Bool(false));
+            put(&mut a, "returnsRef", Value::Bool(false));
+            put(&mut a, "generator", Value::Bool(false));
+            put(&mut a, "static", Value::Bool(false));
+            put(&mut a, "deprecated", Value::Bool(f.deprecated()));
+            put(
+                &mut a,
+                "ret",
+                match f.ret {
+                    "" => Value::Null,
+                    r => self.stub_type_desc(r, false),
+                },
+            );
+            put(&mut a, "tentative", Value::Null);
+            put(&mut a, "attrs", Value::Array(PhpArray::new()));
+            put(&mut a, "variadic", Value::Bool(f.max_args().is_none()));
+            let loc = s(name.as_bytes());
+            let (params, nreq) = self.stub_params_desc(f.params);
+            put(&mut a, "params", Value::Array(params));
+            put(&mut a, "nreq", Value::Int(nreq as i64));
+            put(&mut a, "loc", loc);
+            return Value::Array(a);
+        }
         put(&mut a, "short", s(name.as_bytes()));
         put(&mut a, "ns", s(b""));
         put(&mut a, "internal", Value::Bool(true));
@@ -1706,49 +1832,25 @@ impl Vm {
         put(&mut a, "static", Value::Bool(false));
         put(&mut a, "ret", Value::Null);
         put(&mut a, "attrs", Value::Array(PhpArray::new()));
-        let stub: &[rhp_builtins::stub_params::ParamInfo] = rhp_builtins::stub_params::PARAMS
-            .binary_search_by(|(n, _)| n.cmp(&name))
-            .map(|i| rhp_builtins::stub_params::PARAMS[i].1)
-            .unwrap_or(&[]);
+        // An rhp-only builtin: the registration's arity, unnamed parameters.
         let min = b.map(|b| b.min_args).unwrap_or(0);
         let max = b.and_then(|b| b.max_args);
-        let stub_n = stub.iter().map(|p| p.0 as usize + 1).max().unwrap_or(0);
-        let n = match max {
-            Some(m) => m,
-            None => stub_n.max(min + 1),
-        }
-        .max(stub_n);
-        let refs = rhp_bytecode::builtin_ref_params(name);
+        let n = max.unwrap_or(min + 1);
         let mut params = PhpArray::new();
         let mut variadic = false;
         for i in 0..n {
-            let st = stub.iter().find(|p| p.0 as usize == i);
-            let pv = st.is_some_and(|p| p.3) || (max.is_none() && i + 1 == n);
+            let pv = max.is_none() && i + 1 == n;
             variadic |= pv;
             let mut d = PhpArray::new();
-            let pname = st
-                .map(|p| p.1.to_string())
-                .unwrap_or_else(|| format!("arg{i}"));
-            put(&mut d, "name", s(pname.as_bytes()));
+            put(&mut d, "name", s(format!("arg{i}").as_bytes()));
             put(&mut d, "pos", Value::Int(i as i64));
             put(&mut d, "optional", Value::Bool(i >= min || pv));
             put(&mut d, "variadic", Value::Bool(pv));
-            put(
-                &mut d,
-                "byref",
-                Value::Bool(st.is_some_and(|p| p.7) || refs.get(i).copied().unwrap_or(false)),
-            );
+            put(&mut d, "byref", Value::Bool(false));
             put(&mut d, "promoted", Value::Bool(false));
             put(&mut d, "hasDefault", Value::Bool(i >= min && !pv));
             put(&mut d, "defaultConst", Value::Null);
-            put(
-                &mut d,
-                "type",
-                match st {
-                    Some(p) => self.stub_type_desc(p.2, p.4),
-                    None => Value::Null,
-                },
-            );
+            put(&mut d, "type", Value::Null);
             put(&mut d, "attrs", Value::Array(PhpArray::new()));
             params.push(Value::Array(d));
         }
@@ -1765,12 +1867,32 @@ impl Vm {
         let parts: Vec<&str> = t.split('|').collect();
         let nullable = nullable || ty.starts_with('?') || parts.contains(&"null");
         let parts: Vec<&str> = parts.into_iter().filter(|p| *p != "null").collect();
+        // php counts `static` as a class type for isBuiltin().
+        let builtin = |p: &str| {
+            matches!(
+                p,
+                "int"
+                    | "float"
+                    | "string"
+                    | "bool"
+                    | "false"
+                    | "true"
+                    | "array"
+                    | "callable"
+                    | "iterable"
+                    | "object"
+                    | "mixed"
+                    | "void"
+                    | "never"
+            )
+        };
         if parts.len() == 1 {
-            return named_desc(parts[0].as_bytes(), nullable || parts[0] == "mixed", true);
+            let p = parts[0];
+            return named_desc(p.as_bytes(), nullable || p == "mixed", builtin(p));
         }
         let mut types = PhpArray::new();
         for p in &parts {
-            types.push(named_desc(p.as_bytes(), false, true));
+            types.push(named_desc(p.as_bytes(), false, builtin(p)));
         }
         if nullable {
             types.push(named_desc(b"null", true, true));
@@ -1896,6 +2018,25 @@ impl Vm {
         put(&mut d, "types", Value::Array(types));
         put(&mut d, "nullable", Value::Bool(nullable));
         Value::Array(d)
+    }
+}
+
+/// What Reflection takes from a stub row.
+struct StubSig {
+    ret: &'static str,
+    tentative: bool,
+    deprecated: bool,
+    params: &'static [sigs::Param],
+}
+
+impl StubSig {
+    fn of_fn(f: &'static sigs::Func) -> StubSig {
+        StubSig {
+            ret: f.ret,
+            tentative: false,
+            deprecated: f.deprecated(),
+            params: f.params,
+        }
     }
 }
 

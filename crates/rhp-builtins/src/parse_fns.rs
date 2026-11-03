@@ -8,7 +8,7 @@
 //!   plus field widths, assignment suppression (`%*d`), and `%%`. Unsupported
 //!   conversions (`%n`, `%[...]` scansets) are documented and treated as a no-op
 //!   match failure. The assignment form (`sscanf($s, $fmt, &$a, ...)`) writes
-//!   through the by-ref argument positions registered in `builtin_ref_params`.
+//!   through the by-ref positions of its stub signature (`mixed &...$vars`).
 
 use rhp_values::{conv, PhpArray, Value};
 

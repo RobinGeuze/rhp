@@ -191,7 +191,7 @@ abstract class ReflectionFunctionAbstract implements Reflector {
     protected $__l;
     public function inNamespace(): bool { return $this->__i['ns'] !== ''; }
     public function isClosure(): bool { return isset($this->__i['closure']); }
-    public function isDeprecated(): bool { return Reflection::__deprecated($this->__i['attrs']); }
+    public function isDeprecated(): bool { return ($this->__i['deprecated'] ?? false) || Reflection::__deprecated($this->__i['attrs']); }
     public function isInternal(): bool { return $this->__i['internal']; }
     public function isUserDefined(): bool { return !$this->__i['internal']; }
     public function isGenerator(): bool { return $this->__i['generator']; }
@@ -406,7 +406,7 @@ class ReflectionParameter implements Reflector {
     }
     public function getName(): string { return $this->__p['name']; }
     public function isPassedByReference(): bool { return $this->__p['byref']; }
-    public function canBePassedByValue(): bool { return !$this->__p['byref']; }
+    public function canBePassedByValue(): bool { return !$this->__p['byref'] || ($this->__p['preferRef'] ?? false); }
     public function getDeclaringFunction(): ReflectionFunctionAbstract { return Reflection::__fn($this->__l); }
     public function getDeclaringClass(): ?ReflectionClass {
         if (isset($this->__f['class'])) { return new ReflectionClass($this->__f['class']); }
@@ -450,7 +450,12 @@ class ReflectionParameter implements Reflector {
         if ($this->__p['byref']) { $s .= '&'; }
         if ($this->__p['variadic']) { $s .= '...'; }
         $s .= '$' . $this->__p['name'];
-        if ($this->__p['optional'] && !$this->__p['variadic'] && $this->__p['hasDefault']) {
+        if (array_key_exists('defaultText', $this->__p)) {
+            // An internal parameter prints its arginfo default.
+            if ($this->__p['optional'] && !$this->__p['variadic']) {
+                $s .= ' = ' . ($this->__p['defaultText'] ?? '<default>');
+            }
+        } elseif ($this->__p['optional'] && !$this->__p['variadic'] && $this->__p['hasDefault']) {
             $s .= ' = ' . ($this->__p['defaultConst'] ?? Reflection::__fmt($this->getDefaultValue()));
         }
         return $s . ' ]';

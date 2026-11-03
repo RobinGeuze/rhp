@@ -365,10 +365,10 @@ struct GenState {
 
 mod classes;
 mod compare;
-mod ext_names;
 mod output;
 mod reflect;
 mod request;
+mod stub_default;
 
 /// A function-static slot: (proto address, class it runs as, variable name).
 type StaticKey = (usize, Option<ClassId>, Vec<u8>);
@@ -5465,7 +5465,9 @@ impl Vm {
         frame.argc = args.len();
         // A named-argument call armed `pending_named` for this frame.
         let named = self.pending_named.take();
+        let too_many = self.internal_too_many_args(&proto, frame, args.len());
         let failed = match bind_params(&proto, args, frame) {
+            _ if too_many.is_some() => too_many.map(|e| (0, e)),
             Err(missing) => Some((missing, self.arg_count_error(&proto, frame, args.len()))),
             Ok(()) => {
                 if let Some((holes, extra)) = named {
@@ -5535,6 +5537,49 @@ impl Vm {
                 "Call to {v} {}::{}() from {from}",
                 String::from_utf8_lossy(self.class(m.defining_class).name.as_bytes()),
                 String::from_utf8_lossy(m.proto.name.as_bytes())
+            ),
+        ))
+    }
+
+    /// zpp's "expects at most" for a prelude function or a built-in class's
+    /// prelude method called with more arguments than its stub signature
+    /// declares (prelude code calling it is not checked).
+    fn internal_too_many_args(
+        &self,
+        proto: &FunctionProto,
+        frame: &Frame,
+        passed: usize,
+    ) -> Option<Thrown> {
+        use builtins::signatures::Signature;
+        if !is_prelude_proto(proto) {
+            return None;
+        }
+        let caller = self.stack.len().checked_sub(1)?;
+        if self.is_internal_frame(caller) {
+            return None;
+        }
+        let (name, min, max) = match frame.defining_class {
+            Some(cls) if self.is_internal_class(cls) => {
+                let cname = self.class(cls).name.as_bytes();
+                let st = builtins::signatures::method(cname, proto.name.as_bytes())?;
+                let name = format!("{}::{}", String::from_utf8_lossy(cname), st.name);
+                (name, st.min_args(), st.max_args()?)
+            }
+            Some(_) => return None,
+            None => {
+                let f = builtins::signatures::function(proto.name.as_bytes())?;
+                (f.name.to_string(), f.min_args(), f.max_args()?)
+            }
+        };
+        if passed <= max {
+            return None;
+        }
+        let which = if min == max { "exactly" } else { "at most" };
+        Some(Thrown::error(
+            "ArgumentCountError",
+            format!(
+                "{name}() expects {which} {max} argument{}, {passed} given",
+                if max == 1 { "" } else { "s" }
             ),
         ))
     }
@@ -10245,17 +10290,18 @@ impl Vm {
         // By-ref builtins (sort/array_push/preg_match/…) need their by-reference
         // positions kept as the `Value::Ref` the call site built, so they can
         // write back to the caller's variable. Other args deref to plain values.
-        let ref_mask = rhp_bytecode::builtin_ref_params(name_lc);
+        use builtins::signatures::Signature;
+        let sig = builtins::signatures::function(name_lc.as_bytes());
         let args: Vec<Value> = (0..argc)
             .map(|i| {
-                if ref_mask.get(i as usize).copied().unwrap_or(false) {
+                if sig.is_some_and(|s| s.by_ref(i as usize)) {
                     self.stack[top].regs[(base + i) as usize].clone()
                 } else {
                     self.reg_get(top, base + i)
                 }
             })
             .collect();
-        self.run_builtin(builtin, args, frameless)
+        self.run_builtin_sig(builtin, sig, args, frameless)
     }
 
     /// Call a builtin by name with a pre-collected argument vector.
@@ -10281,7 +10327,6 @@ impl Vm {
         self.run_builtin(builtin, args, frameless)
     }
 
-    /// [`Vm::invoke_builtin_ex`] for an already looked-up builtin.
     /// zpp's checks on a builtin's scalar / array typed parameters (from
     /// php's stubs): a `Stringable` object passed to a `string` parameter is
     /// converted with `__toString()`; other objects, and arrays where no
@@ -10293,17 +10338,20 @@ impl Vm {
     fn coerce_builtin_args(
         &mut self,
         name: &str,
+        sig: Option<&'static builtins::signatures::Func>,
         args: &mut [Value],
         user: bool,
     ) -> Result<(), Thrown> {
-        let params = builtins::stub_params::params(name);
-        for &(pos, pname, ty, variadic, nullable, has_str, has_arr, by_ref) in params {
-            let range = if variadic {
-                pos as usize..args.len()
+        let params = sig.map_or(&[][..], builtins::signatures::scalar_params);
+        for sp in params {
+            let (pos, pname, ty) = (sp.pos, sp.name, sp.ty);
+            let (nullable, has_str, has_arr) = (sp.nullable, sp.has_str, sp.has_arr);
+            let range = if sp.variadic {
+                pos..args.len()
             } else {
-                pos as usize..(pos as usize + 1).min(args.len())
+                pos..(pos + 1).min(args.len())
             };
-            if by_ref {
+            if sp.by_ref {
                 // `array &$array` (sort, usort, array_push, …): the referenced
                 // value must already be an array.
                 if user {
@@ -10405,20 +10453,33 @@ impl Vm {
         }
     }
 
+    /// [`Vm::invoke_builtin_ex`] for an already looked-up builtin.
     fn run_builtin(
         &mut self,
         builtin: &'static builtins::Builtin,
+        args: Vec<Value>,
+        frameless: bool,
+    ) -> Result<Value, Thrown> {
+        let sig = builtins::signatures::function(builtin.name.as_bytes());
+        self.run_builtin_sig(builtin, sig, args, frameless)
+    }
+
+    /// [`Vm::run_builtin`] with the builtin's stub signature.
+    fn run_builtin_sig(
+        &mut self,
+        builtin: &'static builtins::Builtin,
+        sig: Option<&'static builtins::signatures::Func>,
         mut args: Vec<Value>,
         frameless: bool,
     ) -> Result<Value, Thrown> {
         // Free streams whose last reference went away (php closes a resource
         // when its refcount drops to zero).
         self.reap_dropped_streams();
-        let count_error = builtin_arg_count_error(builtin, args.len());
+        let count_error = builtin_arg_count_error(builtin, sig, args.len());
         if count_error.is_none() {
             let caller = self.stack.len().saturating_sub(1);
             let user = !self.stack.is_empty() && !self.is_internal_frame(caller);
-            self.coerce_builtin_args(builtin.name, &mut args, user)?;
+            self.coerce_builtin_args(builtin.name, sig, &mut args, user)?;
         }
         // A builtin called from engine-internal (prelude) code is not a php
         // frame, and php compiles a few calls to opcodes (no frame either).
@@ -10476,15 +10537,40 @@ fn undefined_function(name: &rhp_values::PhpStr) -> Thrown {
 }
 
 /// zend_wrong_parameters_count_error: "f() expects exactly 1 argument, 0 given".
-fn builtin_arg_count_error(b: &builtins::Builtin, n: usize) -> Option<Thrown> {
-    let max = b.max_args.unwrap_or(usize::MAX);
-    if n >= b.min_args && n <= max {
-        return None;
+/// The bounds are php's (the stub's), except that the minimum never drops
+/// below the registration's: the array_u* callback functions check a larger
+/// minimum in their bodies, as php does. An argument for a parameter php
+/// declares but the body does not implement is refused, never ignored.
+fn builtin_arg_count_error(
+    b: &builtins::Builtin,
+    sig: Option<&builtins::signatures::Func>,
+    n: usize,
+) -> Option<Thrown> {
+    use builtins::signatures::Signature;
+    let (min, max) = match sig {
+        Some(s) => (s.min_args().max(b.min_args), s.max_args()),
+        None => (b.min_args, b.max_args),
+    };
+    let max = max.unwrap_or(usize::MAX);
+    if n >= min && n <= max {
+        return match (sig, b.max_args) {
+            (Some(s), Some(implemented)) if n > implemented => Some(Thrown::unsupported(
+                format!(
+                    "{}() argument #{} (${})",
+                    b.name,
+                    implemented + 1,
+                    s.param(implemented).map_or("", |p| p.name)
+                ),
+                "not implemented",
+            )),
+            _ => None,
+        };
     }
-    let (which, bound) = if b.min_args == max {
-        ("exactly", b.min_args)
-    } else if n < b.min_args {
-        ("at least", b.min_args)
+    // strtr parses either exactly 2 or exactly 3 arguments.
+    let (which, bound) = if min == max || b.name == "strtr" {
+        ("exactly", if n < min { min } else { max })
+    } else if n < min {
+        ("at least", min)
     } else {
         ("at most", max)
     };

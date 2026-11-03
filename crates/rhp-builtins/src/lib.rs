@@ -21,7 +21,6 @@ pub mod module;
 pub mod pcre;
 pub mod signatures;
 pub mod streams;
-pub mod stub_params;
 pub mod version;
 
 pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};

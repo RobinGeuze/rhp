@@ -193,47 +193,185 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
 ];
 
 /// Directives whose effect rhp implements: a test that sets one runs, and
-/// rhp gets the setting as `-d` too.
-const RHP_INI: &[&str] = &["pcre.backtrack_limit", "pcre.jit", "pcre.recursion_limit"];
+/// rhp gets the setting as `-d` too. Every `opcache.*` directive also
+/// reaches rhp (see [`opcache_skip`] for the ones whose tests can't match).
+const RHP_INI: &[&str] = &[
+    "date.timezone",
+    "display_errors",
+    "error_reporting",
+    "html_errors",
+    "include_path",
+    "pcre.backtrack_limit",
+    "pcre.jit",
+    "pcre.recursion_limit",
+    "precision",
+    "serialize_precision",
+];
 
-/// Whether `kv` (`name=value`) sets a directive in [`RHP_INI`].
-fn rhp_applies(kv: &str) -> bool {
-    let k = kv.split_once('=').map_or(kv, |(k, _)| k).trim();
-    RHP_INI.contains(&k)
+/// The `name` of a `name=value` setting.
+fn ini_key(kv: &str) -> &str {
+    kv.split_once('=').map_or(kv, |(k, _)| k).trim()
 }
 
-/// A test's `--INI--` as php `-d` args, or the key rhp can't honour (a test
-/// is only runnable when each setting is a no-op for rhp or in [`RHP_INI`]).
-/// With `pass_through` (CGI tests, whose request layer takes `-d`), every
-/// setting is passed to both engines instead.
-fn test_ini(phpt: &Phpt, dir: &Path, pass_through: bool) -> Result<Vec<String>, String> {
-    let Some(body) = phpt.section("INI") else {
-        return Ok(Vec::new());
-    };
-    let defaults: HashMap<&str, &str> = PHP_DEFAULT_INI
-        .iter()
-        .filter_map(|kv| kv.split_once('='))
-        .collect();
-    let mut out = Vec::new();
-    for line in String::from_utf8_lossy(body).lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
-            continue;
-        }
-        let line = line.replace("{PWD}", &dir.to_string_lossy());
-        let (k, v) = line.split_once('=').unwrap_or((&line, ""));
-        let (k, v) = (k.trim(), v.trim().trim_matches('"'));
-        let noop = defaults.get(k) == Some(&v)
-            || defaults
-                .get(k)
-                .is_some_and(|d| ini_bool(d).is_some() && ini_bool(d) == ini_bool(v))
-            || (k.starts_with("opcache.") && !(k == "opcache.enable_cli" && v == "1"));
-        if !noop && !pass_through && !RHP_INI.contains(&k) {
-            return Err(format!("ini:{k}"));
-        }
-        out.push(line.to_string());
+/// Why a test with this opcache setting can't be compared, if it can't.
+/// rhp has a compiled-script cache but no optimizer, no JIT and no file
+/// cache, so their debug output can never match.
+fn opcache_skip(k: &str, v: &str) -> Option<&'static str> {
+    let on = !matches!(v, "" | "0");
+    match k {
+        "opcache.opt_debug_level" if on => Some("opcache:opt_debug_level"),
+        "opcache.jit_debug" if on => Some("opcache:jit_debug"),
+        "opcache.file_cache" | "opcache.file_cache_only" if on => Some("opcache:file_cache"),
+        _ => None,
     }
-    Ok(out)
+}
+
+/// How a test's `--INI--` settings are judged, and which reach rhp.
+struct IniRules {
+    probe: IniProbe,
+    /// `--rhp-ini`: directives treated as in [`RHP_INI`] for this run.
+    extra: Vec<String>,
+}
+
+impl IniRules {
+    /// Whether `kv` (`name=value`) is passed to rhp too.
+    fn rhp_applies(&self, kv: &str) -> bool {
+        let k = ini_key(kv);
+        RHP_INI.contains(&k) || k.starts_with("opcache.") || self.extra.iter().any(|e| e == k)
+    }
+
+    /// A test's `--INI--` as php `-d` args, or why it can't run. A setting
+    /// is fine when it is a no-op (it leaves php's effective value as
+    /// run-tests' defaults have it) or rhp applies it. With `pass_through`
+    /// (CGI tests, whose request layer takes `-d`), every setting is passed
+    /// to both engines instead.
+    fn test_ini(&self, phpt: &Phpt, dir: &Path, pass_through: bool) -> Result<Vec<String>, String> {
+        let Some(body) = phpt.section("INI") else {
+            return Ok(Vec::new());
+        };
+        let defaults: HashMap<&str, &str> = PHP_DEFAULT_INI
+            .iter()
+            .filter_map(|kv| kv.split_once('='))
+            .collect();
+        // run-tests' settings2array: `name=value` lines only, both sides
+        // trimmed, the last value of a name kept.
+        let mut settings: Vec<(String, String)> = Vec::new();
+        for line in String::from_utf8_lossy(body).lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+                continue;
+            }
+            let line = substitute_ini(line, dir)?;
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            let (k, v) = (php_trim_str(k), php_trim_str(v));
+            match settings.iter_mut().find(|(n, _)| n == k) {
+                Some(s) if k != "extension" && k != "zend_extension" => s.1 = v.to_string(),
+                _ => settings.push((k.to_string(), v.to_string())),
+            }
+        }
+        let mut out = Vec::new();
+        for (k, v) in &settings {
+            let line = format!("{k}={v}");
+            let (k, v) = (k.as_str(), v.trim_matches('"'));
+            if let Some(reason) = opcache_skip(k, v) {
+                return Err(reason.into());
+            }
+            let noop = || {
+                defaults.get(k) == Some(&v)
+                    || defaults
+                        .get(k)
+                        .is_some_and(|d| ini_bool(d).is_some() && ini_bool(d) == ini_bool(v))
+                    || self.probe.is_noop(k, &line)
+            };
+            if !pass_through && !self.rhp_applies(&line) && !noop() {
+                return Err(format!("ini:{k}"));
+            }
+            out.push(line);
+        }
+        Ok(out)
+    }
+}
+
+/// run-tests.php's `--INI--` substitutions: `{PWD}` (the test's directory),
+/// `{TMP}` (the temp dir) and `{ENV:NAME}` (a test whose variable is unset
+/// is skipped).
+fn substitute_ini(line: &str, dir: &Path) -> Result<String, String> {
+    let tmp = std::env::temp_dir();
+    let tmp = tmp.to_string_lossy();
+    let mut line = line
+        .replace("{PWD}", &dir.to_string_lossy())
+        .replace("{TMP}", tmp.trim_end_matches('/'));
+    while let Some(start) = line.find("{ENV:") {
+        let Some(len) = line[start..].find('}') else {
+            break;
+        };
+        let name = &line[start + 5..start + len];
+        let value = std::env::var(name).map_err(|_| format!("ini:env:{name}"))?;
+        line.replace_range(start..start + len + 1, &value);
+    }
+    Ok(line)
+}
+
+/// php's effective value of a directive (`ini_get()`) under run-tests'
+/// defaults, with and without a test's setting. A setting that leaves it
+/// unchanged is a no-op: php behaves as without it, so rhp needn't get it.
+/// The answer comes from the php under test (one `php -r` per directive and
+/// per setting, cached for the run), so it is deterministic for a given
+/// php. A directive php doesn't know (`ini_get()` is false) is never a
+/// no-op: an extension php lacks may own it.
+struct IniProbe {
+    /// `None` in unit tests: no setting is a no-op by probing.
+    php: Option<PathBuf>,
+    defaults: Vec<String>,
+    /// `directive` (the defaults) or `directive\nsetting line` → `ini_get()`
+    /// as serialized by php.
+    cache: Mutex<HashMap<String, Vec<u8>>>,
+}
+
+impl IniProbe {
+    fn new(php: Option<PathBuf>, defaults: &[String]) -> IniProbe {
+        IniProbe {
+            php,
+            defaults: defaults.to_vec(),
+            cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn is_noop(&self, k: &str, line: &str) -> bool {
+        if self.php.is_none() || k.is_empty() {
+            return false;
+        }
+        let base = self.value(k, None);
+        base.starts_with(b"s:") && base == self.value(k, Some(line))
+    }
+
+    fn value(&self, k: &str, line: Option<&str>) -> Vec<u8> {
+        let key = match line {
+            None => k.to_string(),
+            Some(l) => format!("{k}\n{l}"),
+        };
+        if let Some(v) = self.cache.lock().unwrap().get(&key) {
+            return v.clone();
+        }
+        let mut cmd = Command::new(self.php.as_ref().unwrap());
+        cmd.arg("-n");
+        for kv in self.defaults.iter().map(String::as_str).chain(line) {
+            cmd.arg("-d").arg(kv);
+        }
+        cmd.args(["-r", "echo serialize(ini_get($argv[1]));", "--", k]);
+        let v = cmd
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| o.stdout)
+            .unwrap_or_default();
+        self.cache.lock().unwrap().insert(key, v.clone());
+        v
+    }
 }
 
 /// A boolean-looking ini value (`0`/`Off`/`false`/`no`, `1`/`On`/…), so
@@ -252,6 +390,11 @@ fn ini_bool(v: &str) -> Option<bool> {
 pub struct CgiRequest {
     pub env: BTreeMap<String, String>,
     pub body: Option<Vec<u8>>,
+}
+
+/// [`php_trim`] on a `str`.
+fn php_trim_str(s: &str) -> &str {
+    s.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\0' | '\x0b'))
 }
 
 /// PHP's `trim()` character set.
@@ -1002,6 +1145,8 @@ struct Ctx {
     /// confirmation pass sets it past a second, so any test whose output
     /// depends on the current time diverges deterministically.
     skew: Duration,
+    /// Which `--INI--` settings run, and which reach rhp.
+    ini: std::sync::Arc<IniRules>,
 }
 
 /// Everything needed to run one script through both engines.
@@ -1097,7 +1242,7 @@ impl Ctx {
             .envs(inv.env.iter().cloned());
         // run-tests' ini overwrites, as php gets them, then the test's
         // settings rhp applies.
-        let test_ini = inv.ini.iter().filter(|kv| rhp_applies(kv));
+        let test_ini = inv.ini.iter().filter(|kv| self.ini.rhp_applies(kv));
         for kv in self.php_ini.iter().chain(test_ini) {
             cmd.arg("-d").arg(kv);
         }
@@ -1240,7 +1385,7 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
     if let Some(m) = SUBPROCESS_MARKERS.iter().find(|m| mentions(m)) {
         return skipped(rel, format!("subprocess:{m}"));
     }
-    let ini = match test_ini(&phpt, &dir, is_cgi) {
+    let ini = match ctx.ini.test_ini(&phpt, &dir, is_cgi) {
         Ok(ini) => ini,
         Err(reason) => return skipped(rel, reason),
     };
@@ -1949,10 +2094,19 @@ fn php_modules(ini: &[String]) -> BTreeSet<String> {
     }
     cmd.arg("-m");
     let out = run_proc(cmd, None, Duration::from_secs(20));
+    // run-tests' remap_loaded_extensions_names(): `--EXTENSIONS-- opcache`
+    // names Zend OPcache.
     String::from_utf8_lossy(&out.out)
         .lines()
         .map(|l| l.trim().to_ascii_lowercase())
         .filter(|l| !l.is_empty() && !l.starts_with('['))
+        .map(|l| {
+            if l == "zend opcache" {
+                "opcache".into()
+            } else {
+                l
+            }
+        })
         .collect()
 }
 
@@ -2186,6 +2340,8 @@ selection:
   --limit <n>            run at most <n> tests
   --check-known <file>   run only the listed tests; exit 1 if any no longer match
   --cgi-only             only CGI tests (--GET--/--POST--/--CGI--/... sections)
+  --rhp-ini <directive>  run tests that set <directive> too, passing it to rhp
+                         (repeatable): to measure whether rhp honours it
 running:
   --rhp <bin>            rhp binary (default: `rhp` next to this binary, or env RHP_BIN)
   --php-cgi <bin>        reference for CGI tests (default: env RHP_PHP_CGI, else the
@@ -2242,6 +2398,7 @@ struct Opts {
     json: Option<PathBuf>,
     write_known: Option<PathBuf>,
     top: usize,
+    rhp_ini: Vec<String>,
 }
 
 fn parse_opts(args: &[String]) -> Result<Opts, String> {
@@ -2270,6 +2427,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         json: None,
         write_known: None,
         top: 25,
+        rhp_ini: Vec::new(),
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -2309,6 +2467,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             "--json" => o.json = Some(val()?.into()),
             "--write-known" => o.write_known = Some(val()?.into()),
             "--top" => o.top = num(val()?)? as usize,
+            "--rhp-ini" => o.rhp_ini.push(val()?),
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown option {other:?}")),
         }
@@ -2436,7 +2595,7 @@ pub fn main(args: &[String]) -> ExitCode {
     }
     let ctx = Ctx {
         php_modules: php_modules(&php_ini),
-        php_ini,
+        php_ini: php_ini.clone(),
         base_env,
         rhp_bin,
         timeout: Duration::from_secs(o.timeout),
@@ -2449,6 +2608,10 @@ pub fn main(args: &[String]) -> ExitCode {
         skew: Duration::ZERO,
         version_skew: None,
         cgi,
+        ini: std::sync::Arc::new(IniRules {
+            probe: IniProbe::new(Some(php_bin().into()), &php_ini),
+            extra: o.rhp_ini.clone(),
+        }),
     };
     let ctx = Ctx {
         version_skew: version_skew(&ctx, &worker_roots[0]),
@@ -2787,25 +2950,92 @@ mod tests {
     #[test]
     fn ini_noops_run_others_skip() {
         let dir = Path::new("/w");
+        let rules = IniRules {
+            probe: IniProbe::new(None, &[]),
+            extra: Vec::new(),
+        };
+        let test_ini = |p: &Phpt| rules.test_ini(p, dir, false);
         let p = Phpt::parse(b"--INI--\nprecision=14\nopcache.enable=0\n--FILE--\n");
-        assert_eq!(test_ini(&p, dir, false).unwrap().len(), 2);
-        let p = Phpt::parse(b"--INI--\nprecision=10\n--FILE--\n");
-        assert_eq!(test_ini(&p, dir, false).unwrap_err(), "ini:precision");
-        let p = Phpt::parse(b"--INI--\nopcache.enable_cli=1\n--FILE--\n");
-        assert!(test_ini(&p, dir, false).is_err());
+        assert_eq!(test_ini(&p).unwrap().len(), 2);
+        let p = Phpt::parse(b"--INI--\nvariables_order=GPS\n--FILE--\n");
+        assert_eq!(test_ini(&p).unwrap_err(), "ini:variables_order");
         let p = Phpt::parse(b"--INI--\noutput_buffering=0\ndisplay_errors=On\n--FILE--\n");
-        assert_eq!(test_ini(&p, dir, false).unwrap().len(), 2);
+        assert_eq!(test_ini(&p).unwrap().len(), 2);
         let p = Phpt::parse(b"--INI--\noutput_buffering=4096\n--FILE--\n");
-        assert_eq!(
-            test_ini(&p, dir, false).unwrap_err(),
-            "ini:output_buffering"
-        );
+        assert_eq!(test_ini(&p).unwrap_err(), "ini:output_buffering");
         // Directives rhp applies run, and only those reach rhp.
-        let p = Phpt::parse(b"--INI--\npcre.jit=0\nprecision=14\n--FILE--\n");
-        let ini = test_ini(&p, dir, false).unwrap();
-        assert_eq!(ini.len(), 2);
-        let to_rhp: Vec<&String> = ini.iter().filter(|kv| rhp_applies(kv)).collect();
-        assert_eq!(to_rhp, ["pcre.jit=0"]);
+        let p = Phpt::parse(
+            b"--INI--\npcre.jit=0\noutput_buffering=0\nopcache.jit=tracing\n--FILE--\n",
+        );
+        let ini = test_ini(&p).unwrap();
+        assert_eq!(ini.len(), 3);
+        let to_rhp: Vec<&String> = ini.iter().filter(|kv| rules.rhp_applies(kv)).collect();
+        assert_eq!(to_rhp, ["pcre.jit=0", "opcache.jit=tracing"]);
+        // opcache runs, except where the output is opcode or JIT dumps.
+        let p = Phpt::parse(b"--INI--\nopcache.enable_cli=1\n--FILE--\n");
+        assert_eq!(test_ini(&p).unwrap(), ["opcache.enable_cli=1"]);
+        let p = Phpt::parse(
+            b"--INI--\nopcache.enable_cli=1\nopcache.opt_debug_level=0x20000\n--FILE--\n",
+        );
+        assert_eq!(test_ini(&p).unwrap_err(), "opcache:opt_debug_level");
+        let p = Phpt::parse(b"--INI--\nopcache.opt_debug_level=0\n--FILE--\n");
+        assert!(test_ini(&p).is_ok());
+        let p = Phpt::parse(b"--INI--\nopcache.file_cache={PWD}\n--FILE--\n");
+        assert_eq!(test_ini(&p).unwrap_err(), "opcache:file_cache");
+        // As run-tests' settings2array: trimmed, the last value kept, and a
+        // line without '=' dropped.
+        let p = Phpt::parse(
+            b"--INI--\nerror_reporting = E_ALL\nprecision=10\nprecision = 12 \nflag\n--FILE--\n",
+        );
+        assert_eq!(
+            test_ini(&p).unwrap(),
+            ["error_reporting=E_ALL", "precision=12"]
+        );
+        // --rhp-ini
+        let rules = IniRules {
+            probe: IniProbe::new(None, &[]),
+            extra: vec!["variables_order".into()],
+        };
+        let p = Phpt::parse(b"--INI--\nvariables_order=GPS\n--FILE--\n");
+        assert_eq!(
+            rules.test_ini(&p, dir, false).unwrap(),
+            ["variables_order=GPS"]
+        );
+    }
+
+    #[test]
+    fn ini_substitutions() {
+        let dir = Path::new("/w/t");
+        assert_eq!(
+            substitute_ini("include_path={PWD}", dir).unwrap(),
+            "include_path=/w/t"
+        );
+        std::env::set_var("RHP_PHPT_UNIT_ENV", "u");
+        assert_eq!(
+            substitute_ini("a={ENV:RHP_PHPT_UNIT_ENV}!", dir).unwrap(),
+            "a=u!"
+        );
+        assert_eq!(
+            substitute_ini("a={ENV:RHP_PHPT_UNSET_ENV_X}", dir).unwrap_err(),
+            "ini:env:RHP_PHPT_UNSET_ENV_X"
+        );
+    }
+
+    /// Needs php: a setting equal to php's effective default is a no-op, an
+    /// unknown directive never is.
+    #[test]
+    fn ini_probe_effective_values() {
+        if !crate::php_available() {
+            return;
+        }
+        let defaults: Vec<String> = PHP_DEFAULT_INI.iter().map(|s| s.to_string()).collect();
+        let probe = IniProbe::new(Some(php_bin().into()), &defaults);
+        assert!(probe.is_noop("allow_url_fopen", "allow_url_fopen=1"));
+        assert!(probe.is_noop("zend.enable_gc", "zend.enable_gc=On"));
+        // E_ALL is 30719 in php 8.5, run-tests sets 32767.
+        assert!(!probe.is_noop("error_reporting", "error_reporting=E_ALL"));
+        assert!(!probe.is_noop("precision", "precision=10"));
+        assert!(!probe.is_noop("no_such.directive", "no_such.directive=1"));
     }
 
     #[test]

@@ -318,7 +318,14 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
         return;
     };
     let key = String::from_utf8_lossy(name).into_owned();
-    let (warnings, ok) = on_modify_check(name, v);
+    let (warnings, ok) = if name == b"date.timezone" && !tz_valid(v) {
+        (vec![invalid_timezone(v, "PHP Startup")], false)
+    } else if let Some(w) = crate::opcache_fns::startup_check(name, v) {
+        crate::opcache_fns::accel_log(name, crate::opcache_fns::LOG_WARNING, w);
+        (Vec::new(), false)
+    } else {
+        on_modify_check(name, v)
+    };
     STARTUP_DIAGS.with(|d| {
         let mut d = d.borrow_mut();
         d.startup.retain(|s| s.1 != key);
@@ -550,7 +557,12 @@ fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value
     for w in &warnings {
         host.emit_diagnostic(crate::E_WARNING, w)?;
     }
-    if !ok {
+    if !ok || !crate::opcache_fns::on_modify(host, &name, &newv)? {
+        return Ok(Value::Bool(false));
+    }
+    if name == b"date.timezone" && !tz_valid(&newv) {
+        let func = format!("{func}()");
+        host.emit_diagnostic(crate::E_WARNING, &invalid_timezone(&newv, &func))?;
         return Ok(Value::Bool(false));
     }
     if ini_validate(&name, &newv).is_err() {
@@ -649,6 +661,25 @@ thread_local! {
 /// Is `id` a known timezone identifier (case-insensitive, as timelib)?
 pub(crate) fn tz_valid(id: &[u8]) -> bool {
     id.eq_ignore_ascii_case(b"UTC") || crate::tzdb::load(id).is_some()
+}
+
+/// OnUpdate_date_timezone's warning (a docref from `func`): it names
+/// `DATEG(default_timezone)`, the date.timezone value in effect as stored,
+/// which is unset at startup (then "UTC").
+fn invalid_timezone(v: &[u8], func: &str) -> String {
+    let fallback = if func == "PHP Startup" {
+        None
+    } else {
+        ini_value(b"date.timezone").flatten()
+    };
+    let fallback = fallback
+        .filter(|z| !z.is_empty())
+        .unwrap_or_else(|| b"UTC".to_vec());
+    format!(
+        "{func}: Invalid date.timezone value '{}', using '{}' instead",
+        String::from_utf8_lossy(v),
+        String::from_utf8_lossy(&fallback)
+    )
 }
 
 /// The effective default timezone name: `date_default_timezone_set()`, then a

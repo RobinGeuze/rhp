@@ -422,7 +422,25 @@ pub(crate) fn mangled_prop_key(entry: &ClassEntry, key: &PhpStr) -> PhpStr {
 }
 
 /// A generated anonymous-class name (`Prefix@anonymous\0file:line$n`).
-fn is_anon_name(name: &[u8]) -> bool {
+/// Where a program's class declarations go in the declaration table.
+pub(crate) struct DeclRanges {
+    pub(crate) top: std::ops::Range<usize>,
+    pub(crate) anon: std::ops::Range<usize>,
+}
+
+/// A program's user class declarations: (top-level, nested, anonymous).
+/// The compiler appends the anonymous ones after the top-level ones.
+pub(crate) fn decl_layout(prog: &rhp_bytecode::Program) -> (usize, usize, usize) {
+    let user = &prog.classes[prog.num_prelude_classes..];
+    let anon = user
+        .iter()
+        .rev()
+        .take_while(|c| is_anon_name(c.name.as_bytes()))
+        .count();
+    (user.len() - anon, prog.cond_classes.len(), anon)
+}
+
+pub(crate) fn is_anon_name(name: &[u8]) -> bool {
     name.windows(10).any(|w| w == b"@anonymous")
 }
 
@@ -507,22 +525,33 @@ impl Vm {
         }
     }
 
-    /// Append a program's user class declarations (top-level, then nested)
-    /// to the flat declaration table, stamped with the file's bases.
-    /// Returns the table range of the top-level ones.
+    /// Append a program's user class declarations to the flat declaration
+    /// table, stamped with the file's bases: the top-level ones, the nested
+    /// ones, then the anonymous ones (`DeclareClass` numbers the first two
+    /// in that order; anonymous classes are found by name). Returns the
+    /// table ranges of the top-level and the anonymous ones.
     pub(crate) fn register_decl_classes(
         &mut self,
         prog: &rhp_bytecode::Program,
         base: u32,
-    ) -> std::ops::Range<usize> {
+    ) -> DeclRanges {
         let cbase = self.decl_classes.len() as u32;
-        let user = prog.classes.iter().skip(prog.num_prelude_classes);
-        for c in user.chain(prog.cond_classes.iter()) {
+        let (top, nested, anon) = decl_layout(prog);
+        let user = &prog.classes[prog.num_prelude_classes..];
+        let ordered = user[..top]
+            .iter()
+            .chain(prog.cond_classes.iter())
+            .chain(user[top..].iter());
+        for c in ordered {
             let c = crate::rebase_class(c, base, cbase);
             self.decl_classes.push((c, false));
         }
         let start = cbase as usize;
-        start..start + prog.classes.len() - prog.num_prelude_classes
+        let anon_start = start + top + nested;
+        DeclRanges {
+            top: start..start + top,
+            anon: anon_start..anon_start + anon,
+        }
     }
 
     /// Hoist (early-bind) the top-level classes in `range`, in declaration
@@ -531,11 +560,8 @@ impl Vm {
     /// counts, as do an enum's and an interface's `extends` list) and no
     /// traits, whose parent — if any — is already declared. The others stay
     /// undeclared until their `DeclareClass` runs.
-    pub(crate) fn hoist_decl_classes(
-        &mut self,
-        range: std::ops::Range<usize>,
-    ) -> Result<(), Thrown> {
-        for i in range.clone() {
+    pub(crate) fn hoist_decl_classes(&mut self, ranges: DeclRanges) -> Result<(), Thrown> {
+        for i in ranges.top.clone() {
             if self.decl_classes[i].1 {
                 continue;
             }
@@ -565,7 +591,7 @@ impl Vm {
         // generated names) are linked up front, once their dependencies are.
         loop {
             let mut progressed = false;
-            for i in range.clone() {
+            for i in ranges.anon.clone() {
                 let proto = &self.decl_classes[i].0;
                 if self.decl_classes[i].1
                     || !is_anon_name(proto.name.as_bytes())
@@ -660,7 +686,7 @@ impl Vm {
 
     /// Link the class compiled into `decl_classes` slot `slot`, recording
     /// that slot as its class-table position.
-    fn link_slot(&mut self, slot: usize, proto: &ClassProto) -> Result<(), Thrown> {
+    pub(crate) fn link_slot(&mut self, slot: usize, proto: &ClassProto) -> Result<(), Thrown> {
         let id = self.classes.len();
         self.link_class(proto)?;
         if let Some(o) = self.class_order.get_mut(id) {
@@ -669,7 +695,7 @@ impl Vm {
         Ok(())
     }
 
-    fn deps_ready(&self, p: &ClassProto) -> bool {
+    pub(crate) fn deps_ready(&self, p: &ClassProto) -> bool {
         let known = |n: &PhpStr| self.class_ids.contains_key(&lc(n.as_bytes()));
         p.parent.as_ref().is_none_or(known)
             && p.interfaces.iter().all(known)

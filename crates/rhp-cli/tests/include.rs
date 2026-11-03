@@ -246,3 +246,74 @@ fn included_files_and_declared_classes_in_order_like_php() {
         "include order / declared classes differ"
     );
 }
+
+/// stdout of `bin -n <args>` run in `cwd`, warnings displayed.
+fn run_in(bin: &str, cwd: &Path, args: &[&str]) -> String {
+    let out = Command::new(bin)
+        .current_dir(cwd)
+        .args(["-n", "-d", "display_errors=1", "-d", "error_reporting=-1"])
+        .args(args)
+        .output()
+        .expect("run");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn include_falls_back_to_the_working_directory_like_php() {
+    if !php_available() {
+        return;
+    }
+    let dir = case_dir("cwdfallback").canonicalize().unwrap();
+    std::fs::create_dir_all(dir.join("app")).unwrap();
+    std::fs::create_dir_all(dir.join("cwd")).unwrap();
+    write(&dir.join("cwd/y.php"), "<?php echo \"cwd/y\\n\";");
+    // An include_path without '.', and y.php in neither it nor app/: only
+    // the plain open relative to the working directory finds it.
+    write(
+        &dir.join("app/m.php"),
+        "<?php set_include_path('/nonexistent'); var_dump(include 'y.php');",
+    );
+    let cwd = dir.join("cwd");
+    let php = run_in("php", &cwd, &["../app/m.php"]);
+    let rhp = run_in(env!("CARGO_BIN_EXE_rhp"), &cwd, &["../app/m.php"]);
+    assert_eq!(php, rhp);
+    assert_eq!(php, "cwd/y\nint(1)\n");
+}
+
+#[test]
+fn opcache_keeps_relative_includes_of_different_directories_apart() {
+    if !php_available() {
+        return;
+    }
+    let dir = case_dir("relkey").canonicalize().unwrap();
+    std::fs::create_dir_all(dir.join("a")).unwrap();
+    std::fs::create_dir_all(dir.join("b")).unwrap();
+    write(&dir.join("a/lib.php"), "<?php echo \"A lib\\n\";");
+    // a/main.php finds lib.php in its own directory; b/other.php asks for
+    // the same name, and there is no b/lib.php.
+    write(
+        &dir.join("a/main.php"),
+        "<?php include 'lib.php'; include __DIR__ . '/../b/other.php';",
+    );
+    write(
+        &dir.join("b/other.php"),
+        "<?php var_dump(include 'lib.php');",
+    );
+    for validate in ["1", "0"] {
+        let args = [
+            "-d",
+            "opcache.enable_cli=1",
+            "-d",
+            "opcache.file_update_protection=0",
+            "-d",
+            &format!("opcache.validate_timestamps={validate}"),
+            "-d",
+            "include_path=.",
+            "a/main.php",
+        ];
+        let php = run_in("php", &dir, &args);
+        let rhp = run_in(env!("CARGO_BIN_EXE_rhp"), &dir, &args);
+        assert_eq!(php, rhp, "validate_timestamps={validate}");
+        assert!(php.ends_with("bool(false)\n"), "{php}");
+    }
+}

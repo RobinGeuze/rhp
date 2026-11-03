@@ -74,6 +74,11 @@ impl Vm {
     /// php_request_startup's header step: `X-Powered-By` when expose_php.
     /// Call after ini settings are applied, before running the script.
     pub fn start_request(&mut self) {
+        // opcache's own log (its ini handlers' warnings at module startup).
+        let (lines, dest) = builtins::take_accel_log();
+        for line in lines {
+            self.write_accel_log(&line, &dest);
+        }
         // Warnings from applying the -d values (module startup): php-cli
         // shows them before anything else; php-cgi's reach the client only
         // after the response body.
@@ -98,6 +103,21 @@ impl Vm {
             let r = &mut self.sapi.response;
             r.no_headers = true;
             r.sent = true;
+        }
+    }
+
+    /// A line of opcache's log, to stderr or the `opcache.error_log` file.
+    pub(crate) fn write_accel_log(&mut self, line: &str, dest: &[u8]) {
+        if dest.is_empty() {
+            self.write_stderr(line.as_bytes());
+        } else {
+            use std::io::Write;
+            let path = String::from_utf8_lossy(dest).into_owned();
+            let _ = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(path)
+                .and_then(|mut f| f.write_all(line.as_bytes()));
         }
     }
 

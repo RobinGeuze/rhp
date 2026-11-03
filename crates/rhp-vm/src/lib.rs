@@ -56,6 +56,15 @@ enum DimFetch {
 /// a `Program`, keeping the VM compiler-agnostic (see the `includer` field).
 type Includer = Box<dyn FnMut(&str, &[u8]) -> Result<Program, IncludeError>>;
 
+/// An included file's source: a stream wrapper's contents, or an open
+/// local file (read only when the compiled-script cache misses).
+pub(crate) enum IncludeSource {
+    Bytes(Vec<u8>),
+    File(std::fs::File),
+    /// Not on disk, but a cached script that needn't be revalidated.
+    Cached,
+}
+
 /// Why the SAPI's includer could not produce a `Program`.
 #[derive(Debug)]
 pub enum IncludeError {
@@ -262,6 +271,13 @@ pub struct Vm {
     module_states: HashMap<&'static str, Box<dyn std::any::Any>>,
     /// The server API layer: sink, response headers, request input.
     sapi: request::SapiState,
+    /// This request's view of the compiled-script cache, once used.
+    opcache: Option<opcache::Request>,
+    /// While running `opcache.preload`: the files compiled so far and where
+    /// they were installed.
+    preload_rec: Option<Vec<opcache::PreloadRec>>,
+    /// What preloading declared, once installed in this request.
+    preloaded: Option<Rc<opcache::Preload>>,
 }
 
 /// Whether a diagnostic text is a builtin's `php_error_docref` message:
@@ -370,6 +386,7 @@ struct GenState {
 
 mod classes;
 mod compare;
+mod opcache;
 mod output;
 mod reflect;
 mod request;
@@ -1927,6 +1944,10 @@ impl Host for Vm {
         Vm::reflect_op(self, op, args)
     }
 
+    fn opcache_op(&mut self, op: &str, args: &[Value]) -> Option<Result<Value, Thrown>> {
+        Vm::opcache_op(self, op, args)
+    }
+
     fn reflect_method_params(&self, class: &[u8], method: &[u8]) -> Option<Value> {
         let cid = self.resolve_class_by_name(class).ok()?;
         let m = self.lookup_method(cid, method)?;
@@ -2535,6 +2556,9 @@ impl Vm {
             destructed_below: 0,
             module_states: HashMap::new(),
             sapi: Default::default(),
+            opcache: None,
+            preload_rec: None,
+            preloaded: None,
         }
     }
 
@@ -4653,6 +4677,8 @@ impl Vm {
         self.decl_classes.clear();
         self.decl_runtime.clear();
         let top = self.register_decl_classes(prog, 0);
+        // Preloaded functions and classes exist before the script compiles.
+        self.install_preload();
         self.hoist_decl_classes(top)?;
         let mut main_frame = Frame::new(prog.main.clone(), 0);
         self.bind_superglobals(&mut main_frame);
@@ -8023,6 +8049,11 @@ impl Vm {
                     let f = self.closures[(proto.closure_base + idx) as usize].clone();
                     let lc = f.name.as_bytes().to_ascii_lowercase();
                     if self.fn_names.contains_key(&lc) {
+                        // A preloaded file's declaration of a preloaded function
+                        // was removed by preloading.
+                        if self.preloaded.as_ref().is_some_and(|p| p.has_function(&lc)) {
+                            continue;
+                        }
                         return Err(Thrown::error(
                             "Error",
                             format!(
@@ -8649,9 +8680,10 @@ impl Vm {
             .ok_or_else(|| Thrown::error("Error", "eval is not available"))?;
         let compiled = cb(&file, &source);
         self.includer = Some(cb);
-        let prog = self.included_program(compiled, &file)?;
+        let prog = Rc::new(self.included_program(compiled, &file)?);
 
-        let main = self.install_included(&prog)?;
+        // eval()'d declarations are preloaded too (recorded without a file).
+        let main = self.install_file(b"", &prog)?;
         self.run_included(main, top, "eval")
     }
 
@@ -8662,27 +8694,31 @@ impl Vm {
         compiled: Result<Program, IncludeError>,
         file: &str,
     ) -> Result<Program, Thrown> {
-        match compiled {
-            Ok(p) => Ok(p),
-            Err(IncludeError::Thrown(t)) => Err(t),
-            Err(IncludeError::Compile { message, line }) => {
+        compiled.map_err(|e| self.include_error(e, file))
+    }
+
+    /// What an includer's failure throws.
+    fn include_error(&mut self, e: IncludeError, file: &str) -> Thrown {
+        match e {
+            IncludeError::Thrown(t) => t,
+            IncludeError::Compile { message, line } => {
                 self.compile_error(&message, file.as_bytes(), line);
-                Err(Thrown::Exit(255))
+                Thrown::Exit(255)
             }
             // raised outside the file: where the include/eval runs
-            Err(IncludeError::Parse {
+            IncludeError::Parse {
                 class,
                 message,
                 line: 0,
-            }) => Err(Thrown::error(class, message)),
-            Err(IncludeError::Parse {
+            } => Thrown::error(class, message),
+            IncludeError::Parse {
                 class,
                 message,
                 line,
-            }) => Err(self.materialize(
+            } => self.materialize(
                 Thrown::error(class, message),
                 Some((file.as_bytes().to_vec(), line)),
-            )),
+            ),
         }
     }
 
@@ -8725,7 +8761,19 @@ impl Vm {
     ) -> Result<Value, Thrown> {
         let path_str = String::from_utf8_lossy(&raw_path).into_owned();
         builtins::streams::clear_errno();
-        let (realpath, source) = match self.resolve_include_path(top, &path_str) {
+        // php looks a script up in opcache by the name it was asked for
+        // before opening anything: a cached absolute path needs no open, and
+        // no realpath while its revalidate window lasts; a file that is gone
+        // may still be served.
+        let found = if self.opcache_fast_hit(&raw_path) {
+            Some((raw_path.clone(), IncludeSource::Cached))
+        } else {
+            self.resolve_include_file(top, &path_str).or_else(|| {
+                self.opcache_cached_name(&raw_path)
+                    .map(|real| (real, IncludeSource::Cached))
+            })
+        };
+        let (realpath, source) = match found {
             Some(found) => found,
             None => {
                 // php_stream_open_for_zend_ex's warning, then the include's.
@@ -8769,21 +8817,9 @@ impl Vm {
             return Ok(Value::Bool(true));
         }
         self.included_files.insert(realpath.clone());
-        // php opens each included file as a stream resource (closed again
-        // after compiling): it uses up a resource id.
-        self.next_resource_id += 1;
 
-        // Compile via the SAPI-provided callback (keeps the VM compiler-agnostic).
-        let mut cb = self
-            .includer
-            .take()
-            .ok_or_else(|| Thrown::error("Error", "file inclusion is not available"))?;
-        let rp_str = String::from_utf8_lossy(&realpath).into_owned();
-        let compiled = cb(&rp_str, &source);
-        self.includer = Some(cb);
-        let prog = self.included_program(compiled, &rp_str)?;
-
-        let main = self.install_included(&prog)?;
+        let prog = self.compile_included_file(&realpath, raw_path.as_slice(), source)?;
+        let main = self.install_file(&realpath, &prog)?;
         let ret = self.run_included(main, top, kind.name())?;
         // A file with no `return` yields int(1).
         Ok(match ret {
@@ -8792,10 +8828,96 @@ impl Vm {
         })
     }
 
-    /// Resolve an include path to `(realpath_bytes, source)`: for a schemed URL
-    /// (`phar://`, …) read through the stream wrapper directly; otherwise
-    /// absolute as-is, else relative to the including file's directory, then CWD.
-    fn resolve_include_path(&self, top: usize, path: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+    /// Compile an included file through the compiled-script cache (a
+    /// local file) or directly (a stream wrapper's contents).
+    pub(crate) fn compile_included_file(
+        &mut self,
+        realpath: &[u8],
+        given: &[u8],
+        source: IncludeSource,
+    ) -> Result<Rc<Program>, Thrown> {
+        let rp_str = String::from_utf8_lossy(realpath).into_owned();
+        let mut compile = |vm: &mut Vm, src: &[u8]| -> Result<Program, IncludeError> {
+            // Compile via the SAPI-provided callback (keeps the VM compiler-agnostic).
+            let mut cb = vm
+                .includer
+                .take()
+                .ok_or_else(|| Thrown::error("Error", "file inclusion is not available"))?;
+            let r = cb(&rp_str, src);
+            vm.includer = Some(cb);
+            r
+        };
+        // php opens an included file as a stream resource (closed again
+        // after compiling), which uses up a resource id — unless opcache
+        // finds the script by the name it was asked for.
+        let opened = std::cell::Cell::new(false);
+        let compiled = match source {
+            IncludeSource::Bytes(src) => {
+                opened.set(true);
+                compile(self, &src).map(Rc::new)
+            }
+            IncludeSource::Cached => self.opcache_compile(
+                realpath,
+                given,
+                opcache::Kind::Include,
+                true,
+                &mut Vec::new,
+                &mut compile,
+            ),
+            IncludeSource::File(mut f) => {
+                opened.set(!self.opcache_has_name(given, realpath));
+                let mut read = || {
+                    opened.set(true);
+                    let mut src = Vec::new();
+                    let _ = std::io::Read::read_to_end(&mut f, &mut src);
+                    src
+                };
+                self.opcache_compile(
+                    realpath,
+                    given,
+                    opcache::Kind::Include,
+                    false,
+                    &mut read,
+                    &mut compile,
+                )
+            }
+        };
+        if opened.get() {
+            self.next_resource_id += 1;
+        }
+        compiled.map_err(|e| self.include_error(e, &rp_str))
+    }
+
+    /// Compile a request's main script (`path` resolved, `given` as named,
+    /// `source` read) through the compiled-script cache: `compile` runs
+    /// only on a miss.
+    pub fn compile_main(
+        &mut self,
+        path: &str,
+        given: &str,
+        source: Vec<u8>,
+        compile: impl FnOnce(&[u8]) -> Result<Program, IncludeError>,
+    ) -> Result<Rc<Program>, IncludeError> {
+        let mut source = Some(source);
+        let mut compile = Some(compile);
+        self.opcache_compile(
+            path.as_bytes(),
+            given.as_bytes(),
+            opcache::Kind::Main,
+            false,
+            &mut || source.take().unwrap_or_default(),
+            &mut |_, src| (compile.take().expect("one compile per load"))(src),
+        )
+    }
+
+    /// Resolve an include path to `(key, source)`: for a schemed URL
+    /// (`phar://`, …) the wrapper's contents; otherwise the real path of
+    /// the first candidate that opens as a file, in php_resolve_path's
+    /// order: an absolute or `./` / `../` path as is (relative to the
+    /// working directory), else each include_path entry, then the
+    /// including file's directory; failing those, the plain open of the
+    /// name relative to the working directory.
+    fn resolve_include_file(&self, top: usize, path: &str) -> Option<(Vec<u8>, IncludeSource)> {
         use std::path::{Path, PathBuf};
         // Schemed URLs: no candidate search — the wrapper owns resolution. The
         // returned key (→ `__FILE__`/`__DIR__`/`_once`) is the normalized URL.
@@ -8805,34 +8927,83 @@ impl Vm {
             let w = self.wrapper_for(url)?;
             let src = w.get_contents(url)?;
             let key = w.canonical(url).unwrap_or_else(|| normalize_url(url));
-            return Some((key, src));
+            return Some((key, IncludeSource::Bytes(src)));
         }
         let p = Path::new(path);
         let mut candidates: Vec<PathBuf> = Vec::new();
-        if p.is_absolute() {
+        let include_path = self.ini_get(b"include_path").unwrap_or_default();
+        let dotted = path.starts_with("./") || path.starts_with("../");
+        if p.is_absolute() || dotted || include_path.is_empty() {
             candidates.push(p.to_path_buf());
         } else {
+            for dir in include_path.split(|&c| c == b':') {
+                // Entries that are stream wrappers (`phar://…`) aren't searched.
+                if dir.is_empty() || dir.windows(3).any(|w| w == b"://") {
+                    continue;
+                }
+                candidates.push(Path::new(&*String::from_utf8_lossy(dir)).join(p));
+            }
             let cur = self.current_file(top);
             let cur = String::from_utf8_lossy(&cur).into_owned();
-            if let Some(dir) = Path::new(&cur).parent() {
+            if let Some(dir) = Path::new(&cur).parent().filter(|d| d.is_absolute()) {
                 candidates.push(dir.join(p));
             }
-            candidates.push(p.to_path_buf()); // relative to CWD
+            candidates.push(p.to_path_buf());
         }
         for cand in candidates {
-            if let Ok(canon) = std::fs::canonicalize(&cand) {
-                if let Ok(src) = std::fs::read(&canon) {
-                    return Some((canon.to_string_lossy().into_owned().into_bytes(), src));
-                }
+            let Ok(canon) = std::fs::canonicalize(&cand) else {
+                continue;
+            };
+            let Ok(f) = std::fs::File::open(&canon) else {
+                continue;
+            };
+            if f.metadata().is_ok_and(|m| m.is_dir()) {
+                continue;
             }
+            return Some((
+                canon.to_string_lossy().into_owned().into_bytes(),
+                IncludeSource::File(f),
+            ));
         }
         None
+    }
+
+    /// [`Vm::install_included`] for a file: recorded while preloading, and
+    /// without redeclaring what preloading already declared from it.
+    pub(crate) fn install_file(
+        &mut self,
+        path: &[u8],
+        prog: &Rc<Program>,
+    ) -> Result<Rc<FunctionProto>, Thrown> {
+        let at = (
+            self.closures.len(),
+            self.decl_classes.len(),
+            self.functions.len(),
+        );
+        let preloaded = self.preloaded.as_ref().is_some_and(|p| p.has_file(path));
+        let main = self.install_included(prog, preloaded)?;
+        if let Some(rec) = self.preload_rec.as_mut() {
+            rec.push(opcache::PreloadRec::new(
+                path,
+                prog.clone(),
+                false,
+                at,
+                self.functions.len() - at.2,
+            ));
+        }
+        Ok(main)
     }
 
     /// Merge an included program's declarations into the running VM, rebasing its
     /// program-global closure indices by the current closure count. Returns the
     /// rebased `{main}` to execute.
-    fn install_included(&mut self, prog: &Program) -> Result<Rc<FunctionProto>, Thrown> {
+    /// `preloaded`: the file was preloaded, and php removed its declarations
+    /// of what preloading declared: those are skipped, not redeclared.
+    fn install_included(
+        &mut self,
+        prog: &Program,
+        preloaded: bool,
+    ) -> Result<Rc<FunctionProto>, Thrown> {
         let base = self.closures.len() as u32;
         let cbase = self.decl_classes.len();
         // closures: append (rebased).
@@ -8845,6 +9016,9 @@ impl Vm {
         for proto in prog.functions.iter().skip(prog.num_prelude_functions) {
             let lc = proto.name.as_bytes().to_ascii_lowercase();
             if self.fn_names.contains_key(&lc) {
+                if preloaded {
+                    continue;
+                }
                 return Err(Thrown::error(
                     "Error",
                     format!(
@@ -8861,6 +9035,9 @@ impl Vm {
         // classes: a name already in use is not early-bound; redeclaring it is
         // fatal only when its declaration statement runs (`DeclareClass`).
         let top = self.register_decl_classes(prog, base);
+        if preloaded {
+            self.skip_preloaded_decls(cbase);
+        }
         self.hoist_decl_classes(top)?;
         // constants: define_const skips an already-defined name.
         for (n, v) in &prog.constants {

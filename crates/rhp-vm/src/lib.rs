@@ -257,6 +257,10 @@ pub struct Vm {
     module_states: HashMap<&'static str, Box<dyn std::any::Any>>,
     /// The server API layer: sink, response headers, request input.
     sapi: request::SapiState,
+    /// This thread's memory accounting (checked between instructions).
+    mem: &'static rhp_values::mem::MemState,
+    /// A memory_limit crossing waiting for an interrupt point.
+    delayed_oom: Option<Box<memory::DelayedOom>>,
 }
 
 /// Whether a diagnostic text is a builtin's `php_error_docref` message:
@@ -366,6 +370,7 @@ struct GenState {
 mod classes;
 mod compare;
 mod ext_names;
+mod memory;
 mod output;
 mod reflect;
 mod request;
@@ -391,6 +396,11 @@ impl Host for Vm {
         // html_errors is on (engine and sapi errors are not, nor are the
         // E_USER_* messages trigger_error passes through as given).
         self.sapi.docref_msg = level & (256 | 512 | 1024 | 16384) == 0 && is_docref_message(msg);
+        // php_verror: none while an out-of-memory error is pending.
+        if self.sapi.docref_msg && self.mem.attention() {
+            self.sapi.docref_msg = false;
+            return;
+        }
         self.raise_error(level, msg);
         self.sapi.docref_msg = false;
     }
@@ -2431,6 +2441,7 @@ impl Vm {
     pub fn new() -> Self {
         // Builtin state is per request: never inherit a previous engine's.
         builtins::reset_request_state();
+        rhp_values::mem::end_request();
         let mut constants = HashMap::new();
         for (name, value) in builtins::constants() {
             constants.insert(name.as_bytes().to_vec(), value);
@@ -2516,6 +2527,8 @@ impl Vm {
             destructed_below: 0,
             module_states: HashMap::new(),
             sapi: Default::default(),
+            mem: rhp_values::mem::state(),
+            delayed_oom: None,
         }
     }
 
@@ -4414,13 +4427,16 @@ impl Vm {
         mut status: i32,
         on_throw: &mut ShutdownThrow,
     ) -> Result<i32, Thrown> {
+        self.oom_reset();
         // 1. shutdown functions
         let mut i = 0;
         while i < self.shutdown_functions.len() {
             let (cb, args) = self.shutdown_functions[i].clone();
             i += 1;
             self.enter_shutdown_scope();
-            if let Err(t) = self.call_callable_value(&cb, args) {
+            let r = self.call_callable_value(&cb, args);
+            // zend_call_function's interrupt check after the call.
+            if let Err(t) = r.and_then(|_| self.oom_interrupt()) {
                 self.enter_shutdown_scope();
                 if let Some(c) = on_throw(self, t)? {
                     status = c;
@@ -4431,7 +4447,10 @@ impl Vm {
         self.shutdown_functions.clear();
         // 2. destructors
         self.enter_shutdown_scope();
-        if let Err(t) = self.shutdown_destructors() {
+        if let Err(t) = self
+            .shutdown_destructors()
+            .and_then(|_| self.oom_interrupt())
+        {
             self.enter_shutdown_scope();
             if let Some(c) = on_throw(self, t)? {
                 status = c;
@@ -4570,6 +4589,10 @@ impl Vm {
 
     /// Execute a compiled program; returns the process exit code.
     pub fn run(&mut self, prog: &Program) -> Result<i32, Thrown> {
+        // The request's memory accounting starts here, with its limits
+        // (compiling the main script doesn't count, as with opcache).
+        builtins::apply_memory_limits();
+        rhp_values::mem::begin_request();
         // Bind the standard stream resources (CLI SAPI) once.
         if self.streams.is_empty() {
             // Forget drops left over from a previous VM on this thread.
@@ -4620,7 +4643,10 @@ impl Vm {
         // Link the built-in prelude classes, then hoist the user's top-level
         // classes (those whose dependencies are available); the rest, and
         // nested declarations, are declared when execution reaches them.
-        self.install_classes(&prog.classes[..prog.num_prelude_classes])?;
+        // (Engine data php has before a request starts: not counted.)
+        rhp_values::mem::uncounted(|| {
+            self.install_classes(&prog.classes[..prog.num_prelude_classes])
+        })?;
         self.internal_classes = self.classes.len();
         self.decl_classes.clear();
         self.decl_runtime.clear();
@@ -4631,8 +4657,10 @@ impl Vm {
         // {main}'s variables are the global symbol table's entries.
         self.bind_global_scope(&mut main_frame);
         self.stack.push(main_frame);
-        match self.run_loop() {
-            Ok(_) => Ok(0),
+        // zend_execute_script raises an out-of-memory error still pending
+        // when the script ends.
+        match self.run_loop().and_then(|_| self.oom_interrupt()) {
+            Ok(()) => Ok(0),
             Err(Thrown::Exit(code)) => Ok(code),
             Err(other) => Err(other),
         }
@@ -6303,6 +6331,9 @@ impl Vm {
             let top = self.stack.len() - 1;
             let proto = self.stack[top].proto.clone();
             let pc = self.stack[top].pc;
+            if self.mem.attention() {
+                self.oom_tick(top, pc)?;
+            }
             if pc >= proto.code.len() {
                 // fell off the end == RetNull
                 if let Some(done) = self.do_return(Value::Null) {
@@ -6387,6 +6418,9 @@ impl Vm {
                     self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Shr))
                 }
                 Instr::Concat { dst, a, b } => {
+                    if self.concat_in_place(top, proto.num_cvs, dst, a, b) {
+                        continue;
+                    }
                     let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
                     let v = if matches!(x, Value::Object(_) | Value::Array(_))
                         || matches!(y, Value::Object(_) | Value::Array(_))
@@ -10428,6 +10462,8 @@ impl Vm {
                 Some(e) => Err(e),
                 None => (builtin.func)(self, &args),
             };
+            // (php's opcodes for these have no interrupt check: an
+            // out-of-memory error waits for the next one.)
             return match self.pending_throw.take() {
                 Some(t) => Err(t),
                 None => r,
@@ -10451,6 +10487,9 @@ impl Vm {
             Some(t) => Err(t),
             None => r,
         };
+        // php's ZEND_VM_FCALL_INTERRUPT_CHECK: an out-of-memory error the
+        // call ran into is raised now, with the call still on the trace.
+        let r = self.oom_interrupt().and(r);
         self.native_calls.pop();
         // `args` outlives the entry just popped (see `NativeCall::args`).
         drop(args);
@@ -11371,14 +11410,20 @@ fn assign_string_offset(
             "Only the first byte will be assigned to the string offset".into(),
         );
     }
-    let mut out = s.as_bytes().to_vec();
-    if at >= out.len() {
+    if at >= s.len() {
+        // zend_string_realloc to the new length: past php's hard limit the
+        // VM exits instead.
+        if !rhp_values::mem::within_hard_limit(rhp_values::mem::zstr_size(at + 1)) {
+            return Ok(());
+        }
+        let out = s.make_mut();
+        let grow = at + 1 - out.len();
+        out.reserve_exact(grow);
         out.resize(at, b' ');
         out.push(c);
     } else {
-        out[at] = c;
+        s.make_mut()[at] = c;
     }
-    *slot = Value::str(out);
     Ok(())
 }
 

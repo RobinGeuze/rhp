@@ -971,8 +971,18 @@ fn fn_register_shutdown_function(host: &mut dyn Host, args: &[Value]) -> Result<
     Ok(Value::Null)
 }
 
-fn fn_memory_usage(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(2_097_152))
+/// `memory_get_usage(bool $real_usage = false)`: zend_mm's `size`, or with
+/// `$real_usage` the chunks and huge blocks taken from the system.
+fn fn_memory_get_usage(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let real = crate::argparse::bool_param(host, args, 0, "memory_get_usage", "real_usage", false)?;
+    Ok(Value::Int(rhp_values::mem::usage(real) as i64))
+}
+
+/// `memory_get_peak_usage(bool $real_usage = false)`.
+fn fn_memory_get_peak_usage(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let real =
+        crate::argparse::bool_param(host, args, 0, "memory_get_peak_usage", "real_usage", false)?;
+    Ok(Value::Int(rhp_values::mem::peak_usage(real) as i64))
 }
 
 fn fn_true(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -1458,8 +1468,14 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
         1,
         None,
     );
-    put(m, "memory_get_usage", fn_memory_usage, 0, Some(1));
-    put(m, "memory_get_peak_usage", fn_memory_usage, 0, Some(1));
+    put(m, "memory_get_usage", fn_memory_get_usage, 0, Some(1));
+    put(
+        m,
+        "memory_get_peak_usage",
+        fn_memory_get_peak_usage,
+        0,
+        Some(1),
+    );
     put(m, "gc_enable", fn_true, 0, Some(0));
     put(m, "gc_disable", fn_true, 0, Some(0));
     put(m, "gc_collect_cycles", fn_zero, 0, Some(0));

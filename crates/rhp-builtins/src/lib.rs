@@ -1189,7 +1189,7 @@ pub fn ini_startup_set(name: &[u8], value: &[u8]) {
     runtime_fns::ini_startup(name, value);
 }
 
-pub use runtime_fns::{take_shutdown_diagnostics, take_startup_diagnostics};
+pub use runtime_fns::{apply_memory_limits, take_shutdown_diagnostics, take_startup_diagnostics};
 
 /// Reset every builtin's per-request state (ini overrides, default timezone,
 /// precision, strtok/preg/json/mbstring state, process title, putenv

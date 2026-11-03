@@ -234,6 +234,15 @@ impl Vm {
         while self.output.active.is_some() && self.stack_pop(POP_FORCE) {}
     }
 
+    /// php_output_discard_all, as php_error_cb runs it for an out-of-memory
+    /// error: skipped while a handler runs (that would free it under itself).
+    pub(crate) fn output_discard_all_unlocked(&mut self) {
+        if self.output.running.is_some() {
+            return;
+        }
+        while self.output.active.is_some() && self.stack_pop(POP_DISCARD | POP_FORCE) {}
+    }
+
     /// The `func(): ` origin php_error_docref puts before a message: the
     /// running builtin, else the innermost user function (`main` at top
     /// level), else `PHP Request Shutdown` / `Unknown` (no code running).
@@ -478,6 +487,9 @@ impl Vm {
         };
         let mut still_have_handler = true;
         let status = match user {
+            // zend_call_function refuses while an out-of-memory error is
+            // handled (php_error_cb discards the buffers then).
+            Some(_) if self.mem.oom_handled() => Status::Failure,
             Some(cb) => {
                 let data = h.borrow().buf.clone();
                 let at_shutdown = self.no_code_running();

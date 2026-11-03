@@ -192,6 +192,7 @@ impl Vm {
         }
         // sapi_deactivate_destroy: uploads not moved away are deleted.
         self.sapi.body.cleanup();
+        rhp_values::mem::end_request();
     }
 
     /// Write bytes through the output layer (output buffers, then the

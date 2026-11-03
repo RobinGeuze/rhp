@@ -311,12 +311,12 @@ fn file_get_contents_refuses_a_file_past_the_limit() {
         &format!(
             r#"<?php
 ini_set('memory_limit', '8M');
-var_dump(strlen(file_get_contents('{}', false, null, 0, 100000)));
-$x = file_get_contents('{}');
+var_dump(strlen(file_get_contents('{big}', false, null, 0, 100000)));
+var_dump(file_get_contents('{big}', false, null, PHP_INT_MIN));
+$x = file_get_contents('{big}');
 echo "not reached\n";
 "#,
-            big.display(),
-            big.display()
+            big = big.display()
         ),
         true,
     );

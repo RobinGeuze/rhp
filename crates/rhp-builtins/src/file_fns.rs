@@ -320,7 +320,12 @@ fn reserve_file_read(url: &[u8], offset: i64, maxlen: Option<usize>) -> bool {
     if std::fs::File::open(path).is_err() {
         return true;
     }
-    let pos = if offset < 0 { size + offset } else { offset };
+    // (A seek before the start fails before php allocates.)
+    let pos = match offset {
+        o if o < 0 && size + o < 0 => return true,
+        o if o < 0 => size + o,
+        o => o,
+    };
     let mut len = (size - pos).max(0) as usize + CHUNK;
     if let Some(m) = maxlen {
         if m < 4 * CHUNK || len > m {
@@ -347,7 +352,7 @@ fn read_file_part(url: &[u8], offset: i64, maxlen: Option<usize>) -> Option<Opti
     let len = f.metadata().ok()?.len() as i64;
     // A plain file may be positioned past its end (reads nothing).
     let start = match offset {
-        o if o < 0 && -o > len => return Some(None),
+        o if o < 0 && len + o < 0 => return Some(None),
         o if o < 0 => len + o,
         o => o.min(len),
     };

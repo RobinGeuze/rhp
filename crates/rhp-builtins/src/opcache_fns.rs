@@ -318,6 +318,20 @@ pub fn take_accel_log() -> (Vec<String>, Vec<u8>) {
     (lines, if dest == b"stderr" { Vec::new() } else { dest })
 }
 
+/// accel_finish_startup_preload_subprocess: `opcache.preload_user` only
+/// matters when php runs as root (it then preloads as that user).
+pub fn preload_user_check() {
+    let user = crate::ini_startup_value(b"opcache.preload_user").unwrap_or_default();
+    // SAFETY: geteuid has no preconditions.
+    if !user.is_empty() && unsafe { libc::geteuid() } != 0 {
+        accel_log(
+            b"opcache.preload_user",
+            LOG_WARNING,
+            "\"opcache.preload_user\" is ignored because the current user is not \"root\"".into(),
+        );
+    }
+}
+
 /// The startup OnUpdate handlers of opcache's sized directives: the
 /// warning when they refuse a value (which then keeps its default).
 pub(crate) fn startup_check(name: &[u8], v: &[u8]) -> Option<String> {

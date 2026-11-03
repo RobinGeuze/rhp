@@ -117,6 +117,7 @@ impl Vm {
         compile: impl FnOnce(&[u8]) -> Result<Program, IncludeError>,
     ) -> bool {
         with_cache(|c| c.preload_tried = true);
+        builtins::preload_user_check();
         // Compiles bypass the cache while preloading (php's ZCG(enabled) = 0).
         self.opcache = Some(Request {
             started: true,

@@ -1194,7 +1194,7 @@ pub fn ini_startup_value(name: &[u8]) -> Option<Vec<u8>> {
     runtime_fns::ini_default_value(name).map(Option::unwrap_or_default)
 }
 
-pub use opcache_fns::{asctime_local, take_accel_log};
+pub use opcache_fns::{asctime_local, preload_user_check, take_accel_log};
 
 /// A startup ini setting (`php -d name=value`): any registered directive,
 /// applied to the engine state it drives (precision, ...). Unknown names are

@@ -237,6 +237,8 @@ fn print_info(flag: i64) -> Vec<u8> {
                 print_core_ini(&mut o);
             } else if *e == "pcre" {
                 print_pcre(&mut o);
+            } else if *e == "curl" {
+                print_curl(&mut o);
             } else {
                 o.row(&[&format!("{e} support"), "enabled"]);
             }
@@ -315,6 +317,23 @@ fn print_pcre(o: &mut Info) {
         };
         o.row(&[name, &show(local), &show(master)]);
     }
+}
+
+/// PHP_MINFO_FUNCTION(curl), then its ini entry.
+fn print_curl(o: &mut Info) {
+    for row in crate::ext::curl::info_rows() {
+        let cols: Vec<&str> = row.iter().map(String::as_str).collect();
+        o.row(&cols);
+    }
+    o.table_start();
+    o.header(&["Directive", "Local Value", "Master Value"]);
+    let show = |v: Option<Vec<u8>>| match v {
+        Some(v) if !v.is_empty() => String::from_utf8_lossy(&v).into_owned(),
+        _ => "no value".to_string(),
+    };
+    let local = crate::runtime_fns::ini_value(b"curl.cainfo").flatten();
+    let master = crate::runtime_fns::ini_default_value(b"curl.cainfo").flatten();
+    o.row(&["curl.cainfo", &show(local), &show(master)]);
 }
 
 fn print_core_ini(o: &mut Info) {

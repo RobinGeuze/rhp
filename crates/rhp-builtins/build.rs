@@ -18,4 +18,21 @@ fn main() {
         .flag_if_supported("-Wno-deprecated-declarations")
         .flag_if_supported("-Wno-unused-parameter")
         .compile("rhp_libxml_shim");
+    // ext/curl's constants against the linked curl.h, and its stdio shim.
+    let curl = linked
+        .iter()
+        .find(|l| l.name == "CURL")
+        .expect("native.rs links libcurl");
+    for f in ["src/ext/curl/consts.c", "src/ext/curl/shim.c"] {
+        println!("cargo:rerun-if-changed={f}");
+    }
+    cc::Build::new()
+        .file("src/ext/curl/consts.c")
+        .file("src/ext/curl/shim.c")
+        .include(&curl.include)
+        .warnings(true)
+        .extra_warnings(true)
+        .flag_if_supported("-Wno-deprecated-declarations")
+        .flag_if_supported("-Wno-unused-parameter")
+        .compile("rhp_curl_shim");
 }

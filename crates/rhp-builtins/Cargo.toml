@@ -60,19 +60,9 @@ bzip2 = { version = "=0.5.2", features = ["static"] }
 x509-parser = { version = "0.18", features = ["verify"] }
 
 # HTTP(S) client for the stream http:// / https:// wrappers (rustls TLS with
-# bundled Mozilla roots — no system OpenSSL dependency). ext/curl also takes
-# its rustls from here (`ureq::rustls`), so dropping ureq needs a direct
-# rustls dependency.
+# bundled Mozilla roots — no system OpenSSL dependency). ext/curl links
+# libcurl (build/native.rs).
 ureq = "2.12"
-# ext/curl: parsing request and proxy URLs, resolving redirect Locations
-# (already in the tree via ureq).
-url = "2.5"
-# ext/curl's own HTTP/1.1 transport (over ureq's rustls): the Mozilla roots
-# ureq bundles, plus the brotli / zstd decoders behind CURLOPT_ENCODING
-# (libcurl's "deflate, gzip, br, zstd"; deflate/gzip go through flate2).
-webpki-roots = "0.26"
-brotli-decompressor = "4"
-ruzstd = "0.8"
 
 # CSPRNG for random_bytes/random_int/mt_rand.
 getrandom = "0.2"

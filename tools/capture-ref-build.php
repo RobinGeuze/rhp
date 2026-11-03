@@ -94,6 +94,12 @@ foreach (['PCRE_VERSION', 'PCRE_VERSION_MAJOR', 'PCRE_VERSION_MINOR',
           'LIBXML_VERSION', 'LIBXML_DOTTED_VERSION', 'LIBXML_LOADED_VERSION'] as $c) {
     row($c, defined($c) ? constant($c) : '(undefined)');
 }
+ext_row('curl', 'curl_version()', function () {
+    $v = curl_version();
+    // The array without feature_list (derived from 'features').
+    unset($v['feature_list']);
+    return $v;
+});
 
 echo "# build\n";
 foreach (['PHP_BUILD_DATE', 'PHP_BUILD_PROVIDER', 'PHP_PREFIX', 'PHP_BINDIR', 'PHP_SBINDIR',
@@ -112,9 +118,3 @@ foreach (['ICONV_VERSION', 'MB_ONIGURUMA_VERSION',
     row($c, defined($c) ? constant($c) : '(undefined)');
 }
 ext_row('zip', 'ZipArchive::LIBZIP_VERSION', fn () => ZipArchive::LIBZIP_VERSION);
-ext_row('curl', 'curl_version()', function () {
-    $v = curl_version();
-    // The array without feature_list (derived from 'features').
-    unset($v['feature_list']);
-    return $v;
-});

@@ -504,6 +504,8 @@ impl Host for Vm {
             b"CurlHandle",
             b"CurlMultiHandle",
             b"CurlShareHandle",
+            b"CurlSharePersistentHandle",
+            b"CURLFile",
             b"OpenSSLAsymmetricKey",
             b"OpenSSLCertificate",
             b"OpenSSLCertificateSigningRequest",
@@ -1986,6 +1988,10 @@ impl Host for Vm {
             _ => return None,
         };
         Some(self.params_to_value(&proto))
+    }
+
+    fn run_released_destructors(&mut self) -> Result<(), Thrown> {
+        self.collect_released_now()
     }
 
     fn call_callable(&mut self, callable: &Value, args: &[Value]) -> Result<Value, Thrown> {
@@ -4273,6 +4279,7 @@ impl Vm {
             b"ZipArchive",
             b"CurlMultiHandle",
             b"CurlShareHandle",
+            b"CurlSharePersistentHandle",
             b"OpenSSLAsymmetricKey",
             b"OpenSSLCertificate",
             b"OpenSSLCertificateSigningRequest",
@@ -8249,16 +8256,18 @@ impl Vm {
                             let bare = cname.rsplit(|&c| c == b'\\').next().unwrap_or(&cname);
                             let deprecation = match bare {
                                 b"E_STRICT" => Some(
-                                    "Constant E_STRICT is deprecated since 8.4, the error level was removed",
+                                    "Constant E_STRICT is deprecated since 8.4, the error level was removed"
+                                        .to_string(),
                                 ),
                                 b"MT_RAND_PHP" => Some(
-                                    "Constant MT_RAND_PHP is deprecated since 8.3, as it uses a biased non-standard variant of Mt19937",
+                                    "Constant MT_RAND_PHP is deprecated since 8.3, as it uses a biased non-standard variant of Mt19937"
+                                        .to_string(),
                                 ),
-                                _ => None,
+                                _ => builtins::constant_deprecation(bare),
                             };
                             if let Some(msg) = deprecation {
                                 if self.constants.contains_key(bare) {
-                                    self.diag(8192, msg)?;
+                                    self.diag(8192, &msg)?;
                                 }
                             }
                             self.reg_set(top, dst, v);

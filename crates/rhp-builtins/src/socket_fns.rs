@@ -1505,6 +1505,23 @@ fn fn_stream_set_read_buffer(host: &mut dyn Host, args: &[Value]) -> Result<Valu
 #[derive(Default)]
 struct ChunkSizes(HashMap<u32, i64>);
 
+/// php fills a stream's read buffer a chunk at a time, allocating the chunk
+/// fallibly: a read on a stream whose chunk size `stream_set_chunk_size`
+/// raised past the memory left gives up (`false`).
+pub(crate) fn reserve_read_chunk(host: &mut dyn Host, stream: &Value) -> bool {
+    let Value::Resource(r) = stream else {
+        return true;
+    };
+    let size = host
+        .module_state("stream_chunk_sizes", || Box::<ChunkSizes>::default())
+        .and_then(|st| st.downcast_mut::<ChunkSizes>())
+        .and_then(|st| st.0.get(&r.id).copied());
+    match size {
+        Some(n) if n > 8192 => rhp_values::mem::reserve(n as usize),
+        _ => true,
+    }
+}
+
 fn fn_stream_set_chunk_size(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "stream_set_chunk_size";
     let s = stream_arg(host, args, 0, fname, "stream")?;

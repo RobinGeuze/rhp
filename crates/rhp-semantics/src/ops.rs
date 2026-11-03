@@ -158,8 +158,20 @@ pub fn negate(a: &Value) -> Result<Value, Thrown> {
 }
 
 pub fn concat(a: &Value, b: &Value) -> Value {
-    let mut bytes = conv::to_string_bytes(&crate::deref(a));
-    bytes.extend_from_slice(&conv::to_string_bytes(&crate::deref(b)));
+    // One exact-size buffer, as php's concat allocates the result once (no
+    // copies of the operands, no growth slack counted against memory_limit).
+    let (a, b) = (crate::deref(a), crate::deref(b));
+    let a = match &a {
+        Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
+        v => std::borrow::Cow::Owned(conv::to_string_bytes(v)),
+    };
+    let b = match &b {
+        Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
+        v => std::borrow::Cow::Owned(conv::to_string_bytes(v)),
+    };
+    let mut bytes = Vec::with_capacity(a.len() + b.len());
+    bytes.extend_from_slice(&a);
+    bytes.extend_from_slice(&b);
     Value::Str(PhpStr::from_bytes(bytes))
 }
 

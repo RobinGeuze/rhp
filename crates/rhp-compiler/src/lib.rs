@@ -1225,6 +1225,7 @@ fn compile_class(
         is_final: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Final(_))),
         is_readonly: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Readonly(_))),
         allow_dynamic: has_allow_dynamic(&class.attribute_lists),
+        ..ClassFlags::default()
     };
     // Single inheritance: a class `extends` one parent.
     let parent = class.extends.as_ref().and_then(|e| {
@@ -1312,6 +1313,7 @@ fn compile_anon_class(
         is_final: true,
         is_readonly: has_modifier(&ac.modifiers, |m| matches!(m, Modifier::Readonly(_))),
         allow_dynamic: has_allow_dynamic(&ac.attribute_lists),
+        ..ClassFlags::default()
     };
     let m = compile_members(&ac.members, sigs, &name)?;
     let mut interfaces = interfaces;
@@ -1401,10 +1403,8 @@ fn compile_enum(
         kind: ClassKind::Enum,
         // Enums are implicitly final.
         flags: ClassFlags {
-            is_abstract: false,
             is_final: true,
-            is_readonly: false,
-            allow_dynamic: false,
+            ..ClassFlags::default()
         },
         parent: None,
         interfaces,

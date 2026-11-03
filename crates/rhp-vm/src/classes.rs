@@ -18,6 +18,8 @@ use rhp_values::{
     ClassFlags, ClassId, ClassKind, ObjectData, ObjectHandle, PhpStr, Thrown, Value, Visibility,
 };
 
+use rhp_builtins::object::{CloneObj, ObjectHandlers};
+
 use crate::{Frame, Vm};
 
 /// A linked class: all tables flattened from the inheritance chain.
@@ -67,9 +69,11 @@ pub struct ClassEntry {
     /// Declaring file and line (empty file: a built-in class).
     pub decl_file: PhpStr,
     pub decl_line: u32,
-    /// The class or a parent is a built-in class with a native `dtor_obj`
-    /// ([`rhp_builtins::object_dtor`]).
-    pub native_dtor: bool,
+    /// The object handlers: the built-in class's own registration
+    /// ([`rhp_builtins::object::registered`]), else the parent's (php's
+    /// inherited `create_object`). `None` for plain classes, so the engine
+    /// pays a field test only.
+    pub handlers: Option<&'static ObjectHandlers>,
 }
 
 #[derive(Clone)]
@@ -154,6 +158,34 @@ pub enum ConstInit {
     /// `case C = <expr>;` of a backed enum — the constant's value is already
     /// the case object; the thunk yields its backing `value` property.
     EnumCase(Rc<FunctionProto>),
+}
+
+/// A linked class's flags: the declaration's, the ones an internal class's
+/// stub gives it (gen_stub's `ce_flags`), the inherited ones
+/// (zend_do_inheritance), and `not_cloneable` from the handlers.
+fn link_flags(
+    proto: &ClassProto,
+    parent: Option<ClassFlags>,
+    handlers: Option<&'static ObjectHandlers>,
+    internal: bool,
+) -> ClassFlags {
+    use rhp_builtins::signatures as sigs;
+    let mut f = proto.flags;
+    let stub = if internal {
+        sigs::class(proto.name.as_bytes()).map_or(0, |c| c.flags)
+    } else {
+        0
+    };
+    f.allow_dynamic |= stub & sigs::CLASS_ALLOW_DYNAMIC_PROPERTIES != 0;
+    f.no_dynamic |= stub & sigs::CLASS_NO_DYNAMIC_PROPERTIES != 0;
+    f.not_serializable |= stub & sigs::CLASS_NOT_SERIALIZABLE != 0;
+    if let Some(p) = parent {
+        f.allow_dynamic |= p.allow_dynamic;
+        f.not_serializable |= p.not_serializable;
+    }
+    f.not_cloneable = proto.kind == ClassKind::Enum
+        || handlers.is_some_and(|h| matches!(h.clone_obj, CloneObj::None));
+    f
 }
 
 /// The key a declared instance property is stored under in
@@ -1108,8 +1140,13 @@ impl Vm {
             .map(|t| self.class_ids[&lc(t.as_bytes())])
             .collect();
 
-        let native_dtor = parent.is_some_and(|p| self.classes[p as usize].native_dtor)
-            || (proto.decl_file.is_empty() && rhp_builtins::has_native_dtor(proto.name.as_bytes()));
+        let parent_entry = parent.map(|p| &self.classes[p as usize]);
+        let internal = proto.decl_file.is_empty();
+        let handlers = internal
+            .then(|| rhp_builtins::object::registered(proto.name.as_bytes()))
+            .flatten()
+            .or_else(|| parent_entry.and_then(|p| p.handlers));
+        let flags = link_flags(proto, parent_entry.map(|p| p.flags), handlers, internal);
 
         self.class_ids.insert(lc(proto.name.as_bytes()), id);
         // Not compiled into a slot (prelude): after everything compiled so far.
@@ -1117,7 +1154,7 @@ impl Vm {
         self.classes.push(ClassEntry {
             name: proto.name.clone(),
             kind: proto.kind,
-            flags: proto.flags,
+            flags,
             parent,
             ancestors,
             interfaces,
@@ -1134,7 +1171,7 @@ impl Vm {
             proto: Rc::new(proto.clone()),
             decl_file: proto.decl_file.clone(),
             decl_line: proto.decl_line,
-            native_dtor,
+            handlers,
         });
 
         // Enum cases: materialize one singleton object per case and expose it as
@@ -1183,11 +1220,7 @@ impl Vm {
         if let Some(v) = value {
             properties.insert(PhpStr::from("value"), v);
         }
-        Rc::new(RefCell::new(ObjectData {
-            class: class_id,
-            id: oid,
-            properties,
-        }))
+        Rc::new(RefCell::new(ObjectData::new(class_id, oid, properties)))
     }
 
     /// Resolve a `ClassRef` (in the context of frame `top`) to a `ClassId`.
@@ -1412,11 +1445,7 @@ impl Vm {
             }
             properties.insert(name.clone(), pe.default.clone());
         }
-        let obj = Rc::new(RefCell::new(ObjectData {
-            class: class_id,
-            id,
-            properties,
-        }));
+        let obj = Rc::new(RefCell::new(ObjectData::new(class_id, id, properties)));
         // Throwables record their creation site (file/line/trace) at creation,
         // before any constructor runs (zend_default_exception_new).
         if self.class_implements(class_id, b"Throwable") {

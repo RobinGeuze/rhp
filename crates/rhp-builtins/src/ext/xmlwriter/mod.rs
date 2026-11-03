@@ -1,10 +1,9 @@
 //! The `xmlwriter` extension on libxml2's xmlTextWriter: a port of
 //! ext/xmlwriter/php_xmlwriter.c. The `XMLWriter` class is declared in PHP
 //! ([`PRELUDE_PHP`]) and calls `__xmlwriter` for its methods, the
-//! procedural `xmlwriter_*` functions `__xmlwriter_fn`. A writer belongs to
-//! its object (by id) and is freed with it.
+//! procedural `xmlwriter_*` functions `__xmlwriter_fn`. A writer is its
+//! object's payload, freed by the class's `dtor_obj` or with the object.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, OsStr};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -17,6 +16,7 @@ use crate::ext::libxml::io::Io;
 use crate::ext::libxml::sys::{self, cbytes};
 use crate::ext::libxml::{ffi, io};
 use crate::ext::zpp::{deref, given_type};
+use crate::object::{ClassHandlers, CloneObj, ObjectHandlers};
 use crate::{Builtin, Host, Thrown};
 
 /// `ze_xmlwriter_object`: the writer and, for a memory writer, its buffer
@@ -37,21 +37,23 @@ impl Drop for Writer {
     }
 }
 
-thread_local! {
-    static WRITERS: RefCell<HashMap<u32, Rc<Writer>>> = RefCell::new(HashMap::new());
-}
-
-/// A new request: object ids restart.
-pub(crate) fn reset_state() {
-    let old = WRITERS.with(|m| m.try_borrow_mut().map(|mut m| std::mem::take(&mut *m)).ok());
-    drop(old);
-}
+/// `XMLWriter`'s handlers: no clone; `dtor_obj` frees the writer.
+pub(crate) const CLASSES: &[ClassHandlers] = &[ClassHandlers {
+    class: "XMLWriter",
+    handlers: &ObjectHandlers {
+        clone_obj: CloneObj::None,
+        dtor_obj: Some(object_dtor),
+        ..ObjectHandlers::STD
+    },
+}];
 
 /// xmlwriter_object_dtor: free the writer while a host can take its last
 /// writes (a URI or stream writer flushes on free). Methods called later,
-/// from a subclass's `__destruct`, find no writer, as in php.
-pub(crate) fn object_dtor(host: &mut dyn Host, id: u32) -> Result<(), Thrown> {
-    let w = WRITERS.with(|m| m.borrow_mut().remove(&id));
+/// from a subclass's `__destruct`, find no writer, as in php. Without a
+/// `dtor_obj` (a fatal error's bailout, a constructor that threw) the
+/// writer goes with the object, with no host, and stream writes are lost.
+fn object_dtor(host: &mut dyn Host, obj: &rhp_values::ObjectHandle) -> Result<(), Thrown> {
+    let w = obj.borrow_mut().take_payload();
     if w.is_none() {
         return Ok(());
     }
@@ -59,41 +61,21 @@ pub(crate) fn object_dtor(host: &mut dyn Host, id: u32) -> Result<(), Thrown> {
     ffi::with_host(host, "Unknown", || drop(w))
 }
 
-/// `free_obj` for an XMLWriter whose `dtor_obj` did not run (a fatal
-/// error's bailout, a constructor that threw): no host, so stream writes
-/// are lost.
-pub(crate) fn object_freed(id: u32) {
-    let w = WRITERS
-        .try_with(|m| m.try_borrow_mut().ok().and_then(|mut m| m.remove(&id)))
-        .ok()
-        .flatten();
-    drop(w);
-}
-
-fn obj_id(v: &Value) -> Option<u32> {
-    match v {
-        Value::Object(h) => Some(h.borrow().id),
-        _ => None,
-    }
-}
-
 /// Attach `w` to the object, freeing the writer it had (inside the caller's
 /// host frame).
 fn set_writer(obj: &Value, w: Option<Writer>) {
-    let Some(id) = obj_id(obj) else { return };
-    let old = WRITERS.with(|m| {
-        let mut m = m.borrow_mut();
-        match w {
-            Some(w) => m.insert(id, Rc::new(w)),
-            None => m.remove(&id),
-        }
-    });
+    let Some(h) = crate::object::object_of(obj) else {
+        return;
+    };
+    let old = match w {
+        Some(w) => h.borrow_mut().set_payload(Rc::new(w)),
+        None => h.borrow_mut().take_payload(),
+    };
     drop(old);
 }
 
 fn writer_of(obj: &Value) -> Option<Rc<Writer>> {
-    let id = obj_id(obj)?;
-    WRITERS.with(|m| m.borrow().get(&id).cloned())
+    crate::object::payload::<Writer>(obj)
 }
 
 unsafe extern "C" fn memory_write(ctx: *mut c_void, buf: *const c_char, len: c_int) -> c_int {

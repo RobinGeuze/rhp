@@ -1,70 +1,86 @@
-//! The VM side of loose comparison: the engine services `zend_compare` needs
-//! for objects (`cast_object` via `__toString`, internal `compare` handlers for
-//! `GMP` and `DateTimeInterface`, enum detection, the conversion notice).
+//! The VM side of loose comparison and of the object handlers that conversions
+//! and operators consult: `cast_object` (an internal class's handler, else
+//! `__toString`), internal `compare` handlers, `do_operation`, enum
+//! detection, the conversion notice.
 
-use rhp_builtins::GmpCmpOperand;
-use rhp_semantics::ops::{CastTarget, CompareCx};
-use rhp_values::{conv, ClassId, ClassKind, ObjectHandle, PhpStr, Thrown, Value};
+use rhp_builtins::object::{CastTarget, Op};
+use rhp_semantics::ops::CompareCx;
+use rhp_values::{ClassId, ClassKind, ObjectHandle, PhpStr, Thrown, Value};
 
 use crate::Vm;
 
 impl Vm {
-    fn class_is(&self, cls: ClassId, name: &[u8]) -> bool {
-        match self.resolve_class_by_name(name) {
-            Ok(t) => self.class(cls).ancestors.contains(&t),
-            Err(_) => false,
+    /// The object handlers of `h`'s class (`None` for plain classes).
+    pub(crate) fn handlers_of(
+        &self,
+        h: &ObjectHandle,
+    ) -> Option<&'static rhp_builtins::object::ObjectHandlers> {
+        self.class(h.borrow().class).handlers
+    }
+
+    /// php's `cast_object` handler: the class's own, else
+    /// `zend_std_cast_object_tostring` (`__toString` for strings, true for
+    /// bool, failure otherwise). `Ok(None)` is FAILURE.
+    pub(crate) fn cast_object_vm(
+        &mut self,
+        obj: &ObjectHandle,
+        target: CastTarget,
+    ) -> Result<Option<Value>, Thrown> {
+        if let Some(f) = self.handlers_of(obj).and_then(|t| t.cast_object) {
+            return f(self, obj, target);
         }
-    }
-
-    fn is_gmp(&self, h: &ObjectHandle) -> bool {
-        self.class(h.borrow().class)
-            .name
-            .as_bytes()
-            .eq_ignore_ascii_case(b"GMP")
-    }
-
-    fn gmp_num(h: &ObjectHandle) -> Vec<u8> {
-        match h
-            .borrow()
-            .properties
-            .get(&PhpStr::from_bytes(b"num".to_vec()))
-        {
-            Some(v) => conv::to_string_bytes(v),
-            None => b"0".to_vec(),
-        }
-    }
-
-    /// `zend_zval_value_name`.
-    fn value_name(&self, v: &Value) -> String {
-        match v {
-            Value::Null => "null".into(),
-            Value::Bool(true) => "true".into(),
-            Value::Bool(false) => "false".into(),
-            Value::Int(_) => "int".into(),
-            Value::Float(_) => "float".into(),
-            Value::Str(_) => "string".into(),
-            Value::Array(_) => "array".into(),
-            Value::Object(h) => {
-                String::from_utf8_lossy(self.class(h.borrow().class).name.as_bytes()).into_owned()
+        match target {
+            CastTarget::Str => {
+                let cls = obj.borrow().class;
+                match self.lookup_method(cls, b"__tostring") {
+                    Some(m) => {
+                        let r = self.call_sync(&m, Some(obj.clone()), cls, Vec::new())?;
+                        Ok(Some(Value::Str(PhpStr::from_bytes(
+                            rhp_values::conv::to_string_bytes(&r),
+                        ))))
+                    }
+                    None => Ok(None),
+                }
             }
-            Value::Closure(_) => "Closure".into(),
-            Value::Resource(_) => "resource".into(),
-            Value::Ref(r) => self.value_name(&r.borrow()),
+            t => Ok(rhp_builtins::object::std_cast(t)),
         }
     }
 
-    fn gmp_operand(&self, v: &Value) -> GmpCmpOperand {
-        match v {
-            Value::Object(h) if self.is_gmp(h) => GmpCmpOperand::Gmp(Self::gmp_num(h)),
-            other => GmpCmpOperand::Other(other.clone(), self.value_name(other)),
+    /// An internal class's `cast_object` for a conversion the engine does
+    /// itself for other objects (`(int)`, `(float)`, `(bool)`, arithmetic
+    /// operands): `None` unless `v` is an object whose class has one that
+    /// succeeds.
+    pub(crate) fn handler_cast(
+        &mut self,
+        v: &Value,
+        target: CastTarget,
+    ) -> Result<Option<Value>, Thrown> {
+        let Value::Object(h) = v else {
+            return Ok(None);
+        };
+        match self.handlers_of(h).and_then(|t| t.cast_object) {
+            Some(f) => f(self, h, target),
+            None => Ok(None),
         }
     }
 
-    fn date_parts(h: &ObjectHandle) -> Option<(i64, i64)> {
-        let o = h.borrow();
-        let ts = o.properties.get(&PhpStr::from_bytes(b"ts".to_vec()))?;
-        let us = o.properties.get(&PhpStr::from_bytes(b"us".to_vec()))?;
-        Some((conv::to_int(ts), conv::to_int(us)))
+    /// ZEND_TRY_BINARY_OBJECT_OPERATION: the `do_operation` of op1's class
+    /// when op1 is an object with one, else op2's. `Ok(None)`: no handler,
+    /// or it failed; the engine goes on with the normal operator.
+    pub(crate) fn try_do_operation(
+        &mut self,
+        op: Op,
+        a: &Value,
+        b: &Value,
+    ) -> Result<Option<Value>, Thrown> {
+        let handler = |vm: &Vm, v: &Value| match v {
+            Value::Object(h) => vm.handlers_of(h).and_then(|t| t.do_operation),
+            _ => None,
+        };
+        match handler(self, a).or_else(|| handler(self, b)) {
+            Some(f) => f(self, op, a, Some(b)),
+            None => Ok(None),
+        }
     }
 
     /// Loose comparison with the engine behind it (`__toString` etc.).
@@ -113,48 +129,7 @@ impl CompareCx for Vm {
         obj: &ObjectHandle,
         target: CastTarget,
     ) -> Result<Option<Value>, Thrown> {
-        if self.is_gmp(obj) {
-            let num = Self::gmp_num(obj);
-            let s = String::from_utf8_lossy(&num).into_owned();
-            return Ok(match target {
-                CastTarget::Str => Some(Value::str(s)),
-                CastTarget::Int => Some(Value::Int(s.parse::<i64>().unwrap_or_else(|_| {
-                    // mpz_get_si keeps the low bits; out-of-range values are rare.
-                    s.parse::<f64>().map(|f| f as i64).unwrap_or(0)
-                }))),
-                CastTarget::Float => Some(Value::Float(s.parse::<f64>().unwrap_or(0.0))),
-                CastTarget::Bool => Some(Value::Bool(s != "0")),
-                _ => None,
-            });
-        }
-        if self.is_sxe(obj) {
-            // sxe_object_cast_ex: the node's text, converted.
-            let v = Value::Object(obj.clone());
-            let text = || Value::str(rhp_builtins::sxe_string(&v).unwrap_or_default());
-            return Ok(match target {
-                CastTarget::Bool => Some(Value::Bool(rhp_builtins::sxe_bool(&v))),
-                CastTarget::Str => Some(text()),
-                CastTarget::Int => Some(Value::Int(conv::to_int(&text()))),
-                CastTarget::Float => Some(Value::Float(conv::to_float(&text()))),
-                _ => None,
-            });
-        }
-        match target {
-            CastTarget::Bool => Ok(Some(Value::Bool(true))),
-            CastTarget::Str => {
-                let cls = obj.borrow().class;
-                match self.lookup_method(cls, b"__tostring") {
-                    Some(m) => {
-                        let r = self.call_sync(&m, Some(obj.clone()), cls, Vec::new())?;
-                        Ok(Some(Value::Str(PhpStr::from_bytes(conv::to_string_bytes(
-                            &r,
-                        )))))
-                    }
-                    None => Ok(None),
-                }
-            }
-            _ => Ok(None),
-        }
+        self.cast_object_vm(obj, target)
     }
 
     fn compare_handler(
@@ -163,46 +138,8 @@ impl CompareCx for Vm {
         a: &Value,
         b: &Value,
     ) -> Option<Result<i32, Thrown>> {
-        if self.is_gmp(obj) {
-            let (x, y) = (self.gmp_operand(a), self.gmp_operand(b));
-            return Some(rhp_builtins::gmp_compare_handler(x, y));
-        }
-        if self.is_sxe(obj) {
-            // sxe_objects_compare: two SimpleXML objects are equal only when
-            // they wrap the same node; otherwise uncomparable.
-            let (Value::Object(x), Value::Object(y)) = (a, b) else {
-                return None;
-            };
-            if !self.is_sxe(x) || !self.is_sxe(y) {
-                return None;
-            }
-            let same = rhp_builtins::sxe_same_node(a, b);
-            return Some(Ok(if same { 0 } else { 1 }));
-        }
-        let cls = obj.borrow().class;
-        if self.class_is(cls, b"DateTimeInterface") {
-            // ZEND_COMPARE_OBJECTS_FALLBACK: both must use the date handler.
-            let (Value::Object(x), Value::Object(y)) = (a, b) else {
-                return None;
-            };
-            let (xc, yc) = (x.borrow().class, y.borrow().class);
-            if !self.class_is(xc, b"DateTimeInterface") || !self.class_is(yc, b"DateTimeInterface")
-            {
-                return None;
-            }
-            return Some(match (Self::date_parts(x), Self::date_parts(y)) {
-                (Some(p), Some(q)) => Ok(match p.cmp(&q) {
-                    std::cmp::Ordering::Less => -1,
-                    std::cmp::Ordering::Equal => 0,
-                    std::cmp::Ordering::Greater => 1,
-                }),
-                _ => Err(Thrown::error(
-                    "Error",
-                    "Trying to compare an incomplete DateTime or DateTimeImmutable object",
-                )),
-            });
-        }
-        None
+        let f = self.handlers_of(obj)?.compare?;
+        f(self, a, b).transpose()
     }
 
     fn notice(&mut self, msg: &str) {

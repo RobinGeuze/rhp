@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use classes::{Deny, PropRes};
+use rhp_builtins::object::{CastTarget, Op};
 use rhp_builtins::{self as builtins, Host};
 use rhp_bytecode::{
     ClassProto, ClassRef, CmpKind, ConstInitProto, FunctionProto, IncludeKind, Instr, NIdx,
@@ -490,36 +491,13 @@ impl Host for Vm {
     }
 
     fn not_serializable(&self, class_id: u32) -> bool {
-        const NO_SERIALIZE: &[&[u8]] = &[
-            b"Closure",
-            b"Generator",
-            b"WeakReference",
-            b"WeakMap",
-            b"Fiber",
-            b"CurlHandle",
-            b"CurlMultiHandle",
-            b"CurlShareHandle",
-            b"OpenSSLAsymmetricKey",
-            b"OpenSSLCertificate",
-            b"OpenSSLCertificateSigningRequest",
-        ];
-        let mut c = (class_id as usize)
-            .lt(&self.classes.len())
-            .then_some(class_id);
-        while let Some(id) = c {
-            if (id as usize) < self.internal_classes {
-                let n = self.classes[id as usize].name.as_bytes();
-                if (n.starts_with(b"Reflection")
-                    && n.len() > 10
-                    && !n.eq_ignore_ascii_case(b"ReflectionException"))
-                    || NO_SERIALIZE.iter().any(|x| n.eq_ignore_ascii_case(x))
-                {
-                    return true;
-                }
-            }
-            c = self.classes[id as usize].parent;
-        }
-        false
+        self.classes
+            .get(class_id as usize)
+            .is_some_and(|c| c.flags.not_serializable)
+    }
+
+    fn object_handlers(&self, class_id: u32) -> Option<&'static builtins::object::ObjectHandlers> {
+        self.classes.get(class_id as usize)?.handlers
     }
 
     fn define_const(&mut self, name: &[u8], value: Value) -> bool {
@@ -3279,32 +3257,18 @@ impl Vm {
         let e = self.class(cls);
         let cname = String::from_utf8_lossy(e.name.as_bytes()).into_owned();
         let p = String::from_utf8_lossy(pname.as_bytes()).into_owned();
-        if e.kind == ClassKind::Enum
-            || e.flags.is_readonly
-            || builtins::is_opaque_handle_class(e.name.as_bytes())
-        {
+        // Engine-internal (prelude) code manages its own objects.
+        let prelude = is_prelude_proto(&self.stack[top].proto);
+        // ZEND_ACC_NO_DYNAMIC_PROPERTIES: enums, readonly classes and the
+        // internal `@strict-properties` classes.
+        if e.kind == ClassKind::Enum || e.flags.is_readonly || (e.flags.no_dynamic && !prelude) {
             return Err(Thrown::error(
                 "Error",
                 format!("Cannot create dynamic property {cname}::${p}"),
             ));
         }
-        let mut c = Some(cls);
-        while let Some(id) = c {
-            let ce = self.class(id);
-            if ce.flags.allow_dynamic
-                || ce.name.as_bytes().eq_ignore_ascii_case(b"stdClass")
-                || ce.name.as_bytes() == b"__PHP_Incomplete_Class"
-            {
-                return Ok(());
-            }
-            c = ce.parent;
-        }
-        // Engine-internal (prelude) code manages its own objects.
-        if (0..=top)
-            .rev()
-            .take(1)
-            .any(|i| is_prelude_proto(&self.stack[i].proto))
-        {
+        // ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES (inherited at link time).
+        if e.flags.allow_dynamic || prelude {
             return Ok(());
         }
         self.diag(
@@ -3738,13 +3702,11 @@ impl Vm {
         if self.matches_type(&v, ty, ctx) {
             return Ok(v);
         }
-        if self
-            .lookup_method(h.borrow().class, b"__tostring")
-            .is_none()
-        {
-            return Ok(v);
-        }
-        Ok(Value::str(self.to_string_vm(&Value::Object(h))?))
+        // zend_parse_arg_str_weak: the object's cast_object.
+        Ok(match self.cast_object_vm(&h, CastTarget::Str)? {
+            Some(s) => Value::str(conv::to_string_bytes(&s)),
+            None => v,
+        })
     }
 
     /// [`Vm::coerce_stringable`] over a just-bound frame's passed parameters.
@@ -4105,44 +4067,10 @@ impl Vm {
         n.len() == 9 && n.eq_ignore_ascii_case(b"Directory")
     }
 
-    /// Objects of this class have no `clone_obj` handler in php ("Trying
-    /// to clone an uncloneable object"): enums, and the built-in classes
-    /// below together with every subclass of them.
+    /// Objects of this class have no `clone_obj` handler ("Trying to clone
+    /// an uncloneable object"): enums, and the classes whose handlers say so.
     pub(crate) fn uncloneable_class(&self, cls: ClassId) -> bool {
-        const NO_CLONE: &[&[u8]] = &[
-            b"Exception",
-            b"Error",
-            b"Generator",
-            b"WeakReference",
-            b"Fiber",
-            b"Directory",
-            b"IteratorIterator",
-            b"RecursiveIteratorIterator",
-            b"ZipArchive",
-            b"CurlMultiHandle",
-            b"CurlShareHandle",
-            b"OpenSSLAsymmetricKey",
-            b"OpenSSLCertificate",
-            b"OpenSSLCertificateSigningRequest",
-            b"XMLParser",
-            b"XMLWriter",
-        ];
-        if self.class(cls).kind == ClassKind::Enum {
-            return true;
-        }
-        let mut c = Some(cls);
-        while let Some(id) = c {
-            if (id as usize) < self.internal_classes {
-                let n = self.class(id).name.as_bytes();
-                if (n.starts_with(b"Reflection") && n.len() > 10)
-                    || NO_CLONE.iter().any(|x| n.eq_ignore_ascii_case(x))
-                {
-                    return true;
-                }
-            }
-            c = self.class(id).parent;
-        }
-        false
+        self.class(cls).flags.not_cloneable
     }
 
     /// Allocate a stream resource backed by `state`, returning its resource Value.
@@ -4222,7 +4150,11 @@ impl Vm {
     /// native `dtor_obj`.
     pub(crate) fn track_destructible(&mut self, h: &ObjectHandle) {
         let cls = h.borrow().class;
-        if self.class(cls).native_dtor || self.lookup_method(cls, b"__destruct").is_some() {
+        let native = self
+            .class(cls)
+            .handlers
+            .is_some_and(|t| t.dtor_obj.is_some());
+        if native || self.lookup_method(cls, b"__destruct").is_some() {
             self.destructibles.push(h.clone());
         }
     }
@@ -4235,10 +4167,9 @@ impl Vm {
             return Ok(()); // marked destructed by a fatal error's bailout
         }
         let cls = h.borrow().class;
-        let native = if self.class(cls).native_dtor {
-            builtins::object_dtor(self, &h)
-        } else {
-            Ok(())
+        let native = match self.class(cls).handlers.and_then(|t| t.dtor_obj) {
+            Some(f) => f(self, &h),
+            None => Ok(()),
         };
         if let Some(m) = self.lookup_method(cls, b"__destruct") {
             self.call_sync(&m, Some(h), cls, Vec::new())?;
@@ -6323,27 +6254,31 @@ impl Vm {
                     self.cv_assign(top, cv, v);
                 }
 
-                Instr::Add { dst, a, b } => self.bin(top, dst, a, b, ops::add)?,
-                Instr::Sub { dst, a, b } => self.bin(top, dst, a, b, ops::sub)?,
-                Instr::Mul { dst, a, b } => self.bin(top, dst, a, b, ops::mul)?,
-                Instr::Div { dst, a, b } => self.bin(top, dst, a, b, ops::div)?,
-                Instr::Mod { dst, a, b } => self.bin(top, dst, a, b, ops::modulo)?,
-                Instr::Pow { dst, a, b } => self.bin(top, dst, a, b, ops::pow)?,
+                Instr::Add { dst, a, b } => self.bin(top, dst, a, b, Op::Add, ops::add)?,
+                Instr::Sub { dst, a, b } => self.bin(top, dst, a, b, Op::Sub, ops::sub)?,
+                Instr::Mul { dst, a, b } => self.bin(top, dst, a, b, Op::Mul, ops::mul)?,
+                Instr::Div { dst, a, b } => self.bin(top, dst, a, b, Op::Div, ops::div)?,
+                Instr::Mod { dst, a, b } => self.bin(top, dst, a, b, Op::Mod, ops::modulo)?,
+                Instr::Pow { dst, a, b } => self.bin(top, dst, a, b, Op::Pow, ops::pow)?,
                 Instr::BitAnd { dst, a, b } => {
-                    self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::And))
+                    self.bin_inf(top, dst, a, b, Op::BitAnd, |x, y| {
+                        ops::bitwise(x, y, ops::BitOp::And)
+                    })?
                 }
-                Instr::BitOr { dst, a, b } => {
-                    self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Or))
-                }
+                Instr::BitOr { dst, a, b } => self.bin_inf(top, dst, a, b, Op::BitOr, |x, y| {
+                    ops::bitwise(x, y, ops::BitOp::Or)
+                })?,
                 Instr::BitXor { dst, a, b } => {
-                    self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Xor))
+                    self.bin_inf(top, dst, a, b, Op::BitXor, |x, y| {
+                        ops::bitwise(x, y, ops::BitOp::Xor)
+                    })?
                 }
-                Instr::Shl { dst, a, b } => {
-                    self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Shl))
-                }
-                Instr::Shr { dst, a, b } => {
-                    self.bin_inf(top, dst, a, b, |x, y| ops::bitwise(x, y, ops::BitOp::Shr))
-                }
+                Instr::Shl { dst, a, b } => self.bin_inf(top, dst, a, b, Op::Shl, |x, y| {
+                    ops::bitwise(x, y, ops::BitOp::Shl)
+                })?,
+                Instr::Shr { dst, a, b } => self.bin_inf(top, dst, a, b, Op::Shr, |x, y| {
+                    ops::bitwise(x, y, ops::BitOp::Shr)
+                })?,
                 Instr::Concat { dst, a, b } => {
                     if self.concat_in_place(top, &proto.code, pc, proto.num_cvs, dst, a, b) {
                         continue;
@@ -6352,6 +6287,10 @@ impl Vm {
                     let v = if matches!(x, Value::Object(_) | Value::Array(_))
                         || matches!(y, Value::Object(_) | Value::Array(_))
                     {
+                        if let Some(r) = self.try_do_operation(Op::Concat, &x, &y)? {
+                            self.reg_set(top, dst, r);
+                            continue;
+                        }
                         let mut bytes = self.to_string_vm(&x)?;
                         bytes.extend_from_slice(&self.to_string_vm(&y)?);
                         Value::str(bytes)
@@ -6362,18 +6301,34 @@ impl Vm {
                 }
 
                 Instr::Neg { dst, a } => {
-                    let v = self.reg_get(top, a);
-                    let v = self.sxe_operand(v);
+                    let mut v = self.reg_get(top, a);
+                    if let Value::Object(_) = v {
+                        // php compiles `-$x` to `$x * -1`.
+                        if let Some(r) = self.try_do_operation(Op::Mul, &v, &Value::Int(-1))? {
+                            self.reg_set(top, dst, r);
+                            continue;
+                        }
+                        v = self.number_operand(v)?;
+                    }
                     let r = ops::negate(&v)?;
                     self.reg_set(top, dst, r);
                 }
                 Instr::BitNot { dst, a } => {
                     let v = self.reg_get(top, a);
+                    if let Value::Object(h) = &v {
+                        if let Some(f) = self.handlers_of(h).and_then(|t| t.do_operation) {
+                            if let Some(r) = f(self, Op::BitNot, &v, None)? {
+                                self.reg_set(top, dst, r);
+                                continue;
+                            }
+                        }
+                    }
                     self.reg_set(top, dst, ops::bitwise_not(&v));
                 }
                 Instr::Not { dst, a } => {
                     let v = self.reg_get(top, a);
-                    self.reg_set(top, dst, Value::Bool(!self.truthy(&v)));
+                    let b = self.truthy(&v)?;
+                    self.reg_set(top, dst, Value::Bool(!b));
                 }
                 Instr::IncDec {
                     dst,
@@ -6382,34 +6337,25 @@ impl Vm {
                     delta,
                 } => {
                     let cur = self.reg_get(top, cv);
-                    let operand = self.sxe_operand(cur.clone());
-                    let new = self.inc_dec_vm(&operand, delta as i64)?;
+                    let new = self.inc_dec_vm(&cur, delta as i64)?;
                     self.cv_assign(top, cv, new.clone());
                     self.reg_set(top, dst, if pre { new } else { cur });
                 }
 
                 Instr::CastInt { dst, a } => {
                     let v = self.reg_get(top, a);
-                    // php's curl_cast_object: (int) $curlHandle is its object id.
-                    let n = match &v {
-                        Value::Object(h) if rhp_builtins::is_curl_handle(&v) => {
-                            h.borrow().id as i64
-                        }
-                        // SimpleXML's cast handler: the node's text.
-                        Value::Object(h) if self.is_sxe(h) => conv::to_int(&Value::str(
-                            rhp_builtins::sxe_string(&v).unwrap_or_default(),
-                        )),
-                        _ => conv::to_int(&v),
+                    // An internal class's cast_object (curl handles: the id).
+                    let n = match self.handler_cast(&v, CastTarget::Int)? {
+                        Some(n) => conv::to_int(&n),
+                        None => conv::to_int(&v),
                     };
                     self.reg_set(top, dst, Value::Int(n));
                 }
                 Instr::CastFloat { dst, a } => {
                     let v = self.reg_get(top, a);
-                    let f = match &v {
-                        Value::Object(h) if self.is_sxe(h) => conv::to_float(&Value::str(
-                            rhp_builtins::sxe_string(&v).unwrap_or_default(),
-                        )),
-                        _ => conv::to_float(&v),
+                    let f = match self.handler_cast(&v, CastTarget::Float)? {
+                        Some(f) => conv::to_float(&f),
+                        None => conv::to_float(&v),
                     };
                     self.reg_set(top, dst, Value::Float(f));
                 }
@@ -6420,22 +6366,21 @@ impl Vm {
                 }
                 Instr::CastBool { dst, a } => {
                     let v = self.reg_get(top, a);
-                    self.reg_set(top, dst, Value::Bool(self.truthy(&v)));
+                    let b = self.truthy(&v)?;
+                    self.reg_set(top, dst, Value::Bool(b));
                 }
                 Instr::CastArray { dst, a } => {
                     let v = self.reg_get(top, a);
                     let out = match &v {
-                        // get_properties_for(ARRAY_CAST): an ArrayObject's storage.
-                        Value::Object(h) if self.is_sxe(h) => {
-                            match builtins::sxe_props_array(self, &v) {
+                        // get_properties_for(ARRAY_CAST): an internal class's
+                        // view (an ArrayObject's storage).
+                        Value::Object(h) => {
+                            let purpose = builtins::object::PropPurpose::ArrayCast;
+                            match builtins::object::properties_for(self, h, purpose)? {
                                 Some(a) => Value::Array(a),
                                 None => self.object_to_array_mangled(h),
                             }
                         }
-                        Value::Object(h) => match builtins::spl_array_storage(h) {
-                            Some((st @ Value::Array(_), _)) => st,
-                            _ => self.object_to_array_mangled(h),
-                        },
                         _ => cast_to_array(v),
                     };
                     self.reg_set(top, dst, out);
@@ -6485,12 +6430,14 @@ impl Vm {
                     }
                 }
                 Instr::JmpTrue { cond, target } => {
-                    if self.truthy(&self.reg_get(top, cond)) {
+                    let c = self.reg_get(top, cond);
+                    if self.truthy(&c)? {
                         self.stack[top].pc = target as usize;
                     }
                 }
                 Instr::JmpFalse { cond, target } => {
-                    if !self.truthy(&self.reg_get(top, cond)) {
+                    let c = self.reg_get(top, cond);
+                    if !self.truthy(&c)? {
                         self.stack[top].pc = target as usize;
                     }
                 }
@@ -7832,12 +7779,6 @@ impl Vm {
                             "__clone method called on non-object",
                         ));
                     };
-                    if let Some(class) = rhp_builtins::curl_uncloneable(&h) {
-                        return Err(Thrown::error(
-                            "Error",
-                            format!("Trying to clone an uncloneable object of class {class}"),
-                        ));
-                    }
                     // php's zval_add_ref: a reference only this object holds is
                     // copied as a plain value, so the clone gets its own slot.
                     // Holders other than the object and our copy that are
@@ -7856,10 +7797,7 @@ impl Vm {
                         }
                         (od.class, props)
                     };
-                    let uncloneable = self.uncloneable_class(cls)
-                        || self.generators.contains_key(&h.borrow().id)
-                        || rhp_builtins::is_socket_object(&h);
-                    if uncloneable {
+                    if self.uncloneable_class(cls) {
                         return Err(Thrown::error(
                             "Error",
                             format!(
@@ -7874,13 +7812,14 @@ impl Vm {
                     if let Some(ks) = self.unset_typed_props.get(&h.borrow().id).cloned() {
                         self.unset_typed_props.insert(id, ks);
                     }
-                    let new_obj: ObjectHandle = Rc::new(RefCell::new(ObjectData {
-                        class: cls,
-                        id,
-                        properties: props,
-                    }));
+                    let new_obj: ObjectHandle =
+                        Rc::new(RefCell::new(ObjectData::new(cls, id, props)));
                     self.track_destructible(&new_obj);
-                    rhp_builtins::curl_cloned(&h, &new_obj);
+                    if let Some(rhp_builtins::object::CloneObj::Custom(f)) =
+                        self.class(cls).handlers.map(|t| t.clone_obj)
+                    {
+                        f(self, &h, &new_obj)?;
+                    }
                     self.reg_set(top, dst, Value::Object(new_obj.clone()));
                     if let Some(m) = self.lookup_method(cls, b"__clone") {
                         self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;
@@ -9146,6 +9085,27 @@ impl Vm {
                 what.to_ascii_lowercase(),
                 self.zval_value_name(&arr)
             ))),
+            // increment_function: `do_operation(ADD, 1)`, else the object
+            // as a number (`cast_object(_IS_NUMBER)`), else a TypeError.
+            obj @ Value::Object(_) => {
+                let Value::Object(h) = &obj else {
+                    unreachable!()
+                };
+                if let Some(f) = self.handlers_of(h).and_then(|t| t.do_operation) {
+                    let op = if inc { Op::Add } else { Op::Sub };
+                    if let Some(r) = f(self, op, &obj, Some(&Value::Int(1)))? {
+                        return Ok(r);
+                    }
+                }
+                match self.cast_object_vm(h, CastTarget::Number)? {
+                    Some(n) => self.inc_dec_vm(&n, delta),
+                    None => Err(Thrown::type_error(format!(
+                        "Cannot {} {}",
+                        what.to_ascii_lowercase(),
+                        self.zval_value_name(&obj)
+                    ))),
+                }
+            }
             other => Ok(inc_dec_value(&other, delta)),
         }
     }
@@ -9292,11 +9252,11 @@ impl Vm {
             .expect("Generator prelude class");
         let id = self.next_object_id;
         self.next_object_id += 1;
-        let obj = Rc::new(RefCell::new(ObjectData {
-            class: cls,
+        let obj = Rc::new(RefCell::new(ObjectData::new(
+            cls,
             id,
-            properties: indexmap::IndexMap::with_hasher(rustc_hash::FxBuildHasher),
-        }));
+            indexmap::IndexMap::with_hasher(rustc_hash::FxBuildHasher),
+        )));
         self.generators.insert(
             id,
             GenState {
@@ -10010,11 +9970,12 @@ impl Vm {
             other => other.clone(),
         };
         if let Value::Object(h) = &d {
-            let cls = h.borrow().class;
-            if let Some(m) = self.lookup_method(cls, b"__tostring") {
-                let r = self.call_sync(&m, Some(h.clone()), cls, Vec::new())?;
+            // zval_get_string: the object's cast_object (`__toString`, or an
+            // internal class's handler).
+            if let Some(r) = self.cast_object_vm(h, CastTarget::Str)? {
                 return Ok(conv::to_string_bytes(&r));
             }
+            let cls = h.borrow().class;
             return Err(Thrown::error(
                 "Error",
                 format!(
@@ -10317,33 +10278,93 @@ impl Vm {
         }
     }
 
-    /// Binary op that may throw (arithmetic).
+    /// Binary op that may throw (arithmetic). An object operand goes
+    /// through [`Vm::bin_object`]; plain values take the operator directly.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
     fn bin(
         &mut self,
         top: usize,
         dst: Reg,
         a: Reg,
         b: Reg,
+        op: Op,
         f: fn(&Value, &Value) -> Result<Value, Thrown>,
     ) -> Result<(), Thrown> {
         let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
-        let (x, y) = (self.sxe_operand(x), self.sxe_operand(y));
-        let v = f(&x, &y)?;
+        let v = if matches!(x, Value::Object(_)) || matches!(y, Value::Object(_)) {
+            self.bin_object(op, f, x, y)?
+        } else {
+            f(&x, &y)?
+        };
         self.reg_set(top, dst, v);
         Ok(())
     }
 
-    /// Infallible binary op (bitwise/concat).
-    fn bin_inf(&mut self, top: usize, dst: Reg, a: Reg, b: Reg, f: fn(&Value, &Value) -> Value) {
+    /// An operator with an object operand: its `do_operation` first, then
+    /// the operator on the operands, an internal class's object cast to a
+    /// number (`cast_object(_IS_NUMBER)`).
+    #[inline(never)]
+    fn bin_object(
+        &mut self,
+        op: Op,
+        f: fn(&Value, &Value) -> Result<Value, Thrown>,
+        x: Value,
+        y: Value,
+    ) -> Result<Value, Thrown> {
+        if let Some(v) = self.try_do_operation(op, &x, &y)? {
+            return Ok(v);
+        }
+        let (x, y) = (self.number_operand(x)?, self.number_operand(y)?);
+        f(&x, &y)
+    }
+
+    /// Bitwise binary op. An object operand goes through
+    /// [`Vm::bin_inf_object`].
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    fn bin_inf(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        op: Op,
+        f: fn(&Value, &Value) -> Value,
+    ) -> Result<(), Thrown> {
         let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
-        // zendi_try_get_long: SimpleXML casts straight to int
-        let as_int = |v: Value| match self.sxe_operand(v) {
+        let v = if matches!(x, Value::Object(_)) || matches!(y, Value::Object(_)) {
+            self.bin_inf_object(op, f, x, y)?
+        } else {
+            f(&x, &y)
+        };
+        self.reg_set(top, dst, v);
+        Ok(())
+    }
+
+    /// A bitwise operator with an object operand: its `do_operation` first,
+    /// then the operator on integers (zendi_try_get_long: an internal
+    /// class's object is cast to a number, then to int).
+    #[inline(never)]
+    fn bin_inf_object(
+        &mut self,
+        op: Op,
+        f: fn(&Value, &Value) -> Value,
+        x: Value,
+        y: Value,
+    ) -> Result<Value, Thrown> {
+        if let Some(v) = self.try_do_operation(op, &x, &y)? {
+            return Ok(v);
+        }
+        let as_int = |v: Value| match v {
             Value::Float(f) => Value::Int(conv::to_int(&Value::Float(f))),
             other => other,
         };
-        let (x, y) = (as_int(x), as_int(y));
-        let v = f(&x, &y);
-        self.reg_set(top, dst, v);
+        let (x, y) = (
+            as_int(self.number_operand(x)?),
+            as_int(self.number_operand(y)?),
+        );
+        Ok(f(&x, &y))
     }
 
     fn call_builtin(
@@ -10439,12 +10460,15 @@ impl Vm {
             for i in range {
                 let given: Vec<u8> = match &args[i] {
                     Value::Object(h) => {
-                        let cls = h.borrow().class;
-                        if has_str && self.lookup_method(cls, b"__tostring").is_some() {
-                            let s = self.to_string_vm(&args[i])?;
-                            args[i] = Value::str(s);
-                            continue;
+                        // zend_parse_arg_str_weak: the object's cast_object.
+                        let h = h.clone();
+                        if has_str {
+                            if let Some(s) = self.cast_object_vm(&h, CastTarget::Str)? {
+                                args[i] = Value::str(conv::to_string_bytes(&s));
+                                continue;
+                            }
                         }
+                        let cls = h.borrow().class;
                         self.class(cls).name.as_bytes().to_vec()
                     }
                     Value::Closure(_) => b"Closure".to_vec(),
@@ -10511,12 +10535,15 @@ impl Vm {
         Ok(())
     }
 
-    /// An object with `__toString()`.
+    /// An object with `__toString()` or an internal class's `cast_object`.
     fn is_stringable(&self, v: &Value) -> bool {
         match v {
-            Value::Object(h) => self
-                .lookup_method(h.borrow().class, b"__tostring")
-                .is_some(),
+            Value::Object(h) => {
+                self.handlers_of(h).is_some_and(|t| t.cast_object.is_some())
+                    || self
+                        .lookup_method(h.borrow().class, b"__tostring")
+                        .is_some()
+            }
             _ => false,
         }
     }
@@ -11875,36 +11902,34 @@ fn prelude_null_coercion(ty: &rhp_bytecode::TypeHint) -> Option<(&'static str, V
 }
 
 impl Vm {
-    /// Whether `h` is a `SimpleXMLElement` (whose cast handler the VM's
-    /// int/float/bool conversions honour).
-    fn is_sxe(&self, h: &ObjectHandle) -> bool {
-        // Hot path (every object in a condition): no allocation.
-        match self.class_ids.get(b"simplexmlelement".as_slice()) {
-            Some(t) => self.class(h.borrow().class).ancestors.contains(t),
-            None => false,
-        }
-    }
-
-    /// SimpleXML's `cast_object(_IS_NUMBER)` for arithmetic operands: the
-    /// node's text as a number (`convert_scalar_to_number`, silent). Any other
-    /// value is returned unchanged.
-    fn sxe_operand(&self, v: Value) -> Value {
-        match &v {
-            Value::Object(h) if self.is_sxe(h) => {
-                let s = Value::str(rhp_builtins::sxe_string(&v).unwrap_or_default());
-                conv::to_number(&s).0.to_value()
+    /// An arithmetic operand: an object of an internal class with a
+    /// `cast_object` handler as its number (`cast_object(_IS_NUMBER)`,
+    /// e.g. a SimpleXML node's text); any other value unchanged.
+    fn number_operand(&mut self, v: Value) -> Result<Value, Thrown> {
+        if let Value::Object(_) = v {
+            if let Some(n) = self.handler_cast(&v, CastTarget::Number)? {
+                return Ok(n);
             }
-            _ => v,
+        }
+        Ok(v)
+    }
+
+    /// `(bool) $v`: an internal class's `cast_object(_IS_BOOL)` (an empty
+    /// SimpleXML list, a zero GMP is false), else php's truthiness.
+    #[inline]
+    fn truthy(&mut self, v: &Value) -> Result<bool, Thrown> {
+        match v {
+            Value::Object(_) => self.truthy_object(v),
+            _ => Ok(conv::to_bool(v)),
         }
     }
 
-    /// `(bool) $v`, with SimpleXML's cast handler (an empty element list is
-    /// false).
-    fn truthy(&self, v: &Value) -> bool {
-        match v {
-            Value::Object(h) if self.is_sxe(h) => rhp_builtins::sxe_bool(v),
-            _ => conv::to_bool(v),
-        }
+    #[inline(never)]
+    fn truthy_object(&mut self, v: &Value) -> Result<bool, Thrown> {
+        Ok(match self.handler_cast(v, CastTarget::Bool)? {
+            Some(b) => conv::to_bool(&b),
+            None => true,
+        })
     }
 }
 

@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use rhp_values::{conv, ArrayKey, ObjectData, ObjectHandle, PhpArray, Value};
 
+use crate::object::{self, CastTarget, ClassHandlers, CloneObj, ObjectHandlers};
 use crate::{Builtin, Host, Thrown};
 
 mod consts;
@@ -439,18 +440,46 @@ fn new_object(host: &mut dyn Host, class: &str) -> Result<(Value, ObjectHandle),
         // A host without an object model (a unit-test host) cannot run curl.
         .ok_or_else(|| Thrown::unsupported("curl", format!("cannot instantiate {class}")))?;
     let h = obj_handle(&v).ok_or_else(|| Thrown::error("Error", "curl: bad object"))?;
-    // The handle classes use zend_objects_not_comparable.
-    rhp_semantics::ops::set_not_comparable_hook(super::not_comparable_object);
     Ok((v, h))
 }
 
-/// Is `h` a CurlHandle / CurlMultiHandle / CurlShareHandle of ours?
-pub(crate) fn is_curl_object(h: &ObjectHandle) -> bool {
-    REG.with(|r| {
-        let r = r.borrow();
-        lookup(&r.easy, h).is_some()
-            || lookup(&r.multi, h).is_some()
-            || lookup(&r.share, h).is_some()
+/// The handle classes' handlers: `zend_objects_not_comparable`, `(int)`
+/// as the object id, and a clone only for easy handles.
+pub(crate) const CLASSES: &[ClassHandlers] = &[
+    ClassHandlers {
+        class: "CurlHandle",
+        handlers: &ObjectHandlers {
+            clone_obj: CloneObj::Custom(curl_clone_obj),
+            compare: Some(object::not_comparable),
+            cast_object: Some(curl_cast_object),
+            ..ObjectHandlers::STD
+        },
+    },
+    ClassHandlers {
+        class: "CurlMultiHandle",
+        handlers: &ObjectHandlers {
+            clone_obj: CloneObj::None,
+            compare: Some(object::not_comparable),
+            cast_object: Some(curl_cast_object),
+            ..ObjectHandlers::STD
+        },
+    },
+    ClassHandlers {
+        class: "CurlShareHandle",
+        handlers: &ObjectHandlers::OPAQUE,
+    },
+];
+
+/// curl_cast_object: `(int)` of a handle is its object id, as it was the
+/// resource id before handles were objects.
+fn curl_cast_object(
+    _: &mut dyn Host,
+    h: &ObjectHandle,
+    target: CastTarget,
+) -> Result<Option<Value>, Thrown> {
+    Ok(match target {
+        CastTarget::Int => Some(Value::Int(h.borrow().id as i64)),
+        t => object::std_cast(t),
     })
 }
 
@@ -511,20 +540,6 @@ fn share_arg(host: &dyn Host, f: &str, v: &Value) -> Result<Rc<RefCell<Share>>, 
         }
     }
     Err(type_err(host, f, 1, "share_handle", "CurlShareHandle", v))
-}
-
-/// Is `v` a `CurlHandle` / `CurlMultiHandle` this extension created? Both
-/// classes install `curl_cast_object`, so `(int) $handle` is the object id
-/// (used by the VM's `(int)` cast and `intval()`).
-pub fn is_curl_handle(v: &Value) -> bool {
-    obj_handle(v)
-        .map(|h| {
-            REG.with(|r| {
-                let r = r.borrow();
-                lookup(&r.easy, &h).is_some() || lookup(&r.multi, &h).is_some()
-            })
-        })
-        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -2097,27 +2112,11 @@ fn fn_curl_copy_handle(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
     register_easy(host, copy)
 }
 
-/// `clone` of a curl object, part one (before the copy exists): the class
-/// name when it is a CurlMultiHandle / CurlShareHandle, whose clone_obj
-/// handler is NULL ("Trying to clone an uncloneable object of class ...").
-pub fn curl_uncloneable(h: &ObjectHandle) -> Option<&'static str> {
-    REG.with(|r| {
-        let r = r.borrow();
-        if lookup(&r.multi, h).is_some() {
-            Some("CurlMultiHandle")
-        } else if lookup(&r.share, h).is_some() {
-            Some("CurlShareHandle")
-        } else {
-            None
-        }
-    })
-}
-
-/// `clone` of a curl object, part two: php's curl_clone_obj gives the clone
-/// its own copy of the easy handle, as curl_copy_handle() does.
-pub fn curl_cloned(src: &ObjectHandle, dst: &ObjectHandle) {
+/// curl_clone_obj: the clone gets its own copy of the easy handle, as
+/// curl_copy_handle() does.
+fn curl_clone_obj(_: &mut dyn Host, src: &ObjectHandle, dst: &ObjectHandle) -> Result<(), Thrown> {
     let Some(easy) = REG.with(|r| lookup(&r.borrow().easy, src)) else {
-        return;
+        return Ok(());
     };
     let copy = dup_easy(&easy);
     REG.with(|r| {
@@ -2131,6 +2130,7 @@ pub fn curl_cloned(src: &ObjectHandle, dst: &ObjectHandle) {
             },
         );
     });
+    Ok(())
 }
 
 fn arg_str(host: &dyn Host, f: &str, n: usize, pname: &str, v: &Value) -> Result<Vec<u8>, Thrown> {

@@ -17,15 +17,13 @@ pub use rhp_values::Thrown;
 pub(crate) mod dump;
 pub mod fdstream;
 pub(crate) mod module;
+pub mod object;
 pub mod pcre;
 pub mod signatures;
 pub mod streams;
 pub mod version;
 pub mod zend;
 
-pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};
-pub use ext::simplexml::{sxe_bool, sxe_props_array, sxe_same_node, sxe_string};
-pub use ext::sockets::is_socket_object;
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};
 
 mod argparse;
@@ -69,12 +67,11 @@ mod arraycmp_fns;
 mod arrayset_fns;
 #[rustfmt::skip]
 mod const_modules;
+mod class_fns;
 mod crypt_fns;
 mod datetime_fns;
 mod dt_oop_fns;
 mod ext;
-pub use ext::gmp::{compare_handler as gmp_compare_handler, CmpOperand as GmpCmpOperand};
-mod class_fns;
 mod file_fns;
 mod filter_fns;
 mod fs_fns;
@@ -115,48 +112,12 @@ mod tzdb;
 mod webenc_fns;
 pub(crate) mod zip_ext;
 
-/// Built-in classes with a native `dtor_obj` handler, which runs with a host
-/// before the object's `__destruct` (see [`object_dtor`]).
-pub fn has_native_dtor(class: &[u8]) -> bool {
-    class.eq_ignore_ascii_case(b"XMLWriter")
-}
-
-/// `dtor_obj` for an object whose class (or a parent) is listed by
-/// [`has_native_dtor`]. The engine calls it once, where php would, before the
-/// user's `__destruct`.
-pub fn object_dtor(host: &mut dyn Host, obj: &rhp_values::ObjectHandle) -> Result<(), Thrown> {
-    let id = obj.borrow().id;
-    ext::xmlwriter::object_dtor(host, id)
-}
-
-/// The engine's object free hook (`rhp_values::set_object_free_hook`): lets
-/// the extensions with per-object native state release it.
+/// The engine's object free hook (`rhp_values::set_object_free_hook`), for
+/// the per-object state still kept by object id.
 pub fn object_freed(id: u32) {
     zip_ext::object_freed(id);
     sort_fns::object_freed(id);
-    ext::sockets::object_freed();
-    ext::xml::object_freed(id);
-    ext::xmlwriter::object_freed(id);
     ext::openssl::object_freed(id);
-}
-
-/// The internal opaque-handle classes php declares `@strict-properties` and
-/// `@not-serializable` (`ZEND_ACC_NO_DYNAMIC_PROPERTIES |
-/// ZEND_ACC_NOT_SERIALIZABLE`): `Socket`, the curl handles and `XMLParser`. Their names
-/// are taken by the prelude, so a user class cannot carry one.
-pub fn is_opaque_handle_class(name: &[u8]) -> bool {
-    [
-        &b"Socket"[..],
-        b"CurlHandle",
-        b"CurlMultiHandle",
-        b"CurlShareHandle",
-        b"XMLParser",
-        b"OpenSSLCertificate",
-        b"OpenSSLCertificateSigningRequest",
-        b"OpenSSLAsymmetricKey",
-    ]
-    .iter()
-    .any(|n| n.eq_ignore_ascii_case(name))
 }
 
 /// `zend_compare` from inside a builtin, with the host's object semantics.
@@ -337,6 +298,12 @@ pub trait Host {
     /// Reflection objects, WeakReference, …). Default: no.
     fn not_serializable(&self, _class_id: u32) -> bool {
         false
+    }
+
+    /// The object handlers of a class: its own registration
+    /// ([`object::registered`]) or an ancestor's. Default: none.
+    fn object_handlers(&self, _class_id: u32) -> Option<&'static object::ObjectHandlers> {
+        None
     }
 
     /// Whether the property slot `key` (storage key) of an object of class
@@ -1773,13 +1740,11 @@ use rhp_semantics::{deref, ops};
 fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
     for a in args {
-        ext::simplexml::prepare_debug(host, a, 0);
-        let r = dump::resolve_debug_info(host, a);
+        let r = dump::resolve_views(host, a, object::PropPurpose::Debug);
         if r.is_ok() {
             dump::var_dump(host, &mut out, a, 0);
         }
-        dump::clear_debug_info();
-        ext::simplexml::clear_debug();
+        dump::clear_views();
         if let Err(t) = r {
             host.write_out(&out);
             return Err(t);
@@ -1791,13 +1756,11 @@ fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    ext::simplexml::prepare_debug(host, &args[0], 0);
-    let r = dump::resolve_debug_info(host, &args[0]);
+    let r = dump::resolve_views(host, &args[0], object::PropPurpose::Debug);
     if r.is_ok() {
         dump::print_r(host, &mut out, &args[0], 0);
     }
-    dump::clear_debug_info();
-    ext::simplexml::clear_debug();
+    dump::clear_views();
     r?;
     let return_mode = args.get(1).map(conv::to_bool).unwrap_or(false);
     if return_mode {
@@ -1810,9 +1773,14 @@ fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    ext::simplexml::prepare_debug(host, &args[0], 0);
-    let circular = dump::var_export(host, &mut out, &args[0], 1);
-    ext::simplexml::clear_debug();
+    let r = dump::resolve_views(host, &args[0], object::PropPurpose::VarExport);
+    let circular = if r.is_ok() {
+        dump::var_export(host, &mut out, &args[0], 1)
+    } else {
+        0
+    };
+    dump::clear_views();
+    r?;
     for _ in 0..circular {
         host.emit_diagnostic(E_WARNING, "var_export does not handle circular references")?;
     }
@@ -2009,18 +1977,12 @@ is_type!(
     Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bool(_)
 );
 
-fn fn_intval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_intval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
     let base = args.get(1).map(|b| conv::to_int(&deref(b))).unwrap_or(10);
-    // php's curl_cast_object: (int) of a CurlHandle is its object id.
-    if let Value::Object(h) = &v {
-        if is_curl_handle(&v) {
-            return Ok(Value::Int(h.borrow().id as i64));
-        }
-    }
-    // SimpleXML's cast handler: the node's text.
-    if let Some(t) = ext::simplexml::sxe_scalar_text(&v) {
-        return Ok(Value::Int(conv::to_int(&t)));
+    // zval_get_long: an internal class's cast_object.
+    if let Some(n) = object::cast(host, &v, object::CastTarget::Int)? {
+        return Ok(Value::Int(conv::to_int(&n)));
     }
     // `base` applies only to a string argument; base 10 is plain integer conversion.
     if base == 10 {
@@ -2093,9 +2055,10 @@ fn detect_prefix(rest: &[u8], base: i64) -> (usize, i64) {
     }
 }
 
-fn fn_floatval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    if let Some(t) = ext::simplexml::sxe_scalar_text(&deref(&args[0])) {
-        return Ok(Value::Float(conv::to_float(&t)));
+fn fn_floatval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // zval_get_double: an internal class's cast_object.
+    if let Some(f) = object::cast(host, &args[0], object::CastTarget::Float)? {
+        return Ok(Value::Float(conv::to_float(&f)));
     }
     Ok(Value::Float(conv::to_float(&args[0])))
 }
@@ -2125,10 +2088,10 @@ fn fn_strval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(conv::to_string_bytes(&args[0])))
 }
 
-fn fn_boolval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let v = deref(&args[0]);
-    if ext::simplexml::is_sxe_object(&v) {
-        return Ok(Value::Bool(sxe_bool(&v)));
+fn fn_boolval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // zend_is_true: an internal class's cast_object.
+    if let Some(b) = object::cast(host, &args[0], object::CastTarget::Bool)? {
+        return Ok(Value::Bool(conv::to_bool(&b)));
     }
     Ok(Value::Bool(conv::to_bool(&args[0])))
 }
@@ -3090,7 +3053,7 @@ fn fn_iterator_to_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 fn fn_get_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match deref(&args[0]) {
         Value::Object(h) => {
-            if let Some(a) = sxe_props_array(host, &deref(&args[0])) {
+            if let Some(a) = object::properties_for(host, &h, object::PropPurpose::GetObjectVars)? {
                 return Ok(Value::Array(a));
             }
             if let Some(v) = host.object_vars(&args[0]) {
@@ -3118,44 +3081,6 @@ fn fn_get_mangled_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Val
             v.type_name()
         ))),
     }
-}
-
-/// php's `spl_array` property hook: an ArrayObject / ArrayIterator (or a
-/// subclass) without `STD_PROP_LIST` presents its storage array as its
-/// properties to `(array)`, `var_export` and `json_encode`. Returns the
-/// storage and the base class (`ArrayObject` / `ArrayIterator`) that owns it.
-pub fn spl_array_storage(h: &rhp_values::ObjectHandle) -> Option<(Value, &'static str)> {
-    let b = h.borrow();
-    for base in ["ArrayObject", "ArrayIterator"] {
-        let key = |n: &str| rhp_values::PhpStr::from(format!("\0{base}\0{n}").as_str());
-        if let Some(s) = b.properties.get(&key("__s")) {
-            let flags = b
-                .properties
-                .get(&key("__f"))
-                .map(|f| conv::to_int(&deref(f)));
-            if flags.unwrap_or(0) & 1 != 0 {
-                return None;
-            }
-            return Some((deref(s), base));
-        }
-    }
-    None
-}
-
-/// php's `spl_array` debug info: the regular properties plus the storage as
-/// a private `storage` property of the base class (`var_dump`/`print_r`).
-pub fn spl_array_debug_storage(
-    h: &rhp_values::ObjectHandle,
-) -> Option<(rhp_values::PhpStr, Value)> {
-    let b = h.borrow();
-    for base in ["ArrayObject", "ArrayIterator"] {
-        let key = rhp_values::PhpStr::from(format!("\0{base}\0__s").as_str());
-        if let Some(s) = b.properties.get(&key) {
-            let name = rhp_values::PhpStr::from(format!("\0{base}\0storage").as_str());
-            return Some((name, deref(s)));
-        }
-    }
-    None
 }
 
 fn fn_ord(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

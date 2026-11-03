@@ -6,6 +6,8 @@
 use rhp_values::conv;
 use rhp_values::{fmt, ArrayKey, PhpStr, Thrown, Value};
 
+use crate::object::PropPurpose;
+
 fn sp(n: usize, out: &mut Vec<u8>) {
     out.extend(std::iter::repeat_n(b' ', n));
 }
@@ -33,26 +35,32 @@ fn mangled_props(host: &dyn crate::Host, h: &rhp_values::ObjectHandle) -> Vec<(P
 }
 
 thread_local! {
-    /// `__debugInfo()` results for the objects of the value being dumped,
-    /// by object id (resolved up front by [`resolve_debug_info`], since the
-    /// formatters only see a `&dyn Host`).
-    static DEBUG_INFO: std::cell::RefCell<std::collections::HashMap<u32, rhp_values::PhpArray>> =
+    /// The views of the objects of the value being formatted, by object id
+    /// (resolved up front by [`resolve_views`], since the formatters only
+    /// see a `&dyn Host`).
+    static VIEWS: std::cell::RefCell<std::collections::HashMap<u32, rhp_values::PhpArray>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-/// Call `__debugInfo()` on every object reachable from `v` whose class
-/// defines it (php's `get_debug_info` for `var_dump` / `print_r`), so the
-/// formatters print its array instead of the properties. The results stay
-/// installed until [`clear_debug_info`].
-pub fn resolve_debug_info(host: &mut dyn crate::Host, v: &Value) -> Result<(), Thrown> {
-    let mut seen_arrays = Vec::new();
-    let mut seen_objects = Vec::new();
-    resolve_debug_info_in(host, v, &mut seen_arrays, &mut seen_objects)
-}
-
-fn resolve_debug_info_in(
+/// php's `zend_get_properties_for(purpose)` for every object reachable
+/// from `v` (through views): the class's `get_properties_for` handler, and
+/// for [`PropPurpose::Debug`] then `__debugInfo()`. The formatters print
+/// such a view instead of the properties; objects without one keep their
+/// properties. The views stay installed until [`clear_views`].
+pub fn resolve_views(
     host: &mut dyn crate::Host,
     v: &Value,
+    purpose: PropPurpose,
+) -> Result<(), Thrown> {
+    let mut seen_arrays = Vec::new();
+    let mut seen_objects = Vec::new();
+    resolve_in(host, v, purpose, &mut seen_arrays, &mut seen_objects)
+}
+
+fn resolve_in(
+    host: &mut dyn crate::Host,
+    v: &Value,
+    purpose: PropPurpose,
     seen_arrays: &mut Vec<usize>,
     seen_objects: &mut Vec<u32>,
 ) -> Result<(), Thrown> {
@@ -63,7 +71,7 @@ fn resolve_debug_info_in(
             }
             seen_arrays.push(a.data_ptr());
             for (_, val) in a.iter() {
-                resolve_debug_info_in(host, val, seen_arrays, seen_objects)?;
+                resolve_in(host, val, purpose, seen_arrays, seen_objects)?;
             }
         }
         Value::Object(h) => {
@@ -75,41 +83,30 @@ fn resolve_debug_info_in(
                 return Ok(());
             }
             seen_objects.push(id);
-            let children: Vec<Value> = if host.class_has_method(class, b"__debuginfo") {
-                let mut cb = rhp_values::PhpArray::new();
-                cb.push(Value::Object(h.clone()));
-                cb.push(Value::str("__debugInfo"));
-                let info = match deref(&host.call_callable(&Value::Array(cb), &[])?) {
-                    Value::Array(a) => a,
-                    Value::Null => {
-                        // php raises this mid-dump; rhp formats after
-                        // resolving, so it comes before the dump output.
-                        let cname = host.class_name(class).unwrap_or_default();
-                        host.emit_diagnostic(
-                            crate::E_DEPRECATED,
-                            &format!(
-                                "Returning null from {}::__debugInfo() is deprecated, return an empty array instead",
-                                String::from_utf8_lossy(&cname)
-                            ),
-                        )?;
-                        rhp_values::PhpArray::new()
-                    }
-                    _ => {
-                        return Err(Thrown::error("Error", "__debuginfo() must return an array"));
-                    }
-                };
-                let vals = info.iter().map(|(_, v)| v.clone()).collect();
-                DEBUG_INFO.with(|m| m.borrow_mut().insert(id, info));
-                vals
-            } else {
-                h.borrow()
+            let view = match crate::object::properties_for(host, &h, purpose)? {
+                Some(table) => Some(table),
+                None if purpose == PropPurpose::Debug
+                    && host.class_has_method(class, b"__debuginfo") =>
+                {
+                    Some(debug_info(host, &h, class)?)
+                }
+                None => None,
+            };
+            let children: Vec<Value> = match view {
+                Some(view) => {
+                    let vals = view.iter().map(|(_, v)| v.clone()).collect();
+                    VIEWS.with(|m| m.borrow_mut().insert(id, view));
+                    vals
+                }
+                None => h
+                    .borrow()
                     .properties
                     .iter()
                     .map(|(_, v)| v.clone())
-                    .collect()
+                    .collect(),
             };
             for c in &children {
-                resolve_debug_info_in(host, c, seen_arrays, seen_objects)?;
+                resolve_in(host, c, purpose, seen_arrays, seen_objects)?;
             }
         }
         _ => {}
@@ -117,46 +114,58 @@ fn resolve_debug_info_in(
     Ok(())
 }
 
-/// Drop the `__debugInfo()` results installed by [`resolve_debug_info`].
-pub fn clear_debug_info() {
-    DEBUG_INFO.with(|m| m.borrow_mut().clear());
+/// zend_std_get_debug_info: the object's `__debugInfo()` result.
+fn debug_info(
+    host: &mut dyn crate::Host,
+    h: &rhp_values::ObjectHandle,
+    class: u32,
+) -> Result<rhp_values::PhpArray, Thrown> {
+    let mut cb = rhp_values::PhpArray::new();
+    cb.push(Value::Object(h.clone()));
+    cb.push(Value::str("__debugInfo"));
+    match deref(&host.call_callable(&Value::Array(cb), &[])?) {
+        Value::Array(a) => Ok(a),
+        Value::Null => {
+            // php raises this mid-dump; rhp formats after resolving, so it
+            // comes before the dump output.
+            let cname = host.class_name(class).unwrap_or_default();
+            host.emit_diagnostic(
+                crate::E_DEPRECATED,
+                &format!(
+                    "Returning null from {}::__debugInfo() is deprecated, return an empty array instead",
+                    String::from_utf8_lossy(&cname)
+                ),
+            )?;
+            Ok(rhp_values::PhpArray::new())
+        }
+        _ => Err(Thrown::error("Error", "__debuginfo() must return an array")),
+    }
 }
 
-/// php's `get_debug_info` view (`var_dump`, `print_r`): a `__debugInfo()`
-/// result when the class defines one, else the properties, plus an
-/// ArrayObject / ArrayIterator's storage as its private `storage`.
+/// Drop the views installed by [`resolve_views`].
+pub fn clear_views() {
+    VIEWS.with(|m| m.borrow_mut().clear());
+}
+
+/// The resolved view of object `id`, as (key, value) entries.
+fn view_of(id: u32) -> Option<Vec<(ArrayKey, Value)>> {
+    VIEWS.with(|m| {
+        m.borrow().get(&id).map(|v| {
+            v.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+    })
+}
+
+/// php's `get_debug_info` view (`var_dump`, `print_r`): the resolved view
+/// (a handler's or `__debugInfo()`'s), else the properties.
 fn debug_props(host: &dyn crate::Host, h: &rhp_values::ObjectHandle) -> Vec<(ArrayKey, Value)> {
     let id = h.borrow().id;
-    // SimpleXML's get_debug_info view, materialized by the caller (a hash
-    // whose numeric names are integer keys)
-    if let Some(v) = crate::ext::simplexml::debug_view(id) {
-        return v
-            .into_iter()
-            .map(|(k, v)| {
-                let b = k.as_bytes();
-                let int = if !b.is_empty() && b.iter().all(|c| c.is_ascii_digit()) {
-                    std::str::from_utf8(b)
-                        .ok()
-                        .and_then(|t| t.parse::<i64>().ok())
-                        .filter(|n| n.to_string().as_bytes() == b)
-                } else {
-                    None
-                };
-                match int {
-                    Some(n) => (ArrayKey::Int(n), v),
-                    None => (ArrayKey::Str(k), v),
-                }
-            })
-            .collect();
+    if let Some(v) = view_of(id) {
+        return v;
     }
-    if let Some(info) = DEBUG_INFO.with(|m| m.borrow().get(&id).cloned()) {
-        return info.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    }
-    let mut props = mangled_props(host, h);
-    if let Some(st) = crate::spl_array_debug_storage(h) {
-        props.push(st);
-    }
-    props
+    mangled_props(host, h)
         .into_iter()
         .map(|(k, v)| (ArrayKey::Str(k), v))
         .collect()
@@ -286,10 +295,9 @@ fn var_dump_value(
                     )
                     .as_bytes(),
                 );
-                // A __debugInfo() or SimpleXML view lists only its own entries.
-                let uninit = if DEBUG_INFO.with(|m| m.borrow().contains_key(&obj_id))
-                    || crate::ext::simplexml::has_debug_view(obj_id)
-                {
+                // A view (a handler's or __debugInfo()'s) lists only its own
+                // entries.
+                let uninit = if VIEWS.with(|m| m.borrow().contains_key(&obj_id)) {
                     Vec::new()
                 } else {
                     host.uninit_props(h)
@@ -559,20 +567,11 @@ fn var_export_value(
                 .class_name(class_id)
                 .unwrap_or_else(|| b"class".to_vec());
             let is_enum = host.is_enum_class(class_id);
-            // get_properties_for(VAR_EXPORT): an ArrayObject's storage keeps
-            // its integer keys; property names are always string keys.
-            let sxe = crate::ext::simplexml::debug_view(h.borrow().id);
-            let props: Vec<(ArrayKey, Value)> = match crate::spl_array_storage(h) {
-                // SimpleXML's property view (materialized by the caller)
-                _ if sxe.is_some() => sxe
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(k, v)| (ArrayKey::Str(k), v))
-                    .collect(),
-                Some((Value::Array(a), _)) => {
-                    a.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-                }
-                _ => mangled_props(host, h)
+            // get_properties_for(VAR_EXPORT), resolved by the caller (an
+            // ArrayObject's storage keeps its integer keys).
+            let props: Vec<(ArrayKey, Value)> = match view_of(h.borrow().id) {
+                Some(v) => v,
+                None => mangled_props(host, h)
                     .into_iter()
                     .map(|(k, v)| (ArrayKey::Str(k), v))
                     .collect(),

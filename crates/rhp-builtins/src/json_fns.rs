@@ -311,12 +311,11 @@ impl Encoder {
         if self.objects.contains(&id) {
             return Ok(self.fail(JSON_ERROR_RECURSION, out, b"null"));
         }
-        // get_properties_for(JSON): an ArrayObject / ArrayIterator encodes
-        // its storage (always as an object).
-        let sxe = crate::ext::simplexml::sxe_props(host, &Value::Object(h.clone()), false);
-        let props: Vec<(PhpStr, Value)> = match crate::spl_array_storage(h) {
-            _ if sxe.is_some() => sxe.unwrap_or_default(),
-            Some((Value::Array(a), _)) => a
+        // get_properties_for(JSON): an internal class's view (an
+        // ArrayObject's storage, always encoded as an object).
+        let view = crate::object::properties_for(host, h, crate::object::PropPurpose::Json)?;
+        let props: Vec<(PhpStr, Value)> = match view {
+            Some(a) => a
                 .iter()
                 .map(|(k, v)| {
                     let k = match k {
@@ -326,7 +325,7 @@ impl Encoder {
                     (k, deref(v))
                 })
                 .collect(),
-            _ => {
+            None => {
                 let b = h.borrow();
                 b.properties
                     .iter()

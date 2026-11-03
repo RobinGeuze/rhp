@@ -1,0 +1,365 @@
+//! Object handlers for internal classes: the part of php's
+//! `zend_object_handlers` rhp routes, registered by the extension that owns
+//! the class and inherited by its subclasses. Native per-object state lives
+//! in the object's payload ([`rhp_values::Payload`]). See
+//! docs/design/object-handlers.md.
+
+use std::rc::Rc;
+use std::sync::OnceLock;
+
+pub use rhp_semantics::ops::CastTarget;
+use rhp_values::{ObjectHandle, PhpArray, Thrown, Value};
+
+use crate::Host;
+
+/// What a property table is fetched for (php's `zend_prop_purpose`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PropPurpose {
+    /// `var_dump`, `print_r`, `debug_zval_refcount` (php's default: the
+    /// `__debugInfo()` result, else the properties).
+    Debug,
+    /// `(array)`.
+    ArrayCast,
+    /// `serialize` of an object without `__serialize` / `__sleep`.
+    Serialize,
+    /// `var_export`.
+    VarExport,
+    /// `json_encode` of an object that is not `JsonSerializable`.
+    Json,
+    /// `get_object_vars`.
+    GetObjectVars,
+}
+
+/// The operator a `do_operation` handler is asked for (php's opcode). `-$x`
+/// arrives as `Mul` by -1 and `++` / `--` as `Add` / `Sub` of 1, as php
+/// compiles them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Op {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+    Shl,
+    Shr,
+    BitOr,
+    BitAnd,
+    BitXor,
+    Concat,
+    /// Unary: the second operand is `None`.
+    BitNot,
+}
+
+/// `get_properties_for`: the table `purpose` sees, keyed as php's property
+/// table is (mangled names, or integer keys), or `None` for the default view
+/// (php's `zend_std_get_properties_for`).
+pub type GetPropertiesFor =
+    fn(&mut dyn Host, &ObjectHandle, PropPurpose) -> Result<Option<PhpArray>, Thrown>;
+
+/// `clone_obj` beyond the default copy: runs after the properties were
+/// copied into `dst` (which has no payload yet) and before `__clone`.
+pub type CloneFn = fn(&mut dyn Host, &ObjectHandle, &ObjectHandle) -> Result<(), Thrown>;
+
+/// `compare(op1, op2)`, called with the operands in order for the object
+/// operand whose class registered it (op1 when both are objects).
+/// `Ok(None)` is php's `zend_std_compare_objects` (what a handler that
+/// starts with `ZEND_COMPARE_OBJECTS_FALLBACK` returns for a pair it does
+/// not handle); an error is php's exception, which makes the comparison
+/// uncomparable.
+pub type CompareFn = fn(&mut dyn Host, &Value, &Value) -> Result<Option<i32>, Thrown>;
+
+/// `do_operation(op, op1, op2)`. `Ok(None)` is FAILURE: the engine goes on
+/// with its normal operator (casting the object with `cast_object`, or
+/// raising php's operator error). An error is php's SUCCESS with an
+/// exception set.
+pub type DoOperationFn =
+    fn(&mut dyn Host, Op, &Value, Option<&Value>) -> Result<Option<Value>, Thrown>;
+
+/// `cast_object`: the converted value, or `Ok(None)` for FAILURE. A class
+/// that registers one replaces php's default (`__toString` for strings,
+/// true for bool, failure otherwise) for every target, so it handles the
+/// targets it does not convert by returning [`std_cast`]'s answer.
+pub type CastFn = fn(&mut dyn Host, &ObjectHandle, CastTarget) -> Result<Option<Value>, Thrown>;
+
+/// `dtor_obj`: runs once, with a host, before the object's `__destruct`.
+pub type DtorFn = fn(&mut dyn Host, &ObjectHandle) -> Result<(), Thrown>;
+
+/// php's `clone_obj` slot.
+#[derive(Clone, Copy)]
+pub enum CloneObj {
+    /// `zend_objects_clone_obj`: copy the properties. The copy gets no
+    /// payload.
+    Std,
+    /// The copy, then this.
+    Custom(CloneFn),
+    /// NULL: "Trying to clone an uncloneable object of class X".
+    None,
+}
+
+/// One internal class's handlers. `free_obj` is the payload's `Drop`
+/// ([`rhp_values::Payload`]).
+#[derive(Clone, Copy)]
+pub struct ObjectHandlers {
+    pub get_properties_for: Option<GetPropertiesFor>,
+    pub clone_obj: CloneObj,
+    pub compare: Option<CompareFn>,
+    pub do_operation: Option<DoOperationFn>,
+    pub cast_object: Option<CastFn>,
+    pub dtor_obj: Option<DtorFn>,
+}
+
+impl ObjectHandlers {
+    /// php's `std_object_handlers`.
+    pub const STD: ObjectHandlers = ObjectHandlers {
+        get_properties_for: None,
+        clone_obj: CloneObj::Std,
+        compare: None,
+        do_operation: None,
+        cast_object: None,
+        dtor_obj: None,
+    };
+    /// `clone_obj = NULL`.
+    pub const UNCLONEABLE: ObjectHandlers = ObjectHandlers {
+        clone_obj: CloneObj::None,
+        ..ObjectHandlers::STD
+    };
+    /// `clone_obj = NULL`, `compare = zend_objects_not_comparable`: the
+    /// opaque handle classes (`Socket`, `XMLParser`, the OpenSSL keys…).
+    pub const OPAQUE: ObjectHandlers = ObjectHandlers {
+        clone_obj: CloneObj::None,
+        compare: Some(not_comparable),
+        ..ObjectHandlers::STD
+    };
+}
+
+/// An extension's registration of its class's handlers (php's
+/// `ce->create_object` and handler table, set in MINIT).
+pub struct ClassHandlers {
+    pub class: &'static str,
+    pub handlers: &'static ObjectHandlers,
+}
+
+/// `zend_objects_not_comparable`: equal only to itself (the engine checks
+/// identity first), uncomparable to anything else.
+pub fn not_comparable(_: &mut dyn Host, _: &Value, _: &Value) -> Result<Option<i32>, Thrown> {
+    Ok(Some(1))
+}
+
+/// php's `zend_std_cast_object_tostring` for a class without a
+/// `cast_object` handler, minus the `__toString` call, which needs the
+/// engine: strings are `None` here and the engine calls `__toString`.
+pub fn std_cast(target: CastTarget) -> Option<Value> {
+    match target {
+        CastTarget::Bool => Some(Value::Bool(true)),
+        _ => None,
+    }
+}
+
+/// The engine's own classes with handlers (Zend/, and Reflection, which
+/// php registers like an extension but rhp keeps in its core prelude).
+const CORE: &[ClassHandlers] = &[
+    // default_exception_handlers
+    ClassHandlers {
+        class: "Exception",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "Error",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "Generator",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "Fiber",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "WeakReference",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    // dir_class_object_handlers
+    ClassHandlers {
+        class: "Directory",
+        handlers: &ObjectHandlers::OPAQUE,
+    },
+];
+
+/// The classes php gives `reflection_object_handlers` (`clone_obj = NULL`);
+/// their subclasses inherit them.
+const REFLECTION: &[ClassHandlers] = &[
+    ClassHandlers {
+        class: "ReflectionFunctionAbstract",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "ReflectionGenerator",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "ReflectionParameter",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "ReflectionType",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "ReflectionClass",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "ReflectionProperty",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "ReflectionClassConstant",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "ReflectionExtension",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "ReflectionZendExtension",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "ReflectionReference",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "ReflectionAttribute",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "ReflectionFiber",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+    ClassHandlers {
+        class: "ReflectionConstant",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+    },
+];
+
+/// The handlers registered for the internal class `name` (any case), if
+/// any. The engine looks this up once per internal class, when it links
+/// it; a subclass takes its parent's.
+pub fn registered(name: &[u8]) -> Option<&'static ObjectHandlers> {
+    fn cmp_ci(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+        a.iter()
+            .map(u8::to_ascii_lowercase)
+            .cmp(b.iter().map(u8::to_ascii_lowercase))
+    }
+    static TABLE: OnceLock<Vec<&'static ClassHandlers>> = OnceLock::new();
+    let t = TABLE.get_or_init(|| {
+        let mut t: Vec<&'static ClassHandlers> = CORE
+            .iter()
+            .chain(REFLECTION)
+            .chain(crate::ext::class_handlers())
+            .collect();
+        t.sort_by(|a, b| cmp_ci(a.class.as_bytes(), b.class.as_bytes()));
+        for w in t.windows(2) {
+            assert!(
+                cmp_ci(w[0].class.as_bytes(), w[1].class.as_bytes()).is_ne(),
+                "handlers for {} registered twice",
+                w[0].class
+            );
+        }
+        t
+    });
+    t.binary_search_by(|r| cmp_ci(r.class.as_bytes(), name))
+        .ok()
+        .map(|i| t[i].handlers)
+}
+
+/// The object behind `v` (through a reference).
+pub fn object_of(v: &Value) -> Option<ObjectHandle> {
+    match v {
+        Value::Object(h) => Some(h.clone()),
+        Value::Ref(r) => object_of(&r.borrow()),
+        _ => None,
+    }
+}
+
+/// The payload of the object `v`, when it is a `T`.
+pub fn payload<T: std::any::Any>(v: &Value) -> Option<Rc<T>> {
+    object_of(v)?.borrow().payload::<T>()
+}
+
+/// The payload of `h`, when it is a `T`.
+pub fn payload_of<T: std::any::Any>(h: &ObjectHandle) -> Option<Rc<T>> {
+    h.borrow().payload::<T>()
+}
+
+/// Attach `state` to `h`, dropping any previous payload after the borrow.
+pub fn set_payload<T: std::any::Any>(h: &ObjectHandle, state: Rc<T>) {
+    let old = h.borrow_mut().set_payload(state);
+    drop(old);
+}
+
+/// The class's own handlers for `v`'s object, through the host.
+pub fn handlers_of(host: &dyn Host, v: &Value) -> Option<&'static ObjectHandlers> {
+    let h = object_of(v)?;
+    let class = h.borrow().class;
+    host.object_handlers(class)
+}
+
+/// php's `zend_get_properties_for` from a builtin: the handler's table for
+/// `purpose`, or `None` when the class has none for it (the caller then
+/// builds the default view).
+pub fn properties_for(
+    host: &mut dyn Host,
+    h: &ObjectHandle,
+    purpose: PropPurpose,
+) -> Result<Option<PhpArray>, Thrown> {
+    let class = h.borrow().class;
+    match host
+        .object_handlers(class)
+        .and_then(|t| t.get_properties_for)
+    {
+        Some(f) => f(host, h, purpose),
+        None => Ok(None),
+    }
+}
+
+/// Whether `v` is an object whose class has the handler table `table`
+/// (php's checks on an object's handlers, e.g.
+/// `ZEND_COMPARE_OBJECTS_FALLBACK`).
+pub fn has_handlers(host: &dyn Host, v: &Value, table: &'static ObjectHandlers) -> bool {
+    handlers_of(host, v).is_some_and(|t| std::ptr::eq(t, table))
+}
+
+/// The `cast_object` handler of `v`'s class applied to `v`; `None` when `v`
+/// is not an object with one, or the handler fails. The caller then goes
+/// on as for any object.
+pub fn cast(host: &mut dyn Host, v: &Value, target: CastTarget) -> Result<Option<Value>, Thrown> {
+    let Some(h) = object_of(v) else {
+        return Ok(None);
+    };
+    let class = h.borrow().class;
+    match host.object_handlers(class).and_then(|t| t.cast_object) {
+        Some(f) => f(host, &h, target),
+        None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_lookup_ignores_case() {
+        let gmp = registered(b"gmp").expect("GMP registers handlers");
+        assert!(std::ptr::eq(gmp, registered(b"GMP").unwrap()));
+        assert!(gmp.do_operation.is_some());
+        assert!(matches!(
+            registered(b"XMLPARSER").map(|t| t.clone_obj),
+            Some(CloneObj::None)
+        ));
+        assert!(registered(b"stdClass").is_none());
+        assert!(registered(b"").is_none());
+    }
+}

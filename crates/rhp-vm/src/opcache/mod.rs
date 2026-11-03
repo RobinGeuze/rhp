@@ -620,8 +620,9 @@ impl Vm {
     }
 
     /// `accel_make_persistent_key`: the name a script was requested by, when
-    /// it isn't its resolved path. A relative name is qualified by the
-    /// working directory and include_path it was resolved under.
+    /// it isn't its resolved path. A relative name is qualified by what it
+    /// was resolved under: the working directory, the include_path and the
+    /// executing script's directory.
     fn persistent_key(&self, given: &[u8], path: &[u8]) -> Option<Vec<u8>> {
         if given == path || given.is_empty() {
             return None;
@@ -634,8 +635,21 @@ impl Vm {
         if let Ok(cwd) = std::env::current_dir() {
             k.extend_from_slice(&path_bytes(&cwd));
         }
-        k.push(b':');
-        k.extend_from_slice(&self.ini(b"include_path"));
+        let include_path = self.ini(b"include_path");
+        if !include_path.is_empty() {
+            k.push(b':');
+            k.extend_from_slice(&include_path);
+        }
+        // zend_get_executed_filename_ex: the innermost user frame's file.
+        let user = (0..self.stack.len())
+            .rev()
+            .find(|&i| !self.is_internal_frame(i));
+        if let Some(i) = user {
+            let file = self.current_file(i);
+            let dir = file.iter().rposition(|&c| c == b'/').unwrap_or(0);
+            k.push(b':');
+            k.extend_from_slice(&file[..dir]);
+        }
         Some(k)
     }
 

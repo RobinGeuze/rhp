@@ -884,10 +884,10 @@ fn fn_quotemeta(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 // ---------------------------------------------------------------------------
-// strip_tags (basic — no allowed-tags list)
+// strip_tags
 // ---------------------------------------------------------------------------
 
-fn fn_strip_tags(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_strip_tags(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let allow = match args.get(1).map(deref) {
         None | Some(Value::Null) => None,
         // Each element becomes `<tag>`; an empty array allows nothing.
@@ -895,7 +895,7 @@ fn fn_strip_tags(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             let mut set = Vec::new();
             for (_, v) in a.iter() {
                 set.push(b'<');
-                set.extend_from_slice(&rhp_values::conv::to_string_bytes(&deref(v)));
+                set.extend_from_slice(&crate::argparse::zval_get_string(host, v)?);
                 set.push(b'>');
             }
             (!set.is_empty()).then_some(set)

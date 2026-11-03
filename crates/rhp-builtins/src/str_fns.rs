@@ -17,6 +17,7 @@ use std::collections::HashMap;
 
 use rhp_values::{conv, fmt, ArrayKey, PhpArray, Value};
 
+use crate::argparse::zval_get_string;
 use crate::{Builtin, Host, Thrown};
 
 // ---------------------------------------------------------------------------
@@ -131,68 +132,81 @@ fn fn_substr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // str_replace
 // ---------------------------------------------------------------------------
 
-/// Apply one (search, replace) pairing to a single subject string.
-fn replace_one_subject(
-    subject: &[u8],
+/// php's `php_str_replace_in_subject`: search and replace elements go
+/// through `zval_get_string`, an empty subject skips them, and the loop stops
+/// once the subject becomes empty.
+fn replace_in_subject(
+    host: &mut dyn Host,
+    subject: Vec<u8>,
     search: &Value,
     replace: &Value,
+    replace_fn: ReplaceFn,
     n: &mut i64,
 ) -> Result<Vec<u8>, Thrown> {
-    match search {
-        Value::Array(searches) => {
-            let mut cur = subject.to_vec();
-            for (i, (_, sv)) in searches.iter().enumerate() {
-                let sbytes = bytes_of(sv);
-                let rbytes = match replace {
-                    Value::Array(reps) => reps
-                        .get_index(i)
-                        .map(|(_, v)| bytes_of(v))
-                        .unwrap_or_default(),
-                    other => bytes_of(other),
-                };
-                cur = replace_all(&cur, &sbytes, &rbytes, n);
-            }
-            Ok(cur)
+    if subject.is_empty() {
+        return Ok(subject);
+    }
+    let Value::Array(searches) = search else {
+        return Ok(replace_fn(
+            &subject,
+            &bytes_of(search),
+            &bytes_of(replace),
+            n,
+        ));
+    };
+    let mut cur = subject;
+    for (i, (_, sv)) in searches.iter().enumerate() {
+        let sbytes = zval_get_string(host, sv)?;
+        let rbytes = match replace {
+            Value::Array(reps) => match reps.get_index(i) {
+                Some((_, v)) => zval_get_string(host, v)?,
+                None => Vec::new(),
+            },
+            other => bytes_of(other),
+        };
+        if sbytes.is_empty() {
+            continue;
         }
-        _ => {
-            if matches!(replace, Value::Array(_)) {
-                return Err(Thrown::type_error(
-                    "str_replace(): Argument #2 ($replace) must be of type string when argument #1 ($search) is a string",
-                ));
-            }
-            Ok(replace_all(
-                subject,
-                &bytes_of(search),
-                &bytes_of(replace),
-                n,
-            ))
+        let before = *n;
+        cur = replace_fn(&cur, &sbytes, &rbytes, n);
+        if *n != before && cur.is_empty() {
+            break;
         }
     }
+    Ok(cur)
 }
 
-fn fn_str_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+pub(crate) type ReplaceFn = fn(&[u8], &[u8], &[u8], &mut i64) -> Vec<u8>;
+
+/// php's `_php_str_replace_common`, shared by str_replace and str_ireplace.
+/// Every subject element is converted with `zval_get_string` and counted.
+pub(crate) fn str_replace_common(
+    host: &mut dyn Host,
+    args: &[Value],
+    fname: &str,
+    replace_fn: ReplaceFn,
+) -> Result<Value, Thrown> {
     let search = deref(&args[0]);
     let replace = deref(&args[1]);
     let subject = deref(&args[2]);
+    if !matches!(search, Value::Array(_)) && matches!(replace, Value::Array(_)) {
+        return Err(Thrown::type_error(format!(
+            "{fname}(): Argument #2 ($replace) must be of type string when argument #1 ($search) is a string"
+        )));
+    }
     let mut n = 0;
     let out = if let Value::Array(items) = subject {
         let mut out = PhpArray::new();
         for (k, v) in items.iter() {
-            // Array and object elements are copied unchanged.
-            if matches!(deref(v), Value::Array(_) | Value::Object(_)) {
-                out.insert(k.clone(), v.clone());
-                continue;
-            }
-            let res = replace_one_subject(&bytes_of(v), &search, &replace, &mut n)?;
+            let s = zval_get_string(host, v)?;
+            let res = replace_in_subject(host, s, &search, &replace, replace_fn, &mut n)?;
             out.insert(k.clone(), Value::str(res));
         }
         Value::Array(out)
     } else {
-        Value::str(replace_one_subject(
-            &bytes_of(&subject),
-            &search,
-            &replace,
-            &mut n,
+        let s = bytes_of(&subject);
+        Value::str(replace_in_subject(
+            host, s, &search, &replace, replace_fn, &mut n,
         )?)
     };
     // `&$count`, written when passed.
@@ -200,6 +214,10 @@ fn fn_str_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         *r.borrow_mut() = Value::Int(n);
     }
     Ok(out)
+}
+
+fn fn_str_replace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    str_replace_common(host, args, "str_replace", replace_all)
 }
 
 // ---------------------------------------------------------------------------

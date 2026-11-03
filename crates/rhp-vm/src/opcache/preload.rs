@@ -127,8 +127,21 @@ impl Vm {
         let real = std::fs::canonicalize(path)
             .map(|p| path_bytes(&p))
             .unwrap_or_else(|_| path.as_bytes().to_vec());
-        let Ok(source) = std::fs::read(os_path(&real)) else {
-            return false;
+        let source = match std::fs::read(os_path(&real)) {
+            Ok(s) => s,
+            Err(e) => {
+                // The preload script is required at startup.
+                let reason = builtins::streams::strerror(e.raw_os_error().unwrap_or(2));
+                let warning = format!("PHP Startup: Failed to open stream: {reason}");
+                self.display_error(2, "Warning", warning.as_bytes(), b"Unknown", 0);
+                let ip = builtins::Host::ini_get(self, b"include_path").unwrap_or_default();
+                let msg = format!(
+                    "Failed opening required '{path}' (include_path='{}')",
+                    String::from_utf8_lossy(&ip)
+                );
+                self.compile_error(&msg, b"Unknown", 0);
+                return false;
+            }
         };
         let file = String::from_utf8_lossy(&real).into_owned();
         let prog = match compile(&source) {

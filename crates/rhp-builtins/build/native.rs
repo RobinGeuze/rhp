@@ -523,6 +523,148 @@ fn parse_pc(path: &Path, own: &str) -> Option<(String, Vec<String>)> {
     Some((version?, private))
 }
 
+/// OpenSSL is linked by openssl-sys, configured through the repo's
+/// `.cargo/config.toml` (`OPENSSL_STATIC`, and on Linux the library and
+/// header directories). Check that what it linked is the OpenSSL php links,
+/// statically, and export the header's version as `RHP_OPENSSL_VERSION_TEXT`
+/// and `RHP_OPENSSL_VERSION_NUMBER` (php reports its compile-time header).
+pub fn check_openssl() {
+    let lib = Lib {
+        name: "OPENSSL",
+        pkg: "libcrypto",
+        brew: Some("openssl@4"),
+        macos_sdk: false,
+        link: "crypto",
+        incdir: "",
+        header: "openssl/opensslv.h",
+        macros: &["OPENSSL_VERSION_TEXT"],
+        version: &[
+            "OPENSSL_VERSION_MAJOR",
+            "OPENSSL_VERSION_MINOR",
+            "OPENSSL_VERSION_PATCH",
+        ],
+        macos: Mode::Static,
+        linux: Mode::Static,
+        install: "macOS: brew install openssl@4; Debian/Ubuntu: apt install pkg-config libssl-dev",
+    };
+    if let Err(e) = openssl(&lib) {
+        eprintln!("\nerror: {e}\n");
+        panic!("OPENSSL: {e}");
+    }
+}
+
+fn openssl(lib: &Lib) -> Result<(), String> {
+    let os = target_os();
+    let target = env::var("TARGET").unwrap_or_default();
+    let prefix = target.to_uppercase().replace('-', "_");
+    // openssl-sys reads `<TARGET>_<NAME>` before `<NAME>`.
+    let var = |name: &str| {
+        let prefixed = format!("{prefix}_{name}");
+        println!("cargo:rerun-if-env-changed={prefixed}");
+        println!("cargo:rerun-if-env-changed={name}");
+        env::var(&prefixed).or_else(|_| env::var(name)).ok()
+    };
+    let include = PathBuf::from(
+        env::var("DEP_OPENSSL_INCLUDE")
+            .map_err(|_| "openssl-sys exported no include directory".to_string())?,
+    );
+    let number = env::var("DEP_OPENSSL_VERSION_NUMBER")
+        .map_err(|_| "openssl-sys found no OpenSSL 1.1+ headers".to_string())?;
+    let header = include.join(lib.header);
+    let text = fs::read_to_string(&header)
+        .map_err(|e| format!("{} is unreadable ({e})", header.display()))?;
+    println!("cargo:rerun-if-changed={}", header.display());
+    let get = |m: &str| {
+        header_macro(&text, m).ok_or_else(|| format!("{} defines no {m}", header.display()))
+    };
+    let version = lib
+        .version
+        .iter()
+        .map(|m| get(m))
+        .collect::<Result<Vec<_>, _>>()?
+        .join(".");
+    println!(
+        "cargo:rustc-env=RHP_OPENSSL_VERSION_TEXT={}",
+        get("OPENSSL_VERSION_TEXT")?
+    );
+    println!("cargo:rustc-env=RHP_OPENSSL_VERSION_NUMBER={number}");
+
+    // The OpenSSL php links: Homebrew's openssl@4 on macOS, pkg-config's
+    // libcrypto elsewhere. openssl-sys must have used the same headers.
+    let found = find(lib, &os)?;
+    let same = |a: &Path, b: &Path| match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    if !same(&found.include, &include) {
+        return Err(format!(
+            "openssl-sys compiled against the headers in {}, but the OpenSSL php links \
+             is {} (headers in {}). Point OPENSSL_DIR (or OPENSSL_LIB_DIR and \
+             OPENSSL_INCLUDE_DIR) at it.",
+            include.display(),
+            found.via,
+            found.include.display()
+        ));
+    }
+    if let Some(pc) = &found.pc_version {
+        if *pc != version {
+            return Err(format!(
+                "OpenSSL {} has version {version}, but its pkg-config file says {pc}",
+                header.display()
+            ));
+        }
+    }
+
+    let statik = var("OPENSSL_STATIC").is_some_and(|v| v != "0");
+    println!(
+        "cargo:rustc-env=RHP_OPENSSL_LINK_MODE={}",
+        if statik { "static" } else { "dynamic" }
+    );
+    if !statik {
+        // OPENSSL_STATIC=0: an explicit experiment, as RHP_<NAME>_LINK=dynamic.
+        return Ok(());
+    }
+    // pkg-config never links a library under /usr statically, so openssl-sys
+    // links statically only from a directory it was given.
+    let libdir = match var("OPENSSL_LIB_DIR") {
+        Some(d) => PathBuf::from(d),
+        None => match var("OPENSSL_DIR") {
+            Some(d) => PathBuf::from(d).join("lib"),
+            None if os == "macos" => found.libdir.clone(),
+            None => {
+                return Err(format!(
+                    "openssl-sys would find OpenSSL through pkg-config, which links {} \
+                     dynamically. Set OPENSSL_LIB_DIR={} and OPENSSL_INCLUDE_DIR={}.",
+                    found.libdir.display(),
+                    found.libdir.display(),
+                    found.include.display()
+                ))
+            }
+        },
+    };
+    if !same(&libdir, &found.libdir) {
+        return Err(format!(
+            "openssl-sys links OpenSSL from {}, but the OpenSSL php links is in {} ({})",
+            libdir.display(),
+            found.libdir.display(),
+            found.via
+        ));
+    }
+    for name in ["libcrypto.a", "libssl.a"] {
+        let archive = found.libdir.join(name);
+        if !archive.is_file() {
+            return Err(format!(
+                "OpenSSL {version} ({}) has no static archive {}. Install the package that \
+                 ships it ({}), or set OPENSSL_STATIC=0 for an experiment.",
+                found.via,
+                archive.display(),
+                lib.install
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The value of `#define NAME value` in a C header, without quotes or a
 /// trailing comment.
 fn header_macro(text: &str, name: &str) -> Option<String> {

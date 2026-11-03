@@ -23,14 +23,15 @@ runs:
       env:
         PHP_BIN: ${{ inputs.php }}
       run: |
-        # PCRE2 (libpcre2-8.a), libxml2 (libxml2.a) and ICU (libicu*.a),
-        # linked statically.
+        # PCRE2 (libpcre2-8.a), libxml2 (libxml2.a), ICU (libicu*.a) and
+        # OpenSSL (libcrypto.a, libssl.a), linked statically.
         sudo apt-get update -q
         sudo apt-get install -y --no-install-recommends \
           pkg-config \
           libpcre2-dev \
           libxml2-dev \
-          libicu-dev
+          libicu-dev \
+          libssl-dev
         php="${PHP_BIN:-$(command -v php || true)}"
         build=""
         # compare <name> <pkg-config module> <php code printing the version php loads>
@@ -62,6 +63,17 @@ runs:
           # libxml2 other than the one it was compiled against.
           # shellcheck disable=SC2016
           "$php" -n -r 'echo "libxml2: php compiled against ", LIBXML_DOTTED_VERSION, ", loads ", LIBXML_LOADED_VERSION, "\n";'
+        fi
+        # OpenSSL is not built from source: php must load the distro's release.
+        have="$(pkg-config --modversion libcrypto)"
+        if [ -n "$php" ]; then
+          # shellcheck disable=SC2016
+          want="$("$php" -n -r 'ob_start(); phpinfo(INFO_MODULES); preg_match("/^OpenSSL Library Version => OpenSSL (\\S+)/m", ob_get_clean(), $m); echo $m[1] ?? "";')"
+          echo "openssl: the distro has $have; $php loads $want"
+          if [ -n "$want" ] && [ "$want" != "$have" ]; then
+            echo "::error::php loads OpenSSL $want but the distro's libssl-dev is $have; rhp links the distro's"
+            exit 1
+          fi
         fi
         echo "build=${build# }" >> "$GITHUB_OUTPUT"
         echo "os=$(. /etc/os-release && echo "$ID-$VERSION_ID")" >> "$GITHUB_OUTPUT"

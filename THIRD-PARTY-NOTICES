@@ -19,6 +19,7 @@ in their package metadata (see Cargo.lock) and are not repeated here.
 11. Charset maps   Unicode, Inc., Apple and Microsoft mapping tables
 12. libxml2        MIT; dict.c and list.c: ISC-style
 13. ICU            Unicode-3.0, plus the third-party terms in ICU's LICENSE
+14. OpenSSL        Apache-2.0
 
 
 ------------------------------------------------------------------------------
@@ -1245,3 +1246,23 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+------------------------------------------------------------------------------
+14. OpenSSL
+------------------------------------------------------------------------------
+
+The OpenSSL php links (libcrypto and libssl), linked statically: Homebrew's
+openssl@4 on macOS, libssl-dev on Debian/Ubuntu.
+
+ Copyright 1995-2026 The OpenSSL Project Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use these files except in compliance with the License. A copy of the License
+is in LICENSE-APACHE, and at https://www.openssl.org/source/license.html.
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.

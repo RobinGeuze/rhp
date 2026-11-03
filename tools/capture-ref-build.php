@@ -41,6 +41,20 @@ function info_rows(array $keys, bool $zend = false): void
     }
 }
 
+/** The rows of `phpinfo(INFO_MODULES)` named in $keys. */
+function module_rows(array $keys): void
+{
+    ob_start();
+    phpinfo(INFO_MODULES);
+    $info = ob_get_clean();
+    foreach (explode("\n", $info) as $line) {
+        $parts = explode(' => ', $line, 2);
+        if (count($parts) === 2 && in_array($parts[0], $keys, true)) {
+            row("phpinfo[{$parts[0]}]", $parts[1]);
+        }
+    }
+}
+
 function ext_row(string $ext, string $key, callable $value): void
 {
     row($key, extension_loaded($ext) ? $value() : "($ext not loaded)");
@@ -95,6 +109,10 @@ foreach (['PCRE_VERSION', 'PCRE_VERSION_MAJOR', 'PCRE_VERSION_MINOR',
           'INTL_ICU_VERSION', 'INTL_ICU_DATA_VERSION'] as $c) {
     row($c, defined($c) ? constant($c) : '(undefined)');
 }
+// The OpenSSL loaded at run time. OPENSSL_VERSION_TEXT/NUMBER are the headers
+// each binary was compiled against: a Homebrew bottle built before an
+// openssl@4 update reports the older headers, so they are compared nowhere.
+module_rows(['OpenSSL Library Version']);
 
 echo "# build\n";
 foreach (['PHP_BUILD_DATE', 'PHP_BUILD_PROVIDER', 'PHP_PREFIX', 'PHP_BINDIR', 'PHP_SBINDIR',
@@ -107,9 +125,8 @@ foreach (['PHP_BUILD_DATE', 'PHP_BUILD_PROVIDER', 'PHP_PREFIX', 'PHP_BINDIR', 'P
 row("ini_get('include_path')", ini_get('include_path'));
 row("ini_get('extension_dir')", ini_get('extension_dir'));
 info_rows(['Build Date', 'Build System', 'Build Provider', 'Configuration File (php.ini) Path']);
-foreach (['ICONV_VERSION', 'MB_ONIGURUMA_VERSION',
-          'OPENSSL_VERSION_TEXT', 'OPENSSL_VERSION_NUMBER',
-          'GMP_VERSION', 'ZLIB_VERSION', 'ZLIB_VERNUM'] as $c) {
+foreach (['ICONV_VERSION', 'MB_ONIGURUMA_VERSION', 'GMP_VERSION', 'ZLIB_VERSION',
+          'ZLIB_VERNUM'] as $c) {
     row($c, defined($c) ? constant($c) : '(undefined)');
 }
 ext_row('zip', 'ZipArchive::LIBZIP_VERSION', fn () => ZipArchive::LIBZIP_VERSION);

@@ -4,6 +4,10 @@
 //! thread-local registry keyed by document id, plus libxml2's serializer
 //! (`xmlDocDumpFormatMemoryEnc` / `xmlNodeDump`) byte for byte.
 
+// Only SimpleXML and XMLReader still use this; it goes when they move to
+// libxml2 trees.
+#![allow(dead_code)]
+
 use std::cell::RefCell;
 
 pub type NodeId = usize;

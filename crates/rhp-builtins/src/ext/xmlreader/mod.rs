@@ -665,7 +665,7 @@ fn node_op(host: &mut dyn Host, op: &str, id: i64, args: &[Value]) -> Result<Val
                 )?;
                 return Ok(Value::Bool(false));
             };
-            Ok(dom::wrap(host, d, ev.node))
+            dom::from_old_tree(host, d, ev.node)
         }
         "lookupNamespace" => {
             let Some((d, ev, _)) = cur else {

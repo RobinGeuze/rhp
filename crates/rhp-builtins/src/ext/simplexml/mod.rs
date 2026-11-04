@@ -176,6 +176,73 @@ fn first_node(doc: &Doc, x: &Sxe) -> Option<NodeId> {
     items(doc, x).first().copied()
 }
 
+/// libxml2's `xmlStringGetNodeList`: element content given in escaped form.
+/// Returns the new child nodes, or an "unterminated entity" warning text.
+pub(crate) fn string_node_list(doc: &mut Doc, v: &[u8]) -> Result<Vec<NodeId>, String> {
+    let mut out = Vec::new();
+    let mut buf = Vec::new();
+    let mut i = 0;
+    while i < v.len() {
+        if v[i] == b'&' {
+            let rest = &v[i + 1..];
+            let Some(end) = rest.iter().position(|&c| c == b';') else {
+                let q = String::from_utf8_lossy(rest).into_owned();
+                return Err(format!("unterminated entity reference {q:>15}"));
+            };
+            let name = &rest[..end];
+            if let Some(num) = name.strip_prefix(b"#") {
+                let cp = if let Some(h) = num.strip_prefix(b"x") {
+                    u32::from_str_radix(std::str::from_utf8(h).unwrap_or(""), 16).ok()
+                } else {
+                    std::str::from_utf8(num).ok().and_then(|x| x.parse().ok())
+                };
+                if let Some(c) = cp.and_then(char::from_u32) {
+                    let mut b = [0u8; 4];
+                    buf.extend_from_slice(c.encode_utf8(&mut b).as_bytes());
+                }
+            } else if let Some(val) = match name {
+                b"lt" => Some(&b"<"[..]),
+                b"gt" => Some(&b">"[..]),
+                b"amp" => Some(&b"&"[..]),
+                b"quot" => Some(&b"\""[..]),
+                b"apos" => Some(&b"'"[..]),
+                _ => None,
+            } {
+                buf.extend_from_slice(val);
+            } else {
+                if !buf.is_empty() {
+                    out.push(doc.new_text(Kind::Text, &std::mem::take(&mut buf)));
+                }
+                let mut n = Node::new(Kind::EntityRef);
+                n.name = name.to_vec();
+                out.push(doc.add(n));
+            }
+            i += end + 2;
+        } else {
+            buf.push(v[i]);
+            i += 1;
+        }
+    }
+    if !buf.is_empty() || out.is_empty() {
+        out.push(doc.new_text(Kind::Text, &buf));
+    }
+    Ok(out)
+}
+
+/// The old tree's (document, node) of a SimpleXMLElement (for
+/// dom_import_simplexml's copy bridge).
+pub fn old_tree_node(v: &Value) -> Option<(DocId, NodeId)> {
+    let Value::Object(h) = v else {
+        return None;
+    };
+    let d = slot(h, b"__d");
+    let n = slot(h, b"__n");
+    let (Value::Int(d), Value::Int(_)) = (&d, &n) else {
+        return None;
+    };
+    Some((*d as usize, target_node(v)?))
+}
+
 /// The node a SimpleXMLElement stands for (dom_import_simplexml).
 pub fn target_node(v: &Value) -> Option<NodeId> {
     let Value::Object(h) = v else {
@@ -426,7 +493,7 @@ fn fn_load_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_import_dom(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = arg(args, 0);
     let class = class_arg(host, "simplexml_import_dom", arg(args, 1))?;
-    let Some((d, n)) = dom::ids_of(&v) else {
+    let Some((d, n)) = dom::to_old_tree(&v) else {
         return Err(Thrown::Error {
             class: "TypeError",
             message: "simplexml_import_dom(): Argument #1 ($node) must be a valid XML node".into(),
@@ -1029,7 +1096,7 @@ fn fn_sxe(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 // xmlNewChild: the value is parsed for entity references
                 let mut warn = None;
                 if let Some(v) = &val {
-                    match dom::string_node_list(doc, v) {
+                    match string_node_list(doc, v) {
                         Ok(ids) => {
                             for i in ids {
                                 doc.append(c, i);

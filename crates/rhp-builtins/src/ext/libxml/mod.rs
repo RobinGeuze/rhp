@@ -5,9 +5,10 @@
 //! once-per-process and once-per-thread libxml2 setup.
 //!
 //! [`sys`] declares the libxml2 calls, [`ffi`] is how C callbacks reach the
-//! VM, [`node`] is php's ownership of libxml2 trees. ext/xml and ext/xmlwriter run on libxml2. DOM, SimpleXML and XMLReader
-//! still run on the hand-written parser and tree below (`parser`, `tree`,
-//! `xpath`, `xsd`, `charset`) and report into the same error store.
+//! VM, [`node`] is php's ownership of libxml2 trees. ext/xml, ext/xmlwriter
+//! and DOM run on libxml2. SimpleXML and XMLReader still run on the
+//! hand-written parser and tree below (`parser`, `tree`, `xpath`,
+//! `charset`) and report into the same error store.
 
 pub mod charset;
 pub mod ffi;
@@ -17,7 +18,6 @@ pub mod parser;
 pub mod sys;
 pub mod tree;
 pub mod xpath;
-pub mod xsd;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -39,8 +39,6 @@ pub(crate) fn deref(v: &Value) -> Value {
 /// How a diagnostic is shown as a php warning when internal errors are off.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Ctx {
-    /// A parser diagnostic: `msg in <file|Entity>, line: N`.
-    Parser,
     /// Anything else (validation, I/O): the bare message.
     Plain,
     /// libxml2's generic error handler (no parser context registered, as
@@ -326,13 +324,6 @@ pub fn report(
         }
         let msg = e.message.trim_end_matches('\n');
         let text = match ctx {
-            Ctx::Parser => {
-                let file = match &e.file {
-                    Some(f) => String::from_utf8_lossy(f).into_owned(),
-                    None => "Entity".to_string(),
-                };
-                format!("{msg} in {file}, line: {}", e.line)
-            }
             Ctx::Plain => msg.to_string(),
             Ctx::Generic => {
                 let mut head = String::new();

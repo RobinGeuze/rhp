@@ -3,6 +3,10 @@
 //! codes, messages, line and column numbers for the common malformations,
 //! and applying libxml2's blank-node heuristic for `keepBlanks = 0`.
 
+// Only SimpleXML and XMLReader still use this; it goes when they move to
+// libxml2 trees.
+#![allow(dead_code)]
+
 use super::charset;
 use super::tree::{Doc, DocTypeInfo, Kind, Node, NodeId, XML_NS};
 

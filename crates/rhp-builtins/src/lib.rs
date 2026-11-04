@@ -115,7 +115,7 @@ pub(crate) mod zip_ext;
 /// The E_DEPRECATED message for reading a `#[\Deprecated]` extension
 /// constant, if `name` is one.
 pub fn constant_deprecation(name: &[u8]) -> Option<String> {
-    ext::curl::constant_deprecation(name)
+    ext::curl::constant_deprecation(name).or_else(|| ext::dom::constant_deprecation(name))
 }
 
 /// The engine's object free hook (`rhp_values::set_object_free_hook`), for

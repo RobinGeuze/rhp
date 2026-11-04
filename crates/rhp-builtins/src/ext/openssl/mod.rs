@@ -400,6 +400,11 @@ pub(crate) fn object_freed(id: u32) {
 pub(crate) fn reset_state() {
     let old = NATIVES.with(|m| m.try_borrow_mut().map(|mut m| std::mem::take(&mut *m)).ok());
     drop(old);
+    // php keeps its error ring per worker (GINIT); a request here starts
+    // as a fresh process does.
+    ERRORS.with(|c| c.set(None));
+    ERRORS_MARK.with(|c| c.set(None));
+    PENDING.with(|p| p.borrow_mut().take());
 }
 
 pub const PRELUDE_PHP: &str = r#"

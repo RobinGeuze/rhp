@@ -116,6 +116,11 @@ thread_local! {
     static PATH_DIAGS: RefCell<Vec<(i64, String)>> = const { RefCell::new(Vec::new()) };
 }
 
+/// A new engine: nothing a walk of an earlier one left behind.
+pub(crate) fn reset_path_diags() {
+    PATH_DIAGS.with(|d| d.borrow_mut().clear());
+}
+
 impl Vm {
     /// Read the value at the current cursor (root + steps) for a compound
     /// assignment / increment: a magic property along the way reads via `__get`.

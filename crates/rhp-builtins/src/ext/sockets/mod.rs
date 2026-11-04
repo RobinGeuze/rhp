@@ -45,6 +45,12 @@ thread_local! {
     static LAST_ERROR: Cell<i32> = const { Cell::new(0) };
 }
 
+/// A new request: php keeps the last error per worker (GINIT); a request
+/// here starts as a fresh process does.
+pub(crate) fn reset_state() {
+    LAST_ERROR.with(|e| e.set(0));
+}
+
 /// The `Socket` behind a `Socket` argument (TypeError for anything else;
 /// `nullable` is php's `?Socket`).
 fn socket_arg(

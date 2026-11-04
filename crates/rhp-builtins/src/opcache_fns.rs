@@ -265,6 +265,11 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// A new request: nothing queued yet.
+pub(crate) fn reset_state() {
+    ACCEL_LOG.with(|l| l.borrow_mut().clear());
+}
+
 /// Queue a message from a directive's startup handler for opcache's log
 /// (written by [`take_accel_log`]'s caller once the settings are known, in
 /// php's registration order).

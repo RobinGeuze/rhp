@@ -24,6 +24,7 @@ impl Vm {
     pub fn new(sapi: Box<dyn builtins::sapi::Sapi>) -> Self {
         // Builtin state is per request: never inherit a previous engine's.
         builtins::reset_request_state();
+        crate::lvalue::reset_path_diags();
         rhp_values::mem::end_request();
         let name = sapi.name().to_string();
         builtins::sapi::set_sapi(&name, &sapi.ini_defaults());

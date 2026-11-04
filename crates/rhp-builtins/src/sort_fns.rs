@@ -397,6 +397,11 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
+/// A new request: object ids start over, so no pointer may survive.
+pub(crate) fn reset_state() {
+    OBJECT_POS.with(|m| m.borrow_mut().clear());
+}
+
 /// Forget a freed object's internal pointer.
 pub(crate) fn object_freed(id: u32) {
     let _ = OBJECT_POS.try_with(|m| m.borrow_mut().remove(&id));

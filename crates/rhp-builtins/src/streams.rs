@@ -93,6 +93,12 @@ pub fn note_io_err(e: &std::io::Error) {
     LAST_OS_ERR.with(|c| c.set(e.raw_os_error()));
 }
 
+/// A new request: no errno or wrapper error recorded.
+pub(crate) fn reset_state() {
+    clear_errno();
+    take_wrapper_error();
+}
+
 /// Forget any recorded errno (before an operation whose failure is reported).
 pub fn clear_errno() {
     LAST_OS_ERR.with(|c| c.set(None));

@@ -478,17 +478,10 @@ fn compare_object_operand(
     }
     // Z_OBJ_HANDLER(object, compare)(a, b)
     let Object(h) = object else {
-        // Closures: zend_closure_compare — uncomparable unless identical;
-        // against scalars the std object path applies.
+        // Closures: zend_closure_compare. Against another object (which is
+        // op2 here) its fallback, zend_std_compare_objects, finds them
+        // uncomparable; against scalars the std object path applies.
         return if is_obj(other) {
-            if let Object(oh) = other {
-                if let Some(r) = cx.compare_handler(oh, a, b) {
-                    return Ok(ord(r?));
-                }
-                if cx.is_enum(oh.borrow().class) {
-                    return Ok(Ordering::Greater);
-                }
-            }
             Ok(Ordering::Greater)
         } else {
             std_compare_scalar(None, b"Closure", object_lhs, other, cx)

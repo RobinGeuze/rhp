@@ -1074,6 +1074,14 @@ fn fn_timezone_name_from_abbr(host: &mut dyn Host, args: &[Value]) -> Result<Val
     )
 }
 
+/// `time(): int` — current unix timestamp (seconds).
+fn fn_time(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    Ok(Value::Int(now.as_secs() as i64))
+}
+
 /// Register the date builtins.
 pub fn register(m: &mut crate::Registry) {
     crate::register(
@@ -1104,6 +1112,7 @@ pub fn register(m: &mut crate::Registry) {
             ("date_sunrise", fn_date_sunrise),
             ("date_sunset", fn_date_sunset),
             ("date_sun_info", fn_date_sun_info),
+            ("time", fn_time),
         ],
     );
     crate::register_helpers(m, &[("__date", classes::fn_date, 1, None)]);

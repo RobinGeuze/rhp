@@ -335,7 +335,6 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
                 ("str_contains", fn_str_contains),
                 ("ord", fn_ord),
                 ("chr", fn_chr),
-                ("iterator_to_array", fn_iterator_to_array),
             ],
         );
         for (_, register_module) in builtin_modules() {
@@ -1796,34 +1795,6 @@ fn fn_str_contains(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(
         needle.is_empty() || find_sub(&haystack, &needle).is_some(),
     ))
-}
-
-/// `iterator_to_array($iterable, $preserve_keys = true)`. Only a plain array is
-/// supported here: driving a user `Iterator` / `Generator` is done by the VM, so
-/// a non-array iterable is deferred-to-VM and yields a TypeError from this
-/// builtin. For an array it is a (re-keyed when `!preserve_keys`) passthrough.
-fn fn_iterator_to_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let preserve = args
-        .get(1)
-        .map(|v| conv::to_bool(&deref(v)))
-        .unwrap_or(true);
-    match deref(&args[0]) {
-        Value::Array(a) => {
-            if preserve {
-                Ok(Value::Array(a))
-            } else {
-                let mut out = PhpArray::new();
-                for (_, v) in a.iter() {
-                    out.push(v.clone());
-                }
-                Ok(Value::Array(out))
-            }
-        }
-        _ => Err(Thrown::type_error(
-            "iterator_to_array(): driving a non-array Traversable is handled by the VM, \
-             not this builtin",
-        )),
-    }
 }
 
 fn fn_ord(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

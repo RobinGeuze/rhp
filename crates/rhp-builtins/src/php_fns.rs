@@ -454,14 +454,6 @@ fn fn_uniqid(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(s))
 }
 
-/// `time(): int` — current unix timestamp (seconds).
-fn fn_time(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    Ok(Value::Int(now.as_secs() as i64))
-}
-
 /// `microtime(bool $as_float = false)` — current time with microseconds.
 fn fn_microtime(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let now = std::time::SystemTime::now()
@@ -726,7 +718,6 @@ pub fn register(m: &mut crate::Registry) {
             ("mt_getrandmax", fn_getrandmax),
             ("getrandmax", fn_getrandmax),
             ("uniqid", fn_uniqid),
-            ("time", fn_time),
             ("microtime", fn_microtime),
             ("hrtime", fn_hrtime),
             ("version_compare", fn_version_compare),

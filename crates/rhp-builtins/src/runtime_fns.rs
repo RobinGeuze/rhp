@@ -12,66 +12,12 @@ use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::ini_table::INI_TABLE;
-use crate::zend::zpp::{bool_param, int_param, str_or_null_param, str_param, zval_value_name};
+use crate::zend::zpp::{bool_param, int_param, str_or_null_param, str_param};
 use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // class relations
 // ---------------------------------------------------------------------------
-
-/// (parents, interfaces, traits) as returned by `Host::class_relations`.
-type Relations = (Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>);
-
-/// Shared argument handling for `class_implements`/`class_parents`/`class_uses`.
-fn relation(
-    host: &mut dyn Host,
-    args: &[Value],
-    func: &str,
-    pick: fn(Relations) -> Vec<Vec<u8>>,
-) -> Result<Value, Thrown> {
-    let v = deref(&args[0]);
-    let autoload = bool_param(host, args, 1, func, "autoload", true)?;
-    let id = match &v {
-        Value::Object(h) => Some(h.borrow().class),
-        Value::Str(s) => {
-            if autoload {
-                host.resolve_class_autoload(s.as_bytes())?
-            } else {
-                host.resolve_class(s.as_bytes())
-            }
-        }
-        other => {
-            return Err(Thrown::type_error(format!(
-                "{func}(): Argument #1 ($object_or_class) must be of type object|string, {} given",
-                zval_value_name(host, other)
-            )))
-        }
-    };
-    // php: Warning "Class X does not exist[ and could not be loaded]"
-    let Some(id) = id else {
-        return Ok(Value::Bool(false));
-    };
-    let Some(rel) = host.class_relations(id) else {
-        return Ok(Value::Array(PhpArray::new()));
-    };
-    let mut out = PhpArray::new();
-    for n in pick(rel) {
-        out.insert(ArrayKey::from_bytes(&n), Value::str(n));
-    }
-    Ok(Value::Array(out))
-}
-
-fn fn_class_implements(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    relation(host, args, "class_implements", |r| r.1)
-}
-
-fn fn_class_parents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    relation(host, args, "class_parents", |r| r.0)
-}
-
-fn fn_class_uses(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    relation(host, args, "class_uses", |r| r.2)
-}
 
 // ---------------------------------------------------------------------------
 // get_defined_constants
@@ -844,9 +790,6 @@ pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
-            ("class_implements", fn_class_implements),
-            ("class_parents", fn_class_parents),
-            ("class_uses", fn_class_uses),
             ("ini_get", fn_ini_get),
             ("ini_set", fn_ini_set),
             ("ini_alter", fn_ini_alter),

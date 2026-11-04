@@ -3,7 +3,8 @@
 //! which the reference php printed (`rhp-difftest golden --check`, see
 //! docs/testing.md); `tests/golden/vm` is rhp-vm's to run. It needs no php
 //! binary, so it also runs in the php-free CI job. `GOLDEN_ONLY=SUBSTR`
-//! runs only the fixtures whose name (`lang/closures`) contains SUBSTR.
+//! runs only the fixtures whose name (`lang/closures`) contains SUBSTR; it
+//! fails when no fixture matches, vm/ included.
 //!
 //! The fixtures run one after another: they chdir, and some set the umask.
 
@@ -37,12 +38,15 @@ fn refused(stderr: &[u8]) -> bool {
 
 fn cases() -> Vec<Fixture> {
     let only = std::env::var("GOLDEN_ONLY").ok();
-    fixtures(&golden_dir())
+    let all: Vec<Fixture> = fixtures(&golden_dir())
         .expect("read golden dir")
         .into_iter()
-        // rhp-vm's tests/golden.rs runs these.
-        .filter(|f| !f.name.starts_with("vm/"))
         .filter(|f| only.as_deref().is_none_or(|o| f.name.contains(o)))
+        .collect();
+    assert!(!all.is_empty(), "no golden fixture matches GOLDEN_ONLY");
+    // rhp-vm's tests/golden.rs runs these.
+    all.into_iter()
+        .filter(|f| !f.name.starts_with("vm/"))
         .collect()
 }
 
@@ -50,7 +54,6 @@ fn cases() -> Vec<Fixture> {
 #[test]
 fn vm_matches_php_baseline() {
     let cases = cases();
-    assert!(!cases.is_empty(), "no golden fixture matches GOLDEN_ONLY");
     let cwd = std::env::current_dir().expect("cwd");
     let mut passed = 0;
     let mut failures = Vec::new();

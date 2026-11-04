@@ -85,7 +85,8 @@ which are per process. `GOLDEN_ONLY=SUBSTR` runs only the fixtures whose
 name (`ext/json/json_flags`, below `tests/golden`, no extension) contains
 SUBSTR. `tests/golden/vm` holds the VM's own goldens; rhp-vm's
 `tests/golden.rs` runs them instead, so `cargo test -p rhp-vm` and
-cargo-mutants on rhp-vm see them.
+cargo-mutants on rhp-vm see them. Both runners honour `GOLDEN_ONLY`;
+diff.rs fails when it matches no fixture at all, `vm/` included.
 Print only the basename of paths (`basename(__FILE__)`), catch exceptions
 whose message holds a path (print `get_class($e)` and the message with the
 path removed), keep output independent of time, the machine, the

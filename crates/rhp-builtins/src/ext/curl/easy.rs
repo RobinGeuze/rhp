@@ -231,15 +231,13 @@ fn c_stderr() -> *const c_void {
 /// `_php_curl_set_default_options`.
 fn set_default_options(host: &dyn Host, e: &Rc<RefCell<Easy>>) {
     let p = ctx(e);
-    let mut ch = e.borrow_mut();
-    let cp = ch.cp;
+    let (cp, err) = {
+        let mut ch = e.borrow_mut();
+        (ch.cp, ch.err.as_mut_ptr())
+    };
     setopt_long(cp, opt("CURLOPT_NOPROGRESS"), 1);
     setopt_long(cp, opt("CURLOPT_VERBOSE"), 0);
-    setopt_ptr(
-        cp,
-        opt("CURLOPT_ERRORBUFFER"),
-        ch.err.as_mut_ptr() as *const c_void,
-    );
+    setopt_ptr(cp, opt("CURLOPT_ERRORBUFFER"), err as *const c_void);
     setopt_ptr(
         cp,
         opt("CURLOPT_WRITEFUNCTION"),
@@ -276,28 +274,27 @@ fn set_default_options(host: &dyn Host, e: &Rc<RefCell<Easy>>) {
 /// Point a new handle's callbacks at itself (after `curl_easy_duphandle`
 /// or a server push copied the source's pointers), and give it the
 /// source's handlers: `_php_setup_easy_copy_handlers`.
-fn copy_handlers(new: &Rc<RefCell<Easy>>, src: &Easy) {
+fn copy_handlers(new: &Rc<RefCell<Easy>>, src: &RefCell<Easy>) {
     let p = ctx(new);
-    let mut ch = new.borrow_mut();
-    ch.write = src.write.clone();
-    ch.read = src.read.clone();
-    ch.write_header = src.write_header.clone();
-    ch.progress = src.progress.clone();
-    ch.xferinfo = src.xferinfo.clone();
-    ch.fnmatch = src.fnmatch.clone();
-    ch.debug = src.debug.clone();
-    ch.prereq = src.prereq.clone();
-    ch.sshhostkey = src.sshhostkey.clone();
-    ch.private = src.private.clone();
-    ch.to_free = src.to_free.clone();
-    // libcurl copied the CURLOPT_STDERR stream pointer.
-    ch.stderr_file = src.stderr_file.clone();
-    let cp = ch.cp;
-    setopt_ptr(
-        cp,
-        opt("CURLOPT_ERRORBUFFER"),
-        ch.err.as_mut_ptr() as *const c_void,
-    );
+    let (cp, err) = {
+        let src = src.borrow();
+        let mut ch = new.borrow_mut();
+        ch.write = src.write.clone();
+        ch.read = src.read.clone();
+        ch.write_header = src.write_header.clone();
+        ch.progress = src.progress.clone();
+        ch.xferinfo = src.xferinfo.clone();
+        ch.fnmatch = src.fnmatch.clone();
+        ch.debug = src.debug.clone();
+        ch.prereq = src.prereq.clone();
+        ch.sshhostkey = src.sshhostkey.clone();
+        ch.private = src.private.clone();
+        ch.to_free = src.to_free.clone();
+        // libcurl copied the CURLOPT_STDERR stream pointer.
+        ch.stderr_file = src.stderr_file.clone();
+        (ch.cp, ch.err.as_mut_ptr())
+    };
+    setopt_ptr(cp, opt("CURLOPT_ERRORBUFFER"), err as *const c_void);
     for d in DATA_OPTS {
         setopt_ptr(cp, opt(d), p);
     }
@@ -310,16 +307,16 @@ pub(super) fn duplicate(
     src: &Rc<RefCell<Easy>>,
     dst: &ObjectHandle,
 ) -> Option<Rc<RefCell<Easy>>> {
-    let (cp, postfields) = {
+    let (src_cp, postfields) = {
         let s = src.borrow();
-        let pf = s.postfields.clone().zip(s.mime_parts.clone());
-        (unsafe { sys::curl_easy_duphandle(s.cp) }, pf)
+        (s.cp, s.postfields.clone().zip(s.mime_parts.clone()))
     };
+    let cp = unsafe { sys::curl_easy_duphandle(src_cp) };
     if cp.is_null() {
         return None;
     }
     let new = Rc::new(RefCell::new(Easy::new(cp, dst)));
-    copy_handlers(&new, &src.borrow());
+    copy_handlers(&new, src);
     if let Some((pf, parts)) = postfields {
         {
             let mut n = new.borrow_mut();
@@ -359,8 +356,21 @@ fn bytes<'a>(p: *const c_char, len: usize) -> &'a [u8] {
     }
 }
 
+/// The handle's fields, read from a callback. No libcurl call is made with
+/// the handle borrowed; should one be, the callback does nothing (`None`).
+fn peek<T>(cell: &RefCell<Easy>, f: impl FnOnce(&Easy) -> T) -> Option<T> {
+    cell.try_borrow().ok().map(|e| f(&e))
+}
+
+/// [`peek`] for writing.
+fn poke(cell: &RefCell<Easy>, f: impl FnOnce(&mut Easy)) {
+    if let Ok(mut e) = cell.try_borrow_mut() {
+        f(&mut e);
+    }
+}
+
 fn handle_value(cell: &RefCell<Easy>) -> Option<Value> {
-    cell.borrow().obj.upgrade().map(Value::Object)
+    peek(cell, |e| e.obj.upgrade()).flatten().map(Value::Object)
 }
 
 /// `php_curl_call_callback`: `None` when it did not run or threw (php's
@@ -371,14 +381,17 @@ fn call(cell: &RefCell<Easy>, fcc: Value, args: Vec<Value>) -> Option<Value> {
     if ffi::aborted() || !ffi::has_host() {
         return None;
     }
-    let was = std::mem::replace(&mut cell.borrow_mut().in_callback, true);
+    let was = {
+        let Ok(mut e) = cell.try_borrow_mut() else {
+            return None;
+        };
+        std::mem::replace(&mut e.in_callback, true)
+    };
     let r = ffi::call_host(|h| h.call_callable(&fcc, &args));
     drop(fcc);
     drop(args);
     ffi::call_host(|h| h.run_released_destructors());
-    if let Ok(mut e) = cell.try_borrow_mut() {
-        e.in_callback = was;
-    }
+    poke(cell, |e| e.in_callback = was);
     r
 }
 
@@ -405,8 +418,7 @@ pub(super) fn verify_handlers(
     cell: &RefCell<Easy>,
     report: bool,
 ) -> Result<(), Thrown> {
-    let (std_err, read, header, write, cp) = {
-        let e = cell.borrow();
+    let Some((std_err, read, header, write, cp)) = peek(cell, |e| {
         (
             e.std_err.clone(),
             e.read.stream.clone(),
@@ -414,6 +426,8 @@ pub(super) fn verify_handlers(
             e.write.stream.clone(),
             e.cp,
         )
+    }) else {
+        return Ok(());
     };
     let gone =
         |host: &dyn Host, s: &Option<Value>| s.as_ref().is_some_and(|s| !host.stream_is_open(s));
@@ -426,11 +440,11 @@ pub(super) fn verify_handlers(
             )?;
         }
         setopt_ptr(cp, opt("CURLOPT_STDERR"), c_stderr());
-        let old = {
-            let mut e = cell.borrow_mut();
+        let mut old = None;
+        poke(cell, |e| {
             e.std_err = None;
-            e.stderr_file.take()
-        };
+            old = e.stderr_file.take();
+        });
         drop(old);
     }
     if gone(host, &read) {
@@ -441,7 +455,7 @@ pub(super) fn verify_handlers(
                 "CURLOPT_INFILE resource has gone away, resetting to default",
             )?;
         }
-        cell.borrow_mut().read.stream = None;
+        poke(cell, |e| e.read.stream = None);
     }
     if gone(host, &header) {
         if report {
@@ -451,9 +465,10 @@ pub(super) fn verify_handlers(
                 "CURLOPT_WRITEHEADER resource has gone away, resetting to default",
             )?;
         }
-        let mut e = cell.borrow_mut();
-        e.write_header.stream = None;
-        e.write_header.method = Method::Ignore;
+        poke(cell, |e| {
+            e.write_header.stream = None;
+            e.write_header.method = Method::Ignore;
+        });
     }
     if gone(host, &write) {
         if report {
@@ -463,9 +478,10 @@ pub(super) fn verify_handlers(
                 "CURLOPT_FILE resource has gone away, resetting to default",
             )?;
         }
-        let mut e = cell.borrow_mut();
-        e.write.stream = None;
-        e.write.method = Method::Stdout;
+        poke(cell, |e| {
+            e.write.stream = None;
+            e.write.method = Method::Stdout;
+        });
     }
     Ok(())
 }
@@ -494,16 +510,17 @@ unsafe extern "C" fn write_cb(
             return length;
         };
         let data = bytes(data, length);
-        let h = cell.borrow().write.clone();
+        let Some(h) = peek(cell, |e| e.write.clone()) else {
+            return length;
+        };
         match h.method {
             Method::Stdout => write_out(data),
             Method::File => return h.stream.as_ref().map_or(0, |s| stream_write(s, data)),
             Method::Return => {
                 if length > 0 {
-                    cell.borrow_mut()
-                        .buf
-                        .get_or_insert_with(Vec::new)
-                        .extend_from_slice(data);
+                    poke(cell, |e| {
+                        e.buf.get_or_insert_with(Vec::new).extend_from_slice(data)
+                    });
                 }
             }
             Method::User => {
@@ -533,18 +550,17 @@ unsafe extern "C" fn header_cb(
             return length;
         };
         let data = bytes(data, length);
-        let (h, write_method) = {
-            let e = cell.borrow();
-            (e.write_header.clone(), e.write.method)
+        let Some((h, write_method)) = peek(cell, |e| (e.write_header.clone(), e.write.method))
+        else {
+            return length;
         };
         match h.method {
             Method::Stdout => {
                 // The whole transfer is being returned: headers go in too.
                 if write_method == Method::Return && length > 0 {
-                    cell.borrow_mut()
-                        .buf
-                        .get_or_insert_with(Vec::new)
-                        .extend_from_slice(data);
+                    poke(cell, |e| {
+                        e.buf.get_or_insert_with(Vec::new).extend_from_slice(data)
+                    });
                 } else {
                     write_out(data);
                 }
@@ -574,7 +590,8 @@ unsafe extern "C" fn read_cb(
     p: *mut c_void,
 ) -> usize {
     let max = size.wrapping_mul(nmemb);
-    ffi::guard(sys::internal("CURL_READFUNC_ABORT") as usize, || {
+    let abort = sys::internal("CURL_READFUNC_ABORT") as usize;
+    ffi::guard(abort, || {
         let Some(cell) = easy_from(p) else {
             return 0;
         };
@@ -583,7 +600,9 @@ unsafe extern "C" fn read_cb(
             unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), data as *mut u8, n) };
             n
         };
-        let h = cell.borrow().read.clone();
+        let Some(h) = peek(cell, |e| e.read.clone()) else {
+            return abort;
+        };
         match h.method {
             Method::Direct => {
                 let Some(s) = h.stream else { return 0 };
@@ -617,7 +636,7 @@ fn progress_like(p: *mut c_void, pick: fn(&Easy) -> Option<Value>, nums: [i64; 4
     let Some(cell) = easy_from(p) else {
         return 0;
     };
-    let fcc = pick(&cell.borrow());
+    let fcc = peek(cell, pick).flatten();
     let (Some(fcc), Some(obj)) = (fcc, handle_value(cell)) else {
         return 0;
     };
@@ -670,7 +689,7 @@ unsafe extern "C" fn fnmatch_cb(
         let Some(cell) = easy_from(p) else {
             return fail;
         };
-        let fcc = cell.borrow().fnmatch.clone();
+        let fcc = peek(cell, |e| e.fnmatch.clone()).flatten();
         let (Some(fcc), Some(obj)) = (fcc, handle_value(cell)) else {
             return fail;
         };
@@ -700,7 +719,7 @@ unsafe extern "C" fn prereq_cb(
         let Some(cell) = easy_from(p) else {
             return ok as c_int;
         };
-        let fcc = cell.borrow().prereq.clone();
+        let fcc = peek(cell, |e| e.prereq.clone()).flatten();
         let (Some(fcc), Some(obj)) = (fcc, handle_value(cell)) else {
             return ok as c_int;
         };
@@ -744,7 +763,7 @@ unsafe extern "C" fn sshhostkey_cb(
         let Some(cell) = easy_from(p) else {
             return mismatch as c_int;
         };
-        let fcc = cell.borrow().sshhostkey.clone();
+        let fcc = peek(cell, |e| e.sshhostkey.clone()).flatten();
         let (Some(fcc), Some(obj)) = (fcc, handle_value(cell)) else {
             return mismatch as c_int;
         };
@@ -787,9 +806,9 @@ unsafe extern "C" fn debug_cb(
         let data = bytes(data, size);
         // Kept for CURLINFO_HEADER_OUT, with or without a user callback.
         if ty as i64 == sys::php("CURLINFO_HEADER_OUT") {
-            cell.borrow_mut().header_out = Some(data.to_vec());
+            poke(cell, |e| e.header_out = Some(data.to_vec()));
         }
-        let fcc = cell.borrow().debug.clone();
+        let fcc = peek(cell, |e| e.debug.clone()).flatten();
         if let (Some(fcc), Some(obj)) = (fcc, handle_value(cell)) {
             call(
                 cell,
@@ -1119,25 +1138,28 @@ fn apply_mime(host: Option<&mut dyn Host>, e: &Rc<RefCell<Easy>>, parts: &[Part]
             error = r;
         }
     }
-    let mut ch = e.borrow_mut();
-    ch.errno = error;
+    e.borrow_mut().errno = error;
     if error != 0 {
-        drop(ch);
         unsafe { sys::curl_mime_free(mime) };
         return false;
     }
-    {
+    let old: Vec<_> = {
+        let ch = e.borrow();
         let shared = Rc::strong_count(&ch.to_free) > 1;
         let mut tf = ch.to_free.borrow_mut();
-        if !shared {
-            for m in tf.mimes.drain(..) {
-                unsafe { sys::curl_mime_free(m) };
-            }
-        }
+        let old = if shared {
+            Vec::new()
+        } else {
+            std::mem::take(&mut tf.mimes)
+        };
         tf.mimes.push(mime);
+        old
+    };
+    for m in old {
+        unsafe { sys::curl_mime_free(m) };
     }
     let r = setopt_ptr(cp, opt("CURLOPT_MIMEPOST"), mime as *const c_void);
-    ch.errno = r;
+    e.borrow_mut().errno = r;
     r == 0
 }
 
@@ -1516,8 +1538,42 @@ fn cb_name(cb: Cb) -> &'static str {
     }
 }
 
+/// Run `op`, a curl_easy_setopt call, with the host reachable: libcurl may
+/// log through CURLOPT_DEBUGFUNCTION or into CURLOPT_STDERR. An exception
+/// a callback throws is kept in `pending` and skips later callbacks, as
+/// php's EG(exception) does; `exit` returns at once.
+fn logged<R: Copy + Default>(
+    host: &mut dyn Host,
+    f: &str,
+    pending: &mut Option<Thrown>,
+    op: impl FnOnce() -> R,
+) -> Result<R, Thrown> {
+    let carried = pending.take();
+    let (r, thrown) = drive(host, f, || {
+        if let Some(t) = carried {
+            ffi::stash(t);
+        }
+        op()
+    });
+    match thrown {
+        Ok(()) => Ok(r),
+        Err(t) if t.is_catchable() => {
+            *pending = Some(t);
+            Ok(r)
+        }
+        Err(t) => Err(t),
+    }
+}
+
 /// `php_curl_option_str`.
-fn option_str(f: &str, e: &RefCell<Easy>, option: i64, s: &[u8]) -> Result<bool, Thrown> {
+fn option_str(
+    host: &mut dyn Host,
+    f: &str,
+    e: &RefCell<Easy>,
+    pending: &mut Option<Thrown>,
+    option: i64,
+    s: &[u8],
+) -> Result<bool, Thrown> {
     if s.contains(&0) {
         return Err(Thrown::error(
             "ValueError",
@@ -1525,13 +1581,16 @@ fn option_str(f: &str, e: &RefCell<Easy>, option: i64, s: &[u8]) -> Result<bool,
         ));
     }
     let c = cstring(s);
-    let mut ch = e.borrow_mut();
-    let r = setopt_ptr(ch.cp, option, c.as_ptr() as *const c_void);
-    ch.errno = r;
+    let cp = e.borrow().cp;
+    let r = logged(host, f, pending, || {
+        setopt_ptr(cp, option, c.as_ptr() as *const c_void)
+    })?;
+    e.borrow_mut().errno = r;
     Ok(r == 0)
 }
 
 /// `_php_curl_setopt`: `Ok(false)` is php's FAILURE without an exception.
+/// No borrow of the handle is held across a libcurl call.
 fn set_option(
     host: &mut dyn Host,
     f: &str,
@@ -1539,6 +1598,7 @@ fn set_option(
     option: i64,
     zvalue: &Value,
     is_array: bool,
+    pending: &mut Option<Thrown>,
 ) -> Result<bool, Thrown> {
     let zvalue = deref(zvalue);
     let cp = e.borrow().cp;
@@ -1649,8 +1709,11 @@ fn set_option(
                         _ => ch.sshhostkey = fcc,
                     }
                 }
-                setopt_ptr(cp, option, func);
-                setopt_ptr(cp, opt(data), ctx(e));
+                let p = ctx(e);
+                logged(host, f, pending, || {
+                    setopt_ptr(cp, option, func);
+                    setopt_ptr(cp, opt(data), p);
+                })?;
             }
         }
         Some(Kind::SslVerifyHost) => {
@@ -1661,14 +1724,14 @@ fn set_option(
                     f,
                     "CURLOPT_SSL_VERIFYHOST no longer accepts the value 1, value 2 will be used instead",
                 )?;
-                error = setopt_long(cp, option, 2);
+                error = logged(host, f, pending, || setopt_long(cp, option, 2))?;
             } else {
-                error = setopt_long(cp, option, lval);
+                error = logged(host, f, pending, || setopt_long(cp, option, lval))?;
             }
         }
         Some(Kind::Long) => {
             let lval = zval_get_long(host, &zvalue)?;
-            error = setopt_long(cp, option, lval);
+            error = logged(host, f, pending, || setopt_long(cp, option, lval))?;
         }
         Some(Kind::SafeUpload) => {
             if !conv::to_bool(&zvalue) {
@@ -1680,26 +1743,24 @@ fn set_option(
         }
         Some(Kind::Str) | Some(Kind::Url) => {
             let s = crate::argparse::zval_get_string(host, &zvalue)?;
-            return option_str(f, e, option, &s);
+            return option_str(host, f, e, pending, option, &s);
         }
-        Some(Kind::Path) => {
+        Some(Kind::Path) | Some(Kind::FilePath) => {
             let s = crate::argparse::zval_get_string(host, &zvalue)?;
-            return option_str(f, e, option, &absolute_path(&s));
+            return option_str(host, f, e, pending, option, &absolute_path(&s));
         }
         Some(Kind::Nullable) | Some(Kind::NullablePath) => {
             if matches!(zvalue, Value::Null) {
-                error = setopt_ptr(cp, option, std::ptr::null());
+                error = logged(host, f, pending, || {
+                    setopt_ptr(cp, option, std::ptr::null())
+                })?;
             } else {
                 let mut s = crate::argparse::zval_get_string(host, &zvalue)?;
                 if kind == Some(Kind::NullablePath) {
                     s = absolute_path(&s);
                 }
-                return option_str(f, e, option, &s);
+                return option_str(host, f, e, pending, option, &s);
             }
-        }
-        Some(Kind::FilePath) => {
-            let s = crate::argparse::zval_get_string(host, &zvalue)?;
-            return option_str(f, e, option, &absolute_path(&s));
         }
         Some(Kind::Private) => {
             e.borrow_mut().private = Some(zvalue.clone());
@@ -1764,7 +1825,9 @@ fn set_option(
                 // CURLOPT_STDERR: libcurl writes to a stdio stream.
                 match stream {
                     None => {
-                        error = setopt_ptr(cp, option, std::ptr::null());
+                        error = logged(host, f, pending, || {
+                            setopt_ptr(cp, option, std::ptr::null())
+                        })?;
                         let old = {
                             let mut ch = e.borrow_mut();
                             ch.std_err = None;
@@ -1784,7 +1847,9 @@ fn set_option(
                             file,
                             _stream: boxed,
                         });
-                        error = setopt_ptr(cp, option, file as *const c_void);
+                        error = logged(host, f, pending, || {
+                            setopt_ptr(cp, option, file as *const c_void)
+                        })?;
                         let old = {
                             let mut ch = e.borrow_mut();
                             ch.std_err = Some(s);
@@ -1835,14 +1900,18 @@ fn set_option(
                     tf.slists.push((option, slist));
                 }
             }
-            error = setopt_ptr(cp, option, slist as *const c_void);
+            error = logged(host, f, pending, || {
+                setopt_ptr(cp, option, slist as *const c_void)
+            })?;
         }
         Some(Kind::Ignore) => {}
         Some(Kind::PostFields) => {
             if let Value::Array(a) = &zvalue {
                 if a.is_empty() {
-                    setopt_ptr(cp, option, c"".as_ptr() as *const c_void);
-                    error = setopt_long(cp, opt("CURLOPT_POSTFIELDSIZE"), 0);
+                    error = logged(host, f, pending, || {
+                        setopt_ptr(cp, option, c"".as_ptr() as *const c_void);
+                        setopt_long(cp, opt("CURLOPT_POSTFIELDSIZE"), 0)
+                    })?;
                 } else {
                     let (parts, files) = mime_parts(host, f, a)?;
                     if files {
@@ -1859,12 +1928,14 @@ fn set_option(
                     v.push(0);
                     v
                 };
-                setopt_long(cp, opt("CURLOPT_POSTFIELDSIZE"), s.len() as i64);
-                error = setopt_ptr(
-                    cp,
-                    opt("CURLOPT_COPYPOSTFIELDS"),
-                    c.as_ptr() as *const c_void,
-                );
+                error = logged(host, f, pending, || {
+                    setopt_long(cp, opt("CURLOPT_POSTFIELDSIZE"), s.len() as i64);
+                    setopt_ptr(
+                        cp,
+                        opt("CURLOPT_COPYPOSTFIELDS"),
+                        c.as_ptr() as *const c_void,
+                    )
+                })?;
             }
         }
         Some(Kind::ReturnTransfer) => {
@@ -1876,11 +1947,12 @@ fn set_option(
         }
         Some(Kind::OffT) => {
             let lval = zval_get_long(host, &zvalue)?;
-            error = setopt_off(cp, option, lval);
+            error = logged(host, f, pending, || setopt_off(cp, option, lval))?;
         }
         Some(Kind::PostRedir) => {
             let lval = zval_get_long(host, &zvalue)?;
-            error = setopt_long(cp, option, lval & sys::php("CURL_REDIR_POST_ALL"));
+            let v = lval & sys::php("CURL_REDIR_POST_ALL");
+            error = logged(host, f, pending, || setopt_long(cp, option, v))?;
         }
         Some(Kind::HeaderOut) => {
             if e.borrow().debug.is_some() {
@@ -1889,23 +1961,30 @@ fn set_option(
                     "CURLINFO_HEADER_OUT option must not be set when the CURLOPT_DEBUGFUNCTION option is set",
                 ));
             }
-            if conv::to_bool(&zvalue) {
-                setopt_ptr(
-                    cp,
-                    opt("CURLOPT_DEBUGFUNCTION"),
-                    debug_cb as sys::DebugFn as *const c_void,
-                );
-                setopt_ptr(cp, opt("CURLOPT_DEBUGDATA"), ctx(e));
-                setopt_long(cp, opt("CURLOPT_VERBOSE"), 1);
-            } else {
-                setopt_ptr(cp, opt("CURLOPT_DEBUGFUNCTION"), std::ptr::null());
-                setopt_ptr(cp, opt("CURLOPT_DEBUGDATA"), std::ptr::null());
-                setopt_long(cp, opt("CURLOPT_VERBOSE"), 0);
-            }
+            let p = ctx(e);
+            let on = conv::to_bool(&zvalue);
+            logged(host, f, pending, || {
+                if on {
+                    setopt_ptr(
+                        cp,
+                        opt("CURLOPT_DEBUGFUNCTION"),
+                        debug_cb as sys::DebugFn as *const c_void,
+                    );
+                    setopt_ptr(cp, opt("CURLOPT_DEBUGDATA"), p);
+                    setopt_long(cp, opt("CURLOPT_VERBOSE"), 1);
+                } else {
+                    setopt_ptr(cp, opt("CURLOPT_DEBUGFUNCTION"), std::ptr::null());
+                    setopt_ptr(cp, opt("CURLOPT_DEBUGDATA"), std::ptr::null());
+                    setopt_long(cp, opt("CURLOPT_VERBOSE"), 0);
+                }
+            })?;
         }
         Some(Kind::Share) => {
             if let Some(sh) = share_of(&zvalue) {
-                setopt_ptr(cp, option, sh.share as *const c_void);
+                let share = sh.share;
+                logged(host, f, pending, || {
+                    setopt_ptr(cp, option, share as *const c_void)
+                })?;
                 let old = e.borrow_mut().share.replace(zvalue.clone());
                 drop(old);
             }
@@ -1917,7 +1996,9 @@ fn set_option(
                 len: s.len(),
                 flags: sys::internal("CURL_BLOB_COPY") as _,
             };
-            error = setopt_ptr(cp, option, &blob as *const sys::curl_blob as *const c_void);
+            error = logged(host, f, pending, || {
+                setopt_ptr(cp, option, &blob as *const sys::curl_blob as *const c_void)
+            })?;
         }
         None => {
             let msg = if is_array {
@@ -1957,7 +2038,12 @@ pub(super) fn fn_curl_init(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     set_default_options(host, &e);
     register(h.borrow().id, e.clone());
     if let Some(url) = url {
-        if !option_str(f, &e, sys::php("CURLOPT_URL"), &url)? {
+        let mut pending = None;
+        let ok = option_str(host, f, &e, &mut pending, sys::php("CURLOPT_URL"), &url)?;
+        if let Some(t) = pending {
+            return Err(t);
+        }
+        if !ok {
             return Ok(Value::Bool(false));
         }
     }
@@ -1969,7 +2055,12 @@ pub(super) fn fn_curl_setopt(host: &mut dyn Host, args: &[Value]) -> Result<Valu
     let (_, e) = easy_arg(host, args, 0, f, "handle")?;
     let option = long_arg(host, args, 1, f, "option")?;
     let value = args.get(2).cloned().unwrap_or(Value::Null);
-    Ok(Value::Bool(set_option(host, f, &e, option, &value, false)?))
+    let mut pending = None;
+    let ok = set_option(host, f, &e, option, &value, false, &mut pending)?;
+    match pending {
+        Some(t) => Err(t),
+        None => Ok(Value::Bool(ok)),
+    }
 }
 
 pub(super) fn fn_curl_setopt_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1985,6 +2076,10 @@ pub(super) fn fn_curl_setopt_array(host: &mut dyn Host, args: &[Value]) -> Resul
             )));
         }
     };
+    // A callback's exception does not stop the loop (php checks only the
+    // FAILURE return); it is thrown at the end.
+    let mut pending = None;
+    let mut ok = true;
     for (k, v) in arr.iter() {
         let option = match k {
             ArrayKey::Int(i) => *i,
@@ -1995,11 +2090,15 @@ pub(super) fn fn_curl_setopt_array(host: &mut dyn Host, args: &[Value]) -> Resul
                 ))
             }
         };
-        if !set_option(host, f, &e, option, v, true)? {
-            return Ok(Value::Bool(false));
+        if !set_option(host, f, &e, option, v, true, &mut pending)? {
+            ok = false;
+            break;
         }
     }
-    Ok(Value::Bool(true))
+    match pending {
+        Some(t) => Err(t),
+        None => Ok(Value::Bool(ok)),
+    }
 }
 
 /// Run `perform` with `host` reachable from libcurl's callbacks; the
@@ -2370,9 +2469,10 @@ pub(super) fn fn_curl_reset(host: &mut dyn Host, args: &[Value]) -> Result<Value
             format!("{f}(): Attempt to reset cURL handle from a callback"),
         ));
     }
+    let cp = e.borrow().cp;
+    unsafe { sys::curl_easy_reset(cp) };
     let old = {
         let mut ch = e.borrow_mut();
-        unsafe { sys::curl_easy_reset(ch.cp) };
         // _php_curl_reset_handlers
         ch.write.stream = None;
         ch.write.method = Method::Stdout;
@@ -2487,7 +2587,7 @@ pub(super) fn wrap_pushed(
 ) -> Result<(Value, Rc<RefCell<Easy>>), Thrown> {
     let (v, h) = new_object(host, "CurlHandle")?;
     let e = Rc::new(RefCell::new(Easy::new(easy, &h)));
-    copy_handlers(&e, &parent.borrow());
+    copy_handlers(&e, parent);
     register(h.borrow().id, e.clone());
     Ok((v, e))
 }

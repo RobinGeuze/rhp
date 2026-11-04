@@ -293,6 +293,13 @@ var_dump(curl_errno($h), curl_error($h));
     check("multi_share", &src);
 }
 
+/// libcurl logs from curl_setopt too (COOKIELIST): the debug callback and
+/// CURLOPT_STDERR get it, also from inside another transfer's callback.
+#[test]
+fn setopt_logging_matches_php() {
+    check("setopt_logging", include_str!("curl/setopt_logging.php"));
+}
+
 /// Callbacks: read, progress, debug, header-out, and handles reused.
 #[test]
 fn callbacks_match_php() {

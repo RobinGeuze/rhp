@@ -48,7 +48,7 @@ fn same_object(a: &Value, b: &Value) -> bool {
 fn find_easy(m: &Multi, cp: *mut CURL) -> Option<(Value, Rc<RefCell<Easy>>)> {
     m.easyh.iter().find_map(|v| {
         let e = easy_of(v)?;
-        let found = e.borrow().cp == cp;
+        let found = e.try_borrow().is_ok_and(|e| e.cp == cp);
         found.then(|| (v.clone(), e))
     })
 }
@@ -91,12 +91,15 @@ pub(super) fn fn_curl_multi_add_handle(
     easy::verify_handlers(host, f, &e, true)?;
     e.borrow_mut().cleanup_handle();
     let (multi, cp) = (m.borrow().multi, e.borrow().cp);
-    let error = unsafe { sys::curl_multi_add_handle(multi, cp) };
-    let mut mh = m.borrow_mut();
-    mh.errno = error;
-    if error == 0 {
-        mh.easyh.push(z_ch);
+    let (error, thrown) = drive(host, f, || unsafe { sys::curl_multi_add_handle(multi, cp) });
+    {
+        let mut mh = m.borrow_mut();
+        mh.errno = error;
+        if error == 0 {
+            mh.easyh.push(z_ch);
+        }
     }
+    thrown?;
     Ok(Value::Int(error as i64))
 }
 
@@ -108,7 +111,10 @@ pub(super) fn fn_curl_multi_remove_handle(
     let (_, m) = multi_arg(host, args, f)?;
     let (z_ch, e) = easy_arg(host, args, 1, f, "handle")?;
     let (multi, cp) = (m.borrow().multi, e.borrow().cp);
-    let error = unsafe { sys::curl_multi_remove_handle(multi, cp) };
+    // A transfer cut short logs through the debug callback.
+    let (error, thrown) = drive(host, f, || unsafe {
+        sys::curl_multi_remove_handle(multi, cp)
+    });
     let removed = {
         let mut mh = m.borrow_mut();
         mh.errno = error;
@@ -122,6 +128,7 @@ pub(super) fn fn_curl_multi_remove_handle(
         }
     };
     drop(removed);
+    thrown?;
     Ok(Value::Int(error as i64))
 }
 
@@ -283,15 +290,22 @@ pub(super) fn fn_curl_multi_close(host: &mut dyn Host, args: &[Value]) -> Result
         let mh = m.borrow();
         (mh.multi, mh.easyh.clone())
     };
+    let mut thrown = Ok(());
     for v in &handles {
         if let Some(e) = easy_of(v) {
             easy::verify_handlers(host, f, &e, true)?;
             let cp = e.borrow().cp;
-            unsafe { sys::curl_multi_remove_handle(multi, cp) };
+            let (_, r) = drive(host, f, || unsafe {
+                sys::curl_multi_remove_handle(multi, cp)
+            });
+            if thrown.is_ok() {
+                thrown = r;
+            }
         }
     }
     let old = std::mem::take(&mut m.borrow_mut().easyh);
     drop(old);
+    thrown?;
     Ok(Value::Null)
 }
 
@@ -316,9 +330,11 @@ unsafe extern "C" fn push_cb(
             return deny;
         }
         let cell = unsafe { &*(userp as *const RefCell<Multi>) };
-        let (found, fcc) = {
-            let m = cell.borrow();
-            (find_easy(&m, parent), m.push.clone())
+        let Ok((found, fcc)) = cell
+            .try_borrow()
+            .map(|m| (find_easy(&m, parent), m.push.clone()))
+        else {
+            return deny;
         };
         let (Some((parent_v, parent_e)), Some(fcc)) = (found, fcc) else {
             return deny;
@@ -340,7 +356,9 @@ unsafe extern "C" fn push_cb(
         });
         match r {
             Some(n) if n != deny as i64 => {
-                cell.borrow_mut().easyh.push(child_v);
+                if let Ok(mut m) = cell.try_borrow_mut() {
+                    m.easyh.push(child_v);
+                }
                 ok
             }
             _ => {

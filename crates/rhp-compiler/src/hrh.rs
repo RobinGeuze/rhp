@@ -188,6 +188,9 @@ impl Scan {
             Node::ArrowFunction(a) => {
                 self.function(Some(&a.parameter_list), Node::Expression(a.expression))
             }
+            Node::PropertyHook(h) => {
+                self.function(h.parameter_list.as_ref(), Node::PropertyHookBody(&h.body))
+            }
             Node::Expression(e) if is_target(e) => self.var(e, Mode::Read),
             Node::DirectVariable(d) => {
                 if d.name == NAME && !*self.assigned.last().expect("scope") {

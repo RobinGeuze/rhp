@@ -10,8 +10,8 @@ use rhp_values::{ArrayKey, Value};
 
 use super::sys::{self, zip_file_t, zip_t};
 use super::{c_string, expand_filepath, Archive, MAXPATHLEN};
-use crate::opsstream::{OpsStream, StreamOps};
-use crate::streams::{StatInfo, StreamWrapper, WrapperReg};
+use crate::main::streams::ops::{OpsStream, StreamOps};
+use crate::main::streams::{StatInfo, StreamWrapper, WrapperReg};
 use crate::{Host, Thrown};
 
 /// `php_zip_stream_data_t`

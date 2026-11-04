@@ -645,7 +645,11 @@ fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     if unsafe { libc::sigprocmask(how as i32, &set, &mut old) } != 0 {
         let e = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         set_last_error(host, e);
-        crate::warn(host, "pcntl_sigprocmask", &crate::streams::strerror(e))?;
+        crate::warn(
+            host,
+            "pcntl_sigprocmask",
+            &crate::main::streams::strerror(e),
+        )?;
         return Ok(Value::Bool(false));
     }
     if args.get(2).is_some() {

@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use super::sys;
-use crate::fdstream::{poll_fd, push_diag, FdStream, SockInfo};
-use crate::streams::errno;
+use crate::main::streams::errno;
+use crate::main::streams::plain_wrapper::{poll_fd, push_diag, FdStream, SockInfo};
 use crate::E_WARNING;
 
 // STREAM_CRYPTO_METHOD_* bits
@@ -479,7 +479,7 @@ fn handle_ssl_error(
                 };
                 *eof = true;
             } else {
-                warn(format!("SSL: {}", crate::streams::strerror(err_no)));
+                warn(format!("SSL: {}", crate::main::streams::strerror(err_no)));
             }
             retry = false;
         }
@@ -826,10 +826,10 @@ fn ini_string(name: &[u8]) -> Option<Vec<u8>> {
 
 /// `php_openssl_load_stream_cafile`: the certificates added.
 fn load_stream_cafile(store: *mut sys::X509_STORE, cafile: &[u8]) -> i64 {
-    let (scheme, _) = crate::streams::split_scheme(cafile);
+    let (scheme, _) = crate::main::streams::split_scheme(cafile);
     let data = if scheme == b"file" {
         std::fs::read(crate::zend::virtual_cwd::os_path(
-            crate::streams::file_path(cafile),
+            crate::main::streams::file_path(cafile),
         ))
         .ok()
     } else {
@@ -1429,7 +1429,7 @@ impl Drop for Captured {
 
 /// `php_openssl_set_blocking`.
 fn set_blocking(raw: RawFd, sock: &mut SockInfo, block: bool) -> bool {
-    let ok = crate::fdstream::set_fd_blocking(raw, block);
+    let ok = crate::main::streams::plain_wrapper::set_fd_blocking(raw, block);
     if ok {
         sock.blocked = block;
     }
@@ -1675,7 +1675,9 @@ fn sockop_io(
                     // php calls the callback from the handshake; rhp has no
                     // host here, so the code that ran the read calls it
                     r.callback_due = false;
-                    stream.events.push(crate::fdstream::NotifyEvent::RenegLimit);
+                    stream
+                        .events
+                        .push(crate::main::streams::plain_wrapper::NotifyEvent::RenegLimit);
                     break;
                 }
                 unsafe { libc::shutdown(raw, libc::SHUT_RDWR) };
@@ -1763,7 +1765,7 @@ impl SslSock {
         }
         let began_blocked = sock.blocked;
         if began_blocked {
-            crate::fdstream::set_fd_blocking(raw, false);
+            crate::main::streams::plain_wrapper::set_fd_blocking(raw, false);
         }
         let mut b = 0u8;
         let n = super::with_callbacks(|| unsafe {
@@ -1779,7 +1781,7 @@ impl SslSock {
             true
         };
         if began_blocked {
-            crate::fdstream::set_fd_blocking(raw, true);
+            crate::main::streams::plain_wrapper::set_fd_blocking(raw, true);
         }
         alive
     }

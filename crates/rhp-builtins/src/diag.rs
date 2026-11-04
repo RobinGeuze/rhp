@@ -1,6 +1,8 @@
 //! php_error_docref-style diagnostics raised from builtins.
 
-use crate::{fdstream, streams, Host, Thrown, E_DEPRECATED, E_NOTICE, E_WARNING};
+use crate::main::streams;
+use crate::main::streams::plain_wrapper;
+use crate::{Host, Thrown, E_DEPRECATED, E_NOTICE, E_WARNING};
 
 /// `php_error_docref(NULL, E_WARNING, msg)` from builtin `fname`.
 pub fn warn(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
@@ -8,9 +10,9 @@ pub fn warn(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
 }
 
 /// Report the diagnostics stream operations queued (see
-/// [`fdstream::Diag`]) as raised by builtin `fname`.
+/// [`plain_wrapper::Diag`]) as raised by builtin `fname`.
 pub fn flush_stream_diags(host: &mut dyn Host, fname: &str) -> Result<(), Thrown> {
-    for d in fdstream::take_diags() {
+    for d in plain_wrapper::take_diags() {
         if d.docref {
             host.emit_diagnostic(d.level, &format!("{fname}(): {}", d.msg))?;
         } else {

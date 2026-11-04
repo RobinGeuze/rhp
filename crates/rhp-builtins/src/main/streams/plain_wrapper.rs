@@ -16,7 +16,7 @@ use std::cell::{Cell, RefCell};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use crate::ext::openssl::xp_ssl::SslSock;
-use crate::streams::errno;
+use crate::main::streams::errno;
 
 /// php's default stream chunk size.
 const CHUNK: usize = 8192;

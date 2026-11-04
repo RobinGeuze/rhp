@@ -23,7 +23,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::streams::errno;
+use crate::main::streams::errno;
 use crate::{Host, Thrown};
 
 fn write_ref(arg: Option<&Value>, value: Value) {
@@ -1449,7 +1449,7 @@ fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
             "stream_select",
             &format!(
                 "Unable to select [{e}]: {} (max_fd={max_fd})",
-                crate::streams::strerror(e)
+                crate::main::streams::strerror(e)
             ),
         )?;
         return pending.map_or(Ok(Value::Bool(false)), Err);

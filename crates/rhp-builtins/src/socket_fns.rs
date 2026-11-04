@@ -20,9 +20,9 @@ use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::ext::openssl::xp_ssl::{self, SslSock};
-use crate::fdstream::{poll_fd, FdStream, SockInfo};
+use crate::main::streams::errno;
+use crate::main::streams::plain_wrapper::{poll_fd, FdStream, SockInfo};
 use crate::proc_fns::{zpp_long, zpp_string};
-use crate::streams::errno;
 use crate::zend::zpp::zval_value_name;
 use crate::{Host, Thrown};
 
@@ -33,7 +33,7 @@ fn write_ref(arg: Option<&Value>, value: Value) {
 }
 
 fn strerror(e: i32) -> String {
-    crate::streams::strerror(e)
+    crate::main::streams::strerror(e)
 }
 
 // php's xport flags.

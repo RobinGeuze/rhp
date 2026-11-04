@@ -226,7 +226,7 @@ fn fn_get_headers(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             )))
         }
     };
-    if crate::streams::is_data_url(&url) {
+    if crate::main::streams::is_data_url(&url) {
         // a URL wrapper whose stream has no header array
         match host.stream_open(&url, b"r") {
             Some(res) => {
@@ -239,7 +239,9 @@ fn fn_get_headers(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     if !crate::http::is_http(&url) {
         // STREAM_USE_URL refuses a wrapper that is not for URLs (the
         // plain-files one when none matches the scheme)
-        let scheme = crate::streams::split_scheme(&url).0.to_ascii_lowercase();
+        let scheme = crate::main::streams::split_scheme(&url)
+            .0
+            .to_ascii_lowercase();
         let known = host.stream_wrapper_schemes();
         if !matches!(&scheme[..], b"file" | b"glob" | b"php")
             && !known.iter().any(|k| k.eq_ignore_ascii_case(&scheme))

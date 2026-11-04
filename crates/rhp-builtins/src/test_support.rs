@@ -13,11 +13,12 @@ use rhp_values::ops::deref;
 use rhp_values::ops::CompareCx;
 use rhp_values::{ArrayKey, ClassKind, ClosureData, ObjectHandle, PhpArray, PhpStr, Value};
 
-use crate::fdstream::{FdStream, SockInfo};
-use crate::opsstream::OpsStream;
+use crate::main::streams;
+use crate::main::streams::ops::OpsStream;
+use crate::main::streams::plain_wrapper::{FdStream, SockInfo};
+use crate::main::streams::{FileWrapper, StatInfo, StreamWrapper};
 use crate::rfc1867::BodyState;
 use crate::sapi::{RequestInfo, Response};
-use crate::streams::{self, FileWrapper, StatInfo, StreamWrapper};
 use crate::zend::object_handlers::{CastTarget, ObjectHandlers};
 use crate::{Host, MagicFetch, NativeFn, ObCall, StreamKind, StreamMeta, Thrown};
 

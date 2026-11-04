@@ -8,7 +8,7 @@
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::ext::openssl::xp_ssl;
-use crate::fdstream::FdStream;
+use crate::main::streams::plain_wrapper::FdStream;
 use crate::socket_fns::{xport_client, Opened};
 use crate::{Host, Thrown};
 
@@ -213,12 +213,12 @@ fn progress_increment(
 pub fn deliver(
     host: &mut dyn Host,
     res: &Value,
-    events: &[crate::fdstream::NotifyEvent],
+    events: &[crate::main::streams::plain_wrapper::NotifyEvent],
 ) -> Result<(), Thrown> {
     let Some(ctx) = host.stream_context_of(res) else {
         return Ok(());
     };
-    if events.contains(&crate::fdstream::NotifyEvent::RenegLimit) {
+    if events.contains(&crate::main::streams::plain_wrapper::NotifyEvent::RenegLimit) {
         // php_openssl_limit_handshake_reneg's callback
         let keep = match ctx_opt(host, &ctx, "ssl", "reneg_limit_callback") {
             Some(cb) => matches!(
@@ -240,9 +240,9 @@ pub fn deliver(
 fn deliver_ctx(
     host: &mut dyn Host,
     ctx: &Value,
-    events: &[crate::fdstream::NotifyEvent],
+    events: &[crate::main::streams::plain_wrapper::NotifyEvent],
 ) -> Result<(), Thrown> {
-    use crate::fdstream::NotifyEvent;
+    use crate::main::streams::plain_wrapper::NotifyEvent;
     for ev in events {
         match *ev {
             NotifyEvent::Progress(n) => progress_increment(host, ctx, n as i64, 0)?,
@@ -989,7 +989,7 @@ fn wrap_http_ex(
                 "Send of {} bytes failed with errno={} {}",
                 e.count,
                 e.errno,
-                crate::streams::strerror(e.errno)
+                crate::main::streams::strerror(e.errno)
             ),
         )?;
     }
@@ -1364,7 +1364,7 @@ pub fn open_arg(
         .ini_get(b"allow_url_fopen")
         .is_none_or(|v| conv::to_bool(&Value::str(v)));
     if !allowed {
-        let scheme = crate::streams::split_scheme(url).0.to_vec();
+        let scheme = crate::main::streams::split_scheme(url).0.to_vec();
         crate::warn(
             host,
             fname,
@@ -1432,7 +1432,7 @@ pub fn get_contents(
 
 /// Whether `url` is for this wrapper.
 pub fn is_http(url: &[u8]) -> bool {
-    let scheme = crate::streams::split_scheme(url).0;
+    let scheme = crate::main::streams::split_scheme(url).0;
     scheme.eq_ignore_ascii_case(b"http") || scheme.eq_ignore_ascii_case(b"https")
 }
 

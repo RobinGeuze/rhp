@@ -179,13 +179,13 @@ pub fn chdir(path: &[u8]) -> Result<(), i32> {
     let opened = with_at(path, |dir, c| unsafe {
         let mut st: libc::stat = std::mem::zeroed();
         if libc::fstatat(dir, c.as_ptr(), &mut st, 0) != 0 {
-            return Err(crate::streams::errno());
+            return Err(crate::main::streams::errno());
         }
         if st.st_mode & libc::S_IFMT != libc::S_IFDIR {
             return Err(libc::ENOTDIR);
         }
         if libc::faccessat(dir, c.as_ptr(), libc::X_OK, libc::AT_EACCESS) != 0 {
-            return Err(crate::streams::errno());
+            return Err(crate::main::streams::errno());
         }
         Ok(open_dir(dir, c))
     })

@@ -11,7 +11,8 @@ use bzip2::{Action, Compress, Compression, Decompress, Status};
 use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
-use crate::streams::{self, StatInfo, StreamWrapper, WrapperReg};
+use crate::main::streams;
+use crate::main::streams::{StatInfo, StreamWrapper, WrapperReg};
 use crate::{Host, Thrown};
 
 const BZ_SEQUENCE_ERROR: i64 = -1;

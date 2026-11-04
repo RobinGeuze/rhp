@@ -178,7 +178,7 @@ impl Vm {
         kind: IncludeKind,
     ) -> Result<Value, Thrown> {
         let path_str = String::from_utf8_lossy(&raw_path).into_owned();
-        builtins::streams::clear_errno();
+        builtins::main::streams::clear_errno();
         // php looks a script up in opcache by the name it was asked for
         // before opening anything: a cached absolute path needs no open, and
         // no realpath while its revalidate window lasts; a file that is gone
@@ -202,9 +202,9 @@ impl Vm {
                 let reason = if path_str.is_empty() {
                     None
                 } else {
-                    Some(match builtins::streams::last_errno() {
-                        Some(c) => builtins::streams::strerror(c),
-                        None => builtins::streams::strerror(2), // ENOENT
+                    Some(match builtins::main::streams::last_errno() {
+                        Some(c) => builtins::main::streams::strerror(c),
+                        None => builtins::main::streams::strerror(2), // ENOENT
                     })
                 };
                 if let Some(reason) = reason {
@@ -347,7 +347,7 @@ impl Vm {
         use std::path::{Path, PathBuf};
         // Schemed URLs: no candidate search — the wrapper owns resolution. The
         // returned key (→ `__FILE__`/`__DIR__`/`_once`) is the normalized URL.
-        let (scheme, _) = builtins::streams::split_scheme(path.as_bytes());
+        let (scheme, _) = builtins::main::streams::split_scheme(path.as_bytes());
         if scheme != b"file" {
             let url = path.as_bytes();
             let w = self.wrapper_for(url)?;

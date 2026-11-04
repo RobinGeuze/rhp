@@ -160,7 +160,7 @@ fn fn_chdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match crate::zend::virtual_cwd::chdir(&dir) {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {
-            let msg = format!("{} (errno {e})", crate::streams::strerror(e));
+            let msg = format!("{} (errno {e})", crate::main::streams::strerror(e));
             crate::warn(host, "chdir", &msg)?;
             Ok(Value::Bool(false))
         }
@@ -222,7 +222,7 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             },
         );
     }
-    let scheme = crate::streams::split_scheme(&url).0.to_vec();
+    let scheme = crate::main::streams::split_scheme(&url).0.to_vec();
     if host
         .stream_wrapper(&scheme)
         .is_some_and(|w| w.has_stream_opener())
@@ -249,17 +249,17 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             return Ok(Value::str(part));
         }
     }
-    crate::streams::clear_errno();
+    crate::main::streams::clear_errno();
     match host.stream_get_contents(&url) {
         Some(bytes) => {
-            host.consume_resource_ids(crate::streams::open_resource_ids(&url));
+            host.consume_resource_ids(crate::main::streams::open_resource_ids(&url));
             // php seeks to `$offset` (SEEK_SET, or SEEK_END when negative)
             // before copying at most `$length` bytes. A plain file may be
             // positioned past its end (reads nothing); other wrappers, and
             // any position before the start, fail the seek -> false.
             let len = bytes.len() as i64;
             let start = if offset > 0 {
-                if offset > len && crate::streams::split_scheme(&url).0 != b"file" {
+                if offset > len && crate::main::streams::split_scheme(&url).0 != b"file" {
                     return Ok(Value::Bool(false));
                 }
                 offset.min(len)
@@ -279,7 +279,7 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             Ok(Value::str(out))
         }
         None => {
-            if crate::streams::last_errno() == Some(libc::EISDIR) {
+            if crate::main::streams::last_errno() == Some(libc::EISDIR) {
                 host.consume_resource_ids(1);
                 crate::notice(
                     host,
@@ -349,7 +349,7 @@ pub(crate) fn read_via_opener(
     url: &[u8],
     ctx: Option<&Value>,
 ) -> Result<Option<Option<Vec<u8>>>, Thrown> {
-    let scheme = crate::streams::split_scheme(url).0.to_vec();
+    let scheme = crate::main::streams::split_scheme(url).0.to_vec();
     if !host
         .stream_wrapper(&scheme)
         .is_some_and(|w| w.has_stream_opener())
@@ -368,9 +368,9 @@ pub(crate) fn read_via_opener(
 
 /// A local path given without a scheme or as `file://`.
 fn plain_path(url: &[u8]) -> Option<std::borrow::Cow<'_, std::path::Path>> {
-    match crate::streams::split_scheme(url) {
+    match crate::main::streams::split_scheme(url) {
         (b"file", p) => Some(crate::zend::virtual_cwd::os_path(
-            crate::streams::file_path(p),
+            crate::main::streams::file_path(p),
         )),
         _ => None,
     }
@@ -487,7 +487,7 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     } else {
         data.clone()
     };
-    crate::streams::clear_errno();
+    crate::main::streams::clear_errno();
     match host.stream_put_contents(&path, &to_write) {
         // php returns the number of bytes written (the `$data` length).
         Some(_) => {
@@ -517,7 +517,7 @@ fn fn_unlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `strerror` of an `io::Error`'s errno (php's warning text).
 fn os_text(e: &std::io::Error) -> String {
     match e.raw_os_error() {
-        Some(c) => crate::streams::strerror(c),
+        Some(c) => crate::main::streams::strerror(c),
         None => e.to_string(),
     }
 }
@@ -674,7 +674,7 @@ fn statvfs_of(path: &[u8]) -> Option<libc::statvfs> {
         if libc::statvfs(c.as_ptr(), &mut st) == 0 {
             Some(st)
         } else {
-            crate::streams::note_errno();
+            crate::main::streams::note_errno();
             None
         }
     }
@@ -685,7 +685,11 @@ fn fn_disk_free_space(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
     match statvfs_of(&path_arg(args, 0)) {
         Some(s) => Ok(Value::Float(s.f_bavail as f64 * s.f_frsize as f64)),
         None => {
-            crate::warn(host, "disk_free_space", &crate::streams::last_strerror())?;
+            crate::warn(
+                host,
+                "disk_free_space",
+                &crate::main::streams::last_strerror(),
+            )?;
             Ok(Value::Bool(false))
         }
     }
@@ -696,7 +700,11 @@ fn fn_disk_total_space(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
     match statvfs_of(&path_arg(args, 0)) {
         Some(s) => Ok(Value::Float(s.f_blocks as f64 * s.f_frsize as f64)),
         None => {
-            crate::warn(host, "disk_total_space", &crate::streams::last_strerror())?;
+            crate::warn(
+                host,
+                "disk_total_space",
+                &crate::main::streams::last_strerror(),
+            )?;
             Ok(Value::Bool(false))
         }
     }

@@ -8,8 +8,8 @@ use std::ffi::{CStr, CString};
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
+use crate::main::streams::errno;
 use crate::proc_fns::{getpwnam, getpwuid, zpp_long, zpp_string, Passwd};
-use crate::streams::errno;
 use crate::{Host, Thrown};
 
 /// php's `PHP_POSIX_CHECK_PID`: ValueError unless `lower <= pid <= upper`.

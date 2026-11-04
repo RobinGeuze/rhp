@@ -1056,13 +1056,13 @@ fn fn_move_uploaded_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
         if let Err(e) =
             std::fs::set_permissions(os_path(&to), std::fs::Permissions::from_mode(mode))
         {
-            let msg = crate::streams::strerror(e.raw_os_error().unwrap_or(0));
+            let msg = crate::main::streams::strerror(e.raw_os_error().unwrap_or(0));
             crate::warn(host, "move_uploaded_file", &msg)?;
         }
     } else {
         match std::fs::read(os_path(&from)) {
             Err(e) => {
-                crate::streams::note_io_err(&e);
+                crate::main::streams::note_io_err(&e);
                 crate::open_failed(host, "move_uploaded_file", &from)?;
             }
             Ok(data) => match crate::zend::virtual_cwd::write_file(&to, &data) {
@@ -1071,7 +1071,7 @@ fn fn_move_uploaded_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
                     ok = true;
                 }
                 Err(e) => {
-                    crate::streams::note_io_err(&e);
+                    crate::main::streams::note_io_err(&e);
                     crate::open_failed(host, "move_uploaded_file", &to)?;
                 }
             },

@@ -12,7 +12,7 @@ use std::ffi::CString;
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::streams::{split_scheme, StatInfo};
+use crate::main::streams::{split_scheme, StatInfo};
 use crate::{Host, StreamKind, Thrown};
 
 fn str_arg(args: &[Value], i: usize) -> Vec<u8> {
@@ -132,13 +132,13 @@ fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 .unwrap_or(Value::Bool(false)),
         );
     }
-    crate::streams::clear_errno();
+    crate::main::streams::clear_errno();
     let ctx = args.get(3).map(deref).unwrap_or(Value::Null);
     match host.stream_open_ctx(&path, &mode, &ctx) {
         Some(v) => Ok(v),
         None => {
-            if crate::streams::split_scheme(&path).0 == b"file"
-                && crate::streams::parse_fopen_mode(&mode).is_none()
+            if crate::main::streams::split_scheme(&path).0 == b"file"
+                && crate::main::streams::parse_fopen_mode(&mode).is_none()
             {
                 crate::warn_arg(
                     host,
@@ -166,7 +166,7 @@ fn do_opendir(
 ) -> Result<Option<(Vec<u8>, Value)>, Thrown> {
     let path = path_param(args, 0, fname, "directory")?;
     touch_ctx(host, args, 1);
-    crate::streams::clear_errno();
+    crate::main::streams::clear_errno();
     let Some(entries) = host.stream_opendir(&path) else {
         dir_open_failed(host, fname, &path)?;
         return Ok(None);
@@ -176,8 +176,8 @@ fn do_opendir(
 
 /// "fname(path): Failed to open directory: <strerror>".
 fn dir_open_failed(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<(), Thrown> {
-    let reason = match crate::streams::last_errno() {
-        Some(c) => crate::streams::strerror(c),
+    let reason = match crate::main::streams::last_errno() {
+        Some(c) => crate::main::streams::strerror(c),
         None => "operation failed".into(),
     };
     crate::warn_arg(
@@ -306,12 +306,12 @@ fn fn_scandir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         ));
     }
     let flags = int_arg(args, 1, 0);
-    crate::streams::clear_errno();
+    crate::main::streams::clear_errno();
     let Some(mut names) = host.stream_opendir(&path) else {
-        let errno = crate::streams::last_errno();
+        let errno = crate::main::streams::last_errno();
         dir_open_failed(host, "scandir", &path)?;
         let (code, text) = match errno {
-            Some(c) => (c, crate::streams::strerror(c)),
+            Some(c) => (c, crate::main::streams::strerror(c)),
             None => (0, "operation failed".into()),
         };
         crate::warn(host, "scandir", &format!("(errno {code}): {text}"))?;
@@ -640,7 +640,7 @@ impl Glob {
         loop {
             if pattern.is_empty() {
                 let path = Self::to_bytes(pathbuf);
-                let Some(sb) = crate::streams::sys_stat(&path, true) else {
+                let Some(sb) = crate::main::streams::sys_stat(&path, true) else {
                     return 0;
                 };
                 let mut path = path;
@@ -648,7 +648,8 @@ impl Glob {
                     && path.last() != Some(&b'/')
                     && (sb.is_dir
                         || (sb.is_link()
-                            && crate::streams::sys_stat(&path, false).is_some_and(|s| s.is_dir)))
+                            && crate::main::streams::sys_stat(&path, false)
+                                .is_some_and(|s| s.is_dir)))
                 {
                     path.push(b'/');
                 }
@@ -688,7 +689,7 @@ impl Glob {
         };
         // php passes no errfunc, so an unreadable directory is skipped even
         // with GLOB_ERR (the bundled glob only honours GLOB_ERR via errfunc).
-        let Some(entries) = crate::streams::sys_readdir(&dir) else {
+        let Some(entries) = crate::main::streams::sys_readdir(&dir) else {
             return 0;
         };
         let base = pathbuf.len();
@@ -833,7 +834,7 @@ fn fn_glob(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut a = PhpArray::new();
     for p in paths {
         if flags & GLOB_ONLYDIR != 0 {
-            match crate::streams::sys_stat(&p, false) {
+            match crate::main::streams::sys_stat(&p, false) {
                 Some(s) if s.is_dir => {}
                 _ => continue,
             }
@@ -863,7 +864,7 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     let include_new_line = flags & IGNORE_NEW_LINES == 0;
     let skip_blank = flags & SKIP_EMPTY_LINES != 0;
-    crate::streams::clear_errno();
+    crate::main::streams::clear_errno();
     let mut opened = crate::http::is_http(&path);
     let data = if opened {
         match crate::http::get_contents(host, "file", &path, args.get(2), 0, None)? {
@@ -885,7 +886,7 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         host.stream_get_contents(&path)
     };
     let Some(buf) = data else {
-        if crate::streams::last_errno() == Some(libc::EISDIR) {
+        if crate::main::streams::last_errno() == Some(libc::EISDIR) {
             host.consume_resource_ids(1);
             crate::notice(
                 host,
@@ -898,7 +899,7 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Bool(false));
     };
     if !opened {
-        host.consume_resource_ids(crate::streams::open_resource_ids(&path));
+        host.consume_resource_ids(crate::main::streams::open_resource_ids(&path));
     }
     let mut a = PhpArray::new();
     if buf.is_empty() {
@@ -1095,7 +1096,7 @@ fn access_check(host: &dyn Host, args: &[Value], amode: libc::c_int) -> bool {
     }
     let (scheme, _) = split_scheme(&p);
     if scheme == b"file" {
-        return crate::zend::virtual_cwd::access(crate::streams::file_path(&p), amode);
+        return crate::zend::virtual_cwd::access(crate::main::streams::file_path(&p), amode);
     }
     let Some(s) = host.stream_stat(&p) else {
         return false;
@@ -1510,7 +1511,7 @@ fn fn_link(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
     if unsafe { libc::link(t.as_ptr(), l.as_ptr()) } != 0 {
         let e = std::io::Error::last_os_error();
-        let text = crate::streams::strerror(e.raw_os_error().unwrap_or(0));
+        let text = crate::main::streams::strerror(e.raw_os_error().unwrap_or(0));
         crate::warn(host, "link", &text)?;
         return Ok(Value::Bool(false));
     }
@@ -1521,7 +1522,7 @@ fn fn_link(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_linkinfo(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_param(args, 0, "linkinfo", "path")?;
     Ok(Value::Int(
-        crate::streams::sys_stat(&path, true)
+        crate::main::streams::sys_stat(&path, true)
             .map(|s| s.dev)
             .unwrap_or(-1),
     ))
@@ -1550,9 +1551,9 @@ fn fn_mkdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if scheme != b"file" {
         return Ok(Value::Bool(false));
     }
-    let local = crate::streams::file_path(&path).to_vec();
+    let local = crate::main::streams::file_path(&path).to_vec();
     let fail = |host: &mut dyn Host, e: i32| -> Result<Value, Thrown> {
-        crate::warn(host, "mkdir", &crate::streams::strerror(e))?;
+        crate::warn(host, "mkdir", &crate::main::streams::strerror(e))?;
         Ok(Value::Bool(false))
     };
     if !recursive {
@@ -1576,7 +1577,7 @@ fn fn_mkdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let leaf = local[..trimmed_end].to_vec();
     prefixes.retain(|p| p.len() < leaf.len());
     for p in &prefixes {
-        if crate::streams::sys_stat(p, false).is_some() {
+        if crate::main::streams::sys_stat(p, false).is_some() {
             continue;
         }
         match sys_mkdir(p, mode) {
@@ -1628,7 +1629,7 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             }
         }
     }
-    crate::streams::clear_errno();
+    crate::main::streams::clear_errno();
     let data = if crate::http::is_http(&from) {
         match crate::http::get_contents(host, "copy", &from, args.get(2), 0, None)? {
             Some(b) => b,
@@ -1648,9 +1649,9 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         data
     };
     let (scheme, _) = split_scheme(&to);
-    crate::streams::clear_errno();
+    crate::main::streams::clear_errno();
     if scheme == b"file" {
-        let Some(mut f) = crate::streams::LocalFile::open(&to, b"wb") else {
+        let Some(mut f) = crate::main::streams::LocalFile::open(&to, b"wb") else {
             crate::open_failed(host, "copy", &to)?;
             return Ok(Value::Bool(false));
         };
@@ -1831,7 +1832,7 @@ fn do_chown(
             )));
         }
     };
-    let Some(c) = crate::zend::virtual_cwd::c_path(crate::streams::file_path(&path)) else {
+    let Some(c) = crate::zend::virtual_cwd::c_path(crate::main::streams::file_path(&path)) else {
         return Ok(Value::Bool(false));
     };
     let (uid, gid) = if group {
@@ -1851,7 +1852,7 @@ fn do_chown(
         crate::warn(
             host,
             fname,
-            &crate::streams::strerror(e.raw_os_error().unwrap_or(0)),
+            &crate::main::streams::strerror(e.raw_os_error().unwrap_or(0)),
         )?;
         return Ok(Value::Bool(false));
     }
@@ -1890,7 +1891,7 @@ fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         host.write_out(&data);
         return Ok(Value::Int(data.len() as i64));
     }
-    crate::streams::clear_errno();
+    crate::main::streams::clear_errno();
     let data = if args.get(1).is_some_and(|v| conv::to_bool(&deref(v))) {
         match resolve_include_path(&path) {
             Some(p) => host.stream_get_contents(&p),
@@ -1900,7 +1901,7 @@ fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         host.stream_get_contents(&path)
     };
     let Some(data) = data else {
-        if crate::streams::last_errno() == Some(libc::EISDIR) {
+        if crate::main::streams::last_errno() == Some(libc::EISDIR) {
             // The open succeeds; the first read fails (php returns -1).
             host.consume_resource_ids(1);
             crate::notice(
@@ -2161,7 +2162,7 @@ pub(crate) fn resolve_include_path(name: &[u8]) -> Option<Vec<u8>> {
     {
         let (scheme, _) = split_scheme(name);
         if scheme.eq_ignore_ascii_case(b"file") {
-            return realpath_bytes(crate::streams::file_path(name));
+            return realpath_bytes(crate::main::streams::file_path(name));
         }
         return None;
     }

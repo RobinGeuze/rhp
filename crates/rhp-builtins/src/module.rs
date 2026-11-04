@@ -9,7 +9,7 @@
 
 use rhp_values::Value;
 
-use crate::streams::WrapperReg;
+use crate::main::streams::WrapperReg;
 
 /// A full extension description.
 pub struct ModuleDef {

@@ -54,7 +54,7 @@ impl Vm {
         // Seed the stream-wrapper registry: the default `file://` plus every
         // module-provided wrapper (`phar://`, …).
         let mut wrappers: HashMap<Vec<u8>, Rc<dyn builtins::StreamWrapper>> = HashMap::new();
-        wrappers.insert(b"file".to_vec(), builtins::streams::file_wrapper());
+        wrappers.insert(b"file".to_vec(), builtins::main::streams::file_wrapper());
         for reg in builtins::stream_wrappers() {
             wrappers.insert(reg.scheme.as_bytes().to_vec(), (reg.factory)());
         }

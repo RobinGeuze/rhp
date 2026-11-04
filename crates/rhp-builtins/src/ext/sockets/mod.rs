@@ -14,8 +14,8 @@ use std::rc::Rc;
 use rhp_values::ops::deref;
 use rhp_values::{ArrayKey, PhpArray, Value};
 
+use crate::main::streams::errno;
 use crate::proc_fns::zpp_long;
-use crate::streams::errno;
 use crate::zend::object_handlers::{ClassHandlers, ObjectHandlers};
 use crate::zend::zpp::zval_value_name;
 use crate::{Host, Thrown};
@@ -103,7 +103,7 @@ fn sockets_strerror(e: i32) -> String {
             return unsafe { std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned() };
         }
     }
-    crate::streams::strerror(e)
+    crate::main::streams::strerror(e)
 }
 
 extern "C" {

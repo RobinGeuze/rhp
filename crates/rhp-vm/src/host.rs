@@ -238,12 +238,12 @@ impl Host for Vm {
     // --- stream layer: dispatch to the per-run wrapper registry ---------------
 
     fn stream_get_contents(&self, url: &[u8]) -> Option<Vec<u8>> {
-        if builtins::streams::is_data_url(url) {
-            return match builtins::streams::parse_data_url(url) {
+        if builtins::main::streams::is_data_url(url) {
+            return match builtins::main::streams::parse_data_url(url) {
                 Ok((data, _)) => Some(data),
                 Err(e) => {
                     if !e.is_empty() {
-                        builtins::streams::note_wrapper_error(e);
+                        builtins::main::streams::note_wrapper_error(e);
                     }
                     None
                 }
@@ -254,8 +254,8 @@ impl Host for Vm {
         }
         if url.eq_ignore_ascii_case(b"php://stdin") {
             // A fresh php://stdin stream (a dup of fd 0) read to EOF.
-            let fd = builtins::fdstream::dup_raw(0)?;
-            return Some(builtins::fdstream::FdStream::new(fd).read_all(-1));
+            let fd = builtins::main::streams::plain_wrapper::dup_raw(0)?;
+            return Some(builtins::main::streams::plain_wrapper::FdStream::new(fd).read_all(-1));
         }
         self.wrapper_for(url)?.get_contents(url)
     }
@@ -452,8 +452,8 @@ impl Host for Vm {
         } else if path == b"php://stdin" {
             // php opens php://stdin on a dup() of fd 0: its own buffer.
             let v = self.make_stream(
-                StreamState::Fd(builtins::fdstream::FdStream::new(
-                    builtins::fdstream::dup_raw(0)?,
+                StreamState::Fd(builtins::main::streams::plain_wrapper::FdStream::new(
+                    builtins::main::streams::plain_wrapper::dup_raw(0)?,
                 )),
                 "stream",
             );
@@ -505,13 +505,13 @@ impl Host for Vm {
             return Some(v);
         } else if path.starts_with(b"php://") {
             return None; // other php:// streams unsupported
-        } else if builtins::streams::is_data_url(path) {
+        } else if builtins::main::streams::is_data_url(path) {
             // php_stream_url_wrap_rfc2397: a TEMP stream over a MEMORY one
-            let (data, meta) = match builtins::streams::parse_data_url(path) {
+            let (data, meta) = match builtins::main::streams::parse_data_url(path) {
                 Ok(v) => v,
                 Err(e) => {
                     if !e.is_empty() {
-                        builtins::streams::note_wrapper_error(e);
+                        builtins::main::streams::note_wrapper_error(e);
                     }
                     return None;
                 }
@@ -537,21 +537,23 @@ impl Host for Vm {
                 s.data_url = Some((Value::Array(meta), mode.to_vec(), path.to_vec()));
             }
             return Some(v);
-        } else if builtins::streams::split_scheme(path).0 == b"file" {
+        } else if builtins::main::streams::split_scheme(path).0 == b"file" {
             // Plain local file: a real descriptor (seek/tell/flock/ftruncate).
-            StreamState::File(Box::new(builtins::streams::LocalFile::open(path, mode)?))
+            StreamState::File(Box::new(builtins::main::streams::LocalFile::open(
+                path, mode,
+            )?))
         } else if let Some(opened) = self.open_wrapper_stream(path, mode, ctx) {
             return opened;
         } else if writable {
             let origin = (path.to_vec(), mode.to_vec());
-            let zlib = builtins::streams::split_scheme(path).0 == b"compress.zlib";
+            let zlib = builtins::main::streams::split_scheme(path).0 == b"compress.zlib";
             if zlib {
                 // The zlib wrapper opens (creating / truncating) the inner
                 // plain file right away: a resource of its own.
                 let inner = &path[b"compress.zlib://".len()..];
                 if !inner.windows(3).any(|w| w == b"://") {
                     let fmode: &[u8] = if append { b"ab" } else { b"wb" };
-                    let (flags, _, _) = builtins::streams::parse_fopen_mode(fmode)?;
+                    let (flags, _, _) = builtins::main::streams::parse_fopen_mode(fmode)?;
                     builtins::zend::virtual_cwd::open(inner, flags, 0o666).ok()?;
                 }
                 self.next_resource_id += 1;
@@ -576,7 +578,7 @@ impl Host for Vm {
             return Some(v);
         } else {
             let data = self.wrapper_for(path).and_then(|w| w.get_contents(path))?;
-            if builtins::streams::split_scheme(path).0 == b"compress.zlib" {
+            if builtins::main::streams::split_scheme(path).0 == b"compress.zlib" {
                 self.next_resource_id += 1; // the inner plain-file stream
             }
             let v = self.make_stream(
@@ -606,7 +608,7 @@ impl Host for Vm {
         res_id(res).is_some_and(|id| self.streams.contains_key(&id))
     }
 
-    fn stream_from_ops(&mut self, s: builtins::opsstream::OpsStream) -> Option<Value> {
+    fn stream_from_ops(&mut self, s: builtins::main::streams::ops::OpsStream) -> Option<Value> {
         Some(self.make_stream(StreamState::Ops(Box::new(s)), "stream"))
     }
 
@@ -670,7 +672,7 @@ impl Host for Vm {
                         "{func}(): Send of {} bytes failed with errno={} {}",
                         e.count,
                         e.errno,
-                        builtins::streams::strerror(e.errno)
+                        builtins::main::streams::strerror(e.errno)
                     );
                     self.raise_error(builtins::E_NOTICE, &msg);
                 }
@@ -864,14 +866,14 @@ impl Host for Vm {
     }
 
     fn stream_from_fd(&mut self, fd: std::os::fd::OwnedFd) -> Option<Value> {
-        let st = StreamState::Fd(builtins::fdstream::FdStream::new(fd));
+        let st = StreamState::Fd(builtins::main::streams::plain_wrapper::FdStream::new(fd));
         Some(self.make_stream(st, "stream"))
     }
 
     fn stream_from_socket(
         &mut self,
         fd: std::os::fd::OwnedFd,
-        info: builtins::fdstream::SockInfo,
+        info: builtins::main::streams::plain_wrapper::SockInfo,
     ) -> Option<Value> {
         let blocked = info.blocked;
         let ty = if info.persistent {
@@ -879,7 +881,8 @@ impl Host for Vm {
         } else {
             "stream"
         };
-        let st = StreamState::Fd(builtins::fdstream::FdStream::new_socket(fd, info));
+        let st =
+            StreamState::Fd(builtins::main::streams::plain_wrapper::FdStream::new_socket(fd, info));
         let v = self.make_stream(st, ty);
         if !blocked {
             if let Some(s) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
@@ -889,14 +892,20 @@ impl Host for Vm {
         Some(v)
     }
 
-    fn stream_sock_info(&self, res: &Value) -> Option<builtins::fdstream::SockInfo> {
+    fn stream_sock_info(
+        &self,
+        res: &Value,
+    ) -> Option<builtins::main::streams::plain_wrapper::SockInfo> {
         match self.streams.get(&res_id(res)?)? {
             StreamState::Fd(f) => f.sock().cloned(),
             _ => None,
         }
     }
 
-    fn stream_fd_mut(&mut self, res: &Value) -> Option<&mut builtins::fdstream::FdStream> {
+    fn stream_fd_mut(
+        &mut self,
+        res: &Value,
+    ) -> Option<&mut builtins::main::streams::plain_wrapper::FdStream> {
         match self.streams.get_mut(&res_id(res)?)? {
             StreamState::Fd(f) => Some(f),
             _ => None,
@@ -905,7 +914,7 @@ impl Host for Vm {
 
     fn stream_insert_fd(
         &mut self,
-        stream: builtins::fdstream::FdStream,
+        stream: builtins::main::streams::plain_wrapper::FdStream,
         ctx: Option<Value>,
     ) -> Option<Value> {
         let (blocked, persistent) = stream
@@ -1016,7 +1025,7 @@ impl Host for Vm {
     }
 
     fn stream_dup_fd(&mut self, res: &Value) -> Result<std::os::fd::OwnedFd, &'static str> {
-        use builtins::fdstream::dup_raw;
+        use builtins::main::streams::plain_wrapper::dup_raw;
         let id = res_id(res).ok_or("Unknown")?;
         let fail = |o: Option<std::os::fd::OwnedFd>| o.ok_or("STDIO");
         let has_origin = self.streams.record(id).is_some_and(|s| s.origin.is_some());
@@ -1030,7 +1039,7 @@ impl Host for Vm {
             }
             StreamState::File(f) => {
                 f.sync_for_cast();
-                fail(builtins::fdstream::dup_raw(f.fd()))
+                fail(builtins::main::streams::plain_wrapper::dup_raw(f.fd()))
             }
             StreamState::Mem { temp: Some(_), .. } => Err("TEMP"),
             _ if has_origin => Err("Unknown"),
@@ -1065,9 +1074,15 @@ impl Host for Vm {
         }
         match self.streams.get_mut(&id) {
             Some(StreamState::Fd(f)) => f.set_blocking(blocking),
-            Some(StreamState::Stdin) => builtins::fdstream::set_fd_blocking(0, blocking),
-            Some(StreamState::Stdout) => builtins::fdstream::set_fd_blocking(1, blocking),
-            Some(StreamState::Stderr) => builtins::fdstream::set_fd_blocking(2, blocking),
+            Some(StreamState::Stdin) => {
+                builtins::main::streams::plain_wrapper::set_fd_blocking(0, blocking)
+            }
+            Some(StreamState::Stdout) => {
+                builtins::main::streams::plain_wrapper::set_fd_blocking(1, blocking)
+            }
+            Some(StreamState::Stderr) => {
+                builtins::main::streams::plain_wrapper::set_fd_blocking(2, blocking)
+            }
             Some(_) => true,
             None => false,
         }
@@ -1274,10 +1289,10 @@ impl Host for Vm {
             StreamState::File(f) => f.stat(),
             // php_stream_http_stream_stat fails rather than stat the socket
             StreamState::Fd(f) if f.sock().is_some_and(|s| s.wrapper == Some("http")) => None,
-            StreamState::Fd(f) => builtins::streams::sys_fstat(f.raw_fd()?),
-            StreamState::Stdin => builtins::streams::sys_fstat(0),
-            StreamState::Stdout => builtins::streams::sys_fstat(1),
-            StreamState::Stderr => builtins::streams::sys_fstat(2),
+            StreamState::Fd(f) => builtins::main::streams::sys_fstat(f.raw_fd()?),
+            StreamState::Stdin => builtins::main::streams::sys_fstat(0),
+            StreamState::Stdout => builtins::main::streams::sys_fstat(1),
+            StreamState::Stderr => builtins::main::streams::sys_fstat(2),
             StreamState::Mem { buf, .. } => Some(builtins::StatInfo {
                 // php's memory-stream stat.
                 is_regular: true,
@@ -1329,7 +1344,7 @@ impl Host for Vm {
                 });
             }
             if let Some((uri, mode)) = self.streams.record(id).and_then(|s| s.origin.as_ref()) {
-                let (scheme, _) = builtins::streams::split_scheme(uri);
+                let (scheme, _) = builtins::main::streams::split_scheme(uri);
                 let (wrapper_type, stream_type) = match scheme {
                     b"phar" => ("phar", "phar stream"),
                     b"compress.zlib" => ("ZLIB", "ZLIB"),
@@ -1423,7 +1438,10 @@ impl Host for Vm {
                         None => M {
                             wrapper_type: "",
                             stream_type: "STDIO",
-                            mode: match f.raw_fd().map(builtins::fdstream::fd_access_mode) {
+                            mode: match f
+                                .raw_fd()
+                                .map(builtins::main::streams::plain_wrapper::fd_access_mode)
+                            {
                                 Some(Some(true)) => b"w".to_vec(),
                                 _ => b"r".to_vec(),
                             },
@@ -1494,7 +1512,7 @@ impl Host for Vm {
                         _ => (2, b"wb", b"php://stderr"),
                     };
                     // php: seekable unless a fifo or character device.
-                    let seekable = builtins::streams::sys_fstat(fd).is_some_and(|s| {
+                    let seekable = builtins::main::streams::sys_fstat(fd).is_some_and(|s| {
                         let fmt = s.mode & 0o170000;
                         fmt != 0o010000 && fmt != 0o020000
                     });

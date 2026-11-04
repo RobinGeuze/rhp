@@ -212,7 +212,7 @@ pub struct Vm {
     native_resources: HashMap<u32, Box<dyn std::any::Any>>,
     // The `STDIN` constant's reader: a buffered stream over a dup of fd 0
     // (created on first read).
-    stdin_reader: Option<builtins::fdstream::FdStream>,
+    stdin_reader: Option<builtins::main::streams::plain_wrapper::FdStream>,
     // Live objects whose class has a `__destruct` (strong handles, creation
     // order). An entry whose only owner is this list has been released by the
     // program: its destructor runs at the next check (`dtor_check`), as php's

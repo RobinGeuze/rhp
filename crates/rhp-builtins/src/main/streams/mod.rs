@@ -11,6 +11,9 @@
 use std::any::Any;
 use std::rc::Rc;
 
+pub mod ops;
+pub mod plain_wrapper;
+
 /// A stat result for a stream URL: the convenience flags plus every field of
 /// php's `stat()` array (`dev` … `blocks`).
 #[derive(Clone, Default, Debug)]
@@ -348,7 +351,7 @@ pub trait StreamWrapper: Any {
         _mode: &[u8],
         _options: &rhp_values::Value,
         _diags: &mut Vec<(i64, String)>,
-    ) -> Option<Option<crate::opsstream::OpsStream>> {
+    ) -> Option<Option<crate::main::streams::ops::OpsStream>> {
         None
     }
     /// For wrapper-specific control ops (e.g. `Phar::mapPhar` reaching its own

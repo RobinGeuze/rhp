@@ -145,7 +145,7 @@ impl Vm {
             Ok(s) => s,
             Err(e) => {
                 // The preload script is required at startup.
-                let reason = builtins::streams::strerror(e.raw_os_error().unwrap_or(2));
+                let reason = builtins::main::streams::strerror(e.raw_os_error().unwrap_or(2));
                 let warning = format!("PHP Startup: Failed to open stream: {reason}");
                 self.display_error(
                     rhp_builtins::E_WARNING,

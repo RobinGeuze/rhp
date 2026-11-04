@@ -18,7 +18,8 @@ use std::rc::Rc;
 use rhp_values::ops::deref;
 use rhp_values::{conv, PhpArray, Value};
 
-use crate::streams::{self, StatInfo, StreamWrapper, WrapperReg};
+use crate::main::streams;
+use crate::main::streams::{StatInfo, StreamWrapper, WrapperReg};
 use crate::{Host, Thrown};
 
 fn bytes_arg(args: &[Value], i: usize) -> Vec<u8> {
@@ -252,7 +253,7 @@ pub(crate) fn open_failure_reason(path: &[u8], mode: &[u8]) -> String {
     match crate::zend::virtual_cwd::open(path, flags | libc::O_CLOEXEC, 0o666) {
         Ok(_) => "operation failed".into(),
         Err(e) => match e.raw_os_error() {
-            Some(code) => crate::streams::strerror(code),
+            Some(code) => crate::main::streams::strerror(code),
             None => e.to_string(),
         },
     }

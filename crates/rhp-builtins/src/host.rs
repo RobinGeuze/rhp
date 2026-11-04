@@ -4,11 +4,10 @@
 use rhp_values::ops::deref;
 use rhp_values::{PhpArray, Value};
 
+use crate::main::streams;
+use crate::main::streams::{ops, plain_wrapper};
 use crate::zend::object_handlers;
-use crate::{
-    fdstream, lookup, opsstream, rfc1867, runtime_fns, sapi, streams, StatInfo, StreamWrapper,
-    Thrown,
-};
+use crate::{lookup, rfc1867, runtime_fns, sapi, StatInfo, StreamWrapper, Thrown};
 
 /// The kind of an open stream resource (see [`Host::stream_kind`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -780,7 +779,7 @@ pub trait Host {
         self.stream_open(path, mode)
     }
     /// A `stream` resource over an extension's stream ops.
-    fn stream_from_ops(&mut self, _s: opsstream::OpsStream) -> Option<Value> {
+    fn stream_from_ops(&mut self, _s: ops::OpsStream) -> Option<Value> {
         None
     }
     /// `fwrite`/`fputs` → bytes written.
@@ -898,23 +897,23 @@ pub trait Host {
     fn stream_from_socket(
         &mut self,
         _fd: std::os::fd::OwnedFd,
-        _info: fdstream::SockInfo,
+        _info: plain_wrapper::SockInfo,
     ) -> Option<Value> {
         None
     }
     /// The socket state of a socket stream (`None` for any other stream).
-    fn stream_sock_info(&self, _res: &Value) -> Option<fdstream::SockInfo> {
+    fn stream_sock_info(&self, _res: &Value) -> Option<plain_wrapper::SockInfo> {
         None
     }
     /// The descriptor stream behind a stream resource (sockets, pipes).
-    fn stream_fd_mut(&mut self, _res: &Value) -> Option<&mut fdstream::FdStream> {
+    fn stream_fd_mut(&mut self, _res: &Value) -> Option<&mut plain_wrapper::FdStream> {
         None
     }
     /// Register a descriptor stream as a stream resource whose context is
     /// `ctx` (php's `stream->ctx`). Default: unsupported.
     fn stream_insert_fd(
         &mut self,
-        _stream: fdstream::FdStream,
+        _stream: plain_wrapper::FdStream,
         _ctx: Option<Value>,
     ) -> Option<Value> {
         None

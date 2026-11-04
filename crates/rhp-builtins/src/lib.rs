@@ -7,6 +7,9 @@
 //! VM (no dependency cycle).
 //! The interpreter talks back through [`Host`].
 
+// `main` is php-src's main/, not a binary's entry point.
+#![allow(special_module_name)]
+
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -17,12 +20,10 @@ pub use rhp_values::Thrown;
 
 mod diag;
 pub(crate) mod dump;
-pub mod fdstream;
 mod host;
+pub mod main;
 pub(crate) mod module;
-pub mod opsstream;
 pub mod pcre;
-pub mod streams;
 pub mod version;
 pub mod zend;
 
@@ -30,7 +31,7 @@ pub use diag::{
     deprecated, deprecated_fn, flush_stream_diags, notice, open_failed, warn, warn_arg,
 };
 pub use host::{host_compare, host_loose_eq, Host, MagicFetch, ObCall, StreamKind, StreamMeta};
-pub use streams::{StatInfo, StreamWrapper, WrapperReg};
+pub use main::streams::{StatInfo, StreamWrapper, WrapperReg};
 
 /// pcntl's asynchronous signal delivery: the VM polls
 /// [`pcntl_interrupt_pending`] between instructions and, when set, calls
@@ -269,8 +270,8 @@ pub use runtime_fns::{apply_memory_limits, take_shutdown_diagnostics, take_start
 /// script run to the next on the same thread.
 pub fn reset_request_state() {
     zend::virtual_cwd::reset_state();
-    streams::reset_state();
-    fdstream::reset_state();
+    main::streams::reset_state();
+    main::streams::plain_wrapper::reset_state();
     dump::clear_views();
     sort_fns::reset_state();
     socket_fns::reset_state();

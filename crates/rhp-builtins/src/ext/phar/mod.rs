@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256, Sha512};
 
 mod tar;
 
-use crate::streams::{StatInfo, StreamWrapper, WrapperReg};
+use crate::main::streams::{StatInfo, StreamWrapper, WrapperReg};
 use crate::{Host, Thrown};
 
 // --- little-endian readers ---------------------------------------------------
@@ -549,7 +549,7 @@ impl PharWrapper {
         cuts.push(rest.len());
         for cut in cuts {
             let prefix = &rest[..cut];
-            let Some(st) = crate::streams::sys_stat(prefix, false) else {
+            let Some(st) = crate::main::streams::sys_stat(prefix, false) else {
                 continue;
             };
             if st.is_dir {
@@ -581,7 +581,7 @@ impl PharWrapper {
     fn is_bare_archive(&self, url: &[u8]) -> bool {
         url.strip_prefix(b"phar://").is_some_and(|rest| {
             self.archives.borrow().contains_key(rest)
-                && !crate::streams::sys_stat(rest, false).is_some_and(|s| s.is_regular)
+                && !crate::main::streams::sys_stat(rest, false).is_some_and(|s| s.is_regular)
         })
     }
 }

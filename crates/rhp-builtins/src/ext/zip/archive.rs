@@ -744,7 +744,7 @@ fn add_file(cx: &mut Cx<'_>, o: &ZipObject, src: FileSource<'_>) -> Result<i32, 
         cx.warn("No such file or directory")?;
         return Ok(-1);
     };
-    if crate::streams::sys_stat(&resolved, false).is_none() {
+    if crate::main::streams::sys_stat(&resolved, false).is_none() {
         cx.warn("No such file or directory")?;
         return Ok(-1);
     }
@@ -966,7 +966,7 @@ fn zip_glob(cx: &mut Cx<'_>, pattern: &[u8], flags: i64) -> Result<Found, Thrown
     let mut out = Vec::new();
     for p in paths {
         if flags & crate::fs_fns::GLOB_ONLYDIR != 0 {
-            match crate::streams::sys_stat(&p, false) {
+            match crate::main::streams::sys_stat(&p, false) {
                 Some(s) if s.is_dir => {}
                 _ => continue,
             }
@@ -978,8 +978,8 @@ fn zip_glob(cx: &mut Cx<'_>, pattern: &[u8], flags: i64) -> Result<Found, Thrown
 
 /// php_zip_pcre: the regular files in `path` whose name matches.
 fn zip_pcre(cx: &mut Cx<'_>, regexp: &[u8], path: &[u8]) -> Result<Found, Thrown> {
-    let Some(mut names) = crate::streams::sys_readdir(path) else {
-        let reason = crate::streams::last_strerror();
+    let Some(mut names) = crate::main::streams::sys_readdir(path) else {
+        let reason = crate::main::streams::last_strerror();
         crate::warn_arg(
             cx.host,
             &cx.fname,
@@ -1015,7 +1015,7 @@ fn zip_pcre(cx: &mut Cx<'_>, regexp: &[u8], path: &[u8]) -> Result<Found, Thrown
         let mut full = path.to_vec();
         full.push(b'/');
         full.extend_from_slice(name);
-        match crate::streams::sys_stat(&full, false) {
+        match crate::main::streams::sys_stat(&full, false) {
             None => {
                 cx.warn(&format!("Cannot read <{}>", String::from_utf8_lossy(&full)))?;
                 continue;
@@ -1218,7 +1218,7 @@ fn extract_file(
             [dest, b"/", &dir].concat()
         }
     };
-    if crate::streams::sys_stat(&dirname_full, false).is_none()
+    if crate::main::streams::sys_stat(&dirname_full, false).is_none()
         && !mkdir_recursive(cx, &dirname_full, true)?
     {
         return Ok(false);
@@ -1325,7 +1325,7 @@ fn mkdir_recursive(cx: &mut Cx<'_>, path: &[u8], report: bool) -> Result<bool, T
     prefixes.push(&full);
     let first_missing = prefixes
         .iter()
-        .rposition(|p| crate::streams::sys_stat(p, false).is_some())
+        .rposition(|p| crate::main::streams::sys_stat(p, false).is_some())
         .map_or(0, |i| i + 1);
     for p in &prefixes[first_missing..] {
         if p.contains(&0) {
@@ -1335,7 +1335,7 @@ fn mkdir_recursive(cx: &mut Cx<'_>, path: &[u8], report: bool) -> Result<bool, T
             let e = e.raw_os_error().unwrap_or(0);
             if e != libc::EEXIST {
                 if report {
-                    cx.warn(&crate::streams::strerror(e))?;
+                    cx.warn(&crate::main::streams::strerror(e))?;
                 }
                 return Ok(false);
             }
@@ -1394,7 +1394,9 @@ fn extract_to(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
     if pathto.is_empty() {
         return Ok(Value::Bool(false));
     }
-    if crate::streams::sys_stat(&pathto, false).is_none() && !mkdir_recursive(cx, &pathto, false)? {
+    if crate::main::streams::sys_stat(&pathto, false).is_none()
+        && !mkdir_recursive(cx, &pathto, false)?
+    {
         return Ok(Value::Bool(false));
     }
     match files {

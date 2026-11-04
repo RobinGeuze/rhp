@@ -2,9 +2,10 @@
 //! variable (zend_compile.c, `has_assigned_to_http_response_header`): a
 //! read of it warns unless the same function assigned it (or has a
 //! parameter of that name) earlier in source order. Variables php compiles
-//! for writing set the flag; reads (BP_VAR_R) warn; isset/unset, compound
-//! assignments and arguments of functions php does not know at compile
-//! time (SEND_FUNC_ARG) do neither.
+//! for writing set the flag; reads (BP_VAR_R) warn, a plain variable passed
+//! as an argument included; isset/unset, compound assignments and elements
+//! or properties passed to a function php does not know at compile time
+//! (SEND_FUNC_ARG) do neither.
 
 use mago_span::HasSpan;
 use rhp_frontend::cst::{

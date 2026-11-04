@@ -134,6 +134,7 @@ var_dump($c === $h, strlen(curl_exec($c)));
 curl_reset($c);
 var_dump(curl_getinfo($c, CURLINFO_EFFECTIVE_URL));
 var_dump(curl_escape($h, "a b&c=d/é~"), curl_unescape($h, "a%20b%26c%3Dd%2F%C3%A9~%zz+"));
+var_dump(curl_escape($h, ""), curl_unescape($h, ""), curl_escape($h, "a\0b"), bin2hex(curl_unescape($h, "a%00b")));
 var_dump(@curl_close($h), curl_errno($h));
 
 echo "== multi\n";

@@ -2422,17 +2422,17 @@ fn escape_fn(
         return Ok(Value::Bool(false));
     }
     let cp = e.borrow().cp;
+    // NUL-terminated, as a zend_string is: libcurl calls strlen() when the
+    // length is 0.
+    let len = s.len() as c_int;
+    let mut buf = s;
+    buf.push(0);
     let mut outlen: c_int = 0;
     let p = unsafe {
         if unescape {
-            sys::curl_easy_unescape(
-                cp,
-                s.as_ptr() as *const c_char,
-                s.len() as c_int,
-                &mut outlen,
-            )
+            sys::curl_easy_unescape(cp, buf.as_ptr() as *const c_char, len, &mut outlen)
         } else {
-            sys::curl_easy_escape(cp, s.as_ptr() as *const c_char, s.len() as c_int)
+            sys::curl_easy_escape(cp, buf.as_ptr() as *const c_char, len)
         }
     };
     if p.is_null() {

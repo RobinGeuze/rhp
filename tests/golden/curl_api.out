@@ -161,6 +161,10 @@ int(18)
 string(0) ""
 string(23) "a%20b%26c%3Dd%2F%C3%A9~"
 string(15) "a b&c=d/é~%zz+"
+string(0) ""
+string(0) ""
+string(5) "a%00b"
+string(6) "610062"
 NULL
 int(0)
 == multi

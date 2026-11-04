@@ -94,6 +94,12 @@ impl From<Thrown> for IncludeError {
 pub struct Vm {
     /// Active magic-accessor guards: (object id, accessor, property name).
     prop_guards: std::collections::HashSet<(u32, &'static [u8], PhpStr)>,
+    /// The fetch the next magic accessor or `offsetGet` call serves (php's
+    /// `BP_VAR_W` below a write, `check_empty` for `empty()`); that call
+    /// takes it.
+    pending_magic_fetch: builtins::MagicFetch,
+    /// The fetch the running accessor serves ([`Host::magic_fetch`]).
+    magic_fetch: builtins::MagicFetch,
     /// The output layer (main/output.c): the `ob_start` handler stack every
     /// write passes through on its way to [`Vm::emit_stdout`].
     output: output::Output,
@@ -463,6 +469,10 @@ impl Host for Vm {
             }
             other => other,
         }
+    }
+
+    fn magic_fetch(&self) -> builtins::MagicFetch {
+        self.magic_fetch
     }
 
     fn arg_uses_strict_types(&self) -> bool {
@@ -2418,6 +2428,8 @@ impl Vm {
         rhp_values::set_object_free_hook(builtins::object_freed);
         Vm {
             prop_guards: Default::default(),
+            pending_magic_fetch: Default::default(),
+            magic_fetch: Default::default(),
             output: output::Output::default(),
             stack: Vec::new(),
             functions: Vec::new(),
@@ -2941,6 +2953,7 @@ impl Vm {
         let Some(m) = self.magic(&h, cls, b"__isset", &pname) else {
             return Ok(true);
         };
+        self.pending_magic_fetch = builtins::MagicFetch::Empty;
         let r = self.call_magic(&m, &h, cls, b"__isset", &pname, vec![nm()])?;
         if !self.truthy(&r)? {
             return Ok(true);
@@ -3136,8 +3149,26 @@ impl Vm {
     ) -> Result<Value, Thrown> {
         let guard = (h.borrow().id, which, name.clone());
         self.prop_guards.insert(guard.clone());
-        let r = self.call_sync(m, Some(h.clone()), cls, args);
+        let r = self.with_magic_fetch(|vm| vm.call_sync(m, Some(h.clone()), cls, args));
         self.prop_guards.remove(&guard);
+        r
+    }
+
+    /// Run a magic accessor or `offsetGet` call with the fetch it serves.
+    fn with_magic_fetch<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let mode = std::mem::take(&mut self.pending_magic_fetch);
+        let saved = std::mem::replace(&mut self.magic_fetch, mode);
+        let r = f(self);
+        self.magic_fetch = saved;
+        r
+    }
+
+    /// `f` (a property or element fetch) with `mode` for the accessor it
+    /// may call.
+    fn fetching_as<T>(&mut self, mode: builtins::MagicFetch, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.pending_magic_fetch = mode;
+        let r = f(self);
+        self.pending_magic_fetch = Default::default();
         r
     }
 
@@ -4548,13 +4579,23 @@ impl Vm {
             }
             MagicSplit::Leaf(h, name) => self.prop_fetch(top, Value::Object(h), name),
             MagicSplit::Nested(i, h, name) => {
-                let got = self.prop_fetch(top, Value::Object(h), name)?;
+                let got = self.fetching_as(builtins::MagicFetch::Write, |vm| {
+                    vm.prop_fetch(top, Value::Object(h), name)
+                })?;
+                let rest = &steps[i + 1..];
+                if let Value::Object(o) = deref(&got) {
+                    // An object holds on: its own magic or ArrayAccess
+                    // takes the rest of the path.
+                    let cell = Rc::new(RefCell::new(Value::Object(o)));
+                    return self
+                        .with_cursor_root(cell, |vm| vm.cursor_read_magic(top, rest, incdec));
+                }
                 let cx = PropCtx {
                     classes: &self.classes,
                     scope: self.stack[top].defining_class,
                     called: self.stack[top].called_class,
                 };
-                Ok(read_path(&got, &steps[i + 1..], &cx))
+                Ok(read_path(&got, rest, &cx))
             }
             MagicSplit::Offset(i, h) => {
                 let key = aa_key(&steps[i]).unwrap_or(Value::Null);
@@ -4791,7 +4832,9 @@ impl Vm {
         h: ObjectHandle,
         name: PhpStr,
     ) -> Result<Rc<RefCell<Value>>, Thrown> {
-        let got = self.prop_fetch(top, Value::Object(h), name)?;
+        let got = self.fetching_as(builtins::MagicFetch::Write, |vm| {
+            vm.prop_fetch(top, Value::Object(h), name)
+        })?;
         Ok(match got {
             Value::Ref(rc) => rc,
             other => Rc::new(RefCell::new(other)),
@@ -5270,11 +5313,15 @@ impl Vm {
                 break;
             }
             let f = &self.stack[i];
-            // A prelude class's `__`-prefixed helper is engine plumbing with
-            // no php counterpart: it never shows in a trace.
+            // A prelude class's `__`-prefixed helper, or an accessor standing
+            // in for php's property and dimension handlers, is engine
+            // plumbing with no php counterpart: it never shows in a trace.
             if f.include_kind.is_none()
                 && is_prelude_proto(&f.proto)
-                && is_engine_helper_name(f.proto.name.as_bytes())
+                && (is_engine_helper_name(f.proto.name.as_bytes())
+                    || f.defining_class.is_some_and(|c| {
+                        is_handler_accessor(self.class(c).name.as_bytes(), f.proto.name.as_bytes())
+                    }))
             {
                 continue;
             }
@@ -5895,7 +5942,9 @@ impl Vm {
     fn aa_offset_get(&mut self, h: &ObjectHandle, key: Value) -> Result<Value, Thrown> {
         let cls = h.borrow().class;
         match self.lookup_method(cls, b"offsetget") {
-            Some(m) => self.call_sync(&m, Some(h.clone()), cls, vec![key]),
+            Some(m) => {
+                self.with_magic_fetch(|vm| vm.call_sync(&m, Some(h.clone()), cls, vec![key]))
+            }
             None => Ok(Value::Null),
         }
     }
@@ -6060,7 +6109,11 @@ impl Vm {
         if let Some(cell) = self.spl_array_dim_ptr(h, step, &key, mode)? {
             return Ok(cell);
         }
-        let got = self.aa_offset_get(h, key)?;
+        let fetch = match mode {
+            DimFetch::W | DimFetch::Rw => builtins::MagicFetch::Write,
+            DimFetch::Unset => builtins::MagicFetch::Read,
+        };
+        let got = self.fetching_as(fetch, |vm| vm.aa_offset_get(h, key))?;
         Ok(match got {
             Value::Ref(rc) => rc,
             other => {
@@ -6763,6 +6816,22 @@ impl Vm {
                     let a = self.reg_get(top, arr);
                     let k = self.reg_get(top, key);
                     let r = self.dim_read(&a, &k, DimMode::Read)?;
+                    self.reg_set(top, dst, r);
+                }
+                Instr::DimFetchW { dst, arr, key } => {
+                    let a = self.reg_get(top, arr);
+                    let k = self.reg_get(top, key);
+                    let r = match deref(&a) {
+                        Value::Object(h)
+                            if self.class_implements(h.borrow().class, b"ArrayAccess") =>
+                        {
+                            let step = CursorStep::Key(k.clone());
+                            let cell = self.aa_fetch_w(&h, &step, k, DimFetch::W)?;
+                            let v = cell.borrow().clone();
+                            v
+                        }
+                        _ => self.dim_read(&a, &k, DimMode::Read)?,
+                    };
                     self.reg_set(top, dst, r);
                 }
                 Instr::DimFetchIs { dst, arr, key } => {
@@ -7504,6 +7573,22 @@ impl Vm {
                     let o = self.reg_get(top, obj);
                     let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
                     let v = self.prop_fetch(top, o, pname)?;
+                    self.reg_set(top, dst, v);
+                }
+                Instr::FetchPropW { dst, obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = proto.names[name as usize].clone();
+                    let v = self.fetching_as(builtins::MagicFetch::Write, |vm| {
+                        vm.prop_fetch(top, o, pname)
+                    })?;
+                    self.reg_set(top, dst, v);
+                }
+                Instr::FetchPropDynW { dst, obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let v = self.fetching_as(builtins::MagicFetch::Write, |vm| {
+                        vm.prop_fetch(top, o, pname)
+                    })?;
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropIs { dst, obj, name } => {
@@ -12220,6 +12305,25 @@ fn is_engine_helper_name(name: &[u8]) -> bool {
     ];
     let lc = name.to_ascii_lowercase();
     lc.starts_with(b"__") && !MAGIC.contains(&lc.as_slice())
+}
+
+/// A magic accessor or ArrayAccess method of a built-in class whose php
+/// stub has no such method: the prelude's stand-in for php's property and
+/// dimension handlers (SimpleXML, DOM, XMLReader).
+fn is_handler_accessor(class: &[u8], method: &[u8]) -> bool {
+    const ACCESSORS: &[&[u8]] = &[
+        b"__get",
+        b"__set",
+        b"__isset",
+        b"__unset",
+        b"offsetget",
+        b"offsetset",
+        b"offsetexists",
+        b"offsetunset",
+    ];
+    ACCESSORS.contains(&method.to_ascii_lowercase().as_slice())
+        && builtins::signatures::class(class).is_some()
+        && builtins::signatures::method(class, method).is_none()
 }
 
 fn array_key_to_value(k: &ArrayKey) -> Value {

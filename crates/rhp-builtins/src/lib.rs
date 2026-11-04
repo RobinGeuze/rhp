@@ -174,6 +174,19 @@ pub enum ObCall {
 
 /// The interpreter surface a builtin may use. Implemented by the VM (and by
 /// the minimal hosts in unit tests, which rely on the default bodies).
+/// The fetch a magic accessor serves ([`Host::magic_fetch`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MagicFetch {
+    /// A read (`BP_VAR_R`), or anything else.
+    #[default]
+    Read,
+    /// A write below the property or element (`BP_VAR_W`/`BP_VAR_RW`:
+    /// `$o->p->q = …`, `$o->p[] = …`, `$o[k][] = …`, `&$o->p`).
+    Write,
+    /// `empty($o->p)`'s `__isset` (`check_empty`).
+    Empty,
+}
+
 pub trait Host {
     /// Append bytes to the single output sink (stdout / output buffer).
     fn write_out(&mut self, bytes: &[u8]);
@@ -256,6 +269,14 @@ pub trait Host {
     /// `strict_types=1` (zpp then coerces no scalars). Default: no.
     fn caller_strict_types(&self) -> bool {
         false
+    }
+
+    /// How the engine fetches the property or element whose magic accessor
+    /// (`__get`, `__isset`, `offsetGet`) is running: SimpleXML's handlers
+    /// behave as php's `read_property` / `has_property` do for that fetch.
+    /// Default: a plain read.
+    fn magic_fetch(&self) -> MagicFetch {
+        MagicFetch::Read
     }
 
     /// php's `ZEND_ARG_USES_STRICT_TYPES()` as an object handler the engine

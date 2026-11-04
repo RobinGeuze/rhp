@@ -113,9 +113,18 @@ Notes:
 - Formatters only see `&dyn Host`, so the dumpers resolve every reachable
   object's view up front (`dump::resolve_views`).
 - Handlers not routed yet: property and dimension access (`read_property`,
-  `has_property`… — DOM's and SimpleXML's virtual properties still go
-  through their prelude classes), `get_constructor` (`Directory`),
-  `get_gc`.
+  `has_property`…), `get_constructor` (`Directory`), `get_gc`. DOM's,
+  SimpleXML's and XMLReader's properties and dimensions go through their
+  prelude classes' `__get`/`__set`/`__isset`/`__unset` and ArrayAccess
+  methods, which call the ported handlers. Two things make those
+  stand-ins behave like php's handlers:
+  - `host.magic_fetch()` says which fetch the running accessor serves:
+    `Write` for a `__get`/`offsetGet` below a write (`$o->a->b = …`,
+    `$o->a[] = …`, `$o[k]->p = …`, `&$o->a`; php's `BP_VAR_W`, where
+    SimpleXML's `get_property_ptr_ptr` creates a missing element),
+    `Empty` for `empty($o->p)`'s `__isset` (`check_empty`), else `Read`.
+  - Their frames never show in a trace: a built-in class's accessor whose
+    php stub has no such method is engine plumbing.
 
 ## Class flags
 

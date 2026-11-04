@@ -267,6 +267,14 @@ pub enum Instr {
         arr: Reg,
         key: Reg,
     },
+    /// `DimFetch` as the object of a property write (`$a[k]->p = v`): an
+    /// ArrayAccess element is fetched for writing (`BP_VAR_W`), anything
+    /// else is read.
+    DimFetchW {
+        dst: Reg,
+        arr: Reg,
+        key: Reg,
+    },
     /// `DimFetch` in isset/`??` context (`BP_VAR_IS`): no diagnostics, and an
     /// absent string offset reads as Null.
     DimFetchIs {
@@ -492,6 +500,20 @@ pub enum Instr {
     },
     /// `$o->$p` / `$o->{expr}`: the property name is a runtime string in `name`.
     FetchPropDyn {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+    },
+    /// `$o->p` as the object of a property write (`$o->p->q = v`): php's
+    /// BP_VAR_W fetch, which a magic `__get` serves as a write
+    /// (`Host::magic_fetch`).
+    FetchPropW {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+    },
+    /// `FetchPropW` with the property name in a register.
+    FetchPropDynW {
         dst: Reg,
         obj: Reg,
         name: Reg,

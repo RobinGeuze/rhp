@@ -162,3 +162,28 @@ fn hot_calls_start_from_the_directory() {
     reset_state();
     assert_eq!(at(b"rel").unwrap().0, libc::AT_FDCWD);
 }
+
+#[test]
+fn a_removed_or_renamed_directory_is_followed() {
+    reset_state();
+    let s = Scratch::new("moved");
+    std::fs::create_dir(s.0.join("old")).unwrap();
+    assert!(set_cwd(&s.bytes()));
+    assert_eq!(chdir(b"old"), Ok(()));
+    std::fs::rename(s.0.join("old"), s.0.join("new")).unwrap();
+    // The *at calls follow the directory; getcwd() takes its new name.
+    write_file(b"f", b"x").unwrap();
+    assert!(s.0.join("new/f").exists());
+    let mut new = s.bytes();
+    new.extend_from_slice(b"/new");
+    assert_eq!(current_dir(), Ok(new.clone()));
+    assert_eq!(getcwd(), Some(new));
+    std::fs::remove_file(s.0.join("new/f")).unwrap();
+    std::fs::remove_dir(s.0.join("new")).unwrap();
+    assert_eq!(current_dir(), Err(libc::ENOENT));
+    // chdir() starts from the directory, as chdir(2) from a removed one.
+    assert_eq!(chdir(b".."), Ok(()));
+    assert_eq!(current_dir(), Ok(s.bytes()));
+    reset_state();
+}
+

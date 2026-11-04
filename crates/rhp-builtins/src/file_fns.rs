@@ -151,12 +151,12 @@ fn dirname_once(path: &[u8]) -> Vec<u8> {
 }
 
 fn fn_getcwd(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(crate::vcwd::getcwd().map_or(Value::Bool(false), Value::str))
+    Ok(crate::vcwd::current_dir().map_or(Value::Bool(false), Value::str))
 }
 
 /// `chdir()`: the request's working directory (see [`crate::vcwd`]).
 fn fn_chdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let dir = path_arg(args, 0);
+    let dir = crate::argparse::path_param(host, args, 0, "chdir", "directory")?;
     match crate::vcwd::chdir(&dir) {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {

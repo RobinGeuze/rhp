@@ -40,13 +40,52 @@ struct Cwd {
 
 impl Cwd {
     fn new(path: Vec<u8>) -> Cwd {
-        let fd = CString::new(path.clone()).ok().and_then(|c| {
-            let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
-            let fd = unsafe { libc::open(c.as_ptr(), flags) };
-            (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
-        });
+        let fd = with_cstr(&path, |c| open_dir(libc::AT_FDCWD, c)).flatten();
         Cwd { path, fd }
     }
+}
+
+/// The directory `c` (from `dir`) opened for the `*at` calls.
+fn open_dir(dir: libc::c_int, c: &CStr) -> Option<OwnedFd> {
+    let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
+    let fd = unsafe { libc::openat(dir, c.as_ptr(), flags) };
+    (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// The path of the directory open at `fd`, as getcwd(3) names it.
+fn fd_path(fd: &OwnedFd) -> Option<Vec<u8>> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf = [0u8; libc::PATH_MAX as usize];
+        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) } == -1 {
+            return None;
+        }
+        let end = buf.iter().position(|&b| b == 0)?;
+        Some(buf[..end].to_vec())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let link = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).ok()?;
+        let path = link.into_os_string().into_vec();
+        (path.first() == Some(&b'/') && !path.ends_with(b" (deleted)")).then_some(path)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = fd;
+        None
+    }
+}
+
+/// Whether `path` still names the directory open at `fd`.
+fn names_dir(path: &[u8], fd: &OwnedFd) -> bool {
+    with_cstr(path, |c| unsafe {
+        let mut named: libc::stat = std::mem::zeroed();
+        let mut open: libc::stat = std::mem::zeroed();
+        libc::stat(c.as_ptr(), &mut named) == 0
+            && libc::fstat(fd.as_raw_fd(), &mut open) == 0
+            && (named.st_dev, named.st_ino) == (open.st_dev, open.st_ino)
+    })
+    .unwrap_or(false)
 }
 
 thread_local! {
@@ -80,7 +119,8 @@ pub fn set_cwd(dir: &[u8]) -> bool {
     }
 }
 
-/// `getcwd()`: the request's working directory.
+/// The request's working directory, by the name it had when the request
+/// entered it.
 pub fn getcwd() -> Option<Vec<u8>> {
     CWD.with(|c| c.borrow().as_ref().map(|c| c.path.clone()))
         .or_else(|| {
@@ -90,31 +130,75 @@ pub fn getcwd() -> Option<Vec<u8>> {
         })
 }
 
+/// `getcwd()`, as getcwd(3) answers it: the request's working directory
+/// by its current name (it takes the new one when the directory was
+/// renamed); ENOENT once the directory was removed.
+pub fn current_dir() -> Result<Vec<u8>, i32> {
+    let found = CWD.with(|c| {
+        let c = c.borrow();
+        let cwd = c.as_ref()?;
+        let Some(fd) = &cwd.fd else {
+            return Some(Ok(cwd.path.clone()));
+        };
+        if names_dir(&cwd.path, fd) {
+            return Some(Ok(cwd.path.clone()));
+        }
+        Some(match fd_path(fd).filter(|p| names_dir(p, fd)) {
+            Some(moved) => Ok(moved),
+            None => Err(libc::ENOENT),
+        })
+    });
+    match found {
+        Some(Ok(path)) => {
+            CWD.with(|c| {
+                if let Some(cwd) = c.borrow_mut().as_mut() {
+                    if cwd.path != path {
+                        cwd.path = path.clone();
+                    }
+                }
+            });
+            Ok(path)
+        }
+        Some(Err(e)) => Err(e),
+        None => std::env::current_dir()
+            .map(|d| d.into_os_string().into_vec())
+            .map_err(|e| e.raw_os_error().unwrap_or(libc::ENOENT)),
+    }
+}
+
 /// `chdir()`: what chdir(2) would do, for the request only. The error is
 /// chdir(2)'s errno.
 pub fn chdir(path: &[u8]) -> Result<(), i32> {
     if path.is_empty() {
         return Err(libc::ENOENT);
     }
-    let c = c_path(path).ok_or(libc::ENOENT)?;
-    // stat(2) walks the path as chdir(2) does (ENOENT, ENOTDIR, EACCES,
-    // ELOOP, ENAMETOOLONG); the target must be a directory this process
-    // may search. realpath(3) then gives the name getcwd(3) would.
-    unsafe {
+    // fstatat walks the path from the request's directory as chdir(2) does
+    // from a real one (ENOENT, ENOTDIR, EACCES, ELOOP, ENAMETOOLONG); the
+    // target must be a directory this process may search. Its name is the
+    // one getcwd(3) would give, taken from the directory opened.
+    let opened = with_at(path, |dir, c| unsafe {
         let mut st: libc::stat = std::mem::zeroed();
-        if libc::stat(c.as_ptr(), &mut st) != 0 {
+        if libc::fstatat(dir, c.as_ptr(), &mut st, 0) != 0 {
             return Err(crate::streams::errno());
         }
         if st.st_mode & libc::S_IFMT != libc::S_IFDIR {
             return Err(libc::ENOTDIR);
         }
-        if libc::faccessat(libc::AT_FDCWD, c.as_ptr(), libc::X_OK, libc::AT_EACCESS) != 0 {
+        if libc::faccessat(dir, c.as_ptr(), libc::X_OK, libc::AT_EACCESS) != 0 {
             return Err(crate::streams::errno());
         }
-    }
-    let real = std::fs::canonicalize(OsStr::from_bytes(c.as_bytes()))
-        .map_err(|e| e.raw_os_error().unwrap_or(libc::ENOENT))?;
-    let cwd = Cwd::new(real.into_os_string().into_vec());
+        Ok(open_dir(dir, c))
+    })
+    .ok_or(libc::ENOENT)??;
+    let cwd = match opened.as_ref().and_then(fd_path) {
+        Some(path) => Cwd { path, fd: opened },
+        None => {
+            // Searchable but not readable: name it from the path.
+            let real = std::fs::canonicalize(os_path(path))
+                .map_err(|e| e.raw_os_error().unwrap_or(libc::ENOENT))?;
+            Cwd::new(real.into_os_string().into_vec())
+        }
+    };
     CWD.with(|c| *c.borrow_mut() = Some(cwd));
     Ok(())
 }

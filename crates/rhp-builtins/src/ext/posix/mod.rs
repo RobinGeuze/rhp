@@ -290,10 +290,10 @@ fn fn_uname(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_getcwd(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    match crate::vcwd::getcwd() {
-        Some(p) => Ok(Value::str(p)),
-        None => {
-            set_last_error(host, errno());
+    match crate::vcwd::current_dir() {
+        Ok(p) => Ok(Value::str(p)),
+        Err(e) => {
+            set_last_error(host, e);
             Ok(Value::Bool(false))
         }
     }

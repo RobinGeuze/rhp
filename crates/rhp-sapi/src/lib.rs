@@ -29,6 +29,7 @@ use rhp_vm::Vm;
 
 mod capture;
 pub mod cgi;
+mod getopt;
 
 pub use capture::{CaptureSapi, Captured};
 

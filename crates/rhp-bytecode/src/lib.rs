@@ -1162,7 +1162,8 @@ pub struct Program {
     pub functions: Vec<Rc<FunctionProto>>,
     /// Compiled, UN-LINKED class declarations; the VM links them (`Vm::install`),
     /// resolving `extends`/`implements`/`use` by name and assigning `ClassId`s.
-    pub classes: Vec<ClassProto>,
+    /// Shared: the VM links a declaration without copying it.
+    pub classes: Vec<Rc<ClassProto>>,
     /// Anonymous closure / arrow-function protos, indexed by the `fnidx` operand
     /// of `MakeClosure` and by `ClosureData::fnidx`.
     pub closures: Vec<Rc<FunctionProto>>,
@@ -1175,7 +1176,7 @@ pub struct Program {
     pub num_prelude_functions: usize,
     /// Class declarations nested in control flow / function bodies; never
     /// hoisted, declared by `DeclareClass` when execution reaches them.
-    pub cond_classes: Vec<ClassProto>,
+    pub cond_classes: Vec<Rc<ClassProto>>,
     /// Diagnostics php's compiler raises for this file: `(level, message,
     /// line)`, reported when the file is loaded.
     pub compile_diags: Vec<(i64, String, u32)>,

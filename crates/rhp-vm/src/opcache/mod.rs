@@ -254,7 +254,7 @@ fn program_size(p: &Program) -> i64 {
         + p.closures.iter().map(|f| proto(f)).sum::<usize>()
         + user_classes
             .chain(&p.cond_classes)
-            .map(class)
+            .map(|c| class(c))
             .sum::<usize>();
     // ZEND_ALIGNED_SIZE
     ((n + 7) & !7) as i64

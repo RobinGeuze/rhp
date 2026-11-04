@@ -70,7 +70,7 @@ pub struct Vm {
     /// Flat table of user class declarations (`class_base + DeclareClass`
     /// operand): each file's top-level class-likes then its nested ones, with
     /// whether the declaration has already happened (hoisted or executed).
-    decl_classes: Vec<(ClassProto, bool)>,
+    decl_classes: Vec<(Rc<ClassProto>, bool)>,
     /// `decl_classes` slots declared by an executed `DeclareClass` (not
     /// early-bound): running that declaration again is a redeclaration.
     decl_runtime: std::collections::HashSet<usize>,

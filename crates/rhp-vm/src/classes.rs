@@ -514,8 +514,8 @@ fn php_member_order<V>(
 impl Vm {
     /// Link every `ClassProto` into the class table, in dependency order so that
     /// `extends`/`implements`/`use` (which may be forward references) resolve.
-    pub(crate) fn install_classes(&mut self, protos: &[ClassProto]) -> Result<(), Thrown> {
-        let mut pending: Vec<&ClassProto> = protos.iter().collect();
+    pub(crate) fn install_classes(&mut self, protos: &[Rc<ClassProto>]) -> Result<(), Thrown> {
+        let mut pending: Vec<&Rc<ClassProto>> = protos.iter().collect();
         loop {
             if pending.is_empty() {
                 // All classes linked. Deferred initializers (non-constant
@@ -579,7 +579,7 @@ impl Vm {
             .chain(user[top..].iter());
         for c in ordered {
             let c = crate::include::rebase_class(c, base, cbase);
-            self.decl_classes.push((c, false));
+            self.decl_classes.push((Rc::new(c), false));
         }
         let start = cbase as usize;
         let anon_start = start + top + nested;
@@ -721,7 +721,7 @@ impl Vm {
 
     /// Link the class compiled into `decl_classes` slot `slot`, recording
     /// that slot as its class-table position.
-    pub(crate) fn link_slot(&mut self, slot: usize, proto: &ClassProto) -> Result<(), Thrown> {
+    pub(crate) fn link_slot(&mut self, slot: usize, proto: &Rc<ClassProto>) -> Result<(), Thrown> {
         let id = self.classes.len();
         self.link_class(proto)?;
         if let Some(o) = self.class_order.get_mut(id) {
@@ -752,7 +752,7 @@ impl Vm {
             .or_else(|| p.traits.iter().find_map(missing))
     }
 
-    fn link_class(&mut self, proto: &ClassProto) -> Result<(), Thrown> {
+    fn link_class(&mut self, proto: &Rc<ClassProto>) -> Result<(), Thrown> {
         let id = self.classes.len() as ClassId;
         let parent = match &proto.parent {
             Some(n) => Some(self.class_ids[&lc(n.as_bytes())]),
@@ -1177,7 +1177,7 @@ impl Vm {
             enum_cases: Vec::new(),
             enum_backing: proto.enum_backing,
             updated: false,
-            proto: Rc::new(proto.clone()),
+            proto: proto.clone(),
             decl_file: proto.decl_file.clone(),
             decl_line: proto.decl_line,
             handlers,

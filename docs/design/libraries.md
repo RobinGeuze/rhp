@@ -327,6 +327,9 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   (`fdstream::push_diag`) and the code that ran the operation reports them
   under its builtin; peer certificates for `capture_peer_cert` come back to
   a caller with a host, which wraps them in `OpenSSLCertificate` objects.
+  What php calls back into PHP from inside a read (the context notifier's
+  progress and completed events, `reneg_limit_callback`) is recorded by the
+  read (`fdstream::NotifyEvent`) and delivered right after it.
   The verify, passphrase, SNI and ALPN callbacks read their data from a
   per-session allocation behind the SSL's ex_data and run under
   ext/openssl's `guard`. `SSL_CTX_new` takes no library context, as in php.

@@ -50,6 +50,15 @@ fn main() {
         .flag_if_supported("-Wno-unused-parameter")
         .compile("rhp_curl_shim");
 
+    // ext/gmp's layout checks against the linked gmp.h.
+    println!("cargo:rerun-if-changed=src/ext/gmp/shim.c");
+    cc::Build::new()
+        .file("src/ext/gmp/shim.c")
+        .include(include("GMP"))
+        .warnings(true)
+        .extra_warnings(true)
+        .compile("rhp_gmp_shim");
+
     // ICU is C++; its .pc files leave the C++ runtime to the linker driver.
     match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
         Ok("macos") | Ok("ios") => println!("cargo:rustc-link-lib=dylib=c++"),

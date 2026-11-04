@@ -243,6 +243,9 @@ fn print_info(flag: i64) -> Vec<u8> {
                 print_curl(&mut o);
             } else if *e == "iconv" {
                 print_iconv(&mut o);
+            } else if *e == "gmp" {
+                o.row(&["gmp support", "enabled"]);
+                o.row(&["GMP version", crate::ext::gmp::sys::version()]);
             } else {
                 o.row(&[&format!("{e} support"), "enabled"]);
             }

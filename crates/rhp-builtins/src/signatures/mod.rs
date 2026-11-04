@@ -330,8 +330,12 @@ const ZPP_OWN: &[(&str, &str)] = &[
     ("ini_set", "value"),
 ];
 
+/// Extensions whose builtins parse every parameter themselves, in php's
+/// order: a `GMP|int|string` argument's error comes before a later `int`'s.
+const ZPP_OWN_EXT: &[&str] = &["gmp"];
+
 fn scalar_param(f: &Func, pos: usize, p: &'static Param) -> Option<ScalarParam> {
-    if p.ty.is_empty() || ZPP_OWN.contains(&(f.name, p.name)) {
+    if p.ty.is_empty() || ZPP_OWN.contains(&(f.name, p.name)) || ZPP_OWN_EXT.contains(&f.ext) {
         return None;
     }
     let parts = || p.ty.trim_start_matches('?').split('|');

@@ -161,6 +161,25 @@ pub const LIBS: &[Lib] = &[
         install: "macOS: brew install curl; Debian/Ubuntu: apt install pkg-config \
                   libcurl4-openssl-dev",
     },
+    // LGPL-3.0+/GPL-2.0+: a dynamic system library only, never static.
+    Lib {
+        name: "GMP",
+        pkg: "gmp",
+        brew: Some("gmp"),
+        macos_sdk: false,
+        link: "gmp",
+        incdir: "",
+        header: "gmp.h",
+        macros: &[],
+        version: &[
+            "__GNU_MP_VERSION",
+            "__GNU_MP_VERSION_MINOR",
+            "__GNU_MP_VERSION_PATCHLEVEL",
+        ],
+        macos: Mode::Dynamic("LGPL: linked dynamically only"),
+        linux: Mode::Dynamic("LGPL: linked dynamically only"),
+        install: "macOS: brew install gmp; Debian/Ubuntu: apt install pkg-config libgmp-dev",
+    },
 ];
 
 const ICU_INSTALL: &str =
@@ -215,6 +234,22 @@ fn target_os() -> String {
     env::var("CARGO_CFG_TARGET_OS").unwrap_or_default()
 }
 
+/// Debian's multiarch tuple for the target (`x86_64-linux-gnu`).
+fn multiarch_tuple() -> String {
+    let var = |k: &str| env::var(k).unwrap_or_default();
+    let arch = match var("CARGO_CFG_TARGET_ARCH").as_str() {
+        "x86" => "i386".to_string(),
+        "powerpc64" if var("CARGO_CFG_TARGET_ENDIAN") == "little" => "powerpc64le".into(),
+        a => a.to_string(),
+    };
+    format!(
+        "{arch}-{}-{}{}",
+        var("CARGO_CFG_TARGET_OS"),
+        var("CARGO_CFG_TARGET_ENV"),
+        var("CARGO_CFG_TARGET_ABI")
+    )
+}
+
 fn link(lib: &Lib) -> Result<PathBuf, String> {
     let override_var = format!("RHP_{}_LINK", lib.name);
     println!("cargo:rerun-if-env-changed={override_var}");
@@ -232,7 +267,15 @@ fn link(lib: &Lib) -> Result<PathBuf, String> {
     }
 
     let found = find(lib, &os)?;
-    let include = found.include.join(lib.incdir);
+    let mut include = found.include.join(lib.incdir);
+    if !include.join(lib.header).is_file() {
+        // Debian/Ubuntu put headers that differ per architecture (gmp.h)
+        // in the multiarch directory, which the .pc file does not name.
+        let multiarch = found.include.join(multiarch_tuple()).join(lib.incdir);
+        if multiarch.join(lib.header).is_file() {
+            include = multiarch;
+        }
+    }
     let header = include.join(lib.header);
     let text = fs::read_to_string(&header).map_err(|e| {
         format!(

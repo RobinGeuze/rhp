@@ -615,8 +615,8 @@ pub trait Host {
         None
     }
 
-    /// Read a named property off an object value (for builtins that accept their
-    /// own object type back, e.g. `gmp_add(gmp_add(...), ...)`). Default: none.
+    /// Read a named property off an object value (an enum case's `name` or
+    /// `value`, an exception's `message`). Default: none.
     fn object_prop(&self, _obj: &Value, _name: &[u8]) -> Option<Value> {
         None
     }
@@ -1245,6 +1245,7 @@ pub fn reset_request_state() {
     ext::openssl::reset_state();
     ext::bz2::reset_state();
     ext::iconv::reset_state();
+    ext::gmp::reset_state();
     ext::intl::error_reset();
     rhp_values::reset_dropped_streams();
 }

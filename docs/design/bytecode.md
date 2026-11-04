@@ -126,7 +126,7 @@ fmt::{float_echo (precision-14), float_serialize (serialize_precision -1)}
 pub enum Thrown { Error{class:&'static str, message:String}, Unsupported{feature:String, reason:&'static str}, Exit(i32) }  // (def'n now in rhp-values)
 pub trait Host { fn write_out(&mut self, bytes: &[u8]); }
 pub type NativeFn = fn(&mut dyn Host, &[Value]) -> Result<Value, Thrown>;
-pub struct Builtin { /* func: NativeFn, min_args, max_args, by_ref flags, ... */ }
+pub struct Builtin { /* name, func: NativeFn, min_args, max_args (from the stub signatures) */ }
 pub fn registry() -> &'static HashMap<&'static str, Builtin>;
 pub fn lookup(name: &str) -> Option<&'static Builtin>;
 pub fn constants() -> Vec<(&'static str, Value)>;
@@ -357,6 +357,10 @@ BindStatic { cv, slot: u32, init: CIdx }  `static $x=init`: init persistent slot
 **Calls / return (phase 5)** — positional args evaluated into a contiguous temp
 window `[base, base+argc)`; for a builtin the VM passes `&regs[base..base+argc]`
 straight to `NativeFn`. `cache` reserved for monomorphic function-resolution ICs.
+(Now: a builtin's arity and by-ref positions come from php's stubs
+(`rhp_builtins::signatures`), and before the call `crates/rhp-vm/src/zpp.rs`
+parses its stub-typed scalar and array arguments as zpp does, in the caller's
+`strict_types` mode, so the body gets coerced values.)
 ```
 CallBuiltin { dst, bid, base, argc }              arity-check vs Builtin; dst = (builtin.func)(self, &regs[base..+argc]) ?
 CallUser    { dst, fnidx, base, argc, cache }     push frame for functions[fnidx]; bind params; dst = return value

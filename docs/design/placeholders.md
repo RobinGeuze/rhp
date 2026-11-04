@@ -58,7 +58,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 33 | `declare(strict_types=1)` — no-op; type hints unenforced | `compiler/lib.rs:1977` | type coercion/TypeError on hinted params — **in progress** | high | high |
 | 34 | Named args to functions whose defaults don't fold — refused | `compiler/lib.rs:3284` | named-arg calls skipping non-constant-default params | med | med |
 | 35 | Arithmetic on a leading-numeric string (`"1abc" + 5`, `"8k" % 3`) — no "A non-numeric value encountered" warning | VM arithmetic | warning output, error handlers that throw on it | low | med |
-| 36 | Builtin `int`/`int\|float` parameters accept leading-numeric strings (`intdiv("9z", 2)`) instead of throwing `TypeError` | builtin argument parsing | TypeError parity at builtin calls | med | med |
+| 36 | ~~Builtin `int`/`int\|float` parameters accept leading-numeric strings~~ — RESOLVED (the VM's zpp, `vm/zpp.rs`) | builtin argument parsing | — | — | — |
 | 37 | Named arguments to builtins — refused (`RHP_UNSUPPORTED`) | `vm/lib.rs` (call setup) | `str_replace(search: …)` and every other named builtin call | med | high |
 | 38 | `metaphone()` — not implemented | — | callers get "Call to undefined function" | low | low |
 
@@ -591,15 +591,18 @@ The module is deliberately "READ-ONLY, native format only"
   VM prologue (run them for unfilled params).
 - **Effort/priority:** med / med.
 
-### 8.3 Builtin int/number parameters take leading-numeric strings
-- **Now:** a leading-numeric string passed to a builtin's `int` or
-  `int|float` parameter is truncated to its number: `intdiv("9z", 2)` is 4,
-  `str_repeat("a", "3x")` is `"aaa"`, `abs("4q")` is 4. php throws
-  `TypeError: intdiv(): Argument #1 ($num1) must be of type int, string
-  given`. User functions with `int $x` already throw in both.
-- **Full impl:** the builtin parameter parser should accept only numeric
-  strings (leading and trailing whitespace allowed) for these types, as
-  `zend_parse_arg_long_weak` does, and raise php's `TypeError` otherwise.
+### 8.3 Builtin int/number parameters take leading-numeric strings — RESOLVED
+- `crates/rhp-vm/src/zpp.rs` parses a builtin's stub-typed scalar arguments
+  as `zend_parse_arg_*_weak` does (or strictly, under `strict_types`), so
+  `intdiv("9z", 2)` throws php's TypeError. Goldens
+  `lang/builtin_arg_types` and `lang/builtin_arg_types_strict`.
+- **Left:** past the first parameter whose checks are a builtin body's (a
+  resource, a callable, a class), the VM only does the object, array and
+  null checks, so php's order of errors holds; the body coerces the rest
+  itself, as before. Bodies that still differ from php for values zpp
+  accepts: `number_format()` of NAN, INF and huge floats, `range()`'s
+  string ranges and their warnings, and `iterator_to_array()` of a scalar
+  (the golden skips those).
 
 ### 8.4 Named arguments to builtins — refused
 - **Now:** a call with named arguments to a builtin function stops with

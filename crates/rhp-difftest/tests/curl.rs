@@ -25,7 +25,7 @@ set_error_handler(function ($no, $str) { echo "W[$no]: $str\n"; return true; });
 "#;
 
 /// One keep-alive connection: answers requests until the client closes it.
-fn serve_conn(stream: TcpStream) {
+fn serve_conn(stream: TcpStream, port: u16) {
     let mut reader = BufReader::new(stream.try_clone().expect("clone"));
     let mut out = stream;
     loop {
@@ -69,6 +69,11 @@ fn serve_conn(stream: TcpStream) {
             }
             "/redirect" => {
                 extra.push("Location: /hello".into());
+                ("302 Found", b"moved".to_vec())
+            }
+            // Another host name for this server.
+            "/xhost" => {
+                extra.push(format!("Location: http://localhost:{port}/echo"));
                 ("302 Found", b"moved".to_vec())
             }
             "/missing" => ("404 Not Found", b"no such page".to_vec()),
@@ -116,7 +121,7 @@ fn serve() -> String {
     let port = listener.local_addr().expect("addr").port();
     std::thread::spawn(move || {
         for s in listener.incoming().flatten() {
-            std::thread::spawn(move || serve_conn(s));
+            std::thread::spawn(move || serve_conn(s, port));
         }
     });
     format!("http://127.0.0.1:{port}")
@@ -355,4 +360,20 @@ var_dump(curl_exec($h));
 "#
         .replace("__BASE__", &base);
     check("callbacks", &src);
+}
+
+/// CURLOPT_COOKIE on a redirect to another host: libcurl 8.18 sends it,
+/// later releases drop it as they drop CURLOPT_USERPWD.
+#[test]
+fn cross_host_redirect_matches_php() {
+    let base = serve();
+    let src = PRELUDE.to_string()
+        + &r#"
+$h = curl_init('__BASE__/xhost');
+curl_setopt_array($h, [CURLOPT_RETURNTRANSFER => 1, CURLOPT_FOLLOWLOCATION => 1, CURLOPT_USERPWD => 'u:p', CURLOPT_COOKIE => 'c=2']);
+echo curl_exec($h), "\n";
+var_dump(curl_getinfo($h, CURLINFO_REDIRECT_COUNT), curl_getinfo($h, CURLINFO_HTTP_CODE));
+"#
+        .replace("__BASE__", &base);
+    check("cross_host_redirect", &src);
 }

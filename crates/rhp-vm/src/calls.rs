@@ -166,20 +166,37 @@ impl Vm {
     }
 
     /// `name(...)` / `$name(...)` where `name` is an engine helper's: php
-    /// looks the function up when the closure is made, and user code has no
-    /// such function (see [`is_helper_function`]). Other names are still
-    /// resolved when the closure is called.
-    pub(crate) fn check_fcc_name(&self, top: usize, name: &PhpStr) -> Result<(), Thrown> {
+    /// looks the function up when the closure is made (`ns_name`, the
+    /// namespaced name `name` fell back from, first), and user code has no
+    /// such function (see [`is_helper_function`]). Returns the namespaced
+    /// name when that is the function found. Other names are still resolved
+    /// when the closure is called.
+    pub(crate) fn check_fcc_name(
+        &self,
+        top: usize,
+        name: &PhpStr,
+        ns_name: NIdx,
+    ) -> Result<Option<PhpStr>, Thrown> {
         let b = name.as_bytes();
         let n = b.strip_prefix(b"\\").unwrap_or(b);
-        if is_helper_function(n)
-            && !n.windows(2).any(|w| w == b"::")
-            && !self.stack[top].proto.is_internal()
-            && !self.fn_names.contains_key(&n.to_ascii_lowercase())
+        if !is_helper_function(n)
+            || n.windows(2).any(|w| w == b"::")
+            || self.stack[top].proto.is_internal()
         {
-            return Err(undefined_function(name));
+            return Ok(None);
         }
-        Ok(())
+        let ns = (ns_name != rhp_bytecode::NO_NAME)
+            .then(|| &self.stack[top].proto.names[ns_name as usize]);
+        if let Some(ns) = ns.filter(|ns| {
+            self.fn_names
+                .contains_key(&ns.as_bytes().to_ascii_lowercase())
+        }) {
+            return Ok(Some(ns.clone()));
+        }
+        if self.fn_names.contains_key(&n.to_ascii_lowercase()) {
+            return Ok(None);
+        }
+        Err(undefined_function(ns.unwrap_or(name)))
     }
 
     /// Name user function `idx` in php's function table. Call sites that

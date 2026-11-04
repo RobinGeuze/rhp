@@ -461,7 +461,9 @@ The engine's helpers behind the prelude classes are builtins named `__…`
 from prelude code reaches them and nothing else does: user calls,
 callables, first-class callables, `function_exists`, `is_callable`,
 `get_defined_functions` and Reflection all treat them as undefined, and a
-user function may take such a name.
+user function may take such a name. A first-class callable of such a name
+is looked up when it is made, as in php: in a namespace `MakeFcc` carries
+the namespaced name, which is tried first and named in the error.
 
 ---
 

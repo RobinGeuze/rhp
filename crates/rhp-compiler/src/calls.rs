@@ -329,15 +329,18 @@ impl ProtoBuilder<'_> {
             ));
         }
         // Build the callable Value into `callee`.
+        let mut ns_name = None;
         let callee = match pa {
             Pa::Function(f) => match f.function {
                 // Named function: the callable is its (resolved) name string.
                 Expression::Identifier(id) => {
-                    let n = self.resolve_callable_name(id);
+                    let (n, ns) = self.resolve_callable_name(id);
+                    ns_name = ns;
                     self.load_string_const(&n)
                 }
                 Expression::ConstantAccess(ca) => {
-                    let n = self.resolve_callable_name(&ca.name);
+                    let (n, ns) = self.resolve_callable_name(&ca.name);
+                    ns_name = ns;
                     self.load_string_const(&n)
                 }
                 // Dynamic `$f(...)`: wrap the existing callable value.
@@ -368,8 +371,13 @@ impl ProtoBuilder<'_> {
                 self.build_pair(class, &name)
             }
         };
+        let ns_name = self.intern_fallback(&ns_name);
         let dst = self.alloc_temp();
-        self.emit(Instr::MakeFcc { dst, callee });
+        self.emit(Instr::MakeFcc {
+            dst,
+            callee,
+            ns_name,
+        });
         Ok(dst)
     }
 

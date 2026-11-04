@@ -602,10 +602,16 @@ impl Vm {
                         self.user_const_order.push(cname.to_vec());
                     }
                 }
-                Instr::MakeFcc { dst, callee } => {
-                    let c = self.reg_get(top, callee);
+                Instr::MakeFcc {
+                    dst,
+                    callee,
+                    ns_name,
+                } => {
+                    let mut c = self.reg_get(top, callee);
                     if let Value::Str(name) = &c {
-                        self.check_fcc_name(top, name)?;
+                        if let Some(n) = self.check_fcc_name(top, name, ns_name)? {
+                            c = Value::Str(n);
+                        }
                     }
                     let cd = Rc::new(rhp_values::ClosureData {
                         fnidx: u32::MAX,

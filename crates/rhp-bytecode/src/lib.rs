@@ -421,10 +421,13 @@ pub enum Instr {
         ncaptures: u16,
     },
     /// First-class callable (`f(...)`, `$o->m(...)`, `C::m(...)`): wrap the
-    /// callable value in `callee` as a `Closure`.
+    /// callable value in `callee` as a `Closure`. `ns_name` is the
+    /// namespaced name as written when `callee` holds the global name an
+    /// unqualified `f(...)` in a namespace fell back to, else `NO_NAME`.
     MakeFcc {
         dst: Reg,
         callee: Reg,
+        ns_name: NIdx,
     },
     Ret {
         src: Reg,

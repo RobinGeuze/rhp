@@ -58,6 +58,10 @@ foreach ($helpers as $n) {
             "Error: Call to undefined function Ns\\$n()",
         ],
         'first-class callable' => [attempt(fn() => eval("$n(...);")), $undefined],
+        'namespaced first-class callable' => [
+            attempt(fn() => eval("namespace Ns; $n(...);")),
+            "Error: Call to undefined function Ns\\$n()",
+        ],
     ];
     foreach ($checks as $what => [$got, $want]) {
         if ($got !== $want) {
@@ -73,3 +77,12 @@ function __mine(int $x) { return $x * 2; }
 $f = __mine(...);
 echo $f(21), " ", var_export(function_exists('__mine'), true), "\n";
 echo (strlen(...))('abcd'), "\n";
+
+// In a namespace, `f(...)` finds `Ns\f` first, even when another file
+// declares it, then the global `f`.
+eval('namespace Ns2; function __xml_fn() { return "Ns2 user"; }');
+$f = eval('namespace Ns2; return __xml_fn(...);');
+echo (new ReflectionFunction($f))->getName(), ": ", $f(), "\n";
+$f = eval('namespace Ns2; return __MINE(...);');
+echo (new ReflectionFunction($f))->getName(), ": ", $f(4), "\n";
+echo attempt(fn() => eval('namespace Ns2; __XMLWRITER(...);')), "\n";

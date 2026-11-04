@@ -131,3 +131,9 @@ show('get', [date_timestamp_get($o), date_offset_get($o), timezone_name_get(date
 show('interval', date_interval_format(date_diff(date_create('2000-01-01'), $o), '%a'));
 show('from string', date_interval_format(date_interval_create_from_date_string('1 week'), '%d'));
 show('tz offset', timezone_offset_get(timezone_open('Asia/Tokyo'), $o));
+
+echo "== sun ==\n";
+print_r(date_sun_info(1626300000, 52.37, 4.89));
+print_r(date_sun_info(1626300000, 89.0, 0.0));
+show('sunrise', [@date_sunrise(1626300000, SUNFUNCS_RET_STRING, 52.37, 4.89, 90.83, 2),
+    @date_sunset(1626300000, SUNFUNCS_RET_STRING, 52.37, 4.89), @date_sunrise(1626300000, SUNFUNCS_RET_TIMESTAMP)]);

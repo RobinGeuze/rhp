@@ -250,3 +250,29 @@ get: [983836923,0,"UTC"]
 interval: 430
 from string: 7
 tz offset: 32400
+== sun ==
+Array
+(
+    [sunrise] => 1626320220
+    [sunset] => 1626378955
+    [transit] => 1626349588
+    [civil_twilight_begin] => 1626317454
+    [civil_twilight_end] => 1626381721
+    [nautical_twilight_begin] => 1626313331
+    [nautical_twilight_end] => 1626385844
+    [astronomical_twilight_begin] => 1
+    [astronomical_twilight_end] => 1
+)
+Array
+(
+    [sunrise] => 1
+    [sunset] => 1
+    [transit] => 1626350761
+    [civil_twilight_begin] => 1
+    [civil_twilight_end] => 1
+    [nautical_twilight_begin] => 1
+    [nautical_twilight_end] => 1
+    [astronomical_twilight_begin] => 1
+    [astronomical_twilight_end] => 1
+)
+sunrise: ["05:34","20:58",1626316981]

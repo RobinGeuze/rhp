@@ -1117,6 +1117,7 @@ dependencies = [
  "num-traits",
  "openssl-sys",
  "rhp-csrc",
+ "rhp-mbfl-sys",
  "rhp-semantics",
  "rhp-values",
  "ripemd",
@@ -1160,6 +1161,7 @@ name = "rhp-csrc"
 version = "0.0.0"
 dependencies = [
  "cc",
+ "rhp-values",
 ]
 
 [[package]]
@@ -1189,6 +1191,15 @@ dependencies = [
  "mago-database",
  "mago-syntax",
  "mago-syntax-core",
+]
+
+[[package]]
+name = "rhp-mbfl-sys"
+version = "0.0.0"
+dependencies = [
+ "cc",
+ "rhp-csrc",
+ "rhp-values",
 ]
 
 [[package]]

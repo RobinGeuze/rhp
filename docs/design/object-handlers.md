@@ -118,6 +118,9 @@ Notes:
   `get_constructor` (`Directory`), `get_gc`. DateInterval keeps its
   fields as real properties instead, which its `get_properties_for`
   and methods read back into the payload (ext/date/objects.rs).
+- php's `ce->unserialize` (the `C:` format) is a class field, not a
+  handler: `unserialize` calls GMP's (`gmp::is_gmp_class`) or a
+  `Serializable` class's `unserialize()` itself (serialize_fns).
 
 ## Class flags
 

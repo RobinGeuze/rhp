@@ -522,6 +522,25 @@ pub fn reserve(size: usize) -> bool {
     need <= s.chunks.get() || s.check_limit(CHUNK_SIZE)
 }
 
+/// [`reserve`] for growing an `old`-byte block to `new` bytes (php's
+/// fallible erealloc): a huge block that stays huge checks only its growth,
+/// as zend_mm_realloc_huge does; shrinking never fails; anything else needs
+/// a new block of `new` bytes.
+pub fn reserve_realloc(old: usize, new: usize) -> bool {
+    if new <= old {
+        return true;
+    }
+    if old > MAX_LARGE && new > MAX_LARGE {
+        let s = state();
+        if !s.active.get() {
+            return true;
+        }
+        let (o, n) = (rounded(old), rounded(new));
+        return n <= o || s.check_limit(n - o);
+    }
+    reserve(new)
+}
+
 /// [`reserve`] for `n * size + offset` bytes, computed as zend_safe_address
 /// does: an overflow records php's "Possible integer overflow in memory
 /// allocation" error instead.

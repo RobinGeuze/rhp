@@ -12,7 +12,8 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 - **Where php runs its own C** with no Zend dependency (libmbfl, timelib,
   crypt), rhp compiles that C from the pinned php-src tag, in
   `crates/rhp-csrc` (see [Compiled from source](#compiled-from-source-rhp-csrc)).
-  LGPL C such as libmbfl goes in its own crate (see [Licences](#licences)).
+  LGPL C (libmbfl) goes in a crate of its own, `crates/rhp-mbfl-sys` (see
+  [Licences](#licences)).
 - **Where php-src owns the data** (stubs, entity tables, Bison tables), rhp
   generates it from php-src.
 - A pure-Rust crate replaces library behaviour only with evidence: it is
@@ -26,7 +27,8 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
   `INTL_ICU_DATA_VERSION` from ICU's uvernum.h;
   `OPENSSL_VERSION_TEXT`/`NUMBER` from opensslv.h and phpinfo's "OpenSSL
   Library Version" from `OpenSSL_version()`; `ICONV_VERSION` from
-  `_libiconv_version` (macOS) or `gnu_get_libc_version()` (glibc).
+  `_libiconv_version` (macOS) or `gnu_get_libc_version()` (glibc);
+  `GMP_VERSION` from libgmp's `gmp_version`.
   `version.rs` keeps hard-coded values only for libraries rhp does not link
   yet; each goes when its library is linked.
 
@@ -34,8 +36,8 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 
 | Kind | Linked | Examples |
 |---|---|---|
-| Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, timelib, argon2 (in `rhp-csrc`); later oniguruma, and libmbfl in its own crate (LGPL) |
-| A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libcurl, libxml2 on Linux; later gmp |
+| Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, timelib, argon2 (in `rhp-csrc`); libmbfl and php_unicode.c (in `rhp-mbfl-sys`, LGPL); later oniguruma |
+| A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libcurl, libxml2 on Linux |
 | The listed exceptions below | dynamic | |
 
 A static archive is "the build php links" when it comes from the same package
@@ -51,6 +53,10 @@ rather than linking dynamically quietly.
   (libicucore, libldap, libgssapi_krb5, libresolv, frameworks). Linux:
   glibc's iconv.
 - Libraries with no static archive of php's version: Homebrew's libzip.
+- LGPL libraries taken from the system: libgmp (LGPL-3.0+ or GPL-2.0+).
+  Homebrew and libgmp-dev ship a `libgmp.a`, but linking it would put LGPL
+  code into rhp's binary; linked dynamically, the user can replace it (see
+  [Licences](#licences)).
 - The C++ runtime a static C++ library needs (ICU), which php also loads
   dynamically. macOS: the SDK has no static libc++, only /usr/lib/libc++.
   Linux: Ubuntu ships libstdc++.a, but libstdc++ is GPL-3.0 with the GCC
@@ -81,6 +87,8 @@ Today rhp-builtins links:
 | timelib 2022.17 with php's embedded tz database 2026.5 (via rhp-csrc) | static, compiled from php-8.5.12's ext/date/lib | the same |
 | argon2 (via rhp-csrc) | static, compiled from release 20190702 | the same |
 | libcurl | static, Homebrew curl (keg-only), with its Homebrew dependencies (nghttp2, nghttp3, ngtcp2, libssh2, libpsl, zstd, brotli) static; OpenSSL is the row above | static, libcurl4-openssl-dev; its dependencies dynamic (see above), OpenSSL the row above |
+| libmbfl, php_unicode.c (via rhp-mbfl-sys; feature `mbstring-libmbfl`, on by default) | static, compiled from php-8.5.12 | the same |
+| libgmp | dynamic, Homebrew gmp | dynamic, libgmp-dev |
 
 ICU's data library is most of the size: linking ICU statically adds about
 35 MB to `rhp` (13.5 MB → 48 MB on the mac with ICU 79.1, 33.5 MB of it
@@ -101,9 +109,9 @@ zlib and bzip2 predate this policy and still go through their -sys crates.
 bzip2 is built from bzip2-sys's 1.0.8 source, not taken from macOS's
 /usr/lib/libbz2 as the list above would have it. Known gap: libz-sys builds
 its bundled zlib when it finds no system zlib, a silent fallback.
-rhp-csrc's code is the same on every machine, so it needs no row in
-`native.rs` or the native-deps action, only a C compiler (and `nm` for its
-test).
+rhp-csrc's and rhp-mbfl-sys's code is the same on every machine, so it
+needs no row in `native.rs` or the native-deps action, only a C compiler
+(and `nm` for their tests).
 
 **OpenSSL goes through openssl-sys**, for its declarations (no bindgen, no
 `vendored` feature); `ext/openssl/sys.rs` declares what it lacks. openssl-sys
@@ -133,7 +141,8 @@ binary that links two PCRE2 copies is wrong too, so rhp-difftest uses
 `rhp_builtins::pcre::Pattern` rather than the `pcre2` crate).
 
 `RHP_<LIB>_LINK=static|dynamic` (e.g. `RHP_PCRE2_LINK=dynamic`) overrides the
-policy for one build, for experiments.
+policy for one build, for experiments. An LGPL row (`Mode::Lgpl`, libgmp)
+refuses `static`.
 
 The helper links a static archive from a directory under `OUT_DIR` that holds
 only that archive. Searching the library's own libdir would not work: ld64
@@ -187,7 +196,10 @@ libcrypto or libcurl (and on Linux no libxml2); `nm` shows the `pcre2_*` and
 `openssl_is_linked_statically` and `libcurl_is_linked_statically` tests
 check its own test binary, which is linked straight from the crate. The last
 also requires `curl_version_info()` to report the version of the curl.h rhp
-compiled against.
+compiled against. ext/gmp's `links_libgmp_dynamically` checks with
+`dladdr` that libgmp comes from the shared library, and
+`runtime_library_matches_the_header` that its `gmp_version` is the gmp.h
+rhp compiled against.
 
 php links libcurl from Homebrew's keg-only curl on the mac, not the SDK's
 older libcurl, whose error texts differ: the CURL row names the formula, so
@@ -238,6 +250,36 @@ php reports no version for its crypt C or for libargon2
 (`ARGON2_VERSION_NUMBER` is the algorithm version, the `v=19` in a hash), so
 neither has a row in the "linked" section of `tools/capture-ref-build.php`.
 
+**LGPL C: rhp-mbfl-sys.** php-src's libmbfl (`ext/mbstring/libmbfl`, LGPL-2.1)
+and the PHP-licensed code mbstring.c compiles next to it (php_unicode.c,
+unicode_data.h, eaw_table.h, rare_cp_bitvec.h) live in
+`crates/rhp-mbfl-sys/vendor/php-src`, written by the same
+`sync-php-src-c.sh`, which copies every `.c` and `.h` under libmbfl so a
+php bump brings new files along. The crate builds against rhp-csrc's shim
+(`DEP_RHP_CSRC_SHIM`), whose symbols, `zend_empty_string` and the `emalloc`
+family included, are defined once, in rhp-csrc's zend archive. It has its
+own prefix header (`glue/prefix_mbfl.h`) and tests: every global symbol is
+`rhp_`-prefixed (the failing test prints the lines to add), and no symbol
+is defined in both crates. `glue/mbfl.c` wraps libmbfl's static inline
+buffer helpers and checks with `_Static_assert` the layouts and constants
+the Rust side mirrors. rhp-builtins depends on it only through its
+`mbstring-libmbfl` feature (on by default); without it there is no
+mbstring extension and no LGPL code in the binary. phpinfo reports
+libmbfl's version from `MBFL_VERSION_*`, read through the glue, as php's
+does.
+
+**Memory.** The shim's `emalloc`, `erealloc` and `ecalloc` go through Rust's
+global allocator, so C allocations count against `memory_limit` as php's
+do. php 8.5's libmbfl grows its buffers with the fallible
+`safe_ferealloc`: past the limit it fails, the conversion stops, and the
+error waits for the VM's next check, as php delays it. The shim's version
+does the same (`rhp_values::mem::reserve_realloc`). emalloc blocks are
+allocated byte-aligned (the system allocator still returns them
+malloc-aligned; a block that isn't is allocated again 16-aligned), so a
+string the C returns becomes a Rust `Vec<u8>` in place
+(`rhp_csrc::emalloc_into_vec`), and mbstring reads its string arguments
+without copying them: a call holds its data once, as in php.
+
 **timelib's tz database.** rhp always uses php's embedded database
 (`timezone_version_get()` is its version, 2026.5 for php 8.5.12), as php.net
 and Homebrew builds do. CI's php is Debian/Ubuntu's build, patched to read the
@@ -260,9 +302,10 @@ the "linked" section for that reason.
   `THIRD-PARTY-NOTICES`.
 - MPL-2.0 data or code may be linked unmodified if its notice names where
   its source is (the Public Suffix List inside Homebrew's static libpsl).
-- LGPL may be linked statically or vendored: rhp ships its source, so users
-  can relink. Keep LGPL code in its own crate with an exact licence
-  expression (libmbfl: `rhp-mbfl-sys`, `LGPL-2.1-only AND PHP-3.01 AND MIT`).
+- LGPL only as a dynamic system library (libgmp), or vendored in its own
+  default-on feature crate: rhp ships its source, so users can relink. That
+  crate gets an exact licence expression (libmbfl: `rhp-mbfl-sys`,
+  `LGPL-2.1-only AND PHP-3.01 AND MIT`).
   Never compile or transliterate libbcmath's LGPL arithmetic.
 - Code ported from php-src is under the PHP License 3.01 (Zend Engine
   License 2.00 for `Zend/`). Keep both notices and php's acknowledgement in
@@ -275,7 +318,9 @@ the "linked" section for that reason.
 One VM per OS thread (see the web SAPI plan). For C libraries:
 
 - **Process-wide init happens once**, under `std::sync::Once` (e.g.
-  `xmlInitParser`, `curl_global_init`). PCRE2 needs none.
+  `xmlInitParser`, `curl_global_init`). PCRE2 and libmbfl need none:
+  libmbfl's tables are `const` or never written, and the AVX2 function
+  pointers in mbfilter_utf16.c, set at startup in php, are compiled out.
 - **Everything else is per thread.** PCRE2's compile and match contexts, JIT
   stack, settings and pattern cache live in a `thread_local!` in
   `rhp-builtins/src/pcre/mod.rs`, as php keeps them in TLS globals. Library
@@ -350,9 +395,15 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   phar's signature check) stay without one. Errors stay per thread: OpenSSL
   keeps its queue in thread-local storage, and php's 16-entry ring
   (`openssl_error_string`) is a thread-local too.
-- **Guard aborts.** A C library that can abort the process (libgmp on huge
-  sizes) needs size checks first: with one VM per thread, an abort kills
-  every request.
+- **Guard aborts.** A C library that can abort the process needs size
+  checks first: with one VM per thread, an abort kills every request.
+  libgmp aborts when a number would need more than `INT_MAX` limbs (php
+  then dies with SIGFPE or SIGABRT, e.g. `gmp_pow(2, PHP_INT_MAX)`). ext/gmp
+  sizes each result that can grow (`+ - * ** <<`, `gmp_pow`, `gmp_mul`,
+  `gmp_lcm`, `gmp_com`, `gmp_nextprime`…) as libgmp allocates it, and
+  factorials and binomials from an estimate with a 2x margin, and throws
+  "is too large" (a `ValueError`) where libgmp would abort. Running out of
+  memory below that limit still aborts, in php and in rhp.
 
 ## Adding a library
 
@@ -363,8 +414,10 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
    pkg-config, or on macOS without pkg-config through
    `/opt/homebrew/opt/<formula>` (`/usr/local/opt/<formula>`) or the SDK
    (`xcrun --show-sdk-path`); checks the header's version against the .pc
-   file; links it; exports each macro as `env!("RHP_<MACRO>")`; and returns
-   the include directory, for a C shim built against the same headers.
+   file (a header Debian keeps in the multiarch directory, such as gmp.h,
+   is found there); links it; exports each macro as `env!("RHP_<MACRO>")`;
+   and returns the include directory, for a C shim built against the same
+   headers.
 2. Declare the functions rhp calls in a hand-written `extern "C"` block
    (no bindgen). Put struct access and macros behind a small C shim with
    `_Static_assert` layout checks if needed (libxml2: `ext/libxml/sys.rs`
@@ -381,7 +434,8 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
 
 1. php-src C: add the files to `FILES` in
    `crates/rhp-csrc/tools/sync-php-src-c.sh` and run it on a php-src
-   checkout at the pinned commit. A frozen library: write a
+   checkout at the pinned commit. LGPL C goes in a crate of its own that
+   builds against this shim, like rhp-mbfl-sys (`MBFL_FILES`). A frozen library: write a
    `crates/rhp-csrc/tools/sync-<lib>.sh` like `sync-argon2.sh` (release
    tarball, pinned SHA-256, file list) and run it.
 2. Add a cargo feature and its build to `build.rs`; php-src C goes through

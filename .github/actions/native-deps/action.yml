@@ -29,6 +29,7 @@ runs:
         # libssl-dev does not pull in: -l:libjitterentropy.a -lz -lzstd.
         # libcurl.a's own dependencies are linked dynamically; Ubuntu 26.04's
         # libcurl4-openssl-dev pulls in their -dev packages, 24.04's does not.
+        # libgmp (LGPL) is linked dynamically.
         sudo apt-get update -q
         sudo apt-get install -y --no-install-recommends \
           pkg-config \
@@ -41,7 +42,8 @@ runs:
           libzstd-dev \
           libcurl4-openssl-dev \
           libbrotli-dev libidn2-dev libkrb5-dev libldap-dev libnghttp2-dev \
-          libpsl-dev librtmp-dev libssh-dev libssh2-1-dev
+          libpsl-dev librtmp-dev libssh-dev libssh2-1-dev \
+          libgmp-dev
         php="${PHP_BIN:-$(command -v php || true)}"
         build=""
         # compare <name> <pkg-config module> <php code printing the version php loads>
@@ -75,6 +77,15 @@ runs:
           echo "libcurl: the distro has $curl_have; $php links ${curl_want:-no libcurl}"
           if [ -n "$curl_want" ] && [ "$curl_want" != "$curl_have" ]; then
             echo "::error::$php links libcurl $curl_want, but the distro's libcurl4-openssl-dev is $curl_have. rhp links the distro's libcurl.a and cannot build another release."
+            exit 1
+          fi
+          # libgmp has no source build here: php must load the distro's.
+          # shellcheck disable=SC2016
+          gmp_want="$("$php" -n -r 'echo defined("GMP_VERSION") ? GMP_VERSION : "";')"
+          gmp_have="$(pkg-config --modversion gmp)"
+          echo "gmp: the distro has $gmp_have; $php loads ${gmp_want:-no gmp}"
+          if [ -n "$gmp_want" ] && [ "$gmp_want" != "$gmp_have" ]; then
+            echo "::error::$php loads libgmp $gmp_want, but the distro's libgmp-dev is $gmp_have; rhp links the distro's"
             exit 1
           fi
           # rhp's LIBXML_DOTTED_VERSION is its headers' and LIBXML_LOADED_VERSION

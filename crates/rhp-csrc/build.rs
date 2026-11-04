@@ -1,8 +1,9 @@
-//! Compiles the vendored C into static archives, one per enabled feature.
-//! Optimisation is fixed (php builds with -O2, libargon2 with -O3) so debug
-//! builds hash at release speed; the output bytes don't depend on it. Each
-//! archive force-includes glue/prefix_<lib>.h, which gives every global symbol
-//! an rhp_ prefix.
+//! Compiles the vendored C into static archives, one per enabled feature,
+//! plus the out-of-line half of the Zend shim. Optimisation is fixed (php
+//! builds with -O2, libargon2 with -O3) so debug builds hash at release
+//! speed; the output bytes don't depend on it. Each archive force-includes
+//! glue/prefix_<lib>.h, which gives every global symbol an rhp_ prefix (the
+//! shim names its own symbols rhp_ directly).
 
 use std::path::{Path, PathBuf};
 
@@ -11,6 +12,15 @@ fn main() {
     let argon2 = std::env::var_os("CARGO_FEATURE_ARGON2").is_some();
     let timelib = std::env::var_os("CARGO_FEATURE_TIMELIB").is_some();
     println!("cargo:rerun-if-changed=build.rs");
+
+    // The shim, for every crate that compiles php-src C (rhp-mbfl-sys reads
+    // it as DEP_RHP_CSRC_SHIM). Its symbols live here, once.
+    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    println!("cargo:shim={}", manifest.join("shim").display());
+    // Where the archives go, for rhp-mbfl-sys's symbol test.
+    println!("cargo:out={}", std::env::var("OUT_DIR").unwrap());
+    php_cc().file("shim/zend_shim.c").compile("rhp_csrc_zend");
+    rerun(&["shim"]);
 
     if crypt {
         php_src(&[
@@ -23,7 +33,7 @@ fn main() {
         .flag(glue("prefix_crypt.h"))
         .file("glue/crypt.c")
         .compile("rhp_csrc_crypt");
-        rerun(&["shim", "glue", "vendor/php-src"]);
+        rerun(&["glue", "vendor/php-src"]);
     }
 
     if timelib {
@@ -88,23 +98,30 @@ fn main() {
     }
 }
 
-/// A build of `files` (paths under vendor/php-src) plus the shared Zend shim,
-/// with the flags php's configure adds (-ffp-contract=off,
-/// -fvisibility=hidden) and -fwrapv (php-src's timelib flag, harmless here).
+/// A build of `files` (paths under vendor/php-src) against the shared Zend
+/// shim.
 fn php_src(files: &[&str]) -> cc::Build {
     let vendor = Path::new("vendor/php-src");
+    let mut b = php_cc();
+    b.include(vendor.join("ext/standard"));
+    for f in files {
+        b.file(vendor.join(f));
+    }
+    b
+}
+
+/// The shim's include directory and the flags php's configure adds
+/// (-ffp-contract=off, -fvisibility=hidden), plus -fwrapv (php-src's
+/// timelib flag; elsewhere it only defines signed overflow, which php's
+/// release build leaves undefined).
+fn php_cc() -> cc::Build {
     let mut b = cc::Build::new();
     b.include("shim")
-        .include(vendor.join("ext/standard"))
         .opt_level(2)
         .warnings(false)
         .flag("-fwrapv")
         .flag("-ffp-contract=off")
-        .flag("-fvisibility=hidden")
-        .file("shim/zend_shim.c");
-    for f in files {
-        b.file(vendor.join(f));
-    }
+        .flag("-fvisibility=hidden");
     b
 }
 

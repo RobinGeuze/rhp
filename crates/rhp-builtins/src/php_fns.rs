@@ -35,6 +35,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "ctype",
     "curl",
     "json",
+    #[cfg(feature = "mbstring-libmbfl")]
     "mbstring",
     "SPL",
     "filter",
@@ -414,23 +415,7 @@ fn fn_zpp_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         (Value::Int(_) | Value::Float(_) | Value::Bool(_), b"string") => {
             Some(Value::str(conv::to_string_bytes(&v)))
         }
-        (Value::Object(_), b"string") => {
-            let cls = host.object_class_name(&v).unwrap_or_default();
-            if host.reflect_is_a(&cls, b"Stringable") || {
-                let id = match &v {
-                    Value::Object(h) => h.borrow().class,
-                    _ => unreachable!(),
-                };
-                host.class_has_method(id, b"__tostring")
-            } {
-                let mut cb = PhpArray::new();
-                cb.push(v.clone());
-                cb.push(Value::str("__toString"));
-                Some(host.call_callable(&Value::Array(cb), &[])?)
-            } else {
-                None
-            }
-        }
+        (Value::Object(_), b"string") => crate::object::to_string(host, &v)?.map(Value::str),
         (Value::Int(_), b"int") => Some(v.clone()),
         (Value::Bool(b), b"int") => Some(Value::Int(*b as i64)),
         (Value::Float(f), b"int") if f.is_finite() => Some(Value::Int(*f as i64)),

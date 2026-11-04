@@ -10,3 +10,24 @@ echo gmp_cmp("5", "7"), gmp_sign("-3"), gmp_popcount("255"), "\n";
 echo gmp_strval(gmp_and("60", "13")), " ", gmp_strval(gmp_or("60", "13")), " ", gmp_strval(gmp_xor("60", "13")), "\n";
 echo gmp_strval(gmp_add("255", "1"), 16), " ", gmp_prob_prime("97"), "\n";
 echo (string)gmp_init("42"), " ", gmp_intval("12345"), "\n";
+set_error_handler(function ($no, $msg) { echo "E$no: $msg\n"; return true; });
+echo gmp_strval("-255", -16), " ", gmp_strval("12345678901234567890", 62), " ", gmp_strval(gmp_init("0o17")), "\n";
+echo bin2hex(gmp_export("66051", 2, GMP_MSW_FIRST | GMP_BIG_ENDIAN)), " ", gmp_strval(gmp_import("\x01\x02", 1, GMP_LSW_FIRST)), "\n";
+$g = gmp_init(-255);
+$g->tag = "x";
+echo serialize($g), " ", json_encode($g->__serialize()), "\n";
+echo unserialize(serialize($g)), " ", unserialize('C:3:"GMP":15:{s:2:"42";a:0:{}}'), "\n";
+try { unserialize('O:3:"GMP":1:{i:0;s:1:"x";}'); } catch (Exception $e) { echo $e->getMessage(), " / ", $e->getPrevious()->getMessage(), "\n"; }
+echo gmp_init(7) ** 3, " ", pow(gmp_init(2), 70), " ", gmp_init(1) << 70, " ", -gmp_init(5) % 3, " ", ~gmp_init(5), "\n";
+try { gmp_init(5) ** -1; } catch (ValueError $e) { echo $e->getMessage(), "\n"; }
+try { gmp_div_qr(1, 2, 7); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }
+try { gmp_add([], 1); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+try { gmp_setbit($g, [], []); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
+print_r(gmp_init(12)); echo "\n";
+var_export(gmp_init(12)); echo "\n";
+$s = gmp_init(34);
+settype($s, "string");
+echo strval(gmp_init(3)), " ", $s, " ", implode(",", array_map('strval', [gmp_init(5), gmp_init(-6)])), "\n";
+echo implode(",", preg_replace('/1/', 'x', [gmp_init(12)])), " ", preg_replace_callback('/\d/', fn($m) => gmp_init(7), "a1"), " ",
+    count(preg_grep('/1/', [gmp_init(12), gmp_init(3)])), " ", implode(",", str_replace('1', 'x', [gmp_init(21)])), " ",
+    strip_tags("<1>a</1><2>b</2>", [gmp_init(1)]), "\n";

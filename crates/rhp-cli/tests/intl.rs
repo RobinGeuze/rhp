@@ -8,9 +8,7 @@
 use std::path::Path;
 use std::process::Command;
 
-fn php() -> String {
-    std::env::var("RHP_PHP").unwrap_or_else(|_| "php".into())
-}
+use rhp_difftest::php_bin;
 
 fn run(bin: &str, args: &[&str], file: &Path) -> Vec<u8> {
     let o = Command::new(bin)
@@ -26,7 +24,7 @@ fn run(bin: &str, args: &[&str], file: &Path) -> Vec<u8> {
 }
 
 fn php_has_intl() -> bool {
-    Command::new(php())
+    Command::new(php_bin())
         .args(["-n", "-r", "echo extension_loaded('intl') ? 1 : 0;"])
         .output()
         .is_ok_and(|o| o.stdout == b"1")
@@ -42,7 +40,7 @@ fn check(name: &str, src: &str) {
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join("t.php");
     std::fs::write(&f, src).unwrap();
-    let theirs = run(&php(), &["-n"], &f);
+    let theirs = run(&php_bin(), &["-n"], &f);
     let ours = run(env!("CARGO_BIN_EXE_rhp"), &["-n"], &f);
     let _ = std::fs::remove_dir_all(&dir);
     if theirs != ours {

@@ -58,7 +58,7 @@ fn section<'a>(text: &'a str, name: &str) -> Vec<&'a str> {
 
 #[test]
 fn rhp_reports_the_reference_build() {
-    let php = PathBuf::from(std::env::var("RHP_PHP").unwrap_or_else(|_| "php".into()));
+    let php = PathBuf::from(rhp_difftest::php_bin());
     let rhp = Path::new(env!("CARGO_BIN_EXE_rhp"));
     let script = script();
     let script = script.to_str().unwrap();
@@ -116,7 +116,7 @@ fn rhp_reports_the_reference_build() {
 
 #[test]
 fn rhp_links_what_php_links() {
-    let php = PathBuf::from(std::env::var("RHP_PHP").unwrap_or_else(|_| "php".into()));
+    let php = PathBuf::from(rhp_difftest::php_bin());
     let rhp = Path::new(env!("CARGO_BIN_EXE_rhp"));
     let script = script();
     let script = script.to_str().unwrap();
@@ -191,7 +191,7 @@ fn version_banner() {
     let ours = run(rhp, &["-n", "-v", "-r", "echo 1;"]).expect("rhp -v -r");
     assert!(!ours.contains("\n1"), "{ours}");
 
-    let php = PathBuf::from(std::env::var("RHP_PHP").unwrap_or_else(|_| "php".into()));
+    let php = PathBuf::from(rhp_difftest::php_bin());
     let cgi = PathBuf::from(std::env::var("PHP_CGI").unwrap_or_else(|_| "php-cgi".into()));
     // php-cgi is the same build as php (CI and Homebrew install them together).
     let same_bottle = bottle(&php).is_some_and(|b| bottle(rhp) == Some(b));

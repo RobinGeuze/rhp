@@ -1,19 +1,13 @@
 //! memory_limit against the real php: scripts run through `php -n` and the
 //! built `rhp`, comparing stdout, stderr and the exit code. Where the size
 //! php failed to allocate depends on its data structures (an array's hash
-//! table), "tried to allocate N bytes" is compared without N. Skips when no
-//! `php` is on PATH.
+//! table), "tried to allocate N bytes" is compared without N. Skips without
+//! php (`RHP_PHP`).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-fn php_available() -> bool {
-    Command::new("php")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+use rhp_difftest::{php_available, php_bin};
 
 fn script(name: &str, code: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("rhp_memory_limit_{name}"));
@@ -26,11 +20,12 @@ fn script(name: &str, code: &str) -> PathBuf {
 }
 
 fn run(bin: &str, args: &[&str], main: &Path) -> Output {
-    let mut c = Command::new(bin);
-    if bin == "php" {
-        c.arg("-n");
-    }
-    c.args(args).arg(main).output().expect("run engine")
+    Command::new(bin)
+        .arg("-n")
+        .args(args)
+        .arg(main)
+        .output()
+        .expect("run engine")
 }
 
 /// "tried to allocate 123 bytes" → "tried to allocate N bytes".
@@ -57,7 +52,7 @@ fn assert_same_with(name: &str, args: &[&str], code: &str, exact: bool) -> Strin
         return String::new();
     }
     let main = script(name, code);
-    let php = run("php", args, &main);
+    let php = run(&php_bin(), args, &main);
     let rhp = run(env!("CARGO_BIN_EXE_rhp"), args, &main);
     let norm = |b: &[u8]| {
         let s = String::from_utf8_lossy(b).into_owned();

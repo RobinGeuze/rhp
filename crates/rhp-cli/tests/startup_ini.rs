@@ -8,6 +8,8 @@
 
 use std::process::Command;
 
+use rhp_difftest::php_bin;
+
 const SCRIPT: &str = r#"echo "start\n";
 var_dump(ini_get('memory_hard_limit_percent'));
 var_dump(ini_get_all(null, false)['memory_hard_limit_percent']);
@@ -62,7 +64,7 @@ fn bad_openssl_libctx_is_a_startup_fatal() {
 }
 
 fn same_release() -> bool {
-    let same = Command::new("php")
+    let same = Command::new(php_bin())
         .args(["-n", "-r", "echo PHP_VERSION;"])
         .output()
         .ok()
@@ -84,7 +86,7 @@ fn openssl_libctx_matches_php() {
     if !same_release() {
         return;
     }
-    let has_openssl = Command::new("php")
+    let has_openssl = Command::new(php_bin())
         .args(["-n", "-r", "echo extension_loaded('openssl') ? 1 : 0;"])
         .output()
         .is_ok_and(|o| o.stdout == b"1");
@@ -107,7 +109,7 @@ fn openssl_libctx_matches_php() {
             let mut ini = vec![kv.as_str()];
             ini.extend_from_slice(extra);
             assert_eq!(
-                run_script("php", &ini, LIBCTX_SCRIPT),
+                run_script(&php_bin(), &ini, LIBCTX_SCRIPT),
                 run_script(RHP, &ini, LIBCTX_SCRIPT),
                 "-d {ini:?}"
             );
@@ -141,7 +143,7 @@ fn startup_ini_matches_php() {
         ] {
             let mut ini = vec![kv.as_str()];
             ini.extend_from_slice(extra);
-            assert_eq!(run("php", &ini), run(RHP, &ini), "-d {ini:?}");
+            assert_eq!(run(&php_bin(), &ini), run(RHP, &ini), "-d {ini:?}");
         }
     }
 }

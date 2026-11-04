@@ -1,6 +1,7 @@
 // Expected strings captured from php 8.5.8.
 
 use super::*;
+use crate::ext::standard::r#type::fn_array_is_list;
 use crate::test_support::TestHost;
 
 fn dumped(v: &Value) -> String {

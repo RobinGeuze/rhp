@@ -9,8 +9,8 @@
 
 use std::collections::HashSet;
 
-use rhp_values::ops::{self, deref};
-use rhp_values::{conv, ArrayKey, PhpArray, Value};
+use rhp_values::ops::deref;
+use rhp_values::{conv, ops, ArrayKey, PhpArray, Value};
 
 use crate::zend::zpp::array_param;
 use crate::{Host, Thrown};
@@ -349,18 +349,6 @@ fn fn_array_key_last(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 // array_is_list
 // ---------------------------------------------------------------------------
 
-fn fn_array_is_list(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = array_param(host, args, 0, "array_is_list")?;
-    let mut expected: i64 = 0;
-    for (k, _) in a.iter() {
-        match k {
-            ArrayKey::Int(n) if *n == expected => expected += 1,
-            _ => return Ok(Value::Bool(false)),
-        }
-    }
-    Ok(Value::Bool(true))
-}
-
 // ---------------------------------------------------------------------------
 // array_diff / array_intersect (string comparison)
 // ---------------------------------------------------------------------------
@@ -563,7 +551,6 @@ pub fn register(m: &mut crate::Registry) {
             ("array_pad", fn_array_pad),
             ("array_key_first", fn_array_key_first),
             ("array_key_last", fn_array_key_last),
-            ("array_is_list", fn_array_is_list),
             ("array_diff", fn_array_diff),
             ("array_intersect", fn_array_intersect),
             ("array_column", fn_array_column),

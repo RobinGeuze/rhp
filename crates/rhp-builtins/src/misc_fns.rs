@@ -36,16 +36,6 @@ fn fn_inet_ntop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // is_iterable / is_countable
 // ---------------------------------------------------------------------------
 
-// Only arrays qualify until Traversable/Countable objects land (phase 7); php
-// also returns true for objects implementing those interfaces.
-fn fn_is_iterable(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(matches!(deref(&args[0]), Value::Array(_))))
-}
-
-fn fn_is_countable(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(matches!(deref(&args[0]), Value::Array(_))))
-}
-
 // ---------------------------------------------------------------------------
 // pack / unpack  (subset of format codes — enough for Composer)
 // ---------------------------------------------------------------------------
@@ -395,8 +385,6 @@ pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
-            ("is_iterable", fn_is_iterable),
-            ("is_countable", fn_is_countable),
             ("inet_pton", fn_inet_pton),
             ("inet_ntop", fn_inet_ntop),
             ("unpack", fn_unpack),
@@ -404,6 +392,3 @@ pub fn register(m: &mut crate::Registry) {
         ],
     );
 }
-
-#[cfg(test)]
-mod tests;

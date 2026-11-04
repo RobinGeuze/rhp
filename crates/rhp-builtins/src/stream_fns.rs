@@ -9,13 +9,6 @@ use rhp_values::{conv, Value};
 
 use crate::{Host, Thrown};
 
-fn fn_is_resource(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let v = deref(&args[0]);
-    Ok(Value::Bool(
-        matches!(v, Value::Resource(_)) && !host.resource_closed(&v),
-    ))
-}
-
 fn set_blocking_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
     let (res, _) = crate::fs_fns::stream_param(host, args, 0, fname, "stream")?;
     let on = crate::zend::zpp::bool_param(host, args, 1, fname, "enable", true)?;
@@ -384,7 +377,6 @@ pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
-            ("is_resource", fn_is_resource),
             ("get_resource_type", fn_get_resource_type),
             ("stream_get_wrappers", fn_stream_get_wrappers),
             ("stream_copy_to_stream", fn_stream_copy_to_stream),

@@ -31,6 +31,7 @@ pub mod reflection;
 pub mod simplexml;
 pub mod sockets;
 pub mod spl;
+pub mod standard;
 pub mod tokenizer;
 pub mod xml;
 pub mod xmlreader;

@@ -11,7 +11,7 @@ use std::cmp::Ordering;
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, PhpStr, Value};
 
-use crate::zend::zpp::{int_or_null_param, int_param, str_param, zval_value_name};
+use crate::zend::zpp::{int_or_null_param, int_param, str_param};
 use crate::{Host, Thrown};
 
 // --- Mt19937 (ext/random/engine_mt19937.c) ----------------------------------
@@ -440,104 +440,6 @@ fn fn_array_multisort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
         if let Value::Ref(r) = &args[slot] {
             *r.borrow_mut() = Value::Array(out);
         }
-    }
-    Ok(Value::Bool(true))
-}
-
-/// `settype(mixed &$var, string $type)`.
-fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let ty = str_param(host, args, 1, "settype", "type")?.to_ascii_lowercase();
-    let cur = deref(&args[0]);
-    // convert_to_long / convert_to_double: an object warns and becomes 1.
-    let object_warn = |host: &mut dyn Host, to: &str| -> Result<(), Thrown> {
-        if matches!(cur, Value::Object(_) | Value::Closure(_)) {
-            host.emit_diagnostic(
-                crate::E_WARNING,
-                &format!(
-                    "Object of class {} could not be converted to {to}",
-                    zval_value_name(host, &cur)
-                ),
-            )?;
-        }
-        Ok(())
-    };
-    let new = match ty.as_slice() {
-        b"integer" | b"int" => {
-            object_warn(host, "int")?;
-            Value::Int(conv::to_int(&cur))
-        }
-        b"float" | b"double" => {
-            object_warn(host, "float")?;
-            Value::Float(conv::to_float(&cur))
-        }
-        b"string" => match &cur {
-            Value::Array(_) => {
-                host.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
-                Value::str("Array")
-            }
-            // convert_to_string: the object's string cast; a failure is an
-            // Error, not a parameter TypeError.
-            Value::Object(_) | Value::Closure(_) => {
-                match crate::zend::object_handlers::to_string(host, &cur)? {
-                    Some(s) => Value::str(s),
-                    None => {
-                        return Err(Thrown::error(
-                            "Error",
-                            format!(
-                                "Object of class {} could not be converted to string",
-                                zval_value_name(host, &cur)
-                            ),
-                        ))
-                    }
-                }
-            }
-            _ => Value::str(conv::to_string_bytes(&cur)),
-        },
-        b"array" => match &cur {
-            Value::Array(_) => cur.clone(),
-            Value::Null => Value::Array(PhpArray::new()),
-            Value::Object(h) => Value::Array(host.object_props_mangled(h)),
-            other => {
-                let mut a = PhpArray::new();
-                a.push(other.clone());
-                Value::Array(a)
-            }
-        },
-        b"object" => match &cur {
-            Value::Object(_) | Value::Closure(_) => cur.clone(),
-            Value::Array(a) => {
-                let props = a
-                    .iter()
-                    .map(|(k, v)| {
-                        let name = match k {
-                            ArrayKey::Int(n) => n.to_string().into_bytes(),
-                            ArrayKey::Str(s) => s.as_bytes().to_vec(),
-                        };
-                        (name, v.clone())
-                    })
-                    .collect();
-                host.make_object(props)
-            }
-            Value::Null => host.make_object(Vec::new()),
-            other => host.make_object(vec![(b"scalar".to_vec(), other.clone())]),
-        },
-        b"bool" | b"boolean" => Value::Bool(conv::to_bool(&cur)),
-        b"null" => Value::Null,
-        b"resource" => {
-            return Err(Thrown::error(
-                "ValueError",
-                "Cannot convert to resource type",
-            ));
-        }
-        _ => {
-            return Err(Thrown::error(
-                "ValueError",
-                "settype(): Argument #2 ($type) must be a valid type",
-            ));
-        }
-    };
-    if let Value::Ref(r) = &args[0] {
-        *r.borrow_mut() = new;
     }
     Ok(Value::Bool(true))
 }
@@ -974,7 +876,6 @@ pub fn register(m: &mut crate::Registry) {
             ("str_shuffle", fn_str_shuffle),
             ("array_change_key_case", fn_array_change_key_case),
             ("array_multisort", fn_array_multisort),
-            ("settype", fn_settype),
             ("fnmatch", fn_fnmatch),
             ("getrusage", fn_getrusage),
             ("gc_status", fn_gc_status),

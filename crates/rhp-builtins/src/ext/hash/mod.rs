@@ -7,11 +7,11 @@
 //! `php` binary over a broad generated corpus.
 //!
 //! Where a faithful pure-Rust crate exists we use it (RustCrypto's `md2`, `md4`,
-//! `md-5`, `sha1`, `sha2`, `sha3`, `ripemd`, `whirlpool`, `tiger`, `gost94`;
+//! `md-5`, `sha1`, `sha2`, `sha3`, `ripemd`, `whirlpool`, `gost94`;
 //! `xxhash-rust`); crc32b and adler32 go through the linked zlib. The oddballs
 //! with no 1:1 implementation are hand-rolled: the crc32/crc32c, FNV, joaat and
-//! murmur variants below, and the table-heavy `snefru`, `haval` and 4-pass
-//! `tiger` in their own files.
+//! murmur variants below, and the table-heavy `snefru`, `haval` and `tiger`
+//! (3- and 4-pass, one N-pass implementation) in their own files.
 
 use digest::Digest;
 use rhp_semantics::deref;

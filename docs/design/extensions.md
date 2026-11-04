@@ -774,13 +774,14 @@ php 8.5.8 over the sweep.
 
 - **Pure-Rust crates (1:1):** RustCrypto `md2`, `md4`, `md-5`, `sha1`, `sha2`
   (sha224/256/384/512 and the sha512/224, sha512/256 truncations), `sha3`,
-  `ripemd`, `whirlpool`, `tiger` (3-pass), `gost94` (gost + gost-crypto);
+  `ripemd`, `whirlpool`, `gost94` (gost + gost-crypto);
   `xxhash-rust` (xxh32/64/3/128).
 - **zlib:** `crc32b` (and `crc32()`) and `adler32` call the linked zlib.
 - **Hand-rolled (no 1:1 crate):** the `crc32` and `crc32c` variants; FNV-1/1a (32/64);
   joaat; MurmurHash3 (x86_32, x86_128, x64_128); and the table-heavy
-  `hash_tiger.rs` (4-pass tiger), `hash_snefru.rs` (Snefru-256),
-  `hash_haval.rs` (HAVAL 3/4/5-pass × 128–256-bit).
+  `hash/tiger.rs` (Tiger, 3- and 4-pass through one N-pass
+  implementation), `hash/snefru.rs` (Snefru-256), `hash/haval.rs` (HAVAL
+  3/4/5-pass × 128–256-bit).
 - **Quirks the differential sweep surfaced** (each invisible to spec reading, each
   caught instantly by diffing php): PHP emits the non-reflected `crc32`
   **little-endian** while `crc32b`/`crc32c` are big-endian; `snefru` and

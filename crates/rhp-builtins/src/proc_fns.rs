@@ -16,7 +16,7 @@
 //! (php's warnings — e.g. "posix_spawn() failed: …" — are not emitted: this
 //! engine has no diagnostics channel yet; the return values match.)
 
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use rhp_semantics::deref;
@@ -159,6 +159,20 @@ struct Desc {
     parentend: Option<OwnedFd>,
 }
 
+/// One file action of the spawn, in php's order.
+#[derive(Clone, Copy)]
+enum Action {
+    Close(RawFd),
+    Dup2(RawFd, i32),
+}
+
+/// Taken for writing while a child is spawned, and for reading while a
+/// descriptor is made close-on-exec in two steps (where the OS has no flag
+/// for it): a child never inherits a descriptor another thread is still
+/// setting up, such as the far end of its pipes, which would hold off their
+/// EOF until that child exits.
+static SPAWN_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
 /// `posix_spawn` the command with php's file actions, in `cwd` (relative to
 /// the request's working directory), else in that directory. Returns the
 /// child pid or the spawn error number.
@@ -168,122 +182,164 @@ fn spawn(
     cwd: Option<&[u8]>,
     env: Option<&[Vec<u8>]>,
 ) -> Result<libc::pid_t, i32> {
-    unsafe {
-        let mut fa: libc::posix_spawn_file_actions_t = std::mem::zeroed();
-        libc::posix_spawn_file_actions_init(&mut fa);
-        let mut fail = 0;
-        for d in descs {
-            if let Some(p) = &d.parentend {
-                let r = libc::posix_spawn_file_actions_addclose(&mut fa, p.as_raw_fd());
-                if r != 0 {
-                    fail = r;
-                }
-            }
-            let c = d.childend.as_raw_fd();
-            if c != d.index {
-                let r = libc::posix_spawn_file_actions_adddup2(&mut fa, c, d.index);
-                if r != 0 {
-                    fail = r;
-                }
-                let r = libc::posix_spawn_file_actions_addclose(&mut fa, c);
-                if r != 0 {
-                    fail = r;
-                }
-            } else {
-                // Already at the right number: make sure it survives exec.
-                let fl = libc::fcntl(c, libc::F_GETFD);
-                if fl >= 0 && fl & libc::FD_CLOEXEC != 0 {
-                    libc::fcntl(c, libc::F_SETFD, fl & !libc::FD_CLOEXEC);
-                }
-            }
+    let mut actions = Vec::new();
+    let mut inherit = Vec::new();
+    for d in descs {
+        if let Some(p) = &d.parentend {
+            actions.push(Action::Close(p.as_raw_fd()));
         }
-        if fail != 0 {
-            libc::posix_spawn_file_actions_destroy(&mut fa);
-            return Err(fail);
+        let c = d.childend.as_raw_fd();
+        if c != d.index {
+            actions.push(Action::Dup2(c, d.index));
+            actions.push(Action::Close(c));
+        } else if unsafe { libc::fcntl(c, libc::F_GETFD) } & libc::FD_CLOEXEC != 0 {
+            // Already at the right number: it must survive exec.
+            inherit.push(c);
         }
-        let cwd_c = match cwd {
-            Some(dir) => Some(cstr(&crate::vcwd::resolve(dir))),
-            None => crate::vcwd::child_cwd().map(|d| cstr(&d)),
-        };
-        if let Some(c) = &cwd_c {
-            libc::posix_spawn_file_actions_addchdir_np(&mut fa, c.as_ptr());
-        }
-        let env_vec = match env {
-            Some(e) => e.to_vec(),
-            None => current_environ(),
-        };
-        let env_c: Vec<CString> = env_vec.iter().map(|e| cstr(e)).collect();
-        let mut envp: Vec<*mut libc::c_char> = env_c
-            .iter()
-            .map(|c| c.as_ptr() as *mut libc::c_char)
-            .collect();
-        envp.push(std::ptr::null_mut());
-
-        let mut pid: libc::pid_t = 0;
-        let r = match cmd {
-            SpawnCmd::Shell(command) => {
-                let sh = cstr(b"/bin/sh");
-                let a0 = cstr(b"sh");
-                let a1 = cstr(b"-c");
-                let a2 = cstr(command);
-                let argv: [*mut libc::c_char; 4] = [
-                    a0.as_ptr() as *mut _,
-                    a1.as_ptr() as *mut _,
-                    a2.as_ptr() as *mut _,
-                    std::ptr::null_mut(),
-                ];
-                libc::posix_spawn(
-                    &mut pid,
-                    sh.as_ptr(),
-                    &fa,
-                    std::ptr::null(),
-                    argv.as_ptr(),
-                    envp.as_ptr(),
-                )
-            }
-            SpawnCmd::Argv(argv) => {
-                let args_c: Vec<CString> = argv.iter().map(|a| cstr(a)).collect();
-                let mut argp: Vec<*mut libc::c_char> =
-                    args_c.iter().map(|c| c.as_ptr() as *mut _).collect();
-                argp.push(std::ptr::null_mut());
-                libc::posix_spawnp(
-                    &mut pid,
-                    args_c[0].as_ptr(),
-                    &fa,
-                    std::ptr::null(),
-                    argp.as_ptr(),
-                    envp.as_ptr(),
-                )
-            }
-        };
-        libc::posix_spawn_file_actions_destroy(&mut fa);
-        if r != 0 {
-            return Err(r);
-        }
-        Ok(pid)
     }
+    let cwd_c = match cwd {
+        Some(dir) => Some(cstr(&crate::vcwd::resolve(dir))),
+        None => crate::vcwd::child_cwd().map(|d| cstr(&d)),
+    };
+    let env_vec = match env {
+        Some(e) => e.to_vec(),
+        None => current_environ(),
+    };
+    let env_c: Vec<CString> = env_vec.iter().map(|e| cstr(e)).collect();
+    let mut envp: Vec<*mut libc::c_char> = env_c
+        .iter()
+        .map(|c| c.as_ptr() as *mut libc::c_char)
+        .collect();
+    envp.push(std::ptr::null_mut());
+    let (args_c, search) = match cmd {
+        SpawnCmd::Shell(command) => (vec![cstr(b"sh"), cstr(b"-c"), cstr(command)], false),
+        SpawnCmd::Argv(argv) => (argv.iter().map(|a| cstr(a)).collect(), true),
+    };
+    let mut argp: Vec<*mut libc::c_char> = args_c.iter().map(|c| c.as_ptr() as *mut _).collect();
+    argp.push(std::ptr::null_mut());
+    let program = if search {
+        args_c[0].clone()
+    } else {
+        cstr(b"/bin/sh")
+    };
+
+    let _spawning = SPAWN_LOCK.write().unwrap_or_else(|e| e.into_inner());
+    let cloexec = |fd: RawFd, on: libc::c_int| unsafe { libc::fcntl(fd, libc::F_SETFD, on) };
+    for &fd in &inherit {
+        cloexec(fd, 0);
+    }
+    let r = unsafe { posix_spawn(&program, search, &actions, cwd_c.as_deref(), &argp, &envp) };
+    for &fd in &inherit {
+        cloexec(fd, libc::FD_CLOEXEC);
+    }
+    r
 }
 
-/// A `pipe(2)` pair `(read, write)`, neither end close-on-exec (like php).
+/// `posix_spawn` (`posix_spawnp` when `search`) with `actions`.
+unsafe fn posix_spawn(
+    program: &CStr,
+    search: bool,
+    actions: &[Action],
+    cwd: Option<&CStr>,
+    argv: &[*mut libc::c_char],
+    envp: &[*mut libc::c_char],
+) -> Result<libc::pid_t, i32> {
+    let mut fa: libc::posix_spawn_file_actions_t = std::mem::zeroed();
+    libc::posix_spawn_file_actions_init(&mut fa);
+    let mut r = 0;
+    for a in actions {
+        let e = match *a {
+            Action::Close(fd) => libc::posix_spawn_file_actions_addclose(&mut fa, fd),
+            Action::Dup2(from, to) => libc::posix_spawn_file_actions_adddup2(&mut fa, from, to),
+        };
+        if e != 0 {
+            r = e;
+        }
+    }
+    if let Some(c) = cwd {
+        libc::posix_spawn_file_actions_addchdir_np(&mut fa, c.as_ptr());
+    }
+    let mut pid: libc::pid_t = 0;
+    if r == 0 {
+        let spawn = if search {
+            libc::posix_spawnp
+        } else {
+            libc::posix_spawn
+        };
+        r = spawn(
+            &mut pid,
+            program.as_ptr(),
+            &fa,
+            std::ptr::null(),
+            argv.as_ptr(),
+            envp.as_ptr(),
+        );
+    }
+    libc::posix_spawn_file_actions_destroy(&mut fa);
+    if r != 0 {
+        return Err(r);
+    }
+    Ok(pid)
+}
+
+/// A `pipe(2)` pair `(read, write)`, both ends close-on-exec: the child
+/// gets its end through the spawn's dup2, and no other child inherits
+/// either (php's ends are inheritable; its children are in one thread).
 fn make_pipe() -> Option<(OwnedFd, OwnedFd)> {
     let mut fds = [0 as libc::c_int; 2];
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+    #[cfg(target_os = "linux")]
+    let r = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+    #[cfg(not(target_os = "linux"))]
+    let r = {
+        let _setup = SPAWN_LOCK.read().unwrap_or_else(|e| e.into_inner());
+        let r = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        if r == 0 {
+            fds.iter().for_each(|&fd| set_cloexec_raw(fd));
+        }
+        r
+    };
+    if r != 0 {
         return None;
     }
     unsafe { Some((OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))) }
 }
 
-fn set_cloexec(fd: &OwnedFd) {
+/// A connected `AF_UNIX` stream pair, both ends close-on-exec (see
+/// [`make_pipe`]).
+fn make_socketpair() -> Option<(OwnedFd, OwnedFd)> {
+    let mut sv = [0 as libc::c_int; 2];
+    #[cfg(target_os = "linux")]
+    let r = unsafe {
+        let ty = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+        libc::socketpair(libc::AF_UNIX, ty, 0, sv.as_mut_ptr())
+    };
+    #[cfg(not(target_os = "linux"))]
+    let r = {
+        let _setup = SPAWN_LOCK.read().unwrap_or_else(|e| e.into_inner());
+        let r = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, sv.as_mut_ptr()) };
+        if r == 0 {
+            sv.iter().for_each(|&fd| set_cloexec_raw(fd));
+        }
+        r
+    };
+    if r != 0 {
+        return None;
+    }
+    unsafe { Some((OwnedFd::from_raw_fd(sv[0]), OwnedFd::from_raw_fd(sv[1]))) }
+}
+
+fn set_cloexec_raw(fd: RawFd) {
     unsafe {
-        let fl = libc::fcntl(fd.as_raw_fd(), libc::F_GETFD);
+        let fl = libc::fcntl(fd, libc::F_GETFD);
         if fl >= 0 {
-            libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, fl | libc::FD_CLOEXEC);
+            libc::fcntl(fd, libc::F_SETFD, fl | libc::FD_CLOEXEC);
         }
     }
 }
 
+/// A close-on-exec `dup` of `raw`.
 fn dup_fd(raw: RawFd) -> Option<OwnedFd> {
-    let d = unsafe { libc::dup(raw) };
+    let d = unsafe { libc::fcntl(raw, libc::F_DUPFD_CLOEXEC, 0) };
     (d >= 0).then(|| unsafe { OwnedFd::from_raw_fd(d) })
 }
 
@@ -313,7 +369,6 @@ fn close_status(st: i32) -> i64 {
 /// and stderr are inherited. Returns (read end, pid).
 fn popen_read(cmd: &[u8]) -> Option<(OwnedFd, libc::pid_t)> {
     let (r, w) = make_pipe()?;
-    set_cloexec(&r);
     let descs = [Desc {
         index: 1,
         childend: w,
@@ -649,7 +704,11 @@ fn fn_popen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     } else {
         c.stdout(Stdio::piped());
     }
-    let mut child = match c.spawn() {
+    let spawned = {
+        let _spawning = SPAWN_LOCK.write().unwrap_or_else(|e| e.into_inner());
+        c.spawn()
+    };
+    let mut child = match spawned {
         Ok(ch) => ch,
         Err(e) => {
             crate::warn(host, "popen", &format!("{e}"))?;
@@ -954,7 +1013,10 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     ));
                 }
                 match host.stream_dup_fd(&item) {
-                    Ok(fd) => (fd, None, DescKind::Std),
+                    Ok(fd) => {
+                        set_cloexec_raw(fd.as_raw_fd());
+                        (fd, None, DescKind::Std)
+                    }
                     // php: "Cannot represent a stream of type X as a File Descriptor"
                     Err(_) => return Ok(Value::Bool(false)),
                 }
@@ -972,20 +1034,12 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         } else {
                             (w, r)
                         };
-                        set_cloexec(&parent);
                         (child, Some(parent), DescKind::Pipe)
                     }
                     b"socket" => {
-                        let mut sv = [0 as libc::c_int; 2];
-                        if unsafe {
-                            libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, sv.as_mut_ptr())
-                        } != 0
-                        {
+                        let Some((p, c)) = make_socketpair() else {
                             return Ok(Value::Bool(false));
-                        }
-                        let (p, c) =
-                            unsafe { (OwnedFd::from_raw_fd(sv[0]), OwnedFd::from_raw_fd(sv[1])) };
-                        set_cloexec(&p);
+                        };
                         (c, Some(p), DescKind::Pipe)
                     }
                     b"file" => {

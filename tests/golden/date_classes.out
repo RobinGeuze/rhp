@@ -244,6 +244,17 @@ round trip: true
 Error: Cannot modify readonly property DatePeriod::$start
 Error: Cannot unset DatePeriod::$interval
 isset: [true,false,false]
+== subclasses ==
+json: [{"x":1,"date":"2021-07-04 12:00:00.000000","timezone_type":3,"timezone":"Europe\/Lisbon"},{"x":1,"timezone_type":1,"timezone":"+02:00"},{"r":1,"y":0,"m":0,"d":1,"h":0,"i":0,"s":0,"f":0,"invert":0,"days":false,"from_string":false}]
+json period: {"x":1,"start":{"x":1,"date":"2021-07-04 12:00:00.000000","timezone_type":3,"timezone":"Europe\/Lisbon"},"current":null,"end":null,"interval":{"y":0,"m":0,"d":0,"h":1,"i":0,"s":0,"f":0,"invert":0,"days":false,"from_string":false},"recurrences":3,"include_start_date":true,"include_end_date":false}
+vars: [["x"],["x","p","q"]]
+interval vars: [["r","y","m","d","h","i","s","f","invert","days","from_string"],["r","p","q","y","m","d","h","i","s","f","invert","days","from_string"]]
+from string vars: ["from_string","date_string"]
+[8192] Implicit conversion from float 2.5 to int loses precision
+period float: 3
+period float string: 3
+[8192] DateTime::createFromTimestamp(): Passing null to parameter #1 ($timestamp) of type int|float is deprecated
+from timestamp null: 1970-01-01T00:00:00+00:00
 == procedural ==
 chain: 2001-03-06T00:02:03+00:00
 get: [983836923,0,"UTC"]

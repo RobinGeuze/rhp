@@ -119,6 +119,30 @@ err(function () use ($p2) { $p2->start = 1; });
 err(function () use ($p2) { unset($p2->interval); });
 show('isset', [isset($p2->start), isset($p2->end), empty($p2->recurrences)]);
 
+echo "== subclasses ==\n";
+class SubDate extends DateTimeImmutable {
+    public $x = 1; protected $p = 2; private $q = 3;
+    function vars() { return array_keys(get_object_vars($this)); }
+}
+class SubZone extends DateTimeZone { public $x = 1; protected $p = 2; private $q = 3; }
+class SubInterval extends DateInterval {
+    public $r = 1; protected $p = 2; private $q = 3;
+    function vars() { return array_keys(get_object_vars($this)); }
+}
+class SubPeriod extends DatePeriod { public $x = 1; protected $p = 2; private $q = 3; }
+$sd = new SubDate('2021-07-04 12:00', new DateTimeZone('Europe/Lisbon'));
+$si = new SubInterval('P1D');
+show('json', [$sd, new SubZone('+02:00'), $si]);
+show('json period', new SubPeriod($sd, new DateInterval('PT1H'), 2));
+show('vars', [array_keys(get_object_vars($sd)), $sd->vars()]);
+show('interval vars', [array_keys(get_object_vars($si)), $si->vars()]);
+show('from string vars', array_keys(get_object_vars(DateInterval::createFromDateString('+1 day'))));
+set_error_handler(function ($no, $msg) { echo "[$no] $msg\n"; return true; });
+show('period float', iterator_count(new DatePeriod($sd, new DateInterval('P1D'), 2.5)));
+show('period float string', iterator_count(new DatePeriod($sd, new DateInterval('P1D'), ' 2')));
+show('from timestamp null', DateTime::createFromTimestamp(null)->format('c'));
+restore_error_handler();
+
 echo "== procedural ==\n";
 $o = date_create('2000-02-29 12:00:00');
 date_add($o, new DateInterval('P1Y'));

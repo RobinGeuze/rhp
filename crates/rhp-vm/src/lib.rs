@@ -4539,7 +4539,7 @@ impl Vm {
         // zend_execute_script raises an out-of-memory error still pending
         // when the script ends.
         match self.run_loop().and_then(|_| self.oom_interrupt()) {
-            Ok(()) => Ok(0),
+            Ok(()) => Ok(self.sapi.startup_status),
             Err(Thrown::Exit(code)) => Ok(code),
             Err(other) => Err(other),
         }

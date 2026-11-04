@@ -16,6 +16,8 @@ use crate::main::ini_table::INI_TABLE;
 use crate::main::network;
 use crate::main::output::ob;
 use crate::zend::builtin_functions::resolve_const;
+use crate::zend::ini_parser::{syntax_error, Event, Parser};
+use crate::zend::ini_scanner::{lexer, trim_ws, MODE_NORMAL, MODE_RAW, MODE_TYPED};
 use crate::zend::virtual_cwd::os_path;
 use crate::zend::zpp::{
     bool_param, int_param, require_callback, str_or_null_param, str_param, zpp_long,
@@ -894,6 +896,202 @@ fn fn_php_strip_whitespace(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     }
 }
 
+/// symtable key: canonical decimal ints become int keys.
+fn sym_key(k: &[u8]) -> ArrayKey {
+    ArrayKey::from_bytes(k)
+}
+
+fn apply(arr: &mut PhpArray, ev: Event) {
+    match ev {
+        Event::Section(_) => {}
+        Event::Entry(_, None) => {}
+        Event::Entry(k, Some(v)) => {
+            arr.insert(sym_key(&k.into_bytes()), v.into_value());
+        }
+        Event::PopEntry(k, v, off) => {
+            let k = k.into_bytes();
+            let key = if !(k.len() > 1 && k[0] == b'0') && is_long_string(&k) {
+                ArrayKey::Int(strtoul(&k))
+            } else {
+                ArrayKey::Str(rhp_values::PhpStr::from_bytes(k))
+            };
+            if !matches!(arr.get(&key), Some(Value::Array(_))) {
+                arr.insert(key.clone(), Value::Array(PhpArray::new()));
+            }
+            let Some(Value::Array(sub)) = arr.get_mut(&key) else {
+                return;
+            };
+            let off = off.into_bytes();
+            if off.is_empty() {
+                sub.push(v.into_value());
+            } else {
+                sub.insert(sym_key(&off), v.into_value());
+            }
+        }
+    }
+}
+
+/// `is_numeric_string(...) == IS_LONG` (whole string, int-typed, no overflow).
+fn is_long_string(s: &[u8]) -> bool {
+    matches!(conv::numeric_string(s), Some(conv::Num::Int(_)))
+}
+
+/// `ZEND_STRTOUL(s, NULL, 0)` (base auto-detect) as php's zend_ulong → key.
+fn strtoul(s: &[u8]) -> i64 {
+    let t = trim_ws(s);
+    let (neg, t) = match t.first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let (base, digits) = if t.len() > 1 && t[0] == b'0' && (t[1] == b'x' || t[1] == b'X') {
+        (16, &t[2..])
+    } else if t.len() > 1 && t[0] == b'0' {
+        (8, &t[1..])
+    } else {
+        (10, t)
+    };
+    let mut n: u64 = 0;
+    for &c in digits {
+        let d = match c {
+            b'0'..=b'9' => (c - b'0') as u64,
+            b'a'..=b'f' => (c - b'a' + 10) as u64,
+            b'A'..=b'F' => (c - b'A' + 10) as u64,
+            _ => break,
+        };
+        if d >= base {
+            break;
+        }
+        n = n.wrapping_mul(base).wrapping_add(d);
+    }
+    (if neg { n.wrapping_neg() } else { n }) as i64
+}
+
+/// php's ini_error: the syntax error as an E_WARNING naming the file
+/// ("Unknown" for a string).
+fn report_syntax_error(
+    host: &mut dyn Host,
+    src: &[u8],
+    mode: i64,
+    file: &[u8],
+) -> Result<bool, Thrown> {
+    let Some((msg, line)) = syntax_error(src, mode) else {
+        return Ok(false);
+    };
+    let mut m = String::from_utf8_lossy(&msg).into_owned();
+    m.push_str(&format!(
+        " in {} on line {line}\n",
+        String::from_utf8_lossy(file)
+    ));
+    host.emit_diagnostic(crate::E_WARNING, &m)?;
+    Ok(true)
+}
+
+/// Parse ini text; `None` = syntax error (php returns false).
+fn parse_ini(host: &dyn Host, src: &[u8], sections: bool, mode: i64) -> Option<PhpArray> {
+    let mut lx = lexer(src, mode);
+    let first = lx.next();
+    let mut p = Parser {
+        lx,
+        tok: first,
+        host,
+    };
+    let mut events = Vec::new();
+    p.statement_list(&mut events).ok()?;
+    let mut out = PhpArray::new();
+    if !sections {
+        for ev in events {
+            apply(&mut out, ev);
+        }
+        return Some(out);
+    }
+    // php_ini_parser_cb_with_sections
+    let mut active: Option<ArrayKey> = None;
+    for ev in events {
+        match ev {
+            Event::Section(name) => {
+                let k = sym_key(&name.into_bytes());
+                out.insert(k.clone(), Value::Array(PhpArray::new()));
+                active = Some(k);
+            }
+            ev => {
+                let has_value = !matches!(ev, Event::Entry(_, None));
+                if !has_value {
+                    continue;
+                }
+                match &active {
+                    Some(k) => {
+                        if let Some(Value::Array(sec)) = out.get_mut(k) {
+                            apply(sec, ev);
+                        }
+                    }
+                    None => apply(&mut out, ev),
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+fn mode_ok(mode: i64) -> bool {
+    matches!(mode, MODE_NORMAL | MODE_RAW | MODE_TYPED)
+}
+
+fn fn_parse_ini_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = str_param(host, args, 0, "parse_ini_string", "ini_string")?;
+    let sections = bool_param(host, args, 1, "parse_ini_string", "process_sections", false)?;
+    let mode = int_param(
+        host,
+        args,
+        2,
+        "parse_ini_string",
+        "scanner_mode",
+        MODE_NORMAL,
+    )?;
+    if !mode_ok(mode) {
+        // php: Warning "Invalid scanner mode"
+        return Ok(Value::Bool(false));
+    }
+    if report_syntax_error(host, &s, mode, b"Unknown")? {
+        return Ok(Value::Bool(false));
+    }
+    Ok(match parse_ini(host, &s, sections, mode) {
+        Some(a) => Value::Array(a),
+        None => Value::Bool(false),
+    })
+}
+
+fn fn_parse_ini_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let path = str_param(host, args, 0, "parse_ini_file", "filename")?;
+    if path.is_empty() {
+        return Err(Thrown::error(
+            "ValueError",
+            "parse_ini_file(): Argument #1 ($filename) must not be empty",
+        ));
+    }
+    if path.contains(&0) {
+        return Err(Thrown::error(
+            "ValueError",
+            "parse_ini_file(): Argument #1 ($filename) must not contain any null bytes",
+        ));
+    }
+    let sections = bool_param(host, args, 1, "parse_ini_file", "process_sections", false)?;
+    let mode = int_param(host, args, 2, "parse_ini_file", "scanner_mode", MODE_NORMAL)?;
+    let Some(src) = host.stream_get_contents(&path) else {
+        return Ok(Value::Bool(false));
+    };
+    if !mode_ok(mode) {
+        return Ok(Value::Bool(false));
+    }
+    if report_syntax_error(host, &src, mode, &path)? {
+        return Ok(Value::Bool(false));
+    }
+    Ok(match parse_ini(host, &src, sections, mode) {
+        Some(a) => Value::Array(a),
+        None => Value::Bool(false),
+    })
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
@@ -932,6 +1130,8 @@ pub fn register(m: &mut crate::Registry) {
             ("is_uploaded_file", fn_is_uploaded_file),
             ("move_uploaded_file", fn_move_uploaded_file),
             ("php_strip_whitespace", fn_php_strip_whitespace),
+            ("parse_ini_string", fn_parse_ini_string),
+            ("parse_ini_file", fn_parse_ini_file),
         ],
     );
 }

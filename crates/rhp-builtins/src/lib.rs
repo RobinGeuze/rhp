@@ -40,7 +40,6 @@ pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_inte
 #[rustfmt::skip]
 mod const_modules;
 mod ext;
-mod ini_parse;
 mod sapi;
 
 #[cfg(test)]
@@ -338,7 +337,6 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("zpp", Box::new(zend::zpp::register)),
         ("sapi", Box::new(main::sapi::register)),
         ("opcache", Box::new(ext::opcache::register)),
-        ("ini_parse", Box::new(ini_parse::register)),
         ("cli", Box::new(sapi::cli::register)),
         ("cgi", Box::new(sapi::cgi::register)),
         ("random", Box::new(ext::random::register)),

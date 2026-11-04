@@ -1043,7 +1043,7 @@ enum Allowed {
 type Cell = Rc<RefCell<Value>>;
 
 struct Parser<'a, 'h> {
-    host: &'h mut dyn Host,
+    pub(crate) host: &'h mut dyn Host,
     b: &'a [u8],
     pos: usize,
     /// php's `var_hash` slots: every parsed value (but `R:`) in order. A

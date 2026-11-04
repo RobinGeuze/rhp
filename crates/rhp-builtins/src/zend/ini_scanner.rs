@@ -1,20 +1,17 @@
-//! `parse_ini_string` / `parse_ini_file`: a port of php's ini scanner
-//! (Zend/zend_ini_scanner.l, re2c longest-match rules per lexer state) and
-//! parser (Zend/zend_ini_parser.y), plus ext/standard's array-building
-//! callbacks (`php_simple_ini_parser_cb` / `php_ini_parser_cb_with_sections`).
+//! Zend/zend_ini_scanner.l: php's ini scanner (re2c longest-match rules per
+//! lexer state), which [`super::ini_parser`] drives for `parse_ini_string`
+//! and `parse_ini_file` (ext/standard/basic_functions.rs, with the
+//! array-building callbacks).
 
-use rhp_values::{conv, ArrayKey, PhpArray, Value};
+use rhp_values::Value;
 
-use crate::zend::zpp::{bool_param, int_param, str_param};
-use crate::{Host, Thrown};
-
-const MODE_NORMAL: i64 = 0;
-const MODE_RAW: i64 = 1;
-const MODE_TYPED: i64 = 2;
+pub(crate) const MODE_NORMAL: i64 = 0;
+pub(crate) const MODE_RAW: i64 = 1;
+pub(crate) const MODE_TYPED: i64 = 2;
 
 /// A scanner/parser value (`zval` with the `INI_ZVAL_IS_NUMBER` extra flag).
 #[derive(Clone, Debug)]
-enum IV {
+pub(crate) enum IV {
     Str(Vec<u8>, bool),
     Bool(bool),
     Null,
@@ -23,10 +20,10 @@ enum IV {
 }
 
 impl IV {
-    fn s(b: &[u8]) -> IV {
+    pub(crate) fn s(b: &[u8]) -> IV {
         IV::Str(b.to_vec(), false)
     }
-    fn into_bytes(self) -> Vec<u8> {
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
         match self {
             IV::Str(s, _) => s,
             IV::Bool(true) => b"1".to_vec(),
@@ -35,10 +32,10 @@ impl IV {
             IV::Double(f) => rhp_values::fmt::float_echo(f),
         }
     }
-    fn is_number(&self) -> bool {
+    pub(crate) fn is_number(&self) -> bool {
         matches!(self, IV::Str(_, true))
     }
-    fn into_value(self) -> Value {
+    pub(crate) fn into_value(self) -> Value {
         match self {
             IV::Str(s, _) => Value::str(s),
             IV::Bool(b) => Value::Bool(b),
@@ -50,7 +47,7 @@ impl IV {
 }
 
 #[derive(Clone, Debug)]
-enum Tok {
+pub(crate) enum Tok {
     End,
     Section,
     Raw(IV),
@@ -84,14 +81,14 @@ enum St {
     Raw,
 }
 
-struct Lexer<'a> {
+pub(crate) struct Lexer<'a> {
     s: &'a [u8],
     pos: usize,
     state: St,
     stack: Vec<St>,
-    mode: i64,
+    pub(crate) mode: i64,
     /// SCNG(lineno), counted where php's scanner counts it.
-    lineno: u32,
+    pub(crate) lineno: u32,
 }
 
 fn is_label_char(c: u8) -> bool {
@@ -357,7 +354,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn next(&mut self) -> Tok {
+    pub(crate) fn next(&mut self) -> Tok {
         loop {
             let i = self.pos;
             if i >= self.s.len() {
@@ -790,7 +787,7 @@ fn count_newlines(t: &[u8]) -> u32 {
     n
 }
 
-fn trim_ws(mut t: &[u8]) -> &[u8] {
+pub(crate) fn trim_ws(mut t: &[u8]) -> &[u8] {
     while let [b' ' | b'\t', rest @ ..] = t {
         t = rest;
     }
@@ -826,380 +823,6 @@ fn escape_string(s: &[u8]) -> Vec<u8> {
     out
 }
 
-// ---------------------------------------------------------------------------
-// parser
-// ---------------------------------------------------------------------------
-
-struct Parser<'a, 'h> {
-    lx: Lexer<'a>,
-    tok: Tok,
-    host: &'h dyn Host,
-}
-
-type PResult<T> = Result<T, ()>;
-
-enum Event {
-    Section(IV),
-    Entry(IV, Option<IV>),
-    PopEntry(IV, IV, IV),
-}
-
-/// `zend_ini_add_string`: concatenate, keeping op1's number flag.
-fn add_string(a: IV, b: IV) -> IV {
-    let flag = a.is_number();
-    let mut s = a.into_bytes();
-    s.extend_from_slice(&b.into_bytes());
-    IV::Str(s, flag)
-}
-
-impl Parser<'_, '_> {
-    fn bump(&mut self) -> Tok {
-        let next = self.lx.next();
-        std::mem::replace(&mut self.tok, next)
-    }
-
-    fn is_ch(&self, c: u8) -> bool {
-        matches!(self.tok, Tok::Ch(x) if x == c)
-    }
-
-    fn expect_ch(&mut self, c: u8) -> PResult<()> {
-        if self.is_ch(c) {
-            self.bump();
-            Ok(())
-        } else {
-            Err(())
-        }
-    }
-
-    fn statement_list(&mut self, ev: &mut Vec<Event>) -> PResult<()> {
-        loop {
-            match self.tok.clone() {
-                Tok::End => return Ok(()),
-                Tok::Eol => {
-                    self.bump();
-                }
-                Tok::Section => {
-                    self.bump();
-                    let v = if self.starts_section_item() {
-                        self.var_string_list(true)?
-                    } else {
-                        IV::s(b"")
-                    };
-                    self.expect_ch(b']')?;
-                    ev.push(Event::Section(v));
-                }
-                Tok::Label(name) => {
-                    self.bump();
-                    if self.is_ch(b'=') {
-                        self.bump();
-                        let v = self.string_or_value()?;
-                        ev.push(Event::Entry(name, Some(v)));
-                    } else {
-                        ev.push(Event::Entry(name, None));
-                    }
-                }
-                Tok::Offset(name) => {
-                    self.bump();
-                    let off = if self.starts_item() {
-                        self.var_string_list(false)?
-                    } else {
-                        IV::s(b"")
-                    };
-                    self.expect_ch(b']')?;
-                    self.expect_ch(b'=')?;
-                    let v = self.string_or_value()?;
-                    ev.push(Event::PopEntry(name, v, off));
-                }
-                _ => return Err(()),
-            }
-        }
-    }
-
-    fn string_or_value(&mut self) -> PResult<IV> {
-        match self.tok.clone() {
-            Tok::BoolTrue(v) | Tok::BoolFalse(v) | Tok::Null(v) => {
-                self.bump();
-                Ok(v)
-            }
-            Tok::Eol => {
-                self.bump();
-                Ok(IV::s(b""))
-            }
-            _ => {
-                let v = self.expr()?;
-                Ok(self.normalize(v))
-            }
-        }
-    }
-
-    /// `normalize_value`: TYPED mode turns number-flagged strings into
-    /// int/float (an overflowing integer string stays a string).
-    fn normalize(&self, v: IV) -> IV {
-        if self.lx.mode != MODE_TYPED {
-            return v;
-        }
-        if let IV::Str(s, true) = &v {
-            match conv::numeric_string(s) {
-                Some(conv::Num::Int(i)) => return IV::Long(i),
-                Some(conv::Num::Float(f)) => {
-                    let t = trim_ws(s);
-                    let intlike = t
-                        .iter()
-                        .enumerate()
-                        .all(|(k, c)| c.is_ascii_digit() || (k == 0 && (*c == b'-' || *c == b'+')));
-                    if !intlike {
-                        return IV::Double(f);
-                    }
-                }
-                None => {}
-            }
-        }
-        v
-    }
-
-    /// expr with '|' '&' '^' left-associative at one level; '~' '!' unary.
-    fn expr(&mut self) -> PResult<IV> {
-        let mut lhs = self.unary()?;
-        while let Tok::Ch(c @ (b'|' | b'&' | b'^')) = self.tok {
-            self.bump();
-            let rhs = self.unary()?;
-            lhs = self.do_op(c, lhs, Some(rhs));
-        }
-        Ok(lhs)
-    }
-
-    fn unary(&mut self) -> PResult<IV> {
-        match self.tok {
-            Tok::Ch(c @ (b'~' | b'!')) => {
-                self.bump();
-                let v = self.unary()?;
-                Ok(self.do_op(c, v, None))
-            }
-            Tok::Ch(b'(') => {
-                self.bump();
-                let v = self.expr()?;
-                self.expect_ch(b')')?;
-                Ok(v)
-            }
-            _ => {
-                if self.starts_item() {
-                    self.var_string_list(false)
-                } else {
-                    Err(())
-                }
-            }
-        }
-    }
-
-    fn int_val(v: &IV) -> i32 {
-        match v {
-            IV::Long(n) => *n as i32,
-            IV::Str(s, _) => crate::c_atoi(s),
-            IV::Bool(b) => *b as i32,
-            IV::Null => 0,
-            IV::Double(f) => *f as i32,
-        }
-    }
-
-    fn do_op(&self, op: u8, a: IV, b: Option<IV>) -> IV {
-        let x = Self::int_val(&a);
-        let y = b.as_ref().map(Self::int_val).unwrap_or(0);
-        let r = match op {
-            b'|' => x | y,
-            b'&' => x & y,
-            b'^' => x ^ y,
-            b'~' => !x,
-            b'!' => (x == 0) as i32,
-            _ => 0,
-        };
-        if self.lx.mode != MODE_TYPED {
-            IV::s(r.to_string().as_bytes())
-        } else {
-            IV::Long(r as i64)
-        }
-    }
-
-    fn starts_item(&self) -> bool {
-        matches!(
-            self.tok,
-            Tok::DollarCurly
-                | Tok::Constant(_)
-                | Tok::Raw(_)
-                | Tok::Number(_)
-                | Tok::Str(_)
-                | Tok::Ws(_)
-                | Tok::Ch(b'"')
-        )
-    }
-
-    fn starts_section_item(&self) -> bool {
-        self.starts_item()
-    }
-
-    /// var_string_list / var_string_list_section (`section` = no constant
-    /// substitution and no number flag).
-    fn var_string_list(&mut self, section: bool) -> PResult<IV> {
-        let mut acc: Option<IV> = None;
-        while self.starts_item() {
-            let item = match self.bump() {
-                Tok::DollarCurly => self.cfg_var_ref()?,
-                Tok::Constant(IV::Str(name, _)) => {
-                    if section {
-                        IV::Str(name, false)
-                    } else {
-                        self.get_constant(name)
-                    }
-                }
-                Tok::Number(IV::Str(n, _)) => IV::Str(n, !section),
-                Tok::Raw(v) | Tok::Str(v) | Tok::Ws(v) => v,
-                Tok::Ch(b'"') => {
-                    let v = self.encapsed_list()?;
-                    self.expect_ch(b'"')?;
-                    v
-                }
-                _ => return Err(()),
-            };
-            acc = Some(match acc {
-                None => item,
-                Some(a) => add_string(a, item),
-            });
-        }
-        acc.ok_or(())
-    }
-
-    fn encapsed_list(&mut self) -> PResult<IV> {
-        let mut acc = IV::s(b"");
-        loop {
-            match self.tok {
-                Tok::DollarCurly => {
-                    self.bump();
-                    let v = self.cfg_var_ref()?;
-                    acc = add_string(acc, v);
-                }
-                Tok::Quoted(_) => {
-                    let Tok::Quoted(v) = self.bump() else {
-                        unreachable!()
-                    };
-                    acc = add_string(acc, v);
-                }
-                _ => return Ok(acc),
-            }
-        }
-    }
-
-    /// After TC_DOLLAR_CURLY: TC_VARNAME '}' | TC_VARNAME TC_FALLBACK fallback '}'.
-    fn cfg_var_ref(&mut self) -> PResult<IV> {
-        let Tok::Varname(IV::Str(name, _)) = self.bump() else {
-            return Err(());
-        };
-        let mut fallback = None;
-        if matches!(self.tok, Tok::Fallback) {
-            self.bump();
-            fallback = Some(if self.starts_item() {
-                self.var_string_list(false)?
-            } else {
-                IV::s(b"")
-            });
-        }
-        self.expect_ch(b'}')?;
-        if let Some(v) = crate::ext::standard::basic_functions::env_get(&name) {
-            return Ok(IV::s(&v));
-        }
-        match fallback {
-            Some(f) => {
-                // zend_ini_get_var copies the fallback with strlen().
-                let b = f.into_bytes();
-                let b = match b.iter().position(|&c| c == 0) {
-                    Some(p) => b[..p].to_vec(),
-                    None => b,
-                };
-                Ok(IV::Str(b, false))
-            }
-            None => Ok(IV::s(b"")),
-        }
-    }
-
-    fn get_constant(&self, name: Vec<u8>) -> IV {
-        if !name.contains(&b':') {
-            if let Some(v) = self.host.get_const(&name) {
-                return IV::Str(conv::to_string_bytes(&v), false);
-            }
-        }
-        IV::Str(name, false)
-    }
-}
-
-/// symtable key: canonical decimal ints become int keys.
-fn sym_key(k: &[u8]) -> ArrayKey {
-    ArrayKey::from_bytes(k)
-}
-
-fn apply(arr: &mut PhpArray, ev: Event) {
-    match ev {
-        Event::Section(_) => {}
-        Event::Entry(_, None) => {}
-        Event::Entry(k, Some(v)) => {
-            arr.insert(sym_key(&k.into_bytes()), v.into_value());
-        }
-        Event::PopEntry(k, v, off) => {
-            let k = k.into_bytes();
-            let key = if !(k.len() > 1 && k[0] == b'0') && is_long_string(&k) {
-                ArrayKey::Int(strtoul(&k))
-            } else {
-                ArrayKey::Str(rhp_values::PhpStr::from_bytes(k))
-            };
-            if !matches!(arr.get(&key), Some(Value::Array(_))) {
-                arr.insert(key.clone(), Value::Array(PhpArray::new()));
-            }
-            let Some(Value::Array(sub)) = arr.get_mut(&key) else {
-                return;
-            };
-            let off = off.into_bytes();
-            if off.is_empty() {
-                sub.push(v.into_value());
-            } else {
-                sub.insert(sym_key(&off), v.into_value());
-            }
-        }
-    }
-}
-
-/// `is_numeric_string(...) == IS_LONG` (whole string, int-typed, no overflow).
-fn is_long_string(s: &[u8]) -> bool {
-    matches!(conv::numeric_string(s), Some(conv::Num::Int(_)))
-}
-
-/// `ZEND_STRTOUL(s, NULL, 0)` (base auto-detect) as php's zend_ulong → key.
-fn strtoul(s: &[u8]) -> i64 {
-    let t = trim_ws(s);
-    let (neg, t) = match t.first() {
-        Some(b'-') => (true, &t[1..]),
-        Some(b'+') => (false, &t[1..]),
-        _ => (false, t),
-    };
-    let (base, digits) = if t.len() > 1 && t[0] == b'0' && (t[1] == b'x' || t[1] == b'X') {
-        (16, &t[2..])
-    } else if t.len() > 1 && t[0] == b'0' {
-        (8, &t[1..])
-    } else {
-        (10, t)
-    };
-    let mut n: u64 = 0;
-    for &c in digits {
-        let d = match c {
-            b'0'..=b'9' => (c - b'0') as u64,
-            b'a'..=b'f' => (c - b'a' + 10) as u64,
-            b'A'..=b'F' => (c - b'A' + 10) as u64,
-            _ => break,
-        };
-        if d >= base {
-            break;
-        }
-        n = n.wrapping_mul(base).wrapping_add(d);
-    }
-    (if neg { n.wrapping_neg() } else { n }) as i64
-}
-
 /// The scanner sees a C string.
 fn c_string(src: &[u8]) -> &[u8] {
     match src.iter().position(|&b| b == 0) {
@@ -1208,7 +831,7 @@ fn c_string(src: &[u8]) -> &[u8] {
     }
 }
 
-fn lexer(src: &[u8], mode: i64) -> Lexer<'_> {
+pub(crate) fn lexer(src: &[u8], mode: i64) -> Lexer<'_> {
     Lexer {
         s: c_string(src),
         pos: 0,
@@ -1217,176 +840,4 @@ fn lexer(src: &[u8], mode: i64) -> Lexer<'_> {
         mode,
         lineno: 1,
     }
-}
-
-/// zend_ini_parser.y's verdict on `src`: its syntax error message and line
-/// (zend_ini_scanner_get_lineno) when the grammar rejects it.
-fn syntax_error(src: &[u8], mode: i64) -> Option<(Vec<u8>, u32)> {
-    use crate::zend::bison::{self, Outcome};
-    use crate::zend::ini_parser_tables::{self as t, TABLES};
-    let mut lx = lexer(src, mode);
-    let outcome = TABLES.parse(|| match lx.next() {
-        Tok::End => 0,
-        Tok::Section => t::TC_SECTION,
-        Tok::Raw(_) => t::TC_RAW,
-        Tok::Constant(_) => t::TC_CONSTANT,
-        Tok::Number(_) => t::TC_NUMBER,
-        Tok::Str(_) => t::TC_STRING,
-        Tok::Ws(_) => t::TC_WHITESPACE,
-        Tok::Label(_) => t::TC_LABEL,
-        Tok::Offset(_) => t::TC_OFFSET,
-        Tok::DollarCurly => t::TC_DOLLAR_CURLY,
-        Tok::Varname(_) => t::TC_VARNAME,
-        Tok::Quoted(_) => t::TC_QUOTED_STRING,
-        Tok::Fallback => t::TC_FALLBACK,
-        Tok::BoolTrue(_) => t::BOOL_TRUE,
-        Tok::BoolFalse(_) => t::BOOL_FALSE,
-        Tok::Null(_) => t::NULL_NULL,
-        Tok::Eol => t::END_OF_LINE,
-        Tok::Ch(c) => c as i32,
-    });
-    match outcome {
-        // no actions run, so none fails
-        Outcome::Accept | Outcome::Aborted => None,
-        Outcome::MemoryExhausted => Some((b"memory exhausted".to_vec(), lx.lineno)),
-        Outcome::SyntaxError { args } => Some((
-            bison::syntax_error_message(&TABLES, &args, |n, _| bison::default_tnamerr(n)),
-            lx.lineno,
-        )),
-    }
-}
-
-/// php's ini_error: the syntax error as an E_WARNING naming the file
-/// ("Unknown" for a string).
-fn report_syntax_error(
-    host: &mut dyn Host,
-    src: &[u8],
-    mode: i64,
-    file: &[u8],
-) -> Result<bool, Thrown> {
-    let Some((msg, line)) = syntax_error(src, mode) else {
-        return Ok(false);
-    };
-    let mut m = String::from_utf8_lossy(&msg).into_owned();
-    m.push_str(&format!(
-        " in {} on line {line}\n",
-        String::from_utf8_lossy(file)
-    ));
-    host.emit_diagnostic(crate::E_WARNING, &m)?;
-    Ok(true)
-}
-
-/// Parse ini text; `None` = syntax error (php returns false).
-fn parse_ini(host: &dyn Host, src: &[u8], sections: bool, mode: i64) -> Option<PhpArray> {
-    let mut lx = lexer(src, mode);
-    let first = lx.next();
-    let mut p = Parser {
-        lx,
-        tok: first,
-        host,
-    };
-    let mut events = Vec::new();
-    p.statement_list(&mut events).ok()?;
-    let mut out = PhpArray::new();
-    if !sections {
-        for ev in events {
-            apply(&mut out, ev);
-        }
-        return Some(out);
-    }
-    // php_ini_parser_cb_with_sections
-    let mut active: Option<ArrayKey> = None;
-    for ev in events {
-        match ev {
-            Event::Section(name) => {
-                let k = sym_key(&name.into_bytes());
-                out.insert(k.clone(), Value::Array(PhpArray::new()));
-                active = Some(k);
-            }
-            ev => {
-                let has_value = !matches!(ev, Event::Entry(_, None));
-                if !has_value {
-                    continue;
-                }
-                match &active {
-                    Some(k) => {
-                        if let Some(Value::Array(sec)) = out.get_mut(k) {
-                            apply(sec, ev);
-                        }
-                    }
-                    None => apply(&mut out, ev),
-                }
-            }
-        }
-    }
-    Some(out)
-}
-
-fn mode_ok(mode: i64) -> bool {
-    matches!(mode, MODE_NORMAL | MODE_RAW | MODE_TYPED)
-}
-
-fn fn_parse_ini_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = str_param(host, args, 0, "parse_ini_string", "ini_string")?;
-    let sections = bool_param(host, args, 1, "parse_ini_string", "process_sections", false)?;
-    let mode = int_param(
-        host,
-        args,
-        2,
-        "parse_ini_string",
-        "scanner_mode",
-        MODE_NORMAL,
-    )?;
-    if !mode_ok(mode) {
-        // php: Warning "Invalid scanner mode"
-        return Ok(Value::Bool(false));
-    }
-    if report_syntax_error(host, &s, mode, b"Unknown")? {
-        return Ok(Value::Bool(false));
-    }
-    Ok(match parse_ini(host, &s, sections, mode) {
-        Some(a) => Value::Array(a),
-        None => Value::Bool(false),
-    })
-}
-
-fn fn_parse_ini_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = str_param(host, args, 0, "parse_ini_file", "filename")?;
-    if path.is_empty() {
-        return Err(Thrown::error(
-            "ValueError",
-            "parse_ini_file(): Argument #1 ($filename) must not be empty",
-        ));
-    }
-    if path.contains(&0) {
-        return Err(Thrown::error(
-            "ValueError",
-            "parse_ini_file(): Argument #1 ($filename) must not contain any null bytes",
-        ));
-    }
-    let sections = bool_param(host, args, 1, "parse_ini_file", "process_sections", false)?;
-    let mode = int_param(host, args, 2, "parse_ini_file", "scanner_mode", MODE_NORMAL)?;
-    let Some(src) = host.stream_get_contents(&path) else {
-        return Ok(Value::Bool(false));
-    };
-    if !mode_ok(mode) {
-        return Ok(Value::Bool(false));
-    }
-    if report_syntax_error(host, &src, mode, &path)? {
-        return Ok(Value::Bool(false));
-    }
-    Ok(match parse_ini(host, &src, sections, mode) {
-        Some(a) => Value::Array(a),
-        None => Value::Bool(false),
-    })
-}
-
-pub fn register(m: &mut crate::Registry) {
-    crate::register(
-        m,
-        &[
-            ("parse_ini_string", fn_parse_ini_string),
-            ("parse_ini_file", fn_parse_ini_file),
-        ],
-    );
 }

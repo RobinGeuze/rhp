@@ -664,7 +664,7 @@ struct Parser<'a, 'h> {
     max_depth: i64,
     assoc: bool,
     bigint_as_string: bool,
-    host: &'h mut dyn Host,
+    pub(crate) host: &'h mut dyn Host,
 }
 
 impl Parser<'_, '_> {

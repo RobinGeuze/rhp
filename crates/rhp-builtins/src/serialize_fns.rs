@@ -789,6 +789,18 @@ impl<'a> Parser<'a, '_> {
                 self.host
                     .call_callable(&Value::Array(cb), &[Value::str(data.to_vec())])?;
             }
+            // php's own Serializable classes (ArrayObject, SplObjectStorage…)
+            // that rhp's do not implement yet.
+            Some(cid) if self.stub_serializable(cid) => {
+                return Err(Thrown::unsupported(
+                    format!(
+                        "unserialize() of a C: {} payload",
+                        String::from_utf8_lossy(&name)
+                    ),
+                    "the class does not implement Serializable yet",
+                )
+                .into());
+            }
             _ => {
                 let msg = format!(
                     "Class {} has no unserializer",
@@ -811,6 +823,25 @@ impl<'a> Parser<'a, '_> {
         oom_stop()?;
         self.pos = end + 1;
         Ok(())
+    }
+
+    /// Whether php's stubs declare that class `cid` or an ancestor
+    /// implements `Serializable`.
+    fn stub_serializable(&self, cid: u32) -> bool {
+        let mut cur = Some(cid);
+        while let Some(id) = cur {
+            let name = self.host.class_name(id).unwrap_or_default();
+            if crate::signatures::class(&name)
+                .is_some_and(|c| c.interfaces.contains(&"Serializable"))
+            {
+                return true;
+            }
+            cur = self
+                .host
+                .class_parent_name(id)
+                .and_then(|p| self.host.resolve_class(&p));
+        }
+        false
     }
 
     /// gmp_unserialize: the number as a decimal string, then the properties.

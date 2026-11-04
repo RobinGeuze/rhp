@@ -313,25 +313,30 @@ impl FdStream {
     /// it, until `want` (at most a chunk) decoded bytes are buffered.
     fn fill_ex(&mut self, want: usize, has_buffered: bool) -> Fill {
         let old_eof = self.eof;
-        let r = self.fill_filtered(want, has_buffered);
+        let r = if self.dechunk.is_none() {
+            self.fill_raw(want, has_buffered)
+        } else {
+            match self.fill_filtered(want, has_buffered) {
+                Some(r) => return r,
+                None => Fill::Error,
+            }
+        };
         if self.notify && old_eof != self.eof {
             self.events.push(NotifyEvent::Completed);
         }
         r
     }
 
-    fn fill_filtered(&mut self, want: usize, has_buffered: bool) -> Fill {
-        if self.dechunk.is_none() {
-            return self.fill_raw(want, has_buffered);
-        }
-        // _php_stream_fill_read_buffer with read filters.
+    /// _php_stream_fill_read_buffer with read filters; `None` when a read
+    /// fails with nothing buffered, the one way it notifies completion.
+    fn fill_filtered(&mut self, want: usize, has_buffered: bool) -> Option<Fill> {
         let to_read_now = want.min(CHUNK);
         let mut got = false;
         while !self.eof && self.rbuf.len() < to_read_now {
             let before = self.rbuf.len();
             let r = self.fill_raw(CHUNK, has_buffered);
             if matches!(r, Fill::Error) && self.rbuf.is_empty() {
-                return Fill::Error;
+                return None;
             }
             let raw: Vec<u8> = self.rbuf.drain(before..).collect();
             if raw.is_empty() {
@@ -341,11 +346,7 @@ impl FdStream {
             got |= !out.is_empty();
             self.rbuf.extend_from_slice(&out);
         }
-        if got {
-            Fill::Data
-        } else {
-            Fill::Nothing
-        }
+        Some(if got { Fill::Data } else { Fill::Nothing })
     }
 
     /// One read of the underlying descriptor (the stream ops' `read`).

@@ -29,6 +29,8 @@ use std::sync::Mutex;
 use rhp_frontend::Arena;
 use rhp_values::Thrown;
 
+use crate::read_known;
+
 const USAGE: &str = "\
 usage: rhp-difftest lint [options] <dir|file>...
 
@@ -190,17 +192,6 @@ fn collect(root: &Path, out: &mut Vec<Entry>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Read a known-refused list: one key per line (the first tab-separated
-/// field), `#` comments and blank lines ignored.
-pub fn read_known(path: &Path) -> std::io::Result<BTreeSet<String>> {
-    Ok(fs::read_to_string(path)?
-        .lines()
-        .map(|l| l.split('\t').next().unwrap_or("").trim())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(String::from)
-        .collect())
-}
-
 /// Does `php -l` accept this file? `None` if php could not be run.
 fn php_lint_ok(path: &Path) -> Option<bool> {
     Command::new(crate::php_bin())
@@ -281,7 +272,7 @@ pub fn main(args: &[String]) -> ExitCode {
     };
     let known = match &o.check_known {
         Some(p) => match read_known(p) {
-            Ok(k) => Some(k),
+            Ok(k) => Some(k.into_iter().collect::<BTreeSet<_>>()),
             Err(e) => {
                 eprintln!("rhp-difftest lint: cannot read {}: {e}", p.display());
                 return ExitCode::from(2);

@@ -6,10 +6,13 @@
 //! extension reimplemented in Rust is "correct" exactly when rhp reproduces
 //! the C engine's output over a broad, generated corpus of inputs.
 //!
-//! This module provides the primitives:
-//!   * [`php_available`] / [`run_php`] — drive the system `php`,
-//!   * [`run_rhp`] — drive rhp's VM in-process,
-//!   * [`diff_source`] — run both and classify the result,
+//! This module provides the primitives, for the `rhp-difftest` binary and
+//! for every test crate that compares with php:
+//!   * [`php_bin`] / [`php_available`] / [`php_cgi`] — find php and php-cgi,
+//!   * [`spawn`] / [`Ran`] — run a process and compare what it printed,
+//!   * [`read_known`] — read a ratchet list,
+//!   * [`run_php`] / [`run_rhp`] — run a snippet on php / on rhp in-process,
+//!   * [`diff_source`] / [`Diff`] — run both and classify the result,
 //!   * [`Rng`] + the `php_bytes_literal` / framing helpers — build generated
 //!     corpora deterministically so a failing run is reproducible from a seed.
 //!
@@ -26,6 +29,7 @@ pub mod phpt;
 pub mod sweeps;
 
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use rhp_sapi::{CaptureSapi, Outcome, Request, Script};
@@ -52,31 +56,156 @@ pub fn php_available() -> bool {
         .unwrap_or(false)
 }
 
+/// The php-cgi to compare `rhp --cgi` with: `RHP_PHP_CGI`, else the
+/// `php-cgi` next to the php [`php_bin`] names (setup-php and Homebrew
+/// install them side by side), else the first on `PATH`, else Homebrew's.
+/// `None` when there is none.
+///
+/// On CI the php next to `php` is the `-n` shim (the setup-php action),
+/// which the phpt and app harnesses want; the CGI fixtures need the real
+/// binary and get it through `RHP_PHP_CGI`.
+pub fn php_cgi() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("RHP_PHP_CGI") {
+        return Some(PathBuf::from(p));
+    }
+    let on_path = |name: &str| -> Option<PathBuf> {
+        if name.contains('/') {
+            return Some(PathBuf::from(name));
+        }
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|d| d.join(name))
+            .find(|p| p.is_file())
+    };
+    let beside = on_path(&php_bin()).and_then(|php| Some(php.parent()?.join("php-cgi")));
+    beside
+        .into_iter()
+        .chain(on_path("php-cgi"))
+        .chain([PathBuf::from("/opt/homebrew/bin/php-cgi")])
+        .find(|p| p.is_file())
+}
+
+/// What a finished process printed, and its exit code (`None`: it was
+/// killed by a signal).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ran {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub status: Option<i32>,
+}
+
+impl Ran {
+    /// The exit code as text, `signal` for a process a signal killed.
+    pub fn status_text(&self) -> String {
+        self.status.map_or("signal".into(), |c| c.to_string())
+    }
+
+    /// How `got` (labelled `got_label`) differs from `self` (`want_label`):
+    /// one report per stream that differs (stdout, stderr, exit status);
+    /// empty when they agree.
+    pub fn differences(&self, want_label: &str, got: &Ran, got_label: &str) -> Vec<String> {
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        let mut d = Vec::new();
+        for (what, w, g) in [
+            ("stdout", &self.stdout, &got.stdout),
+            ("stderr", &self.stderr, &got.stderr),
+        ] {
+            if w != g {
+                d.push(format!(
+                    "{what}:\n--- {want_label}\n{}\n--- {got_label}\n{}",
+                    text(w),
+                    text(g)
+                ));
+            }
+        }
+        if self.status != got.status {
+            d.push(format!(
+                "exit: {want_label} {}, {got_label} {}",
+                self.status_text(),
+                got.status_text()
+            ));
+        }
+        d
+    }
+}
+
+/// Run `cmd` to the end with `stdin` as its standard input (`None`: none,
+/// `/dev/null`) and capture its stdout and stderr. The input is written
+/// from another thread, so a body larger than a pipe buffer can't deadlock
+/// against output nobody reads yet.
+pub fn spawn(cmd: &mut Command, stdin: Option<&[u8]>) -> std::io::Result<Ran> {
+    cmd.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let writer = match (child.stdin.take(), stdin) {
+        (Some(mut pipe), Some(body)) => {
+            let body = body.to_vec();
+            // A child that exits without reading closes the pipe: not an error.
+            Some(std::thread::spawn(move || {
+                let _ = pipe.write_all(&body);
+            }))
+        }
+        _ => None,
+    };
+    let out = child.wait_with_output()?;
+    if let Some(w) = writer {
+        let _ = w.join();
+    }
+    Ok(Ran {
+        stdout: out.stdout,
+        stderr: out.stderr,
+        status: out.status.code(),
+    })
+}
+
+/// `hay` with every `from` replaced by `to` (`hay` itself for an empty
+/// `from`).
+pub fn replace_bytes(hay: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+    if from.is_empty() {
+        return hay.to_vec();
+    }
+    let mut out = Vec::with_capacity(hay.len());
+    let mut i = 0;
+    while i < hay.len() {
+        if hay[i..].starts_with(from) {
+            out.extend_from_slice(to);
+            i += from.len();
+        } else {
+            out.push(hay[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// A ratchet or known list: one entry per line, the line's first
+/// tab-separated field (what follows a tab is a note), trimmed; blank lines
+/// and lines starting with `#` are skipped.
+pub fn read_known(path: &Path) -> std::io::Result<Vec<String>> {
+    Ok(std::fs::read_to_string(path)?
+        .lines()
+        .map(|l| l.split('\t').next().unwrap_or("").trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(String::from)
+        .collect())
+}
+
 /// Run PHP `source` on the real C engine and capture stdout.
 ///
 /// Uses `php -n` (no `php.ini`) with a fixed UTC timezone so results match the
 /// rhp defaults; the source is fed on stdin so no temp files are touched.
 pub fn run_php(source: &[u8]) -> Result<Vec<u8>, String> {
-    let mut child = Command::new(php_bin())
-        .args(["-n", "-d", "date.timezone=UTC", "-d", "error_reporting=0"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("spawn php: {e}"))?;
-    child
-        .stdin
-        .take()
-        .expect("piped stdin")
-        .write_all(source)
-        .map_err(|e| format!("write php stdin: {e}"))?;
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("wait php: {e}"))?;
-    if !out.status.success() {
+    let mut cmd = Command::new(php_bin());
+    cmd.args(["-n", "-d", "date.timezone=UTC", "-d", "error_reporting=0"]);
+    let out = spawn(&mut cmd, Some(source)).map_err(|e| format!("spawn php: {e}"))?;
+    if out.status != Some(0) {
         return Err(format!(
             "php exited {}: {}",
-            out.status,
+            out.status_text(),
             String::from_utf8_lossy(&out.stderr)
         ));
     }

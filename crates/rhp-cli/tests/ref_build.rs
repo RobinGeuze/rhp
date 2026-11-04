@@ -192,7 +192,7 @@ fn version_banner() {
     assert!(!ours.contains("\n1"), "{ours}");
 
     let php = PathBuf::from(rhp_difftest::php_bin());
-    let cgi = PathBuf::from(std::env::var("PHP_CGI").unwrap_or_else(|_| "php-cgi".into()));
+    let cgi = rhp_difftest::php_cgi().unwrap_or_else(|| PathBuf::from("php-cgi"));
     // php-cgi is the same build as php (CI and Homebrew install them together).
     let same_bottle = bottle(&php).is_some_and(|b| bottle(rhp) == Some(b));
     for (bin, args, ours_args) in [

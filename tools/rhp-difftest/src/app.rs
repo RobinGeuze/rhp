@@ -30,6 +30,7 @@ use std::time::{Duration, Instant, SystemTime};
 use rhp_builtins::pcre::Pattern as Regex;
 
 use crate::phpt::split_cgi;
+use crate::{read_known, replace_bytes};
 
 // ---------------------------------------------------------------------------
 // manifest + corpus
@@ -756,24 +757,6 @@ fn expand(s: &str, jar: &Jar, key: Option<&[u8]>) -> Result<Vec<u8>, String> {
 // normalization
 // ---------------------------------------------------------------------------
 
-fn replace_bytes(hay: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
-    if from.is_empty() {
-        return hay.to_vec();
-    }
-    let mut out = Vec::with_capacity(hay.len());
-    let mut i = 0;
-    while i < hay.len() {
-        if hay[i..].starts_with(from) {
-            out.extend_from_slice(to);
-            i += from.len();
-        } else {
-            out.push(hay[i]);
-            i += 1;
-        }
-    }
-    out
-}
-
 /// Replace every match of `re` with `rep`, where `$1`..`$9` in `rep` are
 /// capture groups.
 fn regex_replace(re: &Regex, hay: &[u8], rep: &[u8]) -> Vec<u8> {
@@ -1294,15 +1277,6 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         return Err("--check-known/--write-known take one app".into());
     }
     Ok(o)
-}
-
-fn read_known(path: &Path) -> std::io::Result<Vec<String>> {
-    Ok(fs::read_to_string(path)?
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(String::from)
-        .collect())
 }
 
 /// `rhp-difftest app ...` entry point.

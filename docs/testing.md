@@ -12,10 +12,10 @@ version and build values live in `crates/rhp-builtins/src/version.rs`;
 `crates/rhp-cli/tests/ref_build.rs` checks that rhp reports the same and links
 the same library versions as the php on the machine. CI uses setup-php's
 8.5.12 on Ubuntu, whose libraries (libxml2, ICU, curl, OpenSSL, libzip,
-PCRE2, …) are newer than the mac's. Live-php tests use `php` from `PATH`
-(`RHP_PHP` overrides it; every test finds php through
-`rhp_difftest::php_bin`) and `php-cgi` from `PATH` or `/opt/homebrew/bin`
-(`PHP_CGI` overrides it).
+PCRE2, …) are newer than the mac's. Every test and harness finds php
+through `rhp_difftest::php_bin` (`php` from `PATH`; `RHP_PHP` overrides it)
+and php-cgi through `rhp_difftest::php_cgi` (the `php-cgi` next to that
+php, else from `PATH` or `/opt/homebrew/bin`; `RHP_PHP_CGI` overrides it).
 
 ## Which kind of test
 

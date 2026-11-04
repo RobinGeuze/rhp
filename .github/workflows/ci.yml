@@ -90,8 +90,8 @@ jobs:
         # (argument numbers, `-q`, script detection), and bash reorders the
         # environment that getallheaders() reports. They need no shared ext.
         run: |
-          export PHP_CGI="$(command -v php-cgi8.5)"
-          echo "PHP_CGI=$PHP_CGI"
+          export RHP_PHP_CGI="$(command -v php-cgi8.5)"
+          echo "RHP_PHP_CGI=$RHP_PHP_CGI"
           cargo test --workspace --all-targets --no-fail-fast
       # The CLI fixtures' committed output is still what php prints.
       - name: CLI fixtures still match php

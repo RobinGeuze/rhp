@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::php_bin;
+use crate::{php_bin, spawn};
 
 const USAGE: &str = "usage: rhp-difftest golden (--check [--portable] | --write) \
 [--filter SUBSTR] [--dir DIR]\n\
@@ -100,13 +100,9 @@ pub fn run_php_fixture(php: &Path) -> Result<(Vec<u8>, Vec<u8>), String> {
         RUNS.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    let out = Command::new(php_bin())
-        .arg("-n")
-        .arg(php)
-        .current_dir(dir)
-        .env("TMPDIR", &tmp)
-        .stdin(Stdio::null())
-        .output();
+    let mut cmd = Command::new(php_bin());
+    cmd.arg("-n").arg(php).current_dir(dir).env("TMPDIR", &tmp);
+    let out = spawn(&mut cmd, None);
     let _ = std::fs::remove_dir_all(&tmp);
     let out = out.map_err(|e| format!("spawn {}: {e}", php_bin()))?;
     Ok((out.stdout, out.stderr))

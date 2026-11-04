@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::{mutate, php_bin, Rng};
+use crate::{mutate, php_bin, read_known, Rng};
 
 // ---------------------------------------------------------------------------
 // .phpt parsing
@@ -2163,15 +2163,6 @@ fn php_modules(ini: &[String]) -> BTreeSet<String> {
         .collect()
 }
 
-fn read_known(path: &Path) -> std::io::Result<Vec<String>> {
-    Ok(fs::read_to_string(path)?
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(String::from)
-        .collect())
-}
-
 // ---------------------------------------------------------------------------
 // reporting
 // ---------------------------------------------------------------------------
@@ -2278,30 +2269,11 @@ fn version_skew(ctx: &Ctx, scratch: &Path) -> Option<(String, String)> {
     (!php.is_empty() && php != rhp).then_some((php, rhp))
 }
 
-/// The php-cgi to use as the CGI reference: `--php-cgi`, `RHP_PHP_CGI`, the
-/// `php-cgi` next to the `php` in use (setup-php and Homebrew install them
-/// side by side, and CI's `-n` shims live side by side too), or on `PATH`.
+/// The php-cgi to use as the CGI reference: `--php-cgi`, else
+/// [`crate::php_cgi`] (CI's `-n` shims live side by side, so this finds the
+/// php-cgi shim next to the php shim).
 pub(crate) fn find_php_cgi(explicit: Option<&Path>) -> Option<PathBuf> {
-    if let Some(p) = explicit {
-        return Some(p.to_path_buf());
-    }
-    if let Some(p) = std::env::var_os("RHP_PHP_CGI") {
-        return Some(PathBuf::from(p));
-    }
-    let on_path = |name: &str| -> Option<PathBuf> {
-        if name.contains('/') {
-            return Some(PathBuf::from(name));
-        }
-        std::env::split_paths(&std::env::var_os("PATH")?)
-            .map(|d| d.join(name))
-            .find(|p| p.is_file())
-    };
-    let php = on_path(&php_bin())?;
-    let beside = php.parent()?.join("php-cgi");
-    if beside.is_file() {
-        return Some(beside);
-    }
-    on_path("php-cgi")
+    explicit.map(Path::to_path_buf).or_else(crate::php_cgi)
 }
 
 /// Whether the file at `root/rel` is a CGI test (for `--cgi-only`).

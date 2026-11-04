@@ -30,9 +30,10 @@
 //! rewrites the expectations from the reference php. `CLI_ONLY=SUBSTR`
 //! narrows the runs to those whose `CASE/NAME` contains SUBSTR.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, ExitCode};
+
+use rhp_difftest::{replace_bytes, spawn, Ran};
 
 #[derive(Default)]
 struct Spec {
@@ -43,12 +44,6 @@ struct Spec {
     stdin: Vec<u8>,
     env: Vec<(String, String)>,
     cwd: PathBuf,
-}
-
-struct Output {
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    status: String,
 }
 
 fn spec(case: &Path, name: &str, engine: &str) -> Spec {
@@ -100,22 +95,7 @@ fn spec(case: &Path, name: &str, engine: &str) -> Spec {
     s
 }
 
-fn replace(hay: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(hay.len());
-    let mut i = 0;
-    while i < hay.len() {
-        if hay[i..].starts_with(from) {
-            out.extend_from_slice(to);
-            i += from.len();
-        } else {
-            out.push(hay[i]);
-            i += 1;
-        }
-    }
-    out
-}
-
-fn run(bin: &str, case: &Path, s: &Spec) -> Output {
+fn run(bin: &str, case: &Path, s: &Spec) -> Ran {
     let mut cmd = Command::new(bin);
     cmd.env_clear().env("TZ", "UTC").arg("-n");
     if let Some(path) = std::env::var_os("PATH") {
@@ -125,50 +105,37 @@ fn run(bin: &str, case: &Path, s: &Spec) -> Output {
         cmd.arg("-d").arg(i);
     }
     cmd.args(&s.opts).args(&s.script).args(&s.args);
-    cmd.envs(s.env.iter().map(|(k, v)| (k, v)));
-    let mut child = cmd
-        .current_dir(&s.cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap_or_else(|e| panic!("spawn {bin}: {e}"));
-    let mut stdin = child.stdin.take().unwrap();
-    let body = s.stdin.clone();
-    let writer = std::thread::spawn(move || {
-        let _ = stdin.write_all(&body);
-    });
-    let out = child.wait_with_output().expect("wait");
-    let _ = writer.join();
+    cmd.envs(s.env.iter().map(|(k, v)| (k, v)))
+        .current_dir(&s.cwd);
+    let out = spawn(&mut cmd, Some(&s.stdin)).unwrap_or_else(|e| panic!("spawn {bin}: {e}"));
     let dir = case.to_string_lossy();
-    let norm = |b: &[u8]| replace(b, dir.as_bytes(), b"{DIR}");
-    Output {
+    let norm = |b: &[u8]| replace_bytes(b, dir.as_bytes(), b"{DIR}");
+    Ran {
         stdout: norm(&out.stdout),
         stderr: norm(&out.stderr),
-        status: out.status.code().map_or("signal".into(), |c| c.to_string()),
+        status: out.status,
     }
 }
 
-fn expected(case: &Path, name: &str) -> Output {
+fn expected(case: &Path, name: &str) -> Ran {
     let read = |ext: &str| std::fs::read(case.join(format!("{name}.{ext}")));
-    Output {
+    Ran {
         stdout: read("stdout").unwrap_or_default(),
         stderr: read("stderr").unwrap_or_default(),
-        status: read("status").map_or("0".into(), |s| {
-            String::from_utf8_lossy(&s).trim().to_string()
-        }),
+        // `signal`: killed by one.
+        status: read("status").map_or(Some(0), |s| String::from_utf8_lossy(&s).trim().parse().ok()),
     }
 }
 
-fn write_expected(case: &Path, name: &str, out: &Output) {
+fn write_expected(case: &Path, name: &str, out: &Ran) {
     let path = |ext: &str| case.join(format!("{name}.{ext}"));
     std::fs::write(path("stdout"), &out.stdout).expect("write stdout");
     for (ext, body, empty) in [
         ("stderr", out.stderr.clone(), out.stderr.is_empty()),
         (
             "status",
-            format!("{}\n", out.status).into_bytes(),
-            out.status == "0",
+            format!("{}\n", out.status_text()).into_bytes(),
+            out.status == Some(0),
         ),
     ] {
         if empty {
@@ -177,30 +144,6 @@ fn write_expected(case: &Path, name: &str, out: &Output) {
             std::fs::write(path(ext), body).expect("write expectation");
         }
     }
-}
-
-fn differences(engine: &str, want: &Output, got: &Output) -> Vec<String> {
-    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
-    let mut d = Vec::new();
-    for (what, w, g) in [
-        ("stdout", &want.stdout, &got.stdout),
-        ("stderr", &want.stderr, &got.stderr),
-    ] {
-        if w != g {
-            d.push(format!(
-                "{what}:\n--- expected\n{}\n--- {engine}\n{}",
-                text(w),
-                text(g)
-            ));
-        }
-    }
-    if want.status != got.status {
-        d.push(format!(
-            "exit: expected {}, {engine} {}",
-            want.status, got.status
-        ));
-    }
-    d
 }
 
 /// Every run, as (case directory, run name), sorted, and the expectation
@@ -282,7 +225,7 @@ fn main() -> ExitCode {
         }
         for (engine, bin) in engines {
             let got = run(bin, &case, &spec(&case, &name, engine));
-            let d = differences(engine, &want, &got);
+            let d = want.differences("expected", &got, engine);
             if !d.is_empty() {
                 failures.push(format!("== {id} ({engine})\n{}", d.join("\n")));
             }

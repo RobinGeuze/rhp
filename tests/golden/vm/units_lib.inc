@@ -1,0 +1,36 @@
+<?php
+// Included once: its closures and nested thunks live past index 0 of the
+// engine's tables.
+$fromLib = function () { return 'lib closure'; };
+
+#[Attribute]
+class Tag
+{
+    public function __construct(public Closure $make) {}
+}
+
+function withDefault(Closure $c = static function () { return 'default thunk'; })
+{
+    return $c();
+}
+
+#[Tag(static function () { return 'attribute thunk'; })]
+function tagged() {}
+
+class Consts
+{
+    const MAKE = static function () { return 'constant thunk'; };
+    public $p = [1];
+
+    public function counter()
+    {
+        return function () { static $k = 0; return ++$k; };
+    }
+}
+
+function declareNested()
+{
+    if (!class_exists('Nested', false)) {
+        class Nested { const N = 'nested class'; }
+    }
+}

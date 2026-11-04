@@ -5,13 +5,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rhp_builtins::{self as builtins, Host};
-use rhp_bytecode::{
-    ClassProto, ConstInitProto, FunctionProto, IncludeKind, Program, PropDefaultProto, Reg,
-};
+use rhp_bytecode::{FunctionProto, IncludeKind, Program, Reg};
 use rhp_values::{conv, Thrown, Value};
 
 use crate::errors::UnwindResult;
-use crate::{ini_bool, opcache, Frame, Vm};
+use crate::{ini_bool, opcache, Frame, UnitBase, UnitFn, UnitId, Vm};
 
 /// SAPI-injected callback that parses + compiles an included file's source into
 /// a `Program`, keeping the VM compiler-agnostic (see the `includer` field).
@@ -103,8 +101,8 @@ impl Vm {
         self.emit_compile_diags(&prog);
 
         // eval()'d declarations are preloaded too (recorded without a file).
-        let main = self.install_file(b"", &prog)?;
-        self.run_included(main, top, "eval")
+        let (main, unit) = self.install_file(b"", &prog)?;
+        self.run_included(main, unit, top, "eval")
     }
 
     /// The includer's result: a syntax error becomes a ParseError object
@@ -243,8 +241,8 @@ impl Vm {
         if let Some(t) = self.pending_throw.take() {
             return Err(t);
         }
-        let main = self.install_file(&realpath, &prog)?;
-        let ret = self.run_included(main, top, kind.name())?;
+        let (main, unit) = self.install_file(&realpath, &prog)?;
+        let ret = self.run_included(main, unit, top, kind.name())?;
         // A file with no `return` yields int(1).
         Ok(match ret {
             Value::Null => Value::Int(1),
@@ -402,7 +400,7 @@ impl Vm {
         &mut self,
         path: &[u8],
         prog: &Rc<Program>,
-    ) -> Result<Rc<FunctionProto>, Thrown> {
+    ) -> Result<(Rc<FunctionProto>, UnitId), Thrown> {
         let at = (
             self.closures.len(),
             self.decl_classes.len(),
@@ -422,23 +420,33 @@ impl Vm {
         Ok(main)
     }
 
-    /// Merge an included program's declarations into the running VM, rebasing its
-    /// program-global closure indices by the current closure count. Returns the
-    /// rebased `{main}` to execute.
+    /// Start a unit for `prog`: record where its file-local indices start
+    /// and append its closures.
+    pub(crate) fn add_unit(&mut self, prog: &Program) -> UnitId {
+        let unit = self.units.len() as UnitId;
+        self.units.push(UnitBase {
+            closures: self.closures.len() as u32,
+            classes: self.decl_classes.len() as u32,
+        });
+        let closures = prog.closures.iter().map(|c| UnitFn {
+            proto: c.clone(),
+            unit,
+        });
+        self.closures.extend(closures);
+        unit
+    }
+
+    /// Merge an included program's declarations into the running VM as a new
+    /// unit. Returns its `{main}` to execute, and the unit.
     /// `preloaded`: the file was preloaded, and php removed its declarations
     /// of what preloading declared: those are skipped, not redeclared.
     fn install_included(
         &mut self,
         prog: &Program,
         preloaded: bool,
-    ) -> Result<Rc<FunctionProto>, Thrown> {
-        let base = self.closures.len() as u32;
+    ) -> Result<(Rc<FunctionProto>, UnitId), Thrown> {
         let cbase = self.decl_classes.len();
-        // closures: append (rebased).
-        for c in &prog.closures {
-            self.closures
-                .push(Rc::new(rebase_proto_c(c, base, cbase as u32)));
-        }
+        let unit = self.add_unit(prog);
         // functions: skip the re-emitted prelude helpers (the first N); a user
         // function is fatal to redeclare (php semantics).
         for proto in prog.functions.iter().skip(prog.num_prelude_functions) {
@@ -456,18 +464,20 @@ impl Vm {
                 ));
             }
             let idx = self.functions.len();
-            self.functions
-                .push(Rc::new(rebase_proto_c(proto, base, cbase as u32)));
+            self.functions.push(UnitFn {
+                proto: proto.clone(),
+                unit,
+            });
             self.fn_names.insert(lc, idx);
         }
         // classes: a name already in use is not early-bound; redeclaring it is
         // fatal only when its declaration statement runs (`DeclareClass`).
-        let top = self.register_decl_classes(prog, base);
+        let top = self.register_decl_classes(prog, unit);
         if preloaded {
             self.skip_preloaded_decls(cbase);
         }
         self.hoist_decl_classes(top)?;
-        Ok(Rc::new(rebase_proto_c(&prog.main, base, cbase as u32)))
+        Ok((prog.main.clone(), unit))
     }
 
     /// Run an included / eval'd script's `{main}` **in the calling scope**: its
@@ -478,13 +488,14 @@ impl Vm {
     fn run_included(
         &mut self,
         main: Rc<FunctionProto>,
+        unit: UnitId,
         caller_top: usize,
         kind: &'static str,
     ) -> Result<Value, Thrown> {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
-        let mut frame = Frame::new(main.clone(), 0);
+        let mut frame = Frame::new(main.clone(), unit, 0);
         frame.capture = true;
         frame.include_kind = Some(kind);
         frame.include_caller = Some(caller_top);
@@ -609,47 +620,4 @@ fn normalize_url(url: &[u8]) -> Vec<u8> {
     }
     out.extend_from_slice(&segs.join(&b"/"[..]));
     out
-}
-
-/// Clone a proto, stamping its `closure_base` so its file-local `MakeClosure`
-/// indices resolve into the VM's flat closure table (whose tail holds this
-/// file's closures), and its `class_base` likewise for `DeclareClass`. No
-/// instruction is rewritten: the bases are applied at run time.
-pub(crate) fn rebase_proto_c(proto: &FunctionProto, base: u32, cbase: u32) -> FunctionProto {
-    let mut p = proto.clone();
-    p.closure_base = base;
-    p.class_base = cbase;
-    p
-}
-
-/// Stamp `closure_base` / `class_base` on a class's method and
-/// initializer-thunk protos (their bodies can create closures or declare
-/// classes) when merging an included program.
-pub(crate) fn rebase_class(c: &ClassProto, base: u32, cbase: u32) -> ClassProto {
-    let mut c = c.clone();
-    let rb = |p: &FunctionProto| Rc::new(rebase_proto_c(p, base, cbase));
-    for m in &mut c.methods {
-        m.proto = rb(&m.proto);
-    }
-    for p in &mut c.props {
-        if let PropDefaultProto::Init(t) = &p.default {
-            p.default = PropDefaultProto::Init(rb(t));
-        }
-    }
-    for sp in &mut c.static_props {
-        if let ConstInitProto::Thunk(t) = &sp.init {
-            sp.init = ConstInitProto::Thunk(rb(t));
-        }
-    }
-    for k in &mut c.constants {
-        if let ConstInitProto::Thunk(t) = &k.value {
-            k.value = ConstInitProto::Thunk(rb(t));
-        }
-    }
-    for ec in &mut c.enum_cases {
-        if let Some(ConstInitProto::Thunk(t)) = &ec.value {
-            ec.value = Some(ConstInitProto::Thunk(rb(t)));
-        }
-    }
-    c
 }

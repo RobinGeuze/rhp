@@ -3,10 +3,10 @@
 //!
 //! A cached script is a compiled [`Program`]. The main script, `include`
 //! and `require` of an unchanged file reuse it instead of lexing, parsing
-//! and compiling again. A `Program` is immutable: the VM copies the protos
-//! it runs (an include is rebased into the request's tables), so statics,
-//! class statics and constants live in the request's `Vm` and start fresh
-//! in every request, exactly as without the cache.
+//! and compiling again. A `Program` is immutable: the VM runs its protos as
+//! they are and keeps where each install's tables start in a unit of its
+//! own, so statics, class statics and constants live in the request's `Vm`
+//! and start fresh in every request, exactly as without the cache.
 //!
 //! The cache is per OS thread, like the VM: `Program` holds `Rc`s. Every
 //! request served on a thread shares it, as php-fpm's workers share their

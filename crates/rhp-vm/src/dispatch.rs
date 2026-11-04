@@ -20,7 +20,7 @@ use crate::lvalue::{
     DimMode, MagicSplit,
 };
 use crate::types::type_lc;
-use crate::{classes, deref, StaticKey, Vm};
+use crate::{classes, deref, StaticKey, UnitBase, Vm};
 
 impl Vm {
     /// Key of a function-static slot: the proto plus, for a method, the class
@@ -33,7 +33,12 @@ impl Vm {
         } else {
             self.stack[top].defining_class
         };
-        (Rc::as_ptr(proto) as usize, cls, sname)
+        (Rc::as_ptr(proto) as usize, self.stack[top].unit, cls, sname)
+    }
+
+    /// Where the file-local indices of frame `top`'s unit start.
+    fn unit_base(&self, top: usize) -> UnitBase {
+        self.units[self.stack[top].unit as usize]
     }
 
     pub(crate) fn reg_get(&self, top: usize, r: Reg) -> Value {
@@ -507,7 +512,7 @@ impl Vm {
                     // reach private members and resolve `self::`/`static::`.
                     let cd = Rc::new(rhp_values::ClosureData {
                         // `fnidx` is file-local; resolve into the flat table.
-                        fnidx: proto.closure_base + fnidx,
+                        fnidx: self.unit_base(top).closures + fnidx,
                         captures,
                         bound_this: None,
                         bound_class: self.stack[top].defining_class,
@@ -1321,12 +1326,12 @@ impl Vm {
                 }
                 Instr::CloneObj { dst, src } => self.exec_clone(top, dst, src)?,
                 Instr::DeclareClass { class_idx } => {
-                    self.declare_class_at((proto.class_base + class_idx) as usize)?;
+                    self.declare_class_at((self.unit_base(top).classes + class_idx) as usize)?;
                 }
                 Instr::DeclareFunc { idx } => {
                     // The proto is stored in the closures table (file-local index).
-                    let f = self.closures[(proto.closure_base + idx) as usize].clone();
-                    let lc = f.name.as_bytes().to_ascii_lowercase();
+                    let f = self.closures[(self.unit_base(top).closures + idx) as usize].clone();
+                    let lc = f.proto.name.as_bytes().to_ascii_lowercase();
                     if self.fn_names.contains_key(&lc) {
                         // A preloaded file's declaration of a preloaded function
                         // was removed by preloading.
@@ -1337,7 +1342,7 @@ impl Vm {
                             "Error",
                             format!(
                                 "Cannot redeclare function {}()",
-                                String::from_utf8_lossy(f.name.as_bytes())
+                                String::from_utf8_lossy(f.proto.name.as_bytes())
                             ),
                         ));
                     }

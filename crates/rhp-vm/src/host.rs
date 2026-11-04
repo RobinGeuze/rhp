@@ -1768,7 +1768,7 @@ impl Host for Vm {
             Value::Closure(cd) if cd.wrapped.is_none() => self
                 .closures
                 .get(cd.fnidx as usize)
-                .map(|p| p.name.as_bytes().to_vec()),
+                .map(|f| f.proto.name.as_bytes().to_vec()),
             _ => None,
         }
     }

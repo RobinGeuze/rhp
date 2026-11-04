@@ -11,7 +11,7 @@ use rhp_bytecode::{AttributeProto, ConstInitProto, DeclMeta, FunctionProto, Type
 use rhp_values::{ArrayKey, ClassId, ClassKind, PhpArray, PhpStr, Thrown, Value, Visibility};
 
 use crate::classes::ResolvedMethod;
-use crate::{deref, Vm};
+use crate::{deref, UnitFn, UnitId, Vm};
 
 use rhp_builtins::signatures::{self as sigs, Signature};
 
@@ -61,8 +61,8 @@ pub(crate) const T_PARAMETER: i64 = 32;
 /// A resolved function-like reflection subject.
 #[derive(Clone)]
 enum FnSubject {
-    /// A user (or prelude) function by proto.
-    Func(Rc<FunctionProto>),
+    /// A user (or prelude) function.
+    Func(UnitFn),
     /// A builtin (native) function.
     Builtin(&'static str),
     /// A method, as found on `class` (the reflected class).
@@ -277,8 +277,8 @@ impl Vm {
                     .collect();
                 let mut user = PhpArray::new();
                 for f in &self.functions {
-                    let name = lc(f.name.as_bytes());
-                    if f.debug.file.is_empty() {
+                    let name = lc(f.proto.name.as_bytes());
+                    if f.proto.debug.file.is_empty() {
                         internal.push(name);
                     } else {
                         user.push(s(&name));
@@ -415,7 +415,7 @@ impl Vm {
                         let called = this.as_ref().map(|h| h.borrow().class).unwrap_or(class);
                         self.method_closure(&m, this, called)
                     }
-                    Some(FnSubject::Func(p)) => self.fcc_value(Value::Str(p.name.clone())),
+                    Some(FnSubject::Func(f)) => self.fcc_value(Value::Str(f.proto.name.clone())),
                     Some(FnSubject::EnumBuiltin { class, name }) => {
                         let mut a = PhpArray::new();
                         a.push(Value::Str(self.classes[class as usize].name.clone()));
@@ -1091,8 +1091,8 @@ impl Vm {
         }
         let kind = rhp_values::conv::to_string_bytes(&k[0]);
         let idx_of = |v: &Value| rhp_values::conv::to_int(v) as usize;
-        // (attribute, scope class)
-        let found: Option<(AttributeProto, Option<ClassId>)> = match kind.as_slice() {
+        // (attribute, scope class, unit)
+        let found: Option<(AttributeProto, Option<ClassId>, UnitId)> = match kind.as_slice() {
             b"class" => {
                 let cid = self.resolve_class_by_name(&rhp_values::conv::to_string_bytes(&k[1]))?;
                 self.classes[cid as usize]
@@ -1101,7 +1101,7 @@ impl Vm {
                     .attributes
                     .get(idx_of(&k[2]))
                     .cloned()
-                    .map(|a| (a, Some(cid)))
+                    .map(|a| (a, Some(cid), self.classes[cid as usize].unit))
             }
             b"prop" | b"const" => {
                 let cid = self.resolve_class_by_name(&rhp_values::conv::to_string_bytes(&k[1]))?;
@@ -1112,7 +1112,7 @@ impl Vm {
                     self.find_const_meta(cid, &name).map(|m| m.0)
                 };
                 meta.and_then(|m| m.attributes.get(idx_of(&k[3])).cloned())
-                    .map(|a| (a, Some(cid)))
+                    .map(|a| (a, Some(cid), self.classes[cid as usize].unit))
             }
             b"fn" | b"param" => {
                 let sub = self.fn_subject(&k[1])?;
@@ -1121,6 +1121,7 @@ impl Vm {
                     Some(FnSubject::Closure { cd, .. }) => cd.bound_class,
                     _ => None,
                 };
+                let unit = sub.as_ref().map_or(0, |s| self.subject_unit(s));
                 let proto = sub.as_ref().and_then(|s| self.subject_proto(s));
                 proto
                     .and_then(|p| {
@@ -1132,18 +1133,19 @@ impl Vm {
                                 .and_then(|pi| pi.attributes.get(idx_of(&k[3])).cloned())
                         }
                     })
-                    .map(|a| (a, scope))
+                    .map(|a| (a, scope, unit))
             }
             _ => None,
         };
-        let Some((at, scope)) = found else {
+        let Some((at, scope, unit)) = found else {
             return Ok(Value::Array(PhpArray::new()));
         };
         match at.args {
             None => Ok(Value::Array(PhpArray::new())),
             Some(ConstInitProto::Const(v)) => Ok(v),
-            Some(ConstInitProto::Thunk(t)) => {
-                self.run_proto_sync(t, None, scope, scope, Vec::new(), None)
+            Some(ConstInitProto::Thunk(proto)) => {
+                let f = UnitFn { proto, unit };
+                self.run_proto_sync(f, None, scope, scope, Vec::new(), None)
             }
         }
     }
@@ -1165,20 +1167,19 @@ impl Vm {
                     None
                 }
             }
-            Value::Closure(cd) => {
-                match &cd.wrapped {
-                    Some(w) => {
-                        let w = (**w).clone();
-                        self.fn_subject(&w)?
-                    }
-                    None => self.closures.get(cd.fnidx as usize).cloned().map(|proto| {
-                        FnSubject::Closure {
-                            cd: cd.clone(),
-                            proto,
-                        }
-                    }),
+            Value::Closure(cd) => match &cd.wrapped {
+                Some(w) => {
+                    let w = (**w).clone();
+                    self.fn_subject(&w)?
                 }
-            }
+                None => self
+                    .closures
+                    .get(cd.fnidx as usize)
+                    .map(|f| FnSubject::Closure {
+                        cd: cd.clone(),
+                        proto: f.proto.clone(),
+                    }),
+            },
             Value::Array(a) => {
                 let v: Vec<Value> = a.iter().map(|(_, v)| deref(v)).collect();
                 if v.len() != 2 {
@@ -1218,10 +1219,21 @@ impl Vm {
 
     fn subject_proto(&self, sub: &FnSubject) -> Option<Rc<FunctionProto>> {
         match sub {
-            FnSubject::Func(p) => Some(p.clone()),
+            FnSubject::Func(f) => Some(f.proto.clone()),
             FnSubject::Method { m, .. } => Some(m.proto.clone()),
             FnSubject::Closure { proto, .. } => Some(proto.clone()),
             FnSubject::Builtin(_) | FnSubject::EnumBuiltin { .. } => None,
+        }
+    }
+
+    /// The unit a user function's nested thunks (parameter defaults,
+    /// attribute arguments) run in.
+    fn subject_unit(&self, sub: &FnSubject) -> UnitId {
+        match sub {
+            FnSubject::Func(f) => f.unit,
+            FnSubject::Method { m, .. } => m.unit,
+            FnSubject::Closure { cd, .. } => self.closures[cd.fnidx as usize].unit,
+            FnSubject::Builtin(_) | FnSubject::EnumBuiltin { .. } => 0,
         }
     }
 
@@ -1230,8 +1242,8 @@ impl Vm {
     fn subject_stub_sig(&self, sub: &FnSubject) -> Option<StubSig> {
         match sub {
             FnSubject::Builtin(name) => sigs::function(name.as_bytes()).map(StubSig::of_fn),
-            FnSubject::Func(p) if p.debug.file.is_empty() => {
-                sigs::function(p.name.as_bytes()).map(StubSig::of_fn)
+            FnSubject::Func(f) if f.proto.debug.file.is_empty() => {
+                sigs::function(f.proto.name.as_bytes()).map(StubSig::of_fn)
             }
             FnSubject::Method { m, .. } if self.is_internal_class(m.defining_class) => {
                 sigs::method(
@@ -1294,7 +1306,11 @@ impl Vm {
                         FnSubject::Closure { cd, .. } => cd.bound_class,
                         _ => None,
                     };
-                    self.run_proto_sync(t.clone(), None, scope, scope, Vec::new(), None)
+                    let f = UnitFn {
+                        proto: t.clone(),
+                        unit: self.subject_unit(sub),
+                    };
+                    self.run_proto_sync(f, None, scope, scope, Vec::new(), None)
                 }
                 None => Ok(Value::Null),
             },
@@ -1306,7 +1322,7 @@ impl Vm {
         let (proto, internal) = match sub {
             FnSubject::Builtin(name) => return self.builtin_fn_info(name),
             FnSubject::EnumBuiltin { class, name } => return self.enum_builtin_info(*class, name),
-            FnSubject::Func(p) => (p.clone(), p.debug.file.is_empty()),
+            FnSubject::Func(f) => (f.proto.clone(), f.proto.debug.file.is_empty()),
             FnSubject::Method { m, .. } => {
                 (m.proto.clone(), self.is_internal_class(m.defining_class))
             }
@@ -1655,7 +1671,7 @@ impl Vm {
     /// A value that `fn_subject` resolves back to `sub`.
     fn subject_locator(&self, sub: &FnSubject) -> Value {
         match sub {
-            FnSubject::Func(p) => Value::Str(p.name.clone()),
+            FnSubject::Func(f) => Value::Str(f.proto.name.clone()),
             FnSubject::Builtin(n) => s(n.as_bytes()),
             FnSubject::EnumBuiltin { class, name } => {
                 let mut a = PhpArray::new();

@@ -12,7 +12,7 @@ use rhp_values::{
 
 use crate::errors::UnwindResult;
 use crate::types::type_lc;
-use crate::{classes, deref, is_prelude_proto, Frame, Vm};
+use crate::{classes, deref, is_prelude_proto, Frame, UnitFn, Vm};
 
 /// Named call arguments, in call order.
 type NamedArgs = Vec<(PhpStr, Value)>;
@@ -20,7 +20,7 @@ type NamedArgs = Vec<(PhpStr, Value)>;
 /// A resolved callable (see `Vm::resolve_callable`).
 pub(crate) enum Callee {
     Closure(Rc<rhp_values::ClosureData>),
-    Function(Rc<FunctionProto>),
+    Function(UnitFn),
     Builtin(String),
     /// A method with its `$this` (None: static) and called class.
     Method(classes::ResolvedMethod, Option<ObjectHandle>, ClassId),
@@ -59,7 +59,7 @@ impl Vm {
     /// register `func` is by reference.
     pub(crate) fn resolved_param_is_ref(&self, top: usize, func: Reg, idx: u16) -> bool {
         match self.stack[top].regs[func as usize] {
-            Value::Int(f) if f >= 0 => param_is_ref(&self.functions[f as usize], idx),
+            Value::Int(f) if f >= 0 => param_is_ref(&self.functions[f as usize].proto, idx),
             _ => false,
         }
     }
@@ -485,7 +485,7 @@ impl Vm {
             let line = proto.params.get(idx).map(|p| p.line).unwrap_or(0);
             (proto.debug.file.as_bytes().to_vec(), line)
         });
-        let mut pushed = Frame::new(proto.clone(), Reg::MAX);
+        let mut pushed = Frame::new(proto.clone(), frame.unit, Reg::MAX);
         std::mem::swap(&mut pushed, frame);
         self.stack.push(pushed);
         let t = self.materialize(err, at);
@@ -662,9 +662,12 @@ impl Vm {
         args: Vec<Value>,
         caller: Option<bool>,
     ) -> Result<Value, Thrown> {
-        let proto = method.proto.clone();
+        let f = UnitFn {
+            proto: method.proto.clone(),
+            unit: method.unit,
+        };
         self.run_proto_sync(
-            proto,
+            f,
             this,
             Some(method.defining_class),
             Some(called_class),
@@ -679,7 +682,7 @@ impl Vm {
     /// own frame only ([`Host::magic_fetch`]).
     pub(crate) fn run_proto_sync(
         &mut self,
-        proto: Rc<FunctionProto>,
+        f: UnitFn,
         this: Option<ObjectHandle>,
         defining_class: Option<ClassId>,
         called_class: Option<ClassId>,
@@ -688,14 +691,14 @@ impl Vm {
     ) -> Result<Value, Thrown> {
         let mode = std::mem::take(&mut self.pending_magic_fetch);
         let saved = std::mem::replace(&mut self.magic_fetch, (self.stack.len(), mode));
-        let r = self.run_proto_frame(proto, this, defining_class, called_class, args, caller);
+        let r = self.run_proto_frame(f, this, defining_class, called_class, args, caller);
         self.magic_fetch = saved;
         r
     }
 
     fn run_proto_frame(
         &mut self,
-        proto: Rc<FunctionProto>,
+        f: UnitFn,
         this: Option<ObjectHandle>,
         defining_class: Option<ClassId>,
         called_class: Option<ClassId>,
@@ -705,7 +708,8 @@ impl Vm {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
-        let mut frame = Frame::new(proto.clone(), 0);
+        let proto = f.proto;
+        let mut frame = Frame::new(proto.clone(), f.unit, 0);
         if let (Some(cv), Some(obj)) = (proto.this_cv, this) {
             frame.regs[cv as usize] = Value::Object(obj);
         }
@@ -751,8 +755,9 @@ impl Vm {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
-        let proto = self.closures[cd.fnidx as usize].clone();
-        let mut frame = Frame::new(proto.clone(), 0);
+        let f = &self.closures[cd.fnidx as usize];
+        let proto = f.proto.clone();
+        let mut frame = Frame::new(proto.clone(), f.unit, 0);
         for (i, cap) in cd.captures.iter().enumerate() {
             frame.regs[i] = cap.clone();
         }
@@ -1206,7 +1211,7 @@ impl Vm {
         };
         match callee {
             Callee::Closure(cd) => self.run_closure_sync(&cd, args, caller),
-            Callee::Function(proto) => self.run_proto_sync(proto, None, None, None, args, caller),
+            Callee::Function(f) => self.run_proto_sync(f, None, None, None, args, caller),
             Callee::Builtin(name) => self.invoke_builtin(&name, args),
             Callee::Method(m, this, called) => self.call_sync_mode(&m, this, called, args, caller),
             Callee::Magic(m, this, called, name) => {
@@ -1368,7 +1373,7 @@ impl Vm {
     pub(crate) fn enter_user_call(
         &mut self,
         top: usize,
-        callee: Rc<FunctionProto>,
+        callee: UnitFn,
         dst: Reg,
         base: Reg,
         argc: u16,
@@ -1387,17 +1392,18 @@ impl Vm {
     /// Push a frame for a user function with pre-collected args.
     fn push_user_frame(
         &mut self,
-        callee: Rc<FunctionProto>,
+        callee: UnitFn,
         args: Vec<Value>,
         dst: Reg,
     ) -> Result<(), Thrown> {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
-        let mut frame = Frame::new(callee.clone(), dst);
+        let is_generator = callee.proto.is_generator;
+        let mut frame = Frame::new(callee.proto, callee.unit, dst);
         self.bind_frame(&mut frame, &args, Some(self.caller_strict()))?;
         self.bind_superglobals(&mut frame);
-        if callee.is_generator {
+        if is_generator {
             let gen = self.make_generator(frame);
             let caller = self.stack.len() - 1;
             if dst != Reg::MAX {
@@ -1573,11 +1579,11 @@ impl Vm {
                     self.fcc_scope.set(saved);
                     r
                 }
-                None => Some((self.closures[cd.fnidx as usize].clone(), None)),
+                None => Some((self.closures[cd.fnidx as usize].proto.clone(), None)),
             };
         }
         match self.resolve_callable(c).ok()? {
-            Callee::Function(proto) => Some((proto, None)),
+            Callee::Function(f) => Some((f.proto, None)),
             Callee::Method(m, _, _) => Some((m.proto.clone(), Some(m.defining_class))),
             _ => None,
         }
@@ -1921,7 +1927,7 @@ impl Vm {
         let (argv, named) = self.split_call_args(&arr)?;
         if let Some(fnidx) = user {
             let callee = self.functions[fnidx].clone();
-            let argv = self.place_named_args(&callee, None, argv, named)?;
+            let argv = self.place_named_args(&callee.proto, None, argv, named)?;
             self.push_user_frame(callee, argv, dst)?;
         } else if !named.is_empty() {
             // `call_user_func($f, ...named)` forwards them.

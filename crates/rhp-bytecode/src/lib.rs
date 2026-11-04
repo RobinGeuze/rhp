@@ -832,7 +832,7 @@ pub enum Instr {
     },
     /// Register a conditionally-declared function (one nested in control flow, so
     /// not hoisted): its proto is stored in the closures table at file-local
-    /// index `idx` (resolved via the running proto's `closure_base`).
+    /// index `idx` (resolved against the running frame's unit).
     DeclareFunc {
         idx: u32,
     },
@@ -1057,9 +1057,10 @@ pub struct DebugInfo {
 }
 
 /// One compiled PHP function/method/closure, or the script body (`"{main}"`).
-/// Carries no `'arena` borrow — the AST is consumed at compile time.
-/// `Clone` is used by the VM to stamp an included file's protos with a
-/// `closure_base` offset before merging them (see `Vm::install_included`).
+/// Carries no `'arena` borrow — the AST is consumed at compile time. The VM
+/// runs it as compiled and shares it (`Rc`) between every install of its
+/// program: file-local operands (`MakeClosure`, `DeclareFunc`,
+/// `DeclareClass`) are resolved against the running frame's unit.
 #[derive(Clone)]
 pub struct FunctionProto {
     pub name: PhpStr,
@@ -1085,15 +1086,6 @@ pub struct FunctionProto {
     /// (the body runs lazily, driven by the generator protocol) instead of
     /// running immediately.
     pub is_generator: bool,
-    /// Offset of this proto's file into the VM's flat closure table. A
-    /// `MakeClosure` operand is a *file-local* closure index; the running
-    /// closure index is `closure_base + fnidx`. The base program is 0; an
-    /// included file is stamped with the closure count at merge time, so no
-    /// instruction rewriting is needed (see `Vm::install_included`).
-    pub closure_base: u32,
-    /// Offset of this proto's file into the VM's flat class-declaration table
-    /// (the operand of `DeclareClass` is file-local, like `closure_base`).
-    pub class_base: u32,
     /// CVs that name a superglobal (`$_SERVER`, `$GLOBALS`, …), paired with the
     /// name; the VM binds each to the shared global cell at frame entry so they
     /// are visible in every scope without an explicit `global`.
@@ -1132,8 +1124,6 @@ impl FunctionProto {
             is_static: false,
             num_captures: 0,
             is_generator: false,
-            closure_base: 0,
-            class_base: 0,
             superglobals: Vec::new(),
             return_type: None,
             strict_types: false,
@@ -1164,8 +1154,9 @@ pub struct Program {
     /// resolving `extends`/`implements`/`use` by name and assigning `ClassId`s.
     /// Shared: the VM links a declaration without copying it.
     pub classes: Vec<Rc<ClassProto>>,
-    /// Anonymous closure / arrow-function protos, indexed by the `fnidx` operand
-    /// of `MakeClosure` and by `ClosureData::fnidx`.
+    /// Anonymous closure / arrow-function protos (and conditional functions),
+    /// indexed by the file-local `fnidx` of `MakeClosure` (`idx` of
+    /// `DeclareFunc`).
     pub closures: Vec<Rc<FunctionProto>>,
     /// How many leading entries of `classes` are the built-in prelude (always
     /// re-emitted per compile). An included file's prelude classes are skipped on

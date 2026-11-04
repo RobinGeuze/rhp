@@ -11,7 +11,7 @@ use rhp_values::{ObjectHandle, Thrown, Value};
 
 use crate::lvalue::CursorRoot;
 use crate::streams::{StreamState, StreamTable};
-use crate::{deref, output, request, Frame, Vm};
+use crate::{deref, output, request, Frame, UnitFn, Vm};
 
 /// The shutdown sequence's handler for an `exit` / uncaught throwable:
 /// `Some(code)` ends the current step with that exit status.
@@ -46,6 +46,7 @@ impl Vm {
             magic_fetch: Default::default(),
             output: output::Output::default(),
             stack: Vec::new(),
+            units: Vec::new(),
             functions: Vec::new(),
             fn_names: HashMap::new(),
             closures: Vec::new(),
@@ -610,27 +611,32 @@ impl Vm {
             debug_assert!(
                 idx >= prog.num_prelude_functions || !proto.name.as_bytes().starts_with(b"__")
             );
-            self.functions.push(proto.clone());
+            self.functions.push(UnitFn {
+                proto: proto.clone(),
+                unit: 0,
+            });
             self.fn_names
                 .insert(proto.name.as_bytes().to_ascii_lowercase(), idx);
         }
-        // Register anonymous closure / arrow-function protos (indexed by fnidx).
-        self.closures = prog.closures.clone();
+        // The main script is unit 0: register its anonymous closure /
+        // arrow-function protos (indexed by fnidx).
+        self.decl_classes.clear();
+        self.decl_runtime.clear();
+        let unit = self.add_unit(prog);
+        debug_assert_eq!(unit, 0);
         // Link the built-in prelude classes, then hoist the user's top-level
         // classes (those whose dependencies are available); the rest, and
         // nested declarations, are declared when execution reaches them.
         // (Engine data php has before a request starts: not counted.)
         rhp_values::mem::uncounted(|| {
-            self.install_classes(&prog.classes[..prog.num_prelude_classes])
+            self.install_classes(&prog.classes[..prog.num_prelude_classes], unit)
         })?;
         self.internal_classes = self.classes.len();
-        self.decl_classes.clear();
-        self.decl_runtime.clear();
-        let top = self.register_decl_classes(prog, 0);
+        let top = self.register_decl_classes(prog, unit);
         // Preloaded functions and classes exist before the script compiles.
         self.install_preload();
         self.hoist_decl_classes(top)?;
-        let mut main_frame = Frame::new(prog.main.clone(), 0);
+        let mut main_frame = Frame::new(prog.main.clone(), unit, 0);
         self.bind_superglobals(&mut main_frame);
         // {main}'s variables are the global symbol table's entries.
         self.bind_global_scope(&mut main_frame);
@@ -650,7 +656,7 @@ impl Vm {
     fn push_internal_main(&mut self) {
         let mut main = FunctionProto::new(rhp_values::PhpStr::from("{main}"));
         main.debug.file = rhp_values::PhpStr::from("");
-        self.stack.push(Frame::new(Rc::new(main), 0));
+        self.stack.push(Frame::new(Rc::new(main), 0, 0));
     }
 
     /// Run the script and php's request shutdown (php_execute_script +

@@ -209,26 +209,26 @@ impl Vm {
     fn preload_link(&mut self, recs: &[PreloadRec]) {
         let slots: Vec<usize> = recs.iter().flat_map(|r| r.top_slots()).collect();
         let pending = |vm: &Vm, slot: usize| {
-            let (proto, done) = &vm.decl_classes[slot];
-            let anon = crate::classes::is_anon_name(proto.name.as_bytes());
-            !*done
+            let decl = &vm.decl_classes[slot];
+            let anon = crate::classes::is_anon_name(decl.proto.name.as_bytes());
+            !decl.done
                 && (anon
                     || !vm
                         .class_ids
-                        .contains_key(&proto.name.as_bytes().to_ascii_lowercase()))
+                        .contains_key(&decl.proto.name.as_bytes().to_ascii_lowercase()))
         };
         let mut errors: std::collections::HashMap<usize, (String, Vec<u8>, i64)> =
             std::collections::HashMap::new();
         loop {
             let mut changed = false;
             for &slot in &slots {
-                if !pending(self, slot) || !self.deps_ready(&self.decl_classes[slot].0) {
+                if !pending(self, slot) || !self.deps_ready(&self.decl_classes[slot].proto) {
                     continue;
                 }
-                let proto = self.decl_classes[slot].0.clone();
+                let proto = self.decl_classes[slot].proto.clone();
                 match self.link_slot(slot, &proto) {
                     Ok(()) => {
-                        self.decl_classes[slot].1 = true;
+                        self.decl_classes[slot].done = true;
                         changed = true;
                     }
                     Err(t) => {
@@ -243,11 +243,11 @@ impl Vm {
             }
         }
         for &slot in &slots {
-            let (proto, done) = &self.decl_classes[slot];
-            if *done {
+            let decl = &self.decl_classes[slot];
+            if decl.done {
                 continue;
             }
-            let proto = proto.clone();
+            let proto = decl.proto.clone();
             // A C string: an anonymous class's name stops at its NUL.
             let raw = proto.name.as_bytes();
             let shown = &raw[..raw.iter().position(|&c| c == 0).unwrap_or(raw.len())];
@@ -348,7 +348,8 @@ impl Vm {
         let mut fn_names = std::collections::HashSet::new();
         for i in fn_skew..self.functions.len() {
             let f = &self.functions[i];
-            let origin = match self.closures.iter().position(|c| Rc::ptr_eq(c, f)) {
+            let same = |c: &crate::UnitFn| Rc::ptr_eq(&c.proto, &f.proto) && c.unit == f.unit;
+            let origin = match self.closures.iter().position(same) {
                 Some(abs) => {
                     let Some(r) = find(&|r| {
                         abs >= r.closure_base && abs < r.closure_base + r.prog.closures.len()
@@ -375,7 +376,7 @@ impl Vm {
                     (r, FnOrigin::Top(local))
                 }
             };
-            fn_names.insert(f.name.as_bytes().to_ascii_lowercase());
+            fn_names.insert(f.proto.name.as_bytes().to_ascii_lowercase());
             functions.push(origin);
         }
         // preload_move_user_functions takes them last declared first.
@@ -424,31 +425,24 @@ impl Vm {
         if self.preload_rec.is_some() || !self.opcache_request().started {
             return;
         }
-        let mut bases = Vec::new();
+        let mut units = Vec::new();
         for (_, prog) in &pre.programs {
-            let base = self.closures.len() as u32;
-            let cbase = self.decl_classes.len();
-            for c in &prog.closures {
-                self.closures.push(Rc::new(crate::include::rebase_proto_c(
-                    c,
-                    base,
-                    cbase as u32,
-                )));
-            }
-            self.register_decl_classes(prog, base);
-            bases.push((base, cbase));
+            let unit = self.add_unit(prog);
+            self.register_decl_classes(prog, unit);
+            units.push(unit);
         }
         for &(p, origin) in &pre.functions {
-            let (base, cbase) = bases[p];
+            let unit = units[p];
             let f = match origin {
-                FnOrigin::Top(i) => Rc::new(crate::include::rebase_proto_c(
-                    &pre.programs[p].1.functions[i],
-                    base,
-                    cbase as u32,
-                )),
-                FnOrigin::Closure(i) => self.closures[base as usize + i].clone(),
+                FnOrigin::Top(i) => crate::UnitFn {
+                    proto: pre.programs[p].1.functions[i].clone(),
+                    unit,
+                },
+                FnOrigin::Closure(i) => {
+                    self.closures[self.units[unit as usize].closures as usize + i].clone()
+                }
             };
-            let lc = f.name.as_bytes().to_ascii_lowercase();
+            let lc = f.proto.name.as_bytes().to_ascii_lowercase();
             if self.fn_names.contains_key(&lc) {
                 continue;
             }
@@ -460,8 +454,8 @@ impl Vm {
         self.silence += 1;
         let mut linked = vec![None; pre.classes.len()];
         for (i, &(p, local)) in pre.classes.iter().enumerate() {
-            let slot = bases[p].1 + local;
-            let proto = self.decl_classes[slot].0.clone();
+            let slot = self.units[units[p] as usize].classes as usize + local;
+            let proto = self.decl_classes[slot].proto.clone();
             let anon = crate::classes::is_anon_name(proto.name.as_bytes());
             if !anon
                 && self
@@ -472,7 +466,7 @@ impl Vm {
             }
             let id = self.classes.len() as u32;
             if self.link_slot(slot, &proto).is_ok() {
-                self.decl_classes[slot].1 = true;
+                self.decl_classes[slot].done = true;
                 linked[i] = Some(id);
             }
         }
@@ -491,12 +485,12 @@ impl Vm {
     pub(crate) fn skip_preloaded_decls(&mut self, cbase: usize) {
         for slot in cbase..self.decl_classes.len() {
             let name = self.decl_classes[slot]
-                .0
+                .proto
                 .name
                 .as_bytes()
                 .to_ascii_lowercase();
             if self.class_ids.contains_key(&name) {
-                self.decl_classes[slot].1 = true;
+                self.decl_classes[slot].done = true;
             }
         }
     }

@@ -64,13 +64,19 @@ pub struct Vm {
     /// write passes through on its way to [`Vm::emit_stdout`].
     output: output::Output,
     stack: Vec<Frame>,
-    functions: Vec<Rc<FunctionProto>>,
+    /// The programs installed so far: the main script is unit 0, then each
+    /// included file and eval()'d string, in load order.
+    units: Vec<UnitBase>,
+    functions: Vec<UnitFn>,
     fn_names: HashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
-    closures: Vec<Rc<FunctionProto>>,  // anonymous closure protos, indexed by `fnidx`
-    /// Flat table of user class declarations (`class_base + DeclareClass`
-    /// operand): each file's top-level class-likes then its nested ones, with
-    /// whether the declaration has already happened (hoisted or executed).
-    decl_classes: Vec<(Rc<ClassProto>, bool)>,
+    /// Every unit's closure protos (and conditional functions), indexed by
+    /// `ClosureData::fnidx`: a unit's `MakeClosure`/`DeclareFunc` operand
+    /// plus its [`UnitBase::closures`].
+    closures: Vec<UnitFn>,
+    /// Flat table of user class declarations (a unit's `DeclareClass`
+    /// operand plus its [`UnitBase::classes`]): each file's top-level
+    /// class-likes then its nested ones.
+    decl_classes: Vec<DeclSlot>,
     /// `decl_classes` slots declared by an executed `DeclareClass` (not
     /// early-bound): running that declaration again is a redeclaration.
     decl_runtime: std::collections::HashSet<usize>,
@@ -234,8 +240,38 @@ pub struct Vm {
     delayed_oom: Option<Box<memory::DelayedOom>>,
 }
 
-/// A function-static slot: (proto address, class it runs as, variable name).
-type StaticKey = (usize, Option<ClassId>, Vec<u8>);
+/// A function-static slot: (proto address, unit, class it runs as,
+/// variable name).
+type StaticKey = (usize, UnitId, Option<ClassId>, Vec<u8>);
+
+/// Index into [`Vm::units`].
+type UnitId = u32;
+
+/// An installed program (the main script, an included file, eval()'d
+/// code): where its file-local closure and class-declaration indices start
+/// in the VM's flat tables. Bytecode stays as compiled and is shared (with
+/// opcache, across requests); a frame carries its unit, and the VM adds
+/// these bases when it runs `MakeClosure`, `DeclareFunc` or `DeclareClass`.
+#[derive(Clone, Copy)]
+struct UnitBase {
+    closures: u32,
+    classes: u32,
+}
+
+/// A function proto and the unit it was installed with.
+#[derive(Clone)]
+struct UnitFn {
+    proto: Rc<FunctionProto>,
+    unit: UnitId,
+}
+
+/// One entry of [`Vm::decl_classes`]: a class declaration, its unit, and
+/// whether it has been declared (hoisted or executed).
+struct DeclSlot {
+    proto: Rc<ClassProto>,
+    unit: UnitId,
+    done: bool,
+}
 
 /// zend_ini_parse_bool: "true"/"yes"/"on" (any case) or a nonzero number.
 fn ini_bool(v: &[u8]) -> bool {
@@ -246,6 +282,8 @@ fn ini_bool(v: &[u8]) -> bool {
 /// One activation record.
 struct Frame {
     proto: Rc<FunctionProto>,
+    /// The unit `proto` belongs to.
+    unit: UnitId,
     regs: Vec<Value>,
     pc: usize,
     /// Caller register that receives this frame's return value (unused for main).
@@ -282,10 +320,11 @@ struct Frame {
 }
 
 impl Frame {
-    fn new(proto: Rc<FunctionProto>, ret_dst: Reg) -> Self {
+    fn new(proto: Rc<FunctionProto>, unit: UnitId, ret_dst: Reg) -> Self {
         let regs = vec![Value::Null; proto.num_registers as usize];
         Frame {
             proto,
+            unit,
             regs,
             pc: 0,
             ret_dst,

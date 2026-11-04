@@ -191,6 +191,14 @@ impl<'c> ProtoBuilder<'c> {
             .collect();
         proto.strict_types = self.cx.strict_types;
         proto.returns_ref = self.returns_ref;
+        // The VM keeps the proto as it is for as long as the program lives
+        // (with opcache, across requests): drop the growth slack.
+        proto.code.shrink_to_fit();
+        proto.consts.shrink_to_fit();
+        proto.names.shrink_to_fit();
+        proto.exception_table.shrink_to_fit();
+        proto.debug.lines.shrink_to_fit();
+        proto.superglobals.shrink_to_fit();
         Ok(proto)
     }
 

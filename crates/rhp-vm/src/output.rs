@@ -842,7 +842,7 @@ impl Vm {
                 // A first-class callable is named after what it wraps.
                 Some(w) => self.callable_name(w),
                 None => match self.closures.get(cd.fnidx as usize) {
-                    Some(p) => p.name.as_bytes().to_vec(),
+                    Some(f) => f.proto.name.as_bytes().to_vec(),
                     None => b"Closure::__invoke".to_vec(),
                 },
             },

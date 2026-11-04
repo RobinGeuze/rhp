@@ -403,8 +403,10 @@ fn process_umask() -> u32 {
                 return m;
             }
         }
+        // 0777 for the moment it's set: a file another thread creates
+        // then can only come out stricter, never looser.
         unsafe {
-            let m = libc::umask(0o022);
+            let m = libc::umask(0o777);
             libc::umask(m);
             m as u32
         }
@@ -416,10 +418,17 @@ pub fn umask() -> u32 {
     UMASK.get().unwrap_or_else(process_umask)
 }
 
+/// The bits of a mask the kernel keeps: macOS keeps the setuid, setgid
+/// and sticky bits too (`ALLPERMS`), Linux only the permissions.
+#[cfg(target_os = "macos")]
+const MASK_BITS: u32 = 0o7777;
+#[cfg(not(target_os = "macos"))]
+const MASK_BITS: u32 = 0o777;
+
 /// `umask($mask)`: set the request's mask; returns the old one.
 pub fn set_umask(mask: u32) -> u32 {
     let old = umask();
-    UMASK.set(Some(mask & 0o777));
+    UMASK.set(Some(mask & MASK_BITS));
     old
 }
 
@@ -512,8 +521,9 @@ fn open_at(dir: libc::c_int, c: &CStr, flags: libc::c_int, mode: u32) -> io::Res
     match sys(flags | libc::O_EXCL) {
         Ok(fd) => Ok(fixed(fd)),
         Err(e) if e.raw_os_error() == Some(libc::EEXIST) => match sys(flags & !libc::O_CREAT) {
-            // Gone again, or a dangling symlink: create it as asked.
-            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => sys(flags),
+            // Gone again, or a dangling symlink: create it as asked. Only
+            // a file created between the two calls would wrongly be fixed.
+            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => sys(flags).map(fixed),
             r => r,
         },
         Err(e) => Err(e),

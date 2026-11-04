@@ -187,3 +187,18 @@ fn a_removed_or_renamed_directory_is_followed() {
     reset_state();
 }
 
+#[test]
+fn umask_keeps_the_bits_the_kernel_keeps() {
+    reset_state();
+    let process = umask();
+    set_umask(u32::MAX);
+    let kept = if cfg!(target_os = "macos") {
+        0o7777
+    } else {
+        0o777
+    };
+    assert_eq!(umask(), kept);
+    assert_eq!(create_mode(0o7777), 0);
+    reset_state();
+    assert_eq!(umask(), process);
+}

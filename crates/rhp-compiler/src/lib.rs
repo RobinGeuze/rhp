@@ -30,13 +30,13 @@ mod hrh;
 /// A compiled member selector: a static interned name, or a runtime name in a
 /// register (dynamic `$o->$x` / `$o->{expr}`).
 #[derive(Clone, Copy)]
-enum Sel {
+pub(crate) enum Sel {
     Static(NIdx),
     Dyn(Reg),
 }
 
 /// A step in an lvalue path (compiler-side; key regs are pre-evaluated).
-enum CursorStep {
+pub(crate) enum CursorStep {
     Key(Reg),
     Append,
     Prop(NIdx),
@@ -44,7 +44,7 @@ enum CursorStep {
 }
 
 /// Where an lvalue cursor roots.
-enum LvalRoot {
+pub(crate) enum LvalRoot {
     /// A register: a CV, or a temporary holding a call result.
     Cv(Reg),
     StaticProp(ClassRef, NIdx),
@@ -57,7 +57,7 @@ enum LvalRoot {
 }
 
 /// `$GLOBALS[<index>]`: the index expression when `e` is that form.
-fn globals_index<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
+pub(crate) fn globals_index<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
     match e {
         Expression::ArrayAccess(aa) if is_globals_var(aa.array) => Some(aa.index),
         _ => None,
@@ -65,13 +65,13 @@ fn globals_index<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
 }
 
 /// Is `e` the bare `$GLOBALS` variable?
-fn is_globals_var(e: &Expression) -> bool {
+pub(crate) fn is_globals_var(e: &Expression) -> bool {
     matches!(e, Expression::Variable(Variable::Direct(d)) if strip_dollar(d.name) == b"GLOBALS")
 }
 
 /// php's compile-time errors for `$GLOBALS` as (the root of) a write target:
 /// only `$GLOBALS[$name]...` may be written.
-fn check_globals_write(target: &Expression) -> Result<(), Thrown> {
+pub(crate) fn check_globals_write(target: &Expression) -> Result<(), Thrown> {
     match target {
         e if is_globals_var(e) => Err(Thrown::error(
             "Error",
@@ -102,14 +102,14 @@ thread_local! {
     /// the program. Compilation is single-threaded and non-reentrant per
     /// `compile()` call; the list is cleared on entry and drained into
     /// `Program::closures` on exit. A closure's `fnidx` is its position here.
-    static CLOSURES: RefCell<Vec<Rc<FunctionProto>>> = const { RefCell::new(Vec::new()) };
+    pub(crate) static CLOSURES: RefCell<Vec<Rc<FunctionProto>>> = const { RefCell::new(Vec::new()) };
     /// Anonymous classes (`new class {…}`) found anywhere in the program,
     /// declared with the program's classes under their generated names.
-    static ANON_CLASSES: RefCell<Vec<ClassProto>> = const { RefCell::new(Vec::new()) };
+    pub(crate) static ANON_CLASSES: RefCell<Vec<ClassProto>> = const { RefCell::new(Vec::new()) };
     /// Sink for class declarations nested in control flow / function bodies
     /// (drained into `Program::cond_classes`), plus the file's count of user
     /// top-level class-likes (the `DeclareClass` index offset for them).
-    static COND_CLASSES: RefCell<(Vec<ClassProto>, u32)> = const { RefCell::new((Vec::new(), 0)) };
+    pub(crate) static COND_CLASSES: RefCell<(Vec<ClassProto>, u32)> = const { RefCell::new((Vec::new(), 0)) };
 }
 
 /// The source bytes doc comments are looked up in, and its token stream
@@ -121,39 +121,39 @@ thread_local! {
     /// at position i if ANY method of that name declares `&` there. A call site
     /// passes those positions by reference; by-value callees simply deref, so
     /// over-approximation across classes is safe.
-    static METHOD_REF: RefCell<HashMap<Vec<u8>, Vec<bool>>> = RefCell::new(HashMap::new());
+    pub(crate) static METHOD_REF: RefCell<HashMap<Vec<u8>, Vec<bool>>> = RefCell::new(HashMap::new());
     /// Byte offsets of each line start in the source currently being compiled
     /// (empty while compiling the prelude; whose line numbers are never surfaced).
-    static LINE_STARTS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    pub(crate) static LINE_STARTS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
     /// The earliest compile error (source offset, line, message) recorded by
     /// [`compile_fatal`] in the file being compiled.
-    static COMPILE_FATAL: RefCell<Option<(u32, u32, String)>> = const { RefCell::new(None) };
+    pub(crate) static COMPILE_FATAL: RefCell<Option<(u32, u32, String)>> = const { RefCell::new(None) };
     /// See [`compile_error_line`].
-    static COMPILE_ERROR_LINE: RefCell<u32> = const { RefCell::new(0) };
+    pub(crate) static COMPILE_ERROR_LINE: RefCell<u32> = const { RefCell::new(0) };
     /// The file name reported in debug info / exception getFile().
-    static SRC_FILE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    pub(crate) static SRC_FILE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     /// The user source being compiled (empty for the prelude), for lexical
     /// details the AST drops (the newline a `?>` swallows).
-    static SRC_BYTES: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    pub(crate) static SRC_BYTES: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     /// Whether the file being compiled declared `strict_types=1` (php's
     /// caller-decides coercion rule); stamped on every proto built from it.
-    static STRICT_TYPES: RefCell<bool> = const { RefCell::new(false) };
+    pub(crate) static STRICT_TYPES: RefCell<bool> = const { RefCell::new(false) };
     /// Whether a trait body is being compiled: `__CLASS__` there names the
     /// *using* class, so it is lowered to a runtime `self::class`.
-    static IN_TRAIT: RefCell<bool> = const { RefCell::new(false) };
+    pub(crate) static IN_TRAIT: RefCell<bool> = const { RefCell::new(false) };
     /// Whether an interface body is being compiled (its property
     /// declarations, hooked or not, contribute no runtime members).
-    static IN_INTERFACE: RefCell<bool> = const { RefCell::new(false) };
+    pub(crate) static IN_INTERFACE: RefCell<bool> = const { RefCell::new(false) };
     /// The user source being compiled and its full token stream (comments
     /// included), for locating declarations' doc comments. Empty while
     /// compiling the prelude.
-    static DOC_SRC: RefCell<DocSource> =
+    pub(crate) static DOC_SRC: RefCell<DocSource> =
         RefCell::new((Rc::new(Vec::new()), None));
 }
 
 /// Lower a mago type hint to the bytecode [`rhp_bytecode::TypeHint`] (resolving
 /// class names against the current namespace).
-fn type_hint(h: &Hint) -> rhp_bytecode::TypeHint {
+pub(crate) fn type_hint(h: &Hint) -> rhp_bytecode::TypeHint {
     let mut out = rhp_bytecode::TypeHint {
         nullable: false,
         intersection: false,
@@ -314,7 +314,7 @@ fn check_type_name(id: &Identifier) {
 /// Record an E_COMPILE_ERROR found at source `offset` of the file being
 /// compiled. The compile still finishes (so callers need no error plumbing),
 /// then fails with the earliest recorded error (see [`compile_program`]).
-fn compile_fatal(offset: u32, message: String) {
+pub(crate) fn compile_fatal(offset: u32, message: String) {
     let line = line_of(offset);
     COMPILE_FATAL.with(|f| {
         let mut f = f.borrow_mut();
@@ -332,7 +332,7 @@ pub fn compile_error_line() -> u32 {
 }
 
 /// Whether the program's leading statement is `declare(strict_types=1)`.
-fn detect_strict_types(program: &AstProgram) -> bool {
+pub(crate) fn detect_strict_types(program: &AstProgram) -> bool {
     for stmt in program.statements.iter() {
         match stmt {
             // skip the opening `<?php` / inline-html prelude
@@ -360,24 +360,24 @@ fn detect_strict_types(program: &AstProgram) -> bool {
 /// are case-sensitive. Alias values are fully-qualified names WITHOUT a leading
 /// backslash.
 #[derive(Default, Clone)]
-struct NsContext {
-    ns: Vec<u8>, // "" = global namespace, else e.g. b"Foo\\Bar"
-    use_class: HashMap<Vec<u8>, Vec<u8>>,
-    use_func: HashMap<Vec<u8>, Vec<u8>>,
-    use_const: HashMap<Vec<u8>, Vec<u8>>,
+pub(crate) struct NsContext {
+    pub(crate) ns: Vec<u8>, // "" = global namespace, else e.g. b"Foo\\Bar"
+    pub(crate) use_class: HashMap<Vec<u8>, Vec<u8>>,
+    pub(crate) use_func: HashMap<Vec<u8>, Vec<u8>>,
+    pub(crate) use_const: HashMap<Vec<u8>, Vec<u8>>,
 }
 
 thread_local! {
     /// The namespace context active at the statement currently being compiled.
     /// Set from the flattened `(context, statement)` list before each statement
     /// in every compile pass, so deep name-resolution chokepoints can read it.
-    static NS_CTX: RefCell<Rc<NsContext>> = RefCell::new(Rc::new(NsContext::default()));
+    pub(crate) static NS_CTX: RefCell<Rc<NsContext>> = RefCell::new(Rc::new(NsContext::default()));
 }
 
 /// Which symbol table an identifier resolves against (PHP resolves classes,
 /// functions, and constants in separate namespace tables with different rules).
 #[derive(Clone, Copy)]
-enum NameKind {
+pub(crate) enum NameKind {
     Class,
     Func,
     Const,
@@ -390,17 +390,17 @@ enum UseKind {
     Const,
 }
 
-fn set_ns_ctx(ctx: &Rc<NsContext>) {
+pub(crate) fn set_ns_ctx(ctx: &Rc<NsContext>) {
     NS_CTX.with(|c| *c.borrow_mut() = ctx.clone());
 }
 
 /// The current namespace (empty for the global namespace).
-fn cur_ns() -> Vec<u8> {
+pub(crate) fn cur_ns() -> Vec<u8> {
     NS_CTX.with(|c| c.borrow().ns.clone())
 }
 
 /// Join a namespace prefix and a (relative) name with a backslash.
-fn join_ns(ns: &[u8], name: &[u8]) -> Vec<u8> {
+pub(crate) fn join_ns(ns: &[u8], name: &[u8]) -> Vec<u8> {
     if ns.is_empty() {
         return name.to_vec();
     }
@@ -412,7 +412,7 @@ fn join_ns(ns: &[u8], name: &[u8]) -> Vec<u8> {
 }
 
 /// Drop a single leading backslash, if present.
-fn strip_lead_bs(name: &[u8]) -> Vec<u8> {
+pub(crate) fn strip_lead_bs(name: &[u8]) -> Vec<u8> {
     if name.first() == Some(&b'\\') {
         name[1..].to_vec()
     } else {
@@ -420,13 +420,13 @@ fn strip_lead_bs(name: &[u8]) -> Vec<u8> {
     }
 }
 
-fn starts_with_ci(hay: &[u8], pfx: &[u8]) -> bool {
+pub(crate) fn starts_with_ci(hay: &[u8], pfx: &[u8]) -> bool {
     hay.len() >= pfx.len() && hay[..pfx.len()].eq_ignore_ascii_case(pfx)
 }
 
 /// The raw identifier bytes exactly as written (backslashes preserved), unlike
 /// [`identifier_name`] which strips to the last segment.
-fn identifier_raw<'a>(id: &'a Identifier<'a>) -> &'a [u8] {
+pub(crate) fn identifier_raw<'a>(id: &'a Identifier<'a>) -> &'a [u8] {
     match id {
         Identifier::Local(l) => l.value,
         Identifier::Qualified(q) => q.value,
@@ -439,11 +439,15 @@ fn identifier_raw<'a>(id: &'a Identifier<'a>) -> &'a [u8] {
 /// carry no leading backslash. A fallback is produced only for an unqualified
 /// function/const reference inside a namespace (PHP's fall-back-to-global rule);
 /// class references and everything qualified resolve to a single name.
-fn resolve_name(id: &Identifier, kind: NameKind) -> (Vec<u8>, Option<Vec<u8>>) {
+pub(crate) fn resolve_name(id: &Identifier, kind: NameKind) -> (Vec<u8>, Option<Vec<u8>>) {
     NS_CTX.with(|c| resolve_in(&c.borrow(), id, kind))
 }
 
-fn resolve_in(ctx: &NsContext, id: &Identifier, kind: NameKind) -> (Vec<u8>, Option<Vec<u8>>) {
+pub(crate) fn resolve_in(
+    ctx: &NsContext,
+    id: &Identifier,
+    kind: NameKind,
+) -> (Vec<u8>, Option<Vec<u8>>) {
     match id {
         // `\Foo\Bar` — absolute; drop the leading backslash.
         Identifier::FullyQualified(f) => (strip_lead_bs(f.value), None),
@@ -499,7 +503,7 @@ fn resolve_in(ctx: &NsContext, id: &Identifier, kind: NameKind) -> (Vec<u8>, Opt
 }
 
 /// Resolve a class-position identifier to its single fully-qualified name.
-fn resolve_class_name(id: &Identifier) -> Vec<u8> {
+pub(crate) fn resolve_class_name(id: &Identifier) -> Vec<u8> {
     resolve_name(id, NameKind::Class).0
 }
 
@@ -508,7 +512,7 @@ fn resolve_class_name(id: &Identifier) -> Vec<u8> {
 /// statements see it but earlier ones do not), and each `namespace` block starts
 /// a fresh context. Every compile pass iterates this list so name resolution is
 /// identical across passes.
-fn flatten_namespaces<'a>(
+pub(crate) fn flatten_namespaces<'a>(
     stmts: &'a rhp_frontend::cst::Sequence<'a, Statement<'a>>,
     ctx: Rc<NsContext>,
     out: &mut Vec<(Rc<NsContext>, &'a Statement<'a>)>,
@@ -606,7 +610,7 @@ fn import_one(
 }
 
 /// Sorted byte offsets of line starts (offset 0, then after each '\n').
-fn build_line_starts(source: &[u8]) -> Vec<u32> {
+pub(crate) fn build_line_starts(source: &[u8]) -> Vec<u32> {
     let mut v = vec![0u32];
     for (i, &b) in source.iter().enumerate() {
         if b == b'\n' {
@@ -617,13 +621,13 @@ fn build_line_starts(source: &[u8]) -> Vec<u32> {
 }
 
 /// The source file name currently being compiled (for `__FILE__`).
-fn src_file() -> Vec<u8> {
+pub(crate) fn src_file() -> Vec<u8> {
     SRC_FILE.with(|f| f.borrow().clone())
 }
 
 /// If `e` is a `&$lvalue` reference-prefix expression, return the referenced
 /// operand (used for by-reference array elements `[k => &$v]`).
-fn as_reference<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
+pub(crate) fn as_reference<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
     match e {
         Expression::UnaryPrefix(u) => match &u.operator {
             UnaryPrefixOperator::Reference(_) => Some(u.operand),
@@ -636,7 +640,7 @@ fn as_reference<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
 /// `dirname()` of a path, matching PHP for the file paths `__FILE__` yields:
 /// no slash → ".", a single leading slash → "/", else everything before the
 /// last slash.
-fn dirname(path: &[u8]) -> Vec<u8> {
+pub(crate) fn dirname(path: &[u8]) -> Vec<u8> {
     match path.iter().rposition(|&b| b == b'/') {
         // php (zend_compile `__DIR__`): a "." directory — "Command line
         // code", "Standard input code" — becomes the current directory.
@@ -649,14 +653,14 @@ fn dirname(path: &[u8]) -> Vec<u8> {
 }
 
 /// The file being compiled (a class declaration's `info.user.filename`).
-fn decl_file() -> PhpStr {
+pub(crate) fn decl_file() -> PhpStr {
     SRC_FILE.with(|f| PhpStr::from_bytes(f.borrow().clone()))
 }
 
 /// 1-based line number for a byte offset, via the current `LINE_STARTS`.
 /// php's lexer folds one newline (`\n`, `\r\n` or `\r`) right after `?>`
 /// into the closing tag: drop it from inline text that starts there.
-fn strip_close_tag_newline(offset: u32, text: &[u8]) -> &[u8] {
+pub(crate) fn strip_close_tag_newline(offset: u32, text: &[u8]) -> &[u8] {
     let after_close = SRC_BYTES.with(|b| {
         let b = b.borrow();
         let o = offset as usize;
@@ -671,7 +675,7 @@ fn strip_close_tag_newline(offset: u32, text: &[u8]) -> &[u8] {
     }
 }
 
-fn line_of(offset: u32) -> u32 {
+pub(crate) fn line_of(offset: u32) -> u32 {
     LINE_STARTS.with(|ls| {
         let ls = ls.borrow();
         if ls.is_empty() {
@@ -687,7 +691,7 @@ fn line_of(offset: u32) -> u32 {
 
 /// Stamp a compile-time refusal with the file being compiled and the line of
 /// `offset`, unless an inner construct already located it.
-fn locate(e: Thrown, offset: u32) -> Thrown {
+pub(crate) fn locate(e: Thrown, offset: u32) -> Thrown {
     if !matches!(e, Thrown::Unsupported { location: None, .. }) {
         return e;
     }
@@ -700,7 +704,9 @@ fn locate(e: Thrown, offset: u32) -> Thrown {
 
 /// Scan every class-like's methods, OR-ing their by-ref parameter flags by name.
 /// (Method names are not namespaced, so this ignores the namespace context.)
-fn collect_method_refs(flat: &[(Rc<NsContext>, &Statement)]) -> HashMap<Vec<u8>, Vec<bool>> {
+pub(crate) fn collect_method_refs(
+    flat: &[(Rc<NsContext>, &Statement)],
+) -> HashMap<Vec<u8>, Vec<bool>> {
     let mut map: HashMap<Vec<u8>, Vec<bool>> = HashMap::new();
     let mut add = |name: &[u8], pl: &rhp_frontend::cst::FunctionLikeParameterList| {
         let entry = map.entry(name.to_ascii_lowercase()).or_default();
@@ -940,7 +946,7 @@ fn compile_program_inner(
 
 // --- OOP: class declaration compilation ------------------------------------
 
-fn modifiers_visibility(mods: &rhp_frontend::cst::Sequence<Modifier>) -> Visibility {
+pub(crate) fn modifiers_visibility(mods: &rhp_frontend::cst::Sequence<Modifier>) -> Visibility {
     for m in mods.iter() {
         match m {
             // `private(set)` etc. only restrict writes (asymmetric visibility,
@@ -957,7 +963,9 @@ fn modifiers_visibility(mods: &rhp_frontend::cst::Sequence<Modifier>) -> Visibil
 
 /// The asymmetric write visibility (`private(set)` / `protected(set)`), when
 /// it is narrower than the read visibility.
-fn modifiers_set_visibility(mods: &rhp_frontend::cst::Sequence<Modifier>) -> Option<Visibility> {
+pub(crate) fn modifiers_set_visibility(
+    mods: &rhp_frontend::cst::Sequence<Modifier>,
+) -> Option<Visibility> {
     let read = modifiers_visibility(mods);
     let set = mods.iter().find_map(|m| match m {
         Modifier::PrivateSet(_) => Some(Visibility::Private),
@@ -973,7 +981,10 @@ fn modifiers_set_visibility(mods: &rhp_frontend::cst::Sequence<Modifier>) -> Opt
     (rank(set) > rank(read)).then_some(set)
 }
 
-fn has_modifier(mods: &rhp_frontend::cst::Sequence<Modifier>, want: fn(&Modifier) -> bool) -> bool {
+pub(crate) fn has_modifier(
+    mods: &rhp_frontend::cst::Sequence<Modifier>,
+    want: fn(&Modifier) -> bool,
+) -> bool {
     mods.iter().any(want)
 }
 
@@ -996,7 +1007,7 @@ fn has_allow_dynamic(
 /// back from `pos` over the tokens that can sit between a doc comment and the
 /// claiming point (whitespace, other comments, attribute groups, modifiers and
 /// keywords, type hints): the first doc comment reached is the declaration's.
-fn doc_comment_before(pos: u32) -> Option<PhpStr> {
+pub(crate) fn doc_comment_before(pos: u32) -> Option<PhpStr> {
     use rhp_frontend::TokenKind as T;
     let (src, toks) = DOC_SRC.with(|d| {
         let mut d = d.borrow_mut();
@@ -1063,7 +1074,7 @@ fn doc_comment_before(pos: u32) -> Option<PhpStr> {
 /// Compile `#[...]` attribute groups: each attribute's resolved class name
 /// and its argument list as an array (folded when constant, else a thunk run
 /// in `class_name`'s scope when Reflection asks for the arguments).
-fn compile_attributes(
+pub(crate) fn compile_attributes(
     lists: &rhp_frontend::cst::Sequence<rhp_frontend::cst::AttributeList>,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
     class_name: Option<&PhpStr>,
@@ -1136,7 +1147,7 @@ fn compile_attributes(
 
 /// Reflection metadata of a declaration: its attributes, the doc comment
 /// claimed at `doc_pos`, and the line span `[start, end]` (byte offsets).
-fn decl_meta(
+pub(crate) fn decl_meta(
     lists: &rhp_frontend::cst::Sequence<rhp_frontend::cst::AttributeList>,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
     class_name: Option<&PhpStr>,
@@ -1156,7 +1167,7 @@ fn decl_meta(
 /// Reflection data for a parameter default: a standalone thunk for a
 /// non-constant default, and the constant's name when the default is a bare
 /// constant / class-constant reference.
-fn param_default_meta(
+pub(crate) fn param_default_meta(
     p: &rhp_frontend::cst::FunctionLikeParameter,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
     class_name: Option<&PhpStr>,
@@ -1218,12 +1229,12 @@ fn add_stringable(interfaces: &mut Vec<PhpStr>, methods: &[MethodProto], self_na
 }
 
 /// The span offsets `(start, end)` of an AST node.
-fn span_of(n: &impl mago_span::HasSpan) -> (u32, u32) {
+pub(crate) fn span_of(n: &impl mago_span::HasSpan) -> (u32, u32) {
     let s = n.span();
     (s.start.offset, s.end.offset)
 }
 
-fn compile_class(
+pub(crate) fn compile_class(
     class: &Class,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<ClassProto, Thrown> {
@@ -1285,7 +1296,7 @@ fn compile_class(
 
 /// Compile an anonymous class body under its generated `name`
 /// (`Prefix@anonymous\0file:line$n`, zend_generate_anon_class_name).
-fn compile_anon_class(
+pub(crate) fn compile_anon_class(
     ac: &rhp_frontend::cst::AnonymousClass,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<ClassProto, Thrown> {
@@ -1360,7 +1371,7 @@ fn compile_anon_class(
 /// Enum cases are collected and materialized by the VM at link time (one
 /// singleton object per case, exposed as class constants). The enum implements
 /// `UnitEnum` (pure) or `BackedEnum` (backed), plus any declared interfaces.
-fn compile_enum(
+pub(crate) fn compile_enum(
     en: &rhp_frontend::cst::Enum,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<ClassProto, Thrown> {
@@ -1669,7 +1680,7 @@ fn compile_member(
     Ok(())
 }
 
-fn compile_trait(
+pub(crate) fn compile_trait(
     t: &rhp_frontend::cst::Trait,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<ClassProto, Thrown> {
@@ -1844,10 +1855,10 @@ class RequestParseBodyException extends Exception {}
 
 /// The compiled prelude: built-in classes, helper functions, and the
 /// closures their bodies declare (always program closures `0..n`).
-struct PreludeParts {
-    classes: Vec<ClassProto>,
-    functions: Vec<Rc<FunctionProto>>,
-    closures: Vec<Rc<FunctionProto>>,
+pub(crate) struct PreludeParts {
+    pub(crate) classes: Vec<ClassProto>,
+    pub(crate) functions: Vec<Rc<FunctionProto>>,
+    pub(crate) closures: Vec<Rc<FunctionProto>>,
 }
 
 thread_local! {
@@ -1855,11 +1866,11 @@ thread_local! {
     /// this thread (protos hold `Rc`s, so the cache is per thread — matching
     /// the VM-per-thread model). It depends on no per-file state: it is
     /// compiled in an isolated compiler context (see [`prelude_classes`]).
-    static PRELUDE_CACHE: RefCell<Option<Rc<PreludeParts>>> = const { RefCell::new(None) };
+    pub(crate) static PRELUDE_CACHE: RefCell<Option<Rc<PreludeParts>>> = const { RefCell::new(None) };
 }
 
 /// The compiled prelude, compiling it on this thread's first call.
-fn prelude_classes() -> Result<Rc<PreludeParts>, Thrown> {
+pub(crate) fn prelude_classes() -> Result<Rc<PreludeParts>, Thrown> {
     if let Some(p) = PRELUDE_CACHE.with(|c| c.borrow().clone()) {
         return Ok(p);
     }
@@ -1945,7 +1956,7 @@ fn prelude_classes_inner() -> Result<(Vec<ClassProto>, Vec<Rc<FunctionProto>>), 
     Ok((classes, functions))
 }
 
-fn compile_interface(
+pub(crate) fn compile_interface(
     iface: &rhp_frontend::cst::Interface,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<ClassProto, Thrown> {
@@ -2003,7 +2014,7 @@ fn compile_interface(
     })
 }
 
-fn compile_method(
+pub(crate) fn compile_method(
     m: &rhp_frontend::cst::Method,
     sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
     class_name: &PhpStr,
@@ -2147,7 +2158,7 @@ fn compile_method(
 
 /// Compile one `function name(params) { body }` into a `FunctionProto`.
 /// Parameters occupy the first CV registers, in order.
-fn compile_function(
+pub(crate) fn compile_function(
     func: &rhp_frontend::cst::Function,
     sigs: Rc<HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<FunctionProto, Thrown> {
@@ -2228,7 +2239,7 @@ fn compile_function(
 /// What kind of scope a proto is, for the `__FUNCTION__`/`__METHOD__` magic
 /// constants (which read differently at top level vs in a function/method/closure).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ScopeKind {
+pub(crate) enum ScopeKind {
     Main,
     Function,
     Method,
@@ -2236,69 +2247,69 @@ enum ScopeKind {
     Init,
 }
 
-struct ProtoBuilder {
-    name: PhpStr,
+pub(crate) struct ProtoBuilder {
+    pub(crate) name: PhpStr,
     /// Enclosing class/trait/enum name for `__CLASS__`/`__METHOD__` (None outside).
-    class_name: Option<PhpStr>,
+    pub(crate) class_name: Option<PhpStr>,
     /// `function &f()` — this proto returns by reference (affects `return`).
-    returns_ref: bool,
+    pub(crate) returns_ref: bool,
     /// The scope discriminator for `__FUNCTION__`/`__METHOD__`.
-    scope_kind: ScopeKind,
+    pub(crate) scope_kind: ScopeKind,
     /// For a closure, PHP 8.5's generated name `{closure:<scope>:<line>}` used by
     /// `__FUNCTION__`/`__METHOD__` inside it (the proto name stays "{closure}").
-    magic_fn_name: Option<PhpStr>,
-    code: Vec<Instr>,
-    consts: Vec<Value>,
-    names: Vec<PhpStr>,
-    cv_map: Vec<Vec<u8>>, // index = Reg, value = variable name bytes
-    exception_table: Vec<rhp_bytecode::ExRegion>,
+    pub(crate) magic_fn_name: Option<PhpStr>,
+    pub(crate) code: Vec<Instr>,
+    pub(crate) consts: Vec<Value>,
+    pub(crate) names: Vec<PhpStr>,
+    pub(crate) cv_map: Vec<Vec<u8>>, // index = Reg, value = variable name bytes
+    pub(crate) exception_table: Vec<rhp_bytecode::ExRegion>,
     /// Per enclosing try-with-finally: positions of pending-return jump
     /// placeholders to patch to the finally entry.
-    finally_rets: Vec<Vec<usize>>,
-    num_cvs: u16,
-    next_temp: Reg,
-    high_water: Reg,
+    pub(crate) finally_rets: Vec<Vec<usize>>,
+    pub(crate) num_cvs: u16,
+    pub(crate) next_temp: Reg,
+    pub(crate) high_water: Reg,
     /// Temporaries below this are protected from `reset_temps` (e.g. a `switch`
     /// subject held live across fall-through case bodies).
-    temp_floor: Reg,
+    pub(crate) temp_floor: Reg,
     /// Stack of enclosing loops/switches, for `break`/`continue` resolution.
-    loops: Vec<LoopCtx>,
+    pub(crate) loops: Vec<LoopCtx>,
     /// Function name (lowercase) -> per-parameter by-ref flags (for call sites).
-    sigs: Rc<HashMap<Vec<u8>, Vec<bool>>>,
+    pub(crate) sigs: Rc<HashMap<Vec<u8>, Vec<bool>>>,
     /// Current source line (set per statement); recorded into `lines` on change.
-    cur_line: u32,
+    pub(crate) cur_line: u32,
     /// (pc, line) pairs, appended whenever `cur_line` changes at an emit point.
-    lines: Vec<(rhp_bytecode::Pc, u32)>,
+    pub(crate) lines: Vec<(rhp_bytecode::Pc, u32)>,
     /// Lines of the enclosing call / `new` expressions (innermost last): php
     /// gives the call opcode the line of the callee name (or `new`), not the
     /// statement's, which is what getLine() and traces report.
-    call_lines: Vec<u32>,
+    pub(crate) call_lines: Vec<u32>,
     /// Set once the CV pre-pass is done: every `$var` of the body must already
     /// have its slot (a later slot would alias a temporary).
-    cvs_frozen: bool,
+    pub(crate) cvs_frozen: bool,
     /// The enclosing loop/switch and finally-body scopes (unique ids; finally
     /// bodies have the high bit set), for checking `goto` jumps.
-    goto_scope: Vec<u32>,
-    goto_serial: u32,
+    pub(crate) goto_scope: Vec<u32>,
+    pub(crate) goto_serial: u32,
     /// `label:` name -> (pc, scope path at the label).
-    labels: HashMap<Vec<u8>, (u32, Vec<u32>)>,
+    pub(crate) labels: HashMap<Vec<u8>, (u32, Vec<u32>)>,
     /// Pending `goto`s: placeholder position, label, scope path, line.
-    gotos: Vec<(usize, Vec<u8>, Vec<u32>, u32)>,
+    pub(crate) gotos: Vec<(usize, Vec<u8>, Vec<u32>, u32)>,
 }
 
 /// A break/continue target under construction. Jump placeholders are recorded
 /// as code positions and patched once the loop's exit/continue labels are known.
 #[derive(Default)]
-struct LoopCtx {
+pub(crate) struct LoopCtx {
     /// `finally_rets.len()` when the loop was entered: a break/continue
     /// inside more try-with-finally levels than this must run them.
-    finally_depth: usize,
-    break_jumps: Vec<usize>,
-    continue_jumps: Vec<usize>,
+    pub(crate) finally_depth: usize,
+    pub(crate) break_jumps: Vec<usize>,
+    pub(crate) continue_jumps: Vec<usize>,
 }
 
 impl ProtoBuilder {
-    fn new(name: PhpStr) -> Self {
+    pub(crate) fn new(name: PhpStr) -> Self {
         ProtoBuilder {
             name,
             class_name: None,
@@ -2329,7 +2340,7 @@ impl ProtoBuilder {
     }
 
     /// Enter a loop/switch (`finally == false`) or finally-body scope.
-    fn enter_goto_scope(&mut self, finally: bool) {
+    pub(crate) fn enter_goto_scope(&mut self, finally: bool) {
         self.goto_serial += 1;
         let id = self.goto_serial | if finally { 1 << 31 } else { 0 };
         self.goto_scope.push(id);
@@ -2380,7 +2391,7 @@ impl ProtoBuilder {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<FunctionProto, Thrown> {
+    pub(crate) fn finish(mut self) -> Result<FunctionProto, Thrown> {
         self.resolve_gotos()?;
         let mut proto = FunctionProto::new(self.name);
         proto.num_cvs = self.num_cvs;
@@ -2410,7 +2421,7 @@ impl ProtoBuilder {
 
     // -- register / pool management --
 
-    fn emit(&mut self, instr: Instr) {
+    pub(crate) fn emit(&mut self, instr: Instr) {
         let line = match (&instr, self.call_lines.last()) {
             (
                 Instr::Call { .. }
@@ -2438,7 +2449,7 @@ impl ProtoBuilder {
         self.code.push(instr);
     }
 
-    fn alloc_temp(&mut self) -> Reg {
+    pub(crate) fn alloc_temp(&mut self) -> Reg {
         let r = self.next_temp;
         self.next_temp += 1;
         self.high_water = self.high_water.max(self.next_temp);
@@ -2446,7 +2457,7 @@ impl ProtoBuilder {
     }
 
     /// Allocate `n` contiguous temporaries (for a call arg window).
-    fn alloc_temps(&mut self, n: u16) -> Reg {
+    pub(crate) fn alloc_temps(&mut self, n: u16) -> Reg {
         let base = self.next_temp;
         self.next_temp += n;
         self.high_water = self.high_water.max(self.next_temp);
@@ -2454,23 +2465,23 @@ impl ProtoBuilder {
     }
 
     /// Free temporaries back to the current floor (end of a statement).
-    fn reset_temps(&mut self) {
+    pub(crate) fn reset_temps(&mut self) {
         self.next_temp = self.temp_floor;
     }
 
     /// Patch a placeholder `Nop` at `pos` into a jump to `target`.
-    fn patch_jmp(&mut self, pos: usize, target: u32) {
+    pub(crate) fn patch_jmp(&mut self, pos: usize, target: u32) {
         self.code[pos] = match self.code[pos] {
             Instr::JmpFinally { .. } => Instr::JmpFinally { target },
             _ => Instr::Jmp { target },
         };
     }
 
-    fn here(&self) -> u32 {
+    pub(crate) fn here(&self) -> u32 {
         self.code.len() as u32
     }
 
-    fn cv(&mut self, var_name: &[u8]) -> Reg {
+    pub(crate) fn cv(&mut self, var_name: &[u8]) -> Reg {
         if let Some(i) = self.cv_map.iter().position(|n| n == var_name) {
             return i as Reg;
         }
@@ -2484,7 +2495,7 @@ impl ProtoBuilder {
         r
     }
 
-    fn intern_name(&mut self, bytes: &[u8]) -> NIdx {
+    pub(crate) fn intern_name(&mut self, bytes: &[u8]) -> NIdx {
         if let Some(i) = self.names.iter().position(|n| n.as_bytes() == bytes) {
             return i as NIdx;
         }
@@ -2494,7 +2505,7 @@ impl ProtoBuilder {
     }
 
     /// Intern an optional global-fallback name, or `NO_NAME` when there is none.
-    fn intern_fallback(&mut self, fb: &Option<Vec<u8>>) -> NIdx {
+    pub(crate) fn intern_fallback(&mut self, fb: &Option<Vec<u8>>) -> NIdx {
         match fb {
             Some(f) => self.intern_name(f),
             None => rhp_bytecode::NO_NAME,
@@ -2503,7 +2514,7 @@ impl ProtoBuilder {
 
     /// The register holding the unresolved callee `name` (then `fallback`)
     /// of the call being compiled, emitting its `ResolveFunc` the first time.
-    fn resolve_callee(
+    pub(crate) fn resolve_callee(
         &mut self,
         callee: &mut Option<Reg>,
         name: &[u8],
@@ -2527,7 +2538,7 @@ impl ProtoBuilder {
     /// Resolve a first-class-callable's target function to a single name. An
     /// unqualified reference inside a namespace prefers the namespaced user
     /// function when one is declared, else the global name (builtins are global).
-    fn resolve_callable_name(&self, id: &Identifier) -> Vec<u8> {
+    pub(crate) fn resolve_callable_name(&self, id: &Identifier) -> Vec<u8> {
         let (primary, fallback) = resolve_name(id, NameKind::Func);
         match fallback {
             None => primary,
@@ -2544,7 +2555,10 @@ impl ProtoBuilder {
     /// Evaluate a parameter default to a constant and intern it. Only
     /// compile-time constants are supported (literals, `[]`, true/false/null,
     /// negated numeric literals); other expressions are deferred.
-    fn const_default(&mut self, e: &Expression) -> Result<rhp_bytecode::ParamDefault, Thrown> {
+    pub(crate) fn const_default(
+        &mut self,
+        e: &Expression,
+    ) -> Result<rhp_bytecode::ParamDefault, Thrown> {
         let v = self.const_value(e)?;
         Ok(rhp_bytecode::ParamDefault::Const(self.intern_const(v)))
     }
@@ -2553,7 +2567,10 @@ impl ProtoBuilder {
     /// `$v = self::CONST`): for each, `JmpIfArg index -> after` skips the init when
     /// the argument was passed, else the default expression is evaluated into the
     /// param's CV (in the callee's scope, so `self::`/`static::` resolve).
-    fn emit_param_defaults(&mut self, defs: &[(u16, Reg, &Expression)]) -> Result<(), Thrown> {
+    pub(crate) fn emit_param_defaults(
+        &mut self,
+        defs: &[(u16, Reg, &Expression)],
+    ) -> Result<(), Thrown> {
         for &(index, cv, expr) in defs {
             let jpos = self.code.len();
             self.emit(Instr::Nop); // JmpIfArg index -> after (patched)
@@ -2574,7 +2591,7 @@ impl ProtoBuilder {
         fold_const(e)
     }
 
-    fn intern_const(&mut self, v: Value) -> CIdx {
+    pub(crate) fn intern_const(&mut self, v: Value) -> CIdx {
         if let Some(i) = self.consts.iter().position(|c| const_eq(c, &v)) {
             return i as CIdx;
         }
@@ -2585,7 +2602,7 @@ impl ProtoBuilder {
 
     // -- CV pre-pass --
 
-    fn scan_stmt_vars(&mut self, stmt: &Statement) {
+    pub(crate) fn scan_stmt_vars(&mut self, stmt: &Statement) {
         use rhp_frontend::cst::{ForBody, IfBody, SwitchBody, SwitchCase, WhileBody};
         match stmt {
             Statement::Echo(e) => e.values.iter().for_each(|v| self.scan_expr_vars(v)),
@@ -2722,7 +2739,7 @@ impl ProtoBuilder {
         }
     }
 
-    fn scan_expr_vars(&mut self, expr: &Expression) {
+    pub(crate) fn scan_expr_vars(&mut self, expr: &Expression) {
         match expr {
             Expression::Variable(Variable::Direct(d)) => {
                 self.cv(strip_dollar(d.name));
@@ -2872,7 +2889,7 @@ impl ProtoBuilder {
     /// own) and give each `$name` still missing a slot. A closure contributes
     /// its `use` variables; an arrow function nothing (it captures only
     /// variables the enclosing scope already has).
-    fn scan_node_vars(&mut self, node: Node) {
+    pub(crate) fn scan_node_vars(&mut self, node: Node) {
         match node {
             Node::DirectVariable(d) => {
                 self.cv(strip_dollar(d.name));
@@ -2910,7 +2927,7 @@ impl ProtoBuilder {
     }
 
     /// End the CV pre-pass: CVs occupy `[0, num_cvs)`, temporaries follow.
-    fn freeze_cvs(&mut self) {
+    pub(crate) fn freeze_cvs(&mut self) {
         self.num_cvs = self.cv_map.len() as u16;
         self.next_temp = self.num_cvs;
         self.high_water = self.num_cvs;
@@ -2931,7 +2948,7 @@ impl ProtoBuilder {
         self.emit(Instr::DeclareClass { class_idx });
     }
 
-    fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), Thrown> {
+    pub(crate) fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), Thrown> {
         use mago_span::HasSpan;
         self.compile_stmt_inner(stmt)
             .map_err(|e| locate(e, stmt.span().start.offset))
@@ -3191,7 +3208,7 @@ impl ProtoBuilder {
         Ok(())
     }
 
-    fn compile_if(&mut self, i: &rhp_frontend::cst::If) -> Result<(), Thrown> {
+    pub(crate) fn compile_if(&mut self, i: &rhp_frontend::cst::If) -> Result<(), Thrown> {
         // Jumps to the end of the whole if/elseif/else chain, patched at the end.
         let mut end_jumps = Vec::new();
 
@@ -3255,7 +3272,7 @@ impl ProtoBuilder {
         self.emit(Instr::Jmp { target: next });
     }
 
-    fn compile_while(&mut self, w: &rhp_frontend::cst::While) -> Result<(), Thrown> {
+    pub(crate) fn compile_while(&mut self, w: &rhp_frontend::cst::While) -> Result<(), Thrown> {
         self.emit_loop_entry();
         let top = self.here();
         let cond = self.compile_expr(w.condition)?;
@@ -3280,7 +3297,10 @@ impl ProtoBuilder {
         Ok(())
     }
 
-    fn compile_do_while(&mut self, d: &rhp_frontend::cst::DoWhile) -> Result<(), Thrown> {
+    pub(crate) fn compile_do_while(
+        &mut self,
+        d: &rhp_frontend::cst::DoWhile,
+    ) -> Result<(), Thrown> {
         let top = self.here();
         self.loops.push(LoopCtx {
             finally_depth: self.finally_rets.len(),
@@ -3299,7 +3319,7 @@ impl ProtoBuilder {
         Ok(())
     }
 
-    fn compile_for(&mut self, f: &rhp_frontend::cst::For) -> Result<(), Thrown> {
+    pub(crate) fn compile_for(&mut self, f: &rhp_frontend::cst::For) -> Result<(), Thrown> {
         for e in f.initializations.iter() {
             self.compile_expr(e)?;
         }
@@ -3342,7 +3362,7 @@ impl ProtoBuilder {
         Ok(())
     }
 
-    fn compile_switch(&mut self, sw: &rhp_frontend::cst::Switch) -> Result<(), Thrown> {
+    pub(crate) fn compile_switch(&mut self, sw: &rhp_frontend::cst::Switch) -> Result<(), Thrown> {
         let subject = self.compile_expr(sw.expression)?;
         // Protect the subject register across the fall-through case bodies.
         let saved_floor = self.temp_floor;
@@ -3410,7 +3430,10 @@ impl ProtoBuilder {
         Ok(())
     }
 
-    fn compile_foreach(&mut self, fe: &rhp_frontend::cst::Foreach) -> Result<(), Thrown> {
+    pub(crate) fn compile_foreach(
+        &mut self,
+        fe: &rhp_frontend::cst::Foreach,
+    ) -> Result<(), Thrown> {
         // Resolve key + value targets. A value target may be a destructuring
         // pattern, which binds into a protected element register per iteration.
         // php compiles the iterated expression, then the value variable, then
@@ -3607,7 +3630,7 @@ impl ProtoBuilder {
         }
     }
 
-    fn compile_unset(&mut self, u: &rhp_frontend::cst::Unset) -> Result<(), Thrown> {
+    pub(crate) fn compile_unset(&mut self, u: &rhp_frontend::cst::Unset) -> Result<(), Thrown> {
         for v in u.values.iter() {
             check_globals_write(v)?;
             match v {
@@ -3650,7 +3673,7 @@ impl ProtoBuilder {
         Ok(())
     }
 
-    fn compile_try(&mut self, t: &rhp_frontend::cst::Try) -> Result<(), Thrown> {
+    pub(crate) fn compile_try(&mut self, t: &rhp_frontend::cst::Try) -> Result<(), Thrown> {
         use rhp_bytecode::{CatchArm, ExRegion};
         let has_finally = t.finally_clause.is_some();
         if has_finally {
@@ -3731,7 +3754,7 @@ impl ProtoBuilder {
     }
 
     /// Assign the elements of `src` (an array value) to a destructuring pattern.
-    fn destructure_into<'a>(
+    pub(crate) fn destructure_into<'a>(
         &mut self,
         elements: impl Iterator<Item = &'a ArrayElement<'a>>,
         src: Reg,
@@ -3772,7 +3795,7 @@ impl ProtoBuilder {
 
     /// Store `src` into a single destructuring target (variable, nested pattern,
     /// array element, or property).
-    fn store_to_target(&mut self, target: &Expression, src: Reg) -> Result<(), Thrown> {
+    pub(crate) fn store_to_target(&mut self, target: &Expression, src: Reg) -> Result<(), Thrown> {
         check_globals_write(target)?;
         match target {
             Expression::Variable(Variable::Direct(d)) => {
@@ -3796,7 +3819,7 @@ impl ProtoBuilder {
         Ok(())
     }
 
-    fn compile_break_continue(
+    pub(crate) fn compile_break_continue(
         &mut self,
         level: Option<&Expression>,
         is_break: bool,
@@ -3839,7 +3862,7 @@ impl ProtoBuilder {
         }
     }
 
-    fn compile_match(&mut self, m: &Match) -> Result<Reg, Thrown> {
+    pub(crate) fn compile_match(&mut self, m: &Match) -> Result<Reg, Thrown> {
         let subject = self.compile_expr(m.expression)?;
         let dst = self.alloc_temp();
         let arms: Vec<&MatchArm> = m.arms.iter().collect();
@@ -3904,7 +3927,7 @@ impl ProtoBuilder {
 
     // -- expression lowering (returns the register holding the result) --
 
-    fn compile_expr(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
+    pub(crate) fn compile_expr(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
         use mago_span::HasSpan;
         self.compile_expr_inner(expr)
             .map_err(|e| locate(e, expr.span().start.offset))
@@ -4678,7 +4701,7 @@ impl ProtoBuilder {
         Ok(dst)
     }
 
-    fn compile_call(&mut self, call: &rhp_frontend::cst::Call) -> Result<Reg, Thrown> {
+    pub(crate) fn compile_call(&mut self, call: &rhp_frontend::cst::Call) -> Result<Reg, Thrown> {
         use rhp_frontend::cst::Call;
         match call {
             Call::Function(fc) => self.compile_function_call(fc),
@@ -5102,7 +5125,10 @@ impl ProtoBuilder {
 
     /// First-class callable syntax: `f(...)`, `$o->m(...)`, `C::m(...)`. Builds
     /// the underlying callable value, then wraps it as a `Closure` via `MakeFcc`.
-    fn compile_fcc(&mut self, pa: &rhp_frontend::cst::PartialApplication) -> Result<Reg, Thrown> {
+    pub(crate) fn compile_fcc(
+        &mut self,
+        pa: &rhp_frontend::cst::PartialApplication,
+    ) -> Result<Reg, Thrown> {
         use rhp_frontend::cst::PartialApplication as Pa;
         if !pa.is_first_class_callable() {
             return Err(Thrown::unsupported(
@@ -5156,7 +5182,7 @@ impl ProtoBuilder {
     }
 
     /// Load a byte-string constant into a fresh register.
-    fn load_string_const(&mut self, bytes: &[u8]) -> Reg {
+    pub(crate) fn load_string_const(&mut self, bytes: &[u8]) -> Reg {
         let k = self.intern_const(Value::str(bytes.to_vec()));
         let dst = self.alloc_temp();
         self.emit(Instr::LoadConst { dst, k });
@@ -5164,7 +5190,7 @@ impl ProtoBuilder {
     }
 
     /// Build a two-element `[first, second-string]` array (a callable pair).
-    fn build_pair(&mut self, first: Reg, second: &[u8]) -> Reg {
+    pub(crate) fn build_pair(&mut self, first: Reg, second: &[u8]) -> Reg {
         let arr = self.alloc_temp();
         self.emit(Instr::NewArray { dst: arr, cap: 2 });
         self.emit(Instr::ArrPush { arr, val: first });
@@ -5174,7 +5200,7 @@ impl ProtoBuilder {
     }
 
     /// The raw identifier bytes of a member selector (non-dynamic only).
-    fn selector_string(
+    pub(crate) fn selector_string(
         &self,
         sel: &rhp_frontend::cst::ClassLikeMemberSelector,
     ) -> Result<Vec<u8>, Thrown> {
@@ -5190,7 +5216,10 @@ impl ProtoBuilder {
     /// `fn(params) => expr` — arrow function. Auto-captures (by value) every
     /// free variable of the body that is a CV in the enclosing scope, plus
     /// `$this` when defined and the arrow is non-static.
-    fn compile_arrow(&mut self, af: &rhp_frontend::cst::ArrowFunction) -> Result<Reg, Thrown> {
+    pub(crate) fn compile_arrow(
+        &mut self,
+        af: &rhp_frontend::cst::ArrowFunction,
+    ) -> Result<Reg, Thrown> {
         let is_static = af.r#static.is_some();
         // Parameter names, to exclude from auto-capture.
         let params: Vec<Vec<u8>> = af
@@ -5244,7 +5273,10 @@ impl ProtoBuilder {
 
     /// `function(params) use(...) { body }` — closure with an explicit capture
     /// list. `use(&$x)` captures by reference (shares a cell with the outer var).
-    fn compile_closure(&mut self, cl: &rhp_frontend::cst::Closure) -> Result<Reg, Thrown> {
+    pub(crate) fn compile_closure(
+        &mut self,
+        cl: &rhp_frontend::cst::Closure,
+    ) -> Result<Reg, Thrown> {
         let is_static = cl.r#static.is_some();
         let mut captures: Vec<(Vec<u8>, bool)> = Vec::new();
         if !is_static && self.cv_map.iter().any(|n| n == b"this") {
@@ -5443,7 +5475,7 @@ impl ProtoBuilder {
     /// Collect an lvalue path (root CV + pre-evaluated key/append steps). All
     /// index expressions are compiled into registers here, so the subsequent
     /// cursor opcode sequence is contiguous (no nested cursors).
-    fn collect_lvalue_steps(
+    pub(crate) fn collect_lvalue_steps(
         &mut self,
         target: &Expression,
         steps: &mut Vec<CursorStep>,
@@ -5502,7 +5534,7 @@ impl ProtoBuilder {
         }
     }
 
-    fn emit_cursor(&mut self, root: LvalRoot, steps: &[CursorStep]) {
+    pub(crate) fn emit_cursor(&mut self, root: LvalRoot, steps: &[CursorStep]) {
         match root {
             LvalRoot::Cv(cv) => self.emit(Instr::LvalCv { cv }),
             LvalRoot::StaticProp(class, name) => self.emit(Instr::LvalStaticProp { class, name }),
@@ -5525,7 +5557,7 @@ impl ProtoBuilder {
     // --- OOP expression lowering ---
 
     /// Resolve the class part of `new`/`::`/`instanceof` to a `ClassRef`.
-    fn class_ref(&mut self, expr: &Expression) -> Result<ClassRef, Thrown> {
+    pub(crate) fn class_ref(&mut self, expr: &Expression) -> Result<ClassRef, Thrown> {
         match expr {
             Expression::Identifier(id) => {
                 Ok(ClassRef::Name(self.intern_name(&resolve_class_name(id))))
@@ -5552,7 +5584,7 @@ impl ProtoBuilder {
 
     /// Produce a register holding a `Ref` to a reference-assignment source: a
     /// simple variable's slot, or a property / array-element / static-prop lvalue.
-    fn compile_ref_source(&mut self, src: &Expression) -> Result<Reg, Thrown> {
+    pub(crate) fn compile_ref_source(&mut self, src: &Expression) -> Result<Reg, Thrown> {
         if is_globals_var(src) {
             return Err(Thrown::error(
                 "Error",
@@ -5597,7 +5629,7 @@ impl ProtoBuilder {
 
     /// A member selector as either a static interned name or a runtime name
     /// register (`$o->$x` / `$o->{expr}`).
-    fn compile_selector(
+    pub(crate) fn compile_selector(
         &mut self,
         sel: &rhp_frontend::cst::ClassLikeMemberSelector,
     ) -> Result<Sel, Thrown> {
@@ -5617,7 +5649,7 @@ impl ProtoBuilder {
     }
 
     /// The name of `C::$name` (static) or `C::${expr}` / `C::$$x` (runtime).
-    fn static_prop_sel(&mut self, v: &Variable) -> Result<Sel, Thrown> {
+    pub(crate) fn static_prop_sel(&mut self, v: &Variable) -> Result<Sel, Thrown> {
         match v {
             Variable::Direct(d) => Ok(Sel::Static(self.intern_name(strip_dollar(d.name)))),
             other => Ok(Sel::Dyn(self.var_name_reg(other)?)),
@@ -5627,7 +5659,7 @@ impl ProtoBuilder {
     /// The register holding a variable-variable's *name*: `${expr}` is the
     /// expression's value, `$$x` the value of `$x` (recursively). For a direct
     /// `$x` (only reached as the root of `C::$x` lowering) the name itself.
-    fn var_name_reg(&mut self, v: &Variable) -> Result<Reg, Thrown> {
+    pub(crate) fn var_name_reg(&mut self, v: &Variable) -> Result<Reg, Thrown> {
         match v {
             Variable::Indirect(iv) => self.compile_expr(iv.expression),
             Variable::Nested(nv) => self.compile_variable(nv.variable),
@@ -5636,7 +5668,7 @@ impl ProtoBuilder {
     }
 
     /// A variable in value context: a CV, or a variable-variable read.
-    fn compile_variable(&mut self, v: &Variable) -> Result<Reg, Thrown> {
+    pub(crate) fn compile_variable(&mut self, v: &Variable) -> Result<Reg, Thrown> {
         match v {
             Variable::Direct(d) => Ok(self.cv(strip_dollar(d.name))),
             other => {
@@ -5650,7 +5682,7 @@ impl ProtoBuilder {
 
     /// Build a `PhpArray` of the call arguments (used when the call has a
     /// spread `...$x`): positional args are pushed, spreads are merged.
-    fn build_args_array(
+    pub(crate) fn build_args_array(
         &mut self,
         args: Option<&rhp_frontend::cst::ArgumentList>,
     ) -> Result<Reg, Thrown> {
@@ -5708,7 +5740,7 @@ impl ProtoBuilder {
     /// time: a property / array-element argument asks the callee (`target`)
     /// whether that parameter is by-reference (php's SEND_FUNC_ARG) and is
     /// then passed as a reference to the lvalue, else by value.
-    fn compile_arg_window_t(
+    pub(crate) fn compile_arg_window_t(
         &mut self,
         args: Option<&rhp_frontend::cst::ArgumentList>,
         ref_mask: &[bool],
@@ -5840,7 +5872,7 @@ impl ProtoBuilder {
     }
 
     /// The by-ref mask for a method/constructor name (empty if none).
-    fn method_ref_mask(&self, name_lc: &[u8]) -> Vec<bool> {
+    pub(crate) fn method_ref_mask(&self, name_lc: &[u8]) -> Vec<bool> {
         METHOD_REF.with(|m| m.borrow().get(name_lc).cloned().unwrap_or_default())
     }
 
@@ -5852,7 +5884,10 @@ impl ProtoBuilder {
 
     /// `new class(args) extends P implements I { … }`: declare the class under
     /// its generated name and instantiate it.
-    fn compile_new_anon(&mut self, ac: &rhp_frontend::cst::AnonymousClass) -> Result<Reg, Thrown> {
+    pub(crate) fn compile_new_anon(
+        &mut self,
+        ac: &rhp_frontend::cst::AnonymousClass,
+    ) -> Result<Reg, Thrown> {
         use rhp_frontend::cst::PartialArgument;
         let proto = compile_anon_class(ac, &self.sigs)?;
         let class = ClassRef::Name(self.intern_name(proto.name.as_bytes()));
@@ -5891,7 +5926,10 @@ impl ProtoBuilder {
         Ok(dst)
     }
 
-    fn compile_new(&mut self, inst: &rhp_frontend::cst::Instantiation) -> Result<Reg, Thrown> {
+    pub(crate) fn compile_new(
+        &mut self,
+        inst: &rhp_frontend::cst::Instantiation,
+    ) -> Result<Reg, Thrown> {
         if let Expression::AnonymousClass(ac) = inst.class {
             return self.compile_new_anon(ac);
         }
@@ -5929,7 +5967,7 @@ impl ProtoBuilder {
     /// are quiet (an inaccessible or missing property is null, no access
     /// error, `__isset` consulted before `__get`). Keys, dynamic member names
     /// and anything that is not a fetch compile normally.
-    fn compile_quiet(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+    pub(crate) fn compile_quiet(&mut self, e: &Expression) -> Result<Reg, Thrown> {
         match e {
             Expression::Parenthesized(p) => self.compile_quiet(p.expression),
             Expression::ArrayAccess(aa) => {
@@ -5991,7 +6029,7 @@ impl ProtoBuilder {
     /// The object of a property write: a property access or ArrayAccess
     /// element there is php's BP_VAR_W fetch (`$o->a->b = v` fetches
     /// `$o->a` for writing).
-    fn compile_write_object(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+    pub(crate) fn compile_write_object(&mut self, e: &Expression) -> Result<Reg, Thrown> {
         if let Expression::ArrayAccess(aa) = e {
             if !is_globals_var(aa.array) {
                 let arr = self.compile_write_object(aa.array)?;
@@ -6016,7 +6054,7 @@ impl ProtoBuilder {
     /// The object of `unset($o->p)`: php fetches the properties along it
     /// with BP_VAR_UNSET, which `get_property_ptr_ptr` serves like a write
     /// (SimpleXML creates a missing element); elements are read.
-    fn compile_unset_object(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+    pub(crate) fn compile_unset_object(&mut self, e: &Expression) -> Result<Reg, Thrown> {
         match e {
             Expression::ArrayAccess(aa) if !is_globals_var(aa.array) => {
                 let arr = self.compile_unset_object(aa.array)?;
@@ -6038,7 +6076,7 @@ impl ProtoBuilder {
         }
     }
 
-    fn compile_access(&mut self, acc: &Access) -> Result<Reg, Thrown> {
+    pub(crate) fn compile_access(&mut self, acc: &Access) -> Result<Reg, Thrown> {
         match acc {
             Access::Property(pa) => {
                 let obj = self.compile_expr(pa.object)?;
@@ -6313,7 +6351,10 @@ impl ProtoBuilder {
         }
     }
 
-    fn compile_assignment(&mut self, a: &rhp_frontend::cst::Assignment) -> Result<Reg, Thrown> {
+    pub(crate) fn compile_assignment(
+        &mut self,
+        a: &rhp_frontend::cst::Assignment,
+    ) -> Result<Reg, Thrown> {
         check_globals_write(a.lhs)?;
         // Destructuring: `[$a, $b] = ...` / `list($a, $b) = ...`.
         if matches!(a.operator, AssignmentOperator::Assign(_)) {
@@ -6657,11 +6698,11 @@ impl ProtoBuilder {
 // --- free helpers ---------------------------------------------------------
 
 /// A php compile-time fatal error (E_COMPILE_ERROR) at `line`.
-fn compile_error(msg: impl Into<String>, _line: u32) -> Thrown {
+pub(crate) fn compile_error(msg: impl Into<String>, _line: u32) -> Thrown {
     Thrown::error("Error", msg)
 }
 
-fn strip_dollar(name: &[u8]) -> &[u8] {
+pub(crate) fn strip_dollar(name: &[u8]) -> &[u8] {
     name.strip_prefix(b"$").unwrap_or(name)
 }
 
@@ -6698,15 +6739,15 @@ fn builtin_by_ref(name_lc: &[u8], argc: usize) -> Option<Vec<bool>> {
 
 /// Does a function body contain a top-level `yield` (making it a generator)?
 /// Does not descend into nested function-likes (their yields are their own).
-fn block_has_yield(stmts: &rhp_frontend::cst::Sequence<Statement>) -> bool {
+pub(crate) fn block_has_yield(stmts: &rhp_frontend::cst::Sequence<Statement>) -> bool {
     stmts.iter().any(stmt_has_yield)
 }
 
-fn stmt_has_yield(s: &Statement) -> bool {
+pub(crate) fn stmt_has_yield(s: &Statement) -> bool {
     node_has_yield(Node::Statement(s))
 }
 
-fn expr_has_yield(e: &Expression) -> bool {
+pub(crate) fn expr_has_yield(e: &Expression) -> bool {
     node_has_yield(Node::Expression(e))
 }
 
@@ -6736,13 +6777,13 @@ fn node_has_yield(node: Node) -> bool {
     found
 }
 
-fn has_named(list: &rhp_frontend::cst::ArgumentList) -> bool {
+pub(crate) fn has_named(list: &rhp_frontend::cst::ArgumentList) -> bool {
     list.arguments
         .iter()
         .any(|a| matches!(a, Argument::Named(_)))
 }
 
-fn has_spread(list: &rhp_frontend::cst::ArgumentList) -> bool {
+pub(crate) fn has_spread(list: &rhp_frontend::cst::ArgumentList) -> bool {
     list.arguments
         .iter()
         .any(|a| matches!(a, Argument::Positional(p) if p.ellipsis.is_some()))
@@ -6793,7 +6834,7 @@ fn compound_op(
     })
 }
 
-fn identifier_name<'a>(id: &'a Identifier<'a>) -> &'a [u8] {
+pub(crate) fn identifier_name<'a>(id: &'a Identifier<'a>) -> &'a [u8] {
     let raw = match id {
         Identifier::Local(l) => l.value,
         Identifier::Qualified(q) => q.value,
@@ -6808,7 +6849,7 @@ fn identifier_name<'a>(id: &'a Identifier<'a>) -> &'a [u8] {
 /// Fold a compile-time-constant expression (literals, const arrays, true/false/
 /// null, negated numeric literals) to a `Value`. Errors on anything requiring
 /// runtime evaluation (named constants, class constants, arithmetic).
-fn fold_const(e: &Expression) -> Result<Value, Thrown> {
+pub(crate) fn fold_const(e: &Expression) -> Result<Value, Thrown> {
     let v = match e {
         Expression::Literal(l) => literal_value(l),
         Expression::Parenthesized(p) => return fold_const(p.expression),
@@ -6916,7 +6957,7 @@ fn fold_const_array<'a>(els: impl Iterator<Item = &'a ArrayElement<'a>>) -> Resu
 /// An array literal built only from int/string-keyed scalar literals,
 /// `true`/`false`/`null` and nested such arrays, as its value (`None` when
 /// building it could raise a diagnostic or needs runtime evaluation).
-fn literal_array<'a>(els: impl Iterator<Item = &'a ArrayElement<'a>>) -> Option<Value> {
+pub(crate) fn literal_array<'a>(els: impl Iterator<Item = &'a ArrayElement<'a>>) -> Option<Value> {
     fn scalar(e: &Expression) -> Option<Value> {
         match e {
             Expression::Literal(l) => Some(literal_value(l)),
@@ -6963,7 +7004,7 @@ fn literal_array<'a>(els: impl Iterator<Item = &'a ArrayElement<'a>>) -> Option<
 }
 
 /// Extract the class name(s) a `catch` clause's type hint names (`A` or `A|B`).
-fn hint_class_names(hint: &Hint) -> Result<Vec<PhpStr>, Thrown> {
+pub(crate) fn hint_class_names(hint: &Hint) -> Result<Vec<PhpStr>, Thrown> {
     fn collect(hint: &Hint, out: &mut Vec<PhpStr>) -> Result<(), Thrown> {
         match hint {
             Hint::Identifier(id) => {
@@ -6994,7 +7035,7 @@ fn hint_class_names(hint: &Hint) -> Result<Vec<PhpStr>, Thrown> {
 /// Reads of elements and properties are TMP (zend_adjust_for_fetch_type);
 /// calls, `new`, `yield` and `include`/`eval` are VAR. (php's frameless
 /// and special-cased function calls give TMP; they count as VAR here.)
-fn php_swaps_operands(lhs: &Expression, rhs: &Expression) -> bool {
+pub(crate) fn php_swaps_operands(lhs: &Expression, rhs: &Expression) -> bool {
     match (php_operand_kind(lhs), php_operand_kind(rhs)) {
         (l, r) if l != r => l < r,
         // Both CONST-or-TMP: only a CONST op1 against a TMP op2 swaps.
@@ -7049,7 +7090,7 @@ fn php_operand_kind(e: &Expression) -> Kind {
 }
 
 /// PHP's superglobals, available in every scope without `global`.
-fn is_superglobal(name: &[u8]) -> bool {
+pub(crate) fn is_superglobal(name: &[u8]) -> bool {
     matches!(
         name,
         b"GLOBALS"
@@ -7073,7 +7114,7 @@ fn non_const_err() -> Thrown {
 
 /// Fold a literal AST node to its runtime value (php's scanner rules: an
 /// integer literal past `i64::MAX` becomes a float).
-fn literal_value(lit: &Literal) -> Value {
+pub(crate) fn literal_value(lit: &Literal) -> Value {
     match lit {
         Literal::Integer(i) => match i.value {
             Some(u) if u <= i64::MAX as u64 => Value::Int(u as i64),
@@ -7096,7 +7137,7 @@ fn literal_value(lit: &Literal) -> Value {
 }
 
 /// Structural equality for constant-pool deduplication.
-fn const_eq(a: &Value, b: &Value) -> bool {
+pub(crate) fn const_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Null, Value::Null) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
@@ -7144,7 +7185,7 @@ fn stmt_kind(s: &Statement) -> &'static str {
 /// free variables propagate upward (over-collection is harmless: the caller
 /// keeps only names that are CVs in the enclosing scope). Does not mutate the
 /// builder, unlike [`ProtoBuilder::scan_expr_vars`].
-fn collect_vars(expr: &Expression, out: &mut Vec<Vec<u8>>) {
+pub(crate) fn collect_vars(expr: &Expression, out: &mut Vec<Vec<u8>>) {
     collect_node_vars(Node::Expression(expr), out);
 }
 
@@ -7206,7 +7247,7 @@ fn expr_kind(e: &Expression) -> &'static str {
 /// The callee a SEND_FUNC_ARG check asks: a method on the object in a
 /// register, or a static method / constructor of a class.
 #[derive(Clone, Copy)]
-enum ArgRefTarget {
+pub(crate) enum ArgRefTarget {
     Method(Reg, NIdx),
     Static(ClassRef, NIdx),
     /// The function [`Instr::ResolveFunc`] put in the register.

@@ -1,13 +1,4 @@
-//! SPL iterators and data structures (php-src `ext/spl/spl_iterators.c`,
-//! `spl_heap.c`, `spl_observer.c`) in PHP source. `RecursiveIteratorIterator`
-//! is a port of php's lazy per-level state machine (RS_START / RS_TEST /
-//! RS_SELF / RS_CHILD / RS_NEXT, with the overridable hooks); the heaps use
-//! php's exact sift-up / sift-down so equal elements come out in php's order.
 
-/// The PHP source, spliced into the SPL prelude with `concat!`.
-macro_rules! spl_iterators_prelude {
-    () => {
-        r#"
 interface SplObserver { public function update(SplSubject $subject): void; }
 interface SplSubject {
     public function attach(SplObserver $observer): void;
@@ -838,8 +829,3 @@ class MultipleIterator implements Iterator {
         return ["\0SplObjectStorage\0storage" => $st];
     }
 }
-"#
-    };
-}
-
-pub(crate) use spl_iterators_prelude;

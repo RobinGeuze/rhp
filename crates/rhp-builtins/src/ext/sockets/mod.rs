@@ -372,11 +372,7 @@ pub fn register(m: &mut crate::Registry) {
     );
 }
 
-pub const PRELUDE_PHP: &str = r#"
-final class Socket {
-    public function __construct() { throw new Error("Cannot directly construct Socket, use socket_create() instead"); }
-}
-"#;
+pub const PRELUDE_PHP: &str = include_str!("prelude.php");
 
 /// The extension's constants, with the host platform's numbers.
 pub fn constants() -> Vec<(&'static str, Value)> {

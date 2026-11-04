@@ -508,13 +508,4 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     out
 }
 
-pub const PRELUDE_PHP: &str = r#"
-class LibXMLError {
-    public int $level;
-    public int $code;
-    public int $column;
-    public string $message;
-    public string $file;
-    public int $line;
-}
-"#;
+pub const PRELUDE_PHP: &str = include_str!("prelude.php");

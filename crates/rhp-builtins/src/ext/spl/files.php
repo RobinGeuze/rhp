@@ -1,13 +1,4 @@
-//! SPL's filesystem classes (php-src `ext/spl/spl_directory.c`) in PHP source:
-//! `SplFileInfo`, `DirectoryIterator`, `FilesystemIterator`,
-//! `RecursiveDirectoryIterator`, `GlobIterator`, `SplFileObject` and
-//! `SplTempFileObject`. Directory entries come in readdir order (php reads
-//! the directory stream lazily, unsorted).
 
-/// The PHP source, spliced into the SPL prelude with `concat!`.
-macro_rules! spl_files_prelude {
-    () => {
-        r#"
 class SplFileInfo implements Stringable {
     protected $__path = ''; protected $__dir = ''; protected $__infoClass = 'SplFileInfo'; protected $__fileClass = 'SplFileObject';
     public function __construct(string $filename) { $this->__setPath($filename); }
@@ -387,8 +378,3 @@ class SplTempFileObject extends SplFileObject {
         $this->__tmp($name);
     }
 }
-"#
-    };
-}
-
-pub(crate) use spl_files_prelude;

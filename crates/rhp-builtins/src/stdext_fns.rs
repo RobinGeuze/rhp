@@ -995,16 +995,7 @@ pub fn register(m: &mut crate::Registry) {
 }
 
 /// `utf8_encode` / `utf8_decode`.
-pub const PRELUDE_PHP: &str = r#"
-function utf8_encode(string $string): string {
-    __stdext_deprecated('Function utf8_encode() is deprecated since 8.2, visit the php.net documentation for various alternatives');
-    return mb_convert_encoding($string, 'UTF-8', 'ISO-8859-1');
-}
-function utf8_decode(string $string): string {
-    __stdext_deprecated('Function utf8_decode() is deprecated since 8.2, visit the php.net documentation for various alternatives');
-    return mb_convert_encoding($string, 'ISO-8859-1', 'UTF-8');
-}
-"#;
+pub const PRELUDE_PHP: &str = include_str!("stdext_fns/prelude.php");
 
 /// `__stdext_deprecated($message)`: E_DEPRECATED from a prelude function.
 fn fn_stdext_deprecated(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

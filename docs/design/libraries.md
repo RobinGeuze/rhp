@@ -28,7 +28,9 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
   `OPENSSL_VERSION_TEXT`/`NUMBER` from opensslv.h and phpinfo's "OpenSSL
   Library Version" from `OpenSSL_version()`; `ICONV_VERSION` from
   `_libiconv_version` (macOS) or `gnu_get_libc_version()` (glibc);
-  `GMP_VERSION` from libgmp's `gmp_version`.
+  `GMP_VERSION` from libgmp's `gmp_version`;
+  `ZipArchive::LIBZIP_VERSION` from `zip_libzip_version()`, phpinfo's
+  "Libzip version" from zipconf.h.
   `version.rs` keeps hard-coded values only for libraries rhp does not link
   yet; each goes when its library is linked.
 
@@ -52,7 +54,8 @@ rather than linking dynamically quietly.
   libedit, libffi, and what Homebrew's libcurl takes from the SDK
   (libicucore, libldap, libgssapi_krb5, libresolv, frameworks). Linux:
   glibc's iconv.
-- Libraries with no static archive of php's version: Homebrew's libzip.
+- Libraries with no static archive of php's version: libzip (Homebrew's
+  libzip and Debian/Ubuntu's libzip-dev ship only the shared library).
 - LGPL libraries taken from the system: libgmp (LGPL-3.0+ or GPL-2.0+).
   Homebrew and libgmp-dev ship a `libgmp.a`, but linking it would put LGPL
   code into rhp's binary; linked dynamically, the user can replace it (see
@@ -89,6 +92,7 @@ Today rhp-builtins links:
 | libcurl | static, Homebrew curl (keg-only), with its Homebrew dependencies (nghttp2, nghttp3, ngtcp2, libssh2, libpsl, zstd, brotli) static; OpenSSL is the row above | static, libcurl4-openssl-dev; its dependencies dynamic (see above), OpenSSL the row above |
 | libmbfl, php_unicode.c (via rhp-mbfl-sys; feature `mbstring-libmbfl`, on by default) | static, compiled from php-8.5.12 | the same |
 | libgmp | dynamic, Homebrew gmp | dynamic, libgmp-dev |
+| libzip | dynamic, Homebrew libzip (its own zlib, bzip2, xz and zstd links) | dynamic, libzip-dev |
 
 ICU's data library is most of the size: linking ICU statically adds about
 35 MB to `rhp` (13.5 MB → 48 MB on the mac with ICU 79.1, 33.5 MB of it
@@ -199,7 +203,11 @@ also requires `curl_version_info()` to report the version of the curl.h rhp
 compiled against. ext/gmp's `links_libgmp_dynamically` checks with
 `dladdr` that libgmp comes from the shared library, and
 `runtime_library_matches_the_header` that its `gmp_version` is the gmp.h
-rhp compiled against.
+rhp compiled against. libzip is dynamic too: `libzip_is_the_library_php_links`
+checks with `dladdr` that `zip_open` loads from the directory the build
+found it in, and that `zip_libzip_version()` is the release of zipconf.h.
+The native-deps action fails when CI's php reports another
+`ZipArchive::LIBZIP_VERSION` than libzip-dev's; there is no source build.
 
 php links libcurl from Homebrew's keg-only curl on the mac, not the SDK's
 older libcurl, whose error texts differ: the CURL row names the formula, so
@@ -209,6 +217,16 @@ from the SDK on macOS and builds its bundled libcurl when pkg-config finds
 none. ext/curl's constants are php's names and version gates
 (`rhp-difftest gen curl-consts`, from curl.stub.php), evaluated against the
 linked curl.h at build time (`ext/curl/consts.c`).
+
+rhp declares the libzip API ext/zip calls itself (`ext/zip/sys.rs`; the
+`axfive-libzip-sys` crate runs bindgen and CMake). `ext/zip/shim.c` holds
+what php's build adds around zip.h: `ZipArchive`'s constants (names,
+attributes and `#ifdef` guards from php_zip.stub.php, `rhp-difftest gen
+zip-consts`, evaluated against the linked zip.h, so mac's 1.12.1 and CI's
+1.11.4 each define what php defines with them), the `LIBZIP_ATLEAST(1,9,1)`
+gate on entry seeking, and the layouts of `zip_stat_t` and `zip_error_t`,
+which sys.rs mirrors and a test compares. libzip opens archive files
+itself, so ext/zip hands it absolute paths (php's `expand_filepath`).
 
 ## Compiled from source: rhp-csrc
 
@@ -382,6 +400,18 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
     runs to its end before `curl_exec`/`curl_multi_exec` rethrows. Each
     callback's `void *` is its handle's `RefCell`, kept alive by the builtin
     driving the transfer; freeing a handle clears the pointers first;
+  - libzip's progress and cancel callbacks (ext/zip) run while an archive
+    closes, inside `with_host`. Their state is the archive
+    (`php_zip_archive`), shared by the `ZipArchive`'s payload and the entry
+    streams opened from it; libzip frees the callbacks with the archive.
+    The last owner closes it: a stream's close, `close()`/`open()`, or the
+    class's `free_obj_host` after any `__destruct` when the object goes
+    (an archive the destructor pass never reaches closes in the payload's
+    `Drop`, where the callbacks see no host and do nothing). An exception
+    a callback throws while a stream closes comes out of `fclose()`, or of
+    the next builtin call for a stream freed by its last reference. A
+    warning raised while a callback's exception is pending skips a user
+    error handler, as php's does;
   - a library handle belongs in its object's payload (ext/openssl's and
     ext/curl's still sit in per-thread tables keyed by object id); one whose
     free can call back into PHP (an XMLWriter flushing to a stream) is freed
@@ -488,3 +518,4 @@ Tables php-src owns are generated, committed, and checked by
 | `parser` | the release tarball (`tools/php-dist.sha256`): Bison's `zend_language_parser.{c,h}`, `zend_ini_parser.{c,h}`; the numbers of the grammar rules whose actions rhp runs | `ext/tokenizer/ids.rs`, `zend/*_parser_tables.rs` | CI job `generated` (tarball cached on the pin) |
 | `dumps` | the reference php: `tools/capture-ref-build.php tables`, plus constants gated on a newer library (`CONST_EXTRAS`) | `ini_table.rs`, `const_modules.rs` | `cargo test` on the reference host |
 | `curl-consts` | php-src `ext/curl/curl.stub.php` (names, `@cvalue`, `LIBCURL_VERSION_NUM` gates, `#[\Deprecated]`) and `curl_private.h` | `ext/curl/consts.rs`, `ext/curl/consts.c` (values from the linked curl.h) | CI job `generated` (php-src checkout) |
+| `zip-consts` | php-src `ext/zip/php_zip.stub.php`: `ZipArchive`'s constants, `@cvalue`, `#ifdef` guards, attributes | `ext/zip/consts.h` (values from the linked zip.h, through `ext/zip/shim.c`) | CI job `generated` (php-src checkout) |

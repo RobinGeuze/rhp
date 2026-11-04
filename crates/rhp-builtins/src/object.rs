@@ -82,7 +82,8 @@ pub type DoOperationFn =
 /// `zend_std_cast_object_tostring`), as curl's and SimpleXML's do.
 pub type CastFn = fn(&mut dyn Host, &ObjectHandle, CastTarget) -> Result<Option<Value>, Thrown>;
 
-/// `dtor_obj`: runs once, with a host, before the object's `__destruct`.
+/// `dtor_obj` (once, with a host, before the object's `__destruct`) and
+/// `free_obj_host` (once, with a host, after it).
 pub type DtorFn = fn(&mut dyn Host, &ObjectHandle) -> Result<(), Thrown>;
 
 /// php's `clone_obj` slot.
@@ -107,6 +108,11 @@ pub struct ObjectHandlers {
     pub do_operation: Option<DoOperationFn>,
     pub cast_object: Option<CastFn>,
     pub dtor_obj: Option<DtorFn>,
+    /// The part of php's `free_obj` that may call PHP (ZipArchive closing
+    /// its archive runs the archive's callbacks): run by the destructor
+    /// pass right after `__destruct` (in its place when there is none),
+    /// unless the destructor kept a reference to the object.
+    pub free_obj_host: Option<DtorFn>,
 }
 
 impl ObjectHandlers {
@@ -118,6 +124,7 @@ impl ObjectHandlers {
         do_operation: None,
         cast_object: None,
         dtor_obj: None,
+        free_obj_host: None,
     };
     /// `clone_obj = NULL`.
     pub const UNCLONEABLE: ObjectHandlers = ObjectHandlers {

@@ -31,8 +31,9 @@ h.borrow_mut().take_payload();                   // free early (`close()`)
   argument check is the lookup itself (`socket_arg`, `parser_arg`).
 - It is dropped with the object's storage. Its `Drop` is php's `free_obj`:
   it runs once, when the last reference goes, with no host, so it must not
-  call into PHP. Work that may (an XMLWriter flushing to a user stream)
-  belongs in `dtor_obj`.
+  call into PHP. Work that may belongs in `dtor_obj` (an XMLWriter
+  flushing to a user stream, before `__destruct` as in php) or
+  `free_obj_host` (a ZipArchive's close running its callbacks, after it).
 - Get an `Rc<T>` and release the object borrow before calling the host or
   PHP; mutate through `Cell`/`RefCell` inside `T`. A builtin's clone keeps
   the state alive until it returns, as php's refcount would.
@@ -86,7 +87,7 @@ one. A class with a `create_object` and the default handlers registers
 | `do_operation` | `do_operation(host, op, op1, op2)`: `Ok(None)` is FAILURE (the normal operator runs, casting with `cast_object`), an error is SUCCESS with an exception | `+ - * / **`: op1's handler when op1 is an object with one, else op2's, then both operands as numbers. `% << >> \| & ^` (`convert_op1_op2_long`) and `.` (`concat_function`): op1's handler, then op1 converted (to int / string; failing is "Unsupported operand types"), and only then op2's handler and op2. Compound assignments the same. `-$x` as `Mul` by -1, `~$x` as `BitNot` (else "Cannot perform bitwise not"); `++`/`--` as `Add`/`Sub` of 1, then `cast_object(Number)`, then php's "Cannot increment" TypeError |
 | `cast_object` | `cast_object(host, obj, target)`: replaces php's default for every target, so hand the targets you do not convert to `host.std_cast_object(obj, target)` (`__toString()` for strings) | string conversion (`echo`, `.`, `(string)`), `(int)`/`(float)`/`intval`/`floatval` (`object::object_to_number`: a failure is php's "could not be converted" warning and 1), `(bool)`, `if`, `!`, `empty($o->p)`, `boolval`, `array_filter` (`object::is_true`), arithmetic operands and `array_sum`/`array_product` (`Number`), comparison with a scalar |
 | `dtor_obj` | `dtor_obj(host, obj)`, once, before `__destruct` | the engine's destructor pass |
-| `free_obj` | the payload's `Drop` | the object's storage being freed |
+| `free_obj` | the payload's `Drop`; work that may call PHP goes in `free_obj_host(host, obj)`, run once right after `__destruct` (in its place without one) unless the destructor kept a reference | the object's storage being freed; the engine's destructor pass |
 
 Notes:
 
@@ -113,10 +114,14 @@ Notes:
 - Formatters only see `&dyn Host`, so the dumpers resolve every reachable
   object's view up front (`dump::resolve_views`).
 - Handlers not routed yet: property and dimension access (`read_property`,
-  `has_property`… — DOM's, SimpleXML's and DatePeriod's virtual
-  properties still go through `__get`/`__set` in their prelude classes),
-  `get_constructor` (`Directory`), `get_gc`. DateInterval keeps its
-  fields as real properties instead, which its `get_properties_for`
+  `has_property`… — DOM's, SimpleXML's, DatePeriod's and ZipArchive's
+  virtual properties still go through `__get`/`__set` in their prelude
+  classes, so `property_exists()`, `method_exists(…, '__get')` and
+  Reflection's property and method lists can differ from php, and a user
+  subclass that defines its own `__get`/`__set`/`__isset` replaces the
+  virtual properties, read-only checks included), `get_constructor`
+  (`Directory`), `get_gc`. DateInterval keeps
+  its fields as real properties instead, which its `get_properties_for`
   and methods read back into the payload (ext/date/objects.rs).
 - php's `ce->unserialize` (the `C:` format) is a class field, not a
   handler: `unserialize` calls GMP's (`gmp::is_gmp_class`) or a

@@ -363,6 +363,8 @@ enum StreamState {
     /// An OS file descriptor stream: a `proc_open` pipe's parent end or
     /// `php://stdin` (a dup of fd 0).
     Fd(builtins::fdstream::FdStream),
+    /// A stream on an extension's ops (zip entries).
+    Ops(Box<builtins::opsstream::OpsStream>),
 }
 
 /// Status of a generator.
@@ -432,6 +434,14 @@ impl Host for Vm {
 
     fn take_pending_throw(&mut self) -> Option<Thrown> {
         self.pending_throw.take()
+    }
+
+    fn docref_diagnostic(&mut self, level: i64, msg: &str) -> Result<(), Thrown> {
+        self.ob_diag(level, msg);
+        match self.pending_throw.take() {
+            Some(t) => Err(t),
+            None => Ok(()),
+        }
     }
 
     fn set_error_handler(&mut self, handler: Value, mask: i64) -> Value {
@@ -819,6 +829,10 @@ impl Host for Vm {
     }
 
     fn stream_open(&mut self, path: &[u8], mode: &[u8]) -> Option<Value> {
+        self.stream_open_ctx(path, mode, &Value::Null)
+    }
+
+    fn stream_open_ctx(&mut self, path: &[u8], mode: &[u8], ctx: &Value) -> Option<Value> {
         let writable = mode
             .iter()
             .any(|&b| matches!(b, b'w' | b'a' | b'x' | b'c' | b'+'));
@@ -926,6 +940,8 @@ impl Host for Vm {
         } else if builtins::streams::split_scheme(path).0 == b"file" {
             // Plain local file: a real descriptor (seek/tell/flock/ftruncate).
             StreamState::File(Box::new(builtins::streams::LocalFile::open(path, mode)?))
+        } else if let Some(opened) = self.open_wrapper_stream(path, mode, ctx) {
+            return opened;
         } else if writable {
             let origin = (path.to_vec(), mode.to_vec());
             let zlib = builtins::streams::split_scheme(path).0 == b"compress.zlib";
@@ -995,6 +1011,10 @@ impl Host for Vm {
         res_id(res).is_some_and(|id| self.streams.contains_key(&id))
     }
 
+    fn stream_from_ops(&mut self, s: builtins::opsstream::OpsStream) -> Option<Value> {
+        Some(self.make_stream(StreamState::Ops(Box::new(s)), "stream"))
+    }
+
     fn stream_mode(&self, res: &Value) -> Option<Vec<u8>> {
         let id = res_id(res)?;
         if let Some(m) = self
@@ -1006,6 +1026,7 @@ impl Host for Vm {
         }
         // Memory / temp streams (returned before the mode is recorded).
         match self.streams.get(&id)? {
+            StreamState::Ops(s) => Some(s.mode.clone()),
             StreamState::Mem { mode, .. } => Some(
                 match mode {
                     MemMode::ReadOnly => &b"rb"[..],
@@ -1041,6 +1062,7 @@ impl Host for Vm {
             StreamState::Stderr => Act::Err,
             StreamState::Mem { .. } | StreamState::FileWrite { .. } => Act::Buf,
             StreamState::File(f) => return f.write(data),
+            StreamState::Ops(s) => return s.write(data),
             StreamState::Fd(f) => {
                 let r = f.write(data);
                 let send_error = f.take_send_error();
@@ -1102,6 +1124,15 @@ impl Host for Vm {
 
     fn stream_read(&mut self, res: &Value, len: i64) -> Option<Vec<u8>> {
         let id = res_id(res)?;
+        if let Some(StreamState::Ops(s)) = self.streams.get_mut(&id) {
+            let r = if len < 0 {
+                Some(s.read_all())
+            } else {
+                s.read(len as usize)
+            };
+            self.raise_ops_stream_diags(id);
+            return r;
+        }
         match self.streams.get_mut(&id)? {
             StreamState::Mem {
                 buf,
@@ -1186,6 +1217,7 @@ impl Host for Vm {
             Some(StreamState::Mem { eof, .. }) => *eof,
             Some(StreamState::File(f)) => f.eof(),
             Some(StreamState::Fd(f)) => f.eof(),
+            Some(StreamState::Ops(s)) => s.eof(),
             Some(StreamState::Stdin) => self.stdin_reader.as_ref().is_some_and(|f| f.eof()),
             Some(StreamState::Dir { .. }) => false,
             Some(StreamState::Stdout | StreamState::Stderr | StreamState::FileWrite { .. }) => {
@@ -1484,7 +1516,14 @@ impl Host for Vm {
         if self.last_dir.as_ref().and_then(res_id) == Some(id) {
             self.last_dir = None;
         }
-        self.free_stream(id)
+        match self.free_stream(id) {
+            Ok(closed) => closed,
+            // php's EG(exception): thrown once the builtin returns.
+            Err(t) => {
+                self.pending_throw.get_or_insert(t);
+                true
+            }
+        }
     }
 
     fn stream_flush(&mut self, res: &Value) -> bool {
@@ -1509,6 +1548,7 @@ impl Host for Vm {
             }
             Some(StreamState::File(f)) => f.rewind(),
             Some(StreamState::Fd(f)) => f.seek(0, 0),
+            Some(StreamState::Ops(s)) => s.seek(0, 0) == 0,
             Some(StreamState::Stdout | StreamState::Stderr | StreamState::Stdin) => false,
             _ => true,
         }
@@ -1520,7 +1560,9 @@ impl Host for Vm {
             StreamState::File(_) => K::File,
             StreamState::Fd(_) => K::Pipe,
             StreamState::Dir { .. } => K::Dir,
-            StreamState::Mem { .. } | StreamState::FileWrite { .. } => K::Memory,
+            StreamState::Mem { .. } | StreamState::FileWrite { .. } | StreamState::Ops(_) => {
+                K::Memory
+            }
             StreamState::Stdout | StreamState::Stderr | StreamState::Stdin => K::Stdio,
         })
     }
@@ -1530,6 +1572,11 @@ impl Host for Vm {
         match self.streams.get_mut(&id) {
             Some(StreamState::File(f)) => f.seek(offset, whence),
             Some(StreamState::Fd(f)) => f.seek(offset, whence),
+            Some(StreamState::Ops(s)) => {
+                let ok = s.seek(offset, whence) == 0;
+                self.raise_ops_stream_diags(id);
+                ok
+            }
             Some(StreamState::Stdin) => match self.stdin_stream() {
                 Some(f) => f.seek(offset, whence),
                 None => false,
@@ -1575,6 +1622,7 @@ impl Host for Vm {
             StreamState::File(f) => Some(f.tell()),
             // php's ftell(): false while the stream position is -1.
             StreamState::Fd(f) => Some(f.tell()).filter(|&p| p != -1),
+            StreamState::Ops(s) => Some(s.tell()).filter(|&p| p != -1),
             StreamState::Stdin => Some(self.stdin_reader.as_ref().map_or(0, |f| f.tell())),
             StreamState::Mem { pos, skew, .. } => {
                 // ftell() is false while php's position is -1 (failed seek).
@@ -1625,6 +1673,9 @@ impl Host for Vm {
         if let Some((uri, _)) = self.stream_origins.get(&id) {
             let uri = uri.clone();
             return self.wrapper_for(&uri)?.stat(&uri);
+        }
+        if let Some(StreamState::Ops(s)) = self.streams.get_mut(&id) {
+            return s.stat();
         }
         match self.streams.get(&id)? {
             StreamState::File(f) => f.stat(),
@@ -1709,6 +1760,20 @@ impl Host for Vm {
                 });
             }
             Some(match self.streams.get(&id)? {
+                StreamState::Ops(s) => M {
+                    wrapper_type: s.wrapper_label.unwrap_or(""),
+                    stream_type: s.label(),
+                    mode: s.mode.clone(),
+                    uri: s.uri.clone(),
+                    unread_bytes: s.unread() as i64,
+                    seekable: s.seekable(),
+                    eof: s.eof_flag(),
+                    blocked: true,
+                    timed_out: false,
+                    crypto: None,
+                    wrapper_data: None,
+                    rfc2397: None,
+                },
                 StreamState::File(f) => M {
                     wrapper_type: "plainfile",
                     stream_type: "STDIO",
@@ -4328,6 +4393,11 @@ impl Vm {
                 Some(line)
             }
             StreamState::File(f) => f.gets(max),
+            StreamState::Ops(s) => {
+                let line = s.gets(max);
+                self.raise_ops_stream_diags(id);
+                line
+            }
             // FdStream::gets takes php's `$length` (it reads `length - 1`).
             StreamState::Fd(f) => f.gets(max.map(|m| m + 1)),
             StreamState::Stdin => self.stdin_stream()?.gets(max.map(|m| m + 1)),
@@ -4337,24 +4407,30 @@ impl Vm {
 
     /// Free a stream's backing state (fclose / last reference dropped):
     /// closes the descriptor (releasing flock locks) and flushes buffered
-    /// wrapper writes.
-    fn free_stream(&mut self, id: u32) -> bool {
+    /// wrapper writes. An extension's close may call PHP and throw.
+    fn free_stream(&mut self, id: u32) -> Result<bool, Thrown> {
         self.stream_origins.remove(&id);
         self.stream_modes.remove(&id);
         self.stream_ctx.remove(&id);
         self.data_streams.remove(&id);
-        match self.streams.remove(&id) {
+        Ok(match self.streams.remove(&id) {
             Some(StreamState::FileWrite { buf, url }) => self
                 .wrapper_for(&url)
                 .map(|w| w.put_contents(&url, &buf))
                 .is_some(),
+            Some(StreamState::Ops(mut s)) => {
+                s.close(self)?;
+                true
+            }
             Some(_) => true,
             None => false,
-        }
+        })
     }
 
-    /// Free the streams whose last resource reference has been dropped.
-    fn reap_dropped_streams(&mut self) {
+    /// Free the streams whose last resource reference has been dropped,
+    /// returning the first exception a close threw.
+    fn reap_dropped_streams(&mut self) -> Result<(), Thrown> {
+        let mut thrown = None;
         for id in rhp_values::take_dropped_streams() {
             // The CLI std streams live for the whole request.
             if matches!(
@@ -4364,11 +4440,14 @@ impl Vm {
                 continue;
             }
             if self.streams.contains_key(&id) {
-                self.free_stream(id);
+                if let Err(t) = self.free_stream(id) {
+                    thrown.get_or_insert(t);
+                }
             } else if let Some(data) = self.native_resources.remove(&id) {
                 builtins::native_resource_dtor(self, data);
             }
         }
+        thrown.map_or(Ok(()), Err)
     }
 
     /// The internal `Directory` class (readonly props, not dynamic, not
@@ -4447,6 +4526,48 @@ impl Vm {
         Value::Resource(Rc::new(rhp_values::ResourceData { id, type_name }))
     }
 
+    /// A wrapper's own opener (`zip://`), given the call's stream context
+    /// (null: the default one). `None` when the wrapper has none.
+    fn open_wrapper_stream(
+        &mut self,
+        path: &[u8],
+        mode: &[u8],
+        ctx: &Value,
+    ) -> Option<Option<Value>> {
+        let w = self.wrapper_for(path)?.clone();
+        if !w.has_stream_opener() {
+            return None;
+        }
+        let ctx = match ctx {
+            Value::Resource(_) => ctx.clone(),
+            _ => self.default_stream_context(),
+        };
+        let options = self.stream_context_options(&ctx);
+        let mut diags = Vec::new();
+        let opened = w.open_stream(path, mode, &options, &mut diags)?;
+        self.raise_ops_diags(diags);
+        Some(opened.map(|s| self.make_stream(StreamState::Ops(Box::new(s)), "stream")))
+    }
+
+    /// Report the diagnostics an ops stream's last operation raised, under
+    /// the running builtin.
+    fn raise_ops_stream_diags(&mut self, id: u32) {
+        if let Some(StreamState::Ops(s)) = self.streams.get_mut(&id) {
+            let diags = s.take_diags();
+            self.raise_ops_diags(diags);
+        }
+    }
+
+    fn raise_ops_diags(&mut self, diags: Vec<(i64, String)>) {
+        if diags.is_empty() {
+            return;
+        }
+        let func = self.native_calls.last().map_or("Unknown", |n| n.name);
+        for (level, msg) in diags {
+            self.raise_diagnostic(level, &format!("{func}(): {msg}"));
+        }
+    }
+
     /// Set (or override) an engine constant, e.g. the SAPI's `PHP_BINARY`.
     pub fn set_constant(&mut self, name: &str, value: Value) {
         self.constants.insert(name.as_bytes().to_vec(), value);
@@ -4495,13 +4616,13 @@ impl Vm {
     // -- object destruction & request shutdown ---------------------------------
 
     /// Remember a new object whose class defines `__destruct` or has a
-    /// native `dtor_obj`.
+    /// native `dtor_obj` / `free_obj_host`.
     pub(crate) fn track_destructible(&mut self, h: &ObjectHandle) {
         let cls = h.borrow().class;
         let native = self
             .class(cls)
             .handlers
-            .is_some_and(|t| t.dtor_obj.is_some());
+            .is_some_and(|t| t.dtor_obj.is_some() || t.free_obj_host.is_some());
         if native || self.lookup_method(cls, b"__destruct").is_some() {
             self.destructibles.push(h.clone());
         }
@@ -4509,20 +4630,29 @@ impl Vm {
 
     /// Destruct `h` (already removed from the tracking list, so it runs at
     /// most once): the class's native `dtor_obj` first, then `__destruct`
-    /// (zend_objects_destroy_object).
+    /// (zend_objects_destroy_object), then `free_obj_host` unless the
+    /// destructor kept a reference.
     fn call_destructor(&mut self, h: ObjectHandle) -> Result<(), Thrown> {
         if h.borrow().id < self.destructed_below {
             return Ok(()); // marked destructed by a fatal error's bailout
         }
         let cls = h.borrow().class;
-        let native = match self.class(cls).handlers.and_then(|t| t.dtor_obj) {
+        let handlers = self.class(cls).handlers;
+        let native = match handlers.and_then(|t| t.dtor_obj) {
             Some(f) => f(self, &h),
             None => Ok(()),
         };
+        let mut kept = false;
         if let Some(m) = self.lookup_method(cls, b"__destruct") {
-            self.call_sync(&m, Some(h), cls, Vec::new())?;
+            let before = Rc::strong_count(&h);
+            self.call_sync(&m, Some(h.clone()), cls, Vec::new())?;
+            kept = Rc::strong_count(&h) > before;
         }
-        native
+        let freed = match handlers.and_then(|t| t.free_obj_host) {
+            Some(f) if !kept => f(self, &h),
+            _ => Ok(()),
+        };
+        native.and(freed)
     }
 
     /// Destruct every tracked object nothing else references any more (php
@@ -8855,6 +8985,11 @@ impl Vm {
                 Ok(v) => return Ok(v),
                 Err(thrown) => {
                     if !thrown.is_catchable() {
+                        // php's unwind_exit pops the callback's frames, so
+                        // what the calling builtin raises next is its own.
+                        if matches!(thrown, Thrown::Exit(_)) {
+                            self.stack.truncate(base);
+                        }
                         return Err(thrown);
                     }
                     match self.unwind(thrown, base)? {
@@ -9410,6 +9545,11 @@ impl Vm {
                 Ok(v) => return Ok(v),
                 Err(thrown) => {
                     if !thrown.is_catchable() {
+                        // php's unwind_exit pops the callback's frames, so
+                        // what the calling builtin raises next is its own.
+                        if matches!(thrown, Thrown::Exit(_)) {
+                            self.stack.truncate(base);
+                        }
                         return Err(thrown);
                     }
                     match self.unwind(thrown, base)? {
@@ -10994,8 +11134,8 @@ impl Vm {
         icall: bool,
     ) -> Result<Value, Thrown> {
         // Free streams whose last reference went away (php closes a resource
-        // when its refcount drops to zero).
-        self.reap_dropped_streams();
+        // when its refcount drops to zero; what that throws is thrown there).
+        self.reap_dropped_streams()?;
         let count_error = builtin_arg_count_error(builtin, sig, args.len());
         if count_error.is_none() {
             let caller = self.stack.len().saturating_sub(1);

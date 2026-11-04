@@ -122,6 +122,7 @@ ext_row('curl', 'curl_version()', function () {
 foreach (['ICONV_IMPL', 'ICONV_VERSION', 'GMP_VERSION'] as $c) {
     row($c, defined($c) ? constant($c) : '(undefined)');
 }
+ext_row('zip', 'ZipArchive::LIBZIP_VERSION', fn () => ZipArchive::LIBZIP_VERSION);
 module_rows(['GMP version']);
 
 echo "# build\n";
@@ -138,4 +139,3 @@ info_rows(['Build Date', 'Build System', 'Build Provider', 'Configuration File (
 foreach (['MB_ONIGURUMA_VERSION', 'ZLIB_VERSION', 'ZLIB_VERNUM'] as $c) {
     row($c, defined($c) ? constant($c) : '(undefined)');
 }
-ext_row('zip', 'ZipArchive::LIBZIP_VERSION', fn () => ZipArchive::LIBZIP_VERSION);

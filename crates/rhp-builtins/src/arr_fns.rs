@@ -442,7 +442,37 @@ fn fn_array_intersect(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 // array_column
 // ---------------------------------------------------------------------------
 
-fn fn_array_column(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+/// array_column_fetch_prop for an object row: the property if it exists
+/// as seen from the caller (has_property's "exists" mode), else what
+/// `__isset` admits (its "isset" mode), read through `__get`.
+fn column_prop(host: &mut dyn Host, row: &Value, key: &Value) -> Result<Option<Value>, Thrown> {
+    let name = conv::to_string_bytes(key);
+    if host.object_prop_exists(row, &name) {
+        return Ok(host.object_prop(row, &name).map(|v| deref(&v)));
+    }
+    let Value::Object(h) = row else {
+        return Ok(None);
+    };
+    let cls = h.borrow().class;
+    if !host.class_has_method(cls, b"__isset") {
+        return Ok(None);
+    }
+    let call = |host: &mut dyn Host, m: &str| {
+        let mut cb = PhpArray::new();
+        cb.push(row.clone());
+        cb.push(Value::str(m));
+        host.call_callable(&Value::Array(cb), &[Value::str(name.clone())])
+    };
+    if !conv::to_bool(&call(host, "__isset")?) {
+        return Ok(None);
+    }
+    if !host.class_has_method(cls, b"__get") {
+        return Ok(Some(Value::Null));
+    }
+    Ok(Some(call(host, "__get")?))
+}
+
+fn fn_array_column(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let rows = want_array(deref(&args[0]), "array_column")?;
     let column_key = deref(&args[1]);
     let column_null = matches!(column_key, Value::Null);
@@ -460,6 +490,11 @@ fn fn_array_column(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         // Extracted value.
         let value = if column_null {
             row.clone()
+        } else if let Value::Object(_) = row {
+            match column_prop(host, &row, &column_key)? {
+                Some(v) => v,
+                None => continue,
+            }
         } else {
             let Value::Array(ref ra) = row else { continue };
             match column_ak.as_ref().and_then(|k| ra.get(k)) {
@@ -471,13 +506,14 @@ fn fn_array_column(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         // Index key, if requested and present in this (array) row.
         let idx = match &index_ak {
             None => None,
-            Some(ak) => {
-                if let Value::Array(ref ra) = row {
-                    ak.as_ref().and_then(|k| ra.get(k)).cloned()
-                } else {
-                    None
+            Some(ak) => match &row {
+                Value::Array(ra) => ak.as_ref().and_then(|k| ra.get(k)).cloned(),
+                Value::Object(_) => {
+                    let key = deref(&args[2]);
+                    column_prop(host, &row, &key)?
                 }
-            }
+                _ => None,
+            },
         };
 
         match idx {

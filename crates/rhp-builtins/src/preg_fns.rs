@@ -116,7 +116,7 @@ fn int_arg(args: &[Value], i: usize, default: i64) -> i64 {
 /// pcre_get_compiled_regex_cache: a cached pattern, or parse and compile it.
 /// A failed compile or a JIT problem warns from builtin `fname` right away,
 /// as php does; `None` means the pattern did not compile.
-fn compile_warn(
+pub(crate) fn compile_warn(
     host: &mut dyn Host,
     fname: &str,
     pattern: &[u8],

@@ -232,6 +232,14 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             },
         );
     }
+    let scheme = crate::streams::split_scheme(&url).0.to_vec();
+    if host
+        .stream_wrapper(&scheme)
+        .is_some_and(|w| w.has_stream_opener())
+    {
+        let ctx = args.get(2).map(deref).unwrap_or(Value::Null);
+        return get_contents_via_stream(host, &url, &ctx, offset, maxlen);
+    }
     let use_include_path = args.get(1).is_some_and(|v| conv::to_bool(&deref(v)));
     if !use_include_path {
         if !reserve_file_read(&url, offset, maxlen) {
@@ -294,6 +302,78 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             Ok(Value::Bool(false))
         }
     }
+}
+
+/// file_get_contents over a wrapper's own stream (`zip://`): open with the
+/// context, seek to `offset`, copy at most `maxlen` bytes, close.
+fn get_contents_via_stream(
+    host: &mut dyn Host,
+    url: &[u8],
+    ctx: &Value,
+    offset: i64,
+    maxlen: Option<usize>,
+) -> Result<Value, Thrown> {
+    let Some(res) = host.stream_open_ctx(url, b"rb", ctx) else {
+        crate::open_failed(host, "file_get_contents", url)?;
+        return Ok(Value::Bool(false));
+    };
+    if offset != 0 {
+        let whence = if offset < 0 {
+            libc::SEEK_END
+        } else {
+            libc::SEEK_SET
+        };
+        if !crate::fs_fns::stream_seek(host, "file_get_contents", &res, offset, whence)? {
+            crate::warn(
+                host,
+                "file_get_contents",
+                &format!("Failed to seek to position {offset} in the stream"),
+            )?;
+            host.stream_close(&res);
+            return Ok(Value::Bool(false));
+        }
+    }
+    let data = match maxlen {
+        None => host.stream_read(&res, -1).unwrap_or_default(),
+        Some(max) => {
+            let mut out = Vec::new();
+            while out.len() < max && !host.stream_eof(&res) {
+                match host.stream_read(&res, (max - out.len()) as i64) {
+                    Some(b) if !b.is_empty() => out.extend_from_slice(&b),
+                    _ => break,
+                }
+            }
+            out
+        }
+    };
+    host.stream_close(&res);
+    Ok(Value::str(data))
+}
+
+/// A whole-stream read through a wrapper's own opener (`zip://`), with the
+/// call's context, for builtin `fname`: `None` when the wrapper has no
+/// opener (read as before), `Some(None)` when the open failed (warned).
+pub(crate) fn read_via_opener(
+    host: &mut dyn Host,
+    fname: &str,
+    url: &[u8],
+    ctx: Option<&Value>,
+) -> Result<Option<Option<Vec<u8>>>, Thrown> {
+    let scheme = crate::streams::split_scheme(url).0.to_vec();
+    if !host
+        .stream_wrapper(&scheme)
+        .is_some_and(|w| w.has_stream_opener())
+    {
+        return Ok(None);
+    }
+    let ctx = ctx.map(deref).unwrap_or(Value::Null);
+    let Some(res) = host.stream_open_ctx(url, b"rb", &ctx) else {
+        crate::open_failed(host, fname, url)?;
+        return Ok(Some(None));
+    };
+    let data = host.stream_read(&res, -1).unwrap_or_default();
+    host.stream_close(&res);
+    Ok(Some(Some(data)))
 }
 
 /// A local path given without a scheme or as `file://`.

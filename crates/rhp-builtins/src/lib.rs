@@ -18,6 +18,7 @@ pub(crate) mod dump;
 pub mod fdstream;
 pub(crate) mod module;
 pub mod object;
+pub mod opsstream;
 pub mod pcre;
 pub mod signatures;
 pub mod streams;
@@ -114,7 +115,6 @@ mod strsearch_fns;
 mod sysmisc_fns;
 pub(crate) mod url;
 mod webenc_fns;
-pub(crate) mod zip_ext;
 
 /// The E_DEPRECATED message for reading a `#[\Deprecated]` extension
 /// constant, if `name` is one.
@@ -126,12 +126,12 @@ pub fn constant_deprecation(name: &[u8]) -> Option<String> {
 /// constant raises (`class` is the declaring class).
 pub fn class_constant_deprecation(class: &[u8], name: &[u8]) -> Option<String> {
     ext::date::class_constant_deprecation(class, name)
+        .or_else(|| ext::zip::class_constant_deprecation(class, name))
 }
 
 /// The engine's object free hook (`rhp_values::set_object_free_hook`), for
 /// the per-object state still kept by object id.
 pub fn object_freed(id: u32) {
-    zip_ext::object_freed(id);
     sort_fns::object_freed(id);
     ext::openssl::object_freed(id);
     ext::curl::object_freed(id);
@@ -851,6 +851,15 @@ pub trait Host {
     fn stream_open(&mut self, _path: &[u8], _mode: &[u8]) -> Option<Value> {
         None
     }
+    /// [`Host::stream_open`] with the call's stream context (null: the
+    /// default one), which a wrapper's own opener reads.
+    fn stream_open_ctx(&mut self, path: &[u8], mode: &[u8], _ctx: &Value) -> Option<Value> {
+        self.stream_open(path, mode)
+    }
+    /// A `stream` resource over an extension's stream ops.
+    fn stream_from_ops(&mut self, _s: opsstream::OpsStream) -> Option<Value> {
+        None
+    }
     /// `fwrite`/`fputs` → bytes written.
     fn stream_write(&mut self, _res: &Value, _data: &[u8]) -> Option<usize> {
         None
@@ -1118,6 +1127,13 @@ pub trait Host {
             None => Ok(()),
         }
     }
+    /// `php_error_docref(NULL, level, msg)` raised outside a builtin of its
+    /// own (an object or resource freed): prefixed with php's active
+    /// function (the running builtin, else the innermost user function,
+    /// `main` at top level, else `PHP Request Shutdown` in Unknown on line 0).
+    fn docref_diagnostic(&mut self, level: i64, msg: &str) -> Result<(), Thrown> {
+        self.emit_diagnostic(level, &format!("Unknown: {msg}"))
+    }
 }
 
 /// `E_WARNING`.
@@ -1304,7 +1320,6 @@ pub fn reset_request_state() {
     php_fns::reset_state();
     stdext_fns::reset_state();
     sapi::reset_state();
-    zip_ext::reset_state();
     ext::curl::reset_state();
     ext::openssl::reset_state();
     ext::bz2::reset_state();

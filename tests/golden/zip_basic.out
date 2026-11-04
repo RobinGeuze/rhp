@@ -1,0 +1,75 @@
+int(0)
+int(0)
+string(0) ""
+int(-1)
+int(1)
+Invalid or uninitialized Zip object
+ZipArchive::open(): Argument #1 ($filename) must not be empty
+ZipArchive::open(): Argument #1 ($filename) must not contain any null bytes
+bool(true)
+bool(true)
+bool(true)
+int(0)
+bool(true)
+bool(true)
+int(1)
+bool(true)
+bool(true)
+int(2)
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+string(19) "File already exists"
+int(0)
+int(4)
+int(4)
+bool(true)
+string(4) "note"
+bool(true)
+string(7) "about b"
+bool(true)
+Cannot write read-only property ZipArchive::$numFiles
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+int(0)
+string(0) ""
+int(0)
+bool(true)
+int(4)
+string(4) "note"
+0 a.txt 5 5 3504355690 0
+1 b.txt 9 9 3087847407 0
+2 dir/c.txt 0 0 0 0
+3 empty/ 0 0 0 0
+int(1700000000)
+int(1)
+int(2)
+bool(false)
+string(5) "alpha"
+string(4) "beta"
+string(0) ""
+bool(false)
+string(6) "empty/"
+bool(false)
+string(4) "beta"
+bool(false)
+string(5) " beta"
+bool(true)
+string(5) "alpha"
+bool(true)
+string(9) "beta beta"
+bool(true)
+bool(true)
+bool(true)
+int(4)
+int(1)
+bool(true)
+string(5) "b.txt"
+bool(true)
+b.txt 9 stored bet
+dir/c.txt 0 stored 
+empty/ 0 stored 
+done

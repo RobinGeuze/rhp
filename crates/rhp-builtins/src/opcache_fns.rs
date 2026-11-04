@@ -314,7 +314,9 @@ pub fn accel_log_line(level: i64, msg: &str) -> Option<String> {
         3 => "Message",
         _ => "Debug",
     };
-    let now = crate::zip_ext::now();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
     Some(format!(
         "{} ({}): {kind} {msg}\n",
         asctime_local(now),

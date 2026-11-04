@@ -50,6 +50,18 @@ fn main() {
         .flag_if_supported("-Wno-unused-parameter")
         .compile("rhp_curl_shim");
 
+    // ext/zip's constants against the linked zip.h, and its layout checks.
+    for f in ["src/ext/zip/shim.c", "src/ext/zip/consts.h"] {
+        println!("cargo:rerun-if-changed={f}");
+    }
+    cc::Build::new()
+        .file("src/ext/zip/shim.c")
+        .include(include("LIBZIP"))
+        .warnings(true)
+        .extra_warnings(true)
+        .flag_if_supported("-Wno-deprecated-declarations")
+        .compile("rhp_zip_shim");
+
     // ext/gmp's layout checks against the linked gmp.h.
     println!("cargo:rerun-if-changed=src/ext/gmp/shim.c");
     cc::Build::new()

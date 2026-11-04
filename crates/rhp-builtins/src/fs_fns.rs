@@ -162,7 +162,8 @@ fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         );
     }
     crate::streams::clear_errno();
-    match host.stream_open(&path, &mode) {
+    let ctx = args.get(3).map(deref).unwrap_or(Value::Null);
+    match host.stream_open_ctx(&path, &mode, &ctx) {
         Some(v) => Ok(v),
         None => {
             if crate::streams::split_scheme(&path).0 == b"file"
@@ -384,8 +385,8 @@ const GLOB_NOSORT: i64 = 0x0020;
 const GLOB_BRACE: i64 = 0x0080;
 const GLOB_MAGCHAR: i64 = 0x0100;
 const GLOB_NOESCAPE: i64 = 0x1000;
-const GLOB_ONLYDIR: i64 = 1 << 30;
-const GLOB_AVAILABLE: i64 =
+pub(crate) const GLOB_ONLYDIR: i64 = 1 << 30;
+pub(crate) const GLOB_AVAILABLE: i64 =
     GLOB_BRACE | GLOB_MARK | GLOB_NOSORT | GLOB_NOCHECK | GLOB_NOESCAPE | GLOB_ERR | GLOB_ONLYDIR;
 const GLOB_NOMATCH: i32 = -3;
 
@@ -850,6 +851,17 @@ fn glob_match(name: &[Ch], pat: &[Ch]) -> bool {
     }
 }
 
+/// php_glob(pattern, flags & PHP_GLOB_FLAGMASK): its return code and the
+/// matches (`GLOB_ONLYDIR` is left to the caller, as php does).
+pub(crate) fn php_glob(pattern: &[u8], flags: i64) -> (i32, Vec<Vec<u8>>) {
+    let mut g = Glob {
+        flags: flags & !GLOB_ONLYDIR,
+        paths: Vec::new(),
+    };
+    let ret = g.run(pattern);
+    (ret, g.paths)
+}
+
 fn fn_glob(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let _ = host;
     let pattern = path_param(args, 0, "glob", "pattern")?;
@@ -860,16 +872,12 @@ fn fn_glob(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if (GLOB_AVAILABLE & flags) != flags {
         return Ok(Value::Bool(false));
     }
-    let mut g = Glob {
-        flags: flags & !GLOB_ONLYDIR,
-        paths: Vec::new(),
-    };
-    let ret = g.run(&pattern);
+    let (ret, paths) = php_glob(&pattern, flags);
     if ret != 0 && ret != GLOB_NOMATCH {
         return Ok(Value::Bool(false));
     }
     let mut a = PhpArray::new();
-    for p in g.paths {
+    for p in paths {
         if flags & GLOB_ONLYDIR != 0 {
             match crate::streams::sys_stat(&p, false) {
                 Some(s) if s.is_dir => {}
@@ -902,9 +910,15 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let include_new_line = flags & IGNORE_NEW_LINES == 0;
     let skip_blank = flags & SKIP_EMPTY_LINES != 0;
     crate::streams::clear_errno();
-    let http = crate::http::is_http(&path);
-    let data = if http {
+    let mut opened = crate::http::is_http(&path);
+    let data = if opened {
         match crate::http::get_contents(host, "file", &path, args.get(2), 0, None)? {
+            Some(b) => Some(b),
+            None => return Ok(Value::Bool(false)),
+        }
+    } else if let Some(r) = crate::file_fns::read_via_opener(host, "file", &path, args.get(2))? {
+        opened = true;
+        match r {
             Some(b) => Some(b),
             None => return Ok(Value::Bool(false)),
         }
@@ -929,7 +943,7 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         crate::open_failed(host, "file", &path)?;
         return Ok(Value::Bool(false));
     };
-    if !http {
+    if !opened {
         host.consume_resource_ids(crate::streams::open_resource_ids(&path));
     }
     let mut a = PhpArray::new();
@@ -1233,7 +1247,7 @@ fn fn_flock(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_ftruncate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let (h, _) = stream_param(host, args, 0, "ftruncate", "stream")?;
+    let (h, kind) = stream_param(host, args, 0, "ftruncate", "stream")?;
     let size = int_arg(args, 1, 0);
     if size < 0 {
         return Err(Thrown::error(
@@ -1246,23 +1260,44 @@ fn fn_ftruncate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         crate::warn(host, "ftruncate", "Can't truncate this stream!")?;
         return Ok(Value::Bool(false));
     }
-    Ok(Value::Bool(host.stream_truncate(&h, size).unwrap_or(false)))
+    match host.stream_truncate(&h, size) {
+        Some(r) => Ok(Value::Bool(r)),
+        // Nor do the wrapper and extension streams without a set_option
+        // (zip entries).
+        None if kind == StreamKind::Memory => {
+            crate::warn(host, "ftruncate", "Can't truncate this stream!")?;
+            Ok(Value::Bool(false))
+        }
+        None => Ok(Value::Bool(false)),
+    }
 }
 
 fn fn_fseek(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (h, _) = stream_param(host, args, 0, "fseek", "stream")?;
     let off = int_arg(args, 1, 0);
     let whence = int_arg(args, 2, 0) as i32;
-    if host.stream_seek(&h, off, whence) {
-        return Ok(Value::Int(0));
+    let ok = stream_seek(host, "fseek", &h, off, whence)?;
+    Ok(Value::Int(if ok { 0 } else { -1 }))
+}
+
+/// `_php_stream_seek` for builtin `fname`: php emulates a forward relative
+/// seek on an unseekable stream by reading (failing quietly at eof);
+/// anything else it cannot do warns.
+pub(crate) fn stream_seek(
+    host: &mut dyn Host,
+    fname: &str,
+    h: &Value,
+    off: i64,
+    whence: i32,
+) -> Result<bool, Thrown> {
+    if host.stream_seek(h, off, whence) {
+        return Ok(true);
     }
-    // php emulates a forward relative seek on an unseekable stream by
-    // reading (failing quietly at eof); anything else warns.
     let forward = whence == libc::SEEK_CUR && off >= 0;
-    if !forward && host.stream_meta(&h).is_some_and(|m| !m.seekable) {
-        crate::warn(host, "fseek", "Stream does not support seeking")?;
+    if !forward && host.stream_meta(h).is_some_and(|m| !m.seekable) {
+        crate::warn(host, fname, "Stream does not support seeking")?;
     }
-    Ok(Value::Int(-1))
+    Ok(false)
 }
 
 fn fn_ftell(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1392,7 +1427,7 @@ fn fn_fgetc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_stream_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let (h, _) = stream_param(host, args, 0, "stream_get_contents", "stream")?;
+    let (h, kind) = stream_param(host, args, 0, "stream_get_contents", "stream")?;
     let maxlen = int_arg(args, 1, -1);
     let offset = int_arg(args, 2, -1);
     if maxlen < -1 {
@@ -1401,12 +1436,44 @@ fn fn_stream_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
             "stream_get_contents(): Argument #2 ($length) must be greater than or equal to -1",
         ));
     }
-    if offset >= 0 && !host.stream_seek(&h, offset, 0) {
-        // php: "Failed to seek to position N in the stream".
-        return Ok(Value::Bool(false));
+    if offset >= 0 {
+        // A forward seek is relative, so an unseekable stream can emulate it.
+        let ok = match host.stream_tell(&h) {
+            Some(pos) if offset > pos => stream_seek(
+                host,
+                "stream_get_contents",
+                &h,
+                offset - pos,
+                libc::SEEK_CUR,
+            )?,
+            Some(pos) if offset < pos => {
+                stream_seek(host, "stream_get_contents", &h, offset, libc::SEEK_SET)?
+            }
+            _ => true,
+        };
+        if !ok {
+            crate::warn(
+                host,
+                "stream_get_contents",
+                &format!("Failed to seek to position {offset} in the stream"),
+            )?;
+            return Ok(Value::Bool(false));
+        }
     }
     if maxlen == 0 {
         return Ok(Value::str(""));
+    }
+    if maxlen > 0 && kind == StreamKind::Memory {
+        // _php_stream_copy_to_mem: one read returns at most a buffer's worth
+        // from an extension's stream (zip entries), so read on to `$length`.
+        let mut out = Vec::new();
+        while out.len() < maxlen as usize && !host.stream_eof(&h) {
+            match host.stream_read(&h, maxlen - out.len() as i64) {
+                Some(b) if !b.is_empty() => out.extend_from_slice(&b),
+                _ => break,
+            }
+        }
+        return Ok(Value::str(out));
     }
     Ok(host
         .stream_read(&h, maxlen)
@@ -1614,6 +1681,11 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     crate::streams::clear_errno();
     let data = if crate::http::is_http(&from) {
         match crate::http::get_contents(host, "copy", &from, args.get(2), 0, None)? {
+            Some(b) => b,
+            None => return Ok(Value::Bool(false)),
+        }
+    } else if let Some(r) = crate::file_fns::read_via_opener(host, "copy", &from, args.get(2))? {
+        match r {
             Some(b) => b,
             None => return Ok(Value::Bool(false)),
         }
@@ -1864,6 +1936,13 @@ fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if crate::http::is_http(&path) {
         let Some(data) = crate::http::get_contents(host, "readfile", &path, args.get(2), 0, None)?
         else {
+            return Ok(Value::Bool(false));
+        };
+        host.write_out(&data);
+        return Ok(Value::Int(data.len() as i64));
+    }
+    if let Some(r) = crate::file_fns::read_via_opener(host, "readfile", &path, args.get(2))? {
+        let Some(data) = r else {
             return Ok(Value::Bool(false));
         };
         host.write_out(&data);

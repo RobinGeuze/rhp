@@ -29,7 +29,8 @@ runs:
         # libssl-dev does not pull in: -l:libjitterentropy.a -lz -lzstd.
         # libcurl.a's own dependencies are linked dynamically; Ubuntu 26.04's
         # libcurl4-openssl-dev pulls in their -dev packages, 24.04's does not.
-        # libgmp (LGPL) is linked dynamically.
+        # libzip and libgmp (LGPL) are linked dynamically: libzip-dev ships no
+        # static archive.
         sudo apt-get update -q
         sudo apt-get install -y --no-install-recommends \
           pkg-config \
@@ -43,6 +44,7 @@ runs:
           libcurl4-openssl-dev \
           libbrotli-dev libidn2-dev libkrb5-dev libldap-dev libnghttp2-dev \
           libpsl-dev librtmp-dev libssh-dev libssh2-1-dev \
+          libzip-dev \
           libgmp-dev
         php="${PHP_BIN:-$(command -v php || true)}"
         build=""
@@ -86,6 +88,15 @@ runs:
           echo "gmp: the distro has $gmp_have; $php loads ${gmp_want:-no gmp}"
           if [ -n "$gmp_want" ] && [ "$gmp_want" != "$gmp_have" ]; then
             echo "::error::$php loads libgmp $gmp_want, but the distro's libgmp-dev is $gmp_have; rhp links the distro's"
+            exit 1
+          fi
+          # libzip has no source build here either.
+          # shellcheck disable=SC2016
+          zip_want="$("$php" -n -r 'echo class_exists("ZipArchive") ? ZipArchive::LIBZIP_VERSION : "";')"
+          zip_have="$(pkg-config --modversion libzip)"
+          echo "libzip: the distro has $zip_have; $php links ${zip_want:-no libzip}"
+          if [ -n "$zip_want" ] && [ "$zip_want" != "$zip_have" ]; then
+            echo "::error::$php links libzip $zip_want, but the distro's libzip-dev is $zip_have; rhp links the distro's libzip"
             exit 1
           fi
           # rhp's LIBXML_DOTTED_VERSION is its headers' and LIBXML_LOADED_VERSION

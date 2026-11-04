@@ -11,7 +11,7 @@
 //!
 //! Built for another platform (Linux), rhp keeps the reference's release,
 //! [`BUILD_DATE`] and the library versions below: they describe behaviour rhp
-//! implements the same way everywhere (libzip, ...). Only the
+//! implements the same way everywhere. Only the
 //! values that describe the platform follow the Ubuntu php CI runs against
 //! (setup-php's build): the install paths, [`BUILD_PROVIDER`],
 //! [`BUILD_SYSTEM`] and [`ZEND_VM_KIND`]. There
@@ -68,15 +68,6 @@ macro_rules! php_api {
         "20250925"
     };
 }
-
-/// libzip's version (`ZipArchive::LIBZIP_VERSION`), as a literal: the zip
-/// prelude splices it into PHP source.
-macro_rules! libzip {
-    () => {
-        "1.12.1"
-    };
-}
-pub(crate) use libzip;
 
 // --- php / Zend identity ---------------------------------------------------
 
@@ -223,9 +214,8 @@ pub const EXT_DOM: &str = "20031129";
 // INTL_ICU_* versions from the linked ICU (crate::ext::intl), the OPENSSL_*
 // ones from the linked OpenSSL (crate::ext::openssl), curl_version() from the
 // linked libcurl (crate::ext::curl), ICONV_* from the system iconv
-// (crate::ext::iconv), GMP_VERSION from the linked libgmp (crate::ext::gmp).
-/// `ZipArchive::LIBZIP_VERSION`.
-pub const LIBZIP_VERSION: &str = libzip!();
+// (crate::ext::iconv), GMP_VERSION from the linked libgmp (crate::ext::gmp),
+// ZipArchive::LIBZIP_VERSION from the linked libzip (crate::ext::zip).
 /// `MB_ONIGURUMA_VERSION`.
 pub const ONIGURUMA_VERSION: &str = "6.9.10";
 

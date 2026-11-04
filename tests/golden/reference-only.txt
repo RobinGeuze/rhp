@@ -26,4 +26,3 @@ phpinfo_text            # phpinfo()'s configure command
 preg_php_pcre_glue      # PCRE2 version (the r modifier needs 10.43)
 simplexml_casts         # libxml2 version: entity reference warnings
 xmlreader_basic         # libxml2 version: parser error messages
-zip_lifecycle           # libzip version

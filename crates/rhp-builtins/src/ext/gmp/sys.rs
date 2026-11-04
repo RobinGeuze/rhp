@@ -214,25 +214,10 @@ extern "C" {
     fn gmp_randclear(state: R);
 }
 
-// shim.c: the layout checks, and the header's version for a test.
-#[cfg(test)]
-extern "C" {
-    fn rhp_gmp_header_version() -> *const c_char;
-}
-
 /// `gmp_version`, as php reports it in `GMP_VERSION` and phpinfo.
 pub fn version() -> &'static str {
     // SAFETY: a NUL-terminated static string in libgmp.
     unsafe { CStr::from_ptr(gmp_version) }
-        .to_str()
-        .unwrap_or("")
-}
-
-/// The version of the gmp.h rhp was compiled against.
-#[cfg(test)]
-pub fn header_version() -> &'static str {
-    // SAFETY: a string literal in shim.c.
-    unsafe { CStr::from_ptr(rhp_gmp_header_version()) }
         .to_str()
         .unwrap_or("")
 }

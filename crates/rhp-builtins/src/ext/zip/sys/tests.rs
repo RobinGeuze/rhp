@@ -1,6 +1,17 @@
 use super::*;
 use std::mem::{offset_of, size_of};
 
+extern "C" {
+    fn rhp_zip_layout(out: *mut usize);
+}
+
+/// shim.c's `rhp_zip_layout`: zip.h's sizes and offsets.
+fn c_layout() -> [usize; 14] {
+    let mut out = [0usize; 14];
+    unsafe { rhp_zip_layout(out.as_mut_ptr()) };
+    out
+}
+
 /// libzip has no static archive of php's release (libraries.md), so it
 /// is the shared library the build found: php's.
 #[test]

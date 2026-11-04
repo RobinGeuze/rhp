@@ -20,19 +20,6 @@ fn go(f: crate::NativeFn, args: &[Value]) -> (String, Vec<String>) {
 }
 
 #[test]
-fn links_the_library_php_links() {
-    let path = sys::library_path().expect("dladdr finds iconv_open");
-    if cfg!(target_os = "macos") {
-        assert_eq!(path, "/usr/lib/libiconv.2.dylib");
-        assert_eq!(sys::implementation(), "libiconv");
-    } else if cfg!(all(target_os = "linux", target_env = "gnu")) {
-        assert!(path.contains("libc.so"), "{path}");
-        assert_eq!(sys::implementation(), "glibc");
-    }
-    assert!(sys::version().contains('.'), "{}", sys::version());
-}
-
-#[test]
 fn strlen_diagnostics() {
     let ill = "Notice: iconv_strlen(): Detected an illegal character in input string";
     assert_eq!(

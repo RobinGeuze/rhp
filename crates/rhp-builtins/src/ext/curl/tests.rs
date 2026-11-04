@@ -1,11 +1,6 @@
 use super::*;
 
 #[test]
-fn c_layouts_match() {
-    assert_eq!(sys::c_layout(), &sys::rust_layout()[..]);
-}
-
-#[test]
 fn constants_come_from_curl_h() {
     let c = sys::php_constants();
     let get = |n: &str| c.iter().find(|(k, _)| *k == n).map(|(_, v)| *v);

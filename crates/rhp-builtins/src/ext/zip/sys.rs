@@ -237,8 +237,6 @@ extern "C" {
     );
     pub fn rhp_zip_fl_open_file_now() -> c_uint;
     pub fn rhp_zip_file_is_seekable(zf: *mut zip_file_t) -> c_int;
-    #[cfg(test)]
-    fn rhp_zip_layout(out: *mut usize);
 }
 
 /// The C string at `p` as bytes (empty for null).
@@ -251,14 +249,6 @@ pub unsafe fn cstr<'a>(p: *const c_char) -> &'a [u8] {
     } else {
         unsafe { std::ffi::CStr::from_ptr(p) }.to_bytes()
     }
-}
-
-/// shim.c's `rhp_zip_layout`: zip.h's sizes and offsets.
-#[cfg(test)]
-fn c_layout() -> [usize; 14] {
-    let mut out = [0usize; 14];
-    unsafe { rhp_zip_layout(out.as_mut_ptr()) };
-    out
 }
 
 #[cfg(test)]

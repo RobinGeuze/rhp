@@ -1,5 +1,18 @@
 use super::*;
 
+// shim.c: the header's version.
+extern "C" {
+    fn rhp_gmp_header_version() -> *const c_char;
+}
+
+/// The version of the gmp.h rhp was compiled against.
+fn header_version() -> &'static str {
+    // SAFETY: a string literal in shim.c.
+    unsafe { CStr::from_ptr(rhp_gmp_header_version()) }
+        .to_str()
+        .unwrap_or("")
+}
+
 #[test]
 fn runtime_library_matches_the_header() {
     assert_eq!(version(), header_version());

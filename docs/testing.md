@@ -65,8 +65,9 @@ output rhp can never print are on `tests/phpt/ignored.txt` and never run.
 
 **Bytecode snapshots:** there are none, and there should be none until rhp
 has a real optimizer. php-src's opcode-dump tests are on the phpt ignore
-list; the script output they print after the dump is kept as goldens
-(`tests/golden/opt_*`). Once rhp optimizes, add a developer
+list. Where rhp matches php on the script output they print after the
+dump, that output is kept as goldens (`tests/golden/opt_*`; the pending
+ones are listed in the phpt README). Once rhp optimizes, add a developer
 `--dump-bytecode` and per-pass snapshot tests modelled on php-src's
 `ext/opcache/tests/opt`.
 

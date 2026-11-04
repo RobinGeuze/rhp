@@ -42,7 +42,9 @@ How it compares, mirroring `run-tests.php`:
 - `opcache.enable_cli=1` tests run with opcache on in both engines (rhp has
   the compiled-script cache, no optimizer and no JIT). Tests that dump JIT
   code (`opcache.jit_debug`) or use the file cache are skipped with an
-  `opcache:` reason. Tests that dump opcodes are on the ignore list.
+  `opcache:` reason. Tests that dump opcodes are on the ignore list; one
+  that isn't (new in a php-src bump) is skipped as `opcode dump not on
+  tests/phpt/ignored.txt` until it is added.
 - Each worker has its own copy of the test trees. After every engine run, the
   runner executes `--CLEAN--` and restores the test's directory, so php and rhp
   (and every mutant) start from the same files.
@@ -98,7 +100,20 @@ is the 61 tests that set `opcache.opt_debug_level`: they print Zend's
 optimizer listing. A missing feature (the JIT, the file cache, an extension)
 is a skip or a failure, not an ignore. When an ignored test also prints
 script output and rhp matches php on it, that part is kept as a golden
-(`tests/golden/opt_*.php`).
+(`tests/golden/opt_*.php`). Twenty of the 61 print script output; 13 are
+goldens. The others, with what blocks them:
+
+- `ext/opcache/tests/match/001.phpt`: `range()` with characters.
+- `ext/opcache/tests/ct_eval_frameless_002.phpt`: the "Undefined
+  variable" warning.
+- `ext/opcache/tests/dump_property_hooks.phpt`: property hooks.
+- `ext/opcache/tests/pipe_optimizations.phpt`: piping into a first-class
+  callable (`5 |> f(...)`).
+- `ext/opcache/tests/nodiscard_001.phpt`: the `(void)` cast; the
+  `zend_test_nodiscard()` part needs zend_test.
+- `ext/opcache/tests/preload_optimizer.phpt` (`opcache.preload`) and
+  `ext/dl_test/tests/frameless_temporary_opcache.phpt` (dl_test.so): not
+  portable to a golden.
 
 ## Hunting bugs in php itself
 

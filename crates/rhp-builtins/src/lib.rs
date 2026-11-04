@@ -62,7 +62,6 @@ mod opcache_fns;
 mod parse_fns;
 pub mod php_fns;
 mod preg_fns;
-mod printf_fns;
 mod proc_fns;
 mod query_fns;
 mod runtime_fns;
@@ -347,7 +346,10 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("var", Box::new(ext::standard::var::register)),
         ("filter_fns", Box::new(filter_fns::register)),
         ("strcmp_fns", Box::new(strcmp_fns::register)),
-        ("printf_fns", Box::new(printf_fns::register)),
+        (
+            "formatted_print",
+            Box::new(ext::standard::formatted_print::register),
+        ),
         ("preg_fns", Box::new(preg_fns::register)),
         ("json_fns", Box::new(json_fns::register)),
         ("parse_fns", Box::new(parse_fns::register)),

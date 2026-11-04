@@ -1,0 +1,10 @@
+[8192] http_response_header_deprecation.inc:3 The predefined locally scoped $http_response_header variable is deprecated, call http_get_last_response_headers() instead
+[8192] http_response_header_deprecation.inc:18 The predefined locally scoped $http_response_header variable is deprecated, call http_get_last_response_headers() instead
+[8192] http_response_header_deprecation.inc:23 The predefined locally scoped $http_response_header variable is deprecated, call http_get_last_response_headers() instead
+[8192] http_response_header_deprecation.inc:25 The predefined locally scoped $http_response_header variable is deprecated, call http_get_last_response_headers() instead
+[8192] http_response_header_deprecation.inc:30 The predefined locally scoped $http_response_header variable is deprecated, call http_get_last_response_headers() instead
+[8192] http_response_header_deprecation.inc:31 The predefined locally scoped $http_response_header variable is deprecated, call http_get_last_response_headers() instead
+[8192] http_response_header_deprecation.inc:34 The predefined locally scoped $http_response_header variable is deprecated, call http_get_last_response_headers() instead
+[8192] http_response_header_deprecation.inc:34 The predefined locally scoped $http_response_header variable is deprecated, call http_get_last_response_headers() instead
+1
+done

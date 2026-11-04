@@ -427,3 +427,64 @@ extern "C" {
     pub fn OPENSSL_sk_free(st: *mut OPENSSL_STACK);
     pub fn OPENSSL_sk_pop_free(st: *mut OPENSSL_STACK, func: unsafe extern "C" fn(*mut c_void));
 }
+
+// --- the TLS streams (xp_ssl.rs) ---
+
+/// `OTHERNAME` (a `GENERAL_NAME` of type `GEN_OTHERNAME`).
+#[repr(C)]
+#[allow(clippy::upper_case_acronyms)]
+pub struct OTHERNAME {
+    pub type_id: *mut ASN1_OBJECT,
+    pub value: *mut ASN1_TYPE,
+}
+
+pub const SSL_CB_HANDSHAKE_START: c_int = 0x10;
+pub const SSL_R_NO_SHARED_CIPHER: c_int = 193;
+
+pub type InfoCallback = unsafe extern "C" fn(ssl: *const SSL, where_: c_int, ret: c_int);
+pub type PasswdCallback =
+    unsafe extern "C" fn(buf: *mut c_char, size: c_int, rwflag: c_int, u: *mut c_void) -> c_int;
+pub type AlpnSelectCallback = unsafe extern "C" fn(
+    ssl: *mut SSL,
+    out: *mut *const c_uchar,
+    outlen: *mut c_uchar,
+    inp: *const c_uchar,
+    inlen: c_uint,
+    arg: *mut c_void,
+) -> c_int;
+pub type ServernameCallback =
+    unsafe extern "C" fn(ssl: *mut SSL, al: *mut c_int, arg: *mut c_void) -> c_int;
+
+extern "C" {
+    pub fn SSL_set_fd(s: *mut SSL, fd: c_int) -> c_int;
+    pub fn SSL_copy_session_id(to: *mut SSL, from: *const SSL) -> c_int;
+    pub fn SSL_set_info_callback(ssl: *mut SSL, cb: Option<InfoCallback>);
+    pub fn SSL_CTX_set_default_passwd_cb(ctx: *mut SSL_CTX, cb: Option<PasswdCallback>);
+    pub fn SSL_CTX_set_default_passwd_cb_userdata(ctx: *mut SSL_CTX, u: *mut c_void);
+    #[link_name = "SSL_CTX_set_alpn_select_cb"]
+    pub fn SSL_CTX_set_alpn_select_cb_php(
+        ctx: *mut SSL_CTX,
+        cb: Option<AlpnSelectCallback>,
+        arg: *mut c_void,
+    );
+    pub fn PEM_read_bio_Parameters(bp: *mut BIO, x: *mut *mut EVP_PKEY) -> *mut EVP_PKEY;
+    pub fn X509_NAME_get_text_by_NID(
+        name: *const X509_NAME,
+        nid: c_int,
+        buf: *mut c_char,
+        len: c_int,
+    ) -> c_int;
+    pub fn ERR_peek_error() -> c_ulong;
+}
+
+/// `SSL_set_mode`.
+pub unsafe fn SSL_set_mode(ssl: *mut SSL, mode: c_long) -> c_long {
+    unsafe { SSL_ctrl(ssl, SSL_CTRL_MODE, mode, std::ptr::null_mut()) }
+}
+
+/// `SSL_CTX_set_tlsext_servername_callback`.
+pub unsafe fn SSL_CTX_set_servername_cb(ctx: *mut SSL_CTX, cb: ServernameCallback) -> c_long {
+    // SSL_CTX_callback_ctrl takes the callback as `void (*)(void)`.
+    let f: unsafe extern "C" fn() = unsafe { std::mem::transmute(cb) };
+    unsafe { SSL_CTX_callback_ctrl__fixed_rust(ctx, SSL_CTRL_SET_TLSEXT_SERVERNAME_CB, Some(f)) }
+}

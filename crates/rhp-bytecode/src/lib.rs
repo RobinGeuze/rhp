@@ -552,6 +552,36 @@ pub enum Instr {
         name: NIdx,
         idx: u16,
     },
+    /// The user function a call the compiler could not resolve runs
+    /// (another file's, or declared later), looked up once before its
+    /// arguments as php's INIT_FCALL_BY_NAME: `name`, then `fallback`, both
+    /// lowercase. `dst` gets its index, or -1 (none, or a builtin).
+    ResolveFunc {
+        dst: Reg,
+        name: NIdx,
+        fallback: NIdx,
+    },
+    /// The same question for the function [`Instr::ResolveFunc`] put in
+    /// `func`.
+    FuncArgIsRef {
+        dst: Reg,
+        func: Reg,
+        idx: u16,
+    },
+    /// php's SEND_VAR_EX: variable `cv` as argument `idx` of the function
+    /// in `func` (see [`Instr::ResolveFunc`]): a reference when that
+    /// parameter is by reference, else its value.
+    SendVarEx {
+        dst: Reg,
+        cv: Reg,
+        func: Reg,
+        idx: u16,
+    },
+    /// Copy `src` to `dst` as is: a reference stays a reference.
+    PassArg {
+        dst: Reg,
+        src: Reg,
+    },
     /// The same for static method (or constructor) `name` of `class`; the
     /// class is resolved (autoloaded) first, as php's INIT_STATIC_METHOD_CALL
     /// / NEW do before the arguments.
@@ -1116,6 +1146,12 @@ pub struct Program {
     /// Class declarations nested in control flow / function bodies; never
     /// hoisted, declared by `DeclareClass` when execution reaches them.
     pub cond_classes: Vec<ClassProto>,
+    /// Diagnostics php's compiler raises for this file: `(level, message,
+    /// line)`, reported when the file is loaded.
+    pub compile_diags: Vec<(i64, String, u32)>,
+    /// Whether `compile_diags` were reported: a program opcache hands out
+    /// again reports them only with `opcache.record_warnings`.
+    pub compile_diags_reported: std::cell::Cell<bool>,
 }
 
 // ---------------------------------------------------------------------------

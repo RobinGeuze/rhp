@@ -64,15 +64,11 @@ libz-sys = "1.1"
 # Pinned: bzip2 0.6 defaults to the pure-Rust libbz2-rs instead of C libbz2.
 bzip2 = { version = "=0.5.2", features = ["static"] }
 
-# openssl extension and phar's OpenSSL signatures: the OpenSSL php links,
+# openssl extension, the TLS stream transports (and so https://) and phar's
+# OpenSSL signatures: the OpenSSL php links,
 # statically (no bindgen, no vendored copy; see .cargo/config.toml and
 # build/native.rs). src/ext/openssl/sys.rs declares what openssl-sys lacks.
 openssl-sys = "0.9.118"
-
-# HTTP(S) client for the stream http:// / https:// wrappers (rustls TLS with
-# bundled Mozilla roots — no system OpenSSL dependency). ext/curl links
-# libcurl (build/native.rs).
-ureq = "2.12"
 
 # CSPRNG for random_bytes/random_int/mt_rand.
 getrandom = "0.2"

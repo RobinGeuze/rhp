@@ -55,6 +55,13 @@ pub struct StreamMeta {
     pub blocked: bool,
     /// php's `timed_out` (a socket read / write hit its timeout).
     pub timed_out: bool,
+    /// The TLS layer's `crypto` entry (an active session).
+    pub crypto: Option<Value>,
+    /// The wrapper's data (the http wrapper's response headers).
+    pub wrapper_data: Option<Value>,
+    /// What a data: (RFC 2397) stream's META_DATA_API adds (its media type
+    /// and parameters); php then leaves out timed_out, blocked and eof.
+    pub rfc2397: Option<Value>,
 }
 
 /// pcntl's asynchronous signal delivery: the VM polls
@@ -78,7 +85,7 @@ mod fs_fns;
 mod html;
 #[rustfmt::skip]
 mod html_tables;
-pub(crate) mod http;
+pub mod http;
 mod inet;
 mod info_fns;
 mod ini_parse;
@@ -109,6 +116,7 @@ mod strsearch_fns;
 mod strtotime_fns;
 mod sysmisc_fns;
 mod tzdb;
+pub(crate) mod url;
 mod webenc_fns;
 pub(crate) mod zip_ext;
 
@@ -782,12 +790,25 @@ pub trait Host {
     ) {
     }
 
-    /// Response header lines (status line first) from the last http(s) request.
-    fn set_http_response_headers(&mut self, _headers: Vec<Vec<u8>>) {}
-    fn http_response_headers(&self) -> Vec<Vec<u8>> {
-        Vec::new()
+    /// Response header lines (status line first) of every hop of the last
+    /// http(s) request; `None` before one sent a request.
+    fn set_http_response_headers(&mut self, _headers: Option<Vec<Vec<u8>>>) {}
+    fn http_response_headers(&self) -> Option<Vec<Vec<u8>>> {
+        None
     }
-    fn clear_http_response_headers(&mut self) {}
+    /// The `notification` callback of a stream context (or of a stream's
+    /// context).
+    fn stream_context_notifier(&self, _ctx: &Value) -> Option<Value> {
+        None
+    }
+    /// Set (or drop) a context's `notification` callback.
+    fn set_stream_context_notifier(&mut self, _ctx: &Value, _cb: Option<Value>) {}
+    /// php's `decode_context_param`: the context resource itself, or a
+    /// stream's context (a new one attached when it has none). `None` for
+    /// any other value.
+    fn resolve_stream_context(&mut self, _res: &Value) -> Option<Value> {
+        None
+    }
 
     /// Number of arguments passed to the currently-executing user function
     /// (`func_num_args`). Default 0.
@@ -951,6 +972,29 @@ pub trait Host {
     fn stream_sock_info(&self, _res: &Value) -> Option<fdstream::SockInfo> {
         None
     }
+    /// The descriptor stream behind a stream resource (sockets, pipes).
+    fn stream_fd_mut(&mut self, _res: &Value) -> Option<&mut fdstream::FdStream> {
+        None
+    }
+    /// Register a descriptor stream as a stream resource whose context is
+    /// `ctx` (php's `stream->ctx`). Default: unsupported.
+    fn stream_insert_fd(
+        &mut self,
+        _stream: fdstream::FdStream,
+        _ctx: Option<Value>,
+    ) -> Option<Value> {
+        None
+    }
+    /// The context a stream was opened with (`PHP_STREAM_CONTEXT`).
+    fn stream_context_of(&self, _res: &Value) -> Option<Value> {
+        None
+    }
+    /// `zend_set_local_var_str`: assign a variable of the running user
+    /// code's scope (a compiled variable, or the symbol table where there
+    /// is one). False when the scope has no such variable.
+    fn set_local_var(&mut self, _name: &[u8], _value: Value) -> bool {
+        false
+    }
     /// `stream_set_timeout` (`None` = wait forever): false unless `res` is a
     /// socket stream.
     fn stream_set_timeout(&mut self, _res: &Value, _timeout: Option<(i64, i64)>) -> bool {
@@ -1086,6 +1130,19 @@ pub fn warn(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
     host.emit_diagnostic(E_WARNING, &format!("{fname}(): {msg}"))
 }
 
+/// Report the diagnostics stream operations queued (see
+/// [`fdstream::Diag`]) as raised by builtin `fname`.
+pub fn flush_stream_diags(host: &mut dyn Host, fname: &str) -> Result<(), Thrown> {
+    for d in fdstream::take_diags() {
+        if d.docref {
+            host.emit_diagnostic(d.level, &format!("{fname}(): {}", d.msg))?;
+        } else {
+            host.emit_diagnostic(d.level, &d.msg)?;
+        }
+    }
+    Ok(())
+}
+
 /// The refcount-0 destructor of a native (non-stream) resource, given its
 /// payload: a process closes its pipes and reaps the child if it already
 /// exited (proc_open_rsrc_dtor); anything else is just dropped.
@@ -1113,6 +1170,9 @@ pub fn open_failed(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<(), 
         "operation failed".to_string()
     };
     let known = host.stream_wrapper_schemes();
+    if let Some(msg) = streams::take_wrapper_error() {
+        return warn_arg(host, fname, path, &format!("Failed to open stream: {msg}"));
+    }
     if scheme == b"php" {
         warn(host, fname, "Invalid php:// URL specified")?;
         reason = "operation failed".into();

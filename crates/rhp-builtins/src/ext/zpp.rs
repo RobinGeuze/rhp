@@ -261,32 +261,52 @@ pub fn set_ref(args: &[Value], i: usize, v: Value) {
     }
 }
 
-/// php's `zval_try_get_long` (`zendi_try_get_long`): `None` when the value
-/// cannot be an int (non-numeric string, array, …). A fractional float
-/// raises the "loses precision" deprecation, a leading-numeric string the
-/// "non-numeric value" warning.
-pub fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Thrown> {
-    // ZEND_DOUBLE_FITS_LONG
+/// `ZEND_DOUBLE_FITS_LONG`, true for NAN as in C.
+fn double_fits_long(d: f64) -> bool {
     const TWO_63: f64 = 9_223_372_036_854_775_808.0;
-    let fits = |f: f64| f.is_finite() && (-TWO_63..TWO_63).contains(&f);
+    !(d >= TWO_63 || d < -TWO_63)
+}
+
+/// php 8.5's `zend_dval_to_lval`: a float that is not finite or out of the
+/// int range warns; out-of-range values wrap modulo 2^64, others are 0.
+fn dval_to_lval(host: &mut dyn Host, d: f64) -> Result<i64, Thrown> {
+    if d.is_finite() && double_fits_long(d) {
+        return Ok(d as i64);
+    }
+    let shown = String::from_utf8_lossy(&rhp_values::fmt::float_serialize(d)).into_owned();
+    host.emit_diagnostic(
+        crate::E_WARNING,
+        &format!("The float {shown} is not representable as an int, cast occurred"),
+    )?;
+    Ok(if d.is_finite() {
+        rhp_values::float_to_int(d)
+    } else {
+        0
+    })
+}
+
+/// php's `zval_try_get_long` (`zendi_try_get_long`): `None` when the value
+/// cannot be an int (non-numeric string, array, …). A float goes through
+/// `zend_dval_to_lval_safe` (a warning out of range, the "loses precision"
+/// deprecation for a fraction or NAN), a float string through
+/// `zend_dval_to_lval_cap` (saturating; 0 when not finite); a
+/// leading-numeric string raises the "non-numeric value" warning.
+pub fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Thrown> {
     Ok(Some(match v {
         Value::Null | Value::Bool(false) => 0,
         Value::Bool(true) => 1,
         Value::Int(n) => *n,
         Value::Float(f) => {
-            if !fits(*f) {
-                0
-            } else {
-                if f.fract() != 0.0 {
-                    let shown =
-                        String::from_utf8_lossy(&rhp_values::fmt::float_serialize(*f)).into_owned();
-                    host.emit_diagnostic(
-                        crate::E_DEPRECATED,
-                        &format!("Implicit conversion from float {shown} to int loses precision"),
-                    )?;
-                }
-                *f as i64
+            let l = dval_to_lval(host, *f)?;
+            if l as f64 != *f && double_fits_long(*f) {
+                let shown =
+                    String::from_utf8_lossy(&rhp_values::fmt::float_serialize(*f)).into_owned();
+                host.emit_diagnostic(
+                    crate::E_DEPRECATED,
+                    &format!("Implicit conversion from float {shown} to int loses precision"),
+                )?;
             }
+            l
         }
         Value::Str(s) => {
             let b = s.as_bytes();
@@ -302,17 +322,18 @@ pub fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Throw
             match num {
                 conv::Num::Int(n) => n,
                 conv::Num::Float(f) => {
-                    // zend_dval_to_lval_cap: saturate (NaN is 0).
-                    let l = if f.is_nan() {
+                    let l = if !f.is_finite() {
                         0
-                    } else if fits(f) {
-                        f as i64
-                    } else if f > 0.0 {
-                        i64::MAX
+                    } else if !double_fits_long(f) {
+                        if f > 0.0 {
+                            i64::MAX
+                        } else {
+                            i64::MIN
+                        }
                     } else {
-                        i64::MIN
+                        f as i64
                     };
-                    if !fits(f) || f.fract() != 0.0 {
+                    if l as f64 != f {
                         host.emit_diagnostic(
                             crate::E_DEPRECATED,
                             &format!(

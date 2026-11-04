@@ -1,0 +1,407 @@
+//! The request's file-system context: its working directory (php's virtual
+//! cwd, `Zend/zend_virtual_cwd.c` and `main/fopen_wrappers.c`'s
+//! `expand_filepath`) and its file creation mask (`umask()`).
+//!
+//! rhp never changes the process's working directory or umask, so requests
+//! on different threads can't disturb each other. The thread's live VM has
+//! its own (php's ZTS `CWDG`, reset at every request start). Every path rhp
+//! hands the OS, a C library or a child process goes through [`resolve`]
+//! (or one of its wrappers here) first; error messages keep the path as the
+//! script gave it. Until a request changes them, both are the process's,
+//! and [`resolve`] leaves relative paths alone.
+//!
+//! A per-request umask can't be set for the process without disturbing
+//! other threads, so files are created with the mode computed here
+//! ([`create_mode`]); when the request's umask lets through bits the
+//! process's takes away, the new file's permissions are fixed up after it
+//! was created (see [`open`], [`mkdir`], [`library_created`]).
+
+use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
+use std::ffi::{CString, OsStr, OsString};
+use std::io;
+use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+thread_local! {
+    /// The request's working directory: absolute, without symlinks or dot
+    /// segments. `None`: the process's.
+    static CWD: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    /// The request's umask. `None`: the process's.
+    static UMASK: Cell<Option<u32>> = const { Cell::new(None) };
+}
+
+/// A new request starts in the process's directory, with its umask.
+pub(crate) fn reset_state() {
+    CWD.with(|c| *c.borrow_mut() = None);
+    UMASK.set(None);
+    // Read the process's umask before a script may ask for it.
+    process_umask();
+}
+
+// --- working directory -------------------------------------------------------
+
+/// Start the request in `dir` (php-cgi: the script's directory; an
+/// embedder: the document root). A relative `dir` is taken from the
+/// current one. `false`, and nothing changed, when it isn't a directory.
+pub fn set_cwd(dir: &[u8]) -> bool {
+    match std::fs::canonicalize(os_path(dir)) {
+        Ok(real) if real.is_dir() => {
+            CWD.with(|c| *c.borrow_mut() = Some(real.into_os_string().into_vec()));
+            true
+        }
+        _ => false,
+    }
+}
+
+/// `getcwd()`: the request's working directory.
+pub fn getcwd() -> Option<Vec<u8>> {
+    CWD.with(|c| c.borrow().clone()).or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .map(|d| d.into_os_string().into_vec())
+    })
+}
+
+/// `chdir()`: what chdir(2) would do, for the request only. The error is
+/// chdir(2)'s errno.
+pub fn chdir(path: &[u8]) -> Result<(), i32> {
+    if path.is_empty() {
+        return Err(libc::ENOENT);
+    }
+    let c = c_path(path).ok_or(libc::ENOENT)?;
+    // stat(2) walks the path as chdir(2) does (ENOENT, ENOTDIR, EACCES,
+    // ELOOP, ENAMETOOLONG); the target must be a directory this process
+    // may search. realpath(3) then gives the name getcwd(3) would.
+    unsafe {
+        let mut st: libc::stat = std::mem::zeroed();
+        if libc::stat(c.as_ptr(), &mut st) != 0 {
+            return Err(crate::streams::errno());
+        }
+        if st.st_mode & libc::S_IFMT != libc::S_IFDIR {
+            return Err(libc::ENOTDIR);
+        }
+        if libc::faccessat(libc::AT_FDCWD, c.as_ptr(), libc::X_OK, libc::AT_EACCESS) != 0 {
+            return Err(crate::streams::errno());
+        }
+    }
+    let real = std::fs::canonicalize(OsStr::from_bytes(c.as_bytes()))
+        .map_err(|e| e.raw_os_error().unwrap_or(libc::ENOENT))?;
+    CWD.with(|c| *c.borrow_mut() = Some(real.into_os_string().into_vec()));
+    Ok(())
+}
+
+/// `path` as the OS must see it: a relative path taken from the request's
+/// working directory. Absolute and empty paths, and every path while the
+/// request is still in the process's directory, are returned as given.
+/// Only the directory is prefixed: `..` and symlinks resolve as the OS
+/// resolves them from the working directory.
+pub fn resolve(path: &[u8]) -> Cow<'_, [u8]> {
+    if path.is_empty() || path[0] == b'/' {
+        return Cow::Borrowed(path);
+    }
+    CWD.with(|c| match &*c.borrow() {
+        None => Cow::Borrowed(path),
+        Some(cwd) => Cow::Owned(join(cwd, path)),
+    })
+}
+
+/// [`resolve`] as a `Path`.
+pub fn os_path(path: &[u8]) -> Cow<'_, Path> {
+    match resolve(path) {
+        Cow::Borrowed(b) => Cow::Borrowed(Path::new(OsStr::from_bytes(b))),
+        Cow::Owned(v) => Cow::Owned(PathBuf::from(OsString::from_vec(v))),
+    }
+}
+
+/// [`resolve`] as a C string; `None` for a path holding a NUL byte.
+pub fn c_path(path: &[u8]) -> Option<CString> {
+    CString::new(resolve(path).into_owned()).ok()
+}
+
+/// `dir/path` (`/path` when `dir` is the root).
+fn join(dir: &[u8], path: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(dir.len() + 1 + path.len());
+    out.extend_from_slice(dir);
+    if out.last() != Some(&b'/') {
+        out.push(b'/');
+    }
+    out.extend_from_slice(path);
+    out
+}
+
+/// `path` from the request's working directory: absolute, as the OS sees
+/// it, even while the request is in the process's directory.
+pub fn absolute(path: &[u8]) -> Vec<u8> {
+    if path.starts_with(b"/") {
+        return path.to_vec();
+    }
+    match getcwd() {
+        Some(cwd) => join(&cwd, path),
+        None => path.to_vec(),
+    }
+}
+
+/// virtual_file_ex(CWD_EXPAND) of an absolute path: `.` and `..` folded
+/// and repeated slashes dropped, lexically; at least "/".
+pub fn normalize(path: &[u8]) -> Vec<u8> {
+    let mut parts: Vec<&[u8]> = Vec::new();
+    for seg in path.split(|&b| b == b'/') {
+        match seg {
+            b"" | b"." => {}
+            b".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    let mut out = Vec::with_capacity(path.len() + 1);
+    for p in parts {
+        out.push(b'/');
+        out.extend_from_slice(p);
+    }
+    if out.is_empty() {
+        out.push(b'/');
+    }
+    out
+}
+
+/// php's `expand_filepath` with CWD_EXPAND: [`absolute`], then
+/// [`normalize`]d (symlinks kept).
+pub fn expand_path(path: &[u8]) -> Vec<u8> {
+    normalize(&absolute(path))
+}
+
+/// php's `expand_filepath` (CWD_FILEPATH): [`expand_path`], with the
+/// symlinks in its longest existing leading part resolved. A URL
+/// (`scheme://…`) is returned as given.
+pub fn expand_filepath(path: &[u8]) -> Vec<u8> {
+    if path.windows(3).any(|w| w == b"://") {
+        return path.to_vec();
+    }
+    let full = expand_path(path);
+    let parts: Vec<&[u8]> = full
+        .split(|&b| b == b'/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    let join = |segs: &[&[u8]]| {
+        let mut out = Vec::new();
+        for seg in segs {
+            out.push(b'/');
+            out.extend_from_slice(seg);
+        }
+        out
+    };
+    for keep in (1..=parts.len()).rev() {
+        if let Ok(real) = std::fs::canonicalize(OsStr::from_bytes(&join(&parts[..keep]))) {
+            let mut out = real.into_os_string().into_vec();
+            out.extend_from_slice(&join(&parts[keep..]));
+            return out;
+        }
+    }
+    full
+}
+
+/// `realpath()` (php's tsrm_realpath): the canonical path of an existing
+/// file; "" is the working directory.
+pub fn realpath(path: &[u8]) -> Option<Vec<u8>> {
+    let path = if path.is_empty() { b"." as &[u8] } else { path };
+    std::fs::canonicalize(os_path(path))
+        .ok()
+        .map(|p| p.into_os_string().into_vec())
+}
+
+// --- umask -------------------------------------------------------------------
+
+/// The process's umask, read once. Linux reports it in /proc; elsewhere
+/// reading it means setting it, which the first engine does once.
+fn process_umask() -> u32 {
+    static MASK: OnceLock<u32> = OnceLock::new();
+    *MASK.get_or_init(|| {
+        #[cfg(target_os = "linux")]
+        if let Ok(s) = std::fs::read_to_string("/proc/self/status") {
+            let field = s.lines().find_map(|l| l.strip_prefix("Umask:"));
+            if let Some(m) = field.and_then(|f| u32::from_str_radix(f.trim(), 8).ok()) {
+                return m;
+            }
+        }
+        unsafe {
+            let m = libc::umask(0o022);
+            libc::umask(m);
+            m as u32
+        }
+    })
+}
+
+/// `umask()`: the request's file creation mask.
+pub fn umask() -> u32 {
+    UMASK.get().unwrap_or_else(process_umask)
+}
+
+/// `umask($mask)`: set the request's mask; returns the old one.
+pub fn set_umask(mask: u32) -> u32 {
+    let old = umask();
+    UMASK.set(Some(mask & 0o777));
+    old
+}
+
+/// The permission bits a file created with `mode` should have.
+pub fn create_mode(mode: u32) -> u32 {
+    mode & !umask() & 0o7777
+}
+
+/// The bits of `mode` the process's umask takes away but the request's
+/// keeps: what a newly created file needs added back. 0 while the request
+/// uses the process's umask.
+fn lost_bits(mode: u32) -> u32 {
+    match UMASK.get() {
+        Some(m) => mode & !m & process_umask() & 0o777,
+        None => 0,
+    }
+}
+
+/// Whether files created by C libraries (which use the process's umask)
+/// need [`library_created`]'s fix-up.
+fn umask_differs() -> bool {
+    UMASK.get().is_some_and(|m| m != process_umask())
+}
+
+/// Give a file just created with `mode` the permission bits the request's
+/// umask allows (`fd` when open, else by path).
+fn fix_created(fd: Option<libc::c_int>, path: &CString, mode: u32) {
+    unsafe {
+        let mut st: libc::stat = std::mem::zeroed();
+        let r = match fd {
+            Some(fd) => libc::fstat(fd, &mut st),
+            None => libc::lstat(path.as_ptr(), &mut st),
+        };
+        if r != 0 || st.st_mode & libc::S_IFMT == libc::S_IFLNK {
+            return;
+        }
+        let have = st.st_mode as u32 & 0o7777;
+        let want = (have & 0o7000) | create_mode(mode) & 0o777;
+        if want != have {
+            match fd {
+                Some(fd) => libc::fchmod(fd, want as libc::mode_t),
+                None => libc::chmod(path.as_ptr(), want as libc::mode_t),
+            };
+        }
+    }
+}
+
+/// `fd`, a file a C library call (`mkstemp`) just created with `mode`
+/// under the process's umask, gets the request's instead.
+pub fn created_fd(fd: libc::c_int, mode: u32) {
+    if umask_differs() {
+        fix_created(Some(fd), &CString::default(), mode);
+    }
+}
+
+/// `open(2)` of `path` from the request's directory, creating a file with
+/// `mode` under the request's umask.
+pub fn open(path: &[u8], flags: libc::c_int, mode: u32) -> io::Result<OwnedFd> {
+    open_c(&c_path(path).ok_or_else(nul_error)?, flags, mode)
+}
+
+/// What std reports for a path holding a NUL byte.
+fn nul_error() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte")
+}
+
+/// [`open`] of a resolved path.
+fn open_c(c: &CString, flags: libc::c_int, mode: u32) -> io::Result<OwnedFd> {
+    let sys = |flags: libc::c_int| {
+        let fd = unsafe { libc::open(c.as_ptr(), flags, create_mode(mode) as libc::c_uint) };
+        if fd < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+        }
+    };
+    let fixed = |fd: OwnedFd| {
+        use std::os::fd::AsRawFd;
+        fix_created(Some(fd.as_raw_fd()), c, mode);
+        fd
+    };
+    if flags & libc::O_CREAT == 0 || lost_bits(mode) == 0 {
+        return sys(flags);
+    }
+    if flags & libc::O_EXCL != 0 {
+        return sys(flags).map(fixed);
+    }
+    // Only a file this call creates gets its bits fixed: try creating it
+    // exclusively first.
+    match sys(flags | libc::O_EXCL) {
+        Ok(fd) => Ok(fixed(fd)),
+        Err(e) if e.raw_os_error() == Some(libc::EEXIST) => match sys(flags & !libc::O_CREAT) {
+            // Gone again, or a dangling symlink: create it as asked.
+            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => sys(flags),
+            r => r,
+        },
+        Err(e) => Err(e),
+    }
+}
+
+/// Write `data` to `path` (created or truncated, as `fopen($path, "wb")`).
+pub fn write_file(path: &[u8], data: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_CLOEXEC;
+    std::fs::File::from(open(path, flags, 0o666)?).write_all(data)
+}
+
+/// Append `data` to `path`, creating it with `mode` (a log file).
+pub fn append_file(path: &[u8], data: &[u8], mode: u32) -> io::Result<()> {
+    use std::io::Write;
+    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND | libc::O_CLOEXEC;
+    std::fs::File::from(open(path, flags, mode)?).write_all(data)
+}
+
+/// `mkdir(2)` of `path` from the request's directory, with `mode` under
+/// the request's umask.
+pub fn mkdir(path: &[u8], mode: u32) -> io::Result<()> {
+    let c = c_path(path).ok_or_else(nul_error)?;
+    if unsafe { libc::mkdir(c.as_ptr(), create_mode(mode) as libc::mode_t) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if lost_bits(mode) != 0 {
+        fix_created(None, &c, mode);
+    }
+    Ok(())
+}
+
+/// Run `create`, a C library call that may create the file `path` with
+/// `mode` under the process's umask (libxml2, libzip, OpenSSL, …), then
+/// give a file it created the request's umask instead.
+pub fn library_created<R>(path: &[u8], mode: u32, create: impl FnOnce() -> R) -> R {
+    if !umask_differs() {
+        return create();
+    }
+    let Some(c) = c_path(path) else {
+        return create();
+    };
+    let existed = unsafe {
+        let mut st: libc::stat = std::mem::zeroed();
+        libc::lstat(c.as_ptr(), &mut st) == 0
+    };
+    let r = create();
+    if !existed {
+        fix_created(None, &c, mode);
+    }
+    r
+}
+
+/// The umask a child process must start with when it isn't the process's.
+pub fn child_umask() -> Option<u32> {
+    UMASK.get().filter(|_| umask_differs())
+}
+
+/// The directory a child process must start in when it isn't the
+/// process's.
+pub fn child_cwd() -> Option<Vec<u8>> {
+    CWD.with(|c| c.borrow().clone())
+}
+
+#[cfg(test)]
+mod tests;

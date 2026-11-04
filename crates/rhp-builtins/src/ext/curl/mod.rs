@@ -277,24 +277,14 @@ fn cstr_bytes(p: *const std::ffi::c_char) -> Vec<u8> {
     }
 }
 
-/// `path` made absolute against rhp's current directory, as libcurl must
-/// see it: it resolves relative paths against the process's.
+/// `path` made absolute against the request's working directory, as
+/// libcurl must see it: it resolves relative paths against the process's.
+/// "-" (standard input or output) stays.
 fn absolute_path(path: &[u8]) -> Vec<u8> {
-    use std::os::unix::ffi::OsStringExt;
-    if path.is_empty() || path.starts_with(b"/") || path == b"-" {
+    if path.is_empty() || path == b"-" {
         return path.to_vec();
     }
-    match std::env::current_dir() {
-        Ok(cwd) => {
-            let mut out = cwd.into_os_string().into_vec();
-            if !out.ends_with(b"/") {
-                out.push(b'/');
-            }
-            out.extend_from_slice(path);
-            out
-        }
-        Err(_) => path.to_vec(),
-    }
+    crate::vcwd::absolute(path)
 }
 
 // ---------------------------------------------------------------------------

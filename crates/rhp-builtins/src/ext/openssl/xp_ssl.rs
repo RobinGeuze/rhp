@@ -808,7 +808,7 @@ fn check_path(path: &[u8], option: &str) -> Option<CString> {
     let msg = if path.contains(&0) {
         "must not contain any null bytes"
     } else {
-        let real = crate::ext::dom::expand_filepath(path);
+        let real = crate::vcwd::expand_filepath(path);
         if path.len() < libc::PATH_MAX as usize && real.len() < libc::PATH_MAX as usize {
             return Some(CString::new(real).unwrap_or_default());
         }
@@ -828,7 +828,7 @@ fn ini_string(name: &[u8]) -> Option<Vec<u8>> {
 fn load_stream_cafile(store: *mut sys::X509_STORE, cafile: &[u8]) -> i64 {
     let (scheme, _) = crate::streams::split_scheme(cafile);
     let data = if scheme == b"file" {
-        std::fs::read(&*String::from_utf8_lossy(crate::streams::file_path(cafile))).ok()
+        std::fs::read(crate::vcwd::os_path(crate::streams::file_path(cafile))).ok()
     } else {
         None
     };

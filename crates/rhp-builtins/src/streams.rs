@@ -9,7 +9,6 @@
 //! Resource-backed streams (`fopen`/`fread`/`gzopen`) are a later stage.
 
 use std::any::Any;
-use std::path::Path;
 use std::rc::Rc;
 
 /// A stat result for a stream URL: the convenience flags plus every field of
@@ -240,7 +239,7 @@ pub fn last_strerror() -> String {
 
 /// `stat(2)` (or `lstat(2)` when `link`) a local path.
 pub fn sys_stat(path: &[u8], link: bool) -> Option<StatInfo> {
-    let c = std::ffi::CString::new(path.to_vec()).ok()?;
+    let c = crate::vcwd::c_path(path)?;
     unsafe {
         let mut st: libc::stat = std::mem::zeroed();
         let r = if link {
@@ -272,7 +271,7 @@ pub fn sys_fstat(fd: i32) -> Option<StatInfo> {
 /// Read every entry of a local directory in OS `readdir(3)` order, including
 /// `.` and `..` (exactly what php's plain-files dir stream yields).
 pub fn sys_readdir(path: &[u8]) -> Option<Vec<Vec<u8>>> {
-    let c = std::ffi::CString::new(path.to_vec()).ok()?;
+    let c = crate::vcwd::c_path(path)?;
     let mut out = Vec::new();
     unsafe {
         let dir = libc::opendir(c.as_ptr());
@@ -387,10 +386,10 @@ pub struct FileWrapper;
 
 impl StreamWrapper for FileWrapper {
     fn exists(&self, url: &[u8]) -> bool {
-        Path::new(&*String::from_utf8_lossy(file_path(url))).exists()
+        crate::vcwd::os_path(file_path(url)).exists()
     }
     fn get_contents(&self, url: &[u8]) -> Option<Vec<u8>> {
-        std::fs::read(&*String::from_utf8_lossy(file_path(url)))
+        std::fs::read(crate::vcwd::os_path(file_path(url)))
             .map_err(|e| note_io_err(&e))
             .ok()
     }
@@ -404,7 +403,7 @@ impl StreamWrapper for FileWrapper {
         sys_readdir(file_path(url))
     }
     fn put_contents(&self, url: &[u8], data: &[u8]) -> Option<usize> {
-        std::fs::write(&*String::from_utf8_lossy(file_path(url)), data)
+        crate::vcwd::write_file(file_path(url), data)
             .map_err(|e| note_io_err(&e))
             .ok()
             .map(|_| data.len())
@@ -513,16 +512,19 @@ pub fn parse_fopen_mode(mode: &[u8]) -> Option<(libc::c_int, bool, bool)> {
 impl LocalFile {
     /// `open(2)` a local path with php's fopen-mode rules (perms 0666 & ~umask).
     pub fn open(path: &[u8], mode: &[u8]) -> Option<LocalFile> {
-        use std::os::unix::io::FromRawFd;
         let (flags, readable, writable) = parse_fopen_mode(mode)?;
-        let c = std::ffi::CString::new(file_path(path).to_vec()).ok()?;
-        let fd = unsafe { libc::open(c.as_ptr(), flags, 0o666 as libc::c_uint) };
-        if fd < 0 {
-            note_errno();
+        if path.contains(&0) {
             return None;
         }
+        let fd = match crate::vcwd::open(file_path(path), flags, 0o666) {
+            Ok(fd) => fd,
+            Err(e) => {
+                note_io_err(&e);
+                return None;
+            }
+        };
         Some(LocalFile {
-            file: unsafe { std::fs::File::from_raw_fd(fd) },
+            file: std::fs::File::from(fd),
             rbuf: Vec::new(),
             rpos: 0,
             pos: 0,

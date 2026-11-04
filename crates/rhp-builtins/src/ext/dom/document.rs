@@ -535,44 +535,10 @@ pub fn normalize_document(cx: &mut Cx, this: &Value, _: &[Value]) -> Result<Valu
     Ok(Value::Null)
 }
 
-/// `expand_filepath`: an absolute path, dots resolved, symlinks kept.
-fn expand_path(path: &[u8]) -> Vec<u8> {
-    use std::os::unix::ffi::OsStringExt;
-    let full = if path.starts_with(b"/") {
-        path.to_vec()
-    } else {
-        let mut cwd = std::env::current_dir()
-            .map(|d| d.into_os_string().into_vec())
-            .unwrap_or_default();
-        cwd.push(b'/');
-        cwd.extend_from_slice(path);
-        cwd
-    };
-    let mut parts: Vec<&[u8]> = Vec::new();
-    for seg in full.split(|&b| b == b'/') {
-        match seg {
-            b"" | b"." => {}
-            b".." => {
-                parts.pop();
-            }
-            s => parts.push(s),
-        }
-    }
-    let mut out = Vec::new();
-    for p in parts {
-        out.push(b'/');
-        out.extend_from_slice(p);
-    }
-    if out.is_empty() {
-        out.push(b'/');
-    }
-    out
-}
-
 /// dom_get_valid_file_path: a local path (file:// URLs included) made
 /// absolute (`realpath`, else `expand_filepath`); other URLs unchanged.
 pub fn valid_file_path(source: &[u8]) -> Option<Vec<u8>> {
-    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::os::unix::ffi::OsStringExt;
     let mut src = source;
     let has_scheme = unsafe {
         let uri = sys::xmlCreateURI();
@@ -598,10 +564,9 @@ pub fn valid_file_path(source: &[u8]) -> Option<Vec<u8>> {
         }
     }
     if !has_scheme || is_file_uri {
-        let os = std::ffi::OsStr::from_bytes(src);
-        let p = match std::fs::canonicalize(os) {
+        let p = match std::fs::canonicalize(crate::vcwd::os_path(src)) {
             Ok(p) => p.into_os_string().into_vec(),
-            Err(_) => expand_path(src),
+            Err(_) => crate::vcwd::expand_path(src),
         };
         // expand_filepath fails past MAXPATHLEN.
         if p.len() >= libc::PATH_MAX as usize {
@@ -693,9 +658,7 @@ fn document_parser(
     }
     unsafe {
         if mode != Mode::File {
-            if let Ok(cwd) = std::env::current_dir() {
-                use std::os::unix::ffi::OsStringExt;
-                let mut d = cwd.into_os_string().into_vec();
+            if let Some(mut d) = crate::vcwd::getcwd() {
                 if d.last() != Some(&b'/') {
                     d.push(b'/');
                 }

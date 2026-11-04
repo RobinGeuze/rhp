@@ -123,13 +123,7 @@ impl Vm {
         if dest.is_empty() {
             self.write_stderr(line.as_bytes());
         } else {
-            use std::io::Write;
-            let path = String::from_utf8_lossy(dest).into_owned();
-            let _ = std::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(path)
-                .and_then(|mut f| f.write_all(line.as_bytes()));
+            let _ = builtins::vcwd::append_file(dest, line.as_bytes(), 0o666);
         }
     }
 

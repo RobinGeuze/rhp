@@ -15,7 +15,6 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::rc::Rc;
 
 use flate2::read::DeflateDecoder;
@@ -393,7 +392,7 @@ fn verify_openssl_signature(data: &[u8], sig_type: u32, path: &[u8]) -> Result<(
     pk_path.extend_from_slice(b".pubkey");
     let fail =
         |why: &str| format!("phar \"{fname}\" openssl signature could not be verified: {why}");
-    let pem = match std::fs::read(String::from_utf8_lossy(&pk_path).as_ref()) {
+    let pem = match std::fs::read(crate::vcwd::os_path(&pk_path)) {
         Ok(p) if !p.is_empty() => p,
         _ => return Err(fail("openssl public key could not be read")),
     };
@@ -559,15 +558,13 @@ impl PharWrapper {
             if !st.is_regular {
                 return;
             }
-            let Ok(bytes) = std::fs::read(std::ffi::OsStr::from_bytes(prefix)) else {
+            let Ok(bytes) = std::fs::read(crate::vcwd::os_path(prefix)) else {
                 return;
             };
             let Ok(mut arc) = PharArchive::parse(bytes, prefix) else {
                 return;
             };
-            let real = std::fs::canonicalize(std::ffi::OsStr::from_bytes(prefix))
-                .map(|p| p.into_os_string().into_vec())
-                .unwrap_or_else(|_| prefix.to_vec());
+            let real = crate::vcwd::realpath(prefix).unwrap_or_else(|| prefix.to_vec());
             arc.path = real.clone();
             let arc = Rc::new(arc);
             self.install(&real, None, arc.clone());

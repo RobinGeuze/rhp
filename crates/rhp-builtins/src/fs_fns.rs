@@ -1112,10 +1112,9 @@ fn access_check(host: &dyn Host, args: &[Value], amode: libc::c_int) -> bool {
     }
     let (scheme, _) = split_scheme(&p);
     if scheme == b"file" {
-        let local = crate::streams::file_path(&p).to_vec();
-        return match CString::new(local) {
-            Ok(c) => unsafe { libc::access(c.as_ptr(), amode) == 0 },
-            Err(_) => false,
+        return match crate::vcwd::c_path(crate::streams::file_path(&p)) {
+            Some(c) => unsafe { libc::access(c.as_ptr(), amode) == 0 },
+            None => false,
         };
     }
     let Some(s) = host.stream_stat(&p) else {
@@ -1523,7 +1522,7 @@ fn fn_link(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if is_url(&target) || is_url(&link) {
         return Ok(Value::Bool(false));
     }
-    let (Ok(t), Ok(l)) = (CString::new(target), CString::new(link)) else {
+    let (Some(t), Some(l)) = (crate::vcwd::c_path(&target), crate::vcwd::c_path(&link)) else {
         return Ok(Value::Bool(false));
     };
     if unsafe { libc::link(t.as_ptr(), l.as_ptr()) } != 0 {
@@ -1548,12 +1547,8 @@ fn fn_linkinfo(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // --- mkdir / copy ------------------------------------------------------------------
 
 fn sys_mkdir(path: &[u8], mode: i64) -> Result<(), i32> {
-    let c = CString::new(path.to_vec()).map_err(|_| libc::EINVAL)?;
-    if unsafe { libc::mkdir(c.as_ptr(), mode as libc::mode_t) } == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
-    }
+    crate::vcwd::mkdir(path, mode as libc::mode_t as u32)
+        .map_err(|e| e.raw_os_error().unwrap_or(libc::EINVAL))
 }
 
 /// `mkdir($directory, $permissions = 0777, $recursive = false)` — php's
@@ -1712,16 +1707,7 @@ fn fn_sys_get_temp_dir(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Throw
     Ok(Value::str(temp_dir()))
 }
 
-/// php's tsrm_realpath: canonical absolute path of an existing file; "" is
-/// the cwd.
-fn realpath_bytes(p: &[u8]) -> Option<Vec<u8>> {
-    use std::os::unix::ffi::OsStrExt;
-    let path = if p.is_empty() { b"." as &[u8] } else { p };
-    let os = std::ffi::OsStr::from_bytes(path);
-    std::fs::canonicalize(os)
-        .ok()
-        .map(|pb| pb.as_os_str().as_bytes().to_vec())
-}
+use crate::vcwd::realpath as realpath_bytes;
 
 fn fn_realpath(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let p = path_param(args, 0, "realpath", "path")?;
@@ -1756,6 +1742,7 @@ pub(crate) fn open_temp(dir: &[u8], pfx: &[u8]) -> Option<Vec<u8>> {
     if fd < 0 {
         return None;
     }
+    crate::vcwd::created_fd(fd, 0o600);
     unsafe { libc::close(fd) };
     Some(c.into_bytes())
 }
@@ -1860,7 +1847,7 @@ fn do_chown(
             )));
         }
     };
-    let Ok(c) = CString::new(crate::streams::file_path(&path).to_vec()) else {
+    let Some(c) = crate::vcwd::c_path(crate::streams::file_path(&path)) else {
         return Ok(Value::Bool(false));
     };
     let (uid, gid) = if group {

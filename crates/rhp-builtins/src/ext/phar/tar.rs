@@ -205,7 +205,7 @@ fn arg_bytes(args: &[Value], i: usize) -> Vec<u8> {
 /// 'entries' => [['name','dir','content','mtime','mode'], …]]`.
 pub fn fn_load(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = arg_bytes(args, 0);
-    let Ok(data) = std::fs::read(&*String::from_utf8_lossy(&path)) else {
+    let Ok(data) = std::fs::read(crate::vcwd::os_path(&path)) else {
         return Ok(Value::Bool(false));
     };
     let Some((comp, entries)) = read(&data) else {
@@ -255,7 +255,7 @@ pub fn fn_save(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
     };
     let data = compress(tar, comp);
-    match std::fs::write(&*String::from_utf8_lossy(&path), data) {
+    match crate::vcwd::write_file(&path, &data) {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => Ok(Value::str(format!(
             "unable to open new phar \"{}\" for writing: {e}",

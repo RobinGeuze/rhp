@@ -301,11 +301,7 @@ impl Vm {
                 // code or a script read from stdin).
                 let main = self.main_script_path.clone().or_else(|| {
                     let f = self.stack.first()?.proto.debug.file.as_bytes();
-                    std::path::Path::new(
-                        <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(f),
-                    )
-                    .is_file()
-                    .then(|| f.to_vec())
+                    rhp_builtins::vcwd::os_path(f).is_file().then(|| f.to_vec())
                 });
                 if let Some(m) = &main {
                     out.push(s(m));

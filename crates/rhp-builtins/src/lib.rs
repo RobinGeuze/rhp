@@ -22,6 +22,7 @@ pub mod opsstream;
 pub mod pcre;
 pub mod signatures;
 pub mod streams;
+pub mod vcwd;
 pub mod version;
 pub mod zend;
 
@@ -1403,6 +1404,7 @@ pub use runtime_fns::{apply_memory_limits, take_shutdown_diagnostics, take_start
 /// overlay). Engines call this on construction so state never leaks from one
 /// script run to the next on the same thread.
 pub fn reset_request_state() {
+    vcwd::reset_state();
     ext::libxml::reset_state();
     ext::date::reset_state();
     runtime_fns::reset_state();

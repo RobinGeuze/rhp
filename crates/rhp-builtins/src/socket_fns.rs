@@ -322,7 +322,8 @@ fn sock_name(fd: RawFd, peer: bool) -> Option<Vec<u8>> {
 }
 
 /// A `sockaddr_un` for `path` (php's `parse_unix_address`, truncating an
-/// over-long path with a notice).
+/// over-long path with a notice). A relative path is taken from the
+/// request's working directory while that still fits.
 fn unix_addr(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<Addr, Thrown> {
     let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
     let un = unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_un) };
@@ -340,7 +341,18 @@ fn unix_addr(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<Addr, Thro
             ),
         )?;
     }
-    for (d, &s) in un.sun_path.iter_mut().zip(&path[..n]) {
+    let resolved = if abstract_ns {
+        std::borrow::Cow::Borrowed(&path[..n])
+    } else {
+        crate::vcwd::resolve(&path[..n])
+    };
+    let path: &[u8] = if resolved.len() <= max {
+        &resolved
+    } else {
+        &path[..n]
+    };
+    let n = path.len();
+    for (d, &s) in un.sun_path.iter_mut().zip(path) {
         *d = s as libc::c_char;
     }
     let off = std::mem::size_of::<libc::sockaddr_un>() - cap;

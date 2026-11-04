@@ -1032,8 +1032,7 @@ fn m_set_relaxng_schema_source(
 /// The script's directory as a base URI (`getcwd()` with a trailing
 /// slash, canonicalized).
 fn cwd_uri() -> Option<Vec<u8>> {
-    use std::os::unix::ffi::OsStringExt;
-    let mut d = std::env::current_dir().ok()?.into_os_string().into_vec();
+    let mut d = crate::vcwd::getcwd()?;
     if d.last() != Some(&b'/') {
         d.push(b'/');
     }

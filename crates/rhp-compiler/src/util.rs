@@ -8,10 +8,8 @@ use rhp_values::Thrown;
 pub(crate) fn dirname(path: &[u8]) -> Vec<u8> {
     match path.iter().rposition(|&b| b == b'/') {
         // php (zend_compile `__DIR__`): a "." directory — "Command line
-        // code", "Standard input code" — becomes the current directory.
-        None => std::env::current_dir()
-            .map(|d| d.into_os_string().into_encoded_bytes())
-            .unwrap_or_else(|_| b".".to_vec()),
+        // code", "Standard input code" — becomes the working directory.
+        None => rhp_builtins::vcwd::getcwd().unwrap_or_else(|| b".".to_vec()),
         Some(0) => b"/".to_vec(),
         Some(i) => path[..i].to_vec(),
     }

@@ -9,6 +9,9 @@
 //! built with `USE_POSIX_SPAWN` (macOS, glibc ≥ 2.29): a string command runs as
 //! `/bin/sh -c <command>`, an array command via `posix_spawnp` with no shell.
 //! Pipe parent ends become `stream` resources backed by the VM's fd streams.
+//! A child starts in the request's working directory (`crate::vcwd`), as
+//! php's ZTS build starts it in its virtual one. It inherits the process's
+//! umask, not one the request set: posix_spawn has no way to set it.
 //!
 //! (php's warnings — e.g. "posix_spawn() failed: …" — are not emitted: this
 //! engine has no diagnostics channel yet; the return values match.)
@@ -156,8 +159,9 @@ struct Desc {
     parentend: Option<OwnedFd>,
 }
 
-/// `posix_spawn` the command with php's file actions. Returns the child pid or
-/// the spawn error number.
+/// `posix_spawn` the command with php's file actions, in `cwd` (relative to
+/// the request's working directory), else in that directory. Returns the
+/// child pid or the spawn error number.
 fn spawn(
     cmd: SpawnCmd,
     descs: &[Desc],
@@ -197,7 +201,10 @@ fn spawn(
             libc::posix_spawn_file_actions_destroy(&mut fa);
             return Err(fail);
         }
-        let cwd_c = cwd.map(cstr);
+        let cwd_c = match cwd {
+            Some(dir) => Some(cstr(&crate::vcwd::resolve(dir))),
+            None => crate::vcwd::child_cwd().map(|d| cstr(&d)),
+        };
         if let Some(c) = &cwd_c {
             libc::posix_spawn_file_actions_addchdir_np(&mut fa, c.as_ptr());
         }
@@ -634,6 +641,9 @@ fn fn_popen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
     let mut c = Command::new("/bin/sh");
     c.arg("-c").arg(std::ffi::OsStr::from_bytes(&cmd));
+    if let Some(dir) = crate::vcwd::child_cwd() {
+        c.current_dir(std::ffi::OsStr::from_bytes(&dir));
+    }
     if write {
         c.stdin(Stdio::piped());
     } else {
@@ -828,8 +838,7 @@ fn open_for_mode(path: &[u8], mode: &[u8]) -> Option<OwnedFd> {
         _ => return None,
     };
     let p = cstr(path.strip_prefix(b"file://").unwrap_or(path));
-    let fd = unsafe { libc::open(p.as_ptr(), acc | extra, 0o666 as libc::c_uint) };
-    (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
+    crate::vcwd::open(p.as_bytes(), acc | extra, 0o666).ok()
 }
 
 /// Element `i` of a descriptor array as a string, or the php ValueError.

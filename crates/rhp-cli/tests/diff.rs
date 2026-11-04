@@ -6,7 +6,8 @@
 //! runs only the fixtures whose name (`lang/closures`) contains SUBSTR; it
 //! fails when no fixture matches, vm/ included.
 //!
-//! The fixtures run one after another: they chdir, and some set the umask.
+//! Each fixture runs in its own directory (`Request::cwd`); the test
+//! process's working directory never changes.
 
 use std::path::{Path, PathBuf};
 
@@ -26,9 +27,13 @@ fn golden_dir() -> PathBuf {
 
 /// Run `php` as php runs a golden: by its absolute path, from its directory.
 fn run(php: &Path) -> (Outcome, rhp_sapi::Captured) {
-    std::env::set_current_dir(php.parent().unwrap()).expect("chdir");
+    use std::os::unix::ffi::OsStrExt;
     let script = Script::File(php.to_string_lossy().into_owned());
-    CaptureSapi::cli().run(Request::new(script))
+    let req = Request {
+        cwd: Some(php.parent().unwrap().as_os_str().as_bytes().to_vec()),
+        ..Request::new(script)
+    };
+    CaptureSapi::cli().run(req)
 }
 
 /// An engine refusal (`Thrown::Unsupported`), reported on stderr.
@@ -54,7 +59,6 @@ fn cases() -> Vec<Fixture> {
 #[test]
 fn vm_matches_php_baseline() {
     let cases = cases();
-    let cwd = std::env::current_dir().expect("cwd");
     let mut passed = 0;
     let mut failures = Vec::new();
     for Fixture { name, php } in &cases {
@@ -77,7 +81,6 @@ fn vm_matches_php_baseline() {
             Err(_) => failures.push(format!("{name}: panicked")),
         }
     }
-    std::env::set_current_dir(cwd).expect("chdir back");
     eprintln!("[VM] golden: {passed}/{} passed", cases.len());
     assert!(
         failures.is_empty(),

@@ -547,13 +547,9 @@ impl Host for Vm {
                 // plain file right away: a resource of its own.
                 let inner = &path[b"compress.zlib://".len()..];
                 if !inner.windows(3).any(|w| w == b"://") {
-                    let mut o = std::fs::OpenOptions::new();
-                    if append {
-                        o.append(true).create(true);
-                    } else {
-                        o.write(true).create(true).truncate(!append);
-                    }
-                    o.open(String::from_utf8_lossy(inner).as_ref()).ok()?;
+                    let fmode: &[u8] = if append { b"ab" } else { b"wb" };
+                    let (flags, _, _) = builtins::streams::parse_fopen_mode(fmode)?;
+                    builtins::vcwd::open(inner, flags, 0o666).ok()?;
                 }
                 self.next_resource_id += 1;
             }

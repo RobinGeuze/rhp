@@ -374,6 +374,7 @@ fn load_blacklist(pattern: &[u8]) -> Vec<Vec<u8>> {
             if l.is_empty() || l[0] == b';' {
                 continue;
             }
+            // (Loaded at startup in php: the process's directory.)
             let base = base.clone().unwrap_or_else(|| {
                 std::env::current_dir()
                     .map(|d| path_bytes(&d))
@@ -648,8 +649,8 @@ impl Vm {
         }
         let mut k = given.to_vec();
         k.push(b':');
-        if let Ok(cwd) = std::env::current_dir() {
-            k.extend_from_slice(&path_bytes(&cwd));
+        if let Some(cwd) = builtins::vcwd::getcwd() {
+            k.extend_from_slice(&cwd);
         }
         let include_path = self.ini(b"include_path");
         if !include_path.is_empty() {

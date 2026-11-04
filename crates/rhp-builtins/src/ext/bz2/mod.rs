@@ -168,7 +168,7 @@ fn fn_bzopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if mode == b"r" && !rel.windows(3).any(|w| w == b"://") {
         // libbz2 opens lazily: a readable file that isn't bzip2 still opens,
         // and the first read fails with BZ_DATA_ERROR_MAGIC.
-        if let Ok(raw) = std::fs::read(String::from_utf8_lossy(&rel).as_ref()) {
+        if let Ok(raw) = std::fs::read(crate::vcwd::os_path(&rel)) {
             if let Err(code) = decompress(&raw, false) {
                 if let Some(res) = host.stream_open(b"php://memory", b"rb") {
                     if let Value::Resource(r) = &res {

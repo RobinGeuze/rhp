@@ -274,6 +274,7 @@ pub fn from_old_tree(host: &mut dyn Host, d: DocId, n: NodeId) -> Result<Value, 
         host,
         fname: String::new(),
         quiet: false,
+        lazy_fname: false,
     };
     let docv = create_object(&mut cx, docp.cast(), None)?;
     if found.is_null() {

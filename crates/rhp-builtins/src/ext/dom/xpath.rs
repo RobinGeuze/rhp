@@ -725,6 +725,7 @@ fn call_function(
                 host,
                 fname: ffi::fname(),
                 quiet: false,
+                lazy_fname: false,
             };
             if custom {
                 let (function, uri) = unsafe {

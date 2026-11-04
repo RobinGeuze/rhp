@@ -252,7 +252,7 @@ static XPATH: &[Prop] = &[
 /// A class's property table: its own properties, then the inherited ones
 /// it does not redefine (php's zend_hash_merge without overwrite), with
 /// DOMEntityReference's overrides in place.
-fn table(base: &str) -> Vec<&'static Prop> {
+fn build_table(base: &str) -> Vec<&'static Prop> {
     let parts: &[&[Prop]] = match base {
         "DOMNode" => &[NODE],
         "DOMNameSpaceNode" => &[NS_NODE],
@@ -314,7 +314,16 @@ const DOM_CLASSES: &[&str] = &[
 
 /// The DOM class an object's class derives from (dom_objects_set_class_ex
 /// picks the property table by it).
-fn dom_base(cx: &Cx, v: &Value) -> Option<&'static str> {
+fn dom_base(cx: &Cx, v: &Value, st: &DomObject) -> Option<&'static str> {
+    if let Some(c) = st.prop_class.get() {
+        return Some(c);
+    }
+    let c = dom_base_uncached(cx, v)?;
+    st.prop_class.set(Some(c));
+    Some(c)
+}
+
+fn dom_base_uncached(cx: &Cx, v: &Value) -> Option<&'static str> {
     let mut name = cx.host.object_class_name(v)?;
     for _ in 0..64 {
         if let Some(c) = DOM_CLASSES
@@ -329,8 +338,22 @@ fn dom_base(cx: &Cx, v: &Value) -> Option<&'static str> {
     None
 }
 
-fn find(base: &str, name: &[u8]) -> Option<&'static Prop> {
-    table(base).into_iter().find(|p| p.name.as_bytes() == name)
+/// The table of a DOM class, built once.
+fn table(base: &'static str) -> &'static [&'static Prop] {
+    static TABLES: std::sync::OnceLock<Vec<(&'static str, Vec<&'static Prop>)>> =
+        std::sync::OnceLock::new();
+    let tables = TABLES.get_or_init(|| DOM_CLASSES.iter().map(|c| (*c, build_table(c))).collect());
+    tables
+        .iter()
+        .find(|(c, _)| *c == base)
+        .map_or(&[], |(_, t)| t.as_slice())
+}
+
+fn find(base: &'static str, name: &[u8]) -> Option<&'static Prop> {
+    table(base)
+        .iter()
+        .copied()
+        .find(|p| p.name.as_bytes() == name)
 }
 
 /// The object's state, or an empty one (php's `dom_object` of an object
@@ -348,7 +371,8 @@ pub fn dispatch(
     value: Option<Value>,
 ) -> Result<Value, Thrown> {
     let no_prop = || Ok(Value::Array(PhpArray::new()));
-    let Some(base) = dom_base(cx, this) else {
+    let st = state_of(this);
+    let Some(base) = dom_base(cx, this, &st) else {
         return no_prop();
     };
     let Some(prop) = find(base, name) else {
@@ -366,7 +390,6 @@ pub fn dispatch(
         }
         return no_prop();
     };
-    let st = state_of(this);
     match op {
         0 => Ok((prop.read)(cx, &st)?.unwrap_or(Value::Null)),
         1 => {
@@ -444,11 +467,11 @@ pub fn debug_view(cx: &mut Cx, v: &Value) -> Result<PhpArray, Thrown> {
             out.insert(rhp_values::ArrayKey::Str(k.clone()), val.clone());
         }
     }
-    let Some(base) = dom_base(cx, v) else {
+    let st = state_of(v);
+    let Some(base) = dom_base(cx, v, &st) else {
         return Ok(out);
     };
-    let st = state_of(v);
-    for p in table(base) {
+    for p in table(base).iter().copied() {
         let val = match (p.read)(cx, &st) {
             Ok(Some(val)) => val,
             Ok(None) | Err(_) => continue,

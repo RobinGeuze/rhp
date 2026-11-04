@@ -25,7 +25,7 @@ mod xpath;
 
 pub use bridge::{from_old_tree, to_old_tree};
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ptr;
 use std::rc::Rc;
@@ -41,6 +41,9 @@ use crate::{Builtin, Host, Thrown};
 pub(crate) struct DomObject {
     pub base: NodeObject,
     pub kind: Kind,
+    /// The DOM class whose property table applies (`prop_handler`), found
+    /// on first property access.
+    pub prop_class: Cell<Option<&'static str>>,
 }
 
 /// What else a `dom_object` carries, by class.
@@ -63,6 +66,7 @@ impl DomObject {
         DomObject {
             base: NodeObject::default(),
             kind,
+            prop_class: Cell::new(None),
         }
     }
 
@@ -137,12 +141,25 @@ pub(crate) struct Cx<'h> {
     pub fname: String,
     /// `DOM_G(suppress_warnings)`: set while building the debug view.
     pub quiet: bool,
+    /// `fname` is the active user function, looked up when first needed.
+    pub lazy_fname: bool,
 }
 
 impl Cx<'_> {
+    /// The function php's warnings name. A property handler's is the user
+    /// function running (found on first use: it walks the stack).
+    pub fn fname(&mut self) -> String {
+        if self.fname.is_empty() && self.lazy_fname {
+            self.fname = crate::ext::libxml::active_user_function(self.host);
+            self.lazy_fname = false;
+        }
+        self.fname.clone()
+    }
+
     /// `php_error_docref(NULL, E_WARNING, msg)`.
     pub fn warn(&mut self, msg: &str) -> Result<(), Thrown> {
-        crate::warn(self.host, &self.fname, msg)
+        let fname = self.fname();
+        crate::warn(self.host, &fname, msg)
     }
 
     /// `php_libxml_issue_error(E_WARNING, msg)`: into the libxml error list
@@ -156,7 +173,7 @@ impl Cx<'_> {
 
     /// Run a libxml2 call whose callbacks may reach PHP.
     pub fn with_libxml<R>(&mut self, f: impl FnOnce() -> R) -> Result<R, Thrown> {
-        let fname = self.fname.clone();
+        let fname = self.fname();
         crate::ext::libxml::ffi::with_host(self.host, &fname, f)
     }
 }
@@ -624,6 +641,7 @@ fn fn_dom(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         host,
         fname: String::from_utf8_lossy(&name).into_owned(),
         quiet: false,
+        lazy_fname: false,
     };
     m(&mut cx, &this, &args[2.min(args.len())..])
 }
@@ -635,11 +653,11 @@ fn fn_dom_prop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let op = int(args, 0);
     let this = arg(args, 1);
     let name = bytes(args, 2);
-    let fname = crate::ext::libxml::active_user_function(host);
     let mut cx = Cx {
         host,
-        fname,
+        fname: String::new(),
         quiet: false,
+        lazy_fname: true,
     };
     props::dispatch(&mut cx, op, &this, &name, args.get(3).map(deref))
 }
@@ -655,6 +673,7 @@ fn fn_dom_iter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         host,
         fname: String::new(),
         quiet: false,
+        lazy_fname: false,
     };
     lists::iterate(&mut cx, &this, &cur, index)
 }
@@ -686,6 +705,7 @@ fn get_properties_for(
         host,
         fname: String::new(),
         quiet: true,
+        lazy_fname: false,
     };
     props::debug_view(&mut cx, &v).map(Some)
 }
@@ -702,6 +722,7 @@ fn clone_node_obj(
         host,
         fname: String::new(),
         quiet: false,
+        lazy_fname: false,
     };
     node::clone_object(&mut cx, &sv, &dv)
 }
@@ -714,6 +735,7 @@ fn clone_ns_obj(host: &mut dyn Host, src: &ObjectHandle, dst: &ObjectHandle) -> 
         host,
         fname: String::new(),
         quiet: false,
+        lazy_fname: false,
     };
     node::clone_ns_object(&mut cx, &sv, &dv)
 }

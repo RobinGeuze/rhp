@@ -11,7 +11,7 @@ fn dumped(v: &Value) -> String {
 }
 
 fn call(f: crate::NativeFn, args: &[Value]) -> Value {
-    f(&mut TestHost::new(), args).expect("builtin returned Err")
+    f(&mut TestHost::new(), args).expect("no throw")
 }
 
 fn arr(items: Vec<(ArrayKey, Value)>) -> Value {

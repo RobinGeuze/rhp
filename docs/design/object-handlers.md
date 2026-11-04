@@ -113,9 +113,10 @@ Notes:
 - Formatters only see `&dyn Host`, so the dumpers resolve every reachable
   object's view up front (`dump::resolve_views`).
 - Handlers not routed yet: property and dimension access (`read_property`,
-  `has_property`… — DOM's and SimpleXML's virtual properties still go
-  through their prelude classes), `get_constructor` (`Directory`),
-  `get_gc`.
+  `has_property`… — DOM's, SimpleXML's and ZipArchive's virtual properties
+  still go through their prelude classes' `__get`/`__set`/`__isset`, so
+  `property_exists()` and `method_exists(…, '__get')` differ from php),
+  `get_constructor` (`Directory`), `get_gc`.
 
 ## Class flags
 

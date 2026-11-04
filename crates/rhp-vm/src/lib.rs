@@ -4443,7 +4443,14 @@ impl Vm {
 
     /// Raise the diagnostics stream operations queued (the TLS layer's
     /// warnings) as raised by builtin `func`.
+    #[inline]
     fn flush_stream_diags(&mut self, func: &str) {
+        if builtins::fdstream::has_diags() {
+            self.raise_stream_diags(func);
+        }
+    }
+
+    fn raise_stream_diags(&mut self, func: &str) {
         for d in builtins::fdstream::take_diags() {
             let msg = if d.docref {
                 format!("{func}(): {}", d.msg)

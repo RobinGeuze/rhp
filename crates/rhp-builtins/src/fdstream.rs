@@ -12,7 +12,7 @@
 //! `read(2)` returned 0, and a non-blocking read with no data available
 //! (`EAGAIN`) yields an empty result rather than EOF.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use crate::ext::openssl::xp_ssl::SslSock;
@@ -22,6 +22,8 @@ const CHUNK: usize = 8192;
 
 thread_local! {
     static DIAGS: RefCell<Vec<Diag>> = const { RefCell::new(Vec::new()) };
+    /// Whether `DIAGS` may be non-empty: checked after every builtin call.
+    static HAS_DIAGS: Cell<bool> = const { Cell::new(false) };
 }
 
 /// A diagnostic raised inside a stream operation that has no host (the TLS
@@ -39,10 +41,18 @@ pub struct Diag {
 pub fn push_diag(level: i64, docref: bool, msg: impl Into<String>) {
     let msg = msg.into();
     DIAGS.with(|d| d.borrow_mut().push(Diag { level, docref, msg }));
+    HAS_DIAGS.with(|f| f.set(true));
+}
+
+/// Whether diagnostics are queued (cheaper than [`take_diags`]).
+#[inline]
+pub fn has_diags() -> bool {
+    HAS_DIAGS.with(|f| f.get())
 }
 
 /// The queued diagnostics, oldest first.
 pub fn take_diags() -> Vec<Diag> {
+    HAS_DIAGS.with(|f| f.set(false));
     DIAGS.with(|d| std::mem::take(&mut *d.borrow_mut()))
 }
 

@@ -14,8 +14,10 @@
 //! calls setlocale; the guard installs a per-thread C.UTF-8 locale with
 //! uselocale while it lives.
 
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::ffi::{c_char, c_int, c_void, CStr};
+use std::ptr::NonNull;
 
 // libc's own declarations are deprecated on Apple, so rhp declares the three
 // functions it calls.
@@ -194,9 +196,9 @@ impl Cd {
     /// `out[*pos..]`; both advance past what was consumed and produced.
     /// Returns iconv's result ([`FAILED`]: see [`errno`]).
     ///
-    /// Callers pass slices of NUL-terminated buffers where php passes a
-    /// zend_string, so a library that reads past the input's end sees what
-    /// it sees under php.
+    /// Callers pass slices of NUL-terminated buffers (a [`NulCopy`]) where
+    /// php passes a zend_string, so a library that reads past the input's
+    /// end sees what it sees under php.
     pub fn conv(&self, input: &mut &[u8], out: &mut [u8], pos: &mut usize) -> usize {
         let mut in_p = input.as_ptr() as *mut c_char;
         let mut in_left = input.len();
@@ -255,6 +257,54 @@ impl Drop for Cd {
     fn drop(&mut self) {
         // SAFETY: an open descriptor, closed once.
         with_errno(|| unsafe { iconv_close(self.0) });
+    }
+}
+
+/// A copy of some bytes with a NUL after them, as a zend_string sits in
+/// memory, for [`Cd::conv`]. Derefs to the bytes without the NUL.
+///
+/// It stands in for a string php passes by pointer without allocating, so
+/// it comes from the system allocator directly: memory_get_usage() and
+/// memory_limit don't see it.
+pub struct NulCopy {
+    ptr: NonNull<u8>,
+    len: usize,
+}
+
+impl NulCopy {
+    pub fn new(b: &[u8]) -> NulCopy {
+        let layout = Self::layout(b.len());
+        // SAFETY: the layout is at least one byte.
+        let Some(ptr) = NonNull::new(unsafe { System.alloc(layout) }) else {
+            std::alloc::handle_alloc_error(layout)
+        };
+        // SAFETY: `ptr` has room for `b.len() + 1` bytes and doesn't overlap
+        // `b`.
+        unsafe {
+            std::ptr::copy_nonoverlapping(b.as_ptr(), ptr.as_ptr(), b.len());
+            ptr.as_ptr().add(b.len()).write(0);
+        }
+        NulCopy { ptr, len: b.len() }
+    }
+
+    fn layout(len: usize) -> Layout {
+        // A slice is at most isize::MAX bytes, so `len + 1` fits.
+        Layout::from_size_align(len + 1, 1).expect("string length")
+    }
+}
+
+impl std::ops::Deref for NulCopy {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        // SAFETY: `len` initialised bytes, owned until drop.
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+impl Drop for NulCopy {
+    fn drop(&mut self) {
+        // SAFETY: allocated by `new` from `System` with this layout.
+        unsafe { System.dealloc(self.ptr.as_ptr(), Self::layout(self.len)) };
     }
 }
 

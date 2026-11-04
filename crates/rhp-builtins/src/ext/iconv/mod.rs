@@ -22,7 +22,7 @@ use rhp_values::{ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::ext::zpp::{deref, int_arg, int_arg_or, opt_int_arg, opt_str_arg, str_arg, value_error};
 use crate::{warn, Builtin, Host, OutputHandlerAlias, OutputHandlerCtx, Thrown};
-use sys::{errno, set_errno, Cd, FAILED};
+use sys::{errno, set_errno, Cd, NulCopy, FAILED};
 
 /// ICONV_CSNMAXLEN.
 const CSNMAXLEN: usize = 64;
@@ -68,30 +68,38 @@ fn cstr(b: &[u8]) -> CString {
     CString::new(&b[..end]).unwrap_or_default()
 }
 
-/// A copy of `b` followed by a NUL, as a zend_string sits in memory (see
-/// [`Cd::conv`]). Callers pass `&z[..b.len()]`.
-fn zstr(b: &[u8]) -> Vec<u8> {
-    let mut v = Vec::with_capacity(b.len() + 1);
-    v.extend_from_slice(b);
-    v.push(0);
-    v
+/// A `string` argument as php holds it, with a NUL after the bytes (see
+/// [`Cd::conv`]). Derefs to the bytes.
+enum StrArg {
+    /// The caller's string, which php uses in place.
+    Passed(NulCopy),
+    /// A string converted for the call, which php allocates too.
+    Converted(Vec<u8>),
 }
 
-/// A `string` argument as php holds it: the bytes followed by a NUL (the
-/// last byte of the result).
+impl std::ops::Deref for StrArg {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            StrArg::Passed(c) => c,
+            StrArg::Converted(v) => &v[..v.len() - 1],
+        }
+    }
+}
+
 fn zstr_arg(
     host: &mut dyn Host,
     args: &[Value],
     i: usize,
     fname: &str,
     pname: &str,
-) -> Result<Vec<u8>, Thrown> {
+) -> Result<StrArg, Thrown> {
     if let Some(Value::Str(s)) = args.get(i).map(deref) {
-        return Ok(zstr(s.as_bytes()));
+        return Ok(StrArg::Passed(NulCopy::new(s.as_bytes())));
     }
     let mut v = str_arg(host, args, i, fname, pname)?;
     v.push(0);
-    Ok(v)
+    Ok(StrArg::Converted(v))
 }
 
 /// ZEND_HAS_OOM(): an out-of-memory error is pending.
@@ -1224,9 +1232,9 @@ fn mime_decode(
                         err = Unknown;
                         break 'out_try;
                     };
-                    let decoded = zstr(&decoded);
-                    let decoded = &decoded[..decoded.len() - 1];
-                    err = appendl(pretval, Some(decoded), cd.as_ref());
+                    // php's decoded zend_string already counts.
+                    let decoded = NulCopy::new(&decoded);
+                    err = appendl(pretval, Some(&*decoded), cd.as_ref());
                     if err == Success {
                         err = appendl(pretval, None, cd.as_ref());
                     }
@@ -1407,7 +1415,7 @@ fn fn_iconv_strlen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     let Some(charset) = encoding_arg(host, raw, f)? else {
         return Ok(Value::Bool(false));
     };
-    let (err, n) = iconv_strlen(&s[..s.len() - 1], &charset);
+    let (err, n) = iconv_strlen(&s, &charset);
     show_error(host, f, err, SUPERSET, &charset)?;
     Ok(if err == Success {
         Value::Int(n as i64)
@@ -1425,7 +1433,7 @@ fn fn_iconv_substr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     let Some(charset) = encoding_arg(host, raw, f)? else {
         return Ok(Value::Bool(false));
     };
-    let s = &s[..s.len() - 1];
+    let s = &*s;
     let length = length.unwrap_or(s.len() as i64);
     let (err, retval) = iconv_substr(s, offset, length, &charset);
     show_error(host, f, err, SUPERSET, &charset)?;
@@ -1444,7 +1452,7 @@ fn fn_iconv_strpos(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     let Some(charset) = encoding_arg(host, raw, f)? else {
         return Ok(Value::Bool(false));
     };
-    let (haystk, ndl) = (&haystk[..haystk.len() - 1], &ndl[..ndl.len() - 1]);
+    let (haystk, ndl) = (&*haystk, &*ndl);
     if offset < 0 {
         // A negative offset counts from the end.
         let (err, haystk_len) = iconv_strlen(haystk, &charset);
@@ -1478,7 +1486,7 @@ fn fn_iconv_strrpos(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
     let haystk = zstr_arg(host, args, 0, f, "haystack")?;
     let ndl = zstr_arg(host, args, 1, f, "needle")?;
     let raw = opt_str_arg(host, args, 2, f, "encoding")?;
-    let (haystk, ndl) = (&haystk[..haystk.len() - 1], &ndl[..ndl.len() - 1]);
+    let (haystk, ndl) = (&*haystk, &*ndl);
     if ndl.is_empty() {
         return Ok(Value::Bool(false));
     }
@@ -1565,8 +1573,8 @@ fn fn_iconv_mime_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     let mut retval = SmartStr::default();
     let err = mime_encode(
         &mut retval,
-        &field_name[..field_name.len() - 1],
-        &field_value[..field_value.len() - 1],
+        &field_name,
+        &field_value,
         line_len as usize,
         lfchars.as_bytes(),
         scheme,
@@ -1590,13 +1598,7 @@ fn fn_iconv_mime_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         return Ok(Value::Bool(false));
     };
     let mut retval = SmartStr::default();
-    let err = mime_decode(
-        &mut retval,
-        &encoded[..encoded.len() - 1],
-        &charset,
-        None,
-        mode as i32 as i64,
-    );
+    let err = mime_decode(&mut retval, &encoded, &charset, None, mode as i32 as i64);
     show_error(host, f, err, &charset, c"???")?;
     Ok(if err == Success {
         Value::str(retval.extract())
@@ -1613,7 +1615,7 @@ fn fn_iconv_mime_decode_headers(host: &mut dyn Host, args: &[Value]) -> Result<V
     let Some(charset) = encoding_arg(host, raw, f)? else {
         return Ok(Value::Bool(false));
     };
-    let end = encoded.len() - 1;
+    let end = encoded.len();
     let mut out = PhpArray::new();
     let mut err = Success;
     let mut pos = 0usize;
@@ -1675,7 +1677,7 @@ fn fn_iconv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Bool(false));
     }
     let (in_charset, out_charset) = (cstr(&in_charset), cstr(&out_charset));
-    let (err, out) = iconv_string(&input[..input.len() - 1], &out_charset, &in_charset);
+    let (err, out) = iconv_string(&input, &out_charset, &in_charset);
     show_error(host, f, err, &out_charset, &in_charset)?;
     Ok(match out {
         Some(o) if err == Success => Value::str(o),
@@ -1787,8 +1789,8 @@ fn output_handler(host: &mut dyn Host, cx: &mut OutputHandlerCtx) -> bool {
     }
     if !cx.input.is_empty() {
         let (out_c, in_c) = (cstr(&encoding("output")), cstr(&encoding("internal")));
-        let input = zstr(cx.input);
-        let (err, out) = iconv_string(&input[..input.len() - 1], &out_c, &in_c);
+        let input = NulCopy::new(cx.input);
+        let (err, out) = iconv_string(&input, &out_c, &in_c);
         cx.diags.extend(error_message(err, &out_c, &in_c));
         cx.out = out.unwrap_or_default();
     }

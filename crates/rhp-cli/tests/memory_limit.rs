@@ -350,6 +350,38 @@ fn pending_error_is_raised_before_a_loop_starts() {
 }
 
 #[test]
+fn iconv_does_not_count_its_copy_of_the_argument() {
+    // php converts the caller's string in place; the NUL-terminated copy rhp
+    // hands the library is not php memory. Peaks are rounded to MiB.
+    assert_same(
+        "iconv_peak",
+        r#"<?php
+ini_set('memory_limit', '32M');
+function peak(string $what, callable $f) {
+    memory_reset_peak_usage();
+    $base = memory_get_usage();
+    $r = $f();
+    printf("%s: %s, peak +%d MiB\n", $what, is_string($r) ? strlen($r) : var_export($r, true),
+        round((memory_get_peak_usage() - $base) / 1048576));
+}
+$s = str_repeat('a', 1 << 20);
+peak('iconv', fn() => iconv('UTF-8', 'ISO-8859-1', $s));
+peak('iconv_strlen', fn() => iconv_strlen($s));
+peak('iconv_substr', fn() => iconv_substr($s, 1, 10));
+peak('iconv_strpos', fn() => iconv_strpos($s, 'b'));
+peak('iconv_strrpos', fn() => iconv_strrpos($s, 'b'));
+peak('iconv_mime_decode', fn() => iconv_mime_decode($s));
+peak('iconv_mime_decode_headers', fn() => count(iconv_mime_decode_headers("X: $s")));
+peak('iconv_mime_encode', fn() => iconv_mime_encode('X', $s, ['scheme' => 'Q']));
+// The input and the output (12 MiB each) fit under the limit.
+$big = str_repeat('a', 12 << 20);
+echo strlen(iconv('UTF-8', 'ISO-8859-1', $big)), "\n";
+"#,
+        true,
+    );
+}
+
+#[test]
 fn hash_pbkdf2_past_the_hard_limit() {
     // Exits like php instead of aborting on the failed allocation.
     assert_same(

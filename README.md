@@ -57,7 +57,8 @@ the `Sapi` trait (body writer, `send_headers`, flush, log), fills in a
 `rhp_sapi::run_request` on a worker thread, with one fresh engine per
 request, pinned to that thread, and engine values that stay thread-local
 (`Rc`, not `Send`). Each request has its own working directory and umask;
-the process's never change. See [`docs/design/sapi.md`](docs/design/sapi.md).
+rhp never changes the process's, and reads its umask once, when the first
+engine starts. See [`docs/design/sapi.md`](docs/design/sapi.md).
 
 ## Non-goals / refused by design
 

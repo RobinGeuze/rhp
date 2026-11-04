@@ -1,26 +1,30 @@
 # Request state outside the `Vm`
 
-A thread runs one live `Vm` at a time, from `Vm::new` to `finish_request`
-(see [`sapi.md`](./sapi.md), *Threading model*). State that builtins, the
-compiler or the VM keep outside the `Vm` struct lives in `thread_local!`s,
-as php's ZTS build keeps its module globals per thread. This is every one
-of them, what it holds and how a new request gets a clean copy. Phase 8
-turns the resets into a mandatory hook per module; until then
-`rhp_builtins::reset_request_state` (called first thing in `Vm::new`) is
-the list, and a new `thread_local!` must go into this table and, when it
-holds request state, into that function.
+A thread runs one live `Vm` at a time, from `Vm::new` until the `Vm` is
+dropped (see [`sapi.md`](./sapi.md), *Threading model*). State that
+builtins, the compiler or the VM keep outside the `Vm` struct lives in
+`thread_local!`s, as php's ZTS build keeps its module globals per thread.
+This is every one of them, what it holds and how a request gets a clean
+copy. Phase 8 turns the resets into a mandatory hook per module; until
+then `rhp_builtins::reset_request_state` is the list, and a new
+`thread_local!` must go into this table and, when it holds request state,
+into that function. rhp-vm's `lifecycle::reset_request_state` runs it,
+with the VM's own resets, first thing in `Vm::new` and again when the `Vm`
+drops (after its values), so an idle thread holds nothing of its last
+request.
 
 Kinds:
 
-- **request**: belongs to one request; reset when the next engine starts.
+- **request**: belongs to one request; reset when its engine is dropped and
+  again when the next one starts.
 - **call**: lives only while one call runs (a guard pops it, or the caller
   takes it right after); empty between calls. Some are also cleared at
   request start, in case a call was cut short.
 - **thread**: a cache or setup shared by every request on the thread; holds
   nothing a script can change or see.
 - **startup**: filled before a request starts, also by the preload engine
-  that runs first, and emptied by the request's start; a new engine must
-  not drop it.
+  that runs first, and emptied by the request's start; neither a new
+  engine nor the preload one going away may drop it.
 
 ## rhp-builtins
 
@@ -34,6 +38,7 @@ Kinds:
 | `fdstream.rs` | `DIAGS`, `HAS_DIAGS` (warnings of host-less stream operations) | call | `fdstream::reset_state` |
 | `dump.rs` | `VIEWS` (`__debugInfo` / handler views while formatting) | call | `dump::clear_views` |
 | `sort_fns.rs` | `OBJECT_POS` (objects' internal array pointers, by object id) | request | `sort_fns::reset_state` |
+| `socket_fns.rs` | `BOUND_UNIX` (Unix socket paths bound relative to the request's directory, and the names given) | request | `socket_fns::reset_state` |
 | `json_fns.rs` | `LAST_ERROR` | request | `json_fns::reset_state` |
 | `preg_fns.rs` | `LAST_ERROR` | request | `preg_fns::reset_state` |
 | `pcre/mod.rs` | `STATE` (contexts, JIT stack, `pcre.*` settings, pattern cache) | request (settings, cache); thread (contexts) | `pcre::reset` via `preg_fns::reset_state` |
@@ -86,7 +91,7 @@ them. rhp resets them, so each request starts as a fresh php process does.
 | compiler `lib.rs` | `COMPILE_ERROR_LINE` (line of the last compile error, read right after) | call | — |
 | compiler `prelude.rs` | `PRELUDE_CACHE` (the compiled prelude) | thread | — |
 | vm `classes.rs` | `LINKED_PRELUDE`, `PRELUDE_LINKED_ONCE` | thread | — |
-| vm `lvalue.rs` | `PATH_DIAGS` (warnings of a cursor walk) | call | `lvalue::reset_path_diags` in `Vm::new` |
+| vm `lvalue.rs` | `PATH_DIAGS` (warnings of a cursor walk) | call | `lvalue::reset_path_diags` via `lifecycle::reset_request_state` |
 | vm `opcache/mod.rs` | `CACHE` (the compiled-script cache) | thread, as opcache's shared memory | `opcache_reset()` |
 
 The harness's `SNAPSHOTS` (tools/rhp-difftest `phpt.rs`) is a per-worker

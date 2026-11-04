@@ -359,8 +359,9 @@ fn request_state_does_not_leak_on_one_thread() {
     assert_eq!(run(check, None), clean);
 }
 
-/// pcntl is built only into php's CLI and CGI binaries: signal handlers and
-/// fork belong to the whole process, so a server that embeds rhp has none.
+/// pcntl only under the CLI and CGI: signal handlers and fork belong to the
+/// whole process, so a server that embeds rhp has none (rhp's choice; php's
+/// fpm and embed builds can have pcntl).
 #[test]
 fn pcntl_is_only_in_cli_and_cgi() {
     let code = "echo var_export(function_exists('pcntl_signal'), true), ' ', \

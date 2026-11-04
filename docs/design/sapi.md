@@ -149,7 +149,8 @@ in between can drive it directly:
 `X-Powered-By`), compile, `run_main` (script, shutdown functions,
 destructors, output-buffer flush, headers if still unsent), and finally
 `finish_request` (headers, `Sapi::flush`, upload cleanup). Dropping the
-`Vm` also deletes this request's uploaded temp files. Compile the main
+`Vm` also deletes this request's uploaded temp files and resets the
+thread's request state (see *Threading model*). Compile the main
 script with `Vm::compile_main` to go through the compiled-script cache
 (below); run `opcache.preload` first with `Vm::preload_pending` and
 `Vm::run_preload` on an engine of its own, as `run_request` does.
@@ -240,10 +241,12 @@ threads, never from sharing an engine:
   requests) can come later as a separate API.
 - The per-thread state outside the `Vm` (SAPI name and ini defaults,
   request-scoped builtin state) is in `thread_local!`s, like php's ZTS
-  module globals. `Vm::new` resets it, so the engine a thread runs is the
-  one that state belongs to: a second engine on the same thread while one
-  runs (nested, or two requests multiplexed on one thread) would clobber
-  it. A request keeps its thread from `Vm::new` to `finish_request`.
+  module globals. `Vm::new` resets it, and so does dropping the `Vm`
+  (after its own values), so the engine a thread runs is the one that
+  state belongs to and an idle thread keeps nothing of its last request:
+  a second engine on the same thread while one runs (nested, or two
+  requests multiplexed on one thread) would clobber it. A request keeps
+  its thread from `Vm::new` until its `Vm` is dropped.
   [`request-state.md`](./request-state.md) lists every `thread_local!`
   and which ones each request resets. The prelude's classes are linked
   once per thread (at its second request) and copied into each `Vm`, with
@@ -262,21 +265,39 @@ threads, never from sharing an engine:
   the request's umask allows bits the process's takes away). Each request
   starts in `Request::cwd`, else the process's directory, with the
   process's umask, read once when the first engine starts (on macOS by
-  setting it for a moment: start that engine before other threads create
-  files). Child processes inherit the process's umask, not the request's
-  (posix_spawn can't set one). A Unix socket path the request's directory
+  setting it to 0777 for a moment, so a file another thread creates then
+  can only come out stricter). Child processes start in the request's
+  directory with its umask; posix_spawn can't set a umask, so when the
+  request's differs from the process's, the child is forked and set up by
+  hand. A Unix socket bound by a relative path is bound in the request's
+  directory and still reports the name it was given; one the directory
   would make too long for `sun_path` is left relative. `opcache.preload`
   and `opcache.blacklist_filename`, startup settings, stay relative to
   the process's directory, as in php.
-- **pcntl only under the CLI and CGI.** php builds pcntl only into its CLI
-  and CGI binaries; rhp hides its functions, constants and extension entry
-  under any other SAPI name (`sapi::has_pcntl`), so an embedding server
-  never gets process-wide signal handlers or `fork` from a script.
+- **When the directory moves.** If the request's directory is renamed or
+  removed while the request is in it, the calls that start from its
+  descriptor (stat, open, access, opendir, chdir) follow it, as from a
+  real working directory, and `getcwd()` gives its new name, or false once
+  it is gone. Other paths (rename, unlink, mkdir, include, the C
+  libraries, a child's directory) are joined to the name it had, until
+  `getcwd()` or `chdir()` notices the new one. `realpath('.')` in a
+  removed directory is false; php's is `'.'`.
+- **pcntl only under the CLI and CGI.** rhp hides pcntl's functions,
+  constants and extension entry under any other SAPI name
+  (`sapi::has_pcntl`), so an embedding server never gets process-wide
+  signal handlers or `fork` from a script. This is a deliberate
+  difference: php links pcntl, when built, into every SAPI binary,
+  php-fpm and the embed library included.
 - **Process-wide state.** `putenv()` changes stay in the request (an
   overlay its child processes get); the process's environment never
   changes. What belongs to the OS process: signal handlers (`pcntl`, CLI
   and CGI only), and the shared caches (builtin registry, TLS and HTTP
-  connection pools in `curl`), which are read-only or locked.
+  connection pools in `curl`), which are read-only or locked. The
+  descriptor table is the process's too: the pipes rhp makes for a child
+  are close-on-exec until its spawn hands them over, and spawns don't
+  overlap, so a child started for one request never holds another's pipe
+  ends open (php leaves them inheritable; its children come from one
+  thread).
 
 ## Memory
 
@@ -370,8 +391,6 @@ Limits of the model:
   streaming reader yet.
 - `max_execution_time` / `max_input_time` are not enforced.
 - `auto_prepend_file` / `auto_append_file` are ignored (in every SAPI).
-- A child process starts with the process's umask, not one the script
-  set with `umask()`.
 - The php-cgi front end cannot read the script from stdin and doesn't
   support `-v -i -m -l -s -w -a`.
 - Output layer: no `ob_gzhandler`, no `output_add_rewrite_var`.

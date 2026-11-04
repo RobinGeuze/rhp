@@ -2586,6 +2586,15 @@ impl Default for Vm {
 }
 
 impl Vm {
+    /// Whether parameter `idx` of the function `Instr::ResolveFunc` left in
+    /// register `func` is by reference.
+    fn resolved_param_is_ref(&self, top: usize, func: Reg, idx: u16) -> bool {
+        match self.stack[top].regs[func as usize] {
+            Value::Int(f) if f >= 0 => param_is_ref(&self.functions[f as usize], idx),
+            _ => false,
+        }
+    }
+
     /// Resolve a (possibly namespaced) function reference. Tries the primary
     /// `name`, then `fallback` (the global name) if set, against user functions;
     /// returns the user-function index if found, plus the lowercased name to use
@@ -8051,15 +8060,39 @@ impl Vm {
                     };
                     self.reg_set(top, dst, Value::Bool(r));
                 }
-                Instr::FuncArgIsRef {
+                Instr::ResolveFunc {
                     dst,
                     name,
                     fallback,
-                    idx,
                 } => {
-                    let (user, _) = self.resolve_fn(name, fallback, &proto.names);
-                    let r = user.is_some_and(|f| param_is_ref(&self.functions[f], idx));
+                    let f = self
+                        .fn_names
+                        .get(proto.names[name as usize].as_bytes())
+                        .or_else(|| {
+                            (fallback != rhp_bytecode::NO_NAME)
+                                .then(|| {
+                                    self.fn_names.get(proto.names[fallback as usize].as_bytes())
+                                })
+                                .flatten()
+                        })
+                        .map_or(-1, |&i| i as i64);
+                    self.reg_set(top, dst, Value::Int(f));
+                }
+                Instr::FuncArgIsRef { dst, func, idx } => {
+                    let r = self.resolved_param_is_ref(top, func, idx);
                     self.reg_set(top, dst, Value::Bool(r));
+                }
+                Instr::SendVarEx { dst, cv, func, idx } => {
+                    let v = if self.resolved_param_is_ref(top, func, idx) {
+                        Value::Ref(self.promote(top, cv))
+                    } else {
+                        self.reg_get(top, cv)
+                    };
+                    self.reg_set(top, dst, v);
+                }
+                Instr::PassArg { dst, src } => {
+                    let v = self.stack[top].regs[src as usize].clone();
+                    self.reg_set(top, dst, v);
                 }
                 Instr::StaticArgIsRef {
                     dst,

@@ -204,8 +204,9 @@ is defined in both crates. `glue/mbfl.c` wraps libmbfl's static inline
 buffer helpers and checks with `_Static_assert` the layouts and constants
 the Rust side mirrors. rhp-builtins depends on it only through its
 `mbstring-libmbfl` feature (on by default); without it there is no
-mbstring extension and no LGPL code in the binary. php's phpinfo reports
-libmbfl 1.3.2 from `MBFL_VERSION_*`, which the glue checks.
+mbstring extension and no LGPL code in the binary. phpinfo reports
+libmbfl's version from `MBFL_VERSION_*`, read through the glue, as php's
+does.
 
 **Memory.** The shim's `emalloc`, `erealloc` and `ecalloc` go through Rust's
 global allocator, so C allocations count against `memory_limit` as php's

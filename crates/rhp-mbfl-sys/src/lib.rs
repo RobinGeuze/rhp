@@ -32,8 +32,6 @@ pub const BAD_INPUT: u32 = 0xFFFF_FFFF;
 pub const MIN_WCHAR_BUFSIZE: usize = 5;
 /// `FIRST_DOUBLEWIDTH_CODEPOINT` (eaw_table.h).
 pub const FIRST_DOUBLEWIDTH_CODEPOINT: u32 = 0x1100;
-/// `MBFL_VERSION_MAJOR`, `_MINOR`, `_TEENY`.
-pub const VERSION: (u32, u32, u32) = (1, 3, 2);
 
 /// `MBFL_OUTPUTFILTER_ILLEGAL_MODE_*`: what replaces an unconvertible
 /// character.
@@ -171,6 +169,7 @@ extern "C" {
     fn rhp_mb_convert_buf_append(buf: *mut RawBuf, s: *const u8, len: usize) -> bool;
     fn rhp_mbfl_eaw_table(len: *mut usize) -> *const [i32; 2];
     fn rhp_mbfl_rare_cp_bitvec(len: *mut usize) -> *const u32;
+    fn rhp_mbfl_version() -> *const c_char;
 
     static rhp_zend_empty_string: *mut ZendString;
 
@@ -539,6 +538,12 @@ pub fn strcut(input: &[u8], enc: &Encoding, from: usize, len: usize) -> Option<V
     // SAFETY: `result.val` is an emalloc block holding `result.len` bytes
     // that the caller owns.
     Some(unsafe { rhp_csrc::emalloc_into_vec(result.val.cast(), 0, result.len) })
+}
+
+/// libmbfl's version from its `MBFL_VERSION_*` macros ("1.3.2").
+pub fn version() -> &'static str {
+    // SAFETY: a static NUL-terminated string.
+    std::str::from_utf8(cstr(unsafe { rhp_mbfl_version() })).unwrap_or("")
 }
 
 /// eaw_table.h: the ranges of double-width codepoints, sorted.

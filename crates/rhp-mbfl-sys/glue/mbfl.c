@@ -1,8 +1,9 @@
 /*
  * What Rust needs from libmbfl beyond its exported functions: the static
  * inline helpers of mbfl_encoding.h, the two tables mbstring.c compiles in
- * (eaw_table.h, rare_cp_bitvec.h), and compile-time checks of every constant
- * and struct layout src/lib.rs mirrors.
+ * (eaw_table.h, rare_cp_bitvec.h), the MBFL_VERSION_* macros, and
+ * compile-time checks of every constant and struct layout src/lib.rs
+ * mirrors.
  */
 #include <stddef.h>
 
@@ -118,4 +119,13 @@ const uint32_t *rhp_mbfl_rare_cp_bitvec(size_t *len)
 {
 	*len = sizeof(rare_codepoint_bitvec) / sizeof(rare_codepoint_bitvec[0]);
 	return rare_codepoint_bitvec;
+}
+
+#define RHP_STR_(x) #x
+#define RHP_STR(x) RHP_STR_(x)
+
+/* "MBFL_VERSION_MAJOR.MINOR.TEENY", as PHP_MINFO(mbstring) prints it. */
+const char *rhp_mbfl_version(void)
+{
+	return RHP_STR(MBFL_VERSION_MAJOR) "." RHP_STR(MBFL_VERSION_MINOR) "." RHP_STR(MBFL_VERSION_TEENY);
 }

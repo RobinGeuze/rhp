@@ -144,6 +144,7 @@ fn conversion_case_and_cut() {
     assert!(input.is_empty());
     assert_eq!(eaw_table()[0], [0x1100, 0x115f]);
     assert_eq!(rare_cp_bitvec().len(), 2048);
+    assert_eq!(version().split('.').count(), 3);
 }
 
 /// libmbfl's buffers grow through the fallible realloc: past memory_limit

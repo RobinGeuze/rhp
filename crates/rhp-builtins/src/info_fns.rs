@@ -201,7 +201,12 @@ fn print_info(flag: i64) -> Vec<u8> {
         o.row(&["Thread Safety", "disabled"]);
         o.row(&["Zend Signal Handling", "enabled"]);
         o.row(&["Zend Memory Manager", "enabled"]);
-        o.row(&["Zend Multibyte Support", "provided by mbstring"]);
+        let multibyte = if cfg!(feature = "mbstring-libmbfl") {
+            "provided by mbstring"
+        } else {
+            "disabled"
+        };
+        o.row(&["Zend Multibyte Support", multibyte]);
         o.row(&["Zend Max Execution Timers", "disabled"]);
         o.row(&["IPv6 Support", "enabled"]);
         o.row(&["DTrace Support", "disabled"]);
@@ -239,6 +244,8 @@ fn print_info(flag: i64) -> Vec<u8> {
                 print_pcre(&mut o);
             } else if *e == "openssl" {
                 print_openssl(&mut o);
+            } else if *e == "mbstring" {
+                print_mbstring(&mut o);
             } else {
                 o.row(&[&format!("{e} support"), "enabled"]);
             }
@@ -333,6 +340,54 @@ fn print_openssl(o: &mut Info) {
         };
         let local = crate::runtime_fns::ini_value(name.as_bytes()).flatten();
         let master = crate::runtime_fns::ini_default_value(name.as_bytes()).flatten();
+        o.row(&[name, &show(local), &show(master)]);
+    }
+}
+
+/// PHP_MINFO(mbstring), without PHP_MINFO(mb_regex): rhp has no mb_ereg.
+fn print_mbstring(o: &mut Info) {
+    let ini = |name: &str| crate::runtime_fns::ini_value(name.as_bytes()).flatten();
+    let on = |v: &Option<Vec<u8>>| v.as_deref().is_some_and(crate::runtime_fns::ini_parse_bool);
+    o.row(&["Multibyte Support", "enabled"]);
+    o.row(&["Multibyte string engine", "libmbfl"]);
+    let translation = on(&ini("mbstring.encoding_translation"));
+    o.row(&[
+        "HTTP input encoding translation",
+        if translation { "enabled" } else { "disabled" },
+    ]);
+    #[cfg(feature = "mbstring-libmbfl")]
+    o.row(&["libmbfl version", rhp_mbfl_sys::version()]);
+    o.table_start();
+    o.header(&["mbstring extension makes use of \"streamable kanji code filter and converter\", which is distributed under the GNU Lesser General Public License version 2.1."]);
+    o.table_start();
+    o.header(&["Directive", "Local Value", "Master Value"]);
+    for name in [
+        "mbstring.detect_order",
+        "mbstring.encoding_translation",
+        "mbstring.http_input",
+        "mbstring.http_output",
+        "mbstring.http_output_conv_mimetypes",
+        "mbstring.internal_encoding",
+        "mbstring.language",
+        "mbstring.regex_retry_limit",
+        "mbstring.regex_stack_limit",
+        "mbstring.strict_detection",
+        "mbstring.substitute_character",
+    ] {
+        let Some(local) = crate::runtime_fns::ini_value(name.as_bytes()) else {
+            continue;
+        };
+        let master = crate::runtime_fns::ini_default_value(name.as_bytes()).flatten();
+        // php_ini_boolean_displayer_cb for the two boolean entries.
+        let boolean = matches!(
+            name,
+            "mbstring.encoding_translation" | "mbstring.strict_detection"
+        );
+        let show = |v: Option<Vec<u8>>| match v {
+            _ if boolean => (if on(&v) { "On" } else { "Off" }).to_string(),
+            Some(v) if !v.is_empty() => String::from_utf8_lossy(&v).into_owned(),
+            _ => "no value".to_string(),
+        };
         o.row(&[name, &show(local), &show(master)]);
     }
 }

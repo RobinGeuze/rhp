@@ -770,7 +770,8 @@ pub const E_ALL: i64 = 30719;
 /// Under `@` php 8 lowers it to the fatal types only.
 pub fn error_reporting_level(host: &dyn Host) -> i64 {
     let level = match host.ini_get(b"error_reporting") {
-        Some(v) if !v.is_empty() => atol(&v),
+        // OnUpdateErrorReporting: atoi.
+        Some(v) if !v.is_empty() => i64::from(crate::c_atoi(&v)),
         _ => E_ALL,
     };
     if host.silenced() {
@@ -783,35 +784,6 @@ pub fn error_reporting_level(host: &dyn Host) -> i64 {
 /// E_ERROR | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR |
 /// E_RECOVERABLE_ERROR | E_PARSE: what `@` leaves of error_reporting.
 pub const SILENCE_MASK: i64 = 4437;
-
-/// C `atol`/`ZEND_ATOL`: optional whitespace and sign, then leading digits.
-pub fn atol(s: &[u8]) -> i64 {
-    let mut i = 0;
-    while i < s.len() && (s[i] == b' ' || (b'\t'..=b'\r').contains(&s[i])) {
-        i += 1;
-    }
-    let neg = match s.get(i) {
-        Some(b'-') => {
-            i += 1;
-            true
-        }
-        Some(b'+') => {
-            i += 1;
-            false
-        }
-        _ => false,
-    };
-    let mut n: i64 = 0;
-    while let Some(d) = s.get(i).filter(|c| c.is_ascii_digit()) {
-        n = n.wrapping_mul(10).wrapping_add((d - b'0') as i64);
-        i += 1;
-    }
-    if neg {
-        n.wrapping_neg()
-    } else {
-        n
-    }
-}
 
 /// `set_error_handler(?callable $callback, int $error_levels = E_ALL)`:
 /// returns the previous handler (or null).

@@ -134,25 +134,6 @@ fn ctx_socket_opt(host: &dyn Host, ctx: &Value, name: &str) -> Option<Value> {
 
 // --- addresses ---------------------------------------------------------------
 
-/// C `atoi`: leading whitespace, optional sign, digits (wrapping like an int).
-fn atoi(s: &[u8]) -> i32 {
-    let mut i = 0;
-    while i < s.len() && matches!(s[i], b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
-        i += 1;
-    }
-    let mut neg = false;
-    if i < s.len() && (s[i] == b'+' || s[i] == b'-') {
-        neg = s[i] == b'-';
-        i += 1;
-    }
-    let mut n: i64 = 0;
-    while i < s.len() && s[i].is_ascii_digit() {
-        n = n.wrapping_mul(10).wrapping_add((s[i] - b'0') as i64);
-        i += 1;
-    }
-    (if neg { -n } else { n }) as i32
-}
-
 /// php's `parse_ip_address_ex`: `host:port` or `[v6]:port`.
 fn parse_ip_address(s: &[u8]) -> Result<(Vec<u8>, i32), String> {
     if s.contains(&0) {
@@ -162,7 +143,9 @@ fn parse_ip_address(s: &[u8]) -> Result<(Vec<u8>, i32), String> {
     if s.first() == Some(&b'[') && s.len() > 1 {
         let inner = &s[1..s.len() - 1];
         return match inner.iter().position(|&b| b == b']') {
-            Some(p) if s.get(p + 2) == Some(&b':') => Ok((s[1..p + 1].to_vec(), atoi(&s[p + 3..]))),
+            Some(p) if s.get(p + 2) == Some(&b':') => {
+                Ok((s[1..p + 1].to_vec(), crate::c_atoi(&s[p + 3..])))
+            }
             _ => Err(format!("Failed to parse IPv6 address \"{shown}\"")),
         };
     }
@@ -172,7 +155,7 @@ fn parse_ip_address(s: &[u8]) -> Result<(Vec<u8>, i32), String> {
         s[..s.len() - 1].iter().position(|&b| b == b':')
     };
     match colon {
-        Some(c) => Ok((s[..c].to_vec(), atoi(&s[c + 1..]))),
+        Some(c) => Ok((s[..c].to_vec(), crate::c_atoi(&s[c + 1..]))),
         None => Err(format!("Failed to parse address \"{shown}\"")),
     }
 }
@@ -1347,7 +1330,7 @@ fn parse_network_address(
     };
     // `estrndup` + C string calls: the host ends at its first NUL.
     let h = &h[..h.iter().position(|&b| b == 0).unwrap_or(h.len())];
-    let port = atoi(p) as u16;
+    let port = crate::c_atoi(p) as u16;
     let text = String::from_utf8_lossy(h).into_owned();
     let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
     if let Some(a) = crate::inet::pton6(h) {

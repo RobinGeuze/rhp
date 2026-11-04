@@ -36,6 +36,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_builtins as builtins;
+use rhp_builtins::ini_parse_bool as ini_bool;
 use rhp_bytecode::{ClassProto, FunctionProto, Reg};
 use rhp_semantics::deref;
 use rhp_values::{ClassId, ObjectHandle, PhpStr, Thrown, Value};
@@ -279,12 +280,6 @@ struct DeclSlot {
     proto: Rc<ClassProto>,
     unit: UnitId,
     done: bool,
-}
-
-/// zend_ini_parse_bool: "true"/"yes"/"on" (any case) or a nonzero number.
-fn ini_bool(v: &[u8]) -> bool {
-    let lc = v.to_ascii_lowercase();
-    matches!(lc.as_slice(), b"true" | b"yes" | b"on") || builtins::php_fns::atol(v) != 0
 }
 
 /// One activation record.

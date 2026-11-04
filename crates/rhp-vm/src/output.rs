@@ -204,7 +204,7 @@ impl Vm {
         let ini = |vm: &Self, n: &[u8]| vm.ini_get(n).unwrap_or_default();
         let handler = ini(self, b"output_handler");
         // OnUpdateLong: "On" etc. read as 0 (atol), so php ignores them.
-        let buffering = rhp_builtins::php_fns::atol(&ini(self, b"output_buffering"));
+        let buffering = rhp_builtins::c_atol(&ini(self, b"output_buffering"));
         if !handler.is_empty() {
             self.output.starting = true;
             // No autoloader is registered yet, so resolving cannot throw.

@@ -204,15 +204,10 @@ impl Limits {
             upload_max_filesize: o
                 .upload_max_filesize
                 .unwrap_or_else(|| q(b"upload_max_filesize")),
-            file_uploads: ini_bool(&fu),
+            file_uploads: crate::ini_parse_bool(&fu),
             upload_tmp_dir: ini(b"upload_tmp_dir"),
         }
     }
-}
-
-fn ini_bool(v: &[u8]) -> bool {
-    let l = v.to_ascii_lowercase();
-    matches!(&l[..], b"on" | b"yes" | b"true") || crate::c_atol(v) != 0
 }
 
 /// A diagnostic the parser raised.

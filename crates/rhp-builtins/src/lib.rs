@@ -1345,9 +1345,19 @@ pub fn ini_value(name: &[u8]) -> Option<Option<Vec<u8>>> {
     runtime_fns::ini_value(name)
 }
 
-/// C `atol`: leading blanks, sign, digits.
+/// C `atol` (php's ZEND_ATOL): leading blanks, sign, digits; saturating.
 pub fn c_atol(s: &[u8]) -> i64 {
     runtime_fns::c_atol(s)
+}
+
+/// C `atoi`: [`c_atol`] cut to 32 bits.
+pub fn c_atoi(s: &[u8]) -> i32 {
+    runtime_fns::c_atoi(s)
+}
+
+/// `zend_ini_parse_bool`: "true", "yes", "on" (any case), else atoi != 0.
+pub fn ini_parse_bool(v: &[u8]) -> bool {
+    runtime_fns::ini_parse_bool(v)
 }
 
 /// `zend_ini_parse_quantity`: `8M` → 8388608.

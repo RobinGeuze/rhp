@@ -954,7 +954,7 @@ fn fn_apache_request_headers(host: &mut dyn Host, _args: &[Value]) -> Result<Val
 fn fn_ignore_user_abort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let old = crate::runtime_fns::ini_value(b"ignore_user_abort")
         .flatten()
-        .map(|v| i64::from(crate::c_atol(&v) != 0 || v.eq_ignore_ascii_case(b"on")))
+        .map(|v| i64::from(crate::ini_parse_bool(&v)))
         .unwrap_or(0);
     match args.first().map(deref) {
         None | Some(Value::Null) => {}

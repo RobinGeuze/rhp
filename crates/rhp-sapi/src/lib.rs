@@ -502,21 +502,6 @@ fn ini_expr(v: &str) -> String {
     if !text.is_empty() {
         toks.push(Tok::Val(operand(text)));
     }
-    fn atoi(s: &str) -> i32 {
-        let s = s.trim_start();
-        let (neg, digits) = match s.as_bytes().first() {
-            Some(b'-') => (true, &s[1..]),
-            Some(b'+') => (false, &s[1..]),
-            _ => (false, s),
-        };
-        let n = digits
-            .bytes()
-            .take_while(u8::is_ascii_digit)
-            .fold(0i64, |n, d| {
-                n.wrapping_mul(10).wrapping_add((d - b'0') as i64)
-            });
-        (if neg { -n } else { n }) as i32
-    }
     fn unary(t: &[Tok], i: &mut usize) -> i32 {
         match t.get(*i) {
             Some(Tok::Op(b'~')) => {
@@ -537,7 +522,7 @@ fn ini_expr(v: &str) -> String {
             }
             Some(Tok::Val(s)) => {
                 *i += 1;
-                atoi(s)
+                rhp_builtins::c_atoi(s.as_bytes())
             }
             _ => 0,
         }

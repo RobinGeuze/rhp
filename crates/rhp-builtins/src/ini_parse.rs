@@ -852,25 +852,6 @@ fn add_string(a: IV, b: IV) -> IV {
     IV::Str(s, flag)
 }
 
-/// `atoi`.
-fn atoi(s: &[u8]) -> i32 {
-    let mut i = 0;
-    while i < s.len() && matches!(s[i], b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
-        i += 1;
-    }
-    let mut neg = false;
-    if i < s.len() && (s[i] == b'+' || s[i] == b'-') {
-        neg = s[i] == b'-';
-        i += 1;
-    }
-    let mut n: i64 = 0;
-    while i < s.len() && s[i].is_ascii_digit() {
-        n = (n * 10 + (s[i] - b'0') as i64) & 0xffff_ffff_ffff;
-        i += 1;
-    }
-    (if neg { -n } else { n }) as i32
-}
-
 impl Parser<'_, '_> {
     fn bump(&mut self) -> Tok {
         let next = self.lx.next();
@@ -1013,7 +994,7 @@ impl Parser<'_, '_> {
     fn int_val(v: &IV) -> i32 {
         match v {
             IV::Long(n) => *n as i32,
-            IV::Str(s, _) => atoi(s),
+            IV::Str(s, _) => crate::c_atoi(s),
             IV::Bool(b) => *b as i32,
             IV::Null => 0,
             IV::Double(f) => *f as i32,

@@ -81,11 +81,6 @@ const DIRECTIVES: &[(&str, Ty)] = &[
     ("opcache.jit_max_trace_length", Ty::Int),
 ];
 
-fn ini_bool(v: &[u8]) -> bool {
-    let l = v.to_ascii_lowercase();
-    matches!(&l[..], b"on" | b"yes" | b"true") || crate::runtime_fns::c_atol(&l) != 0
-}
-
 /// `validate_api_restriction`: with `opcache.restrict_api` set, only a
 /// script whose path starts with it may use the API.
 fn api_allowed(host: &mut dyn Host) -> Result<bool, Thrown> {
@@ -183,7 +178,7 @@ fn fn_opcache_get_configuration(host: &mut dyn Host, _args: &[Value]) -> Result<
         let raw = host.ini_get(name.as_bytes()).unwrap_or_default();
         let atol = || crate::runtime_fns::c_atol(&raw);
         let v = match ty {
-            Ty::Bool => Value::Bool(ini_bool(&raw)),
+            Ty::Bool => Value::Bool(crate::ini_parse_bool(&raw)),
             Ty::Int => Value::Int(atol()),
             Ty::Mb => Value::Int(atol().saturating_mul(1024 * 1024)),
             Ty::Quantity => Value::Int(crate::runtime_fns::ini_parse_quantity(&raw)),
@@ -251,8 +246,8 @@ pub fn asctime_local(t: i64) -> String {
 pub(crate) fn jit_enabled() -> bool {
     let startup = |n: &[u8]| crate::ini_startup_value(n).unwrap_or_default();
     let cli = crate::sapi::sapi_name() == "cli";
-    let started = ini_bool(&startup(b"opcache.enable"))
-        && (!cli || ini_bool(&startup(b"opcache.enable_cli")));
+    let started = crate::ini_parse_bool(&startup(b"opcache.enable"))
+        && (!cli || crate::ini_parse_bool(&startup(b"opcache.enable_cli")));
     let mode = startup(b"opcache.jit").to_ascii_lowercase();
     started
         && mode != b"disable"

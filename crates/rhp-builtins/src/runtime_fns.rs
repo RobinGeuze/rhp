@@ -504,7 +504,8 @@ fn fn_ini_get(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     })
 }
 
-/// C `strtol(s, NULL, 10)` / `atoi`: leading whitespace, sign, digits.
+/// C `strtol(s, NULL, 10)` / `atol` (php's ZEND_ATOL): leading whitespace,
+/// sign, digits; saturates on overflow.
 pub(crate) fn c_atol(s: &[u8]) -> i64 {
     let mut i = 0;
     while i < s.len() && matches!(s[i], b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
@@ -521,15 +522,16 @@ pub(crate) fn c_atol(s: &[u8]) -> i64 {
         }
         _ => false,
     };
-    let mut n: i64 = 0;
+    // The magnitude, saturated past i64::MIN's.
+    let mut n: u64 = 0;
     while let Some(d) = s.get(i).filter(|c| c.is_ascii_digit()) {
-        n = n.saturating_mul(10).saturating_add((d - b'0') as i64);
+        n = n.saturating_mul(10).saturating_add((d - b'0') as u64);
         i += 1;
     }
     if neg {
-        n.saturating_neg()
+        0i64.checked_sub_unsigned(n).unwrap_or(i64::MIN)
     } else {
-        n
+        i64::try_from(n).unwrap_or(i64::MAX)
     }
 }
 
@@ -658,12 +660,18 @@ fn ini_apply(name: &[u8], v: Option<&[u8]>) {
     }
 }
 
+/// C `atoi`: `(int)strtol(s, NULL, 10)`, so a value past the long range
+/// saturates first and is then cut to 32 bits.
+pub(crate) fn c_atoi(s: &[u8]) -> i32 {
+    c_atol(s) as i32
+}
+
 /// `zend_ini_parse_bool`: "true", "yes", "on" (any case), else atoi != 0.
 pub(crate) fn ini_parse_bool(v: &[u8]) -> bool {
     [&b"true"[..], b"yes", b"on"]
         .iter()
         .any(|w| v.eq_ignore_ascii_case(w))
-        || c_atol(v) as i32 != 0
+        || c_atoi(v) != 0
 }
 
 fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value, Thrown> {

@@ -988,7 +988,7 @@ pub(crate) fn display_errors_mode(v: &[u8]) -> DisplayErrors {
     match lc.as_slice() {
         b"on" | b"yes" | b"true" | b"stdout" => DisplayErrors::Stdout,
         b"stderr" => DisplayErrors::Stderr,
-        _ => match builtins::php_fns::atol(v) as u8 {
+        _ => match builtins::c_atol(v) as u8 {
             0 => DisplayErrors::Off,
             2 => DisplayErrors::Stderr,
             _ => DisplayErrors::Stdout,

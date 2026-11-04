@@ -8,11 +8,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use rhp_values::ops::deref;
-use rhp_values::{conv, ArrayKey, PhpArray, Value};
-
 use crate::ini_table::INI_TABLE;
-use crate::zend::zpp::{bool_param, int_param, str_or_null_param, str_param};
 use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
@@ -31,30 +27,30 @@ const PHP_INI_USER: u8 = 1;
 
 thread_local! {
     /// Runtime `ini_set` overrides (name → current value; `None` = null).
-    static INI: RefCell<HashMap<String, Option<Vec<u8>>>> = RefCell::new(HashMap::new());
+    pub(crate) static INI: RefCell<HashMap<String, Option<Vec<u8>>>> = RefCell::new(HashMap::new());
     /// Startup (`-d`) values: phpinfo's "Master Value".
-    static INI_STARTUP: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
+    pub(crate) static INI_STARTUP: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
 }
 
 /// Diagnostics of startup (`-d`) ini values, and of re-applying them when a
 /// runtime change is undone (`ini_restore`, `zend_ini_deactivate` at request
 /// end).
 #[derive(Default)]
-struct StartupDiags {
+pub(crate) struct StartupDiags {
     /// Raised while the `-d` values were applied (module startup): the
     /// directive's INI_TABLE position (php applies them in registration
     /// order), its name, the level (E_WARNING or E_ERROR), the message.
     startup: Vec<(usize, String, i64, String)>,
     /// Directives whose accepted startup value warned: php's handler warns
     /// again each time it restores that value.
-    restore: HashMap<String, Vec<String>>,
+    pub(crate) restore: HashMap<String, Vec<String>>,
     /// Directives `ini_set` changed this request, in order
     /// (`EG(modified_ini_directives)`).
-    changed: Vec<String>,
+    pub(crate) changed: Vec<String>,
 }
 
 thread_local! {
-    static STARTUP_DIAGS: RefCell<StartupDiags> = RefCell::new(StartupDiags::default());
+    pub(crate) static STARTUP_DIAGS: RefCell<StartupDiags> = RefCell::new(StartupDiags::default());
 }
 
 /// Directives whose handler parses the value with
@@ -259,7 +255,7 @@ pub(crate) fn reset_state() {
 }
 
 /// Is a directive's owning module loaded in this engine?
-fn module_loaded(module: &str) -> bool {
+pub(crate) fn module_loaded(module: &str) -> bool {
     if module == "cgi-fcgi" {
         return crate::main::sapi::is_cgi();
     }
@@ -371,21 +367,6 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
             .unwrap_or_default();
         ini_startup(b"memory_limit", &ml);
     }
-}
-
-fn ini_opt_value(v: Option<Vec<u8>>) -> Value {
-    match v {
-        Some(s) => Value::str(s),
-        None => Value::Null,
-    }
-}
-
-fn fn_ini_get(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = str_param(host, args, 0, "ini_get", "option")?;
-    Ok(match ini_value(&name) {
-        None => Value::Bool(false),
-        Some(v) => Value::str(v.unwrap_or_default()),
-    })
 }
 
 /// C `strtol(s, NULL, 10)` / `atol` (php's ZEND_ATOL): leading whitespace,
@@ -532,7 +513,7 @@ fn ini_validate(name: &[u8], v: &[u8]) -> Result<(), ()> {
 /// Push a directive's (new) value into the engine state that uses it.
 /// (memory_limit's handler, `memory_limit_modify`, sets the allocator's
 /// limit itself, or leaves it when it clamps to max_memory_limit.)
-fn ini_apply(name: &[u8], v: Option<&[u8]>) {
+pub(crate) fn ini_apply(name: &[u8], v: Option<&[u8]>) {
     match name {
         b"precision" => rhp_values::fmt::set_precision(v.map_or(14, c_atol)),
         b"serialize_precision" => rhp_values::fmt::set_serialize_precision(v.map_or(-1, c_atol)),
@@ -556,25 +537,6 @@ pub(crate) fn ini_parse_bool(v: &[u8]) -> bool {
         .iter()
         .any(|w| v.eq_ignore_ascii_case(w))
         || c_atoi(v) != 0
-}
-
-fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value, Thrown> {
-    let name = str_param(host, args, 0, func, "option")?;
-    let newv = match deref(&args[1]) {
-        Value::Null => Vec::new(),
-        v @ (Value::Str(_) | Value::Int(_) | Value::Float(_) | Value::Bool(_)) => {
-            conv::to_string_bytes(&v)
-        }
-        _ => {
-            return Err(Thrown::type_error(format!(
-                "{func}(): Argument #2 ($value) must be of type string|int|float|bool|null"
-            )))
-        }
-    };
-    Ok(match alter_ini_entry(host, &name, newv, func)? {
-        Some(old) => Value::str(old),
-        None => Value::Bool(false),
-    })
 }
 
 /// zend_alter_ini_entry at runtime (PHP_INI_USER) from builtin `func`: the
@@ -619,91 +581,6 @@ pub(crate) fn alter_ini_entry(
     Ok(Some(old))
 }
 
-fn fn_ini_set(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    ini_set_impl(host, args, "ini_set")
-}
-
-fn fn_ini_alter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    ini_set_impl(host, args, "ini_alter")
-}
-
-fn fn_ini_restore(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = str_param(host, args, 0, "ini_restore", "option")?;
-    let key = String::from_utf8_lossy(&name).into_owned();
-    // zend_restore_ini_entry: a directive ini_set changed is no longer
-    // modified, and its handler runs again on the startup value.
-    let restore = STARTUP_DIAGS.with(|d| {
-        let mut d = d.borrow_mut();
-        let pos = d.changed.iter().position(|c| *c == key)?;
-        d.changed.remove(pos);
-        Some(d.restore.get(&key).cloned())
-    });
-    if restore.is_some() {
-        crate::ext::iconv::ini_runtime_update(host, &name, "ini_restore")?;
-    }
-    for w in restore.flatten().unwrap_or_default() {
-        host.emit_diagnostic(crate::E_WARNING, &w)?;
-    }
-    // Back to the startup value (`-d`), else the default.
-    let startup = INI_STARTUP.with(|m| m.borrow().get(&key).cloned());
-    INI.with(|m| match startup {
-        Some(v) => m.borrow_mut().insert(key, Some(v)),
-        None => m.borrow_mut().remove(&key),
-    });
-    if let Some(v) = ini_value(&name) {
-        if name == b"memory_limit" {
-            // The handler on the startup value (already within
-            // max_memory_limit). Below the memory in use, the current limit
-            // stays.
-            let v = v.as_deref().map_or(u64::MAX, |v| ini_parse_uquantity(v).0);
-            rhp_values::mem::set_limit(v.min(usize::MAX as u64) as usize);
-        }
-        ini_apply(&name, v.as_deref());
-    }
-    Ok(Value::Null)
-}
-
-fn fn_ini_get_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let ext = str_or_null_param(host, args, 0, "ini_get_all", "extension")?;
-    let details = bool_param(host, args, 1, "ini_get_all", "details", true)?;
-    let ext_lc = ext.as_ref().map(|e| e.to_ascii_lowercase());
-    if let Some(e) = &ext_lc {
-        let e = String::from_utf8_lossy(e);
-        if !module_loaded(&e) {
-            // php: Warning "Extension "X" cannot be found"
-            return Ok(Value::Bool(false));
-        }
-    }
-    let mut entries: Vec<_> = INI_TABLE
-        .iter()
-        .filter(|e| module_loaded(e.0))
-        .filter(|e| {
-            ext_lc
-                .as_ref()
-                .is_none_or(|x| x.as_slice() == e.0.as_bytes())
-        })
-        .collect();
-    entries.sort_by(|a, b| a.1.cmp(b.1));
-    let mut out = PhpArray::new();
-    for e in entries {
-        let cur = ini_value(e.1.as_bytes()).flatten();
-        let v = if details {
-            let mut d = PhpArray::new();
-            d.insert(
-                ArrayKey::from_bytes(b"global_value"),
-                ini_opt_value(ini_default_value(e.1.as_bytes()).flatten()),
-            );
-            d.insert(ArrayKey::from_bytes(b"local_value"), ini_opt_value(cur));
-            d.insert(ArrayKey::from_bytes(b"access"), Value::Int(e.3 as i64));
-            Value::Array(d)
-        } else {
-            ini_opt_value(cur)
-        };
-        out.insert(ArrayKey::from_bytes(e.1.as_bytes()), v);
-    }
-    Ok(Value::Array(out))
-}
-
 // ---------------------------------------------------------------------------
 // date.timezone
 // ---------------------------------------------------------------------------
@@ -736,66 +613,5 @@ fn invalid_timezone(v: &[u8], func: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// error_log
-// ---------------------------------------------------------------------------
-
-fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let msg = str_param(host, args, 0, "error_log", "message")?;
-    let ty = int_param(host, args, 1, "error_log", "message_type", 0)?;
-    let dest = str_or_null_param(host, args, 2, "error_log", "destination")?;
-    let _headers = str_or_null_param(host, args, 3, "error_log", "additional_headers")?;
-    match ty {
-        // Mail: no mailer configured.
-        1 => Ok(Value::Bool(false)),
-        3 => {
-            let Some(path) = dest else {
-                return Ok(Value::Bool(false));
-            };
-            let ok = crate::zend::virtual_cwd::append_file(&path, &msg, 0o666).is_ok();
-            Ok(Value::Bool(ok))
-        }
-        // 0 / 4: no error_log ini → the CLI SAPI logger writes "msg\n" to stderr.
-        _ => {
-            let log_target = ini_value(b"error_log").flatten().filter(|v| !v.is_empty());
-            match log_target {
-                Some(path) if ty == 0 => {
-                    // php_log_err: "[d-M-Y H:i:s e] message\n".
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    let mut line = b"[".to_vec();
-                    line.extend_from_slice(&crate::ext::date::php_format_date(
-                        b"d-M-Y H:i:s e",
-                        now,
-                        true,
-                    ));
-                    line.extend_from_slice(b"] ");
-                    line.extend_from_slice(&msg);
-                    line.push(b'\n');
-                    let _ = crate::zend::virtual_cwd::append_file(&path, &line, 0o644);
-                }
-                _ => host.log_message(&msg),
-            }
-            Ok(Value::Bool(true))
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // sleep / usleep
 // ---------------------------------------------------------------------------
-
-pub fn register(m: &mut crate::Registry) {
-    crate::register(
-        m,
-        &[
-            ("ini_get", fn_ini_get),
-            ("ini_set", fn_ini_set),
-            ("ini_alter", fn_ini_alter),
-            ("ini_restore", fn_ini_restore),
-            ("ini_get_all", fn_ini_get_all),
-            ("error_log", fn_error_log),
-        ],
-    );
-}

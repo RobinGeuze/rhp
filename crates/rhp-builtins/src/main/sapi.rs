@@ -959,32 +959,6 @@ fn fn_apache_request_headers(host: &mut dyn Host, _args: &[Value]) -> Result<Val
     Ok(Value::Array(a))
 }
 
-/// `ignore_user_abort(?bool $enable = null)`: the old setting; the engine
-/// never sees the client go away, so the setting has no other effect.
-fn fn_ignore_user_abort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let old = crate::runtime_fns::ini_value(b"ignore_user_abort")
-        .flatten()
-        .map(|v| i64::from(crate::ini_parse_bool(&v)))
-        .unwrap_or(0);
-    match args.first().map(deref) {
-        None | Some(Value::Null) => {}
-        Some(_) => {
-            let on = bool_param(host, args, 0, "ignore_user_abort", "enable", false)?;
-            crate::runtime_fns::ini_store(
-                b"ignore_user_abort",
-                if on { b"1".to_vec() } else { b"0".to_vec() },
-            );
-        }
-    }
-    Ok(Value::Int(old))
-}
-
-/// `connection_status()` / `connection_aborted()`: always CONNECTION_NORMAL
-/// (no abort detection yet).
-fn fn_connection_status(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(0))
-}
-
 /// php-cgi's `apache_child_terminate`: only meaningful under FastCGI.
 fn fn_apache_child_terminate(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Null)
@@ -1094,9 +1068,6 @@ pub fn register(m: &mut crate::Registry) {
             ("apache_request_headers", fn_apache_request_headers),
             ("apache_response_headers", fn_apache_response_headers),
             ("apache_child_terminate", fn_apache_child_terminate),
-            ("ignore_user_abort", fn_ignore_user_abort),
-            ("connection_status", fn_connection_status),
-            ("connection_aborted", fn_connection_status),
         ],
     );
 }

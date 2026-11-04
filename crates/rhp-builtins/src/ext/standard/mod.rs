@@ -3,6 +3,7 @@
 
 pub mod array;
 pub mod assert;
+pub mod basic_functions;
 pub mod crypt;
 pub mod dns;
 pub mod formatted_print;

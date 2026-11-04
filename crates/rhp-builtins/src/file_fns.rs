@@ -50,17 +50,6 @@ fn fn_umask(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(old as i64))
 }
 
-/// `php_strip_whitespace($filename)` — php returns the source with comments and
-/// whitespace removed (via the tokenizer). Composer only uses it to feed its own
-/// comment-stripping classmap scanner, so returning the raw source is correct
-/// for that purpose (and `''` only for a missing/empty file).
-fn fn_php_strip_whitespace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match host.stream_get_contents(&path_arg(args, 0)) {
-        Some(bytes) => Ok(Value::str(bytes)),
-        None => Ok(Value::str("")),
-    }
-}
-
 fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let url = path_arg(args, 0);
     let offset = args.get(3).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
@@ -596,7 +585,6 @@ pub fn register(m: &mut crate::Registry) {
             ("chmod", fn_chmod),
             ("chdir", fn_chdir),
             ("umask", fn_umask),
-            ("php_strip_whitespace", fn_php_strip_whitespace),
             ("clearstatcache", fn_clearstatcache),
             ("readlink", fn_readlink),
             ("symlink", fn_symlink),

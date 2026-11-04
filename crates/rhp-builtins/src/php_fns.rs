@@ -5,11 +5,11 @@
 //! Enough to boot a real framework / Composer.
 
 use rhp_values::ops::deref;
-use rhp_values::{conv, PhpArray, Value};
+use rhp_values::{conv, Value};
 
 use crate::{Host, Thrown};
 
-fn ob(host: &mut dyn Host, call: crate::ObCall) -> Result<Value, Thrown> {
+pub(crate) fn ob(host: &mut dyn Host, call: crate::ObCall) -> Result<Value, Thrown> {
     host.output_control(call)
 }
 
@@ -77,168 +77,10 @@ fn fn_ob_implicit_flush(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     ob(host, crate::ObCall::ImplicitFlush(on))
 }
 
-fn fn_flush(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    ob(host, crate::ObCall::SapiFlush)
-}
-
-/// One `putenv` change: name and new value (`None` = unset).
-pub type EnvChange = (Vec<u8>, Option<Vec<u8>>);
-
-thread_local! {
-    /// `putenv` changes for this request, layered over the process
-    /// environment (`None` = unset). The process environment itself is never
-    /// mutated: that would race with other threads' `getenv` (the test
-    /// harness runs engines on parallel threads) and leak across engines.
-    static ENV_OVERLAY: std::cell::RefCell<Vec<EnvChange>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-pub(crate) fn reset_state() {
-    ENV_OVERLAY.with(|e| e.borrow_mut().clear());
-}
-
-/// The request's `putenv` changes in order (`None` = unset). A spawner of
-/// child processes must apply these (`Command::env` / `env_remove`) so the
-/// child sees the same environment as `getenv`, as in php.
-pub fn env_overrides() -> Vec<EnvChange> {
-    ENV_OVERLAY.with(|e| e.borrow().clone())
-}
-
-/// Apply [`env_overrides`] to a child-process command.
-pub fn apply_env_overrides(cmd: &mut std::process::Command) {
-    for (k, v) in env_overrides() {
-        let k = String::from_utf8_lossy(&k).into_owned();
-        match v {
-            Some(v) => {
-                cmd.env(k, String::from_utf8_lossy(&v).into_owned());
-            }
-            None => {
-                cmd.env_remove(k);
-            }
-        }
-    }
-}
-
-/// `getenv(name)` as php sees it: the request's `putenv` changes, then the
-/// process environment.
-pub(crate) fn env_get(name: &[u8]) -> Option<Vec<u8>> {
-    if let Some(v) = ENV_OVERLAY.with(|e| {
-        e.borrow()
-            .iter()
-            .rev()
-            .find(|(k, _)| k == name)
-            .map(|(_, v)| v.clone())
-    }) {
-        return v;
-    }
-    std::env::var_os(String::from_utf8_lossy(name).as_ref())
-        .map(|v| v.to_string_lossy().into_owned().into_bytes())
-}
-
-/// `$local_only` (arg 2) skips the SAPI's own environment. rhp's SAPIs
-/// keep the request environment in the process one, so both lookups agree.
-fn fn_getenv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match args.first() {
-        Some(v) if !matches!(deref(v), Value::Null) => {
-            let name = conv::to_string_bytes(&deref(v));
-            match env_get(&name) {
-                Some(val) => Ok(Value::str(val)),
-                None => Ok(Value::Bool(false)),
-            }
-        }
-        _ => {
-            let mut a = PhpArray::new();
-            for (k, v) in std::env::vars_os() {
-                a.insert(
-                    rhp_values::ArrayKey::from_bytes(k.to_string_lossy().as_bytes()),
-                    Value::str(v.to_string_lossy().into_owned().into_bytes()),
-                );
-            }
-            for (k, v) in env_overrides() {
-                let key = rhp_values::ArrayKey::from_bytes(&k);
-                match v {
-                    Some(v) => {
-                        a.insert(key, Value::str(v));
-                    }
-                    None => {
-                        a.remove(&key);
-                    }
-                }
-            }
-            Ok(Value::Array(a))
-        }
-    }
-}
-
-/// `putenv("NAME=value")` sets, `putenv("NAME")` unsets (in the request's
-/// environment overlay: `getenv` sees it; see [`env_overrides`]).
-fn fn_putenv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = crate::zend::zpp::str_param(host, args, 0, "putenv", "assignment")?;
-    if a.is_empty() || a[0] == b'=' {
-        return Err(Thrown::error(
-            "ValueError",
-            "putenv(): Argument #1 ($assignment) must have a valid syntax",
-        ));
-    }
-    let (name, value) = match a.iter().position(|&b| b == b'=') {
-        Some(p) => (&a[..p], Some(&a[p + 1..])),
-        None => (&a[..], None),
-    };
-    if name.contains(&0) || value.is_some_and(|v| v.contains(&0)) {
-        return Ok(Value::Bool(false));
-    }
-    let entry = (name.to_vec(), value.map(|v| v.to_vec()));
-    ENV_OVERLAY.with(|e| e.borrow_mut().push(entry));
-    Ok(Value::Bool(true))
-}
-
 fn fn_set_time_limit(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let secs = crate::zend::zpp::int_param(host, args, 0, "set_time_limit", "seconds", 0)?;
     crate::runtime_fns::ini_store(b"max_execution_time", secs.to_string().into_bytes());
     Ok(Value::Bool(true))
-}
-
-fn fn_error_get_last(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(match host.last_error() {
-        None => Value::Null,
-        Some((ty, msg, file, line)) => {
-            let mut a = rhp_values::PhpArray::new();
-            a.insert(
-                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"type".to_vec())),
-                Value::Int(ty),
-            );
-            a.insert(
-                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"message".to_vec())),
-                Value::Str(rhp_values::PhpStr::from_bytes(msg)),
-            );
-            a.insert(
-                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"file".to_vec())),
-                Value::Str(rhp_values::PhpStr::from_bytes(file)),
-            );
-            a.insert(
-                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"line".to_vec())),
-                Value::Int(line),
-            );
-            Value::Array(a)
-        }
-    })
-}
-
-fn fn_error_clear_last(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    host.clear_last_error();
-    Ok(Value::Null)
-}
-
-/// `register_shutdown_function(callable $callback, mixed ...$args): void`.
-fn fn_register_shutdown_function(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let cb = deref(&args[0]);
-    if let Some(why) = host.check_callable(&cb)? {
-        return Err(Thrown::type_error(format!(
-            "register_shutdown_function(): Argument #1 ($callback) must be a valid callback, {why}"
-        )));
-    }
-    host.register_shutdown_function(cb, args[1..].iter().map(deref).collect())?;
-    Ok(Value::Null)
 }
 
 // --- randomness --------------------------------------------------------------
@@ -316,12 +158,6 @@ pub fn register(m: &mut crate::Registry) {
             ("ob_list_handlers", fn_ob_list_handlers),
             ("ob_get_status", fn_ob_get_status),
             ("ob_implicit_flush", fn_ob_implicit_flush),
-            ("flush", fn_flush),
-            ("getenv", fn_getenv),
-            ("putenv", fn_putenv),
-            ("error_get_last", fn_error_get_last),
-            ("error_clear_last", fn_error_clear_last),
-            ("register_shutdown_function", fn_register_shutdown_function),
             ("set_time_limit", fn_set_time_limit),
             ("random_bytes", fn_random_bytes),
             ("random_int", fn_random_int),

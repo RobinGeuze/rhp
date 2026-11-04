@@ -1102,7 +1102,7 @@ impl Parser<'_, '_> {
             });
         }
         self.expect_ch(b'}')?;
-        if let Some(v) = crate::php_fns::env_get(&name) {
+        if let Some(v) = crate::ext::standard::basic_functions::env_get(&name) {
             return Ok(IV::s(&v));
         }
         match fallback {

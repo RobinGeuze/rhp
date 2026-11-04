@@ -1536,31 +1536,6 @@ pub(crate) fn getpwnam(name: &[u8]) -> Option<Passwd> {
     }
 }
 
-fn fn_usleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let us = zpp_long(host, args, 0, "usleep", "microseconds")?;
-    if us < 0 {
-        return Err(Thrown::error(
-            "ValueError",
-            "usleep(): Argument #1 ($microseconds) must be greater than or equal to 0",
-        ));
-    }
-    // php calls usleep(3) once: a signal cuts the sleep short.
-    unsafe { libc::usleep(us as libc::useconds_t) };
-    Ok(Value::Null)
-}
-
-fn fn_sleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = zpp_long(host, args, 0, "sleep", "seconds")?;
-    if s < 0 {
-        return Err(Thrown::error(
-            "ValueError",
-            "sleep(): Argument #1 ($seconds) must be greater than or equal to 0",
-        ));
-    }
-    // php's sleep(3): returns the unslept seconds when a signal interrupts.
-    Ok(Value::Int(unsafe { libc::sleep(s as libc::c_uint) } as i64))
-}
-
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
@@ -1580,8 +1555,6 @@ pub fn register(m: &mut crate::Registry) {
             ("escapeshellcmd", fn_escapeshellcmd),
             ("stream_select", fn_stream_select),
             ("stream_isatty", fn_stream_isatty),
-            ("usleep", fn_usleep),
-            ("sleep", fn_sleep),
         ],
     );
 }

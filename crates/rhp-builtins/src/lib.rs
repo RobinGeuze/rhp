@@ -13,7 +13,6 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use rhp_values::conv;
 use rhp_values::Value;
 
 pub use rhp_values::Thrown;
@@ -26,9 +25,6 @@ pub mod pcre;
 pub mod version;
 pub mod zend;
 
-use crate::ext::standard::array::as_array;
-use crate::zend::builtin_functions::resolve_const;
-use crate::zend::zpp::require_callback;
 pub use diag::{
     deprecated, deprecated_fn, flush_stream_diags, notice, open_failed, warn, warn_arg,
 };
@@ -52,7 +48,6 @@ mod ini_parse;
 #[rustfmt::skip]
 mod ini_table;
 mod json_fns;
-mod misc_fns;
 mod opcache_fns;
 pub mod php_fns;
 mod preg_fns;
@@ -194,7 +189,7 @@ const BODY_MIN: &[(&str, usize)] = &[
     ("openssl_cms_verify", 2),
 ];
 
-pub use php_fns::{apply_env_overrides, env_overrides};
+pub use ext::standard::basic_functions::{apply_env_overrides, env_overrides};
 pub use zend::zpp::{zval_type_name, zval_value_name};
 
 /// The php version this engine reports (`PHP_VERSION`).
@@ -267,7 +262,7 @@ pub fn reset_request_state() {
     #[cfg(feature = "mbstring-libmbfl")]
     ext::mbstring::reset_state();
     ext::standard::string::reset_state();
-    php_fns::reset_state();
+    ext::standard::basic_functions::reset_state();
     stdext_fns::reset_state();
     main::sapi::reset_state();
     ext::curl::reset_state();
@@ -285,15 +280,6 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
     static REG: OnceLock<Registry> = OnceLock::new();
     REG.get_or_init(|| {
         let mut m = Registry::new();
-        register(
-            &mut m,
-            &[
-                ("print_r", fn_print_r),
-                ("constant", fn_constant),
-                ("call_user_func", fn_call_user_func),
-                ("call_user_func_array", fn_call_user_func_array),
-            ],
-        );
         for (_, register_module) in builtin_modules() {
             register_module(&mut m);
         }
@@ -311,7 +297,10 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("string", Box::new(ext::standard::string::register)),
         ("math", Box::new(ext::standard::math::register)),
         ("array", Box::new(ext::standard::array::register)),
-        ("misc_fns", Box::new(misc_fns::register)),
+        (
+            "basic_functions",
+            Box::new(ext::standard::basic_functions::register),
+        ),
         ("file_fns", Box::new(file_fns::register)),
         ("type", Box::new(ext::standard::r#type::register)),
     ];
@@ -350,7 +339,6 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("stream_fns", Box::new(stream_fns::register)),
         ("socket_fns", Box::new(socket_fns::register)),
         ("query_fns", Box::new(query_fns::register)),
-        ("runtime_fns", Box::new(runtime_fns::register)),
         (
             "builtin_functions",
             Box::new(zend::builtin_functions::register),
@@ -736,63 +724,3 @@ pub fn is_refused(name: &str) -> Option<&'static str> {
 // ---------------------------------------------------------------------------
 
 use rhp_values::ops::deref;
-
-fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut out = Vec::new();
-    let r = ext::standard::var::resolve_views(
-        host,
-        &args[0],
-        zend::object_handlers::PropPurpose::Debug,
-    );
-    if r.is_ok() {
-        ext::standard::var::print_r(host, &mut out, &args[0], 0);
-    }
-    ext::standard::var::clear_views();
-    r?;
-    let return_mode = args.get(1).map(conv::to_bool).unwrap_or(false);
-    if return_mode {
-        Ok(Value::str(out))
-    } else {
-        host.write_out(&out);
-        Ok(Value::Bool(true))
-    }
-}
-
-fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = conv::to_string_bytes(&deref(&args[0]));
-    resolve_const(host, &name)?.ok_or_else(|| {
-        let shown = name.strip_prefix(b"\\").unwrap_or(&name);
-        Thrown::error(
-            "Error",
-            format!("Undefined constant \"{}\"", String::from_utf8_lossy(shown)),
-        )
-    })
-}
-
-fn fn_call_user_func(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    require_callback(host, "call_user_func", 1, &args[0])?;
-    host.call_callable(&args[0], &args[1..])
-}
-
-fn fn_call_user_func_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    require_callback(host, "call_user_func_array", 1, &args[0])?;
-    let params = as_array(&args[1], "call_user_func_array")?;
-    let mut argv: Vec<Value> = Vec::new();
-    let mut named: Vec<(rhp_values::PhpStr, Value)> = Vec::new();
-    for (k, v) in params.iter() {
-        match k {
-            rhp_values::ArrayKey::Int(_) if !named.is_empty() => {
-                return Err(Thrown::error(
-                    "Error",
-                    "Cannot use positional argument after named argument",
-                ))
-            }
-            rhp_values::ArrayKey::Int(_) => argv.push(v.clone()),
-            rhp_values::ArrayKey::Str(s) => named.push((s.clone(), v.clone())),
-        }
-    }
-    if named.is_empty() {
-        return host.call_callable(&args[0], &argv);
-    }
-    host.call_callable_named(&args[0], &argv, named)
-}

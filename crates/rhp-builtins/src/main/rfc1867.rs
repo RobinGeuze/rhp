@@ -142,13 +142,13 @@ impl BodyState {
         }
     }
 
-    fn is_uploaded(&self, path: &[u8]) -> bool {
+    pub(crate) fn is_uploaded(&self, path: &[u8]) -> bool {
         self.uploaded
             .as_ref()
             .is_some_and(|l| l.iter().any(|p| p == path))
     }
 
-    fn forget(&mut self, path: &[u8]) {
+    pub(crate) fn forget(&mut self, path: &[u8]) {
         if let Some(l) = self.uploaded.as_mut() {
             l.retain(|p| p != path);
         }
@@ -1010,91 +1010,6 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-// ---------------------------------------------------------------------------
-// builtins
-// ---------------------------------------------------------------------------
-
-/// A `Z_PARAM_PATH` argument: a string without NUL bytes.
-fn path_param(
-    host: &mut dyn Host,
-    args: &[Value],
-    i: usize,
-    fname: &str,
-    pname: &str,
-) -> Result<Vec<u8>, Thrown> {
-    let p = crate::zend::zpp::str_param(host, args, i, fname, pname)?;
-    if p.contains(&0) {
-        return Err(Thrown::error(
-            "ValueError",
-            format!(
-                "{fname}(): Argument #{} (${pname}) must not contain any null bytes",
-                i + 1
-            ),
-        ));
-    }
-    Ok(p)
-}
-
-fn fn_is_uploaded_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = path_param(host, args, 0, "is_uploaded_file", "filename")?;
-    Ok(Value::Bool(
-        host.body_state().is_some_and(|s| s.is_uploaded(&path)),
-    ))
-}
-
-fn fn_move_uploaded_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let from = path_param(host, args, 0, "move_uploaded_file", "from")?;
-    let to = path_param(host, args, 1, "move_uploaded_file", "to")?;
-    if !host.body_state().is_some_and(|s| s.is_uploaded(&from)) {
-        return Ok(Value::Bool(false));
-    }
-    let mut ok = false;
-    if std::fs::rename(os_path(&from), os_path(&to)).is_ok() {
-        ok = true;
-        use std::os::unix::fs::PermissionsExt;
-        let mode = 0o666 & !crate::zend::virtual_cwd::umask();
-        if let Err(e) =
-            std::fs::set_permissions(os_path(&to), std::fs::Permissions::from_mode(mode))
-        {
-            let msg = crate::main::streams::strerror(e.raw_os_error().unwrap_or(0));
-            crate::warn(host, "move_uploaded_file", &msg)?;
-        }
-    } else {
-        match std::fs::read(os_path(&from)) {
-            Err(e) => {
-                crate::main::streams::note_io_err(&e);
-                crate::open_failed(host, "move_uploaded_file", &from)?;
-            }
-            Ok(data) => match crate::zend::virtual_cwd::write_file(&to, &data) {
-                Ok(()) => {
-                    let _ = std::fs::remove_file(os_path(&from));
-                    ok = true;
-                }
-                Err(e) => {
-                    crate::main::streams::note_io_err(&e);
-                    crate::open_failed(host, "move_uploaded_file", &to)?;
-                }
-            },
-        }
-    }
-    if ok {
-        if let Some(s) = host.body_state() {
-            s.forget(&from);
-        }
-    } else {
-        crate::warn(
-            host,
-            "move_uploaded_file",
-            &format!(
-                "Unable to move \"{}\" to \"{}\"",
-                String::from_utf8_lossy(&from),
-                String::from_utf8_lossy(&to)
-            ),
-        )?;
-    }
-    Ok(Value::Bool(ok))
-}
-
 /// `smart_str_append_escaped`.
 fn escaped(s: &[u8]) -> String {
     let mut o = String::new();
@@ -1452,14 +1367,7 @@ fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
 }
 
 pub fn register(m: &mut crate::Registry) {
-    crate::register(
-        m,
-        &[
-            ("is_uploaded_file", fn_is_uploaded_file),
-            ("move_uploaded_file", fn_move_uploaded_file),
-            ("request_parse_body", fn_request_parse_body),
-        ],
-    );
+    crate::register(m, &[("request_parse_body", fn_request_parse_body)]);
 }
 
 #[cfg(test)]

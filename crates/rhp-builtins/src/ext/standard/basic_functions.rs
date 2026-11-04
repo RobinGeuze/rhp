@@ -1,0 +1,935 @@
+//! ext/standard/basic_functions.c: the standard extension's own functions
+//! (`constant`, `call_user_func`, `getenv`/`putenv`, the `ini_*` functions,
+//! `getopt`, `sleep`, `error_log`, `print_r`, ...).
+
+use rhp_values::ops::deref;
+use rhp_values::{conv, ArrayKey, PhpArray, Value};
+
+use crate::ext::standard::array::as_array;
+use crate::ext::standard::pageinfo::script_stat;
+use crate::file_fns::path_arg;
+use crate::ini_table::INI_TABLE;
+use crate::php_fns::ob;
+use crate::proc_fns::zpp_long;
+use crate::runtime_fns::{
+    alter_ini_entry, ini_apply, ini_default_value, ini_parse_uquantity, ini_value, module_loaded,
+    INI, INI_STARTUP, STARTUP_DIAGS,
+};
+use crate::zend::builtin_functions::resolve_const;
+use crate::zend::virtual_cwd::os_path;
+use crate::zend::zpp::{bool_param, int_param, require_callback, str_or_null_param, str_param};
+use crate::{ext, inet, zend, Host, Thrown};
+
+fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let mut out = Vec::new();
+    let r = ext::standard::var::resolve_views(
+        host,
+        &args[0],
+        zend::object_handlers::PropPurpose::Debug,
+    );
+    if r.is_ok() {
+        ext::standard::var::print_r(host, &mut out, &args[0], 0);
+    }
+    ext::standard::var::clear_views();
+    r?;
+    let return_mode = args.get(1).map(conv::to_bool).unwrap_or(false);
+    if return_mode {
+        Ok(Value::str(out))
+    } else {
+        host.write_out(&out);
+        Ok(Value::Bool(true))
+    }
+}
+
+fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = conv::to_string_bytes(&deref(&args[0]));
+    resolve_const(host, &name)?.ok_or_else(|| {
+        let shown = name.strip_prefix(b"\\").unwrap_or(&name);
+        Thrown::error(
+            "Error",
+            format!("Undefined constant \"{}\"", String::from_utf8_lossy(shown)),
+        )
+    })
+}
+
+fn fn_call_user_func(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    require_callback(host, "call_user_func", 1, &args[0])?;
+    host.call_callable(&args[0], &args[1..])
+}
+
+fn fn_call_user_func_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    require_callback(host, "call_user_func_array", 1, &args[0])?;
+    let params = as_array(&args[1], "call_user_func_array")?;
+    let mut argv: Vec<Value> = Vec::new();
+    let mut named: Vec<(rhp_values::PhpStr, Value)> = Vec::new();
+    for (k, v) in params.iter() {
+        match k {
+            rhp_values::ArrayKey::Int(_) if !named.is_empty() => {
+                return Err(Thrown::error(
+                    "Error",
+                    "Cannot use positional argument after named argument",
+                ))
+            }
+            rhp_values::ArrayKey::Int(_) => argv.push(v.clone()),
+            rhp_values::ArrayKey::Str(s) => named.push((s.clone(), v.clone())),
+        }
+    }
+    if named.is_empty() {
+        return host.call_callable(&args[0], &argv);
+    }
+    host.call_callable_named(&args[0], &argv, named)
+}
+
+fn fn_flush(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    ob(host, crate::ObCall::SapiFlush)
+}
+
+/// One `putenv` change: name and new value (`None` = unset).
+pub type EnvChange = (Vec<u8>, Option<Vec<u8>>);
+
+thread_local! {
+    /// `putenv` changes for this request, layered over the process
+    /// environment (`None` = unset). The process environment itself is never
+    /// mutated: that would race with other threads' `getenv` (the test
+    /// harness runs engines on parallel threads) and leak across engines.
+    static ENV_OVERLAY: std::cell::RefCell<Vec<EnvChange>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub(crate) fn reset_state() {
+    ENV_OVERLAY.with(|e| e.borrow_mut().clear());
+}
+
+/// The request's `putenv` changes in order (`None` = unset). A spawner of
+/// child processes must apply these (`Command::env` / `env_remove`) so the
+/// child sees the same environment as `getenv`, as in php.
+pub fn env_overrides() -> Vec<EnvChange> {
+    ENV_OVERLAY.with(|e| e.borrow().clone())
+}
+
+/// Apply [`env_overrides`] to a child-process command.
+pub fn apply_env_overrides(cmd: &mut std::process::Command) {
+    for (k, v) in env_overrides() {
+        let k = String::from_utf8_lossy(&k).into_owned();
+        match v {
+            Some(v) => {
+                cmd.env(k, String::from_utf8_lossy(&v).into_owned());
+            }
+            None => {
+                cmd.env_remove(k);
+            }
+        }
+    }
+}
+
+/// `getenv(name)` as php sees it: the request's `putenv` changes, then the
+/// process environment.
+pub(crate) fn env_get(name: &[u8]) -> Option<Vec<u8>> {
+    if let Some(v) = ENV_OVERLAY.with(|e| {
+        e.borrow()
+            .iter()
+            .rev()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+    }) {
+        return v;
+    }
+    std::env::var_os(String::from_utf8_lossy(name).as_ref())
+        .map(|v| v.to_string_lossy().into_owned().into_bytes())
+}
+
+/// `$local_only` (arg 2) skips the SAPI's own environment. rhp's SAPIs
+/// keep the request environment in the process one, so both lookups agree.
+fn fn_getenv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match args.first() {
+        Some(v) if !matches!(deref(v), Value::Null) => {
+            let name = conv::to_string_bytes(&deref(v));
+            match env_get(&name) {
+                Some(val) => Ok(Value::str(val)),
+                None => Ok(Value::Bool(false)),
+            }
+        }
+        _ => {
+            let mut a = PhpArray::new();
+            for (k, v) in std::env::vars_os() {
+                a.insert(
+                    rhp_values::ArrayKey::from_bytes(k.to_string_lossy().as_bytes()),
+                    Value::str(v.to_string_lossy().into_owned().into_bytes()),
+                );
+            }
+            for (k, v) in env_overrides() {
+                let key = rhp_values::ArrayKey::from_bytes(&k);
+                match v {
+                    Some(v) => {
+                        a.insert(key, Value::str(v));
+                    }
+                    None => {
+                        a.remove(&key);
+                    }
+                }
+            }
+            Ok(Value::Array(a))
+        }
+    }
+}
+
+/// `putenv("NAME=value")` sets, `putenv("NAME")` unsets (in the request's
+/// environment overlay: `getenv` sees it; see [`env_overrides`]).
+fn fn_putenv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = crate::zend::zpp::str_param(host, args, 0, "putenv", "assignment")?;
+    if a.is_empty() || a[0] == b'=' {
+        return Err(Thrown::error(
+            "ValueError",
+            "putenv(): Argument #1 ($assignment) must have a valid syntax",
+        ));
+    }
+    let (name, value) = match a.iter().position(|&b| b == b'=') {
+        Some(p) => (&a[..p], Some(&a[p + 1..])),
+        None => (&a[..], None),
+    };
+    if name.contains(&0) || value.is_some_and(|v| v.contains(&0)) {
+        return Ok(Value::Bool(false));
+    }
+    let entry = (name.to_vec(), value.map(|v| v.to_vec()));
+    ENV_OVERLAY.with(|e| e.borrow_mut().push(entry));
+    Ok(Value::Bool(true))
+}
+
+fn fn_error_get_last(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(match host.last_error() {
+        None => Value::Null,
+        Some((ty, msg, file, line)) => {
+            let mut a = rhp_values::PhpArray::new();
+            a.insert(
+                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"type".to_vec())),
+                Value::Int(ty),
+            );
+            a.insert(
+                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"message".to_vec())),
+                Value::Str(rhp_values::PhpStr::from_bytes(msg)),
+            );
+            a.insert(
+                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"file".to_vec())),
+                Value::Str(rhp_values::PhpStr::from_bytes(file)),
+            );
+            a.insert(
+                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"line".to_vec())),
+                Value::Int(line),
+            );
+            Value::Array(a)
+        }
+    })
+}
+
+fn fn_error_clear_last(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    host.clear_last_error();
+    Ok(Value::Null)
+}
+
+/// `register_shutdown_function(callable $callback, mixed ...$args): void`.
+fn fn_register_shutdown_function(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let cb = deref(&args[0]);
+    if let Some(why) = host.check_callable(&cb)? {
+        return Err(Thrown::type_error(format!(
+            "register_shutdown_function(): Argument #1 ($callback) must be a valid callback, {why}"
+        )));
+    }
+    host.register_shutdown_function(cb, args[1..].iter().map(deref).collect())?;
+    Ok(Value::Null)
+}
+
+fn ini_opt_value(v: Option<Vec<u8>>) -> Value {
+    match v {
+        Some(s) => Value::str(s),
+        None => Value::Null,
+    }
+}
+
+fn fn_ini_get(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = str_param(host, args, 0, "ini_get", "option")?;
+    Ok(match ini_value(&name) {
+        None => Value::Bool(false),
+        Some(v) => Value::str(v.unwrap_or_default()),
+    })
+}
+
+fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value, Thrown> {
+    let name = str_param(host, args, 0, func, "option")?;
+    let newv = match deref(&args[1]) {
+        Value::Null => Vec::new(),
+        v @ (Value::Str(_) | Value::Int(_) | Value::Float(_) | Value::Bool(_)) => {
+            conv::to_string_bytes(&v)
+        }
+        _ => {
+            return Err(Thrown::type_error(format!(
+                "{func}(): Argument #2 ($value) must be of type string|int|float|bool|null"
+            )))
+        }
+    };
+    Ok(match alter_ini_entry(host, &name, newv, func)? {
+        Some(old) => Value::str(old),
+        None => Value::Bool(false),
+    })
+}
+
+fn fn_ini_set(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    ini_set_impl(host, args, "ini_set")
+}
+
+fn fn_ini_alter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    ini_set_impl(host, args, "ini_alter")
+}
+
+fn fn_ini_restore(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = str_param(host, args, 0, "ini_restore", "option")?;
+    let key = String::from_utf8_lossy(&name).into_owned();
+    // zend_restore_ini_entry: a directive ini_set changed is no longer
+    // modified, and its handler runs again on the startup value.
+    let restore = STARTUP_DIAGS.with(|d| {
+        let mut d = d.borrow_mut();
+        let pos = d.changed.iter().position(|c| *c == key)?;
+        d.changed.remove(pos);
+        Some(d.restore.get(&key).cloned())
+    });
+    if restore.is_some() {
+        crate::ext::iconv::ini_runtime_update(host, &name, "ini_restore")?;
+    }
+    for w in restore.flatten().unwrap_or_default() {
+        host.emit_diagnostic(crate::E_WARNING, &w)?;
+    }
+    // Back to the startup value (`-d`), else the default.
+    let startup = INI_STARTUP.with(|m| m.borrow().get(&key).cloned());
+    INI.with(|m| match startup {
+        Some(v) => m.borrow_mut().insert(key, Some(v)),
+        None => m.borrow_mut().remove(&key),
+    });
+    if let Some(v) = ini_value(&name) {
+        if name == b"memory_limit" {
+            // The handler on the startup value (already within
+            // max_memory_limit). Below the memory in use, the current limit
+            // stays.
+            let v = v.as_deref().map_or(u64::MAX, |v| ini_parse_uquantity(v).0);
+            rhp_values::mem::set_limit(v.min(usize::MAX as u64) as usize);
+        }
+        ini_apply(&name, v.as_deref());
+    }
+    Ok(Value::Null)
+}
+
+fn fn_ini_get_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let ext = str_or_null_param(host, args, 0, "ini_get_all", "extension")?;
+    let details = bool_param(host, args, 1, "ini_get_all", "details", true)?;
+    let ext_lc = ext.as_ref().map(|e| e.to_ascii_lowercase());
+    if let Some(e) = &ext_lc {
+        let e = String::from_utf8_lossy(e);
+        if !module_loaded(&e) {
+            // php: Warning "Extension "X" cannot be found"
+            return Ok(Value::Bool(false));
+        }
+    }
+    let mut entries: Vec<_> = INI_TABLE
+        .iter()
+        .filter(|e| module_loaded(e.0))
+        .filter(|e| {
+            ext_lc
+                .as_ref()
+                .is_none_or(|x| x.as_slice() == e.0.as_bytes())
+        })
+        .collect();
+    entries.sort_by(|a, b| a.1.cmp(b.1));
+    let mut out = PhpArray::new();
+    for e in entries {
+        let cur = ini_value(e.1.as_bytes()).flatten();
+        let v = if details {
+            let mut d = PhpArray::new();
+            d.insert(
+                ArrayKey::from_bytes(b"global_value"),
+                ini_opt_value(ini_default_value(e.1.as_bytes()).flatten()),
+            );
+            d.insert(ArrayKey::from_bytes(b"local_value"), ini_opt_value(cur));
+            d.insert(ArrayKey::from_bytes(b"access"), Value::Int(e.3 as i64));
+            Value::Array(d)
+        } else {
+            ini_opt_value(cur)
+        };
+        out.insert(ArrayKey::from_bytes(e.1.as_bytes()), v);
+    }
+    Ok(Value::Array(out))
+}
+
+// ---------------------------------------------------------------------------
+// error_log
+// ---------------------------------------------------------------------------
+
+fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let msg = str_param(host, args, 0, "error_log", "message")?;
+    let ty = int_param(host, args, 1, "error_log", "message_type", 0)?;
+    let dest = str_or_null_param(host, args, 2, "error_log", "destination")?;
+    let _headers = str_or_null_param(host, args, 3, "error_log", "additional_headers")?;
+    match ty {
+        // Mail: no mailer configured.
+        1 => Ok(Value::Bool(false)),
+        3 => {
+            let Some(path) = dest else {
+                return Ok(Value::Bool(false));
+            };
+            let ok = crate::zend::virtual_cwd::append_file(&path, &msg, 0o666).is_ok();
+            Ok(Value::Bool(ok))
+        }
+        // 0 / 4: no error_log ini → the CLI SAPI logger writes "msg\n" to stderr.
+        _ => {
+            let log_target = ini_value(b"error_log").flatten().filter(|v| !v.is_empty());
+            match log_target {
+                Some(path) if ty == 0 => {
+                    // php_log_err: "[d-M-Y H:i:s e] message\n".
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    let mut line = b"[".to_vec();
+                    line.extend_from_slice(&crate::ext::date::php_format_date(
+                        b"d-M-Y H:i:s e",
+                        now,
+                        true,
+                    ));
+                    line.extend_from_slice(b"] ");
+                    line.extend_from_slice(&msg);
+                    line.push(b'\n');
+                    let _ = crate::zend::virtual_cwd::append_file(&path, &line, 0o644);
+                }
+                _ => host.log_message(&msg),
+            }
+            Ok(Value::Bool(true))
+        }
+    }
+}
+
+fn fn_sys_getloadavg(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let mut l = [0f64; 3];
+    if unsafe { libc::getloadavg(l.as_mut_ptr(), 3) } == -1 {
+        return Ok(Value::Bool(false));
+    }
+    let mut a = PhpArray::new();
+    for v in l {
+        a.push(Value::Float(v));
+    }
+    Ok(Value::Array(a))
+}
+
+// --- getopt (main/getopt.c + ext/standard/basic_functions.c) -----------------
+
+struct OptSpec {
+    ch: u8,
+    name: Option<Vec<u8>>,
+    need_param: u8,
+}
+
+/// `parse_opts`: the leading run of alphanumeric option letters, each
+/// optionally followed by `:` (required value) or `::` (optional value).
+fn parse_short_opts(s: &[u8]) -> Vec<OptSpec> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < s.len() && s[i].is_ascii_alphanumeric() {
+        let ch = s[i];
+        i += 1;
+        let mut need = 0;
+        if s.get(i) == Some(&b':') {
+            need = 1;
+            i += 1;
+            if s.get(i) == Some(&b':') {
+                need = 2;
+                i += 1;
+            }
+        }
+        out.push(OptSpec {
+            ch,
+            name: None,
+            need_param: need,
+        });
+    }
+    out
+}
+
+/// One argv string as C sees it (cut at the first NUL), indexable past the end.
+fn at(s: &[u8], i: usize) -> u8 {
+    s.get(i).copied().unwrap_or(0)
+}
+
+enum Got {
+    Eof,
+    Invalid,
+    Opt(usize, Option<Vec<u8>>),
+}
+
+struct GetoptState {
+    optchr: usize,
+    dash: bool,
+}
+
+/// `php_getopt` for one option (show_err = 0, arg_start = 1).
+fn php_getopt(argv: &[Vec<u8>], opts: &[OptSpec], optind: &mut usize, st: &mut GetoptState) -> Got {
+    let argc = argv.len();
+    if *optind >= argc {
+        return Got::Eof;
+    }
+    let cur = |optind: usize| argv[optind].as_slice();
+    if !st.dash {
+        if at(cur(*optind), 0) != b'-' {
+            return Got::Eof;
+        }
+        if at(cur(*optind), 1) == 0 {
+            return Got::Eof;
+        }
+    }
+    let mut idx: Option<usize> = None;
+    let mut arg_start: usize;
+    let a = cur(*optind);
+    if at(a, 0) == b'-' && at(a, 1) == b'-' {
+        if at(a, 2) == 0 {
+            *optind += 1;
+            return Got::Eof;
+        }
+        arg_start = 2;
+        let mut arg_end = a.len() - 1;
+        let search_len = arg_end - arg_start;
+        if let Some(p) = a[arg_start..arg_start + search_len]
+            .iter()
+            .position(|&b| b == b'=')
+        {
+            arg_end = p;
+            arg_start += 1;
+        } else {
+            arg_end -= 1;
+        }
+        let rest = &a[2..];
+        // strncmp(argv + 2, name, arg_end) == 0 && arg_end == strlen(name)
+        let found = opts.iter().position(|o| {
+            o.name
+                .as_deref()
+                .is_some_and(|n| n.len() == arg_end && rest.starts_with(n))
+        });
+        match found {
+            Some(i) => idx = Some(i),
+            None => {
+                *optind += 1;
+                return Got::Invalid;
+            }
+        }
+        st.optchr = 0;
+        st.dash = false;
+        arg_start += opts[idx.unwrap()].name.as_ref().unwrap().len();
+    } else {
+        if !st.dash {
+            st.dash = true;
+            st.optchr = 1;
+        }
+        if at(a, st.optchr) == b':' {
+            st.dash = false;
+            *optind += 1;
+            return Got::Invalid;
+        }
+        arg_start = 1 + st.optchr;
+    }
+    let idx = match idx {
+        Some(i) => i,
+        None => {
+            let c = at(a, st.optchr);
+            match opts.iter().position(|o| o.name.is_none() && o.ch == c) {
+                Some(i) => i,
+                None => {
+                    if at(a, st.optchr + 1) == 0 {
+                        st.dash = false;
+                        *optind += 1;
+                    } else {
+                        st.optchr += 1;
+                    }
+                    return Got::Invalid;
+                }
+            }
+        }
+    };
+    let o = &opts[idx];
+    if o.need_param > 0 {
+        st.dash = false;
+        let mut optarg = None;
+        if at(a, arg_start) == 0 {
+            *optind += 1;
+            if *optind == argc {
+                if o.need_param == 1 {
+                    return Got::Invalid;
+                }
+            } else if o.need_param == 1 {
+                optarg = Some(argv[*optind].clone());
+                *optind += 1;
+            }
+        } else if at(a, arg_start) == b'=' {
+            optarg = Some(a[arg_start + 1..].to_vec());
+            *optind += 1;
+        } else {
+            optarg = Some(a[arg_start..].to_vec());
+            *optind += 1;
+        }
+        Got::Opt(idx, optarg)
+    } else {
+        if arg_start >= 2 && !(at(a, 0) == b'-' && at(a, 1) == b'-') {
+            if at(a, st.optchr + 1) == 0 {
+                st.dash = false;
+                *optind += 1;
+            } else {
+                st.optchr += 1;
+            }
+        } else {
+            *optind += 1;
+        }
+        Got::Opt(idx, None)
+    }
+}
+
+fn cstr(b: &[u8]) -> Vec<u8> {
+    match b.iter().position(|&c| c == 0) {
+        Some(p) => b[..p].to_vec(),
+        None => b.to_vec(),
+    }
+}
+
+/// `getopt(string $short_options, array $long_options = [], &$rest_index = null)`.
+fn fn_getopt(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let short = cstr(&str_param(host, args, 0, "getopt", "short_options")?);
+    let longs = match args.get(1) {
+        None => PhpArray::new(),
+        Some(_) => crate::zend::zpp::array_param(host, args, 1, "getopt")?,
+    };
+    let set_rest = |v: i64| {
+        if let Some(Value::Ref(r)) = args.get(2) {
+            *r.borrow_mut() = Value::Int(v);
+        }
+    };
+    set_rest(1);
+    let Some(argv) = host.cli_argv() else {
+        return Ok(Value::Bool(false));
+    };
+    let argv: Vec<Vec<u8>> = argv.iter().map(|a| cstr(a)).collect();
+    let mut opts = parse_short_opts(&short);
+    for (_, v) in longs.iter() {
+        let mut name = cstr(&conv::to_string_bytes(&deref(v)));
+        let mut need = 0;
+        if name.last() == Some(&b':') {
+            need = 1;
+            name.pop();
+            if name.last() == Some(&b':') {
+                need = 2;
+                name.pop();
+            }
+        }
+        opts.push(OptSpec {
+            ch: 0,
+            name: Some(name),
+            need_param: need,
+        });
+    }
+    let mut out = PhpArray::new();
+    let mut optind = 1usize;
+    let mut st = GetoptState {
+        optchr: 0,
+        dash: false,
+    };
+    loop {
+        match php_getopt(&argv, &opts, &mut optind, &mut st) {
+            Got::Eof => break,
+            Got::Invalid => continue,
+            Got::Opt(i, optarg) => {
+                let name = match &opts[i].name {
+                    Some(n) => n.clone(),
+                    None => vec![opts[i].ch],
+                };
+                let val = optarg.map(Value::str).unwrap_or(Value::Bool(false));
+                // A numeric option name ("1") becomes an integer key.
+                let key = ArrayKey::from_bytes(&name);
+                match out.get_mut(&key) {
+                    Some(existing) => {
+                        if let Value::Array(a) = existing {
+                            a.push(val);
+                        } else {
+                            let mut a = PhpArray::new();
+                            a.push(existing.clone());
+                            a.push(val);
+                            *existing = Value::Array(a);
+                        }
+                    }
+                    None => out.insert(key, val),
+                }
+            }
+        }
+    }
+    set_rest(optind as i64);
+    Ok(Value::Array(out))
+}
+
+fn fn_ip2long(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = crate::zend::zpp::path_param(host, args, 0, "ip2long", "ip")?;
+    Ok(match crate::inet::pton4(&s) {
+        Some(a) if !s.is_empty() => Value::Int(u32::from_be_bytes(a) as i64),
+        _ => Value::Bool(false),
+    })
+}
+
+fn fn_long2ip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let n = int_param(host, args, 0, "long2ip", "ip", 0)? as u64 as u32;
+    let text = crate::inet::ntop(&n.to_be_bytes()).expect("inet_ntop of an IPv4 address");
+    Ok(Value::str(text))
+}
+
+fn fn_get_cfg_var(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // No php.ini is loaded, so the configuration hash is empty.
+    let _ = str_param(host, args, 0, "get_cfg_var", "option")?;
+    Ok(Value::Bool(false))
+}
+
+fn fn_get_include_path(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(
+        match crate::runtime_fns::ini_value(b"include_path").flatten() {
+            Some(v) => Value::str(v),
+            None => Value::Bool(false),
+        },
+    )
+}
+
+fn fn_set_include_path(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let p = str_param(host, args, 0, "set_include_path", "include_path")?;
+    if p.is_empty() {
+        return Ok(Value::Bool(false));
+    }
+    let old = crate::runtime_fns::ini_value(b"include_path").flatten();
+    crate::runtime_fns::ini_store(b"include_path", p);
+    Ok(old.map(Value::str).unwrap_or(Value::Bool(false)))
+}
+
+/// `get_current_user`: the owner of the main script file.
+fn fn_get_current_user(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let Some(m) = script_stat(host) else {
+        return Ok(Value::str(""));
+    };
+    let uid = std::os::unix::fs::MetadataExt::uid(&m);
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut buf = vec![0 as libc::c_char; 4096];
+    let mut res: *mut libc::passwd = std::ptr::null_mut();
+    let rc = unsafe { libc::getpwuid_r(uid, &mut pwd, buf.as_mut_ptr(), buf.len(), &mut res) };
+    if rc != 0 || res.is_null() {
+        return Ok(Value::str(""));
+    }
+    let name = unsafe { std::ffi::CStr::from_ptr(pwd.pw_name) };
+    Ok(Value::str(name.to_bytes().to_vec()))
+}
+
+// ---------------------------------------------------------------------------
+// inet_pton / inet_ntop
+// ---------------------------------------------------------------------------
+
+/// `inet_pton(string $ip): string|false` (basic_functions.c): AF_INET6 when the
+/// text has a ':', otherwise AF_INET if it has a '.'.
+fn fn_inet_pton(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let ip = crate::zend::zpp::path_param(host, args, 0, "inet_pton", "ip")?;
+    let packed = if ip.contains(&b':') {
+        inet::pton6(&ip).map(|a| a.to_vec())
+    } else if ip.contains(&b'.') {
+        inet::pton4(&ip).map(|a| a.to_vec())
+    } else {
+        None
+    };
+    Ok(packed.map_or(Value::Bool(false), Value::str))
+}
+
+/// `inet_ntop(string $ip): string|false`: a 4- or 16-byte address as text.
+fn fn_inet_ntop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let b = crate::zend::zpp::str_param(host, args, 0, "inet_ntop", "ip")?;
+    Ok(inet::ntop(&b).map_or(Value::Bool(false), Value::str))
+}
+
+fn fn_usleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let us = zpp_long(host, args, 0, "usleep", "microseconds")?;
+    if us < 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "usleep(): Argument #1 ($microseconds) must be greater than or equal to 0",
+        ));
+    }
+    // php calls usleep(3) once: a signal cuts the sleep short.
+    unsafe { libc::usleep(us as libc::useconds_t) };
+    Ok(Value::Null)
+}
+
+fn fn_sleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = zpp_long(host, args, 0, "sleep", "seconds")?;
+    if s < 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "sleep(): Argument #1 ($seconds) must be greater than or equal to 0",
+        ));
+    }
+    // php's sleep(3): returns the unslept seconds when a signal interrupts.
+    Ok(Value::Int(unsafe { libc::sleep(s as libc::c_uint) } as i64))
+}
+
+/// `ignore_user_abort(?bool $enable = null)`: the old setting; the engine
+/// never sees the client go away, so the setting has no other effect.
+fn fn_ignore_user_abort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let old = crate::runtime_fns::ini_value(b"ignore_user_abort")
+        .flatten()
+        .map(|v| i64::from(crate::ini_parse_bool(&v)))
+        .unwrap_or(0);
+    match args.first().map(deref) {
+        None | Some(Value::Null) => {}
+        Some(_) => {
+            let on = bool_param(host, args, 0, "ignore_user_abort", "enable", false)?;
+            crate::runtime_fns::ini_store(
+                b"ignore_user_abort",
+                if on { b"1".to_vec() } else { b"0".to_vec() },
+            );
+        }
+    }
+    Ok(Value::Int(old))
+}
+
+/// `connection_status()` / `connection_aborted()`: always CONNECTION_NORMAL
+/// (no abort detection yet).
+fn fn_connection_status(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(0))
+}
+
+// ---------------------------------------------------------------------------
+// builtins
+// ---------------------------------------------------------------------------
+
+/// A `Z_PARAM_PATH` argument: a string without NUL bytes.
+fn path_param(
+    host: &mut dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<Vec<u8>, Thrown> {
+    let p = crate::zend::zpp::str_param(host, args, i, fname, pname)?;
+    if p.contains(&0) {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "{fname}(): Argument #{} (${pname}) must not contain any null bytes",
+                i + 1
+            ),
+        ));
+    }
+    Ok(p)
+}
+
+fn fn_is_uploaded_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let path = path_param(host, args, 0, "is_uploaded_file", "filename")?;
+    Ok(Value::Bool(
+        host.body_state().is_some_and(|s| s.is_uploaded(&path)),
+    ))
+}
+
+fn fn_move_uploaded_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let from = path_param(host, args, 0, "move_uploaded_file", "from")?;
+    let to = path_param(host, args, 1, "move_uploaded_file", "to")?;
+    if !host.body_state().is_some_and(|s| s.is_uploaded(&from)) {
+        return Ok(Value::Bool(false));
+    }
+    let mut ok = false;
+    if std::fs::rename(os_path(&from), os_path(&to)).is_ok() {
+        ok = true;
+        use std::os::unix::fs::PermissionsExt;
+        let mode = 0o666 & !crate::zend::virtual_cwd::umask();
+        if let Err(e) =
+            std::fs::set_permissions(os_path(&to), std::fs::Permissions::from_mode(mode))
+        {
+            let msg = crate::main::streams::strerror(e.raw_os_error().unwrap_or(0));
+            crate::warn(host, "move_uploaded_file", &msg)?;
+        }
+    } else {
+        match std::fs::read(os_path(&from)) {
+            Err(e) => {
+                crate::main::streams::note_io_err(&e);
+                crate::open_failed(host, "move_uploaded_file", &from)?;
+            }
+            Ok(data) => match crate::zend::virtual_cwd::write_file(&to, &data) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(os_path(&from));
+                    ok = true;
+                }
+                Err(e) => {
+                    crate::main::streams::note_io_err(&e);
+                    crate::open_failed(host, "move_uploaded_file", &to)?;
+                }
+            },
+        }
+    }
+    if ok {
+        if let Some(s) = host.body_state() {
+            s.forget(&from);
+        }
+    } else {
+        crate::warn(
+            host,
+            "move_uploaded_file",
+            &format!(
+                "Unable to move \"{}\" to \"{}\"",
+                String::from_utf8_lossy(&from),
+                String::from_utf8_lossy(&to)
+            ),
+        )?;
+    }
+    Ok(Value::Bool(ok))
+}
+
+/// `php_strip_whitespace($filename)` — php returns the source with comments and
+/// whitespace removed (via the tokenizer). Composer only uses it to feed its own
+/// comment-stripping classmap scanner, so returning the raw source is correct
+/// for that purpose (and `''` only for a missing/empty file).
+fn fn_php_strip_whitespace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match host.stream_get_contents(&path_arg(args, 0)) {
+        Some(bytes) => Ok(Value::str(bytes)),
+        None => Ok(Value::str("")),
+    }
+}
+
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("print_r", fn_print_r),
+            ("constant", fn_constant),
+            ("call_user_func", fn_call_user_func),
+            ("call_user_func_array", fn_call_user_func_array),
+            ("flush", fn_flush),
+            ("getenv", fn_getenv),
+            ("putenv", fn_putenv),
+            ("error_get_last", fn_error_get_last),
+            ("error_clear_last", fn_error_clear_last),
+            ("register_shutdown_function", fn_register_shutdown_function),
+            ("ini_get", fn_ini_get),
+            ("ini_set", fn_ini_set),
+            ("ini_alter", fn_ini_alter),
+            ("ini_restore", fn_ini_restore),
+            ("ini_get_all", fn_ini_get_all),
+            ("error_log", fn_error_log),
+            ("sys_getloadavg", fn_sys_getloadavg),
+            ("getopt", fn_getopt),
+            ("ip2long", fn_ip2long),
+            ("long2ip", fn_long2ip),
+            ("get_cfg_var", fn_get_cfg_var),
+            ("get_include_path", fn_get_include_path),
+            ("set_include_path", fn_set_include_path),
+            ("get_current_user", fn_get_current_user),
+            ("inet_pton", fn_inet_pton),
+            ("inet_ntop", fn_inet_ntop),
+            ("usleep", fn_usleep),
+            ("sleep", fn_sleep),
+            ("ignore_user_abort", fn_ignore_user_abort),
+            ("connection_status", fn_connection_status),
+            ("connection_aborted", fn_connection_status),
+            ("is_uploaded_file", fn_is_uploaded_file),
+            ("move_uploaded_file", fn_move_uploaded_file),
+            ("php_strip_whitespace", fn_php_strip_whitespace),
+        ],
+    );
+}

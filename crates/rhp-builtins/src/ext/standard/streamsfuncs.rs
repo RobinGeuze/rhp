@@ -4,7 +4,7 @@
 //! copy/wrapper listing. The resource state lives in the VM.
 
 use std::collections::HashMap;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
@@ -19,8 +19,7 @@ use crate::main::streams::xp_socket::{
     persistent_lookup, register_stream, setsockopt_int, strerror, timeout_tv, xport_client,
     xport_server, Opened, TIMEOUT_ERR,
 };
-use crate::proc_fns::{zpp_long, zpp_string};
-use crate::zend::zpp::{zpp_double_or_null, zval_value_name};
+use crate::zend::zpp::{zpp_double_or_null, zpp_long, zpp_string, zval_value_name};
 use crate::{Host, Thrown};
 
 fn set_blocking_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
@@ -43,7 +42,7 @@ pub(crate) fn fn_socket_set_blocking(host: &mut dyn Host, args: &[Value]) -> Res
 /// sockets, wrappers) answers -1.
 fn write_buffer_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
     let (res, _) = crate::fs_fns::stream_param(host, args, 0, fname, "stream")?;
-    crate::proc_fns::zpp_long(host, args, 1, fname, "size")?;
+    crate::zend::zpp::zpp_long(host, args, 1, fname, "size")?;
     let file_backed = host.stream_sock_info(&res).is_none()
         && host.stream_meta(&res).is_some_and(|m| {
             m.stream_type == "STDIO" && (m.wrapper_type.is_empty() || m.wrapper_type == "PHP")
@@ -954,6 +953,174 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     ]
 }
 
+// ---------------------------------------------------------------------------
+// stream_select
+// ---------------------------------------------------------------------------
+
+/// A by-ref array argument of stream_select (None when null).
+fn select_array(v: Option<&Value>) -> Option<PhpArray> {
+    match v.map(deref) {
+        Some(Value::Array(a)) => Some(a),
+        _ => None,
+    }
+}
+
+fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let arrays = [
+        select_array(args.first()),
+        select_array(args.get(1)),
+        select_array(args.get(2)),
+    ];
+    let sec = match args.get(3).map(deref) {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(conv::to_int(&v)),
+    };
+    let usec = match args.get(4).map(deref) {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(conv::to_int(&v)),
+    };
+
+    let mut sets: [libc::fd_set; 3] = unsafe { std::mem::zeroed() };
+    for s in sets.iter_mut() {
+        unsafe { libc::FD_ZERO(s) };
+    }
+    let mut max_fd: RawFd = 0;
+    let mut nsets = 0;
+    // php's `php_stream_from_zval_no_verify` on an element that is not a
+    // stream raises a TypeError but carries on: the select still runs (and
+    // rewrites the arrays) before the exception surfaces.
+    let mut pending: Option<Thrown> = None;
+    for (i, a) in arrays.iter().enumerate() {
+        if let Some(a) = a {
+            for (_, el) in a.iter() {
+                let el = deref(el);
+                if let Some((fd, _)) = host.stream_select_fd(&el) {
+                    if (fd as usize) < libc::FD_SETSIZE {
+                        unsafe { libc::FD_SET(fd, &mut sets[i]) };
+                        max_fd = max_fd.max(fd);
+                        nsets += 1;
+                    }
+                } else if !matches!(el, Value::Resource(_)) {
+                    pending.get_or_insert_with(|| {
+                        Thrown::type_error(
+                            "stream_select(): supplied argument is not a valid stream resource",
+                        )
+                    });
+                } else if let Some(m) = host.stream_meta(&el) {
+                    crate::warn(
+                        host,
+                        "stream_select",
+                        &format!(
+                            "Cannot represent a stream of type {} as a select()able descriptor",
+                            m.stream_type
+                        ),
+                    )?;
+                } else {
+                    // A closed stream or another kind of resource.
+                    pending.get_or_insert_with(|| {
+                        Thrown::type_error(
+                            "stream_select(): supplied resource is not a valid stream resource",
+                        )
+                    });
+                }
+            }
+        }
+    }
+    // (php chains the TypeError as the ValueError's previous exception.)
+    if nsets == 0 {
+        return Err(Thrown::error("ValueError", "No stream arrays were passed"));
+    }
+    if sec.is_none() && usec.is_some_and(|u| u != 0) {
+        return Err(Thrown::error(
+            "ValueError",
+            "stream_select(): Argument #5 ($microseconds) must be null when argument #4 ($seconds) is null",
+        ));
+    }
+    let mut tv = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 0,
+    };
+    let mut tvp: *mut libc::timeval = std::ptr::null_mut();
+    if let Some(sec) = sec {
+        let usec = usec.unwrap_or(0);
+        if sec < 0 {
+            return Err(Thrown::error(
+                "ValueError",
+                "stream_select(): Argument #4 ($seconds) must be greater than or equal to 0",
+            ));
+        }
+        if usec < 0 {
+            return Err(Thrown::error(
+                "ValueError",
+                "stream_select(): Argument #5 ($microseconds) must be greater than or equal to 0",
+            ));
+        }
+        tv.tv_sec = (sec + usec / 1_000_000) as libc::time_t;
+        tv.tv_usec = (usec % 1_000_000) as libc::suseconds_t;
+        tvp = &mut tv;
+    }
+
+    // Streams with buffered unread data count as readable immediately.
+    if let Some(r) = &arrays[0] {
+        let mut ready = PhpArray::new();
+        for (k, el) in r.iter() {
+            if let Some((_, true)) = host.stream_select_fd(&deref(el)) {
+                ready.insert(k.clone(), el.clone());
+            }
+        }
+        if !ready.is_empty() {
+            let n = ready.len() as i64;
+            write_ref(args.first(), Value::Array(ready));
+            for (i, a) in arrays.iter().enumerate().skip(1) {
+                if a.is_some() {
+                    write_ref(args.get(i), Value::Array(PhpArray::new()));
+                }
+            }
+            return pending.map_or(Ok(Value::Int(n)), Err);
+        }
+    }
+
+    let (rp, rest) = sets.split_at_mut(1);
+    let (wp, ep) = rest.split_at_mut(1);
+    // No retry on EINTR: php reports an interrupted select (a signal
+    // arrived) as a warning and false, so the handler runs right after.
+    let n = unsafe { libc::select(max_fd + 1, &mut rp[0], &mut wp[0], &mut ep[0], tvp) };
+    if n == -1 {
+        let e = errno();
+        crate::warn(
+            host,
+            "stream_select",
+            &format!(
+                "Unable to select [{e}]: {} (max_fd={max_fd})",
+                crate::main::streams::strerror(e)
+            ),
+        )?;
+        return pending.map_or(Ok(Value::Bool(false)), Err);
+    }
+    for (i, a) in arrays.iter().enumerate() {
+        let Some(a) = a else { continue };
+        let mut kept = PhpArray::new();
+        for (k, el) in a.iter() {
+            if let Some((fd, _)) = host.stream_select_fd(&deref(el)) {
+                if (fd as usize) < libc::FD_SETSIZE && unsafe { libc::FD_ISSET(fd, &sets[i]) } {
+                    kept.insert(k.clone(), el.clone());
+                }
+            }
+        }
+        write_ref(args.get(i), Value::Array(kept));
+    }
+    pending.map_or(Ok(Value::Int(n as i64)), Err)
+}
+
+/// `stream_isatty($stream)`: isatty(2) on the stream's fd.
+fn fn_stream_isatty(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = deref(&args[0]);
+    Ok(Value::Bool(match host.stream_select_fd(&v) {
+        Some((fd, _)) => unsafe { libc::isatty(fd) == 1 },
+        None => false,
+    }))
+}
+
 /// TTY detection lives elsewhere: `stream_isatty` with the process
 /// functions (proc_fns), `posix_isatty` in ext/posix;
 /// sapi_windows_vt100_support exists on Windows only.
@@ -990,6 +1157,8 @@ pub fn register(m: &mut crate::Registry) {
             ("stream_set_chunk_size", fn_stream_set_chunk_size),
             ("socket_get_status", crate::fs_fns::fn_socket_get_status),
             ("socket_set_blocking", fn_socket_set_blocking),
+            ("stream_select", fn_stream_select),
+            ("stream_isatty", fn_stream_isatty),
         ],
     );
 }

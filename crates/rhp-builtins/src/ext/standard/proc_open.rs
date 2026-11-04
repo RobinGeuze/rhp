@@ -1,9 +1,6 @@
-//! Program execution (php's `ext/standard/proc_open.c` + `exec.c`) and
-//! `stream_select` (`streamsfuncs.c`): `proc_open`/`proc_close`/
-//! `proc_get_status`/`proc_terminate`/`proc_nice`, the `exec`/`system`/
-//! `passthru`/`shell_exec` family, `escapeshellarg`/`escapeshellcmd`, plus a
-//! few process-environment helpers (`putenv`, `get_current_user`,
-//! `gethostname`, `gethostbyname`, `usleep`, `cli_set_process_title`).
+//! ext/standard/proc_open.c: `proc_open`/`proc_close`/`proc_get_status`/
+//! `proc_terminate`, and the child spawning the exec family and `popen`
+//! share.
 //!
 //! Children are started with `posix_spawn(3)` exactly as php does when it is
 //! built with `USE_POSIX_SPAWN` (macOS, glibc ≥ 2.29): a string command runs as
@@ -24,81 +21,22 @@ use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::main::streams::errno;
+use crate::zend::zpp::zpp_long;
 use crate::{Host, Thrown};
 
-fn write_ref(arg: Option<&Value>, value: Value) {
+pub(crate) fn write_ref(arg: Option<&Value>, value: Value) {
     if let Some(Value::Ref(rc)) = arg {
         *rc.borrow_mut() = value;
     }
 }
 
-/// php's `zend_parse_arg_long_weak` (`Z_PARAM_LONG`, coercive mode): ints
-/// pass, bools/null become 0/1/0, integral-range floats and fully numeric
-/// strings are truncated; anything else is a TypeError
-/// "`fname(): Argument #n ($pname) must be of type int, T given`".
-pub(crate) fn zpp_long(
-    host: &dyn Host,
-    args: &[Value],
-    i: usize,
-    fname: &str,
-    pname: &str,
-) -> Result<i64, Thrown> {
-    let v = deref(&args[i]);
-    let float_to_long = |f: f64| -> Option<i64> {
-        // ZEND_DOUBLE_FITS_LONG: !(d >= 2^63 || d < -2^63), and not NaN.
-        const TWO_63: f64 = 9_223_372_036_854_775_808.0;
-        if f.is_nan() || f >= TWO_63 || f < -TWO_63 {
-            None
-        } else {
-            Some(f as i64)
-        }
-    };
-    let n = match &v {
-        Value::Int(n) => Some(*n),
-        Value::Bool(b) => Some(*b as i64),
-        Value::Null => Some(0),
-        Value::Float(f) => float_to_long(*f),
-        Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
-            Some(conv::Num::Int(n)) => Some(n),
-            Some(conv::Num::Float(f)) => float_to_long(f),
-            None => None,
-        },
-        _ => None,
-    };
-    n.ok_or_else(|| {
-        Thrown::type_error(format!(
-            "{fname}(): Argument #{} (${pname}) must be of type int, {} given",
-            i + 1,
-            crate::zend::zpp::zval_value_name(host, &v)
-        ))
-    })
-}
-
-/// `Z_PARAM_STR` (coercive): scalars become strings; arrays, objects without
-/// `__toString` and resources are a TypeError.
-pub(crate) fn zpp_string(
-    host: &dyn Host,
+/// `Z_PARAM_PATH`-style string argument: coerced to string, rejecting NUL bytes.
+pub(crate) fn path_arg(
     args: &[Value],
     i: usize,
     fname: &str,
     pname: &str,
 ) -> Result<Vec<u8>, Thrown> {
-    let v = deref(&args[i]);
-    match &v {
-        Value::Str(s) => Ok(s.as_bytes().to_vec()),
-        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Null => {
-            Ok(conv::to_string_bytes(&v))
-        }
-        _ => Err(Thrown::type_error(format!(
-            "{fname}(): Argument #{} (${pname}) must be of type string, {} given",
-            i + 1,
-            crate::zend::zpp::zval_value_name(host, &v)
-        ))),
-    }
-}
-
-/// `Z_PARAM_PATH`-style string argument: coerced to string, rejecting NUL bytes.
-fn path_arg(args: &[Value], i: usize, fname: &str, pname: &str) -> Result<Vec<u8>, Thrown> {
     let s = conv::to_string_bytes(&deref(&args[i]));
     if s.contains(&0) {
         return Err(Thrown::error(
@@ -145,7 +83,7 @@ fn current_environ() -> Vec<Vec<u8>> {
 // ---------------------------------------------------------------------------
 
 /// What to execute.
-enum SpawnCmd<'a> {
+pub(crate) enum SpawnCmd<'a> {
     /// `/bin/sh -c <command>`.
     Shell(&'a [u8]),
     /// `posix_spawnp(argv[0], argv)` — no shell.
@@ -154,10 +92,10 @@ enum SpawnCmd<'a> {
 
 /// One child descriptor: the child's fd number, the fd it is fed from, and
 /// (pipes/sockets) the parent's end, which the child must not keep.
-struct Desc {
-    index: i32,
-    childend: OwnedFd,
-    parentend: Option<OwnedFd>,
+pub(crate) struct Desc {
+    pub(crate) index: i32,
+    pub(crate) childend: OwnedFd,
+    pub(crate) parentend: Option<OwnedFd>,
 }
 
 /// One file action of the spawn, in php's order.
@@ -178,7 +116,7 @@ static SPAWN_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
 /// the request's working directory), else in that directory. Returns the
 /// child pid or the spawn error number. A child gets the request's umask
 /// when it isn't the process's ([`fork_exec`]).
-fn spawn(
+pub(crate) fn spawn(
     cmd: SpawnCmd,
     descs: &[Desc],
     cwd: Option<&[u8]>,
@@ -439,7 +377,7 @@ unsafe fn fork_exec(
 /// A `pipe(2)` pair `(read, write)`, both ends close-on-exec: the child
 /// gets its end through the spawn's dup2, and no other child inherits
 /// either (php's ends are inheritable; its children are in one thread).
-fn make_pipe() -> Option<(OwnedFd, OwnedFd)> {
+pub(crate) fn make_pipe() -> Option<(OwnedFd, OwnedFd)> {
     let mut fds = [0 as libc::c_int; 2];
     #[cfg(target_os = "linux")]
     let r = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
@@ -498,7 +436,7 @@ fn dup_fd(raw: RawFd) -> Option<OwnedFd> {
 }
 
 /// `waitpid` retrying on EINTR.
-fn waitpid_retry(pid: libc::pid_t, options: i32) -> (libc::pid_t, i32) {
+pub(crate) fn waitpid_retry(pid: libc::pid_t, options: i32) -> (libc::pid_t, i32) {
     loop {
         let mut st = 0;
         let r = unsafe { libc::waitpid(pid, &mut st, options) };
@@ -511,7 +449,7 @@ fn waitpid_retry(pid: libc::pid_t, options: i32) -> (libc::pid_t, i32) {
 
 /// The value php's `pclose`-style close reports: the exit code when the child
 /// exited normally, else the raw wait status.
-fn close_status(st: i32) -> i64 {
+pub(crate) fn close_status(st: i32) -> i64 {
     if libc::WIFEXITED(st) {
         libc::WEXITSTATUS(st) as i64
     } else {
@@ -519,280 +457,14 @@ fn close_status(st: i32) -> i64 {
     }
 }
 
-/// `popen(cmd, "r")`: run `/bin/sh -c cmd` with its stdout on a pipe; stdin
-/// and stderr are inherited. Returns (read end, pid).
-fn popen_read(cmd: &[u8]) -> Option<(OwnedFd, libc::pid_t)> {
-    let (r, w) = make_pipe()?;
-    let descs = [Desc {
-        index: 1,
-        childend: w,
-        parentend: None,
-    }];
-    let pid = spawn(SpawnCmd::Shell(cmd), &descs, None, None).ok()?;
-    drop(descs);
-    Some((r, pid))
-}
-
 /// php wraps every `popen`ed pipe in a (transient) stream resource, which
 /// consumes a resource id; mirror that so later ids line up.
-fn consume_stream_id(host: &mut dyn Host, fd: &OwnedFd) {
+pub(crate) fn consume_stream_id(host: &mut dyn Host, fd: &OwnedFd) {
     if let Some(d) = dup_fd(fd.as_raw_fd()) {
         if let Some(s) = host.stream_from_fd(d) {
             host.stream_close(&s);
         }
     }
-}
-
-fn read_fd_to_end(fd: &OwnedFd, mut each: impl FnMut(&[u8])) {
-    let mut buf = vec![0u8; 8192];
-    loop {
-        let n = unsafe {
-            libc::read(
-                fd.as_raw_fd(),
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len(),
-            )
-        };
-        if n > 0 {
-            each(&buf[..n as usize]);
-        } else if n == 0 || errno() != libc::EINTR {
-            break;
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// exec / system / passthru / shell_exec
-// ---------------------------------------------------------------------------
-
-/// php's `strip_trailing_whitespace` (C `isspace`).
-fn strip_trailing_ws(b: &[u8]) -> &[u8] {
-    let mut l = b.len();
-    while l > 0 && matches!(b[l - 1], b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') {
-        l -= 1;
-    }
-    &b[..l]
-}
-
-/// `php_exec`: mode 0 = exec (last line), 1 = system (echo lines), 2 = exec
-/// with an output array, 3 = passthru (raw). Returns (return value, status).
-fn php_exec(host: &mut dyn Host, mode: u8, cmd: &[u8], out: &mut Option<PhpArray>) -> (Value, i64) {
-    let Some((fd, pid)) = popen_read(cmd) else {
-        return (Value::Bool(false), -1);
-    };
-    consume_stream_id(host, &fd);
-    let mut ret = Value::str(Vec::new());
-    if mode == 3 {
-        read_fd_to_end(&fd, |chunk| host.write_out(chunk));
-    } else {
-        let mut data = Vec::new();
-        read_fd_to_end(&fd, |chunk| data.extend_from_slice(chunk));
-        let mut last: Option<&[u8]> = None;
-        let mut start = 0;
-        while start < data.len() {
-            let end = data[start..]
-                .iter()
-                .position(|&b| b == b'\n')
-                .map(|i| start + i + 1)
-                .unwrap_or(data.len());
-            let line = &data[start..end];
-            match mode {
-                1 => host.write_out(line),
-                2 => {
-                    if let Some(a) = out.as_mut() {
-                        a.push(Value::str(strip_trailing_ws(line).to_vec()));
-                    }
-                }
-                _ => {}
-            }
-            last = Some(line);
-            start = end;
-        }
-        if let Some(l) = last {
-            ret = Value::str(strip_trailing_ws(l).to_vec());
-        }
-    }
-    drop(fd);
-    let (r, st) = waitpid_retry(pid, 0);
-    let status = if r <= 0 { -1 } else { close_status(st) };
-    (ret, status)
-}
-
-fn exec_family(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
-    let cmd = path_arg(args, 0, fname, "command")?;
-    if cmd.is_empty() {
-        return Err(Thrown::error(
-            "ValueError",
-            format!("{fname}(): Argument #1 ($command) must not be empty"),
-        ));
-    }
-    let (mode, code_idx) = match fname {
-        "exec" => (if args.len() > 1 { 2 } else { 0 }, 2),
-        "system" => (1, 1),
-        _ => (3, 1),
-    };
-    let mut out = None;
-    if mode == 2 {
-        out = Some(match deref(&args[1]) {
-            Value::Array(a) => a,
-            _ => PhpArray::new(),
-        });
-    }
-    let (ret, status) = php_exec(host, mode, &cmd, &mut out);
-    if let Some(a) = out {
-        write_ref(args.get(1), Value::Array(a));
-    }
-    if args.len() > code_idx {
-        write_ref(args.get(code_idx), Value::Int(status));
-    }
-    // passthru returns null on success (php 8.2+), false on failure.
-    if mode == 3 {
-        return Ok(if matches!(ret, Value::Bool(false)) {
-            ret
-        } else {
-            Value::Null
-        });
-    }
-    Ok(ret)
-}
-
-fn fn_exec(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    exec_family(host, args, "exec")
-}
-
-fn fn_system(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    exec_family(host, args, "system")
-}
-
-fn fn_passthru(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    exec_family(host, args, "passthru")
-}
-
-fn fn_shell_exec(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let cmd = path_arg(args, 0, "shell_exec", "command")?;
-    if cmd.is_empty() {
-        return Err(Thrown::error(
-            "ValueError",
-            "shell_exec(): Argument #1 ($command) must not be empty",
-        ));
-    }
-    let Some((fd, pid)) = popen_read(&cmd) else {
-        return Ok(Value::Bool(false));
-    };
-    consume_stream_id(host, &fd);
-    let mut data = Vec::new();
-    read_fd_to_end(&fd, |c| data.extend_from_slice(c));
-    drop(fd);
-    waitpid_retry(pid, 0);
-    Ok(if data.is_empty() {
-        Value::Null
-    } else {
-        Value::str(data)
-    })
-}
-
-// ---------------------------------------------------------------------------
-// escapeshellarg / escapeshellcmd
-// ---------------------------------------------------------------------------
-
-/// `php_mblen` under php's default `C.UTF-8` LC_CTYPE: the length of the valid
-/// UTF-8 sequence at the start of `s`, or -1 when it is invalid/incomplete.
-fn mblen(s: &[u8]) -> isize {
-    let b = s[0];
-    if b < 0x80 {
-        return 1;
-    }
-    let n = match b {
-        0xC2..=0xDF => 2,
-        0xE0..=0xEF => 3,
-        0xF0..=0xF4 => 4,
-        _ => return -1,
-    };
-    if s.len() < n {
-        return -1;
-    }
-    match std::str::from_utf8(&s[..n]) {
-        Ok(_) => n as isize,
-        Err(_) => -1,
-    }
-}
-
-fn escape_shell_arg(s: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(s.len() + 2);
-    out.push(b'\'');
-    let mut x = 0;
-    while x < s.len() {
-        let l = mblen(&s[x..]);
-        if l < 0 {
-            x += 1;
-            continue;
-        }
-        if l > 1 {
-            out.extend_from_slice(&s[x..x + l as usize]);
-            x += l as usize;
-            continue;
-        }
-        if s[x] == b'\'' {
-            out.extend_from_slice(b"'\\'");
-        }
-        out.push(s[x]);
-        x += 1;
-    }
-    out.push(b'\'');
-    out
-}
-
-fn escape_shell_cmd(s: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(s.len() * 2);
-    // Position of the matching closing quote while inside a quoted span.
-    let mut p: Option<usize> = None;
-    let mut x = 0;
-    while x < s.len() {
-        let l = mblen(&s[x..]);
-        if l < 0 {
-            x += 1;
-            continue;
-        }
-        if l > 1 {
-            out.extend_from_slice(&s[x..x + l as usize]);
-            x += l as usize;
-            continue;
-        }
-        let c = s[x];
-        match c {
-            b'"' | b'\'' => {
-                if p.is_none() {
-                    p = s[x + 1..].iter().position(|&b| b == c).map(|i| x + 1 + i);
-                    if p.is_none() {
-                        out.push(b'\\');
-                    }
-                } else if p.map(|i| s[i]) == Some(c) {
-                    p = None;
-                } else {
-                    out.push(b'\\');
-                }
-                out.push(c);
-            }
-            b'#' | b'&' | b';' | b'`' | b'|' | b'*' | b'?' | b'~' | b'<' | b'>' | b'^' | b'('
-            | b')' | b'[' | b']' | b'{' | b'}' | b'$' | b'\\' | b'\n' | 0xFF => {
-                out.push(b'\\');
-                out.push(c);
-            }
-            _ => out.push(c),
-        }
-        x += 1;
-    }
-    out
-}
-
-fn fn_escapeshellarg(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = path_arg(args, 0, "escapeshellarg", "arg")?;
-    Ok(Value::str(escape_shell_arg(&s)))
-}
-
-fn fn_escapeshellcmd(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = path_arg(args, 0, "escapeshellcmd", "command")?;
-    Ok(Value::str(escape_shell_cmd(&s)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1021,25 +693,6 @@ fn fn_proc_terminate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     };
     let h = proc_arg(host, args, "proc_terminate")?;
     Ok(Value::Bool(unsafe { libc::kill(h.pid, sig as i32) } == 0))
-}
-
-fn fn_proc_nice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let pri = zpp_long(host, args, 0, "proc_nice", "priority")?;
-    unsafe {
-        *libc_errno() = 0;
-        libc::nice(pri as i32);
-        Ok(Value::Bool(*libc_errno() == 0))
-    }
-}
-
-#[cfg(target_os = "macos")]
-unsafe fn libc_errno() -> *mut i32 {
-    libc::__error()
-}
-
-#[cfg(not(target_os = "macos"))]
-unsafe fn libc_errno() -> *mut i32 {
-    libc::__errno_location()
 }
 
 /// Open a `['file', $path, $mode]` descriptor target with fopen-mode flags.
@@ -1310,232 +963,6 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(host.resource_insert("process", Box::new(h)))
 }
 
-// ---------------------------------------------------------------------------
-// stream_select
-// ---------------------------------------------------------------------------
-
-/// A by-ref array argument of stream_select (None when null).
-fn select_array(v: Option<&Value>) -> Option<PhpArray> {
-    match v.map(deref) {
-        Some(Value::Array(a)) => Some(a),
-        _ => None,
-    }
-}
-
-fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let arrays = [
-        select_array(args.first()),
-        select_array(args.get(1)),
-        select_array(args.get(2)),
-    ];
-    let sec = match args.get(3).map(deref) {
-        None | Some(Value::Null) => None,
-        Some(v) => Some(conv::to_int(&v)),
-    };
-    let usec = match args.get(4).map(deref) {
-        None | Some(Value::Null) => None,
-        Some(v) => Some(conv::to_int(&v)),
-    };
-
-    let mut sets: [libc::fd_set; 3] = unsafe { std::mem::zeroed() };
-    for s in sets.iter_mut() {
-        unsafe { libc::FD_ZERO(s) };
-    }
-    let mut max_fd: RawFd = 0;
-    let mut nsets = 0;
-    // php's `php_stream_from_zval_no_verify` on an element that is not a
-    // stream raises a TypeError but carries on: the select still runs (and
-    // rewrites the arrays) before the exception surfaces.
-    let mut pending: Option<Thrown> = None;
-    for (i, a) in arrays.iter().enumerate() {
-        if let Some(a) = a {
-            for (_, el) in a.iter() {
-                let el = deref(el);
-                if let Some((fd, _)) = host.stream_select_fd(&el) {
-                    if (fd as usize) < libc::FD_SETSIZE {
-                        unsafe { libc::FD_SET(fd, &mut sets[i]) };
-                        max_fd = max_fd.max(fd);
-                        nsets += 1;
-                    }
-                } else if !matches!(el, Value::Resource(_)) {
-                    pending.get_or_insert_with(|| {
-                        Thrown::type_error(
-                            "stream_select(): supplied argument is not a valid stream resource",
-                        )
-                    });
-                } else if let Some(m) = host.stream_meta(&el) {
-                    crate::warn(
-                        host,
-                        "stream_select",
-                        &format!(
-                            "Cannot represent a stream of type {} as a select()able descriptor",
-                            m.stream_type
-                        ),
-                    )?;
-                } else {
-                    // A closed stream or another kind of resource.
-                    pending.get_or_insert_with(|| {
-                        Thrown::type_error(
-                            "stream_select(): supplied resource is not a valid stream resource",
-                        )
-                    });
-                }
-            }
-        }
-    }
-    // (php chains the TypeError as the ValueError's previous exception.)
-    if nsets == 0 {
-        return Err(Thrown::error("ValueError", "No stream arrays were passed"));
-    }
-    if sec.is_none() && usec.is_some_and(|u| u != 0) {
-        return Err(Thrown::error(
-            "ValueError",
-            "stream_select(): Argument #5 ($microseconds) must be null when argument #4 ($seconds) is null",
-        ));
-    }
-    let mut tv = libc::timeval {
-        tv_sec: 0,
-        tv_usec: 0,
-    };
-    let mut tvp: *mut libc::timeval = std::ptr::null_mut();
-    if let Some(sec) = sec {
-        let usec = usec.unwrap_or(0);
-        if sec < 0 {
-            return Err(Thrown::error(
-                "ValueError",
-                "stream_select(): Argument #4 ($seconds) must be greater than or equal to 0",
-            ));
-        }
-        if usec < 0 {
-            return Err(Thrown::error(
-                "ValueError",
-                "stream_select(): Argument #5 ($microseconds) must be greater than or equal to 0",
-            ));
-        }
-        tv.tv_sec = (sec + usec / 1_000_000) as libc::time_t;
-        tv.tv_usec = (usec % 1_000_000) as libc::suseconds_t;
-        tvp = &mut tv;
-    }
-
-    // Streams with buffered unread data count as readable immediately.
-    if let Some(r) = &arrays[0] {
-        let mut ready = PhpArray::new();
-        for (k, el) in r.iter() {
-            if let Some((_, true)) = host.stream_select_fd(&deref(el)) {
-                ready.insert(k.clone(), el.clone());
-            }
-        }
-        if !ready.is_empty() {
-            let n = ready.len() as i64;
-            write_ref(args.first(), Value::Array(ready));
-            for (i, a) in arrays.iter().enumerate().skip(1) {
-                if a.is_some() {
-                    write_ref(args.get(i), Value::Array(PhpArray::new()));
-                }
-            }
-            return pending.map_or(Ok(Value::Int(n)), Err);
-        }
-    }
-
-    let (rp, rest) = sets.split_at_mut(1);
-    let (wp, ep) = rest.split_at_mut(1);
-    // No retry on EINTR: php reports an interrupted select (a signal
-    // arrived) as a warning and false, so the handler runs right after.
-    let n = unsafe { libc::select(max_fd + 1, &mut rp[0], &mut wp[0], &mut ep[0], tvp) };
-    if n == -1 {
-        let e = errno();
-        crate::warn(
-            host,
-            "stream_select",
-            &format!(
-                "Unable to select [{e}]: {} (max_fd={max_fd})",
-                crate::main::streams::strerror(e)
-            ),
-        )?;
-        return pending.map_or(Ok(Value::Bool(false)), Err);
-    }
-    for (i, a) in arrays.iter().enumerate() {
-        let Some(a) = a else { continue };
-        let mut kept = PhpArray::new();
-        for (k, el) in a.iter() {
-            if let Some((fd, _)) = host.stream_select_fd(&deref(el)) {
-                if (fd as usize) < libc::FD_SETSIZE && unsafe { libc::FD_ISSET(fd, &sets[i]) } {
-                    kept.insert(k.clone(), el.clone());
-                }
-            }
-        }
-        write_ref(args.get(i), Value::Array(kept));
-    }
-    pending.map_or(Ok(Value::Int(n as i64)), Err)
-}
-
-/// `stream_isatty($stream)`: isatty(2) on the stream's fd.
-fn fn_stream_isatty(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let v = deref(&args[0]);
-    Ok(Value::Bool(match host.stream_select_fd(&v) {
-        Some((fd, _)) => unsafe { libc::isatty(fd) == 1 },
-        None => false,
-    }))
-}
-
-// ---------------------------------------------------------------------------
-// process environment helpers
-// ---------------------------------------------------------------------------
-
-/// The passwd entry for a uid: (name, passwd, uid, gid, gecos, dir, shell).
-pub(crate) struct Passwd {
-    pub name: Vec<u8>,
-    pub passwd: Vec<u8>,
-    pub uid: u32,
-    pub gid: u32,
-    pub gecos: Vec<u8>,
-    pub dir: Vec<u8>,
-    pub shell: Vec<u8>,
-}
-
-unsafe fn cbytes(p: *const libc::c_char) -> Vec<u8> {
-    if p.is_null() {
-        Vec::new()
-    } else {
-        std::ffi::CStr::from_ptr(p).to_bytes().to_vec()
-    }
-}
-
-fn passwd_from(pw: &libc::passwd) -> Passwd {
-    unsafe {
-        Passwd {
-            name: cbytes(pw.pw_name),
-            passwd: cbytes(pw.pw_passwd),
-            uid: pw.pw_uid,
-            gid: pw.pw_gid,
-            gecos: cbytes(pw.pw_gecos),
-            dir: cbytes(pw.pw_dir),
-            shell: cbytes(pw.pw_shell),
-        }
-    }
-}
-
-pub(crate) fn getpwuid(uid: u32) -> Option<Passwd> {
-    unsafe {
-        let mut pw: libc::passwd = std::mem::zeroed();
-        let mut buf = vec![0 as libc::c_char; 16384];
-        let mut res: *mut libc::passwd = std::ptr::null_mut();
-        let r = libc::getpwuid_r(uid, &mut pw, buf.as_mut_ptr(), buf.len(), &mut res);
-        (r == 0 && !res.is_null()).then(|| passwd_from(&pw))
-    }
-}
-
-pub(crate) fn getpwnam(name: &[u8]) -> Option<Passwd> {
-    let c = CString::new(name.to_vec()).ok()?;
-    unsafe {
-        let mut pw: libc::passwd = std::mem::zeroed();
-        let mut buf = vec![0 as libc::c_char; 16384];
-        let mut res: *mut libc::passwd = std::ptr::null_mut();
-        let r = libc::getpwnam_r(c.as_ptr(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut res);
-        (r == 0 && !res.is_null()).then(|| passwd_from(&pw))
-    }
-}
-
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
@@ -1546,15 +973,6 @@ pub fn register(m: &mut crate::Registry) {
             ("pclose", fn_pclose),
             ("proc_get_status", fn_proc_get_status),
             ("proc_terminate", fn_proc_terminate),
-            ("proc_nice", fn_proc_nice),
-            ("exec", fn_exec),
-            ("system", fn_system),
-            ("passthru", fn_passthru),
-            ("shell_exec", fn_shell_exec),
-            ("escapeshellarg", fn_escapeshellarg),
-            ("escapeshellcmd", fn_escapeshellcmd),
-            ("stream_select", fn_stream_select),
-            ("stream_isatty", fn_stream_isatty),
         ],
     );
 }

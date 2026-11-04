@@ -43,7 +43,6 @@ mod ext;
 mod file_fns;
 mod fs_fns;
 mod ini_parse;
-mod proc_fns;
 mod sapi;
 mod stdext_fns;
 
@@ -96,7 +95,7 @@ pub use rhp_values::{
 /// payload: a process closes its pipes and reaps the child if it already
 /// exited (proc_open_rsrc_dtor); anything else is just dropped.
 pub fn native_resource_dtor(host: &mut dyn Host, data: Box<dyn std::any::Any>) {
-    proc_fns::proc_dtor(host, data);
+    ext::standard::proc_open::proc_dtor(host, data);
 }
 
 /// A native builtin function over owned values.
@@ -346,7 +345,8 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("random", Box::new(ext::random::register)),
         ("readline", Box::new(ext::readline::register)),
         ("crypt", Box::new(ext::standard::crypt::register)),
-        ("proc_fns", Box::new(proc_fns::register)),
+        ("proc_open", Box::new(ext::standard::proc_open::register)),
+        ("exec", Box::new(ext::standard::exec::register)),
         ("fs_fns", Box::new(fs_fns::register)),
     ];
     v.extend(rest);

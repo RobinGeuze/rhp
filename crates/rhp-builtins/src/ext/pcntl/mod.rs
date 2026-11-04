@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicUsize, Ordering}
 use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
-use crate::proc_fns::zpp_long;
+use crate::zend::zpp::zpp_long;
 use crate::{Host, Thrown};
 
 #[derive(Default)]

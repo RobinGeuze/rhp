@@ -9,7 +9,7 @@ use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::main::streams::errno;
-use crate::proc_fns::{getpwnam, getpwuid, zpp_long, zpp_string, Passwd};
+use crate::zend::zpp::{zpp_long, zpp_string};
 use crate::{Host, Thrown};
 
 /// php's `PHP_POSIX_CHECK_PID`: ValueError unless `lower <= pid <= upper`.
@@ -343,6 +343,56 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("POSIX_S_IFIFO", Value::Int(libc::S_IFIFO as i64)),
         ("POSIX_S_IFSOCK", Value::Int(libc::S_IFSOCK as i64)),
     ]
+}
+
+// ---------------------------------------------------------------------------
+// process environment helpers
+// ---------------------------------------------------------------------------
+
+/// The passwd entry for a uid: (name, passwd, uid, gid, gecos, dir, shell).
+pub(crate) struct Passwd {
+    pub name: Vec<u8>,
+    pub passwd: Vec<u8>,
+    pub uid: u32,
+    pub gid: u32,
+    pub gecos: Vec<u8>,
+    pub dir: Vec<u8>,
+    pub shell: Vec<u8>,
+}
+
+fn passwd_from(pw: &libc::passwd) -> Passwd {
+    unsafe {
+        Passwd {
+            name: cbytes(pw.pw_name),
+            passwd: cbytes(pw.pw_passwd),
+            uid: pw.pw_uid,
+            gid: pw.pw_gid,
+            gecos: cbytes(pw.pw_gecos),
+            dir: cbytes(pw.pw_dir),
+            shell: cbytes(pw.pw_shell),
+        }
+    }
+}
+
+pub(crate) fn getpwuid(uid: u32) -> Option<Passwd> {
+    unsafe {
+        let mut pw: libc::passwd = std::mem::zeroed();
+        let mut buf = vec![0 as libc::c_char; 16384];
+        let mut res: *mut libc::passwd = std::ptr::null_mut();
+        let r = libc::getpwuid_r(uid, &mut pw, buf.as_mut_ptr(), buf.len(), &mut res);
+        (r == 0 && !res.is_null()).then(|| passwd_from(&pw))
+    }
+}
+
+pub(crate) fn getpwnam(name: &[u8]) -> Option<Passwd> {
+    let c = CString::new(name.to_vec()).ok()?;
+    unsafe {
+        let mut pw: libc::passwd = std::mem::zeroed();
+        let mut buf = vec![0 as libc::c_char; 16384];
+        let mut res: *mut libc::passwd = std::ptr::null_mut();
+        let r = libc::getpwnam_r(c.as_ptr(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut res);
+        (r == 0 && !res.is_null()).then(|| passwd_from(&pw))
+    }
 }
 
 pub fn register(m: &mut crate::Registry) {

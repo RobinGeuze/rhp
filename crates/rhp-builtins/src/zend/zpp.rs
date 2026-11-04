@@ -698,6 +698,71 @@ pub(crate) fn zpp_double_or_null(
     })
 }
 
+/// php's `zend_parse_arg_long_weak` (`Z_PARAM_LONG`, coercive mode): ints
+/// pass, bools/null become 0/1/0, integral-range floats and fully numeric
+/// strings are truncated; anything else is a TypeError
+/// "`fname(): Argument #n ($pname) must be of type int, T given`".
+pub(crate) fn zpp_long(
+    host: &dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<i64, Thrown> {
+    let v = deref(&args[i]);
+    let float_to_long = |f: f64| -> Option<i64> {
+        // ZEND_DOUBLE_FITS_LONG: !(d >= 2^63 || d < -2^63), and not NaN.
+        const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+        if f.is_nan() || f >= TWO_63 || f < -TWO_63 {
+            None
+        } else {
+            Some(f as i64)
+        }
+    };
+    let n = match &v {
+        Value::Int(n) => Some(*n),
+        Value::Bool(b) => Some(*b as i64),
+        Value::Null => Some(0),
+        Value::Float(f) => float_to_long(*f),
+        Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
+            Some(conv::Num::Int(n)) => Some(n),
+            Some(conv::Num::Float(f)) => float_to_long(f),
+            None => None,
+        },
+        _ => None,
+    };
+    n.ok_or_else(|| {
+        Thrown::type_error(format!(
+            "{fname}(): Argument #{} (${pname}) must be of type int, {} given",
+            i + 1,
+            zval_value_name(host, &v)
+        ))
+    })
+}
+
+/// `Z_PARAM_STR` (coercive): scalars become strings; arrays, objects without
+/// `__toString` and resources are a TypeError.
+pub(crate) fn zpp_string(
+    host: &dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<Vec<u8>, Thrown> {
+    let v = deref(&args[i]);
+    match &v {
+        Value::Str(s) => Ok(s.as_bytes().to_vec()),
+        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Null => {
+            Ok(conv::to_string_bytes(&v))
+        }
+        _ => Err(Thrown::type_error(format!(
+            "{fname}(): Argument #{} (${pname}) must be of type string, {} given",
+            i + 1,
+            zval_value_name(host, &v)
+        ))),
+    }
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register_helpers(m, &[("__zpp_arg", fn_zpp_arg, 5, Some(5))]);
 }

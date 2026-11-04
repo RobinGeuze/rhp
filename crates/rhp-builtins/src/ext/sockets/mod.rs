@@ -15,9 +15,8 @@ use rhp_values::ops::deref;
 use rhp_values::{ArrayKey, PhpArray, Value};
 
 use crate::main::streams::errno;
-use crate::proc_fns::zpp_long;
 use crate::zend::object_handlers::{ClassHandlers, ObjectHandlers};
-use crate::zend::zpp::zval_value_name;
+use crate::zend::zpp::{zpp_long, zval_value_name};
 use crate::{Host, Thrown};
 
 /// `Socket`'s handlers: no clone, not comparable.

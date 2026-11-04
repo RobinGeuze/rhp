@@ -15,10 +15,11 @@ use crate::main::ini::{
 use crate::main::ini_table::INI_TABLE;
 use crate::main::network;
 use crate::main::output::ob;
-use crate::proc_fns::zpp_long;
 use crate::zend::builtin_functions::resolve_const;
 use crate::zend::virtual_cwd::os_path;
-use crate::zend::zpp::{bool_param, int_param, require_callback, str_or_null_param, str_param};
+use crate::zend::zpp::{
+    bool_param, int_param, require_callback, str_or_null_param, str_param, zpp_long,
+};
 use crate::{ext, zend, Host, Thrown};
 
 fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

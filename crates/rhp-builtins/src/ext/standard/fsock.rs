@@ -7,8 +7,7 @@ use crate::main::streams::xp_socket::{
     default_socket_timeout, escape_persistent_key, persistent_lookup, register_stream,
     xport_client, Opened,
 };
-use crate::proc_fns::{zpp_long, zpp_string};
-use crate::zend::zpp::zpp_double_or_null;
+use crate::zend::zpp::{zpp_double_or_null, zpp_long, zpp_string};
 use crate::{Host, Thrown};
 
 fn fsockopen_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {

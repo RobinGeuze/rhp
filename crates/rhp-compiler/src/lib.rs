@@ -4422,7 +4422,7 @@ impl ProtoBuilder {
                 | Op::Identical(_)
                 | Op::NotIdentical(_)
         );
-        let (a, r) = if commutative && php_operand_kind(b.lhs) < php_operand_kind(b.rhs) {
+        let (a, r) = if commutative && php_swaps_operands(b.lhs, b.rhs) {
             (r, a)
         } else {
             (a, r)
@@ -7140,40 +7140,64 @@ fn hint_class_names(hint: &Hint) -> Result<Vec<PhpStr>, Thrown> {
     Ok(out)
 }
 
-/// The kind php's compiler gives an expression's result: IS_CONST (1) <
-/// IS_TMP_VAR (2) < IS_VAR (4) < IS_CV (8). Reads of elements and
-/// properties are TMP (zend_adjust_for_fetch_type); calls, `new`, `yield`
-/// and `include`/`eval` are VAR. (php's frameless and special-cased
-/// function calls give TMP; they count as VAR here.)
-fn php_operand_kind(e: &Expression) -> u8 {
-    const CONST: u8 = 1;
-    const TMP: u8 = 2;
-    const VAR: u8 = 4;
-    const CV: u8 = 8;
+/// Whether php's VM swaps the operands of a commutative opcode: op1's
+/// kind is lower than op2's, in IS_CONST < IS_TMP_VAR < IS_VAR < IS_CV.
+/// Reads of elements and properties are TMP (zend_adjust_for_fetch_type);
+/// calls, `new`, `yield` and `include`/`eval` are VAR. (php's frameless
+/// and special-cased function calls give TMP; they count as VAR here.)
+/// Constant folding, the costly part, runs only when CONST versus TMP
+/// decides, so long chains compile in linear time.
+fn php_swaps_operands(lhs: &Expression, rhs: &Expression) -> bool {
+    match (php_operand_kind(lhs), php_operand_kind(rhs)) {
+        (l, r) if l != r => l < r,
+        // Both CONST-or-TMP: only a CONST op1 against a TMP op2 swaps.
+        (Kind::ConstOrTmp, Kind::ConstOrTmp) => {
+            !is_magic_const(rhs)
+                && fold_const(rhs).is_err()
+                && (is_magic_const(lhs) || fold_const(lhs).is_ok())
+        }
+        _ => false,
+    }
+}
+
+#[derive(PartialEq, PartialOrd)]
+enum Kind {
+    ConstOrTmp,
+    Var,
+    Cv,
+}
+
+fn php_operand_kind(e: &Expression) -> Kind {
     match e {
         Expression::Parenthesized(p) => php_operand_kind(p.expression),
         Expression::Variable(Variable::Direct(d)) => {
             let n = strip_dollar(d.name);
             if n == b"this" || is_superglobal(n) {
-                TMP
+                Kind::ConstOrTmp
             } else {
-                CV
+                Kind::Cv
             }
         }
         Expression::Call(_)
         | Expression::Instantiation(_)
         | Expression::AnonymousClass(_)
-        | Expression::Yield(_) => VAR,
+        | Expression::Yield(_) => Kind::Var,
         Expression::Construct(
             Construct::Eval(_)
             | Construct::Include(_)
             | Construct::IncludeOnce(_)
             | Construct::Require(_)
             | Construct::RequireOnce(_),
-        ) => VAR,
-        Expression::MagicConstant(_) => CONST,
-        _ if fold_const(e).is_ok() => CONST,
-        _ => TMP,
+        ) => Kind::Var,
+        _ => Kind::ConstOrTmp,
+    }
+}
+
+fn is_magic_const(e: &Expression) -> bool {
+    match e {
+        Expression::Parenthesized(p) => is_magic_const(p.expression),
+        Expression::MagicConstant(_) => true,
+        _ => false,
     }
 }
 

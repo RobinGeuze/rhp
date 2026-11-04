@@ -101,7 +101,7 @@ Notes:
   `*`, `|`, `&`, `^`, `==`, `!=`, `===` and `!==` when op1's kind
   (CONST < TMP < VAR < CV) is lower than op2's, so `[] | $g` reaches
   GMP's handler first and `$arr | $g` does not; rhp's compiler does the
-  same (`php_operand_kind`).
+  same (`php_swaps_operands`).
 - Strictness: a handler that converts operands the way php's
   `ZEND_ARG_USES_STRICT_TYPES()` decides (GMP) asks
   `host.arg_uses_strict_types()`, not `caller_strict_types()`: php looks

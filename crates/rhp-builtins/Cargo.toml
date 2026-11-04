@@ -14,6 +14,8 @@ mbstring-libmbfl = ["dep:rhp-mbfl-sys"]
 
 [dependencies]
 rhp-values = { path = "../rhp-values" }
+# The stub signatures (rhp_bytecode::signatures).
+rhp-bytecode = { path = "../rhp-bytecode" }
 libc = "0.2"
 indexmap = { workspace = true }
 # No -sys crate for PCRE2: build.rs links the system libpcre2-8 (see

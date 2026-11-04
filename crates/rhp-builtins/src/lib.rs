@@ -20,7 +20,6 @@ pub(crate) mod module;
 pub mod object;
 pub mod opsstream;
 pub mod pcre;
-pub mod signatures;
 pub mod streams;
 pub mod version;
 pub mod zend;
@@ -1277,7 +1276,7 @@ pub(crate) type Registry = HashMap<&'static str, Builtin>;
 /// signatures (every registered php function has a stub row; the
 /// `php_builtins_have_stubs` test checks), raised to [`BODY_MIN`].
 pub(crate) fn register(m: &mut Registry, fns: &[(&'static str, NativeFn)]) {
-    use signatures::Signature;
+    use rhp_bytecode::signatures::{self, Signature};
     for &(name, func) in fns {
         let (min_args, max_args) = signatures::function(name.as_bytes())
             .map_or((0, None), |f| (f.min_args(), f.max_args()));

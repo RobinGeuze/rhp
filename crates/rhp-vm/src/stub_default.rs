@@ -1,5 +1,5 @@
 //! Evaluates a builtin parameter's default as the stubs print it (see
-//! rhp_builtins::signatures): the constant expression php compiles in
+//! rhp_bytecode::signatures): the constant expression php compiles in
 //! zend_get_default_from_internal_arg_info for
 //! ReflectionParameter::getDefaultValue(). The forms are gen_stub's:
 //! literals, `[]` arrays, constants, class constants, unary and binary

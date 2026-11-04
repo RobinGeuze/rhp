@@ -824,7 +824,7 @@ impl<'a> Parser<'a, '_> {
         let mut cur = Some(cid);
         while let Some(id) = cur {
             let name = self.host.class_name(id).unwrap_or_default();
-            if crate::signatures::class(&name)
+            if rhp_bytecode::signatures::class(&name)
                 .is_some_and(|c| c.interfaces.contains(&"Serializable"))
             {
                 return true;

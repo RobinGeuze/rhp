@@ -3,7 +3,7 @@
 //! php generates its arginfo from these stubs with build/gen_stub.php, and
 //! Reflection reports that arginfo. This walks the stubs of the extensions
 //! rhp provides with mago-syntax and writes one row per function, class and
-//! method to crates/rhp-builtins/src/signatures/table.rs:
+//! method to crates/rhp-bytecode/src/signatures/table.rs:
 //! - types in zend_type_to_string's canonical spelling;
 //! - defaults printed the way gen_stub prints them (nikic/php-parser's
 //!   pretty printer after name resolution), which is the string Reflection
@@ -69,7 +69,7 @@ const SOURCES: &[(&str, &str)] = &[
 ];
 
 /// The generated file, relative to the workspace root.
-const OUT: &str = "crates/rhp-builtins/src/signatures/table.rs";
+const OUT: &str = "crates/rhp-bytecode/src/signatures/table.rs";
 
 /// The php-src commit the table is generated from.
 const PIN: &str = "tests/phpt/php-src.ref";
@@ -77,7 +77,7 @@ const PIN: &str = "tests/phpt/php-src.ref";
 const USAGE: &str =
     "usage: rhp-difftest gen signatures [--php-src <dir>] [--out <file>] [--check]\n\
   --php-src   php-src checkout at tests/phpt/php-src.ref (default: php-src)\n\
-  --out       output file (default: crates/rhp-builtins/src/signatures/table.rs)\n\
+  --out       output file (default: crates/rhp-bytecode/src/signatures/table.rs)\n\
   --check     fail if the output file differs instead of writing it\n";
 
 pub fn main(args: &[String]) -> ExitCode {
@@ -209,7 +209,7 @@ struct Out {
     methods: BTreeMap<(String, String), MethodRow>,
 }
 
-// Flags, mirrored by crates/rhp-builtins/src/signatures/mod.rs.
+// Flags, mirrored by crates/rhp-bytecode/src/signatures/mod.rs.
 const M_PUBLIC: u32 = 1;
 const M_PROTECTED: u32 = 2;
 const M_PRIVATE: u32 = 4;

@@ -110,7 +110,7 @@ impl ProtoBuilder<'_> {
         // `@prefer-ref` positions of the builtin (array_multisort, extract): a
         // non-variable argument is passed by value, silently.
         let prefer_ref = |i: usize| {
-            use rhp_builtins::signatures::Signature;
+            use rhp_bytecode::signatures::Signature;
             builtin.is_some_and(|f| f.prefer_ref(i))
         };
 
@@ -870,8 +870,8 @@ fn unparen<'a>(mut e: &'a Expression<'a>) -> &'a Expression<'a> {
 
 /// The stub signature of a builtin rhp implements: a native one, or a
 /// function of the prelude.
-fn builtin_sig(cx: &FileCtx, name_lc: &[u8]) -> Option<&'static rhp_builtins::signatures::Func> {
-    let f = rhp_builtins::signatures::function(name_lc)?;
+fn builtin_sig(cx: &FileCtx, name_lc: &[u8]) -> Option<&'static rhp_bytecode::signatures::Func> {
+    let f = rhp_bytecode::signatures::function(name_lc)?;
     let name = std::str::from_utf8(name_lc).ok()?;
     if rhp_builtins::registry().contains_key(name) {
         return Some(f);
@@ -892,8 +892,8 @@ fn builtin_sig(cx: &FileCtx, name_lc: &[u8]) -> Option<&'static rhp_builtins::si
 /// its stub signature. The call site emits `MakeRef` for each flagged
 /// position.
 fn builtin_by_ref(cx: &FileCtx, name_lc: &[u8], argc: usize) -> Option<Vec<bool>> {
-    use rhp_builtins::signatures::Signature;
-    if !rhp_builtins::signatures::function(name_lc)?.has_by_ref() {
+    use rhp_bytecode::signatures::Signature;
+    if !rhp_bytecode::signatures::function(name_lc)?.has_by_ref() {
         return None;
     }
     let f = builtin_sig(cx, name_lc)?;

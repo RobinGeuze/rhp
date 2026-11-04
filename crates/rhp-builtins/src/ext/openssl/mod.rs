@@ -564,8 +564,8 @@ pub(super) unsafe fn openssl_free<T>(p: *mut T) {
 
 /// Parameter `i`'s name and type in php's stub for `fname`.
 pub(super) fn param(fname: &str, i: usize) -> (&'static str, &'static str) {
-    use crate::signatures::Signature;
-    crate::signatures::function(fname.as_bytes())
+    use rhp_bytecode::signatures::Signature;
+    rhp_bytecode::signatures::function(fname.as_bytes())
         .and_then(|f| f.param(i))
         .map_or(("", ""), |p| (p.name, p.ty))
 }

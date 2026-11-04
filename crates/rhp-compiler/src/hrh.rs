@@ -24,7 +24,7 @@ use crate::parse::cst::{
     Yield,
 };
 use mago_span::HasSpan;
-use rhp_builtins::signatures::Signature;
+use rhp_bytecode::signatures::Signature;
 
 use crate::names::{NameKind, NsContext};
 
@@ -55,7 +55,7 @@ type UserSig = Rc<Vec<(Vec<u8>, bool, bool)>>;
 #[derive(Clone)]
 enum Callee {
     Unknown,
-    Builtin(&'static rhp_builtins::signatures::Func),
+    Builtin(&'static rhp_bytecode::signatures::Func),
     User(UserSig),
 }
 
@@ -386,7 +386,7 @@ impl Scan<'_> {
             let lc = name.to_ascii_lowercase();
             let callee = match self.user_fns.get(&lc) {
                 Some(u) => Callee::User(Rc::clone(u)),
-                None => rhp_builtins::signatures::function(&lc)
+                None => rhp_bytecode::signatures::function(&lc)
                     .filter(|_| !lc.contains(&b'\\'))
                     .map_or(Callee::Unknown, Callee::Builtin),
             };
@@ -400,7 +400,7 @@ impl Scan<'_> {
             .all(|a| matches!(a, Argument::Positional(p) if p.ellipsis.is_none()));
         let frameless = !self.in_frameless
             && plain
-            && rhp_builtins::signatures::function(&global.to_ascii_lowercase())
+            && rhp_bytecode::signatures::function(&global.to_ascii_lowercase())
                 .is_some_and(|f| f.frameless(list.arguments.len()));
         if !frameless {
             return self.args(list, Callee::Unknown);

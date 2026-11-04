@@ -14,6 +14,7 @@ name = "rhp-difftest"
 path = "src/main.rs"
 
 [dependencies]
+rhp-bytecode = { path = "../../crates/rhp-bytecode" }
 rhp-compiler = { path = "../../crates/rhp-compiler" }
 rhp-sapi = { path = "../../crates/rhp-sapi" }
 rhp-values = { path = "../../crates/rhp-values" }

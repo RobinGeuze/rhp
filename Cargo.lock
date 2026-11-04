@@ -991,6 +991,7 @@ dependencies = [
  "mago-syntax-core",
  "rhp-builtins",
  "rhp-bytecode",
+ "rhp-sapi",
  "rhp-values",
 ]
 
@@ -1035,6 +1036,7 @@ name = "rhp-sapi"
 version = "0.0.0"
 dependencies = [
  "rhp-builtins",
+ "rhp-bytecode",
  "rhp-compiler",
  "rhp-values",
  "rhp-vm",

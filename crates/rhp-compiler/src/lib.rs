@@ -56,28 +56,27 @@ pub fn compile_error_line() -> u32 {
     COMPILE_ERROR_LINE.with(Cell::get)
 }
 
-/// Compile a parsed program (borrowed from a `crate::parse::Arena`) into an
-/// owned, runnable bytecode `Program`. No `'arena` borrow escapes.
-pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
-    compile_with_source(program, b"", "")
+/// What a file is compiled for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// A request's main script: the program starts with the prelude.
+    Main,
+    /// A file `include`d, `require`d or `eval`ed into a running VM, which
+    /// has the prelude already: the program carries none and reports a
+    /// prelude count of zero.
+    Include,
 }
 
-/// Compile with the original source + file name, so protos carry accurate line
-/// numbers (for exception `getLine()`/`getFile()` and diagnostics).
-pub fn compile_with_source(
+/// Compile a parsed program into an owned, runnable bytecode `Program` (no
+/// `'arena` borrow escapes). `source` and `file` give protos their lines
+/// and file name (exception `getLine()`/`getFile()`, diagnostics).
+pub fn compile(
     program: &AstProgram,
     source: &[u8],
     file: &str,
+    mode: Mode,
 ) -> Result<Program, Thrown> {
-    compile_program(program, source, file, true)
-}
-
-/// Compile a file for `include`/`require`/`eval` into an already-running VM:
-/// like [`compile_with_source`] but without the built-in prelude (the VM
-/// skips an included program's first `num_prelude_*` entries anyway, so
-/// this program carries none and reports a prelude count of zero).
-pub fn compile_include(program: &AstProgram, source: &[u8], file: &str) -> Result<Program, Thrown> {
-    compile_program(program, source, file, false)
+    compile_program(program, source, file, mode == Mode::Main)
 }
 
 fn compile_program(

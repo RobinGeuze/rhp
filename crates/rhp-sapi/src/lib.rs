@@ -22,15 +22,18 @@
 use std::io::Write;
 
 use rhp_builtins::zend::ParseFailure;
+use rhp_bytecode::Program;
 use rhp_compiler::parse::{Arena, Parsed};
-use rhp_compiler::{compile_include, compile_with_source};
 use rhp_values::{Thrown, Value};
-use rhp_vm::{IncludeError, Vm};
+use rhp_vm::Vm;
 
 mod capture;
 pub mod cgi;
 
 pub use capture::{CaptureSapi, Captured};
+
+pub use rhp_compiler::Mode;
+pub use rhp_vm::IncludeError;
 
 pub use rhp_builtins::sapi::{RequestInfo, Response, Sapi};
 /// The `-v` banner (`PHP 8.5.x (cli) (built: …)`) for a SAPI name.
@@ -170,16 +173,22 @@ fn parse_failure(parsed: &Parsed, src: &[u8]) -> Option<IncludeError> {
     })
 }
 
-/// The includer every SAPI installs: parse + compile an included file.
+/// Parse and compile the source `src` of `file` as rhp runs a file: php's
+/// own grammar decides what parses (see [`parse_error`]), then the
+/// compiler. Every script, include, eval and preload goes through here, and
+/// `rhp-difftest lint` too.
+pub fn compile_file(file: &str, src: &[u8], mode: Mode) -> Result<Program, IncludeError> {
+    let arena = Arena::new();
+    let parsed = arena.parse(file.as_bytes(), src);
+    if let Some(e) = parse_failure(&parsed, src) {
+        return Err(e);
+    }
+    rhp_compiler::compile(parsed.program(), src, file, mode).map_err(include_error)
+}
+
+/// The includer every SAPI installs: compile an included or eval'd file.
 fn install_includer(vm: &mut Vm) {
-    vm.set_includer(|file: &str, src: &[u8]| {
-        let arena = Arena::new();
-        let parsed = arena.parse(file.as_bytes(), src);
-        if let Some(e) = parse_failure(&parsed, src) {
-            return Err(e);
-        }
-        compile_include(parsed.program(), src, file).map_err(include_error)
-    });
+    vm.set_includer(|file: &str, src: &[u8]| compile_file(file, src, Mode::Include));
 }
 
 /// A compile entry point's failure as the includer reports it: a compile
@@ -263,14 +272,7 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     // Compile to owned bytecode (the arena is dropped after this). A script
     // file goes through the compiled-script cache; `-r` code and standard
     // input never do, as in php.
-    let compile = |source: &[u8]| {
-        let arena = Arena::new();
-        let parsed = arena.parse(file.as_bytes(), source);
-        if let Some(e) = parse_failure(&parsed, source) {
-            return Err(e);
-        }
-        compile_with_source(parsed.program(), source, &file).map_err(include_error)
-    };
+    let compile = |source: &[u8]| compile_file(&file, source, Mode::Main);
     let compiled = match req.script {
         Script::File(_) => vm.compile_main(&file, &argv0, source, compile),
         _ => compile(&source).map(std::rc::Rc::new),
@@ -385,14 +387,7 @@ fn preload(sapi: &dyn Sapi, ini: &[(String, String)]) -> bool {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path.clone());
     install_includer(&mut vm);
-    let ok = vm.run_preload(&path, |source| {
-        let arena = Arena::new();
-        let parsed = arena.parse(file.as_bytes(), source);
-        if let Some(e) = parse_failure(&parsed, source) {
-            return Err(e);
-        }
-        compile_with_source(parsed.program(), source, &file).map_err(include_error)
-    });
+    let ok = vm.run_preload(&path, |source| compile_file(&file, source, Mode::Main));
     vm.finish_request();
     ok
 }

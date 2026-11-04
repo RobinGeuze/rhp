@@ -14,3 +14,7 @@ mago-allocator.workspace = true
 mago-database.workspace = true
 mago-syntax-core.workspace = true
 mago-span.workspace = true
+
+[dev-dependencies]
+# tests/prelude_cache.rs compiles through the request layer's compile_file.
+rhp-sapi = { path = "../rhp-sapi" }

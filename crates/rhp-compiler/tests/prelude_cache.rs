@@ -5,13 +5,10 @@
 use std::rc::Rc;
 
 use rhp_bytecode::Program;
-use rhp_compiler::parse::Arena;
-use rhp_compiler::{compile_include, compile_with_source};
+use rhp_sapi::{compile_file, Mode};
 
 fn main_prog(src: &str) -> Program {
-    let arena = Arena::new();
-    let parsed = arena.parse(b"t.php", src.as_bytes());
-    compile_with_source(parsed.program(), src.as_bytes(), "t.php").expect("compile")
+    compile_file("t.php", src.as_bytes(), Mode::Main).unwrap_or_else(|_| panic!("compile"))
 }
 
 fn names(p: &Program, n: usize) -> Vec<String> {
@@ -31,10 +28,8 @@ fn prelude_is_identical_across_compiles() {
          $f = function() { return 1; };\n",
     );
     // A failed compile in between must not disturb the cache.
-    let arena = Arena::new();
     let bad = "<?php\n$x = `ls`;\n";
-    let parsed = arena.parse(b"bad.php", bad.as_bytes());
-    assert!(compile_with_source(parsed.program(), bad.as_bytes(), "bad.php").is_err());
+    assert!(compile_file("bad.php", bad.as_bytes(), Mode::Main).is_err());
     let b = main_prog("<?php\n$g = fn() => 2;\n");
 
     assert!(a.num_prelude_classes > 0);
@@ -70,9 +65,8 @@ fn prelude_is_identical_across_compiles() {
 #[test]
 fn include_programs_carry_no_prelude() {
     let src = "<?php\nclass Y extends Exception {}\nfunction h() {}\n$c = function() {};\n";
-    let arena = Arena::new();
-    let parsed = arena.parse(b"inc.php", src.as_bytes());
-    let p = compile_include(parsed.program(), src.as_bytes(), "inc.php").expect("compile");
+    let p = compile_file("inc.php", src.as_bytes(), Mode::Include)
+        .unwrap_or_else(|_| panic!("compile"));
     assert_eq!(p.num_prelude_classes, 0);
     assert_eq!(p.num_prelude_functions, 0);
     assert_eq!(p.classes.len(), 1);

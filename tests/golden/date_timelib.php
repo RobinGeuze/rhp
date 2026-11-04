@@ -76,14 +76,12 @@ try {
     echo get_class($e), ': ', $e->getMessage(), "\n";
 }
 
-// The default timezone and the timezone_* functions.
+// The default timezone and the timezone_* functions. The database's version
+// and identifier lists are in crates/rhp-difftest/tests/date.rs: CI's php
+// reads its system tz database.
 var_dump(date_default_timezone_set('europe/AMSTERDAM'), date_default_timezone_get());
 var_dump(date_default_timezone_set('Mars/Phobos'), date_default_timezone_set(''), date_default_timezone_get());
 var_dump(date_default_timezone_set("UTC\0junk"), date_default_timezone_get());
-var_dump(timezone_version_get());
-var_dump(count(timezone_identifiers_list()), count(timezone_identifiers_list(DateTimeZone::ALL_WITH_BC)));
-var_dump(timezone_identifiers_list(DateTimeZone::PER_COUNTRY, 'NL'), timezone_identifiers_list(DateTimeZone::UTC));
-var_dump(count(timezone_identifiers_list(DateTimeZone::EUROPE | DateTimeZone::ARCTIC)));
 var_dump(timezone_identifiers_list(DateTimeZone::PER_COUNTRY, "N\0"), timezone_identifiers_list(DateTimeZone::PER_COUNTRY, 'nl'));
 try {
     timezone_identifiers_list(DateTimeZone::PER_COUNTRY);

@@ -285,11 +285,16 @@ without copying them: a call holds its data once, as in php.
 and Homebrew builds do. CI's php is Debian/Ubuntu's build, patched to read the
 system zoneinfo: it reports `"Olson" Timezone Database Version => 0.system`
 (and `Timezone Database => internal`; setup-php's library report, run
-41756527132). Both are tz release 2026e (Ubuntu's tzdata 2026e), so zone
-data should agree, though nothing compares it on CI yet. What reads the
-database itself differs (`timezone_version_get()`, the identifier list and
-its backward-compatible flags, locations, transitions), so the ratchet
-leaves out tests whose output depends on those. A system-tzdata mode
+41756527132). Both are tz release 2026e (Ubuntu's tzdata 2026e), and both
+are built the same way: Debian runs zic with `PACKRATDATA=backzone
+PACKRATLIST=zone.tab`, and php's database also keeps the pre-1970 history
+of zone.tab's zones (Europe/Amsterdam) while the other backzone zones are
+links (America/Montreal). So zone data should agree, though nothing
+compares it on CI yet. What reads the database itself differs
+(`timezone_version_get()`, the identifier list and its backward-compatible
+flags, locations, transitions), so the ratchet and the goldens leave out
+output that depends on those; crates/rhp-difftest/tests/date.rs checks it
+against a php whose database version is rhp's. A system-tzdata mode
 (Debian's MIT-licensed patch with runtime selection) is plan item L7c, only
 if the CI ratchet needs it. timelib's version and the database's are not in
 the "linked" section for that reason.

@@ -340,18 +340,6 @@ bool(false)
 string(16) "europe/AMSTERDAM"
 bool(true)
 string(3) "UTC"
-string(6) "2026.5"
-int(419)
-int(598)
-array(1) {
-  [0]=>
-  string(16) "Europe/Amsterdam"
-}
-array(1) {
-  [0]=>
-  string(3) "UTC"
-}
-int(59)
 array(0) {
 }
 array(0) {

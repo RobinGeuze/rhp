@@ -74,8 +74,8 @@ pub enum Mode {
 pub struct Builtins {
     /// The PHP prelude: the core classes first, then each module's classes
     /// and helper functions. Compiled once per thread for each prelude
-    /// source (the same `&str`), and the start of every [`Mode::Main`]
-    /// program.
+    /// source (the same `&str`) and pair of the functions below, and the
+    /// start of every [`Mode::Main`] program.
     pub prelude: fn() -> &'static str,
     /// Is `name` (lowercase) a native builtin function?
     pub native_function: fn(&str) -> bool,

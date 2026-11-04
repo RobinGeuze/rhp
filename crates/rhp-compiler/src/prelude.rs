@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use crate::parse::cst::Statement;
 use rhp_bytecode::{ClassProto, FunctionProto};
-use rhp_values::Thrown;
+use rhp_values::{Thrown, Value};
 
 use crate::decl::{compile_class, compile_interface};
 use crate::file::FileCtx;
@@ -24,20 +24,47 @@ pub(crate) struct PreludeParts {
 thread_local! {
     /// The prelude, compiled on first use and shared by every later compile on
     /// this thread (protos hold `Rc`s, so the cache is per thread — matching
-    /// the VM-per-thread model), keyed on its source. It depends on no
-    /// per-file state: it is compiled in a [`FileCtx`] of its own.
-    static PRELUDE_CACHE: RefCell<Option<(&'static str, Rc<PreludeParts>)>> =
+    /// the VM-per-thread model). It depends on no per-file state: it is
+    /// compiled in a [`FileCtx`] of its own.
+    static PRELUDE_CACHE: RefCell<Option<(Key, Rc<PreludeParts>)>> =
         const { RefCell::new(None) };
 }
 
+/// What a compiled prelude depends on: its source, and the builtins' answers
+/// its compile asked for (constants it folds, native functions it calls).
+struct Key {
+    src: &'static str,
+    native_function: fn(&str) -> bool,
+    constant: fn(&[u8]) -> Option<Value>,
+}
+
+impl Key {
+    fn of(builtins: &Builtins) -> Key {
+        Key {
+            src: (builtins.prelude)(),
+            native_function: builtins.native_function,
+            constant: builtins.constant,
+        }
+    }
+
+    /// The same source and functions. Functions share an address only when
+    /// their code is the same, so they answer alike; one function at two
+    /// addresses only costs a recompile.
+    fn same(&self, other: &Key) -> bool {
+        std::ptr::eq(self.src, other.src)
+            && std::ptr::fn_addr_eq(self.native_function, other.native_function)
+            && std::ptr::fn_addr_eq(self.constant, other.constant)
+    }
+}
+
 /// The compiled prelude of `builtins`, compiling it on this thread's first
-/// call for its source.
+/// call for them.
 pub(crate) fn prelude_classes(builtins: &Builtins) -> Result<Rc<PreludeParts>, Thrown> {
-    let src = (builtins.prelude)();
+    let key = Key::of(builtins);
     let cached = PRELUDE_CACHE.with(|c| {
         c.borrow()
             .as_ref()
-            .filter(|(s, _)| std::ptr::eq(*s, src))
+            .filter(|(k, _)| k.same(&key))
             .map(|(_, p)| p.clone())
     });
     if let Some(p) = cached {
@@ -46,8 +73,8 @@ pub(crate) fn prelude_classes(builtins: &Builtins) -> Result<Rc<PreludeParts>, T
     // Compiled once per thread, kept for every later request: not counted
     // against a request's memory.
     let parts =
-        rhp_values::mem::uncounted(|| prelude_classes_isolated(builtins, src).map(Rc::new))?;
-    PRELUDE_CACHE.with(|c| *c.borrow_mut() = Some((src, parts.clone())));
+        rhp_values::mem::uncounted(|| prelude_classes_isolated(builtins, key.src).map(Rc::new))?;
+    PRELUDE_CACHE.with(|c| *c.borrow_mut() = Some((key, parts.clone())));
     Ok(parts)
 }
 

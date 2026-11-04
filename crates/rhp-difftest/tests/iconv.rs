@@ -160,6 +160,47 @@ foreach ($headers as $h) {
     );
 }
 
+/// Z_PARAM_LONG's deprecations and TypeErrors, and zval_get_long on the
+/// `line-length` option.
+#[test]
+fn int_arguments_match_php() {
+    let cases = r##"
+function show(callable $f) {
+    try { var_dump($f()); } catch (TypeError $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+}
+show(fn() => iconv_substr('abcdef', 1.5, 2.5));
+show(fn() => iconv_substr('abcdef', '1.5'));
+show(fn() => iconv_substr('abcdef', 1, null));
+show(fn() => iconv_substr('abcdef', 1, 2.0));
+show(fn() => iconv_substr('abcdef', '1e30'));
+show(fn() => iconv_substr('abcdef', 1e30));
+show(fn() => iconv_substr('abcdef', 1, 'x'));
+show(fn() => iconv_substr('abcdef', true));
+show(fn() => iconv_strpos('abcdef', 'c', 1.5));
+show(fn() => iconv_strpos('abcdef', 'c', '1'));
+show(fn() => iconv_mime_decode('a', 1.5));
+show(fn() => iconv_mime_decode_headers("a: b", 1.5));
+"##;
+    check(
+        "int arguments",
+        &(PRELUDE.to_string()
+            + cases
+            + r##"
+show(fn() => iconv_substr('abcdef', null));
+show(fn() => iconv_strpos('abcdef', 'c', null));
+foreach ([new stdClass, function () {}, INF, NAN, 18446744073709551616.0 + 40, '1e999', '20abc', ' 30', 'x', [], [1],
+          true, 2.7, '2.7'] as $ll) {
+    show(fn() => iconv_mime_encode('Subject', 'Prüfung Prüfung',
+        ['line-length' => $ll, 'scheme' => 'Q', 'input-charset' => 'UTF-8', 'output-charset' => 'UTF-8']));
+}
+"##),
+    );
+    check(
+        "int arguments, strict_types",
+        &("<?php declare(strict_types=1);\n".to_string() + &PRELUDE[5..] + cases),
+    );
+}
+
 #[test]
 fn encodings_and_ini_match_php() {
     check(

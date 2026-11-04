@@ -66,6 +66,47 @@ pub(crate) fn zval_get_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>,
     }
 }
 
+/// php's `zval_get_long()`: a float outside the int range warns and wraps
+/// (0 for INF and NAN), a numeric string converts silently (a float one
+/// saturates, or is 0 when infinite), an object warns and gives 1.
+pub(crate) fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Thrown> {
+    // ZEND_DOUBLE_FITS_LONG
+    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+    match deref(v) {
+        Value::Float(f) => {
+            if !(-TWO_63..TWO_63).contains(&f) {
+                let shown =
+                    String::from_utf8_lossy(&rhp_values::fmt::float_serialize(f)).into_owned();
+                host.emit_diagnostic(
+                    crate::E_WARNING,
+                    &format!("The float {shown} is not representable as an int, cast occurred"),
+                )?;
+            }
+            Ok(rhp_values::float_to_int(f))
+        }
+        Value::Str(s) => Ok(match conv::scan_number(s.as_bytes()) {
+            Some((conv::Num::Int(n), _)) => n,
+            // zend_dval_to_lval_cap
+            Some((conv::Num::Float(f), _)) if !f.is_finite() => 0,
+            Some((conv::Num::Float(f), _)) if f >= TWO_63 => i64::MAX,
+            Some((conv::Num::Float(f), _)) if f < -TWO_63 => i64::MIN,
+            Some((conv::Num::Float(f), _)) => f as i64,
+            None => 0,
+        }),
+        o @ (Value::Object(_) | Value::Closure(_)) => {
+            host.emit_diagnostic(
+                crate::E_WARNING,
+                &format!(
+                    "Object of class {} could not be converted to int",
+                    value_name(host, &o)
+                ),
+            )?;
+            Ok(1)
+        }
+        other => Ok(conv::to_int(&other)),
+    }
+}
+
 fn type_error(host: &dyn Host, func: &str, n: usize, pname: &str, want: &str, v: &Value) -> Thrown {
     Thrown::type_error(format!(
         "{func}(): Argument #{n} (${pname}) must be of type {want}, {} given",

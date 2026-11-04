@@ -20,7 +20,7 @@ use std::ffi::{CStr, CString};
 use libc::{E2BIG, EBADF, EILSEQ, EINVAL};
 use rhp_values::{ArrayKey, PhpArray, PhpStr, Value};
 
-use crate::ext::zpp::{deref, int_arg, int_arg_or, opt_int_arg, opt_str_arg, str_arg, value_error};
+use crate::ext::zpp::{deref, long_arg, opt_long_arg, opt_str_arg, str_arg, value_error};
 use crate::{warn, Builtin, Host, OutputHandlerAlias, OutputHandlerCtx, Thrown};
 use sys::{errno, set_errno, Cd, NulCopy, FAILED};
 
@@ -100,6 +100,21 @@ fn zstr_arg(
     let mut v = str_arg(host, args, i, fname, pname)?;
     v.push(0);
     Ok(StrArg::Converted(v))
+}
+
+/// A `Z_PARAM_LONG` parameter (absent: 0). The VM has already raised the
+/// deprecation for a null.
+fn long_param(
+    host: &mut dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<i64, Thrown> {
+    match args.get(i).map(deref) {
+        None | Some(Value::Null) => Ok(0),
+        Some(_) => long_arg(host, args, i, fname, pname),
+    }
 }
 
 /// ZEND_HAS_OOM(): an out-of-memory error is pending.
@@ -1427,8 +1442,8 @@ fn fn_iconv_strlen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 fn fn_iconv_substr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "iconv_substr";
     let s = zstr_arg(host, args, 0, f, "string")?;
-    let offset = int_arg(host, args, 1, f, "offset")?;
-    let length = opt_int_arg(host, args, 2, f, "length")?;
+    let offset = long_param(host, args, 1, f, "offset")?;
+    let length = opt_long_arg(host, args, 2, f, "length")?;
     let raw = opt_str_arg(host, args, 3, f, "encoding")?;
     let Some(charset) = encoding_arg(host, raw, f)? else {
         return Ok(Value::Bool(false));
@@ -1447,7 +1462,7 @@ fn fn_iconv_strpos(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     let f = "iconv_strpos";
     let haystk = zstr_arg(host, args, 0, f, "haystack")?;
     let ndl = zstr_arg(host, args, 1, f, "needle")?;
-    let mut offset = int_arg_or(host, args, 2, f, "offset", 0)?;
+    let mut offset = long_param(host, args, 2, f, "offset")?;
     let raw = opt_str_arg(host, args, 3, f, "encoding")?;
     let Some(charset) = encoding_arg(host, raw, f)? else {
         return Ok(Value::Bool(false));
@@ -1560,7 +1575,7 @@ fn fn_iconv_mime_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             return Ok(Value::Bool(false));
         }
         if let Some(v) = pref_get(&pref, "line-length") {
-            line_len = rhp_values::conv::to_int(&v);
+            line_len = crate::argparse::zval_get_long(host, &v)?;
         }
         if let Some(v) = pref_get(&pref, "line-break-chars") {
             lfchars = match v {
@@ -1592,7 +1607,7 @@ fn fn_iconv_mime_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 fn fn_iconv_mime_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "iconv_mime_decode";
     let encoded = zstr_arg(host, args, 0, f, "string")?;
-    let mode = int_arg_or(host, args, 1, f, "mode", 0)?;
+    let mode = long_param(host, args, 1, f, "mode")?;
     let raw = opt_str_arg(host, args, 2, f, "encoding")?;
     let Some(charset) = encoding_arg(host, raw, f)? else {
         return Ok(Value::Bool(false));
@@ -1610,7 +1625,7 @@ fn fn_iconv_mime_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 fn fn_iconv_mime_decode_headers(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "iconv_mime_decode_headers";
     let encoded = zstr_arg(host, args, 0, f, "headers")?;
-    let mode = int_arg_or(host, args, 1, f, "mode", 0)?;
+    let mode = long_param(host, args, 1, f, "mode")?;
     let raw = opt_str_arg(host, args, 2, f, "encoding")?;
     let Some(charset) = encoding_arg(host, raw, f)? else {
         return Ok(Value::Bool(false));

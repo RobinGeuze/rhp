@@ -2,7 +2,8 @@
  * The one stand-in for the Zend and PHP headers that vendored php-src C
  * includes (through shim/php.h and friends). It defines only what those files
  * use, with the meaning a release (NTS, non-debug) php build gives it. Every
- * library in this crate shares it: extend this file, never add a second shim.
+ * library in this crate shares it, and so does rhp-mbfl-sys (through
+ * DEP_RHP_CSRC_SHIM): extend this file, never add a second shim.
  */
 #ifndef RHP_ZEND_SHIM_H
 #define RHP_ZEND_SHIM_H

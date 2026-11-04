@@ -5112,6 +5112,7 @@ ext/simplexml/tests/iterator_interaction_empty_and_var_dump.phpt
 ext/simplexml/tests/key_error.phpt
 ext/simplexml/tests/oom_array_cast.phpt
 ext/simplexml/tests/oom_json_encode.phpt
+ext/simplexml/tests/oom_tostring.phpt
 ext/simplexml/tests/oom_xpath.phpt
 ext/simplexml/tests/profile01.phpt
 ext/simplexml/tests/profile02.phpt

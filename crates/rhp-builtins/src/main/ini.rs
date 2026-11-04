@@ -76,7 +76,7 @@ fn on_modify_check(name: &[u8], v: &[u8]) -> (Vec<String>, Option<Vec<u8>>) {
     }
     let mut warnings = Vec::new();
     if QUANTITY_DIRECTIVES.iter().any(|d| d.as_bytes() == name) {
-        if let Some(err) = crate::main::rfc1867::quantity_error(v) {
+        if let Some(err) = quantity_error(v) {
             let name = String::from_utf8_lossy(name);
             warnings.push(format!("Invalid \"{name}\" setting. {err}"));
         }
@@ -130,7 +130,7 @@ pub(crate) fn ini_parse_uquantity(v: &[u8]) -> (u64, Option<String>) {
     if t == b"-1" {
         return (u64::MAX, None);
     }
-    let err = crate::main::rfc1867::quantity_error(v);
+    let err = quantity_error(v);
     let out_of_range = |e: &Option<String>| e.as_ref().is_some_and(|m| m.contains("out of range"));
     if let Some(rest) = t.strip_prefix(b"-") {
         let value = ini_parse_quantity(rest) as u64;
@@ -204,7 +204,7 @@ fn mark_changed(key: &str) {
 /// whether the value is accepted.
 fn memory_hard_limit_percent_check(v: &[u8]) -> (Vec<String>, bool) {
     let mut warnings = Vec::new();
-    if let Some(err) = crate::main::rfc1867::quantity_error(v) {
+    if let Some(err) = quantity_error(v) {
         warnings.push(format!(
             "Invalid \"memory_hard_limit_percent\" setting. {err}"
         ));
@@ -614,3 +614,159 @@ fn invalid_timezone(v: &[u8], func: &str) -> String {
 // ---------------------------------------------------------------------------
 // sleep / usleep
 // ---------------------------------------------------------------------------
+
+/// `smart_str_append_escaped`.
+fn escaped(s: &[u8]) -> String {
+    let mut o = String::new();
+    for &c in s {
+        match c {
+            b'\n' => o.push_str("\\n"),
+            b'\r' => o.push_str("\\r"),
+            b'\t' => o.push_str("\\t"),
+            0x0c => o.push_str("\\f"),
+            0x0b => o.push_str("\\v"),
+            b'\\' => o.push_str("\\\\"),
+            0x1b => o.push_str("\\e"),
+            c if !(32..127).contains(&c) => o.push_str(&format!("\\x{c:02X}")),
+            c => o.push(c as char),
+        }
+    }
+    o
+}
+
+/// The warning `zend_ini_parse_quantity` reports for a malformed quantity.
+pub(crate) fn quantity_error(v: &[u8]) -> Option<String> {
+    let ws = |c: u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
+    let mut a = 0;
+    let mut b = v.len();
+    while a < b && ws(v[a]) {
+        a += 1;
+    }
+    while b > a && ws(v[b - 1]) {
+        b -= 1;
+    }
+    if a == b {
+        return None;
+    }
+    let inv = escaped(v);
+    let mut d = a;
+    let negative = v[d] == b'-';
+    if v[d] == b'+' || v[d] == b'-' {
+        d += 1;
+    }
+    let no_digits = || {
+        Some(format!(
+            "Invalid quantity \"{inv}\": no valid leading digits, interpreting as \"0\" for backwards compatibility"
+        ))
+    };
+    if d >= b || !v[d].is_ascii_digit() {
+        return no_digits();
+    }
+    let mut base_digits: fn(u8) -> bool = |c: u8| c.is_ascii_digit();
+    // ZEND_STRTOUL's base: 0 (decimal, or octal after a leading 0) unless
+    // an explicit prefix picked one.
+    let mut radix = if v[d] == b'0' { 8 } else { 10 };
+    if v[d] == b'0' && d + 1 < b && !v[d + 1].is_ascii_digit() {
+        match v[d + 1] {
+            b'g' | b'G' | b'm' | b'M' | b'k' | b'K' => {}
+            b'x' | b'X' => {
+                base_digits = |c| c.is_ascii_hexdigit();
+                radix = 16;
+                d += 2;
+            }
+            b'o' | b'O' => {
+                base_digits = |c| (b'0'..=b'7').contains(&c);
+                radix = 8;
+                d += 2;
+            }
+            b'b' | b'B' => {
+                base_digits = |c| c == b'0' || c == b'1';
+                radix = 2;
+                d += 2;
+            }
+            c => {
+                return Some(format!(
+                    "Invalid prefix \"0{}\", interpreting as \"0\" for backwards compatibility",
+                    c as char
+                ))
+            }
+        }
+        if d >= b || !base_digits(v[d]) {
+            return Some(format!(
+                "Invalid quantity \"{inv}\": no digits after base prefix, interpreting as \"0\" for backwards compatibility"
+            ));
+        }
+    }
+    let mut e = d;
+    while e < b && base_digits(v[e]) {
+        e += 1;
+    }
+    // strtoul's ERANGE, then the signed-result check (only PHP_INT_MIN may
+    // have its top bit set).
+    let mut value: u64 = 0;
+    let mut overflow = false;
+    for &c in &v[d..e] {
+        let digit = (c as char).to_digit(radix);
+        let Some(digit) = digit else { break };
+        match value
+            .checked_mul(u64::from(radix))
+            .and_then(|x| x.checked_add(u64::from(digit)))
+        {
+            Some(x) => value = x,
+            None => {
+                overflow = true;
+                value = u64::MAX;
+            }
+        }
+    }
+    let mut signed = value as i64;
+    if !overflow {
+        if negative && value == 1u64 << 63 {
+            signed = i64::MIN;
+        } else if signed < 0 {
+            overflow = true;
+        } else if negative {
+            signed = -signed;
+        }
+    }
+    let out_of_range = || {
+        Some(format!(
+            "Invalid quantity \"{inv}\": value is out of range, using overflow result for backwards compatibility"
+        ))
+    };
+    while e < b && ws(v[e]) {
+        e += 1;
+    }
+    if e == b {
+        return if overflow { out_of_range() } else { None };
+    }
+    let last = v[b - 1];
+    let interp = escaped(&v[..e]);
+    let chr = escaped(&[last]);
+    let factor: i64 = match last {
+        b'g' | b'G' => 1 << 30,
+        b'm' | b'M' => 1 << 20,
+        b'k' | b'K' => 1 << 10,
+        _ => {
+            return Some(format!(
+                "Invalid quantity \"{inv}\": unknown multiplier \"{chr}\", interpreting as \"{interp}\" for backwards compatibility"
+            ))
+        }
+    };
+    if !overflow {
+        overflow = if signed > 0 {
+            signed > i64::MAX / factor
+        } else {
+            signed < i64::MIN / factor
+        };
+    }
+    if e != b - 1 {
+        return Some(format!(
+            "Invalid quantity \"{inv}\", interpreting as \"{interp}{chr}\" for backwards compatibility"
+        ));
+    }
+    if overflow {
+        return out_of_range();
+    }
+    None
+}

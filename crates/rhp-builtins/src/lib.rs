@@ -28,6 +28,7 @@ pub use diag::{
     deprecated, deprecated_fn, flush_stream_diags, notice, open_failed, warn, warn_arg,
 };
 pub use ext::pcre;
+pub use ext::standard::http_fopen_wrapper;
 pub use host::{host_compare, host_loose_eq, Host, MagicFetch, ObCall, StreamKind, StreamMeta};
 pub use main::streams::{StatInfo, StreamWrapper, WrapperReg};
 
@@ -41,7 +42,6 @@ mod const_modules;
 mod ext;
 mod file_fns;
 mod fs_fns;
-pub mod http;
 mod inet;
 mod ini_parse;
 mod proc_fns;
@@ -49,8 +49,6 @@ mod sapi;
 mod socket_fns;
 mod stdext_fns;
 mod stream_fns;
-pub(crate) mod url;
-mod webenc_fns;
 
 #[cfg(test)]
 mod test_support;
@@ -301,7 +299,8 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         v.push((md.name, Box::new(move |m| (md.functions)(m))));
     }
     let rest: Vec<(&'static str, Registrar)> = vec![
-        ("webenc_fns", Box::new(webenc_fns::register)),
+        ("url", Box::new(ext::standard::url::register)),
+        ("head", Box::new(ext::standard::head::register)),
         ("html", Box::new(ext::standard::html::register)),
         ("var", Box::new(ext::standard::var::register)),
         ("filter", Box::new(ext::filter::register)),
@@ -339,7 +338,6 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("closures", Box::new(zend::closures::register)),
         ("zpp", Box::new(zend::zpp::register)),
         ("sapi", Box::new(main::sapi::register)),
-        ("rfc1867", Box::new(main::rfc1867::register)),
         ("opcache", Box::new(ext::opcache::register)),
         ("ini_parse", Box::new(ini_parse::register)),
         ("cli", Box::new(sapi::cli::register)),

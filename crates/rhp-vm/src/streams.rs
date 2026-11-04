@@ -243,7 +243,7 @@ impl Vm {
         if events.is_empty() {
             return;
         }
-        if let Err(e) = builtins::http::deliver(self, res, &events) {
+        if let Err(e) = builtins::http_fopen_wrapper::deliver(self, res, &events) {
             if self.pending_throw.is_none() {
                 self.pending_throw = Some(e);
             }

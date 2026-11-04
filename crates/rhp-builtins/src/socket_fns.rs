@@ -19,7 +19,8 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::ext::openssl::xp_ssl::{self, SslSock};
+use crate::ext::openssl::xp_ssl;
+use crate::ext::openssl::xp_ssl::SslSock;
 use crate::main::streams::errno;
 use crate::main::streams::plain_wrapper::{poll_fd, FdStream, SockInfo};
 use crate::proc_fns::{zpp_long, zpp_string};
@@ -1758,30 +1759,42 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("STREAM_SOCK_RAW", i(libc::SOCK_RAW as i64)),
         ("STREAM_SOCK_SEQPACKET", i(libc::SOCK_SEQPACKET as i64)),
         ("STREAM_SOCK_RDM", i(libc::SOCK_RDM as i64)),
-        ("STREAM_NOTIFY_CONNECT", i(crate::http::NOTIFY_CONNECT)),
+        (
+            "STREAM_NOTIFY_CONNECT",
+            i(crate::ext::standard::http_fopen_wrapper::NOTIFY_CONNECT),
+        ),
         (
             "STREAM_NOTIFY_AUTH_REQUIRED",
-            i(crate::http::NOTIFY_AUTH_REQUIRED),
+            i(crate::ext::standard::http_fopen_wrapper::NOTIFY_AUTH_REQUIRED),
         ),
         (
             "STREAM_NOTIFY_AUTH_RESULT",
-            i(crate::http::NOTIFY_AUTH_RESULT),
+            i(crate::ext::standard::http_fopen_wrapper::NOTIFY_AUTH_RESULT),
         ),
         (
             "STREAM_NOTIFY_MIME_TYPE_IS",
-            i(crate::http::NOTIFY_MIME_TYPE_IS),
+            i(crate::ext::standard::http_fopen_wrapper::NOTIFY_MIME_TYPE_IS),
         ),
         (
             "STREAM_NOTIFY_FILE_SIZE_IS",
-            i(crate::http::NOTIFY_FILE_SIZE_IS),
+            i(crate::ext::standard::http_fopen_wrapper::NOTIFY_FILE_SIZE_IS),
         ),
         (
             "STREAM_NOTIFY_REDIRECTED",
-            i(crate::http::NOTIFY_REDIRECTED),
+            i(crate::ext::standard::http_fopen_wrapper::NOTIFY_REDIRECTED),
         ),
-        ("STREAM_NOTIFY_PROGRESS", i(crate::http::NOTIFY_PROGRESS)),
-        ("STREAM_NOTIFY_FAILURE", i(crate::http::NOTIFY_FAILURE)),
-        ("STREAM_NOTIFY_COMPLETED", i(crate::http::NOTIFY_COMPLETED)),
+        (
+            "STREAM_NOTIFY_PROGRESS",
+            i(crate::ext::standard::http_fopen_wrapper::NOTIFY_PROGRESS),
+        ),
+        (
+            "STREAM_NOTIFY_FAILURE",
+            i(crate::ext::standard::http_fopen_wrapper::NOTIFY_FAILURE),
+        ),
+        (
+            "STREAM_NOTIFY_COMPLETED",
+            i(crate::ext::standard::http_fopen_wrapper::NOTIFY_COMPLETED),
+        ),
         ("STREAM_NOTIFY_RESOLVE", i(1)),
         ("STREAM_NOTIFY_SEVERITY_INFO", i(0)),
         ("STREAM_NOTIFY_SEVERITY_WARN", i(1)),

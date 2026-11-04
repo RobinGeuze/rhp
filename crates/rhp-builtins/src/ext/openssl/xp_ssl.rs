@@ -1833,7 +1833,7 @@ impl SslSock {
 /// `php_openssl_get_url_name`: the host of the transport address (after
 /// `proto://`), trailing dots dropped.
 pub fn url_name(resource: &[u8]) -> Option<Vec<u8>> {
-    let u = crate::url::parse(resource)?;
+    let u = crate::ext::standard::url::parse(resource)?;
     let mut host = u.host?;
     while host.last() == Some(&b'.') {
         host.pop();

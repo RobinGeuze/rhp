@@ -105,7 +105,7 @@ fn parse_context_params(
             )));
         }
         host.set_stream_context_notifier(ctx, Some(cb));
-        crate::http::reset_progress(host, ctx);
+        crate::ext::standard::http_fopen_wrapper::reset_progress(host, ctx);
     }
     if let Some(opts) = params.get(&ArrayKey::from_bytes(b"options")).map(deref) {
         let Value::Array(opts) = opts else {
@@ -192,118 +192,6 @@ fn key_bytes(k: &rhp_values::ArrayKey) -> Vec<u8> {
     }
 }
 
-/// `get_headers($url, $associative = false, $context = null)`: the
-/// response headers of an http(s) URL (the wrapper's only-headers mode).
-fn fn_get_headers(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let fname = "get_headers";
-    let url = crate::zend::zpp::path_param(host, args, 0, fname, "url")?;
-    let assoc = crate::zend::zpp::bool_param(host, args, 1, fname, "associative", false)?;
-    let ctx = match args.get(2).map(deref) {
-        None | Some(Value::Null) => host.default_stream_context(),
-        Some(v @ Value::Resource(_)) => v,
-        Some(v) => {
-            return Err(Thrown::type_error(format!(
-                "{fname}(): Argument #3 ($context) must be of type resource or null, {} given",
-                crate::zend::zpp::zval_value_name(host, &v)
-            )))
-        }
-    };
-    if crate::main::streams::is_data_url(&url) {
-        // a URL wrapper whose stream has no header array
-        match host.stream_open(&url, b"r") {
-            Some(res) => {
-                host.stream_close(&res);
-            }
-            None => crate::open_failed(host, fname, &url)?,
-        }
-        return Ok(Value::Bool(false));
-    }
-    if !crate::http::is_http(&url) {
-        // STREAM_USE_URL refuses a wrapper that is not for URLs (the
-        // plain-files one when none matches the scheme)
-        let scheme = crate::main::streams::split_scheme(&url)
-            .0
-            .to_ascii_lowercase();
-        let known = host.stream_wrapper_schemes();
-        if !matches!(&scheme[..], b"file" | b"glob" | b"php")
-            && !known.iter().any(|k| k.eq_ignore_ascii_case(&scheme))
-        {
-            let name = String::from_utf8_lossy(&scheme).into_owned();
-            crate::warn(
-                host,
-                fname,
-                &format!(
-                    "Unable to find the wrapper \"{name}\" - did you forget to enable it when you configured PHP?"
-                ),
-            )?;
-        }
-        crate::warn(host, fname, "This function may only be used against URLs")?;
-        return Ok(Value::Bool(false));
-    }
-    let Some(res) = crate::http::open(host, fname, &url, b"r", &ctx, true)? else {
-        return Ok(Value::Bool(false));
-    };
-    let data = host.stream_meta(&res).and_then(|m| m.wrapper_data);
-    host.stream_close(&res);
-    let Some(Value::Array(headers)) = data else {
-        return Ok(Value::Bool(false));
-    };
-    let mut out = rhp_values::PhpArray::new();
-    for (_, h) in headers.iter() {
-        let Value::Str(h) = h else { continue };
-        let h = h.as_bytes();
-        let colon = h.iter().position(|&c| c == b':').filter(|_| assoc);
-        let Some(p) = colon else {
-            out.push(Value::str(h.to_vec()));
-            continue;
-        };
-        let mut v = p + 1;
-        while v < h.len() && h[v].is_ascii_whitespace() {
-            v += 1;
-        }
-        let key = rhp_values::ArrayKey::from_bytes(&h[..p]);
-        let value = Value::str(h[v..].to_vec());
-        match out.get(&key).cloned() {
-            None => {
-                out.insert(key, value);
-            }
-            Some(Value::Array(mut prev)) => {
-                prev.push(value);
-                out.insert(key, Value::Array(prev));
-            }
-            Some(prev) => {
-                let mut a = rhp_values::PhpArray::new();
-                a.push(prev);
-                a.push(value);
-                out.insert(key, Value::Array(a));
-            }
-        }
-    }
-    Ok(Value::Array(out))
-}
-
-fn fn_http_get_last_response_headers(
-    host: &mut dyn Host,
-    _args: &[Value],
-) -> Result<Value, Thrown> {
-    let Some(headers) = host.http_response_headers() else {
-        return Ok(Value::Null);
-    };
-    let mut a = rhp_values::PhpArray::new();
-    for h in headers {
-        a.push(Value::str(h));
-    }
-    Ok(Value::Array(a))
-}
-
-fn fn_http_clear_last_response_headers(
-    host: &mut dyn Host,
-    _args: &[Value],
-) -> Result<Value, Thrown> {
-    host.set_http_response_headers(None);
-    Ok(Value::Null)
-}
-
 /// `stream_copy_to_stream($from, $to, ?int $length = null, int $offset = 0)`:
 /// seek `$from` to `$offset` (when > 0), then copy up to `$length` bytes
 /// (null or negative = everything; php casts it to size_t).
@@ -373,15 +261,6 @@ pub fn register(m: &mut crate::Registry) {
             ("stream_context_set_params", fn_stream_context_set_params),
             ("stream_context_get_params", fn_stream_context_get_params),
             ("stream_context_set_option", fn_stream_context_set_option),
-            ("get_headers", fn_get_headers),
-            (
-                "http_get_last_response_headers",
-                fn_http_get_last_response_headers,
-            ),
-            (
-                "http_clear_last_response_headers",
-                fn_http_clear_last_response_headers,
-            ),
             ("stream_set_blocking", fn_stream_set_blocking),
             ("stream_set_write_buffer", fn_stream_set_write_buffer),
             ("set_file_buffer", fn_set_file_buffer),

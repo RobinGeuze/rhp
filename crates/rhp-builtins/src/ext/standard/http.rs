@@ -1,8 +1,14 @@
-//! ext/standard/http.c: `http_build_query`.
+//! ext/standard/http.c: `http_build_query`, `request_parse_body` and the
+//! last response headers of the http:// wrapper.
 
 use rhp_values::ops::deref;
-use rhp_values::{conv, fmt, ArrayKey, Value};
+use rhp_values::{conv, fmt, ArrayKey, PhpArray, Value};
 
+use crate::main::ini::quantity_error;
+use crate::main::php_variables::post_form_vars;
+use crate::main::rfc1867::{
+    actual_length_exceeds, content_type_dup, cstr, media_type, parse, BodyOptions, Diag, Limits,
+};
 use crate::zend::zpp::{int_param, str_or_null_param, str_param, zval_value_name};
 use crate::{Host, Thrown};
 
@@ -191,6 +197,242 @@ fn fn_http_build_query(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
     Ok(Value::str(e.out))
 }
 
+fn fn_http_get_last_response_headers(
+    host: &mut dyn Host,
+    _args: &[Value],
+) -> Result<Value, Thrown> {
+    let Some(headers) = host.http_response_headers() else {
+        return Ok(Value::Null);
+    };
+    let mut a = rhp_values::PhpArray::new();
+    for h in headers {
+        a.push(Value::str(h));
+    }
+    Ok(Value::Array(a))
+}
+
+fn fn_http_clear_last_response_headers(
+    host: &mut dyn Host,
+    _args: &[Value],
+) -> Result<Value, Thrown> {
+    host.set_http_response_headers(None);
+    Ok(Value::Null)
+}
+
+/// `cache_request_parse_body_options`.
+fn parse_options(host: &mut dyn Host, opts: &PhpArray) -> Result<BodyOptions, Thrown> {
+    let mut o = BodyOptions::default();
+    for (k, v) in opts.iter() {
+        let ArrayKey::Str(k) = k else {
+            return Err(Thrown::error(
+                "ValueError",
+                "Invalid integer key in $options argument",
+            ));
+        };
+        let k = k.as_bytes();
+        if k.is_empty() {
+            return Err(Thrown::error(
+                "ValueError",
+                "Invalid empty string key in $options argument",
+            ));
+        }
+        let lk = k.to_ascii_lowercase();
+        let slot = match &lk[..] {
+            b"max_file_uploads" => &mut o.max_file_uploads,
+            b"max_input_vars" => &mut o.max_input_vars,
+            b"max_multipart_body_parts" => &mut o.max_multipart_body_parts,
+            b"post_max_size" => &mut o.post_max_size,
+            b"upload_max_filesize" => &mut o.upload_max_filesize,
+            _ => {
+                return Err(Thrown::error(
+                    "ValueError",
+                    format!(
+                        "Invalid key \"{}\" in $options argument",
+                        String::from_utf8_lossy(cstr(k))
+                    ),
+                ))
+            }
+        };
+        let v = deref(v);
+        *slot = Some(match &v {
+            Value::Int(i) => *i,
+            Value::Str(s) => {
+                if let Some(err) = quantity_error(s.as_bytes()) {
+                    host.emit_diagnostic(crate::E_WARNING, &err)?;
+                }
+                crate::ini_parse_quantity(s.as_bytes())
+            }
+            other => {
+                return Err(Thrown::error(
+                    "ValueError",
+                    format!(
+                        "Invalid {} value in $options argument",
+                        crate::zend::zpp::zval_value_name(host, other)
+                    ),
+                ))
+            }
+        });
+    }
+    Ok(o)
+}
+
+/// `new RequestParseBodyException($msg)`.
+fn parse_body_exception(host: &mut dyn Host, msg: String) -> Thrown {
+    match host.reflect_new_instance(
+        b"RequestParseBodyException",
+        vec![Value::str(msg.clone().into_bytes())],
+        true,
+    ) {
+        Ok(Value::Object(h)) => Thrown::Object(h),
+        Ok(_) => Thrown::error("RequestParseBodyException", msg),
+        Err(t) => t,
+    }
+}
+
+fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let opts = match args.first().map(deref) {
+        None | Some(Value::Null) => BodyOptions::default(),
+        Some(Value::Array(a)) => parse_options(host, &a)?,
+        Some(other) => {
+            return Err(Thrown::type_error(format!(
+                "request_parse_body(): Argument #1 ($options) must be of type ?array, {} given",
+                crate::zend::zpp::zval_value_name(host, &other)
+            )))
+        }
+    };
+    let info = host.request_info().and_then(|r| {
+        r.content_type.clone().map(|ct| {
+            (
+                ct,
+                r.method.clone(),
+                r.content_length.unwrap_or(r.body.len() as i64),
+                r.body.clone(),
+            )
+        })
+    });
+    let Some((ct, method, content_length, body)) = info else {
+        return Err(parse_body_exception(
+            host,
+            "Request does not provide a content type".into(),
+        ));
+    };
+    let is_post = method.as_deref() == Some(b"POST");
+    let kind = media_type(&ct);
+    let lim = Limits::new(host, &opts);
+    let mut post = PhpArray::new();
+    let mut files = PhpArray::new();
+    // sapi_read_standard_form_data.
+    let read_standard = |host: &mut dyn Host| -> Result<bool, Thrown> {
+        if lim.post_max_size > 0 && content_length > lim.post_max_size {
+            crate::warn(
+                host,
+                "request_parse_body",
+                &format!(
+                    "POST Content-Length of {content_length} bytes exceeds the limit of {} bytes",
+                    lim.post_max_size
+                ),
+            )?;
+            return Ok(false);
+        }
+        let over = host
+            .body_state()
+            .is_some_and(|s| s.read_standard(&body, lim.post_max_size));
+        if over {
+            crate::warn(
+                host,
+                "request_parse_body",
+                &actual_length_exceeds(lim.post_max_size),
+            )?;
+        }
+        Ok(true)
+    };
+    match &kind[..] {
+        b"application/x-www-form-urlencoded" => {
+            if read_standard(host)? {
+                let data = host
+                    .body_state()
+                    .and_then(|s| s.buffered())
+                    .unwrap_or_default();
+                let (a, over) = post_form_vars(&data, lim.max_input_vars);
+                post = a;
+                if over {
+                    crate::warn(
+                        host,
+                        "request_parse_body",
+                        &format!(
+                            "Input variables exceeded {}. To increase the limit change max_input_vars in php.ini.",
+                            lim.max_input_vars as u64
+                        ),
+                    )?;
+                }
+            }
+        }
+        b"multipart/form-data" => {
+            let (rest, read_before) = match host.body_state() {
+                Some(s) => (s.remaining(&body).to_vec(), s.read_bytes()),
+                None => (Vec::new(), 0),
+            };
+            let mut out = parse(
+                &rest,
+                read_before,
+                &content_type_dup(&ct),
+                content_length,
+                &lim,
+                &mut post,
+                &mut files,
+            );
+            if let Some(s) = host.body_state() {
+                s.apply(&mut out);
+            }
+            let mut thrown: Option<Thrown> = None;
+            for d in out.diags {
+                match d {
+                    Diag::Emit(m) => {
+                        if thrown.is_none() {
+                            thrown = Some(parse_body_exception(host, m));
+                        }
+                    }
+                    Diag::Notice(m) => crate::notice(host, "request_parse_body", &m)?,
+                    Diag::Sapi(m) => host.emit_diagnostic(crate::E_WARNING, &m)?,
+                }
+            }
+            if let Some(t) = thrown {
+                return Err(t);
+            }
+        }
+        _ => {
+            if is_post {
+                read_standard(host)?;
+            }
+            return Err(parse_body_exception(
+                host,
+                format!(
+                    "Content-Type \"{}\" is not supported",
+                    String::from_utf8_lossy(cstr(&ct))
+                ),
+            ));
+        }
+    }
+    let mut pair = PhpArray::new();
+    pair.push(Value::Array(post));
+    pair.push(Value::Array(files));
+    Ok(Value::Array(pair))
+}
+
 pub fn register(m: &mut crate::Registry) {
-    crate::register(m, &[("http_build_query", fn_http_build_query)]);
+    crate::register(
+        m,
+        &[
+            ("http_build_query", fn_http_build_query),
+            (
+                "http_get_last_response_headers",
+                fn_http_get_last_response_headers,
+            ),
+            (
+                "http_clear_last_response_headers",
+                fn_http_clear_last_response_headers,
+            ),
+            ("request_parse_body", fn_request_parse_body),
+        ],
+    );
 }

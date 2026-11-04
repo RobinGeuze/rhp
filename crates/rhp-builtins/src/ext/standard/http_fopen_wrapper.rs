@@ -430,7 +430,7 @@ struct Resource {
 }
 
 fn parse_resource(path: &[u8]) -> Option<Resource> {
-    let u = crate::url::parse(path)?;
+    let u = crate::ext::standard::url::parse(path)?;
     Some(Resource {
         scheme: u.scheme.unwrap_or_default(),
         user: u.user,

@@ -126,11 +126,15 @@ fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Err(Thrown::error("ValueError", "Path must not be empty"));
     }
     touch_ctx(host, args, 3);
-    if crate::http::is_http(&path) {
-        return Ok(
-            crate::http::open_arg(host, "fopen", &path, &mode, args.get(3))?
-                .unwrap_or(Value::Bool(false)),
-        );
+    if crate::ext::standard::http_fopen_wrapper::is_http(&path) {
+        return Ok(crate::ext::standard::http_fopen_wrapper::open_arg(
+            host,
+            "fopen",
+            &path,
+            &mode,
+            args.get(3),
+        )?
+        .unwrap_or(Value::Bool(false)));
     }
     crate::main::streams::clear_errno();
     let ctx = args.get(3).map(deref).unwrap_or(Value::Null);
@@ -865,9 +869,16 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let include_new_line = flags & IGNORE_NEW_LINES == 0;
     let skip_blank = flags & SKIP_EMPTY_LINES != 0;
     crate::main::streams::clear_errno();
-    let mut opened = crate::http::is_http(&path);
+    let mut opened = crate::ext::standard::http_fopen_wrapper::is_http(&path);
     let data = if opened {
-        match crate::http::get_contents(host, "file", &path, args.get(2), 0, None)? {
+        match crate::ext::standard::http_fopen_wrapper::get_contents(
+            host,
+            "file",
+            &path,
+            args.get(2),
+            0,
+            None,
+        )? {
             Some(b) => Some(b),
             None => return Ok(Value::Bool(false)),
         }
@@ -1630,8 +1641,15 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
     }
     crate::main::streams::clear_errno();
-    let data = if crate::http::is_http(&from) {
-        match crate::http::get_contents(host, "copy", &from, args.get(2), 0, None)? {
+    let data = if crate::ext::standard::http_fopen_wrapper::is_http(&from) {
+        match crate::ext::standard::http_fopen_wrapper::get_contents(
+            host,
+            "copy",
+            &from,
+            args.get(2),
+            0,
+            None,
+        )? {
             Some(b) => b,
             None => return Ok(Value::Bool(false)),
         }
@@ -1876,8 +1894,15 @@ fn fn_lchgrp(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_param(args, 0, "readfile", "filename")?;
     touch_ctx(host, args, 2);
-    if crate::http::is_http(&path) {
-        let Some(data) = crate::http::get_contents(host, "readfile", &path, args.get(2), 0, None)?
+    if crate::ext::standard::http_fopen_wrapper::is_http(&path) {
+        let Some(data) = crate::ext::standard::http_fopen_wrapper::get_contents(
+            host,
+            "readfile",
+            &path,
+            args.get(2),
+            0,
+            None,
+        )?
         else {
             return Ok(Value::Bool(false));
         };

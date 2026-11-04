@@ -67,9 +67,9 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         }
     };
     crate::fs_fns::touch_ctx(host, args, 2);
-    if crate::http::is_http(&url) {
+    if crate::ext::standard::http_fopen_wrapper::is_http(&url) {
         return Ok(
-            match crate::http::get_contents(
+            match crate::ext::standard::http_fopen_wrapper::get_contents(
                 host,
                 "file_get_contents",
                 &url,
@@ -309,7 +309,7 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     }
     let flags = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     const FILE_APPEND: i64 = 8;
-    if crate::http::is_http(&path) {
+    if crate::ext::standard::http_fopen_wrapper::is_http(&path) {
         // php opens the target before reading `$data`; the http wrapper
         // refuses to write
         let mode: &[u8] = if flags & FILE_APPEND != 0 {
@@ -317,9 +317,13 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         } else {
             b"wb"
         };
-        if let Some(res) =
-            crate::http::open_arg(host, "file_put_contents", &path, mode, args.get(3))?
-        {
+        if let Some(res) = crate::ext::standard::http_fopen_wrapper::open_arg(
+            host,
+            "file_put_contents",
+            &path,
+            mode,
+            args.get(3),
+        )? {
             host.stream_close(&res);
         }
         return Ok(Value::Bool(false));

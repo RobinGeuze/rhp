@@ -65,7 +65,9 @@ pub struct Vm {
     output: output::Output,
     stack: Vec<Frame>,
     /// The programs installed so far: the main script is unit 0, then each
-    /// included file and eval()'d string, in load order.
+    /// included file and eval()'d string, in load order. A program installed
+    /// right after one that added no closures and no class declarations
+    /// shares that unit, since their bases are equal.
     units: Vec<UnitBase>,
     functions: Vec<UnitFn>,
     fn_names: HashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
@@ -121,8 +123,12 @@ pub struct Vm {
     // Globals that became PHP references (`global $x`, `=&`, by-ref passing):
     // php's shutdown sweep only destroys plain (non-reference) object globals.
     ref_globals: std::collections::HashSet<Vec<u8>>,
-    // `static $x`: persistent cells keyed by (function proto pointer, var name).
+    // `static $x`: persistent cells keyed by (function proto pointer, unit,
+    // class, var name).
     statics: HashMap<StaticKey, Rc<RefCell<Value>>>,
+    // The statics of the running include and eval `{main}` frames, keyed by
+    // stack index; each frame's are dropped when it returns.
+    include_statics: HashMap<StaticKey, Rc<RefCell<Value>>>,
     // Non-constant class const / static-prop / property-default initializers,
     // evaluated after all classes link (so cross-class/enum refs resolve).
     // Generator runtime state, keyed by the Generator object's id.
@@ -252,7 +258,7 @@ type UnitId = u32;
 /// in the VM's flat tables. Bytecode stays as compiled and is shared (with
 /// opcache, across requests); a frame carries its unit, and the VM adds
 /// these bases when it runs `MakeClosure`, `DeclareFunc` or `DeclareClass`.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct UnitBase {
     closures: u32,
     classes: u32,

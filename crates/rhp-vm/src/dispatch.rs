@@ -2,6 +2,7 @@
 //! operator helpers it calls.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_builtins as builtins;
@@ -27,13 +28,32 @@ impl Vm {
     /// it runs as. A method declared in a class always runs with that class,
     /// but a trait method is copied into every using class and each copy has
     /// its own statics (php duplicates the op_array per using class).
+    /// An include's or eval's `{main}` starts its statics fresh every time
+    /// it runs, as php does: they are keyed by its stack index (see
+    /// [`Vm::static_table`]).
     fn static_key(&self, top: usize, proto: &Rc<FunctionProto>, sname: Vec<u8>) -> StaticKey {
+        let f = &self.stack[top];
+        if f.include_kind.is_some() {
+            return (top, 0, None, sname);
+        }
         let cls = if proto.name.as_bytes().starts_with(b"{closure") {
             None
         } else {
-            self.stack[top].defining_class
+            f.defining_class
         };
-        (Rc::as_ptr(proto) as usize, self.stack[top].unit, cls, sname)
+        (Rc::as_ptr(proto) as usize, f.unit, cls, sname)
+    }
+
+    /// The table frame `top`'s statics live in: an include's or eval's
+    /// `{main}` keeps them in [`Vm::include_statics`], dropped when it
+    /// returns (see [`Vm::run_included`]).
+    #[inline]
+    fn static_table(&mut self, top: usize) -> &mut HashMap<StaticKey, Rc<RefCell<Value>>> {
+        if self.stack[top].include_kind.is_some() {
+            &mut self.include_statics
+        } else {
+            &mut self.statics
+        }
     }
 
     /// Where the file-local indices of frame `top`'s unit start.
@@ -545,7 +565,8 @@ impl Vm {
                 Instr::BindStatic { cv, name, init } => {
                     let sname = proto.names[name as usize].as_bytes().to_vec();
                     let key = self.static_key(top, &proto, sname);
-                    let cell = match self.statics.get(&key) {
+                    let statics = self.static_table(top);
+                    let cell = match statics.get(&key) {
                         Some(c) => c.clone(),
                         None => {
                             let initv = if init == u32::MAX {
@@ -554,7 +575,7 @@ impl Vm {
                                 proto.consts[init as usize].clone()
                             };
                             let c = Rc::new(RefCell::new(initv));
-                            self.statics.insert(key, c.clone());
+                            statics.insert(key, c.clone());
                             c
                         }
                     };
@@ -564,7 +585,7 @@ impl Vm {
                 Instr::BindStaticOrJmp { cv, name, target } => {
                     let sname = proto.names[name as usize].as_bytes().to_vec();
                     let key = self.static_key(top, &proto, sname);
-                    if let Some(c) = self.statics.get(&key) {
+                    if let Some(c) = self.static_table(top).get(&key) {
                         let cell = c.clone();
                         self.stack[top].regs[cv as usize] = Value::Ref(cell);
                         self.sync_global_cv(top, cv);
@@ -576,7 +597,7 @@ impl Vm {
                     let key = self.static_key(top, &proto, sname);
                     let v = self.reg_get(top, src);
                     let cell = self
-                        .statics
+                        .static_table(top)
                         .entry(key)
                         .or_insert_with(|| Rc::new(RefCell::new(v)))
                         .clone();

@@ -52,3 +52,12 @@ for ($i = 0; $i < 3; $i++) {
 }
 echo "\n";
 
+// A file with no closures and no classes shares the unit loaded before it,
+// and its statics still start fresh, also when it includes itself.
+for ($i = 0; $i < 3; $i++) {
+    echo include __DIR__ . '/units_flat.inc';
+}
+echo ' ';
+$depth = 0;
+include __DIR__ . '/units_self.inc';
+echo "\n";

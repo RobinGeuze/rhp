@@ -421,13 +421,18 @@ impl Vm {
     }
 
     /// Start a unit for `prog`: record where its file-local indices start
-    /// and append its closures.
+    /// and append its closures. When the last unit added no closures and
+    /// no class declarations, its base is this one's and `prog` shares it,
+    /// so a file included in a loop does not grow the table.
     pub(crate) fn add_unit(&mut self, prog: &Program) -> UnitId {
-        let unit = self.units.len() as UnitId;
-        self.units.push(UnitBase {
+        let base = UnitBase {
             closures: self.closures.len() as u32,
             classes: self.decl_classes.len() as u32,
-        });
+        };
+        if self.units.last() != Some(&base) {
+            self.units.push(base);
+        }
+        let unit = (self.units.len() - 1) as UnitId;
         let closures = prog.closures.iter().map(|c| UnitFn {
             proto: c.clone(),
             unit,
@@ -532,20 +537,25 @@ impl Vm {
         self.bind_superglobals(&mut frame);
         let base = self.stack.len();
         self.stack.push(frame);
-        loop {
+        let ret = loop {
             match self.run_frames() {
-                Ok(v) => return Ok(v),
+                Ok(v) => break Ok(v),
                 Err(thrown) => {
                     if !thrown.is_catchable() {
-                        return Err(thrown);
+                        break Err(thrown);
                     }
-                    match self.unwind(thrown, base)? {
-                        UnwindResult::Caught => {}
-                        UnwindResult::Escaped(t) => return Err(t),
+                    match self.unwind(thrown, base) {
+                        Ok(UnwindResult::Caught) => {}
+                        Ok(UnwindResult::Escaped(t)) | Err(t) => break Err(t),
                     }
                 }
             }
+        };
+        // php starts an include's statics fresh each time.
+        if !self.include_statics.is_empty() {
+            self.include_statics.retain(|k, _| k.0 < base);
         }
+        ret
     }
 
     /// An include/eval frame that is finishing shares its caller's variables

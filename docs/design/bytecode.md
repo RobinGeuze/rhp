@@ -619,7 +619,9 @@ declarations). Each install of a program (the main script, which is unit
 declarations to the VM's flat tables (`Vm::closures`, `Vm::decl_classes`)
 and records where they start in a `UnitBase` in `Vm::units`. A frame
 carries its unit, and those three instructions add the unit's base to
-their operand.
+their operand. A program loaded right after one that added nothing to
+either table has the same base, so it shares that unit: a file without
+closures or classes included in a loop does not grow `Vm::units`.
 
 Whatever can start a frame records its unit beside its proto: the function
 and closure tables and the class initializer thunks hold a `UnitFn`, a
@@ -627,8 +629,12 @@ and closure tables and the class initializer thunks hold a `UnitFn`, a
 declaration slots and `ClassEntry`s. Nested thunks (parameter defaults,
 attribute arguments) run in their owner's unit; for a trait's property or
 constant that is the trait's. Function statics are keyed by (proto, unit,
-class, name), so a file included twice keeps two sets, as two compiles
-would.
+class, name), so a closure from a file included twice keeps two sets, as
+two compiles would. An include's or eval's `{main}` keeps its statics only
+while it runs (`Vm::include_statics`, keyed by stack index), since php
+starts them fresh on every load; so a unit shared by two loads never mixes
+their statics, and the protos keyed in `Vm::statics` (functions, closures,
+methods) all stay alive until the request ends.
 
 `run_frames` takes the running frame's proto (an `Rc` clone) only when a
 call or a return changes the top frame, not per instruction.

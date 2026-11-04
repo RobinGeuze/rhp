@@ -70,6 +70,7 @@ impl Vm {
             unset_typed_props: HashMap::new(),
             ref_globals: std::collections::HashSet::new(),
             statics: HashMap::new(),
+            include_statics: HashMap::new(),
             generators: HashMap::new(),
             yield_out: None,
             gen_stack: Vec::new(),

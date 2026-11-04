@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::TestHost;
 
 #[test]
 fn openssl_is_linked_statically() {
@@ -58,7 +59,7 @@ fn error_ring_holds_the_last_fifteen() {
         store_errors();
     }
     let mut n = 0;
-    let mut host = crate::diag_test::DiagHost::default();
+    let mut host = TestHost::new();
     while let Ok(Value::Str(_)) = fn_error_string(&mut host, &[]) {
         n += 1;
     }

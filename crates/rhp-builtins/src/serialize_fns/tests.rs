@@ -2,14 +2,10 @@
 #![allow(clippy::approx_constant)] // deliberate literal test values, not PI
 
 use super::*;
-
-struct NullHost;
-impl Host for NullHost {
-    fn write_out(&mut self, _bytes: &[u8]) {}
-}
+use crate::test_support::TestHost;
 
 fn ser(v: Value) -> Vec<u8> {
-    let mut h = NullHost;
+    let mut h = TestHost::new();
     match fn_serialize(&mut h, &[v]).unwrap() {
         Value::Str(s) => s.as_bytes().to_vec(),
         _ => panic!("serialize did not return a string"),
@@ -17,7 +13,7 @@ fn ser(v: Value) -> Vec<u8> {
 }
 
 fn unser(s: &[u8]) -> Value {
-    let mut h = NullHost;
+    let mut h = TestHost::new();
     fn_unserialize(&mut h, &[Value::str(s.to_vec())]).unwrap()
 }
 

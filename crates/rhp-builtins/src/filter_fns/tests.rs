@@ -1,12 +1,8 @@
 // tests — expected values captured from php 8.5.8
 
 use super::*;
+use crate::test_support::TestHost;
 use rhp_values::PhpArray;
-
-struct NullHost;
-impl Host for NullHost {
-    fn write_out(&mut self, _: &[u8]) {}
-}
 
 fn s(b: &str) -> Value {
     Value::str(b)
@@ -14,12 +10,12 @@ fn s(b: &str) -> Value {
 
 /// filter_var($value, $filter)
 fn fv(value: Value, filter: i64) -> Value {
-    fn_filter_var(&mut NullHost, &[value, Value::Int(filter)]).unwrap()
+    fn_filter_var(&mut TestHost::new(), &[value, Value::Int(filter)]).unwrap()
 }
 /// filter_var($value, $filter, $flags_int)
 fn fvf(value: Value, filter: i64, flags: i64) -> Value {
     fn_filter_var(
-        &mut NullHost,
+        &mut TestHost::new(),
         &[value, Value::Int(filter), Value::Int(flags)],
     )
     .unwrap()
@@ -33,7 +29,7 @@ fn fv_opts(value: Value, filter: i64, opts: &[(&str, Value)]) -> Value {
     let mut outer = PhpArray::new();
     outer.insert(ArrayKey::from_bytes(b"options"), Value::Array(inner));
     fn_filter_var(
-        &mut NullHost,
+        &mut TestHost::new(),
         &[value, Value::Int(filter), Value::Array(outer)],
     )
     .unwrap()
@@ -536,7 +532,7 @@ fn special_chars_byte_ranges() {
     // byte 127 and high bytes are kept verbatim; 0x1f is encoded.
     fn sc_bytes(byte: u8) -> Vec<u8> {
         let r = fn_filter_var(
-            &mut NullHost,
+            &mut TestHost::new(),
             &[
                 Value::str(vec![byte]),
                 Value::Int(FILTER_SANITIZE_SPECIAL_CHARS),
@@ -563,7 +559,7 @@ fn default_passthrough() {
     assert_eq!(as_str(&fv(s("a<b>c"), FILTER_DEFAULT)), "a<b>c");
     // default filter when omitted
     assert_eq!(
-        as_str(&fn_filter_var(&mut NullHost, &[s("hi")]).unwrap()),
+        as_str(&fn_filter_var(&mut TestHost::new(), &[s("hi")]).unwrap()),
         "hi"
     );
 }

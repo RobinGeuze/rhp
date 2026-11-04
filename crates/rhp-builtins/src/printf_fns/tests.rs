@@ -1,18 +1,8 @@
 // tests — expected values captured from php 8.5.8
 
 use super::*;
+use crate::test_support::TestHost;
 use rhp_values::PhpArray;
-
-/// A host that captures everything written to output, for byte checks.
-#[derive(Default)]
-struct CapHost {
-    out: Vec<u8>,
-}
-impl Host for CapHost {
-    fn write_out(&mut self, bytes: &[u8]) {
-        self.out.extend_from_slice(bytes);
-    }
-}
 
 fn s(b: &str) -> Value {
     Value::str(b)
@@ -28,7 +18,7 @@ fn arr(vals: Vec<Value>) -> Value {
 
 /// Call an output-family fn: return (captured output string, int return).
 fn run(f: crate::NativeFn, args: &[Value]) -> (String, i64) {
-    let mut host = CapHost::default();
+    let mut host = TestHost::new();
     let ret = f(&mut host, args).expect("no throw");
     let n = match ret {
         Value::Int(n) => n,
@@ -57,7 +47,7 @@ fn vprintf_writes_and_returns_len() {
 /// a non-stream first argument is php's TypeError.
 #[test]
 fn fprintf_family_requires_a_stream() {
-    let mut host = CapHost::default();
+    let mut host = TestHost::new();
     let err = |r: Result<Value, Thrown>| match r {
         Err(Thrown::Error { message, .. }) => message,
         Err(other) => panic!("unexpected {other:?}"),
@@ -84,14 +74,14 @@ fn fprintf_family_requires_a_stream() {
 
 #[test]
 fn varray_arg_must_be_array() {
-    let mut host = CapHost::default();
+    let mut host = TestHost::new();
     assert!(fn_vprintf(&mut host, &[s("%s"), s("notarray")]).is_err());
     assert!(fn_vfprintf(&mut host, &[Value::Int(2), s("%s"), s("notarray")]).is_err());
 }
 
 #[test]
 fn format_errors_propagate() {
-    let mut host = CapHost::default();
+    let mut host = TestHost::new();
     // unknown specifier -> ValueError from the shared core
     assert!(fn_vprintf(&mut host, &[s("%i"), arr(vec![Value::Int(1)])]).is_err());
     // too few arguments -> ArgumentCountError from the shared core

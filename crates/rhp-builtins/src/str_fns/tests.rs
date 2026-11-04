@@ -2,17 +2,13 @@
 #![allow(clippy::approx_constant)] // deliberate literal test values, not PI
 
 use super::*;
-
-struct NullHost;
-impl Host for NullHost {
-    fn write_out(&mut self, _: &[u8]) {}
-}
+use crate::test_support::TestHost;
 
 fn s(b: &str) -> Value {
     Value::str(b)
 }
 fn call(f: crate::NativeFn, args: &[Value]) -> Value {
-    f(&mut NullHost, args).expect("no throw")
+    f(&mut TestHost::new(), args).expect("no throw")
 }
 fn calls(f: crate::NativeFn, args: &[Value]) -> String {
     String::from_utf8(bytes_of(&call(f, args))).unwrap()
@@ -143,7 +139,7 @@ fn strpos_family() {
         Some(6)
     );
     // offset out of range -> ValueError
-    assert!(fn_strpos(&mut NullHost, &[s("Hello"), s("l"), Value::Int(100)]).is_err());
+    assert!(fn_strpos(&mut TestHost::new(), &[s("Hello"), s("l"), Value::Int(100)]).is_err());
 }
 
 #[test]
@@ -647,9 +643,9 @@ fn sprintf_differential() {
 
 #[test]
 fn sprintf_errors() {
-    assert!(fn_sprintf(&mut NullHost, &[s("%i"), Value::Int(1)]).is_err());
-    assert!(fn_sprintf(&mut NullHost, &[s("abc%")]).is_err());
-    assert!(fn_sprintf(&mut NullHost, &[s("%s %s"), s("a")]).is_err());
+    assert!(fn_sprintf(&mut TestHost::new(), &[s("%i"), Value::Int(1)]).is_err());
+    assert!(fn_sprintf(&mut TestHost::new(), &[s("abc%")]).is_err());
+    assert!(fn_sprintf(&mut TestHost::new(), &[s("%s %s"), s("a")]).is_err());
 }
 
 #[test]
@@ -726,5 +722,5 @@ fn count_chars_cases() {
         })
         .collect();
     assert_eq!(pairs, vec![(101, 1), (104, 1), (108, 2), (111, 1)]);
-    assert!(fn_count_chars(&mut NullHost, &[s("x"), Value::Int(5)]).is_err());
+    assert!(fn_count_chars(&mut TestHost::new(), &[s("x"), Value::Int(5)]).is_err());
 }

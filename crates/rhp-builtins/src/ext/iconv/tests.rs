@@ -1,5 +1,5 @@
 use super::*;
-use crate::diag_test::run;
+use crate::test_support::run;
 
 fn s(b: &[u8]) -> Value {
     Value::str(b.to_vec())

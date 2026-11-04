@@ -1,20 +1,16 @@
 // tests — expected strings captured from php 8.5.8
 
 use super::*;
-
-struct NullHost;
-impl Host for NullHost {
-    fn write_out(&mut self, _: &[u8]) {}
-}
+use crate::test_support::TestHost;
 
 fn dumped(v: &Value) -> String {
     let mut out = Vec::new();
-    crate::dump::var_dump(&NullHost, &mut out, v, 0);
+    crate::dump::var_dump(&TestHost::new(), &mut out, v, 0);
     String::from_utf8_lossy(&out).into_owned()
 }
 
 fn call(f: crate::NativeFn, args: &[Value]) -> Value {
-    f(&mut NullHost, args).expect("builtin returned Err")
+    f(&mut TestHost::new(), args).expect("builtin returned Err")
 }
 
 fn arr(items: Vec<(ArrayKey, Value)>) -> Value {
@@ -90,7 +86,7 @@ fn t_array_fill() {
         dumped(&r),
         "array(3) {\n  [-3]=>\n  string(1) \"v\"\n  [-2]=>\n  string(1) \"v\"\n  [-1]=>\n  string(1) \"v\"\n}\n"
     );
-    assert!(fn_array_fill(&mut NullHost, &[i(0), i(-1), s("v")]).is_err());
+    assert!(fn_array_fill(&mut TestHost::new(), &[i(0), i(-1), s("v")]).is_err());
 }
 
 #[test]
@@ -124,7 +120,11 @@ fn t_array_combine() {
         dumped(&r),
         "array(4) {\n  [\"a\"]=>\n  int(1)\n  [\"2.9\"]=>\n  int(2)\n  [1]=>\n  int(3)\n  [123]=>\n  int(4)\n}\n"
     );
-    assert!(fn_array_combine(&mut NullHost, &[list(vec![i(1), i(2)]), list(vec![i(1)])]).is_err());
+    assert!(fn_array_combine(
+        &mut TestHost::new(),
+        &[list(vec![i(1), i(2)]), list(vec![i(1)])]
+    )
+    .is_err());
 }
 
 #[test]
@@ -297,7 +297,7 @@ fn t_array_chunk() {
         dumped(&r),
         "array(2) {\n  [0]=>\n  array(2) {\n    [\"a\"]=>\n    int(1)\n    [\"b\"]=>\n    int(2)\n  }\n  [1]=>\n  array(1) {\n    [\"c\"]=>\n    int(3)\n  }\n}\n"
     );
-    assert!(fn_array_chunk(&mut NullHost, &[list(vec![i(1)]), i(0)]).is_err());
+    assert!(fn_array_chunk(&mut TestHost::new(), &[list(vec![i(1)]), i(0)]).is_err());
 }
 
 #[test]

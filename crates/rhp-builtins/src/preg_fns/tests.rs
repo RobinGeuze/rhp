@@ -1,32 +1,15 @@
 // tests — expected values captured from php 8.5.8
 
 use super::*;
+use crate::test_support::TestHost;
 use std::cell::RefCell;
 use std::rc::Rc;
-
-struct NullHost;
-impl Host for NullHost {
-    fn write_out(&mut self, _: &[u8]) {}
-}
-
-/// A host that dispatches `call_callable` to a Rust closure, for the
-/// preg_replace_callback test (mirrors how other modules stub a callback).
-struct CbHost<'a> {
-    #[allow(clippy::type_complexity)]
-    f: Box<dyn FnMut(&[Value]) -> Value + 'a>,
-}
-impl Host for CbHost<'_> {
-    fn write_out(&mut self, _: &[u8]) {}
-    fn call_callable(&mut self, _c: &Value, args: &[Value]) -> Result<Value, Thrown> {
-        Ok((self.f)(args))
-    }
-}
 
 fn s(b: &str) -> Value {
     Value::str(b)
 }
 fn re(args: &[Value]) -> Value {
-    fn_preg_match(&mut NullHost, args).unwrap()
+    fn_preg_match(&mut TestHost::new(), args).unwrap()
 }
 
 /// A fresh by-ref slot to pass as `&$matches`.
@@ -334,7 +317,7 @@ fn match_all(args: &[Value]) -> (Value, Value) {
     let m = slot();
     let mut full = args.to_vec();
     full.insert(2, m.clone());
-    let r = fn_preg_match_all(&mut NullHost, &full).unwrap();
+    let r = fn_preg_match_all(&mut TestHost::new(), &full).unwrap();
     (r, slot_val(&m))
 }
 
@@ -408,7 +391,7 @@ fn match_all_empty_star() {
 }
 
 fn replace(args: &[Value]) -> Value {
-    fn_preg_replace(&mut NullHost, args).unwrap()
+    fn_preg_replace(&mut TestHost::new(), args).unwrap()
 }
 
 #[test]
@@ -454,7 +437,7 @@ fn replace_limit_and_count() {
     // count out-param
     let c = slot();
     fn_preg_replace(
-        &mut NullHost,
+        &mut TestHost::new(),
         &[s("/\\d/"), s("#"), s("1a2b3"), Value::Int(-1), c.clone()],
     )
     .unwrap();
@@ -493,33 +476,29 @@ fn replace_empty_matches() {
 #[test]
 fn replace_callback() {
     // double each number: 'a3b4' => 'a6b8'
-    let mut host = CbHost {
-        f: Box::new(|args: &[Value]| {
-            let Value::Array(m) = &args[0] else { panic!() };
-            let whole = m.get(&ArrayKey::Int(0)).unwrap();
-            let n = rhp_values::conv::to_int(whole);
-            Value::str((n * 2).to_string())
-        }),
-    };
+    let mut host = TestHost::with_callback(|args: &[Value]| {
+        let Value::Array(m) = &args[0] else { panic!() };
+        let whole = m.get(&ArrayKey::Int(0)).unwrap();
+        let n = rhp_values::conv::to_int(whole);
+        Value::str((n * 2).to_string())
+    });
     let r = fn_preg_replace_callback(&mut host, &[s("/\\d+/"), Value::Null, s("a3b4")]).unwrap();
     assert_eq!(as_str(&r), "a6b8");
 
     // use capture groups: swap the two digits of each pair
-    let mut host2 = CbHost {
-        f: Box::new(|args: &[Value]| {
-            let Value::Array(m) = &args[0] else { panic!() };
-            let g1 = as_str(m.get(&ArrayKey::Int(1)).unwrap());
-            let g2 = as_str(m.get(&ArrayKey::Int(2)).unwrap());
-            Value::str(format!("{g2}{g1}"))
-        }),
-    };
+    let mut host2 = TestHost::with_callback(|args: &[Value]| {
+        let Value::Array(m) = &args[0] else { panic!() };
+        let g1 = as_str(m.get(&ArrayKey::Int(1)).unwrap());
+        let g2 = as_str(m.get(&ArrayKey::Int(2)).unwrap());
+        Value::str(format!("{g2}{g1}"))
+    });
     let r2 = fn_preg_replace_callback(&mut host2, &[s("/(\\d)(\\d)/"), Value::Null, s("x12y34")])
         .unwrap();
     assert_eq!(as_str(&r2), "x21y43");
 }
 
 fn split(args: &[Value]) -> Vec<String> {
-    let Value::Array(a) = fn_preg_split(&mut NullHost, args).unwrap() else {
+    let Value::Array(a) = fn_preg_split(&mut TestHost::new(), args).unwrap() else {
         panic!()
     };
     a.iter().map(|(_, v)| as_str(v)).collect()
@@ -577,7 +556,7 @@ fn split_offset_capture() {
     // php: preg_split('/,/','a,bb',-1,PREG_SPLIT_OFFSET_CAPTURE)
     //   => [['a',0],['bb',2]]
     let Value::Array(a) = fn_preg_split(
-        &mut NullHost,
+        &mut TestHost::new(),
         &[
             s("/,/"),
             s("a,bb"),
@@ -626,7 +605,7 @@ fn split_delim_capture_optional() {
 }
 
 fn quote(args: &[Value]) -> String {
-    as_str(&fn_preg_quote(&mut NullHost, args).unwrap())
+    as_str(&fn_preg_quote(&mut TestHost::new(), args).unwrap())
 }
 
 #[test]
@@ -639,12 +618,12 @@ fn quote_cases() {
         "\\. \\\\ \\+ \\* \\? \\[ \\^ \\] \\$ \\( \\) \\{ \\} \\= \\! \\< \\> \\| \\: \\- \\# /"
     );
     // NUL byte -> \000
-    let nul = fn_preg_quote(&mut NullHost, &[Value::str(vec![b'a', 0, b'b'])]).unwrap();
+    let nul = fn_preg_quote(&mut TestHost::new(), &[Value::str(vec![b'a', 0, b'b'])]).unwrap();
     assert_eq!(as_bytes(&nul), b"a\\000b");
 }
 
 fn grep(args: &[Value]) -> Vec<(ArrayKey, String)> {
-    let Value::Array(a) = fn_preg_grep(&mut NullHost, args).unwrap() else {
+    let Value::Array(a) = fn_preg_grep(&mut TestHost::new(), args).unwrap() else {
         panic!()
     };
     a.iter().map(|(k, v)| (k.clone(), as_str(v))).collect()
@@ -686,7 +665,7 @@ fn invalid_pattern_returns_false() {
     let m = slot();
     assert!(matches!(re(&[s("/(/"), s("abc"), m]), Value::Bool(false)));
     assert!(matches!(
-        fn_preg_split(&mut NullHost, &[s("bad"), s("x")]).unwrap(),
+        fn_preg_split(&mut TestHost::new(), &[s("bad"), s("x")]).unwrap(),
         Value::Bool(false)
     ));
     // preg_replace returns null on a bad pattern

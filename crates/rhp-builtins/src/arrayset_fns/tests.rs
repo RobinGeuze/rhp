@@ -1,24 +1,7 @@
 // tests (expected values captured from php 8.5.8)
 
 use super::*;
-
-/// Host that dispatches `call_callable` to a boxed Rust closure, so the
-/// callback-based functions can be exercised as unit tests.
-struct ClosureHost<'a> {
-    #[allow(clippy::type_complexity)]
-    cb: Box<dyn FnMut(&[Value]) -> Value + 'a>,
-}
-impl Host for ClosureHost<'_> {
-    fn write_out(&mut self, _: &[u8]) {}
-    fn call_callable(&mut self, _callable: &Value, args: &[Value]) -> Result<Value, Thrown> {
-        Ok((self.cb)(args))
-    }
-}
-
-struct NullHost;
-impl Host for NullHost {
-    fn write_out(&mut self, _: &[u8]) {}
-}
+use crate::test_support::TestHost;
 
 fn s(b: &str) -> Value {
     Value::str(b)
@@ -28,7 +11,7 @@ fn i(n: i64) -> Value {
 }
 fn dumped(v: &Value) -> String {
     let mut out = Vec::new();
-    crate::dump::var_dump(&NullHost, &mut out, v, 0);
+    crate::dump::var_dump(&TestHost::new(), &mut out, v, 0);
     String::from_utf8_lossy(&out).into_owned()
 }
 fn map(pairs: Vec<(&str, Value)>) -> Value {
@@ -61,14 +44,14 @@ fn array_diff_assoc_cases() {
     );
     let b = mixed(vec![("a", s("green"))], vec![s("yellow"), s("red")]);
     assert_eq!(
-        dumped(&fn_array_diff_assoc(&mut NullHost, &[a, b]).unwrap()),
+        dumped(&fn_array_diff_assoc(&mut TestHost::new(), &[a, b]).unwrap()),
         "array(3) {\n  [\"b\"]=>\n  string(5) \"brown\"\n  [\"c\"]=>\n  string(4) \"blue\"\n  [0]=>\n  string(3) \"red\"\n}\n"
     );
     // numeric/string values compared by their string form: 1 == "1".
     let x = map(vec![("x", i(1)), ("y", i(2))]);
     let y = map(vec![("x", s("1")), ("y", s("3"))]);
     assert_eq!(
-        dumped(&fn_array_diff_assoc(&mut NullHost, &[x, y]).unwrap()),
+        dumped(&fn_array_diff_assoc(&mut TestHost::new(), &[x, y]).unwrap()),
         "array(1) {\n  [\"y\"]=>\n  int(2)\n}\n"
     );
 }
@@ -85,13 +68,13 @@ fn array_intersect_assoc_cases() {
         vec![s("blue"), s("red")],
     );
     assert_eq!(
-        dumped(&fn_array_intersect_assoc(&mut NullHost, &[a, b]).unwrap()),
+        dumped(&fn_array_intersect_assoc(&mut TestHost::new(), &[a, b]).unwrap()),
         "array(1) {\n  [\"a\"]=>\n  string(5) \"green\"\n}\n"
     );
     let x = map(vec![("x", i(1)), ("y", i(2))]);
     let y = map(vec![("x", s("1")), ("y", s("3"))]);
     assert_eq!(
-        dumped(&fn_array_intersect_assoc(&mut NullHost, &[x, y]).unwrap()),
+        dumped(&fn_array_intersect_assoc(&mut TestHost::new(), &[x, y]).unwrap()),
         "array(1) {\n  [\"x\"]=>\n  int(1)\n}\n"
     );
 }
@@ -107,14 +90,14 @@ fn array_replace_recursive_cases() {
     a2.insert(ArrayKey::Int(0), map(vec![("b", i(9)), ("c", i(3))]));
     a2.insert(ArrayKey::Int(2), s("y"));
     assert_eq!(
-        dumped(&fn_array_replace_recursive(&mut NullHost, &[Value::Array(a1), Value::Array(a2)]).unwrap()),
+        dumped(&fn_array_replace_recursive(&mut TestHost::new(), &[Value::Array(a1), Value::Array(a2)]).unwrap()),
         "array(3) {\n  [0]=>\n  array(3) {\n    [\"a\"]=>\n    int(1)\n    [\"b\"]=>\n    int(9)\n    [\"c\"]=>\n    int(3)\n  }\n  [1]=>\n  string(1) \"x\"\n  [2]=>\n  string(1) \"y\"\n}\n"
     );
     // a scalar replacement overwrites an existing array outright.
     let base = map(vec![("k", map(vec![("a", i(1))]))]);
     let rep = map(vec![("k", s("str"))]);
     assert_eq!(
-        dumped(&fn_array_replace_recursive(&mut NullHost, &[base, rep]).unwrap()),
+        dumped(&fn_array_replace_recursive(&mut TestHost::new(), &[base, rep]).unwrap()),
         "array(1) {\n  [\"k\"]=>\n  string(3) \"str\"\n}\n"
     );
 }
@@ -127,15 +110,11 @@ fn abc() -> Value {
 
 #[test]
 fn array_find_returns_first_value() {
-    let mut host = ClosureHost {
-        cb: Box::new(|a: &[Value]| Value::Bool(conv::to_int(&a[0]) > 15)),
-    };
+    let mut host = TestHost::with_callback(|a: &[Value]| Value::Bool(conv::to_int(&a[0]) > 15));
     let r = fn_array_find(&mut host, &[abc(), Value::Null]).unwrap();
     assert_eq!(dumped(&r), "int(20)\n");
     // no match -> null
-    let mut host2 = ClosureHost {
-        cb: Box::new(|a: &[Value]| Value::Bool(conv::to_int(&a[0]) > 100)),
-    };
+    let mut host2 = TestHost::with_callback(|a: &[Value]| Value::Bool(conv::to_int(&a[0]) > 100));
     assert_eq!(
         dumped(&fn_array_find(&mut host2, &[abc(), Value::Null]).unwrap()),
         "NULL\n"
@@ -148,14 +127,12 @@ fn array_find_passes_value_then_key() {
     let mut first: Option<(Value, Value)> = None;
     {
         let first_ref = &mut first;
-        let mut host = ClosureHost {
-            cb: Box::new(move |a: &[Value]| {
-                if first_ref.is_none() {
-                    *first_ref = Some((a[0].clone(), a[1].clone()));
-                }
-                Value::Bool(false)
-            }),
-        };
+        let mut host = TestHost::with_callback(move |a: &[Value]| {
+            if first_ref.is_none() {
+                *first_ref = Some((a[0].clone(), a[1].clone()));
+            }
+            Value::Bool(false)
+        });
         let _ = fn_array_find(&mut host, &[abc(), Value::Null]).unwrap();
     }
     let (v, k) = first.unwrap();
@@ -165,16 +142,12 @@ fn array_find_passes_value_then_key() {
 
 #[test]
 fn array_find_key_returns_key() {
-    let mut host = ClosureHost {
-        cb: Box::new(|a: &[Value]| Value::Bool(conv::to_int(&a[0]) > 15)),
-    };
+    let mut host = TestHost::with_callback(|a: &[Value]| Value::Bool(conv::to_int(&a[0]) > 15));
     assert_eq!(
         dumped(&fn_array_find_key(&mut host, &[abc(), Value::Null]).unwrap()),
         "string(1) \"y\"\n"
     );
-    let mut host2 = ClosureHost {
-        cb: Box::new(|a: &[Value]| Value::Bool(conv::to_int(&a[0]) > 100)),
-    };
+    let mut host2 = TestHost::with_callback(|a: &[Value]| Value::Bool(conv::to_int(&a[0]) > 100));
     assert_eq!(
         dumped(&fn_array_find_key(&mut host2, &[abc(), Value::Null]).unwrap()),
         "NULL\n"
@@ -183,23 +156,17 @@ fn array_find_key_returns_key() {
 
 #[test]
 fn array_any_and_all() {
-    let mut h = ClosureHost {
-        cb: Box::new(|a: &[Value]| Value::Bool(conv::to_int(&a[0]) > 25)),
-    };
+    let mut h = TestHost::with_callback(|a: &[Value]| Value::Bool(conv::to_int(&a[0]) > 25));
     assert_eq!(
         dumped(&fn_array_any(&mut h, &[abc(), Value::Null]).unwrap()),
         "bool(true)\n"
     );
-    let mut h2 = ClosureHost {
-        cb: Box::new(|a: &[Value]| Value::Bool(conv::to_int(&a[0]) > 5)),
-    };
+    let mut h2 = TestHost::with_callback(|a: &[Value]| Value::Bool(conv::to_int(&a[0]) > 5));
     assert_eq!(
         dumped(&fn_array_all(&mut h2, &[abc(), Value::Null]).unwrap()),
         "bool(true)\n"
     );
-    let mut h3 = ClosureHost {
-        cb: Box::new(|a: &[Value]| Value::Bool(conv::to_int(&a[0]) > 15)),
-    };
+    let mut h3 = TestHost::with_callback(|a: &[Value]| Value::Bool(conv::to_int(&a[0]) > 15));
     assert_eq!(
         dumped(&fn_array_all(&mut h3, &[abc(), Value::Null]).unwrap()),
         "bool(false)\n"
@@ -211,11 +178,11 @@ fn array_any_and_all() {
 fn key_exists_cases() {
     let a = map(vec![("a", i(1)), ("b", i(2))]);
     assert_eq!(
-        dumped(&fn_key_exists(&mut NullHost, &[s("a"), a.clone()]).unwrap()),
+        dumped(&fn_key_exists(&mut TestHost::new(), &[s("a"), a.clone()]).unwrap()),
         "bool(true)\n"
     );
     assert_eq!(
-        dumped(&fn_key_exists(&mut NullHost, &[s("zz"), a]).unwrap()),
+        dumped(&fn_key_exists(&mut TestHost::new(), &[s("zz"), a]).unwrap()),
         "bool(false)\n"
     );
 }

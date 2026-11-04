@@ -1,18 +1,14 @@
 // tests — expected values captured from php 8.5.8
 
 use super::*;
-
-struct NoopHost;
-impl Host for NoopHost {
-    fn write_out(&mut self, _: &[u8]) {}
-}
+use crate::test_support::TestHost;
 
 fn s(b: &str) -> Value {
     Value::str(b)
 }
 
 fn enc(v: &Value, flags: i64) -> String {
-    let r = fn_json_encode(&mut NoopHost, &[v.clone(), Value::Int(flags)]).unwrap();
+    let r = fn_json_encode(&mut TestHost::new(), &[v.clone(), Value::Int(flags)]).unwrap();
     match r {
         Value::Str(s) => String::from_utf8(s.as_bytes().to_vec()).unwrap(),
         Value::Bool(false) => "<false>".to_string(),
@@ -21,12 +17,12 @@ fn enc(v: &Value, flags: i64) -> String {
 }
 
 fn dec(json: &str) -> Value {
-    fn_json_decode(&mut NoopHost, &[s(json)]).unwrap()
+    fn_json_decode(&mut TestHost::new(), &[s(json)]).unwrap()
 }
 
 fn dec_f(json: &str, assoc: Value, depth: i64, flags: i64) -> Value {
     fn_json_decode(
-        &mut NoopHost,
+        &mut TestHost::new(),
         &[s(json), assoc, Value::Int(depth), Value::Int(flags)],
     )
     .unwrap()
@@ -205,14 +201,14 @@ fn decode_round_trip_with_encode() {
 fn last_error_msg_roundtrip() {
     dec("{bad}");
     assert!(matches!(
-        fn_json_last_error(&mut NoopHost, &[]).unwrap(),
+        fn_json_last_error(&mut TestHost::new(), &[]).unwrap(),
         Value::Int(x) if x == JSON_ERROR_SYNTAX
     ));
-    let msg = fn_json_last_error_msg(&mut NoopHost, &[]).unwrap();
+    let msg = fn_json_last_error_msg(&mut TestHost::new(), &[]).unwrap();
     assert!(matches!(msg, Value::Str(s) if s.as_bytes() == b"Syntax error"));
     dec("[1]");
     assert!(matches!(
-        fn_json_last_error(&mut NoopHost, &[]).unwrap(),
+        fn_json_last_error(&mut TestHost::new(), &[]).unwrap(),
         Value::Int(0)
     ));
 }

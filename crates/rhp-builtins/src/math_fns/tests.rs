@@ -2,15 +2,11 @@
 #![allow(clippy::approx_constant)] // deliberate literal test values, not PI
 
 use super::*;
+use crate::test_support::TestHost;
 use rhp_values::fmt;
 
-struct NullHost;
-impl crate::Host for NullHost {
-    fn write_out(&mut self, _bytes: &[u8]) {}
-}
-
 fn call(func: crate::NativeFn, args: &[Value]) -> Value {
-    func(&mut NullHost, args).unwrap()
+    func(&mut TestHost::new(), args).unwrap()
 }
 
 fn fv(v: Value) -> f64 {
@@ -135,8 +131,8 @@ fn logs() {
     assert!(fv(call(fn_log, &[fl(-1.0)])).is_nan());
     assert_eq!(dump(&call(fn_log10, &[i(1000)])), "float(3)");
     // base <= 0 -> ValueError
-    assert!(fn_log(&mut NullHost, &[i(5), i(-2)]).is_err());
-    assert!(fn_log(&mut NullHost, &[i(5), i(0)]).is_err());
+    assert!(fn_log(&mut TestHost::new(), &[i(5), i(-2)]).is_err());
+    assert!(fn_log(&mut TestHost::new(), &[i(5), i(0)]).is_err());
 }
 
 #[test]
@@ -275,8 +271,8 @@ fn base_convert_fn() {
         "string(26) \"a8b8b452291fe8000000000000\""
     );
     // base range errors
-    assert!(fn_base_convert(&mut NullHost, &[st("ff"), i(1), i(10)]).is_err());
-    assert!(fn_base_convert(&mut NullHost, &[st("ff"), i(16), i(37)]).is_err());
+    assert!(fn_base_convert(&mut TestHost::new(), &[st("ff"), i(1), i(10)]).is_err());
+    assert!(fn_base_convert(&mut TestHost::new(), &[st("ff"), i(16), i(37)]).is_err());
 }
 
 #[test]

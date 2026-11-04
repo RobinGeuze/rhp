@@ -1,18 +1,14 @@
 // tests — expected values captured from php 8.5.8
 
 use super::*;
-
-struct NoopHost;
-impl Host for NoopHost {
-    fn write_out(&mut self, _: &[u8]) {}
-}
+use crate::test_support::TestHost;
 
 fn s(b: &str) -> Value {
     Value::str(b)
 }
 
 fn csv(args: &[Value]) -> Vec<Option<String>> {
-    let r = fn_str_getcsv(&mut NoopHost, args).unwrap();
+    let r = fn_str_getcsv(&mut TestHost::new(), args).unwrap();
     match r {
         Value::Array(a) => a
             .iter()
@@ -80,7 +76,7 @@ fn vrepr(v: &Value) -> String {
 }
 
 fn scan_arr(input: &str, fmt: &str) -> Option<Vec<String>> {
-    match fn_sscanf(&mut NoopHost, &[s(input), s(fmt)]).unwrap() {
+    match fn_sscanf(&mut TestHost::new(), &[s(input), s(fmt)]).unwrap() {
         Value::Array(a) => Some(a.iter().map(|(_, v)| vrepr(v)).collect()),
         Value::Null => None,
         _ => unreachable!(),
@@ -124,7 +120,7 @@ fn sscanf_assign_form() {
     let a = Rc::new(RefCell::new(Value::Null));
     let b = Rc::new(RefCell::new(Value::Null));
     let n = fn_sscanf(
-        &mut NoopHost,
+        &mut TestHost::new(),
         &[
             s("42 foo"),
             s("%d %s"),
@@ -141,7 +137,7 @@ fn sscanf_assign_form() {
     let a2 = Rc::new(RefCell::new(Value::Null));
     let b2 = Rc::new(RefCell::new(Value::Null));
     let n2 = fn_sscanf(
-        &mut NoopHost,
+        &mut TestHost::new(),
         &[s("5"), s("%d %d"), Value::Ref(a2.clone()), Value::Ref(b2)],
     )
     .unwrap();
@@ -149,6 +145,10 @@ fn sscanf_assign_form() {
 
     // 0 matched -> NULL.
     let a3 = Rc::new(RefCell::new(Value::Null));
-    let n3 = fn_sscanf(&mut NoopHost, &[s("nomatch"), s("%d"), Value::Ref(a3)]).unwrap();
+    let n3 = fn_sscanf(
+        &mut TestHost::new(),
+        &[s("nomatch"), s("%d"), Value::Ref(a3)],
+    )
+    .unwrap();
     assert!(matches!(n3, Value::Null));
 }

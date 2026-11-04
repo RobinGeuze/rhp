@@ -1,11 +1,7 @@
 // tests — expected values captured from php 8.5.8
 
 use super::*;
-
-struct NullHost;
-impl Host for NullHost {
-    fn write_out(&mut self, _: &[u8]) {}
-}
+use crate::test_support::TestHost;
 
 fn s(b: &str) -> Value {
     Value::str(b)
@@ -14,7 +10,7 @@ fn sb(b: &[u8]) -> Value {
     Value::str(b.to_vec())
 }
 fn call(f: crate::NativeFn, args: &[Value]) -> Vec<u8> {
-    match f(&mut NullHost, args).expect("no throw") {
+    match f(&mut TestHost::new(), args).expect("no throw") {
         Value::Str(b) => b.as_bytes().to_vec(),
         other => panic!("expected string, got {}", other.type_name()),
     }

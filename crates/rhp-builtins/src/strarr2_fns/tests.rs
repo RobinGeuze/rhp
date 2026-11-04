@@ -1,11 +1,7 @@
 // tests — expected values captured from php 8.5.8
 
 use super::*;
-
-struct NullHost;
-impl Host for NullHost {
-    fn write_out(&mut self, _: &[u8]) {}
-}
+use crate::test_support::TestHost;
 
 fn s(b: &str) -> Value {
     Value::str(b)
@@ -14,7 +10,7 @@ fn i(n: i64) -> Value {
     Value::Int(n)
 }
 fn call(f: crate::NativeFn, args: &[Value]) -> Value {
-    f(&mut NullHost, args).expect("no throw")
+    f(&mut TestHost::new(), args).expect("no throw")
 }
 fn calls(f: crate::NativeFn, args: &[Value]) -> String {
     String::from_utf8(bytes_of(&call(f, args))).unwrap()
@@ -27,7 +23,7 @@ fn call_int(f: crate::NativeFn, args: &[Value]) -> i64 {
 }
 fn dumped(v: &Value) -> String {
     let mut out = Vec::new();
-    crate::dump::var_dump(&NullHost, &mut out, v, 0);
+    crate::dump::var_dump(&TestHost::new(), &mut out, v, 0);
     String::from_utf8_lossy(&out).into_owned()
 }
 fn list(items: Vec<Value>) -> Value {
@@ -65,7 +61,7 @@ fn str_split_cases() {
         "array(4) {\n  [0]=>\n  string(3) \"Hel\"\n  [1]=>\n  string(3) \"lo \"\n  [2]=>\n  string(3) \"Wor\"\n  [3]=>\n  string(2) \"ld\"\n}\n"
     );
     assert_eq!(dumped(&call(fn_str_split, &[s("")])), "array(0) {\n}\n");
-    assert!(fn_str_split(&mut NullHost, &[s("abc"), i(0)]).is_err());
+    assert!(fn_str_split(&mut TestHost::new(), &[s("abc"), i(0)]).is_err());
 }
 
 // --- strtr -----------------------------------------------------------
@@ -261,11 +257,15 @@ fn substr_replace_array() {
 #[test]
 fn substr_replace_errors() {
     assert!(fn_substr_replace(
-        &mut NullHost,
+        &mut TestHost::new(),
         &[s("abc"), s("X"), list(vec![i(1)]), list(vec![i(1)])]
     )
     .is_err());
-    assert!(fn_substr_replace(&mut NullHost, &[s("abc"), s("X"), i(1), list(vec![i(1)])]).is_err());
+    assert!(fn_substr_replace(
+        &mut TestHost::new(),
+        &[s("abc"), s("X"), i(1), list(vec![i(1)])]
+    )
+    .is_err());
 }
 
 // --- levenshtein -----------------------------------------------------
@@ -360,7 +360,7 @@ fn str_word_count_cases() {
         call_int(fn_str_word_count, &[s("a1b c"), i(0), s("0..9")]),
         2
     );
-    assert!(fn_str_word_count(&mut NullHost, &[s("hi"), i(5)]).is_err());
+    assert!(fn_str_word_count(&mut TestHost::new(), &[s("hi"), i(5)]).is_err());
 }
 
 // --- chunk_split -----------------------------------------------------
@@ -391,7 +391,7 @@ fn chunk_split_cases() {
         "abcd-efgh-"
     );
     assert_eq!(calls(fn_chunk_split, &[s("abcd"), i(4), s("-")]), "abcd-");
-    assert!(fn_chunk_split(&mut NullHost, &[s("abc"), i(0)]).is_err());
+    assert!(fn_chunk_split(&mut TestHost::new(), &[s("abc"), i(0)]).is_err());
 }
 
 // --- array_diff_key / array_intersect_key ----------------------------
@@ -532,26 +532,19 @@ fn array_merge_recursive_cases() {
 
 // --- array_udiff / array_uintersect / array_diff_ukey ----------------
 
-/// Host whose `call_callable` ignores the callable and applies an integer
-/// spaceship comparison to the two argument values — enough to drive the
-/// comparator-based set functions in a unit test.
 use crate::arraycmp_fns::{fn_array_diff_ukey, fn_array_udiff, fn_array_uintersect};
 
-struct CmpHost;
-impl Host for CmpHost {
-    fn write_out(&mut self, _: &[u8]) {}
-    fn is_callable_value(&self, _: &Value) -> bool {
-        true
-    }
-    fn call_callable(&mut self, _c: &Value, a: &[Value]) -> Result<Value, Thrown> {
-        Ok(Value::Int(
-            match conv::to_int(&a[0]).cmp(&conv::to_int(&a[1])) {
-                std::cmp::Ordering::Less => -1,
-                std::cmp::Ordering::Equal => 0,
-                std::cmp::Ordering::Greater => 1,
-            },
-        ))
-    }
+/// A host whose callbacks ignore the callable and compare their two
+/// arguments as integers with `<=>`: enough to drive the comparator-based
+/// set functions.
+fn cmp_host() -> TestHost<'static> {
+    TestHost::with_callback(|a| {
+        Value::Int(match conv::to_int(&a[0]).cmp(&conv::to_int(&a[1])) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        })
+    })
 }
 fn cb() -> Value {
     Value::str("cmp")
@@ -561,7 +554,7 @@ fn cb() -> Value {
 fn array_udiff_cases() {
     // php: array_udiff([3,1,2,1], [2,4], <=>) => [0=>3, 1=>1, 3=>1]
     let r = fn_array_udiff(
-        &mut CmpHost,
+        &mut cmp_host(),
         &[
             list(vec![i(3), i(1), i(2), i(1)]),
             list(vec![i(2), i(4)]),
@@ -579,7 +572,7 @@ fn array_udiff_cases() {
 fn array_uintersect_cases() {
     // php: array_uintersect([1,2,3,2], [2,3,4], <=>) => [1=>2, 2=>3, 3=>2]
     let r = fn_array_uintersect(
-        &mut CmpHost,
+        &mut cmp_host(),
         &[
             list(vec![i(1), i(2), i(3), i(2)]),
             list(vec![i(2), i(3), i(4)]),
@@ -597,7 +590,7 @@ fn array_uintersect_cases() {
 fn array_diff_ukey_cases() {
     // php: array_diff_ukey([1,2,3], [0=>9, 2=>9], <=>) => [1=>2]
     let r = fn_array_diff_ukey(
-        &mut CmpHost,
+        &mut cmp_host(),
         &[
             list(vec![i(1), i(2), i(3)]),
             imap(vec![(0, i(9)), (2, i(9))]),

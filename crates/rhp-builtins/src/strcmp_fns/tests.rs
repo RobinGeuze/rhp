@@ -1,18 +1,14 @@
 // tests (expected values hardcoded from local php 8.5.8)
 
 use super::*;
+use crate::test_support::TestHost;
 use rhp_values::PhpArray;
-
-struct NullHost;
-impl Host for NullHost {
-    fn write_out(&mut self, _: &[u8]) {}
-}
 
 fn s(b: &str) -> Value {
     Value::str(b)
 }
 fn call(f: crate::NativeFn, args: &[Value]) -> Value {
-    f(&mut NullHost, args).expect("no throw")
+    f(&mut TestHost::new(), args).expect("no throw")
 }
 fn call_int(f: crate::NativeFn, args: &[Value]) -> i64 {
     match call(f, args) {
@@ -24,7 +20,7 @@ fn calls(f: crate::NativeFn, args: &[Value]) -> String {
     String::from_utf8(bytes_of(&call(f, args))).unwrap()
 }
 fn throws(f: crate::NativeFn, args: &[Value]) -> bool {
-    f(&mut NullHost, args).is_err()
+    f(&mut TestHost::new(), args).is_err()
 }
 
 #[test]

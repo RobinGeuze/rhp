@@ -1,13 +1,9 @@
 use super::*;
-
-struct NullHost;
-impl Host for NullHost {
-    fn write_out(&mut self, _: &[u8]) {}
-}
+use crate::test_support::TestHost;
 
 fn call(f: crate::NativeFn, args: &[&str]) -> Vec<u8> {
     let args: Vec<Value> = args.iter().map(|a| Value::str(*a)).collect();
-    match f(&mut NullHost, &args).expect("no throw") {
+    match f(&mut TestHost::new(), &args).expect("no throw") {
         Value::Str(b) => b.as_bytes().to_vec(),
         other => panic!("expected string, got {}", other.type_name()),
     }
@@ -67,7 +63,7 @@ fn doctypes() {
     let s = "\u{e9}'\u{2242}\u{338}<";
     let f = |flags: &str| {
         let args = [Value::str(s), Value::Int(flags.parse().unwrap())];
-        match fn_htmlentities(&mut NullHost, &args).unwrap() {
+        match fn_htmlentities(&mut TestHost::new(), &args).unwrap() {
             Value::Str(b) => String::from_utf8(b.as_bytes().to_vec()).unwrap(),
             _ => unreachable!(),
         }

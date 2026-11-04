@@ -116,6 +116,9 @@ mod sysmisc_fns;
 pub(crate) mod url;
 mod webenc_fns;
 
+#[cfg(test)]
+mod test_support;
+
 /// The E_DEPRECATED message for reading a `#[\Deprecated]` extension
 /// constant, if `name` is one.
 pub fn constant_deprecation(name: &[u8]) -> Option<String> {
@@ -198,16 +201,15 @@ pub enum MagicFetch {
     Empty,
 }
 
-/// The interpreter surface a builtin may use. Implemented by the VM (and by
-/// the minimal hosts in unit tests, which rely on the default bodies).
+/// The interpreter surface a builtin may use. Implemented by the VM, and
+/// for the unit tests by `test_support::TestHost`.
 pub trait Host {
     /// Append bytes to the single output sink (stdout / output buffer).
     fn write_out(&mut self, bytes: &[u8]);
 
     /// A userland output-control call (main/output.c's `ob_*`, `flush`),
     /// arguments already parsed; the host owns the handler stack and raises
-    /// php's notices. Default: unsupported (hosts without output buffering,
-    /// e.g. the unit-test hosts).
+    /// php's notices. Default: unsupported (hosts without output buffering).
     fn output_control(&mut self, _call: ObCall) -> Result<Value, Thrown> {
         Err(Thrown::unsupported(
             "output buffering",
@@ -734,8 +736,8 @@ pub trait Host {
 
     // --- stream layer (file:// / phar:// / …) --------------------------------
     // Defaults implement only `file://` via std::fs, so hosts without a wrapper
-    // registry (the unit-test hosts) still read local files; the VM overrides
-    // these to dispatch through its per-run wrapper registry.
+    // registry still read local files; the VM overrides these to dispatch
+    // through its per-run wrapper registry.
 
     /// Whole-file read through the stream layer (`file_get_contents`, include).
     fn stream_get_contents(&self, url: &[u8]) -> Option<Vec<u8>> {
@@ -3284,40 +3286,5 @@ pub fn type_name_of(host: &dyn Host, v: &Value) -> String {
             .map(|n| String::from_utf8_lossy(&n).into_owned())
             .unwrap_or_else(|| "object".into()),
         other => other.type_name_lower().into(),
-    }
-}
-
-/// A host that records diagnostics the way php displays them
-/// (`Warning: f(): msg`), for unit-testing the sites that emit them.
-#[cfg(test)]
-pub(crate) mod diag_test {
-    use super::{Host, Thrown, Value};
-
-    #[derive(Default)]
-    pub struct DiagHost {
-        pub out: Vec<u8>,
-        pub diags: Vec<String>,
-    }
-
-    impl Host for DiagHost {
-        fn write_out(&mut self, bytes: &[u8]) {
-            self.out.extend_from_slice(bytes);
-        }
-        fn raise_diagnostic(&mut self, level: i64, message: &str) {
-            let kind = match level {
-                super::E_WARNING => "Warning",
-                super::E_NOTICE => "Notice",
-                super::E_DEPRECATED => "Deprecated",
-                _ => "Unknown",
-            };
-            self.diags.push(format!("{kind}: {message}"));
-        }
-    }
-
-    /// Call `f`, returning its result and the diagnostics it emitted.
-    pub fn run(f: crate::NativeFn, args: &[Value]) -> (Result<Value, Thrown>, Vec<String>) {
-        let mut h = DiagHost::default();
-        let r = f(&mut h, args);
-        (r, h.diags)
     }
 }

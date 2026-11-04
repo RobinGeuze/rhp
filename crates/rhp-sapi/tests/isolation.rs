@@ -250,6 +250,9 @@ fn process_file_mode(dir: &std::path::Path) -> u32 {
 #[test]
 fn threads_keep_their_own_cwd_and_umask() {
     let dirs = [Scratch::new("thread0"), Scratch::new("thread1")];
+    // The first engine reads the process's umask (on macOS by setting it
+    // for a moment): let that happen before measuring it.
+    CaptureSapi::cli().run(Request::new(Script::Code(String::new())));
     let cwd_before = std::env::current_dir().unwrap();
     let mode_before = process_file_mode(&dirs[0].0);
     let code = r#"

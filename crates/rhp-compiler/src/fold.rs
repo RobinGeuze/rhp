@@ -5,17 +5,17 @@ use rhp_frontend::cst::{
 };
 use rhp_values::{ArrayKey, PhpArray, Thrown, Value};
 
-use crate::file::{line_of, src_file};
-use crate::names::{cur_ns, identifier_name};
+use crate::file::FileCtx;
+use crate::names::identifier_name;
 use crate::util::{dirname, is_superglobal, strip_dollar};
 
 /// Fold a compile-time-constant expression (literals, const arrays, true/false/
 /// null, negated numeric literals) to a `Value`. Errors on anything requiring
 /// runtime evaluation (named constants, class constants, arithmetic).
-pub(crate) fn fold_const(e: &Expression) -> Result<Value, Thrown> {
+pub(crate) fn fold_const(cx: &FileCtx, e: &Expression) -> Result<Value, Thrown> {
     let v = match e {
         Expression::Literal(l) => literal_value(l),
-        Expression::Parenthesized(p) => return fold_const(p.expression),
+        Expression::Parenthesized(p) => return fold_const(cx, p.expression),
         // Context-free magic constants fold in const / default-value positions
         // (`const ROOT = __DIR__;`, `function f($p = __FILE__)`). The scope-
         // dependent ones (__CLASS__/__FUNCTION__/__METHOD__) are handled by the
@@ -23,15 +23,15 @@ pub(crate) fn fold_const(e: &Expression) -> Result<Value, Thrown> {
         Expression::MagicConstant(mc) => {
             use mago_span::HasSpan;
             match mc {
-                MagicConstant::Line(_) => Value::Int(line_of(mc.span().start.offset) as i64),
-                MagicConstant::File(_) => Value::str(src_file()),
-                MagicConstant::Directory(_) => Value::str(dirname(&src_file())),
-                MagicConstant::Namespace(_) => Value::str(cur_ns()),
+                MagicConstant::Line(_) => Value::Int(cx.line_of(mc.span().start.offset) as i64),
+                MagicConstant::File(_) => Value::str(cx.file_name()),
+                MagicConstant::Directory(_) => Value::str(dirname(cx.file.as_bytes())),
+                MagicConstant::Namespace(_) => Value::str(cx.cur_ns()),
                 _ => return Err(non_const_err()),
             }
         }
-        Expression::Array(arr) => return fold_const_array(arr.elements.iter()),
-        Expression::LegacyArray(arr) => return fold_const_array(arr.elements.iter()),
+        Expression::Array(arr) => return fold_const_array(cx, arr.elements.iter()),
+        Expression::LegacyArray(arr) => return fold_const_array(cx, arr.elements.iter()),
         Expression::ConstantAccess(ca) => match identifier_name(&ca.name) {
             b"true" | b"TRUE" | b"True" => Value::Bool(true),
             b"false" | b"FALSE" | b"False" => Value::Bool(false),
@@ -40,7 +40,7 @@ pub(crate) fn fold_const(e: &Expression) -> Result<Value, Thrown> {
         },
         Expression::UnaryPrefix(u) => {
             use UnaryPrefixOperator as Op;
-            let inner = fold_const(u.operand)?;
+            let inner = fold_const(cx, u.operand)?;
             match (&u.operator, inner) {
                 (Op::Negation(_), Value::Int(n)) => Value::Int(-n),
                 (Op::Negation(_), Value::Float(f)) => Value::Float(-f),
@@ -53,8 +53,8 @@ pub(crate) fn fold_const(e: &Expression) -> Result<Value, Thrown> {
         Expression::Binary(b) => {
             use rhp_frontend::cst::BinaryOperator as Bop;
             use rhp_semantics::ops::{self, BitOp};
-            let l = fold_const(b.lhs)?;
-            let r = fold_const(b.rhs)?;
+            let l = fold_const(cx, b.lhs)?;
+            let r = fold_const(cx, b.rhs)?;
             match &b.operator {
                 Bop::Addition(_) => ops::add(&l, &r)?,
                 Bop::Subtraction(_) => ops::sub(&l, &r)?,
@@ -98,18 +98,21 @@ pub(crate) fn fold_const(e: &Expression) -> Result<Value, Thrown> {
     Ok(v)
 }
 
-fn fold_const_array<'a>(els: impl Iterator<Item = &'a ArrayElement<'a>>) -> Result<Value, Thrown> {
+fn fold_const_array<'a>(
+    cx: &FileCtx,
+    els: impl Iterator<Item = &'a ArrayElement<'a>>,
+) -> Result<Value, Thrown> {
     let mut a = PhpArray::new();
     for el in els {
         match el {
             ArrayElement::KeyValue(kv) => {
-                let k = fold_const(kv.key)?;
-                let v = fold_const(kv.value)?;
+                let k = fold_const(cx, kv.key)?;
+                let v = fold_const(cx, kv.value)?;
                 let key = ArrayKey::from_value(&k)
                     .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
                 a.insert(key, v);
             }
-            ArrayElement::Value(v) => a.push(fold_const(v.value)?),
+            ArrayElement::Value(v) => a.push(fold_const(cx, v.value)?),
             ArrayElement::Variadic(_) => return Err(non_const_err()),
             ArrayElement::Missing(_) => {}
         }
@@ -171,11 +174,11 @@ pub(crate) fn literal_array<'a>(els: impl Iterator<Item = &'a ArrayElement<'a>>)
 /// Reads of elements and properties are TMP (zend_adjust_for_fetch_type);
 /// calls, `new`, `yield` and `include`/`eval` are VAR. (php's frameless
 /// and special-cased function calls give TMP; they count as VAR here.)
-pub(crate) fn php_swaps_operands(lhs: &Expression, rhs: &Expression) -> bool {
+pub(crate) fn php_swaps_operands(cx: &FileCtx, lhs: &Expression, rhs: &Expression) -> bool {
     match (php_operand_kind(lhs), php_operand_kind(rhs)) {
         (l, r) if l != r => l < r,
         // Both CONST-or-TMP: only a CONST op1 against a TMP op2 swaps.
-        (Kind::ConstOrTmp, Kind::ConstOrTmp) => !is_ct_const(rhs) && is_ct_const(lhs),
+        (Kind::ConstOrTmp, Kind::ConstOrTmp) => !is_ct_const(cx, rhs) && is_ct_const(cx, lhs),
         _ => false,
     }
 }
@@ -183,12 +186,14 @@ pub(crate) fn php_swaps_operands(lhs: &Expression, rhs: &Expression) -> bool {
 /// Whether php's compiler folds `e` to a constant. A binary operation
 /// checks its right operand first, so the left spine of a long chain is
 /// not walked at every level.
-fn is_ct_const(e: &Expression) -> bool {
+fn is_ct_const(cx: &FileCtx, e: &Expression) -> bool {
     match e {
-        Expression::Parenthesized(p) => is_ct_const(p.expression),
+        Expression::Parenthesized(p) => is_ct_const(cx, p.expression),
         Expression::MagicConstant(_) => true,
-        Expression::Binary(b) => is_ct_const(b.rhs) && is_ct_const(b.lhs) && fold_const(e).is_ok(),
-        _ => fold_const(e).is_ok(),
+        Expression::Binary(b) => {
+            is_ct_const(cx, b.rhs) && is_ct_const(cx, b.lhs) && fold_const(cx, e).is_ok()
+        }
+        _ => fold_const(cx, e).is_ok(),
     }
 }
 

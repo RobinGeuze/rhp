@@ -6,13 +6,12 @@ use rhp_values::{Thrown, Value};
 
 use crate::assign::is_globals_var;
 use crate::builder::ProtoBuilder;
-use crate::file::METHOD_REF;
-use crate::names::{resolve_class_name, resolve_name, NameKind};
+use crate::names::NameKind;
 use crate::oop::Sel;
 use crate::prelude::PRELUDE_CACHE;
 use crate::util::strip_dollar;
 
-impl ProtoBuilder {
+impl ProtoBuilder<'_> {
     pub(crate) fn compile_call(&mut self, call: &rhp_frontend::cst::Call) -> Result<Reg, Thrown> {
         use rhp_frontend::cst::Call;
         match call {
@@ -58,7 +57,7 @@ impl ProtoBuilder {
         };
         // Resolve the (possibly namespaced) callee to a primary name + optional
         // global fallback (PHP's fall-back-to-global for unqualified calls).
-        let (name_bytes, fallback) = resolve_name(callee_id, NameKind::Func);
+        let (name_bytes, fallback) = self.cx.resolve_name(callee_id, NameKind::Func);
 
         // Spread / named-argument call `foo(...$args)` / `foo(b: 1)`: marshal
         // args into an array, emit CallV (the VM places named arguments).
@@ -82,10 +81,15 @@ impl ProtoBuilder {
         let name_lc = name_bytes.to_ascii_lowercase();
         let global_lc = fallback.as_ref().map(|f| f.to_ascii_lowercase());
         let sig = self
+            .cx
             .sigs
             .get(&name_lc)
             .cloned()
-            .or_else(|| global_lc.as_ref().and_then(|g| self.sigs.get(g).cloned()))
+            .or_else(|| {
+                global_lc
+                    .as_ref()
+                    .and_then(|g| self.cx.sigs.get(g).cloned())
+            })
             .or_else(|| {
                 builtin_by_ref(
                     global_lc.as_deref().unwrap_or(&name_lc),
@@ -93,10 +97,10 @@ impl ProtoBuilder {
                 )
             });
         // The builtin whose stub gave `sig` (not a user function of the file).
-        let builtin = (!self.sigs.contains_key(&name_lc)
+        let builtin = (!self.cx.sigs.contains_key(&name_lc)
             && !global_lc
                 .as_ref()
-                .is_some_and(|g| self.sigs.contains_key(g)))
+                .is_some_and(|g| self.cx.sigs.contains_key(g)))
         .then(|| builtin_sig(global_lc.as_deref().unwrap_or(&name_lc)))
         .flatten();
         // `@prefer-ref` positions of the builtin (array_multisort, extract): a
@@ -341,11 +345,11 @@ impl ProtoBuilder {
             Pa::StaticMethod(s) => {
                 let class = match s.class {
                     Expression::Identifier(id) => {
-                        let n = resolve_class_name(id);
+                        let n = self.cx.resolve_class_name(id);
                         self.load_string_const(&n)
                     }
                     Expression::ConstantAccess(ca) => {
-                        let n = resolve_class_name(&ca.name);
+                        let n = self.cx.resolve_class_name(&ca.name);
                         self.load_string_const(&n)
                     }
                     // Resolved against the creation scope when called.
@@ -556,7 +560,7 @@ impl ProtoBuilder {
 
     /// The by-ref mask for a method/constructor name (empty if none).
     pub(crate) fn method_ref_mask(&self, name_lc: &[u8]) -> Vec<bool> {
-        METHOD_REF.with(|m| m.borrow().get(name_lc).cloned().unwrap_or_default())
+        self.cx.method_ref_mask(name_lc)
     }
 
     /// The by-ref mask for an interned method name.

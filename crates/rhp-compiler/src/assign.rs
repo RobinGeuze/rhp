@@ -76,7 +76,7 @@ pub(crate) fn as_reference<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'
     }
 }
 
-impl ProtoBuilder {
+impl ProtoBuilder<'_> {
     /// Assign the elements of `src` (an array value) to a destructuring pattern.
     pub(crate) fn destructure_into<'a>(
         &mut self,

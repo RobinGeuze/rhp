@@ -1,52 +1,46 @@
 //! Statement lowering.
 
-use std::rc::Rc;
-
 use rhp_bytecode::{ClassProto, Instr};
 use rhp_frontend::cst::{Statement, Variable};
 use rhp_values::{Thrown, Value};
 
 use crate::builder::ProtoBuilder;
 use crate::decl::{compile_class, compile_enum, compile_interface, compile_trait};
-use crate::file::{
-    compile_fatal, line_of, locate, strip_close_tag_newline, CLOSURES, COND_CLASSES,
-};
 use crate::fold::fold_const;
 use crate::functions::compile_function;
-use crate::names::{cur_ns, join_ns};
+use crate::names::join_ns;
 use crate::util::{compile_error, strip_dollar};
 
-impl ProtoBuilder {
+impl ProtoBuilder<'_> {
     /// Record a nested class declaration and emit its `DeclareClass`.
     fn emit_cond_class(&mut self, proto: ClassProto) {
         self.cur_line = proto.decl_line;
-        let class_idx = COND_CLASSES.with(|c| {
-            let mut c = c.borrow_mut();
-            c.0.push(proto);
-            c.1 + c.0.len() as u32 - 1
-        });
+        let class_idx = self.cx.add_cond_class(proto);
         self.emit(Instr::DeclareClass { class_idx });
     }
 
     pub(crate) fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), Thrown> {
         use mago_span::HasSpan;
         self.compile_stmt_inner(stmt)
-            .map_err(|e| locate(e, stmt.span().start.offset))
+            .map_err(|e| self.cx.locate(e, stmt.span().start.offset))
     }
 
     fn compile_stmt_inner(&mut self, stmt: &Statement) -> Result<(), Thrown> {
         use mago_span::HasSpan;
-        self.cur_line = line_of(stmt.span().start.offset);
+        self.cur_line = self.cx.line_of(stmt.span().start.offset);
         match stmt {
             Statement::OpeningTag(_) | Statement::ClosingTag(_) | Statement::Noop(_) => {}
             Statement::Inline(inline) => {
                 if inline.kind.is_text() {
-                    let text = strip_close_tag_newline(inline.span().start.offset, inline.value);
+                    let text = self
+                        .cx
+                        .strip_close_tag_newline(inline.span().start.offset, inline.value);
                     // php's `?>` token includes the newline: the HTML after
                     // it starts on the next line.
                     let skipped = inline.value.len() - text.len();
                     if skipped > 0 {
-                        self.cur_line = line_of(inline.span().start.offset + skipped as u32);
+                        self.cur_line =
+                            self.cx.line_of(inline.span().start.offset + skipped as u32);
                     }
                     if !text.is_empty() {
                         let k = self.intern_const(Value::str(text.to_vec()));
@@ -90,31 +84,26 @@ impl ProtoBuilder {
             // (the {main} loop skips those) — it is nested in control flow or a
             // function body, so declare it at runtime (php conditional functions).
             Statement::Function(f) => {
-                let proto = compile_function(f, self.sigs.clone())?;
-                let idx = CLOSURES.with(|c| {
-                    let mut v = c.borrow_mut();
-                    let i = v.len() as u32;
-                    v.push(Rc::new(proto));
-                    i
-                });
+                let proto = compile_function(self.cx, f)?;
+                let idx = self.cx.add_closure(proto);
                 self.emit(Instr::DeclareFunc { idx });
             }
             // A class-like reached here is nested in control flow or a function
             // body: declared at run time when execution reaches it.
             Statement::Class(cl) => {
-                let proto = compile_class(cl, &self.sigs)?;
+                let proto = compile_class(self.cx, cl)?;
                 self.emit_cond_class(proto);
             }
             Statement::Interface(i) => {
-                let proto = compile_interface(i, &self.sigs)?;
+                let proto = compile_interface(self.cx, i)?;
                 self.emit_cond_class(proto);
             }
             Statement::Trait(t) => {
-                let proto = compile_trait(t, &self.sigs)?;
+                let proto = compile_trait(self.cx, t)?;
                 self.emit_cond_class(proto);
             }
             Statement::Enum(e) => {
-                let proto = compile_enum(e, &self.sigs)?;
+                let proto = compile_enum(self.cx, e)?;
                 self.emit_cond_class(proto);
             }
             Statement::Constant(c) => {
@@ -129,10 +118,10 @@ impl ProtoBuilder {
                             "Cannot redeclare constant '{}'",
                             String::from_utf8_lossy(short)
                         );
-                        compile_fatal(stmt.span().start.offset, msg);
+                        self.cx.fatal(stmt.span().start.offset, msg);
                     }
                     let src = self.compile_expr(item.value)?;
-                    let name = self.intern_name(&join_ns(&cur_ns(), item.name.value));
+                    let name = self.intern_name(&join_ns(&self.cx.cur_ns(), item.name.value));
                     self.emit(Instr::DeclareConst { name, src });
                 }
             }
@@ -161,7 +150,7 @@ impl ProtoBuilder {
                     use rhp_frontend::cst::StaticItem;
                     let (dvar, init) = match item {
                         StaticItem::Abstract(a) => (&a.variable, u32::MAX),
-                        StaticItem::Concrete(c) => match fold_const(c.value) {
+                        StaticItem::Concrete(c) => match fold_const(self.cx, c.value) {
                             Ok(v) => (&c.variable, self.intern_const(v)),
                             Err(_) => {
                                 // php 8.3+: an arbitrary initializer, evaluated

@@ -1,15 +1,14 @@
 //! `ProtoBuilder`: one function body under construction, its registers, pools and line table.
 
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use rhp_bytecode::{CIdx, FunctionProto, Instr, NIdx, Reg};
 use rhp_frontend::cst::{Expression, Identifier};
 use rhp_values::{PhpStr, Thrown, Value};
 
-use crate::file::{SRC_FILE, STRICT_TYPES};
+use crate::file::FileCtx;
 use crate::fold::{const_eq, fold_const};
-use crate::names::{resolve_name, NameKind};
+use crate::names::NameKind;
 use crate::util::{compile_error, is_superglobal};
 
 /// What kind of scope a proto is, for the `__FUNCTION__`/`__METHOD__` magic
@@ -23,7 +22,9 @@ pub(crate) enum ScopeKind {
     Init,
 }
 
-pub(crate) struct ProtoBuilder {
+pub(crate) struct ProtoBuilder<'c> {
+    /// The file this body belongs to.
+    pub(crate) cx: &'c FileCtx<'c>,
     pub(crate) name: PhpStr,
     /// Enclosing class/trait/enum name for `__CLASS__`/`__METHOD__` (None outside).
     pub(crate) class_name: Option<PhpStr>,
@@ -50,8 +51,6 @@ pub(crate) struct ProtoBuilder {
     pub(crate) temp_floor: Reg,
     /// Stack of enclosing loops/switches, for `break`/`continue` resolution.
     pub(crate) loops: Vec<LoopCtx>,
-    /// Function name (lowercase) -> per-parameter by-ref flags (for call sites).
-    pub(crate) sigs: Rc<HashMap<Vec<u8>, Vec<bool>>>,
     /// Current source line (set per statement); recorded into `lines` on change.
     pub(crate) cur_line: u32,
     /// (pc, line) pairs, appended whenever `cur_line` changes at an emit point.
@@ -84,9 +83,10 @@ pub(crate) struct LoopCtx {
     pub(crate) continue_jumps: Vec<usize>,
 }
 
-impl ProtoBuilder {
-    pub(crate) fn new(name: PhpStr) -> Self {
+impl<'c> ProtoBuilder<'c> {
+    pub(crate) fn new(cx: &'c FileCtx<'c>, name: PhpStr) -> Self {
         ProtoBuilder {
+            cx,
             name,
             class_name: None,
             returns_ref: false,
@@ -103,7 +103,6 @@ impl ProtoBuilder {
             high_water: 0,
             temp_floor: 0,
             loops: Vec::new(),
-            sigs: Rc::new(HashMap::new()),
             cur_line: 0,
             lines: Vec::new(),
             call_lines: Vec::new(),
@@ -182,7 +181,7 @@ impl ProtoBuilder {
             .map(|n| PhpStr::from_bytes(n.clone()))
             .collect();
         proto.debug.lines = self.lines;
-        proto.debug.file = SRC_FILE.with(|f| PhpStr::from_bytes(f.borrow().clone()));
+        proto.debug.file = self.cx.file.clone();
         proto.superglobals = self
             .cv_map
             .iter()
@@ -190,7 +189,7 @@ impl ProtoBuilder {
             .filter(|(_, n)| is_superglobal(n))
             .map(|(i, n)| (i as Reg, PhpStr::from_bytes(n.clone())))
             .collect();
-        proto.strict_types = STRICT_TYPES.with(|s| *s.borrow());
+        proto.strict_types = self.cx.strict_types;
         proto.returns_ref = self.returns_ref;
         Ok(proto)
     }
@@ -313,11 +312,11 @@ impl ProtoBuilder {
     /// unqualified reference inside a namespace prefers the namespaced user
     /// function when one is declared, else the global name (builtins are global).
     pub(crate) fn resolve_callable_name(&self, id: &Identifier) -> Vec<u8> {
-        let (primary, fallback) = resolve_name(id, NameKind::Func);
+        let (primary, fallback) = self.cx.resolve_name(id, NameKind::Func);
         match fallback {
             None => primary,
             Some(global) => {
-                if self.sigs.contains_key(&primary.to_ascii_lowercase()) {
+                if self.cx.sigs.contains_key(&primary.to_ascii_lowercase()) {
                     primary
                 } else {
                     global
@@ -362,7 +361,7 @@ impl ProtoBuilder {
 
     fn const_value(&mut self, e: &Expression) -> Result<Value, Thrown> {
         // Parameter defaults fold with the same rules as class consts / props.
-        fold_const(e)
+        fold_const(self.cx, e)
     }
 
     pub(crate) fn intern_const(&mut self, v: Value) -> CIdx {

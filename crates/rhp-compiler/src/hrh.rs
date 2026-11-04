@@ -82,11 +82,11 @@ impl Callee {
     }
 }
 
-struct Scan {
+struct Scan<'a> {
     scopes: Vec<Scope>,
     /// The lines of the deprecations, in source order.
     lines: Vec<u32>,
-    line_of: fn(u32) -> u32,
+    line_of: &'a dyn Fn(u32) -> u32,
     ns: Rc<NsContext>,
     /// Top-level functions compiled so far, by lowercase name.
     user_fns: HashMap<Vec<u8>, UserSig>,
@@ -95,7 +95,10 @@ struct Scan {
 }
 
 /// The lines at which php's compiler warns, for a file's statements.
-pub(crate) fn scan(stmts: &[(Rc<NsContext>, &Statement)], line_of: fn(u32) -> u32) -> Vec<u32> {
+pub(crate) fn scan(
+    stmts: &[(Rc<NsContext>, &Statement)],
+    line_of: &dyn Fn(u32) -> u32,
+) -> Vec<u32> {
     let mut s = Scan {
         scopes: vec![Scope {
             assigned: false,
@@ -208,7 +211,7 @@ fn list_has_refs(e: &Expression) -> bool {
     })
 }
 
-impl Scan {
+impl Scan<'_> {
     fn scope(&mut self) -> &mut Scope {
         self.scopes.last_mut().expect("scope")
     }

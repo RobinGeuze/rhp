@@ -1,10 +1,11 @@
 //! Namespaces: `namespace`/`use` contexts and php's name resolution rules.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_frontend::cst::{Identifier, Statement};
+
+use crate::file::FileCtx;
 
 /// The per-file, per-block namespace state threaded through compilation: the
 /// current namespace and the `use` import aliases visible so far (textual order
@@ -18,13 +19,6 @@ pub(crate) struct NsContext {
     pub(crate) use_class: HashMap<Vec<u8>, Vec<u8>>,
     pub(crate) use_func: HashMap<Vec<u8>, Vec<u8>>,
     pub(crate) use_const: HashMap<Vec<u8>, Vec<u8>>,
-}
-
-thread_local! {
-    /// The namespace context active at the statement currently being compiled.
-    /// Set from the flattened `(context, statement)` list before each statement
-    /// in every compile pass, so deep name-resolution chokepoints can read it.
-    pub(crate) static NS_CTX: RefCell<Rc<NsContext>> = RefCell::new(Rc::new(NsContext::default()));
 }
 
 /// Which symbol table an identifier resolves against (PHP resolves classes,
@@ -43,13 +37,29 @@ enum UseKind {
     Const,
 }
 
-pub(crate) fn set_ns_ctx(ctx: &Rc<NsContext>) {
-    NS_CTX.with(|c| *c.borrow_mut() = ctx.clone());
-}
+impl FileCtx<'_> {
+    /// The current namespace (empty for the global namespace).
+    pub(crate) fn cur_ns(&self) -> Vec<u8> {
+        self.ns().ns.clone()
+    }
 
-/// The current namespace (empty for the global namespace).
-pub(crate) fn cur_ns() -> Vec<u8> {
-    NS_CTX.with(|c| c.borrow().ns.clone())
+    /// Resolve an identifier reference to `(primary_fqn, Option<global_fallback>)`
+    /// per PHP's namespace rules, using the current [`NsContext`]. Returned names
+    /// carry no leading backslash. A fallback is produced only for an unqualified
+    /// function/const reference inside a namespace (PHP's fall-back-to-global rule);
+    /// class references and everything qualified resolve to a single name.
+    pub(crate) fn resolve_name(
+        &self,
+        id: &Identifier,
+        kind: NameKind,
+    ) -> (Vec<u8>, Option<Vec<u8>>) {
+        resolve_in(&self.ns(), id, kind)
+    }
+
+    /// Resolve a class-position identifier to its single fully-qualified name.
+    pub(crate) fn resolve_class_name(&self, id: &Identifier) -> Vec<u8> {
+        self.resolve_name(id, NameKind::Class).0
+    }
 }
 
 /// Join a namespace prefix and a (relative) name with a backslash.
@@ -85,15 +95,6 @@ pub(crate) fn identifier_raw<'a>(id: &'a Identifier<'a>) -> &'a [u8] {
         Identifier::Qualified(q) => q.value,
         Identifier::FullyQualified(f) => f.value,
     }
-}
-
-/// Resolve an identifier reference to `(primary_fqn, Option<global_fallback>)`
-/// per PHP's namespace rules, using the current [`NsContext`]. Returned names
-/// carry no leading backslash. A fallback is produced only for an unqualified
-/// function/const reference inside a namespace (PHP's fall-back-to-global rule);
-/// class references and everything qualified resolve to a single name.
-pub(crate) fn resolve_name(id: &Identifier, kind: NameKind) -> (Vec<u8>, Option<Vec<u8>>) {
-    NS_CTX.with(|c| resolve_in(&c.borrow(), id, kind))
 }
 
 pub(crate) fn resolve_in(
@@ -153,11 +154,6 @@ pub(crate) fn resolve_in(
             }
         }
     }
-}
-
-/// Resolve a class-position identifier to its single fully-qualified name.
-pub(crate) fn resolve_class_name(id: &Identifier) -> Vec<u8> {
-    resolve_name(id, NameKind::Class).0
 }
 
 /// Flatten `namespace`/`use` statements into `(context, statement)` pairs in

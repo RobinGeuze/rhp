@@ -1,6 +1,5 @@
 //! Functions, methods and closures: parameters, captures and bodies.
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_bytecode::{FunctionProto, Instr, MethodProto, NIdx, PropDefaultProto, PropProto, Reg};
@@ -10,13 +9,13 @@ use rhp_values::{PhpStr, Thrown};
 use crate::builder::{ProtoBuilder, ScopeKind};
 use crate::cvs::collect_vars;
 use crate::decl::{
-    compile_attributes, decl_meta, doc_comment_before, has_modifier, modifiers_set_visibility,
-    modifiers_visibility, param_default_meta, span_of,
+    compile_attributes, decl_meta, has_modifier, modifiers_set_visibility, modifiers_visibility,
+    param_default_meta, span_of,
 };
 use crate::expr::{block_has_yield, expr_has_yield, stmt_has_yield};
-use crate::file::{line_of, src_file, CLOSURES};
+use crate::file::FileCtx;
 use crate::hints::type_hint;
-use crate::names::{cur_ns, join_ns};
+use crate::names::join_ns;
 use crate::util::strip_dollar;
 
 /// The body form of a closure being lowered.
@@ -28,8 +27,8 @@ enum ClosureBody<'a> {
 }
 
 pub(crate) fn compile_method(
+    cx: &FileCtx,
     m: &rhp_frontend::cst::Method,
-    sigs: &Rc<std::collections::HashMap<Vec<u8>, Vec<bool>>>,
     class_name: &PhpStr,
 ) -> Result<(MethodProto, Vec<PropProto>), Thrown> {
     let name = PhpStr::from_bytes(m.name.value.to_vec());
@@ -38,8 +37,7 @@ pub(crate) fn compile_method(
     let is_abstract = has_modifier(&m.modifiers, |md| matches!(md, Modifier::Abstract(_)));
     let is_final = has_modifier(&m.modifiers, |md| matches!(md, Modifier::Final(_)));
 
-    let mut c = ProtoBuilder::new(name.clone());
-    c.sigs = sigs.clone();
+    let mut c = ProtoBuilder::new(cx, name.clone());
     c.class_name = Some(class_name.clone());
     c.scope_kind = ScopeKind::Method;
     c.returns_ref = m.ampersand.is_some();
@@ -70,7 +68,7 @@ pub(crate) fn compile_method(
                     rhp_bytecode::ParamDefault::Init
                 }
             });
-        let attributes = compile_attributes(&p.attribute_lists, sigs, Some(class_name))?;
+        let attributes = compile_attributes(cx, &p.attribute_lists, Some(class_name))?;
         if !p.modifiers.is_empty() {
             let vis = modifiers_visibility(&p.modifiers);
             let ro = has_modifier(&p.modifiers, |md| matches!(md, Modifier::Readonly(_)));
@@ -81,29 +79,29 @@ pub(crate) fn compile_method(
                 set_visibility: modifiers_set_visibility(&p.modifiers),
                 is_readonly: ro,
                 default: PropDefaultProto::None,
-                type_hint: p.hint.as_ref().map(type_hint),
+                type_hint: p.hint.as_ref().map(|h| type_hint(cx, h)),
                 meta: rhp_bytecode::DeclMeta {
                     attributes: attributes.clone(),
-                    doc_comment: doc_comment_before(p.variable.span.start.offset),
-                    start_line: line_of(pstart),
+                    doc_comment: cx.doc_comment_before(p.variable.span.start.offset),
+                    start_line: cx.line_of(pstart),
                     offset: pstart,
-                    end_line: line_of(pend),
+                    end_line: cx.line_of(pend),
                 },
                 promoted: true,
             });
             promo_stores.push((c.intern_name(var), cv));
         }
-        let dmeta = param_default_meta(p, sigs, Some(class_name));
+        let dmeta = param_default_meta(cx, p, Some(class_name));
         params.push(rhp_bytecode::ParamInfo {
             name: pname,
             cv,
             by_ref: p.ampersand.is_some(),
             variadic: p.ellipsis.is_some(),
             default,
-            type_hint: p.hint.as_ref().map(type_hint),
+            type_hint: p.hint.as_ref().map(|h| type_hint(cx, h)),
             line: {
                 use mago_span::HasSpan;
-                line_of(p.span().start.offset)
+                cx.line_of(p.span().start.offset)
             },
             attributes,
             promoted: !p.modifiers.is_empty(),
@@ -148,10 +146,10 @@ pub(crate) fn compile_method(
     proto.this_cv = if is_static { None } else { Some(0) };
     proto.is_static = is_static;
     proto.is_generator = body_stmts.iter().any(stmt_has_yield);
-    proto.return_type = m.return_type_hint.as_ref().map(|r| type_hint(&r.hint));
+    proto.return_type = m.return_type_hint.as_ref().map(|r| type_hint(cx, &r.hint));
     proto.meta = decl_meta(
+        cx,
         &m.attribute_lists,
-        sigs,
         Some(class_name),
         m.name.span.start.offset,
         m.function.span.start.offset,
@@ -172,13 +170,11 @@ pub(crate) fn compile_method(
 /// Compile one `function name(params) { body }` into a `FunctionProto`.
 /// Parameters occupy the first CV registers, in order.
 pub(crate) fn compile_function(
+    cx: &FileCtx,
     func: &rhp_frontend::cst::Function,
-    sigs: Rc<HashMap<Vec<u8>, Vec<bool>>>,
 ) -> Result<FunctionProto, Thrown> {
-    let fname = join_ns(&cur_ns(), func.name.value);
-    let mut c = ProtoBuilder::new(PhpStr::from_bytes(fname));
-    let c_sigs = sigs.clone();
-    c.sigs = sigs;
+    let fname = join_ns(&cx.cur_ns(), func.name.value);
+    let mut c = ProtoBuilder::new(cx, PhpStr::from_bytes(fname));
     c.returns_ref = func.ampersand.is_some();
 
     let mut params = Vec::new();
@@ -197,19 +193,19 @@ pub(crate) fn compile_function(
                     rhp_bytecode::ParamDefault::Init
                 }
             });
-        let dmeta = param_default_meta(p, &c.sigs.clone(), None);
+        let dmeta = param_default_meta(cx, p, None);
         params.push(rhp_bytecode::ParamInfo {
             name,
             cv,
             by_ref: p.ampersand.is_some(),
             variadic: p.ellipsis.is_some(),
             default,
-            type_hint: p.hint.as_ref().map(type_hint),
+            type_hint: p.hint.as_ref().map(|h| type_hint(cx, h)),
             line: {
                 use mago_span::HasSpan;
-                line_of(p.span().start.offset)
+                cx.line_of(p.span().start.offset)
             },
-            attributes: compile_attributes(&p.attribute_lists, &c.sigs, None)?,
+            attributes: compile_attributes(cx, &p.attribute_lists, None)?,
             promoted: false,
             default_thunk: dmeta.0,
             default_const: dmeta.1,
@@ -237,10 +233,13 @@ pub(crate) fn compile_function(
     proto.num_params = num_params;
     proto.params = params;
     proto.is_generator = block_has_yield(&func.body.statements);
-    proto.return_type = func.return_type_hint.as_ref().map(|r| type_hint(&r.hint));
+    proto.return_type = func
+        .return_type_hint
+        .as_ref()
+        .map(|r| type_hint(cx, &r.hint));
     proto.meta = decl_meta(
+        cx,
         &func.attribute_lists,
-        &c_sigs,
         None,
         func.name.span.start.offset,
         func.function.span.start.offset,
@@ -249,11 +248,11 @@ pub(crate) fn compile_function(
     Ok(proto)
 }
 
-impl ProtoBuilder {
+impl ProtoBuilder<'_> {
     /// PHP 8.5's closure name `{closure:<enclosing>:<line>}`, built from the scope
     /// that defines the closure (`self`). Top-level/init closures embed the file.
     fn closure_magic_name(&self, offset: u32) -> PhpStr {
-        let line = line_of(offset);
+        let line = self.cx.line_of(offset);
         let qual: Vec<u8> = match self.scope_kind {
             ScopeKind::Method => {
                 let mut v = self
@@ -276,7 +275,7 @@ impl ProtoBuilder {
                 .as_ref()
                 .map(|n| n.as_bytes().to_vec())
                 .unwrap_or_default(),
-            ScopeKind::Main | ScopeKind::Init => src_file(),
+            ScopeKind::Main | ScopeKind::Init => self.cx.file_name(),
         };
         let mut s = b"{closure:".to_vec();
         s.extend_from_slice(&qual);
@@ -334,8 +333,8 @@ impl ProtoBuilder {
             af.return_type_hint.as_ref().map(|r| &r.hint),
             af.ampersand.is_some(),
             decl_meta(
+                self.cx,
                 &af.attribute_lists,
-                &self.sigs,
                 self.class_name.as_ref(),
                 af.r#fn.span.end.offset,
                 af.r#fn.span.start.offset,
@@ -378,8 +377,8 @@ impl ProtoBuilder {
             cl.return_type_hint.as_ref().map(|r| &r.hint),
             cl.ampersand.is_some(),
             decl_meta(
+                self.cx,
                 &cl.attribute_lists,
-                &self.sigs,
                 self.class_name.as_ref(),
                 cl.function.span.end.offset,
                 cl.function.span.start.offset,
@@ -411,8 +410,7 @@ impl ProtoBuilder {
 
         // --- compile the closure proto in an isolated builder ---
         // The proto carries the 8.5 name too: traces and error messages print it.
-        let mut c = ProtoBuilder::new(magic_name.clone());
-        c.sigs = self.sigs.clone();
+        let mut c = ProtoBuilder::new(self.cx, magic_name.clone());
         c.scope_kind = ScopeKind::Closure;
         c.class_name = self.class_name.clone(); // __CLASS__ in a closure = enclosing class
         c.magic_fn_name = Some(magic_name);
@@ -436,19 +434,19 @@ impl ProtoBuilder {
                         rhp_bytecode::ParamDefault::Init
                     }
                 });
-            let dmeta = param_default_meta(p, &c.sigs.clone(), c.class_name.clone().as_ref());
+            let dmeta = param_default_meta(self.cx, p, c.class_name.clone().as_ref());
             params.push(rhp_bytecode::ParamInfo {
                 name,
                 cv,
                 by_ref: p.ampersand.is_some(),
                 variadic: p.ellipsis.is_some(),
                 default,
-                type_hint: p.hint.as_ref().map(type_hint),
+                type_hint: p.hint.as_ref().map(|h| type_hint(self.cx, h)),
                 line: {
                     use mago_span::HasSpan;
-                    line_of(p.span().start.offset)
+                    self.cx.line_of(p.span().start.offset)
                 },
-                attributes: compile_attributes(&p.attribute_lists, &c.sigs, c.class_name.as_ref())?,
+                attributes: compile_attributes(self.cx, &p.attribute_lists, c.class_name.as_ref())?,
                 promoted: false,
                 default_thunk: dmeta.0,
                 default_const: dmeta.1,
@@ -476,7 +474,7 @@ impl ProtoBuilder {
             ClosureBody::Arrow(e) => {
                 c.cur_line = {
                     use mago_span::HasSpan;
-                    line_of(e.span().start.offset)
+                    self.cx.line_of(e.span().start.offset)
                 };
                 let r = c.compile_expr(e)?;
                 c.emit(Instr::Ret { src: r });
@@ -503,19 +501,14 @@ impl ProtoBuilder {
         proto.params = params;
         proto.num_captures = nc;
         proto.is_static = is_static;
-        proto.return_type = ret_hint.map(type_hint);
+        proto.return_type = ret_hint.map(|h| type_hint(self.cx, h));
         proto.meta = meta;
         proto.is_generator = match body {
             ClosureBody::Block(b) => block_has_yield(&b.statements),
             ClosureBody::Arrow(e) => expr_has_yield(e),
         };
 
-        let fnidx = CLOSURES.with(|cls| {
-            let mut v = cls.borrow_mut();
-            let idx = v.len() as u32;
-            v.push(Rc::new(proto));
-            idx
-        });
+        let fnidx = self.cx.add_closure(proto);
 
         // --- emit the capture window + MakeClosure in the enclosing frame ---
         let base = self.alloc_temps(nc.max(1));

@@ -8,12 +8,9 @@ use rhp_frontend::cst::Statement;
 use rhp_values::Thrown;
 
 use crate::decl::{compile_class, compile_interface};
-use crate::file::{
-    collect_method_refs, ANON_CLASSES, CLOSURES, COND_CLASSES, IN_TRAIT, LINE_STARTS, METHOD_REF,
-    SRC_FILE, STRICT_TYPES,
-};
+use crate::file::FileCtx;
 use crate::functions::compile_function;
-use crate::names::{NsContext, NS_CTX};
+use crate::names::NsContext;
 
 /// The built-in exception/throwable class hierarchy, as PHP source. Compiled
 /// and prepended to every program so `throw`/`catch` and engine errors work.
@@ -164,7 +161,7 @@ thread_local! {
     /// The prelude, compiled on first use and shared by every later compile on
     /// this thread (protos hold `Rc`s, so the cache is per thread — matching
     /// the VM-per-thread model). It depends on no per-file state: it is
-    /// compiled in an isolated compiler context (see [`prelude_classes`]).
+    /// compiled in a [`FileCtx`] of its own.
     pub(crate) static PRELUDE_CACHE: RefCell<Option<Rc<PreludeParts>>> = const { RefCell::new(None) };
 }
 
@@ -180,77 +177,54 @@ pub(crate) fn prelude_classes() -> Result<Rc<PreludeParts>, Thrown> {
     Ok(parts)
 }
 
-/// Compile the prelude with the per-file compiler state (thread-locals) set to
-/// a fixed, prelude-only context, restoring the caller's state afterwards, so
-/// the result is independent of whichever file happened to trigger it.
+/// Compile the prelude in a [`FileCtx`] of its own, so the result is
+/// independent of whichever file happened to trigger it.
 fn prelude_classes_isolated() -> Result<PreludeParts, Thrown> {
-    // Prelude / built-in classes are never strict-typed (coercive calls).
-    let saved_strict = STRICT_TYPES.with(|s| std::mem::replace(&mut *s.borrow_mut(), false));
-    // Prelude protos carry an empty file name: the VM treats them as internal
-    // code (skipped for exception file/line, `[internal function]` in traces).
-    let saved_file = SRC_FILE.with(|f| std::mem::take(&mut *f.borrow_mut()));
-    // No line map: prelude line numbers are never surfaced.
-    let saved_lines = LINE_STARTS.with(|l| std::mem::take(&mut *l.borrow_mut()));
-    let saved_ns =
-        NS_CTX.with(|c| std::mem::replace(&mut *c.borrow_mut(), Rc::new(NsContext::default())));
-    let saved_trait = IN_TRAIT.with(|t| std::mem::replace(&mut *t.borrow_mut(), false));
-    let saved_method_ref = METHOD_REF.with(|m| std::mem::take(&mut *m.borrow_mut()));
-    let saved_closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    let saved_anon = ANON_CLASSES.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    let saved_cond = COND_CLASSES.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    let r = prelude_classes_inner();
-    // Closures the prelude declares occupy closure indices `0..n`; a program
-    // with the prelude re-seeds them first. Anonymous / nested classes would
-    // index per-file tables the cached copy cannot carry.
-    let closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    let leaked = ANON_CLASSES.with(|c| !c.borrow().is_empty())
-        || COND_CLASSES.with(|c| !c.borrow().0.is_empty());
-    STRICT_TYPES.with(|s| *s.borrow_mut() = saved_strict);
-    SRC_FILE.with(|f| *f.borrow_mut() = saved_file);
-    LINE_STARTS.with(|l| *l.borrow_mut() = saved_lines);
-    NS_CTX.with(|c| *c.borrow_mut() = saved_ns);
-    IN_TRAIT.with(|t| *t.borrow_mut() = saved_trait);
-    METHOD_REF.with(|m| *m.borrow_mut() = saved_method_ref);
-    CLOSURES.with(|c| *c.borrow_mut() = saved_closures);
-    ANON_CLASSES.with(|c| *c.borrow_mut() = saved_anon);
-    COND_CLASSES.with(|c| *c.borrow_mut() = saved_cond);
-    assert!(
-        !leaked,
-        "prelude must not declare anonymous or nested classes"
-    );
-    let (classes, functions) = r?;
-    Ok(PreludeParts {
-        classes,
-        functions,
-        closures,
-    })
-}
-
-#[allow(clippy::type_complexity)]
-fn prelude_classes_inner() -> Result<(Vec<ClassProto>, Vec<Rc<FunctionProto>>), Thrown> {
     // The engine's core classes (PRELUDE) plus each extension module's own
     // PHP-source classes (GMP, Phar, …) and helper functions (iterator_*, …).
     let src = format!("{PRELUDE}\n{}", rhp_builtins::module_prelude());
     let arena = rhp_frontend::Arena::new();
     let parsed = arena.parse(b"<prelude>", src.as_bytes());
-    // Method calls inside the prelude see the prelude's own by-ref signatures.
     let flat: Vec<(Rc<NsContext>, &Statement)> = parsed
         .program()
         .statements
         .iter()
         .map(|s| (Rc::new(NsContext::default()), s))
         .collect();
-    METHOD_REF.with(|m| *m.borrow_mut() = collect_method_refs(&flat));
-    let sigs = Rc::new(std::collections::HashMap::new());
-    let mut classes = Vec::new();
-    let mut functions = Vec::new();
-    for stmt in parsed.program().statements.iter() {
-        match stmt {
-            Statement::Class(c) => classes.push(compile_class(c, &sigs)?),
-            Statement::Interface(i) => classes.push(compile_interface(i, &sigs)?),
-            Statement::Function(f) => functions.push(Rc::new(compile_function(f, sigs.clone())?)),
-            _ => {}
+    // Never strict-typed (coercive calls). No file name: the VM treats the
+    // protos as internal code (skipped for exception file/line, `[internal
+    // function]` in traces). No line map: prelude line numbers are never
+    // surfaced. Method calls see the prelude's own by-ref signatures.
+    let cx = FileCtx::prelude(&flat);
+    let compile = || -> Result<(Vec<ClassProto>, Vec<Rc<FunctionProto>>), Thrown> {
+        let mut classes = Vec::new();
+        let mut functions = Vec::new();
+        for (_, stmt) in &flat {
+            match stmt {
+                Statement::Class(c) => classes.push(compile_class(&cx, c)?),
+                Statement::Interface(i) => classes.push(compile_interface(&cx, i)?),
+                Statement::Function(f) => functions.push(Rc::new(compile_function(&cx, f)?)),
+                _ => {}
+            }
         }
-    }
-    Ok((classes, functions))
+        Ok((classes, functions))
+    };
+    let r = compile();
+    // Closures the prelude declares occupy closure indices `0..n`; a program
+    // with the prelude re-seeds them first. Anonymous / nested classes would
+    // index per-file tables the cached copy cannot carry.
+    assert!(
+        cx.anon_classes.borrow().is_empty() && cx.cond_classes.borrow().is_empty(),
+        "prelude must not declare anonymous or nested classes"
+    );
+    assert!(
+        cx.take_fatal().is_none(),
+        "prelude must compile without errors"
+    );
+    let (classes, functions) = r?;
+    Ok(PreludeParts {
+        classes,
+        functions,
+        closures: cx.closures.take(),
+    })
 }

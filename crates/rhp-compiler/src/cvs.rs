@@ -8,7 +8,7 @@ use rhp_frontend::cst::{
 use crate::builder::ProtoBuilder;
 use crate::util::strip_dollar;
 
-impl ProtoBuilder {
+impl ProtoBuilder<'_> {
     pub(crate) fn scan_stmt_vars(&mut self, stmt: &Statement) {
         use rhp_frontend::cst::{ForBody, IfBody, SwitchBody, SwitchCase, WhileBody};
         match stmt {

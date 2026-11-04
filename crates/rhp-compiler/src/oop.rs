@@ -8,8 +8,6 @@ use crate::assign::is_globals_var;
 use crate::builder::ProtoBuilder;
 use crate::calls::{has_named, has_spread, ArgRefTarget};
 use crate::decl::compile_anon_class;
-use crate::file::ANON_CLASSES;
-use crate::names::resolve_class_name;
 use crate::util::strip_dollar;
 
 /// A compiled member selector: a static interned name, or a runtime name in a
@@ -20,13 +18,13 @@ pub(crate) enum Sel {
     Dyn(Reg),
 }
 
-impl ProtoBuilder {
+impl ProtoBuilder<'_> {
     /// Resolve the class part of `new`/`::`/`instanceof` to a `ClassRef`.
     pub(crate) fn class_ref(&mut self, expr: &Expression) -> Result<ClassRef, Thrown> {
         match expr {
-            Expression::Identifier(id) => {
-                Ok(ClassRef::Name(self.intern_name(&resolve_class_name(id))))
-            }
+            Expression::Identifier(id) => Ok(ClassRef::Name(
+                self.intern_name(&self.cx.resolve_class_name(id)),
+            )),
             Expression::Self_(_) => Ok(ClassRef::SelfClass),
             Expression::Static(_) => Ok(ClassRef::StaticClass),
             Expression::Parent(_) => Ok(ClassRef::ParentClass),
@@ -107,9 +105,9 @@ impl ProtoBuilder {
         ac: &rhp_frontend::cst::AnonymousClass,
     ) -> Result<Reg, Thrown> {
         use rhp_frontend::cst::PartialArgument;
-        let proto = compile_anon_class(ac, &self.sigs)?;
+        let proto = compile_anon_class(self.cx, ac)?;
         let class = ClassRef::Name(self.intern_name(proto.name.as_bytes()));
-        ANON_CLASSES.with(|c| c.borrow_mut().push(proto));
+        self.cx.anon_classes.borrow_mut().push(proto);
         let mut regs = Vec::new();
         if let Some(list) = &ac.argument_list {
             for arg in list.arguments.iter() {
@@ -354,7 +352,7 @@ impl ProtoBuilder {
                 {
                     if li.value.eq_ignore_ascii_case(b"class") {
                         if let Expression::Identifier(id) = cca.class {
-                            let k = self.intern_const(Value::str(resolve_class_name(id)));
+                            let k = self.intern_const(Value::str(self.cx.resolve_class_name(id)));
                             let dst = self.alloc_temp();
                             self.emit(Instr::LoadConst { dst, k });
                             return Ok(dst);

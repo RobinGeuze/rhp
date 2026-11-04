@@ -3,12 +3,12 @@
 use rhp_frontend::cst::{Hint, Identifier};
 use rhp_values::{PhpStr, Thrown};
 
-use crate::file::compile_fatal;
-use crate::names::{identifier_raw, resolve_class_name, starts_with_ci, strip_lead_bs};
+use crate::file::FileCtx;
+use crate::names::{identifier_raw, starts_with_ci, strip_lead_bs};
 
 /// Lower a mago type hint to the bytecode [`rhp_bytecode::TypeHint`] (resolving
 /// class names against the current namespace).
-pub(crate) fn type_hint(h: &Hint) -> rhp_bytecode::TypeHint {
+pub(crate) fn type_hint(cx: &FileCtx, h: &Hint) -> rhp_bytecode::TypeHint {
     let mut out = rhp_bytecode::TypeHint {
         nullable: false,
         intersection: false,
@@ -16,52 +16,52 @@ pub(crate) fn type_hint(h: &Hint) -> rhp_bytecode::TypeHint {
         groups: Vec::new(),
         explicit_null: false,
     };
-    collect_hint(h, &mut out);
+    collect_hint(cx, h, &mut out);
     out
 }
 
 /// The class names of a (parenthesized) intersection hint `A&B&C`.
-fn intersection_names(h: &Hint, out: &mut Vec<PhpStr>) {
+fn intersection_names(cx: &FileCtx, h: &Hint, out: &mut Vec<PhpStr>) {
     match h {
-        Hint::Parenthesized(p) => intersection_names(p.hint, out),
+        Hint::Parenthesized(p) => intersection_names(cx, p.hint, out),
         Hint::Intersection(i) => {
-            intersection_names(i.left, out);
-            intersection_names(i.right, out);
+            intersection_names(cx, i.left, out);
+            intersection_names(cx, i.right, out);
         }
-        Hint::Identifier(id) => out.push(PhpStr::from_bytes(resolve_class_name(id))),
+        Hint::Identifier(id) => out.push(PhpStr::from_bytes(cx.resolve_class_name(id))),
         _ => {}
     }
 }
 
-fn collect_hint(h: &Hint, out: &mut rhp_bytecode::TypeHint) {
+fn collect_hint(cx: &FileCtx, h: &Hint, out: &mut rhp_bytecode::TypeHint) {
     use rhp_bytecode::TypeKind as K;
     match h {
         Hint::Nullable(n) => {
             out.nullable = true;
-            collect_hint(n.hint, out);
+            collect_hint(cx, n.hint, out);
         }
-        Hint::Parenthesized(p) => collect_hint(p.hint, out),
+        Hint::Parenthesized(p) => collect_hint(cx, p.hint, out),
         Hint::Union(u) => {
             // A DNF member `(A&B)` of a union is an intersection group.
             for side in [u.left, u.right] {
                 match side {
                     Hint::Parenthesized(p) if matches!(p.hint, Hint::Intersection(_)) => {
                         let mut g = Vec::new();
-                        intersection_names(p.hint, &mut g);
+                        intersection_names(cx, p.hint, &mut g);
                         out.groups.push(g);
                     }
                     Hint::Null(_) => {
                         out.nullable = true;
                         out.explicit_null = true;
                     }
-                    other => collect_hint(other, out),
+                    other => collect_hint(cx, other, out),
                 }
             }
         }
         Hint::Intersection(i) => {
             out.intersection = true;
-            collect_hint(i.left, out);
-            collect_hint(i.right, out);
+            collect_hint(cx, i.left, out);
+            collect_hint(cx, i.right, out);
         }
         Hint::Null(_) => out.nullable = true,
         Hint::True(_) => out.kinds.push(K::True),
@@ -81,9 +81,9 @@ fn collect_hint(h: &Hint, out: &mut rhp_bytecode::TypeHint) {
         Hint::Mixed(_) => out.kinds.push(K::Mixed),
         Hint::Iterable(_) => out.kinds.push(K::Iterable),
         Hint::Identifier(id) => {
-            check_type_name(id);
+            check_type_name(cx, id);
             out.kinds
-                .push(K::Named(PhpStr::from_bytes(resolve_class_name(id))))
+                .push(K::Named(PhpStr::from_bytes(cx.resolve_class_name(id))))
         }
     }
 }
@@ -93,7 +93,7 @@ fn collect_hint(h: &Hint, out: &mut rhp_bytecode::TypeHint) {
 /// (`namespace\static`) is "Type declaration '%s' must be unqualified" (php
 /// 8.5.12 added `static` to the builtin list); `\self` is an invalid class
 /// name; and a class name ending in a reserved word (`Foo\int`) is refused.
-fn check_type_name(id: &Identifier) {
+fn check_type_name(cx: &FileCtx, id: &Identifier) {
     use mago_span::HasSpan;
     const BUILTIN: [&[u8]; 13] = [
         b"null",
@@ -143,7 +143,7 @@ fn check_type_name(id: &Identifier) {
             "Type declaration '{}' must be unqualified",
             String::from_utf8_lossy(&lc)
         );
-        return compile_fatal(at, msg);
+        return cx.fatal(at, msg);
     }
     // zend_resolve_class_name: `\self` / `namespace\parent` name no class.
     if !prefix.is_empty() && (lc == b"self" || lc == b"parent") {
@@ -151,37 +151,37 @@ fn check_type_name(id: &Identifier) {
             "'{prefix}{}' is an invalid class name",
             String::from_utf8_lossy(&name)
         );
-        return compile_fatal(at, msg);
+        return cx.fatal(at, msg);
     }
     // zend_assert_valid_class_name(…, "a type name") on the resolved name,
     // whose unqualified tail must not be a reserved name (`Foo\int`).
-    let resolved = resolve_class_name(id);
+    let resolved = cx.resolve_class_name(id);
     let tail = resolved.rsplit(|&b| b == b'\\').next().unwrap_or(&resolved);
     if RESERVED.contains(&tail.to_ascii_lowercase().as_slice()) {
         let msg = format!(
             "Cannot use \"{}\" as a type name as it is reserved",
             String::from_utf8_lossy(&resolved)
         );
-        compile_fatal(at, msg);
+        cx.fatal(at, msg);
     }
 }
 
 /// Extract the class name(s) a `catch` clause's type hint names (`A` or `A|B`).
-pub(crate) fn hint_class_names(hint: &Hint) -> Result<Vec<PhpStr>, Thrown> {
-    fn collect(hint: &Hint, out: &mut Vec<PhpStr>) -> Result<(), Thrown> {
+pub(crate) fn hint_class_names(cx: &FileCtx, hint: &Hint) -> Result<Vec<PhpStr>, Thrown> {
+    fn collect(cx: &FileCtx, hint: &Hint, out: &mut Vec<PhpStr>) -> Result<(), Thrown> {
         match hint {
             Hint::Identifier(id) => {
                 // Resolve against the current namespace + `use` imports (php
                 // treats `catch (Foo)` in namespace N as `N\Foo`), matching how
                 // `instanceof`/`new` resolve class names.
-                out.push(PhpStr::from_bytes(resolve_class_name(id)));
+                out.push(PhpStr::from_bytes(cx.resolve_class_name(id)));
                 Ok(())
             }
             Hint::Union(u) => {
-                collect(u.left, out)?;
-                collect(u.right, out)
+                collect(cx, u.left, out)?;
+                collect(cx, u.right, out)
             }
-            Hint::Parenthesized(p) => collect(p.hint, out),
+            Hint::Parenthesized(p) => collect(cx, p.hint, out),
             _ => Err(Thrown::unsupported(
                 "catch type",
                 "only class-name catch types",
@@ -189,6 +189,6 @@ pub(crate) fn hint_class_names(hint: &Hint) -> Result<Vec<PhpStr>, Thrown> {
         }
     }
     let mut out = Vec::new();
-    collect(hint, &mut out)?;
+    collect(cx, hint, &mut out)?;
     Ok(out)
 }

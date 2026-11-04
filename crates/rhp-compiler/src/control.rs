@@ -13,7 +13,7 @@ use crate::hints::hint_class_names;
 use crate::oop::Sel;
 use crate::util::strip_dollar;
 
-impl ProtoBuilder {
+impl ProtoBuilder<'_> {
     /// Compile a single statement or a colon-delimited statement sequence.
     fn compile_stmts<'a>(
         &mut self,
@@ -507,7 +507,7 @@ impl ProtoBuilder {
         let mut end_jumps = vec![norm_jmp];
         for clause in t.catch_clauses.iter() {
             let target = self.here();
-            let classes = hint_class_names(&clause.hint)?;
+            let classes = hint_class_names(self.cx, &clause.hint)?;
             let var_reg = clause
                 .variable
                 .as_ref()

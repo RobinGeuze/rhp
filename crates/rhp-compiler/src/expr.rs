@@ -10,17 +10,16 @@ use rhp_values::{Thrown, Value};
 
 use crate::assign::{as_reference, check_globals_write, is_globals_var};
 use crate::builder::{ProtoBuilder, ScopeKind};
-use crate::file::{line_of, locate, src_file, IN_TRAIT};
 use crate::fold::{literal_array, literal_value, php_swaps_operands};
-use crate::names::{cur_ns, identifier_name, resolve_name, NameKind};
+use crate::names::{identifier_name, NameKind};
 use crate::oop::Sel;
 use crate::util::{dirname, strip_dollar};
 
-impl ProtoBuilder {
+impl ProtoBuilder<'_> {
     pub(crate) fn compile_expr(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
         use mago_span::HasSpan;
         self.compile_expr_inner(expr)
-            .map_err(|e| locate(e, expr.span().start.offset))
+            .map_err(|e| self.cx.locate(e, expr.span().start.offset))
     }
 
     fn compile_expr_inner(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
@@ -60,14 +59,16 @@ impl ProtoBuilder {
             Expression::Match(m) => self.compile_match(m),
             Expression::Instantiation(inst) => {
                 use mago_span::HasSpan;
-                self.call_lines.push(line_of(inst.span().start.offset));
+                self.call_lines
+                    .push(self.cx.line_of(inst.span().start.offset));
                 let r = self.compile_new(inst);
                 self.call_lines.pop();
                 r
             }
             Expression::AnonymousClass(ac) => {
                 use mago_span::HasSpan;
-                self.call_lines.push(line_of(ac.span().start.offset));
+                self.call_lines
+                    .push(self.cx.line_of(ac.span().start.offset));
                 let r = self.compile_new_anon(ac);
                 self.call_lines.pop();
                 r
@@ -96,7 +97,7 @@ impl ProtoBuilder {
                     Call::NullSafeMethod(mc) => mc.method.span(),
                     Call::StaticMethod(smc) => smc.method.span(),
                 };
-                self.call_lines.push(line_of(at.start.offset));
+                self.call_lines.push(self.cx.line_of(at.start.offset));
                 let r = self.compile_call(call);
                 self.call_lines.pop();
                 r
@@ -119,13 +120,13 @@ impl ProtoBuilder {
         use mago_span::HasSpan;
         let dst = self.alloc_temp();
         if let MagicConstant::Line(_) = mc {
-            let n = line_of(mc.span().start.offset) as i64;
+            let n = self.cx.line_of(mc.span().start.offset) as i64;
             self.emit(Instr::LoadInt { dst, n });
             return Ok(dst);
         }
         if matches!(mc, MagicConstant::Class(_))
             && self.class_name.is_some()
-            && IN_TRAIT.with(|f| *f.borrow())
+            && self.cx.in_trait.get()
         {
             // Inside a trait, `__CLASS__` is the class using it (php resolves
             // it at runtime, like `self::class`).
@@ -144,8 +145,8 @@ impl ProtoBuilder {
             ));
         }
         let s: Vec<u8> = match mc {
-            MagicConstant::File(_) => src_file(),
-            MagicConstant::Directory(_) => dirname(&src_file()),
+            MagicConstant::File(_) => self.cx.file_name(),
+            MagicConstant::Directory(_) => dirname(&self.cx.file_name()),
             MagicConstant::Function(_) => self.magic_function_name(),
             MagicConstant::Method(_) => self.magic_method_name(),
             MagicConstant::Class(_) | MagicConstant::Trait(_) => self
@@ -153,7 +154,7 @@ impl ProtoBuilder {
                 .as_ref()
                 .map(|c| c.as_bytes().to_vec())
                 .unwrap_or_default(),
-            MagicConstant::Namespace(_) => cur_ns(),
+            MagicConstant::Namespace(_) => self.cx.cur_ns(),
             MagicConstant::Line(_) | MagicConstant::Property(_) => unreachable!(),
         };
         let k = self.intern_const(Value::str(s));
@@ -242,7 +243,7 @@ impl ProtoBuilder {
                 | Op::Identical(_)
                 | Op::NotIdentical(_)
         );
-        let (a, r) = if commutative && php_swaps_operands(b.lhs, b.rhs) {
+        let (a, r) = if commutative && php_swaps_operands(self.cx, b.lhs, b.rhs) {
             (r, a)
         } else {
             (a, r)
@@ -584,7 +585,7 @@ impl ProtoBuilder {
             b"false" | b"FALSE" | b"False" => self.emit(Instr::LoadBool { dst, b: false }),
             b"null" | b"NULL" | b"Null" => self.emit(Instr::LoadNull { dst }),
             _ => {
-                let (primary, fallback) = resolve_name(id, NameKind::Const);
+                let (primary, fallback) = self.cx.resolve_name(id, NameKind::Const);
                 let n = self.intern_name(&primary);
                 let fb = self.intern_fallback(&fallback);
                 self.emit(Instr::FetchConst {

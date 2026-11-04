@@ -1600,6 +1600,7 @@ Zend/tests/namespaces/ns_070.phpt
 Zend/tests/namespaces/ns_071.phpt
 Zend/tests/namespaces/ns_072.phpt
 Zend/tests/namespaces/ns_074.phpt
+Zend/tests/namespaces/ns_075.phpt
 Zend/tests/namespaces/ns_076.phpt
 Zend/tests/namespaces/ns_077_1.phpt
 Zend/tests/namespaces/ns_077_2.phpt

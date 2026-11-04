@@ -3289,6 +3289,18 @@ impl ProtoBuilder {
             }
             Statement::Constant(c) => {
                 for item in c.items.iter() {
+                    // zend_compile_const_decl: true/false/null in any case.
+                    let short: &[u8] = item.name.value;
+                    if [&b"true"[..], b"false", b"null"]
+                        .iter()
+                        .any(|s| short.eq_ignore_ascii_case(s))
+                    {
+                        let msg = format!(
+                            "Cannot redeclare constant '{}'",
+                            String::from_utf8_lossy(short)
+                        );
+                        compile_fatal(stmt.span().start.offset, msg);
+                    }
                     let src = self.compile_expr(item.value)?;
                     let name = self.intern_name(&join_ns(&cur_ns(), item.name.value));
                     self.emit(Instr::DeclareConst { name, src });

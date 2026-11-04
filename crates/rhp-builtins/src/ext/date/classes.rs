@@ -996,8 +996,8 @@ fn timezone_transitions(tz: &Tz, begin_ts: i64, end_ts: i64) -> PhpArray {
             }
         }
     }
-    if has_dst_end {
-        let last = trans(timecnt.wrapping_sub(1));
+    if has_dst_end && timecnt > 0 {
+        let last = trans(timecnt - 1);
         let year = |ts: i64| {
             let (mut y, mut m, mut d) = (0, 0, 0);
             // SAFETY: valid out-pointers.

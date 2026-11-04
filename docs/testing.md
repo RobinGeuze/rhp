@@ -36,7 +36,7 @@ crates/rhp-cli/tests/          diff.rs (the goldens, in-process), and runs
 crates/rhp-sapi/tests/         the request layer in-process: embedding,
                                isolation, memory, opcache
 crates/rhp-vm/tests/golden.rs  tests/golden/vm, for `cargo test -p rhp-vm`
-crates/*/src                   unit tests of internal helpers
+crates/*/src/**/tests.rs       unit tests, a sibling file per module
 tools/rhp-difftest/            the harness: php discovery, spawn, known
                                lists, Diff (lib.rs); golden, phpt, app,
                                lint, gen, sweeps; tests/ = live-php tests
@@ -117,10 +117,18 @@ versions, phar archives php builds), and for sweeps over generated inputs
 (`rhp-difftest`'s hash, bcmath, ctype, … sweeps; the startup ini sweep).
 Each one returns early when `rhp_difftest::php_available()` is false.
 
-Unit tests (inline `#[cfg(test)]`, `crates/rhp-sapi/tests`,
-`crates/rhp-cli/tests/unsupported.rs`) hold literal expectations for rhp's
-own contracts: the embedding API, request isolation, the compiled-script
-cache, refusals.
+Unit tests (`crates/*/src/**/tests.rs`, `tools/rhp-difftest/src/**/tests.rs`,
+`crates/rhp-sapi/tests`, `crates/rhp-cli/tests/unsupported.rs`) hold
+literal expectations for rhp's own contracts: the embedding API, request
+isolation, the compiled-script cache, refusals, internal helpers,
+diagnostics and error branches. A module's unit tests live in a sibling
+file, never inline: the module declares `#[cfg(test)] mod tests;` and the
+tests go in `foo/tests.rs` for `foo.rs`, or in `tests.rs` beside a
+`mod.rs` or `lib.rs`. rhp-builtins' tests call builtins with
+`test_support::TestHost`, which keeps the output and diagnostics and runs
+callbacks through a Rust closure; don't add another `Host` for a test.
+A case a golden, a sweep or a live-php test already covers needs no unit
+test.
 
 **CGI fixtures** cover `rhp --cgi`: `crates/rhp-cli/tests/cgi.rs` runs each
 `tests/cgi/*.php` under rhp and php-cgi with the request a `NAME.cgi` file

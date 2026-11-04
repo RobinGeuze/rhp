@@ -229,9 +229,13 @@ jobs:
         with:
           key: asan
       # --target keeps the sanitizer off build scripts and proc macros.
+      # cc passes -fsanitize=address to the vendored C too; CFLAGS turns that
+      # off. Instrumented, GCC's identical-variable folding puts two static
+      # libmbfl tables at one address, which ASan reports as an ODR violation.
       - name: Build with AddressSanitizer
         env:
           RUSTFLAGS: -Zsanitizer=address
+          CFLAGS: -fno-sanitize=address
         run: cargo build --release --target x86_64-unknown-linux-gnu -p rhp-cli -p rhp-difftest
       - name: Stress scripts
         run: |

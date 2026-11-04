@@ -2,7 +2,7 @@
 //! import and adoption, parsing and serialising (XML and libxml2's HTML4
 //! parser), and DTD, XML Schema, RelaxNG and XInclude processing.
 
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::c_int;
 use std::ptr;
 
 use rhp_values::{ArrayKey, Value};
@@ -817,65 +817,6 @@ pub fn load_xml(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thro
     parse_document(cx, this, args, Mode::String)
 }
 
-unsafe extern "C" fn write_vec(ctx: *mut c_void, buf: *const c_char, len: c_int) -> c_int {
-    let v = unsafe { &mut *(ctx as *mut Vec<u8>) };
-    if len > 0 {
-        v.extend_from_slice(unsafe { std::slice::from_raw_parts(buf.cast::<u8>(), len as usize) });
-    }
-    len
-}
-
-/// php_libxml_default_dump_node_to_str
-fn dump_node_to_str(
-    docp: *mut XmlDoc,
-    node: *mut XmlNode,
-    format: bool,
-    encoding: *const u8,
-) -> Option<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::new();
-    unsafe {
-        let buf = sys::xmlOutputBufferCreateIO(
-            Some(write_vec),
-            None,
-            (&mut out as *mut Vec<u8>).cast(),
-            ptr::null_mut(),
-        );
-        if buf.is_null() {
-            return None;
-        }
-        sys::xmlNodeDumpOutput(buf, docp, node, 0, format as c_int, encoding.cast());
-        if sys::xmlOutputBufferFlush(buf) < 0 {
-            sys::xmlOutputBufferClose(buf);
-            return None;
-        }
-        sys::xmlOutputBufferClose(buf);
-    }
-    Some(out)
-}
-
-/// php_libxml_default_dump_doc_to_str
-fn dump_doc_to_str(docp: *mut XmlDoc, options: c_int, encoding: *const u8) -> Option<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::new();
-    unsafe {
-        let ctxt = sys::xmlSaveToIO(
-            Some(write_vec),
-            None,
-            (&mut out as *mut Vec<u8>).cast(),
-            encoding.cast(),
-            options,
-        );
-        if ctxt.is_null() {
-            return None;
-        }
-        let mut status = sys::xmlSaveDoc(ctxt, docp);
-        status |= sys::xmlSaveClose(ctxt) as std::ffi::c_long;
-        if status < 0 {
-            return None;
-        }
-    }
-    Some(out)
-}
-
 pub fn save(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
     let file = bytes(args, 0);
     let options = int(args, 1);
@@ -927,7 +868,7 @@ pub fn save_xml(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thro
         }
         cx.with_libxml(|| unsafe {
             let old = sys::rhp_xml_set_save_no_empty_tags(no_empty);
-            let r = dump_node_to_str(docp, node, format, encoding);
+            let r = lxn::dump_node_to_str(docp, node, format, encoding);
             sys::rhp_xml_set_save_no_empty_tags(old);
             r
         })?
@@ -941,7 +882,7 @@ pub fn save_xml(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thro
         }
         cx.with_libxml(|| unsafe {
             let old = sys::rhp_xml_set_save_no_empty_tags(no_empty);
-            let r = dump_doc_to_str(docp, opts, encoding);
+            let r = lxn::dump_doc_to_str(docp, opts, encoding);
             sys::rhp_xml_set_save_no_empty_tags(old);
             r
         })?

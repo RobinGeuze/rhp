@@ -494,7 +494,25 @@ pub fn nodelist_item(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value,
     get_item(cx, &d, int(args, 0))
 }
 
+/// dom_nodelist_read_dimension / dom_nodemap_read_dimension: `$list[]`
+/// below a write (`$list[][] = …`) has no offset.
+fn no_offset(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<(), Thrown> {
+    if matches!(super::arg(args, 0), Value::Null)
+        && cx.host.magic_fetch() == crate::MagicFetch::Write
+    {
+        return Err(Thrown::error(
+            "Error",
+            format!(
+                "Cannot access {} without offset",
+                super::class_of(cx.host, this)
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub fn nodelist_offset_get(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
+    no_offset(cx, this, args)?;
     let d = this_map(cx, this)?;
     match offset_index(&super::arg(args, 0)) {
         Err(()) => Ok(Value::Null),
@@ -548,6 +566,7 @@ pub fn map_count(cx: &mut Cx, this: &Value, _: &[Value]) -> Result<Value, Thrown
 }
 
 pub fn map_offset_get(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
+    no_offset(cx, this, args)?;
     let d = this_map(cx, this)?;
     let off = super::arg(args, 0);
     match offset_index(&off) {

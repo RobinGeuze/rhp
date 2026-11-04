@@ -568,3 +568,102 @@ pub fn invalidate_node_list_cache_from_doc(docp: *mut XmlDoc) {
         invalidate_node_list_cache(obj.document.get());
     }
 }
+
+unsafe extern "C" fn write_vec(
+    ctx: *mut std::ffi::c_void,
+    buf: *const std::ffi::c_char,
+    len: std::ffi::c_int,
+) -> std::ffi::c_int {
+    let v = unsafe { &mut *(ctx as *mut Vec<u8>) };
+    if len > 0 {
+        v.extend_from_slice(unsafe { std::slice::from_raw_parts(buf.cast::<u8>(), len as usize) });
+    }
+    len
+}
+
+/// php_libxml_default_dump_node_to_str
+pub fn dump_node_to_str(
+    docp: *mut XmlDoc,
+    node: *mut XmlNode,
+    format: bool,
+    encoding: *const u8,
+) -> Option<Vec<u8>> {
+    let mut out: Vec<u8> = Vec::new();
+    unsafe {
+        let buf = sys::xmlOutputBufferCreateIO(
+            Some(write_vec),
+            None,
+            (&mut out as *mut Vec<u8>).cast(),
+            ptr::null_mut(),
+        );
+        if buf.is_null() {
+            return None;
+        }
+        sys::xmlNodeDumpOutput(buf, docp, node, 0, format as i32, encoding.cast());
+        if sys::xmlOutputBufferFlush(buf) < 0 {
+            sys::xmlOutputBufferClose(buf);
+            return None;
+        }
+        sys::xmlOutputBufferClose(buf);
+    }
+    Some(out)
+}
+
+/// php_libxml_default_dump_doc_to_str
+pub fn dump_doc_to_str(docp: *mut XmlDoc, options: i32, encoding: *const u8) -> Option<Vec<u8>> {
+    let mut out: Vec<u8> = Vec::new();
+    unsafe {
+        let ctxt = sys::xmlSaveToIO(
+            Some(write_vec),
+            None,
+            (&mut out as *mut Vec<u8>).cast(),
+            encoding.cast(),
+            options,
+        );
+        if ctxt.is_null() {
+            return None;
+        }
+        let mut status = sys::xmlSaveDoc(ctxt, docp);
+        status |= sys::xmlSaveClose(ctxt) as std::ffi::c_long;
+        if status < 0 {
+            return None;
+        }
+    }
+    Some(out)
+}
+
+/// php_libxml_default_dump_doc_to_file: bytes written, or -1.
+///
+/// # Safety
+/// `doc` is a live document; `filename` is NUL-terminated.
+pub unsafe fn dump_doc_to_file(filename: &[u8], doc: *mut XmlDoc, format: bool) -> i64 {
+    unsafe {
+        sys::xmlSaveFormatFileEnc(
+            filename.as_ptr().cast(),
+            doc,
+            (*doc).encoding.cast(),
+            format as i32,
+        ) as i64
+    }
+}
+
+/// php_libxml_dump_node_to_file: bytes written, or -1.
+///
+/// # Safety
+/// `doc` and `node` are live; `filename` is NUL-terminated.
+pub unsafe fn dump_node_to_file(
+    filename: &[u8],
+    doc: *mut XmlDoc,
+    node: *mut XmlNode,
+    format: bool,
+) -> i64 {
+    unsafe {
+        let outbuf =
+            sys::xmlOutputBufferCreateFilename(filename.as_ptr().cast(), ptr::null_mut(), 0);
+        if outbuf.is_null() {
+            return -1;
+        }
+        sys::xmlNodeDumpOutput(outbuf, doc, node, 0, format as i32, ptr::null());
+        sys::xmlOutputBufferClose(outbuf) as i64
+    }
+}

@@ -13,7 +13,6 @@
 //!
 //! The modern `Dom\` API (HTML5 via lexbor, CSS selectors) is not here.
 
-mod bridge;
 mod chardata;
 mod document;
 mod element;
@@ -23,7 +22,7 @@ mod props;
 mod util;
 mod xpath;
 
-pub use bridge::{from_old_tree, to_old_tree};
+pub(crate) use document::valid_file_path;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -328,6 +327,16 @@ pub(crate) fn create_object(
     node: *mut XmlNode,
     domobj: Option<&DomObject>,
 ) -> Result<Value, Thrown> {
+    create_object_in(cx, node, domobj.map_or(ptr::null_mut(), |d| d.document()))
+}
+
+/// [`create_object`] with the document reference of any libxml-backed
+/// object (`DOM_RET_OBJ` with a SimpleXML or XMLReader object).
+pub(crate) fn create_object_in(
+    cx: &mut Cx,
+    node: *mut XmlNode,
+    document: *mut lxn::RefObj,
+) -> Result<Value, Thrown> {
     if let Some(obj) = unsafe { lxn::object_of_node(node) } {
         if let Some(v) = obj.object() {
             return Ok(v);
@@ -341,12 +350,10 @@ pub(crate) fn create_object(
         ));
     };
     let mut class = base.as_bytes().to_vec();
-    if let Some(d) = domobj {
-        if let Some(c) = classmap_lookup(d.document(), base) {
-            class = c;
-        }
+    if let Some(c) = classmap_lookup(document, base) {
+        class = c;
     }
-    instantiate(cx, &class, node, domobj)
+    instantiate(cx, &class, node, document)
 }
 
 /// php_dom_create_nullable_object
@@ -367,7 +374,7 @@ pub(crate) fn instantiate(
     cx: &mut Cx,
     class: &[u8],
     node: *mut XmlNode,
-    parent: Option<&DomObject>,
+    document: *mut lxn::RefObj,
 ) -> Result<Value, Thrown> {
     let internal = class_for_type_name(class);
     let v = if internal {
@@ -392,8 +399,8 @@ pub(crate) fn instantiate(
     .expect("a new DOM object");
     unsafe {
         if !(*node).doc.is_null() {
-            if let Some(p) = parent {
-                d.base.document.set(p.document());
+            if !document.is_null() {
+                d.base.document.set(document);
             }
             lxn::increment_doc_ref(&d.base, (*node).doc);
         }
@@ -696,10 +703,56 @@ fn fn_dom_iter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     lists::iterate(&mut cx, &this, &cur, index)
 }
 
+/// php_dom_export_node: the node a DOMNode stands for (for
+/// php_libxml_import_node), and its document reference.
+pub(crate) fn export_node(v: &Value) -> Option<(*mut XmlNode, *mut lxn::RefObj)> {
+    let d = intern_of(v)?;
+    if !matches!(d.kind, Kind::Node) {
+        return None;
+    }
+    let n = d.node();
+    (!n.is_null()).then(|| (n, d.document()))
+}
+
+/// The document reference of a libxml-backed object (`nodeobj` in php).
+fn node_object_document(v: &Value) -> *mut lxn::RefObj {
+    if let Some(d) = intern_of(v) {
+        return d.document();
+    }
+    crate::ext::simplexml::document_of(v)
+}
+
 /// dom_import_simplexml
 fn fn_dom_import_simplexml(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = arg(args, 0);
-    bridge::import_simplexml(host, &v)
+    let bad = || {
+        Thrown::type_error("dom_import_simplexml(): Argument #1 ($node) is not a valid node type")
+    };
+    let nodep = crate::ext::libxml::import_node(host, &v)?;
+    let document = node_object_document(&v);
+    let Some((nodep, _)) = nodep else {
+        return Err(bad());
+    };
+    let t = unsafe { (*nodep).type_ };
+    if document.is_null() || !(t == sys::XML_ELEMENT_NODE || t == sys::XML_ATTRIBUTE_NODE) {
+        return Err(bad());
+    }
+    unsafe {
+        let old = (*document).class_type;
+        if old != lxn::ClassType::Unset && old != lxn::ClassType::Legacy {
+            return Err(Thrown::type_error(
+                "dom_import_simplexml(): Argument #1 ($node) must not be already imported as a Dom\\Node",
+            ));
+        }
+        (*document).class_type = lxn::ClassType::Legacy;
+    }
+    let mut cx = Cx {
+        host,
+        fname: "dom_import_simplexml".into(),
+        quiet: false,
+        lazy_fname: false,
+    };
+    create_object_in(&mut cx, nodep, document)
 }
 
 // ---- object handlers ----
@@ -890,23 +943,6 @@ pub const PRELUDE_PHP: &str = include_str!("prelude.php");
 pub fn constant_deprecation(name: &[u8]) -> Option<String> {
     (name == b"DOM_PHP_ERR")
         .then(|| "Constant DOM_PHP_ERR is deprecated since 8.4, as it is no longer used".into())
-}
-
-/// Read a document source (path or URL): (bytes, the URL libxml2 records).
-/// XMLReader still reads through it.
-pub fn read_source(host: &mut dyn Host, path: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
-    let p = String::from_utf8_lossy(path).into_owned();
-    if let Some(rest) = p.strip_prefix("file://") {
-        let data = std::fs::read(rest).ok()?;
-        return Some((data, rest.as_bytes().to_vec()));
-    }
-    if p.contains("://") {
-        let data = host.stream_get_contents(path)?;
-        return Some((data, path.to_vec()));
-    }
-    let full = expand_filepath(path);
-    let data = std::fs::read(String::from_utf8_lossy(&full).as_ref()).ok()?;
-    Some((data, full))
 }
 
 /// php's `expand_filepath`: the absolute path (symlinks in the existing

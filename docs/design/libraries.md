@@ -272,8 +272,11 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
 - **libxml2 trees** belong to the objects that wrap them, counted as php
   counts them (`ext/libxml/node.rs`, a port of libxml.c's node and document
   references): a document goes with the last object that references it, a
-  detached subtree with the last object that wraps a node of it. Trees
-  never leave their VM's thread.
+  detached subtree with the last object that wraps a node of it. DOM,
+  SimpleXML and XMLReader's `expand()` share these trees and counts, so
+  `simplexml_import_dom` and `dom_import_simplexml` hand out the same
+  nodes. Each object keeps its references in its payload; there are no
+  per-thread document tables. Trees never leave their VM's thread.
 - **No process-global side effects from a VM:** no `setlocale` (use
   `newlocale`/`uselocale`), no relative paths handed to a library that opens
   files itself (absolutize against the VM's cwd), no `putenv("TZ=…")`.

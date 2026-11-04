@@ -42,17 +42,12 @@ pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_inte
 
 #[rustfmt::skip]
 mod const_modules;
-mod crypt_fns;
 mod ext;
 mod file_fns;
 mod filter_fns;
 mod fs_fns;
-mod html;
-#[rustfmt::skip]
-mod html_tables;
 pub mod http;
 mod inet;
-mod info_fns;
 mod ini_parse;
 #[rustfmt::skip]
 mod ini_table;
@@ -329,7 +324,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
     }
     let rest: Vec<(&'static str, Registrar)> = vec![
         ("webenc_fns", Box::new(webenc_fns::register)),
-        ("html", Box::new(html::register)),
+        ("html", Box::new(ext::standard::html::register)),
         ("strarr2_fns", Box::new(strarr2_fns::register)),
         ("var", Box::new(ext::standard::var::register)),
         ("filter_fns", Box::new(filter_fns::register)),
@@ -341,7 +336,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("json_fns", Box::new(json_fns::register)),
         ("parse_fns", Box::new(parse_fns::register)),
         ("php_fns", Box::new(php_fns::register)),
-        ("info_fns", Box::new(info_fns::register)),
+        ("info", Box::new(ext::standard::info::register)),
         ("stream_fns", Box::new(stream_fns::register)),
         ("socket_fns", Box::new(socket_fns::register)),
         ("query_fns", Box::new(query_fns::register)),
@@ -359,7 +354,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("ini_parse", Box::new(ini_parse::register)),
         ("sysmisc_fns", Box::new(sysmisc_fns::register)),
         ("stdext_fns", Box::new(stdext_fns::register)),
-        ("crypt_fns", Box::new(crypt_fns::register)),
+        ("crypt", Box::new(ext::standard::crypt::register)),
         ("proc_fns", Box::new(proc_fns::register)),
         ("fs_fns", Box::new(fs_fns::register)),
     ];
@@ -663,10 +658,10 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     .into_iter()
     .chain(preg_fns::preg_constants())
     .chain(json_fns::json_constants())
-    .chain(info_fns::constants())
+    .chain(ext::standard::info::constants())
     .chain(fs_fns::constants())
     .chain(stdext_fns::constants())
-    .chain(crypt_fns::constants())
+    .chain(ext::standard::crypt::constants())
     .chain(socket_fns::constants())
     // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with their
     // module; pcntl's only under the SAPIs that have it.

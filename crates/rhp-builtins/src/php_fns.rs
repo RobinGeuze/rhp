@@ -7,31 +7,8 @@
 use rhp_values::ops::deref;
 use rhp_values::{conv, PhpArray, Value};
 
-use crate::zend::builtin_functions::{ext_version, loaded_ext};
 use crate::zend::zpp::arg_bytes;
 use crate::{Host, Thrown};
-
-fn fn_phpversion(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // phpversion($extension) returns the ext's version or false; plain → engine.
-    match args.first() {
-        Some(v) if !matches!(deref(v), Value::Null) => {
-            match loaded_ext(&conv::to_string_bytes(&deref(v))) {
-                Some(e) => Ok(Value::str(ext_version(e))),
-                None => Ok(Value::Bool(false)),
-            }
-        }
-        _ => Ok(Value::str(crate::version::PHP_VERSION)),
-    }
-}
-
-fn fn_php_sapi_name(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(crate::main::sapi::sapi_name()))
-}
-
-/// rhp has no php.ini, so this reports "no scanned files".
-fn fn_php_ini_scanned_files(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(false))
-}
 
 /// `gethostbyaddr($ip)` (dns.c php_gethostbyaddr): inet_pton as AF_INET6, then
 /// AF_INET, then getnameinfo(NI_NAMEREQD). The address itself when it has no
@@ -326,10 +303,6 @@ fn fn_register_shutdown_function(host: &mut dyn Host, args: &[Value]) -> Result<
 
 fn fn_getmypid(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(std::process::id() as i64))
-}
-
-fn fn_php_ini_loaded_file(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(false))
 }
 
 /// `assert($assertion, $description = null)` — PHP 8: evaluate `$assertion`; if
@@ -663,9 +636,6 @@ pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
-            ("phpversion", fn_phpversion),
-            ("php_sapi_name", fn_php_sapi_name),
-            ("php_ini_scanned_files", fn_php_ini_scanned_files),
             ("gethostbyaddr", fn_gethostbyaddr),
             ("ob_start", fn_ob_start),
             ("ob_flush", fn_ob_flush),
@@ -688,7 +658,6 @@ pub fn register(m: &mut crate::Registry) {
             ("register_shutdown_function", fn_register_shutdown_function),
             ("set_time_limit", fn_set_time_limit),
             ("getmypid", fn_getmypid),
-            ("php_ini_loaded_file", fn_php_ini_loaded_file),
             ("assert", fn_assert),
             ("random_bytes", fn_random_bytes),
             ("random_int", fn_random_int),

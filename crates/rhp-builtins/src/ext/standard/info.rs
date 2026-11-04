@@ -1,5 +1,6 @@
-//! `phpinfo()` / `phpcredits()` in php's CLI text layout (ext/standard/info.c
-//! with `sapi_module.phpinfo_as_text`), plus `php_uname()` backed by uname(2).
+//! ext/standard/info.c: `phpinfo()` / `phpcredits()` in php's CLI text
+//! layout (`sapi_module.phpinfo_as_text`), `php_uname()` backed by uname(2),
+//! `phpversion()` and the `php_ini_*` queries.
 //!
 //! The INFO_GENERAL block follows php's row order and formatting exactly; the
 //! values describe this engine (rhp) where php would describe its build.
@@ -7,6 +8,7 @@
 use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
+use crate::zend::builtin_functions::{ext_version, loaded_ext};
 use crate::{version, Host, Thrown};
 
 pub const INFO_GENERAL: i64 = 1;
@@ -483,6 +485,32 @@ fn fn_phpcredits(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
     Ok(Value::Bool(true))
 }
 
+fn fn_phpversion(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // phpversion($extension) returns the ext's version or false; plain → engine.
+    match args.first() {
+        Some(v) if !matches!(deref(v), Value::Null) => {
+            match loaded_ext(&conv::to_string_bytes(&deref(v))) {
+                Some(e) => Ok(Value::str(ext_version(e))),
+                None => Ok(Value::Bool(false)),
+            }
+        }
+        _ => Ok(Value::str(crate::version::PHP_VERSION)),
+    }
+}
+
+fn fn_php_sapi_name(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::str(crate::main::sapi::sapi_name()))
+}
+
+/// rhp has no php.ini, so this reports "no scanned files".
+fn fn_php_ini_scanned_files(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(false))
+}
+
+fn fn_php_ini_loaded_file(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(false))
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
@@ -490,6 +518,10 @@ pub fn register(m: &mut crate::Registry) {
             ("phpinfo", fn_phpinfo),
             ("phpcredits", fn_phpcredits),
             ("php_uname", fn_php_uname),
+            ("phpversion", fn_phpversion),
+            ("php_sapi_name", fn_php_sapi_name),
+            ("php_ini_scanned_files", fn_php_ini_scanned_files),
+            ("php_ini_loaded_file", fn_php_ini_loaded_file),
         ],
     );
 }

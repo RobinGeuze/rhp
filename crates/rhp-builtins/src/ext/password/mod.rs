@@ -9,8 +9,8 @@ use rhp_csrc::argon2;
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::crypt_fns::php_crypt;
 use crate::ext::hash::primitives::base64_encode as base64;
+use crate::ext::standard::crypt::php_crypt;
 use crate::zend::zpp::{str_param, zval_value_name};
 use crate::{Host, Thrown, E_DEPRECATED};
 

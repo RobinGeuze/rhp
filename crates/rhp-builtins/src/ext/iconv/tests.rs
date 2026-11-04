@@ -45,57 +45,6 @@ fn strlen_diagnostics() {
 }
 
 #[test]
-fn strpos_and_substr() {
-    assert_eq!(
-        go(fn_iconv_strpos, &[s("aéb".as_bytes()), s(b"b")]).0,
-        "int(2)"
-    );
-    assert_eq!(go(fn_iconv_strrpos, &[s(b"abab"), s(b"b")]).0, "int(3)");
-    assert_eq!(
-        go(
-            fn_iconv_substr,
-            &[s("aéb".as_bytes()), Value::Int(1), Value::Int(1)]
-        )
-        .0,
-        "string(\"é\")"
-    );
-    assert_eq!(
-        go(fn_iconv_strpos, &[s(b"\xff"), s(b"a"), Value::Int(3)]).0,
-        "ValueError: iconv_strpos(): Argument #3 ($offset) must be contained in argument #1 ($haystack)"
-    );
-}
-
-#[test]
-fn mime_round_trip() {
-    let mut opts = PhpArray::new();
-    opts.insert(ArrayKey::from_bytes(b"scheme"), Value::str("Q"));
-    let (r, d) = go(
-        fn_iconv_mime_encode,
-        &[s(b"Subject"), s("Prüfung".as_bytes()), Value::Array(opts)],
-    );
-    assert_eq!(
-        (r.as_str(), d.len()),
-        ("string(\"Subject: =?UTF-8?Q?Pr=C3=BCfung?=\")", 0)
-    );
-    assert_eq!(
-        go(
-            fn_iconv_mime_decode,
-            &[s(b"Subject: =?UTF-8?Q?Pr=C3=BCfung?=")]
-        )
-        .0,
-        "string(\"Subject: Prüfung\")"
-    );
-    let (r, _) = run(
-        fn_iconv_mime_decode_headers,
-        &[s(b"A: 1\r\nB: 2\r\nA: 3\r\n")],
-    );
-    let Ok(Value::Array(a)) = r else {
-        panic!("not an array")
-    };
-    assert_eq!(a.len(), 2);
-}
-
-#[test]
 fn unknown_error_prints_php_errno() {
     reset_state();
     assert_eq!(

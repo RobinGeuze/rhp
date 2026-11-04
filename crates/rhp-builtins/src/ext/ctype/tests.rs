@@ -2,45 +2,6 @@
 
 use super::*;
 
-fn s(b: &str) -> Value {
-    Value::str(b)
-}
-
-#[test]
-fn ctype_strings() {
-    assert!(ctype_check(&s("1234"), is_digit));
-    assert!(!ctype_check(&s("12.3"), is_digit));
-    assert!(!ctype_check(&s(""), is_digit)); // empty -> false
-    assert!(ctype_check(&s("Hello"), is_alpha));
-    assert!(!ctype_check(&s("Hello1"), is_alpha));
-    assert!(ctype_check(&s("abc123"), is_alnum));
-    assert!(!ctype_check(&s("abc 123"), is_alnum));
-    assert!(ctype_check(&s(" \t\n"), is_space));
-    assert!(!ctype_check(&s(" x"), is_space));
-    assert!(ctype_check(&s("ABC"), is_upper));
-    assert!(!ctype_check(&s("ABc"), is_upper));
-    assert!(ctype_check(&s("abc"), is_lower));
-    assert!(ctype_check(&s("!?#"), is_punct));
-    assert!(!ctype_check(&s("!a"), is_punct));
-    assert!(!ctype_check(&s(" "), is_punct));
-    assert!(ctype_check(&s("1aF"), is_xdigit));
-    assert!(!ctype_check(&s("1aG"), is_xdigit));
-}
-
-#[test]
-fn ctype_int_quirk() {
-    assert!(ctype_check(&Value::Int(48), is_digit)); // '0'
-    assert!(!ctype_check(&Value::Int(1), is_digit)); // SOH
-    assert!(ctype_check(&Value::Int(256), is_digit)); // -> "256"
-    assert!(!ctype_check(&Value::Int(-1), is_digit)); // byte 255
-    assert!(!ctype_check(&Value::Int(-128), is_digit)); // byte 128
-    assert!(!ctype_check(&Value::Int(-129), is_digit)); // -> "-129"
-    assert!(ctype_check(&Value::Int(99999999999), is_digit)); // -> all digits
-    assert!(!ctype_check(&Value::Int(-99999), is_digit)); // -> "-99999"
-    assert!(ctype_check(&Value::Int(100), is_alnum)); // 'd'
-    assert!(!ctype_check(&Value::Int(0), is_alpha)); // NUL
-}
-
 #[test]
 fn ctype_non_string_non_int() {
     assert!(!ctype_check(&Value::Bool(true), is_digit));

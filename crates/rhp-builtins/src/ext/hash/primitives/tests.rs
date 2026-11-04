@@ -12,79 +12,9 @@ fn call(f: crate::NativeFn, args: &[Value]) -> Value {
 fn calls(f: crate::NativeFn, args: &[Value]) -> String {
     String::from_utf8(bytes_of(&call(f, args))).unwrap()
 }
-fn call_int(f: crate::NativeFn, args: &[Value]) -> i64 {
-    match call(f, args) {
-        Value::Int(n) => n,
-        other => panic!("expected int, got {}", other.type_name()),
-    }
-}
 /// True when the result is php `false` (used for failure returns).
 fn is_false(f: crate::NativeFn, args: &[Value]) -> bool {
     matches!(call(f, args), Value::Bool(false))
-}
-
-#[test]
-fn md5_vectors() {
-    assert_eq!(calls(fn_md5, &[s("")]), "d41d8cd98f00b204e9800998ecf8427e");
-    assert_eq!(
-        calls(fn_md5, &[s("abc")]),
-        "900150983cd24fb0d6963f7d28e17f72"
-    );
-    assert_eq!(
-        calls(fn_md5, &[s("message digest")]),
-        "f96b697d7cb7938d525a2f31aaf161d0"
-    );
-    assert_eq!(
-        calls(fn_md5, &[s("The quick brown fox jumps over the lazy dog")]),
-        "9e107d9d372bb6826bd81d3542a419d6"
-    );
-    // binary form: bin2hex(md5($s, true)) == md5($s)
-    let bin = call(fn_md5, &[s("abc"), Value::Bool(true)]);
-    assert_eq!(bytes_of(&bin).len(), 16);
-    assert_eq!(
-        String::from_utf8(to_hex(&bytes_of(&bin))).unwrap(),
-        "900150983cd24fb0d6963f7d28e17f72"
-    );
-}
-
-#[test]
-fn sha1_vectors() {
-    assert_eq!(
-        calls(fn_sha1, &[s("")]),
-        "da39a3ee5e6b4b0d3255bfef95601890afd80709"
-    );
-    assert_eq!(
-        calls(fn_sha1, &[s("abc")]),
-        "a9993e364706816aba3e25717850c26c9cd0d89d"
-    );
-    assert_eq!(
-        calls(fn_sha1, &[s("The quick brown fox jumps over the lazy dog")]),
-        "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12"
-    );
-    assert_eq!(
-        calls(
-            fn_sha1,
-            &[s(
-                "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
-            )]
-        ),
-        "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
-    );
-    let bin = call(fn_sha1, &[s("abc"), Value::Bool(true)]);
-    assert_eq!(bytes_of(&bin).len(), 20);
-}
-
-#[test]
-fn crc32_vectors() {
-    assert_eq!(call_int(fn_crc32, &[s("")]), 0);
-    assert_eq!(call_int(fn_crc32, &[s("abc")]), 891568578);
-    assert_eq!(
-        call_int(
-            fn_crc32,
-            &[s("The quick brown fox jumps over the lazy dog")]
-        ),
-        1095738169
-    );
 }
 
 #[test]

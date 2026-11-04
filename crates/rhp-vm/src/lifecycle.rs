@@ -10,7 +10,7 @@ use rhp_bytecode::{FunctionProto, Program, Reg};
 use rhp_values::{ObjectHandle, Thrown, Value};
 
 use crate::lvalue::CursorRoot;
-use crate::streams::StreamState;
+use crate::streams::{StreamState, StreamTable};
 use crate::{deref, output, request, Frame, Vm};
 
 /// The shutdown sequence's handler for an `exit` / uncaught throwable:
@@ -82,19 +82,12 @@ impl Vm {
             cuf_caller: None,
             wrappers,
             main_script_path: None,
-            streams: HashMap::new(),
-            output_streams: Default::default(),
+            streams: StreamTable::default(),
             readonly_reinit: Default::default(),
-            nonblocking: Default::default(),
-            fd_names: HashMap::new(),
             last_dir: None,
             default_context: None,
-            stream_origins: HashMap::new(),
-            stream_modes: HashMap::new(),
             next_resource_id: 1,
             stream_contexts: HashMap::new(),
-            stream_ctx: HashMap::new(),
-            data_streams: HashMap::new(),
             stream_notifiers: HashMap::new(),
             last_response_headers: None,
             argv: Vec::new(),

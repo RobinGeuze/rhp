@@ -349,7 +349,7 @@ impl Host for Vm {
     fn stream_context_options(&self, ctx: &Value) -> Value {
         if let Value::Resource(r) = ctx {
             // A stream stands for its context.
-            let id = self.stream_ctx.get(&r.id).copied().unwrap_or(r.id);
+            let id = self.streams.context_of(r.id);
             if let Some(opts) = self.stream_contexts.get(&id) {
                 return opts.clone();
             }
@@ -365,7 +365,7 @@ impl Host for Vm {
         value: Value,
     ) {
         let Value::Resource(r) = ctx else { return };
-        let id = self.stream_ctx.get(&r.id).copied().unwrap_or(r.id);
+        let id = self.streams.context_of(r.id);
         let entry = self
             .stream_contexts
             .entry(id)
@@ -437,8 +437,8 @@ impl Host for Vm {
         let append = mode.first() == Some(&b'a');
         if path == b"php://output" {
             let v = self.make_stream(StreamState::Stdout, "stream");
-            if let Some(id) = res_id(&v) {
-                self.output_streams.insert(id);
+            if let Some(s) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
+                s.output = true;
             }
             return Some(v);
         }
@@ -454,8 +454,8 @@ impl Host for Vm {
                 )),
                 "stream",
             );
-            if let Some(id) = res_id(&v) {
-                self.fd_names.insert(id, (path.to_vec(), mode.to_vec()));
+            if let Some(s) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
+                s.fd_name = Some((path.to_vec(), mode.to_vec()));
             }
             return Some(v);
         } else if path.eq_ignore_ascii_case(b"php://input") {
@@ -530,9 +530,8 @@ impl Host for Vm {
                 "stream",
             );
             self.next_resource_id += 1;
-            if let Some(id) = res_id(&v) {
-                self.data_streams
-                    .insert(id, (Value::Array(meta), mode.to_vec(), path.to_vec()));
+            if let Some(s) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
+                s.data_url = Some((Value::Array(meta), mode.to_vec(), path.to_vec()));
             }
             return Some(v);
         } else if builtins::streams::split_scheme(path).0 == b"file" {
@@ -572,8 +571,8 @@ impl Host for Vm {
                 },
                 "stream",
             );
-            if let Some(id) = res_id(&v) {
-                self.stream_origins.insert(id, origin);
+            if let Some(s) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
+                s.origin = Some(origin);
             }
             return Some(v);
         } else {
@@ -592,15 +591,14 @@ impl Host for Vm {
                 },
                 "stream",
             );
-            if let Some(id) = res_id(&v) {
-                self.stream_origins
-                    .insert(id, (path.to_vec(), mode.to_vec()));
+            if let Some(s) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
+                s.origin = Some((path.to_vec(), mode.to_vec()));
             }
             return Some(v);
         };
         let res = self.make_stream(state, "stream");
-        if let Some(id) = res_id(&res) {
-            self.stream_modes.insert(id, mode.to_vec());
+        if let Some(s) = res_id(&res).and_then(|id| self.streams.record_mut(id)) {
+            s.mode = Some(mode.to_vec());
         }
         Some(res)
     }
@@ -615,11 +613,8 @@ impl Host for Vm {
 
     fn stream_mode(&self, res: &Value) -> Option<Vec<u8>> {
         let id = res_id(res)?;
-        if let Some(m) = self
-            .stream_modes
-            .get(&id)
-            .or_else(|| self.stream_origins.get(&id).map(|(_, m)| m))
-        {
+        let rec = self.streams.record(id)?;
+        if let Some(m) = rec.mode.as_ref().or(rec.origin.as_ref().map(|(_, m)| m)) {
             return Some(m.clone());
         }
         // Memory / temp streams (returned before the mode is recorded).
@@ -639,7 +634,11 @@ impl Host for Vm {
 
     fn stream_write(&mut self, res: &Value, data: &[u8]) -> Option<usize> {
         let id = res_id(res)?;
-        if self.data_streams.contains_key(&id) {
+        if self
+            .streams
+            .record(id)
+            .is_some_and(|s| s.data_url.is_some())
+        {
             // php_stream_rfc2397_ops has no write
             if data.is_empty() {
                 return Some(0);
@@ -681,7 +680,7 @@ impl Host for Vm {
             StreamState::Stdin | StreamState::Dir { .. } => Act::No,
         };
         match act {
-            Act::Out if self.output_streams.contains(&id) => self.write_out(data),
+            Act::Out if self.streams.record(id).is_some_and(|s| s.output) => self.write_out(data),
             Act::Out => self.emit_raw_stdout(data),
             Act::Err => self.write_stderr(data),
             Act::Buf => match self.streams.get_mut(&id)? {
@@ -806,7 +805,9 @@ impl Host for Vm {
             // Wrapper-backed buffers (phar://, compress.zlib://, …) are
             // buffered streams in php: eof once everything has been consumed.
             Some(StreamState::Mem { buf, pos, .. })
-                if res_id(res).is_some_and(|id| self.stream_origins.contains_key(&id)) =>
+                if res_id(res)
+                    .and_then(|id| self.streams.record(id))
+                    .is_some_and(|s| s.origin.is_some()) =>
             {
                 *pos >= buf.len()
             }
@@ -882,8 +883,8 @@ impl Host for Vm {
         let st = StreamState::Fd(builtins::fdstream::FdStream::new_socket(fd, info));
         let v = self.make_stream(st, ty);
         if !blocked {
-            if let Some(id) = res_id(&v) {
-                self.nonblocking.insert(id);
+            if let Some(s) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
+                s.nonblocking = true;
             }
         }
         Some(v)
@@ -917,26 +918,22 @@ impl Host for Vm {
             "stream"
         };
         let v = self.make_stream(StreamState::Fd(stream), ty);
-        if let Some(id) = res_id(&v) {
-            if !blocked {
-                self.nonblocking.insert(id);
-            }
-            if let Some(c) = ctx.as_ref().and_then(res_id) {
-                self.stream_ctx.insert(id, c);
-            }
+        if let Some(s) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
+            s.nonblocking = !blocked;
+            s.ctx = ctx.as_ref().and_then(res_id);
         }
         Some(v)
     }
 
     fn stream_context_notifier(&self, ctx: &Value) -> Option<Value> {
         let id = res_id(ctx)?;
-        let id = self.stream_ctx.get(&id).copied().unwrap_or(id);
+        let id = self.streams.context_of(id);
         self.stream_notifiers.get(&id).cloned()
     }
 
     fn set_stream_context_notifier(&mut self, ctx: &Value, cb: Option<Value>) {
         let Some(id) = res_id(ctx) else { return };
-        let id = self.stream_ctx.get(&id).copied().unwrap_or(id);
+        let id = self.streams.context_of(id);
         match cb {
             Some(cb) => {
                 self.stream_notifiers.insert(id, cb);
@@ -961,17 +958,17 @@ impl Host for Vm {
         if !self.streams.contains_key(&id) {
             return None;
         }
-        if let Some(c) = self.stream_ctx.get(&id) {
-            return Some(ctx(*c));
+        if let Some(c) = self.streams.record(id).and_then(|s| s.ctx) {
+            return Some(ctx(c));
         }
         // php_stream_context_alloc, attached to the stream
         let c = self.create_stream_context(Value::Array(PhpArray::new()));
-        self.stream_ctx.insert(id, res_id(&c)?);
+        self.streams.record_mut(id)?.ctx = Some(res_id(&c)?);
         Some(c)
     }
 
     fn stream_context_of(&self, res: &Value) -> Option<Value> {
-        let id = *self.stream_ctx.get(&res_id(res)?)?;
+        let id = self.streams.record(res_id(res)?)?.ctx?;
         Some(Value::Resource(Rc::new(rhp_values::ResourceData {
             id,
             type_name: "stream-context",
@@ -1023,6 +1020,7 @@ impl Host for Vm {
         use builtins::fdstream::dup_raw;
         let id = res_id(res).ok_or("Unknown")?;
         let fail = |o: Option<std::os::fd::OwnedFd>| o.ok_or("STDIO");
+        let has_origin = self.streams.record(id).is_some_and(|s| s.origin.is_some());
         match self.streams.get_mut(&id).ok_or("Unknown")? {
             StreamState::Stdin => fail(dup_raw(0)),
             StreamState::Stdout => fail(dup_raw(1)),
@@ -1036,7 +1034,7 @@ impl Host for Vm {
                 fail(builtins::fdstream::dup_raw(f.fd()))
             }
             StreamState::Mem { temp: Some(_), .. } => Err("TEMP"),
-            _ if self.stream_origins.contains_key(&id) => Err("Unknown"),
+            _ if has_origin => Err("Unknown"),
             StreamState::Mem { .. } => Err("MEMORY"),
             _ => Err("Unknown"),
         }
@@ -1061,11 +1059,9 @@ impl Host for Vm {
         let Some(id) = res_id(res) else { return false };
         // A memory stream has no blocking option (php answers NOTIMPL, which
         // stream_set_blocking reports as success): `blocked` stays true.
-        if matches!(self.streams.get(&id), Some(s) if !matches!(s, StreamState::Mem { .. })) {
-            if blocking {
-                self.nonblocking.remove(&id);
-            } else {
-                self.nonblocking.insert(id);
+        if let Some(s) = self.streams.record_mut(id) {
+            if !matches!(s.state, StreamState::Mem { .. }) {
+                s.nonblocking = !blocking;
             }
         }
         match self.streams.get_mut(&id) {
@@ -1268,7 +1264,7 @@ impl Host for Vm {
 
     fn stream_fstat(&mut self, res: &Value) -> Option<builtins::StatInfo> {
         let id = res_id(res)?;
-        if let Some((uri, _)) = self.stream_origins.get(&id) {
+        if let Some((uri, _)) = self.streams.record(id).and_then(|s| s.origin.as_ref()) {
             let uri = uri.clone();
             return self.wrapper_for(&uri)?.stat(&uri);
         }
@@ -1314,7 +1310,9 @@ impl Host for Vm {
         use builtins::StreamMeta as M;
         let id = res_id(res)?;
         let meta = || -> Option<M> {
-            if let Some((rfc, mode, uri)) = self.data_streams.get(&id) {
+            if let Some((rfc, mode, uri)) =
+                self.streams.record(id).and_then(|s| s.data_url.as_ref())
+            {
                 let eof = matches!(self.streams.get(&id)?, StreamState::Mem { eof: true, .. });
                 return Some(M {
                     wrapper_type: "RFC2397",
@@ -1331,7 +1329,7 @@ impl Host for Vm {
                     rfc2397: Some(rfc.clone()),
                 });
             }
-            if let Some((uri, mode)) = self.stream_origins.get(&id) {
+            if let Some((uri, mode)) = self.streams.record(id).and_then(|s| s.origin.as_ref()) {
                 let (scheme, _) = builtins::streams::split_scheme(uri);
                 let (wrapper_type, stream_type) = match scheme {
                     b"phar" => ("phar", "phar stream"),
@@ -1405,41 +1403,43 @@ impl Host for Vm {
                         rfc2397: None,
                     }
                 }
-                StreamState::Fd(f) => match self.fd_names.get(&id) {
-                    Some((uri, mode)) => M {
-                        wrapper_type: "PHP",
-                        stream_type: "STDIO",
-                        mode: mode.clone(),
-                        uri: uri.clone(),
-                        unread_bytes: 0,
-                        seekable: f.is_seekable(),
-                        eof: f.eof(),
-                        blocked: true,
-                        timed_out: false,
-                        crypto: None,
-                        wrapper_data: None,
-                        rfc2397: None,
-                    },
-                    // A pipe (proc_open, popen): no wrapper, no uri; the mode is
-                    // the descriptor's direction.
-                    None => M {
-                        wrapper_type: "",
-                        stream_type: "STDIO",
-                        mode: match f.raw_fd().map(builtins::fdstream::fd_access_mode) {
-                            Some(Some(true)) => b"w".to_vec(),
-                            _ => b"r".to_vec(),
+                StreamState::Fd(f) => {
+                    match self.streams.record(id).and_then(|s| s.fd_name.as_ref()) {
+                        Some((uri, mode)) => M {
+                            wrapper_type: "PHP",
+                            stream_type: "STDIO",
+                            mode: mode.clone(),
+                            uri: uri.clone(),
+                            unread_bytes: 0,
+                            seekable: f.is_seekable(),
+                            eof: f.eof(),
+                            blocked: true,
+                            timed_out: false,
+                            crypto: None,
+                            wrapper_data: None,
+                            rfc2397: None,
                         },
-                        uri: Vec::new(),
-                        unread_bytes: 0,
-                        seekable: f.is_seekable(),
-                        eof: f.eof(),
-                        blocked: true,
-                        timed_out: false,
-                        crypto: None,
-                        wrapper_data: None,
-                        rfc2397: None,
-                    },
-                },
+                        // A pipe (proc_open, popen): no wrapper, no uri; the mode is
+                        // the descriptor's direction.
+                        None => M {
+                            wrapper_type: "",
+                            stream_type: "STDIO",
+                            mode: match f.raw_fd().map(builtins::fdstream::fd_access_mode) {
+                                Some(Some(true)) => b"w".to_vec(),
+                                _ => b"r".to_vec(),
+                            },
+                            uri: Vec::new(),
+                            unread_bytes: 0,
+                            seekable: f.is_seekable(),
+                            eof: f.eof(),
+                            blocked: true,
+                            timed_out: false,
+                            crypto: None,
+                            wrapper_data: None,
+                            rfc2397: None,
+                        },
+                    }
+                }
                 StreamState::Dir { .. } => M {
                     wrapper_type: "plainfile",
                     stream_type: "dir",
@@ -1517,7 +1517,7 @@ impl Host for Vm {
             })
         };
         let mut m = meta()?;
-        if self.nonblocking.contains(&id) {
+        if self.streams.record(id).is_some_and(|s| s.nonblocking) {
             m.blocked = false;
         }
         Some(m)

@@ -43,7 +43,7 @@ use errors::FinallyCont;
 use generators::GenState;
 use include::Includer;
 use lvalue::{CursorRoot, CursorStep};
-use streams::StreamState;
+use streams::StreamTable;
 
 pub use include::IncludeError;
 
@@ -154,20 +154,11 @@ pub struct Vm {
     wrappers: HashMap<Vec<u8>, Rc<dyn builtins::StreamWrapper>>,
     // Filesystem path of the top-level script (for `Phar::mapPhar`).
     main_script_path: Option<Vec<u8>>,
-    // Open stream resources (fopen family), keyed by resource id.
-    streams: HashMap<u32, StreamState>,
-    /// Streams opened on `php://output`: writes go through the output
-    /// buffers like `echo` (unlike `php://stdout`).
-    output_streams: std::collections::HashSet<u32>,
+    /// Open stream resources (fopen family), one record per resource id.
+    streams: StreamTable,
     /// Readonly properties already reinitialized inside a `__clone`
     /// (object id, storage key): once each.
     readonly_reinit: std::collections::HashSet<(u32, PhpStr)>,
-    /// Streams switched to non-blocking mode (stream_get_meta_data's `blocked`).
-    nonblocking: std::collections::HashSet<u32>,
-    /// Descriptor streams opened by name (`php://stdin`): their uri and mode.
-    fd_names: HashMap<u32, (Vec<u8>, Vec<u8>)>,
-    // The fopen() mode of each stream opened by stream_open.
-    stream_modes: HashMap<u32, Vec<u8>>,
     next_resource_id: u32,
     // The most recently opened directory stream (`readdir()` with no handle).
     // The last opened directory handle (php's DIRG(default_dir), which holds
@@ -175,16 +166,8 @@ pub struct Vm {
     last_dir: Option<Value>,
     // The lazily-allocated default stream context resource id.
     default_context: Option<u32>,
-    // (uri, mode) of streams opened through a non-local wrapper (phar://…),
-    // for fstat / stream_get_meta_data.
-    stream_origins: HashMap<u32, (Vec<u8>, Vec<u8>)>,
     // Stream-context resources (`stream_context_create`), id -> options array.
     stream_contexts: HashMap<u32, Value>,
-    // The context of each socket stream (php's `stream->ctx`): stream id ->
-    // context id.
-    stream_ctx: HashMap<u32, u32>,
-    // data: (RFC 2397) streams: their metadata, mode and uri.
-    data_streams: HashMap<u32, (Value, Vec<u8>, Vec<u8>)>,
     // The `notification` callback of each stream context, by context id.
     stream_notifiers: HashMap<u32, Value>,
     // Response header lines from the last http(s) request (status line first).

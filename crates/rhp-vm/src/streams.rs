@@ -1,5 +1,7 @@
-//! Stream resources: the open-stream state and the helpers behind the stream builtins.
+//! Stream resources: the open-stream table and the helpers behind the stream
+//! builtins.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_builtins::{self as builtins, Host};
@@ -13,6 +15,85 @@ pub(crate) enum MemMode {
     ReadWrite,
     ReadOnly,
     Append,
+}
+
+/// The open stream resources by resource id, one [`Stream`] record each:
+/// closing a stream drops everything known about it.
+#[derive(Default)]
+pub(crate) struct StreamTable(HashMap<u32, Stream>);
+
+/// An open stream resource: its backing state and what php keeps on the
+/// `php_stream` beside it.
+pub(crate) struct Stream {
+    pub(crate) state: StreamState,
+    /// The fopen() mode of a stream opened by `stream_open`.
+    pub(crate) mode: Option<Vec<u8>>,
+    /// (uri, mode) of a stream opened through a non-local wrapper
+    /// (`phar://…`), for fstat / stream_get_meta_data.
+    pub(crate) origin: Option<(Vec<u8>, Vec<u8>)>,
+    /// (uri, mode) of a descriptor stream opened by name (`php://stdin`).
+    pub(crate) fd_name: Option<(Vec<u8>, Vec<u8>)>,
+    /// A `data:` (RFC 2397) stream's metadata, mode and uri.
+    pub(crate) data_url: Option<(Value, Vec<u8>, Vec<u8>)>,
+    /// The stream's context resource id (php's `stream->ctx`).
+    pub(crate) ctx: Option<u32>,
+    /// Opened on `php://output`: writes go through the output buffers like
+    /// `echo` (unlike `php://stdout`).
+    pub(crate) output: bool,
+    /// Switched to non-blocking mode (stream_get_meta_data's `blocked`).
+    pub(crate) nonblocking: bool,
+}
+
+impl StreamTable {
+    pub(crate) fn insert(&mut self, id: u32, state: StreamState) {
+        let s = Stream {
+            state,
+            mode: None,
+            origin: None,
+            fd_name: None,
+            data_url: None,
+            ctx: None,
+            output: false,
+            nonblocking: false,
+        };
+        self.0.insert(id, s);
+    }
+
+    pub(crate) fn remove(&mut self, id: &u32) -> Option<Stream> {
+        self.0.remove(id)
+    }
+
+    pub(crate) fn contains_key(&self, id: &u32) -> bool {
+        self.0.contains_key(id)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The backing state of stream `id`.
+    pub(crate) fn get(&self, id: &u32) -> Option<&StreamState> {
+        self.0.get(id).map(|s| &s.state)
+    }
+
+    pub(crate) fn get_mut(&mut self, id: &u32) -> Option<&mut StreamState> {
+        self.0.get_mut(id).map(|s| &mut s.state)
+    }
+
+    /// The whole record of stream `id`.
+    pub(crate) fn record(&self, id: u32) -> Option<&Stream> {
+        self.0.get(&id)
+    }
+
+    pub(crate) fn record_mut(&mut self, id: u32) -> Option<&mut Stream> {
+        self.0.get_mut(&id)
+    }
+
+    /// The context resource a stream stands for (its own, when attached),
+    /// or `id` itself (a context resource, or a stream without one).
+    pub(crate) fn context_of(&self, id: u32) -> u32 {
+        self.record(id).and_then(|s| s.ctx).unwrap_or(id)
+    }
 }
 
 /// The backing state of an open stream resource.
@@ -114,11 +195,7 @@ impl Vm {
     /// closes the descriptor (releasing flock locks) and flushes buffered
     /// wrapper writes. An extension's close may call PHP and throw.
     pub(crate) fn free_stream(&mut self, id: u32) -> Result<bool, Thrown> {
-        self.stream_origins.remove(&id);
-        self.stream_modes.remove(&id);
-        self.stream_ctx.remove(&id);
-        self.data_streams.remove(&id);
-        Ok(match self.streams.remove(&id) {
+        Ok(match self.streams.remove(&id).map(|s| s.state) {
             Some(StreamState::FileWrite { buf, url }) => self
                 .wrapper_for(&url)
                 .map(|w| w.put_contents(&url, &buf))

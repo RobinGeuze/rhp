@@ -3077,11 +3077,15 @@ fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
             // An object matches on a declared member (instance or static) OR a
             // property reachable and set from the calling scope.
             host.class_has_property(cid, &prop)
+                || ext::date::has_virtual_property(host, cid, &prop)
                 || host.object_prop_exists(&Value::Object(h.clone()), &prop)
         }
         Value::Str(s) => host
             .resolve_class_autoload(s.as_bytes())?
-            .map(|cid| host.class_has_property(cid, &prop))
+            .map(|cid| {
+                host.class_has_property(cid, &prop)
+                    || ext::date::has_virtual_property(host, cid, &prop)
+            })
             .unwrap_or(false),
         _ => false,
     };

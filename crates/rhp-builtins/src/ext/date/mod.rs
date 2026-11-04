@@ -242,6 +242,15 @@ pub(crate) fn class_constant_deprecation(class: &[u8], name: &[u8]) -> Option<St
     Some("Constant DateTimeInterface::RFC7231 is deprecated since 8.5, as this format ignores the associated timezone and always uses GMT".into())
 }
 
+/// Whether `class` declares the virtual property `name`: DatePeriod's
+/// readonly properties, which its prelude class serves through `__get`.
+pub(crate) fn has_virtual_property(host: &dyn Host, class: u32, name: &[u8]) -> bool {
+    objects::PERIOD_PROPS.iter().any(|p| p.as_bytes() == name)
+        && host
+            .class_name(class)
+            .is_some_and(|c| host.reflect_is_a(&c, b"DatePeriod"))
+}
+
 /// PHP_MINFO_FUNCTION(date)'s rows.
 pub(crate) fn info_rows() -> Vec<(&'static str, Vec<u8>)> {
     vec![

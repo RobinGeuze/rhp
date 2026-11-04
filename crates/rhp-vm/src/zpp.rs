@@ -60,14 +60,6 @@ impl Vm {
                         _ if user => Got::Fail,
                         _ => Got::Keep,
                     }
-                } else if let Zpp::Class(base) = sp.kind {
-                    // Past the prefix (or from the prelude) the body
-                    // converts and looks the class up, in php's order.
-                    if user && i < prefix {
-                        self.zpp_class(name, sp, i, &args[i], base)?
-                    } else {
-                        Got::Keep
-                    }
                 } else if user && i < prefix {
                     self.zpp_arg(name, sp, i, &args[i], strict)?
                 } else if user {
@@ -151,6 +143,9 @@ impl Vm {
         strict: bool,
     ) -> Result<Got, Thrown> {
         use Zpp::*;
+        if sp.kind == Class {
+            return self.zpp_class(name, sp, i, v);
+        }
         if let Value::Null = v {
             if sp.nullable {
                 return Ok(Got::Keep);
@@ -169,7 +164,7 @@ impl Vm {
                 Long | Number | StrOrLong | NumberOrStr | ArrayOrLong => Got::Set(Value::Int(0)),
                 Double => Got::Set(Value::Float(0.0)),
                 Bool => Got::Set(Value::Bool(false)),
-                Str | ArrayOrStr | Array | Class(_) | Other => Got::Keep,
+                Str | ArrayOrStr | Array | Class | Other => Got::Keep,
             });
         }
         let ok = match (sp.kind, v) {
@@ -241,21 +236,23 @@ impl Vm {
                 Value::Bool(b) => Got::Set(Value::Int(*b as i64)),
                 _ => self.zpp_str_object(v)?,
             },
-            Array | Class(_) | Other => Got::Fail,
+            Array | Class | Other => Got::Fail,
         })
     }
 
     /// zend_parse_arg_class: null where the type allows it, else the value
     /// as a string (try_convert_to_string, in either mode), which must name
-    /// a class (autoloaded) derived from `base` when there is one.
+    /// a class (autoloaded) derived from the parameter's base class when
+    /// it has one.
+    #[cold]
     fn zpp_class(
         &mut self,
         name: &str,
         sp: &ScalarParam,
         i: usize,
         v: &Value,
-        base: Option<&str>,
     ) -> Result<Got, Thrown> {
+        let base = builtins::signatures::class_param_base(name, sp.name);
         if sp.nullable && matches!(v, Value::Null) {
             return Ok(Got::Keep);
         }

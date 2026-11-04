@@ -363,9 +363,9 @@ pub enum Zpp {
     /// `array|int`: `Z_PARAM_ARRAY_HT_OR_LONG`.
     ArrayOrLong,
     /// A class name (zpp's `C`, zend_parse_arg_class): converted to a
-    /// string in either mode, then a class that must exist and, when
-    /// given, derive from the named one.
-    Class(Option<&'static str>),
+    /// string in either mode, then a class that must exist and derive from
+    /// [`class_param_base`] when it names one.
+    Class,
     /// Another mix of scalar types: only the object, array and null checks.
     Other,
 }
@@ -396,7 +396,7 @@ impl Zpp {
             (ArrayOrStr, true) => "array|string|null",
             (ArrayOrLong, false) => "array|int",
             (ArrayOrLong, true) => "array|int|null",
-            (Class(_) | Other, _) => return None,
+            (Class | Other, _) => return None,
         })
     }
 
@@ -438,24 +438,23 @@ const ZPP_OWN: &[(&str, &str)] = &[
 /// number_format's `float $num` is `Z_PARAM_NUMBER`, and the `string`
 /// parameters php parses as a class name (`C`).
 const ZPP_KIND: &[(&str, &str, Zpp)] = &[
-    ("get_class_vars", "class", Zpp::Class(None)),
+    ("get_class_vars", "class", Zpp::Class),
     ("number_format", "num", Zpp::Number),
-    (
-        "simplexml_import_dom",
-        "class_name",
-        Zpp::Class(Some("SimpleXMLElement")),
-    ),
-    (
-        "simplexml_load_file",
-        "class_name",
-        Zpp::Class(Some("SimpleXMLElement")),
-    ),
-    (
-        "simplexml_load_string",
-        "class_name",
-        Zpp::Class(Some("SimpleXMLElement")),
-    ),
+    ("simplexml_import_dom", "class_name", Zpp::Class),
+    ("simplexml_load_file", "class_name", Zpp::Class),
+    ("simplexml_load_string", "class_name", Zpp::Class),
 ];
+
+/// The class a [`Zpp::Class`] parameter's class must derive from, if any.
+pub fn class_param_base(func: &str, param: &str) -> Option<&'static str> {
+    match (func, param) {
+        (
+            "simplexml_import_dom" | "simplexml_load_file" | "simplexml_load_string",
+            "class_name",
+        ) => Some("SimpleXMLElement"),
+        _ => None,
+    }
+}
 
 /// Extensions whose builtins parse every parameter themselves, in php's
 /// order: a `GMP|int|string` argument's error comes before a later `int`'s.
@@ -506,7 +505,8 @@ pub struct ScalarParams {
     by_call: bool,
 }
 
-/// The functions [`scalar_params_for`] has variants for.
+/// The functions [`scalar_params_for`] has variants for (`call_variant`
+/// tells them apart by their first letter).
 const ZPP_BY_CALL: &[&str] = &["implode", "strtr"];
 
 /// The [`ScalarParams`] of a function row.
@@ -531,6 +531,13 @@ pub fn scalar_params(f: &'static Func) -> Option<&'static ScalarParams> {
                             && !(p.ty.is_empty() && p.by_ref())
                     })
                     .unwrap_or(usize::MAX);
+                // Past the prefix a class name is the body's: it converts
+                // and looks the class up after the earlier checks.
+                let params = params
+                    .into_vec()
+                    .into_iter()
+                    .filter(|sp| sp.kind != Zpp::Class || sp.pos < prefix)
+                    .collect();
                 ScalarParams {
                     params,
                     prefix,
@@ -551,28 +558,40 @@ pub fn scalar_params(f: &'static Func) -> Option<&'static ScalarParams> {
 /// Z_PARAM_STR with three. implode's frameless forms parse nothing with
 /// one argument (the body raises the TypeError) and `$separator` as
 /// Z_FLF_PARAM_STR with two.
+#[inline]
 pub fn scalar_params_for(
     f: &'static Func,
     argc: usize,
     frameless: bool,
 ) -> Option<&'static ScalarParams> {
-    type Variant = (&'static str, usize, bool, ScalarParams);
-    static VARIANTS: std::sync::OnceLock<Vec<Variant>> = std::sync::OnceLock::new();
     let row = scalar_params(f)?;
     if !row.by_call {
         return Some(row);
     }
+    Some(call_variant(f, argc, frameless).unwrap_or(row))
+}
+
+#[inline]
+fn call_variant(f: &Func, argc: usize, frameless: bool) -> Option<&'static ScalarParams> {
+    static VARIANTS: std::sync::OnceLock<[ScalarParams; 4]> = std::sync::OnceLock::new();
+    let at = match (f.name.as_bytes()[0], argc, frameless) {
+        (b's', 2, _) => 0,
+        (b's', 3, _) => 1,
+        (b'i', 1, true) => 2,
+        (b'i', 2, true) => 3,
+        _ => return None,
+    };
     let variants = VARIANTS.get_or_init(|| {
-        let base = |name: &str| {
-            let f = function(name.as_bytes()).expect("stub row");
-            scalar_params(f).expect("cached row").params.to_vec()
-        };
-        // `params` with each named parameter's kind replaced; the type
-        // php's null deprecation prints stays the stub's.
+        // The row's parameters with each named one's kind replaced; the
+        // type php's null deprecation prints stays the stub's.
         let with = |name: &str, kinds: &[(&str, Zpp)]| {
-            let params: Box<[ScalarParam]> = base(name)
-                .into_iter()
-                .map(|mut sp| {
+            let row = function(name.as_bytes()).and_then(scalar_params);
+            let params = row
+                .expect("cached stub row")
+                .params
+                .iter()
+                .map(|sp| {
+                    let mut sp = sp.clone();
                     if let Some(&(_, kind)) = kinds.iter().find(|(p, _)| *p == sp.name) {
                         sp.kind = kind;
                         sp.nullable = false;
@@ -588,39 +607,18 @@ pub fn scalar_params_for(
                 by_call: true,
             }
         };
-        let none = ScalarParams {
-            params: Box::new([]),
-            prefix: usize::MAX,
-            by_call: true,
-        };
-        vec![
-            ("strtr", 2, false, with("strtr", &[("from", Zpp::Array)])),
-            ("strtr", 2, true, with("strtr", &[("from", Zpp::Array)])),
-            (
-                "strtr",
-                3,
-                false,
-                with("strtr", &[("from", Zpp::Str), ("to", Zpp::Str)]),
-            ),
-            (
-                "strtr",
-                3,
-                true,
-                with("strtr", &[("from", Zpp::Str), ("to", Zpp::Str)]),
-            ),
-            ("implode", 1, true, none),
-            (
-                "implode",
-                2,
-                true,
-                with("implode", &[("separator", Zpp::Str)]),
-            ),
+        [
+            with("strtr", &[("from", Zpp::Array)]),
+            with("strtr", &[("from", Zpp::Str), ("to", Zpp::Str)]),
+            ScalarParams {
+                params: Box::new([]),
+                prefix: usize::MAX,
+                by_call: true,
+            },
+            with("implode", &[("separator", Zpp::Str)]),
         ]
     });
-    variants
-        .iter()
-        .find(|v| v.0 == f.name && v.1 == argc && v.2 == frameless)
-        .map_or(Some(row), |v| Some(&v.3))
+    Some(&variants[at])
 }
 
 #[cfg(test)]

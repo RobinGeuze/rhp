@@ -359,8 +359,12 @@ impl Scan {
             } else if known {
                 let by_ref = arg_num.is_some_and(|n| callee.by_ref(n));
                 self.expr(value, if by_ref { Mode::Write } else { Mode::Read });
+            } else if is_target(value) {
+                // SEND_VAR_EX: the CV is compiled as a read, at the line of
+                // the argument list (its first argument's)
+                let at = list.arguments.first().map_or(value.span(), |a| a.span());
+                self.var_at(at.start.offset, Mode::Read);
             } else if matches!(value, Expression::Variable(_)) {
-                // SEND_VAR_EX: the CV is compiled as a read
                 self.expr(value, Mode::Read);
             } else {
                 // SEND_FUNC_ARG: compiled with BP_VAR_FUNC_ARG

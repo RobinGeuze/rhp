@@ -19,3 +19,10 @@ function o() { return str_replace('a', 'b', $http_response_header[0]); }
 function p() { return trim($http_response_header[0], ' ', 'extra'); }
 function q() { return namespace\trim($http_response_header[0]); }
 function r() { return trim(string: $http_response_header[0]); }
+function s() {
+    return undefined_x(
+        1,
+        $http_response_header,
+        $http_response_header[0]
+    );
+}

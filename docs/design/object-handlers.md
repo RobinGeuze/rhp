@@ -120,11 +120,30 @@ Notes:
   stand-ins behave like php's handlers:
   - `host.magic_fetch()` says which fetch the running accessor serves:
     `Write` for a `__get`/`offsetGet` below a write (`$o->a->b = …`,
-    `$o->a[] = …`, `$o[k]->p = …`, `&$o->a`; php's `BP_VAR_W`, where
-    SimpleXML's `get_property_ptr_ptr` creates a missing element),
-    `Empty` for `empty($o->p)`'s `__isset` (`check_empty`), else `Read`.
+    `$o->a[] = …`, `$o[k]->p = …`, `&$o->a`, `unset($o->a->b)`; php's
+    `BP_VAR_W`/`BP_VAR_UNSET`, where SimpleXML's `get_property_ptr_ptr`
+    creates a missing element), `Empty` for the `__isset` or
+    `offsetExists` of `empty()` (`check_empty`), else `Read`. Only the
+    accessor's own frame sees the mode; whatever it calls sees `Read`.
   - Their frames never show in a trace: a built-in class's accessor whose
-    php stub has no such method is engine plumbing.
+    php stub has no such method is engine plumbing, and a frame it calls
+    gets the call site of the user frame below it. A stand-in
+    `__call`/`__callStatic` (XMLReader's `open`/`XML`, which php's
+    `get_method` runs statically or on an instance) shows as the stub
+    method it runs, or not at all for a name the stub lacks.
+
+  Known consequences until the engine routes real property and dimension
+  handlers:
+  - A user subclass that defines `__get`/`__isset` (or `offsetGet`…)
+    replaces the stand-in, so it shadows every virtual property.
+  - `property_exists()` and Reflection see no virtual properties; the
+    classes implement `ArrayAccess`; `ReflectionMethod('XMLReader',
+    'open')` and `method_exists()` find no `open`/`XML`.
+  - `$sxe[null] = v` acts as `$sxe[] = v`: `offsetSet` cannot tell them
+    apart.
+  - `$sxe->new .= 'x'` and `$sxe->new++` on a missing element write the
+    result through `__set`; php's `get_property_ptr_ptr` hands out a
+    temporary and leaves an empty element.
 
 ## Class flags
 

@@ -352,7 +352,7 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   pointers in mbfilter_utf16.c, set at startup in php, are compiled out.
 - **Everything else is per thread.** PCRE2's compile and match contexts, JIT
   stack, settings and pattern cache live in a `thread_local!` in
-  `rhp-builtins/src/pcre/mod.rs`, as php keeps them in TLS globals. Library
+  `rhp-builtins/src/ext/pcre/mod.rs`, as php keeps them in TLS globals. Library
   handles are `!Send` and stay with their VM.
 - **ICU** keeps no state php changes: php never calls `uloc_setDefault`,
   `u_setDataDirectory` or `u_setMemoryFunctions`, and neither does rhp.
@@ -383,9 +383,9 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
 - **No process-global side effects from a VM:** no `setlocale` (use
   `newlocale`/`uselocale`), no `putenv("TZ=…")`, no chdir(2) or umask(2).
   A path handed to a library that opens files itself goes through
-  `rhp_builtins::vcwd` first (`resolve`, `absolute` or `expand_filepath`,
+  `rhp_builtins::zend::virtual_cwd` first (`resolve`, `absolute` or `expand_filepath`,
   as the php code being ported does), and a file the library creates gets
-  the request's umask through `vcwd::library_created`.
+  the request's umask through `virtual_cwd::library_created`.
 - **C→Rust callbacks** (`ext/libxml/ffi.rs`):
   - a builtin runs the C call inside `ffi::with_host(host, fname, …)`, which
     pushes its `Host` on a thread-local stack;
@@ -451,12 +451,12 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   the errno-based errors (`SSL: Connection reset by peer`) and the
   EAGAIN/poll retry loop are php's. Stream reads and writes happen inside the
   VM without a host: the TLS layer queues its warnings
-  (`fdstream::push_diag`) and the code that ran the operation reports them
+  (`plain_wrapper::push_diag`) and the code that ran the operation reports them
   under its builtin; peer certificates for `capture_peer_cert` come back to
   a caller with a host, which wraps them in `OpenSSLCertificate` objects.
   What php calls back into PHP from inside a read (the context notifier's
   progress and completed events, `reneg_limit_callback`) is recorded by the
-  read (`fdstream::NotifyEvent`) and delivered right after it.
+  read (`plain_wrapper::NotifyEvent`) and delivered right after it.
   The verify, passphrase, SNI and ALPN callbacks read their data from a
   per-session allocation behind the SSL's ex_data and run under
   ext/openssl's `guard`. `SSL_CTX_new` takes no library context, as in php.
@@ -465,9 +465,10 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   (`SSL_CTX_set_default_verify_paths`): no bundled root store. The
   `OPENSSL_NO_*` defines xp_ssl.c checks (SSLv3, TLS 1.1/1.2/1.3, TLS
   extensions) are read from the headers' configuration.h by build.rs.
-- **The http:// wrapper** (`http.rs`, a port of http_fopen_wrapper.c) opens
+- **The http:// wrapper** (`ext/standard/http_fopen_wrapper.rs`) opens
   its connection through the socket transports, so https:// is the TLS
-  layer above. URLs are parsed by `url.rs`, a port of `php_url_parse_ex2`.
+  layer above. URLs are parsed by `ext/standard/url.rs`, a port of
+  `php_url_parse_ex2`.
 - **Guard aborts.** A C library that can abort the process needs size
   checks first: with one VM per thread, an abort kills every request.
   libgmp aborts when a number would need more than `INT_MAX` limbs (php
@@ -530,9 +531,9 @@ Tables php-src owns are generated, committed, and checked by
 
 | Generator | Source | Output | Checked |
 |---|---|---|---|
-| `html-tables` | php-src `ext/standard/html_tables/` (+ `html_tables.h` for HTML5 ties) | `rhp-builtins/src/html_tables.rs` | CI job `generated` (php-src checkout) |
+| `html-tables` | php-src `ext/standard/html_tables/` (+ `html_tables.h` for HTML5 ties) | `rhp-builtins/src/ext/standard/html_tables.rs` | CI job `generated` (php-src checkout) |
 | `intl-consts` | php-src `ext/intl` stubs: global constants' names, types, `@cvalue` and `#if` guards (values come from the linked ICU's headers when `ext/intl/shim.c` compiles) | `rhp-builtins/src/ext/intl/consts.h` | CI job `generated` (php-src checkout) |
 | `parser` | the release tarball (`tools/php-dist.sha256`): Bison's `zend_language_parser.{c,h}`, `zend_ini_parser.{c,h}`; the numbers of the grammar rules whose actions rhp runs | `ext/tokenizer/ids.rs`, `zend/*_parser_tables.rs` | CI job `generated` (tarball cached on the pin) |
-| `dumps` | the reference php: `tools/capture-ref-build.php tables`, plus constants gated on a newer library (`CONST_EXTRAS`) | `ini_table.rs`, `const_modules.rs` | `cargo test` on the reference host |
+| `dumps` | the reference php: `tools/capture-ref-build.php tables`, plus constants gated on a newer library (`CONST_EXTRAS`) | `main/ini_table.rs`, `const_modules.rs` | `cargo test` on the reference host |
 | `curl-consts` | php-src `ext/curl/curl.stub.php` (names, `@cvalue`, `LIBCURL_VERSION_NUM` gates, `#[\Deprecated]`) and `curl_private.h` | `ext/curl/consts.rs`, `ext/curl/consts.c` (values from the linked curl.h) | CI job `generated` (php-src checkout) |
 | `zip-consts` | php-src `ext/zip/php_zip.stub.php`: `ZipArchive`'s constants, `@cvalue`, `#ifdef` guards, attributes | `ext/zip/consts.h` (values from the linked zip.h, through `ext/zip/shim.c`) | CI job `generated` (php-src checkout) |

@@ -1,11 +1,11 @@
 //! Discrete PHP extensions, one folder per extension — mirroring php-src's
 //! `ext/<name>/` layout. Each extension is a self-contained [`ModuleDef`]
 //! ([`modules`]) owning its functions, constants, PHP-source classes, and stream
-//! wrappers; the registry / constants / prelude / wrapper plumbing in `lib.rs`
-//! folds every module in.
+//! wrappers; the registry / constants / prelude / wrapper plumbing in
+//! `registry.rs` folds every module in.
 //!
-//! (The broad core library — string/array/math/etc., php's `ext/standard` — still
-//! lives in the flat `*_fns` modules for now.)
+//! The standard extension (`standard/`), json, pcre, filter, opcache,
+//! random and readline live here too but register directly in the registry.
 
 use crate::module::{no_constants, no_wrappers, ModuleDef};
 
@@ -15,32 +15,37 @@ pub mod ctype;
 pub mod curl;
 pub mod date;
 pub mod dom;
+pub mod filter;
 pub mod gmp;
 pub mod hash;
 pub mod iconv;
 pub mod intl;
+pub mod json;
 pub mod libxml;
 #[cfg(feature = "mbstring-libmbfl")]
 pub mod mbstring;
+pub mod opcache;
 pub mod openssl;
-pub mod password;
 pub mod pcntl;
+pub mod pcre;
 pub mod phar;
 pub mod posix;
+pub mod random;
+pub mod readline;
 pub mod reflection;
 pub mod simplexml;
 pub mod sockets;
 pub mod spl;
+pub mod standard;
 pub mod tokenizer;
 pub mod xml;
 pub mod xmlreader;
 pub mod xmlwriter;
 pub mod zip;
 pub mod zlib;
-pub mod zpp;
 
 /// The object handlers the extensions register for their classes.
-pub(crate) fn class_handlers() -> Vec<&'static crate::object::ClassHandlers> {
+pub(crate) fn class_handlers() -> Vec<&'static crate::zend::object_handlers::ClassHandlers> {
     [
         curl::CLASSES,
         dom::CLASSES,
@@ -108,8 +113,8 @@ pub fn modules() -> Vec<ModuleDef> {
         },
         ModuleDef {
             name: "password",
-            functions: password::register,
-            constants: password::constants,
+            functions: standard::password::register,
+            constants: standard::password::constants,
             prelude_php: "",
             wrappers: no_wrappers,
         },

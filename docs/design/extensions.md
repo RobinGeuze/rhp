@@ -12,6 +12,9 @@ version is in `crates/rhp-builtins/src/version.rs`). Written against 8.5.8 / PCR
 > pure-Rust default (§4.1, §7), "libxml2 — defer" (§6 item 8) and "leave
 > json/date/hash/mbstring-core pure-Rust" (§6 summary, §8 item 5) no longer
 > hold. PCRE2 is linked from the system library, not through `pcre2-sys`.
+> The `rhp-builtins` file names below (`preg_fns.rs`, `misc_fns.rs`, `lib.rs`
+> lines) are from the time of writing; [`builtins-layout.md`](./builtins-layout.md)
+> maps today's files.
 
 This doc distinguishes three very different things that all get called
 "extensions", gives a verdict on each, then proposes a concrete

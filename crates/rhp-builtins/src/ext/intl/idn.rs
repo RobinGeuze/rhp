@@ -5,7 +5,7 @@ use rhp_values::{ArrayKey, PhpArray, Value};
 
 use super::sys::{self, UErrorCode};
 use super::{error_reset, error_set_code, error_set_msg, int_const};
-use crate::ext::zpp::{int_arg_or, set_ref, str_arg, value_error};
+use crate::zend::zpp::{int_arg_or, set_ref, str_arg, value_error};
 use crate::{Host, Thrown};
 
 /// `INTL_IDN_VARIANT_UTS46`.

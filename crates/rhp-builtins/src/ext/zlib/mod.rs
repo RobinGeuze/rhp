@@ -18,7 +18,8 @@ use std::rc::Rc;
 use rhp_values::ops::deref;
 use rhp_values::{conv, PhpArray, Value};
 
-use crate::streams::{self, StatInfo, StreamWrapper, WrapperReg};
+use crate::main::streams;
+use crate::main::streams::{StatInfo, StreamWrapper, WrapperReg};
 use crate::{Host, Thrown};
 
 fn bytes_arg(args: &[Value], i: usize) -> Vec<u8> {
@@ -215,7 +216,7 @@ fn include_path_arg(args: &[Value], i: usize, path: Vec<u8>) -> Vec<u8> {
     if !args.get(i).is_some_and(|v| conv::to_bool(&deref(v))) {
         return path;
     }
-    crate::fs_fns::resolve_include_path(inner(&path)).unwrap_or(path)
+    crate::ext::standard::file::resolve_include_path(inner(&path)).unwrap_or(path)
 }
 
 fn zlib_url(path: &[u8]) -> Vec<u8> {
@@ -249,10 +250,10 @@ pub(crate) fn open_failure_reason(path: &[u8], mode: &[u8]) -> String {
             );
         }
     };
-    match crate::vcwd::open(path, flags | libc::O_CLOEXEC, 0o666) {
+    match crate::zend::virtual_cwd::open(path, flags | libc::O_CLOEXEC, 0o666) {
         Ok(_) => "operation failed".into(),
         Err(e) => match e.raw_os_error() {
-            Some(code) => crate::streams::strerror(code),
+            Some(code) => crate::main::streams::strerror(code),
             None => e.to_string(),
         },
     }
@@ -301,7 +302,7 @@ fn fn_gzopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             b'x' => w | libc::O_EXCL,
             _ => w,
         };
-        if crate::vcwd::open(rel, flags, 0o666).is_err() {
+        if crate::zend::virtual_cwd::open(rel, flags, 0o666).is_err() {
             warn_open_failed(host, "gzopen", rel, &mode);
             return Ok(Value::Bool(false));
         }

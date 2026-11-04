@@ -14,8 +14,8 @@ use rhp_values::{conv, Value};
 use crate::ext::libxml::io::Io;
 use crate::ext::libxml::sys::{self, cbytes};
 use crate::ext::libxml::{ffi, io};
-use crate::ext::zpp::deref;
-use crate::object::{ClassHandlers, CloneObj, ObjectHandlers};
+use crate::zend::object_handlers::{ClassHandlers, CloneObj, ObjectHandlers};
+use crate::zend::zpp::deref;
 use crate::{Host, Thrown};
 
 /// `ze_xmlwriter_object`: the writer and, for a memory writer, its buffer
@@ -64,7 +64,7 @@ fn object_dtor(host: &mut dyn Host, obj: &rhp_values::ObjectHandle) -> Result<()
 /// Attach `w` to the object, freeing the writer it had (inside the caller's
 /// host frame).
 fn set_writer(obj: &Value, w: Option<Writer>) {
-    let Some(h) = crate::object::object_of(obj) else {
+    let Some(h) = crate::zend::object_handlers::object_of(obj) else {
         return;
     };
     let old = match w {
@@ -75,7 +75,7 @@ fn set_writer(obj: &Value, w: Option<Writer>) {
 }
 
 fn writer_of(obj: &Value) -> Option<Rc<Writer>> {
-    crate::object::payload::<Writer>(obj)
+    crate::zend::object_handlers::payload::<Writer>(obj)
 }
 
 unsafe extern "C" fn memory_write(ctx: *mut c_void, buf: *const c_char, len: c_int) -> c_int {
@@ -184,16 +184,16 @@ fn valid_file_path(source: &[u8]) -> Option<Vec<u8>> {
         return Some(source.to_vec());
     }
     // VCWD_REALPATH, else expand_filepath; paths stay bytes.
-    let resolved = match std::fs::canonicalize(crate::vcwd::os_path(source)) {
+    let resolved = match std::fs::canonicalize(crate::zend::virtual_cwd::os_path(source)) {
         Ok(p) => p.into_os_string().into_vec(),
-        Err(_) => crate::vcwd::expand_filepath(source),
+        Err(_) => crate::zend::virtual_cwd::expand_filepath(source),
     };
     // expand_filepath fails on a path longer than MAXPATHLEN.
     if resolved.len() >= libc::PATH_MAX as usize {
         return None;
     }
     let dir = zend_dirname(source);
-    if !dir.is_empty() && std::fs::metadata(crate::vcwd::os_path(&dir)).is_err() {
+    if !dir.is_empty() && std::fs::metadata(crate::zend::virtual_cwd::os_path(&dir)).is_err() {
         return None;
     }
     Some(resolved)
@@ -797,7 +797,7 @@ fn fn_to(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             if !matches!(stream, Value::Resource(_)) {
                 return Err(Thrown::type_error(format!(
                     "{F}(): Argument #1 ($stream) must be of type resource, {} given",
-                    crate::argparse::zval_value_name(host, &stream)
+                    crate::zend::zpp::zval_value_name(host, &stream)
                 )));
             }
             if host.stream_kind(&stream).is_none() {

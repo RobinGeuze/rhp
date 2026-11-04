@@ -5,7 +5,7 @@
 //! is printed by `tools/capture-ref-build.php`; `crates/rhp-cli/tests/ref_build.rs`
 //! runs that script under both php and rhp and requires identical output.
 //!
-//! Libraries rhp links report their own versions (PCRE2: `crate::pcre`,
+//! Libraries rhp links report their own versions (PCRE2: `crate::ext::pcre`,
 //! libcurl: `curl_version()`); the ones still listed here are for code that
 //! does not link its library yet.
 //!
@@ -209,7 +209,7 @@ pub const EXT_DOM: &str = "20031129";
 
 // --- linked libraries --------------------------------------------------------
 
-// PCRE_VERSION and friends come from the linked PCRE2 (crate::pcre), the
+// PCRE_VERSION and friends come from the linked PCRE2 (crate::ext::pcre), the
 // LIBXML_* versions from the linked libxml2 (crate::ext::libxml), the
 // INTL_ICU_* versions from the linked ICU (crate::ext::intl), the OPENSSL_*
 // ones from the linked OpenSSL (crate::ext::openssl), curl_version() from the

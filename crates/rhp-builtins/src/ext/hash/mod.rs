@@ -18,20 +18,18 @@ use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
 mod haval;
-pub(crate) mod primitives;
 mod snefru;
 mod tiger;
 
+use crate::ext::standard::string::to_hex;
 use crate::ext::zlib::zraw as zlib;
 use crate::{Host, Thrown};
-use primitives::to_hex;
-pub(crate) use primitives::{base64_decode, base64_encode};
 
 // ---------------------------------------------------------------------------
 // value helpers
 // ---------------------------------------------------------------------------
 
-fn as_bool(v: Option<&Value>) -> bool {
+pub(crate) fn as_bool(v: Option<&Value>) -> bool {
     v.map(|v| conv::to_bool(&deref(v))).unwrap_or(false)
 }
 
@@ -892,28 +890,6 @@ fn fn_hash_digest(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(if binary { raw } else { to_hex(&raw) }))
 }
 
-fn fn_md5_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = conv::to_string_bytes(&args[0]);
-    let binary = as_bool(args.get(1));
-    let Some(data) = host.stream_get_contents(&path) else {
-        return Ok(Value::Bool(false));
-    };
-    host.consume_resource_ids(1);
-    let raw = digest(b"md5", &data).unwrap();
-    Ok(Value::str(if binary { raw } else { to_hex(&raw) }))
-}
-
-fn fn_sha1_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = conv::to_string_bytes(&args[0]);
-    let binary = as_bool(args.get(1));
-    let Some(data) = host.stream_get_contents(&path) else {
-        return Ok(Value::Bool(false));
-    };
-    host.consume_resource_ids(1);
-    let raw = digest(b"sha1", &data).unwrap();
-    Ok(Value::str(if binary { raw } else { to_hex(&raw) }))
-}
-
 fn fn_hash_hmac(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let algo = conv::to_string_bytes(&args[0]).to_ascii_lowercase();
     let data = conv::to_string_bytes(&args[1]);
@@ -1135,14 +1111,11 @@ const HMAC_ALGOS: &[&str] = &[
 // ---------------------------------------------------------------------------
 
 pub fn register(m: &mut crate::Registry) {
-    primitives::register(m);
     crate::register(
         m,
         &[
             ("hash", fn_hash),
             ("hash_file", fn_hash_file),
-            ("md5_file", fn_md5_file),
-            ("sha1_file", fn_sha1_file),
             ("hash_hmac", fn_hash_hmac),
             ("hash_pbkdf2", fn_hash_pbkdf2),
             ("hash_equals", fn_hash_equals),

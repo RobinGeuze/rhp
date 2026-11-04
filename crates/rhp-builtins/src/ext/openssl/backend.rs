@@ -13,7 +13,7 @@ use super::{
     bio_file, cert_of, check_path, cstr_bytes, cstring, errors_restore_mark, errors_set_mark,
     key_of, libctx, mem_buf, openssl_free, store_errors, try_string, Own, PROPQ,
 };
-use crate::ext::zpp::deref;
+use crate::zend::zpp::deref;
 use crate::{warn, Host, Thrown};
 
 pub(super) const READ: &CStr = c"r";

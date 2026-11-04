@@ -1250,7 +1250,7 @@ fn date_interval_format(format: &[u8], t: &RelTime) -> Vec<u8> {
 
 /// `strtoll` of a value's string form (`DATE_A64I`).
 fn a64i(host: &mut dyn Host, v: &Value) -> Result<i64, Thrown> {
-    let st = crate::argparse::zval_get_string(host, v)?;
+    let st = crate::zend::zpp::zval_get_string(host, v)?;
     let st = c_str(&st);
     let mut i = 0;
     while i < st.len() && matches!(st[i], b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
@@ -1333,7 +1333,7 @@ fn interval_initialize_from_hash(
     };
     let read = |host: &mut dyn Host, k: &str, def: i64| -> Result<i64, Thrown> {
         match scalar(&hash_get(myht, k)) {
-            Some(v) => crate::argparse::zval_get_long(host, &v),
+            Some(v) => crate::zend::zpp::zval_get_long(host, &v),
             None => Ok(def),
         }
     };
@@ -1370,7 +1370,7 @@ fn interval_initialize_from_hash(
     diff.have_weekday_relative = read(host, "have_weekday_relative", 0)? as u32;
     diff.have_special_relative = read(host, "have_special_relative", 0)? as u32;
     let civil_or_wall = match hash_get(myht, "civil_or_wall") {
-        Some(v) => crate::argparse::zval_get_long(host, &v)? as i32,
+        Some(v) => crate::zend::zpp::zval_get_long(host, &v)? as i32,
         None => PHP_DATE_CIVIL,
     };
     set_interval(
@@ -1794,7 +1794,7 @@ fn period_has_more(st: &PeriodState, index: i64) -> bool {
 
 fn iterator_op(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let ih = obj(args, 0)?;
-    let Some(it) = crate::object::payload_of::<PeriodIter>(&ih) else {
+    let Some(it) = crate::zend::object_handlers::payload_of::<PeriodIter>(&ih) else {
         return Err(Thrown::error(
             "Error",
             "The InternalIterator object has not been properly initialized",
@@ -2099,7 +2099,7 @@ fn period_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<Va
         b"dp_iterator" => {
             let h = obj(args, 0)?;
             let it = instantiate(host, b"InternalIterator")?;
-            crate::object::set_payload(
+            crate::zend::object_handlers::set_payload(
                 &it,
                 Rc::new(PeriodIter {
                     period: h,

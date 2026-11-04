@@ -9,10 +9,10 @@ use std::rc::Rc;
 
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use super::sys::{self, zip_t};
+use super::sys::zip_t;
 use super::{
     c_string, check_path, deref, expand_filepath, file_error, must_not_be_empty, release,
-    stat_array, zip_object, Archive, ZipObject, MAXPATHLEN,
+    stat_array, sys, zip_object, Archive, ZipObject, MAXPATHLEN,
 };
 use crate::ext::libxml::ffi;
 use crate::{Host, Thrown};
@@ -72,7 +72,7 @@ impl Cx<'_> {
         self.host.emit_diagnostic(level, &m)
     }
     fn value_error(&self, n: usize, pname: &str, msg: &str) -> Thrown {
-        crate::ext::zpp::value_error(&self.fname, n, pname, msg)
+        crate::zend::zpp::value_error(&self.fname, n, pname, msg)
     }
     fn empty(&self, n: usize, pname: &str) -> Thrown {
         must_not_be_empty(&self.fname, n, pname)
@@ -744,7 +744,7 @@ fn add_file(cx: &mut Cx<'_>, o: &ZipObject, src: FileSource<'_>) -> Result<i32, 
         cx.warn("No such file or directory")?;
         return Ok(-1);
     };
-    if crate::streams::sys_stat(&resolved, false).is_none() {
+    if crate::main::streams::sys_stat(&resolved, false).is_none() {
         cx.warn("No such file or directory")?;
         return Ok(-1);
     }
@@ -861,7 +861,7 @@ struct Options {
 /// php_zip_parse_options; `Err` for php's exceptions.
 fn parse_options(cx: &mut Cx<'_>, options: &PhpArray, o: &mut Options) -> Result<(), Thrown> {
     let get = |k: &str| options.get(&ArrayKey::from_bytes(k.as_bytes())).map(deref);
-    let tname = |cx: &Cx<'_>, v: &Value| crate::argparse::zval_value_name(cx.host, v);
+    let tname = |cx: &Cx<'_>, v: &Value| crate::zend::zpp::zval_value_name(cx.host, v);
     let warn_type = |cx: &mut Cx<'_>, opt: &str, want: &str, v: &Value| {
         let t = tname(cx, v);
         cx.warn(&format!(
@@ -955,18 +955,18 @@ fn zip_glob(cx: &mut Cx<'_>, pattern: &[u8], flags: i64) -> Result<Found, Thrown
         ))?;
         return Ok(Err(()));
     }
-    if (crate::fs_fns::GLOB_AVAILABLE & flags) != flags {
+    if (crate::main::php_glob::GLOB_AVAILABLE & flags) != flags {
         cx.warn("At least one of the passed flags is invalid or not supported on this platform")?;
         return Ok(Err(()));
     }
-    let (ret, paths) = crate::fs_fns::php_glob(pattern, flags);
+    let (ret, paths) = crate::main::php_glob::php_glob(pattern, flags);
     if ret != 0 || paths.is_empty() {
         return Ok(Ok(None));
     }
     let mut out = Vec::new();
     for p in paths {
-        if flags & crate::fs_fns::GLOB_ONLYDIR != 0 {
-            match crate::streams::sys_stat(&p, false) {
+        if flags & crate::main::php_glob::GLOB_ONLYDIR != 0 {
+            match crate::main::streams::sys_stat(&p, false) {
                 Some(s) if s.is_dir => {}
                 _ => continue,
             }
@@ -978,8 +978,8 @@ fn zip_glob(cx: &mut Cx<'_>, pattern: &[u8], flags: i64) -> Result<Found, Thrown
 
 /// php_zip_pcre: the regular files in `path` whose name matches.
 fn zip_pcre(cx: &mut Cx<'_>, regexp: &[u8], path: &[u8]) -> Result<Found, Thrown> {
-    let Some(mut names) = crate::streams::sys_readdir(path) else {
-        let reason = crate::streams::last_strerror();
+    let Some(mut names) = crate::main::streams::sys_readdir(path) else {
+        let reason = crate::main::streams::last_strerror();
         crate::warn_arg(
             cx.host,
             &cx.fname,
@@ -992,7 +992,7 @@ fn zip_pcre(cx: &mut Cx<'_>, regexp: &[u8], path: &[u8]) -> Result<Found, Thrown
         return Ok(Ok(None));
     }
     names.sort();
-    let Some(re) = crate::preg_fns::compile_warn(cx.host, &cx.fname, regexp)? else {
+    let Some(re) = crate::ext::pcre::php_pcre::compile_warn(cx.host, &cx.fname, regexp)? else {
         cx.warn("Invalid expression")?;
         return Ok(Err(()));
     };
@@ -1015,7 +1015,7 @@ fn zip_pcre(cx: &mut Cx<'_>, regexp: &[u8], path: &[u8]) -> Result<Found, Thrown
         let mut full = path.to_vec();
         full.push(b'/');
         full.extend_from_slice(name);
-        match crate::streams::sys_stat(&full, false) {
+        match crate::main::streams::sys_stat(&full, false) {
             None => {
                 cx.warn(&format!("Cannot read <{}>", String::from_utf8_lossy(&full)))?;
                 continue;
@@ -1218,7 +1218,7 @@ fn extract_file(
             [dest, b"/", &dir].concat()
         }
     };
-    if crate::streams::sys_stat(&dirname_full, false).is_none()
+    if crate::main::streams::sys_stat(&dirname_full, false).is_none()
         && !mkdir_recursive(cx, &dirname_full, true)?
     {
         return Ok(false);
@@ -1269,7 +1269,7 @@ fn extract_file(
     }
     cx.host.stream_close(&stream);
     // The plain-files wrapper's metadata(TOUCH).
-    if let Some(c) = crate::vcwd::c_path(&full) {
+    if let Some(c) = crate::zend::virtual_cwd::c_path(&full) {
         let t = libc::utimbuf {
             actime: sb.mtime,
             modtime: sb.mtime,
@@ -1325,17 +1325,17 @@ fn mkdir_recursive(cx: &mut Cx<'_>, path: &[u8], report: bool) -> Result<bool, T
     prefixes.push(&full);
     let first_missing = prefixes
         .iter()
-        .rposition(|p| crate::streams::sys_stat(p, false).is_some())
+        .rposition(|p| crate::main::streams::sys_stat(p, false).is_some())
         .map_or(0, |i| i + 1);
     for p in &prefixes[first_missing..] {
         if p.contains(&0) {
             return Ok(false);
         }
-        if let Err(e) = crate::vcwd::mkdir(p, 0o777) {
+        if let Err(e) = crate::zend::virtual_cwd::mkdir(p, 0o777) {
             let e = e.raw_os_error().unwrap_or(0);
             if e != libc::EEXIST {
                 if report {
-                    cx.warn(&crate::streams::strerror(e))?;
+                    cx.warn(&crate::main::streams::strerror(e))?;
                 }
                 return Ok(false);
             }
@@ -1344,10 +1344,10 @@ fn mkdir_recursive(cx: &mut Cx<'_>, path: &[u8], report: bool) -> Result<bool, T
     Ok(true)
 }
 
-/// virtual_file_ex(CWD_EXPAND) from an empty cwd: [`crate::vcwd::normalize`],
+/// virtual_file_ex(CWD_EXPAND) from an empty cwd: [`crate::zend::virtual_cwd::normalize`],
 /// keeping a trailing slash.
 fn cwd_expand(path: &[u8]) -> Vec<u8> {
-    let mut out = crate::vcwd::normalize(path);
+    let mut out = crate::zend::virtual_cwd::normalize(path);
     if path.ends_with(b"/") && out != b"/" {
         out.push(b'/');
     }
@@ -1386,7 +1386,7 @@ fn extract_to(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
             return Err(Thrown::type_error(format!(
                 "{}(): Argument #2 ($files) must be of type array|string|null, {} given",
                 cx.fname,
-                crate::argparse::zval_value_name(cx.host, v)
+                crate::zend::zpp::zval_value_name(cx.host, v)
             )))
         }
     }
@@ -1394,7 +1394,9 @@ fn extract_to(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
     if pathto.is_empty() {
         return Ok(Value::Bool(false));
     }
-    if crate::streams::sys_stat(&pathto, false).is_none() && !mkdir_recursive(cx, &pathto, false)? {
+    if crate::main::streams::sys_stat(&pathto, false).is_none()
+        && !mkdir_recursive(cx, &pathto, false)?
+    {
         return Ok(Value::Bool(false));
     }
     match files {
@@ -1534,7 +1536,7 @@ fn get_stream(cx: &mut Cx<'_>, by_name: bool, accept_flags: bool) -> Result<Valu
 fn register_progress(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
     let rate = conv::to_float(&cx.arg(0));
     let cb = cx.arg(1);
-    crate::require_callback(cx.host, &cx.fname, 2, &cb)?;
+    crate::zend::zpp::require_callback(cx.host, &cx.fname, 2, &cb)?;
     let za = cx.za()?;
     let a = cx.obj().archive().expect("open archive");
     let ud = Rc::as_ptr(&a) as *mut c_void;
@@ -1556,7 +1558,7 @@ fn register_progress(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
 
 fn register_cancel(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
     let cb = cx.arg(0);
-    crate::require_callback(cx.host, &cx.fname, 1, &cb)?;
+    crate::zend::zpp::require_callback(cx.host, &cx.fname, 1, &cb)?;
     let za = cx.za()?;
     let a = cx.obj().archive().expect("open archive");
     let ud = Rc::as_ptr(&a) as *mut c_void;

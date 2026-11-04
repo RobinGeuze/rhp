@@ -101,7 +101,7 @@ impl Vm {
     /// engine with the SAPI and ini settings of the request about to run.
     pub fn preload_pending(&self) -> Option<String> {
         let startup = |n: &[u8]| builtins::ini_startup_value(n).unwrap_or_default();
-        let cli = builtins::sapi::sapi_name() == "cli";
+        let cli = builtins::main::sapi::sapi_name() == "cli";
         let started = ini_flag(&startup(b"opcache.enable"))
             && (!cli || ini_flag(&startup(b"opcache.enable_cli")));
         let script = startup(b"opcache.preload");
@@ -145,7 +145,7 @@ impl Vm {
             Ok(s) => s,
             Err(e) => {
                 // The preload script is required at startup.
-                let reason = builtins::streams::strerror(e.raw_os_error().unwrap_or(2));
+                let reason = builtins::main::streams::strerror(e.raw_os_error().unwrap_or(2));
                 let warning = format!("PHP Startup: Failed to open stream: {reason}");
                 self.display_error(
                     rhp_builtins::E_WARNING,

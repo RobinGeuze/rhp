@@ -16,7 +16,7 @@ use std::process::ExitCode;
 
 use super::util::{finish, flag, read};
 
-const OUT: &str = "crates/rhp-builtins/src/html_tables.rs";
+const OUT: &str = "crates/rhp-builtins/src/ext/standard/html_tables.rs";
 
 /// Single-byte charsets with a map to Unicode: (php ident, rhp name, file).
 /// ISO-8859-1 maps to itself, so php never reads its table.

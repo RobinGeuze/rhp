@@ -3,7 +3,7 @@
 //! parameters, driven by the stub signatures.
 
 use rhp_builtins as builtins;
-use rhp_builtins::object::CastTarget;
+use rhp_builtins::zend::object_handlers::CastTarget;
 use rhp_builtins::E_DEPRECATED;
 use rhp_bytecode::signatures::{ScalarParam, Zpp};
 use rhp_values::{conv, fmt, ArrayKey, Thrown, Value};

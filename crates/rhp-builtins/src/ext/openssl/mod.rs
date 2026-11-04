@@ -21,24 +21,24 @@ use std::sync::{Once, OnceLock};
 
 use rhp_values::{conv, Value};
 
-use crate::ext::zpp::deref;
+use crate::zend::zpp::deref;
 use crate::{warn, Host, Thrown};
 
 /// The key and certificate classes' handlers: no clone, not comparable.
-pub(crate) static CLASSES: &[crate::object::ClassHandlers] = &[
-    crate::object::ClassHandlers {
+pub(crate) static CLASSES: &[crate::zend::object_handlers::ClassHandlers] = &[
+    crate::zend::object_handlers::ClassHandlers {
         class: "OpenSSLAsymmetricKey",
-        handlers: &crate::object::ObjectHandlers::OPAQUE,
+        handlers: &crate::zend::object_handlers::ObjectHandlers::OPAQUE,
         create_object: true,
     },
-    crate::object::ClassHandlers {
+    crate::zend::object_handlers::ClassHandlers {
         class: "OpenSSLCertificate",
-        handlers: &crate::object::ObjectHandlers::OPAQUE,
+        handlers: &crate::zend::object_handlers::ObjectHandlers::OPAQUE,
         create_object: true,
     },
-    crate::object::ClassHandlers {
+    crate::zend::object_handlers::ClassHandlers {
         class: "OpenSSLCertificateSigningRequest",
-        handlers: &crate::object::ObjectHandlers::OPAQUE,
+        handlers: &crate::zend::object_handlers::ObjectHandlers::OPAQUE,
         create_object: true,
     },
 ];
@@ -141,7 +141,7 @@ thread_local! {
 /// `PHP_OPENSSL_LIBCTX`.
 pub(super) fn libctx() -> *mut sys::OSSL_LIB_CTX {
     init();
-    let default = crate::runtime_fns::ini_value(b"openssl.libctx")
+    let default = crate::main::ini::ini_value(b"openssl.libctx")
         .flatten()
         .is_some_and(|v| v == b"default");
     let custom = CUSTOM_LIBCTX.with(|c| c.0);
@@ -528,7 +528,7 @@ pub(super) fn bio_file(path: &CStr, mode: &CStr) -> Own<sys::BIO> {
     let bio = if mode.to_bytes().starts_with(b"r") {
         open()
     } else {
-        crate::vcwd::library_created(path.to_bytes(), 0o666, open)
+        crate::zend::virtual_cwd::library_created(path.to_bytes(), 0o666, open)
     };
     Own::new(bio, free_bio)
 }
@@ -582,13 +582,13 @@ pub(super) fn try_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thro
         }
         Value::Object(_) => {
             let o = deref(v);
-            match crate::object::to_string(host, &o)? {
+            match crate::zend::object_handlers::to_string(host, &o)? {
                 Some(s) => Ok(s),
                 None => Err(Thrown::error(
                     "Error",
                     format!(
                         "Object of class {} could not be converted to string",
-                        crate::argparse::zval_value_name(host, &o)
+                        crate::zend::zpp::zval_value_name(host, &o)
                     ),
                 )),
             }
@@ -636,7 +636,7 @@ pub(super) fn obj_or_str(
         Value::Int(_) | Value::Float(_) | Value::Bool(_) => {
             Ok(ObjOrStr::Str(conv::to_string_bytes(&v)))
         }
-        Value::Object(_) => match crate::object::to_string(host, &v)? {
+        Value::Object(_) => match crate::zend::object_handlers::to_string(host, &v)? {
             Some(s) => Ok(ObjOrStr::Str(s)),
             None => Err(type_error(host, fname, i, &v)),
         },
@@ -647,7 +647,7 @@ pub(super) fn obj_or_str(
 /// zpp's "must be of type T, X given" (`zend_zval_value_name`).
 pub(super) fn type_error(host: &dyn Host, fname: &str, i: usize, v: &Value) -> Thrown {
     let (pname, ty) = param(fname, i);
-    let given = crate::argparse::zval_value_name(host, v);
+    let given = crate::zend::zpp::zval_value_name(host, v);
     Thrown::type_error(format!(
         "{fname}(): Argument #{} (${pname}) must be of type {ty}, {given} given",
         i + 1
@@ -675,7 +675,7 @@ pub(super) fn str_arg(
     fname: &str,
 ) -> Result<Vec<u8>, Thrown> {
     let (pname, _) = param(fname, i);
-    crate::ext::zpp::str_arg(host, args, i, fname, pname)
+    crate::zend::zpp::str_arg(host, args, i, fname, pname)
 }
 
 pub(super) fn opt_str_arg(
@@ -698,7 +698,7 @@ pub(super) fn int_arg(
     default: i64,
 ) -> Result<i64, Thrown> {
     let (pname, _) = param(fname, i);
-    crate::ext::zpp::int_arg_or(host, args, i, fname, pname, default)
+    crate::zend::zpp::int_arg_or(host, args, i, fname, pname, default)
 }
 
 pub(super) fn bool_arg(
@@ -709,16 +709,16 @@ pub(super) fn bool_arg(
     default: bool,
 ) -> Result<bool, Thrown> {
     let (pname, _) = param(fname, i);
-    crate::ext::zpp::bool_arg_or(host, args, i, fname, pname, default)
+    crate::zend::zpp::bool_arg_or(host, args, i, fname, pname, default)
 }
 
 /// `zend_argument_value_error`.
 pub(super) fn value_error(fname: &str, i: usize, msg: &str) -> Thrown {
     let (pname, _) = param(fname, i);
-    crate::ext::zpp::value_error(fname, i + 1, pname, msg)
+    crate::zend::zpp::value_error(fname, i + 1, pname, msg)
 }
 
-pub(super) use crate::ext::zpp::set_ref;
+pub(super) use crate::zend::zpp::set_ref;
 
 /// php_openssl_check_path_ex: the absolute path (`expand_filepath`) of
 /// `path` (after `file://` when `file_protocol`). `Ok(None)` after a
@@ -748,7 +748,7 @@ pub(super) fn check_path(
         ("must not contain any null bytes", true)
     } else {
         // expand_filepath fails on a path of MAXPATHLEN or more
-        let real = crate::vcwd::expand_filepath(fs);
+        let real = crate::zend::virtual_cwd::expand_filepath(fs);
         if fs.len() < libc::PATH_MAX as usize && real.len() < libc::PATH_MAX as usize {
             return Ok(Some(CString::new(real).unwrap_or_default()));
         }
@@ -846,11 +846,7 @@ fn fn_get_cert_locations(_: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown>
             cstr_bytes(sys::X509_get_default_cert_area()).to_vec(),
         );
     }
-    let ini = |n: &[u8]| {
-        crate::runtime_fns::ini_value(n)
-            .flatten()
-            .unwrap_or_default()
-    };
+    let ini = |n: &[u8]| crate::main::ini::ini_value(n).flatten().unwrap_or_default();
     add("ini_cafile", ini(b"openssl.cafile"));
     add("ini_capath", ini(b"openssl.capath"));
     Ok(Value::Array(a))

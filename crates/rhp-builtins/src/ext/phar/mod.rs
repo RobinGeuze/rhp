@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256, Sha512};
 
 mod tar;
 
-use crate::streams::{StatInfo, StreamWrapper, WrapperReg};
+use crate::main::streams::{StatInfo, StreamWrapper, WrapperReg};
 use crate::{Host, Thrown};
 
 // --- little-endian readers ---------------------------------------------------
@@ -392,7 +392,7 @@ fn verify_openssl_signature(data: &[u8], sig_type: u32, path: &[u8]) -> Result<(
     pk_path.extend_from_slice(b".pubkey");
     let fail =
         |why: &str| format!("phar \"{fname}\" openssl signature could not be verified: {why}");
-    let pem = match std::fs::read(crate::vcwd::os_path(&pk_path)) {
+    let pem = match std::fs::read(crate::zend::virtual_cwd::os_path(&pk_path)) {
         Ok(p) if !p.is_empty() => p,
         _ => return Err(fail("openssl public key could not be read")),
     };
@@ -549,7 +549,7 @@ impl PharWrapper {
         cuts.push(rest.len());
         for cut in cuts {
             let prefix = &rest[..cut];
-            let Some(st) = crate::streams::sys_stat(prefix, false) else {
+            let Some(st) = crate::main::streams::sys_stat(prefix, false) else {
                 continue;
             };
             if st.is_dir {
@@ -558,13 +558,14 @@ impl PharWrapper {
             if !st.is_regular {
                 return;
             }
-            let Ok(bytes) = std::fs::read(crate::vcwd::os_path(prefix)) else {
+            let Ok(bytes) = std::fs::read(crate::zend::virtual_cwd::os_path(prefix)) else {
                 return;
             };
             let Ok(mut arc) = PharArchive::parse(bytes, prefix) else {
                 return;
             };
-            let real = crate::vcwd::realpath(prefix).unwrap_or_else(|| prefix.to_vec());
+            let real =
+                crate::zend::virtual_cwd::realpath(prefix).unwrap_or_else(|| prefix.to_vec());
             arc.path = real.clone();
             let arc = Rc::new(arc);
             self.install(&real, None, arc.clone());
@@ -580,7 +581,7 @@ impl PharWrapper {
     fn is_bare_archive(&self, url: &[u8]) -> bool {
         url.strip_prefix(b"phar://").is_some_and(|rest| {
             self.archives.borrow().contains_key(rest)
-                && !crate::streams::sys_stat(rest, false).is_some_and(|s| s.is_regular)
+                && !crate::main::streams::sys_stat(rest, false).is_some_and(|s| s.is_regular)
         })
     }
 }

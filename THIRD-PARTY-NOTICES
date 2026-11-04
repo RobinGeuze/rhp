@@ -520,9 +520,9 @@ The port is php-src's change, under the PHP License (section 4).
 8. md5crypt
 ------------------------------------------------------------------------------
 
-crypt()'s MD5 hashes ("$1$", crates/rhp-builtins/src/crypt_fns.rs) are a Rust
-port of php_md5_crypt_r in php-src's ext/standard/php_crypt_r.c, which is
-under the PHP License (section 4) and states for this function:
+crypt()'s MD5 hashes ("$1$", crates/rhp-builtins/src/ext/standard/crypt.rs)
+are a Rust port of php_md5_crypt_r in php-src's ext/standard/php_crypt_r.c,
+which is under the PHP License (section 4) and states for this function:
 
   ----------------------------------------------------------------------------
   "THE BEER-WARE LICENSE" (Revision 42):
@@ -613,12 +613,12 @@ exception, which covers both (rhp is not a parser generator):
 11. Charset maps
 ------------------------------------------------------------------------------
 
-crates/rhp-builtins/src/html_tables.rs holds php's single-byte charset maps
-for htmlentities(), generated from the mapping files php-src ships in
-ext/standard/html_tables/mappings: 8859-1.TXT, 8859-5.TXT, 8859-15.TXT and
-KOI8-R.TXT from Unicode, Inc., ROMAN.TXT from Apple Computer, Inc., and
-CP866.TXT, CP1251.TXT and CP1252.TXT from Microsoft. The Unicode, Inc. files
-carry this notice:
+crates/rhp-builtins/src/ext/standard/html_tables.rs holds php's single-byte
+charset maps for htmlentities(), generated from the mapping files php-src
+ships in ext/standard/html_tables/mappings: 8859-1.TXT, 8859-5.TXT,
+8859-15.TXT and KOI8-R.TXT from Unicode, Inc., ROMAN.TXT from Apple Computer,
+Inc., and CP866.TXT, CP1251.TXT and CP1252.TXT from Microsoft. The Unicode,
+Inc. files carry this notice:
 
   Copyright (c) 1991-1999 Unicode, Inc.  All Rights reserved.
 

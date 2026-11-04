@@ -6,8 +6,10 @@ or outright no-ops a piece of PHP behaviour, with a concrete plan to finish each
 **Ground truth:** the reference `php` (the differential oracle; see `crates/rhp-builtins/src/version.rs`). Every item below
 was confirmed by reading the cited `file:line` in `crates/` and, where relevant,
 by comparing against php's documented behaviour. The `vm/lib.rs:N` citations
-predate the 2026-11 split of `rhp-vm` into modules (bytecode.md §3): search
-for the named function instead. The goal that orders the roadmap
+predate the 2026-11 split of `rhp-vm` into modules (bytecode.md §3), and the
+`rhp-builtins` file names (`php_fns.rs`, `fs_fns.rs`, ...) predate its php-src
+layout ([builtins-layout.md](./builtins-layout.md)): search for the named
+function instead. The goal that orders the roadmap
 is the north star — run `composer.phar` end to end (`history/modules-and-streams.md`) and
 then real frameworks.
 
@@ -335,7 +337,7 @@ The original notes:
 
 ### 2.8 `chmod` / `chdir` / `clearstatcache` — RESOLVED (cache semantics aside)
 - `chmod` is real; `chdir`/`getcwd`/`umask` are the request's (php's ZTS
-  virtual cwd, `rhp_builtins::vcwd`), with php CLI's results.
+  virtual cwd, `rhp_builtins::zend::virtual_cwd`), with php CLI's results.
   `clearstatcache` is a no-op: rhp keeps no stat cache, so a php script that
   observes a *stale* cached stat (e.g. `filesize` after an external change
   without `clearstatcache`) sees fresh data under rhp. Known, deliberate gap.

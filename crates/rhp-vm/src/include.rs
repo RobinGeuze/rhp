@@ -148,7 +148,7 @@ impl Vm {
         let backtraces = self.ini_get(b"fatal_error_backtraces").unwrap_or_default();
         let trace = if ini_bool(&backtraces) {
             let trace = Value::Array(self.build_trace_ex(false, false));
-            builtins::php_fns::trace_to_string(self, &trace)
+            builtins::zend::exceptions::trace_to_string(self, &trace)
         } else {
             Vec::new()
         };
@@ -178,7 +178,7 @@ impl Vm {
         kind: IncludeKind,
     ) -> Result<Value, Thrown> {
         let path_str = String::from_utf8_lossy(&raw_path).into_owned();
-        builtins::streams::clear_errno();
+        builtins::main::streams::clear_errno();
         // php looks a script up in opcache by the name it was asked for
         // before opening anything: a cached absolute path needs no open, and
         // no realpath while its revalidate window lasts; a file that is gone
@@ -202,9 +202,9 @@ impl Vm {
                 let reason = if path_str.is_empty() {
                     None
                 } else {
-                    Some(match builtins::streams::last_errno() {
-                        Some(c) => builtins::streams::strerror(c),
-                        None => builtins::streams::strerror(2), // ENOENT
+                    Some(match builtins::main::streams::last_errno() {
+                        Some(c) => builtins::main::streams::strerror(c),
+                        None => builtins::main::streams::strerror(2), // ENOENT
                     })
                 };
                 if let Some(reason) = reason {
@@ -347,7 +347,7 @@ impl Vm {
         use std::path::{Path, PathBuf};
         // Schemed URLs: no candidate search — the wrapper owns resolution. The
         // returned key (→ `__FILE__`/`__DIR__`/`_once`) is the normalized URL.
-        let (scheme, _) = builtins::streams::split_scheme(path.as_bytes());
+        let (scheme, _) = builtins::main::streams::split_scheme(path.as_bytes());
         if scheme != b"file" {
             let url = path.as_bytes();
             let w = self.wrapper_for(url)?;
@@ -378,7 +378,7 @@ impl Vm {
         }
         for cand in candidates {
             use std::os::unix::ffi::OsStrExt;
-            let cand = builtins::vcwd::os_path(cand.as_os_str().as_bytes());
+            let cand = builtins::zend::virtual_cwd::os_path(cand.as_os_str().as_bytes());
             let Ok(canon) = std::fs::canonicalize(&cand) else {
                 continue;
             };

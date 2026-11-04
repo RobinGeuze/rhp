@@ -19,7 +19,7 @@ use std::ffi::{CStr, CString};
 use libc::{E2BIG, EBADF, EILSEQ, EINVAL};
 use rhp_values::{ArrayKey, PhpArray, PhpStr, Value};
 
-use crate::ext::zpp::{deref, long_arg, opt_long_arg, opt_str_arg, str_arg, value_error};
+use crate::zend::zpp::{deref, long_arg, opt_long_arg, opt_str_arg, str_arg, value_error};
 use crate::{warn, Host, OutputHandlerAlias, OutputHandlerCtx, Thrown};
 use sys::{errno, set_errno, Cd, NulCopy, FAILED};
 
@@ -753,7 +753,7 @@ fn mime_encode(
                     out_reserved += 4;
                     inp = ini_in;
                 }
-                let encoded = crate::ext::hash::base64_encode(&buf[..pos]);
+                let encoded = crate::ext::standard::base64::base64_encode(&buf[..pos]);
                 if char_cnt < encoded.len() {
                     // Something went wrong.
                     return Unknown;
@@ -1229,7 +1229,7 @@ fn mime_decode(
                     }
                     let text = &s[encoded_text..encoded_text + encoded_text_len];
                     let decoded = match enc_scheme {
-                        Scheme::Base64 => crate::ext::hash::base64_decode(text, false),
+                        Scheme::Base64 => crate::ext::standard::base64::base64_decode(text, false),
                         Scheme::QPrint => qprint_decode(text),
                     };
                     let Some(decoded) = decoded else {
@@ -1364,7 +1364,7 @@ fn show_error(
 
 /// A directive's value as php's C reads it: up to the first NUL.
 fn ini_cstr(name: &[u8]) -> Vec<u8> {
-    let v = crate::runtime_fns::ini_value(name)
+    let v = crate::main::ini::ini_value(name)
         .flatten()
         .unwrap_or_default();
     let end = v.iter().position(|&c| c == 0).unwrap_or(v.len());
@@ -1547,7 +1547,7 @@ fn fn_iconv_mime_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     let field_value = zstr_arg(host, args, 1, f, "field_value")?;
     let pref = match args.get(2) {
         None => None,
-        Some(_) => Some(crate::argparse::array_param(host, args, 2, f)?),
+        Some(_) => Some(crate::zend::zpp::array_param(host, args, 2, f)?),
     };
     let mut in_charset = cstr(&encoding("internal"));
     let mut out_charset = in_charset.clone();
@@ -1568,12 +1568,12 @@ fn fn_iconv_mime_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             return Ok(Value::Bool(false));
         }
         if let Some(v) = pref_get(&pref, "line-length") {
-            line_len = crate::argparse::zval_get_long(host, &v)?;
+            line_len = crate::zend::zpp::zval_get_long(host, &v)?;
         }
         if let Some(v) = pref_get(&pref, "line-break-chars") {
             lfchars = match v {
                 Value::Str(s) => s.as_bytes().to_vec(),
-                v => crate::argparse::zval_get_string(host, &v)?,
+                v => crate::zend::zpp::zval_get_string(host, &v)?,
             };
         }
     }
@@ -1713,7 +1713,7 @@ fn fn_iconv_set_encoding(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
         return Ok(Value::Bool(false));
     };
     let name = format!("iconv.{kind}_encoding");
-    let ok = crate::runtime_fns::alter_ini_entry(host, name.as_bytes(), charset, f)?;
+    let ok = crate::main::ini::alter_ini_entry(host, name.as_bytes(), charset, f)?;
     Ok(Value::Bool(ok.is_some()))
 }
 
@@ -1756,7 +1756,7 @@ fn output_handler(host: &mut dyn Host, cx: &mut OutputHandlerCtx) -> bool {
         if cx.output_sent {
             return false;
         }
-        let default_mimetype = crate::runtime_fns::ini_value(b"default_mimetype").flatten();
+        let default_mimetype = crate::main::ini::ini_value(b"default_mimetype").flatten();
         let mimetype = host.response().and_then(|r| match &r.mimetype {
             Some(m) if m.len() >= 5 && m[..5].eq_ignore_ascii_case(b"text/") => {
                 // Up to a ';', when there is one.
@@ -1784,8 +1784,11 @@ fn output_handler(host: &mut dyn Host, cx: &mut OutputHandlerCtx) -> bool {
                 line.extend_from_slice(mimetype.as_bytes());
                 line.extend_from_slice(b"; charset=");
                 line.extend_from_slice(charset);
-                if crate::sapi::header_op(host, crate::sapi::HeaderOp::Replace(&line, 0))
-                    .unwrap_or(false)
+                if crate::main::sapi::header_op(
+                    host,
+                    crate::main::sapi::HeaderOp::Replace(&line, 0),
+                )
+                .unwrap_or(false)
                 {
                     if let Some(r) = host.response() {
                         r.send_default_content_type = false;

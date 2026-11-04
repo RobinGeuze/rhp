@@ -22,8 +22,9 @@ use std::sync::Once;
 
 use rhp_values::{ArrayKey, ObjectHandle, PhpArray, Value};
 
-use crate::ext::zpp::deref;
-use crate::object::{self, CastTarget, ClassHandlers, CloneObj, ObjectHandlers};
+use crate::zend::object_handlers;
+use crate::zend::object_handlers::{CastTarget, ClassHandlers, CloneObj, ObjectHandlers};
+use crate::zend::zpp::deref;
 use crate::{Host, Thrown};
 
 // Generated (`rhp-difftest gen curl-consts`).
@@ -126,7 +127,7 @@ pub(crate) const CLASSES: &[ClassHandlers] = &[
         class: "CurlHandle",
         handlers: &ObjectHandlers {
             clone_obj: CloneObj::Custom(curl_clone_obj),
-            compare: Some(object::not_comparable),
+            compare: Some(object_handlers::not_comparable),
             cast_object: Some(curl_cast_object),
             ..ObjectHandlers::STD
         },
@@ -136,7 +137,7 @@ pub(crate) const CLASSES: &[ClassHandlers] = &[
         class: "CurlMultiHandle",
         handlers: &ObjectHandlers {
             clone_obj: CloneObj::None,
-            compare: Some(object::not_comparable),
+            compare: Some(object_handlers::not_comparable),
             cast_object: Some(curl_cast_object),
             ..ObjectHandlers::STD
         },
@@ -202,7 +203,7 @@ fn new_object(host: &mut dyn Host, class: &str) -> Result<(Value, ObjectHandle),
 fn type_err(host: &dyn Host, f: &str, n: usize, pname: &str, class: &str, v: &Value) -> Thrown {
     Thrown::type_error(format!(
         "{f}(): Argument #{n} (${pname}) must be of type {class}, {} given",
-        crate::argparse::zval_value_name(host, &deref(v))
+        crate::zend::zpp::zval_value_name(host, &deref(v))
     ))
 }
 
@@ -254,10 +255,10 @@ fn long_arg(
     if matches!(args.get(i).map(deref), Some(Value::Null)) && !host.caller_strict_types() {
         return Ok(0);
     }
-    crate::ext::zpp::long_arg(host, args, i, f, p)
+    crate::zend::zpp::long_arg(host, args, i, f, p)
 }
 
-pub(crate) use crate::argparse::zval_get_long;
+pub(crate) use crate::zend::zpp::zval_get_long;
 
 fn akey(s: &str) -> ArrayKey {
     ArrayKey::from_bytes(s.as_bytes())
@@ -284,7 +285,7 @@ fn absolute_path(path: &[u8]) -> Vec<u8> {
     if path.is_empty() || path == b"-" {
         return path.to_vec();
     }
-    crate::vcwd::absolute(path)
+    crate::zend::virtual_cwd::absolute(path)
 }
 
 // ---------------------------------------------------------------------------
@@ -455,15 +456,15 @@ fn fn_curl_version(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 /// `curl_file_create()` (curlfile_ctor on a new CURLFile).
 fn fn_curl_file_create(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "curl_file_create";
-    let name = crate::ext::zpp::str_arg(host, args, 0, f, "filename")?;
+    let name = crate::zend::zpp::str_arg(host, args, 0, f, "filename")?;
     if name.contains(&0) {
         return Err(Thrown::error(
             "ValueError",
             format!("{f}(): Argument #1 ($filename) must not contain any null bytes"),
         ));
     }
-    let mime = crate::ext::zpp::opt_str_arg(host, args, 1, f, "mime_type")?;
-    let post = crate::ext::zpp::opt_str_arg(host, args, 2, f, "posted_filename")?;
+    let mime = crate::zend::zpp::opt_str_arg(host, args, 1, f, "mime_type")?;
+    let post = crate::zend::zpp::opt_str_arg(host, args, 2, f, "posted_filename")?;
     let mut props = vec![(b"name".to_vec(), Value::str(name))];
     if let Some(m) = mime {
         props.push((b"mime".to_vec(), Value::str(m)));

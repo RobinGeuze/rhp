@@ -14,7 +14,7 @@ use super::{
     zval_get_long, MULTI,
 };
 use crate::ext::libxml::ffi;
-use crate::ext::zpp::deref;
+use crate::zend::zpp::deref;
 use crate::{Host, Thrown};
 
 /// `php_curlm`.
@@ -158,7 +158,7 @@ fn double_arg(
         Thrown::type_error(format!(
             "{f}(): Argument #{} (${p}) must be of type float, {} given",
             i + 1,
-            crate::argparse::zval_value_name(host, v)
+            crate::zend::zpp::zval_value_name(host, v)
         ))
     };
     match &v {
@@ -229,7 +229,7 @@ pub(super) fn fn_curl_multi_exec(host: &mut dyn Host, args: &[Value]) -> Result<
     let (error, thrown) = drive(host, f, || unsafe {
         sys::curl_multi_perform(multi, running)
     });
-    crate::ext::zpp::set_ref(args, 1, Value::Int(still_running as i64));
+    crate::zend::zpp::set_ref(args, 1, Value::Int(still_running as i64));
     m.borrow_mut().errno = error;
     drop(handles);
     thrown?;
@@ -261,7 +261,7 @@ pub(super) fn fn_curl_multi_info_read(
     }
     let msg = unsafe { &*msg };
     if args.len() > 1 {
-        crate::ext::zpp::set_ref(args, 1, Value::Int(queued as i64));
+        crate::zend::zpp::set_ref(args, 1, Value::Int(queued as i64));
     }
     let mut a = PhpArray::new();
     a.insert(akey("msg"), Value::Int(msg.msg as i64));

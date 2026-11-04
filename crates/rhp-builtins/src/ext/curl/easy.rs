@@ -13,7 +13,7 @@ use super::{
     share_of, zval_get_long, EASY,
 };
 use crate::ext::libxml::ffi;
-use crate::ext::zpp::deref;
+use crate::zend::zpp::deref;
 use crate::{Host, Thrown};
 
 /// php's `PHP_CURL_*` handler methods.
@@ -1029,7 +1029,7 @@ fn mime_parts(
             other => vec![other.clone()],
         };
         for v in values {
-            let value = crate::argparse::zval_get_string(host, &deref(&v))?;
+            let value = crate::zend::zpp::zval_get_string(host, &deref(&v))?;
             parts.push(Part::Field {
                 key: key.clone(),
                 value,
@@ -1771,11 +1771,11 @@ fn set_option(
             }
         }
         Some(Kind::Str) | Some(Kind::Url) => {
-            let s = crate::argparse::zval_get_string(host, &zvalue)?;
+            let s = crate::zend::zpp::zval_get_string(host, &zvalue)?;
             return option_str(host, f, e, pending, option, &s);
         }
         Some(Kind::Path) | Some(Kind::FilePath) => {
-            let s = crate::argparse::zval_get_string(host, &zvalue)?;
+            let s = crate::zend::zpp::zval_get_string(host, &zvalue)?;
             return option_str(host, f, e, pending, option, &path_value(option, s));
         }
         Some(Kind::Nullable) | Some(Kind::NullablePath) => {
@@ -1784,7 +1784,7 @@ fn set_option(
                     setopt_ptr(cp, option, std::ptr::null())
                 })?;
             } else {
-                let mut s = crate::argparse::zval_get_string(host, &zvalue)?;
+                let mut s = crate::zend::zpp::zval_get_string(host, &zvalue)?;
                 if kind == Some(Kind::NullablePath) {
                     s = absolute_path(&s);
                 }
@@ -1903,7 +1903,7 @@ fn set_option(
             };
             let mut lines = Vec::with_capacity(a.len());
             for (_, v) in a.iter() {
-                lines.push(crate::argparse::zval_get_string(host, &deref(v))?);
+                lines.push(crate::zend::zpp::zval_get_string(host, &deref(v))?);
             }
             let mut slist: *mut sys::curl_slist = std::ptr::null_mut();
             for s in &lines {
@@ -1949,7 +1949,7 @@ fn set_option(
                     return Ok(apply_mime(host, e, &parts));
                 }
             } else {
-                let s = crate::argparse::zval_get_string(host, &zvalue)?;
+                let s = crate::zend::zpp::zval_get_string(host, &zvalue)?;
                 let c = {
                     let mut v = s.clone();
                     v.push(0);
@@ -2017,7 +2017,7 @@ fn set_option(
             }
         }
         Some(Kind::Blob) => {
-            let mut s = crate::argparse::zval_get_string(host, &zvalue)?;
+            let mut s = crate::zend::zpp::zval_get_string(host, &zvalue)?;
             let blob = sys::curl_blob {
                 data: s.as_mut_ptr() as *mut c_void,
                 len: s.len(),
@@ -2047,7 +2047,7 @@ fn set_option(
 
 pub(super) fn fn_curl_init(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "curl_init";
-    let url = crate::ext::zpp::opt_str_arg(host, args, 0, f, "url")?;
+    let url = crate::zend::zpp::opt_str_arg(host, args, 0, f, "url")?;
     global_init();
     let cp = unsafe { sys::curl_easy_init() };
     if cp.is_null() {
@@ -2093,7 +2093,7 @@ pub(super) fn fn_curl_setopt(host: &mut dyn Host, args: &[Value]) -> Result<Valu
 pub(super) fn fn_curl_setopt_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "curl_setopt_array";
     let (_, e) = easy_arg(host, args, 0, f, "handle")?;
-    let arr = crate::argparse::array_param(host, args, 1, f)?;
+    let arr = crate::zend::zpp::array_param(host, args, 1, f)?;
     // A callback's exception does not stop the loop (php checks only the
     // FAILURE return); it is thrown at the end.
     let mut pending = None;
@@ -2535,7 +2535,7 @@ fn escape_fn(
     unescape: bool,
 ) -> Result<Value, Thrown> {
     let (_, e) = easy_arg(host, args, 0, f, "handle")?;
-    let s = crate::ext::zpp::str_arg(host, args, 1, f, "string")?;
+    let s = crate::zend::zpp::str_arg(host, args, 1, f, "string")?;
     if s.len() > i32::MAX as usize {
         return Ok(Value::Bool(false));
     }

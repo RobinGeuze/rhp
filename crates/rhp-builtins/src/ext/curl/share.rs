@@ -9,7 +9,7 @@ use rhp_values::{conv, PhpArray, Value};
 
 use super::sys::{self, CURLSH};
 use super::{cstr_bytes, global_init, long_arg, new_object, share_arg, zval_get_long, SHARE};
-use crate::ext::zpp::deref;
+use crate::zend::zpp::deref;
 use crate::{Host, Thrown};
 
 /// `php_curlsh`.
@@ -176,7 +176,7 @@ pub(super) fn fn_curl_share_init_persistent(
     args: &[Value],
 ) -> Result<Value, Thrown> {
     let f = "curl_share_init_persistent";
-    let opts = crate::argparse::array_param(host, args, 0, f)?;
+    let opts = crate::zend::zpp::array_param(host, args, 0, f)?;
     let value_err = |msg: &str| {
         Thrown::error(
             "ValueError",
@@ -198,7 +198,7 @@ pub(super) fn fn_curl_share_init_persistent(
         let Some(option) = try_get_long(host, &entry)? else {
             return Err(Thrown::type_error(format!(
                 "{f}(): Argument #1 ($share_options) must contain only int values, {} given",
-                crate::argparse::zval_value_name(host, &entry)
+                crate::zend::zpp::zval_value_name(host, &entry)
             )));
         };
         if option == sys::php("CURL_LOCK_DATA_COOKIE") {

@@ -420,7 +420,7 @@ impl Vm {
     pub(crate) fn opcache_request(&mut self) -> &Request {
         if self.opcache.is_none() {
             let startup = |n: &[u8]| builtins::ini_startup_value(n).unwrap_or_default();
-            let cli = builtins::sapi::sapi_name() == "cli";
+            let cli = builtins::main::sapi::sapi_name() == "cli";
             let started = ini_flag(&startup(b"opcache.enable"))
                 && (!cli || ini_flag(&startup(b"opcache.enable_cli")));
             let request_time = self
@@ -649,7 +649,7 @@ impl Vm {
         }
         let mut k = given.to_vec();
         k.push(b':');
-        if let Some(cwd) = builtins::vcwd::getcwd() {
+        if let Some(cwd) = builtins::zend::virtual_cwd::getcwd() {
             k.extend_from_slice(&cwd);
         }
         let include_path = self.ini(b"include_path");

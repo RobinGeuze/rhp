@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_builtins as builtins;
-use rhp_builtins::object::{CastTarget, Op};
+use rhp_builtins::zend::object_handlers::{CastTarget, Op};
 use rhp_bytecode::{CallFlags, ClassRef, CmpKind, FunctionProto, Instr, NIdx, Pc, Reg};
 use rhp_values::ops::{self, cast_to_array, inc_dec_value};
 use rhp_values::{conv, ArrayKey, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
@@ -293,7 +293,11 @@ impl Vm {
                     // the id), else a warning.
                     let n = match v {
                         Value::Object(_) | Value::Closure(_) => {
-                            match builtins::object::object_to_number(self, &v, CastTarget::Int)? {
+                            match builtins::zend::object_handlers::object_to_number(
+                                self,
+                                &v,
+                                CastTarget::Int,
+                            )? {
                                 Some(n) => conv::to_int(&n),
                                 None => conv::to_int(&v),
                             }
@@ -306,7 +310,11 @@ impl Vm {
                     let v = self.reg_get(top, a);
                     let f = match v {
                         Value::Object(_) | Value::Closure(_) => {
-                            match builtins::object::object_to_number(self, &v, CastTarget::Float)? {
+                            match builtins::zend::object_handlers::object_to_number(
+                                self,
+                                &v,
+                                CastTarget::Float,
+                            )? {
                                 Some(f) => conv::to_float(&f),
                                 None => conv::to_float(&v),
                             }
@@ -331,8 +339,9 @@ impl Vm {
                         // get_properties_for(ARRAY_CAST): an internal class's
                         // view (an ArrayObject's storage).
                         Value::Object(h) => {
-                            let purpose = builtins::object::PropPurpose::ArrayCast;
-                            match builtins::object::properties_for(self, h, purpose)? {
+                            let purpose = builtins::zend::object_handlers::PropPurpose::ArrayCast;
+                            match builtins::zend::object_handlers::properties_for(self, h, purpose)?
+                            {
                                 Some(a) => Value::Array(a),
                                 None => self.object_to_array_mangled(h),
                             }
@@ -591,10 +600,10 @@ impl Vm {
                 }
                 Instr::DeclareConst { name, src } => {
                     let cname = proto.names[name as usize].as_bytes();
-                    let key = builtins::const_key(cname);
+                    let key = builtins::zend::builtin_functions::const_key(cname);
                     let v = self.reg_get(top, src);
                     if self.const_taken(&key) {
-                        let msg = builtins::const_redefined_message(cname);
+                        let msg = builtins::zend::builtin_functions::const_redefined_message(cname);
                         self.diag(builtins::E_WARNING, &msg)?;
                     } else {
                         self.constants.insert(key.into_owned(), v);
@@ -2309,7 +2318,7 @@ impl Vm {
         fallback: NIdx,
     ) -> Result<(), Thrown> {
         let cname = proto.names[name as usize].as_bytes();
-        let key = builtins::const_key(cname);
+        let key = builtins::zend::builtin_functions::const_key(cname);
         let v = self.constants.get(&*key).cloned().or_else(|| {
             if fallback != rhp_bytecode::NO_NAME {
                 self.constants

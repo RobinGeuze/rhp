@@ -28,8 +28,9 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
  rhp-vm              Vm::new(sapi) → set_ini → set_request → start_request
                          → run_main → finish_request
                                         │
- rhp-builtins        sapi::{Sapi, Response, RequestInfo, header_op},
-                     query_fns (treat_data), rfc1867 (multipart), output layer
+ rhp-builtins        main::sapi::{Sapi, Response, RequestInfo, header_op},
+                     main::php_variables (treat_data), main::rfc1867 (multipart),
+                     main::output
 ```
 
 - **`rhp-builtins::sapi`** defines the contract: the `Sapi` trait, the
@@ -263,7 +264,7 @@ threads, never from sharing an engine:
   `tests/isolation.rs` run requests on several threads at once and one
   after another on one thread and check that none of this leaks.
 - **Working directory and umask are the request's.** rhp never calls
-  chdir(2) or umask(2) for a script (`rhp_builtins::vcwd`, php's ZTS
+  chdir(2) or umask(2) for a script (`rhp_builtins::zend::virtual_cwd`, php's ZTS
   virtual cwd): `chdir()`, `getcwd()` and `umask()` change and read the
   request's values, every relative path rhp hands the OS, a C library or
   a child process is taken from the request's directory first (stat,

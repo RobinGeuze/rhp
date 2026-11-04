@@ -17,7 +17,7 @@ use rhp_csrc::timelib::{self, sys, RelTime, Time, Tz, TIMELIB_UNSET};
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
 use super::format::date_format;
-use crate::object::{ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
+use crate::zend::object_handlers::{ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
 use crate::{Host, Thrown};
 
 /// A `timelib_time` with the zone its `tz_info` points to kept alive.
@@ -267,19 +267,19 @@ pub(crate) static CLASSES: &[ClassHandlers] = &[
 // --- payload access ---------------------------------------------------------
 
 pub(crate) fn date_obj(h: &ObjectHandle) -> Option<Rc<DateObj>> {
-    crate::object::payload_of::<DateObj>(h)
+    crate::zend::object_handlers::payload_of::<DateObj>(h)
 }
 
 pub(crate) fn tz_obj(h: &ObjectHandle) -> Option<Rc<TzObj>> {
-    crate::object::payload_of::<TzObj>(h)
+    crate::zend::object_handlers::payload_of::<TzObj>(h)
 }
 
 pub(crate) fn interval_obj(h: &ObjectHandle) -> Option<Rc<IntervalObj>> {
-    crate::object::payload_of::<IntervalObj>(h)
+    crate::zend::object_handlers::payload_of::<IntervalObj>(h)
 }
 
 pub(crate) fn period_obj(h: &ObjectHandle) -> Option<Rc<PeriodObj>> {
-    crate::object::payload_of::<PeriodObj>(h)
+    crate::zend::object_handlers::payload_of::<PeriodObj>(h)
 }
 
 /// The object's time, if initialized.
@@ -302,7 +302,7 @@ pub(crate) fn set_time(h: &ObjectHandle, t: Option<ZTime>) {
         None => {
             let d = DateObj::default();
             *d.time.borrow_mut() = t;
-            crate::object::set_payload(h, Rc::new(d));
+            crate::zend::object_handlers::set_payload(h, Rc::new(d));
         }
     }
 }
@@ -316,7 +316,7 @@ pub(crate) fn set_tz(h: &ObjectHandle, tz: Option<TzKind>) {
         None => {
             let o = TzObj::default();
             *o.tz.borrow_mut() = tz;
-            crate::object::set_payload(h, Rc::new(o));
+            crate::zend::object_handlers::set_payload(h, Rc::new(o));
         }
     }
 }
@@ -333,7 +333,7 @@ pub(crate) fn set_interval(h: &ObjectHandle, st: IntervalState) {
             let old = o.st.replace(st);
             drop(old);
         }
-        None => crate::object::set_payload(
+        None => crate::zend::object_handlers::set_payload(
             h,
             Rc::new(IntervalObj {
                 st: RefCell::new(st),
@@ -354,7 +354,7 @@ pub(crate) fn set_period(h: &ObjectHandle, st: PeriodState) {
             let old = o.st.replace(st);
             drop(old);
         }
-        None => crate::object::set_payload(
+        None => crate::zend::object_handlers::set_payload(
             h,
             Rc::new(PeriodObj {
                 st: RefCell::new(st),
@@ -590,12 +590,15 @@ fn date_object_compare_date(
     b: &Value,
 ) -> Result<Option<i32>, Thrown> {
     // ZEND_COMPARE_OBJECTS_FALLBACK
-    if !crate::object::has_handlers(host, a, &DATE_HANDLERS)
-        || !crate::object::has_handlers(host, b, &DATE_HANDLERS)
+    if !crate::zend::object_handlers::has_handlers(host, a, &DATE_HANDLERS)
+        || !crate::zend::object_handlers::has_handlers(host, b, &DATE_HANDLERS)
     {
         return Ok(None);
     }
-    let (Some(ha), Some(hb)) = (crate::object::object_of(a), crate::object::object_of(b)) else {
+    let (Some(ha), Some(hb)) = (
+        crate::zend::object_handlers::object_of(a),
+        crate::zend::object_handlers::object_of(b),
+    ) else {
         return Ok(None);
     };
     let (Some(da), Some(db)) = (date_obj(&ha), date_obj(&hb)) else {
@@ -634,12 +637,15 @@ fn date_object_compare_timezone(
     a: &Value,
     b: &Value,
 ) -> Result<Option<i32>, Thrown> {
-    if !crate::object::has_handlers(host, a, &TIMEZONE_HANDLERS)
-        || !crate::object::has_handlers(host, b, &TIMEZONE_HANDLERS)
+    if !crate::zend::object_handlers::has_handlers(host, a, &TIMEZONE_HANDLERS)
+        || !crate::zend::object_handlers::has_handlers(host, b, &TIMEZONE_HANDLERS)
     {
         return Ok(None);
     }
-    let (Some(ha), Some(hb)) = (crate::object::object_of(a), crate::object::object_of(b)) else {
+    let (Some(ha), Some(hb)) = (
+        crate::zend::object_handlers::object_of(a),
+        crate::zend::object_handlers::object_of(b),
+    ) else {
         return Ok(None);
     };
     let (Some(o1), Some(o2)) = (tz_of(&ha), tz_of(&hb)) else {
@@ -668,8 +674,8 @@ fn date_interval_compare_objects(
     a: &Value,
     b: &Value,
 ) -> Result<Option<i32>, Thrown> {
-    if !crate::object::has_handlers(host, a, &INTERVAL_HANDLERS)
-        || !crate::object::has_handlers(host, b, &INTERVAL_HANDLERS)
+    if !crate::zend::object_handlers::has_handlers(host, a, &INTERVAL_HANDLERS)
+        || !crate::zend::object_handlers::has_handlers(host, b, &INTERVAL_HANDLERS)
     {
         return Ok(None);
     }
@@ -753,7 +759,7 @@ pub(crate) fn interval_sync_in(host: &mut dyn Host, h: &ObjectHandle) -> Result<
             };
             dval_to_lval(host, d * 1000000.0)?
         } else {
-            crate::argparse::zval_get_long(host, &v)?
+            crate::zend::zpp::zval_get_long(host, &v)?
         };
         longs.push((f, n));
     }

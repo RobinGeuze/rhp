@@ -19,7 +19,7 @@ rhp-bytecode = { path = "../rhp-bytecode" }
 libc = "0.2"
 indexmap = { workspace = true }
 # No -sys crate for PCRE2: build.rs links the system libpcre2-8 (see
-# docs/design/libraries.md) and src/pcre/sys.rs declares what rhp calls.
+# docs/design/libraries.md) and src/ext/pcre/sys.rs declares what rhp calls.
 # pcre2-sys would silently build its bundled copy instead.
 
 # `hash` extension algorithms. Pure-Rust (RustCrypto et al.) where a faithful

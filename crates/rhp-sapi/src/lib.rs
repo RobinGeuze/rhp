@@ -37,7 +37,7 @@ pub use capture::{CaptureSapi, Captured};
 pub use rhp_compiler::Mode;
 pub use rhp_vm::IncludeError;
 
-pub use rhp_builtins::sapi::{RequestInfo, Response, Sapi};
+pub use rhp_builtins::main::sapi::{RequestInfo, Response, Sapi};
 /// The `-v` banner (`PHP 8.5.x (cli) (built: …)`) for a SAPI name.
 pub use rhp_builtins::version::banner as version_banner;
 /// The global allocator a binary that runs requests must install, for
@@ -187,7 +187,7 @@ static BUILTINS: rhp_compiler::Builtins = rhp_compiler::Builtins {
     prelude: rhp_builtins::prelude,
     native_function: |name| rhp_builtins::registry().contains_key(name),
     constant: rhp_builtins::ct_constant,
-    cwd: rhp_builtins::vcwd::getcwd,
+    cwd: rhp_builtins::zend::virtual_cwd::getcwd,
 };
 
 /// Parse and compile the source `src` of `file` as rhp runs a file: php's

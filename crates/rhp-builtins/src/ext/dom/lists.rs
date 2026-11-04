@@ -549,7 +549,7 @@ const INT_MAX: i64 = i32::MAX as i64;
 pub fn map_item(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
     let index = int(args, 0);
     if !(0..=INT_MAX).contains(&index) {
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             "DOMNamedNodeMap::item",
             1,
             "index",

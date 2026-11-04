@@ -21,9 +21,13 @@ use std::rc::Rc;
 
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
-use crate::argparse::zval_value_name;
-use crate::ext::zpp::{self, deref};
-use crate::object::{self, CastTarget, ClassHandlers, CloneObj, ObjectHandlers, Op, PropPurpose};
+use crate::zend::object_handlers;
+use crate::zend::object_handlers::{
+    CastTarget, ClassHandlers, CloneObj, ObjectHandlers, Op, PropPurpose,
+};
+use crate::zend::zpp;
+use crate::zend::zpp::deref;
+use crate::zend::zpp::zval_value_name;
 use crate::{Host, Thrown};
 use sys::Mpz;
 
@@ -51,18 +55,18 @@ struct GmpNum(RefCell<Mpz>);
 /// `GET_GMP_FROM_ZVAL`: the number of a GMP object. One created without a
 /// constructor (by `unserialize`) gets 0, as php's `create_object` gives it.
 fn gmp_num(h: &ObjectHandle) -> Rc<GmpNum> {
-    if let Some(n) = object::payload_of::<GmpNum>(h) {
+    if let Some(n) = object_handlers::payload_of::<GmpNum>(h) {
         return n;
     }
     let n = Rc::new(GmpNum(RefCell::new(Mpz::new())));
-    object::set_payload(h, n.clone());
+    object_handlers::set_payload(h, n.clone());
     n
 }
 
 /// `IS_GMP`: an object of class GMP (which is final).
 fn gmp_object(host: &dyn Host, v: &Value) -> Option<ObjectHandle> {
-    let h = object::object_of(v)?;
-    object::has_handlers(host, v, &GMP_HANDLERS).then_some(h)
+    let h = object_handlers::object_of(v)?;
+    object_handlers::has_handlers(host, v, &GMP_HANDLERS).then_some(h)
 }
 
 /// `gmp_create`: a new GMP object holding `n`.
@@ -70,8 +74,8 @@ fn gmp_new(host: &mut dyn Host, n: Mpz) -> Result<Value, Thrown> {
     let v = host
         .instantiate(b"GMP", Vec::new())
         .ok_or_else(|| Thrown::unsupported("gmp", "no object model in this host"))?;
-    if let Some(h) = object::object_of(&v) {
-        object::set_payload(&h, Rc::new(GmpNum(RefCell::new(n))));
+    if let Some(h) = object_handlers::object_of(&v) {
+        object_handlers::set_payload(&h, Rc::new(GmpNum(RefCell::new(n))));
     }
     Ok(v)
 }
@@ -326,7 +330,7 @@ fn str_or_long_arg(
         Value::Object(_) | Value::Closure(_) => {
             // zend_parse_arg_str_weak: the object's string cast.
             if !host.caller_strict_types() {
-                if let Some(s) = object::to_string(host, &v)? {
+                if let Some(s) = object_handlers::to_string(host, &v)? {
                     return Ok(Ok(s));
                 }
             }
@@ -379,7 +383,7 @@ fn str_arg(
             Ok(Vec::new())
         }
         Value::Bool(_) | Value::Int(_) | Value::Float(_) => Ok(conv::to_string_bytes(&v)),
-        Value::Object(_) | Value::Closure(_) => match object::to_string(host, &v)? {
+        Value::Object(_) | Value::Closure(_) => match object_handlers::to_string(host, &v)? {
             Some(s) => Ok(s),
             None => Err(wrong(host, &v)),
         },
@@ -588,7 +592,7 @@ fn fn_gmp_init(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `GMP::__construct` (`__gmp_construct($this, $num, $base)`).
 fn fn_gmp_construct(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "GMP::__construct";
-    let this = object::object_of(&args[0]).expect("GMP::__construct passes $this");
+    let this = object_handlers::object_of(&args[0]).expect("GMP::__construct passes $this");
     let rest = &args[1..];
     let num = str_or_long_arg(host, rest, 0, f, "num")?;
     let base = opt_long_arg(host, rest, 1, f, "base", 0)?;
@@ -1351,7 +1355,7 @@ fn fn_gmp_scan1(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `GMP::__serialize` (`__gmp_serialize($this)`): the number in base 16,
 /// then the properties when there are any.
 fn fn_gmp_serialize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let h = object::object_of(&args[0]).expect("GMP::__serialize passes $this");
+    let h = object_handlers::object_of(&args[0]).expect("GMP::__serialize passes $this");
     let num = gmp_num(&h).0.borrow().to_str(16);
     let mut arr = PhpArray::new();
     arr.push(Value::str(num));
@@ -1373,7 +1377,7 @@ fn fn_gmp_serialize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 
 /// `GMP::__unserialize` (`__gmp_unserialize($this, $data)`).
 fn fn_gmp_unserialize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let h = object::object_of(&args[0]).expect("GMP::__unserialize passes $this");
+    let h = object_handlers::object_of(&args[0]).expect("GMP::__unserialize passes $this");
     let data = match args.get(1).map(deref) {
         Some(Value::Array(a)) => a,
         other => {
@@ -1429,7 +1433,7 @@ fn properties_load(host: &mut dyn Host, h: &ObjectHandle, props: &PhpArray) -> R
 }
 
 /// Whether class `cid` is GMP, whose `ce->unserialize` reads the `C:`
-/// format (see serialize_fns).
+/// format (see ext/standard/var.rs).
 pub(crate) fn is_gmp_class(host: &dyn Host, cid: u32) -> bool {
     host.object_handlers(cid)
         .is_some_and(|t| std::ptr::eq(t, &GMP_HANDLERS))
@@ -1442,7 +1446,7 @@ pub(crate) fn unserialize_create(host: &mut dyn Host) -> Result<Value, Thrown> {
 
 /// gmp_unserialize's number: `convert_zstr_to_gmp(num, s, 10, 0)`.
 pub(crate) fn unserialize_number(obj: &Value, s: &[u8]) -> Result<(), Thrown> {
-    let h = object::object_of(obj).expect("a GMP object");
+    let h = object_handlers::object_of(obj).expect("a GMP object");
     let mut z = Mpz::new();
     convert_str(&mut z, s, 10, None)?;
     *gmp_num(&h).0.borrow_mut() = z;
@@ -1584,7 +1588,7 @@ fn gmp_get_properties_for(
 /// `gmp_clone_obj`: the copy gets the number too.
 fn gmp_clone_obj(_: &mut dyn Host, src: &ObjectHandle, dst: &ObjectHandle) -> Result<(), Thrown> {
     let n = gmp_num(src).0.borrow().clone();
-    object::set_payload(dst, Rc::new(GmpNum(RefCell::new(n))));
+    object_handlers::set_payload(dst, Rc::new(GmpNum(RefCell::new(n))));
     Ok(())
 }
 
@@ -1719,7 +1723,7 @@ fn shift_operands(
         Op::Shl => "<<",
         _ => ">>",
     };
-    let type_name = crate::argparse::zval_type_name;
+    let type_name = crate::zend::zpp::zval_type_name;
     let unsupported = |host: &dyn Host| {
         Thrown::type_error(format!(
             "Unsupported operand types: {} {sigil} {}",
@@ -1729,7 +1733,7 @@ fn shift_operands(
     };
     let shift = match deref(b) {
         Value::Int(n) => n,
-        v @ Value::Float(_) => crate::argparse::zval_get_long(host, &v)?,
+        v @ Value::Float(_) => crate::zend::zpp::zval_get_long(host, &v)?,
         Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
             Some(conv::Num::Int(n)) => n,
             _ => {

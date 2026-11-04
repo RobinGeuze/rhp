@@ -16,7 +16,8 @@ use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
 use crate::ext::libxml::ffi;
 use crate::ext::libxml::sys::{self, xmlTextReader};
-use crate::object::{self, ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
+use crate::zend::object_handlers;
+use crate::zend::object_handlers::{ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
 use crate::{Host, Thrown};
 
 /// php's `xmlreader_object`.
@@ -74,12 +75,12 @@ pub(crate) static CLASSES: &[ClassHandlers] = &[ClassHandlers {
 
 /// The payload of `this`, created on first use.
 fn intern(v: &Value) -> Option<Rc<Reader>> {
-    if let Some(r) = object::payload::<Reader>(v) {
+    if let Some(r) = object_handlers::payload::<Reader>(v) {
         return Some(r);
     }
-    let h = object::object_of(v)?;
+    let h = object_handlers::object_of(v)?;
     let r = Rc::new(Reader::new());
-    object::set_payload(&h, r.clone());
+    object_handlers::set_payload(&h, r.clone());
     Some(r)
 }
 
@@ -806,7 +807,7 @@ fn m_from_stream(cx: &mut Cx, _: &Rc<Reader>, _: &Value, args: &[Value]) -> Resu
             return Err(Thrown::type_error(format!(
                 "{}(): Argument #1 ($stream) must be of type resource, {} given",
                 cx.fname,
-                crate::argparse::zval_value_name(cx.host, other)
+                crate::zend::zpp::zval_value_name(cx.host, other)
             )));
         }
     }
@@ -1032,7 +1033,7 @@ fn m_set_relaxng_schema_source(
 /// The script's directory as a base URI (`getcwd()` with a trailing
 /// slash, canonicalized).
 fn cwd_uri() -> Option<Vec<u8>> {
-    let mut d = crate::vcwd::getcwd()?;
+    let mut d = crate::zend::virtual_cwd::getcwd()?;
     if d.last() != Some(&b'/') {
         d.push(b'/');
     }

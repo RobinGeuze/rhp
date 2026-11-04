@@ -11,7 +11,8 @@ use bzip2::{Action, Compress, Compression, Decompress, Status};
 use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
-use crate::streams::{self, StatInfo, StreamWrapper, WrapperReg};
+use crate::main::streams;
+use crate::main::streams::{StatInfo, StreamWrapper, WrapperReg};
 use crate::{Host, Thrown};
 
 const BZ_SEQUENCE_ERROR: i64 = -1;
@@ -168,7 +169,7 @@ fn fn_bzopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if mode == b"r" && !rel.windows(3).any(|w| w == b"://") {
         // libbz2 opens lazily: a readable file that isn't bzip2 still opens,
         // and the first read fails with BZ_DATA_ERROR_MAGIC.
-        if let Ok(raw) = std::fs::read(crate::vcwd::os_path(&rel)) {
+        if let Ok(raw) = std::fs::read(crate::zend::virtual_cwd::os_path(&rel)) {
             if let Err(code) = decompress(&raw, false) {
                 if let Some(res) = host.stream_open(b"php://memory", b"rb") {
                     if let Value::Resource(r) = &res {

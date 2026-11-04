@@ -126,7 +126,7 @@ pub(crate) enum StreamState {
     /// flush/close. `append` keeps existing content. (Non-local wrappers.)
     FileWrite { buf: Vec<u8>, url: Vec<u8> },
     /// A plain local file with a real descriptor.
-    File(Box<builtins::streams::LocalFile>),
+    File(Box<builtins::main::streams::LocalFile>),
     /// A directory stream (`opendir`): the entries snapshot + read position.
     Dir {
         entries: Vec<Vec<u8>>,
@@ -135,9 +135,9 @@ pub(crate) enum StreamState {
     },
     /// An OS file descriptor stream: a `proc_open` pipe's parent end or
     /// `php://stdin` (a dup of fd 0).
-    Fd(builtins::fdstream::FdStream),
+    Fd(builtins::main::streams::plain_wrapper::FdStream),
     /// A stream on an extension's ops (zip entries).
-    Ops(Box<builtins::opsstream::OpsStream>),
+    Ops(Box<builtins::main::streams::ops::OpsStream>),
 }
 
 impl Vm {
@@ -243,7 +243,7 @@ impl Vm {
         if events.is_empty() {
             return;
         }
-        if let Err(e) = builtins::http::deliver(self, res, &events) {
+        if let Err(e) = builtins::http_fopen_wrapper::deliver(self, res, &events) {
             if self.pending_throw.is_none() {
                 self.pending_throw = Some(e);
             }
@@ -254,13 +254,13 @@ impl Vm {
     /// warnings) as raised by builtin `func`.
     #[inline]
     pub(crate) fn flush_stream_diags(&mut self, func: &str) {
-        if builtins::fdstream::has_diags() {
+        if builtins::main::streams::plain_wrapper::has_diags() {
             self.raise_stream_diags(func);
         }
     }
 
     fn raise_stream_diags(&mut self, func: &str) {
-        for d in builtins::fdstream::take_diags() {
+        for d in builtins::main::streams::plain_wrapper::take_diags() {
             let msg = if d.docref {
                 format!("{func}(): {}", d.msg)
             } else {
@@ -322,15 +322,17 @@ impl Vm {
 
     /// The stream wrapper for a URL's scheme (default `file://`).
     pub(crate) fn wrapper_for(&self, url: &[u8]) -> Option<&Rc<dyn builtins::StreamWrapper>> {
-        let (scheme, _) = builtins::streams::split_scheme(url);
+        let (scheme, _) = builtins::main::streams::split_scheme(url);
         self.wrappers.get(scheme)
     }
 
     /// The `STDIN` reader (a dup of fd 0), created on first use.
-    pub(crate) fn stdin_stream(&mut self) -> Option<&mut builtins::fdstream::FdStream> {
+    pub(crate) fn stdin_stream(
+        &mut self,
+    ) -> Option<&mut builtins::main::streams::plain_wrapper::FdStream> {
         if self.stdin_reader.is_none() {
-            let fd = builtins::fdstream::dup_raw(0)?;
-            self.stdin_reader = Some(builtins::fdstream::FdStream::new(fd));
+            let fd = builtins::main::streams::plain_wrapper::dup_raw(0)?;
+            self.stdin_reader = Some(builtins::main::streams::plain_wrapper::FdStream::new(fd));
         }
         self.stdin_reader.as_mut()
     }

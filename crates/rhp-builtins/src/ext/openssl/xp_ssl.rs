@@ -4,7 +4,7 @@
 //! does, so errno-based errors read the same.
 //!
 //! These functions run on a stream the VM lends out, without a host: their
-//! warnings go to the stream diagnostics queue (`fdstream::push_diag`) and
+//! warnings go to the stream diagnostics queue (`plain_wrapper::push_diag`) and
 //! whoever ran the operation reports them. Peer certificates to capture are
 //! handed back for the caller to wrap in `OpenSSLCertificate` objects.
 
@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use super::sys;
-use crate::fdstream::{poll_fd, push_diag, FdStream, SockInfo};
-use crate::streams::errno;
+use crate::main::streams::errno;
+use crate::main::streams::plain_wrapper::{poll_fd, push_diag, FdStream, SockInfo};
 use crate::E_WARNING;
 
 // STREAM_CRYPTO_METHOD_* bits
@@ -479,7 +479,7 @@ fn handle_ssl_error(
                 };
                 *eof = true;
             } else {
-                warn(format!("SSL: {}", crate::streams::strerror(err_no)));
+                warn(format!("SSL: {}", crate::main::streams::strerror(err_no)));
             }
             retry = false;
         }
@@ -577,7 +577,7 @@ fn matches_san_list(peer: *mut sys::X509, subject: &[u8]) -> (bool, bool) {
         }
     };
     let mut has_service_id = false;
-    let subject_ipv6 = crate::inet::pton6(subject).map(|a| expand_ipv6(&a));
+    let subject_ipv6 = crate::main::network::pton6(subject).map(|a| expand_ipv6(&a));
     for i in 0..count {
         let san = unsafe { &*(sys::OPENSSL_sk_value(names, i) as *const sys::GENERAL_NAME) };
         match san.type_ {
@@ -808,7 +808,7 @@ fn check_path(path: &[u8], option: &str) -> Option<CString> {
     let msg = if path.contains(&0) {
         "must not contain any null bytes"
     } else {
-        let real = crate::vcwd::expand_filepath(path);
+        let real = crate::zend::virtual_cwd::expand_filepath(path);
         if path.len() < libc::PATH_MAX as usize && real.len() < libc::PATH_MAX as usize {
             return Some(CString::new(real).unwrap_or_default());
         }
@@ -819,16 +819,19 @@ fn check_path(path: &[u8], option: &str) -> Option<CString> {
 }
 
 fn ini_string(name: &[u8]) -> Option<Vec<u8>> {
-    crate::runtime_fns::ini_value(name)
+    crate::main::ini::ini_value(name)
         .flatten()
         .filter(|v| !v.is_empty())
 }
 
 /// `php_openssl_load_stream_cafile`: the certificates added.
 fn load_stream_cafile(store: *mut sys::X509_STORE, cafile: &[u8]) -> i64 {
-    let (scheme, _) = crate::streams::split_scheme(cafile);
+    let (scheme, _) = crate::main::streams::split_scheme(cafile);
     let data = if scheme == b"file" {
-        std::fs::read(crate::vcwd::os_path(crate::streams::file_path(cafile))).ok()
+        std::fs::read(crate::zend::virtual_cwd::os_path(
+            crate::main::streams::file_path(cafile),
+        ))
+        .ok()
     } else {
         None
     };
@@ -1426,7 +1429,7 @@ impl Drop for Captured {
 
 /// `php_openssl_set_blocking`.
 fn set_blocking(raw: RawFd, sock: &mut SockInfo, block: bool) -> bool {
-    let ok = crate::fdstream::set_fd_blocking(raw, block);
+    let ok = crate::main::streams::plain_wrapper::set_fd_blocking(raw, block);
     if ok {
         sock.blocked = block;
     }
@@ -1672,7 +1675,9 @@ fn sockop_io(
                     // php calls the callback from the handshake; rhp has no
                     // host here, so the code that ran the read calls it
                     r.callback_due = false;
-                    stream.events.push(crate::fdstream::NotifyEvent::RenegLimit);
+                    stream
+                        .events
+                        .push(crate::main::streams::plain_wrapper::NotifyEvent::RenegLimit);
                     break;
                 }
                 unsafe { libc::shutdown(raw, libc::SHUT_RDWR) };
@@ -1760,7 +1765,7 @@ impl SslSock {
         }
         let began_blocked = sock.blocked;
         if began_blocked {
-            crate::fdstream::set_fd_blocking(raw, false);
+            crate::main::streams::plain_wrapper::set_fd_blocking(raw, false);
         }
         let mut b = 0u8;
         let n = super::with_callbacks(|| unsafe {
@@ -1776,7 +1781,7 @@ impl SslSock {
             true
         };
         if began_blocked {
-            crate::fdstream::set_fd_blocking(raw, true);
+            crate::main::streams::plain_wrapper::set_fd_blocking(raw, true);
         }
         alive
     }
@@ -1828,7 +1833,7 @@ impl SslSock {
 /// `php_openssl_get_url_name`: the host of the transport address (after
 /// `proto://`), trailing dots dropped.
 pub fn url_name(resource: &[u8]) -> Option<Vec<u8>> {
-    let u = crate::url::parse(resource)?;
+    let u = crate::ext::standard::url::parse(resource)?;
     let mut host = u.host?;
     while host.last() == Some(&b'.') {
         host.pop();

@@ -21,8 +21,8 @@ use std::rc::Rc;
 use rhp_csrc::timelib::{self, sys, Errors, Time, Tz, Tzdb, TIMELIB_NO_CLONE, TIMELIB_UNSET};
 use rhp_values::{ArrayKey, PhpArray, Value};
 
-use crate::argparse::str_param;
-use crate::ext::zpp;
+use crate::zend::zpp;
+use crate::zend::zpp::str_param;
 use crate::{Host, Thrown};
 
 pub use format::php_format_date;
@@ -181,7 +181,7 @@ pub(crate) fn guess_timezone() -> Vec<u8> {
     {
         return tz;
     }
-    crate::runtime_fns::ini_value(b"date.timezone")
+    crate::main::ini::ini_value(b"date.timezone")
         .flatten()
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| b"UTC".to_vec())
@@ -460,7 +460,7 @@ fn local_time(ts: i64) -> Result<(Time, Rc<Tz>), Thrown> {
 fn fn_localtime(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let ts = zpp::opt_long_arg(host, args, 0, "localtime", "timestamp")?.unwrap_or_else(php_time);
     let associative =
-        crate::argparse::bool_param(host, args, 1, "localtime", "associative", false)?;
+        crate::zend::zpp::bool_param(host, args, 1, "localtime", "associative", false)?;
     let (t, _tzi) = local_time(ts)?;
     let fields = [
         ("tm_sec", t.s),
@@ -632,7 +632,7 @@ fn double_arg(
         Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type {ty}, {} given",
             i + 1,
-            crate::argparse::zval_value_name(host, v)
+            crate::zend::zpp::zval_value_name(host, v)
         ))
     };
     Ok(Some(match &v {
@@ -939,7 +939,7 @@ fn fn_date_parse(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_date_parse_from_format(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let format = str_param(host, args, 0, "date_parse_from_format", "format")?;
-    let date = crate::argparse::path_param(host, args, 1, "date_parse_from_format", "datetime")?;
+    let date = crate::zend::zpp::path_param(host, args, 1, "date_parse_from_format", "datetime")?;
     let (t, error) = parse_from_format(&format, &date);
     Ok(parsed_time_array(&t, &error))
 }
@@ -1028,7 +1028,7 @@ fn fn_timezone_identifiers_list(host: &mut dyn Host, args: &[Value]) -> Result<V
         "timezoneGroup",
         PHP_DATE_TIMEZONE_GROUP_ALL,
     )?;
-    let option = crate::argparse::str_or_null_param(host, args, 1, fname, "countryCode")?;
+    let option = crate::zend::zpp::str_or_null_param(host, args, 1, fname, "countryCode")?;
     identifiers_list(fname, what, option.as_deref())
 }
 
@@ -1074,6 +1074,14 @@ fn fn_timezone_name_from_abbr(host: &mut dyn Host, args: &[Value]) -> Result<Val
     )
 }
 
+/// `time(): int` — current unix timestamp (seconds).
+fn fn_time(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    Ok(Value::Int(now.as_secs() as i64))
+}
+
 /// Register the date builtins.
 pub fn register(m: &mut crate::Registry) {
     crate::register(
@@ -1104,6 +1112,7 @@ pub fn register(m: &mut crate::Registry) {
             ("date_sunrise", fn_date_sunrise),
             ("date_sunset", fn_date_sunset),
             ("date_sun_info", fn_date_sun_info),
+            ("time", fn_time),
         ],
     );
     crate::register_helpers(m, &[("__date", classes::fn_date, 1, None)]);

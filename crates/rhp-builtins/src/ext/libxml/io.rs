@@ -107,7 +107,7 @@ fn open_wrapper(
         }
     };
     // php_stream_locate_url_wrapper: a file:// URL opens as a plain path.
-    let (scheme, _) = crate::streams::split_scheme(&resolved);
+    let (scheme, _) = crate::main::streams::split_scheme(&resolved);
     let is_url = resolved.len() > scheme.len() && resolved[scheme.len()..].starts_with(b"://");
     let plain = !is_url || scheme.eq_ignore_ascii_case(b"file");
     let path: Vec<u8> = if is_url && scheme.eq_ignore_ascii_case(b"file") {
@@ -142,7 +142,7 @@ fn open_wrapper(
     if super::stream_context().is_none() {
         h.default_stream_context();
     }
-    crate::streams::clear_errno();
+    crate::main::streams::clear_errno();
     match h.stream_open(&path, mode) {
         Some(res) => Ok(Some(res)),
         None => {
@@ -367,7 +367,7 @@ pub(crate) fn to_string(h: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> 
             h.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
             Ok(b"Array".to_vec())
         }
-        Value::Object(_) => match crate::object::to_string(h, v)? {
+        Value::Object(_) => match crate::zend::object_handlers::to_string(h, v)? {
             Some(s) => Ok(s),
             None => {
                 let cls = h.object_class_name(v).unwrap_or_default();

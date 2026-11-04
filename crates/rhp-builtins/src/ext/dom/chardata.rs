@@ -207,7 +207,7 @@ pub fn text_split(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Th
     let (intern, node) = get_obj(cx, this)?;
     let offset = int(args, 0);
     if offset < 0 {
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             &cx.fname,
             1,
             "offset",
@@ -373,7 +373,7 @@ pub fn impl_create_document_type(cx: &mut Cx, _: &Value, args: &[Value]) -> Resu
     let publicid = bytes(args, 1);
     let systemid = bytes(args, 2);
     if name.is_empty() {
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             &cx.fname,
             1,
             "qualifiedName",
@@ -437,7 +437,7 @@ pub fn impl_create_document(cx: &mut Cx, _: &Value, args: &[Value]) -> Result<Va
         doctype = n.cast();
         unsafe {
             if (*doctype).type_ == sys::XML_DOCUMENT_TYPE_NODE {
-                return Err(crate::ext::zpp::value_error(
+                return Err(crate::zend::zpp::value_error(
                     &cx.fname,
                     3,
                     "doctype",

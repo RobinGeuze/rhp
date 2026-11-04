@@ -788,7 +788,7 @@ fn canonicalization(
     match &xpath_array {
         Value::Array(ht) => {
             let Some(q) = ht.get(&ArrayKey::from_bytes(b"query")) else {
-                return Err(crate::ext::zpp::value_error(
+                return Err(crate::zend::zpp::value_error(
                     &cx.fname,
                     3 + mode,
                     "xpath",
@@ -801,7 +801,7 @@ fn canonicalization(
                     "{}(): Argument #{} ($xpath) \"query\" option must be a string, {} given",
                     cx.fname,
                     3 + mode,
-                    crate::argparse::zval_value_name(cx.host, &q)
+                    crate::zend::zpp::zval_value_name(cx.host, &q)
                 )));
             };
             let cq = c(qs.as_bytes());
@@ -945,7 +945,7 @@ pub fn c14n(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> 
 pub fn c14n_file(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
     let f = bytes(args, 0);
     if f.contains(&0) {
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             &cx.fname,
             1,
             "uri",

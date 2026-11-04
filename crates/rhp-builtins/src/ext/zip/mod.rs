@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 use rhp_values::{ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
 use crate::ext::libxml::ffi;
-use crate::object::{ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
+use crate::zend::object_handlers::{ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
 use crate::{Host, Thrown};
 
 pub use stream::wrappers;
@@ -45,7 +45,7 @@ static HANDLERS: ObjectHandlers = ObjectHandlers {
 /// callbacks: here, where there is a host. The payload's `Drop` closes an
 /// archive the destructor pass did not reach, without them.
 fn object_free(host: &mut dyn Host, obj: &ObjectHandle) -> Result<(), Thrown> {
-    let Some(o) = crate::object::payload_of::<ZipObject>(obj) else {
+    let Some(o) = crate::zend::object_handlers::payload_of::<ZipObject>(obj) else {
         return Ok(());
     };
     let Some(a) = o.archive.borrow_mut().take() else {
@@ -88,7 +88,9 @@ impl Archive {
     /// zip_close: libzip writes a new archive with the process's umask;
     /// the request's applies.
     fn zip_close(&self, za: *mut sys::zip_t) -> c_int {
-        crate::vcwd::library_created(&self.path, 0o666, || unsafe { sys::zip_close(za) })
+        crate::zend::virtual_cwd::library_created(&self.path, 0o666, || unsafe {
+            sys::zip_close(za)
+        })
     }
 }
 
@@ -222,15 +224,15 @@ impl ZipObject {
 /// The state of `this`, a `ZipArchive` (or subclass) object, created on
 /// first use (php's `create_object`).
 pub(crate) fn zip_object(host: &dyn Host, this: &Value) -> Option<Rc<ZipObject>> {
-    if !crate::object::has_handlers(host, this, &HANDLERS) {
+    if !crate::zend::object_handlers::has_handlers(host, this, &HANDLERS) {
         return None;
     }
-    let h = crate::object::object_of(this)?;
-    if let Some(o) = crate::object::payload_of::<ZipObject>(&h) {
+    let h = crate::zend::object_handlers::object_of(this)?;
+    if let Some(o) = crate::zend::object_handlers::payload_of::<ZipObject>(&h) {
         return Some(o);
     }
     let o = Rc::new(ZipObject::new());
-    crate::object::set_payload(&h, o.clone());
+    crate::zend::object_handlers::set_payload(&h, o.clone());
     Some(o)
 }
 
@@ -304,11 +306,11 @@ fn get_properties_for(
     h: &ObjectHandle,
     purpose: PropPurpose,
 ) -> Result<Option<PhpArray>, Thrown> {
-    let o = match crate::object::payload_of::<ZipObject>(h) {
+    let o = match crate::zend::object_handlers::payload_of::<ZipObject>(h) {
         Some(o) => o,
         None => {
             let o = Rc::new(ZipObject::new());
-            crate::object::set_payload(h, o.clone());
+            crate::zend::object_handlers::set_payload(h, o.clone());
             o
         }
     };
@@ -371,12 +373,12 @@ unsafe extern "C" fn cancel_callback(_za: *mut sys::zip_t, ud: *mut c_void) -> c
         };
         ffi::call_host(|h| {
             let r = deref(&h.call_callable(&cb, &[])?);
-            match crate::ext::zpp::try_get_long(h, &r)? {
+            match crate::zend::zpp::try_get_long(h, &r)? {
                 Some(n) => Ok(n as c_int),
                 None => Err(Thrown::type_error(format!(
                     "Return value of callback provided to ZipArchive::registerCancelCallback() \
                      must be of type int, {} returned",
-                    crate::argparse::zval_value_name(h, &r)
+                    crate::zend::zpp::zval_value_name(h, &r)
                 ))),
             }
         })
@@ -578,7 +580,7 @@ pub(crate) fn c_string(b: &[u8]) -> CString {
 /// zpp's `P`/`p`: a path must not contain NUL bytes.
 pub(crate) fn check_path(fname: &str, n: usize, pname: &str, b: &[u8]) -> Result<(), Thrown> {
     if b.contains(&0) {
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             fname,
             n,
             pname,
@@ -590,7 +592,7 @@ pub(crate) fn check_path(fname: &str, n: usize, pname: &str, b: &[u8]) -> Result
 
 /// zend_argument_must_not_be_empty_error
 pub(crate) fn must_not_be_empty(fname: &str, n: usize, pname: &str) -> Thrown {
-    crate::ext::zpp::value_error(fname, n, pname, "must not be empty")
+    crate::zend::zpp::value_error(fname, n, pname, "must not be empty")
 }
 
 /// MAXPATHLEN
@@ -603,7 +605,7 @@ pub(crate) fn expand_filepath(path: &[u8]) -> Option<Vec<u8>> {
     if path.is_empty() {
         return None;
     }
-    let p = crate::vcwd::expand_filepath(path);
+    let p = crate::zend::virtual_cwd::expand_filepath(path);
     (p.len() < MAXPATHLEN - 1).then_some(p)
 }
 

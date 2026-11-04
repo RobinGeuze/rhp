@@ -243,9 +243,11 @@ neither has a row in the "linked" section of `tools/capture-ref-build.php`.
 and Homebrew builds do. CI's php is Debian/Ubuntu's build, patched to read the
 system zoneinfo: it reports `"Olson" Timezone Database Version => 0.system`
 (and `Timezone Database => internal`; setup-php's library report, run
-41756527132). Both carry tz release 2026e, so zone data agrees; what reads
-the database itself differs (`timezone_version_get()`, the identifier list,
-locations), and tests of those can't match CI's php. A system-tzdata mode
+41756527132). Both are tz release 2026e (Ubuntu's tzdata 2026e), so zone
+data should agree, though nothing compares it on CI yet. What reads the
+database itself differs (`timezone_version_get()`, the identifier list and
+its backward-compatible flags, locations, transitions), so the ratchet
+leaves out tests whose output depends on those. A system-tzdata mode
 (Debian's MIT-licensed patch with runtime selection) is plan item L7c, only
 if the CI ratchet needs it. timelib's version and the database's are not in
 the "linked" section for that reason.

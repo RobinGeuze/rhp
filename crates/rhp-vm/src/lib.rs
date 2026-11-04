@@ -29,6 +29,7 @@ mod request;
 mod streams;
 mod stub_default;
 mod types;
+mod zpp;
 
 use std::cell::RefCell;
 use std::collections::HashMap;

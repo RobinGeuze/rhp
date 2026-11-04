@@ -2301,7 +2301,14 @@ fn fn_intdiv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_str_repeat(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = conv::to_string_bytes(&args[0]);
-    let n = conv::to_int(&args[1]).max(0) as usize;
+    let n = conv::to_int(&args[1]);
+    if n < 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "str_repeat(): Argument #2 ($times) must be greater than or equal to 0",
+        ));
+    }
+    let n = n as usize;
     // zend_string_safe_falloc(len, mult, 0): php refuses past memory_limit.
     if !s.is_empty()
         && n != 0
@@ -2768,7 +2775,23 @@ fn fn_range(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .get(2)
         .map(|v| conv::to_number(&deref(v)).0.as_f64().abs())
         .unwrap_or(1.0);
-    let step = if step == 0.0 { 1.0 } else { step };
+    if step == 0.0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "range(): Argument #3 ($step) cannot be 0",
+        ));
+    }
+    for (n, name, v) in [(1, "start", start), (2, "end", end)] {
+        if let conv::Num::Float(f) = v {
+            if !f.is_finite() {
+                let shown = if f.is_nan() { "NAN" } else { "INF" };
+                return Err(Thrown::error(
+                    "ValueError",
+                    format!("range(): Argument #{n} (${name}) must be a finite number, {shown} provided"),
+                ));
+            }
+        }
+    }
     let mut out = PhpArray::new();
     let use_float = matches!(start, conv::Num::Float(_))
         || matches!(end, conv::Num::Float(_))
@@ -2885,7 +2908,7 @@ fn fn_explode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if delim.is_empty() {
         return Err(Thrown::error(
             "ValueError",
-            "explode(): Argument #1 ($separator) cannot be empty",
+            "explode(): Argument #1 ($separator) must not be empty",
         ));
     }
     // All pieces, in order.
@@ -3240,9 +3263,17 @@ fn fn_ord(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(b.first().copied().unwrap_or(0) as i64))
 }
 
-fn fn_chr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let n = conv::to_int(&deref(&args[0])).rem_euclid(256) as u8;
-    Ok(Value::str(vec![n]))
+fn fn_chr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let c = conv::to_int(&deref(&args[0]));
+    if !(0..=255).contains(&c) {
+        deprecated(
+            host,
+            "chr",
+            "Providing a value not in-between 0 and 255 is deprecated, this is because a byte \
+             value must be in the [0, 255] interval. The value used will be constrained using % 256",
+        )?;
+    }
+    Ok(Value::str(vec![(c & 0xff) as u8]))
 }
 
 // small helper on Value for error messages

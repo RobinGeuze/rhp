@@ -546,7 +546,7 @@ fn fn_wordwrap(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if brk.is_empty() {
         return Err(Thrown::error(
             "ValueError",
-            "wordwrap(): Argument #3 ($break) must be a non-empty string",
+            "wordwrap(): Argument #3 ($break) must not be empty",
         ));
     }
     if width == 0 && cut {

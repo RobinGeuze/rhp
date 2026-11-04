@@ -84,6 +84,7 @@ var_dump(timezone_version_get());
 var_dump(count(timezone_identifiers_list()), count(timezone_identifiers_list(DateTimeZone::ALL_WITH_BC)));
 var_dump(timezone_identifiers_list(DateTimeZone::PER_COUNTRY, 'NL'), timezone_identifiers_list(DateTimeZone::UTC));
 var_dump(count(timezone_identifiers_list(DateTimeZone::EUROPE | DateTimeZone::ARCTIC)));
+var_dump(timezone_identifiers_list(DateTimeZone::PER_COUNTRY, "N\0"), timezone_identifiers_list(DateTimeZone::PER_COUNTRY, 'nl'));
 try {
     timezone_identifiers_list(DateTimeZone::PER_COUNTRY);
 } catch (ValueError $e) {

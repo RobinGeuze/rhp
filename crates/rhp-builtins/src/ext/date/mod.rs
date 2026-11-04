@@ -606,7 +606,7 @@ pub(crate) fn identifiers_list(
     what: i64,
     option: Option<&[u8]>,
 ) -> Result<Value, Thrown> {
-    let option = option.map(c_str);
+    // `option_len` counts every byte; the comparison then meets a NUL.
     if what == PHP_DATE_TIMEZONE_PER_COUNTRY && option.is_none_or(|o| o.len() != 2) {
         return Err(zpp::value_error(
             fname,

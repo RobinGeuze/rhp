@@ -352,6 +352,10 @@ array(1) {
   string(3) "UTC"
 }
 int(59)
+array(0) {
+}
+array(0) {
+}
 timezone_identifiers_list(): Argument #2 ($countryCode) must be a two-letter ISO 3166-1 compatible country code when argument #1 ($timezoneGroup) is DateTimeZone::PER_COUNTRY
 string(13) "Europe/Berlin"
 string(12) "Europe/Paris"

@@ -3,7 +3,7 @@
 use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
-use crate::php_fns::rand_range;
+use crate::ext::random::rand_range;
 use crate::{Host, Thrown};
 
 fn fn_uniqid(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

@@ -263,7 +263,7 @@ pub fn reset_request_state() {
     ext::mbstring::reset_state();
     ext::standard::string::reset_state();
     ext::standard::basic_functions::reset_state();
-    stdext_fns::reset_state();
+    ext::random::reset_state();
     main::sapi::reset_state();
     ext::curl::reset_state();
     ext::openssl::reset_state();
@@ -352,6 +352,8 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("ini_parse", Box::new(ini_parse::register)),
         ("sysmisc_fns", Box::new(sysmisc_fns::register)),
         ("stdext_fns", Box::new(stdext_fns::register)),
+        ("random", Box::new(ext::random::register)),
+        ("readline", Box::new(ext::readline::register)),
         ("crypt", Box::new(ext::standard::crypt::register)),
         ("proc_fns", Box::new(proc_fns::register)),
         ("fs_fns", Box::new(fs_fns::register)),

@@ -27,6 +27,8 @@ pub mod password;
 pub mod pcntl;
 pub mod phar;
 pub mod posix;
+pub mod random;
+pub mod readline;
 pub mod reflection;
 pub mod simplexml;
 pub mod sockets;

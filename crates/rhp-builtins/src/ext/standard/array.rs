@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use rhp_values::ops::deref;
 use rhp_values::{conv, ops, ArrayKey, PhpArray, PhpStr, Value};
 
-use crate::stdext_fns::mt_range;
+use crate::ext::random::mt_range;
 use crate::zend::zpp::{array_param, int_param, zval_value_name};
 use crate::{ext, host_compare, host_loose_eq, warn, zend, Host, Thrown, E_WARNING};
 

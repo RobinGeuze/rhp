@@ -152,13 +152,13 @@ fn date_initialize(
 
     let mut now = Time::new();
     let mut tzi: *mut sys::timelib_tzinfo = std::ptr::null_mut();
-    let mut _pin: Option<Rc<Tz>> = None;
+    let mut pin: Option<Rc<Tz>> = None;
     match tzobj {
         Some(tzh) => match tz_of(tzh) {
             Some(TzKind::Id(tz)) => {
                 tzi = tz.as_ptr();
                 now.tz_info = tzi;
-                _pin = Some(tz);
+                pin = Some(tz);
             }
             Some(TzKind::Offset(o)) => now.z = o as i32,
             Some(TzKind::Abbr {
@@ -188,7 +188,7 @@ fn date_initialize(
             let tz = super::timezone_info()?;
             tzi = tz.as_ptr();
             now.tz_info = tzi;
-            _pin = Some(tz);
+            pin = Some(tz);
         }
     }
     now.zone_type = tzobj
@@ -199,7 +199,7 @@ fn date_initialize(
     now.us = usec;
 
     if format.is_none() && time_str == b"now" {
-        set_time(h, Some(ZTime::new(now)));
+        set_time(h, Some(ZTime::with_zone(now, pin.as_ref())));
         return Ok(true);
     }
     let mut options = TIMELIB_NO_CLONE;
@@ -211,7 +211,7 @@ fn date_initialize(
     unsafe { sys::timelib_update_ts(parsed.as_ptr(), tzi) };
     parsed.update_from_sse();
     parsed.have_relative = 0;
-    set_time(h, Some(ZTime::new(parsed)));
+    set_time(h, Some(ZTime::with_zone(parsed, pin.as_ref())));
     Ok(true)
 }
 
@@ -527,7 +527,7 @@ fn date_add_sub(
             (true, false) => sys::timelib_sub(tp, ip),
         })
     };
-    set_time(h, Some(ZTime::new(new)));
+    set_time(h, Some(ZTime::with_zone(new, t.zone())));
     Ok(())
 }
 
@@ -577,7 +577,10 @@ fn date_timezone_set(host: &dyn Host, h: &ObjectHandle, tzh: &ObjectHandle) -> R
                         },
                     );
                 }
-                Some(TzKind::Id(tz)) => sys::timelib_set_timezone(t.as_ptr(), tz.as_ptr()),
+                Some(TzKind::Id(tz)) => {
+                    sys::timelib_set_timezone(t.as_ptr(), tz.as_ptr());
+                    t.set_zone(tz);
+                }
                 None => {}
             }
         }
@@ -730,7 +733,7 @@ fn date_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<Valu
                 return Ok(Some(Value::Bool(false)));
             }
             let tz = instantiate(host, b"DateTimeZone")?;
-            set_tz(&tz, TzKind::from_time(&t));
+            set_tz(&tz, TzKind::from_time(&t, t.zone()));
             Value::Object(tz)
         }
         b"setTimezone" => {
@@ -887,7 +890,7 @@ fn timezone_initialize(tz: &[u8]) -> Result<TzKind, String> {
     if not_found != 0 || rest != 0 {
         return Err(format!("Unknown or bad timezone ({})", s(tz)));
     }
-    TzKind::from_time(&t).ok_or_else(|| format!("Unknown or bad timezone ({})", s(tz)))
+    TzKind::from_time(&t, None).ok_or_else(|| format!("Unknown or bad timezone ({})", s(tz)))
 }
 
 /// `php_date_timezone_initialize_from_hash`.

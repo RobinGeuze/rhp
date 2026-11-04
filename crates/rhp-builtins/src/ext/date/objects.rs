@@ -29,8 +29,30 @@ pub(crate) struct ZTime {
 impl ZTime {
     /// Takes `t`, pinning the cached zone its `tz_info` points to.
     pub(crate) fn new(t: Time) -> ZTime {
-        let zone = super::cached_zone(t.tz_info);
-        ZTime { t, zone }
+        ZTime::with_zone(t, None)
+    }
+
+    /// Takes `t`, pinning `zone` if `tz_info` points to it, else the cached
+    /// zone. A zone held elsewhere stays pinned after the per-request cache
+    /// was reset.
+    pub(crate) fn with_zone(t: Time, zone: Option<&Rc<Tz>>) -> ZTime {
+        let mut z = ZTime {
+            t,
+            zone: zone.cloned(),
+        };
+        z.repin();
+        z
+    }
+
+    /// The zone `tz_info` points to.
+    pub(crate) fn zone(&self) -> Option<&Rc<Tz>> {
+        self.zone.as_ref()
+    }
+
+    /// Pins `zone`, which `tz_info` now points to.
+    pub(crate) fn set_zone(&mut self, zone: &Rc<Tz>) {
+        self.zone = Some(zone.clone());
+        self.repin();
     }
 
     /// Pins the zone again after `tz_info` changed.
@@ -42,6 +64,10 @@ impl ZTime {
         if !same {
             self.zone = super::cached_zone(self.t.tz_info);
         }
+        debug_assert!(
+            self.zone.is_some() || self.t.tz_info.is_null(),
+            "a date's tz_info points to a zone nothing keeps alive"
+        );
     }
 }
 
@@ -95,10 +121,14 @@ impl TzKind {
         }
     }
 
-    /// `set_timezone_from_timelib_time`.
-    pub(crate) fn from_time(t: &Time) -> Option<TzKind> {
+    /// `set_timezone_from_timelib_time`; `zone` is the zone a [`ZTime`]
+    /// pins.
+    pub(crate) fn from_time(t: &Time, zone: Option<&Rc<Tz>>) -> Option<TzKind> {
         Some(match t.zone_type {
-            timelib::TIMELIB_ZONETYPE_ID => TzKind::Id(super::cached_zone(t.tz_info)?),
+            timelib::TIMELIB_ZONETYPE_ID => TzKind::Id(match zone {
+                Some(z) if std::ptr::eq(z.as_ptr(), t.tz_info) => z.clone(),
+                _ => super::cached_zone(t.tz_info)?,
+            }),
             timelib::TIMELIB_ZONETYPE_OFFSET => TzKind::Offset(t.z as i64),
             timelib::TIMELIB_ZONETYPE_ABBR => TzKind::Abbr {
                 utc_offset: t.z as i64,

@@ -267,7 +267,7 @@ fn fn_array_unique(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 // array_pad
 // ---------------------------------------------------------------------------
 
-const HT_MAX_SIZE: i128 = 1073741824; // 0x40000000
+const PAD_MAX_SIZE: i128 = 1073741824; // 0x40000000
 
 fn fn_array_pad(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let a = array_param(host, args, 0, "array_pad")?;
@@ -275,7 +275,7 @@ fn fn_array_pad(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let val = deref(&args[2]);
 
     let abs = (size as i128).abs();
-    if abs > HT_MAX_SIZE {
+    if abs > PAD_MAX_SIZE {
         return Err(Thrown::error(
             "ValueError",
             "array_pad(): Argument #2 ($length) must not exceed the maximum allowed array size",

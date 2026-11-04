@@ -114,6 +114,12 @@ pub fn constant_deprecation(name: &[u8]) -> Option<String> {
     ext::curl::constant_deprecation(name).or_else(|| ext::date::constant_deprecation(name))
 }
 
+/// The E_DEPRECATED a fetch of a built-in class's `#[\Deprecated]`
+/// constant raises (`class` is the declaring class).
+pub fn class_constant_deprecation(class: &[u8], name: &[u8]) -> Option<String> {
+    ext::date::class_constant_deprecation(class, name)
+}
+
 /// The engine's object free hook (`rhp_values::set_object_free_hook`), for
 /// the per-object state still kept by object id.
 pub fn object_freed(id: u32) {

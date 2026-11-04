@@ -7711,6 +7711,15 @@ impl Vm {
                                 if let Value::Object(h) = &v {
                                     self.touch_enum_case(h);
                                 }
+                                // A built-in class's `#[\Deprecated]` constant.
+                                if self.is_internal_class(decl) {
+                                    let dname = self.class(decl).name.as_bytes();
+                                    if let Some(msg) =
+                                        builtins::class_constant_deprecation(dname, &name_b)
+                                    {
+                                        self.diag(8192, &msg)?;
+                                    }
+                                }
                                 self.reg_set(top, dst, v);
                             }
                             None => {

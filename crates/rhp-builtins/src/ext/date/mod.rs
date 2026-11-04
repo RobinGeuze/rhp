@@ -234,6 +234,14 @@ pub(crate) fn constant_deprecation(name: &[u8]) -> Option<String> {
     ))
 }
 
+/// [`constant_deprecation`] for the stub's deprecated class constants.
+pub(crate) fn class_constant_deprecation(class: &[u8], name: &[u8]) -> Option<String> {
+    if !(class.eq_ignore_ascii_case(b"DateTimeInterface") && name == b"RFC7231") {
+        return None;
+    }
+    Some("Constant DateTimeInterface::RFC7231 is deprecated since 8.5, as this format ignores the associated timezone and always uses GMT".into())
+}
+
 /// PHP_MINFO_FUNCTION(date)'s rows.
 pub(crate) fn info_rows() -> Vec<(&'static str, Vec<u8>)> {
     vec![

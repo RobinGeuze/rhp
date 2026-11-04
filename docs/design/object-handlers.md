@@ -21,10 +21,10 @@ conversion, operator, comparison or clone; property access never looks.
 ## The payload
 
 ```rust
-let h = object::object_of(&v)?;                  // the ObjectHandle
-object::set_payload(&h, Rc::new(MyState { … })); // when creating the object
-let st: Rc<MyState> = object::payload(&v)?;      // in a builtin or handler
-h.borrow_mut().take_payload();                   // free early (`close()`)
+let h = object_handlers::object_of(&v)?;                  // the ObjectHandle
+object_handlers::set_payload(&h, Rc::new(MyState { … })); // when creating the object
+let st: Rc<MyState> = object_handlers::payload(&v)?;      // in a builtin or handler
+h.borrow_mut().take_payload();                            // free early (`close()`)
 ```
 
 - Typed by downcast: a `payload::<T>()` for another type is `None`, so an
@@ -85,19 +85,19 @@ one. A class with a `create_object` and the default handlers registers
 | `clone_obj` | `CloneObj::Std` (copy the properties; no payload), `Custom(f)` (`f(host, src, dst)` after the copy, before `__clone`), `None` (sets `ClassFlags::not_cloneable`) | `clone` |
 | `compare` | `compare(host, op1, op2)`, operands in order; `Ok(None)` is `zend_std_compare_objects` | `==`, `<=>`, sorting, `in_array`… through `zend_compare`'s object branch: op1's handler when op1 is an object (a Closure op1 never asks op2), else op2's |
 | `do_operation` | `do_operation(host, op, op1, op2)`: `Ok(None)` is FAILURE (the normal operator runs, casting with `cast_object`), an error is SUCCESS with an exception | `+ - * / **`: op1's handler when op1 is an object with one, else op2's, then both operands as numbers. `% << >> \| & ^` (`convert_op1_op2_long`) and `.` (`concat_function`): op1's handler, then op1 converted (to int / string; failing is "Unsupported operand types"), and only then op2's handler and op2. Compound assignments the same. `-$x` as `Mul` by -1, `~$x` as `BitNot` (else "Cannot perform bitwise not"); `++`/`--` as `Add`/`Sub` of 1, then `cast_object(Number)`, then php's "Cannot increment" TypeError |
-| `cast_object` | `cast_object(host, obj, target)`: replaces php's default for every target, so hand the targets you do not convert to `host.std_cast_object(obj, target)` (`__toString()` for strings) | string conversion (`echo`, `.`, `(string)`), `(int)`/`(float)`/`intval`/`floatval` (`object::object_to_number`: a failure is php's "could not be converted" warning and 1), `(bool)`, `if`, `!`, `empty($o->p)`, `boolval`, `array_filter` (`object::is_true`), arithmetic operands and `array_sum`/`array_product` (`Number`), comparison with a scalar |
+| `cast_object` | `cast_object(host, obj, target)`: replaces php's default for every target, so hand the targets you do not convert to `host.std_cast_object(obj, target)` (`__toString()` for strings) | string conversion (`echo`, `.`, `(string)`), `(int)`/`(float)`/`intval`/`floatval` (`object_handlers::object_to_number`: a failure is php's "could not be converted" warning and 1), `(bool)`, `if`, `!`, `empty($o->p)`, `boolval`, `array_filter` (`object_handlers::is_true`), arithmetic operands and `array_sum`/`array_product` (`Number`), comparison with a scalar |
 | `dtor_obj` | `dtor_obj(host, obj)`, once, before `__destruct` | the engine's destructor pass |
 | `free_obj` | the payload's `Drop`; work that may call PHP goes in `free_obj_host(host, obj)`, run once right after `__destruct` (in its place without one) unless the destructor kept a reference | the object's storage being freed; the engine's destructor pass |
 
 Notes:
 
 - A handler that starts with php's `ZEND_COMPARE_OBJECTS_FALLBACK` checks
-  that both operands carry its table with `object::has_handlers(host, v,
-  &MY_HANDLERS)` and returns `Ok(None)` otherwise. php compares the
-  `compare` function pointers; rhp compares whole tables, so classes that
-  php compares with each other must share one table (`DateTime` and
-  `DateTimeImmutable` do; if they ever need separate tables, compare
-  their `compare` fields instead).
+  that both operands carry its table with
+  `object_handlers::has_handlers(host, v, &MY_HANDLERS)` and returns
+  `Ok(None)` otherwise. php compares the `compare` function pointers; rhp
+  compares whole tables, so classes that php compares with each other
+  must share one table (`DateTime` and `DateTimeImmutable` do; if they
+  ever need separate tables, compare their `compare` fields instead).
 - "op1" is the operand php's VM sees first. php swaps the operands of
   `*`, `|`, `&`, `^`, `==`, `!=`, `===` and `!==` when op1's kind
   (CONST < TMP < VAR < CV) is lower than op2's, so `[] | $g` reaches
@@ -112,7 +112,7 @@ Notes:
 - An exception raised while another is pending gets it as its previous
   one in php; a handler does that with `host.chain_thrown(new, pending)`.
 - Formatters only see `&dyn Host`, so the dumpers resolve every reachable
-  object's view up front (`dump::resolve_views`).
+  object's view up front (`var::resolve_views`).
 - Handlers not routed yet: property and dimension access (`read_property`,
   `has_property`…), `get_constructor` (`Directory`), `get_gc`. DOM's,
   SimpleXML's, XMLReader's, DatePeriod's and ZipArchive's properties (and

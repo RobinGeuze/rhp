@@ -1,0 +1,17 @@
+Fbool(false)
+Tbool(true)
+|1
+1|
+bool(false)
+bool(true)
+bool(false)
+d1 d2 d3
+5
+00 01 
+00 10 20 
+onetwo
+threedef
+def
+oned
+str
+UnhandledMatchError: Unhandled match case 5

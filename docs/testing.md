@@ -32,6 +32,8 @@ from `PATH` or `/opt/homebrew/bin` (`PHP_CGI` overrides it).
 `tests/golden` as a CLI request in-process (`rhp_sapi::CaptureSapi`), by
 its absolute path and from its directory as php ran it, and requires
 byte-identical stdout.
+`tests/golden/vm` holds the VM's own goldens; rhp-vm's `tests/golden.rs`
+runs them, so `cargo test -p rhp-vm` and cargo-mutants on rhp-vm see them.
 Print only the basename of paths (`basename(__FILE__)`), catch exceptions
 whose message holds a path (print `get_class($e)` and the message with the
 path removed), and keep output independent of time, the machine and the
@@ -51,9 +53,9 @@ files, `fork`), and for sweeps over generated inputs (`rhp-difftest`'s hash,
 bcmath, ctype, … sweeps). Each one returns early when `php_available()` is
 false.
 
-Unit tests (inline `#[cfg(test)]`, `crates/rhp-vm/tests`,
-`crates/rhp-sapi/tests`) hold literal expectations for rhp's own contracts:
-VM snippets, the embedding API, request isolation, the compiled-script cache.
+Unit tests (inline `#[cfg(test)]`, `crates/rhp-sapi/tests`) hold literal
+expectations for rhp's own contracts: the embedding API, request isolation,
+the compiled-script cache.
 
 **CGI fixtures** cover `rhp --cgi`: `crates/rhp-cli/tests/cgi.rs` runs each
 `tests/cgi/*.php` under rhp and php-cgi with the request a `NAME.cgi` file

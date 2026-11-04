@@ -686,8 +686,7 @@ fn opt_str(ini: &[(String, String)], name: &str) -> Option<String> {
 /// file specified."): headers plus `body`, through a fresh engine so the
 /// header defaults (X-Powered-By, Content-type) match php's.
 fn bare_response(ini: &[(String, String)], code: i64, body: &[u8], no_headers: bool) {
-    let mut vm = rhp_vm::Vm::new();
-    vm.set_sapi(Box::new(CgiSapi::new()));
+    let mut vm = rhp_vm::Vm::new(Box::new(CgiSapi::new()));
     for (k, v) in ini {
         vm.set_ini(k.as_bytes(), v.as_bytes());
     }

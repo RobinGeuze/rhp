@@ -1,0 +1,18 @@
+10
+6
+Error: Cannot access private property Priv::$s
+3,5 1,2
+bool(true)
+bool(true)
+bool(false)
+42 42
+M(7) val=M(7) M(7)
+none 9
+RuntimeException: boom
+200 NotFound
+NULL
+ValueError: 99 is not a valid backing value for enum Code
+enum(S::A)
+bool(true)
+bool(true)
+bool(false)

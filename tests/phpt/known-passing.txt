@@ -133,6 +133,7 @@ Zend/tests/attributes/029_reflect_internal_symbols.phpt
 Zend/tests/attributes/033_attribute_flags_type_is_not_validated_at_comp_time.phpt
 Zend/tests/attributes/034_target_values.phpt
 Zend/tests/attributes/constants/constant_listed_as_target-userland.phpt
+Zend/tests/attributes/constants/constant_redefined_addition.phpt
 Zend/tests/attributes/deprecated/property_readonly_001.phpt
 Zend/tests/attributes/deprecated/property_readonly_002.phpt
 Zend/tests/attributes/deprecated/property_readonly_003.phpt
@@ -202,6 +203,7 @@ Zend/tests/bug28442.phpt
 Zend/tests/bug29015.phpt
 Zend/tests/bug29104.phpt
 Zend/tests/bug29210.phpt
+Zend/tests/bug29890.phpt
 Zend/tests/bug30080.phpt
 Zend/tests/bug30140.phpt
 Zend/tests/bug30407.phpt
@@ -556,6 +558,7 @@ Zend/tests/const_dereference_001.phpt
 Zend/tests/const_dereference_002.phpt
 Zend/tests/const_dereference_003.phpt
 Zend/tests/const_eval_and.phpt
+Zend/tests/constants/008.phpt
 Zend/tests/constants/018.phpt
 Zend/tests/constants/bug24699.phpt
 Zend/tests/constants/bug30702.phpt
@@ -563,9 +566,11 @@ Zend/tests/constants/bug33732.phpt
 Zend/tests/constants/bug41633_1.phpt
 Zend/tests/constants/bug41633_4.phpt
 Zend/tests/constants/bug41640.phpt
+Zend/tests/constants/bug42820.phpt
 Zend/tests/constants/bug45742.phpt
 Zend/tests/constants/bug45910.phpt
 Zend/tests/constants/bug45910_2.phpt
+Zend/tests/constants/bug46304.phpt
 Zend/tests/constants/bug49472.phpt
 Zend/tests/constants/bug50816.phpt
 Zend/tests/constants/bug63976.phpt
@@ -584,11 +589,14 @@ Zend/tests/constants/class_constants_004.phpt
 Zend/tests/constants/class_constants_005.phpt
 Zend/tests/constants/class_constants_006.phpt
 Zend/tests/constants/class_constants_007.phpt
+Zend/tests/constants/constants_001.phpt
 Zend/tests/constants/constants_002.phpt
 Zend/tests/constants/constants_003.phpt
+Zend/tests/constants/constants_004.phpt
 Zend/tests/constants/constants_005.phpt
 Zend/tests/constants/constants_006.phpt
 Zend/tests/constants/constants_007.phpt
+Zend/tests/constants/constants_008.phpt
 Zend/tests/constants/constants_009.phpt
 Zend/tests/constants/defined_fn_no_ns_fallback.phpt
 Zend/tests/constants/dir-constant-eval.phpt
@@ -603,10 +611,13 @@ Zend/tests/constants/final_constants/final_const6.phpt
 Zend/tests/constants/final_constants/final_const7.phpt
 Zend/tests/constants/final_constants/final_const9.phpt
 Zend/tests/constants/gh10709.phpt
+Zend/tests/constants/halt_compiler/bug53305.phpt
 Zend/tests/constants/halt_compiler/bug54804.phpt
 Zend/tests/constants/halt_compiler/bug77738.phpt
 Zend/tests/constants/halt_compiler/halt01.phpt
 Zend/tests/constants/halt_compiler/halt03.phpt
+Zend/tests/constants/halt_compiler/halt_compiler3.phpt
+Zend/tests/constants/halt_compiler/halt_compiler4.phpt
 Zend/tests/constants/halt_compiler/halt_compiler5.phpt
 Zend/tests/constants/line_const_in_array.phpt
 Zend/tests/constants/magic_const_in_global_scope.phpt
@@ -1518,6 +1529,7 @@ Zend/tests/named_params/runtime_cache_init.phpt
 Zend/tests/named_params/unknown_named_param.phpt
 Zend/tests/namespaces/bug42819.phpt
 Zend/tests/namespaces/bug46813.phpt
+Zend/tests/namespaces/bug47593.phpt
 Zend/tests/namespaces/bug77376.phpt
 Zend/tests/namespaces/gh11152.phpt
 Zend/tests/namespaces/namespace_first_stmt_nop.phpt
@@ -1566,6 +1578,7 @@ Zend/tests/namespaces/ns_042.phpt
 Zend/tests/namespaces/ns_043.phpt
 Zend/tests/namespaces/ns_046.phpt
 Zend/tests/namespaces/ns_048.phpt
+Zend/tests/namespaces/ns_049.phpt
 Zend/tests/namespaces/ns_050.phpt
 Zend/tests/namespaces/ns_053.phpt
 Zend/tests/namespaces/ns_054.phpt
@@ -1587,6 +1600,7 @@ Zend/tests/namespaces/ns_070.phpt
 Zend/tests/namespaces/ns_071.phpt
 Zend/tests/namespaces/ns_072.phpt
 Zend/tests/namespaces/ns_074.phpt
+Zend/tests/namespaces/ns_075.phpt
 Zend/tests/namespaces/ns_076.phpt
 Zend/tests/namespaces/ns_077_1.phpt
 Zend/tests/namespaces/ns_077_2.phpt
@@ -3391,6 +3405,7 @@ ext/opcache/tests/bug69688.phpt
 ext/opcache/tests/bug70111.phpt
 ext/opcache/tests/bug70207.phpt
 ext/opcache/tests/bug70237.phpt
+ext/opcache/tests/bug71127.phpt
 ext/opcache/tests/bug71843.phpt
 ext/opcache/tests/bug72014.phpt
 ext/opcache/tests/bug72762.phpt

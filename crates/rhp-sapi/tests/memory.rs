@@ -2,56 +2,27 @@
 //! ends as php ends it (fatal error, shutdown functions, status 500), and
 //! the next request on the same thread starts with a clean slate.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use rhp_sapi::{run_request, Outcome, Request, RequestInfo, Response, Sapi, Script};
+use rhp_sapi::{CaptureSapi, Outcome, Request, RequestInfo, Script};
 
 #[global_allocator]
 static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
 
-#[derive(Clone, Default)]
-struct Capture {
-    body: Rc<RefCell<Vec<u8>>>,
-    code: Rc<RefCell<i64>>,
-}
-
-impl Sapi for Capture {
-    fn name(&self) -> &str {
-        "embed-test"
-    }
-
-    fn ub_write(&mut self, data: &[u8]) {
-        self.body.borrow_mut().extend_from_slice(data);
-    }
-
-    fn send_headers(&mut self, r: &Response) {
-        *self.code.borrow_mut() = r.code;
-    }
-}
-
 fn run(code: &str, ini: &[(&str, &str)]) -> (String, i64, Outcome) {
-    let cap = Capture::default();
-    let outcome = run_request(
-        Box::new(cap.clone()),
-        Request {
-            script: Script::Code(code.to_string()),
-            ini: ini
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
-            args: Vec::new(),
-            info: Some(RequestInfo {
-                method: Some(b"GET".to_vec()),
-                response_code: 200,
-                ..Default::default()
-            }),
-            php_binary: None,
-        },
-    );
-    let body = String::from_utf8_lossy(&cap.body.borrow()).into_owned();
-    let code = *cap.code.borrow();
-    (body, code, outcome)
+    let req = Request {
+        ini: ini
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        info: Some(RequestInfo {
+            method: Some(b"GET".to_vec()),
+            response_code: 200,
+            ..Default::default()
+        }),
+        ..Request::new(Script::Code(code.to_string()))
+    };
+    let (outcome, cap) = CaptureSapi::web("embed-test").run(req);
+    let body = String::from_utf8_lossy(&cap.stdout).into_owned();
+    (body, cap.code, outcome)
 }
 
 const GREEDY: &str = r#"

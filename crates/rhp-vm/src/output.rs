@@ -191,13 +191,7 @@ impl Vm {
     /// sapi_flush: push buffered response bytes to the client (the
     /// installed SAPI's `flush`).
     fn sapi_flush(&mut self) {
-        match self.sapi.sapi.as_mut() {
-            Some(s) => s.flush(),
-            None => {
-                use std::io::Write;
-                let _ = std::io::stdout().flush();
-            }
-        }
+        self.sapi.sapi.flush();
     }
 
     /// php_request_startup's output setup: the `output_handler` /

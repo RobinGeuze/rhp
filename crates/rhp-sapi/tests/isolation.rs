@@ -2,55 +2,23 @@
 //! state: each [`run_request`] builds a fresh engine and resets the
 //! builtins' thread-local state.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use rhp_sapi::{run_request, Outcome, Request, RequestInfo, Response, Sapi, Script};
+use rhp_sapi::{CaptureSapi, Captured, Outcome, Request, RequestInfo, Script};
 
 // The engine's memory accounting (memory_get_usage(), memory_limit).
 #[global_allocator]
 static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
 
-/// A SAPI capturing the response into shared buffers.
-#[derive(Clone, Default)]
-struct Capture {
-    body: Rc<RefCell<Vec<u8>>>,
-    headers: Rc<RefCell<Vec<Vec<u8>>>>,
-    code: Rc<RefCell<i64>>,
-}
-
-impl Sapi for Capture {
-    fn name(&self) -> &str {
-        "embed-test"
-    }
-
-    fn ub_write(&mut self, data: &[u8]) {
-        self.body.borrow_mut().extend_from_slice(data);
-    }
-
-    fn send_headers(&mut self, r: &Response) {
-        *self.headers.borrow_mut() = r.headers.clone();
-        *self.code.borrow_mut() = r.code;
-    }
-}
-
-fn run(code: &str, info: RequestInfo) -> (Capture, Outcome) {
-    let cap = Capture::default();
-    let outcome = run_request(
-        Box::new(cap.clone()),
-        Request {
-            script: Script::Code(code.to_string()),
-            ini: Vec::new(),
-            args: Vec::new(),
-            info: Some(info),
-            php_binary: None,
-        },
-    );
+fn run(code: &str, info: RequestInfo) -> (Captured, Outcome) {
+    let req = Request {
+        info: Some(info),
+        ..Request::new(Script::Code(code.to_string()))
+    };
+    let (outcome, cap) = CaptureSapi::web("embed-test").run(req);
     (cap, outcome)
 }
 
-fn body(c: &Capture) -> String {
-    String::from_utf8_lossy(&c.body.borrow()).into_owned()
+fn body(c: &Captured) -> String {
+    String::from_utf8_lossy(&c.stdout).into_owned()
 }
 
 #[test]
@@ -78,8 +46,8 @@ fn sequential_requests_are_isolated() {
     let (c1, o1) = run(first, info);
     assert_eq!(o1, Outcome::Exit(0));
     assert_eq!(body(&c1), "one embed-test 0.333\n");
-    assert_eq!(*c1.code.borrow(), 404);
-    assert!(c1.headers.borrow().iter().any(|h| h == b"X-First: 1"));
+    assert_eq!(c1.code, 404);
+    assert!(c1.headers.iter().any(|h| h == b"X-First: 1"));
 
     let second = r#"
         var_dump(
@@ -122,8 +90,8 @@ array(1) {
     .replace("LEN", &powered.len().to_string())
     .replace("POWERED", &powered);
     assert_eq!(body(&c2), want);
-    assert_eq!(*c2.code.borrow(), 200);
-    assert!(!c2.headers.borrow().iter().any(|h| h == b"X-First: 1"));
+    assert_eq!(c2.code, 200);
+    assert!(!c2.headers.iter().any(|h| h == b"X-First: 1"));
 }
 
 #[test]
@@ -135,25 +103,7 @@ fn sapi_name_follows_the_request() {
     assert_eq!(body(&c), "embed-test embed-test");
     // A CLI-style request on the same thread afterwards (no SAPI request
     // input): the name is the new SAPI's again.
-    struct Other(Rc<RefCell<Vec<u8>>>);
-    impl Sapi for Other {
-        fn name(&self) -> &str {
-            "other"
-        }
-        fn ub_write(&mut self, data: &[u8]) {
-            self.0.borrow_mut().extend_from_slice(data);
-        }
-    }
-    let buf = Rc::new(RefCell::new(Vec::new()));
-    run_request(
-        Box::new(Other(buf.clone())),
-        Request {
-            script: Script::Code("echo php_sapi_name();".to_string()),
-            ini: Vec::new(),
-            args: Vec::new(),
-            info: None,
-            php_binary: None,
-        },
-    );
-    assert_eq!(&buf.borrow()[..], b"other");
+    let script = Script::Code("echo php_sapi_name();".to_string());
+    let (_, out) = CaptureSapi::web("other").run(Request::new(script));
+    assert_eq!(out.stdout, b"other");
 }

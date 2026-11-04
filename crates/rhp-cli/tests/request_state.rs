@@ -3,9 +3,7 @@
 //! next one created on the same thread, and putenv must not touch the process
 //! environment.
 
-use rhp_compiler::compile_with_source;
-use rhp_frontend::Arena;
-use rhp_vm::Vm;
+use rhp_sapi::{CaptureSapi, Request, Script};
 
 // The engine's memory accounting (memory_get_usage(), memory_limit).
 #[global_allocator]
@@ -37,12 +35,12 @@ echo 1/3, ' ', json_encode(0.1), ' ', http_build_query(['a' => 1, 'b' => 2]), ' 
 const CLEAN: &str = "0.33333333333333 0.1 a=1&b=2 14 30719 UTC false 0 0 false";
 
 fn run_vm(source: &[u8]) -> String {
-    let arena = Arena::new();
-    let parsed = arena.parse(b"t.php", source);
-    let program = compile_with_source(parsed.program(), source, "t.php").expect("compile");
-    let mut vm = Vm::new();
-    vm.run(&program).expect("run");
-    String::from_utf8_lossy(vm.output()).into_owned()
+    let script = Script::Source {
+        path: "t.php".to_string(),
+        bytes: source.to_vec(),
+    };
+    let (_, out) = CaptureSapi::cli().run(Request::new(script));
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 #[test]

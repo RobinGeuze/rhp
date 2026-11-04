@@ -206,10 +206,11 @@ impl Vm {
         }
     }
 
-    /// zend_mm_hard_limit_error: php-cli prints the message to stderr and
-    /// exits with status 137 on the spot (no shutdown functions, no output
-    /// flush). A server SAPI ends just the request instead, as a fatal
-    /// error, so one script can't take the whole process down.
+    /// zend_mm_hard_limit_error: php prints the message to stderr and exits
+    /// with status 137 on the spot (no shutdown functions, no output flush).
+    /// Only a SAPI that says so does that here (php-cli); under any other the
+    /// request ends as a fatal error, so one script can't take the whole
+    /// process down.
     fn hard_limit_exit(&mut self, oom: Oom) -> Thrown {
         let (file, line) = self.throw_site();
         let (file, line) = if file.is_empty() {
@@ -217,14 +218,12 @@ impl Vm {
         } else {
             (file, line)
         };
-        // (Only php-cli itself: an engine run in-process, without a SAPI,
-        // must not take its host down.)
-        if self.sapi.sapi.is_some() && rhp_builtins::sapi::sapi_name() == "cli" {
+        if self.sapi.sapi.exits_on_hard_limit() {
             let mut m = oom.message().into_bytes();
             m.extend_from_slice(b" in ");
             m.extend_from_slice(&file);
             m.extend_from_slice(format!(" on line {line}\n").as_bytes());
-            self.flush_stdout();
+            self.sapi.sapi.flush();
             use std::io::Write;
             let _ = std::io::stderr().write_all(&m);
             std::process::exit(137);

@@ -1140,11 +1140,7 @@ dependencies = [
 name = "rhp-cli"
 version = "0.0.0"
 dependencies = [
- "rhp-compiler",
- "rhp-frontend",
  "rhp-sapi",
- "rhp-values",
- "rhp-vm",
 ]
 
 [[package]]
@@ -1179,8 +1175,8 @@ dependencies = [
  "rhp-builtins",
  "rhp-compiler",
  "rhp-frontend",
+ "rhp-sapi",
  "rhp-values",
- "rhp-vm",
  "sha2",
  "toml",
 ]
@@ -1231,8 +1227,7 @@ dependencies = [
  "indexmap",
  "rhp-builtins",
  "rhp-bytecode",
- "rhp-compiler",
- "rhp-frontend",
+ "rhp-sapi",
  "rhp-semantics",
  "rhp-values",
  "rustc-hash",

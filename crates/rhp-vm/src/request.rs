@@ -1,11 +1,6 @@
 //! The engine side of the SAPI layer: the output sink, lazy header sending
 //! (`php_output_header` / `sapi_send_headers`), the response a request
 //! builds, and the request input (superglobals, `php://input`).
-//!
-//! Without a [`Sapi`] installed the VM keeps its built-in php-cli behaviour
-//! (output collected for [`Vm::output`] or passed through to stdout), with
-//! php-cli's header semantics: nothing stored, `headers_sent()` true after
-//! the first output byte.
 
 use rhp_builtins::rfc1867::{self, BodyState, Diag};
 use rhp_builtins::sapi::{self, RequestInfo, Response, Sapi, TreatData};
@@ -15,10 +10,9 @@ use rhp_values::{ArrayKey, PhpArray, Value};
 use crate::{is_prelude_proto, Vm};
 
 /// Per-request SAPI state kept on the [`Vm`].
-#[derive(Default)]
 pub(crate) struct SapiState {
-    /// The installed server API (None: the built-in CLI behaviour).
-    pub(crate) sapi: Option<Box<dyn Sapi>>,
+    /// The server API the request runs under.
+    pub(crate) sapi: Box<dyn Sapi>,
     /// The response being built (`SG(sapi_headers)`).
     pub(crate) response: Response,
     /// The request's input, when a SAPI supplied one.
@@ -42,21 +36,29 @@ pub(crate) struct SapiState {
     pub(crate) body: BodyState,
 }
 
-impl Vm {
-    /// Install the server API this request runs under: its name
-    /// (`php_sapi_name()`, `PHP_SAPI`), ini defaults, header semantics and
-    /// output sink. Call right after [`Vm::new`], before ini settings,
-    /// compiling and running.
-    pub fn set_sapi(&mut self, sapi: Box<dyn Sapi>) {
-        let name = sapi.name().to_string();
-        builtins::sapi::set_sapi(&name, &sapi.ini_defaults());
-        self.constants
-            .insert(b"PHP_SAPI".to_vec(), Value::str(name.into_bytes()));
-        self.sapi.response.store = sapi.stores_headers();
-        self.sapi.response.code = sapi.initial_response_code();
-        self.sapi.sapi = Some(sapi);
+impl SapiState {
+    /// The state for a request under `sapi`, after its name and ini defaults
+    /// were installed for this thread ([`builtins::sapi::set_sapi`]).
+    pub(crate) fn new(sapi: Box<dyn Sapi>) -> SapiState {
+        let response = Response {
+            store: sapi.stores_headers(),
+            code: sapi.initial_response_code(),
+            ..Response::default()
+        };
+        SapiState {
+            sapi,
+            response,
+            request: None,
+            docref_msg: false,
+            startup: false,
+            post_too_big: false,
+            deferred_startup_diags: Vec::new(),
+            body: BodyState::default(),
+        }
     }
+}
 
+impl Vm {
     /// Hand the engine the request's input (server variables, query string,
     /// cookies, body …). Superglobals are built from it when the script
     /// starts.
@@ -247,9 +249,7 @@ impl Vm {
             self.display_error(2, "Warning", d.as_bytes(), b"Unknown", 0);
         }
         self.sapi_send_headers();
-        if let Some(s) = self.sapi.sapi.as_mut() {
-            s.flush();
-        }
+        self.sapi.sapi.flush();
         // sapi_deactivate_destroy: uploads not moved away are deleted.
         self.sapi.body.cleanup();
         rhp_values::mem::end_request();
@@ -261,8 +261,7 @@ impl Vm {
         builtins::Host::write_out(self, data);
     }
 
-    /// Write to the request's error stream (the SAPI's `write_stderr`; the
-    /// process's stderr without one).
+    /// Write to the request's error stream (the SAPI's `write_stderr`).
     pub fn write_error_stream(&mut self, data: &[u8]) {
         self.write_stderr(data);
     }
@@ -281,22 +280,15 @@ impl Vm {
 
     /// Unbuffered output on its way to the SAPI (`php_output_op`'s tail):
     /// the headers go out first, then the bytes reach the sink.
-    pub(crate) fn sapi_write(&mut self, data: &[u8]) -> bool {
+    pub(crate) fn sapi_write(&mut self, data: &[u8]) {
         if data.is_empty() {
-            return true;
+            return;
         }
         if !self.sapi.response.sent {
             self.php_output_header();
         }
-        if self.sapi.response.output_disabled {
-            return true;
-        }
-        match self.sapi.sapi.as_mut() {
-            Some(s) => {
-                s.ub_write(data);
-                true
-            }
-            None => false,
+        if !self.sapi.response.output_disabled {
+            self.sapi.sapi.ub_write(data);
         }
     }
 
@@ -327,9 +319,7 @@ impl Vm {
             }
         }
         self.sapi.response.sent = true;
-        if let Some(s) = self.sapi.sapi.as_mut() {
-            s.send_headers(&self.sapi.response);
-        }
+        self.sapi.sapi.send_headers(&self.sapi.response);
         self.sapi.response.status_line = None;
     }
 

@@ -20,7 +20,7 @@ from `PATH` or `/opt/homebrew/bin` (`PHP_CGI` overrides it).
 
 | kind | where | expectation | runs without php |
 |---|---|---|---|
-| golden | `tests/golden/NAME.php` + `NAME.out` | committed output of `php -n` | yes |
+| golden | `tests/golden/**/NAME.php` + `NAME.out` | committed output of `php -n` | yes |
 | live-php test | `crates/rhp-cli/tests`, `crates/rhp-difftest/tests` | php on the machine, at test time | skips |
 | CGI fixture | `tests/cgi/NAME.php` (+ `NAME.cgi`) | php-cgi on the machine | skips |
 | curl fixture | `tests/curl_http/NAME.php` + `NAME.out` | committed output of `php -n` against the test's local server | yes |
@@ -28,10 +28,16 @@ from `PATH` or `/opt/homebrew/bin` (`PHP_CGI` overrides it).
 | apps | `tests/apps/` | lint list; php-cgi for the request diff | no (CI job) |
 
 **Goldens** are the default for language and library behaviour. The runner
-(`crates/rhp-cli/tests/diff.rs`) runs every fixture on the VM in-process under
-its real path and requires byte-identical output. Print only the basename of
-paths (`basename(__FILE__)`), catch exceptions whose message holds a path,
-and keep output independent of time, the machine and the environment.
+(`crates/rhp-cli/tests/diff.rs`) runs every fixture directly in
+`tests/golden` as a CLI request in-process (`rhp_sapi::CaptureSapi`), by
+its absolute path and from its directory as php ran it, and requires
+byte-identical stdout.
+`tests/golden/vm` holds the VM's own goldens; rhp-vm's `tests/golden.rs`
+runs them, so `cargo test -p rhp-vm` and cargo-mutants on rhp-vm see them.
+Print only the basename of paths (`basename(__FILE__)`), catch exceptions
+whose message holds a path (print `get_class($e)` and the message with the
+path removed), and keep output independent of time, the machine and the
+environment.
 
 **Golden policy:** a golden holds only output that is the same with every
 library version php may link. The no-php CI job runs the goldens against
@@ -47,9 +53,9 @@ files, `fork`), and for sweeps over generated inputs (`rhp-difftest`'s hash,
 bcmath, ctype, … sweeps). Each one returns early when `php_available()` is
 false.
 
-Unit tests (inline `#[cfg(test)]`, `crates/rhp-vm/tests`,
-`crates/rhp-sapi/tests`) hold literal expectations for rhp's own contracts:
-VM snippets, the embedding API, request isolation, the compiled-script cache.
+Unit tests (inline `#[cfg(test)]`, `crates/rhp-sapi/tests`) hold literal
+expectations for rhp's own contracts: the embedding API, request isolation,
+the compiled-script cache.
 
 **CGI fixtures** cover `rhp --cgi`: `crates/rhp-cli/tests/cgi.rs` runs each
 `tests/cgi/*.php` under rhp and php-cgi with the request a `NAME.cgi` file
@@ -77,9 +83,9 @@ php-cgi.
 
 ## Regenerating expectations
 
-- A golden: `cd tests/golden && php -n NAME.php > NAME.out`, with the
-  reference php. Never regenerate a golden just to make a failing run pass:
-  a changed `.out` is a behaviour change to explain.
+- A golden: `rhp-difftest golden --write --filter NAME` with the reference
+  php (see below). Never regenerate a golden just to make a failing run
+  pass: a changed `.out` is a behaviour change to explain.
 - A curl fixture: `cargo test -p rhp-cli --test curl_http -- --ignored regenerate`.
 - The phpt list: `rhp-difftest phpt --write-known` (see the phpt README),
   then keep the list C-sorted with its header lines first; remove an entry
@@ -88,6 +94,37 @@ php-cgi.
 - `rhp-difftest phpt --mutate N --emit-fixtures DIR --minimize` writes
   minimised golden pairs for the divergences it finds; move a pair into
   `tests/golden/` once rhp is fixed.
+
+## Goldens and the reference php
+
+A golden's `.out` is the stdout of the reference php for the fixture, run
+the canonical way:
+
+- `php -n /absolute/path/to/NAME.php` (`RHP_PHP` names the php),
+- with the fixture's directory as the working directory,
+- with the environment inherited, except `TMPDIR`: a fresh empty
+  directory, so a `cargo test` running the goldens at the same time can't
+  touch the files a fixture writes there;
+- with stdin empty;
+- only stdout is recorded, not stderr or the exit status.
+
+`rhp-difftest golden --check` re-runs php that way on every fixture
+(subdirectories included) and compares with the committed `.out`;
+`--write` rewrites them, and only on the reference build (php 8.5.12 on
+macOS); `--filter SUBSTR` narrows either to matching names. Run `--check`
+against the reference build after changing a fixture and at every php
+version bump.
+
+Some goldens print facts of the reference build: its configuration, and
+the versions and features of the libraries it links.
+`tests/golden/reference-only.txt` lists them, with the reason for each.
+`golden --check --portable` skips them; CI's phpt job runs it against its
+php 8.5.12 (Ubuntu, setup-php's libraries). The list came from running
+every golden under Ubuntu's php 8.5 with CI's library versions, not from
+CI itself: if CI's step finds another fixture, list it with its reason.
+A new golden whose output depends on the build belongs in a live-php test
+instead (the golden policy above); list it only when that can't be
+avoided.
 
 Generated tables have their own `--check`: `rhp-difftest gen signatures`,
 `gen html-tables`, `gen parser` (see `crates/rhp-difftest/src/gen/`).
@@ -98,6 +135,7 @@ Generated tables have their own `--check`: `rhp-difftest gen signatures`,
 cargo test --workspace --all-targets          # goldens, unit and live-php tests
 RHP_PHP=php cargo test --workspace --all-targets --no-fail-fast
 cargo build --release -p rhp-cli -p rhp-difftest
+target/release/rhp-difftest golden --check     # the .out files are still php's
 target/release/rhp-difftest phpt --php-src ../php-src \
   --php-cgi "$(command -v php-cgi)" --check-known tests/phpt/known-passing.txt
 ```

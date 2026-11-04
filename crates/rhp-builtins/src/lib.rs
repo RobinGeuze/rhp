@@ -366,7 +366,8 @@ pub trait Host {
         Vec::new()
     }
 
-    /// Define a runtime constant (`define`). Returns false if already defined.
+    /// Define a runtime constant (`define`). False when the name is taken
+    /// (the caller warns, as zend_register_constant does).
     fn define_const(&mut self, _name: &[u8], _value: Value) -> bool {
         false
     }
@@ -1990,16 +1991,46 @@ fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "define(): Argument #3 ($case_insensitive) is ignored since declaration of case-insensitive constants is no longer supported",
         )?;
     }
-    Ok(Value::Bool(host.define_const(&name, value)))
+    if host.define_const(&name, value) {
+        return Ok(Value::Bool(true));
+    }
+    host.emit_diagnostic(E_WARNING, &const_redefined_message(&name))?;
+    Ok(Value::Bool(false))
+}
+
+/// A global constant's key in the constant table: php lowercases the
+/// namespace part (`Foo\Bar\X` → `foo\bar\X`) and keeps the short name.
+/// Like php's `strrchr`, it only looks before the first NUL byte.
+pub fn const_key(name: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    let c_str = &name[..name.iter().position(|&b| b == 0).unwrap_or(name.len())];
+    match c_str.iter().rposition(|&b| b == b'\\') {
+        Some(ns) if name[..ns].iter().any(u8::is_ascii_uppercase) => {
+            let mut key = name.to_vec();
+            key[..ns].make_ascii_lowercase();
+            key.into()
+        }
+        _ => name.into(),
+    }
+}
+
+/// zend_register_constant's warning for a name that is taken: the table
+/// key, printed as a C string.
+pub fn const_redefined_message(name: &[u8]) -> String {
+    let key = const_key(name);
+    let shown = &key[..key.iter().position(|&b| b == 0).unwrap_or(key.len())];
+    format!(
+        "Constant {} already defined, this will be an error in PHP 9",
+        String::from_utf8_lossy(shown)
+    )
 }
 
 /// Resolve a constant by name: a class constant `Class::CONST` (incl. enum cases)
-/// or a global constant.
+/// or a global constant. A leading `\` is skipped, as zend_get_constant_ex
+/// does.
 fn resolve_const(host: &mut dyn Host, name: &[u8]) -> Result<Option<Value>, Thrown> {
+    let name = name.strip_prefix(b"\\").unwrap_or(name);
     if let Some(pos) = find_sub(name, b"::") {
-        let class = name[..pos].strip_prefix(b"\\").unwrap_or(&name[..pos]);
-        let cname = &name[pos + 2..];
-        host.class_constant_eval(class, cname)
+        host.class_constant_eval(&name[..pos], &name[pos + 2..])
     } else {
         Ok(host.get_const(name))
     }
@@ -2013,9 +2044,10 @@ fn fn_defined(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
     resolve_const(host, &name)?.ok_or_else(|| {
+        let shown = name.strip_prefix(b"\\").unwrap_or(&name);
         Thrown::error(
             "Error",
-            format!("Undefined constant \"{}\"", String::from_utf8_lossy(&name)),
+            format!("Undefined constant \"{}\"", String::from_utf8_lossy(shown)),
         )
     })
 }

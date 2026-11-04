@@ -1,0 +1,5 @@
+before
+
+Fatal error: Cannot redeclare constant 'nULL' in F(6) : eval()'d code on line 2
+Stack trace:
+#0 {main}

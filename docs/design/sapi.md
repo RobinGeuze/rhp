@@ -25,7 +25,7 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
                      run_request(Box<dyn Sapi>, Request) -> Outcome
                                         │   one fresh Vm per call
                                         ▼
- rhp-vm              Vm: set_sapi → set_ini → set_request → start_request
+ rhp-vm              Vm::new(sapi) → set_ini → set_request → start_request
                          → run_main → finish_request
                                         │
  rhp-builtins        sapi::{Sapi, Response, RequestInfo, header_op},
@@ -40,9 +40,12 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
   `$_POST`, `$_COOKIE`, `$_FILES`, `$_ENV` and `$_REQUEST`, reads POST
   bodies (`post_max_size`, `enable_post_data_reading`, multipart), and sends
   the headers lazily.
-- **`rhp-sapi`** is the library entry point (`run_request`) plus the two
-  shipped SAPIs, `CliSapi` (php-cli) and `cgi::CgiSapi` (php-cgi, with
-  `cgi::main` porting `cgi_main.c`'s argv and environment handling).
+- **`rhp-sapi`** is the library entry point (`run_request`) plus the
+  shipped SAPIs: `CliSapi` (php-cli), `cgi::CgiSapi` (php-cgi, with
+  `cgi::main` porting `cgi_main.c`'s argv and environment handling) and
+  `CaptureSapi`, which keeps a request's output in memory for tests and
+  tools (`CaptureSapi::cli()` behaves as php-cli, `CaptureSapi::web(name)`
+  as a web server).
 - **`rhp-cli`** is a thin argv front end: `rhp script.php`, `rhp -r code`,
   `rhp --cgi …`.
 
@@ -93,6 +96,8 @@ let outcome = run_request(
 | `send_headers` | called **once**: right before the first body byte, or at request end when there is no body. Not called for `no_headers` (`php-cgi -q`). The `Response` holds the final status code, an explicit status line if `header("HTTP/1.1 …")` set one, and the header lines in order (default `Content-type` and `X-Powered-By` included) | no-op |
 | `log_message` | one `error_log` / `log_errors` line, no newline | stderr |
 | `write_stderr` | `display_errors=stderr` output | stderr |
+| `write_raw_stdout` | a write to php-cli's `STDOUT` stream, past the output layer | `flush`, then stdout |
+| `exits_on_hard_limit` | whether the hard memory limit ends the process (php-cli: exit 137) rather than just the request | `false` |
 
 The SAPI decides the wire format. `CgiSapi` writes `Status:` (when not
 200) + header lines + a blank line + the body to stdout; an HTTP server
@@ -123,6 +128,12 @@ Byte strings throughout (PHP is binary-safe). Everything is optional:
 `info: None` means a CLI run: superglobals come from the process
 environment and `$argv` from `Request::args`.
 
+`Request::script` is a `Script::File` (its real path is `__FILE__`; it goes
+through the compiled-script cache), a `Script::Source { path, bytes }` the
+caller already holds (run as the file `path`, not cached), `Script::Code`
+(`-r`) or `Script::Stdin`. `Request::new(script)` is a CLI-style request
+with no settings or arguments.
+
 ### `Outcome`
 
 `Exit(code)` (the script's exit status; 255 after a fatal error or a parse
@@ -134,8 +145,7 @@ The HTTP status is in the `Response` that `send_headers` received, not in
 
 `run_request` is a convenience over `Vm`. A server that needs to step
 in between can drive it directly:
-`Vm::new()`, `set_sapi` (right away, before anything else), `set_ini` for
-each setting, `set_request`, `start_request` (post-size check,
+`Vm::new(sapi)`, `set_ini` for each setting, `set_request`, `start_request` (post-size check,
 `X-Powered-By`), compile, `run_main` (script, shutdown functions,
 destructors, output-buffer flush, headers if still unsent), and finally
 `finish_request` (headers, `Sapi::flush`, upload cleanup). Dropping the
@@ -182,9 +192,9 @@ functions report it; `opcache_reset()` takes effect at the next request.
 
 What happens inside one `run_request`, in php's order:
 
-1. **Engine setup.** A fresh `Vm`. `set_sapi` installs the SAPI name and ini
-   defaults for this thread and defines `PHP_SAPI`. `-d`-style settings
-   apply over them.
+1. **Engine setup.** A fresh `Vm` for the SAPI: `Vm::new` installs the SAPI
+   name and ini defaults for this thread and defines `PHP_SAPI`. `-d`-style
+   settings apply over them.
 2. **`sapi_activate`.** `set_request` records the method, protocol and HEAD
    flag. `start_request` checks the POST body against `post_max_size`
    ("PHP Request Startup: POST Content-Length …", in Unknown on line 0)
@@ -249,7 +259,7 @@ It is the system allocator plus per-thread counters (`rhp_values::mem`).
 While a request runs on a thread, they follow php's zend_mm: `size` counts
 blocks rounded about as zend_mm rounds them, real usage counts 2 MiB
 chunks (kept once emptied, as zend_mm caches them) plus huge blocks.
-Counting starts when the script starts (`Vm::run`; compiling the main
+Counting starts when the script starts (`Vm::run_main`; compiling the main
 script is not counted, as with opcache) and stops at `finish_request`.
 Without the allocator, requests run, `memory_get_usage()` reads 0, and
 only the builtins that check a size up front enforce the limit.

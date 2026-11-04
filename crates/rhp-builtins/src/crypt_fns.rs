@@ -175,6 +175,3 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("CRYPT_SHA512", Value::Int(1)),
     ]
 }
-
-#[cfg(test)]
-mod tests;

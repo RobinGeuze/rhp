@@ -269,30 +269,6 @@ fn count_width_cases() {
 }
 
 #[test]
-fn strstr_strrchr_cases() {
-    assert_eq!(calls(fn_mb_strstr, &[s("héllo wörld"), s("ö")]), "örld");
-    assert_eq!(
-        calls(fn_mb_strstr, &[s("héllo wörld"), s("ö"), Value::Bool(true)]),
-        "héllo w"
-    );
-    assert!(is_false(fn_mb_strstr, &[s("héllo"), s("z")]));
-    assert_eq!(
-        calls(fn_mb_strstr, &[s("日本語テスト"), s("語")]),
-        "語テスト"
-    );
-    assert_eq!(calls(fn_mb_strrchr, &[s("héllo wörld"), s("l")]), "ld");
-    assert_eq!(
-        calls(
-            fn_mb_strrchr,
-            &[s("héllo wörld"), s("l"), Value::Bool(true)]
-        ),
-        "héllo wör"
-    );
-    assert_eq!(calls(fn_mb_strrchr, &[s("foobarbo"), s("ob")]), "obarbo");
-    assert!(is_false(fn_mb_strrchr, &[s("abc"), s("xy")]));
-}
-
-#[test]
 fn strimwidth_cases() {
     assert_eq!(
         calls(

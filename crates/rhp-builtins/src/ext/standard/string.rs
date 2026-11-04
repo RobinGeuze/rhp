@@ -2568,11 +2568,11 @@ fn hex_nibble(b: u8) -> Option<u8> {
     }
 }
 
-/// Register all string builtins into the shared table.
 // ---------------------------------------------------------------------------
 // registration
 // ---------------------------------------------------------------------------
 
+/// Register all string builtins into the shared table.
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,

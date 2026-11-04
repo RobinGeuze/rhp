@@ -1,4 +1,5 @@
 // Expected values captured from php 8.5.8.
+#![allow(clippy::approx_constant)] // deliberate literal test values, not PI
 
 use super::*;
 use crate::test_support::TestHost;

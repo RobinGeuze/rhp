@@ -261,10 +261,13 @@ threads, never from sharing an engine:
   are created with the request's umask (a new file's mode is fixed up when
   the request's umask allows bits the process's takes away). Each request
   starts in `Request::cwd`, else the process's directory, with the
-  process's umask (read once, when the first engine starts). Child
-  processes inherit the process's umask, not the request's (posix_spawn
-  can't set one). A Unix socket path the request's directory would make
-  too long for `sun_path` is left relative.
+  process's umask, read once when the first engine starts (on macOS by
+  setting it for a moment: start that engine before other threads create
+  files). Child processes inherit the process's umask, not the request's
+  (posix_spawn can't set one). A Unix socket path the request's directory
+  would make too long for `sun_path` is left relative. `opcache.preload`
+  and `opcache.blacklist_filename`, startup settings, stay relative to
+  the process's directory, as in php.
 - **pcntl only under the CLI and CGI.** php builds pcntl only into its CLI
   and CGI binaries; rhp hides its functions, constants and extension entry
   under any other SAPI name (`sapi::has_pcntl`), so an embedding server

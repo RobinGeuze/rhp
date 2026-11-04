@@ -1543,6 +1543,7 @@ fn fn_linkinfo(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 // --- mkdir / copy ------------------------------------------------------------------
 
+#[allow(clippy::unnecessary_cast)] // mode_t is u16 on macOS, u32 on Linux
 fn sys_mkdir(path: &[u8], mode: i64) -> Result<(), i32> {
     crate::vcwd::mkdir(path, mode as libc::mode_t as u32)
         .map_err(|e| e.raw_os_error().unwrap_or(libc::EINVAL))

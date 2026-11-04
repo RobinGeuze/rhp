@@ -172,7 +172,7 @@ try { new OpenSSLAsymmetricKey(); } catch (Error $e) { echo get_class($e), ": ",
 try { openssl_pkey_get_details("x"); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
 try { openssl_pkey_get_public([1]); } catch (Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
 try { openssl_verify("a", "b", $k2, []); } catch (Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
-// the full lists depend on the OpenSSL release (crates/rhp-difftest/tests/openssl.rs)
+// the full lists depend on the OpenSSL release (tools/rhp-difftest/tests/openssl.rs)
 var_dump(in_array('sha384', openssl_get_md_methods()), in_array('RSA-SHA256', openssl_get_md_methods(true)));
 $rsapub = "-----BEGIN RSA PUBLIC KEY-----\n" . chunk_split(base64_encode(substr(base64_decode(str_replace(["-----BEGIN PUBLIC KEY-----", "-----END PUBLIC KEY-----", "\n"], "", $r['pub'])), 22)), 64, "\n") . "-----END RSA PUBLIC KEY-----\n";
 $k3 = openssl_pkey_get_public($rsapub);

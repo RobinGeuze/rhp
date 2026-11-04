@@ -2,7 +2,7 @@
 // curl_setopt argument checks: writable stream handles, string conversion of
 // option values, CURLOPT_SSL_VERIFYHOST 1, and libcurl's own range checks.
 // What depends on how libcurl was built (HTTP/3, NTLM, SRP, RTMP, SMB, the
-// width of CURLAUTH_ANY) is in crates/rhp-difftest/tests/curl.rs.
+// width of CURLAUTH_ANY) is in tools/rhp-difftest/tests/curl.rs.
 $dir = sys_get_temp_dir() . '/rhp_curl_setopt_' . getmypid();
 @mkdir($dir);
 $p = "$dir/f.txt";

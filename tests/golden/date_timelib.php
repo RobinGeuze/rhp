@@ -77,7 +77,7 @@ try {
 }
 
 // The default timezone and the timezone_* functions. The database's version
-// and identifier lists are in crates/rhp-difftest/tests/date.rs: CI's php
+// and identifier lists are in tools/rhp-difftest/tests/date.rs: CI's php
 // reads its system tz database.
 var_dump(date_default_timezone_set('europe/AMSTERDAM'), date_default_timezone_get());
 var_dump(date_default_timezone_set('Mars/Phobos'), date_default_timezone_set(''), date_default_timezone_get());

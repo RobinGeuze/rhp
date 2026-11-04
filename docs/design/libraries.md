@@ -311,7 +311,7 @@ links (America/Montreal). So zone data should agree, though nothing
 compares it on CI yet. What reads the database itself differs
 (`timezone_version_get()`, the identifier list and its backward-compatible
 flags, locations, transitions), so the ratchet and the goldens leave out
-output that depends on those; crates/rhp-difftest/tests/date.rs checks it
+output that depends on those; tools/rhp-difftest/tests/date.rs checks it
 against a php whose database version is rhp's. A system-tzdata mode
 (Debian's MIT-licensed patch with runtime selection) is plan item L7c, only
 if the CI ratchet needs it. timelib's version and the database's are not in
@@ -517,7 +517,7 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
 ## Generated tables
 
 Tables php-src owns are generated, committed, and checked by
-`rhp-difftest gen <name> --check` (`crates/rhp-difftest/src/gen/`):
+`rhp-difftest gen <name> --check` (`tools/rhp-difftest/src/gen/`):
 
 | Generator | Source | Output | Checked |
 |---|---|---|---|

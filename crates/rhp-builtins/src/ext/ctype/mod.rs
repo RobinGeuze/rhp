@@ -1,7 +1,7 @@
 //! The `ctype` extension: character-class tests (`ctype_*`).
 //!
 //! Reimplemented in Rust and verified byte-for-byte against php 8.5.8
-//! (`crates/rhp-difftest` sweep `ctype`).
+//! (`tools/rhp-difftest` sweep `ctype`).
 //!
 //! ## Quirks (matched to php)
 //! - An `int` in `-128..=255` is interpreted as a single ASCII byte

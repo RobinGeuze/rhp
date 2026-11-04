@@ -14,12 +14,12 @@ name = "rhp-difftest"
 path = "src/main.rs"
 
 [dependencies]
-rhp-compiler = { path = "../rhp-compiler" }
-rhp-frontend = { path = "../rhp-frontend" }
-rhp-sapi = { path = "../rhp-sapi" }
-rhp-values = { path = "../rhp-values" }
+rhp-compiler = { path = "../../crates/rhp-compiler" }
+rhp-frontend = { path = "../../crates/rhp-frontend" }
+rhp-sapi = { path = "../../crates/rhp-sapi" }
+rhp-values = { path = "../../crates/rhp-values" }
 # EXPECTF and app masks use rhp-builtins' PCRE2, so the binary links one copy.
-rhp-builtins = { path = "../rhp-builtins" }
+rhp-builtins = { path = "../../crates/rhp-builtins" }
 libc = "0.2"
 toml = "0.9"
 aes = "0.8"

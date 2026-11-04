@@ -28,6 +28,8 @@ to write when.
 
 ### Crates
 
+Production crates are in `crates/`, the test tooling in `tools/`.
+
 | crate | role |
 |---|---|
 | `rhp-values` | `Value` (zval), `PhpStr` (byte-string, COW), `PhpArray` (ordered, COW), conversions, float formatting, `Thrown` |
@@ -40,7 +42,7 @@ to write when.
 | `rhp-vm` | the register VM |
 | `rhp-sapi` | the request layer: `run_request`, the `Sapi` trait a server implements, the CLI and CGI SAPIs |
 | `rhp-cli` | the `rhp` command: argv front end over `rhp-sapi` (`rhp script.php`, `-r`, `--cgi`) |
-| `rhp-difftest` | differential harnesses against php / php-cgi (php-src `.phpt`, fixture apps, extensions) |
+| `rhp-difftest` | in `tools/`: differential harnesses against php / php-cgi (php-src `.phpt`, goldens, fixture apps, extensions) and the table generators |
 
 Full design docs are in [`docs/design/`](docs/design/README.md) — start with
 [`bytecode.md`](docs/design/bytecode.md).

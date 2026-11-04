@@ -8,7 +8,7 @@
 # Derived by running every golden under Ubuntu's php 8.5 with CI's library
 # versions (libxml2 2.15, ICU 78, curl 8.18, OpenSSL 3.5) and with Ubuntu
 # 24.04's older ones. Output that depends on the libxml2 release is in
-# live-php tests (crates/rhp-difftest/tests/libxml.rs), not here.
+# live-php tests (tools/rhp-difftest/tests/libxml.rs), not here.
 
 core_build_constants    # phpinfo()'s configuration file path
 curl_api                # libcurl version: option and info counts, protocol names

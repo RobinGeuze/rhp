@@ -23,7 +23,7 @@ PCRE2, …) are newer than the mac's. Live-php tests use `php` from `PATH`
 |---|---|---|---|
 | golden | `tests/golden/**/NAME.php` + `NAME.out` | committed output of `php -n` | yes |
 | CLI fixture | `tests/cli/CASE/` (`main.php`, `RUN.cmd`, `RUN.stdout`, …) | committed stdout, stderr and exit status of `php -n` | yes |
-| live-php test | `crates/rhp-cli/tests`, `crates/rhp-difftest/tests` | php on the machine, at test time | skips |
+| live-php test | `crates/rhp-cli/tests`, `tools/rhp-difftest/tests` | php on the machine, at test time | skips |
 | CGI fixture | `tests/cgi/NAME.php` (+ `NAME.cgi`) | php-cgi on the machine | skips |
 | curl fixture | `tests/curl_http/NAME.php` + `NAME.out` | committed output of `php -n` against the test's local server | yes |
 | phpt ratchet | `tests/phpt/known-passing.txt` | php on the machine, per php-src `.phpt` | no (CI job) |
@@ -151,7 +151,7 @@ instead (the golden policy above); list it only when that can't be
 avoided.
 
 Generated tables have their own `--check`: `rhp-difftest gen signatures`,
-`gen html-tables`, `gen parser` (see `crates/rhp-difftest/src/gen/`).
+`gen html-tables`, `gen parser` (see `tools/rhp-difftest/src/gen/`).
 
 ## Running
 

@@ -1,7 +1,7 @@
 <?php
 // ext/xml: the expat-compatible SAX parser php builds on libxml2. Error
 // positions that differ between libxml2 releases are in
-// crates/rhp-difftest/tests/libxml.rs.
+// tools/rhp-difftest/tests/libxml.rs.
 set_error_handler(function ($no, $str) { echo "W[$no]: ", str_replace(getcwd(), "CWD", $str), "\n"; return true; });
 function run($xml, $opts = [], $chunks = null) {
     $p = xml_parser_create();

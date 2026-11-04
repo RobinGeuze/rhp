@@ -14,7 +14,7 @@ rhp-sapi = { path = "../rhp-sapi" }
 
 [dev-dependencies]
 # php discovery (`RHP_PHP`) for the live-php tests and the CLI fixtures.
-rhp-difftest = { path = "../rhp-difftest" }
+rhp-difftest = { path = "../../tools/rhp-difftest" }
 
 # The CLI fixture runner takes `--check` / `--write` (tests/cli).
 [[test]]

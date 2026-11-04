@@ -66,7 +66,7 @@ jobs:
 
   # Full suite against real php 8.5, the version rhp targets (another minor
   # version is no reference). This includes the extension differential
-  # sweeps: crates/rhp-difftest/tests run the hash, bcmath, ctype, gmp,
+  # sweeps: tools/rhp-difftest/tests run the hash, bcmath, ctype, gmp,
   # mbstring, password and crypt sweeps with the binary's default seed and
   # corpus, plus more seeds.
   php:

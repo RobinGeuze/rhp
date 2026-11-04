@@ -22,7 +22,7 @@ foreach ([true, false] as $pw) {
 }
 
 // escaping: no encoding declared vs UTF-8 (control characters and
-// non-ASCII text without an encoding: crates/rhp-difftest/tests/libxml.rs)
+// non-ASCII text without an encoding: tools/rhp-difftest/tests/libxml.rs)
 $d = new DOMDocument;
 $d->loadXML("<?xml version=\"1.0\" encoding=\"UTF-8\"?><a x='\u{e9}'>\u{e9}</a>");
 echo $d->saveXML();

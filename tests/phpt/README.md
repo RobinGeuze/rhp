@@ -35,7 +35,7 @@ How it compares, mirroring `run-tests.php`:
 - A test's `--INI--` setting that leaves php's effective value as run-tests'
   defaults have it (`ini_get()`, asked of the php under test once per
   setting) is a no-op. A setting that changes it runs only if rhp applies
-  the directive (`RHP_INI` in `crates/rhp-difftest/src/phpt.rs`, e.g.
+  the directive (`RHP_INI` in `tools/rhp-difftest/src/phpt.rs`, e.g.
   `pcre.jit`, `error_reporting`, and every `opcache.*`); both engines then get
   the setting. `--rhp-ini <directive>` runs the tests a directive blocks, to
   measure it before adding it.

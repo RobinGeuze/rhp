@@ -269,6 +269,7 @@ static SXE_HANDLERS: ObjectHandlers = ObjectHandlers {
 pub(crate) static CLASSES: &[ClassHandlers] = &[ClassHandlers {
     class: "SimpleXMLElement",
     handlers: &SXE_HANDLERS,
+    create_object: true,
 }];
 
 /// sxe_object_cast: a string from a subclass's `__toString()` first, then

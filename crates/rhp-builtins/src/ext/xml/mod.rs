@@ -120,6 +120,7 @@ type ParserRef = Rc<RefCell<Parser>>;
 pub(crate) const CLASSES: &[ClassHandlers] = &[ClassHandlers {
     class: "XMLParser",
     handlers: &ObjectHandlers::OPAQUE,
+    create_object: true,
 }];
 
 thread_local! {

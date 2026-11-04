@@ -454,6 +454,7 @@ pub(crate) const CLASSES: &[ClassHandlers] = &[
             cast_object: Some(curl_cast_object),
             ..ObjectHandlers::STD
         },
+        create_object: true,
     },
     ClassHandlers {
         class: "CurlMultiHandle",
@@ -463,10 +464,12 @@ pub(crate) const CLASSES: &[ClassHandlers] = &[
             cast_object: Some(curl_cast_object),
             ..ObjectHandlers::STD
         },
+        create_object: true,
     },
     ClassHandlers {
         class: "CurlShareHandle",
         handlers: &ObjectHandlers::OPAQUE,
+        create_object: true,
     },
 ];
 

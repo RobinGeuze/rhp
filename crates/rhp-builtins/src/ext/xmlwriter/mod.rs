@@ -45,6 +45,7 @@ pub(crate) const CLASSES: &[ClassHandlers] = &[ClassHandlers {
         dtor_obj: Some(object_dtor),
         ..ObjectHandlers::STD
     },
+    create_object: true,
 }];
 
 /// xmlwriter_object_dtor: free the writer while a host can take its last

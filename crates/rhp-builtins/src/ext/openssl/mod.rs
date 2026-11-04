@@ -29,14 +29,17 @@ pub(crate) static CLASSES: &[crate::object::ClassHandlers] = &[
     crate::object::ClassHandlers {
         class: "OpenSSLAsymmetricKey",
         handlers: &crate::object::ObjectHandlers::OPAQUE,
+        create_object: true,
     },
     crate::object::ClassHandlers {
         class: "OpenSSLCertificate",
         handlers: &crate::object::ObjectHandlers::OPAQUE,
+        create_object: true,
     },
     crate::object::ClassHandlers {
         class: "OpenSSLCertificateSigningRequest",
         handlers: &crate::object::ObjectHandlers::OPAQUE,
+        create_object: true,
     },
 ];
 

@@ -31,24 +31,29 @@ pub(crate) static CLASSES: &[ClassHandlers] = &[
     ClassHandlers {
         class: "ArrayObject",
         handlers: &SPL_ARRAY_HANDLERS,
+        create_object: true,
     },
     ClassHandlers {
         class: "ArrayIterator",
         handlers: &SPL_ARRAY_HANDLERS,
+        create_object: true,
     },
     // spl_handlers_dual_it, spl_handlers_rec_it_it
     ClassHandlers {
         class: "IteratorIterator",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "RecursiveIteratorIterator",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     // spl_filesystem_object_check_handlers
     ClassHandlers {
         class: "SplFileObject",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
 ];
 

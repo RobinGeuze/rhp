@@ -138,6 +138,11 @@ impl ObjectHandlers {
 pub struct ClassHandlers {
     pub class: &'static str,
     pub handlers: &'static ObjectHandlers,
+    /// php gives the class a `create_object` (its objects carry native
+    /// state); false when it only replaces `default_object_handlers`
+    /// (`Directory`). `ReflectionClass::newInstanceWithoutConstructor`
+    /// refuses a final internal class that has one. Inherited.
+    pub create_object: bool,
 }
 
 /// `zend_objects_not_comparable`: equal only to itself (the engine checks
@@ -163,27 +168,54 @@ const CORE: &[ClassHandlers] = &[
     ClassHandlers {
         class: "Exception",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "Error",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "Generator",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "Fiber",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "WeakReference",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     // dir_class_object_handlers
     ClassHandlers {
         class: "Directory",
         handlers: &ObjectHandlers::OPAQUE,
+        create_object: false,
+    },
+    // Classes with a create_object and the default handlers.
+    ClassHandlers {
+        class: "Closure",
+        handlers: &ObjectHandlers::STD,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "WeakMap",
+        handlers: &ObjectHandlers::STD,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "__PHP_Incomplete_Class",
+        handlers: &ObjectHandlers::STD,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "HashContext",
+        handlers: &ObjectHandlers::STD,
+        create_object: true,
     },
 ];
 
@@ -193,61 +225,74 @@ const REFLECTION: &[ClassHandlers] = &[
     ClassHandlers {
         class: "ReflectionFunctionAbstract",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "ReflectionGenerator",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "ReflectionParameter",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "ReflectionType",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "ReflectionClass",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "ReflectionProperty",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "ReflectionClassConstant",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "ReflectionExtension",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "ReflectionZendExtension",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "ReflectionReference",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "ReflectionAttribute",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "ReflectionFiber",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
     ClassHandlers {
         class: "ReflectionConstant",
         handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
     },
 ];
 
-/// The handlers registered for the internal class `name` (any case), if
-/// any. The engine looks this up once per internal class, when it links
-/// it; a subclass takes its parent's.
-pub fn registered(name: &[u8]) -> Option<&'static ObjectHandlers> {
+/// The registration of the internal class `name` (any case), if any. The
+/// engine looks this up once per internal class, when it links it; a
+/// subclass takes its parent's.
+pub fn registered(name: &[u8]) -> Option<&'static ClassHandlers> {
     fn cmp_ci(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
         a.iter()
             .map(u8::to_ascii_lowercase)
@@ -272,7 +317,7 @@ pub fn registered(name: &[u8]) -> Option<&'static ObjectHandlers> {
     });
     t.binary_search_by(|r| cmp_ci(r.class.as_bytes(), name))
         .ok()
-        .map(|i| t[i].handlers)
+        .map(|i| t[i])
 }
 
 /// The object behind `v` (through a reference).
@@ -354,11 +399,12 @@ mod tests {
     fn registry_lookup_ignores_case() {
         let gmp = registered(b"gmp").expect("GMP registers handlers");
         assert!(std::ptr::eq(gmp, registered(b"GMP").unwrap()));
-        assert!(gmp.do_operation.is_some());
+        assert!(gmp.handlers.do_operation.is_some());
         assert!(matches!(
-            registered(b"XMLPARSER").map(|t| t.clone_obj),
+            registered(b"XMLPARSER").map(|t| t.handlers.clone_obj),
             Some(CloneObj::None)
         ));
+        assert!(!registered(b"directory").unwrap().create_object);
         assert!(registered(b"stdClass").is_none());
         assert!(registered(b"").is_none());
     }

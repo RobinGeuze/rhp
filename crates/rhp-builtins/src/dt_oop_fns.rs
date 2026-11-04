@@ -40,10 +40,12 @@ pub(crate) static CLASSES: &[ClassHandlers] = &[
     ClassHandlers {
         class: "DateTime",
         handlers: &DATE_HANDLERS,
+        create_object: true,
     },
     ClassHandlers {
         class: "DateTimeImmutable",
         handlers: &DATE_HANDLERS,
+        create_object: true,
     },
 ];
 

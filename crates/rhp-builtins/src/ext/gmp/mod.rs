@@ -1161,7 +1161,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
 
 /// The `GMP` wrapper class, owned by this module (was in the compiler prelude).
 pub const PRELUDE_PHP: &str = r#"
-class GMP {
+final class GMP {
     public $num = "0";
     public function __construct(int|string $num = 0, int $base = 0) {
         try {
@@ -1202,6 +1202,7 @@ static GMP_HANDLERS: ObjectHandlers = ObjectHandlers {
 pub(crate) static CLASSES: &[ClassHandlers] = &[ClassHandlers {
     class: "GMP",
     handlers: &GMP_HANDLERS,
+    create_object: true,
 }];
 
 /// The number of a GMP object, `None` for any other value.

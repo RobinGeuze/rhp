@@ -29,6 +29,7 @@ fn deref(v: &Value) -> Value {
 pub(crate) const CLASSES: &[ClassHandlers] = &[ClassHandlers {
     class: "Socket",
     handlers: &ObjectHandlers::OPAQUE,
+    create_object: true,
 }];
 
 /// A `Socket` object's payload (php's `php_socket`): the stream it was

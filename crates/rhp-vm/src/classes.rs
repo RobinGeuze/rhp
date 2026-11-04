@@ -74,6 +74,9 @@ pub struct ClassEntry {
     /// inherited `create_object`). `None` for plain classes, so the engine
     /// pays a field test only.
     pub handlers: Option<&'static ObjectHandlers>,
+    /// php's `ce->create_object` is set (see
+    /// [`rhp_builtins::object::ClassHandlers::create_object`]).
+    pub create_object: bool,
 }
 
 #[derive(Clone)]
@@ -1142,10 +1145,16 @@ impl Vm {
 
         let parent_entry = parent.map(|p| &self.classes[p as usize]);
         let internal = proto.decl_file.is_empty();
-        let handlers = internal
+        let reg = internal
             .then(|| rhp_builtins::object::registered(proto.name.as_bytes()))
-            .flatten()
+            .flatten();
+        let handlers = reg
+            .map(|r| r.handlers)
             .or_else(|| parent_entry.and_then(|p| p.handlers));
+        let create_object = reg.map_or_else(
+            || parent_entry.is_some_and(|p| p.create_object),
+            |r| r.create_object,
+        );
         let flags = link_flags(proto, parent_entry.map(|p| p.flags), handlers, internal);
 
         self.class_ids.insert(lc(proto.name.as_bytes()), id);
@@ -1172,6 +1181,7 @@ impl Vm {
             decl_file: proto.decl_file.clone(),
             decl_line: proto.decl_line,
             handlers,
+            create_object,
         });
 
         // Enum cases: materialize one singleton object per case and expose it as

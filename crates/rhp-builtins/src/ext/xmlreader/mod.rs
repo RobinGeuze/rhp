@@ -20,6 +20,7 @@ use crate::{Builtin, Host, Thrown};
 pub(crate) static CLASSES: &[crate::object::ClassHandlers] = &[crate::object::ClassHandlers {
     class: "XMLReader",
     handlers: &crate::object::ObjectHandlers::UNCLONEABLE,
+    create_object: true,
 }];
 
 fn deref(v: &Value) -> Value {

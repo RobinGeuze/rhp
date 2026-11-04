@@ -2,7 +2,8 @@
 //! the functions share (certificate, key and request loading, names, time,
 //! verification stores, request configuration).
 
-use std::ffi::{c_char, c_int, c_long, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_long, c_void, CStr, CString, OsStr};
+use std::os::unix::ffi::OsStrExt;
 use std::ptr;
 
 use rhp_values::{ArrayKey, PhpArray, Value};
@@ -250,7 +251,7 @@ pub(super) fn release_cipher(c: *const sys::EVP_CIPHER) {
 // certificates
 // ---------------------------------------------------------------------------
 
-/// php_openssl_pem_read_asn1_bio_x509: PEM, or DER.
+/// php_openssl_pem_read_asn1_bio_x509: a PEM certificate (no DER).
 fn pem_read_asn1_bio_x509(bio: *mut sys::BIO) -> *mut sys::X509 {
     unsafe extern "C" fn d2i(a: *mut *mut c_void, pp: *mut *const u8, len: c_long) -> *mut c_void {
         unsafe { sys::d2i_X509(a.cast(), pp, len).cast() }
@@ -612,9 +613,7 @@ pub(super) fn setup_verify(
                 continue;
             };
             let shown = String::from_utf8_lossy(path.to_bytes()).into_owned();
-            let meta = std::fs::metadata(std::ffi::OsStr::new(
-                std::str::from_utf8(path.to_bytes()).unwrap_or(""),
-            ));
+            let meta = std::fs::metadata(OsStr::from_bytes(path.to_bytes()));
             let Ok(meta) = meta else {
                 warn(host, fname, &format!("Unable to stat {shown}"))?;
                 continue;
@@ -755,17 +754,19 @@ unsafe extern "C" fn pem_password_cb(
     _rwflag: c_int,
     userdata: *mut c_void,
 ) -> c_int {
-    let pw = userdata as *const Password;
-    let Some(key) = (unsafe { pw.as_ref() }).and_then(|p| p.0) else {
-        return -1;
-    };
-    // php's struct holds the length as an int.
-    let len = key.len() as c_int;
-    let n = len.min(size);
-    if n > 0 {
-        unsafe { ptr::copy_nonoverlapping(key.as_ptr(), buf.cast::<u8>(), n as usize) };
-    }
-    n
+    super::guard(0, || {
+        let pw = userdata as *const Password;
+        let Some(key) = (unsafe { pw.as_ref() }).and_then(|p| p.0) else {
+            return -1;
+        };
+        // php's struct holds the length as an int.
+        let len = key.len() as c_int;
+        let n = len.min(size);
+        if n > 0 {
+            unsafe { ptr::copy_nonoverlapping(key.as_ptr(), buf.cast::<u8>(), n as usize) };
+        }
+        n
+    })
 }
 
 /// php_openssl_pem_read_bio_private_key, with php_openssl_pem_password_cb
@@ -775,7 +776,7 @@ pub(super) fn pem_read_bio_private_key(
     passphrase: Option<&[u8]>,
 ) -> *mut sys::EVP_PKEY {
     let pw = Password(passphrase);
-    unsafe {
+    super::with_callbacks(|| unsafe {
         match passphrase {
             None => sys::PEM_read_bio_PrivateKey_ex(
                 bio,
@@ -794,7 +795,7 @@ pub(super) fn pem_read_bio_private_key(
                 PROPQ,
             ),
         }
-    }
+    })
 }
 
 /// php_openssl_pkey_from_zval: a new reference to the key `val` names (an

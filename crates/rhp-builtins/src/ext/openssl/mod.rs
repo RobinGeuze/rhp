@@ -1,9 +1,11 @@
 //! ext/openssl on the OpenSSL php links: a port of php-src's
 //! ext/openssl/openssl.c, openssl_backend_common.c and openssl_backend_v3.c.
 //!
-//! - Every operation runs in php's own `OSSL_LIB_CTX` (one per thread, as
-//!   php's module globals are under ZTS), loaded from the default
-//!   openssl.cnf; `openssl.libctx=default` switches to OpenSSL's global one.
+//! - Every call php makes with a library context gets php's own
+//!   `OSSL_LIB_CTX` (one per thread, as php's module globals are under
+//!   ZTS), loaded from the default openssl.cnf; `openssl.libctx=default`
+//!   switches to OpenSSL's global one. Calls php makes without one
+//!   (`EVP_PKEY_CTX_new`, `X509_new`, `X509_REQ_new`) stay without.
 //! - OpenSSL's error queue is copied into php's 16-entry ring
 //!   (`php_openssl_store_errors`), which `openssl_error_string` reads.
 //! - `OpenSSLCertificate`, `OpenSSLAsymmetricKey` and
@@ -401,6 +403,43 @@ final class OpenSSLAsymmetricKey {
     public function __construct() { throw new Error("Cannot directly construct OpenSSLAsymmetricKey, use openssl_pkey_new() instead"); }
 }
 "#;
+
+// ---------------------------------------------------------------------------
+// callbacks from OpenSSL
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static CALLBACK_PANIC: RefCell<Option<Box<dyn std::any::Any + Send>>> =
+        const { RefCell::new(None) };
+}
+
+/// The body of an `extern "C"` callback OpenSSL calls: a panic must not
+/// unwind into C. The first one is kept and the callback (and any later one)
+/// returns `default`; [`with_callbacks`] resumes it once the C call returns.
+/// OpenSSL calls these without a host, so `ffi::guard` has no frame to keep
+/// the panic in.
+pub(super) fn guard<R>(default: R, f: impl FnOnce() -> R) -> R {
+    if CALLBACK_PANIC.with(|p| p.borrow().is_some()) {
+        return default;
+    }
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(p) => {
+            CALLBACK_PANIC.with(|s| *s.borrow_mut() = Some(p));
+            default
+        }
+    }
+}
+
+/// Run a C call that may call back into Rust, then resume the panic one of
+/// its callbacks caught.
+pub(super) fn with_callbacks<R>(f: impl FnOnce() -> R) -> R {
+    let r = f();
+    if let Some(p) = CALLBACK_PANIC.with(|s| s.borrow_mut().take()) {
+        std::panic::resume_unwind(p);
+    }
+    r
+}
 
 // ---------------------------------------------------------------------------
 // owned OpenSSL pointers
@@ -1007,5 +1046,19 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, ERR_BUFFER_SIZE - 1);
+    }
+
+    #[test]
+    fn a_callback_panic_resumes_after_the_c_call() {
+        let r = std::panic::catch_unwind(|| {
+            with_callbacks(|| {
+                assert_eq!(guard(1, || -> i32 { panic!("in a callback") }), 1);
+                // Later callbacks of the same C call do nothing.
+                assert_eq!(guard(2, || 3), 2);
+            })
+        });
+        assert!(r.is_err());
+        // The slot is clear again.
+        assert_eq!(guard(0, || 5), 5);
     }
 }

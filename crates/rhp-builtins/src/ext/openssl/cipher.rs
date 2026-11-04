@@ -82,8 +82,10 @@ pub(super) fn register(put: &mut Put) {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" fn add_md_or_alias(name: *const sys::OBJ_NAME, arg: *mut c_void) {
-    let out = unsafe { &mut *(arg as *mut Vec<Vec<u8>>) };
-    out.push(cstr_bytes(unsafe { (*name).name }).to_vec());
+    super::guard((), || {
+        let out = unsafe { &mut *(arg as *mut Vec<Vec<u8>>) };
+        out.push(cstr_bytes(unsafe { (*name).name }).to_vec());
+    })
 }
 
 unsafe extern "C" fn add_md(name: *const sys::OBJ_NAME, arg: *mut c_void) {
@@ -96,13 +98,13 @@ fn fn_get_md_methods(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     let aliases = bool_arg(host, args, 0, "openssl_get_md_methods", false)?;
     super::init();
     let mut names: Vec<Vec<u8>> = Vec::new();
-    unsafe {
+    super::with_callbacks(|| unsafe {
         sys::OBJ_NAME_do_all_sorted(
             sys::OBJ_NAME_TYPE_MD_METH,
             if aliases { add_md_or_alias } else { add_md },
             (&mut names as *mut Vec<Vec<u8>>).cast(),
         );
-    }
+    });
     let mut a = PhpArray::new();
     for n in names {
         a.push(Value::str(n));
@@ -111,8 +113,10 @@ fn fn_get_md_methods(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 }
 
 unsafe extern "C" fn add_cipher_name(name: *const c_char, arg: *mut c_void) {
-    let out = unsafe { &mut *(arg as *mut Vec<Vec<u8>>) };
-    out.push(cstr_bytes(name).to_ascii_lowercase());
+    super::guard((), || {
+        let out = unsafe { &mut *(arg as *mut Vec<Vec<u8>>) };
+        out.push(cstr_bytes(name).to_ascii_lowercase());
+    })
 }
 
 unsafe extern "C" fn add_cipher_or_alias(cipher: *mut sys::EVP_CIPHER, arg: *mut c_void) {
@@ -126,7 +130,7 @@ unsafe extern "C" fn add_cipher(cipher: *mut sys::EVP_CIPHER, arg: *mut c_void) 
 fn fn_get_cipher_methods(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let aliases = bool_arg(host, args, 0, "openssl_get_cipher_methods", false)?;
     let mut names: Vec<Vec<u8>> = Vec::new();
-    unsafe {
+    super::with_callbacks(|| unsafe {
         sys::EVP_CIPHER_do_all_provided(
             libctx(),
             if aliases {
@@ -136,7 +140,7 @@ fn fn_get_cipher_methods(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
             },
             (&mut names as *mut Vec<Vec<u8>>).cast(),
         );
-    }
+    });
     // zend_hash_sort with string_compare_function (a binary comparison of
     // lowercase names); php's sort is stable with renumbering.
     names.sort();

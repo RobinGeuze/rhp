@@ -238,7 +238,11 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
     pushes its `Host` on a thread-local stack;
   - every `extern "C"` callback runs its body in `ffi::guard`, which catches
     a panic (it must not unwind into C), stops the C operation and resumes
-    the panic after the C call returns;
+    the panic after the C call returns. OpenSSL calls its callbacks
+    (passphrase, name lists) without a host: ext/openssl's own `guard`
+    keeps the panic and `with_callbacks` resumes it once the C call
+    returns. A callback whose body only calls C (OpenSSL's free shims,
+    `d2i`) needs no guard;
   - a callback reaches PHP through `ffi::call_host`. What PHP throws is
     stashed and rethrown by `with_host` once the C call returns: php
     longjmps out of the library, rhp cannot. An exception leaves the C

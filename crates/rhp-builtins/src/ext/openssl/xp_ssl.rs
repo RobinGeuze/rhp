@@ -197,6 +197,10 @@ struct Reneg {
     window: i64,
     tokens: f32,
     should_close: bool,
+    /// The context has a `reneg_limit_callback`: it decides (after the read
+    /// that saw the limit exceeded) whether the connection closes.
+    has_callback: bool,
+    callback_due: bool,
 }
 
 /// What OpenSSL's callbacks read. Behind its own allocation: they run while
@@ -381,7 +385,11 @@ unsafe extern "C" fn info_callback(ssl: *const sys::SSL, where_: c_int, _ret: c_
         reneg.tokens += 1.0;
         if reneg.tokens > reneg.limit as f32 {
             reneg.should_close = true;
-            warn("SSL: client-initiated handshake rate limit exceeded by peer");
+            if reneg.has_callback {
+                reneg.callback_due = true;
+            } else {
+                warn("SSL: client-initiated handshake rate limit exceeded by peer");
+            }
         }
     })
 }
@@ -1353,6 +1361,8 @@ pub fn setup_crypto(
                 window,
                 tokens: 0.0,
                 should_close: false,
+                has_callback: opts.get("reneg_limit_callback").is_some(),
+                callback_due: false,
             });
             unsafe { sys::SSL_set_info_callback(t.ssl, Some(info_callback)) };
         }
@@ -1620,7 +1630,14 @@ pub fn sockop_io(stream: &mut FdStream, read: bool, buf: &mut [u8], supplemental
                 sys::SSL_read(t.ssl, buf.as_mut_ptr() as *mut c_void, count)
             });
             err_no = errno();
-            if t.shared().reneg.as_ref().is_some_and(|r| r.should_close) {
+            if let Some(r) = t.shared().reneg.as_mut().filter(|r| r.should_close) {
+                if r.callback_due {
+                    // php calls the callback from the handshake; rhp has no
+                    // host here, so the code that ran the read calls it
+                    r.callback_due = false;
+                    stream.events.push(crate::fdstream::NotifyEvent::RenegLimit);
+                    break;
+                }
                 unsafe { libc::shutdown(raw, libc::SHUT_RDWR) };
                 nr_bytes = 0;
                 eof = true;
@@ -1688,6 +1705,16 @@ pub fn sockop_io(stream: &mut FdStream, read: bool, buf: &mut [u8], supplemental
 }
 
 impl SslSock {
+    /// The `reneg_limit_callback` answered: keep the connection (true), or
+    /// close it as php does when the rate limit is exceeded.
+    pub fn reneg_answered(&mut self, keep: bool) -> bool {
+        let Some(r) = self.shared().reneg.as_mut() else {
+            return true;
+        };
+        r.should_close = !keep;
+        keep
+    }
+
     /// `PHP_STREAM_OPTION_CHECK_LIVENESS` with a zero timeout (what `feof`
     /// asks) on an active session.
     pub fn alive(&self, raw: RawFd, sock: &SockInfo) -> bool {

@@ -76,7 +76,7 @@ pub struct FdStream {
     /// The stream's context has a notifier: reads record [`NotifyEvent`]s
     /// for the code that ran them to deliver.
     pub notify: bool,
-    events: Vec<NotifyEvent>,
+    pub(crate) events: Vec<NotifyEvent>,
 }
 
 /// A notification a stream operation owes its context's notifier.
@@ -86,6 +86,9 @@ pub enum NotifyEvent {
     Progress(usize),
     /// The eof flag changed (`php_stream_notify_completed`).
     Completed,
+    /// A TLS server session exceeded its renegotiation limit and the
+    /// context has a `reneg_limit_callback` to ask.
+    RenegLimit,
 }
 
 /// The socket half of a socket stream (php's `php_netstream_data_t` plus the
@@ -818,6 +821,15 @@ impl FdStream {
     /// The notifications owed since the last call.
     pub fn take_events(&mut self) -> Vec<NotifyEvent> {
         std::mem::take(&mut self.events)
+    }
+
+    /// The `reneg_limit_callback` said not to keep the connection:
+    /// php's shutdown with eof.
+    pub fn reneg_close(&mut self) {
+        if let Some(raw) = self.raw_fd() {
+            unsafe { libc::shutdown(raw, libc::SHUT_RDWR) };
+        }
+        self.eof = true;
     }
 
     /// Read the rest through php's "dechunk" filter.

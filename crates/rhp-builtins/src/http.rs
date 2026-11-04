@@ -218,6 +218,22 @@ pub fn deliver(
     let Some(ctx) = host.stream_context_of(res) else {
         return Ok(());
     };
+    if events.contains(&crate::fdstream::NotifyEvent::RenegLimit) {
+        // php_openssl_limit_handshake_reneg's callback
+        let keep = match ctx_opt(host, &ctx, "ssl", "reneg_limit_callback") {
+            Some(cb) => matches!(
+                host.call_callable(&cb, std::slice::from_ref(res))?,
+                Value::Bool(true)
+            ),
+            None => false,
+        };
+        if let Some(f) = host.stream_fd_mut(res) {
+            let keep = f.tls.as_deref_mut().is_none_or(|t| t.reneg_answered(keep));
+            if !keep {
+                f.reneg_close();
+            }
+        }
+    }
     deliver_ctx(host, &ctx, events)
 }
 
@@ -230,6 +246,7 @@ fn deliver_ctx(
     for ev in events {
         match *ev {
             NotifyEvent::Progress(n) => progress_increment(host, ctx, n as i64, 0)?,
+            NotifyEvent::RenegLimit => {}
             NotifyEvent::Completed => {
                 if host.stream_context_notifier(ctx).is_none() {
                     continue;

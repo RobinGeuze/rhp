@@ -4409,7 +4409,7 @@ impl Vm {
     fn deliver_stream_events(&mut self, res: &Value) {
         let Some(id) = res_id(res) else { return };
         let events = match self.streams.get_mut(&id) {
-            Some(StreamState::Fd(f)) if f.notify => f.take_events(),
+            Some(StreamState::Fd(f)) => f.take_events(),
             _ => return,
         };
         if events.is_empty() {

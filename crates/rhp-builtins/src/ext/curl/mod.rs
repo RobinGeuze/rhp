@@ -226,6 +226,8 @@ fn share_arg(host: &dyn Host, args: &[Value], f: &str) -> Result<Rc<Share>, Thro
     }
 }
 
+/// An `int` parameter. The VM's stub-signature check has already reported
+/// a null as deprecated.
 fn long_arg(
     host: &mut dyn Host,
     args: &[Value],
@@ -233,6 +235,9 @@ fn long_arg(
     f: &str,
     p: &str,
 ) -> Result<i64, Thrown> {
+    if matches!(args.get(i).map(deref), Some(Value::Null)) && !host.caller_strict_types() {
+        return Ok(0);
+    }
     crate::ext::zpp::long_arg(host, args, i, f, p)
 }
 

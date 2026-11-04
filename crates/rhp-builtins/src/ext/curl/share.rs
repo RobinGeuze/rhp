@@ -87,6 +87,88 @@ pub(super) fn fn_curl_share_errno(host: &mut dyn Host, args: &[Value]) -> Result
     Ok(Value::Int(sh.errno.get() as i64))
 }
 
+/// php's `zval_try_get_long`: `None` when the value cannot be an int. A
+/// float that is not an int warns or is deprecated as zend_dval_to_lval_safe
+/// does, a leading-numeric string warns.
+fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Thrown> {
+    // ZEND_DOUBLE_FITS_LONG (true for NaN)
+    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+    let fits = |f: f64| !(f >= TWO_63 || f < -TWO_63);
+    let shown = |f: f64| String::from_utf8_lossy(&rhp_values::fmt::float_serialize(f)).into_owned();
+    Ok(Some(match v {
+        Value::Null | Value::Bool(false) => 0,
+        Value::Bool(true) => 1,
+        Value::Int(n) => *n,
+        Value::Float(f) => {
+            let f = *f;
+            let l = if f.is_finite() && fits(f) {
+                f as i64
+            } else {
+                host.emit_diagnostic(
+                    crate::E_WARNING,
+                    &format!(
+                        "The float {} is not representable as an int, cast occurred",
+                        shown(f)
+                    ),
+                )?;
+                if f.is_finite() {
+                    conv::to_int(v)
+                } else {
+                    0
+                }
+            };
+            if l as f64 != f && fits(f) {
+                host.emit_diagnostic(
+                    crate::E_DEPRECATED,
+                    &format!(
+                        "Implicit conversion from float {} to int loses precision",
+                        shown(f)
+                    ),
+                )?;
+            }
+            l
+        }
+        Value::Str(s) => {
+            let b = s.as_bytes();
+            let Some((num, end)) = conv::scan_number(b) else {
+                return Ok(None);
+            };
+            if !b[end..]
+                .iter()
+                .all(|&c| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
+            {
+                host.emit_diagnostic(crate::E_WARNING, "A non-numeric value encountered")?;
+            }
+            match num {
+                conv::Num::Int(n) => n,
+                conv::Num::Float(f) => {
+                    // zend_dval_to_lval_cap
+                    let l = if f.is_nan() {
+                        0
+                    } else if f.is_finite() && fits(f) {
+                        f as i64
+                    } else if f > 0.0 {
+                        i64::MAX
+                    } else {
+                        i64::MIN
+                    };
+                    if l as f64 != f {
+                        host.emit_diagnostic(
+                            crate::E_DEPRECATED,
+                            &format!(
+                                "Implicit conversion from float-string \"{}\" to int loses precision",
+                                String::from_utf8_lossy(b)
+                            ),
+                        )?;
+                    }
+                    l
+                }
+            }
+        }
+        _ => return Ok(None),
+    }))
+}
+
 /// `curl_share_init_persistent()`: a share per set of options, reused by
 /// later calls (and requests) on the same thread.
 pub(super) fn fn_curl_share_init_persistent(
@@ -122,20 +204,7 @@ pub(super) fn fn_curl_share_init_persistent(
     let mut persistent_id: u64 = 0;
     for (_, entry) in opts.iter() {
         let entry = deref(entry);
-        // zval_try_get_long
-        let option = match &entry {
-            Value::Int(n) => Some(*n),
-            Value::Bool(b) => Some(*b as i64),
-            Value::Null => Some(0),
-            Value::Float(x) if x.is_finite() => Some(*x as i64),
-            Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
-                Some(conv::Num::Int(n)) => Some(n),
-                Some(conv::Num::Float(x)) if x.is_finite() => Some(x as i64),
-                _ => None,
-            },
-            _ => None,
-        };
-        let Some(option) = option else {
+        let Some(option) = try_get_long(host, &entry)? else {
             return Err(Thrown::type_error(format!(
                 "{f}(): Argument #1 ($share_options) must contain only int values, {} given",
                 crate::argparse::value_name(host, &entry)

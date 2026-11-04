@@ -144,7 +144,8 @@ pub(super) fn fn_curl_multi_get_handles(
     Ok(Value::Array(a))
 }
 
-/// `Z_PARAM_DOUBLE` in the caller's typing mode.
+/// `Z_PARAM_DOUBLE` in the caller's typing mode (a null was reported by
+/// the VM's stub-signature check).
 fn double_arg(
     host: &mut dyn Host,
     args: &[Value],
@@ -170,16 +171,7 @@ fn double_arg(
     }
     match &v {
         Value::Bool(b) => Ok(*b as i64 as f64),
-        Value::Null => {
-            host.emit_diagnostic(
-                crate::E_DEPRECATED,
-                &format!(
-                    "{f}(): Passing null to parameter #{} (${p}) of type float is deprecated",
-                    i + 1
-                ),
-            )?;
-            Ok(0.0)
-        }
+        Value::Null => Ok(0.0),
         Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
             Some(conv::Num::Int(n)) => Ok(n as f64),
             Some(conv::Num::Float(x)) => Ok(x),

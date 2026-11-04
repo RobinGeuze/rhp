@@ -21,8 +21,8 @@ use std::process::ExitCode;
 use rhp_frontend::cst::{
     Access, ArrayElement, Attribute, BinaryOperator, ClassLikeConstantSelector, ClassLikeMember,
     Expression, FunctionLikeParameterList, FunctionLikeReturnTypeHint, Hint, Identifier, Literal,
-    LiteralStringKind, Method, MethodBody, Modifier, NamespaceBody, Sequence, Statement,
-    TriviaKind, UnaryPrefixOperator,
+    LiteralStringKind, Method, Modifier, NamespaceBody, Sequence, Statement, TriviaKind,
+    UnaryPrefixOperator,
 };
 
 /// The stub directories of the extensions rhp provides, and the module name
@@ -620,7 +620,10 @@ fn method(f: &File, ns: &str, class: &str, kind: u8, m: &Method) -> Result<Metho
     if flags & (M_PUBLIC | M_PROTECTED | M_PRIVATE) == 0 {
         flags |= M_PUBLIC;
     }
-    if kind == K_INTERFACE || matches!(m.body, MethodBody::Abstract(_)) {
+    // gen_stub: a class method without a body (DateInterval::__serialize)
+    // is still a concrete method; only interfaces' methods are implied
+    // abstract.
+    if kind == K_INTERFACE {
         flags |= M_ABSTRACT;
     }
     if doc_tags(doc)

@@ -5106,6 +5106,47 @@ impl Vm {
         self.stack[i].proto.debug.file.is_empty()
     }
 
+    /// Frame `i` is engine plumbing with no php counterpart: a prelude
+    /// class's `__`-prefixed helper, or a magic method standing in for
+    /// php's property, dimension or `get_method` handlers. Traces leave it
+    /// out (see [`Self::dispatched_method`]).
+    fn is_plumbing_frame(&self, i: usize) -> bool {
+        let f = &self.stack[i];
+        f.include_kind.is_none()
+            && is_prelude_proto(&f.proto)
+            && (is_engine_helper_name(f.proto.name.as_bytes())
+                || f.defining_class.is_some_and(|c| {
+                    is_handler_accessor(self.class(c).name.as_bytes(), f.proto.name.as_bytes())
+                }))
+    }
+
+    /// For a stand-in `__call`/`__callStatic` frame (XMLReader's `open` and
+    /// `XML`, static methods that php's `get_method` also runs on an
+    /// instance): the stub method it runs and that call's arguments, as a
+    /// trace shows them. None when the name is no such method: php fails
+    /// before any call.
+    fn dispatched_method(&self, i: usize) -> Option<(&'static str, PhpArray)> {
+        let f = &self.stack[i];
+        let lc = f.proto.name.as_bytes().to_ascii_lowercase();
+        if lc != b"__call" && lc != b"__callstatic" {
+            return None;
+        }
+        let class = self.class(f.defining_class?).name.clone();
+        let args = self.frame_args(i);
+        let mut it = args.iter().map(|(_, v)| v);
+        let Some(Value::Str(name)) = it.next() else {
+            return None;
+        };
+        let m = builtins::signatures::method(class.as_bytes(), name.as_bytes())?;
+        let mut shown = PhpArray::new();
+        if let Some(Value::Array(a)) = it.next() {
+            for (_, v) in a.iter() {
+                shown.push(deref(v));
+            }
+        }
+        Some((m.name, shown))
+    }
+
     /// A builtin called from frame `i` is still running (so a frame above `i`
     /// was invoked by it, i.e. from `[internal function]`).
     fn native_active_from(&self, i: usize) -> bool {
@@ -5312,25 +5353,42 @@ impl Vm {
                 break;
             }
             let f = &self.stack[i];
-            // A prelude class's `__`-prefixed helper, or an accessor standing
-            // in for php's property and dimension handlers, is engine
-            // plumbing with no php counterpart: it never shows in a trace.
-            if f.include_kind.is_none()
-                && is_prelude_proto(&f.proto)
-                && (is_engine_helper_name(f.proto.name.as_bytes())
-                    || f.defining_class.is_some_and(|c| {
-                        is_handler_accessor(self.class(c).name.as_bytes(), f.proto.name.as_bytes())
-                    }))
+            let shown_as = if self.is_plumbing_frame(i) {
+                match self.dispatched_method(i) {
+                    Some(m) => Some(m),
+                    None => continue,
+                }
+            } else {
+                None
+            };
+            // The call site is the nearest frame below that a trace shows.
+            let mut caller = i - 1;
+            while caller > 0
+                && self.is_plumbing_frame(caller)
+                && self.dispatched_method(caller).is_none()
             {
-                continue;
+                caller -= 1;
             }
             let mut e = PhpArray::new();
-            if !self.is_internal_frame(i - 1) && !self.native_active_from(i - 1) {
-                e.insert(k(b"file"), file_of(i - 1));
-                e.insert(k(b"line"), Value::Int(self.current_line(i - 1) as i64));
+            if !self.is_internal_frame(caller) && !self.native_active_from(caller) {
+                e.insert(k(b"file"), file_of(caller));
+                e.insert(k(b"line"), Value::Int(self.current_line(caller) as i64));
             }
             if let Some(kind) = f.include_kind {
                 e.insert(k(b"function"), Value::str(kind));
+            } else if let Some((name, args)) = shown_as {
+                let c = f.defining_class.expect("a method frame");
+                e.insert(k(b"function"), Value::str(name));
+                e.insert(k(b"class"), Value::Str(self.class(c).name.clone()));
+                let this = self.current_this(i);
+                let ty = if this.is_some() { "->" } else { "::" };
+                if let (true, Some(o)) = (provide_object, this) {
+                    e.insert(k(b"object"), Value::Object(o));
+                }
+                e.insert(k(b"type"), Value::str(ty));
+                if !ignore_args {
+                    e.insert(k(b"args"), Value::Array(args));
+                }
             } else {
                 e.insert(k(b"function"), Value::Str(f.proto.name.clone()));
                 if let Some(c) = f.defining_class {
@@ -12341,15 +12399,17 @@ fn is_engine_helper_name(name: &[u8]) -> bool {
     lc.starts_with(b"__") && !MAGIC.contains(&lc.as_slice())
 }
 
-/// A magic accessor or ArrayAccess method of a built-in class whose php
-/// stub has no such method: the prelude's stand-in for php's property and
-/// dimension handlers (SimpleXML, DOM, XMLReader).
+/// A magic or ArrayAccess method of a built-in class whose php stub has no
+/// such method: the prelude's stand-in for php's property, dimension and
+/// `get_method` handlers (SimpleXML, DOM, XMLReader, SPL's forwarding).
 fn is_handler_accessor(class: &[u8], method: &[u8]) -> bool {
     const ACCESSORS: &[&[u8]] = &[
         b"__get",
         b"__set",
         b"__isset",
         b"__unset",
+        b"__call",
+        b"__callstatic",
         b"offsetget",
         b"offsetset",
         b"offsetexists",

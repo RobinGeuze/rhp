@@ -651,7 +651,9 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     .chain(ext::json::json_constants())
     .chain(ext::standard::info::constants())
     .chain(fs_fns::constants())
-    .chain(stdext_fns::constants())
+    .chain(stdext_fns::fnmatch_constants())
+    .chain(stdext_fns::case_constants())
+    .chain(stdext_fns::mt_rand_constants())
     .chain(ext::standard::crypt::constants())
     .chain(ext::standard::streamsfuncs::constants())
     // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with their

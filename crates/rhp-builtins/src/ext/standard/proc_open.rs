@@ -31,7 +31,7 @@ pub(crate) fn write_ref(arg: Option<&Value>, value: Value) {
 }
 
 /// `Z_PARAM_PATH`-style string argument: coerced to string, rejecting NUL bytes.
-pub(crate) fn path_arg(
+pub(crate) fn zpp_path(
     args: &[Value],
     i: usize,
     fname: &str,
@@ -508,8 +508,8 @@ fn fn_popen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use std::os::fd::OwnedFd;
     use std::os::unix::ffi::OsStrExt;
     use std::process::{Command, Stdio};
-    let cmd = path_arg(args, 0, "popen", "command")?;
-    let mode = path_arg(args, 1, "popen", "mode")?;
+    let cmd = zpp_path(args, 0, "popen", "command")?;
+    let mode = zpp_path(args, 1, "popen", "mode")?;
     let write = match mode.first() {
         Some(b'r') if !mode.contains(&b'+') => false,
         Some(b'w') if !mode.contains(&b'+') => true,

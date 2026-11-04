@@ -57,15 +57,24 @@ pub fn register(m: &mut crate::Registry) {
     crate::register(m, &[("fnmatch", fn_fnmatch)]);
 }
 
-/// The `FNM_*` / `MT_RAND_*` constants.
-pub fn constants() -> Vec<(&'static str, Value)> {
+/// `fnmatch`'s `FNM_*` constants.
+pub fn fnmatch_constants() -> Vec<(&'static str, Value)> {
     vec![
         ("FNM_NOESCAPE", Value::Int(libc::FNM_NOESCAPE as i64)),
         ("FNM_PATHNAME", Value::Int(libc::FNM_PATHNAME as i64)),
         ("FNM_PERIOD", Value::Int(libc::FNM_PERIOD as i64)),
         ("FNM_CASEFOLD", Value::Int(libc::FNM_CASEFOLD as i64)),
-        ("CASE_LOWER", Value::Int(0)),
-        ("CASE_UPPER", Value::Int(1)),
+    ]
+}
+
+/// `array_change_key_case`'s `CASE_*` constants.
+pub fn case_constants() -> Vec<(&'static str, Value)> {
+    vec![("CASE_LOWER", Value::Int(0)), ("CASE_UPPER", Value::Int(1))]
+}
+
+/// The `MT_RAND_*` constants.
+pub fn mt_rand_constants() -> Vec<(&'static str, Value)> {
+    vec![
         ("MT_RAND_MT19937", Value::Int(MT_RAND_MT19937)),
         ("MT_RAND_PHP", Value::Int(MT_RAND_PHP)),
     ]

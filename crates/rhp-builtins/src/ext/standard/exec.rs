@@ -8,7 +8,7 @@ use rhp_values::ops::deref;
 use rhp_values::{PhpArray, Value};
 
 use crate::ext::standard::proc_open::{
-    close_status, consume_stream_id, make_pipe, path_arg, spawn, waitpid_retry, write_ref, Desc,
+    close_status, consume_stream_id, make_pipe, spawn, waitpid_retry, write_ref, zpp_path, Desc,
     SpawnCmd,
 };
 use crate::main::streams::errno;
@@ -105,7 +105,7 @@ fn php_exec(host: &mut dyn Host, mode: u8, cmd: &[u8], out: &mut Option<PhpArray
 }
 
 fn exec_family(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
-    let cmd = path_arg(args, 0, fname, "command")?;
+    let cmd = zpp_path(args, 0, fname, "command")?;
     if cmd.is_empty() {
         return Err(Thrown::error(
             "ValueError",
@@ -155,7 +155,7 @@ fn fn_passthru(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_shell_exec(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let cmd = path_arg(args, 0, "shell_exec", "command")?;
+    let cmd = zpp_path(args, 0, "shell_exec", "command")?;
     if cmd.is_empty() {
         return Err(Thrown::error(
             "ValueError",
@@ -272,12 +272,12 @@ fn escape_shell_cmd(s: &[u8]) -> Vec<u8> {
 }
 
 fn fn_escapeshellarg(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = path_arg(args, 0, "escapeshellarg", "arg")?;
+    let s = zpp_path(args, 0, "escapeshellarg", "arg")?;
     Ok(Value::str(escape_shell_arg(&s)))
 }
 
 fn fn_escapeshellcmd(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = path_arg(args, 0, "escapeshellcmd", "command")?;
+    let s = zpp_path(args, 0, "escapeshellcmd", "command")?;
     Ok(Value::str(escape_shell_cmd(&s)))
 }
 

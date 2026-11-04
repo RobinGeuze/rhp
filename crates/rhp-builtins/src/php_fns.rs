@@ -9,7 +9,7 @@ use rhp_values::{conv, PhpArray, Value};
 
 use crate::{Host, Thrown};
 
-fn str_arg(args: &[Value], i: usize) -> Vec<u8> {
+fn arg_bytes(args: &[Value], i: usize) -> Vec<u8> {
     conv::to_string_bytes(&deref(&args[i]))
 }
 
@@ -87,7 +87,7 @@ fn ext_version(ext: &str) -> &'static str {
 }
 
 fn fn_extension_loaded(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(loaded_ext(&str_arg(args, 0)).is_some()))
+    Ok(Value::Bool(loaded_ext(&arg_bytes(args, 0)).is_some()))
 }
 
 fn fn_get_loaded_extensions(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -115,7 +115,7 @@ fn fn_get_loaded_extensions(host: &mut dyn Host, args: &[Value]) -> Result<Value
 
 fn fn_function_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // A leading "\" is ignored, as in zif_function_exists.
-    let name = str_arg(args, 0);
+    let name = arg_bytes(args, 0);
     let name = name.strip_prefix(b"\\").unwrap_or(&name);
     Ok(Value::Bool(host.function_exists(name)))
 }
@@ -396,10 +396,10 @@ pub fn throwable_to_string(host: &dyn Host, exc: &Value) -> Vec<u8> {
 /// mode (`string`, `int`, `?string`, `?int`, `?Throwable`), or raise its
 /// TypeError ("Fn(): Argument #n ($name) must be of type T, X given").
 fn fn_zpp_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let func = str_arg(args, 0);
+    let func = arg_bytes(args, 0);
     let n = conv::to_int(&deref(&args[1]));
-    let name = str_arg(args, 2);
-    let ty = str_arg(args, 3);
+    let name = arg_bytes(args, 2);
+    let ty = arg_bytes(args, 3);
     let v = deref(&args[4]);
     let (nullable, base) = match ty.strip_prefix(b"?") {
         Some(b) => (true, b.to_vec()),
@@ -1276,8 +1276,8 @@ fn version_cmp(a: &[u8], b: &[u8]) -> i32 {
 }
 
 fn fn_version_compare(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = str_arg(args, 0);
-    let b = str_arg(args, 1);
+    let a = arg_bytes(args, 0);
+    let b = arg_bytes(args, 1);
     let c = version_cmp(&a, &b);
     match args.get(2).map(deref) {
         None | Some(Value::Null) => Ok(Value::Int(c as i64)),

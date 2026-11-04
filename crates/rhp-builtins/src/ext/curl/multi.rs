@@ -401,7 +401,7 @@ pub(super) fn fn_curl_multi_setopt(host: &mut dyn Host, args: &[Value]) -> Resul
                  CURLMOPT_PUSHFUNCTION, {why}"
             )));
         }
-        m.borrow_mut().push = Some(zvalue.clone());
+        m.borrow_mut().push = Some(easy::bind_callable(host, &zvalue));
         let r = unsafe {
             sys::curl_multi_setopt(
                 multi,

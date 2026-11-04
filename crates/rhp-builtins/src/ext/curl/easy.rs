@@ -1568,6 +1568,15 @@ fn logged<R: Copy + Default>(
     }
 }
 
+/// A callable as php's FCC keeps it: resolved in the scope that set it, so
+/// `[$this, 'privateMethod']` set inside the class can be called later.
+pub(super) fn bind_callable(host: &dyn Host, v: &Value) -> Value {
+    match v {
+        Value::Closure(_) | Value::Object(_) => v.clone(),
+        other => host.wrap_callable(other.clone()),
+    }
+}
+
 /// `php_curl_option_str`.
 fn option_str(
     host: &mut dyn Host,
@@ -1642,7 +1651,7 @@ fn set_option(
                 None
             } else {
                 match host.check_callable(&zvalue)? {
-                    None => Some(zvalue.clone()),
+                    None => Some(bind_callable(host, &zvalue)),
                     Some(why) => {
                         if user {
                             set_method(default);

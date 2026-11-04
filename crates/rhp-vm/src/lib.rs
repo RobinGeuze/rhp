@@ -4407,8 +4407,16 @@ impl Vm {
         false
     }
 
-    /// The diagnostics php's compiler raised for a file just loaded.
+    /// The diagnostics php's compiler raised for a file just loaded: once
+    /// per compile, or on every load from opcache with
+    /// `opcache.record_warnings`.
     fn emit_compile_diags(&mut self, prog: &Program) {
+        if prog.compile_diags.is_empty()
+            || (prog.compile_diags_reported.replace(true)
+                && !ini_bool(&self.ini_get(b"opcache.record_warnings").unwrap_or_default()))
+        {
+            return;
+        }
         for (level, msg, line) in &prog.compile_diags {
             let file = prog.main.debug.file.as_bytes().to_vec();
             self.raise_error_at(*level, msg, file, *line as i64);

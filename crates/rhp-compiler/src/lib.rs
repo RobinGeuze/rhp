@@ -934,6 +934,7 @@ fn compile_program_inner(
         num_prelude_functions,
         cond_classes,
         compile_diags,
+        compile_diags_reported: Default::default(),
     })
 }
 

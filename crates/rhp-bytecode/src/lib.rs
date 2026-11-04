@@ -1149,6 +1149,9 @@ pub struct Program {
     /// Diagnostics php's compiler raises for this file: `(level, message,
     /// line)`, reported when the file is loaded.
     pub compile_diags: Vec<(i64, String, u32)>,
+    /// Whether `compile_diags` were reported: a program opcache hands out
+    /// again reports them only with `opcache.record_warnings`.
+    pub compile_diags_reported: std::cell::Cell<bool>,
 }
 
 // ---------------------------------------------------------------------------

@@ -1,14 +1,18 @@
 //! The CV pre-pass: one register per named variable, created in the order php creates them.
 
 use rhp_frontend::cst::{
-    Access, Argument, ArrayElement, CompositeString, Construct, Expression, ForeachBody,
-    ForeachTarget, Node, Statement, StringPart, Variable,
+    Access, Argument, ArrayElement, AssignmentOperator, ClassLikeConstantSelector,
+    ClassLikeMemberSelector, CompositeString, Construct, Expression, ForeachBody, ForeachTarget,
+    Node, PartialArgument, Statement, StringPart, Variable,
 };
 
 use crate::builder::ProtoBuilder;
-use crate::util::strip_dollar;
+use crate::util::{is_superglobal, strip_dollar};
 
 impl ProtoBuilder<'_> {
+    /// Give each variable of `stmt` its CV, in the order php's compiler
+    /// first reaches it (which is the order of `$GLOBALS`, and of the
+    /// destructor calls at shutdown, for the script's own variables).
     pub(crate) fn scan_stmt_vars(&mut self, stmt: &Statement) {
         use rhp_frontend::cst::{ForBody, IfBody, SwitchBody, SwitchCase, WhileBody};
         match stmt {
@@ -41,14 +45,16 @@ impl ProtoBuilder<'_> {
                     }
                 }
             }
+            // php compiles a loop's body before its condition, which sits at
+            // the bottom.
             Statement::While(w) => {
-                self.scan_expr_vars(w.condition);
                 match &w.body {
                     WhileBody::Statement(s) => self.scan_stmt_vars(s),
                     WhileBody::ColonDelimited(b) => {
                         b.statements.iter().for_each(|s| self.scan_stmt_vars(s))
                     }
                 }
+                self.scan_expr_vars(w.condition);
             }
             Statement::DoWhile(d) => {
                 self.scan_stmt_vars(d.statement);
@@ -58,14 +64,14 @@ impl ProtoBuilder<'_> {
                 f.initializations
                     .iter()
                     .for_each(|e| self.scan_expr_vars(e));
-                f.conditions.iter().for_each(|e| self.scan_expr_vars(e));
-                f.increments.iter().for_each(|e| self.scan_expr_vars(e));
                 match &f.body {
                     ForBody::Statement(s) => self.scan_stmt_vars(s),
                     ForBody::ColonDelimited(b) => {
                         b.statements.iter().for_each(|s| self.scan_stmt_vars(s))
                     }
                 }
+                f.increments.iter().for_each(|e| self.scan_expr_vars(e));
+                f.conditions.iter().for_each(|e| self.scan_expr_vars(e));
             }
             Statement::Switch(sw) => {
                 self.scan_expr_vars(sw.expression);
@@ -73,16 +79,18 @@ impl ProtoBuilder<'_> {
                     SwitchBody::BraceDelimited(b) => &b.cases,
                     SwitchBody::ColonDelimited(b) => &b.cases,
                 };
+                // Every case condition, then the case bodies.
                 for case in cases.iter() {
-                    match case {
-                        SwitchCase::Expression(c) => {
-                            self.scan_expr_vars(c.expression);
-                            c.statements.iter().for_each(|s| self.scan_stmt_vars(s));
-                        }
-                        SwitchCase::Default(c) => {
-                            c.statements.iter().for_each(|s| self.scan_stmt_vars(s))
-                        }
+                    if let SwitchCase::Expression(c) = case {
+                        self.scan_expr_vars(c.expression);
                     }
+                }
+                for case in cases.iter() {
+                    let stmts = match case {
+                        SwitchCase::Expression(c) => &c.statements,
+                        SwitchCase::Default(c) => &c.statements,
+                    };
+                    stmts.iter().for_each(|s| self.scan_stmt_vars(s));
                 }
             }
             Statement::Return(r) => {
@@ -108,16 +116,13 @@ impl ProtoBuilder<'_> {
                 }
             }
             Statement::Unset(u) => u.values.iter().for_each(|v| self.scan_expr_vars(v)),
-            Statement::Global(g) => {
-                for v in g.variables.iter() {
-                    if let Variable::Direct(d) = v {
-                        self.cv(strip_dollar(d.name));
-                    }
-                }
-            }
+            Statement::Global(g) => g.variables.iter().for_each(|v| self.scan_variable(v)),
             Statement::Static(s) => {
                 for item in s.items.iter() {
                     self.cv(strip_dollar(item.variable().name));
+                    if let rhp_frontend::cst::StaticItem::Concrete(c) = item {
+                        self.scan_expr_vars(c.value);
+                    }
                 }
             }
             Statement::Try(t) => {
@@ -142,15 +147,22 @@ impl ProtoBuilder<'_> {
                         .for_each(|s| self.scan_stmt_vars(s));
                 }
             }
+            Statement::Declare(d) => {
+                use rhp_frontend::cst::DeclareBody;
+                match &d.body {
+                    DeclareBody::Statement(s) => self.scan_stmt_vars(s),
+                    DeclareBody::ColonDelimited(c) => {
+                        c.statements.iter().for_each(|s| self.scan_stmt_vars(s))
+                    }
+                }
+            }
             _ => {}
         }
     }
 
     pub(crate) fn scan_expr_vars(&mut self, expr: &Expression) {
         match expr {
-            Expression::Variable(Variable::Direct(d)) => {
-                self.cv(strip_dollar(d.name));
-            }
+            Expression::Variable(v) => self.scan_variable(v),
             Expression::Parenthesized(p) => self.scan_expr_vars(p.expression),
             Expression::Binary(b) => {
                 self.scan_expr_vars(b.lhs);
@@ -158,6 +170,14 @@ impl ProtoBuilder<'_> {
             }
             Expression::UnaryPrefix(u) => self.scan_expr_vars(u.operand),
             Expression::UnaryPostfix(u) => self.scan_expr_vars(u.operand),
+            // php compiles a list() assignment's right-hand side first.
+            Expression::Assignment(a)
+                if matches!(a.operator, AssignmentOperator::Assign(_))
+                    && matches!(a.lhs, Expression::Array(_) | Expression::List(_)) =>
+            {
+                self.scan_expr_vars(a.rhs);
+                self.scan_expr_vars(a.lhs);
+            }
             Expression::Assignment(a) => {
                 self.scan_expr_vars(a.lhs);
                 self.scan_expr_vars(a.rhs);
@@ -193,17 +213,19 @@ impl ProtoBuilder<'_> {
                     }
                 }
             }
+            // Every arm's conditions, then the arm bodies.
             Expression::Match(m) => {
+                use rhp_frontend::cst::MatchArm;
                 self.scan_expr_vars(m.expression);
                 for arm in m.arms.iter() {
+                    if let MatchArm::Expression(a) = arm {
+                        a.conditions.iter().for_each(|c| self.scan_expr_vars(c));
+                    }
+                }
+                for arm in m.arms.iter() {
                     match arm {
-                        rhp_frontend::cst::MatchArm::Expression(a) => {
-                            a.conditions.iter().for_each(|c| self.scan_expr_vars(c));
-                            self.scan_expr_vars(a.expression);
-                        }
-                        rhp_frontend::cst::MatchArm::Default(a) => {
-                            self.scan_expr_vars(a.expression)
-                        }
+                        MatchArm::Expression(a) => self.scan_expr_vars(a.expression),
+                        MatchArm::Default(a) => self.scan_expr_vars(a.expression),
                     }
                 }
             }
@@ -213,35 +235,154 @@ impl ProtoBuilder<'_> {
                     self.scan_args(list);
                 }
             }
+            Expression::AnonymousClass(ac) => {
+                if let Some(list) = &ac.argument_list {
+                    self.scan_partial_args(list);
+                }
+            }
+            // A member name after its object or class.
             Expression::Access(acc) => match acc {
-                Access::Property(pa) => self.scan_expr_vars(pa.object),
-                Access::NullSafeProperty(pa) => self.scan_expr_vars(pa.object),
-                // Note: in `C::$x` the `$x` is the static-property NAME, not a local.
-                Access::StaticProperty(spa) => self.scan_expr_vars(spa.class),
-                Access::ClassConstant(cca) => self.scan_expr_vars(cca.class),
+                Access::Property(pa) => {
+                    self.scan_expr_vars(pa.object);
+                    self.scan_selector(&pa.property);
+                }
+                Access::NullSafeProperty(pa) => {
+                    self.scan_expr_vars(pa.object);
+                    self.scan_selector(&pa.property);
+                }
+                // In `C::$x` the `$x` is the property's name, not a variable;
+                // `C::$$x` reads `$x`.
+                Access::StaticProperty(spa) => {
+                    self.scan_expr_vars(spa.class);
+                    if !matches!(spa.property, Variable::Direct(_)) {
+                        self.scan_variable(&spa.property);
+                    }
+                }
+                Access::ClassConstant(cca) => {
+                    self.scan_expr_vars(cca.class);
+                    if let ClassLikeConstantSelector::Expression(e) = &cca.constant {
+                        self.scan_expr_vars(e.expression);
+                    }
+                }
             },
             Expression::Clone(cl) => self.scan_expr_vars(cl.object),
             Expression::Throw(t) => self.scan_expr_vars(t.exception),
             Expression::Construct(c) => self.scan_construct_vars(c),
+            // The callee (or object and method name) before the arguments.
             Expression::Call(call) => {
                 use rhp_frontend::cst::Call;
                 match call {
-                    Call::Function(fc) => self.scan_args(&fc.argument_list),
+                    Call::Function(fc) => {
+                        self.scan_expr_vars(fc.function);
+                        self.scan_args(&fc.argument_list);
+                    }
                     Call::Method(mc) => {
                         self.scan_expr_vars(mc.object);
+                        self.scan_selector(&mc.method);
                         self.scan_args(&mc.argument_list);
                     }
                     Call::NullSafeMethod(mc) => {
                         self.scan_expr_vars(mc.object);
+                        self.scan_selector(&mc.method);
                         self.scan_args(&mc.argument_list);
                     }
                     Call::StaticMethod(smc) => {
                         self.scan_expr_vars(smc.class);
+                        self.scan_selector(&smc.method);
                         self.scan_args(&smc.argument_list);
                     }
                 }
             }
+            Expression::PartialApplication(pa) => {
+                use rhp_frontend::cst::PartialApplication as Pa;
+                match pa {
+                    Pa::Function(f) => {
+                        self.scan_expr_vars(f.function);
+                        self.scan_partial_args(&f.argument_list);
+                    }
+                    Pa::Method(m) => {
+                        self.scan_expr_vars(m.object);
+                        self.scan_selector(&m.method);
+                        self.scan_partial_args(&m.argument_list);
+                    }
+                    Pa::StaticMethod(s) => {
+                        self.scan_expr_vars(s.class);
+                        self.scan_selector(&s.method);
+                        self.scan_partial_args(&s.argument_list);
+                    }
+                }
+            }
+            // A closure binds its use() variables where it is created.
+            Expression::Closure(cl) => {
+                if let Some(uses) = &cl.use_clause {
+                    for u in uses.variables.iter() {
+                        self.cv(strip_dollar(u.variable.name));
+                    }
+                }
+            }
+            // An arrow function binds every variable its body uses (php's
+            // find_implicit_binds) but its parameters, `$this` and the
+            // superglobals.
+            Expression::ArrowFunction(af) => {
+                let mut used = Vec::new();
+                collect_vars(af.expression, &mut used);
+                for name in used {
+                    let param = af
+                        .parameter_list
+                        .parameters
+                        .iter()
+                        .any(|p| strip_dollar(p.variable.name) == name.as_slice());
+                    if !param && name != b"this" && !is_superglobal(&name) {
+                        self.cv(&name);
+                    }
+                }
+            }
+            Expression::Yield(y) => {
+                use rhp_frontend::cst::Yield;
+                match y {
+                    Yield::Value(v) => {
+                        if let Some(e) = v.value {
+                            self.scan_expr_vars(e);
+                        }
+                    }
+                    Yield::Pair(p) => {
+                        self.scan_expr_vars(p.key);
+                        self.scan_expr_vars(p.value);
+                    }
+                    Yield::From(f) => self.scan_expr_vars(f.iterator),
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// `$x` is a CV; `${expr}` and `$$x` read the variables of their name.
+    fn scan_variable(&mut self, v: &Variable) {
+        match v {
+            Variable::Direct(d) => {
+                self.cv(strip_dollar(d.name));
+            }
+            Variable::Indirect(iv) => self.scan_expr_vars(iv.expression),
+            Variable::Nested(nv) => self.scan_variable(nv.variable),
+        }
+    }
+
+    /// A dynamic member name: `->$x` / `->{expr}`.
+    fn scan_selector(&mut self, sel: &ClassLikeMemberSelector) {
+        match sel {
+            ClassLikeMemberSelector::Variable(v) => self.scan_variable(v),
+            ClassLikeMemberSelector::Expression(e) => self.scan_expr_vars(e.expression),
+            ClassLikeMemberSelector::Identifier(_) | ClassLikeMemberSelector::Missing(_) => {}
+        }
+    }
+
+    fn scan_partial_args(&mut self, list: &rhp_frontend::cst::PartialArgumentList) {
+        for arg in list.arguments.iter() {
+            match arg {
+                PartialArgument::Positional(p) => self.scan_expr_vars(p.value),
+                PartialArgument::Named(n) => self.scan_expr_vars(n.value),
+                _ => {}
+            }
         }
     }
 
@@ -292,8 +433,7 @@ impl ProtoBuilder<'_> {
     }
 
     /// Completeness backstop for the CV pre-pass: give each `$name` of the
-    /// body still missing a slot one (see [`visit_vars`]; an arrow function
-    /// adds nothing, it captures only variables the enclosing scope has).
+    /// body still missing a slot one (see [`visit_vars`]).
     pub(crate) fn scan_node_vars(&mut self, node: Node) {
         visit_vars(node, false, &mut |name| {
             self.cv(name);
@@ -310,10 +450,9 @@ impl ProtoBuilder<'_> {
     }
 }
 
-/// Every `$var` name referenced in an expression (deduplicated, in source
-/// order), for arrow-function auto-capture: nested arrow functions are
-/// entered, so their free variables propagate upward (over-collection is
-/// harmless: the caller keeps only names that are CVs in the enclosing scope).
+/// Every `$var` name an arrow function's body uses (deduplicated, in source
+/// order): nested arrow functions' bodies included, so their free variables
+/// propagate upward.
 pub(crate) fn collect_vars(expr: &Expression, out: &mut Vec<Vec<u8>>) {
     visit_vars(Node::Expression(expr), true, &mut |name| {
         if !out.iter().any(|n| n == name) {
@@ -324,8 +463,9 @@ pub(crate) fn collect_vars(expr: &Expression, out: &mut Vec<Vec<u8>>) {
 
 /// Call `f` with every `$name` below `node`, in source order, without
 /// entering the scopes that own their variables (functions, classes,
-/// attributes; arrow functions unless `arrows`): a closure contributes its
-/// `use` variables and an anonymous class its constructor arguments.
+/// attributes, arrow functions): a closure contributes its `use` variables,
+/// an anonymous class its constructor arguments, and with `arrows` a nested
+/// arrow function its body.
 fn visit_vars(node: Node, arrows: bool, f: &mut impl FnMut(&[u8])) {
     match node {
         Node::DirectVariable(d) => {
@@ -351,7 +491,13 @@ fn visit_vars(node: Node, arrows: bool, f: &mut impl FnMut(&[u8])) {
             visit_vars(Node::Expression(spa.class), arrows, f);
             return;
         }
-        Node::ArrowFunction(_) if !arrows => return,
+        // php's find_implicit_binds: a nested arrow function's body.
+        Node::ArrowFunction(af) => {
+            if arrows {
+                visit_vars(Node::Expression(af.expression), arrows, f);
+            }
+            return;
+        }
         Node::Function(_)
         | Node::Class(_)
         | Node::Interface(_)

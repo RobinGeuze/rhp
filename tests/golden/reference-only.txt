@@ -13,8 +13,6 @@
 core_build_constants    # phpinfo()'s configuration file path
 curl_api                # libcurl version: option and info counts, protocol names
 curl_setopt_checks      # libcurl version and features (HTTP/3, option ranges)
-curl_tlsauth_srp        # libcurl built with TLS-SRP
-curl_url_parse          # libcurl's URL parser version
 dom_basic               # libxml2 version: serializer escaping, empty elements
 dom_report_build        # libxml2 version: invalid UTF-8 in output (2.15 writes U+FFFD)
 dom_save_escape         # libxml2 version: entity/encoding errors, serializer

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::test_support::TestHost;
+use rhp_values::{ArrayKey, PhpArray};
 
 fn s(b: &str) -> Value {
     Value::str(b)
@@ -11,9 +12,6 @@ fn i(n: i64) -> Value {
 }
 fn call(f: crate::NativeFn, args: &[Value]) -> Value {
     f(&mut TestHost::new(), args).expect("no throw")
-}
-fn calls(f: crate::NativeFn, args: &[Value]) -> String {
-    String::from_utf8(rhp_values::conv::to_string_bytes(&call(f, args))).unwrap()
 }
 fn call_int(f: crate::NativeFn, args: &[Value]) -> i64 {
     match call(f, args) {
@@ -33,13 +31,6 @@ fn list(items: Vec<Value>) -> Value {
     }
     Value::Array(a)
 }
-fn map(pairs: Vec<(&str, Value)>) -> Value {
-    let mut a = PhpArray::new();
-    for (k, v) in pairs {
-        a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
-    }
-    Value::Array(a)
-}
 fn imap(pairs: Vec<(i64, Value)>) -> Value {
     let mut a = PhpArray::new();
     for (k, v) in pairs {
@@ -50,223 +41,9 @@ fn imap(pairs: Vec<(i64, Value)>) -> Value {
 
 // --- str_split -------------------------------------------------------
 
-#[test]
-fn str_split_cases() {
-    assert_eq!(
-        dumped(&call(fn_str_split, &[s("Hello")])),
-        "array(5) {\n  [0]=>\n  string(1) \"H\"\n  [1]=>\n  string(1) \"e\"\n  [2]=>\n  string(1) \"l\"\n  [3]=>\n  string(1) \"l\"\n  [4]=>\n  string(1) \"o\"\n}\n"
-    );
-    assert_eq!(
-        dumped(&call(fn_str_split, &[s("Hello World"), i(3)])),
-        "array(4) {\n  [0]=>\n  string(3) \"Hel\"\n  [1]=>\n  string(3) \"lo \"\n  [2]=>\n  string(3) \"Wor\"\n  [3]=>\n  string(2) \"ld\"\n}\n"
-    );
-    assert_eq!(dumped(&call(fn_str_split, &[s("")])), "array(0) {\n}\n");
-    assert!(fn_str_split(&mut TestHost::new(), &[s("abc"), i(0)]).is_err());
-}
-
 // --- strtr -----------------------------------------------------------
 
-#[test]
-fn strtr_pairs() {
-    assert_eq!(
-        calls(
-            fn_strtr,
-            &[
-                s("Hello World"),
-                map(vec![("Hello", s("Hi")), ("World", s("Earth"))])
-            ]
-        ),
-        "Hi Earth"
-    );
-    // longest key wins (ab before a)
-    assert_eq!(
-        calls(
-            fn_strtr,
-            &[s("abcabc"), map(vec![("a", s("1")), ("ab", s("X"))])]
-        ),
-        "XcXc"
-    );
-    // output is not re-translated
-    assert_eq!(
-        calls(fn_strtr, &[s("aaa"), map(vec![("a", s("aa"))])]),
-        "aaaaaa"
-    );
-    assert_eq!(calls(fn_strtr, &[s("hi"), list(vec![])]), "hi");
-    // integer keys coerce to their string form; longest wins
-    assert_eq!(
-        calls(fn_strtr, &[s("12"), imap(vec![(1, s("a")), (12, s("bb"))])]),
-        "bb"
-    );
-    assert_eq!(
-        calls(
-            fn_strtr,
-            &[s("test"), map(vec![("t", s("T")), ("te", s("X"))])]
-        ),
-        "XsT"
-    );
-}
-
-#[test]
-fn strtr_from_to() {
-    assert_eq!(calls(fn_strtr, &[s("Hello"), s("el"), s("ip")]), "Hippo");
-    assert_eq!(
-        calls(fn_strtr, &[s("The fox"), s("abcdefghij"), s("0123456789")]),
-        "T74 5ox"
-    );
-    // to shorter than from: only the common prefix maps
-    assert_eq!(calls(fn_strtr, &[s("abcd"), s("abcde"), s("xy")]), "xycd");
-}
-
 // --- substr_replace --------------------------------------------------
-
-#[test]
-fn substr_replace_string() {
-    assert_eq!(
-        calls(fn_substr_replace, &[s("Hello World"), s("PHP"), i(6)]),
-        "Hello PHP"
-    );
-    assert_eq!(
-        calls(fn_substr_replace, &[s("Hello World"), s("PHP"), i(6), i(5)]),
-        "Hello PHP"
-    );
-    assert_eq!(
-        calls(fn_substr_replace, &[s("Hello World"), s("PHP"), i(-5)]),
-        "Hello PHP"
-    );
-    assert_eq!(
-        calls(
-            fn_substr_replace,
-            &[s("Hello World"), s("PHP"), i(-5), i(-1)]
-        ),
-        "Hello PHPd"
-    );
-    assert_eq!(
-        calls(fn_substr_replace, &[s("Hello"), s("XXX"), i(0), i(0)]),
-        "XXXHello"
-    );
-    assert_eq!(
-        calls(fn_substr_replace, &[s("Hello"), s("XXX"), i(2), i(-1)]),
-        "HeXXXo"
-    );
-    assert_eq!(
-        calls(fn_substr_replace, &[s("abcdef"), s("-"), i(2), i(0)]),
-        "ab-cdef"
-    );
-    assert_eq!(calls(fn_substr_replace, &[s("abc"), s("X"), i(10)]), "abcX");
-    assert_eq!(
-        calls(fn_substr_replace, &[s("abc"), s("X"), i(10), i(5)]),
-        "abcX"
-    );
-    assert_eq!(
-        calls(fn_substr_replace, &[s("abcdef"), s("XYZ"), i(-2), i(-5)]),
-        "abcdXYZef"
-    );
-    assert_eq!(
-        calls(fn_substr_replace, &[s("abc"), s("X"), i(-99), i(1)]),
-        "Xbc"
-    );
-    assert_eq!(
-        calls(fn_substr_replace, &[s("Hello World"), s("PHP"), i(6), i(0)]),
-        "Hello PHPWorld"
-    );
-    // scalar subject with array replace uses the first element
-    assert_eq!(
-        calls(
-            fn_substr_replace,
-            &[s("aaa"), list(vec![s("X"), s("Y")]), i(1), i(1)]
-        ),
-        "aXa"
-    );
-    assert_eq!(
-        calls(fn_substr_replace, &[s("abc"), list(vec![]), i(1), i(1)]),
-        "ac"
-    );
-}
-
-#[test]
-fn substr_replace_array() {
-    assert_eq!(
-        dumped(&call(
-            fn_substr_replace,
-            &[list(vec![s("Hello"), s("World")]), s("X"), i(1), i(2)]
-        )),
-        "array(2) {\n  [0]=>\n  string(4) \"HXlo\"\n  [1]=>\n  string(4) \"WXld\"\n}\n"
-    );
-    assert_eq!(
-        dumped(&call(
-            fn_substr_replace,
-            &[
-                list(vec![s("aaa"), s("bbbb")]),
-                list(vec![s("1"), s("2")]),
-                i(1),
-                i(1)
-            ]
-        )),
-        "array(2) {\n  [0]=>\n  string(3) \"a1a\"\n  [1]=>\n  string(4) \"b2bb\"\n}\n"
-    );
-    assert_eq!(
-        dumped(&call(
-            fn_substr_replace,
-            &[
-                list(vec![s("aaa"), s("bbbb")]),
-                list(vec![s("1"), s("2")]),
-                list(vec![i(0), i(1)]),
-                list(vec![i(1), i(2)])
-            ]
-        )),
-        "array(2) {\n  [0]=>\n  string(3) \"1aa\"\n  [1]=>\n  string(3) \"b2b\"\n}\n"
-    );
-    // replace array shorter than subjects -> "" for the rest
-    assert_eq!(
-        dumped(&call(fn_substr_replace, &[list(vec![s("aaa"), s("bbb"), s("ccc")]), list(vec![s("X"), s("Y")]), i(1), i(1)])),
-        "array(3) {\n  [0]=>\n  string(3) \"aXa\"\n  [1]=>\n  string(3) \"bYb\"\n  [2]=>\n  string(2) \"cc\"\n}\n"
-    );
-    // start/length arrays exhausted -> start 0, length full (whole replaced)
-    assert_eq!(
-        dumped(&call(
-            fn_substr_replace,
-            &[
-                list(vec![s("aaa"), s("bbb")]),
-                s("X"),
-                list(vec![i(1)]),
-                list(vec![i(1)])
-            ]
-        )),
-        "array(2) {\n  [0]=>\n  string(3) \"aXa\"\n  [1]=>\n  string(1) \"X\"\n}\n"
-    );
-    // omitted length + start array
-    assert_eq!(
-        dumped(&call(fn_substr_replace, &[list(vec![s("aaa"), s("bbb"), s("ccc")]), s("X"), list(vec![i(0), i(1)])])),
-        "array(3) {\n  [0]=>\n  string(1) \"X\"\n  [1]=>\n  string(2) \"bX\"\n  [2]=>\n  string(1) \"X\"\n}\n"
-    );
-    // keys preserved for associative subject
-    assert_eq!(
-        dumped(&call(
-            fn_substr_replace,
-            &[
-                map(vec![("x", s("aaa")), ("y", s("bbb"))]),
-                list(vec![s("1"), s("2")]),
-                i(1),
-                i(1)
-            ]
-        )),
-        "array(2) {\n  [\"x\"]=>\n  string(3) \"a1a\"\n  [\"y\"]=>\n  string(3) \"b2b\"\n}\n"
-    );
-}
-
-#[test]
-fn substr_replace_errors() {
-    assert!(fn_substr_replace(
-        &mut TestHost::new(),
-        &[s("abc"), s("X"), list(vec![i(1)]), list(vec![i(1)])]
-    )
-    .is_err());
-    assert!(fn_substr_replace(
-        &mut TestHost::new(),
-        &[s("abc"), s("X"), i(1), list(vec![i(1)])]
-    )
-    .is_err());
-}
 
 // --- levenshtein -----------------------------------------------------
 
@@ -299,100 +76,9 @@ fn levenshtein_cases() {
 
 // --- similar_text ----------------------------------------------------
 
-#[test]
-fn similar_text_cases() {
-    assert_eq!(call_int(fn_similar_text, &[s("World"), s("word")]), 3);
-    assert_eq!(call_int(fn_similar_text, &[s("Hello"), s("World")]), 1);
-    assert_eq!(call_int(fn_similar_text, &[s("abcde"), s("ace")]), 3);
-    assert_eq!(call_int(fn_similar_text, &[s(""), s("abc")]), 0);
-    assert_eq!(call_int(fn_similar_text, &[s("abc"), s("")]), 0);
-    assert_eq!(call_int(fn_similar_text, &[s(""), s("")]), 0);
-    assert_eq!(
-        call_int(fn_similar_text, &[s("PHP IS GREAT"), s("WITH MYSQL")]),
-        3
-    );
-    assert_eq!(
-        call_int(fn_similar_text, &[s("Hello World"), s("Hello PHP World")]),
-        11
-    );
-    assert_eq!(call_int(fn_similar_text, &[s("test"), s("test")]), 4);
-    assert_eq!(call_int(fn_similar_text, &[s("aaa"), s("aa")]), 2);
-    assert_eq!(
-        call_int(
-            fn_similar_text,
-            &[s("The quick brown fox"), s("The quick fox")]
-        ),
-        13
-    );
-}
-
 // --- str_word_count --------------------------------------------------
 
-#[test]
-fn str_word_count_cases() {
-    assert_eq!(call_int(fn_str_word_count, &[s("Hello World Foo")]), 3);
-    assert_eq!(call_int(fn_str_word_count, &[s("The quick brown fox")]), 4);
-    assert_eq!(call_int(fn_str_word_count, &[s("  spaces   between  ")]), 2);
-    assert_eq!(call_int(fn_str_word_count, &[s("don't can't")]), 2);
-    assert_eq!(call_int(fn_str_word_count, &[s("hello123world")]), 2);
-    assert_eq!(call_int(fn_str_word_count, &[s("a-b c")]), 2);
-    assert_eq!(
-        dumped(&call(fn_str_word_count, &[s("Hello World Foo"), i(1)])),
-        "array(3) {\n  [0]=>\n  string(5) \"Hello\"\n  [1]=>\n  string(5) \"World\"\n  [2]=>\n  string(3) \"Foo\"\n}\n"
-    );
-    assert_eq!(
-        dumped(&call(fn_str_word_count, &[s(""), i(1)])),
-        "array(0) {\n}\n"
-    );
-    assert_eq!(
-        dumped(&call(fn_str_word_count, &[s("Hello World"), i(2)])),
-        "array(2) {\n  [0]=>\n  string(5) \"Hello\"\n  [6]=>\n  string(5) \"World\"\n}\n"
-    );
-    // additional characters (with range syntax)
-    assert_eq!(
-        dumped(&call(
-            fn_str_word_count,
-            &[s("hi123 there"), i(1), s("123")]
-        )),
-        "array(2) {\n  [0]=>\n  string(5) \"hi123\"\n  [1]=>\n  string(5) \"there\"\n}\n"
-    );
-    assert_eq!(
-        call_int(fn_str_word_count, &[s("a1b c"), i(0), s("0..9")]),
-        2
-    );
-    assert!(fn_str_word_count(&mut TestHost::new(), &[s("hi"), i(5)]).is_err());
-}
-
 // --- chunk_split -----------------------------------------------------
-
-#[test]
-fn chunk_split_cases() {
-    assert_eq!(
-        calls(fn_chunk_split, &[s("abcdefgh"), i(3), s("-")]),
-        "abc-def-gh-"
-    );
-    assert_eq!(calls(fn_chunk_split, &[s("abcdefgh")]), "abcdefgh\r\n");
-    assert_eq!(
-        calls(fn_chunk_split, &[s("abcdefgh"), i(3)]),
-        "abc\r\ndef\r\ngh\r\n"
-    );
-    assert_eq!(calls(fn_chunk_split, &[s("abc"), i(5), s("|")]), "abc|");
-    assert_eq!(calls(fn_chunk_split, &[s(""), i(3), s("-")]), "-");
-    assert_eq!(
-        calls(fn_chunk_split, &[s("abcdef"), i(2), s("\r\n")]),
-        "ab\r\ncd\r\nef\r\n"
-    );
-    assert_eq!(
-        calls(fn_chunk_split, &[s("abcdefgh"), i(4), s("")]),
-        "abcdefgh"
-    );
-    assert_eq!(
-        calls(fn_chunk_split, &[s("abcdefgh"), i(4), s("-")]),
-        "abcd-efgh-"
-    );
-    assert_eq!(calls(fn_chunk_split, &[s("abcd"), i(4), s("-")]), "abcd-");
-    assert!(fn_chunk_split(&mut TestHost::new(), &[s("abc"), i(0)]).is_err());
-}
 
 // --- array_diff_key / array_intersect_key ----------------------------
 

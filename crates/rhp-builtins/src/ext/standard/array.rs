@@ -2269,7 +2269,7 @@ fn cmp_flagged(a: &Value, b: &Value, flags: i64) -> Ordering {
             }
             sa.cmp(&sb)
         }
-        SORT_NATURAL => crate::strcmp_fns::strnatcmp_ex(
+        SORT_NATURAL => crate::ext::standard::string::strnatcmp_ex(
             &conv::to_string_bytes(a),
             &conv::to_string_bytes(b),
             fold_case,
@@ -2460,7 +2460,7 @@ fn natsort_impl(args: &[Value], fold_case: bool) -> Value {
         return Value::Bool(false);
     };
     pairs.sort_by(|a, b| {
-        crate::strcmp_fns::strnatcmp_ex(
+        crate::ext::standard::string::strnatcmp_ex(
             &conv::to_string_bytes(&a.1),
             &conv::to_string_bytes(&b.1),
             fold_case,

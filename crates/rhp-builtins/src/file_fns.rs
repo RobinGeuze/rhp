@@ -7,7 +7,7 @@ use rhp_values::{conv, Value};
 
 use crate::{Host, Thrown};
 
-fn path_arg(args: &[Value], i: usize) -> Vec<u8> {
+pub(crate) fn path_arg(args: &[Value], i: usize) -> Vec<u8> {
     conv::to_string_bytes(&deref(&args[i]))
 }
 
@@ -19,135 +19,6 @@ fn as_str(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
 
 fn fn_file_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(host.stream_exists(&path_arg(args, 0))))
-}
-
-/// `basename(path, suffix="")` — the trailing name component, byte-wise, matching
-/// php (trailing slashes ignored; an exact suffix stripped unless it's the whole).
-fn fn_basename(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = path_arg(args, 0);
-    let suffix = args
-        .get(1)
-        .map(|v| conv::to_string_bytes(&deref(v)))
-        .unwrap_or_default();
-    // drop trailing '/'
-    let end = path
-        .iter()
-        .rposition(|&b| b != b'/')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let trimmed = &path[..end];
-    let start = trimmed
-        .iter()
-        .rposition(|&b| b == b'/')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let mut base = &trimmed[start..];
-    if !suffix.is_empty() && base.len() > suffix.len() && base.ends_with(&suffix[..]) {
-        base = &base[..base.len() - suffix.len()];
-    }
-    Ok(Value::str(base.to_vec()))
-}
-
-/// `pathinfo(path, flags=PATHINFO_ALL)` — splits a path into dirname/basename/
-/// extension/filename. Returns an assoc array, or a single string when exactly
-/// one flag bit is requested.
-fn fn_pathinfo(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    const DIRNAME: i64 = 1;
-    const BASENAME: i64 = 2;
-    const EXTENSION: i64 = 4;
-    const FILENAME: i64 = 8;
-    const ALL: i64 = DIRNAME | BASENAME | EXTENSION | FILENAME;
-
-    let path = path_arg(args, 0);
-    let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(ALL);
-
-    // basename (php keeps trailing-slash handling consistent with basename()).
-    let end = path
-        .iter()
-        .rposition(|&b| b != b'/')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let trimmed = &path[..end];
-    let base_start = trimmed
-        .iter()
-        .rposition(|&b| b == b'/')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let basename = &trimmed[base_start..];
-    // extension / filename: split basename on the LAST '.', but a leading dot
-    // (dotfile with no other dot) has no extension.
-    let (filename, extension): (&[u8], Option<&[u8]>) =
-        match basename.iter().rposition(|&b| b == b'.') {
-            None => (basename, None),
-            Some(dot) => (&basename[..dot], Some(&basename[dot + 1..])),
-        };
-
-    let dir = dirname_once(&path);
-    // php: dirname is "." for a bare name only when the input had no slash.
-    let dirname: Vec<u8> = if path.contains(&b'/') {
-        dir
-    } else {
-        b".".to_vec()
-    };
-
-    // Single-component request -> return a string.
-    if flags != ALL && (flags & (flags - 1)) == 0 {
-        let s: Vec<u8> = match flags {
-            DIRNAME => dirname,
-            BASENAME => basename.to_vec(),
-            EXTENSION => extension.unwrap_or(b"").to_vec(),
-            FILENAME => filename.to_vec(),
-            _ => Vec::new(),
-        };
-        return Ok(Value::str(s));
-    }
-
-    use rhp_values::{ArrayKey as K, PhpArray};
-    let mut arr = PhpArray::new();
-    if flags & DIRNAME != 0 {
-        arr.insert(K::from_bytes(b"dirname"), Value::str(dirname));
-    }
-    if flags & BASENAME != 0 {
-        arr.insert(K::from_bytes(b"basename"), Value::str(basename.to_vec()));
-    }
-    if flags & EXTENSION != 0 {
-        if let Some(ext) = extension {
-            arr.insert(K::from_bytes(b"extension"), Value::str(ext.to_vec()));
-        }
-    }
-    if flags & FILENAME != 0 {
-        arr.insert(K::from_bytes(b"filename"), Value::str(filename.to_vec()));
-    }
-    Ok(Value::Array(arr))
-}
-
-/// `dirname(path, levels=1)` — matching php: "." when no slash, "/" at root.
-fn fn_dirname(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut path = path_arg(args, 0);
-    let levels = args
-        .get(1)
-        .map(|v| conv::to_int(&deref(v)))
-        .unwrap_or(1)
-        .max(1);
-    for _ in 0..levels {
-        path = dirname_once(&path);
-    }
-    Ok(Value::str(path))
-}
-
-fn dirname_once(path: &[u8]) -> Vec<u8> {
-    // drop trailing slashes
-    let end = path
-        .iter()
-        .rposition(|&b| b != b'/')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let trimmed = &path[..end];
-    match trimmed.iter().rposition(|&b| b == b'/') {
-        None => b".".to_vec(),
-        Some(0) => b"/".to_vec(),
-        Some(i) => trimmed[..i].to_vec(),
-    }
 }
 
 fn fn_getcwd(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -715,9 +586,6 @@ pub fn register(m: &mut crate::Registry) {
         m,
         &[
             ("file_exists", fn_file_exists),
-            ("basename", fn_basename),
-            ("dirname", fn_dirname),
-            ("pathinfo", fn_pathinfo),
             ("getcwd", fn_getcwd),
             ("file_get_contents", fn_file_get_contents),
             ("file_put_contents", fn_file_put_contents),

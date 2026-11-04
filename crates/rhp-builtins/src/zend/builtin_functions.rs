@@ -7,9 +7,10 @@ use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, ClassKind, PhpArray, Value};
 
 use crate::const_modules::CONST_MODULES;
+use crate::ext::standard::string::find_subslice;
 use crate::zend::exceptions::trace_to_string;
 use crate::zend::zpp::{arg_bytes, bool_param, str_param, zval_get_string, zval_value_name};
-use crate::{ext, find_subslice, zend, Host, Thrown, E_DEPRECATED, E_WARNING};
+use crate::{ext, zend, Host, Thrown, E_DEPRECATED, E_WARNING};
 
 fn declared(host: &mut dyn Host, kind: &str) -> Result<Value, Thrown> {
     host.reflect_op(b"declared", &[Value::str(kind)])

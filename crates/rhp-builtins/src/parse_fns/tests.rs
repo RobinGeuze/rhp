@@ -7,61 +7,6 @@ fn s(b: &str) -> Value {
     Value::str(b)
 }
 
-fn csv(args: &[Value]) -> Vec<Option<String>> {
-    let r = fn_str_getcsv(&mut TestHost::new(), args).unwrap();
-    match r {
-        Value::Array(a) => a
-            .iter()
-            .map(|(_, v)| match v {
-                Value::Null => None,
-                Value::Str(s) => Some(String::from_utf8(s.as_bytes().to_vec()).unwrap()),
-                _ => unreachable!(),
-            })
-            .collect(),
-        _ => unreachable!(),
-    }
-}
-
-fn some(items: &[&str]) -> Vec<Option<String>> {
-    items.iter().map(|x| Some(x.to_string())).collect()
-}
-
-#[test]
-fn csv_basic() {
-    assert_eq!(csv(&[s("a,b,c")]), some(&["a", "b", "c"]));
-    assert_eq!(csv(&[s("a,\"b,c\",d")]), some(&["a", "b,c", "d"]));
-    assert_eq!(
-        csv(&[s("\"he said \"\"hi\"\"\",x")]),
-        some(&["he said \"hi\"", "x"])
-    );
-    assert_eq!(csv(&[s("a;b;c"), s(";")]), some(&["a", "b", "c"]));
-    assert_eq!(csv(&[s("a,b,,")]), some(&["a", "b", "", ""]));
-    assert_eq!(csv(&[s("")]), vec![None]);
-    assert_eq!(csv(&[s("  a , b ")]), some(&["  a ", " b "]));
-    assert_eq!(csv(&[s("a,\"b\nc\",d")]), some(&["a", "b\nc", "d"]));
-}
-
-#[test]
-fn csv_escape() {
-    // escape char keeps both chars; close-quote handling.
-    assert_eq!(
-        csv(&[s("x,\"y\\\"z\""), s(","), s("\""), s("\\")]),
-        some(&["x", "y\\\"z"])
-    );
-    assert_eq!(
-        csv(&[s("a\"b,c"), s(","), s("\""), s("\\")]),
-        some(&["a\"b", "c"])
-    );
-    assert_eq!(
-        csv(&[s("\"a\"b,c"), s(","), s("\""), s("\\")]),
-        some(&["ab", "c"])
-    );
-    assert_eq!(
-        csv(&[s("a\\,b,c"), s(","), s("\""), s("\\")]),
-        some(&["a\\", "b", "c"])
-    );
-}
-
 /// Canonical string form of a value, for structural comparison (Value has no
 /// `PartialEq`). Floats use a short rounded repr adequate for these tests.
 fn vrepr(v: &Value) -> String {

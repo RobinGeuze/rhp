@@ -348,11 +348,6 @@ fn fn_assert(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-fn fn_setlocale(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    // We don't model locales; report the C locale.
-    Ok(Value::str("C"))
-}
-
 // --- randomness --------------------------------------------------------------
 
 fn rand_u64() -> u64 {
@@ -694,7 +689,6 @@ pub fn register(m: &mut crate::Registry) {
             ("set_time_limit", fn_set_time_limit),
             ("getmypid", fn_getmypid),
             ("php_ini_loaded_file", fn_php_ini_loaded_file),
-            ("setlocale", fn_setlocale),
             ("assert", fn_assert),
             ("random_bytes", fn_random_bytes),
             ("random_int", fn_random_int),

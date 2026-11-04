@@ -10,87 +10,6 @@ use rhp_values::{ArrayKey, PhpArray, Value};
 use crate::zend::zpp::{bool_param, int_param, str_param};
 use crate::{Host, Thrown};
 
-fn check_alnum(s: &[u8], func: &str) -> Result<(), Thrown> {
-    if s.is_empty() {
-        return Err(Thrown::error(
-            "ValueError",
-            format!("{func}(): Argument #1 ($string) must not be empty"),
-        ));
-    }
-    if !s.iter().all(|c| c.is_ascii_alphanumeric()) {
-        return Err(Thrown::error(
-            "ValueError",
-            format!("{func}(): Argument #1 ($string) must be composed only of alphanumeric ASCII characters"),
-        ));
-    }
-    Ok(())
-}
-
-fn fn_str_increment(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = str_param(host, args, 0, "str_increment", "string")?;
-    check_alnum(&s, "str_increment")?;
-    let mut v = s.clone();
-    let mut pos = v.len();
-    let mut carry = true;
-    while carry && pos > 0 {
-        pos -= 1;
-        match v[pos] {
-            b'z' | b'Z' => {
-                v[pos] -= 25;
-            }
-            b'9' => v[pos] = b'0',
-            _ => {
-                v[pos] += 1;
-                carry = false;
-            }
-        }
-    }
-    if carry {
-        let first = if v[0] == b'0' { b'1' } else { v[0] };
-        v.insert(0, first);
-    }
-    Ok(Value::str(v))
-}
-
-fn out_of_range(s: &[u8]) -> Thrown {
-    Thrown::error(
-        "ValueError",
-        format!(
-            "str_decrement(): Argument #1 ($string) \"{}\" is out of decrement range",
-            String::from_utf8_lossy(s)
-        ),
-    )
-}
-
-fn fn_str_decrement(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = str_param(host, args, 0, "str_decrement", "string")?;
-    check_alnum(&s, "str_decrement")?;
-    if s[0] == b'0' {
-        return Err(out_of_range(&s));
-    }
-    let mut v = s.clone();
-    let mut pos = v.len();
-    let mut carry = true;
-    while carry && pos > 0 {
-        pos -= 1;
-        match v[pos] {
-            b'a' | b'A' => v[pos] += 25,
-            b'0' => v[pos] = b'9',
-            _ => {
-                v[pos] -= 1;
-                carry = false;
-            }
-        }
-    }
-    if carry || (v[0] == b'0' && v.len() > 1) {
-        if v.len() == 1 {
-            return Err(out_of_range(&s));
-        }
-        v.remove(0);
-    }
-    Ok(Value::str(v))
-}
-
 fn fn_ip2long(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = crate::zend::zpp::path_param(host, args, 0, "ip2long", "ip")?;
     Ok(match crate::inet::pton4(&s) {
@@ -266,8 +185,6 @@ pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
-            ("str_increment", fn_str_increment),
-            ("str_decrement", fn_str_decrement),
             ("ip2long", fn_ip2long),
             ("long2ip", fn_long2ip),
             ("gettimeofday", fn_gettimeofday),

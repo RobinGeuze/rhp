@@ -222,20 +222,6 @@ fn fn_rand(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }))
 }
 
-fn fn_str_shuffle(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut s = str_param(host, args, 0, "str_shuffle", "string")?;
-    let n = s.len();
-    if n > 1 {
-        let mut left = n - 1;
-        while left > 0 {
-            let j = mt_range(0, left as i64) as usize;
-            s.swap(left, j);
-            left -= 1;
-        }
-    }
-    Ok(Value::str(s))
-}
-
 // --- filesystem --------------------------------------------------------------
 
 const MAXPATHLEN: usize = libc::PATH_MAX as usize;
@@ -626,7 +612,6 @@ pub fn register(m: &mut crate::Registry) {
             ("srand", fn_mt_srand),
             ("mt_rand", fn_mt_rand),
             ("rand", fn_rand),
-            ("str_shuffle", fn_str_shuffle),
             ("fnmatch", fn_fnmatch),
             ("getrusage", fn_getrusage),
             ("sys_getloadavg", fn_sys_getloadavg),
@@ -636,30 +621,6 @@ pub fn register(m: &mut crate::Registry) {
             ("readline_clear_history", fn_true),
         ],
     );
-    crate::register_helpers(
-        m,
-        &[
-            ("__stdext_deprecated", fn_stdext_deprecated, 1, Some(1)),
-            ("__stdext_warning", fn_stdext_warning, 1, Some(1)),
-        ],
-    );
-}
-
-/// `utf8_encode` / `utf8_decode`.
-pub const PRELUDE_PHP: &str = include_str!("stdext_fns/prelude.php");
-
-/// `__stdext_deprecated($message)`: E_DEPRECATED from a prelude function.
-fn fn_stdext_deprecated(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let msg = conv::to_string_bytes(&deref(&args[0]));
-    host.emit_diagnostic(crate::E_DEPRECATED, &String::from_utf8_lossy(&msg))?;
-    Ok(Value::Null)
-}
-
-/// `__stdext_warning($message)`: E_WARNING from a prelude function.
-fn fn_stdext_warning(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let msg = conv::to_string_bytes(&deref(&args[0]));
-    host.emit_diagnostic(crate::E_WARNING, &String::from_utf8_lossy(&msg))?;
-    Ok(Value::Null)
 }
 
 /// The `FNM_*` / `MT_RAND_*` constants.

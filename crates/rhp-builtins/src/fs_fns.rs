@@ -1993,7 +1993,7 @@ fn fn_fgetcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     } else if buf.last() == Some(&b'\r') {
         buf.pop();
     }
-    Ok(Value::Array(crate::parse_fns::parse_csv(
+    Ok(Value::Array(crate::ext::standard::string::parse_csv(
         &buf, sep, enc, esc,
     )))
 }

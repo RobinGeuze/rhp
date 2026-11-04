@@ -275,7 +275,7 @@ fn descend<'a>(arr: &'a mut PhpArray, key: Option<&[u8]>) -> Option<&'a mut PhpA
 }
 
 /// `php_register_variable_ex(var_name, val, array)`.
-fn register_variable(root: &mut PhpArray, var_name: &[u8], val: Vec<u8>) {
+pub(crate) fn register_variable(root: &mut PhpArray, var_name: &[u8], val: Vec<u8>) {
     register_variable_ex(root, var_name, val, false)
 }
 
@@ -425,34 +425,6 @@ pub(crate) fn register_variable_value(
     root.remove(&top);
 }
 
-fn fn_parse_str(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = str_param(host, args, 0, "parse_str", "string")?;
-    // C string: processing stops at the first NUL byte.
-    let s = match s.iter().position(|&b| b == 0) {
-        Some(p) => s[..p].to_vec(),
-        None => s,
-    };
-    let mut out = PhpArray::new();
-    let mut count = 0usize;
-    for var in s.split(|&b| b == b'&').filter(|t| !t.is_empty()) {
-        count += 1;
-        if count > 1000 {
-            // php: Warning "Input variables exceeded 1000 ..."
-            break;
-        }
-        let (name, val) = match var.iter().position(|&b| b == b'=') {
-            Some(p) => (&var[..p], url_decode(&var[p + 1..])),
-            None => (var, Vec::new()),
-        };
-        let name = url_decode(name);
-        register_variable(&mut out, &name, val);
-    }
-    if let Some(Value::Ref(r)) = args.get(1) {
-        *r.borrow_mut() = Value::Array(out);
-    }
-    Ok(Value::Null)
-}
-
 /// `php_raw_url_decode`: `%XX` → byte (no `+` → space).
 pub(crate) fn raw_url_decode(s: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len());
@@ -568,11 +540,5 @@ pub fn post_form_vars(body: &[u8], max_vars: i64) -> (PhpArray, bool) {
 }
 
 pub fn register(m: &mut crate::Registry) {
-    crate::register(
-        m,
-        &[
-            ("http_build_query", fn_http_build_query),
-            ("parse_str", fn_parse_str),
-        ],
-    );
+    crate::register(m, &[("http_build_query", fn_http_build_query)]);
 }

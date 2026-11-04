@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use rhp_values::conv;
-use rhp_values::{PhpArray, Value};
+use rhp_values::Value;
 
 pub use rhp_values::Thrown;
 
@@ -67,11 +67,8 @@ mod query_fns;
 mod runtime_fns;
 mod socket_fns;
 mod stdext_fns;
-mod str_fns;
 mod strarr2_fns;
-mod strcmp_fns;
 mod stream_fns;
-mod strsearch_fns;
 mod sysmisc_fns;
 pub(crate) mod url;
 mod webenc_fns;
@@ -276,7 +273,7 @@ pub fn reset_request_state() {
     json_fns::reset_state();
     #[cfg(feature = "mbstring-libmbfl")]
     ext::mbstring::reset_state();
-    strsearch_fns::reset_state();
+    ext::standard::string::reset_state();
     php_fns::reset_state();
     stdext_fns::reset_state();
     main::sapi::reset_state();
@@ -300,17 +297,8 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             &[
                 ("print_r", fn_print_r),
                 ("constant", fn_constant),
-                ("str_repeat", fn_str_repeat),
                 ("call_user_func", fn_call_user_func),
                 ("call_user_func_array", fn_call_user_func_array),
-                ("implode", fn_implode),
-                ("join", fn_implode),
-                ("explode", fn_explode),
-                ("strtoupper", fn_strtoupper),
-                ("strtolower", fn_strtolower),
-                ("str_contains", fn_str_contains),
-                ("ord", fn_ord),
-                ("chr", fn_chr),
             ],
         );
         for (_, register_module) in builtin_modules() {
@@ -327,7 +315,7 @@ type Registrar = Box<dyn Fn(&mut Registry)>;
 /// `no_duplicate_builtins` test keeps names unique).
 fn builtin_modules() -> Vec<(&'static str, Registrar)> {
     let mut v: Vec<(&'static str, Registrar)> = vec![
-        ("str_fns", Box::new(str_fns::register)),
+        ("string", Box::new(ext::standard::string::register)),
         ("math", Box::new(ext::standard::math::register)),
         ("array", Box::new(ext::standard::array::register)),
         ("misc_fns", Box::new(misc_fns::register)),
@@ -345,7 +333,6 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("strarr2_fns", Box::new(strarr2_fns::register)),
         ("var", Box::new(ext::standard::var::register)),
         ("filter_fns", Box::new(filter_fns::register)),
-        ("strcmp_fns", Box::new(strcmp_fns::register)),
         (
             "formatted_print",
             Box::new(ext::standard::formatted_print::register),
@@ -357,7 +344,6 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("info_fns", Box::new(info_fns::register)),
         ("stream_fns", Box::new(stream_fns::register)),
         ("socket_fns", Box::new(socket_fns::register)),
-        ("strsearch_fns", Box::new(strsearch_fns::register)),
         ("query_fns", Box::new(query_fns::register)),
         ("runtime_fns", Box::new(runtime_fns::register)),
         (
@@ -709,7 +695,7 @@ fn build_prelude() -> String {
     s.push('\n');
     s.push_str(fs_fns::PRELUDE_PHP);
     s.push('\n');
-    s.push_str(stdext_fns::PRELUDE_PHP);
+    s.push_str(ext::standard::string::PRELUDE_PHP);
     s.push('\n');
     for md in ext::modules() {
         if !md.prelude_php.is_empty() {
@@ -778,26 +764,6 @@ fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     })
 }
 
-fn fn_str_repeat(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = conv::to_string_bytes(&args[0]);
-    let n = conv::to_int(&args[1]);
-    if n < 0 {
-        return Err(Thrown::error(
-            "ValueError",
-            "str_repeat(): Argument #2 ($times) must be greater than or equal to 0",
-        ));
-    }
-    let n = n as usize;
-    // zend_string_safe_falloc(len, mult, 0): php refuses past memory_limit.
-    if !s.is_empty()
-        && n != 0
-        && !rhp_values::mem::reserve_safe(s.len(), n, rhp_values::mem::zstr_size(0))
-    {
-        return Ok(Value::Null);
-    }
-    Ok(Value::str(s.repeat(n)))
-}
-
 fn fn_call_user_func(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     require_callback(host, "call_user_func", 1, &args[0])?;
     host.call_callable(&args[0], &args[1..])
@@ -824,155 +790,4 @@ fn fn_call_user_func_array(host: &mut dyn Host, args: &[Value]) -> Result<Value,
         return host.call_callable(&args[0], &argv);
     }
     host.call_callable_named(&args[0], &argv, named)
-}
-
-fn fn_implode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // implode($array) or implode($separator, $array)
-    let (glue, arr) = match (deref(&args[0]), args.get(1).map(deref)) {
-        (Value::Array(a), None | Some(Value::Null)) => (Vec::new(), a),
-        (Value::Array(_), Some(_)) => {
-            return Err(Thrown::type_error(
-                "implode(): Argument #1 ($separator) must be of type string, array given",
-            ))
-        }
-        (g, Some(Value::Array(a))) => (conv::to_string_bytes(&g), a),
-        _ => {
-            return Err(Thrown::type_error(
-                "implode(): If argument #1 ($separator) is of type string, argument #2 ($array) must be of type array, null given",
-            ))
-        }
-    };
-    let parts: Vec<std::borrow::Cow<[u8]>> = arr
-        .iter()
-        .map(|(_, v)| match v {
-            Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
-            v => std::borrow::Cow::Owned(conv::to_string_bytes(v)),
-        })
-        .collect();
-    let len: usize = parts.iter().map(|p| p.len()).sum();
-    // zend_string_safe_falloc(n - 1, glue_len, len): the glue repeated per
-    // element can dwarf the input, so php checks the limit first.
-    if parts.len() > 1
-        && !rhp_values::mem::reserve_safe(
-            parts.len() - 1,
-            glue.len(),
-            rhp_values::mem::zstr_size(len),
-        )
-    {
-        return Ok(Value::Null);
-    }
-    let mut out = Vec::with_capacity(len + glue.len() * parts.len().saturating_sub(1));
-    for (i, p) in parts.iter().enumerate() {
-        if i > 0 {
-            out.extend_from_slice(&glue);
-        }
-        out.extend_from_slice(p);
-    }
-    Ok(Value::str(out))
-}
-
-fn fn_explode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let delim = conv::to_string_bytes(&deref(&args[0]));
-    let s = conv::to_string_bytes(&deref(&args[1]));
-    if delim.is_empty() {
-        return Err(Thrown::error(
-            "ValueError",
-            "explode(): Argument #1 ($separator) must not be empty",
-        ));
-    }
-    // All pieces, in order.
-    let mut parts: Vec<Vec<u8>> = Vec::new();
-    let mut start = 0;
-    while let Some(pos) = find_subslice(&s[start..], &delim) {
-        parts.push(s[start..start + pos].to_vec());
-        start += pos + delim.len();
-    }
-    parts.push(s[start..].to_vec());
-
-    let limit = args.get(2).map(|v| conv::to_int(&deref(v)));
-    let n = parts.len();
-    let pieces: Vec<Vec<u8>> = match limit {
-        None => parts,
-        // Positive: at most `limit` pieces; the last keeps the remainder.
-        Some(l) if l > 0 => {
-            let l = l as usize;
-            if l >= n {
-                parts
-            } else {
-                let mut out: Vec<Vec<u8>> = parts[..l - 1].to_vec();
-                out.push(parts[l - 1..].join(&delim[..]));
-                out
-            }
-        }
-        // Zero is treated as 1: the whole string as one piece.
-        Some(0) => vec![s.clone()],
-        // Negative: drop the last `|limit|` pieces.
-        Some(l) => {
-            let drop = (-l) as usize;
-            if drop >= n {
-                Vec::new()
-            } else {
-                parts[..n - drop].to_vec()
-            }
-        }
-    };
-    let mut arr = PhpArray::new();
-    for p in pieces {
-        arr.push(Value::str(p));
-    }
-    Ok(Value::Array(arr))
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.len() > haystack.len() {
-        return None;
-    }
-    (0..=haystack.len() - needle.len()).find(|&i| &haystack[i..i + needle.len()] == needle)
-}
-
-fn fn_strtoupper(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut b = conv::to_string_bytes(&deref(&args[0]));
-    b.make_ascii_uppercase();
-    Ok(Value::str(b))
-}
-
-fn fn_strtolower(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut b = conv::to_string_bytes(&deref(&args[0]));
-    b.make_ascii_lowercase();
-    Ok(Value::str(b))
-}
-
-fn fn_str_contains(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let haystack = conv::to_string_bytes(&deref(&args[0]));
-    let needle = conv::to_string_bytes(&deref(&args[1]));
-    Ok(Value::Bool(
-        needle.is_empty() || find_subslice(&haystack, &needle).is_some(),
-    ))
-}
-
-fn fn_ord(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let b = conv::to_string_bytes(&deref(&args[0]));
-    match b.len() {
-        1 => {}
-        0 => deprecated(host, "ord", "Providing an empty string is deprecated")?,
-        _ => deprecated(
-            host,
-            "ord",
-            "Providing a string that is not one byte long is deprecated. Use ord($str[0]) instead",
-        )?,
-    }
-    Ok(Value::Int(b.first().copied().unwrap_or(0) as i64))
-}
-
-fn fn_chr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let c = conv::to_int(&deref(&args[0]));
-    if !(0..=255).contains(&c) {
-        deprecated(
-            host,
-            "chr",
-            "Providing a value not in-between 0 and 255 is deprecated, this is because a byte \
-             value must be in the [0, 255] interval. The value used will be constrained using % 256",
-        )?;
-    }
-    Ok(Value::str(vec![(c & 0xff) as u8]))
 }

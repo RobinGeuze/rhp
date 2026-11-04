@@ -51,7 +51,7 @@ pub(crate) fn class_handlers() -> Vec<&'static crate::object::ClassHandlers> {
         xmlreader::CLASSES,
         xmlwriter::CLASSES,
         zip::CLASSES,
-        crate::dt_oop_fns::CLASSES,
+        date::CLASSES,
     ]
     .into_iter()
     .flatten()
@@ -65,7 +65,7 @@ pub fn modules() -> Vec<ModuleDef> {
             name: "date",
             functions: date::register,
             constants: date::constants,
-            prelude_php: "",
+            prelude_php: date::PRELUDE_PHP,
             wrappers: no_wrappers,
         },
         ModuleDef {

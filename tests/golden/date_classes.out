@@ -1,0 +1,252 @@
+== DateTime / DateTimeImmutable ==
+DateTime Object
+(
+    [date] => 2021-03-28 01:30:00.000000
+    [timezone_type] => 3
+    [timezone] => Europe/Amsterdam
+)
+json: {"date":"2021-03-28 01:30:00.000000","timezone_type":3,"timezone":"Europe\/Amsterdam"}
+\DateTime::__set_state(array(
+   'date' => '2021-03-28 01:30:00.000000',
+   'timezone_type' => 3,
+   'timezone' => 'Europe/Amsterdam',
+))
+Array
+(
+    [date] => 2021-03-28 01:30:00.000000
+    [timezone_type] => 3
+    [timezone] => Europe/Amsterdam
+)
+dst gap: 2021-03-28T03:30:00+02:00 CEST 1616895000
+add P1M: 2021-03-03 10:00:00.250000
+sub P1M: 2020-12-31
+unchanged: 2021-01-31
+modify first day of next month: 2021-02-01 10:00:00 CET
+modify last day of this month: 2021-01-31 10:00:00 CET
+modify +1 fortnight: 2021-02-14 10:00:00 CET
+modify tomorrow: 2021-02-01 00:00:00 CET
+modify next monday: 2021-02-01 00:00:00 CET
+modify @86400: 1970-01-02 00:00:00 GMT+0000
+modify noon: 2021-01-31 12:00:00 CET
+modify midnight +1 week: 2021-02-07 00:00:00 CET
+modify last sat of July 2008: 2008-07-26 00:00:00 CEST
+setDate: 2021-02-04T03:30:00+01:00
+setISODate: 2022-01-09T03:30:00+01:00
+setTime: 2021-03-29T02:02:01+02:00 000007
+setTimestamp: 1970-01-01T00:59:59+01:00 000000
+setMicrosecond: 000042
+timezone: 2021-01-31T14:30:00+05:30 Asia/Kolkata IST 19800
+offset tz: 2021-06-01T12:00:00-03:30 -03:30 GMT-0330
+abbr tz: 2021-06-01T12:00:00-04:00 EDT EDT 1
+getOffset: [7200,3600,-18000]
+getTimezone: Europe/Amsterdam
+createFromTimestamp: 2009-02-13T23:31:30+00:00 500000 +00:00
+createFromInterface: DateTimeImmutable
+createFromMutable: 2021-03-28T03:30:00+02:00
+compare: [false,true,true]
+== createFromFormat / getLastErrors ==
+fmt: 2005-08-15T00:00:00+02:00
+fmt U.u: 2009-02-13T23:31:30+00:00 123456
+fmt bad: false
+Array
+(
+    [warning_count] => 1
+    [warnings] => Array
+        (
+            [10] => The parsed date was invalid
+        )
+
+    [error_count] => 1
+    [errors] => Array
+        (
+            [10] => Trailing data
+        )
+
+)
+fmt ok: 2021-02-03T04:05:00+01:00
+no errors: false
+date_create bad: false
+Array
+(
+    [warning_count] => 1
+    [warnings] => Array
+        (
+            [4] => Double timezone specification
+        )
+
+    [error_count] => 2
+    [errors] => Array
+        (
+            [0] => The timezone could not be found in the database
+            [6] => Double timezone specification
+        )
+
+)
+== errors ==
+DateMalformedStringException: Failed to parse time string (foo bar) at position 0 (f): The timezone could not be found in the database
+DateMalformedStringException: DateTime::modify(): Failed to parse time string (nonsense) at position 0 (n): The timezone could not be found in the database
+date_modify: false
+DateInvalidTimeZoneException: DateTimeZone::__construct(): Unknown or bad timezone (Mars/Phobos)
+no error
+DateMalformedIntervalStringException: Unknown or bad format (P1X)
+DateMalformedIntervalStringException: String '2021-01-01' contains non-relative elements
+DateInvalidOperationException: DateTime::sub(): Only non-special relative time specifications are supported for subtraction
+DateRangeError: DateTime::setMicrosecond(): Argument #1 ($microsecond) must be between 0 and 999999, 1000000 given
+DateRangeError: DateTime::createFromTimestamp(): Argument #1 ($timestamp) must be a finite number between -9223372036854775808 and 9223372036854775807.999999, INF given
+Error: Invalid serialization data for DateTime object
+DateObjectError: Object of type Uninit (inheriting DateTime) has not been correctly initialized by calling parent::__construct() in its constructor
+DateObjectError: Trying to compare an incomplete DateTime or DateTimeImmutable object
+DateException: Cannot compare two different kinds of DateTimeZone objects
+TypeError: DatePeriod::__construct() accepts (DateTimeInterface, DateInterval, int [, int]), or (DateTimeInterface, DateInterval, DateTime [, int]), or (string [, int]) as arguments
+DateMalformedPeriodStringException: DatePeriod::__construct(): Recurrence count must be greater or equal to 1 and lower than 2147483640
+DateMalformedPeriodStringException: DatePeriod::createFromISO8601String(): ISO interval must contain an end date or a recurrence count, "2012-07-01T00:00:00Z/P7D" given
+== DateTimeZone ==
+DateTimeZone Object
+(
+    [timezone_type] => 3
+    [timezone] => Europe/Amsterdam
+)
+name/offset: ["Europe\/Amsterdam",7200]
+offset zone: ["+05:30","EST"]
+transitions of offset: false
+timezone_open: false
+equal: true
+identifiers: true
+DateTimeZone Object
+(
+    [timezone_type] => 3
+    [timezone] => Europe/Amsterdam
+)
+== DateInterval ==
+DateInterval Object
+(
+    [y] => 1
+    [m] => 2
+    [d] => 3
+    [h] => 4
+    [i] => 5
+    [s] => 6
+    [f] => 0
+    [invert] => 0
+    [days] => 
+    [from_string] => 
+)
+format: 01 1 02 2 03 3 04 4 05 5 06 6 000000 0 (unknown) +  % %x
+DateInterval Object
+(
+    [y] => 1
+    [m] => 0
+    [d] => 14
+    [h] => 1
+    [i] => 45
+    [s] => 44
+    [f] => 0.5
+    [invert] => 1
+    [days] => 379
+    [from_string] => 
+)
+diff format: -379 days 1:45:44.500000
+written: - 1 500000
+DateInterval Object
+(
+    [y] => 0
+    [m] => 0
+    [d] => 0
+    [h] => 0
+    [i] => 0
+    [s] => 1
+    [f] => 0.5
+    [invert] => 1
+    [days] => 
+    [from_string] => 
+)
+DateInterval Object
+(
+    [from_string] => 1
+    [date_string] => 3 days ago
+)
+from string d: -3
+property_exists: [true,true,"none"]
+DateInterval Object
+(
+    [y] => 1
+    [m] => 2
+    [d] => 3
+    [h] => 4
+    [i] => 5
+    [s] => 6
+    [f] => 0
+    [invert] => 0
+    [days] => 
+    [from_string] => 
+)
+\DateInterval::__set_state(array(
+   'y' => 1,
+   'm' => -1,
+   'd' => -1,
+   'h' => -1,
+   'i' => -1,
+   's' => -1,
+   'f' => 0.5,
+   'invert' => 1,
+   'days' => 10,
+   'from_string' => false,
+))
+compare: false
+== DatePeriod ==
+0 DateTimeImmutable 2021-03-03
+1 DateTimeImmutable 2021-04-03
+2 DateTimeImmutable 2021-05-03
+recurrences: [null,1,true]
+current: 2021-06-03T00:00:00+02:00
+iterator: ["InternalIterator",true,0,"2021-03-03"]
+2012-07-01T00:00:00+00:00
+2012-07-08T00:00:00+00:00
+2012-07-15T00:00:00+00:00
+2012-07-22T00:00:00+00:00
+getters: [null,"2012-07-01T00:00:00+00:00",7]
+DatePeriod Object
+(
+    [start] => DateTimeImmutable Object
+        (
+            [date] => 2012-07-01 00:00:00.000000
+            [timezone_type] => 1
+            [timezone] => +00:00
+        )
+
+    [current] => DateTimeImmutable Object
+        (
+            [date] => 2012-07-29 00:00:00.000000
+            [timezone_type] => 1
+            [timezone] => +00:00
+        )
+
+    [end] => 
+    [interval] => DateInterval Object
+        (
+            [y] => 0
+            [m] => 0
+            [d] => 7
+            [h] => 0
+            [i] => 0
+            [s] => 0
+            [f] => 0
+            [invert] => 0
+            [days] => 
+            [from_string] => 
+        )
+
+    [recurrences] => 4
+    [include_start_date] => 1
+    [include_end_date] => 
+)
+round trip: true
+Error: Cannot modify readonly property DatePeriod::$start
+Error: Cannot unset DatePeriod::$interval
+isset: [true,false,false]
+== procedural ==
+chain: 2001-03-06T00:02:03+00:00
+get: [983836923,0,"UTC"]
+interval: 430
+from string: 7
+tz offset: 32400

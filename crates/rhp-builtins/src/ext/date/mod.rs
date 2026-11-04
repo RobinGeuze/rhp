@@ -3,10 +3,13 @@
 //! tz database).
 //!
 //! Here: the procedural functions that need no date object, the default
-//! timezone, and php's per-request tz cache. The DateTime classes are still
-//! the prelude's (`dt_oop_fns.rs`).
+//! timezone, php's per-request tz cache and last-errors container. The
+//! classes are in `classes.rs` (methods) and `objects.rs` (native state and
+//! handlers); `prelude.php` declares them.
 
+mod classes;
 mod format;
+mod objects;
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -23,6 +26,10 @@ use crate::ext::zpp;
 use crate::{Builtin, Host, Thrown};
 
 pub use format::php_format_date;
+pub(crate) use objects::CLASSES;
+
+/// The date classes and the procedural functions over them.
+pub const PRELUDE_PHP: &str = include_str!("prelude.php");
 
 const PHP_DATE_TIMEZONE_GROUP_AFRICA: i64 = 0x0001;
 const PHP_DATE_TIMEZONE_GROUP_AMERICA: i64 = 0x0002;
@@ -46,13 +53,47 @@ thread_local! {
     static TZCACHE: RefCell<HashMap<Vec<u8>, Rc<Tz>>> = RefCell::new(HashMap::new());
     /// A panic caught in a timelib callback, resumed once timelib returns.
     static CALLBACK_PANIC: RefCell<Option<Box<dyn Any + Send>>> = const { RefCell::new(None) };
+    /// `DATEG(last_errors)`: the last parse's warnings and errors, if any.
+    static LAST_ERRORS: RefCell<Option<Errors>> = const { RefCell::new(None) };
 }
 
-/// php's RINIT/post-deactivate: forget the default zone and the tz cache.
-/// A zone a date object still uses stays alive through its `Rc`.
+/// php's RINIT/post-deactivate: forget the default zone, the tz cache and
+/// the last errors. A zone a date object still uses stays alive through
+/// its `Rc`.
 pub(crate) fn reset_state() {
     TIMEZONE.with(|t| *t.borrow_mut() = None);
     TZCACHE.with(|c| c.borrow_mut().clear());
+    set_last_errors(None);
+}
+
+pub(crate) fn set_last_errors(e: Option<Errors>) {
+    let old = LAST_ERRORS.with(|l| l.replace(e));
+    drop(old);
+}
+
+/// date_get_last_errors()'s array, if there are errors.
+pub(crate) fn last_errors_array() -> Option<PhpArray> {
+    LAST_ERRORS.with(|l| {
+        l.borrow().as_ref().map(|e| {
+            let mut a = PhpArray::new();
+            add_error_container(&mut a, e);
+            a
+        })
+    })
+}
+
+/// The cached zone a time's `tz_info` points to (every zone timelib hands
+/// out comes from the cache, through [`parse_tzfile`]).
+pub(crate) fn cached_zone(p: *mut sys::timelib_tzinfo) -> Option<Rc<Tz>> {
+    if p.is_null() {
+        return None;
+    }
+    TZCACHE.with(|c| {
+        c.borrow()
+            .values()
+            .find(|tz| std::ptr::eq(tz.as_ptr(), p))
+            .cloned()
+    })
 }
 
 /// `DATE_TIMEZONEDB`: php's embedded database (rhp has no external one).
@@ -67,7 +108,7 @@ pub(crate) fn timezone_id_is_valid(id: &[u8]) -> bool {
 }
 
 /// The bytes C sees of a php string passed as `char *`.
-fn c_str(s: &[u8]) -> &[u8] {
+pub(crate) fn c_str(s: &[u8]) -> &[u8] {
     &s[..s.iter().position(|&b| b == 0).unwrap_or(s.len())]
 }
 
@@ -83,7 +124,7 @@ pub(crate) fn parse_tzfile(name: &[u8]) -> Option<Rc<Tz>> {
 }
 
 /// `php_date_parse_tzfile_wrapper`, timelib's `tz_get_wrapper`.
-unsafe extern "C" fn parse_tzfile_wrapper(
+pub(crate) unsafe extern "C" fn parse_tzfile_wrapper(
     name: *const c_char,
     _db: *const sys::timelib_tzdb,
     _error_code: *mut c_int,
@@ -109,7 +150,7 @@ fn guard<R>(default: R, f: impl FnOnce() -> R) -> R {
     }
 }
 
-fn resume_callback_panic() {
+pub(crate) fn resume_callback_panic() {
     if let Some(p) = CALLBACK_PANIC.with(|c| c.borrow_mut().take()) {
         resume_unwind(p);
     }
@@ -153,7 +194,7 @@ pub(crate) fn get_timezone_info() -> Option<Rc<Tz>> {
 }
 
 /// [`get_timezone_info`], or php's DateError.
-fn timezone_info() -> Result<Rc<Tz>, Thrown> {
+pub(crate) fn timezone_info() -> Result<Rc<Tz>, Thrown> {
     get_timezone_info().ok_or_else(|| {
         Thrown::error(
             "DateError",
@@ -208,7 +249,7 @@ pub(crate) fn info_rows() -> Vec<(&'static str, Vec<u8>)> {
 }
 
 /// `php_time()`.
-fn php_time() -> i64 {
+pub(crate) fn php_time() -> i64 {
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         Ok(d) => d.as_secs() as i64,
         Err(e) => -(e.duration().as_secs_f64().ceil() as i64),
@@ -735,4 +776,13 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     );
     put("timezone_name_from_abbr", fn_timezone_name_from_abbr, 1, 3);
     put("timezone_version_get", fn_timezone_version_get, 0, 0);
+    m.insert(
+        "__date",
+        Builtin {
+            name: "__date",
+            func: classes::fn_date,
+            min_args: 1,
+            max_args: None,
+        },
+    );
 }

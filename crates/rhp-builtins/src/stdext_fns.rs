@@ -1042,48 +1042,8 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put("__stdext_warning", fn_stdext_warning, 1, Some(1));
 }
 
-/// The procedural `date_*` / `timezone_*` API over the DateTime classes
-/// (ext/date's function aliases), plus `utf8_encode` / `utf8_decode`.
-/// `date_create(_immutable)_from_format` and
-/// `date_interval_create_from_date_string` are left out until their
-/// `createFromFormat` / `createFromDateString` methods exist.
+/// `utf8_encode` / `utf8_decode`.
 pub const PRELUDE_PHP: &str = r#"
-function date_create(string $datetime = "now", ?DateTimeZone $timezone = null): DateTime|false {
-    try { return new DateTime($datetime, $timezone); } catch (Exception $e) { return false; }
-}
-function date_create_immutable(string $datetime = "now", ?DateTimeZone $timezone = null): DateTimeImmutable|false {
-    try { return new DateTimeImmutable($datetime, $timezone); } catch (Exception $e) { return false; }
-}
-function date_format(DateTimeInterface $object, string $format): string { return $object->format($format); }
-function date_modify(DateTime $object, string $modifier): DateTime|false {
-    try { return $object->modify($modifier); } catch (DateMalformedStringException $e) {
-        __stdext_warning('date_modify(): ' . substr($e->getMessage(), strlen('DateTime::modify(): ')));
-        return false;
-    }
-}
-function date_add(DateTime $object, DateInterval $interval): DateTime { return $object->add($interval); }
-function date_sub(DateTime $object, DateInterval $interval): DateTime { return $object->sub($interval); }
-function date_diff(DateTimeInterface $baseObject, DateTimeInterface $targetObject, bool $absolute = false): DateInterval {
-    return $baseObject->diff($targetObject, $absolute);
-}
-function date_timestamp_get(DateTimeInterface $object): int { return $object->getTimestamp(); }
-function date_timestamp_set(DateTime $object, int $timestamp): DateTime { return $object->setTimestamp($timestamp); }
-function date_timezone_get(DateTimeInterface $object): DateTimeZone|false { return $object->getTimezone(); }
-function date_timezone_set(DateTime $object, DateTimeZone $timezone): DateTime { return $object->setTimezone($timezone); }
-function date_offset_get(DateTimeInterface $object): int { return $object->getOffset(); }
-function date_date_set(DateTime $object, int $year, int $month, int $day): DateTime { return $object->setDate($year, $month, $day); }
-function date_time_set(DateTime $object, int $hour, int $minute, int $second = 0, int $microsecond = 0): DateTime {
-    return $object->setTime($hour, $minute, $second, $microsecond);
-}
-function date_interval_format(DateInterval $object, string $format): string { return $object->format($format); }
-function timezone_open(string $timezone): DateTimeZone|false {
-    try { return new DateTimeZone($timezone); } catch (Exception $e) {
-        __stdext_warning("timezone_open(): Unknown or bad timezone ($timezone)");
-        return false;
-    }
-}
-function timezone_name_get(DateTimeZone $object): string { return $object->getName(); }
-function timezone_offset_get(DateTimeZone $object, DateTimeInterface $datetime): int { return $object->getOffset($datetime); }
 function utf8_encode(string $string): string {
     __stdext_deprecated('Function utf8_encode() is deprecated since 8.2, visit the php.net documentation for various alternatives');
     return mb_convert_encoding($string, 'UTF-8', 'ISO-8859-1');

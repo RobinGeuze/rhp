@@ -5477,8 +5477,10 @@ impl Vm {
         let (name, min, max) = match frame.defining_class {
             Some(cls) if self.is_internal_class(cls) => {
                 let cname = self.class(cls).name.as_bytes();
-                // Its php body throws without parsing any argument.
-                if cname.eq_ignore_ascii_case(b"WeakReference")
+                // Their php bodies throw without parsing any argument, or
+                // parse them quietly (DatePeriod's three signatures).
+                if (cname.eq_ignore_ascii_case(b"WeakReference")
+                    || cname.eq_ignore_ascii_case(b"DatePeriod"))
                     && proto.name.as_bytes().eq_ignore_ascii_case(b"__construct")
                 {
                     return None;

@@ -69,7 +69,6 @@ mod arrayset_fns;
 mod const_modules;
 mod class_fns;
 mod crypt_fns;
-mod dt_oop_fns;
 mod ext;
 mod file_fns;
 mod filter_fns;
@@ -1353,7 +1352,6 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
     let rest: Vec<(&'static str, Registrar)> = vec![
         ("webenc_fns", Box::new(webenc_fns::register)),
         ("html", Box::new(html::register)),
-        ("dt_oop_fns", Box::new(dt_oop_fns::register)),
         ("strarr2_fns", Box::new(strarr2_fns::register)),
         ("sort_fns", Box::new(sort_fns::register)),
         ("serialize_fns", Box::new(serialize_fns::register)),

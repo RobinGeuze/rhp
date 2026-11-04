@@ -402,13 +402,9 @@ pub(crate) fn info_rows() -> Vec<Vec<String>> {
     };
     opt("SSL Version", d.ssl_version);
     opt("ZLib Version", d.libz_version);
-    if d.age >= 1 {
-        // php labels the c-ares version "ZLib Version" too.
-        opt("ZLib Version", d.ares);
-    }
-    if d.age >= 2 {
-        opt("libIDN Version", d.libidn);
-    }
+    // php's c-ares and libIDN rows sit under `#if defined(CURLVERSION_SECOND)`
+    // and `defined(CURLVERSION_THIRD)`, enumerators rather than macros, so
+    // php never prints them.
     if d.age >= 3 {
         opt("libSSH Version", d.libssh_version);
     }

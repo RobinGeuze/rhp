@@ -162,7 +162,7 @@ thread_local! {
     /// this thread (protos hold `Rc`s, so the cache is per thread — matching
     /// the VM-per-thread model). It depends on no per-file state: it is
     /// compiled in a [`FileCtx`] of its own.
-    pub(crate) static PRELUDE_CACHE: RefCell<Option<Rc<PreludeParts>>> = const { RefCell::new(None) };
+    static PRELUDE_CACHE: RefCell<Option<Rc<PreludeParts>>> = const { RefCell::new(None) };
 }
 
 /// The compiled prelude, compiling it on this thread's first call.

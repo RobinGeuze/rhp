@@ -6,9 +6,10 @@ use rhp_values::{Thrown, Value};
 
 use crate::assign::is_globals_var;
 use crate::builder::ProtoBuilder;
+use crate::file::FileCtx;
 use crate::names::NameKind;
 use crate::oop::Sel;
-use crate::prelude::PRELUDE_CACHE;
+use crate::prelude::prelude_classes;
 use crate::util::strip_dollar;
 
 impl ProtoBuilder<'_> {
@@ -92,6 +93,7 @@ impl ProtoBuilder<'_> {
             })
             .or_else(|| {
                 builtin_by_ref(
+                    self.cx,
                     global_lc.as_deref().unwrap_or(&name_lc),
                     fc.argument_list.arguments.len(),
                 )
@@ -101,7 +103,7 @@ impl ProtoBuilder<'_> {
             && !global_lc
                 .as_ref()
                 .is_some_and(|g| self.cx.sigs.contains_key(g)))
-        .then(|| builtin_sig(global_lc.as_deref().unwrap_or(&name_lc)))
+        .then(|| builtin_sig(self.cx, global_lc.as_deref().unwrap_or(&name_lc)))
         .flatten();
         // `@prefer-ref` positions of the builtin (array_multisort, extract): a
         // non-variable argument is passed by value, silently.
@@ -766,32 +768,33 @@ impl ProtoBuilder<'_> {
 
 /// The stub signature of a builtin rhp implements: a native one, or a
 /// function of the prelude.
-fn builtin_sig(name_lc: &[u8]) -> Option<&'static rhp_builtins::signatures::Func> {
+fn builtin_sig(cx: &FileCtx, name_lc: &[u8]) -> Option<&'static rhp_builtins::signatures::Func> {
     let f = rhp_builtins::signatures::function(name_lc)?;
     let name = std::str::from_utf8(name_lc).ok()?;
     if rhp_builtins::registry().contains_key(name) {
         return Some(f);
     }
     // While the prelude itself compiles, every function it calls exists.
-    let in_prelude = PRELUDE_CACHE.with(|c| match &*c.borrow() {
-        Some(p) => p
-            .functions
-            .iter()
-            .any(|pf| pf.name.as_bytes().eq_ignore_ascii_case(name_lc)),
-        None => true,
-    });
+    if cx.is_prelude {
+        return Some(f);
+    }
+    let in_prelude = prelude_classes()
+        .ok()?
+        .functions
+        .iter()
+        .any(|pf| pf.name.as_bytes().eq_ignore_ascii_case(name_lc));
     in_prelude.then_some(f)
 }
 
 /// By-reference flags for the first `argc` arguments of a builtin call, from
 /// its stub signature. The call site emits `MakeRef` for each flagged
 /// position.
-fn builtin_by_ref(name_lc: &[u8], argc: usize) -> Option<Vec<bool>> {
+fn builtin_by_ref(cx: &FileCtx, name_lc: &[u8], argc: usize) -> Option<Vec<bool>> {
     use rhp_builtins::signatures::Signature;
     if !rhp_builtins::signatures::function(name_lc)?.has_by_ref() {
         return None;
     }
-    let f = builtin_sig(name_lc)?;
+    let f = builtin_sig(cx, name_lc)?;
     Some((0..argc.max(f.params.len())).map(|i| f.by_ref(i)).collect())
 }
 

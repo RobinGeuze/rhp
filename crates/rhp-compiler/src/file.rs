@@ -28,6 +28,8 @@ pub(crate) struct FileCtx<'s> {
     /// Byte offset of each line start. Empty for the prelude, whose line
     /// numbers are never surfaced.
     line_starts: Vec<u32>,
+    /// The prelude itself is being compiled: every builtin it calls exists.
+    pub(crate) is_prelude: bool,
     /// `declare(strict_types=1)` (php's caller-decides coercion rule),
     /// stamped on every proto of the file.
     pub(crate) strict_types: bool,
@@ -72,6 +74,7 @@ impl<'s> FileCtx<'s> {
             src,
             tokens: OnceCell::new(),
             line_starts: Vec::new(),
+            is_prelude: false,
             strict_types: false,
             sigs: HashMap::new(),
             method_ref: HashMap::new(),
@@ -119,6 +122,7 @@ impl<'s> FileCtx<'s> {
     /// method signatures (`flat` is its statements).
     pub(crate) fn prelude(flat: &[(Rc<NsContext>, &Statement)]) -> FileCtx<'static> {
         let mut cx = FileCtx::empty(PhpStr::from_bytes(Vec::new()), b"");
+        cx.is_prelude = true;
         cx.method_ref = collect_method_refs(flat);
         cx
     }

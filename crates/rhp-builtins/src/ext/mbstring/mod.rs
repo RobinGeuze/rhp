@@ -924,28 +924,50 @@ fn fn_mb_substitute_character(host: &mut dyn Host, args: &[Value]) -> Result<Val
         }
         Some(v) => v,
     };
-    // Z_PARAM_STR_OR_LONG: strings stay strings; other scalars try int
-    // first.
+    let mode_error = || {
+        value_error(
+            f,
+            0,
+            "must be \"none\", \"long\", \"entity\" or a valid codepoint",
+        )
+    };
+    if let Value::Str(s) = &arg {
+        let s = s.as_bytes();
+        let mode = if s.eq_ignore_ascii_case(b"none") {
+            illegal_mode::NONE
+        } else if s.eq_ignore_ascii_case(b"long") {
+            illegal_mode::LONG
+        } else if s.eq_ignore_ascii_case(b"entity") {
+            illegal_mode::ENTITY
+        } else {
+            return Err(mode_error());
+        };
+        st(|s| s.illegal_mode = mode);
+        return Ok(Value::Bool(true));
+    }
+    // Z_PARAM_STR_OR_LONG for other scalars: in coercive mode int first
+    // (zend_parse_arg_long_weak), then string, so a float that isn't an int
+    // is taken as a string, and its string form ("INF", "1.0E+30", …) is
+    // never a mode name.
+    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
     let cp = match &arg {
-        Value::Str(s) => {
-            let s = s.as_bytes();
-            let mode = if s.eq_ignore_ascii_case(b"none") {
-                illegal_mode::NONE
-            } else if s.eq_ignore_ascii_case(b"long") {
-                illegal_mode::LONG
-            } else if s.eq_ignore_ascii_case(b"entity") {
-                illegal_mode::ENTITY
-            } else {
-                return Err(value_error(
-                    f,
-                    0,
-                    "must be \"none\", \"long\", \"entity\" or a valid codepoint",
-                ));
-            };
-            st(|s| s.illegal_mode = mode);
-            return Ok(Value::Bool(true));
-        }
         Value::Int(n) => *n,
+        _ if host.caller_strict_types() => {
+            return Err(Thrown::type_error(format!(
+                "{f}(): Argument #1 (${}) must be of type string|int|null, {} given",
+                pname(f, 0),
+                crate::argparse::value_name(host, &arg)
+            )));
+        }
+        Value::Float(x) if x.is_nan() || !(-TWO_63..TWO_63).contains(x) => {
+            if x.is_nan() {
+                host.emit_diagnostic(
+                    crate::E_WARNING,
+                    "unexpected NAN value was coerced to string",
+                )?;
+            }
+            return Err(mode_error());
+        }
         _ => long_arg(host, args, 0, f)?,
     };
     if !valid_code_point(cp) {
@@ -1286,11 +1308,12 @@ fn fn_mb_strcut(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let enc = enc_arg(host, args, 3, f)?;
     let n = s.len() as i64;
     let mut len = len.unwrap_or(n);
+    // php's size_t/zend_long arithmetic, which wraps.
     if from < 0 {
-        from = (n + from).max(0);
+        from = n.wrapping_add(from).max(0);
     }
     if len < 0 {
-        len = ((n - from) + len).max(0);
+        len = n.wrapping_sub(from).wrapping_add(len).max(0);
     }
     if from > n || len == 0 {
         return Ok(Value::str(""));

@@ -24,14 +24,19 @@ runs:
         PHP_BIN: ${{ inputs.php }}
       run: |
         # PCRE2 (libpcre2-8.a), libxml2 (libxml2.a), ICU (libicu*.a) and
-        # OpenSSL (libcrypto.a, libssl.a), linked statically.
+        # OpenSSL (libcrypto.a, libssl.a), linked statically. Ubuntu's
+        # libcrypto.a also needs its Libs.private, which libssl-dev does not
+        # pull in: -l:libjitterentropy.a -lz -lzstd.
         sudo apt-get update -q
         sudo apt-get install -y --no-install-recommends \
           pkg-config \
           libpcre2-dev \
           libxml2-dev \
           libicu-dev \
-          libssl-dev
+          libssl-dev \
+          libjitterentropy3-dev \
+          zlib1g-dev \
+          libzstd-dev
         php="${PHP_BIN:-$(command -v php || true)}"
         build=""
         # compare <name> <pkg-config module> <php code printing the version php loads>

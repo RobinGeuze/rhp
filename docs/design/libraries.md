@@ -96,7 +96,10 @@ finds Homebrew's openssl@4 on its own. `native::check_openssl` then fails the
 build unless openssl-sys used the headers of the OpenSSL php links (Homebrew's
 openssl@4, pkg-config's libcrypto), their version matches the .pc file, and
 both static archives are there. `OPENSSL_STATIC=0` links dynamically, for an
-experiment.
+experiment. Ubuntu's libcrypto.a needs its `Libs.private`:
+`-l:libjitterentropy.a` (a static archive, from libjitterentropy3-dev;
+BSD-3-Clause or GPL-2.0, taken under BSD-3-Clause), and `-lz -lzstd`
+dynamically (zlib1g-dev, libzstd-dev). The native-deps action installs them.
 
 php reports `OPENSSL_VERSION_TEXT` from the headers it was compiled against.
 A Homebrew bottle built before an openssl@4 update reports the older headers

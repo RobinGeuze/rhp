@@ -280,7 +280,7 @@ fn link(lib: &Lib) -> Result<PathBuf, String> {
             // A dependency with a row of its own is linked by that row.
             for p in &found.private {
                 if !LIBS.iter().any(|l| l.link == p) {
-                    println!("cargo:rustc-link-lib=dylib={p}");
+                    link_private(p);
                 }
             }
         }
@@ -507,6 +507,17 @@ fn link_names(flags: &str, own: &str) -> Vec<String> {
     out
 }
 
+/// Link one `Libs.private` name after all the Rust archives: dynamically,
+/// or for `-l:FILE` that file as the linker finds it (rustc would read
+/// `:FILE` as `NAME:RENAME`, so it goes through `+verbatim`; GNU ld links a
+/// `-l:lib.a` statically).
+fn link_private(name: &str) {
+    match name.strip_prefix(':') {
+        Some(file) => println!("cargo:rustc-link-lib=dylib:+verbatim={file}"),
+        None => println!("cargo:rustc-link-lib=dylib={name}"),
+    }
+}
+
 /// `Version` and the `-l` names of `Libs.private` from a .pc file, minus
 /// `own`.
 fn parse_pc(path: &Path, own: &str) -> Option<(String, Vec<String>)> {
@@ -651,9 +662,10 @@ fn openssl(lib: &Lib) -> Result<(), String> {
         ));
     }
     // openssl-sys links only libssl and libcrypto: the rest of a static
-    // libcrypto's Libs.private is linked dynamically, as for the other rows.
+    // libcrypto's Libs.private is linked as for the other rows (Ubuntu's:
+    // `-l:libjitterentropy.a -lz -lzstd -ldl`).
     for p in &found.private {
-        println!("cargo:rustc-link-lib=dylib={p}");
+        link_private(p);
     }
     for name in ["libcrypto.a", "libssl.a"] {
         let archive = found.libdir.join(name);

@@ -215,8 +215,15 @@ pub struct Vm {
     stream_origins: HashMap<u32, (Vec<u8>, Vec<u8>)>,
     // Stream-context resources (`stream_context_create`), id -> options array.
     stream_contexts: HashMap<u32, Value>,
+    // The context of each socket stream (php's `stream->ctx`): stream id ->
+    // context id.
+    stream_ctx: HashMap<u32, u32>,
+    // data: (RFC 2397) streams: their metadata, mode and uri.
+    data_streams: HashMap<u32, (Value, Vec<u8>, Vec<u8>)>,
+    // The `notification` callback of each stream context, by context id.
+    stream_notifiers: HashMap<u32, Value>,
     // Response header lines from the last http(s) request (status line first).
-    last_response_headers: Vec<Vec<u8>>,
+    last_response_headers: Option<Vec<Vec<u8>>>,
     // Open ZipArchive handles, id -> parsed archive.
     // CLI arguments ($argv / $_SERVER['argv']); argv[0] is the script name.
     argv: Vec<Vec<u8>>,
@@ -604,6 +611,17 @@ impl Host for Vm {
     // --- stream layer: dispatch to the per-run wrapper registry ---------------
 
     fn stream_get_contents(&self, url: &[u8]) -> Option<Vec<u8>> {
+        if builtins::streams::is_data_url(url) {
+            return match builtins::streams::parse_data_url(url) {
+                Ok((data, _)) => Some(data),
+                Err(e) => {
+                    if !e.is_empty() {
+                        builtins::streams::note_wrapper_error(e);
+                    }
+                    None
+                }
+            };
+        }
         if url.eq_ignore_ascii_case(b"php://input") {
             return Some(self.request_body());
         }
@@ -642,9 +660,37 @@ impl Host for Vm {
     }
 
     fn stream_wrapper_schemes(&self) -> Vec<Vec<u8>> {
-        // The `php://` pseudo-wrapper is handled specially (not in the map).
-        let mut v: Vec<Vec<u8>> = vec![b"php".to_vec()];
-        v.extend(self.wrappers.keys().cloned());
+        // php's registration order (openssl's, zlib's, bz2's, standard's,
+        // phar's, zip's MINIT); `php://`, data: and http(s):// are handled
+        // outside the map.
+        const ORDER: &[&[u8]] = &[
+            b"https",
+            b"ftps",
+            b"compress.zlib",
+            b"compress.bzip2",
+            b"php",
+            b"file",
+            b"glob",
+            b"data",
+            b"http",
+            b"ftp",
+            b"phar",
+            b"zip",
+        ];
+        let builtin = |s: &[u8]| matches!(s, b"php" | b"data" | b"http" | b"https");
+        let mut v: Vec<Vec<u8>> = ORDER
+            .iter()
+            .filter(|s| builtin(s) || self.wrappers.contains_key(**s))
+            .map(|s| s.to_vec())
+            .collect();
+        let mut rest: Vec<Vec<u8>> = self
+            .wrappers
+            .keys()
+            .filter(|k| !ORDER.contains(&k.as_slice()))
+            .cloned()
+            .collect();
+        rest.sort();
+        v.extend(rest);
         v
     }
 
@@ -680,7 +726,9 @@ impl Host for Vm {
 
     fn stream_context_options(&self, ctx: &Value) -> Value {
         if let Value::Resource(r) = ctx {
-            if let Some(opts) = self.stream_contexts.get(&r.id) {
+            // A stream stands for its context.
+            let id = self.stream_ctx.get(&r.id).copied().unwrap_or(r.id);
+            if let Some(opts) = self.stream_contexts.get(&id) {
                 return opts.clone();
             }
         }
@@ -695,9 +743,10 @@ impl Host for Vm {
         value: Value,
     ) {
         let Value::Resource(r) = ctx else { return };
+        let id = self.stream_ctx.get(&r.id).copied().unwrap_or(r.id);
         let entry = self
             .stream_contexts
-            .entry(r.id)
+            .entry(id)
             .or_insert_with(|| Value::Array(PhpArray::new()));
         if !matches!(entry, Value::Array(_)) {
             *entry = Value::Array(PhpArray::new());
@@ -713,14 +762,11 @@ impl Host for Vm {
         }
     }
 
-    fn set_http_response_headers(&mut self, headers: Vec<Vec<u8>>) {
+    fn set_http_response_headers(&mut self, headers: Option<Vec<Vec<u8>>>) {
         self.last_response_headers = headers;
     }
-    fn http_response_headers(&self) -> Vec<Vec<u8>> {
+    fn http_response_headers(&self) -> Option<Vec<Vec<u8>>> {
         self.last_response_headers.clone()
-    }
-    fn clear_http_response_headers(&mut self) {
-        self.last_response_headers.clear();
     }
 
     fn current_arg_count(&self) -> i64 {
@@ -830,6 +876,39 @@ impl Host for Vm {
             return Some(v);
         } else if path.starts_with(b"php://") {
             return None; // other php:// streams unsupported
+        } else if builtins::streams::is_data_url(path) {
+            // php_stream_url_wrap_rfc2397: a TEMP stream over a MEMORY one
+            let (data, meta) = match builtins::streams::parse_data_url(path) {
+                Ok(v) => v,
+                Err(e) => {
+                    if !e.is_empty() {
+                        builtins::streams::note_wrapper_error(e);
+                    }
+                    return None;
+                }
+            };
+            let readonly = mode.first() == Some(&b'r') && mode.get(1) != Some(&b'+');
+            let v = self.make_stream(
+                StreamState::Mem {
+                    buf: data,
+                    pos: 0,
+                    skew: 0,
+                    eof: false,
+                    temp: Some(path.to_vec()),
+                    mode: if readonly {
+                        MemMode::ReadOnly
+                    } else {
+                        MemMode::ReadWrite
+                    },
+                },
+                "stream",
+            );
+            self.next_resource_id += 1;
+            if let Some(id) = res_id(&v) {
+                self.data_streams
+                    .insert(id, (Value::Array(meta), mode.to_vec(), path.to_vec()));
+            }
+            return Some(v);
         } else if builtins::streams::split_scheme(path).0 == b"file" {
             // Plain local file: a real descriptor (seek/tell/flock/ftruncate).
             StreamState::File(Box::new(builtins::streams::LocalFile::open(path, mode)?))
@@ -1035,11 +1114,13 @@ impl Host for Vm {
                 }
             }
             StreamState::Fd(f) => {
-                if len < 0 {
+                let r = if len < 0 {
                     Some(f.read_all(-1))
                 } else {
                     f.read(len as usize)
-                }
+                };
+                self.deliver_stream_events(res);
+                r
             }
             StreamState::Stdin => {
                 let f = self.stdin_stream()?;
@@ -1054,11 +1135,15 @@ impl Host for Vm {
     }
 
     fn stream_gets(&mut self, res: &Value) -> Option<Vec<u8>> {
-        self.stream_gets_impl(res, None)
+        let r = self.stream_gets_impl(res, None);
+        self.deliver_stream_events(res);
+        r
     }
 
     fn stream_gets_max(&mut self, res: &Value, max: usize) -> Option<Vec<u8>> {
-        self.stream_gets_impl(res, Some(max))
+        let r = self.stream_gets_impl(res, Some(max));
+        self.deliver_stream_events(res);
+        r
     }
 
     fn stream_eof(&self, res: &Value) -> bool {
@@ -1152,6 +1237,116 @@ impl Host for Vm {
         match self.streams.get(&res_id(res)?)? {
             StreamState::Fd(f) => f.sock().cloned(),
             _ => None,
+        }
+    }
+
+    fn stream_fd_mut(&mut self, res: &Value) -> Option<&mut builtins::fdstream::FdStream> {
+        match self.streams.get_mut(&res_id(res)?)? {
+            StreamState::Fd(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    fn stream_insert_fd(
+        &mut self,
+        stream: builtins::fdstream::FdStream,
+        ctx: Option<Value>,
+    ) -> Option<Value> {
+        let (blocked, persistent) = stream
+            .sock()
+            .map_or((true, false), |s| (s.blocked, s.persistent));
+        let ty = if persistent {
+            "persistent stream"
+        } else {
+            "stream"
+        };
+        let v = self.make_stream(StreamState::Fd(stream), ty);
+        if let Some(id) = res_id(&v) {
+            if !blocked {
+                self.nonblocking.insert(id);
+            }
+            if let Some(c) = ctx.as_ref().and_then(res_id) {
+                self.stream_ctx.insert(id, c);
+            }
+        }
+        Some(v)
+    }
+
+    fn stream_context_notifier(&self, ctx: &Value) -> Option<Value> {
+        let id = res_id(ctx)?;
+        let id = self.stream_ctx.get(&id).copied().unwrap_or(id);
+        self.stream_notifiers.get(&id).cloned()
+    }
+
+    fn set_stream_context_notifier(&mut self, ctx: &Value, cb: Option<Value>) {
+        let Some(id) = res_id(ctx) else { return };
+        let id = self.stream_ctx.get(&id).copied().unwrap_or(id);
+        match cb {
+            Some(cb) => {
+                self.stream_notifiers.insert(id, cb);
+            }
+            None => {
+                self.stream_notifiers.remove(&id);
+            }
+        }
+    }
+
+    fn resolve_stream_context(&mut self, res: &Value) -> Option<Value> {
+        let id = res_id(res)?;
+        let ctx = |id: u32| {
+            Value::Resource(Rc::new(rhp_values::ResourceData {
+                id,
+                type_name: "stream-context",
+            }))
+        };
+        if self.stream_contexts.contains_key(&id) {
+            return Some(ctx(id));
+        }
+        if !self.streams.contains_key(&id) {
+            return None;
+        }
+        if let Some(c) = self.stream_ctx.get(&id) {
+            return Some(ctx(*c));
+        }
+        // php_stream_context_alloc, attached to the stream
+        let c = self.create_stream_context(Value::Array(PhpArray::new()));
+        self.stream_ctx.insert(id, res_id(&c)?);
+        Some(c)
+    }
+
+    fn stream_context_of(&self, res: &Value) -> Option<Value> {
+        let id = *self.stream_ctx.get(&res_id(res)?)?;
+        Some(Value::Resource(Rc::new(rhp_values::ResourceData {
+            id,
+            type_name: "stream-context",
+        })))
+    }
+
+    fn set_local_var(&mut self, name: &[u8], value: Value) -> bool {
+        // zend_set_local_var_str: the innermost user code frame.
+        let Some(top) = (0..self.stack.len())
+            .rev()
+            .find(|&i| !self.stack[i].proto.debug.file.as_bytes().is_empty())
+        else {
+            return false;
+        };
+        if self.stack[top].global_scope || self.stack[top].include_caller.is_some() {
+            match self.var_var_slot(top, name) {
+                Ok(cv) => self.stack[top].regs[cv as usize] = value,
+                Err(cell) => *cell.borrow_mut() = value,
+            }
+            return true;
+        }
+        match self.var_var_lookup(top, name) {
+            Some(Ok(cv)) => {
+                self.stack[top].regs[cv as usize] = value;
+                true
+            }
+            Some(Err(cell)) => {
+                *cell.borrow_mut() = value;
+                true
+            }
+            None => false,
         }
     }
 
@@ -1442,6 +1637,23 @@ impl Host for Vm {
         use builtins::StreamMeta as M;
         let id = res_id(res)?;
         let meta = || -> Option<M> {
+            if let Some((rfc, mode, uri)) = self.data_streams.get(&id) {
+                let eof = matches!(self.streams.get(&id)?, StreamState::Mem { eof: true, .. });
+                return Some(M {
+                    wrapper_type: "RFC2397",
+                    stream_type: "RFC2397",
+                    mode: mode.clone(),
+                    uri: uri.clone(),
+                    unread_bytes: 0,
+                    seekable: true,
+                    eof,
+                    blocked: true,
+                    timed_out: false,
+                    crypto: None,
+                    wrapper_data: None,
+                    rfc2397: Some(rfc.clone()),
+                });
+            }
             if let Some((uri, mode)) = self.stream_origins.get(&id) {
                 let (scheme, _) = builtins::streams::split_scheme(uri);
                 let (wrapper_type, stream_type) = match scheme {
@@ -1463,6 +1675,9 @@ impl Host for Vm {
                     eof,
                     blocked: true,
                     timed_out: false,
+                    crypto: None,
+                    wrapper_data: None,
+                    rfc2397: None,
                 });
             }
             Some(match self.streams.get(&id)? {
@@ -1476,21 +1691,27 @@ impl Host for Vm {
                     eof: f.eof(),
                     blocked: true,
                     timed_out: false,
+                    crypto: None,
+                    wrapper_data: None,
+                    rfc2397: None,
                 },
                 // A socket: php's META_DATA_API answer (timed_out, blocked,
                 // eof from the socket layer), no wrapper / uri.
                 StreamState::Fd(f) if f.sock().is_some() => {
                     let s = f.sock()?;
                     M {
-                        wrapper_type: "",
+                        wrapper_type: s.wrapper.unwrap_or(""),
                         stream_type: s.stream_type,
-                        mode: b"r+".to_vec(),
+                        mode: s.mode.clone().unwrap_or_else(|| b"r+".to_vec()),
                         uri: s.uri.clone().unwrap_or_default(),
                         unread_bytes: f.unread() as i64,
                         seekable: false,
                         eof: f.eof_flag(),
                         blocked: s.blocked,
                         timed_out: s.timed_out,
+                        crypto: f.crypto_meta(),
+                        wrapper_data: s.wrapper_data.clone(),
+                        rfc2397: None,
                     }
                 }
                 StreamState::Fd(f) => match self.fd_names.get(&id) {
@@ -1504,6 +1725,9 @@ impl Host for Vm {
                         eof: f.eof(),
                         blocked: true,
                         timed_out: false,
+                        crypto: None,
+                        wrapper_data: None,
+                        rfc2397: None,
                     },
                     // A pipe (proc_open, popen): no wrapper, no uri; the mode is
                     // the descriptor's direction.
@@ -1520,6 +1744,9 @@ impl Host for Vm {
                         eof: f.eof(),
                         blocked: true,
                         timed_out: false,
+                        crypto: None,
+                        wrapper_data: None,
+                        rfc2397: None,
                     },
                 },
                 StreamState::Dir { .. } => M {
@@ -1532,6 +1759,9 @@ impl Host for Vm {
                     eof: false,
                     blocked: true,
                     timed_out: false,
+                    crypto: None,
+                    wrapper_data: None,
+                    rfc2397: None,
                 },
                 StreamState::Mem {
                     eof, temp, mode, ..
@@ -1549,6 +1779,9 @@ impl Host for Vm {
                     eof: *eof,
                     blocked: true,
                     timed_out: false,
+                    crypto: None,
+                    wrapper_data: None,
+                    rfc2397: None,
                 },
                 StreamState::FileWrite { url, .. } => M {
                     wrapper_type: "plainfile",
@@ -1560,6 +1793,9 @@ impl Host for Vm {
                     eof: false,
                     blocked: true,
                     timed_out: false,
+                    crypto: None,
+                    wrapper_data: None,
+                    rfc2397: None,
                 },
                 st @ (StreamState::Stdin | StreamState::Stdout | StreamState::Stderr) => {
                     let (fd, mode, uri): (i32, &[u8], &[u8]) = match st {
@@ -1582,6 +1818,9 @@ impl Host for Vm {
                         eof: false,
                         blocked: true,
                         timed_out: false,
+                        crypto: None,
+                        wrapper_data: None,
+                        rfc2397: None,
                     }
                 }
             })
@@ -2452,7 +2691,10 @@ impl Vm {
             stream_modes: HashMap::new(),
             next_resource_id: 1,
             stream_contexts: HashMap::new(),
-            last_response_headers: Vec::new(),
+            stream_ctx: HashMap::new(),
+            data_streams: HashMap::new(),
+            stream_notifiers: HashMap::new(),
+            last_response_headers: None,
             argv: Vec::new(),
             silence: 0,
             silence_stack: Vec::new(),
@@ -4075,6 +4317,8 @@ impl Vm {
     fn free_stream(&mut self, id: u32) -> bool {
         self.stream_origins.remove(&id);
         self.stream_modes.remove(&id);
+        self.stream_ctx.remove(&id);
+        self.data_streams.remove(&id);
         match self.streams.remove(&id) {
             Some(StreamState::FileWrite { buf, url }) => self
                 .wrapper_for(&url)
@@ -4157,6 +4401,37 @@ impl Vm {
         for (level, msg, line) in &prog.compile_diags {
             let file = prog.main.debug.file.as_bytes().to_vec();
             self.raise_error_at(*level, msg, file, *line as i64);
+        }
+    }
+
+    /// Deliver the notifications a read or write on stream `res` owes its
+    /// context's notifier (progress, completed).
+    fn deliver_stream_events(&mut self, res: &Value) {
+        let Some(id) = res_id(res) else { return };
+        let events = match self.streams.get_mut(&id) {
+            Some(StreamState::Fd(f)) if f.notify => f.take_events(),
+            _ => return,
+        };
+        if events.is_empty() {
+            return;
+        }
+        if let Err(e) = builtins::http::deliver(self, res, &events) {
+            if self.pending_throw.is_none() {
+                self.pending_throw = Some(e);
+            }
+        }
+    }
+
+    /// Raise the diagnostics stream operations queued (the TLS layer's
+    /// warnings) as raised by builtin `func`.
+    fn flush_stream_diags(&mut self, func: &str) {
+        for d in builtins::fdstream::take_diags() {
+            let msg = if d.docref {
+                format!("{func}(): {}", d.msg)
+            } else {
+                d.msg
+            };
+            Host::raise_diagnostic(self, d.level, &msg);
         }
     }
 
@@ -10589,6 +10864,7 @@ impl Vm {
                 Some(e) => Err(e),
                 None => (builtin.func)(self, &args),
             };
+            self.flush_stream_diags(builtin.name);
             // (php's opcodes for these have no interrupt check: an
             // out-of-memory error waits for the next one.)
             return match self.pending_throw.take() {
@@ -10605,6 +10881,8 @@ impl Vm {
             Some(e) => Err(e),
             None => (builtin.func)(self, &args),
         };
+        // What a stream operation queued without reaching a host.
+        self.flush_stream_diags(builtin.name);
         let r = match r {
             Err(e @ Thrown::Error { .. }) => Err(self.materialize(e, None)),
             other => other,

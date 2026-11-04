@@ -32,6 +32,7 @@ mod pkey;
 mod smime;
 pub(crate) mod sys;
 mod x509;
+pub(crate) mod xp_ssl;
 
 pub(crate) use pkey::verify_with_pem;
 

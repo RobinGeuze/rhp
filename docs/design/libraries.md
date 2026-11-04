@@ -319,6 +319,25 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   phar's signature check) stay without one. Errors stay per thread: OpenSSL
   keeps its queue in thread-local storage, and php's 16-entry ring
   (`openssl_error_string`) is a thread-local too.
+- **TLS streams** (`ext/openssl/xp_ssl.rs`, a port of xp_ssl.c) run the
+  session on the socket's own descriptor with `SSL_set_fd`, as php does, so
+  the errno-based errors (`SSL: Connection reset by peer`) and the
+  EAGAIN/poll retry loop are php's. Stream reads and writes happen inside the
+  VM without a host: the TLS layer queues its warnings
+  (`fdstream::push_diag`) and the code that ran the operation reports them
+  under its builtin; peer certificates for `capture_peer_cert` come back to
+  a caller with a host, which wraps them in `OpenSSLCertificate` objects.
+  The verify, passphrase, SNI and ALPN callbacks read their data from a
+  per-session allocation behind the SSL's ex_data and run under
+  ext/openssl's `guard`. `SSL_CTX_new` takes no library context, as in php.
+  CA certificates come from the `cafile`/`capath` context options, then
+  `openssl.cafile`/`openssl.capath`, then OpenSSL's default paths
+  (`SSL_CTX_set_default_verify_paths`): no bundled root store. The
+  `OPENSSL_NO_*` defines xp_ssl.c checks (SSLv3, TLS 1.1/1.2/1.3, TLS
+  extensions) are read from the headers' configuration.h by build.rs.
+- **The http:// wrapper** (`http.rs`, a port of http_fopen_wrapper.c) opens
+  its connection through the socket transports, so https:// is the TLS
+  layer above. URLs are parsed by `url.rs`, a port of `php_url_parse_ex2`.
 - **Guard aborts.** A C library that can abort the process (libgmp on huge
   sizes) needs size checks first: with one VM per thread, an abort kills
   every request.

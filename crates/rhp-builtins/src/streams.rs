@@ -99,14 +99,140 @@ pub fn last_errno() -> Option<i32> {
     LAST_OS_ERR.with(|c| c.get())
 }
 
+thread_local! {
+    static WRAPPER_ERR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Record a wrapper's error (`php_stream_wrapper_log_error`) for the
+/// "Failed to open stream" warning of the failed open.
+pub fn note_wrapper_error(msg: impl Into<String>) {
+    let msg = msg.into();
+    WRAPPER_ERR.with(|e| *e.borrow_mut() = Some(msg));
+}
+
+/// The recorded wrapper error, taken.
+pub fn take_wrapper_error() -> Option<String> {
+    WRAPPER_ERR.with(|e| e.borrow_mut().take())
+}
+
 /// How many resource ids php's open of `url` registers: a compress.zlib://
-/// stream wraps an inner plain-file stream.
+/// stream wraps an inner plain-file stream, and a data: stream is a TEMP
+/// stream over a MEMORY one.
 pub fn open_resource_ids(url: &[u8]) -> u32 {
-    if split_scheme(url).0 == b"compress.zlib" {
+    if split_scheme(url).0 == b"compress.zlib" || is_data_url(url) {
         2
     } else {
         1
     }
+}
+
+/// A `data:` URL (RFC 2397): php takes `data:` without the slashes too.
+pub fn is_data_url(url: &[u8]) -> bool {
+    url.starts_with(b"data:")
+}
+
+/// `php_stream_url_wrap_rfc2397`'s parse: the decoded data and the
+/// metadata (`mediatype`, parameters, `base64`), or the wrapper's error.
+pub fn parse_data_url(url: &[u8]) -> Result<(Vec<u8>, rhp_values::PhpArray), &'static str> {
+    use rhp_values::{ArrayKey, PhpArray, Value};
+    let Some(mut path) = url.strip_prefix(b"data:") else {
+        return Err("");
+    };
+    // strlen: the URL ends at a NUL for the C code
+    path = &path[..path.iter().position(|&c| c == 0).unwrap_or(path.len())];
+    if path.starts_with(b"//") {
+        path = &path[2..];
+    }
+    let Some(comma) = path.iter().position(|&c| c == b',') else {
+        return Err("rfc2397: no comma in URL");
+    };
+    let mut meta = PhpArray::new();
+    let mut base64 = false;
+    if comma != 0 {
+        let mut p = &path[..comma];
+        let semi = p.iter().position(|&c| c == b';');
+        let sep = p.iter().position(|&c| c == b'/');
+        if semi.is_none() && sep.is_none() {
+            return Err("rfc2397: illegal media type");
+        }
+        match (semi, sep) {
+            (None, _) => {
+                meta.insert(ArrayKey::from_bytes(b"mediatype"), Value::str(p.to_vec()));
+                p = &[];
+            }
+            (Some(semi), Some(sep)) if sep < semi => {
+                meta.insert(
+                    ArrayKey::from_bytes(b"mediatype"),
+                    Value::str(p[..semi].to_vec()),
+                );
+                p = &p[semi..];
+            }
+            (Some(semi), _) if semi != 0 || p != b";base64" => {
+                return Err("rfc2397: illegal media type");
+            }
+            _ => {}
+        }
+        // parameters and maybe ';base64'
+        while p.first() == Some(&b';') {
+            p = &p[1..];
+            let sep = p.iter().position(|&c| c == b'=');
+            let semi = p.iter().position(|&c| c == b';');
+            match sep {
+                Some(eq) if semi.is_none_or(|s| s > eq) => {
+                    let name = &p[..eq];
+                    let vlen = semi.map_or(p.len() - eq, |s| s - eq) - 1;
+                    if name != b"mediatype" {
+                        meta.insert(
+                            ArrayKey::from_bytes(name),
+                            Value::str(p[eq + 1..eq + 1 + vlen].to_vec()),
+                        );
+                    }
+                    p = &p[eq + 1 + vlen..];
+                }
+                _ => {
+                    if p != b"base64" {
+                        return Err("rfc2397: illegal parameter");
+                    }
+                    base64 = true;
+                    p = &[];
+                    break;
+                }
+            }
+        }
+        if !p.is_empty() {
+            return Err("rfc2397: illegal URL");
+        }
+    }
+    meta.insert(ArrayKey::from_bytes(b"base64"), Value::Bool(base64));
+    let data = &path[comma + 1..];
+    let data = if base64 {
+        crate::ext::hash::primitives::base64_decode(data, true)
+            .ok_or("rfc2397: unable to decode")?
+    } else {
+        // php_url_decode
+        let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+        let mut out = Vec::with_capacity(data.len());
+        let mut i = 0;
+        while i < data.len() {
+            let c = data[i];
+            if c == b'+' {
+                out.push(b' ');
+            } else if c == b'%' && i + 2 < data.len() {
+                match (hex(data[i + 1]), hex(data[i + 2])) {
+                    (Some(a), Some(b)) => {
+                        out.push(a << 4 | b);
+                        i += 2;
+                    }
+                    _ => out.push(c),
+                }
+            } else {
+                out.push(c);
+            }
+            i += 1;
+        }
+        out
+    };
+    Ok((data, meta))
 }
 
 /// `strerror(code)`.

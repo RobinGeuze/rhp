@@ -873,6 +873,29 @@ fn openssl(lib: &Lib) -> Result<(), String> {
         get("OPENSSL_VERSION_TEXT")?
     );
     println!("cargo:rustc-env=RHP_OPENSSL_VERSION_NUMBER={number}");
+    // The OPENSSL_NO_* defines xp_ssl.c checks, from opensslconf.h as php
+    // reads them.
+    let conf = include.join("openssl/configuration.h");
+    let conf_text = fs::read_to_string(&conf).unwrap_or_default();
+    println!("cargo:rerun-if-changed={}", conf.display());
+    let no: Vec<&str> = [
+        "OPENSSL_NO_SSL3",
+        "OPENSSL_NO_TLS1_METHOD",
+        "OPENSSL_NO_TLS1_1_METHOD",
+        "OPENSSL_NO_TLS1_2_METHOD",
+        "OPENSSL_NO_TLS1_3",
+        "OPENSSL_NO_TLSEXT",
+    ]
+    .into_iter()
+    .filter(|m| {
+        conf_text.lines().any(|l| {
+            let l = l.trim_start_matches(|c: char| c == '#' || c.is_whitespace());
+            l.strip_prefix("define")
+                .is_some_and(|r| r.split_whitespace().next() == Some(m))
+        })
+    })
+    .collect();
+    println!("cargo:rustc-env=RHP_OPENSSL_NO={}", no.join(","));
 
     // The OpenSSL php links: Homebrew's openssl@4 on macOS, pkg-config's
     // libcrypto elsewhere. openssl-sys must have used the same headers.

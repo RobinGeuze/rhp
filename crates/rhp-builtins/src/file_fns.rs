@@ -217,13 +217,20 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         }
     };
     crate::fs_fns::touch_ctx(host, args, 2);
-    // http(s): perform a real request (Composer's non-curl transport). The
-    // context (arg 2) carries the http method/headers/body.
-    let lower = url.to_ascii_lowercase();
-    if lower.starts_with(b"http://") || lower.starts_with(b"https://") {
-        // args: (url, use_include_path, context, offset, maxlen)
-        let ctx = args.get(2).map(deref).unwrap_or(Value::Null);
-        return Ok(crate::http::fetch(host, &url, &ctx));
+    if crate::http::is_http(&url) {
+        return Ok(
+            match crate::http::get_contents(
+                host,
+                "file_get_contents",
+                &url,
+                args.get(2),
+                offset,
+                maxlen,
+            )? {
+                Some(b) => Value::str(b),
+                None => Value::Bool(false),
+            },
+        );
     }
     let use_include_path = args.get(1).is_some_and(|v| conv::to_bool(&deref(v)));
     if !use_include_path {

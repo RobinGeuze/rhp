@@ -16,7 +16,8 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::fdstream::{poll_fd, SockInfo};
+use crate::ext::openssl::xp_ssl::{self, SslSock};
+use crate::fdstream::{poll_fd, FdStream, SockInfo};
 use crate::proc_fns::{zpp_long, zpp_string, zpp_type_name};
 use crate::{Builtin, Host, Thrown};
 
@@ -502,11 +503,11 @@ impl Proto {
     }
 }
 
-/// The outcome of opening a transport: the socket, or php's
+/// The outcome of opening a transport: the stream, or php's
 /// `(errno, errstr)` (errstr `None` = "Unknown error") and whether a stream
 /// had been allocated (a resource id consumed) before the failure.
-enum Opened {
-    Ok(OwnedFd, Proto),
+pub(crate) enum Opened {
+    Ok(Box<FdStream>),
     Fail {
         code: i32,
         text: Option<String>,
@@ -514,30 +515,101 @@ enum Opened {
     },
 }
 
-/// `_php_stream_xport_create` for a client.
-fn xport_client(
+/// The transport factory for `proto`: the protocol and, for tcp and the
+/// TLS transports (php's openssl socket ops), `(enable_on_connect, crypto
+/// method)`. `Err` is the failure to report.
+type Transport = (Proto, Option<(bool, i64)>);
+
+fn transport(
+    host: &mut dyn Host,
+    fname: &str,
+    proto: &[u8],
+    ctx: &Value,
+) -> Result<Result<Transport, Opened>, Thrown> {
+    Ok(Ok(match proto {
+        b"udp" => (Proto::Udp, None),
+        b"unix" => (Proto::Unix, None),
+        b"udg" => (Proto::Udg, None),
+        other => {
+            let ctx = (!matches!(ctx, Value::Null)).then_some(ctx);
+            let opts = xp_ssl::stream_opts(host, ctx);
+            match xp_ssl::transport(other, &opts) {
+                Some(Ok(spec)) => (Proto::Tcp, Some(spec)),
+                Some(Err(())) => {
+                    crate::flush_stream_diags(host, fname)?;
+                    return Ok(Err(Opened::Fail {
+                        code: 0,
+                        text: None,
+                        allocated: true,
+                    }));
+                }
+                None => {
+                    return Ok(Err(Opened::Fail {
+                        code: 0,
+                        text: Some(unknown_transport(other)),
+                        allocated: false,
+                    }))
+                }
+            }
+        }
+    }))
+}
+
+/// A connected client socket as a stream, its TLS layer enabled when the
+/// transport says so (php_openssl_sockop_set_option's CONNECT).
+#[allow(clippy::too_many_arguments)]
+fn client_stream(
+    host: &mut dyn Host,
+    fname: &str,
+    fd: OwnedFd,
+    proto: Proto,
+    tls: Option<(bool, i64)>,
+    name: &[u8],
+    timeout: (i64, i64),
+    ctx: &Value,
+) -> Result<Opened, Thrown> {
+    let mut info = SockInfo::new(proto.stream_type(), default_sock_tv(host));
+    info.uri = Some(name.to_vec());
+    info.connect_timeout = timeout;
+    let mut s = FdStream::new_socket(fd, info);
+    s.notify = !matches!(ctx, Value::Null) && host.stream_context_notifier(ctx).is_some();
+    if let Some((enable, method)) = tls {
+        let url_name = xp_ssl::url_name(split_transport(name).1);
+        s.tls = Some(Box::new(SslSock::new(enable, method, url_name)));
+        if enable {
+            let ctx = (!matches!(ctx, Value::Null)).then_some(ctx);
+            let ok = xp_ssl::crypto_on_connect(host, &mut s, ctx, method)?;
+            crate::flush_stream_diags(host, fname)?;
+            if !ok {
+                crate::warn(host, fname, "Failed to enable crypto")?;
+                return Ok(Opened::Fail {
+                    code: 0,
+                    text: None,
+                    allocated: true,
+                });
+            }
+        }
+    }
+    Ok(Opened::Ok(Box::new(s)))
+}
+
+/// `_php_stream_xport_create` for a client. `timeout` is php's timeval (a
+/// negative one waits forever); `ctx` is Null for a stream without a context.
+pub(crate) fn xport_client(
     host: &mut dyn Host,
     fname: &str,
     name: &[u8],
     connect: bool,
     asynchronous: bool,
-    timeout: Tv,
+    timeout: (i64, i64),
     ctx: &Value,
 ) -> Result<Opened, Thrown> {
-    let (proto, rest) = split_transport(name);
-    let proto = match proto {
-        b"tcp" => Proto::Tcp,
-        b"udp" => Proto::Udp,
-        b"unix" => Proto::Unix,
-        b"udg" => Proto::Udg,
-        other => {
-            return Ok(Opened::Fail {
-                code: 0,
-                text: Some(unknown_transport(other)),
-                allocated: false,
-            })
-        }
+    let (proto_name, rest) = split_transport(name);
+    let (proto, tls) = match transport(host, fname, proto_name, ctx)? {
+        Ok(t) => t,
+        Err(fail) => return Ok(fail),
     };
+    let tv = Some(timeout);
     if !(connect || asynchronous) {
         // A client that neither connects nor binds: php keeps an unopened
         // socket stream; nothing useful can be done with it.
@@ -557,12 +629,10 @@ fn xport_client(
             return Ok(fail(0, Some("Failed to create unix socket".into())));
         };
         let addr = unix_addr(host, fname, rest)?;
-        return Ok(
-            match connect_socket(fd.as_raw_fd(), &addr, asynchronous, timeout) {
-                Ok(_) => Opened::Ok(fd, proto),
-                Err(e) => fail(e, Some(strerror(e))),
-            },
-        );
+        return match connect_socket(fd.as_raw_fd(), &addr, asynchronous, tv) {
+            Ok(_) => client_stream(host, fname, fd, proto, tls, name, timeout, ctx),
+            Err(e) => Ok(fail(e, Some(strerror(e)))),
+        };
     }
     let (hostname, port) = match parse_ip_address(rest) {
         Ok(v) => v,
@@ -592,8 +662,8 @@ fn xport_client(
             return Ok(fail(0, Some(t)));
         }
     };
-    let limit = timeout.and_then(deadline);
-    let mut working = timeout;
+    let limit = tv.and_then(deadline);
+    let mut working = tv;
     let mut last: (i32, Option<String>) = (0, None);
     for mut a in addrs {
         let fam = a.family();
@@ -626,7 +696,7 @@ fn xport_client(
             setsockopt_int(fd.as_raw_fd(), libc::IPPROTO_TCP, libc::TCP_NODELAY, 1);
         }
         match connect_socket(fd.as_raw_fd(), &a, asynchronous, working) {
-            Ok(_) => return Ok(Opened::Ok(fd, proto)),
+            Ok(_) => return client_stream(host, fname, fd, proto, tls, name, timeout, ctx),
             Err(e) => last = (e, Some(strerror(e))),
         }
         if let Some(l) = limit {
@@ -719,19 +789,10 @@ fn xport_server(
     flags: i64,
     ctx: &Value,
 ) -> Result<Opened, Thrown> {
-    let (proto, rest) = split_transport(name);
-    let proto = match proto {
-        b"tcp" => Proto::Tcp,
-        b"udp" => Proto::Udp,
-        b"unix" => Proto::Unix,
-        b"udg" => Proto::Udg,
-        other => {
-            return Ok(Opened::Fail {
-                code: 0,
-                text: Some(unknown_transport(other)),
-                allocated: false,
-            })
-        }
+    let (proto_name, rest) = split_transport(name);
+    let (proto, tls) = match transport(host, fname, proto_name, ctx)? {
+        Ok(t) => t,
+        Err(fail) => return Ok(fail),
     };
     let fail = |text: Option<String>| Opened::Fail {
         code: 0,
@@ -818,7 +879,18 @@ fn xport_server(
             return Ok(fail(None));
         }
     }
-    Ok(Opened::Ok(fd, proto))
+    let mut info = SockInfo::new(proto.stream_type(), default_sock_tv(host));
+    info.uri = Some(name.to_vec());
+    info.no_io = flags & STREAM_SERVER_BIND != 0;
+    let mut s = FdStream::new_socket(fd, info);
+    if let Some((enable, method)) = tls {
+        s.tls = Some(Box::new(SslSock::new(
+            enable,
+            method,
+            xp_ssl::url_name(rest),
+        )));
+    }
+    Ok(Opened::Ok(Box::new(s)))
 }
 
 /// The stream context argument at `i` (a resource or null), falling back to
@@ -831,26 +903,20 @@ fn context_arg(host: &mut dyn Host, args: &[Value], i: usize) -> Value {
     }
 }
 
-fn wrap_socket(host: &mut dyn Host, fd: OwnedFd, proto: Proto, no_io: bool, uri: &[u8]) -> Value {
-    wrap_socket_ex(host, fd, proto, no_io, uri, None)
-}
-
-/// [`wrap_socket`], registering the stream under `persistent_key` (a
+/// Register a socket stream with its context, under `persistent_key` (a
 /// `persistent stream` resource) when given.
-fn wrap_socket_ex(
+fn register_stream(
     host: &mut dyn Host,
-    fd: OwnedFd,
-    proto: Proto,
-    no_io: bool,
-    uri: &[u8],
+    mut stream: FdStream,
+    ctx: &Value,
     persistent_key: Option<&[u8]>,
 ) -> Value {
-    let mut info = SockInfo::new(proto.stream_type(), default_sock_tv(host));
-    info.uri = Some(uri.to_vec());
-    info.no_io = no_io;
-    info.persistent = persistent_key.is_some();
+    if let Some(info) = stream.sock_mut() {
+        info.persistent = persistent_key.is_some();
+    }
+    let ctx = (!matches!(ctx, Value::Null)).then(|| ctx.clone());
     let v = host
-        .stream_from_socket(fd, info)
+        .stream_insert_fd(stream, ctx)
         .unwrap_or(Value::Bool(false));
     if let (Some(key), Value::Resource(_)) = (persistent_key, &v) {
         if let Some(reg) = persistent_registry(host) {
@@ -896,13 +962,7 @@ fn fn_stream_socket_server(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     write_ref(args.get(1), Value::Int(0));
     write_ref(args.get(2), Value::str(""));
     match xport_server(host, fname, &address, flags, &ctx)? {
-        Opened::Ok(fd, proto) => Ok(wrap_socket(
-            host,
-            fd,
-            proto,
-            flags & STREAM_SERVER_BIND != 0,
-            &address,
-        )),
+        Opened::Ok(stream) => Ok(register_stream(host, *stream, &ctx, None)),
         Opened::Fail {
             code,
             text,
@@ -951,6 +1011,19 @@ fn addslashes(s: &[u8]) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// `php_stream_escape_persistent_key`.
+fn escape_persistent_key(host: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(host.len());
+    for &b in host {
+        match b {
+            0 => out.extend_from_slice(b"\\0"),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            _ => out.push(b),
+        }
+    }
+    out
+}
+
 fn fn_stream_socket_client(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "stream_socket_client";
     let address = zpp_string(host, args, 0, fname, "address")?;
@@ -970,11 +1043,12 @@ fn fn_stream_socket_client(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     };
     let persistent_key = (flags & STREAM_CLIENT_PERSISTENT != 0).then(|| {
         let mut k = b"stream_socket_client__".to_vec();
-        k.extend_from_slice(&address);
+        k.extend_from_slice(&escape_persistent_key(&address));
         k
     });
     let ctx = context_arg(host, args, 5);
-    let tv = timeout_tv(timeout);
+    // _php_stream_xport_create's default for no timeout
+    let tv = timeout_tv(timeout).unwrap_or((default_socket_timeout(host), 0));
     write_ref(args.get(1), Value::Int(0));
     write_ref(args.get(2), Value::str(""));
     if let Some(v) = persistent_key
@@ -986,12 +1060,10 @@ fn fn_stream_socket_client(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     let connect = flags & STREAM_CLIENT_CONNECT != 0;
     let asynchronous = flags & STREAM_CLIENT_ASYNC_CONNECT != 0;
     match xport_client(host, fname, &address, connect, asynchronous, tv, &ctx)? {
-        Opened::Ok(fd, proto) => Ok(wrap_socket_ex(
+        Opened::Ok(stream) => Ok(register_stream(
             host,
-            fd,
-            proto,
-            false,
-            &address,
+            *stream,
+            &ctx,
             persistent_key.as_deref(),
         )),
         Opened::Fail {
@@ -1031,25 +1103,24 @@ fn fsockopen_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Va
         .unwrap_or(default_socket_timeout(host) as f64);
     let max = u64::MAX as f64 / 1_000_000.0;
     if timeout != -1.0 && !(0.0..=max).contains(&timeout) {
-        // php 8.5.8 reports this as argument #6 (no such parameter, so no
-        // name) and hands the double limit to an integer format: what prints
-        // is the double's bit pattern (on arm64; garbage elsewhere).
         return Err(Thrown::error(
             "ValueError",
             format!(
-                "{fname}(): Argument #6 must be -1 or between 0 and {}",
-                max.to_bits()
+                "{fname}(): Argument #5 ($timeout) must be -1 or between 0 and {}",
+                max as u64
             ),
         ));
     }
-    let tv = timeout_tv(timeout);
+    // (time_t) (timeout * 1000000.0), split
+    let conv = (timeout * 1_000_000.0) as i64;
+    let tv = (conv / 1_000_000, conv % 1_000_000);
     let mut target = hostname.clone();
     if port > 0 {
         target.extend_from_slice(format!(":{port}").as_bytes());
     }
     let persistent_key = persistent.then(|| {
         let mut k = b"pfsockopen__".to_vec();
-        k.extend_from_slice(&hostname);
+        k.extend_from_slice(&escape_persistent_key(&hostname));
         k.extend_from_slice(format!(":{port}").as_bytes());
         k
     });
@@ -1062,15 +1133,13 @@ fn fsockopen_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Va
         return Ok(v);
     }
     match xport_client(host, fname, &target, true, false, tv, &Value::Null)? {
-        Opened::Ok(fd, proto) => {
+        Opened::Ok(stream) => {
             write_ref(args.get(2), Value::Int(0));
             write_ref(args.get(3), Value::str(""));
-            Ok(wrap_socket_ex(
+            Ok(register_stream(
                 host,
-                fd,
-                proto,
-                false,
-                &target,
+                *stream,
+                &Value::Null,
                 persistent_key.as_deref(),
             ))
         }
@@ -1127,6 +1196,20 @@ fn fn_stream_socket_accept(host: &mut dyn Host, args: &[Value]) -> Result<Value,
         crate::warn(host, fname, "Accept failed: Unknown error")?;
         return Ok(Value::Bool(false));
     };
+    let srv_ctx = host.stream_context_of(&srv);
+    let nodelay = srv_ctx
+        .as_ref()
+        .is_some_and(|c| ctx_socket_opt(host, c, "tcp_nodelay").is_some_and(|v| conv::to_bool(&v)));
+    // php_openssl_tcp_sockop_accept: the client bit leaves the server's
+    // method once a client is accepted with enable_on_connect.
+    let tls = host.stream_fd_mut(&srv).and_then(|f| {
+        f.tls.as_mut().map(|t| {
+            if t.enable_on_connect {
+                t.method &= !xp_ssl::IS_CLIENT;
+            }
+            (t.enable_on_connect, t.method)
+        })
+    });
     let n = poll_fd(fd, libc::POLLIN | libc::POLLPRI, tv);
     let mut error = 0;
     let mut client = None;
@@ -1150,17 +1233,36 @@ fn fn_stream_socket_accept(host: &mut dyn Host, args: &[Value]) -> Result<Value,
         crate::warn(host, fname, &format!("Accept failed: {}", strerror(error)))?;
         return Ok(Value::Bool(false));
     };
-    let mut ci = info;
-    ci.no_io = false;
-    ci.uri = None;
+    if nodelay {
+        setsockopt_int(c.as_raw_fd(), libc::IPPROTO_TCP, libc::TCP_NODELAY, 1);
+    }
+    let mut ci = SockInfo::new(info.stream_type, info.timeout);
+    ci.blocked = info.blocked;
     if cfg!(target_os = "linux") {
         // O_NONBLOCK is not inherited on Linux.
         ci.blocked = true;
     }
+    let mut cs = FdStream::new_socket(c, ci);
+    if let Some((enable, method)) = tls {
+        cs.tls = Some(Box::new(SslSock::new(false, method, None)));
+        if enable {
+            let ok = xp_ssl::crypto_on_connect(host, &mut cs, srv_ctx.as_ref(), method)?;
+            crate::flush_stream_diags(host, fname)?;
+            if !ok {
+                crate::warn(host, fname, "Failed to enable crypto")?;
+                // php allocated the client stream before closing it
+                host.consume_resource_ids(1);
+                crate::warn(host, fname, "Accept failed: Cannot enable crypto")?;
+                return Ok(Value::Bool(false));
+            }
+        }
+    }
     if let Some(p) = peer {
         write_ref(args.get(2), Value::str(p));
     }
-    Ok(host.stream_from_socket(c, ci).unwrap_or(Value::Bool(false)))
+    Ok(host
+        .stream_insert_fd(cs, srv_ctx)
+        .unwrap_or(Value::Bool(false)))
 }
 
 fn fn_stream_socket_get_name(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1407,10 +1509,7 @@ fn fn_stream_socket_recvfrom(host: &mut dyn Host, args: &[Value]) -> Result<Valu
     Ok(Value::str(buf))
 }
 
-/// `stream_socket_enable_crypto`: TLS over socket streams is not
-/// implemented; a request to enable it on a socket fails. Any other stream
-/// answers as php's does for a stream without the crypto API: a warning,
-/// then false for a setup (enable) and true for a disable.
+/// `stream_socket_enable_crypto`.
 fn fn_stream_socket_enable_crypto(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "stream_socket_enable_crypto";
     let s = stream_arg(host, args, 0, fname, "stream")?;
@@ -1424,46 +1523,63 @@ fn fn_stream_socket_enable_crypto(host: &mut dyn Host, args: &[Value]) -> Result
         Some(v) => conv::to_bool(&v),
         None => false,
     };
-    let method_null = match args.get(2).map(deref) {
-        None | Some(Value::Null) => true,
-        Some(_) => {
-            zpp_long(host, args, 2, fname, "crypto_method")?;
-            false
-        }
+    let method = match args.get(2).map(deref) {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(zpp_long(host, args, 2, fname, "crypto_method")?),
     };
-    match args.get(3).map(deref) {
-        None | Some(Value::Null) => {}
-        Some(_) => {
-            crate::fs_fns::stream_param(host, args, 3, fname, "session_stream").map_err(|e| {
-                let v = args.get(3).map(deref).unwrap_or(Value::Null);
-                if matches!(v, Value::Resource(_)) {
-                    e
-                } else {
-                    Thrown::type_error(format!(
-                        "{fname}(): Argument #4 ($session_stream) must be of type resource or null, {} given",
-                        zpp_type_name(host, &v)
-                    ))
+    let session = match args.get(3).map(deref) {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(
+            crate::fs_fns::stream_param(host, args, 3, fname, "session_stream")
+                .map_err(|e| {
+                    let v = args.get(3).map(deref).unwrap_or(Value::Null);
+                    if matches!(v, Value::Resource(_)) {
+                        e
+                    } else {
+                        Thrown::type_error(format!(
+                            "{fname}(): Argument #4 ($session_stream) must be of type resource or null, {} given",
+                            zpp_type_name(host, &v)
+                        ))
+                    }
+                })?
+                .0,
+        ),
+    };
+    if enable {
+        let method = match method {
+            Some(m) => m,
+            None => {
+                let opt = host.stream_context_of(&s).and_then(|c| {
+                    match host.stream_context_options(&c) {
+                        Value::Array(o) => match o.get(&ArrayKey::from_bytes(b"ssl")).map(deref) {
+                            Some(Value::Array(ssl)) => {
+                                ssl.get(&ArrayKey::from_bytes(b"crypto_method")).map(deref)
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                });
+                match opt {
+                    Some(v) => conv::to_int(&v),
+                    None => {
+                        return Err(Thrown::error(
+                            "ValueError",
+                            format!("{fname}(): Argument #3 ($crypto_method) must be specified when enabling encryption"),
+                        ))
+                    }
                 }
-            })?;
+            }
+        };
+        if xp_ssl::crypto_setup(host, fname, &s, method, session.as_ref())? < 0 {
+            return Ok(Value::Bool(false));
         }
     }
-    if enable && method_null {
-        return Err(Thrown::error(
-            "ValueError",
-            format!("{fname}(): Argument #3 ($crypto_method) must be specified when enabling encryption"),
-        ));
-    }
-    // tcp sockets carry openssl's ops in php (the "tcp" transport is
-    // openssl's); every other stream lacks the crypto API.
-    if host
-        .stream_sock_info(&s)
-        .is_some_and(|i| i.stream_type == "tcp_socket/ssl")
-    {
-        return Ok(Value::Bool(false));
-    }
-    crate::warn(host, fname, "This stream does not support SSL/crypto")?;
-    // A failed setup is false; the enable step's NOTIMPL (-2) reads as true.
-    Ok(Value::Bool(!enable))
+    Ok(match xp_ssl::crypto_enable(host, fname, &s, enable)? {
+        -1 => Value::Bool(false),
+        0 => Value::Int(0),
+        _ => Value::Bool(true),
+    })
 }
 
 fn fn_stream_set_timeout(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1544,12 +1660,13 @@ fn fn_stream_set_chunk_size(host: &mut dyn Host, args: &[Value]) -> Result<Value
     Ok(Value::Int(prev))
 }
 
-/// `stream_get_transports()`: the socket transports registered here (php
-/// with openssl also lists `ssl`, `tls`, `tlsv1.x`; TLS is not implemented,
-/// so those are left out rather than advertised and then refused).
+/// `stream_get_transports()`: the socket transports, then openssl's.
 fn fn_stream_get_transports(_host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     let mut a = PhpArray::new();
-    for t in ["tcp", "udp", "unix", "udg"] {
+    for t in ["tcp", "udp", "unix", "udg"]
+        .into_iter()
+        .chain(xp_ssl::transport_names())
+    {
         a.push(Value::str(t));
     }
     Ok(Value::Array(a))
@@ -1700,6 +1817,34 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("STREAM_SOCK_RAW", i(libc::SOCK_RAW as i64)),
         ("STREAM_SOCK_SEQPACKET", i(libc::SOCK_SEQPACKET as i64)),
         ("STREAM_SOCK_RDM", i(libc::SOCK_RDM as i64)),
+        ("STREAM_NOTIFY_CONNECT", i(crate::http::NOTIFY_CONNECT)),
+        (
+            "STREAM_NOTIFY_AUTH_REQUIRED",
+            i(crate::http::NOTIFY_AUTH_REQUIRED),
+        ),
+        (
+            "STREAM_NOTIFY_AUTH_RESULT",
+            i(crate::http::NOTIFY_AUTH_RESULT),
+        ),
+        (
+            "STREAM_NOTIFY_MIME_TYPE_IS",
+            i(crate::http::NOTIFY_MIME_TYPE_IS),
+        ),
+        (
+            "STREAM_NOTIFY_FILE_SIZE_IS",
+            i(crate::http::NOTIFY_FILE_SIZE_IS),
+        ),
+        (
+            "STREAM_NOTIFY_REDIRECTED",
+            i(crate::http::NOTIFY_REDIRECTED),
+        ),
+        ("STREAM_NOTIFY_PROGRESS", i(crate::http::NOTIFY_PROGRESS)),
+        ("STREAM_NOTIFY_FAILURE", i(crate::http::NOTIFY_FAILURE)),
+        ("STREAM_NOTIFY_COMPLETED", i(crate::http::NOTIFY_COMPLETED)),
+        ("STREAM_NOTIFY_RESOLVE", i(1)),
+        ("STREAM_NOTIFY_SEVERITY_INFO", i(0)),
+        ("STREAM_NOTIFY_SEVERITY_WARN", i(1)),
+        ("STREAM_NOTIFY_SEVERITY_ERR", i(2)),
         ("STREAM_PEEK", i(STREAM_PEEK)),
         ("STREAM_OOB", i(STREAM_OOB)),
         ("STREAM_CRYPTO_METHOD_ANY_CLIENT", i(127)),

@@ -1,0 +1,6 @@
+Cannot assign string to class constant D::A of type D|int
+Cannot assign string to class constant D::C of type int|float
+Cannot assign string to class constant D::E of type ?bool
+Cannot assign string to class constant D::F of type B|false
+Cannot assign string to property P::$p of type P|int
+Cannot assign string to property Q::$q of type B|bool|null

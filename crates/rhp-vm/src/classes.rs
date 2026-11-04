@@ -1690,7 +1690,7 @@ impl Vm {
                 rhp_builtins::zval_value_name(self, &v),
                 String::from_utf8_lossy(self.classes[decl as usize].name.as_bytes()),
                 String::from_utf8_lossy(name),
-                crate::types::type_string(ty),
+                self.type_string_resolved(ty, Some(decl), None),
             ))),
         }
     }
@@ -1713,7 +1713,7 @@ impl Vm {
                     tn,
                     String::from_utf8_lossy(self.classes[decl as usize].name.as_bytes()),
                     String::from_utf8_lossy(name),
-                    crate::types::type_string(ty),
+                    self.type_string_resolved(ty, Some(decl), None),
                 )))
             }
         }

@@ -162,6 +162,37 @@ fn timezone_info() -> Result<Rc<Tz>, Thrown> {
     })
 }
 
+/// The date constants rhp's core list (lib.rs) doesn't define yet.
+pub(crate) fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("DATE_ISO8601_EXPANDED", Value::str("X-m-d\\TH:i:sP")),
+        ("DATE_RFC7231", Value::str("D, d M Y H:i:s \\G\\M\\T")),
+        ("DATE_RFC3339_EXTENDED", Value::str("Y-m-d\\TH:i:s.vP")),
+        ("SUNFUNCS_RET_TIMESTAMP", Value::Int(0)),
+        ("SUNFUNCS_RET_STRING", Value::Int(1)),
+        ("SUNFUNCS_RET_DOUBLE", Value::Int(2)),
+    ]
+}
+
+/// The stub's `#[\Deprecated]` constants: the E_DEPRECATED a fetch raises.
+pub(crate) fn constant_deprecation(name: &[u8]) -> Option<String> {
+    let (since, msg) = match name {
+        b"DATE_RFC7231" => (
+            "8.5",
+            "as this format ignores the associated timezone and always uses GMT",
+        ),
+        b"SUNFUNCS_RET_TIMESTAMP" | b"SUNFUNCS_RET_STRING" | b"SUNFUNCS_RET_DOUBLE" => (
+            "8.4",
+            "as date_sunrise() and date_sunset() were deprecated in 8.1",
+        ),
+        _ => return None,
+    };
+    Some(format!(
+        "Constant {} is deprecated since {since}, {msg}",
+        String::from_utf8_lossy(name)
+    ))
+}
+
 /// PHP_MINFO_FUNCTION(date)'s rows.
 pub(crate) fn info_rows() -> Vec<(&'static str, Vec<u8>)> {
     vec![

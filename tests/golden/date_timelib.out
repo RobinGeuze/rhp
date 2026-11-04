@@ -420,3 +420,10 @@ array(5) {
 string(3) "UTC"
 bool(false)
 string(10) "Asia/Tokyo"
+[8192] Constant DATE_RFC7231 is deprecated since 8.5, as this format ignores the associated timezone and always uses GMT
+[8192] Constant SUNFUNCS_RET_DOUBLE is deprecated since 8.4, as date_sunrise() and date_sunset() were deprecated in 8.1
+string(13) "X-m-d\TH:i:sP"
+string(15) "Y-m-d\TH:i:s.vP"
+string(21) "D, d M Y H:i:s \G\M\T"
+int(2)
+-0001-01-01T00:00:00+00:00 2023-11-14T22:13:20.000+00:00

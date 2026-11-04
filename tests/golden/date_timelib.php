@@ -96,3 +96,7 @@ var_dump(count($abbr), array_key_first($abbr), $abbr['cest'][0], $abbr['utc']);
 ini_set('date.timezone', 'Asia/Tokyo');
 date_default_timezone_set('UTC');
 var_dump(date_default_timezone_get(), ini_set('date.timezone', 'Nowhere/Land'), ini_get('date.timezone'));
+
+// Constants, the deprecated ones through the error handler.
+var_dump(DATE_ISO8601_EXPANDED, DATE_RFC3339_EXTENDED, DATE_RFC7231, SUNFUNCS_RET_DOUBLE);
+echo date(DATE_ISO8601_EXPANDED, -62198755200), ' ', date(DATE_RFC3339_EXTENDED, 1700000000), "\n";

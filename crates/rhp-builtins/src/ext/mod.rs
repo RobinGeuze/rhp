@@ -64,7 +64,7 @@ pub fn modules() -> Vec<ModuleDef> {
         ModuleDef {
             name: "date",
             functions: date::register,
-            constants: no_constants,
+            constants: date::constants,
             prelude_php: "",
             wrappers: no_wrappers,
         },

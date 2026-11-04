@@ -504,9 +504,12 @@ impl Vm {
                     h.borrow_mut().flags &= !(H_REMOVABLE | H_CLEANABLE);
                 }
                 // Raised while the handler still runs: the output they
-                // produce goes into its own buffer, which php drops.
+                // produce goes into its own buffer, which php drops. None
+                // while an out-of-memory error is pending (php_verror).
                 for (level, msg) in std::mem::take(&mut cx.diags) {
-                    self.ob_diag(level, &msg);
+                    if !self.mem.attention() {
+                        self.ob_diag(level, &msg);
+                    }
                 }
                 if !self.output_activated() {
                     return Status::Failure;

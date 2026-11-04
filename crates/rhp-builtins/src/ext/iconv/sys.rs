@@ -194,9 +194,9 @@ impl Cd {
     /// `out[*pos..]`; both advance past what was consumed and produced.
     /// Returns iconv's result ([`FAILED`]: see [`errno`]).
     ///
-    /// php's input strings are followed by a NUL, and macOS's libiconv may
-    /// read past the input's end (multi-character //TRANSLIT): callers pass
-    /// slices of NUL-terminated buffers where php passes a zend_string.
+    /// Callers pass slices of NUL-terminated buffers where php passes a
+    /// zend_string, so a library that reads past the input's end sees what
+    /// it sees under php.
     pub fn conv(&self, input: &mut &[u8], out: &mut [u8], pos: &mut usize) -> usize {
         let mut in_p = input.as_ptr() as *mut c_char;
         let mut in_left = input.len();
@@ -204,8 +204,9 @@ impl Cd {
         let mut out_p = out[start..].as_mut_ptr() as *mut c_char;
         let mut out_left = out.len() - start;
         let room = out_left;
-        // SAFETY: the pointers and counts describe live slices; iconv only
-        // reads `in_left` bytes (see above) and writes at most `out_left`.
+        // SAFETY: the pointers and counts describe live slices (a byte read
+        // past the input is still in the caller's buffer, see above); iconv
+        // writes at most `out_left` bytes.
         let r = with_errno(|| unsafe {
             iconv(self.0, &mut in_p, &mut in_left, &mut out_p, &mut out_left)
         });

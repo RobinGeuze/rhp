@@ -6,17 +6,23 @@
 //!
 //! - `php -n /absolute/path/NAME.php` (`RHP_PHP` names the php),
 //! - from the fixture's directory,
-//! - with the environment inherited and stdin empty;
+//! - with the environment inherited, except a fresh empty `TMPDIR`
+//!   (fixtures use fixed names under `sys_get_temp_dir()`, and a `cargo
+//!   test` running the goldens on rhp at the same time writes the same
+//!   files);
+//! - with stdin empty;
 //! - only stdout is recorded (not stderr, not the exit status).
 //!
 //! `--check` runs php on every fixture and compares with the committed
-//! `.out`; `--write` rewrites the `.out` files. The fixtures listed in
-//! `tests/golden/reference-only.txt` print facts of the reference build (its
-//! configuration, library versions and features); `--check --portable` skips
-//! them, so another build of php 8.5.12 (CI's) checks the rest.
+//! `.out`; `--write` rewrites the `.out` files and runs only on the
+//! reference build. The fixtures listed in `tests/golden/reference-only.txt`
+//! print facts of the reference build (its configuration, library versions
+//! and features); `--check --portable` skips them, for another build of php
+//! 8.5.12 such as CI's.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::php_bin;
 
@@ -24,15 +30,14 @@ const USAGE: &str = "usage: rhp-difftest golden (--check [--portable] | --write)
 [--filter SUBSTR] [--dir DIR]\n\
 \x20 --check     run php on every fixture and compare with its .out\n\
 \x20 --portable  skip the fixtures in DIR/reference-only.txt\n\
-\x20 --write     rewrite the .out files (reference php only)\n\
+\x20 --write     rewrite the .out files (reference build only)\n\
 \x20 --filter    only fixtures whose name contains SUBSTR\n\
 \x20 --dir       the golden directory (default: tests/golden)\n";
 
 /// The file listing the reference-build-only fixtures, in the golden dir.
 pub const REFERENCE_ONLY: &str = "reference-only.txt";
 
-/// The reference build's `PHP_OS_FAMILY`: only it may write the
-/// reference-only fixtures.
+/// The reference build's `PHP_OS_FAMILY`: only it may write `.out` files.
 const REFERENCE_OS_FAMILY: &str = "Darwin";
 
 /// One fixture: its name (path below the golden dir, no extension) and
@@ -84,16 +89,26 @@ pub fn reference_only(dir: &Path) -> std::io::Result<Vec<String>> {
         .collect())
 }
 
-/// Run php on `php` the canonical way; its stdout and stderr.
+/// Run php on `php` the canonical way, with a fresh empty `TMPDIR`; its
+/// stdout and stderr.
 pub fn run_php_fixture(php: &Path) -> Result<(Vec<u8>, Vec<u8>), String> {
+    static RUNS: AtomicUsize = AtomicUsize::new(0);
     let dir = php.parent().unwrap_or(Path::new("."));
+    let tmp = std::env::temp_dir().join(format!(
+        "rhp-golden-{}-{}",
+        std::process::id(),
+        RUNS.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
     let out = Command::new(php_bin())
         .arg("-n")
         .arg(php)
         .current_dir(dir)
+        .env("TMPDIR", &tmp)
         .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("spawn {}: {e}", php_bin()))?;
+        .output();
+    let _ = std::fs::remove_dir_all(&tmp);
+    let out = out.map_err(|e| format!("spawn {}: {e}", php_bin()))?;
     Ok((out.stdout, out.stderr))
 }
 
@@ -174,9 +189,11 @@ pub fn main(args: &[String]) -> ExitCode {
     eprintln!("golden: php {version} ({os})");
     let reference_build =
         version == rhp_builtins::version::PHP_VERSION && os == REFERENCE_OS_FAMILY;
-    if write && version != rhp_builtins::version::PHP_VERSION {
+    // Another build would write its own library versions into the .out
+    // files that reference-only.txt does not list.
+    if write && !reference_build {
         eprintln!(
-            "golden: --write needs the reference php {}, not {version}",
+            "golden: --write needs the reference build (php {} on {REFERENCE_OS_FAMILY}), not {version} on {os}",
             rhp_builtins::version::PHP_VERSION
         );
         return ExitCode::from(2);
@@ -191,8 +208,7 @@ pub fn main(args: &[String]) -> ExitCode {
         {
             continue;
         }
-        let is_reference = reference.contains(&f.name);
-        if is_reference && (portable || (write && !reference_build)) {
+        if portable && reference.contains(&f.name) {
             skipped += 1;
             continue;
         }

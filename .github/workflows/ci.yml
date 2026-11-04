@@ -132,18 +132,20 @@ jobs:
       - uses: ./.github/actions/native-deps
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release -p rhp-cli -p rhp-difftest
+      - id: build
+        run: cargo build --release -p rhp-cli -p rhp-difftest
       - name: Builtin signatures match php-src's stubs
         run: target/release/rhp-difftest gen signatures --php-src php-src --check
-      # The goldens' .out files are still what php prints, except the ones
-      # holding the reference build's facts (tests/golden/reference-only.txt).
-      - name: Portable goldens still match php
-        run: target/release/rhp-difftest golden --check --portable
       - name: Known-passing php-src tests still match
         run: >-
           target/release/rhp-difftest phpt --php-src php-src
           --php-cgi "$(command -v php-cgi)"
           --check-known tests/phpt/known-passing.txt
+      # The goldens' .out files are still what php prints, except the ones
+      # holding the reference build's facts (tests/golden/reference-only.txt).
+      - name: Portable goldens still match php
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: target/release/rhp-difftest golden --check --portable
 
   # The committed generated tables still match their sources: php-src's
   # entity tables and intl stubs, and the Bison output in the php release tarball (the git

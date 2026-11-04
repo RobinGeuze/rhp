@@ -93,23 +93,29 @@ the canonical way:
 
 - `php -n /absolute/path/to/NAME.php` (`RHP_PHP` names the php),
 - with the fixture's directory as the working directory,
-- with the environment inherited and stdin empty;
+- with the environment inherited, except `TMPDIR`: a fresh empty
+  directory, so a `cargo test` running the goldens at the same time can't
+  touch the files a fixture writes there;
+- with stdin empty;
 - only stdout is recorded, not stderr or the exit status.
 
 `rhp-difftest golden --check` re-runs php that way on every fixture
 (subdirectories included) and compares with the committed `.out`;
-`--write` rewrites them and refuses a php other than 8.5.12; `--filter
-SUBSTR` narrows either to matching names. Run `--check` against the
-reference build after changing a fixture and at every php version bump.
+`--write` rewrites them, and only on the reference build (php 8.5.12 on
+macOS); `--filter SUBSTR` narrows either to matching names. Run `--check`
+against the reference build after changing a fixture and at every php
+version bump.
 
 Some goldens print facts of the reference build: its configuration, and
 the versions and features of the libraries it links.
 `tests/golden/reference-only.txt` lists them, with the reason for each.
-`golden --check --portable` skips them, so another build of php 8.5.12
-(CI's, on Ubuntu) checks the rest; `--write` on a build other than the
-reference (macOS) leaves them alone. A new golden whose output depends on
-the build belongs in a live-php test instead (the golden policy above);
-list it only when that can't be avoided.
+`golden --check --portable` skips them; CI's phpt job runs it against its
+php 8.5.12 (Ubuntu, setup-php's libraries). The list came from running
+every golden under Ubuntu's php 8.5 with CI's library versions, not from
+CI itself: if CI's step finds another fixture, list it with its reason.
+A new golden whose output depends on the build belongs in a live-php test
+instead (the golden policy above); list it only when that can't be
+avoided.
 
 Generated tables have their own `--check`: `rhp-difftest gen signatures`,
 `gen html-tables`, `gen parser` (see `crates/rhp-difftest/src/gen/`).

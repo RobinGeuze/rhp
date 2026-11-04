@@ -1,4 +1,5 @@
-//! ext/xml, XMLWriter, DOM and the libxml glue against php. rhp links the libxml2
+//! ext/xml, XMLWriter, DOM, SimpleXML, XMLReader and the libxml glue
+//! against php. rhp links the libxml2
 //! php links, so error codes, messages, positions and recovery match the php
 //! on the same machine, but they differ between libxml2 releases (the mac's
 //! 2.9.13 and CI's 2.15.2 disagree on several of these documents), so these
@@ -296,6 +297,66 @@ try { var_dump($x->evaluate('string(php:function("boom"))')); } catch (Throwable
 try { var_dump($d->documentElement->C14N(false, false, ['query' => '//*[php:function("boom")]'])); } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(), "\n"; }
 var_dump($x->query('//a')->length);
 "#,
+    );
+}
+
+/// SimpleXML's loads go through libxml2's generic error channel: a
+/// three-line warning per error (message, source line, caret). Documents
+/// that are not UTF-8 are left out: rhp's diagnostics carry UTF-8 text, so
+/// a source line with other bytes would differ.
+#[test]
+fn simplexml_load_errors_match_php() {
+    check(
+        "simplexml_load_errors",
+        &(PRELUDE.to_string()
+            + r#"
+$docs = array_filter($docs, fn($d) => preg_match('//u', $d));
+foreach ($docs as $i => $doc) {
+    echo "== $i\n";
+    var_dump(simplexml_load_string($doc) !== false);
+    try { new SimpleXMLElement($doc); } catch (Exception $e) { echo get_class($e), ': ', $e->getMessage(), "\n"; }
+}
+libxml_use_internal_errors(true);
+foreach ($docs as $doc) {
+    simplexml_load_string($doc, null, LIBXML_NOENT | LIBXML_DTDLOAD);
+    foreach (libxml_get_errors() as $e) { echo "$e->level $e->code $e->line $e->column ", trim($e->message), "\n"; }
+    libxml_clear_errors();
+}
+var_dump(simplexml_load_file('/nonexistent/file.xml'));
+"#),
+    );
+}
+
+/// XMLReader on the same UTF-8 documents, read to the end.
+#[test]
+fn xmlreader_errors_match_php() {
+    check(
+        "xmlreader_reads",
+        &(PRELUDE.to_string()
+            + r#"
+$docs = array_filter($docs, fn($d) => preg_match('//u', $d));
+foreach ($docs as $i => $doc) {
+    echo "== $i\n";
+    if ($doc === '') { continue; }
+    $r = XMLReader::XML($doc);
+    while ($r->read()) { echo $r->nodeType, ':', $r->name, ' '; }
+    echo "\n";
+}
+"#),
+    );
+}
+
+/// Former goldens' cases whose output depends on the libxml2 release
+/// (addChild's entity parsing, reader errors).
+#[test]
+fn simplexml_xmlreader_release_dependent_scripts_match_php() {
+    check(
+        "simplexml_entities",
+        include_str!("libxml/simplexml_entities.php"),
+    );
+    check(
+        "xmlreader_errors",
+        include_str!("libxml/xmlreader_errors.php"),
     );
 }
 

@@ -59,6 +59,12 @@ Today rhp-builtins links:
 | php-src crypt C (via rhp-csrc) | static, compiled from php-8.5.12 | the same |
 | argon2 (via rhp-csrc) | static, compiled from release 20190702 | the same |
 
+iconv has no row in `native.rs`: there is no .pc file or version macro to
+check (php reads `_libiconv_version` or `gnu_get_libc_version()` at run
+time), and on Linux it is part of libc. `ext/iconv/sys.rs` links it, and its
+`links_the_library_php_links` test checks with `dladdr` that `iconv_open`
+comes from that library.
+
 zlib and bzip2 predate this policy and still go through their -sys crates.
 bzip2 is built from bzip2-sys's 1.0.8 source, not taken from macOS's
 /usr/lib/libbz2 as the list above would have it. Known gap: libz-sys builds

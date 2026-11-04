@@ -291,46 +291,13 @@ impl ProtoBuilder<'_> {
         }
     }
 
-    /// Completeness backstop for the CV pre-pass: walk every node of the body
-    /// (not entering nested function/class scopes, whose variables are their
-    /// own) and give each `$name` still missing a slot. A closure contributes
-    /// its `use` variables; an arrow function nothing (it captures only
-    /// variables the enclosing scope already has).
+    /// Completeness backstop for the CV pre-pass: give each `$name` of the
+    /// body still missing a slot one (see [`visit_vars`]; an arrow function
+    /// adds nothing, it captures only variables the enclosing scope has).
     pub(crate) fn scan_node_vars(&mut self, node: Node) {
-        match node {
-            Node::DirectVariable(d) => {
-                self.cv(strip_dollar(d.name));
-                return;
-            }
-            Node::Closure(cl) => {
-                if let Some(u) = &cl.use_clause {
-                    for v in u.variables.iter() {
-                        self.cv(strip_dollar(v.variable.name));
-                    }
-                }
-                return;
-            }
-            Node::AnonymousClass(ac) => {
-                if let Some(args) = &ac.argument_list {
-                    self.scan_node_vars(Node::PartialArgumentList(args));
-                }
-                return;
-            }
-            // `C::$p`: the `$p` is the property name, not a local.
-            Node::StaticPropertyAccess(spa) => {
-                self.scan_node_vars(Node::Expression(spa.class));
-                return;
-            }
-            Node::ArrowFunction(_)
-            | Node::Function(_)
-            | Node::Class(_)
-            | Node::Interface(_)
-            | Node::Trait(_)
-            | Node::Enum(_)
-            | Node::AttributeList(_) => return,
-            _ => {}
-        }
-        node.visit_children(|ch| self.scan_node_vars(ch));
+        visit_vars(node, false, &mut |name| {
+            self.cv(name);
+        });
     }
 
     /// End the CV pre-pass: CVs occupy `[0, num_cvs)`, temporaries follow.
@@ -343,48 +310,48 @@ impl ProtoBuilder<'_> {
     }
 }
 
-/// Read-only collection of every `$var` name referenced in an expression, for
-/// arrow-function auto-capture. Descends into nested closures/arrows so their
-/// free variables propagate upward (over-collection is harmless: the caller
-/// keeps only names that are CVs in the enclosing scope). Does not mutate the
-/// builder, unlike [`ProtoBuilder::scan_expr_vars`].
+/// Every `$var` name referenced in an expression (deduplicated, in source
+/// order), for arrow-function auto-capture: nested arrow functions are
+/// entered, so their free variables propagate upward (over-collection is
+/// harmless: the caller keeps only names that are CVs in the enclosing scope).
 pub(crate) fn collect_vars(expr: &Expression, out: &mut Vec<Vec<u8>>) {
-    collect_node_vars(Node::Expression(expr), out);
-}
-
-/// [`collect_vars`] over any node: every `$name` below it (in source order,
-/// deduplicated), entering nested arrow functions but not other function or
-/// class scopes; a closure contributes its `use` variables.
-fn collect_node_vars(node: Node, out: &mut Vec<Vec<u8>>) {
-    let push = |name: &[u8], out: &mut Vec<Vec<u8>>| {
+    visit_vars(Node::Expression(expr), true, &mut |name| {
         if !out.iter().any(|n| n == name) {
             out.push(name.to_vec());
         }
-    };
+    });
+}
+
+/// Call `f` with every `$name` below `node`, in source order, without
+/// entering the scopes that own their variables (functions, classes,
+/// attributes; arrow functions unless `arrows`): a closure contributes its
+/// `use` variables and an anonymous class its constructor arguments.
+fn visit_vars(node: Node, arrows: bool, f: &mut impl FnMut(&[u8])) {
     match node {
         Node::DirectVariable(d) => {
-            push(strip_dollar(d.name), out);
+            f(strip_dollar(d.name));
             return;
         }
         Node::Closure(cl) => {
             if let Some(uses) = &cl.use_clause {
                 for u in uses.variables.iter() {
-                    push(strip_dollar(u.variable.name), out);
+                    f(strip_dollar(u.variable.name));
                 }
             }
             return;
         }
         Node::AnonymousClass(ac) => {
             if let Some(args) = &ac.argument_list {
-                collect_node_vars(Node::PartialArgumentList(args), out);
+                visit_vars(Node::PartialArgumentList(args), arrows, f);
             }
             return;
         }
         // `C::$p`: the `$p` is the property name, not a variable.
         Node::StaticPropertyAccess(spa) => {
-            collect_node_vars(Node::Expression(spa.class), out);
+            visit_vars(Node::Expression(spa.class), arrows, f);
             return;
         }
+        Node::ArrowFunction(_) if !arrows => return,
         Node::Function(_)
         | Node::Class(_)
         | Node::Interface(_)
@@ -393,5 +360,5 @@ fn collect_node_vars(node: Node, out: &mut Vec<Vec<u8>>) {
         | Node::AttributeList(_) => return,
         _ => {}
     }
-    node.visit_children(|ch| collect_node_vars(ch, out));
+    node.visit_children(|ch| visit_vars(ch, arrows, f));
 }

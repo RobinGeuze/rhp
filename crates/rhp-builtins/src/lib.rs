@@ -111,7 +111,6 @@ mod strtotime_fns;
 mod sysmisc_fns;
 mod tzdb;
 mod webenc_fns;
-pub(crate) mod zip_ext;
 
 /// The E_DEPRECATED message for reading a `#[\Deprecated]` extension
 /// constant, if `name` is one.
@@ -122,7 +121,6 @@ pub fn constant_deprecation(name: &[u8]) -> Option<String> {
 /// The engine's object free hook (`rhp_values::set_object_free_hook`), for
 /// the per-object state still kept by object id.
 pub fn object_freed(id: u32) {
-    zip_ext::object_freed(id);
     sort_fns::object_freed(id);
     ext::openssl::object_freed(id);
     ext::curl::object_freed(id);
@@ -1251,7 +1249,6 @@ pub fn reset_request_state() {
     php_fns::reset_state();
     stdext_fns::reset_state();
     sapi::reset_state();
-    zip_ext::reset_state();
     ext::curl::reset_state();
     ext::openssl::reset_state();
     ext::bz2::reset_state();

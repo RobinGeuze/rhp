@@ -379,8 +379,8 @@ const GLOB_NOSORT: i64 = 0x0020;
 const GLOB_BRACE: i64 = 0x0080;
 const GLOB_MAGCHAR: i64 = 0x0100;
 const GLOB_NOESCAPE: i64 = 0x1000;
-const GLOB_ONLYDIR: i64 = 1 << 30;
-const GLOB_AVAILABLE: i64 =
+pub(crate) const GLOB_ONLYDIR: i64 = 1 << 30;
+pub(crate) const GLOB_AVAILABLE: i64 =
     GLOB_BRACE | GLOB_MARK | GLOB_NOSORT | GLOB_NOCHECK | GLOB_NOESCAPE | GLOB_ERR | GLOB_ONLYDIR;
 const GLOB_NOMATCH: i32 = -3;
 
@@ -845,6 +845,17 @@ fn glob_match(name: &[Ch], pat: &[Ch]) -> bool {
     }
 }
 
+/// php_glob(pattern, flags & PHP_GLOB_FLAGMASK): its return code and the
+/// matches (`GLOB_ONLYDIR` is left to the caller, as php does).
+pub(crate) fn php_glob(pattern: &[u8], flags: i64) -> (i32, Vec<Vec<u8>>) {
+    let mut g = Glob {
+        flags: flags & !GLOB_ONLYDIR,
+        paths: Vec::new(),
+    };
+    let ret = g.run(pattern);
+    (ret, g.paths)
+}
+
 fn fn_glob(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let _ = host;
     let pattern = path_param(args, 0, "glob", "pattern")?;
@@ -855,16 +866,12 @@ fn fn_glob(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if (GLOB_AVAILABLE & flags) != flags {
         return Ok(Value::Bool(false));
     }
-    let mut g = Glob {
-        flags: flags & !GLOB_ONLYDIR,
-        paths: Vec::new(),
-    };
-    let ret = g.run(&pattern);
+    let (ret, paths) = php_glob(&pattern, flags);
     if ret != 0 && ret != GLOB_NOMATCH {
         return Ok(Value::Bool(false));
     }
     let mut a = PhpArray::new();
-    for p in g.paths {
+    for p in paths {
         if flags & GLOB_ONLYDIR != 0 {
             match crate::streams::sys_stat(&p, false) {
                 Some(s) if s.is_dir => {}

@@ -490,8 +490,3 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("ZLIB_VERSION_ERROR", Value::Int(-6)),
     ]
 }
-
-/// Deflate for other modules (ZipArchive): raw, libzip's level/mem level.
-pub fn raw_deflate(data: &[u8], level: i64) -> Option<Vec<u8>> {
-    zraw::deflate(data, level, zraw::ENCODING_RAW, zraw::MAX_MEM_LEVEL, false).ok()
-}

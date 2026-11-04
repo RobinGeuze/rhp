@@ -122,8 +122,8 @@ pub fn modules() -> Vec<ModuleDef> {
             name: "zip",
             functions: zip::register,
             constants: no_constants,
-            prelude_php: zip::PRELUDE_PHP,
-            wrappers: no_wrappers,
+            prelude_php: zip::prelude(),
+            wrappers: zip::wrappers,
         },
         ModuleDef {
             name: "bz2",

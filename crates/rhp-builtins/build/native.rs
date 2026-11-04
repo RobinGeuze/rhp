@@ -161,6 +161,22 @@ pub const LIBS: &[Lib] = &[
         install: "macOS: brew install curl; Debian/Ubuntu: apt install pkg-config \
                   libcurl4-openssl-dev",
     },
+    // php links Homebrew's libzip on macOS and the distro's on Linux; neither
+    // ships a static archive.
+    Lib {
+        name: "LIBZIP",
+        pkg: "libzip",
+        brew: Some("libzip"),
+        macos_sdk: false,
+        link: "zip",
+        incdir: "",
+        header: "zipconf.h",
+        macros: &["LIBZIP_VERSION"],
+        version: &["LIBZIP_VERSION"],
+        macos: Mode::Dynamic("no static archive of php's version (Homebrew ships only the dylib)"),
+        linux: Mode::Dynamic("no static archive of php's version (libzip-dev ships only the .so)"),
+        install: "macOS: brew install libzip; Debian/Ubuntu: apt install pkg-config libzip-dev",
+    },
 ];
 
 const ICU_INSTALL: &str =
@@ -302,6 +318,12 @@ fn link(lib: &Lib) -> Result<PathBuf, String> {
         Mode::Dynamic(_) => {
             println!("cargo:rustc-link-search=native={}", found.libdir.display());
             println!("cargo:rustc-link-lib=dylib={}", lib.link);
+            // For the crate's tests: where the library must load from.
+            println!(
+                "cargo:rustc-env=RHP_{}_LIBDIR={}",
+                lib.name,
+                found.libdir.display()
+            );
         }
     }
     Ok(include)

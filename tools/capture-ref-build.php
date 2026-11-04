@@ -122,6 +122,7 @@ ext_row('curl', 'curl_version()', function () {
 foreach (['ICONV_IMPL', 'ICONV_VERSION'] as $c) {
     row($c, defined($c) ? constant($c) : '(undefined)');
 }
+ext_row('zip', 'ZipArchive::LIBZIP_VERSION', fn () => ZipArchive::LIBZIP_VERSION);
 
 echo "# build\n";
 foreach (['PHP_BUILD_DATE', 'PHP_BUILD_PROVIDER', 'PHP_PREFIX', 'PHP_BINDIR', 'PHP_SBINDIR',
@@ -137,4 +138,3 @@ info_rows(['Build Date', 'Build System', 'Build Provider', 'Configuration File (
 foreach (['MB_ONIGURUMA_VERSION', 'GMP_VERSION', 'ZLIB_VERSION', 'ZLIB_VERNUM'] as $c) {
     row($c, defined($c) ? constant($c) : '(undefined)');
 }
-ext_row('zip', 'ZipArchive::LIBZIP_VERSION', fn () => ZipArchive::LIBZIP_VERSION);

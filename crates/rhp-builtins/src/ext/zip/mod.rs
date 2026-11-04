@@ -1,665 +1,636 @@
-//! The `zip` extension: `ZipArchive` reading *and* writing, backed by the
-//! in-memory archive model in `zip_ext` (open archives keyed by id in a
-//! thread-local table). The PHP-level class (below, in the prelude) holds the
-//! id and calls one dispatcher builtin, `__zip($op, $id, ...$args)`.
+//! The `zip` extension on libzip: a port of ext/zip/php_zip.c and
+//! zip_stream.c. `ZipArchive` is declared in PHP ([`prelude`]); its methods
+//! call `__zip`, its properties go through `__get`/`__set`/`__isset`/
+//! `__unset` to `__zip_prop` (php's read_property, write_property and
+//! has_property handlers), and its views through `get_properties_for`. An
+//! object's state (php's `ze_zip_object`) is its payload; the open archive
+//! (`php_zip_archive`) is shared with the entry streams opened from it. The
+//! procedural `zip_*` functions use native resources.
 
+mod archive;
+mod procedural;
+mod stream;
+pub(crate) mod sys;
+
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::ffi::{c_char, c_double, c_int, c_longlong, c_void, CString};
+use std::ptr;
+use std::rc::Rc;
+use std::sync::OnceLock;
 
-use rhp_values::{conv, ArrayKey, PhpArray, Value};
+use rhp_values::{ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
-use crate::zip_ext::{self, Archive};
+use crate::ext::libxml::ffi;
+use crate::object::{ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
 use crate::{Builtin, Host, Thrown};
 
-/// `ZipArchive`'s handlers (`zip_object_handlers`: no clone).
-pub(crate) static CLASSES: &[crate::object::ClassHandlers] = &[crate::object::ClassHandlers {
+pub use stream::wrappers;
+
+/// `ZipArchive`'s handlers: no clone, the properties' view, and the close
+/// of an archive whose object goes.
+pub(crate) static CLASSES: &[ClassHandlers] = &[ClassHandlers {
     class: "ZipArchive",
-    handlers: &crate::object::ObjectHandlers::UNCLONEABLE,
+    handlers: &ObjectHandlers {
+        get_properties_for: Some(get_properties_for),
+        clone_obj: CloneObj::None,
+        dtor_obj: Some(object_dtor),
+        ..ObjectHandlers::STD
+    },
     create_object: true,
 }];
 
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
+/// php closes the archive in free_obj, which can run the archive's
+/// callbacks; the payload's `Drop` has no host for them. With no
+/// `__destruct` to run between the two, closing here, where the host is,
+/// is the same; a class with a `__destruct` (which may use the archive or
+/// keep the object) leaves the close to the payload.
+fn object_dtor(host: &mut dyn Host, obj: &ObjectHandle) -> Result<(), Thrown> {
+    let cls = obj.borrow().class;
+    if host.class_has_method(cls, b"__destruct") {
+        return Ok(());
     }
-}
-
-fn arg_bytes(args: &[Value], i: usize) -> Vec<u8> {
-    args.get(i)
-        .map(|v| conv::to_string_bytes(&deref(v)))
-        .unwrap_or_default()
-}
-
-fn arg_int(args: &[Value], i: usize) -> i64 {
-    args.get(i).map(|v| conv::to_int(&deref(v))).unwrap_or(0)
-}
-
-/// php's `expand_filepath`: make relative paths absolute against the cwd and
-/// fold `.`/`..` segments, resolving symlinks in the part that exists.
-fn expand_filepath(path: &[u8]) -> Vec<u8> {
-    let p = String::from_utf8_lossy(path).into_owned();
-    if p.contains("://") {
-        return path.to_vec();
-    }
-    let full = if p.starts_with('/') {
-        p
-    } else {
-        let cwd = std::env::current_dir()
-            .map(|d| d.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        format!("{cwd}/{p}")
+    let Some(o) = crate::object::payload_of::<ZipObject>(obj) else {
+        return Ok(());
     };
-    let mut parts: Vec<&str> = Vec::new();
-    for seg in full.split('/') {
-        match seg {
-            "" | "." => {}
-            ".." => {
-                parts.pop();
-            }
-            s => parts.push(s),
-        }
-    }
-    // CWD_FILEPATH: symlinks in the existing leading part are resolved
-    // (tsrm_realpath_r), the rest is kept as written.
-    for keep in (1..=parts.len()).rev() {
-        let head = format!("/{}", parts[..keep].join("/"));
-        if let Ok(real) = std::fs::canonicalize(&head) {
-            let mut out = real.to_string_lossy().into_owned();
-            for seg in &parts[keep..] {
-                out.push('/');
-                out.push_str(seg);
-            }
-            return out.into_bytes();
-        }
-    }
-    format!("/{}", parts.join("/")).into_bytes()
+    let Some(a) = o.archive.borrow_mut().take() else {
+        return Ok(());
+    };
+    // php's warnings name the running function; none runs here.
+    release(host, "Unknown", a)
 }
 
-fn stat_array(i: i64, e: &zip_ext::Entry) -> Value {
-    let (crc, comp_size, method) = e.stat_bits();
+/// `php_zip_archive`: an open libzip archive, owned by its `ZipArchive`
+/// and by the entry streams opened from it. The last owner closes it.
+pub(crate) struct Archive {
+    /// Null once closed.
+    za: Cell<*mut sys::zip_t>,
+    /// What `addFromString` handed libzip, read until the archive closes.
+    buffers: RefCell<Vec<Box<[u8]>>>,
+    /// Set while `close()`/`open()` closes it ("Already being closed").
+    close: Cell<bool>,
+    progress: RefCell<Option<Value>>,
+    cancel: RefCell<Option<Value>>,
+}
+
+impl Archive {
+    fn new(za: *mut sys::zip_t) -> Rc<Archive> {
+        Rc::new(Archive {
+            za: Cell::new(za),
+            buffers: RefCell::new(Vec::new()),
+            close: Cell::new(false),
+            progress: RefCell::new(None),
+            cancel: RefCell::new(None),
+        })
+    }
+
+    pub(crate) fn za(&self) -> *mut sys::zip_t {
+        self.za.get()
+    }
+}
+
+impl Drop for Archive {
+    /// php_zip_archive_release without a host: callbacks registered on the
+    /// archive see no PHP and do nothing; a failed close is discarded
+    /// without php's warning.
+    fn drop(&mut self) {
+        let za = self.za.replace(ptr::null_mut());
+        if !za.is_null() {
+            unsafe {
+                if sys::zip_close(za) != 0 {
+                    sys::zip_discard(za);
+                }
+            }
+        }
+    }
+}
+
+/// php_zip_archive_release with a host: the last reference closes the
+/// archive while its callbacks can reach PHP, warning as php does when the
+/// close fails. `fname` is the running builtin; with none ("Unknown") php's
+/// warning has no parentheses.
+pub(crate) fn release(host: &mut dyn Host, fname: &str, a: Rc<Archive>) -> Result<(), Thrown> {
+    if Rc::strong_count(&a) > 1 {
+        return Ok(());
+    }
+    let za = a.za.get();
+    if za.is_null() {
+        return Ok(());
+    }
+    let mut rc = 0;
+    let r = ffi::with_host(host, fname, || rc = unsafe { sys::zip_close(za) });
+    a.za.set(ptr::null_mut());
+    if rc != 0 {
+        let msg = String::from_utf8_lossy(unsafe { sys::cstr(sys::zip_strerror(za)) }).into_owned();
+        unsafe { sys::zip_discard(za) };
+        let msg = format!("Cannot destroy the zip context: {msg}");
+        if fname == "Unknown" {
+            host.emit_diagnostic(crate::E_WARNING, &format!("Unknown: {msg}"))?;
+        } else {
+            crate::warn(host, fname, &msg)?;
+        }
+    }
+    drop(a);
+    r
+}
+
+/// `ze_zip_object`: a `ZipArchive`'s state.
+#[derive(Default)]
+pub(crate) struct ZipObject {
+    archive: RefCell<Option<Rc<Archive>>>,
+    filename: RefCell<Option<Vec<u8>>>,
+    last_id: Cell<i64>,
+    /// The archive's error, saved by `close()` for the properties.
+    err_zip: Cell<c_int>,
+    err_sys: Cell<c_int>,
+}
+
+impl ZipObject {
+    fn new() -> ZipObject {
+        ZipObject {
+            last_id: Cell::new(-1),
+            ..Default::default()
+        }
+    }
+
+    /// php_zip_object_za
+    pub(crate) fn za(&self) -> *mut sys::zip_t {
+        self.archive
+            .borrow()
+            .as_ref()
+            .map_or(ptr::null_mut(), |a| a.za.get())
+    }
+
+    pub(crate) fn archive(&self) -> Option<Rc<Archive>> {
+        self.archive.borrow().clone()
+    }
+
+    /// php_zip_status
+    fn status(&self) -> i64 {
+        let za = self.za();
+        if za.is_null() {
+            return self.err_zip.get() as i64;
+        }
+        unsafe {
+            let e = sys::zip_get_error(za);
+            let c = sys::zip_error_code_zip(e);
+            sys::zip_error_fini(e);
+            c as i64
+        }
+    }
+
+    /// php_zip_status_sys
+    fn status_sys(&self) -> i64 {
+        let za = self.za();
+        if za.is_null() {
+            return self.err_sys.get() as i64;
+        }
+        unsafe {
+            let e = sys::zip_get_error(za);
+            let c = sys::zip_error_code_system(e);
+            sys::zip_error_fini(e);
+            c as i64
+        }
+    }
+
+    /// php_zip_get_num_files
+    fn num_files(&self) -> i64 {
+        let za = self.za();
+        if za.is_null() {
+            return 0;
+        }
+        unsafe { sys::zip_get_num_entries(za, 0) }
+    }
+
+    /// php_zipobj_get_zip_comment
+    fn comment(&self) -> Vec<u8> {
+        let za = self.za();
+        if za.is_null() {
+            return Vec::new();
+        }
+        let mut len: c_int = 0;
+        let p = unsafe { sys::zip_get_archive_comment(za, &mut len, 0) };
+        if p.is_null() {
+            return Vec::new();
+        }
+        unsafe { std::slice::from_raw_parts(p.cast::<u8>(), len.max(0) as usize) }.to_vec()
+    }
+}
+
+/// The object's state, created on first use (php's `create_object`).
+pub(crate) fn zip_object(this: &Value) -> Option<Rc<ZipObject>> {
+    let h = crate::object::object_of(this)?;
+    if let Some(o) = crate::object::payload_of::<ZipObject>(&h) {
+        return Some(o);
+    }
+    let o = Rc::new(ZipObject::new());
+    crate::object::set_payload(&h, o.clone());
+    Some(o)
+}
+
+/// The class name php's messages give an object (`object->ce->name`).
+fn class_of(host: &dyn Host, this: &Value) -> String {
+    host.object_class_name(this)
+        .map(|n| String::from_utf8_lossy(&n).into_owned())
+        .unwrap_or_else(|| "ZipArchive".into())
+}
+
+// --- properties --------------------------------------------------------------
+
+/// php's `zip_prop_handlers`, in registration order.
+const PROPS: [&str; 6] = [
+    "lastId",
+    "status",
+    "statusSys",
+    "numFiles",
+    "filename",
+    "comment",
+];
+
+/// php_zip_property_reader
+fn read_prop(o: &ZipObject, name: &str) -> Value {
+    match name {
+        "lastId" => Value::Int(o.last_id.get()),
+        "status" => Value::Int(o.status()),
+        "statusSys" => Value::Int(o.status_sys()),
+        "numFiles" => Value::Int(o.num_files()),
+        "filename" => Value::str(o.filename.borrow().clone().unwrap_or_default()),
+        _ => Value::str(o.comment()),
+    }
+}
+
+/// `__zip_prop($op, $this, $name)`: php's read_property (0),
+/// write_property (1), has_property (2) and unset (3) for the six
+/// properties; null for any other name, which the prelude hands to the
+/// standard behaviour.
+fn fn_zip_prop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let op = rhp_values::conv::to_int(&deref(&args[0]));
+    let this = deref(&args[1]);
+    let name = rhp_values::conv::to_string_bytes(&deref(&args[2]));
+    let Some(name) = PROPS.iter().find(|p| p.as_bytes() == name.as_slice()) else {
+        if op == 1 {
+            // The prelude's __set creates it: php's deprecation, which the
+            // engine leaves out for prelude code.
+            host.emit_diagnostic(
+                crate::E_DEPRECATED,
+                &format!(
+                    "Creation of dynamic property {}::${} is deprecated",
+                    class_of(host, &this),
+                    String::from_utf8_lossy(&name)
+                ),
+            )?;
+        }
+        return Ok(Value::Null);
+    };
+    let Some(o) = zip_object(&this) else {
+        return Ok(Value::Null);
+    };
+    Ok(match op {
+        0 => read_prop(&o, name),
+        1 => {
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "Cannot write read-only property {}::${name}",
+                    class_of(host, &this)
+                ),
+            ))
+        }
+        // `isset`: the value is never null.
+        _ => Value::Bool(true),
+    })
+}
+
+/// php_zip_get_properties: the object's own properties with the six
+/// read-only ones before them, for every view.
+fn get_properties_for(
+    host: &mut dyn Host,
+    h: &ObjectHandle,
+    purpose: PropPurpose,
+) -> Result<Option<PhpArray>, Thrown> {
+    let o = match crate::object::payload_of::<ZipObject>(h) {
+        Some(o) => o,
+        None => {
+            let o = Rc::new(ZipObject::new());
+            crate::object::set_payload(h, o.clone());
+            o
+        }
+    };
     let mut a = PhpArray::new();
-    a.insert(ArrayKey::from_bytes(b"name"), Value::str(e.name.clone()));
-    a.insert(ArrayKey::from_bytes(b"index"), Value::Int(i));
-    a.insert(ArrayKey::from_bytes(b"crc"), Value::Int(crc as i64));
-    a.insert(ArrayKey::from_bytes(b"size"), Value::Int(e.size() as i64));
-    a.insert(ArrayKey::from_bytes(b"mtime"), Value::Int(e.mtime));
-    a.insert(
-        ArrayKey::from_bytes(b"comp_size"),
-        Value::Int(comp_size as i64),
-    );
-    a.insert(
-        ArrayKey::from_bytes(b"comp_method"),
-        Value::Int(method as i64),
-    );
-    a.insert(ArrayKey::from_bytes(b"encryption_method"), Value::Int(0));
+    for p in PROPS {
+        a.insert(ArrayKey::Str(PhpStr::from(p.as_bytes())), read_prop(&o, p));
+    }
+    // get_object_vars sees the caller's accessible properties, unmangled.
+    let own = match purpose {
+        PropPurpose::GetObjectVars => match host.object_vars(&Value::Object(h.clone())) {
+            Some(Value::Array(v)) => v,
+            _ => host.object_props_mangled(h),
+        },
+        _ => host.object_props_mangled(h),
+    };
+    for (k, v) in own.iter() {
+        a.insert(k.clone(), v.clone());
+    }
+    Ok(Some(a))
+}
+
+// --- callbacks ---------------------------------------------------------------
+
+/// php_zip_progress_callback
+unsafe extern "C" fn progress_callback(_za: *mut sys::zip_t, state: c_double, ud: *mut c_void) {
+    ffi::guard((), || {
+        let a = unsafe { &*(ud as *const Archive) };
+        // zend_call_known_fcc does nothing while an exception is pending.
+        if ffi::aborted() {
+            return;
+        }
+        let Some(cb) = a.progress.borrow().clone() else {
+            return;
+        };
+        ffi::call_host(|h| h.call_callable(&cb, &[Value::Float(state)]));
+    })
+}
+
+unsafe extern "C" fn progress_free(ud: *mut c_void) {
+    ffi::guard((), || {
+        let a = unsafe { &*(ud as *const Archive) };
+        let cb = a.progress.borrow_mut().take();
+        drop(cb);
+    })
+}
+
+/// php_zip_cancel_callback
+unsafe extern "C" fn cancel_callback(_za: *mut sys::zip_t, ud: *mut c_void) -> c_int {
+    ffi::guard(-1, || {
+        let a = unsafe { &*(ud as *const Archive) };
+        // Freeing the object (no host) closes the archive without PHP.
+        if !ffi::has_host() {
+            return 0;
+        }
+        if ffi::aborted() {
+            return -1;
+        }
+        let Some(cb) = a.cancel.borrow().clone() else {
+            return 0;
+        };
+        ffi::call_host(|h| {
+            let r = deref(&h.call_callable(&cb, &[])?);
+            match crate::ext::zpp::try_get_long(h, &r)? {
+                Some(n) => Ok(n as c_int),
+                None => Err(Thrown::type_error(format!(
+                    "Return value of callback provided to ZipArchive::registerCancelCallback() \
+                     must be of type int, {} returned",
+                    crate::ext::zpp::given_type(h, &r)
+                ))),
+            }
+        })
+        .unwrap_or(-1)
+    })
+}
+
+unsafe extern "C" fn cancel_free(ud: *mut c_void) {
+    ffi::guard((), || {
+        let a = unsafe { &*(ud as *const Archive) };
+        let cb = a.cancel.borrow_mut().take();
+        drop(cb);
+    })
+}
+
+// --- constants and the prelude -----------------------------------------------
+
+/// One of ZipArchive's constants, with its PHP attribute ("" for none).
+struct Const {
+    name: String,
+    value: CVal,
+    attr: String,
+}
+
+enum CVal {
+    Int(i64),
+    Str(Vec<u8>),
+}
+
+unsafe extern "C" fn collect_constant(
+    ctx: *mut c_void,
+    name: *const c_char,
+    ival: c_longlong,
+    sval: *const c_char,
+    attr: *const c_char,
+) {
+    ffi::guard((), || {
+        let out = unsafe { &mut *(ctx as *mut Vec<Const>) };
+        let s = |p| String::from_utf8_lossy(unsafe { sys::cstr(p) }).into_owned();
+        out.push(Const {
+            name: s(name),
+            value: if sval.is_null() {
+                CVal::Int(ival)
+            } else {
+                CVal::Str(unsafe { sys::cstr(sval) }.to_vec())
+            },
+            attr: s(attr),
+        });
+    })
+}
+
+/// ZipArchive's constants as the linked zip.h defines them (consts.h).
+fn constants() -> &'static [Const] {
+    static CONSTS: OnceLock<Vec<Const>> = OnceLock::new();
+    CONSTS.get_or_init(|| {
+        let mut out: Vec<Const> = Vec::new();
+        unsafe {
+            sys::rhp_zip_constants(collect_constant, (&mut out as *mut Vec<Const>).cast());
+        }
+        out
+    })
+}
+
+/// A PHP literal for a constant's value.
+fn php_literal(v: &CVal) -> String {
+    match v {
+        CVal::Int(n) => n.to_string(),
+        CVal::Str(s) => {
+            let mut out = String::from("'");
+            for &b in s {
+                match b {
+                    b'\'' => out.push_str("\\'"),
+                    b'\\' => out.push_str("\\\\"),
+                    _ => out.push(b as char),
+                }
+            }
+            out.push('\'');
+            out
+        }
+    }
+}
+
+/// The `ZipArchive` class: its constants from the linked libzip, then the
+/// methods (prelude.php).
+pub fn prelude() -> &'static str {
+    static PRELUDE: OnceLock<String> = OnceLock::new();
+    PRELUDE.get_or_init(|| {
+        let mut consts = String::new();
+        for c in constants() {
+            if !c.attr.is_empty() {
+                consts.push_str("    ");
+                consts.push_str(&c.attr);
+                consts.push('\n');
+            }
+            consts.push_str(&format!(
+                "    public const {} = {};\n",
+                c.name,
+                php_literal(&c.value)
+            ));
+        }
+        include_str!("prelude.php").replace("    // %CONSTANTS%\n", &consts)
+    })
+}
+
+/// The value of ZipArchive constant `name` in the linked libzip.
+pub(crate) fn constant(name: &str) -> Option<i64> {
+    constants()
+        .iter()
+        .find(|c| c.name == name)
+        .and_then(|c| match c.value {
+            CVal::Int(n) => Some(n),
+            CVal::Str(_) => None,
+        })
+}
+
+/// `ZipArchive::LIBZIP_VERSION`: `zip_libzip_version()`, as php reads it.
+pub fn libzip_version() -> String {
+    String::from_utf8_lossy(unsafe { sys::cstr(sys::zip_libzip_version()) }).into_owned()
+}
+
+/// PHP_MINFO_FUNCTION(zip): the rows of phpinfo's zip table.
+pub fn info_rows() -> Vec<(String, String)> {
+    let supported = |m: Option<i64>, enc: bool| {
+        let yes = match m {
+            Some(m) if enc => unsafe { sys::zip_encryption_method_supported(m as u16, 1) != 0 },
+            Some(m) => unsafe { sys::zip_compression_method_supported(m as i32, 1) != 0 },
+            None => false,
+        };
+        if yes { "Yes" } else { "No" }.to_string()
+    };
+    let mut rows = vec![
+        ("Zip".into(), "enabled".into()),
+        ("Zip version".into(), crate::version::EXT_ZIP.into()),
+    ];
+    let header = env!("RHP_LIBZIP_VERSION");
+    let runtime = libzip_version();
+    if header != runtime {
+        rows.push(("Libzip headers version".into(), header.into()));
+        rows.push(("Libzip library version".into(), runtime));
+    } else {
+        rows.push(("Libzip version".into(), header.into()));
+    }
+    rows.push((
+        "BZIP2 compression".into(),
+        supported(constant("CM_BZIP2"), false),
+    ));
+    rows.push(("XZ compression".into(), supported(constant("CM_XZ"), false)));
+    rows.push((
+        "ZSTD compression".into(),
+        supported(constant("CM_ZSTD"), false),
+    ));
+    rows.push((
+        "AES-128 encryption".into(),
+        supported(constant("EM_AES_128"), true),
+    ));
+    rows.push((
+        "AES-192 encryption".into(),
+        supported(constant("EM_AES_192"), true),
+    ));
+    rows.push((
+        "AES-256 encryption".into(),
+        supported(constant("EM_AES_256"), true),
+    ));
+    rows
+}
+
+// --- shared helpers ----------------------------------------------------------
+
+pub(crate) fn deref(v: &Value) -> Value {
+    crate::ext::zpp::deref(v)
+}
+
+/// A string argument as C sees php's `char *`: up to the first NUL.
+pub(crate) fn c_string(b: &[u8]) -> CString {
+    let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    CString::new(&b[..end]).expect("no NUL")
+}
+
+/// zpp's `P`/`p`: a path must not contain NUL bytes.
+pub(crate) fn check_path(fname: &str, n: usize, pname: &str, b: &[u8]) -> Result<(), Thrown> {
+    if b.contains(&0) {
+        return Err(crate::ext::zpp::value_error(
+            fname,
+            n,
+            pname,
+            "must not contain any null bytes",
+        ));
+    }
+    Ok(())
+}
+
+/// zend_argument_must_not_be_empty_error
+pub(crate) fn must_not_be_empty(fname: &str, n: usize, pname: &str) -> Thrown {
+    crate::ext::zpp::value_error(fname, n, pname, "must not be empty")
+}
+
+/// MAXPATHLEN
+pub(crate) const MAXPATHLEN: usize = libc::PATH_MAX as usize;
+
+/// php's `expand_filepath`: the absolute path libzip is handed (libzip
+/// opens files itself, against the process's directory). `None` for an
+/// empty or too long path.
+pub(crate) fn expand_filepath(path: &[u8]) -> Option<Vec<u8>> {
+    if path.is_empty() {
+        return None;
+    }
+    let p = crate::ext::dom::expand_filepath(path);
+    (p.len() < MAXPATHLEN - 1).then_some(p)
+}
+
+/// `zip_stat_t` as php's RETURN_SB array.
+pub(crate) fn stat_array(sb: &sys::zip_stat_t) -> Value {
+    let mut a = PhpArray::new();
+    let mut put = |k: &str, v: Value| a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
+    put("name", Value::str(unsafe { sys::cstr(sb.name) }.to_vec()));
+    put("index", Value::Int(sb.index as i64));
+    put("crc", Value::Int(sb.crc as i64));
+    put("size", Value::Int(sb.size as i64));
+    put("mtime", Value::Int(sb.mtime));
+    put("comp_size", Value::Int(sb.comp_size as i64));
+    put("comp_method", Value::Int(sb.comp_method as i64));
+    put("encryption_method", Value::Int(sb.encryption_method as i64));
     Value::Array(a)
 }
 
-/// Run `f` on archive `id`, recording a failing op's error code as its status.
-fn on<R>(id: i64, f: impl FnOnce(&mut Archive) -> R) -> Option<R> {
-    zip_ext::with(id, f)
+/// php_zip_file_error: an entry's error code and message.
+pub(crate) fn file_error(zf: *mut sys::zip_file_t) -> (c_int, String) {
+    unsafe {
+        let e = sys::zip_file_get_error(zf);
+        let msg = String::from_utf8_lossy(sys::cstr(sys::zip_error_strerror(e))).into_owned();
+        (sys::zip_error_code_zip(e), msg)
+    }
 }
 
-fn fail(id: i64, code: i64) -> Value {
-    on(id, |a| a.status = code);
-    Value::Bool(false)
-}
-
-fn file_stat(path: &str) -> Option<(i64, u32)> {
-    use std::os::unix::fs::MetadataExt;
-    let m = std::fs::metadata(path).ok()?;
-    Some((m.mtime(), m.mode()))
-}
-
-fn fn_zip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let op = arg_bytes(args, 0);
-    let id = arg_int(args, 1);
-    let v = match op.as_slice() {
-        b"open" => {
-            let path = arg_bytes(args, 2);
-            let flags = arg_int(args, 3);
-            let resolved = expand_filepath(&path);
-            let rs = String::from_utf8_lossy(&resolved).into_owned();
-            let bytes = if rs.contains("://") {
-                host.stream_get_contents(&resolved)
-            } else {
-                match std::fs::metadata(&rs) {
-                    Ok(m) if m.is_dir() => return Ok(Value::Int(zip_ext::ER_READ_DIR)),
-                    Ok(_) => match std::fs::read(&rs) {
-                        Ok(b) => Some(b),
-                        Err(_) => return Ok(Value::Int(zip_ext::ER_OPEN)),
-                    },
-                    Err(_) => None,
-                }
-            };
-            match Archive::open(resolved.clone(), bytes, flags) {
-                Ok(a) => {
-                    zip_ext::insert(id, a);
-                    Value::str(resolved)
-                }
-                Err(code) => Value::Int(code),
-            }
-        }
-        b"close" => match zip_ext::remove(id) {
-            Some(a) => match a.commit() {
-                Ok(()) => Value::Int(0),
-                Err(c) => Value::Int(c),
-            },
-            None => Value::Int(0),
-        },
-        b"discard" => {
-            zip_ext::remove(id);
-            Value::Null
-        }
-        b"is_open" => Value::Bool(zip_ext::with(id, |_| ()).is_some()),
-        b"num" => Value::Int(on(id, |a| a.entries.len() as i64).unwrap_or(0)),
-        b"status" => Value::Int(on(id, |a| a.status).unwrap_or(0)),
-        b"clear_error" => {
-            on(id, |a| a.status = 0);
-            Value::Null
-        }
-        b"add_string" | b"add_dir" | b"add_file" => {
-            let mut name = arg_bytes(args, 2);
-            let flags = arg_int(args, 4);
-            let overwrite = flags & 8192 != 0;
-            let (data, mtime, attr) = match op.as_slice() {
-                b"add_string" => (arg_bytes(args, 3), zip_ext::now(), 0o100666u32 << 16),
-                b"add_dir" => {
-                    if name.last() != Some(&b'/') {
-                        name.push(b'/');
-                    }
-                    (Vec::new(), zip_ext::now(), 0o40777u32 << 16)
-                }
-                _ => {
-                    let path = String::from_utf8_lossy(&arg_bytes(args, 3)).into_owned();
-                    let start = arg_int(args, 5).max(0) as usize;
-                    let length = arg_int(args, 6);
-                    let Some((mtime, mode)) = file_stat(&path) else {
-                        host.raise_diagnostic(
-                            crate::E_WARNING,
-                            "ZipArchive::addFile(): No such file or directory",
-                        );
-                        return Ok(Value::Bool(false));
-                    };
-                    let Ok(mut data) = std::fs::read(&path) else {
-                        return Ok(Value::Bool(false));
-                    };
-                    if start > 0 || length > 0 {
-                        let s = start.min(data.len());
-                        let e = if length > 0 {
-                            (s + length as usize).min(data.len())
-                        } else {
-                            data.len()
-                        };
-                        data = data[s..e].to_vec();
-                    }
-                    (data, mtime, (mode & 0xFFFF) << 16)
-                }
-            };
-            let from_file = op.as_slice() == b"add_file";
-            match on(id, |a| a.add(name, data, mtime, attr, overwrite)) {
-                Some(Ok(i)) => {
-                    if from_file {
-                        on(id, |a| a.entries[i].from_file = true);
-                    }
-                    Value::Int(i as i64)
-                }
-                Some(Err(c)) => fail(id, c),
-                None => Value::Bool(false),
-            }
-        }
-        b"replace_file" => {
-            let path = String::from_utf8_lossy(&arg_bytes(args, 2)).into_owned();
-            let index = arg_int(args, 3);
-            match (file_stat(&path), std::fs::read(&path)) {
-                (Some((mtime, _)), Ok(data)) => {
-                    Value::Bool(on(id, |a| a.replace(index, data, mtime)).unwrap_or(false))
-                }
-                _ => {
-                    host.raise_diagnostic(
-                        crate::E_WARNING,
-                        "ZipArchive::replaceFile(): No such file or directory",
-                    );
-                    Value::Bool(false)
-                }
-            }
-        }
-        b"locate" => {
-            let name = arg_bytes(args, 2);
-            let flags = arg_int(args, 3);
-            match on(id, |a| a.locate(&name, flags & 1 != 0, flags & 2 != 0)).flatten() {
-                Some(i) => Value::Int(i as i64),
-                None => fail(id, zip_ext::ER_NOENT),
-            }
-        }
-        b"name" => {
-            let i = arg_int(args, 2);
-            on(id, |a| a.live(i).map(|e| Value::str(e.name.clone())))
-                .flatten()
-                .unwrap_or(Value::Bool(false))
-        }
-        b"stat" => {
-            let i = arg_int(args, 2);
-            on(id, |a| a.live(i).map(|e| stat_array(i, e)))
-                .flatten()
-                .unwrap_or(Value::Bool(false))
-        }
-        b"get" => {
-            let i = arg_int(args, 2);
-            let len = arg_int(args, 3);
-            if on(id, |a| a.live(i).map(|e| e.from_file)).flatten() == Some(true) {
-                return Ok(fail(id, zip_ext::ER_CHANGED));
-            }
-            match on(id, |a| a.live(i).map(|e| e.contents())).flatten() {
-                Some(Some(mut d)) => {
-                    if len > 0 && (len as usize) < d.len() {
-                        d.truncate(len as usize);
-                    }
-                    Value::str(d)
-                }
-                Some(None) => fail(id, zip_ext::ER_COMPNOTSUPP),
-                None => Value::Bool(false),
-            }
-        }
-        b"delete" => {
-            let i = arg_int(args, 2);
-            Value::Bool(on(id, |a| a.delete(i)).unwrap_or(false))
-        }
-        b"rename" => {
-            let i = arg_int(args, 2);
-            let name = arg_bytes(args, 3);
-            match on(id, |a| a.rename(i, name)) {
-                Some(Ok(())) => Value::Bool(true),
-                Some(Err(c)) => fail(id, c),
-                None => Value::Bool(false),
-            }
-        }
-        b"set_attr" => {
-            let i = arg_int(args, 2);
-            let opsys = arg_int(args, 3) as u8;
-            let attr = arg_int(args, 4) as u32;
-            Value::Bool(
-                on(id, |a| {
-                    let ok = a.live_mut(i).map(|e| {
-                        e.opsys = opsys;
-                        e.attr = attr;
-                    });
-                    if ok.is_some() {
-                        a.touch();
-                    }
-                    ok.is_some()
-                })
-                .unwrap_or(false),
-            )
-        }
-        b"get_attr" => {
-            let i = arg_int(args, 2);
-            match on(id, |a| a.live(i).map(|e| (e.opsys, e.attr))).flatten() {
-                Some((o, at)) => {
-                    let mut r = PhpArray::new();
-                    r.push(Value::Int(o as i64));
-                    r.push(Value::Int(at as i64));
-                    Value::Array(r)
-                }
-                None => Value::Bool(false),
-            }
-        }
-        b"set_comment" => {
-            let i = arg_int(args, 2);
-            let c = arg_bytes(args, 3);
-            Value::Bool(
-                on(id, |a| {
-                    let ok = a.live_mut(i).map(|e| e.comment = c).is_some();
-                    if ok {
-                        a.touch();
-                    }
-                    ok
-                })
-                .unwrap_or(false),
-            )
-        }
-        b"get_comment" => {
-            let i = arg_int(args, 2);
-            on(id, |a| a.live(i).map(|e| Value::str(e.comment.clone())))
-                .flatten()
-                .unwrap_or(Value::Bool(false))
-        }
-        b"set_archive_comment" => {
-            let c = arg_bytes(args, 2);
-            on(id, |a| {
-                a.comment = c;
-                a.touch();
-            });
-            Value::Bool(true)
-        }
-        b"get_archive_comment" => {
-            on(id, |a| Value::str(a.comment.clone())).unwrap_or(Value::Bool(false))
-        }
-        b"set_mtime" => {
-            let i = arg_int(args, 2);
-            let t = arg_int(args, 3);
-            Value::Bool(
-                on(id, |a| {
-                    let ok = a.live_mut(i).map(|e| e.mtime = t).is_some();
-                    if ok {
-                        a.touch();
-                    }
-                    ok
-                })
-                .unwrap_or(false),
-            )
-        }
-        b"set_compression" => {
-            let i = arg_int(args, 2);
-            let m = arg_int(args, 3) as i32;
-            if !matches!(m, -1 | 0 | 8) {
-                return Ok(fail(id, zip_ext::ER_COMPNOTSUPP));
-            }
-            Value::Bool(
-                on(id, |a| {
-                    let ok = a.live_mut(i).map(|e| e.method = m).is_some();
-                    if ok {
-                        a.touch();
-                    }
-                    ok
-                })
-                .unwrap_or(false),
-            )
-        }
-        b"unchange" => {
-            let i = arg_int(args, 2);
-            Value::Bool(on(id, |a| a.unchange(i)).unwrap_or(false))
-        }
-        b"unchange_all" => {
-            on(id, |a| a.unchange_all());
-            Value::Bool(true)
-        }
-        b"unchange_archive" => {
-            on(id, |a| a.unchange_archive());
-            Value::Bool(true)
-        }
-        b"extract" => {
-            let dest = String::from_utf8_lossy(&arg_bytes(args, 2)).into_owned();
-            let dest = dest.trim_end_matches('/').to_string();
-            let dest = if dest.is_empty() {
-                "/".to_string()
-            } else {
-                dest
-            };
-            // files: null → all; string / array → by name.
-            let names: Option<Vec<Vec<u8>>> = match args.get(3).map(deref) {
-                None | Some(Value::Null) => None,
-                Some(Value::Array(a)) => Some(
-                    a.iter()
-                        .map(|(_, v)| conv::to_string_bytes(&deref(v)))
-                        .collect(),
-                ),
-                Some(v) => Some(vec![conv::to_string_bytes(&v)]),
-            };
-            if !std::path::Path::new(&dest).is_dir() && std::fs::create_dir_all(&dest).is_err() {
-                return Ok(Value::Bool(false));
-            }
-            let ok = on(id, |a| match &names {
-                None => a
-                    .entries
-                    .iter()
-                    .filter(|e| !e.deleted)
-                    .all(|e| zip_ext::extract_entry(e, &dest)),
-                Some(ns) => ns.iter().all(|n| match a.locate(n, false, false) {
-                    Some(i) => zip_ext::extract_entry(&a.entries[i], &dest),
-                    None => false,
-                }),
-            });
-            Value::Bool(ok.unwrap_or(false))
-        }
-        b"status_string" => {
-            let code = arg_int(args, 2);
-            let s = zip_ext::ERROR_STRINGS
-                .get(code as usize)
-                .copied()
-                .unwrap_or("Unknown error");
-            Value::str(s)
-        }
-        _ => Value::Null,
-    };
-    Ok(v)
-}
+// --- registration ------------------------------------------------------------
 
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    m.insert(
-        "__zip",
-        Builtin {
-            name: "__zip",
-            func: fn_zip,
-            min_args: 2,
-            max_args: None,
-        },
-    );
+    for (name, func, min) in [
+        ("__zip", archive::fn_zip as crate::NativeFn, 2),
+        ("__zip_prop", fn_zip_prop, 3),
+    ] {
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args: min,
+                max_args: None,
+            },
+        );
+    }
+    procedural::register(m);
 }
-
-pub const PRELUDE_PHP: &str = concat!(
-    r#"
-class ZipArchive implements Countable {
-    public $lastId = -1;
-    public $status = 0;
-    public $statusSys = 0;
-    public $numFiles = 0;
-    public $filename = '';
-    public $comment = '';
-
-    const CREATE = 1; const EXCL = 2; const CHECKCONS = 4; const OVERWRITE = 8; const RDONLY = 16;
-    const FL_NOCASE = 1; const FL_NODIR = 2; const FL_COMPRESSED = 4; const FL_UNCHANGED = 8;
-    const FL_RECOMPRESS = 16; const FL_ENCRYPTED = 32; const FL_OVERWRITE = 8192;
-    const FL_LOCAL = 256; const FL_CENTRAL = 512; const FL_ENC_GUESS = 0; const FL_ENC_RAW = 64;
-    const FL_ENC_STRICT = 128; const FL_ENC_UTF_8 = 2048; const FL_ENC_CP437 = 4096;
-    const FL_OPEN_FILE_NOW = 1073741824;
-    const CM_DEFAULT = -1; const CM_STORE = 0; const CM_SHRINK = 1; const CM_REDUCE_1 = 2;
-    const CM_REDUCE_2 = 3; const CM_REDUCE_3 = 4; const CM_REDUCE_4 = 5; const CM_IMPLODE = 6;
-    const CM_DEFLATE = 8; const CM_DEFLATE64 = 9; const CM_PKWARE_IMPLODE = 10; const CM_BZIP2 = 12;
-    const CM_LZMA = 14; const CM_LZMA2 = 33; const CM_ZSTD = 93; const CM_XZ = 95; const CM_TERSE = 18;
-    const CM_LZ77 = 19; const CM_WAVPACK = 97; const CM_PPMD = 98;
-    const ER_OK = 0; const ER_MULTIDISK = 1; const ER_RENAME = 2; const ER_CLOSE = 3;
-    const ER_SEEK = 4; const ER_READ = 5; const ER_WRITE = 6; const ER_CRC = 7;
-    const ER_ZIPCLOSED = 8; const ER_NOENT = 9; const ER_EXISTS = 10; const ER_OPEN = 11;
-    const ER_TMPOPEN = 12; const ER_ZLIB = 13; const ER_MEMORY = 14; const ER_CHANGED = 15;
-    const ER_COMPNOTSUPP = 16; const ER_EOF = 17; const ER_INVAL = 18; const ER_NOZIP = 19;
-    const ER_INTERNAL = 20; const ER_INCONS = 21; const ER_REMOVE = 22; const ER_DELETED = 23;
-    const ER_ENCRNOTSUPP = 24; const ER_RDONLY = 25; const ER_NOPASSWD = 26; const ER_WRONGPASSWD = 27;
-    const ER_OPNOTSUPP = 28; const ER_INUSE = 29; const ER_TELL = 30; const ER_COMPRESSED_DATA = 31;
-    const ER_CANCELLED = 32; const ER_DATA_LENGTH = 33; const ER_NOT_ALLOWED = 34; const ER_TRUNCATED_ZIP = 35;
-    const AFL_RDONLY = 2; const AFL_IS_TORRENTZIP = 4; const AFL_WANT_TORRENTZIP = 8;
-    const AFL_CREATE_OR_KEEP_FILE_FOR_EMPTY_ARCHIVE = 16;
-    const OPSYS_DOS = 0; const OPSYS_AMIGA = 1; const OPSYS_OPENVMS = 2; const OPSYS_UNIX = 3;
-    const OPSYS_VM_CMS = 4; const OPSYS_ATARI_ST = 5; const OPSYS_OS_2 = 6; const OPSYS_MACINTOSH = 7;
-    const OPSYS_Z_SYSTEM = 8; const OPSYS_CPM = 9; const OPSYS_WINDOWS_NTFS = 10; const OPSYS_MVS = 11;
-    const OPSYS_VSE = 12; const OPSYS_ACORN_RISC = 13; const OPSYS_VFAT = 14; const OPSYS_ALTERNATE_MVS = 15;
-    const OPSYS_BEOS = 16; const OPSYS_TANDEM = 17; const OPSYS_OS_400 = 18; const OPSYS_OS_X = 19;
-    const OPSYS_DEFAULT = 3;
-    const EM_NONE = 0; const EM_TRAD_PKWARE = 1; const EM_AES_128 = 257; const EM_AES_192 = 258;
-    const EM_AES_256 = 259; const EM_UNKNOWN = 65535;
-    const LIBZIP_VERSION = '"#,
-    crate::version::libzip!(),
-    r#"';
-    const LENGTH_TO_END = 0; const LENGTH_UNCHECKED = -2;
-
-    // The open archive is keyed by spl_object_id($this) on the Rust side, so
-    // no handle property shows up in var_dump / casts.
-    private function __h() { return spl_object_id($this); }
-    private function __chk() {
-        if (!__zip('is_open', $this->__h())) { throw new ValueError('Invalid or uninitialized Zip object'); }
-        return $this->__h();
-    }
-    private function __sync() {
-        $this->numFiles = __zip('num', $this->__h());
-        $this->status = __zip('status', $this->__h());
-        $this->comment = (string) __zip('get_archive_comment', $this->__h());
-    }
-    private function __idx($name, $flags = 0) {
-        $i = __zip('locate', $this->__h(), (string) $name, $flags);
-        return $i === false ? -1 : $i;
-    }
-
-    public function open(string $filename, int $flags = 0): bool|int {
-        if ($filename === '') { throw new ValueError('ZipArchive::open(): Argument #1 ($filename) must not be empty'); }
-        if (str_contains($filename, "\0")) { throw new ValueError('ZipArchive::open(): Argument #1 ($filename) must not contain any null bytes'); }
-        __zip('close', $this->__h());
-        $r = __zip('open', $this->__h(), $filename, $flags);
-        if (is_int($r)) { return $r; }
-        $this->filename = $r;
-        $this->__sync();
-        return true;
-    }
-    public function setPassword(string $password): bool { $this->__chk(); return true; }
-    public function close(): bool {
-        $id = $this->__chk();
-        $code = __zip('close', $id);
-        
-        $this->numFiles = 0; $this->filename = ''; $this->comment = ''; $this->lastId = -1;
-        $this->status = $code;
-        return $code === 0;
-    }
-    public function count(): int { $this->__chk(); return __zip('num', $this->__h()); }
-    public function getStatusString(): string {
-        if (!__zip('is_open', $this->__h())) { return __zip('status_string', 0, $this->status); }
-        return __zip('status_string', 0, __zip('status', $this->__h()));
-    }
-    public function clearError(): void { if (__zip('is_open', $this->__h())) { __zip('clear_error', $this->__h()); } $this->status = 0; }
-    private function __added($r) {
-        $this->__sync();
-        if ($r === false) { return false; }
-        $this->lastId = $r;
-        return true;
-    }
-    public function addEmptyDir(string $dirname, int $flags = 0): bool {
-        $this->__chk();
-        return $this->__added(__zip('add_dir', $this->__h(), $dirname, '', $flags));
-    }
-    public function addFromString(string $name, string $content, int $flags = ZipArchive::FL_OVERWRITE): bool {
-        $this->__chk();
-        return $this->__added(__zip('add_string', $this->__h(), $name, $content, $flags));
-    }
-    public function addFile(string $filepath, string $entryname = '', int $start = 0, int $length = ZipArchive::LENGTH_TO_END, int $flags = ZipArchive::FL_OVERWRITE): bool {
-        $this->__chk();
-        if ($filepath === '') { throw new ValueError('ZipArchive::addFile(): Argument #1 ($filepath) must not be empty'); }
-        if (str_contains($filepath, "\0")) { throw new ValueError('ZipArchive::addFile(): Argument #1 ($filepath) must not contain any null bytes'); }
-        if ($entryname === '') { $entryname = $filepath; }
-        return $this->__added(__zip('add_file', $this->__h(), $entryname, $filepath, $flags, $start, $length));
-    }
-    public function replaceFile(string $filepath, int $index, int $start = 0, int $length = ZipArchive::LENGTH_TO_END, int $flags = 0): bool {
-        $this->__chk();
-        $r = __zip('replace_file', $this->__h(), $filepath, $index);
-        $this->__sync();
-        return $r;
-    }
-    public function addGlob(string $pattern, int $flags = 0, array $options = []): array|false {
-        $this->__chk();
-        $files = glob($pattern, $flags);
-        if ($files === false) { return false; }
-        return $this->__addList($files, $options);
-    }
-    public function addPattern(string $pattern, string $path = '.', array $options = []): array|false {
-        $this->__chk();
-        $files = [];
-        foreach ((array) @scandir($path) as $f) {
-            if ($f === '.' || $f === '..' || !preg_match($pattern, $f)) { continue; }
-            $files[] = rtrim($path, '/') . '/' . $f;
-        }
-        return $this->__addList($files, $options);
-    }
-    private function __addList(array $files, array $options): array {
-        $added = [];
-        foreach ($files as $f) {
-            if (is_dir($f)) { continue; }
-            $entry = $f;
-            if (isset($options['remove_path']) && str_starts_with($entry, $options['remove_path'])) {
-                $entry = ltrim(substr($entry, strlen($options['remove_path'])), '/');
-            }
-            if (!empty($options['remove_all_path'])) { $entry = basename($entry); }
-            if (isset($options['add_path'])) { $entry = $options['add_path'] . $entry; }
-            if ($this->addFile($f, $entry)) { $added[] = $f; }
-        }
-        return $added;
-    }
-    public function renameIndex(int $index, string $new_name): bool {
-        $this->__chk();
-        if ($new_name === '') { throw new ValueError('ZipArchive::renameIndex(): Argument #2 ($new_name) must not be empty'); }
-        $r = __zip('rename', $this->__h(), $index, $new_name); $this->__sync(); return $r;
-    }
-    public function renameName(string $name, string $new_name): bool {
-        $this->__chk();
-        if ($new_name === '') { throw new ValueError('ZipArchive::renameName(): Argument #2 ($new_name) must not be empty'); }
-        $r = __zip('rename', $this->__h(), $this->__idx($name), $new_name); $this->__sync(); return $r;
-    }
-    public function setArchiveComment(string $comment): bool { $this->__chk(); $r = __zip('set_archive_comment', $this->__h(), $comment); $this->__sync(); return $r; }
-    public function getArchiveComment(int $flags = 0): string|false { $this->__chk(); return __zip('get_archive_comment', $this->__h()); }
-    public function setArchiveFlag(int $flag, int $value): bool { $this->__chk(); return true; }
-    public function getArchiveFlag(int $flag, int $flags = 0): int { $this->__chk(); return 0; }
-    public function setCommentIndex(int $index, string $comment): bool { $this->__chk(); return __zip('set_comment', $this->__h(), $index, $comment); }
-    public function setCommentName(string $name, string $comment): bool { $this->__chk(); return __zip('set_comment', $this->__h(), $this->__idx($name), $comment); }
-    public function setMtimeIndex(int $index, int $timestamp, int $flags = 0): bool { $this->__chk(); return __zip('set_mtime', $this->__h(), $index, $timestamp); }
-    public function setMtimeName(string $name, int $timestamp, int $flags = 0): bool { $this->__chk(); return __zip('set_mtime', $this->__h(), $this->__idx($name), $timestamp); }
-    public function getCommentIndex(int $index, int $flags = 0): string|false { $this->__chk(); return __zip('get_comment', $this->__h(), $index); }
-    public function getCommentName(string $name, int $flags = 0): string|false { $this->__chk(); return __zip('get_comment', $this->__h(), $this->__idx($name)); }
-    public function deleteIndex(int $index): bool { $this->__chk(); $r = __zip('delete', $this->__h(), $index); $this->__sync(); return $r; }
-    public function deleteName(string $name): bool { $this->__chk(); $r = __zip('delete', $this->__h(), $this->__idx($name)); $this->__sync(); return $r; }
-    public function statName(string $name, int $flags = 0): array|false { $this->__chk(); return __zip('stat', $this->__h(), $this->__idx($name, $flags)); }
-    public function statIndex(int $index, int $flags = 0): array|false { $this->__chk(); return __zip('stat', $this->__h(), $index); }
-    public function locateName(string $name, int $flags = 0): int|false { $this->__chk(); return __zip('locate', $this->__h(), $name, $flags); }
-    public function getNameIndex(int $index, int $flags = 0): string|false { $this->__chk(); return __zip('name', $this->__h(), $index); }
-    public function unchangeArchive(): bool { $this->__chk(); $r = __zip('unchange_archive', $this->__h()); $this->__sync(); return $r; }
-    public function unchangeAll(): bool { $this->__chk(); $r = __zip('unchange_all', $this->__h()); $this->__sync(); return $r; }
-    public function unchangeIndex(int $index): bool { $this->__chk(); $r = __zip('unchange', $this->__h(), $index); $this->__sync(); return $r; }
-    public function unchangeName(string $name): bool { $this->__chk(); $r = __zip('unchange', $this->__h(), $this->__idx($name)); $this->__sync(); return $r; }
-    public function extractTo(string $pathto, array|string|null $files = null): bool { $this->__chk(); return __zip('extract', $this->__h(), $pathto, $files); }
-    public function getFromName(string $name, int $len = 0, int $flags = 0): string|false {
-        $this->__chk();
-        if ($len < 0) { throw new ValueError('ZipArchive::getFromName(): Argument #2 ($len) must be greater than or equal to 0'); }
-        $i = $this->__idx($name, $flags);
-        $r = $i < 0 ? false : __zip('get', $this->__h(), $i, $len);
-        $this->__sync();
-        return $r;
-    }
-    public function getFromIndex(int $index, int $len = 0, int $flags = 0): string|false {
-        $this->__chk();
-        if ($len < 0) { throw new ValueError('ZipArchive::getFromIndex(): Argument #2 ($len) must be greater than or equal to 0'); }
-        $r = __zip('get', $this->__h(), $index, $len);
-        $this->__sync();
-        return $r;
-    }
-    private function __stream($data) {
-        if ($data === false) { return false; }
-        $s = fopen('php://memory', 'w+b');
-        fwrite($s, $data);
-        rewind($s);
-        return $s;
-    }
-    public function getStreamIndex(int $index, int $flags = 0) { $this->__chk(); $r = __zip('get', $this->__h(), $index, 0); $this->__sync(); return $this->__stream($r); }
-    public function getStreamName(string $name, int $flags = 0) { $this->__chk(); return $this->getStreamIndex($this->__idx($name, $flags)); }
-    public function getStream(string $name) { $this->__chk(); return $this->getStreamIndex($this->__idx($name)); }
-    public function setExternalAttributesName(string $name, int $opsys, int $attr, int $flags = 0): bool { $this->__chk(); return __zip('set_attr', $this->__h(), $this->__idx($name), $opsys, $attr); }
-    public function setExternalAttributesIndex(int $index, int $opsys, int $attr, int $flags = 0): bool { $this->__chk(); return __zip('set_attr', $this->__h(), $index, $opsys, $attr); }
-    public function getExternalAttributesName(string $name, &$opsys, &$attr, int $flags = 0): bool {
-        $this->__chk();
-        $r = __zip('get_attr', $this->__h(), $this->__idx($name));
-        if ($r === false) { return false; }
-        [$opsys, $attr] = $r;
-        return true;
-    }
-    public function getExternalAttributesIndex(int $index, &$opsys, &$attr, int $flags = 0): bool {
-        $this->__chk();
-        $r = __zip('get_attr', $this->__h(), $index);
-        if ($r === false) { return false; }
-        [$opsys, $attr] = $r;
-        return true;
-    }
-    public function setCompressionName(string $name, int $method, int $compflags = 0): bool { $this->__chk(); return __zip('set_compression', $this->__h(), $this->__idx($name), $method); }
-    public function setCompressionIndex(int $index, int $method, int $compflags = 0): bool { $this->__chk(); return __zip('set_compression', $this->__h(), $index, $method); }
-    public function setEncryptionName(string $name, int $method, ?string $password = null): bool { $this->__chk(); return $method === 0; }
-    public function setEncryptionIndex(int $index, int $method, ?string $password = null): bool { $this->__chk(); return $method === 0; }
-    public function registerProgressCallback(float $rate, callable $callback): bool { $this->__chk(); return true; }
-    public function registerCancelCallback(callable $callback): bool { $this->__chk(); return true; }
-    public static function isCompressionMethodSupported(int $method, bool $enc = true): bool { return in_array($method, [-1, 0, 8], true); }
-    public static function isEncryptionMethodSupported(int $method, bool $enc = true): bool { return $method === 0; }
-}
-"#
-);

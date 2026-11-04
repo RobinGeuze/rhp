@@ -250,6 +250,10 @@ fn print_info(flag: i64) -> Vec<u8> {
                 print_iconv(&mut o);
             } else if *e == "mbstring" {
                 print_mbstring(&mut o);
+            } else if *e == "zip" {
+                for (k, v) in crate::ext::zip::info_rows() {
+                    o.row(&[&k, &v]);
+                }
             } else {
                 o.row(&[&format!("{e} support"), "enabled"]);
             }

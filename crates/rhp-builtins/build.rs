@@ -50,6 +50,18 @@ fn main() {
         .flag_if_supported("-Wno-unused-parameter")
         .compile("rhp_curl_shim");
 
+    // ext/zip's constants against the linked zip.h, and its layout checks.
+    for f in ["src/ext/zip/shim.c", "src/ext/zip/consts.h"] {
+        println!("cargo:rerun-if-changed={f}");
+    }
+    cc::Build::new()
+        .file("src/ext/zip/shim.c")
+        .include(include("LIBZIP"))
+        .warnings(true)
+        .extra_warnings(true)
+        .flag_if_supported("-Wno-deprecated-declarations")
+        .compile("rhp_zip_shim");
+
     // ICU is C++; its .pc files leave the C++ runtime to the linker driver.
     match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
         Ok("macos") | Ok("ios") => println!("cargo:rustc-link-lib=dylib=c++"),

@@ -9475,6 +9475,7 @@ tests/lang/passByReference_009.phpt
 tests/lang/passByReference_012.phpt
 tests/lang/returnByReference.001.phpt
 tests/lang/static_basic_001.phpt
+tests/lang/static_variation_001.phpt
 tests/lang/static_variation_002.phpt
 tests/lang/string/unicode_escape.phpt
 tests/lang/string/unicode_escape_empty.phpt

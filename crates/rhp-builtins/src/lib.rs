@@ -2,8 +2,9 @@
 //! interpreter exposes to builtins.
 //!
 //! Builtins operate on owned `Value`s only — they never touch the arena/AST,
-//! so this crate depends on `rhp-values` (and the C libraries it links),
-//! never on the compiler or the VM (no dependency cycle).
+//! so this crate depends on `rhp-values` and `rhp-bytecode` (the stub
+//! signatures), plus the C libraries it links, never on the compiler or the
+//! VM (no dependency cycle).
 //! The interpreter talks back through [`Host`].
 
 use std::collections::HashMap;

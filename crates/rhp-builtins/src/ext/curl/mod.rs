@@ -8,8 +8,11 @@
 //! `curl_multi_perform`; callbacks reach PHP through the FFI callback layer
 //! (`ext::libxml::ffi`). `curl_multi_*` runs on the VM thread.
 //!
-//! Paths handed to libcurl (cookie files, CA bundles, keys) are made
-//! absolute against rhp's current directory first.
+//! File paths handed to libcurl (cookie files, CA bundles) are made
+//! absolute against rhp's current directory first, so curl_getinfo()'s
+//! `cainfo` shows a relative CAINFO made absolute where php shows it as
+//! given. SSLCERT and SSLKEY may name a key instead (`pkcs11:…`) and are
+//! passed as given.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

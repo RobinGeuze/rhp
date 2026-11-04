@@ -1392,7 +1392,8 @@ const STR: &[&str] = &[
     "PROTOCOLS_STR",
     "REDIR_PROTOCOLS_STR",
 ];
-/// String options (same case as [`STR`]) that name files.
+/// String options (same case as [`STR`]) that name files libcurl opens:
+/// made absolute, except [`MAYBE_KEY`].
 const STR_PATH: &[&str] = &[
     "CAINFO",
     "CAPATH",
@@ -1406,6 +1407,9 @@ const STR_PATH: &[&str] = &[
     "ALTSVC",
     "PROXY_ISSUERCERT",
 ];
+/// File options whose value may instead name a key in a token or engine
+/// (`pkcs11:…`, an engine key id): passed as given.
+const MAYBE_KEY: &[&str] = &["SSLCERT", "SSLKEY", "PROXY_SSLCERT", "PROXY_SSLKEY"];
 const NULLABLE: &[&str] = &[
     "CUSTOMREQUEST",
     "FTPPORT",
@@ -1524,6 +1528,19 @@ fn build_kinds() -> HashMap<i64, Kind> {
 fn kinds() -> &'static HashMap<i64, Kind> {
     static KINDS: std::sync::OnceLock<HashMap<i64, Kind>> = std::sync::OnceLock::new();
     KINDS.get_or_init(|| rhp_values::mem::uncounted(build_kinds))
+}
+
+/// A file option's value as libcurl gets it.
+fn path_value(option: i64, s: Vec<u8>) -> Vec<u8> {
+    let key = MAYBE_KEY.iter().any(|n| {
+        let n = format!("CURLOPT_{n}");
+        sys::php_defined(&n) && sys::php(&n) == option
+    });
+    if key {
+        s
+    } else {
+        absolute_path(&s)
+    }
 }
 
 /// The name php gives a callable option in errors.
@@ -1759,7 +1776,7 @@ fn set_option(
         }
         Some(Kind::Path) | Some(Kind::FilePath) => {
             let s = crate::argparse::zval_get_string(host, &zvalue)?;
-            return option_str(host, f, e, pending, option, &absolute_path(&s));
+            return option_str(host, f, e, pending, option, &path_value(option, s));
         }
         Some(Kind::Nullable) | Some(Kind::NullablePath) => {
             if matches!(zvalue, Value::Null) {

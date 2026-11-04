@@ -2008,8 +2008,8 @@ is_type!(
 fn fn_intval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
     let base = args.get(1).map(|b| conv::to_int(&deref(b))).unwrap_or(10);
-    // zval_get_long: an internal class's cast_object.
-    if let Some(n) = object::cast(host, &v, object::CastTarget::Int)? {
+    // zval_get_long: the object's cast_object.
+    if let Some(n) = object::object_to_number(host, &v, object::CastTarget::Int)? {
         return Ok(Value::Int(conv::to_int(&n)));
     }
     // `base` applies only to a string argument; base 10 is plain integer conversion.
@@ -2084,8 +2084,8 @@ fn detect_prefix(rest: &[u8], base: i64) -> (usize, i64) {
 }
 
 fn fn_floatval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // zval_get_double: an internal class's cast_object.
-    if let Some(f) = object::cast(host, &args[0], object::CastTarget::Float)? {
+    // zval_get_double: the object's cast_object.
+    if let Some(f) = object::object_to_number(host, &args[0], object::CastTarget::Float)? {
         return Ok(Value::Float(conv::to_float(&f)));
     }
     Ok(Value::Float(conv::to_float(&args[0])))
@@ -2117,11 +2117,7 @@ fn fn_strval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_boolval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // zend_is_true: an internal class's cast_object.
-    if let Some(b) = object::cast(host, &args[0], object::CastTarget::Bool)? {
-        return Ok(Value::Bool(conv::to_bool(&b)));
-    }
-    Ok(Value::Bool(conv::to_bool(&args[0])))
+    Ok(Value::Bool(object::is_true(host, &args[0])?))
 }
 
 fn fn_strlen(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -2364,28 +2360,70 @@ fn extremum(host: &mut dyn Host, args: &[Value], want_max: bool) -> Result<Value
     Ok(args[best].clone())
 }
 
-fn fn_array_sum(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Value::Array(a) = deref(&args[0]) else {
-        return Err(Thrown::type_error(
-            "array_sum(): Argument #1 ($array) must be of type array",
-        ));
-    };
-    let mut acc = Value::Int(0);
-    for (_, v) in a.iter() {
-        acc = ops::add(&acc, v)?;
-    }
-    Ok(acc)
+fn fn_array_sum(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    array_binop(host, args, "array_sum", "Addition", ops::add, 0)
 }
 
-fn fn_array_product(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_array_product(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    array_binop(host, args, "array_product", "Multiplication", ops::mul, 1)
+}
+
+/// php_array_binop: `op` over the entries, objects by their
+/// `cast_object(_IS_NUMBER)`. An entry the operator refuses is skipped
+/// with a warning (a resource counts as its id, a non-numeric string as 0).
+fn array_binop(
+    host: &mut dyn Host,
+    args: &[Value],
+    fname: &str,
+    op_name: &str,
+    op: fn(&Value, &Value) -> Result<Value, Thrown>,
+    initial: i64,
+) -> Result<Value, Thrown> {
     let Value::Array(a) = deref(&args[0]) else {
-        return Err(Thrown::type_error(
-            "array_product(): Argument #1 ($array) must be of type array",
-        ));
+        return Err(Thrown::type_error(format!(
+            "{fname}(): Argument #1 ($array) must be of type array"
+        )));
     };
-    let mut acc = Value::Int(1);
+    let mut acc = Value::Int(initial);
     for (_, v) in a.iter() {
-        acc = ops::mul(&acc, v)?;
+        let v = deref(v);
+        let operand = match &v {
+            Value::Object(_) | Value::Closure(_) => {
+                match object::cast(host, &v, object::CastTarget::Number)? {
+                    Some(n @ (Value::Int(_) | Value::Float(_))) => Some(n),
+                    _ => None,
+                }
+            }
+            Value::Array(_) => None,
+            Value::Resource(r) => {
+                acc = op(&acc, &Value::Int(r.id as i64))?;
+                None
+            }
+            Value::Str(s) => match conv::scan_number(s.as_bytes()) {
+                None => {
+                    acc = op(&acc, &Value::Int(0))?;
+                    None
+                }
+                Some(_) => {
+                    if conv::numeric_string(s.as_bytes()).is_none() {
+                        host.emit_diagnostic(E_WARNING, "A non-numeric value encountered")?;
+                    }
+                    Some(v.clone())
+                }
+            },
+            _ => Some(v.clone()),
+        };
+        match operand {
+            Some(n) => acc = op(&acc, &n)?,
+            None => {
+                let ty = type_name_of(host, &v);
+                warn(
+                    host,
+                    fname,
+                    &format!("{op_name} is not supported on type {ty}"),
+                )?
+            }
+        }
     }
     Ok(acc)
 }
@@ -2526,14 +2564,15 @@ fn fn_array_filter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     let mut out = PhpArray::new();
     for (k, v) in a.iter() {
         let keep = match cb {
-            None => conv::to_bool(v),
+            None => object::is_true(host, v)?,
             Some(cb) => {
                 let call_args: Vec<Value> = match mode {
                     2 => vec![key_to_value(k)],            // ARRAY_FILTER_USE_KEY
                     1 => vec![v.clone(), key_to_value(k)], // ARRAY_FILTER_USE_BOTH
                     _ => vec![v.clone()],
                 };
-                conv::to_bool(&host.call_callable(cb, &call_args)?)
+                let r = host.call_callable(cb, &call_args)?;
+                object::is_true(host, &r)?
             }
         };
         if keep {

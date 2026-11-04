@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 pub use rhp_semantics::ops::CastTarget;
-use rhp_values::{ObjectHandle, PhpArray, Thrown, Value};
+use rhp_values::{conv, ObjectHandle, PhpArray, Thrown, Value};
 
 use crate::Host;
 
@@ -389,6 +389,52 @@ pub fn cast(host: &mut dyn Host, v: &Value, target: CastTarget) -> Result<Option
         Some(f) => f(host, &h, target),
         None => Ok(None),
     }
+}
+
+/// php's `zend_is_true`: an object's `cast_object(_IS_BOOL)` (a zero GMP,
+/// an empty SimpleXML list are false), else the value's truthiness.
+pub fn is_true(host: &mut dyn Host, v: &Value) -> Result<bool, Thrown> {
+    Ok(match cast(host, v, CastTarget::Bool)? {
+        Some(b) => conv::to_bool(&b),
+        None => conv::to_bool(v),
+    })
+}
+
+/// `zval_get_long` / `zval_get_double` of an object (`(int)`, `intval()`,
+/// …): its `cast_object`, else php's "could not be converted" warning
+/// (`convert_object_to_type`) and 1. `None` when `v` is not an object.
+pub fn object_to_number(
+    host: &mut dyn Host,
+    v: &Value,
+    target: CastTarget,
+) -> Result<Option<Value>, Thrown> {
+    let class = match v {
+        Value::Object(h) => {
+            let class = h.borrow().class;
+            host.class_name(class).unwrap_or_default()
+        }
+        Value::Closure(_) => b"Closure".to_vec(),
+        Value::Ref(r) => {
+            let inner = r.borrow().clone();
+            return object_to_number(host, &inner, target);
+        }
+        _ => return Ok(None),
+    };
+    if let Some(n) = cast(host, v, target)? {
+        return Ok(Some(n));
+    }
+    let (ty, one) = match target {
+        CastTarget::Float => ("float", Value::Float(1.0)),
+        _ => ("int", Value::Int(1)),
+    };
+    host.emit_diagnostic(
+        crate::E_WARNING,
+        &format!(
+            "Object of class {} could not be converted to {ty}",
+            String::from_utf8_lossy(&class)
+        ),
+    )?;
+    Ok(Some(one))
 }
 
 #[cfg(test)]

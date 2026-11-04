@@ -2913,7 +2913,7 @@ impl Vm {
                 Some(m) => {
                     let nm = Value::str(pname.as_bytes().to_vec());
                     let r = self.call_magic(&m, &h, cls, b"__isset", &pname, vec![nm])?;
-                    conv::to_bool(&r)
+                    self.truthy(&r)?
                 }
                 None => false,
             },
@@ -2935,21 +2935,22 @@ impl Vm {
             PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
             PropRes::Denied(_) => None,
         };
+        // zend_is_true, through an object's cast_object.
         if let Some(v) = present {
-            return Ok(!conv::to_bool(&deref(&v)));
+            return Ok(!self.truthy(&deref(&v))?);
         }
         let nm = || Value::str(pname.as_bytes().to_vec());
         let Some(m) = self.magic(&h, cls, b"__isset", &pname) else {
             return Ok(true);
         };
         let r = self.call_magic(&m, &h, cls, b"__isset", &pname, vec![nm()])?;
-        if !conv::to_bool(&r) {
+        if !self.truthy(&r)? {
             return Ok(true);
         }
         match self.magic(&h, cls, b"__get", &pname) {
             Some(g) => {
                 let v = self.call_magic(&g, &h, cls, b"__get", &pname, vec![nm()])?;
-                Ok(!conv::to_bool(&deref(&v)))
+                Ok(!self.truthy(&deref(&v))?)
             }
             None => Ok(true),
         }
@@ -2976,7 +2977,7 @@ impl Vm {
         let nm = || Value::str(pname.as_bytes().to_vec());
         if let Some(m) = self.magic(&h, cls, b"__isset", &pname) {
             let r = self.call_magic(&m, &h, cls, b"__isset", &pname, vec![nm()])?;
-            if !conv::to_bool(&r) {
+            if !self.truthy(&r)? {
                 return Ok(Value::Null);
             }
         }
@@ -6387,8 +6388,9 @@ impl Vm {
 
                 Instr::CastInt { dst, a } => {
                     let v = self.reg_get(top, a);
-                    // An internal class's cast_object (curl handles: the id).
-                    let n = match self.handler_cast(&v, CastTarget::Int)? {
+                    // zval_get_long: an object's cast_object (curl handles:
+                    // the id), else a warning.
+                    let n = match builtins::object::object_to_number(self, &v, CastTarget::Int)? {
                         Some(n) => conv::to_int(&n),
                         None => conv::to_int(&v),
                     };
@@ -6396,7 +6398,7 @@ impl Vm {
                 }
                 Instr::CastFloat { dst, a } => {
                     let v = self.reg_get(top, a);
-                    let f = match self.handler_cast(&v, CastTarget::Float)? {
+                    let f = match builtins::object::object_to_number(self, &v, CastTarget::Float)? {
                         Some(f) => conv::to_float(&f),
                         None => conv::to_float(&v),
                     };

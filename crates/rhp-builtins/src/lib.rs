@@ -126,6 +126,18 @@ pub fn constant_deprecation(name: &[u8]) -> Option<String> {
         .or_else(|| ext::dom::constant_deprecation(name))
 }
 
+/// The value php's compiler substitutes for the global constant `name`
+/// (zend_try_ct_eval_const): a builtin constant that is not deprecated.
+pub fn ct_constant(name: &[u8]) -> Option<Value> {
+    if constant_deprecation(name).is_some() {
+        return None;
+    }
+    constants()
+        .into_iter()
+        .find(|(n, _)| n.as_bytes() == name)
+        .map(|(_, v)| v)
+}
+
 /// The E_DEPRECATED a fetch of a built-in class's `#[\Deprecated]`
 /// constant raises (`class` is the declaring class).
 pub fn class_constant_deprecation(class: &[u8], name: &[u8]) -> Option<String> {

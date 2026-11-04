@@ -989,7 +989,6 @@ dependencies = [
  "mago-span",
  "mago-syntax",
  "mago-syntax-core",
- "rhp-builtins",
  "rhp-bytecode",
  "rhp-sapi",
  "rhp-values",

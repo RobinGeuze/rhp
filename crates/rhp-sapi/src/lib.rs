@@ -173,6 +173,13 @@ fn parse_failure(parsed: &Parsed, src: &[u8]) -> Option<IncludeError> {
     })
 }
 
+/// rhp-builtins as the compiler sees it.
+static BUILTINS: rhp_compiler::Builtins = rhp_compiler::Builtins {
+    prelude: rhp_builtins::prelude,
+    native_function: |name| rhp_builtins::registry().contains_key(name),
+    constant: rhp_builtins::ct_constant,
+};
+
 /// Parse and compile the source `src` of `file` as rhp runs a file: php's
 /// own grammar decides what parses (see [`parse_error`]), then the
 /// compiler. Every script, include, eval and preload goes through here, and
@@ -183,7 +190,7 @@ pub fn compile_file(file: &str, src: &[u8], mode: Mode) -> Result<Program, Inclu
     if let Some(e) = parse_failure(&parsed, src) {
         return Err(e);
     }
-    rhp_compiler::compile(parsed.program(), src, file, mode).map_err(include_error)
+    rhp_compiler::compile(&BUILTINS, parsed.program(), src, file, mode).map_err(include_error)
 }
 
 /// The includer every SAPI installs: compile an included or eval'd file.

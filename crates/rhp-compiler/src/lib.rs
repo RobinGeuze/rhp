@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use crate::parse::cst::{Node, Program as AstProgram, Statement};
 use rhp_bytecode::{Instr, Program};
-use rhp_values::{PhpStr, Thrown};
+use rhp_values::{PhpStr, Thrown, Value};
 
 use crate::builder::{ProtoBuilder, ScopeKind};
 use crate::decl::{compile_class, compile_enum, compile_interface, compile_trait};
@@ -67,19 +67,38 @@ pub enum Mode {
     Include,
 }
 
+/// What the compiler needs to know about the engine's builtins.
+/// rhp-builtins has the answers and the request layer passes them in
+/// (`rhp_sapi::compile_file`), so the compiler does not depend on
+/// rhp-builtins and builds alongside it.
+pub struct Builtins {
+    /// The PHP prelude: the core classes first, then each module's classes
+    /// and helper functions. Compiled once per thread for each prelude
+    /// source (the same `&str`), and the start of every [`Mode::Main`]
+    /// program.
+    pub prelude: fn() -> &'static str,
+    /// Is `name` (lowercase) a native builtin function?
+    pub native_function: fn(&str) -> bool,
+    /// The value php's compiler substitutes for the global constant `name`
+    /// (zend_try_ct_eval_const): a builtin constant that is not deprecated.
+    pub constant: fn(&[u8]) -> Option<Value>,
+}
+
 /// Compile a parsed program into an owned, runnable bytecode `Program` (no
 /// `'arena` borrow escapes). `source` and `file` give protos their lines
 /// and file name (exception `getLine()`/`getFile()`, diagnostics).
 pub fn compile(
+    builtins: &Builtins,
     program: &AstProgram,
     source: &[u8],
     file: &str,
     mode: Mode,
 ) -> Result<Program, Thrown> {
-    compile_program(program, source, file, mode == Mode::Main)
+    compile_program(builtins, program, source, file, mode == Mode::Main)
 }
 
 fn compile_program(
+    builtins: &Builtins,
     program: &AstProgram,
     source: &[u8],
     file: &str,
@@ -93,7 +112,7 @@ fn compile_program(
         Rc::new(NsContext::default()),
         &mut flat,
     );
-    let cx = FileCtx::new(file, source, program, &flat);
+    let cx = FileCtx::new(builtins, file, source, program, &flat);
     let r = compile_file(&cx, &flat, with_prelude);
     // A recorded compile error came first in source order (compilation stops
     // at the first one in php), so it wins over a later refusal too.
@@ -115,7 +134,7 @@ fn compile_file(
     // the built-in exception hierarchy (the "prelude"), compiled once per
     // thread and shared from the cache.
     let (mut classes, mut functions) = if with_prelude {
-        let p = prelude_classes()?;
+        let p = prelude_classes(cx.builtins)?;
         *cx.closures.borrow_mut() = p.closures.clone();
         (p.classes.clone(), p.functions.clone())
     } else {

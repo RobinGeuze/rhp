@@ -1,10 +1,13 @@
-//! The compiled prelude is cached per thread: every program compiled with it
-//! gets the same prelude, whatever the user file contains (or whether the
-//! previous compile failed), and include programs carry none of it.
+//! The compiled prelude is cached per thread and per prelude source: every
+//! program compiled with it gets the same prelude, whatever the user file
+//! contains (or whether the previous compile failed), and include programs
+//! carry none of it.
 
 use std::rc::Rc;
 
 use rhp_bytecode::Program;
+use rhp_compiler::parse::Arena;
+use rhp_compiler::Builtins;
 use rhp_sapi::{compile_file, Mode};
 
 fn main_prog(src: &str) -> Program {
@@ -72,4 +75,30 @@ fn include_programs_carry_no_prelude() {
     assert_eq!(p.classes.len(), 1);
     assert_eq!(p.functions.len(), 1);
     assert_eq!(p.closures.len(), 1);
+}
+
+#[test]
+fn prelude_is_compiled_per_source() {
+    static A: Builtins = Builtins {
+        prelude: || "<?php\nclass A {}\n",
+        native_function: |_| false,
+        constant: |_| None,
+    };
+    static B: Builtins = Builtins {
+        prelude: || "<?php\nclass B {}\nclass C {}\n",
+        native_function: |_| false,
+        constant: |_| None,
+    };
+    let compile = |b: &Builtins| {
+        let src = b"<?php\nclass D {}\n";
+        let arena = Arena::new();
+        let parsed = arena.parse(b"t.php", src);
+        rhp_compiler::compile(b, parsed.program(), src, "t.php", Mode::Main).expect("compile")
+    };
+    let all = |p: &Program| names(p, p.classes.len());
+    assert_eq!(all(&compile(&A)), ["A", "D"]);
+    assert_eq!(all(&compile(&B)), ["B", "C", "D"]);
+    let a = compile(&A);
+    assert_eq!(all(&a), ["A", "D"]);
+    assert_eq!(a.num_prelude_classes, 1);
 }

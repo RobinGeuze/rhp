@@ -359,13 +359,10 @@ impl ProtoBuilder<'_> {
             }
         }
         let (name, fallback) = self.cx.resolve_name(id, NameKind::Const);
-        if fallback.is_some() || rhp_builtins::constant_deprecation(&name).is_some() {
+        if fallback.is_some() {
             return None;
         }
-        rhp_builtins::constants()
-            .into_iter()
-            .find(|(n, _)| n.as_bytes() == name.as_slice())
-            .map(|(_, v)| v)
+        (self.cx.builtins.constant)(&name)
     }
 
     /// `$f(args)` — call a runtime callable value. The callee is evaluated to a
@@ -873,14 +870,14 @@ fn unparen<'a>(mut e: &'a Expression<'a>) -> &'a Expression<'a> {
 fn builtin_sig(cx: &FileCtx, name_lc: &[u8]) -> Option<&'static rhp_bytecode::signatures::Func> {
     let f = rhp_bytecode::signatures::function(name_lc)?;
     let name = std::str::from_utf8(name_lc).ok()?;
-    if rhp_builtins::registry().contains_key(name) {
+    if (cx.builtins.native_function)(name) {
         return Some(f);
     }
     // While the prelude itself compiles, every function it calls exists.
     if cx.is_prelude {
         return Some(f);
     }
-    let in_prelude = prelude_classes()
+    let in_prelude = prelude_classes(cx.builtins)
         .ok()?
         .functions
         .iter()

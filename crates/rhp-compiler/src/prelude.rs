@@ -11,6 +11,7 @@ use crate::decl::{compile_class, compile_interface};
 use crate::file::FileCtx;
 use crate::functions::compile_function;
 use crate::names::NsContext;
+use crate::Builtins;
 
 /// The compiled prelude: built-in classes, helper functions, and the
 /// closures their bodies declare (always program closures `0..n`).
@@ -23,27 +24,36 @@ pub(crate) struct PreludeParts {
 thread_local! {
     /// The prelude, compiled on first use and shared by every later compile on
     /// this thread (protos hold `Rc`s, so the cache is per thread — matching
-    /// the VM-per-thread model). It depends on no per-file state: it is
-    /// compiled in a [`FileCtx`] of its own.
-    static PRELUDE_CACHE: RefCell<Option<Rc<PreludeParts>>> = const { RefCell::new(None) };
+    /// the VM-per-thread model), keyed on its source. It depends on no
+    /// per-file state: it is compiled in a [`FileCtx`] of its own.
+    static PRELUDE_CACHE: RefCell<Option<(&'static str, Rc<PreludeParts>)>> =
+        const { RefCell::new(None) };
 }
 
-/// The compiled prelude, compiling it on this thread's first call.
-pub(crate) fn prelude_classes() -> Result<Rc<PreludeParts>, Thrown> {
-    if let Some(p) = PRELUDE_CACHE.with(|c| c.borrow().clone()) {
+/// The compiled prelude of `builtins`, compiling it on this thread's first
+/// call for its source.
+pub(crate) fn prelude_classes(builtins: &Builtins) -> Result<Rc<PreludeParts>, Thrown> {
+    let src = (builtins.prelude)();
+    let cached = PRELUDE_CACHE.with(|c| {
+        c.borrow()
+            .as_ref()
+            .filter(|(s, _)| std::ptr::eq(*s, src))
+            .map(|(_, p)| p.clone())
+    });
+    if let Some(p) = cached {
         return Ok(p);
     }
     // Compiled once per thread, kept for every later request: not counted
     // against a request's memory.
-    let parts = rhp_values::mem::uncounted(|| prelude_classes_isolated().map(Rc::new))?;
-    PRELUDE_CACHE.with(|c| *c.borrow_mut() = Some(parts.clone()));
+    let parts =
+        rhp_values::mem::uncounted(|| prelude_classes_isolated(builtins, src).map(Rc::new))?;
+    PRELUDE_CACHE.with(|c| *c.borrow_mut() = Some((src, parts.clone())));
     Ok(parts)
 }
 
 /// Compile the prelude in a [`FileCtx`] of its own, so the result is
 /// independent of whichever file happened to trigger it.
-fn prelude_classes_isolated() -> Result<PreludeParts, Thrown> {
-    let src = rhp_builtins::prelude();
+fn prelude_classes_isolated(builtins: &Builtins, src: &str) -> Result<PreludeParts, Thrown> {
     let arena = crate::parse::Arena::new();
     let parsed = arena.parse(b"<prelude>", src.as_bytes());
     let flat: Vec<(Rc<NsContext>, &Statement)> = parsed
@@ -56,7 +66,7 @@ fn prelude_classes_isolated() -> Result<PreludeParts, Thrown> {
     // protos as internal code (skipped for exception file/line, `[internal
     // function]` in traces). No line map: prelude line numbers are never
     // surfaced. Method calls see the prelude's own by-ref signatures.
-    let cx = FileCtx::prelude(&flat);
+    let cx = FileCtx::prelude(builtins, &flat);
     let compile = || -> Result<(Vec<ClassProto>, Vec<Rc<FunctionProto>>), Thrown> {
         let mut classes = Vec::new();
         let mut functions = Vec::new();

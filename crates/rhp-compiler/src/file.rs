@@ -11,11 +11,14 @@ use rhp_values::{PhpStr, Thrown, Value};
 
 use crate::fold::fold_const;
 use crate::names::{join_ns, NsContext};
+use crate::Builtins;
 
 /// The file being compiled. Each compile builds one (the prelude its own) and
 /// every builder borrows it, so nothing outlives the compile or leaks into
 /// the next one on the thread.
 pub(crate) struct FileCtx<'s> {
+    /// The builtins the file is compiled against.
+    pub(crate) builtins: &'s Builtins,
     /// The file name for debug info, getFile() and `__FILE__`. Empty for the
     /// prelude.
     pub(crate) file: PhpStr,
@@ -72,8 +75,9 @@ pub(crate) struct FileCtx<'s> {
 }
 
 impl<'s> FileCtx<'s> {
-    fn empty(file: PhpStr, src: &'s [u8]) -> Self {
+    fn empty(builtins: &'s Builtins, file: PhpStr, src: &'s [u8]) -> Self {
         FileCtx {
+            builtins,
             file,
             src,
             tokens: OnceCell::new(),
@@ -96,12 +100,13 @@ impl<'s> FileCtx<'s> {
 
     /// A user file: `flat` is its statements with their namespace contexts.
     pub(crate) fn new(
+        builtins: &'s Builtins,
         file: &str,
         src: &'s [u8],
         program: &AstProgram,
         flat: &[(Rc<NsContext>, &Statement)],
     ) -> Self {
-        let mut cx = Self::empty(PhpStr::from_bytes(file.as_bytes().to_vec()), src);
+        let mut cx = Self::empty(builtins, PhpStr::from_bytes(file.as_bytes().to_vec()), src);
         // Before the line map: `__LINE__` folds to 0 here.
         cx.strict_types = detect_strict_types(&cx, program);
         cx.line_starts = build_line_starts(src);
@@ -125,8 +130,11 @@ impl<'s> FileCtx<'s> {
 
     /// The prelude: no file name, source or line map, and only its own
     /// method signatures (`flat` is its statements).
-    pub(crate) fn prelude(flat: &[(Rc<NsContext>, &Statement)]) -> FileCtx<'static> {
-        let mut cx = FileCtx::empty(PhpStr::from_bytes(Vec::new()), b"");
+    pub(crate) fn prelude(
+        builtins: &'s Builtins,
+        flat: &[(Rc<NsContext>, &Statement)],
+    ) -> FileCtx<'s> {
+        let mut cx = FileCtx::empty(builtins, PhpStr::from_bytes(Vec::new()), b"");
         cx.is_prelude = true;
         cx.method_ref = collect_method_refs(flat);
         cx

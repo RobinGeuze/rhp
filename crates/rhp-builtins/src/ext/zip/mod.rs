@@ -271,19 +271,9 @@ fn fn_zip_prop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let op = rhp_values::conv::to_int(&deref(&args[0]));
     let this = deref(&args[1]);
     let name = rhp_values::conv::to_string_bytes(&deref(&args[2]));
+    // Another name: the prelude's __set creates it, and the engine raises
+    // the dynamic-property deprecation by the object's class flags.
     let Some(name) = PROPS.iter().find(|p| p.as_bytes() == name.as_slice()) else {
-        if op == 1 {
-            // The prelude's __set creates it: php's deprecation, which the
-            // engine leaves out for prelude code.
-            host.emit_diagnostic(
-                crate::E_DEPRECATED,
-                &format!(
-                    "Creation of dynamic property {}::${} is deprecated",
-                    class_of(host, &this),
-                    String::from_utf8_lossy(&name)
-                ),
-            )?;
-        }
         return Ok(Value::Null);
     };
     let Some(o) = zip_object(host, &this) else {

@@ -2116,7 +2116,6 @@ fn period_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<Va
             period_prop(host, &st, &s(&bytes(args, 1)))?
         }
         b"dp_set" => {
-            let h = obj(args, 0)?;
             let name = bytes(args, 1);
             if is_period_prop(&name) {
                 return Err(Thrown::error(
@@ -2124,17 +2123,8 @@ fn period_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<Va
                     format!("Cannot modify readonly property DatePeriod::${}", s(&name)),
                 ));
             }
-            let class = h.borrow().class;
-            if !host.class_has_property(class, &name) {
-                host.emit_diagnostic(
-                    crate::E_DEPRECATED,
-                    &format!(
-                        "Creation of dynamic property {}::${} is deprecated",
-                        s(c_str(&class_name(host, &h))),
-                        s(&name)
-                    ),
-                )?;
-            }
+            // Another name: the prelude's __set creates it, and the engine
+            // raises the dynamic-property deprecation.
             Value::Null
         }
         b"dp_isset" => {

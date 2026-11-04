@@ -376,18 +376,8 @@ pub fn dispatch(
         return no_prop();
     };
     let Some(prop) = find(base, name) else {
-        if op == 1 {
-            // Creating a dynamic property: php's deprecation, as the
-            // prelude's __set then writes it.
-            let class = super::class_of(cx.host, this);
-            cx.host.emit_diagnostic(
-                crate::E_DEPRECATED,
-                &format!(
-                    "Creation of dynamic property {class}::${} is deprecated",
-                    String::from_utf8_lossy(name)
-                ),
-            )?;
-        }
+        // A write: the prelude's __set then creates a dynamic property,
+        // which the engine checks as it would for php's write_property.
         return no_prop();
     };
     match op {

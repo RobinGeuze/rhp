@@ -3332,8 +3332,13 @@ impl Vm {
         let e = self.class(cls);
         let cname = String::from_utf8_lossy(e.name.as_bytes()).into_owned();
         let p = String::from_utf8_lossy(pname.as_bytes()).into_owned();
-        // Engine-internal (prelude) code manages its own objects.
-        let prelude = is_prelude_proto(&self.stack[top].proto);
+        // Engine-internal (prelude) code manages its own objects, except
+        // that a stand-in `__set` writes on behalf of the user's code.
+        let f = &self.stack[top];
+        let prelude = is_prelude_proto(&f.proto)
+            && !(f.proto.name.as_bytes().eq_ignore_ascii_case(b"__set")
+                && f.defining_class
+                    .is_some_and(|c| is_handler_accessor(self.class(c).name.as_bytes(), b"__set")));
         // ZEND_ACC_NO_DYNAMIC_PROPERTIES: enums, readonly classes and the
         // internal `@strict-properties` classes.
         if e.kind == ClassKind::Enum || e.flags.is_readonly || (e.flags.no_dynamic && !prelude) {

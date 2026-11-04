@@ -334,7 +334,8 @@ The original notes:
   read the same stat.
 
 ### 2.8 `chmod` / `chdir` / `clearstatcache` — RESOLVED (cache semantics aside)
-- `chmod`/`chdir`/`umask` are real (process-global cwd, like php CLI).
+- `chmod` is real; `chdir`/`getcwd`/`umask` are the request's (php's ZTS
+  virtual cwd, `rhp_builtins::vcwd`), with php CLI's results.
   `clearstatcache` is a no-op: rhp keeps no stat cache, so a php script that
   observes a *stale* cached stat (e.g. `filesize` after an external change
   without `clearstatcache`) sees fresh data under rhp. Known, deliberate gap.

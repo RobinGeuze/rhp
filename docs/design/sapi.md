@@ -195,9 +195,11 @@ functions report it; `opcache_reset()` takes effect at the next request.
 
 What happens inside one `run_request`, in php's order:
 
-1. **Engine setup.** A fresh `Vm` for the SAPI: `Vm::new` installs the SAPI
-   name and ini defaults for this thread and defines `PHP_SAPI`. `-d`-style
-   settings apply over them.
+1. **Engine setup.** A fresh `Vm` for the SAPI: `Vm::new` resets the
+   thread's request state, installs the SAPI name and ini defaults and
+   defines `PHP_SAPI`. `Request::cwd` (`Vm::set_cwd`) sets the directory
+   the script runs in (php-cgi's chdir to the script's directory).
+   `-d`-style settings apply over them.
 2. **`sapi_activate`.** `set_request` records the method, protocol and HEAD
    flag. `start_request` checks the POST body against `post_max_size`
    ("PHP Request Startup: POST Content-Length …", in Unknown on line 0)
@@ -221,10 +223,11 @@ What happens inside one `run_request`, in php's order:
 
 ## Threading model
 
-**One `Vm` per OS thread, values stay plain `Rc`.** Engine values (`Value`,
-arrays, objects, the `Sapi` box) are deliberately neither `Send` nor
-`Sync`: reference counting stays cheap and non-atomic, as in php's NTS
-build. Concurrency comes from threads, never from sharing an engine:
+**One live `Vm` per OS thread, pinned to it for the request's lifetime;
+values stay plain `Rc`.** Engine values (`Value`, arrays, objects, the
+`Sapi` box) are deliberately neither `Send` nor `Sync`: reference counting
+stays cheap and non-atomic, as in php's NTS build. Concurrency comes from
+threads, never from sharing an engine:
 
 - A server keeps a pool of long-lived worker threads and runs
   `run_request` on one of them per request. The `Sapi` is built *on* that
@@ -236,19 +239,39 @@ build. Concurrency comes from threads, never from sharing an engine:
   FrankenPHP's classic mode. Worker mode (one bootstrapped app serving many
   requests) can come later as a separate API.
 - The per-thread state outside the `Vm` (SAPI name and ini defaults,
-  request-scoped builtin state) is in `thread_local!`s and is reset for
-  each request. The prelude's classes are linked once per thread (at its
-  second request) and copied into each `Vm`, with fresh static properties.
-  `rhp-sapi`'s `concurrent_requests_on_worker_threads_are_isolated` test
-  runs requests on several threads at once and checks that none of this
-  leaks across threads or between requests on one thread.
-- **Process-wide state.** Like php's ZTS builds, some things belong to the
-  OS process, not the thread: the working directory (`chdir()`, and
-  `cgi::main`'s chdir to the script's directory), environment changes from
-  `putenv()`, `umask()`, signal handlers (`pcntl`), and the shared caches
-  (builtin registry, TLS and HTTP connection pools in `curl`), which are
-  read-only or locked. A multi-threaded server must not rely on chdir; a
-  per-`Vm` working directory is future work (see *Gaps*).
+  request-scoped builtin state) is in `thread_local!`s, like php's ZTS
+  module globals. `Vm::new` resets it, so the engine a thread runs is the
+  one that state belongs to: a second engine on the same thread while one
+  runs (nested, or two requests multiplexed on one thread) would clobber
+  it. A request keeps its thread from `Vm::new` to `finish_request`.
+  [`request-state.md`](./request-state.md) lists every `thread_local!`
+  and which ones each request resets. The prelude's classes are linked
+  once per thread (at its second request) and copied into each `Vm`, with
+  fresh static properties. `rhp-sapi`'s
+  `concurrent_requests_on_worker_threads_are_isolated` and
+  `tests/isolation.rs` run requests on several threads at once and one
+  after another on one thread and check that none of this leaks.
+- **Working directory and umask are the request's.** rhp never calls
+  chdir(2) or umask(2) for a script (`rhp_builtins::vcwd`, php's ZTS
+  virtual cwd): `chdir()`, `getcwd()` and `umask()` change and read the
+  request's values, every relative path rhp hands the OS, a C library or
+  a child process is taken from the request's directory first, and files
+  are created with the request's umask (a new file's mode is fixed up when
+  the request's umask allows bits the process's takes away). Each request
+  starts in `Request::cwd`, else the process's directory, with the
+  process's umask (read once, when the first engine starts). Child
+  processes inherit the process's umask, not the request's (posix_spawn
+  can't set one). A Unix socket path the request's directory would make
+  too long for `sun_path` is left relative.
+- **pcntl only under the CLI and CGI.** php builds pcntl only into its CLI
+  and CGI binaries; rhp hides its functions, constants and extension entry
+  under any other SAPI name (`sapi::has_pcntl`), so an embedding server
+  never gets process-wide signal handlers or `fork` from a script.
+- **Process-wide state.** `putenv()` changes stay in the request (an
+  overlay its child processes get); the process's environment never
+  changes. What belongs to the OS process: signal handlers (`pcntl`, CLI
+  and CGI only), and the shared caches (builtin registry, TLS and HTTP
+  connection pools in `curl`), which are read-only or locked.
 
 ## Memory
 
@@ -330,7 +353,7 @@ Limits of the model:
   needed beyond today's API: a streaming body reader (`Sapi::read_body`,
   so uploads don't have to be buffered first), `max_execution_time`
   enforcement with an interrupt flag the server can also set when a client
-  disconnects (`connection_aborted()`) and a per-`Vm` working directory.
+  disconnects (`connection_aborted()`).
 - **FastCGI.** A `cgi-fcgi` front end that reads FastCGI records, builds a
   `RequestInfo` from the params, and writes stdout records through a
   `Sapi`. It reuses `cgi::CgiSapi`'s header logic and `php_sapi_name()`
@@ -342,7 +365,8 @@ Limits of the model:
   streaming reader yet.
 - `max_execution_time` / `max_input_time` are not enforced.
 - `auto_prepend_file` / `auto_append_file` are ignored (in every SAPI).
-- `chdir` is process-wide (see *Threading model*).
+- A child process starts with the process's umask, not one the script
+  set with `umask()`.
 - The php-cgi front end cannot read the script from stdin and doesn't
   support `-v -i -m -l -s -w -a`.
 - Output layer: no `ob_gzhandler`, no `output_add_rewrite_var`.

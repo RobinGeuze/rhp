@@ -216,7 +216,7 @@ fn include_path_arg(args: &[Value], i: usize, path: Vec<u8>) -> Vec<u8> {
     if !args.get(i).is_some_and(|v| conv::to_bool(&deref(v))) {
         return path;
     }
-    crate::fs_fns::resolve_include_path(inner(&path)).unwrap_or(path)
+    crate::ext::standard::file::resolve_include_path(inner(&path)).unwrap_or(path)
 }
 
 fn zlib_url(path: &[u8]) -> Vec<u8> {

@@ -642,14 +642,14 @@ fn strtoll(s: &[u8]) -> i64 {
 /// path (`None`: it could not be created).
 fn open_upload_temp(dir: &[u8], diags: &mut Vec<Diag>) -> Option<Vec<u8>> {
     if !dir.is_empty() {
-        if let Some(p) = crate::fs_fns::open_temp(dir, b"php") {
+        if let Some(p) = crate::ext::standard::file::open_temp(dir, b"php") {
             return Some(p);
         }
         diags.push(Diag::Notice(
             "file created in the system's temporary directory".into(),
         ));
     }
-    crate::fs_fns::open_temp(&crate::fs_fns::temp_dir(), b"php")
+    crate::ext::standard::file::open_temp(&crate::ext::standard::file::temp_dir(), b"php")
 }
 
 /// `rfc1867_post_handler`: parse a multipart body (`src`, what is left of

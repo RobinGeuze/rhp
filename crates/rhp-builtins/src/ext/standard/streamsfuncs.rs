@@ -11,19 +11,22 @@ use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::ext::openssl::xp_ssl;
 use crate::ext::openssl::xp_ssl::SslSock;
+use crate::ext::standard::file::{
+    int_arg, path_param, resolve_include_path, str_arg, stream_param, stream_seek,
+};
 use crate::main::network::{parse_network_address, sock_name, sockaddr_text};
-use crate::main::streams::errno;
 use crate::main::streams::plain_wrapper::{poll_fd, FdStream, SockInfo};
 use crate::main::streams::xp_socket::{
     ctx_socket_opt, default_sock_tv, default_socket_timeout, escape_persistent_key,
     persistent_lookup, register_stream, setsockopt_int, strerror, timeout_tv, xport_client,
     xport_server, Opened, TIMEOUT_ERR,
 };
+use crate::main::streams::{errno, split_scheme};
 use crate::zend::zpp::{zpp_double_or_null, zpp_long, zpp_string, zval_value_name};
-use crate::{Host, Thrown};
+use crate::{Host, StreamKind, Thrown};
 
 fn set_blocking_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
-    let (res, _) = crate::fs_fns::stream_param(host, args, 0, fname, "stream")?;
+    let (res, _) = crate::ext::standard::file::stream_param(host, args, 0, fname, "stream")?;
     let on = crate::zend::zpp::bool_param(host, args, 1, fname, "enable", true)?;
     Ok(Value::Bool(host.stream_set_blocking(&res, on)))
 }
@@ -41,7 +44,7 @@ pub(crate) fn fn_socket_set_blocking(host: &mut dyn Host, args: &[Value]) -> Res
 /// CLI's STDIN/STDOUT/STDERR); every other stream (plain files, memory,
 /// sockets, wrappers) answers -1.
 fn write_buffer_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
-    let (res, _) = crate::fs_fns::stream_param(host, args, 0, fname, "stream")?;
+    let (res, _) = crate::ext::standard::file::stream_param(host, args, 0, fname, "stream")?;
     crate::zend::zpp::zpp_long(host, args, 1, fname, "size")?;
     let file_backed = host.stream_sock_info(&res).is_none()
         && host.stream_meta(&res).is_some_and(|m| {
@@ -209,8 +212,10 @@ fn key_bytes(k: &rhp_values::ArrayKey) -> Vec<u8> {
 /// seek `$from` to `$offset` (when > 0), then copy up to `$length` bytes
 /// (null or negative = everything; php casts it to size_t).
 fn fn_stream_copy_to_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let (src, _) = crate::fs_fns::stream_param(host, args, 0, "stream_copy_to_stream", "from")?;
-    let (dst, _) = crate::fs_fns::stream_param(host, args, 1, "stream_copy_to_stream", "to")?;
+    let (src, _) =
+        crate::ext::standard::file::stream_param(host, args, 0, "stream_copy_to_stream", "from")?;
+    let (dst, _) =
+        crate::ext::standard::file::stream_param(host, args, 1, "stream_copy_to_stream", "to")?;
     let maxlen = match args.get(2).map(deref) {
         None | Some(Value::Null) => None,
         Some(v) => {
@@ -220,7 +225,13 @@ fn fn_stream_copy_to_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value
     };
     let pos = args.get(3).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     if pos > 0
-        && !crate::fs_fns::stream_seek(host, "stream_copy_to_stream", &src, pos, libc::SEEK_SET)?
+        && !crate::ext::standard::file::stream_seek(
+            host,
+            "stream_copy_to_stream",
+            &src,
+            pos,
+            libc::SEEK_SET,
+        )?
     {
         crate::warn(
             host,
@@ -286,7 +297,7 @@ fn stream_arg(
     fname: &str,
     pname: &str,
 ) -> Result<Value, Thrown> {
-    crate::fs_fns::stream_param(host, args, i, fname, pname).map(|(v, _)| v)
+    crate::ext::standard::file::stream_param(host, args, i, fname, pname).map(|(v, _)| v)
 }
 
 /// The stream context argument at `i` (a resource or null), falling back to
@@ -715,7 +726,7 @@ fn fn_stream_socket_enable_crypto(host: &mut dyn Host, args: &[Value]) -> Result
     let session = match args.get(3).map(deref) {
         None | Some(Value::Null) => None,
         Some(_) => Some(
-            crate::fs_fns::stream_param(host, args, 3, fname, "session_stream")
+            crate::ext::standard::file::stream_param(host, args, 3, fname, "session_stream")
                 .map_err(|e| {
                     let v = args.get(3).map(deref).unwrap_or(Value::Null);
                     if matches!(v, Value::Resource(_)) {
@@ -1121,6 +1132,203 @@ fn fn_stream_isatty(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
     }))
 }
 
+fn fn_stream_context_get_default(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let ctx = host.default_stream_context();
+    if let Some(Value::Array(opts)) = args.first().map(deref) {
+        for (wk, wv) in opts.iter() {
+            if let Value::Array(inner) = wv {
+                let w = conv::to_string_bytes(&wk.to_value());
+                for (ok, ov) in inner.iter() {
+                    let o = conv::to_string_bytes(&ok.to_value());
+                    host.stream_context_set_option(&ctx, &w, &o, ov.clone());
+                }
+            }
+        }
+    }
+    Ok(ctx)
+}
+
+fn fn_stream_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, kind) = stream_param(host, args, 0, "stream_get_contents", "stream")?;
+    let maxlen = int_arg(args, 1, -1);
+    let offset = int_arg(args, 2, -1);
+    if maxlen < -1 {
+        return Err(Thrown::error(
+            "ValueError",
+            "stream_get_contents(): Argument #2 ($length) must be greater than or equal to -1",
+        ));
+    }
+    if offset >= 0 {
+        // A forward seek is relative, so an unseekable stream can emulate it.
+        let ok = match host.stream_tell(&h) {
+            Some(pos) if offset > pos => stream_seek(
+                host,
+                "stream_get_contents",
+                &h,
+                offset - pos,
+                libc::SEEK_CUR,
+            )?,
+            Some(pos) if offset < pos => {
+                stream_seek(host, "stream_get_contents", &h, offset, libc::SEEK_SET)?
+            }
+            _ => true,
+        };
+        if !ok {
+            crate::warn(
+                host,
+                "stream_get_contents",
+                &format!("Failed to seek to position {offset} in the stream"),
+            )?;
+            return Ok(Value::Bool(false));
+        }
+    }
+    if maxlen == 0 {
+        return Ok(Value::str(""));
+    }
+    if maxlen > 0 && kind == StreamKind::Memory {
+        // _php_stream_copy_to_mem: one read returns at most a buffer's worth
+        // from an extension's stream (zip entries), so read on to `$length`.
+        let mut out = Vec::new();
+        while out.len() < maxlen as usize && !host.stream_eof(&h) {
+            match host.stream_read(&h, maxlen - out.len() as i64) {
+                Some(b) if !b.is_empty() => out.extend_from_slice(&b),
+                _ => break,
+            }
+        }
+        return Ok(Value::str(out));
+    }
+    Ok(host
+        .stream_read(&h, maxlen)
+        .map(Value::str)
+        .unwrap_or(Value::Bool(false)))
+}
+
+fn fn_stream_get_meta_data(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    stream_get_meta_data_impl(host, args, "stream_get_meta_data")
+}
+
+/// `socket_get_status`: php's alias of `stream_get_meta_data`.
+pub(crate) fn fn_socket_get_status(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    stream_get_meta_data_impl(host, args, "socket_get_status")
+}
+
+fn stream_get_meta_data_impl(
+    host: &mut dyn Host,
+    args: &[Value],
+    fname: &str,
+) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, fname, "stream")?;
+    let Some(m) = host.stream_meta(&h) else {
+        return Ok(Value::Bool(false));
+    };
+    let mut a = PhpArray::new();
+    let mut put = |k: &str, v: Value| {
+        a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
+    };
+    // The TLS layer's META_DATA_API answer comes first.
+    if let Some(c) = m.crypto {
+        put("crypto", c);
+    }
+    let own_meta = m.rfc2397.is_some();
+    if let Some(Value::Array(meta)) = m.rfc2397 {
+        for (k, v) in meta.iter() {
+            a.insert(k.clone(), v.clone());
+        }
+    }
+    let mut put = |k: &str, v: Value| {
+        a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
+    };
+    // A TEMP stream answers META_DATA_API itself, so php skips these three.
+    if m.stream_type != "TEMP" && !own_meta {
+        put("timed_out", Value::Bool(m.timed_out));
+        put("blocked", Value::Bool(m.blocked));
+        put("eof", Value::Bool(m.eof));
+    }
+    if let Some(d) = m.wrapper_data {
+        put("wrapper_data", d);
+    }
+    // Pipes have no wrapper and no uri; directory streams no uri.
+    if !m.wrapper_type.is_empty() {
+        put("wrapper_type", Value::str(m.wrapper_type));
+    }
+    put("stream_type", Value::str(m.stream_type));
+    put("mode", Value::str(m.mode));
+    put("unread_bytes", Value::Int(m.unread_bytes));
+    put("seekable", Value::Bool(m.seekable));
+    if !m.uri.is_empty() {
+        put("uri", Value::str(m.uri));
+    }
+    Ok(Value::Array(a))
+}
+
+/// `stream_get_line($stream, $length, $ending = "")`: read up to `$length`
+/// bytes (0 = the default chunk), stopping before `$ending` (consumed).
+fn fn_stream_get_line(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "stream_get_line", "stream")?;
+    let mut max = int_arg(args, 1, 0);
+    if max < 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "stream_get_line(): Argument #2 ($length) must be greater than or equal to 0",
+        ));
+    }
+    if max == 0 {
+        max = 8192;
+    }
+    if !reserve_read_chunk(host, &h) {
+        return Ok(Value::Null);
+    }
+    let ending = str_arg(args, 2);
+    let mut out = Vec::new();
+    while (out.len() as i64) < max {
+        let Some(b) = host.stream_read(&h, 1) else {
+            break;
+        };
+        if b.is_empty() {
+            break;
+        }
+        out.extend_from_slice(&b);
+        if !ending.is_empty() && out.ends_with(&ending) {
+            out.truncate(out.len() - ending.len());
+            return Ok(Value::str(out));
+        }
+    }
+    if out.is_empty() && host.stream_eof(&h) {
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::str(out))
+}
+
+fn fn_stream_is_local(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = args.first().map(deref).unwrap_or(Value::Null);
+    if let Value::Resource(_) = v {
+        let (h, _) = stream_param(host, args, 0, "stream_is_local", "stream")?;
+        // A stream without a wrapper (pipe, socket) is not local in php.
+        let wrapperless = host
+            .stream_meta(&h)
+            .is_some_and(|m| m.wrapper_type.is_empty());
+        return Ok(Value::Bool(!wrapperless));
+    }
+    let url = conv::to_string_bytes(&v);
+    let (scheme, _) = split_scheme(&url);
+    let lower = scheme.to_ascii_lowercase();
+    // Wrappers with is_url=1 in php: http, https, ftp, ftps, data (rfc2397).
+    let is_url = matches!(
+        lower.as_slice(),
+        b"http" | b"https" | b"ftp" | b"ftps" | b"data"
+    );
+    // php also treats "data:" (no slashes) as the rfc2397 wrapper.
+    let is_data = url.len() >= 5 && url[..5].eq_ignore_ascii_case(b"data:");
+    Ok(Value::Bool(!(is_url || is_data)))
+}
+
+fn fn_stream_resolve_include_path(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = path_param(args, 0, "stream_resolve_include_path", "filename")?;
+    Ok(resolve_include_path(&name)
+        .map(Value::str)
+        .unwrap_or(Value::Bool(false)))
+}
+
 /// TTY detection lives elsewhere: `stream_isatty` with the process
 /// functions (proc_fns), `posix_isatty` in ext/posix;
 /// sapi_windows_vt100_support exists on Windows only.
@@ -1155,10 +1363,19 @@ pub fn register(m: &mut crate::Registry) {
             ("socket_set_timeout", fn_socket_set_timeout),
             ("stream_set_read_buffer", fn_stream_set_read_buffer),
             ("stream_set_chunk_size", fn_stream_set_chunk_size),
-            ("socket_get_status", crate::fs_fns::fn_socket_get_status),
+            ("socket_get_status", fn_socket_get_status),
             ("socket_set_blocking", fn_socket_set_blocking),
             ("stream_select", fn_stream_select),
             ("stream_isatty", fn_stream_isatty),
+            ("stream_context_get_default", fn_stream_context_get_default),
+            ("stream_get_contents", fn_stream_get_contents),
+            ("stream_get_meta_data", fn_stream_get_meta_data),
+            ("stream_get_line", fn_stream_get_line),
+            ("stream_is_local", fn_stream_is_local),
+            (
+                "stream_resolve_include_path",
+                fn_stream_resolve_include_path,
+            ),
         ],
     );
 }

@@ -536,9 +536,6 @@ fn fn_array_count_values(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
 // registration
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
-mod tests;
-
 /// php_count_recursive: an array met again through a reference warns
 /// "Recursion detected" and counts 0.
 fn count_recursive(
@@ -3199,6 +3196,11 @@ fn fn_array_last(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .unwrap_or(Value::Null))
 }
 
+/// `array_change_key_case`'s `CASE_*` constants.
+pub fn case_constants() -> Vec<(&'static str, Value)> {
+    vec![("CASE_LOWER", Value::Int(0)), ("CASE_UPPER", Value::Int(1))]
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
@@ -3289,3 +3291,6 @@ pub fn register(m: &mut crate::Registry) {
         ],
     );
 }
+
+#[cfg(test)]
+mod tests;

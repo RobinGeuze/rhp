@@ -11,6 +11,7 @@ pub mod ini;
 pub mod ini_table;
 pub mod network;
 pub mod output;
+pub mod php_glob;
 pub mod php_variables;
 pub mod rfc1867;
 pub mod sapi;

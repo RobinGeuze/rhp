@@ -955,17 +955,17 @@ fn zip_glob(cx: &mut Cx<'_>, pattern: &[u8], flags: i64) -> Result<Found, Thrown
         ))?;
         return Ok(Err(()));
     }
-    if (crate::fs_fns::GLOB_AVAILABLE & flags) != flags {
+    if (crate::main::php_glob::GLOB_AVAILABLE & flags) != flags {
         cx.warn("At least one of the passed flags is invalid or not supported on this platform")?;
         return Ok(Err(()));
     }
-    let (ret, paths) = crate::fs_fns::php_glob(pattern, flags);
+    let (ret, paths) = crate::main::php_glob::php_glob(pattern, flags);
     if ret != 0 || paths.is_empty() {
         return Ok(Ok(None));
     }
     let mut out = Vec::new();
     for p in paths {
-        if flags & crate::fs_fns::GLOB_ONLYDIR != 0 {
+        if flags & crate::main::php_glob::GLOB_ONLYDIR != 0 {
             match crate::main::streams::sys_stat(&p, false) {
                 Some(s) if s.is_dir => {}
                 _ => continue,

@@ -111,7 +111,7 @@ extern "C" {
 
 fn fn_socket_import_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "socket_import_stream";
-    let (stream, _) = crate::fs_fns::stream_param(host, args, 0, fname, "stream")?;
+    let (stream, _) = crate::ext::standard::file::stream_param(host, args, 0, fname, "stream")?;
     if host.stream_sock_info(&stream).is_none() {
         let ty = host
             .stream_meta(&stream)

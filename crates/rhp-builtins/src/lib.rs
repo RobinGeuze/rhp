@@ -40,11 +40,8 @@ pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_inte
 #[rustfmt::skip]
 mod const_modules;
 mod ext;
-mod file_fns;
-mod fs_fns;
 mod ini_parse;
 mod sapi;
-mod stdext_fns;
 
 #[cfg(test)]
 mod test_support;
@@ -286,7 +283,10 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
             "basic_functions",
             Box::new(ext::standard::basic_functions::register),
         ),
-        ("file_fns", Box::new(file_fns::register)),
+        ("file", Box::new(ext::standard::file::register)),
+        ("filestat", Box::new(ext::standard::filestat::register)),
+        ("dir", Box::new(ext::standard::dir::register)),
+        ("link", Box::new(ext::standard::link::register)),
         ("type", Box::new(ext::standard::r#type::register)),
     ];
     // Discrete extensions (php-src ext/<name>/ layout): each a self-contained
@@ -341,13 +341,11 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("ini_parse", Box::new(ini_parse::register)),
         ("cli", Box::new(sapi::cli::register)),
         ("cgi", Box::new(sapi::cgi::register)),
-        ("stdext_fns", Box::new(stdext_fns::register)),
         ("random", Box::new(ext::random::register)),
         ("readline", Box::new(ext::readline::register)),
         ("crypt", Box::new(ext::standard::crypt::register)),
         ("proc_open", Box::new(ext::standard::proc_open::register)),
         ("exec", Box::new(ext::standard::exec::register)),
-        ("fs_fns", Box::new(fs_fns::register)),
     ];
     v.extend(rest);
     v
@@ -453,7 +451,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("FILE_NO_DEFAULT_CONTEXT", Value::Int(16)),
         ("FILE_TEXT", Value::Int(0)),
         ("FILE_BINARY", Value::Int(0)),
-        // SEEK_* come from fs_fns::constants().
+        // SEEK_* come from ext::standard::file::constants().
         ("LOCK_SH", Value::Int(1)),
         ("LOCK_EX", Value::Int(2)),
         ("LOCK_UN", Value::Int(3)),
@@ -650,10 +648,10 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     .chain(ext::pcre::php_pcre::preg_constants())
     .chain(ext::json::json_constants())
     .chain(ext::standard::info::constants())
-    .chain(fs_fns::constants())
-    .chain(stdext_fns::fnmatch_constants())
-    .chain(stdext_fns::case_constants())
-    .chain(stdext_fns::mt_rand_constants())
+    .chain(ext::standard::file::constants())
+    .chain(ext::standard::file::fnmatch_constants())
+    .chain(ext::standard::array::case_constants())
+    .chain(ext::random::mt_rand_constants())
     .chain(ext::standard::crypt::constants())
     .chain(ext::standard::streamsfuncs::constants())
     // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with their
@@ -681,7 +679,7 @@ fn build_prelude() -> String {
     let mut s = String::from("<?php\n");
     s.push_str(include_str!("core_prelude.php"));
     s.push('\n');
-    s.push_str(fs_fns::PRELUDE_PHP);
+    s.push_str(ext::standard::dir::PRELUDE_PHP);
     s.push('\n');
     s.push_str(ext::standard::string::PRELUDE_PHP);
     s.push('\n');

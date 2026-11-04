@@ -10,7 +10,7 @@ use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::ext::random::mt_range;
-use crate::file_fns::path_arg;
+use crate::ext::standard::file::path_arg;
 use crate::main::php_variables::{register_variable, url_decode};
 use crate::zend::builtin_functions::{binary_strncasecmp, binary_strncmp};
 use crate::zend::zpp::{bool_param, str_or_null_param, str_param, zval_get_string};

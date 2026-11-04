@@ -44,7 +44,7 @@ fn fn_vprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// formatted string is written to `$stream`; the formatted length is returned
 /// whether or not the write succeeds (php_stream_write's result is ignored).
 fn fn_fprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let (h, _) = crate::fs_fns::stream_param(host, args, 0, "fprintf", "stream")?;
+    let (h, _) = crate::ext::standard::file::stream_param(host, args, 0, "fprintf", "stream")?;
     let fmt = conv::to_string_bytes(&args[1]);
     // Argument numbering follows php: the format is arg 2, values start at arg 3,
     // so the error-reporting `given` excludes the stream argument.
@@ -57,7 +57,7 @@ fn fn_fprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `vfprintf(resource $stream, string $format, array $values): int` — array-arg
 /// form of `fprintf`.
 fn fn_vfprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let (h, _) = crate::fs_fns::stream_param(host, args, 0, "vfprintf", "stream")?;
+    let (h, _) = crate::ext::standard::file::stream_param(host, args, 0, "vfprintf", "stream")?;
     let fmt = conv::to_string_bytes(&args[1]);
     let values = array_values(&args[2], "vfprintf", 3)?;
     let out = do_sprintf(&fmt, &values, values.len() + 1)?;

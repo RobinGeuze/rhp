@@ -6,8 +6,8 @@ use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::ext::standard::array::as_array;
+use crate::ext::standard::file::path_arg;
 use crate::ext::standard::pageinfo::script_stat;
-use crate::file_fns::path_arg;
 use crate::main::ini::{
     alter_ini_entry, ini_apply, ini_default_value, ini_parse_uquantity, ini_value, module_loaded,
     INI, INI_STARTUP, STARTUP_DIAGS,

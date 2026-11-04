@@ -290,6 +290,14 @@ fn fn_lcg_value(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Float(n as f64 / (1u64 << 53) as f64))
 }
 
+/// The `MT_RAND_*` constants.
+pub fn mt_rand_constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("MT_RAND_MT19937", Value::Int(MT_RAND_MT19937)),
+        ("MT_RAND_PHP", Value::Int(MT_RAND_PHP)),
+    ]
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,

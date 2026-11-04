@@ -110,7 +110,7 @@ enum Action {
 /// for it): a child never inherits a descriptor another thread is still
 /// setting up, such as the far end of its pipes, which would hold off their
 /// EOF until that child exits.
-static SPAWN_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
+pub(crate) static SPAWN_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
 /// `posix_spawn` the command with php's file actions, in `cwd` (relative to
 /// the request's working directory), else in that directory. Returns the
@@ -494,106 +494,6 @@ impl ProcHandle {
     }
 }
 
-/// Children of `popen()` streams, by stream resource id.
-struct PopenState(std::collections::HashMap<u32, std::process::Child>);
-
-fn popen_state(host: &mut dyn Host) -> Option<&mut PopenState> {
-    host.module_state("popen", || Box::new(PopenState(Default::default())))?
-        .downcast_mut::<PopenState>()
-}
-
-/// `popen($command, $mode)`: `/bin/sh -c` with its stdout (mode "r") or
-/// stdin ("w") as a pipe stream.
-fn fn_popen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    use std::os::fd::OwnedFd;
-    use std::os::unix::ffi::OsStrExt;
-    use std::process::{Command, Stdio};
-    let cmd = zpp_path(args, 0, "popen", "command")?;
-    let mode = zpp_path(args, 1, "popen", "mode")?;
-    let write = match mode.first() {
-        Some(b'r') if !mode.contains(&b'+') => false,
-        Some(b'w') if !mode.contains(&b'+') => true,
-        _ => {
-            return Err(Thrown::error(
-                "ValueError",
-                "popen(): Argument #2 ($mode) must be one of \"r\", \"rb\", \"w\", or \"wb\"",
-            ))
-        }
-    };
-    let mut c = Command::new("/bin/sh");
-    c.arg("-c").arg(std::ffi::OsStr::from_bytes(&cmd));
-    if let Some(dir) = crate::zend::virtual_cwd::child_cwd() {
-        c.current_dir(std::ffi::OsStr::from_bytes(&dir));
-    }
-    if let Some(mask) = crate::zend::virtual_cwd::child_umask() {
-        use std::os::unix::process::CommandExt;
-        // umask(2) is async-signal-safe.
-        unsafe {
-            c.pre_exec(move || {
-                libc::umask(mask as libc::mode_t);
-                Ok(())
-            })
-        };
-    }
-    if write {
-        c.stdin(Stdio::piped());
-    } else {
-        c.stdout(Stdio::piped());
-    }
-    let spawned = {
-        let _spawning = SPAWN_LOCK.write().unwrap_or_else(|e| e.into_inner());
-        c.spawn()
-    };
-    let mut child = match spawned {
-        Ok(ch) => ch,
-        Err(e) => {
-            crate::warn(host, "popen", &format!("{e}"))?;
-            return Ok(Value::Bool(false));
-        }
-    };
-    let fd: OwnedFd = if write {
-        child.stdin.take().map(OwnedFd::from)
-    } else {
-        child.stdout.take().map(OwnedFd::from)
-    }
-    .expect("piped");
-    let Some(stream) = host.stream_from_fd(fd) else {
-        return Ok(Value::Bool(false));
-    };
-    if let (Value::Resource(r), Some(st)) = (&stream, popen_state(host)) {
-        st.0.insert(r.id, child);
-    }
-    Ok(stream)
-}
-
-/// `pclose($handle)`: close the pipe and wait; the exit status.
-fn fn_pclose(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let h = deref(&args[0]);
-    let id = match &h {
-        Value::Resource(r) => r.id,
-        other => {
-            return Err(Thrown::type_error(format!(
-                "pclose(): Argument #1 ($handle) must be of type resource, {} given",
-                crate::zend::zpp::zval_value_name(host, other)
-            )))
-        }
-    };
-    host.stream_close(&h);
-    let child = popen_state(host).and_then(|st| st.0.remove(&id));
-    let Some(mut child) = child else {
-        return Ok(Value::Int(-1));
-    };
-    Ok(Value::Int(match child.wait() {
-        Ok(st) => {
-            use std::os::unix::process::ExitStatusExt;
-            st.code()
-                .map(|c| c as i64)
-                .unwrap_or_else(|| st.into_raw() as i64)
-        }
-        Err(_) => -1,
-    }))
-}
-
 /// proc_open_rsrc_dtor for a process resource whose last reference went
 /// away: close the pipes, then a non-blocking reap.
 pub(crate) fn proc_dtor(host: &mut dyn Host, data: Box<dyn std::any::Any>) {
@@ -969,8 +869,6 @@ pub fn register(m: &mut crate::Registry) {
         &[
             ("proc_open", fn_proc_open),
             ("proc_close", fn_proc_close),
-            ("popen", fn_popen),
-            ("pclose", fn_pclose),
             ("proc_get_status", fn_proc_get_status),
             ("proc_terminate", fn_proc_terminate),
         ],

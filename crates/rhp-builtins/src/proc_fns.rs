@@ -10,8 +10,9 @@
 //! `/bin/sh -c <command>`, an array command via `posix_spawnp` with no shell.
 //! Pipe parent ends become `stream` resources backed by the VM's fd streams.
 //! A child starts in the request's working directory (`crate::vcwd`), as
-//! php's ZTS build starts it in its virtual one. It inherits the process's
-//! umask, not one the request set: posix_spawn has no way to set it.
+//! php's ZTS build starts it in its virtual one, and with the request's
+//! umask: when that differs from the process's, which posix_spawn can't
+//! change, the child is forked and set up by hand instead.
 //!
 //! (php's warnings — e.g. "posix_spawn() failed: …" — are not emitted: this
 //! engine has no diagnostics channel yet; the return values match.)
@@ -175,7 +176,8 @@ static SPAWN_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
 /// `posix_spawn` the command with php's file actions, in `cwd` (relative to
 /// the request's working directory), else in that directory. Returns the
-/// child pid or the spawn error number.
+/// child pid or the spawn error number. A child gets the request's umask
+/// when it isn't the process's ([`fork_exec`]).
 fn spawn(
     cmd: SpawnCmd,
     descs: &[Desc],
@@ -228,7 +230,17 @@ fn spawn(
     for &fd in &inherit {
         cloexec(fd, 0);
     }
-    let r = unsafe { posix_spawn(&program, search, &actions, cwd_c.as_deref(), &argp, &envp) };
+    let r = match crate::vcwd::child_umask() {
+        None => unsafe { posix_spawn(&program, search, &actions, cwd_c.as_deref(), &argp, &envp) },
+        Some(mask) => {
+            let candidates = if search {
+                exec_candidates(args_c[0].as_bytes())
+            } else {
+                vec![program]
+            };
+            unsafe { fork_exec(&candidates, &actions, cwd_c.as_deref(), mask, &argp, &envp) }
+        }
+    };
     for &fd in &inherit {
         cloexec(fd, libc::FD_CLOEXEC);
     }
@@ -278,6 +290,148 @@ unsafe fn posix_spawn(
     libc::posix_spawn_file_actions_destroy(&mut fa);
     if r != 0 {
         return Err(r);
+    }
+    Ok(pid)
+}
+
+/// Where `posix_spawnp` looks for `file`: the process's `PATH`, unless the
+/// name holds a slash.
+fn exec_candidates(file: &[u8]) -> Vec<CString> {
+    use std::os::unix::ffi::OsStrExt;
+    if file.contains(&b'/') {
+        return vec![cstr(file)];
+    }
+    let path = std::env::var_os("PATH");
+    let path = path
+        .as_ref()
+        .map_or(&b"/usr/bin:/bin"[..], |p| p.as_bytes());
+    path.split(|&b| b == b':')
+        .map(|dir| {
+            let mut full = dir.to_vec();
+            if !full.is_empty() {
+                full.push(b'/');
+            }
+            full.extend_from_slice(file);
+            cstr(&full)
+        })
+        .collect()
+}
+
+/// What `posix_spawn` does, by hand, for a child that needs the request's
+/// umask (posix_spawn has no attribute for one): fork, then `actions`, the
+/// directory, the umask and exec (each of `candidates` in turn, as
+/// `posix_spawnp` searches). Between fork and exec the child makes only
+/// async-signal-safe calls and allocates nothing; a failure there comes
+/// back through a close-on-exec pipe as the spawn's error, as from
+/// posix_spawn.
+unsafe fn fork_exec(
+    candidates: &[CString],
+    actions: &[Action],
+    cwd: Option<&CStr>,
+    mask: u32,
+    argv: &[*mut libc::c_char],
+    envp: &[*mut libc::c_char],
+) -> Result<libc::pid_t, i32> {
+    // The spawn lock is held: a plain pipe() can't leak to another child.
+    // Its ends move above every descriptor number the child dup2s onto.
+    let mut report = [0 as libc::c_int; 2];
+    if libc::pipe(report.as_mut_ptr()) != 0 {
+        return Err(errno());
+    }
+    let above = actions
+        .iter()
+        .filter_map(|a| match *a {
+            Action::Dup2(_, to) => Some(to + 1),
+            Action::Close(_) => None,
+        })
+        .fold(3, i32::max);
+    let moved = report.map(|fd| {
+        let high = libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, above);
+        libc::close(fd);
+        high
+    });
+    if moved.iter().any(|&fd| fd < 0) {
+        moved.iter().filter(|&&fd| fd >= 0).for_each(|&fd| {
+            libc::close(fd);
+        });
+        return Err(libc::EMFILE);
+    }
+    let (rd, wr) = (
+        OwnedFd::from_raw_fd(moved[0]),
+        OwnedFd::from_raw_fd(moved[1]),
+    );
+    // The child must not run the parent's signal handlers before exec.
+    let mut all: libc::sigset_t = std::mem::zeroed();
+    let mut old: libc::sigset_t = std::mem::zeroed();
+    libc::sigfillset(&mut all);
+    libc::pthread_sigmask(libc::SIG_SETMASK, &all, &mut old);
+    let pid = libc::fork();
+    if pid == 0 {
+        let fail = |e: i32| -> ! {
+            let bytes = e.to_ne_bytes();
+            libc::write(wr.as_raw_fd(), bytes.as_ptr().cast(), bytes.len());
+            libc::_exit(127)
+        };
+        let nsig = if cfg!(target_os = "linux") { 65 } else { 32 };
+        for sig in 1..nsig {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            if libc::sigaction(sig, std::ptr::null(), &mut sa) == 0
+                && sa.sa_sigaction != libc::SIG_IGN
+                && sa.sa_sigaction != libc::SIG_DFL
+            {
+                sa.sa_sigaction = libc::SIG_DFL;
+                libc::sigaction(sig, &sa, std::ptr::null_mut());
+            }
+        }
+        for a in actions {
+            match *a {
+                Action::Close(fd) => {
+                    libc::close(fd);
+                }
+                Action::Dup2(from, to) => {
+                    if libc::dup2(from, to) < 0 {
+                        fail(errno());
+                    }
+                }
+            }
+        }
+        if let Some(dir) = cwd {
+            if libc::chdir(dir.as_ptr()) != 0 {
+                fail(errno());
+            }
+        }
+        libc::umask(mask as libc::mode_t);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
+        let mut err = libc::ENOENT;
+        let mut denied = false;
+        for c in candidates {
+            libc::execve(c.as_ptr(), argv.as_ptr().cast(), envp.as_ptr().cast());
+            err = errno();
+            match err {
+                libc::EACCES => denied = true,
+                libc::ENOENT | libc::ENOTDIR | libc::ESTALE | libc::ENODEV | libc::ETIMEDOUT => {}
+                _ => fail(err),
+            }
+        }
+        fail(if denied { libc::EACCES } else { err });
+    }
+    let forked = errno();
+    libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
+    drop(wr);
+    if pid < 0 {
+        return Err(forked);
+    }
+    let mut bytes = [0u8; 4];
+    let n = loop {
+        let n = libc::read(rd.as_raw_fd(), bytes.as_mut_ptr().cast(), bytes.len());
+        if n < 0 && errno() == libc::EINTR {
+            continue;
+        }
+        break n;
+    };
+    if n == 4 {
+        waitpid_retry(pid, 0);
+        return Err(i32::from_ne_bytes(bytes));
     }
     Ok(pid)
 }
@@ -698,6 +852,16 @@ fn fn_popen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     c.arg("-c").arg(std::ffi::OsStr::from_bytes(&cmd));
     if let Some(dir) = crate::vcwd::child_cwd() {
         c.current_dir(std::ffi::OsStr::from_bytes(&dir));
+    }
+    if let Some(mask) = crate::vcwd::child_umask() {
+        use std::os::unix::process::CommandExt;
+        // umask(2) is async-signal-safe.
+        unsafe {
+            c.pre_exec(move || {
+                libc::umask(mask as libc::mode_t);
+                Ok(())
+            })
+        };
     }
     if write {
         c.stdin(Stdio::piped());

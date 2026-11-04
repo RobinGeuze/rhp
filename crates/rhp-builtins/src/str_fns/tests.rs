@@ -2,6 +2,7 @@
 #![allow(clippy::approx_constant)] // deliberate literal test values, not PI
 
 use super::*;
+use crate::ext::standard::math::fn_number_format;
 use crate::test_support::TestHost;
 
 fn s(b: &str) -> Value {

@@ -5,7 +5,7 @@
 //! `php -r '...'` output).
 
 use rhp_values::ops::deref;
-use rhp_values::{conv, fmt, ArrayKey, PhpArray, Value};
+use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::zend::zpp::zval_get_string;
 use crate::{Host, Thrown};
@@ -601,140 +601,6 @@ fn fn_wordwrap(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 // number_format
 // ---------------------------------------------------------------------------
-
-/// Increment a big-endian ascii-digit string (`"199"` -> `"200"`),
-/// growing at the front on carry (`"99"` -> `"100"`).
-fn increment_digits(d: &mut Vec<u8>) {
-    let mut i = d.len();
-    loop {
-        if i == 0 {
-            d.insert(0, b'1');
-            return;
-        }
-        i -= 1;
-        if d[i] == b'9' {
-            d[i] = b'0';
-        } else {
-            d[i] += 1;
-            return;
-        }
-    }
-}
-
-/// Round |value| (given as decimal digit strings) to `dec` decimal places using
-/// half-away-from-zero, operating on the shortest decimal representation.
-/// Returns (int_digits, frac_digits) where frac has length `max(dec,0)`.
-fn round_decimal(int_digits: &[u8], frac_digits: &[u8], dec: i64) -> (Vec<u8>, Vec<u8>) {
-    let int_len = int_digits.len() as i64;
-    let mut all: Vec<u8> = Vec::with_capacity(int_digits.len() + frac_digits.len());
-    all.extend_from_slice(int_digits);
-    all.extend_from_slice(frac_digits);
-
-    let keep = int_len + dec; // number of leading digits to retain
-    let round_up = if keep < 0 || keep as usize >= all.len() {
-        false
-    } else {
-        all[keep as usize] >= b'5'
-    };
-
-    let kept_len = keep.max(0) as usize;
-    let mut kept: Vec<u8> = all.iter().take(kept_len).copied().collect();
-    while kept.len() < kept_len {
-        kept.push(b'0'); // value had fewer digits than requested
-    }
-    if round_up {
-        increment_digits(&mut kept);
-    }
-    // normalize kept to a plain integer (strip leading zeros, keep >= "0")
-    let first_nonzero = kept.iter().position(|&b| b != b'0').unwrap_or(kept.len());
-    let kept_int: Vec<u8> = if first_nonzero == kept.len() {
-        vec![b'0']
-    } else {
-        kept[first_nonzero..].to_vec()
-    };
-    let is_zero = kept_int == *b"0";
-
-    if dec <= 0 {
-        // No fractional output. For dec<0 the kept integer scales by 10^(-dec).
-        let mut int_str = kept_int;
-        if !is_zero && dec < 0 {
-            int_str.extend(std::iter::repeat_n(b'0', (-dec) as usize));
-        }
-        (int_str, Vec::new())
-    } else {
-        let dec = dec as usize;
-        let mut kint = kept_int;
-        while kint.len() <= dec {
-            kint.insert(0, b'0'); // ensure at least one integer digit
-        }
-        let split = kint.len() - dec;
-        let int_str = kint[..split].to_vec();
-        let frac_str = kint[split..].to_vec();
-        // strip leading zeros of int part (keep one)
-        let fnz = int_str
-            .iter()
-            .position(|&b| b != b'0')
-            .unwrap_or(int_str.len());
-        let int_str = if fnz == int_str.len() {
-            vec![b'0']
-        } else {
-            int_str[fnz..].to_vec()
-        };
-        (int_str, frac_str)
-    }
-}
-
-fn fn_number_format(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let num = conv::to_float(&deref(&args[0]));
-    let dec = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
-    let dec_point = match args.get(2) {
-        Some(v) => conv::to_string_bytes(v),
-        None => b".".to_vec(),
-    };
-    let thousands = match args.get(3) {
-        Some(v) => conv::to_string_bytes(v),
-        None => b",".to_vec(),
-    };
-
-    if !num.is_finite() {
-        // php emits "nan"/"inf"; rare, keep it simple.
-        return Ok(Value::str(fmt::float_echo(num)));
-    }
-
-    let negative = num < 0.0;
-    let abs = num.abs();
-    // Shortest decimal (Rust's Display is always non-exponential for f64).
-    let s = format!("{abs}");
-    let (int_part, frac_part) = match s.split_once('.') {
-        Some((a, b)) => (a.as_bytes().to_vec(), b.as_bytes().to_vec()),
-        None => (s.as_bytes().to_vec(), Vec::new()),
-    };
-
-    let (int_digits, frac_digits) = round_decimal(&int_part, &frac_part, dec);
-
-    let value_is_zero = int_digits == *b"0" && frac_digits.iter().all(|&b| b == b'0');
-
-    // Group the integer part with the thousands separator.
-    let mut grouped: Vec<u8> = Vec::new();
-    let n = int_digits.len();
-    for (i, &d) in int_digits.iter().enumerate() {
-        if i > 0 && (n - i) % 3 == 0 {
-            grouped.extend_from_slice(&thousands);
-        }
-        grouped.push(d);
-    }
-
-    let mut out = Vec::new();
-    if negative && !value_is_zero {
-        out.push(b'-');
-    }
-    out.extend_from_slice(&grouped);
-    if dec > 0 {
-        out.extend_from_slice(&dec_point);
-        out.extend_from_slice(&frac_digits);
-    }
-    Ok(Value::str(out))
-}
 
 // ---------------------------------------------------------------------------
 // sprintf / printf / vsprintf
@@ -1441,7 +1307,6 @@ pub fn register(m: &mut crate::Registry) {
             ("str_starts_with", fn_str_starts_with),
             ("str_ends_with", fn_str_ends_with),
             ("wordwrap", fn_wordwrap),
-            ("number_format", fn_number_format),
             ("sprintf", fn_sprintf),
             ("printf", fn_printf),
             ("vsprintf", fn_vsprintf),

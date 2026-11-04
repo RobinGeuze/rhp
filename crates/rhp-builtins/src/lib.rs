@@ -59,7 +59,6 @@ mod ini_parse;
 #[rustfmt::skip]
 mod ini_table;
 mod json_fns;
-mod math_fns;
 mod misc_fns;
 mod opcache_fns;
 mod parse_fns;
@@ -313,17 +312,12 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
                 ("strlen", fn_strlen),
                 ("count", fn_count),
                 ("sizeof", fn_sizeof),
-                ("intdiv", fn_intdiv),
                 ("str_repeat", fn_str_repeat),
-                ("abs", fn_abs),
                 ("max", fn_max),
                 ("min", fn_min),
                 ("array_sum", fn_array_sum),
                 ("array_product", fn_array_product),
                 ("array_keys", fn_array_keys),
-                ("is_nan", fn_is_nan),
-                ("is_infinite", fn_is_infinite),
-                ("is_finite", fn_is_finite),
                 ("array_values", fn_array_values),
                 ("array_merge", fn_array_merge),
                 ("array_reverse", fn_array_reverse),
@@ -372,7 +366,7 @@ type Registrar = Box<dyn Fn(&mut Registry)>;
 fn builtin_modules() -> Vec<(&'static str, Registrar)> {
     let mut v: Vec<(&'static str, Registrar)> = vec![
         ("str_fns", Box::new(str_fns::register)),
-        ("math_fns", Box::new(math_fns::register)),
+        ("math", Box::new(ext::standard::math::register)),
         ("arr_fns", Box::new(arr_fns::register)),
         ("misc_fns", Box::new(misc_fns::register)),
         ("file_fns", Box::new(file_fns::register)),
@@ -844,22 +838,6 @@ fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-fn fn_is_nan(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(
-        matches!(deref(&args[0]), Value::Float(f) if f.is_nan()),
-    ))
-}
-fn fn_is_infinite(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(
-        matches!(deref(&args[0]), Value::Float(f) if f.is_infinite()),
-    ))
-}
-fn fn_is_finite(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(
-        matches!(deref(&args[0]), Value::Float(f) if f.is_finite()),
-    ))
-}
-
 /// zpp's `f` check: "F(): Argument #N ($callback) must be a valid callback, …".
 pub fn require_callback(
     host: &mut dyn Host,
@@ -1028,21 +1006,6 @@ fn count_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value,
     }
 }
 
-fn fn_intdiv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = conv::to_int(&args[0]);
-    let b = conv::to_int(&args[1]);
-    if b == 0 {
-        return Err(Thrown::error("DivisionByZeroError", "Division by zero"));
-    }
-    if a == i64::MIN && b == -1 {
-        return Err(Thrown::error(
-            "ArithmeticError",
-            "Division of PHP_INT_MIN by -1 is not an integer",
-        ));
-    }
-    Ok(Value::Int(a / b))
-}
-
 fn fn_str_repeat(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = conv::to_string_bytes(&args[0]);
     let n = conv::to_int(&args[1]);
@@ -1061,16 +1024,6 @@ fn fn_str_repeat(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Null);
     }
     Ok(Value::str(s.repeat(n)))
-}
-
-fn fn_abs(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match conv::to_number(&deref(&args[0])).0 {
-        conv::Num::Int(n) => Ok(match n.checked_abs() {
-            Some(v) => Value::Int(v),
-            None => Value::Float((n as f64).abs()),
-        }),
-        conv::Num::Float(f) => Ok(Value::Float(f.abs())),
-    }
 }
 
 fn fn_max(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1551,7 +1504,7 @@ fn range_size_double(hi: f64, lo: f64, step: f64) -> Result<usize, Thrown> {
             ),
         ));
     }
-    Ok(math_fns::php_math_round(size, 0, 1) as usize)
+    Ok(ext::standard::math::php_math_round(size, 0, 1) as usize)
 }
 
 /// RANGE_CHECK_LONG_INIT_ARRAY for `hi > lo`.

@@ -14,7 +14,7 @@ use rhp_values::{conv, Value};
 use crate::ext::libxml::io::Io;
 use crate::ext::libxml::sys::{self, cbytes};
 use crate::ext::libxml::{ffi, io};
-use crate::object::{ClassHandlers, CloneObj, ObjectHandlers};
+use crate::zend::object_handlers::{ClassHandlers, CloneObj, ObjectHandlers};
 use crate::zend::zpp::deref;
 use crate::{Host, Thrown};
 
@@ -64,7 +64,7 @@ fn object_dtor(host: &mut dyn Host, obj: &rhp_values::ObjectHandle) -> Result<()
 /// Attach `w` to the object, freeing the writer it had (inside the caller's
 /// host frame).
 fn set_writer(obj: &Value, w: Option<Writer>) {
-    let Some(h) = crate::object::object_of(obj) else {
+    let Some(h) = crate::zend::object_handlers::object_of(obj) else {
         return;
     };
     let old = match w {
@@ -75,7 +75,7 @@ fn set_writer(obj: &Value, w: Option<Writer>) {
 }
 
 fn writer_of(obj: &Value) -> Option<Rc<Writer>> {
-    crate::object::payload::<Writer>(obj)
+    crate::zend::object_handlers::payload::<Writer>(obj)
 }
 
 unsafe extern "C" fn memory_write(ctx: *mut c_void, buf: *const c_char, len: c_int) -> c_int {

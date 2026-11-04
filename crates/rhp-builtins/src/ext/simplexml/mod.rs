@@ -20,7 +20,10 @@ use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 use crate::ext::libxml::node::{self as lxn, ClassType, NodeObject};
 use crate::ext::libxml::sys::{self, XmlAttr, XmlDoc, XmlNode, XmlNs};
 use crate::ext::libxml::{self as lx, ffi};
-use crate::object::{self, CastTarget, ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
+use crate::zend::object_handlers;
+use crate::zend::object_handlers::{
+    CastTarget, ClassHandlers, CloneObj, ObjectHandlers, PropPurpose,
+};
 use crate::zend::zpp::{zval_get_string, zval_value_name};
 use crate::{Host, Thrown};
 
@@ -108,7 +111,7 @@ impl Drop for SxeObject {
 
 /// The payload of a SimpleXML object.
 fn sxe_payload(v: &Value) -> Option<Rc<SxeObject>> {
-    object::payload::<SxeObject>(v)
+    object_handlers::payload::<SxeObject>(v)
 }
 
 /// Whether `v` is a SimpleXMLElement.
@@ -123,13 +126,13 @@ fn sxe_of(host: &dyn Host, v: &Value) -> Option<Rc<SxeObject>> {
     if let Some(s) = sxe_payload(v) {
         return Some(s);
     }
-    let h = object::object_of(v)?;
+    let h = object_handlers::object_of(v)?;
     let class = host
         .object_class_name(v)
         .unwrap_or_else(|| b"SimpleXMLElement".to_vec());
     let s = Rc::new(SxeObject::new(class));
     *s.base.this.borrow_mut() = Rc::downgrade(&h);
-    object::set_payload(&h, s.clone());
+    object_handlers::set_payload(&h, s.clone());
     Some(s)
 }
 
@@ -315,10 +318,10 @@ fn new_object(host: &mut dyn Host, class: &[u8]) -> Result<(Value, Rc<SxeObject>
             .take_pending_throw()
             .unwrap_or_else(|| Thrown::error("Error", "Cannot instantiate SimpleXMLElement")));
     };
-    let h = object::object_of(&v).expect("a new object");
+    let h = object_handlers::object_of(&v).expect("a new object");
     let s = Rc::new(SxeObject::new(class.to_vec()));
     *s.base.this.borrow_mut() = Rc::downgrade(&h);
-    object::set_payload(&h, s.clone());
+    object_handlers::set_payload(&h, s.clone());
     Ok((v, s))
 }
 
@@ -1425,8 +1428,8 @@ fn user_to_string(host: &dyn Host, h: &ObjectHandle) -> bool {
 
 /// sxe_objects_compare
 fn sxe_objects_compare(host: &mut dyn Host, a: &Value, b: &Value) -> Result<Option<i32>, Thrown> {
-    if !object::has_handlers(host, a, &SXE_HANDLERS)
-        || !object::has_handlers(host, b, &SXE_HANDLERS)
+    if !object_handlers::has_handlers(host, a, &SXE_HANDLERS)
+        || !object_handlers::has_handlers(host, b, &SXE_HANDLERS)
     {
         return Ok(None);
     }
@@ -1540,7 +1543,7 @@ fn sxe_clone(host: &mut dyn Host, src: &ObjectHandle, dst: &ObjectHandle) -> Res
         };
     }
     lxn::increment_node_ptr(&clone.base, nodep, ptr::null());
-    object::set_payload(dst, clone);
+    object_handlers::set_payload(dst, clone);
     Ok(())
 }
 

@@ -889,7 +889,7 @@ impl Vm {
         }
         let new_obj: ObjectHandle = Rc::new(RefCell::new(ObjectData::new(cls, id, props)));
         self.track_destructible(&new_obj);
-        if let Some(rhp_builtins::object::CloneObj::Custom(f)) =
+        if let Some(rhp_builtins::zend::object_handlers::CloneObj::Custom(f)) =
             self.class(cls).handlers.map(|t| t.clone_obj)
         {
             f(self, &h, &new_obj)?;

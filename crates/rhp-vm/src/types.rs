@@ -1,7 +1,7 @@
 //! Type declarations and conversions: parameter, return and property type
 //! checks, scalar coercion, truthiness and string conversion.
 
-use rhp_builtins::object::CastTarget;
+use rhp_builtins::zend::object_handlers::CastTarget;
 use rhp_builtins::Host;
 use rhp_bytecode::FunctionProto;
 use rhp_values::{conv, ArrayKey, ClassId, Thrown, Value};

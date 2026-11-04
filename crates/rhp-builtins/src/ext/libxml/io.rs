@@ -367,7 +367,7 @@ pub(crate) fn to_string(h: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> 
             h.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
             Ok(b"Array".to_vec())
         }
-        Value::Object(_) => match crate::object::to_string(h, v)? {
+        Value::Object(_) => match crate::zend::object_handlers::to_string(h, v)? {
             Some(s) => Ok(s),
             None => {
                 let cls = h.object_class_name(v).unwrap_or_default();

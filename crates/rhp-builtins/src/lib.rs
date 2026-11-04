@@ -20,7 +20,6 @@ pub(crate) mod dump;
 pub mod fdstream;
 mod host;
 pub(crate) mod module;
-pub mod object;
 pub mod opsstream;
 pub mod pcre;
 pub mod streams;
@@ -809,7 +808,7 @@ use rhp_values::ops::{self, deref};
 fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
     for a in args {
-        let r = dump::resolve_views(host, a, object::PropPurpose::Debug);
+        let r = dump::resolve_views(host, a, zend::object_handlers::PropPurpose::Debug);
         if r.is_ok() {
             dump::var_dump(host, &mut out, a, 0);
         }
@@ -825,7 +824,7 @@ fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    let r = dump::resolve_views(host, &args[0], object::PropPurpose::Debug);
+    let r = dump::resolve_views(host, &args[0], zend::object_handlers::PropPurpose::Debug);
     if r.is_ok() {
         dump::print_r(host, &mut out, &args[0], 0);
     }
@@ -842,7 +841,11 @@ fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    let r = dump::resolve_views(host, &args[0], object::PropPurpose::VarExport);
+    let r = dump::resolve_views(
+        host,
+        &args[0],
+        zend::object_handlers::PropPurpose::VarExport,
+    );
     let circular = if r.is_ok() {
         dump::var_export(host, &mut out, &args[0], 1)
     } else {
@@ -1081,7 +1084,9 @@ fn fn_intval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
     let base = args.get(1).map(|b| conv::to_int(&deref(b))).unwrap_or(10);
     // zval_get_long: the object's cast_object.
-    if let Some(n) = object::object_to_number(host, &v, object::CastTarget::Int)? {
+    if let Some(n) =
+        zend::object_handlers::object_to_number(host, &v, zend::object_handlers::CastTarget::Int)?
+    {
         return Ok(Value::Int(conv::to_int(&n)));
     }
     // `base` applies only to a string argument; base 10 is plain integer conversion.
@@ -1157,7 +1162,11 @@ fn detect_prefix(rest: &[u8], base: i64) -> (usize, i64) {
 
 fn fn_floatval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // zval_get_double: the object's cast_object.
-    if let Some(f) = object::object_to_number(host, &args[0], object::CastTarget::Float)? {
+    if let Some(f) = zend::object_handlers::object_to_number(
+        host,
+        &args[0],
+        zend::object_handlers::CastTarget::Float,
+    )? {
         return Ok(Value::Float(conv::to_float(&f)));
     }
     Ok(Value::Float(conv::to_float(&args[0])))
@@ -1168,7 +1177,7 @@ fn fn_strval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_boolval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(object::is_true(host, &args[0])?))
+    Ok(Value::Bool(zend::object_handlers::is_true(host, &args[0])?))
 }
 
 fn fn_strlen(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1447,7 +1456,11 @@ fn array_binop(
         let v = deref(v);
         let operand = match &v {
             Value::Object(_) | Value::Closure(_) => {
-                match object::cast(host, &v, object::CastTarget::Number)? {
+                match zend::object_handlers::cast(
+                    host,
+                    &v,
+                    zend::object_handlers::CastTarget::Number,
+                )? {
                     Some(n @ (Value::Int(_) | Value::Float(_))) => Some(n),
                     _ => None,
                 }
@@ -1611,7 +1624,7 @@ fn fn_array_filter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     let mut out = PhpArray::new();
     for (k, v) in a.iter() {
         let keep = match cb {
-            None => object::is_true(host, v)?,
+            None => zend::object_handlers::is_true(host, v)?,
             Some(cb) => {
                 let call_args: Vec<Value> = match mode {
                     2 => vec![k.to_value()],            // ARRAY_FILTER_USE_KEY
@@ -1619,7 +1632,7 @@ fn fn_array_filter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
                     _ => vec![v.clone()],
                 };
                 let r = host.call_callable(cb, &call_args)?;
-                object::is_true(host, &r)?
+                zend::object_handlers::is_true(host, &r)?
             }
         };
         if keep {
@@ -2404,7 +2417,11 @@ fn fn_iterator_to_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 fn fn_get_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match deref(&args[0]) {
         Value::Object(h) => {
-            if let Some(a) = object::properties_for(host, &h, object::PropPurpose::GetObjectVars)? {
+            if let Some(a) = zend::object_handlers::properties_for(
+                host,
+                &h,
+                zend::object_handlers::PropPurpose::GetObjectVars,
+            )? {
                 return Ok(Value::Array(a));
             }
             if let Some(v) = host.object_vars(&args[0]) {

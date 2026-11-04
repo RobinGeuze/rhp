@@ -414,7 +414,9 @@ fn fn_zpp_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         (Value::Int(_) | Value::Float(_) | Value::Bool(_), b"string") => {
             Some(Value::str(conv::to_string_bytes(&v)))
         }
-        (Value::Object(_), b"string") => crate::object::to_string(host, &v)?.map(Value::str),
+        (Value::Object(_), b"string") => {
+            crate::zend::object_handlers::to_string(host, &v)?.map(Value::str)
+        }
         (Value::Int(_), b"int") => Some(v.clone()),
         (Value::Bool(b), b"int") => Some(Value::Int(*b as i64)),
         (Value::Float(f), b"int") if f.is_finite() => Some(Value::Int(*f as i64)),

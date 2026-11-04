@@ -7,7 +7,7 @@ use rhp_values::conv;
 use rhp_values::ops::deref;
 use rhp_values::{fmt, ArrayKey, PhpStr, Thrown, Value};
 
-use crate::object::PropPurpose;
+use crate::zend::object_handlers::PropPurpose;
 
 fn sp(n: usize, out: &mut Vec<u8>) {
     out.extend(std::iter::repeat_n(b' ', n));
@@ -84,7 +84,7 @@ fn resolve_in(
                 return Ok(());
             }
             seen_objects.push(id);
-            let view = match crate::object::properties_for(host, &h, purpose)? {
+            let view = match crate::zend::object_handlers::properties_for(host, &h, purpose)? {
                 Some(table) => Some(table),
                 None if purpose == PropPurpose::Debug
                     && host.class_has_method(class, b"__debuginfo") =>

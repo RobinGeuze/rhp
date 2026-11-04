@@ -259,8 +259,15 @@ fn fn_pow(host: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
     // pow_function: ZEND_TRY_BINARY_OBJECT_OPERATION(ZEND_POW), op1's
     // handler, then op2's.
     for v in [&args[0], &args[1]] {
-        if let Some(f) = crate::object::handlers_of(host, v).and_then(|t| t.do_operation) {
-            if let Some(r) = f(host, crate::object::Op::Pow, &args[0], Some(&args[1]))? {
+        if let Some(f) =
+            crate::zend::object_handlers::handlers_of(host, v).and_then(|t| t.do_operation)
+        {
+            if let Some(r) = f(
+                host,
+                crate::zend::object_handlers::Op::Pow,
+                &args[0],
+                Some(&args[1]),
+            )? {
                 return Ok(r);
             }
         }

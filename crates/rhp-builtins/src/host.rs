@@ -4,9 +4,10 @@
 use rhp_values::ops::deref;
 use rhp_values::{PhpArray, Value};
 
+use crate::zend::object_handlers;
 use crate::{
-    fdstream, lookup, object, opsstream, rfc1867, runtime_fns, sapi, streams, StatInfo,
-    StreamWrapper, Thrown,
+    fdstream, lookup, opsstream, rfc1867, runtime_fns, sapi, streams, StatInfo, StreamWrapper,
+    Thrown,
 };
 
 /// The kind of an open stream resource (see [`Host::stream_kind`]).
@@ -266,8 +267,8 @@ pub trait Host {
     }
 
     /// The object handlers of a class: its own registration
-    /// ([`object::registered`]) or an ancestor's. Default: none.
-    fn object_handlers(&self, _class_id: u32) -> Option<&'static object::ObjectHandlers> {
+    /// ([`object_handlers::registered`]) or an ancestor's. Default: none.
+    fn object_handlers(&self, _class_id: u32) -> Option<&'static object_handlers::ObjectHandlers> {
         None
     }
 
@@ -277,9 +278,9 @@ pub trait Host {
     fn std_cast_object(
         &mut self,
         _obj: &rhp_values::ObjectHandle,
-        target: object::CastTarget,
+        target: object_handlers::CastTarget,
     ) -> Result<Option<Value>, Thrown> {
-        Ok(object::std_cast_non_string(target))
+        Ok(object_handlers::std_cast_non_string(target))
     }
 
     /// Whether the property slot `key` (storage key) of an object of class

@@ -39,7 +39,7 @@ pub mod zip;
 pub mod zlib;
 
 /// The object handlers the extensions register for their classes.
-pub(crate) fn class_handlers() -> Vec<&'static crate::object::ClassHandlers> {
+pub(crate) fn class_handlers() -> Vec<&'static crate::zend::object_handlers::ClassHandlers> {
     [
         curl::CLASSES,
         dom::CLASSES,

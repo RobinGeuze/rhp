@@ -49,7 +49,7 @@ pub(crate) fn zval_get_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>,
             Ok(b"Array".to_vec())
         }
         o @ Value::Object(_) => {
-            if let Some(s) = crate::object::to_string(host, &o)? {
+            if let Some(s) = crate::zend::object_handlers::to_string(host, &o)? {
                 return Ok(s);
             }
             Err(Thrown::error(
@@ -131,7 +131,7 @@ pub(crate) fn str_param(
         Value::Array(_) | Value::Resource(_) | Value::Closure(_) => {
             Err(type_error(host, func, i + 1, pname, "string", &v))
         }
-        Value::Object(_) => match crate::object::to_string(host, &v)? {
+        Value::Object(_) => match crate::zend::object_handlers::to_string(host, &v)? {
             Some(s) => Ok(s),
             None => Err(type_error(host, func, i + 1, pname, "string", &v)),
         },
@@ -287,7 +287,7 @@ pub fn str_arg(
         Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) => {
             Ok(conv::to_string_bytes(&v))
         }
-        Value::Object(_) => match crate::object::to_string(host, &v)? {
+        Value::Object(_) => match crate::zend::object_handlers::to_string(host, &v)? {
             Some(s) => Ok(s),
             None => Err(type_err(host, fname, i + 1, pname, "string", &v)),
         },

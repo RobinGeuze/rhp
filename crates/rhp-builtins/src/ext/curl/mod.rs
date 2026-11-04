@@ -22,7 +22,8 @@ use std::sync::Once;
 
 use rhp_values::{ArrayKey, ObjectHandle, PhpArray, Value};
 
-use crate::object::{self, CastTarget, ClassHandlers, CloneObj, ObjectHandlers};
+use crate::zend::object_handlers;
+use crate::zend::object_handlers::{CastTarget, ClassHandlers, CloneObj, ObjectHandlers};
 use crate::zend::zpp::deref;
 use crate::{Host, Thrown};
 
@@ -126,7 +127,7 @@ pub(crate) const CLASSES: &[ClassHandlers] = &[
         class: "CurlHandle",
         handlers: &ObjectHandlers {
             clone_obj: CloneObj::Custom(curl_clone_obj),
-            compare: Some(object::not_comparable),
+            compare: Some(object_handlers::not_comparable),
             cast_object: Some(curl_cast_object),
             ..ObjectHandlers::STD
         },
@@ -136,7 +137,7 @@ pub(crate) const CLASSES: &[ClassHandlers] = &[
         class: "CurlMultiHandle",
         handlers: &ObjectHandlers {
             clone_obj: CloneObj::None,
-            compare: Some(object::not_comparable),
+            compare: Some(object_handlers::not_comparable),
             cast_object: Some(curl_cast_object),
             ..ObjectHandlers::STD
         },

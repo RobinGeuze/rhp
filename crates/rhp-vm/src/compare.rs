@@ -3,7 +3,7 @@
 //! `__toString`), internal `compare` handlers, `do_operation`, enum
 //! detection, the conversion notice.
 
-use rhp_builtins::object::{CastTarget, Op};
+use rhp_builtins::zend::object_handlers::{CastTarget, Op};
 use rhp_values::conv::Num;
 use rhp_values::ops::CompareCx;
 use rhp_values::{ClassId, ClassKind, ObjectHandle, PhpStr, Thrown, Value};
@@ -15,7 +15,7 @@ impl Vm {
     pub(crate) fn handlers_of(
         &self,
         h: &ObjectHandle,
-    ) -> Option<&'static rhp_builtins::object::ObjectHandlers> {
+    ) -> Option<&'static rhp_builtins::zend::object_handlers::ObjectHandlers> {
         self.class(h.borrow().class).handlers
     }
 
@@ -40,7 +40,9 @@ impl Vm {
         target: CastTarget,
     ) -> Result<Option<Value>, Thrown> {
         if target != CastTarget::Str {
-            return Ok(rhp_builtins::object::std_cast_non_string(target));
+            return Ok(rhp_builtins::zend::object_handlers::std_cast_non_string(
+                target,
+            ));
         }
         let cls = obj.borrow().class;
         match self.lookup_method(cls, b"__tostring") {

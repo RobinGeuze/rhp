@@ -16,7 +16,8 @@ use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
 use crate::ext::libxml::ffi;
 use crate::ext::libxml::sys::{self, xmlTextReader};
-use crate::object::{self, ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
+use crate::zend::object_handlers;
+use crate::zend::object_handlers::{ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
 use crate::{Host, Thrown};
 
 /// php's `xmlreader_object`.
@@ -74,12 +75,12 @@ pub(crate) static CLASSES: &[ClassHandlers] = &[ClassHandlers {
 
 /// The payload of `this`, created on first use.
 fn intern(v: &Value) -> Option<Rc<Reader>> {
-    if let Some(r) = object::payload::<Reader>(v) {
+    if let Some(r) = object_handlers::payload::<Reader>(v) {
         return Some(r);
     }
-    let h = object::object_of(v)?;
+    let h = object_handlers::object_of(v)?;
     let r = Rc::new(Reader::new());
-    object::set_payload(&h, r.clone());
+    object_handlers::set_payload(&h, r.clone());
     Some(r)
 }
 

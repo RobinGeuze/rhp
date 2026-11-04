@@ -18,7 +18,7 @@ use rhp_values::{
     ClassFlags, ClassId, ClassKind, ObjectData, ObjectHandle, PhpStr, Thrown, Value, Visibility,
 };
 
-use rhp_builtins::object::{CloneObj, ObjectHandlers};
+use rhp_builtins::zend::object_handlers::{CloneObj, ObjectHandlers};
 
 use crate::{DeclSlot, Frame, UnitFn, UnitId, Vm};
 
@@ -72,12 +72,12 @@ pub struct ClassEntry {
     pub decl_file: PhpStr,
     pub decl_line: u32,
     /// The object handlers: the built-in class's own registration
-    /// ([`rhp_builtins::object::registered`]), else the parent's (php's
+    /// ([`rhp_builtins::zend::object_handlers::registered`]), else the parent's (php's
     /// inherited `create_object`). `None` for plain classes, so the engine
     /// pays a field test only.
     pub handlers: Option<&'static ObjectHandlers>,
     /// php's `ce->create_object` is set (see
-    /// [`rhp_builtins::object::ClassHandlers::create_object`]).
+    /// [`rhp_builtins::zend::object_handlers::ClassHandlers::create_object`]).
     pub create_object: bool,
 }
 
@@ -1279,7 +1279,7 @@ impl Vm {
         let parent_entry = parent.map(|p| &self.classes[p as usize]);
         let internal = proto.decl_file.is_empty();
         let reg = internal
-            .then(|| rhp_builtins::object::registered(proto.name.as_bytes()))
+            .then(|| rhp_builtins::zend::object_handlers::registered(proto.name.as_bytes()))
             .flatten();
         let handlers = reg
             .map(|r| r.handlers)

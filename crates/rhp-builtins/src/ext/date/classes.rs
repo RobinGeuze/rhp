@@ -1794,7 +1794,7 @@ fn period_has_more(st: &PeriodState, index: i64) -> bool {
 
 fn iterator_op(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let ih = obj(args, 0)?;
-    let Some(it) = crate::object::payload_of::<PeriodIter>(&ih) else {
+    let Some(it) = crate::zend::object_handlers::payload_of::<PeriodIter>(&ih) else {
         return Err(Thrown::error(
             "Error",
             "The InternalIterator object has not been properly initialized",
@@ -2099,7 +2099,7 @@ fn period_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<Va
         b"dp_iterator" => {
             let h = obj(args, 0)?;
             let it = instantiate(host, b"InternalIterator")?;
-            crate::object::set_payload(
+            crate::zend::object_handlers::set_payload(
                 &it,
                 Rc::new(PeriodIter {
                     period: h,

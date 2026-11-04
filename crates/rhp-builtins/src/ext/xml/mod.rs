@@ -17,7 +17,7 @@ use std::rc::{Rc, Weak};
 use rhp_values::{conv, ArrayKey, ObjectData, PhpArray, PhpRef, PhpStr, Value};
 
 use crate::ext::libxml::{ffi, sys};
-use crate::object::{ClassHandlers, ObjectHandlers};
+use crate::zend::object_handlers::{ClassHandlers, ObjectHandlers};
 use crate::zend::zpp::{deref, long_arg};
 use crate::{Host, Thrown};
 
@@ -150,7 +150,7 @@ pub(crate) fn reset_state() {
 /// The XMLParser argument `i` of builtin `fname`, else php's TypeError.
 fn parser_arg(host: &dyn Host, args: &[Value], i: usize, fname: &str) -> Result<ParserRef, Thrown> {
     let v = args.get(i).map(deref).unwrap_or(Value::Null);
-    if let Some(p) = crate::object::payload::<RefCell<Parser>>(&v) {
+    if let Some(p) = crate::zend::object_handlers::payload::<RefCell<Parser>>(&v) {
         return Ok(p);
     }
     Err(Thrown::type_error(format!(
@@ -719,7 +719,7 @@ fn create(host: &mut dyn Host, args: &[Value], ns_support: bool) -> Result<Value
         l.retain(|p| p.strong_count() > 0);
         l.push(Rc::downgrade(&parser));
     });
-    crate::object::set_payload(h, parser);
+    crate::zend::object_handlers::set_payload(h, parser);
     Ok(obj)
 }
 
@@ -814,7 +814,7 @@ fn parse_string(
             )?;
             Some(Vec::new())
         }
-        Value::Object(_) => crate::object::to_string(host, v)?,
+        Value::Object(_) => crate::zend::object_handlers::to_string(host, v)?,
         _ => None,
     })
 }

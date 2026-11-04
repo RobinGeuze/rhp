@@ -14,9 +14,9 @@ use std::rc::Rc;
 use rhp_values::ops::deref;
 use rhp_values::{ArrayKey, PhpArray, Value};
 
-use crate::object::{ClassHandlers, ObjectHandlers};
 use crate::proc_fns::zpp_long;
 use crate::streams::errno;
+use crate::zend::object_handlers::{ClassHandlers, ObjectHandlers};
 use crate::zend::zpp::zval_value_name;
 use crate::{Host, Thrown};
 
@@ -61,7 +61,7 @@ fn socket_arg(
     nullable: bool,
 ) -> Result<Rc<Sock>, Thrown> {
     let v = args.get(i).map(deref).unwrap_or(Value::Null);
-    if let Some(s) = crate::object::payload::<Sock>(&v) {
+    if let Some(s) = crate::zend::object_handlers::payload::<Sock>(&v) {
         return Ok(s);
     }
     Err(Thrown::type_error(format!(
@@ -130,9 +130,9 @@ fn fn_socket_import_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     let v = host
         .instantiate(b"Socket", Vec::new())
         .ok_or_else(|| Thrown::unsupported(fname, "cannot instantiate Socket"))?;
-    let h = crate::object::object_of(&v)
+    let h = crate::zend::object_handlers::object_of(&v)
         .ok_or_else(|| Thrown::error("Error", "sockets: bad object"))?;
-    crate::object::set_payload(
+    crate::zend::object_handlers::set_payload(
         &h,
         Rc::new(Sock {
             stream,

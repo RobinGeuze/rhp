@@ -25,20 +25,20 @@ use crate::zend::zpp::deref;
 use crate::{warn, Host, Thrown};
 
 /// The key and certificate classes' handlers: no clone, not comparable.
-pub(crate) static CLASSES: &[crate::object::ClassHandlers] = &[
-    crate::object::ClassHandlers {
+pub(crate) static CLASSES: &[crate::zend::object_handlers::ClassHandlers] = &[
+    crate::zend::object_handlers::ClassHandlers {
         class: "OpenSSLAsymmetricKey",
-        handlers: &crate::object::ObjectHandlers::OPAQUE,
+        handlers: &crate::zend::object_handlers::ObjectHandlers::OPAQUE,
         create_object: true,
     },
-    crate::object::ClassHandlers {
+    crate::zend::object_handlers::ClassHandlers {
         class: "OpenSSLCertificate",
-        handlers: &crate::object::ObjectHandlers::OPAQUE,
+        handlers: &crate::zend::object_handlers::ObjectHandlers::OPAQUE,
         create_object: true,
     },
-    crate::object::ClassHandlers {
+    crate::zend::object_handlers::ClassHandlers {
         class: "OpenSSLCertificateSigningRequest",
-        handlers: &crate::object::ObjectHandlers::OPAQUE,
+        handlers: &crate::zend::object_handlers::ObjectHandlers::OPAQUE,
         create_object: true,
     },
 ];
@@ -582,7 +582,7 @@ pub(super) fn try_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thro
         }
         Value::Object(_) => {
             let o = deref(v);
-            match crate::object::to_string(host, &o)? {
+            match crate::zend::object_handlers::to_string(host, &o)? {
                 Some(s) => Ok(s),
                 None => Err(Thrown::error(
                     "Error",
@@ -636,7 +636,7 @@ pub(super) fn obj_or_str(
         Value::Int(_) | Value::Float(_) | Value::Bool(_) => {
             Ok(ObjOrStr::Str(conv::to_string_bytes(&v)))
         }
-        Value::Object(_) => match crate::object::to_string(host, &v)? {
+        Value::Object(_) => match crate::zend::object_handlers::to_string(host, &v)? {
             Some(s) => Ok(ObjOrStr::Str(s)),
             None => Err(type_error(host, fname, i, &v)),
         },

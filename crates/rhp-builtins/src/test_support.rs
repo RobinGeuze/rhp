@@ -14,11 +14,11 @@ use rhp_values::ops::CompareCx;
 use rhp_values::{ArrayKey, ClassKind, ClosureData, ObjectHandle, PhpArray, PhpStr, Value};
 
 use crate::fdstream::{FdStream, SockInfo};
-use crate::object::{CastTarget, ObjectHandlers};
 use crate::opsstream::OpsStream;
 use crate::rfc1867::BodyState;
 use crate::sapi::{RequestInfo, Response};
 use crate::streams::{self, FileWrapper, StatInfo, StreamWrapper};
+use crate::zend::object_handlers::{CastTarget, ObjectHandlers};
 use crate::{Host, MagicFetch, NativeFn, ObCall, StreamKind, StreamMeta, Thrown};
 
 /// A callback for [`TestHost::with_callback`].
@@ -319,7 +319,7 @@ impl Host for TestHost<'_> {
         _obj: &ObjectHandle,
         target: CastTarget,
     ) -> Result<Option<Value>, Thrown> {
-        Ok(crate::object::std_cast_non_string(target))
+        Ok(crate::zend::object_handlers::std_cast_non_string(target))
     }
     fn is_internal_slot(&self, _class_id: u32, _key: &PhpStr) -> bool {
         false

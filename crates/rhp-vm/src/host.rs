@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use rhp_builtins::object::CastTarget;
+use rhp_builtins::zend::object_handlers::CastTarget;
 use rhp_builtins::{self as builtins, Host};
 use rhp_values::{
     conv, ArrayKey, ClassId, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
@@ -156,7 +156,10 @@ impl Host for Vm {
             .is_some_and(|c| c.flags.not_serializable)
     }
 
-    fn object_handlers(&self, class_id: u32) -> Option<&'static builtins::object::ObjectHandlers> {
+    fn object_handlers(
+        &self,
+        class_id: u32,
+    ) -> Option<&'static builtins::zend::object_handlers::ObjectHandlers> {
         self.classes.get(class_id as usize)?.handlers
     }
 

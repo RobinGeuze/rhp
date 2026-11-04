@@ -308,7 +308,11 @@ impl Encoder {
         // get_properties_for(JSON): an internal class's view (an
         // ArrayObject's storage, always encoded as an object). As for any
         // object, mangled (protected and private) keys are skipped.
-        let view = crate::object::properties_for(host, h, crate::object::PropPurpose::Json)?;
+        let view = crate::zend::object_handlers::properties_for(
+            host,
+            h,
+            crate::zend::object_handlers::PropPurpose::Json,
+        )?;
         let props: Vec<(PhpStr, Value)> = match view {
             Some(a) => a
                 .iter()

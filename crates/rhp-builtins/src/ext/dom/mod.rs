@@ -32,7 +32,8 @@ use rhp_values::{conv, ObjectHandle, PhpArray, Value};
 
 use crate::ext::libxml::node::{self as lxn, NodeObject};
 use crate::ext::libxml::sys::{self, XmlNode};
-use crate::object::{self, ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
+use crate::zend::object_handlers;
+use crate::zend::object_handlers::{ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
 use crate::{Host, Thrown};
 
 /// php's `dom_object`, as an object's payload.
@@ -196,7 +197,7 @@ impl Cx<'_> {
 
 /// The payload of a DOM object.
 pub(crate) fn intern_of(v: &Value) -> Option<Rc<DomObject>> {
-    object::payload::<DomObject>(v)
+    object_handlers::payload::<DomObject>(v)
 }
 
 /// The class name of `v` (for messages).
@@ -234,10 +235,10 @@ pub(crate) fn ensure_intern(v: &Value, kind: impl FnOnce() -> Kind) -> Option<Rc
     if let Some(d) = intern_of(v) {
         return Some(d);
     }
-    let h = object::object_of(v)?;
+    let h = object_handlers::object_of(v)?;
     let d = Rc::new(DomObject::new(kind()));
     *d.base.this.borrow_mut() = Rc::downgrade(&h);
-    object::set_payload(&h, d.clone());
+    object_handlers::set_payload(&h, d.clone());
     Some(d)
 }
 

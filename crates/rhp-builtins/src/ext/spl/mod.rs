@@ -5,7 +5,7 @@
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
-use crate::object::{ClassHandlers, ObjectHandlers, PropPurpose};
+use crate::zend::object_handlers::{ClassHandlers, ObjectHandlers, PropPurpose};
 use crate::{Host, Thrown};
 
 /// `ArrayObject` / `ArrayIterator`'s handlers: spl_array's

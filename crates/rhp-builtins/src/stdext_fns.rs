@@ -477,18 +477,20 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             }
             // convert_to_string: the object's string cast; a failure is an
             // Error, not a parameter TypeError.
-            Value::Object(_) | Value::Closure(_) => match crate::object::to_string(host, &cur)? {
-                Some(s) => Value::str(s),
-                None => {
-                    return Err(Thrown::error(
-                        "Error",
-                        format!(
-                            "Object of class {} could not be converted to string",
-                            zval_value_name(host, &cur)
-                        ),
-                    ))
+            Value::Object(_) | Value::Closure(_) => {
+                match crate::zend::object_handlers::to_string(host, &cur)? {
+                    Some(s) => Value::str(s),
+                    None => {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Object of class {} could not be converted to string",
+                                zval_value_name(host, &cur)
+                            ),
+                        ))
+                    }
                 }
-            },
+            }
             _ => Value::str(conv::to_string_bytes(&cur)),
         },
         b"array" => match &cur {

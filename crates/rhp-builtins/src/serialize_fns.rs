@@ -198,7 +198,11 @@ impl Serializer {
         }
         // The object's slots under their php-mangled names, or an internal
         // class's get_properties_for(SERIALIZE).
-        let view = crate::object::properties_for(host, h, crate::object::PropPurpose::Serialize)?;
+        let view = crate::zend::object_handlers::properties_for(
+            host,
+            h,
+            crate::zend::object_handlers::PropPurpose::Serialize,
+        )?;
         let mut props: Vec<(PhpStr, Value)> = match view {
             Some(a) => a
                 .iter()

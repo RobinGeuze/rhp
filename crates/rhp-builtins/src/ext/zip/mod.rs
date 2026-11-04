@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 use rhp_values::{ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
 use crate::ext::libxml::ffi;
-use crate::object::{ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
+use crate::zend::object_handlers::{ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
 use crate::{Host, Thrown};
 
 pub use stream::wrappers;
@@ -45,7 +45,7 @@ static HANDLERS: ObjectHandlers = ObjectHandlers {
 /// callbacks: here, where there is a host. The payload's `Drop` closes an
 /// archive the destructor pass did not reach, without them.
 fn object_free(host: &mut dyn Host, obj: &ObjectHandle) -> Result<(), Thrown> {
-    let Some(o) = crate::object::payload_of::<ZipObject>(obj) else {
+    let Some(o) = crate::zend::object_handlers::payload_of::<ZipObject>(obj) else {
         return Ok(());
     };
     let Some(a) = o.archive.borrow_mut().take() else {
@@ -222,15 +222,15 @@ impl ZipObject {
 /// The state of `this`, a `ZipArchive` (or subclass) object, created on
 /// first use (php's `create_object`).
 pub(crate) fn zip_object(host: &dyn Host, this: &Value) -> Option<Rc<ZipObject>> {
-    if !crate::object::has_handlers(host, this, &HANDLERS) {
+    if !crate::zend::object_handlers::has_handlers(host, this, &HANDLERS) {
         return None;
     }
-    let h = crate::object::object_of(this)?;
-    if let Some(o) = crate::object::payload_of::<ZipObject>(&h) {
+    let h = crate::zend::object_handlers::object_of(this)?;
+    if let Some(o) = crate::zend::object_handlers::payload_of::<ZipObject>(&h) {
         return Some(o);
     }
     let o = Rc::new(ZipObject::new());
-    crate::object::set_payload(&h, o.clone());
+    crate::zend::object_handlers::set_payload(&h, o.clone());
     Some(o)
 }
 
@@ -304,11 +304,11 @@ fn get_properties_for(
     h: &ObjectHandle,
     purpose: PropPurpose,
 ) -> Result<Option<PhpArray>, Thrown> {
-    let o = match crate::object::payload_of::<ZipObject>(h) {
+    let o = match crate::zend::object_handlers::payload_of::<ZipObject>(h) {
         Some(o) => o,
         None => {
             let o = Rc::new(ZipObject::new());
-            crate::object::set_payload(h, o.clone());
+            crate::zend::object_handlers::set_payload(h, o.clone());
             o
         }
     };

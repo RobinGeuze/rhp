@@ -95,6 +95,7 @@ impl Vm {
     /// reached a builtin (rhp lets a later declaration take a builtin's
     /// name). An include's or eval's `{main}` is freed when it returns, so
     /// its calls are resolved every time.
+    #[inline]
     pub(crate) fn call_target(
         &mut self,
         top: usize,
@@ -103,17 +104,33 @@ impl Vm {
         name: NIdx,
         fallback: NIdx,
     ) -> Result<CallTarget, Thrown> {
-        if self.stack[top].include_kind.is_some() {
-            return Ok(self.resolve_call(proto, name, fallback)?.0);
-        }
-        let key = (Rc::as_ptr(proto) as usize, pc as u32);
-        if let Some(site) = self.call_sites.get(&key) {
-            if site.gen == 0 || site.gen == self.fn_gen {
-                return Ok(site.target);
+        if self.stack[top].include_kind.is_none() {
+            let key = (Rc::as_ptr(proto) as usize, pc as u32);
+            if let Some(site) = self.call_sites.get(&key) {
+                if site.gen == 0 || site.gen == self.fn_gen {
+                    return Ok(site.target);
+                }
             }
         }
+        self.call_target_miss(top, proto, pc, name, fallback)
+    }
+
+    /// [`Vm::call_target`] when the site has no valid entry: resolve the
+    /// call and remember it. Kept out of line so that the dispatch loop
+    /// holds only the cache probe.
+    #[cold]
+    #[inline(never)]
+    fn call_target_miss(
+        &mut self,
+        top: usize,
+        proto: &Rc<FunctionProto>,
+        pc: usize,
+        name: NIdx,
+        fallback: NIdx,
+    ) -> Result<CallTarget, Thrown> {
         let (target, stable) = self.resolve_call(proto, name, fallback)?;
-        if !matches!(target, CallTarget::Missing) {
+        if self.stack[top].include_kind.is_none() && !matches!(target, CallTarget::Missing) {
+            let key = (Rc::as_ptr(proto) as usize, pc as u32);
             let site = CallSite {
                 target,
                 gen: if stable { 0 } else { self.fn_gen },

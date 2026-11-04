@@ -1,0 +1,15 @@
+array(2) {
+  [0]=>
+  string(5) "FromB"
+  [1]=>
+  string(5) "FromA"
+}
+bool(true)
+include_declared_order.php
+include_declared_order_b.inc
+include_declared_order_c.inc
+include_declared_order_a.inc
+bool(true)
+string(5) "FromC"
+string(6) "IFromC"
+ok

@@ -37,7 +37,7 @@ pub use capture::{CaptureSapi, Captured};
 pub use rhp_compiler::Mode;
 pub use rhp_vm::IncludeError;
 
-pub use rhp_builtins::sapi::{RequestInfo, Response, Sapi};
+pub use rhp_builtins::main::sapi::{RequestInfo, Response, Sapi};
 /// The `-v` banner (`PHP 8.5.x (cli) (built: …)`) for a SAPI name.
 pub use rhp_builtins::version::banner as version_banner;
 /// The global allocator a binary that runs requests must install, for

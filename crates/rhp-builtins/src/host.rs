@@ -6,8 +6,9 @@ use rhp_values::{PhpArray, Value};
 
 use crate::main::streams;
 use crate::main::streams::{ops, plain_wrapper};
+use crate::main::{rfc1867, sapi};
 use crate::zend::object_handlers;
-use crate::{lookup, rfc1867, runtime_fns, sapi, StatInfo, StreamWrapper, Thrown};
+use crate::{lookup, runtime_fns, StatInfo, StreamWrapper, Thrown};
 
 /// The kind of an open stream resource (see [`Host::stream_kind`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

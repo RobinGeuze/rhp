@@ -10,7 +10,7 @@
 
 use std::io::{Read, Write};
 
-use rhp_builtins::sapi::{cgi_request_headers, RequestInfo, Response, Sapi};
+use rhp_builtins::main::sapi::{cgi_request_headers, RequestInfo, Response, Sapi};
 
 use crate::getopt::{opt, Opt, OptDef, PhpGetopt, NO_ARG, REQUIRED};
 use crate::{run_request, Outcome, Request, Script};
@@ -560,7 +560,7 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
     let mut skip_getopt = false;
     if let Some(qs) = env.get("QUERY_STRING") {
         if !qs.contains(&b'=') {
-            let decoded = rhp_builtins::sapi::url_decode(&qs);
+            let decoded = rhp_builtins::main::sapi::url_decode(&qs);
             let first = decoded.iter().find(|&&b| b > b' ');
             if first == Some(&b'-') {
                 skip_getopt = true;

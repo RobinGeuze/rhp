@@ -68,9 +68,7 @@ mod preg_fns;
 mod printf_fns;
 mod proc_fns;
 mod query_fns;
-pub mod rfc1867;
 mod runtime_fns;
-pub mod sapi;
 mod serialize_fns;
 mod socket_fns;
 mod sort_fns;
@@ -287,7 +285,7 @@ pub fn reset_request_state() {
     strsearch_fns::reset_state();
     php_fns::reset_state();
     stdext_fns::reset_state();
-    sapi::reset_state();
+    main::sapi::reset_state();
     ext::curl::reset_state();
     ext::openssl::reset_state();
     ext::bz2::reset_state();
@@ -425,8 +423,8 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("query_fns", Box::new(query_fns::register)),
         ("runtime_fns", Box::new(runtime_fns::register)),
         ("class_fns", Box::new(class_fns::register)),
-        ("sapi", Box::new(sapi::register)),
-        ("rfc1867", Box::new(rfc1867::register)),
+        ("sapi", Box::new(main::sapi::register)),
+        ("rfc1867", Box::new(main::rfc1867::register)),
         ("opcache_fns", Box::new(opcache_fns::register)),
         ("ini_parse", Box::new(ini_parse::register)),
         ("arraycmp_fns", Box::new(arraycmp_fns::register)),
@@ -453,7 +451,7 @@ pub fn lookup(name: &str) -> Option<&'static Builtin> {
 pub fn lookup_lc(name_lc: &str) -> Option<&'static Builtin> {
     let b = registry().get(name_lc)?;
     if matches!(name_lc.as_bytes().first(), Some(b'a' | b'c' | b'g' | b'p'))
-        && sapi::builtin_hidden(name_lc)
+        && main::sapi::builtin_hidden(name_lc)
     {
         return None;
     }
@@ -746,7 +744,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     .chain(
         ext::modules()
             .into_iter()
-            .filter(|md| md.name != "pcntl" || sapi::has_pcntl())
+            .filter(|md| md.name != "pcntl" || main::sapi::has_pcntl())
             .flat_map(|md| (md.constants)()),
     )
     .collect()

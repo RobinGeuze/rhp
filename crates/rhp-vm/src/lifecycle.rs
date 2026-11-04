@@ -40,12 +40,12 @@ impl Vm {
     /// A fresh engine for one request under `sapi`: its name
     /// (`php_sapi_name()`, `PHP_SAPI`), ini defaults, header semantics and
     /// output sink. Set ini values, then compile and run.
-    pub fn new(sapi: Box<dyn builtins::sapi::Sapi>) -> Self {
+    pub fn new(sapi: Box<dyn builtins::main::sapi::Sapi>) -> Self {
         // Builtin state is per request: never inherit a previous engine's.
         reset_request_state();
         rhp_values::mem::end_request();
         let name = sapi.name().to_string();
-        builtins::sapi::set_sapi(&name, &sapi.ini_defaults());
+        builtins::main::sapi::set_sapi(&name, &sapi.ini_defaults());
         let mut constants = HashMap::new();
         for (name, value) in builtins::constants() {
             constants.insert(name.as_bytes().to_vec(), value);
@@ -614,7 +614,7 @@ impl Vm {
             let stdin = self.make_stream(StreamState::Stdin, "stream");
             let stdout = self.make_stream(StreamState::Stdout, "stream");
             let stderr = self.make_stream(StreamState::Stderr, "stream");
-            if builtins::sapi::sapi_name() == "cli" {
+            if builtins::main::sapi::sapi_name() == "cli" {
                 self.constants.insert(b"STDIN".to_vec(), stdin);
                 self.constants.insert(b"STDOUT".to_vec(), stdout);
                 self.constants.insert(b"STDERR".to_vec(), stderr);

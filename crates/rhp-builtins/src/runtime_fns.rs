@@ -197,7 +197,7 @@ fn on_modify_check(name: &[u8], v: &[u8]) -> (Vec<String>, Option<Vec<u8>>) {
     }
     let mut warnings = Vec::new();
     if QUANTITY_DIRECTIVES.iter().any(|d| d.as_bytes() == name) {
-        if let Some(err) = crate::rfc1867::quantity_error(v) {
+        if let Some(err) = crate::main::rfc1867::quantity_error(v) {
             let name = String::from_utf8_lossy(name);
             warnings.push(format!("Invalid \"{name}\" setting. {err}"));
         }
@@ -251,7 +251,7 @@ pub(crate) fn ini_parse_uquantity(v: &[u8]) -> (u64, Option<String>) {
     if t == b"-1" {
         return (u64::MAX, None);
     }
-    let err = crate::rfc1867::quantity_error(v);
+    let err = crate::main::rfc1867::quantity_error(v);
     let out_of_range = |e: &Option<String>| e.as_ref().is_some_and(|m| m.contains("out of range"));
     if let Some(rest) = t.strip_prefix(b"-") {
         let value = ini_parse_quantity(rest) as u64;
@@ -325,7 +325,7 @@ fn mark_changed(key: &str) {
 /// whether the value is accepted.
 fn memory_hard_limit_percent_check(v: &[u8]) -> (Vec<String>, bool) {
     let mut warnings = Vec::new();
-    if let Some(err) = crate::rfc1867::quantity_error(v) {
+    if let Some(err) = crate::main::rfc1867::quantity_error(v) {
         warnings.push(format!(
             "Invalid \"memory_hard_limit_percent\" setting. {err}"
         ));
@@ -377,7 +377,7 @@ pub(crate) fn reset_state() {
 /// Is a directive's owning module loaded in this engine?
 fn module_loaded(module: &str) -> bool {
     if module == "cgi-fcgi" {
-        return crate::sapi::is_cgi();
+        return crate::main::sapi::is_cgi();
     }
     crate::php_fns::loaded_ext(module.as_bytes()).is_some()
 }
@@ -415,7 +415,7 @@ pub(crate) fn ini_default_value(name: &[u8]) -> Option<Option<Vec<u8>>> {
 
 /// A directive's startup value: the SAPI's ini default, else the built-in one.
 fn ini_default(e: &(&'static str, &'static str, Option<&'static str>, u8)) -> Option<Vec<u8>> {
-    crate::sapi::sapi_ini_default(e.1).or_else(|| e.2.map(|s| s.as_bytes().to_vec()))
+    crate::main::sapi::sapi_ini_default(e.1).or_else(|| e.2.map(|s| s.as_bytes().to_vec()))
 }
 
 /// Store a runtime override for a directive (`ini_set` / `set_include_path`).

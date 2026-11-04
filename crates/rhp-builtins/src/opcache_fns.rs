@@ -245,7 +245,7 @@ pub fn asctime_local(t: i64) -> String {
 /// `opcache.jit` not "disable" at startup, and a JIT buffer.
 pub(crate) fn jit_enabled() -> bool {
     let startup = |n: &[u8]| crate::ini_startup_value(n).unwrap_or_default();
-    let cli = crate::sapi::sapi_name() == "cli";
+    let cli = crate::main::sapi::sapi_name() == "cli";
     let started = crate::ini_parse_bool(&startup(b"opcache.enable"))
         && (!cli || crate::ini_parse_bool(&startup(b"opcache.enable_cli")));
     let mode = startup(b"opcache.jit").to_ascii_lowercase();

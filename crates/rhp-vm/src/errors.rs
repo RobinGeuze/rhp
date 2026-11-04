@@ -558,7 +558,7 @@ impl Vm {
         let mut mode = display_errors_mode(&ini(self, b"display_errors"));
         if matches!(mode, DisplayErrors::Stderr)
             && !matches!(
-                builtins::sapi::sapi_name().as_str(),
+                builtins::main::sapi::sapi_name().as_str(),
                 "cli" | "cgi" | "phpdbg"
             )
         {
@@ -608,7 +608,7 @@ impl Vm {
             m.extend_from_slice(format!("<br />\n<b>{label}</b>:  ").as_bytes());
             if fatal || docref {
                 let charset = ini(self, b"default_charset");
-                m.extend_from_slice(&builtins::sapi::escape_html(message, &charset));
+                m.extend_from_slice(&builtins::main::sapi::escape_html(message, &charset));
             } else {
                 m.extend_from_slice(message);
             }

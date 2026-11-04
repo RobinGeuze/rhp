@@ -1784,8 +1784,11 @@ fn output_handler(host: &mut dyn Host, cx: &mut OutputHandlerCtx) -> bool {
                 line.extend_from_slice(mimetype.as_bytes());
                 line.extend_from_slice(b"; charset=");
                 line.extend_from_slice(charset);
-                if crate::sapi::header_op(host, crate::sapi::HeaderOp::Replace(&line, 0))
-                    .unwrap_or(false)
+                if crate::main::sapi::header_op(
+                    host,
+                    crate::main::sapi::HeaderOp::Replace(&line, 0),
+                )
+                .unwrap_or(false)
                 {
                     if let Some(r) = host.response() {
                         r.send_default_content_type = false;

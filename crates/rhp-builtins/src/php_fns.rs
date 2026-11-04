@@ -56,7 +56,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
 /// The extensions the running SAPI has loaded: pcntl only under the CLI
 /// and CGI.
 fn sapi_exts() -> impl Iterator<Item = &'static str> {
-    let pcntl = crate::sapi::has_pcntl();
+    let pcntl = crate::main::sapi::has_pcntl();
     LOADED_EXTS
         .iter()
         .copied()
@@ -72,7 +72,7 @@ pub(crate) fn loaded_extension_names() -> Vec<&'static str> {
 /// lookup lowercases), if any.
 pub(crate) fn loaded_ext(name: &[u8]) -> Option<&'static str> {
     if name.eq_ignore_ascii_case(b"cgi-fcgi") {
-        return crate::sapi::is_cgi().then_some("cgi-fcgi");
+        return crate::main::sapi::is_cgi().then_some("cgi-fcgi");
     }
     sapi_exts().find(|e| e.as_bytes().eq_ignore_ascii_case(name))
 }
@@ -104,7 +104,7 @@ fn fn_get_loaded_extensions(host: &mut dyn Host, args: &[Value]) -> Result<Value
         for e in sapi_exts() {
             a.push(Value::str(e));
         }
-        if crate::sapi::is_cgi() {
+        if crate::main::sapi::is_cgi() {
             a.push(Value::str("cgi-fcgi"));
         }
     } else {
@@ -134,7 +134,7 @@ fn fn_phpversion(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_php_sapi_name(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(crate::sapi::sapi_name()))
+    Ok(Value::str(crate::main::sapi::sapi_name()))
 }
 
 /// rhp has no php.ini, so this reports "no scanned files".

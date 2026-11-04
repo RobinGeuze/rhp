@@ -191,7 +191,7 @@ impl Host for Vm {
             .collect()
     }
 
-    fn response(&mut self) -> Option<&mut builtins::sapi::Response> {
+    fn response(&mut self) -> Option<&mut builtins::main::sapi::Response> {
         Some(&mut self.sapi.response)
     }
 
@@ -207,11 +207,11 @@ impl Host for Vm {
             .unwrap_or_default()
     }
 
-    fn request_info(&self) -> Option<&builtins::sapi::RequestInfo> {
+    fn request_info(&self) -> Option<&builtins::main::sapi::RequestInfo> {
         self.sapi.request.as_ref()
     }
 
-    fn body_state(&mut self) -> Option<&mut builtins::rfc1867::BodyState> {
+    fn body_state(&mut self) -> Option<&mut builtins::main::rfc1867::BodyState> {
         Some(&mut self.sapi.body)
     }
 

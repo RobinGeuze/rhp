@@ -2,8 +2,10 @@
 //! (`php_output_header` / `sapi_send_headers`), the response a request
 //! builds, and the request input (superglobals, `php://input`).
 
-use rhp_builtins::rfc1867::{self, BodyState, Diag};
-use rhp_builtins::sapi::{self, RequestInfo, Response, Sapi, TreatData};
+use rhp_builtins::main::rfc1867;
+use rhp_builtins::main::rfc1867::{BodyState, Diag};
+use rhp_builtins::main::sapi;
+use rhp_builtins::main::sapi::{RequestInfo, Response, Sapi, TreatData};
 use rhp_builtins::{self as builtins, Host};
 use rhp_values::{ArrayKey, PhpArray, Value};
 
@@ -38,7 +40,7 @@ pub(crate) struct SapiState {
 
 impl SapiState {
     /// The state for a request under `sapi`, after its name and ini defaults
-    /// were installed for this thread ([`builtins::sapi::set_sapi`]).
+    /// were installed for this thread ([`builtins::main::sapi::set_sapi`]).
     pub(crate) fn new(sapi: Box<dyn Sapi>) -> SapiState {
         let response = Response {
             store: sapi.stores_headers(),
@@ -95,7 +97,7 @@ impl Vm {
         if diags.iter().any(|d| d.0 == 1) {
             self.sapi.startup_status = 255;
         }
-        if builtins::sapi::is_cgi() {
+        if builtins::main::sapi::is_cgi() {
             self.sapi.deferred_startup_diags = diags;
         } else {
             for (level, msg) in diags {
@@ -167,7 +169,7 @@ impl Vm {
         }
         let mut msg = msg.as_bytes().to_vec();
         if crate::ini_bool(&ini(self, b"html_errors")) {
-            msg = builtins::sapi::escape_html(&msg, &ini(self, b"default_charset"));
+            msg = builtins::main::sapi::escape_html(&msg, &ini(self, b"default_charset"));
         }
         let trace: &[u8] = if crate::ini_bool(&ini(self, b"fatal_error_backtraces")) {
             b"#0 {main}"

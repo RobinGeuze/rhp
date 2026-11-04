@@ -178,6 +178,8 @@ neither has a row in the "linked" section of `tools/capture-ref-build.php`.
 - Permissive licences (MIT, BSD, Apache-2.0, ISC, Zlib, curl, Unicode-3.0,
   CC0-1.0, public domain) may be linked or vendored; their notices go in
   `THIRD-PARTY-NOTICES`.
+- MPL-2.0 data or code may be linked unmodified if its notice names where
+  its source is (the Public Suffix List inside Homebrew's static libpsl).
 - LGPL may be linked statically or vendored: rhp ships its source, so users
   can relink. Keep LGPL code in its own crate with an exact licence
   expression (libmbfl: `rhp-mbfl-sys`, `LGPL-2.1-only AND PHP-3.01 AND MIT`).

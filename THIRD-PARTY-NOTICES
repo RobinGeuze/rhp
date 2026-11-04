@@ -20,7 +20,7 @@ in their package metadata (see Cargo.lock) and are not repeated here.
 12. libxml2        MIT; dict.c and list.c: ISC-style
 13. libcurl        curl; on macOS with nghttp2, nghttp3, ngtcp2, libpsl,
                    brotli (MIT), libssh2, zstd (BSD-3-Clause), OpenSSL
-                   (Apache-2.0)
+                   (Apache-2.0), the Public Suffix List (MPL-2.0)
 
 
 ------------------------------------------------------------------------------
@@ -800,6 +800,16 @@ libpsl:
   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
   DEALINGS IN THE SOFTWARE.
+
+The Public Suffix List, built into libpsl as data:
+
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this file,
+  You can obtain one at https://mozilla.org/MPL/2.0/.
+
+  Its source form is public_suffix_list.dat, published at
+  https://publicsuffix.org/list/ and included in libpsl's source
+  distribution (https://github.com/rockdaboot/libpsl).
 
 brotli:
 

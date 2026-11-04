@@ -221,7 +221,7 @@ pub const EXT_DOM: &str = "20031129";
 // PCRE_VERSION and friends come from the linked PCRE2 (crate::pcre), the
 // LIBXML_* versions from the linked libxml2 (crate::ext::libxml).
 /// `OPENSSL_VERSION_TEXT` / `OPENSSL_VERSION_NUMBER` (the headers php was
-/// compiled against; curl reports its own runtime OpenSSL below).
+/// compiled against; curl_version() reports the runtime OpenSSL).
 pub const OPENSSL_VERSION_TEXT: &str = "OpenSSL 4.0.3 29 Sep 2026";
 pub const OPENSSL_VERSION_NUMBER: i64 = 0x4000_0030;
 /// `INTL_ICU_VERSION`, `INTL_ICU_DATA_VERSION`.

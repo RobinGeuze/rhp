@@ -219,16 +219,43 @@ fn ini_key(kv: &str) -> &str {
 }
 
 /// Why a test with this opcache setting can't be compared, if it can't.
-/// rhp has a compiled-script cache but no optimizer, no JIT and no file
-/// cache, so their debug output can never match.
+/// rhp has a compiled-script cache but no JIT and no file cache. Opcode
+/// dumps (`opcache.opt_debug_level`) belong on the ignore list; one that
+/// isn't there yet (a new php-src test) gets its own skip reason.
 fn opcache_skip(k: &str, v: &str) -> Option<&'static str> {
     let on = !matches!(v, "" | "0");
     match k {
-        "opcache.opt_debug_level" if on => Some("opcache:opt_debug_level"),
+        "opcache.opt_debug_level" if on => Some("opcode dump not on tests/phpt/ignored.txt"),
         "opcache.jit_debug" if on => Some("opcache:jit_debug"),
         "opcache.file_cache" | "opcache.file_cache_only" if on => Some("opcache:file_cache"),
         _ => None,
     }
+}
+
+/// `tests/phpt/ignored.txt`: tests whose expected output rhp can never
+/// print. They never run.
+const IGNORED: &str = include_str!("../../../tests/phpt/ignored.txt");
+
+/// An ignore list: test path → reason. One test per line, the path, then
+/// whitespace and the reason; blank lines and `#` lines are skipped.
+fn parse_ignored(text: &str) -> Result<BTreeMap<String, String>, String> {
+    let mut out = BTreeMap::new();
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (path, reason) = line
+            .split_once(char::is_whitespace)
+            .map_or((line, ""), |(p, r)| (p, r.trim()));
+        if reason.is_empty() {
+            return Err(format!("line {}: {path} has no reason", i + 1));
+        }
+        if out.insert(path.to_string(), reason.to_string()).is_some() {
+            return Err(format!("line {}: {path} is listed twice", i + 1));
+        }
+    }
+    Ok(out)
 }
 
 /// How a test's `--INI--` settings are judged, and which reach rhp.
@@ -1023,6 +1050,8 @@ pub enum Status {
     RhpCrash,
     RhpTimeout,
     Skipped,
+    /// On the ignore list ([`IGNORED`]): never run.
+    Ignored,
 }
 
 impl Status {
@@ -1035,6 +1064,7 @@ impl Status {
             Status::RhpCrash => "rhp-crash",
             Status::RhpTimeout => "rhp-timeout",
             Status::Skipped => "skipped",
+            Status::Ignored => "ignored",
         }
     }
 }
@@ -2338,12 +2368,15 @@ const USAGE: &str = "\
 usage: rhp-difftest phpt --php-src <dir> [options]
 
 Runs php-src .phpt tests through php and rhp and compares their output.
+Tests on tests/phpt/ignored.txt (built in) never run.
 
 selection:
   --php-src <dir>        php-src checkout (or env RHP_PHP_SRC)
   --filter <substr>      only tests whose path contains <substr> (repeatable)
   --limit <n>            run at most <n> tests
-  --check-known <file>   run only the listed tests; exit 1 if any no longer match
+  --check-known <file>   run only the listed tests; exit 1 if any no longer match, if
+                         the list and tests/phpt/ignored.txt share a test, or if an
+                         ignored test is missing from --php-src
   --cgi-only             only CGI tests (--GET--/--POST--/--CGI--/... sections)
   --rhp-ini <directive>  run tests that set <directive> too, passing it to rhp
                          (repeatable): to measure whether rhp honours it
@@ -2535,6 +2568,13 @@ pub fn main(args: &[String]) -> ExitCode {
         },
         None => None,
     };
+    let ignored = match parse_ignored(IGNORED) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("rhp-difftest phpt: tests/phpt/ignored.txt: {e}");
+            return ExitCode::from(2);
+        }
+    };
     let mut tests = Vec::new();
     find_phpt(&o.php_src, Path::new(""), &mut tests);
     tests.sort();
@@ -2542,6 +2582,18 @@ pub fn main(args: &[String]) -> ExitCode {
     if let Some(k) = &known {
         let have: BTreeSet<&String> = tests.iter().collect();
         missing_known = k.iter().filter(|t| !have.contains(t)).cloned().collect();
+        // The two lists must agree, and the ignore list must not go stale.
+        let listed: Vec<&String> = k.iter().filter(|t| ignored.contains_key(*t)).collect();
+        let stale: Vec<&String> = ignored.keys().filter(|t| !have.contains(t)).collect();
+        if !listed.is_empty() || !stale.is_empty() {
+            for t in &listed {
+                println!("known-passing test is on tests/phpt/ignored.txt: {t}");
+            }
+            for t in &stale {
+                println!("ignored test not found in --php-src: {t}");
+            }
+            return ExitCode::FAILURE;
+        }
         let want: BTreeSet<&String> = k.iter().collect();
         tests.retain(|t| want.contains(t));
     }
@@ -2551,13 +2603,31 @@ pub fn main(args: &[String]) -> ExitCode {
     if o.cgi_only {
         tests.retain(|t| is_cgi_test(&o.php_src, t));
     }
+    // Ignored tests count against --limit, as skipped ones do.
     if let Some(n) = o.limit {
         tests.truncate(n);
     }
+    let mut ignored_results = Vec::new();
+    tests.retain(|t| match ignored.get(t) {
+        Some(reason) => {
+            ignored_results.push(TestResult {
+                test: t.clone(),
+                status: Status::Ignored,
+                key: reason.clone(),
+            });
+            false
+        }
+        None => true,
+    });
     if tests.is_empty() {
         eprintln!(
-            "rhp-difftest phpt: no tests selected under {}",
-            o.php_src.display()
+            "rhp-difftest phpt: no tests selected under {}{}",
+            o.php_src.display(),
+            if ignored_results.is_empty() {
+                String::new()
+            } else {
+                format!(" ({} on tests/phpt/ignored.txt)", ignored_results.len())
+            }
         );
         return ExitCode::from(2);
     }
@@ -2718,14 +2788,18 @@ pub fn main(args: &[String]) -> ExitCode {
         let _ = fs::remove_dir_all(&work);
     }
 
+    results.extend(ignored_results);
+    results.sort_by(|a, b| a.test.cmp(&b.test));
+
     // Summary.
     let count = |st: Status| results.iter().filter(|r| r.status == st).count();
-    let ran = results.len() - count(Status::Skipped);
+    let ran = results.len() - count(Status::Skipped) - count(Status::Ignored);
     println!(
-        "\nphpt: {} selected, {} ran, {} skipped ({:.0}s)",
+        "\nphpt: {} selected, {} ran, {} skipped, {} ignored ({:.0}s)",
         results.len(),
         ran,
         count(Status::Skipped),
+        count(Status::Ignored),
         started.elapsed().as_secs_f64()
     );
     for st in [
@@ -2760,9 +2834,19 @@ pub fn main(args: &[String]) -> ExitCode {
             8,
         );
     }
+    if count(Status::Ignored) > 0 {
+        println!("\nignored (tests/phpt/ignored.txt), by reason:");
+        print_clusters(
+            results
+                .iter()
+                .filter(|r| r.status == Status::Ignored)
+                .map(|r| (r.key.split(':').next().unwrap_or(&r.key), r.test.as_str())),
+            8,
+        );
+    }
     let failing: Vec<&TestResult> = results
         .iter()
-        .filter(|r| !matches!(r.status, Status::Match | Status::Skipped))
+        .filter(|r| !matches!(r.status, Status::Match | Status::Skipped | Status::Ignored))
         .collect();
     if !failing.is_empty() {
         println!("\ntop clusters (everything that ran but didn't match):");
@@ -2953,6 +3037,41 @@ mod tests {
     }
 
     #[test]
+    fn ignore_list_format() {
+        let l = parse_ignored("# c\n\na/b.phpt  why: this\nc.phpt\tthat\n").unwrap();
+        assert_eq!(l["a/b.phpt"], "why: this");
+        assert_eq!(l["c.phpt"], "that");
+        assert_eq!(
+            parse_ignored("a.phpt\n").unwrap_err(),
+            "line 1: a.phpt has no reason"
+        );
+        assert_eq!(
+            parse_ignored("a.phpt x\na.phpt y\n").unwrap_err(),
+            "line 2: a.phpt is listed twice"
+        );
+    }
+
+    /// The committed list parses, is C-sorted, and known-passing.txt lists
+    /// none of it (`--check-known` checks that too).
+    #[test]
+    fn committed_ignore_list() {
+        let ignored = parse_ignored(IGNORED).unwrap();
+        assert!(ignored.keys().all(|t| t.ends_with(".phpt")));
+        let order: Vec<&str> = IGNORED
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .filter_map(|l| l.split_whitespace().next())
+            .collect();
+        assert!(order.is_sorted(), "tests/phpt/ignored.txt is not C-sorted");
+        let known = read_known(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/phpt/known-passing.txt"),
+        )
+        .unwrap();
+        let both: Vec<&String> = known.iter().filter(|t| ignored.contains_key(*t)).collect();
+        assert!(both.is_empty(), "known-passing and ignored: {both:?}");
+    }
+
+    #[test]
     fn ini_noops_run_others_skip() {
         let dir = Path::new("/w");
         let rules = IniRules {
@@ -2976,15 +3095,21 @@ mod tests {
         assert_eq!(ini.len(), 3);
         let to_rhp: Vec<&String> = ini.iter().filter(|kv| rules.rhp_applies(kv)).collect();
         assert_eq!(to_rhp, ["pcre.jit=0", "opcache.jit=tracing"]);
-        // opcache runs, except where the output is opcode or JIT dumps.
+        // opcache runs, except with dumps or the file cache. Listed opcode
+        // dumps never get here; an unlisted one is flagged.
         let p = Phpt::parse(b"--INI--\nopcache.enable_cli=1\n--FILE--\n");
         assert_eq!(test_ini(&p).unwrap(), ["opcache.enable_cli=1"]);
-        let p = Phpt::parse(
-            b"--INI--\nopcache.enable_cli=1\nopcache.opt_debug_level=0x20000\n--FILE--\n",
+        let p = Phpt::parse(b"--INI--\nopcache.opt_debug_level=0x20000\n--FILE--\n");
+        assert_eq!(
+            test_ini(&p).unwrap_err(),
+            "opcode dump not on tests/phpt/ignored.txt"
         );
-        assert_eq!(test_ini(&p).unwrap_err(), "opcache:opt_debug_level");
         let p = Phpt::parse(b"--INI--\nopcache.opt_debug_level=0\n--FILE--\n");
         assert!(test_ini(&p).is_ok());
+        let p = Phpt::parse(b"--INI--\n;opcache.opt_debug_level=0x20000\n--FILE--\n");
+        assert!(test_ini(&p).is_ok());
+        let p = Phpt::parse(b"--INI--\nopcache.jit_debug=0x1\n--FILE--\n");
+        assert_eq!(test_ini(&p).unwrap_err(), "opcache:jit_debug");
         let p = Phpt::parse(b"--INI--\nopcache.file_cache={PWD}\n--FILE--\n");
         assert_eq!(test_ini(&p).unwrap_err(), "opcache:file_cache");
         // As run-tests' settings2array: trimmed, the last value kept, and a

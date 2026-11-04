@@ -13,6 +13,7 @@ need no special handling.
   and the nightly check out `Zend/tests`, `tests`, `ext/*/tests` and
   `sapi/*/tests`: every php-src test except the 5 in `ext/intl/uchar/tests`
   (none pass yet), which the list must not contain.
+- `ignored.txt` lists tests that never run (see [the ignore list](#the-ignore-list)).
 
 How it compares, mirroring `run-tests.php`:
 
@@ -39,9 +40,11 @@ How it compares, mirroring `run-tests.php`:
   the setting. `--rhp-ini <directive>` runs the tests a directive blocks, to
   measure it before adding it.
 - `opcache.enable_cli=1` tests run with opcache on in both engines (rhp has
-  the compiled-script cache, no optimizer and no JIT). Tests that dump
-  opcodes (`opcache.opt_debug_level`) or JIT code (`opcache.jit_debug`), or
-  use the file cache, are skipped with an `opcache:` reason.
+  the compiled-script cache, no optimizer and no JIT). Tests that dump JIT
+  code (`opcache.jit_debug`) or use the file cache are skipped with an
+  `opcache:` reason. Tests that dump opcodes are on the ignore list; one
+  that isn't (new in a php-src bump) is skipped as `opcode dump not on
+  tests/phpt/ignored.txt` until it is added.
 - Each worker has its own copy of the test trees. After every engine run, the
   runner executes `--CLEAN--` and restores the test's directory, so php and rhp
   (and every mutant) start from the same files.
@@ -78,6 +81,39 @@ target/release/rhp-difftest phpt --php-src ../php-src \
 An emitted repro is a `NAME.php` / `NAME.out` pair in the `tests/golden` format,
 with php's output as the expectation. Once rhp is fixed, move the pair into
 `tests/golden/` so it stays covered.
+
+## The ignore list
+
+`ignored.txt` lists tests whose expected output rhp can never print. One test
+per line: its path, then whitespace and the reason. Blank lines and `#` lines
+are skipped; keep it C-sorted. The list is compiled into `rhp-difftest`, so
+rebuild it after an edit.
+
+- Ignored tests never run. The summary counts them apart from skips, and
+  `--json` gives them the status `ignored`.
+- `--write-known` never writes one.
+- `--check-known` fails, before running anything, if `known-passing.txt`
+  lists an ignored test or an ignored test is missing from `--php-src`.
+
+A test belongs here only if no change to rhp could make it match. Today that
+is the 61 tests that set `opcache.opt_debug_level`: they print Zend's
+optimizer listing. A missing feature (the JIT, the file cache, an extension)
+is a skip or a failure, not an ignore. When an ignored test also prints
+script output and rhp matches php on it, that part is kept as a golden
+(`tests/golden/opt_*.php`). Twenty of the 61 print script output; 13 are
+goldens. The others, with what blocks them:
+
+- `ext/opcache/tests/match/001.phpt`: `range()` with characters.
+- `ext/opcache/tests/ct_eval_frameless_002.phpt`: the "Undefined
+  variable" warning.
+- `ext/opcache/tests/dump_property_hooks.phpt`: property hooks.
+- `ext/opcache/tests/pipe_optimizations.phpt`: piping into a first-class
+  callable (`5 |> f(...)`).
+- `ext/opcache/tests/nodiscard_001.phpt`: the `(void)` cast; the
+  `zend_test_nodiscard()` part needs zend_test.
+- `ext/opcache/tests/preload_optimizer.phpt` (`opcache.preload`) and
+  `ext/dl_test/tests/frameless_temporary_opcache.phpt` (dl_test.so): not
+  portable to a golden.
 
 ## Hunting bugs in php itself
 

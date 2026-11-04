@@ -1,0 +1,5 @@
+
+Fatal error: Uncaught Exception: Should happen in F:8
+Stack trace:
+#0 {main}
+  thrown in F on line 8

@@ -60,7 +60,16 @@ stdout, stderr and the exit status.
 test in `tests/phpt/known-passing.txt` must keep matching. See
 [`tests/phpt/README.md`](../tests/phpt/README.md). Add tests that start
 passing because of rhp's own behaviour, not ones that pass only because the
-local php lacks an extension CI's php has (or the reverse).
+local php lacks an extension CI's php has (or the reverse). Tests whose
+output rhp can never print are on `tests/phpt/ignored.txt` and never run.
+
+**Bytecode snapshots:** there are none, and there should be none until rhp
+has a real optimizer. php-src's opcode-dump tests are on the phpt ignore
+list. Where rhp matches php on the script output they print after the
+dump, that output is kept as goldens (`tests/golden/opt_*`; the pending
+ones are listed in the phpt README). Once rhp optimizes, add a developer
+`--dump-bytecode` and per-pass snapshot tests modelled on php-src's
+`ext/opcache/tests/opt`.
 
 **Apps** (`tests/apps/README.md`) are pinned Symfony and Laravel projects:
 a compile-only lint ratchet and a request diff of `rhp --cgi` against

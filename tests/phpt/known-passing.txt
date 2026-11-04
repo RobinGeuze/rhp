@@ -6755,6 +6755,7 @@ ext/standard/tests/general_functions/putenv_bug75574_utf8.phpt
 ext/standard/tests/general_functions/rand.phpt
 ext/standard/tests/general_functions/register_shutdown_function_with_trampoline.phpt
 ext/standard/tests/general_functions/sleep_error.phpt
+ext/standard/tests/general_functions/strval.phpt
 ext/standard/tests/general_functions/sys_getloadavg.phpt
 ext/standard/tests/general_functions/usleep_error.phpt
 ext/standard/tests/general_functions/var_dump_arrays.phpt
@@ -7573,8 +7574,10 @@ ext/standard/tests/strings/strtr_variation1.phpt
 ext/standard/tests/strings/strtr_variation2.phpt
 ext/standard/tests/strings/strtr_variation4.phpt
 ext/standard/tests/strings/strtr_with_reference.phpt
+ext/standard/tests/strings/strval.phpt
 ext/standard/tests/strings/strval_basic.phpt
 ext/standard/tests/strings/strval_error.phpt
+ext/standard/tests/strings/strval_variation1.phpt
 ext/standard/tests/strings/strval_variation2.phpt
 ext/standard/tests/strings/substr.phpt
 ext/standard/tests/strings/substr_count_basic.phpt

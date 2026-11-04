@@ -97,6 +97,11 @@ Notes:
   php compares with each other must share one table (`DateTime` and
   `DateTimeImmutable` do; if they ever need separate tables, compare
   their `compare` fields instead).
+- "op1" is the operand php's VM sees first. php swaps the operands of
+  `*`, `|`, `&`, `^`, `==`, `!=`, `===` and `!==` when op1's kind
+  (CONST < TMP < VAR < CV) is lower than op2's, so `[] | $g` reaches
+  GMP's handler first and `$arr | $g` does not; rhp's compiler does the
+  same (`php_operand_kind`).
 - Strictness: a handler that converts operands the way php's
   `ZEND_ARG_USES_STRICT_TYPES()` decides (GMP) asks
   `host.arg_uses_strict_types()`, not `caller_strict_types()`: php looks

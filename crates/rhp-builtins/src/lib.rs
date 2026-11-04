@@ -1235,6 +1235,7 @@ pub fn reset_request_state() {
     sysmisc_fns::reset_state();
     preg_fns::reset_state();
     json_fns::reset_state();
+    #[cfg(feature = "mbstring-libmbfl")]
     ext::mbstring::reset_state();
     strsearch_fns::reset_state();
     php_fns::reset_state();
@@ -1543,6 +1544,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("LOCK_EX", Value::Int(2)),
         ("LOCK_UN", Value::Int(3)),
         ("LOCK_NB", Value::Int(4)),
+        #[cfg(feature = "mbstring-libmbfl")]
         (
             "MB_ONIGURUMA_VERSION",
             Value::str(version::ONIGURUMA_VERSION),
@@ -1642,13 +1644,21 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("SORT_LOCALE_STRING", Value::Int(5)),
         ("SORT_NATURAL", Value::Int(6)),
         ("SORT_FLAG_CASE", Value::Int(8)),
+        #[cfg(feature = "mbstring-libmbfl")]
         ("MB_CASE_UPPER", Value::Int(0)),
+        #[cfg(feature = "mbstring-libmbfl")]
         ("MB_CASE_LOWER", Value::Int(1)),
+        #[cfg(feature = "mbstring-libmbfl")]
         ("MB_CASE_TITLE", Value::Int(2)),
+        #[cfg(feature = "mbstring-libmbfl")]
         ("MB_CASE_FOLD", Value::Int(3)),
+        #[cfg(feature = "mbstring-libmbfl")]
         ("MB_CASE_UPPER_SIMPLE", Value::Int(4)),
+        #[cfg(feature = "mbstring-libmbfl")]
         ("MB_CASE_LOWER_SIMPLE", Value::Int(5)),
+        #[cfg(feature = "mbstring-libmbfl")]
         ("MB_CASE_TITLE_SIMPLE", Value::Int(6)),
+        #[cfg(feature = "mbstring-libmbfl")]
         ("MB_CASE_FOLD_SIMPLE", Value::Int(7)),
         ("FILTER_DEFAULT", Value::Int(516)),
         ("FILTER_UNSAFE_RAW", Value::Int(516)),

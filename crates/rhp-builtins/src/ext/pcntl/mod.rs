@@ -619,74 +619,6 @@ fn fn_wait(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(wait_common(host, -1, args.first(), options, args.get(2)))
 }
 
-/// php's `zval_try_get_long` (`zendi_try_get_long`): `None` when the value
-/// cannot be an int (non-numeric string, array, …). A fractional float
-/// raises the "loses precision" deprecation, a leading-numeric string the
-/// "non-numeric value" warning.
-fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Thrown> {
-    // ZEND_DOUBLE_FITS_LONG
-    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
-    let fits = |f: f64| f.is_finite() && (-TWO_63..TWO_63).contains(&f);
-    Ok(Some(match v {
-        Value::Null | Value::Bool(false) => 0,
-        Value::Bool(true) => 1,
-        Value::Int(n) => *n,
-        Value::Float(f) => {
-            if !fits(*f) {
-                0
-            } else {
-                if f.fract() != 0.0 {
-                    let shown =
-                        String::from_utf8_lossy(&rhp_values::fmt::float_serialize(*f)).into_owned();
-                    host.emit_diagnostic(
-                        crate::E_DEPRECATED,
-                        &format!("Implicit conversion from float {shown} to int loses precision"),
-                    )?;
-                }
-                *f as i64
-            }
-        }
-        Value::Str(s) => {
-            let b = s.as_bytes();
-            let Some((num, end)) = conv::scan_number(b) else {
-                return Ok(None);
-            };
-            if !b[end..]
-                .iter()
-                .all(|&c| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
-            {
-                host.emit_diagnostic(crate::E_WARNING, "A non-numeric value encountered")?;
-            }
-            match num {
-                conv::Num::Int(n) => n,
-                conv::Num::Float(f) => {
-                    // zend_dval_to_lval_cap: saturate (NaN is 0).
-                    let l = if f.is_nan() {
-                        0
-                    } else if fits(f) {
-                        f as i64
-                    } else if f > 0.0 {
-                        i64::MAX
-                    } else {
-                        i64::MIN
-                    };
-                    if !fits(f) || f.fract() != 0.0 {
-                        host.emit_diagnostic(
-                            crate::E_DEPRECATED,
-                            &format!(
-                                "Implicit conversion from float-string \"{}\" to int loses precision",
-                                String::from_utf8_lossy(b)
-                            ),
-                        )?;
-                    }
-                    l
-                }
-            }
-        }
-        _ => return Ok(None),
-    }))
-}
-
 /// `pcntl_sigprocmask($mode, $signals, &$old_signals)`.
 fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let how = zpp_long(host, args, 0, "pcntl_sigprocmask", "mode")?;
@@ -722,7 +654,7 @@ fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     }
     for (_, v) in sigs.iter() {
         let v = deref(v);
-        let Some(n) = try_get_long(host, &v)? else {
+        let Some(n) = crate::ext::zpp::try_get_long(host, &v)? else {
             return Err(Thrown::type_error(format!(
                 "pcntl_sigprocmask(): Argument #2 ($signals) signals must be of type int, {} given",
                 value_name(&v)

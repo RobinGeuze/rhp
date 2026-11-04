@@ -64,7 +64,8 @@ git -C ../php-src checkout "$(grep -v '^#' tests/phpt/php-src.ref)"
 # Explore: classify and cluster every failure, biggest gaps first.
 target/release/rhp-difftest phpt --php-src ../php-src --filter Zend/tests
 
-# Ratchet: what CI runs.
+# Ratchet: what CI runs, split across three runners (--shard 1/3, 2/3, 3/3:
+# every third test).
 target/release/rhp-difftest phpt --php-src ../php-src --check-known tests/phpt/known-passing.txt
 
 # Regenerate the list (after fixing things) from the whole corpus, as the
@@ -83,7 +84,7 @@ target/release/rhp-difftest phpt --php-src ../php-src \
 
 An emitted repro is a `NAME.php` / `NAME.out` pair in the `tests/golden` format,
 with php's output as the expectation. Once rhp is fixed, move the pair into
-`tests/golden/` so it stays covered.
+the right `tests/golden/` subdirectory so it stays covered.
 
 ## The ignore list
 

@@ -2368,6 +2368,8 @@ selection:
                          the list and tests/phpt/ignored.txt share a test, or if an
                          ignored test is missing from --php-src
   --cgi-only             only CGI tests (--GET--/--POST--/--CGI--/... sections)
+  --shard <k>/<n>        only every n-th selected test, starting with the k-th (1-based),
+                         to split one run across n machines; not with --write-known
   --rhp-ini <directive>  run tests that set <directive> too, passing it to rhp
                          (repeatable): to measure whether rhp honours it
 running:
@@ -2409,6 +2411,7 @@ struct Opts {
     limit: Option<usize>,
     check_known: Option<PathBuf>,
     cgi_only: bool,
+    shard: Option<(usize, usize)>,
     rhp: Option<PathBuf>,
     php_cgi: Option<PathBuf>,
     cgi_candidate: Option<String>,
@@ -2438,6 +2441,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         limit: None,
         check_known: None,
         cgi_only: false,
+        shard: None,
         rhp: std::env::var_os("RHP_BIN").map(PathBuf::from),
         php_cgi: None,
         cgi_candidate: std::env::var("RHP_CGI_CANDIDATE").ok(),
@@ -2479,6 +2483,14 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             "--check-known" => o.check_known = Some(val()?.into()),
             "--rhp" => o.rhp = Some(val()?.into()),
             "--cgi-only" => o.cgi_only = true,
+            "--shard" => {
+                let v = val()?;
+                let shard = v
+                    .split_once('/')
+                    .and_then(|(k, n)| Some((k.parse().ok()?, n.parse().ok()?)))
+                    .filter(|&(k, n): &(usize, usize)| k >= 1 && k <= n);
+                o.shard = Some(shard.ok_or_else(|| format!("bad --shard {v:?} (want K/N)"))?);
+            }
             "--php-cgi" => o.php_cgi = Some(val()?.into()),
             "--cgi-candidate" => o.cgi_candidate = Some(val()?),
             "--jobs" => o.jobs = (num(val()?)? as usize).max(1),
@@ -2502,6 +2514,9 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
     }
     if o.php_src.as_os_str().is_empty() {
         return Err("--php-src is required".into());
+    }
+    if o.shard.is_some() && o.write_known.is_some() {
+        return Err("--write-known needs every test: not with --shard".into());
     }
     Ok(o)
 }
@@ -2592,6 +2607,15 @@ pub fn main(args: &[String]) -> ExitCode {
     }
     if o.cgi_only {
         tests.retain(|t| is_cgi_test(&o.php_src, t));
+    }
+    // Round robin: neighbours (one slow directory) land on different shards.
+    if let Some((k, n)) = o.shard {
+        tests = tests
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| i % n == k - 1)
+            .map(|(_, t)| t)
+            .collect();
     }
     // Ignored tests count against --limit, as skipped ones do.
     if let Some(n) = o.limit {

@@ -8985,6 +8985,11 @@ impl Vm {
                 Ok(v) => return Ok(v),
                 Err(thrown) => {
                     if !thrown.is_catchable() {
+                        // php's unwind_exit pops the callback's frames, so
+                        // what the calling builtin raises next is its own.
+                        if matches!(thrown, Thrown::Exit(_)) {
+                            self.stack.truncate(base);
+                        }
                         return Err(thrown);
                     }
                     match self.unwind(thrown, base)? {
@@ -9540,6 +9545,11 @@ impl Vm {
                 Ok(v) => return Ok(v),
                 Err(thrown) => {
                     if !thrown.is_catchable() {
+                        // php's unwind_exit pops the callback's frames, so
+                        // what the calling builtin raises next is its own.
+                        if matches!(thrown, Thrown::Exit(_)) {
+                            self.stack.truncate(base);
+                        }
                         return Err(thrown);
                     }
                     match self.unwind(thrown, base)? {

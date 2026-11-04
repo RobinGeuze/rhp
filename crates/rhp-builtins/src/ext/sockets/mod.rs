@@ -14,10 +14,10 @@ use std::rc::Rc;
 use rhp_values::ops::deref;
 use rhp_values::{ArrayKey, PhpArray, Value};
 
-use crate::argparse::zval_value_name;
 use crate::object::{ClassHandlers, ObjectHandlers};
 use crate::proc_fns::zpp_long;
 use crate::streams::errno;
+use crate::zend::zpp::zval_value_name;
 use crate::{Host, Thrown};
 
 /// `Socket`'s handlers: no clone, not comparable.

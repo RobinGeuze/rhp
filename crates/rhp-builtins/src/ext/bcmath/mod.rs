@@ -311,7 +311,7 @@ fn scale_arg(
     func: &str,
     argnum: usize,
 ) -> Result<usize, Thrown> {
-    let s = crate::ext::zpp::opt_long_arg(host, args, idx, func, "scale")?
+    let s = crate::zend::zpp::opt_long_arg(host, args, idx, func, "scale")?
         .unwrap_or_else(default_scale);
     if !(0..=2147483647).contains(&s) {
         return Err(Thrown::error(
@@ -459,7 +459,7 @@ fn fn_bcround(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // $mode takes a RoundingMode, which rhp does not implement: anything a
     // php script can pass is a zpp TypeError, except a RoundingMode case.
     if let Some(mode) = args.get(2).map(deref) {
-        let name = crate::argparse::zval_value_name(host, &mode);
+        let name = crate::zend::zpp::zval_value_name(host, &mode);
         if name.eq_ignore_ascii_case("RoundingMode") {
             return Err(Thrown::unsupported(
                 "bcround() argument #3 ($mode)",
@@ -498,7 +498,7 @@ fn default_scale() -> i64 {
 /// through the ini entry (`zend_alter_ini_entry`).
 fn fn_bcscale(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let old = default_scale();
-    if let Some(new) = crate::ext::zpp::opt_long_arg(host, args, 0, "bcscale", "scale")? {
+    if let Some(new) = crate::zend::zpp::opt_long_arg(host, args, 0, "bcscale", "scale")? {
         if !(0..=2147483647).contains(&new) {
             return Err(Thrown::error(
                 "ValueError",

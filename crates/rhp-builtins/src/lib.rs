@@ -34,8 +34,6 @@ pub use diag::{
 pub use host::{host_compare, host_loose_eq, Host, MagicFetch, ObCall, StreamKind, StreamMeta};
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};
 
-mod argparse;
-
 /// pcntl's asynchronous signal delivery: the VM polls
 /// [`pcntl_interrupt_pending`] between instructions and, when set, calls
 /// [`pcntl_dispatch`] to run the queued PHP signal handlers.
@@ -215,8 +213,8 @@ const BODY_MIN: &[(&str, usize)] = &[
     ("openssl_cms_verify", 2),
 ];
 
-pub use argparse::{zval_type_name, zval_value_name};
 pub use php_fns::{apply_env_overrides, env_overrides};
+pub use zend::zpp::{zval_type_name, zval_value_name};
 
 /// The php version this engine reports (`PHP_VERSION`).
 pub const PHP_VERSION: &str = version::PHP_VERSION;
@@ -1166,7 +1164,7 @@ fn fn_floatval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_strval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(argparse::zval_get_string(host, &args[0])?))
+    Ok(Value::str(zend::zpp::zval_get_string(host, &args[0])?))
 }
 
 fn fn_boolval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1246,12 +1244,12 @@ fn count_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value,
             }
             Err(Thrown::type_error(format!(
                 "{fname}(): Argument #1 ($value) must be of type Countable|array, {} given",
-                argparse::zval_value_name(host, &obj)
+                zend::zpp::zval_value_name(host, &obj)
             )))
         }
         other => Err(Thrown::type_error(format!(
             "{fname}(): Argument #1 ($value) must be of type Countable|array, {} given",
-            argparse::zval_value_name(host, &other)
+            zend::zpp::zval_value_name(host, &other)
         ))),
     }
 }
@@ -1324,7 +1322,7 @@ fn extremum(host: &mut dyn Host, args: &[Value], want_max: bool) -> Result<Value
         let Value::Array(a) = &args[0] else {
             return Err(Thrown::type_error(format!(
                 "{name}(): Argument #1 ($value) must be of type array, {} given",
-                argparse::zval_value_name(host, &args[0])
+                zend::zpp::zval_value_name(host, &args[0])
             )));
         };
         let mut it = a.iter().map(|(_, v)| deref(v));
@@ -1476,7 +1474,7 @@ fn array_binop(
         match operand {
             Some(n) => acc = op(&acc, &n)?,
             None => {
-                let ty = argparse::zval_type_name(host, &v);
+                let ty = zend::zpp::zval_type_name(host, &v);
                 warn(
                     host,
                     fname,
@@ -2183,7 +2181,7 @@ fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
         other => Err(Thrown::type_error(format!(
             "get_class(): Argument #1 ($object) must be of type object, {} given",
-            argparse::zval_value_name(host, &other)
+            zend::zpp::zval_value_name(host, &other)
         ))),
     }
 }
@@ -2275,7 +2273,7 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
         }
         Some(other) => Err(Thrown::type_error(format!(
             "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, {} given",
-            argparse::zval_value_name(host, &other)
+            zend::zpp::zval_value_name(host, &other)
         ))),
     }
 }

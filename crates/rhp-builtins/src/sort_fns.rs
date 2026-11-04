@@ -386,7 +386,7 @@ fn ptr_arg(
         }
         other => Err(Thrown::type_error(format!(
             "{fname}(): Argument #1 ($array) must be of type array, {} given",
-            crate::argparse::zval_value_name(host, &other)
+            crate::zend::zpp::zval_value_name(host, &other)
         ))),
     }
 }

@@ -311,7 +311,7 @@ fn fn_checkpurpose(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     let f = "openssl_x509_checkpurpose";
     let c = cert_arg(host, args, f)?;
     let purpose = int_arg(host, args, 1, f, 0)?;
-    let cainfo = match args.get(2).map(crate::ext::zpp::deref) {
+    let cainfo = match args.get(2).map(crate::zend::zpp::deref) {
         None => None,
         Some(v @ Value::Array(_)) => Some(v),
         Some(v) => return Err(type_error(host, f, 2, &v)),

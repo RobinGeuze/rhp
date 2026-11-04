@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Thrown, Value};
 
-use crate::argparse::{bool_param, int_param, str_or_null_param, str_param};
+use crate::zend::zpp::{bool_param, int_param, str_or_null_param, str_param};
 use crate::Host;
 
 pub use crate::query_fns::{post_form_vars, treat_data, url_decode, TreatData};
@@ -907,7 +907,7 @@ fn setcookie_common(
         Some(Value::Object(_) | Value::Resource(_) | Value::Closure(_)) => {
             return Err(Thrown::type_error(format!(
                 "{func}(): Argument #3 ($expires_or_options) must be of type array|int, {} given",
-                crate::argparse::zval_value_name(host, &deref(&args[2]))
+                crate::zend::zpp::zval_value_name(host, &deref(&args[2]))
             )));
         }
         Some(_) => {

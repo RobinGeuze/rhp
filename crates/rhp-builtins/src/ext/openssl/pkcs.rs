@@ -13,7 +13,7 @@ use super::{
     arg, bio_bytes, check_path, cstring, mem_bio, obj_or_str, set_ref, store_errors, str_arg, sys,
     type_error, Own, CERT_CLASS,
 };
-use crate::ext::zpp::deref;
+use crate::zend::zpp::deref;
 use crate::{warn, Host, Thrown};
 
 pub(super) fn register(m: &mut crate::Registry) {

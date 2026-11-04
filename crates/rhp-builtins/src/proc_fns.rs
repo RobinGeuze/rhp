@@ -69,7 +69,7 @@ pub(crate) fn zpp_long(
         Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type int, {} given",
             i + 1,
-            crate::argparse::zval_value_name(host, &v)
+            crate::zend::zpp::zval_value_name(host, &v)
         ))
     })
 }
@@ -92,7 +92,7 @@ pub(crate) fn zpp_string(
         _ => Err(Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type string, {} given",
             i + 1,
-            crate::argparse::zval_value_name(host, &v)
+            crate::zend::zpp::zval_value_name(host, &v)
         ))),
     }
 }
@@ -902,7 +902,7 @@ fn fn_pclose(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         other => {
             return Err(Thrown::type_error(format!(
                 "pclose(): Argument #1 ($handle) must be of type resource, {} given",
-                crate::argparse::zval_value_name(host, other)
+                crate::zend::zpp::zval_value_name(host, other)
             )))
         }
     };
@@ -943,7 +943,7 @@ fn proc_arg<'h>(
     if !matches!(v, Value::Resource(_)) {
         return Err(Thrown::type_error(format!(
             "{fname}(): Argument #1 ($process) must be of type resource, {} given",
-            crate::argparse::zval_value_name(host, &v)
+            crate::zend::zpp::zval_value_name(host, &v)
         )));
     }
     let is_proc = matches!(&v, Value::Resource(r) if r.type_name == "process");
@@ -1114,7 +1114,7 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Value::Null | Value::Object(_) | Value::Closure(_) | Value::Resource(_) => {
             return Err(Thrown::type_error(format!(
                 "proc_open(): Argument #1 ($command) must be of type array|string, {} given",
-                crate::argparse::zval_value_name(host, &cmd_v)
+                crate::zend::zpp::zval_value_name(host, &cmd_v)
             )))
         }
         other => conv::to_string_bytes(other),
@@ -1126,7 +1126,7 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         other => {
             return Err(Thrown::type_error(format!(
                 "proc_open(): Argument #2 ($descriptor_spec) must be of type array, {} given",
-                crate::argparse::zval_value_name(host, &other)
+                crate::zend::zpp::zval_value_name(host, &other)
             )))
         }
     };
@@ -1231,7 +1231,7 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                                     "ValueError",
                                     format!(
                                         "Redirection target must be of type int, {} given",
-                                        crate::argparse::zval_value_name(host, &other)
+                                        crate::zend::zpp::zval_value_name(host, &other)
                                     ),
                                 ))
                             }

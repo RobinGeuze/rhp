@@ -17,7 +17,7 @@ use super::{
     openssl_free, opt_str_arg, set_ref, store_errors, str_arg, sys, type_error, value_error, Own,
     PROPQ,
 };
-use crate::ext::zpp::deref;
+use crate::zend::zpp::deref;
 use crate::{deprecated_fn, warn, Host, Thrown};
 
 pub(super) fn register(m: &mut crate::Registry) {

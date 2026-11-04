@@ -18,7 +18,7 @@ use crate::ext::libxml::sys::{self, XmlAttr, XmlDoc, XmlNode, XmlNs};
 use crate::Thrown;
 
 fn must_not_be_empty(cx: &Cx, n: usize, pname: &str) -> Thrown {
-    crate::ext::zpp::value_error(&cx.fname, n, pname, "must not be empty")
+    crate::zend::zpp::value_error(&cx.fname, n, pname, "must not be empty")
 }
 
 pub fn construct(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
@@ -219,7 +219,7 @@ pub fn set_attribute(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value,
     }
     let attr = cx.with_libxml(|| create_attribute(nodep, &name, &value))?;
     if attr.is_null() {
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             &cx.fname,
             1,
             "qualifiedName",
@@ -415,7 +415,7 @@ pub fn get_elements_by_tag_name(
 ) -> Result<Value, Thrown> {
     let name = bytes(args, 0);
     if name.contains(&0) {
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             &cx.fname,
             1,
             "qualifiedName",
@@ -445,7 +445,7 @@ pub fn get_elements_by_tag_name_ns(
         .enumerate()
     {
         if s.contains(&0) {
-            return Err(crate::ext::zpp::value_error(
+            return Err(crate::zend::zpp::value_error(
                 &cx.fname,
                 i + 1,
                 p,
@@ -880,7 +880,7 @@ pub fn insert_adjacent_text(cx: &mut Cx, this: &Value, args: &[Value]) -> Result
     let data = bytes(args, 1);
     let (this_intern, thisp) = get_obj(cx, this)?;
     if data.len() > i32::MAX as usize {
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             &cx.fname,
             2,
             "data",
@@ -1004,7 +1004,7 @@ fn check_node_list(cx: &mut Cx, nodes: &[Value]) -> Result<Vec<Item>, Thrown> {
             }
             Value::Str(s) => {
                 if s.len() > i32::MAX as usize {
-                    return Err(crate::ext::zpp::value_error(
+                    return Err(crate::zend::zpp::value_error(
                         &cx.fname,
                         i + 1,
                         "nodes",
@@ -1018,7 +1018,7 @@ fn check_node_list(cx: &mut Cx, nodes: &[Value]) -> Result<Vec<Item>, Thrown> {
                     "{}(): Argument #{} must be of type DOMNode|string, {} given",
                     cx.fname,
                     i + 1,
-                    crate::argparse::zval_type_name(cx.host, &v)
+                    crate::zend::zpp::zval_type_name(cx.host, &v)
                 )));
             }
         }

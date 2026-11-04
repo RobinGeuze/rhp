@@ -11,7 +11,7 @@ use std::cmp::Ordering;
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, PhpStr, Value};
 
-use crate::argparse::{int_or_null_param, int_param, str_param, zval_value_name};
+use crate::zend::zpp::{int_or_null_param, int_param, str_param, zval_value_name};
 use crate::{Host, Thrown};
 
 // --- Mt19937 (ext/random/engine_mt19937.c) ----------------------------------
@@ -252,7 +252,7 @@ fn fn_shuffle(_host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// `array_rand(array $array, int $num = 1)` (php_array_pick_keys).
 fn fn_array_rand(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let arr = crate::argparse::array_param(host, args, 0, "array_rand")?;
+    let arr = crate::zend::zpp::array_param(host, args, 0, "array_rand")?;
     let num = int_param(host, args, 1, "array_rand", "num", 1)?;
     let avail = arr.len() as i64;
     if avail == 0 {
@@ -310,7 +310,7 @@ fn fn_str_shuffle(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 // --- arrays ------------------------------------------------------------------
 
 fn fn_array_change_key_case(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let arr = crate::argparse::array_param(host, args, 0, "array_change_key_case")?;
+    let arr = crate::zend::zpp::array_param(host, args, 0, "array_change_key_case")?;
     let upper = int_param(host, args, 1, "array_change_key_case", "case", 0)? != 0;
     let mut out = PhpArray::new();
     for (k, v) in arr.iter() {
@@ -847,7 +847,7 @@ fn fn_getopt(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let short = cstr(&str_param(host, args, 0, "getopt", "short_options")?);
     let longs = match args.get(1) {
         None => PhpArray::new(),
-        Some(_) => crate::argparse::array_param(host, args, 1, "getopt")?,
+        Some(_) => crate::zend::zpp::array_param(host, args, 1, "getopt")?,
     };
     let set_rest = |v: i64| {
         if let Some(Value::Ref(r)) = args.get(2) {

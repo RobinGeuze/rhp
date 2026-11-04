@@ -16,7 +16,7 @@ use super::{
     opt_str_arg, set_ref, store_errors, sys, try_string, type_error, ObjOrStr, Own, CERT_CLASS,
     CSR_CLASS,
 };
-use crate::ext::zpp::deref;
+use crate::zend::zpp::deref;
 use crate::{warn, Host, Thrown};
 
 pub(super) fn register(m: &mut crate::Registry) {

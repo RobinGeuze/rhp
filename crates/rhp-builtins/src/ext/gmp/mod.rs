@@ -21,9 +21,10 @@ use std::rc::Rc;
 
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
-use crate::argparse::zval_value_name;
-use crate::ext::zpp::{self, deref};
 use crate::object::{self, CastTarget, ClassHandlers, CloneObj, ObjectHandlers, Op, PropPurpose};
+use crate::zend::zpp;
+use crate::zend::zpp::deref;
+use crate::zend::zpp::zval_value_name;
 use crate::{Host, Thrown};
 use sys::Mpz;
 
@@ -1719,7 +1720,7 @@ fn shift_operands(
         Op::Shl => "<<",
         _ => ">>",
     };
-    let type_name = crate::argparse::zval_type_name;
+    let type_name = crate::zend::zpp::zval_type_name;
     let unsupported = |host: &dyn Host| {
         Thrown::type_error(format!(
             "Unsupported operand types: {} {sigil} {}",
@@ -1729,7 +1730,7 @@ fn shift_operands(
     };
     let shift = match deref(b) {
         Value::Int(n) => n,
-        v @ Value::Float(_) => crate::argparse::zval_get_long(host, &v)?,
+        v @ Value::Float(_) => crate::zend::zpp::zval_get_long(host, &v)?,
         Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
             Some(conv::Num::Int(n)) => n,
             _ => {

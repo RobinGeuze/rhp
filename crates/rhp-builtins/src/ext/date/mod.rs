@@ -21,8 +21,8 @@ use std::rc::Rc;
 use rhp_csrc::timelib::{self, sys, Errors, Time, Tz, Tzdb, TIMELIB_NO_CLONE, TIMELIB_UNSET};
 use rhp_values::{ArrayKey, PhpArray, Value};
 
-use crate::argparse::str_param;
-use crate::ext::zpp;
+use crate::zend::zpp;
+use crate::zend::zpp::str_param;
 use crate::{Host, Thrown};
 
 pub use format::php_format_date;
@@ -460,7 +460,7 @@ fn local_time(ts: i64) -> Result<(Time, Rc<Tz>), Thrown> {
 fn fn_localtime(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let ts = zpp::opt_long_arg(host, args, 0, "localtime", "timestamp")?.unwrap_or_else(php_time);
     let associative =
-        crate::argparse::bool_param(host, args, 1, "localtime", "associative", false)?;
+        crate::zend::zpp::bool_param(host, args, 1, "localtime", "associative", false)?;
     let (t, _tzi) = local_time(ts)?;
     let fields = [
         ("tm_sec", t.s),
@@ -632,7 +632,7 @@ fn double_arg(
         Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type {ty}, {} given",
             i + 1,
-            crate::argparse::zval_value_name(host, v)
+            crate::zend::zpp::zval_value_name(host, v)
         ))
     };
     Ok(Some(match &v {
@@ -939,7 +939,7 @@ fn fn_date_parse(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_date_parse_from_format(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let format = str_param(host, args, 0, "date_parse_from_format", "format")?;
-    let date = crate::argparse::path_param(host, args, 1, "date_parse_from_format", "datetime")?;
+    let date = crate::zend::zpp::path_param(host, args, 1, "date_parse_from_format", "datetime")?;
     let (t, error) = parse_from_format(&format, &date);
     Ok(parsed_time_array(&t, &error))
 }
@@ -1028,7 +1028,7 @@ fn fn_timezone_identifiers_list(host: &mut dyn Host, args: &[Value]) -> Result<V
         "timezoneGroup",
         PHP_DATE_TIMEZONE_GROUP_ALL,
     )?;
-    let option = crate::argparse::str_or_null_param(host, args, 1, fname, "countryCode")?;
+    let option = crate::zend::zpp::str_or_null_param(host, args, 1, fname, "countryCode")?;
     identifiers_list(fname, what, option.as_deref())
 }
 

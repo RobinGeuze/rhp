@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::argparse::zval_value_name;
+use crate::zend::zpp::zval_value_name;
 use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------

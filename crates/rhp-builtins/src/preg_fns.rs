@@ -93,7 +93,7 @@ fn find_at(re: &Regex, subject: &[u8], start: usize) -> Result<Option<Ovector>, 
 /// An array entry or a callback's result as a string (zval_get_string): an
 /// array warns, an object goes through `__toString` or throws.
 fn entry_bytes(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> {
-    crate::argparse::zval_get_string(host, v)
+    crate::zend::zpp::zval_get_string(host, v)
 }
 
 /// `(int)` of a value (after deref). Default when the arg is absent.
@@ -896,7 +896,7 @@ fn fn_preg_replace_callback(host: &mut dyn Host, args: &[Value]) -> Result<Value
 /// `preg_replace_callback_array($pattern, $subject, $limit, &$count, $flags)`:
 /// each `pattern => callback` pair is applied in turn to the whole subject.
 fn fn_preg_replace_callback_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let map = crate::argparse::array_param(host, args, 0, "preg_replace_callback_array")?;
+    let map = crate::zend::zpp::array_param(host, args, 0, "preg_replace_callback_array")?;
     let limit = int_arg(args, 2, -1);
     let flags = int_arg(args, 4, 0);
     let mut count = 0usize;

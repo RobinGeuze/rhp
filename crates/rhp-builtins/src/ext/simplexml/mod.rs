@@ -17,11 +17,11 @@ use std::rc::Rc;
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
-use crate::argparse::{zval_get_string, zval_value_name};
 use crate::ext::libxml::node::{self as lxn, ClassType, NodeObject};
 use crate::ext::libxml::sys::{self, XmlAttr, XmlDoc, XmlNode, XmlNs};
 use crate::ext::libxml::{self as lx, ffi};
 use crate::object::{self, CastTarget, ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
+use crate::zend::zpp::{zval_get_string, zval_value_name};
 use crate::{Host, Thrown};
 
 const INT_MAX: i64 = i32::MAX as i64;

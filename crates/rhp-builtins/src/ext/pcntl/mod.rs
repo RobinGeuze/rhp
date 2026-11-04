@@ -423,7 +423,7 @@ fn fn_signal(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
         return Err(Thrown::type_error(format!(
             "pcntl_signal(): Argument #2 ($handler) must be of type callable|int, {} given",
-            crate::argparse::zval_value_name(host, &handler)
+            crate::zend::zpp::zval_value_name(host, &handler)
         )));
     }
     let queue_handler = signal_handler
@@ -610,7 +610,7 @@ fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             "pcntl_sigprocmask(): Argument #1 ($mode) must be one of SIG_BLOCK, SIG_UNBLOCK, or SIG_SETMASK",
         ));
     }
-    let sigs = crate::argparse::array_param(host, args, 1, "pcntl_sigprocmask")?;
+    let sigs = crate::zend::zpp::array_param(host, args, 1, "pcntl_sigprocmask")?;
     if sigs.is_empty() && how != libc::SIG_SETMASK as i64 {
         return Err(Thrown::error(
             "ValueError",
@@ -625,10 +625,10 @@ fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     }
     for (_, v) in sigs.iter() {
         let v = deref(v);
-        let Some(n) = crate::ext::zpp::try_get_long(host, &v)? else {
+        let Some(n) = crate::zend::zpp::try_get_long(host, &v)? else {
             return Err(Thrown::type_error(format!(
                 "pcntl_sigprocmask(): Argument #2 ($signals) signals must be of type int, {} given",
-                crate::argparse::zval_value_name(host, &v)
+                crate::zend::zpp::zval_value_name(host, &v)
             )));
         };
         if !(1..NUM_SIGNALS).contains(&n) {

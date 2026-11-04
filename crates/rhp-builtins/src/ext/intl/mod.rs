@@ -148,12 +148,12 @@ fn fn_intl_get_error_message(_: &mut dyn Host, _args: &[Value]) -> Result<Value,
 }
 
 fn fn_intl_is_failure(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let code = super::zpp::int_arg(host, args, 0, "intl_is_failure", "errorCode")?;
+    let code = crate::zend::zpp::int_arg(host, args, 0, "intl_is_failure", "errorCode")?;
     Ok(Value::Bool(code > sys::U_ZERO_ERROR as i64))
 }
 
 fn fn_intl_error_name(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let code = super::zpp::int_arg(host, args, 0, "intl_error_name", "errorCode")?;
+    let code = crate::zend::zpp::int_arg(host, args, 0, "intl_error_name", "errorCode")?;
     // php passes the zend_long to u_errorName's UErrorCode (an int).
     Ok(Value::str(u_error_name(code as i32)))
 }
@@ -257,7 +257,7 @@ pub(crate) fn path_arg(
     if args.len() <= i {
         return Ok(Vec::new());
     }
-    let s = super::zpp::str_arg(host, args, i, fname, pname)?;
+    let s = crate::zend::zpp::str_arg(host, args, i, fname, pname)?;
     if s.contains(&0) {
         return Err(Thrown::error(
             "ValueError",

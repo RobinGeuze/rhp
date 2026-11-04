@@ -806,7 +806,7 @@ fn m_from_stream(cx: &mut Cx, _: &Rc<Reader>, _: &Value, args: &[Value]) -> Resu
             return Err(Thrown::type_error(format!(
                 "{}(): Argument #1 ($stream) must be of type resource, {} given",
                 cx.fname,
-                crate::argparse::zval_value_name(cx.host, other)
+                crate::zend::zpp::zval_value_name(cx.host, other)
             )));
         }
     }

@@ -18,7 +18,7 @@ use super::{
     set_ref, store_errors, str_arg, sys, value_error, Own,
 };
 use crate::ext::hash::primitives::{base64_decode, base64_encode};
-use crate::ext::zpp::deref;
+use crate::zend::zpp::deref;
 use crate::{warn, Host, Thrown};
 
 const OPENSSL_RAW_DATA: i64 = 1;

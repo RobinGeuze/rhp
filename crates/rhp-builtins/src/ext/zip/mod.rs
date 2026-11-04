@@ -371,12 +371,12 @@ unsafe extern "C" fn cancel_callback(_za: *mut sys::zip_t, ud: *mut c_void) -> c
         };
         ffi::call_host(|h| {
             let r = deref(&h.call_callable(&cb, &[])?);
-            match crate::ext::zpp::try_get_long(h, &r)? {
+            match crate::zend::zpp::try_get_long(h, &r)? {
                 Some(n) => Ok(n as c_int),
                 None => Err(Thrown::type_error(format!(
                     "Return value of callback provided to ZipArchive::registerCancelCallback() \
                      must be of type int, {} returned",
-                    crate::argparse::zval_value_name(h, &r)
+                    crate::zend::zpp::zval_value_name(h, &r)
                 ))),
             }
         })
@@ -578,7 +578,7 @@ pub(crate) fn c_string(b: &[u8]) -> CString {
 /// zpp's `P`/`p`: a path must not contain NUL bytes.
 pub(crate) fn check_path(fname: &str, n: usize, pname: &str, b: &[u8]) -> Result<(), Thrown> {
     if b.contains(&0) {
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             fname,
             n,
             pname,
@@ -590,7 +590,7 @@ pub(crate) fn check_path(fname: &str, n: usize, pname: &str, b: &[u8]) -> Result
 
 /// zend_argument_must_not_be_empty_error
 pub(crate) fn must_not_be_empty(fname: &str, n: usize, pname: &str) -> Thrown {
-    crate::ext::zpp::value_error(fname, n, pname, "must not be empty")
+    crate::zend::zpp::value_error(fname, n, pname, "must not be empty")
 }
 
 /// MAXPATHLEN

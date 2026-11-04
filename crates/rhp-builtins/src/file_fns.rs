@@ -156,7 +156,7 @@ fn fn_getcwd(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 
 /// `chdir()`: the request's working directory (see [`crate::vcwd`]).
 fn fn_chdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let dir = crate::argparse::path_param(host, args, 0, "chdir", "directory")?;
+    let dir = crate::zend::zpp::path_param(host, args, 0, "chdir", "directory")?;
     match crate::vcwd::chdir(&dir) {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {

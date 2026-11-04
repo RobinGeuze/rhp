@@ -10,7 +10,7 @@
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::argparse::array_param;
+use crate::zend::zpp::array_param;
 use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ fn fn_strtr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         let Value::Array(pairs) = deref(&args[1]) else {
             return Err(Thrown::type_error(format!(
                 "strtr(): Argument #2 ($from) must be of type array, {} given",
-                crate::argparse::zval_value_name(host, &args[1])
+                crate::zend::zpp::zval_value_name(host, &args[1])
             )));
         };
         let table: Vec<(Vec<u8>, Vec<u8>)> = pairs

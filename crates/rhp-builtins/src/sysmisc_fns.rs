@@ -7,7 +7,7 @@
 
 use rhp_values::{ArrayKey, PhpArray, Value};
 
-use crate::argparse::{array_param, bool_param, int_param, str_param};
+use crate::zend::zpp::{array_param, bool_param, int_param, str_param};
 use crate::{Host, Thrown};
 
 fn fn_array_first(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -108,7 +108,7 @@ fn fn_str_decrement(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 }
 
 fn fn_ip2long(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = crate::argparse::path_param(host, args, 0, "ip2long", "ip")?;
+    let s = crate::zend::zpp::path_param(host, args, 0, "ip2long", "ip")?;
     Ok(match crate::inet::pton4(&s) {
         Some(a) if !s.is_empty() => Value::Int(u32::from_be_bytes(a) as i64),
         _ => Value::Bool(false),

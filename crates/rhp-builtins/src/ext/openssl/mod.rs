@@ -21,7 +21,7 @@ use std::sync::{Once, OnceLock};
 
 use rhp_values::{conv, Value};
 
-use crate::ext::zpp::deref;
+use crate::zend::zpp::deref;
 use crate::{warn, Host, Thrown};
 
 /// The key and certificate classes' handlers: no clone, not comparable.
@@ -588,7 +588,7 @@ pub(super) fn try_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thro
                     "Error",
                     format!(
                         "Object of class {} could not be converted to string",
-                        crate::argparse::zval_value_name(host, &o)
+                        crate::zend::zpp::zval_value_name(host, &o)
                     ),
                 )),
             }
@@ -647,7 +647,7 @@ pub(super) fn obj_or_str(
 /// zpp's "must be of type T, X given" (`zend_zval_value_name`).
 pub(super) fn type_error(host: &dyn Host, fname: &str, i: usize, v: &Value) -> Thrown {
     let (pname, ty) = param(fname, i);
-    let given = crate::argparse::zval_value_name(host, v);
+    let given = crate::zend::zpp::zval_value_name(host, v);
     Thrown::type_error(format!(
         "{fname}(): Argument #{} (${pname}) must be of type {ty}, {given} given",
         i + 1
@@ -675,7 +675,7 @@ pub(super) fn str_arg(
     fname: &str,
 ) -> Result<Vec<u8>, Thrown> {
     let (pname, _) = param(fname, i);
-    crate::ext::zpp::str_arg(host, args, i, fname, pname)
+    crate::zend::zpp::str_arg(host, args, i, fname, pname)
 }
 
 pub(super) fn opt_str_arg(
@@ -698,7 +698,7 @@ pub(super) fn int_arg(
     default: i64,
 ) -> Result<i64, Thrown> {
     let (pname, _) = param(fname, i);
-    crate::ext::zpp::int_arg_or(host, args, i, fname, pname, default)
+    crate::zend::zpp::int_arg_or(host, args, i, fname, pname, default)
 }
 
 pub(super) fn bool_arg(
@@ -709,16 +709,16 @@ pub(super) fn bool_arg(
     default: bool,
 ) -> Result<bool, Thrown> {
     let (pname, _) = param(fname, i);
-    crate::ext::zpp::bool_arg_or(host, args, i, fname, pname, default)
+    crate::zend::zpp::bool_arg_or(host, args, i, fname, pname, default)
 }
 
 /// `zend_argument_value_error`.
 pub(super) fn value_error(fname: &str, i: usize, msg: &str) -> Thrown {
     let (pname, _) = param(fname, i);
-    crate::ext::zpp::value_error(fname, i + 1, pname, msg)
+    crate::zend::zpp::value_error(fname, i + 1, pname, msg)
 }
 
-pub(super) use crate::ext::zpp::set_ref;
+pub(super) use crate::zend::zpp::set_ref;
 
 /// php_openssl_check_path_ex: the absolute path (`expand_filepath`) of
 /// `path` (after `file://` when `file_protocol`). `Ok(None)` after a

@@ -5,7 +5,7 @@ use rhp_values::Value;
 
 use super::sys::{self, UChar, UErrorCode, UNormalizer2};
 use super::{error_reset, error_set, error_set_code, error_set_msg, utf16_to_utf8, utf8_to_utf16};
-use crate::ext::zpp::{int_arg_or, str_arg, value_error};
+use crate::zend::zpp::{int_arg_or, str_arg, value_error};
 use crate::{Host, Thrown};
 
 const FORM_D: i64 = 4;

@@ -5,7 +5,7 @@
 
 use rhp_values::{ArrayKey, PhpArray, Value};
 
-use crate::argparse::{bool_param, str_param};
+use crate::zend::zpp::{bool_param, str_param};
 use crate::{Host, Thrown};
 
 /// How `opcache_get_configuration()` types a directive.

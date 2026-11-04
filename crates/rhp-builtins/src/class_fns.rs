@@ -7,7 +7,7 @@
 use rhp_values::ops::deref;
 use rhp_values::{ClassKind, Value};
 
-use crate::argparse::{bool_param, str_param, zval_get_string, zval_value_name};
+use crate::zend::zpp::{bool_param, str_param, zval_get_string, zval_value_name};
 use crate::{Host, Thrown};
 
 fn declared(host: &mut dyn Host, kind: &str) -> Result<Value, Thrown> {

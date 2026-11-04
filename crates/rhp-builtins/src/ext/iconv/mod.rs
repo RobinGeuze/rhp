@@ -19,7 +19,7 @@ use std::ffi::{CStr, CString};
 use libc::{E2BIG, EBADF, EILSEQ, EINVAL};
 use rhp_values::{ArrayKey, PhpArray, PhpStr, Value};
 
-use crate::ext::zpp::{deref, long_arg, opt_long_arg, opt_str_arg, str_arg, value_error};
+use crate::zend::zpp::{deref, long_arg, opt_long_arg, opt_str_arg, str_arg, value_error};
 use crate::{warn, Host, OutputHandlerAlias, OutputHandlerCtx, Thrown};
 use sys::{errno, set_errno, Cd, NulCopy, FAILED};
 
@@ -1547,7 +1547,7 @@ fn fn_iconv_mime_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     let field_value = zstr_arg(host, args, 1, f, "field_value")?;
     let pref = match args.get(2) {
         None => None,
-        Some(_) => Some(crate::argparse::array_param(host, args, 2, f)?),
+        Some(_) => Some(crate::zend::zpp::array_param(host, args, 2, f)?),
     };
     let mut in_charset = cstr(&encoding("internal"));
     let mut out_charset = in_charset.clone();
@@ -1568,12 +1568,12 @@ fn fn_iconv_mime_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             return Ok(Value::Bool(false));
         }
         if let Some(v) = pref_get(&pref, "line-length") {
-            line_len = crate::argparse::zval_get_long(host, &v)?;
+            line_len = crate::zend::zpp::zval_get_long(host, &v)?;
         }
         if let Some(v) = pref_get(&pref, "line-break-chars") {
             lfchars = match v {
                 Value::Str(s) => s.as_bytes().to_vec(),
-                v => crate::argparse::zval_get_string(host, &v)?,
+                v => crate::zend::zpp::zval_get_string(host, &v)?,
             };
         }
     }

@@ -15,7 +15,7 @@ use crate::{inet, Host, Thrown};
 /// `inet_pton(string $ip): string|false` (basic_functions.c): AF_INET6 when the
 /// text has a ':', otherwise AF_INET if it has a '.'.
 fn fn_inet_pton(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let ip = crate::argparse::path_param(host, args, 0, "inet_pton", "ip")?;
+    let ip = crate::zend::zpp::path_param(host, args, 0, "inet_pton", "ip")?;
     let packed = if ip.contains(&b':') {
         inet::pton6(&ip).map(|a| a.to_vec())
     } else if ip.contains(&b'.') {
@@ -28,7 +28,7 @@ fn fn_inet_pton(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// `inet_ntop(string $ip): string|false`: a 4- or 16-byte address as text.
 fn fn_inet_ntop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let b = crate::argparse::str_param(host, args, 0, "inet_ntop", "ip")?;
+    let b = crate::zend::zpp::str_param(host, args, 0, "inet_ntop", "ip")?;
     Ok(inet::ntop(&b).map_or(Value::Bool(false), Value::str))
 }
 

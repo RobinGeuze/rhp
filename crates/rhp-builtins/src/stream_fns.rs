@@ -18,7 +18,7 @@ fn fn_is_resource(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 
 fn set_blocking_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
     let (res, _) = crate::fs_fns::stream_param(host, args, 0, fname, "stream")?;
-    let on = crate::argparse::bool_param(host, args, 1, fname, "enable", true)?;
+    let on = crate::zend::zpp::bool_param(host, args, 1, fname, "enable", true)?;
     Ok(Value::Bool(host.stream_set_blocking(&res, on)))
 }
 
@@ -58,7 +58,7 @@ fn fn_get_resource_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         Value::Resource(r) => Ok(Value::str(r.type_name)),
         other => Err(Thrown::type_error(format!(
             "get_resource_type(): Argument #1 ($resource) must be of type resource, {} given",
-            crate::argparse::zval_value_name(host, &other)
+            crate::zend::zpp::zval_value_name(host, &other)
         ))),
     }
 }
@@ -140,7 +140,7 @@ fn context_param(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Val
     if !matches!(v, Value::Resource(_)) {
         return Err(Thrown::type_error(format!(
             "{fname}(): Argument #1 ($context) must be of type resource, {} given",
-            crate::argparse::zval_value_name(host, &v)
+            crate::zend::zpp::zval_value_name(host, &v)
         )));
     }
     host.resolve_stream_context(&v).ok_or_else(|| {
@@ -153,7 +153,7 @@ fn context_param(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Val
 fn fn_stream_context_set_params(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "stream_context_set_params";
     let ctx = context_param(host, args, fname)?;
-    let params = crate::argparse::array_param(host, args, 1, fname)?;
+    let params = crate::zend::zpp::array_param(host, args, 1, fname)?;
     parse_context_params(host, fname, &ctx, &params)?;
     Ok(Value::Bool(true))
 }
@@ -214,15 +214,15 @@ fn key_bytes(k: &rhp_values::ArrayKey) -> Vec<u8> {
 /// response headers of an http(s) URL (the wrapper's only-headers mode).
 fn fn_get_headers(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "get_headers";
-    let url = crate::argparse::path_param(host, args, 0, fname, "url")?;
-    let assoc = crate::argparse::bool_param(host, args, 1, fname, "associative", false)?;
+    let url = crate::zend::zpp::path_param(host, args, 0, fname, "url")?;
+    let assoc = crate::zend::zpp::bool_param(host, args, 1, fname, "associative", false)?;
     let ctx = match args.get(2).map(deref) {
         None | Some(Value::Null) => host.default_stream_context(),
         Some(v @ Value::Resource(_)) => v,
         Some(v) => {
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #3 ($context) must be of type resource or null, {} given",
-                crate::argparse::zval_value_name(host, &v)
+                crate::zend::zpp::zval_value_name(host, &v)
             )))
         }
     };

@@ -15,7 +15,7 @@ use super::{
     arg, bio_bytes, bio_new_file, int_arg, libctx, mem_bio, obj_or_str, set_ref, store_errors,
     str_arg, sys, try_string, type_error, value_error, Own, CERT_CLASS, PROPQ,
 };
-use crate::ext::zpp::deref;
+use crate::zend::zpp::deref;
 use crate::{warn, Host, Thrown};
 
 const PKCS7_DETACHED: i64 = 0x40;

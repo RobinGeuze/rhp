@@ -8,7 +8,7 @@ use md5::{Digest, Md5};
 use rhp_csrc::crypt as c;
 use rhp_values::Value;
 
-use crate::argparse::str_param;
+use crate::zend::zpp::str_param;
 use crate::{Host, Thrown};
 
 /// The C string `s` points at: everything before the first NUL.

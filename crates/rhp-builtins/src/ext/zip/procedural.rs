@@ -78,7 +78,7 @@ fn resource_arg(
     Err(Thrown::type_error(format!(
         "{fname}(): Argument #{} (${pname}) must be of type resource, {} given",
         i + 1,
-        crate::argparse::zval_value_name(host, &v)
+        crate::zend::zpp::zval_value_name(host, &v)
     )))
 }
 
@@ -112,7 +112,7 @@ fn fetch<'h, T: 'static>(
 fn zip_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "zip_open";
     deprecated(host, fname, Some("use ZipArchive::open() instead"))?;
-    let filename = crate::ext::zpp::str_arg(host, args, 0, fname, "filename")?;
+    let filename = crate::zend::zpp::str_arg(host, args, 0, fname, "filename")?;
     check_path(fname, 1, "filename", &filename)?;
     if filename.is_empty() {
         return Err(must_not_be_empty(fname, 1, "filename"));
@@ -190,7 +190,7 @@ fn zip_entry_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     resource_arg(host, args, 0, fname, "zip_dp")?;
     resource_arg(host, args, 1, fname, "zip_entry")?;
     if args.len() > 2 {
-        crate::ext::zpp::str_arg(host, args, 2, fname, "mode")?;
+        crate::zend::zpp::str_arg(host, args, 2, fname, "mode")?;
     }
     let open = fetch::<ZipEntry>(host, args, 1, fname, "zip_entry", ENTRY)?
         .zf
@@ -214,7 +214,7 @@ fn zip_entry_read(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     deprecated(host, fname, Some("use ZipArchive::getFromIndex() instead"))?;
     resource_arg(host, args, 0, fname, "zip_entry")?;
     let mut len = match args.get(1) {
-        Some(_) => crate::ext::zpp::long_arg(host, args, 1, fname, "len")?,
+        Some(_) => crate::zend::zpp::long_arg(host, args, 1, fname, "len")?,
         None => 0,
     };
     let e = fetch::<ZipEntry>(host, args, 0, fname, "zip_entry", ENTRY)?;

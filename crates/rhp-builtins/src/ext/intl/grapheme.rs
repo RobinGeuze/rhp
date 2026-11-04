@@ -14,7 +14,7 @@ use super::sys::{self, UBreakIterator, UChar, UErrorCode, UBRK_DONE, USEARCH_DON
 use super::{
     error_set, error_set_code, error_set_msg, has_oom, path_arg, utf16_to_utf8, utf8_to_utf16,
 };
-use crate::ext::zpp::{bool_arg_or, int_arg, int_arg_or, opt_int_arg, str_arg, value_error};
+use crate::zend::zpp::{bool_arg_or, int_arg, int_arg_or, opt_int_arg, str_arg, value_error};
 use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
@@ -775,7 +775,7 @@ pub(super) fn fn_extract(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     let extract_type = int_arg_or(host, args, 2, f, "type", 0)?;
     let mut lstart = int_arg_or(host, args, 3, f, "offset", 0)?;
     let has_next = matches!(args.get(4), Some(Value::Ref(_)));
-    let set_next = |v: i64| crate::ext::zpp::set_ref(args, 4, Value::Int(v));
+    let set_next = |v: i64| crate::zend::zpp::set_ref(args, 4, Value::Int(v));
     if lstart < 0 {
         lstart += s.len() as i64;
     }

@@ -37,7 +37,6 @@ pub mod xmlreader;
 pub mod xmlwriter;
 pub mod zip;
 pub mod zlib;
-pub mod zpp;
 
 /// The object handlers the extensions register for their classes.
 pub(crate) fn class_handlers() -> Vec<&'static crate::object::ClassHandlers> {

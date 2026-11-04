@@ -1030,10 +1030,10 @@ fn allowed_option(host: &mut dyn Host, opts: Option<&Value>) -> Result<Allowed, 
                 if !matches!(v, Value::Str(_) | Value::Object(_)) {
                     return Err(Thrown::type_error(format!(
                         "unserialize(): Option \"allowed_classes\" must be an array of class names, {} given",
-                        crate::argparse::zval_value_name(host, &v)
+                        crate::zend::zpp::zval_value_name(host, &v)
                     )));
                 }
-                let s = crate::argparse::zval_get_string(host, &v)?;
+                let s = crate::zend::zpp::zval_get_string(host, &v)?;
                 if !valid_class_name(&s) {
                     return Err(Thrown::error(
                         "ValueError",
@@ -1049,7 +1049,7 @@ fn allowed_option(host: &mut dyn Host, opts: Option<&Value>) -> Result<Allowed, 
         }
         Some(other) => Err(Thrown::type_error(format!(
             "unserialize(): Option \"allowed_classes\" must be of type array|bool, {} given",
-            crate::argparse::zval_value_name(host, &other)
+            crate::zend::zpp::zval_value_name(host, &other)
         ))),
     }
 }

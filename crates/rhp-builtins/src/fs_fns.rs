@@ -56,7 +56,7 @@ pub(crate) fn stream_param(
         return Err(Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type resource, {} given",
             i + 1,
-            crate::argparse::zval_value_name(host, &v)
+            crate::zend::zpp::zval_value_name(host, &v)
         )));
     }
     match host.stream_kind(&v) {
@@ -228,7 +228,7 @@ fn dir_param(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, 
         other => {
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #1 ($dir_handle) must be of type resource or null, {} given",
-                crate::argparse::zval_value_name(host, &other)
+                crate::zend::zpp::zval_value_name(host, &other)
             )))
         }
     };
@@ -1824,7 +1824,7 @@ fn do_chown(
             let what = if group { "group" } else { "user" };
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #2 (${what}) must be of type string|int, {} given",
-                crate::argparse::zval_value_name(host, other)
+                crate::zend::zpp::zval_value_name(host, other)
             )));
         }
     };

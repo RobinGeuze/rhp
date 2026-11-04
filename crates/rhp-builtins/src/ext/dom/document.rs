@@ -33,7 +33,7 @@ const LIBXML_SAVE_NOEMPTYTAG: i64 = 1 << 2;
 const XML_SCHEMA_VAL_VC_I_CREATE: i64 = 1 << 0;
 
 fn value_error(cx: &Cx, n: usize, pname: &str, msg: &str) -> Thrown {
-    crate::ext::zpp::value_error(&cx.fname, n, pname, msg)
+    crate::zend::zpp::value_error(&cx.fname, n, pname, msg)
 }
 
 /// The document node of `this`.

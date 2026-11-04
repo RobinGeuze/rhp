@@ -5,7 +5,7 @@
 
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::argparse::{bool_param, int_param, str_param};
+use crate::zend::zpp::{bool_param, int_param, str_param};
 use crate::{Host, Thrown};
 
 const MODE_NORMAL: i64 = 0;

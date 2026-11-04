@@ -17,8 +17,8 @@ use std::rc::{Rc, Weak};
 use rhp_values::{conv, ArrayKey, ObjectData, PhpArray, PhpRef, PhpStr, Value};
 
 use crate::ext::libxml::{ffi, sys};
-use crate::ext::zpp::{deref, long_arg};
 use crate::object::{ClassHandlers, ObjectHandlers};
+use crate::zend::zpp::{deref, long_arg};
 use crate::{Host, Thrown};
 
 const XML_MAXLEVEL: i32 = 255;
@@ -156,7 +156,7 @@ fn parser_arg(host: &dyn Host, args: &[Value], i: usize, fname: &str) -> Result<
     Err(Thrown::type_error(format!(
         "{fname}(): Argument #{} ($parser) must be of type XMLParser, {} given",
         i + 1,
-        crate::argparse::zval_value_name(host, &v)
+        crate::zend::zpp::zval_value_name(host, &v)
     )))
 }
 
@@ -670,7 +670,7 @@ fn create(host: &mut dyn Host, args: &[Value], ns_support: bool) -> Result<Value
                 match xml_get_encoding(&e) {
                     Some(e) => e,
                     None => {
-                        return Err(crate::ext::zpp::value_error(
+                        return Err(crate::zend::zpp::value_error(
                             fname,
                             1,
                             "encoding",
@@ -745,7 +745,7 @@ fn check_string_method_arg(
         return Ok(None);
     }
     let Some(object) = object else {
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             fname,
             arg_num,
             pname,
@@ -754,7 +754,7 @@ fn check_string_method_arg(
     };
     if !object_has_method(host, object, method) {
         let class = host.object_class_name(object).unwrap_or_default();
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             fname,
             arg_num,
             pname,
@@ -990,7 +990,7 @@ fn fn_set_object(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if !matches!(new_this, Value::Object(_)) {
         return Err(Thrown::type_error(format!(
             "{F}(): Argument #2 ($object) must be of type object, {} given",
-            crate::argparse::zval_value_name(host, &new_this)
+            crate::zend::zpp::zval_value_name(host, &new_this)
         )));
     }
     const SET_VIA: [&str; 10] = [
@@ -1023,7 +1023,7 @@ fn fn_set_object(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 // zend_fcc_dtor ran before the check: the slot stays empty.
                 p.borrow_mut().h[slot] = None;
                 let class = host.object_class_name(&new_this).unwrap_or_default();
-                return Err(crate::ext::zpp::value_error(
+                return Err(crate::zend::zpp::value_error(
                     F,
                     2,
                     "object",
@@ -1185,7 +1185,7 @@ fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     if !matches!(value, Value::Bool(_) | Value::Int(_) | Value::Str(_)) {
         let msg = format!(
             "Argument #3 ($value) must be of type string|int|bool, {} given",
-            crate::argparse::zval_type_name(host, &value)
+            crate::zend::zpp::zval_type_name(host, &value)
         );
         crate::warn(host, F, &msg)?;
     }
@@ -1202,7 +1202,7 @@ fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             p.borrow_mut().parsehuge = conv::to_bool(&value);
         }
         OPT_SKIP_TAGSTART => {
-            let v = crate::argparse::zval_get_long(host, &value)?;
+            let v = crate::zend::zpp::zval_get_long(host, &value)?;
             if !(0..=i32::MAX as i64).contains(&v) {
                 crate::warn(
                     host,
@@ -1221,7 +1221,7 @@ fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             match xml_get_encoding(&s) {
                 Some(e) => p.borrow_mut().target_encoding = e,
                 None => {
-                    return Err(crate::ext::zpp::value_error(
+                    return Err(crate::zend::zpp::value_error(
                         F,
                         3,
                         "value",
@@ -1231,7 +1231,7 @@ fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             }
         }
         _ => {
-            return Err(crate::ext::zpp::value_error(
+            return Err(crate::zend::zpp::value_error(
                 F,
                 2,
                 "option",
@@ -1254,7 +1254,7 @@ fn fn_parser_get_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         OPT_PARSE_HUGE => Value::Bool(s.parsehuge),
         OPT_TARGET_ENCODING => Value::str(s.target_encoding),
         _ => {
-            return Err(crate::ext::zpp::value_error(
+            return Err(crate::zend::zpp::value_error(
                 F,
                 2,
                 "option",

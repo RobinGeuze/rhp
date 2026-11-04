@@ -346,7 +346,7 @@ pub fn register_php_functions(cx: &mut Cx, this: &Value, args: &[Value]) -> Resu
                     ArrayKey::Int(_) => crate::ext::libxml::io::to_string(cx.host, &entry)?,
                 };
                 if !valid_callback_name(&name, false) {
-                    return Err(crate::ext::zpp::value_error(
+                    return Err(crate::zend::zpp::value_error(
                         &cx.fname,
                         1,
                         "restrict",
@@ -382,12 +382,12 @@ pub fn register_php_functions(cx: &mut Cx, this: &Value, args: &[Value]) -> Resu
                 return Err(Thrown::type_error(format!(
                     "{}(): Argument #1 ($restrict) must be of type array|string|null, {} given",
                     cx.fname,
-                    crate::argparse::zval_value_name(cx.host, &v)
+                    crate::zend::zpp::zval_value_name(cx.host, &v)
                 )));
             }
             let name = crate::ext::libxml::io::to_string(cx.host, &v)?;
             if !valid_callback_name(&name, false) {
-                return Err(crate::ext::zpp::value_error(
+                return Err(crate::zend::zpp::value_error(
                     &cx.fname,
                     1,
                     "restrict",
@@ -420,7 +420,7 @@ pub fn register_php_function_ns(
     let callable = arg(args, 2);
     for (i, (s, p)) in [(&ns, "namespaceURI"), (&name, "name")].iter().enumerate() {
         if s.contains(&0) {
-            return Err(crate::ext::zpp::value_error(
+            return Err(crate::zend::zpp::value_error(
                 &cx.fname,
                 i + 1,
                 p,
@@ -435,7 +435,7 @@ pub fn register_php_function_ns(
         )));
     }
     if ns == PHP_XPATH_NS {
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             &cx.fname,
             1,
             "namespaceURI",
@@ -443,7 +443,7 @@ pub fn register_php_function_ns(
         ));
     }
     if !valid_callback_name(&name, true) {
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             &cx.fname,
             2,
             "name",
@@ -483,7 +483,7 @@ pub fn register_php_function_ns(
 pub fn quote(cx: &mut Cx, _: &Value, args: &[Value]) -> Result<Value, Thrown> {
     let input = bytes(args, 0);
     if input.contains(&0) {
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             &cx.fname,
             1,
             "str",

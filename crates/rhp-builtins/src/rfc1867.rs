@@ -1022,7 +1022,7 @@ fn path_param(
     fname: &str,
     pname: &str,
 ) -> Result<Vec<u8>, Thrown> {
-    let p = crate::argparse::str_param(host, args, i, fname, pname)?;
+    let p = crate::zend::zpp::str_param(host, args, i, fname, pname)?;
     if p.contains(&0) {
         return Err(Thrown::error(
             "ValueError",
@@ -1299,7 +1299,7 @@ fn parse_options(host: &mut dyn Host, opts: &PhpArray) -> Result<BodyOptions, Th
                     "ValueError",
                     format!(
                         "Invalid {} value in $options argument",
-                        crate::argparse::zval_value_name(host, other)
+                        crate::zend::zpp::zval_value_name(host, other)
                     ),
                 ))
             }
@@ -1328,7 +1328,7 @@ fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
         Some(other) => {
             return Err(Thrown::type_error(format!(
                 "request_parse_body(): Argument #1 ($options) must be of type ?array, {} given",
-                crate::argparse::zval_value_name(host, &other)
+                crate::zend::zpp::zval_value_name(host, &other)
             )))
         }
     };

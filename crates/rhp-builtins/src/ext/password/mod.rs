@@ -9,9 +9,9 @@ use rhp_csrc::argon2;
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::argparse::{str_param, zval_value_name};
 use crate::crypt_fns::php_crypt;
 use crate::ext::hash::primitives::base64_encode as base64;
+use crate::zend::zpp::{str_param, zval_value_name};
 use crate::{Host, Thrown, E_DEPRECATED};
 
 // php_password.h

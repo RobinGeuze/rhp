@@ -91,7 +91,7 @@ fn fn_extension_loaded(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 }
 
 fn fn_get_loaded_extensions(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let zend = crate::argparse::bool_param(
+    let zend = crate::zend::zpp::bool_param(
         host,
         args,
         0,
@@ -433,7 +433,7 @@ fn fn_zpp_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match coerced {
         Some(c) => Ok(c),
         None => {
-            let given = crate::argparse::zval_value_name(host, &v);
+            let given = crate::zend::zpp::zval_value_name(host, &v);
             Err(Thrown::type_error(format!(
                 "{}(): Argument #{} (${}) must be of type {}, {} given",
                 String::from_utf8_lossy(&func),
@@ -455,7 +455,7 @@ fn fn_throwable_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
 /// AF_INET, then getnameinfo(NI_NAMEREQD). The address itself when it has no
 /// name; a warning and false when it is not an address.
 fn fn_gethostbyaddr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let ip = crate::argparse::path_param(host, args, 0, "gethostbyaddr", "ip")?;
+    let ip = crate::zend::zpp::path_param(host, args, 0, "gethostbyaddr", "ip")?;
     let mut out = [0 as libc::c_char; 1025];
     let name = |sa: *const libc::sockaddr, len: usize, out: &mut [libc::c_char]| {
         // SAFETY: `sa` points at a zeroed sockaddr_in/_in6 of `len` bytes with
@@ -563,8 +563,8 @@ fn ob(host: &mut dyn Host, call: crate::ObCall) -> Result<Value, Thrown> {
 
 fn fn_ob_start(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let callback = args.first().map(deref).unwrap_or(Value::Null);
-    let chunk_size = crate::argparse::int_param(host, args, 1, "ob_start", "chunk_size", 0)?;
-    let flags = crate::argparse::int_param(host, args, 2, "ob_start", "flags", 0x70)?;
+    let chunk_size = crate::zend::zpp::int_param(host, args, 1, "ob_start", "chunk_size", 0)?;
+    let flags = crate::zend::zpp::int_param(host, args, 2, "ob_start", "flags", 0x70)?;
     ob(
         host,
         crate::ObCall::Start {
@@ -616,12 +616,12 @@ fn fn_ob_list_handlers(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Th
 }
 
 fn fn_ob_get_status(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let full = crate::argparse::bool_param(host, args, 0, "ob_get_status", "full_status", false)?;
+    let full = crate::zend::zpp::bool_param(host, args, 0, "ob_get_status", "full_status", false)?;
     ob(host, crate::ObCall::GetStatus { full })
 }
 
 fn fn_ob_implicit_flush(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let on = crate::argparse::bool_param(host, args, 0, "ob_implicit_flush", "enable", true)?;
+    let on = crate::zend::zpp::bool_param(host, args, 0, "ob_implicit_flush", "enable", true)?;
     ob(host, crate::ObCall::ImplicitFlush(on))
 }
 
@@ -721,7 +721,7 @@ fn fn_getenv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `putenv("NAME=value")` sets, `putenv("NAME")` unsets (in the request's
 /// environment overlay: `getenv` sees it; see [`env_overrides`]).
 fn fn_putenv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = crate::argparse::str_param(host, args, 0, "putenv", "assignment")?;
+    let a = crate::zend::zpp::str_param(host, args, 0, "putenv", "assignment")?;
     if a.is_empty() || a[0] == b'=' {
         return Err(Thrown::error(
             "ValueError",
@@ -842,7 +842,7 @@ fn fn_trigger_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 }
 
 fn fn_set_time_limit(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let secs = crate::argparse::int_param(host, args, 0, "set_time_limit", "seconds", 0)?;
+    let secs = crate::zend::zpp::int_param(host, args, 0, "set_time_limit", "seconds", 0)?;
     crate::runtime_fns::ini_store(b"max_execution_time", secs.to_string().into_bytes());
     Ok(Value::Bool(true))
 }
@@ -851,7 +851,7 @@ fn fn_set_time_limit(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 /// new one when given.
 fn fn_error_reporting(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let old = error_reporting_level(host);
-    let new = crate::argparse::int_or_null_param(host, args, 0, "error_reporting", "error_level")?;
+    let new = crate::zend::zpp::int_or_null_param(host, args, 0, "error_reporting", "error_level")?;
     if let Some(n) = new {
         if n != old {
             host.ini_set(b"error_reporting", n.to_string().into_bytes());
@@ -906,14 +906,15 @@ fn fn_register_shutdown_function(host: &mut dyn Host, args: &[Value]) -> Result<
 /// `memory_get_usage(bool $real_usage = false)`: zend_mm's `size`, or with
 /// `$real_usage` the chunks and huge blocks taken from the system.
 fn fn_memory_get_usage(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let real = crate::argparse::bool_param(host, args, 0, "memory_get_usage", "real_usage", false)?;
+    let real =
+        crate::zend::zpp::bool_param(host, args, 0, "memory_get_usage", "real_usage", false)?;
     Ok(Value::Int(rhp_values::mem::usage(real) as i64))
 }
 
 /// `memory_get_peak_usage(bool $real_usage = false)`.
 fn fn_memory_get_peak_usage(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let real =
-        crate::argparse::bool_param(host, args, 0, "memory_get_peak_usage", "real_usage", false)?;
+        crate::zend::zpp::bool_param(host, args, 0, "memory_get_peak_usage", "real_usage", false)?;
     Ok(Value::Int(rhp_values::mem::peak_usage(real) as i64))
 }
 

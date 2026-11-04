@@ -753,7 +753,7 @@ pub(crate) fn interval_sync_in(host: &mut dyn Host, h: &ObjectHandle) -> Result<
             };
             dval_to_lval(host, d * 1000000.0)?
         } else {
-            crate::argparse::zval_get_long(host, &v)?
+            crate::zend::zpp::zval_get_long(host, &v)?
         };
         longs.push((f, n));
     }

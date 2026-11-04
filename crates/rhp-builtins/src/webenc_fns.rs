@@ -179,7 +179,7 @@ fn fn_strip_tags(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             let mut set = Vec::new();
             for (_, v) in a.iter() {
                 set.push(b'<');
-                set.extend_from_slice(&crate::argparse::zval_get_string(host, v)?);
+                set.extend_from_slice(&crate::zend::zpp::zval_get_string(host, v)?);
                 set.push(b'>');
             }
             (!set.is_empty()).then_some(set)

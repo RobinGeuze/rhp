@@ -3398,8 +3398,10 @@ ext/mbstring/tests/bug49354.phpt
 ext/mbstring/tests/bug49528.phpt
 ext/mbstring/tests/bug49536.phpt
 ext/mbstring/tests/bug52981.phpt
+ext/mbstring/tests/bug54494.phpt
 ext/mbstring/tests/bug60306.phpt
 ext/mbstring/tests/bug63447_003.phpt
+ext/mbstring/tests/bug65045.phpt
 ext/mbstring/tests/bug65544.phpt
 ext/mbstring/tests/bug66797.phpt
 ext/mbstring/tests/bug66964.phpt
@@ -3506,6 +3508,7 @@ ext/mbstring/tests/mb_strpos_error2.phpt
 ext/mbstring/tests/mb_strpos_invalid_offset.phpt
 ext/mbstring/tests/mb_strpos_offset_errors.phpt
 ext/mbstring/tests/mb_strpos_variation5.phpt
+ext/mbstring/tests/mb_strrchr_basic.phpt
 ext/mbstring/tests/mb_strrchr_empty_needle.phpt
 ext/mbstring/tests/mb_strrchr_error2.phpt
 ext/mbstring/tests/mb_strrchr_variation5.phpt

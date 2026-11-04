@@ -1595,8 +1595,8 @@ fn period_init_finish(
     Ok(())
 }
 
-/// zpp `l` in a quiet parse (weak mode): the long, or `None` when the
-/// value doesn't convert.
+/// zpp `l` in a quiet parse: the long, or `None` when the value doesn't
+/// convert in the caller's typing mode.
 fn quiet_long(
     host: &mut dyn Host,
     v: &Value,
@@ -1605,6 +1605,7 @@ fn quiet_long(
 ) -> Result<Option<i64>, Thrown> {
     Ok(match v {
         Value::Int(i) => Some(*i),
+        _ if host.caller_strict_types() => None,
         Value::Bool(b) => Some(*b as i64),
         Value::Float(f) if f.is_finite() && *f == f.trunc() && f.abs() < 9.2e18 => Some(*f as i64),
         Value::Str(st) => match conv::scan_number(st.as_bytes()) {
@@ -1889,6 +1890,7 @@ fn period_args(host: &mut dyn Host, a: &[Value]) -> Result<Option<PeriodArgs>, T
     if (1..=2).contains(&n) {
         let isostr = match deref(&a[0]) {
             Value::Str(st) => Some(st.as_bytes().to_vec()),
+            _ if host.caller_strict_types() => None,
             v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_)) => {
                 Some(conv::to_string_bytes(&v))
             }

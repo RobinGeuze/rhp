@@ -1,0 +1,12 @@
+before
+
+Fatal error: Uncaught LogicException: inner in {DIR}/main.php:4
+Stack trace:
+#0 {DIR}/main.php(6): f(Array, 'a long string a...')
+#1 {main}
+
+Next RuntimeException: boom in {DIR}/main.php:4
+Stack trace:
+#0 {DIR}/main.php(6): f(Array, 'a long string a...')
+#1 {main}
+  thrown in {DIR}/main.php on line 4

@@ -1,0 +1,8 @@
+
+Fatal error: PHP Startup: OpenSSL libctx "bogus" cannot be found in Unknown on line 0
+Stack trace:
+#0 {main}
+start
+string(6) "custom"
+NULL
+bool(false)

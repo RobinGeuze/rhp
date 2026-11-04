@@ -22,7 +22,7 @@ This doc distinguishes three very different things that all get called
 > **Decision (2026-10-24).** The macro-shim prototype of §9 is **abandoned** —
 > `crates/rhp-zendshim` has been removed. The chosen strategy is to
 > **reimplement each extension in Rust and prove it byte-identical to the real
-> `php` binary with a differential-test framework** (`crates/rhp-difftest`,
+> `php` binary with a differential-test framework** (`tools/rhp-difftest`,
 > documented in §10). Pure-Rust crates are used where a faithful 1:1 exists; a
 > C system library (e.g. libmysqlclient, libpq) is permitted only where no 1:1
 > Rust alternative exists. The first extension reimplemented this way is `hash`
@@ -300,7 +300,7 @@ Key design rules this encodes:
 ### 4.3 Keeping byte-exactness tested (the differential harness is the gate)
 
 The harness in `crates/rhp-cli/tests/diff.rs` holds the VM strictly to
-committed `.out` files captured from the reference php, over `tests/golden/*.php`. Make
+committed `.out` files captured from the reference php, over `tests/golden/**/*.php`. Make
 the native backend subordinate to it:
 
 1. **Same fixtures, both backends.** Golden `.out`s are captured from php once.
@@ -743,7 +743,7 @@ The adopted extension strategy is deliberately simple and hard to fool:
    VM, and require identical stdout — not against a hand-committed `.out`, but
    against php live, over a broad, generated, seed-reproducible corpus.
 
-### 10.1 The framework — `crates/rhp-difftest`
+### 10.1 The framework — `tools/rhp-difftest`
 
 A small crate with a library, a binary, and integration tests:
 

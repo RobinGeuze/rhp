@@ -1,0 +1,7 @@
+case 0: valid
+case 1: {"email":"invalid email","age":"must be 18+","name":"name required"}
+case 2: {"age":"must be 18+"}
+int(123)
+float(1500)
+bool(true)
+string(12) "http://x.com"

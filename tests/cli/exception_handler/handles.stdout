@@ -1,0 +1,2 @@
+NULL
+h: TypeError set_exception_handler(): Argument #1 ($callback) must be a valid callback or null, function "first" not found or invalid function name

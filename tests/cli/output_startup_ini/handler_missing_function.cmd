@@ -1,0 +1,1 @@
+ini output_handler=no_such_function

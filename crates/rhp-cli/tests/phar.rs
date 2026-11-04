@@ -1,22 +1,16 @@
 //! End-to-end tests for the phar / stream / resource / superglobal machinery
 //! (milestone M1 — running a phar like composer). Builds a phar with the real
 //! `php -d phar.readonly=0`, runs it through `php` and the built `rhp`, and
-//! compares. Skips cleanly when no `php` is on PATH.
+//! compares. Skips without php (`RHP_PHP`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn php_available() -> bool {
-    Command::new("php")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+use rhp_difftest::{php_available, php_bin};
 
 fn can_build_phar() -> bool {
     // phar.readonly must be togglable; check php accepts -d phar.readonly=0.
-    Command::new("php")
+    Command::new(php_bin())
         .args([
             "-d",
             "phar.readonly=0",
@@ -43,7 +37,7 @@ fn case_dir(name: &str) -> PathBuf {
 fn build_phar(dir: &Path, name: &str, maker_php: &str) {
     let maker = dir.join("make.php");
     write(&maker, maker_php);
-    let out = Command::new("php")
+    let out = Command::new(php_bin())
         .args(["-d", "phar.readonly=0"])
         .arg(&maker)
         .output()
@@ -92,7 +86,7 @@ fn phar_runs_like_php() {
     );
     let main = dir.join("app.phar");
     let php = {
-        let o = Command::new("php")
+        let o = Command::new(php_bin())
             .args(["-n"])
             .arg(&main)
             .arg("hello")
@@ -154,7 +148,7 @@ include 'phar://implicit.phar/x.php';
     );
     for target in ["wrap.php", "s.phar"] {
         let path = dir.join(target);
-        let php = Command::new("php")
+        let php = Command::new(php_bin())
             .arg("-n")
             .arg(&path)
             .output()

@@ -40,12 +40,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
-  # The suite with NO `php` on PATH: the VM is validated byte-for-byte against
-  # the committed `.out` golden fixtures (captured from the reference php,
-  # crates/rhp-builtins/src/version.rs), and every
-  # live-php test guards on `php_available()` and skips. Proves the suite is
-  # green for a contributor without php installed. (ubuntu-latest ships its own
-  # php, so we remove it first.)
+  # The whole cargo suite, once, with NO `php` on PATH: goldens, CLI and curl
+  # fixtures compare rhp with php output committed from the reference php
+  # (crates/rhp-builtins/src/version.rs); unit and request-layer tests hold
+  # their own expectations; every live-php test guards on `php_available()`
+  # and skips. Proves the suite is green for a contributor without php
+  # installed. (ubuntu-latest ships its own php, so we remove it first.)
   test:
     name: test (no php)
     runs-on: ubuntu-latest
@@ -64,14 +64,21 @@ jobs:
       - uses: ./.github/actions/native-deps
       - run: cargo test --workspace --all-targets --no-fail-fast
 
-  # Full suite against real php 8.5, the version rhp targets (another minor
-  # version is no reference). This includes the extension differential
-  # sweeps: crates/rhp-difftest/tests run the hash, bcmath, ctype, gmp,
-  # mbstring, password and crypt sweeps with the binary's default seed and
-  # corpus, plus more seeds.
+  # The live checks against real php 8.5, the version rhp targets (another
+  # minor version is no reference); the no-php job ran everything else.
+  # tools/rhp-difftest/tests compare with php at test time (the hash,
+  # bcmath, ctype, gmp, mbstring, password and crypt sweeps with the
+  # binary's default seed and corpus plus more seeds, curl, libxml2, ICU,
+  # OpenSSL, zip, ...); so do rhp-cli's tests, which need the rhp binary.
+  # All of rhp-cli's test targets run, so a new live test is covered; only
+  # the goldens (diff.rs, php-free and the slowest) are skipped. Then the
+  # committed expectations (CLI fixtures, portable goldens) must still be
+  # what this php prints.
   php:
-    name: php 8.5
+    name: php 8.5 (live)
     runs-on: ubuntu-latest
+    env:
+      RHP_PHP: php
     steps:
       - uses: actions/checkout@v7
       # php + a shim so `php -n` keeps the shared extensions (see the action).
@@ -82,25 +89,65 @@ jobs:
       - uses: ./.github/actions/native-deps
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Full workspace suite against php 8.5
-        env:
-          RHP_PHP: php
-        # The CGI fixtures run the real php-cgi, not the shim: the shim's
-        # extra `-d extension=…` arguments change php-cgi's option parsing
-        # (argument numbers, `-q`, script detection), and bash reorders the
-        # environment that getallheaders() reports. They need no shared ext.
+      - name: rhp-difftest's live-php tests
+        run: cargo test -p rhp-difftest --tests --no-fail-fast
+      # The CGI fixtures run the real php-cgi, not the shim: the shim's
+      # extra `-d extension=…` arguments change php-cgi's option parsing
+      # (argument numbers, `-q`, script detection), and bash reorders the
+      # environment that getallheaders() reports. They need no shared ext.
+      - name: rhp-cli's live-php tests
+        if: ${{ !cancelled() }}
         run: |
-          export PHP_CGI="$(command -v php-cgi8.5)"
-          echo "PHP_CGI=$PHP_CGI"
-          cargo test --workspace --all-targets --no-fail-fast
+          export RHP_PHP_CGI="$(command -v php-cgi8.5)"
+          echo "RHP_PHP_CGI=$RHP_PHP_CGI"
+          cargo test -p rhp-cli --no-fail-fast --tests -- --skip vm_matches_php_baseline
+      - name: CLI fixtures still match php
+        if: ${{ !cancelled() }}
+        run: cargo test -p rhp-cli --test cli -- --check
+      # Except the ones holding the reference build's facts
+      # (tests/golden/reference-only.txt).
+      - name: Portable goldens still match php
+        if: ${{ !cancelled() }}
+        run: cargo run -q -p rhp-difftest -- golden --check --portable
+
+  # One release build of rhp and rhp-difftest, shared with the phpt shards,
+  # the generated tables and the apps as an artifact. setup-php first: rhp
+  # links the library versions that php links (native-deps), and the jobs
+  # using the build run the same php.
+  build:
+    name: release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-php
+        with:
+          php-version: '8.5'
+      - uses: ./.github/actions/native-deps
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p rhp-cli -p rhp-difftest
+      # A tarball keeps the executable bits, which an artifact drops.
+      - run: tar -cf release.tar target/release/rhp target/release/rhp-difftest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release.tar
+          # Long enough to re-run a failed job of an older run.
+          retention-days: 5
 
   # php-src .phpt ratchet: every test in tests/phpt/known-passing.txt must
   # still match php. The list is generated by `rhp-difftest phpt --write-known`
   # against the php-src commit pinned in tests/phpt/php-src.ref; the nightly
-  # workflow reports newly passing tests to add.
+  # workflow reports newly passing tests to add. Three runners take every
+  # third test each (--shard).
   phpt:
-    name: phpt ratchet (php 8.5)
+    name: phpt ratchet ${{ matrix.shard }}/3 (php 8.5)
+    needs: build
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v7
       - name: Read pinned php-src commit
@@ -116,26 +163,22 @@ jobs:
           # nightly does): tests/ includes tests/basic; sapi/cgi/tests,
           # ext/session/tests and a few others hold CGI tests
           # (--GET--/--POST--/--CGI--/...), run under php-cgi; tests also
-          # include helpers from other trees' tests/ directories. The stubs
-          # feed `gen signatures --check`.
+          # include helpers from other trees' tests/ directories.
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /Zend/tests/
             /tests/
             /ext/*/tests/
             /sapi/*/tests/
-            **/*.stub.php
       - uses: ./.github/actions/setup-php
         with:
           php-version: '8.5'
-      # After setup-php: rhp links the library versions this php links.
+      # The libraries the build links dynamically (libzip, libgmp, libcurl's).
       - uses: ./.github/actions/native-deps
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - id: build
-        run: cargo build --release -p rhp-cli -p rhp-difftest
-      - name: Builtin signatures match php-src's stubs
-        run: target/release/rhp-difftest gen signatures --php-src php-src --check
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+      - run: tar -xf release.tar
       # --timeout 30: the oom_* tests build hundreds of MB before failing;
       # rhp needs ~2.5s CPU for oom_unserialize_001 and crossed the default
       # 10s on a busy runner.
@@ -143,12 +186,7 @@ jobs:
         run: >-
           target/release/rhp-difftest phpt --php-src php-src
           --php-cgi "$(command -v php-cgi)" --timeout 30
-          --check-known tests/phpt/known-passing.txt
-      # The goldens' .out files are still what php prints, except the ones
-      # holding the reference build's facts (tests/golden/reference-only.txt).
-      - name: Portable goldens still match php
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: target/release/rhp-difftest golden --check --portable
+          --check-known tests/phpt/known-passing.txt --shard ${{ matrix.shard }}/3
 
   # AddressSanitizer over the code that frees libxml2 trees: the php-src
   # tests in tests/asan/phpts.txt and the stress scripts in tests/asan. rhp's
@@ -213,11 +251,13 @@ jobs:
           --timeout 60 --check-known tests/asan/phpts.txt
 
   # The committed generated tables still match their sources: php-src's
-  # entity tables and intl stubs, and the Bison output in the php release tarball (the git
-  # tag has none). The tarball is pinned in tools/php-dist.sha256 and cached
-  # on that pin, so php.net is fetched once per release.
+  # stubs (builtin signatures, intl, curl, zip) and entity tables, and the
+  # Bison output in the php release tarball (the git tag has none). The
+  # tarball is pinned in tools/php-dist.sha256 and cached on that pin, so
+  # php.net is fetched once per release.
   generated:
     name: generated tables
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -232,14 +272,10 @@ jobs:
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
+            **/*.stub.php
             /ext/standard/html_tables/
             /ext/standard/html_tables.h
-            /ext/intl/php_intl.stub.php
-            /ext/intl/collator/collator.stub.php
-            /ext/intl/common/common.stub.php
-            /ext/curl/curl.stub.php
             /ext/curl/curl_private.h
-            /ext/zip/php_zip.stub.php
       - uses: actions/cache@v4
         with:
           path: php-dist
@@ -255,15 +291,18 @@ jobs:
           dir=${name%.tar.xz}
           tar -xJf "php-dist/$name" -C "$RUNNER_TEMP" "$dir/Zend" "$dir/main/php_version.h"
           echo "PHP_DIST=$RUNNER_TEMP/$dir" >> "$GITHUB_ENV"
+      # The libraries the build links dynamically.
       - uses: ./.github/actions/native-deps
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build -p rhp-difftest
-      - run: target/debug/rhp-difftest gen html-tables --php-src php-src --check
-      - run: target/debug/rhp-difftest gen intl-consts --php-src php-src --check
-      - run: target/debug/rhp-difftest gen parser --php-dist "$PHP_DIST" --check
-      - run: target/debug/rhp-difftest gen curl-consts --php-src php-src --check
-      - run: target/debug/rhp-difftest gen zip-consts --php-src php-src --check
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+      - run: tar -xf release.tar
+      - run: target/release/rhp-difftest gen signatures --php-src php-src --check
+      - run: target/release/rhp-difftest gen html-tables --php-src php-src --check
+      - run: target/release/rhp-difftest gen intl-consts --php-src php-src --check
+      - run: target/release/rhp-difftest gen parser --php-dist "$PHP_DIST" --check
+      - run: target/release/rhp-difftest gen curl-consts --php-src php-src --check
+      - run: target/release/rhp-difftest gen zip-consts --php-src php-src --check
 
   # Pinned framework fixture apps (tests/apps/apps.toml): the matrix is read
   # from the manifest, so adding an app version needs no workflow change.
@@ -284,7 +323,7 @@ jobs:
   # Last, the request diff ratchet (`rhp-difftest app --check-known`).
   apps-lint:
     name: app ${{ matrix.app }}
-    needs: apps-matrix
+    needs: [apps-matrix, build]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -295,19 +334,20 @@ jobs:
       - uses: ./.github/actions/setup-php
         with:
           php-version: '8.5'
-      # After setup-php: rhp links the library versions this php links.
+      # The libraries the build links dynamically.
       - uses: ./.github/actions/native-deps
       - uses: actions/cache@v4
         with:
           path: tests/apps/${{ matrix.app }}/vendor
           key: apps-vendor-${{ matrix.app }}-${{ hashFiles(format('tests/apps/{0}/composer.lock', matrix.app)) }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+      - run: tar -xf release.tar
       - name: Install and set up the app
         run: python3 tests/apps/apps.py setup ${{ matrix.app }}
       - name: Smoke-test the app under php
         run: python3 tests/apps/apps.py smoke ${{ matrix.app }}
-      - run: cargo build --release -p rhp-difftest -p rhp-cli
       - name: No new compile refusals
         run: python3 tests/apps/apps.py lint ${{ matrix.app }}
       # The request corpus through php-cgi and `rhp --cgi`: fails only when a

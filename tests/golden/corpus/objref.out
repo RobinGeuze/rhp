@@ -1,0 +1,4 @@
+{"ref":"EXP:a","kids":{"x":{"ref":"EXP:b"},"y":{"items":{"ref":"EXP:c"}}}}
+10 20 30 99
+hello
+100 200 300

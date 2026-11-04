@@ -1,0 +1,1 @@
+stdinfile main.php

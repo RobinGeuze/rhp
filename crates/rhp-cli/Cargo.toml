@@ -11,3 +11,12 @@ path = "src/main.rs"
 
 [dependencies]
 rhp-sapi = { path = "../rhp-sapi" }
+
+[dev-dependencies]
+# The shared test helpers: php and php-cgi discovery, spawn, the golden list.
+rhp-difftest = { path = "../../tools/rhp-difftest" }
+
+# The CLI fixture runner takes `--check` / `--write` (tests/cli).
+[[test]]
+name = "cli"
+harness = false

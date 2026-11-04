@@ -1,7 +1,7 @@
 //! The `bcmath` extension: arbitrary-precision decimal arithmetic.
 //!
 //! Reimplemented in Rust under the differential-test framework
-//! (`crates/rhp-difftest`) and proven byte-identical to php 8.5.8's
+//! (`tools/rhp-difftest`) and proven byte-identical to php 8.5.8's
 //! `ext/bcmath`. The arbitrary-precision integers come from `num-bigint` (a
 //! faithful 1:1); the *decimal* layer on top — PHP's scale propagation,
 //! truncate-toward-zero semantics, and exact string formatting — is

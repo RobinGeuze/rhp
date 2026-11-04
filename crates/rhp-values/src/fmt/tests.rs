@@ -9,7 +9,7 @@ fn ser(f: f64) -> String {
 
 #[test]
 fn echo_forms_match_php_8_5() {
-    // ground truth from tests/golden/echo_float_formats.out
+    // ground truth from tests/golden/lang/echo_float_formats.out
     assert_eq!(echo(1.0), "1");
     assert_eq!(echo(0.1 + 0.2), "0.3");
     assert_eq!(echo(1.0 / 3.0), "0.33333333333333");

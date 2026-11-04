@@ -1,0 +1,24 @@
+Standard input code
+2
+cwd
+array(3) {
+  [0]=>
+  string(19) "Standard input code"
+  [1]=>
+  string(1) "a"
+  [2]=>
+  string(1) "b"
+}
+int(3)
+string(0) ""
+string(19) "Standard input code"
+array(0) {
+}
+bool(false)
+
+Notice: note in Standard input code on line 5
+
+Fatal error: Uncaught Exception: boom in Standard input code:6
+Stack trace:
+#0 {main}
+  thrown in Standard input code on line 6

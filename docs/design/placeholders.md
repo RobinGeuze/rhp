@@ -55,6 +55,10 @@ priority order rather than rediscovered one framework crash at a time.
 | 32 | No `E_WARNING`/`E_NOTICE`/`E_DEPRECATED` diagnostics ever emitted (builtins already report them through `Host::emit_diagnostic` — iconv, openssl, mbstring so far — which every host still discards) | engine-wide | warnings-as-errors, deprecation logs, `@`-suppression semantics | high | med |
 | 33 | `declare(strict_types=1)` — no-op; type hints unenforced | `compiler/lib.rs:1977` | type coercion/TypeError on hinted params — **in progress** | high | high |
 | 34 | Named args to functions whose defaults don't fold — refused | `compiler/lib.rs:3284` | named-arg calls skipping non-constant-default params | med | med |
+| 35 | Arithmetic on a leading-numeric string (`"1abc" + 5`, `"8k" % 3`) — no "A non-numeric value encountered" warning | VM arithmetic | warning output, error handlers that throw on it | low | med |
+| 36 | Builtin `int`/`int\|float` parameters accept leading-numeric strings (`intdiv("9z", 2)`) instead of throwing `TypeError` | builtin argument parsing | TypeError parity at builtin calls | med | med |
+| 37 | Named arguments to builtins — refused (`RHP_UNSUPPORTED`) | `vm/lib.rs` (call setup) | `str_replace(search: …)` and every other named builtin call | med | high |
+| 38 | `metaphone()` — not implemented | — | callers get "Call to undefined function" | low | low |
 
 ---
 
@@ -246,6 +250,10 @@ The original notes:
   is global/unsafe). Simple map on the `Vm`.
 - **Effort/priority:** low / med.
 
+### 1.14 `metaphone()` — not implemented
+- **Now:** "Call to undefined function metaphone()". `tests/golden/corpus/strings.php`
+  leaves it out; add it back with the function.
+
 ---
 
 ## 2. Stream & filesystem
@@ -350,7 +358,7 @@ The module is deliberately "READ-ONLY, native format only"
   `verify_with_pem`), with php's exact `PharException` messages for a missing
   key ("openssl public key could not be read"), an unreadable key ("openssl
   signature could not be processed") and a mismatch ("broken openssl
-  signature"). Covered by `tests/golden/phar_openssl_signature.php`.
+  signature"). Covered by `tests/golden/ext/phar/phar_openssl_signature.php`.
 
 ### 3.2 bzip2 entries unsupported
 - **Now:** a `COMPRESSED_BZ2` entry returns `None` from `read`
@@ -486,8 +494,8 @@ The module is deliberately "READ-ONLY, native format only"
   undefined-index/variable reads yield null without a notice, etc. The `E_*`
   constants exist (`builtins/lib.rs:416-433`) purely as values.
 - **How it's worked around:** the differential harness runs php with
-  `error_reporting=0` (`rhp-difftest/src/lib.rs:57`, and the CLI diff tests at
-  `rhp-cli/tests/include.rs:16-20`, `tests/namespaces.rs:18`), so php writes no
+  `error_reporting=0` (`rhp-difftest/src/lib.rs:57`, and the CLI diff tests of
+  the time), so php writes no
   diagnostics to stdout either — parity is achieved by *both sides being silent*.
   php sends diagnostics to stderr, which the harness ignores.
 - **Breaks:** (a) code that sets `error_reporting(E_ALL)` and treats warnings as
@@ -505,6 +513,18 @@ The module is deliberately "READ-ONLY, native format only"
   `error_reporting=E_ALL` + `display_errors=stderr` compared on stderr.
 - **Effort/priority:** high / med. Co-dependent with #1.2–#1.4. Not required for
   composer (which runs clean), but a prerequisite for faithful framework dev-mode.
+
+### 7.2 Arithmetic on leading-numeric strings — no warning
+- **Now:** `"1abc" + 5` and `"8k" % 3` give php's values (6, 2) but no
+  `Warning: A non-numeric value encountered`, which php 8.5 emits for an
+  operand with trailing data. Found folding tests/corpus into goldens
+  (2026-11).
+- **Workaround:** `tests/golden/corpus/typejuggle.php` silences that line
+  with `@`; drop the `@` when this is fixed.
+- **Full impl:** warn where the arithmetic operators convert a string
+  operand, as php's `_zendi_try_convert_scalar_to_number` and
+  `zendi_try_get_long` (for `%`, `<<`, `>>`, `|`, `&`, `^`) do in
+  `Zend/zend_operators.c`.
 
 ---
 
@@ -562,6 +582,27 @@ The module is deliberately "READ-ONLY, native format only"
   Touches the compiler (emit default-init thunks), the proto (store them), and the
   VM prologue (run them for unfilled params).
 - **Effort/priority:** med / med.
+
+### 8.3 Builtin int/number parameters take leading-numeric strings
+- **Now:** a leading-numeric string passed to a builtin's `int` or
+  `int|float` parameter is truncated to its number: `intdiv("9z", 2)` is 4,
+  `str_repeat("a", "3x")` is `"aaa"`, `abs("4q")` is 4. php throws
+  `TypeError: intdiv(): Argument #1 ($num1) must be of type int, string
+  given`. User functions with `int $x` already throw in both.
+- **Full impl:** the builtin parameter parser should accept only numeric
+  strings (leading and trailing whitespace allowed) for these types, as
+  `zend_parse_arg_long_weak` does, and raise php's `TypeError` otherwise.
+
+### 8.4 Named arguments to builtins — refused
+- **Now:** a call with named arguments to a builtin function stops with
+  `RHP_UNSUPPORTED: named arguments to a builtin function is not supported
+  (deferred)` (`vm/lib.rs`, both call paths).
+- **Workaround:** `tests/golden/corpus/namedargs.php` keeps only named
+  arguments to user functions; restore the `str_replace(search: …)` lines
+  when this lands.
+- **Full impl:** map names to positions with the builtin's arginfo (the
+  generated signatures already hold parameter names) and fill skipped
+  optional parameters with their defaults.
 
 ---
 

@@ -2,7 +2,7 @@
 //! surface over the full PHP 8.5 algorithm set.
 //!
 //! This is rhp's first *extension reimplemented in Rust* under the
-//! differential-test framework (`crates/rhp-difftest`): every algorithm here
+//! differential-test framework (`tools/rhp-difftest`): every algorithm here
 //! is proven byte-identical to the C `ext/hash` by sweeping it against the real
 //! `php` binary over a broad generated corpus.
 //!

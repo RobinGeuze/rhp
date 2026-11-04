@@ -695,18 +695,21 @@ try/catch/finally (exception_table: {[Ltry,Lend)->catch Lcatch, finally Lfin}):
 > The VM went on to hold every golden by itself, and the oracle was removed
 > (2026-11). This section describes the harness as it is now.
 
-- **Goldens** (`tests/golden/NAME.php` + `NAME.out`). `NAME.out` is the exact
+- **Goldens** (`tests/golden/**/NAME.php` + `NAME.out`). `NAME.out` is the exact
   stdout the reference `php` printed for the fixture.
   `crates/rhp-cli/tests/diff.rs` (`vm_matches_php_baseline`) compiles every
   fixture, runs it on the VM the way the CLI does (include/eval via the CLI
   includer; `run_main`'s uncaught-throwable report, shutdown functions and
   output flush), and requires byte-identical output. It needs no `php` binary,
   so it also runs in the "test (no php)" CI job.
+- **CLI fixtures** (`tests/cli`, `crates/rhp-cli/tests/cli.rs`): the built
+  `rhp` against php's committed stdout, stderr and exit status for argv,
+  stdin, `-d`/`-r`, uncaught errors and `fork`.
 - **Live php diffs.** The built `rhp` and a real `php` / `php-cgi` run the same
-  input and their outputs are compared byte for byte: the `rhp-cli` tests that
-  shell out (argv, stdin, multi-file includes, exit codes, CGI; they skip when
-  no `php` is on `PATH`), and `rhp-difftest` (the php-src `.phpt` corpus with
-  its known-passing ratchet in `tests/phpt/`, fixture apps, extension sweeps).
+  input and their outputs are compared byte for byte: rhp-cli's live tests
+  (CGI fixtures, memory_limit, intl, phar; they skip when no `php` is on
+  `PATH`), and `rhp-difftest` (the php-src `.phpt` corpus with its
+  known-passing ratchet in `tests/phpt/`, fixture apps, extension sweeps).
 - **Refusals** have no php output to compare against, so their tests
   (`crates/rhp-cli/tests/unsupported.rs`) assert the `RHP_UNSUPPORTED` marker
   instead.
@@ -799,7 +802,7 @@ unaffected); 5–10 build the VM path and wire the runner.
    one explicit terminator per basic block. Never bury an opcode's semantics in
    the loop such that a helper can't be extracted — the JIT calls the same
    `ops::`/`NativeFn` on cold paths.
-10. **The goldens are the regression net.** Every `tests/golden/*.out` is php's
+10. **The goldens are the regression net.** Every `tests/golden/**/*.out` is php's
     own output, and the VM is held to all of them without needing the `php`
     binary (§6), so a VM regression fails CI even where no php is installed.
     Keep every golden green, and add a fixture alongside each fix.

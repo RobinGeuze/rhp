@@ -1,0 +1,5 @@
+Idle->Running
+Running->Paused
+Paused->Running
+Running->Stopped
+Stopped->Stopped

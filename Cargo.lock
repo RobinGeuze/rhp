@@ -977,6 +977,7 @@ dependencies = [
 name = "rhp-cli"
 version = "0.0.0"
 dependencies = [
+ "rhp-difftest",
  "rhp-sapi",
 ]
 

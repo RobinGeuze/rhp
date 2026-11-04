@@ -35,7 +35,7 @@ How it compares, mirroring `run-tests.php`:
 - A test's `--INI--` setting that leaves php's effective value as run-tests'
   defaults have it (`ini_get()`, asked of the php under test once per
   setting) is a no-op. A setting that changes it runs only if rhp applies
-  the directive (`RHP_INI` in `crates/rhp-difftest/src/phpt.rs`, e.g.
+  the directive (`RHP_INI` in `tools/rhp-difftest/src/phpt.rs`, e.g.
   `pcre.jit`, `error_reporting`, and every `opcache.*`); both engines then get
   the setting. `--rhp-ini <directive>` runs the tests a directive blocks, to
   measure it before adding it.
@@ -64,7 +64,8 @@ git -C ../php-src checkout "$(grep -v '^#' tests/phpt/php-src.ref)"
 # Explore: classify and cluster every failure, biggest gaps first.
 target/release/rhp-difftest phpt --php-src ../php-src --filter Zend/tests
 
-# Ratchet: what CI runs.
+# Ratchet: what CI runs, split across three runners (--shard 1/3, 2/3, 3/3:
+# every third test).
 target/release/rhp-difftest phpt --php-src ../php-src --check-known tests/phpt/known-passing.txt
 
 # Regenerate the list (after fixing things) from the whole corpus, as the
@@ -83,7 +84,7 @@ target/release/rhp-difftest phpt --php-src ../php-src \
 
 An emitted repro is a `NAME.php` / `NAME.out` pair in the `tests/golden` format,
 with php's output as the expectation. Once rhp is fixed, move the pair into
-`tests/golden/` so it stays covered.
+the right `tests/golden/` subdirectory so it stays covered.
 
 ## The ignore list
 
@@ -103,7 +104,7 @@ is the 61 tests that set `opcache.opt_debug_level`: they print Zend's
 optimizer listing. A missing feature (the JIT, the file cache, an extension)
 is a skip or a failure, not an ignore. When an ignored test also prints
 script output and rhp matches php on it, that part is kept as a golden
-(`tests/golden/opt_*.php`). Twenty of the 61 print script output; 13 are
+(`tests/golden/lang/opt_*.php`). Twenty of the 61 print script output; 13 are
 goldens. The others, with what blocks them:
 
 - `ext/opcache/tests/match/001.phpt`: `range()` with characters.

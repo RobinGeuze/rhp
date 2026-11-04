@@ -1,0 +1,12 @@
+ok:25
+done:25
+err:negative age: -5
+done:-5
+err:too old
+done:200
+ok:40
+done:40
+inner finally
+caught: x code=404
+NotFoundError
+logic: bad

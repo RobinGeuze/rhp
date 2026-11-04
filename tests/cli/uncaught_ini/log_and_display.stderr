@@ -1,0 +1,4 @@
+PHP Fatal error:  Uncaught Exception: both in {DIR}/log_and_display.php:5
+Stack trace:
+#0 {main}
+  thrown in {DIR}/log_and_display.php on line 5

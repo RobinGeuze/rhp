@@ -200,7 +200,7 @@ fn regenerate() {
     for php in cases() {
         let script = tmp.join(php.file_name().unwrap());
         std::fs::write(&script, source_for(&php, port)).expect("write");
-        let out = Command::new("php")
+        let out = Command::new(rhp_difftest::php_bin())
             .arg("-n")
             .arg(&script)
             .output()

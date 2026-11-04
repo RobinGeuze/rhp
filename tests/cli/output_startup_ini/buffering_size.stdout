@@ -1,0 +1,7 @@
+abc
+string(1) "1"
+int(1)
+array(1) {
+  [0]=>
+  string(22) "default output handler"
+}

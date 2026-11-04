@@ -113,10 +113,12 @@ Notes:
 - Formatters only see `&dyn Host`, so the dumpers resolve every reachable
   object's view up front (`dump::resolve_views`).
 - Handlers not routed yet: property and dimension access (`read_property`,
-  `has_property`… — DOM's, SimpleXML's and ZipArchive's virtual properties
-  still go through their prelude classes' `__get`/`__set`/`__isset`, so
-  `property_exists()` and `method_exists(…, '__get')` differ from php),
-  `get_constructor` (`Directory`), `get_gc`.
+  `has_property`… — DOM's, SimpleXML's, DatePeriod's and ZipArchive's
+  virtual properties still go through `__get`/`__set` in their prelude
+  classes, so `property_exists()` and `method_exists(…, '__get')` can differ
+  from php), `get_constructor` (`Directory`), `get_gc`. DateInterval keeps
+  its fields as real properties instead, which its `get_properties_for`
+  and methods read back into the payload (ext/date/objects.rs).
 - php's `ce->unserialize` (the `C:` format) is a class field, not a
   handler: `unserialize` calls GMP's (`gmp::is_gmp_class`) or a
   `Serializable` class's `unserialize()` itself (serialize_fns).

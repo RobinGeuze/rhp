@@ -312,11 +312,10 @@ impl Encoder {
             return Ok(self.fail(JSON_ERROR_RECURSION, out, b"null"));
         }
         // get_properties_for(JSON): an internal class's view (an
-        // ArrayObject's storage, always encoded as an object).
+        // ArrayObject's storage, always encoded as an object). As for any
+        // object, mangled (protected and private) keys are skipped.
         let view = crate::object::properties_for(host, h, crate::object::PropPurpose::Json)?;
         let props: Vec<(PhpStr, Value)> = match view {
-            // php_json_encode_array skips protected and private (mangled)
-            // members of a view too.
             Some(a) => a
                 .iter()
                 .filter(|(k, _)| {

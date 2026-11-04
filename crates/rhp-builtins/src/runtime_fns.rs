@@ -1,7 +1,7 @@
 //! Runtime / class-table / SAPI builtins: the class relation family
 //! (`class_alias`, `class_implements`, `class_parents`, `class_uses`),
 //! `get_defined_constants`, the ini table (`ini_get`/`ini_set`/`ini_get_all`/
-//! `ini_restore`), `date_default_timezone_*`, `error_log`, CLI header
+//! `ini_restore`), `error_log`, CLI header
 //! semantics (`header`, `headers_sent`, `headers_list`, `header_remove`,
 //! `http_response_code`), and `sleep`/`usleep`.
 
@@ -362,7 +362,6 @@ pub(crate) fn reset_state() {
     INI.with(|m| m.borrow_mut().clear());
     INI_STARTUP.with(|m| m.borrow_mut().clear());
     STARTUP_DIAGS.with(|d| *d.borrow_mut() = StartupDiags::default());
-    TZ.with(|t| *t.borrow_mut() = None);
     rhp_values::fmt::reset_precision();
 }
 
@@ -804,16 +803,12 @@ fn fn_ini_get_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 }
 
 // ---------------------------------------------------------------------------
-// date_default_timezone_*
+// date.timezone
 // ---------------------------------------------------------------------------
 
-thread_local! {
-    static TZ: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
-}
-
-/// Is `id` a known timezone identifier (case-insensitive, as timelib)?
+/// OnUpdate_date_timezone's check (timelib, case-insensitive).
 pub(crate) fn tz_valid(id: &[u8]) -> bool {
-    id.eq_ignore_ascii_case(b"UTC") || crate::tzdb::load(id).is_some()
+    crate::ext::date::timezone_id_is_valid(id)
 }
 
 /// OnUpdate_date_timezone's warning (a docref from `func`): it names
@@ -828,36 +823,14 @@ fn invalid_timezone(v: &[u8], func: &str) -> String {
     let fallback = fallback
         .filter(|z| !z.is_empty())
         .unwrap_or_else(|| b"UTC".to_vec());
+    // Both are printed with %s.
+    let c =
+        |s: &[u8]| String::from_utf8_lossy(s.split(|&b| b == 0).next().unwrap_or(s)).into_owned();
     format!(
         "{func}: Invalid date.timezone value '{}', using '{}' instead",
-        String::from_utf8_lossy(v),
-        String::from_utf8_lossy(&fallback)
+        c(v),
+        c(&fallback)
     )
-}
-
-/// The effective default timezone name: `date_default_timezone_set()`, then a
-/// valid `date.timezone`, then `UTC` (php_date.c `guess_timezone`).
-pub(crate) fn default_timezone_name() -> Vec<u8> {
-    TZ.with(|t| t.borrow().clone()).unwrap_or_else(|| {
-        ini_value(b"date.timezone")
-            .flatten()
-            .filter(|v| !v.is_empty() && tz_valid(v))
-            .unwrap_or_else(|| b"UTC".to_vec())
-    })
-}
-
-fn fn_date_default_timezone_get(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(default_timezone_name()))
-}
-
-fn fn_date_default_timezone_set(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let id = str_param(host, args, 0, "date_default_timezone_set", "timezoneId")?;
-    if !tz_valid(&id) {
-        // php: Notice "Timezone ID 'X' is invalid"
-        return Ok(Value::Bool(false));
-    }
-    TZ.with(|t| *t.borrow_mut() = Some(id));
-    Ok(Value::Bool(true))
 }
 
 // ---------------------------------------------------------------------------
@@ -898,7 +871,7 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         .map(|d| d.as_secs() as i64)
                         .unwrap_or(0);
                     let mut line = b"[".to_vec();
-                    line.extend_from_slice(&crate::datetime_fns::php_date(
+                    line.extend_from_slice(&crate::ext::date::php_format_date(
                         b"d-M-Y H:i:s e",
                         now,
                         true,
@@ -945,17 +918,5 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     put("ini_alter", fn_ini_alter, 2, 2);
     put("ini_restore", fn_ini_restore, 1, 1);
     put("ini_get_all", fn_ini_get_all, 0, 2);
-    put(
-        "date_default_timezone_get",
-        fn_date_default_timezone_get,
-        0,
-        0,
-    );
-    put(
-        "date_default_timezone_set",
-        fn_date_default_timezone_set,
-        1,
-        1,
-    );
     put("error_log", fn_error_log, 1, 4);
 }

@@ -38,7 +38,7 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 
 | Kind | Linked | Examples |
 |---|---|---|
-| Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, argon2 (in `rhp-csrc`); libmbfl and php_unicode.c (in `rhp-mbfl-sys`, LGPL); later timelib, oniguruma |
+| Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, timelib, argon2 (in `rhp-csrc`); libmbfl and php_unicode.c (in `rhp-mbfl-sys`, LGPL); later oniguruma |
 | A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libcurl, libxml2 on Linux |
 | The listed exceptions below | dynamic | |
 
@@ -87,6 +87,7 @@ Today rhp-builtins links:
 | iconv | dynamic, the SDK's /usr/lib/libiconv.2.dylib | glibc's (libc) |
 | bzip2 (bzip2 `=0.5.2`, feature `static`) | static, bzip2-sys's bundled C libbz2 1.0.8 | static, bzip2-sys's bundled C libbz2 1.0.8 |
 | php-src crypt C (via rhp-csrc) | static, compiled from php-8.5.12 | the same |
+| timelib 2022.17 with php's embedded tz database 2026.5 (via rhp-csrc) | static, compiled from php-8.5.12's ext/date/lib | the same |
 | argon2 (via rhp-csrc) | static, compiled from release 20190702 | the same |
 | libcurl | static, Homebrew curl (keg-only), with its Homebrew dependencies (nghttp2, nghttp3, ngtcp2, libssh2, libpsl, zstd, brotli) static; OpenSSL is the row above | static, libcurl4-openssl-dev; its dependencies dynamic (see above), OpenSSL the row above |
 | libmbfl, php_unicode.c (via rhp-mbfl-sys; feature `mbstring-libmbfl`, on by default) | static, compiled from php-8.5.12 | the same |
@@ -235,9 +236,15 @@ archives, except LGPL C (see [Licences](#licences)):
 - **php-src's own C**, copied unmodified into `vendor/php-src` by
   `crates/rhp-csrc/tools/sync-php-src-c.sh <php-src-dir>` from a checkout at
   the commit `tests/phpt/php-src.ref` pins. Today: ext/standard's
-  crypt_freesec, crypt_blowfish, crypt_sha256 and crypt_sha512. All php-src
-  C shares one stand-in for the Zend and PHP headers, `shim/zend_shim.h`, and
-  builds with php's flags (`php_src()` in `build.rs`).
+  crypt_freesec, crypt_blowfish, crypt_sha256 and crypt_sha512, and timelib
+  (ext/date/lib). All php-src C shares one stand-in for the Zend and PHP
+  headers, `shim/zend_shim.h`, and builds with php's flags (`php_src()` in
+  `build.rs`). timelib needs no Zend: it builds with its own flags from
+  ext/date/config0.m4 (`-fwrapv`), and `glue/timelib_config.h` stands in for
+  php's generated timelib_config.h (timelib's allocator on the shim's
+  emalloc family, so it counts against memory_limit). `timezonedb.h` carries the tz database
+  twice; the sync script keeps the "slim" branch parse_tz.c compiles, which
+  gives a byte-identical object at a third of the size.
 - **Frozen libraries**, whose last release is the one php links: the argon2
   reference C 20190702 in `vendor/argon2`, copied by
   `crates/rhp-csrc/tools/sync-argon2.sh` from the release tarball, checked
@@ -290,6 +297,25 @@ malloc-aligned; a block that isn't is allocated again 16-aligned), so a
 string the C returns becomes a Rust `Vec<u8>` in place
 (`rhp_csrc::emalloc_into_vec`), and mbstring reads its string arguments
 without copying them: a call holds its data once, as in php.
+
+**timelib's tz database.** rhp always uses php's embedded database
+(`timezone_version_get()` is its version, 2026.5 for php 8.5.12), as php.net
+and Homebrew builds do. CI's php is Debian/Ubuntu's build, patched to read the
+system zoneinfo: it reports `"Olson" Timezone Database Version => 0.system`
+(and `Timezone Database => internal`; setup-php's library report, run
+41756527132). Both are tz release 2026e (Ubuntu's tzdata 2026e), and both
+are built the same way: Debian runs zic with `PACKRATDATA=backzone
+PACKRATLIST=zone.tab`, and php's database also keeps the pre-1970 history
+of zone.tab's zones (Europe/Amsterdam) while the other backzone zones are
+links (America/Montreal). So zone data should agree, though nothing
+compares it on CI yet. What reads the database itself differs
+(`timezone_version_get()`, the identifier list and its backward-compatible
+flags, locations, transitions), so the ratchet and the goldens leave out
+output that depends on those; crates/rhp-difftest/tests/date.rs checks it
+against a php whose database version is rhp's. A system-tzdata mode
+(Debian's MIT-licensed patch with runtime selection) is plan item L7c, only
+if the CI ratchet needs it. timelib's version and the database's are not in
+the "linked" section for that reason.
 
 ## Licences
 

@@ -5900,8 +5900,10 @@ impl Vm {
         let (name, min, max) = match frame.defining_class {
             Some(cls) if self.is_internal_class(cls) => {
                 let cname = self.class(cls).name.as_bytes();
-                // Its php body throws without parsing any argument.
-                if cname.eq_ignore_ascii_case(b"WeakReference")
+                // Their php bodies throw without parsing any argument, or
+                // parse them quietly (DatePeriod's three signatures).
+                if (cname.eq_ignore_ascii_case(b"WeakReference")
+                    || cname.eq_ignore_ascii_case(b"DatePeriod"))
                     && proto.name.as_bytes().eq_ignore_ascii_case(b"__construct")
                 {
                     return None;
@@ -8131,6 +8133,15 @@ impl Vm {
                                 };
                                 if let Value::Object(h) = &v {
                                     self.touch_enum_case(h);
+                                }
+                                // A built-in class's `#[\Deprecated]` constant.
+                                if self.is_internal_class(decl) {
+                                    let dname = self.class(decl).name.as_bytes();
+                                    if let Some(msg) =
+                                        builtins::class_constant_deprecation(dname, &name_b)
+                                    {
+                                        self.diag(8192, &msg)?;
+                                    }
                                 }
                                 self.reg_set(top, dst, v);
                             }
@@ -12433,7 +12444,14 @@ fn type_lc(v: &Value) -> &'static str {
 /// or is not a single scalar (unions print in php's own order).
 fn prelude_null_coercion(ty: &rhp_bytecode::TypeHint) -> Option<(&'static str, Value)> {
     use rhp_bytecode::TypeKind as K;
-    if ty.nullable || ty.intersection || ty.kinds.len() != 1 {
+    if ty.nullable || ty.intersection {
+        return None;
+    }
+    // Z_PARAM_NUMBER
+    if let [K::Int, K::Float] | [K::Float, K::Int] = ty.kinds[..] {
+        return Some(("int|float", Value::Int(0)));
+    }
+    if ty.kinds.len() != 1 {
         return None;
     }
     match ty.kinds[0] {

@@ -13,6 +13,7 @@ pub mod bcmath;
 pub mod bz2;
 pub mod ctype;
 pub mod curl;
+pub mod date;
 pub mod dom;
 pub mod gmp;
 pub mod hash;
@@ -51,7 +52,7 @@ pub(crate) fn class_handlers() -> Vec<&'static crate::object::ClassHandlers> {
         xmlreader::CLASSES,
         xmlwriter::CLASSES,
         zip::CLASSES,
-        crate::dt_oop_fns::CLASSES,
+        date::CLASSES,
     ]
     .into_iter()
     .flatten()
@@ -61,6 +62,13 @@ pub(crate) fn class_handlers() -> Vec<&'static crate::object::ClassHandlers> {
 /// Every discrete extension, in registration order.
 pub fn modules() -> Vec<ModuleDef> {
     vec![
+        ModuleDef {
+            name: "date",
+            functions: date::register,
+            constants: date::constants,
+            prelude_php: date::PRELUDE_PHP,
+            wrappers: no_wrappers,
+        },
         ModuleDef {
             name: "hash",
             functions: hash::register,

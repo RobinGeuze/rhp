@@ -805,7 +805,7 @@ fn php_setcookie(
             }
             if o.expires > 0 {
                 buf.extend_from_slice(b"; expires=");
-                buf.extend_from_slice(&crate::datetime_fns::php_date(
+                buf.extend_from_slice(&crate::ext::date::php_format_date(
                     b"D, d M Y H:i:s \\G\\M\\T",
                     o.expires,
                     false,

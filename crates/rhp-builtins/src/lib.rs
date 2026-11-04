@@ -77,8 +77,6 @@ mod arrayset_fns;
 mod const_modules;
 mod class_fns;
 mod crypt_fns;
-mod datetime_fns;
-mod dt_oop_fns;
 mod ext;
 mod file_fns;
 mod filter_fns;
@@ -114,16 +112,20 @@ mod strarr2_fns;
 mod strcmp_fns;
 mod stream_fns;
 mod strsearch_fns;
-mod strtotime_fns;
 mod sysmisc_fns;
-mod tzdb;
 pub(crate) mod url;
 mod webenc_fns;
 
 /// The E_DEPRECATED message for reading a `#[\Deprecated]` extension
 /// constant, if `name` is one.
 pub fn constant_deprecation(name: &[u8]) -> Option<String> {
-    ext::curl::constant_deprecation(name)
+    ext::curl::constant_deprecation(name).or_else(|| ext::date::constant_deprecation(name))
+}
+
+/// The E_DEPRECATED a fetch of a built-in class's `#[\Deprecated]`
+/// constant raises (`class` is the declaring class).
+pub fn class_constant_deprecation(class: &[u8], name: &[u8]) -> Option<String> {
+    ext::date::class_constant_deprecation(class, name)
 }
 
 /// The engine's object free hook (`rhp_values::set_object_free_hook`), for
@@ -1299,6 +1301,7 @@ pub use runtime_fns::{apply_memory_limits, take_shutdown_diagnostics, take_start
 /// script run to the next on the same thread.
 pub fn reset_request_state() {
     ext::libxml::reset_state();
+    ext::date::reset_state();
     runtime_fns::reset_state();
     sysmisc_fns::reset_state();
     preg_fns::reset_state();
@@ -1424,9 +1427,6 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
     let rest: Vec<(&'static str, Registrar)> = vec![
         ("webenc_fns", Box::new(webenc_fns::register)),
         ("html", Box::new(html::register)),
-        ("datetime_fns", Box::new(datetime_fns::register)),
-        ("dt_oop_fns", Box::new(dt_oop_fns::register)),
-        ("strtotime_fns", Box::new(strtotime_fns::register)),
         ("strarr2_fns", Box::new(strarr2_fns::register)),
         ("sort_fns", Box::new(sort_fns::register)),
         ("serialize_fns", Box::new(serialize_fns::register)),
@@ -1588,17 +1588,6 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PHP_CLI_PROCESS_TITLE", Value::Bool(true)),
         ("PHP_DEBUG", Value::Bool(false)),
         ("PHP_ZTS", Value::Bool(false)),
-        ("DATE_ATOM", Value::str("Y-m-d\\TH:i:sP")),
-        ("DATE_RFC3339", Value::str("Y-m-d\\TH:i:sP")),
-        ("DATE_W3C", Value::str("Y-m-d\\TH:i:sP")),
-        ("DATE_ISO8601", Value::str("Y-m-d\\TH:i:sO")),
-        ("DATE_COOKIE", Value::str("l, d-M-Y H:i:s T")),
-        ("DATE_RFC2822", Value::str("D, d M Y H:i:s O")),
-        ("DATE_RSS", Value::str("D, d M Y H:i:s O")),
-        ("DATE_RFC822", Value::str("D, d M y H:i:s O")),
-        ("DATE_RFC850", Value::str("l, d-M-y H:i:s T")),
-        ("DATE_RFC1036", Value::str("D, d M y H:i:s O")),
-        ("DATE_RFC1123", Value::str("D, d M Y H:i:s O")),
         // LIBXML_* live with the libxml module (ext/libxml).
         ("FILE_USE_INCLUDE_PATH", Value::Int(1)),
         ("FILE_IGNORE_NEW_LINES", Value::Int(2)),
@@ -3134,11 +3123,15 @@ fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
             // An object matches on a declared member (instance or static) OR a
             // property reachable and set from the calling scope.
             host.class_has_property(cid, &prop)
+                || ext::date::has_virtual_property(host, cid, &prop)
                 || host.object_prop_exists(&Value::Object(h.clone()), &prop)
         }
         Value::Str(s) => host
             .resolve_class_autoload(s.as_bytes())?
-            .map(|cid| host.class_has_property(cid, &prop))
+            .map(|cid| {
+                host.class_has_property(cid, &prop)
+                    || ext::date::has_virtual_property(host, cid, &prop)
+            })
             .unwrap_or(false),
         _ => false,
     };

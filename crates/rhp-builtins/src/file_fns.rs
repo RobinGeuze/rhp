@@ -372,17 +372,33 @@ fn read_file_part(url: &[u8], offset: i64, maxlen: Option<usize>) -> Option<Opti
 
 fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_arg(args, 0);
+    let src = deref(&args[1]);
+    if matches!(src, Value::Resource(_)) && host.stream_kind(&src).is_none() {
+        return Err(Thrown::type_error(
+            "file_put_contents(): supplied resource is not a valid stream resource",
+        ));
+    }
+    let flags = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    const FILE_APPEND: i64 = 8;
+    if crate::http::is_http(&path) {
+        // php opens the target before reading `$data`; the http wrapper
+        // refuses to write
+        let mode: &[u8] = if flags & FILE_APPEND != 0 {
+            b"ab"
+        } else {
+            b"wb"
+        };
+        if let Some(res) =
+            crate::http::open_arg(host, "file_put_contents", &path, mode, args.get(3))?
+        {
+            host.stream_close(&res);
+        }
+        return Ok(Value::Bool(false));
+    }
     // `$data` is a string, an array (concatenated) or a stream resource
     // (copied from its current position to the end).
-    let data = match deref(&args[1]) {
-        r @ Value::Resource(_) => {
-            if host.stream_kind(&r).is_none() {
-                return Err(Thrown::type_error(
-                    "file_put_contents(): supplied resource is not a valid stream resource",
-                ));
-            }
-            host.stream_read(&r, -1).unwrap_or_default()
-        }
+    let data = match src {
+        r @ Value::Resource(_) => host.stream_read(&r, -1).unwrap_or_default(),
         Value::Array(a) => {
             let mut b = Vec::new();
             for (_, v) in a.iter() {
@@ -392,11 +408,9 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         }
         other => conv::to_string_bytes(&other),
     };
-    let flags = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     if flags & 16 == 0 {
         crate::fs_fns::touch_ctx(host, args, 3);
     }
-    const FILE_APPEND: i64 = 8;
     let to_write = if flags & FILE_APPEND != 0 {
         let mut existing = host.stream_get_contents(&path).unwrap_or_default();
         existing.extend_from_slice(&data);

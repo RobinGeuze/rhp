@@ -231,19 +231,46 @@ fn key_bytes(k: &rhp_values::ArrayKey) -> Vec<u8> {
 /// response headers of an http(s) URL (the wrapper's only-headers mode).
 fn fn_get_headers(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "get_headers";
-    let url = crate::ext::zpp::str_arg(host, args, 0, fname, "url")?;
-    if url.contains(&0) {
-        return Err(Thrown::type_error(format!(
-            "{fname}(): Argument #1 ($url) must not contain any null bytes"
-        )));
-    }
+    let url = crate::argparse::path_param(host, args, 0, fname, "url")?;
     let assoc = crate::argparse::bool_param(host, args, 1, fname, "associative", false)?;
     let ctx = match args.get(2).map(deref) {
+        None | Some(Value::Null) => host.default_stream_context(),
         Some(v @ Value::Resource(_)) => v,
-        _ => host.default_stream_context(),
+        Some(v) => {
+            return Err(Thrown::type_error(format!(
+                "{fname}(): Argument #3 ($context) must be of type resource or null, {} given",
+                crate::argparse::value_name(host, &v)
+            )))
+        }
     };
+    if crate::streams::is_data_url(&url) {
+        // a URL wrapper whose stream has no header array
+        match host.stream_open(&url, b"r") {
+            Some(res) => {
+                host.stream_close(&res);
+            }
+            None => crate::open_failed(host, fname, &url)?,
+        }
+        return Ok(Value::Bool(false));
+    }
     if !crate::http::is_http(&url) {
-        // another wrapper's stream has no header array
+        // STREAM_USE_URL refuses a wrapper that is not for URLs (the
+        // plain-files one when none matches the scheme)
+        let scheme = crate::streams::split_scheme(&url).0.to_ascii_lowercase();
+        let known = host.stream_wrapper_schemes();
+        if !matches!(&scheme[..], b"file" | b"glob" | b"php")
+            && !known.iter().any(|k| k.eq_ignore_ascii_case(&scheme))
+        {
+            let name = String::from_utf8_lossy(&scheme).into_owned();
+            crate::warn(
+                host,
+                fname,
+                &format!(
+                    "Unable to find the wrapper \"{name}\" - did you forget to enable it when you configured PHP?"
+                ),
+            )?;
+        }
+        crate::warn(host, fname, "This function may only be used against URLs")?;
         return Ok(Value::Bool(false));
     }
     let Some(res) = crate::http::open(host, fname, &url, b"r", &ctx, true)? else {

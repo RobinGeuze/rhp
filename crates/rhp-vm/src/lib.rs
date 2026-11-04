@@ -1614,6 +1614,8 @@ impl Host for Vm {
         }
         match self.streams.get(&id)? {
             StreamState::File(f) => f.stat(),
+            // php_stream_http_stream_stat fails rather than stat the socket
+            StreamState::Fd(f) if f.sock().is_some_and(|s| s.wrapper == Some("http")) => None,
             StreamState::Fd(f) => builtins::streams::sys_fstat(f.raw_fd()?),
             StreamState::Stdin => builtins::streams::sys_fstat(0),
             StreamState::Stdout => builtins::streams::sys_fstat(1),

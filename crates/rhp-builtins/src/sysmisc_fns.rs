@@ -7,24 +7,8 @@
 
 use rhp_values::{ArrayKey, PhpArray, Value};
 
-use crate::zend::zpp::{array_param, bool_param, int_param, str_param};
+use crate::zend::zpp::{bool_param, int_param, str_param};
 use crate::{Host, Thrown};
-
-fn fn_array_first(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = array_param(host, args, 0, "array_first")?;
-    Ok(a.iter()
-        .next()
-        .map(|(_, v)| v.clone())
-        .unwrap_or(Value::Null))
-}
-
-fn fn_array_last(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = array_param(host, args, 0, "array_last")?;
-    Ok(a.iter()
-        .last()
-        .map(|(_, v)| v.clone())
-        .unwrap_or(Value::Null))
-}
 
 fn check_alnum(s: &[u8], func: &str) -> Result<(), Thrown> {
     if s.is_empty() {
@@ -282,8 +266,6 @@ pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
-            ("array_first", fn_array_first),
-            ("array_last", fn_array_last),
             ("str_increment", fn_str_increment),
             ("str_decrement", fn_str_decrement),
             ("ip2long", fn_ip2long),

@@ -10,7 +10,6 @@
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::zend::zpp::array_param;
 use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
@@ -398,103 +397,6 @@ fn fn_chunk_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 // ---------------------------------------------------------------------------
-// array_diff_key / array_intersect_key
-// ---------------------------------------------------------------------------
-
-fn fn_array_diff_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let base = array_param(host, args, 0, "array_diff_key")?;
-    let mut others = Vec::new();
-    for i in 1..args.len() {
-        others.push(array_param(host, args, i, "array_diff_key")?);
-    }
-    let mut out = PhpArray::new();
-    for (k, v) in base.iter() {
-        if !others.iter().any(|o| o.get(k).is_some()) {
-            out.insert(k.clone(), v.clone());
-        }
-    }
-    Ok(Value::Array(out))
-}
-
-fn fn_array_intersect_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let base = array_param(host, args, 0, "array_intersect_key")?;
-    let mut others = Vec::new();
-    for i in 1..args.len() {
-        others.push(array_param(host, args, i, "array_intersect_key")?);
-    }
-    let mut out = PhpArray::new();
-    for (k, v) in base.iter() {
-        if others.iter().all(|o| o.get(k).is_some()) {
-            out.insert(k.clone(), v.clone());
-        }
-    }
-    Ok(Value::Array(out))
-}
-
-// ---------------------------------------------------------------------------
-// array_replace
-// ---------------------------------------------------------------------------
-
-fn fn_array_replace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut out = array_param(host, args, 0, "array_replace")?;
-    for i in 1..args.len() {
-        let a = array_param(host, args, i, "array_replace")?;
-        for (k, v) in a.iter() {
-            out.insert(k.clone(), v.clone());
-        }
-    }
-    Ok(Value::Array(out))
-}
-
-// ---------------------------------------------------------------------------
-// array_merge_recursive
-// ---------------------------------------------------------------------------
-
-/// Merge `src` into `dest` per php's `php_array_merge_recursive`.
-fn merge_recursive_into(dest: &mut PhpArray, src: &PhpArray) {
-    for (k, v) in src.iter() {
-        match k {
-            // Integer keys are always appended (renumbered), never merged.
-            ArrayKey::Int(_) => dest.push(v.clone()),
-            ArrayKey::Str(_) => {
-                let existing = dest.get(k).cloned();
-                match existing {
-                    None => {
-                        dest.insert(k.clone(), v.clone());
-                    }
-                    Some(cur) => {
-                        // Coerce the existing value to an array (scalars wrap as
-                        // a single-element list), then fold in the new value.
-                        let mut cur_arr = match cur {
-                            Value::Array(a) => a,
-                            other => {
-                                let mut a = PhpArray::new();
-                                a.push(other);
-                                a
-                            }
-                        };
-                        match deref(v) {
-                            Value::Array(src_arr) => merge_recursive_into(&mut cur_arr, &src_arr),
-                            other => cur_arr.push(other),
-                        }
-                        dest.insert(k.clone(), Value::Array(cur_arr));
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn fn_array_merge_recursive(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut out = PhpArray::new();
-    for i in 0..args.len() {
-        let a = array_param(host, args, i, "array_merge_recursive")?;
-        merge_recursive_into(&mut out, &a);
-    }
-    Ok(Value::Array(out))
-}
-
-// ---------------------------------------------------------------------------
 // registration
 // ---------------------------------------------------------------------------
 
@@ -509,10 +411,6 @@ pub fn register(m: &mut crate::Registry) {
             ("similar_text", fn_similar_text),
             ("str_word_count", fn_str_word_count),
             ("chunk_split", fn_chunk_split),
-            ("array_diff_key", fn_array_diff_key),
-            ("array_intersect_key", fn_array_intersect_key),
-            ("array_replace", fn_array_replace),
-            ("array_merge_recursive", fn_array_merge_recursive),
         ],
     );
 }

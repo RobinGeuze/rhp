@@ -26,6 +26,7 @@ pub mod pcre;
 pub mod version;
 pub mod zend;
 
+use crate::ext::standard::array::as_array;
 use crate::zend::builtin_functions::resolve_const;
 use crate::zend::zpp::require_callback;
 pub use diag::{
@@ -39,9 +40,6 @@ pub use main::streams::{StatInfo, StreamWrapper, WrapperReg};
 /// [`pcntl_dispatch`] to run the queued PHP signal handlers.
 pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_interrupt_pending};
 
-mod arr_fns;
-mod arraycmp_fns;
-mod arrayset_fns;
 #[rustfmt::skip]
 mod const_modules;
 mod crypt_fns;
@@ -69,7 +67,6 @@ mod proc_fns;
 mod query_fns;
 mod runtime_fns;
 mod socket_fns;
-mod sort_fns;
 mod stdext_fns;
 mod str_fns;
 mod strarr2_fns;
@@ -113,7 +110,7 @@ pub fn class_constant_deprecation(class: &[u8], name: &[u8]) -> Option<String> {
 /// The engine's object free hook (`rhp_values::set_object_free_hook`), for
 /// the per-object state still kept by object id.
 pub fn object_freed(id: u32) {
-    sort_fns::object_freed(id);
+    ext::standard::array::object_freed(id);
     ext::openssl::object_freed(id);
     ext::curl::object_freed(id);
 }
@@ -269,7 +266,7 @@ pub fn reset_request_state() {
     main::streams::reset_state();
     main::streams::plain_wrapper::reset_state();
     ext::standard::var::clear_views();
-    sort_fns::reset_state();
+    ext::standard::array::reset_state();
     socket_fns::reset_state();
     ext::sockets::reset_state();
     ext::libxml::reset_state();
@@ -304,25 +301,9 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
             &[
                 ("print_r", fn_print_r),
                 ("constant", fn_constant),
-                ("count", fn_count),
-                ("sizeof", fn_sizeof),
                 ("str_repeat", fn_str_repeat),
-                ("max", fn_max),
-                ("min", fn_min),
-                ("array_sum", fn_array_sum),
-                ("array_product", fn_array_product),
-                ("array_keys", fn_array_keys),
-                ("array_values", fn_array_values),
-                ("array_merge", fn_array_merge),
-                ("array_reverse", fn_array_reverse),
-                ("range", fn_range),
-                ("array_map", fn_array_map),
-                ("array_filter", fn_array_filter),
-                ("array_reduce", fn_array_reduce),
                 ("call_user_func", fn_call_user_func),
                 ("call_user_func_array", fn_call_user_func_array),
-                ("in_array", fn_in_array),
-                ("array_key_exists", fn_array_key_exists),
                 ("implode", fn_implode),
                 ("join", fn_implode),
                 ("explode", fn_explode),
@@ -349,7 +330,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
     let mut v: Vec<(&'static str, Registrar)> = vec![
         ("str_fns", Box::new(str_fns::register)),
         ("math", Box::new(ext::standard::math::register)),
-        ("arr_fns", Box::new(arr_fns::register)),
+        ("array", Box::new(ext::standard::array::register)),
         ("misc_fns", Box::new(misc_fns::register)),
         ("file_fns", Box::new(file_fns::register)),
         ("type", Box::new(ext::standard::r#type::register)),
@@ -363,12 +344,10 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("webenc_fns", Box::new(webenc_fns::register)),
         ("html", Box::new(html::register)),
         ("strarr2_fns", Box::new(strarr2_fns::register)),
-        ("sort_fns", Box::new(sort_fns::register)),
         ("var", Box::new(ext::standard::var::register)),
         ("filter_fns", Box::new(filter_fns::register)),
         ("strcmp_fns", Box::new(strcmp_fns::register)),
         ("printf_fns", Box::new(printf_fns::register)),
-        ("arrayset_fns", Box::new(arrayset_fns::register)),
         ("preg_fns", Box::new(preg_fns::register)),
         ("json_fns", Box::new(json_fns::register)),
         ("parse_fns", Box::new(parse_fns::register)),
@@ -390,7 +369,6 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("rfc1867", Box::new(main::rfc1867::register)),
         ("opcache_fns", Box::new(opcache_fns::register)),
         ("ini_parse", Box::new(ini_parse::register)),
-        ("arraycmp_fns", Box::new(arraycmp_fns::register)),
         ("sysmisc_fns", Box::new(sysmisc_fns::register)),
         ("stdext_fns", Box::new(stdext_fns::register)),
         ("crypt_fns", Box::new(crypt_fns::register)),
@@ -764,7 +742,7 @@ pub fn is_refused(name: &str) -> Option<&'static str> {
 // builtin implementations
 // ---------------------------------------------------------------------------
 
-use rhp_values::ops::{self, deref};
+use rhp_values::ops::deref;
 
 fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
@@ -798,80 +776,6 @@ fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     })
 }
 
-/// php_count_recursive: an array met again through a reference warns
-/// "Recursion detected" and counts 0.
-fn count_recursive(
-    host: &mut dyn Host,
-    fname: &str,
-    a: &rhp_values::PhpArray,
-    seen: &mut Vec<usize>,
-) -> Result<i64, Thrown> {
-    if seen.contains(&a.data_ptr()) {
-        host.emit_diagnostic(E_WARNING, &format!("{fname}(): Recursion detected"))?;
-        return Ok(0);
-    }
-    seen.push(a.data_ptr());
-    let mut n = a.len() as i64;
-    for (_, v) in a.iter() {
-        if let Value::Array(sub) = deref(v) {
-            n += count_recursive(host, fname, &sub, seen)?;
-        }
-    }
-    seen.pop();
-    Ok(n)
-}
-
-fn fn_count(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    count_impl(host, args, "count")
-}
-
-/// sizeof() is count() under its own name, which its errors carry.
-fn fn_sizeof(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    count_impl(host, args, "sizeof")
-}
-
-fn count_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
-    let mode = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
-    if mode != 0 && mode != 1 {
-        return Err(Thrown::error(
-            "ValueError",
-            format!(
-                "{fname}(): Argument #2 ($mode) must be either COUNT_NORMAL or COUNT_RECURSIVE"
-            ),
-        ));
-    }
-    match deref(&args[0]) {
-        Value::Array(a) if mode == 1 => Ok(Value::Int(count_recursive(
-            host,
-            fname,
-            &a,
-            &mut Vec::new(),
-        )?)),
-        Value::Array(a) => Ok(Value::Int(a.len() as i64)),
-        // A Countable object: count($obj) calls $obj->count().
-        obj @ Value::Object(_) => {
-            let callable = Value::Array({
-                let mut a = rhp_values::PhpArray::new();
-                a.push(obj.clone());
-                a.push(Value::str("count"));
-                a
-            });
-            if host.is_callable_value(&callable) {
-                let r = host.call_callable(&callable, &[])?;
-                return Ok(Value::Int(conv::to_int(&deref(&r))));
-            }
-            Err(Thrown::type_error(format!(
-                "{fname}(): Argument #1 ($value) must be of type Countable|array, {} given",
-                zend::zpp::zval_value_name(host, &obj)
-            )))
-        }
-        other => Err(Thrown::type_error(format!(
-            "{fname}(): Argument #1 ($value) must be of type Countable|array, {} given",
-            zend::zpp::zval_value_name(host, &other)
-        ))),
-    }
-}
-
 fn fn_str_repeat(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = conv::to_string_bytes(&args[0]);
     let n = conv::to_int(&args[1]);
@@ -890,350 +794,6 @@ fn fn_str_repeat(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Null);
     }
     Ok(Value::str(s.repeat(n)))
-}
-
-fn fn_max(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    extremum(host, args, true)
-}
-fn fn_min(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    extremum(host, args, false)
-}
-
-/// `(double)l` converts back to `l` exactly (`zend_dval_to_lval_silent`).
-fn long_is_exact_double(l: i64) -> bool {
-    let d = l as f64;
-    (-(2f64.powi(63))..2f64.powi(63)).contains(&d) && d as i64 == l
-}
-
-/// php's `min`/`max`: the array form (`zend_hash_minmax`), the two-argument
-/// frameless form, and the variadic loop with its long/double fast paths.
-fn extremum(host: &mut dyn Host, args: &[Value], want_max: bool) -> Result<Value, Thrown> {
-    use std::cmp::Ordering;
-    let name = if want_max { "max" } else { "min" };
-    let args: Vec<Value> = args.iter().map(deref).collect();
-    if args.len() == 1 {
-        let Value::Array(a) = &args[0] else {
-            return Err(Thrown::type_error(format!(
-                "{name}(): Argument #1 ($value) must be of type array, {} given",
-                zend::zpp::zval_value_name(host, &args[0])
-            )));
-        };
-        let mut it = a.iter().map(|(_, v)| deref(v));
-        let Some(mut res) = it.next() else {
-            return Err(Thrown::error(
-                "ValueError",
-                format!("{name}(): Argument #1 ($value) must contain at least one element"),
-            ));
-        };
-        for zv in it {
-            let c = host_compare(host, &res, &zv)?;
-            if (want_max && c == Ordering::Less) || (!want_max && c == Ordering::Greater) {
-                res = zv;
-            }
-        }
-        return Ok(res);
-    }
-    if args.len() == 2 {
-        // ZEND_FRAMELESS_FUNCTION(min|max, 2)
-        let (lhs, rhs) = (&args[0], &args[1]);
-        let pick = |keep_lhs: bool| if keep_lhs { lhs.clone() } else { rhs.clone() };
-        let dbl = |l: f64, r: f64| if want_max { l >= r } else { l < r };
-        return Ok(match (lhs, rhs) {
-            (Value::Int(l), Value::Int(r)) => pick(if want_max { l >= r } else { l < r }),
-            (Value::Int(l), Value::Float(r)) if long_is_exact_double(*l) => {
-                pick(dbl(*l as f64, *r))
-            }
-            (Value::Float(l), Value::Float(r)) => pick(dbl(*l, *r)),
-            (Value::Float(l), Value::Int(r)) if long_is_exact_double(*r) => {
-                pick(dbl(*l, *r as f64))
-            }
-            _ => {
-                let c = host_compare(host, lhs, rhs)?;
-                pick(if want_max {
-                    c != Ordering::Less
-                } else {
-                    c == Ordering::Less
-                })
-            }
-        });
-    }
-    #[derive(PartialEq)]
-    enum Mode {
-        Long(i64),
-        Double(f64),
-        Generic,
-    }
-    let mut best = 0usize;
-    let mut mode = match &args[0] {
-        Value::Int(l) => Mode::Long(*l),
-        Value::Float(d) => Mode::Double(*d),
-        _ => Mode::Generic,
-    };
-    let better_d = |cur: f64, v: f64| if want_max { cur < v } else { cur > v };
-    for i in 1..args.len() {
-        if let Mode::Long(cur) = mode {
-            match &args[i] {
-                Value::Int(v) => {
-                    if (want_max && cur < *v) || (!want_max && cur > *v) {
-                        mode = Mode::Long(*v);
-                        best = i;
-                    }
-                    continue;
-                }
-                Value::Float(_) if long_is_exact_double(cur) => mode = Mode::Double(cur as f64),
-                _ => mode = Mode::Generic,
-            }
-        }
-        if let Mode::Double(cur) = mode {
-            match &args[i] {
-                Value::Float(v) => {
-                    if better_d(cur, *v) {
-                        mode = Mode::Double(*v);
-                        best = i;
-                    }
-                    continue;
-                }
-                Value::Int(v) if long_is_exact_double(*v) => {
-                    if better_d(cur, *v as f64) {
-                        mode = Mode::Double(*v as f64);
-                        best = i;
-                    }
-                    continue;
-                }
-                _ => mode = Mode::Generic,
-            }
-        }
-        let c = host_compare(host, &args[i], &args[best])?;
-        if (want_max && c == Ordering::Greater) || (!want_max && c == Ordering::Less) {
-            best = i;
-        }
-    }
-    Ok(args[best].clone())
-}
-
-fn fn_array_sum(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    array_binop(host, args, "array_sum", "Addition", ops::add, 0)
-}
-
-fn fn_array_product(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    array_binop(host, args, "array_product", "Multiplication", ops::mul, 1)
-}
-
-/// php_array_binop: `op` over the entries, objects by their
-/// `cast_object(_IS_NUMBER)`. An entry the operator refuses is skipped
-/// with a warning (a resource counts as its id, a non-numeric string as 0).
-fn array_binop(
-    host: &mut dyn Host,
-    args: &[Value],
-    fname: &str,
-    op_name: &str,
-    op: fn(&Value, &Value) -> Result<Value, Thrown>,
-    initial: i64,
-) -> Result<Value, Thrown> {
-    let Value::Array(a) = deref(&args[0]) else {
-        return Err(Thrown::type_error(format!(
-            "{fname}(): Argument #1 ($array) must be of type array"
-        )));
-    };
-    let mut acc = Value::Int(initial);
-    for (_, v) in a.iter() {
-        let v = deref(v);
-        let operand = match &v {
-            Value::Object(_) | Value::Closure(_) => {
-                match zend::object_handlers::cast(
-                    host,
-                    &v,
-                    zend::object_handlers::CastTarget::Number,
-                )? {
-                    Some(n @ (Value::Int(_) | Value::Float(_))) => Some(n),
-                    _ => None,
-                }
-            }
-            Value::Array(_) => None,
-            Value::Resource(r) => {
-                acc = op(&acc, &Value::Int(r.id as i64))?;
-                None
-            }
-            Value::Str(s) => match conv::scan_number(s.as_bytes()) {
-                None => {
-                    acc = op(&acc, &Value::Int(0))?;
-                    None
-                }
-                Some(_) => {
-                    if conv::numeric_string(s.as_bytes()).is_none() {
-                        host.emit_diagnostic(E_WARNING, "A non-numeric value encountered")?;
-                    }
-                    Some(v.clone())
-                }
-            },
-            _ => Some(v.clone()),
-        };
-        match operand {
-            Some(n) => acc = op(&acc, &n)?,
-            None => {
-                let ty = zend::zpp::zval_type_name(host, &v);
-                warn(
-                    host,
-                    fname,
-                    &format!("{op_name} is not supported on type {ty}"),
-                )?
-            }
-        }
-    }
-    Ok(acc)
-}
-
-fn fn_array_keys(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Value::Array(a) = deref(&args[0]) else {
-        return Err(Thrown::type_error(
-            "array_keys(): Argument #1 ($array) must be of type array",
-        ));
-    };
-    // Optional search value: keep only keys whose value matches (loose by
-    // default, strict `===` when the third argument is true).
-    let search = args.get(1).map(deref);
-    let strict = args
-        .get(2)
-        .map(|v| conv::to_bool(&deref(v)))
-        .unwrap_or(false);
-    let mut out = PhpArray::new();
-    for (k, v) in a.iter() {
-        let keep = match &search {
-            None => true,
-            Some(needle) => {
-                if strict {
-                    ops::strict_eq(&deref(v), needle)
-                } else {
-                    host_loose_eq(host, &deref(v), needle)?
-                }
-            }
-        };
-        if keep {
-            out.push(k.to_value());
-        }
-    }
-    Ok(Value::Array(out))
-}
-
-fn fn_array_values(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Value::Array(a) = deref(&args[0]) else {
-        return Err(Thrown::type_error(
-            "array_values(): Argument #1 ($array) must be of type array",
-        ));
-    };
-    let mut out = PhpArray::new();
-    for (_, v) in a.iter() {
-        out.push(v.clone());
-    }
-    Ok(Value::Array(out))
-}
-
-fn fn_array_merge(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut out = PhpArray::new();
-    for arg in args {
-        let Value::Array(a) = deref(arg) else {
-            return Err(Thrown::type_error(
-                "array_merge(): Arguments must be of type array",
-            ));
-        };
-        for (k, v) in a.iter() {
-            match k {
-                // integer keys are renumbered; string keys overwrite
-                rhp_values::ArrayKey::Int(_) => out.push(v.clone()),
-                rhp_values::ArrayKey::Str(_) => out.insert(k.clone(), v.clone()),
-            }
-        }
-    }
-    Ok(Value::Array(out))
-}
-
-fn as_array(v: &Value, who: &str) -> Result<PhpArray, Thrown> {
-    match deref(v) {
-        Value::Array(a) => Ok(a),
-        _ => Err(Thrown::type_error(format!(
-            "{who}(): argument must be of type array"
-        ))),
-    }
-}
-
-fn fn_array_map(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let cb = &args[0];
-    let cb_null = matches!(deref(cb), Value::Null);
-    let arrays: Vec<PhpArray> = args[1..]
-        .iter()
-        .map(|a| as_array(a, "array_map"))
-        .collect::<Result<_, _>>()?;
-    if arrays.len() == 1 {
-        // single array: preserve keys
-        let mut out = PhpArray::new();
-        for (k, v) in arrays[0].iter() {
-            let r = if cb_null {
-                v.clone()
-            } else {
-                host.call_callable(cb, std::slice::from_ref(v))?
-            };
-            out.insert(k.clone(), r);
-        }
-        return Ok(Value::Array(out));
-    }
-    // multiple arrays: zip by position, reindex
-    let max_len = arrays.iter().map(|a| a.len()).max().unwrap_or(0);
-    let mut out = PhpArray::new();
-    for i in 0..max_len {
-        let tuple: Vec<Value> = arrays
-            .iter()
-            .map(|a| {
-                a.get_index(i)
-                    .map(|(_, v)| v.clone())
-                    .unwrap_or(Value::Null)
-            })
-            .collect();
-        if cb_null {
-            let mut t = PhpArray::new();
-            for v in tuple {
-                t.push(v);
-            }
-            out.push(Value::Array(t));
-        } else {
-            out.push(host.call_callable(cb, &tuple)?);
-        }
-    }
-    Ok(Value::Array(out))
-}
-
-fn fn_array_filter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = as_array(&args[0], "array_filter")?;
-    let cb = args.get(1).filter(|c| !matches!(deref(c), Value::Null));
-    let mode = args.get(2).map(conv::to_int).unwrap_or(0);
-    let mut out = PhpArray::new();
-    for (k, v) in a.iter() {
-        let keep = match cb {
-            None => zend::object_handlers::is_true(host, v)?,
-            Some(cb) => {
-                let call_args: Vec<Value> = match mode {
-                    2 => vec![k.to_value()],            // ARRAY_FILTER_USE_KEY
-                    1 => vec![v.clone(), k.to_value()], // ARRAY_FILTER_USE_BOTH
-                    _ => vec![v.clone()],
-                };
-                let r = host.call_callable(cb, &call_args)?;
-                zend::object_handlers::is_true(host, &r)?
-            }
-        };
-        if keep {
-            out.insert(k.clone(), v.clone());
-        }
-    }
-    Ok(Value::Array(out))
-}
-
-fn fn_array_reduce(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = as_array(&args[0], "array_reduce")?;
-    let cb = &args[1];
-    let mut acc = args.get(2).map(deref).unwrap_or(Value::Null);
-    for (_, v) in a.iter() {
-        acc = host.call_callable(cb, &[acc, v.clone()])?;
-    }
-    Ok(acc)
 }
 
 fn fn_call_user_func(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1262,372 +822,6 @@ fn fn_call_user_func_array(host: &mut dyn Host, args: &[Value]) -> Result<Value,
         return host.call_callable(&args[0], &argv);
     }
     host.call_callable_named(&args[0], &argv, named)
-}
-
-fn fn_array_reverse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Value::Array(a) = deref(&args[0]) else {
-        return Err(Thrown::type_error(
-            "array_reverse(): Argument #1 ($array) must be of type array",
-        ));
-    };
-    let preserve = args.get(1).map(conv::to_bool).unwrap_or(false);
-    let mut out = PhpArray::new();
-    let entries: Vec<_> = a.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    for (k, v) in entries.into_iter().rev() {
-        match k {
-            rhp_values::ArrayKey::Int(_) if !preserve => out.push(v),
-            _ => out.insert(k, v),
-        }
-    }
-    Ok(Value::Array(out))
-}
-
-/// What php_range_process_input made of a range() bound, ordered as php's
-/// type codes (IS_LONG < IS_DOUBLE < IS_STRING < IS_ARRAY).
-#[derive(Clone, Copy, PartialEq, PartialOrd)]
-enum RangeIn {
-    Long,
-    Double,
-    /// A non-numeric string: its first byte.
-    Char,
-    /// A one-digit string: a char or an int, whichever the other bound is.
-    Digit,
-}
-
-fn range_value_error(n: usize, name: &str, msg: &str) -> Thrown {
-    Thrown::error(
-        "ValueError",
-        format!("range(): Argument #{n} (${name}) {msg}"),
-    )
-}
-
-/// php_range_process_input: the bound's kind with its int and float values.
-fn range_input(
-    host: &mut dyn Host,
-    v: &Value,
-    n: usize,
-    name: &str,
-) -> Result<(RangeIn, i64, f64), Thrown> {
-    let finite = |d: f64| {
-        if d.is_infinite() {
-            Err(range_value_error(
-                n,
-                name,
-                "must be a finite number, INF provided",
-            ))
-        } else if d.is_nan() {
-            Err(range_value_error(
-                n,
-                name,
-                "must be a finite number, NAN provided",
-            ))
-        } else {
-            Ok((RangeIn::Double, 0, d))
-        }
-    };
-    let s = match v {
-        Value::Str(s) => s.as_bytes(),
-        Value::Float(d) => return finite(*d),
-        // The VM's zpp leaves an int or a float, or a string.
-        other => {
-            let l = conv::to_int(other);
-            return Ok((RangeIn::Long, l, l as f64));
-        }
-    };
-    if s.is_empty() {
-        let msg = format!("Argument #{n} (${name}) must not be empty, casted to 0");
-        host.emit_diagnostic(E_WARNING, &format!("range(): {msg}"))?;
-        return Ok((RangeIn::Long, 0, 0.0));
-    }
-    match conv::numeric_string(s) {
-        Some(conv::Num::Float(d)) => finite(d),
-        Some(conv::Num::Int(l)) if s.len() == 1 => Ok((RangeIn::Digit, l, l as f64)),
-        Some(conv::Num::Int(l)) => Ok((RangeIn::Long, l, l as f64)),
-        None => {
-            if s.len() != 1 {
-                let msg = format!(
-                    "Argument #{n} (${name}) must be a single byte, subsequent bytes are ignored"
-                );
-                host.emit_diagnostic(E_WARNING, &format!("range(): {msg}"))?;
-            }
-            Ok((RangeIn::Char, 0, 0.0))
-        }
-    }
-}
-
-const HT_MAX_SIZE: u64 = 0x4000_0000;
-
-/// RANGE_CHECK_DOUBLE_INIT_ARRAY for `hi > lo`: the element count, or the
-/// ValueError for a range past HT_MAX_SIZE.
-fn range_size_double(hi: f64, lo: f64, step: f64) -> Result<usize, Thrown> {
-    let size = (hi - lo) / step + 1.0;
-    if size >= HT_MAX_SIZE as f64 {
-        return Err(Thrown::error(
-            "ValueError",
-            format!(
-                "The supplied range exceeds the maximum array size by {:.1} elements: start={lo:.1}, end={hi:.1}, step={step:.1}. Max size: {HT_MAX_SIZE}",
-                size - HT_MAX_SIZE as f64
-            ),
-        ));
-    }
-    Ok(ext::standard::math::php_math_round(size, 0, 1) as usize)
-}
-
-/// RANGE_CHECK_LONG_INIT_ARRAY for `hi > lo`.
-fn range_size_long(hi: i64, lo: i64, step: u64) -> Result<usize, Thrown> {
-    let size = (hi as u64).wrapping_sub(lo as u64) / step;
-    if size >= HT_MAX_SIZE - 1 {
-        return Err(Thrown::error(
-            "ValueError",
-            format!(
-                "The supplied range exceeds the maximum array size by {} elements: start={lo}, end={hi}, step={}. Calculated size: {size}. Maximum size: {HT_MAX_SIZE}.",
-                size - (HT_MAX_SIZE - 1),
-                step as i64
-            ),
-        ));
-    }
-    Ok(size as usize + 1)
-}
-
-/// php's range(): an int, float or character sequence from `$start` to
-/// `$end` by `abs($step)`, with php_range's argument checks.
-fn fn_range(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let boundary_error = || {
-        range_value_error(
-            3,
-            "step",
-            "must be less than the range spanned by argument #1 ($start) and argument #2 ($end)",
-        )
-    };
-    let negative_step_error =
-        || range_value_error(3, "step", "must be greater than 0 for increasing ranges");
-    let mut is_step_double = false;
-    let mut is_step_negative = false;
-    let mut step_double = 1.0;
-    let mut step: i64 = 1;
-    if let Some(user_step) = args.get(2).map(deref) {
-        if let Value::Float(d) = user_step {
-            if d.is_infinite() {
-                return Err(range_value_error(
-                    3,
-                    "step",
-                    "must be a finite number, INF provided",
-                ));
-            }
-            if d.is_nan() {
-                return Err(range_value_error(
-                    3,
-                    "step",
-                    "must be a finite number, NAN provided",
-                ));
-            }
-            step_double = d;
-            if step_double < 0.0 {
-                is_step_negative = true;
-                step_double = -step_double;
-            }
-            // zend_dval_to_lval_silent, then zend_is_long_compatible
-            step = rhp_values::float_to_int(step_double);
-            is_step_double = step as f64 != step_double;
-        } else {
-            step = conv::to_int(&user_step);
-            if step < 0 {
-                if step == i64::MIN {
-                    return Err(range_value_error(
-                        3,
-                        "step",
-                        &format!("must be greater than {step}"),
-                    ));
-                }
-                is_step_negative = true;
-                step = -step;
-            }
-            step_double = step as f64;
-        }
-        if step_double == 0.0 {
-            return Err(range_value_error(3, "step", "cannot be 0"));
-        }
-    }
-    let start = deref(&args[0]);
-    let end = deref(&args[1]);
-    let (mut start_type, start_long, start_double) = range_input(host, &start, 1, "start")?;
-    let (mut end_type, end_long, end_double) = range_input(host, &end, 2, "end")?;
-    let mut out = PhpArray::new();
-
-    if start_type >= RangeIn::Char || end_type >= RangeIn::Char {
-        if start_type < RangeIn::Char || end_type < RangeIn::Char {
-            if start_type < RangeIn::Char {
-                if end_type != RangeIn::Digit {
-                    host.emit_diagnostic(
-                        E_WARNING,
-                        "range(): Argument #1 ($start) must be a single byte string if argument #2 ($end) is a single byte string, argument #2 ($end) converted to 0",
-                    )?;
-                }
-                end_type = RangeIn::Long;
-            } else {
-                if start_type != RangeIn::Digit {
-                    host.emit_diagnostic(
-                        E_WARNING,
-                        "range(): Argument #2 ($end) must be a single byte string if argument #1 ($start) is a single byte string, argument #1 ($start) converted to 0",
-                    )?;
-                }
-                start_type = RangeIn::Long;
-            }
-        } else if is_step_double {
-            if start_type == RangeIn::Char || end_type == RangeIn::Char {
-                host.emit_diagnostic(
-                    E_WARNING,
-                    "range(): Argument #3 ($step) must be of type int when generating an array of characters, inputs converted to 0",
-                )?;
-            }
-            start_type = RangeIn::Long;
-            end_type = RangeIn::Long;
-        } else {
-            // Both bounds are strings: a range of characters.
-            let first = |v: &Value| match v {
-                Value::Str(s) => s.as_bytes().first().copied().unwrap_or(0) as i64,
-                _ => 0,
-            };
-            let (mut low, high) = (first(&start), first(&end));
-            let char_value = |c: i64| Value::str(vec![c as u8]);
-            if low > high {
-                if low - high < step {
-                    return Err(boundary_error());
-                }
-                while low >= high {
-                    out.push(char_value(low));
-                    if low - step < 0 {
-                        break;
-                    }
-                    low -= step;
-                }
-            } else if high > low {
-                if is_step_negative {
-                    return Err(negative_step_error());
-                }
-                if high - low < step {
-                    return Err(boundary_error());
-                }
-                while low <= high {
-                    out.push(char_value(low));
-                    if low + step > 255 {
-                        break;
-                    }
-                    low += step;
-                }
-            } else {
-                out.push(char_value(low));
-            }
-            return Ok(Value::Array(out));
-        }
-    }
-
-    // php sizes the result up front, fallibly.
-    let reserve = |n: usize| rhp_values::mem::reserve_packed_array(n);
-    if start_type == RangeIn::Double || end_type == RangeIn::Double || is_step_double {
-        let (s, e) = (start_double, end_double);
-        if s > e {
-            if s - e < step_double {
-                return Err(boundary_error());
-            }
-            let size = range_size_double(s, e, step_double)?;
-            if !reserve(size) {
-                return Ok(Value::Null);
-            }
-            let mut el = s;
-            let mut i = 0;
-            while i < size && el >= e {
-                out.push(Value::Float(el));
-                i += 1;
-                el = s - i as f64 * step_double;
-            }
-        } else if e > s {
-            if is_step_negative {
-                return Err(negative_step_error());
-            }
-            if e - s < step_double {
-                return Err(boundary_error());
-            }
-            let size = range_size_double(e, s, step_double)?;
-            if !reserve(size) {
-                return Ok(Value::Null);
-            }
-            let mut el = s;
-            let mut i = 0;
-            while i < size && el <= e {
-                out.push(Value::Float(el));
-                i += 1;
-                el = s + i as f64 * step_double;
-            }
-        } else {
-            out.push(Value::Float(s));
-        }
-    } else {
-        let (s, e) = (start_long, end_long);
-        let ustep = step as u64;
-        if s > e {
-            if (s as u64).wrapping_sub(e as u64) < ustep {
-                return Err(boundary_error());
-            }
-            let size = range_size_long(s, e, ustep)?;
-            if !reserve(size) {
-                return Ok(Value::Null);
-            }
-            for i in 0..size as u64 {
-                out.push(Value::Int(s.wrapping_sub(i.wrapping_mul(ustep) as i64)));
-            }
-        } else if e > s {
-            if is_step_negative {
-                return Err(negative_step_error());
-            }
-            if (e as u64).wrapping_sub(s as u64) < ustep {
-                return Err(boundary_error());
-            }
-            let size = range_size_long(e, s, ustep)?;
-            if !reserve(size) {
-                return Ok(Value::Null);
-            }
-            for i in 0..size as u64 {
-                out.push(Value::Int(s.wrapping_add(i.wrapping_mul(ustep) as i64)));
-            }
-        } else {
-            out.push(Value::Int(s));
-        }
-    }
-    Ok(Value::Array(out))
-}
-
-fn fn_in_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let needle = deref(&args[0]);
-    let Value::Array(a) = deref(&args[1]) else {
-        return Err(Thrown::type_error(
-            "in_array(): Argument #2 ($haystack) must be of type array",
-        ));
-    };
-    let strict = args.get(2).map(conv::to_bool).unwrap_or(false);
-    for (_, v) in a.iter() {
-        let hit = if strict {
-            ops::strict_eq(&needle, v)
-        } else {
-            host_loose_eq(host, &needle, v)?
-        };
-        if hit {
-            return Ok(Value::Bool(true));
-        }
-    }
-    Ok(Value::Bool(false))
-}
-
-fn fn_array_key_exists(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Value::Array(a) = deref(&args[1]) else {
-        return Err(Thrown::type_error(
-            "array_key_exists(): Argument #2 ($array) must be of type array",
-        ));
-    };
-    let Some(key) = rhp_values::ArrayKey::from_value(&args[0]) else {
-        return Ok(Value::Bool(false));
-    };
-    Ok(Value::Bool(a.get(&key).is_some()))
 }
 
 fn fn_implode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

@@ -6,10 +6,9 @@
 //! `gc_mem_caches`), `getopt` and `readline`.
 
 use std::cell::RefCell;
-use std::cmp::Ordering;
 
 use rhp_values::ops::deref;
-use rhp_values::{conv, ArrayKey, PhpArray, PhpStr, Value};
+use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::zend::zpp::{int_or_null_param, int_param, str_param};
 use crate::{Host, Thrown};
@@ -223,76 +222,6 @@ fn fn_rand(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }))
 }
 
-/// `shuffle(array &$array)`: Fisher-Yates over the values, keys dropped.
-fn fn_shuffle(_host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Value::Ref(r) = &args[0] else {
-        return Ok(Value::Bool(true));
-    };
-    let arr = match &*r.borrow() {
-        Value::Array(a) => a.clone(),
-        _ => return Ok(Value::Bool(true)),
-    };
-    let mut vals: Vec<Value> = arr.iter().map(|(_, v)| v.clone()).collect();
-    let n = vals.len();
-    if n > 1 {
-        let mut left = n - 1;
-        while left > 0 {
-            let j = mt_range(0, left as i64) as usize;
-            vals.swap(left, j);
-            left -= 1;
-        }
-    }
-    let mut out = PhpArray::new();
-    for v in vals {
-        out.push(v);
-    }
-    *r.borrow_mut() = Value::Array(out);
-    Ok(Value::Bool(true))
-}
-
-/// `array_rand(array $array, int $num = 1)` (php_array_pick_keys).
-fn fn_array_rand(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let arr = crate::zend::zpp::array_param(host, args, 0, "array_rand")?;
-    let num = int_param(host, args, 1, "array_rand", "num", 1)?;
-    let avail = arr.len() as i64;
-    if avail == 0 {
-        return Err(Thrown::error(
-            "ValueError",
-            "array_rand(): Argument #1 ($array) must not be empty",
-        ));
-    }
-    if num == 1 {
-        let i = mt_range(0, avail - 1) as usize;
-        return Ok(arr.get_index(i).map(|(k, _)| k.to_value()).unwrap());
-    }
-    if num <= 0 || num > avail {
-        return Err(Thrown::error(
-            "ValueError",
-            "array_rand(): Argument #2 ($num) must be between 1 and the number of elements in argument #1 ($array)",
-        ));
-    }
-    let (mut want, negative) = if num > (avail >> 1) {
-        (avail - num, true)
-    } else {
-        (num, false)
-    };
-    let mut bits = vec![false; avail as usize];
-    while want > 0 {
-        let r = mt_range(0, avail - 1) as usize;
-        if !bits[r] {
-            bits[r] = true;
-            want -= 1;
-        }
-    }
-    let mut out = PhpArray::new();
-    for (i, (k, _)) in arr.iter().enumerate() {
-        if bits[i] ^ negative {
-            out.push(k.to_value());
-        }
-    }
-    Ok(Value::Array(out))
-}
-
 fn fn_str_shuffle(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut s = str_param(host, args, 0, "str_shuffle", "string")?;
     let n = s.len();
@@ -305,143 +234,6 @@ fn fn_str_shuffle(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         }
     }
     Ok(Value::str(s))
-}
-
-// --- arrays ------------------------------------------------------------------
-
-fn fn_array_change_key_case(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let arr = crate::zend::zpp::array_param(host, args, 0, "array_change_key_case")?;
-    let upper = int_param(host, args, 1, "array_change_key_case", "case", 0)? != 0;
-    let mut out = PhpArray::new();
-    for (k, v) in arr.iter() {
-        let nk = match k {
-            ArrayKey::Int(n) => ArrayKey::Int(*n),
-            ArrayKey::Str(s) => {
-                let b = if upper {
-                    s.as_bytes().to_ascii_uppercase()
-                } else {
-                    s.as_bytes().to_ascii_lowercase()
-                };
-                ArrayKey::Str(PhpStr::from_bytes(b))
-            }
-        };
-        out.insert(nk, v.clone());
-    }
-    Ok(Value::Array(out))
-}
-
-const SORT_ASC: i64 = 4;
-const SORT_DESC: i64 = 3;
-const SORT_FLAG_CASE: i64 = 8;
-
-/// php names only the declared parameter (`$array`); variadic `$rest`
-/// arguments are reported by position alone.
-fn multisort_arg(i: usize) -> String {
-    if i == 0 {
-        "1 ($array)".to_string()
-    } else {
-        (i + 1).to_string()
-    }
-}
-
-/// `array_multisort(array &$array, mixed &...$rest)`.
-fn fn_array_multisort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // (array slot, sort type, descending)
-    let mut arrays: Vec<(usize, i64, bool)> = Vec::new();
-    let (mut order_ok, mut type_ok) = (false, false);
-    for (i, a) in args.iter().enumerate() {
-        match deref(a) {
-            Value::Array(_) => {
-                arrays.push((i, 0, false));
-                order_ok = true;
-                type_ok = true;
-            }
-            Value::Int(f) => match f & !SORT_FLAG_CASE {
-                SORT_ASC | SORT_DESC => {
-                    if !order_ok {
-                        return Err(Thrown::type_error(format!(
-                            "array_multisort(): Argument #{} must be an array or a sort flag that has not already been specified",
-                            multisort_arg(i)
-                        )));
-                    }
-                    arrays.last_mut().unwrap().2 = f == SORT_DESC;
-                    order_ok = false;
-                }
-                0 | 1 | 2 | 5 | 6 => {
-                    if !type_ok {
-                        return Err(Thrown::type_error(format!(
-                            "array_multisort(): Argument #{} must be an array or a sort flag that has not already been specified",
-                            multisort_arg(i)
-                        )));
-                    }
-                    arrays.last_mut().unwrap().1 = f;
-                    type_ok = false;
-                }
-                _ => {
-                    return Err(Thrown::error(
-                        "ValueError",
-                        format!(
-                            "array_multisort(): Argument #{} must be a valid sort flag",
-                            multisort_arg(i)
-                        ),
-                    ))
-                }
-            },
-            _ => {
-                return Err(Thrown::type_error(format!(
-                    "array_multisort(): Argument #{} must be an array or a sort flag",
-                    multisort_arg(i)
-                )))
-            }
-        }
-    }
-    let cols: Vec<Vec<(ArrayKey, Value)>> = arrays
-        .iter()
-        .map(|&(slot, _, _)| match deref(&args[slot]) {
-            Value::Array(a) => a.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            _ => Vec::new(),
-        })
-        .collect();
-    let size = cols[0].len();
-    if cols.iter().any(|c| c.len() != size) {
-        return Err(Thrown::error("ValueError", "Array sizes are inconsistent"));
-    }
-    if size == 0 {
-        return Ok(Value::Bool(true));
-    }
-    let mut order: Vec<usize> = (0..size).collect();
-    let mut err = None;
-    order.sort_by(|&x, &y| {
-        for (c, &(_, ty, desc)) in arrays.iter().enumerate() {
-            let (a, b) = (&cols[c][x].1, &cols[c][y].1);
-            let o = if desc {
-                crate::sort_fns::cmp_flagged_cx(host, b, a, ty, &mut err)
-            } else {
-                crate::sort_fns::cmp_flagged_cx(host, a, b, ty, &mut err)
-            };
-            if o != Ordering::Equal {
-                return o;
-            }
-        }
-        x.cmp(&y)
-    });
-    if let Some(t) = err.or_else(|| host.take_pending_throw()) {
-        return Err(t);
-    }
-    for (c, &(slot, _, _)) in arrays.iter().enumerate() {
-        let mut out = PhpArray::new();
-        for &i in &order {
-            let (k, v) = &cols[c][i];
-            match k {
-                ArrayKey::Int(_) => out.push(v.clone()),
-                ArrayKey::Str(_) => out.insert(k.clone(), v.clone()),
-            }
-        }
-        if let Value::Ref(r) = &args[slot] {
-            *r.borrow_mut() = Value::Array(out);
-        }
-    }
-    Ok(Value::Bool(true))
 }
 
 // --- filesystem --------------------------------------------------------------
@@ -834,11 +626,7 @@ pub fn register(m: &mut crate::Registry) {
             ("srand", fn_mt_srand),
             ("mt_rand", fn_mt_rand),
             ("rand", fn_rand),
-            ("shuffle", fn_shuffle),
-            ("array_rand", fn_array_rand),
             ("str_shuffle", fn_str_shuffle),
-            ("array_change_key_case", fn_array_change_key_case),
-            ("array_multisort", fn_array_multisort),
             ("fnmatch", fn_fnmatch),
             ("getrusage", fn_getrusage),
             ("sys_getloadavg", fn_sys_getloadavg),

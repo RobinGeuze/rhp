@@ -1,16 +1,18 @@
-//! More pure string + array builtins (no callbacks, no by-reference):
-//! `str_split`, `strtr`, `substr_replace`, `levenshtein`, `similar_text`,
-//! `str_word_count`, `chunk_split`, `array_diff_key`, `array_intersect_key`,
-//! `array_replace`, `array_merge_recursive`.
-//!
-//! Every function here is verified byte-for-byte against the local php 8.5.8
-//! binary (see `strarr2_fns/tests.rs` — expected values hardcoded from
-//! `php -r '...'` output).
+//! ext/standard/levenshtein.c: `levenshtein`.
 
 use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
 use crate::{Host, Thrown};
+
+// More pure string + array builtins (no callbacks, no by-reference):
+// `str_split`, `strtr`, `substr_replace`, `levenshtein`, `similar_text`,
+// `str_word_count`, `chunk_split`, `array_diff_key`, `array_intersect_key`,
+// `array_replace`, `array_merge_recursive`.
+//
+// Every function here is verified byte-for-byte against the local php 8.5.8
+// binary (see `strarr2_fns/tests.rs` — expected values hardcoded from
+// `php -r '...'` output).
 
 // ---------------------------------------------------------------------------
 // levenshtein
@@ -45,10 +47,6 @@ fn fn_levenshtein(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     Ok(Value::Int(prev[lb]))
 }
-
-// ---------------------------------------------------------------------------
-// registration
-// ---------------------------------------------------------------------------
 
 pub fn register(m: &mut crate::Registry) {
     crate::register(m, &[("levenshtein", fn_levenshtein)]);

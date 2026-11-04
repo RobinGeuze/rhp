@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::ext::standard::math::fn_number_format;
+use crate::ext::standard::soundex::fn_soundex;
 use crate::test_support::TestHost;
 use crate::zend::builtin_functions::fn_strcasecmp;
 use crate::zend::builtin_functions::fn_strcmp;

@@ -54,7 +54,6 @@ mod ini_table;
 mod json_fns;
 mod misc_fns;
 mod opcache_fns;
-mod parse_fns;
 pub mod php_fns;
 mod preg_fns;
 mod proc_fns;
@@ -62,7 +61,6 @@ mod query_fns;
 mod runtime_fns;
 mod socket_fns;
 mod stdext_fns;
-mod strarr2_fns;
 mod stream_fns;
 mod sysmisc_fns;
 pub(crate) mod url;
@@ -325,7 +323,6 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
     let rest: Vec<(&'static str, Registrar)> = vec![
         ("webenc_fns", Box::new(webenc_fns::register)),
         ("html", Box::new(ext::standard::html::register)),
-        ("strarr2_fns", Box::new(strarr2_fns::register)),
         ("var", Box::new(ext::standard::var::register)),
         ("filter_fns", Box::new(filter_fns::register)),
         (
@@ -334,7 +331,20 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ),
         ("preg_fns", Box::new(preg_fns::register)),
         ("json_fns", Box::new(json_fns::register)),
-        ("parse_fns", Box::new(parse_fns::register)),
+        ("scanf", Box::new(ext::standard::scanf::register)),
+        ("soundex", Box::new(ext::standard::soundex::register)),
+        (
+            "levenshtein",
+            Box::new(ext::standard::levenshtein::register),
+        ),
+        ("pack", Box::new(ext::standard::pack::register)),
+        ("uniqid", Box::new(ext::standard::uniqid::register)),
+        ("microtime", Box::new(ext::standard::microtime::register)),
+        ("hrtime", Box::new(ext::standard::hrtime::register)),
+        ("assert", Box::new(ext::standard::assert::register)),
+        ("pageinfo", Box::new(ext::standard::pageinfo::register)),
+        ("dns", Box::new(ext::standard::dns::register)),
+        ("versioning", Box::new(ext::standard::versioning::register)),
         ("php_fns", Box::new(php_fns::register)),
         ("info", Box::new(ext::standard::info::register)),
         ("stream_fns", Box::new(stream_fns::register)),

@@ -1,8 +1,13 @@
 // Expected strings captured from php 8.5.8.
 
 use super::*;
+use crate::ext::standard::array::fn_array_diff_ukey;
+use crate::ext::standard::array::fn_array_udiff;
+use crate::ext::standard::array::fn_array_uintersect;
 use crate::ext::standard::r#type::fn_array_is_list;
 use crate::test_support::TestHost;
+use rhp_values::ArrayKey;
+use rhp_values::PhpArray;
 
 fn dumped(v: &Value) -> String {
     let mut out = Vec::new();
@@ -640,4 +645,72 @@ fn array_merge_recursive_cases() {
         dumped(&call(fn_array_merge_recursive, &[map(vec![("a", map(vec![("b", i(1))]))]), map(vec![("a", map(vec![("b", i(2))]))])])),
         "array(1) {\n  [\"a\"]=>\n  array(1) {\n    [\"b\"]=>\n    array(2) {\n      [0]=>\n      int(1)\n      [1]=>\n      int(2)\n    }\n  }\n}\n"
     );
+}
+
+/// A host whose callbacks ignore the callable and compare their two
+/// arguments as integers with `<=>`: enough to drive the comparator-based
+/// set functions.
+fn cmp_host() -> TestHost<'static> {
+    TestHost::with_callback(|a| {
+        Value::Int(match conv::to_int(&a[0]).cmp(&conv::to_int(&a[1])) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        })
+    })
+}
+
+fn cb() -> Value {
+    Value::str("cmp")
+}
+
+#[test]
+fn array_udiff_cases() {
+    // php: array_udiff([3,1,2,1], [2,4], <=>) => [0=>3, 1=>1, 3=>1]
+    let r = fn_array_udiff(
+        &mut cmp_host(),
+        &[
+            list(vec![i(3), i(1), i(2), i(1)]),
+            list(vec![i(2), i(4)]),
+            cb(),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        dumped(&r),
+        "array(3) {\n  [0]=>\n  int(3)\n  [1]=>\n  int(1)\n  [3]=>\n  int(1)\n}\n"
+    );
+}
+
+#[test]
+fn array_uintersect_cases() {
+    // php: array_uintersect([1,2,3,2], [2,3,4], <=>) => [1=>2, 2=>3, 3=>2]
+    let r = fn_array_uintersect(
+        &mut cmp_host(),
+        &[
+            list(vec![i(1), i(2), i(3), i(2)]),
+            list(vec![i(2), i(3), i(4)]),
+            cb(),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        dumped(&r),
+        "array(3) {\n  [1]=>\n  int(2)\n  [2]=>\n  int(3)\n  [3]=>\n  int(2)\n}\n"
+    );
+}
+
+#[test]
+fn array_diff_ukey_cases() {
+    // php: array_diff_ukey([1,2,3], [0=>9, 2=>9], <=>) => [1=>2]
+    let r = fn_array_diff_ukey(
+        &mut cmp_host(),
+        &[
+            list(vec![i(1), i(2), i(3)]),
+            imap(vec![(0, i(9)), (2, i(9))]),
+            cb(),
+        ],
+    )
+    .unwrap();
+    assert_eq!(dumped(&r), "array(1) {\n  [1]=>\n  int(2)\n}\n");
 }

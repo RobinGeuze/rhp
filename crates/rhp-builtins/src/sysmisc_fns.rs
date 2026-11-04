@@ -5,9 +5,10 @@
 //! `cli_get_process_title`, `gethostname`, `gethostbyname`, `getmyuid`/
 //! `getmygid`/`getmyinode`, `get_current_user`.
 
-use rhp_values::{ArrayKey, PhpArray, Value};
+use rhp_values::Value;
 
-use crate::zend::zpp::{bool_param, int_param, str_param};
+use crate::ext::standard::pageinfo::script_stat;
+use crate::zend::zpp::{int_param, str_param};
 use crate::{Host, Thrown};
 
 fn fn_ip2long(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -22,35 +23,6 @@ fn fn_long2ip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let n = int_param(host, args, 0, "long2ip", "ip", 0)? as u64 as u32;
     let text = crate::inet::ntop(&n.to_be_bytes()).expect("inet_ntop of an IPv4 address");
     Ok(Value::str(text))
-}
-
-fn fn_gettimeofday(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let as_float = bool_param(host, args, 0, "gettimeofday", "as_float", false)?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    if as_float {
-        return Ok(Value::Float(
-            now.as_secs() as f64 + now.subsec_micros() as f64 / 1_000_000.0,
-        ));
-    }
-    let mut a = PhpArray::new();
-    a.insert(
-        ArrayKey::from_bytes(b"sec"),
-        Value::Int(now.as_secs() as i64),
-    );
-    a.insert(
-        ArrayKey::from_bytes(b"usec"),
-        Value::Int(now.subsec_micros() as i64),
-    );
-    // The default zone's offset at that second.
-    let (west, dst) = crate::ext::date::get_timezone_info().map_or((0, 0), |tz| {
-        let o = tz.offset_at(now.as_secs() as i64);
-        (-(o.offset as i64) / 60, o.is_dst as i64)
-    });
-    a.insert(ArrayKey::from_bytes(b"minuteswest"), Value::Int(west));
-    a.insert(ArrayKey::from_bytes(b"dsttime"), Value::Int(dst));
-    Ok(Value::Array(a))
 }
 
 fn fn_lcg_value(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -112,58 +84,6 @@ fn fn_cli_get_process_title(_: &mut dyn Host, _args: &[Value]) -> Result<Value, 
     ))
 }
 
-fn fn_gethostname(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    let mut buf = [0u8; 256];
-    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
-    if rc != 0 {
-        return Ok(Value::Bool(false));
-    }
-    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    Ok(Value::str(buf[..end].to_vec()))
-}
-
-/// `gethostbyname`: the first IPv4 address, or the input unchanged on failure.
-fn fn_gethostbyname(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    use std::net::ToSocketAddrs;
-    let name = str_param(host, args, 0, "gethostbyname", "hostname")?;
-    if name.len() > 255 {
-        return Ok(Value::Bool(false));
-    }
-    let s = String::from_utf8_lossy(&name).into_owned();
-    if let Ok(addrs) = (s.as_str(), 0u16).to_socket_addrs() {
-        for a in addrs {
-            if let std::net::SocketAddr::V4(v4) = a {
-                return Ok(Value::str(v4.ip().to_string().into_bytes()));
-            }
-        }
-    }
-    Ok(Value::str(name))
-}
-
-fn fn_getmyuid(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(script_stat(host)
-        .map(|m| Value::Int(std::os::unix::fs::MetadataExt::uid(&m) as i64))
-        .unwrap_or(Value::Bool(false)))
-}
-
-fn fn_getmygid(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(script_stat(host)
-        .map(|m| Value::Int(std::os::unix::fs::MetadataExt::gid(&m) as i64))
-        .unwrap_or(Value::Bool(false)))
-}
-
-fn fn_getmyinode(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(script_stat(host)
-        .map(|m| Value::Int(std::os::unix::fs::MetadataExt::ino(&m) as i64))
-        .unwrap_or(Value::Bool(false)))
-}
-
-/// Stat of the main script (php's `sapi_get_stat`).
-fn script_stat(host: &dyn Host) -> Option<std::fs::Metadata> {
-    let p = host.running_main_path()?;
-    std::fs::metadata(crate::zend::virtual_cwd::os_path(&p)).ok()
-}
-
 /// `get_current_user`: the owner of the main script file.
 fn fn_get_current_user(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     let Some(m) = script_stat(host) else {
@@ -187,18 +107,12 @@ pub fn register(m: &mut crate::Registry) {
         &[
             ("ip2long", fn_ip2long),
             ("long2ip", fn_long2ip),
-            ("gettimeofday", fn_gettimeofday),
             ("lcg_value", fn_lcg_value),
             ("get_cfg_var", fn_get_cfg_var),
             ("get_include_path", fn_get_include_path),
             ("set_include_path", fn_set_include_path),
             ("cli_set_process_title", fn_cli_set_process_title),
             ("cli_get_process_title", fn_cli_get_process_title),
-            ("gethostname", fn_gethostname),
-            ("gethostbyname", fn_gethostbyname),
-            ("getmyuid", fn_getmyuid),
-            ("getmygid", fn_getmygid),
-            ("getmyinode", fn_getmyinode),
             ("get_current_user", fn_get_current_user),
         ],
     );

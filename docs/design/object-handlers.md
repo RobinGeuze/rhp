@@ -116,8 +116,11 @@ Notes:
 - Handlers not routed yet: property and dimension access (`read_property`,
   `has_property`… — DOM's, SimpleXML's, DatePeriod's and ZipArchive's
   virtual properties still go through `__get`/`__set` in their prelude
-  classes, so `property_exists()` and `method_exists(…, '__get')` can differ
-  from php), `get_constructor` (`Directory`), `get_gc`. DateInterval keeps
+  classes, so `property_exists()`, `method_exists(…, '__get')` and
+  Reflection's property and method lists can differ from php, and a user
+  subclass that defines its own `__get`/`__set`/`__isset` replaces the
+  virtual properties, read-only checks included), `get_constructor`
+  (`Directory`), `get_gc`. DateInterval keeps
   its fields as real properties instead, which its `get_properties_for`
   and methods read back into the payload (ext/date/objects.rs).
 - php's `ce->unserialize` (the `C:` format) is a class field, not a

@@ -35,17 +35,25 @@ fn strcspn(s: &[u8], from: usize, to: usize, chars: &[u8]) -> usize {
     e
 }
 
-/// `ZEND_STRTOL(buf, &end, 10)` on at most 5 digits: `None` when no digit.
-fn port_num(digits: &[u8]) -> Option<i64> {
-    let n = digits.iter().take_while(|b| b.is_ascii_digit()).count();
+/// `ZEND_STRTOL(buf, &end, 10)` on at most 5 bytes: leading white space and
+/// a sign, then digits; `None` when there is no digit.
+fn port_num(buf: &[u8]) -> Option<i64> {
+    let mut i = buf
+        .iter()
+        .take_while(|&&b| matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'))
+        .count();
+    let neg = buf.get(i) == Some(&b'-');
+    if matches!(buf.get(i), Some(b'-' | b'+')) {
+        i += 1;
+    }
+    let n = buf[i..].iter().take_while(|b| b.is_ascii_digit()).count();
     if n == 0 {
         return None;
     }
-    Some(
-        digits[..n]
-            .iter()
-            .fold(0i64, |a, &d| a * 10 + (d - b'0') as i64),
-    )
+    let v = buf[i..i + n]
+        .iter()
+        .fold(0i64, |a, &d| a * 10 + (d - b'0') as i64);
+    Some(if neg { -v } else { v })
 }
 
 /// `php_url_parse_ex2`: `None` where php returns NULL.
@@ -257,5 +265,11 @@ mod tests {
         assert_eq!(u.path.as_deref(), Some(&b"/p"[..]));
         let u = p("").unwrap();
         assert_eq!(u.path.as_deref(), Some(&b""[..]));
+        // ZEND_STRTOL: white space and a sign before the port
+        assert_eq!(p("http://h: 80/").unwrap().port, 80);
+        assert_eq!(p("http://h:+80/").unwrap().port, 80);
+        assert_eq!(p("http://h:-0/").unwrap().port, 0);
+        assert!(p("http://h:-1/").is_none());
+        assert!(p("http://h: /").is_none());
     }
 }

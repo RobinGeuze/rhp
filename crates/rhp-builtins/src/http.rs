@@ -295,31 +295,6 @@ fn strip_url_passwd(url: &[u8]) -> Vec<u8> {
     out
 }
 
-/// `php_url_decode`: `+` is a space.
-fn url_decode(s: &[u8]) -> Vec<u8> {
-    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
-    let mut out = Vec::with_capacity(s.len());
-    let mut i = 0;
-    while i < s.len() {
-        let c = s[i];
-        if c == b'+' {
-            out.push(b' ');
-        } else if c == b'%' && i + 2 < s.len() {
-            match (hex(s[i + 1]), hex(s[i + 2])) {
-                (Some(a), Some(b)) => {
-                    out.push(a << 4 | b);
-                    i += 2;
-                }
-                _ => out.push(c),
-            }
-        } else {
-            out.push(c);
-        }
-        i += 1;
-    }
-    out
-}
-
 /// `%.1F`.
 fn format_f1(d: f64) -> String {
     if d.is_nan() {
@@ -945,10 +920,10 @@ fn wrap_http_ex(
 
     if have_header & HEADER_AUTH == 0 {
         if let Some(user) = &resource.user {
-            let mut scratch = url_decode(user);
+            let mut scratch = crate::query_fns::url_decode(user);
             scratch.push(b':');
             if let Some(pass) = &resource.pass {
-                scratch.extend_from_slice(&url_decode(pass));
+                scratch.extend_from_slice(&crate::query_fns::url_decode(pass));
             }
             req.extend_from_slice(b"Authorization: Basic ");
             req.extend_from_slice(&crate::ext::hash::primitives::base64_encode(&scratch));
@@ -1251,7 +1226,7 @@ fn wrap_http_ex(
             .flatten()
             {
                 {
-                    *v = url_decode(v);
+                    *v = crate::query_fns::url_decode(v);
                     if v.iter().any(|c| c.is_ascii_control()) {
                         cx.log_error(format!(
                             "Invalid redirect URL! {}",

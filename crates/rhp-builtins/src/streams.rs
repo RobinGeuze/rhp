@@ -209,28 +209,7 @@ pub fn parse_data_url(url: &[u8]) -> Result<(Vec<u8>, rhp_values::PhpArray), &'s
         crate::ext::hash::primitives::base64_decode(data, true)
             .ok_or("rfc2397: unable to decode")?
     } else {
-        // php_url_decode
-        let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
-        let mut out = Vec::with_capacity(data.len());
-        let mut i = 0;
-        while i < data.len() {
-            let c = data[i];
-            if c == b'+' {
-                out.push(b' ');
-            } else if c == b'%' && i + 2 < data.len() {
-                match (hex(data[i + 1]), hex(data[i + 2])) {
-                    (Some(a), Some(b)) => {
-                        out.push(a << 4 | b);
-                        i += 2;
-                    }
-                    _ => out.push(c),
-                }
-            } else {
-                out.push(c);
-            }
-            i += 1;
-        }
-        out
+        crate::query_fns::url_decode(data)
     };
     Ok((data, meta))
 }

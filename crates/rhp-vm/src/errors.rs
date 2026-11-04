@@ -578,7 +578,7 @@ impl Vm {
             } else {
                 // php_log_err: append "[d-M-Y H:i:s e] message" to the file.
                 let stamp = self
-                    .invoke_builtin("date", vec![Value::str("d-M-Y H:i:s e")])
+                    .invoke_builtin("date", vec![Value::str("d-M-Y H:i:s e")], false)
                     .map(|v| conv::to_string_bytes(&v))
                     .unwrap_or_default();
                 let mut line = b"[".to_vec();

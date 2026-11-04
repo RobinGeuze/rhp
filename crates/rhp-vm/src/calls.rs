@@ -1211,7 +1211,7 @@ impl Vm {
         match callee {
             Callee::Closure(cd) => self.run_closure_sync(&cd, args, caller),
             Callee::Function(f) => self.run_proto_sync(f, None, None, None, args, caller),
-            Callee::Builtin(name) => self.invoke_builtin(&name, args),
+            Callee::Builtin(name) => self.invoke_builtin(&name, args, caller == Some(true)),
             Callee::Method(m, this, called) => self.call_sync_mode(&m, this, called, args, caller),
             Callee::Magic(m, this, called, name) => {
                 let mut arr = PhpArray::new();
@@ -1613,12 +1613,20 @@ impl Vm {
                 }
             })
             .collect();
-        self.run_builtin_sig(builtin, sig, args, frameless, icall)
+        let strict = self.stack[top].proto.strict_types;
+        self.run_builtin_sig(builtin, sig, args, frameless, icall, strict)
     }
 
-    /// Call a builtin by name with a pre-collected argument vector.
-    pub(crate) fn invoke_builtin(&mut self, name: &str, args: Vec<Value>) -> Result<Value, Thrown> {
-        self.invoke_builtin_ex(name, args, false)
+    /// Call a builtin by name with a pre-collected argument vector, its
+    /// arguments parsed in strict mode when `strict` (a call from a
+    /// `strict_types` file, not from another builtin).
+    pub(crate) fn invoke_builtin(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        strict: bool,
+    ) -> Result<Value, Thrown> {
+        self.invoke_builtin_ex(name, args, false, strict)
     }
 
     /// Call a builtin. Unless `frameless` (php compiled the call to an opcode),
@@ -1629,6 +1637,7 @@ impl Vm {
         name: &str,
         args: Vec<Value>,
         frameless: bool,
+        strict: bool,
     ) -> Result<Value, Thrown> {
         let Some(builtin) = builtins::lookup(name) else {
             return Err(Thrown::error(
@@ -1636,7 +1645,7 @@ impl Vm {
                 format!("Call to undefined function {name}()"),
             ));
         };
-        self.run_builtin(builtin, args, frameless)
+        self.run_builtin(builtin, args, frameless, strict)
     }
 
     /// [`Vm::invoke_builtin_ex`] for an already looked-up builtin.
@@ -1645,9 +1654,10 @@ impl Vm {
         builtin: &'static builtins::Builtin,
         args: Vec<Value>,
         frameless: bool,
+        strict: bool,
     ) -> Result<Value, Thrown> {
         let sig = builtins::signatures::function(builtin.name.as_bytes());
-        self.run_builtin_sig(builtin, sig, args, frameless, false)
+        self.run_builtin_sig(builtin, sig, args, frameless, false, strict)
     }
 
     /// [`Vm::run_builtin`] with the builtin's stub signature.
@@ -1658,6 +1668,7 @@ impl Vm {
         mut args: Vec<Value>,
         frameless: bool,
         icall: bool,
+        strict: bool,
     ) -> Result<Value, Thrown> {
         // Free streams whose last reference went away (php closes a resource
         // when its refcount drops to zero; what that throws is thrown there).
@@ -1666,7 +1677,7 @@ impl Vm {
         if count_error.is_none() {
             let caller = self.stack.len().saturating_sub(1);
             let user = !self.stack.is_empty() && !self.is_internal_frame(caller);
-            self.coerce_builtin_args(builtin.name, sig, &mut args, user)?;
+            self.coerce_builtin_args(builtin.name, sig, &mut args, user, strict)?;
         }
         // A builtin called from engine-internal (prelude) code is not a php
         // frame, and php compiles a few calls to opcodes (no frame either).
@@ -1818,7 +1829,7 @@ impl Vm {
                 return Err(undefined_function(&proto.names[name as usize]));
             }
             self.mark_user_call_builtin(&fname, fallback);
-            let out = self.invoke_builtin(&name_str, argv);
+            let out = self.invoke_builtin(&name_str, argv, self.caller_strict());
             self.cuf_caller = None;
             let out = out?;
             self.reg_set(top, dst, out);

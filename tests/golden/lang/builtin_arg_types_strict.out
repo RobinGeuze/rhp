@@ -1,0 +1,96 @@
+== int
+null: TypeError: str_repeat(): Argument #2 ($times) must be of type int, null given
+true: TypeError: str_repeat(): Argument #2 ($times) must be of type int, true given
+3: 'ababab'
+2.5: TypeError: str_repeat(): Argument #2 ($times) must be of type int, float given
+"4": TypeError: str_repeat(): Argument #2 ($times) must be of type int, string given
+[]: TypeError: str_repeat(): Argument #2 ($times) must be of type int, array given
+S: TypeError: str_repeat(): Argument #2 ($times) must be of type int, S given
+== ?int
+null: [2,3,4,5]
+true: TypeError: array_slice(): Argument #3 ($length) must be of type ?int, true given
+3: [2,3,4]
+2.5: TypeError: array_slice(): Argument #3 ($length) must be of type ?int, float given
+"4": TypeError: array_slice(): Argument #3 ($length) must be of type ?int, string given
+[]: TypeError: array_slice(): Argument #3 ($length) must be of type ?int, array given
+S: TypeError: array_slice(): Argument #3 ($length) must be of type ?int, S given
+== float
+null: TypeError: sqrt(): Argument #1 ($num) must be of type float, null given
+true: TypeError: sqrt(): Argument #1 ($num) must be of type float, true given
+3: 1.7320508075688772
+2.5: 1.5811388300841898
+"4": TypeError: sqrt(): Argument #1 ($num) must be of type float, string given
+[]: TypeError: sqrt(): Argument #1 ($num) must be of type float, array given
+S: TypeError: sqrt(): Argument #1 ($num) must be of type float, S given
+== int|float
+null: TypeError: abs(): Argument #1 ($num) must be of type int|float, null given
+true: TypeError: abs(): Argument #1 ($num) must be of type int|float, true given
+3: 3
+2.5: 2.5
+"4": TypeError: abs(): Argument #1 ($num) must be of type int|float, string given
+[]: TypeError: abs(): Argument #1 ($num) must be of type int|float, array given
+S: TypeError: abs(): Argument #1 ($num) must be of type int|float, S given
+== bool
+null: TypeError: in_array(): Argument #3 ($strict) must be of type bool, null given
+true: false
+3: TypeError: in_array(): Argument #3 ($strict) must be of type bool, int given
+2.5: TypeError: in_array(): Argument #3 ($strict) must be of type bool, float given
+"4": TypeError: in_array(): Argument #3 ($strict) must be of type bool, string given
+[]: TypeError: in_array(): Argument #3 ($strict) must be of type bool, array given
+S: TypeError: in_array(): Argument #3 ($strict) must be of type bool, S given
+== string
+null: TypeError: strlen(): Argument #1 ($string) must be of type string, null given
+true: TypeError: strlen(): Argument #1 ($string) must be of type string, true given
+3: TypeError: strlen(): Argument #1 ($string) must be of type string, int given
+2.5: TypeError: strlen(): Argument #1 ($string) must be of type string, float given
+"4": 1
+[]: TypeError: strlen(): Argument #1 ($string) must be of type string, array given
+S: TypeError: strlen(): Argument #1 ($string) must be of type string, S given
+== ?string
+null: 3
+true: TypeError: mb_strlen(): Argument #2 ($encoding) must be of type ?string, true given
+3: TypeError: mb_strlen(): Argument #2 ($encoding) must be of type ?string, int given
+2.5: TypeError: mb_strlen(): Argument #2 ($encoding) must be of type ?string, float given
+"4": ValueError: mb_strlen(): Argument #2 ($encoding) must be a valid encoding, "4" given
+[]: TypeError: mb_strlen(): Argument #2 ($encoding) must be of type ?string, array given
+S: TypeError: mb_strlen(): Argument #2 ($encoding) must be of type ?string, S given
+== string|int
+null: [{"0":1,"1":2,"k":"v"}]
+true: TypeError: array_column(): Argument #2 ($column_key) must be of type string|int|null, true given
+3: []
+2.5: TypeError: array_column(): Argument #2 ($column_key) must be of type string|int|null, float given
+"4": []
+[]: TypeError: array_column(): Argument #2 ($column_key) must be of type string|int|null, array given
+S: TypeError: array_column(): Argument #2 ($column_key) must be of type string|int|null, S given
+== array
+null: TypeError: array_sum(): Argument #1 ($array) must be of type array, null given
+true: TypeError: array_sum(): Argument #1 ($array) must be of type array, true given
+3: TypeError: array_sum(): Argument #1 ($array) must be of type array, int given
+2.5: TypeError: array_sum(): Argument #1 ($array) must be of type array, float given
+"4": TypeError: array_sum(): Argument #1 ($array) must be of type array, string given
+[]: 0
+S: TypeError: array_sum(): Argument #1 ($array) must be of type array, S given
+== array|string
+null: TypeError: str_replace(): Argument #1 ($search) must be of type array|string, null given
+true: TypeError: str_replace(): Argument #1 ($search) must be of type array|string, true given
+3: TypeError: str_replace(): Argument #1 ($search) must be of type array|string, int given
+2.5: TypeError: str_replace(): Argument #1 ($search) must be of type array|string, float given
+"4": 'a7b'
+[]: 'a7b'
+S: TypeError: str_replace(): Argument #1 ($search) must be of type array|string, S given
+== callbacks and dynamic calls
+  Deprecated: strlen(): Passing null to parameter #1 ($string) of type string is deprecated
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(0)
+}
+array(1) {
+  [0]=>
+  string(2) "aa"
+}
+TypeError: strlen(): Argument #1 ($string) must be of type string, int given
+TypeError: str_repeat(): Argument #2 ($times) must be of type int, string given
+TypeError: strlen(): Argument #1 ($string) must be of type string, int given
+TypeError: usort(): Argument #1 ($array) must be of type array, null given

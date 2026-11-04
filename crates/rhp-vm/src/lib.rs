@@ -11979,7 +11979,14 @@ fn type_lc(v: &Value) -> &'static str {
 /// or is not a single scalar (unions print in php's own order).
 fn prelude_null_coercion(ty: &rhp_bytecode::TypeHint) -> Option<(&'static str, Value)> {
     use rhp_bytecode::TypeKind as K;
-    if ty.nullable || ty.intersection || ty.kinds.len() != 1 {
+    if ty.nullable || ty.intersection {
+        return None;
+    }
+    // Z_PARAM_NUMBER
+    if let [K::Int, K::Float] | [K::Float, K::Int] = ty.kinds[..] {
+        return Some(("int|float", Value::Int(0)));
+    }
+    if ty.kinds.len() != 1 {
         return None;
     }
     match ty.kinds[0] {

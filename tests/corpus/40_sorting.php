@@ -17,7 +17,11 @@ echo implode(",", $nums), "\n";
 $words = ["banana", "apple", "cherry", "Date"];
 sort($words, SORT_STRING | SORT_FLAG_CASE);
 echo implode(",", $words), "\n";
-natsort($arr = ["img10", "img2", "img1", "img12"]);
+try {
+    natsort($arr = ["img10", "img2", "img1", "img12"]);
+} catch (Error $e) {
+    echo get_class($e), ': ', $e->getMessage(), "\n";
+}
 echo implode(",", $arr), "\n";
 $mixed = ["10", "9", "2", "1"];
 sort($mixed, SORT_NUMERIC);

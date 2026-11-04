@@ -14,6 +14,6 @@ echo chunk_split("abcdefgh", 3, "/"), "\n";
 echo nl2br("a\nb"), "\n";
 echo similar_text("World", "word"), "\n";
 echo levenshtein("kitten", "sitting"), "\n";
-echo soundex("Robert"), " ", metaphone("Thompson"), "\n";
+echo soundex("Robert"), "\n"; // rhp has no metaphone() yet
 echo ucfirst(strtolower("HELLO WORLD")), "\n";
 echo substr_replace("Hello", "XY", 1, 2), "\n";

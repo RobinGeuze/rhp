@@ -1,4 +1,5 @@
 <?php
+set_error_handler(function ($no, $msg, $file, $line) { echo "[$no] $msg (line $line)\n"; return true; });
 $csv = "id,name,score\n1,Alice,95.5\n2,Bob,82\n3,Carol,77.25";
 $lines = explode("\n", $csv);
 $header = str_getcsv(array_shift($lines));

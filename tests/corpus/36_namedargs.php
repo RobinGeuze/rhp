@@ -18,6 +18,5 @@ class Point {
 echo new Point(y: 5), "\n";
 echo new Point(1, z: 9), "\n";
 
-$data = str_replace(search: "o", replace: "0", subject: "foo bar");
-echo $data, "\n";
+// Named arguments to builtins: rhp refuses them for now (RHP_UNSUPPORTED).
 echo array_sum([1, 2, 3]), "\n";

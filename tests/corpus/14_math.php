@@ -18,5 +18,9 @@ echo base_convert("ff", 16, 2), "\n";
 echo log(M_E), " ", log10(1000), " ", log(8, 2), "\n";
 echo intval("0x1A", 16), " ", intval("42abc"), "\n";
 var_dump(is_nan(sqrt(-1)));
-var_dump(is_infinite(1 / 0.0 ?? INF));
+try {
+    var_dump(is_infinite(1 / 0.0 ?? INF));
+} catch (DivisionByZeroError $e) {
+    echo get_class($e), ': ', $e->getMessage(), "\n";
+}
 echo 7 <=> 3, " ", "a" <=> "b", "\n";

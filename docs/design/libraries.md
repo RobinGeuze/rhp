@@ -359,8 +359,9 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
    `/opt/homebrew/opt/<formula>` (`/usr/local/opt/<formula>`) or the SDK
    (`xcrun --show-sdk-path`); checks the header's version against the .pc
    file (a header Debian keeps in the multiarch directory, such as gmp.h,
-   is found there); links it; exports each macro as `env!("RHP_<MACRO>")`; and returns
-   the include directory, for a C shim built against the same headers.
+   is found there); links it; exports each macro as `env!("RHP_<MACRO>")`;
+   and returns the include directory, for a C shim built against the same
+   headers.
 2. Declare the functions rhp calls in a hand-written `extern "C"` block
    (no bindgen). Put struct access and macros behind a small C shim with
    `_Static_assert` layout checks if needed (libxml2: `ext/libxml/sys.rs`

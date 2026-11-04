@@ -823,10 +823,13 @@ fn invalid_timezone(v: &[u8], func: &str) -> String {
     let fallback = fallback
         .filter(|z| !z.is_empty())
         .unwrap_or_else(|| b"UTC".to_vec());
+    // Both are printed with %s.
+    let c =
+        |s: &[u8]| String::from_utf8_lossy(s.split(|&b| b == 0).next().unwrap_or(s)).into_owned();
     format!(
         "{func}: Invalid date.timezone value '{}', using '{}' instead",
-        String::from_utf8_lossy(v),
-        String::from_utf8_lossy(&fallback)
+        c(v),
+        c(&fallback)
     )
 }
 

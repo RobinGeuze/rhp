@@ -259,7 +259,8 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   - printf-style callbacks are C functions in the shim that format with
     `vasprintf` (no length limit, like php's `vspprintf`) and hand Rust the
     finished message;
-  - a library handle lives in its object's payload; one whose free can call
+  - a library handle belongs in its object's payload (ext/openssl's still
+    sit in a per-thread table keyed by object id); one whose free can call
     back into PHP (an XMLWriter flushing to a stream) is freed by the class's
     `dtor_obj` handler, which the engine runs with a host before
     `__destruct`, as php does. The payload's `Drop` (php's `free_obj`) has

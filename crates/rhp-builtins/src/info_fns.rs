@@ -237,6 +237,8 @@ fn print_info(flag: i64) -> Vec<u8> {
                 print_core_ini(&mut o);
             } else if *e == "pcre" {
                 print_pcre(&mut o);
+            } else if *e == "iconv" {
+                print_iconv(&mut o);
             } else {
                 o.row(&[&format!("{e} support"), "enabled"]);
             }
@@ -314,6 +316,28 @@ fn print_pcre(o: &mut Info) {
             }
         };
         o.row(&[name, &show(local), &show(master)]);
+    }
+}
+
+/// PHP_MINFO_FUNCTION(miconv), then its ini entries.
+fn print_iconv(o: &mut Info) {
+    for (k, v) in crate::ext::iconv::info_rows() {
+        o.row(&[k, &v]);
+    }
+    o.table_start();
+    o.header(&["Directive", "Local Value", "Master Value"]);
+    for name in [
+        "iconv.input_encoding",
+        "iconv.internal_encoding",
+        "iconv.output_encoding",
+    ] {
+        let show = |v: Option<Option<Vec<u8>>>| match v.flatten() {
+            Some(v) if !v.is_empty() => String::from_utf8_lossy(&v).into_owned(),
+            _ => "no value".to_string(),
+        };
+        let local = show(crate::runtime_fns::ini_value(name.as_bytes()));
+        let master = show(crate::runtime_fns::ini_default_value(name.as_bytes()));
+        o.row(&[name, &local, &master]);
     }
 }
 

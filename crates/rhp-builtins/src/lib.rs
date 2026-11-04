@@ -1208,6 +1208,7 @@ pub fn ini_startup_set(name: &[u8], value: &[u8]) {
     runtime_fns::ini_startup(name, value);
 }
 
+pub use module::{output_handler_alias, OutputHandlerAlias, OutputHandlerCtx, OutputHandlerFn};
 pub use runtime_fns::{apply_memory_limits, take_shutdown_diagnostics, take_startup_diagnostics};
 
 /// Reset every builtin's per-request state (ini overrides, default timezone,
@@ -1229,6 +1230,7 @@ pub fn reset_request_state() {
     ext::curl::reset_state();
     ext::openssl::reset_state();
     ext::bz2::reset_state();
+    ext::iconv::reset_state();
     ext::intl::error_reset();
     rhp_values::reset_dropped_streams();
 }
@@ -1503,9 +1505,6 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PHP_CLI_PROCESS_TITLE", Value::Bool(true)),
         ("PHP_DEBUG", Value::Bool(false)),
         ("PHP_ZTS", Value::Bool(false)),
-        ("ICONV_VERSION", Value::str(version::ICONV_VERSION)),
-        ("ICONV_IMPL", Value::str("libiconv")),
-        ("ICONV_MIBENUM_ASCII", Value::Int(3)),
         ("DATE_ATOM", Value::str("Y-m-d\\TH:i:sP")),
         ("DATE_RFC3339", Value::str("Y-m-d\\TH:i:sP")),
         ("DATE_W3C", Value::str("Y-m-d\\TH:i:sP")),

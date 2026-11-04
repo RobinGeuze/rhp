@@ -22,7 +22,8 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
   where php reads a header macro, a runtime getter where php calls one.
   `PCRE_VERSION` comes from `pcre2_config()`, `PCRE_VERSION_MAJOR`/`MINOR`
   from pcre2.h; `LIBXML_VERSION`/`LIBXML_DOTTED_VERSION` from xmlversion.h
-  and `LIBXML_LOADED_VERSION` from `xmlParserVersion`. `version.rs` keeps
+  and `LIBXML_LOADED_VERSION` from `xmlParserVersion`; `ICONV_VERSION` from
+  `_libiconv_version` (macOS) or `gnu_get_libc_version()` (glibc). `version.rs` keeps
   hard-coded values only for libraries rhp does not link yet; each goes when
   its library is linked.
 
@@ -53,6 +54,7 @@ Today rhp-builtins links:
 | PCRE2 (libpcre2-8) | static, Homebrew pcre2 | static, libpcre2-dev (CI: php's release, see below) |
 | libxml2 | dynamic, the SDK's /usr/lib/libxml2.2.dylib (php's; found with `xcrun --show-sdk-path`) | static, libxml2-dev (CI: php's release, see below) |
 | zlib (via libz-sys; also crc32, adler32) | dynamic, /usr/lib/libz | dynamic, zlib1g |
+| iconv | dynamic, the SDK's /usr/lib/libiconv.2.dylib | glibc's (libc) |
 | bzip2 (bzip2 `=0.5.2`, feature `static`) | static, bzip2-sys's bundled C libbz2 1.0.8 | static, bzip2-sys's bundled C libbz2 1.0.8 |
 | php-src crypt C (via rhp-csrc) | static, compiled from php-8.5.12 | the same |
 | argon2 (via rhp-csrc) | static, compiled from release 20190702 | the same |

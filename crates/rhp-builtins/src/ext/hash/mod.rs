@@ -25,8 +25,8 @@ mod tiger;
 
 use crate::ext::zlib::zraw as zlib;
 use crate::{Builtin, Host, Thrown};
-pub(crate) use primitives::base64_decode;
 use primitives::to_hex;
+pub(crate) use primitives::{base64_decode, base64_encode};
 
 // ---------------------------------------------------------------------------
 // value helpers

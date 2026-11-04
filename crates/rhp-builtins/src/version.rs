@@ -218,7 +218,8 @@ pub const EXT_DOM: &str = "20031129";
 // --- linked libraries --------------------------------------------------------
 
 // PCRE_VERSION and friends come from the linked PCRE2 (crate::pcre), the
-// LIBXML_* versions from the linked libxml2 (crate::ext::libxml).
+// LIBXML_* versions from the linked libxml2 (crate::ext::libxml), ICONV_*
+// from the system iconv (crate::ext::iconv).
 /// `OPENSSL_VERSION_TEXT` / `OPENSSL_VERSION_NUMBER` (the headers php was
 /// compiled against; curl reports its own runtime OpenSSL below).
 pub const OPENSSL_VERSION_TEXT: &str = "OpenSSL 4.0.3 29 Sep 2026";
@@ -228,8 +229,6 @@ pub const ICU_VERSION: &str = "79.1";
 pub const ICU_DATA_VERSION: &str = "79.1";
 /// `ZipArchive::LIBZIP_VERSION`.
 pub const LIBZIP_VERSION: &str = libzip!();
-/// `ICONV_VERSION`.
-pub const ICONV_VERSION: &str = "1.11";
 /// `MB_ONIGURUMA_VERSION`.
 pub const ONIGURUMA_VERSION: &str = "6.9.10";
 /// `GMP_VERSION`.

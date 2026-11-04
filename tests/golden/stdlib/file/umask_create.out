@@ -1,0 +1,74 @@
+int(0)
+int(0)
+-- 000 --
+fopen 666
+fpc 666
+touch 666
+copy 666
+dir 777
+deep 775
+deep/er 775
+gz 666
+z.zip 666
+dom.xml 666
+log 666
+tempnam 600
+existing 604
+-- 022 --
+fopen 644
+fpc 644
+touch 644
+copy 644
+dir 755
+deep 755
+deep/er 755
+gz 644
+z.zip 644
+dom.xml 644
+log 644
+tempnam 600
+existing 604
+-- 077 --
+fopen 600
+fpc 600
+touch 600
+copy 600
+dir 700
+deep 700
+deep/er 700
+gz 600
+z.zip 600
+dom.xml 600
+log 600
+tempnam 600
+existing 604
+-- 044 --
+fopen 622
+fpc 622
+touch 622
+copy 622
+dir 733
+deep 731
+deep/er 731
+gz 622
+z.zip 622
+dom.xml 622
+log 622
+tempnam 600
+existing 604
+-- 002 --
+fopen 664
+fpc 664
+touch 664
+copy 664
+dir 775
+deep 775
+deep/er 775
+gz 664
+z.zip 664
+dom.xml 664
+log 664
+tempnam 600
+existing 604
+int(2)
+bool(true)

@@ -1,0 +1,119 @@
+bool(true)
+bool(true)
+bool(true)
+string(3) "sub"
+string(8) "one
+two
+"
+array(2) {
+  [0]=>
+  string(3) "one"
+  [1]=>
+  string(3) "two"
+}
+bool(true)
+bool(true)
+bool(true)
+int(8)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+string(16) "included inc.php"
+string(16) "included inc.php"
+bool(true)
+int(3)
+int(2)
+string(5) "abcde"
+string(9) "via fopen"
+string(9) "sub/f.txt"
+bool(true)
+string(5) "abcde"
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+int(1000000000)
+int(1000000000)
+int(0)
+bool(true)
+string(3) "640"
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+string(5) "w.txt"
+bool(true)
+string(5) "abcde"
+string(4) "link"
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+array(4) {
+  [0]=>
+  string(1) "."
+  [1]=>
+  string(2) ".."
+  [2]=>
+  string(8) "data.txt"
+  [3]=>
+  string(5) "f.txt"
+}
+bool(true)
+array(2) {
+  [0]=>
+  string(12) "sub/data.txt"
+  [1]=>
+  string(9) "sub/f.txt"
+}
+array(1) {
+  [0]=>
+  string(7) "inc.php"
+}
+int(2)
+int(8)
+string(4) "one
+"
+bool(true)
+bool(true)
+bool(true)
+string(3) "two"
+array(2) {
+  [0]=>
+  string(3) "one"
+  [1]=>
+  string(3) "two"
+}
+data.txt
+f.txt
+abcde
+bool(true)
+string(8) "one
+two
+"
+string(5) "abcde"
+bool(true)
+[2] chdir(): No such file or directory (errno 2)
+[2] chdir(): Not a directory (errno 20)
+[2] chdir(): No such file or directory (errno 2)
+bool(false)
+bool(false)
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)

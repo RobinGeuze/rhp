@@ -1,0 +1,31 @@
+bool(true)
+string(1) "1"
+string(7) "doc.xml"
+bool(true)
+int(75)
+string(75) "<?xml version="1.0"?>
+<!DOCTYPE r SYSTEM "r.dtd">
+<r a="1"><c>text</c></r>
+"
+bool(true)
+bool(true)
+bool(true)
+string(9) "from part"
+bool(true)
+string(4) "text"
+bool(true)
+bool(true)
+string(4) "text"
+bool(true)
+bool(true)
+r c 
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+string(31) "<?xml version="1.0"?>
+<w>v</w>
+"
+string(8) "<x>y</x>"
+bool(true)
+bool(true)

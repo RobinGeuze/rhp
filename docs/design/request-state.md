@@ -23,7 +23,7 @@ Kinds:
 
 | where | static | kind | reset by |
 |---|---|---|---|
-| `vcwd.rs` | `CWD`, `UMASK` (the request's working directory and umask) | request | `vcwd::reset_state` |
+| `vcwd.rs` | `CWD` (the request's working directory, and a descriptor of it), `UMASK` | request | `vcwd::reset_state` |
 | `runtime_fns.rs` | `INI`, `INI_STARTUP` (ini overrides, `-d` values) | request | `runtime_fns::reset_state` |
 | `runtime_fns.rs` | `STARTUP_DIAGS` | request | `runtime_fns::reset_state` |
 | `opcache_fns.rs` | `ACCEL_LOG` (opcache startup messages) | request | `opcache_fns::reset_state` |

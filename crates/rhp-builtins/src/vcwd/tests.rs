@@ -127,3 +127,38 @@ fn files_are_created_under_the_request_umask() {
     reset_state();
     assert_eq!(umask(), process);
 }
+
+#[test]
+fn hot_calls_start_from_the_directory() {
+    reset_state();
+    let s = Scratch::new("at");
+    std::fs::create_dir(s.0.join("sub")).unwrap();
+    std::fs::write(s.0.join("sub/f"), b"data").unwrap();
+    assert!(set_cwd(&s.bytes()));
+    let at = |p: &[u8]| with_at(p, |dir, c| (dir, c.to_bytes().to_vec()));
+    let (dir, c) = at(b"sub/f").unwrap();
+    assert_ne!(dir, libc::AT_FDCWD);
+    assert_eq!(c, b"sub/f");
+    assert_eq!(at(b"/abs").unwrap().0, libc::AT_FDCWD);
+    assert!(at(b"a\0b").is_none());
+    assert_eq!(stat(b"sub/f", true).unwrap().st_size, 4);
+    assert_eq!(read_file(b"sub/f").unwrap(), b"data");
+    assert!(access(b"sub/f", libc::R_OK));
+    assert_eq!(
+        stat(b"missing", true).unwrap_err().raw_os_error(),
+        Some(libc::ENOENT)
+    );
+    // A directory that can be searched but not read: paths are joined.
+    std::fs::set_permissions(s.0.join("sub"), std::fs::Permissions::from_mode(0o311)).unwrap();
+    assert_eq!(chdir(b"sub"), Ok(()));
+    let (dir, c) = at(b"f").unwrap();
+    // (root reads any directory)
+    if unsafe { libc::geteuid() } != 0 {
+        assert_eq!(dir, libc::AT_FDCWD);
+        assert!(c.ends_with(b"/sub/f"));
+    }
+    assert_eq!(read_file(b"f").unwrap(), b"data");
+    std::fs::set_permissions(s.0.join("sub"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    reset_state();
+    assert_eq!(at(b"rel").unwrap().0, libc::AT_FDCWD);
+}

@@ -255,7 +255,9 @@ threads, never from sharing an engine:
   chdir(2) or umask(2) for a script (`rhp_builtins::vcwd`, php's ZTS
   virtual cwd): `chdir()`, `getcwd()` and `umask()` change and read the
   request's values, every relative path rhp hands the OS, a C library or
-  a child process is taken from the request's directory first, and files
+  a child process is taken from the request's directory first (stat,
+  open, access and opendir start from a descriptor of it, so the kernel
+  walks no more of the path than from a real working directory), and files
   are created with the request's umask (a new file's mode is fixed up when
   the request's umask allows bits the process's takes away). Each request
   starts in `Request::cwd`, else the process's directory, with the

@@ -10,6 +10,10 @@
 //! script gave it. Until a request changes them, both are the process's,
 //! and [`resolve`] leaves relative paths alone.
 //!
+//! The calls scripts make most (stat, open, access, opendir) start from a
+//! descriptor of the working directory instead ([`at`]): the kernel then
+//! walks only the relative path, as it does from a real working directory.
+//!
 //! A per-request umask can't be set for the process without disturbing
 //! other threads, so files are created with the mode computed here
 //! ([`create_mode`]); when the request's umask lets through bits the
@@ -18,17 +22,36 @@
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{CStr, CString, OsStr, OsString};
 use std::io;
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+/// A working directory of the request's own.
+struct Cwd {
+    /// Absolute, without symlinks or dot segments.
+    path: Vec<u8>,
+    /// The directory opened, for the `*at` calls; `None` when it can't be
+    /// read (searching it is enough for chdir).
+    fd: Option<OwnedFd>,
+}
+
+impl Cwd {
+    fn new(path: Vec<u8>) -> Cwd {
+        let fd = CString::new(path.clone()).ok().and_then(|c| {
+            let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
+            let fd = unsafe { libc::open(c.as_ptr(), flags) };
+            (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
+        });
+        Cwd { path, fd }
+    }
+}
+
 thread_local! {
-    /// The request's working directory: absolute, without symlinks or dot
-    /// segments. `None`: the process's.
-    static CWD: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    /// The request's working directory. `None`: the process's.
+    static CWD: RefCell<Option<Cwd>> = const { RefCell::new(None) };
     /// The request's umask. `None`: the process's.
     static UMASK: Cell<Option<u32>> = const { Cell::new(None) };
 }
@@ -49,7 +72,8 @@ pub(crate) fn reset_state() {
 pub fn set_cwd(dir: &[u8]) -> bool {
     match std::fs::canonicalize(os_path(dir)) {
         Ok(real) if real.is_dir() => {
-            CWD.with(|c| *c.borrow_mut() = Some(real.into_os_string().into_vec()));
+            let cwd = Cwd::new(real.into_os_string().into_vec());
+            CWD.with(|c| *c.borrow_mut() = Some(cwd));
             true
         }
         _ => false,
@@ -58,11 +82,12 @@ pub fn set_cwd(dir: &[u8]) -> bool {
 
 /// `getcwd()`: the request's working directory.
 pub fn getcwd() -> Option<Vec<u8>> {
-    CWD.with(|c| c.borrow().clone()).or_else(|| {
-        std::env::current_dir()
-            .ok()
-            .map(|d| d.into_os_string().into_vec())
-    })
+    CWD.with(|c| c.borrow().as_ref().map(|c| c.path.clone()))
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|d| d.into_os_string().into_vec())
+        })
 }
 
 /// `chdir()`: what chdir(2) would do, for the request only. The error is
@@ -89,7 +114,8 @@ pub fn chdir(path: &[u8]) -> Result<(), i32> {
     }
     let real = std::fs::canonicalize(OsStr::from_bytes(c.as_bytes()))
         .map_err(|e| e.raw_os_error().unwrap_or(libc::ENOENT))?;
-    CWD.with(|c| *c.borrow_mut() = Some(real.into_os_string().into_vec()));
+    let cwd = Cwd::new(real.into_os_string().into_vec());
+    CWD.with(|c| *c.borrow_mut() = Some(cwd));
     Ok(())
 }
 
@@ -104,8 +130,74 @@ pub fn resolve(path: &[u8]) -> Cow<'_, [u8]> {
     }
     CWD.with(|c| match &*c.borrow() {
         None => Cow::Borrowed(path),
-        Some(cwd) => Cow::Owned(join(cwd, path)),
+        Some(cwd) => Cow::Owned(join(&cwd.path, path)),
     })
+}
+
+/// Run `f` with `path` as an `*at` system call takes it: the directory
+/// descriptor to start from (`AT_FDCWD`, or the request's directory) and
+/// the path from there. `None` for a path holding a NUL byte.
+pub fn with_at<R>(path: &[u8], f: impl FnOnce(libc::c_int, &CStr) -> R) -> Option<R> {
+    let relative = !path.is_empty() && path[0] != b'/';
+    let dir = if relative {
+        CWD.with(|c| match &*c.borrow() {
+            None => Some(libc::AT_FDCWD),
+            Some(Cwd { fd: Some(fd), .. }) => Some(fd.as_raw_fd()),
+            Some(_) => None,
+        })
+    } else {
+        Some(libc::AT_FDCWD)
+    };
+    match dir {
+        Some(dir) => with_cstr(path, |c| f(dir, c)),
+        None => with_cstr(&resolve(path), |c| f(libc::AT_FDCWD, c)),
+    }
+}
+
+/// `f` with `bytes` as a C string, kept on the stack when short (as std
+/// does for its paths).
+fn with_cstr<R>(bytes: &[u8], f: impl FnOnce(&CStr) -> R) -> Option<R> {
+    const STACK: usize = 384;
+    if bytes.len() < STACK {
+        let mut buf = [0u8; STACK];
+        buf[..bytes.len()].copy_from_slice(bytes);
+        CStr::from_bytes_with_nul(&buf[..=bytes.len()]).ok().map(f)
+    } else {
+        CString::new(bytes).ok().map(|c| f(&c))
+    }
+}
+
+/// `stat(2)` (`lstat(2)` when not `follow`) of `path` from the request's
+/// directory.
+pub fn stat(path: &[u8], follow: bool) -> io::Result<libc::stat> {
+    let flags = if follow { 0 } else { libc::AT_SYMLINK_NOFOLLOW };
+    with_at(path, |dir, c| unsafe {
+        let mut st: libc::stat = std::mem::zeroed();
+        if libc::fstatat(dir, c.as_ptr(), &mut st, flags) == 0 {
+            Ok(st)
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    })
+    .unwrap_or_else(|| Err(nul_error()))
+}
+
+/// `access(2)` of `path` from the request's directory.
+pub fn access(path: &[u8], mode: libc::c_int) -> bool {
+    with_at(
+        path,
+        |dir, c| unsafe { libc::faccessat(dir, c.as_ptr(), mode, 0) } == 0,
+    )
+    .unwrap_or(false)
+}
+
+/// The whole file at `path` from the request's directory.
+pub fn read_file(path: &[u8]) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut f = std::fs::File::from(open(path, libc::O_RDONLY | libc::O_CLOEXEC, 0)?);
+    let mut out = Vec::new();
+    f.read_to_end(&mut out)?;
+    Ok(out)
 }
 
 /// [`resolve`] as a `Path`.
@@ -270,7 +362,7 @@ fn umask_differs() -> bool {
 
 /// Give a file just created with `mode` the permission bits the request's
 /// umask allows (`fd` when open, else by path).
-fn fix_created(fd: Option<libc::c_int>, path: &CString, mode: u32) {
+fn fix_created(fd: Option<libc::c_int>, path: &CStr, mode: u32) {
     unsafe {
         let mut st: libc::stat = std::mem::zeroed();
         let r = match fd {
@@ -295,14 +387,14 @@ fn fix_created(fd: Option<libc::c_int>, path: &CString, mode: u32) {
 /// under the process's umask, gets the request's instead.
 pub fn created_fd(fd: libc::c_int, mode: u32) {
     if umask_differs() {
-        fix_created(Some(fd), &CString::default(), mode);
+        fix_created(Some(fd), c"", mode);
     }
 }
 
 /// `open(2)` of `path` from the request's directory, creating a file with
 /// `mode` under the request's umask.
 pub fn open(path: &[u8], flags: libc::c_int, mode: u32) -> io::Result<OwnedFd> {
-    open_c(&c_path(path).ok_or_else(nul_error)?, flags, mode)
+    with_at(path, |dir, c| open_at(dir, c, flags, mode)).unwrap_or_else(|| Err(nul_error()))
 }
 
 /// What std reports for a path holding a NUL byte.
@@ -310,10 +402,11 @@ fn nul_error() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte")
 }
 
-/// [`open`] of a resolved path.
-fn open_c(c: &CString, flags: libc::c_int, mode: u32) -> io::Result<OwnedFd> {
+/// [`open`] of `c` from `dir`.
+fn open_at(dir: libc::c_int, c: &CStr, flags: libc::c_int, mode: u32) -> io::Result<OwnedFd> {
     let sys = |flags: libc::c_int| {
-        let fd = unsafe { libc::open(c.as_ptr(), flags, create_mode(mode) as libc::c_uint) };
+        let mode = create_mode(mode) as libc::c_uint;
+        let fd = unsafe { libc::openat(dir, c.as_ptr(), flags, mode) };
         if fd < 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -321,7 +414,6 @@ fn open_c(c: &CString, flags: libc::c_int, mode: u32) -> io::Result<OwnedFd> {
         }
     };
     let fixed = |fd: OwnedFd| {
-        use std::os::fd::AsRawFd;
         fix_created(Some(fd.as_raw_fd()), c, mode);
         fd
     };
@@ -400,7 +492,7 @@ pub fn child_umask() -> Option<u32> {
 /// The directory a child process must start in when it isn't the
 /// process's.
 pub fn child_cwd() -> Option<Vec<u8>> {
-    CWD.with(|c| c.borrow().clone())
+    CWD.with(|c| c.borrow().as_ref().map(|c| c.path.clone()))
 }
 
 #[cfg(test)]

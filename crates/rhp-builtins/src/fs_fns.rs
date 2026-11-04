@@ -1112,10 +1112,7 @@ fn access_check(host: &dyn Host, args: &[Value], amode: libc::c_int) -> bool {
     }
     let (scheme, _) = split_scheme(&p);
     if scheme == b"file" {
-        return match crate::vcwd::c_path(crate::streams::file_path(&p)) {
-            Some(c) => unsafe { libc::access(c.as_ptr(), amode) == 0 },
-            None => false,
-        };
+        return crate::vcwd::access(crate::streams::file_path(&p), amode);
     }
     let Some(s) = host.stream_stat(&p) else {
         return false;

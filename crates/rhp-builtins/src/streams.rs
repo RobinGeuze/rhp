@@ -245,18 +245,13 @@ pub fn last_strerror() -> String {
 
 /// `stat(2)` (or `lstat(2)` when `link`) a local path.
 pub fn sys_stat(path: &[u8], link: bool) -> Option<StatInfo> {
-    let c = crate::vcwd::c_path(path)?;
-    unsafe {
-        let mut st: libc::stat = std::mem::zeroed();
-        let r = if link {
-            libc::lstat(c.as_ptr(), &mut st)
-        } else {
-            libc::stat(c.as_ptr(), &mut st)
-        };
-        if r == 0 {
-            Some(StatInfo::from_libc(&st))
-        } else {
-            note_errno();
+    if path.contains(&0) {
+        return None;
+    }
+    match crate::vcwd::stat(path, !link) {
+        Ok(st) => Some(StatInfo::from_libc(&st)),
+        Err(e) => {
+            note_io_err(&e);
             None
         }
     }
@@ -277,12 +272,21 @@ pub fn sys_fstat(fd: i32) -> Option<StatInfo> {
 /// Read every entry of a local directory in OS `readdir(3)` order, including
 /// `.` and `..` (exactly what php's plain-files dir stream yields).
 pub fn sys_readdir(path: &[u8]) -> Option<Vec<Vec<u8>>> {
-    let c = crate::vcwd::c_path(path)?;
+    // opendir(3)'s open, from the request's directory.
+    let flags = libc::O_RDONLY | libc::O_NONBLOCK | libc::O_DIRECTORY | libc::O_CLOEXEC;
+    let fd = crate::vcwd::with_at(path, |at, c| unsafe { libc::openat(at, c.as_ptr(), flags) })?;
     let mut out = Vec::new();
     unsafe {
-        let dir = libc::opendir(c.as_ptr());
+        let dir = if fd < 0 {
+            std::ptr::null_mut()
+        } else {
+            libc::fdopendir(fd)
+        };
         if dir.is_null() {
             note_errno();
+            if fd >= 0 {
+                libc::close(fd);
+            }
             return None;
         }
         loop {
@@ -392,10 +396,10 @@ pub struct FileWrapper;
 
 impl StreamWrapper for FileWrapper {
     fn exists(&self, url: &[u8]) -> bool {
-        crate::vcwd::os_path(file_path(url)).exists()
+        crate::vcwd::stat(file_path(url), true).is_ok()
     }
     fn get_contents(&self, url: &[u8]) -> Option<Vec<u8>> {
-        std::fs::read(crate::vcwd::os_path(file_path(url)))
+        crate::vcwd::read_file(file_path(url))
             .map_err(|e| note_io_err(&e))
             .ok()
     }

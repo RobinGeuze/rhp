@@ -121,7 +121,7 @@ impl Vm {
                 let internal = self.is_internal_class(cid);
                 let mut out = PhpArray::new();
                 for m in self.classes[cid as usize].methods.values() {
-                    if internal && crate::is_engine_helper_name(m.proto.name.as_bytes()) {
+                    if internal && crate::calls::is_engine_helper_name(m.proto.name.as_bytes()) {
                         continue;
                     }
                     if m.visibility == Visibility::Private && m.defining_class != cid {
@@ -272,7 +272,7 @@ impl Vm {
             b"functions" => {
                 let mut internal: Vec<Vec<u8>> = rhp_builtins::registry()
                     .keys()
-                    .filter(|n| crate::user_visible_builtin(n.as_bytes()))
+                    .filter(|n| crate::calls::user_visible_builtin(n.as_bytes()))
                     .map(|n| n.as_bytes().to_ascii_lowercase())
                     .collect();
                 let mut user = PhpArray::new();
@@ -632,7 +632,7 @@ impl Vm {
                 continue;
             }
             if self.is_internal_class(m.defining_class)
-                && crate::is_engine_helper_name(m.proto.name.as_bytes())
+                && crate::calls::is_engine_helper_name(m.proto.name.as_bytes())
             {
                 continue; // engine-internal helper of a prelude class
             }
@@ -1157,7 +1157,7 @@ impl Vm {
                 let name = name.strip_prefix(b"\\").unwrap_or(name);
                 if let Some(&i) = self.fn_names.get(&lc(name)) {
                     Some(FnSubject::Func(self.functions[i].clone()))
-                } else if crate::user_visible_builtin(name) {
+                } else if crate::calls::user_visible_builtin(name) {
                     rhp_builtins::registry()
                         .get_key_value(String::from_utf8_lossy(&lc(name)).as_ref())
                         .map(|(k, _)| FnSubject::Builtin(k))
@@ -1200,7 +1200,7 @@ impl Vm {
                     // user-visible method.
                     Some(m)
                         if self.is_internal_class(m.defining_class)
-                            && crate::is_engine_helper_name(m.proto.name.as_bytes()) =>
+                            && crate::calls::is_engine_helper_name(m.proto.name.as_bytes()) =>
                     {
                         None
                     }

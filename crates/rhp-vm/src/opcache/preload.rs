@@ -429,8 +429,11 @@ impl Vm {
             let base = self.closures.len() as u32;
             let cbase = self.decl_classes.len();
             for c in &prog.closures {
-                self.closures
-                    .push(Rc::new(crate::rebase_proto_c(c, base, cbase as u32)));
+                self.closures.push(Rc::new(crate::include::rebase_proto_c(
+                    c,
+                    base,
+                    cbase as u32,
+                )));
             }
             self.register_decl_classes(prog, base);
             bases.push((base, cbase));
@@ -438,7 +441,7 @@ impl Vm {
         for &(p, origin) in &pre.functions {
             let (base, cbase) = bases[p];
             let f = match origin {
-                FnOrigin::Top(i) => Rc::new(crate::rebase_proto_c(
+                FnOrigin::Top(i) => Rc::new(crate::include::rebase_proto_c(
                     &pre.programs[p].1.functions[i],
                     base,
                     cbase as u32,

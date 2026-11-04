@@ -578,7 +578,7 @@ impl Vm {
             .chain(prog.cond_classes.iter())
             .chain(user[top..].iter());
         for c in ordered {
-            let c = crate::rebase_class(c, base, cbase);
+            let c = crate::include::rebase_class(c, base, cbase);
             self.decl_classes.push((c, false));
         }
         let start = cbase as usize;
@@ -1560,7 +1560,7 @@ impl Vm {
                 self.zval_value_name(&v),
                 String::from_utf8_lossy(self.classes[decl as usize].name.as_bytes()),
                 String::from_utf8_lossy(name),
-                crate::type_string(ty),
+                crate::types::type_string(ty),
             ))),
         }
     }
@@ -1587,7 +1587,7 @@ impl Vm {
                     tn,
                     String::from_utf8_lossy(self.classes[decl as usize].name.as_bytes()),
                     String::from_utf8_lossy(name),
-                    crate::type_string(ty),
+                    crate::types::type_string(ty),
                 )))
             }
         }

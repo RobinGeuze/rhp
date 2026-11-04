@@ -1,0 +1,2098 @@
+//! Calls: user frames and returns, argument binding, methods, callables and
+//! builtins.
+
+use std::rc::Rc;
+
+use rhp_builtins::object::CastTarget;
+use rhp_builtins::{self as builtins, Host};
+use rhp_bytecode::{ClassRef, FunctionProto, NIdx, ParamDefault, Reg};
+use rhp_values::{
+    conv, ArrayKey, ClassId, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
+};
+
+use crate::errors::UnwindResult;
+use crate::types::type_lc;
+use crate::{classes, deref, is_prelude_proto, Frame, Vm};
+
+/// Named call arguments, in call order.
+type NamedArgs = Vec<(PhpStr, Value)>;
+
+/// A resolved callable (see `Vm::resolve_callable`).
+pub(crate) enum Callee {
+    Closure(Rc<rhp_values::ClosureData>),
+    Function(Rc<FunctionProto>),
+    Builtin(String),
+    /// A method with its `$this` (None: static) and called class.
+    Method(classes::ResolvedMethod, Option<ObjectHandle>, ClassId),
+    /// `__call` (with `$this`) / `__callStatic` for an unknown method name.
+    Magic(
+        classes::ResolvedMethod,
+        Option<ObjectHandle>,
+        ClassId,
+        Vec<u8>,
+    ),
+    /// An enum's built-in `cases`/`from`/`tryFrom` (lowercased).
+    EnumStatic(ClassId, Vec<u8>),
+}
+
+/// A builtin (native) call in progress, for exception traces: php shows the
+/// internal function as its own trace frame, called from `caller`'s line, and
+/// any user callback it invokes as `[internal function]`.
+pub(crate) struct NativeCall {
+    pub(crate) name: &'static str,
+    /// The running builtin's argument slice, borrowed rather than copied so
+    /// tracking a call costs nothing until a trace is actually built.
+    /// Invariant: the entry is pushed just before the builtin is called and
+    /// popped right after it returns, while the owning `Vec` (a local of
+    /// `run_builtin`, only shared-borrowed by the builtin) is alive and
+    /// unmodified — so the pointer is valid whenever it is in `native_calls`.
+    pub(crate) args: *const [Value],
+    /// Index of the frame that made the call.
+    pub(crate) caller: usize,
+    /// php 8.4 runs the call without a frame of its own
+    /// (ZEND_FRAMELESS_ICALL), though traces still list it.
+    pub(crate) frameless_icall: bool,
+}
+
+impl Vm {
+    /// Whether parameter `idx` of the function `Instr::ResolveFunc` left in
+    /// register `func` is by reference.
+    pub(crate) fn resolved_param_is_ref(&self, top: usize, func: Reg, idx: u16) -> bool {
+        match self.stack[top].regs[func as usize] {
+            Value::Int(f) if f >= 0 => param_is_ref(&self.functions[f as usize], idx),
+            _ => false,
+        }
+    }
+
+    /// Resolve a (possibly namespaced) function reference. Tries the primary
+    /// `name`, then `fallback` (the global name) if set, against user functions;
+    /// returns the user-function index if found, plus the lowercased name to use
+    /// for a builtin dispatch / refusal check (the last candidate tried, which is
+    /// the global name inside a namespace since builtins are not namespaced).
+    pub(crate) fn resolve_fn(
+        &self,
+        name: NIdx,
+        fallback: NIdx,
+        names: &[PhpStr],
+    ) -> (Option<usize>, Vec<u8>) {
+        let p = names[name as usize].as_bytes().to_ascii_lowercase();
+        if let Some(&i) = self.fn_names.get(&p) {
+            return (Some(i), p);
+        }
+        if fallback != rhp_bytecode::NO_NAME {
+            let f = names[fallback as usize].as_bytes().to_ascii_lowercase();
+            let idx = self.fn_names.get(&f).copied();
+            return (idx, f);
+        }
+        (None, p)
+    }
+
+    /// The user function a direct call from `caller` to `name` (resolved by
+    /// [`Vm::resolve_fn`] to `user`) runs, `None` for a builtin, or `Err`
+    /// when the call must fail as undefined. `__`-prefixed builtins are
+    /// engine helpers behind the prelude classes: prelude code always gets
+    /// the builtin (a user function of that name doesn't shadow it), user
+    /// code never does (php has no function by such a name).
+    pub(crate) fn engine_helper_call(
+        caller: &FunctionProto,
+        user: Option<usize>,
+        name: &[u8],
+    ) -> Result<Option<usize>, ()> {
+        if !name.starts_with(b"__") {
+            Ok(user)
+        } else if is_prelude_proto(caller) {
+            Ok(None)
+        } else {
+            user.map(Some).ok_or(())
+        }
+    }
+
+    /// Dispatch a method call on `h` by name (generator methods, user method with
+    /// visibility check, `__call` fallback, else errors). Shared by `CallMethod`
+    /// and `CallMethodDyn`.
+    #[allow(clippy::too_many_arguments)] // VM call-dispatch frame setup
+    pub(crate) fn invoke_method(
+        &mut self,
+        top: usize,
+        h: ObjectHandle,
+        cls: ClassId,
+        mname: Vec<u8>,
+        dst: Reg,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        let gid = h.borrow().id;
+        if self.generators.contains_key(&gid) {
+            let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+            if let Some(r) = self.generator_method(gid, &mname.to_ascii_lowercase(), &args) {
+                let r = r?;
+                self.reg_set(top, dst, r);
+                return Ok(());
+            }
+        }
+        let found = self.lookup_method(cls, &mname);
+        let accessible = found.as_ref().is_some_and(|m| {
+            self.check_access(
+                self.stack[top].defining_class,
+                m.defining_class,
+                m.visibility,
+            )
+        });
+        if let (Some(m), true) = (&found, accessible) {
+            let m = m.clone();
+            self.enter_method(top, &m, Some(h.clone()), cls, dst, base, argc)?;
+        } else if let Some(magic) = self.lookup_method(cls, b"__call") {
+            let mut arr = rhp_values::PhpArray::new();
+            for i in 0..argc {
+                arr.push(self.reg_get(top, base + i));
+            }
+            let args = vec![Value::str(mname.clone()), Value::Array(arr)];
+            let r = self.call_sync(&magic, Some(h.clone()), cls, args)?;
+            self.reg_set(top, dst, r);
+        } else if let Some(m) = found {
+            return Err(self.access_err("method", m.defining_class, &mname, m.visibility));
+        } else {
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "Call to undefined method {}::{}()",
+                    String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                    String::from_utf8_lossy(&mname)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Shared body for `C::m()` / `C::$m()` static dispatch (resolves the class,
+    /// handles enum built-ins, `__callStatic`, LSB, and `$this` forwarding).
+    pub(crate) fn do_call_static(
+        &mut self,
+        top: usize,
+        class: ClassRef,
+        mname: Vec<u8>,
+        dst: Reg,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        let cls = self.resolve_class_autoload(top, class)?;
+        let found = self.lookup_method(cls, &mname);
+        // Enum built-in static methods (cases/from/tryFrom) when not overridden.
+        if found.is_none() && self.class(cls).kind == ClassKind::Enum {
+            let lc = mname.to_ascii_lowercase();
+            if matches!(lc.as_slice(), b"cases" | b"from" | b"tryfrom") {
+                let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+                let r = self.enum_builtin_static(cls, &lc, args)?;
+                self.reg_set(top, dst, r);
+                return Ok(());
+            }
+        }
+        let accessible = found.as_ref().is_some_and(|m| {
+            self.check_access(
+                self.stack[top].defining_class,
+                m.defining_class,
+                m.visibility,
+            )
+        });
+        if !(found.is_some() && accessible) {
+            // Undefined / inaccessible static method -> __callStatic.
+            if let Some(magic) = self.lookup_method(cls, b"__callstatic") {
+                let mut arr = rhp_values::PhpArray::new();
+                for i in 0..argc {
+                    arr.push(self.reg_get(top, base + i));
+                }
+                let args = vec![Value::str(mname.clone()), Value::Array(arr)];
+                let r = self.call_sync(&magic, None, cls, args)?;
+                self.reg_set(top, dst, r);
+                return Ok(());
+            }
+            return match found {
+                Some(m) => Err(self.access_err("method", m.defining_class, &mname, m.visibility)),
+                None => Err(Thrown::error(
+                    "Error",
+                    format!(
+                        "Call to undefined method {}::{}()",
+                        String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                        String::from_utf8_lossy(&mname)
+                    ),
+                )),
+            };
+        }
+        let m = found.unwrap();
+        // LSB: self/parent/static forward the called-class; Name/Dynamic set it.
+        let called = match class {
+            ClassRef::SelfClass | ClassRef::ParentClass | ClassRef::StaticClass => {
+                self.stack[top].called_class.unwrap_or(cls)
+            }
+            _ => cls,
+        };
+        let this = self.static_call_this(top, &m, cls)?;
+        self.enter_method(top, &m, this, called, dst, base, argc)
+    }
+
+    /// The `$this` a `C::m()` call forwards (ZEND_INIT_STATIC_METHOD_CALL):
+    /// the caller's object when it is-a `cls`; a non-static method without
+    /// one is "Non-static method C::m() cannot be called statically".
+    fn static_call_this(
+        &self,
+        top: usize,
+        m: &classes::ResolvedMethod,
+        cls: ClassId,
+    ) -> Result<Option<ObjectHandle>, Thrown> {
+        if m.is_static {
+            return Ok(None);
+        }
+        match self
+            .current_this(top)
+            .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))
+        {
+            Some(h) => Ok(Some(h)),
+            None => Err(Thrown::error(
+                "Error",
+                format!(
+                    "Non-static method {}::{}() cannot be called statically",
+                    String::from_utf8_lossy(self.class(m.defining_class).name.as_bytes()),
+                    String::from_utf8_lossy(m.proto.name.as_bytes())
+                ),
+            )),
+        }
+    }
+
+    /// `$o->m(...)` with the arguments in an array (spread / named arguments):
+    /// register `args` holds positional entries then named (string-keyed)
+    /// ones. An undefined or inaccessible method goes to `__call` with the
+    /// arguments array as is (php collects named arguments into it).
+    pub(crate) fn call_method_args(
+        &mut self,
+        top: usize,
+        obj: Reg,
+        mname: Vec<u8>,
+        args: Reg,
+        dst: Reg,
+    ) -> Result<(), Thrown> {
+        let o = self.reg_get(top, obj);
+        let arr = self.reg_get(top, args);
+        if let Value::Closure(_) = o {
+            let (mut argv, named) = self.split_call_args(&arr)?;
+            let r = match mname.to_ascii_lowercase().as_slice() {
+                b"__invoke" if !named.is_empty() => self.call_named(&o, argv, named, None)?,
+                b"call" if !named.is_empty() && !argv.is_empty() => {
+                    let new_this = argv.remove(0);
+                    let bound = self
+                        .closure_bind(&o, &new_this, &new_this)
+                        .unwrap_or(Value::Null);
+                    self.call_named(&bound, argv, named, None)?
+                }
+                _ => self.closure_method(&o, &mname, argv)?,
+            };
+            self.reg_set(top, dst, r);
+            return Ok(());
+        }
+        let Value::Object(h) = o else {
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "Call to a member function {}() on {}",
+                    String::from_utf8_lossy(&mname),
+                    type_lc(&o)
+                ),
+            ));
+        };
+        let gid = h.borrow().id;
+        if self.generators.contains_key(&gid) {
+            let (argv, _named) = self.split_call_args(&arr)?;
+            if let Some(r) = self.generator_method(gid, &mname.to_ascii_lowercase(), &argv) {
+                let r = r?;
+                self.reg_set(top, dst, r);
+                return Ok(());
+            }
+        }
+        let cls = h.borrow().class;
+        let found = self.lookup_method(cls, &mname);
+        let accessible = found.as_ref().is_some_and(|m| {
+            self.check_access(
+                self.stack[top].defining_class,
+                m.defining_class,
+                m.visibility,
+            )
+        });
+        match (found, accessible) {
+            (Some(m), true) => {
+                let (argv, named) = self.split_call_args(&arr)?;
+                let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
+                self.push_method_frame(&m, Some(h.clone()), cls, argv, dst)
+            }
+            (found, _) => {
+                if let Some(magic) = self.lookup_method(cls, b"__call") {
+                    let arr = match deref(&arr) {
+                        Value::Array(a) => Value::Array(a),
+                        _ => Value::Array(PhpArray::new()),
+                    };
+                    let r =
+                        self.call_sync(&magic, Some(h.clone()), cls, vec![Value::str(mname), arr])?;
+                    self.reg_set(top, dst, r);
+                    return Ok(());
+                }
+                Err(match found {
+                    Some(m) => self.access_err("method", m.defining_class, &mname, m.visibility),
+                    None => Thrown::error(
+                        "Error",
+                        format!(
+                            "Call to undefined method {}::{}()",
+                            String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                            String::from_utf8_lossy(&mname)
+                        ),
+                    ),
+                })
+            }
+        }
+    }
+
+    /// `C::m(...)` with the arguments in an array (see [`Self::call_method_args`]):
+    /// LSB and `$this` forwarding as for a window call; enum built-ins; an
+    /// undefined or inaccessible method goes to `__callStatic`.
+    pub(crate) fn call_static_args(
+        &mut self,
+        top: usize,
+        class: ClassRef,
+        mname: Vec<u8>,
+        args: Reg,
+        dst: Reg,
+    ) -> Result<(), Thrown> {
+        let cls = self.resolve_class_autoload(top, class)?;
+        let arr = self.reg_get(top, args);
+        let found = self.lookup_method(cls, &mname);
+        if found.is_none() && self.class(cls).kind == ClassKind::Enum {
+            let lc = mname.to_ascii_lowercase();
+            if matches!(lc.as_slice(), b"cases" | b"from" | b"tryfrom") {
+                let (argv, _named) = self.split_call_args(&arr)?;
+                let r = self.enum_builtin_static(cls, &lc, argv)?;
+                self.reg_set(top, dst, r);
+                return Ok(());
+            }
+        }
+        let accessible = found.as_ref().is_some_and(|m| {
+            self.check_access(
+                self.stack[top].defining_class,
+                m.defining_class,
+                m.visibility,
+            )
+        });
+        let m = match (found, accessible) {
+            (Some(m), true) => m,
+            (found, _) => {
+                if let Some(magic) = self.lookup_method(cls, b"__callstatic") {
+                    let arr = match deref(&arr) {
+                        Value::Array(a) => Value::Array(a),
+                        _ => Value::Array(PhpArray::new()),
+                    };
+                    let r = self.call_sync(&magic, None, cls, vec![Value::str(mname), arr])?;
+                    self.reg_set(top, dst, r);
+                    return Ok(());
+                }
+                return Err(match found {
+                    Some(m) => self.access_err("method", m.defining_class, &mname, m.visibility),
+                    None => Thrown::error(
+                        "Error",
+                        format!(
+                            "Call to undefined method {}::{}()",
+                            String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                            String::from_utf8_lossy(&mname)
+                        ),
+                    ),
+                });
+            }
+        };
+        let called = match class {
+            ClassRef::SelfClass | ClassRef::ParentClass | ClassRef::StaticClass => {
+                self.stack[top].called_class.unwrap_or(cls)
+            }
+            _ => cls,
+        };
+        let this = self.static_call_this(top, &m, cls)?;
+        let (argv, named) = self.split_call_args(&arr)?;
+        let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
+        self.push_method_frame(&m, this, called, argv, dst)
+    }
+
+    /// php compiles a statically resolved `call_user_func()` /
+    /// `call_user_func_array()` into a direct user call (ZEND_INIT_USER_CALL),
+    /// so the callee sees the caller's `strict_types` and the call site; a
+    /// namespaced unqualified call (runtime resolution) stays an internal call.
+    pub(crate) fn mark_user_call_builtin(&mut self, fname: &[u8], fallback: NIdx) {
+        self.cuf_caller = None;
+        if fallback == rhp_bytecode::NO_NAME
+            && (fname.eq_ignore_ascii_case(b"call_user_func")
+                || fname.eq_ignore_ascii_case(b"call_user_func_array"))
+        {
+            self.cuf_caller = Some(self.caller_strict());
+        }
+    }
+
+    /// The strict-types mode of the current caller (top of stack), for argument
+    /// coercion of a call about to be made.
+    pub(crate) fn caller_strict(&self) -> bool {
+        self.stack
+            .last()
+            .map(|f| f.proto.strict_types)
+            .unwrap_or(false)
+    }
+
+    /// Bind `args` into `frame` (which already carries its `$this`/scope) and
+    /// enforce declared parameter types. On failure php raises the
+    /// ArgumentCountError / TypeError from *inside* the callee: at the failing
+    /// parameter's line, with the callee on the trace.
+    pub(crate) fn bind_frame(
+        &mut self,
+        frame: &mut Frame,
+        args: &[Value],
+        caller: Option<bool>,
+    ) -> Result<(), Thrown> {
+        let proto = frame.proto.clone();
+        frame.argc = args.len();
+        // A named-argument call armed `pending_named` for this frame.
+        let named = self.pending_named.take();
+        let count_error = self.internal_arg_count_error(&proto, frame, args.len());
+        let failed = match bind_params(&proto, args, frame) {
+            _ if count_error.is_some() => count_error.map(|e| (0, e)),
+            Err(missing) => Some((missing, self.arg_count_error(&proto, frame, args.len()))),
+            Ok(()) => {
+                if let Some((holes, extra)) = named {
+                    frame.holes = holes;
+                    if !extra.is_empty() {
+                        if let Some(p) = proto.params.iter().find(|p| p.variadic) {
+                            if let Value::Array(a) = &mut frame.regs[p.cv as usize] {
+                                for (k, v) in extra {
+                                    a.insert(ArrayKey::Str(k), deref(&v));
+                                }
+                            }
+                        }
+                    }
+                }
+                let scope = frame.defining_class;
+                match self.coerce_stringable_args(&proto, frame, caller, scope) {
+                    Err(e) => Some((0, e)),
+                    Ok(()) => self.check_arg_types(&proto, frame, caller, scope).err(),
+                }
+            }
+        };
+        let Some((idx, err)) = failed else {
+            return Ok(());
+        };
+        // A prelude callee has no file of its own: like an internal function,
+        // the error belongs to the calling user frame (the throw site).
+        let at = (!is_prelude_proto(&proto)).then(|| {
+            let line = proto.params.get(idx).map(|p| p.line).unwrap_or(0);
+            (proto.debug.file.as_bytes().to_vec(), line)
+        });
+        let mut pushed = Frame::new(proto.clone(), Reg::MAX);
+        std::mem::swap(&mut pushed, frame);
+        self.stack.push(pushed);
+        let t = self.materialize(err, at);
+        let mut popped = self.stack.pop().expect("pushed frame");
+        std::mem::swap(&mut popped, frame);
+        Err(t)
+    }
+
+    /// zend_std_get_constructor's visibility check for `new C` run by frame
+    /// `top`: "Call to private C::__construct() from global scope".
+    /// Engine-internal (prelude) code may construct anything.
+    pub(crate) fn check_ctor_access(&self, top: usize, cls: ClassId) -> Result<(), Thrown> {
+        let Some(m) = self.lookup_method(cls, b"__construct") else {
+            return Ok(());
+        };
+        if m.visibility == rhp_values::Visibility::Public
+            || is_prelude_proto(&self.stack[top].proto)
+        {
+            return Ok(());
+        }
+        let scope = self.stack[top].defining_class;
+        if self.check_access(scope, m.defining_class, m.visibility) {
+            return Ok(());
+        }
+        let v = if m.visibility == rhp_values::Visibility::Private {
+            "private"
+        } else {
+            "protected"
+        };
+        let from = match scope {
+            Some(c) => format!(
+                "scope {}",
+                String::from_utf8_lossy(self.class(c).name.as_bytes())
+            ),
+            None => "global scope".to_string(),
+        };
+        Err(Thrown::error(
+            "Error",
+            format!(
+                "Call to {v} {}::{}() from {from}",
+                String::from_utf8_lossy(self.class(m.defining_class).name.as_bytes()),
+                String::from_utf8_lossy(m.proto.name.as_bytes())
+            ),
+        ))
+    }
+
+    /// zpp's ArgumentCountError for a prelude function or a built-in class's
+    /// prelude method called with an argument count its stub signature
+    /// rejects (prelude code calling it is not checked).
+    fn internal_arg_count_error(
+        &self,
+        proto: &FunctionProto,
+        frame: &Frame,
+        passed: usize,
+    ) -> Option<Thrown> {
+        use builtins::signatures::Signature;
+        if !is_prelude_proto(proto) {
+            return None;
+        }
+        let caller = self.stack.len().checked_sub(1)?;
+        if self.is_internal_frame(caller) {
+            return None;
+        }
+        let (name, min, max) = match frame.defining_class {
+            Some(cls) if self.is_internal_class(cls) => {
+                let cname = self.class(cls).name.as_bytes();
+                // Their php bodies throw without parsing any argument, or
+                // parse them quietly (DatePeriod's three signatures).
+                if (cname.eq_ignore_ascii_case(b"WeakReference")
+                    || cname.eq_ignore_ascii_case(b"DatePeriod"))
+                    && proto.name.as_bytes().eq_ignore_ascii_case(b"__construct")
+                {
+                    return None;
+                }
+                let st = builtins::signatures::method(cname, proto.name.as_bytes())?;
+                let name = format!("{}::{}", String::from_utf8_lossy(cname), st.name);
+                (name, st.min_args(), st.max_args())
+            }
+            Some(_) => return None,
+            None => {
+                let f = builtins::signatures::function(proto.name.as_bytes())?;
+                (f.name.to_string(), f.min_args(), f.max_args())
+            }
+        };
+        if let Some(e) = zpp_count_error(&name, min, max, passed) {
+            return Some(e);
+        }
+        // php takes the argument but the prelude body declares no such
+        // parameter (and reads none through func_get_args): refuse it rather
+        // than ignore it.
+        if passed > proto.params.len() && !proto.params.iter().any(|p| p.variadic) {
+            return Some(Thrown::unsupported(
+                format!("{name}() argument #{}", proto.params.len() + 1),
+                "not implemented",
+            ));
+        }
+        None
+    }
+
+    /// "Too few arguments to function f(), N passed[ in F on line L] and
+    /// {exactly|at least} M expected" (zend_missing_arg_error).
+    fn arg_count_error(&self, proto: &FunctionProto, frame: &Frame, passed: usize) -> Thrown {
+        let required = required_params(proto);
+        let declared = proto.params.iter().filter(|p| !p.variadic).count();
+        let which = if required == declared {
+            "exactly"
+        } else {
+            "at least"
+        };
+        let name = self.func_display_name(proto, frame.defining_class);
+        if is_prelude_proto(proto) {
+            // A built-in implemented in the PHP prelude reports like an
+            // internal function (zend_wrong_parameters_count_error).
+            let which = if proto.params.iter().any(|p| p.variadic) {
+                "at least"
+            } else {
+                which
+            };
+            return Thrown::error(
+                "ArgumentCountError",
+                format!(
+                    "{name}() expects {which} {required} argument{}, {passed} given",
+                    if required == 1 { "" } else { "s" }
+                ),
+            );
+        }
+        let msg = match self.user_call_site() {
+            Some((file, line)) => format!(
+                "Too few arguments to function {name}(), {passed} passed in {} on line {line} and {which} {required} expected",
+                String::from_utf8_lossy(&file)
+            ),
+            None => format!(
+                "Too few arguments to function {name}(), {passed} passed and {which} {required} expected"
+            ),
+        };
+        Thrown::error("ArgumentCountError", msg)
+    }
+
+    /// The `$this` of the current frame, if it is bound to an object.
+    pub(crate) fn current_this(&self, top: usize) -> Option<ObjectHandle> {
+        let cv = self.stack[top].proto.this_cv?;
+        match &self.stack[top].regs[cv as usize] {
+            Value::Object(h) => Some(h.clone()),
+            // Passed to a by-reference-capable argument slot, the register
+            // was promoted to a reference cell.
+            Value::Ref(rc) => match &*rc.borrow() {
+                Value::Object(h) => Some(h.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Synchronously call a method and return its value (re-entrant: used by
+    /// magic methods like `__toString`/`__get` mid-opcode). Exceptions thrown
+    /// inside are handled within the sub-run; if uncaught there, they propagate.
+    pub(crate) fn call_sync(
+        &mut self,
+        method: &classes::ResolvedMethod,
+        this: Option<ObjectHandle>,
+        called_class: ClassId,
+        args: Vec<Value>,
+    ) -> Result<Value, Thrown> {
+        self.call_sync_mode(method, this, called_class, args, None)
+    }
+
+    /// [`Self::call_sync`] with the caller's `strict_types` mode for the
+    /// argument checks (an internal caller is always coercive).
+    fn call_sync_mode(
+        &mut self,
+        method: &classes::ResolvedMethod,
+        this: Option<ObjectHandle>,
+        called_class: ClassId,
+        args: Vec<Value>,
+        caller: Option<bool>,
+    ) -> Result<Value, Thrown> {
+        let proto = method.proto.clone();
+        self.run_proto_sync(
+            proto,
+            this,
+            Some(method.defining_class),
+            Some(called_class),
+            args,
+            caller,
+        )
+    }
+
+    /// Push a capture frame for `proto` and drive it to completion, returning
+    /// its value (re-entrant; exceptions handled within the sub-run). The
+    /// call takes the pending magic fetch mode, which then holds for its
+    /// own frame only ([`Host::magic_fetch`]).
+    pub(crate) fn run_proto_sync(
+        &mut self,
+        proto: Rc<FunctionProto>,
+        this: Option<ObjectHandle>,
+        defining_class: Option<ClassId>,
+        called_class: Option<ClassId>,
+        args: Vec<Value>,
+        caller: Option<bool>,
+    ) -> Result<Value, Thrown> {
+        let mode = std::mem::take(&mut self.pending_magic_fetch);
+        let saved = std::mem::replace(&mut self.magic_fetch, (self.stack.len(), mode));
+        let r = self.run_proto_frame(proto, this, defining_class, called_class, args, caller);
+        self.magic_fetch = saved;
+        r
+    }
+
+    fn run_proto_frame(
+        &mut self,
+        proto: Rc<FunctionProto>,
+        this: Option<ObjectHandle>,
+        defining_class: Option<ClassId>,
+        called_class: Option<ClassId>,
+        args: Vec<Value>,
+        caller: Option<bool>,
+    ) -> Result<Value, Thrown> {
+        if self.stack.len() >= self.max_depth {
+            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
+        }
+        let mut frame = Frame::new(proto.clone(), 0);
+        if let (Some(cv), Some(obj)) = (proto.this_cv, this) {
+            frame.regs[cv as usize] = Value::Object(obj);
+        }
+        frame.defining_class = defining_class;
+        frame.called_class = called_class;
+        self.bind_frame(&mut frame, &args, caller)?;
+        self.bind_superglobals(&mut frame);
+        if proto.is_generator {
+            return Ok(self.make_generator(frame));
+        }
+        frame.capture = true;
+        let base = self.stack.len();
+        self.stack.push(frame);
+        loop {
+            match self.run_frames() {
+                Ok(v) => return Ok(v),
+                Err(thrown) => {
+                    if !thrown.is_catchable() {
+                        // php's unwind_exit pops the callback's frames, so
+                        // what the calling builtin raises next is its own.
+                        if matches!(thrown, Thrown::Exit(_)) {
+                            self.stack.truncate(base);
+                        }
+                        return Err(thrown);
+                    }
+                    match self.unwind(thrown, base)? {
+                        UnwindResult::Caught => {}
+                        UnwindResult::Escaped(t) => return Err(t),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Push a capture frame for a closure (captures bound to CVs `0..nc`, params
+    /// after) and drive it to completion (re-entrant; exceptions handled within).
+    fn run_closure_sync(
+        &mut self,
+        cd: &rhp_values::ClosureData,
+        args: Vec<Value>,
+        caller: Option<bool>,
+    ) -> Result<Value, Thrown> {
+        if self.stack.len() >= self.max_depth {
+            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
+        }
+        let proto = self.closures[cd.fnidx as usize].clone();
+        let mut frame = Frame::new(proto.clone(), 0);
+        for (i, cap) in cd.captures.iter().enumerate() {
+            frame.regs[i] = cap.clone();
+        }
+        // A rebound closure (`Closure::bind`/`bindTo`) overrides the captured
+        // `$this` with the new object.
+        if let (Some(cv), Some(obj)) = (proto.this_cv, &cd.bound_this) {
+            frame.regs[cv as usize] = Value::Object(obj.clone());
+        }
+        frame.defining_class = cd.bound_class;
+        frame.called_class = cd.bound_static;
+        self.bind_frame(&mut frame, &args, caller)?;
+        self.bind_superglobals(&mut frame);
+        if proto.is_generator {
+            return Ok(self.make_generator(frame));
+        }
+        frame.capture = true;
+        let base = self.stack.len();
+        self.stack.push(frame);
+        loop {
+            match self.run_frames() {
+                Ok(v) => return Ok(v),
+                Err(thrown) => {
+                    if !thrown.is_catchable() {
+                        // php's unwind_exit pops the callback's frames, so
+                        // what the calling builtin raises next is its own.
+                        if matches!(thrown, Thrown::Exit(_)) {
+                            self.stack.truncate(base);
+                        }
+                        return Err(thrown);
+                    }
+                    match self.unwind(thrown, base)? {
+                        UnwindResult::Caught => {}
+                        UnwindResult::Escaped(t) => return Err(t),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Built-in enum static methods: `cases()`, `from()`, `tryFrom()`.
+    fn enum_builtin_static(
+        &mut self,
+        cls: ClassId,
+        method_lc: &[u8],
+        args: Vec<Value>,
+    ) -> Result<Value, Thrown> {
+        // Case values may be pending constant expressions: cases() evaluates
+        // just the pending case constants (php's zend_enum_cases_func), while
+        // from()/tryFrom() load the whole class (building the value table).
+        if method_lc == b"cases" {
+            let pending: Vec<Vec<u8>> = self
+                .class(cls)
+                .constants
+                .iter()
+                .filter(|(_, c)| matches!(c.init, Some(classes::ConstInit::EnumCase(_))))
+                .map(|(k, _)| k.clone())
+                .collect();
+            let display = self.class(cls).name.as_bytes().to_vec();
+            for name in pending {
+                self.class_const_value(cls, &name, &display, false)?;
+            }
+        } else {
+            self.update_class_constants(cls)?;
+        }
+        self.touch_enum_cases(cls);
+        let enum_name = || String::from_utf8_lossy(self.class(cls).name.as_bytes()).into_owned();
+        match method_lc {
+            b"cases" => {
+                let mut arr = rhp_values::PhpArray::new();
+                for obj in &self.class(cls).enum_cases {
+                    arr.push(Value::Object(obj.clone()));
+                }
+                Ok(Value::Array(arr))
+            }
+            b"from" | b"tryfrom" => {
+                let is_try = method_lc == b"tryfrom";
+                let backing = self.class(cls).enum_backing.ok_or_else(|| {
+                    Thrown::error(
+                        "Error",
+                        format!(
+                            "{}::{} is not a backed enum",
+                            enum_name(),
+                            if is_try { "tryFrom()" } else { "from()" }
+                        ),
+                    )
+                })?;
+                let input = match args.first() {
+                    Some(Value::Ref(r)) => r.borrow().clone(),
+                    Some(v) => v.clone(),
+                    None => Value::Null,
+                };
+                // The declared parameter type is int|string; other types are a TypeError.
+                use rhp_bytecode::EnumBacking;
+                let matches = |cv: &Value| -> bool {
+                    match (backing, &input) {
+                        (EnumBacking::Int, Value::Int(n)) => matches!(cv, Value::Int(m) if m == n),
+                        (EnumBacking::Str, Value::Str(s)) => {
+                            matches!(cv, Value::Str(cs) if cs.as_bytes() == s.as_bytes())
+                        }
+                        // Cross-type (e.g. int value against a string backing) never matches.
+                        _ => false,
+                    }
+                };
+                let cases = self.class(cls).enum_cases.clone();
+                let value_key = rhp_values::PhpStr::from("value");
+                for obj in &cases {
+                    let val = obj.borrow().properties.get(&value_key).cloned();
+                    if let Some(v) = val {
+                        if matches(&v) {
+                            return Ok(Value::Object(obj.clone()));
+                        }
+                    }
+                }
+                if is_try {
+                    return Ok(Value::Null);
+                }
+                // from(): no match -> ValueError.
+                let shown = match &input {
+                    Value::Str(s) => format!("\"{}\"", String::from_utf8_lossy(s.as_bytes())),
+                    other => String::from_utf8_lossy(&conv::to_string_bytes(other)).into_owned(),
+                };
+                Err(Thrown::error(
+                    "ValueError",
+                    format!(
+                        "{} is not a valid backing value for enum {}",
+                        shown,
+                        enum_name()
+                    ),
+                ))
+            }
+            _ => unreachable!("enum_builtin_static called with {:?}", method_lc),
+        }
+    }
+
+    /// Invoke a PHP callable value synchronously (string function name,
+    /// `[obj_or_class, method]`, an `__invoke` object, or a closure).
+    /// Instance methods of a `Closure` value: `bindTo`, `call`, `__invoke`.
+    pub(crate) fn closure_method(
+        &mut self,
+        closure: &Value,
+        mname: &[u8],
+        mut args: Vec<Value>,
+    ) -> Result<Value, Thrown> {
+        let lc = mname.to_ascii_lowercase();
+        if let Some(e) = native_method_count_error("Closure", &lc, args.len()) {
+            return Err(e);
+        }
+        match lc.as_slice() {
+            b"bindto" => {
+                let new_this = args.first().cloned().unwrap_or(Value::Null);
+                let scope = args.get(1).cloned().unwrap_or_else(|| Value::str("static"));
+                Ok(self
+                    .closure_bind(closure, &new_this, &scope)
+                    .unwrap_or(Value::Null))
+            }
+            b"call" => {
+                // Temporarily binds `$this` AND the scope to the new object.
+                let new_this = args.remove(0);
+                let bound = self
+                    .closure_bind(closure, &new_this, &new_this)
+                    .unwrap_or(Value::Null);
+                self.call_callable_value(&bound, args)
+            }
+            b"__invoke" => self.call_callable_value(closure, args),
+            _ => Err(Thrown::error(
+                "Error",
+                format!(
+                    "Call to undefined method Closure::{}()",
+                    String::from_utf8_lossy(mname)
+                ),
+            )),
+        }
+    }
+
+    /// The calling scope a callable resolves against (zend_is_callable's
+    /// `scope` / called scope / `$this`): the innermost frame.
+    pub(crate) fn callable_scope(
+        &self,
+    ) -> (Option<ClassId>, Option<ClassId>, Option<ObjectHandle>) {
+        if let Some((scope, called)) = self.fcc_scope.get() {
+            return (scope, called, None);
+        }
+        // Prelude (internal) methods act for their caller, as php's internal
+        // functions do: the scope is the innermost user frame's.
+        let n = self.stack.len();
+        let user = (0..n).rev().find(|&i| !self.is_internal_frame(i));
+        match user.or(n.checked_sub(1)) {
+            Some(top) => (
+                self.stack[top].defining_class,
+                self.stack[top].called_class,
+                self.current_this(top),
+            ),
+            None => (None, None, None),
+        }
+    }
+
+    /// The class half of a `Class::method` / `[Class, method]` callable,
+    /// with `self`/`parent`/`static` relative to the calling scope. Returns
+    /// (class, called class).
+    fn callable_class(&self, name: &[u8]) -> Result<(ClassId, ClassId), String> {
+        let (scope, called, _) = self.callable_scope();
+        let lc = name.to_ascii_lowercase();
+        let no_scope = |w: &str| format!("cannot access \"{w}\" when no class scope is active");
+        let forward = |cls: ClassId| match called {
+            Some(c) if self.class(c).ancestors.contains(&cls) => c,
+            _ => cls,
+        };
+        match lc.as_slice() {
+            b"self" => scope
+                .map(|c| (c, forward(c)))
+                .ok_or_else(|| no_scope("self")),
+            b"static" => called
+                .or(scope)
+                .map(|c| (c, c))
+                .ok_or_else(|| no_scope("static")),
+            b"parent" => {
+                let c = scope.ok_or_else(|| no_scope("parent"))?;
+                let p = self.class(c).parent.ok_or_else(|| {
+                    "cannot access \"parent\" when current class scope has no parent".to_string()
+                })?;
+                Ok((p, forward(p)))
+            }
+            _ => self
+                .resolve_class_by_name(name)
+                .map(|c| (c, c))
+                .map_err(|_| {
+                    let n = name.strip_prefix(b"\\").unwrap_or(name);
+                    format!("class \"{}\" not found", String::from_utf8_lossy(n))
+                }),
+        }
+    }
+
+    /// The method half of a method callable (zend_is_callable_check_func).
+    fn callable_method(
+        &self,
+        cls: ClassId,
+        called: ClassId,
+        obj: Option<ObjectHandle>,
+        mname: &[u8],
+    ) -> Result<Callee, String> {
+        let (scope, _, this) = self.callable_scope();
+        let cname = || String::from_utf8_lossy(self.class(cls).name.as_bytes()).into_owned();
+        let magic = |obj: &Option<ObjectHandle>| -> Option<Callee> {
+            let name = mname.to_vec();
+            if let Some(o) = obj {
+                if let Some(m) = self.lookup_method(cls, b"__call") {
+                    return Some(Callee::Magic(m, Some(o.clone()), called, name));
+                }
+            }
+            if let Some(m) = self.lookup_method(cls, b"__callstatic") {
+                return Some(Callee::Magic(m, None, called, name));
+            }
+            None
+        };
+        // A non-static method called without an object borrows a compatible
+        // `$this` from the calling scope.
+        let obj =
+            obj.or_else(|| this.filter(|h| self.class(h.borrow().class).ancestors.contains(&cls)));
+        let Some(m) = self.lookup_method(cls, mname) else {
+            if self.class(cls).kind == ClassKind::Enum {
+                let lc = mname.to_ascii_lowercase();
+                if matches!(lc.as_slice(), b"cases" | b"from" | b"tryfrom") {
+                    return Ok(Callee::EnumStatic(cls, lc));
+                }
+            }
+            return magic(&obj).ok_or_else(|| {
+                format!(
+                    "class {} does not have a method \"{}\"",
+                    cname(),
+                    String::from_utf8_lossy(mname)
+                )
+            });
+        };
+        if !self.check_access(scope, m.defining_class, m.visibility) {
+            if let Some(c) = magic(&obj) {
+                return Ok(c);
+            }
+            let v = match m.visibility {
+                rhp_values::Visibility::Private => "private",
+                rhp_values::Visibility::Protected => "protected",
+                rhp_values::Visibility::Public => "public",
+            };
+            return Err(format!(
+                "cannot access {v} method {}::{}()",
+                cname(),
+                String::from_utf8_lossy(m.proto.name.as_bytes())
+            ));
+        }
+        if m.is_static {
+            return Ok(Callee::Method(m, None, called));
+        }
+        match obj {
+            Some(o) => {
+                let oc = o.borrow().class;
+                Ok(Callee::Method(m, Some(o), oc))
+            }
+            None => Err(format!(
+                "non-static method {}::{}() cannot be called statically",
+                cname(),
+                String::from_utf8_lossy(m.proto.name.as_bytes())
+            )),
+        }
+    }
+
+    /// Resolve a callable value (zend_is_callable_ex), or say why it is not
+    /// one in zend_is_callable_error's words.
+    pub(crate) fn resolve_callable(&self, callable: &Value) -> Result<Callee, String> {
+        match deref(callable) {
+            Value::Closure(cd) => Ok(Callee::Closure(cd)),
+            Value::Str(s) => {
+                let b = s.as_bytes();
+                // `Class::method` splits at the last "::".
+                let split = (1..b.len())
+                    .rev()
+                    .find(|&i| b[i] == b':' && b[i - 1] == b':');
+                if let Some(i) = split {
+                    if i == 1 {
+                        return Err("invalid function name".to_string());
+                    }
+                    let (cls, called) = self.callable_class(&b[..i - 1])?;
+                    return self.callable_method(cls, called, None, &b[i + 1..]);
+                }
+                let name = b.strip_prefix(b"\\").unwrap_or(b);
+                if let Some(&idx) = self.fn_names.get(&name.to_ascii_lowercase()) {
+                    return Ok(Callee::Function(self.functions[idx].clone()));
+                }
+                let n = String::from_utf8_lossy(name).into_owned();
+                // Engine-internal `__*` builtins are not user-visible functions.
+                if user_visible_builtin(name) {
+                    return Ok(Callee::Builtin(n));
+                }
+                Err(format!(
+                    "function \"{}\" not found or invalid function name",
+                    String::from_utf8_lossy(b)
+                ))
+            }
+            Value::Array(a) => {
+                if a.len() != 2 {
+                    return Err("array callback must have exactly two members".to_string());
+                }
+                let item0 = a.get(&ArrayKey::Int(0)).map(deref);
+                let item1 = a.get(&ArrayKey::Int(1)).map(deref);
+                let (Some(item0), Some(item1)) = (item0, item1) else {
+                    return Err("array callback must have exactly two members".to_string());
+                };
+                let (cls, called, obj) = match item0 {
+                    Value::Object(h) => {
+                        let c = h.borrow().class;
+                        (c, c, Some(h))
+                    }
+                    Value::Str(cn) => {
+                        let (c, called) = self.callable_class(cn.as_bytes())?;
+                        (c, called, None)
+                    }
+                    _ => {
+                        return Err(
+                            "first array member is not a valid class name or object".to_string()
+                        )
+                    }
+                };
+                let Value::Str(m) = item1 else {
+                    return Err("second array member is not a valid method".to_string());
+                };
+                self.callable_method(cls, called, obj, m.as_bytes())
+            }
+            Value::Object(h) => {
+                let cls = h.borrow().class;
+                match self.lookup_method(cls, b"__invoke") {
+                    Some(m) => Ok(Callee::Method(m, Some(h), cls)),
+                    None => Err("no array or string given".to_string()),
+                }
+            }
+            _ => Err("no array or string given".to_string()),
+        }
+    }
+
+    /// Autoload the class half of a callable that names an unloaded class
+    /// (php's zend_is_callable looks classes up with autoloading).
+    pub(crate) fn autoload_callable_class(&mut self, callable: &Value) -> Result<(), Thrown> {
+        let class: Option<Vec<u8>> = match deref(callable) {
+            Value::Str(s) => {
+                let b = s.as_bytes();
+                (2..b.len())
+                    .rev()
+                    .find(|&i| b[i] == b':' && b[i - 1] == b':')
+                    .map(|i| b[..i - 1].to_vec())
+            }
+            Value::Array(a) if a.len() == 2 => match a.get(&ArrayKey::Int(0)).map(deref) {
+                Some(Value::Str(s)) => Some(s.as_bytes().to_vec()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(c) = class {
+            let lc = c.to_ascii_lowercase();
+            if !matches!(lc.as_slice(), b"self" | b"parent" | b"static")
+                && self.resolve_class_by_name(&c).is_err()
+            {
+                self.try_autoload(&c)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Invoke a PHP callable value synchronously (string function name,
+    /// `Class::method`, `[obj_or_class, method]`, an `__invoke` object, or a
+    /// closure). A value that is not callable raises the Error php's dynamic
+    /// call (`$f()`) does.
+    pub(crate) fn call_callable_value(
+        &mut self,
+        callable: &Value,
+        args: Vec<Value>,
+    ) -> Result<Value, Thrown> {
+        self.call_callable_value_mode(callable, args, None)
+    }
+
+    /// [`Vm::call_callable_value`] with the caller's mode for the argument
+    /// checks: `Some(strict_types)` for a dynamic call from user code, `None`
+    /// for a callback invoked by a builtin (always coercive, like php's
+    /// internal callers, and no call site in the error).
+    pub(crate) fn call_callable_value_mode(
+        &mut self,
+        callable: &Value,
+        args: Vec<Value>,
+        caller: Option<bool>,
+    ) -> Result<Value, Thrown> {
+        let c = deref(callable);
+        // First-class callable: forward to the wrapped callable.
+        if let Value::Closure(cd) = &c {
+            if let Some(w) = &cd.wrapped {
+                let w = (**w).clone();
+                // Resolve it in the scope the callable was created in.
+                let saved = self
+                    .fcc_scope
+                    .replace(Some((cd.bound_class, cd.bound_static)));
+                let r = self.call_callable_value_mode(&w, args, caller);
+                self.fcc_scope.set(saved);
+                return r;
+            }
+        }
+        let fcc = self.fcc_scope.take();
+        self.autoload_callable_class(&c)?;
+        self.fcc_scope.set(fcc);
+        let resolved = self.resolve_callable(&c);
+        // A first-class callable's creation scope applies to resolving it
+        // only, not to whatever it then runs.
+        self.fcc_scope.set(None);
+        let callee = match resolved {
+            Ok(callee) => callee,
+            Err(_) => return Err(self.dynamic_call_error(&c)),
+        };
+        match callee {
+            Callee::Closure(cd) => self.run_closure_sync(&cd, args, caller),
+            Callee::Function(proto) => self.run_proto_sync(proto, None, None, None, args, caller),
+            Callee::Builtin(name) => self.invoke_builtin(&name, args),
+            Callee::Method(m, this, called) => self.call_sync_mode(&m, this, called, args, caller),
+            Callee::Magic(m, this, called, name) => {
+                let mut arr = PhpArray::new();
+                for a in args {
+                    arr.push(a);
+                }
+                self.call_sync_mode(
+                    &m,
+                    this,
+                    called,
+                    vec![Value::str(name), Value::Array(arr)],
+                    caller,
+                )
+            }
+            Callee::EnumStatic(cls, lc) => self.enum_builtin_static(cls, &lc, args),
+        }
+    }
+
+    /// The Error a dynamic call of a non-callable value raises
+    /// (ZEND_INIT_DYNAMIC_CALL).
+    fn dynamic_call_error(&self, c: &Value) -> Thrown {
+        let err = |m: String| Thrown::error("Error", m);
+        let method_err = |cls: ClassId, m: &[u8]| -> Thrown {
+            match self.lookup_method(cls, m) {
+                Some(rm) if !rm.is_static => err(format!(
+                    "Non-static method {}::{}() cannot be called statically",
+                    String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                    String::from_utf8_lossy(rm.proto.name.as_bytes())
+                )),
+                Some(rm) => {
+                    let v = match rm.visibility {
+                        rhp_values::Visibility::Private => "private",
+                        rhp_values::Visibility::Protected => "protected",
+                        rhp_values::Visibility::Public => "public",
+                    };
+                    let scope = match self.callable_scope().0 {
+                        Some(c) => format!(
+                            "scope {}",
+                            String::from_utf8_lossy(self.class(c).name.as_bytes())
+                        ),
+                        None => "global scope".to_string(),
+                    };
+                    err(format!(
+                        "Call to {v} method {}::{}() from {scope}",
+                        String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                        String::from_utf8_lossy(rm.proto.name.as_bytes())
+                    ))
+                }
+                None => err(format!(
+                    "Call to undefined method {}::{}()",
+                    String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                    String::from_utf8_lossy(m)
+                )),
+            }
+        };
+        let class_err = |n: &[u8]| {
+            err(format!(
+                "Class \"{}\" not found",
+                String::from_utf8_lossy(n.strip_prefix(b"\\").unwrap_or(n))
+            ))
+        };
+        match c {
+            Value::Str(s) => {
+                let b = s.as_bytes();
+                match (1..b.len())
+                    .rev()
+                    .find(|&i| b[i] == b':' && b[i - 1] == b':')
+                {
+                    Some(i) => match self.callable_class(&b[..i - 1]) {
+                        Ok((cls, _)) => method_err(cls, &b[i + 1..]),
+                        Err(_) => class_err(&b[..i - 1]),
+                    },
+                    None => err(format!(
+                        "Call to undefined function {}()",
+                        String::from_utf8_lossy(b)
+                    )),
+                }
+            }
+            Value::Array(a) if a.len() == 2 => {
+                let item0 = a.get(&ArrayKey::Int(0)).map(deref);
+                let item1 = a.get(&ArrayKey::Int(1)).map(deref);
+                match (item0, item1) {
+                    (Some(Value::Object(h)), Some(Value::Str(m))) => {
+                        method_err(h.borrow().class, m.as_bytes())
+                    }
+                    (Some(Value::Str(cn)), Some(Value::Str(m))) => {
+                        match self.callable_class(cn.as_bytes()) {
+                            Ok((cls, _)) => method_err(cls, m.as_bytes()),
+                            Err(_) => class_err(cn.as_bytes()),
+                        }
+                    }
+                    (Some(Value::Object(_) | Value::Str(_)), Some(_)) => {
+                        err("Second array member is not a valid method".to_string())
+                    }
+                    (Some(_), Some(_)) => {
+                        err("First array member is not a valid class name or object".to_string())
+                    }
+                    _ => err("Array callback must have exactly two elements".to_string()),
+                }
+            }
+            Value::Array(_) => err("Array callback must have exactly two elements".to_string()),
+            Value::Object(_) => err(format!(
+                "Object of type {} is not callable",
+                self.debug_class(c)
+            )),
+            v => err(format!(
+                "Value of type {} is not callable",
+                builtins::php_fns::zend_type_name(v)
+            )),
+        }
+    }
+
+    fn debug_class(&self, v: &Value) -> String {
+        match v {
+            Value::Object(h) => {
+                String::from_utf8_lossy(self.class(h.borrow().class).name.as_bytes()).into_owned()
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// Pop the current frame and deliver `value`. Returns `Some(value)` when the
+    /// outermost frame returns (program done), else delivers to the caller.
+    pub(crate) fn do_return(&mut self, value: Value) -> Option<Value> {
+        let frame = self.stack.pop().expect("non-empty stack");
+        if self
+            .ctor_frames
+            .last()
+            .is_some_and(|c| c.0 == self.stack.len())
+        {
+            self.ctor_frames.pop();
+        }
+        if !self.destructibles.is_empty() {
+            self.dtor_check = true;
+        }
+        self.include_writeback(&frame);
+        // A synchronous (re-entrant) call returns its value to the Rust caller.
+        if frame.capture {
+            return Some(value);
+        }
+        match self.stack.len().checked_sub(1) {
+            Some(caller) => {
+                // Reg::MAX means "discard" (constructor / __clone return value).
+                if frame.ret_dst != Reg::MAX {
+                    self.reg_set(caller, frame.ret_dst, value);
+                }
+                None
+            }
+            None => {
+                // {main} finished: keep its globals for the shutdown sequence.
+                self.finished_main = Some(frame);
+                Some(value)
+            }
+        }
+    }
+
+    /// Enter a user function: bind args to the callee's CV registers and push.
+    pub(crate) fn enter_user_call(
+        &mut self,
+        top: usize,
+        callee: Rc<FunctionProto>,
+        dst: Reg,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        if self.stack.len() >= self.max_depth {
+            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
+        }
+        // Raw (non-deref) copy: by-ref args arrive as `Value::Ref` and must be
+        // kept as references; by-value binding derefs in `bind_params`.
+        let args: Vec<Value> = (0..argc)
+            .map(|i| self.stack[top].regs[(base + i) as usize].clone())
+            .collect();
+        self.push_user_frame(callee, args, dst)
+    }
+
+    /// Push a frame for a user function with pre-collected args.
+    pub(crate) fn push_user_frame(
+        &mut self,
+        callee: Rc<FunctionProto>,
+        args: Vec<Value>,
+        dst: Reg,
+    ) -> Result<(), Thrown> {
+        if self.stack.len() >= self.max_depth {
+            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
+        }
+        let mut frame = Frame::new(callee.clone(), dst);
+        self.bind_frame(&mut frame, &args, Some(self.caller_strict()))?;
+        self.bind_superglobals(&mut frame);
+        if callee.is_generator {
+            let gen = self.make_generator(frame);
+            let caller = self.stack.len() - 1;
+            if dst != Reg::MAX {
+                self.reg_set(caller, dst, gen);
+            }
+            return Ok(());
+        }
+        self.stack.push(frame);
+        Ok(())
+    }
+
+    /// Split a call's argument array (a spread / named-argument call) into
+    /// positional arguments and named ones (string keys).
+    pub(crate) fn split_call_args(&self, arr: &Value) -> Result<(Vec<Value>, NamedArgs), Thrown> {
+        let mut pos = Vec::new();
+        let mut named: NamedArgs = Vec::new();
+        if let Value::Array(a) = deref(arr) {
+            for (k, v) in a.iter() {
+                match k {
+                    ArrayKey::Int(_) => {
+                        if !named.is_empty() {
+                            return Err(Thrown::error(
+                                "Error",
+                                "Cannot use positional argument after named argument during unpacking",
+                            ));
+                        }
+                        pos.push(v.clone());
+                    }
+                    ArrayKey::Str(s) => named.push((s.clone(), v.clone())),
+                }
+            }
+        }
+        Ok((pos, named))
+    }
+
+    /// php's `zend_handle_named_arg` + `zend_handle_undef_args`: place named
+    /// arguments into `proto`'s parameter slots. Skipped parameters take
+    /// their default (a constant one directly; a non-constant one through the
+    /// prologue, via the hole mask); unknown names go to a variadic
+    /// parameter. Arms `pending_named` for the frame push that must follow.
+    pub(crate) fn place_named_args(
+        &mut self,
+        proto: &FunctionProto,
+        class: Option<ClassId>,
+        mut args: Vec<Value>,
+        named: Vec<(PhpStr, Value)>,
+    ) -> Result<Vec<Value>, Thrown> {
+        if named.is_empty() {
+            return Ok(args);
+        }
+        let positional = args.len();
+        let variadic = proto.params.iter().position(|p| p.variadic);
+        let mut slots: Vec<Option<Value>> = args.drain(..).map(Some).collect();
+        let mut extra: Vec<(PhpStr, Value)> = Vec::new();
+        for (name, v) in named {
+            let idx = proto.params.iter().position(|p| {
+                !p.variadic && proto.names[p.name as usize].as_bytes() == name.as_bytes()
+            });
+            match idx {
+                Some(i) => {
+                    if i < slots.len() && slots[i].is_some() {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Named parameter ${} overwrites previous argument",
+                                String::from_utf8_lossy(name.as_bytes())
+                            ),
+                        ));
+                    }
+                    if slots.len() <= i {
+                        slots.resize(i + 1, None);
+                    }
+                    slots[i] = Some(v);
+                }
+                None if variadic.is_some() => {
+                    if extra.iter().any(|(k, _)| k.as_bytes() == name.as_bytes()) {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Named parameter ${} overwrites previous argument",
+                                String::from_utf8_lossy(name.as_bytes())
+                            ),
+                        ));
+                    }
+                    extra.push((name, v));
+                }
+                None => {
+                    return Err(Thrown::error(
+                        "Error",
+                        format!(
+                            "Unknown named parameter ${}",
+                            String::from_utf8_lossy(name.as_bytes())
+                        ),
+                    ))
+                }
+            }
+        }
+        let mut holes = 0u64;
+        let mut out = Vec::with_capacity(slots.len());
+        for (i, slot) in slots.into_iter().enumerate() {
+            match slot {
+                Some(v) => out.push(v),
+                None if i < positional => unreachable!("positional slots are filled"),
+                None => {
+                    let p = &proto.params[i];
+                    match &p.default {
+                        Some(ParamDefault::Const(k)) => out.push(proto.consts[*k as usize].clone()),
+                        Some(ParamDefault::Init) => out.push(Value::Null),
+                        None => {
+                            let fname = match class {
+                                Some(c) => format!(
+                                    "{}::{}",
+                                    String::from_utf8_lossy(self.class(c).name.as_bytes()),
+                                    String::from_utf8_lossy(proto.name.as_bytes())
+                                ),
+                                None => String::from_utf8_lossy(proto.name.as_bytes()).into_owned(),
+                            };
+                            return Err(Thrown::error(
+                                "ArgumentCountError",
+                                format!(
+                                    "{}(): Argument #{} (${}) not passed",
+                                    fname,
+                                    i + 1,
+                                    String::from_utf8_lossy(
+                                        proto.names[p.name as usize].as_bytes()
+                                    )
+                                ),
+                            ));
+                        }
+                    }
+                    if i < 64 {
+                        holes |= 1u64 << i;
+                    }
+                }
+            }
+        }
+        self.pending_named = Some((holes, extra));
+        Ok(out)
+    }
+
+    /// Call a callable value with positional and named arguments.
+    pub(crate) fn call_named(
+        &mut self,
+        c: &Value,
+        mut args: Vec<Value>,
+        named: Vec<(PhpStr, Value)>,
+        caller: Option<bool>,
+    ) -> Result<Value, Thrown> {
+        if !named.is_empty() {
+            self.autoload_callable_class(c)?;
+            let Some((p, cls)) = self.callable_proto(c) else {
+                return Err(Thrown::unsupported(
+                    "named arguments to a builtin function",
+                    "deferred",
+                ));
+            };
+            args = self.place_named_args(&p, cls, args, named)?;
+        }
+        self.call_callable_value_mode(c, args, caller)
+    }
+
+    /// The user-code proto a callable value would run (for named-argument
+    /// placement before a dynamic call), with its scope class.
+    fn callable_proto(&self, c: &Value) -> Option<(Rc<FunctionProto>, Option<ClassId>)> {
+        if let Value::Closure(cd) = deref(c) {
+            return match &cd.wrapped {
+                Some(w) => {
+                    // A first-class callable resolves in its creation scope.
+                    let saved = self
+                        .fcc_scope
+                        .replace(Some((cd.bound_class, cd.bound_static)));
+                    let r = self.callable_proto(w);
+                    self.fcc_scope.set(saved);
+                    r
+                }
+                None => Some((self.closures[cd.fnidx as usize].clone(), None)),
+            };
+        }
+        match self.resolve_callable(c).ok()? {
+            Callee::Function(proto) => Some((proto, None)),
+            Callee::Method(m, _, _) => Some((m.proto.clone(), Some(m.defining_class))),
+            _ => None,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn call_builtin(
+        &mut self,
+        top: usize,
+        name_lc: &str,
+        builtin: &'static builtins::Builtin,
+        base: Reg,
+        argc: u16,
+        frameless: bool,
+        icall: bool,
+    ) -> Result<Value, Thrown> {
+        // By-ref builtins (sort/array_push/preg_match/…) need their by-reference
+        // positions kept as the `Value::Ref` the call site built, so they can
+        // write back to the caller's variable. Other args deref to plain values.
+        use builtins::signatures::Signature;
+        let sig = builtins::signatures::function(name_lc.as_bytes());
+        let args: Vec<Value> = (0..argc)
+            .map(|i| {
+                if sig.is_some_and(|s| s.by_ref(i as usize)) {
+                    self.stack[top].regs[(base + i) as usize].clone()
+                } else {
+                    self.reg_get(top, base + i)
+                }
+            })
+            .collect();
+        self.run_builtin_sig(builtin, sig, args, frameless, icall)
+    }
+
+    /// Call a builtin by name with a pre-collected argument vector.
+    pub(crate) fn invoke_builtin(&mut self, name: &str, args: Vec<Value>) -> Result<Value, Thrown> {
+        self.invoke_builtin_ex(name, args, false)
+    }
+
+    /// Call a builtin. Unless `frameless` (php compiled the call to an opcode),
+    /// the call is tracked as a native frame while it runs, and an engine error
+    /// it raises is materialized with that frame on the trace.
+    fn invoke_builtin_ex(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        frameless: bool,
+    ) -> Result<Value, Thrown> {
+        let Some(builtin) = builtins::lookup(name) else {
+            return Err(Thrown::error(
+                "Error",
+                format!("Call to undefined function {name}()"),
+            ));
+        };
+        self.run_builtin(builtin, args, frameless)
+    }
+
+    /// zpp's checks on a builtin's scalar / array typed parameters (from
+    /// php's stubs): a `Stringable` object passed to a `string` parameter is
+    /// converted with `__toString()`; other objects, and arrays where no
+    /// array is accepted, are TypeErrors; null to a non-nullable scalar is
+    /// deprecated (to an array, a TypeError). Builtins that stringify the
+    /// elements of a `mixed` / array argument (`implode`, `sprintf`, …) get
+    /// those converted too. `user`: called from user code (engine-internal
+    /// prelude calls only get the conversions).
+    fn coerce_builtin_args(
+        &mut self,
+        name: &str,
+        sig: Option<&'static builtins::signatures::Func>,
+        args: &mut [Value],
+        user: bool,
+    ) -> Result<(), Thrown> {
+        let params = sig.map_or(&[][..], builtins::signatures::scalar_params);
+        for sp in params {
+            let (pos, pname, ty) = (sp.pos, sp.name, sp.ty);
+            let (nullable, has_str, has_arr) = (sp.nullable, sp.has_str, sp.has_arr);
+            let range = if sp.variadic {
+                pos..args.len()
+            } else {
+                pos..(pos + 1).min(args.len())
+            };
+            if sp.by_ref {
+                // `array &$array` (sort, usort, array_push, …): the referenced
+                // value must already be an array.
+                if user {
+                    for i in range {
+                        let cur = deref(&args[i]);
+                        if !matches!(cur, Value::Array(_)) {
+                            return Err(Thrown::type_error(format!(
+                                "{name}(): Argument #{} (${pname}) must be of type {ty}, {} given",
+                                i + 1,
+                                self.zval_value_name(&cur)
+                            )));
+                        }
+                    }
+                }
+                continue;
+            }
+            for i in range {
+                let given: Vec<u8> = match &args[i] {
+                    Value::Object(h) => {
+                        // zend_parse_arg_str_weak: the object's cast_object.
+                        let h = h.clone();
+                        if has_str {
+                            if let Some(s) = self.cast_object_vm(&h, CastTarget::Str)? {
+                                args[i] = Value::str(conv::to_string_bytes(&s));
+                                continue;
+                            }
+                        }
+                        let cls = h.borrow().class;
+                        self.class(cls).name.as_bytes().to_vec()
+                    }
+                    Value::Closure(_) => b"Closure".to_vec(),
+                    Value::Array(_) if !has_arr && user => b"array".to_vec(),
+                    Value::Null if !nullable && user => {
+                        if has_str || ty != "array" {
+                            let msg = format!(
+                                "{name}(): Passing null to parameter #{} (${pname}) of type {ty} is deprecated",
+                                i + 1
+                            );
+                            self.diag(8192, &msg)?;
+                            continue;
+                        }
+                        b"null".to_vec()
+                    }
+                    Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bool(_)
+                        if (ty == "array" || ty == "?array") && user =>
+                    {
+                        type_lc(&args[i]).as_bytes().to_vec()
+                    }
+                    _ => continue,
+                };
+                return Err(Thrown::type_error(format!(
+                    "{name}(): Argument #{} (${pname}) must be of type {ty}, {} given",
+                    i + 1,
+                    String::from_utf8_lossy(&given)
+                )));
+            }
+        }
+        // Elements stringified inside the builtin (zval_get_string).
+        let elems: Option<(usize, bool)> = match name {
+            "implode" | "join" => Some((0, true)),
+            "sprintf" | "printf" => Some((1, false)),
+            "fprintf" => Some((2, false)),
+            "vsprintf" | "vprintf" => Some((1, true)),
+            "vfprintf" => Some((2, true)),
+            _ => None,
+        };
+        if let Some((from, arrays)) = elems {
+            for arg in args.iter_mut().skip(from) {
+                if arrays {
+                    let Value::Array(a) = &*arg else { continue };
+                    let hits: Vec<ArrayKey> = a
+                        .iter()
+                        .filter(|(_, v)| self.is_stringable(&deref(v)))
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    if hits.is_empty() {
+                        continue;
+                    }
+                    let mut a = a.clone();
+                    for k in hits {
+                        let v = deref(a.get(&k).unwrap_or(&Value::Null));
+                        let s = self.to_string_vm(&v)?;
+                        a.insert(k, Value::str(s));
+                    }
+                    *arg = Value::Array(a);
+                } else if self.is_stringable(arg) {
+                    let s = self.to_string_vm(arg)?;
+                    *arg = Value::str(s);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// An object with `__toString()` or an internal class's `cast_object`.
+    fn is_stringable(&self, v: &Value) -> bool {
+        match v {
+            Value::Object(h) => {
+                self.handlers_of(h).is_some_and(|t| t.cast_object.is_some())
+                    || self
+                        .lookup_method(h.borrow().class, b"__tostring")
+                        .is_some()
+            }
+            _ => false,
+        }
+    }
+
+    /// [`Vm::invoke_builtin_ex`] for an already looked-up builtin.
+    fn run_builtin(
+        &mut self,
+        builtin: &'static builtins::Builtin,
+        args: Vec<Value>,
+        frameless: bool,
+    ) -> Result<Value, Thrown> {
+        let sig = builtins::signatures::function(builtin.name.as_bytes());
+        self.run_builtin_sig(builtin, sig, args, frameless, false)
+    }
+
+    /// [`Vm::run_builtin`] with the builtin's stub signature.
+    fn run_builtin_sig(
+        &mut self,
+        builtin: &'static builtins::Builtin,
+        sig: Option<&'static builtins::signatures::Func>,
+        mut args: Vec<Value>,
+        frameless: bool,
+        icall: bool,
+    ) -> Result<Value, Thrown> {
+        // Free streams whose last reference went away (php closes a resource
+        // when its refcount drops to zero; what that throws is thrown there).
+        self.reap_dropped_streams()?;
+        let count_error = builtin_arg_count_error(builtin, sig, args.len());
+        if count_error.is_none() {
+            let caller = self.stack.len().saturating_sub(1);
+            let user = !self.stack.is_empty() && !self.is_internal_frame(caller);
+            self.coerce_builtin_args(builtin.name, sig, &mut args, user)?;
+        }
+        // A builtin called from engine-internal (prelude) code is not a php
+        // frame, and php compiles a few calls to opcodes (no frame either).
+        let caller = self.stack.len().saturating_sub(1);
+        if frameless || self.stack.is_empty() || self.is_internal_frame(caller) {
+            let r = match count_error {
+                Some(e) => Err(e),
+                None => (builtin.func)(self, &args),
+            };
+            self.flush_stream_diags(builtin.name);
+            // (php's opcodes for these have no interrupt check: an
+            // out-of-memory error waits for the next one.)
+            return match self.pending_throw.take() {
+                Some(t) => Err(t),
+                None => r,
+            };
+        }
+        self.native_calls.push(NativeCall {
+            name: builtin.name,
+            args: args.as_slice() as *const [Value],
+            caller,
+            frameless_icall: icall,
+        });
+        let r = match count_error {
+            Some(e) => Err(e),
+            None => (builtin.func)(self, &args),
+        };
+        // What a stream operation queued without reaching a host.
+        self.flush_stream_diags(builtin.name);
+        let r = match r {
+            Err(e @ Thrown::Error { .. }) => Err(self.materialize(e, None)),
+            other => other,
+        };
+        // An exception a user error handler threw during the call wins.
+        let r = match self.pending_throw.take() {
+            Some(t) => Err(t),
+            None => r,
+        };
+        // php's ZEND_VM_FCALL_INTERRUPT_CHECK: an out-of-memory error the
+        // call ran into is raised now, with the call still on the trace.
+        let r = self.oom_interrupt().and(r);
+        self.native_calls.pop();
+        // `args` outlives the entry just popped (see `NativeCall::args`).
+        drop(args);
+        r
+    }
+}
+
+/// Whether `name` is a builtin visible to user code. `__`-prefixed builtins
+/// are engine-internal helpers behind prelude classes (no php function
+/// starts with `__`), so function_exists/is_callable don't report them.
+pub(crate) fn user_visible_builtin(name: &[u8]) -> bool {
+    !name.starts_with(b"__") && builtins::lookup(&String::from_utf8_lossy(name)).is_some()
+}
+
+/// "Call to undefined function NAME()" with the name as written at the call
+/// site (namespaced for an unqualified call inside a namespace).
+pub(crate) fn undefined_function(name: &rhp_values::PhpStr) -> Thrown {
+    Thrown::error(
+        "Error",
+        format!(
+            "Call to undefined function {}()",
+            String::from_utf8_lossy(name.as_bytes())
+        ),
+    )
+}
+
+/// Functions whose php body accepts one of two exact argument counts and
+/// checks that itself, before any type check.
+fn two_form_arity(name: &str) -> Option<[usize; 2]> {
+    match name {
+        // ZEND_NUM_ARGS() == 0 returns early, then zpp(2, 2).
+        "rand" | "mt_rand" => Some([0, 2]),
+        // A 2-argument call takes an array $from; the error says "exactly".
+        "strtr" => Some([2, 3]),
+        _ => None,
+    }
+}
+
+/// zend_wrong_parameters_count_error: "f() expects exactly 1 argument, 0 given".
+/// The bounds are php's (the stub's), except that the minimum never drops
+/// below the registration's: the array_u* callback functions check a larger
+/// minimum in their bodies, as php does. An argument beyond the registered
+/// maximum is a parameter php declares but the body does not implement: it
+/// is refused, never ignored.
+fn builtin_arg_count_error(
+    b: &builtins::Builtin,
+    sig: Option<&builtins::signatures::Func>,
+    n: usize,
+) -> Option<Thrown> {
+    use builtins::signatures::Signature;
+    let (min, max) = match sig {
+        Some(s) => (s.min_args().max(b.min_args), s.max_args()),
+        None => (b.min_args, b.max_args),
+    };
+    if let Some(counts) = two_form_arity(b.name) {
+        if !counts.contains(&n) {
+            // The smallest non-zero count when below it, else the largest.
+            let low = if counts[0] == 0 { counts[1] } else { counts[0] };
+            let bound = if n < low { low } else { counts[1] };
+            return Some(Thrown::error(
+                "ArgumentCountError",
+                format!(
+                    "{}() expects exactly {bound} argument{}, {n} given",
+                    b.name,
+                    if bound == 1 { "" } else { "s" }
+                ),
+            ));
+        }
+    }
+    if n >= min && n <= max.unwrap_or(usize::MAX) {
+        return match (sig, b.max_args) {
+            (Some(s), Some(implemented)) if n > implemented => Some(Thrown::unsupported(
+                format!(
+                    "{}() argument #{} (${})",
+                    b.name,
+                    implemented + 1,
+                    s.param(implemented).map_or("", |p| p.name)
+                ),
+                "not implemented",
+            )),
+            _ => None,
+        };
+    }
+    zpp_count_error(b.name, min, max, n)
+}
+
+/// zend_wrong_parameters_count_error for `name` with php's bounds.
+fn zpp_count_error(name: &str, min: usize, max: Option<usize>, passed: usize) -> Option<Thrown> {
+    let exact = max == Some(min);
+    let (which, bound) = match max {
+        _ if passed < min => (if exact { "exactly" } else { "at least" }, min),
+        Some(max) if passed > max => (if exact { "exactly" } else { "at most" }, max),
+        _ => return None,
+    };
+    Some(Thrown::error(
+        "ArgumentCountError",
+        format!(
+            "{name}() expects {which} {bound} argument{}, {passed} given",
+            if bound == 1 { "" } else { "s" }
+        ),
+    ))
+}
+
+/// The stub's arity check for a method the VM implements natively
+/// (Generator, Closure).
+pub(crate) fn native_method_count_error(
+    class: &str,
+    method: &[u8],
+    passed: usize,
+) -> Option<Thrown> {
+    use builtins::signatures::Signature;
+    let st = builtins::signatures::method(class.as_bytes(), method)?;
+    zpp_count_error(
+        &format!("{class}::{}", st.name),
+        st.min_args(),
+        st.max_args(),
+        passed,
+    )
+}
+
+/// Calls php compiles to dedicated opcodes instead of a function call
+/// (zend_try_compile_special_func): they never appear as a trace frame, and a
+/// callback they invoke is called from the caller's own line.
+pub(crate) fn compiled_inline(lcname: &[u8], argc: usize) -> bool {
+    match lcname {
+        b"strlen" | b"is_null" | b"is_bool" | b"is_long" | b"is_int" | b"is_integer"
+        | b"is_float" | b"is_double" | b"is_string" | b"is_array" | b"is_object"
+        | b"is_resource" | b"is_scalar" | b"boolval" | b"intval" | b"floatval" | b"doubleval"
+        | b"strval" | b"gettype" | b"count" | b"sizeof" => argc == 1,
+        b"get_class" => argc <= 1,
+        b"get_called_class" | b"func_num_args" | b"func_get_args" => argc == 0,
+        b"array_key_exists" | b"call_user_func_array" => argc == 2,
+        b"call_user_func" => argc >= 1,
+        _ => false,
+    }
+}
+
+/// php 8.4's frameless internal calls (ZEND_FRAMELESS_FUNCTION, by arity):
+/// they get no execute_data, so what they run sees their caller's frame.
+pub(crate) fn frameless_icall(lcname: &[u8], argc: usize) -> bool {
+    match lcname {
+        b"dechex" | b"is_numeric" => argc == 1,
+        b"class_exists" | b"dirname" | b"implode" | b"trim" => argc == 1 || argc == 2,
+        b"in_array" | b"strpos" | b"strstr" | b"strtr" | b"substr" => argc == 2 || argc == 3,
+        b"max" | b"min" | b"preg_match" | b"property_exists" | b"str_contains"
+        | b"str_starts_with" => argc == 2,
+        b"preg_replace" | b"str_replace" => argc == 3,
+        _ => false,
+    }
+}
+
+/// The method name of `$o->$m()` / `C::$m()`: php requires a string.
+pub(crate) fn dyn_method_name(v: &Value) -> Result<Vec<u8>, Thrown> {
+    match deref(v) {
+        Value::Str(s) => Ok(s.as_bytes().to_vec()),
+        _ => Err(Thrown::error("Error", "Method name must be a string")),
+    }
+}
+
+/// A `__`-prefixed method name that is not one of php's magic methods.
+pub(crate) fn is_engine_helper_name(name: &[u8]) -> bool {
+    const MAGIC: &[&[u8]] = &[
+        b"__construct",
+        b"__destruct",
+        b"__call",
+        b"__callstatic",
+        b"__get",
+        b"__set",
+        b"__isset",
+        b"__unset",
+        b"__sleep",
+        b"__wakeup",
+        b"__serialize",
+        b"__unserialize",
+        b"__tostring",
+        b"__invoke",
+        b"__set_state",
+        b"__clone",
+        b"__debuginfo",
+    ];
+    let lc = name.to_ascii_lowercase();
+    lc.starts_with(b"__") && !MAGIC.contains(&lc.as_slice())
+}
+
+/// A magic or ArrayAccess method of a built-in class whose php stub has no
+/// such method: the prelude's stand-in for php's property, dimension and
+/// `get_method` handlers (SimpleXML, DOM, XMLReader, SPL's forwarding).
+pub(crate) fn is_handler_accessor(class: &[u8], method: &[u8]) -> bool {
+    const ACCESSORS: &[&[u8]] = &[
+        b"__get",
+        b"__set",
+        b"__isset",
+        b"__unset",
+        b"__call",
+        b"__callstatic",
+        b"offsetget",
+        b"offsetset",
+        b"offsetexists",
+        b"offsetunset",
+    ];
+    ACCESSORS.contains(&method.to_ascii_lowercase().as_slice())
+        && builtins::signatures::class(class).is_some()
+        && builtins::signatures::method(class, method).is_none()
+}
+
+/// Bind positional `args` to a callee's parameter CV registers (by value), with
+/// constant defaults and variadic collection; surplus args (non-variadic callee)
+/// are kept in `extra_args`. `Err(i)`: required parameter `i` was not passed.
+fn bind_params(proto: &FunctionProto, args: &[Value], frame: &mut Frame) -> Result<(), usize> {
+    let regs = &mut frame.regs;
+    for (i, p) in proto.params.iter().enumerate() {
+        if p.variadic {
+            // Collect the remaining args into an array (by value).
+            let mut arr = PhpArray::new();
+            if i < args.len() {
+                for a in &args[i..] {
+                    arr.push(deref(a));
+                }
+            }
+            regs[p.cv as usize] = Value::Array(arr);
+            return Ok(()); // variadic is always the last parameter
+        } else if i < args.len() {
+            // By-ref params keep the incoming Ref (aliasing the caller's var);
+            // by-value params receive a dereferenced copy.
+            regs[p.cv as usize] = if p.by_ref {
+                args[i].clone()
+            } else {
+                deref(&args[i])
+            };
+        } else if let Some(def) = &p.default {
+            match def {
+                ParamDefault::Const(k) => regs[p.cv as usize] = proto.consts[*k as usize].clone(),
+                ParamDefault::Init => {} // non-constant defaults: deferred
+            }
+        } else {
+            return Err(i);
+        }
+    }
+    if args.len() > proto.params.len() {
+        frame.extra_args = args[proto.params.len()..].iter().map(deref).collect();
+    }
+    Ok(())
+}
+
+fn required_params(proto: &FunctionProto) -> usize {
+    proto
+        .params
+        .iter()
+        .filter(|p| p.default.is_none() && !p.variadic)
+        .count()
+}
+
+/// Whether argument `idx` binds to a by-reference parameter of `p` (a
+/// by-reference variadic covers every argument from its position on).
+pub(crate) fn param_is_ref(p: &FunctionProto, idx: u16) -> bool {
+    let i = idx as usize;
+    match p.params.get(i) {
+        Some(param) => param.by_ref,
+        None => p.params.last().is_some_and(|l| l.variadic && l.by_ref),
+    }
+}

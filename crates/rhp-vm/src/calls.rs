@@ -1840,6 +1840,118 @@ impl Vm {
         drop(args);
         r
     }
+
+    /// `New`: instantiate `class` into `dst` and push its constructor frame.
+    pub(crate) fn exec_new(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        class: ClassRef,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        let cls = self.resolve_class_autoload(top, class)?;
+        let entry = self.class(cls);
+        if entry.kind != ClassKind::Class || entry.flags.is_abstract {
+            let what = if entry.flags.is_abstract {
+                "abstract class"
+            } else {
+                match entry.kind {
+                    ClassKind::Enum => "enum",
+                    ClassKind::Interface => "interface",
+                    ClassKind::Trait => "trait",
+                    ClassKind::Class => "class",
+                }
+            };
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "Cannot instantiate {} {}",
+                    what,
+                    String::from_utf8_lossy(entry.name.as_bytes())
+                ),
+            ));
+        }
+        if self.is_directory_class(cls) {
+            // php's Directory get_constructor handler.
+            return Err(Thrown::error(
+                "Error",
+                "Cannot directly construct Directory, use dir() instead",
+            ));
+        }
+        self.check_ctor_access(top, cls)?;
+        self.update_class_constants(cls)?;
+        let obj = self.new_object(cls);
+        self.reg_set(top, dst, Value::Object(obj.clone()));
+        // Run __construct, discarding its return (into the arg window).
+        if let Some(m) = self.lookup_method(cls, b"__construct") {
+            let ptr = Rc::as_ptr(&obj) as usize;
+            let tracked = !self.destructibles.is_empty()
+                && self
+                    .destructibles
+                    .last()
+                    .is_some_and(|d| Rc::as_ptr(d) as usize == ptr);
+            self.enter_method(top, &m, Some(obj), cls, Reg::MAX, base, argc)?;
+            if tracked {
+                self.ctor_frames.push((self.stack.len() - 1, ptr));
+            }
+        }
+        Ok(())
+    }
+
+    /// `CallV`: call function `name` with the packed arguments array in `args`.
+    pub(crate) fn call_v(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        dst: Reg,
+        name: NIdx,
+        args: Reg,
+        fallback: NIdx,
+    ) -> Result<(), Thrown> {
+        let (user, fname) = self.resolve_fn(name, fallback, &proto.names);
+        let Ok(user) = Self::engine_helper_call(proto, user, &fname) else {
+            return Err(undefined_function(&proto.names[name as usize]));
+        };
+        if let Some(reason) = builtins::is_refused(std::str::from_utf8(&fname).unwrap_or("")) {
+            let shown = String::from_utf8_lossy(&fname).into_owned();
+            return Err(Thrown::unsupported(format!("{shown}()"), reason));
+        }
+        let arr = self.reg_get(top, args);
+        let (argv, named) = self.split_call_args(&arr)?;
+        if let Some(fnidx) = user {
+            let callee = self.functions[fnidx].clone();
+            let argv = self.place_named_args(&callee, None, argv, named)?;
+            self.push_user_frame(callee, argv, dst)?;
+        } else if !named.is_empty() {
+            // `call_user_func($f, ...named)` forwards them.
+            if fname.eq_ignore_ascii_case(b"call_user_func") && !argv.is_empty() {
+                let out = self.call_named(
+                    &argv[0],
+                    argv[1..].to_vec(),
+                    named,
+                    Some(self.caller_strict()),
+                )?;
+                self.reg_set(top, dst, out);
+            } else {
+                return Err(Thrown::unsupported(
+                    "named arguments to a builtin function",
+                    "deferred",
+                ));
+            }
+        } else {
+            let name_str = String::from_utf8_lossy(&fname).into_owned();
+            if builtins::lookup(&name_str).is_none() {
+                return Err(undefined_function(&proto.names[name as usize]));
+            }
+            self.mark_user_call_builtin(&fname, fallback);
+            let out = self.invoke_builtin(&name_str, argv);
+            self.cuf_caller = None;
+            let out = out?;
+            self.reg_set(top, dst, out);
+        }
+        Ok(())
+    }
 }
 
 /// Whether `name` is a builtin visible to user code. `__`-prefixed builtins

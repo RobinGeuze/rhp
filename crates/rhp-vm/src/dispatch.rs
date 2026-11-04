@@ -6,11 +6,9 @@ use std::rc::Rc;
 
 use rhp_builtins as builtins;
 use rhp_builtins::object::{CastTarget, Op};
-use rhp_bytecode::{ClassRef, CmpKind, FunctionProto, Instr, Reg};
+use rhp_bytecode::{ClassRef, CmpKind, FunctionProto, Instr, NIdx, Pc, Reg};
 use rhp_semantics::{cast_to_array, inc_dec_value, ops};
-use rhp_values::{
-    conv, ArrayKey, ClassKind, ObjectData, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
-};
+use rhp_values::{conv, ArrayKey, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
 
 use crate::calls::{
     compiled_inline, dyn_method_name, frameless_icall, param_is_ref, undefined_function,
@@ -867,376 +865,27 @@ impl Vm {
                     src,
                     end,
                     delegate,
-                } => {
-                    match self.reg_get(top, src) {
-                        Value::Array(a) if !a.is_empty() => {
-                            self.reg_set(top, arr_reg, Value::Array(a));
-                            self.reg_set(top, pos_reg, Value::Int(0));
-                        }
-                        Value::Object(h) => {
-                            // Resolve the thing we actually iterate: IteratorAggregate
-                            // delegates to getIterator(); Generators / Iterators drive
-                            // the protocol in FeFetch; a plain object iterates its
-                            // accessible properties (snapshotted to an array).
-                            let mut obj = h;
-                            if self.class_implements(obj.borrow().class, b"IteratorAggregate") {
-                                match self.call_iter_method(&obj, b"getiterator")? {
-                                    Value::Object(it) => obj = it,
-                                    _ => {
-                                        self.stack[top].pc = end as usize;
-                                        continue;
-                                    }
-                                }
-                            }
-                            let oid = obj.borrow().id;
-                            let ocls = obj.borrow().class;
-                            if self.generators.contains_key(&oid) {
-                                if delegate {
-                                    // ZEND_YIELD_FROM attaches the generator
-                                    // as it stands; no rewind.
-                                    self.gen_ensure_started(oid)?;
-                                } else {
-                                    self.gen_check_open(oid)?;
-                                    self.gen_rewind(oid)?;
-                                }
-                                self.reg_set(top, arr_reg, Value::Object(obj));
-                                self.reg_set(top, pos_reg, Value::Int(0));
-                            } else if self.class_implements(ocls, b"Iterator") {
-                                self.call_iter_method(&obj, b"rewind")?;
-                                self.reg_set(top, arr_reg, Value::Object(obj));
-                                self.reg_set(top, pos_reg, Value::Int(0));
-                            } else {
-                                let arr = self.object_prop_array(&obj, top);
-                                if arr.is_empty() {
-                                    self.stack[top].pc = end as usize;
-                                } else {
-                                    self.reg_set(top, arr_reg, Value::Array(arr));
-                                    self.reg_set(top, pos_reg, Value::Int(0));
-                                }
-                            }
-                        }
-                        // empty array or non-iterable: skip the loop
-                        _ => self.stack[top].pc = end as usize,
-                    }
-                }
+                } => self.fe_reset(top, arr_reg, pos_reg, src, end, delegate)?,
                 Instr::FeFetch {
                     arr_reg,
                     pos_reg,
                     key_cv,
                     val_cv,
                     end,
-                } => {
-                    // Generator mode. The advance happens at the TOP of each
-                    // iteration except the first, so the generator's post-yield
-                    // code runs *after* the loop body (unlike an array's pos++).
-                    // `pos_reg` is 0 on the first fetch, 1 thereafter.
-                    if let Value::Object(h) = self.reg_get(top, arr_reg) {
-                        let id = h.borrow().id;
-                        if self.generators.contains_key(&id) {
-                            let first = matches!(self.reg_get(top, pos_reg), Value::Int(0));
-                            if !first {
-                                self.advance_gen(id, Value::Null)?;
-                            }
-                            let g = &self.generators[&id];
-                            if g.status == GenStatus::Finished {
-                                self.stack[top].pc = end as usize;
-                            } else {
-                                let (k, v) = (g.current_key.clone(), deref(&g.current_val));
-                                self.cv_assign(top, val_cv, v);
-                                if key_cv != Reg::MAX {
-                                    self.cv_assign(top, key_cv, k);
-                                }
-                                self.reg_set(top, pos_reg, Value::Int(1));
-                            }
-                            continue;
-                        }
-                        // User Iterator object: rewind()/valid()/current()/key()/next().
-                        if self.class_implements(h.borrow().class, b"Iterator") {
-                            let first = matches!(self.reg_get(top, pos_reg), Value::Int(0));
-                            if !first {
-                                self.call_iter_method(&h, b"next")?;
-                            }
-                            let valid = conv::to_bool(&self.call_iter_method(&h, b"valid")?);
-                            if !valid {
-                                self.stack[top].pc = end as usize;
-                            } else {
-                                let v = self.call_iter_method(&h, b"current")?;
-                                self.cv_assign(top, val_cv, v);
-                                if key_cv != Reg::MAX {
-                                    let k = self.call_iter_method(&h, b"key")?;
-                                    self.cv_assign(top, key_cv, k);
-                                }
-                                self.reg_set(top, pos_reg, Value::Int(1));
-                            }
-                            continue;
-                        }
-                    }
-                    let pos = match self.reg_get(top, pos_reg) {
-                        Value::Int(n) => n as usize,
-                        _ => 0,
-                    };
-                    let snapshot = self.reg_get(top, arr_reg);
-                    let Value::Array(a) = snapshot else {
-                        self.stack[top].pc = end as usize;
-                        continue;
-                    };
-                    match a.get_index(pos) {
-                        Some((k, v)) => {
-                            let (k, v) = (k.clone(), deref(v).clone());
-                            // Bind as a PHP variable: if the loop var is still a
-                            // reference (e.g. left over from a prior by-ref loop),
-                            // write through it — matching PHP's foreach gotcha.
-                            self.cv_assign(top, val_cv, v);
-                            if key_cv != Reg::MAX {
-                                self.cv_assign(top, key_cv, array_key_to_value(&k));
-                            }
-                            self.reg_set(top, pos_reg, Value::Int((pos + 1) as i64));
-                        }
-                        None => self.stack[top].pc = end as usize,
-                    }
-                }
+                } => self.fe_fetch(top, arr_reg, pos_reg, key_cv, val_cv, end)?,
 
                 Instr::FeResetRef {
                     arr_cv,
                     pos_reg,
                     end,
-                } => {
-                    // A Traversable object by reference: only a by-reference
-                    // generator (directly or from getIterator()) can do it;
-                    // `pos_reg` then holds [generator, fetched-once flag].
-                    if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) {
-                        let mut obj = h;
-                        let mut traversable = false;
-                        while self.class_implements(obj.borrow().class, b"IteratorAggregate") {
-                            // A built-in ArrayObject iterates its storage itself.
-                            if self.spl_array_owner(&obj, b"getiterator").is_some() {
-                                break;
-                            }
-                            traversable = true;
-                            match self.call_iter_method(&obj, b"getiterator")? {
-                                Value::Object(it)
-                                    if self.class_implements(it.borrow().class, b"Traversable") =>
-                                {
-                                    obj = it
-                                }
-                                _ => {
-                                    let cls = obj.borrow().class;
-                                    return Err(Thrown::error(
-                                        "Exception",
-                                        format!(
-                                            "Objects returned by {}::getIterator() must be traversable or implement interface Iterator",
-                                            String::from_utf8_lossy(self.class(cls).name.as_bytes())
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
-                        let oid = obj.borrow().id;
-                        if let Some(g) = self.generators.get(&oid) {
-                            let by_value_gen =
-                                g.frame.as_ref().is_some_and(|f| !f.proto.returns_ref);
-                            self.gen_check_open(oid)?;
-                            if by_value_gen {
-                                return Err(Thrown::error(
-                                    "Exception",
-                                    "You can only iterate a generator by-reference if it declared that it yields by-reference",
-                                ));
-                            }
-                            self.gen_rewind(oid)?;
-                            let mut st = PhpArray::new();
-                            st.push(Value::Object(obj));
-                            st.push(Value::Bool(false));
-                            self.reg_set(top, pos_reg, Value::Array(st));
-                            continue;
-                        }
-                        // ArrayObject / ArrayIterator (unless `current()` is
-                        // overridden): by reference over the backing array.
-                        let spl = self
-                            .spl_array_owner(&obj, b"getiterator")
-                            .or_else(|| self.spl_array_owner(&obj, b"current"));
-                        if let Some(owner) = spl {
-                            // `pos_reg` holds [storage reference, position].
-                            let cell = self.spl_array_storage(&obj, owner)?;
-                            let mut st = PhpArray::new();
-                            st.push(Value::Ref(cell));
-                            st.push(Value::Int(0));
-                            self.reg_set(top, pos_reg, Value::Array(st));
-                            continue;
-                        }
-                        if traversable || self.class_implements(obj.borrow().class, b"Iterator") {
-                            return Err(Thrown::error(
-                                "Error",
-                                "An iterator cannot be used with foreach by reference",
-                            ));
-                        }
-                    }
-                    let nonempty = match deref(&self.stack[top].regs[arr_cv as usize]) {
-                        Value::Array(a) => !a.is_empty(),
-                        // A plain object iterates its properties by reference;
-                        // `FeFetchRef` ends the loop when none remain accessible.
-                        Value::Object(_) => true,
-                        _ => false,
-                    };
-                    if nonempty {
-                        self.reg_set(top, pos_reg, Value::Int(0));
-                    } else {
-                        self.stack[top].pc = end as usize;
-                    }
-                }
+                } => self.fe_reset_ref(top, arr_cv, pos_reg, end)?,
                 Instr::FeFetchRef {
                     arr_cv,
                     pos_reg,
                     key_cv,
                     val_cv,
                     end,
-                } => {
-                    // By-reference generator (see FeResetRef): advance at the
-                    // top of each iteration but the first, then alias the loop
-                    // variable to the yielded reference.
-                    if let Value::Array(st) = self.reg_get(top, pos_reg) {
-                        // ArrayObject / ArrayIterator storage (see FeResetRef).
-                        if let (Some(Value::Ref(cell)), Some(Value::Int(pos))) = (
-                            st.get_index(0).map(|e| e.1.clone()),
-                            st.get_index(1).map(|e| e.1.clone()),
-                        ) {
-                            let fetched = foreach_promote(&mut cell.borrow_mut(), pos as usize);
-                            match fetched {
-                                Some((k, elem_rc)) => {
-                                    self.bind_ref_cv(top, val_cv, elem_rc);
-                                    if key_cv != Reg::MAX {
-                                        self.cv_assign(top, key_cv, array_key_to_value(&k));
-                                    }
-                                    let mut st = PhpArray::new();
-                                    st.push(Value::Ref(cell));
-                                    st.push(Value::Int(pos + 1));
-                                    self.reg_set(top, pos_reg, Value::Array(st));
-                                }
-                                None => self.stack[top].pc = end as usize,
-                            }
-                            continue;
-                        }
-                        let (Some(Value::Object(g)), Some(Value::Bool(fetched))) = (
-                            st.get_index(0).map(|e| e.1.clone()),
-                            st.get_index(1).map(|e| e.1.clone()),
-                        ) else {
-                            self.stack[top].pc = end as usize;
-                            continue;
-                        };
-                        let id = g.borrow().id;
-                        if fetched {
-                            self.advance_gen(id, Value::Null)?;
-                        }
-                        let gs = &self.generators[&id];
-                        if gs.status == GenStatus::Finished {
-                            self.stack[top].pc = end as usize;
-                            continue;
-                        }
-                        let (k, v) = (gs.current_key.clone(), gs.current_val.clone());
-                        let rc = match v {
-                            Value::Ref(rc) => rc,
-                            other => Rc::new(RefCell::new(other)),
-                        };
-                        self.bind_ref_cv(top, val_cv, rc);
-                        if key_cv != Reg::MAX {
-                            self.cv_assign(top, key_cv, k);
-                        }
-                        let mut st = PhpArray::new();
-                        st.push(Value::Object(g));
-                        st.push(Value::Bool(true));
-                        self.reg_set(top, pos_reg, Value::Array(st));
-                        continue;
-                    }
-                    let pos = match self.reg_get(top, pos_reg) {
-                        Value::Int(n) => n as usize,
-                        _ => 0,
-                    };
-                    // By-reference foreach over a plain object: alias each
-                    // accessible property slot so writes through the loop var are
-                    // visible on the object (matches PHP).
-                    if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]).clone()
-                    {
-                        let caller = self.stack[top].defining_class;
-                        let cls = h.borrow().class;
-                        let mut b = h.borrow_mut();
-                        let n = b.properties.len();
-                        let mut idx = pos;
-                        let mut found: Option<PhpStr> = None;
-                        while idx < n {
-                            let key = b.properties.get_index(idx).unwrap().0;
-                            if let Some(name) =
-                                classes::slot_accessible(&self.classes, cls, caller, key)
-                            {
-                                found = Some(name);
-                                break;
-                            }
-                            idx += 1;
-                        }
-                        match found {
-                            Some(name) => {
-                                let key = b.properties.get_index(idx).unwrap().0.clone();
-                                if let Some(pe) =
-                                    self.class(cls).props.get(&key).filter(|pe| pe.readonly)
-                                {
-                                    return Err(Thrown::error(
-                                        "Error",
-                                        format!(
-                                            "Cannot acquire reference to readonly property {}::${}",
-                                            String::from_utf8_lossy(
-                                                self.class(pe.declaring_class).name.as_bytes()
-                                            ),
-                                            String::from_utf8_lossy(pe.name.as_bytes())
-                                        ),
-                                    ));
-                                }
-                                let slot = b.properties.get_index_mut(idx).unwrap().1;
-                                let rc = match slot {
-                                    Value::Ref(rc) => rc.clone(),
-                                    other => {
-                                        let inner = std::mem::replace(other, Value::Null);
-                                        let rc = Rc::new(RefCell::new(inner));
-                                        *other = Value::Ref(rc.clone());
-                                        rc
-                                    }
-                                };
-                                drop(b);
-                                self.bind_ref_cv(top, val_cv, rc);
-                                if key_cv != Reg::MAX {
-                                    self.cv_assign(
-                                        top,
-                                        key_cv,
-                                        Value::str(name.as_bytes().to_vec()),
-                                    );
-                                }
-                                self.reg_set(top, pos_reg, Value::Int((idx + 1) as i64));
-                            }
-                            None => {
-                                drop(b);
-                                self.stack[top].pc = end as usize;
-                            }
-                        }
-                        continue;
-                    }
-                    // Promote the element at `pos` to a shared cell (through a
-                    // Ref if the source variable itself is a reference).
-                    let rc_opt = match &self.stack[top].regs[arr_cv as usize] {
-                        Value::Ref(rc) => Some(rc.clone()),
-                        _ => None,
-                    };
-                    let fetched = match rc_opt {
-                        Some(rc) => foreach_promote(&mut rc.borrow_mut(), pos),
-                        None => foreach_promote(&mut self.stack[top].regs[arr_cv as usize], pos),
-                    };
-                    match fetched {
-                        Some((k, elem_rc)) => {
-                            self.bind_ref_cv(top, val_cv, elem_rc);
-                            if key_cv != Reg::MAX {
-                                self.cv_assign(top, key_cv, array_key_to_value(&k));
-                            }
-                            self.reg_set(top, pos_reg, Value::Int((pos + 1) as i64));
-                        }
-                        None => self.stack[top].pc = end as usize,
-                    }
-                }
+                } => self.fe_fetch_ref(top, arr_cv, pos_reg, key_cv, val_cv, end)?,
 
                 Instr::ThrowMatchError { subject } => {
                     let v = self.reg_get(top, subject);
@@ -1332,54 +981,7 @@ impl Vm {
                     base,
                     argc,
                     ..
-                } => {
-                    let cls = self.resolve_class_autoload(top, class)?;
-                    let entry = self.class(cls);
-                    if entry.kind != ClassKind::Class || entry.flags.is_abstract {
-                        let what = if entry.flags.is_abstract {
-                            "abstract class"
-                        } else {
-                            match entry.kind {
-                                ClassKind::Enum => "enum",
-                                ClassKind::Interface => "interface",
-                                ClassKind::Trait => "trait",
-                                ClassKind::Class => "class",
-                            }
-                        };
-                        return Err(Thrown::error(
-                            "Error",
-                            format!(
-                                "Cannot instantiate {} {}",
-                                what,
-                                String::from_utf8_lossy(entry.name.as_bytes())
-                            ),
-                        ));
-                    }
-                    if self.is_directory_class(cls) {
-                        // php's Directory get_constructor handler.
-                        return Err(Thrown::error(
-                            "Error",
-                            "Cannot directly construct Directory, use dir() instead",
-                        ));
-                    }
-                    self.check_ctor_access(top, cls)?;
-                    self.update_class_constants(cls)?;
-                    let obj = self.new_object(cls);
-                    self.reg_set(top, dst, Value::Object(obj.clone()));
-                    // Run __construct, discarding its return (into the arg window).
-                    if let Some(m) = self.lookup_method(cls, b"__construct") {
-                        let ptr = Rc::as_ptr(&obj) as usize;
-                        let tracked = !self.destructibles.is_empty()
-                            && self
-                                .destructibles
-                                .last()
-                                .is_some_and(|d| Rc::as_ptr(d) as usize == ptr);
-                        self.enter_method(top, &m, Some(obj), cls, Reg::MAX, base, argc)?;
-                        if tracked {
-                            self.ctor_frames.push((self.stack.len() - 1, ptr));
-                        }
-                    }
-                }
+                } => self.exec_new(top, dst, class, base, argc)?,
                 Instr::FetchProp { dst, obj, name, .. } => {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
@@ -1583,74 +1185,7 @@ impl Vm {
                 }
                 Instr::FetchClassConst {
                     dst, class, name, ..
-                } => {
-                    let name_b = proto.names[name as usize].as_bytes().to_vec();
-                    let cls = self.resolve_class_autoload(top, class)?;
-                    if name_b == b"class" {
-                        let v = Value::str(self.class(cls).name.as_bytes().to_vec());
-                        self.reg_set(top, dst, v);
-                    } else {
-                        // php loads every constant of a backed enum on first
-                        // fetch (it builds the value -> case table).
-                        // (Not from inside a constant expression, which goes
-                        // through zend_get_class_constant_ex in php.)
-                        let in_const_expr = proto.name.as_bytes() == b"{init}";
-                        if self.class(cls).enum_backing.is_some()
-                            && !self.class(cls).updated
-                            && !in_const_expr
-                        {
-                            self.update_class_constants(cls)?;
-                        }
-                        // Inside a constant expression php names the class as
-                        // written (`self::X`); the opcode path uses its name.
-                        let display: Vec<u8> = match class {
-                            ClassRef::Name(n) if in_const_expr => {
-                                proto.names[n as usize].as_bytes().to_vec()
-                            }
-                            ClassRef::SelfClass if in_const_expr => b"self".to_vec(),
-                            ClassRef::ParentClass if in_const_expr => b"parent".to_vec(),
-                            ClassRef::StaticClass if in_const_expr => b"static".to_vec(),
-                            _ => self.class(cls).name.as_bytes().to_vec(),
-                        };
-                        match self.class(cls).constants.get(&name_b) {
-                            Some(c) => {
-                                let (vis, decl) = (c.visibility, c.declaring_class);
-                                if !self.check_access(self.stack[top].defining_class, decl, vis) {
-                                    return Err(self.access_err("constant", decl, &name_b, vis));
-                                }
-                                let v = if c.init.is_none() {
-                                    c.value.clone()
-                                } else {
-                                    self.class_const_value(cls, &name_b, &display, in_const_expr)?
-                                        .unwrap_or(Value::Null)
-                                };
-                                if let Value::Object(h) = &v {
-                                    self.touch_enum_case(h);
-                                }
-                                // A built-in class's `#[\Deprecated]` constant.
-                                if self.is_internal_class(decl) {
-                                    let dname = self.class(decl).name.as_bytes();
-                                    if let Some(msg) =
-                                        builtins::class_constant_deprecation(dname, &name_b)
-                                    {
-                                        self.diag(8192, &msg)?;
-                                    }
-                                }
-                                self.reg_set(top, dst, v);
-                            }
-                            None => {
-                                return Err(Thrown::error(
-                                    "Error",
-                                    format!(
-                                        "Undefined constant {}::{}",
-                                        String::from_utf8_lossy(&display),
-                                        String::from_utf8_lossy(&name_b)
-                                    ),
-                                ))
-                            }
-                        }
-                    }
-                }
+                } => self.fetch_class_const(top, &proto, dst, class, name)?,
                 Instr::CallMethod {
                     dst,
                     obj,
@@ -1784,73 +1319,7 @@ impl Vm {
                     };
                     self.reg_set(top, dst, Value::Bool(result));
                 }
-                Instr::CloneObj { dst, src } => {
-                    let v = self.reg_get(top, src);
-                    if let Value::Closure(cd) = &v {
-                        // A cloned closure is a new Closure object.
-                        let copy = rhp_values::ClosureData {
-                            fnidx: cd.fnidx,
-                            captures: cd.captures.clone(),
-                            bound_this: cd.bound_this.clone(),
-                            bound_class: cd.bound_class,
-                            bound_static: cd.bound_static,
-                            wrapped: cd.wrapped.clone(),
-                        };
-                        self.reg_set(top, dst, Value::Closure(Rc::new(copy)));
-                        continue;
-                    }
-                    let Value::Object(h) = v else {
-                        return Err(Thrown::error(
-                            "Error",
-                            "__clone method called on non-object",
-                        ));
-                    };
-                    // php's zval_add_ref: a reference only this object holds is
-                    // copied as a plain value, so the clone gets its own slot.
-                    // Holders other than the object and our copy that are
-                    // compiler temporaries (a dead `&` result, a by-ref
-                    // argument already passed) are not PHP references.
-                    let (cls, props) = {
-                        let od = h.borrow();
-                        let mut props = od.properties.clone();
-                        for v in props.values_mut() {
-                            if let Value::Ref(rc) = v {
-                                if Rc::strong_count(rc) == 2 + self.temp_ref_holders(rc) {
-                                    let inner = rc.borrow().clone();
-                                    *v = inner;
-                                }
-                            }
-                        }
-                        (od.class, props)
-                    };
-                    if self.uncloneable_class(cls) {
-                        return Err(Thrown::error(
-                            "Error",
-                            format!(
-                                "Trying to clone an uncloneable object of class {}",
-                                String::from_utf8_lossy(self.class(cls).name.as_bytes())
-                            ),
-                        ));
-                    }
-                    let id = self.next_object_id;
-                    self.next_object_id += 1;
-                    // The clone keeps the property slots' unset flags.
-                    if let Some(ks) = self.unset_typed_props.get(&h.borrow().id).cloned() {
-                        self.unset_typed_props.insert(id, ks);
-                    }
-                    let new_obj: ObjectHandle =
-                        Rc::new(RefCell::new(ObjectData::new(cls, id, props)));
-                    self.track_destructible(&new_obj);
-                    if let Some(rhp_builtins::object::CloneObj::Custom(f)) =
-                        self.class(cls).handlers.map(|t| t.clone_obj)
-                    {
-                        f(self, &h, &new_obj)?;
-                    }
-                    self.reg_set(top, dst, Value::Object(new_obj.clone()));
-                    if let Some(m) = self.lookup_method(cls, b"__clone") {
-                        self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;
-                    }
-                }
+                Instr::CloneObj { dst, src } => self.exec_clone(top, dst, src)?,
                 Instr::DeclareClass { class_idx } => {
                     self.declare_class_at((proto.class_base + class_idx) as usize)?;
                 }
@@ -1902,51 +1371,7 @@ impl Vm {
                     name,
                     args,
                     fallback,
-                } => {
-                    let (user, fname) = self.resolve_fn(name, fallback, &proto.names);
-                    let Ok(user) = Self::engine_helper_call(&proto, user, &fname) else {
-                        return Err(undefined_function(&proto.names[name as usize]));
-                    };
-                    if let Some(reason) =
-                        builtins::is_refused(std::str::from_utf8(&fname).unwrap_or(""))
-                    {
-                        let shown = String::from_utf8_lossy(&fname).into_owned();
-                        return Err(Thrown::unsupported(format!("{shown}()"), reason));
-                    }
-                    let arr = self.reg_get(top, args);
-                    let (argv, named) = self.split_call_args(&arr)?;
-                    if let Some(fnidx) = user {
-                        let callee = self.functions[fnidx].clone();
-                        let argv = self.place_named_args(&callee, None, argv, named)?;
-                        self.push_user_frame(callee, argv, dst)?;
-                    } else if !named.is_empty() {
-                        // `call_user_func($f, ...named)` forwards them.
-                        if fname.eq_ignore_ascii_case(b"call_user_func") && !argv.is_empty() {
-                            let out = self.call_named(
-                                &argv[0],
-                                argv[1..].to_vec(),
-                                named,
-                                Some(self.caller_strict()),
-                            )?;
-                            self.reg_set(top, dst, out);
-                        } else {
-                            return Err(Thrown::unsupported(
-                                "named arguments to a builtin function",
-                                "deferred",
-                            ));
-                        }
-                    } else {
-                        let name_str = String::from_utf8_lossy(&fname).into_owned();
-                        if builtins::lookup(&name_str).is_none() {
-                            return Err(undefined_function(&proto.names[name as usize]));
-                        }
-                        self.mark_user_call_builtin(&fname, fallback);
-                        let out = self.invoke_builtin(&name_str, argv);
-                        self.cuf_caller = None;
-                        let out = out?;
-                        self.reg_set(top, dst, out);
-                    }
-                }
+                } => self.call_v(top, &proto, dst, name, args, fallback)?,
                 Instr::NewV { dst, class, args } => {
                     let cls = self.resolve_class_autoload(top, class)?;
                     let entry = self.class(cls);
@@ -2012,50 +1437,7 @@ impl Vm {
                     dst,
                     name,
                     fallback,
-                } => {
-                    let cname = proto.names[name as usize].as_bytes();
-                    let key = builtins::const_key(cname);
-                    let v = self.constants.get(&*key).cloned().or_else(|| {
-                        if fallback != rhp_bytecode::NO_NAME {
-                            self.constants
-                                .get(proto.names[fallback as usize].as_bytes())
-                                .cloned()
-                        } else {
-                            None
-                        }
-                    });
-                    match v {
-                        Some(v) => {
-                            let bare = cname.rsplit(|&c| c == b'\\').next().unwrap_or(cname);
-                            let deprecation = match bare {
-                                b"E_STRICT" => Some(
-                                    "Constant E_STRICT is deprecated since 8.4, the error level was removed"
-                                        .to_string(),
-                                ),
-                                b"MT_RAND_PHP" => Some(
-                                    "Constant MT_RAND_PHP is deprecated since 8.3, as it uses a biased non-standard variant of Mt19937"
-                                        .to_string(),
-                                ),
-                                _ => builtins::constant_deprecation(bare),
-                            };
-                            if let Some(msg) = deprecation {
-                                if self.constants.contains_key(bare) {
-                                    self.diag(8192, &msg)?;
-                                }
-                            }
-                            self.reg_set(top, dst, v);
-                        }
-                        None => {
-                            return Err(Thrown::error(
-                                "Error",
-                                format!(
-                                    "Undefined constant \"{}\"",
-                                    String::from_utf8_lossy(cname)
-                                ),
-                            ))
-                        }
-                    }
-                }
+                } => self.fetch_const(top, &proto, dst, name, fallback)?,
 
                 Instr::Ret { src } => {
                     let mut v = self.reg_get(top, src);
@@ -2124,45 +1506,7 @@ impl Vm {
                     return Err(Thrown::Exit(code));
                 }
                 Instr::Yield { dst, key, value } => {
-                    // Suspend: hand (key, value, resume-dst) to the generator
-                    // driver, leaving this frame on the stack for it to reclaim.
-                    // A by-reference generator (`function &gen()`) yields a
-                    // variable as a reference to it (php's ZEND_YIELD with
-                    // ZEND_ACC_RETURN_REFERENCE), so `foreach (gen() as &$v)`
-                    // writes reach it; any other value is yielded as is.
-                    let val = if proto.returns_ref && value < proto.num_cvs {
-                        Value::Ref(self.promote(top, value))
-                    } else if proto.returns_ref {
-                        // A reference made by MakeRef/MakeRefLval, or a plain
-                        // value (php: "Only variable references…" notice).
-                        let v = self.stack[top].regs[value as usize].clone();
-                        if !matches!(v, Value::Ref(_)) {
-                            self.diag(
-                                8,
-                                "Only variable references should be yielded by reference",
-                            )?;
-                        }
-                        v
-                    } else {
-                        self.reg_get(top, value)
-                    };
-                    let id = *self.gen_stack.last().expect("yield outside a generator");
-                    let key_val = if key == Reg::MAX {
-                        let g = self.generators.get_mut(&id).unwrap();
-                        let k = Value::Int(g.auto_key);
-                        g.auto_key += 1;
-                        k
-                    } else {
-                        let kv = self.reg_get(top, key);
-                        if let Value::Int(n) = &kv {
-                            let g = self.generators.get_mut(&id).unwrap();
-                            if *n >= g.auto_key {
-                                g.auto_key = n + 1;
-                            }
-                        }
-                        kv
-                    };
-                    self.yield_out = Some((key_val, val, dst));
+                    self.exec_yield(top, &proto, dst, key, value)?;
                     return Ok(Value::Null);
                 }
             }
@@ -2467,6 +1811,515 @@ impl Vm {
             || [&b"true"[..], b"false", b"null"]
                 .iter()
                 .any(|s| name.eq_ignore_ascii_case(s))
+    }
+
+    /// `FeReset`: start a by-value foreach over `src`.
+    fn fe_reset(
+        &mut self,
+        top: usize,
+        arr_reg: Reg,
+        pos_reg: Reg,
+        src: Reg,
+        end: Pc,
+        delegate: bool,
+    ) -> Result<(), Thrown> {
+        match self.reg_get(top, src) {
+            Value::Array(a) if !a.is_empty() => {
+                self.reg_set(top, arr_reg, Value::Array(a));
+                self.reg_set(top, pos_reg, Value::Int(0));
+            }
+            Value::Object(h) => {
+                // Resolve the thing we actually iterate: IteratorAggregate
+                // delegates to getIterator(); Generators / Iterators drive
+                // the protocol in FeFetch; a plain object iterates its
+                // accessible properties (snapshotted to an array).
+                let mut obj = h;
+                if self.class_implements(obj.borrow().class, b"IteratorAggregate") {
+                    match self.call_iter_method(&obj, b"getiterator")? {
+                        Value::Object(it) => obj = it,
+                        _ => {
+                            self.stack[top].pc = end as usize;
+                            return Ok(());
+                        }
+                    }
+                }
+                let oid = obj.borrow().id;
+                let ocls = obj.borrow().class;
+                if self.generators.contains_key(&oid) {
+                    if delegate {
+                        // ZEND_YIELD_FROM attaches the generator
+                        // as it stands; no rewind.
+                        self.gen_ensure_started(oid)?;
+                    } else {
+                        self.gen_check_open(oid)?;
+                        self.gen_rewind(oid)?;
+                    }
+                    self.reg_set(top, arr_reg, Value::Object(obj));
+                    self.reg_set(top, pos_reg, Value::Int(0));
+                } else if self.class_implements(ocls, b"Iterator") {
+                    self.call_iter_method(&obj, b"rewind")?;
+                    self.reg_set(top, arr_reg, Value::Object(obj));
+                    self.reg_set(top, pos_reg, Value::Int(0));
+                } else {
+                    let arr = self.object_prop_array(&obj, top);
+                    if arr.is_empty() {
+                        self.stack[top].pc = end as usize;
+                    } else {
+                        self.reg_set(top, arr_reg, Value::Array(arr));
+                        self.reg_set(top, pos_reg, Value::Int(0));
+                    }
+                }
+            }
+            // empty array or non-iterable: skip the loop
+            _ => self.stack[top].pc = end as usize,
+        }
+        Ok(())
+    }
+
+    /// `FeFetch`: bind the next key/value of a by-value foreach, or jump to `end`.
+    fn fe_fetch(
+        &mut self,
+        top: usize,
+        arr_reg: Reg,
+        pos_reg: Reg,
+        key_cv: Reg,
+        val_cv: Reg,
+        end: Pc,
+    ) -> Result<(), Thrown> {
+        // Generator mode. The advance happens at the TOP of each
+        // iteration except the first, so the generator's post-yield
+        // code runs *after* the loop body (unlike an array's pos++).
+        // `pos_reg` is 0 on the first fetch, 1 thereafter.
+        if let Value::Object(h) = self.reg_get(top, arr_reg) {
+            let id = h.borrow().id;
+            if self.generators.contains_key(&id) {
+                let first = matches!(self.reg_get(top, pos_reg), Value::Int(0));
+                if !first {
+                    self.advance_gen(id, Value::Null)?;
+                }
+                let g = &self.generators[&id];
+                if g.status == GenStatus::Finished {
+                    self.stack[top].pc = end as usize;
+                } else {
+                    let (k, v) = (g.current_key.clone(), deref(&g.current_val));
+                    self.cv_assign(top, val_cv, v);
+                    if key_cv != Reg::MAX {
+                        self.cv_assign(top, key_cv, k);
+                    }
+                    self.reg_set(top, pos_reg, Value::Int(1));
+                }
+                return Ok(());
+            }
+            // User Iterator object: rewind()/valid()/current()/key()/next().
+            if self.class_implements(h.borrow().class, b"Iterator") {
+                let first = matches!(self.reg_get(top, pos_reg), Value::Int(0));
+                if !first {
+                    self.call_iter_method(&h, b"next")?;
+                }
+                let valid = conv::to_bool(&self.call_iter_method(&h, b"valid")?);
+                if !valid {
+                    self.stack[top].pc = end as usize;
+                } else {
+                    let v = self.call_iter_method(&h, b"current")?;
+                    self.cv_assign(top, val_cv, v);
+                    if key_cv != Reg::MAX {
+                        let k = self.call_iter_method(&h, b"key")?;
+                        self.cv_assign(top, key_cv, k);
+                    }
+                    self.reg_set(top, pos_reg, Value::Int(1));
+                }
+                return Ok(());
+            }
+        }
+        let pos = match self.reg_get(top, pos_reg) {
+            Value::Int(n) => n as usize,
+            _ => 0,
+        };
+        let snapshot = self.reg_get(top, arr_reg);
+        let Value::Array(a) = snapshot else {
+            self.stack[top].pc = end as usize;
+            return Ok(());
+        };
+        match a.get_index(pos) {
+            Some((k, v)) => {
+                let (k, v) = (k.clone(), deref(v).clone());
+                // Bind as a PHP variable: if the loop var is still a
+                // reference (e.g. left over from a prior by-ref loop),
+                // write through it — matching PHP's foreach gotcha.
+                self.cv_assign(top, val_cv, v);
+                if key_cv != Reg::MAX {
+                    self.cv_assign(top, key_cv, array_key_to_value(&k));
+                }
+                self.reg_set(top, pos_reg, Value::Int((pos + 1) as i64));
+            }
+            None => self.stack[top].pc = end as usize,
+        }
+        Ok(())
+    }
+
+    /// `FeResetRef`: start a by-reference foreach over CV `arr_cv`.
+    fn fe_reset_ref(
+        &mut self,
+        top: usize,
+        arr_cv: Reg,
+        pos_reg: Reg,
+        end: Pc,
+    ) -> Result<(), Thrown> {
+        // A Traversable object by reference: only a by-reference
+        // generator (directly or from getIterator()) can do it;
+        // `pos_reg` then holds [generator, fetched-once flag].
+        if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) {
+            let mut obj = h;
+            let mut traversable = false;
+            while self.class_implements(obj.borrow().class, b"IteratorAggregate") {
+                // A built-in ArrayObject iterates its storage itself.
+                if self.spl_array_owner(&obj, b"getiterator").is_some() {
+                    break;
+                }
+                traversable = true;
+                match self.call_iter_method(&obj, b"getiterator")? {
+                    Value::Object(it)
+                        if self.class_implements(it.borrow().class, b"Traversable") =>
+                    {
+                        obj = it
+                    }
+                    _ => {
+                        let cls = obj.borrow().class;
+                        return Err(Thrown::error(
+                            "Exception",
+                            format!(
+                                "Objects returned by {}::getIterator() must be traversable or implement interface Iterator",
+                                String::from_utf8_lossy(self.class(cls).name.as_bytes())
+                            ),
+                        ));
+                    }
+                }
+            }
+            let oid = obj.borrow().id;
+            if let Some(g) = self.generators.get(&oid) {
+                let by_value_gen = g.frame.as_ref().is_some_and(|f| !f.proto.returns_ref);
+                self.gen_check_open(oid)?;
+                if by_value_gen {
+                    return Err(Thrown::error(
+                        "Exception",
+                        "You can only iterate a generator by-reference if it declared that it yields by-reference",
+                    ));
+                }
+                self.gen_rewind(oid)?;
+                let mut st = PhpArray::new();
+                st.push(Value::Object(obj));
+                st.push(Value::Bool(false));
+                self.reg_set(top, pos_reg, Value::Array(st));
+                return Ok(());
+            }
+            // ArrayObject / ArrayIterator (unless `current()` is
+            // overridden): by reference over the backing array.
+            let spl = self
+                .spl_array_owner(&obj, b"getiterator")
+                .or_else(|| self.spl_array_owner(&obj, b"current"));
+            if let Some(owner) = spl {
+                // `pos_reg` holds [storage reference, position].
+                let cell = self.spl_array_storage(&obj, owner)?;
+                let mut st = PhpArray::new();
+                st.push(Value::Ref(cell));
+                st.push(Value::Int(0));
+                self.reg_set(top, pos_reg, Value::Array(st));
+                return Ok(());
+            }
+            if traversable || self.class_implements(obj.borrow().class, b"Iterator") {
+                return Err(Thrown::error(
+                    "Error",
+                    "An iterator cannot be used with foreach by reference",
+                ));
+            }
+        }
+        let nonempty = match deref(&self.stack[top].regs[arr_cv as usize]) {
+            Value::Array(a) => !a.is_empty(),
+            // A plain object iterates its properties by reference;
+            // `FeFetchRef` ends the loop when none remain accessible.
+            Value::Object(_) => true,
+            _ => false,
+        };
+        if nonempty {
+            self.reg_set(top, pos_reg, Value::Int(0));
+        } else {
+            self.stack[top].pc = end as usize;
+        }
+        Ok(())
+    }
+
+    /// `FeFetchRef`: alias the loop variable to the next element of a by-reference
+    /// foreach, or jump to `end`.
+    fn fe_fetch_ref(
+        &mut self,
+        top: usize,
+        arr_cv: Reg,
+        pos_reg: Reg,
+        key_cv: Reg,
+        val_cv: Reg,
+        end: Pc,
+    ) -> Result<(), Thrown> {
+        // By-reference generator (see FeResetRef): advance at the
+        // top of each iteration but the first, then alias the loop
+        // variable to the yielded reference.
+        if let Value::Array(st) = self.reg_get(top, pos_reg) {
+            // ArrayObject / ArrayIterator storage (see FeResetRef).
+            if let (Some(Value::Ref(cell)), Some(Value::Int(pos))) = (
+                st.get_index(0).map(|e| e.1.clone()),
+                st.get_index(1).map(|e| e.1.clone()),
+            ) {
+                let fetched = foreach_promote(&mut cell.borrow_mut(), pos as usize);
+                match fetched {
+                    Some((k, elem_rc)) => {
+                        self.bind_ref_cv(top, val_cv, elem_rc);
+                        if key_cv != Reg::MAX {
+                            self.cv_assign(top, key_cv, array_key_to_value(&k));
+                        }
+                        let mut st = PhpArray::new();
+                        st.push(Value::Ref(cell));
+                        st.push(Value::Int(pos + 1));
+                        self.reg_set(top, pos_reg, Value::Array(st));
+                    }
+                    None => self.stack[top].pc = end as usize,
+                }
+                return Ok(());
+            }
+            let (Some(Value::Object(g)), Some(Value::Bool(fetched))) = (
+                st.get_index(0).map(|e| e.1.clone()),
+                st.get_index(1).map(|e| e.1.clone()),
+            ) else {
+                self.stack[top].pc = end as usize;
+                return Ok(());
+            };
+            let id = g.borrow().id;
+            if fetched {
+                self.advance_gen(id, Value::Null)?;
+            }
+            let gs = &self.generators[&id];
+            if gs.status == GenStatus::Finished {
+                self.stack[top].pc = end as usize;
+                return Ok(());
+            }
+            let (k, v) = (gs.current_key.clone(), gs.current_val.clone());
+            let rc = match v {
+                Value::Ref(rc) => rc,
+                other => Rc::new(RefCell::new(other)),
+            };
+            self.bind_ref_cv(top, val_cv, rc);
+            if key_cv != Reg::MAX {
+                self.cv_assign(top, key_cv, k);
+            }
+            let mut st = PhpArray::new();
+            st.push(Value::Object(g));
+            st.push(Value::Bool(true));
+            self.reg_set(top, pos_reg, Value::Array(st));
+            return Ok(());
+        }
+        let pos = match self.reg_get(top, pos_reg) {
+            Value::Int(n) => n as usize,
+            _ => 0,
+        };
+        // By-reference foreach over a plain object: alias each
+        // accessible property slot so writes through the loop var are
+        // visible on the object (matches PHP).
+        if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]).clone() {
+            let caller = self.stack[top].defining_class;
+            let cls = h.borrow().class;
+            let mut b = h.borrow_mut();
+            let n = b.properties.len();
+            let mut idx = pos;
+            let mut found: Option<PhpStr> = None;
+            while idx < n {
+                let key = b.properties.get_index(idx).unwrap().0;
+                if let Some(name) = classes::slot_accessible(&self.classes, cls, caller, key) {
+                    found = Some(name);
+                    break;
+                }
+                idx += 1;
+            }
+            match found {
+                Some(name) => {
+                    let key = b.properties.get_index(idx).unwrap().0.clone();
+                    if let Some(pe) = self.class(cls).props.get(&key).filter(|pe| pe.readonly) {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Cannot acquire reference to readonly property {}::${}",
+                                String::from_utf8_lossy(
+                                    self.class(pe.declaring_class).name.as_bytes()
+                                ),
+                                String::from_utf8_lossy(pe.name.as_bytes())
+                            ),
+                        ));
+                    }
+                    let slot = b.properties.get_index_mut(idx).unwrap().1;
+                    let rc = match slot {
+                        Value::Ref(rc) => rc.clone(),
+                        other => {
+                            let inner = std::mem::replace(other, Value::Null);
+                            let rc = Rc::new(RefCell::new(inner));
+                            *other = Value::Ref(rc.clone());
+                            rc
+                        }
+                    };
+                    drop(b);
+                    self.bind_ref_cv(top, val_cv, rc);
+                    if key_cv != Reg::MAX {
+                        self.cv_assign(top, key_cv, Value::str(name.as_bytes().to_vec()));
+                    }
+                    self.reg_set(top, pos_reg, Value::Int((idx + 1) as i64));
+                }
+                None => {
+                    drop(b);
+                    self.stack[top].pc = end as usize;
+                }
+            }
+            return Ok(());
+        }
+        // Promote the element at `pos` to a shared cell (through a
+        // Ref if the source variable itself is a reference).
+        let rc_opt = match &self.stack[top].regs[arr_cv as usize] {
+            Value::Ref(rc) => Some(rc.clone()),
+            _ => None,
+        };
+        let fetched = match rc_opt {
+            Some(rc) => foreach_promote(&mut rc.borrow_mut(), pos),
+            None => foreach_promote(&mut self.stack[top].regs[arr_cv as usize], pos),
+        };
+        match fetched {
+            Some((k, elem_rc)) => {
+                self.bind_ref_cv(top, val_cv, elem_rc);
+                if key_cv != Reg::MAX {
+                    self.cv_assign(top, key_cv, array_key_to_value(&k));
+                }
+                self.reg_set(top, pos_reg, Value::Int((pos + 1) as i64));
+            }
+            None => self.stack[top].pc = end as usize,
+        }
+        Ok(())
+    }
+
+    /// `FetchClassConst`: `Class::NAME` (and `Class::class`) into `dst`.
+    fn fetch_class_const(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        dst: Reg,
+        class: ClassRef,
+        name: NIdx,
+    ) -> Result<(), Thrown> {
+        let name_b = proto.names[name as usize].as_bytes().to_vec();
+        let cls = self.resolve_class_autoload(top, class)?;
+        if name_b == b"class" {
+            let v = Value::str(self.class(cls).name.as_bytes().to_vec());
+            self.reg_set(top, dst, v);
+        } else {
+            // php loads every constant of a backed enum on first
+            // fetch (it builds the value -> case table).
+            // (Not from inside a constant expression, which goes
+            // through zend_get_class_constant_ex in php.)
+            let in_const_expr = proto.name.as_bytes() == b"{init}";
+            if self.class(cls).enum_backing.is_some() && !self.class(cls).updated && !in_const_expr
+            {
+                self.update_class_constants(cls)?;
+            }
+            // Inside a constant expression php names the class as
+            // written (`self::X`); the opcode path uses its name.
+            let display: Vec<u8> = match class {
+                ClassRef::Name(n) if in_const_expr => proto.names[n as usize].as_bytes().to_vec(),
+                ClassRef::SelfClass if in_const_expr => b"self".to_vec(),
+                ClassRef::ParentClass if in_const_expr => b"parent".to_vec(),
+                ClassRef::StaticClass if in_const_expr => b"static".to_vec(),
+                _ => self.class(cls).name.as_bytes().to_vec(),
+            };
+            match self.class(cls).constants.get(&name_b) {
+                Some(c) => {
+                    let (vis, decl) = (c.visibility, c.declaring_class);
+                    if !self.check_access(self.stack[top].defining_class, decl, vis) {
+                        return Err(self.access_err("constant", decl, &name_b, vis));
+                    }
+                    let v = if c.init.is_none() {
+                        c.value.clone()
+                    } else {
+                        self.class_const_value(cls, &name_b, &display, in_const_expr)?
+                            .unwrap_or(Value::Null)
+                    };
+                    if let Value::Object(h) = &v {
+                        self.touch_enum_case(h);
+                    }
+                    // A built-in class's `#[\Deprecated]` constant.
+                    if self.is_internal_class(decl) {
+                        let dname = self.class(decl).name.as_bytes();
+                        if let Some(msg) = builtins::class_constant_deprecation(dname, &name_b) {
+                            self.diag(8192, &msg)?;
+                        }
+                    }
+                    self.reg_set(top, dst, v);
+                }
+                None => {
+                    return Err(Thrown::error(
+                        "Error",
+                        format!(
+                            "Undefined constant {}::{}",
+                            String::from_utf8_lossy(&display),
+                            String::from_utf8_lossy(&name_b)
+                        ),
+                    ))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `FetchConst`: the global constant `name` (or `fallback`) into `dst`.
+    fn fetch_const(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        dst: Reg,
+        name: NIdx,
+        fallback: NIdx,
+    ) -> Result<(), Thrown> {
+        let cname = proto.names[name as usize].as_bytes();
+        let key = builtins::const_key(cname);
+        let v = self.constants.get(&*key).cloned().or_else(|| {
+            if fallback != rhp_bytecode::NO_NAME {
+                self.constants
+                    .get(proto.names[fallback as usize].as_bytes())
+                    .cloned()
+            } else {
+                None
+            }
+        });
+        match v {
+            Some(v) => {
+                let bare = cname.rsplit(|&c| c == b'\\').next().unwrap_or(cname);
+                let deprecation = match bare {
+                    b"E_STRICT" => Some(
+                        "Constant E_STRICT is deprecated since 8.4, the error level was removed"
+                            .to_string(),
+                    ),
+                    b"MT_RAND_PHP" => Some(
+                        "Constant MT_RAND_PHP is deprecated since 8.3, as it uses a biased non-standard variant of Mt19937"
+                            .to_string(),
+                    ),
+                    _ => builtins::constant_deprecation(bare),
+                };
+                if let Some(msg) = deprecation {
+                    if self.constants.contains_key(bare) {
+                        self.diag(8192, &msg)?;
+                    }
+                }
+                self.reg_set(top, dst, v);
+            }
+            None => {
+                return Err(Thrown::error(
+                    "Error",
+                    format!("Undefined constant \"{}\"", String::from_utf8_lossy(cname)),
+                ))
+            }
+        }
+        Ok(())
     }
 }
 

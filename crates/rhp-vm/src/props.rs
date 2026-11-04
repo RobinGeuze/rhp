@@ -1,8 +1,14 @@
 //! Object properties: fetch, store, isset/unset, magic accessors, typed and
-//! readonly slots.
+//! readonly slots, and `clone`.
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use rhp_builtins as builtins;
-use rhp_values::{ArrayKey, ClassId, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
+use rhp_bytecode::Reg;
+use rhp_values::{
+    ArrayKey, ClassId, ClassKind, ObjectData, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
+};
 
 use crate::calls::is_handler_accessor;
 use crate::classes::{Deny, PropRes};
@@ -832,6 +838,75 @@ impl Vm {
             return false;
         };
         pe.name.as_bytes().starts_with(b"__") && self.is_prelude_class(pe.declaring_class)
+    }
+
+    /// `CloneObj`: `clone` the value in `src` into `dst`, then push `__clone`.
+    pub(crate) fn exec_clone(&mut self, top: usize, dst: Reg, src: Reg) -> Result<(), Thrown> {
+        let v = self.reg_get(top, src);
+        if let Value::Closure(cd) = &v {
+            // A cloned closure is a new Closure object.
+            let copy = rhp_values::ClosureData {
+                fnidx: cd.fnidx,
+                captures: cd.captures.clone(),
+                bound_this: cd.bound_this.clone(),
+                bound_class: cd.bound_class,
+                bound_static: cd.bound_static,
+                wrapped: cd.wrapped.clone(),
+            };
+            self.reg_set(top, dst, Value::Closure(Rc::new(copy)));
+            return Ok(());
+        }
+        let Value::Object(h) = v else {
+            return Err(Thrown::error(
+                "Error",
+                "__clone method called on non-object",
+            ));
+        };
+        // php's zval_add_ref: a reference only this object holds is
+        // copied as a plain value, so the clone gets its own slot.
+        // Holders other than the object and our copy that are
+        // compiler temporaries (a dead `&` result, a by-ref
+        // argument already passed) are not PHP references.
+        let (cls, props) = {
+            let od = h.borrow();
+            let mut props = od.properties.clone();
+            for v in props.values_mut() {
+                if let Value::Ref(rc) = v {
+                    if Rc::strong_count(rc) == 2 + self.temp_ref_holders(rc) {
+                        let inner = rc.borrow().clone();
+                        *v = inner;
+                    }
+                }
+            }
+            (od.class, props)
+        };
+        if self.uncloneable_class(cls) {
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "Trying to clone an uncloneable object of class {}",
+                    String::from_utf8_lossy(self.class(cls).name.as_bytes())
+                ),
+            ));
+        }
+        let id = self.next_object_id;
+        self.next_object_id += 1;
+        // The clone keeps the property slots' unset flags.
+        if let Some(ks) = self.unset_typed_props.get(&h.borrow().id).cloned() {
+            self.unset_typed_props.insert(id, ks);
+        }
+        let new_obj: ObjectHandle = Rc::new(RefCell::new(ObjectData::new(cls, id, props)));
+        self.track_destructible(&new_obj);
+        if let Some(rhp_builtins::object::CloneObj::Custom(f)) =
+            self.class(cls).handlers.map(|t| t.clone_obj)
+        {
+            f(self, &h, &new_obj)?;
+        }
+        self.reg_set(top, dst, Value::Object(new_obj.clone()));
+        if let Some(m) = self.lookup_method(cls, b"__clone") {
+            self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;
+        }
+        Ok(())
     }
 }
 

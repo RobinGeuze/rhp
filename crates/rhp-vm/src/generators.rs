@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use rhp_bytecode::Reg;
+use rhp_bytecode::{FunctionProto, Reg};
 use rhp_values::{ObjectData, Thrown, Value};
 
 use crate::calls::native_method_count_error;
@@ -222,5 +222,54 @@ impl Vm {
             b"getreturn" => Ok(self.generators[&id].return_val.clone()),
             _ => return None,
         })
+    }
+
+    /// `Yield`: hand (key, value, resume register) to the generator driver in
+    /// `yield_out`; the caller then suspends the frame.
+    pub(crate) fn exec_yield(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        dst: Reg,
+        key: Reg,
+        value: Reg,
+    ) -> Result<(), Thrown> {
+        // Suspend: hand (key, value, resume-dst) to the generator
+        // driver, leaving this frame on the stack for it to reclaim.
+        // A by-reference generator (`function &gen()`) yields a
+        // variable as a reference to it (php's ZEND_YIELD with
+        // ZEND_ACC_RETURN_REFERENCE), so `foreach (gen() as &$v)`
+        // writes reach it; any other value is yielded as is.
+        let val = if proto.returns_ref && value < proto.num_cvs {
+            Value::Ref(self.promote(top, value))
+        } else if proto.returns_ref {
+            // A reference made by MakeRef/MakeRefLval, or a plain
+            // value (php: "Only variable references…" notice).
+            let v = self.stack[top].regs[value as usize].clone();
+            if !matches!(v, Value::Ref(_)) {
+                self.diag(8, "Only variable references should be yielded by reference")?;
+            }
+            v
+        } else {
+            self.reg_get(top, value)
+        };
+        let id = *self.gen_stack.last().expect("yield outside a generator");
+        let key_val = if key == Reg::MAX {
+            let g = self.generators.get_mut(&id).unwrap();
+            let k = Value::Int(g.auto_key);
+            g.auto_key += 1;
+            k
+        } else {
+            let kv = self.reg_get(top, key);
+            if let Value::Int(n) = &kv {
+                let g = self.generators.get_mut(&id).unwrap();
+                if *n >= g.auto_key {
+                    g.auto_key = n + 1;
+                }
+            }
+            kv
+        };
+        self.yield_out = Some((key_val, val, dst));
+        Ok(())
     }
 }

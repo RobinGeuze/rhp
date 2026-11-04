@@ -263,7 +263,7 @@ its Zend/ directory is under the Zend Engine License 2.00. Both follow.
 
 crates/rhp-csrc also compiles some php-src C files unmodified (its
 vendor/php-src). Their original authors' terms are in sections 5 to 7 and
-17; php-src's changes to them come under the PHP License.
+19; php-src's changes to them come under the PHP License.
 
 crates/rhp-mbfl-sys compiles php-src's ext/mbstring/php_unicode.c with its
 generated tables (unicode_data.h, rare_cp_bitvec.h) unmodified, next to

@@ -58,3 +58,17 @@ fn clean_state_matches_php_defaults() {
     // phpt harness passes its 32767 with -d, which rhp honours).
     assert_eq!(run_vm(CHECK), CLEAN);
 }
+
+/// php drops gmp's random state at the end of a request (its RSHUTDOWN): a
+/// seed does not carry over to the next engine.
+#[test]
+fn gmp_random_state_does_not_leak() {
+    let seeded =
+        run_vm(b"<?php gmp_random_seed(42); echo gmp_random_bits(100), ' ', gmp_random_bits(100);");
+    let (first, second) = seeded.split_once(' ').expect("two numbers");
+    assert_eq!(
+        run_vm(b"<?php gmp_random_seed(42); echo gmp_random_bits(100);"),
+        first
+    );
+    assert_ne!(run_vm(b"<?php echo gmp_random_bits(100);"), second);
+}

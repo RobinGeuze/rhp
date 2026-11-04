@@ -1,0 +1,20 @@
+warning: Constant A already defined, this will be an error in PHP 9
+warning: Constant B already defined, this will be an error in PHP 9
+warning: Constant A already defined, this will be an error in PHP 9
+warning: Constant true already defined, this will be an error in PHP 9
+warning: Constant NULL already defined, this will be an error in PHP 9
+warning: Constant False already defined, this will be an error in PHP 9
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+warning: Constant __COMPILER_HALT_OFFSET__ already defined, this will be an error in PHP 9
+bool(false)
+int(1)
+int(1)
+array(2) {
+  ["A"]=>
+  int(1)
+  ["B"]=>
+  int(1)
+}

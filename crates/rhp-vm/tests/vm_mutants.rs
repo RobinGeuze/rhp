@@ -97,10 +97,11 @@ fn calling_three_element_array_is_not_callable() {
 
 #[test]
 fn define_returns_true_then_false_on_redefine() {
-    // First define succeeds; redefining the same name returns false (not an error).
+    // First define succeeds; redefining the same name warns and returns
+    // false (this harness compiles without a file name).
     assert_eq!(
         run("<?php var_dump(define('X', 1)); var_dump(define('X', 2)); echo X;"),
-        "bool(true)\nbool(false)\n1"
+        "bool(true)\n\nWarning: Constant X already defined, this will be an error in PHP 9 in  on line 1\nbool(false)\n1"
     );
 }
 

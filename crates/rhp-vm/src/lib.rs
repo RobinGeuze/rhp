@@ -523,7 +523,7 @@ impl Host for Vm {
     }
 
     fn define_const(&mut self, name: &[u8], value: Value) -> bool {
-        if self.constants.contains_key(name) {
+        if self.const_taken(name) {
             return false;
         }
         self.constants.insert(name.to_vec(), value);
@@ -6693,7 +6693,13 @@ impl Vm {
                 Instr::DeclareConst { name, src } => {
                     let cname = proto.names[name as usize].as_bytes().to_vec();
                     let v = self.reg_get(top, src);
-                    self.constants.entry(cname).or_insert(v);
+                    if self.const_taken(&cname) {
+                        let msg = builtins::const_redefined_message(&cname);
+                        self.diag(builtins::E_WARNING, &msg)?;
+                    } else {
+                        self.constants.insert(cname.clone(), v);
+                        self.user_const_order.push(cname);
+                    }
                 }
                 Instr::MakeFcc { dst, callee } => {
                     let c = self.reg_get(top, callee);
@@ -11048,6 +11054,16 @@ impl Vm {
             Some(t) => Err(t),
             None => Ok(()),
         }
+    }
+
+    /// zend_register_constant's refusal: the name is a defined constant,
+    /// `true` / `false` / `null` (any case) or `__COMPILER_HALT_OFFSET__`.
+    fn const_taken(&self, name: &[u8]) -> bool {
+        self.constants.contains_key(name)
+            || name == b"__COMPILER_HALT_OFFSET__"
+            || [&b"true"[..], b"false", b"null"]
+                .iter()
+                .any(|s| name.eq_ignore_ascii_case(s))
     }
 
     /// Raise a diagnostic from inside an instruction; an exception thrown by

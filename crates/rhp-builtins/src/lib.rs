@@ -354,7 +354,8 @@ pub trait Host {
         Vec::new()
     }
 
-    /// Define a runtime constant (`define`). Returns false if already defined.
+    /// Define a runtime constant (`define`). False when the name is taken
+    /// (the caller warns, as zend_register_constant does).
     fn define_const(&mut self, _name: &[u8], _value: Value) -> bool {
         false
     }
@@ -1971,7 +1972,19 @@ fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "define(): Argument #3 ($case_insensitive) is ignored since declaration of case-insensitive constants is no longer supported",
         )?;
     }
-    Ok(Value::Bool(host.define_const(&name, value)))
+    if host.define_const(&name, value) {
+        return Ok(Value::Bool(true));
+    }
+    host.emit_diagnostic(E_WARNING, &const_redefined_message(&name))?;
+    Ok(Value::Bool(false))
+}
+
+/// zend_register_constant's warning for a name that is taken.
+pub fn const_redefined_message(name: &[u8]) -> String {
+    format!(
+        "Constant {} already defined, this will be an error in PHP 9",
+        String::from_utf8_lossy(name)
+    )
 }
 
 /// Resolve a constant by name: a class constant `Class::CONST` (incl. enum cases)

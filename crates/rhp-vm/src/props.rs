@@ -12,7 +12,7 @@ use rhp_values::{
 
 use crate::calls::is_handler_accessor;
 use crate::classes::{Deny, PropRes};
-use crate::types::type_lc;
+use crate::types::value_name_lc;
 use crate::{classes, deref, is_prelude_proto, Vm};
 
 impl Vm {
@@ -107,11 +107,7 @@ impl Vm {
                 let msg = format!(
                     "Attempt to read property \"{}\" on {}",
                     String::from_utf8_lossy(pname.as_bytes()),
-                    match other {
-                        Value::Bool(true) => "true",
-                        Value::Bool(false) => "false",
-                        ref o => type_lc(o),
-                    }
+                    value_name_lc(&other)
                 );
                 self.diag(builtins::E_WARNING, &msg)?;
                 Value::Null
@@ -541,11 +537,7 @@ impl Vm {
             format!(
                 "Attempt to assign property \"{}\" on {}",
                 String::from_utf8_lossy(pname.as_bytes()),
-                match &o {
-                    Value::Bool(true) => "true",
-                    Value::Bool(false) => "false",
-                    other => type_lc(other),
-                }
+                value_name_lc(&o)
             ),
         ))
     }

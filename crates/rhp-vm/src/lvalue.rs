@@ -11,7 +11,7 @@ use rhp_values::{
 };
 
 use crate::classes::PropRes;
-use crate::types::type_lc;
+use crate::types::{type_lc, value_name_lc};
 use crate::{classes, deref, Vm};
 
 /// A pending lvalue step (an evaluated key, an append, or an object property).
@@ -1164,19 +1164,11 @@ impl Vm {
             }),
             other => {
                 if !quiet {
-                    let ty = match other {
-                        Value::Bool(true) => "true",
-                        Value::Bool(false) => "false",
-                        Value::Int(_) => "int",
-                        Value::Float(_) => "float",
-                        Value::Str(_) => "string",
-                        Value::Resource(_) => "resource",
-                        _ => "null",
-                    };
+                    // zend_zval_type_name for list(), else zend_zval_value_name
                     let msg = if mode == DimMode::List {
-                        format!("Cannot use {ty} as array")
+                        format!("Cannot use {} as array", type_lc(other))
                     } else {
-                        format!("Trying to access array offset on {ty}")
+                        format!("Trying to access array offset on {}", value_name_lc(other))
                     };
                     self.diag(builtins::E_WARNING, &msg)?;
                 }
@@ -1496,11 +1488,7 @@ fn assign_path(
             // zend_throw_non_object_error: the property itself is assigned;
             // a write further down the path modifies it.
             other => {
-                let shown = match other {
-                    Value::Bool(true) => "true",
-                    Value::Bool(false) => "false",
-                    o => type_lc(o),
-                };
+                let shown = value_name_lc(other);
                 return Err(Thrown::error(
                     "Error",
                     format!(
@@ -1578,16 +1566,15 @@ fn make_ref_path(
     if let CursorStep::Prop(name) = head {
         let handle = match slot {
             Value::Object(h) => h.clone(),
-            Value::Null => {
-                return Err(Thrown::error(
-                    "Error",
-                    "Attempt to reference property on null",
-                ))
-            }
+            // zend_throw_non_object_error for a fetch for write
             other => {
                 return Err(Thrown::error(
                     "Error",
-                    format!("Attempt to reference property on {}", type_lc(other)),
+                    format!(
+                        "Attempt to modify property \"{}\" on {}",
+                        String::from_utf8_lossy(name.as_bytes()),
+                        value_name_lc(other)
+                    ),
                 ))
             }
         };

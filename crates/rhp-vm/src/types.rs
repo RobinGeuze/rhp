@@ -590,6 +590,8 @@ fn dnf_group_strings(ty: &rhp_bytecode::TypeHint) -> Vec<String> {
         .collect()
 }
 
+/// zend_zval_type_name for a value that is not an object (`bool` for
+/// both bools).
 pub(crate) fn type_lc(v: &Value) -> &'static str {
     match v {
         Value::Null => "null",
@@ -601,6 +603,16 @@ pub(crate) fn type_lc(v: &Value) -> &'static str {
         Value::Object(_) | Value::Closure(_) => "object",
         Value::Resource(_) => "resource",
         Value::Ref(_) => "reference",
+    }
+}
+
+/// zend_zval_value_name for a value that is not an object: [`type_lc`],
+/// but `true` / `false` for a bool.
+pub(crate) fn value_name_lc(v: &Value) -> &'static str {
+    match v {
+        Value::Bool(true) => "true",
+        Value::Bool(false) => "false",
+        other => type_lc(other),
     }
 }
 

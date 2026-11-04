@@ -10,7 +10,7 @@ use rhp_values::{
 };
 
 use crate::errors::UnwindResult;
-use crate::types::type_lc;
+use crate::types::value_name_lc;
 use crate::{classes, deref, is_prelude_proto, Frame, UnitFn, Vm};
 
 /// Named call arguments, in call order.
@@ -293,7 +293,7 @@ impl Vm {
                 format!(
                     "Call to a member function {}() on {}",
                     String::from_utf8_lossy(&mname),
-                    type_lc(&o)
+                    value_name_lc(&o)
                 ),
             ));
         };

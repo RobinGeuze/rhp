@@ -3,12 +3,13 @@
 //! `_get_name` / `_shutdown` / `_pair` / `_sendto` / `_recvfrom`,
 //! `fsockopen` / `pfsockopen`, `stream_set_timeout` and the socket knobs
 //! (`stream_set_read_buffer`, `stream_set_chunk_size`,
-//! `stream_socket_enable_crypto`).
+//! `stream_socket_enable_crypto`). tcp and the TLS transports carry
+//! openssl's socket ops (`ext/openssl/xp_ssl.rs`), as in php.
 //!
-//! The socket descriptor is created and connected / bound here; the VM wraps
-//! it as a stream resource ([`Host::stream_from_socket`]) whose reads and
-//! writes follow `php_sockop_read` / `php_sockop_write`
-//! ([`crate::fdstream::FdStream`] with [`SockInfo`]).
+//! The socket descriptor is created and connected / bound here, as an
+//! [`FdStream`] whose reads and writes follow `php_sockop_read` /
+//! `php_sockop_write` (or the TLS layer's); the VM registers it with its
+//! context ([`Host::stream_insert_fd`]).
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};

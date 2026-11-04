@@ -496,13 +496,11 @@ fn header_trim(line: &mut Vec<u8>) -> bool {
 /// `last` header (returned while still open), or finish `last`.
 fn headers_parse(
     cx: &mut Cx,
-    stream_persistent: bool,
     last: Vec<u8>,
     line: Option<&mut Vec<u8>>,
     response_code: i64,
     info: &mut HeaderInfo,
 ) -> Result<Option<Vec<u8>>, Thrown> {
-    let _ = stream_persistent;
     if let Some(line) = line {
         if !line.is_empty() && line[0] != b'\n' && line[0] != b'\r' {
             if header_trim(line) && line.is_empty() {
@@ -1118,7 +1116,7 @@ fn wrap_http_ex(
             _ => false,
         };
         if let Some(l) = last.take() {
-            last = headers_parse(cx, false, l, Some(&mut line), response_code, &mut info)?;
+            last = headers_parse(cx, l, Some(&mut line), response_code, &mut info)?;
             if last.is_none() {
                 if info.error {
                     drop_stream(cx, s);
@@ -1144,7 +1142,7 @@ fn wrap_http_ex(
     let ev = s.take_events();
     deliver_ctx(cx.host, &ctx, &ev)?;
     if let Some(l) = last.take() {
-        headers_parse(cx, false, l, None, response_code, &mut info)?;
+        headers_parse(cx, l, None, response_code, &mut info)?;
     }
 
     if !reqok || (info.location.is_some() && info.follow_location) {

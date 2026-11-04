@@ -1587,7 +1587,7 @@ pub fn lookup(name: &str) -> Option<&'static Builtin> {
 /// [`lookup`] for a name that is already lowercase (no allocation).
 pub fn lookup_lc(name_lc: &str) -> Option<&'static Builtin> {
     let b = registry().get(name_lc)?;
-    if matches!(name_lc.as_bytes().first(), Some(b'a' | b'c' | b'g'))
+    if matches!(name_lc.as_bytes().first(), Some(b'a' | b'c' | b'g' | b'p'))
         && sapi::builtin_hidden(name_lc)
     {
         return None;
@@ -1876,8 +1876,14 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     .chain(stdext_fns::constants())
     .chain(crypt_fns::constants())
     .chain(socket_fns::constants())
-    // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with their module.
-    .chain(ext::modules().into_iter().flat_map(|md| (md.constants)()))
+    // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with their
+    // module; pcntl's only under the SAPIs that have it.
+    .chain(
+        ext::modules()
+            .into_iter()
+            .filter(|md| md.name != "pcntl" || sapi::has_pcntl())
+            .flat_map(|md| (md.constants)()),
+    )
     .collect()
 }
 

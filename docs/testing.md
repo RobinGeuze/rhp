@@ -28,10 +28,14 @@ from `PATH` or `/opt/homebrew/bin` (`PHP_CGI` overrides it).
 | apps | `tests/apps/` | lint list; php-cgi for the request diff | no (CI job) |
 
 **Goldens** are the default for language and library behaviour. The runner
-(`crates/rhp-cli/tests/diff.rs`) runs every fixture on the VM in-process under
-its real path and requires byte-identical output. Print only the basename of
-paths (`basename(__FILE__)`), catch exceptions whose message holds a path,
-and keep output independent of time, the machine and the environment.
+(`crates/rhp-cli/tests/diff.rs`) runs every fixture directly in
+`tests/golden` as a CLI request in-process (`rhp_sapi::CaptureSapi`), by
+its absolute path and from its directory as php ran it, and requires
+byte-identical stdout.
+Print only the basename of paths (`basename(__FILE__)`), catch exceptions
+whose message holds a path (print `get_class($e)` and the message with the
+path removed), and keep output independent of time, the machine and the
+environment.
 
 **Golden policy:** a golden holds only output that is the same with every
 library version php may link. The no-php CI job runs the goldens against

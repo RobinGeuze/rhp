@@ -80,6 +80,25 @@ pub trait Sapi {
         use std::io::Write;
         let _ = std::io::stderr().write_all(data);
     }
+
+    /// A write to the `STDOUT` stream (php-cli): php writes the descriptor
+    /// directly, past the output layer, so what the SAPI holds goes out
+    /// first.
+    fn write_raw_stdout(&mut self, data: &[u8]) {
+        use std::io::Write;
+        self.flush();
+        let mut so = std::io::stdout().lock();
+        let _ = so.write_all(data);
+        let _ = so.flush();
+    }
+
+    /// Whether running past the hard memory limit
+    /// (`memory_hard_limit_percent`) ends the process, as php does (message
+    /// on stderr, exit 137). False: the request ends as a fatal error, so
+    /// one script can't take its host down.
+    fn exits_on_hard_limit(&self) -> bool {
+        false
+    }
 }
 
 /// php's `SG(sapi_headers)` + `SG(headers_sent)` + the output start

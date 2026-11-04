@@ -10,8 +10,9 @@
 //! engine values are not `Send`, so a threaded server keeps a long-lived
 //! worker thread per concurrent request and calls [`run_request`] on it.
 //!
-//! Provided SAPIs: [`CliSapi`] (php-cli: unbuffered stdout, no headers) and
-//! [`cgi::CgiSapi`] (php-cgi: `Status:` + headers + body on stdout);
+//! Provided SAPIs: [`CliSapi`] (php-cli: unbuffered stdout, no headers),
+//! [`cgi::CgiSapi`] (php-cgi: `Status:` + headers + body on stdout) and
+//! [`CaptureSapi`] (everything kept in memory, for tests and tools);
 //! [`cgi::main`] is the `php-cgi` front end.
 //!
 //! The full contract (lifecycle, threading model, what is process-wide,
@@ -26,7 +27,10 @@ use rhp_frontend::{Arena, Parsed};
 use rhp_values::{Thrown, Value};
 use rhp_vm::{IncludeError, Vm};
 
+mod capture;
 pub mod cgi;
+
+pub use capture::{CaptureSapi, Captured};
 
 pub use rhp_builtins::sapi::{RequestInfo, Response, Sapi};
 /// The `-v` banner (`PHP 8.5.x (cli) (built: …)`) for a SAPI name.
@@ -47,6 +51,14 @@ pub use rhp_values::mem::CountingAlloc;
 pub enum Script {
     /// A script file (its real path becomes `__FILE__`).
     File(String),
+    /// A script the caller already holds, run as the file `path` (its
+    /// `__FILE__` and `$argv[0]`, as given); not cached.
+    Source {
+        /// The script's path.
+        path: String,
+        /// Its source.
+        bytes: Vec<u8>,
+    },
     /// Inline code (`-r`), run as "Command line code".
     Code(String),
     /// No script file and no `-r`: the script is read from standard input.
@@ -66,6 +78,20 @@ pub struct Request {
     pub info: Option<RequestInfo>,
     /// `PHP_BINARY` (composer re-invokes it); default: unchanged.
     pub php_binary: Option<Vec<u8>>,
+}
+
+impl Request {
+    /// A CLI-style request for `script`: no settings, arguments or request
+    /// input.
+    pub fn new(script: Script) -> Request {
+        Request {
+            script,
+            ini: Vec::new(),
+            args: Vec::new(),
+            info: None,
+            php_binary: None,
+        }
+    }
 }
 
 /// How a request ended.
@@ -113,6 +139,10 @@ impl Sapi for CliSapi {
 
     fn flush(&mut self) {
         let _ = std::io::stdout().flush();
+    }
+
+    fn exits_on_hard_limit(&self) -> bool {
+        true
     }
 }
 
@@ -195,6 +225,7 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
                 .unwrap_or_else(|_| path.clone());
             (file, source, path.clone())
         }
+        Script::Source { path, bytes } => (path.clone(), bytes.clone(), path.clone()),
         Script::Stdin => {
             let mut src = Vec::new();
             if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut src) {
@@ -273,7 +304,7 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     if let Some(bin) = req.php_binary {
         vm.set_constant("PHP_BINARY", Value::str(bin));
     }
-    if let Script::File(_) = req.script {
+    if let Script::File(_) | Script::Source { .. } = req.script {
         // The top-level script's path, so `Phar::mapPhar` can parse it.
         vm.set_main_script_path(file.as_bytes().to_vec());
     }
@@ -297,6 +328,7 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
 struct PreloadSapi {
     name: String,
     defaults: Vec<(&'static str, &'static str)>,
+    exits_on_hard_limit: bool,
 }
 
 impl Sapi for PreloadSapi {
@@ -321,6 +353,10 @@ impl Sapi for PreloadSapi {
     fn flush(&mut self) {
         let _ = std::io::stdout().flush();
     }
+
+    fn exits_on_hard_limit(&self) -> bool {
+        self.exits_on_hard_limit
+    }
 }
 
 /// Run `opcache.preload` once per thread, before the first request that
@@ -339,6 +375,7 @@ fn preload(sapi: &dyn Sapi, ini: &[(String, String)]) -> bool {
     vm.set_sapi(Box::new(PreloadSapi {
         name: sapi.name().to_string(),
         defaults: sapi.ini_defaults(),
+        exits_on_hard_limit: sapi.exits_on_hard_limit(),
     }));
     for (k, v) in ini {
         vm.set_ini(k.as_bytes(), v.as_bytes());

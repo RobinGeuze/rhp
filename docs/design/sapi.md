@@ -40,9 +40,12 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
   `$_POST`, `$_COOKIE`, `$_FILES`, `$_ENV` and `$_REQUEST`, reads POST
   bodies (`post_max_size`, `enable_post_data_reading`, multipart), and sends
   the headers lazily.
-- **`rhp-sapi`** is the library entry point (`run_request`) plus the two
-  shipped SAPIs, `CliSapi` (php-cli) and `cgi::CgiSapi` (php-cgi, with
-  `cgi::main` porting `cgi_main.c`'s argv and environment handling).
+- **`rhp-sapi`** is the library entry point (`run_request`) plus the
+  shipped SAPIs: `CliSapi` (php-cli), `cgi::CgiSapi` (php-cgi, with
+  `cgi::main` porting `cgi_main.c`'s argv and environment handling) and
+  `CaptureSapi`, which keeps a request's output in memory for tests and
+  tools (`CaptureSapi::cli()` behaves as php-cli, `CaptureSapi::web(name)`
+  as a web server).
 - **`rhp-cli`** is a thin argv front end: `rhp script.php`, `rhp -r code`,
   `rhp --cgi …`.
 
@@ -93,6 +96,8 @@ let outcome = run_request(
 | `send_headers` | called **once**: right before the first body byte, or at request end when there is no body. Not called for `no_headers` (`php-cgi -q`). The `Response` holds the final status code, an explicit status line if `header("HTTP/1.1 …")` set one, and the header lines in order (default `Content-type` and `X-Powered-By` included) | no-op |
 | `log_message` | one `error_log` / `log_errors` line, no newline | stderr |
 | `write_stderr` | `display_errors=stderr` output | stderr |
+| `write_raw_stdout` | a write to php-cli's `STDOUT` stream, past the output layer | `flush`, then stdout |
+| `exits_on_hard_limit` | whether the hard memory limit ends the process (php-cli: exit 137) rather than just the request | `false` |
 
 The SAPI decides the wire format. `CgiSapi` writes `Status:` (when not
 200) + header lines + a blank line + the body to stdout; an HTTP server
@@ -122,6 +127,12 @@ Byte strings throughout (PHP is binary-safe). Everything is optional:
 
 `info: None` means a CLI run: superglobals come from the process
 environment and `$argv` from `Request::args`.
+
+`Request::script` is a `Script::File` (its real path is `__FILE__`; it goes
+through the compiled-script cache), a `Script::Source { path, bytes }` the
+caller already holds (run as the file `path`, not cached), `Script::Code`
+(`-r`) or `Script::Stdin`. `Request::new(script)` is a CLI-style request
+with no settings or arguments.
 
 ### `Outcome`
 

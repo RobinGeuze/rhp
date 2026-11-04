@@ -4191,13 +4191,7 @@ impl Vm {
     /// bypassing the output layer (no headers, no SAPI buffering).
     fn emit_raw_stdout(&mut self, data: &[u8]) {
         if let Some(s) = self.sapi.sapi.as_mut() {
-            use std::io::Write;
-            // php's SAPIs write the descriptor unbuffered: what the SAPI
-            // holds (headers, body) goes out first.
-            s.flush();
-            let mut so = std::io::stdout().lock();
-            let _ = so.write_all(data);
-            let _ = so.flush();
+            s.write_raw_stdout(data);
             return;
         }
         self.out.extend_from_slice(data);

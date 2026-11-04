@@ -28,10 +28,7 @@ pub mod sweeps;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use rhp_compiler::compile_with_source;
-use rhp_frontend::Arena;
-use rhp_values::Thrown;
-use rhp_vm::Vm;
+use rhp_sapi::{CaptureSapi, Outcome, Request, Script};
 
 // ---------------------------------------------------------------------------
 // the two engines
@@ -86,38 +83,28 @@ pub fn run_php(source: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out.stdout)
 }
 
-/// Run PHP `source` on rhp's VM and capture its output buffer.
+/// Run PHP `source` on rhp in-process, as a CLI request, and capture its
+/// stdout. As with [`run_php`], a non-zero exit status (an uncaught
+/// throwable, a fatal or parse error) is an error. Unlike php's side, rhp's
+/// warnings stay on: a snippet that warns shows up as a mismatch.
 pub fn run_rhp(source: &[u8]) -> Result<Vec<u8>, String> {
-    let arena = Arena::new();
-    let parsed = arena.parse(b"difftest", source);
-    if parsed.has_parse_errors() {
-        return Err("rhp: parse error".to_string());
-    }
-    let program = compile_with_source(parsed.program(), source, "difftest")
-        .map_err(|t| format!("rhp compile: {t:?}"))?;
+    let script = Script::Source {
+        path: "difftest".to_string(),
+        bytes: source.to_vec(),
+    };
     // A genuine rhp panic (an engine bug) is a differential failure, not a
     // harness crash — catch it and report it like any other mismatch cause.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut vm = Vm::new();
-        let r = vm.run(&program).map(|code| {
-            // Request shutdown (shutdown functions, destructors, buffers);
-            // an uncaught throwable there fails the run like one in the script.
-            let mut late: Option<Thrown> = None;
-            vm.request_shutdown(code, &mut |t| {
-                late.get_or_insert(t);
-                255
-            });
-            late
-        });
-        let r = match r {
-            Ok(None) => Ok(0),
-            Ok(Some(t)) | Err(t) => Err(t),
-        };
-        (r, vm.output().to_vec())
-    }));
+    let result = std::panic::catch_unwind(|| CaptureSapi::cli().run(Request::new(script)));
     match result {
-        Ok((Ok(_), out)) => Ok(out),
-        Ok((Err(t), _)) => Err(format!("rhp run: {t:?}")),
+        Ok((Outcome::Exit(0), out)) => Ok(out.stdout),
+        Ok((outcome, out)) => {
+            let why = out
+                .log
+                .first()
+                .map(|l| String::from_utf8_lossy(l).into_owned())
+                .unwrap_or_else(|| String::from_utf8_lossy(&out.stderr).into_owned());
+            Err(format!("rhp: {outcome:?}: {why}"))
+        }
         Err(_) => Err("rhp: panicked".to_string()),
     }
 }

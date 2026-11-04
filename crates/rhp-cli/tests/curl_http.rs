@@ -10,9 +10,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use rhp_compiler::compile_with_source;
-use rhp_frontend::Arena;
-use rhp_vm::Vm;
+use rhp_sapi::{CaptureSapi, Outcome, Request, Script};
 
 // The engine's memory accounting (memory_get_usage(), memory_limit).
 #[global_allocator]
@@ -158,16 +156,19 @@ fn source_for(php: &Path, port: u16) -> String {
 }
 
 fn run_vm(source: &str, name: &str) -> Vec<u8> {
-    let arena = Arena::new();
-    let parsed = arena.parse(name.as_bytes(), source.as_bytes());
-    assert!(!parsed.has_parse_errors(), "{name}: parse error");
-    let program = compile_with_source(parsed.program(), source.as_bytes(), name)
-        .unwrap_or_else(|e| panic!("{name}: compile error {e:?}"));
-    let mut vm = Vm::new();
-    if let Err(e) = vm.run(&program) {
-        panic!("{name}: VM error {e:?}");
-    }
-    vm.output().to_vec()
+    let script = Script::Source {
+        path: name.to_string(),
+        bytes: source.as_bytes().to_vec(),
+    };
+    let (outcome, out) = CaptureSapi::cli().run(Request::new(script));
+    assert_eq!(
+        outcome,
+        Outcome::Exit(0),
+        "{name}: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out.stdout
 }
 
 #[test]

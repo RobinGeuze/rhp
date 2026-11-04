@@ -5,31 +5,14 @@
 //!
 //! The cache is per thread, so each test runs on a thread of its own.
 
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use rhp_sapi::{run_request, Outcome, Request, RequestInfo, Sapi, Script};
+use rhp_sapi::{CaptureSapi, Outcome, Request, RequestInfo, Script};
 
 // The engine's memory accounting (memory_get_usage(), memory_limit).
 #[global_allocator]
 static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
-
-#[derive(Clone, Default)]
-struct Capture {
-    body: Rc<RefCell<Vec<u8>>>,
-}
-
-impl Sapi for Capture {
-    fn name(&self) -> &str {
-        "embed-test"
-    }
-
-    fn ub_write(&mut self, data: &[u8]) {
-        self.body.borrow_mut().extend_from_slice(data);
-    }
-}
 
 /// One request for `script` at `time` (seconds since the epoch), with
 /// opcache on and `ini` on top; returns the body.
@@ -41,29 +24,23 @@ fn request(script: &Path, ini: &[(&str, &str)], time: u64) -> String {
 
 /// [`request`], with its outcome.
 fn run(script: &Path, ini: &[(&str, &str)], time: u64) -> (Outcome, String) {
-    let cap = Capture::default();
     let mut settings = vec![
         ("opcache.enable".to_string(), "1".to_string()),
         ("display_errors".to_string(), "1".to_string()),
     ];
     settings.extend(ini.iter().map(|(k, v)| (k.to_string(), v.to_string())));
-    let outcome = run_request(
-        Box::new(cap.clone()),
-        Request {
-            script: Script::File(script.to_string_lossy().into_owned()),
-            ini: settings,
-            args: Vec::new(),
-            info: Some(RequestInfo {
-                method: Some(b"GET".to_vec()),
-                response_code: 200,
-                request_time: time as f64,
-                ..Default::default()
-            }),
-            php_binary: None,
-        },
-    );
-    let body = String::from_utf8_lossy(&cap.body.borrow()).into_owned();
-    (outcome, body)
+    let req = Request {
+        ini: settings,
+        info: Some(RequestInfo {
+            method: Some(b"GET".to_vec()),
+            response_code: 200,
+            request_time: time as f64,
+            ..Default::default()
+        }),
+        ..Request::new(Script::File(script.to_string_lossy().into_owned()))
+    };
+    let (outcome, cap) = CaptureSapi::web("embed-test").run(req);
+    (outcome, String::from_utf8_lossy(&cap.stdout).into_owned())
 }
 
 /// A scratch directory of PHP files, removed when dropped.

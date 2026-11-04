@@ -25,6 +25,17 @@ foreach ([0, 022, 077, 044, 02] as $mask) {
         echo $f, " ", perms("$base/$f"), "\n";
     }
     echo "tempnam ", perms($t), "\n";
+    // Through a dangling symlink: the file it names is created.
+    symlink("$base/target", "$base/dangling");
+    $h = fopen("$base/dangling", "w"); fclose($h);
+    echo "dangling ", perms("$base/target"), "\n";
+    unlink("$base/dangling"); unlink("$base/target");
+    // Child processes start with the request's umask.
+    echo "child ", trim(shell_exec("umask")), " ";
+    $p = proc_open(["sh", "-c", "umask"], [1 => ["pipe", "w"]], $pipes);
+    echo trim(stream_get_contents($pipes[1])), " ";
+    fclose($pipes[1]); proc_close($p);
+    $h = popen("umask", "r"); echo trim(fread($h, 100)), "\n"; pclose($h);
     // An existing file keeps its mode.
     chmod("$base/fpc", 0604);
     file_put_contents("$base/fpc", "y");

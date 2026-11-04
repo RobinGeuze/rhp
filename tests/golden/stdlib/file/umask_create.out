@@ -13,6 +13,8 @@ z.zip 666
 dom.xml 666
 log 666
 tempnam 600
+dangling 666
+child 0000 0000 0000
 existing 604
 -- 022 --
 fopen 644
@@ -27,6 +29,8 @@ z.zip 644
 dom.xml 644
 log 644
 tempnam 600
+dangling 644
+child 0022 0022 0022
 existing 604
 -- 077 --
 fopen 600
@@ -41,6 +45,8 @@ z.zip 600
 dom.xml 600
 log 600
 tempnam 600
+dangling 600
+child 0077 0077 0077
 existing 604
 -- 044 --
 fopen 622
@@ -55,6 +61,8 @@ z.zip 622
 dom.xml 622
 log 622
 tempnam 600
+dangling 622
+child 0044 0044 0044
 existing 604
 -- 002 --
 fopen 664
@@ -69,6 +77,8 @@ z.zip 664
 dom.xml 664
 log 664
 tempnam 600
+dangling 664
+child 0002 0002 0002
 existing 604
 int(2)
 bool(true)

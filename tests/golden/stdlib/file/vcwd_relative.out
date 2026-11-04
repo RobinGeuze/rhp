@@ -106,6 +106,14 @@ two
 "
 string(5) "abcde"
 bool(true)
+bool(true)
+string(6) "s.sock"
+string(6) "s.sock"
+string(6) "s.sock"
+bool(false)
+int(5)
+bool(true)
+string(5) "moved"
 [2] chdir(): No such file or directory (errno 2)
 [2] chdir(): Not a directory (errno 20)
 [2] chdir(): No such file or directory (errno 2)
@@ -113,6 +121,7 @@ bool(false)
 bool(false)
 bool(false)
 bool(true)
+chdir(): Argument #1 ($directory) must not contain any null bytes
 bool(true)
 bool(true)
 bool(true)

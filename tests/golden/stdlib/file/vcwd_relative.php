@@ -70,8 +70,37 @@ $proc = proc_open("pwd -P", [1 => ["file", "sub/pwd.txt", "w"]], $pipes);
 proc_close($proc);
 var_dump(file_get_contents("sub/out.txt"), trim(file_get_contents("sub/pwd.txt")) === $base);
 
+// a Unix socket bound by a relative name keeps that name
+$srv = stream_socket_server("unix://s.sock", $errno, $errstr);
+$cli = stream_socket_client("unix://s.sock");
+$acc = stream_socket_accept($srv);
+var_dump(file_exists("$base/s.sock"), stream_socket_get_name($srv, false), stream_socket_get_name($cli, true), stream_socket_get_name($acc, false));
+fclose($acc);
+fclose($cli);
+fclose($srv);
+unlink("s.sock");
+
+// the directory removed or renamed while the request is in it
+mkdir("gone");
+chdir("gone");
+rmdir("$base/gone");
+var_dump(getcwd());
+chdir($base);
+mkdir("old");
+chdir("old");
+rename("$base/old", "$base/new");
+var_dump(file_put_contents("y", "moved"), getcwd() === "$base/new", file_get_contents("$base/new/y"));
+chdir($base);
+unlink("new/y");
+rmdir("new");
+
 // chdir failures keep the old directory
 var_dump(chdir("missing"), chdir("w.txt"), chdir(""), getcwd() === $base);
+try {
+    chdir("w.txt\0");
+} catch (ValueError $e) {
+    echo $e->getMessage(), "\n";
+}
 
 // clean up
 foreach (["sub/data.txt", "sub/f.txt", "sub/out.txt", "sub/pwd.txt", "w.txt", "t.txt", "inc.php"] as $f) unlink($f);

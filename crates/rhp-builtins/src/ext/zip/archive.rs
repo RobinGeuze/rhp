@@ -799,16 +799,9 @@ fn add_file_method(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
         entry = filename.clone();
     }
     let (start, len, flags) = (cx.int(2), cx.int(3), cx.int(4));
+    // php has no ZIP_FROM_OBJECT here: on a closed object the path checks
+    // still run, then libzip's NULL checks fail.
     let o = cx.obj();
-    let za = o.za();
-    if za.is_null() {
-        // php_zip_add_file runs on a closed object and fails in libzip's
-        // NULL checks; the expansion warnings still come first.
-        return Err(Thrown::error(
-            "ValueError",
-            "Invalid or uninitialized Zip object",
-        ));
-    }
     Ok(Value::Bool(
         add_file(
             cx,
@@ -836,12 +829,6 @@ fn replace_file(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
     }
     let (start, len, flags) = (cx.int(2), cx.int(3), cx.int(4));
     let o = cx.obj();
-    if o.za().is_null() {
-        return Err(Thrown::error(
-            "ValueError",
-            "Invalid or uninitialized Zip object",
-        ));
-    }
     Ok(Value::Bool(
         add_file(
             cx,

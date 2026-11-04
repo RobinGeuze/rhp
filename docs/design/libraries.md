@@ -242,8 +242,8 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
 
 - **Process-wide init happens once**, under `std::sync::Once` (e.g.
   `xmlInitParser`, `curl_global_init`). PCRE2 and libmbfl need none:
-  libmbfl's tables are `const`, and its only mutable globals (the AVX2
-  function pointers in mbfilter_utf16.c) are compiled out.
+  libmbfl's tables are `const` or never written, and the AVX2 function
+  pointers in mbfilter_utf16.c, set at startup in php, are compiled out.
 - **Everything else is per thread.** PCRE2's compile and match contexts, JIT
   stack, settings and pattern cache live in a `thread_local!` in
   `rhp-builtins/src/pcre/mod.rs`, as php keeps them in TLS globals. Library

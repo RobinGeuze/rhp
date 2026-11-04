@@ -7,7 +7,9 @@
 //!
 //! Not ported yet: the functions rhp does not register (mb_ereg* and the
 //! other mbstring.c functions without a counterpart here), the mbstring.*
-//! ini handlers, and php's `IS_STR_VALID_UTF8` string flag (a shortcut
+//! ini handlers and php's internal-encoding hook (the internal encoding
+//! starts as UTF-8 and doesn't follow default_charset), and php's
+//! `IS_STR_VALID_UTF8` string flag (a shortcut
 //! that gives the same result for UTF-8 itself; for the UTF-8-Mobile
 //! variants php's answer can depend on it, and rhp takes the path php
 //! takes for an unflagged string).
@@ -2260,7 +2262,7 @@ fn entity_decode(input: &[u8], enc: Enc, map: &[[u32; 4]]) -> Vec<u8> {
     let amp = b'&' as u32;
     let (mode, subst) = illegal_settings();
     let mut buf = ConvertBuf::new(input.len(), subst, mode);
-    // One slot more than php's 128 for the '&' sentinel.
+    // As in php: up to 127 codepoints and the '&' sentinel after them.
     let mut wchar = [0u32; 128];
     let mut converted: Vec<u32> = Vec::with_capacity(128);
     let mut offset = 0usize;

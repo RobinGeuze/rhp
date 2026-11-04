@@ -1588,7 +1588,10 @@ impl Vm {
         }
     }
 
+    // Out of line: a builtin call costs far more than the call, and keeping
+    // it out of run_frames keeps the dispatch loop's code steady.
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     pub(crate) fn call_builtin(
         &mut self,
         top: usize,

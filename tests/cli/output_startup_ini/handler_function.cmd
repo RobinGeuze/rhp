@@ -1,0 +1,1 @@
+ini output_handler=strtoupper

@@ -1,0 +1,14 @@
+buffered
+
+Fatal error: Uncaught Exception: main in {DIR}/sd_throws.php:7
+Stack trace:
+#0 {main}
+  thrown in {DIR}/sd_throws.php on line 7
+sd1 arg
+sd2
+
+Fatal error: Uncaught Exception: in sd in {DIR}/sd_throws.php:3
+Stack trace:
+#0 [internal function]: {closure:{DIR}/sd_throws.php:3}()
+#1 {main}
+  thrown in {DIR}/sd_throws.php on line 3

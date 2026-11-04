@@ -1,0 +1,4 @@
+PHP Fatal error:  Uncaught Error: Call to undefined function null_fn() in {DIR}/log_only.php:4
+Stack trace:
+#0 {main}
+  thrown in {DIR}/log_only.php on line 4

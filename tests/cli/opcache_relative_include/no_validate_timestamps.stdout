@@ -1,0 +1,6 @@
+A lib
+
+Warning: include(lib.php): Failed to open stream: No such file or directory in {DIR}/b/other.php on line 1
+
+Warning: include(): Failed opening 'lib.php' for inclusion (include_path='.') in {DIR}/b/other.php on line 1
+bool(false)

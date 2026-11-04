@@ -1,0 +1,6 @@
+
+Fatal error: Uncaught RuntimeException: boom in {DIR}/sd_after_fatal.php:3
+Stack trace:
+#0 {main}
+  thrown in {DIR}/sd_after_fatal.php on line 3
+shutdown

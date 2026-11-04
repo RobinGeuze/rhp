@@ -1,0 +1,5 @@
+buffered
+Fatal error: Uncaught Exception: x in {DIR}/ob_exc.php:4
+Stack trace:
+#0 {main}
+  thrown in {DIR}/ob_exc.php on line 4

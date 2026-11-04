@@ -1,0 +1,13 @@
+inc.inc:3
+#0 /main.php(3): require()
+#1 /main.php(4): go()
+#2 {main}
+main.php(7) : eval()'d code:1
+#0 /main.php(7): eval()
+#1 {main}
+
+Fatal error: Uncaught Error: Call to undefined function undefined_thing() in {DIR}/lib.inc:5
+Stack trace:
+#0 {DIR}/main.php(10): Lib->run()
+#1 {main}
+  thrown in {DIR}/lib.inc on line 5

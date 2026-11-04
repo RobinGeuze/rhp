@@ -1,0 +1,27 @@
+before
+child
+bool(true)
+bool(true)
+int(3)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+int(0)
+bool(true)
+int(7)
+bool(true)
+int(-1)
+bool(true)
+buffered in-child
+buffered in-parent
+string(10) "from child"
+shutdown child
+bool(true)
+array(0) {
+}
+bool(true)
+bool(true)
+end
+shutdown parent

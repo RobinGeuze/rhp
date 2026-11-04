@@ -112,6 +112,25 @@ pub fn run_php_fixture(php: &Path) -> Result<(Vec<u8>, Vec<u8>), String> {
     Ok((out.stdout, out.stderr))
 }
 
+/// The php [`php_bin`] names: its version, its OS family, and whether it
+/// is the reference build, the only one that may write expectations.
+pub struct PhpBuild {
+    pub version: String,
+    pub os: String,
+    pub reference: bool,
+}
+
+/// [`PhpBuild`] of the php; `None` when it does not run.
+pub fn php_build() -> Option<PhpBuild> {
+    let about = php_eval("echo PHP_VERSION, ' ', PHP_OS_FAMILY;")?;
+    let (version, os) = about.split_once(' ').unwrap_or((&about, ""));
+    Some(PhpBuild {
+        reference: version == rhp_builtins::version::PHP_VERSION && os == REFERENCE_OS_FAMILY,
+        version: version.to_string(),
+        os: os.to_string(),
+    })
+}
+
 /// php's answer to `code` (`php -n -r`).
 fn php_eval(code: &str) -> Option<String> {
     let out = Command::new(php_bin())
@@ -181,17 +200,15 @@ pub fn main(args: &[String]) -> ExitCode {
         eprintln!("golden: {REFERENCE_ONLY} names no such fixture: {stale:?}");
         return ExitCode::from(2);
     }
-    let Some(about) = php_eval("echo PHP_VERSION, ' ', PHP_OS_FAMILY;") else {
+    let Some(build) = php_build() else {
         eprintln!("golden: cannot run `{} -n` (set RHP_PHP)", php_bin());
         return ExitCode::from(2);
     };
-    let (version, os) = about.split_once(' ').unwrap_or((&about, ""));
+    let (version, os) = (&build.version, &build.os);
     eprintln!("golden: php {version} ({os})");
-    let reference_build =
-        version == rhp_builtins::version::PHP_VERSION && os == REFERENCE_OS_FAMILY;
     // Another build would write its own library versions into the .out
     // files that reference-only.txt does not list.
-    if write && !reference_build {
+    if write && !build.reference {
         eprintln!(
             "golden: --write needs the reference build (php {} on {REFERENCE_OS_FAMILY}), not {version} on {os}",
             rhp_builtins::version::PHP_VERSION

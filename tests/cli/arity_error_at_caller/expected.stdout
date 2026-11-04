@@ -1,0 +1,8 @@
+main.php:6
+
+Fatal error: Uncaught ArgumentCountError: ArrayObject::__construct() expects at most 3 arguments, 4 given in {DIR}/main.php:3
+Stack trace:
+#0 {DIR}/main.php(3): ArrayObject->__construct(Array, 0, 'ArrayIterator', 5)
+#1 {DIR}/main.php(10): f()
+#2 {main}
+  thrown in {DIR}/main.php on line 3

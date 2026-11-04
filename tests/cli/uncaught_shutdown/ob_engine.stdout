@@ -1,0 +1,5 @@
+buffered
+Fatal error: Uncaught Error: Call to a member function m() on null in {DIR}/ob_engine.php:5
+Stack trace:
+#0 {main}
+  thrown in {DIR}/ob_engine.php on line 5

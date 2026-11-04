@@ -1,0 +1,8 @@
+H main
+
+Fatal error: Uncaught LogicException: again in {DIR}/sd_handler_rethrows.php:2
+Stack trace:
+#0 [internal function]: {closure:{DIR}/sd_handler_rethrows.php:2}(Object(Exception))
+#1 {main}
+  thrown in {DIR}/sd_handler_rethrows.php on line 2
+sd1

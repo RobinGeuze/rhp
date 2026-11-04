@@ -1,10 +1,8 @@
 //! Startup (`-d`) ini values run their directive's on_modify handler, as
-//! php's module startup does: memory_hard_limit_percent warns "in Unknown on
-//! line 0" and a refused value leaves the directive NULL; a bad
-//! openssl.libctx is an E_ERROR that leaves "custom" and exit status 255
-//! while the script still runs. Checked against fixed output and, when the
-//! local php is the same release as rhp, against `php -n` itself (stdout,
-//! stderr and exit status).
+//! php's module startup does: a sweep of memory_hard_limit_percent and
+//! openssl.libctx values crossed with the display settings, compared with
+//! `php -n` (stdout, stderr and exit status) when the local php is rhp's
+//! release. The fixed cases are CLI fixtures (`tests/cli/startup_ini`).
 
 use std::process::Command;
 
@@ -38,30 +36,6 @@ fn run_script(bin: &str, ini: &[&str], script: &str) -> (String, String, Option<
 }
 
 const RHP: &str = env!("CARGO_BIN_EXE_rhp");
-
-#[test]
-fn refused_startup_value_warns_and_stays_null() {
-    let (out, err, code) = run(RHP, &["memory_hard_limit_percent=50"]);
-    assert_eq!(
-        out,
-        "\nWarning: memory_hard_limit_percent must be >= 100, or -1 in Unknown on line 0\n\
-         start\nstring(0) \"\"\nNULL\nNULL\nstring(0) \"\"\n"
-    );
-    assert_eq!(err, "");
-    assert_eq!(code, Some(0));
-}
-
-#[test]
-fn bad_openssl_libctx_is_a_startup_fatal() {
-    let (out, err, code) = run_script(RHP, &["openssl.libctx=bogus"], LIBCTX_SCRIPT);
-    assert_eq!(
-        out,
-        "\nFatal error: PHP Startup: OpenSSL libctx \"bogus\" cannot be found in Unknown on line 0\n\
-         Stack trace:\n#0 {main}\nstart\nstring(6) \"custom\"\nNULL\nbool(false)\n"
-    );
-    assert_eq!(err, "");
-    assert_eq!(code, Some(255));
-}
 
 fn same_release() -> bool {
     let same = Command::new(php_bin())

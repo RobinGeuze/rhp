@@ -1,0 +1,6 @@
+
+Fatal error: Uncaught Exception: main in {DIR}/sd_exit.php:4
+Stack trace:
+#0 {main}
+  thrown in {DIR}/sd_exit.php on line 4
+sd1

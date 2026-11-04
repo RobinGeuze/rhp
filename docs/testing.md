@@ -13,14 +13,16 @@ version and build values live in `crates/rhp-builtins/src/version.rs`;
 the same library versions as the php on the machine. CI uses setup-php's
 8.5.12 on Ubuntu, whose libraries (libxml2, ICU, curl, OpenSSL, libzip,
 PCRE2, …) are newer than the mac's. Live-php tests use `php` from `PATH`
-(`RHP_PHP` overrides it for `rhp-difftest` and `ref_build`) and `php-cgi`
-from `PATH` or `/opt/homebrew/bin` (`PHP_CGI` overrides it).
+(`RHP_PHP` overrides it; every test finds php through
+`rhp_difftest::php_bin`) and `php-cgi` from `PATH` or `/opt/homebrew/bin`
+(`PHP_CGI` overrides it).
 
 ## Which kind of test
 
 | kind | where | expectation | runs without php |
 |---|---|---|---|
 | golden | `tests/golden/**/NAME.php` + `NAME.out` | committed output of `php -n` | yes |
+| CLI fixture | `tests/cli/CASE/` (`main.php`, `RUN.cmd`, `RUN.stdout`, …) | committed stdout, stderr and exit status of `php -n` | yes |
 | live-php test | `crates/rhp-cli/tests`, `crates/rhp-difftest/tests` | php on the machine, at test time | skips |
 | CGI fixture | `tests/cgi/NAME.php` (+ `NAME.cgi`) | php-cgi on the machine | skips |
 | curl fixture | `tests/curl_http/NAME.php` + `NAME.out` | committed output of `php -n` against the test's local server | yes |
@@ -47,12 +49,23 @@ version (libxml2 error messages, ICU data, curl and OpenSSL error strings)
 or with the machine belongs in a live-php test, which
 compares with the php linked against the same libraries on the same machine.
 
+**CLI fixtures** cover what needs the `rhp` binary as a process: argv and
+`getopt()`, a script read from stdin, `-r` and startup `-d` values, stderr,
+the exit status, uncaught errors and shutdown order, `pcntl_fork`. Each
+`tests/cli/CASE/` directory holds a script and one or more runs: `RUN.cmd`
+(the command line, stdin and environment, in the CGI fixtures' directive
+format), `RUN.stdout`, `RUN.stderr` and `RUN.status` (php's, with the
+case's path replaced by `{DIR}`); a single run is named `expected`.
+`crates/rhp-cli/tests/cli.rs` documents the format, runs every run under
+target's `rhp` and compares all three. It needs no php; `-- --check`
+also runs php and compares it with the committed files.
+
 **Live-php tests** are Rust tests that run a PHP snippet through php and
-rhp and compare. Use them for version-sensitive output, for behaviour that
-needs the `rhp` binary (argv, stdin, exit status, stderr interleaving, ini
-files, `fork`), and for sweeps over generated inputs (`rhp-difftest`'s hash,
-bcmath, ctype, … sweeps). Each one returns early when `php_available()` is
-false.
+rhp and compare. Use them for version-sensitive output, for comparisons
+that depend on the machine (memory_limit sizes, the linked library
+versions, phar archives php builds), and for sweeps over generated inputs
+(`rhp-difftest`'s hash, bcmath, ctype, … sweeps; the startup ini sweep).
+Each one returns early when `rhp_difftest::php_available()` is false.
 
 Unit tests (inline `#[cfg(test)]`, `crates/rhp-sapi/tests`) hold literal
 expectations for rhp's own contracts: the embedding API, request isolation,
@@ -94,6 +107,9 @@ php-cgi.
 - A golden: `rhp-difftest golden --write --filter NAME` with the reference
   php (see below). Never regenerate a golden just to make a failing run
   pass: a changed `.out` is a behaviour change to explain.
+- A CLI fixture: `cargo test -p rhp-cli --test cli -- --write` with the
+  reference php (`CLI_ONLY=CASE/RUN` narrows it to matching runs). A new
+  run needs its `RUN.stdout` to exist first (an empty file will do).
 - A curl fixture: `cargo test -p rhp-cli --test curl_http -- --ignored regenerate`.
 - The phpt list: `rhp-difftest phpt --write-known` (see the phpt README),
   then keep the list C-sorted with its header lines first; remove an entry
@@ -144,6 +160,7 @@ cargo test --workspace --all-targets          # goldens, unit and live-php tests
 RHP_PHP=php cargo test --workspace --all-targets --no-fail-fast
 cargo build --release -p rhp-cli -p rhp-difftest
 target/release/rhp-difftest golden --check     # the .out files are still php's
+cargo test -p rhp-cli --test cli -- --check     # so are the CLI fixtures' files
 target/release/rhp-difftest phpt --php-src ../php-src \
   --php-cgi "$(command -v php-cgi)" --check-known tests/phpt/known-passing.txt
 ```

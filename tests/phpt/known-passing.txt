@@ -7594,6 +7594,7 @@ ext/xml/tests/gh17187_1.phpt
 ext/xml/tests/gh17187_2.phpt
 ext/xml/tests/gh20439_1.phpt
 ext/xml/tests/gh20439_2.phpt
+ext/xml/tests/oom_xml_parse_attributes.phpt
 ext/xml/tests/oom_xml_parse_into_struct.phpt
 ext/xml/tests/oom_xml_parse_ns.phpt
 ext/xml/tests/set_element_handler_trampoline.phpt

@@ -523,7 +523,117 @@ fn php_member_order<V>(
     out
 }
 
+thread_local! {
+    /// The prelude's classes as linked on this thread (php links its
+    /// internal classes once, at startup): requests start from a copy
+    /// ([`Vm::install_prelude`]). Taken at the thread's second link, so a
+    /// thread that runs one request (the CLI) doesn't pay for it.
+    static LINKED_PRELUDE: RefCell<Option<Rc<LinkedPrelude>>> = const { RefCell::new(None) };
+    /// Whether this thread has linked the prelude before.
+    static PRELUDE_LINKED_ONCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A linked prelude, as no request has used it yet.
+struct LinkedPrelude {
+    /// The declarations it was linked from. The compiler caches the prelude
+    /// per thread, so every program compiled on the thread shares them.
+    protos: Vec<Rc<ClassProto>>,
+    classes: Vec<ClassEntry>,
+    class_ids: std::collections::HashMap<Vec<u8>, ClassId>,
+    class_order: Vec<usize>,
+    /// The capacities linking left `classes` and `class_order` with: the
+    /// copies keep them, so the request's memory accounting is the same.
+    capacity: (usize, usize),
+}
+
+/// A request's own copy of linked classes: the tables are shared values
+/// (their strings and arrays are copy-on-write, their protos immutable),
+/// and each static property gets a fresh cell, aliased between classes as
+/// in `classes`. Enum case objects are not copied: the caller makes sure
+/// there are none.
+fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
+    let mut cells: FxHashMap<usize, Rc<RefCell<Value>>> = FxHashMap::default();
+    let mut fresh = |c: &Rc<RefCell<Value>>| {
+        cells
+            .entry(Rc::as_ptr(c) as usize)
+            .or_insert_with(|| Rc::new(RefCell::new(c.borrow().clone())))
+            .clone()
+    };
+    let mut out = Vec::with_capacity(capacity.max(classes.len()));
+    for e in classes {
+        debug_assert!(e.enum_cases.is_empty());
+        let mut static_props = IndexMap::with_capacity(e.static_props.len());
+        for (k, sp) in &e.static_props {
+            let sp = StaticProp {
+                cell: fresh(&sp.cell),
+                default: fresh(&sp.default),
+                ..sp.clone()
+            };
+            static_props.insert(k.clone(), sp);
+        }
+        out.push(ClassEntry {
+            name: e.name.clone(),
+            kind: e.kind,
+            flags: e.flags,
+            parent: e.parent,
+            ancestors: e.ancestors.clone(),
+            interfaces: e.interfaces.clone(),
+            traits: e.traits.clone(),
+            methods: e.methods.clone(),
+            props: e.props.clone(),
+            prop_visible: e.prop_visible.clone(),
+            own_private: e.own_private.clone(),
+            constants: e.constants.clone(),
+            static_props,
+            enum_cases: Vec::new(),
+            enum_backing: e.enum_backing,
+            updated: e.updated,
+            proto: e.proto.clone(),
+            unit: e.unit,
+            decl_file: e.decl_file.clone(),
+            decl_line: e.decl_line,
+            handlers: e.handlers,
+            create_object: e.create_object,
+        });
+    }
+    out
+}
+
 impl Vm {
+    /// Link the prelude's classes (the main script's unit 0) into the empty
+    /// class table, or copy them from this thread's earlier link when the
+    /// program carries the same prelude. A prelude with enum cases (it has
+    /// none: the compiler takes only its classes and interfaces) is linked
+    /// every time, since each request needs its own case objects.
+    pub(crate) fn install_prelude(&mut self, protos: &[Rc<ClassProto>]) -> Result<(), Thrown> {
+        debug_assert!(self.classes.is_empty() && self.class_ids.is_empty());
+        let linked = LINKED_PRELUDE.with(|c| c.borrow().clone()).filter(|p| {
+            p.protos.len() == protos.len()
+                && p.protos.iter().zip(protos).all(|(a, b)| Rc::ptr_eq(a, b))
+        });
+        if let Some(p) = linked {
+            self.classes = copy_classes(&p.classes, p.capacity.0);
+            self.class_ids = p.class_ids.clone();
+            self.class_order = Vec::with_capacity(p.capacity.1);
+            self.class_order.extend_from_slice(&p.class_order);
+            return Ok(());
+        }
+        self.install_classes(protos, 0)?;
+        if PRELUDE_LINKED_ONCE.with(|l| l.replace(true))
+            && self.classes.iter().all(|e| e.enum_cases.is_empty())
+        {
+            let p = LinkedPrelude {
+                protos: protos.to_vec(),
+                classes: copy_classes(&self.classes, 0),
+                class_ids: self.class_ids.clone(),
+                class_order: self.class_order.clone(),
+                capacity: (self.classes.capacity(), self.class_order.capacity()),
+            };
+            LINKED_PRELUDE.with(|c| *c.borrow_mut() = Some(Rc::new(p)));
+        }
+        Ok(())
+    }
+
     /// Link every `ClassProto` of `unit` into the class table, in dependency
     /// order so that `extends`/`implements`/`use` (which may be forward
     /// references) resolve.

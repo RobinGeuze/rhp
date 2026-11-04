@@ -629,7 +629,7 @@ impl Vm {
         // nested declarations, are declared when execution reaches them.
         // (Engine data php has before a request starts: not counted.)
         rhp_values::mem::uncounted(|| {
-            self.install_classes(&prog.classes[..prog.num_prelude_classes], unit)
+            self.install_prelude(&prog.classes[..prog.num_prelude_classes])
         })?;
         self.internal_classes = self.classes.len();
         let top = self.register_decl_classes(prog, unit);

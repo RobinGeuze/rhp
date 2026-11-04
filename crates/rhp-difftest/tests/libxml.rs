@@ -1,4 +1,4 @@
-//! ext/xml, XMLWriter and the libxml glue against php. rhp links the libxml2
+//! ext/xml, XMLWriter, DOM and the libxml glue against php. rhp links the libxml2
 //! php links, so error codes, messages, positions and recovery match the php
 //! on the same machine, but they differ between libxml2 releases (the mac's
 //! 2.9.13 and CI's 2.15.2 disagree on several of these documents), so these
@@ -121,6 +121,147 @@ foreach (['<r>&i;&amp;&x;</r>', '<r a="&i;">&lt;&i;</r>'] as $body) {
         echo "mode=$mode r=$r err=", xml_get_error_code($p), ' B', xml_get_current_byte_index($p), "\n";
     }
 }
+"#,
+    );
+}
+
+#[test]
+fn dom_load_errors_match_php() {
+    check(
+        "dom_load_errors",
+        &(PRELUDE.to_string()
+            + r#"
+foreach ($docs as $doc) {
+    if ($doc === '') continue;
+    foreach ([0, LIBXML_RECOVER, LIBXML_NOERROR | LIBXML_NOWARNING] as $opt) {
+        $d = new DOMDocument;
+        $r = $d->loadXML($doc, $opt);
+        echo json_encode(bin2hex($doc)), " opt=$opt r=", var_export($r, true), "\n";
+        if ($r) echo $d->saveXML();
+    }
+    libxml_use_internal_errors(true);
+    $d = new DOMDocument;
+    $d->recover = true;
+    $d->loadXML($doc);
+    foreach (libxml_get_errors() as $e) { echo "[$e->level/$e->code/$e->line/$e->column] ", json_encode($e->message), "\n"; }
+    libxml_clear_errors();
+    libxml_use_internal_errors(false);
+}
+"#),
+    );
+}
+
+#[test]
+fn dom_html_matches_php() {
+    check(
+        "dom_html",
+        r#"<?php
+set_error_handler(function ($no, $str) { echo "W[$no]: $str\n"; return true; });
+$docs = ['<p>unclosed <b>bold<div>x</p>', '<html><body><table><tr><td>1</table>', '<p>&nbsp;&copy;&bogus;</p>',
+    '<!DOCTYPE html><title>t</title><p id=a class=b>x', "<p>\xE9\xFF</p>", '<script>if (a < b) {}</script><br/>',
+    '<meta charset="iso-8859-1"><p>' . "\xE9" . '</p>', '<a href="x"><img src=y alt></a>', '<div><span></div></span>'];
+foreach ($docs as $doc) {
+    foreach ([0, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD] as $opt) {
+        $d = new DOMDocument;
+        var_dump($d->loadHTML($doc, $opt));
+        echo $d->saveHTML();
+        if ($d->documentElement) echo $d->saveHTML($d->documentElement), "\n", $d->saveXML(), "\n";
+    }
+}
+"#,
+    );
+}
+
+#[test]
+fn dom_validation_matches_php() {
+    check(
+        "dom_validation",
+        r#"<?php
+set_error_handler(function ($no, $str) { echo "W[$no]: $str\n"; return true; });
+$xsd = '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="r"><xs:complexType><xs:sequence>'
+    . '<xs:element name="d" type="xs:date"/><xs:element name="n" type="xs:positiveInteger" maxOccurs="2"/>'
+    . '</xs:sequence><xs:attribute name="id" type="xs:ID" use="required"/></xs:complexType></xs:element></xs:schema>';
+$rng = '<element name="r" xmlns="http://relaxng.org/ns/structure/1.0" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes">'
+    . '<element name="d"><data type="date"/></element><oneOrMore><element name="n"><data type="positiveInteger"/></element></oneOrMore></element>';
+$docs = ['<r id="a"><d>2024-02-29</d><n>1</n></r>', '<r><d>2024-02-30</d><n>0</n><n>1</n><n>2</n></r>', '<r id="1"><x/></r>'];
+foreach ($docs as $doc) {
+    $d = new DOMDocument;
+    $d->loadXML($doc);
+    var_dump($d->schemaValidateSource($xsd), $d->relaxNGValidateSource($rng));
+}
+var_dump((new DOMDocument)->schemaValidateSource('<xs:schema'), (new DOMDocument)->relaxNGValidateSource('<x/>'));
+$d = new DOMDocument;
+$d->loadXML("<!DOCTYPE a [<!ELEMENT a (b)><!ELEMENT b EMPTY><!ATTLIST a x CDATA #REQUIRED>]>\n<a><c/></a>");
+var_dump($d->validate());
+$d->validateOnParse = true;
+var_dump($d->loadXML("<!DOCTYPE a [<!ELEMENT a (b)>]>\n<a>text</a>"));
+libxml_use_internal_errors(true);
+$d = new DOMDocument;
+$d->loadXML($docs[1]);
+$d->schemaValidateSource($xsd);
+foreach (libxml_get_errors() as $e) { echo "[$e->level/$e->code/$e->line] ", json_encode($e->message), "\n"; }
+"#,
+    );
+}
+
+#[test]
+fn dom_xpath_matches_php() {
+    check(
+        "dom_xpath",
+        r#"<?php
+set_error_handler(function ($no, $str) { echo "W[$no]: $str\n"; return true; });
+$d = new DOMDocument;
+$d->loadXML('<r xmlns:x="urn:x" xml:lang="en"><a n="1">t</a><a n="2"/><x:b/></r>');
+$x = new DOMXPath($d);
+foreach (['0.1+0.2', '1e21', '123456789012345678901234567890', 'round(-0.5)', '-0', '1 div 0', '0 div 0',
+    'count(//namespace::*)', 'lang("en")', 'string(//a[2]/@n)', 'sum(//a/@n) div 3', 'substring("abc", 0)',
+    '//a[', 'foo()', 'x:b', '//y:z', '1 +', 'string(/)', 'concat("a", 1, true())'] as $e) {
+    $r = $x->evaluate($e);
+    echo $e, ' => ', is_object($r) ? 'list:' . $r->length : var_export($r, true), "\n";
+}
+"#,
+    );
+}
+
+/// Former goldens whose output depends on the libxml2 release (parser
+/// diagnostics, serializer escaping, entity warnings).
+#[test]
+fn dom_release_dependent_scripts_match_php() {
+    check("libxml_errors", include_str!("libxml/libxml_errors.php"));
+    check(
+        "libxml_parse_edges",
+        include_str!("libxml/libxml_parse_edges.php"),
+    );
+    check(
+        "dom_save_escape",
+        include_str!("libxml/dom_save_escape.php"),
+    );
+    check(
+        "dom_tree_errors",
+        include_str!("libxml/dom_tree_errors.php"),
+    );
+    check(
+        "dom_report_build",
+        include_str!("libxml/dom_report_build.php"),
+    );
+}
+
+#[test]
+fn dom_serializer_and_xpath_errors_match_php() {
+    check(
+        "dom_serializer_xpath_errors",
+        r#"<?php
+set_error_handler(function ($no, $str) { echo "W[$no]: $str\n"; return true; });
+$d = new DOMDocument;
+$d->loadXML("<a x='&#9;&#10;&#13;\"&lt;&gt;&amp;&apos;\u{e9}'>\u{e9}&#13;\"'&gt;</a>");
+echo $d->saveXML(), $d->saveXML($d->documentElement), "\n";
+$el = $d->createElement('v');
+$el->nodeValue = 'x';
+$el->nodeValue = ''; echo $d->saveXML($el), "\n";
+$el->textContent = ''; echo $d->saveXML($el), "\n";
+$d->loadXML('<r><n:item xmlns:n="urn:n"/></r>');
+$x = new DOMXPath($d);
+var_dump($x->query('//n:item'), $x->query('//zz:a'), $x->evaluate('foo()'), $x->evaluate('php:function("strlen")'));
 "#,
     );
 }

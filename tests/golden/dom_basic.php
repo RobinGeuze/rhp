@@ -21,10 +21,9 @@ foreach ([true, false] as $pw) {
     echo $d->saveXML($d->documentElement), "\n";
 }
 
-// escaping: no encoding declared vs UTF-8
+// escaping: no encoding declared vs UTF-8 (control characters and
+// non-ASCII text without an encoding: crates/rhp-difftest/tests/libxml.rs)
 $d = new DOMDocument;
-$d->loadXML("<a x='&#9;&#10;&#13;\"&lt;&gt;&amp;&apos;\u{e9}'>\u{e9}&#13;\"'&gt;</a>");
-echo $d->saveXML(), $d->saveXML($d->documentElement), "\n";
 $d->loadXML("<?xml version=\"1.0\" encoding=\"UTF-8\"?><a x='\u{e9}'>\u{e9}</a>");
 echo $d->saveXML();
 $d->loadXML("<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><a x='\xe9'>\xe9</a>");
@@ -65,7 +64,6 @@ var_dump($root->getAttribute('nope'), $root->hasAttribute('name'), $root->remove
 $el = $d->createElement('v');
 $el->nodeValue = 'p &amp; q'; echo $d->saveXML($el), "\n";
 $el->textContent = 'p &amp; q'; echo $d->saveXML($el), "\n";
-$el->nodeValue = ''; echo $d->saveXML($el), "\n";
 var_dump($d->saveXML($d->createElement('w', '')), $d->saveXML($d->createElement('w')));
 
 // live node lists

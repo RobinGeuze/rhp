@@ -48,9 +48,6 @@ bool(true)
   <e><f/>x</e>
   <g><![CDATA[ <&> ]]><h/></g>
 </a>
-<?xml version="1.0"?>
-<a x="&#9;&#10;&#13;&quot;&lt;&gt;&amp;'&#xE9;">&#xE9;&#xD;"'&gt;</a>
-<a x="&#9;&#10;&#13;&quot;&lt;&gt;&amp;'&#xE9;">é&#13;"'&gt;</a>
 <?xml version="1.0" encoding="UTF-8"?>
 <a x="é">é</a>
 3c3f786d6c2076657273696f6e3d22312e302220656e636f64696e673d2249534f2d383835392d31223f3e0a3c6120783d22e9223ee93c2f613e0a
@@ -100,7 +97,6 @@ bool(true)
 bool(false)
 <v>p &amp; q</v>
 <v>p &amp;amp; q</v>
-<v></v>
 string(4) "<w/>"
 string(4) "<w/>"
 int(3)

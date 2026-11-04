@@ -1,10 +1,33 @@
-//! A port of php's `php_getopt` (main/getopt.c).
+//! A port of php's `php_getopt` (main/getopt.c), which php-cli and php-cgi
+//! both parse their command lines with: bundled short options (`-qC`),
+//! `-dfoo` / `-d foo` / `-d=foo` values, `--long[=value]` names, and its
+//! error messages.
 
-use crate::cgi::OPTIONS;
+/// One option of a table (php's `opt_struct`).
+pub(crate) struct OptDef {
+    /// What [`PhpGetopt::next`] returns for it: its letter, or a number for
+    /// a long-only option.
+    pub(crate) ch: u8,
+    /// [`NO_ARG`], [`REQUIRED`] or [`OPTIONAL`].
+    pub(crate) param: u8,
+    /// Its long name.
+    pub(crate) name: &'static str,
+}
+
+/// The option takes no value.
+pub(crate) const NO_ARG: u8 = 0;
+/// The option needs a value.
+pub(crate) const REQUIRED: u8 = 1;
+/// The value is optional, and only given as `--name=value` or `-xvalue`.
+pub(crate) const OPTIONAL: u8 = 2;
+
+pub(crate) const fn opt(ch: u8, param: u8, name: &'static str) -> OptDef {
+    OptDef { ch, param, name }
+}
 
 /// One `php_getopt` result.
 pub(crate) enum Opt {
-    /// No more options (`php_optind` is the first operand).
+    /// No more options ([`PhpGetopt::optind`] is the first operand).
     End,
     /// An invalid option (reported on stderr when asked to).
     Invalid,
@@ -12,20 +35,31 @@ pub(crate) enum Opt {
     Char(u8, Option<String>),
 }
 
-/// A port of php's `php_getopt` (main/getopt.c): bundled short options
-/// (`-qC`), `-dfoo` / `-d foo` / `-d=foo` values, `--long[=value]` names,
-/// and its error messages.
+/// The errors `php_opt_error` reports.
+enum OptError {
+    /// `-:`.
+    Colon,
+    /// An unknown short option.
+    NotFound,
+    /// A missing value, or an unknown long option.
+    Arg,
+}
+
+/// `php_getopt`'s state over one pass of the command line.
 pub(crate) struct PhpGetopt<'a> {
     args: &'a [String],
+    opts: &'a [OptDef],
+    /// The argument being read.
     pub(crate) optind: usize,
     optchr: usize,
     dash: bool,
 }
 
 impl<'a> PhpGetopt<'a> {
-    pub(crate) fn new(args: &'a [String]) -> Self {
+    pub(crate) fn new(args: &'a [String], opts: &'a [OptDef]) -> Self {
         PhpGetopt {
             args,
+            opts,
             optind: 1,
             optchr: 0,
             dash: false,
@@ -40,19 +74,20 @@ impl<'a> PhpGetopt<'a> {
             .unwrap_or(0)
     }
 
-    fn error(&self, ind: usize, chr: usize, what: &str, show: bool) -> Opt {
+    fn error(&self, ind: usize, chr: usize, err: OptError, show: bool) -> Opt {
         if show {
             let c = self.at(ind, chr) as char;
-            let msg = match what {
-                "colon" => ": in flags".to_string(),
-                "nf" => format!("option not found {c}"),
-                _ => format!("no argument for option {c}"),
+            let msg = match err {
+                OptError::Colon => ": in flags".to_string(),
+                OptError::NotFound => format!("option not found {c}"),
+                OptError::Arg => format!("no argument for option {c}"),
             };
             eprintln!("Error in argument {ind}, char {}: {msg}", chr + 1);
         }
         Opt::Invalid
     }
 
+    /// The next option; `show` reports an invalid one on stderr.
     pub(crate) fn next(&mut self, show: bool) -> Opt {
         let argc = self.args.len();
         if self.optind >= argc {
@@ -80,16 +115,16 @@ impl<'a> PhpGetopt<'a> {
                 None => arg_end -= 1,
             }
             let name = &arg[2..(2 + arg_end).min(arg.len())];
-            match OPTIONS.iter().position(|o| o.2.as_bytes() == name) {
+            match self.opts.iter().position(|o| o.name.as_bytes() == name) {
                 Some(i) => idx = Some(i),
                 None => {
                     self.optind += 1;
-                    return self.error(self.optind - 1, self.optchr, "arg", show);
+                    return self.error(self.optind - 1, self.optchr, OptError::Arg, show);
                 }
             }
             self.optchr = 0;
             self.dash = false;
-            arg_start += OPTIONS[idx.unwrap_or(0)].2.len();
+            arg_start += self.opts[idx.unwrap_or(0)].name.len();
         } else {
             if !self.dash {
                 self.dash = true;
@@ -98,7 +133,7 @@ impl<'a> PhpGetopt<'a> {
             if self.at(ind, self.optchr) == b':' {
                 self.dash = false;
                 self.optind += 1;
-                return self.error(self.optind - 1, self.optchr, "colon", show);
+                return self.error(self.optind - 1, self.optchr, OptError::Colon, show);
             }
             arg_start = 1 + self.optchr;
         }
@@ -106,7 +141,7 @@ impl<'a> PhpGetopt<'a> {
             Some(i) => i,
             None => {
                 let c = self.at(ind, self.optchr);
-                match OPTIONS.iter().position(|o| o.0 == c) {
+                match self.opts.iter().position(|o| o.ch == c) {
                     Some(i) => i,
                     None => {
                         let (errind, errchr) = (ind, self.optchr);
@@ -116,18 +151,25 @@ impl<'a> PhpGetopt<'a> {
                         } else {
                             self.optchr += 1;
                         }
-                        return self.error(errind, errchr, "nf", show);
+                        return self.error(errind, errchr, OptError::NotFound, show);
                     }
                 }
             }
         };
-        let (c, need_param, _) = OPTIONS[i];
-        if need_param {
+        let OptDef { ch: c, param, .. } = self.opts[i];
+        if param != NO_ARG {
             self.dash = false;
             if self.at(ind, arg_start) == 0 {
                 self.optind += 1;
                 if self.optind == argc {
-                    return self.error(self.optind - 1, self.optchr, "arg", show);
+                    if param == REQUIRED {
+                        return self.error(self.optind - 1, self.optchr, OptError::Arg, show);
+                    }
+                    return Opt::Char(c, None);
+                }
+                // An optional value is never the next argument.
+                if param != REQUIRED {
+                    return Opt::Char(c, None);
                 }
                 let v = self.args[self.optind].clone();
                 self.optind += 1;
@@ -154,3 +196,6 @@ impl<'a> PhpGetopt<'a> {
         Opt::Char(c, None)
     }
 }
+
+#[cfg(test)]
+mod tests;

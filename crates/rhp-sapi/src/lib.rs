@@ -29,6 +29,7 @@ use rhp_vm::Vm;
 
 mod capture;
 pub mod cgi;
+pub mod cli;
 mod getopt;
 
 pub use capture::{CaptureSapi, Captured};
@@ -414,6 +415,13 @@ fn fatal(vm: &mut Vm, t: Thrown) -> i32 {
     };
     vm.write_error_stream(format!("{msg}\n").as_bytes());
     255
+}
+
+/// A `-d key[=value]` setting (php_ini_builder_define, shared by php-cli
+/// and php-cgi): `key` alone is `key=1`.
+pub(crate) fn ini_define(kv: &str) -> (String, String) {
+    let (k, v) = kv.split_once('=').unwrap_or((kv, "1"));
+    (k.trim().to_string(), ini_define_value(v))
 }
 
 /// The value php gives a `-d key=value` setting (php_ini_builder_define,

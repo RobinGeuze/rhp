@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 
 use rhp_builtins::sapi::{cgi_request_headers, RequestInfo, Response, Sapi};
 
-use crate::getopt::{Opt, PhpGetopt};
+use crate::getopt::{opt, Opt, OptDef, PhpGetopt, NO_ARG, REQUIRED};
 use crate::{run_request, Outcome, Request, Script};
 
 /// php-cgi's response writer: body bytes buffered like stdio's `stdout`
@@ -420,28 +420,27 @@ fn usage() -> String {
     "Usage: php-cgi [-q] [-h] [-s] [-v] [-i] [-f <file>]\n       php-cgi <file> [args...]\n  -a               Run interactively\n  -b <address:port>|<port> Bind Path for external FASTCGI Server mode\n  -C               Do not chdir to the script's directory\n  -c <path>|<file> Look for php.ini file in this directory\n  -n               No php.ini file will be used\n  -d foo[=bar]     Define INI entry foo with value 'bar'\n  -e               Generate extended information for debugger/profiler\n  -f <file>        Parse <file>.  Implies `-q'\n  -h               This help\n  -i               PHP information\n  -l               Syntax check only (lint)\n  -m               Show compiled in modules\n  -q               Quiet-mode.  Suppress HTTP Header output.\n  -s               Display colour syntax highlighted source.\n  -v               Version number\n  -w               Display source with stripped comments and whitespace.\n  -T <count>       Measure execution time of script repeated <count> times.\n".to_string()
 }
 
-/// php-cgi's option table (`OPTIONS` in cgi_main.c): (char, needs a
-/// value, long name).
-pub(crate) const OPTIONS: &[(u8, bool, &str)] = &[
-    (b'a', false, "interactive"),
-    (b'b', true, "bindpath"),
-    (b'C', false, "no-chdir"),
-    (b'c', true, "php-ini"),
-    (b'd', true, "define"),
-    (b'e', false, "profile-info"),
-    (b'f', true, "file"),
-    (b'h', false, "help"),
-    (b'i', false, "info"),
-    (b'l', false, "syntax-check"),
-    (b'm', false, "modules"),
-    (b'n', false, "no-php-ini"),
-    (b'q', false, "no-header"),
-    (b's', false, "syntax-highlight"),
-    (b's', false, "syntax-highlighting"),
-    (b'w', false, "strip"),
-    (b'?', false, "usage"),
-    (b'v', false, "version"),
-    (b'T', true, "timing"),
+/// php-cgi's option table (`OPTIONS` in cgi_main.c).
+const OPTIONS: &[OptDef] = &[
+    opt(b'a', NO_ARG, "interactive"),
+    opt(b'b', REQUIRED, "bindpath"),
+    opt(b'C', NO_ARG, "no-chdir"),
+    opt(b'c', REQUIRED, "php-ini"),
+    opt(b'd', REQUIRED, "define"),
+    opt(b'e', NO_ARG, "profile-info"),
+    opt(b'f', REQUIRED, "file"),
+    opt(b'h', NO_ARG, "help"),
+    opt(b'i', NO_ARG, "info"),
+    opt(b'l', NO_ARG, "syntax-check"),
+    opt(b'm', NO_ARG, "modules"),
+    opt(b'n', NO_ARG, "no-php-ini"),
+    opt(b'q', NO_ARG, "no-header"),
+    opt(b's', NO_ARG, "syntax-highlight"),
+    opt(b's', NO_ARG, "syntax-highlighting"),
+    opt(b'w', NO_ARG, "strip"),
+    opt(b'?', NO_ARG, "usage"),
+    opt(b'v', NO_ARG, "version"),
+    opt(b'T', REQUIRED, "timing"),
 ];
 
 /// php-cgi's command line after its three `php_getopt` passes.
@@ -461,19 +460,15 @@ struct Opts {
 fn parse_options(args: &[String], cgi: bool, skip: bool) -> Result<Opts, (String, i32)> {
     let mut o = Opts::default();
     if !skip {
-        let mut g = PhpGetopt::new(args);
+        let mut g = PhpGetopt::new(args, OPTIONS);
         loop {
             match g.next(false) {
                 Opt::End => break,
-                Opt::Char(b'd', Some(kv)) => {
-                    let (k, v) = kv.split_once('=').unwrap_or((&kv, "1"));
-                    o.ini
-                        .push((k.trim().to_string(), crate::ini_define_value(v)));
-                }
+                Opt::Char(b'd', Some(kv)) => o.ini.push(crate::ini_define(&kv)),
                 _ => {}
             }
         }
-        let mut g = PhpGetopt::new(args);
+        let mut g = PhpGetopt::new(args, OPTIONS);
         loop {
             match g.next(true) {
                 Opt::End => break,
@@ -483,7 +478,7 @@ fn parse_options(args: &[String], cgi: bool, skip: bool) -> Result<Opts, (String
             }
         }
     }
-    let mut g = PhpGetopt::new(args);
+    let mut g = PhpGetopt::new(args, OPTIONS);
     if !cgi {
         loop {
             match g.next(false) {

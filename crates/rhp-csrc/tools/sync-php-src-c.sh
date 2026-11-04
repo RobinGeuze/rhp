@@ -18,6 +18,23 @@ ext/standard/crypt_freesec.c
 ext/standard/crypt_freesec.h
 ext/standard/crypt_sha256.c
 ext/standard/crypt_sha512.c
+ext/date/lib/LICENSE.rst
+ext/date/lib/astro.c
+ext/date/lib/astro.h
+ext/date/lib/dow.c
+ext/date/lib/fallbackmap.h
+ext/date/lib/interval.c
+ext/date/lib/parse_date.c
+ext/date/lib/parse_iso_intervals.c
+ext/date/lib/parse_posix.c
+ext/date/lib/parse_tz.c
+ext/date/lib/timelib.c
+ext/date/lib/timelib.h
+ext/date/lib/timelib_private.h
+ext/date/lib/timezonedb.h
+ext/date/lib/timezonemap.h
+ext/date/lib/tm2unixtime.c
+ext/date/lib/unixtime2tm.c
 '
 
 # rhp-mbfl-sys: every C file and header of libmbfl (found below, so files a
@@ -33,6 +50,20 @@ ext/mbstring/php_unicode.h
 ext/mbstring/rare_cp_bitvec.h
 ext/mbstring/unicode_data.h
 '
+
+# timezonedb.h holds the tz database twice. parse_tz.c defines
+# TIMELIB_SUPPORT_SLIM_FILE, so only the first (slim) branch is ever compiled;
+# the copy keeps that branch and drops the #else one. SHA256SUMS has the copy's
+# checksum.
+slim_tzdb() {
+	awk '
+		/^#ifdef TIMELIB_SUPPORT_SLIM_FILE$/ && state == 0 { state = 1 }
+		/^#else$/ && state == 1 { state = 2; next }
+		/^#endif$/ && state == 2 { state = 3 }
+		state != 2 { print }
+		END { if (state != 3) exit 1 }
+	' "$1"
+}
 
 die() { echo "sync-php-src-c: $*" >&2; exit 1; }
 
@@ -74,7 +105,13 @@ sync() {
 
 	for f in $files; do
 		[ -f "$src/$f" ] || die "$src/$f: missing"
-		put "$src/$f" "$dest/$f"
+		case $f in
+		ext/date/lib/timezonedb.h)
+			slim_tzdb "$src/$f" >"$tmp/timezonedb.h" || die "$src/$f: no slim branch"
+			put "$tmp/timezonedb.h" "$dest/$f"
+			;;
+		*) put "$src/$f" "$dest/$f" ;;
+		esac
 	done
 
 	mkdir -p "$dest"

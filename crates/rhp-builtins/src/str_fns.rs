@@ -867,6 +867,10 @@ fn parse_format(fmt: &[u8]) -> Result<Vec<Piece>, Thrown> {
             });
         }
 
+        // A C length modifier is skipped.
+        if i < fmt.len() && fmt[i] == b'l' {
+            i += 1;
+        }
         if i >= fmt.len() {
             return Err(Thrown::error(
                 "ValueError",

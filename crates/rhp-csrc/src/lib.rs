@@ -14,6 +14,8 @@
 pub mod argon2;
 #[cfg(feature = "crypt")]
 pub mod crypt;
+#[cfg(feature = "timelib")]
+pub mod timelib;
 
 use std::alloc::{alloc, dealloc, handle_alloc_error, realloc, Layout};
 use std::ffi::c_void;
@@ -324,6 +326,9 @@ mod tests {
         }
         if cfg!(feature = "crypt") {
             want.push("librhp_csrc_crypt.a");
+        }
+        if cfg!(feature = "timelib") {
+            want.push("librhp_csrc_timelib.a");
         }
         want.push("librhp_csrc_zend.a");
         assert_eq!(seen, want);

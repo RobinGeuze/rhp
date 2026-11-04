@@ -312,11 +312,15 @@ impl Encoder {
             return Ok(self.fail(JSON_ERROR_RECURSION, out, b"null"));
         }
         // get_properties_for(JSON): an internal class's view (an
-        // ArrayObject's storage, always encoded as an object).
+        // ArrayObject's storage, always encoded as an object). As for any
+        // object, mangled (protected and private) keys are skipped.
         let view = crate::object::properties_for(host, h, crate::object::PropPurpose::Json)?;
         let props: Vec<(PhpStr, Value)> = match view {
             Some(a) => a
                 .iter()
+                .filter(|(k, _)| {
+                    !matches!(k, rhp_values::ArrayKey::Str(s) if s.as_bytes().first() == Some(&0))
+                })
                 .map(|(k, v)| {
                     let k = match k {
                         rhp_values::ArrayKey::Int(n) => PhpStr::from(n.to_string().as_str()),

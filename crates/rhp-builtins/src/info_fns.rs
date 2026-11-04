@@ -253,6 +253,8 @@ fn print_info(flag: i64) -> Vec<u8> {
                 o.row(&["GMP version", crate::ext::gmp::sys::version()]);
             } else if *e == "mbstring" {
                 print_mbstring(&mut o);
+            } else if *e == "date" {
+                print_date(&mut o);
             } else {
                 o.row(&[&format!("{e} support"), "enabled"]);
             }
@@ -344,6 +346,30 @@ fn print_openssl(o: &mut Info) {
         let show = |v: Option<Vec<u8>>| match v {
             Some(v) => String::from_utf8_lossy(&v).into_owned(),
             None => "no value".to_string(),
+        };
+        let local = crate::runtime_fns::ini_value(name.as_bytes()).flatten();
+        let master = crate::runtime_fns::ini_default_value(name.as_bytes()).flatten();
+        o.row(&[name, &show(local), &show(master)]);
+    }
+}
+
+/// PHP_MINFO_FUNCTION(date), then its ini entries.
+fn print_date(o: &mut Info) {
+    for (k, v) in crate::ext::date::info_rows() {
+        o.row(&[k, &String::from_utf8_lossy(&v)]);
+    }
+    o.table_start();
+    o.header(&["Directive", "Local Value", "Master Value"]);
+    for name in [
+        "date.default_latitude",
+        "date.default_longitude",
+        "date.sunrise_zenith",
+        "date.sunset_zenith",
+        "date.timezone",
+    ] {
+        let show = |v: Option<Vec<u8>>| match v {
+            Some(v) if !v.is_empty() => String::from_utf8_lossy(&v).into_owned(),
+            _ => "no value".to_string(),
         };
         let local = crate::runtime_fns::ini_value(name.as_bytes()).flatten();
         let master = crate::runtime_fns::ini_default_value(name.as_bytes()).flatten();

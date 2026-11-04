@@ -1,7 +1,7 @@
 //! Native string-comparison + related builtins (pure, non-callback).
 //!
 //! Every function here is verified byte-for-byte against the local php 8.5.8
-//! binary (see the `#[cfg(test)]` block — expected values are hardcoded from
+//! binary (see `strcmp_fns/tests.rs` — expected values are hardcoded from
 //! `php -r '...'` output).
 //!
 //! Note: on this platform php's `strcmp`/`strncmp`/`strcasecmp`/`strncasecmp`

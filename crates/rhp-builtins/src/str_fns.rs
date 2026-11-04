@@ -1,7 +1,7 @@
 //! Native string builtins (pure, non-callback, non-by-reference).
 //!
 //! Every function here is verified byte-for-byte against the local php 8.5.8
-//! binary (see the `#[cfg(test)]` block — expected values are hardcoded from
+//! binary (see `str_fns/tests.rs` — expected values are hardcoded from
 //! `php -r '...'` output).
 
 use std::collections::HashMap;

@@ -7,7 +7,7 @@
 //! invoked with `(value, key)` in that order — verified against php 8.5.8.
 //!
 //! Every function here is verified byte-for-byte against the local php 8.5.8
-//! binary (see the `#[cfg(test)]` block — expected values hardcoded from
+//! binary (see `arrayset_fns/tests.rs` — expected values hardcoded from
 //! `php -r '...'` output). Collisions with existing modules are skipped:
 //! `array_sum`, `array_product`, `in_array`, `array_key_exists` live in
 //! `lib.rs`; `array_replace` and `array_merge_recursive` live in

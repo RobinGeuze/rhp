@@ -1,5 +1,3 @@
-// tests
-
 use super::*;
 use crate::test_support::TestHost;
 

@@ -1,7 +1,7 @@
 //! String-parsing builtins: `str_getcsv` and `sscanf`.
 //!
-//! Behaviour verified byte-for-byte against the local php 8.5.8 binary (see the
-//! `#[cfg(test)]` block — expected values are hardcoded from `php -r`).
+//! Behaviour verified byte-for-byte against the local php 8.5.8 binary (see
+//! `parse_fns/tests.rs` — expected values are hardcoded from `php -r`).
 //!
 //! ## Scope
 //! - `sscanf` supports the common conversions `%d %i %u %f %e %g %s %c %x %o`

@@ -5,7 +5,7 @@
 //! `array_column`, `array_chunk`, `array_count_values`.
 //!
 //! Key handling and var_dump/print_r output verified byte-for-byte against the
-//! local php 8.5.8 binary (see the `#[cfg(test)]` module for the captured cases).
+//! local php 8.5.8 binary (see `arr_fns/tests.rs` for the captured cases).
 
 use std::collections::HashSet;
 

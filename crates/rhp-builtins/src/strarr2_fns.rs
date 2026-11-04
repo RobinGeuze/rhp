@@ -4,7 +4,7 @@
 //! `array_replace`, `array_merge_recursive`.
 //!
 //! Every function here is verified byte-for-byte against the local php 8.5.8
-//! binary (see the `#[cfg(test)]` block — expected values hardcoded from
+//! binary (see `strarr2_fns/tests.rs` — expected values hardcoded from
 //! `php -r '...'` output).
 
 use std::collections::HashMap;

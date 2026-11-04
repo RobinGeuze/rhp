@@ -1,4 +1,4 @@
-// tests — expected strings captured from php 8.5.8
+// Expected strings captured from php 8.5.8.
 
 use super::*;
 use crate::test_support::TestHost;

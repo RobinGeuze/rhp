@@ -1,4 +1,4 @@
-// tests (expected values hardcoded from local php 8.5.8)
+// Expected values hardcoded from local php 8.5.8.
 
 use super::*;
 use crate::test_support::TestHost;

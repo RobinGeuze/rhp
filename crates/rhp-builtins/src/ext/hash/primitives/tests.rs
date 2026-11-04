@@ -1,4 +1,4 @@
-// tests: expected values from php
+// Expected values from php.
 
 use super::*;
 use crate::test_support::TestHost;

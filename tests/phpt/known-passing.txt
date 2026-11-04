@@ -5445,13 +5445,11 @@ ext/posix/tests/posix_getsid_basic.phpt
 ext/posix/tests/posix_getsid_error.phpt
 ext/posix/tests/posix_isatty.phpt
 ext/posix/tests/posix_isatty_no_warning_on_stream_cast.phpt
-ext/posix/tests/posix_isatty_non_castable_user_stream.phpt
 ext/posix/tests/posix_kill_error.phpt
 ext/posix/tests/posix_kill_pidoverflow.phpt
 ext/posix/tests/posix_strerror_error.phpt
 ext/posix/tests/posix_ttyname.phpt
 ext/posix/tests/posix_ttyname_no_warning_on_cast.phpt
-ext/posix/tests/posix_ttyname_non_castable_user_stream.phpt
 ext/posix/tests/posix_uname_basic.phpt
 ext/random/tests/01_functions/array_rand_mt_rand_php.phpt
 ext/random/tests/01_functions/bug46587.phpt

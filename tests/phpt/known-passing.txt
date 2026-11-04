@@ -8542,6 +8542,7 @@ ext/standard/tests/strings/ucwords_variation2.phpt
 ext/standard/tests/strings/ucwords_variation3.phpt
 ext/standard/tests/strings/ucwords_variation4.phpt
 ext/standard/tests/strings/ucwords_variation5.phpt
+ext/standard/tests/strings/url_t.phpt
 ext/standard/tests/strings/utf8.phpt
 ext/standard/tests/strings/vfprintf_basic.phpt
 ext/standard/tests/strings/vfprintf_basic1.phpt

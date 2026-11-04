@@ -35,8 +35,9 @@ impl Cx<'_> {
     fn int(&self, i: usize) -> i64 {
         conv::to_int(&self.arg(i))
     }
+    /// The object's state (fn_zip checked `$this` is a ZipArchive).
     fn obj(&self) -> Rc<ZipObject> {
-        zip_object(&self.this).expect("ZipArchive object")
+        zip_object(&*self.host, &self.this).expect("checked ZipArchive")
     }
     /// ZIP_FROM_OBJECT
     fn za(&self) -> Result<*mut zip_t, Thrown> {
@@ -86,10 +87,20 @@ impl Cx<'_> {
 pub(super) fn fn_zip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let method = conv::to_string_bytes(&deref(&args[0]));
     let method = String::from_utf8_lossy(&method).into_owned();
+    let this = deref(&args[1]);
+    let is_static = matches!(
+        method.as_str(),
+        "isCompressionMethodSupported" | "isEncryptionMethodSupported"
+    );
+    if !is_static && super::zip_object(host, &this).is_none() {
+        return Err(Thrown::type_error(
+            "__zip(): Argument #2 must be a ZipArchive",
+        ));
+    }
     let mut cx = Cx {
         host,
         fname: format!("ZipArchive::{method}"),
-        this: deref(&args[1]),
+        this,
         args: &args[2..],
     };
     let b = Value::Bool;

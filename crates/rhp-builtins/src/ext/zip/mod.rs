@@ -31,14 +31,16 @@ pub use stream::wrappers;
 /// of an archive whose object goes.
 pub(crate) static CLASSES: &[ClassHandlers] = &[ClassHandlers {
     class: "ZipArchive",
-    handlers: &ObjectHandlers {
-        get_properties_for: Some(get_properties_for),
-        clone_obj: CloneObj::None,
-        dtor_obj: Some(object_dtor),
-        ..ObjectHandlers::STD
-    },
+    handlers: &HANDLERS,
     create_object: true,
 }];
+
+static HANDLERS: ObjectHandlers = ObjectHandlers {
+    get_properties_for: Some(get_properties_for),
+    clone_obj: CloneObj::None,
+    dtor_obj: Some(object_dtor),
+    ..ObjectHandlers::STD
+};
 
 /// php closes the archive in free_obj, which can run the archive's
 /// callbacks; the payload's `Drop` has no host for them. With no
@@ -217,8 +219,12 @@ impl ZipObject {
     }
 }
 
-/// The object's state, created on first use (php's `create_object`).
-pub(crate) fn zip_object(this: &Value) -> Option<Rc<ZipObject>> {
+/// The state of `this`, a `ZipArchive` (or subclass) object, created on
+/// first use (php's `create_object`).
+pub(crate) fn zip_object(host: &dyn Host, this: &Value) -> Option<Rc<ZipObject>> {
+    if !crate::object::has_handlers(host, this, &HANDLERS) {
+        return None;
+    }
     let h = crate::object::object_of(this)?;
     if let Some(o) = crate::object::payload_of::<ZipObject>(&h) {
         return Some(o);
@@ -282,7 +288,7 @@ fn fn_zip_prop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
         return Ok(Value::Null);
     };
-    let Some(o) = zip_object(&this) else {
+    let Some(o) = zip_object(host, &this) else {
         return Ok(Value::Null);
     };
     Ok(match op {

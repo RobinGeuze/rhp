@@ -153,8 +153,13 @@ fn fn_gettimeofday(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
         ArrayKey::from_bytes(b"usec"),
         Value::Int(now.subsec_micros() as i64),
     );
-    a.insert(ArrayKey::from_bytes(b"minuteswest"), Value::Int(0));
-    a.insert(ArrayKey::from_bytes(b"dsttime"), Value::Int(0));
+    // The default zone's offset at that second.
+    let (west, dst) = crate::ext::date::get_timezone_info().map_or((0, 0), |tz| {
+        let o = tz.offset_at(now.as_secs() as i64);
+        (-(o.offset as i64) / 60, o.is_dst as i64)
+    });
+    a.insert(ArrayKey::from_bytes(b"minuteswest"), Value::Int(west));
+    a.insert(ArrayKey::from_bytes(b"dsttime"), Value::Int(dst));
     Ok(Value::Array(a))
 }
 

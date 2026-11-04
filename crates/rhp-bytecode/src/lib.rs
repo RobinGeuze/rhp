@@ -628,6 +628,14 @@ pub enum Instr {
         arr: Reg,
         key: Reg,
     },
+    /// `empty($c[$k])`: `!DimFetchIs`, except that an ArrayAccess object is
+    /// asked php's `has_dimension(check_empty = 1)`: `offsetExists`, which
+    /// sees an `empty()` fetch (`Host::magic_fetch`), then `offsetGet`.
+    EmptyDim {
+        dst: Reg,
+        arr: Reg,
+        key: Reg,
+    },
     /// `isset($o->name)`: declared non-null property, else `__isset`, else false.
     IssetProp {
         dst: Reg,

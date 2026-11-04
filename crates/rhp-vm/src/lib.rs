@@ -7699,6 +7699,26 @@ impl Vm {
                     }
                     self.reg_set(top, dst, Value::Bool(isset_dim(&a, &k)));
                 }
+                Instr::EmptyDim { dst, arr, key } => {
+                    let a = self.reg_get(top, arr);
+                    let k = self.reg_get(top, key);
+                    let v = match &a {
+                        // zend_std_has_dimension(check_empty = 1).
+                        Value::Object(h)
+                            if self.class_implements(h.borrow().class, b"ArrayAccess") =>
+                        {
+                            self.pending_magic_fetch = builtins::MagicFetch::Empty;
+                            if self.aa_offset_exists(h, k.clone())? {
+                                self.aa_offset_get(h, k)?
+                            } else {
+                                Value::Null
+                            }
+                        }
+                        _ => self.dim_read(&a, &k, DimMode::Is)?,
+                    };
+                    let b = self.truthy(&v)?;
+                    self.reg_set(top, dst, Value::Bool(!b));
+                }
                 Instr::IssetProp { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();

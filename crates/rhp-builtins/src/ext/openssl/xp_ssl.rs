@@ -1241,6 +1241,10 @@ pub fn setup_crypto(
             sys::TLS_server_method()
         }
     };
+    if !t.ctx.is_null() {
+        // left by a setup that failed after creating it
+        unsafe { sys::SSL_CTX_free(t.ctx) };
+    }
     t.ctx = unsafe { sys::SSL_CTX_new(m) };
     if t.ctx.is_null() {
         warn("SSL context creation failure");

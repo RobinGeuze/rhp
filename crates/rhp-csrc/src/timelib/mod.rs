@@ -536,7 +536,8 @@ pub fn parse_from_format(
     }
 }
 
-/// What `timelib_strtointerval` parsed from an ISO 8601 interval.
+/// What `timelib_strtointerval` parsed from an ISO 8601 interval
+/// (`recurrences` is 0 without an `R` part).
 pub struct Interval {
     pub begin: Option<Time>,
     pub end: Option<Time>,
@@ -548,7 +549,8 @@ pub struct Interval {
 /// `timelib_strtointerval(s, len, ...)`.
 pub fn strtointerval(s: &[u8]) -> Interval {
     let (mut begin, mut end, mut period) = (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
-    let mut recurrences: c_int = 1;
+    // Written only when the string has an R part; php starts from 0.
+    let mut recurrences: c_int = 0;
     let z = zstr(s);
     let mut errors = ptr::null_mut();
     // SAFETY: `z` holds `len` bytes and a NUL; the outputs are owned
@@ -804,6 +806,21 @@ mod tests {
         assert_eq!(w, [(17, &b"The parsed date was invalid"[..])]);
         let errs: Vec<_> = e.errors().map(|m| (m.position, m.character)).collect();
         assert_eq!(errs, [(11, b'2'), (15, b'1')]);
+    }
+
+    #[test]
+    fn iso_intervals() {
+        let iv = strtointerval(b"R5/2008-03-01T13:00:00Z/P1Y2M10DT2H30M");
+        assert_eq!((iv.errors.error_count(), iv.recurrences), (0, 5));
+        let begin = iv.begin.unwrap();
+        assert_eq!((begin.y, begin.m, begin.d, begin.h), (2008, 3, 1, 13));
+        let p = iv.period.unwrap();
+        assert_eq!((p.y, p.m, p.d, p.h, p.i, p.s), (1, 2, 10, 2, 30, 0));
+        let iv = strtointerval(b"P1D");
+        assert_eq!(iv.recurrences, 0);
+        assert!(iv.begin.is_none() && iv.end.is_none());
+        assert_eq!(iv.period.unwrap().d, 1);
+        assert!(strtointerval(b"P1X").errors.error_count() > 0);
     }
 
     #[test]

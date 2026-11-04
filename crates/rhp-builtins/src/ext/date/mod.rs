@@ -486,6 +486,323 @@ fn fn_getdate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(a))
 }
 
+// --- strftime() / gmstrftime() ----------------------------------------------------
+
+/// The E_DEPRECATED of a `#[\Deprecated]` function, raised when it is called.
+fn deprecated_fn(host: &mut dyn Host, fname: &str, since: &str, msg: &str) -> Result<(), Thrown> {
+    host.emit_diagnostic(
+        crate::E_DEPRECATED,
+        &format!("Function {fname}() is deprecated since {since}, {msg}"),
+    )
+}
+
+/// `php_strftime`: the C library's strftime in the process locale (rhp's
+/// locale is always "C").
+fn php_strftime(
+    host: &mut dyn Host,
+    args: &[Value],
+    fname: &str,
+    gmt: bool,
+) -> Result<Value, Thrown> {
+    deprecated_fn(
+        host,
+        fname,
+        "8.1",
+        "use IntlDateFormatter::format() instead",
+    )?;
+    let format = str_param(host, args, 0, fname, "format")?;
+    let ts = zpp::opt_long_arg(host, args, 1, fname, "timestamp")?.unwrap_or_else(php_time);
+    if format.is_empty() {
+        return Ok(Value::Bool(false));
+    }
+    let mut t = Time::new();
+    let offset = if gmt {
+        t.unixtime2gmt(ts);
+        None
+    } else {
+        let tzi = timezone_info()?;
+        t.set_zone_id(&tzi);
+        t.unixtime2local(ts);
+        Some(tzi.offset_at(ts))
+    };
+    let zone = std::ffi::CString::new(match &offset {
+        Some(o) => c_str(o.abbr()).to_vec(),
+        None => b"GMT".to_vec(),
+    })
+    .expect("no NUL");
+    // SAFETY: a plain C struct; zero is a valid value for every field.
+    let mut ta: libc::tm = unsafe { std::mem::zeroed() };
+    ta.tm_sec = t.s as c_int;
+    ta.tm_min = t.i as c_int;
+    ta.tm_hour = t.h as c_int;
+    ta.tm_mday = t.d as c_int;
+    ta.tm_mon = (t.m - 1) as c_int;
+    ta.tm_year = (t.y - 1900) as c_int;
+    ta.tm_wday = timelib::day_of_week(t.y, t.m, t.d) as c_int;
+    ta.tm_yday = timelib::day_of_year(t.y, t.m, t.d) as c_int;
+    ta.tm_isdst = offset.as_ref().map_or(0, |o| o.is_dst as c_int);
+    ta.tm_gmtoff = offset.as_ref().map_or(0, |o| o.offset as libc::c_long);
+    ta.tm_zone = zone.as_ptr() as _;
+    let cformat = std::ffi::CString::new(c_str(&format)).expect("no NUL");
+    let mut buf_len = 256usize;
+    let mut max_reallocs = 5;
+    let mut buf = vec![0u8; buf_len];
+    let mut real_len;
+    loop {
+        // SAFETY: `buf` holds `buf_len` bytes; the format and the struct
+        // (and the zone name it points to) are alive.
+        real_len = unsafe {
+            libc::strftime(
+                buf.as_mut_ptr() as *mut c_char,
+                buf_len,
+                cformat.as_ptr(),
+                &ta,
+            )
+        };
+        if real_len != buf_len && real_len != 0 {
+            break;
+        }
+        buf_len *= 2;
+        buf.resize(buf_len, 0);
+        max_reallocs -= 1;
+        if max_reallocs == 0 {
+            break;
+        }
+    }
+    if real_len != 0 && real_len != buf_len {
+        buf.truncate(real_len);
+        return Ok(Value::str(buf));
+    }
+    Ok(Value::Bool(false))
+}
+
+fn fn_strftime(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    php_strftime(host, args, "strftime", false)
+}
+
+fn fn_gmstrftime(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    php_strftime(host, args, "gmstrftime", true)
+}
+
+// --- date_sunrise() / date_sunset() / date_sun_info() -------------------------------
+
+/// `Z_PARAM_DOUBLE` (`None` for null when `nullable`).
+fn double_arg(
+    host: &mut dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    pname: &str,
+    nullable: bool,
+) -> Result<Option<f64>, Thrown> {
+    let v = args.get(i).map(rhp_semantics::deref).unwrap_or(Value::Null);
+    let ty = if nullable { "?float" } else { "float" };
+    let wrong = |host: &dyn Host, v: &Value| {
+        Thrown::type_error(format!(
+            "{fname}(): Argument #{} (${pname}) must be of type {ty}, {} given",
+            i + 1,
+            crate::argparse::value_name(host, v)
+        ))
+    };
+    Ok(Some(match &v {
+        Value::Null if nullable => return Ok(None),
+        Value::Float(f) => *f,
+        Value::Int(n) => *n as f64,
+        _ if host.caller_strict_types() => return Err(wrong(host, &v)),
+        Value::Bool(b) => *b as i64 as f64,
+        Value::Null => 0.0,
+        Value::Str(st) => match rhp_values::conv::numeric_string(st.as_bytes()) {
+            Some(rhp_values::conv::Num::Int(n)) => n as f64,
+            Some(rhp_values::conv::Num::Float(f)) => f,
+            None => return Err(wrong(host, &v)),
+        },
+        _ => return Err(wrong(host, &v)),
+    }))
+}
+
+/// `INI_FLT(name)`.
+fn ini_float(host: &dyn Host, name: &[u8]) -> f64 {
+    let v = host.ini_get(name).unwrap_or_default();
+    match rhp_values::conv::scan_number(&v) {
+        Some((rhp_values::conv::Num::Int(n), _)) => n as f64,
+        Some((rhp_values::conv::Num::Float(f), _)) => f,
+        None => 0.0,
+    }
+}
+
+const SUNFUNCS_RET_TIMESTAMP: i64 = 0;
+const SUNFUNCS_RET_STRING: i64 = 1;
+const SUNFUNCS_RET_DOUBLE: i64 = 2;
+
+/// `timelib_astro_rise_set_altitude(t, ...)`: (rs, h_rise, h_set, rise,
+/// set, transit).
+fn rise_set(
+    t: &Time,
+    lon: f64,
+    lat: f64,
+    altit: f64,
+    upper_limb: c_int,
+) -> (c_int, f64, f64, i64, i64, i64) {
+    let (mut h_rise, mut h_set) = (0.0, 0.0);
+    let (mut rise, mut set, mut transit) = (0, 0, 0);
+    // SAFETY: the time and its zone are alive; valid out-pointers.
+    let rs = unsafe {
+        sys::timelib_astro_rise_set_altitude(
+            t.as_ptr(),
+            lon,
+            lat,
+            altit,
+            upper_limb,
+            &mut h_rise,
+            &mut h_set,
+            &mut rise,
+            &mut set,
+            &mut transit,
+        )
+    };
+    (rs, h_rise, h_set, rise, set, transit)
+}
+
+/// `php_do_date_sunrise_sunset`.
+fn php_sunrise_sunset(
+    host: &mut dyn Host,
+    args: &[Value],
+    fname: &str,
+    calc_sunset: bool,
+) -> Result<Value, Thrown> {
+    deprecated_fn(host, fname, "8.1", "use date_sun_info() instead")?;
+    let time = zpp::long_arg(host, args, 0, fname, "timestamp")?;
+    let retformat = long_or(host, args, 1, fname, "returnFormat", SUNFUNCS_RET_STRING)?;
+    let latitude = match double_arg(host, args, 2, fname, "latitude", true)? {
+        Some(v) => v,
+        None => ini_float(host, b"date.default_latitude"),
+    };
+    let longitude = match double_arg(host, args, 3, fname, "longitude", true)? {
+        Some(v) => v,
+        None => ini_float(host, b"date.default_longitude"),
+    };
+    let zenith = match double_arg(host, args, 4, fname, "zenith", true)? {
+        Some(v) => v,
+        None if calc_sunset => ini_float(host, b"date.sunset_zenith"),
+        None => ini_float(host, b"date.sunrise_zenith"),
+    };
+    let gmt_offset = double_arg(host, args, 5, fname, "utcOffset", true)?;
+    if ![
+        SUNFUNCS_RET_TIMESTAMP,
+        SUNFUNCS_RET_STRING,
+        SUNFUNCS_RET_DOUBLE,
+    ]
+    .contains(&retformat)
+    {
+        return Err(zpp::value_error(
+            fname,
+            2,
+            "returnFormat",
+            "must be one of SUNFUNCS_RET_TIMESTAMP, SUNFUNCS_RET_STRING, or SUNFUNCS_RET_DOUBLE",
+        ));
+    }
+    let altitude = 90.0 - zenith;
+    if !latitude.is_finite() || !longitude.is_finite() {
+        return Ok(Value::Bool(false));
+    }
+    let tzi = timezone_info()?;
+    let mut t = Time::new();
+    t.set_zone_id(&tzi);
+    // php reads the offset before setting the time: at the epoch.
+    // SAFETY: the time and its zone are alive.
+    let gmt_offset = gmt_offset
+        .unwrap_or_else(|| unsafe { sys::timelib_get_current_offset(t.as_ptr()) } as f64 / 3600.0);
+    t.unixtime2local(time);
+    let (rs, h_rise, h_set, rise, set, _) = rise_set(&t, longitude, latitude, altitude, 1);
+    if rs != 0 {
+        return Ok(Value::Bool(false));
+    }
+    if retformat == SUNFUNCS_RET_TIMESTAMP {
+        return Ok(Value::Int(if calc_sunset { set } else { rise }));
+    }
+    let mut n = if calc_sunset { h_set } else { h_rise } + gmt_offset;
+    if !(0.0..=24.0).contains(&n) {
+        n -= (n / 24.0).floor() * 24.0;
+    }
+    if !(0.0..=24.0).contains(&n) {
+        return Ok(Value::Bool(false));
+    }
+    Ok(match retformat {
+        SUNFUNCS_RET_STRING => Value::str(format!(
+            "{:02}:{:02}",
+            n as i32,
+            (60.0 * (n - (n as i32) as f64)) as i32
+        )),
+        _ => Value::Float(n),
+    })
+}
+
+fn fn_date_sunrise(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    php_sunrise_sunset(host, args, "date_sunrise", false)
+}
+
+fn fn_date_sunset(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    php_sunrise_sunset(host, args, "date_sunset", true)
+}
+
+fn fn_date_sun_info(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let fname = "date_sun_info";
+    let time = zpp::long_arg(host, args, 0, fname, "timestamp")?;
+    let latitude = double_arg(host, args, 1, fname, "latitude", false)?.unwrap_or(0.0);
+    let longitude = double_arg(host, args, 2, fname, "longitude", false)?.unwrap_or(0.0);
+    if !latitude.is_finite() {
+        return Err(zpp::value_error(fname, 2, "latitude", "must be finite"));
+    }
+    if !longitude.is_finite() {
+        return Err(zpp::value_error(fname, 3, "longitude", "must be finite"));
+    }
+    let tzi = timezone_info()?;
+    let mut t = Time::new();
+    t.set_zone_id(&tzi);
+    t.unixtime2local(time);
+    let mut t2 = Time::new();
+    let mut to_int = |sse: i64| {
+        t2.sse = sse;
+        // timelib_date_to_int, its overflow flag ignored.
+        let mut dummy: c_int = 0;
+        // SAFETY: the time is alive.
+        Value::Int(unsafe { sys::timelib_date_to_int(t2.as_ptr(), &mut dummy) })
+    };
+    let mut a = PhpArray::new();
+    let rows: [(f64, c_int, &str, &str); 4] = [
+        (-35.0 / 60.0, 1, "sunrise", "sunset"),
+        (-6.0, 0, "civil_twilight_begin", "civil_twilight_end"),
+        (-12.0, 0, "nautical_twilight_begin", "nautical_twilight_end"),
+        (
+            -18.0,
+            0,
+            "astronomical_twilight_begin",
+            "astronomical_twilight_end",
+        ),
+    ];
+    for (n, (alt, limb, begin, end)) in rows.into_iter().enumerate() {
+        let (rs, _, _, rise, set, transit) = rise_set(&t, longitude, latitude, alt, limb);
+        match rs {
+            -1 => {
+                assoc(&mut a, begin, Value::Bool(false));
+                assoc(&mut a, end, Value::Bool(false));
+            }
+            1 => {
+                assoc(&mut a, begin, Value::Bool(true));
+                assoc(&mut a, end, Value::Bool(true));
+            }
+            _ => {
+                assoc(&mut a, begin, to_int(rise));
+                assoc(&mut a, end, to_int(set));
+            }
+        }
+        if n == 0 {
+            assoc(&mut a, "transit", to_int(transit));
+        }
+    }
+    Ok(Value::Array(a))
+}
+
 // --- date_parse() / date_parse_from_format() ------------------------------------
 
 /// `zval_from_error_container`: the counts and the messages by position.
@@ -776,6 +1093,11 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     );
     put("timezone_name_from_abbr", fn_timezone_name_from_abbr, 1, 3);
     put("timezone_version_get", fn_timezone_version_get, 0, 0);
+    put("strftime", fn_strftime, 1, 2);
+    put("gmstrftime", fn_gmstrftime, 1, 2);
+    put("date_sunrise", fn_date_sunrise, 1, 6);
+    put("date_sunset", fn_date_sunset, 1, 6);
+    put("date_sun_info", fn_date_sun_info, 3, 3);
     m.insert(
         "__date",
         Builtin {

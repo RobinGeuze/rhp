@@ -788,17 +788,26 @@ fn date_object_get_properties_interval(
 ) -> Result<Option<PhpArray>, Thrown> {
     interval_sync_in(host, h)?;
     interval_sync_out(h);
-    if debug_info_wins(host, h, purpose) {
-        return Ok(None);
-    }
     let st = interval_state(h);
+    let hidden = |k: &ArrayKey| match k {
+        ArrayKey::Str(s) => st.initialized && interval_hidden(&st, s.as_bytes()),
+        ArrayKey::Int(_) => false,
+    };
+    let table = if purpose == PropPurpose::GetObjectVars {
+        // get_object_vars filters php's get_properties table by the
+        // caller's scope.
+        match host.object_vars(&Value::Object(h.clone())) {
+            Some(Value::Array(vars)) => vars,
+            _ => return Ok(None),
+        }
+    } else if debug_info_wins(host, h, purpose) {
+        return Ok(None);
+    } else {
+        std_props(host, h)
+    };
     let mut props = PhpArray::new();
-    for (k, v) in std_props(host, h).iter() {
-        let hidden = match k {
-            ArrayKey::Str(s) => st.initialized && interval_hidden(&st, s.as_bytes()),
-            ArrayKey::Int(_) => false,
-        };
-        if !hidden {
+    for (k, v) in table.iter() {
+        if !hidden(k) {
             props.insert(k.clone(), v.clone());
         }
     }

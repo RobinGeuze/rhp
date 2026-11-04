@@ -88,9 +88,9 @@ impl From<Thrown> for IncludeError {
     }
 }
 
-/// The virtual machine: output sink + call stack + global tables.
+/// The virtual machine: call stack + global tables, running one request
+/// under its SAPI.
 pub struct Vm {
-    out: Vec<u8>,
     /// Active magic-accessor guards: (object id, accessor, property name).
     prop_guards: std::collections::HashSet<(u32, &'static [u8], PhpStr)>,
     /// The output layer (main/output.c): the `ob_start` handler stack every
@@ -543,16 +543,7 @@ impl Host for Vm {
     }
 
     fn log_message(&mut self, msg: &[u8]) {
-        match self.sapi.sapi.as_mut() {
-            Some(s) => s.log_message(msg),
-            None => {
-                use std::io::Write;
-                let mut e = std::io::stderr();
-                let _ = e.write_all(msg);
-                let _ = e.write_all(b"\n");
-                let _ = e.flush();
-            }
-        }
+        self.sapi.sapi.log_message(msg);
     }
 
     fn request_headers(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -2332,12 +2323,6 @@ impl Frame {
     }
 }
 
-impl Default for Vm {
-    fn default() -> Self {
-        Vm::new()
-    }
-}
-
 impl Vm {
     /// Resolve a (possibly namespaced) function reference. Tries the primary
     /// `name`, then `fallback` (the global name) if set, against user functions;
@@ -2377,14 +2362,20 @@ impl Vm {
         }
     }
 
-    pub fn new() -> Self {
+    /// A fresh engine for one request under `sapi`: its name
+    /// (`php_sapi_name()`, `PHP_SAPI`), ini defaults, header semantics and
+    /// output sink. Set ini values, then compile and run.
+    pub fn new(sapi: Box<dyn builtins::sapi::Sapi>) -> Self {
         // Builtin state is per request: never inherit a previous engine's.
         builtins::reset_request_state();
         rhp_values::mem::end_request();
+        let name = sapi.name().to_string();
+        builtins::sapi::set_sapi(&name, &sapi.ini_defaults());
         let mut constants = HashMap::new();
         for (name, value) in builtins::constants() {
             constants.insert(name.as_bytes().to_vec(), value);
         }
+        constants.insert(b"PHP_SAPI".to_vec(), Value::str(name.into_bytes()));
         // Seed the stream-wrapper registry: the default `file://` plus every
         // module-provided wrapper (`phar://`, …).
         let mut wrappers: HashMap<Vec<u8>, Rc<dyn builtins::StreamWrapper>> = HashMap::new();
@@ -2394,7 +2385,6 @@ impl Vm {
         }
         rhp_values::set_object_free_hook(builtins::object_freed);
         Vm {
-            out: Vec::new(),
             prop_guards: Default::default(),
             output: output::Output::default(),
             stack: Vec::new(),
@@ -2463,7 +2453,7 @@ impl Vm {
             in_shutdown_scope: false,
             destructed_below: 0,
             module_states: HashMap::new(),
-            sapi: Default::default(),
+            sapi: request::SapiState::new(sapi),
             opcache: None,
             preload_rec: None,
             preloaded: None,
@@ -4178,27 +4168,15 @@ impl Vm {
         self.includer = Some(Box::new(f));
     }
 
-    /// Output past the output buffers: to the SAPI, or collected for
-    /// [`Vm::output`] without one.
+    /// Output past the output buffers, to the SAPI.
     fn emit_stdout(&mut self, data: &[u8]) {
-        if self.sapi_write(data) {
-            return;
-        }
-        self.out.extend_from_slice(data);
+        self.sapi_write(data);
     }
 
     /// A write to the `STDOUT` stream: php writes the descriptor directly,
     /// bypassing the output layer (no headers, no SAPI buffering).
     fn emit_raw_stdout(&mut self, data: &[u8]) {
-        if let Some(s) = self.sapi.sapi.as_mut() {
-            s.write_raw_stdout(data);
-            return;
-        }
-        self.out.extend_from_slice(data);
-    }
-
-    pub fn output(&self) -> &[u8] {
-        &self.out
+        self.sapi.sapi.write_raw_stdout(data);
     }
 
     /// The `STDIN` reader (a dup of fd 0), created on first use.
@@ -4276,19 +4254,6 @@ impl Vm {
                 }
             }
         }
-    }
-
-    /// php's request shutdown after the script finished (normally, through
-    /// `exit`, or with an uncaught throwable already dealt with), for hosts
-    /// that report uncaught throwables themselves: like [`Vm::run_main`]'s
-    /// sequence, but a throwable escaping a shutdown function or destructor
-    /// goes to `on_fatal` (which returns the resulting exit code).
-    pub fn request_shutdown(&mut self, code: i32, on_fatal: &mut dyn FnMut(Thrown) -> i32) -> i32 {
-        let r = self.shutdown_sequence(code, &mut |_vm, t| match t {
-            Thrown::Exit(c) => Ok(Some(c)),
-            t => Ok(Some(on_fatal(t))),
-        });
-        r.unwrap_or(255)
     }
 
     /// php_request_shutdown: 1. the `register_shutdown_function` callbacks,
@@ -4464,7 +4429,7 @@ impl Vm {
     }
 
     /// Execute a compiled program; returns the process exit code.
-    pub fn run(&mut self, prog: &Program) -> Result<i32, Thrown> {
+    fn run(&mut self, prog: &Program) -> Result<i32, Thrown> {
         // The request's memory accounting starts here, with its limits
         // (compiling the main script doesn't count, as with opcache).
         builtins::apply_memory_limits();
@@ -5570,28 +5535,9 @@ impl Vm {
         r.err()
     }
 
-    /// The class name of an object (e.g. an uncaught `Thrown::Object`).
-    pub fn class_name_of(&self, obj: &ObjectHandle) -> String {
-        String::from_utf8_lossy(self.class(obj.borrow().class).name.as_bytes()).into_owned()
-    }
-
-    /// Write pending unbuffered output to the process's stdout.
-    pub(crate) fn flush_stdout(&mut self) {
-        use std::io::Write;
-        let mut o = std::io::stdout().lock();
-        let _ = o.write_all(&self.out);
-        let _ = o.flush();
-        self.out.clear();
-    }
-
-    /// Write to the SAPI's error stream, or the process's stderr.
+    /// Write to the SAPI's error stream.
     fn write_stderr(&mut self, data: &[u8]) {
-        use std::io::Write;
-        if let Some(s) = self.sapi.sapi.as_mut() {
-            s.write_stderr(data);
-            return;
-        }
-        let _ = std::io::stderr().write_all(data);
+        self.sapi.sapi.write_stderr(data);
     }
 
     /// php_error_cb's log + display step for an error of type `ty` (an E_*
@@ -5650,12 +5596,8 @@ impl Vm {
             if target.is_empty() || target == b"syslog" {
                 // error_log unset: the SAPI's log_message (the CLI's writes
                 // to stderr).
-                if self.sapi.sapi.is_some() {
-                    let line = m.strip_suffix(b"\n").unwrap_or(&m).to_vec();
-                    builtins::Host::log_message(self, &line);
-                } else {
-                    self.write_stderr(&m);
-                }
+                let line = m.strip_suffix(b"\n").unwrap_or(&m).to_vec();
+                builtins::Host::log_message(self, &line);
             } else {
                 // php_log_err: append "[d-M-Y H:i:s e] message" to the file.
                 let stamp = self
@@ -5804,7 +5746,7 @@ impl Vm {
         }
     }
 
-    /// The CLI request around [`Vm::run`] (php_execute_script +
+    /// Run the script and php's request shutdown (php_execute_script +
     /// php_request_shutdown): an uncaught throwable goes to the exception
     /// handler or is reported, then the shutdown functions run (a fatal or
     /// `exit` in one stops the rest), then every output buffer is flushed.
@@ -5827,11 +5769,9 @@ impl Vm {
         let status = self.shutdown_sequence(status, &mut |vm, t| vm.top_level_throw(t))?;
         // php_request_shutdown sends the headers if no output did: a throw
         // from the header_register_callback callback is reported there.
-        if self.sapi.sapi.is_some() {
-            self.sapi_send_headers();
-            if let Some(t) = self.pending_throw.take() {
-                return Ok(self.top_level_throw(t)?.unwrap_or(255));
-            }
+        self.sapi_send_headers();
+        if let Some(t) = self.pending_throw.take() {
+            return Ok(self.top_level_throw(t)?.unwrap_or(255));
         }
         Ok(status)
     }

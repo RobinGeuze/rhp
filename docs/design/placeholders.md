@@ -25,7 +25,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 2 | `set_error_handler`/`set_exception_handler`/`restore_*` — stored-nowhere no-ops | `php_fns.rs:140`,`:146` | framework error pipelines, `trigger_error` routing | high | high |
 | 3 | `trigger_error` — returns true, emits nothing | `php_fns.rs:150` | user warnings/deprecations, logging | med | med |
 | 4 | `error_reporting` — always returns `32767` | `php_fns.rs:154` | reads/writes of the mask; no effect either way | low | low |
-| 5 | ~~`register_shutdown_function` — accepted, never invoked~~ **done**: run by `Vm::request_shutdown` (then destructors, then `ob_*` flush) | — | shutdown hooks, fatal-error handlers, flush-on-exit | — | — |
+| 5 | ~~`register_shutdown_function` — accepted, never invoked~~ **done**: run by `Vm::run_main` (then destructors, then `ob_*` flush) | — | shutdown hooks, fatal-error handlers, flush-on-exit | — | — |
 | 6 | `memory_get_usage`/`_peak_usage` — fixed `2097152` | `php_fns.rs:167` | memory probes, `ini` memory-limit logic | low | low |
 | 7 | `gc_*`, `set_time_limit` — no-ops | `php_fns.rs:445` | none observable (cosmetic) | low | low |
 | 8 | `setlocale` — always `"C"` | `php_fns.rs:187` | locale-dependent formatting | low | low |
@@ -121,8 +121,7 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
 
 ### 1.5 `register_shutdown_function` — registered, **never invoked** — RESOLVED
 - **Resolved:** callbacks are stored on the `Vm` and run by
-  `Vm::request_shutdown` (called by the SAPI after `{main}` returns, exits or
-  throws): shutdown functions in order (an `exit`/uncaught throwable stops the
+  `Vm::run_main` after `{main}` returns, exits or throws: shutdown functions in order (an `exit`/uncaught throwable stops the
   rest), then destructors (globals holding the sole reference, last first, then
   every remaining object in creation order), then all output buffers are flushed.
   Objects with a `__destruct` are tracked; one the program releases is destructed

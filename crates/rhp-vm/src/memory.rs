@@ -218,17 +218,12 @@ impl Vm {
         } else {
             (file, line)
         };
-        if self
-            .sapi
-            .sapi
-            .as_ref()
-            .is_some_and(|s| s.exits_on_hard_limit())
-        {
+        if self.sapi.sapi.exits_on_hard_limit() {
             let mut m = oom.message().into_bytes();
             m.extend_from_slice(b" in ");
             m.extend_from_slice(&file);
             m.extend_from_slice(format!(" on line {line}\n").as_bytes());
-            self.flush_stdout();
+            self.sapi.sapi.flush();
             use std::io::Write;
             let _ = std::io::stderr().write_all(&m);
             std::process::exit(137);

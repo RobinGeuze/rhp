@@ -21,7 +21,7 @@
 
 use std::io::Write;
 
-pub use rhp_builtins::zend::ParseFailure;
+use rhp_builtins::zend::ParseFailure;
 use rhp_compiler::{compile_include, compile_with_source};
 use rhp_frontend::{Arena, Parsed};
 use rhp_values::{Thrown, Value};
@@ -150,7 +150,7 @@ impl Sapi for CliSapi {
 /// action errors (`rhp_builtins::zend`). For code php parses but mago-syntax
 /// does not (mago's bugs, or its recursion limit on deeply nested code),
 /// mago's error, which is not php's.
-pub fn parse_error(parsed: &Parsed, src: &[u8]) -> Option<ParseFailure> {
+fn parse_error(parsed: &Parsed, src: &[u8]) -> Option<ParseFailure> {
     rhp_builtins::zend::syntax_error(src).or_else(|| {
         let (message, line) = parsed.parse_error()?;
         Some(ParseFailure {
@@ -184,7 +184,7 @@ fn install_includer(vm: &mut Vm) {
 
 /// A compile entry point's failure as the includer reports it: a compile
 /// error (E_COMPILE_ERROR) is a located fatal, anything else is thrown.
-pub fn include_error(t: Thrown) -> IncludeError {
+fn include_error(t: Thrown) -> IncludeError {
     match t {
         Thrown::Error {
             class: "CompileError",
@@ -251,8 +251,7 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
         }
     };
 
-    let mut vm = Vm::new();
-    vm.set_sapi(sapi);
+    let mut vm = Vm::new(sapi);
     for (k, v) in &req.ini {
         vm.set_ini(k.as_bytes(), v.as_bytes());
     }
@@ -371,8 +370,7 @@ fn preload(sapi: &dyn Sapi, ini: &[(String, String)]) -> bool {
     if let Some(ok) = Vm::preload_outcome() {
         return ok;
     }
-    let mut vm = Vm::new();
-    vm.set_sapi(Box::new(PreloadSapi {
+    let mut vm = Vm::new(Box::new(PreloadSapi {
         name: sapi.name().to_string(),
         defaults: sapi.ini_defaults(),
         exits_on_hard_limit: sapi.exits_on_hard_limit(),

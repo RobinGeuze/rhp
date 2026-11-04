@@ -20,7 +20,7 @@ use std::cell::Cell;
 use rhp_semantics::deref;
 use rhp_values::{conv, fmt, ArrayKey, PhpArray, PhpStr, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // --- json_last_error state --------------------------------------------------
 
@@ -944,25 +944,17 @@ fn fn_json_last_error_msg(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Th
 // registration + constants
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
-    macro_rules! reg {
-        ($name:literal, $func:path, $min:literal, $max:expr) => {
-            m.insert(
-                $name,
-                Builtin {
-                    name: $name,
-                    func: $func,
-                    min_args: $min,
-                    max_args: $max,
-                },
-            );
-        };
-    }
-    reg!("json_encode", fn_json_encode, 1, Some(3));
-    reg!("json_decode", fn_json_decode, 1, Some(4));
-    reg!("json_validate", fn_json_validate, 1, Some(3));
-    reg!("json_last_error", fn_json_last_error, 0, Some(0));
-    reg!("json_last_error_msg", fn_json_last_error_msg, 0, Some(0));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("json_encode", fn_json_encode),
+            ("json_decode", fn_json_decode),
+            ("json_validate", fn_json_validate),
+            ("json_last_error", fn_json_last_error),
+            ("json_last_error_msg", fn_json_last_error_msg),
+        ],
+    );
 }
 
 /// The `JSON_*` constants (chained into the engine's `constants()` table).

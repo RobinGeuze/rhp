@@ -1,16 +1,14 @@
 //! `md5`, `sha1`, `crc32`, `base64_encode`/`decode` and `bin2hex`/`hex2bin`.
 //!
 //! md5 and sha1 come from RustCrypto, crc32 from the linked zlib. base64 and
-//! hex are php's own code, ported. Registered via `super::register`.
-
-use std::collections::HashMap;
+//! hex are php's own code, ported. Registered by `super::register`.
 
 use digest::Digest;
 
 use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // small shared helpers
@@ -238,31 +236,19 @@ fn hex_val(b: u8) -> Option<u8> {
 // ---------------------------------------------------------------------------
 
 /// Register all hashing + binary-encoding builtins into the shared table.
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "md5", fn_md5, 1, Some(2));
-    put(m, "sha1", fn_sha1, 1, Some(2));
-    put(m, "crc32", fn_crc32, 1, Some(1));
-    put(m, "base64_encode", fn_base64_encode, 1, Some(1));
-    put(m, "base64_decode", fn_base64_decode, 1, Some(2));
-    put(m, "bin2hex", fn_bin2hex, 1, Some(1));
-    put(m, "hex2bin", fn_hex2bin, 1, Some(1));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("md5", fn_md5),
+            ("sha1", fn_sha1),
+            ("crc32", fn_crc32),
+            ("base64_encode", fn_base64_encode),
+            ("base64_decode", fn_base64_decode),
+            ("bin2hex", fn_bin2hex),
+            ("hex2bin", fn_hex2bin),
+        ],
+    );
 }
 
 #[cfg(test)]

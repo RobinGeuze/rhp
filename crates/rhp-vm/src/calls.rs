@@ -1673,7 +1673,7 @@ impl Vm {
         // Free streams whose last reference went away (php closes a resource
         // when its refcount drops to zero; what that throws is thrown there).
         self.reap_dropped_streams()?;
-        let count_error = builtin_arg_count_error(builtin, sig, args.len());
+        let count_error = builtin_arg_count_error(builtin, args.len());
         if count_error.is_none() {
             let caller = self.stack.len().saturating_sub(1);
             let user = !self.stack.is_empty() && !self.is_internal_frame(caller);
@@ -1870,21 +1870,9 @@ fn two_form_arity(name: &str) -> Option<[usize; 2]> {
 }
 
 /// zend_wrong_parameters_count_error: "f() expects exactly 1 argument, 0 given".
-/// The bounds are php's (the stub's), except that the minimum never drops
-/// below the registration's: the array_u* callback functions check a larger
-/// minimum in their bodies, as php does. An argument beyond the registered
-/// maximum is a parameter php declares but the body does not implement: it
-/// is refused, never ignored.
-fn builtin_arg_count_error(
-    b: &builtins::Builtin,
-    sig: Option<&builtins::signatures::Func>,
-    n: usize,
-) -> Option<Thrown> {
-    use builtins::signatures::Signature;
-    let (min, max) = match sig {
-        Some(s) => (s.min_args().max(b.min_args), s.max_args()),
-        None => (b.min_args, b.max_args),
-    };
+/// The bounds are the registration's: php's (the stub's), with the larger
+/// minimum the array_u* callback functions check in their bodies.
+fn builtin_arg_count_error(b: &builtins::Builtin, n: usize) -> Option<Thrown> {
     if let Some(counts) = two_form_arity(b.name) {
         if !counts.contains(&n) {
             // The smallest non-zero count when below it, else the largest.
@@ -1900,21 +1888,7 @@ fn builtin_arg_count_error(
             ));
         }
     }
-    if n >= min && n <= max.unwrap_or(usize::MAX) {
-        return match (sig, b.max_args) {
-            (Some(s), Some(implemented)) if n > implemented => Some(Thrown::unsupported(
-                format!(
-                    "{}() argument #{} (${})",
-                    b.name,
-                    implemented + 1,
-                    s.param(implemented).map_or("", |p| p.name)
-                ),
-                "not implemented",
-            )),
-            _ => None,
-        };
-    }
-    zpp_count_error(b.name, min, max, n)
+    zpp_count_error(b.name, b.min_args, b.max_args, n)
 }
 
 /// zend_wrong_parameters_count_error for `name` with php's bounds.

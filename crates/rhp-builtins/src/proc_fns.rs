@@ -13,14 +13,13 @@
 //! (php's warnings — e.g. "posix_spawn() failed: …" — are not emitted: this
 //! engine has no diagnostics channel yet; the return values match.)
 
-use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 fn write_ref(arg: Option<&Value>, value: Value) {
     if let Some(Value::Ref(rc)) = arg {
@@ -1367,39 +1366,27 @@ fn fn_sleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(unsafe { libc::sleep(s as libc::c_uint) } as i64))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "proc_open", fn_proc_open, 3, Some(6));
-    put(m, "proc_close", fn_proc_close, 1, Some(1));
-    put(m, "popen", fn_popen, 2, Some(2));
-    put(m, "pclose", fn_pclose, 1, Some(1));
-    put(m, "proc_get_status", fn_proc_get_status, 1, Some(1));
-    put(m, "proc_terminate", fn_proc_terminate, 1, Some(2));
-    put(m, "proc_nice", fn_proc_nice, 1, Some(1));
-    put(m, "exec", fn_exec, 1, Some(3));
-    put(m, "system", fn_system, 1, Some(2));
-    put(m, "passthru", fn_passthru, 1, Some(2));
-    put(m, "shell_exec", fn_shell_exec, 1, Some(1));
-    put(m, "escapeshellarg", fn_escapeshellarg, 1, Some(1));
-    put(m, "escapeshellcmd", fn_escapeshellcmd, 1, Some(1));
-    put(m, "stream_select", fn_stream_select, 4, Some(5));
-    put(m, "stream_isatty", fn_stream_isatty, 1, Some(1));
-    put(m, "usleep", fn_usleep, 1, Some(1));
-    put(m, "sleep", fn_sleep, 1, Some(1));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("proc_open", fn_proc_open),
+            ("proc_close", fn_proc_close),
+            ("popen", fn_popen),
+            ("pclose", fn_pclose),
+            ("proc_get_status", fn_proc_get_status),
+            ("proc_terminate", fn_proc_terminate),
+            ("proc_nice", fn_proc_nice),
+            ("exec", fn_exec),
+            ("system", fn_system),
+            ("passthru", fn_passthru),
+            ("shell_exec", fn_shell_exec),
+            ("escapeshellarg", fn_escapeshellarg),
+            ("escapeshellcmd", fn_escapeshellcmd),
+            ("stream_select", fn_stream_select),
+            ("stream_isatty", fn_stream_isatty),
+            ("usleep", fn_usleep),
+            ("sleep", fn_sleep),
+        ],
+    );
 }

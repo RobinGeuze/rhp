@@ -7,13 +7,12 @@
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::HashMap;
 
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::argparse::{int_or_null_param, int_param, str_param, value_name};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // --- Mt19937 (ext/random/engine_mt19937.c) ----------------------------------
 
@@ -989,50 +988,39 @@ fn fn_true(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(true))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: Option<usize>| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    };
-    put("mt_srand", fn_mt_srand, 0, Some(2));
-    put("srand", fn_mt_srand, 0, Some(2));
-    put("mt_rand", fn_mt_rand, 0, Some(2));
-    put("rand", fn_rand, 0, Some(2));
-    put("shuffle", fn_shuffle, 1, Some(1));
-    put("array_rand", fn_array_rand, 1, Some(2));
-    put("str_shuffle", fn_str_shuffle, 1, Some(1));
-    put(
-        "array_change_key_case",
-        fn_array_change_key_case,
-        1,
-        Some(2),
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("mt_srand", fn_mt_srand),
+            ("srand", fn_mt_srand),
+            ("mt_rand", fn_mt_rand),
+            ("rand", fn_rand),
+            ("shuffle", fn_shuffle),
+            ("array_rand", fn_array_rand),
+            ("str_shuffle", fn_str_shuffle),
+            ("array_change_key_case", fn_array_change_key_case),
+            ("array_multisort", fn_array_multisort),
+            ("settype", fn_settype),
+            ("fnmatch", fn_fnmatch),
+            ("getrusage", fn_getrusage),
+            ("gc_status", fn_gc_status),
+            ("memory_reset_peak_usage", fn_memory_reset_peak_usage),
+            ("gc_mem_caches", fn_gc_mem_caches),
+            ("sys_getloadavg", fn_sys_getloadavg),
+            ("getopt", fn_getopt),
+            ("readline", fn_readline),
+            ("readline_add_history", fn_readline_add_history),
+            ("readline_clear_history", fn_true),
+        ],
     );
-    put("array_multisort", fn_array_multisort, 1, None);
-    put("settype", fn_settype, 2, Some(2));
-    put("fnmatch", fn_fnmatch, 2, Some(3));
-    put("getrusage", fn_getrusage, 0, Some(1));
-    put("gc_status", fn_gc_status, 0, Some(0));
-    put(
-        "memory_reset_peak_usage",
-        fn_memory_reset_peak_usage,
-        0,
-        Some(0),
+    crate::register_helpers(
+        m,
+        &[
+            ("__stdext_deprecated", fn_stdext_deprecated, 1, Some(1)),
+            ("__stdext_warning", fn_stdext_warning, 1, Some(1)),
+        ],
     );
-    put("gc_mem_caches", fn_gc_mem_caches, 0, Some(0));
-    put("sys_getloadavg", fn_sys_getloadavg, 0, Some(0));
-    put("getopt", fn_getopt, 1, Some(3));
-    put("readline", fn_readline, 0, Some(1));
-    put("readline_add_history", fn_readline_add_history, 1, Some(1));
-    put("readline_clear_history", fn_true, 0, Some(0));
-    put("__stdext_deprecated", fn_stdext_deprecated, 1, Some(1));
-    put("__stdext_warning", fn_stdext_warning, 1, Some(1));
 }
 
 /// `utf8_encode` / `utf8_decode`.

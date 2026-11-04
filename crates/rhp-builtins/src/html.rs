@@ -2,13 +2,11 @@
 //! get_html_translation_table(): a port of ext/standard/html.c over php's
 //! own tables (`html_tables`, generated from php-src).
 
-use std::collections::HashMap;
-
 use rhp_values::{ArrayKey, PhpArray, Value};
 
 use crate::argparse::{bool_param, int_param, str_or_null_param, str_param};
 use crate::html_tables::{self as t, Enc};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 const ENT_HTML_QUOTE_SINGLE: i64 = 1;
 const ENT_HTML_QUOTE_DOUBLE: i64 = 2;
@@ -942,30 +940,17 @@ fn fn_get_html_translation_table(host: &mut dyn Host, args: &[Value]) -> Result<
     Ok(Value::Array(arr))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let fns: &[(&'static str, crate::NativeFn, usize, usize)] = &[
-        ("htmlspecialchars", fn_htmlspecialchars, 1, 4),
-        ("htmlspecialchars_decode", fn_htmlspecialchars_decode, 1, 2),
-        ("htmlentities", fn_htmlentities, 1, 4),
-        ("html_entity_decode", fn_html_entity_decode, 1, 3),
-        (
-            "get_html_translation_table",
-            fn_get_html_translation_table,
-            0,
-            3,
-        ),
-    ];
-    for &(name, func, min, max) in fns {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    }
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("htmlspecialchars", fn_htmlspecialchars),
+            ("htmlspecialchars_decode", fn_htmlspecialchars_decode),
+            ("htmlentities", fn_htmlentities),
+            ("html_entity_decode", fn_html_entity_decode),
+            ("get_html_translation_table", fn_get_html_translation_table),
+        ],
+    );
 }
 
 #[cfg(test)]

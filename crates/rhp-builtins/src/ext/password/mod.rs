@@ -3,7 +3,6 @@
 //! other `crypt()` hash as php does; argon2i and argon2id go through the
 //! argon2 reference C php links. Both C libraries come from rhp-csrc.
 
-use std::collections::HashMap;
 use std::ffi::CString;
 
 use rhp_csrc::argon2;
@@ -12,7 +11,7 @@ use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::argparse::{str_param, value_name};
 use crate::crypt_fns::php_crypt;
-use crate::{Builtin, Host, Thrown, E_DEPRECATED};
+use crate::{Host, Thrown, E_DEPRECATED};
 
 // php_password.h
 const BCRYPT_COST: i64 = 12;
@@ -498,23 +497,17 @@ fn fn_password_algos(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown>
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("password_hash", fn_password_hash, 2, 3);
-    put("password_verify", fn_password_verify, 2, 2);
-    put("password_needs_rehash", fn_password_needs_rehash, 2, 3);
-    put("password_get_info", fn_password_get_info, 1, 1);
-    put("password_algos", fn_password_algos, 0, 0);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("password_hash", fn_password_hash),
+            ("password_verify", fn_password_verify),
+            ("password_needs_rehash", fn_password_needs_rehash),
+            ("password_get_info", fn_password_get_info),
+            ("password_algos", fn_password_algos),
+        ],
+    );
 }
 
 /// `PASSWORD_*` (password.stub.php).

@@ -28,7 +28,7 @@ use sha2::{Digest, Sha256, Sha512};
 mod tar;
 
 use crate::streams::{StatInfo, StreamWrapper, WrapperReg};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // --- little-endian readers ---------------------------------------------------
 
@@ -711,29 +711,17 @@ fn fn_phar_running(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     })
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "__phar_mapphar", fn_phar_mapphar, 0, Some(2));
-    put(m, "__phar_loadphar", fn_phar_loadphar, 1, Some(2));
-    put(m, "__phar_running", fn_phar_running, 0, Some(1));
-    put(m, "__phardata_load", tar::fn_load, 1, Some(1));
-    put(m, "__phardata_save", tar::fn_save, 3, Some(3));
+pub fn register(m: &mut crate::Registry) {
+    crate::register_helpers(
+        m,
+        &[
+            ("__phar_mapphar", fn_phar_mapphar, 0, Some(2)),
+            ("__phar_loadphar", fn_phar_loadphar, 1, Some(2)),
+            ("__phar_running", fn_phar_running, 0, Some(1)),
+            ("__phardata_load", tar::fn_load, 1, Some(1)),
+            ("__phardata_save", tar::fn_save, 3, Some(3)),
+        ],
+    );
 }
 
 pub fn wrappers() -> Vec<WrapperReg> {

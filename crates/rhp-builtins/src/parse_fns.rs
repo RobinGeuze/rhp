@@ -13,7 +13,7 @@
 use rhp_semantics::deref;
 use rhp_values::{conv, PhpArray, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 fn first_byte(v: Option<&Value>, default: u8) -> u8 {
     match v {
@@ -420,22 +420,8 @@ fn scan_char(input: &[u8], ip: &mut usize, width: Option<usize>) -> Option<Value
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
-    macro_rules! reg {
-        ($name:literal, $func:path, $min:literal, $max:expr) => {
-            m.insert(
-                $name,
-                Builtin {
-                    name: $name,
-                    func: $func,
-                    min_args: $min,
-                    max_args: $max,
-                },
-            );
-        };
-    }
-    reg!("str_getcsv", fn_str_getcsv, 1, Some(4));
-    reg!("sscanf", fn_sscanf, 2, None);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(m, &[("str_getcsv", fn_str_getcsv), ("sscanf", fn_sscanf)]);
 }
 
 #[cfg(test)]

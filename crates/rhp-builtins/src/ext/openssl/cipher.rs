@@ -15,7 +15,7 @@ use super::backend::{
 };
 use super::{
     bio_bytes, bool_arg, cstr_bytes, cstring, int_arg, key_arg, libctx, mem_bio, openssl_free,
-    set_ref, store_errors, str_arg, sys, value_error, Own, Put,
+    set_ref, store_errors, str_arg, sys, value_error, Own,
 };
 use crate::ext::hash::primitives::{base64_decode, base64_encode};
 use crate::ext::zpp::deref;
@@ -25,55 +25,40 @@ const OPENSSL_RAW_DATA: i64 = 1;
 const OPENSSL_ZERO_PADDING: i64 = 2;
 const OPENSSL_DONT_ZERO_PAD_KEY: i64 = 4;
 
-pub(super) fn register(put: &mut Put) {
-    put(
-        "openssl_get_md_methods",
-        super::wrapped!(fn_get_md_methods),
-        0,
-        1,
-    );
-    put(
-        "openssl_get_cipher_methods",
-        super::wrapped!(fn_get_cipher_methods),
-        0,
-        1,
-    );
-    put(
-        "openssl_get_curve_names",
-        super::wrapped!(fn_get_curve_names),
-        0,
-        0,
-    );
-    put("openssl_digest", super::wrapped!(fn_digest), 2, 3);
-    put("openssl_encrypt", super::wrapped!(fn_encrypt), 3, 8);
-    put("openssl_decrypt", super::wrapped!(fn_decrypt), 3, 7);
-    put(
-        "openssl_cipher_iv_length",
-        super::wrapped!(fn_cipher_iv_length),
-        1,
-        1,
-    );
-    put(
-        "openssl_cipher_key_length",
-        super::wrapped!(fn_cipher_key_length),
-        1,
-        1,
-    );
-    put(
-        "openssl_random_pseudo_bytes",
-        super::wrapped!(fn_random_pseudo_bytes),
-        1,
-        2,
-    );
-    put("openssl_pbkdf2", super::wrapped!(fn_pbkdf2), 4, 5);
-    put("openssl_spki_new", super::wrapped!(fn_spki_new), 2, 3);
-    put("openssl_spki_verify", super::wrapped!(fn_spki_verify), 1, 1);
-    put("openssl_spki_export", super::wrapped!(fn_spki_export), 1, 1);
-    put(
-        "openssl_spki_export_challenge",
-        fn_spki_export_challenge,
-        1,
-        1,
+pub(super) fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("openssl_get_md_methods", super::wrapped!(fn_get_md_methods)),
+            (
+                "openssl_get_cipher_methods",
+                super::wrapped!(fn_get_cipher_methods),
+            ),
+            (
+                "openssl_get_curve_names",
+                super::wrapped!(fn_get_curve_names),
+            ),
+            ("openssl_digest", super::wrapped!(fn_digest)),
+            ("openssl_encrypt", super::wrapped!(fn_encrypt)),
+            ("openssl_decrypt", super::wrapped!(fn_decrypt)),
+            (
+                "openssl_cipher_iv_length",
+                super::wrapped!(fn_cipher_iv_length),
+            ),
+            (
+                "openssl_cipher_key_length",
+                super::wrapped!(fn_cipher_key_length),
+            ),
+            (
+                "openssl_random_pseudo_bytes",
+                super::wrapped!(fn_random_pseudo_bytes),
+            ),
+            ("openssl_pbkdf2", super::wrapped!(fn_pbkdf2)),
+            ("openssl_spki_new", super::wrapped!(fn_spki_new)),
+            ("openssl_spki_verify", super::wrapped!(fn_spki_verify)),
+            ("openssl_spki_export", super::wrapped!(fn_spki_export)),
+            ("openssl_spki_export_challenge", fn_spki_export_challenge),
+        ],
     );
 }
 

@@ -11,20 +11,23 @@ use super::backend::{
 use super::pkey::path_arg;
 use super::{
     arg, bio_bytes, check_path, cstring, mem_bio, obj_or_str, set_ref, store_errors, str_arg, sys,
-    type_error, Own, Put, CERT_CLASS,
+    type_error, Own, CERT_CLASS,
 };
 use crate::ext::zpp::deref;
 use crate::{warn, Host, Thrown};
 
-pub(super) fn register(put: &mut Put) {
-    put(
-        "openssl_pkcs12_export_to_file",
-        super::wrapped!(fn_export_to_file),
-        4,
-        5,
+pub(super) fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            (
+                "openssl_pkcs12_export_to_file",
+                super::wrapped!(fn_export_to_file),
+            ),
+            ("openssl_pkcs12_export", super::wrapped!(fn_export)),
+            ("openssl_pkcs12_read", super::wrapped!(fn_read)),
+        ],
     );
-    put("openssl_pkcs12_export", super::wrapped!(fn_export), 4, 5);
-    put("openssl_pkcs12_read", super::wrapped!(fn_read), 3, 3);
 }
 
 unsafe extern "C" fn pkcs12_free(p: *mut sys::PKCS12) {

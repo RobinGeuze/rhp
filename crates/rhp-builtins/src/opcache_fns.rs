@@ -3,12 +3,10 @@
 //! `opcache.enable_cli`, or `opcache.enable=0`) each function reports what
 //! php reports then, so feature detection still sees them.
 
-use std::collections::HashMap;
-
 use rhp_values::{ArrayKey, PhpArray, Value};
 
 use crate::argparse::{bool_param, str_param};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 /// How `opcache_get_configuration()` types a directive.
 #[derive(Clone, Copy)]
@@ -454,39 +452,21 @@ pub(crate) fn jit_mode_valid(mode: &[u8]) -> bool {
     jit % 10 <= 1 && jit / 10 == 0
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("opcache_get_status", fn_opcache_get_status, 0, 1);
-    put("opcache_reset", fn_opcache_reset, 0, 0);
-    put("opcache_invalidate", fn_opcache_invalidate, 1, 2);
-    put(
-        "opcache_is_script_cached",
-        fn_opcache_is_script_cached,
-        1,
-        1,
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("opcache_get_status", fn_opcache_get_status),
+            ("opcache_reset", fn_opcache_reset),
+            ("opcache_invalidate", fn_opcache_invalidate),
+            ("opcache_is_script_cached", fn_opcache_is_script_cached),
+            (
+                "opcache_is_script_cached_in_file_cache",
+                fn_opcache_is_script_cached_in_file_cache,
+            ),
+            ("opcache_compile_file", fn_opcache_compile_file),
+            ("opcache_get_configuration", fn_opcache_get_configuration),
+            ("opcache_jit_blacklist", fn_opcache_jit_blacklist),
+        ],
     );
-    put(
-        "opcache_is_script_cached_in_file_cache",
-        fn_opcache_is_script_cached_in_file_cache,
-        1,
-        1,
-    );
-    put("opcache_compile_file", fn_opcache_compile_file, 1, 1);
-    put(
-        "opcache_get_configuration",
-        fn_opcache_get_configuration,
-        0,
-        0,
-    );
-    put("opcache_jit_blacklist", fn_opcache_jit_blacklist, 1, 1);
 }

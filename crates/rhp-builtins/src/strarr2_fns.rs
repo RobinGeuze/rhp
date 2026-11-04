@@ -7,12 +7,10 @@
 //! binary (see `strarr2_fns/tests.rs` — expected values hardcoded from
 //! `php -r '...'` output).
 
-use std::collections::HashMap;
-
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // shared helpers
@@ -527,40 +525,22 @@ fn fn_array_merge_recursive(_: &mut dyn Host, args: &[Value]) -> Result<Value, T
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "str_split", fn_str_split, 1, Some(2));
-    put(m, "strtr", fn_strtr, 2, Some(3));
-    put(m, "substr_replace", fn_substr_replace, 3, Some(4));
-    put(m, "levenshtein", fn_levenshtein, 2, Some(5));
-    put(m, "similar_text", fn_similar_text, 2, Some(3));
-    put(m, "str_word_count", fn_str_word_count, 1, Some(3));
-    put(m, "chunk_split", fn_chunk_split, 1, Some(3));
-    put(m, "array_diff_key", fn_array_diff_key, 1, None);
-    put(m, "array_intersect_key", fn_array_intersect_key, 1, None);
-    put(m, "array_replace", fn_array_replace, 1, None);
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "array_merge_recursive",
-        fn_array_merge_recursive,
-        0,
-        None,
+        &[
+            ("str_split", fn_str_split),
+            ("strtr", fn_strtr),
+            ("substr_replace", fn_substr_replace),
+            ("levenshtein", fn_levenshtein),
+            ("similar_text", fn_similar_text),
+            ("str_word_count", fn_str_word_count),
+            ("chunk_split", fn_chunk_split),
+            ("array_diff_key", fn_array_diff_key),
+            ("array_intersect_key", fn_array_intersect_key),
+            ("array_replace", fn_array_replace),
+            ("array_merge_recursive", fn_array_merge_recursive),
+        ],
     );
 }
 

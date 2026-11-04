@@ -11,13 +11,13 @@
 //! `zend_sort`), because both the result for inconsistent comparators and the
 //! sequence of callback invocations are observable.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::argparse::value_name;
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // zend_sort (Zend/zend_sort.c): hybrid insertion sort / quicksort
@@ -729,28 +729,22 @@ fn fn_array_uintersect_assoc(host: &mut dyn Host, args: &[Value]) -> Result<Valu
     assoc_by_key(host, args, "array_uintersect_assoc", true)
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: None,
-            },
-        );
-    };
-    put("array_udiff", fn_array_udiff, 2);
-    put("array_uintersect", fn_array_uintersect, 2);
-    put("array_diff_ukey", fn_array_diff_ukey, 2);
-    put("array_intersect_ukey", fn_array_intersect_ukey, 2);
-    put("array_diff_uassoc", fn_array_diff_uassoc, 2);
-    put("array_intersect_uassoc", fn_array_intersect_uassoc, 2);
-    put("array_udiff_uassoc", fn_array_udiff_uassoc, 3);
-    put("array_uintersect_uassoc", fn_array_uintersect_uassoc, 3);
-    put("array_udiff_assoc", fn_array_udiff_assoc, 2);
-    put("array_uintersect_assoc", fn_array_uintersect_assoc, 2);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("array_udiff", fn_array_udiff),
+            ("array_uintersect", fn_array_uintersect),
+            ("array_diff_ukey", fn_array_diff_ukey),
+            ("array_intersect_ukey", fn_array_intersect_ukey),
+            ("array_diff_uassoc", fn_array_diff_uassoc),
+            ("array_intersect_uassoc", fn_array_intersect_uassoc),
+            ("array_udiff_uassoc", fn_array_udiff_uassoc),
+            ("array_uintersect_uassoc", fn_array_uintersect_uassoc),
+            ("array_udiff_assoc", fn_array_udiff_assoc),
+            ("array_uintersect_assoc", fn_array_uintersect_assoc),
+        ],
+    );
 }
 
 #[cfg(test)]

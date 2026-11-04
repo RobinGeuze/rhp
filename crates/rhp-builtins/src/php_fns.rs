@@ -4,12 +4,10 @@
 //! this engine emits no diagnostics), and a handful of no-op-ish runtime knobs.
 //! Enough to boot a real framework / Composer.
 
-use std::collections::HashMap;
-
 use rhp_semantics::deref;
 use rhp_values::{conv, PhpArray, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 fn str_arg(args: &[Value], i: usize) -> Vec<u8> {
     conv::to_string_bytes(&deref(&args[i]))
@@ -1351,138 +1349,87 @@ fn fn_version_compare(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     }
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "extension_loaded", fn_extension_loaded, 1, Some(1));
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "get_loaded_extensions",
-        fn_get_loaded_extensions,
-        0,
-        Some(1),
+        &[
+            ("extension_loaded", fn_extension_loaded),
+            ("get_loaded_extensions", fn_get_loaded_extensions),
+            ("function_exists", fn_function_exists),
+            ("phpversion", fn_phpversion),
+            ("php_sapi_name", fn_php_sapi_name),
+            ("php_ini_scanned_files", fn_php_ini_scanned_files),
+            ("func_num_args", fn_func_num_args),
+            ("func_get_args", fn_func_get_args),
+            ("func_get_arg", fn_func_get_arg),
+            ("debug_backtrace", fn_debug_backtrace),
+            ("gethostbyaddr", fn_gethostbyaddr),
+            ("debug_print_backtrace", fn_debug_print_backtrace),
+            ("ob_start", fn_ob_start),
+            ("ob_flush", fn_ob_flush),
+            ("ob_clean", fn_ob_clean),
+            ("ob_end_flush", fn_ob_end_flush),
+            ("ob_end_clean", fn_ob_end_clean),
+            ("ob_get_flush", fn_ob_get_flush),
+            ("ob_get_clean", fn_ob_get_clean),
+            ("ob_get_contents", fn_ob_get_contents),
+            ("ob_get_length", fn_ob_get_length),
+            ("ob_get_level", fn_ob_get_level),
+            ("ob_list_handlers", fn_ob_list_handlers),
+            ("ob_get_status", fn_ob_get_status),
+            ("ob_implicit_flush", fn_ob_implicit_flush),
+            ("flush", fn_flush),
+            ("getenv", fn_getenv),
+            ("putenv", fn_putenv),
+            ("set_error_handler", fn_set_handler),
+            ("restore_error_handler", fn_restore_handler),
+            ("set_exception_handler", fn_set_exception_handler),
+            ("restore_exception_handler", fn_restore_exception_handler),
+            ("trigger_error", fn_trigger_error),
+            ("user_error", fn_trigger_error),
+            ("error_reporting", fn_error_reporting),
+            ("error_get_last", fn_error_get_last),
+            ("error_clear_last", fn_error_clear_last),
+            ("register_shutdown_function", fn_register_shutdown_function),
+            ("memory_get_usage", fn_memory_get_usage),
+            ("memory_get_peak_usage", fn_memory_get_peak_usage),
+            ("gc_enable", fn_true),
+            ("gc_disable", fn_true),
+            ("gc_collect_cycles", fn_zero),
+            ("set_time_limit", fn_set_time_limit),
+            ("getmypid", fn_getmypid),
+            ("php_ini_loaded_file", fn_php_ini_loaded_file),
+            ("setlocale", fn_setlocale),
+            ("assert", fn_assert),
+            ("random_bytes", fn_random_bytes),
+            ("random_int", fn_random_int),
+            ("mt_getrandmax", fn_getrandmax),
+            ("getrandmax", fn_getrandmax),
+            ("uniqid", fn_uniqid),
+            ("time", fn_time),
+            ("microtime", fn_microtime),
+            ("hrtime", fn_hrtime),
+            ("version_compare", fn_version_compare),
+        ],
     );
-    put(m, "function_exists", fn_function_exists, 1, Some(1));
-    put(m, "phpversion", fn_phpversion, 0, Some(1));
-    put(m, "php_sapi_name", fn_php_sapi_name, 0, Some(0));
-    put(
+    crate::register_helpers(
         m,
-        "php_ini_scanned_files",
-        fn_php_ini_scanned_files,
-        0,
-        Some(0),
+        &[
+            (
+                "__exception_trace_string",
+                fn_exception_trace_string,
+                1,
+                Some(1),
+            ),
+            ("__throwable_string", fn_throwable_string, 1, Some(1)),
+            ("__zpp_arg", fn_zpp_arg, 5, Some(5)),
+            (
+                "__closure_from_callable",
+                fn_closure_from_callable,
+                1,
+                Some(1),
+            ),
+            ("__closure_bind", fn_closure_bind, 2, Some(3)),
+        ],
     );
-    put(m, "func_num_args", fn_func_num_args, 0, Some(0));
-    put(m, "func_get_args", fn_func_get_args, 0, Some(0));
-    put(m, "func_get_arg", fn_func_get_arg, 1, Some(1));
-    put(m, "debug_backtrace", fn_debug_backtrace, 0, Some(2));
-    put(
-        m,
-        "__exception_trace_string",
-        fn_exception_trace_string,
-        1,
-        Some(1),
-    );
-    put(m, "__throwable_string", fn_throwable_string, 1, Some(1));
-    put(m, "__zpp_arg", fn_zpp_arg, 5, Some(5));
-    put(m, "gethostbyaddr", fn_gethostbyaddr, 1, Some(1));
-    put(
-        m,
-        "debug_print_backtrace",
-        fn_debug_print_backtrace,
-        0,
-        Some(2),
-    );
-    put(m, "ob_start", fn_ob_start, 0, Some(3));
-    put(m, "ob_flush", fn_ob_flush, 0, Some(0));
-    put(m, "ob_clean", fn_ob_clean, 0, Some(0));
-    put(m, "ob_end_flush", fn_ob_end_flush, 0, Some(0));
-    put(m, "ob_end_clean", fn_ob_end_clean, 0, Some(0));
-    put(m, "ob_get_flush", fn_ob_get_flush, 0, Some(0));
-    put(m, "ob_get_clean", fn_ob_get_clean, 0, Some(0));
-    put(m, "ob_get_contents", fn_ob_get_contents, 0, Some(0));
-    put(m, "ob_get_length", fn_ob_get_length, 0, Some(0));
-    put(m, "ob_get_level", fn_ob_get_level, 0, Some(0));
-    put(m, "ob_list_handlers", fn_ob_list_handlers, 0, Some(0));
-    put(m, "ob_get_status", fn_ob_get_status, 0, Some(1));
-    put(m, "ob_implicit_flush", fn_ob_implicit_flush, 0, Some(1));
-    put(m, "flush", fn_flush, 0, Some(0));
-    put(m, "getenv", fn_getenv, 0, Some(2));
-    put(m, "putenv", fn_putenv, 1, Some(1));
-    put(m, "set_error_handler", fn_set_handler, 1, Some(2));
-    put(m, "restore_error_handler", fn_restore_handler, 0, Some(0));
-    put(
-        m,
-        "set_exception_handler",
-        fn_set_exception_handler,
-        1,
-        Some(1),
-    );
-    put(
-        m,
-        "restore_exception_handler",
-        fn_restore_exception_handler,
-        0,
-        Some(0),
-    );
-    put(m, "trigger_error", fn_trigger_error, 1, Some(2));
-    put(m, "user_error", fn_trigger_error, 1, Some(2));
-    put(m, "error_reporting", fn_error_reporting, 0, Some(1));
-    put(m, "error_get_last", fn_error_get_last, 0, Some(0));
-    put(m, "error_clear_last", fn_error_clear_last, 0, Some(0));
-    put(
-        m,
-        "register_shutdown_function",
-        fn_register_shutdown_function,
-        1,
-        None,
-    );
-    put(m, "memory_get_usage", fn_memory_get_usage, 0, Some(1));
-    put(
-        m,
-        "memory_get_peak_usage",
-        fn_memory_get_peak_usage,
-        0,
-        Some(1),
-    );
-    put(m, "gc_enable", fn_true, 0, Some(0));
-    put(m, "gc_disable", fn_true, 0, Some(0));
-    put(m, "gc_collect_cycles", fn_zero, 0, Some(0));
-    put(m, "set_time_limit", fn_set_time_limit, 1, Some(1));
-    put(m, "getmypid", fn_getmypid, 0, Some(0));
-    put(m, "php_ini_loaded_file", fn_php_ini_loaded_file, 0, Some(0));
-    put(m, "setlocale", fn_setlocale, 2, None);
-    put(m, "assert", fn_assert, 1, Some(2));
-    put(m, "random_bytes", fn_random_bytes, 1, Some(1));
-    put(m, "random_int", fn_random_int, 2, Some(2));
-    put(m, "mt_getrandmax", fn_getrandmax, 0, Some(0));
-    put(m, "getrandmax", fn_getrandmax, 0, Some(0));
-    put(m, "uniqid", fn_uniqid, 0, Some(2));
-    put(m, "time", fn_time, 0, Some(0));
-    put(m, "microtime", fn_microtime, 0, Some(1));
-    put(m, "hrtime", fn_hrtime, 0, Some(1));
-    put(
-        m,
-        "__closure_from_callable",
-        fn_closure_from_callable,
-        1,
-        Some(1),
-    );
-    put(m, "__closure_bind", fn_closure_bind, 2, Some(3));
-    put(m, "version_compare", fn_version_compare, 2, Some(3));
 }

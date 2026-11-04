@@ -19,7 +19,7 @@ use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
 use crate::proc_fns::zpp_long;
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 fn value_name(v: &Value) -> &'static str {
     match v {
@@ -796,47 +796,29 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     v
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "pcntl_async_signals", fn_async_signals, 0, Some(1));
-    put(m, "pcntl_signal", fn_signal, 2, Some(3));
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "pcntl_signal_get_handler",
-        fn_signal_get_handler,
-        1,
-        Some(1),
+        &[
+            ("pcntl_async_signals", fn_async_signals),
+            ("pcntl_signal", fn_signal),
+            ("pcntl_signal_get_handler", fn_signal_get_handler),
+            ("pcntl_signal_dispatch", fn_signal_dispatch),
+            ("pcntl_alarm", fn_alarm),
+            ("pcntl_get_last_error", fn_get_last_error),
+            ("pcntl_errno", fn_get_last_error),
+            ("pcntl_strerror", fn_strerror),
+            ("pcntl_fork", fn_fork),
+            ("pcntl_waitpid", fn_waitpid),
+            ("pcntl_wait", fn_wait),
+            ("pcntl_sigprocmask", fn_sigprocmask),
+            ("pcntl_wifexited", fn_wifexited),
+            ("pcntl_wifstopped", fn_wifstopped),
+            ("pcntl_wifsignaled", fn_wifsignaled),
+            ("pcntl_wifcontinued", fn_wifcontinued),
+            ("pcntl_wexitstatus", fn_wexitstatus),
+            ("pcntl_wtermsig", fn_wtermsig),
+            ("pcntl_wstopsig", fn_wstopsig),
+        ],
     );
-    put(m, "pcntl_signal_dispatch", fn_signal_dispatch, 0, Some(0));
-    put(m, "pcntl_alarm", fn_alarm, 1, Some(1));
-    put(m, "pcntl_get_last_error", fn_get_last_error, 0, Some(0));
-    put(m, "pcntl_errno", fn_get_last_error, 0, Some(0));
-    put(m, "pcntl_strerror", fn_strerror, 1, Some(1));
-    put(m, "pcntl_fork", fn_fork, 0, Some(0));
-    put(m, "pcntl_waitpid", fn_waitpid, 2, Some(4));
-    put(m, "pcntl_wait", fn_wait, 1, Some(3));
-    put(m, "pcntl_sigprocmask", fn_sigprocmask, 2, Some(3));
-    put(m, "pcntl_wifexited", fn_wifexited, 1, Some(1));
-    put(m, "pcntl_wifstopped", fn_wifstopped, 1, Some(1));
-    put(m, "pcntl_wifsignaled", fn_wifsignaled, 1, Some(1));
-    put(m, "pcntl_wifcontinued", fn_wifcontinued, 1, Some(1));
-    put(m, "pcntl_wexitstatus", fn_wexitstatus, 1, Some(1));
-    put(m, "pcntl_wtermsig", fn_wtermsig, 1, Some(1));
-    put(m, "pcntl_wstopsig", fn_wstopsig, 1, Some(1));
 }

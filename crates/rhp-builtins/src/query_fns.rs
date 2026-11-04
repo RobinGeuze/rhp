@@ -2,13 +2,11 @@
 //! `parse_str` (main/php_variables.c `php_default_treat_data` +
 //! `php_register_variable_ex`), with php's exact key mangling.
 
-use std::collections::HashMap;
-
 use rhp_semantics::deref;
 use rhp_values::{conv, fmt, ArrayKey, PhpArray, Value};
 
 use crate::argparse::{int_param, str_or_null_param, str_param, value_name};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 const HEX: &[u8; 16] = b"0123456789ABCDEF";
 const PHP_QUERY_RFC3986: i64 = 2;
@@ -569,18 +567,12 @@ pub fn post_form_vars(body: &[u8], max_vars: i64) -> (PhpArray, bool) {
     (out, false)
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("http_build_query", fn_http_build_query, 1, 4);
-    put("parse_str", fn_parse_str, 2, 2);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("http_build_query", fn_http_build_query),
+            ("parse_str", fn_parse_str),
+        ],
+    );
 }

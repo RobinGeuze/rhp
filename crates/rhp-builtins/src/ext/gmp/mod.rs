@@ -16,7 +16,6 @@
 pub(crate) mod sys;
 
 use std::cell::{Ref, RefCell};
-use std::collections::HashMap;
 use std::ops::Deref;
 use std::rc::Rc;
 
@@ -25,7 +24,7 @@ use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 use crate::argparse::value_name;
 use crate::ext::zpp::{self, deref};
 use crate::object::{self, CastTarget, ClassHandlers, CloneObj, ObjectHandlers, Op, PropPurpose};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 use sys::Mpz;
 
 const GMP_ROUND_ZERO: i64 = 0;
@@ -1455,78 +1454,71 @@ pub(crate) fn unserialize_number(obj: &Value, s: &[u8]) -> Result<(), Thrown> {
 // ---------------------------------------------------------------------------
 
 /// Register all `gmp_*` builtins.
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "gmp_init", fn_gmp_init, 1, Some(2));
-    put(m, "gmp_import", fn_gmp_import, 1, Some(3));
-    put(m, "gmp_export", fn_gmp_export, 1, Some(3));
-    put(m, "gmp_intval", fn_gmp_intval, 1, Some(1));
-    put(m, "gmp_strval", fn_gmp_strval, 1, Some(2));
-    put(m, "gmp_add", fn_gmp_add, 2, Some(2));
-    put(m, "gmp_sub", fn_gmp_sub, 2, Some(2));
-    put(m, "gmp_mul", fn_gmp_mul, 2, Some(2));
-    put(m, "gmp_div_qr", fn_gmp_div_qr, 2, Some(3));
-    put(m, "gmp_div_q", fn_gmp_div_q, 2, Some(3));
-    put(m, "gmp_div_r", fn_gmp_div_r, 2, Some(3));
-    put(m, "gmp_div", fn_gmp_div, 2, Some(3));
-    put(m, "gmp_mod", fn_gmp_mod, 2, Some(2));
-    put(m, "gmp_divexact", fn_gmp_divexact, 2, Some(2));
-    put(m, "gmp_neg", fn_gmp_neg, 1, Some(1));
-    put(m, "gmp_abs", fn_gmp_abs, 1, Some(1));
-    put(m, "gmp_fact", fn_gmp_fact, 1, Some(1));
-    put(m, "gmp_sqrt", fn_gmp_sqrt, 1, Some(1));
-    put(m, "gmp_sqrtrem", fn_gmp_sqrtrem, 1, Some(1));
-    put(m, "gmp_root", fn_gmp_root, 2, Some(2));
-    put(m, "gmp_rootrem", fn_gmp_rootrem, 2, Some(2));
-    put(m, "gmp_pow", fn_gmp_pow, 2, Some(2));
-    put(m, "gmp_powm", fn_gmp_powm, 3, Some(3));
-    put(m, "gmp_perfect_square", fn_gmp_perfect_square, 1, Some(1));
-    put(m, "gmp_perfect_power", fn_gmp_perfect_power, 1, Some(1));
-    put(m, "gmp_prob_prime", fn_gmp_prob_prime, 1, Some(2));
-    put(m, "gmp_gcd", fn_gmp_gcd, 2, Some(2));
-    put(m, "gmp_gcdext", fn_gmp_gcdext, 2, Some(2));
-    put(m, "gmp_lcm", fn_gmp_lcm, 2, Some(2));
-    put(m, "gmp_invert", fn_gmp_invert, 2, Some(2));
-    put(m, "gmp_jacobi", fn_gmp_jacobi, 2, Some(2));
-    put(m, "gmp_legendre", fn_gmp_legendre, 2, Some(2));
-    put(m, "gmp_kronecker", fn_gmp_kronecker, 2, Some(2));
-    put(m, "gmp_cmp", fn_gmp_cmp, 2, Some(2));
-    put(m, "gmp_sign", fn_gmp_sign, 1, Some(1));
-    put(m, "gmp_random_seed", fn_gmp_random_seed, 1, Some(1));
-    put(m, "gmp_random_bits", fn_gmp_random_bits, 1, Some(1));
-    put(m, "gmp_random_range", fn_gmp_random_range, 2, Some(2));
-    put(m, "gmp_and", fn_gmp_and, 2, Some(2));
-    put(m, "gmp_or", fn_gmp_or, 2, Some(2));
-    put(m, "gmp_com", fn_gmp_com, 1, Some(1));
-    put(m, "gmp_xor", fn_gmp_xor, 2, Some(2));
-    put(m, "gmp_setbit", fn_gmp_setbit, 2, Some(3));
-    put(m, "gmp_clrbit", fn_gmp_clrbit, 2, Some(2));
-    put(m, "gmp_testbit", fn_gmp_testbit, 2, Some(2));
-    put(m, "gmp_scan0", fn_gmp_scan0, 2, Some(2));
-    put(m, "gmp_scan1", fn_gmp_scan1, 2, Some(2));
-    put(m, "gmp_popcount", fn_gmp_popcount, 1, Some(1));
-    put(m, "gmp_hamdist", fn_gmp_hamdist, 2, Some(2));
-    put(m, "gmp_nextprime", fn_gmp_nextprime, 1, Some(1));
-    put(m, "gmp_binomial", fn_gmp_binomial, 2, Some(2));
-    put(m, "__gmp_construct", fn_gmp_construct, 1, Some(3));
-    put(m, "__gmp_serialize", fn_gmp_serialize, 1, Some(1));
-    put(m, "__gmp_unserialize", fn_gmp_unserialize, 2, Some(2));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("gmp_init", fn_gmp_init),
+            ("gmp_import", fn_gmp_import),
+            ("gmp_export", fn_gmp_export),
+            ("gmp_intval", fn_gmp_intval),
+            ("gmp_strval", fn_gmp_strval),
+            ("gmp_add", fn_gmp_add),
+            ("gmp_sub", fn_gmp_sub),
+            ("gmp_mul", fn_gmp_mul),
+            ("gmp_div_qr", fn_gmp_div_qr),
+            ("gmp_div_q", fn_gmp_div_q),
+            ("gmp_div_r", fn_gmp_div_r),
+            ("gmp_div", fn_gmp_div),
+            ("gmp_mod", fn_gmp_mod),
+            ("gmp_divexact", fn_gmp_divexact),
+            ("gmp_neg", fn_gmp_neg),
+            ("gmp_abs", fn_gmp_abs),
+            ("gmp_fact", fn_gmp_fact),
+            ("gmp_sqrt", fn_gmp_sqrt),
+            ("gmp_sqrtrem", fn_gmp_sqrtrem),
+            ("gmp_root", fn_gmp_root),
+            ("gmp_rootrem", fn_gmp_rootrem),
+            ("gmp_pow", fn_gmp_pow),
+            ("gmp_powm", fn_gmp_powm),
+            ("gmp_perfect_square", fn_gmp_perfect_square),
+            ("gmp_perfect_power", fn_gmp_perfect_power),
+            ("gmp_prob_prime", fn_gmp_prob_prime),
+            ("gmp_gcd", fn_gmp_gcd),
+            ("gmp_gcdext", fn_gmp_gcdext),
+            ("gmp_lcm", fn_gmp_lcm),
+            ("gmp_invert", fn_gmp_invert),
+            ("gmp_jacobi", fn_gmp_jacobi),
+            ("gmp_legendre", fn_gmp_legendre),
+            ("gmp_kronecker", fn_gmp_kronecker),
+            ("gmp_cmp", fn_gmp_cmp),
+            ("gmp_sign", fn_gmp_sign),
+            ("gmp_random_seed", fn_gmp_random_seed),
+            ("gmp_random_bits", fn_gmp_random_bits),
+            ("gmp_random_range", fn_gmp_random_range),
+            ("gmp_and", fn_gmp_and),
+            ("gmp_or", fn_gmp_or),
+            ("gmp_com", fn_gmp_com),
+            ("gmp_xor", fn_gmp_xor),
+            ("gmp_setbit", fn_gmp_setbit),
+            ("gmp_clrbit", fn_gmp_clrbit),
+            ("gmp_testbit", fn_gmp_testbit),
+            ("gmp_scan0", fn_gmp_scan0),
+            ("gmp_scan1", fn_gmp_scan1),
+            ("gmp_popcount", fn_gmp_popcount),
+            ("gmp_hamdist", fn_gmp_hamdist),
+            ("gmp_nextprime", fn_gmp_nextprime),
+            ("gmp_binomial", fn_gmp_binomial),
+        ],
+    );
+    crate::register_helpers(
+        m,
+        &[
+            ("__gmp_construct", fn_gmp_construct, 1, Some(3)),
+            ("__gmp_serialize", fn_gmp_serialize, 1, Some(1)),
+            ("__gmp_unserialize", fn_gmp_unserialize, 2, Some(2)),
+        ],
+    );
 }
 
 /// The `GMP` class. Its parameters are parsed natively (php's zpp, not a

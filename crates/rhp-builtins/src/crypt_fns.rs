@@ -2,7 +2,6 @@
 //! MD5-crypt is ported here (php_crypt_r.c's `php_md5_crypt_r`) instead of
 //! vendoring php_crypt_r.c and md5.c.
 
-use std::collections::HashMap;
 use std::ffi::CString;
 
 use md5::{Digest, Md5};
@@ -10,7 +9,7 @@ use rhp_csrc::crypt as c;
 use rhp_values::Value;
 
 use crate::argparse::str_param;
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 /// The C string `s` points at: everything before the first NUL.
 fn c_str(s: &[u8]) -> &[u8] {
@@ -151,16 +150,8 @@ fn fn_crypt(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    m.insert(
-        "crypt",
-        Builtin {
-            name: "crypt",
-            func: fn_crypt,
-            min_args: 2,
-            max_args: Some(2),
-        },
-    );
+pub fn register(m: &mut crate::Registry) {
+    crate::register(m, &[("crypt", fn_crypt)]);
 }
 
 /// `CRYPT_*` (basic_functions.stub.php): every algorithm is always there.

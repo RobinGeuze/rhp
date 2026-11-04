@@ -16,14 +16,13 @@
 //! request ends.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::collections::HashSet;
 
 use rhp_semantics::deref;
 use rhp_values::{ArrayKey, PhpArray, Thrown, Value};
 
 use crate::query_fns::{post_form_vars, register_variable_value};
-use crate::{Builtin, Host};
+use crate::Host;
 
 /// `FILLUNIT`: the multipart buffer's minimum size.
 const FILLUNIT: usize = 1024 * 5;
@@ -1465,21 +1464,15 @@ fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     Ok(Value::Array(pair))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("is_uploaded_file", fn_is_uploaded_file, 1, 1);
-    put("move_uploaded_file", fn_move_uploaded_file, 2, 2);
-    put("request_parse_body", fn_request_parse_body, 0, 1);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("is_uploaded_file", fn_is_uploaded_file),
+            ("move_uploaded_file", fn_move_uploaded_file),
+            ("request_parse_body", fn_request_parse_body),
+        ],
+    );
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use rhp_semantics::{deref, ops};
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // PHP sort-flag constants. The low byte selects the comparison kind; the
 // `SORT_FLAG_CASE` bit (8) can be OR'd into `SORT_STRING` / `SORT_NATURAL` to
@@ -685,50 +685,34 @@ fn fn_array_splice(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(removed))
 }
 
-pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
-    let add = |m: &mut std::collections::HashMap<&'static str, Builtin>,
-               name: &'static str,
-               func: crate::NativeFn,
-               min: usize,
-               max: Option<usize>| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    };
-    add(m, "sort", fn_sort, 1, Some(2));
-    add(m, "rsort", fn_rsort, 1, Some(2));
-    add(m, "asort", fn_asort, 1, Some(2));
-    add(m, "arsort", fn_arsort, 1, Some(2));
-    add(m, "ksort", fn_ksort, 1, Some(2));
-    add(m, "krsort", fn_krsort, 1, Some(2));
-    add(m, "usort", fn_usort, 2, Some(2));
-    add(m, "uasort", fn_uasort, 2, Some(2));
-    add(m, "uksort", fn_uksort, 2, Some(2));
-    add(m, "natsort", fn_natsort, 1, Some(1));
-    add(m, "natcasesort", fn_natcasesort, 1, Some(1));
-    add(m, "array_walk", fn_array_walk, 2, Some(3));
-    add(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "array_walk_recursive",
-        fn_array_walk_recursive,
-        2,
-        Some(3),
+        &[
+            ("sort", fn_sort),
+            ("rsort", fn_rsort),
+            ("asort", fn_asort),
+            ("arsort", fn_arsort),
+            ("ksort", fn_ksort),
+            ("krsort", fn_krsort),
+            ("usort", fn_usort),
+            ("uasort", fn_uasort),
+            ("uksort", fn_uksort),
+            ("natsort", fn_natsort),
+            ("natcasesort", fn_natcasesort),
+            ("array_walk", fn_array_walk),
+            ("array_walk_recursive", fn_array_walk_recursive),
+            ("array_push", fn_array_push),
+            ("array_pop", fn_array_pop),
+            ("array_shift", fn_array_shift),
+            ("array_unshift", fn_array_unshift),
+            ("array_splice", fn_array_splice),
+            ("reset", fn_reset),
+            ("end", fn_end),
+            ("next", fn_next),
+            ("prev", fn_prev),
+            ("current", fn_current),
+            ("key", fn_key),
+        ],
     );
-    add(m, "array_push", fn_array_push, 1, None);
-    add(m, "array_pop", fn_array_pop, 1, Some(1));
-    add(m, "array_shift", fn_array_shift, 1, Some(1));
-    add(m, "array_unshift", fn_array_unshift, 1, None);
-    add(m, "array_splice", fn_array_splice, 2, Some(4));
-    add(m, "reset", fn_reset, 1, Some(1));
-    add(m, "end", fn_end, 1, Some(1));
-    add(m, "next", fn_next, 1, Some(1));
-    add(m, "prev", fn_prev, 1, Some(1));
-    add(m, "current", fn_current, 1, Some(1));
-    add(m, "key", fn_key, 1, Some(1));
 }

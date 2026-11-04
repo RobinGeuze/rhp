@@ -11,7 +11,6 @@
 mod compat;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::ffi::c_int;
 use std::rc::{Rc, Weak};
 
@@ -20,7 +19,7 @@ use rhp_values::{conv, ArrayKey, ObjectData, PhpArray, PhpRef, PhpStr, Value};
 use crate::ext::libxml::{ffi, sys};
 use crate::ext::zpp::{deref, given_type, long_arg};
 use crate::object::{ClassHandlers, ObjectHandlers};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 const XML_MAXLEVEL: i32 = 255;
 
@@ -1350,25 +1349,9 @@ fn fn_dispatch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     f(host, &args[1..])
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    m.insert(
-        "__xml_fn",
-        Builtin {
-            name: "__xml_fn",
-            func: fn_dispatch,
-            min_args: 1,
-            max_args: None,
-        },
-    );
-    m.insert(
-        "xml_parse_into_struct",
-        Builtin {
-            name: "xml_parse_into_struct",
-            func: fn_parse_into_struct,
-            min_args: 3,
-            max_args: Some(4),
-        },
-    );
+pub fn register(m: &mut crate::Registry) {
+    crate::register(m, &[("xml_parse_into_struct", fn_parse_into_struct)]);
+    crate::register_helpers(m, &[("__xml_fn", fn_dispatch, 1, None)]);
 }
 
 pub fn constants() -> Vec<(&'static str, Value)> {

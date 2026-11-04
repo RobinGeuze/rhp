@@ -17,12 +17,10 @@
 //! strcmp_fns::register(&mut m);
 //! ```
 
-use std::collections::HashMap;
-
 use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // small shared helpers
@@ -543,36 +541,24 @@ fn fn_str_rot13(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "strcmp", fn_strcmp, 2, Some(2));
-    put(m, "strcasecmp", fn_strcasecmp, 2, Some(2));
-    put(m, "strncmp", fn_strncmp, 3, Some(3));
-    put(m, "strncasecmp", fn_strncasecmp, 3, Some(3));
-    put(m, "substr_compare", fn_substr_compare, 3, Some(5));
-    put(m, "strnatcmp", fn_strnatcmp, 2, Some(2));
-    put(m, "strnatcasecmp", fn_strnatcasecmp, 2, Some(2));
-    put(m, "str_ireplace", fn_str_ireplace, 3, Some(4));
-    put(m, "strpbrk", fn_strpbrk, 2, Some(2));
-    put(m, "strspn", fn_strspn, 2, Some(4));
-    put(m, "strcspn", fn_strcspn, 2, Some(4));
-    put(m, "str_rot13", fn_str_rot13, 1, Some(1));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("strcmp", fn_strcmp),
+            ("strcasecmp", fn_strcasecmp),
+            ("strncmp", fn_strncmp),
+            ("strncasecmp", fn_strncasecmp),
+            ("substr_compare", fn_substr_compare),
+            ("strnatcmp", fn_strnatcmp),
+            ("strnatcasecmp", fn_strnatcasecmp),
+            ("str_ireplace", fn_str_ireplace),
+            ("strpbrk", fn_strpbrk),
+            ("strspn", fn_strspn),
+            ("strcspn", fn_strcspn),
+            ("str_rot13", fn_str_rot13),
+        ],
+    );
 }
 
 #[cfg(test)]

@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use rhp_semantics::{deref, ops};
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // shared helpers
@@ -586,38 +586,28 @@ fn fn_array_count_values(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
-    let add = |m: &mut std::collections::HashMap<&'static str, Builtin>,
-               name: &'static str,
-               func: crate::NativeFn,
-               min: usize,
-               max: Option<usize>| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    };
-    add(m, "array_slice", fn_array_slice, 2, Some(4));
-    add(m, "array_flip", fn_array_flip, 1, Some(1));
-    add(m, "array_fill", fn_array_fill, 3, Some(3));
-    add(m, "array_fill_keys", fn_array_fill_keys, 2, Some(2));
-    add(m, "array_combine", fn_array_combine, 2, Some(2));
-    add(m, "array_search", fn_array_search, 2, Some(3));
-    add(m, "array_unique", fn_array_unique, 1, Some(2));
-    add(m, "array_pad", fn_array_pad, 3, Some(3));
-    add(m, "array_key_first", fn_array_key_first, 1, Some(1));
-    add(m, "array_key_last", fn_array_key_last, 1, Some(1));
-    add(m, "array_is_list", fn_array_is_list, 1, Some(1));
-    add(m, "array_diff", fn_array_diff, 1, None);
-    add(m, "array_intersect", fn_array_intersect, 1, None);
-    add(m, "array_column", fn_array_column, 2, Some(3));
-    add(m, "array_chunk", fn_array_chunk, 2, Some(3));
-    add(m, "array_count_values", fn_array_count_values, 1, Some(1));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("array_slice", fn_array_slice),
+            ("array_flip", fn_array_flip),
+            ("array_fill", fn_array_fill),
+            ("array_fill_keys", fn_array_fill_keys),
+            ("array_combine", fn_array_combine),
+            ("array_search", fn_array_search),
+            ("array_unique", fn_array_unique),
+            ("array_pad", fn_array_pad),
+            ("array_key_first", fn_array_key_first),
+            ("array_key_last", fn_array_key_last),
+            ("array_is_list", fn_array_is_list),
+            ("array_diff", fn_array_diff),
+            ("array_intersect", fn_array_intersect),
+            ("array_column", fn_array_column),
+            ("array_chunk", fn_array_chunk),
+            ("array_count_values", fn_array_count_values),
+        ],
+    );
 }
 
 #[cfg(test)]

@@ -13,8 +13,6 @@
 //! murmur variants below, and the table-heavy `snefru`, `haval` and 4-pass
 //! `tiger` in their own files.
 
-use std::collections::HashMap;
-
 use digest::Digest;
 use rhp_semantics::deref;
 use rhp_values::{conv, Value};
@@ -25,7 +23,7 @@ mod snefru;
 mod tiger;
 
 use crate::ext::zlib::zraw as zlib;
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 use primitives::to_hex;
 pub(crate) use primitives::{base64_decode, base64_encode};
 
@@ -1150,37 +1148,29 @@ const HMAC_ALGOS: &[&str] = &[
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    // md5/sha1/crc32/base64/bin2hex/hex2bin — the hand-rolled core primitives.
+pub fn register(m: &mut crate::Registry) {
     primitives::register(m);
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "hash", fn_hash, 2, Some(4));
-    put(m, "hash_file", fn_hash_file, 2, Some(4));
-    put(m, "md5_file", fn_md5_file, 1, Some(2));
-    put(m, "sha1_file", fn_sha1_file, 1, Some(2));
-    put(m, "hash_hmac", fn_hash_hmac, 3, Some(4));
-    put(m, "hash_pbkdf2", fn_hash_pbkdf2, 4, Some(7));
-    put(m, "__hash_init_options", fn_hash_init_options, 2, Some(2));
-    put(m, "__hash_digest", fn_hash_digest, 4, Some(4));
-    put(m, "hash_equals", fn_hash_equals, 2, Some(2));
-    put(m, "hash_algos", fn_hash_algos, 0, Some(0));
-    put(m, "hash_hmac_algos", fn_hash_hmac_algos, 0, Some(0));
+    crate::register(
+        m,
+        &[
+            ("hash", fn_hash),
+            ("hash_file", fn_hash_file),
+            ("md5_file", fn_md5_file),
+            ("sha1_file", fn_sha1_file),
+            ("hash_hmac", fn_hash_hmac),
+            ("hash_pbkdf2", fn_hash_pbkdf2),
+            ("hash_equals", fn_hash_equals),
+            ("hash_algos", fn_hash_algos),
+            ("hash_hmac_algos", fn_hash_hmac_algos),
+        ],
+    );
+    crate::register_helpers(
+        m,
+        &[
+            ("__hash_init_options", fn_hash_init_options, 2, Some(2)),
+            ("__hash_digest", fn_hash_digest, 4, Some(4)),
+        ],
+    );
 }
 
 /// `HASH_HMAC`.

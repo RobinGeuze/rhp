@@ -2,10 +2,9 @@
 //! `strstr` / `strchr`, `stristr`, `strrchr`, and the stateful `strtok`.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 
 use crate::argparse::{bool_param, str_or_null_param, str_param};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 use rhp_values::Value;
 
 fn find(h: &[u8], n: &[u8]) -> Option<usize> {
@@ -138,21 +137,15 @@ fn fn_strtok(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     })
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("strstr", fn_strstr, 2, 3);
-    put("strchr", fn_strchr, 2, 3);
-    put("stristr", fn_stristr, 2, 3);
-    put("strrchr", fn_strrchr, 2, 3);
-    put("strtok", fn_strtok, 1, 2);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("strstr", fn_strstr),
+            ("strchr", fn_strchr),
+            ("stristr", fn_stristr),
+            ("strrchr", fn_strrchr),
+            ("strtok", fn_strtok),
+        ],
+    );
 }

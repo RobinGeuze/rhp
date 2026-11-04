@@ -10,7 +10,6 @@
 //! (`crate::ext::libxml::node`).
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::ffi::c_int;
 use std::ptr;
 use std::rc::Rc;
@@ -23,7 +22,7 @@ use crate::ext::libxml::node::{self as lxn, ClassType, NodeObject};
 use crate::ext::libxml::sys::{self, XmlAttr, XmlDoc, XmlNode, XmlNs};
 use crate::ext::libxml::{self as lx, ffi};
 use crate::object::{self, CastTarget, ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 const INT_MAX: i64 = i32::MAX as i64;
 
@@ -2648,25 +2647,23 @@ fn fn_sxe_dim(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    for (name, func, min, max) in [
-        ("__sxe", fn_sxe as crate::NativeFn, 2, None),
-        ("__sxe_prop", fn_sxe_prop, 3, Some(4)),
-        ("__sxe_dim", fn_sxe_dim, 3, Some(4)),
-        ("simplexml_load_string", fn_load_string, 1, Some(5)),
-        ("simplexml_load_file", fn_load_file, 1, Some(5)),
-        ("simplexml_import_dom", fn_import_dom, 1, Some(2)),
-    ] {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("simplexml_load_string", fn_load_string),
+            ("simplexml_load_file", fn_load_file),
+            ("simplexml_import_dom", fn_import_dom),
+        ],
+    );
+    crate::register_helpers(
+        m,
+        &[
+            ("__sxe", fn_sxe, 2, None),
+            ("__sxe_prop", fn_sxe_prop, 3, Some(4)),
+            ("__sxe_dim", fn_sxe_dim, 3, Some(4)),
+        ],
+    );
 }
 
 pub const PRELUDE_PHP: &str = include_str!("prelude.php");

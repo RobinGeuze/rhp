@@ -22,13 +22,12 @@
 //!   `ctype_alpha("\xE9")` / `é` → true), glibc is ASCII-only (→ false) — so we
 //!   read the same tables from the same libc and match the php on that host.
 
-use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use rhp_semantics::deref;
 use rhp_values::Value;
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // ctype character classes (byte predicates), read from libc under C.UTF-8 like
@@ -189,31 +188,23 @@ ctype_fn!(fn_ctype_print, is_print);
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    macro_rules! reg {
-        ($name:literal, $func:path, $min:literal, $max:expr) => {
-            m.insert(
-                $name,
-                Builtin {
-                    name: $name,
-                    func: $func,
-                    min_args: $min,
-                    max_args: $max,
-                },
-            );
-        };
-    }
-    reg!("ctype_digit", fn_ctype_digit, 1, Some(1));
-    reg!("ctype_alpha", fn_ctype_alpha, 1, Some(1));
-    reg!("ctype_alnum", fn_ctype_alnum, 1, Some(1));
-    reg!("ctype_space", fn_ctype_space, 1, Some(1));
-    reg!("ctype_upper", fn_ctype_upper, 1, Some(1));
-    reg!("ctype_lower", fn_ctype_lower, 1, Some(1));
-    reg!("ctype_punct", fn_ctype_punct, 1, Some(1));
-    reg!("ctype_xdigit", fn_ctype_xdigit, 1, Some(1));
-    reg!("ctype_cntrl", fn_ctype_cntrl, 1, Some(1));
-    reg!("ctype_graph", fn_ctype_graph, 1, Some(1));
-    reg!("ctype_print", fn_ctype_print, 1, Some(1));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("ctype_digit", fn_ctype_digit),
+            ("ctype_alpha", fn_ctype_alpha),
+            ("ctype_alnum", fn_ctype_alnum),
+            ("ctype_space", fn_ctype_space),
+            ("ctype_upper", fn_ctype_upper),
+            ("ctype_lower", fn_ctype_lower),
+            ("ctype_punct", fn_ctype_punct),
+            ("ctype_xdigit", fn_ctype_xdigit),
+            ("ctype_cntrl", fn_ctype_cntrl),
+            ("ctype_graph", fn_ctype_graph),
+            ("ctype_print", fn_ctype_print),
+        ],
+    );
 }
 
 #[cfg(test)]

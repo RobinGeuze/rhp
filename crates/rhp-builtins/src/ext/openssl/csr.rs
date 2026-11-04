@@ -13,33 +13,29 @@ use super::backend::{
 use super::pkey::{opt_array, path_arg};
 use super::{
     arg, bio_bytes, bio_file, bool_arg, check_path, cstring, int_arg, mem_bio, mem_buf, obj_or_str,
-    opt_str_arg, set_ref, store_errors, sys, try_string, type_error, ObjOrStr, Own, Put,
-    CERT_CLASS, CSR_CLASS,
+    opt_str_arg, set_ref, store_errors, sys, try_string, type_error, ObjOrStr, Own, CERT_CLASS,
+    CSR_CLASS,
 };
 use crate::ext::zpp::deref;
 use crate::{warn, Host, Thrown};
 
-pub(super) fn register(put: &mut Put) {
-    put(
-        "openssl_csr_export_to_file",
-        super::wrapped!(fn_export_to_file),
-        2,
-        3,
-    );
-    put("openssl_csr_export", super::wrapped!(fn_export), 2, 3);
-    put("openssl_csr_sign", super::wrapped!(fn_sign), 4, 7);
-    put("openssl_csr_new", super::wrapped!(fn_new), 2, 4);
-    put(
-        "openssl_csr_get_subject",
-        super::wrapped!(fn_get_subject),
-        1,
-        2,
-    );
-    put(
-        "openssl_csr_get_public_key",
-        super::wrapped!(fn_get_public_key),
-        1,
-        2,
+pub(super) fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            (
+                "openssl_csr_export_to_file",
+                super::wrapped!(fn_export_to_file),
+            ),
+            ("openssl_csr_export", super::wrapped!(fn_export)),
+            ("openssl_csr_sign", super::wrapped!(fn_sign)),
+            ("openssl_csr_new", super::wrapped!(fn_new)),
+            ("openssl_csr_get_subject", super::wrapped!(fn_get_subject)),
+            (
+                "openssl_csr_get_public_key",
+                super::wrapped!(fn_get_public_key),
+            ),
+        ],
     );
 }
 

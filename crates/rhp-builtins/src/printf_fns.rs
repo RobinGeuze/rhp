@@ -2,13 +2,11 @@
 //! [`crate::str_fns::do_sprintf`] (`sprintf`, `printf` and `vsprintf` live
 //! in `str_fns`). `fprintf`/`vfprintf` write to the stream argument.
 
-use std::collections::HashMap;
-
 use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
 use crate::str_fns::do_sprintf;
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // small shared helpers
@@ -83,27 +81,15 @@ fn fn_vfprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 ///
 /// `sprintf`/`printf`/`vsprintf` are registered by `str_fns` and must NOT be
 /// re-registered here; this module adds `vprintf`, `fprintf` and `vfprintf`.
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "vprintf", fn_vprintf, 2, Some(2));
-    put(m, "fprintf", fn_fprintf, 2, None);
-    put(m, "vfprintf", fn_vfprintf, 3, Some(3));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("vprintf", fn_vprintf),
+            ("fprintf", fn_fprintf),
+            ("vfprintf", fn_vfprintf),
+        ],
+    );
 }
 
 #[cfg(test)]

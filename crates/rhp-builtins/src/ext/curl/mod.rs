@@ -24,7 +24,7 @@ use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, Value};
 
 use crate::ext::zpp::deref;
 use crate::object::{self, CastTarget, ClassHandlers, CloneObj, ObjectHandlers};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // Generated (`rhp-difftest gen curl-consts`).
 #[rustfmt::skip]
@@ -517,83 +517,53 @@ pub fn constant_deprecation(name: &[u8]) -> Option<String> {
         .map(|(n, since, msg)| format!("Constant {n} is deprecated since {since}, {msg}"))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: Option<usize>| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    };
-    put("curl_init", easy::fn_curl_init, 0, Some(1));
-    put("curl_setopt", easy::fn_curl_setopt, 3, Some(3));
-    put("curl_setopt_array", easy::fn_curl_setopt_array, 2, Some(2));
-    put("curl_exec", easy::fn_curl_exec, 1, Some(1));
-    put("curl_getinfo", easy::fn_curl_getinfo, 1, Some(2));
-    put("curl_error", easy::fn_curl_error, 1, Some(1));
-    put("curl_errno", easy::fn_curl_errno, 1, Some(1));
-    put("curl_strerror", fn_curl_strerror, 1, Some(1));
-    put("curl_close", easy::fn_curl_close, 1, Some(1));
-    put("curl_reset", easy::fn_curl_reset, 1, Some(1));
-    put("curl_copy_handle", easy::fn_curl_copy_handle, 1, Some(1));
-    put("curl_escape", easy::fn_curl_escape, 2, Some(2));
-    put("curl_unescape", easy::fn_curl_unescape, 2, Some(2));
-    put("curl_pause", easy::fn_curl_pause, 2, Some(2));
-    put("curl_upkeep", easy::fn_curl_upkeep, 1, Some(1));
-    put("curl_version", fn_curl_version, 0, Some(0));
-    put("curl_file_create", fn_curl_file_create, 1, Some(3));
-    put("curl_multi_init", multi::fn_curl_multi_init, 0, Some(0));
-    put(
-        "curl_multi_add_handle",
-        multi::fn_curl_multi_add_handle,
-        2,
-        Some(2),
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("curl_init", easy::fn_curl_init),
+            ("curl_setopt", easy::fn_curl_setopt),
+            ("curl_setopt_array", easy::fn_curl_setopt_array),
+            ("curl_exec", easy::fn_curl_exec),
+            ("curl_getinfo", easy::fn_curl_getinfo),
+            ("curl_error", easy::fn_curl_error),
+            ("curl_errno", easy::fn_curl_errno),
+            ("curl_strerror", fn_curl_strerror),
+            ("curl_close", easy::fn_curl_close),
+            ("curl_reset", easy::fn_curl_reset),
+            ("curl_copy_handle", easy::fn_curl_copy_handle),
+            ("curl_escape", easy::fn_curl_escape),
+            ("curl_unescape", easy::fn_curl_unescape),
+            ("curl_pause", easy::fn_curl_pause),
+            ("curl_upkeep", easy::fn_curl_upkeep),
+            ("curl_version", fn_curl_version),
+            ("curl_file_create", fn_curl_file_create),
+            ("curl_multi_init", multi::fn_curl_multi_init),
+            ("curl_multi_add_handle", multi::fn_curl_multi_add_handle),
+            (
+                "curl_multi_remove_handle",
+                multi::fn_curl_multi_remove_handle,
+            ),
+            ("curl_multi_exec", multi::fn_curl_multi_exec),
+            ("curl_multi_select", multi::fn_curl_multi_select),
+            ("curl_multi_info_read", multi::fn_curl_multi_info_read),
+            ("curl_multi_getcontent", multi::fn_curl_multi_getcontent),
+            ("curl_multi_get_handles", multi::fn_curl_multi_get_handles),
+            ("curl_multi_close", multi::fn_curl_multi_close),
+            ("curl_multi_errno", multi::fn_curl_multi_errno),
+            ("curl_multi_strerror", fn_curl_multi_strerror),
+            ("curl_multi_setopt", multi::fn_curl_multi_setopt),
+            ("curl_share_init", share::fn_curl_share_init),
+            (
+                "curl_share_init_persistent",
+                share::fn_curl_share_init_persistent,
+            ),
+            ("curl_share_setopt", share::fn_curl_share_setopt),
+            ("curl_share_close", share::fn_curl_share_close),
+            ("curl_share_errno", share::fn_curl_share_errno),
+            ("curl_share_strerror", fn_curl_share_strerror),
+        ],
     );
-    put(
-        "curl_multi_remove_handle",
-        multi::fn_curl_multi_remove_handle,
-        2,
-        Some(2),
-    );
-    put("curl_multi_exec", multi::fn_curl_multi_exec, 2, Some(2));
-    put("curl_multi_select", multi::fn_curl_multi_select, 1, Some(2));
-    put(
-        "curl_multi_info_read",
-        multi::fn_curl_multi_info_read,
-        1,
-        Some(2),
-    );
-    put(
-        "curl_multi_getcontent",
-        multi::fn_curl_multi_getcontent,
-        1,
-        Some(1),
-    );
-    put(
-        "curl_multi_get_handles",
-        multi::fn_curl_multi_get_handles,
-        1,
-        Some(1),
-    );
-    put("curl_multi_close", multi::fn_curl_multi_close, 1, Some(1));
-    put("curl_multi_errno", multi::fn_curl_multi_errno, 1, Some(1));
-    put("curl_multi_strerror", fn_curl_multi_strerror, 1, Some(1));
-    put("curl_multi_setopt", multi::fn_curl_multi_setopt, 3, Some(3));
-    put("curl_share_init", share::fn_curl_share_init, 0, Some(0));
-    put(
-        "curl_share_init_persistent",
-        share::fn_curl_share_init_persistent,
-        1,
-        Some(1),
-    );
-    put("curl_share_setopt", share::fn_curl_share_setopt, 3, Some(3));
-    put("curl_share_close", share::fn_curl_share_close, 1, Some(1));
-    put("curl_share_errno", share::fn_curl_share_errno, 1, Some(1));
-    put("curl_share_strerror", fn_curl_share_strerror, 1, Some(1));
 }
 
 pub const PRELUDE_PHP: &str = r#"

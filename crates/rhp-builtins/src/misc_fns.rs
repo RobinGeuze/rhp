@@ -6,7 +6,7 @@
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::{inet, Builtin, Host, Thrown};
+use crate::{inet, Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // inet_pton / inet_ntop
@@ -391,26 +391,18 @@ fn fn_pack(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 /// Register this module's builtins into the engine's table.
-pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
-    macro_rules! reg {
-        ($name:literal, $func:path, $min:literal, $max:expr) => {
-            m.insert(
-                $name,
-                Builtin {
-                    name: $name,
-                    func: $func,
-                    min_args: $min,
-                    max_args: $max,
-                },
-            );
-        };
-    }
-    reg!("is_iterable", fn_is_iterable, 1, Some(1));
-    reg!("is_countable", fn_is_countable, 1, Some(1));
-    reg!("inet_pton", fn_inet_pton, 1, Some(1));
-    reg!("inet_ntop", fn_inet_ntop, 1, Some(1));
-    reg!("unpack", fn_unpack, 2, Some(3));
-    reg!("pack", fn_pack, 1, None);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("is_iterable", fn_is_iterable),
+            ("is_countable", fn_is_countable),
+            ("inet_pton", fn_inet_pton),
+            ("inet_ntop", fn_inet_ntop),
+            ("unpack", fn_unpack),
+            ("pack", fn_pack),
+        ],
+    );
 }
 
 #[cfg(test)]

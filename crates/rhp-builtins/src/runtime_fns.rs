@@ -14,7 +14,7 @@ use rhp_values::{conv, ArrayKey, PhpArray, Value};
 use crate::argparse::{bool_param, int_param, str_or_null_param, str_param, value_name};
 use crate::const_modules::CONST_MODULES;
 use crate::ini_table::INI_TABLE;
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // class relations
@@ -906,27 +906,21 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // sleep / usleep
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("class_alias", fn_class_alias, 2, 3);
-    put("class_implements", fn_class_implements, 1, 2);
-    put("class_parents", fn_class_parents, 1, 2);
-    put("class_uses", fn_class_uses, 1, 2);
-    put("get_defined_constants", fn_get_defined_constants, 0, 1);
-    put("ini_get", fn_ini_get, 1, 1);
-    put("ini_set", fn_ini_set, 2, 2);
-    put("ini_alter", fn_ini_alter, 2, 2);
-    put("ini_restore", fn_ini_restore, 1, 1);
-    put("ini_get_all", fn_ini_get_all, 0, 2);
-    put("error_log", fn_error_log, 1, 4);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("class_alias", fn_class_alias),
+            ("class_implements", fn_class_implements),
+            ("class_parents", fn_class_parents),
+            ("class_uses", fn_class_uses),
+            ("get_defined_constants", fn_get_defined_constants),
+            ("ini_get", fn_ini_get),
+            ("ini_set", fn_ini_set),
+            ("ini_alter", fn_ini_alter),
+            ("ini_restore", fn_ini_restore),
+            ("ini_get_all", fn_ini_get_all),
+            ("error_log", fn_error_log),
+        ],
+    );
 }

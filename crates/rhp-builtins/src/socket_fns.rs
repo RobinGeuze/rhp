@@ -21,7 +21,7 @@ use rhp_values::{conv, ArrayKey, PhpArray, Value};
 use crate::ext::openssl::xp_ssl::{self, SslSock};
 use crate::fdstream::{poll_fd, FdStream, SockInfo};
 use crate::proc_fns::{zpp_long, zpp_string, zpp_type_name};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 fn write_ref(arg: Option<&Value>, value: Value) {
     if let Some(Value::Ref(rc)) = arg {
@@ -1667,120 +1667,35 @@ fn fn_stream_get_transports(_host: &mut dyn Host, _args: &[Value]) -> Result<Val
     Ok(Value::Array(a))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "stream_socket_server",
-        fn_stream_socket_server,
-        1,
-        Some(5),
-    );
-    put(
-        m,
-        "stream_socket_client",
-        fn_stream_socket_client,
-        1,
-        Some(6),
-    );
-    put(
-        m,
-        "stream_socket_accept",
-        fn_stream_socket_accept,
-        1,
-        Some(3),
-    );
-    put(
-        m,
-        "stream_socket_get_name",
-        fn_stream_socket_get_name,
-        2,
-        Some(2),
-    );
-    put(
-        m,
-        "stream_socket_shutdown",
-        fn_stream_socket_shutdown,
-        2,
-        Some(2),
-    );
-    put(m, "stream_socket_pair", fn_stream_socket_pair, 3, Some(3));
-    put(
-        m,
-        "stream_socket_sendto",
-        fn_stream_socket_sendto,
-        2,
-        Some(4),
-    );
-    put(
-        m,
-        "stream_socket_recvfrom",
-        fn_stream_socket_recvfrom,
-        2,
-        Some(4),
-    );
-    put(
-        m,
-        "stream_socket_enable_crypto",
-        fn_stream_socket_enable_crypto,
-        2,
-        Some(4),
-    );
-    put(m, "fsockopen", fn_fsockopen, 1, Some(5));
-    put(
-        m,
-        "stream_get_transports",
-        fn_stream_get_transports,
-        0,
-        Some(0),
-    );
-    put(m, "pfsockopen", fn_pfsockopen, 1, Some(5));
-    put(m, "stream_set_timeout", fn_stream_set_timeout, 2, Some(3));
-    put(m, "socket_set_timeout", fn_socket_set_timeout, 2, Some(3));
-    // php's aliases
-    put(
-        m,
-        "socket_get_status",
-        crate::fs_fns::fn_socket_get_status,
-        1,
-        Some(1),
-    );
-    put(
-        m,
-        "socket_set_blocking",
-        crate::stream_fns::fn_socket_set_blocking,
-        2,
-        Some(2),
-    );
-    put(
-        m,
-        "stream_set_read_buffer",
-        fn_stream_set_read_buffer,
-        2,
-        Some(2),
-    );
-    put(
-        m,
-        "stream_set_chunk_size",
-        fn_stream_set_chunk_size,
-        2,
-        Some(2),
+        &[
+            ("stream_socket_server", fn_stream_socket_server),
+            ("stream_socket_client", fn_stream_socket_client),
+            ("stream_socket_accept", fn_stream_socket_accept),
+            ("stream_socket_get_name", fn_stream_socket_get_name),
+            ("stream_socket_shutdown", fn_stream_socket_shutdown),
+            ("stream_socket_pair", fn_stream_socket_pair),
+            ("stream_socket_sendto", fn_stream_socket_sendto),
+            ("stream_socket_recvfrom", fn_stream_socket_recvfrom),
+            (
+                "stream_socket_enable_crypto",
+                fn_stream_socket_enable_crypto,
+            ),
+            ("fsockopen", fn_fsockopen),
+            ("stream_get_transports", fn_stream_get_transports),
+            ("pfsockopen", fn_pfsockopen),
+            ("stream_set_timeout", fn_stream_set_timeout),
+            ("socket_set_timeout", fn_socket_set_timeout),
+            ("socket_get_status", crate::fs_fns::fn_socket_get_status),
+            (
+                "socket_set_blocking",
+                crate::stream_fns::fn_socket_set_blocking,
+            ),
+            ("stream_set_read_buffer", fn_stream_set_read_buffer),
+            ("stream_set_chunk_size", fn_stream_set_chunk_size),
+        ],
     );
 }
 

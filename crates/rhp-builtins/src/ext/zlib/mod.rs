@@ -13,14 +13,13 @@
 pub(crate) mod zraw;
 
 use std::any::Any;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_semantics::deref;
 use rhp_values::{conv, PhpArray, Value};
 
 use crate::streams::{self, StatInfo, StreamWrapper, WrapperReg};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 fn bytes_arg(args: &[Value], i: usize) -> Vec<u8> {
     conv::to_string_bytes(&deref(&args[i]))
@@ -411,43 +410,35 @@ fn fn_gzseek(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     alias(host, "fseek", args)
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let table: &[(&'static str, crate::NativeFn, usize, Option<usize>)] = &[
-        ("gzdeflate", fn_gzdeflate, 1, Some(3)),
-        ("gzinflate", fn_gzinflate, 1, Some(2)),
-        ("gzcompress", fn_gzcompress, 1, Some(3)),
-        ("gzuncompress", fn_gzuncompress, 1, Some(2)),
-        ("gzencode", fn_gzencode, 1, Some(3)),
-        ("gzdecode", fn_gzdecode, 1, Some(2)),
-        ("zlib_encode", fn_zlib_encode, 2, Some(3)),
-        ("zlib_decode", fn_zlib_decode, 1, Some(2)),
-        ("zlib_get_coding_type", fn_zlib_get_coding_type, 0, Some(0)),
-        ("gzopen", fn_gzopen, 2, Some(3)),
-        ("gzfile", fn_gzfile, 1, Some(2)),
-        ("readgzfile", fn_readgzfile, 1, Some(2)),
-        ("gzpassthru", fn_gzpassthru, 1, Some(1)),
-        ("gzread", fn_gzread, 2, Some(2)),
-        ("gzwrite", fn_gzwrite, 2, Some(3)),
-        ("gzputs", fn_gzwrite, 2, Some(3)),
-        ("gzclose", fn_gzclose, 1, Some(1)),
-        ("gzeof", fn_gzeof, 1, Some(1)),
-        ("gzgets", fn_gzgets, 1, Some(2)),
-        ("gzgetc", fn_gzgetc, 1, Some(1)),
-        ("gzrewind", fn_gzrewind, 1, Some(1)),
-        ("gzseek", fn_gzseek, 2, Some(3)),
-        ("gztell", fn_gztell, 1, Some(1)),
-    ];
-    for &(name, func, min, max) in table {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("gzdeflate", fn_gzdeflate),
+            ("gzinflate", fn_gzinflate),
+            ("gzcompress", fn_gzcompress),
+            ("gzuncompress", fn_gzuncompress),
+            ("gzencode", fn_gzencode),
+            ("gzdecode", fn_gzdecode),
+            ("zlib_encode", fn_zlib_encode),
+            ("zlib_decode", fn_zlib_decode),
+            ("zlib_get_coding_type", fn_zlib_get_coding_type),
+            ("gzopen", fn_gzopen),
+            ("gzfile", fn_gzfile),
+            ("readgzfile", fn_readgzfile),
+            ("gzpassthru", fn_gzpassthru),
+            ("gzread", fn_gzread),
+            ("gzwrite", fn_gzwrite),
+            ("gzputs", fn_gzwrite),
+            ("gzclose", fn_gzclose),
+            ("gzeof", fn_gzeof),
+            ("gzgets", fn_gzgets),
+            ("gzgetc", fn_gzgetc),
+            ("gzrewind", fn_gzrewind),
+            ("gzseek", fn_gzseek),
+            ("gztell", fn_gztell),
+        ],
+    );
 }
 
 /// `ZLIB_*` / `FORCE_*` constants.

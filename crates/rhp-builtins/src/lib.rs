@@ -1270,15 +1270,69 @@ pub struct Builtin {
     pub max_args: Option<usize>,
 }
 
-macro_rules! builtins {
-    ($($name:literal => $func:path, $min:literal, $max:expr);* $(;)?) => {{
-        let mut m: HashMap<&'static str, Builtin> = HashMap::new();
-        $(
-            m.insert($name, Builtin { name: $name, func: $func, min_args: $min, max_args: $max });
-        )*
-        m
-    }};
+/// The builtin table under construction, keyed by lowercase name.
+pub(crate) type Registry = HashMap<&'static str, Builtin>;
+
+/// Register php functions by name. Their arity is php's, from the stub
+/// signatures (every registered php function has a stub row; the
+/// `php_builtins_have_stubs` test checks), raised to [`BODY_MIN`].
+pub(crate) fn register(m: &mut Registry, fns: &[(&'static str, NativeFn)]) {
+    use signatures::Signature;
+    for &(name, func) in fns {
+        let (min_args, max_args) = signatures::function(name.as_bytes())
+            .map_or((0, None), |f| (f.min_args(), f.max_args()));
+        let min_args = BODY_MIN
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map_or(min_args, |&(_, min)| min);
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args,
+                max_args,
+            },
+        );
+    }
 }
+
+/// Register engine helpers: `__` builtins only prelude code calls, with no
+/// stub row, so their arity (min, max; `None` = variadic) is given here.
+pub(crate) fn register_helpers(
+    m: &mut Registry,
+    fns: &[(&'static str, NativeFn, usize, Option<usize>)],
+) {
+    for &(name, func, min_args, max_args) in fns {
+        debug_assert!(name.starts_with("__"), "{name} is not an engine helper");
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args,
+                max_args,
+            },
+        );
+    }
+}
+
+/// Functions whose php body requires more arguments than their arginfo
+/// (`array_udiff(): expects at least 2 arguments`; openssl_cms_verify's zpp
+/// wants `$flags`).
+const BODY_MIN: &[(&str, usize)] = &[
+    ("array_diff_uassoc", 2),
+    ("array_diff_ukey", 2),
+    ("array_intersect_uassoc", 2),
+    ("array_intersect_ukey", 2),
+    ("array_udiff", 2),
+    ("array_udiff_assoc", 2),
+    ("array_udiff_uassoc", 3),
+    ("array_uintersect", 2),
+    ("array_uintersect_assoc", 2),
+    ("array_uintersect_uassoc", 3),
+    ("openssl_cms_verify", 2),
+];
 
 pub use php_fns::{apply_env_overrides, env_overrides};
 
@@ -1350,89 +1404,93 @@ pub fn reset_request_state() {
 /// The builtin function table, keyed by lowercase name (PHP function names are
 /// case-insensitive).
 pub fn registry() -> &'static HashMap<&'static str, Builtin> {
-    static REG: OnceLock<HashMap<&'static str, Builtin>> = OnceLock::new();
+    static REG: OnceLock<Registry> = OnceLock::new();
     REG.get_or_init(|| {
-        let mut m = builtins! {
-            "var_dump"       => fn_var_dump, 1, None;
-            "print_r"        => fn_print_r, 1, Some(2);
-            "var_export"     => fn_var_export, 1, Some(2);
-            "gettype"        => fn_gettype, 1, Some(1);
-            "get_debug_type" => fn_get_debug_type, 1, Some(1);
-            "is_numeric"     => fn_is_numeric, 1, Some(1);
-            "is_int"         => fn_is_int, 1, Some(1);
-            "is_integer"     => fn_is_int, 1, Some(1);
-            "is_long"        => fn_is_int, 1, Some(1);
-            "is_float"       => fn_is_float, 1, Some(1);
-            "is_double"      => fn_is_float, 1, Some(1);
-            "is_string"      => fn_is_string, 1, Some(1);
-            "is_bool"        => fn_is_bool, 1, Some(1);
-            "is_null"        => fn_is_null, 1, Some(1);
-            "is_array"       => fn_is_array, 1, Some(1);
-            "is_scalar"      => fn_is_scalar, 1, Some(1);
-            "is_object"      => fn_is_object, 1, Some(1);
-            "is_callable"    => fn_is_callable, 1, Some(3);
-            "define"         => fn_define, 2, Some(3);
-            "defined"        => fn_defined, 1, Some(1);
-            "constant"       => fn_constant, 1, Some(1);
-            "intval"         => fn_intval, 1, Some(2);
-            "floatval"       => fn_floatval, 1, Some(1);
-            "doubleval"      => fn_floatval, 1, Some(1);
-            "strval"         => fn_strval, 1, Some(1);
-            "boolval"        => fn_boolval, 1, Some(1);
-            "strlen"         => fn_strlen, 1, Some(1);
-            "count"          => fn_count, 1, Some(2);
-            "sizeof"         => fn_sizeof, 1, Some(2);
-            "intdiv"         => fn_intdiv, 2, Some(2);
-            "str_repeat"     => fn_str_repeat, 2, Some(2);
-            "abs"            => fn_abs, 1, Some(1);
-            "max"            => fn_max, 1, None;
-            "min"            => fn_min, 1, None;
-            "array_sum"      => fn_array_sum, 1, Some(1);
-            "array_product"  => fn_array_product, 1, Some(1);
-            "array_keys"     => fn_array_keys, 1, Some(3);
-            "is_nan"         => fn_is_nan, 1, Some(1);
-            "is_infinite"    => fn_is_infinite, 1, Some(1);
-            "is_finite"      => fn_is_finite, 1, Some(1);
-            "array_values"   => fn_array_values, 1, Some(1);
-            "array_merge"    => fn_array_merge, 0, None;
-            "array_reverse"  => fn_array_reverse, 1, Some(2);
-            "range"          => fn_range, 2, Some(3);
-            "array_map"      => fn_array_map, 2, None;
-            "array_filter"   => fn_array_filter, 1, Some(3);
-            "array_reduce"   => fn_array_reduce, 2, Some(3);
-            "call_user_func" => fn_call_user_func, 1, None;
-            "call_user_func_array" => fn_call_user_func_array, 2, Some(2);
-            "in_array"       => fn_in_array, 2, Some(3);
-            "array_key_exists" => fn_array_key_exists, 2, Some(2);
-            "implode"        => fn_implode, 1, Some(2);
-            "join"           => fn_implode, 1, Some(2);
-            "explode"        => fn_explode, 2, Some(3);
-            "strtoupper"     => fn_strtoupper, 1, Some(1);
-            "strtolower"     => fn_strtolower, 1, Some(1);
-            "str_contains"   => fn_str_contains, 2, Some(2);
-            "ord"            => fn_ord, 1, Some(1);
-            "chr"            => fn_chr, 1, Some(1);
-            "get_class"      => fn_get_class, 0, Some(1);
-            "get_parent_class" => fn_get_parent_class, 0, Some(1);
-            "is_a"           => fn_is_a, 2, Some(3);
-            "is_subclass_of" => fn_is_subclass_of, 2, Some(3);
-            "get_object_vars" => fn_get_object_vars, 1, Some(1);
-            "get_mangled_object_vars" => fn_get_mangled_object_vars, 1, Some(1);
-            "method_exists"  => fn_method_exists, 2, Some(2);
-            "property_exists" => fn_property_exists, 2, Some(2);
-            "class_exists"   => fn_class_exists, 1, Some(2);
-            "interface_exists" => fn_interface_exists, 1, Some(2);
-            "enum_exists"    => fn_enum_exists, 1, Some(2);
-            "iterator_to_array" => fn_iterator_to_array, 1, Some(2);
-        };
-        for (_, register) in builtin_modules() {
-            register(&mut m);
+        let mut m = Registry::new();
+        register(
+            &mut m,
+            &[
+                ("var_dump", fn_var_dump),
+                ("print_r", fn_print_r),
+                ("var_export", fn_var_export),
+                ("gettype", fn_gettype),
+                ("get_debug_type", fn_get_debug_type),
+                ("is_numeric", fn_is_numeric),
+                ("is_int", fn_is_int),
+                ("is_integer", fn_is_int),
+                ("is_long", fn_is_int),
+                ("is_float", fn_is_float),
+                ("is_double", fn_is_float),
+                ("is_string", fn_is_string),
+                ("is_bool", fn_is_bool),
+                ("is_null", fn_is_null),
+                ("is_array", fn_is_array),
+                ("is_scalar", fn_is_scalar),
+                ("is_object", fn_is_object),
+                ("is_callable", fn_is_callable),
+                ("define", fn_define),
+                ("defined", fn_defined),
+                ("constant", fn_constant),
+                ("intval", fn_intval),
+                ("floatval", fn_floatval),
+                ("doubleval", fn_floatval),
+                ("strval", fn_strval),
+                ("boolval", fn_boolval),
+                ("strlen", fn_strlen),
+                ("count", fn_count),
+                ("sizeof", fn_sizeof),
+                ("intdiv", fn_intdiv),
+                ("str_repeat", fn_str_repeat),
+                ("abs", fn_abs),
+                ("max", fn_max),
+                ("min", fn_min),
+                ("array_sum", fn_array_sum),
+                ("array_product", fn_array_product),
+                ("array_keys", fn_array_keys),
+                ("is_nan", fn_is_nan),
+                ("is_infinite", fn_is_infinite),
+                ("is_finite", fn_is_finite),
+                ("array_values", fn_array_values),
+                ("array_merge", fn_array_merge),
+                ("array_reverse", fn_array_reverse),
+                ("range", fn_range),
+                ("array_map", fn_array_map),
+                ("array_filter", fn_array_filter),
+                ("array_reduce", fn_array_reduce),
+                ("call_user_func", fn_call_user_func),
+                ("call_user_func_array", fn_call_user_func_array),
+                ("in_array", fn_in_array),
+                ("array_key_exists", fn_array_key_exists),
+                ("implode", fn_implode),
+                ("join", fn_implode),
+                ("explode", fn_explode),
+                ("strtoupper", fn_strtoupper),
+                ("strtolower", fn_strtolower),
+                ("str_contains", fn_str_contains),
+                ("ord", fn_ord),
+                ("chr", fn_chr),
+                ("get_class", fn_get_class),
+                ("get_parent_class", fn_get_parent_class),
+                ("is_a", fn_is_a),
+                ("is_subclass_of", fn_is_subclass_of),
+                ("get_object_vars", fn_get_object_vars),
+                ("get_mangled_object_vars", fn_get_mangled_object_vars),
+                ("method_exists", fn_method_exists),
+                ("property_exists", fn_property_exists),
+                ("class_exists", fn_class_exists),
+                ("interface_exists", fn_interface_exists),
+                ("enum_exists", fn_enum_exists),
+                ("iterator_to_array", fn_iterator_to_array),
+            ],
+        );
+        for (_, register_module) in builtin_modules() {
+            register_module(&mut m);
         }
         m
     })
 }
 
-type Registrar = Box<dyn Fn(&mut HashMap<&'static str, Builtin>)>;
+type Registrar = Box<dyn Fn(&mut Registry)>;
 
 /// Every builtin module's registration, in registry order (a later module
 /// would override an earlier one's function of the same name; the

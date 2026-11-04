@@ -22,7 +22,7 @@ use std::sync::{Once, OnceLock};
 use rhp_values::{conv, Value};
 
 use crate::ext::zpp::{deref, given_type};
-use crate::{warn, Builtin, Host, Thrown};
+use crate::{warn, Host, Thrown};
 
 /// The key and certificate classes' handlers: no clone, not comparable.
 pub(crate) static CLASSES: &[crate::object::ClassHandlers] = &[
@@ -864,26 +864,20 @@ fn fn_get_cert_locations(_: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown>
     Ok(Value::Array(a))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("openssl_error_string", fn_error_string, 0, 0);
-    put("openssl_get_cert_locations", fn_get_cert_locations, 0, 0);
-    x509::register(&mut put);
-    pkey::register(&mut put);
-    csr::register(&mut put);
-    cipher::register(&mut put);
-    pkcs::register(&mut put);
-    smime::register(&mut put);
+pub fn register(m: &mut crate::Registry) {
+    x509::register(m);
+    pkey::register(m);
+    csr::register(m);
+    cipher::register(m);
+    pkcs::register(m);
+    smime::register(m);
+    crate::register(
+        m,
+        &[
+            ("openssl_error_string", fn_error_string),
+            ("openssl_get_cert_locations", fn_get_cert_locations),
+        ],
+    );
 }
 
 /// The constants, in php's registration order.
@@ -975,9 +969,6 @@ ECDHE-RSA-AES256-SHA:ECDHE-ECDSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES128
 DHE-DSS-AES128-SHA256:DHE-RSA-AES256-SHA256:DHE-DSS-AES256-SHA:DHE-RSA-AES256-SHA:\
 AES128-GCM-SHA256:AES256-GCM-SHA384:AES128:AES256:HIGH:!SSLv2:!aNULL:!eNULL:!EXPORT:!DES:\
 !MD5:!RC4:!ADH";
-
-/// The function-registration callback each submodule receives.
-pub(super) type Put<'a> = dyn FnMut(&'static str, crate::NativeFn, usize, usize) + 'a;
 
 #[cfg(test)]
 mod tests;

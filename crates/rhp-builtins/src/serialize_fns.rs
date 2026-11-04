@@ -26,7 +26,7 @@ use std::rc::Rc;
 use rhp_semantics::deref;
 use rhp_values::{conv, fmt, ArrayKey, PhpArray, PhpStr, Value};
 
-use crate::{Builtin, Host, Thrown, TypeNameLower};
+use crate::{Host, Thrown, TypeNameLower};
 
 const INCOMPLETE: &[u8] = b"__PHP_Incomplete_Class";
 const INCOMPLETE_NAME: &[u8] = b"__PHP_Incomplete_Class_Name";
@@ -1127,26 +1127,11 @@ fn fn_unserialize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "serialize", fn_serialize, 1, Some(1));
-    put(m, "unserialize", fn_unserialize, 1, Some(2));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[("serialize", fn_serialize), ("unserialize", fn_unserialize)],
+    );
 }
 
 #[cfg(test)]

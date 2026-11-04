@@ -4,12 +4,10 @@
 //! The INFO_GENERAL block follows php's row order and formatting exactly; the
 //! values describe this engine (rhp) where php would describe its build.
 
-use std::collections::HashMap;
-
 use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
-use crate::{version, Builtin, Host, Thrown};
+use crate::{version, Host, Thrown};
 
 pub const INFO_GENERAL: i64 = 1;
 pub const INFO_CREDITS: i64 = 2;
@@ -485,20 +483,13 @@ fn fn_phpcredits(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
     Ok(Value::Bool(true))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    for (name, func, min, max) in [
-        ("phpinfo", fn_phpinfo as crate::NativeFn, 0, 1),
-        ("phpcredits", fn_phpcredits, 0, 1),
-        ("php_uname", fn_php_uname, 0, 1),
-    ] {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    }
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("phpinfo", fn_phpinfo),
+            ("phpcredits", fn_phpcredits),
+            ("php_uname", fn_php_uname),
+        ],
+    );
 }

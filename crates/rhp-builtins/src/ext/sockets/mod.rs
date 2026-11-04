@@ -9,7 +9,6 @@
 //! reported as loaded (`extension_loaded('sockets')` stays false).
 
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_semantics::deref;
@@ -17,7 +16,7 @@ use rhp_values::{ArrayKey, PhpArray, Value};
 
 use crate::object::{ClassHandlers, ObjectHandlers};
 use crate::proc_fns::{zpp_long, zpp_type_name};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 /// `Socket`'s handlers: no clone, not comparable.
 pub(crate) const CLASSES: &[ClassHandlers] = &[ClassHandlers {
@@ -359,38 +358,20 @@ fn fn_socket_clear_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     Ok(Value::Null)
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "socket_import_stream",
-        fn_socket_import_stream,
-        1,
-        Some(1),
+        &[
+            ("socket_import_stream", fn_socket_import_stream),
+            ("socket_get_option", fn_socket_get_option),
+            ("socket_getopt", fn_socket_get_option),
+            ("socket_set_option", fn_socket_set_option),
+            ("socket_setopt", fn_socket_set_option),
+            ("socket_strerror", fn_socket_strerror),
+            ("socket_last_error", fn_socket_last_error),
+            ("socket_clear_error", fn_socket_clear_error),
+        ],
     );
-    put(m, "socket_get_option", fn_socket_get_option, 3, Some(3));
-    put(m, "socket_getopt", fn_socket_get_option, 3, Some(3));
-    put(m, "socket_set_option", fn_socket_set_option, 4, Some(4));
-    put(m, "socket_setopt", fn_socket_set_option, 4, Some(4));
-    put(m, "socket_strerror", fn_socket_strerror, 1, Some(1));
-    put(m, "socket_last_error", fn_socket_last_error, 0, Some(1));
-    put(m, "socket_clear_error", fn_socket_clear_error, 0, Some(1));
 }
 
 pub const PRELUDE_PHP: &str = r#"

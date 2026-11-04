@@ -3,12 +3,10 @@
 //!
 //! The unit tests' expected values were captured from php.
 
-use std::collections::HashMap;
-
 use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // small shared helpers
@@ -432,35 +430,22 @@ fn fn_parse_url(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 /// Register all URL/HTML encoding builtins into the shared table.
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "urlencode", fn_urlencode, 1, Some(1));
-    put(m, "urldecode", fn_urldecode, 1, Some(1));
-    put(m, "rawurlencode", fn_rawurlencode, 1, Some(1));
-    put(m, "rawurldecode", fn_rawurldecode, 1, Some(1));
-    put(m, "nl2br", fn_nl2br, 1, Some(2));
-    put(m, "addslashes", fn_addslashes, 1, Some(1));
-    put(m, "stripslashes", fn_stripslashes, 1, Some(1));
-    put(m, "quotemeta", fn_quotemeta, 1, Some(1));
-    // strip_tags: basic (no allowed-tags list) — single-argument form only.
-    put(m, "strip_tags", fn_strip_tags, 1, Some(2));
-    put(m, "parse_url", fn_parse_url, 1, Some(2));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("urlencode", fn_urlencode),
+            ("urldecode", fn_urldecode),
+            ("rawurlencode", fn_rawurlencode),
+            ("rawurldecode", fn_rawurldecode),
+            ("nl2br", fn_nl2br),
+            ("addslashes", fn_addslashes),
+            ("stripslashes", fn_stripslashes),
+            ("quotemeta", fn_quotemeta),
+            ("strip_tags", fn_strip_tags),
+            ("parse_url", fn_parse_url),
+        ],
+    );
 }
 
 #[cfg(test)]

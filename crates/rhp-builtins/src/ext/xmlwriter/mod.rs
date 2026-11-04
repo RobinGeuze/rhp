@@ -4,7 +4,6 @@
 //! procedural `xmlwriter_*` functions `__xmlwriter_fn`. A writer is its
 //! object's payload, freed by the class's `dtor_obj` or with the object.
 
-use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, OsStr};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::ptr;
@@ -17,7 +16,7 @@ use crate::ext::libxml::sys::{self, cbytes};
 use crate::ext::libxml::{ffi, io};
 use crate::ext::zpp::{deref, given_type};
 use crate::object::{ClassHandlers, CloneObj, ObjectHandlers};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 /// `ze_xmlwriter_object`: the writer and, for a memory writer, its buffer
 /// (owned by the writer's output buffer, freed by its close callback).
@@ -886,33 +885,14 @@ fn fn_procedural(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     run(host, &call, m, &this, &args[1.min(args.len())..])
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    m.insert(
-        "__xmlwriter_fn",
-        Builtin {
-            name: "__xmlwriter_fn",
-            func: fn_procedural,
-            min_args: 1,
-            max_args: None,
-        },
-    );
-    m.insert(
-        "__xmlwriter",
-        Builtin {
-            name: "__xmlwriter",
-            func: fn_method,
-            min_args: 2,
-            max_args: None,
-        },
-    );
-    m.insert(
-        "__xmlwriter_to",
-        Builtin {
-            name: "__xmlwriter_to",
-            func: fn_to,
-            min_args: 2,
-            max_args: None,
-        },
+pub fn register(m: &mut crate::Registry) {
+    crate::register_helpers(
+        m,
+        &[
+            ("__xmlwriter_fn", fn_procedural, 1, None),
+            ("__xmlwriter", fn_method, 2, None),
+            ("__xmlwriter_to", fn_to, 2, None),
+        ],
     );
 }
 

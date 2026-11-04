@@ -27,14 +27,13 @@
 //! is the start advanced by one code unit (one byte, or one UTF-8 character
 //! under `u`).
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_semantics::deref;
 use rhp_values::{ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::pcre::{self, sys::*, JitIssue, Ovector, Regex};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // `preg_last_error()` codes.
 const PREG_NO_ERROR: i64 = 0;
@@ -1130,49 +1129,26 @@ pub fn preg_constants() -> Vec<(&'static str, Value)> {
     ]
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    // `&$matches` / `&$count` are by-reference OUT params (arg 2 for the match
-    // functions, the final arg for the replace functions).
-    put(m, "preg_match", fn_preg_match, 2, Some(5));
-    put(m, "preg_match_all", fn_preg_match_all, 2, Some(5));
-    put(m, "preg_replace", fn_preg_replace, 3, Some(5));
-    put(m, "preg_filter", fn_preg_filter, 3, Some(5));
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "preg_replace_callback",
-        fn_preg_replace_callback,
-        3,
-        Some(6),
+        &[
+            ("preg_match", fn_preg_match),
+            ("preg_match_all", fn_preg_match_all),
+            ("preg_replace", fn_preg_replace),
+            ("preg_filter", fn_preg_filter),
+            ("preg_replace_callback", fn_preg_replace_callback),
+            (
+                "preg_replace_callback_array",
+                fn_preg_replace_callback_array,
+            ),
+            ("preg_last_error", fn_preg_last_error),
+            ("preg_last_error_msg", fn_preg_last_error_msg),
+            ("preg_split", fn_preg_split),
+            ("preg_quote", fn_preg_quote),
+            ("preg_grep", fn_preg_grep),
+        ],
     );
-    put(
-        m,
-        "preg_replace_callback_array",
-        fn_preg_replace_callback_array,
-        2,
-        Some(5),
-    );
-    put(m, "preg_last_error", fn_preg_last_error, 0, Some(0));
-    put(m, "preg_last_error_msg", fn_preg_last_error_msg, 0, Some(0));
-    put(m, "preg_split", fn_preg_split, 2, Some(4));
-    put(m, "preg_quote", fn_preg_quote, 1, Some(2));
-    put(m, "preg_grep", fn_preg_grep, 2, Some(3));
 }
 
 #[cfg(test)]

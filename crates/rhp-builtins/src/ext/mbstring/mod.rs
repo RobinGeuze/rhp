@@ -16,14 +16,14 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use rhp_mbfl_sys::{self as mbfl, case_mode, encodings, illegal_mode, ConvertBuf, Encoding};
 use rhp_values::{ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::ext::zpp::{self, deref};
-use crate::{deprecated, warn, Builtin, Host, Thrown};
+use crate::{deprecated, warn, Host, Thrown};
 
 type Enc = &'static Encoding;
 
@@ -2406,67 +2406,44 @@ fn fn_mb_decode_numericentity(host: &mut dyn Host, args: &[Value]) -> Result<Val
 // ---------------------------------------------------------------------------
 
 /// Register the mbstring builtins.
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let fns: &[(&'static str, crate::NativeFn, usize, Option<usize>)] = &[
-        ("mb_internal_encoding", fn_mb_internal_encoding, 0, Some(1)),
-        (
-            "mb_substitute_character",
-            fn_mb_substitute_character,
-            0,
-            Some(1),
-        ),
-        ("mb_str_split", fn_mb_str_split, 1, Some(3)),
-        ("mb_strlen", fn_mb_strlen, 1, Some(2)),
-        ("mb_strpos", fn_mb_strpos, 2, Some(4)),
-        ("mb_strrpos", fn_mb_strrpos, 2, Some(4)),
-        ("mb_stripos", fn_mb_stripos, 2, Some(4)),
-        ("mb_strripos", fn_mb_strripos, 2, Some(4)),
-        ("mb_strstr", fn_mb_strstr, 2, Some(4)),
-        ("mb_strrchr", fn_mb_strrchr, 2, Some(4)),
-        ("mb_stristr", fn_mb_stristr, 2, Some(4)),
-        ("mb_strrichr", fn_mb_strrichr, 2, Some(4)),
-        ("mb_substr_count", fn_mb_substr_count, 2, Some(3)),
-        ("mb_substr", fn_mb_substr, 2, Some(4)),
-        ("mb_strcut", fn_mb_strcut, 2, Some(4)),
-        ("mb_strwidth", fn_mb_strwidth, 1, Some(2)),
-        ("mb_strimwidth", fn_mb_strimwidth, 3, Some(5)),
-        ("mb_convert_encoding", fn_mb_convert_encoding, 2, Some(3)),
-        ("mb_convert_case", fn_mb_convert_case, 2, Some(3)),
-        ("mb_strtoupper", fn_mb_strtoupper, 1, Some(2)),
-        ("mb_strtolower", fn_mb_strtolower, 1, Some(2)),
-        ("mb_detect_encoding", fn_mb_detect_encoding, 1, Some(3)),
-        ("mb_list_encodings", fn_mb_list_encodings, 0, Some(0)),
-        ("mb_encoding_aliases", fn_mb_encoding_aliases, 1, Some(1)),
-        ("mb_convert_variables", fn_mb_convert_variables, 3, None),
-        (
-            "mb_encode_numericentity",
-            fn_mb_encode_numericentity,
-            2,
-            Some(4),
-        ),
-        (
-            "mb_decode_numericentity",
-            fn_mb_decode_numericentity,
-            2,
-            Some(3),
-        ),
-        ("mb_check_encoding", fn_mb_check_encoding, 0, Some(2)),
-        ("mb_scrub", fn_mb_scrub, 1, Some(2)),
-        ("mb_ord", fn_mb_ord, 1, Some(2)),
-        ("mb_chr", fn_mb_chr, 1, Some(2)),
-        ("mb_str_pad", fn_mb_str_pad, 2, Some(5)),
-    ];
-    for &(name, func, min_args, max_args) in fns {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args,
-                max_args,
-            },
-        );
-    }
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("mb_internal_encoding", fn_mb_internal_encoding),
+            ("mb_substitute_character", fn_mb_substitute_character),
+            ("mb_str_split", fn_mb_str_split),
+            ("mb_strlen", fn_mb_strlen),
+            ("mb_strpos", fn_mb_strpos),
+            ("mb_strrpos", fn_mb_strrpos),
+            ("mb_stripos", fn_mb_stripos),
+            ("mb_strripos", fn_mb_strripos),
+            ("mb_strstr", fn_mb_strstr),
+            ("mb_strrchr", fn_mb_strrchr),
+            ("mb_stristr", fn_mb_stristr),
+            ("mb_strrichr", fn_mb_strrichr),
+            ("mb_substr_count", fn_mb_substr_count),
+            ("mb_substr", fn_mb_substr),
+            ("mb_strcut", fn_mb_strcut),
+            ("mb_strwidth", fn_mb_strwidth),
+            ("mb_strimwidth", fn_mb_strimwidth),
+            ("mb_convert_encoding", fn_mb_convert_encoding),
+            ("mb_convert_case", fn_mb_convert_case),
+            ("mb_strtoupper", fn_mb_strtoupper),
+            ("mb_strtolower", fn_mb_strtolower),
+            ("mb_detect_encoding", fn_mb_detect_encoding),
+            ("mb_list_encodings", fn_mb_list_encodings),
+            ("mb_encoding_aliases", fn_mb_encoding_aliases),
+            ("mb_convert_variables", fn_mb_convert_variables),
+            ("mb_encode_numericentity", fn_mb_encode_numericentity),
+            ("mb_decode_numericentity", fn_mb_decode_numericentity),
+            ("mb_check_encoding", fn_mb_check_encoding),
+            ("mb_scrub", fn_mb_scrub),
+            ("mb_ord", fn_mb_ord),
+            ("mb_chr", fn_mb_chr),
+            ("mb_str_pad", fn_mb_str_pad),
+        ],
+    );
 }
 
 #[cfg(test)]

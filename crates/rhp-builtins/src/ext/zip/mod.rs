@@ -13,7 +13,6 @@ mod stream;
 pub(crate) mod sys;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::ffi::{c_char, c_double, c_int, c_longlong, c_void, CString};
 use std::ptr;
 use std::rc::Rc;
@@ -23,7 +22,7 @@ use rhp_values::{ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
 use crate::ext::libxml::ffi;
 use crate::object::{ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 pub use stream::wrappers;
 
@@ -631,20 +630,13 @@ pub(crate) fn file_error(zf: *mut sys::zip_file_t) -> (c_int, String) {
 
 // --- registration ------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    for (name, func, min) in [
-        ("__zip", archive::fn_zip as crate::NativeFn, 2),
-        ("__zip_prop", fn_zip_prop, 3),
-    ] {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: None,
-            },
-        );
-    }
+pub fn register(m: &mut crate::Registry) {
     procedural::register(m);
+    crate::register_helpers(
+        m,
+        &[
+            ("__zip", archive::fn_zip, 2, None),
+            ("__zip_prop", fn_zip_prop, 3, None),
+        ],
+    );
 }

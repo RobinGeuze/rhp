@@ -4,13 +4,11 @@
 //! binary (see `str_fns/tests.rs` — expected values are hardcoded from
 //! `php -r '...'` output).
 
-use std::collections::HashMap;
-
 use rhp_semantics::deref;
 use rhp_values::{conv, fmt, ArrayKey, PhpArray, Value};
 
 use crate::argparse::zval_get_string;
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // small shared helpers
@@ -1425,51 +1423,39 @@ fn fn_count_chars(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 /// Register all string builtins into the shared table.
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "substr", fn_substr, 2, Some(3));
-    put(m, "str_replace", fn_str_replace, 3, Some(4));
-    put(m, "strpos", fn_strpos, 2, Some(3));
-    put(m, "stripos", fn_stripos, 2, Some(3));
-    put(m, "strrpos", fn_strrpos, 2, Some(3));
-    put(m, "strripos", fn_strripos, 2, Some(3));
-    put(m, "str_pad", fn_str_pad, 2, Some(4));
-    put(m, "trim", fn_trim, 1, Some(2));
-    put(m, "ltrim", fn_ltrim, 1, Some(2));
-    put(m, "rtrim", fn_rtrim, 1, Some(2));
-    put(m, "chop", fn_rtrim, 1, Some(2));
-    put(m, "ucfirst", fn_ucfirst, 1, Some(1));
-    put(m, "lcfirst", fn_lcfirst, 1, Some(1));
-    put(m, "ucwords", fn_ucwords, 1, Some(2));
-    put(m, "strrev", fn_strrev, 1, Some(1));
-    put(m, "substr_count", fn_substr_count, 2, Some(4));
-    put(m, "str_starts_with", fn_str_starts_with, 2, Some(2));
-    put(m, "str_ends_with", fn_str_ends_with, 2, Some(2));
-    put(m, "wordwrap", fn_wordwrap, 1, Some(4));
-    put(m, "number_format", fn_number_format, 1, Some(4));
-    put(m, "sprintf", fn_sprintf, 1, None);
-    put(m, "printf", fn_printf, 1, None);
-    put(m, "vsprintf", fn_vsprintf, 2, Some(2));
-    put(m, "soundex", fn_soundex, 1, Some(1));
-    put(m, "addcslashes", fn_addcslashes, 2, Some(2));
-    put(m, "stripcslashes", fn_stripcslashes, 1, Some(1));
-    put(m, "count_chars", fn_count_chars, 1, Some(2));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("substr", fn_substr),
+            ("str_replace", fn_str_replace),
+            ("strpos", fn_strpos),
+            ("stripos", fn_stripos),
+            ("strrpos", fn_strrpos),
+            ("strripos", fn_strripos),
+            ("str_pad", fn_str_pad),
+            ("trim", fn_trim),
+            ("ltrim", fn_ltrim),
+            ("rtrim", fn_rtrim),
+            ("chop", fn_rtrim),
+            ("ucfirst", fn_ucfirst),
+            ("lcfirst", fn_lcfirst),
+            ("ucwords", fn_ucwords),
+            ("strrev", fn_strrev),
+            ("substr_count", fn_substr_count),
+            ("str_starts_with", fn_str_starts_with),
+            ("str_ends_with", fn_str_ends_with),
+            ("wordwrap", fn_wordwrap),
+            ("number_format", fn_number_format),
+            ("sprintf", fn_sprintf),
+            ("printf", fn_printf),
+            ("vsprintf", fn_vsprintf),
+            ("soundex", fn_soundex),
+            ("addcslashes", fn_addcslashes),
+            ("stripcslashes", fn_stripcslashes),
+            ("count_chars", fn_count_chars),
+        ],
+    );
 }
 
 #[cfg(test)]

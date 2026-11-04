@@ -4,13 +4,11 @@
 //! `get_included_files` / `get_required_files`. The tables live in the host
 //! and are read through `Host::reflect_op`.
 
-use std::collections::HashMap;
-
 use rhp_semantics::deref;
 use rhp_values::{ClassKind, Value};
 
 use crate::argparse::{bool_param, str_param, value_name};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 fn declared(host: &mut dyn Host, kind: &str) -> Result<Value, Thrown> {
     host.reflect_op(b"declared", &[Value::str(kind)])
@@ -109,25 +107,19 @@ fn fn_get_included_files(host: &mut dyn Host, _args: &[Value]) -> Result<Value, 
     host.reflect_op(b"included", &[])
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("get_declared_classes", fn_get_declared_classes, 0, 0);
-    put("get_declared_interfaces", fn_get_declared_interfaces, 0, 0);
-    put("get_declared_traits", fn_get_declared_traits, 0, 0);
-    put("trait_exists", fn_trait_exists, 1, 2);
-    put("get_defined_functions", fn_get_defined_functions, 0, 1);
-    put("get_class_methods", fn_get_class_methods, 1, 1);
-    put("get_class_vars", fn_get_class_vars, 1, 1);
-    put("get_included_files", fn_get_included_files, 0, 0);
-    put("get_required_files", fn_get_included_files, 0, 0);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("get_declared_classes", fn_get_declared_classes),
+            ("get_declared_interfaces", fn_get_declared_interfaces),
+            ("get_declared_traits", fn_get_declared_traits),
+            ("trait_exists", fn_trait_exists),
+            ("get_defined_functions", fn_get_defined_functions),
+            ("get_class_methods", fn_get_class_methods),
+            ("get_class_vars", fn_get_class_vars),
+            ("get_included_files", fn_get_included_files),
+            ("get_required_files", fn_get_included_files),
+        ],
+    );
 }

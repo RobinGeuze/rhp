@@ -3,12 +3,10 @@
 //! parser (Zend/zend_ini_parser.y), plus ext/standard's array-building
 //! callbacks (`php_simple_ini_parser_cb` / `php_ini_parser_cb_with_sections`).
 
-use std::collections::HashMap;
-
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::argparse::{bool_param, int_param, str_param};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 const MODE_NORMAL: i64 = 0;
 const MODE_RAW: i64 = 1;
@@ -1402,18 +1400,12 @@ fn fn_parse_ini_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     })
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("parse_ini_string", fn_parse_ini_string, 1, 3);
-    put("parse_ini_file", fn_parse_ini_file, 1, 3);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("parse_ini_string", fn_parse_ini_string),
+            ("parse_ini_file", fn_parse_ini_file),
+        ],
+    );
 }

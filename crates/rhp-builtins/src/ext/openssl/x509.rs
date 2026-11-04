@@ -10,40 +10,34 @@ use super::backend::{
 };
 use super::{
     arg, bio_bytes, bool_arg, check_path, cstr_bytes, int_arg, mem_bio, obj_or_str, openssl_free,
-    opt_str_arg, set_ref, store_errors, str_arg, sys, type_error, ObjOrStr, Put, CERT_CLASS,
+    opt_str_arg, set_ref, store_errors, str_arg, sys, type_error, ObjOrStr, CERT_CLASS,
 };
 use crate::{warn, Host, Thrown};
 
-pub(super) fn register(put: &mut Put) {
-    put(
-        "openssl_x509_export_to_file",
-        super::wrapped!(fn_export_to_file),
-        2,
-        3,
+pub(super) fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            (
+                "openssl_x509_export_to_file",
+                super::wrapped!(fn_export_to_file),
+            ),
+            ("openssl_x509_export", super::wrapped!(fn_export)),
+            ("openssl_x509_fingerprint", super::wrapped!(fn_fingerprint)),
+            (
+                "openssl_x509_check_private_key",
+                super::wrapped!(fn_check_private_key),
+            ),
+            ("openssl_x509_verify", super::wrapped!(fn_verify)),
+            ("openssl_x509_parse", super::wrapped!(fn_parse)),
+            (
+                "openssl_x509_checkpurpose",
+                super::wrapped!(fn_checkpurpose),
+            ),
+            ("openssl_x509_read", super::wrapped!(fn_read)),
+            ("openssl_x509_free", super::wrapped!(fn_free)),
+        ],
     );
-    put("openssl_x509_export", super::wrapped!(fn_export), 2, 3);
-    put(
-        "openssl_x509_fingerprint",
-        super::wrapped!(fn_fingerprint),
-        1,
-        3,
-    );
-    put(
-        "openssl_x509_check_private_key",
-        super::wrapped!(fn_check_private_key),
-        2,
-        2,
-    );
-    put("openssl_x509_verify", super::wrapped!(fn_verify), 2, 2);
-    put("openssl_x509_parse", super::wrapped!(fn_parse), 1, 2);
-    put(
-        "openssl_x509_checkpurpose",
-        super::wrapped!(fn_checkpurpose),
-        2,
-        4,
-    );
-    put("openssl_x509_read", super::wrapped!(fn_read), 1, 1);
-    put("openssl_x509_free", super::wrapped!(fn_free), 1, 1);
 }
 
 fn cert_arg(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<ObjOrStr, Thrown> {

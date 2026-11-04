@@ -2,13 +2,12 @@
 //! checks, `basename`/`dirname`/`pathinfo`, `getcwd`/`chdir`, and whole-file
 //! read/write through the stream wrappers.
 
-use std::collections::HashMap;
 use std::ffi::CString;
 
 use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 fn path_arg(args: &[Value], i: usize) -> Vec<u8> {
     conv::to_string_bytes(&deref(&args[i]))
@@ -706,49 +705,31 @@ fn fn_disk_total_space(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
     }
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "file_exists", fn_file_exists, 1, Some(1));
-    put(m, "basename", fn_basename, 1, Some(2));
-    put(m, "dirname", fn_dirname, 1, Some(2));
-    put(m, "pathinfo", fn_pathinfo, 1, Some(2));
-    put(m, "getcwd", fn_getcwd, 0, Some(0));
-    put(m, "file_get_contents", fn_file_get_contents, 1, Some(5));
-    put(m, "file_put_contents", fn_file_put_contents, 2, Some(4));
-    put(m, "unlink", fn_unlink, 1, Some(2));
-    put(m, "rmdir", fn_rmdir, 1, Some(2));
-    put(m, "rename", fn_rename, 2, Some(3));
-    put(m, "touch", fn_touch, 1, Some(3));
-    put(m, "chmod", fn_chmod, 2, Some(2));
-    put(m, "chdir", fn_chdir, 1, Some(1));
-    put(m, "umask", fn_umask, 0, Some(1));
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "php_strip_whitespace",
-        fn_php_strip_whitespace,
-        1,
-        Some(1),
+        &[
+            ("file_exists", fn_file_exists),
+            ("basename", fn_basename),
+            ("dirname", fn_dirname),
+            ("pathinfo", fn_pathinfo),
+            ("getcwd", fn_getcwd),
+            ("file_get_contents", fn_file_get_contents),
+            ("file_put_contents", fn_file_put_contents),
+            ("unlink", fn_unlink),
+            ("rmdir", fn_rmdir),
+            ("rename", fn_rename),
+            ("touch", fn_touch),
+            ("chmod", fn_chmod),
+            ("chdir", fn_chdir),
+            ("umask", fn_umask),
+            ("php_strip_whitespace", fn_php_strip_whitespace),
+            ("clearstatcache", fn_clearstatcache),
+            ("readlink", fn_readlink),
+            ("symlink", fn_symlink),
+            ("disk_free_space", fn_disk_free_space),
+            ("diskfreespace", fn_disk_free_space),
+            ("disk_total_space", fn_disk_total_space),
+        ],
     );
-    put(m, "clearstatcache", fn_clearstatcache, 0, Some(2));
-    put(m, "readlink", fn_readlink, 1, Some(1));
-    put(m, "symlink", fn_symlink, 2, Some(2));
-    put(m, "disk_free_space", fn_disk_free_space, 1, Some(1));
-    put(m, "diskfreespace", fn_disk_free_space, 1, Some(1));
-    put(m, "disk_total_space", fn_disk_total_space, 1, Some(1));
 }

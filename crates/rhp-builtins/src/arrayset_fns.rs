@@ -13,12 +13,10 @@
 //! `lib.rs`; `array_replace` and `array_merge_recursive` live in
 //! `strarr2_fns.rs`.
 
-use std::collections::HashMap;
-
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // shared helpers
@@ -224,44 +222,20 @@ impl TypeNameLower for Value {
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "array_diff_assoc", fn_array_diff_assoc, 1, None);
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "array_intersect_assoc",
-        fn_array_intersect_assoc,
-        1,
-        None,
+        &[
+            ("array_diff_assoc", fn_array_diff_assoc),
+            ("array_intersect_assoc", fn_array_intersect_assoc),
+            ("array_replace_recursive", fn_array_replace_recursive),
+            ("array_find", fn_array_find),
+            ("array_find_key", fn_array_find_key),
+            ("array_any", fn_array_any),
+            ("array_all", fn_array_all),
+            ("key_exists", fn_key_exists),
+        ],
     );
-    put(
-        m,
-        "array_replace_recursive",
-        fn_array_replace_recursive,
-        1,
-        None,
-    );
-    put(m, "array_find", fn_array_find, 2, Some(2));
-    put(m, "array_find_key", fn_array_find_key, 2, Some(2));
-    put(m, "array_any", fn_array_any, 2, Some(2));
-    put(m, "array_all", fn_array_all, 2, Some(2));
-    put(m, "key_exists", fn_key_exists, 2, Some(2));
 }
 
 #[cfg(test)]

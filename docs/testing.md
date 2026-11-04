@@ -26,6 +26,7 @@ from `PATH` or `/opt/homebrew/bin` (`PHP_CGI` overrides it).
 | curl fixture | `tests/curl_http/NAME.php` + `NAME.out` | committed output of `php -n` against the test's local server | yes |
 | phpt ratchet | `tests/phpt/known-passing.txt` | php on the machine, per php-src `.phpt` | no (CI job) |
 | apps | `tests/apps/` | lint list; php-cgi for the request diff | no (CI job) |
+| ASan | `tests/asan/` | stress scripts print `ok`; `phpts.txt`, a subset of the ratchet, still matches | no (CI job) |
 
 **Goldens** are the default for language and library behaviour. The runner
 (`crates/rhp-cli/tests/diff.rs`) runs every fixture directly in
@@ -76,6 +77,12 @@ dump, that output is kept as goldens (`tests/golden/opt_*`; the pending
 ones are listed in the phpt README). Once rhp optimizes, add a developer
 `--dump-bytecode` and per-pass snapshot tests modelled on php-src's
 `ext/opcache/tests/opt`.
+
+**ASan**: CI's `asan` job builds rhp with AddressSanitizer (nightly
+`-Zsanitizer=address`) and runs `tests/asan/*.php` and the php-src tests
+in `tests/asan/phpts.txt`, the code that frees libxml2 trees. Add a
+script or a test there when you change how DOM, SimpleXML or XMLReader
+own nodes.
 
 **Apps** (`tests/apps/README.md`) are pinned Symfony and Laravel projects:
 a compile-only lint ratchet and a request diff of `rhp --cgi` against

@@ -52,7 +52,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 27 | ~~zlib compressors not byte-identical to php~~ — **done**: C zlib with php's deflateInit2 params (`ext/zlib/zraw.rs`) | — | — | — | — |
 | 28 | ~~`gzopen` family + `compress.zlib://` wrapper missing~~ — **done** (whole-buffer streams; gzopen's level/strategy mode letters are ignored on write) | `ext/zlib/mod.rs` | — | low | low |
 | 29 | `spl_autoload_unregister` — no-op true, never removes | `ext/spl/mod.rs:39` | dynamic autoloader swapping | med | low |
-| 30 | `Closure::bindTo`/`Closure::call` instance methods missing | `compiler/prelude.rs` | rebinding via instance form; scoped invoke | med | high |
+| 30 | `Closure::bindTo`/`Closure::call` instance methods missing | `builtins/core_prelude.php` | rebinding via instance form; scoped invoke | med | high |
 | 31 | var_dump object ids — monotonic, no handle recycling | `vm/classes.rs:321` | byte-exact `var_dump`/`spl_object_id` vs php | high | low |
 | 32 | No `E_WARNING`/`E_NOTICE`/`E_DEPRECATED` diagnostics ever emitted (builtins already report them through `Host::emit_diagnostic` — iconv, openssl, mbstring so far — which every host still discards) | engine-wide | warnings-as-errors, deprecation logs, `@`-suppression semantics | high | med |
 | 33 | ~~`declare(strict_types=1)` — no-op; type hints unenforced~~ RESOLVED (§8.1) | `vm/zpp.rs` | — | — | — |
@@ -465,11 +465,11 @@ The module is deliberately "READ-ONLY, native format only"
 
 ---
 
-## 6. Closures (`crates/rhp-compiler/src/prelude.rs`, `crates/rhp-vm/src/lib.rs`)
+## 6. Closures (`crates/rhp-builtins/src/core_prelude.php`, `crates/rhp-vm/src/lib.rs`)
 
 ### 6.1 `Closure::bindTo` / `Closure::call` instance methods missing
 - **Now:** the prelude `Closure` class has only the two **static** methods
-  `fromCallable` and `bind` (the `PRELUDE` source in `compiler/prelude.rs`).
+  `fromCallable` and `bind` (in `crates/rhp-builtins/src/core_prelude.php`).
   The underlying rebinding machinery exists and works — `__closure_bind`
   (`php_fns.rs:216`) calls `host.closure_bind` (`vm/lib.rs:355`), and the VM honours
   a rebound `$this`/scope when invoking (`vm/lib.rs:2273-2279`). Only the

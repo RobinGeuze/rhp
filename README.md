@@ -17,8 +17,8 @@ register-based bytecode, and runs it on a VM.
 One execution core over one shared, verified semantics layer: an
 AST→bytecode compiler (`rhp-compiler`) emits a data-only register ISA
 (`rhp-bytecode`) that the **bytecode VM** (`rhp-vm`) runs. Operators
-(`rhp-semantics`) and builtins (`rhp-builtins`) are shared libraries, so each
-PHP rule is implemented once.
+(`rhp_values::ops`) and builtins (`rhp-builtins`) are shared libraries, so
+each PHP rule is implemented once.
 
 The VM runs every fixture in `tests/golden/` and must match the output the real
 `php` binary recorded for it **byte-for-byte**. `rhp-difftest` also diffs rhp
@@ -32,17 +32,25 @@ Production crates are in `crates/`, the test tooling in `tools/`.
 
 | crate | role |
 |---|---|
-| `rhp-values` | `Value` (zval), `PhpStr` (byte-string, COW), `PhpArray` (ordered, COW), conversions, float formatting, `Thrown` |
-| `rhp-frontend` | safe scoped wrapper over the mago-syntax arena parser |
-| `rhp-semantics` | PHP operator semantics (arithmetic, comparison, concat, …) |
-| `rhp-builtins` | native function + constant registry, `var_dump`/`print_r`/… |
-| `rhp-csrc` | php-src's own C (crypt) and frozen C libraries php links (argon2), vendored and linked statically |
-| `rhp-bytecode` | the register ISA (data only) |
-| `rhp-compiler` | AST → bytecode; refuses what rhp does not implement yet |
+| `rhp-values` | `Value` (zval), `PhpStr` (byte-string, COW), `PhpArray` (ordered, COW), conversions, float formatting, `Thrown`, the operators (`ops`) |
+| `rhp-bytecode` | the register ISA (data only) and php's stub signatures for the builtins |
+| `rhp-compiler` | parsing (mago-syntax) and AST → bytecode; refuses what rhp does not implement yet. Knows the builtins only through what the request layer passes in |
+| `rhp-builtins` | native function + constant registry, the extensions, and the PHP prelude (`*.php`) |
+| `rhp-csrc` | php-src's own C (crypt) and frozen C libraries php links (argon2, timelib), vendored and linked statically |
+| `rhp-mbfl-sys` | php-src's libmbfl (LGPL-2.1), vendored and linked statically for mbstring |
 | `rhp-vm` | the register VM |
-| `rhp-sapi` | the request layer: `run_request`, the `Sapi` trait a server implements, the CLI and CGI SAPIs |
-| `rhp-cli` | the `rhp` command: argv front end over `rhp-sapi` (`rhp script.php`, `-r`, `--cgi`) |
+| `rhp-sapi` | the request layer: `run_request`, `compile_file`, the `Sapi` trait a server implements, the CLI and CGI SAPIs and their command lines |
+| `rhp-cli` | the `rhp` binary: picks php-cli or php-cgi (`--cgi`) and hands over to `rhp-sapi` |
 | `rhp-difftest` | in `tools/`: differential harnesses against php / php-cgi (php-src `.phpt`, goldens, fixture apps, extensions) and the table generators |
+
+The compiler and the builtins build in parallel: neither depends on the
+other.
+
+```
+rhp-values ── rhp-bytecode ─┬─ rhp-compiler ────────────┐
+                            └─ rhp-builtins ── rhp-vm ──┴─ rhp-sapi ── rhp-cli
+                                 └─ rhp-csrc, rhp-mbfl-sys (C)
+```
 
 Full design docs are in [`docs/design/`](docs/design/README.md) — start with
 [`bytecode.md`](docs/design/bytecode.md).

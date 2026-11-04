@@ -35,6 +35,7 @@ crates/rhp-cli/tests/          diff.rs (the goldens, in-process), and runs
                                startup_ini); curl_http.rs
 crates/rhp-sapi/tests/         the request layer in-process: embedding,
                                isolation, memory, opcache
+crates/rhp-compiler/tests/     prelude_cache.rs: the per-thread prelude cache
 crates/rhp-vm/tests/golden.rs  tests/golden/vm, for `cargo test -p rhp-vm`
 crates/*/src/**/tests.rs       unit tests, a sibling file per module
 tools/rhp-difftest/            the harness: php discovery, spawn, known
@@ -101,8 +102,9 @@ or with the machine belongs in a live-php test, which
 compares with the php linked against the same libraries on the same machine.
 
 **CLI fixtures** cover what needs the `rhp` binary as a process: argv and
-`getopt()`, a script read from stdin, `-r` and startup `-d` values, stderr,
-the exit status, uncaught errors and shutdown order, `pcntl_fork`. Each
+`getopt()`, php-cli's own option parsing and its errors, a script read
+from stdin, `-r` and startup `-d` values, stderr, the exit status,
+uncaught errors and shutdown order, `pcntl_fork`. Each
 `tests/cli/CASE/` directory holds a script and one or more runs: `RUN.cmd`
 (the command line, stdin and environment, in the CGI fixtures' directive
 format), `RUN.stdout`, `RUN.stderr` and `RUN.status` (php's, with the
@@ -223,7 +225,7 @@ Generated tables have their own `--check`: `rhp-difftest gen signatures`,
 |---|---|
 | rustfmt, clippy | `cargo fmt --check`, `cargo clippy -D warnings` |
 | test (no php) | the whole `cargo test --workspace --all-targets`, with php removed: goldens, CLI and curl fixtures, unit tests; live-php tests skip |
-| php 8.5 (live) | only what compares with php: rhp-difftest's tests, rhp-cli's tests except the goldens (the live tests, the CGI fixtures against the real php-cgi), `cli -- --check`, `golden --check --portable` |
+| php 8.5 (live) | only what compares with php: `php -l` on every prelude file (`crates/rhp-builtins/src/**/*.php`), rhp-difftest's tests, rhp-cli's tests except the goldens (the live tests, the CGI fixtures against the real php-cgi), `cli -- --check`, `golden --check --portable` |
 | release build | `cargo build --release -p rhp-cli -p rhp-difftest` once, as an artifact for the jobs below |
 | phpt ratchet K/3 | the ratchet in three shards (`phpt --shard K/3`) |
 | generated tables | every `gen … --check` |

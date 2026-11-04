@@ -151,18 +151,20 @@ pub struct ObjectData {
 /// user stream, belongs in the class's `dtor_obj` handler).
 ///
 /// Contract:
-/// - The payload is the only owner of per-object native state: no
-///   thread-local table keyed by object id or address. State that lives in
-///   the object moves with it.
+/// - The payload is the only owner of per-object native state: no table
+///   keyed by object id or address. State that lives in the object moves
+///   with it. (ext/xml also keeps weak references to its parsers, only to
+///   break their cycles at the next request; see `ext/xml`.)
 /// - Read it as an `Rc<T>` clone and release the object borrow before
 ///   calling into PHP or the host; mutate through a `Cell`/`RefCell` inside
 ///   `T`. A payload never holds a strong reference to its own object.
 /// - `Rc<dyn Any>` because objects are `Rc` and stay on their VM's thread
-///   (docs/design/libraries.md, Threading). A payload type must not depend
-///   on that beyond the `Rc` itself: when objects become `Send`, this alias
-///   becomes `Arc<dyn Any + Send + Sync>` and library handles inside a
-///   payload must then be safe to move between threads (most are: one
-///   object is used by one thread at a time).
+///   (docs/design/libraries.md, Threading). Today's payloads are `!Send`
+///   (`Cell`, `RefCell`, raw library pointers). If objects ever move
+///   between threads, the alias becomes `Arc<dyn Any + Send + Sync>` and
+///   every payload type changes with it: `Mutex` or atomics instead of
+///   `Cell`/`RefCell`, and a `Send` wrapper for each library handle whose
+///   library allows that.
 pub type Payload = Rc<dyn std::any::Any>;
 
 impl ObjectData {

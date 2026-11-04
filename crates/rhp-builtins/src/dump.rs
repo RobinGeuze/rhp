@@ -150,11 +150,9 @@ pub fn clear_views() {
 /// The resolved view of object `id`, as (key, value) entries.
 fn view_of(id: u32) -> Option<Vec<(ArrayKey, Value)>> {
     VIEWS.with(|m| {
-        m.borrow().get(&id).map(|v| {
-            v.iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        })
+        m.borrow()
+            .get(&id)
+            .map(|v| v.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
     })
 }
 

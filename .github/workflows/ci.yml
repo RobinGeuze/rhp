@@ -136,10 +136,13 @@ jobs:
         run: cargo build --release -p rhp-cli -p rhp-difftest
       - name: Builtin signatures match php-src's stubs
         run: target/release/rhp-difftest gen signatures --php-src php-src --check
+      # --timeout 30: the oom_* tests build hundreds of MB before failing;
+      # rhp needs ~2.5s CPU for oom_unserialize_001 and crossed the default
+      # 10s on a busy runner.
       - name: Known-passing php-src tests still match
         run: >-
           target/release/rhp-difftest phpt --php-src php-src
-          --php-cgi "$(command -v php-cgi)"
+          --php-cgi "$(command -v php-cgi)" --timeout 30
           --check-known tests/phpt/known-passing.txt
       # The goldens' .out files are still what php prints, except the ones
       # holding the reference build's facts (tests/golden/reference-only.txt).

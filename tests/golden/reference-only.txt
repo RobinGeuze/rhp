@@ -10,10 +10,10 @@
 # 24.04's older ones. Output that depends on the libxml2 release is in
 # live-php tests (tools/rhp-difftest/tests/libxml.rs), not here.
 
-core_build_constants    # phpinfo()'s configuration file path
-curl_api                # libcurl version: option and info counts, protocol names
-curl_setopt_checks      # libcurl version and features (HTTP/3, option ranges)
-intl_idn                # ICU's UTS #46 data
-openssl_pkey            # OpenSSL's digest list
-phpinfo_text            # phpinfo()'s configure command
-preg_php_pcre_glue      # PCRE2 version (the r modifier needs 10.43)
+ext/curl/curl_api                    # libcurl version: option and info counts, protocol names
+ext/curl/curl_setopt_checks          # libcurl version and features (HTTP/3, option ranges)
+ext/intl/intl_idn                    # ICU's UTS #46 data
+ext/openssl/openssl_pkey             # OpenSSL's digest list
+ext/pcre/preg_php_pcre_glue          # PCRE2 version (the r modifier needs 10.43)
+stdlib/general/core_build_constants  # phpinfo()'s configuration file path
+stdlib/general/phpinfo_text          # phpinfo()'s configure command

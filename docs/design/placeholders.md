@@ -350,7 +350,7 @@ The module is deliberately "READ-ONLY, native format only"
   `verify_with_pem`), with php's exact `PharException` messages for a missing
   key ("openssl public key could not be read"), an unreadable key ("openssl
   signature could not be processed") and a mismatch ("broken openssl
-  signature"). Covered by `tests/golden/phar_openssl_signature.php`.
+  signature"). Covered by `tests/golden/ext/phar/phar_openssl_signature.php`.
 
 ### 3.2 bzip2 entries unsupported
 - **Now:** a `COMPRESSED_BZ2` entry returns `None` from `read`

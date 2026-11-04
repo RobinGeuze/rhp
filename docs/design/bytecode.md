@@ -695,7 +695,7 @@ try/catch/finally (exception_table: {[Ltry,Lend)->catch Lcatch, finally Lfin}):
 > The VM went on to hold every golden by itself, and the oracle was removed
 > (2026-11). This section describes the harness as it is now.
 
-- **Goldens** (`tests/golden/NAME.php` + `NAME.out`). `NAME.out` is the exact
+- **Goldens** (`tests/golden/**/NAME.php` + `NAME.out`). `NAME.out` is the exact
   stdout the reference `php` printed for the fixture.
   `crates/rhp-cli/tests/diff.rs` (`vm_matches_php_baseline`) compiles every
   fixture, runs it on the VM the way the CLI does (include/eval via the CLI

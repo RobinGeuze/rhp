@@ -1,7 +1,7 @@
 //! Byte-exact `var_dump` / `print_r` / `var_export` formatters.
 //!
 //! Indentation and punctuation verified against php 8.5.8
-//! (tests/golden/{var_dump,print_r,var_export}_nested.out).
+//! (tests/golden/stdlib/var/{var_dump,print_r,var_export}_nested.out).
 
 use rhp_values::conv;
 use rhp_values::{fmt, ArrayKey, PhpStr, Thrown, Value};

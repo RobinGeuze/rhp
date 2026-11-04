@@ -88,6 +88,9 @@ static const size_t layout[] = {
 	S(timelib_posix_transitions),
 	L(timelib_posix_transitions, count), L(timelib_posix_transitions, times),
 	L(timelib_posix_transitions, types),
+	S(timelib_posix_str),
+	L(timelib_posix_str, dst_offset), L(timelib_posix_str, dst_begin),
+	L(timelib_posix_str, dst_end),
 };
 
 const size_t *rhp_timelib_layout(size_t *n)

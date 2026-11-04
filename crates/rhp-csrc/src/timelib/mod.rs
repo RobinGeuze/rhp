@@ -774,6 +774,10 @@ mod tests {
             l!(timelib_posix_transitions, count),
             l!(timelib_posix_transitions, times),
             l!(timelib_posix_transitions, types),
+            size_of::<timelib_posix_str>(),
+            l!(timelib_posix_str, dst_offset),
+            l!(timelib_posix_str, dst_begin),
+            l!(timelib_posix_str, dst_end),
         ];
         let mut n = 0;
         // SAFETY: a static array of `n` entries.

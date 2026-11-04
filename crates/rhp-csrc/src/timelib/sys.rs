@@ -136,10 +136,18 @@ pub struct timelib_tzinfo_counts64 {
     pub charcnt: u64,
 }
 
-/// Parsed POSIX TZ string (opaque here).
+/// A parsed POSIX TZ string (`dst_begin`/`dst_end` are opaque here).
 #[repr(C)]
+#[derive(Debug)]
 pub struct timelib_posix_str {
-    _private: [u8; 0],
+    pub std: *mut c_char,
+    pub std_offset: timelib_sll,
+    pub dst: *mut c_char,
+    pub dst_offset: timelib_sll,
+    pub dst_begin: *mut std::ffi::c_void,
+    pub dst_end: *mut std::ffi::c_void,
+    pub type_index_std_type: c_int,
+    pub type_index_dst_type: c_int,
 }
 
 #[repr(C)]

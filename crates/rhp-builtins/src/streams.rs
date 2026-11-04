@@ -248,7 +248,7 @@ pub fn sys_stat(path: &[u8], link: bool) -> Option<StatInfo> {
     if path.contains(&0) {
         return None;
     }
-    match crate::vcwd::stat(path, !link) {
+    match crate::zend::virtual_cwd::stat(path, !link) {
         Ok(st) => Some(StatInfo::from_libc(&st)),
         Err(e) => {
             note_io_err(&e);
@@ -274,7 +274,9 @@ pub fn sys_fstat(fd: i32) -> Option<StatInfo> {
 pub fn sys_readdir(path: &[u8]) -> Option<Vec<Vec<u8>>> {
     // opendir(3)'s open, from the request's directory.
     let flags = libc::O_RDONLY | libc::O_NONBLOCK | libc::O_DIRECTORY | libc::O_CLOEXEC;
-    let fd = crate::vcwd::with_at(path, |at, c| unsafe { libc::openat(at, c.as_ptr(), flags) })?;
+    let fd = crate::zend::virtual_cwd::with_at(path, |at, c| unsafe {
+        libc::openat(at, c.as_ptr(), flags)
+    })?;
     let mut out = Vec::new();
     unsafe {
         let dir = if fd < 0 {
@@ -396,10 +398,10 @@ pub struct FileWrapper;
 
 impl StreamWrapper for FileWrapper {
     fn exists(&self, url: &[u8]) -> bool {
-        crate::vcwd::stat(file_path(url), true).is_ok()
+        crate::zend::virtual_cwd::stat(file_path(url), true).is_ok()
     }
     fn get_contents(&self, url: &[u8]) -> Option<Vec<u8>> {
-        crate::vcwd::read_file(file_path(url))
+        crate::zend::virtual_cwd::read_file(file_path(url))
             .map_err(|e| note_io_err(&e))
             .ok()
     }
@@ -413,7 +415,7 @@ impl StreamWrapper for FileWrapper {
         sys_readdir(file_path(url))
     }
     fn put_contents(&self, url: &[u8], data: &[u8]) -> Option<usize> {
-        crate::vcwd::write_file(file_path(url), data)
+        crate::zend::virtual_cwd::write_file(file_path(url), data)
             .map_err(|e| note_io_err(&e))
             .ok()
             .map(|_| data.len())
@@ -526,7 +528,7 @@ impl LocalFile {
         if path.contains(&0) {
             return None;
         }
-        let fd = match crate::vcwd::open(file_path(path), flags, 0o666) {
+        let fd = match crate::zend::virtual_cwd::open(file_path(path), flags, 0o666) {
             Ok(fd) => fd,
             Err(e) => {
                 note_io_err(&e);

@@ -9,6 +9,7 @@ mod language_parser;
 #[rustfmt::skip]
 mod language_parser_tables;
 pub mod object_handlers;
+pub mod virtual_cwd;
 pub(crate) mod zpp;
 
 pub use language_parser::{syntax_error, ParseFailure};

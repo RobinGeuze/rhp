@@ -88,7 +88,9 @@ impl Archive {
     /// zip_close: libzip writes a new archive with the process's umask;
     /// the request's applies.
     fn zip_close(&self, za: *mut sys::zip_t) -> c_int {
-        crate::vcwd::library_created(&self.path, 0o666, || unsafe { sys::zip_close(za) })
+        crate::zend::virtual_cwd::library_created(&self.path, 0o666, || unsafe {
+            sys::zip_close(za)
+        })
     }
 }
 
@@ -603,7 +605,7 @@ pub(crate) fn expand_filepath(path: &[u8]) -> Option<Vec<u8>> {
     if path.is_empty() {
         return None;
     }
-    let p = crate::vcwd::expand_filepath(path);
+    let p = crate::zend::virtual_cwd::expand_filepath(path);
     (p.len() < MAXPATHLEN - 1).then_some(p)
 }
 

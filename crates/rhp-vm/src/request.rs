@@ -123,7 +123,7 @@ impl Vm {
         if dest.is_empty() {
             self.write_stderr(line.as_bytes());
         } else {
-            let _ = builtins::vcwd::append_file(dest, line.as_bytes(), 0o666);
+            let _ = builtins::zend::virtual_cwd::append_file(dest, line.as_bytes(), 0o666);
         }
     }
 

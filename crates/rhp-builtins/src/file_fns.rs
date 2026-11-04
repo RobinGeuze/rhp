@@ -151,13 +151,13 @@ fn dirname_once(path: &[u8]) -> Vec<u8> {
 }
 
 fn fn_getcwd(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(crate::vcwd::current_dir().map_or(Value::Bool(false), Value::str))
+    Ok(crate::zend::virtual_cwd::current_dir().map_or(Value::Bool(false), Value::str))
 }
 
-/// `chdir()`: the request's working directory (see [`crate::vcwd`]).
+/// `chdir()`: the request's working directory (see [`crate::zend::virtual_cwd`]).
 fn fn_chdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let dir = crate::zend::zpp::path_param(host, args, 0, "chdir", "directory")?;
-    match crate::vcwd::chdir(&dir) {
+    match crate::zend::virtual_cwd::chdir(&dir) {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {
             let msg = format!("{} (errno {e})", crate::streams::strerror(e));
@@ -171,8 +171,10 @@ fn fn_chdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// request's file mode creation mask.
 fn fn_umask(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let old = match args.first().map(deref) {
-        Some(v) if !matches!(v, Value::Null) => crate::vcwd::set_umask(conv::to_int(&v) as u32),
-        _ => crate::vcwd::umask(),
+        Some(v) if !matches!(v, Value::Null) => {
+            crate::zend::virtual_cwd::set_umask(conv::to_int(&v) as u32)
+        }
+        _ => crate::zend::virtual_cwd::umask(),
     };
     Ok(Value::Int(old as i64))
 }
@@ -367,7 +369,9 @@ pub(crate) fn read_via_opener(
 /// A local path given without a scheme or as `file://`.
 fn plain_path(url: &[u8]) -> Option<std::borrow::Cow<'_, std::path::Path>> {
     match crate::streams::split_scheme(url) {
-        (b"file", p) => Some(crate::vcwd::os_path(crate::streams::file_path(p))),
+        (b"file", p) => Some(crate::zend::virtual_cwd::os_path(
+            crate::streams::file_path(p),
+        )),
         _ => None,
     }
 }
@@ -500,7 +504,7 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 fn fn_unlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     crate::fs_fns::touch_ctx(host, args, 1);
     let path = path_arg(args, 0);
-    let c = crate::vcwd::c_path(&path).unwrap_or_default();
+    let c = crate::zend::virtual_cwd::c_path(&path).unwrap_or_default();
     // php_plain_files_unlink: unlink(2) (a directory fails with EPERM/EISDIR).
     if unsafe { libc::unlink(c.as_ptr()) } != 0 {
         let e = std::io::Error::last_os_error();
@@ -521,7 +525,7 @@ fn os_text(e: &std::io::Error) -> String {
 fn fn_rmdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     crate::fs_fns::touch_ctx(host, args, 1);
     let path = path_arg(args, 0);
-    if let Err(e) = std::fs::remove_dir(crate::vcwd::os_path(&path)) {
+    if let Err(e) = std::fs::remove_dir(crate::zend::virtual_cwd::os_path(&path)) {
         crate::warn_arg(host, "rmdir", &path, &os_text(&e))?;
         return Ok(Value::Bool(false));
     }
@@ -532,8 +536,8 @@ fn fn_rename(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     crate::fs_fns::touch_ctx(host, args, 2);
     let from_b = path_arg(args, 0);
     let to_b = path_arg(args, 1);
-    let from = crate::vcwd::os_path(&from_b);
-    let to = crate::vcwd::os_path(&to_b);
+    let from = crate::zend::virtual_cwd::os_path(&from_b);
+    let to = crate::zend::virtual_cwd::os_path(&to_b);
     let both = [&from_b[..], b",", &to_b[..]].concat();
     match std::fs::rename(&from, &to) {
         Ok(()) => Ok(Value::Bool(true)),
@@ -571,9 +575,9 @@ fn fn_touch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_arg(args, 0);
     let path_str = as_str(&path).into_owned();
     // Create the file if absent (php's touch creates an empty file).
-    if !crate::vcwd::os_path(&path).exists() {
+    if !crate::zend::virtual_cwd::os_path(&path).exists() {
         let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND | libc::O_CLOEXEC;
-        if let Err(e) = crate::vcwd::open(&path, flags, 0o666) {
+        if let Err(e) = crate::zend::virtual_cwd::open(&path, flags, 0o666) {
             crate::warn(
                 host,
                 "touch",
@@ -595,7 +599,7 @@ fn fn_touch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
     let mtime = given(1).unwrap_or(now);
     let atime = given(2).unwrap_or(mtime);
-    let ok = match crate::vcwd::c_path(&path) {
+    let ok = match crate::zend::virtual_cwd::c_path(&path) {
         Some(c) => {
             let times = [
                 libc::timeval {
@@ -626,7 +630,7 @@ fn fn_clearstatcache(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown>
 
 fn fn_chmod(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mode = conv::to_int(&deref(&args[1])) as libc::mode_t;
-    let ok = match crate::vcwd::c_path(&path_arg(args, 0)) {
+    let ok = match crate::zend::virtual_cwd::c_path(&path_arg(args, 0)) {
         Some(c) => unsafe { libc::chmod(c.as_ptr(), mode) == 0 },
         None => false,
     };
@@ -638,7 +642,7 @@ fn fn_chmod(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_readlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match std::fs::read_link(crate::vcwd::os_path(&path_arg(args, 0))) {
+    match std::fs::read_link(crate::zend::virtual_cwd::os_path(&path_arg(args, 0))) {
         Ok(p) => Ok(Value::str(p.to_string_lossy().into_owned().into_bytes())),
         Err(e) => {
             crate::warn(host, "readlink", &os_text(&e))?;
@@ -654,7 +658,7 @@ fn fn_symlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let target = path_arg(args, 0);
     let link = path_arg(args, 1);
     let target = std::ffi::OsStr::from_bytes(&target);
-    match std::os::unix::fs::symlink(target, crate::vcwd::os_path(&link)) {
+    match std::os::unix::fs::symlink(target, crate::zend::virtual_cwd::os_path(&link)) {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {
             crate::warn(host, "symlink", &os_text(&e))?;
@@ -664,7 +668,7 @@ fn fn_symlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn statvfs_of(path: &[u8]) -> Option<libc::statvfs> {
-    let c = crate::vcwd::c_path(path)?;
+    let c = crate::zend::virtual_cwd::c_path(path)?;
     unsafe {
         let mut st: libc::statvfs = std::mem::zeroed();
         if libc::statvfs(c.as_ptr(), &mut st) == 0 {

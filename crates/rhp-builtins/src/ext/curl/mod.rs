@@ -285,7 +285,7 @@ fn absolute_path(path: &[u8]) -> Vec<u8> {
     if path.is_empty() || path == b"-" {
         return path.to_vec();
     }
-    crate::vcwd::absolute(path)
+    crate::zend::virtual_cwd::absolute(path)
 }
 
 // ---------------------------------------------------------------------------

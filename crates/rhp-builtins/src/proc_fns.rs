@@ -9,7 +9,7 @@
 //! built with `USE_POSIX_SPAWN` (macOS, glibc ≥ 2.29): a string command runs as
 //! `/bin/sh -c <command>`, an array command via `posix_spawnp` with no shell.
 //! Pipe parent ends become `stream` resources backed by the VM's fd streams.
-//! A child starts in the request's working directory (`crate::vcwd`), as
+//! A child starts in the request's working directory (`crate::zend::virtual_cwd`), as
 //! php's ZTS build starts it in its virtual one, and with the request's
 //! umask: when that differs from the process's, which posix_spawn can't
 //! change, the child is forked and set up by hand instead.
@@ -200,8 +200,8 @@ fn spawn(
         }
     }
     let cwd_c = match cwd {
-        Some(dir) => Some(cstr(&crate::vcwd::resolve(dir))),
-        None => crate::vcwd::child_cwd().map(|d| cstr(&d)),
+        Some(dir) => Some(cstr(&crate::zend::virtual_cwd::resolve(dir))),
+        None => crate::zend::virtual_cwd::child_cwd().map(|d| cstr(&d)),
     };
     let env_vec = match env {
         Some(e) => e.to_vec(),
@@ -230,7 +230,7 @@ fn spawn(
     for &fd in &inherit {
         cloexec(fd, 0);
     }
-    let r = match crate::vcwd::child_umask() {
+    let r = match crate::zend::virtual_cwd::child_umask() {
         None => unsafe { posix_spawn(&program, search, &actions, cwd_c.as_deref(), &argp, &envp) },
         Some(mask) => {
             let candidates = if search {
@@ -850,10 +850,10 @@ fn fn_popen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
     let mut c = Command::new("/bin/sh");
     c.arg("-c").arg(std::ffi::OsStr::from_bytes(&cmd));
-    if let Some(dir) = crate::vcwd::child_cwd() {
+    if let Some(dir) = crate::zend::virtual_cwd::child_cwd() {
         c.current_dir(std::ffi::OsStr::from_bytes(&dir));
     }
-    if let Some(mask) = crate::vcwd::child_umask() {
+    if let Some(mask) = crate::zend::virtual_cwd::child_umask() {
         use std::os::unix::process::CommandExt;
         // umask(2) is async-signal-safe.
         unsafe {
@@ -1061,7 +1061,7 @@ fn open_for_mode(path: &[u8], mode: &[u8]) -> Option<OwnedFd> {
         _ => return None,
     };
     let p = cstr(path.strip_prefix(b"file://").unwrap_or(path));
-    crate::vcwd::open(p.as_bytes(), acc | extra, 0o666).ok()
+    crate::zend::virtual_cwd::open(p.as_bytes(), acc | extra, 0o666).ok()
 }
 
 /// Element `i` of a descriptor array as a string, or the php ValueError.

@@ -552,7 +552,7 @@ impl Host for Vm {
                 if !inner.windows(3).any(|w| w == b"://") {
                     let fmode: &[u8] = if append { b"ab" } else { b"wb" };
                     let (flags, _, _) = builtins::streams::parse_fopen_mode(fmode)?;
-                    builtins::vcwd::open(inner, flags, 0o666).ok()?;
+                    builtins::zend::virtual_cwd::open(inner, flags, 0o666).ok()?;
                 }
                 self.next_resource_id += 1;
             }

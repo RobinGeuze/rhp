@@ -1095,7 +1095,7 @@ fn access_check(host: &dyn Host, args: &[Value], amode: libc::c_int) -> bool {
     }
     let (scheme, _) = split_scheme(&p);
     if scheme == b"file" {
-        return crate::vcwd::access(crate::streams::file_path(&p), amode);
+        return crate::zend::virtual_cwd::access(crate::streams::file_path(&p), amode);
     }
     let Some(s) = host.stream_stat(&p) else {
         return false;
@@ -1502,7 +1502,10 @@ fn fn_link(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if is_url(&target) || is_url(&link) {
         return Ok(Value::Bool(false));
     }
-    let (Some(t), Some(l)) = (crate::vcwd::c_path(&target), crate::vcwd::c_path(&link)) else {
+    let (Some(t), Some(l)) = (
+        crate::zend::virtual_cwd::c_path(&target),
+        crate::zend::virtual_cwd::c_path(&link),
+    ) else {
         return Ok(Value::Bool(false));
     };
     if unsafe { libc::link(t.as_ptr(), l.as_ptr()) } != 0 {
@@ -1528,7 +1531,7 @@ fn fn_linkinfo(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 #[allow(clippy::unnecessary_cast)] // mode_t is u16 on macOS, u32 on Linux
 fn sys_mkdir(path: &[u8], mode: i64) -> Result<(), i32> {
-    crate::vcwd::mkdir(path, mode as libc::mode_t as u32)
+    crate::zend::virtual_cwd::mkdir(path, mode as libc::mode_t as u32)
         .map_err(|e| e.raw_os_error().unwrap_or(libc::EINVAL))
 }
 
@@ -1688,7 +1691,7 @@ fn fn_sys_get_temp_dir(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Throw
     Ok(Value::str(temp_dir()))
 }
 
-use crate::vcwd::realpath as realpath_bytes;
+use crate::zend::virtual_cwd::realpath as realpath_bytes;
 
 fn fn_realpath(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let p = path_param(args, 0, "realpath", "path")?;
@@ -1723,7 +1726,7 @@ pub(crate) fn open_temp(dir: &[u8], pfx: &[u8]) -> Option<Vec<u8>> {
     if fd < 0 {
         return None;
     }
-    crate::vcwd::created_fd(fd, 0o600);
+    crate::zend::virtual_cwd::created_fd(fd, 0o600);
     unsafe { libc::close(fd) };
     Some(c.into_bytes())
 }
@@ -1828,7 +1831,7 @@ fn do_chown(
             )));
         }
     };
-    let Some(c) = crate::vcwd::c_path(crate::streams::file_path(&path)) else {
+    let Some(c) = crate::zend::virtual_cwd::c_path(crate::streams::file_path(&path)) else {
         return Ok(Value::Bool(false));
     };
     let (uid, gid) = if group {

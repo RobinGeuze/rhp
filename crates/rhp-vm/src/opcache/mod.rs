@@ -649,7 +649,7 @@ impl Vm {
         }
         let mut k = given.to_vec();
         k.push(b':');
-        if let Some(cwd) = builtins::vcwd::getcwd() {
+        if let Some(cwd) = builtins::zend::virtual_cwd::getcwd() {
             k.extend_from_slice(&cwd);
         }
         let include_path = self.ini(b"include_path");

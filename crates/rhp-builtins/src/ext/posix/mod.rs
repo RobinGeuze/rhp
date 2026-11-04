@@ -290,7 +290,7 @@ fn fn_uname(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_getcwd(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    match crate::vcwd::current_dir() {
+    match crate::zend::virtual_cwd::current_dir() {
         Ok(p) => Ok(Value::str(p)),
         Err(e) => {
             set_last_error(host, e);
@@ -311,7 +311,7 @@ fn fn_access(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Some(_) => zpp_long(host, args, 1, "posix_access", "flags")?,
         None => 0,
     };
-    let Some(c) = crate::vcwd::c_path(&path) else {
+    let Some(c) = crate::zend::virtual_cwd::c_path(&path) else {
         return Ok(Value::Bool(false));
     };
     if unsafe { libc::access(c.as_ptr(), mode as i32) } != 0 {

@@ -528,7 +528,7 @@ pub(super) fn bio_file(path: &CStr, mode: &CStr) -> Own<sys::BIO> {
     let bio = if mode.to_bytes().starts_with(b"r") {
         open()
     } else {
-        crate::vcwd::library_created(path.to_bytes(), 0o666, open)
+        crate::zend::virtual_cwd::library_created(path.to_bytes(), 0o666, open)
     };
     Own::new(bio, free_bio)
 }
@@ -748,7 +748,7 @@ pub(super) fn check_path(
         ("must not contain any null bytes", true)
     } else {
         // expand_filepath fails on a path of MAXPATHLEN or more
-        let real = crate::vcwd::expand_filepath(fs);
+        let real = crate::zend::virtual_cwd::expand_filepath(fs);
         if fs.len() < libc::PATH_MAX as usize && real.len() < libc::PATH_MAX as usize {
             return Ok(Some(CString::new(real).unwrap_or_default()));
         }

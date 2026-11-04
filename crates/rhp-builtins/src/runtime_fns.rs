@@ -867,7 +867,7 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             let Some(path) = dest else {
                 return Ok(Value::Bool(false));
             };
-            let ok = crate::vcwd::append_file(&path, &msg, 0o666).is_ok();
+            let ok = crate::zend::virtual_cwd::append_file(&path, &msg, 0o666).is_ok();
             Ok(Value::Bool(ok))
         }
         // 0 / 4: no error_log ini → the CLI SAPI logger writes "msg\n" to stderr.
@@ -889,7 +889,7 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     line.extend_from_slice(b"] ");
                     line.extend_from_slice(&msg);
                     line.push(b'\n');
-                    let _ = crate::vcwd::append_file(&path, &line, 0o644);
+                    let _ = crate::zend::virtual_cwd::append_file(&path, &line, 0o644);
                 }
                 _ => host.log_message(&msg),
             }

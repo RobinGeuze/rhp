@@ -378,7 +378,7 @@ fn unix_addr(
     let resolved = if abstract_ns {
         Cow::Borrowed(&path[..n])
     } else {
-        crate::vcwd::resolve(&path[..n])
+        crate::zend::virtual_cwd::resolve(&path[..n])
     };
     let given = &path[..n];
     let (path, alias) = match &resolved {

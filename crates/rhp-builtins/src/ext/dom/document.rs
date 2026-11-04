@@ -564,9 +564,9 @@ pub fn valid_file_path(source: &[u8]) -> Option<Vec<u8>> {
         }
     }
     if !has_scheme || is_file_uri {
-        let p = match std::fs::canonicalize(crate::vcwd::os_path(src)) {
+        let p = match std::fs::canonicalize(crate::zend::virtual_cwd::os_path(src)) {
             Ok(p) => p.into_os_string().into_vec(),
-            Err(_) => crate::vcwd::expand_path(src),
+            Err(_) => crate::zend::virtual_cwd::expand_path(src),
         };
         // expand_filepath fails past MAXPATHLEN.
         if p.len() >= libc::PATH_MAX as usize {
@@ -658,7 +658,7 @@ fn document_parser(
     }
     unsafe {
         if mode != Mode::File {
-            if let Some(mut d) = crate::vcwd::getcwd() {
+            if let Some(mut d) = crate::zend::virtual_cwd::getcwd() {
                 if d.last() != Some(&b'/') {
                     d.push(b'/');
                 }

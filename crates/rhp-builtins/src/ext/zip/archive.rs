@@ -1269,7 +1269,7 @@ fn extract_file(
     }
     cx.host.stream_close(&stream);
     // The plain-files wrapper's metadata(TOUCH).
-    if let Some(c) = crate::vcwd::c_path(&full) {
+    if let Some(c) = crate::zend::virtual_cwd::c_path(&full) {
         let t = libc::utimbuf {
             actime: sb.mtime,
             modtime: sb.mtime,
@@ -1331,7 +1331,7 @@ fn mkdir_recursive(cx: &mut Cx<'_>, path: &[u8], report: bool) -> Result<bool, T
         if p.contains(&0) {
             return Ok(false);
         }
-        if let Err(e) = crate::vcwd::mkdir(p, 0o777) {
+        if let Err(e) = crate::zend::virtual_cwd::mkdir(p, 0o777) {
             let e = e.raw_os_error().unwrap_or(0);
             if e != libc::EEXIST {
                 if report {
@@ -1344,10 +1344,10 @@ fn mkdir_recursive(cx: &mut Cx<'_>, path: &[u8], report: bool) -> Result<bool, T
     Ok(true)
 }
 
-/// virtual_file_ex(CWD_EXPAND) from an empty cwd: [`crate::vcwd::normalize`],
+/// virtual_file_ex(CWD_EXPAND) from an empty cwd: [`crate::zend::virtual_cwd::normalize`],
 /// keeping a trailing slash.
 fn cwd_expand(path: &[u8]) -> Vec<u8> {
-    let mut out = crate::vcwd::normalize(path);
+    let mut out = crate::zend::virtual_cwd::normalize(path);
     if path.ends_with(b"/") && out != b"/" {
         out.push(b'/');
     }

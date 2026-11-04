@@ -593,7 +593,7 @@ impl Vm {
                 line.extend_from_slice(&stamp);
                 line.extend_from_slice(b"] ");
                 line.extend_from_slice(&m);
-                if builtins::vcwd::append_file(&target, &line, 0o644).is_err() {
+                if builtins::zend::virtual_cwd::append_file(&target, &line, 0o644).is_err() {
                     self.write_stderr(&m);
                 }
             }

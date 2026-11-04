@@ -23,7 +23,6 @@ pub(crate) mod module;
 pub mod opsstream;
 pub mod pcre;
 pub mod streams;
-pub mod vcwd;
 pub mod version;
 pub mod zend;
 
@@ -269,7 +268,7 @@ pub use runtime_fns::{apply_memory_limits, take_shutdown_diagnostics, take_start
 /// overlay). Engines call this on construction so state never leaks from one
 /// script run to the next on the same thread.
 pub fn reset_request_state() {
-    vcwd::reset_state();
+    zend::virtual_cwd::reset_state();
     streams::reset_state();
     fdstream::reset_state();
     dump::clear_views();

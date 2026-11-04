@@ -1033,7 +1033,7 @@ fn m_set_relaxng_schema_source(
 /// The script's directory as a base URI (`getcwd()` with a trailing
 /// slash, canonicalized).
 fn cwd_uri() -> Option<Vec<u8>> {
-    let mut d = crate::vcwd::getcwd()?;
+    let mut d = crate::zend::virtual_cwd::getcwd()?;
     if d.last() != Some(&b'/') {
         d.push(b'/');
     }

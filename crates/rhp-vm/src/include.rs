@@ -378,7 +378,7 @@ impl Vm {
         }
         for cand in candidates {
             use std::os::unix::ffi::OsStrExt;
-            let cand = builtins::vcwd::os_path(cand.as_os_str().as_bytes());
+            let cand = builtins::zend::virtual_cwd::os_path(cand.as_os_str().as_bytes());
             let Ok(canon) = std::fs::canonicalize(&cand) else {
                 continue;
             };

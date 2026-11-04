@@ -249,7 +249,7 @@ pub(crate) fn open_failure_reason(path: &[u8], mode: &[u8]) -> String {
             );
         }
     };
-    match crate::vcwd::open(path, flags | libc::O_CLOEXEC, 0o666) {
+    match crate::zend::virtual_cwd::open(path, flags | libc::O_CLOEXEC, 0o666) {
         Ok(_) => "operation failed".into(),
         Err(e) => match e.raw_os_error() {
             Some(code) => crate::streams::strerror(code),
@@ -301,7 +301,7 @@ fn fn_gzopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             b'x' => w | libc::O_EXCL,
             _ => w,
         };
-        if crate::vcwd::open(rel, flags, 0o666).is_err() {
+        if crate::zend::virtual_cwd::open(rel, flags, 0o666).is_err() {
             warn_open_failed(host, "gzopen", rel, &mode);
             return Ok(Value::Bool(false));
         }

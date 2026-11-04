@@ -184,16 +184,16 @@ fn valid_file_path(source: &[u8]) -> Option<Vec<u8>> {
         return Some(source.to_vec());
     }
     // VCWD_REALPATH, else expand_filepath; paths stay bytes.
-    let resolved = match std::fs::canonicalize(crate::vcwd::os_path(source)) {
+    let resolved = match std::fs::canonicalize(crate::zend::virtual_cwd::os_path(source)) {
         Ok(p) => p.into_os_string().into_vec(),
-        Err(_) => crate::vcwd::expand_filepath(source),
+        Err(_) => crate::zend::virtual_cwd::expand_filepath(source),
     };
     // expand_filepath fails on a path longer than MAXPATHLEN.
     if resolved.len() >= libc::PATH_MAX as usize {
         return None;
     }
     let dir = zend_dirname(source);
-    if !dir.is_empty() && std::fs::metadata(crate::vcwd::os_path(&dir)).is_err() {
+    if !dir.is_empty() && std::fs::metadata(crate::zend::virtual_cwd::os_path(&dir)).is_err() {
         return None;
     }
     Some(resolved)

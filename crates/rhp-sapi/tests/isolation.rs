@@ -347,8 +347,8 @@ fn request_state_does_not_leak_on_one_thread() {
     let clean = run(check, None);
     assert_eq!(run(&dirty, None), "in sub 0 socket error openssl error");
     // Its engine is gone, and so is its state, before any next request.
-    assert_eq!(rhp_builtins::vcwd::child_cwd(), None);
-    assert_eq!(rhp_builtins::vcwd::child_umask(), None);
+    assert_eq!(rhp_builtins::zend::virtual_cwd::child_cwd(), None);
+    assert_eq!(rhp_builtins::zend::virtual_cwd::child_umask(), None);
     assert_eq!(run(check, None), clean);
     // A request that starts elsewhere: only its own directory.
     let elsewhere = run(check, Some(&s.path()));

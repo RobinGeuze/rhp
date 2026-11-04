@@ -142,10 +142,10 @@ impl Vm {
     /// Start the request in `dir` (php-cgi's script directory, an embedder's
     /// document root); relative paths, `getcwd()` and child processes use
     /// it. The process's working directory never changes: each thread's
-    /// engine has its own (`rhp_builtins::vcwd`). `false` when `dir` isn't
+    /// engine has its own (`rhp_builtins::zend::virtual_cwd`). `false` when `dir` isn't
     /// a directory.
     pub fn set_cwd(&mut self, dir: &[u8]) -> bool {
-        builtins::vcwd::set_cwd(dir)
+        builtins::zend::virtual_cwd::set_cwd(dir)
     }
 
     /// A startup ini setting (`-d key=value`); unknown directives are ignored.

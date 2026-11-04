@@ -1860,11 +1860,20 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     .collect()
 }
 
-/// Concatenated PHP-source class declarations contributed by extension modules
-/// (GMP, Phar, …). The compiler compiles these into the prelude alongside the
-/// engine's own core classes.
-pub fn module_prelude() -> String {
-    let mut s = String::new();
+/// The PHP prelude the compiler compiles into every program: the engine's
+/// core classes and interfaces (core_prelude.php), then each module's
+/// PHP-source classes (GMP, Phar, …) and helper functions (iterator_*, …).
+/// The core comes first, so its class indices never change. Built once per
+/// process, outside any request's memory.
+pub fn prelude() -> &'static str {
+    static PRELUDE: OnceLock<String> = OnceLock::new();
+    PRELUDE.get_or_init(|| rhp_values::mem::uncounted(build_prelude))
+}
+
+fn build_prelude() -> String {
+    let mut s = String::from("<?php\n");
+    s.push_str(include_str!("core_prelude.php"));
+    s.push('\n');
     s.push_str(fs_fns::PRELUDE_PHP);
     s.push('\n');
     s.push_str(stdext_fns::PRELUDE_PHP);

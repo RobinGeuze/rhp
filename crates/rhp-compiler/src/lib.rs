@@ -25,6 +25,8 @@ use rhp_frontend::cst::{
 };
 use rhp_values::{ClassFlags, ClassKind, Visibility};
 
+mod hrh;
+
 /// A compiled member selector: a static interned name, or a runtime name in a
 /// register (dynamic `$o->$x` / `$o->{expr}`).
 #[derive(Clone, Copy)]
@@ -919,6 +921,11 @@ fn compile_program_inner(
     let closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
     classes.extend(ANON_CLASSES.with(|c| std::mem::take(&mut *c.borrow_mut())));
     let cond_classes = COND_CLASSES.with(|c| std::mem::take(&mut c.borrow_mut().0));
+    let stmts: Vec<&Statement> = flat.iter().map(|(_, st)| *st).collect();
+    let compile_diags = hrh::scan(&stmts, line_of)
+        .into_iter()
+        .map(|line| (8192, hrh::MESSAGE.to_string(), line))
+        .collect();
     Ok(Program {
         main: Rc::new(c.finish()?),
         functions,
@@ -927,6 +934,7 @@ fn compile_program_inner(
         num_prelude_classes,
         num_prelude_functions,
         cond_classes,
+        compile_diags,
     })
 }
 

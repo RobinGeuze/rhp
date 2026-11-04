@@ -1124,6 +1124,9 @@ pub struct Program {
     /// Class declarations nested in control flow / function bodies; never
     /// hoisted, declared by `DeclareClass` when execution reaches them.
     pub cond_classes: Vec<ClassProto>,
+    /// Diagnostics php's compiler raises for this file: `(level, message,
+    /// line)`, reported when the file is loaded.
+    pub compile_diags: Vec<(i64, String, u32)>,
 }
 
 // ---------------------------------------------------------------------------

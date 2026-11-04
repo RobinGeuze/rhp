@@ -4152,6 +4152,14 @@ impl Vm {
         false
     }
 
+    /// The diagnostics php's compiler raised for a file just loaded.
+    fn emit_compile_diags(&mut self, prog: &Program) {
+        for (level, msg, line) in &prog.compile_diags {
+            let file = prog.main.debug.file.as_bytes().to_vec();
+            self.raise_error_at(*level, msg, file, *line as i64);
+        }
+    }
+
     /// Allocate a stream resource backed by `state`, returning its resource Value.
     fn make_stream(&mut self, state: StreamState, type_name: &'static str) -> Value {
         let id = self.next_resource_id;
@@ -4511,6 +4519,7 @@ impl Vm {
             self.output_startup();
             self.seed_superglobals();
         }
+        self.emit_compile_diags(prog);
         // Install (hoist) all declared functions, keyed case-insensitively.
         for (idx, proto) in prog.functions.iter().enumerate() {
             // Engine helpers are `__` builtins, not prelude functions, so a
@@ -8678,6 +8687,10 @@ impl Vm {
         self.included_files.insert(realpath.clone());
 
         let prog = self.compile_included_file(&realpath, raw_path.as_slice(), source)?;
+        self.emit_compile_diags(&prog);
+        if let Some(t) = self.pending_throw.take() {
+            return Err(t);
+        }
         let main = self.install_file(&realpath, &prog)?;
         let ret = self.run_included(main, top, kind.name())?;
         // A file with no `return` yields int(1).

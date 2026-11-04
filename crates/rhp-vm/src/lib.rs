@@ -8076,7 +8076,7 @@ impl Vm {
                         properties: props,
                     }));
                     self.track_destructible(&new_obj);
-                    rhp_builtins::curl_cloned(&h, &new_obj);
+                    rhp_builtins::curl_cloned(self, &h, &new_obj)?;
                     self.reg_set(top, dst, Value::Object(new_obj.clone()));
                     if let Some(m) = self.lookup_method(cls, b"__clone") {
                         self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;

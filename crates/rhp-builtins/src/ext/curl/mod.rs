@@ -148,15 +148,21 @@ pub fn curl_uncloneable(h: &ObjectHandle) -> Option<&'static str> {
 
 /// `clone` of a CurlHandle (`curl_clone_obj`): the copy gets a duplicate of
 /// the libcurl handle.
-pub fn curl_cloned(src: &ObjectHandle, dst: &ObjectHandle) {
+pub fn curl_cloned(
+    host: &mut dyn Host,
+    src: &ObjectHandle,
+    dst: &ObjectHandle,
+) -> Result<(), Thrown> {
     let id = src.borrow().id;
     let Some(easy) = EASY.with(|m| m.borrow().get(&id).cloned()) else {
-        return;
+        return Ok(());
     };
-    if let Some(copy) = easy::duplicate(None, &easy, dst) {
-        let dst_id = dst.borrow().id;
-        EASY.with(|m| m.borrow_mut().insert(dst_id, copy));
-    }
+    let Some(copy) = easy::duplicate(host, &easy, dst)? else {
+        return Err(Thrown::error("Exception", "Failed to clone CurlHandle"));
+    };
+    let dst_id = dst.borrow().id;
+    EASY.with(|m| m.borrow_mut().insert(dst_id, copy));
+    Ok(())
 }
 
 /// A new object of a curl handle class (no constructor runs, as with

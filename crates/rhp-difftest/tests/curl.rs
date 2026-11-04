@@ -285,6 +285,15 @@ curl_setopt($h, CURLOPT_POSTFIELDS, [
 echo curl_exec($h), "\n";
 $c = curl_copy_handle($h);
 echo curl_exec($c), "\n";
+// A copy reads the CURLFile objects again.
+$cf = new CURLFile($f, 'text/plain', 'before.txt');
+$h = curl_init($base . '/echo');
+curl_setopt($h, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($h, CURLOPT_POSTFIELDS, ['f' => $cf]);
+$cf->setPostFilename('after.txt');
+echo curl_exec(curl_copy_handle($h)), "\n";
+echo curl_exec(clone $h), "\n";
+echo curl_exec($h), "\n";
 unlink($f);
 echo curl_exec($h), "\n";
 var_dump(curl_errno($h), curl_error($h));

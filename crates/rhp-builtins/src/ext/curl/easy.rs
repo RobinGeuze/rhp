@@ -115,10 +115,9 @@ pub(crate) struct Easy {
     header_out: Option<Vec<u8>>,
     pub in_callback: bool,
     to_free: Rc<RefCell<ToFree>>,
-    /// The CURLOPT_POSTFIELDS array, kept once it held a file (a copy of
-    /// the handle rebuilds its parts from `mime_parts`).
+    /// The CURLOPT_POSTFIELDS array, kept once it held a file: a copy of
+    /// the handle rebuilds the body from it.
     postfields: Option<Value>,
-    mime_parts: Option<Vec<Part>>,
     private: Option<Value>,
     share: Option<Value>,
 }
@@ -173,7 +172,6 @@ impl Easy {
             in_callback: false,
             to_free: Rc::new(RefCell::new(ToFree::default())),
             postfields: None,
-            mime_parts: None,
             private: None,
             share: None,
         }
@@ -301,33 +299,38 @@ fn copy_handlers(new: &Rc<RefCell<Easy>>, src: &RefCell<Easy>) {
 }
 
 /// A copy of `src` for the object `dst` (`curl_clone_obj`), or `None` when
-/// libcurl cannot duplicate it.
+/// libcurl cannot duplicate it or the body cannot be rebuilt. Errs only
+/// with what cannot be caught (`exit`).
 pub(super) fn duplicate(
-    host: Option<&mut dyn Host>,
+    host: &mut dyn Host,
     src: &Rc<RefCell<Easy>>,
     dst: &ObjectHandle,
-) -> Option<Rc<RefCell<Easy>>> {
+) -> Result<Option<Rc<RefCell<Easy>>>, Thrown> {
     let (src_cp, postfields) = {
         let s = src.borrow();
-        (s.cp, s.postfields.clone().zip(s.mime_parts.clone()))
+        (s.cp, s.postfields.clone())
     };
     let cp = unsafe { sys::curl_easy_duphandle(src_cp) };
     if cp.is_null() {
-        return None;
+        return Ok(None);
     }
     let new = Rc::new(RefCell::new(Easy::new(cp, dst)));
     copy_handlers(&new, src);
-    if let Some((pf, parts)) = postfields {
-        {
-            let mut n = new.borrow_mut();
-            n.postfields = Some(pf);
-            n.mime_parts = Some(parts.clone());
-        }
-        if !apply_mime(host, &new, &parts) {
-            return None;
-        }
+    let Some(Value::Array(pf)) = postfields else {
+        return Ok(Some(new));
+    };
+    // php rebuilds the body from the array, reading its CURLFile objects
+    // again.
+    let parts = match mime_parts(host, "curl_copy_handle", &pf) {
+        Ok((parts, _)) => parts,
+        Err(t) if t.is_catchable() => return Ok(None),
+        Err(t) => return Err(t),
+    };
+    new.borrow_mut().postfields = Some(Value::Array(pf));
+    if !apply_mime(host, &new, &parts) {
+        return Ok(None);
     }
-    Some(new)
+    Ok(Some(new))
 }
 
 fn register(id: u32, e: Rc<RefCell<Easy>>) {
@@ -935,9 +938,9 @@ fn key_bytes(k: &ArrayKey) -> Vec<u8> {
 }
 
 /// One part of a multipart POST, as read from the CURLOPT_POSTFIELDS array.
-#[derive(Clone)]
-pub(super) enum Part {
-    /// A CURLFile: the file (made absolute), its upload name and type.
+enum Part {
+    /// A CURLFile: the file (opened through rhp's streams, as php opens it
+    /// with php_stream_open_wrapper), its upload name and type.
     File {
         key: Vec<u8>,
         path: Vec<u8>,
@@ -1037,7 +1040,7 @@ fn mime_parts(
 }
 
 /// The second half: the curl_mime, set as CURLOPT_MIMEPOST.
-fn apply_mime(host: Option<&mut dyn Host>, e: &Rc<RefCell<Easy>>, parts: &[Part]) -> bool {
+fn apply_mime(host: &mut dyn Host, e: &Rc<RefCell<Easy>>, parts: &[Part]) -> bool {
     let cp = e.borrow().cp;
     let mut mime: *mut sys::curl_mime = std::ptr::null_mut();
     if !parts.is_empty() {
@@ -1046,7 +1049,6 @@ fn apply_mime(host: Option<&mut dyn Host>, e: &Rc<RefCell<Easy>>, parts: &[Part]
             return false;
         }
     }
-    let mut host = host;
     let mut error: c_int = 0;
     for p in parts {
         let part = unsafe { sys::curl_mime_addpart(mime) };
@@ -1066,11 +1068,12 @@ fn apply_mime(host: Option<&mut dyn Host>, e: &Rc<RefCell<Easy>>, parts: &[Part]
                 filename,
                 mime: ty,
             } => {
-                // Without a host (a `clone`) it is opened on the first read.
-                let stream = host.as_mut().and_then(|h| h.stream_open(path, b"rb"));
-                let size: curl_off_t = match (&stream, host.as_mut()) {
-                    (Some(s), Some(h)) => h.stream_fstat(s).map_or(-1, |st| st.size as curl_off_t),
-                    _ => -1,
+                // A file that does not open now is tried again on the first
+                // read.
+                let stream = host.stream_open(path, b"rb");
+                let size: curl_off_t = match &stream {
+                    Some(s) => host.stream_fstat(s).map_or(-1, |st| st.size as curl_off_t),
+                    None => -1,
                 };
                 let seek: Option<sys::SeekFn> = if stream.is_some() {
                     Some(mime_seek)
@@ -1915,11 +1918,9 @@ fn set_option(
                 } else {
                     let (parts, files) = mime_parts(host, f, a)?;
                     if files {
-                        let mut ch = e.borrow_mut();
-                        ch.postfields = Some(zvalue.clone());
-                        ch.mime_parts = Some(parts.clone());
+                        e.borrow_mut().postfields = Some(zvalue.clone());
                     }
-                    return Ok(apply_mime(Some(host), e, &parts));
+                    return Ok(apply_mime(host, e, &parts));
                 }
             } else {
                 let s = crate::argparse::zval_get_string(host, &zvalue)?;
@@ -2498,7 +2499,7 @@ pub(super) fn fn_curl_copy_handle(host: &mut dyn Host, args: &[Value]) -> Result
     let f = "curl_copy_handle";
     let (_, e) = easy_arg(host, args, 0, f, "handle")?;
     let (v, h) = new_object(host, "CurlHandle")?;
-    match duplicate(Some(host), &e, &h) {
+    match duplicate(host, &e, &h)? {
         Some(copy) => {
             register(h.borrow().id, copy);
             Ok(v)

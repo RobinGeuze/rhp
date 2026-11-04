@@ -391,6 +391,21 @@ pub fn cast(host: &mut dyn Host, v: &Value, target: CastTarget) -> Result<Option
     }
 }
 
+/// `cast_object(IS_STRING)` of an object, as `zval_get_string` and
+/// `zend_parse_arg_str_weak` do it: the class's handler, else
+/// `__toString()`. `None` when `v` is not an object or has no string form.
+pub fn to_string(host: &mut dyn Host, v: &Value) -> Result<Option<Vec<u8>>, Thrown> {
+    let Some(h) = object_of(v) else {
+        return Ok(None);
+    };
+    let class = h.borrow().class;
+    let cast = match host.object_handlers(class).and_then(|t| t.cast_object) {
+        Some(f) => f(host, &h, CastTarget::Str)?,
+        None => host.std_cast_object(&h, CastTarget::Str)?,
+    };
+    Ok(cast.map(|s| conv::to_string_bytes(&s)))
+}
+
 /// php's `zend_is_true`: an object's `cast_object(_IS_BOOL)` (a zero GMP,
 /// an empty SimpleXML list are false), else the value's truthiness.
 pub fn is_true(host: &mut dyn Host, v: &Value) -> Result<bool, Thrown> {

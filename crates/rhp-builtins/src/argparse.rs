@@ -3,7 +3,7 @@
 //! argument instead of silently coercing.
 
 use rhp_semantics::deref;
-use rhp_values::{conv, PhpArray, Value};
+use rhp_values::{conv, Value};
 
 use crate::{Host, Thrown};
 
@@ -28,7 +28,8 @@ pub(crate) fn value_name(host: &dyn Host, v: &Value) -> String {
 }
 
 /// php's `zval_get_string()`: arrays warn "Array to string conversion",
-/// objects go through `__toString` or throw.
+/// objects go through their string cast (`cast_object`, `__toString`) or
+/// throw.
 pub(crate) fn zval_get_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> {
     match deref(v) {
         Value::Array(_) => {
@@ -36,19 +37,8 @@ pub(crate) fn zval_get_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>,
             Ok(b"Array".to_vec())
         }
         o @ Value::Object(_) => {
-            let has = match &o {
-                Value::Object(h) => {
-                    let class = h.borrow().class;
-                    host.class_has_method(class, b"__tostring")
-                }
-                _ => false,
-            };
-            if has {
-                let mut cb = PhpArray::new();
-                cb.push(o.clone());
-                cb.push(Value::str("__toString"));
-                let r = host.call_callable(&Value::Array(cb), &[])?;
-                return Ok(conv::to_string_bytes(&deref(&r)));
+            if let Some(s) = crate::object::to_string(host, &o)? {
+                return Ok(s);
             }
             Err(Thrown::error(
                 "Error",
@@ -114,8 +104,9 @@ fn type_error(host: &dyn Host, func: &str, n: usize, pname: &str, want: &str, v:
     ))
 }
 
-/// `Z_PARAM_STR`: scalars coerce, `Stringable` objects call `__toString`,
-/// anything else is a `TypeError`. `i` is 0-based; messages are 1-based.
+/// `Z_PARAM_STR`: scalars coerce, objects go through their string cast
+/// (`cast_object`, `__toString`), anything else is a `TypeError`. `i` is
+/// 0-based; messages are 1-based.
 pub(crate) fn str_param(
     host: &mut dyn Host,
     args: &[Value],
@@ -128,17 +119,10 @@ pub(crate) fn str_param(
         Value::Array(_) | Value::Resource(_) | Value::Closure(_) => {
             Err(type_error(host, func, i + 1, pname, "string", &v))
         }
-        Value::Object(_) => {
-            let mut cb = PhpArray::new();
-            cb.push(v.clone());
-            cb.push(Value::str("__toString"));
-            let cb = Value::Array(cb);
-            if host.is_callable_value(&cb) {
-                Ok(conv::to_string_bytes(&host.call_callable(&cb, &[])?))
-            } else {
-                Err(type_error(host, func, i + 1, pname, "string", &v))
-            }
-        }
+        Value::Object(_) => match crate::object::to_string(host, &v)? {
+            Some(s) => Ok(s),
+            None => Err(type_error(host, func, i + 1, pname, "string", &v)),
+        },
         _ => Ok(conv::to_string_bytes(&v)),
     }
 }

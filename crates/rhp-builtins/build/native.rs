@@ -7,7 +7,8 @@
 //! - read its version from its header and export the listed macros to the
 //!   crate as `RHP_<MACRO>` (`env!("RHP_PCRE2_MAJOR")`);
 //! - link it statically or dynamically as the row says for the target OS,
-//!   unless `RHP_<NAME>_LINK=static|dynamic` overrides that, and tell the
+//!   unless `RHP_<NAME>_LINK=static|dynamic` overrides that (an LGPL
+//!   library is never linked statically), and tell the
 //!   crate which as `env!("RHP_<NAME>_LINK_MODE")`. A static
 //!   archive is linked from a directory of its own under `OUT_DIR`, so the
 //!   linker cannot pick the shared library next to it (ld64 has no
@@ -30,6 +31,9 @@ pub enum Mode {
     /// The shared library. Only for the exceptions in libraries.md; the
     /// string says why.
     Dynamic(&'static str),
+    /// The shared library of an LGPL library, which may not be linked
+    /// statically: `RHP_<NAME>_LINK=static` is refused.
+    Lgpl,
 }
 
 pub struct Lib {
@@ -161,6 +165,25 @@ pub const LIBS: &[Lib] = &[
         install: "macOS: brew install curl; Debian/Ubuntu: apt install pkg-config \
                   libcurl4-openssl-dev",
     },
+    // LGPL-3.0+/GPL-2.0+: a dynamic system library only, never static.
+    Lib {
+        name: "GMP",
+        pkg: "gmp",
+        brew: Some("gmp"),
+        macos_sdk: false,
+        link: "gmp",
+        incdir: "",
+        header: "gmp.h",
+        macros: &[],
+        version: &[
+            "__GNU_MP_VERSION",
+            "__GNU_MP_VERSION_MINOR",
+            "__GNU_MP_VERSION_PATCHLEVEL",
+        ],
+        macos: Mode::Lgpl,
+        linux: Mode::Lgpl,
+        install: "macOS: brew install gmp; Debian/Ubuntu: apt install pkg-config libgmp-dev",
+    },
 ];
 
 const ICU_INSTALL: &str =
@@ -215,12 +238,35 @@ fn target_os() -> String {
     env::var("CARGO_CFG_TARGET_OS").unwrap_or_default()
 }
 
+/// Debian's multiarch tuple for the target (`x86_64-linux-gnu`).
+fn multiarch_tuple() -> String {
+    let var = |k: &str| env::var(k).unwrap_or_default();
+    let arch = match var("CARGO_CFG_TARGET_ARCH").as_str() {
+        "x86" => "i386".to_string(),
+        "powerpc64" if var("CARGO_CFG_TARGET_ENDIAN") == "little" => "powerpc64le".into(),
+        a => a.to_string(),
+    };
+    format!(
+        "{arch}-{}-{}{}",
+        var("CARGO_CFG_TARGET_OS"),
+        var("CARGO_CFG_TARGET_ENV"),
+        var("CARGO_CFG_TARGET_ABI")
+    )
+}
+
 fn link(lib: &Lib) -> Result<PathBuf, String> {
     let override_var = format!("RHP_{}_LINK", lib.name);
     println!("cargo:rerun-if-env-changed={override_var}");
     let os = target_os();
     let mut mode = if os == "macos" { lib.macos } else { lib.linux };
     match env::var(&override_var).as_deref() {
+        Ok("static") if mode == Mode::Lgpl => {
+            return Err(format!(
+                "{override_var}=static: {} is LGPL and is only linked dynamically \
+                 (docs/design/libraries.md)",
+                lib.name
+            ))
+        }
         Ok("static") => mode = Mode::Static,
         Ok("dynamic") => mode = Mode::Dynamic("RHP_*_LINK=dynamic"),
         Ok(other) => {
@@ -232,7 +278,15 @@ fn link(lib: &Lib) -> Result<PathBuf, String> {
     }
 
     let found = find(lib, &os)?;
-    let include = found.include.join(lib.incdir);
+    let mut include = found.include.join(lib.incdir);
+    if !include.join(lib.header).is_file() {
+        // Debian/Ubuntu put headers that differ per architecture (gmp.h)
+        // in the multiarch directory, which the .pc file does not name.
+        let multiarch = found.include.join(multiarch_tuple()).join(lib.incdir);
+        if multiarch.join(lib.header).is_file() {
+            include = multiarch;
+        }
+    }
     let header = include.join(lib.header);
     let text = fs::read_to_string(&header).map_err(|e| {
         format!(
@@ -299,7 +353,7 @@ fn link(lib: &Lib) -> Result<PathBuf, String> {
                 link_private(lib, pc, &os)?;
             }
         }
-        Mode::Dynamic(_) => {
+        Mode::Dynamic(_) | Mode::Lgpl => {
             println!("cargo:rustc-link-search=native={}", found.libdir.display());
             println!("cargo:rustc-link-lib=dylib={}", lib.link);
         }

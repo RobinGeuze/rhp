@@ -116,6 +116,9 @@ Notes:
   `has_property`… — DOM's and SimpleXML's virtual properties still go
   through their prelude classes), `get_constructor` (`Directory`),
   `get_gc`.
+- php's `ce->unserialize` (the `C:` format) is a class field, not a
+  handler: `unserialize` calls GMP's (`gmp::is_gmp_class`) or a
+  `Serializable` class's `unserialize()` itself (serialize_fns).
 
 ## Class flags
 

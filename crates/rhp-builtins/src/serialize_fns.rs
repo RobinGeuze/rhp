@@ -5,7 +5,9 @@
 //! `__sleep`/`__wakeup`, enums as `E:`, `__PHP_Incomplete_Class`), with php's
 //! `var_hash` back-references: a repeated object is `r:n;`, a repeated PHP
 //! reference `R:n;` (so cycles terminate and identity round-trips).
-//! `Serializable` (`C:`) is not modelled. php's warnings (bad `__sleep`
+//! `unserialize` reads `C:` (php's `object_custom`) for the classes with a
+//! `ce->unserialize`: GMP and user classes implementing `Serializable`;
+//! `serialize` never writes it. php's warnings (bad `__sleep`
 //! names, "Error at offset", undefined enum case, …) are not emitted: the
 //! engine has no warning channel yet; the values / return codes match.
 //!
@@ -572,6 +574,7 @@ impl<'a> Parser<'a, '_> {
                 Value::Array(arr)
             }
             Some(b'O') => return self.parse_object(cell),
+            Some(b'C') => return self.parse_custom(cell),
             Some(b'}') => {
                 // php: "this is the case where we have less data than planned"
                 self.unexpected_end = true;
@@ -708,6 +711,212 @@ impl<'a> Parser<'a, '_> {
             self.pending.push((obj, None));
         }
         Ok(())
+    }
+
+    /// `C:len:"Class":datalen:{data}` (php's `object_custom`): the class's
+    /// `ce->unserialize` reads `data`, parsing its values through the same
+    /// var_hash.
+    fn parse_custom(&mut self, cell: &Cell) -> PResult<()> {
+        self.pos += 1;
+        self.expect(b':')?;
+        let len = self.read_len(b':')?;
+        let cname = self.read_quoted(len)?;
+        if cname.is_empty() || cname[0] == 0 || cname[0] == b'\\' || !valid_class_name(&cname) {
+            return malformed();
+        }
+        if self.b.get(self.pos) != Some(&b':') {
+            return self.fail_at(self.pos);
+        }
+        self.pos += 1;
+        let cid = if self.class_allowed(&cname) {
+            self.host.resolve_class_autoload(&cname)?
+        } else {
+            None
+        };
+        let name = match cid {
+            Some(cid) => self.host.class_name(cid).unwrap_or_else(|| cname.clone()),
+            None => INCOMPLETE.to_vec(),
+        };
+        if cid.is_some_and(|cid| self.host.not_serializable(cid)) {
+            return Err(Thrown::error(
+                "Exception",
+                format!(
+                    "Unserialization of '{}' is not allowed",
+                    String::from_utf8_lossy(&name)
+                ),
+            )
+            .into());
+        }
+        let datalen = self.parse_iv2()?;
+        if self.b.len() - self.pos < 2 || self.b[self.pos] != b':' {
+            return self.fail_at(self.pos);
+        }
+        if self.b[self.pos + 1] != b'{' {
+            return self.fail_at(self.pos + 1);
+        }
+        self.pos += 2;
+        let present = (self.b.len() - self.pos) as i64;
+        if datalen < 0 || present <= datalen {
+            let msg = format!(
+                "Insufficient data for unserializing - {datalen} required, {present} present"
+            );
+            self.host.emit_diagnostic(crate::E_WARNING, &msg)?;
+            return self.fail_at(self.pos);
+        }
+        let end = self.pos + datalen as usize;
+        if self.b[end] != b'}' {
+            return self.fail_at(end);
+        }
+        let data = &self.b[self.pos..end];
+        match cid {
+            Some(cid) if crate::ext::gmp::is_gmp_class(self.host, cid) => {
+                let obj = crate::ext::gmp::unserialize_create(self.host)?;
+                *cell.borrow_mut() = obj.clone();
+                // The callback reads only its data.
+                let whole = self.b;
+                self.b = &whole[..end];
+                let r = self.gmp_unserialize(&obj);
+                self.b = whole;
+                r?;
+            }
+            Some(_) if self.host.reflect_is_a(&name, b"Serializable") => {
+                // zend_user_unserialize
+                let obj = self.host.reflect_new_instance(&name, Vec::new(), false)?;
+                *cell.borrow_mut() = obj.clone();
+                let mut cb = PhpArray::new();
+                cb.push(obj);
+                cb.push(Value::str("unserialize"));
+                self.host
+                    .call_callable(&Value::Array(cb), &[Value::str(data.to_vec())])?;
+            }
+            // php's own Serializable classes (ArrayObject, SplObjectStorage…)
+            // that rhp's do not implement yet.
+            Some(cid) if self.stub_serializable(cid) => {
+                return Err(Thrown::unsupported(
+                    format!(
+                        "unserialize() of a C: {} payload",
+                        String::from_utf8_lossy(&name)
+                    ),
+                    "the class does not implement Serializable yet",
+                )
+                .into());
+            }
+            _ => {
+                let msg = format!(
+                    "Class {} has no unserializer",
+                    String::from_utf8_lossy(&name)
+                );
+                self.host.emit_diagnostic(crate::E_WARNING, &msg)?;
+                let obj = match cid {
+                    Some(_) => self.host.reflect_new_instance(&name, Vec::new(), false)?,
+                    None => self
+                        .host
+                        .instantiate(
+                            INCOMPLETE,
+                            vec![(INCOMPLETE_NAME.to_vec(), Value::str(cname))],
+                        )
+                        .ok_or(Fail::Malformed)?,
+                };
+                *cell.borrow_mut() = obj;
+            }
+        }
+        oom_stop()?;
+        self.pos = end + 1;
+        Ok(())
+    }
+
+    /// Whether php's stubs declare that class `cid` or an ancestor
+    /// implements `Serializable`.
+    fn stub_serializable(&self, cid: u32) -> bool {
+        let mut cur = Some(cid);
+        while let Some(id) = cur {
+            let name = self.host.class_name(id).unwrap_or_default();
+            if crate::signatures::class(&name)
+                .is_some_and(|c| c.interfaces.contains(&"Serializable"))
+            {
+                return true;
+            }
+            cur = self
+                .host
+                .class_parent_name(id)
+                .and_then(|p| self.host.resolve_class(&p));
+        }
+        false
+    }
+
+    /// gmp_unserialize: the number as a decimal string, then the properties.
+    fn gmp_unserialize(&mut self, obj: &Value) -> PResult<()> {
+        let fail = |p: &mut Self, what: &str, prev: Option<Thrown>| -> Fail {
+            let e = Thrown::error("Exception", format!("Could not unserialize {what}"));
+            Fail::Thrown(match prev {
+                Some(prev) => p.host.chain_thrown(e, prev),
+                None => e,
+            })
+        };
+        let num = match self.parse_slot() {
+            Ok(v) => deref(&v),
+            Err(Fail::Malformed) => return Err(fail(self, "number", None)),
+            Err(Fail::Thrown(t)) => return Err(fail(self, "number", Some(t))),
+        };
+        let Value::Str(num) = num else {
+            return Err(fail(self, "number", None));
+        };
+        if let Err(e) = crate::ext::gmp::unserialize_number(obj, num.as_bytes()) {
+            return Err(fail(self, "number", Some(e)));
+        }
+        let props = match self.parse_slot() {
+            Ok(v) => deref(&v),
+            Err(Fail::Malformed) => return Err(fail(self, "properties", None)),
+            Err(Fail::Thrown(t)) => return Err(fail(self, "properties", Some(t))),
+        };
+        let Value::Array(props) = props else {
+            return Err(fail(self, "properties", None));
+        };
+        // zend_hash_copy into the property table.
+        if let Value::Object(h) = obj {
+            let mut o = h.borrow_mut();
+            for (k, v) in props.iter() {
+                let key = match k {
+                    ArrayKey::Int(n) => PhpStr::from_bytes(n.to_string().into_bytes()),
+                    ArrayKey::Str(s) => s.clone(),
+                };
+                o.properties.insert(key, v.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// php's `parse_iv2`: an optionally signed integer (a too long one warns
+    /// and saturates).
+    fn parse_iv2(&mut self) -> PResult<i64> {
+        let mut neg = false;
+        match self.b.get(self.pos) {
+            Some(b'-') => {
+                neg = true;
+                self.pos += 1;
+            }
+            Some(b'+') => self.pos += 1,
+            _ => {}
+        }
+        while self.b.get(self.pos) == Some(&b'0') {
+            self.pos += 1;
+        }
+        let start = self.pos;
+        let mut v: u64 = 0;
+        while let Some(&c) = self.b.get(self.pos).filter(|c| c.is_ascii_digit()) {
+            v = v.wrapping_mul(10).wrapping_add((c - b'0') as u64);
+            self.pos += 1;
+        }
+        // MAX_LENGTH_OF_LONG - 1 digits
+        if self.pos - start > 19 || v > i64::MAX as u64 + neg as u64 {
+            crate::warn(self.host, "unserialize", "Numerical result out of range")?;
+            return Ok(if neg { i64::MIN } else { i64::MAX });
+        }
+        Ok(if neg {
+            (v as i64).wrapping_neg()
+        } else {
+            v as i64
+        })
     }
 
     /// Replace every slot wrapper no `R:` named by its plain value (php only

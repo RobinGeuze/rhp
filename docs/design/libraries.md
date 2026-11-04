@@ -27,7 +27,8 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
   `INTL_ICU_DATA_VERSION` from ICU's uvernum.h;
   `OPENSSL_VERSION_TEXT`/`NUMBER` from opensslv.h and phpinfo's "OpenSSL
   Library Version" from `OpenSSL_version()`; `ICONV_VERSION` from
-  `_libiconv_version` (macOS) or `gnu_get_libc_version()` (glibc).
+  `_libiconv_version` (macOS) or `gnu_get_libc_version()` (glibc);
+  `GMP_VERSION` from libgmp's `gmp_version`.
   `version.rs` keeps hard-coded values only for libraries rhp does not link
   yet; each goes when its library is linked.
 
@@ -36,7 +37,7 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 | Kind | Linked | Examples |
 |---|---|---|
 | Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, argon2 (in `rhp-csrc`); libmbfl and php_unicode.c (in `rhp-mbfl-sys`, LGPL); later timelib, oniguruma |
-| A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libcurl, libxml2 on Linux; later gmp |
+| A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libcurl, libxml2 on Linux |
 | The listed exceptions below | dynamic | |
 
 A static archive is "the build php links" when it comes from the same package
@@ -52,6 +53,10 @@ rather than linking dynamically quietly.
   (libicucore, libldap, libgssapi_krb5, libresolv, frameworks). Linux:
   glibc's iconv.
 - Libraries with no static archive of php's version: Homebrew's libzip.
+- LGPL libraries taken from the system: libgmp (LGPL-3.0+ or GPL-2.0+).
+  Homebrew and libgmp-dev ship a `libgmp.a`, but linking it would put LGPL
+  code into rhp's binary; linked dynamically, the user can replace it (see
+  [Licences](#licences)).
 - The C++ runtime a static C++ library needs (ICU), which php also loads
   dynamically. macOS: the SDK has no static libc++, only /usr/lib/libc++.
   Linux: Ubuntu ships libstdc++.a, but libstdc++ is GPL-3.0 with the GCC
@@ -82,6 +87,7 @@ Today rhp-builtins links:
 | argon2 (via rhp-csrc) | static, compiled from release 20190702 | the same |
 | libcurl | static, Homebrew curl (keg-only), with its Homebrew dependencies (nghttp2, nghttp3, ngtcp2, libssh2, libpsl, zstd, brotli) static; OpenSSL is the row above | static, libcurl4-openssl-dev; its dependencies dynamic (see above), OpenSSL the row above |
 | libmbfl, php_unicode.c (via rhp-mbfl-sys; feature `mbstring-libmbfl`, on by default) | static, compiled from php-8.5.12 | the same |
+| libgmp | dynamic, Homebrew gmp | dynamic, libgmp-dev |
 
 ICU's data library is most of the size: linking ICU statically adds about
 35 MB to `rhp` (13.5 MB → 48 MB on the mac with ICU 79.1, 33.5 MB of it
@@ -134,7 +140,8 @@ binary that links two PCRE2 copies is wrong too, so rhp-difftest uses
 `rhp_builtins::pcre::Pattern` rather than the `pcre2` crate).
 
 `RHP_<LIB>_LINK=static|dynamic` (e.g. `RHP_PCRE2_LINK=dynamic`) overrides the
-policy for one build, for experiments.
+policy for one build, for experiments. An LGPL row (`Mode::Lgpl`, libgmp)
+refuses `static`.
 
 The helper links a static archive from a directory under `OUT_DIR` that holds
 only that archive. Searching the library's own libdir would not work: ld64
@@ -188,7 +195,10 @@ libcrypto or libcurl (and on Linux no libxml2); `nm` shows the `pcre2_*` and
 `openssl_is_linked_statically` and `libcurl_is_linked_statically` tests
 check its own test binary, which is linked straight from the crate. The last
 also requires `curl_version_info()` to report the version of the curl.h rhp
-compiled against.
+compiled against. ext/gmp's `links_libgmp_dynamically` checks with
+`dladdr` that libgmp comes from the shared library, and
+`runtime_library_matches_the_header` that its `gmp_version` is the gmp.h
+rhp compiled against.
 
 php links libcurl from Homebrew's keg-only curl on the mac, not the SDK's
 older libcurl, whose error texts differ: the CURL row names the formula, so
@@ -271,9 +281,10 @@ without copying them: a call holds its data once, as in php.
   `THIRD-PARTY-NOTICES`.
 - MPL-2.0 data or code may be linked unmodified if its notice names where
   its source is (the Public Suffix List inside Homebrew's static libpsl).
-- LGPL may be linked statically or vendored: rhp ships its source, so users
-  can relink. Keep LGPL code in its own crate with an exact licence
-  expression (libmbfl: `rhp-mbfl-sys`, `LGPL-2.1-only AND PHP-3.01 AND MIT`).
+- LGPL only as a dynamic system library (libgmp), or vendored in its own
+  default-on feature crate: rhp ships its source, so users can relink. That
+  crate gets an exact licence expression (libmbfl: `rhp-mbfl-sys`,
+  `LGPL-2.1-only AND PHP-3.01 AND MIT`).
   Never compile or transliterate libbcmath's LGPL arithmetic.
 - Code ported from php-src is under the PHP License 3.01 (Zend Engine
   License 2.00 for `Zend/`). Keep both notices and php's acknowledgement in
@@ -363,9 +374,15 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   phar's signature check) stay without one. Errors stay per thread: OpenSSL
   keeps its queue in thread-local storage, and php's 16-entry ring
   (`openssl_error_string`) is a thread-local too.
-- **Guard aborts.** A C library that can abort the process (libgmp on huge
-  sizes) needs size checks first: with one VM per thread, an abort kills
-  every request.
+- **Guard aborts.** A C library that can abort the process needs size
+  checks first: with one VM per thread, an abort kills every request.
+  libgmp aborts when a number would need more than `INT_MAX` limbs (php
+  then dies with SIGFPE or SIGABRT, e.g. `gmp_pow(2, PHP_INT_MAX)`). ext/gmp
+  sizes each result that can grow (`+ - * ** <<`, `gmp_pow`, `gmp_mul`,
+  `gmp_lcm`, `gmp_com`, `gmp_nextprime`…) as libgmp allocates it, and
+  factorials and binomials from an estimate with a 2x margin, and throws
+  "is too large" (a `ValueError`) where libgmp would abort. Running out of
+  memory below that limit still aborts, in php and in rhp.
 
 ## Adding a library
 
@@ -376,8 +393,10 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
    pkg-config, or on macOS without pkg-config through
    `/opt/homebrew/opt/<formula>` (`/usr/local/opt/<formula>`) or the SDK
    (`xcrun --show-sdk-path`); checks the header's version against the .pc
-   file; links it; exports each macro as `env!("RHP_<MACRO>")`; and returns
-   the include directory, for a C shim built against the same headers.
+   file (a header Debian keeps in the multiarch directory, such as gmp.h,
+   is found there); links it; exports each macro as `env!("RHP_<MACRO>")`;
+   and returns the include directory, for a C shim built against the same
+   headers.
 2. Declare the functions rhp calls in a hand-written `extern "C"` block
    (no bindgen). Put struct access and macros behind a small C shim with
    `_Static_assert` layout checks if needed (libxml2: `ext/libxml/sys.rs`

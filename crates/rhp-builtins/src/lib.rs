@@ -615,8 +615,8 @@ pub trait Host {
         None
     }
 
-    /// Read a named property off an object value (for builtins that accept their
-    /// own object type back, e.g. `gmp_add(gmp_add(...), ...)`). Default: none.
+    /// Read a named property off an object value (an enum case's `name` or
+    /// `value`, an exception's `message`). Default: none.
     fn object_prop(&self, _obj: &Value, _name: &[u8]) -> Option<Value> {
         None
     }
@@ -1246,6 +1246,7 @@ pub fn reset_request_state() {
     ext::openssl::reset_state();
     ext::bz2::reset_state();
     ext::iconv::reset_state();
+    ext::gmp::reset_state();
     ext::intl::error_reset();
     rhp_values::reset_dropped_streams();
 }
@@ -2147,28 +2148,7 @@ fn fn_floatval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_strval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // zval_get_string: objects go through their cast handler (`__toString`).
-    let v = deref(&args[0]);
-    if let Value::Object(h) = &v {
-        let mut cb = PhpArray::new();
-        cb.push(v.clone());
-        cb.push(Value::str("__toString"));
-        let cb = Value::Array(cb);
-        if host.is_callable_value(&cb) {
-            return Ok(Value::str(conv::to_string_bytes(
-                &host.call_callable(&cb, &[])?,
-            )));
-        }
-        let class = host.class_name(h.borrow().class).unwrap_or_default();
-        return Err(Thrown::error(
-            "Error",
-            format!(
-                "Object of class {} could not be converted to string",
-                String::from_utf8_lossy(&class)
-            ),
-        ));
-    }
-    Ok(Value::str(conv::to_string_bytes(&args[0])))
+    Ok(Value::str(argparse::zval_get_string(host, &args[0])?))
 }
 
 fn fn_boolval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

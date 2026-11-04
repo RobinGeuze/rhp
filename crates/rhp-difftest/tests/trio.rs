@@ -22,6 +22,56 @@ fn gmp_matches_php() {
     }
 }
 
+/// libgmp's own results: the seeded Mersenne twister, primality, word
+/// export and import.
+#[test]
+fn gmp_library_matches_php() {
+    if !php_available() {
+        eprintln!("[gmp] no php — skipping");
+        return;
+    }
+    let src = br#"<?php
+gmp_random_seed(42);
+echo gmp_strval(gmp_random_bits(100)), " ", gmp_strval(gmp_random_range(0, "1000000000000000000000")), "\n";
+gmp_random_seed(gmp_init("123456789012345678901234567890"));
+echo gmp_strval(gmp_random_bits(65)), " ", gmp_strval(gmp_random_range(-5, 5)), "\n";
+foreach (["97", "2462906046218231", "2462906046218233", "170141183460469231731687303715884105727", "-7"] as $n) {
+    echo gmp_prob_prime($n), gmp_prob_prime($n, 1), " ";
+}
+echo "\n", gmp_strval(gmp_nextprime("1000000000000000000000")), "\n";
+echo bin2hex(gmp_export("123456789012345678901234567890", 3, GMP_LSW_FIRST | GMP_BIG_ENDIAN)), "\n";
+echo gmp_strval(gmp_import("\x01\x02\x03\x04", 2, GMP_MSW_FIRST | GMP_LITTLE_ENDIAN)), "\n";
+echo serialize(gmp_init(-255)), " ", unserialize('C:3:"GMP":15:{s:2:"42";a:0:{}}'), "\n";
+var_dump(gmp_perfect_power("-27"), gmp_kronecker(-3, 8), gmp_hamdist(-1, 1), gmp_popcount(-1), gmp_scan0(-1, 0));
+echo gmp_strval(gmp_pow(3, 300), 62), "\n", (gmp_init(2) ** 100) >> 3, " ", pow(gmp_init(-3), 41), "\n";
+"#;
+    expect_match("gmp", rhp_difftest::diff_source(src));
+}
+
+/// Where libgmp would abort the process (php dies with SIGFPE), rhp throws.
+#[test]
+fn gmp_size_guards_throw() {
+    let src = br#"<?php
+$cases = [
+    fn() => gmp_pow(2, PHP_INT_MAX),
+    fn() => gmp_init(3) ** PHP_INT_MAX,
+    fn() => gmp_init(1) << PHP_INT_MAX,
+    fn() => gmp_fact(PHP_INT_MAX),
+    fn() => gmp_binomial(gmp_pow(10, 30), PHP_INT_MAX),
+];
+foreach ($cases as $f) {
+    try { $f(); echo "no error\n"; } catch (ValueError $e) { echo $e->getMessage(), "\n"; }
+}
+"#;
+    let out = rhp_difftest::run_rhp(src).expect("rhp runs");
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        "gmp_pow(): Argument #2 ($exponent) is too large\nExponent is too large\n\
+         Shift is too large\ngmp_fact(): Argument #1 ($num) is too large\n\
+         gmp_binomial(): Argument #2 ($k) is too large\n"
+    );
+}
+
 #[test]
 fn mbstring_matches_php() {
     if !php_available() {

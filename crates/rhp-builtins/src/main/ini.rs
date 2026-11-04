@@ -1,14 +1,13 @@
-//! Runtime / class-table / SAPI builtins: the class relation family
-//! (`class_alias`, `class_implements`, `class_parents`, `class_uses`),
-//! `get_defined_constants`, the ini table (`ini_get`/`ini_set`/`ini_get_all`/
-//! `ini_restore`), `error_log`, CLI header
-//! semantics (`header`, `headers_sent`, `headers_list`, `header_remove`,
-//! `http_response_code`), and `sleep`/`usleep`.
+//! The ini machinery (Zend/zend_ini.c, main/php_ini.c and the handlers in
+//! main/main.c): each directive's request value over the reference build's
+//! table ([`INI_TABLE`]), the startup (`-d`) values, `zend_alter_ini_entry`
+//! with each directive's on-modify check, and the quantity and bool
+//! parsers. The `ini_*` functions are in ext/standard/basic_functions.rs.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::ini_table::INI_TABLE;
+use crate::main::ini_table::INI_TABLE;
 use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------

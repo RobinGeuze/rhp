@@ -11,6 +11,7 @@ pub mod hrtime;
 pub mod html;
 #[rustfmt::skip]
 pub mod html_tables;
+pub mod http;
 pub mod info;
 pub mod levenshtein;
 pub mod math;

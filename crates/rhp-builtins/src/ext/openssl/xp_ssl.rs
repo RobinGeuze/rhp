@@ -819,7 +819,7 @@ fn check_path(path: &[u8], option: &str) -> Option<CString> {
 }
 
 fn ini_string(name: &[u8]) -> Option<Vec<u8>> {
-    crate::runtime_fns::ini_value(name)
+    crate::main::ini::ini_value(name)
         .flatten()
         .filter(|v| !v.is_empty())
 }

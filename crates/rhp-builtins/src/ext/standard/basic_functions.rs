@@ -8,13 +8,13 @@ use rhp_values::{conv, ArrayKey, PhpArray, Value};
 use crate::ext::standard::array::as_array;
 use crate::ext::standard::pageinfo::script_stat;
 use crate::file_fns::path_arg;
-use crate::ini_table::INI_TABLE;
-use crate::main::output::ob;
-use crate::proc_fns::zpp_long;
-use crate::runtime_fns::{
+use crate::main::ini::{
     alter_ini_entry, ini_apply, ini_default_value, ini_parse_uquantity, ini_value, module_loaded,
     INI, INI_STARTUP, STARTUP_DIAGS,
 };
+use crate::main::ini_table::INI_TABLE;
+use crate::main::output::ob;
+use crate::proc_fns::zpp_long;
 use crate::zend::builtin_functions::resolve_const;
 use crate::zend::virtual_cwd::os_path;
 use crate::zend::zpp::{bool_param, int_param, require_callback, str_or_null_param, str_param};
@@ -687,7 +687,7 @@ fn fn_get_cfg_var(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 
 fn fn_get_include_path(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(
-        match crate::runtime_fns::ini_value(b"include_path").flatten() {
+        match crate::main::ini::ini_value(b"include_path").flatten() {
             Some(v) => Value::str(v),
             None => Value::Bool(false),
         },
@@ -699,8 +699,8 @@ fn fn_set_include_path(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
     if p.is_empty() {
         return Ok(Value::Bool(false));
     }
-    let old = crate::runtime_fns::ini_value(b"include_path").flatten();
-    crate::runtime_fns::ini_store(b"include_path", p);
+    let old = crate::main::ini::ini_value(b"include_path").flatten();
+    crate::main::ini::ini_store(b"include_path", p);
     Ok(old.map(Value::str).unwrap_or(Value::Bool(false)))
 }
 
@@ -773,7 +773,7 @@ fn fn_sleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `ignore_user_abort(?bool $enable = null)`: the old setting; the engine
 /// never sees the client go away, so the setting has no other effect.
 fn fn_ignore_user_abort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let old = crate::runtime_fns::ini_value(b"ignore_user_abort")
+    let old = crate::main::ini::ini_value(b"ignore_user_abort")
         .flatten()
         .map(|v| i64::from(crate::ini_parse_bool(&v)))
         .unwrap_or(0);
@@ -781,7 +781,7 @@ fn fn_ignore_user_abort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         None | Some(Value::Null) => {}
         Some(_) => {
             let on = bool_param(host, args, 0, "ignore_user_abort", "enable", false)?;
-            crate::runtime_fns::ini_store(
+            crate::main::ini::ini_store(
                 b"ignore_user_abort",
                 if on { b"1".to_vec() } else { b"0".to_vec() },
             );

@@ -506,7 +506,7 @@ fn fn_bcscale(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             ));
         }
         let new = new.to_string().into_bytes();
-        crate::runtime_fns::alter_ini_entry(host, b"bcmath.scale", new, "bcscale")?;
+        crate::main::ini::alter_ini_entry(host, b"bcmath.scale", new, "bcscale")?;
     }
     Ok(Value::Int(old))
 }

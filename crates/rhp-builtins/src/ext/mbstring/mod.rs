@@ -19,7 +19,8 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use rhp_mbfl_sys::{self as mbfl, case_mode, encodings, illegal_mode, ConvertBuf, Encoding};
+use rhp_mbfl_sys as mbfl;
+use rhp_mbfl_sys::{case_mode, encodings, illegal_mode, ConvertBuf, Encoding};
 use rhp_values::{ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::zend::zpp;
@@ -111,7 +112,7 @@ fn default_detect_order() -> Vec<Enc> {
 fn strict_detection() -> bool {
     crate::ini_value(b"mbstring.strict_detection")
         .flatten()
-        .is_some_and(|v| crate::runtime_fns::ini_parse_bool(&v))
+        .is_some_and(|v| crate::main::ini::ini_parse_bool(&v))
 }
 
 /// php's `ZEND_HAS_OOM()`: an allocation crossed memory_limit, and the VM

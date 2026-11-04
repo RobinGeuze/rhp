@@ -902,10 +902,10 @@ fn wrap_http_ex(
 
     if have_header & HEADER_AUTH == 0 {
         if let Some(user) = &resource.user {
-            let mut scratch = crate::query_fns::url_decode(user);
+            let mut scratch = crate::main::php_variables::url_decode(user);
             scratch.push(b':');
             if let Some(pass) = &resource.pass {
-                scratch.extend_from_slice(&crate::query_fns::url_decode(pass));
+                scratch.extend_from_slice(&crate::main::php_variables::url_decode(pass));
             }
             req.extend_from_slice(b"Authorization: Basic ");
             req.extend_from_slice(&crate::ext::hash::primitives::base64_encode(&scratch));
@@ -1208,7 +1208,7 @@ fn wrap_http_ex(
             .flatten()
             {
                 {
-                    *v = crate::query_fns::url_decode(v);
+                    *v = crate::main::php_variables::url_decode(v);
                     if v.iter().any(|c| c.is_ascii_control()) {
                         cx.log_error(format!(
                             "Invalid redirect URL! {}",

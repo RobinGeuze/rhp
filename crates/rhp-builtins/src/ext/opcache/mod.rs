@@ -176,12 +176,12 @@ fn fn_opcache_get_configuration(host: &mut dyn Host, _args: &[Value]) -> Result<
     let mut d = PhpArray::new();
     for &(name, ty) in DIRECTIVES {
         let raw = host.ini_get(name.as_bytes()).unwrap_or_default();
-        let atol = || crate::runtime_fns::c_atol(&raw);
+        let atol = || crate::main::ini::c_atol(&raw);
         let v = match ty {
             Ty::Bool => Value::Bool(crate::ini_parse_bool(&raw)),
             Ty::Int => Value::Int(atol()),
             Ty::Mb => Value::Int(atol().saturating_mul(1024 * 1024)),
-            Ty::Quantity => Value::Int(crate::runtime_fns::ini_parse_quantity(&raw)),
+            Ty::Quantity => Value::Int(crate::main::ini::ini_parse_quantity(&raw)),
             Ty::Percent => Value::Float(atol() as f64 / 100.0),
             Ty::Float => Value::Float(
                 String::from_utf8_lossy(&raw)
@@ -252,7 +252,7 @@ pub(crate) fn jit_enabled() -> bool {
     started
         && mode != b"disable"
         && jit_mode_valid(&mode)
-        && crate::runtime_fns::ini_parse_quantity(&startup(b"opcache.jit_buffer_size")) > 0
+        && crate::main::ini::ini_parse_quantity(&startup(b"opcache.jit_buffer_size")) > 0
 }
 
 /// `zend_accel_error` levels.
@@ -361,7 +361,7 @@ pub(crate) fn startup_check(name: &[u8], v: &[u8]) -> Option<String> {
             "opcache.max_wasted_percentage must be set between 1 and 50.\n".to_string()
         }
         b"opcache.interned_strings_buffer" => {
-            let q = crate::runtime_fns::ini_parse_quantity(v);
+            let q = crate::main::ini::ini_parse_quantity(v);
             if q < 0 {
                 format!("opcache.interned_strings_buffer must be greater than or equal to 0, {q} given.\n")
             } else if q > 32767 {
@@ -379,9 +379,9 @@ pub(crate) fn startup_check(name: &[u8], v: &[u8]) -> Option<String> {
 /// be switched off) and `opcache.jit` (OnUpdateJit). `Ok(false)`: refused.
 pub(crate) fn on_modify(host: &mut dyn Host, name: &[u8], v: &[u8]) -> Result<bool, Thrown> {
     match name {
-        b"opcache.enable" if crate::runtime_fns::ini_parse_bool(v) => {
+        b"opcache.enable" if crate::main::ini::ini_parse_bool(v) => {
             let cur = host.ini_get(name).unwrap_or_default();
-            if crate::runtime_fns::ini_parse_bool(&cur) {
+            if crate::main::ini::ini_parse_bool(&cur) {
                 return Ok(true);
             }
             host.emit_diagnostic(

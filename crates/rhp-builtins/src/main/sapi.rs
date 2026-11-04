@@ -27,7 +27,7 @@ use rhp_values::{conv, ArrayKey, PhpArray, Thrown, Value};
 use crate::zend::zpp::{bool_param, int_param, str_or_null_param, str_param};
 use crate::Host;
 
-pub use crate::query_fns::{post_form_vars, treat_data, url_decode, TreatData};
+pub use crate::main::php_variables::{post_form_vars, treat_data, url_decode, TreatData};
 
 /// What a server embedding the engine provides for one request (php's
 /// `sapi_module_struct`). Every method but [`Sapi::name`] and
@@ -578,7 +578,7 @@ pub fn header_op(host: &mut dyn Host, op: HeaderOp<'_>) -> Result<bool, Thrown> 
 fn extract_response_code(line: &[u8]) -> i64 {
     for i in 0..line.len() {
         if line[i] == b' ' && line.get(i + 1) != Some(&b' ') {
-            return crate::runtime_fns::c_atol(&line[i + 1..]);
+            return crate::main::ini::c_atol(&line[i + 1..]);
         }
     }
     200
@@ -809,7 +809,7 @@ fn php_setcookie(
             buf.extend_from_slice(name);
             buf.push(b'=');
             if url_encode {
-                buf.extend_from_slice(&crate::query_fns::url_encode(v, true));
+                buf.extend_from_slice(&crate::ext::standard::http::url_encode(v, true));
             } else {
                 buf.extend_from_slice(v);
             }

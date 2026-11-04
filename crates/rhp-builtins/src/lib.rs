@@ -44,11 +44,7 @@ mod fs_fns;
 pub mod http;
 mod inet;
 mod ini_parse;
-#[rustfmt::skip]
-mod ini_table;
 mod proc_fns;
-mod query_fns;
-mod runtime_fns;
 mod sapi;
 mod socket_fns;
 mod stdext_fns;
@@ -193,33 +189,33 @@ pub const PHP_VERSION: &str = version::PHP_VERSION;
 /// A directive's current value: `None` = unknown directive, `Some(None)` =
 /// registered with a null value.
 pub fn ini_value(name: &[u8]) -> Option<Option<Vec<u8>>> {
-    runtime_fns::ini_value(name)
+    main::ini::ini_value(name)
 }
 
 /// C `atol` (php's ZEND_ATOL): leading blanks, sign, digits; saturating.
 pub fn c_atol(s: &[u8]) -> i64 {
-    runtime_fns::c_atol(s)
+    main::ini::c_atol(s)
 }
 
 /// C `atoi`: [`c_atol`] cut to 32 bits.
 pub fn c_atoi(s: &[u8]) -> i32 {
-    runtime_fns::c_atoi(s)
+    main::ini::c_atoi(s)
 }
 
 /// `zend_ini_parse_bool`: "true", "yes", "on" (any case), else atoi != 0.
 pub fn ini_parse_bool(v: &[u8]) -> bool {
-    runtime_fns::ini_parse_bool(v)
+    main::ini::ini_parse_bool(v)
 }
 
 /// `zend_ini_parse_quantity`: `8M` → 8388608.
 pub fn ini_parse_quantity(s: &[u8]) -> i64 {
-    runtime_fns::ini_parse_quantity(s)
+    main::ini::ini_parse_quantity(s)
 }
 
 /// A directive's startup value (`-d`, else the SAPI's or the built-in
 /// default): what php's PHP_INI_SYSTEM directives keep. `None` = unknown.
 pub fn ini_startup_value(name: &[u8]) -> Option<Vec<u8>> {
-    runtime_fns::ini_default_value(name).map(Option::unwrap_or_default)
+    main::ini::ini_default_value(name).map(Option::unwrap_or_default)
 }
 
 pub use ext::opcache::{
@@ -230,11 +226,11 @@ pub use ext::opcache::{
 /// applied to the engine state it drives (precision, ...). Unknown names are
 /// ignored. Call after [`reset_request_state`].
 pub fn ini_startup_set(name: &[u8], value: &[u8]) {
-    runtime_fns::ini_startup(name, value);
+    main::ini::ini_startup(name, value);
 }
 
+pub use main::ini::{apply_memory_limits, take_shutdown_diagnostics, take_startup_diagnostics};
 pub use module::{output_handler_alias, OutputHandlerAlias, OutputHandlerCtx, OutputHandlerFn};
-pub use runtime_fns::{apply_memory_limits, take_shutdown_diagnostics, take_startup_diagnostics};
 
 /// Reset every builtin's per-request state (ini overrides, default timezone,
 /// precision, strtok/preg/json/mbstring state, process title, putenv
@@ -250,7 +246,7 @@ pub fn reset_request_state() {
     ext::sockets::reset_state();
     ext::libxml::reset_state();
     ext::date::reset_state();
-    runtime_fns::reset_state();
+    main::ini::reset_state();
     sapi::cli::reset_state();
     ext::pcre::php_pcre::reset_state();
     ext::json::reset_state();
@@ -334,7 +330,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("info", Box::new(ext::standard::info::register)),
         ("stream_fns", Box::new(stream_fns::register)),
         ("socket_fns", Box::new(socket_fns::register)),
-        ("query_fns", Box::new(query_fns::register)),
+        ("http", Box::new(ext::standard::http::register)),
         (
             "builtin_functions",
             Box::new(zend::builtin_functions::register),

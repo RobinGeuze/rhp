@@ -4,11 +4,10 @@
 use rhp_values::ops::deref;
 use rhp_values::{PhpArray, Value};
 
-use crate::main::streams;
 use crate::main::streams::{ops, plain_wrapper};
-use crate::main::{rfc1867, sapi};
+use crate::main::{ini, rfc1867, sapi, streams};
 use crate::zend::object_handlers;
-use crate::{lookup, runtime_fns, StatInfo, StreamWrapper, Thrown};
+use crate::{lookup, StatInfo, StreamWrapper, Thrown};
 
 /// The kind of an open stream resource (see [`Host::stream_kind`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -226,13 +225,13 @@ pub trait Host {
     /// `ini_get`/`ini_set`; a null value reads as ""), or None when no loaded
     /// module registers it.
     fn ini_get(&self, name: &[u8]) -> Option<Vec<u8>> {
-        runtime_fns::ini_value(name).map(Option::unwrap_or_default)
+        ini::ini_value(name).map(Option::unwrap_or_default)
     }
     /// Store `value` for a known directive (no validation; engine-internal
     /// writes such as `error_reporting()`), returning the old value.
     fn ini_set(&mut self, name: &[u8], value: Vec<u8>) -> Option<Vec<u8>> {
         let old = self.ini_get(name)?;
-        runtime_fns::ini_store(name, value);
+        ini::ini_store(name, value);
         Some(old)
     }
 

@@ -52,13 +52,13 @@ fn fn_rawurlencode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_urldecode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(crate::query_fns::url_decode(
+    Ok(Value::str(crate::main::php_variables::url_decode(
         &conv::to_string_bytes(&args[0]),
     )))
 }
 
 fn fn_rawurldecode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(crate::query_fns::raw_url_decode(
+    Ok(Value::str(crate::main::php_variables::raw_url_decode(
         &conv::to_string_bytes(&args[0]),
     )))
 }

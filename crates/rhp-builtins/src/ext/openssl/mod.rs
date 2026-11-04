@@ -141,7 +141,7 @@ thread_local! {
 /// `PHP_OPENSSL_LIBCTX`.
 pub(super) fn libctx() -> *mut sys::OSSL_LIB_CTX {
     init();
-    let default = crate::runtime_fns::ini_value(b"openssl.libctx")
+    let default = crate::main::ini::ini_value(b"openssl.libctx")
         .flatten()
         .is_some_and(|v| v == b"default");
     let custom = CUSTOM_LIBCTX.with(|c| c.0);
@@ -846,11 +846,7 @@ fn fn_get_cert_locations(_: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown>
             cstr_bytes(sys::X509_get_default_cert_area()).to_vec(),
         );
     }
-    let ini = |n: &[u8]| {
-        crate::runtime_fns::ini_value(n)
-            .flatten()
-            .unwrap_or_default()
-    };
+    let ini = |n: &[u8]| crate::main::ini::ini_value(n).flatten().unwrap_or_default();
     add("ini_cafile", ini(b"openssl.cafile"));
     add("ini_capath", ini(b"openssl.capath"));
     Ok(Value::Array(a))

@@ -316,14 +316,14 @@ fn print_pcre(o: &mut Info) {
     o.table_start();
     o.header(&["Directive", "Local Value", "Master Value"]);
     for name in ["pcre.backtrack_limit", "pcre.jit", "pcre.recursion_limit"] {
-        let Some(local) = crate::runtime_fns::ini_value(name.as_bytes()) else {
+        let Some(local) = crate::main::ini::ini_value(name.as_bytes()) else {
             continue;
         };
-        let master = crate::runtime_fns::ini_default_value(name.as_bytes()).flatten();
+        let master = crate::main::ini::ini_default_value(name.as_bytes()).flatten();
         let show = |v: Option<Vec<u8>>| {
             let v = v.unwrap_or_default();
             if name == "pcre.jit" {
-                let on = crate::runtime_fns::ini_parse_bool(&v);
+                let on = crate::main::ini::ini_parse_bool(&v);
                 (if on { "On" } else { "Off" }).to_string()
             } else {
                 String::from_utf8_lossy(&v).into_owned()
@@ -345,8 +345,8 @@ fn print_openssl(o: &mut Info) {
             Some(v) => String::from_utf8_lossy(&v).into_owned(),
             None => "no value".to_string(),
         };
-        let local = crate::runtime_fns::ini_value(name.as_bytes()).flatten();
-        let master = crate::runtime_fns::ini_default_value(name.as_bytes()).flatten();
+        let local = crate::main::ini::ini_value(name.as_bytes()).flatten();
+        let master = crate::main::ini::ini_default_value(name.as_bytes()).flatten();
         o.row(&[name, &show(local), &show(master)]);
     }
 }
@@ -369,8 +369,8 @@ fn print_date(o: &mut Info) {
             Some(v) if !v.is_empty() => String::from_utf8_lossy(&v).into_owned(),
             _ => "no value".to_string(),
         };
-        let local = crate::runtime_fns::ini_value(name.as_bytes()).flatten();
-        let master = crate::runtime_fns::ini_default_value(name.as_bytes()).flatten();
+        let local = crate::main::ini::ini_value(name.as_bytes()).flatten();
+        let master = crate::main::ini::ini_default_value(name.as_bytes()).flatten();
         o.row(&[name, &show(local), &show(master)]);
     }
 }
@@ -387,8 +387,8 @@ fn print_curl(o: &mut Info) {
         Some(v) if !v.is_empty() => String::from_utf8_lossy(&v).into_owned(),
         _ => "no value".to_string(),
     };
-    let local = crate::runtime_fns::ini_value(b"curl.cainfo").flatten();
-    let master = crate::runtime_fns::ini_default_value(b"curl.cainfo").flatten();
+    let local = crate::main::ini::ini_value(b"curl.cainfo").flatten();
+    let master = crate::main::ini::ini_default_value(b"curl.cainfo").flatten();
     o.row(&["curl.cainfo", &show(local), &show(master)]);
 }
 
@@ -408,16 +408,16 @@ fn print_iconv(o: &mut Info) {
             Some(v) if !v.is_empty() => String::from_utf8_lossy(&v).into_owned(),
             _ => "no value".to_string(),
         };
-        let local = show(crate::runtime_fns::ini_value(name.as_bytes()));
-        let master = show(crate::runtime_fns::ini_default_value(name.as_bytes()));
+        let local = show(crate::main::ini::ini_value(name.as_bytes()));
+        let master = show(crate::main::ini::ini_default_value(name.as_bytes()));
         o.row(&[name, &local, &master]);
     }
 }
 
 /// PHP_MINFO(mbstring), without PHP_MINFO(mb_regex): rhp has no mb_ereg.
 fn print_mbstring(o: &mut Info) {
-    let ini = |name: &str| crate::runtime_fns::ini_value(name.as_bytes()).flatten();
-    let on = |v: &Option<Vec<u8>>| v.as_deref().is_some_and(crate::runtime_fns::ini_parse_bool);
+    let ini = |name: &str| crate::main::ini::ini_value(name.as_bytes()).flatten();
+    let on = |v: &Option<Vec<u8>>| v.as_deref().is_some_and(crate::main::ini::ini_parse_bool);
     o.row(&["Multibyte Support", "enabled"]);
     o.row(&["Multibyte string engine", "libmbfl"]);
     let translation = on(&ini("mbstring.encoding_translation"));
@@ -444,10 +444,10 @@ fn print_mbstring(o: &mut Info) {
         "mbstring.strict_detection",
         "mbstring.substitute_character",
     ] {
-        let Some(local) = crate::runtime_fns::ini_value(name.as_bytes()) else {
+        let Some(local) = crate::main::ini::ini_value(name.as_bytes()) else {
             continue;
         };
-        let master = crate::runtime_fns::ini_default_value(name.as_bytes()).flatten();
+        let master = crate::main::ini::ini_default_value(name.as_bytes()).flatten();
         // php_ini_boolean_displayer_cb for the two boolean entries.
         let boolean = matches!(
             name,

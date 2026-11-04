@@ -10,7 +10,7 @@ use std::process::{Command, ExitCode};
 
 use super::util::{finish, repo_root};
 
-const INI: &str = "crates/rhp-builtins/src/ini_table.rs";
+const INI: &str = "crates/rhp-builtins/src/main/ini_table.rs";
 const CONSTS: &str = "crates/rhp-builtins/src/const_modules.rs";
 
 /// Directives whose owner rhp does not load but which rhp shows anyway, as

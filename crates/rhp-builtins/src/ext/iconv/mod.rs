@@ -1364,7 +1364,7 @@ fn show_error(
 
 /// A directive's value as php's C reads it: up to the first NUL.
 fn ini_cstr(name: &[u8]) -> Vec<u8> {
-    let v = crate::runtime_fns::ini_value(name)
+    let v = crate::main::ini::ini_value(name)
         .flatten()
         .unwrap_or_default();
     let end = v.iter().position(|&c| c == 0).unwrap_or(v.len());
@@ -1713,7 +1713,7 @@ fn fn_iconv_set_encoding(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
         return Ok(Value::Bool(false));
     };
     let name = format!("iconv.{kind}_encoding");
-    let ok = crate::runtime_fns::alter_ini_entry(host, name.as_bytes(), charset, f)?;
+    let ok = crate::main::ini::alter_ini_entry(host, name.as_bytes(), charset, f)?;
     Ok(Value::Bool(ok.is_some()))
 }
 
@@ -1756,7 +1756,7 @@ fn output_handler(host: &mut dyn Host, cx: &mut OutputHandlerCtx) -> bool {
         if cx.output_sent {
             return false;
         }
-        let default_mimetype = crate::runtime_fns::ini_value(b"default_mimetype").flatten();
+        let default_mimetype = crate::main::ini::ini_value(b"default_mimetype").flatten();
         let mimetype = host.response().and_then(|r| match &r.mimetype {
             Some(m) if m.len() >= 5 && m[..5].eq_ignore_ascii_case(b"text/") => {
                 // Up to a ';', when there is one.

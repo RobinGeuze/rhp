@@ -222,7 +222,7 @@ pub fn parse_data_url(url: &[u8]) -> Result<(Vec<u8>, rhp_values::PhpArray), &'s
         crate::ext::hash::primitives::base64_decode(data, true)
             .ok_or("rfc2397: unable to decode")?
     } else {
-        crate::query_fns::url_decode(data)
+        crate::main::php_variables::url_decode(data)
     };
     Ok((data, meta))
 }

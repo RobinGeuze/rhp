@@ -181,7 +181,7 @@ pub(crate) fn guess_timezone() -> Vec<u8> {
     {
         return tz;
     }
-    crate::runtime_fns::ini_value(b"date.timezone")
+    crate::main::ini::ini_value(b"date.timezone")
         .flatten()
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| b"UTC".to_vec())

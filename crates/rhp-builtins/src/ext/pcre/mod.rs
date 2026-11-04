@@ -184,7 +184,7 @@ pub(crate) fn ini_update(name: &[u8], value: &[u8]) {
         match name {
             b"pcre.backtrack_limit" => s.set_backtrack_limit(crate::ini_parse_quantity(value)),
             b"pcre.recursion_limit" => s.set_recursion_limit(crate::ini_parse_quantity(value)),
-            b"pcre.jit" if jit_supported() => s.set_jit(crate::runtime_fns::ini_parse_bool(value)),
+            b"pcre.jit" if jit_supported() => s.set_jit(crate::main::ini::ini_parse_bool(value)),
             _ => {}
         }
     });

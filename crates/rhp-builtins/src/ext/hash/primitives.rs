@@ -204,8 +204,8 @@ fn fn_hex2bin(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     let mut out = Vec::with_capacity(s.len() / 2);
     for pair in s.as_chunks::<2>().0 {
-        let hi = hex_val(pair[0]);
-        let lo = hex_val(pair[1]);
+        let hi = hex_nibble(pair[0]);
+        let lo = hex_nibble(pair[1]);
         match (hi, lo) {
             (Some(h), Some(l)) => out.push((h << 4) | l),
             _ => {
@@ -217,7 +217,7 @@ fn fn_hex2bin(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(out))
 }
 
-fn hex_val(b: u8) -> Option<u8> {
+fn hex_nibble(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
         b'a'..=b'f' => Some(b - b'a' + 10),

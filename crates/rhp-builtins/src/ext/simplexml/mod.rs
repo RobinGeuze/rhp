@@ -1648,17 +1648,17 @@ fn move_forward(cx: &mut Cx, sxe: &SxeObject) -> Result<(), Thrown> {
 
 /// xmlReadMemory / xmlReadFile under PHP_LIBXML_SANITIZE_GLOBALS.
 fn read_doc(cx: &mut Cx, data: &[u8], is_file: bool, options: i64) -> Result<*mut XmlDoc, Thrown> {
-    let src = if is_file { cs(data) } else { data.to_vec() };
+    let path = if is_file { cs(data) } else { Vec::new() };
     cx.with_libxml_owned(
         || unsafe {
             let mut saved = [0 as c_int; 6];
             sys::rhp_xml_sanitize_globals(saved.as_mut_ptr());
             let d = if is_file {
-                sys::xmlReadFile(src.as_ptr().cast(), ptr::null(), options as c_int)
+                sys::xmlReadFile(path.as_ptr().cast(), ptr::null(), options as c_int)
             } else {
                 sys::xmlReadMemory(
-                    src.as_ptr().cast(),
-                    src.len() as c_int,
+                    sys::mem_ptr(data),
+                    data.len() as c_int,
                     ptr::null(),
                     ptr::null(),
                     options as c_int,
@@ -1737,7 +1737,8 @@ fn load_common(host: &mut dyn Host, args: &[Value], is_file: bool) -> Result<Val
     } else {
         "simplexml_load_string"
     };
-    let src = bytes(args, 0);
+    let src = lx::str_arg(args, 0);
+    let src = src.as_bytes();
     if is_file && src.contains(&0) {
         return Err(value_error(format!(
             "{fname}(): Argument #1 ($filename) must not contain any null bytes"
@@ -1767,7 +1768,7 @@ fn load_common(host: &mut dyn Host, args: &[Value], is_file: bool) -> Result<Val
         fname: fname.into(),
         lazy: false,
     };
-    let docp = read_doc(&mut cx, &src, is_file, options)?;
+    let docp = read_doc(&mut cx, src, is_file, options)?;
     if docp.is_null() {
         return Ok(Value::Bool(false));
     }
@@ -1900,7 +1901,8 @@ fn m_construct(
     _: &Value,
     args: &[Value],
 ) -> Result<Value, Thrown> {
-    let data = bytes(args, 0);
+    let data = lx::str_arg(args, 0);
+    let data = data.as_bytes();
     let options = conv::to_int(&arg(args, 1));
     let is_url = conv::to_bool(&arg(args, 2));
     let ns = bytes(args, 3);
@@ -1918,7 +1920,7 @@ fn m_construct(
     if options > INT_MAX || options < i32::MIN as i64 {
         return Err(exc(2, "options", "is invalid"));
     }
-    let docp = read_doc(cx, &data, is_url, options)?;
+    let docp = read_doc(cx, data, is_url, options)?;
     if docp.is_null() {
         return Err(Thrown::Error {
             class: "Exception",

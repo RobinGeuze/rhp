@@ -1061,6 +1061,16 @@ pub unsafe fn cstr<'a, T>(p: *const T) -> &'a [u8] {
     unsafe { std::ffi::CStr::from_ptr(p.cast()) }.to_bytes()
 }
 
+/// `b`'s address for a call that also takes its length, without copying:
+/// never an empty slice's dangling pointer, which libxml2 2.13+ reads.
+pub fn mem_ptr(b: &[u8]) -> *const c_char {
+    if b.is_empty() {
+        c"".as_ptr()
+    } else {
+        b.as_ptr().cast()
+    }
+}
+
 /// `s` with a NUL terminator, for passing to C. A string with an embedded
 /// NUL is cut there, as C would read it.
 pub fn cbytes(s: &[u8]) -> Vec<u8> {

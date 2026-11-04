@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void};
 use std::sync::{Once, OnceLock};
 
-use rhp_values::{conv, PhpArray, Value};
+use rhp_values::{conv, PhpArray, PhpStr, Value};
 
 use crate::{Builtin, Host, Thrown};
 
@@ -37,6 +37,16 @@ pub(crate) fn deref(v: &Value) -> Value {
     match v {
         Value::Ref(r) => r.borrow().clone(),
         o => o.clone(),
+    }
+}
+
+/// String argument `i` as zpp's `s` hands it over: the string itself, not
+/// a copy (a document as large as memory_limit allows still loads).
+pub(crate) fn str_arg(args: &[Value], i: usize) -> PhpStr {
+    match args.get(i).map(deref) {
+        Some(Value::Str(s)) => s,
+        Some(v) => PhpStr::from_bytes(conv::to_string_bytes(&v)),
+        None => PhpStr::from_bytes(Vec::new()),
     }
 }
 

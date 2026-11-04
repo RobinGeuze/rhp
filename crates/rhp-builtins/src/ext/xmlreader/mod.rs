@@ -1056,7 +1056,8 @@ fn from_string(
     class: Option<&[u8]>,
     throw: bool,
 ) -> Result<Value, Thrown> {
-    let source = bytes(args, 0);
+    let source = crate::ext::libxml::str_arg(args, 0);
+    let source = source.as_bytes();
     let encoding = opt_bytes(args, 1);
     let options = conv::to_int(&arg(args, 2));
     if let Some(e) = &encoding {
@@ -1081,7 +1082,7 @@ fn from_string(
         ));
     }
     let inputbfr = unsafe {
-        sys::xmlParserInputBufferCreateMem(source.as_ptr().cast(), source.len() as c_int, 0)
+        sys::xmlParserInputBufferCreateMem(sys::mem_ptr(source), source.len() as c_int, 0)
     };
     if !inputbfr.is_null() {
         let uri = cwd_uri().map(|u| cs(&u));
@@ -1301,17 +1302,20 @@ class XMLReader {
     public function expand(?DOMNode $baseNode = null) { return __xr('XMLReader::expand', $this, $baseNode); }
     // open() and XML() are static methods that load into the instance when
     // called on one (php's get_method handler): the magic call hooks.
+    // The source string is passed on as is: a cast would copy it.
     public function __call($name, $args) {
         $l = strtolower($name);
-        if ($l === 'open') { return __xr('XMLReader::open', $this, (string) ($args[0] ?? ''), $args[1] ?? null, (int) ($args[2] ?? 0)); }
-        if ($l === 'xml') { return __xr('XMLReader::XML', $this, (string) ($args[0] ?? ''), $args[1] ?? null, (int) ($args[2] ?? 0)); }
-        throw new Error('Call to undefined method ' . static::class . '::' . $name . '()');
+        if ($l !== 'open' && $l !== 'xml') { throw new Error('Call to undefined method ' . static::class . '::' . $name . '()'); }
+        $s = $args[0] ?? '';
+        if (!is_string($s)) { $s = (string) $s; }
+        return __xr($l === 'open' ? 'XMLReader::open' : 'XMLReader::XML', $this, $s, $args[1] ?? null, (int) ($args[2] ?? 0));
     }
     public static function __callStatic($name, $args) {
         $l = strtolower($name);
-        if ($l === 'open') { return __xr('XMLReader::open', null, (string) ($args[0] ?? ''), $args[1] ?? null, (int) ($args[2] ?? 0)); }
-        if ($l === 'xml') { return __xr('XMLReader::XML', null, (string) ($args[0] ?? ''), $args[1] ?? null, (int) ($args[2] ?? 0)); }
-        throw new Error('Call to undefined method ' . static::class . '::' . $name . '()');
+        if ($l !== 'open' && $l !== 'xml') { throw new Error('Call to undefined method ' . static::class . '::' . $name . '()'); }
+        $s = $args[0] ?? '';
+        if (!is_string($s)) { $s = (string) $s; }
+        return __xr($l === 'open' ? 'XMLReader::open' : 'XMLReader::XML', null, $s, $args[1] ?? null, (int) ($args[2] ?? 0));
     }
     public static function fromString(string $source, ?string $encoding = null, int $flags = 0) {
         return __xr('XMLReader::fromString', null, $source, $encoding, $flags, static::class);

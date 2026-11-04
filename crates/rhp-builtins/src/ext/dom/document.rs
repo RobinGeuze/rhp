@@ -781,7 +781,8 @@ fn finish_loading(this: &Value, newdoc: *mut XmlDoc) -> Result<Value, Thrown> {
 }
 
 fn parse_document(cx: &mut Cx, this: &Value, args: &[Value], mode: Mode) -> Result<Value, Thrown> {
-    let source = bytes(args, 0);
+    let source = crate::ext::libxml::str_arg(args, 0);
+    let source = source.as_bytes();
     let options = int(args, 1);
     if source.is_empty() {
         let p = if mode == Mode::File {
@@ -802,7 +803,7 @@ fn parse_document(cx: &mut Cx, this: &Value, args: &[Value], mode: Mode) -> Resu
     let props = super::intern_of(this)
         .map(|d| lxn::doc_props_read_only(d.document()))
         .unwrap_or(lxn::DocProps::DEFAULT);
-    let newdoc = match document_parser(cx, &props, mode, &source, options)? {
+    let newdoc = match document_parser(cx, &props, mode, source, options)? {
         Parsed::Doc(d) => d,
         Parsed::Malformed | Parsed::Failed => ptr::null_mut(),
     };
@@ -1153,7 +1154,8 @@ fn load_html_common(
     args: &[Value],
     mode: Mode,
 ) -> Result<Value, Thrown> {
-    let source = bytes(args, 0);
+    let source = crate::ext::libxml::str_arg(args, 0);
+    let source = source.as_bytes();
     let options = int(args, 1);
     let pname = if mode == Mode::File {
         "filename"
@@ -1171,7 +1173,7 @@ fn load_html_common(
         if source.contains(&0) {
             return Err(value_error(cx, 1, pname, "must not contain any null bytes"));
         }
-        let cs = c(&source);
+        let cs = c(source);
         cx.with_libxml_owned(
             || unsafe { sys::htmlCreateFileParserCtxt(cs.as_ptr().cast(), ptr::null()) },
             free_html_ctxt,

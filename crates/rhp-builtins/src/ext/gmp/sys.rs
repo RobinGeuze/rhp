@@ -2,10 +2,12 @@
 //! and [`Mpz`], an owned `mpz_t`.
 //!
 //! gmp.h names every function through a macro (`mpz_add` is `__gmpz_add`);
-//! the extern names here are the symbols. `mpz_sgn` and the `mpz_cmp_si`
-//! dispatch are macros over the struct, so [`MpzStruct`] mirrors
-//! `__mpz_struct`; `shim.c` checks that layout against the gmp.h build.rs
-//! linked. libgmp is LGPL and linked dynamically (docs/design/libraries.md).
+//! the extern names here are the symbols. `mpz_sgn` is a macro over the
+//! struct (and [`Mpz::limbs`] reads it as `mpz_size` does), so
+//! [`MpzStruct`] mirrors `__mpz_struct`; `shim.c` checks that layout
+//! against the gmp.h build.rs linked. `mpz_cmp_si`'s macro is bypassed by
+//! calling `__gmpz_cmp_si`. libgmp is LGPL and linked dynamically
+//! (docs/design/libraries.md).
 //!
 //! libgmp aborts the process when a number outgrows an `mpz_t` (more than
 //! `INT_MAX` limbs) or memory runs out: callers check sizes first.

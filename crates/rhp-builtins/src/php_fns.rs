@@ -763,16 +763,13 @@ pub fn zend_type_name(v: &Value) -> &'static str {
     }
 }
 
-/// php's E_ALL (8.4+: E_STRICT is gone).
-pub const E_ALL: i64 = 30719;
-
 /// EG(error_reporting): the `error_reporting` directive, E_ALL while unset.
 /// Under `@` php 8 lowers it to the fatal types only.
 pub fn error_reporting_level(host: &dyn Host) -> i64 {
     let level = match host.ini_get(b"error_reporting") {
         // OnUpdateErrorReporting: atoi.
         Some(v) if !v.is_empty() => i64::from(crate::c_atoi(&v)),
-        _ => E_ALL,
+        _ => crate::E_ALL,
     };
     if host.silenced() {
         level & SILENCE_MASK
@@ -781,9 +778,13 @@ pub fn error_reporting_level(host: &dyn Host) -> i64 {
     }
 }
 
-/// E_ERROR | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR |
-/// E_RECOVERABLE_ERROR | E_PARSE: what `@` leaves of error_reporting.
-pub const SILENCE_MASK: i64 = 4437;
+/// What `@` leaves of error_reporting (php 8): the fatal types.
+pub const SILENCE_MASK: i64 = crate::E_ERROR
+    | crate::E_CORE_ERROR
+    | crate::E_COMPILE_ERROR
+    | crate::E_USER_ERROR
+    | crate::E_RECOVERABLE_ERROR
+    | crate::E_PARSE;
 
 /// `set_error_handler(?callable $callback, int $error_levels = E_ALL)`:
 /// returns the previous handler (or null).
@@ -806,7 +807,7 @@ fn fn_set_handler(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     let mask = args
         .get(1)
         .map(|v| conv::to_int(&deref(v)))
-        .unwrap_or(E_ALL);
+        .unwrap_or(crate::E_ALL);
     Ok(host.set_error_handler(h, mask))
 }
 

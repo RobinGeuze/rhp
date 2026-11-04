@@ -226,7 +226,7 @@ impl Vm {
                         "{fname}(): Passing null to parameter #{} (${pname}) of type {tname} is deprecated",
                         i + 1
                     );
-                    if let Err(t) = self.diag(8192, &msg) {
+                    if let Err(t) = self.diag(rhp_builtins::E_DEPRECATED, &msg) {
                         return Err((i, t));
                     }
                     frame.regs[p.cv as usize] = zero;
@@ -499,7 +499,7 @@ impl Vm {
             ));
         }
         if let Value::Array(_) = d {
-            self.diag(2, "Array to string conversion")?;
+            self.diag(rhp_builtins::E_WARNING, "Array to string conversion")?;
         }
         Ok(conv::to_string_bytes(&d))
     }

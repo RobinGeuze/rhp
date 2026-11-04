@@ -1154,12 +1154,24 @@ pub trait Host {
     }
 }
 
-/// `E_WARNING`.
+// php's error levels (Zend/zend_errors.h).
+pub const E_ERROR: i64 = 1;
 pub const E_WARNING: i64 = 2;
-/// `E_NOTICE`.
+pub const E_PARSE: i64 = 4;
 pub const E_NOTICE: i64 = 8;
-/// `E_DEPRECATED`.
+pub const E_CORE_ERROR: i64 = 16;
+pub const E_CORE_WARNING: i64 = 32;
+pub const E_COMPILE_ERROR: i64 = 64;
+pub const E_COMPILE_WARNING: i64 = 128;
+pub const E_USER_ERROR: i64 = 256;
+pub const E_USER_WARNING: i64 = 512;
+pub const E_USER_NOTICE: i64 = 1024;
+pub const E_STRICT: i64 = 2048;
+pub const E_RECOVERABLE_ERROR: i64 = 4096;
 pub const E_DEPRECATED: i64 = 8192;
+pub const E_USER_DEPRECATED: i64 = 16384;
+/// Every level but E_STRICT (php 8.4+).
+pub const E_ALL: i64 = 30719;
 
 /// `php_error_docref(NULL, E_WARNING, msg)` from builtin `fname`.
 pub fn warn(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
@@ -1720,24 +1732,24 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PATHINFO_ALL", Value::Int(15)),
         ("DEBUG_BACKTRACE_PROVIDE_OBJECT", Value::Int(1)),
         ("DEBUG_BACKTRACE_IGNORE_ARGS", Value::Int(2)),
-        ("E_ERROR", Value::Int(1)),
-        ("E_PARSE", Value::Int(4)),
-        ("E_CORE_ERROR", Value::Int(16)),
-        ("E_CORE_WARNING", Value::Int(32)),
-        ("E_COMPILE_ERROR", Value::Int(64)),
-        ("E_COMPILE_WARNING", Value::Int(128)),
-        ("E_USER_ERROR", Value::Int(256)),
-        ("E_USER_WARNING", Value::Int(512)),
-        ("E_USER_NOTICE", Value::Int(1024)),
-        ("E_STRICT", Value::Int(2048)),
-        ("E_RECOVERABLE_ERROR", Value::Int(4096)),
-        ("E_DEPRECATED", Value::Int(8192)),
-        ("E_USER_DEPRECATED", Value::Int(16384)),
+        ("E_ERROR", Value::Int(E_ERROR)),
+        ("E_PARSE", Value::Int(E_PARSE)),
+        ("E_CORE_ERROR", Value::Int(E_CORE_ERROR)),
+        ("E_CORE_WARNING", Value::Int(E_CORE_WARNING)),
+        ("E_COMPILE_ERROR", Value::Int(E_COMPILE_ERROR)),
+        ("E_COMPILE_WARNING", Value::Int(E_COMPILE_WARNING)),
+        ("E_USER_ERROR", Value::Int(E_USER_ERROR)),
+        ("E_USER_WARNING", Value::Int(E_USER_WARNING)),
+        ("E_USER_NOTICE", Value::Int(E_USER_NOTICE)),
+        ("E_STRICT", Value::Int(E_STRICT)),
+        ("E_RECOVERABLE_ERROR", Value::Int(E_RECOVERABLE_ERROR)),
+        ("E_DEPRECATED", Value::Int(E_DEPRECATED)),
+        ("E_USER_DEPRECATED", Value::Int(E_USER_DEPRECATED)),
         ("NAN", Value::Float(f64::NAN)),
         ("INF", Value::Float(f64::INFINITY)),
-        ("E_ALL", Value::Int(30719)),
-        ("E_WARNING", Value::Int(2)),
-        ("E_NOTICE", Value::Int(8)),
+        ("E_ALL", Value::Int(E_ALL)),
+        ("E_WARNING", Value::Int(E_WARNING)),
+        ("E_NOTICE", Value::Int(E_NOTICE)),
         ("COUNT_NORMAL", Value::Int(0)),
         ("COUNT_RECURSIVE", Value::Int(1)),
         // Placeholders: the VM binds the stream resources when a request

@@ -256,7 +256,7 @@ impl Vm {
                     };
                     if l as f64 != d {
                         self.diag(
-                            8192,
+                            rhp_builtins::E_DEPRECATED,
                             &format!(
                                 "Implicit conversion from float-string \"{}\" to int loses precision",
                                 String::from_utf8_lossy(s.as_bytes())
@@ -312,7 +312,7 @@ impl Vm {
             return Ok(None);
         };
         if !s[end..].iter().all(|b| b" \t\n\r\x0b\x0c".contains(b)) {
-            self.diag(2, "A non-numeric value encountered")?;
+            self.diag(rhp_builtins::E_WARNING, "A non-numeric value encountered")?;
         }
         Ok(Some(num))
     }
@@ -322,7 +322,7 @@ impl Vm {
         let shown = || String::from_utf8_lossy(&rhp_values::fmt::float_serialize(d)).into_owned();
         let l = if !d.is_finite() || !fits_long(d) {
             self.diag(
-                2,
+                rhp_builtins::E_WARNING,
                 &format!(
                     "The float {} is not representable as an int, cast occurred",
                     shown()
@@ -334,7 +334,7 @@ impl Vm {
         };
         if l as f64 != d && fits_long(d) {
             self.diag(
-                8192,
+                rhp_builtins::E_DEPRECATED,
                 &format!(
                     "Implicit conversion from float {} to int loses precision",
                     shown()
@@ -434,6 +434,6 @@ impl CompareCx for Vm {
     }
 
     fn notice(&mut self, msg: &str) {
-        self.raise_error(8, msg);
+        self.raise_error(rhp_builtins::E_NOTICE, msg);
     }
 }

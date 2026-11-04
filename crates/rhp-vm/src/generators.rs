@@ -247,7 +247,10 @@ impl Vm {
             // value (php: "Only variable references…" notice).
             let v = self.stack[top].regs[value as usize].clone();
             if !matches!(v, Value::Ref(_)) {
-                self.diag(8, "Only variable references should be yielded by reference")?;
+                self.diag(
+                    rhp_builtins::E_NOTICE,
+                    "Only variable references should be yielded by reference",
+                )?;
             }
             v
         } else {

@@ -408,7 +408,10 @@ pub(super) fn x509_fingerprint(
     if unsafe { sys::X509_digest(peer, md, buf.as_mut_ptr(), &mut n) } == 0 {
         release_md(md);
         store_errors();
-        host.emit_diagnostic(1, &format!("{fname}(): Could not generate signature"))?;
+        host.emit_diagnostic(
+            crate::E_ERROR,
+            &format!("{fname}(): Could not generate signature"),
+        )?;
         return Ok(None);
     }
     release_md(md);
@@ -567,7 +570,10 @@ pub(super) fn check_cert(
         let csc = sys::X509_STORE_CTX_new();
         if csc.is_null() {
             store_errors();
-            host.emit_diagnostic(1, &format!("{fname}(): Memory allocation failure"))?;
+            host.emit_diagnostic(
+                crate::E_ERROR,
+                &format!("{fname}(): Memory allocation failure"),
+            )?;
             return Ok(0);
         }
         if sys::X509_STORE_CTX_init(csc, store, x, untrusted.cast()) == 0 {

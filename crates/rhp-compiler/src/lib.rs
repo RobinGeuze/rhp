@@ -190,7 +190,7 @@ fn compile_file(
     let cond_classes = cx.cond_classes.take().into_iter().map(Rc::new).collect();
     let compile_diags = hrh::scan(flat, &|o| cx.line_of(o))
         .into_iter()
-        .map(|line| (8192, hrh::MESSAGE.to_string(), line))
+        .map(|line| (rhp_builtins::E_DEPRECATED, hrh::MESSAGE.to_string(), line))
         .collect();
     let mut prog = Program {
         main: Rc::new(c.finish()?),

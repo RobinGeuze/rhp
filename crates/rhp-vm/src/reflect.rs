@@ -234,7 +234,7 @@ impl Vm {
             b"attr_args" => self.attr_args(args),
             b"deprecated" => {
                 let msg = arg_bytes(args, 0);
-                self.raise_error(8192, &String::from_utf8_lossy(&msg));
+                self.raise_error(rhp_builtins::E_DEPRECATED, &String::from_utf8_lossy(&msg));
                 match self.pending_throw.take() {
                     Some(t) => Err(t),
                     None => Ok(Value::Null),

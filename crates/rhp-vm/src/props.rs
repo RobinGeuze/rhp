@@ -89,7 +89,7 @@ impl Vm {
                                 String::from_utf8_lossy(self.class(cls).name.as_bytes()),
                                 String::from_utf8_lossy(pname.as_bytes())
                             );
-                            self.diag(2, &msg)?;
+                            self.diag(builtins::E_WARNING, &msg)?;
                             Value::Null
                         }
                     },
@@ -100,7 +100,7 @@ impl Vm {
                     "Undefined property: Closure::${}",
                     String::from_utf8_lossy(pname.as_bytes())
                 );
-                self.diag(2, &msg)?;
+                self.diag(builtins::E_WARNING, &msg)?;
                 Value::Null
             }
             other => {
@@ -113,7 +113,7 @@ impl Vm {
                         ref o => type_lc(o),
                     }
                 );
-                self.diag(2, &msg)?;
+                self.diag(builtins::E_WARNING, &msg)?;
                 Value::Null
             }
         })
@@ -582,7 +582,7 @@ impl Vm {
             return Ok(());
         }
         self.diag(
-            8192,
+            builtins::E_DEPRECATED,
             &format!("Creation of dynamic property {cname}::${p} is deprecated"),
         )
     }
@@ -710,7 +710,7 @@ impl Vm {
                         let shown = String::from_utf8_lossy(&rhp_values::fmt::float_serialize(f))
                             .into_owned();
                         self.diag(
-                            8192,
+                            builtins::E_DEPRECATED,
                             &format!(
                                 "Implicit conversion from float {shown} to int loses precision"
                             ),

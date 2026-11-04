@@ -951,13 +951,13 @@ impl Vm {
         let Some((real, file)) = self.resolve_include_file(top, &p) else {
             let ip = String::from_utf8_lossy(&self.ini(b"include_path")).into_owned();
             self.diag(
-                2,
+                builtins::E_WARNING,
                 &format!(
                     "opcache_compile_file({p}): Failed to open stream: No such file or directory"
                 ),
             )?;
             self.diag(
-                2,
+                builtins::E_WARNING,
                 &format!("opcache_compile_file(): Failed opening '{p}' for inclusion (include_path='{ip}')"),
             )?;
             return Ok(Value::Bool(false));

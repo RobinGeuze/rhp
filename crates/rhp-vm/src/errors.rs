@@ -34,10 +34,7 @@ pub(crate) enum FinallyCont {
     Jump(u32),
 }
 
-/// php 8's `@` lowers error_reporting to these fatal types only
-/// (E_ERROR | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR |
-/// E_RECOVERABLE_ERROR | E_PARSE).
-pub(crate) const SILENCE_KEEPS: i64 = 4437;
+pub(crate) use builtins::php_fns::SILENCE_MASK as SILENCE_KEEPS;
 
 impl Vm {
     /// An `E_COMPILE_ERROR` raised while executing (e.g. a runtime class
@@ -133,7 +130,7 @@ impl Vm {
             }
         }
         self.last_error = Some((level, msg.as_bytes().to_vec(), file.clone(), line));
-        if level == 256 {
+        if level == builtins::E_USER_ERROR {
             // E_USER_ERROR is fatal: displayed with the backtrace, then the
             // request bails out (shutdown functions still run; exit 255).
             let trace = Value::Array(self.build_trace_ex(false, false));
@@ -146,12 +143,13 @@ impl Vm {
         if self.silence > 0 && level & SILENCE_KEEPS == 0 {
             return;
         }
+        use builtins::*;
         let label = match level {
-            1 | 16 | 64 | 256 => "Fatal error",
-            2 | 32 | 128 | 512 => "Warning",
-            8 | 1024 => "Notice",
-            8192 | 16384 => "Deprecated",
-            4096 => "Recoverable fatal error",
+            E_ERROR | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR => "Fatal error",
+            E_WARNING | E_CORE_WARNING | E_COMPILE_WARNING | E_USER_WARNING => "Warning",
+            E_NOTICE | E_USER_NOTICE => "Notice",
+            E_DEPRECATED | E_USER_DEPRECATED => "Deprecated",
+            E_RECOVERABLE_ERROR => "Recoverable fatal error",
             _ => "Unknown error",
         };
         self.sapi.docref_msg = docref;
@@ -538,7 +536,14 @@ impl Vm {
         trace: &[u8],
     ) {
         let docref = std::mem::take(&mut self.sapi.docref_msg);
-        if ty & (1 | 4 | 16 | 64 | 256 | 4096) != 0 {
+        use builtins::{E_COMPILE_ERROR, E_CORE_ERROR, E_ERROR, E_PARSE, E_RECOVERABLE_ERROR};
+        let fatal = E_ERROR
+            | E_PARSE
+            | E_CORE_ERROR
+            | E_COMPILE_ERROR
+            | builtins::E_USER_ERROR
+            | E_RECOVERABLE_ERROR;
+        if ty & fatal != 0 {
             // php_error_cb's bailout: a 200 becomes a 500 when nothing shows.
             self.fatal_status();
         }
@@ -604,7 +609,7 @@ impl Vm {
             // php_error_cb's html branch: E_ERROR / E_PARSE escape the
             // message and drop the trace; others show it as given (a
             // builtin's docref message was escaped when it was built).
-            let fatal = ty == 1 || ty == 4;
+            let fatal = ty == builtins::E_ERROR || ty == builtins::E_PARSE;
             let mut m = ini(self, b"error_prepend_string");
             m.extend_from_slice(format!("<br />\n<b>{label}</b>:  ").as_bytes());
             if fatal || docref {

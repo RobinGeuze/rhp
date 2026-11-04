@@ -799,7 +799,7 @@ impl Vm {
                                 "Undefined global variable ${}",
                                 String::from_utf8_lossy(&n)
                             );
-                            self.diag(2, &msg)?;
+                            self.diag(builtins::E_WARNING, &msg)?;
                             Value::Null
                         }
                     };
@@ -930,7 +930,10 @@ impl Vm {
                 }
                 Instr::SendNoRef { dst, src } => {
                     let v = self.reg_get(top, src);
-                    self.diag(8, "Only variables should be passed by reference")?;
+                    self.diag(
+                        builtins::E_NOTICE,
+                        "Only variables should be passed by reference",
+                    )?;
                     // The callee works on a private copy.
                     self.reg_set(top, dst, Value::Ref(Rc::new(RefCell::new(v))));
                 }
@@ -1583,14 +1586,14 @@ impl Vm {
         match deref(v) {
             Value::Null if !inc => {
                 self.diag(
-                    2,
+                    builtins::E_WARNING,
                     "Decrement on type null has no effect, this will change in the next major version of PHP",
                 )?;
                 Ok(Value::Null)
             }
             Value::Bool(b) => {
                 self.diag(
-                    2,
+                    builtins::E_WARNING,
                     &format!(
                         "{what} on type bool has no effect, this will change in the next major version of PHP"
                     ),
@@ -1602,19 +1605,19 @@ impl Vm {
                 if !inc {
                     if b.is_empty() {
                         self.diag(
-                            8192,
+                            builtins::E_DEPRECATED,
                             "Decrement on empty string is deprecated as non-numeric",
                         )?;
                         return Ok(Value::Int(-1));
                     }
                     self.diag(
-                        8192,
+                        builtins::E_DEPRECATED,
                         "Decrement on non-numeric string has no effect and is deprecated",
                     )?;
                     return Ok(Value::Str(s));
                 }
                 self.diag(
-                    8192,
+                    builtins::E_DEPRECATED,
                     "Increment on non-numeric string is deprecated, use str_increment() instead",
                 )?;
                 Ok(Value::str(perl_increment(b)))
@@ -2278,7 +2281,7 @@ impl Vm {
                     if self.is_internal_class(decl) {
                         let dname = self.class(decl).name.as_bytes();
                         if let Some(msg) = builtins::class_constant_deprecation(dname, &name_b) {
-                            self.diag(8192, &msg)?;
+                            self.diag(builtins::E_DEPRECATED, &msg)?;
                         }
                     }
                     self.reg_set(top, dst, v);
@@ -2334,7 +2337,7 @@ impl Vm {
                 };
                 if let Some(msg) = deprecation {
                     if self.constants.contains_key(bare) {
-                        self.diag(8192, &msg)?;
+                        self.diag(builtins::E_DEPRECATED, &msg)?;
                     }
                 }
                 self.reg_set(top, dst, v);

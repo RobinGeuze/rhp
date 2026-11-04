@@ -147,7 +147,13 @@ impl Vm {
                 // The preload script is required at startup.
                 let reason = builtins::streams::strerror(e.raw_os_error().unwrap_or(2));
                 let warning = format!("PHP Startup: Failed to open stream: {reason}");
-                self.display_error(2, "Warning", warning.as_bytes(), b"Unknown", 0);
+                self.display_error(
+                    rhp_builtins::E_WARNING,
+                    "Warning",
+                    warning.as_bytes(),
+                    b"Unknown",
+                    0,
+                );
                 let ip = builtins::Host::ini_get(self, b"include_path").unwrap_or_default();
                 let msg = format!(
                     "Failed opening required '{path}' (include_path='{}')",
@@ -301,7 +307,13 @@ impl Vm {
             } else {
                 continue;
             };
-            self.display_error(2, "Warning", msg.as_bytes(), &file, line);
+            self.display_error(
+                rhp_builtins::E_WARNING,
+                "Warning",
+                msg.as_bytes(),
+                &file,
+                line,
+            );
         }
     }
 

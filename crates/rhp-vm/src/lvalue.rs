@@ -291,7 +291,7 @@ impl Vm {
 
     fn flush_rw_warnings(&mut self, warnings: Vec<String>) -> Result<(), Thrown> {
         for w in warnings {
-            self.diag(2, &w)?;
+            self.diag(builtins::E_WARNING, &w)?;
         }
         Ok(())
     }
@@ -895,7 +895,7 @@ impl Vm {
             "Indirect modification of overloaded element of {} has no effect",
             String::from_utf8_lossy(self.class(cls).name.as_bytes())
         );
-        self.diag(8, &msg)
+        self.diag(builtins::E_NOTICE, &msg)
     }
 
     /// The built-in ArrayObject / ArrayIterator class `h` derives from, when
@@ -946,7 +946,7 @@ impl Vm {
         let akey = match deref(key) {
             Value::Null => {
                 self.diag(
-                    8192,
+                    builtins::E_DEPRECATED,
                     "Using null as an array offset is deprecated, use an empty string instead",
                 )?;
                 Some(rhp_values::ArrayKey::from_bytes(b""))
@@ -975,7 +975,7 @@ impl Vm {
                             String::from_utf8_lossy(&conv::to_string_bytes(&k))
                         ),
                     };
-                    self.diag(2, &msg)?;
+                    self.diag(builtins::E_WARNING, &msg)?;
                 }
                 DimFetch::W => {}
             }
@@ -1017,19 +1017,19 @@ impl Vm {
     fn dim_key(&mut self, key: &Value, quiet: bool) -> Result<Option<ArrayKey>, Thrown> {
         match key {
             Value::Null if !quiet => self.diag(
-                8192,
+                builtins::E_DEPRECATED,
                 "Using null as an array offset is deprecated, use an empty string instead",
             )?,
             Value::Float(f) if !quiet && (!f.is_finite() || f.fract() != 0.0) => {
                 let shown =
                     String::from_utf8_lossy(&rhp_values::fmt::float_serialize(*f)).into_owned();
                 self.diag(
-                    8192,
+                    builtins::E_DEPRECATED,
                     &format!("Implicit conversion from float {shown} to int loses precision"),
                 )?
             }
             Value::Resource(r) if !quiet => self.diag(
-                2,
+                builtins::E_WARNING,
                 &format!(
                     "Resource ID#{} used as offset, casting to integer ({})",
                     r.id, r.id
@@ -1068,7 +1068,7 @@ impl Vm {
                                     String::from_utf8_lossy(s.as_bytes())
                                 ),
                             };
-                            self.diag(2, &msg)?;
+                            self.diag(builtins::E_WARNING, &msg)?;
                         }
                         Ok(Value::Null)
                     }
@@ -1107,7 +1107,7 @@ impl Vm {
                                     !kb[end..].iter().all(|b| b" \t\n\r\x0b\x0c".contains(b));
                                 if trailing && !quiet {
                                     self.diag(
-                                        2,
+                                        builtins::E_WARNING,
                                         &format!(
                                             "Illegal string offset \"{}\"",
                                             String::from_utf8_lossy(kb)
@@ -1128,7 +1128,7 @@ impl Vm {
                     }
                     Value::Float(_) | Value::Null | Value::Bool(_) => {
                         if !quiet {
-                            self.diag(2, "String offset cast occurred")?;
+                            self.diag(builtins::E_WARNING, "String offset cast occurred")?;
                         }
                         conv::to_int(key)
                     }
@@ -1149,13 +1149,16 @@ impl Vm {
                 } else if quiet {
                     Ok(Value::Null)
                 } else {
-                    self.diag(2, &format!("Uninitialized string offset {offset}"))?;
+                    self.diag(
+                        builtins::E_WARNING,
+                        &format!("Uninitialized string offset {offset}"),
+                    )?;
                     Ok(Value::str(""))
                 }
             }
             Value::Null => Ok(Value::Null).and_then(|v| {
                 if mode == DimMode::Read {
-                    self.diag(2, "Trying to access array offset on null")?;
+                    self.diag(builtins::E_WARNING, "Trying to access array offset on null")?;
                 }
                 Ok(v)
             }),
@@ -1175,7 +1178,7 @@ impl Vm {
                     } else {
                         format!("Trying to access array offset on {ty}")
                     };
-                    self.diag(2, &msg)?;
+                    self.diag(builtins::E_WARNING, &msg)?;
                 }
                 Ok(Value::Null)
             }
@@ -1283,7 +1286,7 @@ fn autovivify(slot: &mut Value, cx: &PropCtx) -> Result<(), Thrown> {
         }
         Value::Bool(false) => {
             path_diag(
-                8192,
+                builtins::E_DEPRECATED,
                 "Automatic conversion of false to array is deprecated".into(),
             );
             *slot = Value::Array(PhpArray::new());
@@ -1321,11 +1324,11 @@ fn path_diag(level: i64, msg: String) {
 fn write_key_of(k: &Value, cx: &PropCtx) -> Result<ArrayKey, Thrown> {
     match deref(k) {
         Value::Null => path_diag(
-            8192,
+            builtins::E_DEPRECATED,
             "Using null as an array offset is deprecated, use an empty string instead".into(),
         ),
         Value::Float(f) if f.is_finite() && f.fract() != 0.0 => path_diag(
-            8192,
+            builtins::E_DEPRECATED,
             format!(
                 "Implicit conversion from float {} to int loses precision",
                 String::from_utf8_lossy(&conv::to_string_bytes(&Value::Float(f)))
@@ -1357,7 +1360,7 @@ fn string_offset(k: &Value, unset: bool, cx: &PropCtx) -> Result<i64, Thrown> {
                     let trailing = !kb[end..].iter().all(|b| b" \t\n\r\x0b\x0c".contains(b));
                     if trailing && !unset {
                         path_diag(
-                            2,
+                            builtins::E_WARNING,
                             format!("Illegal string offset \"{}\"", String::from_utf8_lossy(kb)),
                         );
                     }
@@ -1367,7 +1370,10 @@ fn string_offset(k: &Value, unset: bool, cx: &PropCtx) -> Result<i64, Thrown> {
             }
         }
         v @ (Value::Float(_) | Value::Null | Value::Bool(_)) => {
-            path_diag(2, "String offset cast occurred".into());
+            path_diag(
+                rhp_builtins::E_WARNING,
+                "String offset cast occurred".into(),
+            );
             Ok(conv::to_int(&v))
         }
         Value::Object(h) => Err(illegal(
@@ -1408,13 +1414,16 @@ fn assign_string_offset(
     };
     let len = s.as_bytes().len() as i64;
     if offset < -len {
-        path_diag(2, format!("Illegal string offset {offset}"));
+        path_diag(
+            rhp_builtins::E_WARNING,
+            format!("Illegal string offset {offset}"),
+        );
         return Ok(());
     }
     let at = if offset < 0 { offset + len } else { offset } as usize;
     let bytes = match deref(value) {
         Value::Array(_) => {
-            path_diag(2, "Array to string conversion".into());
+            path_diag(rhp_builtins::E_WARNING, "Array to string conversion".into());
             b"Array".to_vec()
         }
         Value::Object(_) | Value::Closure(_) => {
@@ -1433,7 +1442,7 @@ fn assign_string_offset(
     };
     if bytes.len() != 1 {
         path_diag(
-            2,
+            builtins::E_WARNING,
             "Only the first byte will be assigned to the string offset".into(),
         );
     }
@@ -1647,7 +1656,7 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep], cx: &PropCtx) -> Result<()
                 }
                 Value::Bool(false) if rest.is_empty() => {
                     path_diag(
-                        8192,
+                        builtins::E_DEPRECATED,
                         "Automatic conversion of false to array is deprecated".into(),
                     );
                     return Ok(());

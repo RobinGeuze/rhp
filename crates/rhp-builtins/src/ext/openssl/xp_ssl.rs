@@ -692,7 +692,7 @@ fn fingerprint_cmp(peer: *mut sys::X509, method: &[u8], expected: &[u8]) -> i32 
     super::backend::release_md(md);
     if ok == 0 {
         super::store_errors();
-        push_diag(1, true, "Could not generate signature");
+        push_diag(crate::E_ERROR, true, "Could not generate signature");
         return -1;
     }
     let hex = super::backend::hex(&buf[..n as usize]);

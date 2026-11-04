@@ -153,9 +153,15 @@ impl Vm {
             crate::errors::display_errors_mode(&ini(self, b"display_errors")),
             crate::errors::DisplayErrors::Off
         ) && crate::ini_bool(&ini(self, b"display_startup_errors"));
-        if level != 1 {
+        if level != rhp_builtins::E_ERROR {
             if shown {
-                self.display_error(2, "Warning", msg.as_bytes(), b"Unknown", 0);
+                self.display_error(
+                    rhp_builtins::E_WARNING,
+                    "Warning",
+                    msg.as_bytes(),
+                    b"Unknown",
+                    0,
+                );
             } else {
                 let line = format!("PHP Warning:  {msg} in Unknown on line 0\n");
                 self.write_stderr(line.as_bytes());
@@ -247,7 +253,13 @@ impl Vm {
         }
         // The module is up by now: the usual display / log rules apply.
         for d in builtins::take_shutdown_diagnostics() {
-            self.display_error(2, "Warning", d.as_bytes(), b"Unknown", 0);
+            self.display_error(
+                rhp_builtins::E_WARNING,
+                "Warning",
+                d.as_bytes(),
+                b"Unknown",
+                0,
+            );
         }
         self.sapi_send_headers();
         self.sapi.sapi.flush();

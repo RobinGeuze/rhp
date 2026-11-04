@@ -138,7 +138,8 @@ binary that links two PCRE2 copies is wrong too, so rhp-difftest uses
 `rhp_builtins::pcre::Pattern` rather than the `pcre2` crate).
 
 `RHP_<LIB>_LINK=static|dynamic` (e.g. `RHP_PCRE2_LINK=dynamic`) overrides the
-policy for one build, for experiments.
+policy for one build, for experiments. An LGPL row (`Mode::Lgpl`, libgmp)
+refuses `static`.
 
 The helper links a static archive from a directory under `OUT_DIR` that holds
 only that archive. Searching the library's own libdir would not work: ld64

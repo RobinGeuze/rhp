@@ -7,7 +7,8 @@
 //! - read its version from its header and export the listed macros to the
 //!   crate as `RHP_<MACRO>` (`env!("RHP_PCRE2_MAJOR")`);
 //! - link it statically or dynamically as the row says for the target OS,
-//!   unless `RHP_<NAME>_LINK=static|dynamic` overrides that, and tell the
+//!   unless `RHP_<NAME>_LINK=static|dynamic` overrides that (an LGPL
+//!   library is never linked statically), and tell the
 //!   crate which as `env!("RHP_<NAME>_LINK_MODE")`. A static
 //!   archive is linked from a directory of its own under `OUT_DIR`, so the
 //!   linker cannot pick the shared library next to it (ld64 has no
@@ -30,6 +31,9 @@ pub enum Mode {
     /// The shared library. Only for the exceptions in libraries.md; the
     /// string says why.
     Dynamic(&'static str),
+    /// The shared library of an LGPL library, which may not be linked
+    /// statically: `RHP_<NAME>_LINK=static` is refused.
+    Lgpl,
 }
 
 pub struct Lib {
@@ -176,8 +180,8 @@ pub const LIBS: &[Lib] = &[
             "__GNU_MP_VERSION_MINOR",
             "__GNU_MP_VERSION_PATCHLEVEL",
         ],
-        macos: Mode::Dynamic("LGPL: linked dynamically only"),
-        linux: Mode::Dynamic("LGPL: linked dynamically only"),
+        macos: Mode::Lgpl,
+        linux: Mode::Lgpl,
         install: "macOS: brew install gmp; Debian/Ubuntu: apt install pkg-config libgmp-dev",
     },
 ];
@@ -256,6 +260,13 @@ fn link(lib: &Lib) -> Result<PathBuf, String> {
     let os = target_os();
     let mut mode = if os == "macos" { lib.macos } else { lib.linux };
     match env::var(&override_var).as_deref() {
+        Ok("static") if mode == Mode::Lgpl => {
+            return Err(format!(
+                "{override_var}=static: {} is LGPL and is only linked dynamically \
+                 (docs/design/libraries.md)",
+                lib.name
+            ))
+        }
         Ok("static") => mode = Mode::Static,
         Ok("dynamic") => mode = Mode::Dynamic("RHP_*_LINK=dynamic"),
         Ok(other) => {
@@ -342,7 +353,7 @@ fn link(lib: &Lib) -> Result<PathBuf, String> {
                 link_private(lib, pc, &os)?;
             }
         }
-        Mode::Dynamic(_) => {
+        Mode::Dynamic(_) | Mode::Lgpl => {
             println!("cargo:rustc-link-search=native={}", found.libdir.display());
             println!("cargo:rustc-link-lib=dylib={}", lib.link);
         }

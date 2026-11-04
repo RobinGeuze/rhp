@@ -167,8 +167,6 @@ pub struct Vm {
     yield_out: Option<(Value, Value, Reg)>,
     // Stack of generator ids currently being advanced (innermost last).
     gen_stack: Vec<u32>,
-    // Default scale for the bcmath builtins (`bcscale()`); 0 at script start.
-    bc_scale: i64,
     // `include`/`require`: a callback (injected by the SAPI) that parses+compiles
     // an included file's source into a Program, keeping the VM compiler-agnostic.
     includer: Option<Includer>,
@@ -623,14 +621,6 @@ impl Host for Vm {
 
     fn get_const(&self, name: &[u8]) -> Option<Value> {
         self.constants.get(&*builtins::const_key(name)).cloned()
-    }
-
-    fn bc_scale(&self) -> i64 {
-        self.bc_scale
-    }
-
-    fn set_bc_scale(&mut self, scale: i64) {
-        self.bc_scale = scale;
     }
 
     fn register_autoloader(&mut self, callback: Value, prepend: bool) {
@@ -2792,7 +2782,6 @@ impl Vm {
             generators: HashMap::new(),
             yield_out: None,
             gen_stack: Vec::new(),
-            bc_scale: 0,
             includer: None,
             fcc_scope: std::cell::Cell::new(None),
             included_files: indexmap::IndexSet::new(),

@@ -176,7 +176,11 @@ thread_local! {
 /// Directives whose handler parses the value with
 /// `zend_ini_parse_quantity_warn` (OnUpdateLong and handlers built on it),
 /// among those rhp applies.
-const QUANTITY_DIRECTIVES: &[&str] = &["pcre.backtrack_limit", "pcre.recursion_limit"];
+const QUANTITY_DIRECTIVES: &[&str] = &[
+    "pcre.backtrack_limit",
+    "pcre.recursion_limit",
+    "bcmath.scale",
+];
 
 /// The warnings a directive's OnModify handler raises for `v`, and the
 /// value it keeps (`None`: refused).
@@ -197,6 +201,10 @@ fn on_modify_check(name: &[u8], v: &[u8]) -> (Vec<String>, Option<Vec<u8>>) {
             let name = String::from_utf8_lossy(name);
             warnings.push(format!("Invalid \"{name}\" setting. {err}"));
         }
+    }
+    // bcmath's OnUpdateScale: 0..=INT_MAX.
+    if name == b"bcmath.scale" && !(0..=i64::from(i32::MAX)).contains(&ini_parse_quantity(v)) {
+        return (warnings, None);
     }
     (warnings, Some(v.to_vec()))
 }
@@ -363,6 +371,7 @@ pub(crate) fn reset_state() {
     INI_STARTUP.with(|m| m.borrow_mut().clear());
     STARTUP_DIAGS.with(|d| *d.borrow_mut() = StartupDiags::default());
     rhp_values::fmt::reset_precision();
+    crate::ext::bcmath::set_default_scale(0);
 }
 
 /// Is a directive's owning module loaded in this engine?
@@ -644,6 +653,7 @@ fn ini_apply(name: &[u8], v: Option<&[u8]>) {
         b"pcre.backtrack_limit" | b"pcre.recursion_limit" | b"pcre.jit" => {
             crate::pcre::ini_update(name, v.unwrap_or_default())
         }
+        b"bcmath.scale" => crate::ext::bcmath::set_default_scale(v.map_or(0, ini_parse_quantity)),
         _ => {}
     }
 }

@@ -176,10 +176,6 @@ impl Host for TestHost<'_> {
     ) -> Option<&mut dyn Any> {
         None
     }
-    fn bc_scale(&self) -> i64 {
-        0
-    }
-    fn set_bc_scale(&mut self, _scale: i64) {}
 
     // --- callables ---------------------------------------------------------
 

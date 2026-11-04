@@ -2,7 +2,7 @@
 //! php's module startup does: memory_hard_limit_percent warns "in Unknown on
 //! line 0" and a refused value leaves the directive NULL; a bad
 //! openssl.libctx is an E_ERROR that leaves "custom" and exit status 255
-//! while the script still runs. Checked against fixed output and, when the
+//! while the script still runs; bcmath.scale is bcmath's default scale. Checked against fixed output and, when the
 //! local php is the same release as rhp, against `php -n` itself (stdout,
 //! stderr and exit status).
 
@@ -13,6 +13,13 @@ var_dump(ini_get('memory_hard_limit_percent'));
 var_dump(ini_get_all(null, false)['memory_hard_limit_percent']);
 var_dump(error_get_last());
 var_dump(ini_set('memory_hard_limit_percent', '200'));"#;
+
+const BCMATH_SCRIPT: &str = r#"var_dump(bcscale(), ini_get('bcmath.scale'));
+echo bcadd('1', '2'), "\n";
+ini_set('bcmath.scale', '2');
+var_dump(bcscale());
+ini_restore('bcmath.scale');
+var_dump(bcscale(), ini_get_all('bcmath')['bcmath.scale']['global_value']);"#;
 
 const LIBCTX_SCRIPT: &str = r#"echo "start\n";
 var_dump(ini_get('openssl.libctx'), error_get_last(), ini_set('openssl.libctx', 'default'));"#;
@@ -59,6 +66,17 @@ fn bad_openssl_libctx_is_a_startup_fatal() {
     );
     assert_eq!(err, "");
     assert_eq!(code, Some(255));
+}
+
+#[test]
+fn bcmath_scale_startup_value_is_the_default_scale() {
+    let (out, err, code) = run_script(RHP, &["bcmath.scale=4"], BCMATH_SCRIPT);
+    assert_eq!(
+        out,
+        "int(4)\nstring(1) \"4\"\n3.0000\nint(2)\nint(4)\nstring(1) \"4\"\n"
+    );
+    assert_eq!(err, "");
+    assert_eq!(code, Some(0));
 }
 
 fn same_release() -> bool {
@@ -143,5 +161,20 @@ fn startup_ini_matches_php() {
             ini.extend_from_slice(extra);
             assert_eq!(run("php", &ini), run(RHP, &ini), "-d {ini:?}");
         }
+    }
+}
+
+#[test]
+fn bcmath_scale_matches_php() {
+    if !same_release() {
+        return;
+    }
+    for v in ["4", "-1", "abc", "3x", " 7 ", "2147483648", "1k", ""] {
+        let kv = format!("bcmath.scale={v}");
+        assert_eq!(
+            run_script("php", &[&kv], BCMATH_SCRIPT),
+            run_script(RHP, &[&kv], BCMATH_SCRIPT),
+            "-d {kv}"
+        );
     }
 }

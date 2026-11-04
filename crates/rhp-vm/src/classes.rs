@@ -1289,7 +1289,7 @@ impl Vm {
         }
     }
 
-    /// Like [`resolve_class`], but on a miss for a by-name reference it runs the
+    /// Like [`Self::resolve_class`], but on a miss for a by-name reference it runs the
     /// registered autoloaders and retries (php's autoloading). `self`/`parent`/
     /// `static` and object refs never autoload.
     pub(crate) fn resolve_class_autoload(

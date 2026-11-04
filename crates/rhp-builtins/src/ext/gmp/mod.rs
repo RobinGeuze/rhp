@@ -1433,7 +1433,7 @@ fn properties_load(host: &mut dyn Host, h: &ObjectHandle, props: &PhpArray) -> R
 }
 
 /// Whether class `cid` is GMP, whose `ce->unserialize` reads the `C:`
-/// format (see serialize_fns).
+/// format (see ext/standard/var.rs).
 pub(crate) fn is_gmp_class(host: &dyn Host, cid: u32) -> bool {
     host.object_handlers(cid)
         .is_some_and(|t| std::ptr::eq(t, &GMP_HANDLERS))

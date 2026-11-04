@@ -1,7 +1,7 @@
 //! `filter_var` and the common validators / sanitizers.
 //!
 //! Every function here is verified byte-for-byte against the local php 8.5.8
-//! binary (see `filter_fns/tests.rs` — expected values are hardcoded from
+//! binary (see `filter/tests.rs` — expected values are hardcoded from
 //! `php -r '...'` output).
 //!
 //! Strings are byte strings. Scalars are converted with the standard PHP

@@ -1,8 +1,8 @@
-//! Native math builtins (pure, no callbacks / no by-reference).
+//! ext/standard/math.c: the math functions.
 //!
 //! Every function's behaviour and output formatting is matched byte-for-byte
 //! against the local `php` 8.5.8 binary (var_dump floats use shortest
-//! round-trip; echo uses precision 14). See `math_fns/tests.rs` for the
+//! round-trip; echo uses precision 14). See `math/tests.rs` for the
 //! verified expectations.
 //!
 //! Notes on fidelity:

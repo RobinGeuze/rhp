@@ -1329,9 +1329,8 @@ fn fn_stream_resolve_include_path(_: &mut dyn Host, args: &[Value]) -> Result<Va
         .unwrap_or(Value::Bool(false)))
 }
 
-/// TTY detection lives elsewhere: `stream_isatty` with the process
-/// functions (proc_fns), `posix_isatty` in ext/posix;
-/// sapi_windows_vt100_support exists on Windows only.
+/// `posix_isatty` is in ext/posix; sapi_windows_vt100_support exists on
+/// Windows only.
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,

@@ -73,7 +73,7 @@ fn set_exec_error(rc: i32) {
     set_last_error(code);
 }
 
-// PCRE flag constants (mirrored into lib.rs `constants()`; see `preg_constants`).
+// PCRE flag constants (mirrored into the registry's `constants()`; see `preg_constants`).
 const PREG_PATTERN_ORDER: i64 = 1;
 const PREG_SET_ORDER: i64 = 2;
 const PREG_OFFSET_CAPTURE: i64 = 256;
@@ -376,7 +376,7 @@ fn build_match(
 }
 
 /// Write an out-value through a by-reference `$matches`/`$count` argument.
-/// Mirrors `sort_fns`: the compiler passes arg 2 as a `Value::Ref`; if it is
+/// As for the sort functions: the compiler passes arg 2 as a `Value::Ref`; if it is
 /// not a ref (the optional out-param was omitted), this is a no-op.
 fn write_ref(arg: Option<&Value>, value: Value) {
     if let Some(Value::Ref(rc)) = arg {
@@ -1098,7 +1098,7 @@ fn fn_preg_grep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // registration + constants
 // ---------------------------------------------------------------------------
 
-/// The pcre extension's constants, for lib.rs `constants()`. The `PCRE_*`
+/// The pcre extension's constants, for the registry's `constants()`. The `PCRE_*`
 /// ones describe the linked PCRE2 as php_pcre.c does: `PCRE_VERSION` from
 /// pcre2_config at run time, MAJOR/MINOR from the header.
 pub fn preg_constants() -> Vec<(&'static str, Value)> {

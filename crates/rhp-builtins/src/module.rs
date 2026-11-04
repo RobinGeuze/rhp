@@ -4,8 +4,10 @@
 //! `ext/<name>/` each expose a [`ModuleDef`]; [`crate::ext::modules`] lists them,
 //! and the registry / constants / prelude / wrapper plumbing folds them in.
 //!
-//! Core stdlib groups (`str_fns`, `math_fns`, …) stay registered directly for
-//! now — only discrete extensions use this richer contract.
+//! The standard extension (`ext/standard/`), `zend/`, `main/` and `sapi/`
+//! modules, and json, pcre, filter, opcache, random and readline, still
+//! register directly in [`crate::registry`]; only these extensions use this
+//! richer contract.
 
 use rhp_values::Value;
 

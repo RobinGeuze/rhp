@@ -542,10 +542,7 @@ fn fn_vsprintf(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(out))
 }
 
-/// Register the printf output-family builtins into the shared table.
-///
-/// `sprintf`/`printf`/`vsprintf` are registered by `str_fns` and must NOT be
-/// re-registered here; this module adds `vprintf`, `fprintf` and `vfprintf`.
+/// Register the printf family into the shared table.
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,

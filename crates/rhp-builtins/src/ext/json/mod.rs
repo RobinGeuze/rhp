@@ -2,7 +2,7 @@
 //! `json_last_error_msg`, and the `JSON_*` constants.
 //!
 //! Every behaviour is verified byte-for-byte against the local php 8.5.8 binary
-//! (see `json_fns/tests.rs` — expected values are hardcoded from `php -r`).
+//! (see `json/tests.rs` — expected values are hardcoded from `php -r`).
 //!
 //! ## Scope / known gaps
 //! - `json_decode` decodes JSON objects to a `stdClass` (default / `$associative

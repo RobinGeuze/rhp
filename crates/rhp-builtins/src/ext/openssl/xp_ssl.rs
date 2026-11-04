@@ -4,7 +4,7 @@
 //! does, so errno-based errors read the same.
 //!
 //! These functions run on a stream the VM lends out, without a host: their
-//! warnings go to the stream diagnostics queue (`fdstream::push_diag`) and
+//! warnings go to the stream diagnostics queue (`plain_wrapper::push_diag`) and
 //! whoever ran the operation reports them. Peer certificates to capture are
 //! handed back for the caller to wrap in `OpenSSLCertificate` objects.
 

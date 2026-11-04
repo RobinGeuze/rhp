@@ -1,11 +1,11 @@
 //! Discrete PHP extensions, one folder per extension — mirroring php-src's
 //! `ext/<name>/` layout. Each extension is a self-contained [`ModuleDef`]
 //! ([`modules`]) owning its functions, constants, PHP-source classes, and stream
-//! wrappers; the registry / constants / prelude / wrapper plumbing in `lib.rs`
-//! folds every module in.
+//! wrappers; the registry / constants / prelude / wrapper plumbing in
+//! `registry.rs` folds every module in.
 //!
-//! (The broad core library — string/array/math/etc., php's `ext/standard` — still
-//! lives in the flat `*_fns` modules for now.)
+//! The standard extension (`standard/`), json, pcre, filter, opcache,
+//! random and readline live here too but register directly in the registry.
 
 use crate::module::{no_constants, no_wrappers, ModuleDef};
 

@@ -1,6 +1,6 @@
 //! The http:// and https:// stream wrapper: a port of
 //! ext/standard/http_fopen_wrapper.c over the socket transports
-//! (`socket_fns::xport_client`, TLS from ext/openssl/xp_ssl.rs). The opened
+//! (`xp_socket::xport_client`, TLS from ext/openssl/xp_ssl.rs). The opened
 //! stream is the connection itself, positioned at the body, with the
 //! response headers as its wrapper data and php's "dechunk" filter for a
 //! chunked body.

@@ -165,6 +165,23 @@ impl Vm {
         Ok((target, false))
     }
 
+    /// `name(...)` / `$name(...)` where `name` is an engine helper's: php
+    /// looks the function up when the closure is made, and user code has no
+    /// such function (see [`is_helper_function`]). Other names are still
+    /// resolved when the closure is called.
+    pub(crate) fn check_fcc_name(&self, top: usize, name: &PhpStr) -> Result<(), Thrown> {
+        let b = name.as_bytes();
+        let n = b.strip_prefix(b"\\").unwrap_or(b);
+        if is_helper_function(n)
+            && !n.windows(2).any(|w| w == b"::")
+            && !self.stack[top].proto.is_internal()
+            && !self.fn_names.contains_key(&n.to_ascii_lowercase())
+        {
+            return Err(undefined_function(name));
+        }
+        Ok(())
+    }
+
     /// Name user function `idx` in php's function table. Call sites that
     /// the new name can change are resolved again (see
     /// [`Vm::call_target`]).
@@ -175,16 +192,15 @@ impl Vm {
 
     /// The user function a direct call from `caller` to `name` (resolved by
     /// [`Vm::resolve_call`] to `user`) runs, `None` for a builtin, or `Err`
-    /// when the call must fail as undefined. `__`-prefixed builtins are
-    /// engine helpers behind the prelude classes: prelude code always gets
-    /// the builtin (a user function of that name doesn't shadow it), user
-    /// code never does (php has no function by such a name).
+    /// when the call must fail as undefined. For an engine helper's name
+    /// (see [`is_helper_function`]) prelude code always gets the builtin (a
+    /// user function of that name doesn't shadow it), user code never does.
     pub(crate) fn engine_helper_call(
         caller: &FunctionProto,
         user: Option<usize>,
         name: &[u8],
     ) -> Result<Option<usize>, ()> {
-        if !name.starts_with(b"__") {
+        if !is_helper_function(name) {
             Ok(user)
         } else if caller.is_internal() {
             Ok(None)
@@ -2026,11 +2042,19 @@ impl Vm {
     }
 }
 
-/// Whether `name` is a builtin visible to user code. `__`-prefixed builtins
-/// are engine-internal helpers behind prelude classes (no php function
-/// starts with `__`), so function_exists/is_callable don't report them.
+/// The engine's helpers behind the prelude classes are the builtins named
+/// `__…`. php has no function by such a name, so they exist only for
+/// built-in code: a direct call from the prelude reaches them, and nothing
+/// else does or shows them (callables, function_exists, is_callable,
+/// get_defined_functions, Reflection, first-class callables). A user
+/// function may take such a name.
+pub(crate) fn is_helper_function(name: &[u8]) -> bool {
+    name.starts_with(b"__")
+}
+
+/// Whether `name` is a builtin visible to user code (not an engine helper).
 pub(crate) fn user_visible_builtin(name: &[u8]) -> bool {
-    !name.starts_with(b"__") && builtins::lookup(&String::from_utf8_lossy(name)).is_some()
+    !is_helper_function(name) && builtins::lookup(&String::from_utf8_lossy(name)).is_some()
 }
 
 /// "Call to undefined function NAME()" with the name as written at the call

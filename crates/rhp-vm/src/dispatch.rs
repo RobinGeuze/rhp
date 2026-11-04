@@ -604,6 +604,9 @@ impl Vm {
                 }
                 Instr::MakeFcc { dst, callee } => {
                     let c = self.reg_get(top, callee);
+                    if let Value::Str(name) = &c {
+                        self.check_fcc_name(top, name)?;
+                    }
                     let cd = Rc::new(rhp_values::ClosureData {
                         fnidx: u32::MAX,
                         captures: Vec::new(),

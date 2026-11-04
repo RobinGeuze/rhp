@@ -610,10 +610,11 @@ impl Vm {
         self.emit_compile_diags(prog);
         // Install (hoist) all declared functions, keyed case-insensitively.
         for (idx, proto) in prog.functions.iter().enumerate() {
-            // Engine helpers are `__` builtins, not prelude functions, so a
-            // user function may take any `__` name.
+            // Engine helpers are builtins, not prelude functions, so a user
+            // function may take any helper's name.
             debug_assert!(
-                idx >= prog.num_prelude_functions || !proto.name.as_bytes().starts_with(b"__")
+                idx >= prog.num_prelude_functions
+                    || !crate::calls::is_helper_function(proto.name.as_bytes())
             );
             self.functions.push(UnitFn {
                 proto: proto.clone(),

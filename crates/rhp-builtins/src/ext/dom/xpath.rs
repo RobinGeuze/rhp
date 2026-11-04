@@ -249,7 +249,14 @@ fn eval(cx: &mut Cx, this: &Value, args: &[Value], query: bool) -> Result<Value,
             sys::rhp_xml_xpath_set_namespaces(ctxp, list, count as c_int);
         }
         state(&intern).borrow_mut().evaluation_depth += 1;
-        let r = cx.with_libxml(|| sys::xmlXPathEvalExpression(ce.as_ptr(), ctxp));
+        let r = cx.with_libxml_owned(
+            || sys::xmlXPathEvalExpression(ce.as_ptr(), ctxp),
+            |o| {
+                if !o.is_null() {
+                    sys::xmlXPathFreeObject(o)
+                }
+            },
+        );
         state(&intern).borrow_mut().evaluation_depth -= 1;
         sys::rhp_xml_xpath_set_node(ctxp, old_node);
         sys::rhp_xml_xpath_set_namespaces(ctxp, old_ns, old_nr);

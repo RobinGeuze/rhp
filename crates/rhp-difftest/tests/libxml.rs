@@ -266,6 +266,39 @@ var_dump($x->query('//n:item'), $x->query('//zz:a'), $x->evaluate('foo()'), $x->
     );
 }
 
+/// An exception from an error handler or an XPath callback in the middle
+/// of a libxml2 call (what the call made is freed: see Cx::with_libxml_owned).
+#[test]
+fn dom_callback_exceptions_match_php() {
+    check(
+        "dom_callback_exceptions",
+        r#"<?php
+set_error_handler(function ($no, $str) { throw new Exception("H: $str"); });
+$d = new DOMDocument;
+foreach ([
+  fn() => $d->createElement('a', 'x &y'),
+  fn() => $d->createElementNS('urn:a', 'p:a', 'x &y'),
+  fn() => $d->loadXML('<a><b></a>'),
+  fn() => $d->loadHTML('<p>x</q><zz:b>'),
+  fn() => (new DOMDocument)->loadXML('<a/>') && $d->schemaValidateSource('<bad'),
+  fn() => $d->relaxNGValidateSource('<bad'),
+  fn() => ($f = $d->createDocumentFragment()) && $f->appendXML('<a>&e;</a>'),
+] as $i => $f) {
+  try { var_dump($f()); } catch (Throwable $e) { echo $i, ' ', get_class($e), ': ', trim($e->getMessage()), "\n"; }
+}
+set_error_handler(function ($no, $str) { echo "W[$no]: $str\n"; return true; });
+$d->loadXML('<r><a/><b/></r>');
+$x = new DOMXPath($d);
+$x->registerNamespace('php', 'http://php.net/xpath');
+$x->registerPhpFunctions(['boom' => function () { throw new RuntimeException('boom'); }]);
+try { var_dump($x->query('//*[php:function("boom")]')); } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(), "\n"; }
+try { var_dump($x->evaluate('string(php:function("boom"))')); } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(), "\n"; }
+try { var_dump($d->documentElement->C14N(false, false, ['query' => '//*[php:function("boom")]'])); } catch (Throwable $e) { echo get_class($e), ': ', $e->getMessage(), "\n"; }
+var_dump($x->query('//a')->length);
+"#,
+    );
+}
+
 #[test]
 fn xmlwriter_errors_match_php() {
     check(

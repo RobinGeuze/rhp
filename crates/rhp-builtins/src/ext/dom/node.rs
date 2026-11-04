@@ -820,7 +820,20 @@ fn canonicalization(
                         }
                     }
                 }
-                xpathobjp = cx.with_libxml(|| sys::xmlXPathEvalExpression(cq.as_ptr(), ctxp))?;
+                xpathobjp = match cx.with_libxml_owned(
+                    || sys::xmlXPathEvalExpression(cq.as_ptr(), ctxp),
+                    |o| {
+                        if !o.is_null() {
+                            sys::xmlXPathFreeObject(o)
+                        }
+                    },
+                ) {
+                    Ok(o) => o,
+                    Err(t) => {
+                        sys::xmlXPathFreeContext(ctxp);
+                        return Err(t);
+                    }
+                };
                 sys::rhp_xml_xpath_set_node(ctxp, ptr::null_mut());
                 if !xpathobjp.is_null() && (*xpathobjp).type_ == sys::XPATH_NODESET {
                     nodeset = (*xpathobjp).nodesetval;

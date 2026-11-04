@@ -103,8 +103,10 @@ pub fn create_element(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value
     }
     let cn = c(&name);
     let vp = value.as_ref().map_or(ptr::null(), |v| v.as_ptr());
-    let node =
-        cx.with_libxml(|| unsafe { sys::xmlNewDocNode(docp, ptr::null_mut(), cn.as_ptr(), vp) })?;
+    let node = cx.with_libxml_owned(
+        || unsafe { sys::xmlNewDocNode(docp, ptr::null_mut(), cn.as_ptr(), vp) },
+        free_node,
+    )?;
     if node.is_null() {
         throw(cx, INVALID_STATE_ERR, true)?;
     }
@@ -262,9 +264,10 @@ pub fn create_element_ns(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Va
             if valid_name(&localname) {
                 let cl = c(&localname);
                 unsafe {
-                    nodep = cx.with_libxml(|| {
-                        sys::xmlNewDocNode(docp, ptr::null_mut(), cl.as_ptr(), vp)
-                    })?;
+                    nodep = cx.with_libxml_owned(
+                        || sys::xmlNewDocNode(docp, ptr::null_mut(), cl.as_ptr(), vp),
+                        free_node,
+                    )?;
                     if nodep.is_null() {
                         throw(cx, INVALID_STATE_ERR, true)?;
                     }
@@ -671,7 +674,14 @@ fn document_parser(
         match valid_file_path(source) {
             Some(dest) => {
                 let cd = c(&dest);
-                cx.with_libxml(|| unsafe { sys::xmlCreateFileParserCtxt(cd.as_ptr().cast()) })?
+                cx.with_libxml_owned(
+                    || unsafe { sys::xmlCreateFileParserCtxt(cd.as_ptr().cast()) },
+                    |p| unsafe {
+                        if !p.is_null() {
+                            sys::xmlFreeParserCtxt(p)
+                        }
+                    },
+                )?
             }
             None => ptr::null_mut(),
         }
@@ -736,7 +746,14 @@ fn document_parser(
         }
     };
     unsafe { sys::xmlFreeParserCtxt(ctxt) };
-    parsed?;
+    if let Err(t) = parsed {
+        if let Parsed::Doc(doc) = ret {
+            if !doc.is_null() {
+                unsafe { sys::xmlFreeDoc(doc) };
+            }
+        }
+        return Err(t);
+    }
     Ok(ret)
 }
 
@@ -1065,12 +1082,19 @@ fn schema_validate_common(
             sys::xmlSchemaNewMemParserCtxt(source.as_ptr().cast(), source.len() as c_int)
         },
     };
-    let sptr = cx.with_libxml(|| unsafe {
-        sys::rhp_xml_schema_parser_use_php_errors(parser);
-        let s = sys::xmlSchemaParse(parser);
-        sys::xmlSchemaFreeParserCtxt(parser);
-        s
-    });
+    let sptr = cx.with_libxml_owned(
+        || unsafe {
+            sys::rhp_xml_schema_parser_use_php_errors(parser);
+            let s = sys::xmlSchemaParse(parser);
+            sys::xmlSchemaFreeParserCtxt(parser);
+            s
+        },
+        |s| unsafe {
+            if !s.is_null() {
+                sys::xmlSchemaFree(s)
+            }
+        },
+    );
     unsafe { sys::rhp_xml_restore_globals(saved.as_ptr()) };
     let sptr = sptr?;
     if sptr.is_null() {
@@ -1138,15 +1162,22 @@ fn relaxng_validate_common(
             sys::xmlRelaxNGNewMemParserCtxt(source.as_ptr().cast(), source.len() as c_int)
         },
     };
-    let sptr = cx.with_libxml(|| unsafe {
-        let mut saved = [0i32; 6];
-        sys::rhp_xml_sanitize_globals(saved.as_mut_ptr());
-        sys::rhp_xml_relaxng_parser_use_php_errors(parser);
-        let s = sys::xmlRelaxNGParse(parser);
-        sys::xmlRelaxNGFreeParserCtxt(parser);
-        sys::rhp_xml_restore_globals(saved.as_ptr());
-        s
-    })?;
+    let sptr = cx.with_libxml_owned(
+        || unsafe {
+            let mut saved = [0i32; 6];
+            sys::rhp_xml_sanitize_globals(saved.as_mut_ptr());
+            sys::rhp_xml_relaxng_parser_use_php_errors(parser);
+            let s = sys::xmlRelaxNGParse(parser);
+            sys::xmlRelaxNGFreeParserCtxt(parser);
+            sys::rhp_xml_restore_globals(saved.as_ptr());
+            s
+        },
+        |s| unsafe {
+            if !s.is_null() {
+                sys::xmlRelaxNGFree(s)
+            }
+        },
+    )?;
     if sptr.is_null() {
         cx.warn("Invalid RelaxNG")?;
         return Ok(Value::Bool(false));
@@ -1200,32 +1231,43 @@ fn load_html_common(
             return Err(value_error(cx, 1, pname, "must not contain any null bytes"));
         }
         let cs = c(&source);
-        cx.with_libxml(|| unsafe {
-            sys::htmlCreateFileParserCtxt(cs.as_ptr().cast(), ptr::null())
-        })?
+        cx.with_libxml_owned(
+            || unsafe { sys::htmlCreateFileParserCtxt(cs.as_ptr().cast(), ptr::null()) },
+            free_html_ctxt,
+        )?
     } else {
         if source.len() > INT_MAX as usize {
             cx.warn("Input string is too long")?;
             return Ok(Value::Bool(false));
         }
-        cx.with_libxml(|| unsafe {
-            sys::htmlCreateMemoryParserCtxt(source.as_ptr().cast(), source.len() as c_int)
-        })?
+        cx.with_libxml_owned(
+            || unsafe {
+                sys::htmlCreateMemoryParserCtxt(source.as_ptr().cast(), source.len() as c_int)
+            },
+            free_html_ctxt,
+        )?
     };
     if ctxt.is_null() {
         return Ok(Value::Bool(false));
     }
-    let newdoc = cx.with_libxml(|| unsafe {
-        sys::rhp_xml_ctxt_use_php_errors(ctxt);
-        sys::rhp_xml_sanitize_parse_ctxt_options(ctxt);
-        if options != 0 {
-            sys::htmlCtxtUseOptions(ctxt, options as c_int);
-        }
-        sys::htmlParseDocument(ctxt);
-        let d = sys::rhp_xml_ctxt_take_doc(ctxt);
-        sys::htmlFreeParserCtxt(ctxt);
-        d
-    })?;
+    let newdoc = cx.with_libxml_owned(
+        || unsafe {
+            sys::rhp_xml_ctxt_use_php_errors(ctxt);
+            sys::rhp_xml_sanitize_parse_ctxt_options(ctxt);
+            if options != 0 {
+                sys::htmlCtxtUseOptions(ctxt, options as c_int);
+            }
+            sys::htmlParseDocument(ctxt);
+            let d = sys::rhp_xml_ctxt_take_doc(ctxt);
+            sys::htmlFreeParserCtxt(ctxt);
+            d
+        },
+        |d| unsafe {
+            if !d.is_null() {
+                sys::xmlFreeDoc(d)
+            }
+        },
+    )?;
     finish_loading(this, newdoc)
 }
 
@@ -1440,5 +1482,18 @@ fn set_doc_classmap(document: *mut lxn::RefObj, basece: &[u8], ce: Option<Vec<u8
     props.classmap.retain(|(b, _)| b != &lc);
     if let Some(c) = ce {
         props.classmap.push((lc, c));
+    }
+}
+
+/// Frees an unlinked node a callback's exception orphaned.
+fn free_node(n: *mut XmlNode) {
+    if !n.is_null() {
+        unsafe { sys::xmlFreeNode(n) };
+    }
+}
+
+fn free_html_ctxt(p: sys::Ctxt) {
+    if !p.is_null() {
+        unsafe { sys::htmlFreeParserCtxt(p) };
     }
 }

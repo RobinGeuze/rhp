@@ -347,7 +347,16 @@ pub fn fragment_append_xml(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<
         );
         sys::rhp_xml_restore_globals(saved.as_ptr());
         e
-    })?;
+    });
+    let err = match err {
+        Ok(e) => e,
+        Err(t) => {
+            if !lst.is_null() {
+                unsafe { sys::xmlFreeNodeList(lst) };
+            }
+            return Err(t);
+        }
+    };
     if err != 0 {
         return Ok(Value::Bool(false));
     }

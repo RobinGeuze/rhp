@@ -176,6 +176,24 @@ impl Cx<'_> {
         let fname = self.fname();
         crate::ext::libxml::ffi::with_host(self.host, &fname, f)
     }
+
+    /// [`Self::with_libxml`] for a call whose result owns memory: when a
+    /// callback threw, `free` releases the result before the exception
+    /// goes on.
+    pub fn with_libxml_owned<R>(
+        &mut self,
+        f: impl FnOnce() -> R,
+        free: impl FnOnce(R),
+    ) -> Result<R, Thrown> {
+        let fname = self.fname();
+        match crate::ext::libxml::ffi::with_host_keep(self.host, &fname, f) {
+            (r, Some(t)) => {
+                free(r);
+                Err(t)
+            }
+            (r, None) => Ok(r),
+        }
+    }
 }
 
 /// The payload of a DOM object.

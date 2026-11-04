@@ -169,3 +169,28 @@ fn growth_stops_at_memory_limit() {
     .join()
     .unwrap();
 }
+
+/// A result is held once: the Vec takes over the C's buffer.
+#[test]
+fn results_are_not_copied() {
+    use rhp_values::mem;
+    std::thread::spawn(|| {
+        mem::begin_request();
+        let input = vec![b'a'; 4 * 1024 * 1024];
+        mem::reset_peak();
+        let base = mem::usage(false);
+        let (out, _) = fast_convert(
+            &input,
+            encodings::ascii(),
+            encodings::utf16le(),
+            '?' as u32,
+            illegal_mode::CHAR,
+        );
+        let peak = mem::peak_usage(false) - base;
+        assert_eq!(out.len(), 2 * input.len());
+        assert!(peak < out.len() + out.len() / 4, "peak {peak}");
+        mem::end_request();
+    })
+    .join()
+    .unwrap();
+}

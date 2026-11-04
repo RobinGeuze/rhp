@@ -18,33 +18,73 @@ pub mod crypt;
 use std::alloc::{alloc, dealloc, handle_alloc_error, realloc, Layout};
 use std::ffi::c_void;
 
-/// Bytes before each block emalloc hands out: the block's layout size, for
-/// efree (C frees by pointer only). 16 keeps malloc's alignment.
+/// Bytes before each block emalloc hands out: the block's layout (size and
+/// alignment), for efree (C frees by pointer only). 16 keeps malloc's
+/// alignment.
 const EMALLOC_HEADER: usize = 16;
+/// The alignment C gets from emalloc, as from malloc.
+const EMALLOC_ALIGN: usize = 16;
 
-/// The layout of a block holding `size` bytes after the header.
-fn block_layout(size: usize) -> Layout {
+/// The bytes a block holding `size` bytes after the header takes.
+fn block_total(size: usize) -> usize {
     size.max(1)
         .checked_add(EMALLOC_HEADER)
-        .and_then(|n| Layout::from_size_align(n, EMALLOC_HEADER).ok())
+        .filter(|&n| n <= isize::MAX as usize - EMALLOC_ALIGN)
         .unwrap_or_else(|| handle_alloc_error(Layout::new::<[u8; EMALLOC_HEADER]>()))
+}
+
+/// # Safety
+///
+/// `base` is the start of a block from [`alloc_block`].
+unsafe fn block_layout(base: *const u8) -> Layout {
+    let p = base as *const usize;
+    Layout::from_size_align_unchecked(p.read(), p.add(1).read())
+}
+
+/// # Safety
+///
+/// `base` points to at least [`EMALLOC_HEADER`] writable, aligned bytes.
+unsafe fn set_block_layout(base: *mut u8, layout: Layout) {
+    let p = base as *mut usize;
+    p.write(layout.size());
+    p.add(1).write(layout.align());
+}
+
+/// A block of `total` bytes, header included. Blocks are requested
+/// byte-aligned, so that one can become a `Vec<u8>` ([`emalloc_into_vec`]);
+/// the system allocator returns malloc-aligned memory for them anyway, and
+/// a block that comes back less aligned is allocated again 16-aligned.
+///
+/// # Safety
+///
+/// `total` comes from [`block_total`].
+unsafe fn alloc_block(total: usize) -> *mut u8 {
+    let bytes = Layout::from_size_align_unchecked(total, 1);
+    let base = alloc(bytes);
+    if base.is_null() {
+        handle_alloc_error(bytes);
+    }
+    if (base as usize).is_multiple_of(EMALLOC_ALIGN) {
+        set_block_layout(base, bytes);
+        return base;
+    }
+    dealloc(base, bytes);
+    let aligned = Layout::from_size_align_unchecked(total, EMALLOC_ALIGN);
+    let base = alloc(aligned);
+    if base.is_null() {
+        handle_alloc_error(aligned);
+    }
+    set_block_layout(base, aligned);
+    base
 }
 
 /// zend_shim.h's `emalloc`: through Rust's global allocator, so vendored C
 /// counts against `memory_limit` like php's own emalloc. Never NULL.
 #[no_mangle]
 pub extern "C" fn rhp_csrc_emalloc(size: usize) -> *mut c_void {
-    let layout = block_layout(size);
-    // SAFETY: the layout has a non-zero size; the header fits in front of
-    // the block and keeps it 16-byte aligned.
-    unsafe {
-        let base = alloc(layout);
-        if base.is_null() {
-            handle_alloc_error(layout);
-        }
-        (base as *mut usize).write(layout.size());
-        base.add(EMALLOC_HEADER) as *mut c_void
-    }
+    // SAFETY: the header fits in front of the block and keeps it 16-byte
+    // aligned.
+    unsafe { alloc_block(block_total(size)).add(EMALLOC_HEADER) as *mut c_void }
 }
 
 /// zend_shim.h's `efree`, for blocks from [`rhp_csrc_emalloc`].
@@ -58,11 +98,7 @@ pub unsafe extern "C" fn rhp_csrc_efree(ptr: *mut c_void) {
         return;
     }
     let base = (ptr as *mut u8).sub(EMALLOC_HEADER);
-    let size = (base as *const usize).read();
-    dealloc(
-        base,
-        Layout::from_size_align_unchecked(size, EMALLOC_HEADER),
-    );
+    dealloc(base, block_layout(base));
 }
 
 /// The bytes `ptr`'s block holds after the header (0 for NULL).
@@ -74,7 +110,7 @@ unsafe fn block_size(ptr: *mut c_void) -> usize {
     if ptr.is_null() {
         0
     } else {
-        ((ptr as *mut u8).sub(EMALLOC_HEADER) as *const usize).read() - EMALLOC_HEADER
+        block_layout((ptr as *mut u8).sub(EMALLOC_HEADER)).size() - EMALLOC_HEADER
     }
 }
 
@@ -90,14 +126,51 @@ pub unsafe extern "C" fn rhp_csrc_erealloc(ptr: *mut c_void, size: usize) -> *mu
         return rhp_csrc_emalloc(size);
     }
     let base = (ptr as *mut u8).sub(EMALLOC_HEADER);
-    let old = Layout::from_size_align_unchecked((base as *const usize).read(), EMALLOC_HEADER);
-    let new = block_layout(size);
-    let base = realloc(base, old, new.size());
+    let old = block_layout(base);
+    let total = block_total(size);
+    let mut base = realloc(base, old, total);
     if base.is_null() {
-        handle_alloc_error(new);
+        handle_alloc_error(Layout::from_size_align_unchecked(total, old.align()));
     }
-    (base as *mut usize).write(new.size());
+    let new = Layout::from_size_align_unchecked(total, old.align());
+    if (base as usize).is_multiple_of(EMALLOC_ALIGN) {
+        set_block_layout(base, new);
+    } else {
+        // A byte-aligned block that moved to a less aligned address.
+        let moved = alloc_block(total);
+        std::ptr::copy_nonoverlapping(
+            base.add(EMALLOC_HEADER),
+            moved.add(EMALLOC_HEADER),
+            old.size().min(total) - EMALLOC_HEADER,
+        );
+        dealloc(base, new);
+        base = moved;
+    }
     base.add(EMALLOC_HEADER) as *mut c_void
+}
+
+/// `len` bytes at `ptr + offset` in an emalloc block, as a `Vec<u8>`. A
+/// byte-aligned block (the usual case) becomes the vector's buffer: the
+/// bytes move to its start and nothing is allocated or copied elsewhere,
+/// so a C result is held once. Other blocks are copied and freed.
+///
+/// # Safety
+///
+/// `ptr` came from `rhp_csrc_emalloc`, `offset + len` bytes of it are
+/// initialised, and it is not used again.
+pub unsafe fn emalloc_into_vec(ptr: *mut c_void, offset: usize, len: usize) -> Vec<u8> {
+    let base = (ptr as *mut u8).sub(EMALLOC_HEADER);
+    let layout = block_layout(base);
+    let src = (ptr as *const u8).add(offset);
+    if layout.align() == 1 {
+        std::ptr::copy(src, base, len);
+        // The block was allocated as `Layout::array::<u8>(layout.size())`.
+        Vec::from_raw_parts(base, len, layout.size())
+    } else {
+        let v = std::slice::from_raw_parts(src, len).to_vec();
+        rhp_csrc_efree(ptr);
+        v
+    }
 }
 
 /// zend_shim.h's `zend_safe_address_guarded`: `nmemb * size + offset`. On
@@ -160,6 +233,23 @@ mod tests {
         }
         // SAFETY: NULL is a no-op, as in php.
         unsafe { super::rhp_csrc_efree(std::ptr::null_mut()) };
+    }
+
+    #[test]
+    fn emalloc_block_becomes_a_vec() {
+        for (size, offset, len) in [(1usize, 0usize, 1usize), (64, 24, 40), (1 << 20, 24, 1000)] {
+            let p = super::rhp_csrc_emalloc(size) as *mut u8;
+            // SAFETY: the block holds `size` bytes, `offset + len` of them
+            // written; it is not used after emalloc_into_vec.
+            let v = unsafe {
+                for i in 0..offset + len {
+                    *p.add(i) = i as u8;
+                }
+                super::emalloc_into_vec(p as *mut c_void, offset, len)
+            };
+            assert_eq!(v.len(), len);
+            assert!(v.iter().enumerate().all(|(i, &b)| b == (offset + i) as u8));
+        }
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //! The API is libmbfl's own: [`Encoding`] with its `to_wchar` /
 //! `from_wchar` / `check` / `cut` hooks, [`ConvertBuf`] (`mb_convert_buf`),
 //! [`fast_convert`], [`convert_case`] and [`strcut`]. Strings come back as
-//! `Vec<u8>` copies; the C buffers are freed here.
+//! `Vec<u8>`s that take over the C's emalloc buffers.
 
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
 
@@ -198,19 +198,27 @@ extern "C" {
     static MBFL_ENCODING_ASCII: Encoding;
 }
 
-/// The bytes of a zend_string the C returned, which it gives up: a copy,
-/// and the C buffer freed (never the static empty string).
+/// The first byte of a zend_string's value (its flexible array member).
+///
+/// # Safety
+///
+/// `s` is a live zend_string.
+unsafe fn zstr_val(s: *mut ZendString) -> *mut u8 {
+    std::ptr::addr_of_mut!((*s).val).cast()
+}
+
+/// The bytes of a zend_string the C returned and gives up, as a `Vec` that
+/// takes over its emalloc block (never the static empty string).
 ///
 /// # Safety
 ///
 /// `s` is a live zend_string from libmbfl that nothing else owns.
 unsafe fn take(s: *mut ZendString) -> Vec<u8> {
-    let len = (*s).len;
-    let v = std::slice::from_raw_parts((*s).val.as_ptr(), len).to_vec();
-    if s != rhp_zend_empty_string {
-        rhp_csrc::rhp_csrc_efree(s as *mut c_void);
+    if s == rhp_zend_empty_string {
+        return Vec::new();
     }
-    v
+    let len = (*s).len;
+    rhp_csrc::emalloc_into_vec(s.cast(), std::mem::offset_of!(ZendString, val), len)
 }
 
 /// A C string from libmbfl's tables.
@@ -419,7 +427,7 @@ impl ConvertBuf {
     /// `mb_convert_buf_len`.
     pub fn len(&self) -> usize {
         // SAFETY: `out` points into the live string's buffer.
-        unsafe { self.raw.out.offset_from((*self.raw.str).val.as_ptr()) as usize }
+        unsafe { self.raw.out.offset_from(zstr_val(self.raw.str)) as usize }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -525,16 +533,12 @@ pub fn strcut(input: &[u8], enc: &Encoding, from: usize, len: usize) -> Option<V
     if r.is_null() {
         return None;
     }
-    // SAFETY: `result.val` holds `result.len` bytes the caller owns.
-    unsafe {
-        let v = if result.val.is_null() {
-            Vec::new()
-        } else {
-            std::slice::from_raw_parts(result.val, result.len).to_vec()
-        };
-        rhp_csrc::rhp_csrc_efree(result.val as *mut c_void);
-        Some(v)
+    if result.val.is_null() {
+        return Some(Vec::new());
     }
+    // SAFETY: `result.val` is an emalloc block holding `result.len` bytes
+    // that the caller owns.
+    Some(unsafe { rhp_csrc::emalloc_into_vec(result.val.cast(), 0, result.len) })
 }
 
 /// eaw_table.h: the ranges of double-width codepoints, sorted.

@@ -1,8 +1,5 @@
-//! PHP runtime / environment introspection (php's `ext/standard` "info" group):
-//! `extension_loaded`, `function_exists`, `phpversion`, `php_sapi_name`,
-//! `version_compare`, the error/exception-handler setters (stored, not invoked —
-//! this engine emits no diagnostics), and a handful of no-op-ish runtime knobs.
-//! Enough to boot a real framework / Composer.
+//! main/output.c: the userland output-control functions (`ob_*`). The
+//! handler stack itself lives in the host ([`crate::Host::output_control`]).
 
 use rhp_values::ops::deref;
 use rhp_values::Value;
@@ -77,12 +74,6 @@ fn fn_ob_implicit_flush(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     ob(host, crate::ObCall::ImplicitFlush(on))
 }
 
-fn fn_set_time_limit(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let secs = crate::zend::zpp::int_param(host, args, 0, "set_time_limit", "seconds", 0)?;
-    crate::runtime_fns::ini_store(b"max_execution_time", secs.to_string().into_bytes());
-    Ok(Value::Bool(true))
-}
-
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
@@ -100,7 +91,6 @@ pub fn register(m: &mut crate::Registry) {
             ("ob_list_handlers", fn_ob_list_handlers),
             ("ob_get_status", fn_ob_get_status),
             ("ob_implicit_flush", fn_ob_implicit_flush),
-            ("set_time_limit", fn_set_time_limit),
         ],
     );
 }

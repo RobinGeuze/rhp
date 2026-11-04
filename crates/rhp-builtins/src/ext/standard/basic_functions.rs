@@ -9,7 +9,7 @@ use crate::ext::standard::array::as_array;
 use crate::ext::standard::pageinfo::script_stat;
 use crate::file_fns::path_arg;
 use crate::ini_table::INI_TABLE;
-use crate::php_fns::ob;
+use crate::main::output::ob;
 use crate::proc_fns::zpp_long;
 use crate::runtime_fns::{
     alter_ini_entry, ini_apply, ini_default_value, ini_parse_uquantity, ini_value, module_loaded,

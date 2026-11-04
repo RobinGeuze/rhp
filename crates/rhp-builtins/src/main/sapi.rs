@@ -951,43 +951,6 @@ fn fn_header_register_callback(host: &mut dyn Host, args: &[Value]) -> Result<Va
     Ok(Value::Bool(true))
 }
 
-fn fn_apache_request_headers(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    let mut a = PhpArray::new();
-    for (k, v) in host.request_headers() {
-        a.insert(ArrayKey::from_bytes(&k), Value::str(v));
-    }
-    Ok(Value::Array(a))
-}
-
-/// php-cgi's `apache_child_terminate`: only meaningful under FastCGI.
-fn fn_apache_child_terminate(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Null)
-}
-
-fn fn_apache_response_headers(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    let mut a = PhpArray::new();
-    if let Some(r) = host.response() {
-        for h in &r.headers {
-            let Some(colon) = h.iter().position(|&b| b == b':') else {
-                continue;
-            };
-            let mut len = colon;
-            while len > 0 && matches!(h[len - 1], b' ' | b'\t') {
-                len -= 1;
-            }
-            if len == 0 {
-                continue;
-            }
-            let mut p = colon + 1;
-            while p < h.len() && matches!(h[p], b' ' | b'\t') {
-                p += 1;
-            }
-            a.insert(ArrayKey::from_bytes(&h[..len]), Value::str(h[p..].to_vec()));
-        }
-    }
-    Ok(Value::Array(a))
-}
-
 /// The CGI SAPI's request headers from its environment
 /// (`apache_request_headers` without FastCGI): `HTTP_FOO_BAR` → `Foo-Bar`,
 /// plus `CONTENT_TYPE` / `CONTENT_LENGTH`.
@@ -1064,10 +1027,6 @@ pub fn register(m: &mut crate::Registry) {
             ("setcookie", fn_setcookie),
             ("setrawcookie", fn_setrawcookie),
             ("header_register_callback", fn_header_register_callback),
-            ("getallheaders", fn_apache_request_headers),
-            ("apache_request_headers", fn_apache_request_headers),
-            ("apache_response_headers", fn_apache_response_headers),
-            ("apache_child_terminate", fn_apache_child_terminate),
         ],
     );
 }

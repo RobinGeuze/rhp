@@ -1,9 +1,5 @@
-//! Small standard-library / system builtins: `array_first`/`array_last`,
-//! `str_increment`/`str_decrement`, `ip2long`/`long2ip`, `gettimeofday`,
-//! `lcg_value`, `zend_version`, `get_cfg_var`, `get_include_path`/
-//! `set_include_path`, `error_clear_last`, `cli_set_process_title`/
-//! `cli_get_process_title`, `gethostname`, `gethostbyname`, `getmyuid`/
-//! `getmygid`/`getmyinode`, `get_current_user`.
+//! sapi/cli/php_cli_process_title.c: `cli_set_process_title` and
+//! `cli_get_process_title`.
 
 use rhp_values::Value;
 

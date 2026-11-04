@@ -49,15 +49,14 @@ mod ini_parse;
 mod ini_table;
 mod json_fns;
 mod opcache_fns;
-pub mod php_fns;
 mod preg_fns;
 mod proc_fns;
 mod query_fns;
 mod runtime_fns;
+mod sapi;
 mod socket_fns;
 mod stdext_fns;
 mod stream_fns;
-mod sysmisc_fns;
 pub(crate) mod url;
 mod webenc_fns;
 
@@ -256,7 +255,7 @@ pub fn reset_request_state() {
     ext::libxml::reset_state();
     ext::date::reset_state();
     runtime_fns::reset_state();
-    sysmisc_fns::reset_state();
+    sapi::cli::reset_state();
     preg_fns::reset_state();
     json_fns::reset_state();
     #[cfg(feature = "mbstring-libmbfl")]
@@ -334,7 +333,8 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("pageinfo", Box::new(ext::standard::pageinfo::register)),
         ("dns", Box::new(ext::standard::dns::register)),
         ("versioning", Box::new(ext::standard::versioning::register)),
-        ("php_fns", Box::new(php_fns::register)),
+        ("output", Box::new(main::output::register)),
+        ("main", Box::new(main::register)),
         ("info", Box::new(ext::standard::info::register)),
         ("stream_fns", Box::new(stream_fns::register)),
         ("socket_fns", Box::new(socket_fns::register)),
@@ -350,7 +350,8 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("rfc1867", Box::new(main::rfc1867::register)),
         ("opcache_fns", Box::new(opcache_fns::register)),
         ("ini_parse", Box::new(ini_parse::register)),
-        ("sysmisc_fns", Box::new(sysmisc_fns::register)),
+        ("cli", Box::new(sapi::cli::register)),
+        ("cgi", Box::new(sapi::cgi::register)),
         ("stdext_fns", Box::new(stdext_fns::register)),
         ("random", Box::new(ext::random::register)),
         ("readline", Box::new(ext::readline::register)),

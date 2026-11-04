@@ -6888,7 +6888,6 @@ ext/standard/tests/http/bug80256.phpt
 ext/standard/tests/http/bug80838.phpt
 ext/standard/tests/http/gh15034.phpt
 ext/standard/tests/http/gh15650.phpt
-ext/standard/tests/http/gh16810.phpt
 ext/standard/tests/http/gh22171.phpt
 ext/standard/tests/http/gh8641.phpt
 ext/standard/tests/http/gh9316.phpt
@@ -7794,7 +7793,6 @@ ext/standard/tests/url/bug68917.phpt
 ext/standard/tests/url/bug69976.phpt
 ext/standard/tests/url/bug73192.phpt
 ext/standard/tests/url/bug74780.phpt
-ext/standard/tests/url/get_headers_error_003.phpt
 ext/standard/tests/url/parse_url_basic_001.phpt
 ext/standard/tests/url/parse_url_basic_002.phpt
 ext/standard/tests/url/parse_url_basic_003.phpt

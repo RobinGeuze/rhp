@@ -124,9 +124,7 @@ fn t_array_combine() {
         dumped(&r),
         "array(4) {\n  [\"a\"]=>\n  int(1)\n  [\"2.9\"]=>\n  int(2)\n  [1]=>\n  int(3)\n  [123]=>\n  int(4)\n}\n"
     );
-    assert!(
-        fn_array_combine(&mut NullHost, &[list(vec![i(1), i(2)]), list(vec![i(1)])]).is_err()
-    );
+    assert!(fn_array_combine(&mut NullHost, &[list(vec![i(1), i(2)]), list(vec![i(1)])]).is_err());
 }
 
 #[test]

@@ -19,9 +19,7 @@ fn known_vectors() {
     );
     assert_eq!(
         sha256(&k, &c(b"$5$rounds=5000$usesomesillystri$")).as_deref(),
-        Some(
-            &b"$5$rounds=5000$usesomesillystri$KqJWpanXZHKq2BOB43TSaYhEWsQ1Lr5QNyPCDH/Tp.6"[..]
-        )
+        Some(&b"$5$rounds=5000$usesomesillystri$KqJWpanXZHKq2BOB43TSaYhEWsQ1Lr5QNyPCDH/Tp.6"[..])
     );
     assert_eq!(
         sha512(&k, &c(b"$6$rounds=5000$usesomesillystri$")).as_deref(),

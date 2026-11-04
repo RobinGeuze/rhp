@@ -22,8 +22,8 @@ fn encrypt(plain: &[u8], key: &[u8], iv: &[u8; 16]) -> String {
         .iter()
         .map(|x| format!("{x:02x}"))
         .collect();
-    let json = format!(r#"{{"iv":"{iv}","value":"{value}","mac":"{mac}","tag":""}}"#)
-        .replace('/', "\\/");
+    let json =
+        format!(r#"{{"iv":"{iv}","value":"{value}","mac":"{mac}","tag":""}}"#).replace('/', "\\/");
     b.encode(json)
 }
 

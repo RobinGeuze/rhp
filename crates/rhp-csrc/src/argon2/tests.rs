@@ -5,7 +5,8 @@ fn hash_then_verify() {
     let h = hash(2, 1024, 1, b"password", b"somesalt", 32, Type::Id).unwrap();
     assert_eq!(
         h,
-        b"$argon2id$v=19$m=1024,t=2,p=1$c29tZXNhbHQ$7FfsnA6vUe7qLpL/3Kqc3uR48ZJyFbUVt7jWZlf0Htk".to_vec()
+        b"$argon2id$v=19$m=1024,t=2,p=1$c29tZXNhbHQ$7FfsnA6vUe7qLpL/3Kqc3uR48ZJyFbUVt7jWZlf0Htk"
+            .to_vec()
     );
     let c = std::ffi::CString::new(h).unwrap();
     assert!(verify(&c, b"password", Type::Id));

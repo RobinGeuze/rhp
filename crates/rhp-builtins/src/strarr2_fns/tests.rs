@@ -265,9 +265,7 @@ fn substr_replace_errors() {
         &[s("abc"), s("X"), list(vec![i(1)]), list(vec![i(1)])]
     )
     .is_err());
-    assert!(
-        fn_substr_replace(&mut NullHost, &[s("abc"), s("X"), i(1), list(vec![i(1)])]).is_err()
-    );
+    assert!(fn_substr_replace(&mut NullHost, &[s("abc"), s("X"), i(1), list(vec![i(1)])]).is_err());
 }
 
 // --- levenshtein -----------------------------------------------------

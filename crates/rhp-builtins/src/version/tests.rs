@@ -11,9 +11,7 @@ fn derived_values() {
     assert_eq!(parse_int("0"), 0);
     assert_eq!(
         PHP_VERSION,
-        format!(
-            "{PHP_MAJOR_VERSION}.{PHP_MINOR_VERSION}.{PHP_RELEASE_VERSION}{PHP_EXTRA_VERSION}"
-        )
+        format!("{PHP_MAJOR_VERSION}.{PHP_MINOR_VERSION}.{PHP_RELEASE_VERSION}{PHP_EXTRA_VERSION}")
     );
     assert_eq!(ZEND_VERSION, format!("4.5.{PHP_RELEASE_VERSION}"));
     assert!(EXTENSION_DIR.ends_with(PHP_API));

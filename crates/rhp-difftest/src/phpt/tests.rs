@@ -87,9 +87,8 @@ fn ini_noops_run_others_skip() {
     let p = Phpt::parse(b"--INI--\noutput_buffering=4096\n--FILE--\n");
     assert_eq!(test_ini(&p).unwrap_err(), "ini:output_buffering");
     // Directives rhp applies run, and only those reach rhp.
-    let p = Phpt::parse(
-        b"--INI--\npcre.jit=0\noutput_buffering=0\nopcache.jit=tracing\n--FILE--\n",
-    );
+    let p =
+        Phpt::parse(b"--INI--\npcre.jit=0\noutput_buffering=0\nopcache.jit=tracing\n--FILE--\n");
     let ini = test_ini(&p).unwrap();
     assert_eq!(ini.len(), 3);
     let to_rhp: Vec<&String> = ini.iter().filter(|kv| rules.rhp_applies(kv)).collect();
@@ -339,7 +338,8 @@ fn run_proc_merges_streams_and_survives_background_children() {
 
 #[test]
 fn uncaught_exception_trace_counts_as_diagnostic() {
-    let php = b"start\nPHP Fatal error:  Uncaught Error: Call to undefined function f() in /t.php:3\n\
+    let php =
+        b"start\nPHP Fatal error:  Uncaught Error: Call to undefined function f() in /t.php:3\n\
                     Stack trace:\n#0 {main}\n  thrown in /t.php on line 3\n";
     assert_eq!(strip_diagnostics(php), "start");
     let php = b"start\n\nFatal error: Uncaught Exception: a in /t.php:2\nStack trace:\n#0 {main}\n\n\
@@ -474,7 +474,8 @@ fn cgi_requests_match_run_tests() {
 
 #[test]
 fn cgi_output_splits_and_version_is_rewritten() {
-    let out = b"X-Powered-By: PHP/8.5.9\r\nContent-type: text/html; charset=UTF-8\r\n\r\nbody PHP/8.5.9";
+    let out =
+        b"X-Powered-By: PHP/8.5.9\r\nContent-type: text/html; charset=UTF-8\r\n\r\nbody PHP/8.5.9";
     let (h, b) = split_cgi(out).unwrap();
     assert_eq!(
         h,

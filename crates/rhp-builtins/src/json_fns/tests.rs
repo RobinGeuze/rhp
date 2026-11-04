@@ -140,9 +140,7 @@ fn decode_scalars_and_numbers() {
 fn decode_strings_and_unicode() {
     assert!(matches!(dec("\"hi\\u0041\""), Value::Str(s) if s.as_bytes() == b"hiA"));
     // surrogate pair -> 😀 (U+1F600)
-    assert!(
-        matches!(dec("\"\\ud83d\\ude00\""), Value::Str(s) if s.as_bytes() == "😀".as_bytes())
-    );
+    assert!(matches!(dec("\"\\ud83d\\ude00\""), Value::Str(s) if s.as_bytes() == "😀".as_bytes()));
     // lone surrogate -> error -> null
     assert!(matches!(dec("\"\\ud83d\""), Value::Null));
     assert_eq!(get_last_error(), JSON_ERROR_UTF16);

@@ -501,8 +501,7 @@ fn replace_callback() {
             Value::str((n * 2).to_string())
         }),
     };
-    let r =
-        fn_preg_replace_callback(&mut host, &[s("/\\d+/"), Value::Null, s("a3b4")]).unwrap();
+    let r = fn_preg_replace_callback(&mut host, &[s("/\\d+/"), Value::Null, s("a3b4")]).unwrap();
     assert_eq!(as_str(&r), "a6b8");
 
     // use capture groups: swap the two digits of each pair
@@ -514,9 +513,8 @@ fn replace_callback() {
             Value::str(format!("{g2}{g1}"))
         }),
     };
-    let r2 =
-        fn_preg_replace_callback(&mut host2, &[s("/(\\d)(\\d)/"), Value::Null, s("x12y34")])
-            .unwrap();
+    let r2 = fn_preg_replace_callback(&mut host2, &[s("/(\\d)(\\d)/"), Value::Null, s("x12y34")])
+        .unwrap();
     assert_eq!(as_str(&r2), "x21y43");
 }
 

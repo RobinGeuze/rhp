@@ -87,6 +87,17 @@ jobs:
           php-version: '8.5'
       # After setup-php: rhp links the library versions this php links.
       - uses: ./.github/actions/native-deps
+      # The PHP prelude files (crates/rhp-builtins/src/**/*.php, no open
+      # tag) must stay valid php. Some declare functions under php's own
+      # names, which php would refuse to redeclare: they are disabled.
+      - name: Prelude files pass php -l
+        run: |
+          rc=0
+          for f in $(git ls-files 'crates/rhp-builtins/src/*.php'); do
+            fns=$(grep -oE '^function +&?[A-Za-z_][A-Za-z0-9_]*' "$f" | sed -E 's/^function +&?//' | paste -sd, -)
+            out=$({ echo '<?php'; cat "$f"; } | php -n -d "disable_functions=$fns" -l 2>&1) || { echo "$f: $out"; rc=1; }
+          done
+          exit $rc
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: rhp-difftest's live-php tests

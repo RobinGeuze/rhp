@@ -90,12 +90,13 @@ curl_setopt($h, CURLOPT_RETURNTRANSFER, true);
 var_dump(curl_exec($h), curl_errno($h), str_replace($dir, 'DIR', curl_error($h)));
 $h = curl_init('foo://bar');
 var_dump(curl_exec($h), curl_errno($h), curl_error($h));
+// (The disabled-protocol texts differ between libcurl releases: tests/curl.rs.)
 $h = curl_init('ftp://x/');
 curl_setopt($h, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
-var_dump(curl_exec($h), curl_errno($h), curl_error($h));
+var_dump(curl_exec($h), curl_errno($h));
 $h = curl_init($url);
 curl_setopt($h, CURLOPT_PROTOCOLS, CURLPROTO_HTTP);
-var_dump(curl_exec($h), curl_errno($h), curl_error($h));
+var_dump(curl_exec($h), curl_errno($h));
 
 echo "== validation\n";
 $h = curl_init();

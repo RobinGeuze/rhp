@@ -161,6 +161,11 @@ fn tls_srp_options_match_php() {
 }
 
 #[test]
+fn build_dependent_options_match_php() {
+    check("setopt_build", include_str!("curl/setopt_build.php"));
+}
+
+#[test]
 fn failures_match_php() {
     check(
         "failures",

@@ -120,10 +120,8 @@ int(1)
 string(28) "Protocol "foo" not supported"
 bool(false)
 int(1)
-string(26) "Protocol "ftp" is disabled"
 bool(false)
 int(1)
-string(27) "Protocol "file" is disabled"
 == validation
 curl_setopt(): Argument #1 ($handle) must be of type CurlHandle, int given
 curl_setopt(): Argument #1 ($handle) must be of type CurlHandle, string given

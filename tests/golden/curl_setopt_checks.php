@@ -1,6 +1,8 @@
 <?php
 // curl_setopt argument checks: writable stream handles, string conversion of
 // option values, CURLOPT_SSL_VERIFYHOST 1, and libcurl's own range checks.
+// What depends on how libcurl was built (HTTP/3, NTLM, SRP, RTMP, SMB, the
+// width of CURLAUTH_ANY) is in crates/rhp-difftest/tests/curl.rs.
 $dir = sys_get_temp_dir() . '/rhp_curl_setopt_' . getmypid();
 @mkdir($dir);
 $p = "$dir/f.txt";
@@ -72,14 +74,13 @@ $cases = [
     'MAXREDIRS' => [-5, -2, -1, 0, 20],
     'SSLVERSION' => [99, 2, 3, 0, 1, 6, 7, 8, CURL_SSLVERSION_TLSv1_2 | CURL_SSLVERSION_MAX_TLSv1_3, 1 | (8 << 16)],
     'PROXYTYPE' => [12345, -1, 0, 7, 8],
-    'HTTP_VERSION' => [99, -1, 0, 2, 3, 4, 5, 6, 30, 31, 32],
+    'HTTP_VERSION' => [99, -1, 0, 2, 3, 4, 5, 6, 32],
     'IPRESOLVE' => [99, -1, 0, 1, 2, 3],
     'PORT' => [99999, -1, 0, 80, 65535, 65536],
     'FOLLOWLOCATION' => [0, 1, 2, 3, 4, -1],
     'BUFFERSIZE' => [-1, 0, 1024],
     'INFILESIZE' => [-2, -1, 0],
-    'HTTPAUTH' => [0, CURLAUTH_BASIC, CURLAUTH_NTLM, CURLAUTH_ANY, CURLAUTH_ONLY, CURLAUTH_DIGEST_IE, CURLAUTH_ANYSAFE],
-    'PROXYAUTH' => [CURLAUTH_NTLM, CURLAUTH_BASIC | CURLAUTH_NTLM],
+    'HTTPAUTH' => [0, CURLAUTH_BASIC, CURLAUTH_ONLY, CURLAUTH_DIGEST_IE],
     'SOCKS5_AUTH' => [0, 1, 4, 5, 2, -1],
     'NEW_FILE_PERMS' => [0644, 0777, 01000, -1],
     'ADDRESS_SCOPE' => [0, 4294967295, 4294967296, -1],
@@ -99,12 +100,12 @@ foreach ($cases as $name => $values) {
 foreach (['PROTOCOLS_STR', 'REDIR_PROTOCOLS_STR'] as $name) {
     $o = constant("CURLOPT_$name");
     $r = [];
-    foreach (['nope', '', 'all', 'ALL', 'http', 'HTTP,https', 'http,,https', 'http,', 'all,http', 'http ', 'rtmp', 'smb', 'file,ftp,sftp'] as $v) {
+    foreach (['nope', '', 'all', 'ALL', 'http', 'HTTP,https', 'http,,https', 'http,', 'all,http', 'http ', 'file,ftp,sftp'] as $v) {
         $r[] = "'$v'=" . var_export(curl_setopt(curl_init(), $o, $v), true);
     }
     echo $name, ": ", implode(' ', $r), "\n";
 }
-foreach (['INTERFACE' => ['', 'lo0'], 'SSLENGINE' => ['', 'x'], 'DNS_SERVERS' => ['', '1.1.1.1'], 'TLSAUTH_TYPE' => ['SRP', 'srp', 'x', ''], 'PROXY_TLSAUTH_TYPE' => ['SRP', 'tls']] as $name => $values) {
+foreach (['INTERFACE' => ['', 'lo0'], 'SSLENGINE' => ['', 'x'], 'DNS_SERVERS' => ['', '1.1.1.1'], 'TLSAUTH_TYPE' => ['x', ''], 'PROXY_TLSAUTH_TYPE' => ['tls']] as $name => $values) {
     $o = constant("CURLOPT_$name");
     foreach ($values as $v) {
         echo $name, " '$v' => ", var_export(curl_setopt(curl_init(), $o, $v), true), "\n";

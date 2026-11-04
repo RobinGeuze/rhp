@@ -1,0 +1,24 @@
+[package]
+name = "rhp-mbfl-sys"
+description = "php-src's libmbfl and php_unicode.c, vendored and compiled statically: LGPL code in a crate of its own"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+# Our Rust, glue and build script: MIT OR Apache-2.0. Vendored (see NOTICE):
+# libmbfl (LGPL-2.1-only; filters/mbfilter_singlebyte.c and .h PHP-3.01),
+# php_unicode.c and .h (PHP-3.01, with the ucdata MIT notice), and php-src's
+# generated unicode_data.h and rare_cp_bitvec.h (PHP-3.01).
+license = "(MIT OR Apache-2.0) AND LGPL-2.1-only AND PHP-3.01 AND MIT"
+links = "rhp_mbfl"
+build = "build.rs"
+
+[dependencies]
+# The shared Zend shim: its headers (DEP_RHP_CSRC_SHIM), zend_empty_string
+# and the emalloc family that counts against memory_limit.
+rhp-csrc = { path = "../rhp-csrc", default-features = false }
+
+[dev-dependencies]
+rhp-values = { path = "../rhp-values" }
+
+[build-dependencies]
+cc = "1.9"

@@ -18,5 +18,9 @@ default = ["crypt", "argon2"]
 crypt = []
 argon2 = []
 
+[dependencies]
+# memory_limit accounting for the shim's allocator (src/lib.rs).
+rhp-values = { path = "../rhp-values" }
+
 [build-dependencies]
 cc = "1.9"

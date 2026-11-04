@@ -242,10 +242,10 @@ impl OpsStream {
             _ => {}
         }
         if self.ops.can_seek() {
-            let (offset, whence) = if whence == libc::SEEK_CUR {
-                (self.position + offset, libc::SEEK_SET)
-            } else {
-                (offset, whence)
+            let (offset, whence) = match whence {
+                libc::SEEK_CUR => (self.position.saturating_add(offset), libc::SEEK_SET),
+                libc::SEEK_SET if offset < 0 => return -1,
+                _ => (offset, whence),
             };
             let (ret, pos) = self.ops.seek(offset, whence);
             self.position = pos;

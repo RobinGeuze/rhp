@@ -1607,7 +1607,7 @@ impl Host for Vm {
             StreamState::File(f) => Some(f.tell()),
             // php's ftell(): false while the stream position is -1.
             StreamState::Fd(f) => Some(f.tell()).filter(|&p| p != -1),
-            StreamState::Ops(s) => Some(s.tell()),
+            StreamState::Ops(s) => Some(s.tell()).filter(|&p| p != -1),
             StreamState::Stdin => Some(self.stdin_reader.as_ref().map_or(0, |f| f.tell())),
             StreamState::Mem { pos, skew, .. } => {
                 // ftell() is false while php's position is -1 (failed seek).

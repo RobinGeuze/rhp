@@ -1,0 +1,30 @@
+H*: ValueError: Type H: not enough arguments
+H: ValueError: Type H: not enough arguments
+h4: ValueError: Type h: not enough arguments
+a: ValueError: Type a: not enough arguments
+A*: ValueError: Type A: not enough arguments
+Z5: ValueError: Type Z: not enough arguments
+N: ValueError: Type N: too few arguments
+N2: ValueError: Type N: too few arguments
+n*: string(0) ""
+C3: ValueError: Type C: too few arguments
+H3a: ValueError: Type a: not enough arguments
+NH*: ValueError: Type H: not enough arguments
+H*N: ValueError: Type N: too few arguments
+N: warning: pack(): 1 arguments unused
+string(8) "00000001"
+H*: warning: pack(): 2 arguments unused
+string(2) "ab"
+C*: string(6) "010203"
+H*: warning: pack(): Type H: illegal hex digit z
+warning: pack(): Type H: illegal hex digit z
+string(2) "00"
+H5: warning: pack(): Type H: not enough characters in string
+string(4) "abc0"
+h*: string(4) "a1b2"
+N0: warning: pack(): 1 arguments unused
+string(0) ""
+a0: ValueError: Type a: not enough arguments
+v*: string(0) ""
+J: warning: pack(): 1 arguments unused
+string(16) "0000000000000001"

@@ -234,6 +234,8 @@ fn fn_pack(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out: Vec<u8> = Vec::new();
     let fmt = String::from_utf8_lossy(&format).into_owned();
     let chars: Vec<char> = fmt.chars().collect();
+    // (code, '*', count)
+    let mut codes: Vec<(char, bool, usize)> = Vec::new();
     let mut ci = 0;
     while ci < chars.len() {
         let code = chars[ci];
@@ -254,6 +256,48 @@ fn fn_pack(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         } else {
             count_str.parse().unwrap_or(1)
         };
+        codes.push((code, star, count));
+    }
+    // php's first pass: each code's arguments must be there before anything
+    // is packed.
+    let mut used = 0usize;
+    let mut checked = true;
+    for &(code, star, count) in &codes {
+        match code {
+            'a' | 'A' | 'Z' | 'h' | 'H' => {
+                if used >= vals.len() {
+                    return Err(Thrown::error(
+                        "ValueError",
+                        format!("Type {code}: not enough arguments"),
+                    ));
+                }
+                used += 1;
+            }
+            'C' | 'c' | 'n' | 'v' | 's' | 'S' | 'N' | 'V' | 'l' | 'L' | 'i' | 'I' | 'J' | 'P'
+            | 'q' | 'Q' => {
+                used = used.saturating_add(if star { vals.len() - used } else { count });
+                if used > vals.len() {
+                    return Err(Thrown::error(
+                        "ValueError",
+                        format!("Type {code}: too few arguments"),
+                    ));
+                }
+            }
+            // Not implemented here: the packing loop gives up on it.
+            _ => {
+                checked = false;
+                break;
+            }
+        }
+    }
+    if checked && used < vals.len() {
+        crate::warn(
+            host,
+            "pack",
+            &format!("{} arguments unused", vals.len() - used),
+        )?;
+    }
+    for &(code, star, count) in &codes {
         let push_int = |out: &mut Vec<u8>, v: u64, size: usize, be: bool| {
             if be {
                 for i in (0..size).rev() {

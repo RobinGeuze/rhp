@@ -523,10 +523,11 @@ impl Host for Vm {
     }
 
     fn define_const(&mut self, name: &[u8], value: Value) -> bool {
-        if self.const_taken(name) {
+        let key = builtins::const_key(name);
+        if self.const_taken(&key) {
             return false;
         }
-        self.constants.insert(name.to_vec(), value);
+        self.constants.insert(key.into_owned(), value);
         self.user_const_order.push(name.to_vec());
         true
     }
@@ -534,7 +535,10 @@ impl Host for Vm {
     fn user_constants(&self) -> Vec<(Vec<u8>, Value)> {
         self.user_const_order
             .iter()
-            .filter_map(|n| self.constants.get(n).map(|v| (n.clone(), v.clone())))
+            .filter_map(|n| {
+                let v = self.constants.get(&*builtins::const_key(n))?;
+                Some((n.clone(), v.clone()))
+            })
             .collect()
     }
 
@@ -563,7 +567,7 @@ impl Host for Vm {
     }
 
     fn get_const(&self, name: &[u8]) -> Option<Value> {
-        self.constants.get(name).cloned()
+        self.constants.get(&*builtins::const_key(name)).cloned()
     }
 
     fn bc_scale(&self) -> i64 {
@@ -6631,14 +6635,15 @@ impl Vm {
                     self.sync_global_cv(top, cv);
                 }
                 Instr::DeclareConst { name, src } => {
-                    let cname = proto.names[name as usize].as_bytes().to_vec();
+                    let cname = proto.names[name as usize].as_bytes();
+                    let key = builtins::const_key(cname);
                     let v = self.reg_get(top, src);
-                    if self.const_taken(&cname) {
-                        let msg = builtins::const_redefined_message(&cname);
+                    if self.const_taken(&key) {
+                        let msg = builtins::const_redefined_message(cname);
                         self.diag(builtins::E_WARNING, &msg)?;
                     } else {
-                        self.constants.insert(cname.clone(), v);
-                        self.user_const_order.push(cname);
+                        self.constants.insert(key.into_owned(), v);
+                        self.user_const_order.push(cname.to_vec());
                     }
                 }
                 Instr::MakeFcc { dst, callee } => {
@@ -7988,8 +7993,9 @@ impl Vm {
                     name,
                     fallback,
                 } => {
-                    let cname = proto.names[name as usize].as_bytes().to_vec();
-                    let v = self.constants.get(&cname).cloned().or_else(|| {
+                    let cname = proto.names[name as usize].as_bytes();
+                    let key = builtins::const_key(cname);
+                    let v = self.constants.get(&*key).cloned().or_else(|| {
                         if fallback != rhp_bytecode::NO_NAME {
                             self.constants
                                 .get(proto.names[fallback as usize].as_bytes())
@@ -8000,7 +8006,7 @@ impl Vm {
                     });
                     match v {
                         Some(v) => {
-                            let bare = cname.rsplit(|&c| c == b'\\').next().unwrap_or(&cname);
+                            let bare = cname.rsplit(|&c| c == b'\\').next().unwrap_or(cname);
                             let deprecation = match bare {
                                 b"E_STRICT" => Some(
                                     "Constant E_STRICT is deprecated since 8.4, the error level was removed",
@@ -8022,7 +8028,7 @@ impl Vm {
                                 "Error",
                                 format!(
                                     "Undefined constant \"{}\"",
-                                    String::from_utf8_lossy(&cname)
+                                    String::from_utf8_lossy(cname)
                                 ),
                             ))
                         }

@@ -566,9 +566,11 @@ Zend/tests/constants/bug33732.phpt
 Zend/tests/constants/bug41633_1.phpt
 Zend/tests/constants/bug41633_4.phpt
 Zend/tests/constants/bug41640.phpt
+Zend/tests/constants/bug42820.phpt
 Zend/tests/constants/bug45742.phpt
 Zend/tests/constants/bug45910.phpt
 Zend/tests/constants/bug45910_2.phpt
+Zend/tests/constants/bug46304.phpt
 Zend/tests/constants/bug49472.phpt
 Zend/tests/constants/bug50816.phpt
 Zend/tests/constants/bug63976.phpt
@@ -1527,6 +1529,7 @@ Zend/tests/named_params/runtime_cache_init.phpt
 Zend/tests/named_params/unknown_named_param.phpt
 Zend/tests/namespaces/bug42819.phpt
 Zend/tests/namespaces/bug46813.phpt
+Zend/tests/namespaces/bug47593.phpt
 Zend/tests/namespaces/bug77376.phpt
 Zend/tests/namespaces/gh11152.phpt
 Zend/tests/namespaces/namespace_first_stmt_nop.phpt
@@ -1575,6 +1578,7 @@ Zend/tests/namespaces/ns_042.phpt
 Zend/tests/namespaces/ns_043.phpt
 Zend/tests/namespaces/ns_046.phpt
 Zend/tests/namespaces/ns_048.phpt
+Zend/tests/namespaces/ns_049.phpt
 Zend/tests/namespaces/ns_050.phpt
 Zend/tests/namespaces/ns_053.phpt
 Zend/tests/namespaces/ns_054.phpt

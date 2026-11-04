@@ -702,11 +702,14 @@ try/catch/finally (exception_table: {[Ltry,Lend)->catch Lcatch, finally Lfin}):
   includer; `run_main`'s uncaught-throwable report, shutdown functions and
   output flush), and requires byte-identical output. It needs no `php` binary,
   so it also runs in the "test (no php)" CI job.
+- **CLI fixtures** (`tests/cli`, `crates/rhp-cli/tests/cli.rs`): the built
+  `rhp` against php's committed stdout, stderr and exit status for argv,
+  stdin, `-d`/`-r`, uncaught errors and `fork`.
 - **Live php diffs.** The built `rhp` and a real `php` / `php-cgi` run the same
-  input and their outputs are compared byte for byte: the `rhp-cli` tests that
-  shell out (argv, stdin, multi-file includes, exit codes, CGI; they skip when
-  no `php` is on `PATH`), and `rhp-difftest` (the php-src `.phpt` corpus with
-  its known-passing ratchet in `tests/phpt/`, fixture apps, extension sweeps).
+  input and their outputs are compared byte for byte: rhp-cli's live tests
+  (CGI fixtures, memory_limit, intl, phar; they skip when no `php` is on
+  `PATH`), and `rhp-difftest` (the php-src `.phpt` corpus with its
+  known-passing ratchet in `tests/phpt/`, fixture apps, extension sweeps).
 - **Refusals** have no php output to compare against, so their tests
   (`crates/rhp-cli/tests/unsupported.rs`) assert the `RHP_UNSUPPORTED` marker
   instead.

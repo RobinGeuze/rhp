@@ -486,8 +486,8 @@ The module is deliberately "READ-ONLY, native format only"
   undefined-index/variable reads yield null without a notice, etc. The `E_*`
   constants exist (`builtins/lib.rs:416-433`) purely as values.
 - **How it's worked around:** the differential harness runs php with
-  `error_reporting=0` (`rhp-difftest/src/lib.rs:57`, and the CLI diff tests at
-  `rhp-cli/tests/include.rs:16-20`, `tests/namespaces.rs:18`), so php writes no
+  `error_reporting=0` (`rhp-difftest/src/lib.rs:57`, and the CLI diff tests of
+  the time), so php writes no
   diagnostics to stdout either — parity is achieved by *both sides being silent*.
   php sends diagnostics to stderr, which the harness ignores.
 - **Breaks:** (a) code that sets `error_reporting(E_ALL)` and treats warnings as

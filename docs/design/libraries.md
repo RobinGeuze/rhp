@@ -12,7 +12,8 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 - **Where php runs its own C** with no Zend dependency (libmbfl, timelib,
   crypt), rhp compiles that C from the pinned php-src tag, in
   `crates/rhp-csrc` (see [Compiled from source](#compiled-from-source-rhp-csrc)).
-  LGPL C such as libmbfl goes in its own crate (see [Licences](#licences)).
+  LGPL C (libmbfl) goes in a crate of its own, `crates/rhp-mbfl-sys` (see
+  [Licences](#licences)).
 - **Where php-src owns the data** (stubs, entity tables, Bison tables), rhp
   generates it from php-src.
 - A pure-Rust crate replaces library behaviour only with evidence: it is
@@ -35,7 +36,7 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 
 | Kind | Linked | Examples |
 |---|---|---|
-| Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, argon2 (in `rhp-csrc`); later timelib, oniguruma, and libmbfl in its own crate (LGPL) |
+| Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, argon2 (in `rhp-csrc`); libmbfl and php_unicode.c (in `rhp-mbfl-sys`, LGPL); later timelib, oniguruma |
 | A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libcurl, libxml2 on Linux |
 | The listed exceptions below | dynamic | |
 
@@ -85,6 +86,7 @@ Today rhp-builtins links:
 | php-src crypt C (via rhp-csrc) | static, compiled from php-8.5.12 | the same |
 | argon2 (via rhp-csrc) | static, compiled from release 20190702 | the same |
 | libcurl | static, Homebrew curl (keg-only), with its Homebrew dependencies (nghttp2, nghttp3, ngtcp2, libssh2, libpsl, zstd, brotli) static; OpenSSL is the row above | static, libcurl4-openssl-dev; its dependencies dynamic (see above), OpenSSL the row above |
+| libmbfl, php_unicode.c (via rhp-mbfl-sys; feature `mbstring-libmbfl`, on by default) | static, compiled from php-8.5.12 | the same |
 | libgmp | dynamic, Homebrew gmp | dynamic, libgmp-dev |
 
 ICU's data library is most of the size: linking ICU statically adds about
@@ -106,9 +108,9 @@ zlib and bzip2 predate this policy and still go through their -sys crates.
 bzip2 is built from bzip2-sys's 1.0.8 source, not taken from macOS's
 /usr/lib/libbz2 as the list above would have it. Known gap: libz-sys builds
 its bundled zlib when it finds no system zlib, a silent fallback.
-rhp-csrc's code is the same on every machine, so it needs no row in
-`native.rs` or the native-deps action, only a C compiler (and `nm` for its
-test).
+rhp-csrc's and rhp-mbfl-sys's code is the same on every machine, so it
+needs no row in `native.rs` or the native-deps action, only a C compiler
+(and `nm` for their tests).
 
 **OpenSSL goes through openssl-sys**, for its declarations (no bindgen, no
 `vendored` feature); `ext/openssl/sys.rs` declares what it lacks. openssl-sys
@@ -241,6 +243,36 @@ php reports no version for its crypt C or for libargon2
 (`ARGON2_VERSION_NUMBER` is the algorithm version, the `v=19` in a hash), so
 neither has a row in the "linked" section of `tools/capture-ref-build.php`.
 
+**LGPL C: rhp-mbfl-sys.** php-src's libmbfl (`ext/mbstring/libmbfl`, LGPL-2.1)
+and the PHP-licensed code mbstring.c compiles next to it (php_unicode.c,
+unicode_data.h, eaw_table.h, rare_cp_bitvec.h) live in
+`crates/rhp-mbfl-sys/vendor/php-src`, written by the same
+`sync-php-src-c.sh`, which copies every `.c` and `.h` under libmbfl so a
+php bump brings new files along. The crate builds against rhp-csrc's shim
+(`DEP_RHP_CSRC_SHIM`), whose symbols, `zend_empty_string` and the `emalloc`
+family included, are defined once, in rhp-csrc's zend archive. It has its
+own prefix header (`glue/prefix_mbfl.h`) and tests: every global symbol is
+`rhp_`-prefixed (the failing test prints the lines to add), and no symbol
+is defined in both crates. `glue/mbfl.c` wraps libmbfl's static inline
+buffer helpers and checks with `_Static_assert` the layouts and constants
+the Rust side mirrors. rhp-builtins depends on it only through its
+`mbstring-libmbfl` feature (on by default); without it there is no
+mbstring extension and no LGPL code in the binary. phpinfo reports
+libmbfl's version from `MBFL_VERSION_*`, read through the glue, as php's
+does.
+
+**Memory.** The shim's `emalloc`, `erealloc` and `ecalloc` go through Rust's
+global allocator, so C allocations count against `memory_limit` as php's
+do. php 8.5's libmbfl grows its buffers with the fallible
+`safe_ferealloc`: past the limit it fails, the conversion stops, and the
+error waits for the VM's next check, as php delays it. The shim's version
+does the same (`rhp_values::mem::reserve_realloc`). emalloc blocks are
+allocated byte-aligned (the system allocator still returns them
+malloc-aligned; a block that isn't is allocated again 16-aligned), so a
+string the C returns becomes a Rust `Vec<u8>` in place
+(`rhp_csrc::emalloc_into_vec`), and mbstring reads its string arguments
+without copying them: a call holds its data once, as in php.
+
 ## Licences
 
 - Never GPL.
@@ -265,7 +297,9 @@ neither has a row in the "linked" section of `tools/capture-ref-build.php`.
 One VM per OS thread (see the web SAPI plan). For C libraries:
 
 - **Process-wide init happens once**, under `std::sync::Once` (e.g.
-  `xmlInitParser`, `curl_global_init`). PCRE2 needs none.
+  `xmlInitParser`, `curl_global_init`). PCRE2 and libmbfl need none:
+  libmbfl's tables are `const` or never written, and the AVX2 function
+  pointers in mbfilter_utf16.c, set at startup in php, are compiled out.
 - **Everything else is per thread.** PCRE2's compile and match contexts, JIT
   stack, settings and pattern cache live in a `thread_local!` in
   `rhp-builtins/src/pcre/mod.rs`, as php keeps them in TLS globals. Library
@@ -379,7 +413,8 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
 
 1. php-src C: add the files to `FILES` in
    `crates/rhp-csrc/tools/sync-php-src-c.sh` and run it on a php-src
-   checkout at the pinned commit. A frozen library: write a
+   checkout at the pinned commit. LGPL C goes in a crate of its own that
+   builds against this shim, like rhp-mbfl-sys (`MBFL_FILES`). A frozen library: write a
    `crates/rhp-csrc/tools/sync-<lib>.sh` like `sync-argon2.sh` (release
    tarball, pinned SHA-256, file list) and run it.
 2. Add a cargo feature and its build to `build.rs`; php-src C goes through

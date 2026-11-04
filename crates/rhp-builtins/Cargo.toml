@@ -5,6 +5,13 @@ version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = ["mbstring-libmbfl"]
+# The mbstring extension, on php-src's libmbfl (LGPL-2.1, in the
+# rhp-mbfl-sys crate). Without it rhp has no mbstring extension and contains
+# no LGPL code.
+mbstring-libmbfl = ["dep:rhp-mbfl-sys"]
+
 [dependencies]
 rhp-values = { path = "../rhp-values" }
 rhp-semantics = { path = "../rhp-semantics" }
@@ -40,6 +47,7 @@ num-integer = "0.1"
 # crypt() and password_*: php-src's crypt C and the argon2 reference C php
 # links, compiled from source and linked statically.
 rhp-csrc = { path = "../rhp-csrc", default-features = false, features = ["crypt", "argon2"] }
+rhp-mbfl-sys = { path = "../rhp-mbfl-sys", optional = true }
 
 # zlib + phar per-file compression + ZipArchive: raw DEFLATE / zlib / gzip,
 # CRC-32. Backed by C zlib (system libz, or libz-sys's bundled copy) rather than

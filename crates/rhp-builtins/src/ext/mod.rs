@@ -19,6 +19,7 @@ pub mod hash;
 pub mod iconv;
 pub mod intl;
 pub mod libxml;
+#[cfg(feature = "mbstring-libmbfl")]
 pub mod mbstring;
 pub mod openssl;
 pub mod password;
@@ -88,6 +89,7 @@ pub fn modules() -> Vec<ModuleDef> {
             prelude_php: gmp::PRELUDE_PHP,
             wrappers: no_wrappers,
         },
+        #[cfg(feature = "mbstring-libmbfl")]
         ModuleDef {
             name: "mbstring",
             functions: mbstring::register,

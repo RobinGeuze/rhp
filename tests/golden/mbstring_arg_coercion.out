@@ -1,0 +1,84 @@
+-- numeric entity maps (zval_try_get_long)
+[2] The float 1.0E+20 is not representable as an int, cast occurred
+string(6) "aé€"
+[2] The float 1.0E+20 is not representable as an int, cast occurred
+string(11) "&#97;&#233;"
+[2] The float -1.0E+19 is not representable as an int, cast occurred
+string(6) "aé€"
+[2] The float -1.0E+19 is not representable as an int, cast occurred
+string(11) "&#97;&#233;"
+[2] The float INF is not representable as an int, cast occurred
+string(18) "&#97;&#233;&#8364;"
+[2] The float INF is not representable as an int, cast occurred
+string(3) "aé"
+[2] The float -INF is not representable as an int, cast occurred
+string(18) "&#97;&#233;&#8364;"
+[2] The float -INF is not representable as an int, cast occurred
+string(3) "aé"
+[2] The float NAN is not representable as an int, cast occurred
+[8192] Implicit conversion from float NAN to int loses precision
+string(18) "&#97;&#233;&#8364;"
+[2] The float NAN is not representable as an int, cast occurred
+[8192] Implicit conversion from float NAN to int loses precision
+string(3) "aé"
+[8192] Implicit conversion from float 0.5 to int loses precision
+string(18) "&#97;&#233;&#8364;"
+[8192] Implicit conversion from float 0.5 to int loses precision
+string(3) "aé"
+[8192] Implicit conversion from float-string "1e999" to int loses precision
+string(18) "&#97;&#233;&#8364;"
+[8192] Implicit conversion from float-string "1e999" to int loses precision
+string(3) "aé"
+[8192] Implicit conversion from float-string "-1e999" to int loses precision
+string(18) "&#97;&#233;&#8364;"
+[8192] Implicit conversion from float-string "-1e999" to int loses precision
+string(3) "aé"
+string(6) "aé€"
+string(11) "&#97;&#233;"
+string(18) "&#97;&#233;&#8364;"
+string(3) "aé"
+string(6) "aé€"
+string(11) "&#97;&#233;"
+[2] A non-numeric value encountered
+string(18) "&#97;&#233;&#8364;"
+[2] A non-numeric value encountered
+string(3) "aé"
+[8192] Implicit conversion from float-string "1.5" to int loses precision
+string(18) "&#97;&#233;&#8364;"
+[8192] Implicit conversion from float-string "1.5" to int loses precision
+string(3) "aé"
+string(10) "&#1168993;"
+-- mb_substitute_character (Z_PARAM_STR_OR_LONG)
+bool(true)
+int(1)
+bool(true)
+int(0)
+[8192] Implicit conversion from float 65.5 to int loses precision
+bool(true)
+int(65)
+bool(true)
+int(66)
+ValueError: mb_substitute_character(): Argument #1 ($substitute_character) must be "none", "long", "entity" or a valid codepoint
+int(66)
+ValueError: mb_substitute_character(): Argument #1 ($substitute_character) must be "none", "long", "entity" or a valid codepoint
+int(66)
+[2] unexpected NAN value was coerced to string
+ValueError: mb_substitute_character(): Argument #1 ($substitute_character) must be "none", "long", "entity" or a valid codepoint
+int(66)
+ValueError: mb_substitute_character(): Argument #1 ($substitute_character) must be "none", "long", "entity" or a valid codepoint
+int(66)
+ValueError: mb_substitute_character(): Argument #1 ($substitute_character) must be "none", "long", "entity" or a valid codepoint
+int(66)
+ValueError: mb_substitute_character(): Argument #1 ($substitute_character) is not a valid codepoint
+int(66)
+ValueError: mb_substitute_character(): Argument #1 ($substitute_character) must be "none", "long", "entity" or a valid codepoint
+int(66)
+ValueError: mb_substitute_character(): Argument #1 ($substitute_character) must be "none", "long", "entity" or a valid codepoint
+int(66)
+bool(true)
+string(4) "long"
+-- mb_strcut extremes
+string(0) ""
+string(0) ""
+string(3) "abc"
+string(0) ""

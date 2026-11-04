@@ -269,3 +269,92 @@ pub fn set_ref(args: &[Value], i: usize, v: Value) {
         *r.borrow_mut() = v;
     }
 }
+
+/// `ZEND_DOUBLE_FITS_LONG`, true for NAN as in C.
+fn double_fits_long(d: f64) -> bool {
+    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+    !(d >= TWO_63 || d < -TWO_63)
+}
+
+/// php 8.5's `zend_dval_to_lval`: a float that is not finite or out of the
+/// int range warns; out-of-range values wrap modulo 2^64, others are 0.
+fn dval_to_lval(host: &mut dyn Host, d: f64) -> Result<i64, Thrown> {
+    if d.is_finite() && double_fits_long(d) {
+        return Ok(d as i64);
+    }
+    let shown = String::from_utf8_lossy(&rhp_values::fmt::float_serialize(d)).into_owned();
+    host.emit_diagnostic(
+        crate::E_WARNING,
+        &format!("The float {shown} is not representable as an int, cast occurred"),
+    )?;
+    Ok(if d.is_finite() {
+        rhp_values::float_to_int(d)
+    } else {
+        0
+    })
+}
+
+/// php's `zval_try_get_long` (`zendi_try_get_long`): `None` when the value
+/// cannot be an int (non-numeric string, array, …). A float goes through
+/// `zend_dval_to_lval_safe` (a warning out of range, the "loses precision"
+/// deprecation for a fraction or NAN), a float string through
+/// `zend_dval_to_lval_cap` (saturating; 0 when not finite); a
+/// leading-numeric string raises the "non-numeric value" warning.
+pub fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Thrown> {
+    Ok(Some(match v {
+        Value::Null | Value::Bool(false) => 0,
+        Value::Bool(true) => 1,
+        Value::Int(n) => *n,
+        Value::Float(f) => {
+            let l = dval_to_lval(host, *f)?;
+            if l as f64 != *f && double_fits_long(*f) {
+                let shown =
+                    String::from_utf8_lossy(&rhp_values::fmt::float_serialize(*f)).into_owned();
+                host.emit_diagnostic(
+                    crate::E_DEPRECATED,
+                    &format!("Implicit conversion from float {shown} to int loses precision"),
+                )?;
+            }
+            l
+        }
+        Value::Str(s) => {
+            let b = s.as_bytes();
+            let Some((num, end)) = conv::scan_number(b) else {
+                return Ok(None);
+            };
+            if !b[end..]
+                .iter()
+                .all(|&c| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
+            {
+                host.emit_diagnostic(crate::E_WARNING, "A non-numeric value encountered")?;
+            }
+            match num {
+                conv::Num::Int(n) => n,
+                conv::Num::Float(f) => {
+                    let l = if !f.is_finite() {
+                        0
+                    } else if !double_fits_long(f) {
+                        if f > 0.0 {
+                            i64::MAX
+                        } else {
+                            i64::MIN
+                        }
+                    } else {
+                        f as i64
+                    };
+                    if l as f64 != f {
+                        host.emit_diagnostic(
+                            crate::E_DEPRECATED,
+                            &format!(
+                                "Implicit conversion from float-string \"{}\" to int loses precision",
+                                String::from_utf8_lossy(b)
+                            ),
+                        )?;
+                    }
+                    l
+                }
+            }
+        }
+        _ => return Ok(None),
+    }))
+}

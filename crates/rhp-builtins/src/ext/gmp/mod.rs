@@ -1442,6 +1442,27 @@ fn properties_load(host: &mut dyn Host, h: &ObjectHandle, props: &PhpArray) -> R
     Ok(())
 }
 
+/// Whether class `cid` is GMP, whose `ce->unserialize` reads the `C:`
+/// format (see serialize_fns).
+pub(crate) fn is_gmp_class(host: &dyn Host, cid: u32) -> bool {
+    host.object_handlers(cid)
+        .is_some_and(|t| std::ptr::eq(t, &GMP_HANDLERS))
+}
+
+/// gmp_unserialize's `gmp_create`: a GMP object holding 0.
+pub(crate) fn unserialize_create(host: &mut dyn Host) -> Result<Value, Thrown> {
+    gmp_new(host, Mpz::new())
+}
+
+/// gmp_unserialize's number: `convert_zstr_to_gmp(num, s, 10, 0)`.
+pub(crate) fn unserialize_number(obj: &Value, s: &[u8]) -> Result<(), Thrown> {
+    let h = object::object_of(obj).expect("a GMP object");
+    let mut z = Mpz::new();
+    convert_str(&mut z, s, 10, None)?;
+    *gmp_num(&h).0.borrow_mut() = z;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // registration
 // ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ pub mod math;
 pub mod microtime;
 pub mod pack;
 pub mod pageinfo;
+pub mod password;
 pub mod proc_open;
 pub mod scanf;
 pub mod soundex;

@@ -26,7 +26,6 @@ pub mod libxml;
 pub mod mbstring;
 pub mod opcache;
 pub mod openssl;
-pub mod password;
 pub mod pcntl;
 pub mod pcre;
 pub mod phar;
@@ -114,8 +113,8 @@ pub fn modules() -> Vec<ModuleDef> {
         },
         ModuleDef {
             name: "password",
-            functions: password::register,
-            constants: password::constants,
+            functions: standard::password::register,
+            constants: standard::password::constants,
             prelude_php: "",
             wrappers: no_wrappers,
         },

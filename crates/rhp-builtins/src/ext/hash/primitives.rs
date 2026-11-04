@@ -14,11 +14,6 @@ use crate::{Host, Thrown};
 // small shared helpers
 // ---------------------------------------------------------------------------
 
-/// `(string)` bytes of a value (after deref).
-fn bytes_of(v: &Value) -> Vec<u8> {
-    conv::to_string_bytes(&deref(v))
-}
-
 /// Lowercase hex encoding of a byte slice.
 pub(crate) fn to_hex(bytes: &[u8]) -> Vec<u8> {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -142,7 +137,7 @@ pub(crate) fn base64_decode(input: &[u8], strict: bool) -> Option<Vec<u8>> {
 // ---------------------------------------------------------------------------
 
 fn fn_md5(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let digest = md5::Md5::digest(&s);
     let binary = args
         .get(1)
@@ -156,7 +151,7 @@ fn fn_md5(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_sha1(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let digest = sha1::Sha1::digest(&s);
     let binary = args
         .get(1)
@@ -170,17 +165,17 @@ fn fn_sha1(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_crc32(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     Ok(Value::Int(crate::ext::zlib::zraw::crc32(&s) as i64))
 }
 
 fn fn_base64_encode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     Ok(Value::str(base64_encode(&s)))
 }
 
 fn fn_base64_decode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let strict = args
         .get(1)
         .map(|v| conv::to_bool(&deref(v)))
@@ -192,12 +187,12 @@ fn fn_base64_decode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_bin2hex(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     Ok(Value::str(to_hex(&s)))
 }
 
 fn fn_hex2bin(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     // Odd length or non-hex input: php emits a warning and returns false.
     if !s.len().is_multiple_of(2) {
         crate::warn(

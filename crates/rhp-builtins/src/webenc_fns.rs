@@ -12,11 +12,6 @@ use crate::{Host, Thrown};
 // small shared helpers
 // ---------------------------------------------------------------------------
 
-/// `(string)` bytes of a value (after deref).
-fn bytes_of(v: &Value) -> Vec<u8> {
-    conv::to_string_bytes(&deref(v))
-}
-
 const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
 
 /// C `isspace`: space, \t, \n, \v, \f, \r.
@@ -29,7 +24,7 @@ fn is_space(b: u8) -> bool {
 // ---------------------------------------------------------------------------
 
 fn fn_urlencode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let mut out = Vec::with_capacity(s.len());
     for &b in &s {
         match b {
@@ -46,7 +41,7 @@ fn fn_urlencode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_rawurlencode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let mut out = Vec::with_capacity(s.len());
     for &b in &s {
         match b {
@@ -62,15 +57,15 @@ fn fn_rawurlencode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_urldecode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(crate::query_fns::url_decode(&bytes_of(
-        &args[0],
-    ))))
+    Ok(Value::str(crate::query_fns::url_decode(
+        &conv::to_string_bytes(&args[0]),
+    )))
 }
 
 fn fn_rawurldecode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(crate::query_fns::raw_url_decode(&bytes_of(
-        &args[0],
-    ))))
+    Ok(Value::str(crate::query_fns::raw_url_decode(
+        &conv::to_string_bytes(&args[0]),
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +73,7 @@ fn fn_rawurldecode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_nl2br(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let is_xhtml = args
         .get(1)
         .map(|v| conv::to_bool(&deref(v)))
@@ -114,7 +109,7 @@ fn fn_nl2br(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_addslashes(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let mut out = Vec::with_capacity(s.len());
     for &b in &s {
         match b {
@@ -133,7 +128,7 @@ fn fn_addslashes(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_stripslashes(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let mut out = Vec::with_capacity(s.len());
     let mut i = 0;
     while i < s.len() {
@@ -158,7 +153,7 @@ fn fn_stripslashes(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_quotemeta(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let mut out = Vec::with_capacity(s.len());
     for &b in &s {
         if matches!(
@@ -189,10 +184,10 @@ fn fn_strip_tags(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             }
             (!set.is_empty()).then_some(set)
         }
-        Some(v) => Some(bytes_of(&v)),
+        Some(v) => Some(conv::to_string_bytes(&v)),
     };
     Ok(Value::str(strip_tags(
-        &bytes_of(&args[0]),
+        &conv::to_string_bytes(&args[0]),
         allow.as_deref(),
     )))
 }
@@ -383,7 +378,7 @@ fn strip_tags(s: &[u8], allow: Option<&[u8]>) -> Vec<u8> {
 
 /// php `parse_url($url, $component = -1)`.
 fn fn_parse_url(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let url = bytes_of(&args[0]);
+    let url = conv::to_string_bytes(&args[0]);
     let component = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(-1);
     let Some(u) = crate::url::parse(&url) else {
         return Ok(Value::Bool(false));

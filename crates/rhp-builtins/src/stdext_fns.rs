@@ -250,13 +250,6 @@ fn fn_shuffle(_host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(true))
 }
 
-fn key_value(k: &ArrayKey) -> Value {
-    match k {
-        ArrayKey::Int(n) => Value::Int(*n),
-        ArrayKey::Str(s) => Value::Str(s.clone()),
-    }
-}
-
 /// `array_rand(array $array, int $num = 1)` (php_array_pick_keys).
 fn fn_array_rand(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let arr = match deref(&args[0]) {
@@ -278,7 +271,7 @@ fn fn_array_rand(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     if num == 1 {
         let i = mt_range(0, avail - 1) as usize;
-        return Ok(arr.get_index(i).map(|(k, _)| key_value(k)).unwrap());
+        return Ok(arr.get_index(i).map(|(k, _)| k.to_value()).unwrap());
     }
     if num <= 0 || num > avail {
         return Err(Thrown::error(
@@ -302,7 +295,7 @@ fn fn_array_rand(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = PhpArray::new();
     for (i, (k, _)) in arr.iter().enumerate() {
         if bits[i] ^ negative {
-            out.push(key_value(k));
+            out.push(k.to_value());
         }
     }
     Ok(Value::Array(out))

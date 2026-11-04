@@ -968,7 +968,7 @@ impl Vm {
                     return Ok(Some(Rc::new(RefCell::new(Value::Null))));
                 }
                 DimFetch::Rw => {
-                    let msg = match array_key_to_value(&akey) {
+                    let msg = match akey.to_value() {
                         Value::Int(n) => format!("Undefined array key {n}"),
                         k => format!(
                             "Undefined array key \"{}\"",
@@ -986,12 +986,7 @@ impl Vm {
             called: Some(owner),
         };
         let mut slot = storage.borrow_mut();
-        make_ref_path(
-            &mut slot,
-            &[CursorStep::Key(array_key_to_value(&akey))],
-            &cx,
-        )
-        .map(Some)
+        make_ref_path(&mut slot, &[CursorStep::Key(akey.to_value())], &cx).map(Some)
     }
 
     /// Promote a CV slot to a shared reference cell, returning the cell. If the
@@ -1722,13 +1717,6 @@ pub(crate) fn foreach_promote(
         }
     };
     Some((key, rc))
-}
-
-pub(crate) fn array_key_to_value(k: &ArrayKey) -> Value {
-    match k {
-        ArrayKey::Int(n) => Value::Int(*n),
-        ArrayKey::Str(s) => Value::Str(s.clone()),
-    }
 }
 
 /// php's "Undefined array key" warning text for `k`.

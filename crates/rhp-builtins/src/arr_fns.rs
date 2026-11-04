@@ -18,14 +18,6 @@ use crate::{Host, Thrown};
 // shared helpers
 // ---------------------------------------------------------------------------
 
-/// `ArrayKey` -> `Value` (for returning keys, e.g. `array_search`).
-fn key_to_value(k: &ArrayKey) -> Value {
-    match k {
-        ArrayKey::Int(n) => Value::Int(*n),
-        ArrayKey::Str(s) => Value::Str(s.clone()),
-    }
-}
-
 /// The "string-cast" key coercion used by `array_fill_keys` / `array_combine`:
 /// integers stay integers; everything else is `(string)`-cast and then run
 /// through the canonical-integer-string rule. Notably floats become string
@@ -149,7 +141,7 @@ fn fn_array_flip(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = PhpArray::new();
     for (k, v) in a.iter() {
         if let Some(nk) = key_intstr(v) {
-            out.insert(nk, key_to_value(k));
+            out.insert(nk, k.to_value());
         }
         // non int/string values are skipped (php: warning to stderr)
     }
@@ -246,7 +238,7 @@ fn fn_array_search(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             crate::host_loose_eq(host, &needle, v)?
         };
         if hit {
-            return Ok(key_to_value(k));
+            return Ok(k.to_value());
         }
     }
     Ok(Value::Bool(false))
@@ -370,7 +362,7 @@ fn fn_array_key_first(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     let a = want_array(deref(&args[0]), "array_key_first")?;
     Ok(a.iter()
         .next()
-        .map(|(k, _)| key_to_value(k))
+        .map(|(k, _)| k.to_value())
         .unwrap_or(Value::Null))
 }
 
@@ -378,7 +370,7 @@ fn fn_array_key_last(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     let a = want_array(deref(&args[0]), "array_key_last")?;
     Ok(a.iter()
         .last()
-        .map(|(k, _)| key_to_value(k))
+        .map(|(k, _)| k.to_value())
         .unwrap_or(Value::Null))
 }
 

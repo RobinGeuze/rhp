@@ -362,6 +362,14 @@ impl ArrayKey {
         })
     }
 
+    /// The key as a value (`array_keys`, `foreach`'s key, …).
+    pub fn to_value(&self) -> Value {
+        match self {
+            ArrayKey::Int(n) => Value::Int(*n),
+            ArrayKey::Str(s) => Value::Str(s.clone()),
+        }
+    }
+
     /// Apply the canonical-integer-string rule to raw bytes.
     pub fn from_bytes(s: &[u8]) -> ArrayKey {
         if let Some(n) = canonical_int_string(s) {

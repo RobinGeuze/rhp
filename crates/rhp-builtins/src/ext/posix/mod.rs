@@ -9,6 +9,7 @@ use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::proc_fns::{getpwnam, getpwuid, zpp_long, zpp_string, Passwd};
+use crate::streams::errno;
 use crate::{Host, Thrown};
 
 /// php's `PHP_POSIX_CHECK_PID`: ValueError unless `lower <= pid <= upper`.
@@ -24,10 +25,6 @@ fn check_pid(pid: i64, arg: usize, fname: &str, pname: &str, lower: i64) -> Resu
         ));
     }
     Ok(())
-}
-
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 /// The module's `last_error` (posix_get_last_error).

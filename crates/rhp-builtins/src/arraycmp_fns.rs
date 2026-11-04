@@ -220,13 +220,6 @@ pub(crate) fn zend_sort<T>(a: &mut [T], cmp: &mut CmpFn<T>) {
 
 type Elem = (ArrayKey, Value);
 
-fn key_value(k: &ArrayKey) -> Value {
-    match k {
-        ArrayKey::Int(n) => Value::Int(*n),
-        ArrayKey::Str(s) => Value::Str(s.clone()),
-    }
-}
-
 fn normalize(n: i64) -> i32 {
     n.signum() as i32
 }
@@ -271,7 +264,7 @@ impl Ctx<'_> {
 
     fn key_cmp(&mut self, x: &Elem, y: &Elem) -> i32 {
         let cb = self.key_cb.clone().expect("key callback");
-        self.user_sort_cmp(&cb, key_value(&x.0), key_value(&y.0))
+        self.user_sort_cmp(&cb, x.0.to_value(), y.0.to_value())
     }
 
     /// The data comparator: the user callback, or php's

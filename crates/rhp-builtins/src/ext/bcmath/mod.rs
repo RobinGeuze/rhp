@@ -23,10 +23,6 @@ use crate::{Host, Thrown};
 // value helpers
 // ---------------------------------------------------------------------------
 
-fn bytes_of(v: &Value) -> Vec<u8> {
-    conv::to_string_bytes(&deref(v))
-}
-
 fn ten_pow(n: usize) -> BigInt {
     BigInt::from(10).pow(n as u32)
 }
@@ -296,7 +292,7 @@ fn operand(
     argnum: usize,
     name: &str,
 ) -> Result<Dec, Thrown> {
-    let raw = bytes_of(&args[idx]);
+    let raw = conv::to_string_bytes(&args[idx]);
     Dec::parse(&raw).ok_or_else(|| {
         Thrown::error(
             "ValueError",

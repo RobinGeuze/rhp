@@ -33,14 +33,6 @@ fn want_array(v: &Value, func: &str, argn: usize) -> Result<PhpArray, Thrown> {
     }
 }
 
-/// `ArrayKey` -> `Value` (for returning keys from the find family).
-fn key_to_value(k: &ArrayKey) -> Value {
-    match k {
-        ArrayKey::Int(n) => Value::Int(*n),
-        ArrayKey::Str(s) => Value::Str(s.clone()),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // array_diff_assoc / array_intersect_assoc
 //
@@ -139,7 +131,7 @@ fn fn_array_find(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let a = want_array(&args[0], "array_find", 1)?;
     let cb = &args[1];
     for (k, v) in a.iter() {
-        if conv::to_bool(&host.call_callable(cb, &[v.clone(), key_to_value(k)])?) {
+        if conv::to_bool(&host.call_callable(cb, &[v.clone(), k.to_value()])?) {
             return Ok(v.clone());
         }
     }
@@ -150,8 +142,8 @@ fn fn_array_find_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     let a = want_array(&args[0], "array_find_key", 1)?;
     let cb = &args[1];
     for (k, v) in a.iter() {
-        if conv::to_bool(&host.call_callable(cb, &[v.clone(), key_to_value(k)])?) {
-            return Ok(key_to_value(k));
+        if conv::to_bool(&host.call_callable(cb, &[v.clone(), k.to_value()])?) {
+            return Ok(k.to_value());
         }
     }
     Ok(Value::Null)
@@ -161,7 +153,7 @@ fn fn_array_any(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let a = want_array(&args[0], "array_any", 1)?;
     let cb = &args[1];
     for (k, v) in a.iter() {
-        if conv::to_bool(&host.call_callable(cb, &[v.clone(), key_to_value(k)])?) {
+        if conv::to_bool(&host.call_callable(cb, &[v.clone(), k.to_value()])?) {
             return Ok(Value::Bool(true));
         }
     }
@@ -172,7 +164,7 @@ fn fn_array_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let a = want_array(&args[0], "array_all", 1)?;
     let cb = &args[1];
     for (k, v) in a.iter() {
-        if !conv::to_bool(&host.call_callable(cb, &[v.clone(), key_to_value(k)])?) {
+        if !conv::to_bool(&host.call_callable(cb, &[v.clone(), k.to_value()])?) {
             return Ok(Value::Bool(false));
         }
     }

@@ -16,6 +16,7 @@ use rhp_values::{ArrayKey, PhpArray, Value};
 
 use crate::object::{ClassHandlers, ObjectHandlers};
 use crate::proc_fns::{zpp_long, zpp_type_name};
+use crate::streams::errno;
 use crate::{Host, Thrown};
 
 /// `Socket`'s handlers: no clone, not comparable.
@@ -100,10 +101,6 @@ fn sockets_strerror(e: i32) -> String {
 
 extern "C" {
     fn hstrerror(err: libc::c_int) -> *const libc::c_char;
-}
-
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 fn fn_socket_import_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

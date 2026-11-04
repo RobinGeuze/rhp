@@ -20,7 +20,7 @@ use std::ffi::CStr;
 use std::rc::Rc;
 use std::sync::Once;
 
-use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, Value};
+use rhp_values::{ArrayKey, ObjectHandle, PhpArray, Value};
 
 use crate::ext::zpp::deref;
 use crate::object::{self, CastTarget, ClassHandlers, CloneObj, ObjectHandlers};
@@ -257,20 +257,7 @@ fn long_arg(
     crate::ext::zpp::long_arg(host, args, i, f, p)
 }
 
-/// php's `zval_get_long()` for an option value (objects warn and give 1).
-pub(crate) fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Thrown> {
-    let v = deref(v);
-    if matches!(v, Value::Object(_) | Value::Closure(_)) {
-        host.emit_diagnostic(
-            crate::E_WARNING,
-            &format!(
-                "Object of class {} could not be converted to int",
-                crate::argparse::value_name(host, &v)
-            ),
-        )?;
-    }
-    Ok(conv::to_int(&v))
-}
+pub(crate) use crate::argparse::zval_get_long;
 
 fn akey(s: &str) -> ArrayKey {
     ArrayKey::from_bytes(s.as_bytes())

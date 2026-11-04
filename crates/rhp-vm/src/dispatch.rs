@@ -17,8 +17,7 @@ use crate::calls::{
 use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
 use crate::generators::GenStatus;
 use crate::lvalue::{
-    aa_key, array_key_to_value, foreach_promote, isset_dim, CursorRoot, CursorStep, DimFetch,
-    DimMode, MagicSplit,
+    aa_key, foreach_promote, isset_dim, CursorRoot, CursorStep, DimFetch, DimMode, MagicSplit,
 };
 use crate::types::type_lc;
 use crate::{classes, deref, StaticKey, UnitBase, Vm};
@@ -1976,7 +1975,7 @@ impl Vm {
                 // write through it — matching PHP's foreach gotcha.
                 self.cv_assign(top, val_cv, v);
                 if key_cv != Reg::MAX {
-                    self.cv_assign(top, key_cv, array_key_to_value(&k));
+                    self.cv_assign(top, key_cv, k.to_value());
                 }
                 self.reg_set(top, pos_reg, Value::Int((pos + 1) as i64));
             }
@@ -2101,7 +2100,7 @@ impl Vm {
                     Some((k, elem_rc)) => {
                         self.bind_ref_cv(top, val_cv, elem_rc);
                         if key_cv != Reg::MAX {
-                            self.cv_assign(top, key_cv, array_key_to_value(&k));
+                            self.cv_assign(top, key_cv, k.to_value());
                         }
                         let mut st = PhpArray::new();
                         st.push(Value::Ref(cell));
@@ -2218,7 +2217,7 @@ impl Vm {
             Some((k, elem_rc)) => {
                 self.bind_ref_cv(top, val_cv, elem_rc);
                 if key_cv != Reg::MAX {
-                    self.cv_assign(top, key_cv, array_key_to_value(&k));
+                    self.cv_assign(top, key_cv, k.to_value());
                 }
                 self.reg_set(top, pos_reg, Value::Int((pos + 1) as i64));
             }

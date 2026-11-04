@@ -11,7 +11,7 @@ fn call(f: crate::NativeFn, args: &[Value]) -> Value {
     f(&mut TestHost::new(), args).expect("no throw")
 }
 fn calls(f: crate::NativeFn, args: &[Value]) -> String {
-    String::from_utf8(bytes_of(&call(f, args))).unwrap()
+    String::from_utf8(rhp_values::conv::to_string_bytes(&call(f, args))).unwrap()
 }
 /// Result as `int|false` (strpos family): `None` == php `false`.
 fn call_pos(f: crate::NativeFn, args: &[Value]) -> Option<i64> {

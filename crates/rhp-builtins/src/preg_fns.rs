@@ -90,11 +90,6 @@ fn find_at(re: &Regex, subject: &[u8], start: usize) -> Result<Option<Ovector>, 
 // small shared helpers
 // ---------------------------------------------------------------------------
 
-/// `(string)` bytes of a value (after deref).
-fn bytes_of(v: &Value) -> Vec<u8> {
-    rhp_values::conv::to_string_bytes(&deref(v))
-}
-
 /// An array entry or a callback's result as a string (zval_get_string): an
 /// array warns, an object goes through `__toString` or throws.
 fn entry_bytes(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> {
@@ -438,10 +433,15 @@ fn match_setup(
 // ---------------------------------------------------------------------------
 
 fn fn_preg_match(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(re) = compile_warn(host, "preg_match", &bytes_of(&args[0]))? else {
+    let Some(re) = compile_warn(
+        host,
+        "preg_match",
+        &rhp_values::conv::to_string_bytes(&args[0]),
+    )?
+    else {
         return Ok(Value::Bool(false));
     };
-    let subject = bytes_of(&args[1]);
+    let subject = rhp_values::conv::to_string_bytes(&args[1]);
     let flags = int_arg(args, 3, 0);
     let offset = int_arg(args, 4, 0);
     let Some(offset) = match_setup("preg_match", false, &subject, flags, offset, args.get(2))?
@@ -470,10 +470,15 @@ fn fn_preg_match(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_preg_match_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(re) = compile_warn(host, "preg_match_all", &bytes_of(&args[0]))? else {
+    let Some(re) = compile_warn(
+        host,
+        "preg_match_all",
+        &rhp_values::conv::to_string_bytes(&args[0]),
+    )?
+    else {
         return Ok(Value::Bool(false));
     };
-    let subject = bytes_of(&args[1]);
+    let subject = rhp_values::conv::to_string_bytes(&args[1]);
     let flags = int_arg(args, 3, 0);
     let offset = int_arg(args, 4, 0);
     let Some(offset) = match_setup("preg_match_all", true, &subject, flags, offset, args.get(2))?
@@ -713,8 +718,13 @@ fn replace_subject(
 /// becomes a one-element list; an array keeps its values in order.
 fn as_list(v: &Value) -> (Vec<Vec<u8>>, bool) {
     match deref(v) {
-        Value::Array(a) => (a.iter().map(|(_, x)| bytes_of(x)).collect(), true),
-        other => (vec![bytes_of(&other)], false),
+        Value::Array(a) => (
+            a.iter()
+                .map(|(_, x)| rhp_values::conv::to_string_bytes(x))
+                .collect(),
+            true,
+        ),
+        other => (vec![rhp_values::conv::to_string_bytes(&other)], false),
     }
 }
 
@@ -761,7 +771,7 @@ fn preg_replace_common(
             Value::Array(out)
         }
         other => {
-            let sb = bytes_of(&other);
+            let sb = rhp_values::conv::to_string_bytes(&other);
             match replace_subject(host, fname, &pats, &reps, &sb, limit, &mut count)? {
                 Some(r) if !filter || count > 0 => Value::str(r),
                 _ => Value::Null,
@@ -857,7 +867,7 @@ fn cb_subject(
             Ok(Some(Value::Array(out)))
         }
         other => {
-            let sb = bytes_of(&other);
+            let sb = rhp_values::conv::to_string_bytes(&other);
             Ok(cb_string(host, fname, pairs, &sb, limit, flags, count)?.map(Value::str))
         }
     }
@@ -900,7 +910,7 @@ fn fn_preg_replace_callback_array(host: &mut dyn Host, args: &[Value]) -> Result
     let mut count = 0usize;
     let mut cur = match deref(&args[1]) {
         Value::Array(a) => Value::Array(a),
-        other => Value::str(bytes_of(&other)),
+        other => Value::str(rhp_values::conv::to_string_bytes(&other)),
     };
     for (k, cb) in map.iter() {
         let ArrayKey::Str(pat) = k else {
@@ -948,10 +958,15 @@ fn fn_preg_last_error_msg(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Th
 // ---------------------------------------------------------------------------
 
 fn fn_preg_split(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(re) = compile_warn(host, "preg_split", &bytes_of(&args[0]))? else {
+    let Some(re) = compile_warn(
+        host,
+        "preg_split",
+        &rhp_values::conv::to_string_bytes(&args[0]),
+    )?
+    else {
         return Ok(Value::Bool(false));
     };
-    let subject = bytes_of(&args[1]);
+    let subject = rhp_values::conv::to_string_bytes(&args[1]);
     let flags = int_arg(args, 3, 0);
     let no_empty = flags & PREG_SPLIT_NO_EMPTY != 0;
     let delim_capture = flags & PREG_SPLIT_DELIM_CAPTURE != 0;
@@ -1023,11 +1038,11 @@ fn fn_preg_split(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// Escape the PCRE metacharacters (and an optional delimiter). NUL becomes the
 /// literal escape `\000`; every metacharacter is prefixed with a backslash.
 fn fn_preg_quote(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = rhp_values::conv::to_string_bytes(&args[0]);
     // delimiter: first byte of the second argument, if any.
     let delim = args
         .get(1)
-        .map(bytes_of)
+        .map(rhp_values::conv::to_string_bytes)
         .filter(|d| !d.is_empty())
         .map(|d| d[0]);
     let mut out = Vec::with_capacity(s.len() + s.len() / 2);
@@ -1055,7 +1070,12 @@ fn fn_preg_quote(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_preg_grep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(re) = compile_warn(host, "preg_grep", &bytes_of(&args[0]))? else {
+    let Some(re) = compile_warn(
+        host,
+        "preg_grep",
+        &rhp_values::conv::to_string_bytes(&args[0]),
+    )?
+    else {
         return Ok(Value::Bool(false));
     };
     let Value::Array(input) = deref(&args[1]) else {

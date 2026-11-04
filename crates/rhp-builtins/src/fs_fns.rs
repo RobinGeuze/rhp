@@ -130,9 +130,9 @@ fn fn_stream_context_get_default(host: &mut dyn Host, args: &[Value]) -> Result<
     if let Some(Value::Array(opts)) = args.first().map(deref) {
         for (wk, wv) in opts.iter() {
             if let Value::Array(inner) = wv {
-                let w = conv::to_string_bytes(&crate::key_to_value(wk));
+                let w = conv::to_string_bytes(&wk.to_value());
                 for (ok, ov) in inner.iter() {
-                    let o = conv::to_string_bytes(&crate::key_to_value(ok));
+                    let o = conv::to_string_bytes(&ok.to_value());
                     host.stream_context_set_option(&ctx, &w, &o, ov.clone());
                 }
             }

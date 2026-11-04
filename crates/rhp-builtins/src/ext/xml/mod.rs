@@ -1177,25 +1177,6 @@ fn fn_parser_free(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     Ok(Value::Bool(true))
 }
 
-/// zval_get_long, with the warning for an object.
-fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Thrown> {
-    match v {
-        Value::Object(_) => {
-            let class = host.object_class_name(v).unwrap_or_default();
-            host.emit_diagnostic(
-                crate::E_WARNING,
-                &format!(
-                    "Object of class {} could not be converted to int",
-                    String::from_utf8_lossy(&class)
-                ),
-            )?;
-            Ok(1)
-        }
-        Value::Array(a) => Ok(!a.is_empty() as i64),
-        other => Ok(conv::to_int(other)),
-    }
-}
-
 fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     const F: &str = "xml_parser_set_option";
     let p = parser_arg(host, args, 0, F)?;
@@ -1221,7 +1202,7 @@ fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             p.borrow_mut().parsehuge = conv::to_bool(&value);
         }
         OPT_SKIP_TAGSTART => {
-            let v = zval_get_long(host, &value)?;
+            let v = crate::argparse::zval_get_long(host, &value)?;
             if !(0..=i32::MAX as i64).contains(&v) {
                 crate::warn(
                     host,

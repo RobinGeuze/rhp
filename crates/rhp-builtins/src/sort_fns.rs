@@ -20,13 +20,6 @@ const SORT_STRING: i64 = 2;
 const SORT_NATURAL: i64 = 6;
 const SORT_FLAG_CASE: i64 = 8;
 
-fn key_to_value(k: &ArrayKey) -> Value {
-    match k {
-        ArrayKey::Int(n) => Value::Int(*n),
-        ArrayKey::Str(s) => Value::Str(s.clone()),
-    }
-}
-
 /// Compare two values honouring a `SORT_*` flag (default: PHP loose compare).
 /// The `SORT_FLAG_CASE` bit folds ASCII case for the string/natural kinds.
 /// [`cmp_flagged`] with the engine's comparison context (notices such as
@@ -172,7 +165,7 @@ fn asort_impl(
     let mut err = None;
     pairs.sort_by(|a, b| {
         let o = if by_key {
-            cmp_flagged(&key_to_value(&a.0), &key_to_value(&b.0), flags)
+            cmp_flagged(&a.0.to_value(), &b.0.to_value(), flags)
         } else {
             cmp_flagged_cx(host, &a.1, &b.1, flags, &mut err)
         };
@@ -221,7 +214,7 @@ fn usort_impl(
             return Ordering::Equal;
         }
         let (x, y) = if by_key {
-            (key_to_value(&a.0), key_to_value(&b.0))
+            (a.0.to_value(), b.0.to_value())
         } else {
             (a.1.clone(), b.1.clone())
         };
@@ -302,7 +295,7 @@ fn fn_array_walk(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         // Pass the element by reference so `&$value` callbacks write back.
         let cell = std::rc::Rc::new(std::cell::RefCell::new(v));
         let value_ref = Value::Ref(cell.clone());
-        host.call_callable(&cb, &[value_ref, key_to_value(&k), extra.clone()])?;
+        host.call_callable(&cb, &[value_ref, k.to_value(), extra.clone()])?;
         let new_val = cell.borrow().clone();
         out.insert(k, new_val);
     }
@@ -340,10 +333,7 @@ fn walk_rec_pairs(
             }
             leaf => {
                 let cell = std::rc::Rc::new(std::cell::RefCell::new(leaf));
-                host.call_callable(
-                    cb,
-                    &[Value::Ref(cell.clone()), key_to_value(&k), extra.clone()],
-                )?;
+                host.call_callable(cb, &[Value::Ref(cell.clone()), k.to_value(), extra.clone()])?;
                 let nv = cell.borrow().clone();
                 out.insert(k, nv);
             }
@@ -531,10 +521,7 @@ fn fn_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(with_array_data(&args[0], |d| {
         d.entries
             .get_index(d.pos)
-            .map(|(k, _)| match k {
-                ArrayKey::Int(n) => Value::Int(*n),
-                ArrayKey::Str(s) => Value::Str(s.clone()),
-            })
+            .map(|(k, _)| k.to_value())
             .unwrap_or(Value::Null)
     })
     .unwrap_or(Value::Null))

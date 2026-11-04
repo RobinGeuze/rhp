@@ -16,11 +16,6 @@ use crate::{Host, Thrown};
 // shared helpers
 // ---------------------------------------------------------------------------
 
-/// `(string)` bytes of a value (after deref).
-fn bytes_of(v: &Value) -> Vec<u8> {
-    conv::to_string_bytes(&deref(v))
-}
-
 /// The byte form of an array key (int keys render as their decimal string).
 fn key_bytes(k: &ArrayKey) -> Vec<u8> {
     match k {
@@ -79,7 +74,7 @@ fn type_name_lower(v: &Value) -> &'static str {
 // ---------------------------------------------------------------------------
 
 fn fn_str_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let n = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(1);
     if n < 1 {
         return Err(Thrown::error(
@@ -101,7 +96,7 @@ fn fn_str_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_strtr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     if args.len() == 2 {
         // Pairs form: longest matching key at each position wins.
         let Value::Array(pairs) = deref(&args[1]) else {
@@ -117,7 +112,7 @@ fn fn_strtr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 if kb.is_empty() {
                     None
                 } else {
-                    Some((kb, bytes_of(v)))
+                    Some((kb, conv::to_string_bytes(v)))
                 }
             })
             .collect();
@@ -147,8 +142,8 @@ fn fn_strtr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Ok(Value::str(out))
     } else {
         // from/to form: byte-for-byte over the common prefix length.
-        let from = bytes_of(&args[1]);
-        let to = bytes_of(&args[2]);
+        let from = conv::to_string_bytes(&args[1]);
+        let to = conv::to_string_bytes(&args[2]);
         let n = from.len().min(to.len());
         let mut map: [Option<u8>; 256] = [None; 256];
         for i in 0..n {
@@ -196,14 +191,14 @@ fn fn_substr_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     if let Value::Array(subj) = subject {
         let mut out = PhpArray::new();
         for (i, (k, v)) in subj.iter().enumerate() {
-            let sbytes = bytes_of(v);
+            let sbytes = conv::to_string_bytes(v);
             // replace: array -> nth element (else ""); scalar -> whole, for all.
             let rep = match &replace {
                 Value::Array(ra) => ra
                     .get_index(i)
-                    .map(|(_, rv)| bytes_of(rv))
+                    .map(|(_, rv)| conv::to_string_bytes(rv))
                     .unwrap_or_default(),
-                other => bytes_of(other),
+                other => conv::to_string_bytes(other),
             };
             // start: array -> nth element (else 0); scalar -> per-subject.
             let st = match &start_arg {
@@ -247,9 +242,9 @@ fn fn_substr_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             Value::Array(ra) => ra
                 .iter()
                 .next()
-                .map(|(_, rv)| bytes_of(rv))
+                .map(|(_, rv)| conv::to_string_bytes(rv))
                 .unwrap_or_default(),
-            other => bytes_of(other),
+            other => conv::to_string_bytes(other),
         };
         let st = conv::to_int(&start_arg);
         let ln = length_arg.as_ref().map(conv::to_int);
@@ -262,8 +257,8 @@ fn fn_substr_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 // ---------------------------------------------------------------------------
 
 fn fn_levenshtein(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = bytes_of(&args[0]);
-    let b = bytes_of(&args[1]);
+    let a = conv::to_string_bytes(&args[0]);
+    let b = conv::to_string_bytes(&args[1]);
     let cost_ins = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(1);
     let cost_rep = args.get(3).map(|v| conv::to_int(&deref(v))).unwrap_or(1);
     let cost_del = args.get(4).map(|v| conv::to_int(&deref(v))).unwrap_or(1);
@@ -331,8 +326,8 @@ fn similar_char(t1: &[u8], t2: &[u8]) -> usize {
 }
 
 fn fn_similar_text(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = bytes_of(&args[0]);
-    let b = bytes_of(&args[1]);
+    let a = conv::to_string_bytes(&args[0]);
+    let b = conv::to_string_bytes(&args[1]);
     let total = a.len() + b.len();
     let sim = if total == 0 { 0 } else { similar_char(&a, &b) };
     // `&$percent`, written when passed.
@@ -352,7 +347,7 @@ fn fn_similar_text(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_str_word_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let format = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     if !matches!(format, 0..=2) {
         return Err(Thrown::error(
@@ -360,7 +355,7 @@ fn fn_str_word_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             "str_word_count(): Argument #2 ($format) must be a valid format value",
         ));
     }
-    let extra = args.get(2).map(bytes_of);
+    let extra = args.get(2).map(conv::to_string_bytes);
     let extra_mask = extra.map(|e| charmask(&e)).unwrap_or([false; 256]);
     let is_word =
         |b: u8| b.is_ascii_alphabetic() || b == b'\'' || b == b'-' || extra_mask[b as usize];
@@ -399,7 +394,7 @@ fn fn_str_word_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 // ---------------------------------------------------------------------------
 
 fn fn_chunk_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let chunklen = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(76);
     if chunklen < 1 {
         return Err(Thrown::error(
@@ -408,7 +403,7 @@ fn fn_chunk_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         ));
     }
     let end = match args.get(2) {
-        Some(v) => bytes_of(v),
+        Some(v) => conv::to_string_bytes(v),
         None => b"\r\n".to_vec(),
     };
     // php appends `end` once for an empty subject.

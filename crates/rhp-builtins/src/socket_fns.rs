@@ -21,16 +21,13 @@ use rhp_values::{conv, ArrayKey, PhpArray, Value};
 use crate::ext::openssl::xp_ssl::{self, SslSock};
 use crate::fdstream::{poll_fd, FdStream, SockInfo};
 use crate::proc_fns::{zpp_long, zpp_string, zpp_type_name};
+use crate::streams::errno;
 use crate::{Host, Thrown};
 
 fn write_ref(arg: Option<&Value>, value: Value) {
     if let Some(Value::Ref(rc)) = arg {
         *rc.borrow_mut() = value;
     }
-}
-
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 fn strerror(e: i32) -> String {

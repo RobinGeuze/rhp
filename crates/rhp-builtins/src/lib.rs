@@ -2597,10 +2597,6 @@ fn fn_array_keys(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .get(2)
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(false);
-    let key_val = |k: &rhp_values::ArrayKey| match k {
-        rhp_values::ArrayKey::Int(n) => Value::Int(*n),
-        rhp_values::ArrayKey::Str(s) => Value::Str(s.clone()),
-    };
     let mut out = PhpArray::new();
     for (k, v) in a.iter() {
         let keep = match &search {
@@ -2614,7 +2610,7 @@ fn fn_array_keys(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             }
         };
         if keep {
-            out.push(key_val(k));
+            out.push(k.to_value());
         }
     }
     Ok(Value::Array(out))
@@ -2650,13 +2646,6 @@ fn fn_array_merge(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
     }
     Ok(Value::Array(out))
-}
-
-pub(crate) fn key_to_value(k: &rhp_values::ArrayKey) -> Value {
-    match k {
-        rhp_values::ArrayKey::Int(n) => Value::Int(*n),
-        rhp_values::ArrayKey::Str(s) => Value::Str(s.clone()),
-    }
 }
 
 fn as_array(v: &Value, who: &str) -> Result<PhpArray, Thrown> {
@@ -2723,8 +2712,8 @@ fn fn_array_filter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             None => object::is_true(host, v)?,
             Some(cb) => {
                 let call_args: Vec<Value> = match mode {
-                    2 => vec![key_to_value(k)],            // ARRAY_FILTER_USE_KEY
-                    1 => vec![v.clone(), key_to_value(k)], // ARRAY_FILTER_USE_BOTH
+                    2 => vec![k.to_value()],            // ARRAY_FILTER_USE_KEY
+                    1 => vec![v.clone(), k.to_value()], // ARRAY_FILTER_USE_BOTH
                     _ => vec![v.clone()],
                 };
                 let r = host.call_callable(cb, &call_args)?;

@@ -31,10 +31,6 @@ pub(crate) use primitives::{base64_decode, base64_encode};
 // value helpers
 // ---------------------------------------------------------------------------
 
-fn bytes_of(v: &Value) -> Vec<u8> {
-    conv::to_string_bytes(&deref(v))
-}
-
 fn as_bool(v: Option<&Value>) -> bool {
     v.map(|v| conv::to_bool(&deref(v))).unwrap_or(false)
 }
@@ -853,8 +849,8 @@ fn invalid_algo(func: &str) -> Thrown {
 }
 
 fn fn_hash(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let algo = bytes_of(&args[0]).to_ascii_lowercase();
-    let data = bytes_of(&args[1]);
+    let algo = conv::to_string_bytes(&args[0]).to_ascii_lowercase();
+    let data = conv::to_string_bytes(&args[1]);
     let binary = as_bool(args.get(2));
     if digest(&algo, b"").is_none() {
         return Err(invalid_algo("hash"));
@@ -865,8 +861,8 @@ fn fn_hash(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_hash_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let algo = bytes_of(&args[0]).to_ascii_lowercase();
-    let path = bytes_of(&args[1]);
+    let algo = conv::to_string_bytes(&args[0]).to_ascii_lowercase();
+    let path = conv::to_string_bytes(&args[1]);
     let binary = as_bool(args.get(2));
     if digest(&algo, b"").is_none() {
         return Err(invalid_algo("hash_file"));
@@ -883,7 +879,7 @@ fn fn_hash_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `__hash_init_options($algo, $options)`: hash_init's reading of
 /// `$options`, as `[seed]`, `['secret' => k]` or null.
 fn fn_hash_init_options(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let algo = bytes_of(&args[0]).to_ascii_lowercase();
+    let algo = conv::to_string_bytes(&args[0]).to_ascii_lowercase();
     Ok(match hash_options(host, "hash_init", &algo, args.get(1))? {
         Some(Init::Seed(n)) => Value::Int(n),
         Some(Init::Secret(k)) => Value::str(k),
@@ -894,8 +890,8 @@ fn fn_hash_init_options(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 /// `__hash_digest($algo, $data, $binary, $init)`: a HashContext's digest,
 /// `$init` from `__hash_init_options`.
 fn fn_hash_digest(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let algo = bytes_of(&args[0]).to_ascii_lowercase();
-    let data = bytes_of(&args[1]);
+    let algo = conv::to_string_bytes(&args[0]).to_ascii_lowercase();
+    let data = conv::to_string_bytes(&args[1]);
     let binary = as_bool(args.get(2));
     let init = match args.get(3).map(crate::deref) {
         Some(Value::Int(n)) => Some(Init::Seed(n)),
@@ -907,7 +903,7 @@ fn fn_hash_digest(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_md5_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = bytes_of(&args[0]);
+    let path = conv::to_string_bytes(&args[0]);
     let binary = as_bool(args.get(1));
     let Some(data) = host.stream_get_contents(&path) else {
         return Ok(Value::Bool(false));
@@ -918,7 +914,7 @@ fn fn_md5_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_sha1_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = bytes_of(&args[0]);
+    let path = conv::to_string_bytes(&args[0]);
     let binary = as_bool(args.get(1));
     let Some(data) = host.stream_get_contents(&path) else {
         return Ok(Value::Bool(false));
@@ -929,9 +925,9 @@ fn fn_sha1_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_hash_hmac(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let algo = bytes_of(&args[0]).to_ascii_lowercase();
-    let data = bytes_of(&args[1]);
-    let key = bytes_of(&args[2]);
+    let algo = conv::to_string_bytes(&args[0]).to_ascii_lowercase();
+    let data = conv::to_string_bytes(&args[1]);
+    let key = conv::to_string_bytes(&args[2]);
     let binary = as_bool(args.get(3));
     // hash_hmac rejects non-crypto algorithms (crc32/adler/fnv/…)
     match hmac(&algo, &key, &data) {
@@ -946,9 +942,9 @@ fn fn_hash_hmac(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `$options` (arg 6) goes to the hash's init, and only the seeded
 /// non-cryptographic algorithms read it, which pbkdf2 refuses.
 fn fn_hash_pbkdf2(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let algo = bytes_of(&args[0]).to_ascii_lowercase();
-    let pass = bytes_of(&args[1]);
-    let salt = bytes_of(&args[2]);
+    let algo = conv::to_string_bytes(&args[0]).to_ascii_lowercase();
+    let pass = conv::to_string_bytes(&args[1]);
+    let salt = conv::to_string_bytes(&args[2]);
     let iterations = as_int(&args[3]);
     let length = args.get(4).map(as_int).unwrap_or(0);
     let binary = as_bool(args.get(5));
@@ -1004,8 +1000,8 @@ fn fn_hash_pbkdf2(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_hash_equals(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let known = bytes_of(&args[0]);
-    let user = bytes_of(&args[1]);
+    let known = conv::to_string_bytes(&args[0]);
+    let user = conv::to_string_bytes(&args[1]);
     // constant-time compare (length first, then byte diff accumulation)
     let eq = known.len() == user.len()
         && known

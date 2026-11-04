@@ -19,6 +19,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
+use crate::streams::errno;
 use crate::{Host, Thrown};
 
 fn write_ref(arg: Option<&Value>, value: Value) {
@@ -138,10 +139,6 @@ fn path_arg(args: &[Value], i: usize, fname: &str, pname: &str) -> Result<Vec<u8
 
 fn cstr(b: &[u8]) -> CString {
     CString::new(b.iter().copied().filter(|&c| c != 0).collect::<Vec<u8>>()).unwrap_or_default()
-}
-
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 /// The current process environment as `KEY=VALUE` entries (php passes

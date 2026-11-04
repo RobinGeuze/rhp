@@ -11,6 +11,7 @@ use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::argparse::{str_param, value_name};
 use crate::crypt_fns::php_crypt;
+use crate::ext::hash::primitives::base64_encode as base64;
 use crate::{Host, Thrown, E_DEPRECATED};
 
 // php_password.h
@@ -198,29 +199,6 @@ fn sscanf_longs(s: &[u8], fmt: &[Option<&[u8]>], out: &mut [&mut i64]) {
 // ---------------------------------------------------------------------------
 // salts
 // ---------------------------------------------------------------------------
-
-fn base64(data: &[u8]) -> Vec<u8> {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = Vec::with_capacity(data.len().div_ceil(3) * 4);
-    for c in data.chunks(3) {
-        let n = (c[0] as u32) << 16
-            | (*c.get(1).unwrap_or(&0) as u32) << 8
-            | *c.get(2).unwrap_or(&0) as u32;
-        out.push(T[(n >> 18) as usize & 63]);
-        out.push(T[(n >> 12) as usize & 63]);
-        out.push(if c.len() > 1 {
-            T[(n >> 6) as usize & 63]
-        } else {
-            b'='
-        });
-        out.push(if c.len() > 2 {
-            T[n as usize & 63]
-        } else {
-            b'='
-        });
-    }
-    out
-}
 
 /// `php_password_get_salt`: warns about a `salt` option, then
 /// `php_password_make_salt(length)`: `length` characters of the base64 of

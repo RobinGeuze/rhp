@@ -1,0 +1,27 @@
+Warning: xml_parser_set_option(): Argument #3 ($value) must be of type string|int|bool, float given
+Warning: The float 1.0E+20 is not representable as an int, cast occurred
+Warning: xml_parser_set_option(): Argument #3 ($value) must be between 0 and 2147483647 for option XML_OPTION_SKIP_TAGSTART
+bool(false)
+int(0)
+Warning: xml_parser_set_option(): Argument #3 ($value) must be of type string|int|bool, float given
+Warning: The float NAN is not representable as an int, cast occurred
+bool(true)
+int(0)
+bool(true)
+int(12)
+Warning: xml_parser_set_option(): Argument #3 ($value) must be between 0 and 2147483647 for option XML_OPTION_SKIP_TAGSTART
+bool(false)
+int(12)
+Warning: xml_parser_set_option(): Argument #3 ($value) must be of type string|int|bool, array given
+bool(true)
+int(0)
+Warning: xml_parser_set_option(): Argument #3 ($value) must be of type string|int|bool, array given
+bool(true)
+int(1)
+Warning: xml_parser_set_option(): Argument #3 ($value) must be of type string|int|bool, float given
+bool(true)
+int(3)
+Warning: xml_parser_set_option(): Argument #3 ($value) must be of type string|int|bool, stdClass given
+Warning: Object of class stdClass could not be converted to int
+bool(true)
+int(1)

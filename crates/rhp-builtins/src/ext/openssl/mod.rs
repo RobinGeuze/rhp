@@ -723,10 +723,7 @@ pub(super) fn value_error(fname: &str, i: usize, msg: &str) -> Thrown {
     crate::ext::zpp::value_error(fname, i + 1, pname, msg)
 }
 
-/// Assign through by-reference argument `i`.
-pub(super) fn set_ref(args: &[Value], i: usize, v: Value) {
-    crate::ext::zpp::set_ref(args, i, v);
-}
+pub(super) use crate::ext::zpp::set_ref;
 
 /// php_openssl_check_path_ex: the absolute path (`expand_filepath`) of
 /// `path` (after `file://` when `file_protocol`). `Ok(None)` after a

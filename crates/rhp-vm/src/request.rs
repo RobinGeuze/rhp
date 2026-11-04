@@ -53,6 +53,7 @@ impl SapiState {
             startup: false,
             post_too_big: false,
             deferred_startup_diags: Vec::new(),
+            startup_status: 0,
             body: BodyState::default(),
         }
     }

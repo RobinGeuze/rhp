@@ -9,9 +9,9 @@
 //!
 //! libgmp aborts the process when a number outgrows an `mpz_t` (`INT_MAX`
 //! limbs) or memory runs out, and php calls it unchecked. With one VM per
-//! thread that would end every request, so results that cannot fit (and,
-//! with a margin, factorials and binomials that could not) throw a
-//! `ValueError` instead: "is too large".
+//! thread that would end every request, so a result that cannot fit throws
+//! a `ValueError` ("is too large") instead. Factorials and binomials are
+//! sized from an estimate, with a margin.
 
 pub(crate) mod sys;
 

@@ -110,7 +110,7 @@ Each file is the php-src file of the same name in ext/standard/.
 | `pageinfo.rs` | pageinfo.c |
 | `password.rs` | password.c |
 | `proc_open.rs` | proc_open.c |
-| `scanf.rs` | scanf.c |
+| `scanf.rs` | scanf.c, and `sscanf` itself: php-src defines `PHP_FUNCTION(sscanf)` in string.c as a wrapper around scanf.c's `php_sscanf_internal` |
 | `sha1.rs` | sha1.c |
 | `soundex.rs` | soundex.c |
 | `streamsfuncs.rs` | streamsfuncs.c |

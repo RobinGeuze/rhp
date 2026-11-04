@@ -1,4 +1,5 @@
-//! ext/standard/scanf.c: `sscanf`.
+//! ext/standard/scanf.c: `sscanf` (its `PHP_FUNCTION` is string.c's, a
+//! wrapper around scanf.c's `php_sscanf_internal`).
 //!
 //! Behaviour verified byte-for-byte against the local php 8.5.8 binary (see
 //! `scanf/tests.rs` — expected values are hardcoded from `php -r`).

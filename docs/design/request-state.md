@@ -18,6 +18,9 @@ Kinds:
   request start, in case a call was cut short.
 - **thread**: a cache or setup shared by every request on the thread; holds
   nothing a script can change or see.
+- **startup**: filled before a request starts, also by the preload engine
+  that runs first, and emptied by the request's start; a new engine must
+  not drop it.
 
 ## rhp-builtins
 
@@ -26,7 +29,7 @@ Kinds:
 | `vcwd.rs` | `CWD` (the request's working directory, and a descriptor of it), `UMASK` | request | `vcwd::reset_state` |
 | `runtime_fns.rs` | `INI`, `INI_STARTUP` (ini overrides, `-d` values) | request | `runtime_fns::reset_state` |
 | `runtime_fns.rs` | `STARTUP_DIAGS` | request | `runtime_fns::reset_state` |
-| `opcache_fns.rs` | `ACCEL_LOG` (opcache startup messages) | request | `opcache_fns::reset_state` |
+| `opcache_fns.rs` | `ACCEL_LOG` (opcache's startup messages) | startup | emptied by `start_request` |
 | `streams.rs` | `LAST_OS_ERR`, `WRAPPER_ERR` (the last failure's errno / wrapper message) | call | `streams::reset_state` |
 | `fdstream.rs` | `DIAGS`, `HAS_DIAGS` (warnings of host-less stream operations) | call | `fdstream::reset_state` |
 | `dump.rs` | `VIEWS` (`__debugInfo` / handler views while formatting) | call | `dump::clear_views` |

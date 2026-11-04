@@ -259,15 +259,12 @@ pub(crate) fn jit_enabled() -> bool {
 pub(crate) const LOG_WARNING: i64 = 2;
 
 thread_local! {
-    /// Messages for opcache's own log, raised before the request starts.
+    /// Messages for opcache's own log, raised before the request starts:
+    /// by the settings and by preloading, which runs on an engine of its
+    /// own, so a new engine keeps them; the request's start writes them.
     /// (the directive's position in php's registration order, level, message)
     static ACCEL_LOG: std::cell::RefCell<Vec<(usize, i64, String)>> =
         const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// A new request: nothing queued yet.
-pub(crate) fn reset_state() {
-    ACCEL_LOG.with(|l| l.borrow_mut().clear());
 }
 
 /// Queue a message from a directive's startup handler for opcache's log

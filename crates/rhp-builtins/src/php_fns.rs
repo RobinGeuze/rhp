@@ -4,7 +4,7 @@
 //! this engine emits no diagnostics), and a handful of no-op-ish runtime knobs.
 //! Enough to boot a real framework / Composer.
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, PhpArray, Value};
 
 use crate::{Host, Thrown};

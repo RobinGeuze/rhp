@@ -17,7 +17,7 @@
 //! - `log2()` is intentionally NOT provided: PHP has no `log2()` function
 //!   (use `log($x, 2)`), so defining it would diverge from the oracle.
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
 use crate::Thrown;

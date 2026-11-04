@@ -9,7 +9,7 @@
 pub(crate) mod ids;
 pub(crate) mod lexer;
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, PhpArray, Value};
 
 use crate::{Host, Thrown};

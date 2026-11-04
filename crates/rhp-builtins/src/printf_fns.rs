@@ -2,7 +2,7 @@
 //! [`crate::str_fns::do_sprintf`] (`sprintf`, `printf` and `vsprintf` live
 //! in `str_fns`). `fprintf`/`vfprintf` write to the stream argument.
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
 use crate::str_fns::do_sprintf;

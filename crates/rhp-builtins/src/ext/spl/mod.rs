@@ -2,7 +2,7 @@
 //! (`spl_autoload_register` and friends). The callables live on the [`Host`]
 //! (the VM), which invokes them when a class reference fails to resolve.
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
 use crate::object::{ClassHandlers, ObjectHandlers, PropPurpose};

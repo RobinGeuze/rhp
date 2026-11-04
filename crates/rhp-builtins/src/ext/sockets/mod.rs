@@ -11,7 +11,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{ArrayKey, PhpArray, Value};
 
 use crate::argparse::zval_value_name;

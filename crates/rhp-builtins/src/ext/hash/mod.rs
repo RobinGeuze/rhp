@@ -14,7 +14,7 @@
 //! (3- and 4-pass, one N-pass implementation) in their own files.
 
 use digest::Digest;
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
 mod haval;

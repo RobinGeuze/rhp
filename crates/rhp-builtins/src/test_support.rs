@@ -9,8 +9,8 @@ use std::any::Any;
 use std::os::fd::{OwnedFd, RawFd};
 use std::rc::Rc;
 
-use rhp_semantics::deref;
-use rhp_semantics::ops::CompareCx;
+use rhp_values::ops::deref;
+use rhp_values::ops::CompareCx;
 use rhp_values::{ArrayKey, ClassKind, ClosureData, ObjectHandle, PhpArray, PhpStr, Value};
 
 use crate::fdstream::{FdStream, SockInfo};

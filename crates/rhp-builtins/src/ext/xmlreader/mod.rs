@@ -11,7 +11,7 @@ use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::rc::Rc;
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
 use crate::ext::libxml::ffi;

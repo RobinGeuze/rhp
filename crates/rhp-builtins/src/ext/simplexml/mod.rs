@@ -14,7 +14,7 @@ use std::ffi::c_int;
 use std::ptr;
 use std::rc::Rc;
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
 use crate::argparse::{zval_get_string, zval_value_name};

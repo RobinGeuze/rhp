@@ -14,7 +14,6 @@ mbstring-libmbfl = ["dep:rhp-mbfl-sys"]
 
 [dependencies]
 rhp-values = { path = "../rhp-values" }
-rhp-semantics = { path = "../rhp-semantics" }
 libc = "0.2"
 indexmap = { workspace = true }
 # No -sys crate for PCRE2: build.rs links the system libpcre2-8 (see

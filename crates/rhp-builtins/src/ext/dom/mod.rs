@@ -457,7 +457,7 @@ fn classmap_lookup(document: *mut lxn::RefObj, base: &str) -> Option<Vec<u8>> {
 
 // ---- arguments ----
 
-pub(crate) use rhp_semantics::deref;
+pub(crate) use rhp_values::ops::deref;
 
 pub(crate) fn arg(args: &[Value], i: usize) -> Value {
     args.get(i).map(deref).unwrap_or(Value::Null)

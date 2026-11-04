@@ -8,7 +8,7 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::argparse::{int_or_null_param, int_param, str_param, zval_value_name};

@@ -32,7 +32,7 @@ pub struct XmlError {
     pub file: Option<Vec<u8>>,
 }
 
-pub(crate) use rhp_semantics::deref;
+pub(crate) use rhp_values::ops::deref;
 
 /// String argument `i` as zpp's `s` hands it over: the string itself, not
 /// a copy (a document as large as memory_limit allows still loads).

@@ -10,7 +10,7 @@
 //!   match failure. The assignment form (`sscanf($s, $fmt, &$a, ...)`) writes
 //!   through the by-ref positions of its stub signature (`mixed &...$vars`).
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, PhpArray, Value};
 
 use crate::{Host, Thrown};

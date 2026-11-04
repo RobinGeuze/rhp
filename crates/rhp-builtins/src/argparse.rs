@@ -2,7 +2,7 @@
 //! builtins that must raise php's exact `TypeError` text on a wrong-typed
 //! argument instead of silently coercing.
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, PhpArray, Value};
 
 use crate::{Host, Thrown};

@@ -4,7 +4,7 @@
 //! binary (see `str_fns/tests.rs` — expected values are hardcoded from
 //! `php -r '...'` output).
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, fmt, ArrayKey, PhpArray, Value};
 
 use crate::argparse::zval_get_string;

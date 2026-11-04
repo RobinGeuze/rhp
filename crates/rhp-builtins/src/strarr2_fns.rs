@@ -7,7 +7,7 @@
 //! binary (see `strarr2_fns/tests.rs` — expected values hardcoded from
 //! `php -r '...'` output).
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::argparse::array_param;

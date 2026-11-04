@@ -90,11 +90,11 @@ pub(crate) fn ctx_opt(host: &dyn Host, ctx: &Value, wrapper: &str, name: &str) -
     match host.stream_context_options(ctx) {
         Value::Array(a) => match a
             .get(&ArrayKey::from_bytes(wrapper.as_bytes()))
-            .map(rhp_semantics::deref)
+            .map(rhp_values::ops::deref)
         {
             Some(Value::Array(w)) => w
                 .get(&ArrayKey::from_bytes(name.as_bytes()))
-                .map(rhp_semantics::deref),
+                .map(rhp_values::ops::deref),
             _ => None,
         },
         _ => None,
@@ -716,7 +716,7 @@ fn wrap_http_ex(
         match cx.opt("header") {
             Some(Value::Array(a)) => {
                 for (_, h) in a.iter() {
-                    if let Value::Str(h) = rhp_semantics::deref(h) {
+                    if let Value::Str(h) = rhp_values::ops::deref(h) {
                         if let Some(pa) = proxy_authorization_header(h.as_bytes()) {
                             header.extend_from_slice(&pa);
                             break;
@@ -826,7 +826,7 @@ fn wrap_http_ex(
             Value::Array(a) => {
                 let mut joined = Vec::new();
                 for (_, v) in a.iter() {
-                    if let Value::Str(s) = rhp_semantics::deref(v) {
+                    if let Value::Str(s) = rhp_values::ops::deref(v) {
                         joined.extend_from_slice(s.as_bytes());
                         joined.extend_from_slice(b"\r\n");
                     }
@@ -1356,7 +1356,7 @@ pub fn open_arg(
     mode: &[u8],
     ctx_arg: Option<&Value>,
 ) -> Result<Option<Value>, Thrown> {
-    let ctx = match ctx_arg.map(rhp_semantics::deref) {
+    let ctx = match ctx_arg.map(rhp_values::ops::deref) {
         Some(v @ Value::Resource(_)) => v,
         _ => host.default_stream_context(),
     };

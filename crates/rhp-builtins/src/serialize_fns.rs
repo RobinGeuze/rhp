@@ -23,7 +23,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, fmt, ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::{Host, Thrown};

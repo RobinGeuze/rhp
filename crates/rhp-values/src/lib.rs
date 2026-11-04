@@ -1,7 +1,7 @@
 //! rhp runtime value model — the zval analogue.
 //!
-//! Pure storage + PHP key/number normalization rules. No AST, no operator
-//! semantics (those live in `rhp-semantics`). Everything here is owned and
+//! Storage, PHP key/number normalization rules and the operators on values
+//! ([`ops`]). No AST. Everything here is owned and
 //! `'static`: the arena holds the AST, the runtime holds owned copies.
 //!
 //! See `docs/design/value-model.md` for the full rationale.
@@ -16,6 +16,7 @@ use rustc_hash::FxBuildHasher;
 pub mod conv;
 pub mod fmt;
 pub mod mem;
+pub mod ops;
 pub mod thrown;
 
 pub use thrown::Thrown;

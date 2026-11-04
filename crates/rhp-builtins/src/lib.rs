@@ -2,8 +2,8 @@
 //! interpreter exposes to builtins.
 //!
 //! Builtins operate on owned `Value`s only — they never touch the arena/AST,
-//! so this crate depends on `rhp-values` and `rhp-semantics` only, never on
-//! the compiler or the VM (no dependency cycle).
+//! so this crate depends on `rhp-values` (and the C libraries it links),
+//! never on the compiler or the VM (no dependency cycle).
 //! The interpreter talks back through [`Host`].
 
 use std::collections::HashMap;
@@ -149,8 +149,8 @@ pub fn host_compare(
     b: &Value,
 ) -> Result<std::cmp::Ordering, Thrown> {
     match host.compare_cx() {
-        Some(cx) => rhp_semantics::ops::compare(a, b, cx),
-        None => rhp_semantics::ops::compare(a, b, &mut rhp_semantics::ops::NoCx),
+        Some(cx) => rhp_values::ops::compare(a, b, cx),
+        None => rhp_values::ops::compare(a, b, &mut rhp_values::ops::NoCx),
     }
 }
 
@@ -244,7 +244,7 @@ pub trait Host {
 
     /// The engine's comparison context (`__toString`, internal compare
     /// handlers, notices) for loose comparisons inside builtins.
-    fn compare_cx(&mut self) -> Option<&mut dyn rhp_semantics::ops::CompareCx> {
+    fn compare_cx(&mut self) -> Option<&mut dyn rhp_values::ops::CompareCx> {
         None
     }
 
@@ -1915,7 +1915,7 @@ pub fn is_refused(name: &str) -> Option<&'static str> {
 // builtin implementations
 // ---------------------------------------------------------------------------
 
-use rhp_semantics::{deref, ops};
+use rhp_values::ops::{self, deref};
 
 fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();

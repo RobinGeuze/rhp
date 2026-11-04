@@ -9,7 +9,7 @@
 
 use std::collections::HashSet;
 
-use rhp_semantics::{deref, ops};
+use rhp_values::ops::{self, deref};
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::argparse::array_param;

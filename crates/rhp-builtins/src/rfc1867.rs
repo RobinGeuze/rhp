@@ -18,7 +18,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{ArrayKey, PhpArray, Thrown, Value};
 
 use crate::query_fns::{post_form_vars, register_variable_value};

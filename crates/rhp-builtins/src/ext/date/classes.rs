@@ -10,7 +10,7 @@ use rhp_csrc::timelib::{
     self, sys, RelTime, Time, Tz, TIMELIB_NO_CLONE, TIMELIB_OVERRIDE_TIME, TIMELIB_UNSET,
     TIMELIB_ZONETYPE_ABBR, TIMELIB_ZONETYPE_ID, TIMELIB_ZONETYPE_OFFSET,
 };
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, Value};
 
 use super::format::date_format;

@@ -1,14 +1,73 @@
-//! PHP operator semantics (arithmetic, comparison, bitwise, concat).
-//!
-//! These can raise `Throwable`s (`DivisionByZeroError`, `TypeError`), so they
-//! live here rather than in `rhp-values`. All rules verified against
-//! php 8.5.8 (see `docs/design/php-semantics.md`).
+//! PHP operator semantics (arithmetic, comparison, bitwise, concat) and the
+//! value helpers the VM, the compiler's constant folding and the builtins
+//! share (`deref`, `(array)` casts, `++`/`--`). Operators can raise
+//! `Throwable`s (`DivisionByZeroError`, `TypeError`). All rules verified
+//! against php 8.5.8 (see `docs/design/php-semantics.md`).
 
 use std::cmp::Ordering;
 
-use rhp_values::conv::{self, Num};
-use rhp_values::Thrown;
-use rhp_values::{PhpStr, Value};
+use crate::conv::{self, Num};
+use crate::Thrown;
+use crate::{PhpArray, PhpStr, Value};
+
+/// Deref a possible `Value::Ref` to the underlying value (clone).
+#[inline]
+pub fn deref(v: &Value) -> Value {
+    match v {
+        Value::Ref(r) => r.borrow().clone(),
+        other => other.clone(),
+    }
+}
+
+/// `(array)` cast: arrays pass through, null → empty, scalars → single element.
+pub fn cast_to_array(v: Value) -> Value {
+    match deref(&v) {
+        Value::Array(a) => Value::Array(a),
+        Value::Null => Value::Array(PhpArray::new()),
+        // `(array)$object`: public properties become array elements keyed by
+        // name (visibility name-mangling for private/protected is not modelled).
+        Value::Object(h) => {
+            let mut a = PhpArray::new();
+            for (name, val) in &h.borrow().properties {
+                a.insert(crate::ArrayKey::from_bytes(name.as_bytes()), deref(val));
+            }
+            Value::Array(a)
+        }
+        scalar => {
+            let mut a = PhpArray::new();
+            a.push(scalar);
+            Value::Array(a)
+        }
+    }
+}
+
+/// PHP `++`/`--`: null++ => 1, null-- => null, numeric steps numerically;
+/// non-numeric string increment (Perl-style) deferred (returns unchanged).
+pub fn inc_dec_value(v: &Value, delta: i64) -> Value {
+    match deref(v) {
+        Value::Null => {
+            if delta > 0 {
+                Value::Int(1)
+            } else {
+                Value::Null
+            }
+        }
+        Value::Int(n) => match n.checked_add(delta) {
+            Some(r) => Value::Int(r),
+            None => Value::Float(n as f64 + delta as f64),
+        },
+        Value::Float(f) => Value::Float(f + delta as f64),
+        Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
+            Some(conv::Num::Int(n)) => match n.checked_add(delta) {
+                Some(r) => Value::Int(r),
+                None => Value::Float(n as f64 + delta as f64),
+            },
+            Some(conv::Num::Float(f)) => Value::Float(f + delta as f64),
+            None => Value::Str(s),
+        },
+        other => other,
+    }
+}
 
 /// Coerce an operand to a number for arithmetic, raising `TypeError` for
 /// unsupported types and non-numeric strings (PHP 8 behavior).
@@ -51,7 +110,7 @@ fn arith_add_sub_mul(
 
 pub fn add(a: &Value, b: &Value) -> Result<Value, Thrown> {
     // array + array = union (left wins); only defined for arrays.
-    if let (Value::Array(x), Value::Array(y)) = (&crate::deref(a), &crate::deref(b)) {
+    if let (Value::Array(x), Value::Array(y)) = (&deref(a), &deref(b)) {
         let mut out = x.clone();
         for (k, v) in y.iter() {
             if out.get(k).is_none() {
@@ -86,8 +145,8 @@ pub fn div(a: &Value, b: &Value) -> Result<Value, Thrown> {
 }
 
 pub fn modulo(a: &Value, b: &Value) -> Result<Value, Thrown> {
-    let p = conv::to_int(&crate::deref(a));
-    let q = conv::to_int(&crate::deref(b));
+    let p = conv::to_int(&deref(a));
+    let q = conv::to_int(&deref(b));
     if q == 0 {
         return Err(Thrown::error("DivisionByZeroError", "Modulo by zero"));
     }
@@ -124,8 +183,8 @@ pub fn pow(a: &Value, b: &Value) -> Result<Value, Thrown> {
 }
 
 pub fn bitwise(a: &Value, b: &Value, op: BitOp) -> Value {
-    let x = conv::to_int(&crate::deref(a));
-    let y = conv::to_int(&crate::deref(b));
+    let x = conv::to_int(&deref(a));
+    let y = conv::to_int(&deref(b));
     Value::Int(match op {
         BitOp::And => x & y,
         BitOp::Or => x | y,
@@ -144,7 +203,7 @@ pub enum BitOp {
 }
 
 pub fn bitwise_not(a: &Value) -> Value {
-    Value::Int(!conv::to_int(&crate::deref(a)))
+    Value::Int(!conv::to_int(&deref(a)))
 }
 
 pub fn negate(a: &Value) -> Result<Value, Thrown> {
@@ -161,7 +220,7 @@ pub fn concat(a: &Value, b: &Value) -> Value {
     // One buffer of the result's size, as php's concat allocates the result
     // once (no copies of the operands, no growth slack counted against
     // memory_limit).
-    let (a, b) = (crate::deref(a), crate::deref(b));
+    let (a, b) = (deref(a), deref(b));
     let a = match &a {
         Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
         v => std::borrow::Cow::Owned(conv::to_string_bytes(v)),
@@ -173,11 +232,11 @@ pub fn concat(a: &Value, b: &Value) -> Value {
     let len = a.len() + b.len();
     // php's zend_string_alloc for the result: past the hard limit the VM
     // stops at its next check, so don't allocate.
-    if !rhp_values::mem::alloc_check(rhp_values::mem::zstr_size(len)) {
+    if !crate::mem::alloc_check(crate::mem::zstr_size(len)) {
         return Value::Str(PhpStr::from_bytes(Vec::new()));
     }
     // (The whole block: a later in-place append can use the slack.)
-    let mut bytes = Vec::with_capacity(rhp_values::mem::block_size(len));
+    let mut bytes = Vec::with_capacity(crate::mem::block_size(len));
     bytes.extend_from_slice(&a);
     bytes.extend_from_slice(&b);
     Value::Str(PhpStr::from_bytes(bytes))
@@ -205,27 +264,27 @@ pub enum CastTarget {
 /// [`NoCx`] is the context-free fallback (no user code can run).
 pub trait CompareCx {
     /// Whether the object's class is an enum (enums are uncomparable).
-    fn is_enum(&self, _class: rhp_values::ClassId) -> bool {
+    fn is_enum(&self, _class: crate::ClassId) -> bool {
         false
     }
     /// The class's declared (default) property names, in slot order; `None`
     /// when unknown (every property is then treated as declared).
-    fn declared_props(&self, _class: rhp_values::ClassId) -> Option<Vec<PhpStr>> {
+    fn declared_props(&self, _class: crate::ClassId) -> Option<Vec<PhpStr>> {
         None
     }
     /// Engine-internal state of a built-in class, invisible to comparison
     /// (php keeps it outside the property table).
-    fn is_internal_prop(&self, _class: rhp_values::ClassId, _name: &PhpStr) -> bool {
+    fn is_internal_prop(&self, _class: crate::ClassId, _name: &PhpStr) -> bool {
         false
     }
     /// The class name (for the conversion notice).
-    fn class_name(&self, _class: rhp_values::ClassId) -> Vec<u8> {
+    fn class_name(&self, _class: crate::ClassId) -> Vec<u8> {
         b"object".to_vec()
     }
     /// `cast_object`: `Ok(None)` is FAILURE.
     fn cast_object(
         &mut self,
-        _obj: &rhp_values::ObjectHandle,
+        _obj: &crate::ObjectHandle,
         target: CastTarget,
     ) -> Result<Option<Value>, Thrown> {
         Ok(match target {
@@ -237,7 +296,7 @@ pub trait CompareCx {
     /// called with the operands in order when `obj` (one of them) has one.
     fn compare_handler(
         &mut self,
-        _obj: &rhp_values::ObjectHandle,
+        _obj: &crate::ObjectHandle,
         _a: &Value,
         _b: &Value,
     ) -> Option<Result<i32, Thrown>> {
@@ -300,8 +359,8 @@ pub fn loose_compare(a: &Value, b: &Value) -> Ordering {
 
 /// `zend_compare`, ported: verified against php 8.5.8.
 pub fn compare(a: &Value, b: &Value, cx: &mut dyn CompareCx) -> Result<Ordering, Thrown> {
-    let a = crate::deref(a);
-    let b = crate::deref(b);
+    let a = deref(a);
+    let b = deref(b);
     use Value::*;
     Ok(match (&a, &b) {
         (Int(x), Int(y)) => x.cmp(y),
@@ -428,8 +487,8 @@ fn smart_strcmp(x: &[u8], y: &[u8]) -> Ordering {
 
 /// `zend_hash_compare(.., ordered=0)` over two arrays.
 fn compare_arrays(
-    x: &rhp_values::PhpArray,
-    y: &rhp_values::PhpArray,
+    x: &crate::PhpArray,
+    y: &crate::PhpArray,
     cx: &mut dyn CompareCx,
 ) -> Result<Ordering, Thrown> {
     if x.len() != y.len() {
@@ -526,7 +585,7 @@ fn same_object(a: &Value, b: &Value) -> bool {
 /// php's `zend_closure_compare` for two distinct closure objects: only
 /// first-class-callable ("fake") closures over the same function, `$this` and
 /// scope are equal.
-fn fake_closures_equal(x: &rhp_values::ClosureData, y: &rhp_values::ClosureData) -> bool {
+fn fake_closures_equal(x: &crate::ClosureData, y: &crate::ClosureData) -> bool {
     let (Some(wx), Some(wy)) = (&x.wrapped, &y.wrapped) else {
         return false;
     };
@@ -539,13 +598,13 @@ fn fake_closures_equal(x: &rhp_values::ClosureData, y: &rhp_values::ClosureData)
 }
 
 fn callables_equal(a: &Value, b: &Value) -> bool {
-    let a = crate::deref(a);
-    let b = crate::deref(b);
+    let a = deref(a);
+    let b = deref(b);
     match (&a, &b) {
         (Value::Str(x), Value::Str(y)) => x.as_bytes().eq_ignore_ascii_case(y.as_bytes()),
         (Value::Array(x), Value::Array(y)) if x.len() == 2 && y.len() == 2 => {
-            let xs: Vec<Value> = x.iter().map(|(_, v)| crate::deref(v)).collect();
-            let ys: Vec<Value> = y.iter().map(|(_, v)| crate::deref(v)).collect();
+            let xs: Vec<Value> = x.iter().map(|(_, v)| deref(v)).collect();
+            let ys: Vec<Value> = y.iter().map(|(_, v)| deref(v)).collect();
             let target = match (&xs[0], &ys[0]) {
                 (Value::Object(p), Value::Object(q)) => std::rc::Rc::ptr_eq(p, q),
                 (Value::Str(p), Value::Str(q)) => p.as_bytes().eq_ignore_ascii_case(q.as_bytes()),
@@ -561,7 +620,7 @@ fn callables_equal(a: &Value, b: &Value) -> bool {
 /// zend_std_compare_objects with one non-object operand: cast the object to
 /// the other operand's type.
 fn std_compare_scalar(
-    obj: Option<&rhp_values::ObjectHandle>,
+    obj: Option<&crate::ObjectHandle>,
     class_name: &[u8],
     object_lhs: bool,
     value: &Value,
@@ -610,8 +669,8 @@ fn std_compare_scalar(
 
 /// zend_std_compare_objects for two objects.
 fn std_compare_objects(
-    x: &rhp_values::ObjectHandle,
-    y: &rhp_values::ObjectHandle,
+    x: &crate::ObjectHandle,
+    y: &crate::ObjectHandle,
     cx: &mut dyn CompareCx,
 ) -> Result<Ordering, Thrown> {
     let (xc, yc) = (x.borrow().class, y.borrow().class);
@@ -627,16 +686,16 @@ fn std_compare_objects(
         .filter(|(k, _)| !cx.is_internal_prop(xc, k))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    let yp: rhp_values::PhpArray = {
-        let mut a = rhp_values::PhpArray::new();
+    let yp: crate::PhpArray = {
+        let mut a = crate::PhpArray::new();
         for (k, v) in y.borrow().properties.iter() {
             if !cx.is_internal_prop(yc, k) {
-                a.insert(rhp_values::ArrayKey::Str(k.clone()), v.clone());
+                a.insert(crate::ArrayKey::Str(k.clone()), v.clone());
             }
         }
         a
     };
-    let get_y = |k: &PhpStr| yp.get(&rhp_values::ArrayKey::Str(k.clone())).cloned();
+    let get_y = |k: &PhpStr| yp.get(&crate::ArrayKey::Str(k.clone())).cloned();
     let declared: Vec<PhpStr> = cx
         .declared_props(xc)
         .unwrap_or_else(|| xp.iter().map(|(k, _)| k.clone()).collect())
@@ -716,8 +775,8 @@ pub fn loose_eq(a: &Value, b: &Value) -> bool {
 
 /// PHP strict comparison (`===`): same type and value; identity for objects.
 pub fn strict_eq(a: &Value, b: &Value) -> bool {
-    let a = crate::deref(a);
-    let b = crate::deref(b);
+    let a = deref(a);
+    let b = deref(b);
     use Value::*;
     match (&a, &b) {
         (Null, Null) => true,

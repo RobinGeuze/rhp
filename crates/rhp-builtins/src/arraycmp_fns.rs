@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::argparse::zval_value_name;

@@ -121,7 +121,7 @@ impl Host for Vm {
         self.last_error = None;
     }
 
-    fn compare_cx(&mut self) -> Option<&mut dyn rhp_semantics::ops::CompareCx> {
+    fn compare_cx(&mut self) -> Option<&mut dyn rhp_values::ops::CompareCx> {
         Some(self)
     }
 

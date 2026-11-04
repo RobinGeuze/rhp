@@ -623,7 +623,10 @@ fn double_arg(
     pname: &str,
     nullable: bool,
 ) -> Result<Option<f64>, Thrown> {
-    let v = args.get(i).map(rhp_semantics::deref).unwrap_or(Value::Null);
+    let v = args
+        .get(i)
+        .map(rhp_values::ops::deref)
+        .unwrap_or(Value::Null);
     let ty = if nullable { "?float" } else { "float" };
     let wrong = |host: &dyn Host, v: &Value| {
         Thrown::type_error(format!(

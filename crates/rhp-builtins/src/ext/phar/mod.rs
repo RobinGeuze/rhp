@@ -20,7 +20,7 @@ use std::rc::Rc;
 
 use flate2::read::DeflateDecoder;
 use md5::Md5;
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};

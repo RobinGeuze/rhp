@@ -5,7 +5,7 @@
 //! literals, `[]` arrays, constants, class constants, unary and binary
 //! operators, parentheses.
 
-use rhp_semantics::ops::{self, BitOp};
+use rhp_values::ops::{self, BitOp};
 use rhp_values::{ArrayKey, PhpArray, Thrown, Value};
 
 /// A name the expression refers to.

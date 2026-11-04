@@ -3,8 +3,8 @@
 //! Indentation and punctuation verified against php 8.5.8
 //! (tests/golden/stdlib/var/{var_dump,print_r,var_export}_nested.out).
 
-use rhp_semantics::deref;
 use rhp_values::conv;
+use rhp_values::ops::deref;
 use rhp_values::{fmt, ArrayKey, PhpStr, Thrown, Value};
 
 use crate::object::PropPurpose;

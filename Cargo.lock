@@ -955,7 +955,6 @@ dependencies = [
  "openssl-sys",
  "rhp-csrc",
  "rhp-mbfl-sys",
- "rhp-semantics",
  "rhp-values",
  "ripemd",
  "sha1",
@@ -988,7 +987,6 @@ dependencies = [
  "rhp-builtins",
  "rhp-bytecode",
  "rhp-frontend",
- "rhp-semantics",
  "rhp-values",
 ]
 
@@ -1050,13 +1048,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rhp-semantics"
-version = "0.0.0"
-dependencies = [
- "rhp-values",
-]
-
-[[package]]
 name = "rhp-values"
 version = "0.0.0"
 dependencies = [
@@ -1075,7 +1066,6 @@ dependencies = [
  "rhp-builtins",
  "rhp-bytecode",
  "rhp-sapi",
- "rhp-semantics",
  "rhp-values",
  "rustc-hash",
 ]

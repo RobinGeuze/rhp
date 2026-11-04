@@ -7,7 +7,7 @@ use rhp_values::{conv, Value};
 
 use crate::{Host, Thrown};
 
-pub use rhp_semantics::deref;
+pub use rhp_values::ops::deref;
 
 fn type_err(host: &dyn Host, fname: &str, n: usize, pname: &str, want: &str, v: &Value) -> Thrown {
     Thrown::type_error(format!(

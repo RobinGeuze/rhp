@@ -24,7 +24,7 @@
 
 use std::sync::OnceLock;
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::Value;
 
 use crate::{Host, Thrown};

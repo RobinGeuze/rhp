@@ -351,7 +351,14 @@ fn fn_stream_copy_to_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value
         }
     };
     let pos = args.get(3).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
-    if pos > 0 && !host.stream_seek(&src, pos, 0) {
+    if pos > 0
+        && !crate::fs_fns::stream_seek(host, "stream_copy_to_stream", &src, pos, libc::SEEK_SET)?
+    {
+        crate::warn(
+            host,
+            "stream_copy_to_stream",
+            &format!("Failed to seek to position {pos} in the stream"),
+        )?;
         return Ok(Value::Bool(false));
     }
     if maxlen == Some(0) {

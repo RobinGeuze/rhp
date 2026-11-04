@@ -323,10 +323,7 @@ fn get_contents_via_stream(
         } else {
             libc::SEEK_SET
         };
-        if !host.stream_seek(&res, offset, whence) {
-            if host.stream_meta(&res).is_some_and(|m| !m.seekable) {
-                crate::warn(host, "file_get_contents", "Stream does not support seeking")?;
-            }
+        if !crate::fs_fns::stream_seek(host, "file_get_contents", &res, offset, whence)? {
             crate::warn(
                 host,
                 "file_get_contents",
@@ -351,6 +348,32 @@ fn get_contents_via_stream(
     };
     host.stream_close(&res);
     Ok(Value::str(data))
+}
+
+/// A whole-stream read through a wrapper's own opener (`zip://`), with the
+/// call's context, for builtin `fname`: `None` when the wrapper has no
+/// opener (read as before), `Some(None)` when the open failed (warned).
+pub(crate) fn read_via_opener(
+    host: &mut dyn Host,
+    fname: &str,
+    url: &[u8],
+    ctx: Option<&Value>,
+) -> Result<Option<Option<Vec<u8>>>, Thrown> {
+    let scheme = crate::streams::split_scheme(url).0.to_vec();
+    if !host
+        .stream_wrapper(&scheme)
+        .is_some_and(|w| w.has_stream_opener())
+    {
+        return Ok(None);
+    }
+    let ctx = ctx.map(deref).unwrap_or(Value::Null);
+    let Some(res) = host.stream_open_ctx(url, b"rb", &ctx) else {
+        crate::open_failed(host, fname, url)?;
+        return Ok(Some(None));
+    };
+    let data = host.stream_read(&res, -1).unwrap_or_default();
+    host.stream_close(&res);
+    Ok(Some(Some(data)))
 }
 
 /// A local path given without a scheme or as `file://`.

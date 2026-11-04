@@ -42,6 +42,12 @@ impl Vm {
                 sp.pos..(sp.pos + 1).min(args.len())
             };
             for i in range {
+                // A reference in a by-value position (call_user_func_array
+                // with `&$x` elements) is read when zpp reaches it: an
+                // earlier argument's __toString may have changed it.
+                if user && !sp.by_ref && matches!(args[i], Value::Ref(_)) {
+                    args[i] = deref(&args[i]);
+                }
                 let got = if sp.by_ref {
                     // `array &$array` (sort, usort, array_push, …): the
                     // referenced value must already be an array.

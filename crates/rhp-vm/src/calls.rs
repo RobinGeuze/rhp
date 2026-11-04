@@ -1680,7 +1680,7 @@ impl Vm {
         if count_error.is_none() {
             let caller = self.stack.len().saturating_sub(1);
             let user = !self.stack.is_empty() && !self.is_internal_frame(caller);
-            self.coerce_builtin_args(builtin.name, sig, &mut args, user, strict)?;
+            self.coerce_builtin_args(builtin.name, sig, &mut args, user, strict, icall)?;
         }
         // A builtin called from engine-internal (prelude) code is not a php
         // frame, and php compiles a few calls to opcodes (no frame either).

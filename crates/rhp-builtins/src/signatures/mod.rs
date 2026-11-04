@@ -325,7 +325,7 @@ pub fn methods() -> &'static [Method] {
 /// A parameter whose type is made of scalar and array types only, so zpp's
 /// checks on it are generic: the `Z_PARAM_*` its type maps to ([`Zpp`]),
 /// in the caller's typing mode.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ScalarParam {
     pub pos: usize,
     pub name: &'static str,
@@ -502,7 +502,12 @@ fn scalar_param(f: &Func, pos: usize, p: &'static Param) -> Option<ScalarParam> 
 pub struct ScalarParams {
     pub params: Box<[ScalarParam]>,
     pub prefix: usize,
+    /// zpp depends on the call ([`scalar_params_for`]).
+    by_call: bool,
 }
+
+/// The functions [`scalar_params_for`] has variants for.
+const ZPP_BY_CALL: &[&str] = &["implode", "strtr"];
 
 /// The [`ScalarParams`] of a function row.
 pub fn scalar_params(f: &'static Func) -> Option<&'static ScalarParams> {
@@ -526,13 +531,96 @@ pub fn scalar_params(f: &'static Func) -> Option<&'static ScalarParams> {
                             && !(p.ty.is_empty() && p.by_ref())
                     })
                     .unwrap_or(usize::MAX);
-                ScalarParams { params, prefix }
+                ScalarParams {
+                    params,
+                    prefix,
+                    by_call: ZPP_BY_CALL.contains(&f.name),
+                }
             })
             .collect()
     });
     let at = (f as *const Func as usize).wrapping_sub(rows.as_ptr() as usize)
         / std::mem::size_of::<Func>();
     cache.get(at)
+}
+
+/// The [`ScalarParams`] for a call with `argc` arguments (`frameless`:
+/// one php compiles to ZEND_FRAMELESS_ICALL_n): the row's, except where
+/// php's zpp depends on the count or the variant. strtr parses `$from` as
+/// Z_PARAM_ARRAY_HT with two arguments, and `$from` and `$to` as
+/// Z_PARAM_STR with three. implode's frameless forms parse nothing with
+/// one argument (the body raises the TypeError) and `$separator` as
+/// Z_FLF_PARAM_STR with two.
+pub fn scalar_params_for(
+    f: &'static Func,
+    argc: usize,
+    frameless: bool,
+) -> Option<&'static ScalarParams> {
+    type Variant = (&'static str, usize, bool, ScalarParams);
+    static VARIANTS: std::sync::OnceLock<Vec<Variant>> = std::sync::OnceLock::new();
+    let row = scalar_params(f)?;
+    if !row.by_call {
+        return Some(row);
+    }
+    let variants = VARIANTS.get_or_init(|| {
+        let base = |name: &str| {
+            let f = function(name.as_bytes()).expect("stub row");
+            scalar_params(f).expect("cached row").params.to_vec()
+        };
+        // `params` with each named parameter's kind replaced; the type
+        // php's null deprecation prints stays the stub's.
+        let with = |name: &str, kinds: &[(&str, Zpp)]| {
+            let params: Box<[ScalarParam]> = base(name)
+                .into_iter()
+                .map(|mut sp| {
+                    if let Some(&(_, kind)) = kinds.iter().find(|(p, _)| *p == sp.name) {
+                        sp.kind = kind;
+                        sp.nullable = false;
+                        sp.has_str = kind == Zpp::Str;
+                        sp.has_arr = kind == Zpp::Array;
+                    }
+                    sp
+                })
+                .collect();
+            ScalarParams {
+                params,
+                prefix: usize::MAX,
+                by_call: true,
+            }
+        };
+        let none = ScalarParams {
+            params: Box::new([]),
+            prefix: usize::MAX,
+            by_call: true,
+        };
+        vec![
+            ("strtr", 2, false, with("strtr", &[("from", Zpp::Array)])),
+            ("strtr", 2, true, with("strtr", &[("from", Zpp::Array)])),
+            (
+                "strtr",
+                3,
+                false,
+                with("strtr", &[("from", Zpp::Str), ("to", Zpp::Str)]),
+            ),
+            (
+                "strtr",
+                3,
+                true,
+                with("strtr", &[("from", Zpp::Str), ("to", Zpp::Str)]),
+            ),
+            ("implode", 1, true, none),
+            (
+                "implode",
+                2,
+                true,
+                with("implode", &[("separator", Zpp::Str)]),
+            ),
+        ]
+    });
+    variants
+        .iter()
+        .find(|v| v.0 == f.name && v.1 == argc && v.2 == frameless)
+        .map_or(Some(row), |v| Some(&v.3))
 }
 
 #[cfg(test)]

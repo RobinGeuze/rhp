@@ -72,14 +72,15 @@ fn fn_str_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // strtr
 // ---------------------------------------------------------------------------
 
-fn fn_strtr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_strtr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = conv::to_string_bytes(&args[0]);
     if args.len() == 2 {
         // Pairs form: longest matching key at each position wins.
         let Value::Array(pairs) = deref(&args[1]) else {
-            return Err(Thrown::type_error(
-                "strtr(): Argument #2 ($from) must be of type array, string given",
-            ));
+            return Err(Thrown::type_error(format!(
+                "strtr(): Argument #2 ($from) must be of type array, {} given",
+                crate::argparse::zval_value_name(host, &args[1])
+            )));
         };
         let table: Vec<(Vec<u8>, Vec<u8>)> = pairs
             .iter()

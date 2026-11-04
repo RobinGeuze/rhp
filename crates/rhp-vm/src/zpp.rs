@@ -22,7 +22,8 @@ impl Vm {
     /// calls only get the object conversions). Past the first parameter
     /// whose checks are the body's (a resource, a callable, …), only the
     /// object, array and null checks run here, so that parameter's error
-    /// still comes first.
+    /// still comes first. `frameless`: php runs the call's
+    /// ZEND_FRAMELESS_FUNCTION variant, whose zpp may differ.
     pub(crate) fn coerce_builtin_args(
         &mut self,
         name: &str,
@@ -30,8 +31,11 @@ impl Vm {
         args: &mut [Value],
         user: bool,
         strict: bool,
+        frameless: bool,
     ) -> Result<(), Thrown> {
-        let (params, prefix) = match sig.and_then(builtins::signatures::scalar_params) {
+        let sps =
+            sig.and_then(|f| builtins::signatures::scalar_params_for(f, args.len(), frameless));
+        let (params, prefix) = match sps {
             Some(sps) => (&sps.params[..], sps.prefix),
             None => (&[][..], 0),
         };

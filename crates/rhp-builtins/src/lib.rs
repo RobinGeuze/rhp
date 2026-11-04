@@ -2933,13 +2933,18 @@ fn fn_array_key_exists(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 }
 
 fn fn_implode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // implode($array) or implode($glue, $array)
+    // implode($array) or implode($separator, $array)
     let (glue, arr) = match (deref(&args[0]), args.get(1).map(deref)) {
-        (Value::Array(a), _) => (Vec::new(), a),
+        (Value::Array(a), None | Some(Value::Null)) => (Vec::new(), a),
+        (Value::Array(_), Some(_)) => {
+            return Err(Thrown::type_error(
+                "implode(): Argument #1 ($separator) must be of type string, array given",
+            ))
+        }
         (g, Some(Value::Array(a))) => (conv::to_string_bytes(&g), a),
         _ => {
             return Err(Thrown::type_error(
-                "implode(): Argument must be of type array",
+                "implode(): If argument #1 ($separator) is of type string, argument #2 ($array) must be of type array, null given",
             ))
         }
     };

@@ -37,15 +37,24 @@ pub mod zip;
 pub mod zlib;
 pub mod zpp;
 
-/// Objects of the extension classes that install
-/// `zend_objects_not_comparable` (curl handles, `Socket`, the OpenSSL
-/// objects): the predicate behind
-/// [`rhp_semantics::ops::set_not_comparable_hook`].
-pub(crate) fn not_comparable_object(h: &rhp_values::ObjectHandle) -> bool {
-    curl::is_curl_object(h)
-        || sockets::is_socket_object(h)
-        || xml::is_parser_object(h)
-        || openssl::is_openssl_object(h)
+/// The object handlers the extensions register for their classes.
+pub(crate) fn class_handlers() -> Vec<&'static crate::object::ClassHandlers> {
+    [
+        curl::CLASSES,
+        gmp::CLASSES,
+        openssl::CLASSES,
+        simplexml::CLASSES,
+        sockets::CLASSES,
+        spl::CLASSES,
+        xml::CLASSES,
+        xmlreader::CLASSES,
+        xmlwriter::CLASSES,
+        zip::CLASSES,
+        crate::dt_oop_fns::CLASSES,
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// Every discrete extension, in registration order.

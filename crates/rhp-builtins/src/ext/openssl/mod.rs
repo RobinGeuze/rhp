@@ -24,6 +24,25 @@ use rhp_values::{conv, Value};
 use crate::ext::zpp::{deref, given_type};
 use crate::{warn, Builtin, Host, Thrown};
 
+/// The key and certificate classes' handlers: no clone, not comparable.
+pub(crate) static CLASSES: &[crate::object::ClassHandlers] = &[
+    crate::object::ClassHandlers {
+        class: "OpenSSLAsymmetricKey",
+        handlers: &crate::object::ObjectHandlers::OPAQUE,
+        create_object: true,
+    },
+    crate::object::ClassHandlers {
+        class: "OpenSSLCertificate",
+        handlers: &crate::object::ObjectHandlers::OPAQUE,
+        create_object: true,
+    },
+    crate::object::ClassHandlers {
+        class: "OpenSSLCertificateSigningRequest",
+        handlers: &crate::object::ObjectHandlers::OPAQUE,
+        create_object: true,
+    },
+];
+
 mod backend;
 mod cipher;
 mod csr;
@@ -319,7 +338,6 @@ fn new_object(host: &mut dyn Host, class: &str, native: Native) -> Result<Value,
         let old = NATIVES.with(|m| m.borrow_mut().insert(id, native));
         drop(old);
     }
-    rhp_semantics::ops::set_not_comparable_hook(super::not_comparable_object);
     Ok(obj)
 }
 
@@ -366,15 +384,6 @@ pub(super) fn csr_of(v: &Value) -> Option<*mut sys::X509_REQ> {
         Some(Native::Csr(p)) => Some(*p),
         _ => None,
     })
-}
-
-/// An object of one of the three classes (`zend_objects_not_comparable`).
-pub(crate) fn is_openssl_object(h: &rhp_values::ObjectHandle) -> bool {
-    let Ok(o) = h.try_borrow() else { return false };
-    let id = o.id;
-    NATIVES
-        .try_with(|m| m.try_borrow().is_ok_and(|m| m.contains_key(&id)))
-        .unwrap_or(false)
 }
 
 /// The object free hook.

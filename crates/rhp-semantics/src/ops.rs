@@ -187,31 +187,7 @@ pub fn concat(a: &Value, b: &Value) -> Value {
 // Comparison
 // ---------------------------------------------------------------------------
 
-/// Predicate over objects (see [`set_not_comparable_hook`]).
-pub type ObjectPredicate = fn(&rhp_values::ObjectHandle) -> bool;
-
-thread_local! {
-    /// Objects whose class installs `zend_objects_not_comparable` (the curl
-    /// handle classes, registered by the extension that creates them).
-    static NOT_COMPARABLE: std::cell::Cell<Option<ObjectPredicate>> =
-        const { std::cell::Cell::new(None) };
-}
-
-/// Install the predicate telling which objects are not comparable: such an
-/// object is `==` only to itself and uncomparable (1) to anything else.
-pub fn set_not_comparable_hook(f: ObjectPredicate) {
-    NOT_COMPARABLE.with(|c| c.set(Some(f)));
-}
-
-fn not_comparable(v: &Value) -> bool {
-    match v {
-        Value::Object(h) => NOT_COMPARABLE.with(|c| c.get()).is_some_and(|f| f(h)),
-        _ => false,
-    }
-}
-
-/// The type an object is cast to when it is compared with a non-object
-/// (`cast_object` in zend_std_compare_objects).
+/// The type an object's `cast_object` handler converts it to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CastTarget {
     Bool,
@@ -220,6 +196,8 @@ pub enum CastTarget {
     Str,
     Array,
     Resource,
+    /// `_IS_NUMBER`: an int or a float (arithmetic operands, `++`).
+    Number,
 }
 
 /// The engine services object comparison needs: class facts, `cast_object`
@@ -498,24 +476,12 @@ fn compare_object_operand(
             compare(other, &casted, cx)
         };
     }
-    // zend_objects_not_comparable (the curl handle classes): uncomparable to
-    // anything but itself, whichever side it is on.
-    if not_comparable(object) || not_comparable(other) {
-        return Ok(Ordering::Greater);
-    }
     // Z_OBJ_HANDLER(object, compare)(a, b)
     let Object(h) = object else {
-        // Closures: zend_closure_compare — uncomparable unless identical;
-        // against scalars the std object path applies.
+        // Closures: zend_closure_compare. Against another object (which is
+        // op2 here) its fallback, zend_std_compare_objects, finds them
+        // uncomparable; against scalars the std object path applies.
         return if is_obj(other) {
-            if let Object(oh) = other {
-                if let Some(r) = cx.compare_handler(oh, a, b) {
-                    return Ok(ord(r?));
-                }
-                if cx.is_enum(oh.borrow().class) {
-                    return Ok(Ordering::Greater);
-                }
-            }
             Ok(Ordering::Greater)
         } else {
             std_compare_scalar(None, b"Closure", object_lhs, other, cx)

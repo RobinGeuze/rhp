@@ -6,7 +6,6 @@
 //! `__nm`, and the namespace filter `__ns` / `__p` (is-prefix). The class is
 //! PHP-source ([`PRELUDE_PHP`]) forwarding to `__sxe($op, ...)`.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 use rhp_values::{conv, ArrayKey, PhpArray, PhpStr, Value};
@@ -15,6 +14,7 @@ use crate::ext::dom;
 use crate::ext::libxml::parser::{self, ParseOpts};
 use crate::ext::libxml::tree::{self, Doc, DocId, Kind, Node, NodeId, SaveOpts};
 use crate::ext::libxml::{self as lx, xpath, Ctx};
+use crate::object::{CastTarget, ClassHandlers, ObjectHandlers, PropPurpose};
 use crate::{Builtin, Host, Thrown};
 
 fn deref(v: &Value) -> Value {
@@ -222,8 +222,8 @@ fn direct_text(doc: &Doc, id: NodeId) -> Vec<u8> {
     out
 }
 
-/// The string value of an sxe (its cast handler), for the VM's casts.
-pub fn sxe_string(v: &Value) -> Option<Vec<u8>> {
+/// The string value of an sxe (its cast handler).
+fn sxe_string(v: &Value) -> Option<Vec<u8>> {
     let Value::Object(h) = v else {
         return None;
     };
@@ -238,9 +238,9 @@ pub fn sxe_string(v: &Value) -> Option<Vec<u8>> {
     })
 }
 
-/// sxe_objects_compare: whether two SimpleXML objects wrap the same node
-/// (a child/attribute list wraps its parent element).
-pub fn sxe_same_node(a: &Value, b: &Value) -> bool {
+/// Whether two SimpleXML objects wrap the same node (a child/attribute list
+/// wraps its parent element).
+fn sxe_same_node(a: &Value, b: &Value) -> bool {
     let (Value::Object(x), Value::Object(y)) = (a, b) else {
         return false;
     };
@@ -253,18 +253,97 @@ pub fn sxe_same_node(a: &Value, b: &Value) -> bool {
     key(x) == key(y)
 }
 
-/// A SimpleXMLElement's text as a string value (its scalar cast source), or
-/// `None` for anything else.
-pub fn sxe_scalar_text(v: &Value) -> Option<Value> {
-    if !is_sxe_object(v) {
-        return None;
-    }
-    Some(Value::str(sxe_string(v).unwrap_or_default()))
-}
-
 /// `(bool) $sxe`: true when it has a node.
 pub fn sxe_bool(v: &Value) -> bool {
     target_node(v).is_some()
+}
+
+/// `SimpleXMLElement`'s handlers (simplexml.c's `sxe_object_handlers`).
+static SXE_HANDLERS: ObjectHandlers = ObjectHandlers {
+    get_properties_for: Some(sxe_get_properties_for),
+    compare: Some(sxe_objects_compare),
+    cast_object: Some(sxe_object_cast),
+    ..ObjectHandlers::STD
+};
+
+pub(crate) static CLASSES: &[ClassHandlers] = &[ClassHandlers {
+    class: "SimpleXMLElement",
+    handlers: &SXE_HANDLERS,
+    create_object: true,
+}];
+
+/// sxe_object_cast: a string from a subclass's `__toString()` first, then
+/// sxe_object_cast_ex: the node's text, converted.
+fn sxe_object_cast(
+    host: &mut dyn Host,
+    h: &rhp_values::ObjectHandle,
+    target: CastTarget,
+) -> Result<Option<Value>, Thrown> {
+    if target == CastTarget::Str {
+        if let Some(s) = host.std_cast_object(h, target)? {
+            return Ok(Some(s));
+        }
+    }
+    let v = Value::Object(h.clone());
+    let text = || Value::str(sxe_string(&v).unwrap_or_default());
+    Ok(match target {
+        CastTarget::Bool => Some(Value::Bool(sxe_bool(&v))),
+        CastTarget::Str => Some(text()),
+        CastTarget::Int => Some(Value::Int(conv::to_int(&text()))),
+        CastTarget::Float => Some(Value::Float(conv::to_float(&text()))),
+        CastTarget::Number => Some(conv::to_number(&text()).0.to_value()),
+        _ => None,
+    })
+}
+
+/// sxe_objects_compare: two SimpleXML objects are equal only when they wrap
+/// the same node, otherwise uncomparable; any other pair goes to the
+/// standard comparison.
+fn sxe_objects_compare(host: &mut dyn Host, a: &Value, b: &Value) -> Result<Option<i32>, Thrown> {
+    let is_sxe = |v: &Value| crate::object::has_handlers(host, v, &SXE_HANDLERS);
+    if !is_sxe(a) || !is_sxe(b) {
+        return Ok(None);
+    }
+    Ok(Some(if sxe_same_node(a, b) { 0 } else { 1 }))
+}
+
+/// sxe_get_properties / sxe_get_debug_info: the element's children and
+/// attributes. The debug view gives digit names integer keys, as php's
+/// hash does.
+fn sxe_get_properties_for(
+    host: &mut dyn Host,
+    h: &rhp_values::ObjectHandle,
+    purpose: PropPurpose,
+) -> Result<Option<PhpArray>, Thrown> {
+    let v = Value::Object(h.clone());
+    let as_str_keys = |props: Vec<(PhpStr, Value)>| {
+        let mut a = PhpArray::new();
+        for (k, v) in props {
+            a.insert(ArrayKey::Str(k), v);
+        }
+        a
+    };
+    Ok(match purpose {
+        PropPurpose::Debug => sxe_props(host, &v, true).map(|props| {
+            let mut a = PhpArray::new();
+            for (k, v) in props {
+                let b = k.as_bytes();
+                let int = (!b.is_empty() && b.iter().all(u8::is_ascii_digit))
+                    .then(|| std::str::from_utf8(b).ok()?.parse::<i64>().ok())
+                    .flatten()
+                    .filter(|n| n.to_string().as_bytes() == b);
+                match int {
+                    Some(n) => a.insert(ArrayKey::Int(n), v),
+                    None => a.insert(ArrayKey::Str(k), v),
+                }
+            }
+            a
+        }),
+        PropPurpose::VarExport => sxe_props(host, &v, true).map(as_str_keys),
+        PropPurpose::Json => sxe_props(host, &v, false).map(as_str_keys),
+        PropPurpose::ArrayCast | PropPurpose::GetObjectVars => sxe_props_array(host, &v),
+        PropPurpose::Serialize => None,
+    })
 }
 
 fn parse_doc(
@@ -1379,81 +1458,6 @@ pub fn is_sxe_object(v: &Value) -> bool {
             .contains_key(&PhpStr::from_bytes(b"__t".to_vec()))
         && b.properties
             .contains_key(&PhpStr::from_bytes(b"__xns".to_vec()))
-}
-
-thread_local! {
-    static DEBUG_VIEWS: RefCell<HashMap<u32, Vec<(PhpStr, Value)>>> = RefCell::new(HashMap::new());
-}
-
-/// Before var_dump / print_r (which only get `&dyn Host`): materialize the
-/// debug property views of every SimpleXMLElement reachable from `v`.
-pub fn prepare_debug(host: &mut dyn Host, v: &Value, depth: usize) {
-    let mut seen = std::collections::HashSet::new();
-    prepare_debug_in(host, v, depth, &mut seen);
-}
-
-/// Walk `v` once (each object / reference cell visited at most once, so
-/// cyclic graphs stay linear), recording SimpleXMLElement debug views.
-fn prepare_debug_in(
-    host: &mut dyn Host,
-    v: &Value,
-    depth: usize,
-    seen: &mut std::collections::HashSet<usize>,
-) {
-    if depth > 64 {
-        return;
-    }
-    match v {
-        Value::Ref(r) => {
-            if !seen.insert(std::rc::Rc::as_ptr(r) as *const () as usize) {
-                return;
-            }
-            let inner = r.borrow().clone();
-            prepare_debug_in(host, &inner, depth + 1, seen);
-        }
-        Value::Array(a) => {
-            let vals: Vec<Value> = a.iter().map(|(_, v)| v.clone()).collect();
-            for x in vals {
-                prepare_debug_in(host, &x, depth + 1, seen);
-            }
-        }
-        Value::Object(h) => {
-            let id = h.borrow().id;
-            if !seen.insert(std::rc::Rc::as_ptr(h) as *const () as usize) {
-                return;
-            }
-            if DEBUG_VIEWS.with(|m| m.borrow().contains_key(&id)) {
-                return;
-            }
-            if is_sxe_object(v) {
-                if let Some(props) = sxe_props(host, v, true) {
-                    DEBUG_VIEWS.with(|m| m.borrow_mut().insert(id, props.clone()));
-                    for (_, pv) in props {
-                        prepare_debug_in(host, &pv, depth + 1, seen);
-                    }
-                }
-            } else {
-                let vals: Vec<Value> = h.borrow().properties.values().cloned().collect();
-                for x in vals {
-                    prepare_debug_in(host, &x, depth + 1, seen);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-/// The prepared debug view of object `id`, if it is a SimpleXMLElement.
-pub fn debug_view(id: u32) -> Option<Vec<(PhpStr, Value)>> {
-    DEBUG_VIEWS.with(|m| m.borrow().get(&id).cloned())
-}
-
-pub fn has_debug_view(id: u32) -> bool {
-    DEBUG_VIEWS.with(|m| m.borrow().contains_key(&id))
-}
-
-pub fn clear_debug() {
-    DEBUG_VIEWS.with(|m| m.borrow_mut().clear());
 }
 
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {

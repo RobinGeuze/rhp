@@ -520,6 +520,7 @@ impl Vm {
         }
         let anon = full.windows(10).any(|w| w == b"@anonymous");
         put(&mut a, "anon", Value::Bool(anon));
+        put(&mut a, "create_object", Value::Bool(e.create_object));
         // php: ZEND_ACC_EXPLICIT_ABSTRACT_CLASS (64) for `abstract class`,
         // ZEND_ACC_IMPLICIT_ABSTRACT_CLASS (16) for a class with abstract
         // methods / an interface / a trait; final 32; readonly 65536.

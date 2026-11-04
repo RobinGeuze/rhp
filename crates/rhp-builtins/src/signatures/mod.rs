@@ -93,10 +93,17 @@ pub const INTERFACE: u8 = 1;
 pub const TRAIT: u8 = 2;
 pub const ENUM: u8 = 3;
 
-/// Class flags: ReflectionClass's modifiers.
+/// Class flags: ReflectionClass's modifiers, then the `ce_flags` gen_stub
+/// derives from `@strict-properties`, `#[\AllowDynamicProperties]` and
+/// `@not-serializable` (php's ZEND_ACC_* values).
 pub const CLASS_FINAL: u32 = 32;
 pub const CLASS_ABSTRACT: u32 = 64;
 pub const CLASS_READONLY: u32 = 65536;
+pub const CLASS_NO_DYNAMIC_PROPERTIES: u32 = 1 << 13;
+pub const CLASS_ALLOW_DYNAMIC_PROPERTIES: u32 = 1 << 15;
+pub const CLASS_NOT_SERIALIZABLE: u32 = 1 << 29;
+/// The bits ReflectionClass::getModifiers() reports.
+pub const CLASS_MODIFIERS: u32 = CLASS_FINAL | CLASS_ABSTRACT | CLASS_READONLY;
 
 #[derive(Debug)]
 pub struct Class {

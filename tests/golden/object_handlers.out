@@ -1,0 +1,155 @@
+-- GMP do_operation
+GMP 8
+GMP -2
+GMP 25
+GMP 2
+GMP -1
+GMP 2
+GMP 2
+GMP 125
+GMP 80
+GMP -5
+GMP 7
+GMP 4
+GMP 4
+GMP -6
+GMP -5
+GMP 21
+GMP 6
+30 5
+4
+-- GMP failures
+ValueError: Number is not an integer string
+TypeError: Number must be of type GMP|string|int, array given
+TypeError: Number must be of type GMP|string|int, stdClass given
+DivisionByZeroError: Division by zero
+DivisionByZeroError: Modulo by zero
+ValueError: Shift must be greater than or equal to 0
+ValueError: Exponent must be greater than or equal to 0
+TypeError: Unsupported operand types: GMP ** array
+TypeError: Unsupported operand types: array << GMP
+TypeError: Unsupported operand types: string << GMP
+'5x'
+TypeError: Number must be of type GMP|string|int, null given
+-- GMP cast_object and compare
+string(1) "5"
+int(5)
+float(5)
+bool(false)
+bool(true)
+int(-12)
+float(8)
+bool(false)
+bool(true)
+bool(true)
+int(-1)
+bool(true)
+bool(true)
+bool(true)
+ValueError: Number is not an integer string
+TypeError: Number must be of type GMP|string|int, array given
+-- object increments
+TypeError: Cannot increment stdClass
+TypeError: Cannot decrement stdClass
+-- clone_obj
+Error: Trying to clone an uncloneable object of class Exception
+Error: Trying to clone an uncloneable object of class MyException
+Error: Trying to clone an uncloneable object of class ReflectionClass
+Error: Trying to clone an uncloneable object of class ReflectionMethod
+Error: Trying to clone an uncloneable object of class XMLParser
+Error: Trying to clone an uncloneable object of class XMLWriter
+Error: Trying to clone an uncloneable object of class XMLReader
+Error: Trying to clone an uncloneable object of class MyIterator
+Error: Trying to clone an uncloneable object of class Directory
+Error: Trying to clone an uncloneable object of class CurlMultiHandle
+Error: Trying to clone an uncloneable object of class CurlShareHandle
+cloned ArrayObject
+cloned WeakMap
+cloned SplObjectStorage
+string(17) "http://localhost/"
+bool(true)
+-- not serializable
+Exception: Serialization of 'XMLParser' is not allowed
+Exception: Serialization of 'ReflectionClass' is not allowed
+Exception: Serialization of 'Directory' is not allowed
+Exception: Serialization of 'WeakMap' is not allowed
+Exception: Serialization of 'CurlHandle' is not allowed
+Exception: Serialization of 'SimpleXMLElement' is not allowed
+Exception: Serialization of 'SplFileInfo' is not allowed
+Exception: Serialization of 'Generator' is not allowed
+Exception: Unserialization of 'XMLParser' is not allowed
+Exception: Unserialization of 'SimpleXMLElement' is not allowed
+Exception: Unserialization of 'Directory' is not allowed
+-- dynamic properties
+Error: Cannot create dynamic property XMLParser::$x
+Error: Cannot create dynamic property DateError::$x
+Error: Cannot create dynamic property CurlHandle::$x
+1
+-- compare
+bool(false)
+bool(true)
+bool(false)
+bool(false)
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(false)
+TypeError: Number must be of type GMP|string|int, CurlHandle given
+bool(true)
+bool(true)
+bool(false)
+-- operand order (convert_op1_op2_long, concat_function)
+TypeError: Unsupported operand types: array | GMP
+TypeError: Unsupported operand types: array % GMP
+TypeError: Unsupported operand types: stdClass % GMP
+TypeError: Unsupported operand types: stdClass ^ GMP
+TypeError: Unsupported operand types: stdClass << GMP
+TypeError: Unsupported operand types: string & GMP
+[8192] Implicit conversion from float 2.5 to int loses precision
+[8192] Implicit conversion from float 2.5 to int loses precision
+GMP 7
+[2] Array to string conversion
+'Array5'
+TypeError: Unsupported operand types: stdClass + int
+TypeError: Unsupported operand types: array + stdClass
+TypeError: Unsupported operand types: Closure * int
+TypeError: Unsupported operand types: stdClass * int
+TypeError: Cannot perform bitwise not on stdClass
+[2] A non-numeric value encountered
+TypeError: Unsupported operand types: string << GMP / ValueError
+-- GMP edges
+float(18014398509481984)
+float(-18014398509481984)
+GMP 0
+GMP -1
+GMP 1
+GMP 0
+GMP -1
+GMP 0
+[8192] Implicit conversion from float 1.5 to int loses precision
+GMP 6
+bool(false)
+bool(false)
+-- conversions
+[2] Object of class stdClass could not be converted to int
+[2] Object of class stdClass could not be converted to int
+[2] Object of class CurlHandle could not be converted to float
+int(1)
+int(1)
+float(1)
+[2] array_sum(): Addition is not supported on type array
+[2] array_sum(): Addition is not supported on type string
+int(2)
+int(6)
+bool(true)
+-- flags
+Exception: Serialization of 'class@anonymous' is not allowed
+ReflectionException: Class XMLParser is an internal class marked as final that cannot be instantiated without invoking its constructor
+ReflectionException: Class GMP is an internal class marked as final that cannot be instantiated without invoking its constructor
+ReflectionException: Class Closure is an internal class marked as final that cannot be instantiated without invoking its constructor
+'Directory'
+Error: Cannot create dynamic property CurlHandle::$z
+Error: Cannot create dynamic property CurlHandle::$q
+Error: Cannot create dynamic property CurlHandle::$w

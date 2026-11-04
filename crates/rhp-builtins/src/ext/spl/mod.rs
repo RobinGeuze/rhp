@@ -4,8 +4,9 @@
 
 use std::collections::HashMap;
 
-use rhp_values::{conv, PhpArray, Value};
+use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
+use crate::object::{ClassHandlers, ObjectHandlers, PropPurpose};
 use crate::{Builtin, Host, Thrown};
 
 mod files;
@@ -15,6 +16,107 @@ fn deref(v: &Value) -> Value {
     match v {
         Value::Ref(r) => r.borrow().clone(),
         o => o.clone(),
+    }
+}
+
+/// `ArrayObject` / `ArrayIterator`'s handlers: spl_array's
+/// `get_properties_for` (the storage stands in for the properties) and its
+/// debug info.
+static SPL_ARRAY_HANDLERS: ObjectHandlers = ObjectHandlers {
+    get_properties_for: Some(spl_array_get_properties_for),
+    ..ObjectHandlers::STD
+};
+
+pub(crate) static CLASSES: &[ClassHandlers] = &[
+    ClassHandlers {
+        class: "ArrayObject",
+        handlers: &SPL_ARRAY_HANDLERS,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "ArrayIterator",
+        handlers: &SPL_ARRAY_HANDLERS,
+        create_object: true,
+    },
+    // spl_handlers_dual_it, spl_handlers_rec_it_it
+    ClassHandlers {
+        class: "IteratorIterator",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "RecursiveIteratorIterator",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
+    },
+    // spl_filesystem_object_check_handlers
+    ClassHandlers {
+        class: "SplFileObject",
+        handlers: &ObjectHandlers::UNCLONEABLE,
+        create_object: true,
+    },
+];
+
+/// The storage of an ArrayObject / ArrayIterator (or a subclass); `None`
+/// with `STD_PROP_LIST`, where the properties are the properties.
+fn spl_array_storage(h: &ObjectHandle) -> Option<Value> {
+    let b = h.borrow();
+    for base in ["ArrayObject", "ArrayIterator"] {
+        let key = |n: &str| PhpStr::from(format!("\0{base}\0{n}").as_str());
+        if let Some(s) = b.properties.get(&key("__s")) {
+            let flags = b
+                .properties
+                .get(&key("__f"))
+                .map(|f| conv::to_int(&deref(f)));
+            if flags.unwrap_or(0) & 1 != 0 {
+                return None;
+            }
+            return Some(deref(s));
+        }
+    }
+    None
+}
+
+/// spl_array_get_properties_for: `(array)`, `var_export` and `json_encode`
+/// see an array storage. The debug view (spl_array_get_debug_info, php's
+/// `ArrayObject::__debugInfo()`) is the properties plus the storage as the
+/// base class's private `storage`, unless a subclass has its own
+/// `__debugInfo()`.
+fn spl_array_get_properties_for(
+    host: &mut dyn Host,
+    h: &ObjectHandle,
+    purpose: PropPurpose,
+) -> Result<Option<PhpArray>, Thrown> {
+    match purpose {
+        PropPurpose::ArrayCast | PropPurpose::VarExport | PropPurpose::Json => {
+            Ok(match spl_array_storage(h) {
+                Some(Value::Array(a)) => Some(a),
+                _ => None,
+            })
+        }
+        PropPurpose::Debug => {
+            let class = h.borrow().class;
+            if host.class_has_method(class, b"__debuginfo") {
+                return Ok(None);
+            }
+            let b = h.borrow();
+            let mut a = PhpArray::new();
+            for (k, v) in b.properties.iter() {
+                if !host.is_internal_slot(b.class, k) {
+                    a.insert(ArrayKey::Str(host.mangled_prop_name(b.class, k)), v.clone());
+                }
+            }
+            for base in ["ArrayObject", "ArrayIterator"] {
+                let key = PhpStr::from(format!("\0{base}\0__s").as_str());
+                if let Some(st) = b.properties.get(&key) {
+                    let name = PhpStr::from(format!("\0{base}\0storage").as_str());
+                    a.insert(ArrayKey::Str(name), deref(st));
+                    break;
+                }
+            }
+            Ok(Some(a))
+        }
+        PropPurpose::Serialize | PropPurpose::GetObjectVars => Ok(None),
     }
 }
 

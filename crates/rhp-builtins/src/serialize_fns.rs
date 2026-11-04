@@ -147,15 +147,14 @@ impl Serializer {
     ) -> Result<(), Thrown> {
         let class_id = h.borrow().class;
         let mut cname = host.class_name(class_id).unwrap_or_default();
-        if host.not_serializable(class_id)
-            || cname.eq_ignore_ascii_case(b"Generator")
-            || crate::is_opaque_handle_class(&cname)
-        {
+        if host.not_serializable(class_id) {
+            // php's `%s`: an anonymous class's name ends at its NUL.
+            let shown = cname.split(|&b| b == 0).next().unwrap_or_default();
             return Err(Thrown::error(
                 "Exception",
                 format!(
                     "Serialization of '{}' is not allowed",
-                    String::from_utf8_lossy(&cname)
+                    String::from_utf8_lossy(shown)
                 ),
             ));
         }
@@ -202,14 +201,28 @@ impl Serializer {
             out.push(b'}');
             return Ok(());
         }
-        // The object's slots under their php-mangled names.
-        let mut props: Vec<(PhpStr, Value)> = {
-            let b = h.borrow();
-            b.properties
+        // The object's slots under their php-mangled names, or an internal
+        // class's get_properties_for(SERIALIZE).
+        let view = crate::object::properties_for(host, h, crate::object::PropPurpose::Serialize)?;
+        let mut props: Vec<(PhpStr, Value)> = match view {
+            Some(a) => a
                 .iter()
-                .filter(|(k, _)| !host.is_internal_slot(class_id, k))
-                .map(|(k, v)| (host.mangled_prop_name(class_id, k), v.clone()))
-                .collect()
+                .map(|(k, v)| {
+                    let k = match k {
+                        ArrayKey::Int(n) => PhpStr::from(n.to_string().as_str()),
+                        ArrayKey::Str(s) => s.clone(),
+                    };
+                    (k, v.clone())
+                })
+                .collect(),
+            None => {
+                let b = h.borrow();
+                b.properties
+                    .iter()
+                    .filter(|(k, _)| !host.is_internal_slot(class_id, k))
+                    .map(|(k, v)| (host.mangled_prop_name(class_id, k), v.clone()))
+                    .collect()
+            }
         };
         let incomplete = cname == INCOMPLETE;
         if !incomplete && host.class_has_method(class_id, b"__sleep") {
@@ -634,7 +647,7 @@ impl<'a> Parser<'a, '_> {
         let (obj, has_unserialize, has_wakeup) = match cid {
             Some(cid) => {
                 let name = self.host.class_name(cid).unwrap_or_else(|| cname.clone());
-                if self.host.not_serializable(cid) || crate::is_opaque_handle_class(&name) {
+                if self.host.not_serializable(cid) {
                     return Err(Thrown::error(
                         "Exception",
                         format!(

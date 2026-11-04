@@ -26,7 +26,61 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rhp_values::{conv, PhpArray, Value};
 
+use crate::object::{ClassHandlers, ObjectHandlers};
 use crate::{Builtin, Host, Thrown};
+
+/// `DateTime` / `DateTimeImmutable`'s handlers (one table, as php's two
+/// share `date_object_compare_date`).
+static DATE_HANDLERS: ObjectHandlers = ObjectHandlers {
+    compare: Some(date_object_compare_date),
+    ..ObjectHandlers::STD
+};
+
+pub(crate) static CLASSES: &[ClassHandlers] = &[
+    ClassHandlers {
+        class: "DateTime",
+        handlers: &DATE_HANDLERS,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "DateTimeImmutable",
+        handlers: &DATE_HANDLERS,
+        create_object: true,
+    },
+];
+
+/// date_object_compare_date: the instants, as (seconds, microseconds) from
+/// the prelude's `ts` / `us` properties.
+fn date_object_compare_date(
+    host: &mut dyn Host,
+    a: &Value,
+    b: &Value,
+) -> Result<Option<i32>, Thrown> {
+    // ZEND_COMPARE_OBJECTS_FALLBACK
+    if !crate::object::has_handlers(host, a, &DATE_HANDLERS)
+        || !crate::object::has_handlers(host, b, &DATE_HANDLERS)
+    {
+        return Ok(None);
+    }
+    let parts = |v: &Value| {
+        let h = crate::object::object_of(v)?;
+        let o = h.borrow();
+        let ts = o.properties.get(&rhp_values::PhpStr::from("ts"))?;
+        let us = o.properties.get(&rhp_values::PhpStr::from("us"))?;
+        Some((conv::to_int(ts), conv::to_int(us)))
+    };
+    match (parts(a), parts(b)) {
+        (Some(p), Some(q)) => Ok(Some(match p.cmp(&q) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        })),
+        _ => Err(Thrown::error(
+            "Error",
+            "Trying to compare an incomplete DateTime or DateTimeImmutable object",
+        )),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // value plumbing

@@ -16,6 +16,13 @@ use crate::ext::libxml::tree::{self, DocId, Kind, NodeId, SaveOpts, XMLNS_NS};
 use crate::ext::libxml::{self as lx, Ctx};
 use crate::{Builtin, Host, Thrown};
 
+/// `XMLReader`'s handlers (`xmlreader_object_handlers`: no clone).
+pub(crate) static CLASSES: &[crate::object::ClassHandlers] = &[crate::object::ClassHandlers {
+    class: "XMLReader",
+    handlers: &crate::object::ObjectHandlers::UNCLONEABLE,
+    create_object: true,
+}];
+
 fn deref(v: &Value) -> Value {
     match v {
         Value::Ref(r) => r.borrow().clone(),

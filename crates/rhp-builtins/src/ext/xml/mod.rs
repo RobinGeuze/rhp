@@ -15,10 +15,11 @@ use std::collections::HashMap;
 use std::ffi::c_int;
 use std::rc::{Rc, Weak};
 
-use rhp_values::{conv, ArrayKey, ObjectData, ObjectHandle, PhpArray, PhpRef, PhpStr, Value};
+use rhp_values::{conv, ArrayKey, ObjectData, PhpArray, PhpRef, PhpStr, Value};
 
 use crate::ext::libxml::{ffi, sys};
 use crate::ext::zpp::{deref, given_type, long_arg};
+use crate::object::{ClassHandlers, ObjectHandlers};
 use crate::{Builtin, Host, Thrown};
 
 const XML_MAXLEVEL: i32 = 255;
@@ -114,46 +115,44 @@ impl Drop for Parser {
 
 type ParserRef = Rc<RefCell<Parser>>;
 
+/// `XMLParser`'s handlers: no clone, not comparable. The parser is the
+/// object's payload.
+pub(crate) const CLASSES: &[ClassHandlers] = &[ClassHandlers {
+    class: "XMLParser",
+    handlers: &ObjectHandlers::OPAQUE,
+    create_object: true,
+}];
+
 thread_local! {
-    static PARSERS: RefCell<HashMap<u32, ParserRef>> = RefCell::new(HashMap::new());
+    /// The parsers created on this thread. A parser holds PHP values (the
+    /// `xml_set_object` target, handlers) that often hold the parser's own
+    /// object; php's cycle collector, or its end-of-request free of every
+    /// object, breaks that cycle. rhp has neither, so a new request drops
+    /// what the old request's parsers still hold.
+    static LIVE: RefCell<Vec<Weak<RefCell<Parser>>>> = const { RefCell::new(Vec::new()) };
 }
 
-/// A new request: object ids restart.
+/// A new request: release the PHP values earlier requests' parsers hold.
 pub(crate) fn reset_state() {
-    let old = PARSERS.with(|m| m.try_borrow_mut().map(|mut m| std::mem::take(&mut *m)).ok());
-    drop(old);
-}
-
-/// `free_obj` for an XMLParser.
-pub(crate) fn object_freed(id: u32) {
-    let p = PARSERS
-        .try_with(|m| m.try_borrow_mut().ok().and_then(|mut m| m.remove(&id)))
-        .ok()
-        .flatten();
-    drop(p);
-}
-
-/// Whether `h` is an XMLParser (php: not comparable).
-pub(crate) fn is_parser_object(h: &ObjectHandle) -> bool {
-    let id = h.borrow().id;
-    PARSERS.with(|m| {
-        m.borrow().get(&id).is_some_and(|p| {
-            p.borrow()
-                .index
-                .upgrade()
-                .is_some_and(|o| Rc::ptr_eq(&o, h))
-        })
-    })
+    let live = LIVE.with(|l| std::mem::take(&mut *l.borrow_mut()));
+    for p in live.iter().filter_map(Weak::upgrade) {
+        let held = p.try_borrow_mut().ok().map(|mut p| {
+            (
+                p.object.take(),
+                std::mem::take(&mut p.h),
+                p.data.take(),
+                p.info.take(),
+            )
+        });
+        drop(held);
+    }
 }
 
 /// The XMLParser argument `i` of builtin `fname`, else php's TypeError.
 fn parser_arg(host: &dyn Host, args: &[Value], i: usize, fname: &str) -> Result<ParserRef, Thrown> {
     let v = args.get(i).map(deref).unwrap_or(Value::Null);
-    if let Value::Object(h) = &v {
-        let id = h.borrow().id;
-        if let Some(p) = PARSERS.with(|m| m.borrow().get(&id).cloned()) {
-            return Ok(p);
-        }
+    if let Some(p) = crate::object::payload::<RefCell<Parser>>(&v) {
+        return Ok(p);
     }
     Err(Thrown::type_error(format!(
         "{fname}(): Argument #{} ($parser) must be of type XMLParser, {} given",
@@ -693,7 +692,6 @@ fn create(host: &mut dyn Host, args: &[Value], ns_support: bool) -> Result<Value
     let Value::Object(h) = &obj else {
         return Err(Thrown::error("Error", "XMLParser is not available"));
     };
-    let id = h.borrow().id;
     let parser = Rc::new(RefCell::new(Parser {
         ctxt: std::ptr::null_mut(),
         use_namespace: false,
@@ -717,9 +715,12 @@ fn create(host: &mut dyn Host, args: &[Value], ns_support: bool) -> Result<Value
         case_folding: true,
     }));
     compat::parser_create(&parser, separator);
-    PARSERS.with(|m| m.borrow_mut().insert(id, parser));
-    // XMLParser uses zend_objects_not_comparable.
-    rhp_semantics::ops::set_not_comparable_hook(super::not_comparable_object);
+    LIVE.with(|l| {
+        let mut l = l.borrow_mut();
+        l.retain(|p| p.strong_count() > 0);
+        l.push(Rc::downgrade(&parser));
+    });
+    crate::object::set_payload(h, parser);
     Ok(obj)
 }
 

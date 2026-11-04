@@ -125,7 +125,6 @@ pub fn reset_state() {
     });
     thread_init();
     crate::ext::xml::reset_state();
-    crate::ext::xmlwriter::reset_state();
 }
 
 /// php_libxml_uses_internal_errors

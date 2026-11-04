@@ -17,15 +17,13 @@ pub use rhp_values::Thrown;
 pub(crate) mod dump;
 pub mod fdstream;
 pub(crate) mod module;
+pub mod object;
 pub mod pcre;
 pub mod signatures;
 pub mod streams;
 pub mod version;
 pub mod zend;
 
-pub use ext::curl::{curl_cloned, curl_uncloneable, is_curl_handle};
-pub use ext::simplexml::{sxe_bool, sxe_props_array, sxe_same_node, sxe_string};
-pub use ext::sockets::is_socket_object;
 pub use streams::{StatInfo, StreamWrapper, WrapperReg};
 
 mod argparse;
@@ -69,12 +67,11 @@ mod arraycmp_fns;
 mod arrayset_fns;
 #[rustfmt::skip]
 mod const_modules;
+mod class_fns;
 mod crypt_fns;
 mod datetime_fns;
 mod dt_oop_fns;
 mod ext;
-pub use ext::gmp::{compare_handler as gmp_compare_handler, CmpOperand as GmpCmpOperand};
-mod class_fns;
 mod file_fns;
 mod filter_fns;
 mod fs_fns;
@@ -115,56 +112,19 @@ mod tzdb;
 mod webenc_fns;
 pub(crate) mod zip_ext;
 
-/// Built-in classes with a native `dtor_obj` handler, which runs with a host
-/// before the object's `__destruct` (see [`object_dtor`]).
-pub fn has_native_dtor(class: &[u8]) -> bool {
-    class.eq_ignore_ascii_case(b"XMLWriter")
-}
-
-/// `dtor_obj` for an object whose class (or a parent) is listed by
-/// [`has_native_dtor`]. The engine calls it once, where php would, before the
-/// user's `__destruct`.
-pub fn object_dtor(host: &mut dyn Host, obj: &rhp_values::ObjectHandle) -> Result<(), Thrown> {
-    let id = obj.borrow().id;
-    ext::xmlwriter::object_dtor(host, id)
-}
-
 /// The E_DEPRECATED message for reading a `#[\Deprecated]` extension
 /// constant, if `name` is one.
 pub fn constant_deprecation(name: &[u8]) -> Option<String> {
     ext::curl::constant_deprecation(name)
 }
 
-/// The engine's object free hook (`rhp_values::set_object_free_hook`): lets
-/// the extensions with per-object native state release it.
+/// The engine's object free hook (`rhp_values::set_object_free_hook`), for
+/// the per-object state still kept by object id.
 pub fn object_freed(id: u32) {
     zip_ext::object_freed(id);
     sort_fns::object_freed(id);
-    ext::sockets::object_freed();
-    ext::xml::object_freed(id);
-    ext::xmlwriter::object_freed(id);
     ext::openssl::object_freed(id);
     ext::curl::object_freed(id);
-}
-
-/// The internal opaque-handle classes php declares `@strict-properties` and
-/// `@not-serializable` (`ZEND_ACC_NO_DYNAMIC_PROPERTIES |
-/// ZEND_ACC_NOT_SERIALIZABLE`): `Socket`, the curl handles and `XMLParser`. Their names
-/// are taken by the prelude, so a user class cannot carry one.
-pub fn is_opaque_handle_class(name: &[u8]) -> bool {
-    [
-        &b"Socket"[..],
-        b"CurlHandle",
-        b"CurlMultiHandle",
-        b"CurlShareHandle",
-        b"CurlSharePersistentHandle",
-        b"XMLParser",
-        b"OpenSSLCertificate",
-        b"OpenSSLCertificateSigningRequest",
-        b"OpenSSLAsymmetricKey",
-    ]
-    .iter()
-    .any(|n| n.eq_ignore_ascii_case(name))
 }
 
 /// `zend_compare` from inside a builtin, with the host's object semantics.
@@ -298,6 +258,23 @@ pub trait Host {
         false
     }
 
+    /// php's `ZEND_ARG_USES_STRICT_TYPES()` as an object handler the engine
+    /// runs (`do_operation`, `compare`) sees it: the strictness of the
+    /// caller of php's current frame, which is the builtin running the
+    /// handler if there is one, else the code running the operator. Weak
+    /// when that caller is a builtin or there is none (the main script).
+    /// Default: no.
+    fn arg_uses_strict_types(&self) -> bool {
+        false
+    }
+
+    /// `thrown` raised while `previous` is pending: php makes `previous`
+    /// the new exception's previous one. An `exit` in `previous` wins.
+    /// Default: `thrown` alone.
+    fn chain_thrown(&mut self, thrown: Thrown, _previous: Thrown) -> Thrown {
+        thrown
+    }
+
     /// Inside an `@` region (error_reporting then reads as the fatal mask).
     fn silenced(&self) -> bool {
         false
@@ -345,6 +322,23 @@ pub trait Host {
     /// Reflection objects, WeakReference, …). Default: no.
     fn not_serializable(&self, _class_id: u32) -> bool {
         false
+    }
+
+    /// The object handlers of a class: its own registration
+    /// ([`object::registered`]) or an ancestor's. Default: none.
+    fn object_handlers(&self, _class_id: u32) -> Option<&'static object::ObjectHandlers> {
+        None
+    }
+
+    /// php's `zend_std_cast_object_tostring` for `obj`: `__toString()` for a
+    /// string, true for bool, FAILURE (`Ok(None)`) otherwise; what a
+    /// `cast_object` handler defers to. Default: no `__toString()` call.
+    fn std_cast_object(
+        &mut self,
+        _obj: &rhp_values::ObjectHandle,
+        target: object::CastTarget,
+    ) -> Result<Option<Value>, Thrown> {
+        Ok(object::std_cast_non_string(target))
     }
 
     /// Whether the property slot `key` (storage key) of an object of class
@@ -1789,13 +1783,11 @@ use rhp_semantics::{deref, ops};
 fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
     for a in args {
-        ext::simplexml::prepare_debug(host, a, 0);
-        let r = dump::resolve_debug_info(host, a);
+        let r = dump::resolve_views(host, a, object::PropPurpose::Debug);
         if r.is_ok() {
             dump::var_dump(host, &mut out, a, 0);
         }
-        dump::clear_debug_info();
-        ext::simplexml::clear_debug();
+        dump::clear_views();
         if let Err(t) = r {
             host.write_out(&out);
             return Err(t);
@@ -1807,13 +1799,11 @@ fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    ext::simplexml::prepare_debug(host, &args[0], 0);
-    let r = dump::resolve_debug_info(host, &args[0]);
+    let r = dump::resolve_views(host, &args[0], object::PropPurpose::Debug);
     if r.is_ok() {
         dump::print_r(host, &mut out, &args[0], 0);
     }
-    dump::clear_debug_info();
-    ext::simplexml::clear_debug();
+    dump::clear_views();
     r?;
     let return_mode = args.get(1).map(conv::to_bool).unwrap_or(false);
     if return_mode {
@@ -1826,9 +1816,14 @@ fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    ext::simplexml::prepare_debug(host, &args[0], 0);
-    let circular = dump::var_export(host, &mut out, &args[0], 1);
-    ext::simplexml::clear_debug();
+    let r = dump::resolve_views(host, &args[0], object::PropPurpose::VarExport);
+    let circular = if r.is_ok() {
+        dump::var_export(host, &mut out, &args[0], 1)
+    } else {
+        0
+    };
+    dump::clear_views();
+    r?;
     for _ in 0..circular {
         host.emit_diagnostic(E_WARNING, "var_export does not handle circular references")?;
     }
@@ -2056,18 +2051,12 @@ is_type!(
     Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bool(_)
 );
 
-fn fn_intval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_intval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
     let base = args.get(1).map(|b| conv::to_int(&deref(b))).unwrap_or(10);
-    // php's curl_cast_object: (int) of a CurlHandle is its object id.
-    if let Value::Object(h) = &v {
-        if is_curl_handle(&v) {
-            return Ok(Value::Int(h.borrow().id as i64));
-        }
-    }
-    // SimpleXML's cast handler: the node's text.
-    if let Some(t) = ext::simplexml::sxe_scalar_text(&v) {
-        return Ok(Value::Int(conv::to_int(&t)));
+    // zval_get_long: the object's cast_object.
+    if let Some(n) = object::object_to_number(host, &v, object::CastTarget::Int)? {
+        return Ok(Value::Int(conv::to_int(&n)));
     }
     // `base` applies only to a string argument; base 10 is plain integer conversion.
     if base == 10 {
@@ -2140,9 +2129,10 @@ fn detect_prefix(rest: &[u8], base: i64) -> (usize, i64) {
     }
 }
 
-fn fn_floatval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    if let Some(t) = ext::simplexml::sxe_scalar_text(&deref(&args[0])) {
-        return Ok(Value::Float(conv::to_float(&t)));
+fn fn_floatval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // zval_get_double: the object's cast_object.
+    if let Some(f) = object::object_to_number(host, &args[0], object::CastTarget::Float)? {
+        return Ok(Value::Float(conv::to_float(&f)));
     }
     Ok(Value::Float(conv::to_float(&args[0])))
 }
@@ -2172,12 +2162,8 @@ fn fn_strval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(conv::to_string_bytes(&args[0])))
 }
 
-fn fn_boolval(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let v = deref(&args[0]);
-    if ext::simplexml::is_sxe_object(&v) {
-        return Ok(Value::Bool(sxe_bool(&v)));
-    }
-    Ok(Value::Bool(conv::to_bool(&args[0])))
+fn fn_boolval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(object::is_true(host, &args[0])?))
 }
 
 fn fn_strlen(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -2420,28 +2406,70 @@ fn extremum(host: &mut dyn Host, args: &[Value], want_max: bool) -> Result<Value
     Ok(args[best].clone())
 }
 
-fn fn_array_sum(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Value::Array(a) = deref(&args[0]) else {
-        return Err(Thrown::type_error(
-            "array_sum(): Argument #1 ($array) must be of type array",
-        ));
-    };
-    let mut acc = Value::Int(0);
-    for (_, v) in a.iter() {
-        acc = ops::add(&acc, v)?;
-    }
-    Ok(acc)
+fn fn_array_sum(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    array_binop(host, args, "array_sum", "Addition", ops::add, 0)
 }
 
-fn fn_array_product(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_array_product(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    array_binop(host, args, "array_product", "Multiplication", ops::mul, 1)
+}
+
+/// php_array_binop: `op` over the entries, objects by their
+/// `cast_object(_IS_NUMBER)`. An entry the operator refuses is skipped
+/// with a warning (a resource counts as its id, a non-numeric string as 0).
+fn array_binop(
+    host: &mut dyn Host,
+    args: &[Value],
+    fname: &str,
+    op_name: &str,
+    op: fn(&Value, &Value) -> Result<Value, Thrown>,
+    initial: i64,
+) -> Result<Value, Thrown> {
     let Value::Array(a) = deref(&args[0]) else {
-        return Err(Thrown::type_error(
-            "array_product(): Argument #1 ($array) must be of type array",
-        ));
+        return Err(Thrown::type_error(format!(
+            "{fname}(): Argument #1 ($array) must be of type array"
+        )));
     };
-    let mut acc = Value::Int(1);
+    let mut acc = Value::Int(initial);
     for (_, v) in a.iter() {
-        acc = ops::mul(&acc, v)?;
+        let v = deref(v);
+        let operand = match &v {
+            Value::Object(_) | Value::Closure(_) => {
+                match object::cast(host, &v, object::CastTarget::Number)? {
+                    Some(n @ (Value::Int(_) | Value::Float(_))) => Some(n),
+                    _ => None,
+                }
+            }
+            Value::Array(_) => None,
+            Value::Resource(r) => {
+                acc = op(&acc, &Value::Int(r.id as i64))?;
+                None
+            }
+            Value::Str(s) => match conv::scan_number(s.as_bytes()) {
+                None => {
+                    acc = op(&acc, &Value::Int(0))?;
+                    None
+                }
+                Some(_) => {
+                    if conv::numeric_string(s.as_bytes()).is_none() {
+                        host.emit_diagnostic(E_WARNING, "A non-numeric value encountered")?;
+                    }
+                    Some(v.clone())
+                }
+            },
+            _ => Some(v.clone()),
+        };
+        match operand {
+            Some(n) => acc = op(&acc, &n)?,
+            None => {
+                let ty = type_name_of(host, &v);
+                warn(
+                    host,
+                    fname,
+                    &format!("{op_name} is not supported on type {ty}"),
+                )?
+            }
+        }
     }
     Ok(acc)
 }
@@ -2582,14 +2610,15 @@ fn fn_array_filter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     let mut out = PhpArray::new();
     for (k, v) in a.iter() {
         let keep = match cb {
-            None => conv::to_bool(v),
+            None => object::is_true(host, v)?,
             Some(cb) => {
                 let call_args: Vec<Value> = match mode {
                     2 => vec![key_to_value(k)],            // ARRAY_FILTER_USE_KEY
                     1 => vec![v.clone(), key_to_value(k)], // ARRAY_FILTER_USE_BOTH
                     _ => vec![v.clone()],
                 };
-                conv::to_bool(&host.call_callable(cb, &call_args)?)
+                let r = host.call_callable(cb, &call_args)?;
+                object::is_true(host, &r)?
             }
         };
         if keep {
@@ -3137,7 +3166,7 @@ fn fn_iterator_to_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 fn fn_get_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match deref(&args[0]) {
         Value::Object(h) => {
-            if let Some(a) = sxe_props_array(host, &deref(&args[0])) {
+            if let Some(a) = object::properties_for(host, &h, object::PropPurpose::GetObjectVars)? {
                 return Ok(Value::Array(a));
             }
             if let Some(v) = host.object_vars(&args[0]) {
@@ -3165,44 +3194,6 @@ fn fn_get_mangled_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Val
             v.type_name()
         ))),
     }
-}
-
-/// php's `spl_array` property hook: an ArrayObject / ArrayIterator (or a
-/// subclass) without `STD_PROP_LIST` presents its storage array as its
-/// properties to `(array)`, `var_export` and `json_encode`. Returns the
-/// storage and the base class (`ArrayObject` / `ArrayIterator`) that owns it.
-pub fn spl_array_storage(h: &rhp_values::ObjectHandle) -> Option<(Value, &'static str)> {
-    let b = h.borrow();
-    for base in ["ArrayObject", "ArrayIterator"] {
-        let key = |n: &str| rhp_values::PhpStr::from(format!("\0{base}\0{n}").as_str());
-        if let Some(s) = b.properties.get(&key("__s")) {
-            let flags = b
-                .properties
-                .get(&key("__f"))
-                .map(|f| conv::to_int(&deref(f)));
-            if flags.unwrap_or(0) & 1 != 0 {
-                return None;
-            }
-            return Some((deref(s), base));
-        }
-    }
-    None
-}
-
-/// php's `spl_array` debug info: the regular properties plus the storage as
-/// a private `storage` property of the base class (`var_dump`/`print_r`).
-pub fn spl_array_debug_storage(
-    h: &rhp_values::ObjectHandle,
-) -> Option<(rhp_values::PhpStr, Value)> {
-    let b = h.borrow();
-    for base in ["ArrayObject", "ArrayIterator"] {
-        let key = rhp_values::PhpStr::from(format!("\0{base}\0__s").as_str());
-        if let Some(s) = b.properties.get(&key) {
-            let name = rhp_values::PhpStr::from(format!("\0{base}\0storage").as_str());
-            return Some((name, deref(s)));
-        }
-    }
-    None
 }
 
 fn fn_ord(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

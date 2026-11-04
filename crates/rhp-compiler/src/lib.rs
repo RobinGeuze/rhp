@@ -1225,6 +1225,7 @@ fn compile_class(
         is_final: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Final(_))),
         is_readonly: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Readonly(_))),
         allow_dynamic: has_allow_dynamic(&class.attribute_lists),
+        ..ClassFlags::default()
     };
     // Single inheritance: a class `extends` one parent.
     let parent = class.extends.as_ref().and_then(|e| {
@@ -1312,6 +1313,9 @@ fn compile_anon_class(
         is_final: true,
         is_readonly: has_modifier(&ac.modifiers, |m| matches!(m, Modifier::Readonly(_))),
         allow_dynamic: has_allow_dynamic(&ac.attribute_lists),
+        // zend_compile_class_decl: every anonymous class.
+        not_serializable: true,
+        ..ClassFlags::default()
     };
     let m = compile_members(&ac.members, sigs, &name)?;
     let mut interfaces = interfaces;
@@ -1401,10 +1405,8 @@ fn compile_enum(
         kind: ClassKind::Enum,
         // Enums are implicitly final.
         flags: ClassFlags {
-            is_abstract: false,
             is_final: true,
-            is_readonly: false,
-            allow_dynamic: false,
+            ..ClassFlags::default()
         },
         parent: None,
         interfaces,
@@ -4417,6 +4419,26 @@ impl ProtoBuilder {
 
         let a = self.compile_expr(b.lhs)?;
         let r = self.compile_expr(b.rhs)?;
+        // zend_vm's SPEC_RULE_COMMUTATIVE: php swaps the operands of these
+        // opcodes when op1's kind is lower than op2's, which decides whose
+        // object handler runs first.
+        let commutative = matches!(
+            &b.operator,
+            Op::Multiplication(_)
+                | Op::BitwiseAnd(_)
+                | Op::BitwiseOr(_)
+                | Op::BitwiseXor(_)
+                | Op::Equal(_)
+                | Op::NotEqual(_)
+                | Op::AngledNotEqual(_)
+                | Op::Identical(_)
+                | Op::NotIdentical(_)
+        );
+        let (a, r) = if commutative && php_swaps_operands(b.lhs, b.rhs) {
+            (r, a)
+        } else {
+            (a, r)
+        };
         let dst = self.alloc_temp();
         let cmp = |k| Instr::Cmp {
             dst,
@@ -7128,6 +7150,65 @@ fn hint_class_names(hint: &Hint) -> Result<Vec<PhpStr>, Thrown> {
     let mut out = Vec::new();
     collect(hint, &mut out)?;
     Ok(out)
+}
+
+/// Whether php's VM swaps the operands of a commutative opcode: op1's
+/// kind is lower than op2's, in IS_CONST < IS_TMP_VAR < IS_VAR < IS_CV.
+/// Reads of elements and properties are TMP (zend_adjust_for_fetch_type);
+/// calls, `new`, `yield` and `include`/`eval` are VAR. (php's frameless
+/// and special-cased function calls give TMP; they count as VAR here.)
+fn php_swaps_operands(lhs: &Expression, rhs: &Expression) -> bool {
+    match (php_operand_kind(lhs), php_operand_kind(rhs)) {
+        (l, r) if l != r => l < r,
+        // Both CONST-or-TMP: only a CONST op1 against a TMP op2 swaps.
+        (Kind::ConstOrTmp, Kind::ConstOrTmp) => !is_ct_const(rhs) && is_ct_const(lhs),
+        _ => false,
+    }
+}
+
+/// Whether php's compiler folds `e` to a constant. A binary operation
+/// checks its right operand first, so the left spine of a long chain is
+/// not walked at every level.
+fn is_ct_const(e: &Expression) -> bool {
+    match e {
+        Expression::Parenthesized(p) => is_ct_const(p.expression),
+        Expression::MagicConstant(_) => true,
+        Expression::Binary(b) => is_ct_const(b.rhs) && is_ct_const(b.lhs) && fold_const(e).is_ok(),
+        _ => fold_const(e).is_ok(),
+    }
+}
+
+#[derive(PartialEq, PartialOrd)]
+enum Kind {
+    ConstOrTmp,
+    Var,
+    Cv,
+}
+
+fn php_operand_kind(e: &Expression) -> Kind {
+    match e {
+        Expression::Parenthesized(p) => php_operand_kind(p.expression),
+        Expression::Variable(Variable::Direct(d)) => {
+            let n = strip_dollar(d.name);
+            if n == b"this" || is_superglobal(n) {
+                Kind::ConstOrTmp
+            } else {
+                Kind::Cv
+            }
+        }
+        Expression::Call(_)
+        | Expression::Instantiation(_)
+        | Expression::AnonymousClass(_)
+        | Expression::Yield(_) => Kind::Var,
+        Expression::Construct(
+            Construct::Eval(_)
+            | Construct::Include(_)
+            | Construct::IncludeOnce(_)
+            | Construct::Require(_)
+            | Construct::RequireOnce(_),
+        ) => Kind::Var,
+        _ => Kind::ConstOrTmp,
+    }
 }
 
 /// PHP's superglobals, available in every scope without `global`.

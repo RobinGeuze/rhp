@@ -23,6 +23,7 @@ use std::sync::Once;
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, Value};
 
 use crate::ext::zpp::deref;
+use crate::object::{self, CastTarget, ClassHandlers, CloneObj, ObjectHandlers};
 use crate::{Builtin, Host, Thrown};
 
 // Generated (`rhp-difftest gen curl-consts`).
@@ -117,45 +118,57 @@ fn share_of(v: &Value) -> Option<Rc<Share>> {
     SHARE.with(|m| m.borrow().get(&id).cloned())
 }
 
-/// Is `h` one of the curl handle objects (`zend_objects_not_comparable`)?
-pub(crate) fn is_curl_object(h: &ObjectHandle) -> bool {
-    let id = h.borrow().id;
-    EASY.with(|m| m.borrow().contains_key(&id))
-        || MULTI.with(|m| m.borrow().contains_key(&id))
-        || SHARE.with(|m| m.borrow().contains_key(&id))
-}
+/// The handle classes' handlers (interface.c, multi.c, share.c):
+/// `zend_objects_not_comparable`, `curl_cast_object` on easy and multi
+/// handles, and a clone only for easy handles.
+pub(crate) const CLASSES: &[ClassHandlers] = &[
+    ClassHandlers {
+        class: "CurlHandle",
+        handlers: &ObjectHandlers {
+            clone_obj: CloneObj::Custom(curl_clone_obj),
+            compare: Some(object::not_comparable),
+            cast_object: Some(curl_cast_object),
+            ..ObjectHandlers::STD
+        },
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "CurlMultiHandle",
+        handlers: &ObjectHandlers {
+            clone_obj: CloneObj::None,
+            compare: Some(object::not_comparable),
+            cast_object: Some(curl_cast_object),
+            ..ObjectHandlers::STD
+        },
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "CurlShareHandle",
+        handlers: &ObjectHandlers::OPAQUE,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "CurlSharePersistentHandle",
+        handlers: &ObjectHandlers::OPAQUE,
+        create_object: true,
+    },
+];
 
-/// Is `v` a `CurlHandle` or `CurlMultiHandle`? Both install
-/// `curl_cast_object`, so `(int) $handle` is the object id.
-pub fn is_curl_handle(v: &Value) -> bool {
-    let Some(id) = obj_id(v) else { return false };
-    EASY.with(|m| m.borrow().contains_key(&id)) || MULTI.with(|m| m.borrow().contains_key(&id))
-}
-
-/// `clone` of a curl object, before the copy exists: the class name when
-/// its `clone_obj` handler is NULL.
-pub fn curl_uncloneable(h: &ObjectHandle) -> Option<&'static str> {
-    let id = h.borrow().id;
-    if MULTI.with(|m| m.borrow().contains_key(&id)) {
-        Some("CurlMultiHandle")
-    } else if let Some(s) = SHARE.with(|m| m.borrow().get(&id).cloned()) {
-        Some(if s.persistent {
-            "CurlSharePersistentHandle"
-        } else {
-            "CurlShareHandle"
-        })
-    } else {
-        None
+/// curl_cast_object: `(int)` of a handle is its object id, as it was the
+/// resource id before handles were objects.
+fn curl_cast_object(
+    host: &mut dyn Host,
+    h: &ObjectHandle,
+    target: CastTarget,
+) -> Result<Option<Value>, Thrown> {
+    match target {
+        CastTarget::Int => Ok(Some(Value::Int(h.borrow().id as i64))),
+        t => host.std_cast_object(h, t),
     }
 }
 
-/// `clone` of a CurlHandle (`curl_clone_obj`): the copy gets a duplicate of
-/// the libcurl handle.
-pub fn curl_cloned(
-    host: &mut dyn Host,
-    src: &ObjectHandle,
-    dst: &ObjectHandle,
-) -> Result<(), Thrown> {
+/// curl_clone_obj: the copy gets a duplicate of the libcurl handle.
+fn curl_clone_obj(host: &mut dyn Host, src: &ObjectHandle, dst: &ObjectHandle) -> Result<(), Thrown> {
     let id = src.borrow().id;
     let Some(easy) = EASY.with(|m| m.borrow().get(&id).cloned()) else {
         return Ok(());
@@ -175,7 +188,6 @@ fn new_object(host: &mut dyn Host, class: &str) -> Result<(Value, ObjectHandle),
         .instantiate(class.as_bytes(), Vec::new())
         .ok_or_else(|| Thrown::unsupported("curl", format!("cannot instantiate {class}")))?;
     let h = obj_handle(&v).ok_or_else(|| Thrown::error("Error", "curl: bad object"))?;
-    rhp_semantics::ops::set_not_comparable_hook(super::not_comparable_object);
     Ok((v, h))
 }
 

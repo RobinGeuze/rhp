@@ -263,7 +263,6 @@ pub(super) fn fn_curl_share_init_persistent(
             Thrown::unsupported("curl", "cannot instantiate CurlSharePersistentHandle")
         })?;
     if let Value::Object(h) = &v {
-        rhp_semantics::ops::set_not_comparable_hook(super::super::not_comparable_object);
         register(
             h.borrow().id,
             Share {

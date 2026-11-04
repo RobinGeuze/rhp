@@ -136,12 +136,83 @@ pub struct ObjectData {
     pub class: ClassId,
     pub id: u32,
     pub properties: IndexMap<PhpStr, Value, FxBuildHasher>,
+    /// Native state (see [`Payload`]). Boxed so that objects without one
+    /// pay a pointer.
+    native: Option<Box<Payload>>,
+}
+
+/// The native state an internal class keeps with each of its objects: what
+/// php's extensions keep in the struct around `zend_object` (a libxml node,
+/// a socket, a curl handle). Set by the builtin that creates the object,
+/// read by builtins and object handlers with [`ObjectData::payload`], and
+/// dropped with the object's storage, which makes the payload's `Drop`
+/// php's `free_obj`: it runs once, when the last reference goes, with no
+/// host, so it must not call into PHP (work that may, such as flushing to a
+/// user stream, belongs in the class's `dtor_obj` handler).
+///
+/// Contract:
+/// - The payload is the only owner of per-object native state: no table
+///   keyed by object id or address. State that lives in the object moves
+///   with it. (ext/xml also keeps weak references to its parsers, only to
+///   break their cycles at the next request; see `ext/xml`.)
+/// - Read it as an `Rc<T>` clone and release the object borrow before
+///   calling into PHP or the host; mutate through a `Cell`/`RefCell` inside
+///   `T`. A payload never holds a strong reference to its own object.
+/// - `Rc<dyn Any>` because objects are `Rc` and stay on their VM's thread
+///   (docs/design/libraries.md, Threading). Today's payloads are `!Send`
+///   (`Cell`, `RefCell`, raw library pointers). If objects ever move
+///   between threads, the alias becomes `Arc<dyn Any + Send + Sync>` and
+///   every payload type changes with it: `Mutex` or atomics instead of
+///   `Cell`/`RefCell`, and a `Send` wrapper for each library handle whose
+///   library allows that.
+pub type Payload = Rc<dyn std::any::Any>;
+
+impl ObjectData {
+    pub fn new(
+        class: ClassId,
+        id: u32,
+        properties: IndexMap<PhpStr, Value, FxBuildHasher>,
+    ) -> Self {
+        ObjectData {
+            class,
+            id,
+            properties,
+            native: None,
+        }
+    }
+
+    /// The object's native state, when it is a `T`.
+    pub fn payload<T: std::any::Any>(&self) -> Option<Rc<T>> {
+        self.native.as_deref()?.clone().downcast::<T>().ok()
+    }
+
+    /// Whether the object carries native state.
+    pub fn has_payload(&self) -> bool {
+        self.native.is_some()
+    }
+
+    /// Attach native state, returning the previous one. Drop that after the
+    /// object borrow is released: its `Drop` may touch other objects.
+    pub fn set_payload(&mut self, state: Payload) -> Option<Payload> {
+        match &mut self.native {
+            Some(slot) => Some(std::mem::replace(&mut **slot, state)),
+            None => {
+                self.native = Some(Box::new(state));
+                None
+            }
+        }
+    }
+
+    /// Detach the native state (php's `free_obj` run early, e.g. `close()`).
+    pub fn take_payload(&mut self) -> Option<Payload> {
+        self.native.take().map(|b| *b)
+    }
 }
 
 thread_local! {
-    /// Called with an object's id when its storage is freed (the engine's
-    /// `free_obj` hook: lets native extensions release per-object state, e.g.
-    /// libzip writing an unclosed `ZipArchive`).
+    /// Called with an object's id when its storage is freed, for engine
+    /// state still kept by object id (the internal array pointer of
+    /// objects, archives not on the payload yet).
     static OBJECT_FREE_HOOK: std::cell::Cell<Option<fn(u32)>> = const { std::cell::Cell::new(None) };
 }
 
@@ -152,6 +223,8 @@ pub fn set_object_free_hook(f: fn(u32)) {
 
 impl Drop for ObjectData {
     fn drop(&mut self) {
+        // php's free_obj: the native state goes first, then the properties.
+        drop(self.native.take());
         // `try_with`: thread-local teardown may already have run.
         if let Ok(Some(f)) = OBJECT_FREE_HOOK.try_with(|h| h.get()) {
             f(self.id);
@@ -176,14 +249,26 @@ pub enum Visibility {
     Private,
 }
 
-/// Class-level modifier flags.
+/// Class-level flags (php's `ce_flags`).
 #[derive(Clone, Copy, Default, Debug)]
 pub struct ClassFlags {
     pub is_abstract: bool,
     pub is_final: bool,
     pub is_readonly: bool,
     /// `#[\AllowDynamicProperties]` (php's ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES).
+    /// Inherited.
     pub allow_dynamic: bool,
+    /// ZEND_ACC_NO_DYNAMIC_PROPERTIES: an internal class's `@strict-properties`
+    /// (enums and readonly classes are checked by kind). Not inherited.
+    pub no_dynamic: bool,
+    /// ZEND_ACC_NOT_SERIALIZABLE (`@not-serializable`): serialize() and
+    /// unserialize() throw. Inherited.
+    pub not_serializable: bool,
+    /// The objects have no `clone_obj` handler: `clone` throws "Trying to
+    /// clone an uncloneable object of class X". php keeps this in the
+    /// handler table, which subclasses inherit with `create_object`; set at
+    /// link time from the class's handlers. Inherited.
+    pub not_cloneable: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -646,6 +731,63 @@ mod tests {
         b.push(Value::str("b"));
         let keys: Vec<_> = b.iter().map(|(k, _)| k.clone()).collect();
         assert_eq!(keys, vec![ArrayKey::Int(-5), ArrayKey::Int(-4)]);
+    }
+
+    struct Native(Rc<std::cell::Cell<u32>>);
+    impl Drop for Native {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    fn object() -> ObjectHandle {
+        Rc::new(RefCell::new(ObjectData::new(
+            0,
+            1,
+            IndexMap::with_hasher(FxBuildHasher),
+        )))
+    }
+
+    #[test]
+    fn payload_is_typed_and_dropped_with_the_object() {
+        let drops = Rc::new(std::cell::Cell::new(0));
+        let h = object();
+        assert!(!h.borrow().has_payload());
+        assert!(h
+            .borrow_mut()
+            .set_payload(Rc::new(Native(drops.clone())))
+            .is_none());
+        assert!(h.borrow().payload::<String>().is_none());
+        let p = h.borrow().payload::<Native>().expect("payload");
+        drop(h);
+        // A clone a builtin still holds keeps the state alive.
+        assert_eq!(drops.get(), 0);
+        drop(p);
+        assert_eq!(drops.get(), 1);
+    }
+
+    #[test]
+    fn payload_replace_and_take() {
+        let drops = Rc::new(std::cell::Cell::new(0));
+        let h = object();
+        h.borrow_mut().set_payload(Rc::new(Native(drops.clone())));
+        let old = h.borrow_mut().set_payload(Rc::new(Native(drops.clone())));
+        assert_eq!(drops.get(), 0, "the caller drops the old payload");
+        drop(old);
+        assert_eq!(drops.get(), 1);
+        drop(h.borrow_mut().take_payload());
+        assert_eq!(drops.get(), 2);
+        assert!(!h.borrow().has_payload());
+        drop(h);
+        assert_eq!(drops.get(), 2);
+    }
+
+    /// The slot is one pointer: an object's allocation (what memory_limit
+    /// accounting counts) stays in the 96-byte bin.
+    #[test]
+    fn payload_slot_is_one_pointer() {
+        assert_eq!(std::mem::size_of::<Option<Box<Payload>>>(), 8);
+        assert!(std::mem::size_of::<RefCell<ObjectData>>() + 16 <= 96);
     }
 
     #[test]

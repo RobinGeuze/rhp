@@ -10,6 +10,13 @@ use rhp_values::{conv, ArrayKey, PhpArray, Value};
 use crate::zip_ext::{self, Archive};
 use crate::{Builtin, Host, Thrown};
 
+/// `ZipArchive`'s handlers (`zip_object_handlers`: no clone).
+pub(crate) static CLASSES: &[crate::object::ClassHandlers] = &[crate::object::ClassHandlers {
+    class: "ZipArchive",
+    handlers: &crate::object::ObjectHandlers::UNCLONEABLE,
+    create_object: true,
+}];
+
 fn deref(v: &Value) -> Value {
     match v {
         Value::Ref(r) => r.borrow().clone(),

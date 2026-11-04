@@ -303,11 +303,13 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
     runs to its end before `curl_exec`/`curl_multi_exec` rethrows. Each
     callback's `void *` is its handle's `RefCell`, kept alive by the builtin
     driving the transfer; freeing a handle clears the pointers first;
-  - a handle whose free can call back into PHP (an XMLWriter flushing to a
-    stream) is freed in the class's native `dtor_obj`
-    (`rhp_builtins::object_dtor`), which the engine runs with a host before
-    `__destruct`, as php does. The object-free hook has no host; it frees
-    only what php's `dtor_obj` would have skipped.
+  - a library handle belongs in its object's payload (ext/openssl's and
+    ext/curl's still sit in per-thread tables keyed by object id); one whose
+    free can call back into PHP (an XMLWriter flushing to a stream) is freed
+    by the class's `dtor_obj` handler, which the engine runs with a host
+    before `__destruct`, as php does. The payload's `Drop` (php's `free_obj`) has
+    no host; it frees only what `dtor_obj` would have skipped. See
+    [object-handlers.md](./object-handlers.md).
 - **OpenSSL's library context.** php 8.5 runs ext/openssl in its own
   `OSSL_LIB_CTX` (`openssl.libctx=custom`, the default): one per thread
   (module globals under ZTS), loaded with `CONF_modules_load_file_ex` from

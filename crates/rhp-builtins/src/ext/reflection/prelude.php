@@ -588,8 +588,7 @@ class ReflectionClass implements Reflector {
         return new $cls(...$args);
     }
     public function newInstanceWithoutConstructor(): object {
-        // Internal final classes with their own object handlers.
-        if ($this->__c['internal'] && $this->isFinal() && in_array(strtolower($this->name), ['generator', '__php_incomplete_class', 'closure', 'gmp', 'weakreference', 'weakmap', 'fiber', 'reflectionreference', 'reflectiongenerator', 'reflectionfiber', 'curlhandle', 'curlmultihandle', 'curlsharehandle', 'opensslasymmetrickey', 'opensslcertificate', 'opensslcertificatesigningrequest', 'inflatecontext', 'deflatecontext', 'hashcontext', 'bcmath\\number'], true)) {
+        if ($this->__c['internal'] && $this->isFinal() && $this->__c['create_object']) {
             throw new ReflectionException('Class ' . $this->name . ' is an internal class marked as final that cannot be instantiated without invoking its constructor');
         }
         return __reflect_new_instance_noctor($this->name);

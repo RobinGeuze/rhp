@@ -21,6 +21,7 @@ use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use rhp_values::{conv, Value};
 
+use crate::object::{self, ClassHandlers, ObjectHandlers, Op};
 use crate::{Builtin, Host, Thrown};
 
 // ---------------------------------------------------------------------------
@@ -1160,7 +1161,7 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
 
 /// The `GMP` wrapper class, owned by this module (was in the compiler prelude).
 pub const PRELUDE_PHP: &str = r#"
-class GMP {
+final class GMP {
     public $num = "0";
     public function __construct(int|string $num = 0, int $base = 0) {
         try {
@@ -1189,40 +1190,292 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     ]
 }
 
-/// One operand of the `GMP` object `compare` handler: a GMP object's decimal
-/// `num`, or any other value with its `zend_zval_value_name`.
-pub enum CmpOperand {
-    Gmp(Vec<u8>),
-    Other(Value, String),
+/// `GMP`'s handlers (gmp.c's `gmp_object_handlers`). The number is the
+/// object's `num` property.
+static GMP_HANDLERS: ObjectHandlers = ObjectHandlers {
+    compare: Some(gmp_compare),
+    cast_object: Some(gmp_cast_object),
+    do_operation: Some(gmp_do_operation),
+    ..ObjectHandlers::STD
+};
+
+pub(crate) static CLASSES: &[ClassHandlers] = &[ClassHandlers {
+    class: "GMP",
+    handlers: &GMP_HANDLERS,
+    create_object: true,
+}];
+
+/// The number of a GMP object, `None` for any other value.
+fn gmp_value(host: &dyn Host, v: &Value) -> Option<BigInt> {
+    let h = object::object_of(v)?;
+    let class = h.borrow().class;
+    if !host
+        .object_handlers(class)
+        .is_some_and(|t| std::ptr::eq(t, &GMP_HANDLERS))
+    {
+        return None;
+    }
+    let num = h
+        .borrow()
+        .properties
+        .get(&rhp_values::PhpStr::from("num"))
+        .map(|n| conv::to_string_bytes(&deref(n)));
+    Some(
+        num.and_then(|n| BigInt::parse_bytes(&n, 10))
+            .unwrap_or_default(),
+    )
 }
 
-/// `gmp_compare`: both operands are converted to GMP (`is_operator` rules:
-/// base-0 integer strings, ints, weak scalars except null); a failed
-/// conversion throws, which php reports as uncomparable.
-pub fn compare_handler(a: CmpOperand, b: CmpOperand) -> Result<i32, Thrown> {
-    fn conv_op(o: CmpOperand) -> Result<BigInt, Thrown> {
-        let bad = |name: &str| {
-            Thrown::type_error(format!(
-                "Number must be of type GMP|string|int, {name} given"
-            ))
-        };
-        match o {
-            CmpOperand::Gmp(n) => Ok(BigInt::parse_bytes(&n, 10).unwrap_or_default()),
-            CmpOperand::Other(v, name) => match deref(&v) {
-                Value::Int(i) => Ok(BigInt::from(i)),
-                Value::Str(s) => parse_str_auto(s.as_bytes())
-                    .ok_or_else(|| Thrown::error("ValueError", "Number is not an integer string")),
-                Value::Bool(b) => Ok(BigInt::from(b as i64)),
-                Value::Float(f) if f.is_finite() && f.abs() < 9.2e18 => Ok(bigint_from_f64(f)),
-                _ => Err(bad(&name)),
-            },
-        }
+/// gmp_zend_parse_arg_into_mpz_ex with `is_operator`: a GMP object, an
+/// integer string (base 0), an int, or in coercive mode a weak scalar other
+/// than null. `Ok(None)` when the value is none of these and nothing was
+/// thrown.
+fn operator_operand(host: &mut dyn Host, v: &Value) -> Result<Option<BigInt>, Thrown> {
+    if let Some(n) = gmp_value(host, v) {
+        return Ok(Some(n));
     }
-    let x = conv_op(a)?;
-    let y = conv_op(b)?;
-    Ok(match x.cmp(&y) {
+    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+    Ok(match deref(v) {
+        Value::Int(i) => Some(BigInt::from(i)),
+        Value::Str(s) => Some(
+            parse_str_auto(s.as_bytes())
+                .ok_or_else(|| Thrown::error("ValueError", "Number is not an integer string"))?,
+        ),
+        _ if host.arg_uses_strict_types() => None,
+        Value::Bool(b) => Some(BigInt::from(b as i64)),
+        Value::Float(f) if (-TWO_63..TWO_63).contains(&f) => {
+            if f.fract() != 0.0 {
+                let shown =
+                    String::from_utf8_lossy(&rhp_values::fmt::float_serialize(f)).into_owned();
+                host.emit_diagnostic(
+                    crate::E_DEPRECATED,
+                    &format!("Implicit conversion from float {shown} to int loses precision"),
+                )?;
+            }
+            Some(BigInt::from(f as i64))
+        }
+        _ => None,
+    })
+}
+
+/// The operand, or php's "Number must be of type GMP|string|int" TypeError.
+fn operand_or_error(host: &mut dyn Host, v: &Value) -> Result<BigInt, Thrown> {
+    match operator_operand(host, v)? {
+        Some(n) => Ok(n),
+        None => Err(Thrown::type_error(format!(
+            "Number must be of type GMP|string|int, {} given",
+            crate::proc_fns::zpp_type_name(host, &deref(v))
+        ))),
+    }
+}
+
+/// gmp_compare: both operands are converted to GMP; a failed conversion
+/// throws, which makes the pair uncomparable.
+fn gmp_compare(host: &mut dyn Host, a: &Value, b: &Value) -> Result<Option<i32>, Thrown> {
+    let x = operand_or_error(host, a)?;
+    let y = operand_or_error(host, b)?;
+    Ok(Some(match x.cmp(&y) {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
         std::cmp::Ordering::Greater => 1,
+    }))
+}
+
+/// mpz_get_si: the low bits, with the number's sign.
+fn mpz_get_si(n: &BigInt) -> i64 {
+    let low = n.iter_u64_digits().next().unwrap_or(0);
+    match n.sign() {
+        Sign::Plus => (low & i64::MAX as u64) as i64,
+        Sign::Minus => -1 - (low.wrapping_sub(1) & i64::MAX as u64) as i64,
+        Sign::NoSign => 0,
+    }
+}
+
+/// mpz_get_d: the number as a float, truncated toward zero (not rounded),
+/// infinite past the float range.
+fn mpz_get_d(n: &BigInt) -> f64 {
+    let bits = n.bits();
+    let mag = if bits <= 53 {
+        n.magnitude().to_u64().unwrap_or(0) as f64
+    } else {
+        // The top 53 bits, scaled back: exact, since a float holds them.
+        let shift = bits - 53;
+        let top = (n.magnitude() >> shift).to_u64().unwrap_or(0) as f64;
+        top * 2f64.powi(shift.min(2048) as i32)
+    };
+    if n.sign() == Sign::Minus {
+        -mag
+    } else {
+        mag
+    }
+}
+
+/// gmp_cast_object.
+fn gmp_cast_object(
+    host: &mut dyn Host,
+    h: &rhp_values::ObjectHandle,
+    target: object::CastTarget,
+) -> Result<Option<Value>, Thrown> {
+    use object::CastTarget as T;
+    let n = gmp_value(host, &Value::Object(h.clone())).unwrap_or_default();
+    Ok(match target {
+        T::Str => Some(Value::str(n.to_string())),
+        T::Int => Some(Value::Int(mpz_get_si(&n))),
+        T::Float => Some(Value::Float(mpz_get_d(&n))),
+        T::Number => Some(match n.to_i64() {
+            Some(i) => Value::Int(i),
+            None => Value::Float(mpz_get_d(&n)),
+        }),
+        T::Bool => Some(Value::Bool(!n.is_zero())),
+        _ => None,
     })
+}
+
+/// gmp_do_operation.
+fn gmp_do_operation(
+    host: &mut dyn Host,
+    op: Op,
+    a: &Value,
+    b: Option<&Value>,
+) -> Result<Option<Value>, Thrown> {
+    let r = match (op, b) {
+        (Op::BitNot, _) => {
+            let x = operand_or_error(host, a)?;
+            -x - 1
+        }
+        (Op::Pow | Op::Shl | Op::Shr, Some(b)) => {
+            let Some((x, shift)) = shift_operands(host, op, a, b)? else {
+                return Ok(None);
+            };
+            shift_op(op, x, shift)?
+        }
+        (
+            Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::BitOr | Op::BitAnd | Op::BitXor,
+            Some(b),
+        ) => {
+            let x = operand_or_error(host, a)?;
+            let y = operand_or_error(host, b)?;
+            match op {
+                Op::Add => x + y,
+                Op::Sub => x - y,
+                Op::Mul => x * y,
+                Op::Div | Op::Mod if y.is_zero() => {
+                    let msg = if op == Op::Div {
+                        "Division by zero"
+                    } else {
+                        "Modulo by zero"
+                    };
+                    return Err(Thrown::error("DivisionByZeroError", msg));
+                }
+                // mpz_tdiv_q
+                Op::Div => x / y,
+                // mpz_mod: in [0, |y|)
+                Op::Mod => {
+                    let m = y.abs();
+                    let r = x % &m;
+                    if r.sign() == Sign::Minus {
+                        r + m
+                    } else {
+                        r
+                    }
+                }
+                Op::BitOr => x | y,
+                Op::BitAnd => x & y,
+                _ => x ^ y,
+            }
+        }
+        _ => return Ok(None),
+    };
+    gmp_obj(host, r).map(Some)
+}
+
+/// mpz_pow_ui, mpz_mul_2exp or mpz_fdiv_q_2exp. Results that need no
+/// memory are computed for any shift or exponent; others are refused past
+/// 2^32 bits, where libgmp would allocate gigabytes.
+fn shift_op(op: Op, x: BigInt, shift: u64) -> Result<BigInt, Thrown> {
+    let minus = x.sign() == Sign::Minus;
+    match op {
+        // Rounds toward -inf, as BigInt's >> does.
+        Op::Shr if shift >= x.bits() => return Ok(BigInt::from(-(minus as i64))),
+        Op::Shr => return Ok(x >> shift),
+        Op::Shl if x.is_zero() => return Ok(x),
+        Op::Pow if shift == 0 => return Ok(BigInt::one()),
+        Op::Pow if x.is_zero() || x.is_one() => return Ok(x),
+        Op::Pow if minus && x.magnitude().is_one() => {
+            return Ok(BigInt::from(if shift.is_multiple_of(2) { 1 } else { -1 }))
+        }
+        _ => {}
+    }
+    let Ok(shift) = u32::try_from(shift) else {
+        let what = if op == Op::Pow { "Exponent" } else { "Shift" };
+        return Err(Thrown::error(
+            "ValueError",
+            format!("{what} must be less than 4294967296"),
+        ));
+    };
+    Ok(match op {
+        Op::Pow => x.pow(shift),
+        _ => x << shift,
+    })
+}
+
+/// shift_operator_helper's operands: the number and the shift / exponent.
+fn shift_operands(
+    host: &mut dyn Host,
+    op: Op,
+    a: &Value,
+    b: &Value,
+) -> Result<Option<(BigInt, u64)>, Thrown> {
+    let sigil = match op {
+        Op::Pow => "**",
+        Op::Shl => "<<",
+        _ => ">>",
+    };
+    let type_name = |host: &dyn Host, v: &Value| match deref(v) {
+        Value::Object(_) => crate::proc_fns::zpp_type_name(host, v),
+        Value::Bool(_) => "bool".to_string(),
+        other => crate::proc_fns::zpp_type_name(host, &other),
+    };
+    let unsupported = |host: &dyn Host| {
+        Thrown::type_error(format!(
+            "Unsupported operand types: {} {sigil} {}",
+            type_name(host, a),
+            type_name(host, b)
+        ))
+    };
+    let shift = match deref(b) {
+        Value::Int(n) => n,
+        Value::Float(f) => conv::to_int(&Value::Float(f)),
+        Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
+            Some(conv::Num::Int(n)) => n,
+            _ => {
+                return Err(Thrown::error(
+                    "ValueError",
+                    "Number is not an integer string",
+                ))
+            }
+        },
+        other => match gmp_value(host, &other) {
+            Some(n) => mpz_get_si(&n),
+            None => return Err(unsupported(host)),
+        },
+    };
+    if shift < 0 {
+        let what = if op == Op::Pow { "Exponent" } else { "Shift" };
+        return Err(Thrown::error(
+            "ValueError",
+            format!("{what} must be greater than or equal to 0"),
+        ));
+    }
+    // A failed conversion of the number is the operand-type error, with
+    // the conversion's exception as its previous one.
+    let x = match operator_operand(host, a) {
+        Ok(Some(x)) => x,
+        Ok(None) => return Err(unsupported(host)),
+        Err(e) => {
+            let t = unsupported(host);
+            return Err(host.chain_thrown(t, e));
+        }
+    };
+    Ok(Some((x, shift as u64)))
 }

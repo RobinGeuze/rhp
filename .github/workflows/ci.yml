@@ -135,6 +135,10 @@ jobs:
       - run: cargo build --release -p rhp-cli -p rhp-difftest
       - name: Builtin signatures match php-src's stubs
         run: target/release/rhp-difftest gen signatures --php-src php-src --check
+      # The goldens' .out files are still what php prints, except the ones
+      # holding the reference build's facts (tests/golden/reference-only.txt).
+      - name: Portable goldens still match php
+        run: target/release/rhp-difftest golden --check --portable
       - name: Known-passing php-src tests still match
         run: >-
           target/release/rhp-difftest phpt --php-src php-src

@@ -20,7 +20,7 @@ from `PATH` or `/opt/homebrew/bin` (`PHP_CGI` overrides it).
 
 | kind | where | expectation | runs without php |
 |---|---|---|---|
-| golden | `tests/golden/NAME.php` + `NAME.out` | committed output of `php -n` | yes |
+| golden | `tests/golden/**/NAME.php` + `NAME.out` | committed output of `php -n` | yes |
 | live-php test | `crates/rhp-cli/tests`, `crates/rhp-difftest/tests` | php on the machine, at test time | skips |
 | CGI fixture | `tests/cgi/NAME.php` (+ `NAME.cgi`) | php-cgi on the machine | skips |
 | curl fixture | `tests/curl_http/NAME.php` + `NAME.out` | committed output of `php -n` against the test's local server | yes |
@@ -68,9 +68,9 @@ php-cgi.
 
 ## Regenerating expectations
 
-- A golden: `cd tests/golden && php -n NAME.php > NAME.out`, with the
-  reference php. Never regenerate a golden just to make a failing run pass:
-  a changed `.out` is a behaviour change to explain.
+- A golden: `rhp-difftest golden --write --filter NAME` with the reference
+  php (see below). Never regenerate a golden just to make a failing run
+  pass: a changed `.out` is a behaviour change to explain.
 - A curl fixture: `cargo test -p rhp-cli --test curl_http -- --ignored regenerate`.
 - The phpt list: `rhp-difftest phpt --write-known` (see the phpt README),
   then keep the list C-sorted with its header lines first; remove an entry
@@ -79,6 +79,31 @@ php-cgi.
 - `rhp-difftest phpt --mutate N --emit-fixtures DIR --minimize` writes
   minimised golden pairs for the divergences it finds; move a pair into
   `tests/golden/` once rhp is fixed.
+
+## Goldens and the reference php
+
+A golden's `.out` is the stdout of the reference php for the fixture, run
+the canonical way:
+
+- `php -n /absolute/path/to/NAME.php` (`RHP_PHP` names the php),
+- with the fixture's directory as the working directory,
+- with the environment inherited and stdin empty;
+- only stdout is recorded, not stderr or the exit status.
+
+`rhp-difftest golden --check` re-runs php that way on every fixture
+(subdirectories included) and compares with the committed `.out`;
+`--write` rewrites them and refuses a php other than 8.5.12; `--filter
+SUBSTR` narrows either to matching names. Run `--check` against the
+reference build after changing a fixture and at every php version bump.
+
+Some goldens print facts of the reference build: its configuration, and
+the versions and features of the libraries it links.
+`tests/golden/reference-only.txt` lists them, with the reason for each.
+`golden --check --portable` skips them, so another build of php 8.5.12
+(CI's, on Ubuntu) checks the rest; `--write` on a build other than the
+reference (macOS) leaves them alone. A new golden whose output depends on
+the build belongs in a live-php test instead (the golden policy above);
+list it only when that can't be avoided.
 
 Generated tables have their own `--check`: `rhp-difftest gen signatures`,
 `gen html-tables`, `gen parser` (see `crates/rhp-difftest/src/gen/`).
@@ -89,6 +114,7 @@ Generated tables have their own `--check`: `rhp-difftest gen signatures`,
 cargo test --workspace --all-targets          # goldens, unit and live-php tests
 RHP_PHP=php cargo test --workspace --all-targets --no-fail-fast
 cargo build --release -p rhp-cli -p rhp-difftest
+target/release/rhp-difftest golden --check     # the .out files are still php's
 target/release/rhp-difftest phpt --php-src ../php-src \
   --php-cgi "$(command -v php-cgi)" --check-known tests/phpt/known-passing.txt
 ```

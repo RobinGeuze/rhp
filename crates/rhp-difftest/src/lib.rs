@@ -19,6 +19,7 @@
 
 pub mod app;
 pub mod gen;
+pub mod golden;
 pub mod lint;
 pub mod mutate;
 pub mod phpt;

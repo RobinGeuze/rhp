@@ -1,0 +1,17 @@
+# Goldens whose .out holds facts of the reference build (php 8.5.12, the
+# Homebrew build on macOS) that another build of php 8.5.12 prints
+# differently: its configuration and the versions and features of the
+# libraries it links. `rhp-difftest golden --check --portable` skips them;
+# only the reference build may rewrite them. One fixture name per line (path
+# below tests/golden, no extension). See docs/testing.md.
+
+core_build_constants    # phpinfo()'s configuration file path
+curl_api                # libcurl version: option and info counts, protocol names
+curl_setopt_checks      # libcurl version and features (HTTP/3, option ranges)
+curl_tlsauth_srp        # libcurl built with TLS-SRP
+curl_url_parse          # libcurl's URL parser version
+intl_idn                # ICU's UTS #46 data
+openssl_pkey            # OpenSSL's digest list
+phpinfo_text            # phpinfo()'s configure command
+preg_php_pcre_glue      # PCRE2 version (the r modifier needs 10.43)
+zip_lifecycle           # libzip version

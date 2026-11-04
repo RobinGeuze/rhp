@@ -4680,11 +4680,12 @@ impl Vm {
                 (Some(Value::Object(h)), CursorStep::Prop(name)) => {
                     let cls = h.borrow().class;
                     let scope = self.stack[top].defining_class;
-                    let key = match classes::resolve_prop(&self.classes, cls, scope, name) {
-                        PropRes::Slot(k) => k,
-                        PropRes::Dynamic => name.clone(),
-                        PropRes::Denied(_) => break,
-                    };
+                    let (key, dynamic) =
+                        match classes::resolve_prop(&self.classes, cls, scope, name) {
+                            PropRes::Slot(k) => (k, false),
+                            PropRes::Dynamic => (name.clone(), true),
+                            PropRes::Denied(_) => break,
+                        };
                     let present = h.borrow().properties.get(&key).map(deref);
                     match present {
                         Some(v) => Some(v),
@@ -4693,6 +4694,14 @@ impl Vm {
                             // with no `__get` to defer to.
                             if let Some(e) = self.typed_slot(cls, &key) {
                                 return Err(e);
+                            }
+                            if dynamic {
+                                // zend_std_get_property_ptr_ptr (BP_VAR_RW):
+                                // the dynamic-property rules, then the
+                                // property exists (null) before the warning.
+                                self.flush_rw_warnings(std::mem::take(&mut warnings))?;
+                                self.check_dynamic_prop(top, cls, name)?;
+                                h.borrow_mut().properties.insert(key, Value::Null);
                             }
                             warnings.push(format!(
                                 "Undefined property: {}::${}",
@@ -4833,6 +4842,7 @@ impl Vm {
         self.cursor_readonly_check(top, steps, true)?;
         let (i, h, name) = match self.cursor_magic_split(top, steps) {
             MagicSplit::Plain => {
+                self.cursor_dyn_check(top, steps, true)?;
                 let cx = PropCtx {
                     classes: &self.classes,
                     scope: self.stack[top].defining_class,
@@ -4940,11 +4950,61 @@ impl Vm {
         Ok(())
     }
 
+    /// The dynamic-property rules (deprecation, or php's "Cannot create
+    /// dynamic property" Error) for the first absent undeclared property
+    /// a write or reference along `steps` creates (zend_std_get_property_
+    /// ptr_ptr for the fetches, zend_std_write_property for a leaf with no
+    /// `__set`). `make_ref`: the leaf is fetched for a reference.
+    fn cursor_dyn_check(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+        make_ref: bool,
+    ) -> Result<(), Thrown> {
+        let scope = self.stack[top].defining_class;
+        let mut cur = self.cursor_root_value(top);
+        for (i, step) in steps.iter().enumerate() {
+            let next = match (deref(&cur), step) {
+                (Value::Array(a), CursorStep::Key(k)) => {
+                    match ArrayKey::from_value(k).and_then(|key| a.get(&key).cloned()) {
+                        Some(v) => v,
+                        None => return Ok(()),
+                    }
+                }
+                (Value::Object(h), CursorStep::Prop(name)) => {
+                    let cls = h.borrow().class;
+                    let (key, dynamic) =
+                        match classes::resolve_prop(&self.classes, cls, scope, name) {
+                            PropRes::Slot(k) => (k, false),
+                            PropRes::Dynamic => (name.clone(), true),
+                            PropRes::Denied(_) => return Ok(()),
+                        };
+                    let val = h.borrow().properties.get(&key).cloned();
+                    match val {
+                        Some(v) => v,
+                        None => {
+                            let leaf = i + 1 == steps.len();
+                            let set =
+                                !make_ref && leaf && self.magic(&h, cls, b"__set", name).is_some();
+                            if dynamic && !set {
+                                self.check_dynamic_prop(top, cls, name)?;
+                            }
+                            return Ok(());
+                        }
+                    }
+                }
+                _ => return Ok(()),
+            };
+            cur = next;
+        }
+        Ok(())
+    }
+
     /// Write `v` at the current cursor (root + steps).
     fn cursor_write(&mut self, top: usize, steps: &[CursorStep], v: Value) -> Result<(), Thrown> {
         self.cursor_readonly_check(top, steps, false)?;
         match self.cursor_magic_split(top, steps) {
-            MagicSplit::Plain => {}
+            MagicSplit::Plain => self.cursor_dyn_check(top, steps, false)?,
             MagicSplit::Leaf(h, name) => return self.prop_store(top, Value::Object(h), name, v),
             MagicSplit::Nested(i, h, name) => {
                 let cell = self.magic_write_cell(top, h, name)?;

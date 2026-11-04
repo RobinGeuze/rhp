@@ -1006,6 +1006,16 @@ impl Host for Vm {
 
     fn stream_write(&mut self, res: &Value, data: &[u8]) -> Option<usize> {
         let id = res_id(res)?;
+        if self.data_streams.contains_key(&id) {
+            // php_stream_rfc2397_ops has no write
+            if data.is_empty() {
+                return Some(0);
+            }
+            let func = self.native_calls.last().map_or("fwrite", |n| n.name);
+            let msg = format!("{func}(): Stream is not writable");
+            self.raise_error(builtins::E_NOTICE, &msg);
+            return None;
+        }
         enum Act {
             Out,
             Err,

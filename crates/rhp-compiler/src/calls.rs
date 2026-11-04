@@ -1,0 +1,856 @@
+//! Calls: function, method and static calls, argument passing and by-reference parameters.
+
+use rhp_bytecode::{ClassRef, Instr, NIdx, Reg};
+use rhp_frontend::cst::{Access, Argument, Expression, Identifier, Variable};
+use rhp_values::{Thrown, Value};
+
+use crate::assign::is_globals_var;
+use crate::builder::ProtoBuilder;
+use crate::file::METHOD_REF;
+use crate::names::{resolve_class_name, resolve_name, NameKind};
+use crate::oop::Sel;
+use crate::prelude::PRELUDE_CACHE;
+use crate::util::strip_dollar;
+
+impl ProtoBuilder {
+    pub(crate) fn compile_call(&mut self, call: &rhp_frontend::cst::Call) -> Result<Reg, Thrown> {
+        use rhp_frontend::cst::Call;
+        match call {
+            Call::Function(fc) => self.compile_function_call(fc),
+            Call::Method(mc) => {
+                self.compile_method_call(mc.object, &mc.method, &mc.argument_list, false)
+            }
+            Call::StaticMethod(smc) => self.compile_static_call(smc),
+            Call::NullSafeMethod(mc) => {
+                self.compile_method_call(mc.object, &mc.method, &mc.argument_list, true)
+            }
+        }
+    }
+
+    /// `throw new \Error($msg)` at the current line; the returned register
+    /// is never written.
+    fn emit_throw_error(&mut self, msg: &str) -> Reg {
+        let base = self.alloc_temps(1);
+        let k = self.intern_const(Value::str(msg));
+        self.emit(Instr::LoadConst { dst: base, k });
+        let class = ClassRef::Name(self.intern_name(b"Error"));
+        let dst = self.alloc_temp();
+        self.emit(Instr::New {
+            dst,
+            class,
+            base,
+            argc: 1,
+        });
+        self.emit(Instr::Throw { src: dst });
+        dst
+    }
+
+    fn compile_function_call(
+        &mut self,
+        fc: &rhp_frontend::cst::FunctionCall,
+    ) -> Result<Reg, Thrown> {
+        let callee_id: &Identifier = match fc.function {
+            Expression::Identifier(id) => id,
+            Expression::ConstantAccess(ca) => &ca.name,
+            // `$f(...)`, `($expr)(...)`, `$arr[0](...)`: the callee is a runtime
+            // value (closure / string name / `[obj, method]` / __invoke object).
+            _ => return self.compile_dynamic_call(fc),
+        };
+        // Resolve the (possibly namespaced) callee to a primary name + optional
+        // global fallback (PHP's fall-back-to-global for unqualified calls).
+        let (name_bytes, fallback) = resolve_name(callee_id, NameKind::Func);
+
+        // Spread / named-argument call `foo(...$args)` / `foo(b: 1)`: marshal
+        // args into an array, emit CallV (the VM places named arguments).
+        if has_spread(&fc.argument_list) || has_named(&fc.argument_list) {
+            let args = self.build_args_array(Some(&fc.argument_list))?;
+            let name = self.intern_name(&name_bytes);
+            let fb = self.intern_fallback(&fallback);
+            let dst = self.alloc_temp();
+            self.emit(Instr::CallV {
+                dst,
+                name,
+                args,
+                fallback: fb,
+            });
+            return Ok(dst);
+        }
+
+        // Per-parameter by-ref flags of the (statically-known) callee: a user
+        // function's recorded signature (tried under the namespaced name, then the
+        // global fallback), or a known by-ref builtin (always global).
+        let name_lc = name_bytes.to_ascii_lowercase();
+        let global_lc = fallback.as_ref().map(|f| f.to_ascii_lowercase());
+        let sig = self
+            .sigs
+            .get(&name_lc)
+            .cloned()
+            .or_else(|| global_lc.as_ref().and_then(|g| self.sigs.get(g).cloned()))
+            .or_else(|| {
+                builtin_by_ref(
+                    global_lc.as_deref().unwrap_or(&name_lc),
+                    fc.argument_list.arguments.len(),
+                )
+            });
+        // The builtin whose stub gave `sig` (not a user function of the file).
+        let builtin = (!self.sigs.contains_key(&name_lc)
+            && !global_lc
+                .as_ref()
+                .is_some_and(|g| self.sigs.contains_key(g)))
+        .then(|| builtin_sig(global_lc.as_deref().unwrap_or(&name_lc)))
+        .flatten();
+        // `@prefer-ref` positions of the builtin (array_multisort, extract): a
+        // non-variable argument is passed by value, silently.
+        let prefer_ref = |i: usize| {
+            use rhp_builtins::signatures::Signature;
+            builtin.is_some_and(|f| f.prefer_ref(i))
+        };
+
+        // Compile each arg into a value reg, or (for a by-ref param) note the
+        // variable's CV so it can be materialized as a reference.
+        enum ArgSlot<'e> {
+            Value(Reg),
+            Ref(Reg),
+            /// A by-ref argument that is a property / array-element lvalue.
+            RefLval(&'e Expression<'e>),
+            /// A call result for a by-ref parameter (passed with a notice).
+            NoRef(Reg),
+            /// SEND_VAR_EX of a variable to an unresolved function.
+            VarEx {
+                cv: Reg,
+                func: Reg,
+                idx: u16,
+            },
+            /// A reference or a value, passed on as it is.
+            Pass(Reg),
+        }
+        // The unresolved callee, looked up (ResolveFunc) for the first
+        // argument that needs to ask it about by-reference parameters.
+        let mut callee: Option<Reg> = None;
+        let mut slots = Vec::new();
+        for (i, arg) in fc.argument_list.arguments.iter().enumerate() {
+            let p = match arg {
+                Argument::Positional(p) if p.ellipsis.is_none() => p,
+                Argument::Positional(_) => {
+                    return Err(Thrown::unsupported(
+                        "argument spread",
+                        "call-site spread is deferred",
+                    ))
+                }
+                Argument::Named(_) => {
+                    return Err(Thrown::unsupported("named arguments", "deferred"))
+                }
+            };
+            let by_ref = sig
+                .as_ref()
+                .and_then(|s| s.get(i).copied())
+                .unwrap_or(false);
+            if by_ref {
+                match p.value {
+                    Expression::Variable(Variable::Direct(d)) => {
+                        slots.push(ArgSlot::Ref(self.cv(strip_dollar(d.name))))
+                    }
+                    // `sort($a['k'])`, `array_push($this->items, …)`.
+                    Expression::ArrayAccess(_)
+                    | Expression::ArrayAppend(_)
+                    | Expression::Access(Access::Property(_))
+                    | Expression::Access(Access::StaticProperty(_)) => {
+                        slots.push(ArgSlot::RefLval(p.value))
+                    }
+                    // A call result for a by-ref parameter: php passes it
+                    // anyway with "Only variables should be passed by reference"
+                    // (ZEND_SEND_VAR_NO_REF / SEND_FUNC_ARG). prefer-ref
+                    // parameters accept a temporary silently.
+                    Expression::Call(_) => {
+                        let r = self.compile_expr(p.value)?;
+                        if prefer_ref(i) {
+                            slots.push(ArgSlot::Value(r))
+                        } else {
+                            slots.push(ArgSlot::NoRef(r))
+                        }
+                    }
+                    _ if prefer_ref(i) => slots.push(ArgSlot::Value(self.compile_expr(p.value)?)),
+                    // zend_cannot_pass_by_reference: a catchable Error raised
+                    // when the argument is sent, after its expression runs.
+                    // A variadic parameter is not named.
+                    _ if builtin.is_some() => {
+                        let f = builtin.expect("checked");
+                        self.compile_expr(p.value)?;
+                        let named = f
+                            .params
+                            .get(i)
+                            .filter(|p| !p.variadic())
+                            .map(|p| format!(" (${})", p.name))
+                            .unwrap_or_default();
+                        let msg = format!(
+                            "{}(): Argument #{}{named} could not be passed by reference",
+                            f.name,
+                            i + 1
+                        );
+                        slots.push(ArgSlot::Value(self.emit_throw_error(&msg)));
+                    }
+                    _ => {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "{}(): Argument #{} could not be passed by reference",
+                                String::from_utf8_lossy(&name_bytes),
+                                i + 1
+                            ),
+                        ))
+                    }
+                }
+            } else if let (None, None, Some(var)) = (&sig, builtin, send_var_ex_name(p.value)) {
+                // A function the compiler does not know (another file's, or
+                // declared later): php's SEND_VAR_EX asks it at run time
+                // whether the parameter is by reference.
+                let cv = self.cv(var);
+                let func = self.resolve_callee(&mut callee, &name_bytes, &fallback);
+                let idx = i as u16;
+                if !later_arg_may_write(&fc.argument_list, i) {
+                    slots.push(ArgSlot::VarEx { cv, func, idx });
+                } else {
+                    // a later argument may change the variable: send it now
+                    let t = self.alloc_temp();
+                    self.emit(Instr::SendVarEx {
+                        dst: t,
+                        cv,
+                        func,
+                        idx,
+                    });
+                    slots.push(ArgSlot::Pass(t));
+                }
+            } else if sig.is_none()
+                && builtin.is_none()
+                && matches!(
+                    p.value,
+                    Expression::ArrayAccess(_)
+                        | Expression::Access(Access::Property(_))
+                        | Expression::Access(Access::StaticProperty(_))
+                )
+                && variable_rooted_lvalue(p.value)
+            {
+                // SEND_FUNC_ARG for an element or property of a variable
+                let func = self.resolve_callee(&mut callee, &name_bytes, &fallback);
+                let t = self.compile_func_arg(p.value, ArgRefTarget::Func(func), i as u16)?;
+                slots.push(ArgSlot::Pass(t));
+            } else {
+                // A variable's value is taken when its argument is evaluated
+                // (php's SEND_VAR), before later arguments can change it.
+                let r = self.compile_expr(p.value)?;
+                let r = self.snapshot_arg(&fc.argument_list, i, p.value, r);
+                slots.push(ArgSlot::Value(r));
+            }
+        }
+        let argc = slots.len() as u16;
+        let base = self.alloc_temps(argc);
+        for (i, slot) in slots.into_iter().enumerate() {
+            let dst = base + i as Reg;
+            match slot {
+                ArgSlot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
+                ArgSlot::Ref(cv) => self.emit(Instr::MakeRef { dst, cv }),
+                ArgSlot::NoRef(src) => self.emit(Instr::SendNoRef { dst, src }),
+                ArgSlot::RefLval(expr) => {
+                    let mut steps = Vec::new();
+                    let root = self.collect_lvalue_steps(expr, &mut steps)?;
+                    self.emit_cursor(root, &steps);
+                    self.emit(Instr::MakeRefLval { dst });
+                }
+                ArgSlot::VarEx { cv, func, idx } => {
+                    self.emit(Instr::SendVarEx { dst, cv, func, idx })
+                }
+                ArgSlot::Pass(src) => self.emit(Instr::PassArg { dst, src }),
+            }
+        }
+        let name = self.intern_name(&name_bytes);
+        let fb = self.intern_fallback(&fallback);
+        let dst = self.alloc_temp();
+        self.emit(Instr::Call {
+            dst,
+            name,
+            base,
+            argc,
+            fallback: fb,
+        });
+        Ok(dst)
+    }
+
+    /// `$f(args)` — call a runtime callable value. The callee is evaluated to a
+    /// register; arguments are passed by value (the signature is unknown at the
+    /// call site, so by-ref parameters are not honoured for dynamic calls).
+    fn compile_dynamic_call(
+        &mut self,
+        fc: &rhp_frontend::cst::FunctionCall,
+    ) -> Result<Reg, Thrown> {
+        let callee = self.compile_expr(fc.function)?;
+
+        if has_spread(&fc.argument_list) || has_named(&fc.argument_list) {
+            let args = self.build_args_array(Some(&fc.argument_list))?;
+            let dst = self.alloc_temp();
+            self.emit(Instr::CallDynV { dst, callee, args });
+            return Ok(dst);
+        }
+
+        // The callee is only known at run time, so (as for method calls) a
+        // simple-variable argument travels as a reference; a by-value
+        // parameter dereferences it.
+        let (base, argc) = self.compile_arg_window_ex(Some(&fc.argument_list), &[], true)?;
+        let dst = self.alloc_temp();
+        self.emit(Instr::CallDyn {
+            dst,
+            callee,
+            base,
+            argc,
+        });
+        Ok(dst)
+    }
+
+    /// First-class callable syntax: `f(...)`, `$o->m(...)`, `C::m(...)`. Builds
+    /// the underlying callable value, then wraps it as a `Closure` via `MakeFcc`.
+    pub(crate) fn compile_fcc(
+        &mut self,
+        pa: &rhp_frontend::cst::PartialApplication,
+    ) -> Result<Reg, Thrown> {
+        use rhp_frontend::cst::PartialApplication as Pa;
+        if !pa.is_first_class_callable() {
+            return Err(Thrown::unsupported(
+                "partial application with placeholders",
+                "only the first-class callable form `f(...)` is supported",
+            ));
+        }
+        // Build the callable Value into `callee`.
+        let callee = match pa {
+            Pa::Function(f) => match f.function {
+                // Named function: the callable is its (resolved) name string.
+                Expression::Identifier(id) => {
+                    let n = self.resolve_callable_name(id);
+                    self.load_string_const(&n)
+                }
+                Expression::ConstantAccess(ca) => {
+                    let n = self.resolve_callable_name(&ca.name);
+                    self.load_string_const(&n)
+                }
+                // Dynamic `$f(...)`: wrap the existing callable value.
+                other => self.compile_expr(other)?,
+            },
+            Pa::Method(m) => {
+                let obj = self.compile_expr(m.object)?;
+                let name = self.selector_string(&m.method)?;
+                self.build_pair(obj, &name)
+            }
+            Pa::StaticMethod(s) => {
+                let class = match s.class {
+                    Expression::Identifier(id) => {
+                        let n = resolve_class_name(id);
+                        self.load_string_const(&n)
+                    }
+                    Expression::ConstantAccess(ca) => {
+                        let n = resolve_class_name(&ca.name);
+                        self.load_string_const(&n)
+                    }
+                    // Resolved against the creation scope when called.
+                    Expression::Self_(_) => self.load_string_const(b"self"),
+                    Expression::Static(_) => self.load_string_const(b"static"),
+                    Expression::Parent(_) => self.load_string_const(b"parent"),
+                    other => self.compile_expr(other)?,
+                };
+                let name = self.selector_string(&s.method)?;
+                self.build_pair(class, &name)
+            }
+        };
+        let dst = self.alloc_temp();
+        self.emit(Instr::MakeFcc { dst, callee });
+        Ok(dst)
+    }
+
+    /// Build a `PhpArray` of the call arguments (used when the call has a
+    /// spread `...$x`): positional args are pushed, spreads are merged.
+    pub(crate) fn build_args_array(
+        &mut self,
+        args: Option<&rhp_frontend::cst::ArgumentList>,
+    ) -> Result<Reg, Thrown> {
+        let dst = self.alloc_temp();
+        self.emit(Instr::NewArray { dst, cap: 0 });
+        if let Some(list) = args {
+            for arg in list.arguments.iter() {
+                match arg {
+                    Argument::Positional(p) => {
+                        let r = self.compile_expr(p.value)?;
+                        if p.ellipsis.is_some() {
+                            self.emit(Instr::ArgSpread { arr: dst, src: r });
+                        } else {
+                            self.emit(Instr::ArrPush { arr: dst, val: r });
+                        }
+                    }
+                    // A named argument travels under its name (the callee's
+                    // parameter list places it at run time).
+                    Argument::Named(n) => {
+                        let r = self.compile_expr(n.value)?;
+                        let k = self.intern_const(Value::str(n.name.value.to_vec()));
+                        let key = self.alloc_temp();
+                        self.emit(Instr::LoadConst { dst: key, k });
+                        self.emit(Instr::ArrSet {
+                            arr: dst,
+                            key,
+                            val: r,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(dst)
+    }
+
+    /// Marshal positional args into a contiguous register window.
+    /// Compile a method/constructor argument list into a contiguous window.
+    /// `ref_mask[i]` true means position `i` may be by-reference for some method
+    /// of this name: if the argument is a simple variable, pass it as a `Ref`
+    /// (by-value callees deref it in `bind_params`).
+    /// `over_approx`: pass every simple-variable argument by reference (used for
+    /// method / constructor calls, where the callee may live in another file so
+    /// its by-ref signature is unknown at compile time; a by-value parameter just
+    /// dereferences a copy, so this is safe and matches php's runtime by-ref).
+    fn compile_arg_window_ex(
+        &mut self,
+        args: Option<&rhp_frontend::cst::ArgumentList>,
+        ref_mask: &[bool],
+        over_approx: bool,
+    ) -> Result<(Reg, u16), Thrown> {
+        self.compile_arg_window_t(args, ref_mask, over_approx, None)
+    }
+
+    /// [`compile_arg_window_ex`] for a call whose callee is resolved at run
+    /// time: a property / array-element argument asks the callee (`target`)
+    /// whether that parameter is by-reference (php's SEND_FUNC_ARG) and is
+    /// then passed as a reference to the lvalue, else by value.
+    pub(crate) fn compile_arg_window_t(
+        &mut self,
+        args: Option<&rhp_frontend::cst::ArgumentList>,
+        ref_mask: &[bool],
+        over_approx: bool,
+        target: Option<ArgRefTarget>,
+    ) -> Result<(Reg, u16), Thrown> {
+        enum Slot {
+            Value(Reg),
+            Ref(Reg),
+        }
+        let mut slots = Vec::new();
+        if let Some(list) = args {
+            for (i, arg) in list.arguments.iter().enumerate() {
+                let p = match arg {
+                    Argument::Positional(p) if p.ellipsis.is_none() => p,
+                    Argument::Positional(_) => {
+                        return Err(Thrown::unsupported("argument spread", "deferred"))
+                    }
+                    Argument::Named(_) => {
+                        return Err(Thrown::unsupported("named arguments", "deferred"))
+                    }
+                };
+                if let Expression::Variable(Variable::Direct(d)) = p.value {
+                    if over_approx || ref_mask.get(i).copied().unwrap_or(false) {
+                        slots.push(Slot::Ref(self.cv(strip_dollar(d.name))));
+                        continue;
+                    }
+                }
+                if let Some(t) = target {
+                    if matches!(
+                        p.value,
+                        Expression::ArrayAccess(_)
+                            | Expression::Access(Access::Property(_))
+                            | Expression::Access(Access::StaticProperty(_))
+                    ) && variable_rooted_lvalue(p.value)
+                    {
+                        let r = self.compile_func_arg(p.value, t, i as u16)?;
+                        slots.push(Slot::Ref(r));
+                        continue;
+                    }
+                }
+                let r = self.compile_expr(p.value)?;
+                let r = self.snapshot_arg(list, i, p.value, r);
+                slots.push(Slot::Value(r));
+            }
+        }
+        let argc = slots.len() as u16;
+        let base = self.alloc_temps(argc);
+        for (i, slot) in slots.into_iter().enumerate() {
+            let dst = base + i as Reg;
+            match slot {
+                Slot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
+                Slot::Ref(cv) => self.emit(Instr::MakeRef { dst, cv }),
+            }
+        }
+        Ok((base, argc))
+    }
+
+    /// One SEND_FUNC_ARG argument: `$t = callee-param-is-ref ? &lvalue :
+    /// lvalue` into a temp (the caller passes it on with `MakeRef`, which
+    /// a by-value parameter dereferences).
+    fn compile_func_arg(
+        &mut self,
+        e: &Expression,
+        target: ArgRefTarget,
+        idx: u16,
+    ) -> Result<Reg, Thrown> {
+        let flag = self.alloc_temp();
+        match target {
+            ArgRefTarget::Method(obj, name) => self.emit(Instr::MethodArgIsRef {
+                dst: flag,
+                obj,
+                name,
+                idx,
+            }),
+            ArgRefTarget::Static(class, name) => self.emit(Instr::StaticArgIsRef {
+                dst: flag,
+                class,
+                name,
+                idx,
+            }),
+            ArgRefTarget::Func(func) => self.emit(Instr::FuncArgIsRef {
+                dst: flag,
+                func,
+                idx,
+            }),
+        }
+        let t = self.alloc_temp();
+        let jf = self.code.len();
+        self.emit(Instr::Nop); // JmpFalse flag -> by_value
+        let mut steps = Vec::new();
+        let root = self.collect_lvalue_steps(e, &mut steps)?;
+        self.emit_cursor(root, &steps);
+        self.emit(Instr::MakeRefLval { dst: t });
+        let jend = self.code.len();
+        self.emit(Instr::Nop); // Jmp -> end
+        let by_value = self.here();
+        self.code[jf] = Instr::JmpFalse {
+            cond: flag,
+            target: by_value,
+        };
+        let v = self.compile_expr(e)?;
+        self.emit(Instr::Mov { dst: t, src: v });
+        let end = self.here();
+        self.code[jend] = Instr::Jmp { target: end };
+        Ok(t)
+    }
+
+    /// A by-value argument that is a plain variable compiles to the variable's
+    /// own register, which is only read when the argument window is filled
+    /// after every argument ran. Snapshot it into a temp now when a later
+    /// argument could change it (`f($m, g($m))` with a by-ref `g`): php
+    /// evaluates arguments strictly left to right.
+    fn snapshot_arg(
+        &mut self,
+        list: &rhp_frontend::cst::ArgumentList,
+        i: usize,
+        expr: &Expression,
+        r: Reg,
+    ) -> Reg {
+        if !later_arg_may_write(list, i)
+            || !matches!(expr, Expression::Variable(Variable::Direct(_)))
+        {
+            return r;
+        }
+        let t = self.alloc_temp();
+        self.emit(Instr::Mov { dst: t, src: r });
+        t
+    }
+
+    /// The by-ref mask for a method/constructor name (empty if none).
+    pub(crate) fn method_ref_mask(&self, name_lc: &[u8]) -> Vec<bool> {
+        METHOD_REF.with(|m| m.borrow().get(name_lc).cloned().unwrap_or_default())
+    }
+
+    /// The by-ref mask for an interned method name.
+    fn name_ref_mask(&self, name: NIdx) -> Vec<bool> {
+        let lc = self.names[name as usize].as_bytes().to_ascii_lowercase();
+        self.method_ref_mask(&lc)
+    }
+
+    fn compile_method_call(
+        &mut self,
+        object: &Expression,
+        selector: &rhp_frontend::cst::ClassLikeMemberSelector,
+        args: &rhp_frontend::cst::ArgumentList,
+        null_safe: bool,
+    ) -> Result<Reg, Thrown> {
+        let obj = self.compile_expr(object)?;
+        if !null_safe {
+            match self.compile_selector(selector)? {
+                Sel::Static(name) => {
+                    if has_spread(args) || has_named(args) {
+                        let args = self.build_args_array(Some(args))?;
+                        let dst = self.alloc_temp();
+                        self.emit(Instr::CallMethodV {
+                            dst,
+                            obj,
+                            name,
+                            args,
+                        });
+                        return Ok(dst);
+                    }
+                    let mask = self.name_ref_mask(name);
+                    let (base, argc) = self.compile_arg_window_t(
+                        Some(args),
+                        &mask,
+                        true,
+                        Some(ArgRefTarget::Method(obj, name)),
+                    )?;
+                    let dst = self.alloc_temp();
+                    self.emit(Instr::CallMethod {
+                        dst,
+                        obj,
+                        name,
+                        base,
+                        argc,
+                    });
+                    return Ok(dst);
+                }
+                Sel::Dyn(name) => {
+                    if has_spread(args) || has_named(args) {
+                        let args = self.build_args_array(Some(args))?;
+                        let dst = self.alloc_temp();
+                        self.emit(Instr::CallMethodDynV {
+                            dst,
+                            obj,
+                            name,
+                            args,
+                        });
+                        return Ok(dst);
+                    }
+                    let (base, argc) = self.compile_arg_window_ex(Some(args), &[], true)?;
+                    let dst = self.alloc_temp();
+                    self.emit(Instr::CallMethodDyn {
+                        dst,
+                        obj,
+                        name,
+                        base,
+                        argc,
+                    });
+                    return Ok(dst);
+                }
+            }
+        }
+        // `$o?->m(...)`: if $o is null, the whole call is null and args are not
+        // evaluated (the guard jumps over both the arg marshalling and the call).
+        let dst = self.alloc_temp();
+        self.emit(Instr::Mov { dst, src: obj });
+        let jn = self.code.len();
+        self.emit(Instr::Nop); // JmpNull dst -> Lnull
+        let sel = self.compile_selector(selector)?;
+        let t = self.alloc_temp();
+        if has_spread(args) || has_named(args) {
+            let args = self.build_args_array(Some(args))?;
+            match sel {
+                Sel::Static(name) => self.emit(Instr::CallMethodV {
+                    dst: t,
+                    obj: dst,
+                    name,
+                    args,
+                }),
+                Sel::Dyn(name) => self.emit(Instr::CallMethodDynV {
+                    dst: t,
+                    obj: dst,
+                    name,
+                    args,
+                }),
+            }
+        } else {
+            match sel {
+                Sel::Static(name) => {
+                    let mask = self.name_ref_mask(name);
+                    let (base, argc) = self.compile_arg_window_t(
+                        Some(args),
+                        &mask,
+                        true,
+                        Some(ArgRefTarget::Method(dst, name)),
+                    )?;
+                    self.emit(Instr::CallMethod {
+                        dst: t,
+                        obj: dst,
+                        name,
+                        base,
+                        argc,
+                    });
+                }
+                Sel::Dyn(name) => {
+                    let (base, argc) = self.compile_arg_window_ex(Some(args), &[], true)?;
+                    self.emit(Instr::CallMethodDyn {
+                        dst: t,
+                        obj: dst,
+                        name,
+                        base,
+                        argc,
+                    });
+                }
+            }
+        }
+        self.emit(Instr::Mov { dst, src: t });
+        let jend = self.code.len();
+        self.emit(Instr::Nop); // Jmp end
+        let lnull = self.here();
+        self.emit(Instr::LoadNull { dst });
+        let end = self.here();
+        self.code[jn] = Instr::JmpNull {
+            src: dst,
+            target: lnull,
+        };
+        self.code[jend] = Instr::Jmp { target: end };
+        Ok(dst)
+    }
+
+    fn compile_static_call(
+        &mut self,
+        smc: &rhp_frontend::cst::StaticMethodCall,
+    ) -> Result<Reg, Thrown> {
+        let class = self.class_ref(smc.class)?;
+        match self.compile_selector(&smc.method)? {
+            Sel::Static(name) => {
+                if has_spread(&smc.argument_list) || has_named(&smc.argument_list) {
+                    let args = self.build_args_array(Some(&smc.argument_list))?;
+                    let dst = self.alloc_temp();
+                    self.emit(Instr::CallStaticV {
+                        dst,
+                        class,
+                        name,
+                        args,
+                    });
+                    return Ok(dst);
+                }
+                let mask = self.name_ref_mask(name);
+                let (base, argc) = self.compile_arg_window_t(
+                    Some(&smc.argument_list),
+                    &mask,
+                    true,
+                    Some(ArgRefTarget::Static(class, name)),
+                )?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::CallStatic {
+                    dst,
+                    class,
+                    name,
+                    base,
+                    argc,
+                });
+                Ok(dst)
+            }
+            Sel::Dyn(name) => {
+                if has_spread(&smc.argument_list) || has_named(&smc.argument_list) {
+                    let args = self.build_args_array(Some(&smc.argument_list))?;
+                    let dst = self.alloc_temp();
+                    self.emit(Instr::CallStaticDynV {
+                        dst,
+                        class,
+                        name,
+                        args,
+                    });
+                    return Ok(dst);
+                }
+                let (base, argc) =
+                    self.compile_arg_window_ex(Some(&smc.argument_list), &[], true)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::CallStaticDyn {
+                    dst,
+                    class,
+                    name,
+                    base,
+                    argc,
+                });
+                Ok(dst)
+            }
+        }
+    }
+}
+
+/// The stub signature of a builtin rhp implements: a native one, or a
+/// function of the prelude.
+fn builtin_sig(name_lc: &[u8]) -> Option<&'static rhp_builtins::signatures::Func> {
+    let f = rhp_builtins::signatures::function(name_lc)?;
+    let name = std::str::from_utf8(name_lc).ok()?;
+    if rhp_builtins::registry().contains_key(name) {
+        return Some(f);
+    }
+    // While the prelude itself compiles, every function it calls exists.
+    let in_prelude = PRELUDE_CACHE.with(|c| match &*c.borrow() {
+        Some(p) => p
+            .functions
+            .iter()
+            .any(|pf| pf.name.as_bytes().eq_ignore_ascii_case(name_lc)),
+        None => true,
+    });
+    in_prelude.then_some(f)
+}
+
+/// By-reference flags for the first `argc` arguments of a builtin call, from
+/// its stub signature. The call site emits `MakeRef` for each flagged
+/// position.
+fn builtin_by_ref(name_lc: &[u8], argc: usize) -> Option<Vec<bool>> {
+    use rhp_builtins::signatures::Signature;
+    if !rhp_builtins::signatures::function(name_lc)?.has_by_ref() {
+        return None;
+    }
+    let f = builtin_sig(name_lc)?;
+    Some((0..argc.max(f.params.len())).map(|i| f.by_ref(i)).collect())
+}
+
+pub(crate) fn has_named(list: &rhp_frontend::cst::ArgumentList) -> bool {
+    list.arguments
+        .iter()
+        .any(|a| matches!(a, Argument::Named(_)))
+}
+
+pub(crate) fn has_spread(list: &rhp_frontend::cst::ArgumentList) -> bool {
+    list.arguments
+        .iter()
+        .any(|a| matches!(a, Argument::Positional(p) if p.ellipsis.is_some()))
+}
+
+/// The callee a SEND_FUNC_ARG check asks: a method on the object in a
+/// register, or a static method / constructor of a class.
+#[derive(Clone, Copy)]
+pub(crate) enum ArgRefTarget {
+    Method(Reg, NIdx),
+    Static(ClassRef, NIdx),
+    /// The function [`Instr::ResolveFunc`] put in the register.
+    Func(Reg),
+}
+
+/// The variable name (without `$`) of a plain-variable argument php sends
+/// with SEND_VAR_EX to a function it cannot resolve (`$this` and `$GLOBALS`
+/// are passed by value).
+fn send_var_ex_name<'a>(e: &Expression<'a>) -> Option<&'a [u8]> {
+    match e {
+        Expression::Variable(Variable::Direct(d))
+            if !matches!(strip_dollar(d.name), b"GLOBALS" | b"this") =>
+        {
+            Some(strip_dollar(d.name))
+        }
+        _ => None,
+    }
+}
+
+/// Whether an argument after the `i`th may write a variable (anything but
+/// a literal or a plain variable).
+fn later_arg_may_write(list: &rhp_frontend::cst::ArgumentList, i: usize) -> bool {
+    list.arguments.iter().skip(i + 1).any(|a| {
+        !matches!(
+            a,
+            Argument::Positional(q) if matches!(
+                q.value,
+                Expression::Literal(_) | Expression::Variable(Variable::Direct(_))
+            )
+        )
+    })
+}
+
+/// Whether `e` is a `$var[...]` / `$var->p` / `C::$p[...]` chain rooted at a
+/// variable other than `$GLOBALS` or at a static property: the arguments
+/// SEND_FUNC_ARG can bind by reference (a chain on a call result or other
+/// temporary is passed by value).
+fn variable_rooted_lvalue(e: &Expression) -> bool {
+    match e {
+        Expression::Variable(Variable::Direct(_)) => !is_globals_var(e),
+        Expression::Access(Access::StaticProperty(_)) => true,
+        Expression::ArrayAccess(a) => variable_rooted_lvalue(a.array),
+        Expression::Access(Access::Property(p)) => variable_rooted_lvalue(p.object),
+        _ => false,
+    }
+}

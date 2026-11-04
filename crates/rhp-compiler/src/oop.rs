@@ -1,0 +1,377 @@
+//! Object expressions: class references, member names, property access and `new`.
+
+use rhp_bytecode::{ClassRef, Instr, NIdx, Reg};
+use rhp_frontend::cst::{Access, ClassLikeMemberSelector, Expression, Variable};
+use rhp_values::{Thrown, Value};
+
+use crate::assign::is_globals_var;
+use crate::builder::ProtoBuilder;
+use crate::calls::{has_named, has_spread, ArgRefTarget};
+use crate::decl::compile_anon_class;
+use crate::file::ANON_CLASSES;
+use crate::names::resolve_class_name;
+use crate::util::strip_dollar;
+
+/// A compiled member selector: a static interned name, or a runtime name in a
+/// register (dynamic `$o->$x` / `$o->{expr}`).
+#[derive(Clone, Copy)]
+pub(crate) enum Sel {
+    Static(NIdx),
+    Dyn(Reg),
+}
+
+impl ProtoBuilder {
+    /// Resolve the class part of `new`/`::`/`instanceof` to a `ClassRef`.
+    pub(crate) fn class_ref(&mut self, expr: &Expression) -> Result<ClassRef, Thrown> {
+        match expr {
+            Expression::Identifier(id) => {
+                Ok(ClassRef::Name(self.intern_name(&resolve_class_name(id))))
+            }
+            Expression::Self_(_) => Ok(ClassRef::SelfClass),
+            Expression::Static(_) => Ok(ClassRef::StaticClass),
+            Expression::Parent(_) => Ok(ClassRef::ParentClass),
+            other => Ok(ClassRef::Dynamic(self.compile_expr(other)?)),
+        }
+    }
+
+    fn selector_name(
+        &mut self,
+        sel: &rhp_frontend::cst::ClassLikeMemberSelector,
+    ) -> Result<NIdx, Thrown> {
+        match sel {
+            ClassLikeMemberSelector::Identifier(li) => Ok(self.intern_name(li.value)),
+            _ => Err(Thrown::unsupported(
+                "dynamic member name",
+                "`->$x`/`->{expr}` deferred",
+            )),
+        }
+    }
+
+    /// A member selector as either a static interned name or a runtime name
+    /// register (`$o->$x` / `$o->{expr}`).
+    pub(crate) fn compile_selector(
+        &mut self,
+        sel: &rhp_frontend::cst::ClassLikeMemberSelector,
+    ) -> Result<Sel, Thrown> {
+        match sel {
+            ClassLikeMemberSelector::Identifier(li) => Ok(Sel::Static(self.intern_name(li.value))),
+            ClassLikeMemberSelector::Variable(Variable::Direct(d)) => {
+                Ok(Sel::Dyn(self.cv(strip_dollar(d.name))))
+            }
+            ClassLikeMemberSelector::Expression(e) => {
+                Ok(Sel::Dyn(self.compile_expr(e.expression)?))
+            }
+            _ => Err(Thrown::unsupported(
+                "dynamic member name",
+                "variable-variable member names deferred",
+            )),
+        }
+    }
+
+    /// The name of `C::$name` (static) or `C::${expr}` / `C::$$x` (runtime).
+    pub(crate) fn static_prop_sel(&mut self, v: &Variable) -> Result<Sel, Thrown> {
+        match v {
+            Variable::Direct(d) => Ok(Sel::Static(self.intern_name(strip_dollar(d.name)))),
+            other => Ok(Sel::Dyn(self.var_name_reg(other)?)),
+        }
+    }
+
+    /// The register holding a variable-variable's *name*: `${expr}` is the
+    /// expression's value, `$$x` the value of `$x` (recursively). For a direct
+    /// `$x` (only reached as the root of `C::$x` lowering) the name itself.
+    pub(crate) fn var_name_reg(&mut self, v: &Variable) -> Result<Reg, Thrown> {
+        match v {
+            Variable::Indirect(iv) => self.compile_expr(iv.expression),
+            Variable::Nested(nv) => self.compile_variable(nv.variable),
+            Variable::Direct(d) => Ok(self.load_string_const(strip_dollar(d.name))),
+        }
+    }
+
+    /// A variable in value context: a CV, or a variable-variable read.
+    pub(crate) fn compile_variable(&mut self, v: &Variable) -> Result<Reg, Thrown> {
+        match v {
+            Variable::Direct(d) => Ok(self.cv(strip_dollar(d.name))),
+            other => {
+                let name = self.var_name_reg(other)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::FetchVarVar { dst, name });
+                Ok(dst)
+            }
+        }
+    }
+
+    /// `new class(args) extends P implements I { … }`: declare the class under
+    /// its generated name and instantiate it.
+    pub(crate) fn compile_new_anon(
+        &mut self,
+        ac: &rhp_frontend::cst::AnonymousClass,
+    ) -> Result<Reg, Thrown> {
+        use rhp_frontend::cst::PartialArgument;
+        let proto = compile_anon_class(ac, &self.sigs)?;
+        let class = ClassRef::Name(self.intern_name(proto.name.as_bytes()));
+        ANON_CLASSES.with(|c| c.borrow_mut().push(proto));
+        let mut regs = Vec::new();
+        if let Some(list) = &ac.argument_list {
+            for arg in list.arguments.iter() {
+                match arg {
+                    PartialArgument::Positional(p) if p.ellipsis.is_none() => {
+                        regs.push(self.compile_expr(p.value)?)
+                    }
+                    _ => {
+                        return Err(Thrown::unsupported(
+                            "anonymous class argument",
+                            "spread / named / placeholder arguments deferred",
+                        ))
+                    }
+                }
+            }
+        }
+        let argc = regs.len() as u16;
+        let base = self.alloc_temps(argc);
+        for (i, r) in regs.into_iter().enumerate() {
+            self.emit(Instr::Mov {
+                dst: base + i as Reg,
+                src: r,
+            });
+        }
+        let dst = self.alloc_temp();
+        self.emit(Instr::New {
+            dst,
+            class,
+            base,
+            argc,
+        });
+        Ok(dst)
+    }
+
+    pub(crate) fn compile_new(
+        &mut self,
+        inst: &rhp_frontend::cst::Instantiation,
+    ) -> Result<Reg, Thrown> {
+        if let Expression::AnonymousClass(ac) = inst.class {
+            return self.compile_new_anon(ac);
+        }
+        let class = self.class_ref(inst.class)?;
+        if inst
+            .argument_list
+            .as_ref()
+            .is_some_and(|l| has_spread(l) || has_named(l))
+        {
+            let args = self.build_args_array(inst.argument_list.as_ref())?;
+            let dst = self.alloc_temp();
+            self.emit(Instr::NewV { dst, class, args });
+            return Ok(dst);
+        }
+        let mask = self.method_ref_mask(b"__construct");
+        let ctor = self.intern_name(b"__construct");
+        let (base, argc) = self.compile_arg_window_t(
+            inst.argument_list.as_ref(),
+            &mask,
+            true,
+            Some(ArgRefTarget::Static(class, ctor)),
+        )?;
+        let dst = self.alloc_temp();
+        self.emit(Instr::New {
+            dst,
+            class,
+            base,
+            argc,
+        });
+        Ok(dst)
+    }
+
+    /// Compile `e` in php's BP_VAR_IS mode (an isset / empty / `??` operand):
+    /// the property, static-property and dim fetches along its container chain
+    /// are quiet (an inaccessible or missing property is null, no access
+    /// error, `__isset` consulted before `__get`). Keys, dynamic member names
+    /// and anything that is not a fetch compile normally.
+    pub(crate) fn compile_quiet(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+        match e {
+            Expression::Parenthesized(p) => self.compile_quiet(p.expression),
+            Expression::ArrayAccess(aa) => {
+                let arr = self.compile_quiet(aa.array)?;
+                let key = self.compile_expr(aa.index)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::DimFetchIs { dst, arr, key });
+                Ok(dst)
+            }
+            Expression::Access(Access::Property(pa)) => {
+                let obj = self.compile_quiet(pa.object)?;
+                let dst = self.alloc_temp();
+                match self.compile_selector(&pa.property)? {
+                    Sel::Static(name) => self.emit(Instr::FetchPropIs { dst, obj, name }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchPropDynIs { dst, obj, name }),
+                }
+                Ok(dst)
+            }
+            Expression::Access(Access::NullSafeProperty(npa)) => {
+                let obj = self.compile_quiet(npa.object)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::Mov { dst, src: obj });
+                let jn = self.code.len();
+                self.emit(Instr::Nop); // JmpNull dst -> end
+                let t = self.alloc_temp();
+                match self.compile_selector(&npa.property)? {
+                    Sel::Static(name) => self.emit(Instr::FetchPropIs {
+                        dst: t,
+                        obj: dst,
+                        name,
+                    }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchPropDynIs {
+                        dst: t,
+                        obj: dst,
+                        name,
+                    }),
+                }
+                self.emit(Instr::Mov { dst, src: t });
+                let end = self.here();
+                self.code[jn] = Instr::JmpNull {
+                    src: dst,
+                    target: end,
+                };
+                Ok(dst)
+            }
+            Expression::Access(Access::StaticProperty(spa)) => {
+                let class = self.class_ref(spa.class)?;
+                let dst = self.alloc_temp();
+                match self.static_prop_sel(&spa.property)? {
+                    Sel::Static(name) => self.emit(Instr::FetchStaticPropIs { dst, class, name }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchStaticPropDynIs { dst, class, name }),
+                }
+                Ok(dst)
+            }
+            _ => self.compile_expr(e),
+        }
+    }
+
+    /// The object of a property write: a property access or ArrayAccess
+    /// element there is php's BP_VAR_W fetch (`$o->a->b = v` fetches
+    /// `$o->a` for writing).
+    pub(crate) fn compile_write_object(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+        if let Expression::ArrayAccess(aa) = e {
+            if !is_globals_var(aa.array) {
+                let arr = self.compile_write_object(aa.array)?;
+                let key = self.compile_expr(aa.index)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::DimFetchW { dst, arr, key });
+                return Ok(dst);
+            }
+        }
+        let Expression::Access(Access::Property(pa)) = e else {
+            return self.compile_expr(e);
+        };
+        let obj = self.compile_write_object(pa.object)?;
+        let dst = self.alloc_temp();
+        match self.compile_selector(&pa.property)? {
+            Sel::Static(name) => self.emit(Instr::FetchPropW { dst, obj, name }),
+            Sel::Dyn(name) => self.emit(Instr::FetchPropDynW { dst, obj, name }),
+        }
+        Ok(dst)
+    }
+
+    /// The object of `unset($o->p)`: php fetches the properties along it
+    /// with BP_VAR_UNSET, which `get_property_ptr_ptr` serves like a write
+    /// (SimpleXML creates a missing element); elements are read.
+    pub(crate) fn compile_unset_object(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+        match e {
+            Expression::ArrayAccess(aa) if !is_globals_var(aa.array) => {
+                let arr = self.compile_unset_object(aa.array)?;
+                let key = self.compile_expr(aa.index)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::DimFetch { dst, arr, key });
+                Ok(dst)
+            }
+            Expression::Access(Access::Property(pa)) => {
+                let obj = self.compile_unset_object(pa.object)?;
+                let dst = self.alloc_temp();
+                match self.compile_selector(&pa.property)? {
+                    Sel::Static(name) => self.emit(Instr::FetchPropW { dst, obj, name }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchPropDynW { dst, obj, name }),
+                }
+                Ok(dst)
+            }
+            _ => self.compile_expr(e),
+        }
+    }
+
+    pub(crate) fn compile_access(&mut self, acc: &Access) -> Result<Reg, Thrown> {
+        match acc {
+            Access::Property(pa) => {
+                let obj = self.compile_expr(pa.object)?;
+                let dst = self.alloc_temp();
+                match self.compile_selector(&pa.property)? {
+                    Sel::Static(name) => {
+                        self.emit(Instr::FetchProp { dst, obj, name });
+                    }
+                    Sel::Dyn(name) => self.emit(Instr::FetchPropDyn { dst, obj, name }),
+                }
+                Ok(dst)
+            }
+            Access::NullSafeProperty(npa) => {
+                // `$o?->p`: null short-circuits the whole access to null.
+                let obj = self.compile_expr(npa.object)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::Mov { dst, src: obj });
+                let jn = self.code.len();
+                self.emit(Instr::Nop); // JmpNull dst -> Lnull
+                let name = self.selector_name(&npa.property)?;
+                let t = self.alloc_temp();
+                self.emit(Instr::FetchProp {
+                    dst: t,
+                    obj: dst,
+                    name,
+                });
+                self.emit(Instr::Mov { dst, src: t });
+                let jend = self.code.len();
+                self.emit(Instr::Nop); // Jmp end
+                let lnull = self.here();
+                self.emit(Instr::LoadNull { dst });
+                let end = self.here();
+                self.code[jn] = Instr::JmpNull {
+                    src: dst,
+                    target: lnull,
+                };
+                self.code[jend] = Instr::Jmp { target: end };
+                Ok(dst)
+            }
+            Access::StaticProperty(spa) => {
+                let class = self.class_ref(spa.class)?;
+                let dst = self.alloc_temp();
+                match self.static_prop_sel(&spa.property)? {
+                    Sel::Static(name) => {
+                        self.emit(Instr::FetchStaticProp { dst, class, name });
+                    }
+                    Sel::Dyn(name) => self.emit(Instr::FetchStaticPropDyn { dst, class, name }),
+                }
+                Ok(dst)
+            }
+            Access::ClassConstant(cca) => {
+                // `Name::class` is a COMPILE-TIME fully-qualified-name string — the
+                // class need not exist (php uses `Foo::class` as a bareword FQN,
+                // e.g. `function_exists(u::class)`). `self/static/parent::class`
+                // and `$obj::class` stay runtime.
+                if let rhp_frontend::cst::ClassLikeConstantSelector::Identifier(li) = &cca.constant
+                {
+                    if li.value.eq_ignore_ascii_case(b"class") {
+                        if let Expression::Identifier(id) = cca.class {
+                            let k = self.intern_const(Value::str(resolve_class_name(id)));
+                            let dst = self.alloc_temp();
+                            self.emit(Instr::LoadConst { dst, k });
+                            return Ok(dst);
+                        }
+                    }
+                }
+                let class = self.class_ref(cca.class)?;
+                let name = match &cca.constant {
+                    rhp_frontend::cst::ClassLikeConstantSelector::Identifier(li) => {
+                        self.intern_name(li.value)
+                    }
+                    _ => return Err(Thrown::unsupported("dynamic class constant", "deferred")),
+                };
+                let dst = self.alloc_temp();
+                self.emit(Instr::FetchClassConst { dst, class, name });
+                Ok(dst)
+            }
+        }
+    }
+}

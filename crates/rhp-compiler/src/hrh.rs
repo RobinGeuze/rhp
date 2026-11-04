@@ -26,7 +26,7 @@ use rhp_frontend::cst::{
     Yield,
 };
 
-use crate::{NameKind, NsContext};
+use crate::names::{NameKind, NsContext};
 
 const NAME: &[u8] = b"$http_response_header";
 pub(crate) const MESSAGE: &str = "The predefined locally scoped $http_response_header variable is deprecated, call http_get_last_response_headers() instead";
@@ -112,7 +112,7 @@ pub(crate) fn scan(stmts: &[(Rc<NsContext>, &Statement)], line_of: fn(u32) -> u3
         s.node(Node::Statement(st));
         // a top-level function is in the function table once compiled
         if let Statement::Function(f) = st {
-            let name = crate::join_ns(&ctx.ns, f.name.value).to_ascii_lowercase();
+            let name = crate::names::join_ns(&ctx.ns, f.name.value).to_ascii_lowercase();
             let sig = f
                 .parameter_list
                 .parameters
@@ -378,7 +378,7 @@ impl Scan {
             self.expr(fc.function, Mode::Read);
             return self.args(&fc.argument_list, Callee::Unknown);
         };
-        let (name, fallback) = crate::resolve_in(&self.ns, id, NameKind::Func);
+        let (name, fallback) = crate::names::resolve_in(&self.ns, id, NameKind::Func);
         let Some(global) = fallback else {
             let lc = name.to_ascii_lowercase();
             let callee = match self.user_fns.get(&lc) {

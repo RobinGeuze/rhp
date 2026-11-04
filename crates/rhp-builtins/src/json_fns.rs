@@ -315,8 +315,13 @@ impl Encoder {
         // ArrayObject's storage, always encoded as an object).
         let view = crate::object::properties_for(host, h, crate::object::PropPurpose::Json)?;
         let props: Vec<(PhpStr, Value)> = match view {
+            // php_json_encode_array skips protected and private (mangled)
+            // members of a view too.
             Some(a) => a
                 .iter()
+                .filter(|(k, _)| {
+                    !matches!(k, rhp_values::ArrayKey::Str(s) if s.as_bytes().first() == Some(&0))
+                })
                 .map(|(k, v)| {
                     let k = match k {
                         rhp_values::ArrayKey::Int(n) => PhpStr::from(n.to_string().as_str()),

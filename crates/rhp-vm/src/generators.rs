@@ -28,7 +28,7 @@ pub(crate) struct GenState {
     pub(crate) current_val: Value,
     return_val: Value,
     /// Next auto-increment integer key for keyless `yield`.
-    pub(crate) auto_key: i64,
+    auto_key: i64,
     /// Register in the frame that receives the `send()` value on resume.
     resume_dst: Reg,
     /// php's ZEND_GENERATOR_AT_FIRST_YIELD: started, and not resumed since

@@ -115,12 +115,12 @@ impl Vm {
         }
     }
 
-    /// Set the CLI argument vector (`$argv`; `argv[0]` is the script name).
     /// A startup ini setting (`-d key=value`); unknown directives are ignored.
     pub fn set_ini(&mut self, name: &[u8], value: &[u8]) {
         builtins::ini_startup_set(name, value);
     }
 
+    /// Set the CLI argument vector (`$argv`; `argv[0]` is the script name).
     pub fn set_argv(&mut self, argv: Vec<Vec<u8>>) {
         self.argv = argv;
     }

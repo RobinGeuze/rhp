@@ -1513,10 +1513,6 @@ impl Vm {
         }
     }
 
-    /// Unwind a thrown exception through the exception table: find a matching
-    /// catch (bind + jump) or finally (re-raise after) in the current frame,
-    /// else pop and continue in the caller. Returns `Ok` when a handler is
-    /// installed (re-enter `run_frames`), `Err` when it escapes the top frame.
     fn eval_cmp(&mut self, kind: CmpKind, a: &Value, b: &Value) -> Result<Value, Thrown> {
         use std::cmp::Ordering;
         Ok(match kind {

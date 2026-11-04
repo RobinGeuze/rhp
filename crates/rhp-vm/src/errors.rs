@@ -40,15 +40,6 @@ pub(crate) enum FinallyCont {
 pub(crate) const SILENCE_KEEPS: i64 = 4437;
 
 impl Vm {
-    /// Raise a php diagnostic (`E_WARNING`, `E_NOTICE`, …): record it for
-    /// `error_get_last()` and display it (CLI `display_errors=1`) unless an
-    /// `@` is in effect.
-    /// php's `zend_error` for a non-fatal diagnostic of type `level`: the
-    /// user error handler (when its mask covers `level`; called even under
-    /// `@`, where `error_reporting()` reads as the fatal mask), and unless it
-    /// returns false, nothing else; otherwise php_error_cb: `error_get_last`
-    /// and the display / log step (masked by `error_reporting` and `@`). An
-    /// exception from the handler becomes `pending_throw`.
     /// An `E_COMPILE_ERROR` raised while executing (e.g. a runtime class
     /// redeclaration): never seen by a user error handler, displayed with
     /// php 8.5's backtrace, then the request bails out (exit status 255).
@@ -68,6 +59,15 @@ impl Vm {
         Thrown::Exit(255)
     }
 
+    /// Raise a php diagnostic (`E_WARNING`, `E_NOTICE`, …): record it for
+    /// `error_get_last()` and display it (CLI `display_errors=1`) unless an
+    /// `@` is in effect.
+    /// php's `zend_error` for a non-fatal diagnostic of type `level`: the
+    /// user error handler (when its mask covers `level`; called even under
+    /// `@`, where `error_reporting()` reads as the fatal mask), and unless it
+    /// returns false, nothing else; otherwise php_error_cb: `error_get_last`
+    /// and the display / log step (masked by `error_reporting` and `@`). An
+    /// exception from the handler becomes `pending_throw`.
     pub(crate) fn raise_error(&mut self, level: i64, msg: &str) {
         // The innermost user frame: prelude (built-in PHP-source) code has no
         // line map, and php reports internal functions at their caller.
@@ -328,7 +328,7 @@ impl Vm {
         self.build_trace_ex(false, false)
     }
 
-    /// [`build_trace`] with debug_backtrace's options: `$trace['object']` for
+    /// [`Vm::build_trace`] with debug_backtrace's options: `$trace['object']` for
     /// frames with a `$this`, and no `args`.
     pub(crate) fn build_trace_ex(&self, provide_object: bool, ignore_args: bool) -> PhpArray {
         // Keys and file names are shared (Rc) rather than re-allocated per
@@ -735,6 +735,10 @@ impl Vm {
         }
     }
 
+    /// Unwind a thrown exception through the exception table: find a matching
+    /// catch (bind + jump) or finally (re-raise after) in the current frame,
+    /// else pop and continue in the caller. Returns `Ok` when a handler is
+    /// installed (re-enter `run_frames`), `Err` when it escapes the top frame.
     pub(crate) fn unwind(&mut self, thrown: Thrown, floor: usize) -> Result<UnwindResult, Thrown> {
         // An engine error becomes a real object here, before any frame is popped,
         // so its file/line/trace describe the throw point.

@@ -1385,7 +1385,7 @@ impl Vm {
     }
 
     /// Push a frame for a user function with pre-collected args.
-    pub(crate) fn push_user_frame(
+    fn push_user_frame(
         &mut self,
         callee: Rc<FunctionProto>,
         args: Vec<Value>,

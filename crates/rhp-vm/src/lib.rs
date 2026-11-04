@@ -56,7 +56,7 @@ pub struct Vm {
     /// `BP_VAR_W` below a write, `check_empty` for `empty()`); the next
     /// synchronous call takes it.
     pending_magic_fetch: builtins::MagicFetch,
-    /// The fetch the running accessor serves ([`Host::magic_fetch`]), and
+    /// The fetch the running accessor serves ([`builtins::Host::magic_fetch`]), and
     /// the stack index of that accessor's frame: code it calls runs in
     /// frames above and sees a plain read.
     magic_fetch: (usize, builtins::MagicFetch),

@@ -238,9 +238,10 @@ build. Concurrency comes from threads, never from sharing an engine:
 - The per-thread state outside the `Vm` (SAPI name and ini defaults,
   request-scoped builtin state) is in `thread_local!`s and is reset for
   each request. The prelude's classes are linked once per thread (at its
-  second request) and copied into each `Vm`, with fresh static properties. `rhp-sapi`'s `concurrent_requests_on_worker_threads_are_isolated`
-  test runs requests on several threads at once and checks that none of
-  this leaks across threads or between requests on one thread.
+  second request) and copied into each `Vm`, with fresh static properties.
+  `rhp-sapi`'s `concurrent_requests_on_worker_threads_are_isolated` test
+  runs requests on several threads at once and checks that none of this
+  leaks across threads or between requests on one thread.
 - **Process-wide state.** Like php's ZTS builds, some things belong to the
   OS process, not the thread: the working directory (`chdir()`, and
   `cgi::main`'s chdir to the script's directory), environment changes from

@@ -664,7 +664,9 @@ sharing one `Program` between threads is in the data types:
 - **Caches.** opcache's `Cache` and the compiler's `PRELUDE_CACHE` move
   from `thread_local!` behind a process-wide lock (only the `opcache`
   module touches the cache). Preloading can then run once per process; its
-  declarations are still linked into each request's VM.
+  declarations are still linked into each request's VM. The linked prelude
+  classes `Vm::install_prelude` copies into each request are VM state, so
+  they stay per thread.
 - **Memory accounting.** The counters are per thread and a block freed on
   another thread is charged there, so shared programs are built and freed
   inside `rhp_values::mem::uncounted`, as the cache already does.

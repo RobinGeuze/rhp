@@ -152,7 +152,7 @@ class RequestParseBodyException extends Exception {}
 /// The compiled prelude: built-in classes, helper functions, and the
 /// closures their bodies declare (always program closures `0..n`).
 pub(crate) struct PreludeParts {
-    pub(crate) classes: Vec<ClassProto>,
+    pub(crate) classes: Vec<Rc<ClassProto>>,
     pub(crate) functions: Vec<Rc<FunctionProto>>,
     pub(crate) closures: Vec<Rc<FunctionProto>>,
 }
@@ -223,7 +223,7 @@ fn prelude_classes_isolated() -> Result<PreludeParts, Thrown> {
     );
     let (classes, functions) = r?;
     Ok(PreludeParts {
-        classes,
+        classes: classes.into_iter().map(Rc::new).collect(),
         functions,
         closures: cx.closures.take(),
     })

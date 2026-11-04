@@ -842,7 +842,7 @@ impl Vm {
                 // A first-class callable is named after what it wraps.
                 Some(w) => self.callable_name(w),
                 None => match self.closures.get(cd.fnidx as usize) {
-                    Some(p) => p.name.as_bytes().to_vec(),
+                    Some(f) => f.proto.name.as_bytes().to_vec(),
                     None => b"Closure::__invoke".to_vec(),
                 },
             },
@@ -1050,5 +1050,18 @@ impl Handler {
             buf: Vec::new(),
             buf_size: initbuf_size(size),
         }
+    }
+}
+
+impl Vm {
+    /// Output past the output buffers, to the SAPI.
+    fn emit_stdout(&mut self, data: &[u8]) {
+        self.sapi_write(data);
+    }
+
+    /// A write to the `STDOUT` stream: php writes the descriptor directly,
+    /// bypassing the output layer (no headers, no SAPI buffering).
+    pub(crate) fn emit_raw_stdout(&mut self, data: &[u8]) {
+        self.sapi.sapi.write_raw_stdout(data);
     }
 }

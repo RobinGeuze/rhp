@@ -177,3 +177,34 @@ fn gmp_random_state_does_not_leak() {
     );
     assert_ne!(run_source(b"<?php echo gmp_random_bits(100);"), second);
 }
+
+#[test]
+fn built_in_classes_are_fresh_in_every_request() {
+    // The first request links the prelude's classes, the second keeps a
+    // copy of them for the thread, the third starts from that copy.
+    let code = r#"
+        var_dump(class_exists('LeakedAlias'));
+        class_alias('ArrayIterator', 'LeakedAlias');
+        // Hoisted: a copy of the last request's class would redeclare it.
+        class LeakedSub extends RuntimeException {}
+        $e = new LeakedSub('m', 3);
+        echo get_class($e), ' ', $e->getMessage(), ' ', $e->getCode(), ' ',
+            get_parent_class($e), "\n";
+        echo implode(',', class_implements(new LeakedAlias([1]))), "\n";
+        echo count(get_declared_classes()), ' ', count(get_declared_interfaces()), "\n";
+    "#;
+    let outputs: Vec<String> = (0..3)
+        .map(|_| {
+            let (c, o) = run(code, RequestInfo::default());
+            assert_eq!(o, Outcome::Exit(0), "{}", body(&c));
+            body(&c)
+        })
+        .collect();
+    assert!(
+        outputs[0].starts_with("bool(false)\nLeakedSub m 3 RuntimeException\n"),
+        "{}",
+        outputs[0]
+    );
+    assert_eq!(outputs[1], outputs[0]);
+    assert_eq!(outputs[2], outputs[0]);
+}

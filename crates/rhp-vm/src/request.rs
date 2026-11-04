@@ -150,8 +150,8 @@ impl Vm {
     fn module_startup_diag(&mut self, level: i64, msg: &str) {
         let ini = |vm: &Self, n: &[u8]| vm.ini_get(n).unwrap_or_default();
         let shown = !matches!(
-            crate::display_errors_mode(&ini(self, b"display_errors")),
-            crate::DisplayErrors::Off
+            crate::errors::display_errors_mode(&ini(self, b"display_errors")),
+            crate::errors::DisplayErrors::Off
         ) && crate::ini_bool(&ini(self, b"display_startup_errors"));
         if level != 1 {
             if shown {
@@ -329,8 +329,8 @@ impl Vm {
     pub(crate) fn fatal_status(&mut self) {
         let display = self.ini_get(b"display_errors").unwrap_or_default();
         if !matches!(
-            crate::display_errors_mode(&display),
-            crate::DisplayErrors::Off
+            crate::errors::display_errors_mode(&display),
+            crate::errors::DisplayErrors::Off
         ) {
             return;
         }

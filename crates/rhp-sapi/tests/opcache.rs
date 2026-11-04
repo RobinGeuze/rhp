@@ -306,6 +306,28 @@ fn a_failed_preload_fails_every_request_on_the_thread() {
     });
 }
 
+/// php starts an included file's statics fresh on every include, also when
+/// the include runs the same cached code (here through one unit, since the
+/// file declares no closures and no classes).
+#[test]
+fn a_cached_include_starts_its_statics_fresh() {
+    on_own_thread(|| {
+        let d = Dir::new("statics");
+        d.file("st.php", "<?php\nstatic $s = 0;\necho ++$s;\n", 500);
+        let main = d.file(
+            "main.php",
+            r#"<?php
+            for ($i = 0; $i < 3; $i++) include __DIR__ . '/st.php';
+            echo ' ';
+            for ($i = 0; $i < 3; $i++) echo eval('static $e = 0; return ++$e;');
+            "#,
+            500,
+        );
+        assert_eq!(request(&main, &[], 1000), "111 111");
+        assert_eq!(request(&main, &[], 1001), "111 111");
+    });
+}
+
 /// php compiles a script into the request heap without opcache, and into
 /// shared memory with it: a cached program is never the request's memory,
 /// neither when compiled nor when discarded.
@@ -347,6 +369,8 @@ fn cached_programs_are_outside_the_request_memory() {
         let hit = grew(&main, &[], 1002);
         assert!(uncached > hit + 100_000, "uncached {uncached}, hit {hit}");
         assert!((miss - hit).abs() < 4096, "miss {miss}, hit {hit}");
+        // The include runs the cached code as it is (php: 352 bytes).
+        assert!(hit < 4096, "a cache hit copied the file: {hit} bytes");
         let discarded = grew(&discard, &[], 1003);
         assert!(discarded >= 0, "invalidating gave back {discarded}");
     });

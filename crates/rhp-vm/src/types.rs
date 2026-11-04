@@ -1,0 +1,719 @@
+//! Type declarations and conversions: parameter, return and property type
+//! checks, scalar coercion, truthiness and string conversion.
+
+use rhp_builtins::object::CastTarget;
+use rhp_builtins::Host;
+use rhp_bytecode::FunctionProto;
+use rhp_values::{conv, ArrayKey, ClassId, Thrown, Value};
+
+use crate::{deref, is_prelude_proto, Frame, Vm};
+
+impl Vm {
+    fn value_instanceof(&self, v: &Value, name: &[u8]) -> bool {
+        match v {
+            Value::Object(h) => match self.resolve_class_by_name(name) {
+                Ok(cid) => self.classes[h.borrow().class as usize]
+                    .ancestors
+                    .contains(&cid),
+                Err(_) => true,
+            },
+            Value::Closure(_) => name.eq_ignore_ascii_case(b"Closure"),
+            _ => false,
+        }
+    }
+
+    fn kind_matches(&self, v: &Value, k: &rhp_bytecode::TypeKind, ctx: Option<ClassId>) -> bool {
+        use rhp_bytecode::TypeKind as K;
+        match k {
+            K::Mixed => true,
+            K::Int => matches!(v, Value::Int(_)),
+            K::Float => matches!(v, Value::Float(_)),
+            K::String => matches!(v, Value::Str(_)),
+            K::Bool => matches!(v, Value::Bool(_)),
+            K::True => matches!(v, Value::Bool(true)),
+            K::False => matches!(v, Value::Bool(false)),
+            K::Array => matches!(v, Value::Array(_)),
+            K::Object => matches!(v, Value::Object(_) | Value::Closure(_)),
+            K::Callable => self.is_callable_value(v),
+            K::Iterable => matches!(v, Value::Array(_)) || self.value_instanceof(v, b"Traversable"),
+            K::Null => matches!(v, Value::Null),
+            K::Named(n) => self.value_instanceof(v, n.as_bytes()),
+            K::SelfType | K::StaticType => match (v, ctx) {
+                (Value::Object(h), Some(c)) => self.classes[h.borrow().class as usize]
+                    .ancestors
+                    .contains(&c),
+                _ => false,
+            },
+            K::Parent => match (v, ctx.and_then(|c| self.classes[c as usize].parent)) {
+                (Value::Object(h), Some(p)) => self.classes[h.borrow().class as usize]
+                    .ancestors
+                    .contains(&p),
+                _ => false,
+            },
+            K::Void | K::Never => false,
+        }
+    }
+
+    fn matches_type(&self, v: &Value, ty: &rhp_bytecode::TypeHint, ctx: Option<ClassId>) -> bool {
+        if matches!(v, Value::Null) && ty.nullable {
+            return true;
+        }
+        // DNF: any intersection group fully matched satisfies the union.
+        if ty.groups.iter().any(|g| {
+            g.iter()
+                .all(|n| self.kind_matches(v, &rhp_bytecode::TypeKind::Named(n.clone()), ctx))
+        }) {
+            return true;
+        }
+        if ty.kinds.is_empty() {
+            // only-null / unknown: don't reject (a DNF union already failed)
+            return ty.groups.is_empty();
+        }
+        if ty.intersection {
+            ty.kinds.iter().all(|k| self.kind_matches(v, k, ctx))
+        } else {
+            ty.kinds.iter().any(|k| self.kind_matches(v, k, ctx))
+        }
+    }
+
+    /// Check/coerce one argument against its declared type. `Ok(None)` = fine as
+    /// is, `Ok(Some(v))` = coerced replacement, `Err(())` = type violation.
+    pub(crate) fn check_one(
+        &self,
+        v: &Value,
+        ty: &rhp_bytecode::TypeHint,
+        strict: bool,
+        ctx: Option<ClassId>,
+    ) -> Result<Option<Value>, ()> {
+        use rhp_bytecode::TypeKind as K;
+        let d = deref(v);
+        if self.matches_type(&d, ty, ctx) {
+            return Ok(None);
+        }
+        if matches!(d, Value::Null) {
+            return Err(()); // null but not nullable
+        }
+        // int -> float widening is allowed in both strict and coercive modes.
+        if let Value::Int(n) = d {
+            if ty.kinds.iter().any(|k| matches!(k, K::Float)) {
+                return Ok(Some(Value::Float(n as f64)));
+            }
+        }
+        if strict {
+            return Err(());
+        }
+        // Coercive mode: php's zend_verify_weak_scalar_type_hint.
+        weak_scalar_coerce(&d, ty).map(Some).ok_or(())
+    }
+
+    /// Coercive typing's `__toString` step (zend_verify_weak_scalar_type_hint
+    /// for `string`): an object with `__toString` passed where a `string`
+    /// (and not its class) is declared becomes its string form.
+    pub(crate) fn coerce_stringable(
+        &mut self,
+        v: Value,
+        ty: &rhp_bytecode::TypeHint,
+        strict: bool,
+        ctx: Option<ClassId>,
+    ) -> Result<Value, Thrown> {
+        use rhp_bytecode::TypeKind as K;
+        if strict || !ty.kinds.contains(&K::String) {
+            return Ok(v);
+        }
+        let Value::Object(h) = deref(&v) else {
+            return Ok(v);
+        };
+        if self.matches_type(&v, ty, ctx) {
+            return Ok(v);
+        }
+        // zend_parse_arg_str_weak: the object's cast_object.
+        Ok(match self.cast_object_vm(&h, CastTarget::Str)? {
+            Some(s) => Value::str(conv::to_string_bytes(&s)),
+            None => v,
+        })
+    }
+
+    /// [`Vm::coerce_stringable`] over a just-bound frame's passed parameters.
+    pub(crate) fn coerce_stringable_args(
+        &mut self,
+        proto: &FunctionProto,
+        frame: &mut Frame,
+        caller: Option<bool>,
+        ctx: Option<ClassId>,
+    ) -> Result<(), Thrown> {
+        let strict = caller.unwrap_or(false);
+        if strict {
+            return Ok(());
+        }
+        for (i, p) in proto.params.iter().enumerate() {
+            let Some(ty) = &p.type_hint else { continue };
+            if p.variadic && !p.by_ref {
+                // `string ...$xs`: each collected argument.
+                let Value::Array(a) = &frame.regs[p.cv as usize] else {
+                    continue;
+                };
+                if !a.iter().any(|(_, v)| matches!(v, Value::Object(_))) {
+                    continue;
+                }
+                let mut a = a.clone();
+                let keys: Vec<ArrayKey> = a.iter().map(|(k, _)| k.clone()).collect();
+                for k in keys {
+                    let cur = a.get(&k).cloned().unwrap_or(Value::Null);
+                    if matches!(cur, Value::Object(_)) {
+                        let v = self.coerce_stringable(cur, ty, false, ctx)?;
+                        a.insert(k, v);
+                    }
+                }
+                frame.regs[p.cv as usize] = Value::Array(a);
+                continue;
+            }
+            if p.by_ref
+                || p.variadic
+                || i >= frame.argc
+                || (i < 64 && frame.holes & (1u64 << i) != 0)
+            {
+                continue;
+            }
+            let cur = frame.regs[p.cv as usize].clone();
+            if matches!(cur, Value::Object(_)) {
+                frame.regs[p.cv as usize] = self.coerce_stringable(cur, ty, false, ctx)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Enforce declared parameter types on a just-bound frame (php's
+    /// `strict_types` is the CALLER's; `ctx` resolves `self`/`static`/`parent`).
+    /// `caller` is `Some(strict_types)` for a call from user code, `None` for
+    /// a call made by a builtin (coercive, and the error has no call site).
+    pub(crate) fn check_arg_types(
+        &mut self,
+        proto: &FunctionProto,
+        frame: &mut Frame,
+        caller: Option<bool>,
+        ctx: Option<ClassId>,
+    ) -> Result<(), (usize, Thrown)> {
+        let strict = caller.unwrap_or(false);
+        for (i, p) in proto.params.iter().enumerate() {
+            let Some(ty) = &p.type_hint else { continue };
+            // by-ref / variadic params aren't coerced here; a defaulted (not
+            // passed) param is trusted.
+            if p.by_ref
+                || p.variadic
+                || i >= frame.argc
+                || (i < 64 && frame.holes & (1u64 << i) != 0)
+            {
+                continue;
+            }
+            let cur = frame.regs[p.cv as usize].clone();
+            match self.check_one(&cur, ty, strict, ctx) {
+                Ok(None) => {}
+                Ok(Some(coerced)) => frame.regs[p.cv as usize] = coerced,
+                // A prelude (built-in) function takes null for a scalar
+                // parameter like an internal one in coercive mode: deprecated,
+                // then coerced (zend_null_arg_deprecated).
+                Err(())
+                    if !strict
+                        && is_prelude_proto(proto)
+                        && matches!(deref(&cur), Value::Null)
+                        && prelude_null_coercion(ty).is_some() =>
+                {
+                    let (tname, zero) = prelude_null_coercion(ty).unwrap();
+                    let fname = self.func_display_name(proto, ctx);
+                    let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
+                        .into_owned();
+                    let msg = format!(
+                        "{fname}(): Passing null to parameter #{} (${pname}) of type {tname} is deprecated",
+                        i + 1
+                    );
+                    if let Err(t) = self.diag(8192, &msg) {
+                        return Err((i, t));
+                    }
+                    frame.regs[p.cv as usize] = zero;
+                }
+                Err(()) => {
+                    let fname = self.func_display_name(proto, ctx);
+                    let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
+                        .into_owned();
+                    // php appends the call site when the caller is user code (the
+                    // new frame has not been pushed yet: the caller is the top);
+                    // a callback invoked by a builtin (`caller == None`) has none.
+                    // Prelude (built-in PHP-source) functions report like
+                    // internal ones: no call site.
+                    let site = caller
+                        .filter(|_| !is_prelude_proto(proto))
+                        .and_then(|_| self.user_call_site())
+                        .map(|(file, line)| {
+                            format!(
+                                ", called in {} on line {}",
+                                String::from_utf8_lossy(&file),
+                                line
+                            )
+                        });
+                    return Err((
+                        i,
+                        Thrown::error(
+                            "TypeError",
+                            format!(
+                                "{}(): Argument #{} (${}) must be of type {}, {} given{}",
+                                fname,
+                                i + 1,
+                                pname,
+                                self.type_string_resolved(ty, ctx, frame.called_class),
+                                self.zval_value_name(&deref(&cur)),
+                                site.unwrap_or_default(),
+                            ),
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Enforce a function's declared return type on `v`, coercing in coercive
+    /// mode. `void`/`never`/`mixed` and unknowable types are not checked.
+    /// Falling off the end of (or a bare `return;` in) a function with a
+    /// declared return type: only `void` allows it (zend_verify_missing_return_type).
+    pub(crate) fn check_implicit_return(
+        &self,
+        proto: &FunctionProto,
+        top: usize,
+    ) -> Result<(), Thrown> {
+        use rhp_bytecode::TypeKind as K;
+        let Some(ty) = &proto.return_type else {
+            return Ok(());
+        };
+        if ty.kinds.contains(&K::Void) {
+            return Ok(());
+        }
+        let ctx = self.stack[top].defining_class;
+        let fname = self.func_display_name(proto, ctx);
+        let msg = if ty.kinds.contains(&K::Never) {
+            format!("{fname}(): never-returning function must not implicitly return")
+        } else {
+            let called = self.stack[top].called_class;
+            format!(
+                "{fname}(): Return value must be of type {}, none returned",
+                self.type_string_resolved(ty, ctx, called)
+            )
+        };
+        Err(Thrown::error("TypeError", msg))
+    }
+
+    pub(crate) fn check_return_type(
+        &self,
+        proto: &FunctionProto,
+        top: usize,
+        v: Value,
+    ) -> Result<Value, Thrown> {
+        use rhp_bytecode::TypeKind as K;
+        let ty = match &proto.return_type {
+            Some(t) => t,
+            None => return Ok(v),
+        };
+        if ty
+            .kinds
+            .iter()
+            .any(|k| matches!(k, K::Void | K::Never | K::Mixed))
+        {
+            return Ok(v);
+        }
+        let ctx = self.stack[top].defining_class;
+        let strict = proto.strict_types;
+        match self.check_one(&v, ty, strict, ctx) {
+            Ok(None) => Ok(v),
+            Ok(Some(coerced)) => Ok(coerced),
+            Err(()) => {
+                let fname = self.func_display_name(proto, ctx);
+                let called = self.stack[top].called_class;
+                Err(Thrown::error(
+                    "TypeError",
+                    format!(
+                        "{}(): Return value must be of type {}, {} returned",
+                        fname,
+                        self.type_string_resolved(ty, ctx, called),
+                        self.zval_value_name(&deref(&v)),
+                    ),
+                ))
+            }
+        }
+    }
+
+    pub(crate) fn value_debug_type(&self, v: &Value) -> String {
+        match v {
+            Value::Object(h) => self
+                .class_name(h.borrow().class)
+                .map(|n| String::from_utf8_lossy(&n).into_owned())
+                .unwrap_or_else(|| "object".into()),
+            Value::Closure(_) => "Closure".into(),
+            Value::Null => "null".into(),
+            Value::Bool(_) => "bool".into(),
+            Value::Int(_) => "int".into(),
+            Value::Float(_) => "float".into(),
+            Value::Str(_) => "string".into(),
+            Value::Array(_) => "array".into(),
+            Value::Resource(_) => "resource".into(),
+            Value::Ref(r) => self.value_debug_type(&r.borrow()),
+        }
+    }
+
+    /// zend_type_to_string_resolved: a declared type as php prints it in
+    /// TypeErrors -- class names first (self/parent resolved against `scope`,
+    /// static against `called`), then the builtin types in php's fixed order.
+    pub(crate) fn type_string_resolved(
+        &self,
+        ty: &rhp_bytecode::TypeHint,
+        scope: Option<ClassId>,
+        called: Option<ClassId>,
+    ) -> String {
+        use rhp_bytecode::TypeKind as K;
+        let cname =
+            |c: ClassId| String::from_utf8_lossy(self.class(c).name.as_bytes()).into_owned();
+        let has = |k: &K| ty.kinds.contains(k);
+        if has(&K::Mixed) {
+            return "mixed".into();
+        }
+        let mut parts: Vec<String> = dnf_group_strings(ty);
+        for k in &ty.kinds {
+            match k {
+                K::Named(n) => parts.push(String::from_utf8_lossy(n.as_bytes()).into_owned()),
+                K::SelfType => parts.push(scope.map(cname).unwrap_or_else(|| "self".into())),
+                K::Parent => parts.push(
+                    scope
+                        .and_then(|c| self.class(c).parent)
+                        .map(cname)
+                        .unwrap_or_else(|| "parent".into()),
+                ),
+                K::Iterable => parts.push("Traversable".into()),
+                _ => {}
+            }
+        }
+        if has(&K::StaticType) {
+            let name = match (scope, called) {
+                (Some(_), Some(c)) => cname(c),
+                _ => "static".into(),
+            };
+            parts.push(name);
+        }
+        let array = has(&K::Array) || has(&K::Iterable);
+        let bool_ = has(&K::Bool) || (has(&K::True) && has(&K::False));
+        for (on, name) in [
+            (has(&K::Callable), "callable"),
+            (has(&K::Object), "object"),
+            (array, "array"),
+            (has(&K::String), "string"),
+            (has(&K::Int), "int"),
+            (has(&K::Float), "float"),
+            (bool_, "bool"),
+            (!bool_ && has(&K::False), "false"),
+            (!bool_ && has(&K::True), "true"),
+            (has(&K::Void), "void"),
+            (has(&K::Never), "never"),
+        ] {
+            if on {
+                parts.push(name.into());
+            }
+        }
+        let sep = if ty.intersection { "&" } else { "|" };
+        if ty.nullable || has(&K::Null) {
+            if parts.is_empty() {
+                return "null".into();
+            }
+            if parts.len() == 1 && ty.groups.is_empty() {
+                return format!("?{}", parts[0]);
+            }
+            let mut out = parts.join(sep);
+            out.push_str("|null");
+            return out;
+        }
+        parts.join(sep)
+    }
+
+    /// `(object)` cast: wrap a value in a fresh `stdClass`. Objects pass through;
+    /// arrays map each element to a property; null yields an empty object; a
+    /// scalar yields `{ scalar: value }`.
+    pub(crate) fn cast_to_object(&mut self, v: Value) -> Value {
+        let v = deref(&v);
+        if let Value::Object(_) | Value::Closure(_) = v {
+            return v;
+        }
+        let cls = match self.resolve_class_by_name(b"stdClass") {
+            Ok(c) => c,
+            Err(_) => return v, // prelude missing (shouldn't happen)
+        };
+        let obj = self.new_object(cls);
+        {
+            let mut b = obj.borrow_mut();
+            match v {
+                Value::Null => {}
+                Value::Array(a) => {
+                    for (k, val) in a.iter() {
+                        let name = match k {
+                            ArrayKey::Int(n) => {
+                                rhp_values::PhpStr::from_bytes(n.to_string().into_bytes())
+                            }
+                            ArrayKey::Str(s) => s.clone(),
+                        };
+                        b.properties.insert(name, deref(val));
+                    }
+                }
+                scalar => {
+                    b.properties
+                        .insert(rhp_values::PhpStr::from("scalar"), scalar);
+                }
+            }
+        }
+        Value::Object(obj)
+    }
+
+    /// Does `class_id`'s ancestor set include the named interface/class?
+    pub(crate) fn class_implements(&self, class_id: ClassId, name: &[u8]) -> bool {
+        match self.resolve_class_by_name(name) {
+            Ok(target) => self.classes[class_id as usize].ancestors.contains(&target),
+            Err(_) => false,
+        }
+    }
+
+    /// Stringify a value, invoking `__toString` on objects that define it.
+    // Takes `&mut self` because stringifying an object may run its `__toString`.
+    #[allow(clippy::wrong_self_convention)]
+    pub(crate) fn to_string_vm(&mut self, v: &Value) -> Result<Vec<u8>, Thrown> {
+        let d = match v {
+            Value::Ref(r) => r.borrow().clone(),
+            other => other.clone(),
+        };
+        if let Value::Object(h) = &d {
+            // zval_get_string: the object's cast_object (`__toString`, or an
+            // internal class's handler).
+            if let Some(r) = self.cast_object_vm(h, CastTarget::Str)? {
+                return Ok(conv::to_string_bytes(&r));
+            }
+            let cls = h.borrow().class;
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "Object of class {} could not be converted to string",
+                    String::from_utf8_lossy(self.class(cls).name.as_bytes())
+                ),
+            ));
+        }
+        if let Value::Array(_) = d {
+            self.diag(2, "Array to string conversion")?;
+        }
+        Ok(conv::to_string_bytes(&d))
+    }
+
+    /// `(bool) $v`: an internal class's `cast_object(_IS_BOOL)` (an empty
+    /// SimpleXML list, a zero GMP is false), else php's truthiness.
+    #[inline]
+    pub(crate) fn truthy(&mut self, v: &Value) -> Result<bool, Thrown> {
+        match v {
+            Value::Object(_) => self.truthy_object(v),
+            _ => Ok(conv::to_bool(v)),
+        }
+    }
+
+    #[inline(never)]
+    fn truthy_object(&mut self, v: &Value) -> Result<bool, Thrown> {
+        Ok(match self.handler_cast(v, CastTarget::Bool)? {
+            Some(b) => conv::to_bool(&b),
+            None => true,
+        })
+    }
+}
+
+/// php's `zend_verify_weak_scalar_type_hint`: coerce a scalar to the first of
+/// int, float, string, bool (in that preference order) the type accepts.
+/// `None` if no member accepts it. (The E_DEPRECATED for a fractional float
+/// to int is not emitted.)
+fn weak_scalar_coerce(d: &Value, ty: &rhp_bytecode::TypeHint) -> Option<Value> {
+    use rhp_bytecode::TypeKind as K;
+    use rhp_values::conv::Num;
+    let has = |want: fn(&K) -> bool| ty.kinds.iter().any(want);
+    let (t_int, t_float, t_str) = (
+        has(|k| matches!(k, K::Int)),
+        has(|k| matches!(k, K::Float)),
+        has(|k| matches!(k, K::String)),
+    );
+    let t_bool = has(|k| matches!(k, K::Bool))
+        || (has(|k| matches!(k, K::True)) && has(|k| matches!(k, K::False)));
+    // ZEND_DOUBLE_FITS_LONG + NaN check, then truncation.
+    let f2i = |f: f64| -> Option<i64> {
+        if f.is_nan() || !(-9.223_372_036_854_776e18..9.223_372_036_854_776e18).contains(&f) {
+            None
+        } else {
+            Some(f as i64)
+        }
+    };
+    if t_int {
+        match d {
+            // int|float and a string: is_numeric_string decides.
+            Value::Str(s) if t_float => match conv::numeric_string(s.as_bytes()) {
+                Some(Num::Int(n)) => return Some(Value::Int(n)),
+                Some(Num::Float(f)) => return Some(Value::Float(f)),
+                None => {}
+            },
+            Value::Float(f) => {
+                if let Some(n) = f2i(*f) {
+                    return Some(Value::Int(n));
+                }
+            }
+            Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
+                Some(Num::Int(n)) => return Some(Value::Int(n)),
+                Some(Num::Float(f)) => {
+                    if let Some(n) = f2i(f) {
+                        return Some(Value::Int(n));
+                    }
+                }
+                None => {}
+            },
+            Value::Bool(b) => return Some(Value::Int(*b as i64)),
+            _ => {}
+        }
+    }
+    if t_float {
+        match d {
+            Value::Int(n) => return Some(Value::Float(*n as f64)),
+            Value::Bool(b) => return Some(Value::Float(*b as i64 as f64)),
+            Value::Str(s) => {
+                if let Some(num) = conv::numeric_string(s.as_bytes()) {
+                    return Some(Value::Float(num.as_f64()));
+                }
+            }
+            _ => {}
+        }
+    }
+    if t_str && matches!(d, Value::Int(_) | Value::Float(_) | Value::Bool(_)) {
+        return Some(Value::str(conv::to_string_bytes(d)));
+    }
+    if t_bool && matches!(d, Value::Int(_) | Value::Float(_) | Value::Str(_)) {
+        return Some(Value::Bool(conv::to_bool(d)));
+    }
+    None
+}
+
+/// The `(A&B)` members of a DNF type, as php prints them.
+fn dnf_group_strings(ty: &rhp_bytecode::TypeHint) -> Vec<String> {
+    ty.groups
+        .iter()
+        .map(|g| {
+            let names: Vec<String> = g
+                .iter()
+                .map(|n| String::from_utf8_lossy(n.as_bytes()).into_owned())
+                .collect();
+            format!("({})", names.join("&"))
+        })
+        .collect()
+}
+
+/// Human-readable form of a declared type, for TypeError messages.
+pub(crate) fn type_string(ty: &rhp_bytecode::TypeHint) -> String {
+    // php's zend_type_to_string: class names first (declaration order), then
+    // the builtin types in a fixed order, `null` last (or `?T` for a single
+    // type). `iterable` is `Traversable|array`.
+    use rhp_bytecode::TypeKind as K;
+    if ty.intersection {
+        let parts: Vec<String> = ty
+            .kinds
+            .iter()
+            .filter_map(|k| match k {
+                K::Named(n) => Some(String::from_utf8_lossy(n.as_bytes()).into_owned()),
+                _ => None,
+            })
+            .collect();
+        return parts.join("&");
+    }
+    let has = |want: &dyn Fn(&K) -> bool| ty.kinds.iter().any(want);
+    let mut parts: Vec<String> = dnf_group_strings(ty);
+    for k in &ty.kinds {
+        match k {
+            K::Named(n) => parts.push(String::from_utf8_lossy(n.as_bytes()).into_owned()),
+            K::SelfType => parts.push("self".into()),
+            K::Parent => parts.push("parent".into()),
+            _ => {}
+        }
+    }
+    if has(&|k| matches!(k, K::Iterable)) && !parts.iter().any(|p| p == "Traversable") {
+        parts.push("Traversable".into());
+    }
+    if has(&|k| matches!(k, K::Mixed)) {
+        parts.push("mixed".into());
+        return parts.join("|");
+    }
+    type Pred = fn(&K) -> bool;
+    let order: [(Pred, &str); 7] = [
+        (|k| matches!(k, K::StaticType), "static"),
+        (|k| matches!(k, K::Callable), "callable"),
+        (|k| matches!(k, K::Object), "object"),
+        (|k| matches!(k, K::Array | K::Iterable), "array"),
+        (|k| matches!(k, K::String), "string"),
+        (|k| matches!(k, K::Int), "int"),
+        (|k| matches!(k, K::Float), "float"),
+    ];
+    for (pred, name) in order {
+        if has(&pred) {
+            parts.push(name.into());
+        }
+    }
+    let t = has(&|k| matches!(k, K::True));
+    let f = has(&|k| matches!(k, K::False));
+    if has(&|k| matches!(k, K::Bool)) || (t && f) {
+        parts.push("bool".into());
+    } else if f {
+        parts.push("false".into());
+    } else if t {
+        parts.push("true".into());
+    }
+    if has(&|k| matches!(k, K::Void)) {
+        parts.push("void".into());
+    }
+    if has(&|k| matches!(k, K::Never)) {
+        parts.push("never".into());
+    }
+    if ty.nullable || has(&|k| matches!(k, K::Null)) {
+        if parts.len() == 1 && ty.groups.is_empty() {
+            return format!("?{}", parts[0]);
+        }
+        parts.push("null".into());
+    }
+    parts.join("|")
+}
+
+pub(crate) fn type_lc(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Str(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) | Value::Closure(_) => "object",
+        Value::Resource(_) => "resource",
+        Value::Ref(_) => "reference",
+    }
+}
+
+/// The type name and zero value a null argument coerces to for a scalar
+/// parameter of an internal function, or `None` when the type accepts null
+/// or is not a single scalar (unions print in php's own order).
+fn prelude_null_coercion(ty: &rhp_bytecode::TypeHint) -> Option<(&'static str, Value)> {
+    use rhp_bytecode::TypeKind as K;
+    if ty.nullable || ty.intersection {
+        return None;
+    }
+    // Z_PARAM_NUMBER
+    if let [K::Int, K::Float] | [K::Float, K::Int] = ty.kinds[..] {
+        return Some(("int|float", Value::Int(0)));
+    }
+    if ty.kinds.len() != 1 {
+        return None;
+    }
+    match ty.kinds[0] {
+        K::Int => Some(("int", Value::Int(0))),
+        K::Float => Some(("float", Value::Float(0.0))),
+        K::String => Some(("string", Value::str(""))),
+        K::Bool => Some(("bool", Value::Bool(false))),
+        _ => None,
+    }
+}

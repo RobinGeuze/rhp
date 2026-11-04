@@ -21,6 +21,7 @@ use crate::file::FileCtx;
 use crate::functions::compile_function;
 use crate::names::{flatten_namespaces, NsContext};
 use crate::prelude::prelude_classes;
+use crate::shrink::shrink_program;
 
 mod assign;
 mod builder;
@@ -37,6 +38,7 @@ mod hrh;
 mod names;
 mod oop;
 mod prelude;
+mod shrink;
 mod stmt;
 mod util;
 
@@ -111,7 +113,7 @@ fn compile_file(
 ) -> Result<Program, Thrown> {
     // Hoist top-level function + class declarations. Start the class list with
     // the built-in exception hierarchy (the "prelude"), compiled once per
-    // thread and copied from the cache.
+    // thread and shared from the cache.
     let (mut classes, mut functions) = if with_prelude {
         let p = prelude_classes()?;
         *cx.closures.borrow_mut() = p.closures.clone();
@@ -129,10 +131,12 @@ fn compile_file(
             Statement::Function(func) => {
                 functions.push(Rc::new(compile_function(cx, func).map_err(at)?));
             }
-            Statement::Class(class) => classes.push(compile_class(cx, class).map_err(at)?),
-            Statement::Interface(iface) => classes.push(compile_interface(cx, iface).map_err(at)?),
-            Statement::Trait(tr) => classes.push(compile_trait(cx, tr).map_err(at)?),
-            Statement::Enum(en) => classes.push(compile_enum(cx, en).map_err(at)?),
+            Statement::Class(class) => classes.push(Rc::new(compile_class(cx, class).map_err(at)?)),
+            Statement::Interface(iface) => {
+                classes.push(Rc::new(compile_interface(cx, iface).map_err(at)?))
+            }
+            Statement::Trait(tr) => classes.push(Rc::new(compile_trait(cx, tr).map_err(at)?)),
+            Statement::Enum(en) => classes.push(Rc::new(compile_enum(cx, en).map_err(at)?)),
             // Top-level `const NAME = <expr>;` is a runtime statement (php
             // declares it when execution reaches it), compiled in {main}.
             _ => {}
@@ -182,13 +186,13 @@ fn compile_file(
     c.emit(Instr::RetNull);
 
     let closures = cx.closures.take();
-    classes.extend(cx.anon_classes.take());
-    let cond_classes = cx.cond_classes.take();
+    classes.extend(cx.anon_classes.take().into_iter().map(Rc::new));
+    let cond_classes = cx.cond_classes.take().into_iter().map(Rc::new).collect();
     let compile_diags = hrh::scan(flat, &|o| cx.line_of(o))
         .into_iter()
         .map(|line| (8192, hrh::MESSAGE.to_string(), line))
         .collect();
-    Ok(Program {
+    let mut prog = Program {
         main: Rc::new(c.finish()?),
         functions,
         classes,
@@ -198,5 +202,7 @@ fn compile_file(
         cond_classes,
         compile_diags,
         compile_diags_reported: Default::default(),
-    })
+    };
+    shrink_program(&mut prog);
+    Ok(prog)
 }

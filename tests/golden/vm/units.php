@@ -17,6 +17,13 @@ $k = (new Consts)->counter();
 echo Nested::N, " ", $k(), $k(), "\n";
 echo $early(), " ", $early2(), "\n";
 
+// A trait method runs in the trait's unit, whichever file uses it.
+class UsesMaker
+{
+    use Maker;
+}
+echo ((new UsesMaker)->make())(), " ", UsesMaker::$label, "\n";
+
 // One file, included three times: each include is a unit of its own.
 $rows = [];
 $kept = [];

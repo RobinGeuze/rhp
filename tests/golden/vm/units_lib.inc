@@ -28,6 +28,16 @@ class Consts
     }
 }
 
+trait Maker
+{
+    public static $label = PHP_EOL === "\n" ? 'trait static' : '?';
+
+    public function make()
+    {
+        return fn() => 'trait closure';
+    }
+}
+
 function declareNested()
 {
     if (!class_exists('Nested', false)) {

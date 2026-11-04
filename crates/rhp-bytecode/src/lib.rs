@@ -33,6 +33,33 @@ pub enum CmpKind {
     Spaceship,
 }
 
+/// What php's compiler decides about a call by name (`Call`) that reaches a
+/// builtin.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CallFlags(u8);
+
+impl CallFlags {
+    /// php compiles the call to an opcode of its own
+    /// (zend_try_compile_special_func: `strlen`, the `is_*` checks, `count`,
+    /// …): it never shows in a trace, and a callback it runs is called from
+    /// the caller's line.
+    pub const INLINE: CallFlags = CallFlags(1);
+    /// A php 8.4 frameless internal call (ZEND_FRAMELESS_ICALL_n): the
+    /// builtin gets no frame of its own, so what it runs sees its caller's.
+    pub const ICALL: CallFlags = CallFlags(2);
+    /// `call_user_func()` / `call_user_func_array()` compiled to a user call
+    /// (ZEND_INIT_USER_CALL): the callback sees the caller's `strict_types`.
+    pub const USER_CALL: CallFlags = CallFlags(4);
+
+    pub const fn contains(self, other: CallFlags) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub fn insert(&mut self, other: CallFlags) {
+        self.0 |= other.0;
+    }
+}
+
 /// One bytecode instruction. `Copy`, fixed-width, one variant per opcode.
 #[derive(Clone, Copy, Debug)]
 pub enum Instr {
@@ -352,16 +379,20 @@ pub enum Instr {
     /// builtin is called with `regs[base..base+argc]`.
     /// `fallback` is a second name to try if `name` misses (`NO_NAME` if none):
     /// an unqualified call inside a namespace resolves `Ns\name` first, then the
-    /// global `name` (PHP's fall-back-to-global rule).
+    /// global `name` (PHP's fall-back-to-global rule). `flags` apply when the
+    /// call reaches a builtin.
     Call {
         dst: Reg,
         name: NIdx,
         base: Reg,
         argc: u16,
         fallback: NIdx,
+        flags: CallFlags,
     },
     /// Variadic call: `args` holds a `PhpArray` of the evaluated arguments
-    /// (used when a call site contains argument spread `...$x`).
+    /// (used when a call site contains argument spread `...$x` or a named
+    /// argument). php compiles such a call as a plain one, so it has no
+    /// `CallFlags`.
     CallV {
         dst: Reg,
         name: NIdx,
@@ -391,10 +422,13 @@ pub enum Instr {
         ncaptures: u16,
     },
     /// First-class callable (`f(...)`, `$o->m(...)`, `C::m(...)`): wrap the
-    /// callable value in `callee` as a `Closure`.
+    /// callable value in `callee` as a `Closure`. `ns_name` is the
+    /// namespaced name as written when `callee` holds the global name an
+    /// unqualified `f(...)` in a namespace fell back to, else `NO_NAME`.
     MakeFcc {
         dst: Reg,
         callee: Reg,
+        ns_name: NIdx,
     },
     Ret {
         src: Reg,
@@ -1056,6 +1090,40 @@ pub struct DebugInfo {
     pub lines: Vec<(Pc, u32)>,
 }
 
+/// What the compiler knows about a function that the VM checks while
+/// running it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProtoFlags(u8);
+
+impl ProtoFlags {
+    /// Built-in code, compiled from the prelude (the PHP source behind some
+    /// of php's internal functions and classes). php runs internal code
+    /// without a user frame: its errors are reported at the calling user
+    /// code, it takes its caller's `strict_types`, and its argument errors
+    /// read like an internal function's.
+    pub const INTERNAL: ProtoFlags = ProtoFlags(1);
+    /// Not set by the compiler: the VM's copy of the script's `{main}` that
+    /// holds the globals while shutdown callbacks run. php runs them with
+    /// no frame at all, so this one, too, is no user frame.
+    pub const SHUTDOWN_SCOPE: ProtoFlags = ProtoFlags(2);
+
+    pub const fn contains(self, other: ProtoFlags) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub const fn intersects(self, other: ProtoFlags) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    pub const fn union(self, other: ProtoFlags) -> ProtoFlags {
+        ProtoFlags(self.0 | other.0)
+    }
+
+    pub fn insert(&mut self, other: ProtoFlags) {
+        self.0 |= other.0;
+    }
+}
+
 /// One compiled PHP function/method/closure, or the script body (`"{main}"`).
 /// Carries no `'arena` borrow — the AST is consumed at compile time. The VM
 /// runs it as compiled and shares it (`Rc`) between every install of its
@@ -1104,9 +1172,15 @@ pub struct FunctionProto {
     pub cv_var_names: Vec<PhpStr>,
     /// Reflection metadata (attributes, doc comment, line span).
     pub meta: DeclMeta,
+    pub flags: ProtoFlags,
 }
 
 impl FunctionProto {
+    /// Built-in (prelude) code: see [`ProtoFlags::INTERNAL`].
+    pub fn is_internal(&self) -> bool {
+        self.flags.contains(ProtoFlags::INTERNAL)
+    }
+
     /// An empty proto (builder starting point).
     pub fn new(name: PhpStr) -> Self {
         FunctionProto {
@@ -1130,6 +1204,7 @@ impl FunctionProto {
             returns_ref: false,
             cv_var_names: Vec::new(),
             meta: DeclMeta::default(),
+            flags: ProtoFlags::default(),
         }
     }
 }

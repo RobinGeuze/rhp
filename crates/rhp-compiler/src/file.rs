@@ -17,7 +17,7 @@ use crate::names::{join_ns, NsContext};
 /// the next one on the thread.
 pub(crate) struct FileCtx<'s> {
     /// The file name for debug info, getFile() and `__FILE__`. Empty for the
-    /// prelude: the VM treats such protos as internal code.
+    /// prelude.
     pub(crate) file: PhpStr,
     /// The source (empty for the prelude), for what the AST drops: doc
     /// comments and the newline a `?>` swallows.
@@ -28,7 +28,8 @@ pub(crate) struct FileCtx<'s> {
     /// Byte offset of each line start. Empty for the prelude, whose line
     /// numbers are never surfaced.
     line_starts: Vec<u32>,
-    /// The prelude itself is being compiled: every builtin it calls exists.
+    /// The prelude itself is being compiled: every builtin it calls exists,
+    /// and its protos are internal ([`rhp_bytecode::ProtoFlags::INTERNAL`]).
     pub(crate) is_prelude: bool,
     /// `declare(strict_types=1)` (php's caller-decides coercion rule),
     /// stamped on every proto of the file.

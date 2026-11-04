@@ -8,7 +8,7 @@ use rhp_bytecode::FunctionProto;
 use rhp_values::{conv, ArrayKey, ClassId, ObjectHandle, PhpArray, Thrown, Value};
 
 use crate::calls::{is_engine_helper_name, is_handler_accessor};
-use crate::{deref, ini_bool, is_prelude_proto, Vm};
+use crate::{deref, ini_bool, Vm};
 
 /// PG(display_errors) (main.c php_get_display_errors_mode).
 pub(crate) enum DisplayErrors {
@@ -46,7 +46,7 @@ impl Vm {
     pub(crate) fn fatal_compile_error(&mut self, msg: &str) -> Thrown {
         let (file, line) = match (0..self.stack.len())
             .rev()
-            .find(|&i| !is_prelude_proto(&self.stack[i].proto))
+            .find(|&i| !self.stack[i].proto.is_internal())
         {
             None => (Vec::new(), 0),
             Some(i) => (self.current_file(i), self.current_line(i) as i64),
@@ -73,7 +73,7 @@ impl Vm {
         // line map, and php reports internal functions at their caller.
         let (file, line) = match (0..self.stack.len())
             .rev()
-            .find(|&i| !is_prelude_proto(&self.stack[i].proto))
+            .find(|&i| !self.stack[i].proto.is_internal())
         {
             None if self.sapi.startup => (b"Unknown".to_vec(), 0),
             None => (Vec::new(), 0),
@@ -96,7 +96,7 @@ impl Vm {
                 depth
                     .checked_sub(1)
                     .and_then(|i| self.stack.get(i))
-                    .is_some_and(|f| is_prelude_proto(&f.proto))
+                    .is_some_and(|f| f.proto.is_internal())
             });
         let handler = match self.error_handlers.last() {
             _ if prelude_silenced => None,
@@ -196,10 +196,13 @@ impl Vm {
         }
     }
 
-    /// Frame `i` runs engine-internal code (the prelude's PHP-source classes /
-    /// helpers, compiled with an empty file name): php has no user frame there.
+    /// Frame `i` runs no user code: built-in (prelude) code, or the
+    /// finished script's `{main}` that holds the globals while shutdown
+    /// callbacks run (php has no frame there).
     pub(crate) fn is_internal_frame(&self, i: usize) -> bool {
-        self.stack[i].proto.debug.file.is_empty()
+        use rhp_bytecode::ProtoFlags as F;
+        let flags = self.stack[i].proto.flags;
+        flags.intersects(F::INTERNAL.union(F::SHUTDOWN_SCOPE))
     }
 
     /// Frame `i` is engine plumbing with no php counterpart: a prelude
@@ -209,7 +212,7 @@ impl Vm {
     fn is_plumbing_frame(&self, i: usize) -> bool {
         let f = &self.stack[i];
         f.include_kind.is_none()
-            && is_prelude_proto(&f.proto)
+            && f.proto.is_internal()
             && (is_engine_helper_name(f.proto.name.as_bytes())
                 || f.defining_class.is_some_and(|c| {
                     is_handler_accessor(self.class(c).name.as_bytes(), f.proto.name.as_bytes())

@@ -49,6 +49,8 @@ impl Vm {
             units: Vec::new(),
             functions: Vec::new(),
             fn_names: HashMap::new(),
+            fn_gen: 1,
+            call_sites: Default::default(),
             closures: Vec::new(),
             decl_classes: Vec::new(),
             decl_runtime: std::collections::HashSet::new(),
@@ -468,6 +470,7 @@ impl Vm {
             Some(mut main) => {
                 let mut p = (*main.proto).clone();
                 p.debug.file = rhp_values::PhpStr::from("");
+                p.flags.insert(rhp_bytecode::ProtoFlags::SHUTDOWN_SCOPE);
                 main.pc = p.code.len();
                 // {main}'s temporaries are dead once it finished (php frees
                 // TMP/VAR slots as it goes): only its variables keep values.
@@ -607,17 +610,17 @@ impl Vm {
         self.emit_compile_diags(prog);
         // Install (hoist) all declared functions, keyed case-insensitively.
         for (idx, proto) in prog.functions.iter().enumerate() {
-            // Engine helpers are `__` builtins, not prelude functions, so a
-            // user function may take any `__` name.
+            // Engine helpers are builtins, not prelude functions, so a user
+            // function may take any helper's name.
             debug_assert!(
-                idx >= prog.num_prelude_functions || !proto.name.as_bytes().starts_with(b"__")
+                idx >= prog.num_prelude_functions
+                    || !crate::calls::is_helper_function(proto.name.as_bytes())
             );
             self.functions.push(UnitFn {
                 proto: proto.clone(),
                 unit: 0,
             });
-            self.fn_names
-                .insert(proto.name.as_bytes().to_ascii_lowercase(), idx);
+            self.add_fn_name(proto.name.as_bytes().to_ascii_lowercase(), idx);
         }
         // The main script is unit 0: register its anonymous closure /
         // arrow-function protos (indexed by fnidx).
@@ -657,6 +660,7 @@ impl Vm {
     fn push_internal_main(&mut self) {
         let mut main = FunctionProto::new(rhp_values::PhpStr::from("{main}"));
         main.debug.file = rhp_values::PhpStr::from("");
+        main.flags.insert(rhp_bytecode::ProtoFlags::INTERNAL);
         self.stack.push(Frame::new(Rc::new(main), 0, 0));
     }
 

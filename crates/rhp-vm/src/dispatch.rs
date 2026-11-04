@@ -7,13 +7,11 @@ use std::rc::Rc;
 
 use rhp_builtins as builtins;
 use rhp_builtins::object::{CastTarget, Op};
-use rhp_bytecode::{ClassRef, CmpKind, FunctionProto, Instr, NIdx, Pc, Reg};
+use rhp_bytecode::{CallFlags, ClassRef, CmpKind, FunctionProto, Instr, NIdx, Pc, Reg};
 use rhp_semantics::{cast_to_array, inc_dec_value, ops};
 use rhp_values::{conv, ArrayKey, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
 
-use crate::calls::{
-    compiled_inline, dyn_method_name, frameless_icall, param_is_ref, undefined_function,
-};
+use crate::calls::{dyn_method_name, param_is_ref, undefined_function, CallTarget};
 use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
 use crate::generators::GenStatus;
 use crate::lvalue::{
@@ -489,40 +487,28 @@ impl Vm {
                     base,
                     argc,
                     fallback,
-                } => {
-                    let (user, fname) = self.resolve_fn(name, fallback, &proto.names);
-                    let Ok(user) = Self::engine_helper_call(&proto, user, &fname) else {
-                        return Err(undefined_function(&proto.names[name as usize]));
-                    };
-                    if let Some(reason) =
-                        builtins::is_refused(std::str::from_utf8(&fname).unwrap_or(""))
-                    {
-                        let shown = String::from_utf8_lossy(&fname).into_owned();
-                        return Err(Thrown::unsupported(format!("{shown}()"), reason));
-                    }
-                    if let Some(fnidx) = user {
+                    flags,
+                } => match self.call_target(top, &proto, pc, name, fallback)? {
+                    CallTarget::User(i) => {
                         // User function: push a frame (args bound to its CVs).
-                        let callee = self.functions[fnidx].clone();
+                        let callee = self.functions[i].clone();
                         self.enter_user_call(top, callee, dst, base, argc)?;
-                    } else {
-                        // Builtin (`fname` is already lowercase).
-                        let lc = std::str::from_utf8(&fname).unwrap_or("");
-                        let Some(builtin) = builtins::lookup_lc(lc) else {
-                            return Err(undefined_function(&proto.names[name as usize]));
-                        };
-                        // php compiles a few calls to dedicated opcodes (no call
-                        // frame): only when resolvable at compile time, i.e. not an
-                        // unqualified call inside a namespace.
-                        let frameless = fallback == rhp_bytecode::NO_NAME
-                            && compiled_inline(&fname, argc as usize);
-                        let icall = frameless_icall(&fname, argc as usize);
-                        self.mark_user_call_builtin(&fname, fallback);
-                        let out = self.call_builtin(top, lc, builtin, base, argc, frameless, icall);
+                    }
+                    CallTarget::Builtin(builtin, sig) => {
+                        let inline = flags.contains(CallFlags::INLINE);
+                        let icall = flags.contains(CallFlags::ICALL);
+                        self.cuf_caller = flags
+                            .contains(CallFlags::USER_CALL)
+                            .then(|| self.caller_strict());
+                        let out = self.call_builtin(top, builtin, sig, base, argc, inline, icall);
                         self.cuf_caller = None;
                         let out = out?;
                         self.reg_set(top, dst, out);
                     }
-                }
+                    CallTarget::Missing => {
+                        return Err(undefined_function(&proto.names[name as usize]));
+                    }
+                },
 
                 Instr::MakeClosure {
                     dst,
@@ -616,8 +602,17 @@ impl Vm {
                         self.user_const_order.push(cname.to_vec());
                     }
                 }
-                Instr::MakeFcc { dst, callee } => {
-                    let c = self.reg_get(top, callee);
+                Instr::MakeFcc {
+                    dst,
+                    callee,
+                    ns_name,
+                } => {
+                    let mut c = self.reg_get(top, callee);
+                    if let Value::Str(name) = &c {
+                        if let Some(n) = self.check_fcc_name(top, name, ns_name)? {
+                            c = Value::Str(n);
+                        }
+                    }
                     let cd = Rc::new(rhp_values::ClosureData {
                         fnidx: u32::MAX,
                         captures: Vec::new(),
@@ -1375,7 +1370,7 @@ impl Vm {
                     }
                     let i = self.functions.len();
                     self.functions.push(f);
-                    self.fn_names.insert(lc, i);
+                    self.add_fn_name(lc, i);
                 }
 
                 Instr::BindRef { dst_cv, src_cv } => {
@@ -1403,7 +1398,10 @@ impl Vm {
                     name,
                     args,
                     fallback,
-                } => self.call_v(top, &proto, dst, name, args, fallback)?,
+                } => {
+                    let target = self.call_target(top, &proto, pc, name, fallback)?;
+                    self.call_v(top, dst, args, target, &proto.names[name as usize])?;
+                }
                 Instr::NewV { dst, class, args } => {
                     let cls = self.resolve_class_autoload(top, class)?;
                     let entry = self.class(cls);

@@ -12,7 +12,7 @@ use crate::calls::{is_engine_helper_name, user_visible_builtin};
 use crate::classes::PropRes;
 use crate::errors::is_docref_message;
 use crate::streams::{res_id, MemMode, StreamState};
-use crate::{classes, deref, is_prelude_proto, Vm};
+use crate::{classes, deref, Vm};
 
 impl Host for Vm {
     fn raise_diagnostic(&mut self, level: i64, msg: &str) {
@@ -63,7 +63,7 @@ impl Host for Vm {
         self.stack
             .iter()
             .rev()
-            .find(|f| !is_prelude_proto(&f.proto))
+            .find(|f| !f.proto.is_internal())
             .is_some_and(|f| f.proto.strict_types)
     }
 
@@ -416,13 +416,11 @@ impl Host for Vm {
     }
 
     fn executing_file(&self) -> Option<Vec<u8>> {
-        // The innermost user-code frame (prelude frames have no file).
-        self.stack
-            .iter()
+        // The innermost user-code frame.
+        (0..self.stack.len())
             .rev()
-            .map(|f| f.proto.debug.file.as_bytes())
-            .find(|f| !f.is_empty())
-            .map(|f| f.to_vec())
+            .find(|&i| !self.is_internal_frame(i))
+            .map(|i| self.stack[i].proto.debug.file.as_bytes().to_vec())
             .or_else(|| self.main_script_path.clone())
     }
 
@@ -979,7 +977,7 @@ impl Host for Vm {
         // zend_set_local_var_str: the innermost user code frame.
         let Some(top) = (0..self.stack.len())
             .rev()
-            .find(|&i| !self.stack[i].proto.debug.file.as_bytes().is_empty())
+            .find(|&i| !self.is_internal_frame(i))
         else {
             return false;
         };
@@ -1908,7 +1906,7 @@ impl Host for Vm {
         match self.lookup_method(class_id, method) {
             // `__`-prefixed helpers of built-in (prelude) classes are engine
             // plumbing, invisible to php code; real magic methods stay.
-            Some(m) => !(is_prelude_proto(&m.proto) && is_engine_helper_name(method)),
+            Some(m) => !(m.proto.is_internal() && is_engine_helper_name(method)),
             None => false,
         }
     }

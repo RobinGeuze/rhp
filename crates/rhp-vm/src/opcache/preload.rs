@@ -446,7 +446,7 @@ impl Vm {
             if self.fn_names.contains_key(&lc) {
                 continue;
             }
-            self.fn_names.insert(lc, self.functions.len());
+            self.add_fn_name(lc, self.functions.len());
             self.functions.push(f);
         }
         // Linking ran (and warned) while preloading; replaying it is quiet.

@@ -33,3 +33,33 @@ fn no_duplicate_constants() {
     dups.sort();
     assert!(dups.is_empty(), "constants defined twice: {dups:?}");
 }
+
+/// The golden lang/engine_helper_functions checks that user code can't
+/// reach any engine helper (a builtin named `__…`), so its list must name
+/// every one.
+#[test]
+fn engine_helper_golden_lists_every_helper() {
+    let golden = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/golden/lang/engine_helper_functions.php"
+    );
+    let src = std::fs::read_to_string(golden).expect("read the golden");
+    let list = src
+        .split_once("$helpers = [")
+        .and_then(|(_, rest)| rest.split_once("];"))
+        .expect("the golden's $helpers list")
+        .0;
+    let mut listed: Vec<&str> = list
+        .split(',')
+        .map(|s| s.trim().trim_matches('\''))
+        .filter(|s| !s.is_empty())
+        .collect();
+    listed.sort_unstable();
+    let mut registered: Vec<&str> = registry()
+        .keys()
+        .copied()
+        .filter(|n| n.starts_with("__"))
+        .collect();
+    registered.sort_unstable();
+    assert_eq!(listed, registered);
+}

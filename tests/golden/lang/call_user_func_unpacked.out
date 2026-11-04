@@ -1,0 +1,13 @@
+plain: TypeError: f(): Argument #1 ($x) must be of type int, string given [site]
+plain array: TypeError: f(): Argument #1 ($x) must be of type int, string given [site]
+unpacked: int(5)
+unpacked array: int(5)
+unpacked args: int(5)
+named forwarded: int(5)
+unpacked, bad value: TypeError: f(): Argument #1 ($x) must be of type int, string given
+named, bad value: TypeError: f(): Argument #1 ($x) must be of type int, string given
+unpacked builtin: int(5)
+trace plain: string(18) "frames < {closure}"
+trace unpacked: string(23) "frames < call_user_func"
+trace unpacked array: string(29) "frames < call_user_func_array"
+int(2)

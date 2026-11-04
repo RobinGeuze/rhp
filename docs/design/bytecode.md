@@ -15,10 +15,11 @@ decisions are folded in and the losing alternatives are noted inline.
 >
 > The instruction set and the proto layout have grown since:
 > `crates/rhp-bytecode/src/lib.rs` is the authority. The reserved inline-cache
-> plumbing (`InlineCache`, `caches`, the `cache` operands), `ProtoFlags`,
-> `DebugInfo.cv_names`, `FnIdx` and the `Refuse` opcode were never used and
-> are gone; `Default` is now `ParamDefault { Const(CIdx), Init }`. `eval`
-> and `include`/`require` run (§4 lists them as refused).
+> plumbing (`InlineCache`, `caches`, the `cache` operands), the sketched
+> `ProtoFlags`, `DebugInfo.cv_names`, `FnIdx` and the `Refuse` opcode were
+> never used and are gone; `Default` is now `ParamDefault { Const(CIdx),
+> Init }`. The flags that exist now are in §2.6. `eval` and
+> `include`/`require` run (§4 lists them as refused).
 
 Synthesizes: [`isa.md`](./history/isa.md) (instruction set), [`vm.md`](./history/vm.md) (VM
 runtime), [`bytecode-prior-art.md`](./history/bytecode-prior-art.md) (Zend/Lua lessons),
@@ -402,7 +403,8 @@ calling convention; omitted here.
 ### 2.5 Inline caches, constants, names
 
 (Not built: there are no inline caches. Method and property lookups probe
-the flattened class table's hash maps; see the note at the top.)
+the flattened class table's hash maps; see the note at the top. Calls by
+name have a per-VM resolution cache instead, §2.6.)
 
 - `caches: Vec<InlineCache>` is a Zend-style **side** table (not interleaved),
   `Cell`-based (single-threaded ⇒ no atomics), **monomorphic to start**, guarded
@@ -416,6 +418,53 @@ the flattened class table's hash maps; see the note at the top.)
   `CallByName`, param names for named args). Functions are case-insensitive (the
   builtin table lowercases). Engine constants come from `builtins::constants()`
   at link time; `FetchConst` consults the engine/user constant table, not `consts`.
+
+### 2.6 Compile-time flags and call resolution
+
+What the VM needs to know about code it runs is decided when it is
+compiled, not guessed from debug info:
+
+- `FunctionProto::flags` (`ProtoFlags`). `INTERNAL` marks every proto
+  compiled from the prelude (and the VM's own `[internal function]`
+  `{main}`). php runs internal code without a user frame, so the VM skips
+  such frames when it reports an error's file and line or a caller's
+  `strict_types`, and words their argument errors like an internal
+  function's. `SHUTDOWN_SCOPE` is set only by the VM, on the copy of the
+  finished script's `{main}` that holds the globals while shutdown
+  callbacks run; it is no user frame either (`Vm::is_internal_frame`).
+- `Call` carries `CallFlags`, php's compile-time decisions for a call
+  that reaches a builtin: `INLINE` (zend_try_compile_special_func: no
+  trace frame), `ICALL` (php 8.4 frameless internal calls) and `USER_CALL`
+  (`call_user_func[_array]` compiled to ZEND_INIT_USER_CALL). The compiler
+  sets them from the call's name and argument count: `INLINE` and
+  `USER_CALL` only for a name resolved at compile time (no namespace
+  fallback), `ICALL` also for a namespaced call that falls back to the
+  builtin. `CallV` (an unpacked or named argument) has none: php compiles
+  such a call as a plain internal call.
+
+A call by name is resolved once per call site and request, like php's
+run-time cache slots: `Vm::call_sites` maps (proto address, pc) to the user
+function or the builtin with its stub signature, so a repeated call does
+no lowercasing, lookups or `is_refused` check. The cache is per VM, never
+in the proto, so a program opcache shares between requests stays as
+compiled, and it is not counted in `memory_get_usage()` (php allocates an
+op_array's run-time cache in one piece, so reaching a new call site does
+not move the number). Each entry holds a `Weak` to its proto, which keeps
+the address from being reused while the entry exists. An include's or eval's `{main}`
+is not cached: it is usually freed when it returns. An entry that a later
+function declaration could change (a namespaced call that fell back to the
+global name, or a builtin, since rhp still lets a declaration take a
+builtin's name) records `Vm::fn_gen` and is resolved again after a
+declaration; php would keep the first result.
+
+The engine's helpers behind the prelude classes are builtins named `__…`
+(`calls::is_helper_function`). php has no such functions, so a direct call
+from prelude code reaches them and nothing else does: user calls,
+callables, first-class callables, `function_exists`, `is_callable`,
+`get_defined_functions` and Reflection all treat them as undefined, and a
+user function may take such a name. A first-class callable of such a name
+is looked up when it is made, as in php: in a namespace `MakeFcc` carries
+the namespaced name, which is tried first and named in the error.
 
 ---
 
@@ -679,8 +728,8 @@ sharing one `Program` between threads is in the data types:
   inside `rhp_values::mem::uncounted`, as the cache already does.
 - **What stays per VM.** Units, the function, closure and declaration
   tables, linked `ClassEntry`s (static properties, lazily evaluated
-  constants, enum case objects), statics and everything else a request
-  changes. None of it needs to be `Send`.
+  constants, enum case objects), statics, the call-site cache (§2.6) and
+  everything else a request changes. None of it needs to be `Send`.
 
 The model stays one VM per thread with plain `Rc` (sapi.md, *Threading
 model*); `Arc` comes later, behind a flag, once measured.

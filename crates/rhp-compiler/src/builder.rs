@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use rhp_bytecode::{CIdx, FunctionProto, Instr, NIdx, Reg};
+use rhp_bytecode::{CIdx, FunctionProto, Instr, NIdx, ProtoFlags, Reg};
 use rhp_frontend::cst::{Expression, Identifier};
 use rhp_values::{PhpStr, Thrown, Value};
 
@@ -191,6 +191,9 @@ impl<'c> ProtoBuilder<'c> {
             .collect();
         proto.strict_types = self.cx.strict_types;
         proto.returns_ref = self.returns_ref;
+        if self.cx.is_prelude {
+            proto.flags.insert(ProtoFlags::INTERNAL);
+        }
         // The VM keeps the proto as it is for as long as the program lives
         // (with opcache, across requests): drop the growth slack.
         proto.code.shrink_to_fit();
@@ -318,16 +321,17 @@ impl<'c> ProtoBuilder<'c> {
 
     /// Resolve a first-class-callable's target function to a single name. An
     /// unqualified reference inside a namespace prefers the namespaced user
-    /// function when one is declared, else the global name (builtins are global).
-    pub(crate) fn resolve_callable_name(&self, id: &Identifier) -> Vec<u8> {
+    /// function when one is declared, else the global name (builtins are
+    /// global), returned with the namespaced name it fell back from.
+    pub(crate) fn resolve_callable_name(&self, id: &Identifier) -> (Vec<u8>, Option<Vec<u8>>) {
         let (primary, fallback) = self.cx.resolve_name(id, NameKind::Func);
         match fallback {
-            None => primary,
+            None => (primary, None),
             Some(global) => {
                 if self.cx.sigs.contains_key(&primary.to_ascii_lowercase()) {
-                    primary
+                    (primary, None)
                 } else {
-                    global
+                    (global, Some(primary))
                 }
             }
         }

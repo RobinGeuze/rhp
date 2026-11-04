@@ -81,8 +81,13 @@ To choose:
 as a CLI request in-process (`rhp_sapi::CaptureSapi`), by its absolute
 path and from its directory as php ran it, and requires byte-identical
 stdout. Each fixture runs with its directory as the request's working
-directory (`Request::cwd`); the test process's own never changes.
-`GOLDEN_ONLY=SUBSTR` runs only the fixtures whose name
+directory (`Request::cwd`); the test process's own directory and umask
+never change, so the fixtures run on several threads at once
+(`GOLDEN_THREADS=N`, default: one per CPU; `GOLDEN_THREADS=1` runs them in
+order). The few that install signal handlers, which belong to the
+process, run alone afterwards (`ALONE` in diff.rs). A fixture's temp
+files need names no other fixture uses. `GOLDEN_ONLY=SUBSTR` runs only
+the fixtures whose name
 (`ext/json/json_flags`, below `tests/golden`, no extension) contains
 SUBSTR. `tests/golden/vm` holds the VM's own goldens; rhp-vm's
 `tests/golden.rs` runs them instead, so `cargo test -p rhp-vm` and

@@ -491,6 +491,28 @@ pub fn prelude() -> &'static str {
     })
 }
 
+/// The E_DEPRECATED a fetch of a `#[\Deprecated]` ZipArchive constant
+/// raises (FL_RECOMPRESS, from the stub's attribute).
+pub(crate) fn class_constant_deprecation(class: &[u8], name: &[u8]) -> Option<String> {
+    if !class.eq_ignore_ascii_case(b"ZipArchive") {
+        return None;
+    }
+    let c = constants().iter().find(|c| c.name.as_bytes() == name)?;
+    let args = c.attr.strip_prefix("#[\\Deprecated(")?.strip_suffix(")]")?;
+    let arg = |key: &str| {
+        let rest = &args[args.find(&format!("{key}: '"))? + key.len() + 3..];
+        Some(rest[..rest.find('\'')?].to_string())
+    };
+    let mut msg = format!("Constant ZipArchive::{} is deprecated", c.name);
+    if let Some(since) = arg("since") {
+        msg.push_str(&format!(" since {since}"));
+    }
+    if let Some(m) = arg("message") {
+        msg.push_str(&format!(", {m}"));
+    }
+    Some(msg)
+}
+
 /// The value of ZipArchive constant `name` in the linked libzip.
 pub(crate) fn constant(name: &str) -> Option<i64> {
     constants()

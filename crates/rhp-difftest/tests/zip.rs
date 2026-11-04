@@ -299,6 +299,7 @@ fn constants_and_info_match_php() {
 $c = (new ReflectionClass('ZipArchive'))->getConstants();
 foreach ($c as $k => $v) { echo "$k=", var_export($v, true), "\n"; }
 var_dump(ZipArchive::LIBZIP_VERSION === phpversion('zip') ? 'same' : 'differs');
+if (defined('ZipArchive::FL_RECOMPRESS')) { var_dump(ZipArchive::FL_RECOMPRESS); }
 ob_start();
 phpinfo(INFO_MODULES);
 $info = ob_get_clean();

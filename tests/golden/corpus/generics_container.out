@@ -1,0 +1,11 @@
+Array
+(
+    [0] => dog
+    [1] => bird
+    [2] => spider
+)
+2
+dog: 4
+bird: 2
+spider: 8
+rejected: expected Animal

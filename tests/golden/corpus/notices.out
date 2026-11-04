@@ -1,0 +1,18 @@
+default
+Array
+(
+    [x] => Array
+        (
+            [y] => 1
+        )
+
+)
+undef
+5
+ac
+5
+0
+3306
+notset
+nonempty
+bool(true)

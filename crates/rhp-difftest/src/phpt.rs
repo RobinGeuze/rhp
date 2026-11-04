@@ -220,10 +220,12 @@ fn ini_key(kv: &str) -> &str {
 
 /// Why a test with this opcache setting can't be compared, if it can't.
 /// rhp has a compiled-script cache but no JIT and no file cache. Opcode
-/// dumps (`opcache.opt_debug_level`) are on the ignore list instead.
+/// dumps (`opcache.opt_debug_level`) belong on the ignore list; one that
+/// isn't there yet (a new php-src test) gets its own skip reason.
 fn opcache_skip(k: &str, v: &str) -> Option<&'static str> {
     let on = !matches!(v, "" | "0");
     match k {
+        "opcache.opt_debug_level" if on => Some("opcode dump not on tests/phpt/ignored.txt"),
         "opcache.jit_debug" if on => Some("opcache:jit_debug"),
         "opcache.file_cache" | "opcache.file_cache_only" if on => Some("opcache:file_cache"),
         _ => None,
@@ -2372,8 +2374,9 @@ selection:
   --php-src <dir>        php-src checkout (or env RHP_PHP_SRC)
   --filter <substr>      only tests whose path contains <substr> (repeatable)
   --limit <n>            run at most <n> tests
-  --check-known <file>   run only the listed tests; exit 1 if any no longer match, or
-                         if the list and tests/phpt/ignored.txt disagree
+  --check-known <file>   run only the listed tests; exit 1 if any no longer match, if
+                         the list and tests/phpt/ignored.txt share a test, or if an
+                         ignored test is missing from --php-src
   --cgi-only             only CGI tests (--GET--/--POST--/--CGI--/... sections)
   --rhp-ini <directive>  run tests that set <directive> too, passing it to rhp
                          (repeatable): to measure whether rhp honours it
@@ -2600,6 +2603,10 @@ pub fn main(args: &[String]) -> ExitCode {
     if o.cgi_only {
         tests.retain(|t| is_cgi_test(&o.php_src, t));
     }
+    // Ignored tests count against --limit, as skipped ones do.
+    if let Some(n) = o.limit {
+        tests.truncate(n);
+    }
     let mut ignored_results = Vec::new();
     tests.retain(|t| match ignored.get(t) {
         Some(reason) => {
@@ -2612,9 +2619,6 @@ pub fn main(args: &[String]) -> ExitCode {
         }
         None => true,
     });
-    if let Some(n) = o.limit {
-        tests.truncate(n);
-    }
     if tests.is_empty() {
         eprintln!(
             "rhp-difftest phpt: no tests selected under {}{}",
@@ -3091,10 +3095,19 @@ mod tests {
         assert_eq!(ini.len(), 3);
         let to_rhp: Vec<&String> = ini.iter().filter(|kv| rules.rhp_applies(kv)).collect();
         assert_eq!(to_rhp, ["pcre.jit=0", "opcache.jit=tracing"]);
-        // opcache runs, except with JIT dumps or the file cache (opcode
-        // dumps are on the ignore list).
+        // opcache runs, except with dumps or the file cache. Listed opcode
+        // dumps never get here; an unlisted one is flagged.
         let p = Phpt::parse(b"--INI--\nopcache.enable_cli=1\n--FILE--\n");
         assert_eq!(test_ini(&p).unwrap(), ["opcache.enable_cli=1"]);
+        let p = Phpt::parse(b"--INI--\nopcache.opt_debug_level=0x20000\n--FILE--\n");
+        assert_eq!(
+            test_ini(&p).unwrap_err(),
+            "opcode dump not on tests/phpt/ignored.txt"
+        );
+        let p = Phpt::parse(b"--INI--\nopcache.opt_debug_level=0\n--FILE--\n");
+        assert!(test_ini(&p).is_ok());
+        let p = Phpt::parse(b"--INI--\n;opcache.opt_debug_level=0x20000\n--FILE--\n");
+        assert!(test_ini(&p).is_ok());
         let p = Phpt::parse(b"--INI--\nopcache.jit_debug=0x1\n--FILE--\n");
         assert_eq!(test_ini(&p).unwrap_err(), "opcache:jit_debug");
         let p = Phpt::parse(b"--INI--\nopcache.file_cache={PWD}\n--FILE--\n");

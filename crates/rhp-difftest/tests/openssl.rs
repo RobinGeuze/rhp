@@ -160,6 +160,9 @@ foreach ([OPENSSL_ALGO_SHA1, OPENSSL_ALGO_SHA256, OPENSSL_ALGO_MD5, 'sha512', 'S
 }
 openssl_sign('data', $sig, $k, 'sha256', OPENSSL_PKCS1_PSS_PADDING);
 show('pss', [openssl_verify('data', $sig, $pub, 'sha256', OPENSSL_PKCS1_PSS_PADDING), openssl_verify('data', $sig, $pub, 'sha256')]);
+// The PSS salt is random, so the PKCS#1 check fails with "invalid padding" or
+// (first byte 0) "block type is not 01": drop those errors unprinted.
+while (openssl_error_string() !== false) {}
 show('bad padding', openssl_verify('data', $sig, $pub, 'sha256', 99));
 show('bad sig', openssl_verify('data', 'xx', $pub, 'sha256'));
 errors();
